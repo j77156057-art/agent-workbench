@@ -215,7 +215,7 @@ cd frontend && npm run test:node
 - **假干净三连**（同一程序里反复出现）：CI 用 `unittest discover` 静默跳过 22 个 pytest 风格文件；
   ruff 输出截断被当成 0 发现；`node --test` 空 glob 退出码 0。**加一条测试/门禁时先做变异测试**：
   把它故意改坏，看有没有用例会红；不红就是装饰。
-- **本会话我自己犯的 4 个错**（都留下了对应测试）：① 原地改生产文件做变异测试 → 还原撞上
+- **本会话我自己犯的 5 个错**（都留下了对应测试）：① 原地改生产文件做变异测试 → 还原撞上
   `OSError 22`，文件短暂留在变异态；② 把 `dev_media` 的异常文案合并成一句，打断既有断言；
   ③ 现场测试的浏览器探针写错模块别名被宽 `except` 吞掉 → **整类静默跳过**；④ `preview_target`
   抛错时会话名额没归还（变异测试跑出来的真 bug）；⑤ **`git commit -- <路径>` 绕过索引**：hunk
@@ -223,6 +223,12 @@ cd frontend && npm run test:node
   在途 WIP 挂进 `b828d10`，且扫进去的 import 引用了未跟踪模块 → **HEAD 单独检出 `import agent`
   失败**（干净 worktree 实测）。流程教训：hunk 暂存之后只能裸 `git commit`，且提交后要
   `git show --stat` + 在干净 worktree 里 import 一次。
+- **门禁自己有一个负载敏感点（本仓文件，不是别人的）**：
+  `tests/test_dev_eval.py::GateBitesCases::test_cli_exit_codes` 是在**进程里把整套题跑一遍**
+  再看退出码，所以任何一题（要起浏览器的 `media-fixture`、要真跑 pytest 的 `testrun`）现场卡顿
+  都会连带它红。实测：9 个套件串在一起跑时它红过一次（84 passed / 3 failed），单跑同一文件
+  15 passed、三文件组合重跑 87 passed。读这条红之前，先看同一时间有没有别的 lane 在起浏览器
+  （按 `--user-data-dir` 归组数进程），别第一时间怀疑代码。
 
 ## 10. 本会话未结事项
 
