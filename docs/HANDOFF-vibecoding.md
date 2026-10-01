@@ -1,6 +1,6 @@
 # HANDOFF · Vibecoding 能力补全（harness 侧）
 
-> 状态：**Wave1–9、11–17 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫 / 17 组件守卫第二层「挂载前驱动共享状态」+ `dev_apptest` 真后端整页集成守卫）。
+> 状态：**Wave1–9、11–18 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫 / 17 组件守卫第二层「挂载前驱动共享状态」+ `dev_apptest` 真后端整页集成守卫）。
 > 发出人：本会话（用户直接指派，不占 R0–R15 槽位）。最后更新：2026-10-01。
 >
 > **这份文档是什么**：让没跟过这个过程的人（或另一个 AI）能直接接手**操作**这套 harness 的
@@ -53,13 +53,19 @@
 ## 3. 怎么自己复跑验证
 
 ```bash
-# 能力门禁（19 题，不联网、不需要浏览器；含基线对比）
+# 守卫到底有没有牙：把源码逐条改坏，确认有测试/门禁因此变红（约 4 分钟，不起浏览器）
+.venv/Scripts/python.exe tests/mutation/run_all.py --no-live          # 加 -v 看逐条
+#   现场层是兜底：离线跑完仍有 2 条（整页的"就绪说谎"与"服务不回收"）验不了，
+#   要在有 Edge 与前端的机器上完整跑：
+#   .venv/Scripts/python.exe tests/mutation/run_all.py
+# 能力门禁（23 题，不联网、不需要浏览器；含基线对比）
 .venv/Scripts/python.exe -m agent_runtime.dev_eval --self-check \
     --baseline .github/dev-eval-baseline.json --json
-# 本程序新增的四套回归（138 项，其中少量需要 Edge / node）
+# 本程序新增的回归（其中少量需要 Edge / node / 能起后端）
 .venv/Scripts/python.exe -m pytest tests/test_media_fixture.py tests/test_page_action.py \
     tests/test_voice_loop.py tests/test_frontend_node_tests.py tests/test_head_check.py \
-    tests/test_test_run.py tests/test_vue_component.py -q --basetemp=.tmp/pt-manual
+    tests/test_test_run.py tests/test_vue_component.py tests/test_app_test.py \
+    tests/test_mutation_batteries.py -q -p no:cacheprovider --basetemp=.tmp/pt-manual
 # 让工具自己跑一次组件守卫（真浏览器，5~20 秒）：
 #   dev_vue(component: src/workbench/components/WorkflowMembersDock.vue,
 #           props: {"active":true,"members":[{"id":"t1","label":"研究","role":"r",
@@ -277,18 +283,36 @@ cd frontend && npm run test:node
 5. 不推。不代别人提交。跨进程写回有锁竞争时**不要原地改被 watcher 监听的源文件**（做变异测试时在
    `.tmp` 副本上做，见 §9）。
 
+## 7.5 变异电池放在哪、怎么读（Wave18）
+
+- `tests/mutation/engine.py`：共用引擎。**三条不可退让**：① 对照组（未变异）必须在电池要用到的
+  每一层都干净，否则整块电池不作数——不然环境一红，每条变异都"被抓到"，分数好看而毫无意义；
+  ② 锚点找不到原文＝电池与源码脱钩，报**失败**而不是跳过；③ 现场层跑不了（没浏览器/工具链）时
+  相关变异记「本环境未验证」，**既不算抓住也不算活下来**。
+- `tests/mutation/battery_*.py`：五份声明式电池（`MODULE` / `TARGET` / `CASE_ID` / `TEST_MODULE`
+  / `BIND` / `UNIT_CLASSES` / `LIVE` + `MUTATIONS`）。第 4 个元素 `("live",)` 表示
+  "只有真浏览器才看得见"。
+- `tests/test_mutation_batteries.py`：元测试（0.24 秒，`unittest discover` 会自动收到）。查锚点
+  漂移、测试类改名、门禁题号变更、变异数被偷删（`MINIMUMS` 下限），以及引擎自己的判定逻辑。
+- CI：`.github/workflows/harness.yml` 的 `Run mutation batteries` 一步，跑 `--no-live`，
+  只在 sqlite matrix 付费。本机实测：`--no-live` **118/120 抓到 + 2 条未验证 + 0 条活下来，
+  243 秒**（其中 `head_check` 一块就 182 秒，因为它要真建 `git worktree`）；带浏览器
+  `--only vue,app_test` **72/72，99 秒**。
+- **怎么读这份证据**：电池绿＝"这些测试确实会红"。它**不**保证变异集合覆盖了这个模块的每个守卫；
+  新加一条守卫时同时加一条变异，否则那条守卫没有凭据。
+
 ## 8. 文件地图（本程序新增，均在 `agent_runtime/` 除注明外）
 
 `code_intel.py`(扩展) · `ts_index.py` · `diagnostics.py` · `patch_apply.py` · `lanes.py` ·
 `dev_server.py` · `mcp_server.py` · `mcp_bridge.py` · `dev_eval.py` · `proposal.py` · `ci_status.py` ·
 `media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` · `test_run.py` ·
-`vue_component.py` · `app_test.py` ·
+`vue_component.py` · `app_test.py` ·（另有 `tests/mutation/engine.py` + `run_all.py` + 五份 `battery_*.py`）·
 `visual_acceptance.py`（被抽出 `browser_session` / `serve_static` / `stop_static` / `sanitize_flags`，
 并被别的 lane 加了作业对象回收）· 测试：`test_dev_glob_git_log` / `test_lanes_registry` /
 `test_ts_index` / `test_dev_diagnostics` / `test_dev_patch_move` / `test_mcp_server_expose` /
 `test_mcp_inline_tools` / `test_dev_serve_preview` / `test_dev_eval` / `test_dev_propose_ci` /
 `test_media_fixture` / `test_page_action` / `test_voice_loop` / `test_frontend_node_tests` /
-`test_head_check` / `test_test_run` / `test_vue_component` / `test_app_test` ·
+`test_head_check` / `test_test_run` / `test_vue_component` / `test_app_test` / `test_mutation_batteries` ·
 前端：`frontend/tests/liveAudioControl.test.mjs`（+ `test:node` 脚本与 CI 步骤）。
 
 ## 9. 事故与教训（避免重蹈）

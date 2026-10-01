@@ -75,6 +75,12 @@ jobs:
         run: python -m agent_runtime.workflow_eval --self-check --baseline .github/workflow-eval-baseline.json --json
       - name: Run dev lane capability gate
         run: python -m agent_runtime.dev_eval --self-check --baseline .github/dev-eval-baseline.json --json
+      - name: Run mutation batteries (守卫到底有没有牙)
+        if: matrix.backend == 'sqlite'
+        # 上面那道门只问"能力在不在"，这一道问"守着能力的测试会不会根本没在守"：
+        # 逐条把源码改坏，确认有测试或门禁因此变红。--no-live = 不启真浏览器，
+        # 只有现场能验的变异记成「本环境未验证」而不是"抓住"。
+        run: python tests/mutation/run_all.py --no-live -q
       - name: Run retrieval regression gate
         run: python -m agent_runtime.retrieval_eval --dataset .github/retrieval-eval.json --baseline .github/retrieval-eval-baseline.json --minimum 0.75 --json
       - name: Run live Chroma retrieval gate
