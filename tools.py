@@ -6436,13 +6436,13 @@ def dev_page_action(arg=""):
             result = page_action.open_page(root, url=_one("url"), entry=_one("entry"))
         elif action == "click":
             result = page_action.click(root, page=_one("page"), selector=_one("selector"),
-                                       text=_one("text"), nth=_one("nth", 0), scope=_one("scope"),
+                                       text=_one("text"), nth=_one("nth"), scope=_one("scope"),
                                        settle=_one("settle", 600),
                                        screenshot=_flag("screenshot", True))
         elif action == "type":
             result = page_action.type_text(root, page=_one("page"), value=fields.get("value") or "",
                                            selector=_one("selector"), text=_one("text"),
-                                           nth=_one("nth", 0), scope=_one("scope"),
+                                           nth=_one("nth"), scope=_one("scope"),
                                            replace=_flag("replace", True),
                                            settle=_one("settle", 600),
                                            screenshot=_flag("screenshot", False))
@@ -6457,10 +6457,10 @@ def dev_page_action(arg=""):
         elif action == "read":
             result = page_action.read_page(root, page=_one("page"), selector=_one("selector"),
                                            mode=_one("mode", "text"), attr=_one("attr"),
-                                           nth=_one("nth", 0))
+                                           nth=_one("nth"))
         elif action == "locate":
             result = page_action.locate(root, page=_one("page"), selector=_one("selector"),
-                                        text=_one("text"), nth=_one("nth", 0), scope=_one("scope"))
+                                        text=_one("text"), nth=_one("nth"), scope=_one("scope"))
         elif action in ("list", "status"):
             result = {"action": "list", "live": page_action.live_pages()}
         elif action == "close":
@@ -6483,6 +6483,64 @@ def dev_page_action(arg=""):
     if not image:
         return text
     return ToolResult(True, text, data={"images": [image], "image_sources": [shot]})
+
+
+def dev_vue(arg=""):
+    """把【真实的 .vue 组件】挂进真浏览器验接线：编译、渲染、真点击、收 emit。
+
+    输入（多行 keyed）：
+      component: src/workbench/components/WorkflowMembersDock.vue   # 相对前端目录
+      props: {"active": true, "members": [...]}                     # JSON 对象
+      clicks: .wmd-strip, .wmd-item#1                                # 顺序点击，#n 是第几个
+      expect_present: .wmd-panel                                      # 点击后必须出现
+      expect_absent: .wmd-head.old                                    # 必须不存在
+      counts: .wmd-item=2                                             # 数量断言（选择器=数字）
+      texts: 1/2                                                      # 渲染文本里必须有（按行分条）
+      expect_emit: focus                                              # 必须是组件 defineEmits 声明过的
+      expect_emit_args: ["t2"]                                        # 原样比较 emit 的实参
+      timeout: 60
+    这一条补的是最后一块没有守卫的接线层：`voice_loop` 里的胶水是我照 `AutonomousCockpit.vue`
+    **转写**的，`.vue` 文件本身被改坏（props 改名、emit 从 id 变成 label、`v-if` 条件写反）
+    以前没有任何测试会发现。这里挂的是**真组件**：用仓库自带的 `@vue/compiler-sfc`（vue-tsc
+    带的，版本与 vue 一致）编、前端自己的 esbuild 打包、Wave13 的 `dev_page_action` 真点击。
+    **零新依赖**——vitest 量化过不装（1 critical + 3 moderate + 1 high 公告，且 vitest3 要
+    vite6/7 而本树是 vite5）。
+    判定 fail-closed：什么都不断言（只挂不上判）＝未通过；`expect_emit` 写了组件没声明的名字
+    ＝未通过（否则会退化成"永远等不到"的假守卫）；读状态那次点击抛错单独红，不让所有事实
+    断言一起"莫名没成立"。
+    边界：只证明这一个组件在这一组 props 下的行为，不证明整页集成，也不听真网关。
+    """
+    from agent_runtime import vue_component
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    fields = _parse_keyed(arg or "", ["component", "props", "clicks", "expect_present",
+                                      "expect_absent", "counts", "texts", "expect_emit",
+                                      "expect_emit_args", "timeout"])
+
+    def _one(key, default=""):
+        value = (fields.get(key) or "").strip()
+        if not value:
+            return default
+        lines = [line.strip() for line in value.splitlines() if line.strip()]
+        return lines[0] if key in ("component", "timeout", "expect_emit") else "\n".join(lines)
+    try:
+        timeout = float(_one("timeout") or 60)
+    except (TypeError, ValueError):
+        return "timeout 必须是秒数（5~300）。"
+    if not 5 <= timeout <= 300:
+        return "timeout 只能在 5~300 秒之间。"
+    try:
+        report = vue_component.run_guard(
+            root, component=_one("component"), props=_one("props"), clicks=_one("clicks"),
+            expect_present=_one("expect_present"), expect_absent=_one("expect_absent"),
+            counts=_one("counts"), texts=_one("texts"), expect_emit=_one("expect_emit"),
+            expect_emit_args=_one("expect_emit_args"), timeout=timeout)
+    except vue_component.VueComponentError as exc:
+        return "组件守卫未能开始：%s" % str(exc)[:300]
+    except Exception as exc:  # noqa: BLE001 - 挂不起来要报原因，不能报通过
+        return "dev_vue 失败：%s: %s" % (type(exc).__name__, str(exc)[:240])
+    return vue_component.render(report)
 
 
 def dev_testrun(arg=""):
@@ -7343,6 +7401,24 @@ TOOLS = {
             "页面里的按钮可能真的会改你的项目或发请求——那是你的开发服务，不是沙箱里的玩具。"
         ),
         "func": dev_page_action,
+    },
+    "dev_vue": {
+        "description": (
+            "把【真实的 .vue 组件】挂进真浏览器验它的接线：编译 → 渲染 → 真点击 → 收 emit。\n"
+            "输入 keyed 多行：`component: src/workbench/components/Xxx.vue`（相对前端目录）、"
+            "`props:` 一个 JSON 对象、`clicks:` 顺序点击（`.wmd-item#1` 里的 `#1` 是第几个）、"
+            "`expect_present:` / `expect_absent:` / `counts: .wmd-item=2` / `texts:`（按行分条）、"
+            "`expect_emit: focus` + `expect_emit_args: [\"t2\"]`（实参原样比较）、`timeout: 60`。\n"
+            "这是循环里最后没被守住的一段：`dev_media action: voice` 里的胶水是照 `AutonomousCockpit.vue`"
+            "**转写**的，`.vue` 本体被改坏（props 改名、emit 从 id 变成 label、`v-if` 条件写反）以前"
+            "没有测试会发现。这里挂的是真组件——用仓库自带的 `@vue/compiler-sfc`（vue-tsc 带的，"
+            "与 vue 同版本）编、前端自己的 esbuild 打包、`dev_page_action` 真点击，**零新依赖**"
+            "（vitest 量化过不装：1 critical + 3 moderate + 1 high 公告，且 vitest3 要 vite6/7 而本树 vite5）。\n"
+            "判定 fail-closed：不写任何断言＝未通过（挂上了不是证据）；`expect_emit` 写组件没声明过的"
+            "名字＝未通过（否则永远等不到也看不出来）；读状态那次点击抛错单独红。"
+            "边界：只证明这一个组件在这一组 props 下的行为，不证明整页集成，也不听真网关。\n"
+        ),
+        "func": dev_vue,
     },
     "dev_testrun": {
         "description": (

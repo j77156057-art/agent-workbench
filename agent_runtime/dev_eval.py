@@ -490,6 +490,76 @@ def _case_testrun_reads_failures_and_reruns_only_them(root: str, run: Callable[.
                    "coverage_available=%s" % test_run.coverage_available())]
 
 
+def _case_vue_guard_can_go_red(root: str, run: Callable[..., dict]) -> list[dict]:
+    """组件守卫的判定表在【没有 node / 没有浏览器】时也必须可验——否则这条门禁就是装饰。
+
+    真挂载那一半在 `tests/test_vue_component.py` 的现场类里（含把组件**副本**改坏两条反证）；
+    这里钉的是"红了才有意义"的那部分：判定表、参数闸门、以及页面必须按组件自己声明的
+    emits 建监听。
+    """
+    from agent_runtime import vue_component as vcomp
+
+    state = {"mounted": True, "rendered": True, "errors": [], "warnings": [],
+             "declaredEmits": ["focus"], "emits": [{"name": "focus", "args": ["t2"]}],
+             "facts": {"present:.wmd-panel": True, "absent:.nope": True,
+                       "count:.wmd-item": 2, "text:1/2": True}}
+    cfg = {"props": {}, "expect_present": [".wmd-panel"], "expect_absent": [".nope"],
+           "counts": [[".wmd-item", "2"]], "texts": ["1/2"], "expect_emit": "focus",
+           "expect_emit_args": ["t2"]}
+    ok = vcomp.evaluate(state, cfg, [], [], synced=True)
+    label_only = vcomp.evaluate(dict(state, emits=[{"name": "focus", "args": ["写作"]}]),
+                                cfg, [], [], synced=True)
+    undeclared = vcomp.evaluate(dict(state, emits=[]), dict(cfg, expect_emit="pick"),
+                                [], [], synced=True)
+    blind = vcomp.evaluate(state, {"props": {}, "expect_present": [], "expect_absent": [],
+                                   "counts": [], "texts": [], "expect_emit": "",
+                                   "expect_emit_args": None}, [], [], synced=True)
+    no_read = vcomp.evaluate(dict(state, facts={}), cfg, [], [], synced=False)
+    warned = vcomp.evaluate(dict(state, warnings=["Missing prop: active"]), cfg, [], [],
+                            synced=True)
+    page = (Path(root) / "page.html")
+    vcomp.mount_page("app.mjs", cfg, page)
+    html = page.read_text(encoding="utf-8")
+    fe = Path(root) / "frontend"
+    (fe / "src").mkdir(parents=True, exist_ok=True)
+    fe.joinpath("package.json").write_text('{"name":"x"}\n', encoding="utf-8", newline="\n")
+    fe.joinpath("src", "Ok.vue").write_text("<template><p>ok</p></template>\n",
+                                            encoding="utf-8", newline="\n")
+
+    def refuses(rel: str) -> bool:
+        try:
+            vcomp.component_file(fe, rel)
+        except vcomp.VueComponentError:
+            return True
+        return False
+
+    hostile = ("../outside.vue", "/etc/passwd.vue", "src/../x.vue", "other/Ok.vue",
+               "src/Nope.vue", "src/Ok.txt")
+    return [_check("a_faithful_table_passes", ok["passed"], ok["failed"]),
+            _check("emit_label_instead_of_id_is_red",
+                   not label_only["passed"]
+                   and "emit_args_exact" in label_only["failed"], label_only["failed"]),
+            _check("undeclared_emit_name_is_red",
+                   not undeclared["passed"]
+                   and "emit_declared_by_component" in undeclared["failed"], undeclared["failed"]),
+            _check("mounting_without_assertions_is_red",
+                   not blind["passed"] and "assertions_declared" in blind["failed"],
+                   blind["failed"]),
+            _check("a_failed_state_read_is_named_not_masked",
+                   "state_read_back" in no_read["failed"], no_read["failed"]),
+            _check("vue_warning_is_red", "no_vue_warnings" in warned["failed"],
+                   warned["failed"]),
+            _check("listeners_come_from_the_component", "Comp.emits" in html, html[:120]),
+            _check("hostile_component_paths_are_refused",
+                   all(refuses(rel) for rel in hostile), [rel for rel in hostile
+                                                           if not refuses(rel)]),
+            _check("the_real_component_is_not_refused", refuses("src/Ok.vue") is False, ""),
+            _check("nth_zero_differs_from_unset",
+                   vcomp.click_plan(".a, .b#0") == [{"selector": ".a", "nth": ""},
+                                                    {"selector": ".b", "nth": 0}],
+                   vcomp.click_plan(".a, .b#0"))]
+
+
 def _case_headcheck_catches_an_untracked_reference(root: str, run: Callable[..., dict]) -> list[dict]:
     """HEAD 自检：同一份代码，差一个 `git add`，判红→判绿。
 
@@ -712,6 +782,12 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "direct": _case_page_action_refuses_and_never_claims_success,
         "uses": ["dev_page_action"],
         "note": "点了没生效绝不能报成功：歧义/隐藏/禁用不派发，报错优先于 DOM 变化",
+    },
+    {
+        "id": "vue-guard-can-go-red", "fixture": "plain",
+        "direct": _case_vue_guard_can_go_red,
+        "uses": ["dev_vue"],
+        "note": "组件守卫的判定表必须每条能红：只挂不断言、emit 名字没声明、读状态失败都要红",
     },
     {
         "id": "testrun-rerereads-failures-not-just-an-exit-code", "fixture": "plain",

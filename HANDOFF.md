@@ -1,5 +1,19 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-02 Vibecoding 能力补全 Wave16：`dev_vue` —— 把真实 `.vue` 组件挂进真浏览器验接线（本会话，不占 R 槽位）
+
+- **补什么**：循环里最后一段没有守卫的接线。Wave8 的语音行为回路里那段胶水是我**照 `AutonomousCockpit.vue` 转写**的，不是从 `.vue` import 出来的——所以组件文件本身被改坏（props 改名、`emit('focus', id)` 变成 `emit('focus', label)`、`v-if="visible"` 写反）以前**没有任何测试会发现**。
+- **零新依赖**（这是前提，不是附带优点）：编译器用仓库里已有的 `@vue/compiler-sfc`（vue-tsc 带的，3.5.42 与 `vue` 完全同版），打包用前端自己的 `esbuild@0.21.5` 的 **JS API**，点击/读状态用 Wave13 的 `dev_page_action`，静态服务用 Wave7 抽出来的 `serve_static`。vitest 那条路量化过不走（`vitest@2 + @vue/test-utils + jsdom` = 1 critical + 3 moderate + 1 high dev 公告，critical 是 Vitest UI 任意文件读；vitest 3 要 vite 6/7 而本树是 vite 5）。
+- **产物**：`agent_runtime/vue_component.py`、`tests/test_vue_component.py` **62 项**（54 纯 + 8 真浏览器现场）、`tools.py` 的实现 + TOOLS 注册、`agent.py` 提示目录 1 行、`mcp_server.py` 归 WRITE_TOOLS、门禁加 1 题（21→22，基线已刷）。**顺手修掉 Wave13 的一个真缺陷**：`_target_spec` 把"没写 `nth`"和"`nth: 0`"都归成 0，于是多项命中时**无论怎么指定都点不到第一个**——`dev_vue` 在 `.wmd-item#0` 上撞出来，补了 `nth_given` 与两条回归用例（`tests/test_page_action.py` 49→51 项）。
+- **被实测决定了的三件事**：① esbuild 只能走 JS API（CLI 没有插件位），且 `compileScript` 的输出**仍是 TypeScript**，返回的 `loader` 必须跟着 SFC 的 `lang` 走——写死 `'js'` 时 esbuild 在 `interface Member` 那行报 `Expected ";" but found "Member"`；② 页面要挂起来必须**从同一个 bundle 拿 `createApp`/`h`**（组件入口 `import Comp from '...'` + `export { createApp, h } from 'vue'` 一张图），否则是两个 vue 实例；③ 产物目录必须落在**前端树内**（`frontend/.tmp/vue-guard/`，命中 .gitignore 的 `.tmp/`）：入口里的裸说明符 `from 'vue'` 要靠从入口目录向上找 `node_modules`，放仓外直接 ESM loader 报错。
+- **判定 fail-closed，8 条要求 + 6 条不变量**：`assertions_declared`（**只挂不断言＝未通过**，"挂上了"不是证据）、`emit_declared_by_component`（断言的 emit 名不在组件自己 `defineEmits` 的清单里＝未通过，否则会退化成"永远等不到"的假守卫）、`emit_recorded` / `emit_args_exact`（实参原样比较）、`state_read_back`（读状态那次点击抛错要**单独红**——不然 present/absent/count/text 四条一起"莫名没成立"）、`mounted`/`rendered`/`no_component_errors`/`no_vue_warnings`/`every_click_applied`/`artifacts_cleaned`。
+- **两条守卫是修 bug 修出来的**：① `counts` 原本把整串 `.wmd-item=2` 当选择器传进页面，`querySelectorAll` 抛错把整份事实吞成空 dict，于是每条断言都只是"没成立"——现在 Python 侧 `count_plan` 拆成 `[选择器, 期望值]`，页面侧合并成**单条** `probe()`，并在测试里断言"失败分支既记错误又不谎报元素存在"；② 产物回收原来用 `shutil.rmtree(ignore_errors=True)`，浏览器刚关掉时 `app.mjs` 还被句柄占着，一次删不掉就永远没人知道——工作树里确实躺着这么一套孤儿目录，现在 `clean_target` 带重试并如实回报 `removed`。
+- **变异电池 22/22 抓红**（`.tmp/mut_vue.py`，只在 `.tmp` 副本上变异）。其中 **5 条一开始活下来**，原因同一个：那几处只有 `run_guard`/现场类才走到，纯层碰不到——于是把参数解析抽成 `parse_request()`、产物目录抽成 `workdir_for()`，把清理测试挪进纯层，并把"写死事件名""非法选择器谎报存在"两条改成断言**页面上的那一行**。还有一条是我的可用性判据把 `node_modules/@vue/compiler-sfc`（目录）用 `.is_file()` 去查，导致 8 条现场用例**静默跳过**而全量仍显示绿灯——判据改成复用模块自己的 `ESBUILD_API`/`SFC_API` 常量，并把跳过原因打进 `skipUnless` 文案。
+- **反证不是想出来的**（现场类里四条真红）：`active:false` 时 `v-if` 必须让它什么都不渲染；断言 emit 实参是 `t9`（实际发 `t1`）必须只红 `emit_args_exact`；把组件**副本**的 `emit('focus', id)` 改成 `emit('focus', 'WRONG')` → 红；把 `v-if="visible"` 改成 `v-if="false"` → 红。副本一律写在 `frontend/.tmp/`（gitignore 内），**不原地改被监听的生产源码**。
+- **验证**：`tests/test_vue_component.py` **62 passed / 0 skipped**；`tests/test_page_action.py` 51 项（含 2 条 nth 回归）；与 `test_native_tools` / `test_mcp_server_expose` / `test_dev_eval` / `test_vue_component` 一起 **140 passed / 60 subtests**；门禁 **22/22** 与基线持平；工具走文本协议真跑：真组件全绿并回 `emits=["focus"]`、`count:.wmd-item=2`、`text:1/2`，`props: not-json` / `../outside.vue` / `timeout: 1` / `counts: .a=b` 全部不起浏览器就拒绝。跑完按 `--user-data-dir` 数进程：24 个全是别人的（14 用户 Edge + 9 `codex-model-probe`），我的产物目录已空。
+- **边界（不许越界宣称）**：只证明**这一个组件在这一组 props 下**的行为，不证明整页集成、不 proof 路由/父组件传参，也不听真网关；`expect_absent` 是"点完之后不在"，不是"永远不在"；组件若依赖运行时的 `window` 全局（真实 App 的 provide/inject、`session.js` 之类）需要另写 mount 包装，本工具只给 `props` + `emits`。
+
+
 ## 2026-10-02 Vibecoding 能力补全 Wave15：`dev_testrun` —— 跑测试→读失败→只重跑失败（本会话，不占 R 槽位）
 
 - **补什么**：这一段以前只能 `run_command("pytest -q")` 然后把一整屏文本交回来自己读，实测有三个具体的漏法：① pytest **一个用例都没收集到时退出码是 5**（实测本仓 `pytest .tmp/empty_t` → exit 5），"没看到 FAILED"很容易被读成通过；② `-q` 的失败摘要（`FAILED <nodeid> - <原因>`）是文本里最容易漏读的几行；③ 全量 2569 项 / 5–15 分钟，改一处要重跑全部。

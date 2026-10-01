@@ -1,6 +1,6 @@
 # HANDOFF · Vibecoding 能力补全（harness 侧）
 
-> 状态：**Wave1–9、11–15 已入库**（Wave14 = `dev_headcheck` 提交自洽；Wave15 = `dev_testrun` 跑测试/读失败/只重跑失败）。
+> 状态：**Wave1–9、11–16 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫）。
 > 发出人：本会话（用户直接指派，不占 R0–R15 槽位）。最后更新：2026-10-01。
 >
 > **这份文档是什么**：让没跟过这个过程的人（或另一个 AI）能直接接手**操作**这套 harness 的
@@ -26,13 +26,14 @@
 | 跑起来 | `dev_serve`（起/停本机 dev server）| 只允许回环；命令过同一道黑名单 |
 | 跑测试 | `dev_testrun`（`paths` / `keyword` / `only_failed` / `related`）| 退出码 5 = 一个都没收集到，判**未通过**；覆盖率未启用（没装 coverage）|
 | 看结果 | `preview_project`（截图 + console + 失败请求）/ `dev_page_action`（点/填/按键/等待）| **no_change 不是成功**；只回环 |
+| 守组件 | `dev_vue`（真实 .vue 挂进真浏览器：props → 真点击 → 收 emit）| **不写断言＝未通过**；只证明一个组件在一组 props 下（§5.6） |
 | 验语音/摄像头 | `dev_media`（`build` / `run` / `voice`）| 假设备喂合成媒体；门限行为见 §5.3 |
 | 静态检查 | `dev_diagnostics`（ruff + vue-tsc）| 退出码非 0 却解析不出发现时**报错误不报干净** |
 | 交付 | `dev_propose`（补丁+草稿，写进状态目录）/ `dev_ci_status`（只读 GET）| 不 add/commit/push；CI 读不到就明说 |
 | 提交自洽 | `dev_headcheck`（把 HEAD 挂成干净检出真 import 一遍）| 只读 + `worktree --detach`；抓的是"工作树能跑、单独检出必红"，见 §5.4 |
 | 多人防撞 | `dev_lanes`（TTL 认领登记表 + 可选 worktree）| 冲突默认拒绝，`force: true` 才共管 |
 | 对外出口 | `mcp_server`（harness 自己是 MCP server）/ `mcp_bridge`（连接器工具一等公民化）| 默认只读；写要 `--allow-writes`；`run_command` 等永不暴露 |
-| 能力回归 | `dev_eval`（20 题门禁 + 基线 + CI 步骤）| 测的是 harness，不是模型智商 |
+| 能力回归 | `dev_eval`（22 题门禁 + 基线 + CI 步骤）| 测的是 harness，不是模型智商 |
 
 ## 2. 环境事实（会咬人，先读）
 
@@ -57,7 +58,13 @@
 # 本程序新增的四套回归（138 项，其中少量需要 Edge / node）
 .venv/Scripts/python.exe -m pytest tests/test_media_fixture.py tests/test_page_action.py \
     tests/test_voice_loop.py tests/test_frontend_node_tests.py tests/test_head_check.py \
-    -q --basetemp=.tmp/pt-manual
+    tests/test_test_run.py tests/test_vue_component.py -q --basetemp=.tmp/pt-manual
+# 让工具自己跑一次组件守卫（真浏览器，5~20 秒）：
+#   dev_vue(component: src/workbench/components/WorkflowMembersDock.vue,
+#           props: {"active":true,"members":[{"id":"t1","label":"研究","role":"r",
+#                    "status":"ok","task":"查资料"}]},
+#           clicks: .wmd-strip, expect_present: .wmd-panel, counts: .wmd-item=1,
+#           expect_emit: focus, expect_emit_args: ["t1"])
 # 前端行为测试（29 项：node:test 跑生产 .ts）
 cd frontend && npm run test:node
 ```
@@ -159,11 +166,35 @@ cd frontend && npm run test:node
 - 边界：只报"跑到什么、哪里红了"，不判断根因；`--tb=line` 是一行式现场；记账是覆盖写，
   两条并发 `dev_testrun` 会互相顶掉。
 
+### 5.6 `dev_vue`（Wave16）：把真实 `.vue` 组件挂进真浏览器
+补的是最后一段没有守卫的接线：`voice_loop` 里的胶水是**转写**的，`.vue` 本体被改坏以前没人发现。
+**零新依赖**——编译器是仓库里已有的 `@vue/compiler-sfc`（vue-tsc 带的，与 `vue` 同版本），
+打包是前端自己的 `esbuild` 的 **JS API**，点击是 Wave13 的 `dev_page_action`。
+- 一条命令能断言的东西：`props` → 渲染出什么（`expect_present` / `expect_absent` /
+  `counts: .wmd-item=2` / `texts: 1/2`）→ 真点几下（`clicks: .wmd-strip, .wmd-item#1`，
+  `#n` 是 nth）→ **emit 的名字与实参**（`expect_emit: focus` + `expect_emit_args: ["t2"]`）。
+- 三件被实测决定的实现细节：① `compileScript` 的输出**仍是 TS**，esbuild 的 `loader` 必须跟
+  SFC 的 `lang` 走（写死 `js` 会在 `interface` 那行炸）；② 页面要的 `createApp`/`h` 必须
+  **从同一个 bundle 导出**，否则是两个 vue 实例；③ 产物目录必须在**前端树内**
+  （`frontend/.tmp/vue-guard/`，命中 `.gitignore` 的 `.tmp/`）——裸说明符 `from 'vue'`
+  是从入口目录向上找 `node_modules` 的。
+- 判定 fail-closed：**不写任何断言＝未通过**（"挂上了"不是证据）；`expect_emit` 写了组件
+  `defineEmits` 里没有的名字＝未通过（否则永远等不到也看不出来）；读状态那次点击抛错
+  **单独**红（`state_read_back`），不然四条事实断言一起"莫名没成立"。
+- 反证是真的：把组件**副本**（`frontend/.tmp/`，gitignore 内）的 `emit('focus', id)` 改成常量、
+  或把 `v-if="visible"` 改成 `v-if="false"`，守卫当场红。变异电池 **22/22**，其中 5 条一开始
+  活下来都是因为"只有现场类才走到"——于是把参数解析抽成 `parse_request()`、产物目录抽成
+  `workdir_for()`、清理测试挪进纯层，才补上牙。
+- 顺手修掉 Wave13 的一个真缺陷：`_target_spec` 把"没写 `nth`"与"`nth: 0`"都归成 0，
+  于是多项命中时**怎么指定都点不到第一个**；现在 `nth_given` 区分两者（+2 回归用例）。
+- 边界：只证明**这一个组件在这一组 props 下**的行为；不证明整页集成/路由/父组件传参，
+  也不听真网关。依赖 `window` 全局或 `provide/inject` 的组件需要另写 mount 包装。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
 |---|---|---|---|
-| 1 | `.vue` 接线层无组件级守卫 | 装了 vitest@2 + @vue/test-utils + jsdom 后量化：**1 critical + 3 moderate + 1 high** dev 公告（critical=Vitest UI 任意文件读）；vitest 3 要 vite 6/7 而本树 vite 5 | 已回退安装。**推荐**：行为用 §5.3/§5.1 覆盖；要组件级断言再接受 dev-only 公告并禁用 UI |
+| 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 仍**没有**的是：整页/路由级集成、`provide/inject` 依赖型组件的 mount 包装 |
 | 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；覆盖率入口仍无 | 实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | 覆盖率要先决定加不加依赖；记账由 `last-failed.json` 自己做 |
 | 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证），沙箱 push 不通 | 人 push 一次，把首跑结果记回本文件 |
 | 4 | `dev_serve` 端口被抢不自动重试 | Wave6 未做项 | 就绪失败时换端口重试一次 |
@@ -199,12 +230,13 @@ cd frontend && npm run test:node
 `code_intel.py`(扩展) · `ts_index.py` · `diagnostics.py` · `patch_apply.py` · `lanes.py` ·
 `dev_server.py` · `mcp_server.py` · `mcp_bridge.py` · `dev_eval.py` · `proposal.py` · `ci_status.py` ·
 `media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` · `test_run.py` ·
+`vue_component.py` ·
 `visual_acceptance.py`（被抽出 `browser_session` / `serve_static` / `stop_static` / `sanitize_flags`，
 并被别的 lane 加了作业对象回收）· 测试：`test_dev_glob_git_log` / `test_lanes_registry` /
 `test_ts_index` / `test_dev_diagnostics` / `test_dev_patch_move` / `test_mcp_server_expose` /
 `test_mcp_inline_tools` / `test_dev_serve_preview` / `test_dev_eval` / `test_dev_propose_ci` /
 `test_media_fixture` / `test_page_action` / `test_voice_loop` / `test_frontend_node_tests` /
-`test_head_check` / `test_test_run` ·
+`test_head_check` / `test_test_run` / `test_vue_component` ·
 前端：`frontend/tests/liveAudioControl.test.mjs`（+ `test:node` 脚本与 CI 步骤）。
 
 ## 9. 事故与教训（避免重蹈）

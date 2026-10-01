@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 21,
- "scored": 21,
- "passed": 21,
+ "total": 22,
+ "scored": 22,
+ "passed": 22,
  "skipped": [],
  "results": [
   {
@@ -109,6 +109,12 @@
   },
   {
    "id": "page-action-refuses-and-never-claims-success",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "vue-guard-can-go-red",
    "passed": true,
    "skipped": "",
    "failed_checks": []

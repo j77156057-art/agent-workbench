@@ -259,6 +259,47 @@ class ActionDispatchTests(unittest.TestCase):
             pa.close_all()
         self.assertEqual(result["at"], [60, 10])
 
+    def test_explicit_nth_zero_is_not_treated_as_unspecified(self):
+        """`nth: 0` 是【显式要第一个】，与"没写 nth"必须能区分。
+
+        以前 `_target_spec` 把两者都归成 0，歧义判定又写 `spec["nth"] == 0`，于是
+        多项命中时**无论怎么指定都点不到第一个**——调用方只能改选择器。这个缺陷是
+        组件守卫（`dev_vue`）在 `.wmd-item#0` 上撞出来的，不是读代码看出来的。
+        """
+        self.assertTrue(pa._target_spec(selector=".item", nth=0)["nth_given"])
+        self.assertEqual(pa._target_spec(selector=".item", nth=0)["nth"], 0)
+        for unset in ("", None):
+            self.assertFalse(pa._target_spec(selector=".item", nth=unset)["nth_given"],
+                             "nth=%r 被判成了显式指定" % (unset,))
+        fake = FakeDevTools(resolve={"count": 2, "nth": 0,
+                                     "matched": {"tag": "button", "text": "第一项", "visible": True,
+                                                 "disabled": False, "x": 10, "y": 20, "w": 20,
+                                                 "h": 10}})
+        row = self._session(fake)
+        try:
+            result = pa.click(row.root, page=row.id, selector=".item", nth=0, screenshot=False)
+        finally:
+            pa.close_all()
+        # 假页面不会有 DOM 变化，所以 ok/effect 本来就是 no_change/False；
+        # 这条要断言的是【没有被歧义拒掉、事件真的派发了】。
+        self.assertEqual(result["effect"], "no_change", result)
+        self.assertEqual(result["at"], [20, 25])
+        self.assertEqual(len(fake.dispatched("Input.dispatchMouseEvent")), 3)
+
+    def test_ambiguous_without_nth_is_still_refused(self):
+        """另一半：没写 nth 时多项命中仍然拒绝，且一个鼠标事件都不派发。"""
+        fake = FakeDevTools(resolve={"count": 2, "matched": {
+            "tag": "button", "text": "第一项", "visible": True, "disabled": False,
+            "x": 10, "y": 20, "w": 20, "h": 10}})
+        row = self._session(fake)
+        try:
+            with self.assertRaises(pa.PageActionError) as caught:
+                pa.click(row.root, page=row.id, selector=".item", screenshot=False)
+        finally:
+            pa.close_all()
+        self.assertIn("未指定 nth", str(caught.exception))
+        self.assertEqual(fake.dispatched("Input.dispatchMouseEvent"), [])
+
     def test_out_of_viewport_center_is_refused(self):
         fake = FakeDevTools(resolve={"matched": {"tag": "div", "text": "在视口外", "visible": True,
                                                  "disabled": False, "x": 5000, "y": 5, "w": 20,

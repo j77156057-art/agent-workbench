@@ -200,7 +200,8 @@ def _evaluate(devtools: Any, source: str, spec: dict[str, Any]) -> Any:
     return devtools.evaluate("(%s)(%s)" % (source, json.dumps(spec or {}, ensure_ascii=True)))
 
 
-def _target_spec(selector: Any = "", text: Any = "", nth: Any = 0, scope: Any = "") -> dict[str, Any]:
+def _target_spec(selector: Any = "", text: Any = "", nth: Any = None,
+                 scope: Any = "") -> dict[str, Any]:
     selector = str(selector or "").strip()
     text = str(text or "").strip()
     scope = str(scope or "").strip()
@@ -214,7 +215,10 @@ def _target_spec(selector: Any = "", text: Any = "", nth: Any = 0, scope: Any = 
         raise PageActionError("选择器太长（上限 400 字符）。")
     if len(text) > 200:
         raise PageActionError("text 太长（上限 200 字符）。")
-    if nth in ("", None):
+    # `nth: 0` 是【显式要第一个】，与"没写 nth"必须区分开：以前两者都变成 0，
+    # 于是 nth: 0 也被"命中多个，未指定 nth"拒掉，调用方无论怎么写都点不到第一项。
+    given = nth not in ("", None)
+    if not given:
         nth = 0
     try:
         index = int(nth)
@@ -222,7 +226,8 @@ def _target_spec(selector: Any = "", text: Any = "", nth: Any = 0, scope: Any = 
         raise PageActionError("nth 必须是整数序号。") from None
     if not 0 <= index <= 99:
         raise PageActionError("nth 超出范围（0~99）。")
-    return {"selector": selector, "text": text, "nth": index, "scope": scope}
+    return {"selector": selector, "text": text, "nth": index, "scope": scope,
+            "nth_given": given}
 
 
 def _describe(found: dict[str, Any], spec: dict[str, Any]) -> str:
@@ -246,7 +251,7 @@ def _resolve(devtools: Any, spec: dict[str, Any]) -> dict[str, Any]:
     if not count:
         found["reason"] = "没有找到匹配元素"
         raise PageActionError(_describe(found, spec))
-    if count > 1 and spec["nth"] == 0:
+    if count > 1 and not spec["nth_given"]:
         found["reason"] = "命中多个，未指定 nth"
         raise PageActionError(_describe(found, spec))
     matched = found.get("matched")
@@ -522,7 +527,8 @@ def _session_gen(timeout: float, flags: list[str], cleanup: dict):
         yield devtools
 
 
-def click(root: str | Path, *, page: str = "", selector: str = "", text: str = "", nth: int = 0,
+def click(root: str | Path, *, page: str = "", selector: str = "", text: str = "",
+          nth: Any = None,
           scope: str = "", settle: float = 600, screenshot: bool = True) -> dict[str, Any]:
     """真实点击：定位 → 滚进视口 → CDP 鼠标按下/抬起 → 比对是否真的发生了变化。"""
     row = _get(page)
@@ -543,7 +549,7 @@ def click(root: str | Path, *, page: str = "", selector: str = "", text: str = "
 
 
 def type_text(root: str | Path, *, page: str = "", value: str = "", selector: str = "",
-              text: str = "", nth: int = 0, scope: str = "", replace: bool = True,
+              text: str = "", nth: Any = None, scope: str = "", replace: bool = True,
               settle: float = 600, screenshot: bool = False) -> dict[str, Any]:
     """往【刚才定位到的那个】元素里插文本：走 `Input.insertText`，Vue/React 的 input 监听会收到。"""
     row = _get(page)
@@ -643,7 +649,7 @@ def wait_for(root: str | Path, *, page: str = "", selector: str = "", state: str
 
 
 def read_page(root: str | Path, *, page: str = "", selector: str = "", mode: str = "text",
-              attr: str = "", nth: int = 0, held: bool = False) -> dict[str, Any]:
+              attr: str = "", nth: Any = None, held: bool = False) -> dict[str, Any]:
     row = _get(page)
     kind = str(mode or "text").strip().lower()
     if kind not in READ_MODES:
@@ -666,12 +672,12 @@ def read_page(root: str | Path, *, page: str = "", selector: str = "", mode: str
 
 
 def locate(root: str | Path, *, page: str = "", selector: str = "", text: str = "",
-           nth: int = 0, scope: str = "") -> dict[str, Any]:
+           nth: Any = None, scope: str = "") -> dict[str, Any]:
     """只看不动：这个定位会命中什么、可不可见、中心在哪个坐标。歧义也照样列出来。"""
     row = _get(page)
     spec = _target_spec(selector, text, nth, scope)
     found = dict(_evaluate(row.devtools, RESOLVE_JS, spec) or {})
-    found["ambiguous"] = int(found.get("count") or 0) > 1 and spec["nth"] == 0
+    found["ambiguous"] = int(found.get("count") or 0) > 1 and not spec["nth_given"]
     return {"action": "locate", "page": row.id, "ok": True, **found}
 
 
