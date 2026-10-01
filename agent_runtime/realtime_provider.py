@@ -185,7 +185,10 @@ class RealtimeProvider:
 _FACTORIES: dict[str, Callable[[], RealtimeProvider]] = {}
 # Adapters self-register on import; importing them here keeps callers from
 # having to know which modules exist. A broken adapter is skipped, never fatal.
-_BUILTIN_MODULES = ("agent_runtime.realtime_omni",)
+# `realtime_scripted` 是零网络的离线剧本适配器（选它需要显式设
+# ``DOCMIND_REALTIME_PROVIDER=scripted``，不影响默认路径），它存在的目的是让
+# "真页面 + 真麦克风 + 真 ws 协议"这一段能被自动测试跑到。
+_BUILTIN_MODULES = ("agent_runtime.realtime_omni", "agent_runtime.realtime_scripted")
 _AUTLOADED = False
 
 
