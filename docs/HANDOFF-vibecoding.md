@@ -1,6 +1,6 @@
 # HANDOFF · Vibecoding 能力补全（harness 侧）
 
-> 状态：**Wave1–9、11–16 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫）。
+> 状态：**Wave1–9、11–17 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫 / 17 组件守卫第二层「挂载前驱动共享状态」+ `dev_apptest` 真后端整页集成守卫）。
 > 发出人：本会话（用户直接指派，不占 R0–R15 槽位）。最后更新：2026-10-01。
 >
 > **这份文档是什么**：让没跟过这个过程的人（或另一个 AI）能直接接手**操作**这套 harness 的
@@ -26,7 +26,8 @@
 | 跑起来 | `dev_serve`（起/停本机 dev server）| 只允许回环；命令过同一道黑名单 |
 | 跑测试 | `dev_testrun`（`paths` / `keyword` / `only_failed` / `related`）| 退出码 5 = 一个都没收集到，判**未通过**；覆盖率未启用（没装 coverage）|
 | 看结果 | `preview_project`（截图 + console + 失败请求）/ `dev_page_action`（点/填/按键/等待）| **no_change 不是成功**；只回环 |
-| 守组件 | `dev_vue`（真实 .vue 挂进真浏览器：props → 真点击 → 收 emit）| **不写断言＝未通过**；只证明一个组件在一组 props 下（§5.6） |
+| 守组件 | `dev_vue`（真实 .vue 挂进真浏览器：props → 真点击 → 收 emit；第二层可**挂载前驱动共享状态**）| **不写断言＝未通过**；只证明一个组件在一组 props 下（§5.6、§5.7） |
+| 跑整页 | `dev_apptest`（起真 `uvicorn api:app` + 真 `web/` 产物 + 真浏览器）| **旧构建判未通过**（`web/` 比 `frontend/src` 新才算数）；不点真模型、不听真网关（§5.8） |
 | 验语音/摄像头 | `dev_media`（`build` / `run` / `voice`）| 假设备喂合成媒体；门限行为见 §5.3 |
 | 静态检查 | `dev_diagnostics`（ruff + vue-tsc）| 退出码非 0 却解析不出发现时**报错误不报干净** |
 | 交付 | `dev_propose`（补丁+草稿，写进状态目录）/ `dev_ci_status`（只读 GET）| 不 add/commit/push；CI 读不到就明说 |
@@ -188,13 +189,64 @@ cd frontend && npm run test:node
 - 顺手修掉 Wave13 的一个真缺陷：`_target_spec` 把"没写 `nth`"与"`nth: 0`"都归成 0，
   于是多项命中时**怎么指定都点不到第一个**；现在 `nth_given` 区分两者（+2 回归用例）。
 - 边界：只证明**这一个组件在这一组 props 下**的行为；不证明整页集成/路由/父组件传参，
-  也不听真网关。依赖 `window` 全局或 `provide/inject` 的组件需要另写 mount 包装。
+  也不听真网关。依赖共享状态的组件见 §5.7（mount 包装已做），整页见 §5.8。
+
+### 5.7 `dev_vue` 第二层：挂载前驱动**共享状态**（Wave17a）
+
+- **为什么不是 provide/inject**：这条曾被写进边界当"以后再说"，实测把它纠正了——
+  `frontend/src` 里 `provide(`/`inject(` **零命中**，本仓前端的组合式（`useWorkbench`）是
+  **模块级单例**。所以 mount 包装的正确形状是"入口与组件同源 import 同一份 + 挂载前调它的方法"，
+  不是造一个假 provider。
+- 接口：`composable:` + `store_call:` + `setup: [{"call":..., "args":[...]}]`。名字校验分两级：
+  `store_call` 与（没给 store_call 时的）setup 名按 `exported_names()` **静态**校验——扫不出任何导出
+  时**拒执行**而不是返回空清单（返回空清单等于把所有名字判成"不存在"，看着安全实则把整类组件挡在门外）；
+  给了 `store_call` 时方法名来自运行期才拿得到的对象，静态放行，但运行期取不到函数、抛错、
+  **或返回 Promise** 都记成页面错误 → `setup_applied` / `no_component_errors` 判红。
+  （异步方法同步确认不了，这条守卫因此把自己限在"同步可确认"的范围内。）
+- **读状态改成非交互**：`ContextMenu.vue` 监听 window `mousedown`，任何一次点击都会把它自己关掉——
+  实测"菜单点开了、读回来是空的"。现在页面自带 `MutationObserver` 盯 `#app`，`#state` 永远是当前
+  状态，调用方只读不改。同时把 `rendered` 从"判决"降级为"报出来的事实"：菜单关着时组件什么都不渲染
+  **是正确状态**，要断言"渲染出了什么"得写 `expect_present`（那才有牙）。
+- 现场凭据：`store_call: useWorkbench` + `setup: openRootMenu({clientX:30,clientY:30})` 让
+  `ContextMenu.vue` 真的长出 `.cm-menu` 且 `count:.cm-item=2`；不驱动时同一份断言必须判红（对照组）。
+- 测试 **79 项**（65 纯 + 14 现场），变异电池 **37/37**（纯层 / 门禁 / 现场三层对照组）。
+  其中一条变异反过来抓出我写的**假防御**：`setup_plan` 里的 `json.loads(json.dumps(args))`
+  深拷贝加那条"改不动计划"的测试——入参本来就是 JSON 字符串，每次调用重新解析，别名根本不可能发生。
+  代码与假测试一起删掉。
+
+### 5.8 `dev_apptest`（Wave17b）：真后端 + 真构建产物 + 真浏览器整页
+
+- **补什么**：`dev_vue` 的 props 是我喂进去的，整页要的是真的 `/api` 往返。做法：
+  `free_port` → `sys.executable -m uvicorn api:app`（`DOCMIND_STATE_ROOT` 指到临时目录；
+  实测冷启动就绪 4.7s，整轮含点击 8.5s）→ `POST /api/projects` 注册一个**只含本次夹具**的临时项目 →
+  `GET /api/projects` **读回来核对** `current` 与清单 → 开 `/workbench` → 逐条判定 → 拆干净。
+  进程生命周期不自己实现：服务走 `dev_server`（`process_runner` 的 job，Windows 上 born-in-job），
+  浏览器走 `page_action`，产物回收复用 `vue_component.clean_target`。
+- **凭据是"这一次独有的数据"**：夹具是一个随机命名的文件 `probe_<6位>.py`，要求它出现在文件树的
+  文本里——随机名让"缓存/旧页面里恰好有这句话"冒充不了。
+- 三条被实测纠正的形状（都是先写错、跑真页面才发现）：① `page_action` 的 `text:` 定位只在
+  **可交互元素**（a/button/input/label/…）里找，文件树那行是 `<span>`，实测命中 0 个 → 改成读
+  `.ft-body` 文本；② `locate` 的候选清单在 **64 个**就 `return`（`page_action.py:101`），
+  实测切工作区前后 `#app *` 都报 64，html 长度又被 4000 字上限砍平 → 内容换没换改用 `main`
+  正文**指纹**；③ `page_action` 禁止 selector 与 text 同时给，「素材」在顶栏「素材区」徽标上也有，
+  所以点击必须带 `scope: .ws-bar`。
+- **旧构建不算现在的代码**：`bundle_built_after_latest_source` 要求 `web/**` 的最新 mtime
+  不早于 `frontend/src/**`。实测这条在本机当场抓到过旧了 4829 秒的构建；同时 `node_modules`/`.tmp`/
+  `__pycache__` 必须从"源码"里排除，否则这条永远红。本工具**不代跑构建**，只拒绝把旧的当新的。
+- 隔离判据是双的：临时状态根里真的落下了文件，**且** `GET /api/projects` 只列得出这一次的项目——
+  漏传 `DOCMIND_STATE_ROOT` 时后面那条必红（仓库真登记表里项目不止一个）。
+- 其余 fail-closed：后端没应答、注册只回了 200 没核对、console 有错、有失败请求、点了导航却没换
+  活动标签或正文、正文被截断（截断后的"没找到"不是证据）、沙箱/服务/页面没收回——一律未通过。
+- 现场三条：全表 14 条绿（8.5s）；`page: /no-such-page-for-apptest` → 后端仍绿但 `shell_mounted`
+  与 `backend_data_reaches_page` 红；`api.py` 一导入就抛错 → `backend_started` 红并带出
+  `ImportError`。测试 **41 项**（36 纯 + 5 现场），变异电池 **35/35**，门禁 +1 题（22→23）。
+- 边界：不点真模型、不听真网关、不替组件级断言背书；页面与接口一律锁在回环与站内路径上。
 
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
 |---|---|---|---|
-| 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 仍**没有**的是：整页/路由级集成、`provide/inject` 依赖型组件的 mount 包装 |
+| 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 已做 Wave17：`dev_vue` 第二层驱动共享状态（§5.7）+ `dev_apptest` 真后端整页（§5.8）。仍**没有**的是：深链到具体路由/文件的整页断言、真模型往返（`dev_apptest` 明确不点模型）|
 | 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；覆盖率入口仍无 | 实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | 覆盖率要先决定加不加依赖；记账由 `last-failed.json` 自己做 |
 | 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证），沙箱 push 不通 | 人 push 一次，把首跑结果记回本文件 |
 | 4 | `dev_serve` 端口被抢不自动重试 | Wave6 未做项 | 就绪失败时换端口重试一次 |
@@ -230,13 +282,13 @@ cd frontend && npm run test:node
 `code_intel.py`(扩展) · `ts_index.py` · `diagnostics.py` · `patch_apply.py` · `lanes.py` ·
 `dev_server.py` · `mcp_server.py` · `mcp_bridge.py` · `dev_eval.py` · `proposal.py` · `ci_status.py` ·
 `media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` · `test_run.py` ·
-`vue_component.py` ·
+`vue_component.py` · `app_test.py` ·
 `visual_acceptance.py`（被抽出 `browser_session` / `serve_static` / `stop_static` / `sanitize_flags`，
 并被别的 lane 加了作业对象回收）· 测试：`test_dev_glob_git_log` / `test_lanes_registry` /
 `test_ts_index` / `test_dev_diagnostics` / `test_dev_patch_move` / `test_mcp_server_expose` /
 `test_mcp_inline_tools` / `test_dev_serve_preview` / `test_dev_eval` / `test_dev_propose_ci` /
 `test_media_fixture` / `test_page_action` / `test_voice_loop` / `test_frontend_node_tests` /
-`test_head_check` / `test_test_run` / `test_vue_component` ·
+`test_head_check` / `test_test_run` / `test_vue_component` / `test_app_test` ·
 前端：`frontend/tests/liveAudioControl.test.mjs`（+ `test:node` 脚本与 CI 步骤）。
 
 ## 9. 事故与教训（避免重蹈）
@@ -255,6 +307,18 @@ cd frontend && npm run test:node
   在途 WIP 挂进 `b828d10`，且扫进去的 import 引用了未跟踪模块 → **HEAD 单独检出 `import agent`
   失败**（干净 worktree 实测）。流程教训：hunk 暂存之后只能裸 `git commit`，且提交后要
   `git show --stat` + 在干净 worktree 里 import 一次。
+- **Wave17 的三条"量出来的形状"**（都是先按直觉写、跑真页面才纠正）：① `page_action` 的文本定位
+  只在**可交互元素**里找，文件树里那行 `<span>` 永远命中 0；② `locate` 的候选清单在 64 个就
+  `return`（`page_action.py:101`），于是"`#app *` 计数前后一样"完全可能是**饱和**而不是没变；
+  ③ `read_page` 有 4000 字上限，拿 html 长度比"内容换没换"会得到两个一样的截断值。
+  教训：凡是用"数量没变"当证据的地方，要先问这个数量会不会**撞到上限**。
+- **本会话自己犯的两次同类错**（都由变异电池或复核抓出，不是我主动发现的）：
+  ① 在 `setup_plan` 里写了 `json.loads(json.dumps(args))` 的"防御性深拷贝"并配了一条测试——
+  入参本来就是 JSON 字符串，每次调用重新解析，别名根本不可能发生，那条变异**存活**证明测试是假的
+  → 代码与假测试一起删。② 一次 `Edit` 想插入新行，`old_string` 带了行尾换行而 `new_string` 没带，
+  结果把 `test_missing_component_...` 的函数体黏到了 `def` 行上；同一会话另一次同型错直接**吃掉**了
+  `agent.py` 提示目录里的 `dev_testrun` 整行。流程教训：整行替换必须"旧串=新串的前缀关系"要清楚，
+  改完立刻看 `git diff --stat` 的插入/删除计数对不对。
 - **门禁自己有一个负载敏感点（本仓文件，不是别人的）**：
   `tests/test_dev_eval.py::GateBitesCases::test_cli_exit_codes` 是在**进程里把整套题跑一遍**
   再看退出码，所以任何一题（要起浏览器的 `media-fixture`、要真跑 pytest 的 `testrun`）现场卡顿
@@ -269,8 +333,13 @@ cd frontend && npm run test:node
    第一次真跑抓到的正是这个，现在同一条检查报【通过】。误收本身仍按用户口径**保留不改历史**，
    披露与复现见 `HANDOFF.md` 那节。
 2. **`voice_loop` 已入库**：独立审计 11 条里 8 条成立并改掉，变异电池 16/16 抓红
-   （其中"开麦时归零序号"是真机跑出来的真 bug）。剩下的只是**边界**：`.vue` 接线层
-   没有组件级守卫（按选项3 的决定不做 vitest），真网关与听感归 R12。
+   （其中"开麦时归零序号"是真机跑出来的真 bug）。剩下的只是**边界**：真网关与听感归 R12。
+   ~~`.vue` 接线层没有组件级守卫~~ 这条已经在 Wave16/17 补掉（`dev_vue` + `dev_apptest`，
+   按选项3 的决定不走 vitest）。
+2b. **`dev_apptest` 与"别人正在改前端"是耦合的**：它的 `bundle_built_after_latest_source`
+   比较的是 mtime，而 `frontend/src/**` 随时可能被别的 lane 改动（实测本机 1 分钟内就变了两次）。
+   所以这条红**通常是"该重新构建了"而不是代码坏了**；现场测试对这一条单独放行
+   （只允许它是唯一一条红，其余 13 条必须绿）。本工具不代跑 `npm run build`。
 3. 全量最后一次：**2569 passed / 12 failed**，12 条已用干净 worktree 证明全部来自
    另一条 lane 未提交的 step-budget / capacity / game_workflow WIP（本程序不代修、不代提交）。
 4. 需要人做的两件：**push**（或 `git bundle` 离线备份），以及在配好 DashScope 的机器上跑一次

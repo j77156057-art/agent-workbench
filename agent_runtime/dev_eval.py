@@ -525,12 +525,40 @@ def _case_vue_guard_can_go_red(root: str, run: Callable[..., dict]) -> list[dict
     fe.joinpath("package.json").write_text('{"name":"x"}\n', encoding="utf-8", newline="\n")
     fe.joinpath("src", "Ok.vue").write_text("<template><p>ok</p></template>\n",
                                             encoding="utf-8", newline="\n")
+    fe.joinpath("src", "store.ts").write_text(
+        "export function openThing(p) { return p }\n", encoding="utf-8", newline="\n")
+    (fe / "other").mkdir(parents=True, exist_ok=True)
+    fe.joinpath("other", "Real.vue").write_text("<template><p>x</p></template>\n",
+                                                encoding="utf-8", newline="\n")
+    # 第二层（mount 包装：驱动共享状态）的离线判据——真凭据在现场类里，这里钉"能不能红"
+    shared = dict(cfg, setup=[{"call": "openThing", "args": []}], store_call="openThing")
+    drove = vcomp.evaluate(dict(state, setupRan=["openThing"]), shared, [], [], synced=True)
+    skipped = vcomp.evaluate(state, shared, [], [], synced=True)
+    thrown = vcomp.evaluate(dict(state, setupRan=["openThing"],
+                                 errors=["setup openThing 抛错：x"]), shared, [], [], synced=True)
+
+    def refuses_setup_target(name: str) -> bool:
+        try:
+            vcomp.parse_request(fe, component="src/Ok.vue", composable="src/store.ts",
+                                store_call=name)
+        except vcomp.VueComponentError:
+            return True
+        return False
 
     def refuses(rel: str) -> bool:
         try:
             vcomp.component_file(fe, rel)
         except vcomp.VueComponentError:
             return True
+        return False
+
+    def refused_by_the_fence(rel: str) -> bool:
+        """`other/Real.vue` 磁盘上真的有：它被拒必须拒在**围栏**上，
+        不能拒在"碰巧不存在"上——后者让删掉围栏的变异照样绿（实测）。"""
+        try:
+            vcomp.component_file(fe, rel)
+        except vcomp.VueComponentError as exc:
+            return "相对" in str(exc)
         return False
 
     hostile = ("../outside.vue", "/etc/passwd.vue", "src/../x.vue", "other/Ok.vue",
@@ -554,10 +582,96 @@ def _case_vue_guard_can_go_red(root: str, run: Callable[..., dict]) -> list[dict
                    all(refuses(rel) for rel in hostile), [rel for rel in hostile
                                                            if not refuses(rel)]),
             _check("the_real_component_is_not_refused", refuses("src/Ok.vue") is False, ""),
+            _check("existing_file_outside_src_is_refused_by_the_fence",
+                   refused_by_the_fence("other/Real.vue"), ""),
             _check("nth_zero_differs_from_unset",
                    vcomp.click_plan(".a, .b#0") == [{"selector": ".a", "nth": ""},
                                                     {"selector": ".b", "nth": 0}],
-                   vcomp.click_plan(".a, .b#0"))]
+                   vcomp.click_plan(".a, .b#0")),
+            _check("setup_rows_must_all_have_run",
+                   "setup_applied" not in drove["failed"]
+                   and "setup_applied" in skipped["failed"],
+                   [drove["failed"], skipped["failed"]]),
+            _check("a_thrown_setup_call_is_red", "setup_applied" in thrown["failed"],
+                   thrown["failed"]),
+            _check("reading_state_never_clicks_the_page",
+                   "new MutationObserver(collect)" in html, html[-160:]),
+            _check("store_call_must_be_a_real_export",
+                   refuses_setup_target("nope") and not refuses_setup_target("openThing"), ""),
+            _check("the_page_always_gets_a_store_binding",
+                   "export const STORE = {}" in vcomp.entry_source("a.vue")
+                   and "import * as STORE from" in vcomp.entry_source("a.vue", "s.ts"), "")]
+
+
+def _case_apptest_refuses_a_stale_page_as_current(root: str, run: Callable[..., dict]) -> list[dict]:
+    """整页守卫在【没有浏览器、没有后端】时也必须能验它的判定表与围栏。
+
+    真起服务那一半在 `tests/test_app_test.py` 的现场类里（含"页面不存在"与"后端起不来"
+    两条反证）；这里钉的是最容易骗自己的三类假绿：①拿**旧构建**当现在的代码；
+    ②只信注册接口的 200；③点了导航却没换视图／现场没收回。
+    """
+    from agent_runtime import app_test as ap
+
+    good = {"ready": True, "isolated": True, "activated": True, "shell": 1, "tabs": 4,
+            "rows": 1, "fixture_in_tree": True, "console_errors": [], "failed_requests": [],
+            "click_ok": True, "active_before": "概览", "active_after": "素材",
+            "content_before": "467:aaaa", "content_after": "182:bbbb",
+            "body_truncated": False, "texts": {}}
+    want = {"tab": "素材", "texts": [], "tabs": 4}
+    fresh = {"built": True, "fresh": True, "stale_by": 0, "detail": "x"}
+    clean = {"removed": True, "job_stopped": True, "live_pages": 0}
+    judged = ap.evaluate(good, want, fresh, clean)
+    stale = ap.evaluate(good, want, dict(fresh, fresh=False, stale_by=900), clean)
+    still_the_same_view = ap.evaluate(dict(good, active_before="素材"), want, fresh, clean)
+    no_fixture = ap.evaluate(dict(good, fixture_in_tree=False), want, fresh, clean)
+    left_running = ap.evaluate(good, want, fresh, dict(clean, live_pages=1))
+    no_shell = ap.evaluate(dict(good, shell=0, tabs=3), want, fresh, clean)
+    truncated = ap.evaluate(dict(good, body_truncated=True, texts={"资源管理器": False}),
+                            dict(want, texts=["资源管理器"]), fresh, clean)
+    listing = {"current": "prj-1", "projects": [{"project_id": "prj-1"}]}
+    state_dir = Path(root) / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    def refuses(fn, *args) -> bool:
+        try:
+            fn(*args)
+        except ap.AppTestError:
+            return True
+        return False
+
+    return [_check("a_faithful_integration_table_passes", judged["passed"], judged["failed"]),
+            _check("a_stale_build_is_never_current_code",
+                   not stale["passed"]
+                   and "bundle_built_after_latest_source" in stale["failed"], stale["failed"]),
+            _check("a_200_from_the_register_call_alone_is_not_enough",
+                   not ap.activate(200, {"current": "", "projects": []},
+                                   {"project_id": "prj-1"})["ok"]
+                   and ap.activate(200, listing, {"project_id": "prj-1"})["ok"], ""),
+            _check("an_empty_state_root_is_not_isolation",
+                   not ap.state_isolated(state_dir, {"ok": True, "listed": ["prj-1"]}), ""),
+            _check("clicking_a_tab_that_stays_active_is_red",
+                   "view_changed_on_click" in still_the_same_view["failed"],
+                   still_the_same_view["failed"]),
+            _check("the_fixture_name_has_to_reach_the_tree",
+                   "backend_data_reaches_page" in no_fixture["failed"], no_fixture["failed"]),
+            _check("leftovers_are_red", "artifacts_cleaned" in left_running["failed"],
+                   left_running["failed"]),
+            _check("an_emptier_page_is_not_a_rendered_page",
+                   {"shell_mounted", "nav_renders_every_tab"} <= set(no_shell["failed"]),
+                   no_shell["failed"]),
+            _check("a_truncated_read_is_not_evidence",
+                   "page_text_read_wholly" in truncated["failed"], truncated["failed"]),
+            _check("only_the_two_local_api_paths_are_reachable",
+                   all(refuses(ap.http_json, url) for url in (
+                       "http://example.com/api/projects", "http://10.0.0.5/api/projects",
+                       "http://127.0.0.1/api/ingest_code")), ""),
+            _check("page_paths_cannot_escape_the_site",
+                   all(refuses(ap.page_path, bad) for bad in ("//evil/x", "../etc/passwd",
+                                                              "/a?b=1", "/a b")), ""),
+            _check("the_child_keeps_its_environment",
+                   bool([k for k in ap.server_env(state_dir) if k.upper() == "PATH"])
+                   and str(ap.server_env(state_dir)[
+                       "DOCMIND_STATE_ROOT"]) == str(state_dir), "")]
 
 
 def _case_headcheck_catches_an_untracked_reference(root: str, run: Callable[..., dict]) -> list[dict]:
@@ -787,7 +901,15 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "id": "vue-guard-can-go-red", "fixture": "plain",
         "direct": _case_vue_guard_can_go_red,
         "uses": ["dev_vue"],
-        "note": "组件守卫的判定表必须每条能红：只挂不断言、emit 名字没声明、读状态失败都要红",
+        "note": "组件守卫的判定表必须每条能红：只挂不断言、emit 名字没声明、读状态失败、"
+                "要求的 setup 调用没跑成都要红；读状态不能靠点击",
+    },
+    {
+        "id": "apptest-refuses-a-stale-build-as-current", "fixture": "plain",
+        "direct": _case_apptest_refuses_a_stale_page_as_current,
+        "uses": ["dev_apptest"],
+        "note": "整页守卫最容易的三种假绿：旧构建当现在的代码、只信注册接口的 200、"
+                "点了导航却没换视图——每条都必须判红；页面与后端地址一律锁在回环与站内路径上",
     },
     {
         "id": "testrun-rerereads-failures-not-just-an-exit-code", "fixture": "plain",

@@ -7,6 +7,7 @@
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -85,6 +86,19 @@ class PathGuardTests(Base):
             with self.subTest(rel=bad):
                 with self.assertRaises(vc.VueComponentError):
                     vc.component_file(fe, bad)
+
+    def test_an_existing_file_outside_the_allowed_dirs_is_refused_by_the_fence(self):
+        """`other/Real.vue` 在磁盘上**真的存在**：它被拒必须是围栏拒的，
+        不能碰巧是"文件不存在"——那样把围栏删掉也没人红（变异电池实测）。"""
+        fe = vc.frontend_dir(str(self.tmp))
+        other = fe / "other"
+        other.mkdir(exist_ok=True)
+        (other / "Real.vue").write_text("<template><p>x</p></template>\n", encoding="utf-8",
+                                        newline="\n")
+        with self.assertRaises(vc.VueComponentError) as caught:
+            vc.component_file(fe, "other/Real.vue")
+        self.assertIn("相对", str(caught.exception))
+        self.assertTrue((other / "Real.vue").is_file(), "文件必须在，否则测的是运气")
 
     def test_missing_component_is_named_not_swallowed(self):
         fe = vc.frontend_dir(str(self.tmp))
@@ -223,17 +237,36 @@ class MountPageTests(Base):
         self.assertIn('"active": false', text)
         self.assertNotIn("__PROPS__", text)
 
+    def test_state_refreshes_on_its_own_without_a_click(self):
+        """读状态**不能靠点击**：ContextMenu 这类组件监听 window mousedown，
+        任何一次点击都会把它自己关掉（实测：菜单点开了、读回来是空的）。
+        所以页面必须自带 MutationObserver，并且盯的是 `#app`。"""
+        text = self.page()
+        self.assertRegex(text, r"new MutationObserver\(collect\)\.observe\(")
+        self.assertIn("observe(document.getElementById('app')", text.replace('"', "'"))
+        self.assertIn("childList: true", text)
+
+    def test_a_failing_shared_state_branch_is_recorded_as_an_error(self):
+        """`store_call` 取不到函数、`setup` 返回 Promise 这两种"静默少做一件事"
+        必须各有一条 `state.errors.push`：删掉任何一条，判定表就看不到原因。"""
+        text = self.page()
+        for needle in ("store_call 不可调用", "setup 不可调用", "setup 返回了 Promise"):
+            with self.subTest(needle=needle):
+                self.assertEqual(text.count("state.errors.push('%s" % needle), 1)
+
 
 class EvaluateTableTests(Base):
+    CFG_BASE = {"props": {}, "expect_present": [".wmd-panel"], "expect_absent": [],
+                "counts": [], "texts": [], "expect_emit": "", "expect_emit_args": None,
+                "setup": [], "store_call": ""}
     STATE = {"mounted": True, "rendered": True, "errors": [], "warnings": [],
              "declaredEmits": ["focus"], "emits": [{"name": "focus", "args": ["t2"]}],
              "facts": {"present:.wmd-panel": True, "absent:.nope": True,
                        "count:.wmd-item": 2, "text:1/2": True}}
 
     def evaluate(self, config=None, state=None, clicks=(), results=(), synced=True):
-        cfg = {"props": {}, "expect_present": [".wmd-panel"], "expect_absent": [".nope"],
-               "counts": [[".wmd-item", "2"]], "texts": ["1/2"], "expect_emit": "focus",
-               "expect_emit_args": ["t2"]}
+        cfg = dict(self.CFG_BASE, expect_absent=[".nope"], counts=[[".wmd-item", "2"]],
+                   texts=["1/2"], expect_emit="focus", expect_emit_args=["t2"])
         cfg.update(config or {})
         return vc.evaluate(dict(state or self.STATE), cfg, list(clicks), list(results),
                            synced=synced)
@@ -298,9 +331,30 @@ class EvaluateTableTests(Base):
                             results=[{"ok": True}, {"ok": False}])
         self.assertIn("every_click_applied", got["failed"])
 
-    def test_a_hidden_component_is_still_rendered_truthfully(self):
+    def test_rendered_is_a_reported_fact_not_a_verdict(self):
+        """合法的空渲染（右键菜单关着）不能被当成失败——它只报事实。
+        要断言"渲染出了东西"必须写 expect_present，那才是有牙的写法。"""
         got = self.evaluate(state=dict(self.STATE, rendered=False))
-        self.assertIn("rendered", got["failed"])
+        self.assertTrue(got["passed"], got["failed"])
+        self.assertIs(got["assertions"]["rendered"], False)
+        self.assertNotIn("rendered", got["failed"])
+
+    def test_nothing_rendered_is_caught_by_a_declared_expectation(self):
+        got = self.evaluate(state=dict(self.STATE, rendered=False, facts={}),
+                            clicks=(), results=(), synced=False)
+        self.assertFalse(got["passed"])
+        self.assertIn("present:.wmd-panel", got["failed"])
+
+    def test_setup_rows_must_all_have_run(self):
+        cfg = dict(self.CFG_BASE, setup=[{"call": "openRootMenu", "args": []}],
+                   store_call="useWorkbench")
+        ran = self.evaluate(state=dict(self.STATE, setupRan=["openRootMenu"]), config=cfg)
+        self.assertNotIn("setup_applied", ran["failed"])
+        missed = self.evaluate(state=dict(self.STATE, setupRan=[]), config=cfg)
+        self.assertIn("setup_applied", missed["failed"])
+        thrown = self.evaluate(state=dict(self.STATE, setupRan=["openRootMenu"],
+                                          errors=["setup openRootMenu 抛错：x"]), config=cfg)
+        self.assertIn("setup_applied", thrown["failed"])
 
 
 class RenderTests(Base):
@@ -425,38 +479,119 @@ class CompileArtifactTests(Base):
         self.assertIn("esbuild", got["error"])
 
 
+class EntrySourceTests(unittest.TestCase):
+    """入口的 import/export 清单：页面那边 import 的名字是**固定**的，
+    ESM 里少 export 一个名字是链接期整页炸（不是"少个功能"），所以两种入口都得导 STORE。"""
+
+    def test_both_entry_forms_export_every_name_the_page_imports(self):
+        page_names = {"Comp", "__vueStyles__", "createApp", "h", "STORE"}
+        for rel in (vc.entry_source("../src/A.vue"),
+                    vc.entry_source("../src/A.vue", "../src/store.ts")):
+            with self.subTest(composable=bool("store.ts" in rel)):
+                exported = set(re.search(r"export \{([^}]*)\}", rel).group(1).replace(
+                    " ", "").split(",")) | (
+                    {"STORE"} if "export const STORE" in rel else set())
+                self.assertEqual(page_names - exported, set(), rel)
+
+    def test_shared_state_module_is_imported_not_reimplemented(self):
+        """setup 驱动共享状态的前提：组件与 STORE 是**同一份模块**（裸说明符同源）。"""
+        rel = vc.entry_source("../src/A.vue", "../src/store.ts")
+        self.assertIn("import * as STORE from '../src/store.ts'", rel)
+        self.assertNotIn("export const STORE = {}", rel, "有 composable 时不能再造假 STORE")
+
+
 class RequestParsingTests(Base):
-    """工具报文 → (config, 点击计划)。这条边界必须【不起浏览器】就能验：
-    以前参数是在 run_guard 里就地散的，变异电池里"文本断言被当选择器校验"这类
-    缺陷纯层根本测不到（只有现场类才走到）。"""
+    """工具报文 → (config, 点击计划, 组件路径, 共享状态模块)。这条边界必须
+    【不起浏览器】就能验：以前参数是在 run_guard 里就地散的，"文本断言被当选择器
+    校验"这类缺陷纯层根本测不到（只有现场类才走到）。"""
+
+    def setUp(self):
+        super().setUp()
+        fe = self.tmp / "frontend"
+        (fe / "src").mkdir(parents=True)
+        fe.joinpath("package.json").write_text('{"name":"x"}\n', encoding="utf-8", newline="\n")
+        fe.joinpath("src", "A.vue").write_text("<template><p>x</p></template>\n",
+                                               encoding="utf-8", newline="\n")
+        fe.joinpath("src", "store.ts").write_text(
+            "export function openThing(p) { return p }\nexport const thing = 1\n"
+            "export { thing as renamed }\n", encoding="utf-8", newline="\n")
+        self.fe = fe
+
+    def parse(self, **over):
+        args = {"component": "src/A.vue"}
+        args.update(over)
+        return vc.parse_request(self.fe, **args)
 
     def test_text_needles_survive_the_parser(self):
-        config, plan = vc.parse_request(component="src/A.vue", texts="1/2\n工作流团队",
-                                        counts=".i=2", clicks=".strip\n.i#1")
+        config, plan = self.parse(texts="1/2\n工作流团队", counts=".i=2",
+                                  clicks=".strip\n.i#1")[:2]
         self.assertEqual(config["texts"], ["1/2", "工作流团队"])
         self.assertEqual(config["counts"], [[".i", "2"]])
         self.assertEqual(plan, [{"selector": ".strip", "nth": ""},
-                               {"selector": ".i", "nth": 1}])
+                                {"selector": ".i", "nth": 1}])
+
+    def test_export_scan_reads_both_export_forms(self):
+        names = vc.exported_names(self.fe, "src/store.ts")
+        self.assertIn("openThing", names)
+        self.assertIn("thing", names)
+        self.assertIn("renamed", names, "`export { thing as renamed }` 也要扫到别名")
+
+    def test_scan_that_finds_nothing_refuses_instead_of_passing_everything(self):
+        self.fe.joinpath("src", "silent.ts").write_text("const hidden = 1\n", encoding="utf-8",
+                                                        newline="\n")
+        with self.assertRaises(vc.VueComponentError):
+            vc.exported_names(self.fe, "src/silent.ts")
 
     def test_every_bad_input_is_rejected_here_not_later(self):
         for bad in ({"texts": "a" * 300}, {"counts": ".i=many"}, {"counts": "--help=2"},
                     {"expect_present": "$(rm)"}, {"clicks": ".a, .b, .c, .d, .e, .f, .g, .h, .i"},
-                    {"props": "[1]"}, {"expect_emit_args": '{"a":1}'}):
+                    {"props": "[1]"}, {"expect_emit_args": '{"a":1}'},
+                    {"component": "../outside.vue"}, {"composable": "src/A.ts"}):
             with self.subTest(bad=str(bad)[:30]):
-                args = {"component": "src/A.vue"}
-                args.update(bad)
                 with self.assertRaises(vc.VueComponentError):
-                    vc.parse_request(**args)
+                    self.parse(**bad)
 
     def test_max_clicks_boundary_is_the_documented_one(self):
         ok = ", ".join(".c%d" % i for i in range(vc.MAX_CLICKS))
-        self.assertEqual(len(vc.parse_request(component="a.vue", clicks=ok)[1]), vc.MAX_CLICKS)
+        self.assertEqual(len(self.parse(clicks=ok)[1]), vc.MAX_CLICKS)
 
     def test_empty_optional_lists_are_empty_not_none(self):
-        config, plan = vc.parse_request(component="src/A.vue")
+        config, plan = self.parse()[:2]
         self.assertEqual(plan, [])
         self.assertEqual(config["expect_present"], [])
         self.assertIsNone(config["expect_emit_args"])
+        self.assertEqual(config["setup"], [])
+        self.assertEqual(config["store_call"], "")
+
+    def test_store_call_must_be_a_real_export(self):
+        with self.assertRaises(vc.VueComponentError) as caught:
+            self.parse(composable="src/store.ts", store_call="nope")
+        self.assertIn("不是", str(caught.exception))
+
+    def test_setup_names_are_checked_against_exports_without_a_store_call(self):
+        got = self.parse(composable="src/store.ts",
+                         setup='[{"call":"openThing","args":["p"]}]')
+        self.assertEqual(got[0]["setup"], [{"call": "openThing", "args": ["p"]}])
+        with self.assertRaises(vc.VueComponentError):
+            self.parse(composable="src/store.ts", setup='[{"call":"nope","args":[]}]')
+
+    def test_setup_is_loosened_only_behind_a_store_call_and_still_shape_checked(self):
+        """给了 store_call 时方法名来自运行期对象，静态只能放行；
+        但形状仍要合法——取不到函数会在运行期把 setup_applied 判红。"""
+        got = self.parse(composable="src/store.ts", store_call="openThing",
+                         setup='[{"call":"anyMethod","args":[1]}]')
+        self.assertEqual(got[0]["setup"], [{"call": "anyMethod", "args": [1]}])
+        for bad in ('[{"call":"a; rm -rf","args":[]}]', '[{"call":"x.y","args":[]}]',
+                    '{"call":"x"}', '[{"call":"x","args":{"a":1}}]', "not json"):
+            with self.subTest(setup=bad[:24]):
+                with self.assertRaises(vc.VueComponentError):
+                    self.parse(composable="src/store.ts", store_call="openThing", setup=bad)
+
+    def test_args_are_passed_through_as_parsed_json_values(self):
+        """参数是 JSON 字面量：嵌套结构原样送到组件手上（`openRootMenu({clientX:30})` 靠这个）。"""
+        rows = vc.setup_plan('[{"call":"openThing","args":[{"a":{"b":[1,2]}}]}]',
+                             available=["openThing"])
+        self.assertEqual(rows[0]["args"], [{"a": {"b": [1, 2]}}])
 
 
 class ArtifactLocationTests(Base):
@@ -649,8 +784,86 @@ class LiveComponentTests(Base):
         result = self.guard(component=".tmp/vue-guard-mut/NeverOpens.vue", clicks="",
                             expect_emit="", expect_emit_args="")
         self.assertFalse(result["ok"])
-        self.assertIn("rendered", result["failed"])
+        # `rendered` 只是报出来的事实（菜单关着时不渲染是正确的）；真正判红的是
+        # 声明出来的断言——这才是有牙的写法。
+        self.assertIs(result["assertions"]["rendered"], False)
         self.assertIn("present:.wmd-panel", result["failed"])
+        self.assertIn("count:.wmd-item=2", result["failed"])
+
+    def test_shared_state_can_be_driven_before_mount(self):
+        """第二层的真凭据：`ContextMenu.vue` 依赖模块级单例，挂上去时状态关着 →
+        不渲染；用 `store_call`+`setup` 先把菜单打开，同一份状态就让组件真的长出面板。
+        """
+        closed = self.guard(component="src/workbench/components/ContextMenu.vue",
+                             clicks="", expect_present=".cm-menu",
+                             expect_emit="", expect_emit_args="",
+                             composable="src/workbench/composables/workbench.ts",
+                             store_call="useWorkbench", setup="")
+        self.assertTrue(closed["ok"] is False, "没打开菜单时不该有 .cm-menu")
+        self.assertIn("present:.cm-menu", closed["failed"])
+        self.assertIs(closed["assertions"]["rendered"], False)
+
+        opened = self.guard(component="src/workbench/components/ContextMenu.vue",
+                             clicks="", expect_present=".cm-menu", counts=".cm-item=2",
+                             texts="", expect_emit="", expect_emit_args="",
+                             composable="src/workbench/composables/workbench.ts",
+                             store_call="useWorkbench",
+                             # openRootMenu(ev) 只读 clientX/clientY（workbench-menu.ts:56）
+                             setup='[{"call":"openRootMenu",'
+                                   '"args":[{"clientX":30,"clientY":30}]}]')
+        self.assertTrue(opened["ok"], json.dumps(
+            {"failed": opened.get("failed"), "vue_errors": opened.get("vue_errors"),
+             "error": opened.get("error"), "facts": opened.get("facts")}, ensure_ascii=False))
+        self.assertIs(opened["assertions"]["setup_applied"], True)
+        self.assertIs(opened["assertions"]["rendered"], True)
+        self.assertEqual(opened["facts"]["count:.cm-item"], 2,
+                         "菜单项是共享状态里声明的那两条：数量对了才说明驱动到了组件上")
+
+    def test_a_setup_name_the_store_does_not_have_is_red_not_silent(self):
+        """静态放行（名字来自运行期对象）之后，运行期必须抓得住。"""
+        result = self.guard(component="src/workbench/components/ContextMenu.vue", clicks="",
+                            expect_present="", expect_emit="", expect_emit_args="",
+                            composable="src/workbench/composables/workbench.ts",
+                            store_call="useWorkbench",
+                            setup='[{"call":"totallyNotAMethod","args":[]}]')
+        self.assertFalse(result["ok"])
+        self.assertIn("setup_applied", result["failed"])
+
+    def test_a_store_call_that_is_not_a_function_is_red(self):
+        """`store_call` 静态只查"是不是导出的名字"，取到的是个对象时页面必须**记成错误**。
+        静默退回整个模块命名空间的话，setup 会调不到东西，而原因看起来像"组件没渲染"。"""
+        result = self.guard(component="src/workbench/components/ContextMenu.vue", clicks="",
+                            expect_present="", counts="", texts="", expect_emit="",
+                            expect_emit_args="", composable=self.bad_store(),
+                            store_call="useFakeConst", setup="")
+        self.assertFalse(result["ok"])
+        self.assertIn("no_component_errors", result["failed"])
+        self.assertTrue([e for e in result["vue_errors"] if "store_call" in str(e)],
+                        result["vue_errors"])
+
+    def test_a_setup_call_that_returns_a_promise_is_red(self):
+        """异步方法返回 Promise：同步读状态读不到它的结果，"调用成功了"是假凭据。
+        这一条把 `setup` 限定在【同步可确认】的范围内，越界就红而不是含糊绿。"""
+        result = self.guard(component="src/workbench/components/ContextMenu.vue", clicks="",
+                            expect_present="", counts="", texts="", expect_emit="",
+                            expect_emit_args="", composable=self.bad_store(),
+                            store_call="useFake", setup='[{"call":"go","args":[]}]')
+        self.assertFalse(result["ok"])
+        self.assertIn("setup_applied", result["failed"])
+        self.assertTrue([e for e in result["vue_errors"] if "Promise" in str(e)],
+                        result["vue_errors"])
+
+    def bad_store(self) -> str:
+        """一份**故意只有假状态**的共享状态模块：写在 gitignore 的 `.tmp/` 里，
+        不碰被别的 lane 监听的生产 composable。"""
+        holder = FRONTEND / ".tmp" / "vue-guard-mut"
+        holder.mkdir(parents=True, exist_ok=True)
+        path = holder / "store-bad.ts"
+        path.write_text("export const useFakeConst = { notAFn: 1 }\n"
+                        "export function useFake() { return { go: async () => 1 } }\n",
+                        encoding="utf-8", newline="\n")
+        self.addCleanup(path.unlink, missing_ok=True)
+        return ".tmp/vue-guard-mut/store-bad.ts"
 
     def test_nothing_is_left_behind_in_the_working_tree(self):
         """本次产物目录必须真的消失，而不是 `ignore_errors=True` 报"删过了"。

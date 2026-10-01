@@ -1,5 +1,21 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-02 Vibecoding 能力补全 Wave17：`dev_vue` 第二层（驱动共享状态）+ `dev_apptest`（真后端整页）（本会话，不占 R 槽位）
+
+- **补什么**：Wave16 那条边界里说"依赖运行时全局的组件要另写 mount 包装"——先量了一下再动手：`frontend/src` 里 `provide(`/`inject(` **零命中**，本仓前端的组合式（`useWorkbench`）是**模块级单例**。于是 17a 的 mount 包装不是造假 provider，而是**入口与组件同源 import 同一份 + 挂载前调那个单例的方法**；17b 补 `dev_vue` 明确不证明的那一段——组件守卫的 props 是我喂的，整页要的是真 `/api` 往返。
+- **17a 产物**：`vue_component.py` 加 `composable:` / `store_call:` / `setup: [{"call","args"}]` + `exported_names()`；`tests/test_vue_component.py` **79 项**（65 纯 + 14 现场）；变异电池 22 → **37/37**（并补了纯层/门禁/现场**三层对照组**——对照组红就整块电池不作数）。现场凭据：`store_call: useWorkbench` + `setup: openRootMenu({clientX:30,clientY:30})` 让 `ContextMenu.vue` 真的长出 `.cm-menu` 且 `count:.cm-item=2`，不驱动时同一份断言判红。
+- **两处设计被实测纠正**：① `rendered` 从"判决"降级为"报出来的事实"——右键菜单**关着时什么都不渲染是正确状态**，判它红等于把正确行为当失败；要断言"渲染出了什么"必须写 `expect_present`。② **读状态不能靠点击**：`ContextMenu.vue` 监听 window `mousedown`，任何一次点击都会把它自己关掉，实测"点开了、读回来是空的"——改成页面自带 `MutationObserver` 盯 `#app`，`#state` 永远是当前状态，调用方只读不改。
+- **17b 产物**：`agent_runtime/app_test.py`（工具 `dev_apptest`）、`tests/test_app_test.py` **41 项**（36 纯 + 5 现场）、`tools.py` 实现 + TOOLS 注册、`agent.py` 目录 1 行、`mcp_server.py` 归 WRITE_TOOLS、门禁 22 → **23/23**（基线已刷）、变异电池 **35/35**。实测：`uvicorn api:app` 冷启动就绪 **4.7s**，整轮含点击 **8.5s**，14 条断言全绿。
+- **凭据设计的关键一条**：注册一个**只含本次随机命名夹具文件**（`probe_<6位>.py`）的临时项目，要求它出现在文件树文本里——随机名让"缓存/旧页面恰好有这句话"冒充不了。隔离判据是双的：临时状态根里真的落下了文件 **且** `GET /api/projects` 只列得出这一次的项目（漏传 `DOCMIND_STATE_ROOT` 时后面那条必红）。
+- **旧构建不算现在的代码**：`bundle_built_after_latest_source` 要求 `web/**` 的 mtime 不早于 `frontend/src/**`；实测当场抓到过旧了 **4829 秒**的构建（同时必须把 `node_modules`/`.tmp`/`__pycache__` 从"源码"里排除，否则这条永远红）。本工具**不代跑** `npm run build`，只拒绝把旧的当新的。
+- **三条被真页面纠正的形状**（先按直觉写，跑真页面才发现）：① `page_action` 的 `text:` 定位只在**可交互元素**里找，文件树那行是 `<span>`，实测命中 0 → 改成读 `.ft-body` 文本；② `locate` 的候选清单在 **64 个**就 `return`（`page_action.py:101`），所以"切页前后 `#app *` 都是 64"是**饱和**不是没变 → 内容换没换改用 `main` 正文指纹；③ `read_page` 有 4000 字上限，拿 html 长度比截断后两个值相等。另：`page_action` 禁 selector+text 同时给，「素材」在顶栏「素材区」徽标上也有，所以点击必须带 `scope: .ws-bar`。
+- **现场三条红/绿**：全表绿；`page: /no-such-page-for-apptest` → 后端仍绿而 `shell_mounted`/`backend_data_reaches_page` 红；`api.py` 一导入就抛错 → `backend_started` 红并带出 `ImportError`。围栏：`page` 只接受站内裸路径、`http_json` 只允许回环主机 + `/api/projects`、`timeout` 20~600 秒，非法输入不起进程。
+- **电池抓出的两次我自己的错**：① `setup_plan` 里我写了 `json.loads(json.dumps(args))` 的"防御性深拷贝"并配一条测试——入参本来就是 JSON 字符串，每次调用重新解析，别名不可能发生，那条变异**存活**证明测试是假的，代码与假测试一起删；② 两次 `Edit` 把 `old_string` 尾部换行处理错，一次把某条用例的函数体黏到 `def` 行上、一次直接吃掉了 `agent.py` 提示目录里的 `dev_testrun` 整行（从 HEAD 取回原行重插，`git diff --stat` 复核后现在只有 +1 行）。
+- **验证**：`tests/test_app_test.py + tests/test_native_tools.py` **55 passed / 31 subtests**；`tests/test_vue_component.py` **79 passed / 44 subtests**；门禁 **23/23**；`dev_vue`/`dev_apptest` 都走文本协议真跑过。
+- **边界（不许越界宣称）**：`dev_apptest` 不点真模型、不听真网关、不替组件级断言背书；它跑的是 `web/` 里的构建产物，所以**只能证明那份构建**与后端集成得起来；`frontend/src` 被别的 lane 改动时这条会红，那是"该重新构建了"而不是代码坏了。
+
+
+
 ## 2026-10-02 Vibecoding 能力补全 Wave16：`dev_vue` —— 把真实 `.vue` 组件挂进真浏览器验接线（本会话，不占 R 槽位）
 
 - **补什么**：循环里最后一段没有守卫的接线。Wave8 的语音行为回路里那段胶水是我**照 `AutonomousCockpit.vue` 转写**的，不是从 `.vue` import 出来的——所以组件文件本身被改坏（props 改名、`emit('focus', id)` 变成 `emit('focus', label)`、`v-if="visible"` 写反）以前**没有任何测试会发现**。
@@ -11,7 +27,8 @@
 - **变异电池 22/22 抓红**（`.tmp/mut_vue.py`，只在 `.tmp` 副本上变异）。其中 **5 条一开始活下来**，原因同一个：那几处只有 `run_guard`/现场类才走到，纯层碰不到——于是把参数解析抽成 `parse_request()`、产物目录抽成 `workdir_for()`，把清理测试挪进纯层，并把"写死事件名""非法选择器谎报存在"两条改成断言**页面上的那一行**。还有一条是我的可用性判据把 `node_modules/@vue/compiler-sfc`（目录）用 `.is_file()` 去查，导致 8 条现场用例**静默跳过**而全量仍显示绿灯——判据改成复用模块自己的 `ESBUILD_API`/`SFC_API` 常量，并把跳过原因打进 `skipUnless` 文案。
 - **反证不是想出来的**（现场类里四条真红）：`active:false` 时 `v-if` 必须让它什么都不渲染；断言 emit 实参是 `t9`（实际发 `t1`）必须只红 `emit_args_exact`；把组件**副本**的 `emit('focus', id)` 改成 `emit('focus', 'WRONG')` → 红；把 `v-if="visible"` 改成 `v-if="false"` → 红。副本一律写在 `frontend/.tmp/`（gitignore 内），**不原地改被监听的生产源码**。
 - **验证**：`tests/test_vue_component.py` **62 passed / 0 skipped**；`tests/test_page_action.py` 51 项（含 2 条 nth 回归）；与 `test_native_tools` / `test_mcp_server_expose` / `test_dev_eval` / `test_vue_component` 一起 **140 passed / 60 subtests**；门禁 **22/22** 与基线持平；工具走文本协议真跑：真组件全绿并回 `emits=["focus"]`、`count:.wmd-item=2`、`text:1/2`，`props: not-json` / `../outside.vue` / `timeout: 1` / `counts: .a=b` 全部不起浏览器就拒绝。跑完按 `--user-data-dir` 数进程：24 个全是别人的（14 用户 Edge + 9 `codex-model-probe`），我的产物目录已空。
-- **边界（不许越界宣称）**：只证明**这一个组件在这一组 props 下**的行为，不证明整页集成、不 proof 路由/父组件传参，也不听真网关；`expect_absent` 是"点完之后不在"，不是"永远不在"；组件若依赖运行时的 `window` 全局（真实 App 的 provide/inject、`session.js` 之类）需要另写 mount 包装，本工具只给 `props` + `emits`。
+- **边界（不许越界宣称）**：只证明**这一个组件在这一组 props 下**的行为，不证明整页集成、不 proof 路由/父组件传参，也不听真网关；`expect_absent` 是"点完之后不在"，不是"永远不在"。
+  **更正一条当时写错的边界**：那句"依赖 provide/inject 的组件需要另写 mount 包装"是**猜的**——Wave17a 实测 `frontend/src` 里 `provide(`/`inject(` **零命中**，本仓组合式是模块级单例，所以 mount 包装的真实形状是"同源 import + 挂载前调单例方法"（下一节）。
 
 
 ## 2026-10-02 Vibecoding 能力补全 Wave15：`dev_testrun` —— 跑测试→读失败→只重跑失败（本会话，不占 R 槽位）

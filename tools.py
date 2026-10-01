@@ -6498,6 +6498,9 @@ def dev_vue(arg=""):
       texts: 1/2                                                      # 渲染文本里必须有（按行分条）
       expect_emit: focus                                              # 必须是组件 defineEmits 声明过的
       expect_emit_args: ["t2"]                                        # 原样比较 emit 的实参
+      composable: src/workbench/composables/workbench.ts              # 共享状态模块（同源自 import）
+      store_call: useWorkbench                                        # 先取到那个单例对象
+      setup: [{"call":"openRootMenu","args":[...]}]                   # 挂载前调它的方法
       timeout: 60
     这一条补的是最后一块没有守卫的接线层：`voice_loop` 里的胶水是我照 `AutonomousCockpit.vue`
     **转写**的，`.vue` 文件本身被改坏（props 改名、emit 从 id 变成 label、`v-if` 条件写反）
@@ -6516,7 +6519,8 @@ def dev_vue(arg=""):
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
     fields = _parse_keyed(arg or "", ["component", "props", "clicks", "expect_present",
                                       "expect_absent", "counts", "texts", "expect_emit",
-                                      "expect_emit_args", "timeout"])
+                                      "expect_emit_args", "composable", "store_call",
+                                      "setup", "timeout"])
 
     def _one(key, default=""):
         value = (fields.get(key) or "").strip()
@@ -6535,12 +6539,62 @@ def dev_vue(arg=""):
             root, component=_one("component"), props=_one("props"), clicks=_one("clicks"),
             expect_present=_one("expect_present"), expect_absent=_one("expect_absent"),
             counts=_one("counts"), texts=_one("texts"), expect_emit=_one("expect_emit"),
-            expect_emit_args=_one("expect_emit_args"), timeout=timeout)
+            expect_emit_args=_one("expect_emit_args"), composable=_one("composable"),
+            store_call=_one("store_call"), setup=_one("setup"), timeout=timeout)
     except vue_component.VueComponentError as exc:
         return "组件守卫未能开始：%s" % str(exc)[:300]
     except Exception as exc:  # noqa: BLE001 - 挂不起来要报原因，不能报通过
         return "dev_vue 失败：%s: %s" % (type(exc).__name__, str(exc)[:240])
     return vue_component.render(report)
+
+
+def dev_apptest(arg=""):
+    """整页集成守卫：起【真后端】+ 真构建产物 + 真浏览器，断言页面真的从后端拿到了数据。
+
+    输入（多行 keyed）：
+      page: /workbench          # 站内路径（不带查询/片段）
+      text: 资源管理器          # 页面上必须有的文字，按行分条（最多 8 条）
+      tab: 素材                 # 要点开的工作区标签（默认「素材」）
+      timeout: 120
+    这一条补的是 `dev_vue` 明确不证明的那一段：组件守卫喂的是我自己写的 props，
+    整页要的是 **真 uvicorn + 真 `web/` 构建产物 + 真 /api 往返**。做法：
+    临时端口起 `api:app`（`DOCMIND_STATE_ROOT` 指到临时目录，绝不往仓库真登记表上写）→
+    注册一个**只含这次夹具文件**的临时项目 → 打开页面 → 数外壳/标签、看文件树里有没有
+    那个随机命名的文件（这就是"后端数据到了 DOM"的凭据，缓存冒充不了）→ 点工作区标签，
+    要求活动标签与正文指纹都真的换了 → 拆服务、关页面、删沙箱并如实回报有没有删干净。
+    判定 fail-closed：后端没起来、状态根没隔离、console 有错、有失败请求、点击没换视图、
+    正文被截断（`read_page` 有 4000 字上限，截断后的"没找到"不是证据）、现场没收回
+    一律未通过。**`bundle_built_after_latest_source` 也会红**：`web/` 比 `frontend/src/**`
+    旧时整页跑的是【旧构建】，绿了也不代表当前代码——先 `cd frontend && npm run build`。
+    边界：证明的是集成那一段，不点真模型、不听真网关，也不替组件级断言背书。
+    """
+    from agent_runtime import app_test
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    fields = _parse_keyed(arg or "", ["page", "text", "tab", "timeout"])
+
+    def _one(key, default=""):
+        value = (fields.get(key) or "").strip()
+        if not value:
+            return default
+        lines = [line.strip() for line in value.splitlines() if line.strip()]
+        return lines[0] if key in ("page", "tab", "timeout") else "\n".join(lines)
+    try:
+        timeout = float(_one("timeout") or 120)
+    except (TypeError, ValueError):
+        return "timeout 必须是秒数（20~600）。"
+    if not 20 <= timeout <= 600:
+        return "timeout 只能在 20~600 秒之间（整页要等后端冷启动）。"
+    try:
+        report = app_test.run_app_test(root, page=_one("page", "/workbench"),
+                                       texts=_one("text"), tab=_one("tab", "素材"),
+                                       timeout=timeout)
+    except app_test.AppTestError as exc:
+        return "整页守卫未能开始：%s" % str(exc)[:300]
+    except Exception as exc:  # noqa: BLE001 - 起不来要报原因，不能报通过
+        return "dev_apptest 失败：%s: %s" % (type(exc).__name__, str(exc)[:240])
+    return app_test.render(report)
 
 
 def dev_testrun(arg=""):
@@ -7409,6 +7463,13 @@ TOOLS = {
             "`props:` 一个 JSON 对象、`clicks:` 顺序点击（`.wmd-item#1` 里的 `#1` 是第几个）、"
             "`expect_present:` / `expect_absent:` / `counts: .wmd-item=2` / `texts:`（按行分条）、"
             "`expect_emit: focus` + `expect_emit_args: [\"t2\"]`（实参原样比较）、`timeout: 60`。\n"
+            "第二层是共享状态驱动：`composable: src/workbench/composables/workbench.ts` + "
+            "`store_call: useWorkbench` + `setup: [{\"call\":\"openRootMenu\",\"args\":[...]}]`。"
+            "本仓前端的组合式是【模块级单例】（实测全仓没有 provide/inject），所以入口与组件同源 "
+            "import 同一份就是同一份状态，挂载前可以先把它开到某个状态。名字校验分两种："
+            "`store_call` 与不带 store_call 的 setup 名按模块真实导出【静态】校验；给了 "
+            "`store_call` 时方法名来自运行期才拿得到的对象，静态放行但运行期取不到函数就把 "
+            "`setup_applied` 判红——静默少做一件事是最坏的一种假干净。\n"
             "这是循环里最后没被守住的一段：`dev_media action: voice` 里的胶水是照 `AutonomousCockpit.vue`"
             "**转写**的，`.vue` 本体被改坏（props 改名、emit 从 id 变成 label、`v-if` 条件写反）以前"
             "没有测试会发现。这里挂的是真组件——用仓库自带的 `@vue/compiler-sfc`（vue-tsc 带的，"
@@ -7419,6 +7480,24 @@ TOOLS = {
             "边界：只证明这一个组件在这一组 props 下的行为，不证明整页集成，也不听真网关。\n"
         ),
         "func": dev_vue,
+    },
+    "dev_apptest": {
+        "description": (
+            "整页集成守卫：起【真后端】+ 真构建产物 + 真浏览器，断言页面真的从后端拿到了数据。\n"
+            "输入 keyed 多行：`page: /workbench`（站内路径）、`text:`（页面上必须有的文字，"
+            "按行分条，最多 8 条）、`tab: 素材`（要点开的工作区标签）、`timeout: 120`。\n"
+            "这一条补的是 `dev_vue` 明确不证明的那一段：组件守卫喂的是我自己写的 props，"
+            "整页要的是真 uvicorn + 真 `web/` 产物 + 真 `/api` 往返。临时端口起 `api:app`，"
+            "`DOCMIND_STATE_ROOT` 指到临时目录（绝不往仓库真登记表上写），注册一个只含"
+            "【这次夹具文件】的临时项目，然后要求文件树里出现那个随机命名的文件——"
+            "这就是\"后端数据到了 DOM\"的凭据，缓存与旧页面冒充不了。\n"
+            "判定 fail-closed：后端没起来 / 状态根没隔离 / console 有错 / 有失败请求 / "
+            "点了导航但活动标签或正文没换 / 正文被截断 / 现场没收回，一律未通过。"
+            "`bundle_built_after_latest_source` 也会红：`web/` 比 `frontend/src/**` 旧时"
+            "整页跑的是【旧构建】，绿了也不代表当前代码——先 `cd frontend && npm run build`。\n"
+            "边界：证明集成那一段，不点真模型、不听真网关，也不替组件级断言背书。\n"
+        ),
+        "func": dev_apptest,
     },
     "dev_testrun": {
         "description": (

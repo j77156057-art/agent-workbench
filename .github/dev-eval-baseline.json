@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 22,
- "scored": 22,
- "passed": 22,
+ "total": 23,
+ "scored": 23,
+ "passed": 23,
  "skipped": [],
  "results": [
   {
@@ -115,6 +115,12 @@
   },
   {
    "id": "vue-guard-can-go-red",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "apptest-refuses-a-stale-build-as-current",
    "passed": true,
    "skipped": "",
    "failed_checks": []

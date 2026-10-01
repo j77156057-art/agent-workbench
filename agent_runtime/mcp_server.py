@@ -55,6 +55,8 @@ WRITE_TOOLS = (
     "dev_testrun",
     # 会编译 .vue、起临时静态服务并启动真实浏览器执行组件代码
     "dev_vue",
+    # 会起真后端进程（uvicorn api:app）、开真浏览器整页跑一遍
+    "dev_apptest",
 )
 #: 无论如何都不暴露：任意命令执行、越界文件操作、以及会二次放大权限的连接器跳转
 NEVER_EXPOSED = (

@@ -118,10 +118,22 @@ try {
 }
 """
 
-MOUNT_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><title>%(title)s</title></head><body>
-<div id="app"></div><button id="sync">同步状态</button><pre id="state">{}</pre>
+MOUNT_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><title>%(title)s</title>
+<style>
+  /* 读状态的控件必须永远点得到：弹出层（右键菜单、对话框）会盖住页面流里的按钮，
+     而菜单自己带 @mousedown.stop —— 实测这样一次点击根本落不到 #sync 上。 */
+  html, body { margin: 0; }
+  #vueGuardDock { position: fixed; top: 4px; right: 4px; z-index: 2147483647;
+                  max-width: 40vw; text-align: right; }
+  #sync { position: fixed; top: 0; right: 0; z-index: 2147483647; }
+  #state { white-space: pre-wrap; word-break: break-all; font-size: 10px; margin-top: 22px;
+           background: #fff; border: 1px solid #999; }
+</style></head><body>
+<div id="app"></div>
+<div id="vueGuardDock"><button id="sync">同步状态</button><pre id="state">{}</pre></div>
 <script type="module">
-import { Comp, __vueStyles__, createApp, h } from './%(bundle)s';
+import { Comp, __vueStyles__, createApp, h, STORE } from './%(bundle)s';
+window.__store = STORE;
 const CFG = %(config)s;
 const style = document.createElement('style');
 style.textContent = __vueStyles__;
@@ -136,6 +148,34 @@ const handlers = {};
 for (const name of (Comp.emits || [])) {
   handlers['on' + cap(name)] = (...args) => { state.emits.push({ name, args }); show(); };
 }
+// 共享状态驱动：本仓前端的组合式是【模块级单例】（没有 provide/inject，实测零命中），
+// 所以和组件同源自 import 同一份就是同一份状态。`store_call` 先取到那个共享对象，
+// `setup` 再按名字调它的方法——名字取不到一定是红，不会静默少做一件事。
+state.setupRan = [];
+let api = STORE;
+if (CFG.store_call) {
+  const factory = STORE[CFG.store_call];
+  if (typeof factory !== 'function') {
+    state.errors.push('store_call 不可调用：' + CFG.store_call);
+  } else {
+    try { api = factory() || {}; }
+    catch (err) { state.errors.push('store_call ' + CFG.store_call + ' 抛错：'
+                                    + String(err && err.message || err)); }
+  }
+}
+for (const row of (CFG.setup || [])) {
+  const fn = api ? api[row.call] : null;
+  if (typeof fn !== 'function') { state.errors.push('setup 不可调用：' + row.call); continue; }
+  try {
+    const back = fn(...row.args);
+    if (back && typeof back.then === 'function') {
+      state.errors.push('setup 返回了 Promise，无法同步确认：' + row.call);
+    }
+    state.setupRan.push(row.call);
+  } catch (err) {
+    state.errors.push('setup ' + row.call + ' 抛错：' + String(err && err.message || err));
+  }
+}
 try {
   const app = createApp({ render: () => h(Comp, { ...CFG.props, ...handlers }) });
   app.config.warnHandler = (msg) => { state.warnings.push(String(msg).slice(0, 200)); };
@@ -144,7 +184,7 @@ try {
   state.declaredEmits = Comp.emits || [];
   state.rendered = !!document.querySelector(CFG.root || '#app > *');
 } catch (err) { state.errors.push(String((err && err.message) || err)); }
-document.getElementById('sync').addEventListener('click', () => {
+function collect() {
   const facts = {};
   // 非法选择器必须当场记成页面错误：以前 present/absent 与 count 各写一份 try，
   // 把其中一份改成"静默返回"就没人知道——现在只有一条 probe() 路径。
@@ -166,8 +206,14 @@ document.getElementById('sync').addEventListener('click', () => {
   state.facts = facts;
   state.vueNodes = document.querySelectorAll('#app *').length;
   show();
-});
-show();
+}
+document.getElementById('sync').addEventListener('click', collect);
+// 读状态**不靠点击**：ContextMenu 这类组件监听 window 的 mousedown，任何一次点击都会
+// 把它自己关掉（实测：菜单被点开、读回来却是空的）。MutationObserver 让 #state 始终
+// 是当前状态，调用方只管读，不改。#sync 留着给人工排查用。
+new MutationObserver(collect).observe(document.getElementById('app'),
+                                      { childList: true, subtree: true, attributes: true });
+collect();
 window.__vueGuardReady = true;
 </script></body></html>
 """
@@ -175,6 +221,74 @@ window.__vueGuardReady = true;
 
 class VueComponentError(RuntimeError):
     """组件守卫无法开始。"""
+
+
+def exported_names(frontend: Path, rel: str) -> list[str]:
+    """列出某个前端模块导出了哪些名字。
+
+    `setup:` 要调的函数必须是【该模块真的导出的名字】——否则页面里 `STORE[...]`
+    取到 undefined，调用要么静默不做事要么抛在 catch 里，守卫会看着像"跑过了"。
+    这里只做静态文本扫描（导出形式取自本仓前端实际写法），扫描失败宁可报"读不出导出"。
+    """
+    text = str(rel or "").strip().replace("\\", "/")
+    if text.startswith("frontend/"):
+        text = text[len("frontend/"):]
+    path = frontend.joinpath(*text.split("/")) if text else None
+    if path is None or ".." in text or not text or not path.is_file():
+        raise VueComponentError("composable 文件不存在：%s" % text[:120])
+    source = path.read_text(encoding="utf-8", errors="replace")
+    names = re.findall(r"^export\s+(?:async\s+)?(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)",
+                       source, re.M)
+    for group in re.findall(r"^export\s*\{([^}]*)\}", source, re.M):
+        for part in group.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            names.append(token.split(" as ")[-1].strip())
+    out = []
+    for name in names:
+        if name and name not in out:
+            out.append(name)
+    if not out:
+        # 扫不出任何导出却返回空清单，等于让 setup_plan 把所有名字都判成"不存在"——
+        # 看起来安全，其实是把整类组件永远挡在外面，而且报错说不清原因。
+        raise VueComponentError("读不出 %s 的导出名字（只认 `export function/const/let/class` "
+                                "与 `export { … }` 两种写法），`setup` 无法校验——拒绝执行。" % text)
+    return out
+
+
+def setup_plan(raw: str, *, available: list[str], loose: bool = False) -> list[dict[str, Any]]:
+    """把 `setup:` 的 JSON 清单校验成【只含已知导出名 + JSON 字面量参数】的调用计划。
+
+    `loose` 只在给了 `store_call` 时用：那时可调的名字来自运行期才拿得到的共享对象。
+    放开的是【静态名字白名单】，形状仍要合法；页面里取不到函数会把 setup_applied 判红。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        rows = json.loads(text)
+    except ValueError as exc:
+        raise VueComponentError("setup 必须是 JSON 数组：%s" % str(exc)[:160]) from exc
+    if not isinstance(rows, list):
+        raise VueComponentError("setup 必须是 JSON 数组（[{call, args}]）。")
+    if rows and not available and not loose:
+        raise VueComponentError("这个模块没扫出任何导出名字，`setup` 无法校验——拒绝执行。")
+    plan: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise VueComponentError("setup 每一项要是 {\"call\": 名字, \"args\": [...]}。")
+        name = str(row.get("call") or "").strip()
+        if not re.match(r"^[A-Za-z_$][\w$]{0,63}$", name):
+            raise VueComponentError("setup 里的函数名形状不被接受：%s" % name[:70])
+        if name not in available and not loose:
+            raise VueComponentError("setup 要调的 %s 不是该模块导出的名字（可导出：%s）" % (
+                name, ", ".join(available[:12]) or "无"))
+        args = row.get("args", [])
+        if not isinstance(args, list):
+            raise VueComponentError("setup 的 args 必须是数组。")
+        plan.append({"call": name, "args": args})
+    return plan
 
 
 def workdir_for(frontend: Path) -> Path:
@@ -187,23 +301,39 @@ def workdir_for(frontend: Path) -> Path:
     return frontend / ".tmp" / "vue-guard"
 
 
-def parse_request(*, component: str, props: str = "", clicks: str = "",
+def parse_request(frontend: Path, *, component: str, props: str = "", clicks: str = "",
                   expect_present: str = "", expect_absent: str = "", counts: str = "",
                   texts: str = "", expect_emit: str = "",
-                  expect_emit_args: str = "") -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """把工具文本报文变成 (config, 点击计划)，非法输入在这里就抛，不起浏览器。"""
+                  expect_emit_args: str = "", composable: str = "", store_call: str = "",
+                  setup: str = "") -> tuple[dict[str, Any], list[dict[str, Any]], Path, Path | None]:
+    """把工具文本报文变成 (config, 点击计划, 组件路径, 共享状态模块路径)。
+
+    所有校验都放在这一层、起浏览器之前：路径围栏、选择器形状、setup 的函数名是不是
+    该模块真的导出的名字——任一不成立就抛，绝不起进程。
+    """
     plan = click_plan(clicks)
     args_value = json.loads(expect_emit_args) if str(expect_emit_args or "").strip() else None
     if expect_emit_args and not isinstance(args_value, list):
         raise VueComponentError("expect_emit_args 必须是 JSON 数组。")
+    comp = component_file(frontend, component)
+    store = (component_file(frontend, composable, suffixes=(".ts", ".js", ".mjs"))
+             if composable else None)
+    available = exported_names(frontend, composable) if composable else []
+    if store_call and store_call not in available:
+        raise VueComponentError("store_call 要调的 %s 不是 %s 导出的名字（可导出：%s）"
+                                % (store_call, composable, ", ".join(available[:12]) or "无"))
+    # 经 store_call 拿到的共享对象，方法名只有运行期才知道；静态放行、运行期取不到
+    # 函数就红（setup_applied 要求每一条都真的跑成）。
+    rows = setup_plan(setup, available=available, loose=bool(store_call))
     config = {"props": parse_props(props),
               "expect_present": selectors(expect_present),
               "expect_absent": selectors(expect_absent),
               "counts": count_plan(counts),
               "texts": text_needles(texts),
               "expect_emit": str(expect_emit or ""),
-              "expect_emit_args": args_value, "root": "#app > *"}
-    return config, plan
+              "expect_emit_args": args_value,
+              "setup": rows, "store_call": str(store_call or ""), "root": "#app > *"}
+    return config, plan, comp, store
 
 
 def frontend_dir(root: str | Path) -> Path:
@@ -214,16 +344,18 @@ def frontend_dir(root: str | Path) -> Path:
     raise VueComponentError("找不到前端目录（需要 package.json + src/）。")
 
 
-def component_file(frontend: Path, rel: str) -> Path:
-    """只接受前端树内的 .vue，且必须在磁盘上真的存在。
+def component_file(frontend: Path, rel: str, *, suffixes: tuple[str, ...] = (".vue",)) -> Path:
+    """只接受前端树内的组件文件，且必须在磁盘上真的存在。
 
     除了 `src/**`，还允许 `frontend/.tmp/**`：那是 gitignore 的位置，用来指向一份
     【故意改坏的组件副本】做反证——守卫必须能红，而在真组件上原地做变异会撞别人
     正在编辑的文件（本会话为这条踩过两次）。除这两处之外一律拒绝。
+    `suffixes` 让共享状态模块（`.ts`）走同一道围栏，别再长第二份路径校验。
     """
     text = str(rel or "").strip().replace("\\", "/")
-    if not text.endswith(".vue") or text.startswith("/") or ".." in text.split("/"):
-        raise VueComponentError("组件路径必须是前端目录内的 .vue 相对路径，收到：%s" % text[:120])
+    if not text.endswith(suffixes) or text.startswith("/") or ".." in text.split("/"):
+        raise VueComponentError("组件路径必须是前端目录内的 %s 相对路径，收到：%s"
+                                % ("/".join(suffixes), text[:120]))
     parts = text.split("/")
     if parts[0] == "frontend":
         parts = parts[1:]
@@ -327,7 +459,26 @@ def parse_props(raw: str) -> dict[str, Any]:
     return data
 
 
+def entry_source(component_rel: str, composable_rel: str = "") -> str:
+    """生成的入口。
+
+    没有 composable 时也【照样导出一个空 STORE】：页面的 import 清单是固定的，
+    ESM 里 import 一个不存在的名字会在链接期直接炸掉整页，所以不能靠两套模板。
+    """
+    if composable_rel:
+        return ("import Comp, { __vueStyles__ } from '%s'\n"
+                "import { createApp, h } from 'vue'\n"
+                "import * as STORE from '%s'\n"
+                "export { Comp, __vueStyles__, createApp, h, STORE }\n"
+                % (component_rel, composable_rel))
+    return ("import Comp, { __vueStyles__ } from '%s'\n"
+            "import { createApp, h } from 'vue'\n"
+            "export const STORE = {}\n"
+            "export { Comp, __vueStyles__, createApp, h }\n" % component_rel)
+
+
 def compile_component(frontend: Path, component: Path, target: Path, *,
+                      composable: Path | None = None,
                       script: str = COMPILE_SCRIPT,
                       runner: Callable[..., Any] = subprocess.run) -> dict[str, Any]:
     """生成入口 + 编译脚本，用前端自带的 esbuild JS API 打成一张浏览器可用的图。"""
@@ -338,12 +489,9 @@ def compile_component(frontend: Path, component: Path, target: Path, *,
     target.mkdir(parents=True, exist_ok=True)
     rel = component.relative_to(frontend).as_posix()
     entry = target / "entry.mjs"
-    entry.write_text(
-        "import Comp, { __vueStyles__ } from '%s'\n"
-        "import { createApp, h } from 'vue'\n"
-        "export { Comp, __vueStyles__, createApp, h }\n"
-        % posix_relative(target, component),
-        encoding="utf-8", newline="\n")
+    entry.write_text(entry_source(posix_relative(target, component),
+                                  posix_relative(target, composable) if composable else ""),
+                     encoding="utf-8", newline="\n")
     runner_file = target / "compile.mjs"
     # createRequire 要一个【绝对路径】当解析锚点，用前端自己的 package.json，
     # 这样脚本本身放在仓外的临时目录里也能 require 到前端的 esbuild / compiler-sfc。
@@ -403,13 +551,18 @@ def evaluate(state: dict[str, Any], config: dict[str, Any], clicks: list[dict[st
     want_texts = list(config.get("texts") or [])
     expect_emit = str(config.get("expect_emit") or "")
     expect_args = config.get("expect_emit_args")
+    want_setup = list(config.get("setup") or [])
     facts = state.get("facts") or {}
     assertions = {
         "mounted": bool(state.get("mounted")) and not (state.get("errors") or []),
-        "rendered": bool(state.get("rendered")),
+        # 要求了 setup 调用，就必须【每一条都真的跑成】：名字取到 undefined 时
+        # 页面里只会静默少做一件事，靠别的断言根本发现不了。
+        "setup_applied": (not want_setup) or (
+            len(state.get("setupRan") or []) == len(want_setup)
+            and not [err for err in (state.get("errors") or []) if str(err).startswith("setup")]),
         # 读状态那一次点击必须成功：它抛错时 facts 是空的，每条断言都只是"没成立"，
         # 看不出真正原因——所以这一条必须单独红出来。
-        "state_read_back": bool(synced) and bool(facts),
+        "state_read_back": bool(synced),
         "no_component_errors": not (state.get("errors") or []),
         "no_vue_warnings": not (state.get("warnings") or []),
         # sync 那一次点击不算进"要求的点击"，它只是读状态的手段
@@ -435,6 +588,9 @@ def evaluate(state: dict[str, Any], config: dict[str, Any], clicks: list[dict[st
     asked = bool(want_present or want_absent or want_counts or want_texts or expect_emit)
     assertions["assertions_declared"] = asked
     failed = [name for name, ok in assertions.items() if not ok]
+    assertions["rendered"] = bool(state.get("rendered"))   # 只报事实，不当判决：
+    # 菜单关着时组件本来就不渲染，那是正确状态，不是失败；要断言"渲染出了什么"
+    # 请用 expect_present / counts（少了会红，那才是有牙的写法）。
     return {"assertions": assertions, "failed": failed, "passed": not failed,
             "declared_emits": declared, "observed_emits": emit_names,
             "emit_names_seen": emit_names, "facts": facts,
@@ -445,6 +601,7 @@ def evaluate(state: dict[str, Any], config: dict[str, Any], clicks: list[dict[st
 def run_guard(root: str | Path, *, component: str, props: str = "", clicks: str = "",
               expect_present: str = "", expect_absent: str = "", counts: str = "",
               texts: str = "", expect_emit: str = "", expect_emit_args: str = "",
+              composable: str = "", store_call: str = "", setup: str = "",
               timeout: float = 60.0) -> dict[str, Any]:
     """编译 → 起服务 → 真点击 → 逐条判定 → 收回。"""
     base = Path(root).resolve()
@@ -460,14 +617,15 @@ def run_guard(root: str | Path, *, component: str, props: str = "", clicks: str 
     workdir = workdir_for(frontend)
     try:
         target = Path(workdir) / ("guard-%d" % int(time.time()))
-        comp = component_file(frontend, component)
-        config, plan = parse_request(component=component, props=props, clicks=clicks,
-                                     expect_present=expect_present, expect_absent=expect_absent,
-                                     counts=counts, texts=texts, expect_emit=expect_emit,
-                                     expect_emit_args=expect_emit_args)
+        config, plan, comp, store = parse_request(
+            frontend, component=component, props=props, clicks=clicks,
+            expect_present=expect_present, expect_absent=expect_absent,
+            counts=counts, texts=texts, expect_emit=expect_emit,
+            expect_emit_args=expect_emit_args, composable=composable,
+            store_call=store_call, setup=setup)
     except (VueComponentError, ValueError) as exc:
         return {"ok": False, "passed": False, "checks": {}, "error": str(exc)}
-    built = compile_component(frontend, comp, target)
+    built = compile_component(frontend, comp, target, composable=store)
     if not built["ok"]:
         return {"ok": False, "passed": False, "checks": {"compiled": False},
                 "error": built["error"], "component": str(comp)}
@@ -494,15 +652,10 @@ def run_guard(root: str | Path, *, component: str, props: str = "", clicks: str 
             click_results.append(outcome)
             console_errors += list(outcome.get("console_errors") or [])
             failed_requests += list(outcome.get("failed_requests") or [])
-        sync = page_action.click(base, page=page_id, selector="#sync", screenshot=False)
-        # 读状态那一次点击单独记：它抛错时 facts 会是空 dict，
-        # 让每条事实断言都"没成立"却看不出原因，是最坏的一种红。
-        synced = bool(sync.get("ok")) and not (sync.get("console_errors") or [])
-        console_errors += list(sync.get("console_errors") or [])
-        failed_requests += list(sync.get("failed_requests") or [])
         read = page_action.read_page(base, page=page_id, selector="#state", mode="text")
         try:
             state = json.loads(str(read.get("text") or "{}"))
+            synced = bool(state)
         except ValueError:
             start_error = "读不回组件状态：%s" % str(read.get("text"))[:160]
     except (page_action.PageActionError, visual.VisualAcceptanceError) as exc:
@@ -598,5 +751,6 @@ def render(result: dict[str, Any]) -> str:
 
 __all__ = ["VueComponentError", "clean_target", "click_plan", "compile_component",
            "component_file",
-           "count_plan", "evaluate", "frontend_dir", "mount_page", "parse_props",
-           "posix_relative", "render", "run_guard", "selectors", "text_needles"]
+           "count_plan", "entry_source", "evaluate", "exported_names", "frontend_dir",
+           "mount_page", "parse_props", "parse_request", "posix_relative", "render",
+           "run_guard", "selectors", "setup_plan", "text_needles", "workdir_for"]
