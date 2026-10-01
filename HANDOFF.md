@@ -1,5 +1,21 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-02 Vibecoding 能力补全 Wave15：`dev_testrun` —— 跑测试→读失败→只重跑失败（本会话，不占 R 槽位）
+
+- **补什么**：这一段以前只能 `run_command("pytest -q")` 然后把一整屏文本交回来自己读，实测有三个具体的漏法：① pytest **一个用例都没收集到时退出码是 5**（实测本仓 `pytest .tmp/empty_t` → exit 5），"没看到 FAILED"很容易被读成通过；② `-q` 的失败摘要（`FAILED <nodeid> - <原因>`）是文本里最容易漏读的几行；③ 全量 2569 项 / 5–15 分钟，改一处要重跑全部。
+- **产物**：`agent_runtime/test_run.py`、`tests/test_test_run.py` **46 项**、`tools.py` 的实现 + TOOLS 注册、`agent.py` 提示目录 1 行、`mcp_server.py` 归入 WRITE_TOOLS（真的执行项目代码，但参数固定、不接受任意命令）、门禁加 1 题（题集 20→21，基线已刷）。**CI 不用改**：新题走已有的 `dev_eval` 门步骤。
+- **判定 7 条，全部 fail-closed**：`runner_ran`（退出码必须落在 0~5 这组已知值里）、`finished`、`tests_collected`（计数 / 退出码 5 / 文本 "no tests ran" **三个信号各自都能单独判红**）、`summary_parsed`、`no_failures`、`counts_agree_with_exit`（摘要说 5 passed 而退出码是 1 → 判"报告不可信"而不是判通过）、`rerun_record_kept`。
+- **`--lf` 在这台机器上不能用，所以记账自己做**：本工作树的 `.pytest_cache` 是 `Permission denied`（每条 pytest 都在刷 `PytestCacheWarning: could not create cache path .pytest_cache\v\cache`），pytest 自己的 lastfailed 存不下来。现在一律带 `-p no:cacheprovider`，失败 nodeid 记进项目状态目录的 `testrun/last-failed.json`，`only_failed: true` 用的是这份账；记账里非法 nodeid（选项样式、绝对路径、`..`、带换行）直接不进账。
+- **两个是真跑出来才看见的设计错**（不是想出来的）：
+  ① **`related` 一开始用 `--collect-only` 拿全仓 nodeid 做匹配**——实测本仓收集结果 **243,591 字符**，而有界缓冲只留 **8,022（`truncated=True`）**，大多数 nodeid 在截断里丢了，结果"什么都找不到"，还报成"这些源文件没有相干测试"。改成**按文件名在磁盘上选**（`tests/**/test_*.py`），代价与仓库大小无关，而且少一次全量收集。
+  ② **`coverage` 没进 `_parse_keyed` 的 keys 列表**，于是 `coverage: true` 被静默丢掉、变成"跑一次全量 pytest"，300 秒后超时。现在补了 keys，并加了 `test_every_documented_key_reaches_the_module` / `test_coverage_flag_is_not_silently_dropped` 两条守卫——参数没落到模块，必须当场变红。
+- **覆盖率不装假**：实测本仓 `.venv` 里 `coverage` 与 `pytest_cov` 都 `find_spec` → None，所以 `coverage: true` 直接回「未启用、缺依赖，那是【没测】不是 0%」，且**不起任何进程**。要不要加这个依赖留给你决定。
+- **自查（变异电池 18/18 抓红**，`.tmp/mut_test_run.py`，只在 `.tmp` 副本上变异**）**：其中两条是电池跑出来才暴露的**测试自己没牙**——`tests_collected` 由三个信号合成，而我原来的用例把三个信号同时设成"坏"，于是删掉 `exit_code != 5` 或删掉 `no_tests_ran` 都照样全绿；改成**每个用例让另外两个信号说"绿"**，两条变异当场被抓住。另一条同类：`--tb=line` 的行数与摘要 FAILED 行数不等时硬配对，会把 A 的错误消息挂到 B 的 nodeid 上，补了不等就不配对的用例。
+- **实测踩到的归因**：一次性把 9 个套件（含 3 个起真浏览器的）串起来跑，`test_page_action` 的 7 项现场报 `ConnectionResetError [WinError 10054]`；单跑同一文件 **49 passed / 19.4 秒**，同时按 `--user-data-dir` 归组数进程：23 个全是别人的（13 用户 Edge + 9 `codex-model-probe` + 1 用户 profile），我的一个没留 → 判为负载导致的 CDP 断连，不是代码回退。
+- **验证**：`tests/test_test_run.py` **46 passed**；门禁 **21/21** 且与基线持平；真跑现场三例——`tests/test_head_check.py, tests/test_test_run.py` → pass 64 判通过；`tests/test_agent.py` → 2 fail 并逐条列出 nodeid + 原因（`AssertionError: 8 != 20` / `IndexError: list index out of range`），`only_failed: true` 精确重跑那 2 条（pass 0 / fail 2，mode=only_failed）；`related: agent_runtime/head_check.py` → 命中 `tests/test_head_check.py`，69 passed；非法输入（`paths: --collect-only`、`timeout: 3`、`timeout: 99999`）全部不起进程就拒绝。
+- **边界（不许越界宣称）**：它只报【跑到了什么、哪里红了】，不修失败也不判断根因；`-q --tb=line` 拿到的是一行式现场，深层 traceback 仍要人 `run_command` 细看；`related` 靠文件名相干，命名不遵守 `test_*.py` 约定的仓它选不出来（会明说"没有相干测试文件"而不是退化成跑全量）；覆盖率未启用；不替代 CI 的全量 lane；记账是【每条命令一次覆盖写】，并发两条 `dev_testrun` 会互相顶掉。
+
+
 ## 2026-10-02 Vibecoding 能力补全 Wave14：`dev_headcheck` —— 把 HEAD 挂成干净检出验自洽（本会话，不占 R 槽位）
 
 - **补什么**：一条**在工作树里永远看不见**的错。共享工作树里多个 AI 同时改同一批文件，只要发生 ① 漏 `git add`，或 ② `git commit -- <路径>` 绕过索引把别人的 WIP 一起提交掉（本仓 2026-10-01 真发生过，见上一节披露），结果都是"引用新模块的 import 进了 HEAD，新模块本身还在磁盘上未跟踪"。于是**在这个工作树里跑测试永远是绿的**，而 CI、别人的 `git worktree add`、任何 clone 都会在第一批 `import agent` 上红。缺的不是测试，是"只有已提交内容"这个视角。

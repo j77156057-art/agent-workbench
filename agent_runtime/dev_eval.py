@@ -446,6 +446,50 @@ def _case_page_action_refuses_and_never_claims_success(root: str, run: Callable[
     ]
 
 
+def _case_testrun_reads_failures_and_reruns_only_them(root: str, run: Callable[..., dict]) -> list[dict]:
+    """跑测试→读失败→只重跑失败：整段必须是结构化的，且 0 收集绝不能读成通过。"""
+    from agent_runtime import test_run
+
+    tests = Path(root) / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+    tests.joinpath("test_good.py").write_text("def test_ok():\n    assert True\n",
+                                              encoding="utf-8", newline="\n")
+    tests.joinpath("test_bad.py").write_text("def test_wrong():\n    assert 1 == 2, '算错了'\n",
+                                             encoding="utf-8", newline="\n")
+    Path(root).joinpath("pytest.ini").write_text("[pytest]\n", encoding="utf-8", newline="\n")
+    first = test_run.run(root, timeout=180)
+    recorded = test_run.load_failures(root)
+    rerun = test_run.run(root, only_failed=True, timeout=180)
+    empty = test_run.run(root, paths="tests/test_not_there.py", timeout=180)
+    hostile = test_run.run(root, paths="--collect-only", timeout=180)
+    mismatch = test_run.run(root, runner=lambda argv, **kw: {
+        "ok": True, "exit_code": 1, "timed_out": False, "error": "",
+        "output": "5 passed in 0.01s\n"})
+    return [_check("a_red_suite_is_red", not first["ok"] and first["counts"]["failed"] == 1,
+                   {"counts": first["counts"], "checks": first["checks"]}),
+            _check("the_failure_is_named_with_a_reason",
+                   bool(first["failures"])
+                   and first["failures"][0]["nodeid"] == "tests/test_bad.py::test_wrong"
+                   and "算错了" in first["failures"][0]["reason"], first["failures"]),
+            _check("failures_are_recorded_for_the_rerun",
+                   recorded == ["tests/test_bad.py::test_wrong"], recorded),
+            _check("only_failed_reruns_just_that_test",
+                   not rerun["ok"] and rerun["scope"]["mode"] == "only_failed"
+                   and rerun["counts"]["failed"] == 1 and rerun["counts"]["passed"] == 0,
+                   {"scope": rerun["scope"], "counts": rerun["counts"]}),
+            _check("zero_collected_is_never_green",
+                   not empty["ok"] and not empty["checks"]["tests_collected"], empty["checks"]),
+            _check("option_shaped_path_starts_no_process",
+                   not hostile["ok"] and hostile.get("command") in (None, []), hostile.get("error")),
+            _check("counts_and_exit_code_must_agree",
+                   not mismatch["ok"] and not mismatch["checks"]["counts_agree_with_exit"],
+                   mismatch["checks"]),
+            _check("missing_coverage_is_declared_not_skipped",
+                   not test_run.run(root, coverage=True, timeout=180)["ok"]
+                   and not test_run.coverage_available() or test_run.coverage_available(),
+                   "coverage_available=%s" % test_run.coverage_available())]
+
+
 def _case_headcheck_catches_an_untracked_reference(root: str, run: Callable[..., dict]) -> list[dict]:
     """HEAD 自检：同一份代码，差一个 `git add`，判红→判绿。
 
@@ -668,6 +712,12 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "direct": _case_page_action_refuses_and_never_claims_success,
         "uses": ["dev_page_action"],
         "note": "点了没生效绝不能报成功：歧义/隐藏/禁用不派发，报错优先于 DOM 变化",
+    },
+    {
+        "id": "testrun-rerereads-failures-not-just-an-exit-code", "fixture": "plain",
+        "direct": _case_testrun_reads_failures_and_reruns_only_them,
+        "uses": ["dev_testrun"],
+        "note": "0 收集不是通过；失败要 named+带原因+可只重跑；计数与退出码不自洽就判不可信",
     },
     {
         "id": "headcheck-catches-untracked-reference", "fixture": "plain",

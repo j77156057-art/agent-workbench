@@ -51,6 +51,8 @@ WRITE_TOOLS = (
     "dev_page_action",
     # 会建/删临时 detached worktree（写 .git 元数据）并执行提交里的代码，不是纯读
     "dev_headcheck",
+    # 真的把项目测试跑起来（执行项目代码），只是不接受任意命令与任意参数
+    "dev_testrun",
 )
 #: 无论如何都不暴露：任意命令执行、越界文件操作、以及会二次放大权限的连接器跳转
 NEVER_EXPOSED = (

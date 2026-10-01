@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 20,
- "scored": 20,
- "passed": 20,
+ "total": 21,
+ "scored": 21,
+ "passed": 21,
  "skipped": [],
  "results": [
   {
@@ -109,6 +109,12 @@
   },
   {
    "id": "page-action-refuses-and-never-claims-success",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "testrun-rerereads-failures-not-just-an-exit-code",
    "passed": true,
    "skipped": "",
    "failed_checks": []

@@ -1,6 +1,6 @@
 # HANDOFF · Vibecoding 能力补全（harness 侧）
 
-> 状态：**Wave1–8、9–14 已入库**（Wave14 = `dev_headcheck`，提交自洽检查）。
+> 状态：**Wave1–9、11–15 已入库**（Wave14 = `dev_headcheck` 提交自洽；Wave15 = `dev_testrun` 跑测试/读失败/只重跑失败）。
 > 发出人：本会话（用户直接指派，不占 R0–R15 槽位）。最后更新：2026-10-01。
 >
 > **这份文档是什么**：让没跟过这个过程的人（或另一个 AI）能直接接手**操作**这套 harness 的
@@ -24,6 +24,7 @@
 | 问历史 | `dev_git_log` / `dev_git_diff` | **只读**白名单：`rev-parse/status/diff/log` |
 | 改代码 | `dev_patch`（原子统一差异）/ `dev_move`（走 `git mv`） | 全有或全无；拒绝在补丁里删文件 |
 | 跑起来 | `dev_serve`（起/停本机 dev server）| 只允许回环；命令过同一道黑名单 |
+| 跑测试 | `dev_testrun`（`paths` / `keyword` / `only_failed` / `related`）| 退出码 5 = 一个都没收集到，判**未通过**；覆盖率未启用（没装 coverage）|
 | 看结果 | `preview_project`（截图 + console + 失败请求）/ `dev_page_action`（点/填/按键/等待）| **no_change 不是成功**；只回环 |
 | 验语音/摄像头 | `dev_media`（`build` / `run` / `voice`）| 假设备喂合成媒体；门限行为见 §5.3 |
 | 静态检查 | `dev_diagnostics`（ruff + vue-tsc）| 退出码非 0 却解析不出发现时**报错误不报干净** |
@@ -139,12 +140,31 @@ cd frontend && npm run test:node
 - 用法：**每次 commit 之后、push 之前跑一次**。边界：只验"能不能跑起来"，默认三个入口之外的
   深层 import 要靠 import 链真的走到才暴露；不跑测试、不装依赖、不验 requirements 完整性。
 
+### 5.5 `dev_testrun`（Wave15）：跑测试 → 读失败 → 只重跑失败
+`agent_runtime/test_run.py`。存在的理由是三个**实测**到的漏法：pytest 在 0 收集时退出码是 5
+（"没看到 FAILED"不等于通过）、`-q` 的失败摘要最容易漏读、以及本工作树
+`.pytest_cache` 是 `Permission denied` → `--lf` 根本不可用。
+- 7 条判定全 fail-closed：`runner_ran` / `finished` / `tests_collected` / `summary_parsed` /
+  `no_failures` / `counts_agree_with_exit`（摘要与退出码不自洽＝报告不可信）/ `rerun_record_kept`。
+- 记账：失败 nodeid 写到项目状态目录 `testrun/last-failed.json`，`only_failed: true` 用它重跑；
+  `total` 存的是**真实失败条数**（清单会被 200 条上限截断，看截后的清单长度就永远触发不了
+  "整片红别逐条重跑"这条守卫——实测出来的）。
+- `related: agent_runtime/x.py` 按**磁盘上的文件名**选相干测试。别用
+  `--collect-only` 拿全仓 nodeid：实测本仓收集结果 243,591 字符，有界缓冲只留 8,022
+  （`truncated=True`），大部分 nodeid 在截断里丢了，选择会退化成"什么都找不到"。
+- 覆盖率：`coverage` 与 `pytest_cov` 都不在 `.venv` 里，`coverage: true` 直接回「未启用、
+  缺依赖」且**不起任何进程**——那是【没测】，不是 0%。
+- 变异电池 **18/18**，并抓到两条"测试自己没牙"：`tests_collected` 的三个信号原来被同一个
+  用例同时设坏，删掉任一个都还绿；改成每个用例让另外两个信号说"绿"才抓得住。
+- 边界：只报"跑到什么、哪里红了"，不判断根因；`--tb=line` 是一行式现场；记账是覆盖写，
+  两条并发 `dev_testrun` 会互相顶掉。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
 |---|---|---|---|
 | 1 | `.vue` 接线层无组件级守卫 | 装了 vitest@2 + @vue/test-utils + jsdom 后量化：**1 critical + 3 moderate + 1 high** dev 公告（critical=Vitest UI 任意文件读）；vitest 3 要 vite 6/7 而本树 vite 5 | 已回退安装。**推荐**：行为用 §5.3/§5.1 覆盖；要组件级断言再接受 dev-only 公告并禁用 UI |
-| 2 | 没有"跑测试→读失败→只重跑失败"的结构化工具，也没有覆盖率入口 | `tools.py` 里 `pytest`/`coverage` 零命中；全量 2569 项、一次 5–15 分钟 | 加一个解析 pytest 失败摘要 + 只跑相关子集的工具 |
+| 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；覆盖率入口仍无 | 实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | 覆盖率要先决定加不加依赖；记账由 `last-failed.json` 自己做 |
 | 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证），沙箱 push 不通 | 人 push 一次，把首跑结果记回本文件 |
 | 4 | `dev_serve` 端口被抢不自动重试 | Wave6 未做项 | 就绪失败时换端口重试一次 |
 | 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
@@ -178,13 +198,13 @@ cd frontend && npm run test:node
 
 `code_intel.py`(扩展) · `ts_index.py` · `diagnostics.py` · `patch_apply.py` · `lanes.py` ·
 `dev_server.py` · `mcp_server.py` · `mcp_bridge.py` · `dev_eval.py` · `proposal.py` · `ci_status.py` ·
-`media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` ·
+`media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` · `test_run.py` ·
 `visual_acceptance.py`（被抽出 `browser_session` / `serve_static` / `stop_static` / `sanitize_flags`，
 并被别的 lane 加了作业对象回收）· 测试：`test_dev_glob_git_log` / `test_lanes_registry` /
 `test_ts_index` / `test_dev_diagnostics` / `test_dev_patch_move` / `test_mcp_server_expose` /
 `test_mcp_inline_tools` / `test_dev_serve_preview` / `test_dev_eval` / `test_dev_propose_ci` /
 `test_media_fixture` / `test_page_action` / `test_voice_loop` / `test_frontend_node_tests` /
-`test_head_check` ·
+`test_head_check` / `test_test_run` ·
 前端：`frontend/tests/liveAudioControl.test.mjs`（+ `test:node` 脚本与 CI 步骤）。
 
 ## 9. 事故与教训（避免重蹈）

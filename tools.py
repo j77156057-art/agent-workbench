@@ -6485,6 +6485,53 @@ def dev_page_action(arg=""):
     return ToolResult(True, text, data={"images": [image], "image_sources": [shot]})
 
 
+def dev_testrun(arg=""):
+    """跑 pytest 并回【结构化】判定：计数、逐条失败 nodeid、以及只重跑上次失败的。
+
+    输入（多行 keyed）：
+      paths: tests/test_a.py, tests/test_b.py   # 逗号分隔；留空＝全量
+      keyword: voice                # 变成 `-k`，只当参数传，不拼进 shell
+      only_failed: true             # 只重跑上一次记账里的失败 nodeid
+      related: agent_runtime/x.py   # 按改动文件选出真实存在的相干测试
+      coverage: true                # 要覆盖率（本仓未装 coverage → 直接回「未启用」）
+      timeout: 300                  # 秒，5~1500
+    为什么不用 `run_command("pytest -q")` 再看文本：① pytest 在【一个用例都没收集到】时退出码
+    是 5，读文本很容易当成"没看到 FAILED＝通过"，这里判 `tests_collected` 明确报未通过；
+    ② 摘要说 N passed 而退出码不匹配时判 `counts_agree_with_exit`，防止输出被截断污染；
+    ③ 本仓 `.pytest_cache` 写不进去（Permission denied），所以 pytest 自己的 `--lf` 不可靠，
+    失败清单由本工具记账到项目状态目录，`only_failed` 用的是这份账；④ basetemp 一律钉在项目内
+    （用户名带引号时默认 pytest-of-* 会 PermissionError）。
+    覆盖率：本仓没装 coverage/pytest-cov，`coverage: true` 直接回"未启用、缺依赖"——
+    那是【没测】，不是 0%，也不许当成通过。选不出相干测试时报错而不是退化成跑全量。
+    """
+    from agent_runtime import test_run
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    fields = _parse_keyed(arg or "", ["paths", "keyword", "only_failed", "related",
+                                      "coverage", "timeout"])
+
+    def _one(key, default=""):
+        value = (fields.get(key) or "").strip()
+        return value.splitlines()[0].strip() if value else default
+
+    def _flag(key):
+        return _one(key).lower() in ("1", "true", "yes", "y", "on")
+    try:
+        timeout = float(_one("timeout") or test_run.DEFAULT_TIMEOUT)
+    except (TypeError, ValueError):
+        return "timeout 必须是秒数（5~1500）。"
+    if not 5 <= timeout <= test_run.MAX_TIMEOUT:
+        return "timeout 只能在 5~%s 秒之间；全量要更久请交给 CI 的 pytest lane。" % int(test_run.MAX_TIMEOUT)
+    try:
+        report = test_run.run(root, paths=_one("paths"), keyword=_one("keyword"),
+                              only_failed=_flag("only_failed"), related=_one("related"),
+                              coverage=_flag("coverage"), timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - 跑不成要报原因，不能报通过
+        return "dev_testrun 失败：%s: %s" % (type(exc).__name__, str(exc)[:240])
+    return test_run.render(report)
+
+
 def dev_headcheck(arg=""):
     """把【提交本身】挂成干净检出跑一遍 import——专抓"工作树能跑、单独检出必红"。
 
@@ -7296,6 +7343,25 @@ TOOLS = {
             "页面里的按钮可能真的会改你的项目或发请求——那是你的开发服务，不是沙箱里的玩具。"
         ),
         "func": dev_page_action,
+    },
+    "dev_testrun": {
+        "description": (
+            "跑 pytest 并回【结构化】判定，替代 `run_command(\"pytest -q\")` + 自己读一整屏文本。\n"
+            "输入 keyed 多行：`paths: tests/test_a.py, tests/test_b.py`（逗号分隔，留空＝全量）、"
+            "`keyword: voice`（走 `-k`，只当参数传）、`only_failed: true`（只重跑上次记账里的失败）、"
+            "`related: agent_runtime/x.py,tools.py`（按改动文件选出真实存在的相干测试）、"
+            "`timeout: 300`（5~1500 秒）。输出是 counts / 逐条 FAILED nodeid + 原因 / 范围回显。\n"
+            "为什么不能只看退出码：pytest 在【一个用例都没收集到】时退出码是 5——那绝不是通过，"
+            "本工具用 `tests_collected` 明确判未通过；摘要与退出码对不上时判 "
+            "`counts_agree_with_exit`（输出被截断或被污染）；读不到摘要判 `summary_parsed`。\n"
+            "`--lf` 在本仓不可用（`.pytest_cache` 是 Permission denied），所以失败清单由本工具"
+            "记到项目状态目录，`only_failed` 用的是这份账；失败超过 200 条会拒绝逐条重跑"
+            "（那是整片红，该跑全量）。`basetemp` 一律钉在项目内。\n"
+            "覆盖率：本仓没装 coverage/pytest-cov，`coverage: true` 直接回"
+            "「未启用、缺依赖」——那是【没测】，不是 0%，也不许当成通过。"
+            "选不出相干测试时报错并列出没命中的文件名，不悄悄退化成跑全量或跑 0 个。\n"
+        ),
+        "func": dev_testrun,
     },
     "dev_headcheck": {
         "description": (
