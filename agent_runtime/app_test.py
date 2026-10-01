@@ -392,8 +392,10 @@ def _teardown(state: dict[str, Any]) -> dict[str, Any]:
             job_error = "" if stopped.get("ok") else str(stopped.get("error") or "回收失败")
         except Exception as exc:  # noqa: BLE001 - 停不下来也要继续往下拆
             job_error = "%s: %s" % (type(exc).__name__, str(exc)[:120])
-    cleaned = vue_component.clean_target(Path(state["sandbox"]))
-    return {"removed": bool(cleaned.get("removed")),
+    # 沙箱里有子进程自己的 sqlite/状态文件：`job_cancel` 返回时句柄可能还没被 OS 收走，
+    # 实测默认 4 次 × 0.25s（约 1s）删不掉，留了两份孤儿目录在系统临时目录里。
+    cleaned = vue_component.clean_target(Path(state["sandbox"]), attempts=10, pause=0.4)
+    return {"removed": bool(cleaned.get("removed")), "attempts": cleaned.get("attempts"),
             "job_stopped": not job_error, "job_error": job_error,
             "close_error": state.get("close_error", ""),
             "live_pages": len(page_action.live_pages()),

@@ -209,7 +209,7 @@ cd frontend && npm run test:node
   **是正确状态**，要断言"渲染出了什么"得写 `expect_present`（那才有牙）。
 - 现场凭据：`store_call: useWorkbench` + `setup: openRootMenu({clientX:30,clientY:30})` 让
   `ContextMenu.vue` 真的长出 `.cm-menu` 且 `count:.cm-item=2`；不驱动时同一份断言必须判红（对照组）。
-- 测试 **79 项**（65 纯 + 14 现场），变异电池 **37/37**（纯层 / 门禁 / 现场三层对照组）。
+- 测试 **79 项**（67 纯 + 12 现场），变异电池 **37/37**（纯层 / 门禁 / 现场三层对照组）。
   其中一条变异反过来抓出我写的**假防御**：`setup_plan` 里的 `json.loads(json.dumps(args))`
   深拷贝加那条"改不动计划"的测试——入参本来就是 JSON 字符串，每次调用重新解析，别名根本不可能发生。
   代码与假测试一起删掉。
@@ -239,7 +239,7 @@ cd frontend && npm run test:node
   活动标签或正文、正文被截断（截断后的"没找到"不是证据）、沙箱/服务/页面没收回——一律未通过。
 - 现场三条：全表 14 条绿（8.5s）；`page: /no-such-page-for-apptest` → 后端仍绿但 `shell_mounted`
   与 `backend_data_reaches_page` 红；`api.py` 一导入就抛错 → `backend_started` 红并带出
-  `ImportError`。测试 **41 项**（36 纯 + 5 现场），变异电池 **35/35**，门禁 +1 题（22→23）。
+  `ImportError`。测试 **43 项**（38 纯 + 5 现场），变异电池 **35/35**，门禁 +1 题（22→23）。
 - 边界：不点真模型、不听真网关、不替组件级断言背书；页面与接口一律锁在回环与站内路径上。
 
 ## 6. 已知缺口与建议下一步
@@ -319,6 +319,10 @@ cd frontend && npm run test:node
   结果把 `test_missing_component_...` 的函数体黏到了 `def` 行上；同一会话另一次同型错直接**吃掉**了
   `agent.py` 提示目录里的 `dev_testrun` 整行。流程教训：整行替换必须"旧串=新串的前缀关系"要清楚，
   改完立刻看 `git diff --stat` 的插入/删除计数对不对。
+- **子进程的句柄比"进程已终止"活得久**：`dev_apptest` 第一次跑完在系统临时目录留了两份
+  沙箱——`process_runner.job_cancel` 回来时 uvicorn 自己开的 sqlite/状态文件句柄还没被 OS 收走，
+  `clean_target` 默认的 4 次 ×0.25s（约 1s）不够，而几秒后手工能删。回收预算提到 10 次 ×0.4s 后
+  实测 0 残留。**删不干净这件事本身是判红项**（`artifacts_cleaned`），不是静默重试。
 - **门禁自己有一个负载敏感点（本仓文件，不是别人的）**：
   `tests/test_dev_eval.py::GateBitesCases::test_cli_exit_codes` 是在**进程里把整套题跑一遍**
   再看退出码，所以任何一题（要起浏览器的 `media-fixture`、要真跑 pytest 的 `testrun`）现场卡顿
