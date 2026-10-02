@@ -6555,6 +6555,7 @@ def dev_apptest(arg=""):
       page: /workbench          # 站内路径（不带查询/片段）
       text: 资源管理器          # 页面上必须有的文字，按行分条（最多 8 条）
       tab: 素材                 # 要点开的工作区标签（默认「素材」）
+      stream: 1                 # 再跑一档真流式：假麦克风 → 真 ws → scripted 离线适配器
       timeout: 120
     这一条补的是 `dev_vue` 明确不证明的那一段：组件守卫喂的是我自己写的 props，
     整页要的是 **真 uvicorn + 真 `web/` 构建产物 + 真 /api 往返**。做法：
@@ -6562,17 +6563,21 @@ def dev_apptest(arg=""):
     注册一个**只含这次夹具文件**的临时项目 → 打开页面 → 数外壳/标签、看文件树里有没有
     那个随机命名的文件（这就是"后端数据到了 DOM"的凭据，缓存冒充不了）→ 点工作区标签，
     要求活动标签与正文指纹都真的换了 → 拆服务、关页面、删沙箱并如实回报有没有删干净。
+    `stream: 1` 再跑一档真流式：浏览器带**假麦克风**开页 → 进开发舱开摄像头（这条才会建 ws）
+    → 开麦 → 要求页面字幕出现【由收到的音频算出来】的片数/字节数/峰值，并且字节数 ==
+    片数×3200、助手回包引用同一个字节数、至少出两轮。适配器是 `scripted`（零网络零 key）。
     判定 fail-closed：后端没起来、状态根没隔离、console 有错、有失败请求、点击没换视图、
     正文被截断（`read_page` 有 4000 字上限，截断后的"没找到"不是证据）、现场没收回
     一律未通过。**`bundle_built_after_latest_source` 也会红**：`web/` 比 `frontend/src/**`
     旧时整页跑的是【旧构建】，绿了也不代表当前代码——先 `cd frontend && npm run build`。
-    边界：证明的是集成那一段，不点真模型、不听真网关，也不替组件级断言背书。
+    边界：证明的是集成那一段，不点真模型，也不替组件级断言背书；流式那一档证明的是
+    **自家协议与页面接线**，厂商事件与打断语义仍归 R12 人跑。
     """
     from agent_runtime import app_test
     root = _get_code_root()
     if not root:
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
-    fields = _parse_keyed(arg or "", ["page", "text", "tab", "timeout"])
+    fields = _parse_keyed(arg or "", ["page", "text", "tab", "stream", "timeout"])
 
     def _one(key, default=""):
         value = (fields.get(key) or "").strip()
@@ -6589,7 +6594,7 @@ def dev_apptest(arg=""):
     try:
         report = app_test.run_app_test(root, page=_one("page", "/workbench"),
                                        texts=_one("text"), tab=_one("tab", "素材"),
-                                       timeout=timeout)
+                                       stream=bool(_one("stream")), timeout=timeout)
     except app_test.AppTestError as exc:
         return "整页守卫未能开始：%s" % str(exc)[:300]
     except Exception as exc:  # noqa: BLE001 - 起不来要报原因，不能报通过
@@ -7485,7 +7490,11 @@ TOOLS = {
         "description": (
             "整页集成守卫：起【真后端】+ 真构建产物 + 真浏览器，断言页面真的从后端拿到了数据。\n"
             "输入 keyed 多行：`page: /workbench`（站内路径）、`text:`（页面上必须有的文字，"
-            "按行分条，最多 8 条）、`tab: 素材`（要点开的工作区标签）、`timeout: 120`。\n"
+            "按行分条，最多 8 条）、`tab: 素材`（要点开的工作区标签）、`stream: 1`"
+            "（再跑一档真流式）、`timeout: 120`。\n"
+            "流式那一档：浏览器带假麦克风开页 → 进开发舱开摄像头（这才建 ws）→ 开麦 →"
+            " 要求页面字幕里出现**由收到的音频算出的**片数/字节数/峰值，且字节数 == 片数×3200、"
+            "助手回包引用同一个字节数、至少两轮；适配器是 `scripted`，零网络零 key。\n"
             "这一条补的是 `dev_vue` 明确不证明的那一段：组件守卫喂的是我自己写的 props，"
             "整页要的是真 uvicorn + 真 `web/` 产物 + 真 `/api` 往返。临时端口起 `api:app`，"
             "`DOCMIND_STATE_ROOT` 指到临时目录（绝不往仓库真登记表上写），注册一个只含"

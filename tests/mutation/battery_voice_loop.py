@@ -19,6 +19,13 @@ UNIT_CLASSES = (
     'ToolSurfaceTests',)
 LIVE = ()
 
+#: 故意不作为电池的层：它们要么慢得离谱、要么必须 import 整个工具注册面，
+#: 与「这条守卫会不会红」无关。写在这里必须说清原因（否则就该进 UNIT_CLASSES）。
+LAYER_EXEMPT = {'LiveVoiceLoopTests': '现场类，但没有一条变异只有现场才看得见——跑它是白等'}
+
+#: 本块电池的变异条数下限：删一条变异必须显式改这里，「守卫悄悄变少」不该是绿灯
+MINIMUM_MUTATIONS = 16
+
 MUTATIONS = [
     # (名字, 原文, 变异后)
     ("tail_stats 用回尾内间隔（gaps[after-1]）",

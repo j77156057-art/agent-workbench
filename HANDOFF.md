@@ -1,5 +1,47 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-02 Vibecoding 能力补全 Wave19：`scripted` 离线实时适配器 + `dev_apptest stream` 真流式回合（本会话，不占 R 槽位）
+
+- **补什么**：`dev_apptest`（Wave17b）明确写着"不听真网关"，而页面 + 麦克风 + `/api/vision/live-stream` 这条链路**以前只能靠人对着设备说话**（R12）。缺的不是模型，是"一个能自动被测的对面"。这一条补上：整条回路（真浏览器、真假麦克风、真 ws、真 DOM）第一次能被自动跑到，且**零网络、零 key、零模型调用**。
+- **19a `agent_runtime/realtime_scripted.py`**：注册为 `scripted`，靠 `DOCMIND_REALTIME_PROVIDER=scripted` 选中——**走的就是生产选适配器那条路**（`realtime_provider.register` + 注册表），所以被测的是我们自己的接线而不是厂商。注册只往 `realtime_provider._BUILTIN_MODULES` 加了一行，**`api.py` 一个字没动**。事件载荷逐条对齐真实适配器 `realtime_omni.py`：`EVENT_TRANSCRIPT{text,role:user,final,language}` / `EVENT_TEXT_DELTA{text,role:assistant[,final]}` / `EVENT_AUDIO_DELTA{audio:裸 bytes,encoding:"pcm24",chars}` / `EVENT_DONE{response_id,reason}`，`"pcm24"` 的含义是 **24kHz 的 pcm16**（不是 24-bit），写成 24-bit 就是"播得快但看起来成功"那一类。
+- **凭据设计（这条的核心）**：剧本回合的内容全部是**从收到的 PCM 现算**的量（片数 / 字节数 / 峰值 RMS）。于是"页面字幕里出现了这些数字"只能解释为麦克风真的流到了服务端。判据**不写死数字**（推几片取决于时钟与夹具循环位置），查的是自洽：`字节 == 片数 × 3200`、峰值落在 `(0.05, 1.0)`（喂静音凑不出这个带）、助手回包引用的字节数与转写是同一次实测（两个独立事件互相印证）、且至少**两轮**。
+- **收轮规则故意照抄生产契约**：尾静音满 **10 片**才算说完（"停止说话 ≠ 停止推流"，Wave8 为这条付过真金白银），所以"喂 9 片"必须没有回合——夹具与守卫同一条线，断一处就红。
+- **19b `dev_apptest stream: 1`**：`server_env(realtime=True)` 覆盖 ambient 的适配器选择 → 开页时带 `media_fixture.fake_media_flags()`（假麦克风 + 假摄像头）→ 点开发舱 → 打开摄像头（**这一步才建 ws**）→ 开麦 → 轮询字幕。现场实测：开麦后约 3 秒出第一轮，整档 18 秒。
+- **三条被真页面纠正的形状**：① 假设备开关**必须在开页时**给，页面起来之后再传无效——漏传的现象不是红而是"没有字幕"，一开始把我去引向查上行（我第一版就漏了）；② 「开麦对话」按钮在 `liveVisionActive` 之前**根本不存在**（`AutonomousCockpit.vue:2636`），固定 sleep 1 秒就报"命中 0 个"，必须带截止期重试，而且开成之后文案会翻成「闭麦」；③ 轮次正则不能跨行：`.*` 配 DOTALL 会把第一条转写配到最后一条轮次，两轮只认出一轮。
+- **默认路径没被动过**：`test_the_default_path_is_untouched_when_no_provider_is_configured` 钉住"没配 env 时 `hello.ok` 依旧报 `sampled-frames` + 原因"，`test_an_unknown_project_is_closed_before_any_provider_is_built` 钉住"项目不存在就 1008 关掉、一个 provider 都不建"。
+- **产物与数量**：`agent_runtime/realtime_scripted.py`、`tests/test_realtime_scripted.py` **21 项**（15 纯 + 5 真 `TestClient` websocket + 注册表；**全部不需要浏览器，CI 跑得到**）、`app_test.py` 的 stream 档、`tests/test_app_test.py` **56 项**（50 纯 + 6 现场，现场含真流式那一档）、`tests/test_mutation_batteries.py` **20 项**、门禁整页那题 12 → **18 条检查**、`battery_app_test` 35 → **46 条变异**（新增 11 条流式判据；那条"开页时不带假设备"只有现场能抓，标了 `("live",)`）。
+- **电池自己也被这条规则救了**：加完流式测试跑电池，**10 条流式变异全活下来**——不是守卫没牙，是电池的 `UNIT_CLASSES` 不知道有新类。于是元测试新增一条：**测试模块里每个有 `test_` 方法的 TestCase 必须落在 `UNIT_CLASSES`/`LIVE`/`LAYER_EXEMPT` 里**，不想当层的要写原因。另外把"变异数下限"从中央清单改成每块电池自己的 `MINIMUM_MUTATIONS`——共享工作树里有别的 lane 在加电池（今天多了 `page_action` / `job_logs` / `log_view` 三块），中央清单会变成互相挡路。
+- **自查抓出的自己的错**：① 控制组红了一整轮才看清：我给 `server_env` 写的断言假设"环境里没有 `DOCMIND_REALTIME_PROVIDER`"，而这台机器 `.env` 就设着 `dashscope_omni` —— 改成"这个函数自己不该加、开了档必须覆盖 ambient"；② 一次脚本 `write` 写在 `ast.parse` 之前，把一个坏字符串真写进了 `dev_eval.py`（且把助手函数插到了另一题的作用域里）——教训：**先解析后落盘，插函数要确认宿主函数**；③ 三次 `Edit`/heredoc 把 `
+` 弄成真实换行，直接制造 `unterminated string literal`。
+- **验证**：`tests/test_app_test.py + test_realtime_scripted.py + test_vue_component.py + test_realtime_gateway_bridge.py` **195 passed / 75 subtests**（84 秒，含真浏览器现场）；相邻实时套件一起跑无回退；门禁整页题 18/18、vue 题 16/16。
+- **边界（不许越界宣称）**：它证明**自家协议与页面接线**在真事件流下是通的，**不**证明厂商事件、打断语义、听感——那些仍归 R12 的人跑；`scripted` 需要显式选中，不在任何默认路径上；假麦克风只在有 Edge 的机器上验，CI 上那条现场用例是 skip 而不是通过；数字来自实测，但"这一轮说了什么"没有任何语义理解。
+
+
+
+## 2026-10-02 Vibecoding 补充：`log_view` 长日志折叠与级别筛选 + `dev_job_logs` 的 fold/level（本会话 Side 分支，用户点名实现）
+
+- **为什么不抬上限**：输出缓冲本来就是"头 4000 + 尾 4000，丢中段"（`process_runner.py:30-31`），抬上限只是把噪声灌进上下文。缺的是把判断下推到文本里。
+- **签名而不是整行（量出来的）**：真起 uvicorn `--log-level info` 打 24 次同一接口，27 行日志**逐行去重还是 27 行**——每条 access 行都带临时客户端端口。按签名归一后 28 → 10 行、重复 21 次折成一段。样本入库 `tests/fixtures/uvicorn-access.log`，测试对着真样本断言，不写"看起来短了"。
+- **三条被实测/电池删掉的东西**：① 引号内容归一——access 行引号里是请求路径，把 `"/api/settings"` 与 `"/api/models"` 折成一个签名是**把不同事件合并**，比折不动更糟；② IP 归一——`\d+` 已经吃掉它，规则冗余；③ 空白归一——举不出真实用例，电池里那条变异直接**活下来**，说明写的是猜测不是规则。另有一条等价变异（fold=False 仍分组）查出我留了两条产出完全相同的路径 → 合并。
+- **级别筛选按块不按行**：`Traceback` 下面的正文行没有级别词，逐行筛会把最该看的筛掉。无级别行**继承**上一条识别到的级别；开头识别不到级别的行一律保留（保守方向）。实测门禁题 `traceback_body_follows_its_header` 钉这条。
+- **视图不许冒充全文**：`middle_omitted_chars`（缓冲丢的中段）、`line_cap_hit`（超 2 万行没看）、`dropped_failure_marks`（被筛掉的段里带 4xx/5xx/失败 字样）单独计数并写在正文前。uvicorn 把 404 记成 INFO，`level: warn` 筛掉它合规，但那份视图永远不能被读成"没有错误"。计数自洽不变量：`lines_in - dropped_lines - folded_away + markers_added == lines_out`（`markers_added` 是合成行，不单列就对不上账）。
+- **工具面保守**：`dev_job_logs` 加 `fold: true` / `level: warn|error`；不给这两个键时**原始增量文本一字不改**，只在确有重复/缺口时附 `view_hint`。视图模式整块重算不能续读：带 `offset` 会明说被忽略并把 `next_offset` 置空。
+- **证据**：`tests/test_log_view.py` **26 项**；电池 `battery_log_view` **17/17**、`battery_job_logs` **6/6**；门禁 23 → **24 题**（`log-view-collapses-real-spam`，9 条判据全过）；`tests/test_page_action.py + test_log_view + test_native_tools + test_mcp_server_expose` **119 passed**。三处注册齐（实现 + TOOLS + `agent.py` 目录）。
+- **一条不是我造成的红（如实报，未代改）**：`dev_eval.py` 里 `apptest-refuses-a-stale-build-as-current` 现在报 `NameError: name 'stream_fail' is not defined`——是主会话在写的 realtime/stream 档改到一半（`agent_runtime/app_test.py` 已加 `server_env(..., realtime=True)` 与 `tests/test_app_test.py::StreamPlumbingTests`，但门禁题里 `stream_fail` 未定义）。连带 `test_dev_eval` 三条红与 `app_test` 电池对照组红（电池对照组规则：**对照组红就整块不作数**，所以它报 0/46 而不是假装抓到）。这条归那条 lane，我不动。
+- **边界**：只按可见文本与签名折叠，不做语义聚类；`level` 词表是固定保守表（认不出就当正文，不猜成 info）；视图是**给人看的摘要**，任何"日志里没有 X"的结论仍要用 `dev_apptest`/`contains` 那样的精确判据去坐实。
+
+
+## 2026-10-02 Vibecoding 补充：`dev_page_action` 加 `mode: contains`，并修掉一个结构性死字段（本会话 Side 分支，用户点名实现）
+
+- **为什么会做这个**：讨论「4000 字上限对 agent 是不是太少」时量出来的结论是——不该抬上限，该把判断下推到页面里。`read` 的其它模式都返回整段文本，于是「这句话在不在页面上」实际只回答了「它在前 4000 字里在不在」。
+- **新形状**：`action: read` + `mode: contains` + `selector: <容器>` + `needle: <词>` → 回「可见命中几处 / 覆盖几个元素 / 扫了多少字符 / 最多 3 段周围样本」，返回量与页面大小无关。参数仍走 JSON 字面量，带引号括号的 needle 原样参与搜索（有专门用例验）。
+- **顺手修掉一个永远为假的判据**：`INSPECT_JS` 先 `slice(0, 4000)`，Python 再判 `len(text) > MAX_READ_CHARS` —— 该条件**结构上不可能成立**，`truncated` 一直是 False，"读了一半"看起来像"读完了"。现在页面在截断之前算好 `full_length` 一起回传，判据改用它；`dev_apptest` 的 `page_text_read_wholly` 也因此从装饰变成活判据（实测本页正文只有 510 字，所以那条断言此前从未真的需要过）。
+- **两处被真浏览器/电池纠正**：① 我以为 `innerText` 天然只搜可见文字——**不对**，元素不在渲染树里时它退回 `textContent`，真页面上 `#hid`（`display:none`）照样命中。现在用 `getClientRects().length === 0` 显式判可见，命中分 `hits`（可见）与 `hidden_hits`（不可见）两个数，样本只取可见处：「页面上有这句话」与「DOM 里有这句话」不再混为一谈。② 电池抓到样本上限有**两套数字**（JS 写死 3 + Python 再 `[:MAX_SAMPLES]`），删掉 JS 硬编码、改由 `spec.samples` 单一下发，与 `spec.limit` 同一套规矩；那两条变异因此从"活下来/等价"变成有牙。
+- **诚实边界**：容器没匹配到时明说「这次搜索不构成任何证据」；没扫完（200k 字符 / 单元素 500 次）时复用 `truncated` 语义并明说「没找到不能当成没有」；只搜当前 DOM，不触发懒加载；iframe 与 Shadow DOM 依旧到不了。
+- **证据**：`tests/test_page_action.py` 51 → **67 passed**（现场新增 2 条：`#hid` 可见性判定；4200 字之后的 needle 在 `mode: text` 拿不到而 `contains` 拿得到）；门禁题 `page-action-refuses-and-never-claims-success` 加 6 条离线判据（hidden/empty/上限下发/截断判据/needle 校验/容器围栏）；电池入库为 `tests/mutation/battery_page_action.py`，**18/18**（纯层+门禁+现场三层对照组），全套 `--no-live` 合计 **132/138 抓到、0 活下来**；相邻 `test_page_action / test_dev_eval / test_app_test / test_native_tools` 合计 **137 passed**。
+- **顺手报一条别处的危险残留**（未代改属本程序文件，只改了这一行）：`docs/HANDOFF-vibecoding.md` §7 第 1 条仍写着 `git commit -- <只属于我的路径>` —— 正是 `b828d10` 误收的成因（pathspec 绕过索引）。已按 HANDOFF.md §9 的结论改为「hunk 暂存后只能裸 `git commit`」。
+
+
 ## 2026-10-02 Vibecoding 能力补全 Wave18：变异电池入库 + CI 可重跑（本会话，不占 R 槽位）
 
 - **补什么**：Wave14–17 每一轮我都写了"变异电池 N/N 抓红"当凭据，可那五份脚本一直躺在 **gitignore 的 `.tmp/`** 里——也就是说所有"N/N 抓红"都是**不可重跑**的口头账，而且电池自身会烂：锚点被重构掉、测试类改名、现场类整类 skip，任何一种都只会让它"悄悄全绿"而没有任何东西变红。这一条把自己补上。

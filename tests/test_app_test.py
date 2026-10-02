@@ -7,12 +7,14 @@
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -362,6 +364,119 @@ class RenderTests(Base):
         self.assertIn("未能开始", at.render({"checks": {}, "error": "没有 web/"}))
 
 
+def stream_observation(**over):
+    base = {"native": True, "mic_on": True,
+            "heard": [{"chunks": 29, "bytes": 92800, "peak": 0.685}],
+            "replied": [{"bytes": 92800, "round": 1}, {"bytes": 92800, "round": 2}],
+            "rounds": [1, 2]}
+    base.update(over)
+    return base
+
+
+CAPTION_TEXT = ("你说 | 29 片 · 92800 字节 · 峰值 0.685 | AI | "
+                "收到 92800 字节，峰值 0.685，第 1 轮剧本回复。 | 你说 | 31 片 · 99200 字节 · "
+                "峰值 0.685 | AI | 收到 99200 字节，峰值 0.685，第 2 轮剧本回复。")
+MODE_TEXT = "当前模式：原生实时 · 模型能力：麦克风音频输入 · 可打断"
+
+
+class StreamParsingTests(unittest.TestCase):
+    """流式那一档的判定：纯字符串就能验，所以 CI 上不必起浏览器也有牙。"""
+
+    def test_captions_are_parsed_into_measurable_numbers(self):
+        got = at.read_turns(CAPTION_TEXT, MODE_TEXT)
+        self.assertTrue(got["native"])
+        self.assertEqual([row["bytes"] for row in got["heard"]], [92800, 99200])
+        self.assertEqual([row["chunks"] for row in got["heard"]], [29, 31])
+        self.assertEqual(got["rounds"], [1, 2])
+        # `mic_on` 不是从字幕文本里读出来的（它是另一次 DOM 计数），所以这里
+        # 只要求"字幕能撑起来的那四条"全绿
+        checks = at.stream_checks(dict(got, mic_on=True))
+        self.assertEqual([name for name, ok in checks.items() if not ok], [],
+                         "形状对的字幕应当全条绿：%s" % checks)
+        self.assertEqual([name for name, ok in at.stream_checks(got).items() if not ok],
+                         ["stream_mic_started"], "少了麦克风状态就该只红那一条")
+
+    def test_a_sample_that_is_all_silence_is_not_a_measurement(self):
+        """喂静音也能凑出"0 片 · 0 字节"这种自洽数字，所以峰值必须单独卡一道。"""
+        got = at.read_turns("你说 | 12 片 · 38400 字节 · 峰值 0.000 | AI | "
+                           "收到 38400 字节，第 1 轮剧本回复。| x 收到 38400 字节，第 2 轮",
+                           MODE_TEXT)
+        checks = at.stream_checks(got)
+        self.assertIs(checks["stream_audio_measured"], False, got["heard"])
+
+    def test_numbers_that_do_not_add_up_are_a_fabricated_page(self):
+        """字节数必须等于片数 × 3200（16k mono 100ms）：对不上就是页面自己写了串数字。"""
+        checks = at.stream_checks(stream_observation(
+            heard=[{"chunks": 9, "bytes": 92800, "peak": 0.685}]))
+        self.assertIs(checks["stream_audio_measured"], False)
+
+    def test_the_reply_has_to_cite_the_same_measurement(self):
+        """转写与回包是两个独立事件：引用同一个字节数才互相印证。"""
+        checks = at.stream_checks(stream_observation(
+            replied=[{"bytes": 11111, "round": 1}, {"bytes": 11111, "round": 2}]))
+        self.assertIs(checks["stream_reply_matches_measured_audio"], False)
+
+    def test_one_lucky_turn_is_not_a_loop(self):
+        checks = at.stream_checks(stream_observation(rounds=[1], replied=[{"bytes": 92800,
+                                                                          "round": 1}]))
+        self.assertIs(checks["stream_turns_repeat"], False)
+
+    def test_a_degraded_session_is_red_before_anything_else(self):
+        checks = at.stream_checks(stream_observation(native=False))
+        self.assertIs(checks["stream_negotiated_native"], False)
+
+    def test_a_mic_that_never_opened_is_its_own_red_line(self):
+        """"没转写"要能分清是麦没开还是上行不通：合成一条红会浪费一整次现场排查。"""
+        checks = at.stream_checks(stream_observation(mic_on=False))
+        self.assertIs(checks["stream_mic_started"], False)
+
+    def test_evaluate_merges_the_stream_table_only_when_asked(self):
+        observed = dict(observation(), **stream_observation())
+        plain = at.evaluate(observed, WANT, FRESH, CLEAN)
+        asked = at.evaluate(observed, dict(WANT, stream=True, rounds=2), FRESH, CLEAN)
+        self.assertNotIn("stream_audio_measured", plain["assertions"])
+        self.assertTrue(asked["passed"], asked["failed"])
+        broken = at.evaluate(dict(observed, native=False),
+                             dict(WANT, stream=True, rounds=2), FRESH, CLEAN)
+        self.assertIn("stream_negotiated_native", broken["failed"])
+
+
+class StreamPlumbingTests(unittest.TestCase):
+    def test_the_realtime_tier_overrides_whatever_the_environment_already_says(self):
+        """`realtime: 1` 必须**覆盖**ambient 的适配器选择（本机 .env 就设着
+        `dashscope_omni`——写"不含这个键"的断言只在一台干净的机器上才成立）。"""
+        with patch.dict(os.environ, {"DOCMIND_REALTIME_PROVIDER": "dashscope_omni"}):
+            plain = at.server_env(Path("D:/tmp/state"))
+            forced = at.server_env(Path("D:/tmp/state"), realtime=True)
+        self.assertEqual(plain["DOCMIND_REALTIME_PROVIDER"], "dashscope_omni",
+                         "不开这一档，这个函数不该动实时配置")
+        self.assertEqual(forced["DOCMIND_REALTIME_PROVIDER"], "scripted",
+                         "开了这一档就必须压过 ambient，否则整页跑在真厂商上")
+        for key in ("PATH", "SystemRoot" if os.name == "nt" else "HOME"):
+            self.assertTrue([k for k in forced if k.upper() == key.upper()], "%s 不能丢" % key)
+
+    def test_stream_flags_point_at_files_that_actually_exist(self):
+        """`--use-file-for-fake-audio-capture` 指向不存在的文件时 Edge 会静默回落成
+        内置假设备——"跑通了但内容是假的"比红更糟。"""
+        tmp = Path(tempfile.mkdtemp(prefix="docmind_stream_"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        sandbox = {"sandbox": tmp}
+        flags = at.stream_flags(sandbox)
+        joined = " ".join(flags)
+        self.assertIn("--use-file-for-fake-audio-capture=", joined)
+        self.assertIn("--use-file-for-fake-video-capture=", joined)
+        for row in flags:
+            if "=" in row and "capture" in row:
+                self.assertTrue(Path(row.split("=", 1)[1]).is_file(), row)
+
+    def test_the_stream_steps_click_the_nav_scoped_and_the_mic_last(self):
+        labels = [row[0] for row in at.STREAM_STEPS]
+        self.assertEqual(labels[:2], ["开发舱", "打开摄像头"])
+        self.assertEqual(at.STREAM_STEPS[0][1], ".ws-bar",
+                         "「开发舱」在别处也有同名文字，必须限定在工作区标签条里点")
+        self.assertIn("麦", labels[-1], "不开麦就没有上行音频，顺序错了会把没声音误判成不通")
+
+
 def _fake_root(tmp: Path, *, body: str, built=True) -> Path:
     root = tmp / ("root-%d" % (time.time_ns() % 100000))
     root.mkdir(parents=True)
@@ -416,7 +531,7 @@ class LivePageTests(Base):
         self.assertEqual([got["observed"]["active_before"], got["observed"]["active_after"]],
                          ["概览", "素材"], "活动标签必须真的换过了")
         self.assertTrue(got["observed"]["fixture_in_tree"])
-        self.assertLess(got["elapsed"], 90.0)
+        self.assertLess(got["elapsed"], 90.0, "非流式那一档不该被流式拖慢")
 
     def test_a_page_that_does_not_exist_turns_the_guard_red(self):
         """反证一：换到一个没有的页面——后端照样活着，守卫必须红而不是"没看到错＝通过"。"""
@@ -443,6 +558,32 @@ class LivePageTests(Base):
         self.assertFalse(got["ok"])
         self.assertIn("index.html", got["error"])
         self.assertEqual(page_count(), 0, "前置检查就该挡住，不该起浏览器")
+
+    def test_the_stream_tier_actually_hears_the_fake_microphone(self):
+        """整页 + 假麦克风 + scripted：这是本仓第一次自动跑到"真 ws 回合"。
+
+        旧构建那条红允许单独存在（别人正在改前端时会恰好卡在那儿），其余每条——
+        包括四条流式判据——都必须绿。
+        """
+        got = at.run_app_test(ROOT, stream=True, timeout=180.0)
+        detail = json.dumps({"failed": got.get("failed"),
+                             "observed": {k: (got.get("observed") or {}).get(k)
+                                          for k in ("native", "heard", "replied", "rounds",
+                                                    "stream_steps", "stream_captions")},
+                             "error": got.get("error")}, ensure_ascii=False)[:1200]
+        if not at.bundle_freshness(ROOT)["fresh"]:
+            self.assertEqual([row for row in (got.get("failed") or [])
+                              if row != "bundle_built_after_latest_source"], [], detail)
+        else:
+            self.assertTrue(got["ok"], detail)
+        checks = got["checks"]
+        for name in ("stream_negotiated_native", "stream_mic_started",
+                     "stream_audio_measured", "stream_reply_matches_measured_audio",
+                     "stream_turns_repeat"):
+            self.assertIs(checks.get(name), True, detail)
+        heard = got["observed"]["heard"]
+        self.assertTrue(all(row["bytes"] == row["chunks"] * 3200 for row in heard), heard)
+        self.assertGreaterEqual(len(got["observed"]["rounds"]), 2, detail)
 
     def test_nothing_is_left_behind(self):
         got = at.run_app_test(ROOT, timeout=120.0)
@@ -487,6 +628,56 @@ class ToolSurfaceTests(unittest.TestCase):
                 text = tools.TOOLS["dev_apptest"]["func"](arg)
                 self.assertTrue(text.strip(), arg)
                 self.assertNotIn("【通过】", text)
+
+    def test_the_prompt_catalog_has_one_clean_line_per_tool(self):
+        """目录里每个工具必须**自己一行、行内不夹带别人**。
+
+        整行替换时用下一行的前缀当锚点，会把那条工具的正文吞进这一行
+        （Wave17 真发生过：`dev_testrun` 的正文被并进了 `dev_apptest` 那行），
+        而它只表现为"提示词长了一点"，没有任何测试会红。
+        只查"有独立行的那些工具"：`dev_mcp_*`、外部文件与记忆那批是分组登记的，
+        不是一行一工具，硬要求会变成假红。
+        """
+        import agent
+        import tools
+        catalog = agent._SYSTEM_PROMPT_FULL
+        rows = {}
+        for row in catalog.splitlines():
+            for name in tools.TOOLS:
+                if row.startswith("- %s(" % name) or row.startswith("- %s:" % name):
+                    rows.setdefault(name, []).append(row)
+        for name in ("dev_page_action", "dev_media", "dev_headcheck", "dev_testrun",
+                     "dev_vue", "dev_apptest"):
+            self.assertEqual(len(rows.get(name, [])), 1,
+                             "%s 在提示词目录里应当恰好一行" % name)
+        for name, hits in rows.items():
+            with self.subTest(tool=name):
+                self.assertEqual(len(hits), 1, "目录里 %s 出现多行" % name)
+                tail = hits[0][-160:]
+                swallowed = [other for other, other_rows in rows.items()
+                             if other != name and tail in other_rows[0]]
+                self.assertFalse(swallowed,
+                                 "%s 这一行的尾部同时出现在 %s 里：有一行被吞并了"
+                                 % (name, swallowed))
+
+    def test_every_documented_key_reaches_the_module(self):
+        """文档里写过的 keyed 参数必须真的进了 `_parse_keyed` 的 keys——
+        `dev_testrun` 就因为 `coverage` 漏在 keys 里而被静默丢掉，变成"跑一次全量"。"""
+        import ast as _ast
+        import inspect
+        import tools
+        # 用 inspect.getdoc：docstring 的缩进按实现细节会变，判据不能建在它上面
+        doc = inspect.getdoc(tools.dev_apptest) or ""
+        documented = set(re.findall(r"^\s*(\w+):\s", doc, re.M))
+        tree = _ast.parse(inspect.getsource(tools.dev_apptest))
+        listed = set()
+        for node in _ast.walk(tree):
+            if (isinstance(node, _ast.Call) and getattr(node.func, "id", "") == "_parse_keyed"
+                    and len(node.args) > 1 and isinstance(node.args[1], _ast.List)):
+                listed |= {str(row.value) for row in node.args[1].elts}
+        self.assertTrue(documented, "文档里一个 keyed 参数都没写？")
+        self.assertEqual(documented - listed, set(),
+                         "这些参数写了但没交给模块：%s" % sorted(documented - listed))
 
     def test_a_tree_without_a_build_reports_failure_not_green(self):
         import tools

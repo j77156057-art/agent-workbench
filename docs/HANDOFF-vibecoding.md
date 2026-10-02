@@ -1,6 +1,6 @@
 # HANDOFF · Vibecoding 能力补全（harness 侧）
 
-> 状态：**Wave1–9、11–18 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫 / 17 组件守卫第二层「挂载前驱动共享状态」+ `dev_apptest` 真后端整页集成守卫）。
+> 状态：**Wave1–9、11–19 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫 / 17 组件守卫第二层「挂载前驱动共享状态」+ `dev_apptest` 真后端整页集成守卫）。
 > 发出人：本会话（用户直接指派，不占 R0–R15 槽位）。最后更新：2026-10-01。
 >
 > **这份文档是什么**：让没跟过这个过程的人（或另一个 AI）能直接接手**操作**这套 harness 的
@@ -27,7 +27,8 @@
 | 跑测试 | `dev_testrun`（`paths` / `keyword` / `only_failed` / `related`）| 退出码 5 = 一个都没收集到，判**未通过**；覆盖率未启用（没装 coverage）|
 | 看结果 | `preview_project`（截图 + console + 失败请求）/ `dev_page_action`（点/填/按键/等待）| **no_change 不是成功**；只回环 |
 | 守组件 | `dev_vue`（真实 .vue 挂进真浏览器：props → 真点击 → 收 emit；第二层可**挂载前驱动共享状态**）| **不写断言＝未通过**；只证明一个组件在一组 props 下（§5.6、§5.7） |
-| 跑整页 | `dev_apptest`（起真 `uvicorn api:app` + 真 `web/` 产物 + 真浏览器）| **旧构建判未通过**（`web/` 比 `frontend/src` 新才算数）；不点真模型、不听真网关（§5.8） |
+| 跑整页 | `dev_apptest`（起真 `uvicorn api:app` + 真 `web/` 产物 + 真浏览器）| **旧构建判未通过**（`web/` 比 `frontend/src` 新才算数）；不点真模型（§5.8） |
+| 跑流式 | `dev_apptest stream: 1`（假麦克风 + `scripted` 适配器 + 真 `/api/vision/live-stream`）| 证明**自家协议与页面接线**；厂商事件与打断语义仍归 R12 人跑（§5.10） |
 | 验语音/摄像头 | `dev_media`（`build` / `run` / `voice`）| 假设备喂合成媒体；门限行为见 §5.3 |
 | 静态检查 | `dev_diagnostics`（ruff + vue-tsc）| 退出码非 0 却解析不出发现时**报错误不报干净** |
 | 交付 | `dev_propose`（补丁+草稿，写进状态目录）/ `dev_ci_status`（只读 GET）| 不 add/commit/push；CI 读不到就明说 |
@@ -254,6 +255,7 @@ cd frontend && npm run test:node
 |---|---|---|---|
 | 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 已做 Wave17：`dev_vue` 第二层驱动共享状态（§5.7）+ `dev_apptest` 真后端整页（§5.8）。仍**没有**的是：深链到具体路由/文件的整页断言、真模型往返（`dev_apptest` 明确不点模型）|
 | 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；覆盖率入口仍无 | 实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | 覆盖率要先决定加不加依赖；记账由 `last-failed.json` 自己做 |
+| 3a | ~~真 ws 回合零自动覆盖~~ **已做（Wave19：`scripted` 适配器 + `dev_apptest stream`）** | 页面 + 麦克风 + `/api/vision/live-stream` 以前只有人对着说话才能验 | 厂商事件、打断语义、听感仍归 R12 的人跑 |
 | 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证），沙箱 push 不通 | 人 push 一次，把首跑结果记回本文件 |
 | 4 | `dev_serve` 端口被抢不自动重试 | Wave6 未做项 | 就绪失败时换端口重试一次 |
 | 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
@@ -262,7 +264,10 @@ cd frontend && npm run test:node
 
 ## 7. 共享工作树里的提交规范（实测有效的那套）
 
-1. 只提交自己的路径：`git add <新文件>` + `git commit -- <只属于我的路径>`；**永远不要** `git add -A`。
+1. 只提交自己的路径：新文件用 `git add <路径>`，共享文件按 hunk `git apply --cached` 只挑自己的块；
+   暂存后**只能裸 `git commit`**。**永远不要** `git commit -- <路径>`——pathspec 会绕过索引直接提交
+   工作树内容，把别人在同一批文件里的在途改动一起扫进去（本仓 `b828d10` 就是这么连累 HEAD 的，
+   见 `HANDOFF.md` §9）；也永远不要 `git add -A`。提交后 `git show --stat` 核对，再跑一次 `dev_headcheck`。
 2. 若自己改的文件**同时含别人的在途改动**（本会话实测：`tools.py` 16 个 hunk 里 5 个是我的、
    `agent.py` 34 个里 1 个），按 hunk 暂存：`git diff` 拆 hunk → 只留自己的 → `git apply --cached` →
    **裸 `git commit`（不带 pathspec！）**。`git commit -- <路径>` 会**绕过索引**，按这些路径的
@@ -292,8 +297,12 @@ cd frontend && npm run test:node
 - `tests/mutation/battery_*.py`：五份声明式电池（`MODULE` / `TARGET` / `CASE_ID` / `TEST_MODULE`
   / `BIND` / `UNIT_CLASSES` / `LIVE` + `MUTATIONS`）。第 4 个元素 `("live",)` 表示
   "只有真浏览器才看得见"。
-- `tests/test_mutation_batteries.py`：元测试（0.24 秒，`unittest discover` 会自动收到）。查锚点
-  漂移、测试类改名、门禁题号变更、变异数被偷删（`MINIMUMS` 下限），以及引擎自己的判定逻辑。
+- `tests/test_mutation_batteries.py`：元测试（0.4 秒，`unittest discover` 会自动收到）。查
+  锚点漂移、测试类/现场用例改名、门禁题号变更、**每块电池自己声明的 `MINIMUM_MUTATIONS`
+  下限**（别的 lane 加电池不用改中央清单），以及**"新写的测试类有没有落到某一层"**——
+  这条是我自己撞出来的：给 `dev_apptest` 加完流式测试后跑电池，10 条流式变异全活下来，
+  原因不是守卫没牙，是电池根本不知道有新类。不想让它成为层的，必须写进
+  `LAYER_EXEMPT` 并说明原因（如"要 import tools 全量注册面"）。
 - CI：`.github/workflows/harness.yml` 的 `Run mutation batteries` 一步，跑 `--no-live`，
   只在 sqlite matrix 付费。本机实测：`--no-live` **118/120 抓到 + 2 条未验证 + 0 条活下来，
   243 秒**（其中 `head_check` 一块就 182 秒，因为它要真建 `git worktree`）；带浏览器
@@ -306,7 +315,7 @@ cd frontend && npm run test:node
 `code_intel.py`(扩展) · `ts_index.py` · `diagnostics.py` · `patch_apply.py` · `lanes.py` ·
 `dev_server.py` · `mcp_server.py` · `mcp_bridge.py` · `dev_eval.py` · `proposal.py` · `ci_status.py` ·
 `media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` · `test_run.py` ·
-`vue_component.py` · `app_test.py` ·（另有 `tests/mutation/engine.py` + `run_all.py` + 五份 `battery_*.py`）·
+`vue_component.py` · `app_test.py` · `realtime_scripted.py` ·（另有 `tests/mutation/engine.py` + `run_all.py` + `battery_*.py`，条数下限写在每块电池自己的 `MINIMUM_MUTATIONS` 里）·
 `visual_acceptance.py`（被抽出 `browser_session` / `serve_static` / `stop_static` / `sanitize_flags`，
 并被别的 lane 加了作业对象回收）· 测试：`test_dev_glob_git_log` / `test_lanes_registry` /
 `test_ts_index` / `test_dev_diagnostics` / `test_dev_patch_move` / `test_mcp_server_expose` /
@@ -347,6 +356,14 @@ cd frontend && npm run test:node
   沙箱——`process_runner.job_cancel` 回来时 uvicorn 自己开的 sqlite/状态文件句柄还没被 OS 收走，
   `clean_target` 默认的 4 次 ×0.25s（约 1s）不够，而几秒后手工能删。回收预算提到 10 次 ×0.4s 后
   实测 0 残留。**删不干净这件事本身是判红项**（`artifacts_cleaned`），不是静默重试。
+- **判据可以"结构上永远为假"，比写反更难发现**：`page_action.read_page` 的 `truncated` 判据是
+  `len(text) > 4000`，而 `INSPECT_JS` 在返回前就 `slice(0, 4000)` —— 这个条件不可能成立，于是每次
+  整段读取都显示"没截断"。凡是"我有没有被截断/丢包/跳过"这类判据，都要问一句
+  **它读的是不是已经被削过的那份**。同型错误本仓还有一次：拿 `.is_file()` 查目录，导致整类现场
+  用例静默跳过而全量仍显示绿灯。修法都一样——【多上报一个原始量】（`full_length`），而不是猜。
+- **上限写两处，就等于写了一处旧的**：`contains` 的样本上限原本 JS 写死 3、Python 再切一次，
+  变异电池当场"抓不到"（删掉任何一边都看不出差别）。现在 `limit` / `samples` 都由 Python 随请求
+  下发，并有专门用例断言发出去的数值。
 - **门禁自己有一个负载敏感点（本仓文件，不是别人的）**：
   `tests/test_dev_eval.py::GateBitesCases::test_cli_exit_codes` 是在**进程里把整套题跑一遍**
   再看退出码，所以任何一题（要起浏览器的 `media-fixture`、要真跑 pytest 的 `testrun`）现场卡顿

@@ -10,20 +10,18 @@ TARGET = 'agent_runtime/app_test.py'
 CASE_ID = 'apptest-refuses-a-stale-build-as-current'
 TEST_MODULE = 'tests.test_app_test'
 BIND = 'at'
-UNIT_CLASSES = (
-        'ArgShapeTests',
-    'SandboxTests',
-    'BundleFreshnessTests',
-    'ActivationTests',
-    'ProbeTests',
-    'EvaluateTableTests',
-    'RenderTests',
-    'PreflightTests',)
-LIVE = (
-        'LivePageTests',
-    (
-                'test_nothing_is_left_behind',
-        'test_a_backend_that_cannot_start_is_red_not_silent',    ),)
+UNIT_CLASSES = ('ArgShapeTests', 'SandboxTests', 'BundleFreshnessTests', 'ActivationTests',
+                'ProbeTests', 'EvaluateTableTests', 'RenderTests', 'PreflightTests',
+                'StreamParsingTests', 'StreamPlumbingTests')
+LIVE = ('LivePageTests', ('test_nothing_is_left_behind',
+                          'test_a_backend_that_cannot_start_is_red_not_silent',
+                          'test_the_stream_tier_actually_hears_the_fake_microphone'))
+#: 故意不作为电池的层：它们要 import 整个 `tools`（工具注册面）才能跑，
+#: 与"这条守卫会不会红"无关，拉进来只会让电池被别人改 tools.py 带飞。
+LAYER_EXEMPT = {'ToolSurfaceTests': '要 import tools 全量注册面，不属于守卫的层'}
+
+#: 本块电池的变异条数下限：删一条变异必须显式改这里，「守卫悄悄变少」不该是绿灯
+MINIMUM_MUTATIONS = 46
 
 MUTATIONS = [
     # ---- 判定表：每一条都对应一类"看起来绿其实没测" ----
@@ -91,8 +89,8 @@ MUTATIONS = [
      '    if not 1024 <= int(port) <= 65535:',
      '    if False:'),
     ("子进程 env 只带状态根一个键（连 PATH 都没有）",
-     '    return {**os.environ, "DOCMIND_STATE_ROOT": str(state_root)}',
-     '    return {"DOCMIND_STATE_ROOT": str(state_root)}'),
+     '    env = {**os.environ, "DOCMIND_STATE_ROOT": str(state_root)}',
+     '    env = {"DOCMIND_STATE_ROOT": str(state_root)}'),
     ("接口白名单形同虚设（能打到任意 /api）",
      '    if parsed.path not in _API_PATHS:',
      '    if False:'),
@@ -140,4 +138,38 @@ MUTATIONS = [
     ("没开始也照样渲染出一张表（把「未能开始」藏掉）",
      '    if not result.get("checks"):',
      '    if False:'),
+    # ---- 流式那一档（Wave19b：假麦克风 → 真 ws → scripted 适配器）----
+    ("流式：没协商成原生也当过了",
+     '        "stream_negotiated_native": bool(observed.get("native")),',
+     '        "stream_negotiated_native": True,'),
+    ("流式：麦克风没开也当开了",
+     '        "stream_mic_started": bool(observed.get("mic_on")),',
+     '        "stream_mic_started": True,'),
+    ("流式：不查音频实测",
+     '        "stream_audio_measured": bool(consistent),',
+     '        "stream_audio_measured": True,'),
+    ("流式：回包不必引用同一个实测字节数",
+     '            heard_bytes & {row["bytes"] for row in (observed.get("replied") or [])}),',
+     '            bool(heard_bytes)),'),
+    ("流式：出一轮也算跑了循环",
+     '        "stream_turns_repeat": len(observed.get("rounds") or []) >= rounds,',
+     '        "stream_turns_repeat": len(observed.get("rounds") or []) >= 1,'),
+    ("流式：不卡峰值带（喂静音也绿）",
+     '                  if row["bytes"] == row["chunks"] * 3200 and PEAK_LO < row["peak"] < PEAK_HI]',
+     '                  if row["bytes"] == row["chunks"] * 3200]'),
+    ("流式：字节与片数不必自洽（页面自己写串数字也认）",
+     '                  if row["bytes"] == row["chunks"] * 3200 and PEAK_LO < row["peak"] < PEAK_HI]',
+     '                  if PEAK_LO < row["peak"] < PEAK_HI]'),
+    ("轮次正则跨行贪（把第一条转写配到最后一条轮次）",
+     'REPLY_RE = re.compile(r"收到\\s*(\\d+)\\s*字节[^\\n]{0,60}?第\\s*(\\d+)\\s*轮")',
+     'REPLY_RE = re.compile(r"收到\\s*(\\d+)\\s*字节[\\s\\S]*第\\s*(\\d+)\\s*轮")'),
+    ("不给子进程选 scripted 适配器（整档悄悄跑在真配置上）",
+     '        env["DOCMIND_REALTIME_PROVIDER"] = "scripted"',
+     '        pass'),
+    ("流式判定无条件并进主表（没开这一档也拿它判红）",
+     '    if wanted.get("stream"):',
+     '    if True:'),
+    ("开页时不带假设备（麦克风按钮根本不出现，整档只剩「没转写」这一种红）",
+     '    flags = stream_flags(sandbox) if stream else []',
+     '    flags = []', ("live",)),
 ]

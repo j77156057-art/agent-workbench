@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -47,6 +48,22 @@ READY_WAIT = 60.0
 #: 只在回环上跑：这条工具不是网页浏览器，不能拿去访问别的机器
 LOOPBACK = "127.0.0.1"
 _API_PATHS = ("/api/projects",)
+#: 流式档要点的三步：进开发舱 → 起摄像头会话（这条才会开 ws）→ 开麦。
+#: 「开发舱」必须限定在工作区标签条里点——顶栏「素材区」徽标上也有同名字。
+STREAM_STEPS = (("开发舱", ".ws-bar"), ("打开摄像头", ""), ("开麦对话", ""))
+#: 回合文本由 `realtime_scripted` 生成：`"N 片 · M 字节 · 峰值 P"`。
+CAPTION_RE = re.compile(r"(\d+)\s*片\s*·\s*(\d+)\s*字节\s*·\s*峰值\s*([0-9]*\.?[0-9]+)")
+#: `.*` 加 DOTALL 会贪过整段字幕，把"第一条转写 + 最后一条轮次"配成一对——
+#: 于是两轮只认出一个轮次。限在同一行内、非贪婪，才对得上每一轮自己那一句。
+REPLY_RE = re.compile(r"收到\s*(\d+)\s*字节[^\n]{0,60}?第\s*(\d+)\s*轮")
+STREAM_SCRIPT = "sil:0.3 talk:0.8 sil:0.3 talk:0.8 sil:1.6"
+#: 字节/片数要自洽（16k mono 100ms = 3200 字节），峰值落在这个带内才算"真有人说话"：
+#: 静音喂进来也能凑出数字的话，这条守卫就成了装饰。
+PEAK_LO, PEAK_HI = 0.05, 1.0
+#: 流式要等浏览器真的推够一轮尾静音（实测开麦后 ~3s 出第一轮）
+STREAM_WAIT = 45.0
+#: 单步点击的重试窗口（按钮要等 ws 握手完才存在）
+STREAM_STEP_WAIT = 25.0
 
 
 class AppTestError(RuntimeError):
@@ -87,13 +104,18 @@ def server_argv(port: int, *, python: str, module: str = "api:app") -> list[str]
             "--log-level", "warning"]
 
 
-def server_env(state_root: Path) -> dict[str, str]:
+def server_env(state_root: Path, *, realtime: bool = False) -> dict[str, str]:
     """把子进程的状态根指到隔离目录——但**先带上自己的 env**。
 
     `process_runner.clean_environment()` 拿到什么就用什么（不会自动并 os.environ），
     所以只传一个键会让 uvicorn 连 PATH/SYSTEMROOT 都拿不到。凭据类变量由它统一剔除。
+    `realtime` 那次额外把实时适配器指到 `scripted`：零网络、零 key，但走的仍是
+    生产选适配器那条路（`DOCMIND_REALTIME_PROVIDER` + 注册表）。
     """
-    return {**os.environ, "DOCMIND_STATE_ROOT": str(state_root)}
+    env = {**os.environ, "DOCMIND_STATE_ROOT": str(state_root)}
+    if realtime:
+        env["DOCMIND_REALTIME_PROVIDER"] = "scripted"
+    return env
 
 
 def make_sandbox(base: str | Path | None = None) -> dict[str, Any]:
@@ -224,6 +246,59 @@ def _digest(value: Any) -> str:
     return "%d:%s" % (len(text), hashlib.sha1(text.encode("utf-8")).hexdigest()[:8])
 
 
+def stream_flags(sandbox: dict[str, Any], *, script: str = STREAM_SCRIPT) -> list[str]:
+    """合成"有人说话 + 尾静音"的麦克风内容，交给 Edge 的假设备开关。
+
+    文件必须真的存在：`--use-file-for-fake-audio-capture` 指向不存在的文件时 Edge 会
+    **静默回落**成内置假设备，现象是"跑通了但内容是假的"（Wave7 踩过，`fake_media_flags`
+    因此直接抛错）。
+    """
+    from agent_runtime import media_fixture
+    holder = Path(sandbox["sandbox"])
+    wav = media_fixture.write_wav(holder / "mic.wav",
+                                  media_fixture.build_pcm(
+                                      media_fixture.parse_script(script)))
+    frame = holder / "cam.y4m"
+    frame.write_bytes(media_fixture.build_y4m(frames=25))
+    return media_fixture.fake_media_flags(audio=wav, video=frame)
+
+
+def read_turns(captions: str, mode_text: str) -> dict[str, Any]:
+    """把页面上的回合文本拆成可判定的量。
+
+    **数字一律不硬编码**：浏览器推了多少片取决于时钟与夹具循环的位置，所以判据只能是
+    "自洽"——字节数等于片数 × 3200（16k mono 100ms），且助手回包引用的字节数与转写来自
+    同一次实测。这两条一起就把"页面自己写了串像样的字"排除掉了。
+    """
+    heard = [{"chunks": int(chunks), "bytes": int(row_bytes), "peak": float(peak)}
+             for chunks, row_bytes, peak in CAPTION_RE.findall(str(captions or ""))]
+    replied = [{"bytes": int(row_bytes), "round": int(number)}
+               for row_bytes, number in REPLY_RE.findall(str(captions or ""))]
+    return {"heard": heard, "replied": replied,
+            "rounds": sorted({row["round"] for row in replied}),
+            "native": "原生实时" in str(mode_text or "")}
+
+
+def stream_checks(observed: dict[str, Any], *, rounds: int = 2) -> dict[str, bool]:
+    """流式那一段的判定。每条都对应一类"看着像通了其实没通"。"""
+    consistent = [row for row in (observed.get("heard") or [])
+                  if row["bytes"] == row["chunks"] * 3200 and PEAK_LO < row["peak"] < PEAK_HI]
+    heard_bytes = {row["bytes"] for row in consistent}
+    return {
+        # 页面报的是"原生实时"而不是降级——没协商成功时后面几条绿也不可信
+        "stream_negotiated_native": bool(observed.get("native")),
+        # 麦克风内容真的到了服务端并被实测：字节/片数自洽 + 峰值在"有人说话"的带内
+        "stream_audio_measured": bool(consistent),
+        # 回包引用的字节数必须与那次实测同一个数：两件事件互相印证
+        "stream_reply_matches_measured_audio": bool(
+            heard_bytes & {row["bytes"] for row in (observed.get("replied") or [])}),
+        # 至少两轮：只出一轮可能是撞上一次幸运投递
+        "stream_turns_repeat": len(observed.get("rounds") or []) >= rounds,
+        # 麦克风真的开着（页面自己承认）：少了这条，"没转写"到底是没开麦还是没上行分不清
+        "stream_mic_started": bool(observed.get("mic_on")),
+    }
+
+
 def evaluate(observed: dict[str, Any], wanted: dict[str, Any],
              fresh: dict[str, Any], cleanup: dict[str, Any]) -> dict[str, Any]:
     """判定表。每一条都对应一类"看起来绿其实没测"的假象，缺任何一条证据都判未通过。"""
@@ -258,12 +333,15 @@ def evaluate(observed: dict[str, Any], wanted: dict[str, Any],
         "artifacts_cleaned": bool(cleanup.get("removed")) and bool(cleanup.get("job_stopped"))
                              and int(cleanup.get("live_pages") or 0) == 0,
     }
+    if wanted.get("stream"):
+        # 流式那一段是"整页 + 假麦克风 + 真 ws"，判定另成一表并并进同一张红单
+        assertions.update(stream_checks(observed, rounds=int(wanted.get("rounds") or 2)))
     failed = [name for name, ok in assertions.items() if not ok]
     return {"assertions": assertions, "failed": failed, "passed": not failed}
 
 
 def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
-                 tab: str = DEFAULT_TAB, timeout: float = 120.0,
+                 tab: str = DEFAULT_TAB, stream: bool = False, timeout: float = 120.0,
                  ready_wait: float = READY_WAIT) -> dict[str, Any]:
     """前置检查 → 起后端 → 注册项目 → 开整页 → 点击导航 → 逐条判定 → 拆干净。"""
     base = Path(root).resolve()
@@ -290,7 +368,7 @@ def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
                              "sandbox": sandbox["sandbox"]}
     try:
         _drive(base, state, port=port, path=path, tab=tab, needles=needles,
-               timeout=timeout, ready_wait=ready_wait, sandbox=sandbox)
+               timeout=timeout, ready_wait=ready_wait, sandbox=sandbox, stream=bool(stream))
     except (AppTestError, page_action.PageActionError,
             urllib.error.URLError, OSError) as exc:
         out["error"] = "整页守卫没能走完：%s" % str(exc)[:300]
@@ -305,8 +383,8 @@ def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
         out["log_tail"] = state.get("log_tail", "")
         out["elapsed"] = round(time.monotonic() - started, 2)
         return out
-    judged = evaluate(state, {"tab": tab, "texts": needles, "tabs": EXPECTED_TABS},
-                      fresh, cleanup)
+    judged = evaluate(state, {"tab": tab, "texts": needles, "tabs": EXPECTED_TABS,
+                              "stream": bool(stream), "rounds": 2}, fresh, cleanup)
     reasons = [out.get("error") or ""]
     if not judged["passed"]:
         reasons.append(_why(judged["failed"], fresh, state))
@@ -321,20 +399,23 @@ def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
 FACT_KEYS = ("shell", "tabs", "rows", "fixture_in_tree", "active_before", "active_after",
              "content_before", "content_after", "body_truncated", "texts", "console_errors",
              "failed_requests", "activated", "isolated", "project_id", "click_ok",
-             "click_effect", "log_tail")
+             "click_effect", "log_tail", "heard", "replied", "rounds", "native", "mic_on",
+             "stream_steps", "stream_captions", "stream_flags")
 
 
 def _facts(state: dict[str, Any]) -> dict[str, Any]:
+    # `probe` 是个函数，不能进报告（也没意义）
     return {key: state.get(key) for key in FACT_KEYS if key in state}
 
 
 def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
            needles: list[str], timeout: float, ready_wait: float,
-           sandbox: dict[str, Any]) -> None:
+           sandbox: dict[str, Any], stream: bool = False) -> None:
     """真起服务、真开页面、真点导航——事实一律写进 `state`（判定与收回都在外面）。"""
     server = dev_server.start(str(base), "uvicorn api:app (整页守卫)",
                               argv=server_argv(port, python=sys.executable),
-                              port=port, wait=ready_wait, env=server_env(sandbox["state"]))
+                              port=port, wait=ready_wait,
+                              env=server_env(sandbox["state"], realtime=stream))
     state["job_id"] = str(server.get("job_id") or "")
     state["ready"] = bool(server.get("ready"))
     state["log_tail"] = str(server.get("log_tail") or "")[-500:]
@@ -350,7 +431,12 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
     state["activated"] = verdict["ok"]
     state["isolated"] = state_isolated(sandbox["state"], verdict)
     state["project_id"] = verdict["project_id"]
-    session = page_action.open_page(base, url=state["url"], timeout=timeout)
+    # 假设备必须在**开页之前**定好：`--use-file-for-fake-*-capture` 是浏览器启动参数，
+    # 页面已经起来了再传是无效的。少了它们，「打开摄像头」会静默失败、
+    # 麦克风按钮压根不出现——现象和"上行不通"一模一样，所以只能在这里就带对。
+    flags = stream_flags(sandbox) if stream else []
+    state["stream_flags"] = [row.split("=")[0] for row in flags]
+    session = page_action.open_page(base, url=state["url"], timeout=timeout, flags=flags)
     state["page"] = session["page"]
     state["console_errors"] = list(session.get("console_errors") or [])
     state["failed_requests"] = list(session.get("failed_requests") or [])
@@ -358,9 +444,14 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
     def probe(mode: str, target: str, scope: str = "") -> Any:
         if mode == "count":
             return page_action.locate(base, page=state["page"], selector=target).get("count")
+        if mode == "count-text":
+            # 按**可见文字**数元素：`闭麦`/`开麦对话` 这种状态标签没有稳定 class
+            return page_action.locate(base, page=state["page"], text=target,
+                                      scope=scope).get("count")
         return page_action.read_page(base, page=state["page"], selector=target,
                                      mode="text").get("text")
 
+    state["probe"] = probe                      # 流式那一档要复用同一个读法
     state.update(read_facts(probe, fixture=sandbox["fixture"]))
     body = page_action.read_page(base, page=state["page"], selector="body", mode="text")
     read_text = str(body.get("text") or "")
@@ -374,6 +465,53 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
                                    state="present", timeout=5.0)
     state["console_errors"] += list(settled.get("console_errors") or [])
     state["failed_requests"] += list(settled.get("failed_requests") or [])
+    if stream:
+        _drive_stream(base, state)
+
+
+def _drive_stream(base: Path, state: dict[str, Any]) -> None:
+    """整页的流式那一档：假麦克风喂进真 Edge → 真 ws → scripted 适配器 → 回落到 DOM。
+
+    三步缺一不可（实测）：ws 只在**开摄像头/共享屏幕**那一步才建立，而麦克风是独立的第二个
+    手势；少了第三步就只有画面没有声音，那时候"没转写"会被误读成"上行不通"。
+    每一步都要重试：`开麦对话` 那个按钮在 `liveVisionActive` 之前**根本不存在**
+    （AutonomousCockpit.vue:2636），而握手要一两秒——实测一次 1 秒的固定 sleep 就会
+    报"命中 0 个"。开麦成功后按钮文案会翻成「闭麦」，所以"已经开着"也算这一步达成。
+    """
+    read = state["probe"]
+    for index, (label, scope) in enumerate(STREAM_STEPS):
+        deadline = time.monotonic() + (STREAM_STEP_WAIT if index else 6.0)
+        recorded = None
+        while recorded is None:
+            if (index == len(STREAM_STEPS) - 1
+                    and int(read("count-text", "闭麦", "") or 0) >= 1):
+                recorded = {"label": label, "ok": True, "effect": "mic-already-on"}
+                break
+            try:
+                back = page_action.click(base, page=state["page"], text=label, scope=scope,
+                                         screenshot=False)
+                recorded = {"label": label, "ok": bool(back.get("ok")),
+                            "effect": str(back.get("effect") or "")}
+            except page_action.PageActionError as exc:
+                if time.monotonic() >= deadline:
+                    state.setdefault("stream_steps", []).append(
+                        {"label": label, "ok": False, "effect": str(exc)[:160]})
+                    return
+                time.sleep(0.7)
+        state.setdefault("stream_steps", []).append(recorded)
+        time.sleep(0.5)
+    state["mic_on"] = int(read("count-text", "闭麦", "") or 0) >= 1
+    deadline = time.monotonic() + STREAM_WAIT
+    captions = mode = ""
+    while True:
+        captions = str(read("text", ".acp-live-captions", "") or "")
+        mode = str(read("text", ".acp-live-vision-mode", "") or "")
+        facts = read_turns(captions, mode)
+        if len(facts["rounds"]) >= 2 or time.monotonic() >= deadline:
+            state.update(facts)
+            state["stream_captions"] = captions[:400]
+            return
+        time.sleep(1.0)
 
 
 def _teardown(state: dict[str, Any]) -> dict[str, Any]:
@@ -450,6 +588,18 @@ def render(result: dict[str, Any]) -> str:
     tail = str(observed.get("log_tail") or result.get("log_tail") or "")
     if tail:
         lines.append("服务输出尾部：%s" % tail[-300:])
+    heard = observed.get("heard") or []
+    if heard or observed.get("stream_steps"):
+        lines.append("流式回合：实测 %s；回包 %s；轮次 %s；模式 %s" % (
+            json.dumps(heard[-2:], ensure_ascii=False),
+            json.dumps(observed.get("replied") or [], ensure_ascii=False),
+            observed.get("rounds"), "原生实时" if observed.get("native") else "非原生"))
+        for row in (observed.get("stream_steps") or []):
+            lines.append("流式点击：%s → %s%s" % (row.get("label"), "ok" if row.get("ok")
+                                                else "失败", ("：" + str(row.get("effect"))[:80])
+                                                if not row.get("ok") else ""))
+        if observed.get("stream_captions"):
+            lines.append("字幕原文：%s" % str(observed["stream_captions"])[:220])
     cleanup = result.get("cleanup") or {}
     if not cleanup.get("removed") or not cleanup.get("job_stopped") or cleanup.get("live_pages") \
             or cleanup.get("close_error"):
@@ -461,7 +611,8 @@ def render(result: dict[str, Any]) -> str:
     if not result.get("ok"):
         lines.append("为什么不可信：%s" % (result.get("error") or "有断言未成立"))
     lines.append("边界：证明的是【真后端 + 真构建产物 + 真浏览器】这一段集成——注册项目、"
-                 "读文件树、切工作区；它不点真模型、不听真网关，也不替组件级断言背书。")
+                 "读文件树、切工作区；流式那一档走的是 scripted 离线适配器，"
+                 "证明的是自家协议与页面接线，**不证明厂商事件与打断语义**（那些仍归 R12 人跑）。")
     return "\n".join(lines)
 
 

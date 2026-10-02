@@ -443,6 +443,24 @@ def _case_page_action_refuses_and_never_claims_success(root: str, run: Callable[
                (expression_probe[0][:160] if expression_probe else "没有生成表达式")),
         _check("errors_outrank_dom_changes", error_seen["verdict"] == "error_seen", error_seen),
         _check("no_change_is_not_success", still["verdict"] == "no_change", still),
+        # 不可见命中不能点亮 found，也不能被静默丢掉——「页面上有」与「DOM 里有」是两件事
+        _check("hidden_hits_never_light_found",
+               hidden_only[0]["found"] is False and hidden_only[0]["hidden_hits"] == 3
+               and "不可见" in hidden_only[1], hidden_only[0]),
+        _check("empty_container_is_not_evidence",
+               empty_container[0]["elements"] == 0 and "不构成任何证据" in empty_container[1],
+               empty_container[0]),
+        _check("scan_bounds_are_issued_by_python",
+               bounds_sent.get("limit") == page_action.MAX_SCAN_CHARS
+               and bounds_sent.get("samples") == page_action.MAX_SAMPLES, bounds_sent),
+        _check("truncation_uses_the_reported_full_length",
+               capped["truncated"] is True and capped["full_length"] == 9000
+               and len(capped["text"]) == 4000,
+               {k: capped[k] for k in ("truncated", "full_length")}),
+        _check("bad_needle_never_reaches_the_page",
+               "needle" in refused_needle and dispatched == [], refused_needle[:120]),
+        _check("search_container_still_passes_the_fence", refused_selector != "",
+               refused_selector[:120]),
     ]
 
 
@@ -631,6 +649,24 @@ def _case_apptest_refuses_a_stale_page_as_current(root: str, run: Callable[..., 
     listing = {"current": "prj-1", "projects": [{"project_id": "prj-1"}]}
     state_dir = Path(root) / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
+
+    def stream_fail(over: dict) -> list[str]:
+        """流式判定表：基线是"形状全对"，只翻一样东西，看是不是恰好红那一条。"""
+        good = {"native": True, "mic_on": True,
+                "heard": [{"chunks": 29, "bytes": 92800, "peak": 0.685}],
+                "replied": [{"bytes": 92800, "round": 1}, {"bytes": 92800, "round": 2}],
+                "rounds": [1, 2]}
+        good.update(over)
+        table = ap.stream_checks(good)
+        return [name for name, ok in table.items() if not ok]
+
+    def stream_rounds() -> list[int]:
+        """两条字幕必须各配各的轮次：正则跨行贪就会把第一条配到最后一条。"""
+        text = ("你说 | 29 片 · 92800 字节 · 峰值 0.685 | AI | 收到 92800 字节，峰值 0.685，"
+                "第 1 轮剧本回复。" + chr(10)
+                + "你说 | 31 片 · 99200 字节 · 峰值 0.700 | AI | "
+                "收到 99200 字节，峰值 0.700，第 2 轮剧本回复。")
+        return ap.read_turns(text, "当前模式：原生实时 · 可打断")["rounds"]
 
     def refuses(fn, *args) -> bool:
         try:

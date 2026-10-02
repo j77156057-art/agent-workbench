@@ -20,8 +20,9 @@ if ROOT not in sys.path:
 from tests.mutation import engine  # noqa: E402
 from tests.mutation import run_all  # noqa: E402
 
-# 每条电池的变异数下限：删变异必须是有意的（改了这里要在文档里说清楚）
-MINIMUMS = {"voice_loop": 16, "head_check": 14, "test_run": 18, "vue": 37, "app_test": 35}
+#: 我这块程序该有的五块电池（别的 lane 加新电池只要自己在文件里声明
+#: `MINIMUM_MUTATIONS`，不需要来这里登记——共享工作树里不该有一张中央登记表）
+MINE = ("voice_loop", "head_check", "test_run", "vue", "app_test")
 
 
 def fake_battery(mutations, live=()):
@@ -127,9 +128,47 @@ class BatteryDeclarationTests(unittest.TestCase):
     def batteries(self):
         return run_all.discover()
 
-    def test_discovery_finds_every_battery(self):
+    def test_discovery_finds_every_battery_i_own(self):
         names = sorted(b.BATTERY_NAME for b in self.batteries())
-        self.assertEqual(names, sorted(MINIMUMS), "发现了新的电池却没登记下限")
+        for mine in MINE:
+            self.assertIn(mine, names, "我的电池不见了：%s（现有 %s）" % (mine, names))
+
+    def test_every_battery_declares_its_own_floor(self):
+        """删一条变异必须是显式的：电池自己声明 `MINIMUM_MUTATIONS`。
+
+        别的 lane 新加的电池也走同一条规则——不需要谁去改中央清单，
+        所以共享工作树里不会因为"多了一块电池"而互相挡路。
+        """
+        for battery in self.batteries():
+            with self.subTest(battery=battery.BATTERY_NAME):
+                floor = getattr(battery, "MINIMUM_MUTATIONS", None)
+                self.assertTrue(isinstance(floor, int) and floor > 0,
+                                "在这个电池文件里加一行 MINIMUM_MUTATIONS = 现在的条数")
+                self.assertGreaterEqual(len(battery.MUTATIONS), floor)
+
+    def test_every_test_class_is_reachable_from_a_layer(self):
+        """新写的测试类必须落在电池的某一层里，否则**永远不会被拿来判变异**。
+
+        这条是我自己撞出来的：给 `dev_apptest` 加完流式判定与测试之后跑电池，
+        10 条流式变异全活下来——不是守卫没牙，是电池根本不知道有新类。
+        不想让它成为层的，必须显式写进 `LAYER_EXEMPT` 并说清原因。
+        """
+        for battery in self.batteries():
+            module = importlib.import_module(battery.TEST_MODULE)
+            covered = set(battery.UNIT_CLASSES)
+            if getattr(battery, "LIVE", ()):
+                covered.add(battery.LIVE[0])
+            exempt = set(getattr(battery, "LAYER_EXEMPT", {}) or {})
+            with self.subTest(battery=battery.BATTERY_NAME):
+                for name, klass in vars(module).items():
+                    if not (isinstance(klass, type) and issubclass(klass, unittest.TestCase)
+                            and getattr(klass, "__module__", "") == battery.TEST_MODULE):
+                        continue
+                    if not [m for m in dir(klass) if m.startswith("test_")]:
+                        continue                     # 只是公共基类
+                    self.assertIn(name, covered | exempt,
+                                  "%s 里的 %s 既不在 UNIT_CLASSES/LIVE，也没写 LAYER_EXEMPT" % (
+                                      battery.TEST_MODULE, name))
 
     def test_targets_and_gate_cases_exist(self):
         from agent_runtime import dev_eval
@@ -139,8 +178,6 @@ class BatteryDeclarationTests(unittest.TestCase):
                 self.assertTrue((engine.REPO / battery.TARGET).is_file(), battery.TARGET)
                 self.assertIn(battery.CASE_ID, known,
                               "门禁题被改名/删掉了，这层守卫就成了装饰")
-                self.assertGreaterEqual(len(battery.MUTATIONS), MINIMUMS[battery.BATTERY_NAME],
-                                        "删变异必须是有意的")
 
     def test_declared_test_classes_and_bindings_still_resolve(self):
         for battery in self.batteries():
@@ -167,15 +204,20 @@ class BatteryDeclarationTests(unittest.TestCase):
             with self.subTest(battery=battery.BATTERY_NAME):
                 self.assertEqual(engine.anchors_valid(battery, source), [])
 
-    def test_live_marked_mutants_are_only_the_ones_needing_a_browser(self):
+    def test_live_marks_and_live_layer_agree_both_ways(self):
+        """标了 `("live",)` 就必须声明现场用例；声明了现场就必须至少有一条用得上它。
+
+        两个方向都查，才不会出现"现场层形同虚设"或"有变异没人能验"这两种静默失效。
+        """
         for battery in self.batteries():
             marked = [row[0] for row in battery.MUTATIONS if len(row) > 3]
             with self.subTest(battery=battery.BATTERY_NAME):
                 if marked:
-                    self.assertTrue(battery.LIVE, "有现场级变异却没声明 LIVE")
-                    self.assertIn(battery.BATTERY_NAME, ("vue", "app_test"))
+                    self.assertTrue(getattr(battery, "LIVE", ()),
+                                    "有现场级变异却没声明 LIVE：%s" % marked[:3])
                 else:
-                    self.assertFalse(battery.LIVE)
+                    self.assertFalse(getattr(battery, "LIVE", ()),
+                                     "声明了 LIVE 却没有任何变异需要它——现场层是装饰")
 
 
 class RunnerSurfaceTests(unittest.TestCase):

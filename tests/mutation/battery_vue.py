@@ -30,6 +30,13 @@ LIVE = (
         'test_a_setup_call_that_returns_a_promise_is_red',
         'test_a_setup_name_the_store_does_not_have_is_red_not_silent',    ),)
 
+#: 故意不作为电池的层：它们要么慢得离谱、要么必须 import 整个工具注册面，
+#: 与「这条守卫会不会红」无关。写在这里必须说清原因（否则就该进 UNIT_CLASSES）。
+LAYER_EXEMPT = {'ToolSurfaceTests': '要 import tools 全量注册面；与「这条守卫会不会红」无关'}
+
+#: 本块电池的变异条数下限：删一条变异必须显式改这里，「守卫悄悄变少」不该是绿灯
+MINIMUM_MUTATIONS = 37
+
 MUTATIONS = [
     ("只挂不断言也算通过",
      '    assertions["assertions_declared"] = asked',
