@@ -34,6 +34,8 @@ export interface AppEventMap {
   'docmind:project-context-changed': void
   /** ChatDock 团队抽屉 → 指定 WorkflowCard 滚动定位成员任务 */
   'docmind:wf-focus-member': WfFocusMemberDetail
+  /** 设置页外观 → 切换皮肤/风格/布局/材质后派发，用于顶部提示条告知结果 */
+  'docmind:appearance-changed': { kind: 'skin' | 'style' | 'layout' | 'material'; label: string }
   /** 开发舱持续视觉：最近一帧及当前观察会话的变化记录。 */
   'docmind:live-vision-frame': {
     projectId: string

@@ -63,6 +63,63 @@ class ReplyShapeTests(unittest.TestCase):
              {"role": "user", "content": "像素风角色素材有哪些？"}]), "")
         self.assertIn("Action:", text, "第一轮必须去调工具，不能直接作答")
 
+    def test_a_trailing_harness_hint_is_not_quoted(self):
+        """观察末尾常常跟着一句 harness 提示——引述它等于把凭据换成一句套话。
+
+        实测：那次的 final 成了「根据检索到的内容，（请基于观察继续，或给出 Final Answer）
+        —— 以上就是可用清单。」，`final_quotes_a_tool_observation` 因此红。
+        """
+        messages = [{"role": "user", "content":
+                     "Observation: · Pixel Platformer ［2d-sprites｜CC0］ 像素风平台跳跃角色\n"
+                     "· Space Shooter Redux ［2d-sprites｜CC0］ 384 个太空射击素材\n"
+                     "（请基于观察继续，或给出 Final Answer）"}]
+        snippet = llm_stub.observation_snippet(messages, action="search_assets")
+        self.assertTrue(snippet.startswith("·"), "引述的必须是工具产出的那一行：%r" % snippet)
+        self.assertNotIn("请基于观察继续", snippet)
+        # 引述进去之后，凭据确实出现在 final 里
+        final = llm_stub.reply_for(messages, action="search_assets")
+        self.assertIn(snippet, final)
+        self.assertNotIn("请基于观察继续", final)
+
+    def test_list_dir_skips_its_header_line(self):
+        """`list_dir` 的首行是表头，凭据（随机文件名）在带 `[FILE]` 的那一行。"""
+        messages = [{"role": "user", "content":
+                     "Observation: 目录 (代码库根) 共 1 项：\n"
+                     "[FILE] probe_601a0c.py  (10 字节)"}]
+        snippet = llm_stub.observation_snippet(messages, action="list_dir")
+        self.assertIn("probe_601a0c.py", snippet)
+        self.assertNotIn("共 1 项", snippet)
+        self.assertIn("probe_601a0c.py", llm_stub.reply_for(messages, action="list_dir"))
+
+    def test_list_dir_first_turn_lists_the_root(self):
+        text = llm_stub.reply_for([{"role": "user", "content": "玩家受伤扣血的逻辑在哪里实现？"}],
+                                  action="list_dir")
+        self.assertEqual(llm_stub.tool_name_in(text), "list_dir")
+        self.assertIn("Action Input: .", text)
+
+    def test_a_corrective_prompt_makes_it_stop_calling_tools(self):
+        """harness 的纠正提示一出现就必须收尾——不然会空转到被强制收尾。
+
+        实测（问答页那一档）：桩不认 `Evidence check:` / `Reflection:` / `Nudge:`，
+        于是一直回 `Action: list_dir`，一轮问答跑了 6 轮，最后靠"模型反复空转"的兜底停，
+        渲染出来的是兜底证据块而不是一条干净的答复。
+        """
+        base = [{"role": "user", "content": "玩家受伤扣血的逻辑在哪里实现？"},
+                {"role": "assistant", "content": "Thought: x\nAction: list_dir\nAction Input: ."},
+                {"role": "user", "content": "Observation: 目录 (代码库根) 共 1 项：\n"
+                                           "[FILE] probe_23bb39.py  (10 字节)"}]
+        for prompt in ("Evidence check: 这是定位类问题，但最终回答缺少可核验的 read_file 原文。",
+                       "Reflection: 你刚刚已经用完全相同的参数调用过 list_dir。",
+                       "Nudge: 禁止再调用任何工具。请立即基于上文全部 Observation 输出 "
+                       "`Final Answer:`"):
+            with self.subTest(prompt=prompt[:20]):
+                text = llm_stub.reply_for(base + [{"role": "user", "content": prompt}],
+                                          action="list_dir")
+                self.assertEqual(llm_stub.tool_name_in(text), "",
+                                 "纠正提示之后还在调工具：%r" % text[:80])
+                self.assertIn("Final Answer:", text)
+                self.assertIn("probe_23bb39.py", text, "凭据要落在收尾的答复里")
+
     def test_a_later_observation_still_counts(self):
         text = llm_stub.reply_for([
             {"role": "system", "content": SYSTEM_WITH_FORMAT},

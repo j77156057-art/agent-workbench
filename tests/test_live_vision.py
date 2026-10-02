@@ -34,7 +34,9 @@ def test_live_stream_delivers_timestamped_model_observation_without_chat_history
                 "/api/vision/live-stream?project_id=stream-test",
                 headers={"origin": "http://testserver"}) as socket:
             socket.send_text(HELLO)
-            assert socket.receive_json()["type"] == "hello.ok"
+            hello = socket.receive_json()
+            assert hello["type"] == "hello.ok"
+            assert hello["video_min_interval_ms"] >= api._LIVE_VISION_MIN_INTERVAL * 1000
             socket.send_bytes(payload)
             event = socket.receive_json()
     assert event["type"] == "video.observation"

@@ -320,6 +320,7 @@ class SessionBridge:
         self._discovery_prefix_state: bool | None = None
         self._discovery_last_sent_at = 0.0
         self._recent_discoveries: list[tuple[float, str]] = []
+        self._agent_reports: list[str] = []
 
         mode = resolve_mode(provider_name)
         self.mode = MODE_NATIVE if mode["ok"] else MODE_SAMPLED
@@ -440,6 +441,14 @@ class SessionBridge:
             return False
         return bool(self.provider.interrupt())
 
+    def submit_agent_result(self, request_id: str, text: str) -> bool:
+        if not self.native or self.provider is None or request_id in self._agent_reports:
+            return False
+        if not self.provider.submit_agent_result(request_id, text):
+            return False
+        self._agent_reports = (self._agent_reports + [request_id])[-64:]
+        return True
+
     def recover(self) -> bool:
         """Reconnect a provider after a retryable stream break, when supported."""
         if not self.native or self.provider is None:
@@ -457,10 +466,10 @@ class SessionBridge:
     def note_observation(self, header: dict[str, Any], observations: list[str],
                          *, elapsed_ms: float | None = None) -> None:
         session = self.session_id or None
+        value = self.observation_elapsed_ms() if elapsed_ms is None else elapsed_ms
         self._pending_frames = 0
         self._frame_received_at = None
         self.metrics.gauge(metrics.QUEUE_DEPTH, 0.0, session)
-        value = self.observation_elapsed_ms() if elapsed_ms is None else elapsed_ms
         self.metrics.observe(metrics.OBSERVATION_LATENCY_MS, value, session)
         text = str(observations[-1])[:900] if observations else ""
         if text:

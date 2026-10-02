@@ -435,6 +435,71 @@ def _case_page_action_refuses_and_never_claims_success(root: str, run: Callable[
               "href": "http://127.0.0.1:1/", "title": "t"}
     error_seen = page_action._verdict(before, {**before, "mutations": 30, "console": 1})
     still = page_action._verdict(before, dict(before))
+
+    # ---- `mode: contains` 的离线判据：页面内搜索的三处最容易糊过去的位置 ----
+    def scripted(payload):
+        """装一个会回 contains 结果的会话，并留下发给页面的表达式。"""
+        seen = []
+
+        def evaluate(expression):
+            seen.append(expression)
+            if "elements_with_hit" in expression:
+                return dict(payload)
+            return {"count": 1, "found": True, "visible": True,
+                    "text": str(payload.get("text") or "x"), "href": "http://127.0.0.1:1/",
+                    "title": "t", "full_length": payload.get("full_length")}
+
+        row, holder = session(ambiguous)
+        row.devtools.evaluate = evaluate
+        return row, holder, seen
+
+    hidden_only = None
+    empty_container = None
+    bounds_sent = {}
+    capped = None
+    refused_needle, refused_selector = "", ""
+    for payload, key in (({"elements": 2, "hits": 0, "elements_with_hit": 0,
+                           "hidden_hits": 3, "hidden_elements": 1, "searched_chars": 40,
+                           "scanned_all": True, "samples": []}, "hidden"),
+                         ({"elements": 0, "hits": 0, "elements_with_hit": 0,
+                           "hidden_hits": 0, "hidden_elements": 0, "searched_chars": 0,
+                           "scanned_all": True, "samples": []}, "empty")):
+        row, holder, seen = scripted(payload)
+        try:
+            got = page_action.read_page(root, page=row.id, selector=".p", mode="contains",
+                                        needle="某个词")
+            text = page_action.render(got)
+        finally:
+            page_action._sessions.pop(row.id, None)
+            holder.close()
+        if key == "hidden":
+            hidden_only = (got, text)
+            bounds_sent = _json.loads(seen[-1][seen[-1].index("({") + 1:seen[-1].rindex(")")])
+        else:
+            empty_container = (got, text)
+    row, holder, _seen = scripted({"text": "字" * 4000, "full_length": 9000})
+    try:
+        capped = page_action.read_page(root, page=row.id, selector="#big", mode="text")
+    finally:
+        page_action._sessions.pop(row.id, None)
+        holder.close()
+    row, holder, seen = scripted({})
+    try:
+        for bad_needle in ("", "x" * 300):
+            try:
+                page_action.read_page(root, page=row.id, selector=".p", mode="contains",
+                                      needle=bad_needle)
+            except page_action.PageActionError as exc:
+                refused_needle = refused_needle or str(exc)
+        try:
+            page_action.read_page(root, page=row.id, selector="<div>", mode="contains",
+                                  needle="词")
+        except page_action.PageActionError as exc:
+            refused_selector = str(exc)
+        dispatched = [item for item in seen if "elements_with_hit" in item]
+    finally:
+        page_action._sessions.pop(row.id, None)
+        holder.close()
     return results + [
         _check("needs_a_session", "page" in missing and ("缺少" in missing or "找不到" in missing),
                missing[:160]),
@@ -443,6 +508,24 @@ def _case_page_action_refuses_and_never_claims_success(root: str, run: Callable[
                (expression_probe[0][:160] if expression_probe else "没有生成表达式")),
         _check("errors_outrank_dom_changes", error_seen["verdict"] == "error_seen", error_seen),
         _check("no_change_is_not_success", still["verdict"] == "no_change", still),
+        # 不可见命中不能点亮 found，也不能被静默丢掉——「页面上有」与「DOM 里有」是两件事
+        _check("hidden_hits_never_light_found",
+               hidden_only[0]["found"] is False and hidden_only[0]["hidden_hits"] == 3
+               and "不可见" in hidden_only[1], hidden_only[0]),
+        _check("empty_container_is_not_evidence",
+               empty_container[0]["elements"] == 0 and "不构成任何证据" in empty_container[1],
+               empty_container[0]),
+        _check("scan_bounds_are_issued_by_python",
+               bounds_sent.get("limit") == page_action.MAX_SCAN_CHARS
+               and bounds_sent.get("samples") == page_action.MAX_SAMPLES, bounds_sent),
+        _check("truncation_uses_the_reported_full_length",
+               capped["truncated"] is True and capped["full_length"] == 9000
+               and len(capped["text"]) == 4000,
+               {k: capped[k] for k in ("truncated", "full_length")}),
+        _check("bad_needle_never_reaches_the_page",
+               "needle" in refused_needle and dispatched == [], refused_needle[:120]),
+        _check("search_container_still_passes_the_fence", refused_selector != "",
+               refused_selector[:120]),
     ]
 
 
@@ -689,7 +772,73 @@ def _case_apptest_refuses_a_stale_page_as_current(root: str, run: Callable[..., 
             _check("the_child_keeps_its_environment",
                    bool([k for k in ap.server_env(state_dir) if k.upper() == "PATH"])
                    and str(ap.server_env(state_dir)[
-                       "DOCMIND_STATE_ROOT"]) == str(state_dir), "")]
+                       "DOCMIND_STATE_ROOT"]) == str(state_dir), ""),
+            # ---- 流式那一档（Wave19b）：整页 + 假麦克风 + scripted 适配器 ----
+            _check("stream_tier_needs_a_negotiated_session",
+                   stream_fail({"native": False}) == ["stream_negotiated_native"],
+                   stream_fail({"native": False})),
+            _check("a_fabricated_caption_is_not_a_measurement",
+                   "stream_audio_measured" in stream_fail(
+                       {"heard": [{"chunks": 7, "bytes": 92800, "peak": 0.685}]}),
+                   stream_fail({"heard": [{"chunks": 7, "bytes": 92800,
+                                           "peak": 0.685}]})),
+            _check("the_reply_has_to_cite_that_same_measurement",
+                   "stream_reply_matches_measured_audio" in stream_fail(
+                       {"replied": [{"bytes": 4242, "round": 1},
+                                    {"bytes": 4242, "round": 2}]}), ""),
+            _check("one_lucky_turn_is_not_a_loop",
+                   "stream_turns_repeat" in stream_fail({"rounds": [1]}), ""),
+            _check("captions_are_read_one_turn_at_a_time",
+                   stream_rounds() == [1, 2], stream_rounds()),
+            _check("the_stream_tier_overrides_the_configured_adapter",
+                   ap.server_env(state_dir, realtime=True)["DOCMIND_REALTIME_PROVIDER"]
+                   == "scripted", "")]
+
+
+def _case_log_view_collapses_real_spam(root: str, run: Callable[..., dict]) -> list[dict]:
+    """日志视图最容易糊过去的三件事：折不动真 spam、筛级别筛掉 traceback、以及视图冒充全文。
+
+    样本是从真 uvicorn（`--log-level info`）打 24 次同一接口抓的日志的形状（每条 access 行
+    都带临时客户端端口 → **逐行去重一行也折不动**），入库为
+    `tests/fixtures/uvicorn-access.log`。
+    """
+    from agent_runtime import log_view as view
+
+    access = "\n".join('INFO:     127.0.0.1:%d - "GET /api/projects HTTP/1.1" 200 OK'
+                       % (56617 + i) for i in range(8))
+    spam = "INFO:     Started server process [39116]\n" + access + "\n" \
+           'INFO:     127.0.0.1:56700 - "GET /api/settings HTTP/1.1" 404 Not Found\n'
+    trace = ("INFO: 启动\n进度 50%\nERROR: 装配失败\n"
+             'Traceback (most recent call last):\n  File "api.py", line 3, in <module>\n'
+             "ValueError: 坏值\n")
+    plain = view.summarize(spam)
+    no_fold = view.summarize(spam, fold=False)
+    errors = view.summarize(trace, level="error")
+    warned = view.summarize(spam, level="warn")
+    gap = view.summarize("INFO: 开头\n...[省略 40000 字符]...\nERROR: 结尾")
+    lines = [row for row in spam.split("\n") if row]     # 行尾换行不是一行
+    return [_check("exact_line_dedup_would_fold_nothing",
+                   len({row for row in lines}) == len(lines), lines[:2]),
+            _check("signatures_collapse_the_spam",
+                   plain["top_repeats"][0]["times"] == 8 and plain["lines_out"] <= 5, plain),
+            _check("first_and_last_survive_a_fold",
+                   "56617" in plain["text"] and "56624" in plain["text"], plain["text"][:200]),
+            _check("view_counts_add_up",
+                   plain["lines_in"] - plain["dropped_lines"] - plain["folded_away"]
+                   + plain["markers_added"] == plain["lines_out"], plain),
+            _check("fold_off_is_really_verbatim",
+                   no_fold["lines_out"] == no_fold["lines_in"] and no_fold["folded_away"] == 0,
+                   no_fold),
+            _check("traceback_body_follows_its_header",
+                   "ValueError: 坏值" in errors["text"] and "api.py" in errors["text"]
+                   and "进度 50%" not in errors["text"] and "INFO: 启动" not in errors["text"],
+                   errors["text"]),
+            _check("filtered_away_failures_are_counted",
+                   warned["dropped_failure_marks"] >= 1
+                   and "不证明没有错误" in view.render(warned), warned),
+            _check("a_buffer_gap_is_named_not_hidden",
+                   gap["middle_omitted_chars"] == 40000 and "不能说" in view.render(gap), gap),
+            _check("an_unknown_level_is_refused", not view.summarize(trace, level="fatal")["ok"], "")]
 
 
 def _case_headcheck_catches_an_untracked_reference(root: str, run: Callable[..., dict]) -> list[dict]:
@@ -875,6 +1024,7 @@ def _case_voice_glue_would_catch_unconditional_pumping(root: str, run: Callable[
                    truncated_verdict["checks"]),
             _check("a_faithful_shape_passes", proper_verdict["passed"], proper_verdict["checks"]),
             _check("non_loopback_ws_%s" % shape, shape == "拒绝", shape)]
+
 
 
 def _case_bat_guard_refuses_an_escaped_closing_quote(root: str,
@@ -1214,6 +1364,13 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "uses": ["dev_apptest"],
         "note": "整页守卫最容易的三种假绿：旧构建当现在的代码、只信注册接口的 200、"
                 "点了导航却没换视图——每条都必须判红；页面与后端地址一律锁在回环与站内路径上",
+    },
+    {
+        "id": "log-view-collapses-real-spam", "fixture": "plain",
+        "direct": _case_log_view_collapses_real_spam,
+        "uses": ["dev_job_logs"],
+        "note": "长日志视图三条底线：真 access 行逐行去重折不动（必须按签名折）、"
+                "筛级别不能把 traceback 正文筛掉、缓冲丢中段时不许冒充完整日志",
     },
     {
         "id": "testrun-rerereads-failures-not-just-an-exit-code", "fixture": "plain",

@@ -56,6 +56,8 @@ def test_voice_hint_lands_in_system_context_not_in_the_visible_message():
     context = "\n".join(captured["context"])
     assert "语音转写" in context, "必须告诉模型这是语音转写（可能有误识别）"
     assert "最多两三句" in context, "语音轮次要限长"
+    assert "先说结论" in context
+    assert "具体位置、对象和现象" in context
     assert "不要罗列能力清单" in context, "禁止菜单式回答"
     assert "不要提议改动项目" in context, "闲聊时不得提议改动"
     # 关键：可见消息就是用户原话，没有我们拼的框架前缀

@@ -24,7 +24,7 @@ export interface SettingsConfigInfo {
   web_search_provider: WebSearchProvider
   web_search_api_url: string
   web_search_has_key: boolean
-  /** 优先使用模型内置 Web 工具（如模型本身支持联网） */
+  /** Deprecated legacy API field; no model-native Web tool adapter is currently available. */
   web_search_prefer_builtin: boolean
   web_fetch_provider: WebFetchProvider
   web_fetch_api_url: string
@@ -39,6 +39,38 @@ export interface SaveSettingsReq {
   web_fetch_provider?: WebFetchProvider
   web_fetch_api_key?: string
   web_fetch_api_url?: string
+}
+
+export interface AgentCapacitySettings {
+  max_agents: number
+  main_max_steps: number
+  child_max_steps: number
+  max_nudges: number
+  max_final_continuations: number
+  task_token_budget: number
+  local_auto_limit: boolean
+}
+
+export interface AgentCapacityInfo {
+  ok?: boolean
+  settings: AgentCapacitySettings
+  model: { provider: string; name: string; local_endpoint: boolean }
+  resources: {
+    available: boolean
+    scope: 'local_host'
+    total_mb: number
+    used_mb: number
+    free_mb: number
+    gpus: Array<{ index: number; name: string | null; used_mb: number; total_mb: number; free_mb: number; utilization: number | null }>
+    compute_apps: Array<{ pid: number; process_name: string | null; used_mb: number }>
+  }
+  loaded_models: {
+    available: boolean
+    provider: string
+    models: Array<{ name: string; size_vram_bytes: number; size_bytes: number }>
+  }
+  effective_local_parallelism: number | null
+  resource_note: string
 }
 
 export const WEB_SEARCH_PROVIDERS: ProviderOption[] = [
@@ -73,6 +105,15 @@ export const settingsApi = {
   /** 保存网络搜索 / URL 获取设置（复用 /api/config 的保存通道）。 */
   save(req: SaveSettingsReq): Promise<SettingsConfigInfo & ModelConfigInfo & { ok?: boolean; error?: string; warnings?: string[] }> {
     return rawJson<SettingsConfigInfo & ModelConfigInfo & { ok?: boolean; error?: string; warnings?: string[] }>('/api/config', req)
+  },
+}
+
+export const agentCapacityApi = {
+  get(): Promise<AgentCapacityInfo> {
+    return request('/api/agent-capacity')
+  },
+  save(settings: AgentCapacitySettings): Promise<{ ok?: boolean; settings?: AgentCapacitySettings; error?: string }> {
+    return rawJson('/api/agent-capacity', settings)
   },
 }
 

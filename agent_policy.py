@@ -15,10 +15,22 @@ def route_for(prompt, files=None, requested='auto'):
 def routing_status():
     return {'auto_cloud_enabled': os.getenv('AGENT_AUTO_CLOUD','0').lower() in ('1','true','yes','on'), 'local_first': True, 'cloud_requires_key': True}
 
-_SECRET_RX=re.compile(r'(?i)(api[_-]?key|token|password|passwd|secret|private[_-]?key)\s*[:=]\s*[^\s,;]+')
+_SECRET_RX = re.compile(
+    r'''(?i)(?P<prefix>["']?(?:api[_-]?key|access[_-]?token|token|password|passwd|'''
+    r'''client[_-]?secret|secret|private[_-]?key|authorization)["']?\s*[:=]\s*)'''
+    r'''(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)'''
+)
+
+
+def _redact_secret(match):
+    value = match.group("value")
+    quote = value[0] if value[:1] in {"'", '"'} else ""
+    return match.group("prefix") + quote + "[REDACTED]" + quote
+
+
 def redact_for_cloud(text, limit=24000):
     """最小化云端上下文：脱敏常见凭据并限制长度。"""
-    value=_SECRET_RX.sub(lambda m: m.group(1)+'=[REDACTED]', str(text or ''))
+    value = _SECRET_RX.sub(_redact_secret, str(text or ""))
     value=re.sub(r'(?i)\b(sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{20,}|-----BEGIN [^-]+-----.*?-----END [^-]+-----)', '[REDACTED]', value, flags=re.S)
     return value[:max(1000,int(limit))]
 def permission_check(path, project_root, allow_external=False):

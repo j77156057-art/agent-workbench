@@ -196,20 +196,38 @@ CHAT_VIDEO_MAX_FRAMES=8
 
 | 脚本 | 跑什么 | 前置条件 | 用途 |
 |---|---|---|---|
-| `启动DocMind.bat` | **优先用项目 `.venv` 启动当前源码** `desktop.py`，并关闭仍占用中的旧 `DocMind.exe`；源码环境不存在时才回退 `dist\DocMind\DocMind.exe` | 推荐先建好 `.venv` 并装完依赖 | 仓库内日常启动（默认跟随最新源码） |
-| `run_desktop.bat` | 用项目 venv 跑**源码** `desktop.py` | 先建好 `.venv` 并装完依赖 | 兼容旧的源码启动入口 |
+| `启动DocMind.bat` | 调用自动依赖同步器后启动当前源码；源码不可用时回退 `dist\DocMind\DocMind.exe` | 仅需安装 Python 3.11+；首次启动需要联网安装依赖 | 仓库内日常启动（默认跟随最新源码） |
+| `run_desktop.bat` | 同上，兼容旧的源码启动入口 | 同上 | 命令行/自动化启动 |
 
 ```bash
-# 默认启动当前源码
-.venv\Scripts\python.exe -m pip install pywebview   # 仅需一次
-.venv\Scripts\python.exe desktop.py                 # 或双击 启动DocMind.bat
+# 默认启动当前源码；首次启动会创建 .venv、安装 requirements.txt、安装前端锁定依赖并构建 web/
+启动DocMind.bat
 
 # 打包模式（演示 / 交付）：先构建，再直接运行打包产物
 .venv\Scripts\python.exe -m PyInstaller docmind.spec --noconfirm   # 产出 dist\DocMind\DocMind.exe
 dist\DocMind\DocMind.exe
 ```
 
-> ⚠️ **`dist/` 不入库**（见 `.gitignore`）。仓库内的 `启动DocMind.bat` 不再默认运行可能过期的打包快照，而是优先启动当前源码；只有 `.venv` 或 `desktop.py` 不可用时才回退到 `dist\DocMind\DocMind.exe`。独立交付给没有 Python 的机器时，仍需先按下面「打包成独立 exe」构建并分发整个 `dist\DocMind` 目录。
+> ⚠️ **`dist/` 不入库**（见 `.gitignore`）。依赖同步器按 `requirements.txt` 和 `frontend/package-lock.json` 的 SHA-256 记录状态；文件发生变化时，下次启动自动执行依赖升级和前端重建。若目标机器没有 npm，只要已有 `web/assets` 构建产物仍可启动；首次没有构建产物时必须安装 Node.js。
+
+### 发布、更新与卸载
+
+推荐使用发布脚本生成可交付包：
+
+```powershell
+pwsh -File packaging/build_release.ps1
+```
+
+脚本会同步构建依赖、构建 PyInstaller onedir 包、写入 `install-manifest.json`，并把 `uninstall.bat`、`upgrade_portable.ps1` 和卸载脚本放进发布目录。检测到 Inno Setup 的 `ISCC.exe` 时还会额外生成安装器；安装器的开始菜单包含独立的“卸载 DocMind”入口。
+
+便携版升级：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\upgrade_portable.ps1 `
+  -Package .\dist\release\DocMind -InstallDir "$env:LOCALAPPDATA\DocMind"
+```
+
+便携版卸载：双击安装目录中的 `uninstall.bat`，或运行 `uninstall_portable.ps1`。卸载器会先停止 DocMind，确认目标确实是 DocMind 安装目录后延迟删除整个便携目录；源码项目不受影响，但该目录内的索引、会话和配置也会随目录删除。需要保留数据时，请先设置独立的 `DOCMIND_STATE_ROOT` 并备份该目录。
 
 - **引擎嵌入**：Godot / Unity / Unreal 的窗口按 Win32 HWND 规则嵌进工作台（`desktop_bridge.py`）。
   **已在 Godot 4.7.2 + 真 Win32 宿主下实机验证**（`verify_engine_embed.py` 68 项全绿）：置父与样式摘除、按客户区（或前端指定的"引擎视窗"矩形）铺排、

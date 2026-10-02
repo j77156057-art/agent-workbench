@@ -42,6 +42,7 @@ FIXTURE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>交互
 <button id="off" disabled>禁用</button>
 <div style="display:none"><button id="hid">隐藏</button></div>
 <form id="form" action="/next.html"><input id="name" placeholder="名字"><button id="submit" type="submit">提交</button></form>
+<div id="long">__LONG__</div>
 <p id="echo">echo:</p>
 <script>
   const input = document.getElementById('name');
@@ -58,12 +59,19 @@ FIXTURE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>交互
 </script></body></html>
 """
 
+#: 一段【超过 4000 字】的正文，needle 落在第 4200 字之后：`mode: text` 因为上限读不到它，
+#: `mode: contains` 必须读得到——这条差异就是两种模式的分界，也是"别拿整段文本判断在不在"
+#: 的可执行版本。
+LONG_TEXT = ("填" * 4200) + "紫终点-needle9" + ("绿" * 300)
+FIXTURE_PAGE = FIXTURE_PAGE.replace("__LONG__", LONG_TEXT)
+
 
 class FakeDevTools:
     """按脚本特征回话的假 CDP 通道：让判定表与派发顺序可以不启动浏览器就测到。"""
 
     def __init__(self, resolve=None, inspect=None, probe=10, probe_after=None, target=None,
-                 error_on_drain=False, inspect_by_mode=None):
+                 error_on_drain=False, inspect_by_mode=None, corpus=None, full_text=None,
+                 scanned_all=True):
         self.calls = []
         self.evaluations = []
         self.console = []
@@ -92,6 +100,14 @@ class FakeDevTools:
                                  "x": 30, "y": 30}
         self.error_on_drain = error_on_drain
         self.inspect_by_mode = inspect_by_mode or {}
+        # corpus: {选择器: [每个元素的可见文字]}。命中数由假页面【真的数一遍】，不把结果写死成
+        # 一个数——否则"搜错了字段/搜错了容器"这类错在假页面上根本测不出来。
+        self.corpus = corpus or {}
+        self.scanned_all = scanned_all
+        if full_text is not None:
+            # 模仿真实浏览器：页面里是全文，回传的 text 已被 slice 到 4000，全文长度另报
+            self.inspect["text"] = full_text[:4000]
+            self.inspect["full_length"] = len(full_text)
 
     def add_error(self, text="反复出现的同一条报错"):
         """模拟一条【重复】报错：列表去重、事件计数不去重——这正是判定必须看计数的原因。"""
@@ -114,6 +130,36 @@ class FakeDevTools:
             return dict(self.resolve)
         if "element-gone" in expression:
             return dict(self.target)
+        if "elements_with_hit" in expression:      # CONTAINS_JS
+            spec = json.loads(expression[expression.index("({") + 1:expression.rindex(")")])
+            needle = str(spec.get("needle") or "")
+            # corpus 值支持 "文字" 或 ("文字", hidden) ——假页面也得分清可见与不可见，
+            # 否则"把不可见命中混进 hits"这种错在假页面上根本测不出来
+            rows = [(row, False) if isinstance(row, str) else (row[0], bool(row[1]))
+                    for row in self.corpus.get(spec.get("selector") or "body", [])]
+            hits = hidden_hits = hidden_elements = with_hit = 0
+            samples = []
+            max_samples = int(spec.get("samples") or 0)      # 与真页面一样：上限由 spec 下发
+            for text, hidden in rows:
+                n = text.count(needle) if needle else 0
+                if hidden:
+                    hidden_hits += n
+                    if n:
+                        hidden_elements += 1
+                    continue
+                hits += n
+                if n:
+                    with_hit += 1
+                    at = text.find(needle)
+                    while at >= 0 and len(samples) < max_samples:
+                        samples.append(text[max(0, at - 40): at + len(needle) + 40])
+                        at = text.find(needle, at + len(needle))
+            return {"needle": needle, "selector": spec.get("selector"),
+                    "elements": len(rows), "elements_with_hit": with_hit, "hits": hits,
+                    "hidden_hits": hidden_hits, "hidden_elements": hidden_elements,
+                    "searched_chars": sum(len(text) for text, _ in rows),
+                    "scanned_all": self.scanned_all, "samples": samples,
+                    "href": "http://127.0.0.1:1/", "title": "t"}
         if "spec.mode === 'attr'" in expression:
             row = dict(self.inspect)
             # 按请求的 mode 分别回话：`<input>` 的 innerText 恒为空，只有 value 模式才拿得到
@@ -395,6 +441,186 @@ class ActionDispatchTests(unittest.TestCase):
         finally:
             pa.close_all()
 
+    def test_read_reports_truncation_truthfully(self):
+        """页面里 9000 字、回传被砍到 4000：`truncated` 必须为真。
+        以前 JS 先 slice(0,4000)、Python 再判 `len(text) > 4000`——那个条件结构上永远为假，
+        "读了一半"看起来像"读完了"。"""
+        row = self._session(FakeDevTools(full_text="字" * 9000))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector="#big", mode="text")
+        finally:
+            pa.close_all()
+        self.assertEqual(len(got["text"]), 4000)
+        self.assertTrue(got["truncated"], "截断标记必须是活的，否则整段读取都是假干净")
+        self.assertEqual(got["full_length"], 9000)
+        short = self._session(FakeDevTools(inspect={"text": "短", "full_length": 1}))
+        try:
+            self.assertFalse(pa.read_page(short.root, page=short.id,
+                                          selector="#small")["truncated"])
+        finally:
+            pa.close_all()
+
+    def test_contains_finds_a_needle_beyond_the_read_limit(self):
+        """这条是新模式的立命之处：needle 在第 4200 字，整段读取拿不到，页面内搜索照样命中。"""
+        row = self._session(FakeDevTools(corpus={"#long": [LONG_TEXT]}))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector="#long", mode="contains",
+                               needle="紫终点-needle9")
+        finally:
+            pa.close_all()
+        self.assertTrue(got["found"], got)
+        self.assertEqual(got["hits"], 1)
+        self.assertEqual(got["elements"], 1)
+        self.assertGreater(got["searched_chars"], 4000)
+        self.assertIn("紫终点-needle9", "".join(got["samples"]))
+        self.assertTrue(got["scanned_all"])
+
+    def test_contains_is_allowed_to_combine_container_and_needle(self):
+        """`_target_spec` 禁 selector+text 同给（定位会互相矛盾），contains 必须绕开那道围栏：
+        它的 selector 是【容器】、needle 是【要搜的词】，两者本来就该同时存在。"""
+        fake = FakeDevTools(corpus={".panel": ["甲 needle9 乙", "丙"]})
+        row = self._session(fake)
+        try:
+            got = pa.read_page(row.root, page=row.id, selector=".panel", mode="contains",
+                               needle="needle9")
+        finally:
+            pa.close_all()
+        self.assertEqual(got["hits"], 1)
+        self.assertEqual(got["elements"], 2)
+        self.assertEqual(got["elements_with_hit"], 1, "要能区分「哪几个元素里有」")
+
+    def test_contains_counts_per_element(self):
+        row = self._session(FakeDevTools(corpus={".row": ["x needle y needle", "needle"]}))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector=".row", mode="contains",
+                               needle="needle")
+        finally:
+            pa.close_all()
+        self.assertEqual((got["hits"], got["elements_with_hit"]), (3, 2))
+
+    def test_an_unmatched_container_is_not_evidence(self):
+        """容器一个都没匹配到时，"没找到"这句话毫无内容——必须如实标出来。"""
+        row = self._session(FakeDevTools(corpus={".panel": ["有货"]}))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector="#nope", mode="contains",
+                               needle="needle")
+            text = pa.render(got)
+        finally:
+            pa.close_all()
+        self.assertEqual(got["elements"], 0)
+        self.assertFalse(got["found"])
+        self.assertEqual(got["searched_chars"], 0)
+        self.assertIn("不构成任何证据", text)
+
+    def test_a_bailed_scan_is_flagged_as_incomplete(self):
+        row = self._session(FakeDevTools(corpus={".panel": ["x"]}, scanned_all=False))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector=".panel", mode="contains",
+                               needle="needle")
+            text = pa.render(got)
+        finally:
+            pa.close_all()
+        self.assertFalse(got["scanned_all"])
+        self.assertTrue(got["truncated"], "没扫完要复用同一个「被截断」语义，别另起一套字段")
+        self.assertIn("没扫完", text)
+
+    def test_contains_is_validated_before_touching_the_page(self):
+        for needle in ("", "   ", "x" * 300):
+            fake = FakeDevTools(corpus={".panel": ["x"]})
+            row = self._session(fake)
+            try:
+                with self.assertRaises(pa.PageActionError):
+                    pa.read_page(row.root, page=row.id, selector=".panel", mode="contains",
+                                 needle=needle)
+            finally:
+                pa.close_all()
+            self.assertEqual([item for item in fake.evaluations if "elements_with_hit" in item],
+                             [], "参数不合法就绝不能把脚本派发到页面")
+
+    def test_contains_container_still_passes_the_selector_fence(self):
+        """容器是 selector，就必须过 `_target_spec` 那道围栏——不能因为"它是搜索范围"
+        就允许选项样式、`javascript:`、超长或穿越写法混进 querySelectorAll。"""
+        for bad in ("<div>", "javascript:alert(1)", "@x", "x" * 500):
+            fake = FakeDevTools(corpus={".panel": ["x"]})
+            row = self._session(fake)
+            try:
+                with self.assertRaises(pa.PageActionError):
+                    pa.read_page(row.root, page=row.id, selector=bad, mode="contains",
+                                 needle="needle")
+            finally:
+                pa.close_all()
+            self.assertEqual([item for item in fake.evaluations if "elements_with_hit" in item], [])
+
+    def test_contains_counts_every_hit_but_shows_only_a_few(self):
+        """命中数与样本数是两件事：上限只该砍样本，不该让"命中 5 处"报成"3 处"。"""
+        row = self._session(FakeDevTools(corpus={".p": ["needle " * 5]}))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector=".p", mode="contains",
+                               needle="needle")
+        finally:
+            pa.close_all()
+        self.assertEqual(got["hits"], 5)
+        self.assertEqual(len(got["samples"]), pa.MAX_SAMPLES,
+                         "样本必须【正好】收满上限：只断言 ≤ 的话删掉限量也照样绿")
+
+    def test_hits_count_visible_text_and_hidden_matches_are_reported_separately(self):
+        """「页面上有这句话」与「DOM 里有这句话」必须是两个数：
+        `innerText` 对未渲染元素会退回 `textContent`（真浏览器实测），不分开计数的话
+        一个折叠面板里的文案会被当成"用户看得见"。"""
+        row = self._session(FakeDevTools(corpus={
+            ".p": ["needle 看得见", ("needle 藏在折叠区里", True)]}))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector=".p", mode="contains",
+                               needle="needle")
+            text = pa.render(got)
+        finally:
+            pa.close_all()
+        self.assertEqual(got["hits"], 1)
+        self.assertEqual((got["hidden_hits"], got["hidden_elements"]), (1, 1))
+        self.assertTrue(got["found"])
+        self.assertEqual(len(got["samples"]), 1, "样本只回可见的那处")
+        self.assertIn("当前不可见", text)
+
+    def test_a_needle_only_in_hidden_text_is_not_a_hit(self):
+        row = self._session(FakeDevTools(corpus={".p": [("只有隐藏版", True)]}))
+        try:
+            got = pa.read_page(row.root, page=row.id, selector=".p", mode="contains",
+                               needle="只有隐藏版")
+        finally:
+            pa.close_all()
+        self.assertFalse(got["found"], "不可见命中不能把 found 点亮")
+        self.assertEqual(got["hidden_hits"], 1)
+
+    def test_the_scan_bound_is_set_in_one_place(self):
+        """上限由 Python 传进页面（`spec.limit`），不是 JS 里写死的另一套数字——
+        否则调一个地方、另一个地方还在按老上限静默截断。"""
+        fake = FakeDevTools(corpus={".p": ["x"]})
+        row = self._session(fake)
+        try:
+            pa.read_page(row.root, page=row.id, selector=".p", mode="contains", needle="x")
+        finally:
+            pa.close_all()
+        expr = next(item for item in fake.evaluations if "elements_with_hit" in item)
+        sent = json.loads(expr[expr.index("({") + 1:expr.rindex(")")])
+        self.assertEqual(sent["limit"], pa.MAX_SCAN_CHARS)
+        self.assertEqual(sent["samples"], pa.MAX_SAMPLES)
+
+    def test_contains_sends_the_needle_as_data_not_as_script(self):
+        """参数走 JSON 字面量：带引号与括号的 needle 原样送达，不该把脚本写坏或被执行。"""
+        hostile = "'); alert(1); ('"
+        fake = FakeDevTools(corpus={".panel": ["前 " + hostile + " 后"]})
+        row = self._session(fake)
+        try:
+            got = pa.read_page(row.root, page=row.id, selector=".panel", mode="contains",
+                               needle=hostile)
+        finally:
+            pa.close_all()
+        self.assertEqual(got["hits"], 1, "needle 必须原样参与搜索，不能被转义掉")
+        expr = next(item for item in fake.evaluations if "elements_with_hit" in item)
+        sent = json.loads(expr[expr.index("({") + 1:expr.rindex(")")])
+        self.assertEqual(sent["needle"], hostile)
+        self.assertEqual(sent["selector"], ".panel")
+
     def test_wait_reports_timeout_as_failure_with_what_it_saw(self):
         fake = FakeDevTools(inspect={"count": 0, "found": False, "visible": False, "text": ""})
         fake.console = [{"level": "error", "text": "页面炸了"}]
@@ -487,9 +713,12 @@ class ActionDispatchTests(unittest.TestCase):
 
     def _session(self, fake):
         with pa._lock:
+            scratch = Path(tempfile.mkdtemp(prefix="docmind_page_"))
+            # 这个临时目录以前没人删：一块电池把 ActionDispatchTests 重复跑十几遍，
+            # 实测一小时内堆出 893 个空目录。测试自己造的垃圾自己收。
+            self.addCleanup(shutil.rmtree, scratch, ignore_errors=True)
             row = pa._Session("fake%05d" % len(pa._sessions), _EmptyStack(), fake,
-                              Path(tempfile.mkdtemp(prefix="docmind_page_")),
-                              "http://127.0.0.1:1/", {}, None, None)
+                              scratch, "http://127.0.0.1:1/", {}, None, None)
             pa._sessions[row.id] = row
         return row
 
@@ -723,6 +952,41 @@ class BrowserActionTests(unittest.TestCase):
         self.assertTrue(result["screenshot"].startswith(".docmind/page-action/"))
         self.assertTrue((Path(self.tmp) / result["screenshot"]).is_file())
 
+    def test_a_long_page_is_searchable_even_though_the_read_is_capped(self):
+        """真浏览器上把两种模式的分工验一遍：整段读取被 4000 字上限砍掉（且必须承认砍了），
+        页面内搜索照样命中第 4200 字之后的词。"""
+        capped = pa.read_page(self.tmp, page=self.page["page"], selector="#long", mode="text")
+        self.assertGreater(capped["full_length"], 4000, capped["full_length"])
+        self.assertTrue(capped["truncated"])
+        self.assertNotIn("紫终点-needle9", capped["text"], "读取不该拿到全文，否则上限没生效")
+        hit = pa.read_page(self.tmp, page=self.page["page"], selector="#long", mode="contains",
+                           needle="紫终点-needle9")
+        self.assertTrue(hit["found"], hit)
+        self.assertEqual(hit["elements"], 1)
+        self.assertGreater(hit["searched_chars"], 4000)
+        self.assertIn("needle9", "".join(hit["samples"]))
+        miss = pa.read_page(self.tmp, page=self.page["page"], selector="#nope",
+                            mode="contains", needle="紫终点-needle9")
+        self.assertFalse(miss["found"])
+        self.assertEqual(miss["elements"], 0)
+        self.assertIn("不构成任何证据", pa.render(miss))
+
+    def test_contains_searches_visible_text_only(self):
+        """真浏览器实测：`innerText` 对 `display:none` 的元素会退回 `textContent`，
+        所以"只搜可见文字"必须靠显式的渲染判定（`getClientRects()`），不能指望 innerText。
+        不可见那边的命中另报 `hidden_hits`，既不混进 `hits`，也不静默丢掉。"""
+        hidden = pa.read_page(self.tmp, page=self.page["page"], selector="#hid",
+                              mode="contains", needle="隐藏")
+        self.assertEqual(hidden["elements"], 1, "容器是存在的，问题在文字不可见")
+        self.assertEqual(hidden["hits"], 0, hidden)
+        self.assertEqual(hidden["hidden_hits"], 1, "不可见命中要如实报出来，不能假装搜不到")
+        self.assertFalse(hidden["found"])
+        self.assertIn("当前不可见", pa.render(hidden))
+        shown = pa.read_page(self.tmp, page=self.page["page"], selector="button",
+                             mode="contains", needle="选项")
+        self.assertEqual((shown["hits"], shown["elements_with_hit"]), (2, 2),
+                         "两个可见按钮各命中一次：计数要按元素分开，不能只报「整页命中」")
+
     def test_close_leaves_no_session_and_reports_real_reaping(self):
         result = pa.close_page(self.page["page"])
         self.assertTrue(result["ok"], result)
@@ -751,6 +1015,33 @@ class ToolSurfaceTests(unittest.TestCase):
         from agent_runtime import mcp_server
         self.assertIn("dev_page_action", mcp_server.WRITE_TOOLS)
         self.assertNotIn("dev_page_action", mcp_server.READ_ONLY_TOOLS)
+
+    def test_needle_and_mode_actually_reach_the_module(self):
+        """文档里写的每个参数都必须真的落到模块上：`needle` 一旦漏接，contains 会静默
+        变成"搜一个空词"并永远报没找到——本仓为 `coverage:` 这类漏接付过学费。"""
+        import tools
+        from agent_runtime import page_action
+        seen = {}
+
+        def fake_read(root, **kwargs):
+            seen.update(kwargs)
+            return {"action": "read", "ok": True, "mode": kwargs.get("mode"),
+                    "needle": kwargs.get("needle"), "selector": kwargs.get("selector"),
+                    "hits": 1, "elements": 1, "elements_with_hit": 1, "searched_chars": 9000,
+                    "scanned_all": True, "samples": ["…needle9…"], "text": "", "count": 1,
+                    "truncated": False, "error": ""}
+
+        original = page_action.read_page
+        page_action.read_page = fake_read
+        try:
+            out = tools.TOOLS["dev_page_action"]["func"](
+                "action: read\npage: p1\nselector: .panel\nmode: contains\nneedle: needle9")
+        finally:
+            page_action.read_page = original
+        self.assertEqual((seen["needle"], seen["mode"], seen["selector"]),
+                         ("needle9", "contains", ".panel"))
+        self.assertIn("命中 1 处", out)
+
     def test_bad_actions_and_args_come_back_as_text_not_tracebacks(self):
         import tools
         call = tools.TOOLS["dev_page_action"]["func"]

@@ -111,6 +111,7 @@ class WorkflowGraphState(TypedDict, total=False):
     step_count: int
     replan_count: int
     max_steps: int
+    child_max_steps: int
     max_replans: int
     max_context_chars: int
     max_provider_retries: int
@@ -155,9 +156,39 @@ class TaskFanoutState(TypedDict, total=False):
 #   DOCMIND_WORKFLOW_STEPS_MAX  硬顶
 WORKFLOW_STEPS_MIN = 0
 WORKFLOW_STEPS_MAX = 0
-# 单子代理默认步数——与 agent.SUBAGENT_MAX_STEPS 的默认值保持一致；
-# 仅在无法 import agent（极端裁剪安装）时作为回退。
+# 无法 import agent（极端裁剪安装）时，工作流用的默认子代理步数回退值。
 WORKFLOW_CHILD_DEFAULT_STEPS = 24
+
+
+def _default_max_agents() -> int:
+    try:
+        from agent_runtime.capacity import get_settings
+        return int(get_settings().get("max_agents", 0))
+    except Exception:
+        return 0
+
+
+def _default_child_max_steps() -> int:
+    try:
+        from agent_runtime.capacity import get_settings
+        return int(get_settings().get("child_max_steps", 0))
+    except Exception:
+        return 0
+
+
+def _effective_task_parallelism(requested: int) -> int:
+    """Apply the local model/GPU concurrency estimate to workflow fan-out."""
+    requested = max(1, int(requested))
+    try:
+        from config import LLM_MODEL, LLM_PROVIDER, PROVIDERS, get_runtime
+        from .local_runtime import effective_parallelism
+        provider = str(get_runtime("llm_provider") or LLM_PROVIDER).lower()
+        model = str(get_runtime("llm_model") or LLM_MODEL or "")
+        base_url = str(get_runtime("llm_base_url") or
+                       PROVIDERS.get(provider, {}).get("base_url", ""))
+        return effective_parallelism(provider, model, requested, base_url=base_url)
+    except Exception:
+        return requested
 
 
 def _env_int(name: str, default: int) -> int:
@@ -221,9 +252,10 @@ def effective_workflow_max_steps(task_count: int, *, child_default: int = 0,
 class WorkflowPolicy:
     # 默认值跟随配置下限；0 表示无限。
     max_steps: int = field(default_factory=lambda: workflow_step_limits()[0])
+    child_max_steps: int = field(default_factory=_default_child_max_steps)
     max_replans: int = 2
     max_subagent_retries: int = 2
-    max_subagents: int = 4
+    max_subagents: int = field(default_factory=_default_max_agents)
     max_context_chars: int = 6000
     approval_mode: str = "safe"  # safe | high
     max_tool_failures: int = 3
@@ -244,9 +276,12 @@ class WorkflowPolicy:
         return WorkflowPolicy(
             max_steps=(0 if int(self.max_steps) <= 0 else
                        (min(hi, int(self.max_steps)) if hi > 0 else int(self.max_steps))),
+            child_max_steps=(0 if int(self.child_max_steps) <= 0 else
+                             min(1000, int(self.child_max_steps))),
             max_replans=max(0, min(10, int(self.max_replans))),
             max_subagent_retries=max(0, min(5, int(self.max_subagent_retries))),
-            max_subagents=max(1, min(16, int(self.max_subagents))),
+            max_subagents=(0 if int(self.max_subagents) <= 0 else
+                           min(64, max(1, int(self.max_subagents)))),
             max_context_chars=max(800, min(50000, int(self.max_context_chars))),
             approval_mode=mode,
             max_tool_failures=max(1, min(20, int(self.max_tool_failures))),
@@ -1470,7 +1505,8 @@ class GameWorkflowManager:
             "max_steps": int((state.policy or {}).get(
                 "max_steps", workflow_step_limits()[0])),
             "max_replans": int((state.policy or {}).get("max_replans", 2)),
-            "max_subagents": int((state.policy or {}).get("max_subagents", 4)),
+            "max_subagents": int((state.policy or {}).get("max_subagents", _default_max_agents())),
+            "child_max_steps": int((state.policy or {}).get("child_max_steps", _default_child_max_steps())),
             "max_context_chars": int((state.policy or {}).get("max_context_chars", 6000)),
             "max_provider_retries": int((state.policy or {}).get("provider_retries", 2)),
             "langsmith_trace": dict(state.langsmith_trace or {}),
@@ -1803,7 +1839,8 @@ class GameWorkflowManager:
                 state.status = "planned"
                 state.phase = "execute"
                 state.interrupt_reason = ""
-                state.subagents = self._subagent_records(state.tasks)
+                state.subagents = self._subagent_records(
+                    state.tasks, int((state.policy or {}).get("child_max_steps", _default_child_max_steps())))
                 state.context_layers["task"] = {"count": len(state.tasks),
                                                  "ids": [t.get("id") for t in state.tasks]}
                 self._event(state, "plan", task_count=len(state.tasks),
@@ -1843,7 +1880,8 @@ class GameWorkflowManager:
             state.status = "planned"
             state.phase = "execute"
             state.interrupt_reason = ""
-            state.subagents = self._subagent_records(state.tasks)
+            state.subagents = self._subagent_records(
+                state.tasks, int((state.policy or {}).get("child_max_steps", _default_child_max_steps())))
             state.context_layers["task"] = {"count": len(state.tasks),
                                              "ids": [t.get("id") for t in state.tasks]}
             self._event(state, "plan", task_count=len(state.tasks),
@@ -1963,7 +2001,8 @@ class GameWorkflowManager:
             return []
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for item in raw[:max(1, int(max_tasks))]:
+        limit = len(raw) if int(max_tasks) <= 0 else max(1, int(max_tasks))
+        for item in raw[:limit]:
             if not isinstance(item, Mapping):
                 continue
             task_id = re.sub(r"[^A-Za-z0-9_-]", "", str(item.get("id") or ""))[:48]
@@ -2001,10 +2040,10 @@ class GameWorkflowManager:
                     else:
                         value = _clean_text(value, 300)
                     task[key] = value
-            # 逐任务加步申请：只接受 1..12 的非布尔整数（上界与子代理硬顶同源）。
+            # 逐任务加步申请：只接受 1..1000 的非布尔整数；0 留给全局设置表示不限。
             # 布尔/10.7 浮点/非数字串/越界值直接丢弃该字段，回退子代理默认步数。
             steps_value = _strict_int_steps(item.get("max_steps"))
-            if steps_value is not None and 1 <= steps_value <= 12:
+            if steps_value is not None and 1 <= steps_value <= 1000:
                 task["max_steps"] = steps_value
             out.append(task)
         if not out:
@@ -2027,13 +2066,21 @@ class GameWorkflowManager:
         return out
 
     @staticmethod
-    def _subagent_records(tasks: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    def _subagent_records(tasks: Iterable[Mapping[str, Any]], child_max_steps: int | None = None) -> list[dict[str, Any]]:
         """Expose bounded persona/capability policy alongside each task."""
+        if child_max_steps is None:
+            child_max_steps = _default_child_max_steps()
         rows = []
         for task in tasks or ():
             tools = task.get("tools") or []
             if isinstance(tools, str):
                 tools = [tools]
+            try:
+                task_steps = int(task.get("max_steps") or child_max_steps)
+            except (TypeError, ValueError):
+                task_steps = child_max_steps
+            if child_max_steps > 0:
+                task_steps = min(child_max_steps, task_steps if task_steps > 0 else child_max_steps)
             rows.append({
                 "id": task.get("id"),
                 "role": task.get("role", "coder"),
@@ -2041,7 +2088,7 @@ class GameWorkflowManager:
                 "tools": [str(item)[:80] for item in list(tools)[:16]],
                 "mcp": str(task.get("mcp") or "auto"),
                 "reflection": bool(task.get("reflection", True)),
-                "max_steps": task.get("max_steps"),
+                "max_steps": task_steps,
                 "status": "pending",
             })
         return rows
@@ -2079,7 +2126,9 @@ class GameWorkflowManager:
             task_source = "deterministic"
             tasks = get_profile(state.kind).fallback_tasks()
         previous_plan = [(item.get("id"), item.get("task")) for item in state.tasks]
-        state.tasks = [dict(t) for t in list(tasks)[:policy.max_subagents]]
+        task_items = list(tasks)
+        state.tasks = ([dict(t) for t in task_items] if policy.max_subagents <= 0 else
+                       [dict(t) for t in task_items[:policy.max_subagents]])
         next_plan = [(item.get("id"), item.get("task")) for item in state.tasks]
         if previous_plan != next_plan or not state.acceptance_contract.get("items"):
             state.acceptance_contract = acceptance_on_plan_changed(
@@ -2099,7 +2148,7 @@ class GameWorkflowManager:
             effective_steps = effective_workflow_max_steps(len(state.tasks))
             budget_source = "auto"
             state.policy["max_steps"] = effective_steps
-        state.subagents = self._subagent_records(state.tasks)
+        state.subagents = self._subagent_records(state.tasks, policy.child_max_steps)
         state.context_layers["task"] = {"count": len(state.tasks),
                                         "ids": [t.get("id") for t in state.tasks]}
         state.context_layers["step_budget"] = {
@@ -2139,6 +2188,7 @@ class GameWorkflowManager:
         prior_results: Mapping[str, Any] | None = None,
         max_steps: int = 0,
         max_parallel: int = 4,
+        max_subagents: int = 16,
         max_context_chars: int = 6000,
         on_event: Callable[[str, Mapping[str, Any]], Any] | None = None,
         thread_id: str = "task-wave",
@@ -2150,7 +2200,8 @@ class GameWorkflowManager:
 
         started = time.monotonic()
         original = {str(item.get("id")): dict(item) for item in tasks}
-        normalized, deduped_ids, dedup_remap = dedup_tasks(tasks)
+        normalized, deduped_ids, dedup_remap = dedup_tasks(
+            tasks, max_tasks=max_subagents if max_subagents > 0 else 0)
         for item in normalized:
             item["context_from"] = list((original.get(item["id"]) or {}).get("context_from") or [])
         waves = topological_waves(normalized)
@@ -2384,9 +2435,11 @@ class GameWorkflowManager:
                                                   planner_id=task["id"])
                 if not proposed:
                     continue
-                room = max(0, 16 - len(normalized))
+                dispatched = len(set(external) | {str(item.get("id")) for item in normalized})
+                room = max(0, max_subagents - dispatched) if max_subagents > 0 else None
                 try:
-                    parsed = parse_plan(proposed, known_ids=set(by_id))[:room]
+                    parsed = ([] if room == 0 else parse_plan(
+                        proposed, known_ids=set(by_id), max_tasks=room or 0))
                 except Exception:
                     parsed = []
                 added = []
@@ -2504,7 +2557,8 @@ class GameWorkflowManager:
                 report = self._run_task_dag_langgraph(
                     [task], scoped_runner, prior_results=result_map,
                     max_steps=(0 if policy.max_steps <= 0 else max(0, policy.max_steps - state.steps)),
-                    max_parallel=1, max_context_chars=policy.max_context_chars,
+                    max_parallel=1, max_subagents=policy.max_subagents,
+                    max_context_chars=policy.max_context_chars,
                     on_event=emit, thread_id="%s:retry%s" % (workflow_id, attempt),
                     trace_parent_id=str((state.langsmith_trace or {}).get("root_run_id") or ""))
             else:
@@ -2542,7 +2596,8 @@ class GameWorkflowManager:
                                   }]})
             state.results = merged_report
             state.steps += int(report.get("steps_used") or 0)
-            state.subagents = self._subagent_records(state.tasks)
+            state.subagents = self._subagent_records(
+                state.tasks, policy.child_max_steps)
             for row in state.subagents:
                 item = result_map.get(str(row.get("id"))) or {}
                 row["status"] = item.get("status", row.get("status"))
@@ -2703,6 +2758,19 @@ class GameWorkflowManager:
             if compression.get("truncated"):
                 task = dict(task)
                 task["context_compression"] = compression
+            else:
+                task = dict(task)
+            try:
+                requested_child_steps = int(task.get("max_steps") or 0)
+            except (TypeError, ValueError):
+                requested_child_steps = 0
+            if policy.child_max_steps > 0:
+                task["max_steps"] = min(
+                    policy.child_max_steps,
+                    requested_child_steps if requested_child_steps > 0 else policy.child_max_steps,
+                )
+            else:
+                task["max_steps"] = requested_child_steps
             with tool_idempotency_scope(
                     "%s:%s" % (workflow_id, str(task.get("id") or "task")),
                     self.state_root):
@@ -2732,9 +2800,13 @@ class GameWorkflowManager:
                 graph_wave_index += 1
                 self._workflow_hook(state, "before_wave", wave=graph_wave_index - 1,
                                     task_count=len(tasks))
+                requested_parallel = (len(tasks) if policy.max_subagents <= 0
+                                      else min(len(tasks), policy.max_subagents))
                 report = self._run_task_dag_langgraph(
                     tasks, scoped_runner, prior_results=prior_results,
-                    max_steps=remaining_steps, max_parallel=policy.max_subagents,
+                    max_steps=remaining_steps,
+                    max_parallel=_effective_task_parallelism(requested_parallel),
+                    max_subagents=policy.max_subagents,
                     max_context_chars=policy.max_context_chars,
                     on_event=emit, thread_id=wave_thread,
                     trace_parent_id=str((state.langsmith_trace or {}).get("root_run_id") or ""),
@@ -2755,6 +2827,8 @@ class GameWorkflowManager:
                 "tasks": [dict(task) for task in state.tasks], "results": {},
                 "step_count": int(state.steps or 0), "replan_count": 0,
                 "max_steps": policy.max_steps, "max_replans": policy.max_replans,
+                "max_subagents": policy.max_subagents,
+                "child_max_steps": policy.child_max_steps,
                 "langsmith_trace": dict(state.langsmith_trace or {}),
             }
             graph_state = graph.invoke(
@@ -2784,8 +2858,11 @@ class GameWorkflowManager:
                         replans=graph_state.get("replan_count", 0),
                         steps=graph_state.get("step_count", 0))
         else:
+            requested_parallel = (len(state.tasks) if policy.max_subagents <= 0
+                                  else min(len(state.tasks), policy.max_subagents))
             report = run_plan(state.tasks, runner, synth_runner=synth_runner,
-                              max_parallel=policy.max_subagents, max_replans=policy.max_replans,
+                              max_parallel=_effective_task_parallelism(requested_parallel),
+                              max_replans=policy.max_replans,
                               max_steps=policy.max_steps, replanner=replanner, on_event=emit)
         if StateGraph is not None and synth_runner and report.get("results"):
             try:
@@ -2802,7 +2879,7 @@ class GameWorkflowManager:
         state.steps += int(report.get("steps_used") or 0)
         state.replans = int(report.get("replans") or 0)
         result_map = dict(report.get("results") or {})
-        subagent_rows = self._subagent_records(state.tasks)
+        subagent_rows = self._subagent_records(state.tasks, policy.child_max_steps)
         for row in subagent_rows:
             result = dict(result_map.get(str(row.get("id"))) or {})
             row["status"] = result.get("status", row.get("status"))
@@ -3145,7 +3222,8 @@ class GameWorkflowManager:
             state.pending_tasks = []
             state.results = {}
             state.review = {}
-            state.subagents = self._subagent_records(state.tasks)
+            state.subagents = self._subagent_records(
+                state.tasks, policy.child_max_steps)
             state.status, state.phase, state.interrupt_reason = "planned", "execute", ""
             state.context_layers["task"] = {"count": len(state.tasks),
                                              "ids": [item.get("id") for item in state.tasks],
@@ -3628,7 +3706,7 @@ class GameWorkflowManager:
                             parsed = self._parse_generated_tasks(provider_call(
                                 state, "llm.plan", lambda: task_generator(
                                 str(state.get("request", "")), state.get("selected_option") or {}, plan)),
-                                max_tasks=int(state.get("max_subagents", 16) or 16))
+                                max_tasks=int(state.get("max_subagents", _default_max_agents())))
                             if not parsed:
                                 raise ValueError("invalid_task_dag")
                             tasks, source = parsed, "llm"
@@ -3778,7 +3856,13 @@ class GameWorkflowManager:
                     item["context_from"] = [str(dep) for dep in (deps or [])
                                             if str(dep) in known_results]
                     item["depends_on"] = [str(dep) for dep in (deps or []) if str(dep) in ids]
-                parsed = self._parse_generated_tasks(raw_tasks, max_tasks=16)
+                max_subagents = int(state.get("max_subagents", _default_max_agents()))
+                remaining_capacity = (max(0, max_subagents - len(known_results))
+                                      if max_subagents > 0 else 0)
+                parsed = ([] if max_subagents > 0 and remaining_capacity == 0 else
+                          self._parse_generated_tasks(
+                              raw_tasks,
+                              max_tasks=remaining_capacity if max_subagents > 0 else 0))
             except Exception as exc:
                 parsed = []
                 error = type(exc).__name__

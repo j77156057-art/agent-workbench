@@ -2,9 +2,10 @@
 // 模型设置弹窗：选择预设厂商或任意 OpenAI 兼容端点（base_url + Key + 模型名）。
 // 保存后后端即时重建 Agent LLM 客户端；能力画像（思考/上下文窗口）回传父组件，
 // 用于刷新输入栏的模型标签与「深度思考」开关状态。
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import { modelApi } from '../api'
 import type { ModelConfigInfo, ContextLookupResult, ModelPreset } from '../api'
+import { ASK_PREFS_EVENT, loadAskPrefs, saveAskPrefs, type AskPrefs } from '../../ask/askPrefs'
 
 const props = defineProps<{ visible: boolean; config: ModelConfigInfo | null }>()
 const emit = defineEmits<{
@@ -147,6 +148,23 @@ watch(provider, (p) => {
 
 function onMaskDown() {
   if (!saving.value) emit('close')
+}
+
+// Esc 关闭：组件只在父级 v-if 打开时挂载，所以监听随挂载/卸载同步进出，不会漏。
+// 保存中不允许关窗（与点遮罩的行为一致），否则半成品配置会被误当取消吞掉。
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.visible && !saving.value) emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+
+// 问答页「展示偏好」：纯前端开关，不落后端 /api/config（那是 api.py 交叠热点）。
+// 改完立刻写 localStorage 并派发事件，问答页已渲染的旧消息也会即时跟着变。
+const ap = ref<AskPrefs>(loadAskPrefs())
+function apSet(patch: Partial<AskPrefs>) {
+  ap.value = { ...ap.value, ...patch }
+  saveAskPrefs(ap.value)
+  window.dispatchEvent(new Event(ASK_PREFS_EVENT))
 }
 
 // Ollama /api/show 实时探测模型真实窗口：成功后仅填入输入框，保存才生效
@@ -342,9 +360,14 @@ async function save() {
 </script>
 
 <template>
-  <div v-if="visible" class="ms-mask wb-modal-backdrop" @mousedown.self="onMaskDown">
-    <div class="ms-box wb-modal-shell" role="dialog" aria-modal="true">
-      <h3 class="ms-title">模型设置</h3>
+  <!-- ChatDock 有 transform 入场动画；弹窗必须脱离该 containing block，才能相对整个视口定位。 -->
+  <Teleport to="body">
+    <div v-if="visible" class="ms-mask wb-modal-backdrop" @mousedown.self="onMaskDown">
+      <div class="ms-box wb-modal-shell" role="dialog" aria-modal="true">
+      <h3 class="ms-title">
+        <span class="ms-title-txt">模型设置</span>
+        <button type="button" class="ms-x" title="关闭（Esc）" aria-label="关闭模型设置" @click="emit('close')">✕</button>
+      </h3>
 
       <label class="ms-label">模型选择方式</label>
       <div class="ms-seg" role="radiogroup" aria-label="模型选择方式">
@@ -577,6 +600,38 @@ async function save() {
       </div>
       <p class="ms-tip">切换模型会清空当前对话上下文；Key 使用系统凭据加密存储，仅保存在本机项目目录。</p>
 
+      <div class="ms-sep"></div>
+      <label class="ms-label">问答偏好<span class="ms-label-note">纯前端偏好，点开关即生效，不需要点「保存并切换」</span></label>
+      <div class="ms-prefs">
+        <button type="button" class="ms-check" :class="{ 'ms-check-on': ap.defaultThinking }"
+                :aria-pressed="ap.defaultThinking" @click="apSet({ defaultThinking: !ap.defaultThinking })">
+          <span class="ms-box-tick" aria-hidden="true">✓</span><span>深度思考默认开启</span>
+        </button>
+        <button type="button" class="ms-check" :class="{ 'ms-check-on': ap.defaultWeb }"
+                :aria-pressed="ap.defaultWeb" @click="apSet({ defaultWeb: !ap.defaultWeb })">
+          <span class="ms-box-tick" aria-hidden="true">✓</span><span>联网搜索默认开启</span>
+        </button>
+        <button type="button" class="ms-check" :class="{ 'ms-check-on': ap.showTrace }"
+                :aria-pressed="ap.showTrace" @click="apSet({ showTrace: !ap.showTrace })">
+          <span class="ms-box-tick" aria-hidden="true">✓</span><span>显示推理轨迹步骤</span>
+        </button>
+        <button type="button" class="ms-check" :class="{ 'ms-check-on': ap.reasonOpen }"
+                :aria-pressed="ap.reasonOpen" @click="apSet({ reasonOpen: !ap.reasonOpen })">
+          <span class="ms-box-tick" aria-hidden="true">✓</span><span>深度思考默认展开</span>
+        </button>
+        <label class="ms-pref-row">
+          <span>答案下方文件引用最多显示</span>
+          <select class="ms-input ms-pref-select"
+                  :value="ap.maxRefs"
+                  @change="apSet({ maxRefs: Number(($event.target as HTMLSelectElement).value) })">
+            <option value="0">不限制</option>
+            <option value="3">3 条</option>
+            <option value="6">6 条</option>
+            <option value="12">12 条</option>
+          </select>
+        </label>
+      </div>
+
       <div class="ms-actions">
         <button class="ms-btn" :disabled="saving" @click="emit('close')">{{ warnings.length ? '知道了' : '取消' }}</button>
         <button v-if="!warnings.length" class="ms-btn ms-primary"
@@ -585,15 +640,18 @@ async function save() {
           {{ saving ? '保存中…' : '保存并切换' }}
         </button>
       </div>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
 .ms-mask {
   position: fixed; inset: 0; z-index: 2000; box-sizing: border-box;
   background: rgba(20, 24, 33, .32);
-  display: flex; align-items: center; justify-content: center; backdrop-filter: blur(2px); animation: ms-fade .18s ease-out both;
+  display: flex; align-items: center; justify-content: center;
+  overflow: auto; overscroll-behavior: contain;
+  backdrop-filter: blur(2px); animation: ms-fade .18s ease-out both;
 }
 .ms-box {
   width: 460px; max-width: min(460px, calc(100vw - 24px));
@@ -606,7 +664,35 @@ async function save() {
   padding: 18px 20px 16px;
   display: flex; flex-direction: column; gap: 6px; animation: ms-rise .2s cubic-bezier(.2,.8,.2,1) both; scrollbar-gutter: stable;
 }
-.ms-title { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.ms-title { margin: 0 0 6px; font-size: 15px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ms-x {
+  flex: 0 0 auto; width: 26px; height: 26px; padding: 0; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; cursor: pointer;
+  background: var(--bg-raised); color: var(--ink);
+  border: 1px solid var(--border-strong); border-radius: 0;
+}
+.ms-x:hover { color: var(--accent); border-color: var(--accent); }
+
+/* 问答偏好：纯展示开关（不落后端），沿用粗野风方角 + 响亮色勾选块 */
+.ms-prefs { display: flex; flex-direction: column; gap: 8px; }
+.ms-check {
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+  font-family: inherit; font-size: 13px; color: var(--text); text-align: left;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 0; cursor: pointer;
+}
+.ms-check:hover { border-color: var(--border-strong); }
+.ms-check-on { border-color: var(--accent); color: var(--accent-text); }
+.ms-check .ms-box-tick {
+  flex: 0 0 16px; width: 16px; height: 16px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border-strong); background: var(--bg);
+  font-size: 11px; line-height: 1; color: transparent;
+}
+.ms-check-on .ms-box-tick { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.ms-pref-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
+.ms-pref-select { width: 108px; }
+.ms-label-note { color: var(--text-faint); font-size: 11px; font-weight: 400; }
 .ms-label {
   font-size: 12px; color: var(--text-muted); margin-top: 8px;
   display: flex; justify-content: space-between; align-items: center;

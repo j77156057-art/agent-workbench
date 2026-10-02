@@ -13,8 +13,8 @@ BIND = 'at'
 UNIT_CLASSES = ('ArgShapeTests', 'SandboxTests', 'BundleFreshnessTests', 'ActivationTests',
                 'ProbeTests', 'EvaluateTableTests', 'RenderTests', 'PreflightTests',
                 'StreamParsingTests', 'StreamPlumbingTests',
-                # Wave24：深链整页那一档
-                'DeepLinkTests')
+                # Wave24：深链整页那一档；Wave26/27：问答那一档
+                'DeepLinkTests', 'AskTierTests')
 LIVE = ('LivePageTests', ('test_nothing_is_left_behind',
                           'test_a_backend_that_cannot_start_is_red_not_silent',
                           'test_the_stream_tier_actually_hears_the_fake_microphone'))
@@ -23,7 +23,7 @@ LIVE = ('LivePageTests', ('test_nothing_is_left_behind',
 LAYER_EXEMPT = {'ToolSurfaceTests': '要 import tools 全量注册面，不属于守卫的层'}
 
 #: 本块电池的变异条数下限：删一条变异必须显式改这里，「守卫悄悄变少」不该是绿灯
-MINIMUM_MUTATIONS = 58
+MINIMUM_MUTATIONS = 66
 
 MUTATIONS = [
     # ---- 判定表：每一条都对应一类"看起来绿其实没测" ----
@@ -219,4 +219,30 @@ MUTATIONS = [
     ("真失败也一律算客户端取消：真失败被静默吞掉",
      '        (cancelled if CLIENT_CANCELLED in detail else failed).append(row)',
      '        cancelled.append(row)'),
+
+    # ---- Wave26/27：问答那一档（页面 → /api/chat → ReAct → 工具 → DOM）----
+    ("凭据不再要求在回答里出现：页面上有句话就算跑过",
+     '        "ask_reply_arrived": bool(fixture) and fixture in text,',
+     '        "ask_reply_arrived": True,'),
+    ("空凭据也被当成通过（`\"\" in text` 恒真）",
+     '        "ask_reply_arrived": bool(fixture) and fixture in text,',
+     '        "ask_reply_arrived": fixture in text,'),
+    ("失败文案也不算失败：HTTP 200 + 有回复就绿",
+     '        "ask_reply_is_not_an_error": "本轮请求失败" not in text,',
+     '        "ask_reply_is_not_an_error": True,'),
+    ("截断后的读取也算读全了",
+     '        "ask_read_wholly": not bool(observed.get("ask_truncated")),',
+     '        "ask_read_wholly": True,'),
+    ("点没点中不算：只要开了页面就算跑过一轮问答",
+     '        "ask_suggestion_clicked": bool(observed.get("ask_click_ok")),',
+     '        "ask_suggestion_clicked": True,'),
+    ("回答的是不是我点的那个问题不再要求",
+     '        "ask_question_echoed": bool(observed.get("ask_question_echoed")),',
+     '        "ask_question_echoed": True,'),
+    ("问答那一档没要求也并进红单",
+     '    if wanted.get("ask"):',
+     '    if True:'),
+    ("`server_env` 不把调用方给的 extra 传下去（子进程拿不到假 provider 地址）",
+     '    if extra:\n        env.update({str(key): str(value) for key, value in extra.items()})',
+     '    if False:\n        env.update({str(key): str(value) for key, value in extra.items()})'),
 ]

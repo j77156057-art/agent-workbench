@@ -9,6 +9,10 @@ import { appEvents } from '../eventBus'
 import { sampleVisualFrame, shouldAnalyzeVisualFrame } from '../liveVisionSampling'
 import type { VisualSample } from '../liveVisionSampling'
 import { cropFocusFrame, normalizeFocusRegion } from '../liveVisionFocus'
+import { encodeLiveFrame } from '../liveFrameEncoding'
+import type { EncodedLiveFrame, FrameEncodingOptions } from '../liveFrameEncoding'
+import { LiveFrameEncoder } from '../liveFrameEncoder'
+import { createLiveVisualWindow } from '../liveVisualWindow'
 import type { FocusRegion } from '../liveVisionFocus'
 import { advanceVisionAlert } from '../liveVisionAlerts'
 import type { PendingVisionAlert, VisionAnomaly } from '../liveVisionAlerts'
@@ -20,13 +24,15 @@ import {
   classifyLivePhase, createAdaptiveSender, createInFlightLedger, LIVE_PHASE_LABELS,
   appendCaptionTurn, closeUserTranscript, describeLiveCapabilities, shouldDispatchVoiceTurn,
   sameVisualFocus, isDismissedVisualAlert, pruneDismissedVisualAlerts,
+  canQueueLiveVideo, sendLiveVideoPacket, liveVideoOverrun,
 } from '../liveStreamControl'
 import type { LivePhase, LiveCaptionTurn } from '../liveStreamControl'
 import {
-  createChunkPump, createVoiceGate, encodeAudioPacket, frameRms, resample,
+  createAudioPlaybackClock, createChunkPump, createVoiceGate, encodeAudioPacket, frameRms, resample,
   resolveLiveModelAudioFormat, TARGET_SAMPLE_RATE,
 } from '../liveAudioControl'
 import { REALTIME_PROTOCOL_VERSION } from '../realtimeProtocol'
+import { createVoiceVerificationGate } from '../voiceVerification'
 import CockpitApprovalQueue from './CockpitApprovalQueue.vue'
 import CockpitModelBar from './CockpitModelBar.vue'
 import WorkflowCard from './WorkflowCard.vue'
@@ -155,7 +161,8 @@ const liveVisionAlert = ref<(VisionAnomaly & { detectedAt: string; atMs: number 
 // `frame` 是**报出这条提醒时**的那一帧快照，不是"点排查时"的当前帧：模型说的是几秒前
 // 看到的问题，用户过一会儿才点「交给 AI 排查」，那时画面可能已经变了——拿当前帧去核实
 // 等于核实错了对象。
-const liveRealtimeAlert = ref<{ text: string; detectedAt: string; frame: Blob | null; atMs: number } | null>(null)
+const liveRealtimeAlert = ref<{ id: string; text: string; detectedAt: string; frame: Blob | null; atMs: number } | null>(null)
+const voiceVerification = createVoiceVerificationGate()
 // 用户忽略过的实时提醒（10 分钟窗口、最多 20 条）：后端的相似度去重只有 45s，过了窗口
 // 同一处会再弹，用户会以为「忽略」没生效。
 let dismissedRealtimeAlerts: { text: string; at: number }[] = []
@@ -198,7 +205,7 @@ function refreshLiveVisionPhase() {
 function refreshLiveVisionMetrics(latencyMs: number | null = null) {
   liveVisionMetrics.value = {
     latencyMs: latencyMs !== null ? latencyMs : liveVisionMetrics.value.latencyMs,
-    intervalMs: liveAdaptive.plan().intervalMs,
+    intervalMs: liveVisualWindow.captureInterval(Date.now(), liveAdaptive.plan().intervalMs, liveVideoImageBudget.value),
     dropped: liveVisionMetrics.value.dropped,
   }
 }
@@ -256,6 +263,20 @@ function appendLiveCaption(event: ReturnType<typeof parseRealtimeServerEvent>) {
   const next = closeUserTranscript(liveStreamCaptions.value, finalText, hadDraft)
   if (!next) return
   liveStreamCaptions.value = next
+  const consent = voiceVerification.decide(finalText, Date.now())
+  if (consent !== 'none') {
+    if (consent === 'approve') reviewRealtimeAlert(true)
+    else if (consent === 'decline') {
+      dismissRealtimeAlert()
+      liveVisionAlertStatus.value = '已取消核查。'
+    } else if (consent === 'expired') {
+      liveVisionAlertStatus.value = '这条核查询问已过期，请点击核查按钮重新确认。'
+    } else if (consent === 'clarify') {
+      liveVisionAlertStatus.value = '还未确认核查。可以说“可以核查一下”，或点击下方按钮；说“不用”则取消。'
+    }
+    // Consent replies are not independent development commands.
+    return
+  }
   // 噪音门控：误识别与旁音不起 Agent 轮。挡下的回合在状态栏明说，不静默吞掉。
   const now = Date.now()
   if (!shouldDispatchVoiceTurn(finalText, lastVoiceDispatch, now)) {
@@ -314,15 +335,22 @@ async function refreshLiveVisionMode() {
   }
 }
 function stopAiPlayback() {
-  for (const source of liveAudioSources) { try { source.stop() } catch { /* 已自然结束 */ } }
+  liveAudioPlaybackRevision++
+  for (const source of liveAudioSources) {
+    source.onended = null
+    try { source.stop() } catch { /* 已自然结束 */ }
+    source.disconnect()
+  }
   liveAudioSources.clear()
-  liveAudioNextAt = 0
+  liveAudioPlaybackClock.reset()
   liveAiSpeaking.value = false
 }
 function interruptLiveStream(reason = '用户在开发舱打断') {
   const socket = liveStreamSocket
   if (!socket || socket.readyState !== WebSocket.OPEN) return
   try { socket.send(JSON.stringify(realtimeCancel(reason))) } catch { return }
+  liveStreamSendRevision++
+  resetLiveStreamDedup()
   stopAiPlayback()
   closeOpenLiveCaption()
   liveLedger.clear()
@@ -342,7 +370,8 @@ let liveAudioStream: MediaStream | null = null
 let liveAudioContext: AudioContext | null = null
 let liveAudioNode: AudioWorkletNode | null = null
 const liveAudioSources = new Set<AudioBufferSourceNode>()
-let liveAudioNextAt = 0
+const liveAudioPlaybackClock = createAudioPlaybackClock()
+let liveAudioPlaybackRevision = 0
 let liveAudioSequence = 0
 let liveNativeAudioReady = false
 let liveStreamReadyForVideo = false
@@ -376,7 +405,14 @@ function handleLiveAudioFrame(frame: Float32Array) {
   const context = liveAudioContext
   if (!context) return
   const signal = liveVoiceGate.feed(frameRms(frame), Date.now(), liveAiSpeaking.value)
+  if (signal.started) {
+    resetLiveStreamDedup(false)
+    liveVisualWindow.activate(Date.now(), '用户开始说话')
+    scheduleLiveStreamFrame(liveVisionGeneration, 0)
+  }
   if (signal.bargeIn) {
+    liveStreamSendRevision++
+    resetLiveStreamDedup()
     stopAiPlayback()
     closeOpenLiveCaption()
     const socket = liveStreamSocket
@@ -449,10 +485,11 @@ async function stopLiveMic(message = '麦克风已关闭。') {
   stopAiPlayback()
   if (message) liveMicStatus.value = message
 }
-function playLiveModelAudio(raw: { audio?: unknown; encoding?: unknown; sample_rate?: unknown; sampleRate?: unknown }) {
+async function playLiveModelAudio(raw: { audio?: unknown; encoding?: unknown; sample_rate?: unknown; sampleRate?: unknown }) {
   if (typeof raw.audio !== 'string' || !raw.audio) return
   const context = getLiveAudioContext()
   if (!context) return
+  const revision = liveAudioPlaybackRevision
   try {
     // DashScope's `pcm24` means 16-bit PCM at 24 kHz.  Prefer an explicit
     // sample_rate if a future provider supplies one; reject unknown metadata
@@ -473,21 +510,30 @@ function playLiveModelAudio(raw: { audio?: unknown; encoding?: unknown; sample_r
     const view = new DataView(bytes.buffer)
     for (let i = 0; i < samples.length; i++) samples[i] = view.getInt16(i * 2, true) / 32767
     if (!samples.length) return
+    if (context.state === 'suspended') await context.resume()
+    // A resume may finish after interruption or reconnect; never revive old audio.
+    if (revision !== liveAudioPlaybackRevision) return
+    if (context.state !== 'running') {
+      liveMicStatus.value = '声音播放尚未启用，请点击开麦后重试。'
+      return
+    }
     const buffer = context.createBuffer(1, samples.length, format.sampleRate)
     buffer.copyToChannel(samples, 0)
     const source = context.createBufferSource()
     source.buffer = buffer
     source.connect(context.destination)
-    const startAt = Math.max(context.currentTime + 0.02, liveAudioNextAt)
+    const startAt = liveAudioPlaybackClock.schedule(context.currentTime, buffer.duration)
     source.start(startAt)
-    liveAudioNextAt = startAt + buffer.duration
     liveAudioSources.add(source)
     source.onended = () => {
+      source.disconnect()
       liveAudioSources.delete(source)
       if (liveAudioSources.size === 0) liveAiSpeaking.value = false
     }
     liveAiSpeaking.value = true
-  } catch { /* 畸形音频片直接丢弃，不谎报播放 */ }
+  } catch {
+    if (revision === liveAudioPlaybackRevision) liveMicStatus.value = '声音播放失败，请重新开麦后重试。'
+  }
 }
 const clickDescription = ref('')
 const clickGoal = ref('')
@@ -601,6 +647,54 @@ let liveStreamReconnectTimer: ReturnType<typeof setTimeout> | null = null
 let liveStreamHeartbeatTimer: ReturnType<typeof setInterval> | null = null
 let liveStreamSequence = 0
 const liveStreamFrames = new Map<number, { image: Blob; focusImage: Blob | null; capturedAt: number }>()
+const LIVE_STREAM_FRAME_LIMIT = 32
+const LIVE_STREAM_FRAME_MAX_AGE_MS = 30_000
+let liveStreamSendRevision = 0
+let liveStreamCapture: object | null = null
+let liveCaptureCanvas: HTMLCanvasElement | null = null
+let liveFocusCanvas: HTMLCanvasElement | null = null
+let liveSampleCanvas: HTMLCanvasElement | null = null
+let liveFrameEncoder: LiveFrameEncoder | null = null
+let liveStreamLastSentSample: VisualSample | null = null
+let liveStreamLastSentAt = 0
+const liveStreamStaticSkipped = ref(0)
+const liveVisualWindow = createLiveVisualWindow()
+let liveForceStreamFrame = true
+const liveVideoImagesUsed = ref(0)
+const liveVideoImageBudget = ref(90)
+try {
+  const saved = Number(localStorage.getItem('docmind.liveVideoImageBudget'))
+  if (saved >= 6 && saved <= 240) liveVideoImageBudget.value = Math.floor(saved)
+} catch { /* local storage may be unavailable */ }
+watch(liveVideoImageBudget, value => {
+  const normalized = Number.isFinite(Number(value)) ? Math.max(6, Math.min(240, Math.floor(Number(value)))) : 90
+  liveVideoImageBudget.value = normalized
+  try { localStorage.setItem('docmind.liveVideoImageBudget', String(normalized)) } catch { /* ignore */ }
+})
+
+function resetLiveStreamDedup(resetWindow = true) {
+  liveStreamLastSentSample = null
+  liveStreamLastSentAt = 0
+  liveForceStreamFrame = true
+  if (resetWindow) liveVisualWindow.reset()
+}
+
+function pruneLiveStreamFrames(now = Date.now()): number {
+  let removed = 0
+  for (const [sequence, frame] of liveStreamFrames) {
+    if (now - frame.capturedAt > LIVE_STREAM_FRAME_MAX_AGE_MS) {
+      liveStreamFrames.delete(sequence)
+      removed += 1
+    }
+  }
+  while (liveStreamFrames.size > LIVE_STREAM_FRAME_LIMIT) {
+    const oldest = liveStreamFrames.keys().next().value
+    if (oldest === undefined) break
+    liveStreamFrames.delete(oldest)
+    removed += 1
+  }
+  return removed
+}
 let generation = 0
 const statusLabel: Record<string, string> = {
   awaiting_choice: '等待选择方案', generating_options: '正在设计方案', planning: '正在规划',
@@ -815,6 +909,7 @@ function setLiveVisionSnapshot(image: Blob) {
 }
 function resetFocusObservation() {
   liveVisionFocusRevision++
+  resetLiveStreamDedup()
   liveVisionRequest?.abort()
   liveVisionRequest = null
   liveVisionLastSample = null
@@ -865,30 +960,50 @@ function reviewVisionAlert() {
  * 同一条，会以为按钮没生效。窗口 10 分钟（见 isDismissedVisualAlert 的说明）。
  */
 function dismissRealtimeAlert() {
+  voiceVerification.reset()
   const alert = liveRealtimeAlert.value
   if (alert) dismissedRealtimeAlerts = pruneDismissedVisualAlerts([...dismissedRealtimeAlerts,
     { text: alert.text, at: Date.now() }], Date.now())
   liveRealtimeAlert.value = null
 }
-function reviewRealtimeAlert() {
+function reviewRealtimeAlert(alreadyApproved = false) {
   const alert = liveRealtimeAlert.value
   if (!alert) return
+  if (!alreadyApproved && !voiceVerification.approve(alert.id, Date.now())) {
+    // Clicking is explicit consent, including when the spoken offer has expired.
+    voiceVerification.offer(alert.id, alert.text, Date.now())
+    if (!voiceVerification.approve(alert.id, Date.now())) return
+  }
+  if (!voiceVerification.matches(alert.id)) return
   const projectId = getProjectId()
+  const stream = liveStreamSocket
+  const generation = liveVisionGeneration
   // 附**报警当刻**的快照；只有拿不到快照时才退回当前帧（并如实说明是"当前画面"）。
   const frame = alert.frame || liveVisionLatestFrame
   const frameNote = alert.frame ? '附件是报出这条提醒时的画面' : '附件是当前画面（报警时的画面已不可用）'
   appEvents.emit('docmind:send-chat', {
     target: 'cockpit', projectId,
-    prompt: `实时模型在画面中给出一条未核实提醒：「${alert.text}」。${frameNote}。请结合当前项目文件、运行日志和画面核实是否确有问题；先提出修改方案与验收条件，修改前等待用户确认。`,
+    prompt: `我同意核查这条线索。实时模型提醒：「${alert.text}」。${frameNote}。请只读核查当前项目文件、现有运行日志和画面，说明结论、证据和不确定之处；不要修改文件、执行修复或启动工作流。`,
     images: frame ? [frame] : [],
-    // 专用上下文：不能复用 app_interface_inspect —— 那段提示是「本轮意图就是浏览当前界面，
-    // 请直接执行」，与"核实这一条提醒"互相矛盾，会把 Agent 带成泛泛扫一眼。
+    // 核查专用上下文在服务端绑定只读工具，不能扩大为修改或工作流执行。
     uiContext: 'verify_realtime_alert',
+    onResult: text => {
+      if (projectId !== getProjectId() || generation !== liveVisionGeneration || !voiceVerification.complete(alert.id)) return
+      if (stream && stream === liveStreamSocket && stream.readyState === WebSocket.OPEN) {
+        try {
+          stream.send(JSON.stringify({ v: REALTIME_PROTOCOL_VERSION, type: 'agent.result', request_id: alert.id,
+            text: text.length > 3900 ? text.slice(0, 3900) + '\n（报告已截短；完整证据和限制请查看右侧对话，不要根据节选推断未展示内容。）' : text }))
+          liveVisionAlertStatus.value = '核查报告已提交语音端，等待播报。'
+        } catch { liveVisionAlertStatus.value = '核查已结束，语音连接不可用，请查看右侧完整报告。' }
+      } else liveVisionAlertStatus.value = '核查已结束，请查看右侧报告；当前语音连接已变更。'
+    },
     onStatus: (status, detail) => {
-      if (projectId !== getProjectId() || !liveRealtimeAlert.value) return
-      liveVisionAlertStatus.value = status === 'processing' ? 'AI 正在核实实时提醒…'
-        : status === 'awaiting_review' ? 'AI 已回复，请在右侧对话中查看。'
-          : detail || '暂未送达，请稍后重试。'
+      if (projectId !== getProjectId() || generation !== liveVisionGeneration || liveRealtimeAlert.value?.id !== alert.id) return
+      if (status === 'processing') liveVisionAlertStatus.value = '已获得同意，后台正在只读核查这条线索…'
+      else if (status === 'pending' || status === 'failed') {
+        voiceVerification.retry(alert.id, Date.now())
+        liveVisionAlertStatus.value = detail || '核查未完成，请稍后重新确认。'
+      } else if (!liveVisionAlertStatus.value.includes('报告')) liveVisionAlertStatus.value = '核查已结束，请查看右侧报告。'
     },
   })
 }
@@ -1135,6 +1250,7 @@ async function submitClickReview(
   }
 }
 function stopLiveVision(message = '') {
+  voiceVerification.reset()
   if (!message) {
     clickRequestGeneration++
     clickBusy.value = false
@@ -1149,6 +1265,14 @@ function stopLiveVision(message = '') {
     clickStatus.value = ''
   }
   liveVisionGeneration++
+  liveStreamSendRevision++
+  liveFrameEncoder?.dispose()
+  liveFrameEncoder = null
+  liveSampleCanvas = null
+  resetLiveStreamDedup()
+  liveStreamStaticSkipped.value = 0
+  liveCaptureCanvas = null
+  liveFocusCanvas = null
   if (liveStreamTimer) { clearTimeout(liveStreamTimer); liveStreamTimer = null }
   if (liveStreamReconnectTimer) { clearTimeout(liveStreamReconnectTimer); liveStreamReconnectTimer = null }
   if (liveStreamHeartbeatTimer) { clearInterval(liveStreamHeartbeatTimer); liveStreamHeartbeatTimer = null }
@@ -1219,37 +1343,121 @@ async function desktopVisionBlob(): Promise<Blob> {
   if (!response.ok) throw new Error('桌面视觉帧读取失败')
   return response.blob()
 }
-async function sharedScreenFrame(): Promise<{ image: Blob; capturedAt: number }> {
+async function sharedScreenFrame(focus: FocusRegion | null = null, deduplicate = false): Promise<EncodedLiveFrame> {
   const video = sharedVideo.value
   if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
     throw new Error('共享画面尚未就绪，请稍后重试')
   }
   const plan = liveAdaptive.plan()
-  const scale = Math.min(1, plan.maxEdge / video.videoWidth, plan.maxEdge / video.videoHeight)
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
-  canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
-  canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height)
-  const capturedAt = Date.now()
-  return new Promise((resolve, reject) => canvas.toBlob(blob => blob
-    ? resolve({ image: blob, capturedAt }) : reject(new Error('共享画面截图失败')), 'image/jpeg', plan.quality))
+  const latest = deduplicate ? liveVisualWindow.latest() : null
+  const options: FrameEncodingOptions = { ...plan, focus,
+    previous: latest?.sample || liveStreamLastSentSample,
+    lastSentAt: Math.max(latest?.capturedAt || 0, liveStreamLastSentAt), capturedAt: Date.now(),
+    refreshMs: liveVisionMode.value === 'native-realtime' ? 5000 : 10_000,
+    force: !deduplicate || liveForceStreamFrame }
+  if (deduplicate) liveForceStreamFrame = false
+  if (typeof Worker === 'function' && typeof OffscreenCanvas === 'function' && typeof createImageBitmap === 'function') {
+    const encoder = liveFrameEncoder ??= new LiveFrameEncoder()
+    if (encoder.available()) {
+      try {
+        return await encoder.encode(await createImageBitmap(video), options)
+      } catch {
+        encoder.dispose()
+        if (liveFrameEncoder !== encoder || !liveVisionActive.value) throw new Error('视频会话已停止')
+        // Worker/CSP/驱动不支持时回退浏览器画布，不让后台编码故障中断通话。
+        options.capturedAt = Date.now()
+      }
+    }
+  }
+  return encodeLiveFrame(video, video.videoWidth, video.videoHeight, options, {
+    frame: liveCaptureCanvas ??= document.createElement('canvas'),
+    focus: liveFocusCanvas ??= document.createElement('canvas'),
+    sample: liveSampleCanvas ??= document.createElement('canvas'),
+  })
 }
-async function sharedScreenBlob(): Promise<Blob> { return (await sharedScreenFrame()).image }
-function scheduleLiveStreamFrame(ticket: number, delay = liveAdaptive.plan().intervalMs) {
+async function sharedScreenBlob(): Promise<Blob> {
+  const result = await sharedScreenFrame()
+  if (!result.image) throw new Error('共享画面截图失败')
+  return result.image
+}
+function scheduleLiveStreamFrame(ticket: number, delay = liveVisualWindow.captureInterval(
+  Date.now(), liveAdaptive.plan().intervalMs, liveVideoImageBudget.value)) {
   if (liveStreamTimer) clearTimeout(liveStreamTimer)
   if (!liveVisionActive.value || liveVisionPaused.value || ticket !== liveVisionGeneration) return
   liveStreamTimer = setTimeout(() => { liveStreamTimer = null; void sendLiveStreamFrame(ticket) }, delay)
 }
 async function sendLiveStreamFrame(ticket: number) {
   if (!liveVisionActive.value || liveVisionPaused.value || ticket !== liveVisionGeneration) return
-  if (!liveStreamReadyForVideo) { scheduleLiveStreamFrame(ticket, 100); return }
+  if (liveStreamCapture) return // 同一时刻最多一次异步采集/编码。
+  const socket = liveStreamSocket
+  if (!socket || socket.readyState !== WebSocket.OPEN) return
+  if (!liveStreamReadyForVideo) {
+    if (liveVisionMode.value === 'native-realtime') liveStreamReadyForVideo = sendNativeAudioReady()
+    if (!liveStreamReadyForVideo) { scheduleLiveStreamFrame(ticket); return }
+  }
   if (document.hidden) { scheduleLiveStreamFrame(ticket, 1000); return }
   const projectId = getProjectId(), focusRevision = liveVisionFocusRevision
+  const sendRevision = liveStreamSendRevision
+  const capture = {}
+  liveStreamCapture = capture
+  const startedAt = performance.now()
+  const isCurrent = () => ticket === liveVisionGeneration && sendRevision === liveStreamSendRevision
+    && focusRevision === liveVisionFocusRevision && projectId === getProjectId()
+    && !liveVisionPaused.value && liveVisionActive.value
+    && socket === liveStreamSocket && socket.readyState === WebSocket.OPEN
   try {
-    const { image, capturedAt } = await sharedScreenFrame()
-    const focused = !!liveVisionFocus.value
-    const focusImage = liveVisionFocus.value ? await cropFocusFrame(image, liveVisionFocus.value) : null
-    if (ticket !== liveVisionGeneration || focusRevision !== liveVisionFocusRevision || projectId !== getProjectId()) return
+    // 在编码前就检查背压。网络已经跟不上时，截图/压缩这一轮没有价值，
+    // 继续做只会占用主线程并让下一轮更晚到达。
+    const videoBufferLimit = liveMicActive.value ? 128_000 : undefined
+    if (!canQueueLiveVideo(socket.bufferedAmount, 0, videoBufferLimit)) {
+      liveVisionMetrics.value = { ...liveVisionMetrics.value, dropped: liveVisionMetrics.value.dropped + 1 }
+      liveAdaptive.feed({ bufferedAmount: socket.bufferedAmount })
+      return
+    }
+    liveLedger.prune(Date.now())
+    pruneLiveStreamFrames()
+    const captured = await sharedScreenFrame(liveVisionFocus.value, true)
+    if (!isCurrent()) return
+    if (captured.image) liveVisualWindow.push({ ...captured, image: captured.image })
+    else liveStreamStaticSkipped.value++
+    const now = Date.now()
+    liveVideoImagesUsed.value = liveVisualWindow.usage(now)
+    if (!liveVisualWindow.due(now, liveAdaptive.plan().intervalMs,
+      liveVisionMode.value === 'native-realtime', liveVideoImageBudget.value)) return
+    const selection = liveVisualWindow.select(now)
+    if (!selection) return
+    const { image, focusImage, capturedAt, sample } = selection.current
+    let uploadImage = image
+    const hasContext = typeof createImageBitmap === 'function' && !!(selection.before || selection.key || focusImage)
+    if (hasContext) {
+      const options: FrameEncodingOptions = { ...liveAdaptive.plan(), focus: null, previous: null,
+        lastSentAt: 0, capturedAt, refreshMs: 5000, force: true,
+        context: {
+          ...(selection.before ? { before: { image: selection.before.focusImage || selection.before.image,
+            capturedAt: selection.before.capturedAt } } : {}),
+          ...(selection.key ? { key: { image: selection.key.focusImage || selection.key.image,
+            capturedAt: selection.key.capturedAt } } : {}),
+          detail: focusImage, reason: selection.reason,
+        } }
+      const bitmap = await createImageBitmap(image)
+      const encoder = liveFrameEncoder
+      if (encoder?.available()) {
+        const composite = await encoder.encode(bitmap, options)
+        uploadImage = composite.image || image
+      } else {
+        try {
+          const composite = await encodeLiveFrame(bitmap, bitmap.width, bitmap.height, options, {
+            frame: liveCaptureCanvas ??= document.createElement('canvas'),
+            focus: liveFocusCanvas ??= document.createElement('canvas'),
+            sample: liveSampleCanvas ??= document.createElement('canvas'),
+          })
+          uploadImage = composite.image || image
+        } finally { bitmap.close() }
+      }
+    }
+    if (!isCurrent() || Date.now() - capturedAt > 2500) return
+    if (!liveVisualWindow.canUpload(Date.now(), uploadImage.size, liveVideoImageBudget.value)) return
+    const focused = !!liveVisionFocus.value && !hasContext
     liveVisionLatestFrame = image
     liveVisionLatestFocusFrame = focusImage
     liveVisionLatestCapturedAt = capturedAt
@@ -1258,34 +1466,50 @@ async function sendLiveStreamFrame(ticket: number) {
       projectId, image, capturedAt, focusImage, observation: liveVisionObservation.value,
       timeline: liveVisionTimeline.value,
     })
-    const socket = liveStreamSocket
-    if (socket?.readyState === WebSocket.OPEN && socket.bufferedAmount < 1_000_000) {
-      if (ticket !== liveVisionGeneration || projectId !== getProjectId()) return
-      const sequence = ++liveStreamSequence
-      socket.send(await encodeVideoFrame(sequence, capturedAt, focusImage || image, focused))
+    const sequence = ++liveStreamSequence
+    let queuedBeforeSend = socket.bufferedAmount
+    const outcome = await sendLiveVideoPacket({
+      bufferLimit: videoBufferLimit,
+      encode: () => encodeVideoFrame(sequence, capturedAt, uploadImage, focused),
+      isCurrent, bufferedAmount: () => socket.bufferedAmount,
+      send: packet => { queuedBeforeSend = socket.bufferedAmount; socket.send(packet) },
+    })
+    if (outcome === 'stale') return
+    if (outcome === 'sent') {
+      liveVisualWindow.uploaded(selection.current, Date.now(), uploadImage.size)
+      liveVideoImagesUsed.value = liveVisualWindow.usage(Date.now())
+      liveStreamLastSentSample = sample
+      liveStreamLastSentAt = capturedAt
       liveStreamFrames.set(sequence, { image, focusImage, capturedAt })
-      while (liveStreamFrames.size > 60) liveStreamFrames.delete(liveStreamFrames.keys().next().value!)
+      pruneLiveStreamFrames()
       liveLedger.onSent(sequence, capturedAt, Date.now())
-      liveAdaptive.feed({ bufferedAmount: socket.bufferedAmount,
-        encodeOverrun: liveLedger.oldestPendingAge(Date.now()) > liveAdaptive.plan().intervalMs * 2 })
+      const encodeMs = performance.now() - startedAt
+      // 只看发送前滞留的队列，新包刚加入缓冲不能被当成网络积压。
+      liveAdaptive.feed({ bufferedAmount: queuedBeforeSend,
+        encodeOverrun: liveVideoOverrun(liveVisionMode.value, encodeMs,
+          liveLedger.oldestPendingAge(Date.now()), liveAdaptive.plan().intervalMs),
+        transportHealthy: liveVisionMode.value === 'native-realtime' && encodeMs <= liveAdaptive.plan().intervalMs })
     } else {
       // 发不出去的新帧直接丢弃而不补发旧帧：模型永远只该看到最新画面。
       liveVisionMetrics.value = { ...liveVisionMetrics.value, dropped: liveVisionMetrics.value.dropped + 1 }
-      liveAdaptive.feed({ bufferedAmount: socket?.readyState === WebSocket.OPEN ? socket.bufferedAmount : 0 })
+      liveAdaptive.feed({ bufferedAmount: socket.bufferedAmount, encodeOverrun: true })
     }
   } catch (cause) {
-    if (ticket === liveVisionGeneration) liveVisionStatus.value = (cause as Error).message || '实时画面采集失败'
+    if (isCurrent()) liveVisionStatus.value = (cause as Error).message || '实时画面采集失败'
   } finally {
-    if (ticket === liveVisionGeneration && liveVisionActive.value && !liveVisionPaused.value) {
+    if (liveStreamCapture === capture) liveStreamCapture = null
+    if (liveVisionActive.value && !liveVisionPaused.value && liveStreamReadyForVideo) {
       refreshLiveVisionMetrics()
-      scheduleLiveStreamFrame(ticket)
+      scheduleLiveStreamFrame(liveVisionGeneration)
     }
   }
 }
 function receiveLiveStreamObservation(raw: string, ticket: number, projectId: string) {
-  if (ticket !== liveVisionGeneration || projectId !== getProjectId() || liveVisionPaused.value) return
+  if (ticket !== liveVisionGeneration || projectId !== getProjectId()) return
   const event = parseRealtimeServerEvent(raw)
   if (!event) return
+  // 暂停只丢媒体结果，握手和连接错误仍须处理；否则暂停期间完成握手，恢复后永远无法发帧。
+  if (liveVisionPaused.value && !['hello.ok', 'heartbeat', 'error', 'session.closed'].includes(event.type)) return
   if (event.type === 'hello.ok') {
     const recovered = liveStreamRecovering.value
     liveStreamRecovering.value = false
@@ -1293,6 +1517,8 @@ function receiveLiveStreamObservation(raw: string, ticket: number, projectId: st
     const mode = event.mode === 'native-realtime' || event.mode === 'sampled-frames'
       ? event.mode : 'sampled-frames'
     liveVisionMode.value = mode
+    liveAdaptive.setMinimumInterval(mode === 'sampled-frames'
+      && typeof event.video_min_interval_ms === 'number' ? event.video_min_interval_ms : 0)
     liveVisionModeLabel.value = mode === 'native-realtime' ? '原生实时' : '兼容抽帧'
     liveVisionModeReason.value = typeof event.reason === 'string' && event.reason
       ? event.reason : mode === 'native-realtime'
@@ -1322,7 +1548,7 @@ function receiveLiveStreamObservation(raw: string, ticket: number, projectId: st
     resolveLiveStreamRecovery()
     liveStreamLastObservationAt = Date.now()
     refreshLiveVisionPhase()
-    playLiveModelAudio(event as typeof event & { audio?: unknown; encoding?: unknown })
+    void playLiveModelAudio(event as typeof event & { audio?: unknown; encoding?: unknown })
     return
   }
   if (event.type === 'model.delta' || event.type === 'audio.transcript') {
@@ -1337,7 +1563,10 @@ function receiveLiveStreamObservation(raw: string, ticket: number, projectId: st
       const text = event.text.slice(0, 300)
       // 用户刚忽略过这一处就别再弹了（后端 45s 去重窗过后同一处还会再来）。
       if (isDismissedVisualAlert(text, dismissedRealtimeAlerts)) return
+      const id = `voice-check-${Date.now()}-${event.sequence || 0}`
+      if (!voiceVerification.offer(id, text, Date.now())) return
       liveRealtimeAlert.value = {
+        id,
         text,
         atMs: Date.now(),
         detectedAt: new Date(typeof event.captured_at === 'number' ? event.captured_at : event.sent_at)
@@ -1345,14 +1574,29 @@ function receiveLiveStreamObservation(raw: string, ticket: number, projectId: st
         // 报警当刻的画面：此刻模型正看着它，快照下来供后续核实（见类型声明处的说明）。
         frame: liveVisionLatestFrame,
       }
-      liveVisionAlertStatus.value = ''
+      liveVisionAlertStatus.value = '这是待核实线索。可以核查一下吗？说“可以核查一下”或点击核查按钮后才会开始。'
     }
+    return
+  }
+  if (event.type === 'agent.result.ok') {
+    if (event.request_id === liveRealtimeAlert.value?.id) liveVisionAlertStatus.value = '核查报告已交给语音前端，正在生成播报。'
     return
   }
   if (event.type === 'heartbeat' || event.type === 'cancel.ok') return
   if (event.type === 'error') {
     const message = typeof event.message === 'string' ? event.message : '实时视觉连接发生错误。'
+    if (event.code === 'agent_result_failed') {
+      liveVisionAlertStatus.value = '核查报告未能播报，请查看右侧完整报告。'
+      return
+    }
     if (event.code === 'audio_not_ready') return
+    if (event.code === 'audio_backpressure') {
+      stopAiPlayback()
+      closeOpenLiveCaption()
+      liveMicStatus.value = message
+      liveVisionStatus.value = message
+      return
+    }
     if (event.code === 'stream_broken' && event.retryable === true) {
       liveStreamRecovering.value = true
       liveStreamReconnectScheduled.value = true
@@ -1368,10 +1612,22 @@ function receiveLiveStreamObservation(raw: string, ticket: number, projectId: st
   const result = event as typeof event & {
     ok?: boolean; error?: string; observations?: string[]; anomalies?: VisionAnomaly[]; audit?: { mode?: string }
   }
+  if (result.throttled === true) {
+    resetLiveStreamDedup()
+    liveLedger.onObserved(result.sequence || 0, Date.now())
+    for (const key of liveStreamFrames.keys()) {
+      if (key <= (result.sequence || 0)) liveStreamFrames.delete(key)
+    }
+    liveVisionMetrics.value = { ...liveVisionMetrics.value, dropped: liveVisionMetrics.value.dropped + 1 }
+    liveAdaptive.feed({ bufferedAmount: liveStreamSocket?.bufferedAmount || 0, throttled: true,
+      retryAfterS: typeof result.retry_after === 'number' ? result.retry_after : null })
+    refreshLiveVisionMetrics()
+    scheduleLiveStreamFrame(ticket)
+    return // 限流没有新观察，不能刷新字幕、告警确认或“AI 最近理解”时间。
+  }
   if (!result.ok || result.audit?.mode === 'unavailable' || result.audit?.mode === 'error') {
     liveVisionStatus.value = result.error || '视觉模型暂不可用；实时画面仍在播放，暂不提供画面理解。'
     liveStreamSocket?.close()
-    liveStreamSocket = null
     liveStreamFrames.clear()
     return
   }
@@ -1410,7 +1666,8 @@ function receiveLiveStreamObservation(raw: string, ticket: number, projectId: st
   const latency = liveLedger.onObserved(result.sequence || 0, Date.now())
   const plan = liveAdaptive.feed({
     bufferedAmount: liveStreamSocket?.readyState === WebSocket.OPEN ? liveStreamSocket.bufferedAmount : 0,
-    latencyMs: latency ? latency.e2eMs : null,
+    // 原生模式的低频旁路模型延迟不代表主实时通道的吞吐。
+    latencyMs: liveVisionMode.value === 'sampled-frames' && latency ? latency.e2eMs : null,
     throttled: result.throttled === true,
     retryAfterS: typeof result.retry_after === 'number' ? result.retry_after : null,
   })
@@ -1429,13 +1686,15 @@ function startLiveStream(ticket: number, retry = 0) {
   let connectedAt = 0
   const reconnecting = retry > 0 || liveStreamRecovering.value
   liveStreamSocket = socket
+  liveStreamSendRevision++
+  resetLiveStreamDedup()
   liveStreamSequence = 0
   liveAudioSequence = 0
   liveNativeAudioReady = false
   liveStreamReadyForVideo = false
   liveStreamFrames.clear()
   socket.onopen = () => {
-    if (ticket !== liveVisionGeneration || projectId !== getProjectId()) { socket.close(); return }
+    if (socket !== liveStreamSocket || ticket !== liveVisionGeneration || projectId !== getProjectId()) { socket.close(); return }
     connectedAt = Date.now()
     liveStreamConnected.value = true
     liveStreamReconnectScheduled.value = false
@@ -1454,11 +1713,20 @@ function startLiveStream(ticket: number, retry = 0) {
       ? `实时视频连接已恢复 · ${liveVisionSource.value} · 继续传送画面和语音`
       : `实时视频已连接 · ${liveVisionSource.value} · 画面持续传送，AI 异步理解最新帧`
   }
-  socket.onmessage = event => receiveLiveStreamObservation(String(event.data), ticket, projectId)
+  socket.onmessage = event => {
+    if (socket === liveStreamSocket) receiveLiveStreamObservation(String(event.data), ticket, projectId)
+  }
   socket.onclose = event => {
     if (liveStreamSocket !== socket || ticket !== liveVisionGeneration) return
     const recoveryFailed = liveStreamRecovering.value
     liveStreamSocket = null
+    voiceVerification.reset()
+    liveStreamSendRevision++
+    liveStreamReadyForVideo = false
+    liveNativeAudioReady = false
+    liveStreamFrames.clear()
+    liveLedger.clear()
+    if (liveStreamTimer) { clearTimeout(liveStreamTimer); liveStreamTimer = null }
     liveStreamConnected.value = false
     liveStreamRecovering.value = false
     stopAiPlayback()
@@ -1488,7 +1756,6 @@ function startLiveStream(ticket: number, retry = 0) {
   socket.onerror = () => {
     if (liveStreamSocket === socket && ticket === liveVisionGeneration) liveVisionStatus.value = '视觉流连接失败；画面仍在本地播放。'
   }
-  scheduleLiveStreamFrame(ticket, 100)
 }
 async function startMediaVision(source: 'screen' | 'camera') {
   if (!getProjectId()) {
@@ -1502,8 +1769,10 @@ async function startMediaVision(source: 'screen' | 'camera') {
   }
   try {
     const stream = source === 'screen'
-      ? await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
-      : await navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+      ? await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 15, max: 30 } }, audio: false })
+      : await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } }, audio: false })
     stopLiveVision()
     screenStream = stream
     screenSharing.value = source === 'screen'
@@ -1543,6 +1812,8 @@ function scheduleLiveVision(ticket: number, delay = 1400) {
 }
 function toggleLiveVisionPause() {
   liveVisionPaused.value = !liveVisionPaused.value
+  liveStreamSendRevision++
+  resetLiveStreamDedup()
   if (liveVisionPaused.value) {
     liveVisionRequest?.abort()
     liveVisionRequest = null
@@ -2245,7 +2516,7 @@ onBeforeUnmount(() => {
     </section>
     <section v-else-if="liveRealtimeAlert" class="acp-realtime-alert-banner" role="alert">
       <div><b>实时模型提醒 · {{ liveRealtimeAlert.detectedAt }}</b><p>{{ liveRealtimeAlert.text }}</p><small>{{ liveVisionAlertStatus || '实时模型自述，尚未核实。' }}</small></div>
-      <button @click="reviewRealtimeAlert()">交给 AI 排查</button><button @click="dismissRealtimeAlert()">忽略</button>
+      <button @click="reviewRealtimeAlert()">同意核查</button><button @click="dismissRealtimeAlert()">不用核查</button>
     </section>
     <nav class="acp-flow-rail" aria-label="自主开发流程">
       <div
@@ -2356,7 +2627,11 @@ onBeforeUnmount(() => {
           </div>
           <p v-if="visualInspectStatus" class="acp-visual-inspect-status" role="status">{{ visualInspectStatus }}</p>
           <section v-if="liveVisionActive || liveVisionStatus || liveVisionObservation" class="acp-live-vision-panel" aria-live="polite">
-            <div><b><i :class="{ pulse: liveVisionActive && !liveVisionPaused }" />{{ screenSharing || cameraSharing ? '实时视频 · ' + liveVisionPhaseLabel : liveVisionActive ? 'AI 持续视觉观察中' : '实时视觉' }}</b><small v-if="screenSharing || cameraSharing">{{ liveVisionSource }} · 每 {{ (liveVisionMetrics.intervalMs / 1000).toFixed(1) }} 秒上传新画面 · 理解延迟 {{ liveVisionMetrics.latencyMs === null ? '—' : (liveVisionMetrics.latencyMs / 1000).toFixed(1) + ' 秒' }} · 丢弃旧帧 {{ liveVisionMetrics.dropped }}</small><small v-else>{{ liveVisionSource }}</small><button v-if="liveVisionActive && (screenSharing || cameraSharing)" :disabled="!liveStreamConnected || liveVisionPaused" @click="interruptLiveStream()">打断</button><button v-if="liveVisionActive" @click="toggleLiveVisionPause()">{{ liveVisionPaused ? '继续观察' : '暂停观察' }}</button><button v-if="liveVisionActive" @click="stopLiveVision('已停止持续视觉观察。')">停止</button></div>
+<div><b><i :class="{ pulse: liveVisionActive && !liveVisionPaused }" />{{ screenSharing || cameraSharing ? '实时视频 · ' + liveVisionPhaseLabel : liveVisionActive ? 'AI 持续视觉观察中' : '实时视觉' }}</b><small v-if="screenSharing || cameraSharing">{{ liveVisionSource }} · 每 {{ (liveVisionMetrics.intervalMs / 1000).toFixed(1) }} 秒检查画面变化 · 理解延迟 {{ liveVisionMetrics.latencyMs === null ? '—' : (liveVisionMetrics.latencyMs / 1000).toFixed(1) + ' 秒' }} · 跳过静态画面 {{ liveStreamStaticSkipped }} · 丢弃旧帧 {{ liveVisionMetrics.dropped }}</small><small v-else>{{ liveVisionSource }}</small><button v-if="liveVisionActive && (screenSharing || cameraSharing)" :disabled="!liveStreamConnected || liveVisionPaused" @click="interruptLiveStream()">打断</button><button v-if="liveVisionActive" @click="toggleLiveVisionPause()">{{ liveVisionPaused ? '继续观察' : '暂停观察' }}</button><button v-if="liveVisionActive" @click="stopLiveVision('已停止持续视觉观察。')">停止</button></div>
+            <div v-if="liveVisionActive && (screenSharing || cameraSharing)" class="acp-live-audio">
+              <label>每分钟最多发送画面 <input v-model.number="liveVideoImageBudget" type="number" min="6" max="240" step="6" aria-label="每分钟最多发送画面" style="width: 5em"></label>
+              <small>最近一分钟已发送 {{ liveVideoImagesUsed }} 张；关键变化会保留前后画面，更多画面会增加模型消耗。</small>
+            </div>
             <div v-if="liveStreamConnected" class="acp-live-audio">
               <button :disabled="!liveVisionActive" @click="liveMicActive ? stopLiveMic() : startLiveMic()">{{ liveMicActive ? '闭麦' : '开麦对话' }}</button>
               <span><i :class="{ pulse: liveAiSpeaking }" />{{ liveAiSpeaking ? 'AI 正在说话，可直接开口打断' : (liveMicActive ? '正在听你说话' : '麦克风未开') }}</span>
@@ -2588,11 +2863,11 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-empty-profile { max-width: 420px; margin: 16px auto 0; text-align: left; }
 .acp-previews { display: grid; gap: 6px; }.acp-preview { border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font-size: 11px; }.acp-preview summary { display: flex; gap: 7px; cursor: pointer; }.acp-preview summary b { color: var(--accent); font-weight: 600; }.acp-preview p { margin: 7px 0; }.acp-preview img,.acp-preview video { display: block; max-width: 100%; max-height: 180px; margin-top: 7px; border-radius: 5px; }.acp-preview audio { width: 100%; margin-top: 7px; }.acp-preview pre { max-height: 150px; overflow: auto; padding: 7px; white-space: pre-wrap; background: var(--bg-hover); }.acp-preview small { display: block; color: var(--text-faint); margin-top: 4px; overflow-wrap: anywhere; }
 .acp-change-summary { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; font-size: 11px; color: var(--text-faint); }.acp-change-summary b { color: var(--text); margin-right: 3px; }
-.acp-live-frame { position: relative; margin-top: 8px; max-width: 100%; border: 1px solid var(--border); border-radius: 7px; overflow: visible; background: #101521; }.acp-live-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: #dbe5f5; font-size: 10px; }.acp-live-bar i { width: 7px; height: 7px; border-radius: 50%; background: #43d17a; box-shadow: 0 0 8px #43d17a; }.acp-live-bar small { margin-left: auto; color: #93a4bd; }.acp-live-bar button { padding: 3px 7px; border-color: #52698b; color: #dbe5f5; background: #26344b; font-size: 10px; }.acp-live-bar .acp-vision-trigger { border-color: #5a9cff; color: #d9ebff; background: rgba(45, 113, 214, .45); }.acp-live-bar .acp-vision-trigger:disabled { opacity: .7; cursor: wait; }.acp-live-viewport { position: relative; max-width: 100%; min-height: 220px; }.acp-live-viewport iframe { display: block; width: 100%; height: 100%; min-height: 220px; border: 0; border-radius: 0 0 7px 7px; background: #000; }.acp-annotation-layer { position: absolute; inset: 0; cursor: crosshair; background: rgba(24, 39, 64, .22); touch-action: none; }.acp-annotation-box { position: absolute; border: 2px solid #55a8ff; background: rgba(85,168,255,.18); pointer-events: none; }.acp-resize-handle { position: absolute; right: -1px; bottom: -1px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 0 0 7px 0; background: linear-gradient(135deg, transparent 45%, #8fa4c4 46%, #8fa4c4 53%, transparent 54%, transparent 64%, #8fa4c4 65%, #8fa4c4 72%, transparent 73%); cursor: nwse-resize; }.acp-feedback-pop { position: absolute; z-index: 4; top: 35px; right: 8px; width: min(300px, calc(100% - 16px)); padding: 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-raised); box-shadow: 0 12px 32px rgba(0,0,0,.28); }.acp-feedback-head,.acp-feedback-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.acp-feedback-head button { border: 0; background: transparent; padding: 0 3px; font-size: 16px; }.acp-feedback-pop textarea { width: 100%; box-sizing: border-box; margin: 8px 0; resize: vertical; border: 1px solid var(--border); border-radius: 6px; padding: 7px; color: var(--text); background: var(--bg); font: inherit; font-size: 11px; }.acp-feedback-foot small { color: var(--text-faint); font-size: 10px; }.acp-feedback-foot button { padding: 5px 8px; background: var(--accent); color: #fff; border-color: var(--accent); }
+.acp-live-frame { position: relative; margin-top: 8px; max-width: 100%; border: 1px solid var(--border); border-radius: 7px; overflow: visible; background: #101521; }.acp-live-bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: #dbe5f5; font-size: 10px; }.acp-live-bar i { width: 7px; height: 7px; border-radius: 50%; background: #43d17a; /*__KEEP0__*/; }.acp-live-bar small { margin-left: auto; color: #93a4bd; }.acp-live-bar button { padding: 3px 7px; border-color: #52698b; color: #dbe5f5; background: #26344b; font-size: 10px; }.acp-live-bar .acp-vision-trigger { border-color: #5a9cff; color: #d9ebff; background: rgba(45, 113, 214, .45); }.acp-live-bar .acp-vision-trigger:disabled { opacity: .7; cursor: wait; }.acp-live-viewport { position: relative; max-width: 100%; min-height: 220px; }.acp-live-viewport iframe { display: block; width: 100%; height: 100%; min-height: 220px; border: 0; border-radius: 0 0 7px 7px; background: #000; }.acp-annotation-layer { position: absolute; inset: 0; cursor: crosshair; background: rgba(24, 39, 64, .22); touch-action: none; }.acp-annotation-box { position: absolute; border: 2px solid #55a8ff; background: rgba(85,168,255,.18); pointer-events: none; }.acp-resize-handle { position: absolute; right: -1px; bottom: -1px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 0 0 7px 0; background: linear-gradient(135deg, transparent 45%, #8fa4c4 46%, #8fa4c4 53%, transparent 54%, transparent 64%, #8fa4c4 65%, #8fa4c4 72%, transparent 73%); cursor: nwse-resize; }.acp-feedback-pop { position: absolute; z-index: 4; top: 35px; right: 8px; width: min(300px, calc(100% - 16px)); padding: 9px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-raised); box-shadow: 0 12px 32px rgba(0,0,0,.28); }.acp-feedback-head,.acp-feedback-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.acp-feedback-head button { border: 0; background: transparent; padding: 0 3px; font-size: 16px; }.acp-feedback-pop textarea { width: 100%; box-sizing: border-box; margin: 8px 0; resize: vertical; border: 1px solid var(--border); border-radius: 6px; padding: 7px; color: var(--text); background: var(--bg); font: inherit; font-size: 11px; }.acp-feedback-foot small { color: var(--text-faint); font-size: 10px; }.acp-feedback-foot button { padding: 5px 8px; background: var(--accent); color: #fff; border-color: var(--accent); }
 .acp-visual-inspect-status { margin: 8px 0 0; padding: 7px 9px; border: 1px solid rgba(74, 139, 228, .35); border-radius: 7px; color: #315b8f; background: rgba(74, 139, 228, .08); font-size: 11px; }
 .acp-inspect-button { margin-left: auto; padding: 4px 9px; border: 1px solid rgba(66, 125, 213, .5); border-radius: 999px; color: #2f65a9; background: rgba(66, 125, 213, .08); font-size: 11px; }
 .acp-inspect-button:disabled { opacity: .65; cursor: wait; }
-.acp-live-vision-button { padding: 4px 9px; border: 1px solid rgba(33, 161, 113, .48); border-radius: 999px; color: #177653; background: rgba(33, 161, 113, .09); font-size: 11px; }
+.acp-live-vision-button { padding: 4px 9px; border: 1px solid rgba(33, 161, 113, .48); border-radius: 999px; color: var(--green); background: rgba(33, 161, 113, .09); font-size: 11px; }
 .acp-live-vision-button.on, .acp-live-bar .acp-stream-trigger.on { border-color: #d48748; color: #fff; background: #a85723; }
 .acp-live-vision-panel { margin-top: 9px; padding: 10px; border: 1px solid rgba(33, 161, 113, .34); border-radius: 9px; background: rgba(33, 161, 113, .06); }
 .acp-visual-click-panel { display: grid; gap: 8px; margin-top: 10px; padding: 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-raised); }
@@ -2610,7 +2885,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 @media (max-width: 680px) { .acp-visual-click-review { grid-template-columns: 1fr; }.acp-visual-click-input { flex-wrap: wrap; }.acp-visual-click-input input { flex-basis: 100%; } }
 .acp-live-vision-panel > div { display: flex; align-items: center; gap: 9px; }
 .acp-live-vision-panel b { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
-.acp-live-vision-panel i { width: 7px; height: 7px; border-radius: 50%; background: #25a16e; }
+.acp-live-vision-panel i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 .acp-live-vision-panel i.pulse { animation: acp-vision-pulse 1.3s ease-in-out infinite; }
 .acp-live-vision-panel small { color: var(--text-muted); font-size: 10px; }
 .acp-live-vision-panel button { padding: 3px 9px; font-size: 10px; }
@@ -2621,7 +2896,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-focus-snapshot { position: relative; width: 100%; max-width: 720px; }
 .acp-focus-snapshot.selecting { cursor: crosshair; touch-action: none; }
 .acp-focus-snapshot img { display: block; width: 100%; height: auto; user-select: none; }
-.acp-focus-region { position: absolute; box-sizing: border-box; border: 2px solid #26bd8b; background: rgba(38, 189, 139, .16); pointer-events: none; }
+.acp-focus-region { position: absolute; box-sizing: border-box; border: 2px solid var(--green); background: rgba(38, 189, 139, .16); pointer-events: none; }
 .acp-live-vision-panel p { margin: 7px 0 0; color: var(--text-muted); font-size: 11px; }
 .acp-live-vision-mode { padding: 7px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-raised); }
 .acp-live-audio { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 7px 0 0; padding: 7px 8px; border: 1px dashed var(--border); border-radius: 6px; font-size: 11px; color: var(--text-muted); }
@@ -2633,7 +2908,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-live-captions li { display: flex; gap: 7px; align-items: baseline; padding: 6px 8px; border-radius: 6px; background: var(--bg-raised); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .acp-live-captions b { flex: none; font-size: 10px; color: var(--text-muted); }
 .acp-live-captions em { font-style: normal; color: var(--text-muted); font-size: 10px; }
-.acp-caption-assistant { border-left: 2px solid #26bd8b; }
+.acp-caption-assistant { border-left: 2px solid var(--green); }
 .acp-caption-user { border-left: 2px solid var(--accent); }
 .acp-live-vision-panel pre { margin: 9px 0 0; padding: 9px; max-height: 210px; overflow: auto; white-space: pre-wrap; font: inherit; font-size: 11px; line-height: 1.6; color: var(--text); background: var(--bg-raised); border-radius: 6px; }
 .acp-vision-timeline { margin: 9px 0 0; padding: 0 0 0 20px; max-height: 230px; overflow: auto; color: var(--text); font-size: 11px; line-height: 1.6; }
@@ -2725,14 +3000,14 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
   background: var(--bg-raised); color: var(--text-faint);
   cursor: pointer; transition: color .16s, border-color .16s, background .16s;
 }
-.acp-collab-rail:hover { color: var(--accent); border-color: #b9d0f5; background: #fff; }
+.acp-collab-rail:hover { color: var(--accent); border-color: var(--border-2); background: #fff; }
 .acp-collab-rail-label { writing-mode: vertical-rl; letter-spacing: 2px; font-size: 10px; }
 .acp-stage-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
 .acp-stage-tabs { display: flex; gap: 4px; }
 .acp-stage-tabs button { border-color: transparent; color: var(--text-faint); background: transparent; }
 .acp-stage-tabs button.on { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .acp-stage-bar > button { font-size: 11px; }
-.acp-stage-content { flex: 1; min-height: 0; overflow: auto; padding: 20px; background: radial-gradient(circle, #cbd5e1 1px, transparent 1px) 0 0 / 22px 22px, #f4f7fb; }
+.acp-stage-content { flex: 1; min-height: 0; overflow: auto; padding: 20px; background: radial-gradient(circle, #cbd5e1 1px, transparent 1px) 0 0 / 22px 22px, var(--accent-soft); }
 .acp-stage-content { display: grid; align-content: start; gap: 18px; }
 .acp-execute-region, .acp-preview-region { display: grid; gap: 9px; min-width: 0; }
 .acp-region-placeholder { margin: 0; padding: 16px; border: 1px dashed var(--border-strong); border-radius: var(--radius-lg); background: rgba(255,255,255,.55); }
@@ -2769,7 +3044,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-stage-empty p { max-width: 460px; font-size: 13px; color: #64748b; line-height: 1.8; }
 .acp-stage-empty small { max-width: 480px; margin-top: 20px; font-size: 11px; line-height: 1.7; color: #8291a8; }
 .acp-stage-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 8px 0 18px; }
-.acp-stage-chips span { padding: 5px 10px; border: 1px solid #dce4ee; border-radius: 99px; font-size: 11px; background: #ffffffba; color: #526480; }
+.acp-stage-chips span { padding: 5px 10px; border: 1px solid #dce4ee; border-radius: 99px; font-size: 11px; background: var(--bg); color: #526480; }
 .acp-stage-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .acp-stage-empty-actions button:first-child { background: var(--accent); color: #fff; border-color: var(--accent); }
 .acp-stage-request { border-left: 3px solid var(--accent); padding-left: 12px; text-align: left; }
@@ -2875,7 +3150,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
   height: 2px; border-radius: 2px; background: var(--accent);
   animation: acp-tab-in .2s var(--ease-spring) both;
 }
-.acp-stage-content { background: radial-gradient(circle, #c5cfde 1px, transparent 1px) 0 0 / 22px 22px, #f2f6fb; }
+.acp-stage-content { background: radial-gradient(circle, #c5cfde 1px, transparent 1px) 0 0 / 22px 22px, var(--accent-soft); }
 .acp-workflow-surface { animation: acp-content-in .34s .06s var(--ease-spring) both; }
 .acp-evidence-card,
 .acp-preview,
@@ -2891,11 +3166,11 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-preview:hover,
 .acp-profile:hover,
 .acp-self-review:hover,
-.acp-evaluation:hover { border-color: #b9d0f5; box-shadow: var(--shadow-hover); transform: translateY(-1px); }
+.acp-evaluation:hover { border-color: var(--border-2); box-shadow: var(--shadow-hover); transform: translateY(-1px); }
 .acp-stage-empty { animation: acp-content-in .4s var(--ease-spring) both; }
 .acp-stage-glyph { box-shadow: 0 10px 24px rgba(47,111,237,.11); animation: acp-float 4s ease-in-out infinite; }
 .acp-stage-chips span { transition: transform .16s var(--ease-spring), border-color .16s, background .16s; }
-.acp-stage-chips span:hover { transform: translateY(-2px); border-color: #b9d0f5; background: #fff; }
+.acp-stage-chips span:hover { transform: translateY(-2px); border-color: var(--border-2); background: #fff; }
 .acp-collaborator-head { padding-bottom: 9px; border-bottom: 1px solid var(--border); }
 .acp-collaborator .acp-compose textarea { background: rgba(247,249,253,.86); transition: border-color .16s, box-shadow .16s, background .16s; }
 .acp-collaborator .acp-compose textarea:focus { background: #fff; box-shadow: 0 0 0 3px rgba(47,111,237,.11); }
@@ -2906,7 +3181,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-approval-drawer { background: rgba(247,249,253,.72); }
 .acp-chat-slot :deep(.cd-dock) { box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 4px 14px rgba(35,52,84,.05); }
 .acp-feedback-pop { animation: acp-pop .2s var(--ease-spring) both; }
-.acp-live-frame { box-shadow: 0 12px 28px rgba(15,23,42,.18); }
+.acp-live-frame { /*__KEEP13__*/; }
 
 @keyframes acp-rise {
   from { opacity: 0; transform: translateY(7px); }

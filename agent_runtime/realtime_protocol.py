@@ -14,8 +14,8 @@ from typing import Any
 PROTOCOL_VERSION = 1
 MAX_PACKET_HEADER = 512
 MEDIA_TYPES = {"video.frame", "audio.chunk"}
-CONTROL_TYPES = {"hello", "heartbeat", "cancel", "session.close"}
-SERVER_TYPES = {"hello.ok", "heartbeat", "video.observation", "model.observation", "audio.transcript", "model.delta", "model.audio", "error", "cancel.ok", "session.closed"}
+CONTROL_TYPES = {"hello", "heartbeat", "cancel", "session.close", "agent.result"}
+SERVER_TYPES = {"hello.ok", "heartbeat", "video.observation", "model.observation", "audio.transcript", "model.delta", "model.audio", "error", "cancel.ok", "session.closed", "agent.result.ok"}
 _ENVELOPE_KEYS = {"v", "type", "sent_at", "sequence", "captured_at", "session_id"}
 
 
@@ -56,6 +56,11 @@ def parse_control_packet(value: Any) -> dict[str, Any] | None:
         return None
     if value.get("type") not in CONTROL_TYPES:
         return None
+    if value.get("type") == "agent.result":
+        request_id, text = value.get("request_id"), value.get("text")
+        if (not isinstance(request_id, str) or not 1 <= len(request_id) <= 160
+                or not isinstance(text, str) or not text.strip() or len(text) > 4000):
+            return None
     return value
 
 

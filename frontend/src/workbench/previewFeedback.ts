@@ -22,6 +22,8 @@ export interface PreviewFeedbackRequest {
   /** 反馈发送失败时由调用方自行重试，聊天层不弹默认重试交互。 */
   autoRetry?: boolean
   onStatus?: (status: FeedbackDeliveryStatus, detail?: string) => void
+  /** Only a completed answer, never reasoning tokens or an interrupted partial. */
+  onResult?: (text: string) => void
 }
 
 export function blobDataUrl(blob: Blob): Promise<string> {

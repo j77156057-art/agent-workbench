@@ -1,0 +1,240 @@
+/* =============================================================
+   DocMind · AI 问答页「可用性/对比度纠偏」覆盖层（最后加载）
+   -------------------------------------------------------------
+   R14 纪律：本文件为独立增量层，经 ask/main.ts 在
+     ask.css → ask-riso.css → ask-typo.css → ask-a11y.css
+   之后引入。仅用「#app 前缀」提高特异性来覆盖组件 scoped 的
+   缺陷样式，不改动并发写者正在维护的 ask.css / AskApp.vue /
+   AskSidebar.vue 源文件（与 ask-riso.css 的「覆盖式修复」同一约定）。
+
+   修复清单（均以 Playwright 计算样式实测为据，2026-09-30）：
+   1) 侧栏「上传资料文档」按钮禁用态（.btn）
+      —— 原用 opacity:.55 冲淡实心朱红块，背景与墨字同时褪色，
+         实际对比度由启用态 5.69:1 崩到 2.15:1，且在细线稿侧栏里
+         留下一整块「半渲染」色斑。改为显式中性弱化
+         （中性底 + 弱字 + 虚线边），既明确表达「不可用」，
+         又把对比度拉回可读区间。
+   2) 输入区「发送」按钮禁用态（.send-btn）
+      —— 与 (1) 完全同源缺陷（实心朱红块 + opacity:.45）。空输入
+         是最高频状态，默认就顶着这枚褪色块；同一处一并纠正，
+         保持「禁用态 = 中性虚线块」的一条规则。
+      注：wf-orphan-btn / AskHistoryPopover 的 :disabled opacity 属
+         描边按钮（非实心色块、低强调），危害等级不同，暂不动。
+   3) 「示例演示模式」横幅底色
+      —— 底色仍是硬编码蓝 rgba(31,95,224,.10)，与已被 riso 改成
+         朱红的边/字打架（蓝底 + 朱红边 + 朱红字），破 ink+accent
+         双色纪律。统一回朱红软底。
+   4) 空状态引导卡网格（欢迎态）左右不对称
+      —— 3 张卡片落在 repeat(2,1fr) 网格里：第 1 行 2 张、第 2 行
+         只剩 1 张且左对齐，右半格留空。探针实测卡片 l/r 为
+         494–898 / 910–1314 / 494–898 —— 这是整页唯一真正的左右
+         不对称（横幅/欢迎块/输入框中心偏移均为 0）。
+         改为 3 等列一行铺满欢迎块宽度（与欢迎区共享左右边界），
+         窄屏回退单列堆叠，任何宽度都关于中轴左右对称。
+   5) 引导卡「步骤条」误读（2026-10-01 用户反馈）
+      —— v1 给三张引导卡加了 01/02/03 序号徽标，读起来像逐步工作流；
+         它们实为并列的「挑一句开问」，序号语义误导。v2 删除序号，
+         重排字体/字号/形状（纯文字 14px/600、卡片 72px 等高、箭头降灰），
+         详见文件内 §5。
+   6) 欢迎态入场微动效（2026-10-01 用户要求「加一点动效」）
+      —— 粗野风适配：只做「一次性入场」、无 hover/持续动效、无 bounce/blur。
+         仅 hero 淡入上移 + 三张引导卡错峰浮现，建立层次；
+         @media(prefers-reduced-motion:no-preference) 包裹，降级优先；
+         详见文件内 §7。
+   ============================================================= */
+
+/* 1) 主按钮禁用态：去 opacity，改显式中性弱化 */
+#app .ask-side .btn:disabled {
+  opacity: 1;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  border-style: dashed;
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 2) 输入区「发送」按钮禁用态：与侧栏按钮同源缺陷，一并中性化 */
+#app .ask-main .send-btn:disabled {
+  opacity: 1;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  border-style: dashed;
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 3) 提示横幅底色：硬编码蓝 → 朱红软底（守 ink + accent 双色） */
+#app .ask-main .banner.info {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 4) 引导卡：2 列末行孤卡 → 3 等列一行铺满欢迎块宽度（左右对称） */
+#app .ask-main .suggestions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  max-width: none;
+}
+/* 窄屏：单列堆叠，仍关于中轴左右对称 */
+@media (max-width: 760px) {
+  #app .ask-main .suggestions { grid-template-columns: 1fr; }
+}
+
+/* 5) 引导卡视觉提质 v2（2026-10-01 用户反馈：去掉 01/02/03 序号）
+   —— v1 给三张卡加了朱红序号徽标 + 朱红箭头，整体读起来像「步骤条 / 工作流」，
+      但这里是「随便挑一句开问」的并列建议，不是要逐步完成的任务，序号语义误导。
+      v2 改法：① 删序号（不再 counter-reset / counter-increment / ::before）；
+      ② 纯文字左对齐，正文无衬线 600 / 14px / 行高 1.55，拉大字距与行距、
+      消「扁条」观感；③ 卡片加高到 72px、三列等高，方角 + 2px 墨边 + 硬阴影
+      与全站粗野风一致；④ 右侧箭头降为低调灰（--text-faint），hover 才随卡片
+      反色为 --accent-ink，弱化「流程感」、只留「可点」提示。
+      守 R14：纯 CSS 覆盖层，不动 AskApp.vue / AskSidebar.vue 热文件。 */
+#app .ask-main .suggestions {
+  align-items: stretch;
+  gap: 14px;
+}
+#app .ask-main .suggestion {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 72px;
+  padding: 16px 46px 16px 18px;   /* 右侧留箭头位 */
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.55;
+  letter-spacing: .01em;
+  white-space: normal;
+}
+#app .ask-main .suggestion::after {
+  content: '\2192';                /* → */
+  position: absolute;
+  right: 16px; top: 50%; transform: translateY(-50%);
+  font-size: 15px; line-height: 1;
+  color: var(--text-faint);
+  transition: transform 130ms cubic-bezier(.2,.8,.2,1), color 130ms;
+}
+#app .ask-main .suggestion:hover::after { transform: translate(3px, -50%); color: var(--accent-ink); }
+
+/* 6) 品牌/欢迎「图标」提质：通用五角星 → 有语义的「文档 + 放大镜」标记
+   —— 实测两处同用一条五角星 path（AskApp.vue:816 / AskSidebar.vue:51），
+      是通用占位符、与该产品「读代码·查资料答问」无关联；且侧栏 brand-mark
+      星为硬编码白 #fff 压朱红（3.31:1，未达 AA）。
+      改名后语义：文档页 + 放大镜 = 「检索文档/代码后作答」。
+      守 R14：不碰 AskApp.vue / AskSidebar.vue 热文件，纯 CSS 覆盖层——
+      隐藏原内联 <svg>，用 mask 绘制新标记（随 currentColor 着色），
+      侧栏标记改为 --accent-ink（同修白字压朱红的对比度缺陷）。 */
+#app {
+  --docmind-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5'/%3E%3Cpath d='M13.5 3l4.5 4.5'/%3E%3Cpath d='M13.5 3v4.5H18'/%3E%3Ccircle cx='16.8' cy='16.8' r='3.7'/%3E%3Cpath d='M19.5 19.5L21.6 21.6'/%3E%3C/svg%3E");
+}
+#app .ask-side .brand-mark > svg,
+#app .ask-main .welcome-mark > svg { display: none; }
+#app .ask-side .brand-mark { color: var(--accent-ink); }   /* 修白字压朱红：3.31:1 → 5.69:1 */
+#app .ask-side .brand-mark::before,
+#app .ask-main .welcome-mark::before {
+  content: '';
+  background-color: currentColor;
+  -webkit-mask-image: var(--docmind-mark);
+          mask-image: var(--docmind-mark);
+  -webkit-mask-repeat: no-repeat;  mask-repeat: no-repeat;
+  -webkit-mask-position: center;   mask-position: center;
+  -webkit-mask-size: contain;      mask-size: contain;
+}
+#app .ask-side .brand-mark::before { width: 22px; height: 22px; }
+#app .ask-main .welcome-mark::before { width: 30px; height: 30px; }
+
+/* 7) 欢迎态入场微动效（2026-10-01 用户要求「加一点动效」）
+   —— 粗野风适配：只做「一次性入场」，不叠加 hover / 持续动效，
+      无 bounce / blur / 长时长；节奏干脆（cubic-bezier(.2,.8,.2,1)）。
+      hero 整体淡入上移；三张引导卡错峰 60ms 浮现，建立「被引导」层次。
+      全程 @media(prefers-reduced-motion: no-preference) 包裹：
+      系统开启「减少动态」即完全不动，降级优先。 */
+@media (prefers-reduced-motion: no-preference) {
+  #app .ask-main .welcome {
+    animation: welcomeIn 220ms cubic-bezier(.2, .8, .2, 1) both;
+  }
+  #app .ask-main .suggestion {
+    animation: cardIn 260ms cubic-bezier(.2, .8, .2, 1) both;
+  }
+  #app .ask-main .suggestions .suggestion:nth-child(1) { animation-delay: 60ms; }
+  #app .ask-main .suggestions .suggestion:nth-child(2) { animation-delay: 120ms; }
+  #app .ask-main .suggestions .suggestion:nth-child(3) { animation-delay: 180ms; }
+}
+@keyframes welcomeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 8) 悬停/选中语言统一（2026-10-01 Part F，用户选 A「统一悬停语言」降红）
+   —— 原 ask 有 5 处「悬停/选中即整块填红」：
+        .suggestion / .cap-chip / .followup / .ref-chip 的 :hover，及 .chip.on 选中态。
+      开发台（Part E 后）的悬停语言是「骨白底 + 2px 墨边 + 朱红字 + 硬阴影」，
+      几乎不填红；两页交互语言不一致正是「问答页更红」的来源。
+      本覆盖层把这 5 处统一成与开发台相同的「墨边 + 朱红字」悬停/选中，
+      保留真正的「主操作」红（发送主按钮 .send-btn、顶栏 .tb-btn.primary、
+      侧栏当前会话红行、用户气泡 .user-bubble）。
+      守 R14：#app 前缀提特异性压过组件 scoped，纯覆盖层，
+      不碰 AskApp.vue / AskSidebar.vue / AskMessage.vue 热文件。 */
+
+/* 建议卡悬停：去掉整块填红 → 骨白底 + 朱红字 + 墨边 + 硬阴影按压 */
+#app .ask-main .suggestion:hover {
+  background: var(--bg-raised);
+  color: var(--accent);
+  border-color: var(--ink);
+  box-shadow: var(--sh-hard);
+  transform: translate(-2px, -2px);
+}
+
+/* 能力 chip 悬停：骨白底 + 朱红字 + 墨边 */
+#app .ask-main .cap-chip:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+  border-color: var(--ink);
+  box-shadow: var(--sh-hard-sm);
+  transform: translate(-1px, -1px);
+}
+
+/* 猜你想问悬停：同建议卡（骨白底 + 朱红字） */
+#app .ask-main .followup:hover {
+  background: var(--bg-raised);
+  color: var(--accent);
+  border-color: var(--ink);
+  box-shadow: var(--sh-hard);
+  transform: translate(-2px, -2px);
+}
+
+/* 引用 chip 悬停：基线已是朱红字，保持；填红回落到骨白底 + 墨边，
+   引用行号由「白字」回落到次级灰（避免在骨白底上压白字） */
+#app .ask-main .ref-chip:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+  border-color: var(--ink);
+}
+#app .ask-main .ref-chip:hover .ref-line { color: var(--text-muted); }
+
+/* 选中 chip（.chip.on）：去掉整块填红 → 骨白底 + 朱红字 + 墨边 + 硬阴影，
+   与开发台选中态同一「选中 = 朱红信号」语义（不靠满屏红块表达选中） */
+#app .ask-main .chip.on {
+  background: var(--bg-raised);
+  color: var(--accent);
+  border-color: var(--ink);
+  box-shadow: var(--sh-hard-sm);
+}
+
+/* 9) 用户气泡去满红（2026-10-01 续：用户反馈"感觉和之前差不多"——
+   静止红量主角是每条用户消息的整块朱红 .user-bubble，悬停去红只动了瞬时态，静止观感不变。
+   改骨白底 + 2px 墨边 + 墨字，仅留 3px 朱红顶边作"你"的信号（降一点，非全去），
+   并修掉原白字压朱红 3.31:1 对比缺陷。用户行已 flex-end 右对齐、助手行带头像左对齐，
+   去红后仍靠对齐 + 头像区分你/我。守 R14：#app 前缀提特异性，纯覆盖层不碰 AskMessage.vue。 */
+#app .ask-main .user-bubble {
+  background: var(--bg-raised);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  border-top: 3px solid var(--accent);
+  box-shadow: var(--sh-hard-sm);
+}

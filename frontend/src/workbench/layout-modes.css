@@ -1,0 +1,243 @@
+/* =============================================================
+   DocMind 布局模式层（Layout Modes）—— 换空间构成本身
+   -------------------------------------------------------------
+   触发：<html data-layout="fixed|focus|dock|split|grid">
+
+   四层分工（四者完全正交，可任意组合）：
+     data-skin     配色       skins.css        8 套
+     data-style    造型语言   style-modes.css  5 套
+     data-material 材质       glass.css        2 套
+     data-layout   **空间构成** 本文件          5 套 ← 本层
+
+   为什么必须有这一层：前三层换的全是「表面」——颜色、描边、圆角、字体。
+   但工作台的空间构成一直是同一副骨架：
+     .wb-body { display:flex }  +  .ft-panel { flex: 0 0 288px }
+   也就是「左 288px 侧栏 + 右主区」永远不变。用户说「风格大改」时真正指的
+   是这个 —— 侧栏该在哪、主区该多宽、该居中还是铺满、该分屏还是堆叠。
+
+   本层动的是骨架：
+     · .wb-body 的 flex-direction / 侧栏的 flex-basis 与 order
+     · 主区的 max-width + margin（居中限宽 = 编辑式阅读感）
+     · 概览内部的两栏 → 网格 / 单列
+   不改任何 DOM 结构、不改任何业务逻辑、不动交叠源文件 —— 纯 CSS 覆盖。
+
+   ⚠️ 每套布局都配一套排版尺度（--style-scale / --style-space-*）：
+      布局换了，密度必须跟着换。侧栏收窄若字号不变会挤；主区限宽若字号不变会行长过长。
+   ============================================================= */
+
+/* ==========================================================
+   ① fixed 固定三栏（默认 / 零回归）
+   侧栏 288px 常驻左，主区铺满右侧。VS Code / 常规 IDE 骨架。
+   ========================================================== */
+:root:root:root[data-layout='fixed'] {
+  --lay-rail: 288px;          /* 侧栏宽度 */
+  --lay-rail-side: left;      /* 侧栏停靠边 */
+  --lay-main-max: none;       /* 主区不限宽 */
+  --lay-main-center: 0;       /* 主区不居中 */
+  --lay-ov-cols: 1fr 1fr;     /* 概览内两栏 */
+  --lay-stack: horizontal;    /* 主区子块排列方向 */
+  /* 排版尺度：常规 */
+  --style-scale: 1;
+  --style-space-s: 8px;
+  --style-space-l: 16px;
+  --style-line: 1.65;
+}
+
+/* ==========================================================
+   ② focus 单列专注
+   侧栏移出视口（但仍可切换唤出），主区**居中限宽 860px** —— 编辑式阅读感。
+   适用于长时间读文档 / 写提示词。空间特征：大量左右留白，一列到底。
+   ========================================================== */
+:root:root:root[data-layout='focus'] {
+  --lay-rail: 0px;
+  --lay-rail-side: left;
+  --lay-main-max: 860px;      /* ← 核心：主区限宽居中 */
+  --lay-main-center: 1;
+  --lay-ov-cols: 1fr;         /* 概览也收成单列 */
+  --lay-stack: vertical;
+  --style-scale: 1.06;        /* 正文略放大 */
+  --style-space-s: 10px;
+  --style-space-l: 24px;      /* 留白放大 */
+  --style-line: 1.78;         /* 行距放大，长文可读 */
+}
+
+/* ==========================================================
+   ③ dock 底部抽屉
+   侧栏从「左栏」变成「底部面板」：整个 .wb-body 竖排，主区在上、
+   文件树在下（横向铺满的抽屉）。空间特征：横向全宽，纵向分层。
+   ========================================================== */
+:root:root:root[data-layout='dock'] {
+  --lay-rail: 240px;          /* 变成高度 */
+  --lay-rail-side: bottom;
+  --lay-main-max: none;
+  --lay-main-center: 0;
+  --lay-ov-cols: repeat(4, 1fr);   /* 概览铺成四列网格 */
+  --lay-stack: horizontal;
+  --style-scale: 0.95;
+  --style-space-s: 6px;
+  --style-space-l: 12px;
+  --style-line: 1.55;
+}
+
+/* ==========================================================
+   ④ split 对半分屏
+   侧栏与主区**各占一半**，中间一条粗分隔线。空间特征：硬 50/50，
+   适合同时看文件与内容做对照。
+   ========================================================== */
+:root:root:root[data-layout='split'] {
+  --lay-rail: 50%;
+  --lay-rail-side: left;
+  --lay-main-max: none;
+  --lay-main-center: 0;
+  --lay-ov-cols: 1fr;         /* 主区只剩一半，概览必须收单列 */
+  --lay-stack: vertical;
+  --style-scale: 0.92;        /* 空间被压缩，字号跟着缩 */
+  --style-space-s: 6px;
+  --style-space-l: 12px;
+  --style-line: 1.5;
+}
+
+/* ==========================================================
+   ⑤ grid 仪表盘
+   侧栏收窄成 68px **图标条**（只剩图标与色点），主区铺满；
+   概览内部变成 12 栅格卡片流。空间特征：极窄导航 + 高密度主区。
+   ========================================================== */
+:root:root:root[data-layout='grid'] {
+  --lay-rail: 68px;
+  --lay-rail-side: left;
+  --lay-main-max: none;
+  --lay-main-center: 0;
+  --lay-ov-cols: repeat(3, 1fr);   /* 主区宽了，网格能多排 */
+  --lay-stack: horizontal;
+  --style-scale: 0.97;
+  --style-space-s: 7px;
+  --style-space-l: 14px;
+  --style-line: 1.58;
+}
+
+/* ==========================================================
+   骨架落地：把上面的令牌接到真实布局上
+   ========================================================== */
+
+/* —— ① 主干：.wb-body 的排列方向 + 侧栏停靠边 —— */
+html[data-layout] .wb-body {
+  display: flex;
+  min-height: 0;
+  /* dock 模式：竖排（主区在上、抽屉在下）；其余横排 */
+  flex-direction: row;
+}
+html[data-layout='dock'] .wb-body { flex-direction: column; }
+
+/* —— ② 侧栏尺寸与位置 —— */
+html[data-layout] .ft-panel {
+  width: var(--lay-rail);
+  flex: 0 0 var(--lay-rail);
+  min-width: 0;
+  overflow: hidden;
+}
+/* focus 模式下侧栏压成 3px 细条（不是移出视口 —— 移出会让里面的滚动位置与
+   展开状态全部重置，用户再切回来就找不到刚才的位置了）。保留 3px 意味着
+   侧栏仍是「收着」的状态而不是「消失」，语义更准。 */
+html[data-layout='focus'] .ft-panel {
+  position: relative;
+  z-index: 5;
+  flex: 0 0 3px !important;
+  width: 3px !important;
+  opacity: .55;
+  transition: opacity .2s var(--ease-standard, ease);
+}
+html[data-layout='focus'] .ft-panel:hover { opacity: 1; }
+/* dock：侧栏从「左栏」变成「底部抽屉」。
+   ⚠️ 两个必须同时做的动作，缺一个就错位（实测踩过）：
+   ① order 换位 —— .wb-body 改 column 后 DOM 里 .ft-panel 在前，
+      竖排后它跑到**上面**了，与设计相反。
+   ② **给 .wb-main 加 flex:1 + min-height:0** —— flex 子项默认 min-height:auto，
+      内容高度（1714px）会顶破容器（848px），把下面的抽屉挤出视口（实测 y=1766）。
+      这是 flex 布局最经典的坑：竖排时高度方向的 min-height:0 与横排时
+      min-width:0 同等重要，只写一个必然漏。 */
+html[data-layout='dock'] .wb-body { flex-direction: column; }
+html[data-layout='dock'] .wb-main {
+  order: 1;
+  flex: 1 1 0% !important;
+  min-height: 0;              /* ← 关键：不加则内容顶破容器 */
+  max-height: 100%;
+  overflow: hidden;
+}
+html[data-layout='dock'] .ft-panel {
+  order: 2;
+  width: 100% !important;
+  flex: 0 0 var(--lay-rail) !important;
+  min-height: 0;
+  border-right: none;
+  border-top: var(--edge-w) solid var(--edge-ink);
+  /* 抽屉里的文件树改成横向条目流，否则 240px 高度里纵向排会挤成一团 */
+  flex-direction: row;
+  align-items: stretch;
+}
+html[data-layout='dock'] .ft-panel .ft-head { flex: 0 0 150px; border-bottom: none; border-right: var(--edge-w) solid var(--edge-ink); }
+html[data-layout='dock'] .ft-panel .ft-body { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+/* grid：窄图标条 —— 隐藏文字，只留图标/色点 */
+html[data-layout='grid'] .ft-panel { align-items: center; }
+html[data-layout='grid'] .ft-panel :is(.ft-name, .ft-head-label, .ft-folder-name, .ft-list-label) {
+  display: none;
+}
+html[data-layout='grid'] .ft-panel :is(.ft-row, .ft-folder) { justify-content: center; }
+
+/* —— ③ 主区限宽居中（focus 的灵魂）——
+   ⚠️ 限宽后内部若还有固定宽度子元素（编辑器 pre、代码块、长表格），
+   它不会自动收缩而是把父级撑破 —— 实测 focus 模式下主区 860px，
+   底部输入区仍按 1152px 排版，导致超出视口被裁。
+   所以这里除了限宽，还要给内部可滚动容器兜一个 min-width:0。 */
+html[data-layout] .wb-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;      /* 与 min-width:0 同理：竖向内容也会顶破，别只写宽度那一个 */
+  max-width: var(--lay-main-max);
+  margin-inline: auto;             /* 限宽后居中 */
+  width: 100%;
+}
+/* 所有可能撑破的内部容器：flex/grid 子项默认 min-width:auto，
+   内容一长就顶破父级 —— 这是 flex 布局最常见的坑，必须逐个兜住。 */
+html[data-layout] .wb-main :is(.wb-chat-host, .wb-editor-row, .ov-inner, .ov-main, .wb-body, .cd-body) {
+  min-width: 0;
+  max-width: 100%;
+}
+html[data-layout] .wb-main :is(pre, code, table) { max-width: 100%; overflow-x: auto; }
+html[data-layout='split'] .wb-main { border-left: 2px solid var(--edge-ink); }
+
+/* focus 模式下主区两侧加呼吸留白（限宽居中后仍有缝隙，需要显式填充） */
+html[data-layout='focus'] .wb-main::before,
+html[data-layout='focus'] .wb-main::after { content: ''; }
+
+/* —— ④ 概览内部列数 —— */
+html[data-layout] .ov-columns,
+html[data-layout] .ov-inner {
+  grid-template-columns: var(--lay-ov-cols) !important;
+}
+html[data-layout] .ov-columns { gap: var(--style-space-l) !important; }
+
+/* —— ⑤ 排版尺度：字号整体缩放 + 行距/留白跟随布局 —— */
+html[data-layout] body {
+  font-size: calc(var(--fs-body) * var(--style-scale));
+  line-height: var(--style-line);
+}
+html[data-layout] :is(.ov-main, .wb-main) { --style-space-l: inherit; }
+
+/* —— ⑥ focus：主区加一条竖向「书脊」辅助线，视觉上强化单列阅读 —— */
+html[data-layout='focus'] .wb-main {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+/* ==========================================================
+   降级：窄屏下布局模式一律退回横排
+   （三栏/对半分在 1024 以下会把主区压到不可用，dock 模式还占高度）
+   ========================================================== */
+@media (max-width: 1023px) {
+  html[data-layout] .wb-body { flex-direction: row !important; }
+  html[data-layout] .ft-panel {
+    width: 220px !important;
+    flex: 0 0 220px !important;
+  }
+  html[data-layout] .wb-main { max-width: none !important; }
+  html[data-layout] .ov-columns { grid-template-columns: 1fr !important; }
+}

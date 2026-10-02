@@ -92,3 +92,9 @@ game_project_template.md
 分区开发设计.md
 docs/agent-self-verify-memory.md
 docs/agent-applications-roadmap.md
+
+# 运行时/工具生成的本地状态，不入库：
+# .coverage      —— coverage.py 跑出来的 SQLite 覆盖率数据库（每次跑都变）
+# artifacts/     —— 视觉验收的临时 HTML 快照（.tmp-*），一次能攒几百个
+.coverage
+artifacts/

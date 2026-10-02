@@ -1,0 +1,126 @@
+/* =============================================================
+   DocMind · 实时视频对话引擎 · 基础层
+   重置 / 排版 / 焦点 / 氛围层 / 降级动效
+   ============================================================= */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  line-height: 1.68;
+  letter-spacing: 0.01em;
+  overflow-x: hidden;
+  min-height: 100vh;
+}
+
+/* —— 氛围层：渐变网格 + 网格地平线 + 扫描线 + 颗粒 —— */
+.atmos {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(48rem 36rem at 14% -8%, rgba(46, 196, 182, 0.20), transparent 60%),
+    radial-gradient(42rem 34rem at 96% 4%, rgba(88, 166, 255, 0.16), transparent 58%),
+    radial-gradient(40rem 40rem at 60% 120%, rgba(227, 138, 58, 0.10), transparent 60%);
+  filter: saturate(1.05);
+}
+.atmos::before { /* 网格地平线 */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(230, 237, 243, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(230, 237, 243, 0.045) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask-image: radial-gradient(circle at 50% 38%, #000 0%, transparent 78%);
+  -webkit-mask-image: radial-gradient(circle at 50% 38%, #000 0%, transparent 78%);
+}
+.atmos::after { /* CRT 扫描线 */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.022) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: 0.5;
+}
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* —— 排版 —— */
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.02;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+p { margin: 0; }
+a { color: inherit; text-decoration: none; }
+
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.accent { color: var(--accent); }
+.cyan { color: var(--cyan); }
+.amber { color: var(--amber); }
+.muted { color: var(--text-muted); }
+
+.container { width: 100%; max-width: var(--maxw); margin-inline: auto; padding-inline: var(--s-5); }
+
+/* —— 焦点可见（可访问性） —— */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+button:focus-visible, a:focus-visible { outline-color: var(--accent); }
+
+/* —— 入场序列（编排一次） —— */
+.reveal { opacity: 0; transform: translateY(26px); }
+.reveal.in {
+  opacity: 1; transform: none;
+  transition: opacity var(--dur-base) var(--ease-out),
+              transform var(--dur-base) var(--ease-out);
+}
+.reveal.d1 { transition-delay: 90ms; }
+.reveal.d2 { transition-delay: 180ms; }
+.reveal.d3 { transition-delay: 270ms; }
+.reveal.d4 { transition-delay: 360ms; }
+.reveal.d5 { transition-delay: 450ms; }
+
+/* —— 降级动效 —— */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .reveal { opacity: 1; transform: none; }
+  .atmos, .grain { display: none; }
+}
+
+/* —— 选区 —— */
+::selection { background: var(--accent-soft); color: var(--text); }

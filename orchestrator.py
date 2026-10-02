@@ -53,7 +53,7 @@ def _as_deps(value):
     raise PlanError(f"depends_on 类型不支持：{type(value).__name__}")
 
 
-def parse_plan(raw, known_ids=None):
+def parse_plan(raw, known_ids=None, max_tasks=None):
     """校验并规范化任务列表。返回 [{id, role, task, depends_on, optional}]。
 
     `known_ids` 用于**动态重规划**：补救任务的 `depends_on` 允许指向本轮之前
@@ -67,8 +67,9 @@ def parse_plan(raw, known_ids=None):
         raise PlanError("plan 必须是任务数组，或含 tasks 字段的对象")
     if not isinstance(tasks, list) or not tasks:
         raise PlanError("任务列表为空")
-    if len(tasks) > MAX_TASKS:
-        raise PlanError(f"任务过多（{len(tasks)} > {MAX_TASKS}）")
+    task_limit = MAX_TASKS if max_tasks is None else max(0, int(max_tasks))
+    if task_limit > 0 and len(tasks) > task_limit:
+        raise PlanError(f"任务过多（{len(tasks)} > {task_limit}）")
 
     out, seen = [], set()
     for i, t in enumerate(tasks):
@@ -109,10 +110,10 @@ def parse_plan(raw, known_ids=None):
             "mcp": mcp,
             "reflection": bool(t.get("reflection", True)),
         }
-        # 逐任务加步申请：只透传 1..12 的非布尔整数（与 agent 子代理硬顶同源），
-        # 非法/越界值（布尔、10.7 这类浮点、非数字串）直接丢弃，回退默认步数。
+        # 逐任务步数申请与用户可配置的子代理步数上限保持一致。
+        # 非法/越界值（布尔、10.7 这类浮点、非数字串）回退默认步数。
         steps_value = _strict_int_steps(t.get("max_steps"))
-        if steps_value is not None and 1 <= steps_value <= 12:
+        if steps_value is not None and 1 <= steps_value <= 1000:
             item["max_steps"] = steps_value
         out.append(item)
 
@@ -149,14 +150,14 @@ def _norm_task(text):
     return _WS.sub(" ", str(text or "").strip()).lower()
 
 
-def dedup_tasks(tasks):
+def dedup_tasks(tasks, max_tasks=None):
     """批次内去重 + 依赖重路由。
 
     按 ``(role, 归一化 task)`` 判定重复；保留拓扑波序中最靠前的副本，
     后续副本标记 dropped，并把其下游 ``depends_on`` 重路由（transitive）到保留副本。
     返回 ``(kept_tasks, dropped_ids, remap)``。无重复时 dropped/remap 为空。
     """
-    tasks = parse_plan(list(tasks))           # 复用校验（id 重复/依赖/循环）
+    tasks = parse_plan(list(tasks), max_tasks=max_tasks)  # 复用校验（id 重复/依赖/循环）
     waves = topological_waves(tasks)
     order_idx = {}
     for wi, w in enumerate(waves):
@@ -306,7 +307,7 @@ def apply_proposal(proposal, by_id, tasks, results, max_tasks):
     raw = proposal.get("replace") or proposal.get("revise") or []
     if isinstance(raw, list) and raw:
         try:
-            norm = parse_plan(raw, known_ids=set(by_id))
+            norm = parse_plan(raw, known_ids=set(by_id), max_tasks=max_tasks)
         except PlanError:
             norm = []
         for t in norm:
@@ -345,10 +346,10 @@ def apply_proposal(proposal, by_id, tasks, results, max_tasks):
 
     # ③ add：追加补救任务（可依赖已完成的任务）
     raw = proposal.get("add") or proposal.get("tasks") or []
-    room = max(0, max_tasks - len(tasks))
+    room = max(0, max_tasks - len(tasks)) if max_tasks > 0 else len(raw or [])
     if isinstance(raw, list) and raw and room:
         try:
-            norm = parse_plan(raw, known_ids=set(by_id))
+            norm = parse_plan(raw, known_ids=set(by_id), max_tasks=max_tasks)
         except PlanError:
             norm = []
         for t in norm:
@@ -389,9 +390,10 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
     """
     t0 = time.monotonic()
     # 接受"原始任务"或"已 parse_plan 过的任务"两种入参（幂等规范化，避免调用方踩坑）
-    tasks = parse_plan(list(tasks))
+    task_limit = MAX_TASKS if max_tasks is None else max(0, int(max_tasks))
+    tasks = parse_plan(list(tasks), max_tasks=task_limit)
     topological_waves(tasks)          # 静态校验：先炸出循环依赖
-    limit_tasks = int(max_tasks or MAX_TASKS)
+    limit_tasks = task_limit
     results = {}
     blocked = {}
     rounds = []                       # 每轮实际执行的 id 列表（≈ 拓扑波）
@@ -409,7 +411,7 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
                 pass
 
     # 批次内去重：合并完全相同的 (role, 任务) 副本，依赖重路由到保留副本
-    tasks, _dropped, _remap = dedup_tasks(tasks)
+    tasks, _dropped, _remap = dedup_tasks(tasks, max_tasks=task_limit)
     by_id = {t["id"]: t for t in tasks}
     if _dropped:
         for _did in _dropped:

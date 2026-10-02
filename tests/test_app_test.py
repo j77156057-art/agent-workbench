@@ -711,7 +711,137 @@ class DeepLinkTests(Base):
         self.assertTrue(on["passed"], on["failed"])
 
 
+class AskTierTests(Base):
+    """问答那一档的判定（Wave26/27）。纯层，不起浏览器。
+
+    它补的是 §6 缺口 15 的下半：`/api/chat` 的真问答链路此前只在 HTTP 层验过（而且要
+    **注入** LLM），页面那一层（页面 → `/api/chat` → ReAct → 工具 → DOM）没有覆盖。
+    这里只验**判定表**；真跑页面那条在现场类里。
+    """
+
+    CREDENTIAL = "probe_6f6c8f.py"
+
+    def honest(self, **overrides):
+        base = {"ask_credential": self.CREDENTIAL,
+                "ask_text": "分析\n先看一眼代码库根\nLIST_DIR\n.\n观察\n返回 39 个字符\n"
+                            "根据检索到的内容，[FILE] %s —— 以上就是可用清单。" % self.CREDENTIAL,
+                "ask_shell": 1, "ask_click_ok": True,
+                "ask_question": "玩家受伤扣血的逻辑在哪里实现？",
+                "ask_question_echoed": True, "ask_truncated": False,
+                "ask_console_errors": [], "ask_failed_requests": []}
+        base.update(overrides)
+        return base
+
+    def test_an_honest_turn_is_green(self):
+        checks = at.ask_checks(self.honest())
+        self.assertTrue(all(checks.values()), [k for k, v in checks.items() if not v])
+
+    def test_the_credential_has_to_be_in_the_reply(self):
+        """凭据是**那一次运行独有的随机夹具名**：它只能从 `list_dir` 的真实返回里来。
+
+        少了它，"页面上出现了一句话"跟"整条链路真跑过"就分不开了。
+        """
+        checks = at.ask_checks(self.honest(ask_text="根据检索到的内容，以上就是可用清单。"))
+        self.assertFalse(checks["ask_reply_arrived"])
+
+    def test_an_empty_credential_can_never_pass(self):
+        """凭据是空串时必须红——不然 `"" in text` 恒为真，那条判据就是装饰。"""
+        checks = at.ask_checks(self.honest(ask_credential=""))
+        self.assertFalse(checks["ask_reply_arrived"], "空凭据被当成了通过")
+
+    def test_the_failure_banner_is_not_an_answer(self):
+        checks = at.ask_checks(self.honest(
+            ask_text=self.CREDENTIAL + "\n本轮请求失败，未完成。"))
+        self.assertFalse(checks["ask_reply_is_not_an_error"])
+
+    def test_a_truncated_read_is_not_evidence_of_absence(self):
+        checks = at.ask_checks(self.honest(ask_truncated=True))
+        self.assertFalse(checks["ask_read_wholly"])
+
+    def test_a_click_without_a_reply_is_not_a_turn(self):
+        checks = at.ask_checks(self.honest(ask_shell=0, ask_click_ok=False,
+                                           ask_question_echoed=False, ask_text=""))
+        for name in ("ask_shell_mounted", "ask_suggestion_clicked", "ask_question_echoed",
+                     "ask_reply_arrived"):
+            self.assertFalse(checks[name], name)
+
+    def test_the_question_has_to_be_echoed_back(self):
+        checks = at.ask_checks(self.honest(ask_question_echoed=False))
+        self.assertFalse(checks["ask_question_echoed"])
+
+    def test_console_and_failed_requests_are_separate_checks(self):
+        checks = at.ask_checks(self.honest(ask_console_errors=["boom"],
+                                           ask_failed_requests=[{"url": "/x"}]))
+        self.assertFalse(checks["ask_console_clean"])
+        self.assertFalse(checks["ask_no_failed_requests"])
+
+    def test_the_table_is_merged_only_when_asked(self):
+        base = {"ready": True, "isolated": True, "activated": True, "shell": 1, "tabs": 4,
+                "rows": 1, "fixture_in_tree": True, "console_errors": [],
+                "failed_requests": [], "click_ok": True, "active_before": "a",
+                "active_after": "b", "content_before": "x", "content_after": "y",
+                "body_truncated": False, "texts": {}}
+        fresh = {"built": True, "fresh": True}
+        cleanup = {"removed": True, "job_stopped": True, "live_pages": 0}
+        off = at.evaluate(dict(base), {"tab": "b", "texts": [], "tabs": 4}, fresh, cleanup)
+        self.assertFalse([k for k in off["assertions"] if k.startswith("ask_")])
+        on = at.evaluate(dict(base, **self.honest()),
+                         {"tab": "b", "texts": [], "tabs": 4, "ask": True}, fresh, cleanup)
+        self.assertTrue([k for k in on["assertions"] if k.startswith("ask_")])
+        self.assertTrue(on["passed"], on["failed"])
+
+    def test_server_env_extra_reaches_the_child(self):
+        """问答那一档靠 `extra` 把 `LLM_PROVIDER=custom` + `LLM_BASE_URL` 传给子进程。
+
+        `server_env` 是**合并 `os.environ`** 的（`process_runner.clean_environment` 拿到什么
+        用什么，所以少了 PATH 之类 uvicorn 都起不来），而 `config` 导入时 `load_dotenv()`
+        已经把本仓 `.env` 灌进了 `os.environ`——所以这里要验的是"extra **覆盖**了环境里的
+        值"，不是"环境里没有这个键"（第一版按后者写，当场红）。
+        """
+        import os
+        old = os.environ.get("LLM_PROVIDER")
+        os.environ["LLM_PROVIDER"] = "ollama"
+        try:
+            env = at.server_env("D:/tmp/x", extra={"LLM_PROVIDER": "custom",
+                                                   "LLM_BASE_URL": "http://127.0.0.1:1/v1"})
+        finally:
+            if old is None:
+                os.environ.pop("LLM_PROVIDER", None)
+            else:
+                os.environ["LLM_PROVIDER"] = old
+        self.assertEqual(env["LLM_PROVIDER"], "custom", "extra 没盖住环境里的值")
+        self.assertEqual(env["LLM_BASE_URL"], "http://127.0.0.1:1/v1")
+        self.assertEqual(env["DOCMIND_STATE_ROOT"], "D:/tmp/x")
+        self.assertNotIn("LLM_BASE_URL", at.server_env("D:/tmp/x"))
+
+
 class LivePageTests(Base):
+    def test_the_ask_tier_really_runs_a_turn_through_the_page(self):
+        """真开一次问答页：点建议问题 → 真 `/api/chat` → 真 ReAct + 真工具 → 答案进 DOM。
+
+        服务端用 `llm_stub` 的**回环假服务**当 `custom` provider（零网络），凭据是那一次
+        运行独有的随机夹具文件名——它只能从 `list_dir` 的真实返回里来。
+        """
+        from agent_runtime import llm_stub
+        handle = llm_stub.start(action="list_dir")
+        try:
+            got = at.run_app_test(ROOT, ask=True, timeout=180.0,
+                                  server_env_extra=llm_stub.env_for(handle))
+        finally:
+            llm_stub.stop(handle)
+        detail = json.dumps({"failed": got.get("failed"),
+                             "credential": (got.get("observed") or {}).get("ask_credential"),
+                             "question": (got.get("observed") or {}).get("ask_question"),
+                             "text": str((got.get("observed") or {}).get("ask_text"))[:400],
+                             "error": got.get("error")}, ensure_ascii=False)[:1200]
+        if not at.bundle_freshness(ROOT)["fresh"]:
+            self.assertEqual(got["failed"], ["bundle_built_after_latest_source"], detail)
+        else:
+            self.assertTrue(got["ok"], detail)
+        text = str((got.get("observed") or {}).get("ask_text") or "")
+        self.assertIn(str((got.get("observed") or {}).get("ask_credential")), text, detail)
+        self.assertEqual((got.get("observed") or {}).get("ask_console_errors"), [], detail)
+
     def test_the_deep_link_tier_visits_every_route_in_a_real_browser(self):
         """真开一次浏览器：三条页面路由 + 两条别名 + 一条不存在的路径。
 

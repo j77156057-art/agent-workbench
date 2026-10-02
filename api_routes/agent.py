@@ -571,7 +571,8 @@ def build_router(ctx) -> APIRouter:
                 await run_in_threadpool(WORKFLOWS.unsubscribe, workflow_id, q)
 
         return StreamingResponse(stream(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache",
+                                 headers={"Cache-Control": "no-cache, no-transform",
+                                          "Connection": "keep-alive",
                                           "X-Accel-Buffering": "no"})
 
     @router.get("/workflow/{workflow_id}/skill-candidate")

@@ -2,10 +2,10 @@
 // AI 问答首页（/）：用大白话提问，AI 自动检索当前项目代码/资料后流式作答。
 // 与代码工作台共享 api.ts / markdown / 主题变量 / 会话 session.js；
 // 重操作（建索引、分区开发）统一收口到工作台，本页只保留问答必需能力。
-import { computed, defineAsyncComponent, nextTick, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   aiApi, modelResidencyApi, projectApi, kbApi, promptApi, harnessApi, contextApi,
-  getProjectId, setProjectId, setSessionId, startTabProbe, probeSoleDocMindTab,
+  getProjectId, setSessionId, startTabProbe, probeSoleDocMindTab,
 } from '../workbench/api'
 import type { ModelStatus, ProjectInfo, SseEvent, SessionInfo, ContextUsage } from '../workbench/api'
 import { demoMode, probeBackend } from '../workbench/composables/demo'
@@ -15,11 +15,11 @@ import { useOrphanWorkflow } from '../workbench/composables/useOrphanWorkflow'
 import { useChatStream } from '../workbench/composables/useChatStream'
 import AskSidebar from './components/AskSidebar.vue'
 import AskMessage from './components/AskMessage.vue'
-import AskHistoryPopover from './components/AskHistoryPopover.vue'
 import FileViewer from './components/FileViewer.vue'
 // 设置弹窗体积大（117KB）且低频：异步组件 + v-if，打开时才拉取
 const ModelSettingsDialog = defineAsyncComponent(() => import('../workbench/components/ModelSettingsDialog.vue'))
 import type { ChatMsg, ChatTraceItem } from '../workbench/composables/chat-types'
+import { ASK_PREFS_EVENT, loadAskPrefs, type AskPrefs } from './askPrefs'
 
 // ---------------- 全局状态 ----------------
 const power = ref<ModelStatus | null>(null)
@@ -53,6 +53,18 @@ const {
   },
 })
 
+// 问答「默认开关」：设置弹窗里勾的「深度思考/联网搜索默认开启」写进 docmind.chatThinking / chatWeb
+// （useModelConfig 自己存的那份，问答页与工作台对话台共享），这里把 chip 状态跟着翻。
+// 正在回答时不搅 —— 改设置不该影响已经在跑的这一轮。
+function syncDefaultSwitches() {
+  if (sending.value) return
+  const p = loadAskPrefs()
+  thinkingOn.value = p.defaultThinking
+  webOn.value = p.defaultWeb
+}
+onMounted(() => window.addEventListener(ASK_PREFS_EVENT, syncDefaultSwitches))
+onUnmounted(() => window.removeEventListener(ASK_PREFS_EVENT, syncDefaultSwitches))
+
 const viewer = ref<{ path: string; line: number } | null>(null)
 
 const ingestBusy = ref(false)
@@ -69,10 +81,79 @@ const SUGGESTIONS = [
   '新手引导流程涉及哪些文件？',
 ]
 
+// 输入框上方能力 chip：点击把能力前缀填入输入框（可编辑后发送），而非直接发送
+const CAP_CHIPS = [
+  { label: '检索代码', prompt: '检索一下：' },
+  { label: '读文档', prompt: '帮我通读这份资料并总结：' },
+  { label: '生成补丁', prompt: '为下面的问题生成一个修复补丁：' },
+  { label: '解释报错', prompt: '帮我解释这段报错的成因：' },
+]
+function useCapability(prompt: string) {
+  draft.value = prompt
+  inputFocus.value = true
+  void nextTick(() => { autosize(); textareaEl.value?.focus() })
+}
+
+// 占位 ghost text 轮播：空输入且未聚焦时，在输入框内轮播示例提问
+const GHOST_PROMPTS = [
+  '这个函数在哪里被调用？',
+  '解释这段报错的原因',
+  '为这个 bug 生成一个修复补丁',
+  '通读 src 入口逻辑并总结',
+  '这个数值公式是怎么算出来的？',
+]
+const ghostText = ref(GHOST_PROMPTS[0])
+const inputFocus = ref(false)
+let ghostTimer = 0
+function startGhostRotation() {
+  window.clearInterval(ghostTimer)
+  let i = 0
+  ghostTimer = window.setInterval(() => {
+    i = (i + 1) % GHOST_PROMPTS.length
+    ghostText.value = GHOST_PROMPTS[i]
+  }, 3500)
+}
+
+// 回答结束后「猜你想问」第二触点：从最后一条已完成回答启发式抽取文件引用生成相关追问
+const FILE_REF_RE = /[A-Za-z0-9_.\-/\\]+\.(gd|gdshader|cs|cpp|cc|c|h|hpp|py|ts|tsx|js|jsx|vue|java|go|rs|rb|php|md|json|toml|yaml|yml|sql|sh|bat|ps1|txt)\b(?::\d+)?/g
+const FOLLOWUP_GENERIC = [
+  '用大白话再解释一遍',
+  '这块逻辑有没有边界情况或坑？',
+  '给我一个最小可运行示例',
+  '如果要改这里，风险点在哪里？',
+]
+function deriveFollowups(text: string): string[] {
+  const files = new Set<string>()
+  if (text) {
+    let m: RegExpExecArray | null
+    FILE_REF_RE.lastIndex = 0
+    while ((m = FILE_REF_RE.exec(text)) !== null && files.size < 2) {
+      files.add(m[0].replace(/:\d+$/, ''))
+    }
+  }
+  const out: string[] = []
+  for (const f of files) {
+    out.push(`通读 ${f} 并总结它负责什么`)
+    out.push(`在 ${f} 里还有哪些相关函数？`)
+  }
+  for (const g of FOLLOWUP_GENERIC) {
+    if (out.length >= 4) break
+    out.push(g)
+  }
+  return out.slice(0, 4)
+}
+
 // ---------------- 派生 ----------------
 const guidance = computed(() => config.value?.ollama_status?.guidance || '')
 const canSend = computed(() => !sending.value && !historyLoading.value && !gateBlocking.value
   && (draft.value.trim().length > 0 || pendingImages.value.length > 0))
+
+// 最后一条已完成的助手回答 → 相关追问（仅对话态、无草稿且未在发送时显示）
+const followups = computed<string[]>(() => {
+  const last = messages.value[messages.value.length - 1]
+  if (!last || last.role !== 'assistant' || last.status !== 'done') return []
+  return deriveFollowups(last.text)
+})
 
 // ---------------- 工作流门控 / 孤儿恢复 ----------------
 // 审批门互斥与孤儿工作流恢复均复用工作台 composable，保持两入口行为一致
@@ -107,11 +188,9 @@ function clearLastSession() {
   try { localStorage.removeItem(lastSessionKey()) } catch { /* ignore */ }
 }
 
-// ---------------- 问答历史弹层 ----------------
-const historyOpen = ref(false)
+// ---------------- 会话历史（左侧栏列表）----------------
 const sessionItems = ref<SessionInfo[]>([])
 const sessionBusy = ref(false)
-const sessionError = ref('')
 
 // ---------------- 上下文窗口用量（与工作台同口径，后端按当前模型真实窗口估算）----------------
 const usage = ref<ContextUsage | null>(null)
@@ -167,22 +246,16 @@ async function refreshSessionList() {
     // 问答页只列 ask- 域会话（工作台 web- 域不混入），后端已按当前项目分桶
     sessionItems.value = (Array.isArray(result.items) ? result.items : [])
       .filter(i => String(i.session_id || '').startsWith('ask-'))
-    sessionError.value = ''
   } catch (e) {
-    sessionError.value = (e as Error).message || '问答历史加载失败'
+    showToast((e as Error).message || '问答历史加载失败')
   }
-}
-async function openHistory() {
-  historyOpen.value = true
-  await refreshSessionList()
 }
 async function switchAskSession(id: string) {
   const target = String(id || '').trim()
-  if (!target || target === sid() || sessionBusy.value) { historyOpen.value = false; return }
+  if (!target || target === sid() || sessionBusy.value) return
   if (messages.value.length
       && !window.confirm('当前对话会保留在历史中，切换后将显示另一段对话。继续？')) return
   sessionBusy.value = true
-  sessionError.value = ''
   stop()
   try {
     const claimed = await setSessionId(target)
@@ -191,7 +264,6 @@ async function switchAskSession(id: string) {
     usage.value = null
     pendingImages.value = []
     try { sessionStorage.removeItem(interruptedKey()) } catch { /* ignore */ }
-    historyOpen.value = false
     await restoreHistory()
     persistLastSession(target)
     await loadAskContext()
@@ -211,7 +283,6 @@ async function deleteAskSession(id: string) {
     try {
       try { await harnessApi.deleteSession(target) } catch { /* 文件可能已不存在 */ }
       clearLastSession()
-      historyOpen.value = false
       await newSession()
       await refreshSessionList()
     } finally {
@@ -269,7 +340,9 @@ async function loadPower() {
 async function loadProjects() {
   const r = await projectApi.list()
   projects.value = r.projects || []
-  if (!currentPid.value) currentPid.value = r.current || (r.projects[0]?.project_id || '')
+  // 问答页不强制选项目：currentPid 仅读已存偏好（可为空 = 无项目对话模式）。
+  // 选择 / 切换项目统一在代码工作台进行，本页只展示当前项，不在本页切换。
+  currentPid.value = getProjectId()
 }
 async function reloadAll() {
   await Promise.all([loadConfig(), loadProjects(), loadPower()])
@@ -338,6 +411,18 @@ async function newSession() {
   void detectOrphanWorkflow()
   await nextTick(scrollToBottom)
 }
+// 侧栏「＋ 新对话」：新建后刷新历史列表，使新会话在列表中可见/置顶
+async function newChat() {
+  await newSession()
+  await refreshSessionList()
+  // 乐观插入新会话占位：后台此时尚无内容，发首条消息后由真实列表覆盖。
+  // 即时可见反馈，避免「点了新对话却像什么都没发生」。
+  const id = sid()
+  sessionItems.value = [
+    { session_id: id, title: '未命名对话', updated_at: new Date().toISOString(), preview: '' } as SessionInfo,
+    ...sessionItems.value.filter((s) => s.session_id !== id),
+  ]
+}
 
 // ---------------- SSE 流式问答 ----------------
 let chatEpoch = 0
@@ -378,19 +463,24 @@ async function send(preset?: string) {
     id: msgSeq++, role: 'user', text: q || '请分析附件图片', status: 'done',
     images: imgs.map((i) => i.url), trace: [], reasoning: '', notices: [], plan: [],
   }
-  const turn: ChatMsg = {
+  // 关键：把流式回答对象创建为 reactive 代理，否则流式直写 turn.text/status
+  // 是绕过代理改原始对象，computed 依赖（如 followups 读 last.status）永不失效。
+  const turn = reactive<ChatMsg>({
     id: msgSeq++, role: 'assistant', text: '', status: 'streaming',
     trace: [], reasoning: '', notices: [], plan: [],
     startedAt: Date.now(),
-  }
+  })
   messages.value.push(userMsg, turn)
   pendingImages.value = []
   attachmentError.value = ''
   draft.value = ''
   autosize()
   sending.value = true
-  stick.value = true
-  await nextTick(scrollToBottom)
+  // 发送时不强制把视口拽到底：仅当用户本就在底部附近才跟随，
+  // 避免「结果还没出来就被强制拉到最低」打断正在上方阅读的用户。
+  const se0 = scrollEl.value
+  stick.value = se0 ? se0.scrollHeight - se0.scrollTop - se0.clientHeight < 80 : true
+  if (stick.value) await nextTick(scrollToBottom)
 
   if (demoMode.value) {
     await demoAnswer(turn, q)
@@ -597,25 +687,6 @@ async function onPower(action: 'on' | 'off') {
   await loadPower()
 }
 
-async function onActivate(pid: string) {
-  if (!pid || pid === currentPid.value) return
-  try {
-    const r = await projectApi.activate(pid)
-    if (!r.ok) { showToast('切换项目失败：' + (r.error || '未知错误')); return }
-    setProjectId(pid)
-    currentPid.value = pid
-    messages.value = []
-    await reloadAll()
-    // 切回某项目时优先续接它最近一次问答（单标签门禁内），没有才开空白新会话
-    const resumed = await resumeLastSession()
-    if (!resumed) await window.DocMindSession.create()
-    showToast('已切换项目：' + (r.project?.name || pid))
-    await nextTick(scrollToBottom)
-  } catch (e) {
-    showToast('切换项目失败：' + (e as Error).message)
-  }
-}
-
 async function openSettings() {
   if (demoMode.value) { showToast('示例演示模式下不可修改模型设置'); return }
   try {
@@ -637,7 +708,10 @@ function onScroll() {
 }
 function scrollToBottom() {
   const el = scrollEl.value
-  if (el) el.scrollTop = el.scrollHeight
+  if (!el) return
+  const bottom = el.scrollHeight - el.clientHeight
+  // 已在底部则跳过写入，避免流式逐帧重复设置 scrollTop 引发重排抖动
+  if (el.scrollTop < bottom - 1) el.scrollTop = bottom
 }
 function followScroll() {
   if (stick.value) scrollToBottom()
@@ -645,6 +719,7 @@ function followScroll() {
 
 // ---------------- 生命周期 ----------------
 onMounted(async () => {
+  startGhostRotation()
   startTabProbe()
   try { draft.value = sessionStorage.getItem(draftKey()) || '' } catch { /* ignore */ }
   window.addEventListener('pagehide', () => {
@@ -663,6 +738,7 @@ onMounted(async () => {
   }
   try {
     await reloadAll()
+    await refreshSessionList()
     await restoreHistory()
     // 当前 sid 没有内容（新标签/重开浏览器）时，单标签下自动续接本项目最近问答
     if (!messages.value.length) await resumeLastSession()
@@ -672,6 +748,9 @@ onMounted(async () => {
     showToast('读取配置失败：' + (e as Error).message)
   }
 })
+
+// 离开页面时清理 ghost 轮播定时器
+onUnmounted(() => { window.clearInterval(ghostTimer) })
 </script>
 
 <template>
@@ -684,47 +763,32 @@ onMounted(async () => {
       :demo="demoMode"
       :ingest-busy="ingestBusy"
       :ingest-msg="ingestMsg"
-      @activate="onActivate"
+      :sessions="sessionItems"
+      :current-session-id="sid()"
+      :session-busy="sessionBusy"
       @ingest="onIngest"
       @power="onPower"
       @open-settings="openSettings"
+      @new-session="newChat"
+      @switch-session="switchAskSession"
+      @delete-session="deleteAskSession"
     />
 
     <main class="ask-main">
       <header class="ask-topbar">
-        <div class="topbar-title">
-          <h1>AI 问答</h1>
-          <span class="topbar-sub">提问 → 自动检索当前项目代码与资料 → 给出带文件行号的答案</span>
+        <div class="tb-left">
+          <h1 class="tb-title">AI 问答</h1>
+          <span class="tb-sub">提问 → 检索当前项目代码与资料 → 给出带文件行号的答案</span>
         </div>
-        <div class="topbar-actions">
+        <div class="tb-right">
           <span v-if="usageLabel" class="tb-usage"
-                :class="{ 'tb-usage-warn': usage?.level === 'warn', 'tb-usage-high': usage?.level === 'high' }"
+                :class="{ 'is-warn': usage?.level === 'warn', 'is-high': usage?.level === 'high' }"
                 :title="usageTitle">{{ usageLabel }}</span>
-          <button class="tb-btn" title="查看并恢复本项目的历史问答" @click="openHistory">
-            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M13 3a9 9 0 108.94 10h-2.02A7 7 0 1113 5v3l4-4-4-4v3zm-1 5v5l4.25 2.52.75-1.23-3.5-2.08V8H12z"/></svg>
-            历史
-          </button>
-          <button class="tb-btn" title="清空当前标签页对话并开始新会话" @click="newSession">
-            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 5V2L7 6l5 4V7a5 5 0 11-5 5H5a7 7 0 107-7z"/></svg>
-            新会话
-          </button>
           <a class="tb-btn primary" href="/workbench">
             代码工作台
             <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M8.5 16.5L16 9H9V7h10v10h-2v-7l-7.5 7.5z"/></svg>
           </a>
         </div>
-        <AskHistoryPopover
-          :open="historyOpen"
-          :items="sessionItems"
-          :busy="sessionBusy"
-          :error="sessionError"
-          :current-id="sid()"
-          @close="historyOpen = false"
-          @refresh="refreshSessionList"
-          @create="(async () => { await newSession(); historyOpen = false; await refreshSessionList() })()"
-          @select="switchAskSession"
-          @delete="deleteAskSession"
-        />
       </header>
 
       <div v-if="demoMode" class="banner info">
@@ -735,13 +799,13 @@ onMounted(async () => {
       </div>
 
       <div ref="scrollEl" class="chat-scroll" @scroll="onScroll">
-        <div class="chat-col">
+        <div class="chat-col" :class="{ 'is-welcome': !messages.length }">
           <div v-if="!messages.length" class="welcome">
-            <div class="welcome-logo" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="26" height="26"><path fill="#fff" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
+            <div class="welcome-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
             </div>
-            <h2>用大白话问，我帮你翻代码</h2>
-            <p>AI 会先检索当前项目的代码与已上传资料，再给出答案，并附上可点击的文件行号。</p>
+            <h2 class="welcome-title">用大白话问，我帮你翻代码</h2>
+            <p class="welcome-desc">AI 会先检索当前项目的代码与已上传资料，再给出答案，并附上可点击的文件行号。</p>
             <div class="suggestions">
               <button v-for="s in SUGGESTIONS" :key="s" class="suggestion" @click="send(s)">{{ s }}</button>
             </div>
@@ -755,10 +819,16 @@ onMounted(async () => {
               @wf-activity="onWfActivity"
             />
           </template>
+
+          <div v-if="followups.length && !draft.trim() && !sending" class="followups">
+            <span class="followups-label">猜你想问</span>
+            <div class="followups-row">
+              <button v-for="(q, i) in followups" :key="i" class="followup" type="button" @click="send(q)">{{ q }}</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- 孤儿工作流恢复条：刷新后卡片丢失但后端仍未终结 -->
       <div v-if="orphanWf" class="wf-orphan" role="alert">
         <span class="wf-orphan-glyph" aria-hidden="true">⚠</span>
         <div class="wf-orphan-body">
@@ -781,17 +851,25 @@ onMounted(async () => {
               <button class="img-x" @click="removeImage(i)">×</button>
             </div>
           </div>
-          <textarea
-            ref="textareaEl"
-            v-model="draft"
-            rows="1"
-            placeholder="问点什么：例如「玩家死亡后奖励是怎么结算的？」（Enter 发送，Shift+Enter 换行）"
-            @keydown="onKeydown"
-            @input="autosize"
-            @paste="onPaste"
-            @dragover.prevent
-            @drop="onDrop"
-          ></textarea>
+          <div class="cap-chips">
+            <button v-for="c in CAP_CHIPS" :key="c.label" class="cap-chip" type="button" @click="useCapability(c.prompt)">{{ c.label }}</button>
+          </div>
+          <div class="composer-input">
+            <span v-show="!draft && !inputFocus" class="ghost-text" aria-hidden="true">{{ ghostText }}</span>
+            <textarea
+              ref="textareaEl"
+              v-model="draft"
+              rows="1"
+              aria-label="向 AI 提问，支持检索当前项目代码与资料（Enter 发送，Shift+Enter 换行）"
+              @keydown="onKeydown"
+              @input="autosize"
+              @focus="inputFocus = true"
+              @blur="inputFocus = false"
+              @paste="onPaste"
+              @dragover.prevent
+              @drop="onDrop"
+            ></textarea>
+          </div>
           <div v-if="attachmentError" class="attach-err">{{ attachmentError }}</div>
           <div class="composer-bar">
             <div class="bar-left">
@@ -847,7 +925,8 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.ask-shell { display: flex; height: 100vh; overflow: hidden; }
+/* ===== DocMind 问答页 · 高级粗野风 ===== */
+.ask-shell { display: flex; height: 100vh; overflow: hidden; background: var(--bg); }
 
 .ask-main {
   flex: 1;
@@ -855,242 +934,217 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  background: var(--bg);
 }
 
-/* 顶栏 */
+/* 顶栏：粗下边 + 等宽副标题 */
 .ask-topbar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 12px 24px;
+  gap: 20px;
+  padding: 16px 28px;
   background: var(--bg-raised);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 3px solid var(--ink);
 }
-.topbar-title h1 { margin: 0; font-size: 15px; font-weight: 700; }
-.topbar-sub { font-size: 12px; color: var(--text-faint); margin-left: 10px; }
-.topbar-actions { display: flex; gap: 8px; align-items: center; }
+.tb-left { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.tb-title { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 900; letter-spacing: .01em; color: var(--ink); }
+.tb-sub { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-right { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .tb-usage {
-  font-size: 11px; color: var(--text-muted, #667085);
-  border: 1px solid var(--border, #e4e8ef); border-radius: 999px;
-  padding: 3px 10px; background: var(--bg-selected, #f1f5fb);
-  white-space: nowrap;
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  border: 2px solid var(--ink); padding: 4px 10px; background: var(--bg); white-space: nowrap;
 }
-.tb-usage-warn { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
-.tb-usage-high { color: #b91c1c; border-color: #fca5a5; background: #fef2f2; }
+.tb-usage.is-warn { color: var(--amber); border-color: var(--amber); }
+.tb-usage.is-high { color: var(--danger); border-color: var(--danger); }
 .tb-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
-  color: var(--text);
-  border-radius: 9px;
-  padding: 6px 12px;
-  font-size: 12.5px;
-  cursor: pointer;
-  text-decoration: none;
-  transition: background .15s, border-color .15s;
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 2px solid var(--ink); background: var(--bg-raised); color: var(--ink);
+  font-family: var(--font-mono); font-size: 12.5px; font-weight: 700;
+  padding: 8px 14px; cursor: pointer; text-decoration: none;
+  box-shadow: var(--sh-hard-sm);
+  transition: transform 130ms cubic-bezier(.2,.8,.2,1), background 130ms, box-shadow 130ms;
 }
-.tb-btn:hover { background: var(--bg-hover); }
-.tb-btn.primary { border-color: var(--accent); color: var(--accent); }
-.tb-btn.primary:hover { background: var(--accent-soft); }
+.tb-btn:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); }
+.tb-btn.primary { background: var(--accent); color: var(--accent-ink); }
+.tb-btn.primary:hover { transform: translate(-2px, -2px); }
 
-/* 横幅 */
+/* 横幅：粗边框卡片 */
 .banner {
   flex: 0 0 auto;
-  margin: 12px 24px 0;
-  padding: 9px 14px;
-  border-radius: 10px;
+  margin: 16px 28px 0;
+  padding: 12px 16px;
+  border: 2px solid var(--ink);
+  background: var(--bg-raised);
+  box-shadow: var(--sh-hard-sm);
+  font-family: var(--font-mono);
   font-size: 12.5px;
-  line-height: 1.55;
+  line-height: 1.6;
 }
-.banner.info { background: rgba(47, 111, 237, .08); border: 1px solid rgba(47, 111, 237, .2); color: var(--accent); }
-.banner.warn { background: rgba(200, 129, 28, .10); border: 1px solid rgba(200, 129, 28, .28); color: var(--amber); }
+.banner.info { background: rgba(31, 95, 224, .10); border-color: var(--accent-2); color: var(--accent-2); }
+.banner.warn { background: rgba(200, 129, 28, .10); border-color: var(--amber); color: var(--amber); }
 
 /* 对话区 */
-.chat-scroll { flex: 1; overflow-y: auto; }
+.chat-scroll { flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
 .chat-col {
-  max-width: 860px;
+  max-width: var(--measure);
   margin: 0 auto;
-  padding: 28px 24px 20px;
+  padding: 40px 32px 32px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--s5);
 }
 
-.welcome { text-align: center; padding: 7vh 16px 0; color: var(--text-muted); }
-.welcome-logo {
-  width: 54px; height: 54px;
-  margin: 0 auto 16px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 10px 26px rgba(47, 111, 237, .28);
+/* 空状态：欢迎态打破 680 阅读栏约束，占满高度并借用横向空间（左右引导卡），消除超宽屏空旷感 */
+.chat-col.is-welcome { max-width: min(1040px, 100%); min-height: 100%; justify-content: center; }
+.welcome { text-align: center; padding: 0; }
+.welcome-mark {
+  width: 60px; height: 60px; margin: 0 auto 18px;
+  display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink);
+  border: 3px solid var(--ink); box-shadow: var(--sh-hard-sm);
 }
-.welcome h2 { margin: 0 0 8px; font-size: 20px; color: var(--text); }
-.welcome p { margin: 0 0 22px; font-size: 13.5px; }
-.suggestions { display: flex; flex-direction: column; gap: 8px; max-width: 480px; margin: 0 auto; }
+.welcome-title { margin: 0 0 10px; font-family: var(--font-display); font-size: 26px; font-weight: 900; color: var(--ink); }
+.welcome-desc { margin: 0 auto 28px; max-width: 48ch; font-family: var(--font-sans); font-size: 14px; line-height: 1.7; color: var(--text-muted); }
+.suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-width: 820px; margin: var(--s5) auto 0; }
+@media (max-width: 560px) { .suggestions { grid-template-columns: 1fr; } }
 .suggestion {
-  border: 1px solid var(--border);
-  background: var(--bg-raised);
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
   text-align: left;
-  transition: border-color .15s, background .15s;
+  border: 2px solid var(--ink);
+  background: var(--bg-raised);
+  box-shadow: var(--sh-hard-sm);
+  font-family: var(--font-sans); font-size: 13.5px; color: var(--text);
+  padding: 14px 16px; cursor: pointer;
+  transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
 }
-.suggestion:hover { border-color: var(--accent); background: var(--accent-soft); }
+.suggestion:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); background: var(--accent); color: var(--accent-ink); }
 
-/* 输入区 */
-.composer-wrap { flex: 0 0 auto; padding: 8px 24px 18px; background: linear-gradient(transparent, var(--bg) 28%); }
+/* 输入区：粗边卡片 + 硬阴影 */
+.composer-wrap { flex: 0 0 auto; padding: 16px 28px 24px; }
 .composer {
-  max-width: 860px;
+  max-width: var(--measure);
   margin: 0 auto;
   background: var(--bg-raised);
-  border: 1px solid var(--border-strong);
-  border-radius: 16px;
-  box-shadow: var(--shadow-soft);
-  padding: 10px 12px 8px;
+  border: 3px solid var(--ink);
+  box-shadow: var(--sh-hard);
+  padding: 14px 16px 12px;
 }
-.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(47, 111, 237, .10); }
+.composer:focus-within { border-color: var(--accent); }
 .composer textarea {
   width: 100%;
-  border: none;
-  outline: none;
-  resize: none;
+  border: none; outline: none; resize: none;
   background: transparent;
-  font-family: inherit;
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--text);
-  padding: 4px 6px;
-  max-height: 160px;
+  font-family: var(--font-sans); font-size: 14px; line-height: 1.6;
+  color: var(--text); padding: 6px 8px; max-height: 160px;
 }
 .composer textarea::placeholder { color: var(--text-faint); }
+.cap-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 6px 8px; }
+.cap-chip {
+  border: 2px solid var(--ink); background: var(--bg); color: var(--text);
+  font-family: var(--font-mono); font-size: 11.5px; font-weight: 700;
+  padding: 4px 10px; cursor: pointer; line-height: 1.4;
+  transition: background 130ms, color 130ms, border-color 130ms, transform 130ms;
+}
+.cap-chip:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--ink); transform: translate(-1px, -1px); }
+.composer-input { position: relative; }
+.ghost-text {
+  position: absolute; left: 0; top: 0; right: 0;
+  padding: 6px 8px;
+  font-family: var(--font-sans); font-size: 14px; line-height: 1.6;
+  color: var(--text-faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none;
+}
+.followups { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 0 4px; }
+.followups-label { font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: .04em; }
+.followups-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.followup {
+  border: 2px solid var(--ink); background: var(--bg-raised); color: var(--text);
+  font-family: var(--font-sans); font-size: 13px;
+  padding: 9px 14px; cursor: pointer; text-align: left;
+  box-shadow: var(--sh-hard-sm);
+  transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
+}
+.followup:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); background: var(--accent); color: var(--accent-ink); }
 
 .img-preview { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 6px 8px; }
 .img-thumb { position: relative; }
-.img-thumb img {
-  width: 64px; height: 64px; object-fit: cover;
-  border: 1px solid var(--border); border-radius: 9px;
-}
+.img-thumb img { width: 64px; height: 64px; object-fit: cover; border: 2px solid var(--ink); }
 .img-x {
-  position: absolute; top: -7px; right: -7px;
+  position: absolute; top: -8px; right: -8px;
   width: 18px; height: 18px;
-  border: none; border-radius: 50%;
-  background: var(--text); color: #fff;
-  font-size: 12px; line-height: 1;
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--ink); background: var(--ink); color: #fff;
+  font-size: 12px; line-height: 1; cursor: pointer;
+  display: grid; place-items: center;
 }
-.attach-err { padding: 0 6px 6px; font-size: 12px; color: var(--danger); }
+.attach-err { padding: 0 6px 6px; font-family: var(--font-mono); font-size: 11.5px; color: var(--danger); }
 
-.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
-.bar-left { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; border-top: 2px solid var(--ink); }
+.bar-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .bar-right { display: flex; flex: 0 0 auto; }
 .tool-btn {
-  border: none;
-  background: none;
-  color: var(--text-faint);
-  padding: 6px 8px;
-  border-radius: 8px;
-  cursor: pointer;
-  display: inline-flex;
+  border: 2px solid transparent; background: none; color: var(--text-muted);
+  padding: 6px 8px; cursor: pointer; display: inline-flex;
+  transition: color 130ms, background 130ms, border-color 130ms;
 }
-.tool-btn:hover { background: var(--bg-hover); color: var(--accent); }
+.tool-btn:hover { color: var(--accent); background: var(--bg-hover); border-color: var(--ink); }
 .chip {
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
-  color: var(--text-muted);
-  border-radius: 999px;
-  font-size: 12px;
-  padding: 4px 12px;
-  cursor: pointer;
-  transition: all .15s;
+  border: 2px solid var(--ink); background: var(--bg-raised); color: var(--text);
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  padding: 6px 12px; cursor: pointer;
+  transition: background 130ms, color 130ms, border-color 130ms;
 }
-.chip:hover { border-color: var(--accent); color: var(--accent); }
-.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-.chip.native { background: rgba(122, 90, 248, .10); border-color: var(--accent-2); color: var(--accent-2); cursor: default; }
+.chip:hover { background: var(--ink); color: var(--bg); }
+.chip.on { background: var(--accent); border-color: var(--ink); color: var(--accent-ink); }
+.chip.native { background: rgba(31, 95, 224, .12); border-color: var(--accent-2); color: var(--accent-2); cursor: default; }
 .chip.ghost { border-style: dashed; }
 
 .send-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: #fff;
-  border-radius: 10px;
-  padding: 7px 16px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background .15s;
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 2px solid var(--ink); background: var(--accent); color: var(--accent-ink);
+  font-family: var(--font-mono); font-weight: 700; font-size: 13px;
+  padding: 9px 20px; cursor: pointer;
+  box-shadow: var(--sh-hard-sm);
+  transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms;
 }
-.send-btn:hover { background: #245fd6; border-color: #245fd6; }
-.send-btn:disabled { opacity: .45; cursor: default; background: var(--accent); border-color: var(--accent); }
+.send-btn:hover:not(:disabled) { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); }
+.send-btn:disabled { opacity: .45; cursor: default; }
 .send-btn.stop { background: var(--bg-raised); color: var(--danger); border-color: var(--danger); }
-.send-btn.stop:hover { background: rgba(224, 72, 79, .08); }
-.stop-ico { width: 10px; height: 10px; background: currentColor; border-radius: 2px; }
+.stop-ico { width: 10px; height: 10px; background: currentColor; }
 
 /* toast */
 .toast {
-  position: fixed;
-  top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(30, 38, 54, .92);
-  color: #fff;
-  font-size: 13px;
-  padding: 9px 18px;
-  border-radius: 10px;
-  box-shadow: var(--shadow-pop);
-  z-index: 200;
-  max-width: 70vw;
+  position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: #fff;
+  font-family: var(--font-mono); font-size: 12.5px;
+  padding: 10px 18px; border: 2px solid var(--ink); box-shadow: var(--sh-hard-sm);
+  z-index: 200; max-width: 70vw;
 }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, -8px); }
-.toast-enter-active, .toast-leave-active { transition: all .2s ease; }
+.toast-enter-active, .toast-leave-active { transition: all .2s cubic-bezier(.2,.8,.2,1); }
 
 /* 孤儿工作流恢复条 / 审批门提示 */
 .wf-orphan {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 24px 8px;
-  padding: 9px 14px;
-  border: 1px solid var(--amber);
-  background: rgba(214, 158, 46, .08);
-  border-radius: 10px;
-  font-size: 12.5px;
-  color: var(--text-muted);
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 28px 10px; padding: 12px 16px;
+  border: 2px solid var(--amber); background: rgba(200, 129, 28, .10);
+  font-family: var(--font-mono); font-size: 12px; color: var(--text);
 }
 .wf-orphan-glyph { color: var(--amber); font-size: 15px; }
 .wf-orphan-body { flex: 1; min-width: 0; }
 .wf-orphan-err { color: var(--danger); margin-top: 3px; }
 .wf-orphan-btn {
   flex: 0 0 auto;
-  border: 1px solid var(--border-strong);
-  background: var(--bg-raised);
-  color: var(--text);
-  border-radius: 8px;
-  padding: 5px 12px;
-  font-size: 12px;
-  cursor: pointer;
+  border: 2px solid var(--ink); background: var(--bg-raised); color: var(--text);
+  font-family: var(--font-mono); font-size: 12px; padding: 6px 12px; cursor: pointer;
+  transition: background 130ms, color 130ms, border-color 130ms;
 }
-.wf-orphan-btn:hover { border-color: var(--accent); color: var(--accent); }
-.wf-orphan-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+.wf-orphan-btn:hover { background: var(--ink); color: var(--bg); }
+.wf-orphan-btn.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
 .wf-orphan-btn:disabled { opacity: .55; cursor: default; }
-.gate-hint {
-  flex: 0 0 auto;
-  margin: 0 24px 6px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--amber);
-}
+.gate-hint { flex: 0 0 auto; margin: 0 28px 8px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--amber); }
 .composer.blocked { opacity: .7; }
 .composer.blocked textarea { pointer-events: none; }
 </style>

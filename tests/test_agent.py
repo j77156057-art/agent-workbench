@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import agent as agent_mod
 import tools as tools_mod
 from config import set_runtime
+from agent_runtime.run_budget import RunBudget
 
 
 class _ScriptedLLM:
@@ -90,6 +91,40 @@ class AgentGuardTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertEqual(len([e for e in events if e["type"] == "final"]), 1)
         self.assertIn("当前还没有执行任何写操作", events[-1]["text"])
+
+    def test_capacity_help_is_available_when_cost_budget_is_blocked(self):
+        """额度咨询走本地设置，不因费用熔断而丢失，也不调用模型。"""
+        llm = _ScriptedLLM([_FINAL_OK])
+        with patch.object(agent_mod._pricing, "check", return_value={
+                "ok": False, "reason": "全局预算已用尽"}), \
+             patch.object(agent_mod._pricing, "status", return_value={
+                 "global_limit": 1, "global_spent": 1,
+                 "sessions": {}, "per_minute_calls_limit": 0,
+                 "minute_calls": 0}):
+            events = list(agent_mod.Agent(llm=llm).run(
+                "token上限了，后续问怎么提高上限？", stream=True))
+        self.assertEqual(llm.calls, 0)
+        self.assertEqual(len([e for e in events if e.get("type") == "final"]), 1)
+        self.assertTrue(events[-1].get("offline"))
+        self.assertIn("设置 → 智能体", events[-1]["text"])
+        self.assertIn("任务 Token 上限", events[-1]["text"])
+        self.assertIn("费用预算是另一套限制", events[-1]["text"])
+
+    def test_capacity_help_does_not_match_normal_task(self):
+        self.assertIsNone(agent_mod._capacity_help_response("请检查项目代码并修复这个报错"))
+
+    def test_capacity_help_is_available_after_task_token_budget_is_exhausted(self):
+        """已有回合的共享任务预算耗尽后，能力咨询仍不调用模型。"""
+        llm = _ScriptedLLM([_FINAL_OK])
+        budget = RunBudget(1)
+        budget.record(prompt_chars=20, output_chars=20)
+        agent = agent_mod.Agent(llm=llm, depth=1, run_budget=budget)
+        with patch.object(agent_mod._pricing, "check", return_value={"ok": True}), \
+             patch.object(agent_mod._pricing, "status", return_value={"sessions": {}}):
+            events = list(agent.run("怎么提高 token 上限？", stream=True))
+        self.assertEqual(llm.calls, 0)
+        self.assertTrue(events[-1].get("offline"))
+        self.assertIn("任务 Token 上限", events[-1]["text"])
 
     def test_project_bug_audit_does_not_start_from_historical_bug_records(self):
         """当前项目缺陷审查必须先取得代码/运行证据，再允许读取历史 bugs。"""
@@ -613,6 +648,72 @@ class SubagentPlanningRoleTests(unittest.TestCase):
         self.assertIn("read_file", spec["tools"])
         self.assertNotIn("apply_edit", spec["tools"])
         self.assertIn("任务拆解", spec["hint"])
+
+    def test_tester_can_run_harness_game_playtest(self):
+        class ChildLLM(_ScriptedLLM):
+            def chat(self, messages, stream=True, **kwargs):
+                chunks = super().chat(messages, stream=stream, **kwargs)
+                return chunks if stream else chunks[0]
+
+        playtest_calls = []
+        playtest_arg = "command: godot --headless --path . --quit-after 3"
+        llm = ChildLLM([
+            _act("game_playtest", playtest_arg),
+            _FINAL_OK,
+        ])
+        parent = agent_mod.Agent(
+            llm=llm,
+            tool_registry={"game_playtest": {
+                "func": lambda arg: playtest_calls.append(arg) or '{"ok": true}'
+            }},
+        )
+
+        result = parent._run_child(
+            "tester", "运行真实 Godot 主场景并核对 player_ready",
+            tool_allowlist=["game_playtest"], mcp_policy="deny", reflect=False,
+        )
+
+        self.assertEqual(playtest_calls, [playtest_arg], repr(result))
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("game_playtest", agent_mod._SUBAGENT_ROLES["tester"]["tools"])
+
+    def test_tester_can_run_and_manage_harness_commands(self):
+        class ChildLLM(_ScriptedLLM):
+            def chat(self, messages, stream=True, **kwargs):
+                chunks = super().chat(messages, stream=stream, **kwargs)
+                return chunks if stream else chunks[0]
+
+        calls = []
+        command_arg = "pytest -q"
+        llm = ChildLLM([
+            _act("run_command", command_arg),
+            _act("dev_job_logs", "job_id: test-job"),
+            _act("dev_job_cancel", "job_id: test-job"),
+            _FINAL_OK,
+        ])
+        parent = agent_mod.Agent(
+            llm=llm,
+            tool_registry={
+                "run_command": {"func": lambda arg: calls.append(("run_command", arg)) or "tests passed"},
+                "dev_job_logs": {"func": lambda arg: calls.append(("dev_job_logs", arg)) or "job running"},
+                "dev_job_cancel": {"func": lambda arg: calls.append(("dev_job_cancel", arg)) or "job cancelled"},
+            },
+        )
+
+        result = parent._run_child(
+            "tester", "运行 pytest 并管理后台测试任务",
+            tool_allowlist=["run_command", "dev_job_logs", "dev_job_cancel"],
+            mcp_policy="deny", reflect=False,
+        )
+
+        self.assertEqual(calls, [
+            ("run_command", command_arg),
+            ("dev_job_logs", "job_id: test-job"),
+            ("dev_job_cancel", "job_id: test-job"),
+        ], repr(result))
+        self.assertEqual(result["status"], "ok")
+        for name in ("run_command", "dev_job_logs", "dev_job_cancel"):
+            self.assertIn(name, agent_mod._SUBAGENT_ROLES["tester"]["tools"])
 
     def test_planner_cannot_widen_tools_or_enable_mcp(self):
         class CaptureLLM(_ScriptedLLM):

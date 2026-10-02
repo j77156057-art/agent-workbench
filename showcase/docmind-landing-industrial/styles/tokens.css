@@ -1,0 +1,60 @@
+/* =============================================================
+   DocMind · 产品落地草案（工业控制台版 / v3）
+   方向：暗色 cockpit · 遥测条 + LED 状态 + 密排网格
+   底色 #0b0e13，强调用 theme.ts 真实分区色板
+   ============================================================= */
+:root {
+  /* —— 表面层（暗色 cockpit） —— */
+  --bg: #0b0e13;
+  --surface: #11161f;
+  --surface-2: #161d28;
+  --hover: #1b2330;
+  --selected: #1e2a3d;
+
+  /* —— 文本 —— */
+  --ink: #e7edf5;
+  --muted: #9aa7b8;
+  --faint: #5e6b7d;
+
+  /* —— 主色 —— */
+  --accent: #2ec4b6;       /* 品牌青（audio 区） */
+  --accent-deep: #1f9b90;
+  --accent-soft: rgba(46, 196, 182, 0.12);
+
+  /* —— 发丝线（暗色更冷） —— */
+  --border: #1f2832;
+  --border-strong: #2c3744;
+
+  /* —— LED 状态色 —— */
+  --led-green: #45c98c;
+  --led-amber: #e3a83a;
+  --led-red: #ff6b6b;
+  --led-cyan: #58a6ff;
+  --led-violet: #bc8cff;
+
+  /* —— 真实分区色板（theme.ts 同源） —— */
+  --r-audio: #2ec4b6;
+  --r-values: #58a6ff;
+  --r-assets: #e3a83a;
+  --r-behaviors: #bc8cff;
+  --r-bugs: #ff6b6b;
+  --r-levels: #45c98c;
+  --r-ui: #f072b6;
+  --r-net: #f0883e;
+
+  /* —— 圆角（工业：小、硬） —— */
+  --r-sm: 4px; --r-md: 7px; --r-lg: 12px; --r-pill: 999px;
+
+  /* —— 间距阶梯 —— */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 40px; --s-7: 72px; --s-8: 112px;
+
+  /* —— 阴影（暗色：极淡，靠边线分层） —— */
+  --shadow-soft: 0 8px 24px rgba(0, 0, 0, .35);
+  --shadow-pop: 0 16px 44px rgba(0, 0, 0, .5);
+
+  /* —— 字体 —— */
+  --font-ui: 'Segoe UI Variable Display', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-display: 'Archivo', 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+}

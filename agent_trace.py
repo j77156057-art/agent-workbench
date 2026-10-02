@@ -108,6 +108,7 @@ class Turn:
         self.finish_reason = None
         self.final_chars = 0
         self.cost_cny = 0.0     # 本轮按 provider 计价的花费（元）
+        self.task_budget = None  # 主 Agent + 子 Agent + 辅助调用的共享预算快照
         self.error = None
         self.aborted = False
         self._t0 = time.monotonic()
@@ -178,6 +179,7 @@ class Turn:
             "cache_creation_tokens": self.cache_creation_tokens,
             "total_tokens": self.prompt_tokens + self.completion_tokens,
             "cost_cny": round(self.cost_cny, 8),
+            "task_budget": self.task_budget,
             "llm_calls": self.llm_calls,
             "llm_ms": self.llm_ms,
             "steps": self.steps,
@@ -264,6 +266,7 @@ def summary():
         "cache_creation_tokens": 0,
         "total_tokens": 0,
         "total_cost_cny": 0.0,
+        "cache_saved_cny": 0.0,
         "avg_elapsed_ms": 0,
         "aborted": 0,
         "errors": 0,
@@ -293,7 +296,8 @@ def summary():
         slot = agg["by_provider"].setdefault(key, {
             "turns": 0, "prompt_tokens": 0, "completion_tokens": 0,
             "cache_read_tokens": 0, "cache_creation_tokens": 0,
-            "tokens": 0, "cost_cny": 0.0,
+            "tokens": 0, "cost_cny": 0.0, "model": r.get("model") or "",
+            "provider": key, "cache_saved_cny": 0.0,
         })
         slot["turns"] += 1
         slot["prompt_tokens"] += p
@@ -302,9 +306,30 @@ def summary():
         slot["cache_creation_tokens"] += cc
         slot["tokens"] += p + c
         slot["cost_cny"] += cost
+        # 逐行用**这一行自己的 model** 算节省，而不是用该 provider 最后见到的 model：
+        # 同一个 provider 可能换过模型（deepseek-chat → deepseek-reasoner），
+        # 统一用最后一个会把之前的行按错价折算。
+        try:
+            import pricing as _pricing
+            saved = _pricing.cache_saved_cny(key, r.get("model") or "", p, cr, cc)
+        except Exception:  # noqa: BLE001 - 节省只是附注，取不到不影响统计
+            saved = 0.0
+        slot["cache_saved_cny"] += saved
+        agg["cache_saved_cny"] += saved
     agg["total_cost_cny"] = round(agg["total_cost_cny"], 8)
+    agg["cache_saved_cny"] = round(agg["cache_saved_cny"], 8)
     for slot in agg["by_provider"].values():
         slot["cost_cny"] = round(slot["cost_cny"], 8)
+        slot["cache_saved_cny"] = round(slot["cache_saved_cny"], 8)
+    # 费用为 0 时补上计价状态：这个 0 到底是「免费」「本地」还是「没配置单价」，
+    # 三者在界面上原本完全一样，用户无从分辨（见 pricing.pricing_state 的说明）。
+    for key, slot in agg["by_provider"].items():
+        try:
+            import pricing as _pricing
+            slot["pricing_state"] = _pricing.pricing_state(
+                slot.get("provider") or key, slot.get("model") or "").get("state", "")
+        except Exception:  # noqa: BLE001 - 状态只是附注，取不到不影响统计
+            slot["pricing_state"] = ""
     agg["avg_elapsed_ms"] = int(elapsed / len(rows))
     return agg
 

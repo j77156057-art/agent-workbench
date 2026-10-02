@@ -31,6 +31,9 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
 PrivilegesRequired=lowest
 Uninstallable=yes
+CloseApplications=force
+RestartApplications=no
+CloseApplicationsFilter=DocMind.exe
 
 [Files]
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
@@ -38,6 +41,12 @@ Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 [Icons]
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\DocMind.exe"
 Name: "{group}\{#AppName}"; Filename: "{app}\DocMind.exe"
+Name: "{group}\卸载 {#AppName}"; Filename: "{uninstallexe}"
+
+[UninstallDelete]
+Type: files; Name: "{app}\uninstall.bat"
+Type: files; Name: "{app}\uninstall_portable.ps1"
+Type: files; Name: "{app}\upgrade_portable.ps1"
 
 [Run]
 Filename: "{app}\DocMind.exe"; Description: "启动 DocMind"; Flags: nowait postinstall skipifsilent

@@ -1,0 +1,90 @@
+/* =============================================================
+   DocMind · 产品落地草案（粗野·重排版 / v5）
+   方向：粗野原始 · 素描纸 · 粗黑描边 · 巨型标题 · 硬阴影 · 零圆角
+   重排要点：正文回归无衬线、字号阶梯收敛、留白放大、动画放缓
+   ============================================================= */
+:root {
+  /* ===== DocMind 统一设计系统：高级粗野风（与 app 同源）===== */
+  /* —— 表面：暖骨白 —— */
+  --bg: #ece7db;
+  --surface: #f3f1ea;
+  --surface-2: #faf8f2;
+
+  /* —— 墨（同时用于粗描边） —— */
+  --ink: #14110f;
+  --muted: #6b6356;
+  --text: #14110f;
+  --text-muted: #6b6356;
+  --faint: #9a9183;
+  --text-faint: #9a9183;
+
+  /* —— 粗黑描边 —— */
+  --border: #14110f;
+  --border-2: 2px solid #14110f;
+  --border-3: 3px solid #14110f;
+
+  /* —— 强调：朱红（唯一响亮色） ——
+     2026-10-02 提亮两档：固定色相 8.9° / 饱和度 100%，只把明度 L 59.0% -> 65.1%，
+     与应用两页（ask/ask-riso.css、workbench/workbench-riso.css）同值。
+     --accent-ink 原为 #ffffff：白字压朱红仅 3.31:1（不达 AA），且提亮后进一步跌到
+     2.88:1；按"响亮色配墨字"的角色分工统一改为墨 → 6.54:1。
+     --accent-deep 保持 #d83a1e 不动：它的角色是"纸底上的深色强调字 / hover 压深"，
+     跟着提亮只会把纸底文字对比（3.75:1）进一步压低，故留作深锚点。 */
+  --accent: #ff674d;
+  --accent-loud: #ff674d;
+  --accent-deep: #d83a1e;
+  --accent-ink: #14110f;
+  --accent-2: var(--accent);
+
+  /* —— 状态色（与 app 同源） —— */
+  --danger: #d8453a;
+  --amber: #c8861c;
+  --green: #1c9e66;
+
+  /* —— 真实分区色板（theme.ts 同源，仅作大色块强调） —— */
+  --r-audio: #2ec4b6;
+  --r-values: #58a6ff;
+  --r-assets: #e3a83a;
+  --r-behaviors: #bc8cff;
+  --r-bugs: #ff6b6b;
+  --r-levels: #45c98c;
+  --r-ui: #f072b6;
+  --r-net: #f0883e;
+
+  --r: 0;
+
+  /* —— 间距梯：整体放大，给粗野风呼吸 —— */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 44px; --s-7: 96px; --s-8: 128px;
+
+  /* —— 硬阴影（brutalist 签名） —— */
+  --sh-hard: 6px 6px 0 var(--ink);
+  --sh-hard-sm: 4px 4px 0 var(--ink);
+  --sh-hard-hover: 8px 8px 0 var(--ink);
+  --shadow-soft: 0 2px 0 rgba(20, 17, 15, .08);
+  --shadow-pop: 6px 6px 0 var(--ink);
+
+  /* —— 字阶：收敛落差，重建层级 —— */
+  --fs-mega: clamp(2.8rem, 6.5vw, 5.2rem);
+  --fs-h1: clamp(2.3rem, 4.6vw, 3.6rem);
+  --fs-h2: clamp(1.7rem, 3vw, 2.4rem);
+  --fs-h3: 1.3rem;
+  --fs-body: 1.0625rem;
+  --fs-sm: 0.9rem;
+  --fs-xs: 0.75rem;
+  --fs-mono: 0.85rem;
+
+  /* —— 字体：标题 Archivo Black / UI grotesque / 标签等宽 —— */
+  --font-display: 'Archivo Black', 'Space Grotesk', 'Noto Sans SC', sans-serif;
+  --font-mono: 'Space Mono', 'JetBrains Mono', Consolas, monospace;
+  --font-body: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  --font-sans: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  --font-ui: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+
+  /* —— 动画：克制、利落 —— */
+  --dur-fast: 130ms;
+  --dur-base: 220ms;
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+
+  --maxw: 1200px;
+}

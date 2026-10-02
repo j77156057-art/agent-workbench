@@ -335,6 +335,9 @@ function providerLabel(p: string) {
             <span class="fl-chip">{{ (selectedTurn.steps || []).length }} 个工具调用</span>
             <span class="fl-chip">{{ selectedTurn.llm_calls }} 次模型思考 · {{ fmtMs(selectedTurn.llm_ms) }}</span>
             <span class="fl-chip">{{ selectedTurn.total_tokens.toLocaleString() }} token（入 {{ selectedTurn.prompt_tokens.toLocaleString() }} / 出 {{ selectedTurn.completion_tokens.toLocaleString() }}）</span>
+            <span v-if="selectedTurn.task_budget?.limit" class="fl-chip" :class="{ cache: selectedTurn.task_budget.exhausted }">
+              任务预算 {{ (selectedTurn.task_budget.total_tokens || 0).toLocaleString() }} / {{ selectedTurn.task_budget.limit.toLocaleString() }}
+            </span>
             <span v-if="selectedTurn.cache_read_tokens" class="fl-chip cache">缓存命中 {{ selectedTurn.cache_read_tokens.toLocaleString() }}</span>
             <span class="fl-chip">花费 {{ money(selectedTurn.cost_cny) }}</span>
             <span class="fl-chip">总耗时 {{ fmtMs(selectedTurn.elapsed_ms) }}</span>

@@ -41,6 +41,11 @@ tree-sitter-javascript>=0.25,<1
 # Lint engine behind dev_diagnostics (Python half). The tool reports "not
 # installed" instead of a false clean when this is missing.
 ruff>=0.16,<1
+# Coverage behind `dev_testrun coverage: true` (agent_runtime/code_coverage).
+# It reports which files/lines were never executed, scoped to the files you
+# changed. When the report can't be produced the tool says "coverage unknown"
+# rather than folding it into a number.
+coverage>=7,<8
 # MCP SDK: client side plus `agent_runtime.mcp_server`, which re-publishes the
 # harness's own read-only tools to the other agents working this repo.
 mcp>=2,<3

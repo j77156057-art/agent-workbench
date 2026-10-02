@@ -1,0 +1,338 @@
+/* =============================================================
+   DocMind 玻璃拟态材质层（Glassmorphism）
+   -------------------------------------------------------------
+   用法：给 <html> 加 data-material="glass"
+        <html data-skin="celadon" data-material="glass">   ← 任意皮肤 + 玻璃
+        皮肤层（skins.css）管**颜色**，本层管**材质**，两者正交。
+
+   为什么不直接改配色做玻璃：玻璃的视觉核心是「半透明 + 背后内容可见」，
+   而现有 5 套皮肤的不透明底色（--bg-raised 等）会把它挡死。两者必须分层，
+   否则每换一次皮肤就要重做一遍磨砂。
+
+   ⚠️ 一个物理约束必须先说清：**backdrop-filter 只能模糊元素「背后」已有的像素。
+   如果祖先链上有不透明底色，玻璃就是纯灰一片、什么都没有。所以本层的所有
+   面板都必须同时满足两条：(1) 自己半透；(2) 祖先链没有不透明底。
+   只做第 1 条是最常见的失败方式 —— 代码写了 backdrop-filter，截图却是纯色。
+
+   ---------- 覆盖范围 ----------
+   ✅ workbench.html  主视图 / 开发舱 / 设置弹窗 / 对话坞 —— 46 个类
+   ✅ index.html      问答页 —— 见 ask/ask-glass.css。
+      必须分文件：实测问答页类名前缀是 sess-* / card-* / ah-* / composer-* / tb-*，
+      与工作台的 wb-* / acp-* / cd-* / ov-* / rh-* / ft-* **零重叠**，
+      塞进同一文件只会互相污染。
+   ⛔ landing.html    产品落地宣传页 —— **有意不做**。它是独立 MPA 入口
+      （landing/main.ts 不依赖 window.DocMindSession），自带 tokens.css 与
+      「粗野原始」版式基线（巨型标题 / 硬边 / 素描纸）。玻璃化会破坏它刻意为之的
+      宣传页观感，且它不读 docmind.skin / docmind.material —— 两个入口的数据源
+      本来就独立。若确需玻璃化 landing，应单独立项而不是塞进本层。
+
+   ============================================================= */
+
+/* ---------- ① 玻璃参数（全部可调，改这里即可） ---------- */
+html[data-material='glass'] {
+  /* — 模糊强度 —
+     8~12px  通透（能看清底下文字，苹果风）
+     16~24px 磨砂（只留色块轮廓，底下文字化开）
+     32px+   毛玻璃（几乎完全遮蔽，只剩氛围）
+     代价：值越大，GPU 合成开销越高；>40px 在低端机明显掉帧 */
+  --glass-blur: 20px;
+
+  /* — 透明度（底色不透明度）—
+     0.10~0.25  通透感强，但对比度要额外补（底下文字会透上来抢注意力）
+     0.35~0.55 平衡（推荐）：既透出氛围又不干扰阅读
+     0.60+     接近不透明，玻璃感最弱 */
+  --glass-alpha: 0.42;
+
+  /* — 高光不透明度 —
+     边缘描边与内高光的强度。0.3 以下看不出"厚度"，0.8 以上像描了白边。
+     浅色底要用 0.5~0.7（深色底的白色高光本来就显眼），深色底 0.25~0.4。 */
+  --glass-highlight: 0.55;
+
+  /* — 饱和度增强 —
+     backdrop-filter 的 saturate()：让背后内容透过玻璃时颜色更鲜活，
+     这是苹果宣传片里"晶莹"的关键。100% = 不变，180% 明显。
+     注意：过 200% 会让朱红/靛青等品牌色溢出到周边，破坏配色纪律。 */
+  --glass-saturate: 165%;
+
+  /* — 圆角 —
+     玻璃必须有圆角，圆角=0 会被读成"半透明的方块"而不是"玻璃片"。
+     苹果风偏大：16~24px。 */
+  --glass-radius: 18px;
+  --glass-radius-sm: 12px;
+
+  /* — 阴影层次 —
+     玻璃的"悬浮感"全靠阴影。分三层：
+       ① 贴地阴影（小、扩散小）—— 玻璃贴着底面
+       ② 悬浮阴影（大、扩散大）—— 玻璃浮在内容之上
+       ③ 内阴影（inset）—— 模拟玻璃厚度，顶部内高光 + 底部内暗
+     玻璃阴影比不透明面板要**更柔和更大**，因为光要穿过材质散开。 */
+  --glass-shadow-contact: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent);
+  --glass-shadow-float: 0 8px 28px -6px color-mix(in srgb, var(--ink) 26%, transparent),
+                          0 20px 48px -12px color-mix(in srgb, var(--ink) 18%, transparent);
+  --glass-inset: inset 0 1px 0 color-mix(in srgb, #fff 60%, transparent),
+                 inset 0 -1px 0 color-mix(in srgb, var(--ink) 10%, transparent);
+
+  /* — 光标高光与视差（由 glassPointer.ts 写入）—
+     --glass-x/--glass-y 是光标在元素内的归一化坐标（-1 ~ 1），
+     驱动「跟随高光」；--glass-p 是视差强度。 */
+  --glass-x: 0;
+  --glass-y: 0;
+  --glass-p: 1;
+
+  /* — 三级深度档位 —
+     不同高度的玻璃用不同模糊与透明度，模拟景深：
+       底层（侧栏/顶栏）：最实、几乎不透明，承担导航可读性
+       中层（卡片/面板）：主力玻璃层
+       浮层（弹窗/下拉）：最透最亮，浮在最上 */
+  --glass-d1-blur: 12px;  --glass-d1-alpha: 0.62;   /* 底层 */
+  --glass-d2-blur: 20px;  --glass-d2-alpha: 0.42;   /* 中层 */
+  --glass-d3-blur: 30px;  --glass-d3-alpha: 0.30;   /* 浮层 */
+
+  /* — 降级：不支持 backdrop-filter 时退回高不透明度 —
+     模糊失效后，底下的内容会直接透上来抢注意力（文字叠文字）。
+     所以不支持时必须把 alpha 顶上去，宁可"像不透明"也不能"花"。 */
+  --glass-fallback-alpha: 0.94;
+}
+
+/* 深色皮肤下的微调：高光要压低（深色底上的白描边本来就显眼），
+   阴影要加重（深色底上看不出投影，玻璃会"浮不起来"） */
+html[data-material='glass'][data-skin='graphite'] {
+  --glass-highlight: 0.34;
+  --glass-shadow-contact: 0 1px 2px rgba(0, 0, 0, .5);
+  --glass-shadow-float: 0 10px 30px -6px rgba(0, 0, 0, .62),
+                         0 24px 54px -12px rgba(0, 0, 0, .5);
+  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, .22),
+                 inset 0 -1px 0 rgba(0, 0, 0, .3);
+  --glass-d1-alpha: 0.72;
+  --glass-d2-alpha: 0.54;
+  --glass-d3-alpha: 0.42;
+  --glass-fallback-alpha: 0.96;
+}
+
+/* ---------- ② 玻璃基元 ---------- */
+/* 一张玻璃片 = 半透底 + 模糊 + 饱和 + 高光描边 + 内阴影 + 投影
+   刻意不加 ::after —— ::after 已被圆点/图标等元素占用，
+   高光用 ::before 会被内容盖住，改用 inset box-shadow 表达厚度更稳。
+
+   ⚠️ 圆角必须带 !important：覆盖层 brutalist-overrides.css:391 给这批类写了
+   `border-radius: var(--r-sm) !important`，而 --r-sm 在纸色皮肤是 0px，
+   不提权就把玻璃的圆角压成 0 —— 半透明的方块不会被读成"玻璃片"。 */
+html[data-material='glass'] :is(
+  .wb-topbar, .wb-statusbar, .ft-panel, .wb-card,
+  .acp-panel, .acp-stage-content, .acp-head,
+  .ov-group, .ov-strip, .ov-chip, .ov-step, .ov-folder,
+  .rh-card, .rh-missing, .rh-refresh, .lb-box, .ws-tab,
+  .cd-input, .cd-btn, .cd-chip, .cd-dock, .cd-head-toggle, .ft-rail
+) {
+  background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d2-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-d2-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-d2-blur)) saturate(var(--glass-saturate));
+  border: 1px solid color-mix(in srgb, var(--ink) calc(var(--glass-highlight) * 42%), transparent);
+  border-radius: var(--glass-radius) !important;
+  box-shadow: var(--glass-shadow-contact), var(--glass-shadow-float), var(--glass-inset) !important;
+}
+/* 小件（chip / step / 图标块）用小圆角，否则一片 18px 圆角会显得幼稚 */
+html[data-material='glass'] :is(.ov-chip, .ov-step, .ov-folder, .cd-btn, .cd-chip, .cd-head-toggle, .ft-rail, .lb-box, .ws-tab) {
+  border-radius: var(--glass-radius-sm) !important;
+  box-shadow: var(--glass-shadow-contact), var(--glass-inset) !important;
+}
+
+/* 底层：侧栏 / 顶栏 / 状态栏 —— 最实，保证导航文字可读 */
+html[data-material='glass'] :is(.wb-topbar, .wb-statusbar, .ft-panel) {
+  background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d1-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-d1-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-d1-blur)) saturate(var(--glass-saturate));
+  border-radius: 0 !important;
+  border-width: 0;
+  box-shadow: var(--glass-inset) !important;
+}
+/* 顶栏与侧栏是通栏的，只有内阴影（贴边感），不要圆角和外投影 */
+html[data-material='glass'] .wb-topbar { border-bottom: 1px solid color-mix(in srgb, var(--ink) 18%, transparent); }
+html[data-material='glass'] .ft-panel { border-right: 1px solid color-mix(in srgb, var(--ink) 18%, transparent); }
+html[data-material='glass'] .wb-statusbar { border-top: 1px solid color-mix(in srgb, var(--ink) 18%, transparent); }
+
+/* 浮层：弹窗 / 下拉 / 悬浮卡 —— 最透最亮 */
+html[data-material='glass'] :is(
+  .sv-box, .wb-modal-shell, .caq-dialog, .ap-pop, .dg-panel, .cmb-manage
+) {
+  background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d3-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-d3-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-d3-blur)) saturate(var(--glass-saturate));
+  border-radius: var(--glass-radius);
+  border: 1px solid color-mix(in srgb, var(--ink) calc(var(--glass-highlight) * 52%), transparent);
+  box-shadow: var(--glass-shadow-float), var(--glass-inset);
+}
+
+/* ---------- ③ 光标跟随高光 ----------
+   原理：用一个覆盖整片玻璃的渐变层，高光中心跟随光标在元素内的位置。
+   --glass-x/--glass-y 由 glassPointer.ts 写成 -1~1 的归一化值，
+   这里换成百分比坐标喂给 radial-gradient。
+   强度用 --glass-p 衰减（默认 1，可用 prefers-reduced-motion 归零）。 */
+html[data-material='glass'] :is(.wb-card, .acp-panel, .acp-stage-content, .ov-group, .rh-card)::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    420px circle at
+    calc(50% + var(--glass-x) * 34%) calc(50% + var(--glass-y) * 34%),
+    color-mix(in srgb, #fff calc(var(--glass-highlight) * 42%), transparent) 0%,
+    transparent 62%
+  );
+  opacity: var(--glass-p);
+  transition: opacity .32s var(--ease-standard, ease);
+}
+/* 玻璃片必须是定位容器，否则 ::before 会相对更外层的祖先定位而跑偏 */
+html[data-material='glass'] :is(.wb-card, .acp-panel, .acp-stage-content, .ov-group, .rh-card) {
+  position: relative;
+  isolation: isolate;
+}
+/* 内容要浮在 ::before 之上 */
+html[data-material='glass'] :is(.wb-card, .acp-panel, .acp-stage-content, .ov-group, .rh-card) > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 视差：玻璃片本体做 2~4px 的反向位移，比背景慢一拍 → 深度感 */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-material='glass'] :is(.wb-card, .acp-panel, .ov-group, .rh-card) {
+    transform: translate3d(
+      calc(var(--glass-x) * 3px * var(--glass-p)),
+      calc(var(--glass-y) * 3px * var(--glass-p)),
+      0
+    );
+    transition: transform .42s var(--ease-standard, cubic-bezier(.16, 1, .3, 1));
+  }
+}
+
+/* ---------- ④ 玻璃要有东西可透 ----------
+   半透明 + 模糊必须背后有内容才看得出效果。若祖先全透明，body 会退化成
+   浏览器默认白（浅色）或黑（深色），玻璃就退化成"纯色块"—— 代码在、效果无。
+   所以这里给 html 铺一层**极低对比的柔和底**，专门作为玻璃的"被折射物"：
+   两团大尺度径向色晕（用皮肤自己的强调色 + 墨），不抢内容但能让玻璃有折射感。 */
+html[data-material='glass'] {
+  background-image:
+    radial-gradient(120% 90% at 12% 8%,
+      color-mix(in srgb, var(--accent) 13%, transparent) 0%, transparent 58%),
+    radial-gradient(100% 80% at 88% 92%,
+      color-mix(in srgb, var(--ink) 9%, transparent) 0%, transparent 62%),
+    linear-gradient(168deg,
+      color-mix(in srgb, var(--bg) 100%, transparent) 0%,
+      color-mix(in srgb, var(--bg-hover) 100%, transparent) 100%);
+  background-attachment: fixed;
+}
+/* 深色皮肤下底色要更深，色晕才不明显（否则整页发灰） */
+html[data-material='glass'][data-skin='graphite'] {
+  background-image:
+    radial-gradient(120% 90% at 12% 8%,
+      color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 55%),
+    radial-gradient(100% 80% at 88% 92%,
+      color-mix(in srgb, #000 26%, transparent) 0%, transparent 60%),
+    linear-gradient(168deg, #101318 0%, #191d24 100%);
+}
+
+/* ---------- ⑤ 按钮与输入框：薄玻璃 ----------
+   按钮不加大模糊（要能读清字），只给半透 + 内高光；
+   输入框反而要更实一点，否则输入的文字和底下的内容会互相干扰。 */
+html[data-material='glass'] :is(button, .wb-btn, .dg-primary, .cd-send, .acp-compose > button):not(:disabled) {
+  background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d2-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(8px) saturate(var(--glass-saturate));
+  backdrop-filter: blur(8px) saturate(var(--glass-saturate));
+  border: 1px solid color-mix(in srgb, var(--ink) calc(var(--glass-highlight) * 38%), transparent);
+  border-radius: var(--glass-radius-sm);
+  box-shadow: var(--glass-shadow-contact), var(--glass-inset);
+}
+html[data-material='glass'] :is(input, textarea, select, .dg-input, .cd-input) {
+  background: color-mix(in srgb, var(--bg) calc(var(--glass-d1-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(var(--glass-saturate));
+  backdrop-filter: blur(10px) saturate(var(--glass-saturate));
+  border-radius: var(--glass-radius-sm);
+  border: 1px solid color-mix(in srgb, var(--ink) 24%, transparent);
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+/* ---------- ⑤' 顶栏/状态栏里的按钮组：必须比玻璃容器更实 ----------
+   实测 bug：切到玻璃后顶栏的「保存 Ctrl+S」整块消失（用户截图证实）。
+   根因：⑤ 给**所有** button 都发了半透 + blur，但顶栏按钮组
+   （问答页 / AI 对话 / 设置 / 更多 / 保存）本身并没有玻璃容器背景 ——
+   它们是「浮在空气里的半透片」，背后又是顶栏的半透玻璃，
+   两层 alpha 叠完 + 双层模糊 → 文字与背景糊在一起，等于隐形。
+
+   修法：给这组按钮一个**不透明**的底（保留内高光与圆角，只是不再透）。
+   玻璃质感由「容器」承担，按钮保持实心 —— 这也是苹果的做法：
+   导航栏是玻璃，按钮是实心的。 */
+html[data-material='glass'] :is(
+  .wb-topbar button, .wb-topbar a, .wb-topbar .wb-question-link,
+  .wb-statusbar button, .wb-statusbar a,
+  .wb-save-btn, .wb-proj-trigger, .wb-region-pill, .wb-locate-input
+) {
+  background: var(--bg-raised) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  border-radius: var(--glass-radius-sm) !important;
+  box-shadow: var(--glass-inset) !important;
+  color: var(--text) !important;
+  position: relative;
+  z-index: 1;                    /* 明确压在顶栏玻璃之上 */
+}
+
+/* 编辑器/对话坞的空白工作面（cv / cd-body / cd-messages）：
+   这些是「内容区」而不是「容器」，在深色皮肤下若保持浅色底会形成一整块亮斑，
+   把深色玻璃的通透感毁掉。改成比 --bg 更实的暗面（内容区要保证文字对比度），
+   同时保留轻微透明让底层的色晕能渗上来一点。 */
+html[data-material='glass'] :is(.cv, .cv-editor, .cd-body, .cd-messages, .cd-empty) {
+  background: color-mix(in srgb, var(--bg) 88%, transparent) !important;
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+/* ---------- ⑤ 祖先链去不透明（关键，见文件头警告） ----------
+   workbench-riso.css 给 body 铺了孔版颗粒/暗角/网点三个固定层，
+   它们是不透明的，会把玻璃背后的内容挡成一片纯色。这里一并转半透。 */
+html[data-material='glass'] body::before,
+html[data-material='glass'] body::after {
+  opacity: calc(var(--skin-grain, .09) * 0.5);
+}
+
+/* app / 根容器也要放行，否则整页还是实底。
+   ⚠️ 这一段是玻璃能否生效的**决定性因素**（实测踩过）：
+   探针逐元素查祖先链，发现 .wb-body 的 background-color 计算值是 alpha=1 的不透明底，
+   它是 #app 与所有面板之间的那一层 —— 它不透明，下面所有 backdrop-filter 都只能
+   模糊到一片纯色。实测证据：改之前 14 个玻璃面全部「挡死于 div.wb-body」，
+   改之后 0 个。 */
+html[data-material='glass'] #app,
+html[data-material='glass'] .wb-shell,
+html[data-material='glass'] .wb-body,
+html[data-material='glass'] .wb-main,
+html[data-material='glass'] .acp {
+  background: transparent !important;
+}
+
+/* ---------- ⑥ 降级 ----------
+   @supports not (backdrop-filter: blur(1px))：模糊不可用时把 alpha 顶到
+   --glass-fallback-alpha，宁可"像不透明"也不能让底下文字透上来叠字。
+   注意这里不能用 color-mix 两次（不支持的老浏览器会整条丢弃），
+   所以直接给一个不透明背景色。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-material='glass'] :is(.wb-topbar, .wb-statusbar, .ft-panel, .wb-card, .acp-panel, .acp-stage-content, .ov-group) {
+    background: var(--bg-raised) !important;
+  }
+  html[data-material='glass'] :is(.sv-box, .wb-modal-shell, .caq-dialog) {
+    background: var(--bg-raised) !important;
+  }
+}
+
+/* ---------- ⑦ 无障碍：降低动效时关掉视差与跟随高光 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  html[data-material='glass'] {
+    --glass-p: 0;
+  }
+  html[data-material='glass'] :is(.wb-card, .acp-panel, .ov-group, .rh-card) {
+    transform: none !important;
+  }
+  html[data-material='glass'] :is(.wb-card, .acp-panel, .acp-stage-content, .ov-group, .rh-card)::before {
+    display: none;
+  }
+}

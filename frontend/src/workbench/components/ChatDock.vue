@@ -467,7 +467,7 @@ const usageTitle = computed(() => {
 })
 
 // ---------------------------------------------------------------- 发送 / 停止
-async function send(text?: string, attached?: File[], onAccepted?: () => void, uiContext?: ChatUiContext, activity?: { kind: ChatActivityKind; label: string }, reviewRef?: { workflowId?: string; feedbackId?: string }): Promise<boolean> {
+async function send(text?: string, attached?: File[], onAccepted?: () => void, uiContext?: ChatUiContext, activity?: { kind: ChatActivityKind; label: string }, reviewRef?: { workflowId?: string; feedbackId?: string }, onResult?: (text: string) => void): Promise<boolean> {
   const q = (text ?? input.value).trim()
   const imgs = attached ? attached.slice() : pendingImages.value.slice()
   // 共享屏幕进行中对两种对话都附加最新帧：用户切页后落到的普通工作台对话同样在"看着"，
@@ -527,11 +527,13 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
   await nextTick(scrollToBottom)
   if (epoch !== chatEpoch) return false
   let finished = false
+  let receivedFinal = false
 
   const live = () => epoch === chatEpoch ? messages.value.find((m) => m.id === turn.id) : undefined
   // 事件分类与帧合批在 useChatStream 中（token/reasoning/plan/trace/workflow/context…）
   const onEvent = (ev: SseEvent) => {
     if (epoch !== chatEpoch) return
+    if (ev.type === 'final' && typeof ev.text === 'string' && ev.text) receivedFinal = true
     dispatch(ev, live())
   }
 
@@ -558,6 +560,8 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
       finishLiveMd(t.id, () => answerHtml(t))
       finished = !!t.text && t.status !== 'error'
       if (t.status === 'error') t.recoverable = true
+      if (finished && receivedFinal) onResult?.(t.text)
+      if (onResult && !receivedFinal) finished = false
     }
   } catch (e) {
     drain()
@@ -1065,7 +1069,9 @@ async function onSendChat(detail: PreviewFeedbackRequest) {
     const finished = await send(prompt, files, () => detail.onStatus?.('processing'), detail.uiContext, activity,
       detail.uiContext === 'desktop_visual_review'
         ? { workflowId: detail.workflowId, feedbackId: detail.feedbackId }
-        : undefined)
+        : undefined, text => {
+          if (detail.projectId === getProjectId()) detail.onResult?.(text)
+        })
     detail.onStatus?.(finished ? 'awaiting_review' : 'failed', finished ? 'AI 回复已结束，请检查预览效果' : '本次对话未完成，已执行操作不会自动撤销，请检查后重试')
   } catch {
     detail.onStatus?.('failed', '本次对话未完成，请检查项目当前状态后重试')
@@ -1134,10 +1140,8 @@ const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
   onTextFlushed: (t) => { scheduleLiveMd(t); speakDelta(t) },
   // 一次 rAF 帧提交后跟随一次（微任务里读到本帧最新布局），不逐 token 强排
   onFrame: () => queueMicrotask(followBottom),
-  // 首条 reasoning 到达时自动展开该回合的思考窗口（Set 判重）
-  onReasoning: (t) => {
-    if (!reasonOpen.value.has(t.id)) reasonOpen.value = new Set([...reasonOpen.value, t.id])
-  },
+  // 深度思考默认折叠：用户点「深度思考」开关自行展开，避免长推理轨迹未请求即铺开（也更省空间）。
+  // 流式期间该开关仍显示「…」提示模型正在思考，无需自动展开。
   onContext: (ev) => applyUsage(ev),
   onStructural: () => scheduleFollow(),
   onFinal: (t, text) => {
@@ -1314,8 +1318,8 @@ const webTitle = computed(() => webOn.value
             </div>
             <div v-if="m.reasoning" class="cd-reason">
               <button class="cd-reason-head" @click="toggleReason(m.id)">
-                {{ reasonOpen.has(m.id) ? '▾' : '▸' }} 深度思考
-                <span v-if="m.status === 'streaming'" class="cd-dots">…</span>
+                {{ reasonOpen.has(m.id) ? '▾ 深度思考' : '▸ 深度思考（点击展开）' }}
+                <span v-if="m.status === 'streaming'" class="cd-dots">模型思考中…</span>
               </button>
               <div v-if="reasonOpen.has(m.id)" class="cd-reason-body">{{ m.reasoning }}</div>
             </div>
@@ -1476,9 +1480,15 @@ const webTitle = computed(() => webOn.value
   transition: height .24s cubic-bezier(.32, .72, 0, 1),
               min-height .24s cubic-bezier(.32, .72, 0, 1);
 }
+/* 展开态高度 = 视口 - 上方「顶栏 + 编辑器区」的最小高度（--wb-main-min）。
+   旧值写死 100vh-86px：实测上方最小是 118px（窄屏换行后 126/143px），86 偏小 32，
+   于是展开后 dock 把输入栏底部顶出视口 32px —— 输入框被裁掉一截（"对话框被挤没了"）。
+   现在按宽度分档把 --wb-main-min 调在实测值之上（124/132/150），
+   展开时上方恰好压到最小、dock 底边贴视口底且余量恒 >= 0，任何尺寸下都不裁输入栏。 */
 .cd-dock.cd-expanded {
-  height: calc(100vh - 86px);
-  max-height: calc(100vh - 86px);
+  height: calc(100vh - var(--wb-main-min, 124px));
+  max-height: calc(100vh - var(--wb-main-min, 124px));
+  min-height: 380px;
 }
 /* 折叠态用显式高度（=头部 32 + 顶边 1），auto 无法参与过渡；
    双类名保证在矮屏媒体查询里也能覆盖 .cd-dock 的高度声明 */
@@ -1498,7 +1508,8 @@ const webTitle = computed(() => webOn.value
     min-height: 240px;
     max-height: calc(100vh - 86px);
   }
-  .cd-dock.cd-expanded { height: calc(100vh - 86px); }
+  /* 矮屏：上方最小高度不随视口高度变化，继续复用 --wb-main-min */
+  .cd-dock.cd-expanded { height: calc(100vh - var(--wb-main-min, 124px)); }
 }
 
 .cd-head {
@@ -1590,7 +1601,7 @@ const webTitle = computed(() => webOn.value
 /* 消息区 */
 .cd-jump-bottom {
   position: absolute; right: 14px; bottom: 58px; z-index: 3;
-  border: 1px solid #c8dcfa; border-radius: 999px; padding: 4px 9px;
+  border: 1px solid var(--border-2); border-radius: 999px; padding: 4px 9px;
   background: var(--bg-raised); color: var(--accent); font-size: 10.5px;
   box-shadow: 0 2px 8px rgba(30, 50, 90, .14); cursor: pointer;
 }
@@ -1763,8 +1774,8 @@ const webTitle = computed(() => webOn.value
 .cd-ref {
   display: inline-flex; align-items: center; gap: 4px;
   height: 22px; padding: 0 8px;
-  border: 1px solid #c8dcfa; border-radius: 5px;
-  background: #f3f8ff; color: var(--accent);
+  border: 1px solid var(--border-2); border-radius: 5px;
+  background: var(--accent-soft); color: var(--accent);
   font-family: var(--font-mono); font-size: 11px; cursor: pointer;
 }
 .cd-ref:hover { background: var(--bg-selected); border-color: var(--accent); }
@@ -1816,13 +1827,13 @@ const webTitle = computed(() => webOn.value
 /* 深度思考窗口（reasoning_content 流） */
 .cd-reason {
   margin: 2px 0 6px; border: 1px solid var(--border);
-  border-left: 2px solid var(--violet, #7c5cd6);
+  border-left: 2px solid var(--tool);
   border-radius: 6px; background: var(--bg-hover); overflow: hidden;
 }
 .cd-reason-head {
   width: 100%; text-align: left;
   border: none; background: none; padding: 5px 9px; cursor: pointer;
-  font-size: 11px; color: var(--violet, #7c5cd6);
+  font-size: 11px; color: var(--tool);
 }
 .cd-reason-head:hover { color: var(--text); }
 .cd-reason-body {

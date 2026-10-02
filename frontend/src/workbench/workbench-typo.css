@@ -1,0 +1,86 @@
+/* =============================================================
+   DocMind · 工作台排版令牌系统（"重做排版"版式的共享基础层）
+   -------------------------------------------------------------
+   来源：artifacts/docmind-typography-layout.html 与
+         artifacts/docmind-ask-page.html 共用的 :root 令牌块
+         （用户确认「两版都要」）。
+
+   与 ask/ask-typo.css 的关系：
+   - **:root 令牌块逐字节一致**，保证问答页 / 工作台两套界面
+     共用同一把「字阶 / 阅读栏 / 行高字距 / 间距栅格」尺子，
+     后续组件可统一改用 --fs-* / --lh-* / --s* 收敛。
+   - ~~**差异点**：工作台不做全局 body 覆写，只挂令牌。~~
+     **2026-10-02 已撤销**：实测证明"不动密度"的代价是两页各走各的——
+     开发舱 89 个文字元素里 **74 个行高是 `normal`**（浏览器默认，中文行距偏挤），
+     字距 95% 是 normal，而问答页是 1.70 / .02em。用户据此要求统一排版。
+     现两页 body 基线都取 **14px / 1.65 / .02em**；
+     为避免撑高控件，控件族（button/input/textarea/select/chip）单独回落到
+     `--lh-snug` 1.40。组件里那些 11~14px 的**显式**字号不受影响，密度基本保住。
+
+   设计约束（R14 铁律）：
+   - 纯增量层：只新增源码里尚不存在的令牌
+     （--fs-* / --measure / --lh-* / --ls-* / --s1..s6 / --gutter），
+     不重定义 --bg / --ink / --text / --accent / --font-* /
+     --space-* / --radius-* / --sh-hard* 等由 style.css 控制
+     的现有令牌，避免与并发写者的在飞改动冲突。
+   - 经 workbench/App.vue 在 workbench-riso.css 之后引入。
+   ============================================================= */
+
+:root {
+  /* —— 字阶：收敛到 5 级（原 7 级，中间几级只差 0.5–1px 互相干扰）——
+     2026-10-02 与 ask/ask-typo.css **逐字节一致**（两页同一把尺子）。 */
+  --fs-display: 30px;   /* 顶栏/英雄标题档：≥28px 的主角字 */
+  --fs-h1: 22px;        /* 一级标题 */
+  --fs-h2: 16px;        /* 区段标题 */
+  --fs-body: 14px;      /* 正文（两页统一基线） */
+  --fs-sm: 12.5px;      /* 次级文字 */
+  --fs-cap: 11px;       /* 说明/标签（原 10 / 10.5 / 11.5 半档并入此档） */
+  --fs-micro: 11px;     /* 元信息/等宽小字（与 cap 同尺寸，靠族/字距区分） */
+
+  /* —— 阅读栏宽度：正文与输入框共用同一把尺 —— */
+  --measure: min(680px, 100%);
+
+  /* —— 行高 / 字距 —— */
+  --lh-tight: 1.15;
+  --lh-snug: 1.40;      /* 控件内（button/input/chip）：跟着舒展会撑高控件，故单独一档 */
+  --lh-body: 1.65;      /* 中文长文更舒展；原 1.6 偏挤 */
+  --ls-body: .02em;     /* 中文在 Windows 上默认偏挤，补一点字距 */
+
+  /* —— 8px 间距栅格 —— */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 32px;
+  --s6: 48px;
+  --gutter: 32px;       /* 顶栏/主区左右留白；≤1400px 视口降为 24px（见响应式） */
+
+  /* —— 字体栈（与源码 --font-* 同源，仅在此显式列出供组件复用，不重定义）——
+     --font-ui / --font-display / --font-mono 已在 style.css 定义，
+     此处仅在注释锚定，避免组件各自写死家族导致决策发散。 */
+}
+
+/* 基线应用：同特异性、后加载，覆盖 style.css 的 body 默认值（原 13px / normal）。
+   只影响「没被组件显式覆盖」的元素——组件里 11~14px 的显式字号不动，密度基本保住。 */
+/* ⚠ 实测的注入顺序坑（2026-10-02）：
+   `workbench/main.ts:2` 先 `import App from './App.vue'`、**第 3 行**才 `import './style.css'`。
+   ESM 按声明顺序求值 ⇒ App.vue 里 import 的 workbench-riso.css / workbench-typo.css
+   实际注入在 **style.css 之前**，同特异性（都是 `body`，0,0,1）会被 style.css:105 的
+   `font-size: 13px` 压过——实测改完 body 仍显示 13px。
+   （`workbench-riso.css` 头部注释里「在 style.css 之后加载」的说法是**错的**，别信。）
+   故这里必须提特异性：`html body` = (0,0,2) > (0,0,1)，与加载顺序无关。 */
+html body {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  letter-spacing: var(--ls-body);
+}
+/* 控件内不跟着舒展：否则 button/input 会被行高撑高，密集 IDE 布局会散。 */
+button, input, textarea, select, label,
+.wb-region-pill, .ft-chip, .ov-chip, .cd-chip {
+  line-height: var(--lh-snug);
+}
+
+/* 响应式：窄视口收窄主区留白（与两份 mockup 的 @media 约定一致） */
+@media (max-width: 1400px) {
+  :root { --gutter: 24px; }
+}

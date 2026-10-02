@@ -50,33 +50,83 @@ def last_user_text(messages: Any) -> str:
     return ""
 
 
-def observation_snippet(messages: Any) -> str:
-    """取**最后一条**消息里的工具观察首行——Final Answer 要原样引述它。
+#: 每种动作"它的输出行长什么样"。凭据必须落在被引述的那一行里，所以**不能**靠
+#: 位置（首行/末行）挑——实测两条都不行：`list_dir` 的首行是表头
+#: （`目录 (代码库根) 共 1 项：`），而观察的**末行常常是 harness 的提示**
+#: （`（请基于观察继续，或给出 Final Answer）`），引述它等于把凭据换成一句套话。
+_LINE_HINTS = {
+    "search_assets": re.compile(r"^[·•]"),
+    "list_dir": re.compile(r"^\[(FILE|DIR)\]"),
+}
+
+#: `list_dir` 输出里带文件名的那些行——用来回看"这一轮到底列出了哪个文件"。
+#: 扫**所有**消息是安全的：`[FILE] ` 这种形状不会出现在系统提示里
+#: （与 `Observation:` 不同，见 `observation_snippet` 的注释）。
+FILE_RE = re.compile(r"\[FILE\]\s+(\S+)")
+
+#: harness 的纠正提示前缀。桩要**听懂**它们，否则会一直重复同一个工具调用、直到被强制
+#: 收尾——实测那样一轮问答跑了 6 轮，最后靠"模型反复空转"的兜底才停，而且渲染出来的
+#: 是兜底证据块而不是一条干净的答复。这些前缀一出现就说明"该收尾了，别再调工具"。
+CORRECTIVE = ("Evidence check:", "Reflection:", "Nudge:")
+
+
+def observation_snippet(messages: Any, *, action: str = "search_assets") -> str:
+    """取**最后一条**消息里、**这个工具真正产出**的那一行——Final Answer 要原样引述它。
 
     **只看最后一条**，不要在所有消息里搜 `Observation:`：系统提示里本身就有一大段
     解释 ReAct 格式的文字（含 "Observation:" 这个词），搜全局会把那段提示当成工具结果，
     于是第一轮就直接作答、一个工具都不调。`_mock_chat` 用的就是"只看 last"这条窄规则
     （`llm.py:1108`），这里照它——实测第一版搜全局就是这么翻车的。
+
+    **按动作找行，不按位置找行**：见 `_LINE_HINTS` 上的注释——首行与末行实测各错一次。
+    找不到该工具的签名行时退回首行非空行（宁可弱一点，也不要静默变成空串）。
     """
     rows = list(messages or [])
     text = str((rows[-1] or {}).get("content") or "") if rows else ""
     if "Observation:" not in text:
         return ""
-    tail = text.rsplit("Observation:", 1)[-1].strip()
-    return tail.split("\n", 1)[0][:200]
+    tail = text.rsplit("Observation:", 1)[-1]
+    lines = [line.strip() for line in tail.splitlines() if line.strip()]
+    hint = _LINE_HINTS.get(str(action or ""))
+    if hint is not None:
+        for line in lines:
+            if hint.match(line):
+                return line[:200]
+    return lines[0][:200] if lines else ""
 
 
-def reply_for(messages: Any) -> str:
+def reply_for(messages: Any, *, action: str = "search_assets") -> str:
     """一个回合的正文：先调工具，再引述工具结果作答。
 
     两条分支与 `agent.py` 的契约对齐：**必须带 `Final Answer:`**——
     `_mock_chat` 就是因为裸文本收尾而被格式失守判定连拒两轮（见 docs §6 缺口 14），
     这里不重蹈。
+
+    `action` 决定第一轮调哪个工具：`search_assets` 走精选素材目录（问答页的示范问题多半
+    是代码类，命中不了）；`list_dir` 列代码库根，**返回里带着那一次运行独有的随机文件名**
+    ——所以它才是页面那一层要的凭据（照 §5.8 那条"夹具是随机命名的文件"的做法）。
     """
-    snippet = observation_snippet(messages)
+    rows = list(messages or [])
+    last = str((rows[-1] or {}).get("content") or "") if rows else ""
+    # 听懂纠正提示：它一出现就必须收尾，别再调工具（否则空转到被强制收尾）。
+    if any(mark in last for mark in CORRECTIVE):
+        known = ""
+        for row in reversed(rows):
+            found = FILE_RE.search(str((row or {}).get("content") or ""))
+            if found:
+                known = "[FILE] %s" % found.group(1)
+                break
+        return ("Thought: 就用已有证据\n"
+                "Final Answer: 根据检索到的内容，%s —— 以上就是可用清单。"
+                % (known or "当前无法确认"))
+    snippet = observation_snippet(messages, action=action)
     if snippet:
         return ("Thought: 证据够了\n"
-                "Final Answer: 根据精选素材目录，%s —— 以上就是可用清单。" % snippet)
+                "Final Answer: 根据检索到的内容，%s —— 以上就是可用清单。" % snippet)
+    if action == "list_dir":
+        return ("Thought: 先看一眼代码库根\n"
+                "Action: list_dir\n"
+                "Action Input: .")
     question = last_user_text(messages) or ASSET_QUERY
     return ("Thought: 先查精选素材目录\n"
             "Action: search_assets\n"
@@ -137,7 +187,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not self.path.rstrip("/").endswith("/chat/completions"):
             self._send(404, "application/json", b'{"error":"not found"}')
             return
-        text = reply_for(body.get("messages"))
+        text = reply_for(body.get("messages"),
+                         action=str(getattr(self.server, "stub_action", "search_assets")))
         if body.get("stream"):
             self._send(200, "text/event-stream", sse_frames(text))
             return
@@ -160,9 +211,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def start() -> dict[str, Any]:
-    """在回环上起一个假服务，返回 `{"url", "port", "server", "thread"}`。"""
+def start(*, action: str = "search_assets") -> dict[str, Any]:
+    """在回环上起一个假服务，返回 `{"url", "port", "server", "thread", "action"}`。
+
+    `action` 决定剧本第一轮调哪个工具（见 `reply_for`）：问答页那一层用 `list_dir`，
+    因为它的返回里带着那一次运行独有的随机文件名。
+    """
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    server.stub_action = action
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, name="docmind-llm-stub",
                               daemon=True)

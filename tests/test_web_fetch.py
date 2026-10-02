@@ -17,6 +17,23 @@ class WebFetchTests(unittest.TestCase):
             out = tools.web_fetch('https://example.test/guide')
         self.assertIn('标题：Guide', out); self.assertIn('Hello world', out); self.assertNotIn('script', out)
 
+    def test_prefers_article_text_and_decodes_entities(self):
+        html = (b'<html><head><title>Guide &amp; reference</title></head><body>'
+                b'<nav>Home Search Account</nav><div class="advert">Buy now</div>'
+                b'<main><article><h1>Guide</h1><p>One &amp; two are useful.</p>'
+                b'<p>' + (b'Article content with details. ' * 8) + b'</p></article></main>'
+                b'<footer>Privacy Terms</footer></body></html>')
+        resp = io.BytesIO(html)
+        resp.headers = {'Content-Type': 'text/html; charset=utf-8'}
+        resp.geturl = lambda: 'https://example.test/guide'
+        with patch('tools.urllib.request.urlopen', return_value=resp):
+            out = tools.web_fetch('https://example.test/guide')
+        self.assertIn('标题：Guide & reference', out)
+        self.assertIn('One & two are useful.', out)
+        self.assertNotIn('Home Search Account', out)
+        self.assertNotIn('Buy now', out)
+        self.assertNotIn('Privacy Terms', out)
+
     def test_non_html_is_reported(self):
         resp = io.BytesIO(b'PNGDATA'); resp.headers = {'Content-Type': 'image/png'}; resp.geturl=lambda: 'https://x.test/a.png'
         with patch('tools.urllib.request.urlopen', return_value=resp):

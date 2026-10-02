@@ -16,6 +16,7 @@ import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from threading import BoundedSemaphore, Lock
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class LocalResourceProfile:
 
 
 _LOCAL_PROVIDERS = {"ollama", "llamacpp"}
+_UNBOUNDED = 2**31 - 1
 # 等待本地推理槽的上限（秒）。>0 为有界等待；0 = 无限等待（旧行为，失衡时会永久阻塞）。
 # 背景：本地 provider 全局只有一个 BoundedSemaphore(1) 槽位，任何一次 acquire/release
 # 失衡或上一个生成长期不返回，都会让后续每一个请求在"首次 LLM 调用之前"无限阻塞，
@@ -79,15 +81,46 @@ def _tier(model: str) -> str:
     return "unknown"
 
 
-def resource_profile(provider: str, model: str) -> LocalResourceProfile:
+def _local_endpoint(provider: str, base_url: str | None = None) -> bool:
+    try:
+        if base_url:
+            url = base_url
+        else:
+            from config import LLM_PROVIDER, PROVIDERS, get_runtime
+            selected = str(get_runtime("llm_provider") or LLM_PROVIDER).lower()
+            if selected != provider:
+                return False
+            url = str(get_runtime("llm_base_url") or PROVIDERS.get(provider, {}).get("base_url", ""))
+        return (urlsplit(url).hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
+    except Exception:
+        return True
+
+
+def _detected_parallel_capacity(tier: str) -> int | None:
+    """Estimate additional local inference slots from current NVIDIA free VRAM.
+
+    This is a scheduling estimate, not a guarantee: context/KV-cache sizes and
+    remote cluster nodes are not observable through the local NVIDIA probe.
+    """
+    try:
+        from agent_runtime.capacity import gpu_snapshot
+        snapshot = gpu_snapshot()
+        if not snapshot.get("available"):
+            return None
+        reserve_mb = {"tiny": 2048, "small": 3072, "medium": 5120,
+                      "large": 8192, "unknown": 4096}.get(tier, 4096)
+        free_mb = max(0, int(snapshot.get("free_mb", 0)))
+        return max(1, min(16, 1 + free_mb // reserve_mb))
+    except Exception:
+        return None
+
+
+def resource_profile(provider: str, model: str, base_url: str | None = None) -> LocalResourceProfile:
     """Return a conservative model resource profile.
 
-    ``DOCMIND_LOCAL_LLM_MAX_CONCURRENCY`` is an explicit operator override for
-    the number of simultaneous local model generations.  The default remains
-    one even for a large MoE model: active parameters do not imply that several
-    full contexts fit in memory.  ``DOCMIND_LOCAL_SUBAGENT_MAX`` is a separate
-    hard cap on the number of planned child tasks; it does not increase
-    simultaneous generations, which remain controlled by the concurrency cap.
+    Local hardware readings provide a best-effort concurrency estimate. The
+    persisted user policy caps task count; remote local-model endpoints cannot
+    be inspected and therefore use the user's cap without a local VRAM limit.
     """
     p, m = (provider or "").strip().lower(), (model or "").strip()
     if p not in _LOCAL_PROVIDERS:
@@ -110,38 +143,59 @@ def resource_profile(provider: str, model: str) -> LocalResourceProfile:
         "unknown": (1, 3, ("dispatcher", "designer", "tester", "reviewer")),
     }
     default_parallel, default_subagents, roles = defaults[tier]
-    parallel = _env_int("DOCMIND_LOCAL_LLM_MAX_CONCURRENCY", default_parallel)
-    subagents = _env_int("DOCMIND_LOCAL_SUBAGENT_MAX", default_subagents)
-    # A subagent cap should never silently exceed the selected model tier's
-    # conservative default; operators can raise it explicitly with the tier's
-    # concurrency override when they have measured headroom.
-    subagents = min(subagents, max(1, default_subagents))
+    try:
+        from agent_runtime.capacity import get_settings
+        settings = get_settings()
+    except Exception:
+        settings = {"max_agents": default_subagents, "local_auto_limit": True}
+    endpoint_local = _local_endpoint(p, base_url)
+    env_parallel = os.getenv("DOCMIND_LOCAL_LLM_MAX_CONCURRENCY")
+    if env_parallel is not None:
+        parallel = _env_int("DOCMIND_LOCAL_LLM_MAX_CONCURRENCY", default_parallel)
+    elif settings.get("local_auto_limit") and endpoint_local:
+        parallel = _detected_parallel_capacity(tier) or default_parallel
+    else:
+        parallel = max(1, int(settings.get("max_agents") or _UNBOUNDED))
+
+    env_agents = os.getenv("DOCMIND_LOCAL_SUBAGENT_MAX")
+    if env_agents is not None:
+        subagents = _env_int("DOCMIND_LOCAL_SUBAGENT_MAX", default_subagents)
+    else:
+        configured = int(settings.get("max_agents", 0))
+        # 本地模型**不**跟随"默认不限"：它们共用同一个推理服务（上面 max_parallel 已被
+        # 钳到 1），不限子代理数会让任务无上限地排进同一个队列——显存不会被并发撑爆，
+        # 但队列会越积越长、用户看到的是"卡住"而不是"在跑"。
+        # 所以本地档位保留按模型体量推出的默认值；用户显式填正数仍然生效。
+        # 这条边界要写在这里而不是藏起来：它与云端 provider 的"0=不限"不同。
+        subagents = configured if configured > 0 else default_subagents
     return LocalResourceProfile(
         p, m, True, tier, parallel, subagents, roles,
         "本地模型共享同一推理服务，默认串行生成以避免显存/上下文争抢",
     )
 
 
-def effective_parallelism(provider: str, model: str, requested: int | None) -> int:
+def effective_parallelism(provider: str, model: str, requested: int | None,
+                           base_url: str | None = None) -> int:
     """Clamp an orchestration request to the provider/model resource profile."""
-    requested_value = max(1, int(requested or 1))
-    profile = resource_profile(provider, model)
+    requested_value = max(1, int(requested or _UNBOUNDED))
+    profile = resource_profile(provider, model, base_url)
     return min(requested_value, profile.max_parallel) if profile.local else requested_value
 
 
-def effective_subagent_limit(provider: str, model: str, requested: int | None) -> int:
-    requested_value = max(1, int(requested or 1))
-    profile = resource_profile(provider, model)
+def effective_subagent_limit(provider: str, model: str, requested: int | None,
+                              base_url: str | None = None) -> int:
+    requested_value = max(1, int(requested or _UNBOUNDED))
+    profile = resource_profile(provider, model, base_url)
     return min(requested_value, profile.max_subagents) if profile.local else requested_value
 
 
 @contextmanager
-def local_llm_slot(provider: str, model: str, purpose: str = ""):
+def local_llm_slot(provider: str, model: str, purpose: str = "", base_url: str | None = None):
     """Serialize local generations even when callers use independent clients.
 
     ``purpose`` 只用于诊断：卡住时可点名"谁"占着槽（用途@线程名）。
     """
-    profile = resource_profile(provider, model)
+    profile = resource_profile(provider, model, base_url)
     if not profile.local:
         yield
         return

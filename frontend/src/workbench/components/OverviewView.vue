@@ -2,18 +2,37 @@
 // 概览驾驶舱（打开工作台、未进入代码编辑时的默认工作区）：
 // 顶部项目状态条 + 左主区（分区卡片/未启用空状态）+ 右栏（上手清单 / 最近打开 / 试试问 AI）。
 // 视觉遵循 Linear 式克制：平面表面、无装饰渐变、右栏为朴素分组（卡片只留给可点的分区）。
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import RegionHomeView from './RegionHomeView.vue'
 import { demoMode, demoRegionCards } from '../composables/demo'
 import { useWorkbench } from '../composables/workbench'
 import { appEvents } from '../eventBus'
+import { getProjectId, projectApi } from '../api'
 
 const {
   tree, regionCards, recentFiles, openRecent, openSymbolMap,
   openRegionMap, tagMeta,
 } = useWorkbench()
 
+// 当前项目名（顶栏下拉之外的第二处项目上下文锚点）：自取项目列表解析，
+// 不依赖 App.vue 的 local state；失败不影响概览渲染。
+const projects = ref<{ project_id: string; name: string; root: string }[]>([])
+const currentProjectName = computed(() => {
+  const id = demoMode.value ? 'demo' : getProjectId()
+  if (demoMode.value) return '示例游戏项目'
+  return projects.value.find((p) => p.project_id === id)?.name || ''
+})
+onMounted(async () => {
+  if (demoMode.value) return
+  try {
+    const r = await projectApi.list()
+    projects.value = (r.projects || []).map((p) => ({ project_id: p.project_id, name: p.name, root: p.root }))
+  } catch { /* 失败仅导致项目名不显示，不阻断概览 */ }
+})
+
 const regionsEnabled = computed(() => demoMode.value || !!tree.value?.regions_enabled)
+// 真实态且未打开任何项目：概览首屏应引导「打开项目」，而非误导向「启用分区治理」
+const noProject = computed(() => !demoMode.value && !tree.value)
 
 // ------------------------------------------------------------ 项目状态条统计
 const stats = computed(() => {
@@ -74,6 +93,7 @@ const ASK_CHIPS = [
           </svg>
         </span>
         <div class="ov-strip-main">
+          <span v-if="currentProjectName" class="ov-project-name">{{ currentProjectName }}</span>
           <span class="ov-root" :title="tree?.code_root || ''">
             {{ demoMode ? '示例游戏项目（离线演示）' : (tree?.code_root || '未连接项目') }}
           </span>
@@ -96,7 +116,25 @@ const ASK_CHIPS = [
         <div class="ov-main">
           <RegionHomeView v-if="regionsEnabled" />
 
-          <!-- 未启用分区治理的空状态 -->
+          <!-- 未打开任何项目：首屏引导去顶栏打开/切换项目（而非误导向「启用分区治理」） -->
+          <div v-else-if="noProject" class="ov-empty ov-noproj">
+            <span class="ov-empty-ic" aria-hidden="true">
+              <svg width="30" height="30" viewBox="0 0 30 30">
+                <rect x="3.5" y="6.5" width="23" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M3.5 12.5 H26.5 M10.5 6.5 V4.5 M19.5 6.5 V4.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+              </svg>
+            </span>
+            <h3>还没有打开项目</h3>
+            <p>
+              代码工作台需要先绑定一个项目目录作为工作区。点击<b>顶栏左侧的项目名</b>，
+              即可打开新项目或切换已有项目；打开后这里会显示分区与文件概览、最近改动与「试试问 AI」。
+            </p>
+            <p class="ov-noproj-hint">
+              AI 问答页也能直接提问；但要在工作台里改代码、看分区、做 git 存档与回滚，需要先在这里打开项目。
+            </p>
+          </div>
+
+          <!-- 已打开项目但未启用分区治理的空状态 -->
           <div v-else class="ov-empty">
             <span class="ov-empty-ic" aria-hidden="true">
               <svg width="30" height="30" viewBox="0 0 30 30">
@@ -219,6 +257,10 @@ const ASK_CHIPS = [
 }
 .ov-folder { color: var(--accent); display: inline-flex; padding: 7px; border-radius: 9px; background: #eaf2ff; }
 .ov-strip-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ov-project-name {
+  font-family: var(--font-ui); font-size: 14px; font-weight: 700;
+  color: var(--text); line-height: 1.2;
+}
 .ov-root {
   font-family: var(--font-mono);
   font-size: 13px;
@@ -360,6 +402,13 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 }
 .ov-empty-btn:hover { background: rgba(47,111,237,.12); }
 .ov-empty-btn:active, .ov-step:active, .ov-recent-item:active, .ov-chip:active { transform: translateY(1px); }
+.ov-noproj { border-style: solid; border-color: #cfe0fb; background: linear-gradient(180deg, #fbfdff, #f6f9fd); }
+.ov-noproj .ov-empty-ic { color: var(--accent); }
+.ov-noproj-hint {
+  margin: 14px auto 0; max-width: 460px;
+  font-size: 11.5px; line-height: 1.7; color: var(--text-faint);
+  padding-top: 12px; border-top: 1px dashed var(--border);
+}
 
 /* ---------- 窄屏：右栏落到底部 ---------- */
 @media (max-width: 1080px) {

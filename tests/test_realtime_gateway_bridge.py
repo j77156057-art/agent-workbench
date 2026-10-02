@@ -28,6 +28,8 @@ from __future__ import annotations
 import base64
 import json
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -606,6 +608,33 @@ def test_native_frames_go_to_the_provider_not_the_sampler(gateway, provider):
     assert analyzer.calls == 0, "原生通道不得再调用抽帧模型"
 
 
+def test_slow_native_upload_does_not_block_other_requests(gateway, provider):
+    """供应商同步发送卡住时，本地服务仍可处理其他请求。"""
+    client, _ = gateway
+    entered, release = threading.Event(), threading.Event()
+    original_send = provider.send_frame
+
+    def slow_send(*args):
+        entered.set()
+        release.wait(3)
+        return original_send(*args)
+
+    with patch.object(provider, "send_frame", side_effect=slow_send):
+        with client.websocket_connect(f"{ENDPOINT}?project_id={PROJECT_ID}") as socket:
+            _handshake(socket)
+            socket.send_bytes(_frame(1))
+            assert entered.wait(2)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                try:
+                    response = pool.submit(client.get, "/api/health").result(timeout=1)
+                    assert response.status_code == 200
+                    assert not release.is_set()
+                finally:
+                    release.set()
+            socket.send_text(json.dumps({"v": 1, "type": "heartbeat", "sent_at": 42}))
+            assert socket.receive_json()["type"] == "heartbeat"
+
+
 def test_native_audio_is_accepted_instead_of_audio_not_ready(gateway, provider):
     client, _ = gateway
     with client.websocket_connect(f"{ENDPOINT}?project_id={PROJECT_ID}") as socket:
@@ -617,6 +646,68 @@ def test_native_audio_is_accepted_instead_of_audio_not_ready(gateway, provider):
     assert len(provider.audio) == 1
     pcm, _ = provider.audio[0]
     assert pcm == b"\x00\x01\x02\x03"
+
+
+def test_same_session_cancel_and_heartbeat_bypass_a_blocked_video_upload(gateway, provider):
+    client, _ = gateway
+    entered, release = threading.Event(), threading.Event()
+    sent = []
+
+    def slow_video(image, captured_at):
+        sent.append(image)
+        entered.set()
+        release.wait(3)
+        return True
+
+    with patch.object(provider, 'send_frame', side_effect=slow_video):
+        with client.websocket_connect(f"{ENDPOINT}?project_id={PROJECT_ID}") as socket:
+            _handshake(socket)
+            socket.send_bytes(_frame(1))
+            assert entered.wait(2)
+            # These frames/audio belong to the old turn and must never be replayed.
+            socket.send_bytes(_frame(2))
+            socket.send_bytes(_audio_chunk(2))
+            socket.send_text(_control('cancel'))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                try:
+                    assert pool.submit(socket.receive_json).result(timeout=1)['type'] == 'cancel.ok'
+                    socket.send_text(_control('heartbeat'))
+                    assert pool.submit(socket.receive_json).result(timeout=1)['type'] == 'heartbeat'
+                    assert not release.is_set()
+                finally:
+                    release.set()
+            assert _wait_for(lambda: provider.interrupts == 1, timeout=2)
+            assert len(sent) == 1
+            assert not provider.audio
+
+
+def test_audio_backpressure_is_reported_and_queued_old_turn_is_discarded(gateway, provider):
+    client, _ = gateway
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_video(*args):
+        entered.set()
+        release.wait(3)
+        return True
+
+    with patch.object(provider, 'send_frame', side_effect=slow_video):
+        with client.websocket_connect(f"{ENDPOINT}?project_id={PROJECT_ID}") as socket:
+            _handshake(socket)
+            socket.send_bytes(_frame(1))
+            assert entered.wait(2)
+            try:
+                for i in range(21):
+                    socket.send_bytes(_audio_chunk(i))
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    error = pool.submit(socket.receive_json).result(timeout=1)
+                    assert error['code'] == 'audio_backpressure'
+                    assert error['retryable'] is True
+                    socket.send_text(_control('heartbeat'))
+                    assert pool.submit(socket.receive_json).result(timeout=1)['type'] == 'heartbeat'
+            finally:
+                release.set()
+            assert _wait_for(lambda: provider.interrupts == 1, timeout=2)
+            assert provider.audio == []
 
 
 def test_degraded_audio_still_reports_audio_not_ready(gateway):
@@ -771,6 +862,20 @@ def test_close_releases_provider_timeline_and_metric_scope(provider):
     assert PROJECT_ID not in realtime_bridge.active_timeline_projects(), "本项目的时间线必须被释放"
     assert SESSION_ID not in realtime_bridge.METRICS.snapshot()["sessions"], \
         f"会话作用域没有被回收：{sorted(realtime_bridge.METRICS.snapshot()['sessions'])}"
+
+
+def test_observation_latency_is_measured_before_resetting_the_frame_clock():
+    clock = [10.0]
+    bridge = realtime_bridge.SessionBridge(PROJECT_ID, clock=lambda: clock[0])
+    bridge.bind_session(SESSION_ID)
+    try:
+        bridge.note_frame({"captured_at": _now_ms(), "sequence": 1})
+        clock[0] = 11.8
+        bridge.note_observation({"captured_at": _now_ms(), "sequence": 1}, ["画面"])
+        histogram = bridge.metrics.snapshot()["sessions"][SESSION_ID]["histograms"][metrics.OBSERVATION_LATENCY_MS]
+        assert histogram["p50"] == pytest.approx(1800.0)
+    finally:
+        bridge.close()
 
 
 def test_provider_session_id_never_hijacks_the_gateway_session(gateway, provider):

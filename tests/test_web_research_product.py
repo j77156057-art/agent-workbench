@@ -56,6 +56,9 @@ class WebResearchProductTests(unittest.TestCase):
                 patch.object(tools, "_bing_search", side_effect=OSError()) as bing:
             out = tools._builtin_search("builtin_auto", "q")
         self.assertIn("均不可达", out)
+        self.assertIn("ddg", out)
+        self.assertIn("baidu", out)
+        self.assertIn("bing", out)
         for backend in (ddg, baidu, bing):
             backend.assert_called_once()
 
@@ -82,6 +85,52 @@ class WebResearchProductTests(unittest.TestCase):
             out = tools._builtin_search("builtin_auto", "Godot scene tree official docs")
         self.assertTrue(out.startswith("搜索结果相关性不足"))
         self.assertNotIn("https://godotengine.org", out)
+
+    def test_chinese_candidate_matching_only_generic_route_term_is_rejected(self):
+        query = "南宁旅游攻略景点路线"
+        unrelated = "· 路线规划器通用工具\n  generic route planning\n  https://example.test/tool"
+        out = tools._merge_builtin_results(query, [
+            ("ddg", unrelated), ("bing", "搜索未返回结果"),
+        ])
+        self.assertTrue(out.startswith("搜索结果相关性不足"), out)
+        self.assertIn("1 条候选", out)
+        self.assertIn("bing=无候选", out)
+
+    def test_chinese_candidate_with_topic_phrase_is_kept(self):
+        query = "南宁旅游攻略景点路线"
+        relevant = "· 南宁旅游攻略：景点与路线\n  南宁旅游景点路线建议\n  https://example.test/nanning"
+        out = tools._merge_builtin_results(query, [("ddg", relevant)])
+        self.assertIn("https://example.test/nanning", out)
+
+    def test_cached_candidates_are_rechecked_for_relevance(self):
+        unrelated = "· 路线规划器通用工具\n  generic route planning\n  https://example.test/tool"
+        with patch("tools.get_web_search_provider", return_value="ddg"), \
+                patch("tools._search_cache_enabled", return_value=True), \
+                patch("tools._web_cache_read", return_value=unrelated), \
+                patch("tools._ddg_search") as search:
+            out = tools.web_search("南宁旅游攻略景点路线")
+        self.assertTrue(out.startswith("搜索结果相关性不足"), out)
+        search.assert_not_called()
+
+    def test_auto_search_does_not_recheck_truncated_aggregate_snippets(self):
+        aggregate = ("聚合搜索结果（1 条候选）：\n· Godot 插件\n  "
+                     + "背景信息 " * 40
+                     + "Godot scene tree integration\n  https://example.test/godot")
+        with patch("tools.get_web_search_provider", return_value="builtin_auto"), \
+                patch("tools._search_cache_enabled", return_value=False), \
+                patch("tools._builtin_search", return_value=aggregate), \
+                patch("tools._filter_search_results", wraps=tools._filter_search_results) as filter_results:
+            out = tools.web_search("Godot scene tree docs")
+        self.assertEqual(out, aggregate)
+        filter_results.assert_not_called()
+
+    def test_web_research_does_not_fetch_irrelevant_search_candidates(self):
+        unrelated = "· 路线规划器通用工具\n  generic route planning\n  https://example.test/tool"
+        with patch("tools.web_search", return_value=unrelated), \
+                patch("tools.web_fetch") as fetch:
+            out = tools.web_research("南宁旅游攻略景点路线")
+        self.assertTrue(out.startswith("搜索结果相关性不足"), out)
+        fetch.assert_not_called()
 
     def test_travel_recommendation_rejects_bing_only_candidate(self):
         with patch.object(tools, "_ddg_search", return_value="搜索未返回结果"), \
@@ -151,7 +200,7 @@ class WebResearchProductTests(unittest.TestCase):
         rows = {
             "ddg": "· Godot official docs\n  scene tree reference\n  https://docs.godotengine.org/en/stable/scene.html",
             "baidu": "· Godot 场景树教程\n  scene tree reference\n  https://docs.godotengine.org/en/stable/scene.html\n"
-                     "· Godot community guide\n  scene tree guide\n  https://example.com/godot",
+                     "· Godot scene tree community guide\n  scene tree guide\n  https://example.com/godot",
             "bing": "· Godot scene tree\n  scene tree reference\n  https://example.net/godot",
         }
         with patch.dict(tools.os.environ, {"WEB_SEARCH_FANOUT": "3"}, clear=False), \
@@ -172,7 +221,7 @@ class WebResearchProductTests(unittest.TestCase):
     def test_web_research_coerces_toolresult_without_raising(self):
         # 回归 #2：web_search / web_fetch 返回不可切片的 ToolResult（非图片分支）
         # 不得抛 TypeError，且应把 .text 当正文产出可 join 的 str。
-        search_tr = _FakeToolResult("· 标题\n  https://example.com/doc")
+        search_tr = _FakeToolResult("· 上下文窗口文档\n  上下文窗口说明\n  https://example.com/doc")
         fetch_tr = _FakeToolResult("来源：https://example.com/doc\n正文：窗口上下文说明")
         with patch("tools.web_search", return_value=search_tr), \
                 patch("tools.web_fetch", return_value=fetch_tr), \
@@ -184,10 +233,10 @@ class WebResearchProductTests(unittest.TestCase):
         self.assertIn("正文：窗口上下文说明", out)
 
     def test_auto_search_adds_relevant_platform_sources(self):
-        base = "· 通用结果\n  菜品好吃体验\n  https://example.com/general"
+        base = "· 什么菜好吃：通用结果\n  菜品好吃体验\n  https://example.com/general"
         platform_rows = {
-            "知乎": "· 知乎评价\n  菜品好吃口碑\n  https://www.zhihu.com/question/1",
-            "小红书": "· 小红书探店\n  菜品好吃实拍体验\n  https://www.xiaohongshu.com/explore/1",
+            "知乎": "· 什么菜好吃：知乎评价\n  菜品好吃口碑\n  https://www.zhihu.com/question/1",
+            "小红书": "· 什么菜好吃：小红书探店\n  菜品好吃实拍体验\n  https://www.xiaohongshu.com/explore/1",
         }
         with patch.object(tools, "_infer_search_sources", return_value=["zhihu.com", "xiaohongshu.com"]), \
                 patch.object(tools, "_search_one_source", side_effect=lambda domain, _q: (
@@ -206,9 +255,9 @@ class WebResearchProductTests(unittest.TestCase):
 
     def test_batch_search_runs_queries_in_parallel_and_excludes_seen(self):
         rows = {
-            "候选菜 评价": "· 菜 A 评价\n  很好吃\n  https://example.com/a",
-            "候选菜 做法": "· 菜 A 做法\n  步骤\n  https://example.com/a\n"
-                         "· 菜 B 做法\n  步骤\n  https://example.com/b",
+            "南宁酸菜鱼 评价": "· 南宁酸菜鱼 A 评价\n  很好吃\n  https://example.com/a",
+            "南宁酸菜鱼 做法": "· 南宁酸菜鱼 A 做法\n  步骤\n  https://example.com/a\n"
+                             "· 南宁酸菜鱼 B 做法\n  步骤\n  https://example.com/b",
         }
         with patch.object(tools, "web_search", side_effect=lambda q, _allow_aux=True: rows[q]):
             out = tools.web_search_batch(json.dumps({"queries": list(rows), "exclude": ["example.com/a"]}, ensure_ascii=False))

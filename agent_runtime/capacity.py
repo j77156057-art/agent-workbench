@@ -8,14 +8,32 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 SETTING_KEY = "agent_capacity_settings"
+
+#: 默认**全部为 0 = 不设上限**（2026-10-02 起）。
+#:
+#: 为什么从 8/24/50000 改成 0：这些默认值是「防失控」而不是「防出错」——它们压的是
+#: **正常**的长任务，而不是危险行为。用户反馈的正是这一点：一句话问答被 8 步截断、
+#: 一轮审查被 50000 token 掐断，看起来像 agent 变笨了。
+#:
+#: 放开之后**仍然在**的护栏（这些不是"上限"，是正确性/安全性约束，一个都不动）：
+#:   · 重复调用同一 (工具, 参数) 被拒；
+#:   · 连续失败熔断、用户取消、截止时间；
+#:   · 写操作的人工审批门、分区越界拦截、命令黑名单；
+#:   · 观察截断与轨迹裁剪（防上下文撑爆，不是防"多跑几步"）；
+#:   · `_MAX_FORMAT_STALLS`（我刚加的格式失守早退）——它防的是"同一句话重复 8 遍"，
+#:     正是用户当初看到那个现象的根因，与步数上限无关。
+#:
+#: 代价（说清楚而不是藏起来）：真出现死循环时，没有步数兜底了。所以
+#: `remaining_agent_capacity` / `RunBudget` / `normalize_settings` 三处的 0 语义必须
+#: 保持"不限"，任何一处把 0 当成"用默认"就会静默退回旧行为——那比不改更坏。
 DEFAULTS = {
-    "max_agents": 8,
-    "main_max_steps": 8,
-    "child_max_steps": 24,
-    "max_nudges": 2,
-    "max_final_continuations": 2,
-    "task_token_budget": 50000,
-    "local_auto_limit": True,
+    "max_agents": 0,               # 0 = 不限并发子代理
+    "main_max_steps": 0,           # 0 = 不限工具步数
+    "child_max_steps": 0,          # 0 = 不限子代理步数
+    "max_nudges": 2,               # 纠偏次数仍保留：它防的是"同一提示重复 8 遍"
+    "max_final_continuations": 2,  # 续写仍保留：防输出被长度截断后答一半
+    "task_token_budget": 0,        # 0 = 不限 token
+    "local_auto_limit": True,      # 本地模型显存自适应（不是步数上限，保留）
 }
 
 
@@ -45,6 +63,9 @@ def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
         task_token_budget = int(raw.get("task_token_budget", DEFAULTS["task_token_budget"]))
     except (TypeError, ValueError):
         task_token_budget = DEFAULTS["task_token_budget"]
+    # 0 是**合法的"不限"**，必须原样保留。实测踩过：这几行原本写成
+    # `if x < 0 or x > 1000: x = DEFAULTS[...]`，而当时的 DEFAULTS 是 8/24——
+    # 于是用户填 0 会被"修正"回 8，看起来像改了却没生效，比不改更难查。
     if max_agents < 0 or max_agents > 64:
         max_agents = DEFAULTS["max_agents"]
     if main_max_steps < 0 or main_max_steps > 1000:

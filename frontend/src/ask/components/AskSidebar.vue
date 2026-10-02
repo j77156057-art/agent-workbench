@@ -2,7 +2,7 @@
 // AI 问答页左侧栏：品牌、当前项目（只读状态 + 跳转开发台）、资料文档上传、模型与显存。
 // 全部为只读/轻操作；代码建索引等重操作统一收口到代码工作台。
 import { computed, ref } from 'vue'
-import type { ModelConfigInfo, ModelStatus, ProjectInfo } from '../../workbench/api'
+import type { ModelConfigInfo, ModelStatus, ProjectInfo, SessionInfo } from '../../workbench/api'
 
 const props = defineProps<{
   projects: ProjectInfo[]
@@ -12,12 +12,17 @@ const props = defineProps<{
   demo: boolean
   ingestBusy: boolean
   ingestMsg: string
+  sessions?: SessionInfo[]
+  currentSessionId?: string
+  sessionBusy?: boolean
 }>()
 const emit = defineEmits<{
-  (e: 'activate', pid: string): void
   (e: 'ingest', file: File): void
   (e: 'power', action: 'on' | 'off'): void
   (e: 'openSettings'): void
+  (e: 'newSession'): void
+  (e: 'switchSession', id: string): void
+  (e: 'deleteSession', id: string): void
 }>()
 
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -25,7 +30,6 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const current = computed(() =>
   props.projects.find((p) => p.project_id === props.currentPid) || null)
 const files = computed(() => props.config?.ingested_files || [])
-const slices = computed(() => props.config?.code_sources || 0)
 
 function pickFile() {
   fileInput.value?.click()
@@ -42,6 +46,20 @@ function shortPath(p: string, n = 34): string {
 }
 
 const residentNames = computed(() => (props.power?.loaded || []).map((m) => m.name).join('、'))
+
+function sessTitle(s: SessionInfo): string {
+  return (s.title || s.preview || '').trim() || '未命名对话'
+}
+function sessTime(v?: string): string {
+  if (!v) return ''
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return ''
+  const delta = Math.max(0, Date.now() - d.getTime())
+  if (delta < 60_000) return '刚刚'
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`
+  return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
+}
 </script>
 
 <template>
@@ -56,73 +74,41 @@ const residentNames = computed(() => (props.power?.loaded || []).map((m) => m.na
       </div>
     </div>
 
-    <!-- 模型与显存 -->
-    <section class="card">
-      <div class="card-title">
-        模型
-        <button class="gear" title="模型设置" @click="emit('openSettings')">
-          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 8a4 4 0 100 8 4 4 0 000-8zm9 4a7.5 7.5 0 00-.13-1.4l2-1.56-2-3.46-2.37.96a7.6 7.6 0 00-2.4-1.4L15.8 2h-4l-.3 2.74a7.6 7.6 0 00-2.4 1.4l-2.37-.96-2 3.46 2 1.56a7.6 7.6 0 000 2.8l-2 1.56 2 3.46 2.37-.96a7.6 7.6 0 002.4 1.4l.3 2.74h4l.3-2.74a7.6 7.6 0 002.4-1.4l2.37.96 2-3.46-2-1.56c.09-.46.13-.92.13-1.4z"/></svg>
-        </button>
-      </div>
-      <div class="model-line">
-        <span class="model-k">回答</span>
-        <b>{{ demo ? 'qwen2.5:7b（示例）' : ((config?.llm_provider || '-') + (config?.llm_model ? ' · ' + config.llm_model : '')) }}</b>
-      </div>
-      <div class="model-line">
-        <span class="model-k">检索</span>
-        <b>{{ demo ? 'local（示例）' : (config?.embedding_provider || '-') }}</b>
-      </div>
+    <button class="btn block new-chat" @click="emit('newSession')">＋ 新对话</button>
 
-      <div v-if="!demo" class="power">
-        <template v-if="!power">
-          <div class="status-row"><span class="status-dot"></span>显存状态读取中…</div>
-        </template>
-        <template v-else-if="!power.reachable">
-          <div class="status-row">
-            <span class="status-dot"></span>
-            {{ power.needs_ollama ? 'Ollama 未运行，无本地模型驻留' : '云端模型，不占本机显存' }}
-          </div>
-        </template>
-        <template v-else-if="!power.loaded.length">
-          <div class="status-row"><span class="status-dot"></span>模型未驻留，发消息时自动加载</div>
-          <button v-if="power.needs_ollama" class="btn ghost block sm" @click="emit('power', 'on')">预加载模型</button>
-        </template>
-        <template v-else>
-          <div class="status-row">
-            <span class="status-dot on"></span>
-            驻留中：<b>{{ residentNames }}</b> · {{ power.vram_gb }} GB
-          </div>
-          <button class="btn ghost block sm" @click="emit('power', 'off')">卸载模型 · 释放约 {{ power.vram_gb }} GB</button>
-        </template>
+    <div class="ask-middle">
+      <section class="card">
+        <div class="card-title">会话历史</div>
+      <div class="sess-list">
+        <div
+          v-for="s in (sessions || [])"
+          :key="s.session_id"
+          class="sess-item"
+          :class="{ active: s.session_id === currentSessionId }"
+        >
+          <button class="sess-main" :disabled="sessionBusy" @click="emit('switchSession', s.session_id)">
+            <span class="ah-dot">{{ s.session_id === currentSessionId ? '●' : '○' }}</span>
+            <span class="sess-copy">
+              <strong>{{ sessTitle(s) }}</strong>
+              <small v-if="sessTime(s.updated_at)">{{ sessTime(s.updated_at) }}</small>
+            </span>
+          </button>
+          <button class="sess-del" title="删除这条问答历史" :disabled="sessionBusy" @click.stop="emit('deleteSession', s.session_id)">×</button>
+        </div>
+        <div v-if="!(sessions || []).length" class="sess-empty">还没有已保存的问答</div>
       </div>
-
-      <button v-if="!demo" class="btn block sm" @click="emit('openSettings')">模型设置</button>
     </section>
 
-    <!-- 当前项目 -->
+    <!-- 当前项目：只读展示。选择 / 切换 / 建索引等重操作统一收口到代码工作台 -->
     <section class="card">
       <div class="card-title">当前项目</div>
-      <select
-        v-if="projects.length > 1"
-        class="project-select"
-        :value="currentPid"
-        @change="emit('activate', ($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="p in projects" :key="p.project_id" :value="p.project_id">{{ p.name }}</option>
-      </select>
-      <div v-else class="project-name">{{ demo ? '示例游戏项目' : (current?.name || '未选择项目') }}</div>
+      <div v-if="demo" class="project-name">示例游戏项目</div>
+      <div v-else-if="current" class="project-name">{{ current.name }}</div>
+      <div v-else class="project-name muted">未选择项目</div>
       <div v-if="current?.root" class="project-root" :title="current.root">{{ shortPath(current.root) }}</div>
-
-      <div class="status-row">
-        <span class="status-dot" :class="{ on: !demo && slices > 0 }"></span>
-        <template v-if="demo">
-          已索引 <b>1,284</b> 条代码切片
-        </template>
-        <template v-else-if="slices > 0">
-          已索引 <b>{{ slices }}</b> 条代码切片
-        </template>
-        <template v-else>代码索引为空</template>
-      </div>
+      <p class="project-hint">
+        问答页无需绑定项目，可直接提问。需要建索引、分区开发或切换项目，请到代码工作台。
+      </p>
       <a class="card-link" href="/workbench">打开代码工作台，管理项目与索引 →</a>
     </section>
 
@@ -132,7 +118,6 @@ const residentNames = computed(() => (props.power?.loaded || []).map((m) => m.na
         资料文档
         <span class="card-count">{{ demo ? 3 : files.length }}</span>
       </div>
-      <p class="card-hint">上传 PDF / Markdown / TXT，AI 回答前会先检索资料。</p>
       <button class="btn block" :disabled="demo || ingestBusy" @click="pickFile">
         {{ ingestBusy ? '正在摄取…' : '上传资料文档' }}
       </button>
@@ -154,145 +139,230 @@ const residentNames = computed(() => (props.power?.loaded || []).map((m) => m.na
         </template>
       </div>
     </section>
+    </div>
+
+    <!-- 运行状态：模型与显存沉到底部一行，不占首屏 -->
+    <section class="card status-card">
+      <div class="card-title">运行状态</div>
+      <div class="model-line">
+        <span class="model-k">模型</span>
+        <b :title="config?.llm_model">{{ config?.llm_model || '未配置' }}</b>
+        <button class="gear" title="模型与引擎设置" @click="emit('openSettings')">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M19.4 13a7.8 7.8 0 000-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 00-1.7-1l-.4-2.6H10.1l-.4 2.6a7.6 7.6 0 00-1.7 1l-2.4-1-2 3.4L3.6 11a7.8 7.8 0 000 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.7 1.7 1l.4 2.6h3.8l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/></svg>
+        </button>
+      </div>
+      <div class="power" v-if="!demo">
+        <div class="model-line">
+          <span class="model-k">显存</span>
+          <b v-if="power">{{ power.vram_gb.toFixed(1) }} GB</b>
+          <b v-else>—</b>
+          <span class="resident" v-if="power?.loaded?.length">{{ power.loaded.length }} 个模型驻留</span>
+        </div>
+        <button class="btn sm block" :disabled="!power?.reachable" @click="emit('power', power?.loaded?.length ? 'off' : 'on')">
+          {{ power?.loaded?.length ? '卸载显存模型' : '预加载显存模型' }}
+        </button>
+        <div v-if="power?.error" class="ingest-msg err">{{ power.error }}</div>
+      </div>
+    </section>
   </aside>
 </template>
 
 <style scoped>
+/* ===== DocMind 问答页侧栏 · 高级粗野风 ===== */
 .ask-side {
   flex: 0 0 296px;
   width: 296px;
   height: 100vh;
   overflow-y: auto;
-  padding: 18px 14px 24px;
+  overflow-x: hidden;
+  padding: 12px 12px 14px;
   background: var(--bg-raised);
-  border-right: 1px solid var(--border);
+  border-right: 3px solid var(--ink);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
+/* 侧栏整体作为单一滚动列：所有卡片保持自然高度（flex 不收缩、不中途裁切），
+   内容超出视口时整栏平滑滚动。短视口下不会出现卡片被压扁/互相重叠。 */
+.ask-middle { display: contents; }
+.brand { flex: 0 0 auto; }
+.new-chat { flex: 0 0 auto; }
+.status-card { flex: 0 0 auto; }
 
-.brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 6px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; }
 .brand-mark {
-  width: 32px; height: 32px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  width: 30px; height: 30px;
+  border: 3px solid var(--ink);
+  background: var(--accent);
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 4px 12px rgba(47, 111, 237, .25);
+  box-shadow: var(--sh-hard-sm);
 }
-.brand-name { font-size: 15px; font-weight: 700; letter-spacing: .2px; }
-.brand-sub { font-size: 11.5px; color: var(--text-faint); }
+.brand-name { font-family: var(--font-display); font-size: 17px; font-weight: 900; letter-spacing: .01em; color: var(--ink); }
+.brand-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); letter-spacing: .04em; }
 
 .card {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 13px;
+  flex: 0 0 auto;
+  border: 2px solid var(--ink);
   background: var(--bg-raised);
+  box-shadow: var(--sh-hard-sm);
+  padding: 9px;
 }
 .card-title {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
   color: var(--text-muted);
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 9px;
+  margin-bottom: 5px;
 }
 .card-count {
   margin-left: auto;
-  background: var(--bg-selected);
-  color: var(--accent);
-  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  font-family: var(--font-mono);
   font-size: 11px;
-  padding: 0 7px;
+  padding: 1px 7px;
   line-height: 18px;
 }
-.card-hint { margin: 0 0 8px; font-size: 12px; color: var(--text-faint); line-height: 1.55; }
 .card-link {
   display: block;
   margin-top: 8px;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--accent);
   text-decoration: none;
+  border-bottom: 2px solid transparent;
 }
-.card-link:hover { text-decoration: underline; }
+.card-link:hover { border-bottom-color: var(--accent); }
 
-.project-name { font-size: 14px; font-weight: 600; word-break: break-all; }
-.project-select {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--bg-raised);
-  font-size: 13px;
-  color: var(--text);
+.project-name { font-family: var(--font-display); font-size: 15px; font-weight: 900; word-break: break-all; color: var(--ink); }
+.project-name.muted { color: var(--text-muted); }
+.project-hint {
+  margin: 6px 0 0;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
 }
 .project-root {
-  margin-top: 3px;
+  margin-top: 6px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-faint);
-}
-.status-row {
-  margin-top: 8px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 7px;
 }
-.status-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--border-strong);
-  flex: 0 0 auto;
-}
-.status-dot.on { background: var(--green); box-shadow: 0 0 0 3px rgba(28, 158, 102, .14); }
-
-.ingest-msg { margin-top: 8px; font-size: 12px; color: var(--green); word-break: break-all; }
+.ingest-msg { margin-top: 6px; font-family: var(--font-sans); font-size: 12px; color: var(--green); word-break: break-all; }
 .ingest-msg.err { color: var(--danger); }
-.file-list { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; max-height: 200px; overflow-y: auto; }
-.file-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.file-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 78px; overflow-y: auto; }
+.file-item { display: flex; align-items: center; gap: 8px; font-family: var(--font-sans); font-size: 13px; }
 .file-ic {
   flex: 0 0 auto;
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 5px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--ink);
+  border: 2px solid var(--ink);
   padding: 1px 5px;
 }
 .file-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-empty { font-size: 12px; color: var(--text-faint); padding: 2px 0; }
+.file-empty { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); padding: 2px 0; }
 
-.model-line { display: flex; gap: 8px; font-size: 12.5px; padding: 2px 0; }
-.model-k { flex: 0 0 34px; color: var(--text-faint); }
-.model-line b { font-weight: 500; word-break: break-all; }
+.new-chat { width: 100%; margin-bottom: 0; }
+
+.sess-list { display: flex; flex-direction: column; gap: 6px; max-height: 108px; overflow-y: auto; }
+.sess-item {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  border: 2px solid var(--ink);
+  background: var(--bg);
+  box-shadow: var(--sh-hard-sm);
+}
+.sess-item.active { background: var(--accent); }
+.sess-item.active .sess-main strong,
+.sess-item.active .sess-main small { color: var(--accent-ink); }
+.sess-item.active .ah-dot { color: var(--accent-ink); }
+.sess-main {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 9px 10px;
+  cursor: pointer;
+  color: var(--text);
+  min-width: 0;
+}
+.sess-main:disabled { cursor: default; opacity: .6; }
+.ah-dot { flex: 0 0 auto; font-size: 9px; color: var(--text-faint); }
+.sess-copy { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.sess-copy strong {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sess-copy small { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.sess-del {
+  flex: 0 0 auto;
+  width: 30px;
+  border: none;
+  border-left: 2px solid var(--ink);
+  background: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 130ms, color 130ms;
+}
+.sess-del:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.sess-del:disabled { opacity: .4; cursor: default; }
+.sess-empty { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); padding: 4px 2px; }
+
+.status-card .resident { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.status-card .btn.sm.block { margin-top: 6px; }
+
+.model-line { display: flex; gap: 10px; font-family: var(--font-sans); font-size: 13px; padding: 1px 0; }
+.model-k { flex: 0 0 34px; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; }
+.model-line b { font-weight: 600; word-break: break-all; }
 .gear {
   margin-left: auto;
-  border: none;
+  border: 2px solid transparent;
   background: none;
-  color: var(--text-faint);
+  color: var(--text-muted);
   cursor: pointer;
   padding: 3px;
-  border-radius: 6px;
   display: flex;
+  transition: background 130ms, color 130ms, border-color 130ms;
 }
-.gear:hover { background: var(--bg-hover); color: var(--text); }
-.power { margin: 8px 0; padding-top: 8px; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 7px; }
+.gear:hover { background: var(--bg-hover); color: var(--accent); border-color: var(--ink); }
+.power { margin: 6px 0 0; padding-top: 6px; border-top: 2px dashed var(--border); display: flex; flex-direction: column; gap: 6px; }
 
 .btn {
-  border: 1px solid var(--accent);
+  border: 2px solid var(--ink);
   background: var(--accent);
-  color: #fff;
-  border-radius: 9px;
-  padding: 8px 14px;
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-weight: 700;
+  padding: 6px 12px;
   font-size: 13px;
   cursor: pointer;
-  transition: background .15s, border-color .15s;
+  box-shadow: var(--sh-hard-sm);
+  transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
 }
-.btn:hover { background: #245fd6; border-color: #245fd6; }
+.btn:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); }
 .btn:disabled { opacity: .55; cursor: default; }
-.btn.ghost { background: var(--bg-raised); color: var(--text); border-color: var(--border-strong); }
-.btn.ghost:hover { background: var(--bg-hover); }
+.btn.ghost { background: var(--bg-raised); color: var(--text); }
+.btn.ghost:hover { transform: translate(-2px, -2px); background: var(--ink); color: var(--bg); }
 .btn.block { width: 100%; }
 .btn.sm { padding: 5px 10px; font-size: 12.5px; }
 </style>

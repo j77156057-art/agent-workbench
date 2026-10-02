@@ -1,0 +1,103 @@
+/* DocMind「J 双色 Risograph」印刷语言层 + 双色纠偏覆盖层。
+   本文件在 ask.css 之后加载（见 ask/main.ts），因此可对 ask.css 的
+   缺陷做"覆盖式"修复，而不会触碰并发写者正在改动的 ask.css / AskApp.vue。
+
+   严格双色纪律：全文件仅使用 ink(#14110f) 与 accent(#ff674d) 两色相，
+   不引入任何第三色相（蓝 / 绿 / 琥珀等）。所有颜色均取自 J 令牌或墨/朱红。 */
+
+/* ---------- 印刷语言层：孔版颗粒 + 暗角（叠在 body 背景之上、内容之下） ---------- */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  mix-blend-mode: multiply;            /* 与纸张底色相乘，产生孔版压墨感 */
+  background-image:
+    /* 孔版颗粒：fractalNoise 低透明度，随机微暗 */
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.09'/%3E%3C/svg%3E"),
+    /* 暗角：四角均匀压暗（ellipse 125% 居中，边缘 16% 墨色） */
+    radial-gradient(ellipse 125% 125% at 50% 50%,
+      transparent 58%,
+      color-mix(in srgb, var(--ink) 16%, transparent) 100%);
+  background-size: 140px 140px, 100% 100%;
+  background-repeat: repeat, no-repeat;
+}
+
+/* ---------- 印刷语言层：荧光网点（朱红半透网点，稀疏铺陈） ---------- */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(circle,
+    color-mix(in srgb, var(--accent) 12%, transparent) 1.2px,
+    transparent 1.4px);
+  background-size: 32px 32px;
+  opacity: 0.5;
+}
+
+/* ---------- 双色纠偏：修复 ask.css 的令牌级缺陷（覆盖式） ----------
+   用 :root:root 提高特异性，确保无论 ask.css 被并发写者 HMR 重注入到何种
+   顺序，本覆盖都压过后者（单 :root 与 ask.css 同级，仅赖加载序，dev 下不稳）。 */
+:root:root {
+  /* 朱红提亮两档：固定色相 8.9°、饱和度 100%，只把明度 L 59.0% -> 65.1%。
+     原 #ff4d2e 压在大面积实心块上发闷发深（用户反馈"红色有点深了"）。
+     提亮后红底墨字 5.69:1 -> 6.54:1，对比度只增不减。 */
+  --accent: #ff674d;
+  /* 半透明朱红原为写死的 rgba(255,77,46,.12)，改令牌后不同步就会残留旧红，
+     故一并改为跟随 --accent 推导。 */
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  /* 纸底上的强调字（第三个颜色角色，与 --accent-ink 不可混用）：
+     原令牌在工程里只有引用、没有定义（ModelSettingsDialog.vue:685），
+     静默回退成 inherit。掺墨 62% 后 vs 纸底 4.80:1、vs 面板 5.57:1，达 AA。 */
+  --accent-text: color-mix(in srgb, var(--accent) 62%, var(--ink));
+  /* 朱红实心块上的文字由白改为墨色：白字压朱红仅 3.31:1（不达标），
+     改墨字后 6.54:1，达 WCAG AA。 */
+  --accent-ink: #14110f;
+  /* 消除蓝第三色相：--accent-2 原本 #1f5fe0，违反严格双色，统一指向朱红。 */
+  --accent-2: var(--accent);
+  /* 标题字体栈补离线兜底：ask.css 写的是 'Archivo Black','Space Grotesk',…，
+     中间**没有本地打包的可变字 'Archivo'**。canvas 实测（900 30px 同串字）：
+     "Archivo Black" 331.7px / "Archivo" 319.9px / sans-serif 319.9px
+     ⇒ 有网时 Archivo Black 正常；**离线（桌面端）时它会一路掉到 sans-serif**，
+     因为 Space Grotesk 同样来自 Google Fonts。这里把 'Archivo' 插在中间，
+     离线时落到本地可变字 + font-weight:900，视觉与 Black 基本一致。 */
+  --font-display: 'Archivo Black', 'Archivo', 'Space Grotesk', 'Noto Sans SC', sans-serif;
+  /* hover 压深用的深朱红：原本在问答页/开发台都**没有定义**，导致
+     background: var(--accent-deep) 在计算值阶段失效（回退成透明，
+     hover 时实心块直接漏底）。这里补上定义，值沿用落地页真源 #d83a1e。 */
+  --accent-deep: #d83a1e;
+}
+
+/* ---------- 双色纠偏：Markdown 渲染层的蓝泄漏（覆盖式） ---------- */
+.md-link {
+  color: var(--accent);
+  border-bottom-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.md-link:hover { border-bottom-color: var(--accent); }
+
+.md-ic {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--ink);
+}
+
+/* 代码块由深蓝屏改为朱红描边 + 纸张底，回归 Risograph 平面纸感 */
+.md-pre {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  color: var(--ink);
+}
+.md-pre code { color: var(--ink); }
+
+/* ---------- 几何统一：问答页控件零圆角（对齐开发台粗野风） ---------- */
+.md-pre { border-radius: 0; }
+.md-ic { border-radius: 0; }
+.ask-modal {
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  box-shadow: var(--sh-hard);
+}
+.ask-overlay { background: color-mix(in srgb, var(--ink) 42%, transparent); }

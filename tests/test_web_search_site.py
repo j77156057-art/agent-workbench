@@ -89,10 +89,10 @@ class BaiduBackendTests(unittest.TestCase):
     def test_forced_baidu_backend(self):
         # 指定单后端：经 config.get_web_search_provider() 读取，不走 auto 故障转移
         with patch("tools.get_web_search_provider", return_value="baidu"), \
-                patch("tools._baidu_search", return_value="· 百度结果") as m, \
+                patch("tools._baidu_search", return_value="· 百度关键词\n  百度关键词匹配结果") as m, \
                 patch("tools._ddg_search", return_value="x") as ddg:
-            out = tools.web_search("某关键词")
-        self.assertEqual(out, "· 百度结果")
+            out = tools.web_search("百度关键词")
+        self.assertIn("· 百度关键词", out)
         ddg.assert_not_called()
 
     def test_baidu_parse_html(self):
@@ -141,7 +141,7 @@ class ApiProviderDispatchTests(unittest.TestCase):
                 patch("tools.get_web_search_api_key", return_value="k"), \
                 patch("urllib.request.urlopen", return_value=resp), \
                 patch("urllib.request.Request", side_effect=lambda url, **kw: url):
-            out = tools.web_search("某关键词")
+            out = tools.web_search("T 标题")
         self.assertIn("T 标题", out)
         self.assertIn("https://x.com/1", out)
         self.assertIn("T 摘要内容", out)

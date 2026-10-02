@@ -1,0 +1,59 @@
+/* =============================================================
+   DocMind · 实时视频对话引擎 · 粗野原始版本（Brutalist）
+   方向：粗野原始 / 外露结构 · 浅色素描纸 · 粗黑描边 · 巨型字 · 硬阴影 · 零圆角
+   与 v2(极简克制) 同浅色但气质相反：粗粝外露 vs 纤细留白
+   ============================================================= */
+:root {
+  /* —— 表面：素描纸 —— */
+  --bg: #e9e6df;
+  --surface: #f3f1ea;
+  --surface-2: #ffffff;
+
+  /* —— 墨（同时用于粗描边） —— */
+  --ink: #0d0d0d;
+  --muted: #565049;
+  --faint: #8a8178;
+
+  /* —— 粗黑描边（brutalist 用真实黑线，非发丝） —— */
+  --border: #0d0d0d;
+  --border-2: 2px solid #0d0d0d;
+  --border-3: 3px solid #0d0d0d;
+
+  /* —— 强调：品牌青（浅色版），作响亮色块 —— */
+  --accent: #0c8c7e;
+  --accent-loud: #2ec4b6;
+  --accent-ink: #04302b;
+
+  /* —— 圆角：硬，全部 0 —— */
+  --r: 0;
+
+  /* —— 间距 —— */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 40px; --s-7: 72px; --s-8: 112px;
+
+  /* —— 硬阴影（brutalist 签名：实色偏移投影） —— */
+  --sh-hard: 6px 6px 0 var(--ink);
+  --sh-hard-sm: 4px 4px 0 var(--ink);
+
+  /* —— 字阶（巨型） —— */
+  --fs-mega: clamp(3.4rem, 9vw, 7.4rem);
+  --fs-h1: clamp(2.4rem, 5vw, 4rem);
+  --fs-h2: clamp(1.8rem, 3vw, 2.6rem);
+  --fs-h3: 1.2rem;
+  --fs-body: 1.02rem;
+  --fs-sm: 0.88rem;
+  --fs-xs: 0.79rem;
+  --fs-mono: 0.82rem;
+
+  /* —— 动效（克制、硬切） —— */
+  --dur-fast: 120ms;
+  --dur-base: 240ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* —— 字体：Archivo Black（巨型重字）+ Space Mono（原始技术感） —— */
+  --font-display: 'Archivo Black', 'Noto Sans SC', sans-serif;
+  --font-mono: 'Space Mono', 'JetBrains Mono', Consolas, monospace;
+  --font-body: 'Space Mono', 'Noto Sans SC', system-ui, sans-serif;
+
+  --maxw: 1180px;
+}

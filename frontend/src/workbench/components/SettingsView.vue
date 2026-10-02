@@ -4,10 +4,11 @@
 // MCP 走 mcpApi；智能体为本地预设（localStorage），后续可升级为后端持久化。
 import { ref, watch, computed, onUnmounted } from 'vue'
 import {
-  settingsApi, mcpApi, harnessApi,
+  settingsApi, agentCapacityApi, mcpApi, harnessApi,
   agentApi,
   WEB_SEARCH_PROVIDERS, WEB_FETCH_PROVIDERS,
   type SettingsConfigInfo, type ModelConfigInfo, type ProviderOption, type McpServer,
+  type AgentCapacityInfo,
   type McpCapabilityCandidate,
   type BudgetStatus, type TraceSummary,
   type McpAutoConnectCandidate, type McpAutoConnectConfig, type McpProbeRes, type McpDirectoryResult,
@@ -283,13 +284,130 @@ const cfg = ref<SettingsConfigInfo & ModelConfigInfo | null>(null)
 const wsProvider = ref<ProviderOption['value']>('builtin_auto')
 const wsApiKey = ref('')
 const wsApiUrl = ref('')
-const wsPreferBuiltin = ref(false)
 const wfProvider = ref<ProviderOption['value']>('builtin')
 const wfApiKey = ref('')
 const wfApiUrl = ref('')
 const showWsKey = ref(false)
 const showWfKey = ref(false)
 const searchSaving = ref(false)
+
+// ---------------- Agent 工作负载 / 显存感知 ----------------
+const capacityInfo = ref<AgentCapacityInfo | null>(null)
+const maxAgents = ref('8')
+const mainMaxSteps = ref('8')
+const childMaxSteps = ref('24')
+const maxNudges = ref('2')
+const maxFinalContinuations = ref('2')
+const taskTokenBudget = ref('50000')
+const localAutoLimit = ref(true)
+const capacitySaving = ref(false)
+const capacityError = ref('')
+const capacitySaved = ref('')
+const unlimitedAgentsConfirmed = ref(false)
+const unlimitedMainStepsConfirmed = ref(false)
+const unlimitedStepsConfirmed = ref(false)
+const unlimitedBudgetConfirmed = ref(false)
+
+const unlimitedRisk = '不设固定上限可能显著增加模型调用次数和 Token 消耗，也可能延长任务时间；关闭本地显存自动控制时还可能导致显存不足。确认吗？'
+
+function confirmUnlimitedAgents() {
+  if (maxAgents.value !== '0') { unlimitedAgentsConfirmed.value = false; return }
+  if (window.confirm(unlimitedRisk)) unlimitedAgentsConfirmed.value = true
+  else maxAgents.value = String(capacityInfo.value?.settings.max_agents ?? 8)
+}
+
+function confirmUnlimitedSteps() {
+  if (childMaxSteps.value !== '0') { unlimitedStepsConfirmed.value = false; return }
+  if (window.confirm(unlimitedRisk)) unlimitedStepsConfirmed.value = true
+  else childMaxSteps.value = String(capacityInfo.value?.settings.child_max_steps ?? 24)
+}
+
+function confirmUnlimitedMainSteps() {
+  if (mainMaxSteps.value !== '0') { unlimitedMainStepsConfirmed.value = false; return }
+  if (window.confirm(unlimitedRisk)) unlimitedMainStepsConfirmed.value = true
+  else mainMaxSteps.value = String(capacityInfo.value?.settings.main_max_steps ?? 8)
+}
+
+function confirmUnlimitedBudget() {
+  if (taskTokenBudget.value !== '0') { unlimitedBudgetConfirmed.value = false; return }
+  if (window.confirm(unlimitedRisk)) unlimitedBudgetConfirmed.value = true
+  else taskTokenBudget.value = String(capacityInfo.value?.settings.task_token_budget ?? 50000)
+}
+
+async function loadAgentCapacity() {
+  capacityError.value = ''
+  try {
+    const info = await agentCapacityApi.get()
+    capacityInfo.value = info
+    maxAgents.value = String(info.settings.max_agents)
+    mainMaxSteps.value = String(info.settings.main_max_steps)
+    childMaxSteps.value = String(info.settings.child_max_steps)
+    maxNudges.value = String(info.settings.max_nudges)
+    maxFinalContinuations.value = String(info.settings.max_final_continuations)
+    taskTokenBudget.value = String(info.settings.task_token_budget)
+    localAutoLimit.value = info.settings.local_auto_limit
+  } catch (e) {
+    capacityError.value = (e as { message?: string }).message || '读取 Agent 容量设置失败'
+  }
+}
+
+async function saveAgentCapacity() {
+  const max = Number(maxAgents.value)
+  const mainSteps = Number(mainMaxSteps.value)
+  const steps = Number(childMaxSteps.value)
+  const nudges = Number(maxNudges.value)
+  const continuations = Number(maxFinalContinuations.value)
+  const tokenBudget = Number(taskTokenBudget.value)
+  if (!Number.isInteger(max) || max < 0 || max > 64 ||
+      !Number.isInteger(mainSteps) || mainSteps < 0 || mainSteps > 1000 ||
+      !Number.isInteger(steps) || steps < 0 || steps > 1000) {
+    capacityError.value = 'Agent 数量需为 0–64，工具步数需为 0–1000；0 表示不设固定上限。'
+    return
+  }
+  if (![nudges, continuations].every(Number.isInteger) || nudges < 0 || nudges > 20 || continuations < 0 || continuations > 20 ||
+      !Number.isInteger(tokenBudget) || tokenBudget < 0 || tokenBudget > 10000000) {
+    capacityError.value = '纠偏/续写次数需为 0–20，任务 Token 上限需为 0–10000000；0 表示不限。'
+    return
+  }
+  if ((max === 0 && !unlimitedAgentsConfirmed.value) ||
+      (mainSteps === 0 && !unlimitedMainStepsConfirmed.value) ||
+      (steps === 0 && !unlimitedStepsConfirmed.value) ||
+      (tokenBudget === 0 && !unlimitedBudgetConfirmed.value)) {
+    if (!window.confirm(unlimitedRisk)) return
+    if (max === 0) unlimitedAgentsConfirmed.value = true
+    if (mainSteps === 0) unlimitedMainStepsConfirmed.value = true
+    if (steps === 0) unlimitedStepsConfirmed.value = true
+    if (tokenBudget === 0) unlimitedBudgetConfirmed.value = true
+  }
+  capacitySaving.value = true
+  capacityError.value = ''
+  capacitySaved.value = ''
+  try {
+    const result = await agentCapacityApi.save({
+      max_agents: max,
+      main_max_steps: mainSteps,
+      child_max_steps: steps,
+      max_nudges: nudges,
+      max_final_continuations: continuations,
+      task_token_budget: tokenBudget,
+      local_auto_limit: localAutoLimit.value,
+    })
+    if (!result.ok) {
+      capacityError.value = result.error || '保存失败'
+      return
+    }
+    capacitySaved.value = 'Agent 容量设置已保存'
+    unlimitedAgentsConfirmed.value = false
+    unlimitedMainStepsConfirmed.value = false
+    unlimitedStepsConfirmed.value = false
+    unlimitedBudgetConfirmed.value = false
+    await loadAgentCapacity()
+  } catch (e) {
+    capacityError.value = (e as { message?: string }).message || '保存失败'
+  } finally {
+    capacitySaving.value = false
+  }
+}
 
 const wsNeedsKey = computed(() => WEB_SEARCH_PROVIDERS.find(p => p.value === wsProvider.value)?.needs_key)
 const wsNeedsUrl = computed(() => WEB_SEARCH_PROVIDERS.find(p => p.value === wsProvider.value)?.needs_url)
@@ -404,10 +522,10 @@ async function loadConfig() {
   try {
     const c = await settingsApi.get()
     cfg.value = c
+    await loadAgentCapacity()
     wsProvider.value = c.web_search_provider
     wsApiKey.value = ''
     wsApiUrl.value = c.web_search_api_url || ''
-    wsPreferBuiltin.value = c.web_search_prefer_builtin
     wfProvider.value = c.web_fetch_provider
     wfApiKey.value = ''
     wfApiUrl.value = c.web_fetch_api_url || ''
@@ -427,7 +545,6 @@ async function saveSearch() {
       web_search_provider: wsProvider.value as SettingsConfigInfo['web_search_provider'],
       web_search_api_key: wsApiKey.value.trim(),
       web_search_api_url: wsApiUrl.value.trim(),
-      web_search_prefer_builtin: wsPreferBuiltin.value,
       web_fetch_provider: wfProvider.value as SettingsConfigInfo['web_fetch_provider'],
       web_fetch_api_key: wfApiKey.value.trim(),
       web_fetch_api_url: wfApiUrl.value.trim(),
@@ -1020,14 +1137,19 @@ async function removeMcp(key: string) {
 // immediate：组件在首次打开设置时才由 App 异步挂载，挂载即 visible=true，需立即加载
 watch(() => props.visible, async (v) => {
   if (!v) { stopRegPoll(); return } // 关掉设置即停轮询，绝不让定时器泄漏
-  await Promise.all([loadConfig(), loadMcp(), loadUsage(), loadMemoryProfile()])
-  loadAgents()
+  // 先应用入口标签，再加载远程配置；否则用户在加载期间点击其他标签，
+  // 请求完成后的回调会把 tab 重置回 usage，表现为导航失效。
+  tabTouched.value = false
   tab.value = props.initialTab || 'usage'
   savedMsg.value = ''
   usageSaved.value = ''
+  await Promise.all([loadConfig(), loadMcp(), loadUsage(), loadMemoryProfile()])
+  loadAgents()
 }, { immediate: true })
 watch(() => props.initialTab, (value) => {
-  if (props.visible && value) tab.value = value
+  // 父组件只在从外部打开某个指定页面时更新 initialTab；用户已经在设置页
+  // 内操作后，不能被一次无关的父级更新抢回入口页面。
+  if (props.visible && value && !tabTouched.value) tab.value = value
 })
 
 // 注册弹窗关闭 → 立即停轮询
@@ -1056,11 +1178,12 @@ function openModelSettings() {
       <div class="sv-body">
         <!-- 左侧分组导航 -->
         <nav class="sv-nav">
-          <button class="sv-nav-item" :class="{ on: tab === 'usage' }" @click="tab = 'usage'">用量与费用</button>
-          <button class="sv-nav-item" :class="{ on: tab === 'search' }" @click="tab = 'search'">网络搜索</button>
-          <button class="sv-nav-item" :class="{ on: tab === 'mcp' }" @click="tab = 'mcp'">MCP</button>
-          <button class="sv-nav-item" :class="{ on: tab === 'agent' }" @click="tab = 'agent'">智能体</button>
-          <button class="sv-nav-item" :class="{ on: tab === 'model' }" @click="tab = 'model'">模型</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'usage' }" :aria-current="tab === 'usage' ? 'page' : undefined" @click.stop="selectTab('usage')">用量与费用</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'search' }" :aria-current="tab === 'search' ? 'page' : undefined" @click.stop="selectTab('search')">网络搜索</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'mcp' }" :aria-current="tab === 'mcp' ? 'page' : undefined" @click.stop="selectTab('mcp')">MCP</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'agent' }" :aria-current="tab === 'agent' ? 'page' : undefined" @click.stop="selectTab('agent')">智能体</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'model' }" :aria-current="tab === 'model' ? 'page' : undefined" @click.stop="selectTab('model')">模型</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'appearance' }" :aria-current="tab === 'appearance' ? 'page' : undefined" @click.stop="selectTab('appearance')">外观</button>
         </nav>
 
         <!-- 右侧内容 -->
@@ -1178,11 +1301,6 @@ function openModelSettings() {
               <label class="sv-label">API 地址（自建实例 / 网关）</label>
               <input v-model="wsApiUrl" class="sv-input" placeholder="https://your-instance" spellcheck="false" />
             </template>
-
-            <label class="sv-toggle-row">
-              <input type="checkbox" v-model="wsPreferBuiltin" />
-              <span>优先使用模型内置 Web 工具（如模型本身支持联网）</span>
-            </label>
 
             <div class="sv-sep"></div>
             <h4 class="sv-h4">URL 获取（网页正文）</h4>
@@ -1524,6 +1642,77 @@ function openModelSettings() {
 
           <!-- 智能体 -->
           <section v-show="tab === 'agent'" class="sv-panel">
+            <h4 class="sv-h4">多 Agent 工作负载</h4>
+            <p class="sv-hint">主 Agent 会按任务需要拆分工作；这里可以分别限制主/子 Agent 步数、自动纠偏、续写和整轮 Token 消耗。</p>
+            <div class="sv-form-grid">
+              <label class="sv-field">
+                <span>最多 Agent 数（0 = 不设上限）</span>
+                <input v-model="maxAgents" class="sv-input" type="number" min="0" max="64" step="1" @change="confirmUnlimitedAgents" />
+              </label>
+              <label class="sv-field">
+                <span>主 Agent 工具步数（0 = 不设上限）</span>
+                <input v-model="mainMaxSteps" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedMainSteps" />
+              </label>
+              <label class="sv-field">
+                <span>每个子 Agent 工具步数（0 = 不设上限）</span>
+                <input v-model="childMaxSteps" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedSteps" />
+              </label>
+              <label class="sv-field">
+                <span>任务 Token 上限（0 = 不限）</span>
+                <input v-model="taskTokenBudget" class="sv-input" type="number" min="0" max="10000000" step="1000" @change="confirmUnlimitedBudget" />
+              </label>
+              <label class="sv-field">
+                <span>自动纠偏次数</span>
+                <input v-model="maxNudges" class="sv-input" type="number" min="0" max="20" step="1" />
+              </label>
+              <label class="sv-field">
+                <span>最终续写次数</span>
+                <input v-model="maxFinalContinuations" class="sv-input" type="number" min="0" max="20" step="1" />
+              </label>
+            </div>
+            <label class="sv-toggle-row">
+              <input v-model="localAutoLimit" type="checkbox" />
+              <span>本地模型按当前显存余量自动控制并发</span>
+            </label>
+            <div v-if="capacityInfo" class="sv-note">
+              <div>{{ capacityInfo.model.provider }} / {{ capacityInfo.model.name || '默认模型' }} ·
+                {{ capacityInfo.model.local_endpoint ? '本机推理端点' : '远程推理端点' }}</div>
+              <div v-if="capacityInfo.resources.available">
+                本机 NVIDIA 显存 {{ (capacityInfo.resources.used_mb / 1024).toFixed(1) }} /
+                {{ (capacityInfo.resources.total_mb / 1024).toFixed(1) }} GB 已用 ·
+                {{ capacityInfo.resources.gpus.length }} 张卡
+                <span v-if="capacityInfo.effective_local_parallelism !== null">
+                  · 当前估算并发上限 {{ capacityInfo.effective_local_parallelism }}
+                </span>
+              </div>
+              <div v-else>未检测到可用的本机 NVIDIA 显存数据。</div>
+              <div>{{ capacityInfo.resource_note }}</div>
+              <div v-if="capacityInfo.loaded_models.available">
+                Ollama 已加载模型显存：
+                <span v-if="capacityInfo.loaded_models.models.length">
+                  {{ capacityInfo.loaded_models.models.map(m => `${m.name} ${(m.size_vram_bytes / 1073741824).toFixed(1)} GB`).join(' · ') }}
+                </span>
+                <span v-else>当前没有已加载模型</span>
+              </div>
+              <div v-else-if="capacityInfo.model.local_endpoint">
+                当前推理服务未提供可读取的模型级显存数据；显示的是本机显卡与进程占用。
+              </div>
+              <div v-for="gpu in capacityInfo.resources.gpus" :key="gpu.index">
+                GPU {{ gpu.index }} · {{ gpu.name }} · {{ (gpu.used_mb / 1024).toFixed(1) }} /
+                {{ (gpu.total_mb / 1024).toFixed(1) }} GB
+              </div>
+              <div v-for="app in capacityInfo.resources.compute_apps" :key="app.pid">
+                进程 {{ app.process_name || '未知' }} · {{ (app.used_mb / 1024).toFixed(1) }} GB
+              </div>
+            </div>
+            <p v-if="capacityError" class="sv-err">{{ capacityError }}</p>
+            <p v-if="capacitySaved" class="sv-ok">{{ capacitySaved }}</p>
+            <div class="sv-actions">
+              <button class="sv-btn sv-primary" :disabled="capacitySaving" @click="saveAgentCapacity">
+                {{ capacitySaving ? '保存中…' : '保存工作负载设置' }}
+              </button>
+            </div>
+            <div class="sv-sep"></div>
             <h4 class="sv-h4">智能体（本地预设）</h4>
             <p class="sv-hint">保存常用 Agent 预设（名称 / 模型 / 提示词），便于在对话前快速切换。当前存于本机浏览器。</p>
             <ul class="sv-list" v-if="agents.length">
@@ -1592,6 +1781,159 @@ function openModelSettings() {
             </div>
             <button class="sv-btn sv-primary sv-model-open" :disabled="loading || !cfg" @click="openModelSettings">打开模型参数设置</button>
           </section>
+
+          <!-- 外观：皮肤（视觉风格） -->
+          <section v-show="tab === 'appearance'" class="sv-panel">
+            <div class="sv-section-head">
+              <div>
+                <h4 class="sv-h4">外观</h4>
+                <p class="sv-hint">皮肤只改配色、圆角与阴影质感，不动布局与字号。选择后立即生效，问答页与工作台共用同一套。</p>
+              </div>
+            </div>
+
+            <div class="sv-skins" role="radiogroup" aria-label="皮肤">
+              <button
+                v-for="s in SKINS"
+                :key="s.key"
+                type="button"
+                class="sv-skin"
+                :class="{ on: skin === s.key }"
+                role="radio"
+                :aria-checked="skin === s.key"
+                @click="chooseSkin(s.key)"
+              >
+                <span class="sv-skin-swatch" aria-hidden="true">
+                  <i v-for="(c, i) in s.swatch" :key="i" :style="{ background: c }" />
+                </span>
+                <span class="sv-skin-text">
+                  <b>{{ s.name }}</b>
+                  <small>{{ s.desc }}</small>
+                </span>
+                <span class="sv-skin-check" aria-hidden="true">
+                  <Icon v-if="skin === s.key" name="circle-check" :size="16" />
+                </span>
+              </button>
+            </div>
+
+            <p class="sv-note" data-tone="neutral">
+              全部 {{ SKINS.length }} 套配色都过了 WCAG AA 对比度校验（正文与实心块上的文字 ≥ 4.5:1，描边 ≥ 3:1）——
+              深色皮肤下最容易塌的第三级灰字与状态色是逐套解算出来的，不是手调的。
+            </p>
+
+            <!-- 布局：空间构成 -->
+            <div class="sv-section-head" style="margin-top: 18px;">
+              <div>
+                <h4 class="sv-h4">布局</h4>
+                <p class="sv-hint">这是改动最大的一项：侧栏停在哪、主区多宽、概览分几栏。配色、造型、材质都不变。</p>
+              </div>
+            </div>
+
+            <div class="sv-layouts" role="radiogroup" aria-label="布局">
+              <button
+                v-for="l in LAYOUTS"
+                :key="l.key"
+                type="button"
+                class="sv-layout"
+                :class="{ on: layout === l.key }"
+                role="radio"
+                :aria-checked="layout === l.key"
+                @click="chooseLayout(l.key)"
+              >
+                <span class="sv-layout-demo" :data-layout-demo="l.key" aria-hidden="true">
+                  <i class="rail" /><i class="main" />
+                </span>
+                <span class="sv-skin-text">
+                  <b>{{ l.name }}</b>
+                  <small>{{ l.desc }}</small>
+                </span>
+                <span class="sv-skin-check" aria-hidden="true">
+                  <Icon v-if="layout === l.key" name="circle-check" :size="16" />
+                </span>
+              </button>
+            </div>
+
+            <!-- 风格：造型语言（圆角/描边/阴影/字体/纹理/字重） -->
+            <div class="sv-section-head" style="margin-top: 18px;">
+              <div>
+                <h4 class="sv-h4">风格</h4>
+                <p class="sv-hint">风格决定造型的六个维度：圆角、描边、阴影、字体、纹理、字重。配色由上面的皮肤决定，两者互不影响。</p>
+              </div>
+            </div>
+
+            <div class="sv-styles" role="radiogroup" aria-label="风格">
+              <button
+                v-for="s in STYLES"
+                :key="s.key"
+                type="button"
+                class="sv-style"
+                :class="{ on: style === s.key }"
+                role="radio"
+                :aria-checked="style === s.key"
+                @click="chooseStyle(s.key)"
+              >
+                <span class="sv-style-demo" :data-style-demo="s.key" aria-hidden="true">
+                  <i class="d1" /><i class="d2" /><i class="d3" />
+                </span>
+                <span class="sv-skin-text">
+                  <b>{{ s.name }}</b>
+                  <small>{{ s.desc }}</small>
+                </span>
+                <span class="sv-skin-check" aria-hidden="true">
+                  <Icon v-if="style === s.key" name="circle-check" :size="16" />
+                </span>
+              </button>
+            </div>
+
+            <!-- 材质：实体 / 玻璃 -->
+            <div class="sv-section-head" style="margin-top: 18px;">
+              <div>
+                <h4 class="sv-h4">材质</h4>
+                <p class="sv-hint">材质只改表面：半透明、背景模糊、高光描边。与配色、造型都正交。</p>
+              </div>
+            </div>
+
+            <div class="sv-mats" role="radiogroup" aria-label="材质">
+              <button
+                type="button"
+                class="sv-mat"
+                :class="{ on: material === 'solid' }"
+                role="radio"
+                :aria-checked="material === 'solid'"
+                @click="chooseMaterial('solid')"
+              >
+                <span class="sv-mat-demo" data-kind="solid" aria-hidden="true"><i /><i /><i /></span>
+                <span class="sv-skin-text">
+                  <b>实体</b>
+                  <small>不透明面板，文字最清晰</small>
+                </span>
+                <span class="sv-skin-check" aria-hidden="true">
+                  <Icon v-if="material === 'solid'" name="circle-check" :size="16" />
+                </span>
+              </button>
+              <button
+                type="button"
+                class="sv-mat"
+                :class="{ on: material === 'glass' }"
+                role="radio"
+                :aria-checked="material === 'glass'"
+                @click="chooseMaterial('glass')"
+              >
+                <span class="sv-mat-demo" data-kind="glass" aria-hidden="true"><i /><i /><i /></span>
+                <span class="sv-skin-text">
+                  <b>玻璃</b>
+                  <small>半透明 + 背景模糊 + 高光描边</small>
+                </span>
+                <span class="sv-skin-check" aria-hidden="true">
+                  <Icon v-if="material === 'glass'" name="circle-check" :size="16" />
+                </span>
+              </button>
+            </div>
+
+            <p class="sv-note" data-tone="neutral">
+              四层互相独立、可自由组合：<b>皮肤</b>（8 种配色）·<b>风格</b>（5 种造型语言）·<b>材质</b>（实体/玻璃）·<b>布局</b>（5 种空间构成）。
+              调形状参数改 <code>layout-modes.css</code> 与 <code>style-modes.css</code>，改材质参数改 <code>glass.css</code>，改完刷新即生效，不需要重新构建。
+            </p>
+          </section>
         </div>
       </div>
     </div>
@@ -1625,13 +1967,140 @@ function openModelSettings() {
   width: 168px; flex: none; border-right: 1px solid var(--border);
   padding: 10px 8px; display: flex; flex-direction: column; gap: 4px;
   background: var(--bg-selected);
+  position: relative; z-index: 2; pointer-events: auto;
 }
 .sv-nav-item {
   text-align: left; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px;
+  position: relative; z-index: 1; width: 100%;
   background: transparent; color: var(--text); cursor: pointer; font-size: 13px;
+  pointer-events: auto;
 }
 .sv-nav-item:hover { background: var(--bg-input); }
 .sv-nav-item.on { background: var(--bg-input); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* 外观：皮肤卡片（色板 + 名称 + 说明 + 选中态）
+   色板用 SKINS 里的 swatch 四色直接内联，**不读当前皮肤的 CSS 变量** ——
+   否则所有卡片都会显示当前皮肤的颜色，就分不出"点了会变成什么样"了。 */
+.sv-skins { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 10px; margin-top: 12px; }
+.sv-skin {
+  display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
+  padding: 11px 12px; text-align: left; cursor: pointer;
+  background: var(--bg-raised); border: 2px solid var(--border);
+  border-radius: var(--radius-md); color: var(--text);
+  transition: background var(--motion-base) var(--ease-standard);
+}
+.sv-skin:hover { background: var(--bg-hover); }
+.sv-skin.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+.sv-skin:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sv-skin-swatch { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; width: 44px; height: 44px; border: 1px solid var(--border); flex: none; }
+.sv-skin-swatch i { display: block; }
+.sv-skin-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sv-skin-text b { font-size: 13px; font-weight: 700; color: var(--text); }
+.sv-skin-text small { font-size: var(--fs-cap, 11px); line-height: 1.45; color: var(--text-muted); }
+.sv-skin-check { display: grid; place-items: center; color: var(--accent); }
+.sv-skin:not(.on) .sv-skin-check { color: transparent; }
+
+/* 布局示意缩略图：**形状本身就是信息** —— 侧栏在哪、主区多宽、是否居中，
+   五张必须长得不一样（不是同一张换配色）。i.rail=侧栏，i.main=主区。 */
+.sv-layouts { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 10px; margin-top: 12px; }
+.sv-layout {
+  display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
+  padding: 11px 12px; text-align: left; cursor: pointer;
+  background: var(--bg-raised); border: 2px solid var(--border);
+  border-radius: var(--radius-md); color: var(--text);
+  transition: background var(--motion-base) var(--ease-standard);
+}
+.sv-layout:hover { background: var(--bg-hover); }
+.sv-layout.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+.sv-layout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sv-layout:not(.on) .sv-skin-check { color: transparent; }
+.sv-layout-demo {
+  position: relative; width: 44px; height: 34px; flex: none;
+  background: var(--bg-hover); border: 1px solid var(--border); overflow: hidden;
+}
+.sv-layout-demo i { position: absolute; display: block; background: var(--ink); }
+.sv-layout-demo i.rail { background: var(--accent); }
+.sv-layout-demo i.main { background: var(--ink); }
+/* ① fixed：左窄栏 + 右满宽 */
+.sv-layout-demo[data-layout-demo='fixed'] .rail { left: 0; top: 0; width: 12px; height: 100%; }
+.sv-layout-demo[data-layout-demo='fixed'] .main { left: 15px; top: 0; right: 0; height: 100%; }
+/* ② focus：左右留白（虚线示意）+ 居中一条 */
+.sv-layout-demo[data-layout-demo='focus'] .rail { display: none; }
+.sv-layout-demo[data-layout-demo='focus'] .main { left: 11px; right: 11px; top: 0; height: 100%; opacity: .9; }
+/* ③ dock：上满宽 + 下抽屉 */
+.sv-layout-demo[data-layout-demo='dock'] .rail { left: 0; bottom: 0; width: 100%; height: 10px; }
+.sv-layout-demo[data-layout-demo='dock'] .main { left: 0; top: 0; right: 0; height: 20px; }
+/* ④ split：左右对半，中间留缝 */
+.sv-layout-demo[data-layout-demo='split'] .rail { left: 0; top: 0; width: 50%; height: 100%; }
+.sv-layout-demo[data-layout-demo='split'] .main { left: 50%; top: 0; right: 0; height: 100%; opacity: .8; }
+/* ⑤ grid：极窄栏（1/5）+ 满宽主区 */
+.sv-layout-demo[data-layout-demo='grid'] .rail { left: 0; top: 0; width: 4px; height: 100%; }
+.sv-layout-demo[data-layout-demo='grid'] .main { left: 7px; top: 0; right: 0; height: 100%; }
+
+/* 风格示意缩略图：五张必须**看得出区别**，
+   所以每张按自己那套语言画（圆角/描边粗细/阴影形态/字体），而不是同一张换配色。
+   i.d1/d2/d3 是三层错落的卡片，直观呈现「浮起方式」的差异。 */
+.sv-styles { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 10px; margin-top: 12px; }
+.sv-style {
+  display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
+  padding: 11px 12px; text-align: left; cursor: pointer;
+  background: var(--bg-raised); border: 2px solid var(--border);
+  border-radius: var(--radius-md); color: var(--text);
+  transition: background var(--motion-base) var(--ease-standard);
+}
+.sv-style:hover { background: var(--bg-hover); }
+.sv-style.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+.sv-style:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sv-style:not(.on) .sv-skin-check { color: transparent; }
+.sv-style-demo { position: relative; width: 44px; height: 44px; flex: none; background: var(--bg-hover); }
+.sv-style-demo i { position: absolute; display: block; background: var(--bg-raised); border: 1px solid var(--ink); }
+.sv-style-demo i.d1 { left: 4px; top: 5px; width: 26px; height: 9px; }
+.sv-style-demo i.d2 { left: 9px; top: 18px; width: 26px; height: 9px; }
+.sv-style-demo i.d3 { left: 14px; top: 31px; width: 26px; height: 9px; }
+/* ① brutal：零圆角 + 2px 黑边 + 错位硬投影（每层往右下错开） */
+.sv-style-demo[data-style-demo='brutal'] i { border-width: 2px; border-color: var(--ink); border-radius: 0;
+  box-shadow: 3px 3px 0 var(--ink); }
+/* ② soft：大圆角 + 半透明细边 + 极淡软阴影（不投影，靠色阶分层） */
+.sv-style-demo[data-style-demo='soft'] i { border-width: 1px; border-radius: 5px;
+  border-color: color-mix(in srgb, var(--ink) 16%, transparent); box-shadow: none; opacity: .95; }
+.sv-style-demo[data-style-demo='soft'] i.d2 { opacity: .78; }
+.sv-style-demo[data-style-demo='soft'] i.d3 { opacity: .6; }
+/* ③ outline：零圆角 + 强调色 1px 线 + 零阴影（纯线条） */
+.sv-style-demo[data-style-demo='outline'] i { border-width: 1px; border-radius: 0;
+  border-color: var(--accent); box-shadow: none; background: transparent; }
+/* ④ neon：小圆角 + 强调色辉光（两层 box-shadow 叠出光晕） */
+.sv-style-demo[data-style-demo='neon'] i { border-width: 1px; border-radius: 3px; border-color: var(--accent);
+  box-shadow: 0 0 4px var(--accent), 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent); }
+/* ⑤ flat：零圆角 + 无描边 + 无阴影（纯色块，靠透明度差分层） */
+.sv-style-demo[data-style-demo='flat'] i { border-width: 0; border-radius: 0; box-shadow: none; }
+.sv-style-demo[data-style-demo='flat'] i.d1 { background: var(--ink); }
+.sv-style-demo[data-style-demo='flat'] i.d2 { background: color-mix(in srgb, var(--ink) 58%, transparent); }
+.sv-style-demo[data-style-demo='flat'] i.d3 { background: color-mix(in srgb, var(--ink) 30%, transparent); }
+
+/* 材质：实体 / 玻璃 */
+.sv-mats { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 10px; margin-top: 12px; }
+.sv-mat {
+  display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
+  padding: 11px 12px; text-align: left; cursor: pointer;
+  background: var(--bg-raised); border: 2px solid var(--border);
+  border-radius: var(--radius-md); color: var(--text);
+  transition: background var(--motion-base) var(--ease-standard);
+}
+.sv-mat:hover { background: var(--bg-hover); }
+.sv-mat.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+.sv-mat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sv-mat:not(.on) .sv-skin-check { color: transparent; }
+/* 材质示意缩略图：实体=不透明方块三层；玻璃=半透+模糊，三层透出彼此 */
+.sv-mat-demo { position: relative; width: 44px; height: 44px; flex: none; overflow: hidden; border-radius: 6px; background: var(--bg-hover); }
+.sv-mat-demo[data-kind='solid'] i { position: absolute; left: 6px; right: 6px; height: 6px; border-radius: 2px; background: var(--ink); }
+.sv-mat-demo[data-kind='solid'] i:nth-child(1) { top: 7px; }
+.sv-mat-demo[data-kind='solid'] i:nth-child(2) { top: 18px; opacity: .55; }
+.sv-mat-demo[data-kind='solid'] i:nth-child(3) { top: 29px; opacity: .25; }
+.sv-mat-demo[data-kind='glass'] { background: linear-gradient(135deg, var(--accent) 0%, var(--bg-hover) 60%); }
+.sv-mat-demo[data-kind='glass'] i { position: absolute; left: 6px; right: 6px; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--bg-raised) 55%, transparent); box-shadow: inset 0 1px 0 rgba(255,255,255,.6); }
+.sv-mat-demo[data-kind='glass'] i:nth-child(1) { top: 6px; }
+.sv-mat-demo[data-kind='glass'] i:nth-child(2) { top: 17px; }
+.sv-mat-demo[data-kind='glass'] i:nth-child(3) { top: 28px; }
 .sv-content { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 20px; }
 .sv-panel { display: flex; flex-direction: column; gap: 4px; }
 .sv-model-current { display: flex; flex-direction: column; gap: 5px; padding: 13px; margin-top: 8px; background: var(--bg); }
@@ -1665,7 +2134,7 @@ function openModelSettings() {
 .sv-meter b { display: block; margin-top: 3px; font-size: 17px; font-weight: 650; overflow-wrap: anywhere; }
 .sv-provider-list { margin-top: 8px; border-top: 1px solid var(--border); }
 .sv-provider-head, .sv-provider-row {
-  display: grid; grid-template-columns: minmax(90px, 1fr) 100px 110px 90px;
+  display: grid; grid-template-columns: minmax(90px, 1fr) 100px 110px 150px 110px;
   gap: 10px; align-items: center; padding: 7px 4px; font-size: 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -1831,6 +2300,6 @@ function openModelSettings() {
   .sv-meter:nth-child(3n) { border-right: 1px solid var(--border); }
   .sv-meter:nth-child(2n) { border-right: 0; }
   .sv-meter:nth-child(n+3) { border-top: 1px solid var(--border); }
-  .sv-provider-head, .sv-provider-row { grid-template-columns: minmax(70px, 1fr) 74px 82px 68px; gap: 6px; }
+  .sv-provider-head, .sv-provider-row { grid-template-columns: minmax(70px, 1fr) 74px 82px 132px 68px; gap: 6px; }
 }
 </style>

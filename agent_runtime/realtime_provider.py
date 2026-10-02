@@ -154,6 +154,10 @@ class RealtimeProvider:
     def interrupt(self) -> bool:
         return False
 
+    def submit_agent_result(self, request_id: str, text: str) -> bool:
+        """Feed an approved investigation report back into the spoken session."""
+        return False
+
     # -- read side ------------------------------------------------------------
     def poll(self, timeout: float = 0.0) -> RealtimeEvent | None:
         try:

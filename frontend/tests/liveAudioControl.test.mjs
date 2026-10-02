@@ -10,12 +10,49 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   CHUNK_MS, OUTPUT_BITS_PER_SAMPLE, OUTPUT_SAMPLE_RATE, TARGET_SAMPLE_RATE,
-  clampInt16, createChunkPump, createVoiceGate, encodeAudioPacket, floatToInt16Le,
+  clampInt16, createAudioPlaybackClock, createChunkPump, createVoiceGate, encodeAudioPacket, floatToInt16Le,
   frameRms, resolveLiveModelAudioFormat, resample,
 } from '../src/workbench/liveAudioControl.ts'
 
 const LOUD = 0.5
 const SILENT = 0.0
+
+test('播放短暂预缓冲后逐片无缝衔接，保留原始时长', () => {
+  const clock = createAudioPlaybackClock()
+  let end = clock.schedule(0, .04) + .04
+  assert.ok(Math.abs(end - .1) < 1e-9, '首片只预留 60ms，不等整句话')
+  // 40ms PCM packets with uneven delivery still fit inside the jitter reserve.
+  for (let i = 1; i < 20; i++) {
+    const receivedAt = i * .04 + (i % 2 ? .03 : 0)
+    const start = clock.schedule(receivedAt, .04)
+    assert.ok(Math.abs(start - end) < 1e-9, '分片边界不插入额外停顿')
+    end = start + .04
+  }
+  assert.ok(Math.abs(end - .86) < 1e-9, '800ms 的语音仍播放 800ms，不变速变调')
+})
+
+test('网络欠载时缓冲有上限，下一次回答恢复低延迟', () => {
+  const clock = createAudioPlaybackClock()
+  let now = 0
+  let end = clock.schedule(now, .04) + .04
+  for (let i = 0; i < 20; i++) {
+    now = end + .01
+    const start = clock.schedule(now, .04)
+    assert.ok(start >= now + .06 && start <= now + .14 + 1e-9)
+    end = start + .04
+  }
+  now = end + 2
+  assert.ok(Math.abs(clock.schedule(now, .04) - now - .06) < 1e-9)
+})
+
+test('抢话重置清空上一轮排期，新片不等待旧语音结束', () => {
+  const clock = createAudioPlaybackClock()
+  clock.schedule(1, 10)
+  clock.reset()
+  assert.ok(Math.abs(clock.schedule(2, .1) - 2.06) < 1e-9)
+  assert.throws(() => clock.schedule(NaN, .1))
+  assert.throws(() => clock.schedule(1, 0))
+})
 
 test('pcm24 是 24kHz PCM16 的格式名，不是 24-bit 样本', () => {
   const format = resolveLiveModelAudioFormat('pcm24')

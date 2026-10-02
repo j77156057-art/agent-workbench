@@ -71,6 +71,15 @@ export interface TraceItem {
   cache_read_tokens?: number
   cache_creation_tokens?: number
   total_tokens: number
+  task_budget?: {
+    limit?: number | null
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+    remaining?: number | null
+    calls?: number
+    exhausted?: boolean
+  } | null
   cost_cny: number
   llm_calls: number
   llm_ms: number

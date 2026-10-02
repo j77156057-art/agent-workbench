@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 26,
- "scored": 26,
- "passed": 26,
+ "total": 27,
+ "scored": 27,
+ "passed": 27,
  "skipped": [],
  "results": [
   {
@@ -121,6 +121,12 @@
   },
   {
    "id": "apptest-refuses-a-stale-build-as-current",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "log-view-collapses-real-spam",
    "passed": true,
    "skipped": "",
    "failed_checks": []

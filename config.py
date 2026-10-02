@@ -894,6 +894,11 @@ def _apply_persisted_state():
             and "cockpit_mode" not in _RUNTIME:
         _RUNTIME["cockpit_mode"] = cmm.strip()
 
+    capacity = data.get("agent_capacity_settings")
+    if isinstance(capacity, dict) and "agent_capacity_settings" not in _RUNTIME:
+        from agent_runtime.capacity import normalize_settings
+        _RUNTIME["agent_capacity_settings"] = normalize_settings(capacity)
+
     # 网络搜索 / URL 获取配置恢复
     _apply_web_search_state(data)
 

@@ -26,7 +26,7 @@ class ParseGeneratedTasksMaxStepsTests(unittest.TestCase):
 
     def test_out_of_range_and_garbage_dropped(self):
         tasks = self._parse(
-            {"id": "a", "role": "coder", "task": "实现", "max_steps": 99},
+            {"id": "a", "role": "coder", "task": "实现", "max_steps": 1001},
             {"id": "b", "role": "coder", "task": "自测", "depends_on": ["a"],
              "max_steps": 0},
             {"id": "c", "role": "tester", "task": "验收", "depends_on": ["b"],
@@ -58,11 +58,21 @@ class ParseGeneratedTasksMaxStepsTests(unittest.TestCase):
             {"id": "b", "role": "coder", "task": "y", "depends_on": ["a"],
              "max_steps": 12},
             {"id": "c", "role": "coder", "task": "z", "depends_on": ["b"],
-             "max_steps": 13},
+             "max_steps": 1001},
         )
         self.assertEqual(tasks[0]["max_steps"], 1)
         self.assertEqual(tasks[1]["max_steps"], 12)
         self.assertNotIn("max_steps", tasks[2])
+
+    def test_unlimited_agent_count_and_larger_task_step_cap(self):
+        policy = WorkflowPolicy(max_subagents=0)
+        self.assertEqual(policy.normalized().max_subagents, 0)
+        tasks = GameWorkflowManager._parse_generated_tasks([
+            {"id": "a", "role": "coder", "task": "长任务", "max_steps": 120},
+            {"id": "b", "role": "tester", "task": "验证"},
+        ], max_tasks=0)
+        self.assertEqual(len(tasks), 2)
+        self.assertEqual(tasks[0]["max_steps"], 120)
 
 
 class EffectiveMaxStepsTests(unittest.TestCase):
@@ -289,6 +299,11 @@ class RunChildStepCapTests(unittest.TestCase):
     def test_garbage_falls_back_to_default(self):
         _result, executed = self._run("x")
         self.assertEqual(len(executed), 6)
+
+    def test_global_child_step_limit_caps_task_override(self):
+        with patch("agent_runtime.capacity.get_settings", return_value={
+                "max_agents": 8, "child_max_steps": 24, "local_auto_limit": True}):
+            self.assertEqual(agent_mod._resolve_child_max_steps(120), 24)
 
 
 class _CyclicActionsLLM:

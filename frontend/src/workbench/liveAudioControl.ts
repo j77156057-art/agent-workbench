@@ -22,6 +22,35 @@ export const OUTPUT_BITS_PER_SAMPLE = 16 as const
 export const CHUNK_MS = 100
 const MAX_CHUNK_BYTES = 1_000_000
 
+/** Small jitter reserve without changing the PCM sample rate or voice pitch. */
+export function createAudioPlaybackClock() {
+  let nextAt = 0
+  let reserve = 0.06
+  return {
+    reset() { nextAt = 0; reserve = 0.06 },
+    schedule(now: number, duration: number): number {
+      if (!Number.isFinite(now) || now < 0 || !Number.isFinite(duration) || duration <= 0) {
+        throw new Error('Invalid playback time or duration')
+      }
+      let startAt: number
+      if (nextAt === 0 || now - nextAt > 0.5) {
+        // A new answer only needs a 60 ms reserve, even after a stalled answer.
+        reserve = 0.06
+        startAt = now + reserve
+      } else if (nextAt < now + 0.005) {
+        // Refill on underrun; cap additional latency at 140 ms.
+        reserve = Math.min(0.14, reserve + 0.02)
+        startAt = now + reserve
+      } else {
+        // Adjacent PCM fragments share an exact boundary: no per-chunk pause.
+        startAt = nextAt
+      }
+      nextAt = startAt + duration
+      return startAt
+    },
+  }
+}
+
 export interface LiveModelAudioFormat {
   sampleRate: number
   bitsPerSample: 16

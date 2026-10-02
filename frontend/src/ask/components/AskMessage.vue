@@ -2,8 +2,9 @@
 // 单条对话气泡：用户消息（含图片）/ 助手消息。
 // 助手消息支持 SSE 流式渲染：深度思考折叠块、ReAct 轨迹（分析/动作/观察/复核）、
 // Markdown 正文、文件行号引用 chips（点击打开只读源码弹窗）。
-import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { mdToHtml, extractFileRefs } from '../../workbench/markdown'
+import { ASK_PREFS_EVENT, loadAskPrefs, type AskPrefs } from '../askPrefs'
 // 工作流卡片 104KB，只有触发工作流的消息才渲染：按需加载，问答首屏不背
 const WorkflowCard = defineAsyncComponent(() => import('../../workbench/components/WorkflowCard.vue'))
 import type { ChatMsg, ChatTraceItem } from '../../workbench/composables/chat-types'
@@ -19,14 +20,33 @@ const html = computed(() => mdToHtml(props.msg.text || ''))
 const refs = computed(() => extractFileRefs(props.msg.text || ''))
 const streaming = computed(() => props.msg.status === 'streaming')
 
+// 问答偏好：设置弹窗改完派发 ASK_PREFS_EVENT，这里即时重载，已渲染的旧消息也跟着变
+const prefs = ref<AskPrefs>(loadAskPrefs())
+const onPrefsChanged = () => { prefs.value = loadAskPrefs() }
+onMounted(() => window.addEventListener(ASK_PREFS_EVENT, onPrefsChanged))
+onBeforeUnmount(() => window.removeEventListener(ASK_PREFS_EVENT, onPrefsChanged))
+
+// 引用条数上限（0 = 不限制）：答案里可能引用几十处代码，默认只挑前几条展示
+const shownRefs = computed(() => {
+  const all = refs.value
+  const n = prefs.value.maxRefs
+  return n > 0 ? all.slice(0, n) : all
+})
+
 // ---------------- 深度思考折叠 ----------------
-const reasonOpen = ref(false)
+// 初始展开与否由「问答偏好」决定（设置弹窗里可改，存 localStorage）；
+// 关掉该偏好时，答案生成完自动折叠翻回默认折叠。
+const reasonOpen = ref(prefs.value.reasonOpen)
 let reasonManual = false
 watch(() => props.msg.reasoning, (v) => {
   if (v && streaming.value && !reasonManual) reasonOpen.value = true
 })
 watch(() => props.msg.status, (s) => {
-  if (s !== 'streaming' && !reasonManual) reasonOpen.value = false
+  if (s !== 'streaming' && !reasonManual && !prefs.value.reasonOpen) reasonOpen.value = false
+})
+// 设置弹窗里改「深度思考默认展开」时，已渲染的折叠块要跟着翻（手动点开过的那条不搅）
+watch(() => prefs.value.reasonOpen, (v) => {
+  if (!reasonManual) reasonOpen.value = v
 })
 function toggleReason() {
   reasonManual = true
@@ -68,7 +88,8 @@ function stepTitle(item: ChatTraceItem): string {
   return TRACE_LABEL[item.type] || item.type
 }
 function stepSummary(item: ChatTraceItem): string {
-  const raw = item.text.trim()
+  // 单条轨迹缺 text 曾让整条消息渲染抛错挂掉（页面级 pageerror），这里做兜底
+  const raw = (item.text ?? '').trim()
   if (item.type === 'action') {
     const tool = /^([\w.-]+)\s*\(([^)]*)\)/.exec(raw)
     if (tool) return oneLine(tool[2].replace(/^['"]|['"]$/g, '') || tool[1], 72)
@@ -160,8 +181,8 @@ const phaseLabel = computed(() => {
           <div v-if="reasonOpen" class="reason-body">{{ msg.reasoning }}</div>
         </div>
 
-        <!-- ReAct 轨迹 -->
-        <div v-if="visibleTrace.length" class="trace">
+        <!-- ReAct 轨迹（问答偏好「显示推理轨迹步骤」可整体关掉） -->
+        <div v-if="prefs.showTrace && visibleTrace.length" class="trace">
           <div v-for="row in visibleTrace" :key="row.index" class="step">
             <button class="step-head" @click="toggleStep(row.index)">
               <span class="step-tag" :class="row.item.type">{{ stepTitle(row.item) }}</span>
@@ -190,15 +211,15 @@ const phaseLabel = computed(() => {
             <span v-if="elapsedLabel" class="typing-time">{{ elapsedLabel }}</span>
             <span class="td"></span><span class="td"></span><span class="td"></span>
           </div>
-          <div v-else-if="msg.text" class="answer" v-html="html"></div>
+          <div v-else-if="msg.text" class="answer" :class="{ streaming }" v-html="html"></div>
           <div v-if="msg.status === 'stopped' && msg.text" class="flag stopped">已停止</div>
           <div v-if="msg.status === 'error'" class="flag error">{{ msg.error || '请求失败' }}</div>
         </div>
 
-        <!-- 文件引用 -->
-        <div v-if="refs.length" class="refs">
+        <!-- 文件引用（条数上限由问答偏好控制） -->
+        <div v-if="shownRefs.length" class="refs">
           <button
-            v-for="(r, i) in refs" :key="i"
+            v-for="(r, i) in shownRefs" :key="i"
             class="ref-chip"
             :title="r.path + (r.line ? ':' + r.line : '')"
             @click="emit('openFile', r.path, r.line)"
@@ -216,79 +237,87 @@ const phaseLabel = computed(() => {
 </template>
 
 <style scoped>
-.msg-row { display: flex; gap: 10px; }
+/* ===== DocMind 问答气泡 · 高级粗野风 ===== */
+.msg-row { display: flex; gap: 12px; animation: msg-in .22s ease both; }
 .user-row { justify-content: flex-end; }
-
-.bubble {
-  border-radius: 14px;
-  padding: 10px 14px;
-  max-width: 100%;
+@keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .msg-row { animation: none !important; }
+  .td, .reason-dot.on { animation: none !important; }
+  .td { opacity: .5; }
+  .answer.streaming::after { animation: none !important; opacity: .6; }
 }
+
+.bubble { border-radius: 0; padding: 12px 16px; max-width: 100%; }
 .user-bubble {
   max-width: min(560px, 82%);
   background: var(--accent);
   color: #fff;
-  border-bottom-right-radius: 4px;
-  box-shadow: 0 4px 14px rgba(47, 111, 237, .18);
+  border: 2px solid var(--ink);
+  box-shadow: var(--sh-hard-sm);
 }
-.user-text { white-space: pre-wrap; word-break: break-word; }
+.user-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-sans); }
 .user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.user-imgs img {
-  max-width: 180px;
-  max-height: 180px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, .3);
-}
+.user-imgs img { max-width: 180px; max-height: 180px; border: 2px solid var(--ink); }
 
 .ai-avatar {
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--ink);
+  border-radius: 0;
+  background: var(--ink);
   display: flex;
   align-items: center;
   justify-content: center;
   margin-top: 2px;
 }
-.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .ai-bubble {
   background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-top-left-radius: 4px;
-  padding: 12px 16px;
-  box-shadow: 0 2px 8px rgba(35, 52, 84, .05);
+  border: 2px solid var(--ink);
+  box-shadow: var(--sh-hard-sm);
+  padding: 14px 18px;
   width: fit-content;
   max-width: 100%;
 }
-.answer { word-break: break-word; }
-.answer :deep(.md-link) { color: var(--accent); }
+.answer { word-break: break-word; font-family: var(--font-sans); }
+.answer :deep(.md-link) { color: var(--accent); border-bottom: 2px solid transparent; }
+.answer :deep(.md-link:hover) { border-bottom-color: var(--accent); }
 
-.typing { color: var(--text-muted); font-size: 13px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.typing-phase { color: var(--text); font-weight: 500; }
+.typing { color: var(--text-muted); font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--font-sans); }
+.typing-phase { color: var(--text); font-weight: 600; }
 .typing-time {
-  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint);
-  background: var(--bg-hover); border-radius: 99px; padding: 1px 8px;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
+  background: var(--bg-hover); border: 1px solid var(--border); padding: 1px 8px;
 }
 .td {
-  width: 5px; height: 5px; border-radius: 50%; background: var(--text-faint);
-  display: inline-block; animation: td-blink 1.2s infinite;
+  width: 6px; height: 6px; background: var(--accent-2);
+  display: inline-block; animation: td-blink 1.4s ease-in-out infinite;
 }
-.td ~ .td { animation-delay: .2s; }
-.td ~ .td ~ .td { animation-delay: .4s; }
-@keyframes td-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+.td ~ .td { animation-delay: .18s; }
+.td ~ .td ~ .td { animation-delay: .36s; }
+@keyframes td-blink { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
 
-.flag { margin-top: 8px; font-size: 12px; }
+/* 流式正文末端插入粗野风方块光标，传达「生成中」的实时感（仅 streaming 时显示） */
+.answer.streaming::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--ink);
+  animation: ai-caret 1s steps(1, end) infinite;
+}
+@keyframes ai-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
+
+.flag { margin-top: 8px; font-family: var(--font-mono); font-size: 12px; }
 .flag.stopped { color: var(--text-faint); }
 .flag.error { color: var(--danger); }
 
 /* 深度思考 */
-.reason {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(122, 90, 248, .05);
-  overflow: hidden;
-}
+.reason { border: 2px solid var(--ink); background: rgba(31, 95, 224, .06); overflow: hidden; }
 .reason-head {
   width: 100%;
   display: flex;
@@ -297,17 +326,20 @@ const phaseLabel = computed(() => {
   border: none;
   background: none;
   padding: 8px 12px;
-  font-size: 12.5px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
   color: var(--accent-2);
   cursor: pointer;
   text-align: left;
 }
-.reason-head:hover { background: rgba(122, 90, 248, .07); }
-.reason-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.reason-head:hover { background: rgba(31, 95, 224, .10); }
+.reason-dot { width: 7px; height: 7px; background: var(--text-faint); }
 .reason-dot.on { background: var(--accent-2); animation: reason-pulse 1.1s infinite; }
 @keyframes reason-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 .reason-body {
   padding: 2px 12px 10px 27px;
+  font-family: var(--font-sans);
   font-size: 12.5px;
   color: var(--text-muted);
   white-space: pre-wrap;
@@ -317,12 +349,7 @@ const phaseLabel = computed(() => {
 
 /* 轨迹 */
 .trace { display: flex; flex-direction: column; gap: 4px; }
-.step {
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg-raised);
-  overflow: hidden;
-}
+.step { border: 2px solid var(--ink); background: var(--bg-raised); overflow: hidden; }
 .step-head {
   width: 100%;
   display: flex;
@@ -332,21 +359,24 @@ const phaseLabel = computed(() => {
   border: none;
   background: none;
   cursor: pointer;
+  font-family: var(--font-sans);
   font-size: 12.5px;
   text-align: left;
 }
 .step-head:hover { background: var(--bg-hover); }
 .step-tag {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
   padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--bg-selected);
-  color: var(--accent);
+  background: var(--ink);
+  color: #fff;
 }
-.step-tag.observation { background: rgba(28, 158, 102, .12); color: var(--green); }
-.step-tag.reflection { background: rgba(200, 129, 28, .12); color: var(--amber); }
-.step-tag.thought { background: rgba(122, 90, 248, .12); color: var(--accent-2); }
+.step-tag.observation { background: var(--green); color: #fff; }
+.step-tag.reflection { background: var(--amber); color: #fff; }
+.step-tag.thought { background: var(--accent-2); color: #fff; }
 .step-summary {
   flex: 1;
   min-width: 0;
@@ -359,7 +389,7 @@ const phaseLabel = computed(() => {
 .step-body {
   margin: 0;
   padding: 8px 12px;
-  border-top: 1px dashed var(--border);
+  border-top: 2px solid var(--ink);
   max-height: 280px;
   overflow: auto;
   font-family: var(--font-mono);
@@ -378,25 +408,26 @@ const phaseLabel = computed(() => {
   align-items: center;
   gap: 4px;
   max-width: 320px;
-  border: 1px solid var(--border);
+  border: 2px solid var(--ink);
   background: var(--bg-raised);
-  border-radius: 8px;
   padding: 3px 9px;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--accent);
   cursor: pointer;
-  transition: border-color .15s, background .15s;
+  transition: background 130ms, color 130ms, border-color 130ms;
 }
-.ref-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.ref-chip:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--ink); }
 .ref-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref-line { color: var(--text-muted); font-family: var(--font-mono); }
+.ref-chip:hover .ref-line { color: var(--accent-ink); }
 
 .notice {
+  font-family: var(--font-sans);
   font-size: 12px;
   color: var(--text-muted);
   background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 2px solid var(--border);
   padding: 6px 10px;
 }
 

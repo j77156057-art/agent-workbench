@@ -12,6 +12,16 @@ test('small encoding noise does not repeatedly call the vision model', () => {
   assert.equal(shouldAnalyzeVisualFrame(baseline, noisy, 1000, 2000), false)
 })
 
+test('live dedup refreshes static frames and compares accumulated changes to the last sent frame', () => {
+  const baseline = frame(Array(2304).fill(100))
+  assert.equal(shouldAnalyzeVisualFrame(baseline, baseline, 1000, 5999, 5000), false)
+  assert.equal(shouldAnalyzeVisualFrame(baseline, baseline, 1000, 6000, 5000), true)
+  assert.equal(shouldAnalyzeVisualFrame(baseline, baseline, 1000, 10_999, 10_000), false)
+  assert.equal(shouldAnalyzeVisualFrame(baseline, baseline, 1000, 11_000, 10_000), true)
+  assert.equal(shouldAnalyzeVisualFrame(baseline, frame(Array(2304).fill(102)), 1000, 2000), false)
+  assert.equal(shouldAnalyzeVisualFrame(baseline, frame(Array(2304).fill(104)), 1000, 3000), true)
+})
+
 test('localized UI changes and periodic checks still reach the model', () => {
   const baseline = frame(Array(576).fill(100))
   const changed = Array(576).fill(100)

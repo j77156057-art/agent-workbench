@@ -1,4 +1,4 @@
-import tempfile, unittest
+import json, tempfile, unittest
 from pathlib import Path
 from agent_policy import route_for, record_permission, SELF_ROOT, create_external_approval, decide_approval, approval_allows, redact_for_cloud
 import secrets_store
@@ -41,5 +41,15 @@ class AgentPolicyTests(unittest.TestCase):
     def test_cloud_redaction(self):
         out=redact_for_cloud('api_key=sk-secret password: hello token=abc123 normal text')
         self.assertNotIn('sk-secret',out); self.assertNotIn('hello',out); self.assertIn('[REDACTED]',out)
+
+    def test_cloud_redaction_handles_quoted_json_credentials(self):
+        payload = '{"auth":{"api_key":"abc123secret","password":"my pass",' \
+                  '"access_token":"token-value","keep":"visible"}}'
+        out = redact_for_cloud(payload)
+        parsed = json.loads(out)
+        self.assertEqual(parsed['auth']['api_key'], '[REDACTED]')
+        self.assertEqual(parsed['auth']['password'], '[REDACTED]')
+        self.assertEqual(parsed['auth']['access_token'], '[REDACTED]')
+        self.assertEqual(parsed['auth']['keep'], 'visible')
 
 if __name__ == '__main__': unittest.main()

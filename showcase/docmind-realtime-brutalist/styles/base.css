@@ -1,0 +1,36 @@
+/* =============================================================
+   DocMind · 粗野版本 · 基础层
+   ============================================================= */
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background:
+    repeating-linear-gradient(0deg, rgba(13,13,13,0.035) 0 1px, transparent 1px 32px),
+    repeating-linear-gradient(90deg, rgba(13,13,13,0.035) 0 1px, transparent 1px 32px),
+    var(--bg);
+  color: var(--ink); font-family: var(--font-body); font-size: var(--fs-body);
+  line-height: 1.6; letter-spacing: 0.01em; overflow-x: hidden; min-height: 100vh;
+}
+h1, h2, h3 { font-family: var(--font-display); font-weight: 900; line-height: 0.96; letter-spacing: -0.03em; margin: 0; text-transform: none; }
+p { margin: 0; }
+a { color: inherit; text-decoration: none; }
+.mono { font-family: var(--font-mono); }
+.eyebrow { font-family: var(--font-mono); font-size: var(--fs-xs); letter-spacing: 0.3em; text-transform: uppercase; color: var(--accent); }
+.accent { color: var(--accent); }
+.muted { color: var(--muted); }
+.container { width: 100%; max-width: var(--maxw); margin-inline: auto; padding-inline: var(--s-5); }
+
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* 入场（硬切、短促） */
+.reveal { opacity: 0; transform: translateY(10px); }
+.reveal.in { opacity: 1; transform: none; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+.reveal.d1 { transition-delay: 60ms; } .reveal.d2 { transition-delay: 120ms; }
+.reveal.d3 { transition-delay: 180ms; } .reveal.d4 { transition-delay: 240ms; }
+.reveal.d5 { transition-delay: 300ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+  .reveal { opacity: 1; transform: none; }
+}
+::selection { background: var(--accent-loud); color: var(--ink); }

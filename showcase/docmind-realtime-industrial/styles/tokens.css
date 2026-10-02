@@ -1,0 +1,69 @@
+/* =============================================================
+   DocMind · 实时视频对话引擎 · 工业实用版本（Industrial）
+   方向：任务控制台 / 驾驶舱 · 暗色扁平 · 密集遥测 · LED 状态色
+   与 v1(霓虹氛围) 的区别：无辉光/无扫描线/无颗粒，靠密度与状态色
+   ============================================================= */
+:root {
+  /* —— 表面层（冷调近黑，扁平） —— */
+  --bg: #0b0e13;
+  --surface: #11151c;
+  --surface-2: #161b24;
+  --surface-3: #1c2230;
+
+  /* —— 文本（冷灰） —— */
+  --text: #d7dde6;
+  --text-muted: #8b95a4;
+  --text-faint: #57616f;
+
+  /* —— 发丝线（冷调） —— */
+  --border: rgba(215, 221, 230, 0.10);
+  --border-strong: rgba(215, 221, 230, 0.24);
+
+  /* —— LED 状态色（真实状态语义，非装饰） —— */
+  --led-green: #45c98c;
+  --led-amber: #e3a83a;
+  --led-red: #ff6b6b;
+  --led-cyan: #58a6ff;
+  --led-violet: #bc8cff;
+
+  /* —— 主强调：品牌青（region.audio） —— */
+  --accent: #2ec4b6;
+  --accent-deep: #14998d;
+  --accent-soft: rgba(46, 196, 182, 0.12);
+
+  /* —— 圆角：工业感 = 小圆角/硬边 —— */
+  --r-sm: 2px;
+  --r-md: 4px;
+  --r-lg: 6px;
+  --r-pill: 999px;
+
+  /* —— 间距（偏紧凑） —— */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 36px; --s-7: 60px; --s-8: 92px;
+
+  /* —— 阴影（极淡，扁平为主） —— */
+  --sh-1: 0 1px 0 rgba(0,0,0,0.4);
+  --sh-2: 0 8px 24px -12px rgba(0,0,0,0.6);
+
+  /* —— 字阶 —— */
+  --fs-mega: clamp(2.8rem, 6.5vw, 5.4rem);
+  --fs-h1: clamp(2rem, 4vw, 3.2rem);
+  --fs-h2: clamp(1.4rem, 2.4vw, 2rem);
+  --fs-h3: 1.05rem;
+  --fs-body: 0.98rem;
+  --fs-sm: 0.84rem;
+  --fs-xs: 0.79rem;
+  --fs-mono: 0.82rem;
+
+  /* —— 动效（克制） —— */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 140ms;
+  --dur-base: 300ms;
+
+  /* —— 字体：工业配对（Archivo + IBM Plex Sans + JetBrains Mono） —— */
+  --font-display: 'Archivo', 'Noto Sans SC', sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', Consolas, monospace;
+  --font-body: 'IBM Plex Sans', 'Noto Sans SC', system-ui, sans-serif;
+
+  --maxw: 1200px;
+}

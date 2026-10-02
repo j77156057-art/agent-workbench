@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // DocMind 开发工作台 · P0 任务 4：多标签编辑 + 保存 + 新建/改名/删除。
-import { onMounted, onBeforeUnmount, computed, defineAsyncComponent, nextTick, reactive, ref, watch } from 'vue'
+import { onMounted, onBeforeUnmount, computed, defineAsyncComponent, nextTick, reactive, ref, watch, Teleport } from 'vue'
 import FileTree from './components/FileTree.vue'
 import CodeView from './components/CodeView.vue'
 import EditorTabs from './components/EditorTabs.vue'
@@ -36,6 +36,11 @@ const AssetCenterView = defineAsyncComponent(() => import('./components/AssetCen
 // 自主开发舱：重型工作流面板独立分包，切到该工作区才加载
 const AutonomousCockpit = defineAsyncComponent(() => import('./components/AutonomousCockpit.vue'))
 
+// J 双色 Risograph 印刷语言层 + 双色纠偏（在 style.css / brutalist-overrides.css 之后加载）
+import './workbench-riso.css'
+// 排版令牌系统（"重做排版"版式共享基础层；仅挂载令牌、不覆写 body 13px 密度，详见 workbench-typo.css）
+import './workbench-typo.css'
+
 // 演示侧栏的文件 → 业务标签（key 取文件名，与静态示例树对齐）
 const demoBadgeOf = (name: string) => {
   const hit = Object.entries(demoTagMap).find(([p]) => p.endsWith('/' + name))
@@ -67,6 +72,9 @@ const settingsVisible = ref(false)
 const settingsSection = ref<'usage' | 'search' | 'mcp' | 'agent' | 'model'>('usage')
 function openSettings(tab: 'usage' | 'search' | 'mcp' | 'agent' | 'model' = 'usage') {
   settingsSection.value = tab
+  // 先同步挂载异步设置组件，再切换可见状态，避免首次点击时 watcher
+  // 与异步 chunk 加载交错导致弹层没有进入 DOM。
+  everMounted.settings = true
   settingsVisible.value = true
 }
 function onOpenSettings(ev: Event) {
@@ -93,7 +101,6 @@ watch(relationGraphOpen, (v) => { if (v) everMounted.relation = true })
 watch(unityGraphOpen, (v) => { if (v) everMounted.unity = true })
 watch(flowOpen, (v) => { if (v) everMounted.flow = true })
 watch(regionMapOpen, (v) => { if (v) everMounted.region = true })
-watch(settingsVisible, (v) => { if (v) everMounted.settings = true })
 /** 当前标签可回滚：已纳入 git 且磁盘或编辑器存在改动 */
 const canRevertActive = computed(() => {
   const t = activeTab.value
@@ -331,7 +338,18 @@ function onWorkspaceHotkey(e: KeyboardEvent) {
   if (e.key === '1') { e.preventDefault(); setWorkspace('overview') }
   else if (e.key === '2' && tabs.value.length) { e.preventDefault(); setWorkspace('code') }
   else if (e.key === '3') { e.preventDefault(); setWorkspace('assets') }
-  else if (e.key === '4') { e.preventDefault(); setWorkspace('cockpit') }
+  else   if (e.key === '4') { e.preventDefault(); setWorkspace('cockpit') }
+  else if ((e.key === 'p' || e.key === 'P') && !demoMode.value) { e.preventDefault(); toggleProjectMenu() }
+}
+
+/** 外观切换后告知结果：用户点了卡片会看到界面变，但不知道变成了什么。 */
+const APPEARANCE_KIND: Record<string, string> = {
+  skin: '配色', style: '风格', layout: '布局', material: '材质',
+}
+function onAppearanceChanged(e: Event) {
+  const d = (e as CustomEvent).detail
+  if (!d || typeof d.label !== 'string') return
+  flashNotice(`${APPEARANCE_KIND[d.kind] ?? d.kind}：${d.label}`)
 }
 
 onMounted(() => {
@@ -351,6 +369,7 @@ onMounted(() => {
   window.addEventListener('docmind:open-settings', onOpenSettings)
   // fixed 菜单坐标基于打开瞬间的布局：视口尺寸变化后直接收起，避免错位
   window.addEventListener('resize', closeTopMenus)
+  window.addEventListener('docmind:appearance-changed', onAppearanceChanged)
 })
 
 onBeforeUnmount(() => {
@@ -358,6 +377,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onWorkspaceHotkey)
   window.removeEventListener('docmind:open-settings', onOpenSettings)
   window.removeEventListener('resize', closeTopMenus)
+  window.removeEventListener('docmind:appearance-changed', onAppearanceChanged)
   if (noticeTimer !== null) { window.clearTimeout(noticeTimer); noticeTimer = null }
 })
 </script>
@@ -381,7 +401,7 @@ onBeforeUnmount(() => {
             class="wb-proj-btn"
             :class="{ busy: projectBusy }"
             :disabled="projectBusy"
-            :title="currentProject ? currentProject.root : '选择或打开一个项目作为工作目录'"
+            :title="(currentProject ? currentProject.root : '选择或打开一个项目作为工作目录') + '（Alt+P 打开项目菜单）'"
             @click="toggleProjectMenu"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" class="wb-proj-icon"><path d="M1 3 Q1 2.2 1.8 2.2 H4.6 L5.6 3.2 H10.2 Q11 3.2 11 4 V9 Q11 9.8 10.2 9.8 H1.8 Q1 9.8 1 9 Z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
@@ -407,6 +427,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="wb-proj-empty">暂无项目，先「打开项目」</div>
             <div class="wb-proj-sep" />
+            <div style="font-size:10.5px;line-height:1.5;color:var(--text-faint);padding:2px 8px 6px;">快捷键 Alt+P 可随时打开本菜单</div>
             <button class="wb-proj-open-toggle" @click="openFormVisible = !openFormVisible">＋ 打开项目…</button>
             <div v-if="openFormVisible" class="wb-proj-form">
               <input
@@ -423,7 +444,12 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <span v-if="projectNotice" class="wb-proj-notice" role="status">{{ projectNotice }}</span>
+        <!-- 用 Teleport 挂到 body：提示条原本在顶栏内，而顶栏自建层叠上下文（z-index:20），
+             子元素 z-index 再高也出不去 → 设置弹窗（z:2100）会把它完全盖住，
+             用户点了卡片看不到任何反馈。Teleport 到 body 后才能真正浮在最上层。 -->
+        <Teleport to="body">
+          <span v-if="projectNotice" class="wb-proj-notice" role="status">{{ projectNotice }}</span>
+        </Teleport>
         <button
           v-if="tree"
           class="wb-region-pill"

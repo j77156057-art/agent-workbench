@@ -113,6 +113,14 @@ DEEP_LINK_WAIT = 20.0
 #: 而且**红得毫无信息量**（`rows: 0`、`console_errors: []`、`failed_requests: []`）。
 WORKBENCH_DATA_WAIT = 25.0
 
+#: 问答页那一档：点一个建议问题之后，等回答里出现**那一次运行独有的凭据**。
+#: 凭据是 `list_dir` 列出的代码库根里的随机夹具文件名（`probe_<6位>.py`，见 `make_sandbox`）
+#: ——页面字幕里出现它，就只能解释为"整条链路真跑过"，照 §5.8「夹具是随机命名的文件」那条。
+ASK_WAIT = 40.0
+
+#: 建议问题按钮：问答页刚打开时有若干个（实测 3 个），点第一个就能发一轮。
+ASK_SUGGESTION = "button.suggestion"
+
 
 def _deep_slug(path: str) -> str:
     """把路径变成判据名的一截：`/` → `root`，`/workbench` → `workbench`。"""
@@ -140,6 +148,29 @@ def split_requests(rows: Any) -> dict[str, list]:
         detail = str((row or {}).get("detail") or "")
         (cancelled if CLIENT_CANCELLED in detail else failed).append(row)
     return {"failed_requests": failed, "cancelled_requests": cancelled}
+
+
+def ask_checks(observed: dict[str, Any]) -> dict[str, bool]:
+    """问答页那一档的判定：整页真的走完一轮问答（页面 → `/api/chat` → ReAct → 工具 → DOM）。
+
+    **凭据**是那一次运行独有的随机夹具文件名——它只能从 `list_dir` 的真实返回里来，
+    所以"回答里出现了它"证的是整条链路，而不是"页面上写了句像样的话"。
+    """
+    text = str(observed.get("ask_text") or "")
+    fixture = str(observed.get("ask_credential") or "")
+    return {
+        "ask_shell_mounted": int(observed.get("ask_shell") or 0) >= 1,
+        "ask_suggestion_clicked": bool(observed.get("ask_click_ok")),
+        # 只点一下不算：得真的出现一条回答，而且它回的是我们点的那个问题
+        "ask_question_echoed": bool(observed.get("ask_question_echoed")),
+        "ask_reply_arrived": bool(fixture) and fixture in text,
+        # 失败文案出现就不能算通过（HTTP 200 + 有回复 ≠ 成功，§5.18 ② 那条同款）
+        "ask_reply_is_not_an_error": "本轮请求失败" not in text,
+        # "这一句话没出现"要读全了才算证据：read_page 有 4000 字上限
+        "ask_read_wholly": not bool(observed.get("ask_truncated")),
+        "ask_console_clean": not (observed.get("ask_console_errors") or []),
+        "ask_no_failed_requests": not (observed.get("ask_failed_requests") or []),
+    }
 
 
 def _console_matters(spec: dict) -> bool:
@@ -283,17 +314,24 @@ def server_argv(port: int, *, python: str, module: str = "api:app") -> list[str]
             "--log-level", "warning"]
 
 
-def server_env(state_root: Path, *, realtime: bool = False) -> dict[str, str]:
+def server_env(state_root: Path, *, realtime: bool = False,
+               extra: Mapping[str, str] | None = None) -> dict[str, str]:
     """把子进程的状态根指到隔离目录——但**先带上自己的 env**。
 
     `process_runner.clean_environment()` 拿到什么就用什么（不会自动并 os.environ），
     所以只传一个键会让 uvicorn 连 PATH/SYSTEMROOT 都拿不到。凭据类变量由它统一剔除。
     `realtime` 那次额外把实时适配器指到 `scripted`：零网络、零 key，但走的仍是
     生产选适配器那条路（`DOCMIND_REALTIME_PROVIDER` + 注册表）。
+    `extra` 是调用方自己带的环境（问答那一档用它把 `LLM_PROVIDER=custom` +
+    `LLM_BASE_URL` 指向 `llm_stub` 起的回环假服务——同样零网络、走的仍是生产 provider
+    那条路）。**子进程**才是导入时读 `config` 的那个进程，所以这里用 env 是对的
+    （进程内注入必须走 `config.set_runtime`，见 `llm_stub` 的文档）。
     """
     env = {**os.environ, "DOCMIND_STATE_ROOT": str(state_root)}
     if realtime:
         env["DOCMIND_REALTIME_PROVIDER"] = "scripted"
+    if extra:
+        env.update({str(key): str(value) for key, value in extra.items()})
     return env
 
 
@@ -520,13 +558,18 @@ def evaluate(observed: dict[str, Any], wanted: dict[str, Any],
     if wanted.get("deep_link"):
         # 深链那一档是"冷开每条页面路由"，判定同样另成一表并并进同一张红单
         assertions.update(deep_link_checks(observed))
+    if wanted.get("ask"):
+        # 问答那一档是"整页真的走完一轮问答"，判定同样另成一表并并进同一张红单
+        assertions.update(ask_checks(observed))
     failed = [name for name, ok in assertions.items() if not ok]
     return {"assertions": assertions, "failed": failed, "passed": not failed}
 
 
 def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
                  tab: str = DEFAULT_TAB, stream: bool = False, timeout: float = 120.0,
-                 ready_wait: float = READY_WAIT, deep_link: bool = False) -> dict[str, Any]:
+                 ready_wait: float = READY_WAIT, deep_link: bool = False,
+                 ask: bool = False, server_env_extra: Mapping[str, str] | None = None
+                 ) -> dict[str, Any]:
     """前置检查 → 起后端 → 注册项目 → 开整页 → 点击导航 → 逐条判定 → 拆干净。"""
     base = Path(root).resolve()
     started = time.monotonic()
@@ -553,7 +596,7 @@ def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
     try:
         _drive(base, state, port=port, path=path, tab=tab, needles=needles,
                timeout=timeout, ready_wait=ready_wait, sandbox=sandbox, stream=bool(stream),
-               deep_link=bool(deep_link))
+               deep_link=bool(deep_link), ask=bool(ask), ask_env=server_env_extra)
     except (AppTestError, page_action.PageActionError,
             urllib.error.URLError, OSError) as exc:
         out["error"] = "整页守卫没能走完：%s" % str(exc)[:300]
@@ -570,7 +613,7 @@ def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
         return out
     judged = evaluate(state, {"tab": tab, "texts": needles, "tabs": EXPECTED_TABS,
                               "stream": bool(stream), "rounds": 2,
-                              "deep_link": bool(deep_link)}, fresh, cleanup)
+                              "deep_link": bool(deep_link), "ask": bool(ask)}, fresh, cleanup)
     reasons = [out.get("error") or ""]
     if not judged["passed"]:
         reasons.append(_why(judged["failed"], fresh, state))
@@ -595,6 +638,10 @@ FACT_KEYS = ("shell", "tabs", "rows", "fixture_in_tree", "active_before", "activ
              # 客户端自己取消的请求单独上报：判据不为它变红，但它必须看得见——
              # 静默扔掉就是"假干净"。
              "cancelled_requests", "deep_cancelled_requests",
+             # 问答那一档：凭据（随机夹具名）、点了哪个问题、等了多少毫秒。
+             "ask_credential", "ask_shell", "ask_click_ok", "ask_click_effect",
+             "ask_question", "ask_question_echoed", "ask_waited_ms", "ask_text",
+             "ask_truncated", "ask_console_errors", "ask_failed_requests", "ask_error",
              # 等了两级多久、数据到底来没来：红了的时候这两个数直接说明"是没等到"
              # 还是"等到了但内容不对"。
              "shell_waited_ms", "data_waited_ms", "data_ready")
@@ -608,12 +655,14 @@ def _facts(state: dict[str, Any]) -> dict[str, Any]:
 def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
            needles: list[str], timeout: float, ready_wait: float,
            sandbox: dict[str, Any], stream: bool = False,
-           deep_link: bool = False) -> None:
+           deep_link: bool = False, ask: bool = False,
+           ask_env: Mapping[str, str] | None = None) -> None:
     """真起服务、真开页面、真点导航——事实一律写进 `state`（判定与收回都在外面）。"""
     server = dev_server.start(str(base), "uvicorn api:app (整页守卫)",
                               argv=server_argv(port, python=sys.executable),
                               port=port, wait=ready_wait,
-                              env=server_env(sandbox["state"], realtime=stream))
+                              env=server_env(sandbox["state"], realtime=stream,
+                                             extra=ask_env if ask else None))
     state["job_id"] = str(server.get("job_id") or "")
     state["ready"] = bool(server.get("ready"))
     state["log_tail"] = str(server.get("log_tail") or "")[-500:]
@@ -687,7 +736,12 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
     if deep_link:
         # 深链要**冷开**每一条页面路由，所以复用上面那个会话是没有意义的（那样只是站内
         # 导航）；它自己按路由逐个开新会话，跑在同一个后端上。
-        _drive_deep_link(base, state, "http://%s:%d" % (LOOPBACK, port))
+        _drive_deep_link(base, state, "http://%s:%d" % (LOOPBACK, port), timeout=timeout)
+    if ask:
+        # 问答那一档开在 `/` 上（上面那个会话开的是工作台），所以它自己开新会话。
+        # **必须在工作台那轮之后跑**：它复用同一个后端，而问答会写会话历史。
+        _drive_ask(base, state, "http://%s:%d" % (LOOPBACK, port),
+                   fixture=str(sandbox["fixture"]), timeout=timeout)
     # 全部收齐之后再做一次分类：客户端自己取消的（`probeBackend` 那条 `/api/health`）
     # 不算失败，但**照样上报**（`cancelled_requests`）。
     for key, out_key in (("failed_requests", "cancelled_requests"),
@@ -698,7 +752,95 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
             state[out_key] = split["cancelled_requests"]
 
 
-def _drive_deep_link(base: Path, state: dict[str, Any], url: str) -> None:
+def _open_with_retry(base: Path, target: str, *, timeout: float,
+                     retries: list[str] | None = None,
+                     attempts: int = 3) -> dict[str, Any]:
+    """开一个页面；顶破 `open_page` 那 6 秒就绪预算时重试，**次数记进 `retries`**。
+
+    就绪判据是 `document.readyState === 'complete'`，而它的预算**硬编码**为
+    `120 × 50ms`（`page_action.py` 的脚本里，不是参数；那个文件现阶段属别人），
+    每条路由又都要重下整套资源（`open_page` 会给 URL 加 `?docmind=` 缓存戳）。
+    深链与问答两档共用这一份——同一个逻辑写两处就是"其中一处迟早变陈旧"（§9）。
+    """
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return page_action.open_page(base, url=target, timeout=timeout)
+        except Exception as exc:                 # noqa: BLE001
+            if "页面加载超时" not in str(exc):
+                raise
+            last = exc
+            if retries is not None:
+                retries.append("%s#%d" % (target, attempt))
+            time.sleep(1.0)
+    raise AppTestError("开了 %d 次都顶破 open_page 的就绪预算：%s" % (attempts, str(last)[:160]))
+
+
+def _drive_ask(base: Path, state: dict[str, Any], url: str, *, fixture: str,
+               timeout: float) -> None:
+    """冷开问答页 `/`，点一个建议问题，等回答里出现**那一次独有的凭据**。
+
+    为什么点建议按钮而不是打字：输入区在子组件里（`AskApp.vue` 只渲染 `AskMessage`），
+    而建议按钮是 `@click="send(s)"`——点一下就发一轮，不用先挖出输入框的选择器。
+    代价是问题文案不由我们定；所以凭据不能依赖问题内容，落在 `list_dir` 的返回上（见
+    `ASK_WAIT`）。
+    """
+    state["ask_credential"] = fixture
+    errors: list[Any] = []
+    failed: list[Any] = []
+    session: dict[str, Any] = {}
+    try:
+        # 开页放在 try **里面**：第一版写在外面，它一抛（问答页资源重，实测会顶破
+        # `open_page` 那 6 秒就绪预算）`finally` 就不执行，`ask_credential` 从没被设上、
+        # 真实原因被吞掉——报告里只剩"凭据: None"。
+        session = _open_with_retry(base, url + "/", timeout=timeout)
+        page = str(session.get("page") or "")
+        state["ask_page"] = page
+        errors += list(session.get("console_errors") or [])
+        failed += list(session.get("failed_requests") or [])
+        shell = page_action.wait_for(base, page=page, selector=".ask-shell",
+                                     state="present", timeout=WORKBENCH_DATA_WAIT)
+        errors += list(shell.get("console_errors") or [])
+        failed += list(shell.get("failed_requests") or [])
+        state["ask_shell"] = 1 if shell.get("ok") else 0
+        ready = page_action.wait_for(base, page=page, selector=ASK_SUGGESTION,
+                                     state="present", timeout=WORKBENCH_DATA_WAIT)
+        if not ready.get("ok"):
+            state["ask_error"] = "问答页没有出现建议问题按钮"
+            return
+        # 记住第一个建议问题的文字：下面要确认"回答的是我点的那个"
+        question = str(page_action.read_page(base, page=page, selector=ASK_SUGGESTION,
+                                             mode="text").get("text") or "").strip()
+        clicked = page_action.click(base, page=page, selector=ASK_SUGGESTION, nth=0,
+                                    screenshot=False)
+        state["ask_click_ok"] = bool(clicked.get("ok"))
+        state["ask_click_effect"] = str(clicked.get("effect") or clicked.get("error") or "")[:120]
+        # 等凭据出现在会话区里——用 `state="text"`，不带截止期地 sleep 就是跟渲染赛跑
+        landed = page_action.wait_for(base, page=page, selector=".chat-scroll",
+                                      state="text", value=fixture, timeout=ASK_WAIT)
+        body = page_action.read_page(base, page=page, selector=".chat-scroll", mode="text")
+        text = str(body.get("text") or "")
+        state["ask_text"] = text[:4000]
+        state["ask_truncated"] = bool(body.get("truncated"))
+        state["ask_waited_ms"] = landed.get("waited_ms")
+        state["ask_question"] = question[:80]
+        state["ask_question_echoed"] = bool(question) and question[:20] in text
+        errors += list(landed.get("console_errors") or [])
+        failed += list(landed.get("failed_requests") or [])
+    except Exception as exc:                     # noqa: BLE001
+        # 绝不静默：把原因写进 state，报告里点名（第一版这里什么都不写，
+        # 于是"凭据: None"就是全部信息，连是超时还是没挂上都看不出来）。
+        state["ask_error"] = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+    finally:
+        if session:
+            page_action.close_page(str(session.get("page") or ""))
+        state["ask_console_errors"] = errors
+        state["ask_failed_requests"] = failed
+        state["ask_credential"] = fixture
+
+
+def _drive_deep_link(base: Path, state: dict[str, Any], url: str, *,
+                     timeout: float = 60.0) -> None:
     """逐条**冷开**每一条深链：每条路由一个新会话、走完整加载，绝不复用上一个页面。
 
     为什么必须每条都新会话：复用同一个页面去 navigate，第二条起就是**站内导航**，
@@ -717,28 +859,17 @@ def _drive_deep_link(base: Path, state: dict[str, Any], url: str) -> None:
     state["deep_retried_routes"] = retries
 
     def open_route(spec: dict) -> dict:
-        """开一条路由；`页面加载超时` 时**重试并把重试记进报告**。
+        """开一条路由；`页面加载超时` 时重试（次数记进 `deep_retried_routes`）。
 
-        为什么要重试：`open_page` 的就绪判据是 `document.readyState === 'complete'`，
-        而它的预算是**硬编码**的 `120 × 50ms = 6 秒`（`page_action.py` 的脚本里，不是参数；
-        那个文件现阶段属别人，不动）。最重的是 `/workbench` 那几条：`open_page` 会给 URL
-        加 `?docmind=<ns>` 缓存戳，于是每次都要重下整套资源（含 vendor 与 model-viewer）。
-        重试**不是掩盖**：每条的重试次数记进 `deep_retried_routes`，报告里看得见；
-        三次都超时就照常红——而且错误里点名是哪条路由。
+        重试**不是掩盖**：每条的重试次数在报告里看得见；三次都超时就照常红——
+        而且错误里点名是哪条路由。最重的是 `/workbench` 那几条（缓存戳让每次都要重下
+        整套资源，含 vendor 与 model-viewer）。
         """
         path = str(spec["path"])
-        last: Exception | None = None
-        for attempt in (1, 2, 3):
-            try:
-                return page_action.open_page(base, url=url + path)
-            except Exception as exc:                     # noqa: BLE001
-                if "页面加载超时" not in str(exc):
-                    raise
-                last = exc
-                retries.append("%s#%d" % (path, attempt))
-                time.sleep(1.0)
-        raise AppTestError("深链路由 %s 连三次都顶破了 open_page 那 6 秒的就绪预算：%s"
-                           % (path, str(last)[:200]))
+        try:
+            return _open_with_retry(base, url + path, timeout=timeout, retries=retries)
+        except AppTestError as exc:
+            raise AppTestError("深链路由 %s：%s" % (path, exc)) from None
 
     def read(spec: dict) -> dict:
         session = open_route(spec)

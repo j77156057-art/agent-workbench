@@ -1,0 +1,126 @@
+/* =============================================================
+   DocMind 玻璃拟态材质层 · 问答页（/ → index.html）
+   -------------------------------------------------------------
+   与 workbench/glass.css 是**同一套参数、两套选择器**：
+   参数在 workbench/glass.css 的 html[data-material='glass'] 块里定义
+   （单源），本文件只负责「问答页自己的类名怎么映射到玻璃」。
+
+   为什么必须分文件：问答页的类名体系与工作台**零重叠** ——
+   实测前缀分布是 sess-* / card-* / ah-* / composer-* / tb-*，
+   而工作台那 46 个类（wb-* / acp-* / cd-* / ov-* / rh-* / ft-*）
+   在问答页上一个都命中不了。把两套类名塞进同一个文件会互相污染。
+
+   同样受两条物理约束（详见 workbench/glass.css 文件头）：
+   ① 祖先链不能有 alpha=1 的不透明底 —— 实测 .ask-shell / .ask-main 都是
+      alpha=1，玻璃接上去必然是纯色（问答题这层尤其致命，页面就 134 个元素，
+      挡死层只有两层但覆盖了全部可视区）。
+   ② 得有东西可透 —— 同样给 html 铺色晕。
+   ============================================================= */
+
+/* ---------- ① 玻璃面：问答页的主要容器 ---------- */
+html[data-material='glass'] :is(
+  .ask-topbar,        /* 顶栏 */
+  .ask-side,          /* 左侧会话栏 */
+  .composer-wrap,     /* 输入区外框 */
+  .sess-list,         /* 会话列表容器 */
+  .card,              /* 历史会话卡 */
+  .suggestion,        /* 欢迎页的建议入口 */
+  .msg.assistant,     /* 助手消息气泡 */
+  .msg.user,          /* 用户消息气泡 */
+  .trace, .reason,    /* 轨迹 / 思考块 */
+  .refs,              /* 引用区 */
+  .model-pop, .gear-pop  /* 弹层 */
+) {
+  background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d2-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-d2-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-d2-blur)) saturate(var(--glass-saturate));
+  border: 1px solid color-mix(in srgb, var(--ink) calc(var(--glass-highlight) * 40%), transparent);
+  border-radius: var(--glass-radius) !important;
+  box-shadow: var(--glass-shadow-contact), var(--glass-shadow-float), var(--glass-inset) !important;
+}
+
+/* 底层：顶栏与侧栏是通栏的，只留内阴影，不要圆角和外投影 */
+html[data-material='glass'] :is(.ask-topbar, .ask-side) {
+  background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d1-alpha) * 100%), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-d1-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-d1-blur)) saturate(var(--glass-saturate));
+  border-radius: 0 !important;
+  border-width: 0;
+  box-shadow: var(--glass-inset) !important;
+}
+html[data-material='glass'] .ask-topbar { border-bottom: 1px solid color-mix(in srgb, var(--ink) 16%, transparent); }
+html[data-material='glass'] .ask-side { border-right: 1px solid color-mix(in srgb, var(--ink) 16%, transparent); }
+
+/* 消息气泡：半透但要保证正文对比度，用更深一档的底 */
+html[data-material='glass'] :is(.msg.assistant, .msg.user) {
+  background: color-mix(in srgb, var(--bg-raised) 58%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(var(--glass-saturate));
+  backdrop-filter: blur(14px) saturate(var(--glass-saturate));
+  border-radius: var(--glass-radius-sm) !important;
+  box-shadow: var(--glass-shadow-contact), var(--glass-inset) !important;
+}
+
+/* 小件：建议入口、会话卡、chip 用小圆角 */
+html[data-material='glass'] :is(.suggestion, .card, .tb-chip, .composer .chip) {
+  border-radius: var(--glass-radius-sm) !important;
+  box-shadow: var(--glass-shadow-contact), var(--glass-inset) !important;
+}
+
+/* ---------- ② 输入框：比面板更实（否则输入文字与底下内容互相干扰） ---------- */
+html[data-material='glass'] :is(.composer, .composer textarea, .composer input, .sess-search input) {
+  background: color-mix(in srgb, var(--bg) 84%, transparent) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(var(--glass-saturate));
+  backdrop-filter: blur(10px) saturate(var(--glass-saturate));
+  border-radius: var(--glass-radius) !important;
+  border: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
+  box-shadow: var(--glass-shadow-contact), var(--glass-inset) !important;
+}
+
+/* 消息滚动区：内容区要保证阅读，不做成玻璃（否则大量文字叠在半透层上） */
+html[data-material='glass'] :is(.chat-scroll, .chat-col) {
+  background: transparent !important;
+}
+
+/* ---------- ③ 祖先链放行（决定性，见文件头 ①） ---------- */
+html[data-material='glass'] :is(#app, .ask-shell, .ask-main, .ask-body) {
+  background: transparent !important;
+}
+
+/* ---------- ④ 光标跟随高光（与工作台同一套变量） ---------- */
+html[data-material='glass'] :is(.card, .suggestion, .msg.assistant)::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    380px circle at
+    calc(50% + var(--glass-x) * 32%) calc(50% + var(--glass-y) * 32%),
+    color-mix(in srgb, #fff calc(var(--glass-highlight) * 40%), transparent) 0%,
+    transparent 62%
+  );
+  opacity: var(--glass-p);
+  transition: opacity .32s var(--ease-standard, ease);
+}
+html[data-material='glass'] :is(.card, .suggestion, .msg.assistant) {
+  position: relative;
+  isolation: isolate;
+}
+html[data-material='glass'] :is(.card, .suggestion, .msg.assistant) > * {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-material='glass'] :is(.card, .suggestion, .msg.assistant)::before {
+    display: none;
+  }
+}
+
+/* ---------- ⑤ 降级 ---------- */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-material='glass'] :is(.ask-topbar, .ask-side, .card, .suggestion, .composer) {
+    background: var(--bg-raised) !important;
+  }
+}

@@ -1,0 +1,76 @@
+/* =============================================================
+   DocMind · 实时视频对话引擎 · 交互层
+   - 编排入场序列（IntersectionObserver）
+   - 指标数字滚动（count-up）
+   - 降级：prefers-reduced-motion 下全部关闭动效
+   ============================================================= */
+(function () {
+  "use strict";
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* —— 1. 滚动入场序列 —— */
+  const reveals = document.querySelectorAll(".reveal");
+  if (reduceMotion || !("IntersectionObserver" in window)) {
+    reveals.forEach((el) => el.classList.add("in"));
+  } else {
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("in");
+            io.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.16, rootMargin: "0px 0px -8% 0px" }
+    );
+    reveals.forEach((el) => io.observe(el));
+  }
+
+  /* —— 2. 指标数字滚动 —— */
+  function countUp(el) {
+    const target = parseFloat(el.dataset.count || "0");
+    const suffix = el.dataset.suffix || "";
+    if (reduceMotion) {
+      el.innerHTML = format(target) + unit(suffix);
+      return;
+    }
+    const dur = 1100;
+    const start = performance.now();
+    function tick(now) {
+      const p = Math.min(1, (now - start) / dur);
+      const eased = 1 - Math.pow(1 - p, 3);
+      const val = target * eased;
+      el.innerHTML = format(val) + unit(suffix);
+      if (p < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+  // 保留 <span class="u"> 单位样式
+  function unit(suffix) {
+    return suffix ? '<span class="u">' + suffix + "</span>" : "";
+  }
+  function format(v) {
+    // 整数展示，千分位
+    return Math.round(v).toLocaleString("en-US");
+  }
+
+  const counters = document.querySelectorAll(".metric .num[data-count]");
+  if (reduceMotion || !("IntersectionObserver" in window)) {
+    counters.forEach(countUp);
+  } else {
+    const co = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            countUp(entry.target);
+            co.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.5 }
+    );
+    counters.forEach((el) => co.observe(el));
+  }
+})();

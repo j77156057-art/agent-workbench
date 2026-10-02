@@ -14,9 +14,11 @@
    并且一律带 `-p no:cacheprovider`——否则每次跑都在刷那条警告，也把"缓存写成功"
    误当成"记账成功"。
 
-**覆盖率这一条不做假动作**：本仓 `.venv` 里既没有 `coverage` 也没有 `pytest-cov`（实测
-`find_spec` 都是 False），所以 `coverage: true` 直接回"未启用，缺依赖"，不静默跳过、
-更不把"没测"报成 0% 或 100%。
+**覆盖率**：早先这条只能回「未启用，缺依赖」——那时 `.venv` 里既没有 `coverage` 也没有
+`pytest-cov`，如实说「这是【没测】，不是 0%」是当时能做的最好选择。现在依赖补上了，
+`coverage: true` 会走 `agent_runtime.code_coverage` 真跑一遍并回**哪些行没被执行过**；
+但那条模块自己的 fail-closed 仍然管着：报告读不出来就说「覆盖率未知」，绝不折算成
+数字。**覆盖率低不是「测试失败」**——这两件事在本模块里是分开判的。
 
 判定一律 fail-closed：跑不起来 / 没收集到 / 摘要解析不出来 / 退出码与计数不自洽，
 统统算未通过。
@@ -232,8 +234,10 @@ def sys_executable() -> str:
 
 
 def coverage_available() -> bool:
-    import importlib.util
-    return bool(importlib.util.find_spec("coverage")) or bool(importlib.util.find_spec("pytest_cov"))
+    """覆盖率能不能真的跑。口径与 `code_coverage` 共用同一个函数——
+    两处各判一次就会出现「这里说能跑、那里跑不出来」。"""
+    from agent_runtime import code_coverage
+    return code_coverage.coverage_available()
 
 
 def run(root: str | Path, *, paths: str = "", keyword: str = "", only_failed: bool = False,
@@ -247,6 +251,7 @@ def run(root: str | Path, *, paths: str = "", keyword: str = "", only_failed: bo
         return {"ok": False, "passed": False, "checks": {},
                 "error": "覆盖率没有启用：本仓环境里 `coverage` 与 `pytest_cov` 都不在。"
                          "这是【没测】，不是 0%——要先决定加不加这个依赖。"}
+    coverage_result: dict[str, Any] | None = None
     selected = [item.strip() for item in re.split(r"[,\n]", str(paths or "")) if item.strip()]
     for item in selected:
         if item.startswith("-") or ".." in item or Path(item).is_absolute():
@@ -316,6 +321,15 @@ def run(root: str | Path, *, paths: str = "", keyword: str = "", only_failed: bo
                               keyword=str(keyword or "")) \
         if parsed["failures"] else {"ok": True, "recorded": 0, "truncated": False}
     checks["rerun_record_kept"] = bool(recorded.get("ok"))
+    if coverage:
+        # 覆盖率单独跑一趟（agent_runtime.code_coverage）。放在判定之后而不是之前：
+        # 它要的是「哪些行被执行过」，而不是「pytest 有没有红」，两件事混在一次输出里
+        # 谁都解析不清。**覆盖率低了不是「测试失败」**——上面 checks 的结论不受它影响。
+        from agent_runtime import code_coverage
+        coverage_result = code_coverage.run(
+            base, paths=selected, timeout=min(MAX_TIMEOUT, max(seconds, 300)),
+            targets=[item for item in (related or "").replace("\n", ",").split(",")
+                     if item.strip()] or None)
     return {"ok": all(checks.values()), "passed": checks["no_failures"],
             "checks": checks, "counts": counts, "failures": parsed["failures"][:40],
             "failure_total": len(parsed["failures"]),
@@ -327,7 +341,7 @@ def run(root: str | Path, *, paths: str = "", keyword: str = "", only_failed: bo
                                                   "related" if related else
                                                   "paths" if selected else "all")},
             "related": related_info, "recorded": recorded,
-            "coverage": "not_installed" if coverage else "off",
+            "coverage": coverage_result or ("off" if not coverage else "unavailable"),
             "output_tail": text[-400:],
             "error": "" if all(checks.values()) else _why(checks, parsed, exit_code, seconds)}
 
@@ -375,8 +389,18 @@ def render(result: dict[str, Any]) -> str:
             len(info.get("picked") or []), ", ".join(info.get("missed") or []) or "无"))
     if not result.get("ok"):
         lines.append("为什么不可信：%s" % result.get("error", ""))
-    lines.append("边界：这条只报【跑到了什么、哪里红了】；覆盖率未启用（本仓没装 coverage/"
-                 "pytest-cov），也不替代 CI 的全量 lane。")
+    cov = result.get("coverage")
+    if isinstance(cov, dict):
+        # 覆盖率单独渲染：它是「哪些行被执行过」，不是「测试过没过」。
+        # 两者混成一条判断，就会出现「因为覆盖率 60% 所以测试失败」这种胡说。
+        from agent_runtime import code_coverage
+        lines.append(code_coverage.render(cov))
+    elif cov == "off":
+        lines.append("边界：这条只报【跑到了什么、哪里红了】。要覆盖率加 `coverage: true`；"
+                     "它也不替代 CI 的全量 lane。")
+    else:
+        lines.append("边界：这条只报【跑到了什么、哪里红了】；覆盖率不可用"
+                     "（`coverage: true` 会说明原因），也不替代 CI 的全量 lane。")
     return "\n".join(lines)
 
 

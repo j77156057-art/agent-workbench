@@ -24,7 +24,7 @@ from agent_runtime.realtime_omni import (
 _ENV_KEYS = ("DOCMIND_REALTIME_PROVIDER", "DOCMIND_OMNI_API_KEY", "DASHSCOPE_API_KEY",
              "DOCMIND_OMNI_MODEL", "DOCMIND_OMNI_VOICE", "DOCMIND_OMNI_VAD",
              "DOCMIND_OMNI_URL", "DOCMIND_OMNI_INSTRUCTIONS",
-             "DOCMIND_OMNI_WORKSPACE")
+             "DOCMIND_OMNI_WORKSPACE", "DOCMIND_OMNI_VAD_SILENCE_MS")
 
 
 class _FakeWS:
@@ -175,10 +175,19 @@ class OmniAdapterTests(unittest.TestCase):
         session = ws.sent[0]["session"]
         self.assertEqual(session["modalities"], ["text", "audio"])
         self.assertEqual(session["turn_detection"]["type"], "server_vad")
+        self.assertEqual(session["turn_detection"]["silence_duration_ms"], 500)
         self.assertEqual(session["input_audio_format"], INPUT_AUDIO_FORMAT)
         self.assertEqual(session["output_audio_format"], OUTPUT_AUDIO_FORMAT)
         self.assertEqual(session["input_audio_transcription"]["model"], "gummy-realtime-v1")
         self.assertTrue(provider.running)
+
+    def test_vad_wait_can_be_tuned_without_exceeding_the_audio_tail(self):
+        for value, expected in (("800", 800), ("0", 300), ("5000", 1000),
+                                ("invalid", 500), ("", 500)):
+            with self.subTest(value=value):
+                os.environ["DOCMIND_OMNI_VAD_SILENCE_MS"] = value
+                _, ws = self._start()
+                self.assertEqual(ws.sent[0]["session"]["turn_detection"]["silence_duration_ms"], expected)
 
     def test_manual_mode_disables_vad(self):
         os.environ["DOCMIND_OMNI_VAD"] = "manual"
@@ -295,6 +304,10 @@ class OmniAdapterTests(unittest.TestCase):
         # B：原生模式下网关不再兜抽帧观察，所以要求它自己主动报明显的界面问题。
         self.assertIn("主动提醒用户", instructions, "必须要求主动报告画面中的明显问题")
         self.assertIn("不要凭推测报异常", instructions, "误报比不报更伤信任：必须禁止推测式报异常")
+        self.assertIn("普通话", instructions)
+        self.assertIn("轻快、均匀", instructions)
+        self.assertIn("先说结论", instructions)
+        self.assertIn("不在词语中间停顿", instructions)
 
     def test_explicit_instructions_override_the_default(self):
         os.environ["DOCMIND_OMNI_INSTRUCTIONS"] = "只说你好。"

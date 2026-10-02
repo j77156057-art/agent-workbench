@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DocMind · 实时视频对话引擎</title>
+  <meta name="description" content="DocMind 实时视频对话引擎：语音入、画面入、打断出、断线自恢复——为游戏与 Mod 工程团队打造的实时多模态 AI 协作层。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Work+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles/tokens.css" />
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+</head>
+<body>
+  <!-- 导航 -->
+  <header class="nav">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span>
+        <b>DocMind</b>
+        <span class="tag">REALTIME ENGINE</span>
+      </span>
+    </div>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#capabilities">能力</a>
+      <a href="#metrics">指标</a>
+      <a href="#pipeline">管线</a>
+      <a href="#start">接入</a>
+    </nav>
+    <span class="status-pill"><span class="dot" aria-hidden="true"></span>REALTIME ONLINE</span>
+  </header>
+
+  <main>
+    <!-- HERO -->
+    <section class="hero">
+      <div class="container">
+        <div class="hero-grid">
+          <div>
+            <p class="eyebrow reveal">Realtime Multimodal Engine</p>
+            <h1 class="reveal d1">
+              <span class="line">和你的</span>
+              <span class="line">游戏世界，<span class="glow">实时对谈</span></span>
+            </h1>
+            <p class="hero-sub reveal d2">
+              语音即输入、画面即上下文、打断即响应、断线自恢复。
+              DocMind 把多模态实时模型嵌进你的开发舱，让 AI 看着你的场景、听你说话、秒回你的问题。
+            </p>
+            <div class="hero-cta reveal d3">
+              <a class="btn btn-primary" href="#start">观看实时演示</a>
+              <a class="btn btn-ghost" href="#pipeline">查看接入管线</a>
+            </div>
+          </div>
+
+          <!-- 实时会话控制台（极简线框） -->
+          <div class="console reveal d2" role="img" aria-label="实时会话控制台示意：麦克风音频电平、摄像头画面、用户与模型的实时字幕、首响与模型延迟读数">
+            <div class="console-bar">
+              <span>SESSION · <span class="mono">prj-3da07fde89a5</span></span>
+              <span class="mode">native-realtime</span>
+            </div>
+            <div class="console-body">
+              <div class="session-row">
+                <span class="label">STATUS</span>
+                <span class="chip live">● CONNECTED</span>
+                <span class="chip">VAD · server</span>
+                <span class="chip">audio.in · video.in</span>
+              </div>
+
+              <div class="video-frame">
+                <span class="rec"><span class="rd" aria-hidden="true"></span>REC</span>
+                <span class="cam-tag">CAM 01 · 720p</span>
+              </div>
+
+              <div class="session-row">
+                <span class="label">MIC</span>
+                <span class="audio-bars" aria-hidden="true">
+                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </span>
+              </div>
+
+              <div class="bubble user"><b>你 ›</b> 把 boss 的血量调低 20%，再加一个阶段。</div>
+              <div class="bubble model"><b>模型 ›</b> 已把 boss 血量设为 80%，并新增「狂暴阶段」。要我同步改一下对话触发配置吗<span class="cursor" aria-hidden="true"></span></div>
+
+              <div class="latency-readout">
+                <span>首响应 <b class="ok">3171ms</b></span>
+                <span>模型延迟 <b>223ms</b></span>
+                <span>错误率 <b class="ok">0.0%</b></span>
+                <span>验收 <b class="ok">6 / 6</b></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 指标 -->
+    <section class="section" id="metrics">
+      <div class="container">
+        <div class="section-head reveal">
+          <p class="eyebrow">Verified Acceptance · R12</p>
+          <h2>真机验收，不是 PPT 数字</h2>
+          <p>以下指标来自 R12 真实设备联验报告：75 轮对话、0 错误、持续响应 3/3、打断与断线恢复全通过。</p>
+        </div>
+        <div class="metrics">
+          <div class="metric reveal">
+            <div class="num" data-count="3171" data-suffix="ms">0<span class="u">ms</span></div>
+            <div class="cap">首响应延迟</div>
+          </div>
+          <div class="metric reveal d1">
+            <div class="num" data-count="223" data-suffix="ms">0<span class="u">ms</span></div>
+            <div class="cap">模型延迟</div>
+          </div>
+          <div class="metric reveal d2">
+            <div class="num" data-count="0" data-suffix="%">0<span class="u">%</span></div>
+            <div class="cap">对话错误率 / 75 轮</div>
+          </div>
+          <div class="metric reveal d3">
+            <div class="num" data-count="6" data-suffix="/6">0<span class="u">/6</span></div>
+            <div class="cap">R12 验收通过项</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 能力 -->
+    <section class="section" id="capabilities">
+      <div class="container">
+        <div class="section-head reveal">
+          <p class="eyebrow">Capabilities</p>
+          <h2>六个被真机验证过的硬能力</h2>
+          <p>每一项都对应一次真实联验，而不是「理论上支持」。</p>
+        </div>
+        <div class="caps">
+          <article class="cap reveal">
+            <span class="idx">01</span>
+            <div class="ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+            </div>
+            <h3>语音即输入</h3>
+            <p>16kHz PCM16 麦克风上行，弱模型断句也能稳定识别，前端 VAD 尾不掐流。</p>
+            <span class="tag">audio.in</span>
+          </article>
+
+          <article class="cap reveal d1">
+            <span class="idx">02</span>
+            <div class="ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/></svg>
+            </div>
+            <h3>画面即上下文</h3>
+            <p>摄像头 / 屏幕共享帧实时进入模型视野，AI 看得到你的场景与编辑器。</p>
+            <span class="tag">video.in</span>
+          </article>
+
+          <article class="cap reveal d2">
+            <span class="idx">03</span>
+            <div class="ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>
+            </div>
+            <h3>打断即响应</h3>
+            <p>你说一半模型就停、就改口；自动取消在播音频，零等待抢话。</p>
+            <span class="tag">barge-in</span>
+          </article>
+
+          <article class="cap reveal">
+            <span class="idx">04</span>
+            <div class="ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M21 4v4h-4M3 20v-4h4"/></svg>
+            </div>
+            <h3>静音尾收句</h3>
+            <p>停说话后自动补约 1 秒静音，让服务端 VAD 干净收句——「有转写无回复」的根因修复。</p>
+            <span class="tag">silence-tail</span>
+          </article>
+
+          <article class="cap reveal d1">
+            <span class="idx">05</span>
+            <div class="ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12h14M5 12l4-4M5 12l4 4"/><circle cx="19" cy="12" r="2"/></svg>
+            </div>
+            <h3>断线自恢复</h3>
+            <p>stream_broken 可重试时自动重连并重放未完成的音频回合，WebSocket 不丢会话。</p>
+            <span class="tag">recover</span>
+          </article>
+
+          <article class="cap reveal d2">
+            <span class="idx">06</span>
+            <div class="ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="9"/></svg>
+            </div>
+            <h3>音频先行闸门</h3>
+            <p>同一会话内必须先有音频、后有图像，否则 DashScope 报 vendor_error。前端 + provider 双层兜底。</p>
+            <span class="tag">audio-gate</span>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- 管线 -->
+    <section class="section" id="pipeline">
+      <div class="container">
+        <div class="section-head reveal">
+          <p class="eyebrow">Pipeline</p>
+          <h2>一帧画面、一句话的旅程</h2>
+          <p>从麦克风到扬声器，每一跳都经过实测。黄色闸门是供应商的硬约束：音频必须先于视频。</p>
+        </div>
+        <div class="pipeline">
+          <div class="pipe reveal">
+            <span class="step">01</span><span class="nm">麦克风</span><span class="ds">PCM16 上行</span>
+          </div>
+          <div class="pipe reveal d1">
+            <span class="step">02</span><span class="nm">VAD 静音尾</span><span class="ds">收句 + 补尾</span>
+          </div>
+          <div class="pipe gate reveal d2">
+            <span class="step">03</span><span class="nm">音频先行闸门</span><span class="ds">先音频后图像</span>
+          </div>
+          <div class="pipe reveal d3">
+            <span class="step">04</span><span class="nm">视频帧</span><span class="ds">画面上下文</span>
+          </div>
+          <div class="pipe reveal d4">
+            <span class="step">05</span><span class="nm">Omni Realtime</span><span class="ds">原生多模态</span>
+          </div>
+          <div class="pipe reveal d5">
+            <span class="step">06</span><span class="nm">模型回应</span><span class="ds">扬声器播放</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="marquee" aria-hidden="true">
+        <div class="track">
+          <span><b>qwen3.8-omni-flash-realtime</b> · 原生实时多模态</span>
+          <span>语音入 / 画面入 / 文本出 / 音频出 / 打断</span>
+          <span><b>server VAD</b> · 静音尾收句</span>
+          <span>stream_broken 自动重连重放</span>
+          <span><b>audio-before-video</b> 供应商硬约束</span>
+          <span>R12 验收 6 / 6 · 错误率 0.0%</span>
+          <span><b>qwen3.8-omni-flash-realtime</b> · 原生实时多模态</span>
+          <span>语音入 / 画面入 / 文本出 / 音频出 / 打断</span>
+          <span><b>server VAD</b> · 静音尾收句</span>
+          <span>stream_broken 自动重连重放</span>
+          <span><b>audio-before-video</b> 供应商硬约束</span>
+          <span>R12 验收 6 / 6 · 错误率 0.0%</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="section" id="start">
+      <div class="container">
+        <div class="cta-band reveal">
+          <h2>把实时对话，嵌进你的开发舱</h2>
+          <p>本地 RAG + ReAct Agent 之上，再叠加一层看着你屏幕、听你说话的实时多模态引擎。</p>
+          <div class="hero-cta">
+            <a class="btn btn-primary" href="#metrics">查看验收报告</a>
+            <a class="btn btn-ghost" href="#pipeline">阅读接入文档</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <span>DOCUMENT · DocMind Realtime Engine · 展示页（极简版）</span>
+      <span class="muted">数据来源 · R12 真实设备联验报告 · 2026-09-29</span>
+    </div>
+  </footer>
+
+  <script src="scripts/main.js"></script>
+</body>
+</html>

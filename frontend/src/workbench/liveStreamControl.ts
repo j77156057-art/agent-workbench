@@ -17,6 +17,8 @@ export interface LiveSendSample {
   retryAfterS?: number | null
   /** 在飞帧滞留超过两个发送周期：编码/网络跟不上采集 */
   encodeOverrun?: boolean
+  /** 原生通道没有逐帧回执：编码及时且网络队列低时可恢复档位。 */
+  transportHealthy?: boolean
 }
 
 export interface LiveSendPlan {
@@ -40,9 +42,40 @@ const HEALTHY_BUFFER_BYTES = 60_000
 const HEALTHY_STREAK = 4 // 恢复要连续健康 4 次才升一档，避免抖动
 const THROTTLE_FLOOR_MAX_MS = 8000
 
+export const LIVE_VIDEO_BUFFER_LIMIT = 1_000_000
+
+/** 预算包括即将加入队列的整包，避免一张大图把音频也堵在后面。 */
+export function canQueueLiveVideo(bufferedAmount: number, packetBytes = 0, limit = LIVE_VIDEO_BUFFER_LIMIT): boolean {
+  return bufferedAmount + packetBytes < limit
+}
+
+/** 编码会异步让出执行权；暂停、重连或圈选后，旧包不得进入新会话。 */
+export async function sendLiveVideoPacket(input: {
+  encode(): Promise<ArrayBuffer>
+  isCurrent(): boolean
+  bufferedAmount(): number
+  send(packet: ArrayBuffer): void
+  bufferLimit?: number
+}): Promise<'sent' | 'stale' | 'backpressure'> {
+  if (!input.isCurrent()) return 'stale'
+  if (!canQueueLiveVideo(input.bufferedAmount(), 0, input.bufferLimit)) return 'backpressure'
+  const packet = await input.encode()
+  if (!input.isCurrent()) return 'stale'
+  if (!canQueueLiveVideo(input.bufferedAmount(), packet.byteLength, input.bufferLimit)) return 'backpressure'
+  input.send(packet)
+  return 'sent'
+}
+
+/** 原生通道没有逐帧回执，只有兼容抽帧通道能用在飞年龄衡量模型压力。 */
+export function liveVideoOverrun(mode: string, encodeMs: number, pendingAgeMs: number, intervalMs: number): boolean {
+  return encodeMs > intervalMs * 2
+    || (mode === 'sampled-frames' && pendingAgeMs > Math.max(6000, intervalMs * 2))
+}
+
 export interface AdaptiveSender {
   plan(): LiveSendPlan
   feed(sample: LiveSendSample): LiveSendPlan
+  setMinimumInterval(intervalMs: number): void
   reset(): void
   level(): number
 }
@@ -56,15 +89,19 @@ export function createAdaptiveSender(): AdaptiveSender {
   let level = DEFAULT_LEVEL
   let healthyStreak = 0
   let throttleFloorUntil = 0
+  let minimumIntervalMs = 0
 
   const step = (delta: number) => { level = Math.max(0, Math.min(INTERVALS.length - 1, level + delta)) }
 
   return {
     level() { return level },
+    setMinimumInterval(intervalMs) {
+      minimumIntervalMs = Number.isFinite(intervalMs) ? Math.max(0, intervalMs) : 0
+    },
     plan() {
       const floor = Math.max(0, throttleFloorUntil - Date.now())
       return {
-        intervalMs: Math.min(8000, Math.max(INTERVALS[level], floor)),
+        intervalMs: Math.max(minimumIntervalMs, Math.min(8000, Math.max(INTERVALS[level], floor))),
         maxEdge: EDGES[Math.min(level, EDGES.length - 1)],
         quality: QUALITIES[Math.min(level, QUALITIES.length - 1)],
       }
@@ -82,14 +119,14 @@ export function createAdaptiveSender(): AdaptiveSender {
       if (pressured) {
         healthyStreak = 0
         step(1)
-      } else if (typeof sample.latencyMs === 'number' && sample.latencyMs <= HEALTHY_LATENCY_MS
-        && sample.bufferedAmount <= HEALTHY_BUFFER_BYTES) {
+      } else if ((typeof sample.latencyMs === 'number' && sample.latencyMs <= HEALTHY_LATENCY_MS
+        || sample.transportHealthy === true) && sample.bufferedAmount <= HEALTHY_BUFFER_BYTES) {
         healthyStreak += 1
         if (healthyStreak >= HEALTHY_STREAK) { step(-1); healthyStreak = 0 }
-      }
+      } else healthyStreak = 0
       return this.plan()
     },
-    reset() { level = DEFAULT_LEVEL; healthyStreak = 0; throttleFloorUntil = 0 },
+    reset() { level = DEFAULT_LEVEL; healthyStreak = 0; throttleFloorUntil = 0; minimumIntervalMs = 0 },
   }
 }
 
@@ -133,14 +170,37 @@ export interface InFlightLedger {
   pendingCount(): number
   /** 最老在飞帧的滞留时间 ms（无在飞帧为 0） */
   oldestPendingAge(now: number): number
+  /** 回收服务端没有回帧的旧记录，返回回收条数。 */
+  prune(now: number, maxAgeMs?: number): number
   clear(): void
 }
 
 /** 在飞帧账本：服务端背压只会为最新帧产出观察，较新帧回帧即视为更早帧已被取代。 */
 export function createInFlightLedger(): InFlightLedger {
   const frames = new Map<number, { capturedAt: number; sentAt: number }>()
+  const maxEntries = 64
+  const defaultMaxAgeMs = 30_000
+  const prune = (now: number, maxAgeMs = defaultMaxAgeMs): number => {
+    let removed = 0
+    for (const [key, frame] of frames) {
+      if (now - frame.sentAt > maxAgeMs) {
+        frames.delete(key)
+        removed += 1
+      }
+    }
+    while (frames.size > maxEntries) {
+      const oldest = frames.keys().next().value
+      if (oldest === undefined) break
+      frames.delete(oldest)
+      removed += 1
+    }
+    return removed
+  }
   return {
-    onSent(sequence, capturedAt, at) { frames.set(sequence, { capturedAt, sentAt: at }) },
+    onSent(sequence, capturedAt, at) {
+      frames.set(sequence, { capturedAt, sentAt: at })
+      prune(at)
+    },
     onObserved(sequence, at) {
       const frame = frames.get(sequence)
       if (!frame) return null
@@ -158,6 +218,7 @@ export function createInFlightLedger(): InFlightLedger {
       for (const frame of frames.values()) oldest = Math.max(oldest, now - frame.sentAt)
       return oldest
     },
+    prune,
     clear() { frames.clear() },
   }
 }

@@ -52,6 +52,11 @@ IDLE_TTL_SECONDS = 600.0
 MAX_WAIT = 30.0
 MAX_VALUE_CHARS = 4_000
 MAX_READ_CHARS = 4_000
+#: `mode: contains` 的三个上限：要搜的词、一次最多扫多少字符、回几段上下文。
+#: 上限存在不是为了省 CPU，是为了【让"没找到"这句话可被核实】——扫不完就必须说没扫完。
+MAX_NEEDLE_CHARS = 200
+MAX_SCAN_CHARS = 200_000
+MAX_SAMPLES = 3
 MAX_CANDIDATES = 8
 MAX_SETTLE = 5.0
 
@@ -68,7 +73,7 @@ KEYS: dict[str, tuple[str, str, int, str]] = {
 }
 
 WAIT_STATES = ("present", "absent", "visible", "hidden", "text")
-READ_MODES = ("text", "value", "attr", "html", "count")
+READ_MODES = ("text", "value", "attr", "html", "count", "contains")
 
 
 class PageActionError(RuntimeError):
@@ -191,7 +196,59 @@ INSPECT_JS = r"""(spec) => {
   else if (spec.mode === 'html') out.text = el.innerHTML || '';
   else if (spec.mode === 'count') out.text = String(list.length);
   else out.text = (el.innerText !== undefined ? el.innerText : (el.textContent || '')) || '';
+  // full_length 必须在切之前算：以前这里先 slice(0,4000)，Python 再拿 len(text) > 4000 判
+  // "有没有截断"——那个条件结构上永远为假，`truncated` 是个死字段，读了一半的页面
+  // 看起来像读完了。
+  out.full_length = String(out.text).length;
   out.text = String(out.text).slice(0, 4000);
+  return out;
+}"""
+
+# mode: contains —— 在【指定容器】的可见文字里搜一个词，只回命中数与周围一小段。
+# 存在的理由：`read` 的其它模式都把整段文本交给调用方，而 4000 字上限会让"这句话
+# 在不在页面上"退化成"它在前 4000 字里在不在"。这里把判断下推到页面里，返回量与
+# 页面大小无关，缺席断言才谈得上可靠。
+# 可见性必须【显式】处理：`innerText` 对不在渲染树里的元素（`display:none` 及其子树）
+# 会退回 `textContent`，实测 `#hid` 照样搜得到——不分开计数的话「页面上没有这句话」
+# 会悄悄变成「DOM 里没有这句话」。所以命中分 `hits`（可见）与 `hidden_hits`（不可见）报。
+CONTAINS_JS = r"""(spec) => {
+  const needle = String(spec.needle || '');
+  const limit = spec.limit || 200000;
+  const maxSamples = spec.samples;          // 上限只由 Python 下发，JS 不再自带一套默认值
+  const nodes = Array.from(document.querySelectorAll(spec.selector || 'body'));
+  const out = {needle: needle, selector: spec.selector || 'body', elements: nodes.length,
+               elements_with_hit: 0, hits: 0, hidden_hits: 0, hidden_elements: 0,
+               searched_chars: 0, scanned_all: true, samples: [],
+               href: location.href, title: document.title || ''};
+  if (!needle) { out.scanned_all = false; out.error = 'empty needle'; return out; }
+  const countIn = (hay) => {
+    let at = hay.indexOf(needle), n = 0;
+    const grabbed = [];
+    while (at >= 0) {
+      n += 1;
+      if (grabbed.length < maxSamples) grabbed.push(
+        hay.slice(Math.max(0, at - 40), at + needle.length + 40));
+      at = hay.indexOf(needle, at + needle.length);
+      if (n >= 500) break;                                    // 一个元素里刷屏也要说清
+    }
+    return {n: n, grabbed: grabbed, ran: n >= 500};
+  };
+  for (const el of nodes) {
+    if (out.searched_chars >= limit) { out.scanned_all = false; break; }
+    const hay = String(el.innerText !== undefined ? el.innerText : (el.textContent || ''));
+    out.searched_chars += Math.min(hay.length, limit - out.searched_chars);
+    const hidden = el.getClientRects().length === 0;         // 不在渲染树里＝用户看不见
+    const seen = countIn(hay);
+    if (hidden) { out.hidden_hits += seen.n; out.hidden_elements += 1; }
+    else {
+      out.hits += seen.n;
+      if (seen.n) out.elements_with_hit += 1;
+      for (const row of seen.grabbed) {
+        if (out.samples.length < maxSamples) out.samples.push(row);
+      }
+    }
+    if (seen.ran) out.scanned_all = false;
+  }
   return out;
 }"""
 
@@ -649,7 +706,8 @@ def wait_for(root: str | Path, *, page: str = "", selector: str = "", state: str
 
 
 def read_page(root: str | Path, *, page: str = "", selector: str = "", mode: str = "text",
-              attr: str = "", nth: Any = None, held: bool = False) -> dict[str, Any]:
+              attr: str = "", nth: Any = None, held: bool = False,
+              needle: str = "") -> dict[str, Any]:
     row = _get(page)
     kind = str(mode or "text").strip().lower()
     if kind not in READ_MODES:
@@ -658,17 +716,53 @@ def read_page(root: str | Path, *, page: str = "", selector: str = "", mode: str
         raise PageActionError("mode: attr 需要 attr: <属性名>。")
     if len(str(attr or "")) > 60:
         raise PageActionError("属性名太长。")
-    css = str(selector or "").strip() or "html"
+    css = str(selector or "").strip() or ("body" if kind == "contains" else "html")
+    if kind == "contains":
+        return _read_contains(row, css, str(needle or ""))
     index = 0 if held else _target_spec(css, "", nth, "")["nth"]
     out = _evaluate(row.devtools, INSPECT_JS,
                     {"selector": "" if held else css,
                      "target": "held" if held else "", "mode": kind, "attr": str(attr or "").strip(),
                      "nth": index}) or {}
     text = str(out.get("text") or "")
+    full = out.get("full_length")
+    # 双端核对：页面报了全文长度就用它判，没报（老页面/别的实现）才退回字符串长度。
+    truncated = (int(full) > len(text)) if isinstance(full, (int, float)) \
+        else len(text) > MAX_READ_CHARS
     return {"action": "read", "page": row.id, "ok": True, "mode": kind, "count": out.get("count"),
             "found": out.get("found"), "visible": out.get("visible"), "tag": out.get("tag"),
             "title": out.get("title"), "url": out.get("href"), "text": text[:MAX_READ_CHARS],
-            "truncated": len(text) > MAX_READ_CHARS}
+            "full_length": int(full) if isinstance(full, (int, float)) else len(text),
+            "truncated": truncated}
+
+
+def _read_contains(row: _Session, css: str, needle: str) -> dict[str, Any]:
+    """在 `selector` 容器的可见文字里搜 `needle`：只回命中数与周围几段，不回整页文本。"""
+    if not needle.strip():
+        raise PageActionError("mode: contains 需要 needle: <要找的词>。")
+    if len(needle) > MAX_NEEDLE_CHARS:
+        raise PageActionError("needle 太长（上限 %d 字符）。" % MAX_NEEDLE_CHARS)
+    _target_spec(css, "", None, "")            # 容器仍走同一道选择器围栏
+    out = _evaluate(row.devtools, CONTAINS_JS,
+                    {"selector": css, "needle": needle, "limit": MAX_SCAN_CHARS,
+                     "samples": MAX_SAMPLES}) or {}
+    elements = int(out.get("elements") or 0)
+    hits = int(out.get("hits") or 0)
+    scanned_all = bool(out.get("scanned_all"))
+    return {"action": "read", "page": row.id, "ok": True, "mode": "contains",
+            "needle": needle, "selector": css,
+            "found": hits > 0, "hits": hits, "elements": elements,
+            "elements_with_hit": int(out.get("elements_with_hit") or 0),
+            # 不可见容器里的命中单独报：混进 `hits` 会让「页面上没有」变成「DOM 里没有」，
+            # 完全丢掉则会让"用户看得见的那句"被误判成不存在
+            "hidden_hits": int(out.get("hidden_hits") or 0),
+            "hidden_elements": int(out.get("hidden_elements") or 0),
+            "searched_chars": int(out.get("searched_chars") or 0), "scanned_all": scanned_all,
+            # 样本限量已经由 `spec.samples` 在页面里生效，这里不再二次裁剪：两处各一套上限时，
+            # 调一处另一处仍按老数字静默截断（变异电池实测：删掉这里的 [:MAX_SAMPLES] 谁都发现不了）
+            "samples": list(out.get("samples") or []),
+            "title": out.get("title"), "url": out.get("href"), "count": elements,
+            "text": "", "truncated": not scanned_all, "error": str(out.get("error") or "")}
 
 
 def locate(root: str | Path, *, page: str = "", selector: str = "", text: str = "",
@@ -712,6 +806,23 @@ def render(result: dict[str, Any]) -> str:
         return "等待 %s %s（等了 %sms）；当时看到 %s。" % (
             result.get("state"), "成立" if result.get("ok") else "【未成立：超时】",
             result.get("waited_ms"), json.dumps(result.get("seen"), ensure_ascii=False)[:240])
+    if result.get("mode") == "contains":
+        lines = ["页面搜索 %r：在 %s 的【可见】文字里命中 %s 处（扫了 %s 字符，覆盖 %s/%s 个元素）" % (
+            result.get("needle"), result.get("selector") or "body", result.get("hits"),
+            result.get("searched_chars"), result.get("elements_with_hit"),
+            result.get("elements"))]
+        if not result.get("elements"):
+            # 最坏的一种"没找到"：容器本身根本不存在，这句「页面上没有」等于没说
+            lines.append("注意：容器一个都没匹配到——这次搜索不构成任何证据。")
+        elif int(result.get("hidden_hits") or 0):
+            lines.append("另有 %s 处在【当前不可见】的元素里（%s 个元素）：按「用户看得见」判定时"
+                         "不计入命中。" % (result.get("hidden_hits"),
+                                        result.get("hidden_elements")))
+        elif not result.get("scanned_all"):
+            lines.append("注意：没扫完（超出上限就停了），所以「没找到」不能当成「没有」。")
+        for row in (result.get("samples") or []):
+            lines.append("  命中处：%s" % str(row).replace("\n", " ⏎ ")[:180])
+        return "\n".join(lines)
     if action == "read":
         return "读取 %s：命中 %s 个，%s%s" % (
             result.get("mode"), result.get("count"),

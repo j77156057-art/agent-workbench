@@ -13,23 +13,33 @@ from orchestrator import parse_plan
 
 class AgentCapacityTests(unittest.TestCase):
     def test_defaults_and_unlimited_values_are_normalized(self):
+        """默认四项**全是 0（不限）**——2026-10-02 起。
+
+        这条断言以前写的是 8/8/24/50000。它是"默认值"的唯一凭据：一旦默认值改了而
+        这里没同步，测试会红；反过来若有人只改了这里，行为与断言就脱钩了。
+        """
         self.assertEqual(normalize_settings(None), {
-            "max_agents": 8, "main_max_steps": 8, "child_max_steps": 24,
+            "max_agents": 0, "main_max_steps": 0, "child_max_steps": 0,
             "max_nudges": 2, "max_final_continuations": 2,
-            "task_token_budget": 50000, "local_auto_limit": True,
+            "task_token_budget": 0, "local_auto_limit": True,
         })
+        # 只给一部分时，未给的那几项沿用默认（也必须是 0，而不是旧默认）。
         self.assertEqual(normalize_settings({
-            "max_agents": 0, "child_max_steps": 0, "local_auto_limit": False,
-        }), {"max_agents": 0, "main_max_steps": 8, "child_max_steps": 0,
+            "max_agents": 4, "local_auto_limit": False,
+        }), {"max_agents": 4, "main_max_steps": 0, "child_max_steps": 0,
               "max_nudges": 2, "max_final_continuations": 2,
-              "task_token_budget": 50000, "local_auto_limit": False})
+              "task_token_budget": 0, "local_auto_limit": False})
+        # 显式 0 必须原样保留（这是"填 0 = 不限"能成立的前提）。
+        self.assertEqual(normalize_settings({
+            "max_agents": 0, "child_max_steps": 0,
+        })["child_max_steps"], 0)
 
     def test_invalid_limits_fall_back_to_safe_defaults(self):
         self.assertEqual(normalize_settings({
             "max_agents": 65, "child_max_steps": -1, "local_auto_limit": "false",
-        }), {"max_agents": 8, "main_max_steps": 8, "child_max_steps": 24,
+        }), {"max_agents": 0, "main_max_steps": 0, "child_max_steps": 0,
               "max_nudges": 2, "max_final_continuations": 2,
-              "task_token_budget": 50000, "local_auto_limit": True})
+              "task_token_budget": 0, "local_auto_limit": True})
 
     def test_gpu_snapshot_reports_per_device_and_process_occupancy(self):
         memory = {

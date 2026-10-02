@@ -5,10 +5,11 @@ export type RealtimeClientControl =
   | { v: 1; type: 'heartbeat'; sent_at: number }
   | { v: 1; type: 'cancel'; reason?: string }
   | { v: 1; type: 'session.close'; reason?: string }
+  | { v: 1; type: 'agent.result'; request_id: string; text: string }
 
 export type RealtimeServerEvent = {
   v: 1
-  type: 'hello.ok' | 'heartbeat' | 'video.observation' | 'model.observation' | 'audio.transcript' | 'model.delta' | 'model.audio' | 'error' | 'cancel.ok' | 'session.closed'
+  type: 'hello.ok' | 'heartbeat' | 'video.observation' | 'model.observation' | 'audio.transcript' | 'model.delta' | 'model.audio' | 'error' | 'cancel.ok' | 'session.closed' | 'agent.result.ok'
   sent_at: number
   sequence?: number
   captured_at?: number

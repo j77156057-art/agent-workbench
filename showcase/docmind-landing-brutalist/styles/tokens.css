@@ -1,0 +1,71 @@
+/* =============================================================
+   DocMind · 产品落地草案（粗野·重排版 / v5）
+   方向：粗野原始 · 素描纸 · 粗黑描边 · 巨型标题 · 硬阴影 · 零圆角
+   重排要点：正文回归无衬线、字号阶梯收敛、留白放大、动画放缓
+   ============================================================= */
+:root {
+  /* —— 表面：素描纸 —— */
+  --bg: #e9e6df;
+  --surface: #f3f1ea;
+  --surface-2: #ffffff;
+
+  /* —— 墨（同时用于粗描边） —— */
+  --ink: #0d0d0d;
+  --muted: #565049;
+  --faint: #8a8178;
+
+  /* —— 粗黑描边 —— */
+  --border: #0d0d0d;
+  --border-2: 2px solid #0d0d0d;
+  --border-3: 3px solid #0d0d0d;
+
+  /* —— 强调：品牌青（浅色版），作响亮色块 —— */
+  --accent: #0c8c7e;
+  --accent-loud: #2ec4b6;
+  --accent-deep: #0a6f64;
+  --accent-ink: #04302b;
+
+  /* —— 真实分区色板（theme.ts 同源，仅作大色块强调） —— */
+  --r-audio: #2ec4b6;
+  --r-values: #58a6ff;
+  --r-assets: #e3a83a;
+  --r-behaviors: #bc8cff;
+  --r-bugs: #ff6b6b;
+  --r-levels: #45c98c;
+  --r-ui: #f072b6;
+  --r-net: #f0883e;
+
+  --r: 0;
+
+  /* —— 间距梯：整体放大，给粗野风呼吸 —— */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 44px; --s-7: 96px; --s-8: 128px;
+
+  /* —— 硬阴影（brutalist 签名） —— */
+  --sh-hard: 6px 6px 0 var(--ink);
+  --sh-hard-sm: 4px 4px 0 var(--ink);
+  --sh-hard-hover: 8px 8px 0 var(--ink);
+
+  /* —— 字阶：收敛落差，重建层级 —— */
+  --fs-mega: clamp(2.6rem, 6vw, 4.8rem);
+  --fs-h1: clamp(2.3rem, 4.6vw, 3.6rem);
+  --fs-h2: clamp(1.7rem, 3vw, 2.4rem);
+  --fs-h3: 1.25rem;
+  --fs-body: 1.0625rem;
+  --fs-sm: 0.9rem;
+  --fs-xs: 0.79rem;
+  --fs-mono: 0.85rem;
+
+  /* —— 字体：标题 Archivo Black / 标签等宽 / 正文无衬线 —— */
+  --font-display: 'Archivo Black', 'Noto Sans SC', sans-serif;
+  --font-mono: 'Space Mono', 'JetBrains Mono', Consolas, monospace;
+  --font-body: 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+  --font-sans: 'Noto Sans SC', 'Segoe UI', system-ui, sans-serif;
+
+  /* —— 动画：放缓、收敛 —— */
+  --dur-fast: 140ms;
+  --dur-base: 320ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --maxw: 1200px;
+}

@@ -1,0 +1,58 @@
+/* ===== 基础层：重置 + 方格坐标纸 + 排版（粗野·重排） ===== */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+body {
+  font-family: var(--font-sans);
+  color: var(--ink);
+  line-height: 1.7;
+  background-color: var(--bg);
+  /* 方格坐标纸：细格 22px + 粗格 110px */
+  background-image:
+    linear-gradient(to right, rgba(13,13,13,0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(13,13,13,0.05) 1px, transparent 1px),
+    linear-gradient(to right, rgba(13,13,13,0.09) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(13,13,13,0.09) 1px, transparent 1px);
+  background-size: 22px 22px, 22px 22px, 110px 110px, 110px 110px;
+}
+.container { width: min(var(--maxw), 92vw); margin-inline: auto; }
+a { color: inherit; text-decoration: none; }
+
+h1, h2, h3 {
+  font-family: var(--font-display);
+  font-weight: 900;
+  line-height: 1.06;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  text-wrap: balance;
+}
+h1 { font-size: var(--fs-mega); }
+h2 { font-size: var(--fs-h2); }
+h3 { font-size: var(--fs-h3); }
+p { color: var(--muted); line-height: 1.75; }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--accent-deep);
+  font-weight: 700;
+}
+
+/* reveal：放缓、位移收敛，杜绝“满屏跳” */
+.reveal {
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity .6s var(--ease-out), transform .6s var(--ease-out);
+  will-change: opacity, transform;
+}
+.reveal.in { opacity: 1; transform: none; }
+.reveal.d1 { transition-delay: .06s; } .reveal.d2 { transition-delay: .12s; }
+.reveal.d3 { transition-delay: .18s; } .reveal.d4 { transition-delay: .24s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1 !important; transform: none !important; transition: none !important; }
+  html { scroll-behavior: auto; } * { animation: none !important; }
+}
+a:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }

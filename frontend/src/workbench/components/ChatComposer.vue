@@ -227,10 +227,10 @@ function onVideoPick(ev: Event) {
   color: var(--accent); border-color: var(--accent);
   background: rgba(37, 96, 212, .07);
 }
-.cd-chip-native { color: var(--violet, #7c5cd6); border-color: var(--violet, #7c5cd6); background: rgba(124, 92, 214, .08); }
+.cd-chip-native { color: var(--tool); border-color: var(--tool); background: rgba(124, 92, 214, .08); }
 .cd-chip-off { opacity: .6; cursor: default; }
 .cd-chip-badge { font-size: 10px; color: var(--text-faint); }
-.cd-chip-native .cd-chip-badge { color: var(--violet, #7c5cd6); }
+.cd-chip-native .cd-chip-badge { color: var(--tool); }
 
 /* 迷你开关 */
 .cd-switch {
@@ -245,7 +245,7 @@ function onVideoPick(ev: Event) {
   transition: left .15s;
 }
 .cd-switch.on { background: var(--accent); }
-.cd-chip-native .cd-switch.on { background: var(--violet, #7c5cd6); }
+.cd-chip-native .cd-switch.on { background: var(--tool); }
 .cd-switch.on i { left: 11px; }
 
 /* 上下文窗口用量指示 */

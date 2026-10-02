@@ -1,0 +1,99 @@
+/* =============================================================
+   DocMind · 排版令牌系统（"重做排版"版式的共享基础层）
+   -------------------------------------------------------------
+   来源：artifacts/docmind-typography-layout.html 与
+         artifacts/docmind-ask-page.html 共用的 :root 令牌块
+         （用户确认「两版都要」）。
+
+   设计约束（R14 铁律）：
+   - 本文件为**纯增量层**：只新增源码里尚不存在的令牌
+     （--fs-* / --measure / --lh-* / --ls-* / --s1..s6 / --gutter），
+     不重定义 --bg / --ink / --text / --accent / --font-* 等
+     由 ask.css / workbench/style.css 控制的现有令牌，避免与
+     并发写者的在飞改动冲突。
+   - 经 ask/main.ts 在 ask.css、ask-riso.css 之后引入，
+     故全局 `body` 基线规则（同特异性、后加载者胜）可安全覆盖
+     ask.css 的 14px/1.6 默认值，把正文基线抬到 15px/1.70/.02em。
+   - 组件内的显式字号（.tb-title / .composer textarea 等）仍由
+     各自 scoped 样式决定；本层只定「基线」与「可复用令牌」，
+     组件后续可逐步改用 --fs-* 收敛字阶。
+   ============================================================= */
+
+:root {
+  /* —— 字阶：收敛到 5 级（原 7 级，中间几级只差 0.5–1px 互相干扰）——
+     2026-10-02 两页统一（与 workbench/workbench-typo.css **逐字节一致**）：
+     实测原状态是两套尺子——问答页 body 15px / 行高 1.70 / 字距 .3px，
+     开发舱 body 13px / 行高 **normal**（89 个元素里 74 个没行高系统）/ 字距 normal，
+     且两页各散着 9–10 档字号（含 10 / 10.5 / 11.5 这种半档）。
+     统一后：body 取 14（15 与 13 之间），半档全部并入 --fs-cap。 */
+  --fs-display: 30px;   /* 顶栏/英雄标题档：≥28px 的主角字 */
+  --fs-h1: 22px;        /* 一级标题 */
+  --fs-h2: 16px;        /* 区段标题 */
+  --fs-body: 14px;      /* 正文（两页统一基线） */
+  --fs-sm: 12.5px;      /* 次级文字 */
+  --fs-cap: 11px;       /* 说明/标签（原 10 / 10.5 / 11.5 半档并入此档） */
+  --fs-micro: 11px;     /* 元信息/等宽小字（与 cap 同尺寸，靠族/字距区分） */
+
+  /* —— 阅读栏宽度：正文与输入框共用同一把尺 —— */
+  --measure: min(840px, 100%);
+
+  /* —— 行高 / 字距 —— */
+  --lh-tight: 1.15;
+  --lh-snug: 1.40;      /* 控件内（button/input/chip）：跟着舒展会撑高控件，故单独一档 */
+  --lh-body: 1.65;      /* 中文长文更舒展；原 1.6 偏挤 */
+  --ls-body: .02em;     /* 中文在 Windows 上默认偏挤，补一点字距 */
+
+  /* —— 8px 间距栅格 —— */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 32px;
+  --s6: 48px;
+  --gutter: 32px;       /* 顶栏/主区左右留白；≤1400px 视口降为 24px（见响应式） */
+
+  /* —— 字体栈（与源码 --font-* 同源，仅在此显式列出供组件复用，不重定义）——
+     --font-ui / --font-display / --font-mono 已在 ask.css 定义，
+     此处仅在注释锚定，避免组件各自写死家族导致决策发散。 */
+}
+
+/* 基线应用：同特异性、后加载，覆盖 ask.css 的 body 默认值。
+   只动「没被组件显式覆盖」的元素，把整页正文基线抬到排版版式的 15/1.70/.02em。 */
+body {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  letter-spacing: var(--ls-body);
+}
+
+/* 正文阅读密度（严格还原「重做排版」mockup :360-370 的 .answer 规则）。
+   映射到真实 markdown 产物类（.md-*，由 markdown.ts 产出）。
+   用 .answer 作用域把特异性抬到 (0,2,0)，覆盖 ask.css 的 .md-* 默认基线，
+   但不改写 AskMessage.vue 的 scoped 样式块（其 .answer 仅设 word-break / font-family）。
+   变量取值对应 mockup：--s3=12px 段距、--fs-sm=13.5px 内联码、--accent 左朱红边。 */
+.answer .md-p { margin: 0 0 var(--s3); }
+.answer .md-p:last-child { margin-bottom: 0; }
+.answer .md-h { margin: var(--s4) 0 var(--s2); }
+.answer .md-ul { margin: 0 0 var(--s3); padding-left: 1.35em; }
+.answer .md-ul li { margin-bottom: var(--s1); }
+.answer .md-ic {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0 4px;
+}
+.answer .callout {
+  margin: var(--s3) 0 0;
+  padding: var(--s3) var(--s4);
+  background: var(--bg-hover);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+}
+
+/* 响应式：窄视口收窄主区留白（与两份 mockup 的 @media 约定一致） */
+@media (max-width: 1400px) {
+  :root { --gutter: 24px; }
+}

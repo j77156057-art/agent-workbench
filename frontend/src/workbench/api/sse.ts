@@ -86,6 +86,22 @@ export async function postSse(url: string, init: RequestInit, h: SseStreamHandle
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
+  let streamDone = false
+  const handleChunk = (chunk: string) => {
+    for (const raw of chunk.split('\n')) {
+      const line = raw.trimStart()
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload || payload === '[DONE]') continue
+      try {
+        const event = JSON.parse(payload) as SseEvent
+        if (event.type === 'done') streamDone = true
+        h.onEvent(event)
+      } catch {
+        /* 忽略半条/非 JSON 心跳 */
+      }
+    }
+  }
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
@@ -94,18 +110,13 @@ export async function postSse(url: string, init: RequestInit, h: SseStreamHandle
     while ((sep = buf.indexOf('\n\n')) >= 0) {
       const chunk = buf.slice(0, sep)
       buf = buf.slice(sep + 2)
-      for (const raw of chunk.split('\n')) {
-        const line = raw.trimStart()
-        if (!line.startsWith('data:')) continue
-        const payload = line.slice(5).trim()
-        if (!payload || payload === '[DONE]') continue
-        try {
-          h.onEvent(JSON.parse(payload) as SseEvent)
-        } catch {
-          /* 忽略半条/非 JSON 心跳 */
-        }
-      }
+      handleChunk(chunk)
     }
+  }
+  buf += decoder.decode()
+  if (buf.trim()) handleChunk(buf)
+  if (!streamDone && !h.signal?.aborted) {
+    throw new FsApiError(0, '流式连接在服务完成前中断；已收到的内容已保留，请重试并检查服务日志。')
   }
 }
 
@@ -144,6 +155,22 @@ export async function openSse(
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
+  let streamDone = false
+  const handleChunk = (chunk: string) => {
+    for (const raw of chunk.split('\n')) {
+      const line = raw.trimStart()
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload || payload === '[DONE]') continue
+      try {
+        const event = JSON.parse(payload) as SseEvent
+        if ((event as unknown as { kind?: string }).kind === '__stream_done__') streamDone = true
+        onEvent(event)
+      } catch {
+        /* 忽略半条/非 JSON 心跳 */
+      }
+    }
+  }
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
@@ -152,17 +179,12 @@ export async function openSse(
     while ((sep = buf.indexOf('\n\n')) >= 0) {
       const chunk = buf.slice(0, sep)
       buf = buf.slice(sep + 2)
-      for (const raw of chunk.split('\n')) {
-        const line = raw.trimStart()
-        if (!line.startsWith('data:')) continue
-        const payload = line.slice(5).trim()
-        if (!payload || payload === '[DONE]') continue
-        try {
-          onEvent(JSON.parse(payload) as SseEvent)
-        } catch {
-          /* 忽略半条/非 JSON 心跳 */
-        }
-      }
+      handleChunk(chunk)
     }
+  }
+  buf += decoder.decode()
+  if (buf.trim()) handleChunk(buf)
+  if (!streamDone && !signal.aborted) {
+    throw new FsApiError(0, '工作流事件流在终态前中断；请重新打开工作流查看最新状态。')
   }
 }

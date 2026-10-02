@@ -3,25 +3,32 @@
 
 :root {
   color-scheme: light;
-  --bg: #eef1f7;
-  --bg-raised: #ffffff;
-  --bg-hover: #f3f6fb;
-  --bg-selected: #e4edfc;
-  --border: #dde3ee;
-  --border-strong: #c4cedd;
-  --text: #222b38;
-  --text-muted: #5a6778;
-  --text-faint: #98a3b4;
-  --accent: #2f6fed;
-  --accent-soft: rgba(47, 111, 237, .10);
-  --accent-2: #7a5af8;
-  --danger: #e0484f;
-  --amber: #c8811c;
+  /* ===== DocMind 统一设计系统：高级粗野风（与 workbench/style.css 同源）===== */
+  --bg: #ece7db;
+  --bg-raised: #faf8f2;
+  --bg-hover: #e3dccd;
+  --bg-selected: #f1e7d3;   /* 浅色兜底；深色皮肤由 skins.css 覆写（见下）
+                              写死的浅米底在深色皮肤下会让浅色字隐形（实测设置页左栏整排消失） */
+  --border: #d9d1c0;
+  --border-strong: #14110f;
+  --ink: #14110f;
+  --text: #14110f;
+  --text-muted: #6b6356;
+  --text-faint: #9a9183;
+  --accent: #ff4d2e;
+  --accent-2: #1f5fe0;
+  --accent-soft: rgba(255, 77, 46, .12);
+  --accent-ink: #ffffff;
+  --danger: #d8453a;
+  --amber: #c8861c;
   --green: #1c9e66;
-  --shadow-soft: 0 8px 24px rgba(35, 52, 84, .08);
-  --shadow-pop: 0 16px 44px rgba(35, 52, 84, .16);
-  --font-ui: 'Segoe UI Variable Display', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  --shadow-soft: 0 2px 0 rgba(20, 17, 15, .08);
+  --shadow-pop: 6px 6px 0 var(--ink);
+  --sh-hard: 4px 4px 0 var(--ink);
+  --sh-hard-sm: 3px 3px 0 var(--ink);
+  --font-ui: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  --font-display: 'Archivo Black', 'Space Grotesk', 'Noto Sans SC', sans-serif;
+  --font-mono: 'Space Mono', ui-monospace, 'JetBrains Mono', Consolas, monospace;
 }
 
 * { box-sizing: border-box; }

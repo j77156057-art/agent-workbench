@@ -34,7 +34,8 @@ import assert from 'node:assert';
 import { createAdaptiveSender, classifyLivePhase, LIVE_PHASE_LABELS, createInFlightLedger,
   appendCaptionTurn, closeUserTranscript, describeLiveCapabilities,
   shouldDispatchVoiceTurn, sameVisualFocus,
-  isDismissedVisualAlert, pruneDismissedVisualAlerts } from './liveStreamControl.js';
+  isDismissedVisualAlert, pruneDismissedVisualAlerts,
+  canQueueLiveVideo, sendLiveVideoPacket, liveVideoOverrun } from './liveStreamControl.js';
 
 const now = () => Date.now();
 
@@ -112,6 +113,63 @@ assert.strictEqual(ledger.pendingCount(), 0, '背压只处理最新帧：3 号�
 assert.strictEqual(ledger.onObserved(9, t0), null, '未登记序号不得编造延迟');
 ledger.onSent(4, now(), now()); ledger.clear();
 assert.strictEqual(ledger.pendingCount(), 0, 'clear 后不得残留（会话重连卫生）');
+
+// 无逐帧回执的原生模式长时间运行，账本仍有界；过期元数据不再制造永久积压。
+for (let i = 1; i <= 1000; i++) ledger.onSent(i, t0, t0 + i);
+assert.ok(ledger.pendingCount() <= 64);
+assert.ok(ledger.prune(t0 + 31_001) > 0);
+assert.strictEqual(ledger.pendingCount(), 0);
+assert.strictEqual(ledger.oldestPendingAge(t0 + 31_001), 0);
+
+assert.strictEqual(liveVideoOverrun('native-realtime', 10, 60_000, 500), false,
+  '原生不逐帧回观察，不能据此持续降画质');
+assert.strictEqual(liveVideoOverrun('sampled-frames', 10, 7000, 500), true);
+assert.strictEqual(liveVideoOverrun('native-realtime', 1100, 0, 500), true,
+  '真正的编码耗时仍触发降压');
+
+// 网速慢时连编码都不执行；编码期间暂停/重连则丢包，不允许旧帧进入新会话。
+let encodes = 0, sends = 0, buffered = 1_000_000, current = true;
+const input = { encode: async () => { encodes++; return new ArrayBuffer(100); },
+  isCurrent: () => current, bufferedAmount: () => buffered, send: () => sends++ };
+assert.strictEqual(await sendLiveVideoPacket(input), 'backpressure');
+assert.strictEqual(encodes, 0);
+buffered = 0;
+assert.strictEqual(await sendLiveVideoPacket({ ...input,
+  encode: async () => { current = false; return new ArrayBuffer(100); } }), 'stale');
+assert.strictEqual(sends, 0);
+current = true;
+assert.strictEqual(await sendLiveVideoPacket({ ...input,
+  encode: async () => { buffered = 999_950; return new ArrayBuffer(100); } }), 'backpressure');
+assert.strictEqual(sends, 0, '必须把整包大小计入缓冲预算并在编码后复查');
+buffered = 0;
+assert.strictEqual(await sendLiveVideoPacket(input), 'sent');
+assert.strictEqual(sends, 1);
+assert.strictEqual(canQueueLiveVideo(0, 1_000_000), false);
+assert.strictEqual(canQueueLiveVideo(120_000, 10_000, 128_000), false,
+  '开麦时视频必须服从较小缓冲预算，给语音留空间');
+assert.strictEqual(await sendLiveVideoPacket({ ...input, bufferLimit: 80,
+  encode: async () => new ArrayBuffer(100) }), 'backpressure');
+assert.strictEqual(sends, 1, '语音优先预算必须在真正发送整包之前执行');
+
+const nativeSender = createAdaptiveSender();
+nativeSender.feed({ bufferedAmount: 500_000 });
+for (let i = 0; i < 4; i++) nativeSender.feed({ bufferedAmount: 0, transportHealthy: true });
+assert.strictEqual(nativeSender.plan().intervalMs, 500,
+  '原生通道在网络恢复后也必须能恢复画质，无需等待不存在的逐帧观察');
+nativeSender.feed({ bufferedAmount: 500_000 });
+nativeSender.feed({ bufferedAmount: 0, transportHealthy: true });
+nativeSender.feed({ bufferedAmount: 100_000 });
+for (let i = 0; i < 3; i++) nativeSender.feed({ bufferedAmount: 0, transportHealthy: true });
+assert.strictEqual(nativeSender.plan().intervalMs, 900, '健康样本必须连续，不能跨过中等压力累计');
+
+const negotiated = createAdaptiveSender();
+negotiated.setMinimumInterval(1400);
+for (let i = 0; i < 12; i++) negotiated.feed({ bufferedAmount: 0, latencyMs: 900 });
+assert.ok(negotiated.plan().intervalMs >= 1400, '恢复后也不能超过服务端允许的分析频率');
+negotiated.setMinimumInterval(12_000);
+assert.strictEqual(negotiated.plan().intervalMs, 12_000, '用户配置的服务端间隔不应被普通退避上限截短');
+negotiated.reset();
+assert.strictEqual(negotiated.plan().intervalMs, 500, '重连到原生通道时不沿用抽帧限速');
 
 // ---- 字幕归约（R13：model.delta / audio.transcript） -------------------------
 let caps = appendCaptionTurn([], { type: 'audio.transcript', text: '这里的按钮不对' });

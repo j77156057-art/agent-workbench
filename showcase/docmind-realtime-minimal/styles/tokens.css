@@ -1,0 +1,65 @@
+/* =============================================================
+   DocMind · 实时视频对话引擎 · 极简版本设计令牌
+   方向：极简克制（Brutally minimal）· 暖纸白底 · 单一品牌青
+   配色从 theme.ts region.audio 抽出的青做「浅色适配」（加深以满足 AA 对比）
+   ============================================================= */
+:root {
+  /* —— 表面层（暖纸白，非纯白） —— */
+  --bg: #f3f1ea;
+  --surface: #faf9f5;
+  --surface-2: #ffffff;
+
+  /* —— 墨色文本 —— */
+  --ink: #16130d;
+  --muted: #6c655a;
+  --faint: #a39a8b;
+
+  /* —— 发丝线 —— */
+  --border: rgba(22, 19, 13, 0.12);
+  --border-strong: rgba(22, 19, 13, 0.26);
+
+  /* —— 主强调：品牌青的浅色适配（region.audio #2ec4b6 → 加深满足 AA） —— */
+  --accent: #0c8c7e;
+  --accent-deep: #0a6f64;      /* 按钮填充，白字对比 ≥4.5 */
+  --accent-bright: #2ec4b6;    /* 装饰/深色用原品牌青 */
+  --accent-soft: rgba(12, 140, 126, 0.10);
+
+  /* —— 结构蓝（region.values，极简下仅作细节点缀） —— */
+  --blue: #2f6fed;
+
+  /* —— 圆角（克制：小圆角） —— */
+  --r-sm: 3px;
+  --r-md: 6px;
+  --r-lg: 10px;
+  --r-pill: 999px;
+
+  /* —— 间距阶梯 —— */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 24px; --s-6: 40px; --s-7: 72px; --s-8: 112px;
+
+  /* —— 阴影（极简：仅靠一层极淡投影区分层级） —— */
+  --sh-1: 0 1px 2px rgba(22,19,13,0.04);
+  --sh-2: 0 12px 40px -16px rgba(22,19,13,0.18);
+
+  /* —— 字阶 —— */
+  --fs-mega: clamp(3rem, 7.5vw, 6rem);
+  --fs-h1: clamp(2.2rem, 4.4vw, 3.6rem);
+  --fs-h2: clamp(1.5rem, 2.6vw, 2.2rem);
+  --fs-h3: 1.12rem;
+  --fs-body: 1.02rem;
+  --fs-sm: 0.88rem;
+  --fs-xs: 0.79rem;
+  --fs-mono: 0.82rem;
+
+  /* —— 动效 —— */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 160ms;
+  --dur-base: 360ms;
+
+  /* —— 字体 —— */
+  --font-display: 'Bricolage Grotesque', 'Noto Sans SC', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+  --font-body: 'Work Sans', 'Noto Sans SC', system-ui, sans-serif;
+
+  --maxw: 1180px;
+}
