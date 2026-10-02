@@ -133,7 +133,7 @@ cd frontend && npm run test:node
   `hello.ok` 后的标记片和第一片语音撞同一个序号，`sequence_monotonic` 当场变红。
 - 边界：`.vue` 的接线是**转写**的、不是 import 的；真网关（`api.py` + DashScope）仍归 R12 人跑。
 
-### 5.4 `dev_headcheck`（Wave14，Wave21 加第二档）：把 HEAD 挂成干净检出真 import、真跑套件
+### 5.4 `dev_headcheck`（Wave14；Wave21b 加第二档）：把 HEAD 挂成干净检出真 import、真跑套件
 共享工作树里有一类错**在工作树里永远看不见**：提交引用了没入库的文件（漏 `git add`，
 或 `git commit -- <路径>` 绕过索引把别人的 WIP 一起提交掉）。本地测试全绿，CI / 别人的
 `git worktree add` / 任何 clone 第一批 `import agent` 就红。所以必须回到"只有已提交内容"
@@ -321,6 +321,10 @@ cd frontend && npm run test:node
 - **第一天实测**：工作树层抓到 2 处 —— `run_desktop.bat:27` 与 `installer/uninstall.bat:9`
   （`powershell.exe -InstallDir "%~dp0"`，同一 bug 类的第二个实例），两处都在**别人未提交**的
   文件里，本程序不代改；HEAD 层绿（提交出去的那两份没这个问题）。
+  **当天晚些时候两处都由各自那条 lane 改成了 `"%~dp0."`**（现 `run_desktop.bat:35`、
+  `installer/uninstall.bat:13`，注释里写的理由就是"闭合引号被转义"）：工作树语料层现在
+  0 findings、`tests/test_bat_guard.py` 40 项全绿——这道门的闭环到此为止，留着它防的是
+  下一次有人再写回这个形状。
 - 边界：只查 `.bat`/`.cmd` 里"目录展开 + 引号"这一类；`%VAR:~0,-1%` 之类剪切写法是否真的
   剪对了、PowerShell 自己那套引号规则、以及 `start`/`pushd` 之类的边缘行为都**没有**覆盖。
 
@@ -382,9 +386,12 @@ cd frontend && npm run test:node
   `LAYER_EXEMPT` 并说明原因（如"要 import tools 全量注册面"）。
 - CI：`.github/workflows/harness.yml` 的 `Run mutation batteries` 一步，跑 `--no-live`，
   只在 sqlite matrix 付费。本机实测（2026-10-02，九块电池）：`--no-live`
-  **200/207 抓到 + 7 条未验证 + 0 条活下来，229 秒**（`head_check` 一块就 182 秒，因为它要真建
-  `git worktree`；`bat_guard` 35/35 只用 4 秒——纯文本判据便宜到没有借口不跑全；
-  `head_check` 涨到 44 条、529 秒（第二档那 3 条真检出用例是主要成本））；带浏览器
+  **229/237 抓到 + 7 条本环境未验证 + 1 条活下来，587 秒**（`head_check` 44 条要 529 秒，
+  第二档那 3 条真检出用例是主要成本；`bat_guard` 35/35 只用 4 秒——纯文本判据便宜到没借口
+  不跑全）。那 1 条活下来在 `test_run` 里，**不是我这轮的事**：别人未提交的 `test_run.py`
+  （他们的 `coverage:` 档）让一条变异变成等价变异；同一块电池在**干净检出的 HEAD** 上重跑是
+  18/18，`head_check`+`bat_guard` 在 HEAD 上合跑 **79/79（467 秒）**，我的四套在 HEAD 干净
+  检出里 **133 passed**。全量在 HEAD 工作树合起来 **2165 passed / 64 skipped / 348 秒**；带浏览器
   `--only vue,app_test` **72/72，99 秒**。
 - **怎么读这份证据**：电池绿＝"这些测试确实会红"。它**不**保证变异集合覆盖了这个模块的每个守卫；
   新加一条守卫时同时加一条变异，否则那条守卫没有凭据。
@@ -492,11 +499,12 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
 4. 需要人做的两件：**push**（或 `git bundle` 离线备份），以及在配好 DashScope 的机器上跑一次
    真网关回路，把结果回写本文件 §5.3 与 §6#3。push 之前顺手跑一次
    `dev_headcheck` 带 `gate: 1`（约 1 分钟）：CI 看到的是那棵树，不是这棵树。
-5. **Wave20 的门在别人在飞的两个文件上是红的**（本程序不代改、不代提交）：
-   `run_desktop.bat:27` 与 `installer/uninstall.bat:9`（后者还没入库）。改法各一个字符：
-   `"%~dp0"` → `"%~dp0."`。`tests/test_bat_guard.py::RealRepoLauncherTests` 就是为了让这两行
-   不能被无声带着走；HEAD 层（`test_head_committed_launchers_are_clean`）绿，所以 CI 不受影响。
-   同一批账里 `dev_headcheck` 加了第二档（`gate: 1`）：**push 之前跑它**，因为 CI 看到的
+5. **Wave20 的门抓到过、当天就被各自那条 lane 修好了**：那两处 `"%~dp0"`（`run_desktop.bat`
+   与 `installer/uninstall.bat`）现在都是 `"%~dp0."`，本程序全程没代改别人一行文件；
+   `tests/test_bat_guard.py::RealRepoLauncherTests` 现在绿，留着它防的是下一次再写回这个形状
+   ——**它已经生效了，不是待办**。同一批账里 `dev_headcheck` 加了第二档（`gate: 1`，本会话
+   记作 **Wave21b**：另一条 lane 也把他们的四个缺口叫作 Wave21，尚未提交，用 b 后缀避免撞号）：
+   **push 之前跑它**，因为 CI 看到的
    是那棵树而不是这棵树；本会话就是靠它在事后抓到 `f7ec14e` 的行为红（见 §5.4）。
    基线 `.github/dev-eval-baseline.json` 按【我的提交】口径刷成 `23 → 24`；工作树里还有别人
    那一题（`log-view-collapses-real-spam`），所以本地刷全量会得 25——那一行不由我提交。
