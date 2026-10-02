@@ -480,6 +480,50 @@ cd frontend && npm run test:node
 `LivePageTests::test_the_real_page_passes_every_line` 一样红，所以不是本轮的改动引起的；
 按 §9 的老规矩，读这条红之前先看同一时间有没有别的 lane 在起浏览器。
 
+### 5.19 Wave25：把"浏览器坏了"查成一条可以量出来的读数
+
+**症状**：Wave24 交付后真浏览器那一档 3 红 / 4 绿，而且红了**没有信息量**——
+`rows: 0`、`console_errors: []`、`failed_requests: []`。我当时的结论是"本机浏览器那一档
+现在是坏的"。**这个结论两个词都错**：它没坏，也不是纯环境问题。下面是量出来的东西。
+
+- **`open_page` 返回 ≠ 页面数据到位**。`open_page` 的就绪判据是
+  `document.readyState === 'complete'`，而工作台把 UI 门控在 `GET /api/config` 上。
+  实测时间线：`open_page` 在 **1903 ms** 返回、文件树到 **5160 ms** 才出现——晚 3.3 秒。
+  夹具在 `open_page` 返回后**立刻**读 `rows`，就是在跟这段时间赛跑：数据先到就绿、
+  晚到就红。**修法**：读 facts 之前加两级等待（`.wb-shell` → `.ft-row`，各有截止期），
+  并把 `shell_waited_ms` / `data_waited_ms` / `data_ready` 上报（红了能直接看出是"没等到"
+  还是"等到了但内容不对"）。**顺带**：`_drive` 里本来就有 `wait_for(".wb-shell", timeout=5.0)`，
+  只是写在了读 facts **之后**——等待不是没有，是放错了地方。
+- **`/api/config` 冷启动 6.1 秒**（本机实测；热了 15 ms）。拆开看：`check_ollama(force=True)`
+  自己只要 **2.0 秒**（`Ollama` 未运行时的探活，`check_ollama` 的文档注释早就写了
+  "可能耗时数秒"），所以**另约 4 秒来源未定**——`api.py` 是别人在改的文件，本轮只报。
+  这条冷路径也是"文档加载完"与"数据到位"之间那 3.3 秒的来源。
+- **`/api/health` 那条 `ERR_ABORTED` 不是服务端慢**：health 单独 15 ms，**6 条并发慢
+  `/api/config` 在飞时也只 24 ms**（我原以为是浏览器每主机 6 连接的饥饿，实测被推翻）。
+  它是前端自己按设计取消的——`probeBackend()` 带 `AbortController`（4 s）并在 `catch` 里
+  `return false`（`frontend/src/workbench/composables/demo.ts:13-31`），只在页面加载慢的
+  那几次才会触发。
+  **修法**：把浏览器报的失败请求**分类**成"真失败"与"客户端自己取消"（`ERR_ABORTED`），
+  判据只对前者变红，两堆**都进报告**（`failed_requests` / `cancelled_requests`）。
+  静默扔掉就叫假干净，而把客户端取消也算失败则是假红——本仓刚为"确定性红教人忽略门禁"
+  付过账。
+- **深链那档给"页面加载超时"加了一次记账式重试**：`open_page` 的就绪预算是**硬编码**的
+  `120 × 50ms = 6 秒`（`page_action.py` 的脚本里，不是参数；那个文件现阶段属别人，不动），
+  而 `open_page` 会给 URL 加 `?docmind=<ns>` 缓存戳，于是每条路由都要重下整套资源
+  （含 vendor 与 model-viewer）。最重的 `/workbench` 那几条偶尔顶破 6 秒。重试次数记进
+  `deep_retried_routes`（**不是掩盖**），三次都超时就红，且错误里点名是哪条路由。
+  **第一版把 `deep_retried_routes` 只在成功路径末尾赋值**，一抛异常连"是哪条路由超时"
+  都看不到——所以改成先把同一个 list 对象挂进 state。
+- **验证**：现场类 **7/7 通过**（141.29 s，含先前红的两条）；纯层与元测试
+  **121 passed / 486 subtests**；七套确定性 **254 passed / 572 subtests**；
+  十一块电池 `--no-live` **277/294 + 17 未验证 + 0 活下来**；
+  `battery_app_test` 56 → **58 条变异**（新增两条把"分类"两个方向都钉住：全算失败 = 假红、
+  全算取消 = 假干净）。
+- **边界**：`/api/config` 那 6.1 秒里约 4 秒**来源未定**，本轮没有继续查（`api.py` 属别人）；
+  客户端取消的那类请求被排除在 `no_failed_requests` 之外，这是一个**有意的收紧**——
+  代价是"被客户端掐断的真实失败"也可能落进 `cancelled_requests`，所以它必须上报、
+  不能静默丢。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -497,6 +541,7 @@ cd frontend && npm run test:node
 | 13 | `run_isolated` 的子进程输出**可能整个丢掉且不报错** | `Popen(..., text=True)` 没给 `encoding`，按本机区域编码解码；本机是 GBK，子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成 `None`（`stdout is None` 而不是报错） | 调用方要么传 ASCII 输出，要么给 `windows_sandbox` 加 `errors="replace"` + 显式 encoding。**本轮只报不改**——它会改变所有适配器进程的行为，不在 Wave23 范围内 |
 | 14 | **`mock` provider 无法完成一轮问答** | `_mock_chat` 的「拿到观察 → 作答」分支（`llm.py:1119-1122`）吐**不带 `Final Answer:` 标记的裸文本**，而 `agent.py:3443` 的格式失守判定连拒两轮后发 `final(status="error")`。实测走完 345 个 chunk 仍然收不了尾 | 让它也带上 `Final Answer:` 前缀（一行）。**只报不改**——`llm.py` 正在被别人改（Wave24） |
 | 15 | `dev_apptest` 的问答回合还没做 | §5.18 ② 只把 `/api/chat` 的真问答链路在 **HTTP 层**验了；页面那一层（深链到 `/` + 提问 + 断言答案进 DOM）还没走，缺的是"页面怎么把 SSE 消费者接稳"这半 | 可参考 §5.10 那条流式档的做法：`server_env` 里带 `LLM_PROVIDER=mock`（并在 TEST 里先解决缺口 14，否则 mock 收不了尾）|
+| 16 | **`GET /api/config` 冷启动 6.1 秒** | 实测：`check_ollama(force=True)` 自己只要 2.0 s，**另约 4 s 来源未定**；热了 15 ms。工作台把 UI 门控在它上面，于是"文档加载完"与"文件树有行"之间隔 3.3 s（§5.19）。它也是前端那条 `/api/health` 探针被自己掐掉的背景 | 先把那 4 秒定位出来（`api.py` 属别人，本轮只报）。方向：`/api/config` 上有没有别的同步初始化；`ollama_status` 是否可以只在真用到时才算 |
 
 ## 7. 共享工作树里的提交规范（实测有效的那套）
 
@@ -707,6 +752,26 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   （`event: {...}` 会剩下 `: {...}`），所以"只认 data:"这道门在这个形状下**测不出来**。
   换成"连切片一起去掉、于是裸 JSON 行也成事件"才能区分。**教训**：写变异时问一句
   "**在真实的输入形状下**，这两个版本的行为真的不同吗"——不同才算变异。
+
+- **"红了三次"不等于"坏了"——先量再下结论**（Wave25 我自己犯的）。真浏览器那一档连红三次
+  之后，我写下"本机浏览器那一档现在是坏的"，并据此把它从电池的 LIVE 名单里摘掉了。
+  实际一量：浏览器好得很——`open_page` 在 **1903 ms** 返回、文件树到 **5160 ms** 才出现，
+  夹具在"文档加载完"之后**立刻**读数据，就是在跟中间那 3.3 秒赛跑。
+  **教训**：三次同样的红只说明"这件事稳定地错"，**不说明错在哪**；"坏"是个需要证据的
+  结论，而不是"红了几次"的推论。这个仓的规矩本来就有"红了先在同一环境重跑一次"，
+  但重跑只够排除抖动——要定位就得**把中间量出来**（这里是时间线：`open_page` 何时返回、
+  数据何时到位）。
+- **"客户端取消"与"真失败"是两件事，分开归类而不是丢掉**（Wave25）。工作台的存活探针
+  `probeBackend()` 自带 `AbortController` 并在 `catch` 里故意吞掉，所以页面加载慢时那条
+  `/api/health` 是**前端自己掐的**（Chrome 报 `net::ERR_ABORTED`）。把它算成"请求失败"
+  会让 `no_failed_requests` 在慢加载时**假红**——而假红和不报一样有害，它教人忽略门禁。
+  修法是**分类**：两堆都进报告（`failed_requests` / `cancelled_requests`），判据只对前者变红。
+  **代价要写明**：被客户端掐断的**真实**失败也可能落进 `cancelled_requests`，所以它必须
+  上报、不能静默丢。
+- **等待不是没有，是放错了地方**（Wave25）。`_drive` 里本来就有一个
+  `wait_for(".wb-shell", timeout=5.0)`，但它写在**读 facts 之后**——于是"等页面就绪"
+  这件事只对后面的 console 采集生效，对 `rows` 那条判据完全没生效。
+  **教训**：加等待时先问"我下面要读的东西，是等到哪个条件才出现的"；等错了对象等于没等。
 
 ## 10. 本会话未结事项
 

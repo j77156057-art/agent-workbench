@@ -1,5 +1,39 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-03 Vibecoding 能力补全 Wave25：把"浏览器坏了"查成一条可以量出来的读数（本会话，不占 R 槽位）
+
+- **起因是用户的一句反问**："怎么浏览器是坏的了"。我在 Wave24 交付后真浏览器那一档连红三次
+  （3 红 / 4 绿，且红了没有信息量：`rows: 0`、`console_errors: []`、`failed_requests: []`），
+  于是写下了"本机浏览器那一档现在是坏的"。**这个结论两个词都错**——它没坏，也不是纯环境
+  问题。量完之后：**`open_page` 返回 ≠ 页面数据到位**。
+- **时间线（实测）**：`open_page` 在 **1903 ms** 返回，文件树到 **5160 ms** 才出现——中间
+  3.3 秒。`open_page` 的就绪判据是 `document.readyState === 'complete'`，而工作台把 UI
+  门控在 `GET /api/config` 上。夹具在 `open_page` 返回后**立刻**读 `rows`，就是在跟这 3.3 秒
+  赛跑：数据先到就绿、晚到就红——"有时绿有时红"就是这么来的。
+  自己招的同类错：`_drive` 里**本来就有** `wait_for(".wb-shell", timeout=5.0)`，
+  但它写在**读 facts 之后**，对 `rows` 那条判据完全没生效。
+- **`/api/config` 冷启动 6.1 秒**（热了 15 ms）。拆开：`check_ollama(force=True)` 自己只要
+  **2.0 秒**，**另约 4 秒来源未定**（`api.py` 属别人，本轮只报，记进 §6 缺口 16）。
+- **`/api/health` 的 `ERR_ABORTED` 不是服务端慢**：health 单独 15 ms，**6 条并发慢
+  `/api/config` 在飞时也只 24 ms**——我原先猜的"浏览器每主机 6 连接的饥饿"**被自己的测量
+  推翻**。它是前端按设计取消的（`probeBackend()` 带 `AbortController` 4s + `catch { return false }`）。
+- **三处修法**（都在本轮的文件里）：
+  ① 读 facts 之前加两级等待（`.wb-shell` → `.ft-row`，各有截止期），并把
+  `shell_waited_ms` / `data_waited_ms` / `data_ready` 上报；
+  ② 把浏览器报的失败请求**分类**成"真失败"与"客户端自己取消"（`ERR_ABORTED`），判据只对
+  前者变红，**两堆都进报告**（`failed_requests` / `cancelled_requests`）——静默扔掉是假干净，
+  把取消算失败是假红；
+  ③ 深链那档给"页面加载超时"加**记账式重试**（`open_page` 的就绪预算是硬编码的 6 秒，
+  `page_action.py` 属别人不动），次数记进 `deep_retried_routes`，三次都超时就红并点名路由。
+- **验证**：现场类 **7/7 通过**（141.29 s，含先前红的两条）；纯层与元测试
+  **121 passed / 486 subtests**；七套确定性 **254 passed / 572 subtests**；十一块电池
+  `--no-live` **277/294 + 17 未验证 + 0 活下来 / 533 秒**；`battery_app_test` 56 → **58 条变异**。
+- **教训（已进 §9）**：三次同样的红只说明"这件事稳定地错"，**不说明错在哪**；
+  "坏"是需要证据的结论，不是"红了几次"的推论——要定位就得**把中间量出来**。
+- **边界**：`/api/config` 那 4 秒没有继续查；把客户端取消排除在 `no_failed_requests` 之外是
+  一个**有意的收紧**，代价是"被客户端掐断的真实失败"也可能落进 `cancelled_requests`，
+  所以它必须上报。
+
 ## 2026-10-03 Vibecoding 能力补全 Wave24：深链整页断言 + `/api/chat` 的 SSE 真问答链路（本会话，不占 R 槽位）
 
 - **先纠正一个前提**：任务里写的 **`/api/ask` 不存在**（全仓零命中）。问答页真正打的端点是

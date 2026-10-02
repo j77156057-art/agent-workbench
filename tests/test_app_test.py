@@ -640,6 +640,39 @@ class DeepLinkTests(Base):
         checks = at.deep_link_checks({"deep_links": rows})
         self.assertFalse(checks["deeplink_every_route_was_visited"])
 
+    def test_client_cancelled_requests_are_classified_not_swallowed(self):
+        """`probeBackend()` 自己带 AbortController 并在 catch 里吞掉，所以页面加载慢时
+        那条 `/api/health` 是**前端自己取消**的。它不该让 `no_failed_requests` 变红，
+        但也**必须**照样上报——否则就成了"假干净"（§9）。"""
+        rows = [{"kind": "network", "url": "/api/health", "detail": "net::ERR_ABORTED"},
+                {"kind": "network", "url": "/api/fs/tree", "detail": "net::ERR_CONNECTION_RESET"},
+                {"kind": "http", "url": "/api/projects", "detail": "500"}]
+        split = at.split_requests(rows)
+        self.assertEqual([row["url"] for row in split["cancelled_requests"]], ["/api/health"])
+        self.assertEqual([row["url"] for row in split["failed_requests"]],
+                         ["/api/fs/tree", "/api/projects"])
+        self.assertEqual(at.split_requests(None),
+                         {"failed_requests": [], "cancelled_requests": []})
+
+    def test_a_cancelled_probe_alone_does_not_red_the_run(self):
+        base = {"ready": True, "isolated": True, "activated": True, "shell": 1, "tabs": 4,
+                "rows": 1, "fixture_in_tree": True, "console_errors": [],
+                "click_ok": True, "active_before": "a", "active_after": "b",
+                "content_before": "x", "content_after": "y", "body_truncated": False,
+                "texts": {}}
+        fresh = {"built": True, "fresh": True}
+        cleanup = {"removed": True, "job_stopped": True, "live_pages": 0}
+        split = at.split_requests([{"kind": "network", "url": "/api/health",
+                                    "detail": "net::ERR_ABORTED"}])
+        judged = at.evaluate(dict(base, **split),
+                             {"tab": "b", "texts": [], "tabs": 4}, fresh, cleanup)
+        self.assertTrue(judged["assertions"]["no_failed_requests"], judged["failed"])
+        self.assertNotEqual(split["cancelled_requests"], [], "取消的那条也要上报")
+        # 反过来：真失败照样红
+        judged = at.evaluate(dict(base, failed_requests=[{"detail": "net::ERR_FAILED"}]),
+                             {"tab": "b", "texts": [], "tabs": 4}, fresh, cleanup)
+        self.assertFalse(judged["assertions"]["no_failed_requests"])
+
     def test_the_unknown_path_is_excluded_from_the_console_cleanliness_checks(self):
         """未知路径**理应**加载失败（实测 1 条 console 错误 + 1 条失败请求）。
 

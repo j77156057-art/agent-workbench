@@ -102,11 +102,44 @@ DEEP_LINK_UNKNOWN = "/no-such-page-for-deeplink"
 #: 单页挂载点的等待窗口（实测冷加载 1~3s；给足余量但要有截止期，不能固定 sleep）
 DEEP_LINK_WAIT = 20.0
 
+#: 工作台**数据**到位的等待窗口。
+#:
+#: 为什么要等数据而不是等文档：`open_page` 的就绪判据是
+#: `document.readyState === 'complete'`，而工作台把 UI 门控在 `GET /api/config` 上，
+#: 那条冷路径要跑一次 Ollama 探活（`api.py:4022`；`check_ollama` 自己的注释就写着
+#: "Ollama 未运行时探测本身就可能耗时数秒"）。本机实测**首次 6108 毫秒、之后 15 毫秒**，
+#: 于是"文档加载完"与"文件树有行"之间隔着好几秒（实测 1903ms → 5160ms）。
+#: 读 facts 之前不等这一段，就是在跟那 6 秒赛跑——实测表现为"有时绿有时红"，
+#: 而且**红得毫无信息量**（`rows: 0`、`console_errors: []`、`failed_requests: []`）。
+WORKBENCH_DATA_WAIT = 25.0
+
 
 def _deep_slug(path: str) -> str:
     """把路径变成判据名的一截：`/` → `root`，`/workbench` → `workbench`。"""
     text = str(path or "").strip().strip("/").replace("/", "_").replace(".", "_")
     return "root" if not text else text[:32]
+
+
+#: 浏览器把"请求被**客户端**取消"报成这个。它和"服务端失败"是两件事：
+#: 工作台的存活探针 `probeBackend()` 自己带 `AbortController`（4s）并在 `catch` 里
+#: 故意吞掉（`frontend/src/workbench/composables/demo.ts:13-31`），所以页面加载慢的时候
+#: 那条 `/api/health` 会被前端自己掐掉。本机实测：health 本身 15~24 ms，连 6 条并发慢
+#: `/api/config` 在飞时也只要 24 ms——所以被取消的**不是**服务端慢，是客户端不想要了。
+CLIENT_CANCELLED = "ERR_ABORTED"
+
+
+def split_requests(rows: Any) -> dict[str, list]:
+    """把浏览器报的失败请求分成**真失败**与**客户端自己取消**两堆。
+
+    分类而不是丢弃：两堆都进报告（`failed_requests` / `cancelled_requests`），
+    判据只对真失败变红。静默扔掉就叫"假干净"，而把客户端取消也算成失败则是"假红"
+    ——本仓刚为"确定性红教人忽略门禁"付过账（§9）。
+    """
+    failed, cancelled = [], []
+    for row in rows or []:
+        detail = str((row or {}).get("detail") or "")
+        (cancelled if CLIENT_CANCELLED in detail else failed).append(row)
+    return {"failed_requests": failed, "cancelled_requests": cancelled}
 
 
 def _console_matters(spec: dict) -> bool:
@@ -462,6 +495,8 @@ def evaluate(observed: dict[str, Any], wanted: dict[str, Any],
         "backend_data_reaches_page": int(observed.get("rows") or 0) >= 1
                                      and observed.get("fixture_in_tree") is True,
         "console_clean": not (observed.get("console_errors") or []),
+        # 只对**真失败**变红：客户端自己 AbortController 取消的那条不算（见
+        # `split_requests`），但它照样进报告，不是被扔掉。
         "no_failed_requests": not (observed.get("failed_requests") or []),
         "nav_click_applied": bool(observed.get("click_ok")),
         "view_changed_on_click": (str(observed.get("active_after") or "")
@@ -555,7 +590,14 @@ FACT_KEYS = ("shell", "tabs", "rows", "fixture_in_tree", "active_before", "activ
              # 深链那一档的事实**必须**进报告：判据只给"绿/红"，不给"数到了什么"，
              # 于是"标记选错了"和"这一页真的没渲染"在报告里长得一模一样（§9：
              # 多上报一个原始量，而不是猜）。
-             "deep_links", "deep_console_errors", "deep_failed_requests")
+             "deep_links", "deep_console_errors", "deep_failed_requests",
+             "deep_retried_routes",
+             # 客户端自己取消的请求单独上报：判据不为它变红，但它必须看得见——
+             # 静默扔掉就是"假干净"。
+             "cancelled_requests", "deep_cancelled_requests",
+             # 等了两级多久、数据到底来没来：红了的时候这两个数直接说明"是没等到"
+             # 还是"等到了但内容不对"。
+             "shell_waited_ms", "data_waited_ms", "data_ready")
 
 
 def _facts(state: dict[str, Any]) -> dict[str, Any]:
@@ -597,6 +639,25 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
     state["console_errors"] = list(session.get("console_errors") or [])
     state["failed_requests"] = list(session.get("failed_requests") or [])
 
+    # 两级等待，都在读 facts 之前——见 `WORKBENCH_DATA_WAIT` 上面那段：
+    # "文档加载完"不等于"应用把数据拉回来了"。
+    # 第一级只问"这是不是工作台那一页"；**它不判红**——`page:` 指向不存在的路径时
+    # 壳子本来就不该出现，那条路要靠后面的断言去红
+    # （`test_a_page_that_does_not_exist_turns_the_guard_red`）。
+    shell = page_action.wait_for(base, page=state["page"], selector=".wb-shell",
+                                 state="present", timeout=min(5.0, float(timeout)))
+    state["console_errors"] += list(shell.get("console_errors") or [])
+    state["failed_requests"] += list(shell.get("failed_requests") or [])
+    state["shell_waited_ms"] = shell.get("waited_ms")
+    if shell.get("ok"):
+        # 第二级等**数据**：文件树有行正是 `backend_data_reaches_page` 读的那个凭据。
+        data = page_action.wait_for(base, page=state["page"], selector=".ft-row",
+                                    state="present", timeout=WORKBENCH_DATA_WAIT)
+        state["console_errors"] += list(data.get("console_errors") or [])
+        state["failed_requests"] += list(data.get("failed_requests") or [])
+        state["data_waited_ms"] = data.get("waited_ms")
+        state["data_ready"] = bool(data.get("ok"))
+
     def probe(mode: str, target: str, scope: str = "") -> Any:
         if mode == "count":
             return page_action.locate(base, page=state["page"], selector=target).get("count")
@@ -627,6 +688,14 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
         # 深链要**冷开**每一条页面路由，所以复用上面那个会话是没有意义的（那样只是站内
         # 导航）；它自己按路由逐个开新会话，跑在同一个后端上。
         _drive_deep_link(base, state, "http://%s:%d" % (LOOPBACK, port))
+    # 全部收齐之后再做一次分类：客户端自己取消的（`probeBackend` 那条 `/api/health`）
+    # 不算失败，但**照样上报**（`cancelled_requests`）。
+    for key, out_key in (("failed_requests", "cancelled_requests"),
+                        ("deep_failed_requests", "deep_cancelled_requests")):
+        if key in state:
+            split = split_requests(state.get(key))
+            state[key] = split["failed_requests"]
+            state[out_key] = split["cancelled_requests"]
 
 
 def _drive_deep_link(base: Path, state: dict[str, Any], url: str) -> None:
@@ -641,9 +710,38 @@ def _drive_deep_link(base: Path, state: dict[str, Any], url: str) -> None:
     """
     console_errors: list[Any] = []
     failed_requests: list[Any] = []
+    retries: list[str] = []
+    # 先把同一个 list 对象挂进 state：失败了也要看得见"重试过哪几条"，
+    # 只在成功路径末尾赋值的话，一旦抛异常这些信息就全丢了（第一版就是这样，
+    # 红了只有 `deep: null`，连是哪条路由超时都看不出来）。
+    state["deep_retried_routes"] = retries
+
+    def open_route(spec: dict) -> dict:
+        """开一条路由；`页面加载超时` 时**重试并把重试记进报告**。
+
+        为什么要重试：`open_page` 的就绪判据是 `document.readyState === 'complete'`，
+        而它的预算是**硬编码**的 `120 × 50ms = 6 秒`（`page_action.py` 的脚本里，不是参数；
+        那个文件现阶段属别人，不动）。最重的是 `/workbench` 那几条：`open_page` 会给 URL
+        加 `?docmind=<ns>` 缓存戳，于是每次都要重下整套资源（含 vendor 与 model-viewer）。
+        重试**不是掩盖**：每条的重试次数记进 `deep_retried_routes`，报告里看得见；
+        三次都超时就照常红——而且错误里点名是哪条路由。
+        """
+        path = str(spec["path"])
+        last: Exception | None = None
+        for attempt in (1, 2, 3):
+            try:
+                return page_action.open_page(base, url=url + path)
+            except Exception as exc:                     # noqa: BLE001
+                if "页面加载超时" not in str(exc):
+                    raise
+                last = exc
+                retries.append("%s#%d" % (path, attempt))
+                time.sleep(1.0)
+        raise AppTestError("深链路由 %s 连三次都顶破了 open_page 那 6 秒的就绪预算：%s"
+                           % (path, str(last)[:200]))
 
     def read(spec: dict) -> dict:
-        session = page_action.open_page(base, url=url + str(spec["path"]))
+        session = open_route(spec)
         page = str(session.get("page") or "")
         try:
             if spec.get("own"):
@@ -753,8 +851,11 @@ def _why(failed: list[str], fresh: dict[str, Any], observed: dict[str, Any]) -> 
         reasons.append("页面没把后端读到的那个文件列出来（文件树 %s 行）"
                        % observed.get("rows"))
     if "console_clean" in failed or "no_failed_requests" in failed:
-        reasons.append("console 有 %s 条错误、请求失败 %s 条" % (
-            len(observed.get("console_errors") or []), len(observed.get("failed_requests") or [])))
+        reasons.append("console 有 %s 条错误、请求失败 %s 条（另有 %s 条是客户端自己取消的，"
+                       "不计入失败）" % (
+                           len(observed.get("console_errors") or []),
+                           len(observed.get("failed_requests") or []),
+                           len(observed.get("cancelled_requests") or [])))
     deep_bad = [row for row in (observed.get("deep_links") or [])
                 if not row.get("own_seen") and row.get("own")]
     if deep_bad:

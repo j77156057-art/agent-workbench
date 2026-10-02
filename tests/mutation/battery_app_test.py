@@ -23,7 +23,7 @@ LIVE = ('LivePageTests', ('test_nothing_is_left_behind',
 LAYER_EXEMPT = {'ToolSurfaceTests': '要 import tools 全量注册面，不属于守卫的层'}
 
 #: 本块电池的变异条数下限：删一条变异必须显式改这里，「守卫悄悄变少」不该是绿灯
-MINIMUM_MUTATIONS = 56
+MINIMUM_MUTATIONS = 58
 
 MUTATIONS = [
     # ---- 判定表：每一条都对应一类"看起来绿其实没测" ----
@@ -211,4 +211,12 @@ MUTATIONS = [
     ("未知路径的 404 也算进 console 干净：那条判据永远红",
      '    return not bool(spec.get("unknown"))',
      '    return True'),
+    # 客户端自己取消的请求（前端 `probeBackend` 的 AbortController）与"真失败"分开归类。
+    # 两个方向都要钉：全算失败 = 假红（页面加载慢就红），全算取消 = 假干净（真失败被吞）。
+    ("客户端取消的那些也一律算真失败：页面加载慢就红",
+     '        (cancelled if CLIENT_CANCELLED in detail else failed).append(row)',
+     '        failed.append(row)'),
+    ("真失败也一律算客户端取消：真失败被静默吞掉",
+     '        (cancelled if CLIENT_CANCELLED in detail else failed).append(row)',
+     '        cancelled.append(row)'),
 ]
