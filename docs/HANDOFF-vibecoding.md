@@ -1,7 +1,7 @@
 # HANDOFF · Vibecoding 能力补全（harness 侧）
 
-> 状态：**Wave1–9、11–19 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫 / 17 组件守卫第二层「挂载前驱动共享状态」+ `dev_apptest` 真后端整页集成守卫）。
-> 发出人：本会话（用户直接指派，不占 R0–R15 槽位）。最后更新：2026-10-01。
+> 状态：**Wave1–9、11–21 已入库**（14 `dev_headcheck` 提交自洽 / 15 `dev_testrun` 跑测试 / 16 `dev_vue` 真实 .vue 组件守卫 / 17 组件守卫第二层「挂载前驱动共享状态」+ `dev_apptest` 真后端整页集成守卫 / **21 补四个缺口：`dev_deps` 依赖对账、`dev_probe` 后端/CLI 观察、`dev_testrun coverage: true`、`dev_handoff` 交付决策材料** —— 见 §5.12–5.15）。
+> 发出人：本会话（用户直接指派，不占 R0–R15 槽位）。最后更新：2026-10-02。
 >
 > **这份文档是什么**：让没跟过这个过程的人（或另一个 AI）能直接接手**操作**这套 harness 的
 > 开发闭环，并知道每条能力的**边界在哪里**、**被哪条测试守着**、**哪些还只是本地提交**。
@@ -24,8 +24,10 @@
 | 问历史 | `dev_git_log` / `dev_git_diff` | **只读**白名单：`rev-parse/status/diff/log` |
 | 改代码 | `dev_patch`（原子统一差异）/ `dev_move`（走 `git mv`） | 全有或全无；拒绝在补丁里删文件 |
 | 跑起来 | `dev_serve`（起/停本机 dev server）| 只允许回环；命令过同一道黑名单 |
-| 跑测试 | `dev_testrun`（`paths` / `keyword` / `only_failed` / `related`）| 退出码 5 = 一个都没收集到，判**未通过**；覆盖率未启用（没装 coverage）|
+| 跑测试 | `dev_testrun`（`paths` / `keyword` / `only_failed` / `related` / `coverage`）| 退出码 5 = 一个都没收集到，判**未通过**；`coverage: true` 按改动文件给未覆盖行（§5.12）|
 | 看结果 | `preview_project`（截图 + console + 失败请求）/ `dev_page_action`（点/填/按键/等待）| **no_change 不是成功**；只回环 |
+| **看后端/CLI** | `dev_probe`（`mode: http` / `mode: cli`）| 补浏览器那套够不着的那半边（§5.13） |
+| **查依赖** | `dev_deps`（对账 import ↔ 声明，`action: apply` 只追加）| 补「本地能跑、干净装不上」那段（§5.14） |
 | 守组件 | `dev_vue`（真实 .vue 挂进真浏览器：props → 真点击 → 收 emit；第二层可**挂载前驱动共享状态**）| **不写断言＝未通过**；只证明一个组件在一组 props 下（§5.6、§5.7） |
 | 跑整页 | `dev_apptest`（起真 `uvicorn api:app` + 真 `web/` 产物 + 真浏览器）| **旧构建判未通过**（`web/` 比 `frontend/src` 新才算数）；不点真模型（§5.8） |
 | 跑流式 | `dev_apptest stream: 1`（假麦克风 + `scripted` 适配器 + 真 `/api/vision/live-stream`）| 证明**自家协议与页面接线**；厂商事件与打断语义仍归 R12 人跑（§5.10） |
@@ -33,6 +35,7 @@
 | 静态检查 | `dev_diagnostics`（ruff + vue-tsc）| 退出码非 0 却解析不出发现时**报错误不报干净** |
 | 守启动器 | `agent_runtime/bat_guard.py`（静态扫 `.bat`/`.cmd`，**不是工具**，由测试与门禁题驱动）| 只查**交给外部程序的实参**；`cd`/`set`/`if` 条件/`echo` 由 cmd 自己解析，有意不查（§5.11）|
 | 交付 | `dev_propose`（补丁+草稿，写进状态目录）/ `dev_ci_status`（只读 GET）| 不 add/commit/push；CI 读不到就明说 |
+| **交到门口** | `dev_handoff`（分支名 + commit message 建议 + 范围体检）| 仍然不 add/commit/push；只算决策材料（§5.15）|
 | 提交自洽 | `dev_headcheck`（把 HEAD 挂成干净检出：真 import，`gate: 1` 再真跑门禁整集，`tests:` 真跑指定测试）| 只读 + `worktree --detach`；红了先重跑再拿工作树当对照组，**比两边失败题名单的差集**，见 §5.4 |
 | 多人防撞 | `dev_lanes`（TTL 认领登记表 + 可选 worktree）| 冲突默认拒绝，`force: true` 才共管 |
 | 对外出口 | `mcp_server`（harness 自己是 MCP server）/ `mcp_bridge`（连接器工具一等公民化）| 默认只读；写要 `--allow-writes`；`run_command` 等永不暴露 |
@@ -102,6 +105,22 @@ cd frontend && npm run test:node
   并回候选清单。
 - 不做：drag/hover/scroll/文件选择/对话框；iframe 与 Shadow DOM 定位不到；不共享登录态；
   每个动作后是"观察多久"（`settle`）而不是条件等待（那要用 `wait`）。
+- **`mode: contains`（2026-10-02 补）**：`read` 的文本/结构输出有 4000 字上限，所以
+  「这句话在不在页面上」用整段文本来判断，实际只回答了「它在前 4000 字里在不在」。
+  新模式把判断下推到页面里：`selector:` 是【容器】、`needle:` 是【要搜的词】，回
+  命中数、覆盖几个元素、扫了多少字符、最多 3 段周围样本——返回量与页面大小无关。
+  三条边界钉在用例与门禁里：① **可见性必须显式判**（`getClientRects()`），因为
+  `innerText` 对不在渲染树里的元素会退回 `textContent`（真浏览器实测 `#hid` 照样搜得到），
+  不可见命中单独报 `hidden_hits`，既不点亮 `found` 也不静默丢掉；② 容器没匹配到 /
+  没扫完（200k 字符、单元素 500 次）时必须明说「这次搜索不构成证据」；③ 上限由 Python
+  通过 `spec.limit` / `spec.samples` 下发，JS 不自带默认值（两处各一套数字时，调一处
+  另一处仍按老数字静默生效——变异电池实测）。电池 **18/18**
+  （`tests/mutation/battery_page_action.py`，纯层+门禁+现场三层对照组）。
+- 顺带修掉一个**结构上永远为假**的判据：`INSPECT_JS` 先 `slice(0, 4000)`，Python 再判
+  `len(text) > 4000` → `truncated` 恒为 False，"读了一半"看起来像"读完了"。现在页面在截断
+  之前算好 `full_length` 一起回传，判据改用它（`dev_apptest` 的 `page_text_read_wholly`
+  也因此从装饰变成活判据）。
+
 ### 5.2 `dev_media action: run`（Wave7）
 合成 WAV/Y4M 经 Chromium 假设备开关喂进真实 `getUserMedia`，回环 WS 探针按
 `realtime_protocol.parse_binary_packet` 逐包判定，畸形包记成协议违规而不是丢掉。
@@ -267,6 +286,37 @@ cd frontend && npm run test:node
   `ImportError`。测试 **43 项**（38 纯 + 5 现场），变异电池 **35/35**，门禁 +1 题（22→23）。
 - 边界：不点真模型、不听真网关、不替组件级断言背书；页面与接口一律锁在回环与站内路径上。
 
+### 5.9 `log_view`：长日志的重复折叠与级别筛选（2026-10-02，用户点名）
+
+- **为什么不是"读更多"**：`run_command`/`dev_serve` 的输出缓冲本来就是"头 4000 + 尾 4000，丢中段"
+  （`process_runner.py:30-31`），抬上限只会把噪声灌进上下文。真正缺的是**把判断下推到文本里**：
+  折掉重复、按级别留内容、并如实说"哪些没看见"。
+- **签名而不是整行**（这条是量出来的）：真起 uvicorn（`--log-level info`）打 24 次同一接口，
+  抓到的 27 行日志**逐行去重还是 27 行**——每条 access 行都带临时客户端端口
+  （`127.0.0.1:56617`）。按签名归一（数字、长十六进制 id、uuid）后 28 → 10 行、重复 21 次折成一段。
+  样本入库为 `tests/fixtures/uvicorn-access.log`，测试直接对着它断言，不写"看起来短了"。
+- **刻意不做两件事**：① 不归一引号里的内容——access 行的引号里是请求路径，把 `"/api/settings"`
+  与 `"/api/models"` 折成一个签名就是**把不同事件合并**，比折不动更糟；② 不留"空白归一"和
+  "IP 归一"两条规则——`\d+` 已经把 IP 吃掉，空白那条举不出真实用例，电池里它的变异直接活下来，
+  说明是猜测，删了。
+- **级别筛选必须按块，不能按行**：`Traceback` 下面的正文行没有任何级别词，逐行筛正好把最该看的
+  部分筛掉。实现是无级别行**继承**上一条识别到的级别；文件开头还没识别到级别的行一律保留（保守方向）。
+- **视图不许冒充全文**：`middle_omitted_chars`（缓冲丢掉的中段）、`line_cap_hit`（超过 2 万行没看）、
+  `dropped_failure_marks`（被级别筛掉的段里还带着 4xx/5xx/失败 字样）都单独计数，`render` 把这三句
+  放在正文前面。uvicorn 把 404 记成 INFO，所以 `level: warn` 筛掉它是合规的——但那份视图
+  **永远不能被读成"没有错误"**。
+- **计数自洽**：`lines_in - dropped_lines - folded_away + markers_added == lines_out`。
+  `markers_added` 必须单列，因为「… ↑ 重复 N 次」是合成行，不是原日志。这条不变量与
+  `dev_testrun` 的"摘要与退出码不自洽就判红"同型。
+- 工具面：`dev_job_logs` 加 `fold: true` / `level: warn|error`。默认（不给这两个键）**保持原始增量
+  文本不变**、只附一句 `view_hint`，避免改动别人在用的行为；视图模式是整块重算，**不能续读**，
+  带了 `offset` 会明说被忽略并把 `next_offset` 置空。
+- 证据：`tests/test_log_view.py` **26 项**；电池两块——`battery_log_view` **17/17**、
+  `battery_job_logs` **6/6**（后者钉"参数有没有真的落到模块""视图有没有谎报可续读"）；
+  门禁 +1 题（23→24，`log-view-collapses-real-spam`，9 条判据）。电池过程中一条变异
+  （fold=False 仍分组）**活下来**，查明是我留了两条产出完全相同的路径 → 合并成一条，
+  换成"去掉 emit 处的 fold 判断"这条真有牙的变异。
+
 ### 5.10 `dev_apptest stream: 1`（Wave19）：整页真的走一轮实时对话，零网络
 
 - **为什么现在才做得动**：这条链路（真页面 + 真麦克风 + 真 ws）以前只能人工验——它要一个
@@ -321,12 +371,112 @@ cd frontend && npm run test:node
 - **第一天实测**：工作树层抓到 2 处 —— `run_desktop.bat:27` 与 `installer/uninstall.bat:9`
   （`powershell.exe -InstallDir "%~dp0"`，同一 bug 类的第二个实例），两处都在**别人未提交**的
   文件里，本程序不代改；HEAD 层绿（提交出去的那两份没这个问题）。
-  **当天晚些时候两处都由各自那条 lane 改成了 `"%~dp0."`**（现 `run_desktop.bat:35`、
-  `installer/uninstall.bat:13`，注释里写的理由就是"闭合引号被转义"）：工作树语料层现在
-  0 findings、`tests/test_bat_guard.py` 40 项全绿——这道门的闭环到此为止，留着它防的是
-  下一次有人再写回这个形状。
+  **当天晚些时候两处都由各自的 lane 改成了 `"%~dp0."`**（现 `run_desktop.bat:35` 与
+  `installer/uninstall.bat:13`，两边注释里写的理由就是"闭合引号被转义"这一条），
+  工作树层现在 0 findings、`tests/test_bat_guard.py` 40 项全绿——这道门的闭环到此为止。
 - 边界：只查 `.bat`/`.cmd` 里"目录展开 + 引号"这一类；`%VAR:~0,-1%` 之类剪切写法是否真的
   剪对了、PowerShell 自己那套引号规则、以及 `start`/`pushd` 之类的边缘行为都**没有**覆盖。
+
+### 5.12 `dev_testrun coverage: true`：覆盖率从"没装"变成真数字（Wave21）
+
+- **为什么不是又一个 stub**：早先这条只能回「本仓没装 coverage/pytest-cov，`coverage: true`
+  回未启用——那是【没测】，不是 0%」。那是当时最诚实的选择，但它留了个洞：
+  **没有任何测试能回答「我这次改动覆盖到了吗」**。依赖补上（`requirements.txt` 新增 `coverage>=7,<8`）后
+  这条走 `agent_runtime/code_coverage.py` 真跑。
+- **主输出不是百分比，是「你改的文件里哪些行没被执行过」**。全仓覆盖率是会骗人的数字：
+  一条 87% 的横幅可能完全没碰到你刚写的三行分支。所以 `targets:` 圈定范围 + 逐行回报，
+  `total_percent` 只是附带。
+- **两个必须记下来的实测坑**：
+  1. **报告必须写文件，不能走 stdout**。`coverage json -o -` 在本仓产出 200KB+，
+     而 `process_runner` 的缓冲只留头尾各 4000 字符 → JSON 被拦腰截断、`json.loads` 抛错，
+     而截断后的尾部停在 JSON 中段，**肉眼完全看不出它被切过**。改成 `-o <tmp文件>`。
+  2. **`coverage json` 不带 `--ignore-errors` 会整体失败**：仓里有一个语法坏掉的 `.py`
+     （`tests/mutation/battery_head_check.py`，另一条 lane 的在途改动）时，它 exit=1、
+     stdout 只有一行 `Couldn't parse …`，**一条 JSON 都不吐**。加上 `--ignore-errors` 后
+     它会跳过该文件、继续把其余文件的报告写完——但被跳过的文件既不算已覆盖也不算未覆盖，
+     所以单独列进 `unparsed_sources` 并把 `complete` 置假。
+- **「未知」与「很高」必须分开**（这个仓库最贵的一类教训在这里最容易复发）：
+  报告读不出来、给的改动文件不在报告里、`--source` 圈错导致 0 条语句——三种都判
+  「覆盖率未知」，绝不折算成 0% 或 100%。`excluded_lines` 不算未覆盖。
+- **覆盖率低不是「测试失败」**：`test_run.run` 里覆盖率是**判定之后**单独跑的，
+  `checks` 的结论不受它影响；`LOW`（70%）只提示一句。
+- 测试：`tests/test_code_coverage.py` 31 项 + `test_test_run.py` 原有用例全过。
+- 边界：只量「哪些行被执行过」。**一行被执行 100 次也可能断言是错的**——覆盖率满了
+  不能替代 `dev_testrun` 的通过判定。也不含分支覆盖率。
+
+### 5.13 `dev_probe`：给后端与命令行一条真凭据（Wave21）
+
+- **补的是哪半边**：`preview_project` / `dev_page_action` / `dev_vue` / `dev_apptest`
+  整段观察能力都长在浏览器上。对纯后端项目、一条 CLI、一个 worker，它们一样都够不着，
+  于是那段闭环退回「`run_command` + 一屏文本由模型自己读」——而「没看到报错」会被读成
+  「没报错」、「跑完了」会被读成「跑对了」。
+- **`mode: http`**：只允许回环（复用 `dev_server.loopback_url`，与 `dev_serve`/`dev_page_action`
+  同一道边界）。回状态码 / 响应体形状 / 耗时，并把 JSON 里的错误字段单独拎出。
+  **5xx 有两个意思且必须分开报**：既是「服务确实在应答」的凭据（把它当"没应答"会让 Agent
+  去重启一个好好在跑的服务），也是「这次不该通过」的证据。404 不算 server error。
+- **`mode: cli`**：**除了退出码**还回 ERROR/CRITICAL 级行、真 traceback、
+  `NameError: name 'x' is not defined` 的名字、以及「输出为空」这件事本身——
+  退出码 0 的一个什么都不打印的 CLI 和一个真干了活的 CLI 在退出码上无法区分
+  （`allow_silent: true` 可以为真静默的 CLI 开口子）。
+- **命令解析与安全门复用 `run_command` 那一套**（注入 `_shell_argv` / `_cmd_is_blocked`）。
+  这一条是**安全要求**不是风格问题：自己 `text.split()` 会把 `-c "print(1)"` 拆成三段
+  （引号原样留在参数里，命令"跑了"但跑的不是你写的东西），更重要的是会**绕开那道黑名单**。
+  测试里有源码级断言盯着接线（`SafetyTests::test_the_tool_passes_the_repo_argv_and_gate`）。
+- **误报比漏报更贵**：正文里出现 "error" 字样的正常输出（`fix the error handling path`）
+  **不算**错误行——只认行首等级标记。一个天天误报的检查用两次就会被关掉。
+  access log 那种每行带随机端口的噪声折掉，不挤掉真正的错误。
+- 测试：`tests/test_svc_probe.py` 36 项（含起真 `ThreadingHTTPServer` 的现场层）。
+
+### 5.14 `dev_deps`：把「本地能跑、干净装不上」补上（Wave21）
+
+- **要补的那一段**：`dev_headcheck` 能**发现**「提交引用了没声明的依赖」（它把 HEAD 挂成
+  干净检出真 import 一遍），但发现之后**没有工具能修**——从「知道缺了」到「补上」之间是断的。
+  而这正是 vibecoding 最常见的死法：本地因为恰好装过而一切正常，别人 clone 或 CI 拉干净
+  检出时第一句 import 就 `ModuleNotFoundError`。
+- **映射靠证据，不靠猜**（按可信度）：`importlib.metadata.packages_distributions()`
+  （**本机实际装着的元数据**，最硬——实测 `websocket`→`websocket-client`、`webview`→`pywebview`、
+  `yaml`→`PyYAML` 全靠它）→ 已声明依赖的 `Provides-Extra`（`psycopg[binary,pool]` 带出
+  `psycopg-pool`）→ 内置查表 → 同名（标成**弱证据**并注明本机没装）。
+  都不确定就归 `unknown` 并明确报出来，**绝不猜一个名字写进清单**——猜错等于装了个
+  不相干的包而真正缺的那个还缺着。
+- **对账用 `ast` 不用正则**：注释里的 `# import numpy` 与字符串里的 `"import os"`
+  必须是两回事。正则扫全文会建议往 requirements.txt 里塞标准库。
+- **本地包不误报**，而且是**逐个导入方**判的（`resolvable_locally`）：`python game_demo/main.py`
+  会把 `game_demo/` 放进 `sys.path`，所以 `from starvoyager.config import …` 是项目内代码。
+  这条误报**实测出现过**（把 `game_demo/starvoyager` 报成"缺一个叫 starvoyager 的发行包"）。
+  同一个模块对 A 文件是本地、对 B 文件可以是真第三方。
+- **写操作只有一处**：往**已存在**的清单追加缺失行（每行带"谁 import 了它"的注释），
+  不改版本、不删行、不重排——版本是人的决定。没有依赖清单时**不替你新建**。
+- **fail-closed**：解析失败的 `.py`、被扫描上限截断、没有依赖清单——三者都让报告
+  **不能**被读成「依赖没问题」。「声明了但没扫到 import」只作**线索**列出
+  （pytest/ruff 是命令行用的，不算多余依赖），不影响判定。
+- **在本仓实测抓到 11 个真问题**（未修，按 §7 规矩不代改别人的文件）：
+  `api.py` 直接 import `starlette`（30 个文件在用）/`pydantic`/`anyio` 却只声明了 `fastapi`、
+  `secrets_store.py` 的 `cryptography`、`data_formats.py` 的 `PyYAML`、`make_shortcut.py` 的
+  `pywin32` 那一族、`agent_runtime/retrieval.py` 的可选 `sentence-transformers`。
+- 测试：`tests/test_deps_sync.py` 31 项。
+
+### 5.15 `dev_handoff`：把交付补到门口（Wave21）
+
+- **`dev_propose` 到草稿就停了**：产物躺在状态目录里，人还得自己决定分支名、自己写
+  commit message、自己确认「改动里有没有混进别人的在途 WIP」。本工具算**决策材料**：
+  建议分支名、建议 commit message、「这次提交会包含哪些文件」与规模。
+- **仍然不 add / 不 commit / 不 push / 不切分支**。只跑只读 git（`rev-parse`/`status`/`log`，
+  `diff` 走 `git_diff_preview`）。测试里有两道锁：源码级断言（传给 `_run_git` 的子命令必须
+  全在白名单里，外加"模块里不得出现任何写类子命令的字面量"）+ 一条真的跑一遍然后比对
+  HEAD 与 `git status` 前后完全一致（`analyzing_does_not_change_the_repository`）。
+- **共享文件必须点名**：非 `tests/` 非 `.md` 的主干文件是 `git commit -- <路径>` 出事的
+  高发区——本仓 `b828d10` 就是这么把别人 ~457 行在途 WIP 扫进提交、导致 HEAD 单独检出
+  `import agent` 失败的。所以输出里直接点名并给出 `git diff --cached --stat` 的复核提醒。
+- **未跟踪文件不说成"已交付"**：它们不在 `git diff` 里，会被单独列出并标明
+  「**不会**被这次提交带上」。只有未跟踪文件时给的是**另一种**状态（不是"没有可提交的东西"——
+  那样读起来像"这轮白干了"，而实测新建一批模块后正是这个误报）。
+- **按仓库自己的习惯写**：先读最近 12 条提交标题判断该不该加 `type(scope):` 前缀；
+  用户标题里已有的 Conventional 前缀**剥掉再拼**（否则 `feat: x` 会变成
+  `chore(harness): feat: x`，分支名变成 `fix/harness-fix-x`——两个都实测踩到）。
+  中文标题不会产出空分支名。
+- 测试：`tests/test_handoff.py` 33 项（自带临时 git 仓库，不用共享工作树当断言依据——
+  否则会因**别人**的改动而变红）。
 
 ### 5.16 作业对象的进程预算：Wave22 修掉的那条"确定性红"
 
@@ -524,23 +674,61 @@ cd frontend && npm run test:node
   代价是"被客户端掐断的真实失败"也可能落进 `cancelled_requests`，所以它必须上报、
   不能静默丢。
 
+### 5.20 Wave26：`llm_stub` —— 让问答链路在零网络下走到**生产 provider 那条路**
+
+- **它补的是 §5.18 ② 漏掉的一层**：`tests/test_chat_sse.py` 的真回合是往 `api._agent_for`
+  的 Agent 上**注入**剧本 LLM——那验的是 ReAct 循环、工具执行与 SSE 包装，但**不经过**
+  `llm.py` 的 provider 选择、`base_url` 解析与 OpenAI SDK 那条真实客户端路径。而
+  `dev_apptest` 把 uvicorn 起成**子进程**，注入法在那里根本用不上。
+- **做法与 Wave19a 的 `realtime_scripted` 同型**（一个只在显式选中时才生效的测试双）：
+  `llm.py:567-571` 对 `provider == "custom"` 会采纳 `LLM_BASE_URL`，所以只要把
+  `custom` 指到 `agent_runtime/llm_stub.py` 起的回环假服务上，整条链路就走**产品里的正式
+  provider**——`llm.py` / `api.py` / `config.py` **一个字没动**。
+- **差一点走错的那一步**：进程内用 `os.environ` 设 `LLM_PROVIDER` **没用**——
+  `config.LLM_PROVIDER` 是**导入时**读的（`.env` 里是 ollama），导入之后再设太晚，
+  现象是"去连 11434 报连接被拒"。进程内必须 `config.set_runtime(...)`；`env_for()`
+  是给**子进程**用的（那边才是导入时读）。
+- **假服务的形状照 `llm.py` 的消费方式写**（`llm.py:274-295`）：每片
+  `choices[0].delta.content` 带一小段正文；末尾一个 `choices` 为**空**的分片带 `usage`
+  （`if not chunk.choices: continue` 正是为它准备的）；最后 `data: [DONE]`。
+- **一条自己招的坑，已立测试盯着**：`observation_snippet` 起初在**所有**消息里搜
+  `Observation:`，而**系统提示里本身就有一大段解释 ReAct 格式的文字**（含这个词），于是它
+  把提示当成工具结果、第一轮就作答、**一个工具都不调**。`_mock_chat` 用的是"只看最后一条"
+  这条窄规则（`llm.py:1108`），照它改才对。`tests/test_llm_stub.py` 里有夹具显式带着那段
+  格式提示，专门钉这条错法。
+- **产物与验证**：`agent_runtime/llm_stub.py`（纯函数 `reply_for` / `sse_frames` /
+  `observation_snippet` / `env_for` + stdlib 回环服务），`tests/test_llm_stub.py` **14 项**
+  （纯 12 + 真起服务 2 + 真打 `/api/chat` 的 provider 路径 2）。真回合实测：
+  `check_ollama` **零次调用**、工具是 `search_assets`、`final` 原样引述了目录里的
+  `· Pixel Platformer ［2d-sprites｜CC0］…`，`chat_sse.verdict` **14 条判据全绿**。
+- **为什么这块没配变异电池**：本仓那条规矩是"**新守卫**必须配一条变异电池"，而
+  `llm_stub` 是**测试双**不是守卫——它喂的那个守卫（`chat_sse.verdict`）已经有
+  20 条变异的 `battery_chat_sse`。所以这里给的是测试，不是电池；这一点是**有意的选择**，
+  写在这里免得后来人以为是漏了。
+- **边界**：它不证明模型理解问题、不证明厂商行为；`custom` 是产品里的正式 provider，
+  但"用假服务冒充它"这件事本身是测试手段——生产上没人给 `LLM_BASE_URL` 指回环地址；
+  **页面那一层（问答页的输入框 + DOM 断言）仍没做**，见 §6 缺口 15。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
 |---|---|---|---|
 | 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）**；~~深链到具体路由/文件的整页断言~~ **已做（Wave24，§5.18）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 仍**没有**的是：真模型往返（`dev_apptest` 明确不点模型）、`dev_apptest` 上的问答回合（§5.18 ② 那条只在 HTTP 层做了，页面那一层还没走）|
-| 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；覆盖率入口仍无 | 实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | 覆盖率要先决定加不加依赖；记账由 `last-failed.json` 自己做 |
+| 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；~~覆盖率入口仍无~~ **已做（Wave21 `coverage: true`，§5.12）** | 早先实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | Wave21 已加 `coverage>=7,<8` 并真跑。仍**没有**的是：分支覆盖率、`--source` 的配置化、以及给"改动行"本身（而不只是改动文件）的覆盖判定 |
 | 3a | ~~真 ws 回合零自动覆盖~~ **已做（Wave19：`scripted` 适配器 + `dev_apptest stream`）** | 页面 + 麦克风 + `/api/vision/live-stream` 以前只有人对着说话才能验 | 厂商事件、打断语义、听感仍归 R12 的人跑 |
 | 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证），沙箱 push 不通 | 人 push 一次，把首跑结果记回本文件 |
 | 4 | `dev_serve` 端口被抢不自动重试 | Wave6 未做项 | 就绪失败时换端口重试一次 |
 | 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
 | 6 | 连接器 UI 未接 `inline_tools` 开关 | Wave10 未做项 | 小改，UI 侧 |
 | 7 | 一条计时断言只有 0.12s 余量 | `tests/test_orchestrator.py` 的 `elapsed < 0.32`，负载高时必红（属别人文件，未代改） | 改成相对余量（sleep 拉到 1.0s、断言 <1.6s） |
+| 8 | ~~依赖声明无人对账~~ **已做（Wave21 `dev_deps`，§5.14）**；但它在本仓抓到 11 个真问题**尚未修** | `api.py` 直接 import `starlette`（30 处）却只声明 `fastapi`；另有 `pydantic`/`anyio`/`cryptography`/`PyYAML`/`pywin32`/`sentence-transformers` | 跑 `dev_deps(action: apply)` 追加声明，**版本由人定**；本程序不代改（§7） |
+| 9 | ~~观察能力只覆盖浏览器~~ **已做（Wave21 `dev_probe`，§5.13）** | 整段观察能力都长在浏览器上，后端/CLI 只能退回"一屏文本自己读" | 仍**没有**的是：worker/队列类长驻进程的观测（现在只有 `cli` 与 `http` 两种档）、以及"改了哪几行"级别的覆盖判定 |
+| 10 | ~~交付到草稿为止~~ **已做（Wave21 `dev_handoff`，§5.15）** | `dev_propose` 停在草稿，人还要自己定分支名与 message | **有意不做**：建分支 / 开 PR / push。那是人的决定，与命令黑名单同一条纪律 |
 | 11 | ~~引擎不查锚点唯一性~~ **已做（Wave23）** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点出现两次时只改第一处。**先量影响面**：十块电池 256 条锚点里只有 3 条不唯一，全在 `battery_head_check`（`render` 里有 12 空格缩进的同名块，4 空格那份是它的子串） | 已加 `source.count(old) == 1` → 报**问题**；3 条锚点改成带上下文。**仍有**：引擎没有"按平台分层"的概念，所以非 Windows fallback 分支的变异在两个平台里必有一个红（见 §5.17） |
 | 12 | ~~`run_isolated` 仍然零测试~~ **已做（Wave23）** | 它与 `spawn_isolated` 共用 `_create_job`，本次出事故的那行在两个函数里各有一份 | 已补 5 条跨平台 + 3 条 Windows-only 用例（含一条**加入失败后已起来的子进程必须被收掉**的漏进程判据），电池 19 → **25 条变异** |
-| 13 | `run_isolated` 的子进程输出**可能整个丢掉且不报错** | `Popen(..., text=True)` 没给 `encoding`，按本机区域编码解码；本机是 GBK，子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成 `None`（`stdout is None` 而不是报错） | 调用方要么传 ASCII 输出，要么给 `windows_sandbox` 加 `errors="replace"` + 显式 encoding。**本轮只报不改**——它会改变所有适配器进程的行为，不在 Wave23 范围内 |
+| 13 | `run_isolated` 的子进程输出**可能整个丢掉且不报错** | `Popen(..., text=True)` 没给 `encoding`，按本机区域编码解码；本机是 GBK，子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成 `None`（`stdout is None` 而不是报错） | 调用方要么传 ASCII 输出，要么给 `windows_sandbox` 加 `errors="replace"` + 显式 encoding。**只报不改**——它会改变所有适配器进程的行为，不在 Wave23 范围内 |
 | 14 | **`mock` provider 无法完成一轮问答** | `_mock_chat` 的「拿到观察 → 作答」分支（`llm.py:1119-1122`）吐**不带 `Final Answer:` 标记的裸文本**，而 `agent.py:3443` 的格式失守判定连拒两轮后发 `final(status="error")`。实测走完 345 个 chunk 仍然收不了尾 | 让它也带上 `Final Answer:` 前缀（一行）。**只报不改**——`llm.py` 正在被别人改（Wave24） |
-| 15 | `dev_apptest` 的问答回合还没做 | §5.18 ② 只把 `/api/chat` 的真问答链路在 **HTTP 层**验了；页面那一层（深链到 `/` + 提问 + 断言答案进 DOM）还没走，缺的是"页面怎么把 SSE 消费者接稳"这半 | 可参考 §5.10 那条流式档的做法：`server_env` 里带 `LLM_PROVIDER=mock`（并在 TEST 里先解决缺口 14，否则 mock 收不了尾）|
+| 15 | `dev_apptest` 的问答回合还没做（**HTTP 层已补，页面层仍缺**） | §5.18 ② 原先在 HTTP 层验真回合，但要**注入** LLM；§5.20 的 `llm_stub` 把那层补上了——回环假服务 + `provider=custom`，走的是生产 provider 那条路。**仍缺**的是页面那一层：问答页的输入区在子组件里（`AskApp.vue` 只渲染 `AskMessage`），要点出提问框 + 断言答案进 DOM 还得再挖一轮选择器 | 可先用 `button.suggestion`（`@click="send(s)"`）绕过输入框：点一下就能发一轮，然后按 DOM 断言"助手消息出现且原样引用了工具输出"。**别**照抄 §5.10 那条用 `LLM_PROVIDER=mock`——mock 收不了尾（缺口 14） |
 | 16 | **`GET /api/config` 冷启动 6.1 秒** | 实测：`check_ollama(force=True)` 自己只要 2.0 s，**另约 4 s 来源未定**；热了 15 ms。工作台把 UI 门控在它上面，于是"文档加载完"与"文件树有行"之间隔 3.3 s（§5.19）。它也是前端那条 `/api/health` 探针被自己掐掉的背景 | 先把那 4 秒定位出来（`api.py` 属别人，本轮只报）。方向：`/api/config` 上有没有别的同步初始化；`ollama_status` 是否可以只在真用到时才算 |
 
 ## 7. 共享工作树里的提交规范（实测有效的那套）
@@ -589,11 +777,11 @@ cd frontend && npm run test:node
 - CI：`.github/workflows/harness.yml` 的 `Run mutation batteries` 一步，跑 `--no-live`，
   只在 sqlite matrix 付费。本机实测（2026-10-02，九块电池）：`--no-live`
   **229/237 抓到 + 7 条本环境未验证 + 1 条活下来，587 秒**（`head_check` 44 条要 529 秒，
-  第二档那 3 条真检出用例是主要成本；`bat_guard` 35/35 只用 4 秒——纯文本判据便宜到没借口
-  不跑全）。那 1 条活下来在 `test_run` 里，**不是我这轮的事**：别人未提交的 `test_run.py`
-  （他们的 `coverage:` 档）让一条变异变成等价变异；同一块电池在**干净检出的 HEAD** 上重跑是
-  18/18，`head_check`+`bat_guard` 在 HEAD 上合跑 **79/79（467 秒）**，我的四套在 HEAD 干净
-  检出里 **133 passed**。全量在 HEAD 工作树合起来 **2165 passed / 64 skipped / 348 秒**；带浏览器
+  第二档那 3 条真检出用例是主要成本；`bat_guard` 35/35 只用 4 秒——纯文本判据便宜到没借口不跑全）。
+  那 1 条活下来在 `test_run` 里，**不是我这轮的事**：别人未提交的 `test_run.py`（他们的
+  `coverage:` 档）让一条变异变成等价变异；同一块电池在**干净检出的 HEAD** 上重跑是 18/18，
+  `head_check`+`bat_guard` 在 HEAD 上重跑是 79/79（467 秒）。全量在 HEAD 工作树合起来
+  **2165 passed / 64 skipped / 348 秒**；带浏览器
   `--only vue,app_test` **72/72，99 秒**。
 - **怎么读这份证据**：电池绿＝"这些测试确实会红"。它**不**保证变异集合覆盖了这个模块的每个守卫；
   新加一条守卫时同时加一条变异，否则那条守卫没有凭据。
@@ -603,15 +791,21 @@ cd frontend && npm run test:node
 `code_intel.py`(扩展) · `ts_index.py` · `diagnostics.py` · `patch_apply.py` · `lanes.py` ·
 `dev_server.py` · `mcp_server.py` · `mcp_bridge.py` · `dev_eval.py` · `proposal.py` · `ci_status.py` ·
 `media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` · `test_run.py` ·
-`vue_component.py` · `app_test.py` · `realtime_scripted.py` · `bat_guard.py` ·（另有 `tests/mutation/engine.py` + `run_all.py` + `battery_*.py`，条数下限写在每块电池自己的 `MINIMUM_MUTATIONS` 里）·
+`vue_component.py` · `app_test.py` · `realtime_scripted.py` · `bat_guard.py` ·
+**Wave21 新增**：`deps_sync.py`（依赖对账，§5.14）· `svc_probe.py`（后端/CLI 观察，§5.13）·
+`code_coverage.py`（覆盖率，§5.12）· `handoff.py`（交付决策材料，§5.15）·
+（另有 `tests/mutation/engine.py` + `run_all.py` + `battery_*.py`，条数下限写在每块电池自己的 `MINIMUM_MUTATIONS` 里）·
 `visual_acceptance.py`（被抽出 `browser_session` / `serve_static` / `stop_static` / `sanitize_flags`，
 并被别的 lane 加了作业对象回收）· 测试：`test_dev_glob_git_log` / `test_lanes_registry` /
 `test_ts_index` / `test_dev_diagnostics` / `test_dev_patch_move` / `test_mcp_server_expose` /
 `test_mcp_inline_tools` / `test_dev_serve_preview` / `test_dev_eval` / `test_dev_propose_ci` /
 `test_media_fixture` / `test_page_action` / `test_voice_loop` / `test_frontend_node_tests` /
-`test_head_check` / `test_test_run` / `test_vue_component` / `test_app_test` / `test_mutation_batteries` / `test_realtime_scripted` / `test_bat_guard` ·
-电池（可重跑的凭据，Wave18 入库）：`tests/mutation/battery_*.py` = vue / app_test / head_check /
-test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
+`test_head_check` / `test_test_run` / `test_vue_component` / `test_app_test` / `test_log_view` / `test_mutation_batteries` / `test_realtime_scripted` / `test_bat_guard` ·
+**Wave21 新增测试**：`test_deps_sync`（31）· `test_svc_probe`（36）· `test_code_coverage`（31）· `test_handoff`（33）·
+电池（Wave18 入库，可重跑的凭据）：`tests/mutation/battery_*.py` = vue / app_test / head_check /
+test_run / voice_loop / **bat_guard** / **page_action** / **log_view** / **job_logs**；真日志样本夹具
+`tests/fixtures/uvicorn-access.txt`（**刻意 .txt**——`.gitignore` 里有一条 `*.log`，
+叫 `.log` 的夹具进不了仓库，新检出上那批用例就会静默跳过而全量仍显示绿灯）。
 前端：`frontend/tests/liveAudioControl.test.mjs`（+ `test:node` 脚本与 CI 步骤）。
 
 ## 9. 事故与教训（避免重蹈）
@@ -648,7 +842,7 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   这次靠 `git diff --stat` 的插入/删除计数不对才看见（140/4 变成 139/1）。流程教训：
   往共享的热文件里插东西，用**唯一且完整**的锚点，或者干脆走"读全文 → 替换 → `ast.parse` 过了
   才落盘"的脚本；改完立刻核对 `git diff --stat` 的两个数字。
-- **一条变异把整块电池崩掉，而我差点把"崩掉"报成"全抓"**：Wave21 里我写了条只替换半句的变异，
+- **一条变异把整块电池崩掉，而我差点把"崩掉"报成"全抓"**：Wave21b 里我写了条只替换半句的变异，
   `exec_module` 抛 `IndentationError`，整轮电池死在 traceback 上；而我第一次读结果时把汇总行
   看成了 `44/44 抓到`（其实是 `41/44 + 3 条活下来`）。两条修法是同一件事的两面：
   ① 引擎在**事前**用 `ast.parse` 检查"变异后的源码还编译得过吗"，编译不过就报成这条电池的
@@ -663,6 +857,76 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   所以它"活下来"根本不是守卫没牙，是我那条变异写歪了。同一条批次里还有两条"活下来"是真的
   ——`tests:` 那条路的失败题名单从来没被任何用例读过。两种"活下来"要分开处理：
   等价变异换掉，真缺口补判据（`test_the_pytest_path_also_names_its_failed_tests`）。
+- **等价变异还有两个来源，都不是守卫没牙（Wave23 实测）**：① **依赖被装上了**——那条
+  "缺覆盖率依赖时不开口"的守卫只在本机没装 `coverage` 时才走得到，Wave21 装上之后它成了
+  恒真的空路径，变异成 `if False:` 自然"活下来"。② **两个机制互为冗余**——超时回收里
+  「杀直接子进程」与「终止作业对象」单独去掉哪一个都照样过，因为测试的树只有一层；改成
+  "孩子拉一个孙进程去写标记"才可区分。**教训**：写判据时问两句——它依赖的是**代码**还是
+  **环境**？它给的树有**几层**？两句都答不上来的判据，变异活下来是必然的。
+- **本机全绿 ≠ CI 绿，因为它们不是同一个平台**（Wave22 提交在 CI 上是红的）：
+  `.github/workflows/harness.yml` 在 **ubuntu-latest** 上跑 `run_all.py --no-live`，而我那块
+  电池有 3 条变异只被 `@skipUnless(os.name == "nt")` 的用例抓着。ubuntu 上那些用例被 skip
+  → 无人抓 → 记成**活下来** → 电池红 → CI 步骤失败。**教训**：给一个只有某平台能验的守卫
+  写变异之前，先问"CI 那条命令在这个平台上会看到什么"。修法有两条：把这类用例声明成
+  `LIVE`（本环境未验证，既不算抓住也不算活下来），或者让用例不依赖平台。**别把"本机跑过
+  全抓"当成 CI 会绿**——本仓 §6 第 3 条早就记着"CI 从未在 GitHub 真跑过"。
+- **电池接错线：`BIND` 写错时，纯层看的是真模块**（Wave24 实测）。`battery_chat_sse` 的
+  `BIND` 我写了 `"cs"`，而测试文件里的模块级名字是 `chat_sse`——引擎的
+  `setattr(测试模块, "cs", 变异副本)` 只是新建了一个**没人用**的属性，于是纯层从头到尾看的
+  是真模块，**11 条变异全部"活下来"**。看着像守卫没牙，其实是电池接错了线；那 9 条被抓住的
+  全是**门禁层**抓的（门禁题在函数体里 `from agent_runtime import chat_sse`，拿到的是
+  `sys.modules` 里的变异副本）。**教训**：报"活下来"时，先怀疑**接线**（BIND 对不对、
+  锚点唯一不唯一），再怀疑守卫。
+- **夹具形状抄错，等于整块纯层没跑**（Wave24，同一个电池的另一半）。`VerdictTableTests`
+  起初把 `action` 事件写成 `{"tool": "search_assets"}`，而**真实**载荷的工具名在
+  `text` 里（`"search_assets(像素风角色…)"`）。于是纯层压根没走到真实代码路径。
+  **教训**：写判据夹具之前，先把**一次真跑**的事件 dump 出来照抄——本会话就是这么发现
+  `_tool_name` 读错字段（永远 `None`）的，而那条"没调联网工具"的判据因此**恒真**。
+- **恒真判据的第三种形态：参数缺省让判据结构上不可能为假**（Wave24，两条同型）。
+  ① 反向对照（"不存在的路径不许渲染出任何一页"）那一行传了空的 `foreign`，`any([])` 恒为
+  `False`；② 深链判据里读不到行时 `rows.get(path) or {}` 给出空 dict，于是"没数据"被当成
+  "没关系"。两处的修法一样：**让它必须真的数过东西**（前者要求数三页的标记，后者加一条
+  "该读的路径都读了"）。对照 §9 上面那条"判据可以结构上永远为假"。
+- **抽成纯函数是把"只有现场能验"变成"CI 能验"的最省事办法**（Wave24）。"未知路径的 404
+  不该算进 console 干净"这条判断本来埋在 `_drive_deep_link` 里，只有真浏览器能验；抽成
+  `_console_matters(spec)` 之后它和别的判据一样在纯层就能被变异抓住。**边界**：抽出来的是
+  **判断**，不是"这条判断在真页面上对不对"——后者仍归现场档。
+- **在"所有消息里搜某个词"之前，先问"提示词里有没有这个词"**（Wave26 实测）。
+  `llm_stub` 的 `observation_snippet` 起初在**所有**消息里找 `Observation:`，而**系统提示
+  里本身就有一大段解释 ReAct 格式的文字**（含这个词）。后果不是报错，而是**行为悄悄变了**：
+  桩以为已经拿到工具结果，第一轮就直接作答、**一个工具都不调**——判据报的是
+  `at_least_one_tool_action` 红，看起来像 Agent 没调工具，其实是桩读错了消息。
+  修法是窄化到"只看最后一条"（`_mock_chat` 就是这么做的，`llm.py:1108`）。
+  **教训**：从消息数组里提取信息时，先把"哪些角色/位置的消息可能含这个词"想一遍；
+  提示词是**最容易被误读成数据**的那一类。
+- **等价变异之外的一种"白写"：正则按错误的形状写**（Wave26）。`tool_name_in` 起初按
+  **事件**形状写（`name(args)`），而它要解析的是 **ReAct 正文**（`Action: search_assets`）
+  ——于是永远返回空串，用它做断言的那条测试恒红（而不是恒绿，所以它至少会叫）。
+  **教训**：解析函数要跟"它实际拿到的那份文本"对齐——先 dump 一次真输入再写正则。
+- **"红了三次"不等于"坏了"——先量再下结论**（Wave25 我自己犯的）。真浏览器那一档连红三次
+  之后，我写下"本机浏览器那一档现在是坏的"，并据此把它从电池的 LIVE 名单里摘掉了。
+  实际一量：浏览器好得很——`open_page` 在 **1903 ms** 返回、文件树到 **5160 ms** 才出现，
+  夹具在"文档加载完"之后**立刻**读数据，就是在跟中间那 3.3 秒赛跑。
+  **教训**：三次同样的红只说明"这件事稳定地错"，**不说明错在哪**；"坏"是个需要证据的
+  结论，而不是"红了几次"的推论。这个仓的规矩本来就有"红了先在同一环境重跑一次"，
+  但重跑只够排除抖动——要定位就得**把中间量出来**（这里是时间线：`open_page` 何时返回、
+  数据何时到位）。
+- **"客户端取消"与"真失败"是两件事，分开归类而不是丢掉**（Wave25）。工作台的存活探针
+  `probeBackend()` 自带 `AbortController` 并在 `catch` 里故意吞掉，所以页面加载慢时那条
+  `/api/health` 是**前端自己掐的**（Chrome 报 `net::ERR_ABORTED`）。把它算成"请求失败"
+  会让 `no_failed_requests` 在慢加载时**假红**——而假红和不报一样有害，它教人忽略门禁。
+  修法是**分类**：两堆都进报告（`failed_requests` / `cancelled_requests`），判据只对前者变红。
+  **代价要写明**：被客户端掐断的**真实**失败也可能落进 `cancelled_requests`，所以它必须
+  上报、不能静默丢。
+- **等待不是没有，是放错了地方**（Wave25）。`_drive` 里本来就有一个
+  `wait_for(".wb-shell", timeout=5.0)`，但它写在**读 facts 之后**——于是"等页面就绪"
+  这件事只对后面的 console 采集生效，对 `rows` 那条判据完全没生效。
+  **教训**：加等待时先问"我下面要读的东西，是等到哪个条件才出现的"；等错了对象等于没等。
+- **等价变异的第四种来源：协议形状下根本区分不出来**（Wave24）。`if not line.startswith("data:")`
+  → `if False:` 看着是一条好变异，但真实 SSE 里非 `data:` 行去掉前缀后都不是合法 JSON
+  （`event: {...}` 会剩下 `: {...}`），所以"只认 data:"这道门在这个形状下**测不出来**。
+  换成"连切片一起去掉、于是裸 JSON 行也成事件"才能区分。**教训**：写变异时问一句
+  "**在真实的输入形状下**，这两个版本的行为真的不同吗"——不同才算变异。
 - **子进程的句柄比"进程已终止"活得久**：`dev_apptest` 第一次跑完在系统临时目录留了两份
   沙箱——`process_runner.job_cancel` 回来时 uvicorn 自己开的 sqlite/状态文件句柄还没被 OS 收走，
   `clean_target` 默认的 4 次 ×0.25s（约 1s）不够，而几秒后手工能删。回收预算提到 10 次 ×0.4s 后
@@ -681,7 +945,6 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   都会连带它红。实测：9 个套件串在一起跑时它红过一次（84 passed / 3 failed），单跑同一文件
   15 passed、三文件组合重跑 87 passed。读这条红之前，先看同一时间有没有别的 lane 在起浏览器
   （按 `--user-data-dir` 归组数进程），别第一时间怀疑代码。
-
 - **"已知红"要重新验一遍，它可能是确定性的，而差集归因天生抓不到确定性红**（Wave22）。
   接手时 `diagnostics-*` 两题被记为"负载下会抖"，实测重跑两次一模一样。根因是作业对象
   `ActiveProcessLimit = 4`：`python -m dev_eval` → `python -m ruff` → `ruff.exe` 这条树加上
@@ -712,67 +975,6 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   断言恒为真，什么都没验就绿。修法是让孩子睡 300 秒、并在关句柄**之前**用就绪标记确认它
   真的活着。**教训**：断言"某物消失"之前，先问"它还有什么别的原因会消失"。
 
-- **等价变异还有两个来源，都不是守卫没牙（Wave23 实测）**：① **依赖被装上了**——那条
-  "缺覆盖率依赖时不开口"的守卫只在本机没装 `coverage` 时才走得到，Wave21 装上之后它成了
-  恒真的空路径，变异成 `if False:` 自然"活下来"。② **两个机制互为冗余**——超时回收里
-  「杀直接子进程」与「终止作业对象」单独去掉哪一个都照样过，因为测试的树只有一层；改成
-  "孩子拉一个孙进程去写标记"才可区分。**教训**：写判据时问两句——它依赖的是**代码**还是
-  **环境**？它给的树有**几层**？两句都答不上来的判据，变异活下来是必然的。
-- **本机全绿 ≠ CI 绿，因为它们不是同一个平台**（Wave22 提交在 CI 上是红的）：
-  `.github/workflows/harness.yml` 在 **ubuntu-latest** 上跑 `run_all.py --no-live`，而我那块
-  电池有 3 条变异只被 `@skipUnless(os.name == "nt")` 的用例抓着。ubuntu 上那些用例被 skip
-  → 无人抓 → 记成**活下来** → 电池红 → CI 步骤失败。**教训**：给一个只有某平台能验的守卫
-  写变异之前，先问"CI 那条命令在这个平台上会看到什么"。修法有两条：把这类用例声明成
-  `LIVE`（本环境未验证，既不算抓住也不算活下来），或者让用例不依赖平台。**别把"本机跑过
-  全抓"当成 CI 会绿**——本仓 §6 第 3 条早就记着"CI 从未在 GitHub 真跑过"。
-
-- **电池接错线：`BIND` 写错时，纯层看的是真模块**（Wave24 实测）。`battery_chat_sse` 的
-  `BIND` 我写了 `"cs"`，而测试文件里的模块级名字是 `chat_sse`——引擎的
-  `setattr(测试模块, "cs", 变异副本)` 只是新建了一个**没人用**的属性，于是纯层从头到尾看的
-  是真模块，**11 条变异全部"活下来"**。看着像守卫没牙，其实是电池接错了线；那 9 条被抓住的
-  全是**门禁层**抓的（门禁题在函数体里 `from agent_runtime import chat_sse`，拿到的是
-  `sys.modules` 里的变异副本）。**教训**：报"活下来"时，先怀疑**接线**（BIND 对不对、
-  锚点唯一不唯一），再怀疑守卫。
-- **夹具形状抄错，等于整块纯层没跑**（Wave24，同一个电池的另一半）。`VerdictTableTests`
-  起初把 `action` 事件写成 `{"tool": "search_assets"}`，而**真实**载荷的工具名在
-  `text` 里（`"search_assets(像素风角色…)"`）。于是纯层压根没走到真实代码路径。
-  **教训**：写判据夹具之前，先把**一次真跑**的事件 dump 出来照抄——本会话就是这么发现
-  `_tool_name` 读错字段（永远 `None`）的，而那条"没调联网工具"的判据因此**恒真**。
-- **恒真判据的第三种形态：参数缺省让判据结构上不可能为假**（Wave24，两条同型）。
-  ① 反向对照（"不存在的路径不许渲染出任何一页"）那一行传了空的 `foreign`，`any([])` 恒为
-  `False`；② 深链判据里读不到行时 `rows.get(path) or {}` 给出空 dict，于是"没数据"被当成
-  "没关系"。两处的修法一样：**让它必须真的数过东西**（前者要求数三页的标记，后者加一条
-  "该读的路径都读了"）。对照 §9 上面那条"判据可以结构上永远为假"。
-- **抽成纯函数是把"只有现场能验"变成"CI 能验"的最省事办法**（Wave24）。"未知路径的 404
-  不该算进 console 干净"这条判断本来埋在 `_drive_deep_link` 里，只有真浏览器能验；抽成
-  `_console_matters(spec)` 之后它和别的判据一样在纯层就能被变异抓住。**边界**：抽出来的是
-  **判断**，不是"这条判断在真页面上对不对"——后者仍归现场档。
-- **等价变异的第四种来源：协议形状下根本区分不出来**（Wave24）。`if not line.startswith("data:")`
-  → `if False:` 看着是一条好变异，但真实 SSE 里非 `data:` 行去掉前缀后都不是合法 JSON
-  （`event: {...}` 会剩下 `: {...}`），所以"只认 data:"这道门在这个形状下**测不出来**。
-  换成"连切片一起去掉、于是裸 JSON 行也成事件"才能区分。**教训**：写变异时问一句
-  "**在真实的输入形状下**，这两个版本的行为真的不同吗"——不同才算变异。
-
-- **"红了三次"不等于"坏了"——先量再下结论**（Wave25 我自己犯的）。真浏览器那一档连红三次
-  之后，我写下"本机浏览器那一档现在是坏的"，并据此把它从电池的 LIVE 名单里摘掉了。
-  实际一量：浏览器好得很——`open_page` 在 **1903 ms** 返回、文件树到 **5160 ms** 才出现，
-  夹具在"文档加载完"之后**立刻**读数据，就是在跟中间那 3.3 秒赛跑。
-  **教训**：三次同样的红只说明"这件事稳定地错"，**不说明错在哪**；"坏"是个需要证据的
-  结论，而不是"红了几次"的推论。这个仓的规矩本来就有"红了先在同一环境重跑一次"，
-  但重跑只够排除抖动——要定位就得**把中间量出来**（这里是时间线：`open_page` 何时返回、
-  数据何时到位）。
-- **"客户端取消"与"真失败"是两件事，分开归类而不是丢掉**（Wave25）。工作台的存活探针
-  `probeBackend()` 自带 `AbortController` 并在 `catch` 里故意吞掉，所以页面加载慢时那条
-  `/api/health` 是**前端自己掐的**（Chrome 报 `net::ERR_ABORTED`）。把它算成"请求失败"
-  会让 `no_failed_requests` 在慢加载时**假红**——而假红和不报一样有害，它教人忽略门禁。
-  修法是**分类**：两堆都进报告（`failed_requests` / `cancelled_requests`），判据只对前者变红。
-  **代价要写明**：被客户端掐断的**真实**失败也可能落进 `cancelled_requests`，所以它必须
-  上报、不能静默丢。
-- **等待不是没有，是放错了地方**（Wave25）。`_drive` 里本来就有一个
-  `wait_for(".wb-shell", timeout=5.0)`，但它写在**读 facts 之后**——于是"等页面就绪"
-  这件事只对后面的 console 采集生效，对 `rows` 那条判据完全没生效。
-  **教训**：加等待时先问"我下面要读的东西，是等到哪个条件才出现的"；等错了对象等于没等。
-
 ## 10. 本会话未结事项
 
 1. **HEAD 已自愈（2026-10-02）**：`b828d10` 误收导致的"引用未跟踪模块"由那条 lane 用
@@ -792,12 +994,12 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
 4. 需要人做的两件：**push**（或 `git bundle` 离线备份），以及在配好 DashScope 的机器上跑一次
    真网关回路，把结果回写本文件 §5.3 与 §6#3。push 之前顺手跑一次
    `dev_headcheck` 带 `gate: 1`（约 1 分钟）：CI 看到的是那棵树，不是这棵树。
-5. **Wave20 的门抓到过、当天就被各自那条 lane 修好了**：那两处 `"%~dp0"`（`run_desktop.bat`
-   与 `installer/uninstall.bat`）现在都是 `"%~dp0."`，本程序全程没代改别人一行文件；
-   `tests/test_bat_guard.py::RealRepoLauncherTests` 现在绿，留着它防的是下一次再写回这个形状
-   ——**它已经生效了，不是待办**。同一批账里 `dev_headcheck` 加了第二档（`gate: 1`，本会话
-   记作 **Wave21b**：另一条 lane 也把他们的四个缺口叫作 Wave21，尚未提交，用 b 后缀避免撞号）：
-   **push 之前跑它**，因为 CI 看到的
+5. **Wave20 的门抓到过、也被修掉了**：那两处（`run_desktop.bat` 与 `installer/uninstall.bat`
+   里的 `"%~dp0"`）在 2026-10-02 当天由各自那条 lane 改成 `"%~dp0."`，本程序全程没代改一行
+   别人的文件。`tests/test_bat_guard.py::RealRepoLauncherTests` 现在绿；留着它防的是下一次
+   有人再写回这个形状——**它已经是有效的了，不是待办**。
+   同一批账里 `dev_headcheck` 加了第二档（`gate: 1`，本会话记作 Wave21b——另一条 lane 也把
+   他们的四个缺口叫作 Wave21，尚未提交；这里用 b 后缀避免撞号）：**push 之前跑它**，因为 CI 看到的
    是那棵树而不是这棵树；本会话就是靠它在事后抓到 `f7ec14e` 的行为红（见 §5.4）。
    基线 `.github/dev-eval-baseline.json` 按【我的提交】口径刷成 `23 → 24`；工作树里还有别人
    那一题（`log-view-collapses-real-spam`），所以本地刷全量会得 25——那一行不由我提交。

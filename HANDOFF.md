@@ -1,5 +1,38 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-03 Vibecoding 能力补全 Wave26：`llm_stub`——问答链路在零网络下走到**生产 provider 那条路**（本会话，不占 R 槽位）
+
+- **补的是 Wave24 §5.18 ② 漏掉的一层**：那一档的真回合是往 `api._agent_for` 的 Agent 上
+  **注入**剧本 LLM，验的是 ReAct 循环、工具执行与 SSE 包装，但**不经过** `llm.py` 的
+  provider 选择、`base_url` 解析与 OpenAI SDK 那条真实客户端路径。而 `dev_apptest` 把
+  uvicorn 起成**子进程**，注入法在那里根本用不上。
+- **做法与 Wave19a 的 `realtime_scripted` 同型**（只在显式选中时才生效的测试双）：
+  `llm.py:567-571` 对 `provider == "custom"` 采纳 `LLM_BASE_URL`，所以把 `custom` 指到
+  `agent_runtime/llm_stub.py` 起的回环假服务上，整条链路就是**产品里的正式 provider**
+  ——`llm.py` / `api.py` / `config.py` **一个字没动**。
+- **差一点走错的那一步**：进程内用 `os.environ` 设 `LLM_PROVIDER` **无效**——
+  `config.LLM_PROVIDER` 是**导入时**读的（`.env` 里是 ollama），导入后再设太晚，现象是
+  "去连 11434 报连接被拒"。进程内必须 `config.set_runtime(...)`；`env_for()` 是给
+  **子进程**用的。
+- **一条自己招的坑（已立测试盯着）**：`observation_snippet` 起初在**所有**消息里搜
+  `Observation:`，而**系统提示里本身就有一大段解释 ReAct 格式的文字**（含这个词），
+  于是桩把提示当成工具结果、第一轮就作答、**一个工具都不调**——判据报
+  `at_least_one_tool_action` 红，看起来像 Agent 没调工具，其实是桩读错了消息。改窄到
+  "只看最后一条"（`_mock_chat` 同款，`llm.py:1108`）。另有一条 `tool_name_in` 按**事件**
+  形状写正则、而它要解析的是 **ReAct 正文**，永远返回空串。
+- **验证**：`tests/test_llm_stub.py` **14 项**（纯 12 + 真起服务 2 + 真打 `/api/chat` 的
+  provider 路径 2）。真回合实测：`check_ollama` **零次调用**、工具是 `search_assets`、
+  `final` 原样引述目录里的 `· Pixel Platformer ［2d-sprites｜CC0］…`，
+  `chat_sse.verdict` **14 条判据全绿**；八套确定性 **268 passed / 572 subtests**。
+- **为什么这块没配变异电池**：本仓规矩是"**新守卫**必须配变异电池"，而 `llm_stub` 是
+  **测试双**不是守卫——它喂的那个守卫（`chat_sse.verdict`）已有 20 条变异的
+  `battery_chat_sse`。这是**有意的选择**，写明了免得后来人以为漏了。
+- **仍缺（§6 缺口 15 的下半）**：**页面那一层**没做——问答页的输入区在子组件里
+  （`AskApp.vue` 只渲染 `AskMessage`），要点出提问框 + 断言答案进 DOM 还得再挖一轮选择器。
+  方向已写进 §6：先用 `button.suggestion`（`@click="send(s)"`）绕过输入框。
+- **边界**：不证明模型理解问题、不证明厂商行为；"用假服务冒充 `custom`"是测试手段，
+  生产上没人给 `LLM_BASE_URL` 指回环地址。
+
 ## 2026-10-03 Vibecoding 能力补全 Wave25：把"浏览器坏了"查成一条可以量出来的读数（本会话，不占 R 槽位）
 
 - **起因是用户的一句反问**："怎么浏览器是坏的了"。我在 Wave24 交付后真浏览器那一档连红三次
