@@ -55,6 +55,7 @@ from agent_runtime.context_router import ContextRouter
 from agent_runtime.run_budget import RunBudget
 from agent_runtime.local_runtime import effective_parallelism, local_llm_slot
 from agent_runtime.tools import Capability, SideEffect, coerce_tool_spec, execute_tool, upgrade_registry
+from agent_runtime import tool_failure as _tool_failure
 from agent_runtime import mcp_bridge as _mcp_bridge
 from agent_runtime import langsmith as _langsmith
 
@@ -2598,6 +2599,8 @@ class Agent:
         repeats = 0  # 完全相同参数重复调用同一工具的次数
         tool_fail_streak = {}  # 同一工具连续失败次数（换参数也算；防同工具反复失败死循环）
         web_family_failures = {}  # 同一研究意图反复换写法仍失败时，及时要求换来源或收尾
+        _permanent_failures = {}  # 重试必然同样失败的类别（invalid_result / 幂等存疑 / 试做区禁调）
+                                  # 连续撞同一类就立刻要求换工具，不浪费反思额度
         fail_total = 0  # 连续失败总次数（任一工具；成功即清零）
         _last_ctx_at = 0.0  # 上次实时刷新上下文用量指示的时刻（限频用）
         executed = set()  # 本轮已执行过的 (工具, 参数)，用于防空转循环
@@ -3250,13 +3253,29 @@ class Agent:
 
                 # 自我反思：工具未返回有效结果时，标记反思并提示换思路重试。
                 if not _tool_ok:
+                    # 按失败类别分级处置（见 agent_runtime/tool_failure.py）。
+                    # 以前一律只说「换一种方式重试」，于是三类**重试必然同样失败**
+                    # 的情况被当成"再试一次说不定就成了"：
+                    #   · invalid_result（工具返回值不符协议）—— 那是代码 bug；
+                    #   · idempotency_in_doubt（上次执行中途挂了，状态未知）
+                    #     —— execute_tool 已经拒绝执行，但若这里还提示模型重试，
+                    #        模型换个参数再调就会算出新的幂等 key，**绕过唯一那道
+                    #        防重复副作用的闸门**；
+                    #   · project_stage_blocked（试做区禁该工具）—— 重试必被拒。
+                    # permanent 类不再累加"连续失败"计数：它本来就不该重试，
+                    # 累加只会让熔断阈值提前触发，在模型还没试够别的路之前收尾。
+                    _fail_category, _fail_guidance = _tool_failure.failure_guidance(
+                        _result.error_kind, obs)
+                    if _fail_category == "permanent":
+                        _permanent_failures[parsed["action"]] = (
+                            _permanent_failures.get(parsed["action"], 0) + 1)
                     if parsed["action"] in _WEB_ACTIONS:
                         family = _web_query_family(action_arg)
                         if family:
                             web_family_failures[family] = web_family_failures.get(family, 0) + 1
                     streak = tool_fail_streak.get(parsed["action"], 0) + 1
                     tool_fail_streak[parsed["action"]] = streak
-                    fail_total += 1
+                    fail_total += _tool_failure.retry_budget_cost(_fail_category)
                     # Phase 3 经验记录辅助：累计失败次数 / 单工具最长连续失败 / 全局最长连续失败 /
                     # 最近一次失败观察（截断，脱敏后用于回合收尾决策）。
                     if turn is not None:
@@ -3264,6 +3283,36 @@ class Agent:
                         turn.max_tool_streak = max(turn.max_tool_streak, streak)
                         turn.max_consec_failures = max(turn.max_consec_failures, fail_total)
                         turn.last_failure = _clip(obs, 400)
+                    # 同一工具反复撞「重试必然同样失败」的类别：立刻要求换工具，
+                    # 不再走下面的通用熔断（那条要3 次才触发，而这里每次都是白试）。
+                    # 幂等存疑（idempotency_in_doubt）尤其要拦：execute_tool 已经
+                    # 拒绝执行，若还让模型换参数再调，会算出新key 绕过唯一那道闸门。
+                    if _fail_category == "permanent" and _permanent_failures[parsed["action"]] >= 2:
+                        forced_finals = _MAX_FORCED_FINALS
+                        forced_final_reason = (
+                            f"（工具 {parsed['action']} 连续 { _permanent_failures[parsed['action']] } 次"
+                            "返回同类不可重试的失败（" + str(_result.error_kind or "unspecified") +
+                            "），重试没有意义，已要求换工具或直接收尾。）"
+                        )
+                        trail.append(
+                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                        )
+                        trail.append(
+                            {"role": "user", "content": (
+                                f"Nudge: 工具 {parsed['action']} 反复返回同类**不可重试**的失败"
+                                "（" + str(_result.error_kind or "unspecified") +
+                                "）。**禁止再用任何参数调用它**——这不是环境抖动，重试只会"
+                                "得到同样的错误。请立即改用其它工具；若没有其它路可走，就基于"
+                                "已有 Observation 输出 `Final Answer:`，如实说明这一步没做成、"
+                                "原因是什么。"
+                            )}
+                        )
+                        yield {
+                            "type": "reflection",
+                            "text": (f"工具 {parsed['action']} 反复返回不可重试的失败"
+                                     f"（{_result.error_kind or 'unspecified'}），已要求停止重试。"),
+                        }
+                        continue
                     # 同一工具连续失败到上限（换参数也算），或连续失败总数越界：判为「无用重试」，
                     # 强制收尾。否则弱模型会一直重试同一工具耗尽上下文——这正是
                     # dev_apply_regions 入参格式没被识别时报「参数缺失」刷出死循环的成因。
@@ -3304,7 +3353,11 @@ class Agent:
                         failures += 1
                         yield {
                             "type": "reflection",
-                            "text": f"工具 {parsed['action']} 未返回有效结果，正在换思路重试（改用其他工具或改写查询）。",
+                            "text": (f"工具 {parsed['action']} 未返回有效结果（{_fail_category}），"
+                                     + ("可原样重试。" if _fail_category == "transient"
+                                        else "不要重试，换工具或收尾。"
+                                        if _fail_category == "permanent"
+                                        else "建议针对性换做法。")),
                         }
                         trail.append(
                             {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
@@ -3313,8 +3366,7 @@ class Agent:
                             {
                                 "role": "user",
                                 "content": (
-                                    f"Reflection: 上一工具 {parsed['action']} 未得到有效结果，请换一种方式"
-                                    f"（例如改用 web_search，或换关键词）。\n\nObservation was: "
+                                    f"Reflection: {_fail_guidance}\n\nObservation was: "
                                     f"{_clip_tool_observation(obs, observation_limit, parsed['action'])}"
                                 ),
                             }
