@@ -1,5 +1,57 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-03 Vibecoding 能力补全 Wave22：作业对象的进程预算——把一条**确定性**的门禁红修掉（本会话，不占 R 槽位）
+
+- **接手的第一个动作就撞上它**：`dev_headcheck gate: 1` 在 `e6078bb` 上稳定红三题
+  （`diagnostics-find-real-errors`、`diagnostics-clean-file-is-clean`、
+  `headcheck-catches-untracked-reference`）。上一轮把它们记为"负载下会抖"——**实测不是**：
+  重跑两次一模一样，连失败名单都逐条相同。根因在 `agent_runtime/windows_sandbox.py:80`
+  的 `limits.BasicLimitInformation.ActiveProcessLimit = 4`（裸字面量）。
+- **机制**：门禁整集的子进程树是 `python -m dev_eval` → `python -m ruff` → `ruff.exe`
+  （ruff 的 `__main__` 自己还会 `subprocess.run` 再开一层），而整集里别的题同时还留着并发的
+  后端/浏览器/git 进程。并发预算花光后 `CreateProcess` 回 **`WinError 1816`（配额不足）**。
+  三步实验：① 把完整原始输出打出来，看到的是 `subprocess.py:1554` 的 traceback；
+  ② 6 个**串行**孩子全过（`Popen` 返回即前一个已退出）→ 卡的是**并发**不是深度；
+  ③ 并发到第 4 个活进程就 1816。
+- **它为什么特别难查，两层遮蔽**：① `diagnostics` 把这个 traceback **误报成**「ruff 退出码 1
+  但输出没能解析（可能被截断）」，把人引向完全不同的方向；② 因为它在检出与工作树里**都**红，
+  "比两边失败题名单差集"的归因会把它当公共噪声减掉——工具如实说"不是自洽问题"，同时报
+  【未通过】且不给任何可行动信号。**这个门当时每天都在教人忽略自己。**
+- **修法与依据**：`ACTIVE_PROCESS_LIMIT = 32`（具名常量，理由写进代码注释）。门禁整集
+  **实测峰值 7**——作业对象 `QueryInformationJobObject` 采样，105 次采样 0 次失败，32 是 4 倍
+  余量。单变量因果闭环：只把 `4` 临时改成 `64`，**同一条调用**从 22/25（3 红）变成 **25/25
+  全绿**，真 `dev_headcheck gate: 1` 变成【通过】、干净检出 24/24；改完已精确还原、`git diff` 为空。
+- **安全论证（不是"我觉得没关系"）**：回收整棵树的是 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，
+  与进程数无关；**浏览器路径至今只设这一个 flag**（`visual_acceptance.py:242`），也就是说
+  "只靠 kill-on-close"在本仓已经是交付过一次 99°C 事故的写法。真正的资源上限是
+  `JOB_OBJECT_LIMIT_JOB_MEMORY`（1 GiB），`ACTIVE_PROCESS` 只是第二道刹车，所以新值**保留
+  上限**而不是写成无界，并且有一条用例钉住"预算抬宽之后回收不能变松"。
+- **顺带两处让限位可测**（此前该模块**零测试**）：把限位构造抽成 `job_limits()` 纯函数，
+  并把模块级 `import ctypes.wintypes` 改成容错导入——它在非 Windows 上抛 `ValueError` 而非
+  `ImportError`，而模块 docstring 早就写着"非 Windows 走 fallback，好让契约在 CI 上可测"，
+  只是这条 import 把路堵死了。
+- **产物与数量**：`windows_sandbox.py` **+46/-12**（唯一的行为变化就是 4 → 32）；
+  `tests/test_windows_sandbox.py` **13 项**（9 纯层 + 2 fail-closed + 2 现场）；
+  `battery_windows_sandbox` **19 条变异 / 全抓 / 33 秒**；门禁新增 1 题
+  `sandbox-process-budget-survives-a-real-tree` **7 条断言**。
+  **基线不动**：`compare_to_baseline` 把基线里没有的新题放进 `new_cases` 放行，只有"基线里
+  已有且这轮翻转"的题才判回退——整集实测 **26/26**，`new_cases` 就是新增那一题。
+- **本轮踩的四个坑，全部写进 `docs/HANDOFF-vibecoding.md` §9**：① 判据写成"孩子被回收了"
+  而那个孩子**自己也会退出**，于是断言恒为真（假测试）；② `Popen` 返回 ≠ 进程起来了，所以
+  "拉起 8 个"没证明 8 个**同时占着预算**；③ 探针用 `spawn_isolated` 起子进程却**从不读它的
+  管道**，Windows 匿名管道约 4 KB 而门禁吐 27 KB → 子进程卡在 write 上，挂了 15 分钟；
+  ④ 电池那条"活下来"是**锚点不唯一**——`run_isolated` 与 `spawn_isolated` 的
+  `if ... AssignProcessToJobObject` 那一行字面完全相同，引擎 `replace(old, new, 1)` 把变异
+  打进了没人调用的那个函数。现有元测试只查"锚点在不在"，查不出"是不是只出现一次"——
+  已作为缺口 #11 记进 §6，**本轮没改引擎**（不在范围内）。
+- **验证**：13 项新测试全绿（现场层 0.66s）；把上限临时打回 4，现场层以**一模一样的
+  `WinError 1816`** 变红且耗时从 0.66s 涨到 120s（那 120s 正是在等永远不出现的标记）；
+  电池 **19/19**；整集门禁 **26/26**；`dev_headcheck gate: 1` **【通过】**。
+- **边界（不许越界宣称）**：证明的是"限位表摆得对、且门禁那棵树真的塞得进去"，**不**证明
+  并发无关的稳定性；嵌套树的现场检查只在 Windows 上跑，CI（ubuntu）上那两条是 skip 而不是
+  通过；纯层验的是**限位表与常量**，"进程有没有真被加进作业对象"只有现场层能抓；
+  `run_isolated` 至今**零测试**（缺口 #12）。
+
 ## 2026-10-02 Vibecoding 能力补全 Wave21b：`dev_headcheck` 加第二档——在干净检出里真跑套件（本会话，不占 R 槽位）
 
 > 编号说明：另一条 lane 也把他们的四个缺口（`dev_deps` / `dev_probe` / `dev_testrun coverage:` / `dev_handoff`）叫作 Wave21，尚未提交。为避免撞号，本会话这一档记作 **Wave21b**。

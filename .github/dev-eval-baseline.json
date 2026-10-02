@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 24,
- "scored": 24,
- "passed": 24,
+ "total": 25,
+ "scored": 25,
+ "passed": 25,
  "skipped": [],
  "results": [
   {
@@ -145,6 +145,12 @@
   },
   {
    "id": "bat-guard-refuses-an-escaped-closing-quote",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "sandbox-process-budget-survives-a-real-tree",
    "passed": true,
    "skipped": "",
    "failed_checks": []

@@ -7,10 +7,15 @@ contract remains testable in CI.
 from __future__ import annotations
 
 import ctypes
-import ctypes.wintypes
 import os
 import subprocess
 from typing import Any, Mapping
+
+try:  # 非 Windows 平台没有 ctypes.wintypes（那里 import 它抛的是 ValueError 不是 ImportError）。
+    # 本模块在那些平台只走 subprocess fallback，但**必须能被 import**：限位表要能在 CI 上被测。
+    import ctypes.wintypes  # noqa: F401
+except (ImportError, ValueError):  # pragma: no cover - 只有非 Windows 才走到
+    pass
 
 
 class SandboxUnavailable(RuntimeError):
@@ -24,6 +29,26 @@ JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION = 0x00000400
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 CREATE_NO_WINDOW = 0x08000000
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+#: 作业对象里允许的**并发**进程数上限。
+#:
+#: 这里是 2026-10-02 那次门禁事故的根因：原值是裸字面量 ``4``，而门禁整集那条子进程树是
+#: ``python -m dev_eval`` → ``python -m ruff`` → ``ruff.exe``（工具自己还会再开一层），
+#: 整集里别的题同时还留着并发的后端/浏览器/git 进程。预算花光之后 ``CreateProcess``
+#: 直接回 ``WinError 1816``（配额不足），三道门禁题被压红，而 ``diagnostics`` 把它
+#: 误报成「ruff 退出码 1 但输出解析不出来」——**退出码 1 的真实内容是一段 traceback**。
+#: 门禁整集的实测峰值是 **7**（``.tmp`` 探针按 ``--user-data-dir`` 无关的作业对象
+#: ``QueryInformationJobObject`` 采样，105 次采样 0 次失败）；32 是它的 4 倍余量。
+#:
+#: 为什么不是无界：真正的资源上限是 ``JOB_OBJECT_LIMIT_JOB_MEMORY``（1 GiB），
+#: ``ACTIVE_PROCESS`` 是**第二道**刹车——没有它，一个坏循环能在触到内存上限之前
+#: 先把整台机器的进程表铺满。
+#:
+#: 为什么抬高它不削弱 99°C 漏浏览器那道修法：真正回收整棵树的是
+#: ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE``，与进程数无关；浏览器路径至今也**只**设这一个
+#: flag（``visual_acceptance._make_job``），也就是说"只靠 kill-on-close"在本仓已经是
+#: 交付过一次事故的写法。
+ACTIVE_PROCESS_LIMIT = 32
 
 
 class _IO_COUNTERS(ctypes.Structure):
@@ -61,6 +86,23 @@ def _win32_error(prefix: str) -> SandboxUnavailable:
     return SandboxUnavailable("%s（Win32=%s）" % (prefix, code))
 
 
+def job_limits(memory_bytes: int) -> _EXTENDED_LIMIT_INFORMATION:
+    """这张作业对象的限位表长什么样——抽成纯函数，好让"限位是怎么摆的"能被测到。
+
+    内联在 `_create_job` 里的时候，非 Windows 上根本没有任何函数能读到它，于是
+    `KILL_ON_JOB_CLOSE` 掉了、`ActiveProcessLimit` 写回 4 了，谁都不会红。
+    """
+    limits = _EXTENDED_LIMIT_INFORMATION()
+    limits.BasicLimitInformation.LimitFlags = (
+        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY |
+        JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    limits.BasicLimitInformation.ActiveProcessLimit = ACTIVE_PROCESS_LIMIT
+    limits.ProcessMemoryLimit = int(memory_bytes)
+    limits.JobMemoryLimit = int(memory_bytes)
+    return limits
+
+
 def _create_job(memory_bytes: int):
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
@@ -70,16 +112,7 @@ def _create_job(memory_bytes: int):
     handle = kernel32.CreateJobObjectW(None, None)
     if not handle:
         raise _win32_error("无法创建适配器 Job Object")
-    limits = _EXTENDED_LIMIT_INFORMATION()
-    limits.BasicLimitInformation.LimitFlags = (
-        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY |
-        JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION |
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
-    # The Windows Python launcher may create one short-lived runtime child;
-    # allow a small fixed process tree while still preventing fan-out.
-    limits.BasicLimitInformation.ActiveProcessLimit = 4
-    limits.ProcessMemoryLimit = int(memory_bytes)
-    limits.JobMemoryLimit = int(memory_bytes)
+    limits = job_limits(memory_bytes)
     ok = kernel32.SetInformationJobObject(handle, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
                                           ctypes.byref(limits), ctypes.sizeof(limits))
     if not ok:
@@ -176,4 +209,5 @@ def terminate_isolated(kernel32, job_handle, *, exit_code: int = 124) -> None:
             pass
 
 
-__all__ = ["SandboxUnavailable", "run_isolated", "spawn_isolated", "terminate_isolated"]
+__all__ = ["SandboxUnavailable", "run_isolated", "spawn_isolated", "terminate_isolated",
+           "job_limits", "ACTIVE_PROCESS_LIMIT"]

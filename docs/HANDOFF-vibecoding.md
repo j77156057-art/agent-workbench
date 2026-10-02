@@ -328,6 +328,49 @@ cd frontend && npm run test:node
 - 边界：只查 `.bat`/`.cmd` 里"目录展开 + 引号"这一类；`%VAR:~0,-1%` 之类剪切写法是否真的
   剪对了、PowerShell 自己那套引号规则、以及 `start`/`pushd` 之类的边缘行为都**没有**覆盖。
 
+### 5.16 作业对象的进程预算：Wave22 修掉的那条"确定性红"
+
+- **这不是补能力，是修一条把门禁压红的确定性缺陷**。接手 `e6078bb` 时
+  `dev_headcheck gate: 1` 稳定红三题（`diagnostics-find-real-errors`、
+  `diagnostics-clean-file-is-clean`、`headcheck-catches-untracked-reference`），
+  重跑一模一样，**不是负载抖动**。根因在 `agent_runtime/windows_sandbox.py:80`：
+  `limits.BasicLimitInformation.ActiveProcessLimit = 4`（裸字面量）。
+- **链条**：门禁整集的子进程树是 `python -m dev_eval` → `python -m ruff` → `ruff.exe`
+  （工具自己还会再开一层），整集里别的题同时还留着并发的后端/浏览器/git 进程。并发预算
+  花光后 `CreateProcess` 直接回 **`WinError 1816`（配额不足）**。三步实验把因果钉死：
+  ① 拿到完整原始输出——`diagnostics` 把它**误报成**「ruff 退出码 1 但输出没能解析
+  （可能被截断）」，而退出码 1 的真实内容是一段 `subprocess.py:1554` 的 traceback；
+  ② 排除深度——6 个**串行**孩子全过（`Popen` 返回即前一个已退出），限制卡的是**并发**；
+  ③ 测出阈值——并发到第 4 个活进程就 1816。
+- **为什么"比差集"抓不到它**：那个红在检出与工作树里**都**出现，于是归因如实说
+  "不是自洽问题"，同时报【未通过】却不给任何可行动信号——**等于这个门每天教人忽略自己**。
+  Wave21b 的"先重跑再比差集"是为负载抖动设计的，对确定性红无效。
+- **修法**：`ACTIVE_PROCESS_LIMIT = 32`（具名常量 + 写清理由）。门禁整集**实测峰值 7**
+  （作业对象 `QueryInformationJobObject` 采样，105 次采样 0 次失败），32 是它的 4 倍余量。
+  单变量验证：只把 `4` 临时改成 `64`，**同一条调用**从 22/25（3 红）变成 **25/25 全绿**，
+  真 `dev_headcheck gate: 1` 变成【通过】、干净检出 24/24。
+- **为什么抬高它不削弱 99°C 那道修法**：真正回收整棵树的是
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，与进程数无关；浏览器路径至今**只**设这一个 flag
+  （`visual_acceptance.py:242`），也就是说"只靠 kill-on-close"在本仓已经是交付过一次事故
+  的写法。真正的资源上限是 `JOB_OBJECT_LIMIT_JOB_MEMORY`（1 GiB），`ACTIVE_PROCESS` 只是
+  第二道刹车，所以新值**保留上限**而不是写成无界。
+- **顺带把限位构造抽成 `job_limits()` 纯函数**：内联在 `_create_job` 里的时候，非 Windows
+  上没有任何函数能读到那张表，于是 `KILL_ON_JOB_CLOSE` 掉了、预算写回 4 了，CI 上一个红都
+  没有。同时把模块级的 `import ctypes.wintypes` 改成容错导入——它在非 Windows 上抛的是
+  `ValueError` 不是 `ImportError`，而模块 docstring 早就写着"非 Windows 走 fallback，
+  好让契约在 CI 上可测"，只是这条 import 把它堵死了。
+- **产物与数量**：`windows_sandbox.py`（+46/-12，唯一的行为变化就是 4 → 32）；
+  `tests/test_windows_sandbox.py` **13 项**（9 纯层 + 2 fail-closed + 2 现场）；
+  `tests/mutation/battery_windows_sandbox.py` **19 条变异 / 全抓 / 33 秒**；
+  门禁新增 1 题 `sandbox-process-budget-survives-a-real-tree` **7 条断言**。
+  **基线不用动**：`compare_to_baseline` 把基线里没有的新题放进 `new_cases` 放行，
+  只有"基线里已有且这轮翻转"的题才判回退（整集实测 **26/26**，`new_cases` 就是那一题）。
+- **边界（不许越界宣称）**：它证明的是"作业对象的限位表摆得对、且门禁那棵树真的塞得进去"，
+  **不**证明并发无关的稳定性；嵌套树的现场检查只在 Windows 上跑，CI（ubuntu）上那两条
+  是 skip 而不是通过；纯层能验的是**限位表与常量**，验不出"进程有没有真的被加进作业对象"
+  ——那条只有现场层（关一次句柄、看整棵树会不会跟着走）能抓，而它正是电池里唯一
+  只能靠现场抓的那一类。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -340,6 +383,8 @@ cd frontend && npm run test:node
 | 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
 | 6 | 连接器 UI 未接 `inline_tools` 开关 | Wave10 未做项 | 小改，UI 侧 |
 | 7 | 一条计时断言只有 0.12s 余量 | `tests/test_orchestrator.py` 的 `elapsed < 0.32`，负载高时必红（属别人文件，未代改） | 改成相对余量（sleep 拉到 1.0s、断言 <1.6s） |
+| 11 | Wave22 修掉了压红门禁的作业对象进程预算，但**引擎不查锚点唯一性** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点在源码里出现两次时只改第一处。本轮实测：`run_isolated` 与 `spawn_isolated` 的 `if ... AssignProcessToJobObject` 那一行字面完全相同，变异因此打进没人调用的 `run_isolated`，那条"活下来"看起来像守卫没牙 | `anchors_valid()` 加一条 `source.count(old) == 1`，非唯一即报**问题**（不是跳过）。改引擎要配它自己的电池，本轮**没做**（不在 Wave22 范围内） |
+| 12 | `run_isolated` 仍然零测试 | 它与 `spawn_isolated` 共用 `_create_job`，Wave22 只给后者加了现场层；本次出事故的那行在两个函数里各有一份 | 与 11 一起做：给 `run_isolated` 补最小回归（能拿到子进程 stdout、超时走 `TerminateJobObject`），再给电池补对应锚点 |
 
 ## 7. 共享工作树里的提交规范（实测有效的那套）
 
@@ -479,6 +524,36 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   都会连带它红。实测：9 个套件串在一起跑时它红过一次（84 passed / 3 failed），单跑同一文件
   15 passed、三文件组合重跑 87 passed。读这条红之前，先看同一时间有没有别的 lane 在起浏览器
   （按 `--user-data-dir` 归组数进程），别第一时间怀疑代码。
+
+- **"已知红"要重新验一遍，它可能是确定性的，而差集归因天生抓不到确定性红**（Wave22）。
+  接手时 `diagnostics-*` 两题被记为"负载下会抖"，实测重跑两次一模一样。根因是作业对象
+  `ActiveProcessLimit = 4`：`python -m dev_eval` → `python -m ruff` → `ruff.exe` 这条树加上
+  别的题留下的并发进程把预算花光，`CreateProcess` 回 **`WinError 1816`（配额不足）**。
+  两层遮蔽让它格外难查：① `diagnostics` 把这个 traceback **误报成**「ruff 输出没能解析
+  （可能被截断）」，错误信息把方向指向完全不同的地方；② 因为它在检出与工作树里都红，
+  "比失败题名单差集"的归因会把它当公共噪声减掉，于是工具如实说"不是自洽问题"、同时报
+  【未通过】且不给任何可行动信号。**教训**：把一条红归为"环境噪声"之前，先问它**是不是
+  每次都以同样的名字红**；确定性的红不会被差集减掉，只会被差集**藏起来**。
+- **"活下来"先怀疑锚点，再怀疑守卫**（Wave22 实测）。`battery_windows_sandbox` 有一条
+  "进程没被加入作业对象也不报错"报活下来，我按机制推断现场层一定能抓（并用探针证实了
+  机制：不加入作业对象的孩子确实不会被句柄关闭带走）。真因是**锚点不唯一**——
+  `run_isolated` 与 `spawn_isolated` 的 `if ... AssignProcessToJobObject` 那一行字面完全
+  相同，而引擎做 `replace(old, new, 1)`，变异被打进没人调用的 `run_isolated`。
+  现有元测试只查"锚点在不在"，查不出"锚点是不是只出现一次"。**教训**：加变异时优先挑
+  **唯一**的锚点（多带一行上下文）；报活下来时，先问"这条变异改的地方真被调用吗"。
+- **`Popen` 返回 ≠ 进程起来了，而且"没人读的管道"会把子进程永久卡死**（Wave22 两条现场
+  用例都被这两件事骗过）。① `Popen` 在 `CreateProcess` 成功那一刻就返回，所以"拉起 8 个
+  进程"只证明系统肯创建，不证明 8 个**同时占着预算**——现场判据要改成"每个孙进程先写标记
+  文件再睡，等齐标记才回报"。② `spawn_isolated` 把子进程 stdout 接成 `PIPE` 并**指望调用方
+  读**；Windows 匿名管道缓冲约 4 KB，而门禁要吐 27 KB JSON，于是子进程卡在 write 上永不
+  退出——我那个量峰值的探针为此挂了 15 分钟。`process_runner.run_bounded` 会抽干管道所以没
+  这问题，**自己 Popen 时必须 `communicate()` 或把输出接到文件**。
+  顺带：中途 `kill()` 一个还在加载 DLL 的 Python 会打出 `Windows fatal exception: access
+  violation`，看到它先查是不是在杀没起来的进程，别当成代码崩了。
+- **判据"永远为真"的同型：让被观察的对象自己退出**（Wave22 第一版的假测试）。回收那条
+  现场用例起个孩子、关掉作业对象句柄、断言孩子没了——可那个孩子**自己也会退出**，于是
+  断言恒为真，什么都没验就绿。修法是让孩子睡 300 秒、并在关句柄**之前**用就绪标记确认它
+  真的活着。**教训**：断言"某物消失"之前，先问"它还有什么别的原因会消失"。
 
 ## 10. 本会话未结事项
 

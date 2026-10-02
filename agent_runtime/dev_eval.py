@@ -943,6 +943,55 @@ def _case_bat_guard_refuses_an_escaped_closing_quote(root: str,
                    bs + dq in wire and hand != wire, {"wire": wire, "hand": hand})]
 
 
+def _case_sandbox_process_budget_survives_a_real_tree(
+        root: str, run: Callable[..., dict]) -> list[dict]:
+    r"""作业对象的进程预算：门禁整集自己就是那棵被压死的树（Wave22）。
+
+    2026-10-02 的事故形状：`_create_job` 把 `ActiveProcessLimit` 写成裸字面量 ``4``，
+    而门禁整集的子进程树是 ``python -m dev_eval`` → ``python -m ruff`` → ``ruff.exe``
+    （工具自己还会再开一层），整集里别的题同时还留着并发的后端/浏览器/git 进程。
+    预算花光之后 ``CreateProcess`` 直接回 ``WinError 1816``（配额不足），而
+    ``diagnostics`` 把它**误报成**「ruff 退出码 1 但输出没能解析」——退出码 1 的真实
+    内容是一段 Python traceback，不是 lint 发现。
+
+    为什么这道题值得在门禁里：那个红是**确定性**的，但它在检出与工作树里**都**出现，
+    于是"比两边失败题名单差集"的归因会把它当公共噪声减掉——工具如实说"不是自洽问题"，
+    同时报【未通过】且不给任何可行动信号，等于每天教人忽略自己。
+
+    门禁整集的实测峰值是 7（作业对象 ``QueryInformationJobObject`` 采样），所以这里钉的
+    下限是 8。**真在作业对象里拉一棵嵌套树**那条现场检查放在
+    ``tests/test_windows_sandbox.py``，不在这里重跑一遍：门禁每题都有时限，而这一条
+    已经被变异电池的现场层逐条验过。
+    """
+    from agent_runtime import windows_sandbox as ws
+
+    memory = 4096
+    limits = ws.job_limits(memory)
+    flags = int(limits.BasicLimitInformation.LimitFlags)
+    return [
+        _check("kill_on_job_close_is_always_requested",
+               flags & ws.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, hex(flags)),
+        _check("the_active_process_flag_is_still_requested",
+               flags & ws.JOB_OBJECT_LIMIT_ACTIVE_PROCESS, hex(flags)),
+        _check("the_memory_caps_are_still_requested",
+               flags & ws.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+               and flags & ws.JOB_OBJECT_LIMIT_JOB_MEMORY, hex(flags)),
+        _check("the_budget_is_above_the_measured_peak",
+               ws.ACTIVE_PROCESS_LIMIT >= 8,
+               "ACTIVE_PROCESS_LIMIT=%s（事故值是 4，门禁整集实测峰值 7）"
+               % ws.ACTIVE_PROCESS_LIMIT),
+        _check("the_budget_stays_finite",
+               0 < ws.ACTIVE_PROCESS_LIMIT <= 256, ws.ACTIVE_PROCESS_LIMIT),
+        _check("the_limit_table_and_the_constant_agree",
+               limits.BasicLimitInformation.ActiveProcessLimit == ws.ACTIVE_PROCESS_LIMIT,
+               {"table": limits.BasicLimitInformation.ActiveProcessLimit,
+                "constant": ws.ACTIVE_PROCESS_LIMIT}),
+        _check("the_memory_numbers_reach_the_table",
+               limits.ProcessMemoryLimit == memory and limits.JobMemoryLimit == memory,
+               {"process": limits.ProcessMemoryLimit, "job": limits.JobMemoryLimit}),
+    ]
+
+
 DEV_DATASET: tuple[dict[str, Any], ...] = (
     {
         "id": "lookup-by-filename", "fixture": "ts-refs",
@@ -1111,6 +1160,14 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "note": "启动器引号门只有一种失效方式：把 cmd 自己解析的地方也判红，那就没人会留着它。"
                 "红的是「展开后以反斜杠结尾的引号实参」与「裸的目录展开」；绿的是 "
                 "%~dp0. 与 %ROOT:~0,-1% 两种正解，外加 cd / if 条件 / set 这三处",
+    },
+    {
+        "id": "sandbox-process-budget-survives-a-real-tree", "fixture": "plain",
+        "direct": _case_sandbox_process_budget_survives_a_real_tree,
+        "uses": [],
+        "note": "作业对象的进程预算必须撑得住门禁整集自己那棵树；4 会让 CreateProcess "
+                "回 1816，而它在检出与工作树里都红，会被差集归因当成噪声减掉。"
+                "真正的嵌套树现场检查在 tests/test_windows_sandbox.py，不在这里重跑",
     },
 )
 
