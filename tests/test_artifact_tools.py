@@ -98,8 +98,13 @@ class ArtifactToolsTests(unittest.TestCase):
         self.assertNotEqual(first["path"], second["path"])
 
     def test_artifact_generation_uses_existing_write_guardrails(self):
-        self.assertIn("create_artifact", agent._WRITE_TOOLS)
-        self.assertIn("create_artifact", agent._NO_PARALLEL_TOOLS)
+        # 断言运行期的 ToolSpec，而不是 agent._WRITE_TOOLS / _NO_PARALLEL_TOOLS
+        # 那两张运行期不读的死副本（断言它们等于校验一份与真实行为无关的清单）。
+        from agent_runtime.tools import Capability, SideEffect, coerce_tool_spec
+        spec = coerce_tool_spec("create_artifact", __import__("tools").TOOLS["create_artifact"])
+        self.assertEqual(spec.capability, Capability.WRITE_LOCAL)
+        self.assertEqual(spec.side_effect, SideEffect.MUTATING)
+        self.assertFalse(spec.parallel_safe)
         self.assertTrue(agent._has_write_intent("请生成一份 PDF 报告"))
         self.assertFalse(agent._has_write_intent("请审查这份 PDF 报告"))
 

@@ -16,12 +16,79 @@ import {
 } from '../api'
 import Icon from './Icon.vue'
 import { appEvents } from '../eventBus'
+import { costLabel, money, type PricingState } from '../composables/costLabel'
+import { SKINS, loadSkin, setSkin, onSkinChange, type SkinKey } from '../skins'
+import { loadMaterial, setMaterial, onMaterialChange, type Material } from '../glassPointer'
+import { STYLES, loadStyle, setStyle, onStyleChange, type StyleKey } from '../styleMode'
+import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '../layoutMode'
 
-const props = defineProps<{ visible: boolean; initialTab?: 'usage' | 'search' | 'mcp' | 'agent' | 'model' }>()
+const props = defineProps<{ visible: boolean; initialTab?: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'appearance' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-type Tab = 'usage' | 'search' | 'mcp' | 'agent' | 'model'
+type Tab = 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'appearance'
 const tab = ref<Tab>('usage')
+// 记录用户最近一次主动选择。设置面板的初始化请求是异步的，不能在请求完成后
+// 用入口标签覆盖掉用户已经点选的页面。
+const tabTouched = ref(false)
+
+function selectTab(next: Tab) {
+  tabTouched.value = true
+  tab.value = next
+}
+
+// ---------------- 皮肤（视觉风格）----------------
+// 纯前端：写 localStorage + 改 <html data-skin>，skins.css 里的 html[data-skin='x']
+// 覆写 :root 令牌，浏览器立即重算全部 var()，无需刷新也不走后端。
+const skin = ref<SkinKey>(loadSkin())
+
+function chooseSkin(key: SkinKey) {
+  // setSkin 内部会夹住非法值并返回实际生效的 key，用返回值回填避免 UI 显示与实际不一致
+  skin.value = setSkin(key)
+  const s = SKINS.find((x) => x.key === key)
+  appEvents.emit('docmind:appearance-changed', { kind: 'skin', label: s?.name ?? key })
+}
+
+// 另一个入口（问答页 / 另一个窗口）改了皮肤时同步本组件的选中态
+onSkinChange((k) => { skin.value = k })
+
+// ---------------- 材质（玻璃 / 实体）----------------
+// 材质与皮肤正交：皮肤管颜色，材质管表面。玻璃 = 半透明 + 背后模糊 + 高光描边。
+const material = ref<Material>(loadMaterial())
+
+function chooseMaterial(m: Material) {
+  material.value = setMaterial(m)
+  appEvents.emit('docmind:appearance-changed', {
+    kind: 'material', label: m === 'glass' ? '玻璃' : '实体',
+  })
+}
+
+onMaterialChange((m) => { material.value = m })
+
+// ---------------- 风格（造型语言）----------------
+// 皮肤管颜色、风格管造型（圆角/描边/阴影/字体/纹理/字重）、材质管表面，三者正交。
+const style = ref<StyleKey>(loadStyle())
+
+/** 每次切换都派发事件，让顶栏提示「现在是什么」—— 否则用户在弹窗里点完
+ *  看到界面变了但不知道变成了什么（实测反馈：「选了啥按钮没提示」）。 */
+function chooseStyle(k: StyleKey) {
+  style.value = setStyle(k)
+  const s = STYLES.find((x) => x.key === k)
+  appEvents.emit('docmind:appearance-changed', { kind: 'style', label: s?.name ?? k })
+}
+
+onStyleChange((k) => { style.value = k })
+
+// ---------------- 布局（空间构成）----------------
+// 皮肤管颜色、风格管造型、布局管空间：侧栏在哪、主区多宽、该居中还是铺满。
+const layout = ref<LayoutKey>(loadLayout())
+
+function chooseLayout(k: LayoutKey) {
+  layout.value = setLayout(k)
+  const l = LAYOUTS.find((x) => x.key === k)
+  appEvents.emit('docmind:appearance-changed', { kind: 'layout', label: l?.name ?? k })
+}
+
+onLayoutChange((k) => { layout.value = k })
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -83,8 +150,33 @@ const budgetRemaining = computed(() => {
   return Math.max(0, limit - Number(budget.value?.global_spent || 0))
 })
 const providerUsage = computed(() => Object.entries(traceSummary.value?.by_provider || {})
-  .map(([provider, item]) => ({ provider, ...item, ...providerMeta(provider) }))
+  .map(([provider, item]) => {
+    const cacheRead = Number(item.cache_read_tokens || 0)
+    const cacheWrite = Number(item.cache_creation_tokens || 0)
+    const saved = Number(item.cache_saved_cny || 0)
+    const parts = [`缓存命中 ${tokens(cacheRead)}`]
+    if (cacheWrite > 0) parts.push(`写入 ${tokens(cacheWrite)}`)
+    if (saved > 0) parts.push(`省 ¥${saved.toFixed(4)}`)
+    if (cacheRead <= 0 && cacheWrite <= 0) parts.push('—')
+    return {
+      provider,
+      ...item,
+      ...providerMeta(provider),
+      // 后端已判定好这个 0 是"免费/本地/未配置"，前端只翻成人话，不自己猜。
+      cost: costLabel(item.cost_cny, (item as { pricing_state?: PricingState }).pricing_state),
+      cache_read_tokens: cacheRead,
+      cacheText: parts.join(' · '),
+      cacheTitle: cacheRead > 0
+        ? `输入 ${tokens(item.prompt_tokens)} 中有 ${tokens(cacheRead)} 命中缓存（${pctOf(cacheRead, Number(item.prompt_tokens || 0))}），按折扣价计费`
+        : '这个供应商没有缓存命中记录',
+    }
+  })
   .sort((a, b) => b.tokens - a.tokens))
+
+function pctOf(part: number, whole: number): string {
+  if (!whole) return '0%'
+  return `${((part / whole) * 100).toFixed(1)}%`
+}
 
 function providerMeta(provider: string): { label: string; kind: string; simulated: boolean } {
   const key = (provider || '').toLowerCase()
@@ -97,12 +189,53 @@ function providerMeta(provider: string): { label: string; kind: string; simulate
   return { label: provider, kind: '云端模型', simulated: false }
 }
 
-function money(value: number | null | undefined): string {
-  return `¥${Number(value || 0).toFixed(4)}`
-}
 function tokens(value: number | null | undefined): string {
   return Number(value || 0).toLocaleString('zh-CN')
 }
+
+/**
+ * 缓存命中的 token 数。
+ *
+ * 注意：`prompt_tokens` **已经包含**缓存命中部分（provider 报的 prompt_tokens 就是
+ * 缓存后的总量），所以这里**不能**把它再加到总 Token 上——那会把账算重。
+ * 正确的说法是"其中多少走了缓存折扣"，所以 UI 上写成"含缓存命中 N（M%）"。
+ */
+const cacheReadTokens = computed(() =>
+  Number(traceSummary.value?.cache_read_tokens || 0))
+const cacheWriteTokens = computed(() =>
+  Number(traceSummary.value?.cache_creation_tokens || 0))
+
+/** 缓存命中占输入的比例。分母用 prompt_tokens（含缓存），这才是"多少输入走了缓存"。 */
+const cacheRatio = computed(() => {
+  const prompt = Number(traceSummary.value?.prompt_tokens || 0)
+  if (prompt <= 0 || !cacheReadTokens.value) return '0'
+  return ((cacheReadTokens.value / prompt) * 100).toFixed(1)
+})
+
+/**
+ * 缓存命中省下的钱。**后端算好的**，前端只负责显示。
+ *
+ * 不在前端算：单价在 `.docmind_pricing.json`，还有阶梯档（OpenRouter 长上下文会翻倍），
+ * 前端拿不到也不该重复实现一遍——两处逻辑各写一遍，阶梯档一改就对不上，
+ * 而且没人会发现（省的钱会比该收的钱还离谱）。
+ */
+const cacheSavedCny = computed(() =>
+  Number(traceSummary.value?.cache_saved_cny || 0))
+
+const cacheSavedNote = computed(() => {
+  const saved = cacheSavedCny.value
+  // 为 0 有两种含义：没命中缓存 / 没配单价算不出。只报有数的那个，
+  // 拿 0 冒充"省了 0 元"就是把"没算"说成"算了"。
+  if (saved <= 0) return ''
+  return `其中缓存命中按折扣价计费，约省 ¥${saved.toFixed(4)}`
+})
+
+/** 缓存写入的 token。DeepSeek / Anthropic 的写入价**高于**全价（1.25x），所以不叫"省"。 */
+const cacheWriteNote = computed(() => {
+  const wrote = cacheWriteTokens.value
+  if (wrote <= 0) return ''
+  return `（另含缓存写入 ${tokens(wrote)}，写入价高于全价，不计入节省）`
+})
 
 async function loadUsage() {
   usageLoading.value = true
@@ -946,6 +1079,7 @@ function openModelSettings() {
               <div class="sv-meter">
                 <span>输入 Token</span>
                 <b>{{ tokens(traceSummary?.prompt_tokens) }}</b>
+                <small v-if="cacheReadTokens" class="sv-meter-sub">含缓存命中 {{ tokens(cacheReadTokens) }}（{{ cacheRatio }}%）</small>
               </div>
               <div class="sv-meter">
                 <span>输出 Token</span>
@@ -954,6 +1088,7 @@ function openModelSettings() {
               <div class="sv-meter">
                 <span>总 Token</span>
                 <b>{{ tokens(traceSummary?.total_tokens) }}</b>
+                <small v-if="cacheSavedNote" class="sv-meter-sub">{{ cacheSavedNote }}{{ cacheWriteNote }}</small>
               </div>
               <div class="sv-meter">
                 <span>今日费用</span>
@@ -970,14 +1105,26 @@ function openModelSettings() {
             </div>
 
             <div v-if="providerUsage.length" class="sv-provider-list">
-              <div class="sv-provider-head"><span>模型供应商</span><span>类型</span><span>Token</span><span>费用</span></div>
+              <div class="sv-provider-head"><span>模型供应商</span><span>类型</span><span>Token</span><span>缓存命中</span><span>费用</span></div>
               <div v-for="item in providerUsage" :key="item.provider" class="sv-provider-row" :class="{ simulated: item.simulated }">
                 <b>{{ item.label }}</b>
                 <span class="sv-kind">{{ item.kind }}</span>
                 <span :title="`输入 ${tokens(item.prompt_tokens)} / 输出 ${tokens(item.completion_tokens)}`">{{ tokens(item.tokens) }}</span>
-                <span>{{ money(item.cost_cny) }}</span>
+                <!-- 缓存命中**已包含在上面那列输入 Token 里**，所以这里不参与求和，
+                     只标出其中有多少走了折扣价。 -->
+                <span class="sv-cache" :class="{ on: item.cache_read_tokens > 0 }"
+                      :title="item.cacheTitle">{{ item.cacheText }}</span>
+                <span :title="item.pricing_state === 'unknown' ? '没有配置这个 provider 的单价，费用并未计入；用 dev_pricing(action: apply) 从官方目录检索写入' : ''">{{ item.cost }}</span>
               </div>
             </div>
+            <p v-if="cacheSavedCny > 0" class="sv-note">
+              缓存命中按折扣价（通常约为输入全价的 1/10）计费，累计<b>省下 ¥{{ cacheSavedCny.toFixed(4) }}</b>。
+              没有这部分命中，同样的输入需要 ¥{{ (Number(traceSummary?.total_cost_cny || 0) + cacheSavedCny).toFixed(4) }}。
+            </p>
+            <p v-if="providerUsage.some(item => item.pricing_state === 'unknown' && item.tokens > 0)" class="sv-note">
+              标为「未配置单价」的供应商费用<b>并未计入</b>——那个 ¥0 只代表「没算」，不代表免费。
+              用 dev_pricing(action: apply) 从官方目录检索并写入单价。
+            </p>
             <p v-if="providerUsage.some(item => item.simulated && item.tokens > 0)" class="sv-note">
               mock / fake 的 Token 是按文本估算的测试负载，用于验证上下文裁剪与性能，不代表 API 消耗，也不会计费。
             </p>
@@ -1526,6 +1673,11 @@ function openModelSettings() {
 .sv-provider-row span { text-align: right; color: var(--text-muted); }
 .sv-provider-head span:not(:first-child) { text-align: right; }
 .sv-provider-row .sv-kind { text-align: left; font-size: 11px; }
+/* 缓存命中：有命中才上色——满屏灰色「—」没有信息量，命中那行才该被看见。
+   数字用等宽，避免长数字在 grid 里抖动。 */
+.sv-provider-row .sv-cache { font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0.55; }
+.sv-provider-row .sv-cache.on { opacity: 1; color: var(--accent); }
+.sv-meter-sub { display: block; margin-top: 4px; font-size: 11px; line-height: 1.45; color: var(--text-faint); }
 .sv-provider-row.simulated { background: color-mix(in srgb, var(--bg-selected) 55%, transparent); }
 .sv-note { margin: 8px 0 0; padding-left: 9px; border-left: 2px solid var(--accent); color: var(--text-muted); font-size: 11px; line-height: 1.55; }
 .sv-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }

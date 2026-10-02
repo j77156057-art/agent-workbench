@@ -134,7 +134,8 @@ class StartWorkflowGuardsTests(unittest.TestCase):
         spec = coerce_tool_spec("start_workflow", tools_mod.TOOLS["start_workflow"])
         self.assertEqual(spec.capability, Capability.ADMIN)
         self.assertFalse(spec.parallel_safe)
-        self.assertIn("start_workflow", agent_mod._NO_PARALLEL_TOOLS)
+        # 原来还有一句 assertIn(..., agent_mod._NO_PARALLEL_TOOLS)，断言的是
+        # 一张运行期不读的死副本；上面两行断的 coerce_tool_spec 才是真实判定。
 
     def test_subagents_cannot_call_start_workflow(self):
         for role, spec in agent_mod._SUBAGENT_ROLES.items():

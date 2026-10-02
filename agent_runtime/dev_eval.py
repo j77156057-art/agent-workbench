@@ -1104,6 +1104,11 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "patch-applies-atomically", "fixture": "patch",
+        # 这三道补丁题必须自带写入意图：dev_patch 改源码，写意图护栏（用户没要求改
+        # 就不许落盘）理应拦它。以前 dev_patch 被错登记成 read_local，护栏看不见它，
+        # 于是这些题在"无授权也能改文件"的前提下一直是绿的——门禁反而掩盖了问题。
+        # 护栏修好后题面要写成真实场景：用户确实要求打补丁。
+        "question": "请应用补丁，修改 a.txt 与 b.txt。",
         "steps": [_react("dev_patch", _CLEAN_PATCH), _final("改好了")],
         "expect": {"called": ["dev_patch"], "observation_contains": ["补丁已应用"],
                    "files": {"a.txt": "one\nTWO\nthree\n", "b.txt": _OTHER_TARGET}},
@@ -1112,6 +1117,7 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "patch-rejects-partial-and-writes-nothing", "fixture": "patch",
+        "question": "请应用补丁，修改 a.txt 与 b.txt。",
         "steps": [_react("dev_patch", _BAD_SECOND_PATCH), _final("被打回")],
         "expect": {"called": ["dev_patch"], "observation_contains": ["补丁被拒绝"],
                    "files": {"a.txt": _PATCH_TARGET, "b.txt": _OTHER_TARGET}},
@@ -1119,6 +1125,7 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "patch-refuses-delete-and-escape", "fixture": "patch",
+        "question": "请应用补丁，修改 a.txt 与 b.txt。",
         "steps": [_react("dev_patch", "--- a/a.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-one\n"),
                   _final("不让删")],
         "expect": {"called": ["dev_patch"], "observation_contains": ["拒绝"],

@@ -60,22 +60,50 @@ from agent_runtime import langsmith as _langsmith
 
 # 单轮总截止时间（秒）：0 或负数表示不限时。防止一次问答无限拖长。
 TURN_DEADLINE_S = float(os.getenv("DOCMIND_TURN_DEADLINE_S", "0"))
-# 工具调用通道：react(默认，文本协议) / native(原生 function-calling) / auto(按 provider 自动)
-TOOL_MODE = os.getenv("DOCMIND_TOOL_MODE", "react").strip().lower()
-# 支持原生 function-calling 的 provider（auto 模式下启用）
-_NATIVE_CAPABLE = {"qwen", "deepseek", "ollama", "llamacpp", "openai", "azure"}
+#: 工具调用通道：react(文本协议) / native(强制原生 function-calling) / auto(按 provider 自动)
+#:
+#: **默认从 `react` 改成 `auto`（2026-10）**，理由是文本协议那份"要求"应该退回 API
+#: 层面去"保证"：
+#:
+#: 1. 弱模型在长提示下会**静默丢掉** `Action:` / `Final Answer:` 标记。实测
+#:    `custom/stealth/space-bunny-alpha`（约 30k 字符系统提示）在契约埋中段时，
+#:    5 个真实问题有 2 个直接输出裸正文、不带任何标记 → 解析器判"没答完" →
+#:    续写纠偏最多转 8 次。为此只能把格式契约在提示首尾各贴一遍来对冲。
+#:    原生 function-calling 下这个整类问题**不存在**。
+#: 2. 每轮省 token：标记不用再写进提示、也不用从每条观察里解析回来。
+#: 3. 并行工具调用不再靠模型"在同一段文本里写多个 Action"。
+#:
+#: 用 `auto` 而不是直接 `native`：未知 provider 不在 _NATIVE_CAPABLE 里，会退回
+#: 文本协议。最坏结果是"退回更保守的通道"，不会炸。
+TOOL_MODE = os.getenv("DOCMIND_TOOL_MODE", "auto").strip().lower()
+#: 支持原生 function-calling 的 provider（auto 模式下启用）。
+#:
+#: `custom` 是 OpenAI 兼容中转（OpenRouter 等），实测其 `/chat/completions`
+#: 接受 `tools` 并正常回 `tool_calls`（2026-10-03 用 stealth/space-bunny-alpha
+#: 实测：带 tools 的流式请求返回 tool_calls，且 `stop` 这种目录里标"不支持"的
+#: 参数也照收）。此前它**不在**这个集合里，于是即便把 TOOL_MODE 默认改成 auto，
+#: 用中转的用户仍然走文本协议——改了不起作用，是那种"看着改了其实没改"的坑。
+#:
+#: 未知 provider 一律不在此集合，`_native_enabled()` 会退回文本协议，所以这份名单
+#: 漏一个的后果是"退回更保守的通道"，不是"炸掉"。
+_NATIVE_CAPABLE = {"qwen", "deepseek", "ollama", "llamacpp", "openai", "azure", "custom"}
 # 子代理最大递归深度（父=0）
 SUBAGENT_MAX_DEPTH = int(os.getenv("DOCMIND_SUBAGENT_MAX_DEPTH", "2"))
 # 0 means the persisted user setting supplies the child Agent's step limit.
 SUBAGENT_MAX_STEPS = max(0, int(os.getenv("DOCMIND_SUBAGENT_MAX_STEPS", "0")))
 SUBAGENT_STEPS_HARD_CAP = max(0, int(os.getenv("DOCMIND_SUBAGENT_STEPS_HARD_CAP", "0")))
 def _resolve_child_max_steps(max_steps):
-    """生效步数 = clamp(任务申请值或默认, 1, 硬顶)；非法值回退默认。"""
+    """生效步数 = clamp(任务申请值或默认, 1, 硬顶)；非法值回退默认。
+
+    **0 = 不设上限**（2026-10 起）。此前末尾那句 `max(1, …)` 会把 0 压成 1 步——
+    于是「在设置里填 0」不但没放开，反而变成只能走一步，比默认的 24 严得多，
+    比不改更糟。显式 0 时直接返回 0，也不再套硬顶（硬顶本身就是「要限」的意思）。
+    """
     try:
         from agent_runtime.capacity import get_settings
-        configured_steps = int(get_settings().get("child_max_steps", 24))
+        configured_steps = int(get_settings().get("child_max_steps", 0))
     except Exception:
-        configured_steps = 24
+        configured_steps = 0
     if max_steps in (None, ""):
         requested = SUBAGENT_MAX_STEPS
         if requested <= 0:
@@ -87,6 +115,8 @@ def _resolve_child_max_steps(max_steps):
             requested = SUBAGENT_MAX_STEPS or configured_steps
         if SUBAGENT_MAX_STEPS <= 0 and configured_steps > 0:
             requested = min(requested, configured_steps)
+    if requested <= 0:
+        return 0
     if SUBAGENT_STEPS_HARD_CAP <= 0:
         return max(0, requested)
     return max(1, min(requested, SUBAGENT_STEPS_HARD_CAP))
@@ -106,16 +136,18 @@ SINK_THOUGHT_CHARS = int(os.getenv("DOCMIND_SINK_THOUGHT_CHARS", "400"))
 SINK_ACTION_CHARS = int(os.getenv("DOCMIND_SINK_ACTION_CHARS", "300"))
 SINK_OBS_CHARS = int(os.getenv("DOCMIND_SINK_OBS_CHARS", "1200"))
 SINK_STEP_TYPES = {"thought", "action", "observation"}
-# 明确有副作用、**不可并发**的工具：批内只要出现一个就整体退回顺序执行。
-# （delegate 允许并发——子代理各自持独立 LLMClient，见 _delegate）
-_NO_PARALLEL_TOOLS = {"apply_edit", "dev_apply_edits", "create_file", "create_artifact", "generate_data_file", "dev_region_edit", "run_command",
-                      "python_exec", "dev_mcp_call", "dev_commit", "dev_commit_all",
-                      "dev_rollback_changeset", "init_regions_tool", "dev_apply_regions",
-                      "dev_add_region", "dev_refactor", "dev_rebuild_index",
-                      "dev_mcp_add", "dev_mcp_decide", "dev_mcp_remove", "dev_mcp_probe",
-                      "dev_preview_adapter_refresh", "dev_preview_adapter_rollback", "dev_desktop_capture",
-                      "dev_desktop_action",
-                      "orchestrate", "start_workflow"}
+# 「不可并发」不再由本文件的一张名字表决定。
+#
+# 这张表曾经在这里（_NO_PARALLEL_TOOLS），运行期却从不读它——批内能否并发只看
+# ToolSpec.parallel_safe（见 _parallel_safe / coerce_tool_spec）。于是这张表成了纯装饰：
+# 它和真正生效的 `agent_runtime.tools` 里的表**各说各话**，而测试断言的正是这张装饰表。
+# 后果不是"多写了一份"，而是**绿灯是假的**：dev_apply_edits 在这张表里（不可并发），
+# 在运行期那张表里却没有，于是被判成 parallel_safe=True 的只读工具——
+# 一个批量改文件的工具能和别的工具并发写，同时因为 side_effect=PURE 拿不到幂等账本。
+# 现在单一事实来源是 `agent_runtime.tools`（_WRITE_TOOLS / _ADMIN_TOOLS / _EXEC_TOOLS
+# 与各注册项的 capability/side_effect/parallel_safe 声明）。
+# 回归防护见 tests/test_tool_taxonomy.py。
+# （delegate 仍允许并发——子代理各自持独立 LLMClient，见 _delegate）
 
 # 写后自验证收尾门开关（Phase 1 闭环）。默认开启；设 DOCMIND_SELF_VERIFY=0 可关闭
 # （例如纯问答场景或校验器本身不可用）。关闭时写操作不再自动触发 self_verify。
@@ -152,14 +184,20 @@ def _step_budget(question):
 
     普通问题仍使用 MAX_AGENT_STEPS；当前项目缺陷审查需要读取多份源码并核对
     场景/配置，给它独立上限，避免一次无效目录调用就把证据链截断。
+
+    **0 = 不设上限**（2026-10 起）。此前 0 会回落到硬编码的 8，于是「在设置里
+    填 0」看起来像放开了、实际把所有人压回 8 步——那恰恰是要消除的那个拦截。
+    用户设置（capacity.DEFAULTS，默认全 0）优先于环境变量 MAX_AGENT_STEPS：
+    环境变量是给部署方兜底的，设置是给用户改的，后者赢。
     """
-    base = max(0, int(MAX_AGENT_STEPS))
+    base = 0
+    try:
+        from agent_runtime.capacity import get_settings
+        base = max(0, int(get_settings().get("main_max_steps", 0)))
+    except Exception:
+        base = 0
     if base == 0:
-        try:
-            from agent_runtime.capacity import get_settings
-            base = max(0, int(get_settings().get("main_max_steps", 8)))
-        except Exception:
-            base = 8
+        base = max(0, int(MAX_AGENT_STEPS))
     value = _user_question(question)
     if _is_project_audit_question(value):
         return max(base, int(AUDIT_MAX_AGENT_STEPS))
@@ -241,7 +279,36 @@ def _derive_experience_outcome(turn):
     return None
 
 
-_SYSTEM_PROMPT_FULL = """你是一个严谨的多工具问答 Agent，可以调用以下工具来获取信息或执行动作。
+#: ReAct 输出契约。放在系统提示词**最前面**，末尾再重申一次。
+#:
+#: 为什么不能只把它埋在三万字的工具说明中间：实测 `custom/stealth/space-bunny-alpha`
+#: （长提示词 + 思考型模型）在契约埋中段时，5 个真实问题里有 2 个直接输出裸正文、
+#: 不带任何标记 → 解析器判「没答完」→ 触发续写纠偏最多 8 次 → 用户看到同一句话
+#: 重复 8 遍。把契约前置到开头后，同一批问题裸正文降到 0（2026-10-02 实测）。
+#: 长提示词模型遵循「首尾」远好过「中段」，所以两头各放一次。
+_FORMAT_CONTRACT = """【输出格式契约 · 最高优先级 · 必须遵守】
+你每次回复只允许下面两种形状之一。标记必须原样照抄，大小写、空格、冒号都不能改：
+
+形状一 · 还需要查证据或执行动作时：
+Thought: <一句话说明你要做什么>
+Action: <工具名>
+Action Input: <参数>
+
+形状二 · 证据够了、可以给结论时：
+Final Answer: <最终答案正文>
+
+硬性要求：
+1. 任何情况下都要带上 `Action:` 或 `Final Answer:` 其中之一。
+2. 不要在标记之外先写一段解释性正文，也不要只输出正文而漏掉标记——
+   不带标记的回复会被判为「没答完」并被反复重试。
+3. `Final Answer:` 的正文里不要再出现 `Final Answer:` 这几个字。
+4. 中文问题就用中文回答；命令、路径、代码保持原样。
+5. 证据不足时在 Final Answer 里说明缺什么，不要凭空断言。
+"""
+
+
+_SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
+你是一个严谨的多工具问答 Agent，可以调用以下工具来获取信息或执行动作。
 若系统消息中还附有「本项目规则」（分区约定 / 修改约束），其优先级高于本通用指引，必须逐条遵守。
 可用工具：
 - search_knowledge(query): 在本地知识库中检索相关文档片段。回答"某文档里讲了什么/某概念怎么定义"类问题。
@@ -761,9 +828,11 @@ def _capacity_settings():
 def _task_token_budget():
     settings = _capacity_settings()
     try:
-        return max(0, int(settings.get("task_token_budget", 50000)))
+        # 0 = 不限（RunBudget 自己就把 token_limit<=0 当不限，这里必须原样传下去；
+        # 写成 50000 兜底会让"默认不限"静默退回 5 万）。
+        return max(0, int(settings.get("task_token_budget", 0)))
     except (TypeError, ValueError):
-        return 50000
+        return 0
 
 
 # 额度/能力咨询必须能在费用预算或任务预算耗尽后继续回答，因此这类问题
@@ -792,10 +861,10 @@ def _capacity_help_response(question, session_id="", llm=None, run_budget=None):
         except (TypeError, ValueError):
             return fallback
 
-    task_limit = _int_setting("task_token_budget", 50000)
-    max_agents = _int_setting("max_agents", 8)
-    main_steps = _int_setting("main_max_steps", 8)
-    child_steps = _int_setting("child_max_steps", 24)
+    task_limit = _int_setting("task_token_budget", 0)
+    max_agents = _int_setting("max_agents", 0)
+    main_steps = _int_setting("main_max_steps", 0)
+    child_steps = _int_setting("child_max_steps", 0)
     try:
         cost_status = _pricing.status()
     except Exception:  # noqa: BLE001 - help must work even if budget state is unavailable
@@ -835,14 +904,21 @@ def _capacity_help_response(question, session_id="", llm=None, run_budget=None):
         task_usage = "本回合运行时统计"
     context_text = f"{context_window:,} tokens" if context_window > 0 else "由模型端点决定"
     prompt_text = f"单次提示词预算约 {prompt_budget:,} tokens" if prompt_budget > 0 else "单次提示词预算按模型画像计算"
+    # 0 在这套设置里一律是「不限」。直接印一个 0 会让人以为还有别的上限在生效，
+    # 所以显式写成「不限」——数字 0 本身不是自解释的。
+    unlimited = lambda v: "不限" if int(v or 0) <= 0 else f"{int(v):,}"
+    task_text = unlimited(task_limit)
+    agents_text = unlimited(max_agents)
+    steps_text = unlimited(main_steps)
+    child_text = unlimited(child_steps)
 
     return (
         "这是本地能力说明，不会消耗模型 Token。\n"
         f"当前任务 Token 上限：{task_text}（{task_usage}）。\n"
         "调整路径：工作台 → 设置 → 智能体 → 任务 Token 上限；填 0 表示不限，"
         "但可能明显增加 Token 消耗、运行时间和本地显存压力。"
-        f"同一页还可调整 Agent 数（当前 {max_agents}）、主 Agent 步数（{main_steps}）"
-        f"和子 Agent 步数（{child_steps}）。\n"
+        f"同一页还可调整 Agent 数（当前 {agents_text}）、主 Agent 步数（{steps_text}）"
+        f"和子 Agent 步数（{child_text}）。四项默认都是 0＝不限。\n"
         f"费用预算是另一套限制：全局 {global_text}，当前会话 {session_text}；"
         f"每分钟调用次数上限：{rate_text}。费用预算耗尽时，在设置 → 用量与费用中提高累计预算上限或清零。\n"
         f"当前模型：{provider} / {model}；上下文窗口约 {context_text}，{prompt_text}。"
@@ -1030,23 +1106,15 @@ def _trail_pair_count(trail):
 # 注意 calculate 不在此列：算术结果可能只是「哪个大/差多少」等问题的中间证据，
 # 需要回填给模型再走一轮，由它把数字解读成自然语言结论；模型给不出结论时，
 # _evidence_final 会用「计算结果为：…」做确定性兜底。
-_VERBATIM_TOOLS = {"python_exec", "gen_video_prompt"}
-
-# 写工具：只有用户问题明确表达修改/新建意图才允许执行，防止审查类任务越权改代码。
-_WRITE_TOOLS = {"apply_edit", "dev_apply_edits", "create_file", "create_artifact", "generate_data_file", "dev_region_edit"}
-
-# 外网工具：只有用户显式打开「联网搜索」开关时才可用（默认关闭，代码问答不外联）。
-_WEB_TOOLS = {"web_search", "web_search_batch", "web_transport", "web_fetch", "web_research", "web_subtitles"}
-
-# 输入留空即合法的工具（无参调用 / 可选 path 调用）；
-# 其余工具在 Action Input 为空时一律拦截回填，不消耗工具步数——
-# 弱模型常输出 search_code()/grep() 空参，空跑一步后误判"项目无此实现"。
-_NO_ARG_TOOLS = {
-    "init_regions", "dev_list_regions", "dev_verify_contracts",
-    "dev_list_changesets", "list_pending_edits", "game_validate_data",
-    "game_release_check",
-}
-_OPTIONAL_ARG_TOOLS = {"list_dir"}
+# 「写工具 / 外网工具 / 免参工具 / 逐字透传工具」这四类名单曾经在这里各有一份副本
+# （_VERBATIM_TOOLS / _WRITE_TOOLS / _WEB_TOOLS / _NO_ARG_TOOLS / _OPTIONAL_ARG_TOOLS）。
+# 运行期**一份都不读**——判定全部走 ToolSpec：
+#   · 写工具   Agent._is_write_tool  -> spec.capability ∈ {WRITE_LOCAL, WRITE_EXTERNAL}
+#   · 外网工具 Agent._web_blocked    -> spec.group == "web"
+#   · 免参工具 Agent._arg_required   -> spec.input_schema["required"]
+#   · 逐字透传 Agent._is_verbatim_tool -> spec.verbatim
+# 副本与运行期脱节 → 断言副本的测试给出假保障（dev_apply_edits 一例，见 _NO_PARALLEL_TOOLS
+# 处注释）。现已删除，名单只在 `agent_runtime.tools` 与各注册项声明里存在一份。
 _EMPTY_ARG_OBS = (
     "参数缺失：{tool} 必须提供有效输入才能执行（空参数不会返回任何有用信息，本次未执行、不计工具步数）。"
     "请立即用【完整参数】重新调用该工具——代码检索类工具只放纯标识符（如 `PlayMode`），"
@@ -1172,6 +1240,14 @@ def _empty_arg_obs(tool_name, question):
 
 # 工具步数耗尽后，先强制模型基于已有观察收尾的次数；仍不收尾则用观察证据确定性兜底。
 _MAX_FORCED_FINALS = 1
+
+#: 连续几轮「有正文但既无 Action 也无 Final Answer」就停止重试并明说。
+#:
+#: 为什么是 2 而不是 nudges 的上限（本仓实测用户看到 8 遍同一条提示）：
+#: 这个状态是**稳定**的，不是抖动的——模型在长系统提示词下会一直用聊天口吻回答，
+#: 第一次 nudge 它可能照做一次、第二次又忘了，第三、四次只是把同一条提示重复给用户看。
+#: 给 2 次机会足以区分「偶发没写」与「稳定不守格式」，再往下只是消耗 token 与耐心。
+_MAX_FORMAT_STALLS = 2
 _RE_WRITE_INTENT = re.compile(
     r"修改|修复|改正|改一下|改成|改好|重构|新建|创建|新增|添加|加上|"
     r"生成|制作|导出|补全|删掉|删除|移除|替换|重写|提交代码|帮我改|动手改|"
@@ -1665,7 +1741,7 @@ class Agent:
                     _sessions.save(session_id, self.history, self.summary, self.project_id)
             except Exception:
                 pass
-        self.tool_mode = (tool_mode or TOOL_MODE or "react")
+        self.tool_mode = (tool_mode or TOOL_MODE or "auto")
         self.plan_mode = bool(plan_mode)
         self.depth = int(depth or 0)
         # A top-level turn creates this budget; child agents inherit the same
@@ -1853,6 +1929,17 @@ class Agent:
             if profile_hint:
                 messages.append({"role": "system", "content": profile_hint})
         except Exception:
+            pass
+        # 任务清单每轮注入。这是让「上下文压缩」不再有损的那一环：
+        # 摘要可以放心压，因为目标本身在磁盘上、每轮都会被重新告知模型。
+        # 没有这一步，清单只是个模型可能忘记去读的旁路文件。
+        try:
+            from agent_runtime import plan_state
+            plan_hint = plan_state.summary_for_prompt(get_runtime("code_root", ""))
+            if plan_hint:
+                messages.append({"role": "system", "content": plan_hint})
+        except Exception:
+            # 清单读不出来只是少一条提示，绝不能因此让整轮问答失败
             pass
         for context_message in self._request_system_context:
             value = str(context_message or "").strip()
@@ -2508,6 +2595,11 @@ class Agent:
         forced_final_reason = ""  # 触发强制收尾的原因，证据兜底 final 里原样告知用户
         evidence = []  # 本轮已执行工具的简要清单（action(input)），耗尽时兜底用
         evidence_nudges = 0  # 定位类回答最多补读一次原文，避免复核本身形成死循环
+        # 连续「输出无标记」的次数。与 nudges 分开计数，因为它的处置完全不同：
+        # nudges 是「再给它一次机会」，而格式连续失守说明**这个模型在当前提示词下
+        # 稳定地不遵守契约**——继续喂 nudge 只会让界面上重复同一条提示（实测最多 8 遍），
+        # 而真正该做的是停下来告诉用户「模型没按格式应答」，让他换模型或调提示词。
+        format_stalls = 0
         plan_emitted = False  # 计划模式：计划只上抛一次
         self._native_queue = []   # 原生通道：顺序回退时逐个消化的 tool_calls
         self._pending_batch = []  # 原生通道：待并发执行的只读 tool_calls
@@ -3333,6 +3425,27 @@ class Agent:
 
             # 没有有效动作也没有合格 Final：可能是输出被长度截断 / 只有思考没有正文 /
             # 格式没写完。自动「续写纠偏」最多 _MAX_NUDGES 次，绝不把残句静默当答案。
+            # 格式连续失守：模型有正文、但既没 Action 也没 Final Answer。
+            # 这与「被长度截断」是两回事（后者 acc 也可能没有完整标记，但要靠
+            # finish_reason 区分），处置也不同，所以单独计数、单独早退。
+            if acc.strip() and not truncated and not has_real_final and not parsed["action"]:
+                format_stalls += 1
+                if format_stalls >= _MAX_FORMAT_STALLS:
+                    if turn is not None:
+                        turn.outcome = "format_stall"
+                    final_text = (
+                        "模型连续 %d 轮没有按要求输出格式（既没有 `Action:` 也没有 "
+                        "`Final Answer:`），本轮已停止重试。\n\n"
+                        "它的回答其实是有内容的，但不带标记时 harness 无法判断"
+                        "「它是没答完」还是「它已经答完了」，只能反复要求重写。\n"
+                        "可下手的办法：换一个更守格式的模型；或在项目规则里明确要求"
+                        "它以 `Final Answer:` 开头收尾。" % format_stalls
+                    )
+                    yield {"type": "final", "status": "error", "text": final_text}
+                    return
+            else:
+                format_stalls = 0
+
             if nudges < max_nudges and (truncated or not acc.strip() or not has_real_final):
                 nudges += 1
                 if truncated:
@@ -3369,10 +3482,18 @@ class Agent:
                         "`Final Answer: ...`（中文、简洁、不要再只做思考）。"
                     )
                 else:
+                    # 把上一轮的**实际输出**回显给它，并明确指出缺的是哪一段。
+                    # 原来只说「你没给 Final Answer」，模型并不知道自己说了什么；
+                    # 回显 + 指出缺口之后，它要做的改动是明确的（把已有正文挪到标记后面，
+                    # 而不是重写一遍）——这也顺带避免了「换个说法再答一遍」导致内容漂移。
                     hint = (
-                        "Nudge: 你上一轮的输出没有完成（既无有效 Action，也没有 Final Answer）。"
-                        "若还需调用工具，请输出完整的 Action 与 Action Input；"
-                        "否则直接给出 `Final Answer: ...` 结束回答。"
+                        "Nudge: 你上一轮的输出既没有 `Action:`，也没有 `Final Answer:`，"
+                        "所以系统无法判断你是不是已经答完了。下面是你上一轮的**实际输出**：\n"
+                        "----------\n%s\n----------\n"
+                        "请二选一，不要重写内容：\n"
+                        "· 已经答完了 → 在这段正文**前面**补一行 `Final Answer: `，其余一字不改；\n"
+                        "· 还需要查证 → 补上 `Thought:` / `Action: <工具名>` / `Action Input: <参数>`。"
+                        % _clip(acc, 1200)
                     )
                 trail.append({"role": "user", "content": hint})
                 yield {"type": "notice", "text": "模型输出尚未结束，正在继续执行。"}
@@ -3390,7 +3511,21 @@ class Agent:
             elif not acc.strip():
                 if turn is not None:
                     turn.outcome = "empty"
-                final_text = "模型本轮未返回有效正文（可能在思考阶段耗尽输出长度）。请重试或换一个更具体的问题。"
+                # 这条文案原来写的是「请重试或换一个更具体的问题」——**归因错了**。
+                # 走到这里之前，格式纠偏（_MAX_FORMAT_STALLS）与续写纠偏
+                # （_MAX_FINAL_CONTINUATIONS）都已经用尽仍一个字都没拿到，
+                # 那基本是上游回了个 200 空信封（瞬时故障），而不是用户问题含糊。
+                # 归因错的后果很具体：用户会去改自己的问题，而真正该做的是重试，
+                # 于是"重试一次就好"变成一个查不出原因的玄学问题。
+                # 与上面 truncated 那条刻意区分开：那是长度问题，这条是拿不到内容。
+                attempts = 1 + int(final_continuations) + int(format_stalls)
+                final_text = (
+                    "模型连续 %d 次调用都没有返回可用正文。**这多半不是你的问题写得不清楚**，"
+                    "而是上游/中转返回了空内容（瞬时故障），直接重试通常就能拿到。"
+                    "若反复出现，依次检查：① 该 provider 是否可用（免费中转容易限流或"
+                    "无上游容量）；② 若该模型开了思考模式，可能是思考阶段吃光了输出预算——"
+                    "关掉 thinking 或调小 max_tokens 再试。" % max(1, attempts)
+                )
             else:
                 # 连纠偏后仍不合格式的残句：清洗 ReAct 标记后再兜底，不再把 Thought/Action 原样抛给用户
                 if turn is not None:
@@ -3764,9 +3899,9 @@ class Agent:
                     "示例：role: researcher / task: 找出 _ready 定义在哪些文件")
         try:
             from agent_runtime.capacity import get_settings
-            limit = int(get_settings().get("max_agents", 8))
+            limit = int(get_settings().get("max_agents", 0))
         except Exception:
-            limit = 8
+            limit = 0
         dispatched = int(getattr(turn, "subagents_dispatched", 0)) if turn is not None else 0
         if limit > 0 and dispatched >= limit:
             return f"[delegate 已达本轮 Agent 数上限 {limit}] 请使用已有子任务结论完成回答。"
@@ -3918,7 +4053,7 @@ class Agent:
         try:
             from agent_runtime.capacity import get_settings, remaining_agent_capacity
             capacity = get_settings()
-            configured_limit = int(capacity.get("max_agents", 8))
+            configured_limit = int(capacity.get("max_agents", 0))
             dispatched = int(getattr(turn, "subagents_dispatched", 0)) if turn is not None else 0
             remaining_capacity = remaining_agent_capacity(configured_limit, dispatched)
             if remaining_capacity == 0:

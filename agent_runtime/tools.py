@@ -133,6 +133,12 @@ _ADMIN_TOOLS = {
 }
 _WRITE_TOOLS = {
     "apply_edit", "create_file", "create_artifact", "dev_region_edit",
+    # dev_apply_edits 是 apply_edit 的批量版：一次原子提交多个文件的局部替换。
+    # **曾经漏在这里**，于是 coerce_tool_spec 把它推成 read_local / SideEffect.PURE /
+    # parallel_safe=True —— 一个批量改文件的工具被当成无害只读：既能和别的工具并发
+    # 造成写竞争，又拿不到幂等账本的保护。agent.py 里那份同名死常量是包含它的，
+    # 测试也只断言那份死常量，所以两边一起错、绿灯一直亮着（见 test_tool_taxonomy.py）。
+    "dev_apply_edits",
     "dev_refactor", "dev_rebuild_index", "dev_asset_register", "dev_capture_bug",
     "dev_update_bug", "game_upsert_task",
     "dev_preview_adapter_create",
@@ -146,6 +152,20 @@ _NO_ARG_TOOLS = {
     "dev_rebuild_index", "dev_list_changesets", "dev_list_bugs", "init_regions",
 }
 _VERBATIM_TOOLS = {"python_exec", "gen_video_prompt"}
+
+# 上面几张表的**公开只读别名**，指向同一份内容（不是副本）。
+#
+# 加这一层是为了让"单一事实来源"名副其实：`coerce_tool_spec` 读的是上面这些下划线
+# 名字，而测试与审计脚本需要引用同一份。以前没有公开入口，于是它们各自抄了agent.py
+# 里的副本去断言——两份表对 `dev_apply_edits` 给出相反答案，而测试一直绿着。
+# 抄副本的测试断的是抄来的东西，不是行为；只有断真表才有意义。
+WRITE_TOOLS = frozenset(_WRITE_TOOLS)
+ADMIN_TOOLS = frozenset(_ADMIN_TOOLS)
+EXEC_TOOLS = frozenset(_EXEC_TOOLS)
+IRREVERSIBLE_TOOLS = frozenset(_IRREVERSIBLE_TOOLS)
+NETWORK_TOOLS = frozenset(_NETWORK_TOOLS)
+NO_ARG_TOOLS = frozenset(_NO_ARG_TOOLS)
+VERBATIM_TOOLS = frozenset(_VERBATIM_TOOLS)
 
 _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
     "search_knowledge": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},

@@ -357,11 +357,31 @@ class TestDevApplyEdits(_CodeRootCase):
                "- frontend/b.ts（9 字节）")
         self.assertEqual(agent_mod._parse_written_rel(obs), "backend/a.py,frontend/b.ts")
 
-    def test_batch_write_in_guardrail_sets(self):
-        """dev_apply_edits 是写工具且不可并发，必须与 apply_edit 同列。"""
-        import agent as agent_mod
-        self.assertIn("dev_apply_edits", agent_mod._WRITE_TOOLS)
-        self.assertIn("dev_apply_edits", agent_mod._NO_PARALLEL_TOOLS)
+    def test_batch_write_is_classified_as_a_write_tool(self):
+        """dev_apply_edits 必须被**运行期**判成写工具且不可并发。
+
+        这条测试以前断言的是 `agent._WRITE_TOOLS` / `agent._NO_PARALLEL_TOOLS`——
+        两张都是运行期不读的死副本，于是它一直绿着，而真实判定把一个批量改文件的
+        工具当成 read_local / SideEffect.PURE / parallel_safe=True：既能和别的工具
+        并发写，又拿不到幂等账本的保护。现在直接断言 coerce_tool_spec 的输出，
+        也就是运行期真正拿到的那个对象。
+        """
+        import tools as tools_mod
+        from agent_runtime.tools import Capability, SideEffect, coerce_tool_spec
+        spec = coerce_tool_spec("dev_apply_edits", tools_mod.TOOLS["dev_apply_edits"])
+        self.assertEqual(spec.capability, Capability.WRITE_LOCAL)
+        self.assertEqual(spec.side_effect, SideEffect.MUTATING)
+        self.assertFalse(spec.parallel_safe,
+                         "写工具若被判成可并发，会与只读工具一起进并行批次造成写竞争")
+
+    def test_it_matches_apply_edit_its_batch_sibling(self):
+        """批量版与单条版的分类必须一致，否则护栏对两者宽严不同。"""
+        import tools as tools_mod
+        from agent_runtime.tools import coerce_tool_spec
+        batch = coerce_tool_spec("dev_apply_edits", tools_mod.TOOLS["dev_apply_edits"])
+        single = coerce_tool_spec("apply_edit", tools_mod.TOOLS["apply_edit"])
+        for field in ("capability", "side_effect", "parallel_safe"):
+            self.assertEqual(getattr(batch, field), getattr(single, field), field)
 
 
 # --------------------------------------------------------------------------- #

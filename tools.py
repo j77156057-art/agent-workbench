@@ -4679,10 +4679,15 @@ def dev_job_logs(arg=""):
 
     输入 job_id: <id>（可附加 offset: <字符偏移> 续读）；省略 job_id 则列出最近的后台任务。
     用于跑长构建、测试套件或本地服务时持续观察，而不是让前台调用一直阻塞。
+    长日志加两样：**fold: true** 把重复行折成「重复 N 次」（按签名比，不是按整行——真
+    uvicorn 的 access 行每条都带临时端口，逐行去重等于折不动）；**level: warn|error** 只看
+    警告以上，且 traceback 正文会跟着它的标题走（逐行筛级别会把最该看的正文筛掉）。
+    视图模式是【整块重算】，不能续读，会如实说；上游缓冲丢掉的中段也照实报，所以视图永远
+    不许被读成「日志里没有错误」。
     """
-    from agent_runtime import process_runner
+    from agent_runtime import log_view, process_runner
 
-    fields = _parse_keyed(arg or "", ["job_id", "id", "offset"])
+    fields = _parse_keyed(arg or "", ["job_id", "id", "offset", "fold", "level"])
     job_id = str(fields.get("job_id") or fields.get("id") or "").strip()
     # 模型经常直接把 id 当整串输入（"dev_job_logs(abc123)"），此时首行就是 id。
     if not job_id and str(arg or "").strip():
@@ -4701,6 +4706,40 @@ def dev_job_logs(arg=""):
     report = process_runner.job_logs(job_id, offset=offset)
     if not report.get("ok"):
         return f"后台任务读取失败：{report.get('error')}"
+    want_fold = str(fields.get("fold") or "").strip().lower()
+    level = str(fields.get("level") or "").strip().lower()
+    folding = want_fold in ("1", "true", "yes", "on") or bool(level)
+    if not (folding or want_fold or level):
+        # 原始增量读法：不改文本、不碰 offset，只在确实有重复/有缺口时附一句提示
+        stats = log_view.summarize(str(report.get("logs") or ""))
+        if stats["ok"] and (stats["folded_away"] >= 5 or stats["middle_omitted_chars"]):
+            gap = ("，且缓冲已丢掉中段 %d 字符" % stats["middle_omitted_chars"]
+                   if stats["middle_omitted_chars"] else "")
+            report["view_hint"] = ("有 %d 行是重复的（加 fold: true 折成 %d 行；只看问题加 "
+                                   "level: warn）%s"
+                                   % (stats["folded_away"], stats["lines_out"], gap))
+        return json.dumps(report, ensure_ascii=False)
+    view = log_view.summarize(str(report.get("logs") or ""), level=level, fold=folding)
+    if not view["ok"]:
+        return "后台任务读取失败：%s" % view["error"]
+    notes = []
+    if offset:
+        notes.append("视图模式整块重算，offset 被忽略（要增量请去掉 fold/level）")
+    if view["middle_omitted_chars"]:
+        notes.append("缓冲丢掉中段 %d 字符，本视图看不见" % view["middle_omitted_chars"])
+    if view["dropped_failure_marks"]:
+        notes.append("筛掉的 %d 段里有 %d 段带 4xx/5xx/失败 字样" % (
+            view["dropped_runs"], view["dropped_failure_marks"]))
+    if view["line_cap_hit"]:
+        notes.append("只处理了前 %d 行" % log_view.MAX_LOG_LINES)
+    report["logs"] = view["text"]
+    report["view"] = {k: view[k] for k in (
+        "lines_in", "lines_out", "folded_away", "markers_added", "dropped_runs",
+        "dropped_lines", "dropped_failure_marks", "middle_omitted_chars", "levels_seen",
+        "top_repeats")}
+    report["note"] = "；".join(notes)
+    if offset:
+        report["next_offset"] = None      # 视图不是增量视图：留着旧 offset 会让人重复读同一段
     return json.dumps(report, ensure_ascii=False)
 
 
@@ -5130,6 +5169,78 @@ def dev_git_log(arg):
     return code_intel.render_git_log(res)
 
 
+def dev_plan(arg):
+    """把「正在做的事」外置成项目状态目录里的一份清单，让上下文压缩不再等于丢目标。
+
+    为什么需要它：对话上下文会被摘要压缩，而**压缩是有损的**——摘要有取舍，摘得越多
+    任务细节退化越明显。正解不是压得更狠，而是把任务状态搬出上下文：清单在磁盘上，
+    每轮自动注入你的系统消息，于是"上下文被摘掉一大半"不再等于"目标丢了"。
+    长任务、跨多轮、或被压缩过之后，先 `read` 看清单，接着做**下一件未完成的事**。
+
+    输入（多行 keyed）：
+      action: open|append|check|uncheck|read|clear   # 必填
+      title: 修好登录超时                     # open 用：清单标题
+      items: 先加日志, 再补测试, 最后跑一遍    # open/append 用；逗号或换行分隔
+      item: 补测试                           # check/uncheck 用：条目 key 或文本前缀
+
+    例子：
+      action: open / title: 修登录超时 / items: 定位超时点, 加日志, 补测试, 跑一遍
+      action: check / item: 加日志           # 做完一件勾掉
+      action: read                           # 随时看当前进度与下一件
+
+    清单写在项目状态目录，**不碰工作树**（`git status` 不会因此变脏）。同名条目会自动
+    合并，所以你把计划重述一遍不会堆出三份重复项。
+    """
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    from agent_runtime import plan_state
+
+    keys = ["action", "title", "items", "item"]
+    fields = _parse_keyed(arg, keys)
+
+    def _one(key):
+        """单值字段只取第一行：`action: read` 后面还能接着写裸内容。"""
+        return (fields.get(key) or "").splitlines()[0].strip() if fields.get(key) else ""
+
+    action = _one("action").lower() or "read"
+
+    if action == "read":
+        plan = plan_state.read(root)
+        return plan_state.render(plan)
+
+    if action == "clear":
+        plan_state.clear(root)
+        return "任务清单已清空。"
+
+    if action in ("open", "append"):
+        raw = fields.get("items") or ""
+        items = [part for part in re.split(r"[,，\n;；]+", raw) if part.strip()]
+        if not items:
+            return "缺少 items：请给出要写入清单的条目，例如 " \
+                   "items: 先定位问题, 再修复, 最后补测试。"
+        if action == "open":
+            plan = plan_state.open_plan(root, _one("title"), items)
+            return "已新建清单（%d 项，旧的同名条目已合并）：\n%s" \
+                   % (len(plan["items"]), plan_state.render(plan))
+        plan = plan_state.append_items(root, items)
+        return "已追加 %d 项（跳过 %d 个同名重复）：\n%s" \
+               % (plan.get("_added", 0), plan.get("_skipped", 0), plan_state.render(plan))
+
+    if action in ("check", "uncheck"):
+        target = _one("item")
+        if not target:
+            return "缺少 item：请给出要勾选/取消的条目 key 或文本前缀（先 action: read 看一眼）。"
+        plan = plan_state.set_done(root, target, action == "check")
+        if not plan.get("_hit"):
+            known = "、".join(i["key"] for i in plan.get("items", [])[:8]) or "（清单为空）"
+            return "没找到匹配「%s」的条目。现有 key：%s" % (target, known)
+        return "已%s：%s\n\n%s" % ("完成" if action == "check" else "取消完成",
+                                  plan["_hit"]["text"], plan_state.render(plan))
+
+    return "未知 action: %s。可用：open / append / check / uncheck / read / clear。" % action
+
+
 def dev_lanes(arg):
     """多人同仓协作的认领登记表：谁在动哪些文件，冲突当场发现，过期自动可被接手。
 
@@ -5203,6 +5314,300 @@ def dev_lanes(arg):
     except ValueError as exc:
         return f"dev_lanes({action}) 未完成：项目状态路径不可用（{exc}）"
     return lanes.render(res)
+
+
+def dev_probe(arg=""):
+    """给**后端与命令行**一条真观察凭据——浏览器那套（preview_project / dev_page_action /
+    dev_vue / dev_apptest）对纯后端项目、一条 CLI、一个 worker 一样都够不着。
+
+    两种模式：
+      mode: http   # 真的发一个请求到回环服务
+        url: http://127.0.0.1:8000/api/projects     # 只允许回环，和 dev_serve 同一道边界
+        method: GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS
+        body: {...}                                  # POST 等带正文时用
+        headers: {"X-Test": "1"}                    # 可选，单行 JSON
+        expect_status: 200                           # 期望状态码；不符会明确报出来
+        expect_text: total                           # 正文里必须出现的字符串
+      mode: cli    # 跑一条命令，除了退出码还看别的
+        command: python -m mypkg.cli --check         # 解析与安全门复用 run_command 那一套
+        expect_text: OK                              # 输出里必须出现
+        forbid_text: Traceback                      # 输出里不许出现
+        allow_silent: true                           # 这条命令本来就不出声（默认「没输出」判未通过）
+
+    `cli` 比退出码多给的，都是「退出码 0 但事情没成」的形态：输出为空、有 ERROR/CRITICAL
+    级日志行、有 traceback、有 `NameError: name 'x' is not defined`、输出被截断。
+    判定 fail-closed：连不上、命令起不来、输出截断、扫描不全，每一种都是单独一条红，
+    不会悄悄变成一个好看的结论。
+
+    只读观察：只发回环请求、只跑已经过黑名单的项目内命令，不改任何项目文件。
+    """
+    from agent_runtime import svc_probe
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    fields = _parse_keyed(arg or "", ["mode", "url", "method", "body", "headers",
+                                      "expect_status", "expect_text", "command",
+                                      "forbid_text", "allow_silent", "timeout"])
+
+    def _one(key):
+        value = fields.get(key) or ""
+        return value.splitlines()[0].strip() if value else ""
+
+    def _truthy(key):
+        return _one(key).lower() in ("1", "true", "yes", "y", "on", "是")
+
+    mode = (_one("mode") or ("http" if _one("url") else "cli")).lower()
+    if mode not in ("http", "cli"):
+        return "dev_probe 只认 mode: http 或 mode: cli。"
+    try:
+        seconds = int(_one("timeout") or svc_probe.DEFAULT_TIMEOUT)
+    except (TypeError, ValueError):
+        seconds = svc_probe.DEFAULT_TIMEOUT
+    if mode == "http":
+        headers = {}
+        raw_headers = (fields.get("headers") or "").strip()
+        if raw_headers:
+            try:
+                parsed = json.loads(raw_headers)
+            except ValueError as exc:
+                return "headers 要写成单行 JSON 对象（%s）。" % exc
+            if not isinstance(parsed, dict):
+                return "headers 必须是一个 JSON 对象。"
+            headers = {str(k): str(v) for k, v in parsed.items()}
+        try:
+            expect_status = int(_one("expect_status") or 0)
+        except (TypeError, ValueError):
+            expect_status = 0
+        try:
+            result = svc_probe.http_probe(_one("url"), method=_one("method") or "GET",
+                                          body=(fields.get("body") or "").strip(),
+                                          headers=headers, timeout=seconds)
+        except Exception as exc:  # noqa: BLE001 - 探针失败就是失败，不能报通过
+            return "dev_probe(http) 未完成（%s: %s）——这次观察没有发生。" % (
+                type(exc).__name__, str(exc)[:200])
+        return svc_probe.render_http(result, expect_status=expect_status,
+                                     expect_text=_one("expect_text"))
+    command = (fields.get("command") or "").strip()
+    if not command:
+        bare = [ln.strip() for ln in (arg or "").splitlines()
+                if ln.strip() and not re.match(r"^\s*(mode|url|method|body|headers|"
+                                                r"expect_status|expect_text|forbid_text|"
+                                                r"allow_silent|timeout|command)\s*[:：]", ln)]
+        command = " ".join(bare).strip()
+    if not command:
+        return "dev_probe(cli) 需要一行 command:（要跑什么）。"
+    try:
+        result = svc_probe.cli_probe(
+            root, command, timeout=seconds, expect_text=_one("expect_text"),
+            forbid_text=_one("forbid_text"), allow_silent=_truthy("allow_silent"),
+            # 复用 run_command 的解析与黑名单：自己 split() 会拆坏引号，更会绕开
+            # 那道安全门——那等于给这条工具开后门。
+            argv_of=_shell_argv, gate=_cmd_is_blocked)
+    except Exception as exc:  # noqa: BLE001
+        return "dev_probe(cli) 未完成（%s: %s）——这次观察没有发生。" % (
+            type(exc).__name__, str(exc)[:200])
+    return svc_probe.render_cli(result)
+
+
+def dev_handoff(arg=""):
+    """把交付这段补到能真的往前走一步：分支名建议 + commit message 草稿 + 范围体检。
+
+    补的是 `dev_propose` 到草稿就停下的那一段——产物躺在状态目录里，人还得自己决定
+    分支名、自己写 message、自己确认「这些改动里有没有混进别人的在途 WIP」。本工具
+    算的是**决策材料**，不代替决策：**不 add、不 commit、不 push、不切分支**，
+    只跑只读 git（rev-parse/status/diff/log）。
+
+    输入 keyed 多行（全部可选）：
+      files: agent_runtime/x.py, tests/test_x.py   # 只看这些路径（默认全部改动）
+      title: 修好打断后不闭嘴的问题                # 有它才推得出像样的 message
+      timeout: 30
+
+    会回：当前分支与 HEAD、建议分支名（`type/scope-slug`）、建议 commit message、
+    「这次提交会包含哪些文件」与规模，以及几条必须提醒的事：
+
+    * **共享文件**（非 tests/ 非 .md 的主干文件）会被单独标出——本仓实测教训：
+      `git commit -- <路径>` 会绕过索引，把别人在同一批文件里的在途改动一起扫进去
+      （`b828d10` 就是这么连累 HEAD 的）。提交前请核对 `git diff --cached --stat`。
+    * **未跟踪文件**单列：它们不在 diff 里，说成「已交付」是这类工具最容易骗人的地方。
+    * 改了 40 个文件以上会明说「该拆成几个提交」——没人能 review 40 文件的提交。
+    * 会看本仓最近的提交标题来判断该不该加 `type(scope):` 前缀，按仓库自己的习惯
+      写，而不是强推一套外来的。
+    """
+    from agent_runtime import handoff
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    fields = _parse_keyed(arg or "", ["files", "title", "timeout"])
+
+    def _one(key):
+        value = fields.get(key) or ""
+        return value.splitlines()[0].strip() if value else ""
+
+    try:
+        timeout = int(_one("timeout") or "30")
+    except (TypeError, ValueError):
+        timeout = 30
+    try:
+        result = handoff.analyze(root, files=_split_path_list(fields.get("files") or "") or None,
+                                 title=(fields.get("title") or "").strip(), timeout=timeout)
+        result["_root"] = root
+    except Exception as exc:  # noqa: BLE001 - 交付材料生成失败就是失败，不能报「就绪」
+        return "dev_handoff 未完成（%s: %s）——没有 git 就没有「提交」，本次未生成任何材料。" % (
+            type(exc).__name__, str(exc)[:200])
+    return handoff.render(result)
+
+
+def dev_pricing(arg=""):
+    """从 OpenRouter 官方目录**联网检索**模型单价并写入价格表——不手抄、不写死会过期的表。
+
+    为什么需要它：`custom` / OpenAI 兼容中转的模型目录与价格随时会变，代码里写死一份
+    过期表比"显示未知"更糟——运行台会报出一个看着精确、实际错误的金额。而不配置就恒为 0，
+    那也和"真的免费"混成了一件事。
+
+    输入 keyed 多行（全部可选）：
+      model: stealth/space-bunny-alpha   # 留空 = 用当前运行时选中的模型
+      action: fetch|apply                 # fetch=只查不写（默认）；apply=写入价格表
+      timeout: 45                         # 检索超时秒数
+
+    `fetch` 回：单价（已从美元换算成**元 / 1M tokens**，汇率用 `DOCMIND_USD_CNY` 覆盖）、
+    缓存读写单价、以及**阶梯定价** `overrides`（OpenRouter 普遍在长上下文处翻倍，
+    缺了它长对话会被系统性低估）。三种结果分开报，绝不混成 0：
+      · `free: true`      —— 官方目录里这个模型标价就是 0（真的免费）
+      · `error: …`        —— 没查到 / 检索失败（**不是**免费）
+      · 正常单价
+    `apply` 额外把该模型的单价写进 `.docmind_pricing.json`（原子写、只动这一个模型、
+    写完立刻用 price_detail 复核并回显写前/写后差别）。
+
+    **免费模型建议 apply**：写进去以后运行台会明说"该模型免费"，而不是让人以为
+    "没配价格所以显示 0"。
+    """
+    # pricing 是仓库顶层的模块（与 agent / tools 平级），不在 agent_runtime 下——
+    # 从 agent_runtime 导入会 ImportError。
+    import pricing
+    from config import get_runtime
+    fields = _parse_keyed(arg or "", ["model", "action", "timeout"])
+
+    def _one(key):
+        value = fields.get(key) or ""
+        return value.splitlines()[0].strip() if value else ""
+
+    action = (_one("action") or "fetch").lower()
+    if action not in ("fetch", "apply"):
+        return "dev_pricing 只认 action: fetch（只查）或 action: apply（写入价格表）。"
+    model = _one("model") or str(get_runtime("llm_model") or "").strip()
+    if not model:
+        return "没有可用的模型名：请给 `model: <id>`，或先在设置里选好模型。"
+    provider = str(get_runtime("llm_provider") or "custom").strip() or "custom"
+    try:
+        seconds = int(_one("timeout") or "45")
+    except (TypeError, ValueError):
+        seconds = 45
+    try:
+        found = pricing.openrouter_pricing(model, timeout=max(5, min(seconds, 120)))
+    except Exception as exc:  # noqa: BLE001 - 检索失败就是失败，不能当成免费
+        return "dev_pricing 检索失败（%s: %s）——这是【没查到】，不是「该模型免费」。" % (
+            type(exc).__name__, str(exc)[:200])
+    if found.get("error"):
+        return ("dev_pricing 没查到 %s：%s\n"
+                "注意这与「该模型免费」是两件事——免费会回 `free: true`，"
+                "而这里是检索失败或模型 id 拼错。" % (model, found["error"]))
+    lines = ["OpenRouter 官方单价（%s）：" % model]
+    if found.get("free"):
+        lines.append("  **该模型在官方目录里标价就是 0 —— 它真的免费。**"
+                     "（这与「没配价格」不同；建议 `action: apply` 写进去，"
+                     "运行台就会明说免费，而不是显示一个含义不明的 0。）")
+    else:
+        lines.append("  输入      %s 元 / 1M tokens" % found.get("in"))
+        lines.append("  输出      %s 元 / 1M tokens" % found.get("out"))
+        lines.append("  缓存命中读 %s 元 / 1M tokens" % found.get("cache_read"))
+        lines.append("  缓存写入  %s 元 / 1M tokens" % found.get("cache_creation"))
+        lines.append("  （源数据为美元/1M，汇率 %s；可用 DOCMIND_USD_CNY 覆盖）"
+                     % found.get("usd_rate"))
+    tiers = found.get("tiers") or []
+    if tiers:
+        lines.append("  阶梯定价（超过阈值后单价会跳档，缺了它长对话会被低估）：")
+        for tier in tiers[:6]:
+            lines.append("    ≥%s 输入 token：in=%s out=%s cache_read=%s" % (
+                tier.get("min_prompt_tokens"), tier.get("in"), tier.get("out"),
+                tier.get("cache_read")))
+    if action == "fetch":
+        lines.append("（只查未写。要写进价格表用 `action: apply`。）")
+        return "\n".join(lines)
+    saved = pricing.save_model_pricing(provider, model, {
+        "in": found.get("in"), "out": found.get("out"),
+        "cache_read": found.get("cache_read"),
+        "cache_creation": found.get("cache_creation"),
+        "overrides": tiers,
+        # 显式落一个 free 标记：否则「真的免费」与「没配置单价」在界面上都是 0，
+        # 用户无从分辨——这正是这个入口存在的理由，不能只把数字写进去就完事。
+        "free": bool(found.get("free")),
+    })
+    if not saved.get("ok"):
+        return "dev_pricing 检索到了，但写入失败：%s" % saved.get("error")
+    verified = saved.get("verified") or {}
+    lines.append("已写入 %s（provider=%s / model=%s）" % (saved.get("file"), provider, model))
+    lines.append("写入后复核：in=%s out=%s cache_read=%s cache_creation=%s" % (
+        verified.get("in"), verified.get("out"),
+        verified.get("cache_read"), verified.get("cache_creation")))
+    if saved.get("previous") is not None:
+        lines.append("（覆盖了原值：%s）" % json.dumps(saved["previous"], ensure_ascii=False))
+    state = pricing.pricing_state(provider, model)
+    if state["state"] == pricing.PRICING_STATE_FREE:
+        lines.append("运行台现在会把这个模型的 0 显示成「¥0.0000（该模型免费）」，"
+                     "而不是含义不明的 0。")
+    elif state["state"] == pricing.PRICING_STATE_UNKNOWN:
+        lines.append("注意：写入后仍判为「未配置单价」——单价表没被读到，请检查文件权限。")
+    return "\n".join(lines)
+
+
+def dev_deps(arg=""):
+    """对账「代码 import 了什么」与「依赖清单声明了什么」，并能把缺的**追加**进去。
+
+    输入（keyed，全部可选）：
+      paths: agent_runtime/retrieval.py, api.py   # 只查这些文件/目录，留空=全仓
+      action: check|apply                        # check=只读对账（默认）；apply=追加缺失行
+      source: requirements.txt                   # apply 时指定写进哪个清单
+
+    补的是 vibecoding 最常见的死法：你在工作树里 import 了一个新包，本地因为恰好装过
+    而一切正常，可提交里没有依赖声明——别人 clone 下来、或 CI 拉一个干净检出，第一句
+    import 就 ModuleNotFoundError。dev_headcheck 能**发现**这件事，但没有工具能修，
+    从「知道缺了」到「补上」之间是断的。
+
+    扫描走 `ast` 不是正则：注释里的 `# import numpy` 与字符串里的 `"import os"`
+    不会被当成依赖。映射按可信度找证据——本机已安装的发行元数据（最硬，实测
+    `websocket`→`websocket-client`、`yaml`→`PyYAML` 都靠它）→ 已声明依赖的 extras
+    （`psycopg[pool]` 带出 `psycopg-pool`）→ 查表 → 同名（标成弱证据）。都不确定就
+    归入 unknown 并明确报出来，**绝不猜一个名字写进清单**。
+
+    写操作只有一处：往依赖清单**追加**缺失行，不改版本、不删行、不重排——那是人的决定。
+    没有依赖清单时不替你新建。解析失败的文件、被上限截断的扫描都会让报告**不能**
+    被读成「依赖没问题」。
+    """
+    from agent_runtime import deps_sync
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    fields = _parse_keyed(arg or "", ["paths", "action", "source"])
+
+    def _one(key):
+        value = fields.get(key) or ""
+        return value.splitlines()[0].strip() if value else ""
+
+    action = (_one("action") or "check").lower()
+    if action not in ("check", "apply"):
+        return "dev_deps 只认 action: check 或 apply（只读对账 / 追加缺失行）。"
+    try:
+        report = deps_sync.reconcile(root, paths=_split_path_list(fields.get("paths") or "") or None)
+    except Exception as exc:  # noqa: BLE001 - 扫描要失败就失败，绝不能报通过
+        return "dev_deps 扫描失败（%s: %s）——这是【没查成】，不是「依赖没问题」。" % (
+            type(exc).__name__, str(exc)[:200])
+    applied = None
+    if action == "apply":
+        try:
+            applied = deps_sync.apply(root, report, source=_one("source"))
+        except Exception as exc:  # noqa: BLE001
+            applied = {"ok": False, "applied": [], "error": "%s: %s" % (type(exc).__name__, exc)}
+    return deps_sync.render(report, applied)
 
 
 def dev_propose(arg):
@@ -6400,20 +6805,25 @@ def dev_page_action(arg=""):
       value: 要输入的文本            # type
       key: Enter                     # press；只支持固定键表，组合键请改用 click/type
       state: present|absent|visible|hidden|text   # wait
-      mode: text|value|attr|html|count            # read
+      mode: text|value|attr|html|count|contains   # read
       attr: href                    # read 的 mode: attr
+      needle: probe_x.py            # read 的 mode: contains（selector 当容器，只回命中与周围小段）
       timeout: 4                    # wait 的等待秒数
       settle: 600                   # 动作后观察多久（毫秒，上限 5000）
       screenshot: true|false        # click/shot 是否需要截图
     动作后会给 effect：changed / navigated / reloaded / error_seen / no_change，并附 DOM 变更、
     新 console 错误、新失败请求的计数。`no_change` 就是「没观察到变化」，不要当成功；
     隐藏/禁用/歧义元素一律拒绝执行。用完必须 action: close 回收（同时最多 3 个会话）。
+    `read` 的文本/结构输出有 4000 字上限（会明确标「已截断」），所以**别拿整页文本判断
+    「这句话在不在」**：用 `mode: contains` + `selector: <容器>` + `needle: <词>`，命中数与周围
+    几段小样本回来，返回量与页面大小无关；容器没匹配到或没扫完时会单独提醒「这不构成证据」。
+    搜索按【可见文字】判定：`display:none` 里的命中不进 `hits`，另报 `hidden_hits`——「页面上有这句话」和「DOM 里有这句话」是两件事。
     """
     root = _get_code_root()
     if not root:
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
     keys = ["action", "page", "url", "entry", "selector", "text", "nth", "scope", "value",
-            "key", "state", "mode", "attr", "timeout", "settle", "screenshot"]
+            "key", "state", "mode", "attr", "needle", "timeout", "settle", "screenshot"]
     fields = _parse_keyed(arg or "", keys)
 
     def _one(key, default=""):
@@ -6457,7 +6867,7 @@ def dev_page_action(arg=""):
         elif action == "read":
             result = page_action.read_page(root, page=_one("page"), selector=_one("selector"),
                                            mode=_one("mode", "text"), attr=_one("attr"),
-                                           nth=_one("nth"))
+                                           nth=_one("nth"), needle=_one("needle"))
         elif action == "locate":
             result = page_action.locate(root, page=_one("page"), selector=_one("selector"),
                                         text=_one("text"), nth=_one("nth"), scope=_one("scope"))
@@ -6610,7 +7020,7 @@ def dev_testrun(arg=""):
       keyword: voice                # 变成 `-k`，只当参数传，不拼进 shell
       only_failed: true             # 只重跑上一次记账里的失败 nodeid
       related: agent_runtime/x.py   # 按改动文件选出真实存在的相干测试
-      coverage: true                # 要覆盖率（本仓未装 coverage → 直接回「未启用」）
+      coverage: true                # 附带覆盖率：哪些文件哪些行没被执行过
       timeout: 300                  # 秒，5~1500
     为什么不用 `run_command("pytest -q")` 再看文本：① pytest 在【一个用例都没收集到】时退出码
     是 5，读文本很容易当成"没看到 FAILED＝通过"，这里判 `tests_collected` 明确报未通过；
@@ -6618,8 +7028,11 @@ def dev_testrun(arg=""):
     ③ 本仓 `.pytest_cache` 写不进去（Permission denied），所以 pytest 自己的 `--lf` 不可靠，
     失败清单由本工具记账到项目状态目录，`only_failed` 用的是这份账；④ basetemp 一律钉在项目内
     （用户名带引号时默认 pytest-of-* 会 PermissionError）。
-    覆盖率：本仓没装 coverage/pytest-cov，`coverage: true` 直接回"未启用、缺依赖"——
-    那是【没测】，不是 0%，也不许当成通过。选不出相干测试时报错而不是退化成跑全量。
+    覆盖率（`coverage: true`）：真跑一遍并回【哪些文件哪些行没被执行过】；配合 `related:`
+    时按你改动的文件圈定范围——比一个全仓百分比有用得多，因为 87% 的横幅完全可能没碰到
+    你刚写的三行分支。报告读不出来、或改动文件不在报告里，都明确说「覆盖率未知」而不是
+    折算成数字。**覆盖率低不等于测试失败**，两者分开判；没装 coverage 时如实说缺依赖，
+    不把「没测」报成 0%。选不出相干测试时报错而不是退化成跑全量。
     """
     from agent_runtime import test_run
     root = _get_code_root()
@@ -7290,7 +7703,7 @@ TOOLS = {
     "dev_mcp_decide": {"description": "自助装配 MCP 第 5 步：批准/拒绝能力候选。多行输入 decision: approve|reject 与 key: <连接器key>；approve 只有用户在 MCP 设置中确认后才会放行。批准后 Agent 才能经 dev_route_connector/dev_mcp_call 自动调用该连接器。", "func": dev_mcp_decide},
     "dev_mcp_remove": {"description": "移除自定义 MCP 连接器（内置预设则禁用），用户确认后才会放行。输入连接器 key；会先关闭活动会话。", "func": dev_mcp_remove},
     "dev_mcp_discover_from_need": {"description": "从自然语言需求发现可装配的 MCP 连接器候选（不写盘、不自动启用）。输入需求描述（如『我需要查高铁票的 MCP』），可选多行 web_enabled: true 开启联网。流程：离线精选索引 →（联网时）GitHub 域限定搜索取仓库 README 解析官方命令，候选过 R1-R9 信任闸门。返回后须向用户展示候选，逐条 dev_mcp_add（审批）落盘，再 dev_mcp_probe 探活、dev_mcp_discover 生成能力候选。", "func": dev_mcp_discover_from_need},
-    "dev_skill_create": {"description": "起草用户技能（待审批，不会自动启用）。skill 是*可执行行为*，必须经用户确认才激活。多行输入 name/description/body；写入 SKILLS_DIR/.pending/<name>/SKILL.md（草稿不生效）。返回完整正文，代理须向用户完整展示并取得明确同意后，再 dev_skill_approve 激活。", "func": dev_skill_create},
+    "dev_skill_create": {"description": "起草用户技能（待审批，不会自动启用）。skill 是*可执行行为*，必须经用户确认才激活。多行输入 name/description/body；写入 SKILLS_DIR/.pending/<name>/SKILL.md（草稿不生效）。返回完整正文，代理须向用户完整展示并取得明确同意后，再 dev_skill_approve 激活。", "func": dev_skill_create, "capability": "write_local", "side_effect": "mutating", "parallel_safe": False},
     "dev_preview_adapter_create": {"description": "让 Agent 为当前项目生成领域预览适配器草稿（不会自动启用）。多行输入 id/label/domain/artifact_kinds/capture_adapter/refresh_tool/connector_hint/validation/evidence；若需要真正代码，再提供 runtime: python|node、entrypoint: adapt、source: 完整模块源码。系统只允许 adapt(payload) 把已批准工具结果转换为 JSON，静态检查通过后仍需用户确认；代码写入 .docmind/preview-adapters/.pending。", "func": dev_preview_adapter_create},
     "dev_preview_adapter_approve": {"description": "激活或拒绝 Agent 生成的项目预览适配器。只有用户明确确认适配器方案、刷新工具和验证条件后才传 decision: approve；否则只用 reject。输入 id 与 decision。", "func": dev_preview_adapter_approve},
     "dev_preview_adapter_refresh": {"description": "执行已激活项目预览适配器的受控刷新。适配器可使用已批准的 builtin/MCP 获取原始结果，再交给隔离 Python/Node 的 adapt(payload) 转换为预览产物；禁止适配器自行联网、启动命令或读写项目。", "func": dev_preview_adapter_refresh},
@@ -7363,14 +7776,29 @@ TOOLS = {
     "create_external_file": {
         "description": "在白名单目录内【新建】文件（受控越界写，不覆盖已有文件）。仅在「高权限模式」+ 已配置 DOCMIND_EXTERNAL_DIRS 白名单时生效；安全模式或被列出白名单外一律拒绝。用于给其他项目新增文件/模块。输入同 create_file：第一行 path: <绝对路径>，最后 new_text: <文件内容（可多行）>。受单文件 200KB 上限与 .py 语法校验约束；「人工确认」开启时只暂存不落盘。",
         "func": create_external_file,
+        # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
+        # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
+        "capability": "write_external",
+        "side_effect": "mutating",
+        "parallel_safe": False,
     },
     "edit_external_file": {
         "description": "在白名单目录内修改【已存在】文件（受控越界写）。仅在「高权限模式」+ 白名单内生效。两种用法：① 局部替换——path + old_text（精确旧片段）+ new_text；② 整体重写——path + new_text（须先用 read_external_file 读过该文件）。受 200KB 上限与 .py 语法校验约束；「人工确认」开启时暂存。",
         "func": edit_external_file,
+        # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
+        # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
+        "capability": "write_external",
+        "side_effect": "mutating",
+        "parallel_safe": False,
     },
     "delete_external_file": {
         "description": "删除白名单目录内的【单个文件】（危险操作，受控越界删）。仅在「高权限模式」+ 白名单内生效。输入需含 path: <绝对路径> 与 confirm: yes 明确确认；只删文件不删目录；「人工确认」开启时改为暂存待批准。用于清理其它项目的无用文件。",
         "func": delete_external_file,
+        # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
+        # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
+        "capability": "write_external",
+        "side_effect": "mutating",
+        "parallel_safe": False,
     },
     "grep": {
         "description": "在代码库中按正则表达式搜索文本/符号，返回匹配的文件路径与行号。定位某段代码、某变量、某错误出现位置时用。输入为正则表达式。",
@@ -7413,7 +7841,21 @@ TOOLS = {
         "func": run_command,
     },
     "dev_job_logs": {
-        "description": "读取后台命令任务的运行状态与增量输出。输入 `job_id: <id>` 查看该任务（可附加 `offset: <字符偏移>` 只取新增部分）；省略 job_id 则列出最近后台任务。用于跑长构建、测试套件或本地服务时持续观察，避免前台命令一直阻塞。任务结束或失败都会保留已采集的输出供排查。",
+        "description": (
+            "读取后台命令任务的运行状态与输出。输入 `job_id: <id>` 查看该任务（可附加 "
+            "`offset: <字符偏移>` 只取新增部分）；省略 job_id 则列出最近后台任务。任务结束或"
+            "失败都会保留已采集的输出供排查。\n"
+            "长日志加两样：`fold: true` 把重复行折成「重复 N 次」——比的是【签名】而不是整行，"
+            "真 uvicorn 的 access 行每条都带临时客户端端口，逐行去重实测折不动任何一行；"
+            "`level: warn|error` 只看警告以上，且 traceback 正文跟随它的标题走（逐行筛级别会"
+            "把最该看的正文一起筛掉）。\n"
+            "视图模式是整块重算、**不能续读**（带了 offset 会明说被忽略，`next_offset` 置空），"
+            "并如实报 `lines_in/lines_out/folded_away/dropped_*`。上游缓冲本来就是「头 4000 + "
+            "尾 4000，丢中段」，所以视图会报 `middle_omitted_chars`，被级别筛掉的行里若还有 "
+            "4xx/5xx/失败字样也会报 `dropped_failure_marks`——这份视图永远不该被读成「日志里"
+            "没有错误」。原始读法（不给 fold/level）不改文本，只在确有重复或确有缺口时附一句 "
+            "`view_hint`。"
+        ),
         "func": dev_job_logs,
     },
     "dev_job_cancel": {
@@ -7472,7 +7914,12 @@ TOOLS = {
             "输入 keyed 多行：`action: open|click|type|press|wait|read|locate|list|close`、"
             "`page: <会话 id>`（open 之外必填）、`url: http://127.0.0.1:5173/` 或 `entry: index.html`、"
             "`selector:`/`text:`/`nth:` 定位、`value:` 文本、`key: Enter`、`state: present|absent|visible|hidden|text`、"
-            "`mode: text|value|attr|html|count`、`settle: 600`、`screenshot: true|false`。\n"
+            "`mode: text|value|attr|html|count|contains`、`attr: href`、`needle: 要找的词`"
+            "（contains 用）、`settle: 600`、`screenshot: true|false`。\n"
+            "`read` 的文本有 4000 字上限（回包会标「已截断」），所以判断「这句话在不在」时别读整段"
+            "文本，改用 `mode: contains` + `selector: 容器` + `needle: 词`——只回命中数与周围小段，"
+            "返回量与页面大小无关；容器没匹配到或没扫完时会明说「这次搜索不构成证据」；"
+            "搜索按【可见文字】判定，`display:none` 里的命中另报 `hidden_hits`，不混进 `hits`。\n"
             "**每个动作都回报是否真的生效**：effect 取 `changed`/`navigated`/`reloaded`/`error_seen`/`no_change`，"
             "并附 DOM 变更、新 console 错误、新失败请求的计数。`no_change` 就是没观察到变化，"
             "不要当成成功；`error_seen` 要按报错修。隐藏、禁用、或命中多个却没给 `nth` 的元素一律拒绝执行，"
@@ -7535,16 +7982,24 @@ TOOLS = {
             "跑 pytest 并回【结构化】判定，替代 `run_command(\"pytest -q\")` + 自己读一整屏文本。\n"
             "输入 keyed 多行：`paths: tests/test_a.py, tests/test_b.py`（逗号分隔，留空＝全量）、"
             "`keyword: voice`（走 `-k`，只当参数传）、`only_failed: true`（只重跑上次记账里的失败）、"
-            "`related: agent_runtime/x.py,tools.py`（按改动文件选出真实存在的相干测试）、"
-            "`timeout: 300`（5~1500 秒）。输出是 counts / 逐条 FAILED nodeid + 原因 / 范围回显。\n"
+            "`related: agent_runtime/x.py,tools.py`（按改动文件选出真实存在的相干测试；"
+            "同时也是 `coverage: true` 时的圈定范围）、"
+            "`coverage: true`（附带覆盖率）、`timeout: 300`（5~1500 秒）。"
+            "输出是 counts / 逐条 FAILED nodeid + 原因 / 范围回显。\n"
             "为什么不能只看退出码：pytest 在【一个用例都没收集到】时退出码是 5——那绝不是通过，"
             "本工具用 `tests_collected` 明确判未通过；摘要与退出码对不上时判 "
             "`counts_agree_with_exit`（输出被截断或被污染）；读不到摘要判 `summary_parsed`。\n"
             "`--lf` 在本仓不可用（`.pytest_cache` 是 Permission denied），所以失败清单由本工具"
             "记到项目状态目录，`only_failed` 用的是这份账；失败超过 200 条会拒绝逐条重跑"
             "（那是整片红，该跑全量）。`basetemp` 一律钉在项目内。\n"
-            "覆盖率：本仓没装 coverage/pytest-cov，`coverage: true` 直接回"
-            "「未启用、缺依赖」——那是【没测】，不是 0%，也不许当成通过。"
+            "覆盖率（`coverage: true`）：会真跑一遍并回【哪些文件哪些行没被执行过】，"
+            "配合 `related:` 时按你改动的文件圈定范围——这比一个全仓百分比有用得多，"
+            "因为一条 87% 的横幅完全可能没碰到你刚写的三行分支。"
+            "报告读不出来、或你给的改动文件压根不在报告里，都明确说「覆盖率未知」而"
+            "不是折算成数字（有语法坏掉的文件时 coverage 会跳过它，那些文件的覆盖率"
+            "既不算已覆盖也不算未覆盖，会单独列出来）。"
+            "**覆盖率低不等于测试失败**，两者分开判。没装 `coverage` 时如实说缺依赖，"
+            "不把「没测」报成 0%，也不许当成通过。"
             "选不出相干测试时报错并列出没命中的文件名，不悄悄退化成跑全量或跑 0 个。\n"
         ),
         "func": dev_testrun,
@@ -7667,17 +8122,64 @@ TOOLS = {
         "description": "【只读】看提交历史：谁在什么时候改了什么、某个文件被哪些提交动过、某条 lane 最近在干什么。与 dev_git_diff 的分工——diff 回答「还没提交的改动」，log 回答「已经进历史的那些」；判断重复劳动、确认某改动是否已入库、找回被覆盖前的实现都必须用它。输入（全部可选）：paths: <文件或目录，逗号/换行分隔>、limit: <条数，默认 20，上限 200>、since: <日期，如 2026-09-25>、until: <日期>、author: <作者名片段>、at: <某个提交，如 HEAD 或 b78bd52，也可 a..b>、files: true（每条附带改动文件清单）、timeout: <秒，上限 60>；直接把路径当输入也可以。只走 rev-parse/status/diff/log 四个只读子命令，绝不写入、绝不提交；取值里以 `-` 或 `=` 开头、含控制字符的一律拒绝（防参数注入）。返回 `hash 日期 作者 标题` 流水并标注当前 HEAD。",
         "func": dev_git_log,
     },
+    "dev_plan": {
+        "description": "把「正在做的事」外置成项目状态目录里的一份可勾选清单——让上下文压缩不再等于丢目标。对话上下文会被摘要压缩，而压缩是有损的（摘要有取舍，摘得越多细节退化越明显）；把任务状态搬到磁盘上、每轮自动注入你的系统消息，于是「上下文被摘掉一大半」不再等于「目标丢了」。输入 keyed 多行：`action: open|append|check|uncheck|read|clear`（默认 read）、`title:` 清单标题、`items:` 条目（逗号或换行分隔）、`item:` 要勾选的条目 key 或文本前缀。典型用法：`action: open / title: 修登录超时 / items: 定位超时点, 加日志, 补测试, 跑一遍` → 每做完一件 `action: check / item: 加日志` → 随时 `action: read` 看进度与「下一件未完成的事」。**长任务、跨多轮、或发现对话已被压缩过时，先 read 再继续，不要凭记忆接着做。** 清单只写项目状态目录、不碰工作树（git status 不会因此变脏）；同名条目自动合并，重述计划不会堆出重复项。",
+        "func": dev_plan,
+        "capability": "admin",
+        "side_effect": "mutating",
+        "parallel_safe": False,
+    },
     "dev_lanes": {
         "description": "多人同仓协作的【认领登记表】（带 TTL 的租约）：谁在动哪些文件，冲突当场发现，过期自动可被接手。开工前先 `action: status` 看别的 lane 在动哪块，避免重复造轮子；动某个文件前 `action: check` + `path: <相对路径>` 问一句归属；领到任务 `action: claim` + `lane: AI-A` + `paths: frontend/src/workbench/**, tests/test_live_*.py`（+ 可选 `owner:`、`ttl_minutes:` 默认 120、`note:` 给别人看的说明）；做完 `action: release`，长任务定期 `action: heartbeat` 续租。需要物理隔离（别人收口提交不会把你的半成品卷进 HEAD）时 `action: open`（开通独立 worktree 并把路径回给你，之后的读写与 run_command 都用它），收回用 `action: close`（默认拒绝删除有未提交改动的 worktree，确认丢弃才加 `discard: true`）。排他按目录前缀保守判定：`*.vue` 这种无目录前缀的模式等于占下全仓，会与其他 lane 冲突，请用 `frontend/src/**/*.vue` 收窄。明知无重复但要共管时加 `force: true`，并在 HANDOFF 说明。所有写入只落在项目状态目录，不碰 git 历史。",
         "func": dev_lanes,
+        # 认领登记表只写项目**状态目录**（project_state/lanes.json），不碰源码，
+        # 所以不该被"用户有没有要求改文件"拦住——它是协作登记，不是改代码。
+        # 但它确实改共享状态（认领/心跳/释放），必须 mutating 且不可并发：
+        # 两个 lane 并发认领会互相覆盖。与 dev_mcp_add/remove 同类，归 ADMIN。
+        # 曾经声明为 read_local/pure/parallel_safe，那是三个错一起犯。
+        "capability": "admin",
+        "side_effect": "mutating",
+        "parallel_safe": False,
     },
     "dev_diagnostics": {
         "description": "拿【结构化诊断】而不是「过/不过」加一坨尾部日志：Python 走 ruff、前端走 `npm run typecheck`（vue-tsc），输出归一成 文件:行:列 + 规则号 + 说明 + 严重度。改完一段代码、跑测试之前先调用它，比 self_verify 更早发现问题；重命名/搬文件之后用它确认没留下未定义引用。输入：target: <文件或目录，逗号/换行分隔，留空=按 scope 扫整个代码根目录>、scope: auto|py|frontend|all（auto 按扩展名选引擎）、rules: <ruff 规则覆盖，默认只查会咬人的 E9,F401,F811,F821,F822,F841,E722；要风格全检写 rules: ALL 或 rules: E,W,F>、timeout: <秒，上限 300>、config: <项目内 ruff 配置文件>；直接把路径当输入也可以。只读：从不传 --fix，从不写文件。工具没装时会【明确说「未安装」并给出安装命令】，绝不把「没跑成」报成「没问题」；输出被截断导致解析不出条目时同样如实报，不会谎称干净。前端诊断需要在 frontend/ 里有 typecheck 脚本且能找到 npm（可用 DOCMIND_NPM_BIN 指定）。",
         "func": dev_diagnostics,
     },
+    "dev_probe": {
+        "description": "给【后端与命令行】一条真观察凭据——浏览器那一套（preview_project / dev_page_action / dev_vue / dev_apptest）对纯后端项目、一条 CLI、一个 worker 一样都够不着，那段闭环只能退回 `run_command` 加一屏文本由模型自己读，而「没看到报错」很容易被读成「没报错」、「跑完了」很容易被读成「跑对了」。两种模式：`mode: http` 真的发一个请求到回环服务（`url:`、`method:`、`body:`、`headers:`、`expect_status:` 期望状态码、`expect_text:` 正文必须含某串）——**只允许回环**，和 dev_serve / dev_page_action 同一道边界，连不上就明确说「没应答」而不是当成服务正常；5xx 既是「服务在应答」的凭据也是「这次不该通过」的证据，两个意思分开报。`mode: cli` 跑一条命令（`command:`、`expect_text:` 必须出现、`forbid_text:` 不许出现、`allow_silent: true` 这条命令本来就不出声），**除了退出码**还回：ERROR/CRITICAL 级日志行、真 traceback（认 `Traceback (most recent call last)` 与带类型的抛出，不拿正文里出现的 error 字样充数）、`NameError: name 'x' is not defined` 的名字、以及「输出为空」这件事本身——退出码 0 的一个什么都没打印的 CLI 和一个真干了活的 CLI 在退出码上无法区分。命令解析与安全黑名单**复用 run_command 那一套**（自己 split() 会把 `-c \"print(1)\"` 拆坏，更会绕开黑名单）。判定 fail-closed：连不上、命令起不来、超时、输出被截断，每一种都是单独一条红，不会悄悄变成一个好看的结论；access log 那种每行带随机端口的噪声会被折掉，不会挤掉真正的错误。只读观察：不改任何项目文件。",
+        "func": dev_probe,
+    },
+    "dev_handoff": {
+        "description": "把【交付】这段补到能真的往前走一步：建议分支名 + commit message 草稿 + 这次提交会包含哪些文件的范围体检。补的是 dev_propose 到「草稿」就停下的那一段——产物躺在状态目录里，人还得自己决定分支名、自己写 message、自己确认改动里有没有混进别人的在途 WIP。本工具算的是**决策材料**，不代替决策：**不 git add、不 commit、不 push、不切分支**，只跑只读 git 子命令（rev-parse/status/diff/log）。输入 keyed 多行（全部可选）：`files: agent_runtime/x.py, tests/test_x.py`（只看这些路径，默认全部改动）、`title: 修好打断后不闭嘴的问题`（有它才推得出像样的 message）、`timeout:`。输出含：当前分支与 HEAD、建议分支名（`type/scope-slug`）、建议 commit message、会包含的文件清单与规模，以及几条必须提醒的事——**共享文件**（非 tests/ 非 .md 的主干文件）单独标出，因为本仓实测教训是 `git commit -- <路径>` 会绕过索引把别人在同一批文件里的在途改动一起扫进去（`b828d10` 就是这么连累 HEAD 的），提交前请核对 `git diff --cached --stat` 或先跑 dev_headcheck；**未跟踪文件**单列，因为它们不在 diff 里，说成「已交付」是这类工具最容易骗人的地方；改了 40 个文件以上会明说「该拆成几个提交」（没人能 review 40 文件的提交）；会看本仓最近的提交标题来判断该不该加 `type(scope):` 前缀，按仓库自己的习惯写而不是强推外来的。不是 git 工作树时明说「没有 git 就没有提交这一步」，不生成任何看起来就绪的材料。",
+        "func": dev_handoff,
+    },
+    "dev_pricing": {
+        "description": "从 OpenRouter 官方目录**联网检索**模型单价并写入价格表——不手抄、不写死会过期的表。补的是「custom / OpenAI 兼容中转没有内置单价 → cost_cny 恒为 0」这个洞，而那个 0 与「模型真的免费」在界面上完全一样。输入 keyed 多行（全部可选）：`model: stealth/space-bunny-alpha`（留空＝用当前选中的模型）、`action: fetch|apply`（fetch 只查不写，默认；apply 写进 `.docmind_pricing.json`）、`timeout:` 检索超时秒数。输出单价已从**美元换算成元 / 1M tokens**（汇率可用 `DOCMIND_USD_CNY` 覆盖），含缓存命中读与缓存写入单价，以及**阶梯定价 overrides**（OpenRouter 普遍在长上下文处翻倍，缺了它长对话会被系统性低估一半且看不出错）。三种结果**分开报、绝不混成 0**：`free: true` 表示官方目录标价就是 0（真的免费，建议 apply 写进去，运行台就会明说免费）；`error:` 表示没查到或检索失败（**不是**免费）；否则是正常单价。apply 只动这一个模型、原子写、写完立刻用 price_detail 复核并回显写前/写后差别。",
+        "func": dev_pricing,
+        # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
+        # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
+        "capability": "write_local",
+        "side_effect": "mutating",
+        "parallel_safe": False,
+    },
+    "dev_deps": {
+        "description": "对账「代码 import 了什么」与「依赖清单声明了什么」，并能把缺的**追加**进去——补的是 vibecoding 最常见的死法：你在工作树里 import 了一个新包，本地因为恰好装过而一切正常，可提交里没有依赖声明，别人 clone 下来或 CI 拉干净检出时第一句 import 就 ModuleNotFoundError。dev_headcheck 能**发现**这件事，但没有工具能修；这条补的就是「知道缺了」到「补上」之间那一段。输入 keyed 多行（全部可选）：`paths: agent_runtime/retrieval.py, api.py` 只查这些文件/目录（留空=全仓）、`action: check|apply`（check=只读对账，默认；apply=把缺失行追加进清单）、`source: requirements.txt`（apply 时指定写进哪个清单）。扫描走 `ast` 不是正则，所以注释里的 `# import numpy` 和字符串里的 `\"import os\"` 不会被当成依赖；相对 import（`from . import x`）一律跳过。import 名与发行名的映射按可信度找证据：本机已安装的发行元数据最硬（实测 `websocket`→`websocket-client`、`yaml`→`PyYAML`、`webview`→`pywebview` 都靠它）→ 已声明依赖的 extras（`psycopg[binary,pool]` 带出 `psycopg-pool`）→ 内置查表 → 同名（标成**弱证据**并注明本机没装）。都不确定就归入 unknown 并明确报出来，**绝不猜一个名字写进清单**——猜错等于装了个不相干的包而真正缺的那个还缺着。本地包不会被误报：`import tools` 指向本仓 tools.py、`game_demo/main.py` 里 `from starvoyager.config import …` 指向 `game_demo/starvoyager/`（按「导入方自己的目录」逐个判，同一个模块对 A 文件是本地、对 B 文件可以是真第三方）。写操作只有一处：往**已存在**的清单追加缺失行（每行带「谁 import 了它」的注释），不改版本、不删行、不重排；没有依赖清单时不替你新建。「声明了但没扫到 import」只作为**线索**列出（pytest/ruff 是命令行用的，不算多余依赖），不影响判定。fail-closed：解析失败的文件、被扫描上限截断、没有依赖清单，都会让报告**不能**被读成「依赖没问题」。",
+        "func": dev_deps,
+        # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
+        # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
+        "capability": "write_local",
+        "side_effect": "mutating",
+        "parallel_safe": False,
+    },
     "dev_propose": {
         "description": "把本轮改动打包成【可评审产物】：一份真 `git diff` 补丁 + 一份提交/PR 草稿，写完把两个路径回给你。**不提交、不推送**（提交与推送是人的决定，命令黑名单也拦着），补的是「改完了却只能口头描述」这段交付空洞。输入 keyed 多行（全部可选）：`title:` 草稿标题兼产物命名、`body:` 为什么这么改、`files: a.py, tests/` 只打包这些路径（默认全部未暂存改动）、`staged: true` 打包暂存区、`test_plan:` 复核步骤、`lane: AI-A` 署名、`timeout:`。产物写在【项目状态目录】里而不是仓库工作树——多人同仓时，把临时文件写进工作树等于给别人埋雷，所以 `git status` 不会因为打包变脏。未跟踪的新文件【不伪装成补丁】，只在草稿里列成清单并写明「需确认后再入库」。补丁可直接喂给 dev_patch 重放。",
         "func": dev_propose,
+        # 只读工作树（git diff）、产物只写项目**状态目录**，不动源码，
+        # 因此不该被写意图护栏拦——"把改动打包成评审产物"不是改代码。
+        # 但它确实落盘，标 mutating + 不可并发。与 dev_lanes 同类，归 ADMIN。
+        "capability": "admin",
+        "side_effect": "mutating",
+        "parallel_safe": False,
     },
     "dev_ci_status": {
         "description": "【只读】看 CI：最近的 workflow runs、结论、失败 job，以及【本地 HEAD 到底有没有被 CI 跑到】——后者在「push 得在用户机器上跑」的环境里尤其重要，没 push 时它会直说「这些 run 里没有本地 HEAD」而不是让你以为绿了。输入 keyed 多行（全部可选）：`branch: main`、`ref: <sha>`、`per_page: 5`（上限 20）、`jobs: true`（把最近一次的 job 列表拉回来，能指出是哪个 job 挂的）、`log_url: <地址>` 单独抓一份 job 日志并只回错误行、`timeout:`。需要 GitHub token（DOCMIND_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN 任一）。本工具绝不触发或重跑 workflow；没 token、401/403、404 或连不上时明确回「未完成 + 原因」，不会编一个状态出来。仓库归属直接读 .git/config 的 origin，不调 git 也不猜。",
@@ -7686,10 +8188,20 @@ TOOLS = {
     "dev_patch": {
         "description": "把一段【unified diff】原子地打到代码库里：全成才打，任一文件对不上就一个都不改、树上不留半成品。输入就是 diff 正文（`--- a/路径`、`+++ b/路径`、`@@ -起行数,行数 +起行数,行数 @@`、空格/`+`/`-` 行），首行可加 `dry_run: true` 只做校验与语法检查不写盘（大补丁先空跑一次）。护栏：路径必须是代码根目录内的相对路径（`a/`、`b/` 前缀会自动去掉，`../` 与绝对路径拒绝）；上下文行与被删行必须逐字相等——【不做模糊匹配】，宁可报错也不改错地方；声明行号偏了但上下文一致时会自动对齐并在结果里说明落到了第几行；.py 打完还会过一遍 ast 语法检查，语法不过直接整体拒绝；删除文件一律不让补丁做（会用带确认的删除工具）。一次最多 20 个文件、单文件 200KB。改多处调用点、落地外部评审意见、回滚某段改动时优先用它，比连续多次 apply_edit 安全。",
         "func": dev_patch,
+        # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
+        # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
+        "capability": "write_local",
+        "side_effect": "mutating",
+        "parallel_safe": False,
     },
     "dev_move": {
         "description": "移动/重命名代码库内的【单个文件】：被 git 跟踪的走 `git mv`（保留历史与 blame，git 会显示为 R），未被跟踪的退回文件系统移动。输入两行：`from: <旧路径>`、`to: <新路径>`（相对代码根目录），可选 `timeout: <秒>`。只做移动：目标已存在一律拒绝不覆盖、不删目录、不越界、单文件 200KB 上限。注意 `run_command` 只拦【历史类】git 子命令（commit/push/reset/checkout/worktree 等），`git mv` 本来就能跑——这个工具的价值是把移动约束成安全路径（越界拒绝、不覆盖、强制回归提示），而不是绕过禁令。移动之后必须用 dev_find_references / grep 检查旧路径的 import 与引用，再用 dev_diagnostics 确认没打断。",
         "func": dev_move,
+        # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
+        # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
+        "capability": "write_local",
+        "side_effect": "mutating",
+        "parallel_safe": False,
     },
     "dev_find_references": {
         "description": "重构前定位符号的全部引用点（重命名/删函数/改签名/搬文件前必用）。Python 走 ast 精确匹配——注释与字符串里的同名文本【不会】被误报；TS/TSX/JS/JSX/Vue 走 tree-sitter 语法匹配，注释、字符串字面量与对象字面量的键都不算引用，Vue 会解析 <script> 块并把行号映射回文件真实行（模板里的同名文本用词边界正则补充，并在 notes 说明）；其他语言走词边界正则并跳过纯注释行。语法包缺失时自动回退正则，不会静默丢结果。输入：symbol: <符号名>（必填），可选 scope: <限定目录或文件>、kind: def|ref|all（默认 all）、limit: <条数上限，默认 80>；直接把符号名当输入也可以。返回定义处与引用处（file:行号 + 代码行，按文件聚合计数），低置信的字符串/键名单列。命中过多时请用 scope 缩小范围。",

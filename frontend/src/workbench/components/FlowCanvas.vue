@@ -15,6 +15,7 @@ import '@vue-flow/controls/dist/style.css'
 import { harnessApi, type TraceItem, type TraceStep } from '../api'
 import { demoMode, demoTraceItems } from '../composables/demo'
 import { useWorkbench } from '../composables/workbench'
+import { costLabel } from '../composables/costLabel'
 
 const { flowOpen, closeFlow } = useWorkbench()
 const { fitView } = useVueFlow()
@@ -165,8 +166,11 @@ function fmtMs(ms: number) {
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(1)}s`
 }
+
 function money(v: number) {
-  return `¥${Number(v || 0).toFixed(4)}`
+  // 同 SettingsView：0 元时不猜「免费」，只回金额；解释交给带 pricing_state 的
+  // 供应商表。逐轮 trace 里没有那个字段，硬猜就是假信息。
+  return costLabel(v)
 }
 function selectTurn(id: string) {
   if (selectedTurnId.value === id) return

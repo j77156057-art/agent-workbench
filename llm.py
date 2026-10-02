@@ -1,4 +1,4 @@
-"""LLM 客户端：用 OpenAI 兼容协议统一封装 通义千问 / DeepSeek / Ollama / mock。
+﻿"""LLM 客户端：用 OpenAI 兼容协议统一封装 通义千问 / DeepSeek / Ollama / mock。
 
 设计意图（与 Android 端 AIApiClient 一致）：把不同厂商的大模型收敛到同一套
 OpenAI chat/completions 接口后面，运行时切换 provider 即可，业务代码无需改动。
@@ -26,8 +26,21 @@ from textutil import as_text
 
 # 默认单次 LLM 调用超时（秒）与重试策略（可用环境变量覆盖）
 LLM_TIMEOUT = float(os.getenv("DOCMIND_LLM_TIMEOUT", "180"))
-LLM_RETRIES = int(os.getenv("DOCMIND_LLM_RETRIES", "3"))       # 总尝试次数（含首次）
-LLM_RETRY_BASE = float(os.getenv("DOCMIND_LLM_RETRY_BASE", "0.8"))  # 指数退避基数（秒）
+# 总尝试次数（含首次）。
+#
+# 为什么从 3 提到 4：**这不是“多试一次”的好意，而是放宽退避的算术前提**。
+# 退避发生在第 i 次失败之后，i 只取 0..attempts-2，所以 attempts=3 只允许 2 段退避。
+# 实测（2026-10-03 账本）免费中转的“空响应”故障窗口约 8–9 秒才恢复，而旧的
+# 0.8s→1.6s 两段退避合计仅约 2.4 秒——**3 次尝试全部落在同一个故障窗口内**，
+# 于是重试等于没重试，整轮照样失败（实测 elapsed 2153ms / 4279ms，
+# 与“3 次秒回空信封 + 短退避”的推算吻合）。
+# attempts=4 才给出第 3 段退避，把总覆盖拉到 15–27 秒。
+LLM_RETRIES = int(os.getenv("DOCMIND_LLM_RETRIES", "4"))       # 总尝试次数（含首次）
+# 指数退避基数（秒）。配合下面的上限，3 段退避合计约 15–27 秒（含抖动）。
+# 这是**全局**放宽：付费托管 API 真出故障时会多等一会儿才放弃，是有意接受的代价。
+LLM_RETRY_BASE = float(os.getenv("DOCMIND_LLM_RETRY_BASE", "3.0"))
+# 单段退避上限（秒）。原先硬编码 8.0 藏在 retry_call 里，调参时根本看不见。
+LLM_RETRY_CAP = float(os.getenv("DOCMIND_LLM_RETRY_CAP", "12.0"))
 # 默认采样温度；golden 回归实验用 DOCMIND_LLM_TEMPERATURE=0 关闭随机性以测稳定性。
 # 默认 0.3 与历史行为一致；仅在显式覆盖时改变，不影响其它调用方。
 LLM_TEMPERATURE = float(os.getenv("DOCMIND_LLM_TEMPERATURE", "0.3"))
@@ -51,6 +64,12 @@ def _status_of(exc):
 
 def is_retryable(exc) -> bool:
     """判断异常是否值得重试（限流、5xx、网络/超时）。"""
+    # 上游空响应按定义就是「这次没给、下次可能给」，所以必须重试。
+    # 它尤其需要这一条：HTTP 层看到的是 200，`_status_of` 取不到任何状态码，
+    # 不显式认它的话就会一路落到下面的字符串启发式——而那句消息里并没有
+    # 任何网络/限流关键词，于是**一次都不会重试**，等于白抛。
+    if isinstance(exc, EmptyProviderResponse):
+        return True
     st = _status_of(exc)
     if isinstance(st, int) and (st == 429 or st >= 500):
         return True
@@ -69,6 +88,15 @@ def retry_call(fn, deadline=None, attempts=None, base=None):
     - deadline 为 time.monotonic() 基准的绝对截止时刻；逼近或到达即停止重试。
     - 流式场景：本包装只覆盖"建立连接"阶段；一旦开始吐 token 就不再重试
       （已发出的 token 无法撤回，宁可让上层走续写纠偏）。
+
+    **退避总跨度必须覆盖上游的真实故障窗口，否则重试是假的。**
+    实测免费中转的空响应窗口约 8–9 秒；旧参数（attempts=3 / base=0.8 / cap=8）
+    三次尝试只铺开约 2.4 秒，于是每次重试都落在同一个故障窗口内，整轮仍失败——
+    账本里那两条 `elapsed_ms` 2153 / 4279 就是这么来的。
+    现在（attempts=4 / base=3 / cap=12）铺开 15–27 秒，覆盖得住。
+
+    注意 `i` 只取到 `attempts - 2`：**只调大 base 而不动 attempts 是无效的**，
+    attempts=3 时最多也只有 2 段退避（这是本文件顶上把 3 改成 4 的原因）。
     """
     attempts = int(attempts or LLM_RETRIES)
     base = LLM_RETRY_BASE if base is None else float(base)
@@ -82,7 +110,7 @@ def retry_call(fn, deadline=None, attempts=None, base=None):
             last = e
             if i >= attempts - 1 or not is_retryable(e):
                 raise
-            delay = min(base * (2 ** i), 8.0) * (0.7 + 0.6 * random.random())
+            delay = min(base * (2 ** i), LLM_RETRY_CAP) * (0.7 + 0.6 * random.random())
             if deadline is not None and time.monotonic() + delay >= deadline:
                 raise
             time.sleep(delay)
@@ -452,6 +480,72 @@ def _doc_context_resolver(query: str) -> str:
     return res
 
 
+class EmptyProviderResponse(RuntimeError):
+    """provider 用 HTTP 200 回了一个错误信封，而不是一次正常的补全。
+
+    OpenRouter 兼容端点在**状态码是 200** 的情况下把上游失败包成
+    `{"choices": null, "error": {"message": "Provider returned an empty
+    response", "code": 502}}`。实测本机用 `custom/stealth/space-bunny-alpha`
+    连打三个问题，第二个就命中（2026-10-02）。
+
+    为什么值得单独一个异常类型：原来的写法是 `resp.choices[0].message`，它抛的是
+    `TypeError: 'NoneType' object is not subscriptable`——一句与真实原因毫无关系的
+    消息，`api.py:2418` 又按 `type(e).__name__` 把它显示成 `⚠ TypeError`，于是用户
+    看到的是"服务内部类型错误"，而真实情况是"上游这次没返回内容，重试可能就好了"。
+    两件事必须分开：**说清是谁没给内容**，并让上层知道这类错误**值得重试**。
+    """
+
+
+def _response_error(resp) -> dict:
+    """把 provider 的错误信封挖出来（`error` 可能是 dict 或嵌套信封）。"""
+    dump = None
+    if hasattr(resp, "model_dump"):
+        try:
+            dump = resp.model_dump()
+        except Exception:  # noqa: BLE001 - 取不到就按「没有信封」处理
+            dump = None
+    if not isinstance(dump, dict):
+        dump = resp if isinstance(resp, dict) else {}
+    error = dump.get("error")
+    if isinstance(error, dict):
+        inner = error.get("error")
+        if isinstance(inner, dict):
+            error = inner
+        return error
+    return {}
+
+
+def _first_message(resp):
+    """取 `choices[0].message`，并把「没有 choices」变成一句能读懂的错。
+
+    fail-closed 的两个分支都在这里：
+    * `choices` 是 `None` / 空 —— 上游用 200 回了个错误信封（见 EmptyProviderResponse）；
+    * `message` 是 `None` —— 有 choice 但没内容，同样不算一次成功的补全。
+    两者都**不**返回空字符串冒充答案——空串会被 Agent 当成"模型什么都没说"，
+    然后触发续写纠偏转 8 次，比直接报错难查得多。
+
+    调用位置在 `retry_call` **内部**（见 chat()）：空响应按定义是"这次没给、
+    下次可能给"，所以它必须走重试，否则这个异常只是把旧的真错误换了个好听的名字。
+    """
+    choices = getattr(resp, "choices", None)
+    if not choices:
+        detail = _response_error(resp)
+        message = str(detail.get("message") or "").strip()
+        code = detail.get("code")
+        where = "%s（%s）" % (message, code) if message and code else (message or "无错误说明")
+        raise EmptyProviderResponse(
+            "模型服务没有返回任何候选内容：%s。这是上游/中转的临时故障，"
+            "与代码无关，直接重试通常即可。" % where)
+    first = choices[0]
+    msg = getattr(first, "message", None)
+    if msg is None:
+        raise EmptyProviderResponse(
+            "模型服务返回了一条空的候选消息（finish_reason=%r）。这是上游/中转的"
+            "临时故障，与代码无关，直接重试通常即可。"
+            % getattr(first, "finish_reason", None))
+    return msg
+
+
 class LLMClient:
     def __init__(self, provider=None, model=None, api_key=None, base_url=None, web_fn=None):
         self.provider = provider or get_runtime("llm_provider") or LLM_PROVIDER
@@ -667,30 +761,42 @@ class LLMClient:
 
 
         with local_llm_slot(self.provider, self.model):
-            resp = retry_call(
-                lambda: self.client.chat.completions.create(
+            # 取 content **也在重试范围内**：`_first_message` 抛的
+            # EmptyProviderResponse 是可重试的（上游空响应 = 这次没给、下次可能给），
+            # 而 HTTP 200 的错误信封不会让 HTTP 层报错——所以不把检查放进重试里，
+            # 这个异常只是把旧的 TypeError 换了个好听的名字，一次都不会重试。
+            # 实测本机打 6 个问题命中 1 次空响应，重试后拿到了正常内容。
+            def _complete():
+                resp = self.client.chat.completions.create(
                     model=self.model, messages=oai_messages, stream=False,
                     temperature=temperature, timeout=call_timeout, **kwargs
-                ),
-                deadline=deadline, attempts=self.max_retries, base=self.retry_base,
-            )
+                )
+                self._record_usage(resp)
+                msg = _first_message(resp)
+                self.last_tool_calls = normalize_tool_calls(getattr(msg, "tool_calls", None))
+                return getattr(msg, "content", None)
+
+            return retry_call(_complete, deadline=deadline, attempts=self.max_retries,
+                              base=self.retry_base)
+
+    def _record_usage(self, resp):
+        """把 usage 里的 token 计数搬进 last_usage（供 trace 与计价用）。"""
         u = getattr(resp, "usage", None)
-        if u is not None:
-            dump = u.model_dump() if hasattr(u, "model_dump") else (u if isinstance(u, dict) else {})
-            if isinstance(dump, dict):
-                for k in ("prompt_tokens", "completion_tokens",
-                          "cache_read_input_tokens", "cache_creation_input_tokens",
-                          "cache_read_tokens", "cache_creation_tokens", "cached_tokens"):
-                    if isinstance(dump.get(k), int):
-                        self.last_usage[k] = dump[k]
-                details = dump.get("prompt_tokens_details")
-                if isinstance(details, dict):
-                    for k in ("cached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
-                        if isinstance(details.get(k), int):
-                            self.last_usage[k] = details[k]
-        msg = resp.choices[0].message
-        self.last_tool_calls = normalize_tool_calls(getattr(msg, "tool_calls", None))
-        return msg.content
+        if u is None:
+            return
+        dump = u.model_dump() if hasattr(u, "model_dump") else (u if isinstance(u, dict) else {})
+        if not isinstance(dump, dict):
+            return
+        for key in ("prompt_tokens", "completion_tokens",
+                    "cache_read_input_tokens", "cache_creation_input_tokens",
+                    "cache_read_tokens", "cache_creation_tokens", "cached_tokens"):
+            if isinstance(dump.get(key), int):
+                self.last_usage[key] = dump[key]
+        details = dump.get("prompt_tokens_details")
+        if isinstance(details, dict):
+            for key in ("cached_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                if isinstance(details.get(key), int):
+                    self.last_usage[key] = details[key]
 
     @staticmethod
     def _collect_cancelable_stream(stream, cancel_event):

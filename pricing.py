@@ -34,6 +34,17 @@ DEFAULT_PRICING = {
     "deepseek": {"in": 1.0, "out": 2.0, "cache_read": 0.1, "cache_creation": 1.25,
                  "models": {"deepseek-chat": {"in": 1.0, "out": 2.0},
                             "deepseek-reasoner": {"in": 4.0, "out": 16.0}}},
+    # OpenAI 兼容中转（OpenRouter 等）。**刻意不给 in/out**（连 0 也不给）：
+    # 中转的模型目录与价格随时会变，写死一份过期表比"显示未知"更糟——它会让运行台
+    # 报出一个看着精确、实际错误的金额。检索入口见 `openrouter_pricing()`。
+    #
+    # 为什么连 `in: 0.0` 都不能放：`pricing_state` 用「有没有显式写单价」判断
+    # "是否配置过"，而 `_load_pricing` 会把内置表 merge 进来——所以这里放一个 0.0
+    # 就等于宣称"custom 这个 provider 已配价"，于是换个收费模型却不写单价时，
+    # 那个本该报警的 0 会被判成 known，**静默漏报**（实测踩到）。
+    # 单位是**美元 / 1M tokens**（OpenRouter 的口径），不是元。
+    "custom": {"currency": "USD", "unpriced": True,
+               "note": "单价未内置：用 dev_pricing(action: apply) 从官方目录检索写入"},
     "ollama": {"in": 0.0, "out": 0.0},
     "llamacpp": {"in": 0.0, "out": 0.0},
     "mock": {"in": 0.0, "out": 0.0},
@@ -121,6 +132,88 @@ def _budget_lock():
             pass
 
 
+#: 费用「看起来是 0」的三种截然不同的情况。界面必须能分开，否则用户永远分不清
+#: 该去配价格、该换模型、还是确实省了钱。
+#:
+#: · `free`     —— 官方标价就是 0（真的免费），已确认；
+#: · `local`    —— 本地 provider（ollama / llamacpp / mock），不产生 API 费用；
+#: · `unknown`  —— **没有配置单价**。数字是 0，但那只是"没查"，不是"免费"。
+#:
+#: 实测踩过：用户用 OpenRouter 的免费模型，运行台显示 0 元，他无法判断这是省了钱
+#: 还是系统根本没在算账——于是"费用不对"变成一个查不出原因的问题。
+PRICING_STATE_FREE = "free"
+PRICING_STATE_LOCAL = "local"
+PRICING_STATE_UNKNOWN = "unknown"
+PRICING_STATE_KNOWN = "known"
+
+#: 恒定为 0 且语义明确的本地 provider（它们不打 API，不存在"单价"这回事）。
+LOCAL_PROVIDERS = frozenset({"ollama", "llamacpp", "mock"})
+
+
+def pricing_state(provider: str, model: str = "") -> dict:
+    """这个 provider/model 当前的计价状态，供界面把"免费"和"没配置"分开。
+
+    返回 `{"state", "configured", "is_free", "is_local", "in", "out", "note"}`。
+    `note` 是给界面直接用的一句话（中文），说明这个 0 到底意味着什么。
+    """
+    prov = str(provider or "").strip().lower()
+    pin, pout, pcr, pcc = price_detail(provider, model)
+    table = _load_pricing()
+    cfg = table.get(provider) or {}
+    models = cfg.get("models") or {}
+    entry = None
+    if model:
+        entry = models.get(model)
+        if not isinstance(entry, dict):
+            entry = models.get(str(model).split("/")[-1])
+    # 「配置过」的判据是**这一项（或该 provider 的平铺档）明确写了单价**，
+    # 而不是"取出来是不是 0"——后者会让未配置的 provider 冒充已配置。
+    has_model = isinstance(entry, dict) and (
+        "in" in entry or "out" in entry or entry.get("free") is True)
+    # `unpriced: True` 是内置表里"这个 provider 刻意没有单价"的标记（见 DEFAULT_PRICING
+    # 里 custom 那条）。它必须压过"cfg 里有 in/out"的判断——否则一个占位的 0.0
+    # 会被当成"配过价"，收费模型漏配时就不报警了。
+    has_flat = ("in" in cfg or "out" in cfg) and not cfg.get("unpriced")
+    configured = bool(has_model or has_flat)
+    explicitly_free = bool((entry or {}).get("free") is True)
+    local = prov in LOCAL_PROVIDERS
+    if explicitly_free:
+        state, note = PRICING_STATE_FREE, "该模型在官方目录标价就是 0 —— 它真的免费。"
+    elif local:
+        state, note = PRICING_STATE_LOCAL, "本地模型，不产生 API 费用。"
+    elif not configured:
+        state, note = (PRICING_STATE_UNKNOWN,
+                       "未配置单价：这个 0 只是「没算」，不代表免费。用 "
+                       "dev_pricing(action: apply) 从官方目录检索并写入。")
+    else:
+        state, note = PRICING_STATE_KNOWN, ""
+    return {"state": state, "configured": configured, "is_free": state == PRICING_STATE_FREE,
+            "is_local": state == PRICING_STATE_LOCAL,
+            "is_unknown": state == PRICING_STATE_UNKNOWN,
+            "in": pin, "out": pout, "cache_read": pcr, "cache_creation": pcc,
+            "provider": provider, "model": model, "note": note}
+
+
+def render_cost(provider: str, model: str, cost: float) -> str:
+    """给界面用的一句话：金额 + 这个 0 到底意味着什么。
+
+    有金额时只回金额；金额为 0 时补上状态说明——**这正是原先缺的那一环**：
+    原先一律显示「¥0.00」，于是"免费"和"没配置"在界面上完全一样。
+    """
+    amount = float(cost or 0.0)
+    text = "¥%.4f" % amount
+    if amount > 0:
+        return text
+    info = pricing_state(provider, model)
+    if info["state"] == PRICING_STATE_FREE:
+        return "%s（该模型免费）" % text
+    if info["state"] == PRICING_STATE_LOCAL:
+        return "%s（本地模型）" % text
+    if info["state"] == PRICING_STATE_UNKNOWN:
+        return "%s（未配置单价，费用未计入）" % text
+    return text
+
+
 def _load_pricing() -> dict:
     data = {k: dict(v) for k, v in DEFAULT_PRICING.items()}
     try:
@@ -130,10 +223,68 @@ def _load_pricing() -> dict:
             if isinstance(override, dict):
                 for prov, cfg in override.items():
                     if isinstance(cfg, dict):
-                        data.setdefault(prov, {}).update(cfg)
+                        # models 是逐模型覆盖，必须**深合并**：否则新写一个模型的单价
+                        # 会把同 provider 下已配好的其它模型整块抹掉（实测会踩）。
+                        merged = data.setdefault(prov, {})
+                        models = cfg.get("models")
+                        if isinstance(models, dict):
+                            existing = dict(merged.get("models") or {})
+                            existing.update(models)
+                            merged["models"] = existing
+                        merged.update({k: v for k, v in cfg.items() if k != "models"})
     except (OSError, ValueError):
         pass
     return data
+
+
+def save_model_pricing(provider: str, model: str, entry: dict) -> dict:
+    """把一个模型的单价写进 `.docmind_pricing.json`（原子写，不动其它条目）。
+
+    只写**该 provider 的该 model**，别的一律保留。写完立刻能用 `price_detail` 复核，
+    并把写入前后的差别回显出来——价格这种事不能"写完就说好了"。
+
+    `entry` 形如 `{"in","out","cache_read","cache_creation","overrides"}`，
+    与 `openrouter_pricing()` 的返回值同构（它已经换算成元 / 1M tokens）。
+    """
+    prov = str(provider or "").strip()
+    name = str(model or "").strip()
+    if not prov or not name:
+        return {"ok": False, "error": "provider 与 model 都要给。"}
+    if not isinstance(entry, dict):
+        return {"ok": False, "error": "entry 必须是字典。"}
+    fields = ("in", "out", "cache_read", "cache_creation", "overrides", "free")
+    clean = {key: entry[key] for key in fields if entry.get(key) is not None}
+    if "in" not in clean or "out" not in clean:
+        return {"ok": False, "error": "至少要有 in 与 out 两项单价。"}
+
+    current: dict = {}
+    if os.path.isfile(PRICING_FILE):
+        try:
+            with open(PRICING_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                current = loaded
+        except (OSError, ValueError):
+            current = {}
+    before = ((current.get(prov) or {}).get("models") or {}).get(name)
+    models = dict((current.get(prov) or {}).get("models") or {})
+    models[name] = clean
+    current.setdefault(prov, {})["models"] = models
+    try:
+        os.makedirs(os.path.dirname(PRICING_FILE) or ".", exist_ok=True)
+        tmp = PRICING_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(current, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.replace(tmp, PRICING_FILE)
+    except OSError as exc:
+        return {"ok": False, "error": "写 %s 失败：%s" % (PRICING_FILE, exc)}
+    # 写完立刻复核：读不回来的话就是没写进去，不能只看"没抛异常"。
+    after = price_detail(prov, name)
+    return {"ok": True, "provider": prov, "model": name, "file": PRICING_FILE,
+            "written": clean, "previous": before,
+            "verified": {"in": after[0], "out": after[1],
+                         "cache_read": after[2], "cache_creation": after[3]},
+            "error": ""}
 
 
 def price_detail(provider, model=""):
@@ -159,27 +310,210 @@ def price_for(provider, model=""):
     return pin, pout
 
 
+#: OpenRouter 公开的模型目录（无需鉴权）。`/api/v1/models` 返回每个模型的
+#: `pricing`（美元 / token，含 `input_cache_read` / `input_cache_write` 与阶梯 `overrides`）。
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+
+def openrouter_pricing(model: str, *, timeout: float = 45.0) -> dict:
+    """联网检索 OpenRouter 上某个模型的官方单价，返回可直接写进价格表的结构。
+
+    返回 `{"in","out","cache_read","cache_creation","currency","tiers","raw"}`，
+    单位统一换算成 **元 / 1M tokens**（源数据是美元 / token）。查不到或该模型免费时
+    返回带 `error` / `free=True` 的字典——**绝不返回 0 来冒充"查过了"**，
+    因为 0 有两种完全不同的含义（真免费 vs 没查到），混起来就是又一个假干净。
+
+    这是「价格自己去官方文档检索」那条要求的落点：不手抄、不写死会过期的表。
+    """
+    target = str(model or "").strip()
+    if not target:
+        return {"error": "没给模型名。"}
+    try:
+        import json as _json
+        import urllib.request as _request
+        with _request.urlopen(OPENROUTER_MODELS_URL, timeout=timeout) as response:
+            catalog = _json.loads(response.read().decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 - 检索失败要说失败，不能静默当免费
+        return {"error": "取 OpenRouter 模型目录失败：%s: %s" % (type(exc).__name__, exc)}
+    rows = [row for row in (catalog.get("data") or [])
+            if isinstance(row, dict) and str(row.get("id") or "") == target]
+    if not rows:
+        return {"error": "OpenRouter 的模型目录里没有 %s（目录共 %d 个模型，"
+                         "请确认模型 id 拼写）。" % (target, len(catalog.get("data") or []))}
+    raw = rows[0].get("pricing") or {}
+    usd_per_million = 1_000_000.0
+    fx = _usd_to_cny_rate()
+
+    def to_cny(value) -> float:
+        try:
+            return round(float(value) * usd_per_million * fx, 6)
+        except (TypeError, ValueError):
+            return 0.0
+
+    pin = to_cny(raw.get("prompt"))
+    pout = to_cny(raw.get("completion"))
+    pcr = to_cny(raw.get("input_cache_read")) or round(pin * CACHE_READ_RATIO, 6)
+    pcc = to_cny(raw.get("input_cache_write")) or round(pin * CACHE_CREATION_RATIO, 6)
+    tiers = []
+    for row in raw.get("overrides") or []:
+        if not isinstance(row, dict):
+            continue
+        item = {"min_prompt_tokens": int(row.get("min_prompt_tokens") or 0)}
+        if row.get("prompt") is not None:
+            item["in"] = to_cny(row.get("prompt"))
+        if row.get("completion") is not None:
+            item["out"] = to_cny(row.get("completion"))
+        if row.get("input_cache_read") is not None:
+            item["cache_read"] = to_cny(row.get("input_cache_read"))
+        if row.get("input_cache_write") is not None:
+            item["cache_creation"] = to_cny(row.get("input_cache_write"))
+        tiers.append(item)
+    return {"in": pin, "out": pout, "cache_read": pcr, "cache_creation": pcc,
+            "currency": "CNY", "usd_rate": fx, "tiers": tiers,
+            "source": OPENROUTER_MODELS_URL, "retrieved_at": _time.time(),
+            "free": pin == 0.0 and pout == 0.0, "raw": raw}
+
+
+def _usd_to_cny_rate() -> float:
+    """美元兑人民币汇率。默认 7.1，可用环境变量 `DOCMIND_USD_CNY` 覆盖。
+
+    为什么要有汇率：中转（OpenRouter）的报价单位是美元，而本仓其它 provider 的
+    单价表是元。不换算的话同一个界面里会混着两种币种，数字还都"看着对"。
+    """
+    raw = str(os.getenv("DOCMIND_USD_CNY", "") or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return 7.1
+
+
+def _tier_for(in_tokens: int, tiers: list) -> dict:
+    """按**输入 token 数**选出该用的那一档单价。
+
+    OpenRouter 的模型目录普遍带 `overrides`（阶梯定价）：实测
+    `openai/gpt-6.1-sol-pro` 在 `min_prompt_tokens=272000` 处 prompt 单价从
+    0.000002 跳到 0.000004（**翻倍**），缓存读与缓存写也各自跳档。用一张扁平单价
+    表算长对话，会在超过阈值之后**系统性低估**——而且因为低估得很平滑，
+    看数字根本发现不了。所以这里必须按当次输入量选档。
+
+    档位按 `min_prompt_tokens` 升序匹配，取最后一个**满足**的；没有满足的（输入量
+    低于最低那一档的门槛）返回空字典，让调用方回落到平铺单价。
+
+    这里刻意**不**把 `ordered[0]` 当基线：实测踩过——只配一档
+    `[{min_prompt_tokens: 272000, …}]` 时，那样写会让**所有低于 272k 的调用**
+    （也就是绝大多数）都按那一档的高价计费，一次 200k 的对话会算出 200k 档的价钱，
+    凭空翻倍还看不出错。
+    """
+    usable = [row for row in (tiers or []) if isinstance(row, dict)]
+    if not usable:
+        return {}
+    ordered = sorted(usable, key=lambda row: int(row.get("min_prompt_tokens") or 0))
+    chosen: dict = {}
+    for row in ordered:
+        if in_tokens >= int(row.get("min_prompt_tokens") or 0):
+            chosen = row
+        else:
+            break
+    return chosen
+
+
 def cost_cny(provider, model, in_tokens, out_tokens,
              cache_read_tokens=0, cache_creation_tokens=0) -> float:
-    """一次调用的费用（元）。本地 provider 恒为 0。
+    """一次调用的费用。本地 provider 恒为 0。
 
     in_tokens / out_tokens 为总输入 / 输出 token；prompt caching 命中（cache_read_tokens）
     与首次写入（cache_creation_tokens）通常已计入 in_tokens，故按折扣价单独计费、并从全价
     输入中扣减，避免缓存命中被按全价重复计费（这正是运行台"计费没考虑缓存命中"的根因）。
+
+    阶梯定价：单价表里带 `overrides` 时，按当次输入 token 数选档
+    （见 `_tier_for`——OpenRouter 普遍在长上下文处翻倍，扁平单价会系统性低估）。
     """
-    pin, pout, pcr, pcc = price_detail(provider, model)
-    if pin == 0.0 and pout == 0.0 and pcr == 0.0 and pcc == 0.0:
-        return 0.0
     in_t = int(in_tokens or 0)
+    out_t = int(out_tokens or 0)
     cr_t = int(cache_read_tokens or 0)
     cc_t = int(cache_creation_tokens or 0)
+
+    table = _load_pricing()
+    cfg = table.get(provider) or {}
+    models = cfg.get("models") or {}
+    base = models.get(model) if (model and isinstance(models.get(model), dict)) else cfg
+    pin = float(base.get("in", cfg.get("in", 0.0)))
+    pout = float(base.get("out", cfg.get("out", 0.0)))
+    pcr = float(base.get("cache_read", cfg.get("cache_read", pin * CACHE_READ_RATIO)))
+    pcc = float(base.get("cache_creation",
+                         cfg.get("cache_creation", pin * CACHE_CREATION_RATIO)))
+
+    tier = _tier_for(in_t, base.get("overrides") or cfg.get("overrides"))
+    if tier:
+        # 档位里没写的项沿用平铺档，不要因为某一档只调了 prompt 就把输出价清零。
+        pin = float(tier.get("prompt", tier.get("in", pin)))
+        pout = float(tier.get("completion", tier.get("out", pout)))
+        if "input_cache_read" in tier or "cache_read" in tier:
+            pcr = float(tier.get("input_cache_read", tier.get("cache_read", pcr)))
+        if "input_cache_write" in tier or "cache_creation" in tier:
+            pcc = float(tier.get("input_cache_write", tier.get("cache_creation", pcc)))
+
+    if pin == 0.0 and pout == 0.0 and pcr == 0.0 and pcc == 0.0:
+        return 0.0
     # 非缓存输入 = 总输入 - 缓存命中 - 缓存写入（下限 0，防 provider 口径差异致负数）
     non_cached = max(0, in_t - cr_t - cc_t)
     total = (non_cached * pin
              + cr_t * pcr
              + cc_t * pcc
-             + int(out_tokens or 0) * pout)
+             + out_t * pout)
     return total / 1_000_000.0
+
+
+def _rates(provider, model, in_tokens) -> tuple:
+    """取一次调用的实际单价（含阶梯档），返回 (输入价, 缓存读价, 缓存写价)。
+
+    与 `cost_cny` 抽出来共用，**这是刻意的**：省了多少必须和实际收了多少出自同一份
+    单价。曾经想在前端算，于是两处逻辑各写一遍——阶梯档一改就对不上，且没人发现。
+    """
+    table = _load_pricing()
+    cfg = table.get(provider) or {}
+    models = cfg.get("models") or {}
+    base = models.get(model) if (model and isinstance(models.get(model), dict)) else cfg
+    pin = float(base.get("in", cfg.get("in", 0.0)))
+    pcr = float(base.get("cache_read", cfg.get("cache_read", pin * CACHE_READ_RATIO)))
+    pcc = float(base.get("cache_creation", cfg.get("cache_creation", pin * CACHE_CREATION_RATIO)))
+    tier = _tier_for(int(in_tokens or 0), base.get("overrides") or cfg.get("overrides"))
+    if tier:
+        pin = float(tier.get("prompt", tier.get("in", pin)))
+        if "input_cache_read" in tier or "cache_read" in tier:
+            pcr = float(tier.get("input_cache_read", tier.get("cache_read", pcr)))
+        if "input_cache_write" in tier or "cache_creation" in tier:
+            pcc = float(tier.get("input_cache_write", tier.get("cache_creation", pcc)))
+    return pin, pcr, pcc
+
+
+def cache_saved_cny(provider, model, in_tokens,
+                    cache_read_tokens=0, cache_creation_tokens=0) -> float:
+    """缓存帮用户省了多少钱（对比"这些 token 全按输入全价买"的假设）。
+
+    只算**读命中**的节省——那才是省钱的部分。缓存写入通常比全价**贵**
+    （DeepSeek 写缓存 1.25x 输入价、Anthropic 1.25x），把它算成"省"是错的；
+    写入的成本本来就已经计进 `cost_cny` 了，这里不重复算省。
+
+    没配置单价时返回 0：不能拿"0"冒充"省了 0 元"——那和把"免费"说成"没算"是同一种错。
+    """
+    cr_t = int(cache_read_tokens or 0)
+    cc_t = int(cache_creation_tokens or 0)
+    if cr_t <= 0:
+        return 0.0
+    pin, pcr, _ = _rates(provider, model, in_tokens)
+    if pin <= 0.0:
+        return 0.0
+    saved = cr_t * max(0.0, pin - pcr)
+    # 缓存写入要扣回来：写入比全价贵，省下的会被它抵掉一部分。
+    if cc_t > 0:
+        _, _, pcc = _rates(provider, model, in_tokens)
+        saved -= cc_t * max(0.0, pcc - pin)
+    return max(0.0, saved) / 1_000_000.0
 
 
 # ---------------------------------------------------------------------------

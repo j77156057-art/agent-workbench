@@ -14,6 +14,7 @@ import {
 } from '../composables/demo'
 import { useWorkbench } from '../composables/workbench'
 import { appEvents } from '../eventBus'
+import { costLabel } from '../composables/costLabel'
 
 const { openFlow } = useWorkbench()
 
@@ -52,9 +53,14 @@ const TABS = [
   { key: 'skills', label: '技能与扩展' },
 ] as const
 
+/**
+ * 每轮的花费。0 元时带上「这个 0 是什么意思」——免费 / 本地 / **未配置单价**
+ * 三者数字一样但含义完全不同，缺了这层用户会以为系统在乱算账。
+ * 逐轮 trace 里没有 pricing_state 字段（那是按 provider 聚合的），
+ * 所以这里退到纯金额，由设置页的供应商表承担解释。
+ */
 function money(v: number | null | undefined): string {
-  const n = Number(v || 0)
-  return `¥${n.toFixed(4)}`
+  return costLabel(v)
 }
 function ago(iso: string): string {
   const t = new Date(iso).getTime()

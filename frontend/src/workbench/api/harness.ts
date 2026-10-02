@@ -88,6 +88,8 @@ export interface TraceSummary {
   completion_tokens: number
   cache_read_tokens?: number
   cache_creation_tokens?: number
+  /** 缓存命中省下的钱（后端算，前端只显示——单价和阶梯档都在后端）。 */
+  cache_saved_cny?: number
   total_tokens: number
   total_cost_cny: number
   avg_elapsed_ms: number
@@ -101,6 +103,13 @@ export interface TraceSummary {
     cache_creation_tokens?: number
     tokens: number
     cost_cny: number
+    /** 后端判定的计价状态：free / local / unknown / known。
+     *  用来区分「都是 0 但含义不同」的三种情况，别在前端用 cost===0 反推。 */
+    pricing_state?: string
+    /** 该 provider 的缓存命中省下的钱（后端按每一行自己的 model 折算）。 */
+    cache_saved_cny?: number
+    model?: string
+    provider?: string
   }>
 }
 export interface SessionInfo {

@@ -290,7 +290,9 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(spec.capability.value, "read_local")
         self.assertTrue(spec.parallel_safe)
         self.assertEqual(spec.group, "game")
-        self.assertNotIn("game_screenshot", agent_mod._NO_PARALLEL_TOOLS)
+        # 原来这里还有一句 assertNotIn(..., agent_mod._NO_PARALLEL_TOOLS)，
+        # 但 _NO_PARALLEL_TOOLS 是运行期不读的死副本——上面 assertTrue(spec.parallel_safe)
+        # 才是运行期真正拿到的那份判定，所以删掉那句，改断真实对象。
 
     def test_desktop_capture_is_readonly_observation(self):
         self.assertIn("dev_desktop_capture", tools_mod.TOOLS)

@@ -3341,8 +3341,17 @@ async def _activate_project(pid):
 
 @app.get("/api/budget")
 async def budget_status_ep(session_id: str = ""):
-    """成本账本：全局/会话的花费与额度（按 provider 单价折算）。"""
-    return {"ok": True, "status": pricing_mod.status(), "check": pricing_mod.check(session_id)}
+    """成本账本：全局/会话的花费与额度（按 provider 单价折算）。
+
+    额外回 `pricing_state`：让界面能把「免费」「本地模型」「未配置单价」这三种
+    都是 0 的情况分开显示。少了它，用户看到 ¥0.00 无从判断是省了钱还是系统
+    根本没在算账——那正是「费用不对却查不出原因」的来源。
+    """
+    provider = str(get_runtime("llm_provider") or "").strip()
+    model = str(get_runtime("llm_model") or "").strip()
+    state = pricing_mod.pricing_state(provider, model) if provider else {}
+    return {"ok": True, "status": pricing_mod.status(), "check": pricing_mod.check(session_id),
+            "pricing_state": state}
 
 
 class BudgetReq(BaseModel):

@@ -571,15 +571,23 @@ class WebGateTests(unittest.TestCase):
         self.assertEqual(len(finals), 1, "事件流最终必须产出 final")
 
     def test_effective_tool_schemas_filter_web_tools(self):
+        # 名单从运行期的判定依据（spec.group == "web"）现算，不再取自
+        # agent._WEB_TOOLS —— 那是一张运行期不读的死副本，用它遍历等于
+        # 校验一份和真实行为无关的清单，绿灯是假的。
+        web_tools = sorted(
+            name for name, value in tools_mod.TOOLS.items()
+            if agent_mod.coerce_tool_spec(name, value).group == "web")
+        self.assertTrue(web_tools, "运行期应至少识别出若干 web 组工具")
+
         a = agent_mod.Agent(llm=_ScriptedLLM([_FINAL_OK]))
         names_off = set(a._effective_tool_names())
-        for name in agent_mod._WEB_TOOLS:
+        for name in web_tools:
             self.assertNotIn(name, names_off, f"联网关闭时 {name} 不应暴露给模型")
         self.assertIn("search_code", names_off)
 
         a.web_enabled = True
         names_on = set(a._effective_tool_names())
-        for name in agent_mod._WEB_TOOLS:
+        for name in web_tools:
             self.assertIn(name, names_on, f"联网开启后 {name} 应出现在 schema 中")
 
     def test_system_prompt_declares_web_status(self):
