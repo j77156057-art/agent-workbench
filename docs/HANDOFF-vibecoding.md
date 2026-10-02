@@ -155,6 +155,24 @@ cd frontend && npm run test:node
 - 用法：**每次 commit 之后、push 之前跑一次**。边界：只验"能不能跑起来"，默认三个入口之外的
   深层 import 要靠 import 链真的走到才暴露；不跑测试、不装依赖、不验 requirements 完整性。
 
+> **Wave21b 加的第二档（`gate: 1` / `tests:`）**——"import 绿"不等于"行为绿"。
+> 2026-10-02 我自己第二次踩同型的坑就是证据：hunk 暂存收进了 `dev_eval` 里别人那段的**尾巴**
+> （6 条 `_check`），它们读的局部量还在别人未提交的上半段里 → import 全绿、只验 import 的
+> `dev_headcheck` 全绿、**行为红**，而当时是手工挂干净检出跑测试才抓到的。现在这一档自动化：
+> 在那棵检出里真跑 dev_eval 整集（或指定 pytest 目标），**红了先在检出里重跑一次**（门禁题里有
+> 计时敏感的，抖一下不该算提交坏了；翻绿也照样写在输出里），仍红才拿工作树跑同一条当对照组，
+> 并且**比两边失败题名单的差集**——布尔值比较会被共同抖动污染（实测 `diagnostics-*` 两题在
+> 两棵树里都红过），差集把公共噪声减掉、直接点名 `only_in_checkout`。
+> 两条被实测纠正的形状：`dev_eval --json` 一行 ~26 KB 会被默认 4000 字符的输出窗拦腰截断
+> （"读不出结论"和"门禁没跑成"是两件事，这一档显式放大窗口并有专门用例）；`run_bounded` 会
+> 把 `timeout` **静默削到 `MAX_TIMEOUT=300`**，所以 `suite_timeout` 的上限钉在这个常量上，
+> 有元测试盯着两者相等——配一个跑不到的秒数就是谎报能力。
+> 凭据：`tests/test_head_check.py` 26 → 58 项、`battery_head_check` 14 → 44 条变异
+> （`--no-live` 全抓）、门禁题 `headcheck-catches-untracked-reference` 8 → 17 条断言。
+> 真检出那条端到端用例单跑 37 秒；拿事故 commit `f7ec14e` 复验：attempts=2、
+> `only_in_checkout=[page-action-refuses-and-never-claims-success]`、
+> `only_in_worktree=[]`——差集把两棵树共同抖掉的 `diagnostics` 减掉了。
+
 ### 5.5 `dev_testrun`（Wave15）：跑测试 → 读失败 → 只重跑失败
 `agent_runtime/test_run.py`。存在的理由是三个**实测**到的漏法：pytest 在 0 收集时退出码是 5
 （"没看到 FAILED"不等于通过）、`-q` 的失败摘要最容易漏读、以及本工作树
@@ -472,7 +490,8 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
 3. 全量最后一次：**2569 passed / 12 failed**，12 条已用干净 worktree 证明全部来自
    另一条 lane 未提交的 step-budget / capacity / game_workflow WIP（本程序不代修、不代提交）。
 4. 需要人做的两件：**push**（或 `git bundle` 离线备份），以及在配好 DashScope 的机器上跑一次
-   真网关回路，把结果回写本文件 §5.3 与 §6#3。
+   真网关回路，把结果回写本文件 §5.3 与 §6#3。push 之前顺手跑一次
+   `dev_headcheck` 带 `gate: 1`（约 1 分钟）：CI 看到的是那棵树，不是这棵树。
 5. **Wave20 的门在别人在飞的两个文件上是红的**（本程序不代改、不代提交）：
    `run_desktop.bat:27` 与 `installer/uninstall.bat:9`（后者还没入库）。改法各一个字符：
    `"%~dp0"` → `"%~dp0."`。`tests/test_bat_guard.py::RealRepoLauncherTests` 就是为了让这两行

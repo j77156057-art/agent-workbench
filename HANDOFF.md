@@ -1,6 +1,8 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
-## 2026-10-02 Vibecoding 能力补全 Wave21：`dev_headcheck` 加第二档——在干净检出里真跑套件（本会话，不占 R 槽位）
+## 2026-10-02 Vibecoding 能力补全 Wave21b：`dev_headcheck` 加第二档——在干净检出里真跑套件（本会话，不占 R 槽位）
+
+> 编号说明：另一条 lane 也把他们的四个缺口（`dev_deps` / `dev_probe` / `dev_testrun coverage:` / `dev_handoff`）叫作 Wave21，尚未提交。为避免撞号，本会话这一档记作 **Wave21b**。
 
 - **补什么**：Wave14 那条回路只证一件事——HEAD 能被 **import**。而 2026-10-02 我自己犯的第二次事故正好卡在它证不到的地方：hunk 暂存收进了别人那段的**尾巴**（`dev_eval` 里 6 条 `_check`），它们读的局部量还在别人未提交的上半段里 → import 全绿、`dev_headcheck` 全绿、**行为红**。当时是手工挂干净检出跑测试才抓到的；这一档把它变成工具：`gate: 1` 在那棵检出里真跑 dev_eval 门禁整集，`tests: 仓内相对路径` 真跑指定测试。
 - **红了怎么归因（这条是设计核心）**：先重跑一次（门禁题里有计时敏感的，抖一下不算提交坏了；重跑绿了会**照样写在输出里**，不瞒），重跑仍红才拿**工作树**跑同一条当对照组，然后比**两边失败题名单的差集**而不是比布尔值。为什么：拿真事故 commit `f7ec14e` 实测，两棵树都因 `diagnostics` 两题在负载下抖而红——比布尔值就得出"两棵树都红，不是自洽问题"，把真正那一题埋了；差集一算，公共噪声自己减掉，报告点名 `only_in_checkout = [page-action-refuses-and-never-claims-success]`。
@@ -10,7 +12,7 @@
 - **产物与数量**：`head_check.py` 新增 `safe_relative` / `gate_argv` / `pytest_argv` / `parse_gate` / `parse_pytest` / `attribute` / `run_suite` / `run_suites` 与 `check(gate=, tests=, suite_timeout=)`；`tests/test_head_check.py` 26 → **58 项**（+4 类：SuiteArgv / GateParsing / Attribution / CheckoutSuite / RealSuiteWiring / WholeRepoGate）；`battery_head_check` 14 → **44 条变异**；门禁题 `headcheck-catches-untracked-reference` 8 → **17 条断言**；三处注册齐（`tools.py` 函数 + `TOOLS` 描述 + `agent.py` 目录行）。
 - **引擎也被这一轮改了**：事前新增"变异后的源码还得编译得过"检查——一条只替换半句的变异让整块电池崩在 `IndentationError` 上，而我第一版修法把它记成"抓到"（**白送一分**）；正确立场是：装不进的代码证明不了任何判据有牙，所以它是**这块电池的问题**，不是它的分数。`test_a_mutant_that_does_not_compile_is_a_problem_not_a_catch` 钉住这条。
 - **两条"活下来"分开处理**：`row["failed_names"] = [] or sorted(...)` 是**等价变异**（恒等于原式）→ 换掉；另两条（`tests:` 那条路的失败题名单从没被读过）是**真缺口** → 补 `test_the_pytest_path_also_names_its_failed_tests`。
-- **我自己又犯的一次同类错**（记进 §9）：为了改假 runner 而**整段替换类体**，把夹在两个锚点之间的 3 条刚写的用例一起吃掉了——电池当场报 5 条活下来才暴露。教训：大块替换前先列出"这一段里有哪些用例"，替换后数一遍条数。
+- **我自己又犯的一次同类错**（记进 `docs/HANDOFF-vibecoding.md` §9）：为了改假 runner 而**整段替换类体**，把夹在两个锚点之间的 3 条刚写的用例一起吃掉了——电池当场报 5 条活下来才暴露。教训：大块替换前先列出"这一段里有哪些用例"，替换后数一遍条数。
 - **验证**：`tests/test_head_check.py + tests/test_mutation_batteries.py` **78 passed / 92 subtests**（离线那 57 项 22 秒）；门禁整集在该题上 **17/17**；`--only head_check --no-live` 电池 **44/44 抓到、0 活下来、529 秒**；`--only bat_guard` **35/35、4 秒**；端到端那条真检出用例单跑 **37 秒**通过。
 - **边界（不许越界宣称）**：这一档验的是「**只有已提交内容时能不能跑成**」，不验行为对不对；需要未跟踪工具链（`frontend/node_modules`、`web/`）的套件在新检出里必然红——那种红是环境，报告靠差集把它减掉，而不是替它编一个解释；门禁整集在负载下有计时敏感的题（`diagnostics-*` 两题本会话实测在**两棵树里都抖过**），所以"重跑一次"是设计的一部分而不是遮羞布；`suite_timeout` 上限 300 秒是硬顶，慢机器上真可能超时，超时会明说而不是默认通过。
 
@@ -43,7 +45,10 @@
 - **第一天就抓到两处**（都在别人**未提交**的文件里，本程序不代改、不代提交，改法各一个字符）：
   `run_desktop.bat:27` 与 `installer/uninstall.bat:9`（后者是 `powershell.exe -InstallDir "%~dp0"`，
   同一 bug 类的第二个实例，而且还没入库）。语料层因此分成两格并各自钉住：
-  `test_working_tree_launchers_are_clean`（这台机器上要真跑的那份，现在为红）与
+  **当天晚些时候两处都由各自那条 lane 改成了 `"%~dp0."`**（现 `run_desktop.bat:35`、
+  `installer/uninstall.bat:13`，注释里写的理由就是"闭合引号被转义"）：工作树层现在 0 findings，
+  本程序全程没代改别人一行。留着的这一格防的是下一次有人再写回这个形状。
+  `test_working_tree_launchers_are_clean`（这台机器上要真跑的那份，抓到过 2 处、现在为绿）与
   `test_head_committed_launchers_are_clean`（CI 看到的 HEAD 那份，绿）——
   分开是因为它们会因不同的事而红，合成一格就只能说清一半。
 - **自己撞的三条**：① `Edit` 插入时又一次用「下一行的前缀」当锚点，把 `DEV_DATASET` 第一题的
