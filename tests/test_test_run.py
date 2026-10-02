@@ -158,6 +158,48 @@ class BookkeepingTests(StateCase):
         self.assertEqual(tr.load_failures(Path(self.project) / "nope"), [])
 
 
+class CoverageDependencyGuardTests(StateCase):
+    """缺覆盖率依赖时必须**开口说没测**，而不是静默当成普通跑（Wave22 补）。
+
+    这条守卫此前只在"本机没装 coverage"时才被触发；而 Wave21 把 `coverage>=7` 装上之后
+    `coverage_available()` 恒为真，于是电池里"守卫被变异成 `if False:`"那条**变成了等价
+    变异**——它"活下来"看着像守卫没牙，其实是我这条用例根本没跑。
+
+    所以这里不依赖本机环境：直接把 `coverage_available` 打成 False，再断言**runner 一次
+    都没被调用**（守卫在 `run()` 最前面短路）。变异成 `if False:` 时 runner 会被调，
+    这条立刻红。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._prev = tr.coverage_available
+        tr.coverage_available = lambda: False
+        self.addCleanup(setattr, tr, "coverage_available", self._prev)
+
+    def test_it_says_it_was_not_measured_instead_of_pretending_zero_percent(self):
+        calls = []
+
+        def runner(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"ok": True, "exit_code": 0, "output": GOOD_SUMMARY,
+                    "timed_out": False, "error": ""}
+
+        result = tr.run(self.project, paths="tests/test_a.py", coverage=True, runner=runner)
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["passed"])
+        self.assertIn("覆盖率没有启用", result["error"])
+        self.assertIn("不是 0%", result["error"],
+                      "缺依赖与 0%% 覆盖率是两件事，措辞必须把它说出来")
+        self.assertEqual(calls, [], "守卫没有在跑任何东西之前短路——它去跑测试了")
+
+    def test_without_the_flag_nothing_is_claimed_about_coverage(self):
+        """反过来：不带 coverage 时不该冒出覆盖率字样（守卫不该误伤普通跑）。"""
+        result = tr.run(self.project, paths="tests/test_a.py",
+                        runner=FakeRunner(GOOD_SUMMARY, exit_code=0))
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertNotIn("覆盖率", json.dumps(result, ensure_ascii=False))
+
+
 class RunTests(StateCase):
     def test_a_red_run_is_structured_and_recorded(self):
         runner = FakeRunner(REAL_SUMMARY, exit_code=1)

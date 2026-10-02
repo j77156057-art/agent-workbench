@@ -1,5 +1,54 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-03 Vibecoding 能力补全 Wave23：处理三条"报出来但不是我的"红——两条动手，一条归还原主（本会话，不占 R 槽位）
+
+- **接到的三件事与实际归属**：① 干净 HEAD 上 `tests/test_orchestrator.py` 12 红；
+  ② `test_run` 电池 1 条活下来；③ 引擎不查锚点唯一性 + `run_isolated` 零测试。
+  逐条查归属之后：**只有 ② 和 ③ 该我动手**。
+- **① 是别人正在修的，不碰**：`agent.py:3931` 调 `parse_plan(plan, max_tasks=…)`，而 HEAD 的
+  `orchestrator.parse_plan(raw, known_ids=None)` 不接受——HEAD 确实自相矛盾。但
+  **`orchestrator.py` 在工作树里是 `M`**，对方版本已把签名改成 `parse_plan(raw, known_ids=None,
+  max_tasks=None)`，另有 12 个 hunk 在改 `run_plan`/`dedup_tasks`/`apply_proposal`；他们的
+  `agent.py` WIP 约 30 个 hunk 全是步数预算与提示词，**没有一处碰 `orchestrate`/`parse_plan`**。
+  也就是说没人跟我抢，但我插手就会和他们在途的 12 个 hunk 撞车。HEAD 暂时红是过渡态。
+  （我工作树里那条测试不是快速失败而是**空转 662 CPU-秒**，也是他们半成品在树里的现象。）
+  用干净检出 + 把我的 `windows_sandbox.py` 换进去做过对照，两次都是 `12 failed, 45 passed`
+  ——本轮零影响。**只报不改。**
+- **② 是环境招出来的等价变异，补判据**：`agent_runtime/test_run.py` 的
+  `if coverage and not coverage_available():` 只在本机没装 coverage 时走得到；Wave21 把
+  `coverage>=7` 装进 `.venv` 之后这条路径恒不进入，变异成 `if False:` 自然等价。新增
+  `CoverageDependencyGuardTests`（2 条）：直接把 `coverage_available` 打成 False，再断言
+  **runner 一次都没被调用**（守卫在 `run()` 最前面短路）。该电池 **18/18**，0 活下来。
+- **③ 引擎加锚点唯一性检查，先量影响面**：加之前扫了十块电池 256 条锚点——**只有 3 条
+  不唯一，且全在 `battery_head_check`**（`head_check.py` 的 `render` 里有 12 空格缩进的同名块，
+  4 空格那行是它的子串；`if missing:` 同理）。所以这条检查不会把任何别人的电池变红。
+  现在 `anchors_valid()` 查 `source.count(old) == 1`，非唯一即报**问题**；3 条锚点改成带上下文。
+  **有牙的证明**：用进程内替换模拟"检查不存在"，对应元测试当场变红（带检查 4 条全绿 / 关掉 1 条红）。
+- **③ 顺带把 `run_isolated` 补上测试与电池**（此前它零测试）：新增跨平台 3 条
+  （输出接得回来、退出码是自己的、两个流不合并）+ Windows-only 5 条（含一条**加入作业对象
+  失败后那个已经起来的子进程必须被收掉**的漏进程判据，用"孩子本该写出、却永远没出现"的标记）。
+  电池 **19 → 25 条变异**。
+- **本轮最重要的发现：Wave22 那个提交在 CI 上是红的**。`.github/workflows/harness.yml` 在
+  **ubuntu-latest** 上跑 `run_all.py --no-live`，而那 3 条 fail-closed 变异只被
+  `@skipUnless(os.name == "nt")` 的用例抓着——ubuntu 上那些用例被 skip → 无人抓 → 记成
+  **活下来** → 电池红 → CI 步骤失败。本机（Windows）跑是 19/19 全抓，**看不出来**。
+  修法：把所有需要真 Windows 内核的用例归到一个 `WindowsOnlyLiveTests` 并声明成 `LIVE`
+  （本电池的 `LIVE` 语义因此是"需要 Windows"而不是别处的"需要真浏览器"，在电池 docstring
+  里写明，没改引擎契约）。现在 `--no-live` 是 **15/25 + 10 条本环境未验证 + 0 活下来**。
+- **两条自己招的等价变异，都靠"把树加深一层 / 不依赖环境"解决**：超时回收那条我先写成
+  "孩子直接写标记"，于是「杀直接子进程」与「终止作业对象」**单独去掉哪个都照样过**；
+  改成"孩子拉一个孙进程去写标记"才可区分——而这正是作业对象存在的理由。
+- **只报不改的新发现**：`run_isolated` 的 `Popen(..., text=True)` 没给 `encoding`，按本机
+  区域编码（GBK）解码；子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成
+  **`None`**（不是报错）。我的测试因此只用 ASCII 子进程输出。修它会改变所有适配器进程的
+  行为，不在本轮范围，记进 §6 第 13 条。
+- **验证**：六套 **204 passed / 1 skipped / 427 subtests / 94.52s**；`battery_windows_sandbox`
+  带现场 **25/25**（235 秒）、`--no-live` 15/25 + 10 未验证 + 0 活下来；`battery_test_run`
+  **18/18**；256 条锚点 0 条不唯一；引擎新检查的"关掉就红"证明见上。
+- **边界**：引擎仍**没有"按平台分层"的概念**，所以给非 Windows 的 fallback 分支写变异会让
+  两个平台里必有一个红——本轮**选择不写**那种变异并在电池里写明原因，这比写一条让 CI 红的
+  变异诚实。`run_isolated` 的 fallback 分支只有回归保护（那 3 条跨平台用例），没有变异凭据。
+
 ## 2026-10-03 Vibecoding 能力补全 Wave22：作业对象的进程预算——把一条**确定性**的门禁红修掉（本会话，不占 R 槽位）
 
 - **接手的第一个动作就撞上它**：`dev_headcheck gate: 1` 在 `e6078bb` 上稳定红三题

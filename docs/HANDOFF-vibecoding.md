@@ -371,6 +371,36 @@ cd frontend && npm run test:node
   ——那条只有现场层（关一次句柄、看整棵树会不会跟着走）能抓，而它正是电池里唯一
   只能靠现场抓的那一类。
 
+### 5.17 Wave23：把"平台"当成第二现场层，以及两条自己招的等价变异
+
+这一节记的是**同一个错误的两种形态**：让一条变异"活下来"，而原因都不在守卫身上。
+
+- **CI 的电池跑在 ubuntu 上，所以"只有 Windows 能验"必须算现场层**。`.github/workflows/
+  harness.yml` 是 `ubuntu-latest` + `run_all.py --no-live`。Wave22 那块电池里 3 条
+  fail-closed 变异只被 `@skipUnless(os.name == "nt")` 的用例抓着 —— 在 ubuntu 上那些
+  用例被 skip，于是**无人抓 → 记成活下来 → 电池红 → CI 步骤失败**。也就是说 Wave22
+  那个提交在 CI 上是红的，而本机（Windows）跑出来是 19/19 全抓，看不出来。
+  修法不是"给 CI 换个平台"，而是把这类用例归到一个 `WindowsOnlyLiveTests` 并声明成
+  `LIVE`：ubuntu 上它们记「本环境未验证」——既不算抓住也不算活下来。
+  **本电池的 `LIVE` 语义因此与别处不同**（那边是"需要真浏览器"，这边是"需要 Windows"），
+  这是在电池文件里自己声明的，没有改引擎的契约。
+- **等价变异的第二种来源：依赖被装上了**。`test_run` 那条"缺覆盖率依赖时不开口"报活下来，
+  原因是 Wave21 把 `coverage>=7` 装进了 `.venv`，`coverage_available()` 恒为真，那条守卫
+  在本机根本走不到 —— 把它变异成 `if False:` 是**等价变异**，不是守卫没牙。修法是让用例
+  不依赖本机环境：直接把 `coverage_available` 打成 False，再断言**runner 一次都没被调用**。
+  写新判据时问一句"它依赖的是代码还是环境？"
+- **等价变异的第三种来源：两个机制互为冗余**。`run_isolated` 超时那条我先写成"孩子直接写
+  标记"，于是「杀掉直接子进程」（`process.kill()`）与「终止整个作业对象」
+  （`TerminateJobObject`）**单独去掉哪一个都照样绿**，两条变异一起报活下来 —— 看着像两条
+  缺口，其实是测试的树只有一层。改成"孩子拉一个孙进程去写标记"之后两个机制才可区分，
+  而这恰恰就是作业对象存在的理由。
+- **引擎侧的通用修法**：`anchors_valid()` 现在查 `source.count(old) == 1`，非唯一即报
+  **问题**。先量影响面再改：十块电池 256 条锚点里只有 3 条不唯一，且全在 `battery_head_check`
+  （`render` 里有 12 空格缩进的同名块，4 空格那行是它的子串），改锚点不影响别人。
+- **仍然没有**：引擎没有"按平台分层"的概念，所以给非 Windows 的 fallback 分支写变异会
+  让两个平台里必有一个红（那种变异在 ubuntu 上被纯层抓住、在 Windows 上却是活下来）。
+  本轮**选择不写**那种变异，并在电池 docstring 里写明为什么——这比写一条让 CI 红的变异诚实。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -383,8 +413,9 @@ cd frontend && npm run test:node
 | 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
 | 6 | 连接器 UI 未接 `inline_tools` 开关 | Wave10 未做项 | 小改，UI 侧 |
 | 7 | 一条计时断言只有 0.12s 余量 | `tests/test_orchestrator.py` 的 `elapsed < 0.32`，负载高时必红（属别人文件，未代改） | 改成相对余量（sleep 拉到 1.0s、断言 <1.6s） |
-| 11 | Wave22 修掉了压红门禁的作业对象进程预算，但**引擎不查锚点唯一性** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点在源码里出现两次时只改第一处。本轮实测：`run_isolated` 与 `spawn_isolated` 的 `if ... AssignProcessToJobObject` 那一行字面完全相同，变异因此打进没人调用的 `run_isolated`，那条"活下来"看起来像守卫没牙 | `anchors_valid()` 加一条 `source.count(old) == 1`，非唯一即报**问题**（不是跳过）。改引擎要配它自己的电池，本轮**没做**（不在 Wave22 范围内） |
-| 12 | `run_isolated` 仍然零测试 | 它与 `spawn_isolated` 共用 `_create_job`，Wave22 只给后者加了现场层；本次出事故的那行在两个函数里各有一份 | 与 11 一起做：给 `run_isolated` 补最小回归（能拿到子进程 stdout、超时走 `TerminateJobObject`），再给电池补对应锚点 |
+| 11 | ~~引擎不查锚点唯一性~~ **已做（Wave23）** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点出现两次时只改第一处。**先量影响面**：十块电池 256 条锚点里只有 3 条不唯一，全在 `battery_head_check`（`render` 里有 12 空格缩进的同名块，4 空格那份是它的子串） | 已加 `source.count(old) == 1` → 报**问题**；3 条锚点改成带上下文。**仍有**：引擎没有"按平台分层"的概念，所以非 Windows fallback 分支的变异在两个平台里必有一个红（见 §5.17） |
+| 12 | ~~`run_isolated` 仍然零测试~~ **已做（Wave23）** | 它与 `spawn_isolated` 共用 `_create_job`，本次出事故的那行在两个函数里各有一份 | 已补 5 条跨平台 + 3 条 Windows-only 用例（含一条**加入失败后已起来的子进程必须被收掉**的漏进程判据），电池 19 → **25 条变异** |
+| 13 | `run_isolated` 的子进程输出**可能整个丢掉且不报错** | `Popen(..., text=True)` 没给 `encoding`，按本机区域编码解码；本机是 GBK，子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成 `None`（`stdout is None` 而不是报错） | 调用方要么传 ASCII 输出，要么给 `windows_sandbox` 加 `errors="replace"` + 显式 encoding。**本轮只报不改**——它会改变所有适配器进程的行为，不在 Wave23 范围内 |
 
 ## 7. 共享工作树里的提交规范（实测有效的那套）
 
@@ -554,6 +585,20 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   现场用例起个孩子、关掉作业对象句柄、断言孩子没了——可那个孩子**自己也会退出**，于是
   断言恒为真，什么都没验就绿。修法是让孩子睡 300 秒、并在关句柄**之前**用就绪标记确认它
   真的活着。**教训**：断言"某物消失"之前，先问"它还有什么别的原因会消失"。
+
+- **等价变异还有两个来源，都不是守卫没牙（Wave23 实测）**：① **依赖被装上了**——那条
+  "缺覆盖率依赖时不开口"的守卫只在本机没装 `coverage` 时才走得到，Wave21 装上之后它成了
+  恒真的空路径，变异成 `if False:` 自然"活下来"。② **两个机制互为冗余**——超时回收里
+  「杀直接子进程」与「终止作业对象」单独去掉哪一个都照样过，因为测试的树只有一层；改成
+  "孩子拉一个孙进程去写标记"才可区分。**教训**：写判据时问两句——它依赖的是**代码**还是
+  **环境**？它给的树有**几层**？两句都答不上来的判据，变异活下来是必然的。
+- **本机全绿 ≠ CI 绿，因为它们不是同一个平台**（Wave22 提交在 CI 上是红的）：
+  `.github/workflows/harness.yml` 在 **ubuntu-latest** 上跑 `run_all.py --no-live`，而我那块
+  电池有 3 条变异只被 `@skipUnless(os.name == "nt")` 的用例抓着。ubuntu 上那些用例被 skip
+  → 无人抓 → 记成**活下来** → 电池红 → CI 步骤失败。**教训**：给一个只有某平台能验的守卫
+  写变异之前，先问"CI 那条命令在这个平台上会看到什么"。修法有两条：把这类用例声明成
+  `LIVE`（本环境未验证，既不算抓住也不算活下来），或者让用例不依赖平台。**别把"本机跑过
+  全抓"当成 CI 会绿**——本仓 §6 第 3 条早就记着"CI 从未在 GitHub 真跑过"。
 
 ## 10. 本会话未结事项
 

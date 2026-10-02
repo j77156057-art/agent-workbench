@@ -114,6 +114,27 @@ class EngineJudgementTests(unittest.TestCase):
         self.assertEqual(report["caught"], 0)
         self.assertFalse(engine.is_green(report))
 
+    def test_a_non_unique_anchor_is_a_problem_not_a_silent_first_hit(self):
+        """锚点出现两次 = 变异只打进第一处 = 可能改的是没人调用的那份代码。
+
+        这不是假想：`windows_sandbox` 里 `run_isolated` 与 `spawn_isolated` 的
+        `if ... AssignProcessToJobObject` 那一行字面完全相同，本会话实测那条变异因此
+        改在死代码上，电池报"活下来"——看着像守卫没牙，其实是电池自己写歪了。
+        """
+        source = "VALUE = 1\nif guard():\n    pass\nif guard():\n    pass\n"
+        battery = fake_battery([("只替换第一处", "if guard():", "if False:")])
+        problems = engine.anchors_valid(battery, source)
+        self.assertTrue([p for p in problems if "出现 2 次" in p], problems)
+        # 而且它必须真的改变判定：这块电池不能因为"锚点合法"就算绿
+        report = self.run_it(battery, {"纯层": lambda _m: ([], 1)})
+        self.assertFalse(engine.is_green(report), report)
+
+    def test_a_unique_anchor_is_accepted(self):
+        """反过来也要钉住：唯一锚点不该被这条检查误伤。"""
+        source = "VALUE = 1\nif guard():\n    pass\nif other():\n    pass\n"
+        battery = fake_battery([("唯一锚点", "if guard():", "if False:")])
+        self.assertEqual(engine.anchors_valid(battery, source), [])
+
     def test_marking_a_mutant_live_requires_a_declared_live_layer(self):
         battery = fake_battery([("标了现场", "VALUE = 1", "VALUE = 9", ("live",))], live=())
         problems = engine.anchors_valid(battery, self.SOURCE)
@@ -219,6 +240,22 @@ class BatteryDeclarationTests(unittest.TestCase):
             source = engine.read_source(battery)
             with self.subTest(battery=battery.BATTERY_NAME):
                 self.assertEqual(engine.anchors_valid(battery, source), [])
+
+    def test_every_anchor_occurs_exactly_once_in_the_source(self):
+        """锚点必须唯一，否则引擎只替换第一处，变异可能打进另一处近似代码。
+
+        单独立一条而不是只靠上面那条：这条的失效方式**不是红**——变异落进死代码时
+        电池会报"活下来"，读起来像守卫没牙，于是没人会去查锚点。
+        """
+        for battery in self.batteries():
+            source = engine.read_source(battery)
+            for entry in battery.MUTATIONS:
+                count = source.count(str(entry[1]))
+                with self.subTest(battery=battery.BATTERY_NAME, mutation=str(entry[0])[:40]):
+                    self.assertEqual(
+                        count, 1,
+                        "锚点在 %s 里出现 %d 次；只替换第一处，变异可能改错地方"
+                        % (battery.TARGET, count))
 
     def test_live_marks_and_live_layer_agree_both_ways(self):
         """标了 `("live",)` 就必须声明现场用例；声明了现场就必须至少有一条用得上它。

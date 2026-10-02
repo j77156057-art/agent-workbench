@@ -133,6 +133,14 @@ def anchors_valid(battery: Any, source: str) -> list[str]:
             problems.append("%s：锚点是空串" % name)
         elif old not in source:
             problems.append("%s：锚点在当前源码里找不到（电池已与源码脱钩）" % name)
+        elif source.count(old) > 1:
+            # 只查"锚点在不在"不够：引擎做的是 replace(old, new, 1)，锚点出现两次时
+            # 变异只落在**第一处**。本会话实测踩过：`run_isolated` 与 `spawn_isolated`
+            # 里 `if ... AssignProcessToJobObject` 那一行字面完全相同，于是那条变异
+            # 被打进没人调用的那个函数——它"活下来"看起来像守卫没牙，其实是电池写歪了。
+            problems.append(
+                "%s：锚点在源码里出现 %d 次，只替换第一处，变异可能打进另一处近似代码；"
+                "请多带一行上下文把它变成唯一" % (name, source.count(old)))
         if old == new:
             problems.append("%s：变异前后一模一样，等于没变异" % name)
         elif old in source:

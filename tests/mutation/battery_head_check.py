@@ -108,12 +108,17 @@ MUTATIONS = [
     ("差集被丢掉：只在检出里红的那题永远不被指名",
      '    if only:',
      '    if False:'),
+    # 这两条与 `render` 里那段 12 空格缩进的同名代码字面相同（只差缩进，4 空格那份
+    # 是 12 空格那行的子串），而引擎只替换第一处。带上 `return ATTR_NO_CONTROL`
+    # 才唯一——现在 `anchors_valid` 会把不唯一的锚点报成**问题**。
     ("检出侧的失败名单不取（差集永远是空）",
-     '    here = set(row.get("failed_names") or [])',
-     '    here = set()'),
+     '        return ATTR_NO_CONTROL\n    here = set(row.get("failed_names") or [])\n',
+     '        return ATTR_NO_CONTROL\n    here = set()\n'),
     ("对照组侧的失败名单不取（公共噪声也被算成缺内容）",
-     '    there = set(control.get("failed_names") or [])',
-     '    there = set()'),
+     '        return ATTR_NO_CONTROL\n    here = set(row.get("failed_names") or [])\n'
+     '    there = set(control.get("failed_names") or [])\n',
+     '        return ATTR_NO_CONTROL\n    here = set(row.get("failed_names") or [])\n'
+     '    there = set()\n'),
     ("两棵树都红也被说成「提交缺内容」",
      '    return ATTR_BOTH_RED',
      '    return ATTR_ONLY_IN_COMMIT % "（名单为空）"'),
@@ -173,7 +178,11 @@ MUTATIONS = [
     ("测试目标数量不设上限",
      '    if len(cleaned) > MAX_TEST_TARGETS:',
      '    if False:'),
+    # `if missing:` 在 head_check.py 里有两处（8 空格与 16 空格），只写这一行会被
+    # `replace(..., 1)` 打到第一处；带上下一行那个 `rows.append` 才唯一。
     ("提交里根本没有的测试也照样跑（不先说清是谁漏的）",
-     '        if missing:\n',
-     '        if False:\n'),
+     '        if missing:\n'
+     '            rows.append({"kind": kind, "ok": False, "ran": False, "parsed": False,\n',
+     '        if False:\n'
+     '            rows.append({"kind": kind, "ok": False, "ran": False, "parsed": False,\n'),
 ]

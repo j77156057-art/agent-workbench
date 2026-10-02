@@ -103,6 +103,21 @@ time.sleep(300)
 '''
 
 
+#: 超时那条用的孩子：它自己**不写**标记，而是拉一个孙进程去写。
+#:
+#: 为什么必须多这一层（实测）：第一版的孩子直接写标记，于是「杀掉直接子进程」和
+#: 「终止整个作业对象」两个机制**互为冗余**——只去掉其中一个，那条变异照样绿，
+#: 电池就报两条"活下来"。而这两个机制的区别恰恰在于**孙进程**：作业对象能带走整棵树，
+#: `process.kill()` 只能带走直接那一个。
+_TIMEOUT_CHILD = r'''
+import subprocess, sys, time
+marker = sys.argv[1]
+code = "import time, sys; time.sleep(6); open(sys.argv[1],'w').write('leaked')"
+subprocess.Popen([sys.executable, "-c", code, marker])
+time.sleep(30)
+'''
+
+
 class JobLimitDeclarationTests(unittest.TestCase):
     """限位表是怎么摆的。纯层——不碰内核，所以在任何平台都能跑，CI 上也有牙。"""
 
@@ -169,8 +184,51 @@ class JobLimitDeclarationTests(unittest.TestCase):
         self.assertEqual(first.ProcessMemoryLimit, 4096)
 
 
-class JobCreationFailsClosedTests(unittest.TestCase):
-    """起不出限位就必须是红——模块 docstring 就是这么承诺的（fail closed）。"""
+def _run_isolated(code, **kwargs):
+    """跑一条子进程命令。子进程只吐 ASCII：`run_isolated` 用 `text=True` 且没指定
+    encoding，按本机区域编码解码；中文输出会让读线程抛异常、那一路变成 None
+    （本轮报告里的编码缺口）。这里要验的是"输出接得回来、两路分得开"，不是编码策略。"""
+    return ws.run_isolated([sys.executable, "-c", code], cwd=str(ROOT),
+                           env=dict(os.environ), timeout=60, **kwargs)
+
+
+class RunIsolatedOutputTests(unittest.TestCase):
+    """`run_isolated` 跨平台可验的那半边：输出接得回来、两路分得开、退出码是自己的。
+
+    此前 `run_isolated` 与 `spawn_isolated` 共用 `_create_job` 却只有后者有测试，于是
+    「适配器进程的边界」这条承诺没人验证。它在非 Windows 上走 `subprocess.run`
+    分支，所以这几条在任何平台都跑得到。
+    """
+
+    def test_the_child_output_comes_back(self):
+        result = _run_isolated("print('adapter-output')")
+        self.assertEqual(result.returncode, 0, result.stderr[:200])
+        self.assertIn("adapter-output", result.stdout)
+
+    def test_a_failing_child_reports_its_own_exit_code(self):
+        result = _run_isolated("import sys; sys.stderr.write('adapter-stderr'); sys.exit(3)")
+        self.assertEqual(result.returncode, 3, result.stdout[:200])
+        self.assertIn("adapter-stderr", result.stderr)
+
+    def test_stdout_and_stderr_stay_apart(self):
+        """两个流不能被合并——上层要靠 stderr 认"这是失败不是输出"。"""
+        result = _run_isolated("import sys; sys.stdout.write('OUT'); sys.stderr.write('ERR')")
+        self.assertIn("OUT", result.stdout)
+        self.assertNotIn("ERR", result.stdout)
+        self.assertIn("ERR", result.stderr)
+        self.assertNotIn("OUT", result.stderr)
+
+
+class WindowsOnlyLiveTests(unittest.TestCase):
+    """**本电池的 LIVE 层：只有 Windows 才验得了的那一层**——注意它与别的电池的
+    LIVE 含义不同：那边是"需要真浏览器"，这边是"作业对象是 Windows 机制"。
+
+    为什么要这么分组（这不是洁癖，是 CI 会红）：`.github/workflows/harness.yml` 在
+    **ubuntu-latest** 上跑 `run_all.py --no-live`。一个只被 `@skipUnless(os.name == "nt")`
+    用例抓住的变异，在 ubuntu 上那类用例被 skip → 无人抓 → 记成**活下来** → 电池红、
+    CI 步骤失败。声明成 LIVE 之后，它在 ubuntu 上记「本环境未验证」——既不算抓住，
+    也不算活下来，这才是不谎报。
+    """
 
     @staticmethod
     def _stub(**functions):
@@ -211,11 +269,78 @@ class JobCreationFailsClosedTests(unittest.TestCase):
             ws._create_job(1 << 20)
 
 
-class NestedProcessTreeTests(unittest.TestCase):
-    """现场层：真作业对象里真拉一棵嵌套进程树。
+    @unittest.skipUnless(os.name == "nt", "作业对象是 Windows 机制")
+    def test_it_refuses_to_run_unbounded_when_the_job_cannot_be_created(self):
+        """起不出作业对象必须是红——这个模块的承诺就是 fail closed，不是"降级跑一把"。"""
+        self._with_stub(self._stub(
+            CreateJobObjectW=lambda *_a: 0,
+            SetInformationJobObject=lambda *_a: 1,
+        ))
+        with self.assertRaises(ws.SandboxUnavailable):
+            _run_isolated("print('never-runs')")
 
-    这是唯一能同时看见「常量」与「限位表」两处的地方——纯层只看得见常量。
-    """
+    @unittest.skipUnless(os.name == "nt", "作业对象是 Windows 机制")
+    def test_it_refuses_to_run_when_the_process_cannot_be_assigned(self):
+        """加入作业对象失败也必须是红——否则那棵树从此没人回收，正是 99°C 的形状。
+
+        `run_isolated` 与 `spawn_isolated` 的 `if ... AssignProcessToJobObject` 那一行
+        **字面完全相同**，所以电池里对应那条变异的锚点必须带上下文才唯一。
+        """
+        self._with_stub(self._stub(
+            CreateJobObjectW=lambda *_a: 4321,
+            SetInformationJobObject=lambda *_a: 1,
+            AssignProcessToJobObject=lambda *_a: 0,
+            CloseHandle=lambda *_a: 0,
+        ))
+        with self.assertRaises(ws.SandboxUnavailable):
+            _run_isolated("print('never-runs')")
+
+    @unittest.skipUnless(os.name == "nt", "作业对象是 Windows 机制")
+    def test_a_process_started_before_the_refusal_is_still_reaped(self):
+        """拒绝时那个子进程**已经起来了**，必须被收掉——这才是"边界"的意思。
+
+        `run_isolated` 先 `Popen` 再 `AssignProcessToJobObject`，所以"加入失败"这条路上
+        有一个已经存在的进程；`finally` 里那层兜底就是为它准备的。判据仍是标记文件：
+        孩子 5 秒后写标记，我们等 7 秒——它若还活着就写出来了。
+        """
+        with tempfile.TemporaryDirectory() as root:
+            marker = Path(root) / "leaked.txt"
+            code = ("import time, pathlib; time.sleep(5); "
+                    "pathlib.Path(r'%s').write_text('leaked')" % marker)
+            self._with_stub(self._stub(
+                CreateJobObjectW=lambda *_a: 4321,
+                SetInformationJobObject=lambda *_a: 1,
+                AssignProcessToJobObject=lambda *_a: 0,
+                CloseHandle=lambda *_a: 0,
+            ))
+            with self.assertRaises(ws.SandboxUnavailable):
+                ws.run_isolated([sys.executable, "-c", code], cwd=root,
+                                env=dict(os.environ), timeout=30)
+            time.sleep(7)
+            self.assertFalse(marker.exists(),
+                             "已经拒绝执行了，那个子进程却还活着——每次这种失败都会漏一个")
+
+    @unittest.skipUnless(os.name == "nt", "作业对象是 Windows 机制")
+    def test_a_timeout_kills_the_tree_rather_than_merely_giving_up(self):
+        """超时必须是**杀掉整棵树**，不是抛个异常就不管了。
+
+        判据是那个标记文件：孩子拉一个孙进程，孙进程 6 秒后写标记。若只杀掉直接那个孩子
+        （`process.kill()` 而不终止作业对象），孙进程会活下来把标记写出来——这正是
+        `KILL_ON_JOB_CLOSE` / `TerminateJobObject` 存在的理由，也正是 99°C 事故的形状。
+        """
+        with tempfile.TemporaryDirectory() as root:
+            marker = Path(root) / "late.txt"
+            child = Path(root) / "timeout_child.py"
+            child.write_text(_TIMEOUT_CHILD, encoding="utf-8")
+            start = time.time()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                ws.run_isolated([sys.executable, str(child), str(marker)], cwd=root,
+                                env=dict(os.environ), timeout=1)
+            self.assertLess(time.time() - start, 3.5, "超时没有立刻生效")
+            time.sleep(8)
+            self.assertFalse(marker.exists(),
+                             "超时之后孙进程还在跑并写出了标记——只收了直接那个孩子，"
+                             "整棵树没收走")
 
     @unittest.skipUnless(os.name == "nt", "作业对象是 Windows 机制")
     def test_a_nested_tree_at_least_as_wide_as_the_gate_can_still_spawn(self):

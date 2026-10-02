@@ -17,6 +17,9 @@ UNIT_CLASSES = (
     'NodeidGuardTests',
     'BookkeepingTests',
     'RunTests',
+    # Wave22 补：缺覆盖率依赖那条守卫此前只在本机没装 coverage 时才被触发，
+    # Wave21 装上之后它变成等价变异、报"活下来"。见该类的 docstring。
+    'CoverageDependencyGuardTests',
     'RelatedTests',
     'LocationTests',
     'RenderTests',)
