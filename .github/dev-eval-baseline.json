@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 25,
- "scored": 25,
- "passed": 25,
+ "total": 26,
+ "scored": 26,
+ "passed": 26,
  "skipped": [],
  "results": [
   {
@@ -151,6 +151,12 @@
   },
   {
    "id": "sandbox-process-budget-survives-a-real-tree",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "chat-sse-refuses-a-final-that-never-ran-a-tool",
    "passed": true,
    "skipped": "",
    "failed_checks": []

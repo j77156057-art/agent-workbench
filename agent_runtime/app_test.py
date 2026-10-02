@@ -65,6 +65,152 @@ STREAM_WAIT = 45.0
 #: 单步点击的重试窗口（按钮要等 ws 握手完才存在）
 STREAM_STEP_WAIT = 25.0
 
+# --------------------------------------------------------------------------- #
+# 深链整页：每条页面路由必须渲染**它自己**那一页（Wave24）
+# --------------------------------------------------------------------------- #
+#
+#: 三条页面路由各自独立、**没有 catch-all**（`api.py` 的 `/`、`/workbench`、`/trace`
+#: 各自 `FileResponse` 自己的 html）。所以"路由 A 返回了页面 B"今天不会让任何东西变红：
+#: 谁把 `/trace` 接到 `index.html` 上，整页守卫照样 14 条全绿。
+#:
+#: 三组标记**互不相交**，于是这件事可判定：`own` 是这一页自己的挂载点，另外两页的挂载点
+#: 必须一个都看不到。标记只用 CSS 选择器——`page_action` 的 `text:` 定位只在**可交互元素**
+#: 里找，`AI 操作记录` 那个 `<h1>` 实测命中 0 个（Wave17 已付过这笔学费），所以改用
+#: `#tablewrap` 这个结构标记。
+#:
+#: **这里只写 `own`，不写"另外两页是谁"** —— 那份由 `_foreign_for()` 从同一张表推出来。
+#: 手写两份的话，加第 4 个页面时手写那份会静默变陈旧（§9：上限写两处就等于写了一处旧的）。
+DEEP_LINK_ROUTES = (
+    {"path": "/", "own": ".ask-shell"},
+    {"path": "/workbench", "own": ".wb-shell"},
+    {"path": "/trace", "own": "#tablewrap"},
+)
+
+#: `api.py` 给了 `/workbench.html`、`/trace.html` 两个 307 别名（为了纯静态托管也能打开）。
+#: 断言它们**落在同一页**上（别名 404 或者指向别的页都是回归），并且**真的停在规范路径**——
+#: 实测浏览器跟完 307 之后 href 就是 `/workbench`、连 `page_action` 加的 `?docmind=`
+#: 缓存戳都掉了。只查"标记在"不够：那证不了重定向落在哪。
+DEEP_LINK_ALIASES = (
+    {"path": "/workbench.html", "own": ".wb-shell", "canonical": "/workbench"},
+    {"path": "/trace.html", "own": "#tablewrap", "canonical": "/trace"},
+)
+
+#: 反向对照：站内不存在的路径**不许**渲染出任何一页。没有它的话，一个 catch-all
+#: 把所有路径都回成 `index.html`，上面那些断言会**全部照样绿**。
+DEEP_LINK_UNKNOWN = "/no-such-page-for-deeplink"
+
+#: 单页挂载点的等待窗口（实测冷加载 1~3s；给足余量但要有截止期，不能固定 sleep）
+DEEP_LINK_WAIT = 20.0
+
+
+def _deep_slug(path: str) -> str:
+    """把路径变成判据名的一截：`/` → `root`，`/workbench` → `workbench`。"""
+    text = str(path or "").strip().strip("/").replace("/", "_").replace(".", "_")
+    return "root" if not text else text[:32]
+
+
+def _console_matters(spec: dict) -> bool:
+    """这条深链的 console/失败请求要不要算进"干净"里。
+
+    未知路径**理应**加载失败（实测就是 1 条 console 错误 + 1 条失败请求），把它算进去的话
+    `deeplink_console_clean` 永远红。抽成纯函数是为了让这条判断在 CI 上可验——
+    留在 `_drive_deep_link` 里就只能靠真浏览器，而本机浏览器那一档有时序敏感。
+    """
+    return not bool(spec.get("unknown"))
+
+
+def _href_path(href: Any) -> str:
+    """从 href 里取**路径**部分——去掉 origin、`?docmind=…` 缓存戳与 `#`。
+
+    别名那条判据要的就是它：浏览器跟完 307 之后 href 应该是规范路径，
+    而 `page_action.open_page` 给每条 URL 都加了 `?docmind=<ns>`，不剥掉就永远对不上。
+    只剥查询串是不够的：那样留下来的是整个 URL，比 `canonical` 多一截 origin。
+    """
+    text = str(href or "").strip()
+    for cut in ("#", "?"):
+        text = text.split(cut, 1)[0]
+    if "://" in text:
+        text = text.split("://", 1)[1]
+        slash = text.find("/")
+        text = text[slash:] if slash >= 0 else "/"
+    return text.rstrip("/") or "/"
+
+
+def _foreign_for(own: str) -> tuple[str, ...]:
+    """"另外几页的挂载点"——按 own 反查，而不是每条手写一遍。
+
+    手写会漏：别名那一档起初就没带 foreign，于是现场那侧数出空列表、
+    `[][0]` 直接 IndexError。**从同一张表推**，别名与反向对照才拿得到同一套标记。
+    """
+    return tuple(spec["own"] for spec in DEEP_LINK_ROUTES if spec["own"] != own)
+
+
+def deep_link_facts(read: Callable[[dict], dict]) -> list[dict[str, Any]]:
+    """把每条深链页面上要看的东西读齐——`read` 由调用方注入，纯层因此能拿假页面喂。
+
+    页面交互（开会话、等挂载、数选择器）全在 `read` 里面：现场那侧每条路由都要**自己**
+    的会话，塞进这个纯函数会让它没法在 CI 上跑。
+
+    `own_seen` / `foreign_seen` 都要**真的数过**：只看"own 在"不够——
+    "A 路由吐了 B 页面"时 B 的挂载点同样在场，只查 own 会照样绿。
+    """
+    rows: list[dict[str, Any]] = []
+    for spec in list(DEEP_LINK_ROUTES) + [dict(row, alias=True)
+                                          for row in DEEP_LINK_ALIASES]:
+        spec = dict(spec, foreign=_foreign_for(str(spec["own"])))
+        got = read(spec)
+        foreign = [int(count or 0) for count in (got.get("foreign") or [])]
+        rows.append({"path": spec["path"], "own": spec["own"],
+                     "alias": bool(spec.get("alias")),
+                     "canonical": str(spec.get("canonical") or ""),
+                     "landed": _href_path(got.get("href")),
+                     "own_seen": int(got.get("own") or 0) >= 1,
+                     "foreign_seen": any(count >= 1 for count in foreign),
+                     "foreign_counts": foreign})
+    # 反向对照：那条路径必须把**三页的标记**都数一遍。漏传 foreign 的话
+    # `any([])` 恒为 False，这条判据就成了永远为真的装饰——而它恰恰是"没有 catch-all
+    # 把所有路径都回成 index.html"的唯一凭据。
+    every = tuple(spec["own"] for spec in DEEP_LINK_ROUTES)
+    got = read({"path": DEEP_LINK_UNKNOWN, "unknown": True, "foreign": every})
+    seen = [int(count or 0) for count in (got.get("foreign") or [])]
+    rows.append({"path": DEEP_LINK_UNKNOWN, "unknown": True, "own_seen": False,
+                 "unknown_served_a_page": any(count >= 1 for count in seen),
+                 "unknown_counts": seen})
+    return rows
+
+
+def deep_link_checks(observed: dict[str, Any]) -> dict[str, bool]:
+    """深链那一档的判定表。每一条都对应一类"看起来绿其实没测"的假象。"""
+    rows = {str(row.get("path")): row for row in (observed.get("deep_links") or [])}
+    out: dict[str, bool] = {}
+    for spec in DEEP_LINK_ROUTES:
+        row = rows.get(spec["path"]) or {}
+        slug = _deep_slug(spec["path"])
+        out["deeplink_%s_renders_its_own_page" % slug] = bool(row.get("own_seen"))
+        out["deeplink_%s_serves_no_other_page" % slug] = bool(row.get("own_seen")) \
+            and not bool(row.get("foreign_seen"))
+    for spec in DEEP_LINK_ALIASES:
+        row = rows.get(spec["path"]) or {}
+        slug = "alias_%s" % _deep_slug(spec["path"])
+        out["deeplink_%s_reaches_its_page" % slug] = bool(row.get("own_seen"))
+        out["deeplink_%s_serves_no_other_page" % slug] = bool(row.get("own_seen")) \
+            and not bool(row.get("foreign_seen"))
+        # 重定向要真的落在规范路径上：只查"标记在"的话，停在任何带 .wb-shell 的页都算过
+        out["deeplink_%s_lands_on_the_canonical_path" % slug] = bool(row) \
+            and str(row.get("landed") or "") == str(spec.get("canonical") or "")
+    unknown = rows.get(DEEP_LINK_UNKNOWN) or {}
+    out["deeplink_unknown_path_serves_no_page"] = bool(unknown) \
+        and not bool(unknown.get("unknown_served_a_page"))
+    # 一行都没读到时，上面那些都会因为 `rows.get(path) or {}` 变成"没数据所以没关系"，
+    # 而 console/failed 两条又会因为空列表报"没有错误"——整张表看起来还挺绿。
+    # 所以显式钉一条"该读的路径都读了"。
+    out["deeplink_every_route_was_visited"] = \
+        len(observed.get("deep_links") or []) == len(DEEP_LINK_ROUTES) \
+        + len(DEEP_LINK_ALIASES) + 1
+    out["deeplink_console_clean"] = not (observed.get("deep_console_errors") or [])
+    out["deeplink_no_failed_requests"] = not (observed.get("deep_failed_requests") or [])
+    return out
+
 
 class AppTestError(RuntimeError):
     """整页守卫无法开始。"""
@@ -336,13 +482,16 @@ def evaluate(observed: dict[str, Any], wanted: dict[str, Any],
     if wanted.get("stream"):
         # 流式那一段是"整页 + 假麦克风 + 真 ws"，判定另成一表并并进同一张红单
         assertions.update(stream_checks(observed, rounds=int(wanted.get("rounds") or 2)))
+    if wanted.get("deep_link"):
+        # 深链那一档是"冷开每条页面路由"，判定同样另成一表并并进同一张红单
+        assertions.update(deep_link_checks(observed))
     failed = [name for name, ok in assertions.items() if not ok]
     return {"assertions": assertions, "failed": failed, "passed": not failed}
 
 
 def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
                  tab: str = DEFAULT_TAB, stream: bool = False, timeout: float = 120.0,
-                 ready_wait: float = READY_WAIT) -> dict[str, Any]:
+                 ready_wait: float = READY_WAIT, deep_link: bool = False) -> dict[str, Any]:
     """前置检查 → 起后端 → 注册项目 → 开整页 → 点击导航 → 逐条判定 → 拆干净。"""
     base = Path(root).resolve()
     started = time.monotonic()
@@ -368,7 +517,8 @@ def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
                              "sandbox": sandbox["sandbox"]}
     try:
         _drive(base, state, port=port, path=path, tab=tab, needles=needles,
-               timeout=timeout, ready_wait=ready_wait, sandbox=sandbox, stream=bool(stream))
+               timeout=timeout, ready_wait=ready_wait, sandbox=sandbox, stream=bool(stream),
+               deep_link=bool(deep_link))
     except (AppTestError, page_action.PageActionError,
             urllib.error.URLError, OSError) as exc:
         out["error"] = "整页守卫没能走完：%s" % str(exc)[:300]
@@ -384,7 +534,8 @@ def run_app_test(root: str | Path, *, page: str = "/workbench", texts: str = "",
         out["elapsed"] = round(time.monotonic() - started, 2)
         return out
     judged = evaluate(state, {"tab": tab, "texts": needles, "tabs": EXPECTED_TABS,
-                              "stream": bool(stream), "rounds": 2}, fresh, cleanup)
+                              "stream": bool(stream), "rounds": 2,
+                              "deep_link": bool(deep_link)}, fresh, cleanup)
     reasons = [out.get("error") or ""]
     if not judged["passed"]:
         reasons.append(_why(judged["failed"], fresh, state))
@@ -400,7 +551,11 @@ FACT_KEYS = ("shell", "tabs", "rows", "fixture_in_tree", "active_before", "activ
              "content_before", "content_after", "body_truncated", "texts", "console_errors",
              "failed_requests", "activated", "isolated", "project_id", "click_ok",
              "click_effect", "log_tail", "heard", "replied", "rounds", "native", "mic_on",
-             "stream_steps", "stream_captions", "stream_flags")
+             "stream_steps", "stream_captions", "stream_flags",
+             # 深链那一档的事实**必须**进报告：判据只给"绿/红"，不给"数到了什么"，
+             # 于是"标记选错了"和"这一页真的没渲染"在报告里长得一模一样（§9：
+             # 多上报一个原始量，而不是猜）。
+             "deep_links", "deep_console_errors", "deep_failed_requests")
 
 
 def _facts(state: dict[str, Any]) -> dict[str, Any]:
@@ -410,7 +565,8 @@ def _facts(state: dict[str, Any]) -> dict[str, Any]:
 
 def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
            needles: list[str], timeout: float, ready_wait: float,
-           sandbox: dict[str, Any], stream: bool = False) -> None:
+           sandbox: dict[str, Any], stream: bool = False,
+           deep_link: bool = False) -> None:
     """真起服务、真开页面、真点导航——事实一律写进 `state`（判定与收回都在外面）。"""
     server = dev_server.start(str(base), "uvicorn api:app (整页守卫)",
                               argv=server_argv(port, python=sys.executable),
@@ -467,6 +623,52 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
     state["failed_requests"] += list(settled.get("failed_requests") or [])
     if stream:
         _drive_stream(base, state)
+    if deep_link:
+        # 深链要**冷开**每一条页面路由，所以复用上面那个会话是没有意义的（那样只是站内
+        # 导航）；它自己按路由逐个开新会话，跑在同一个后端上。
+        _drive_deep_link(base, state, "http://%s:%d" % (LOOPBACK, port))
+
+
+def _drive_deep_link(base: Path, state: dict[str, Any], url: str) -> None:
+    """逐条**冷开**每一条深链：每条路由一个新会话、走完整加载，绝不复用上一个页面。
+
+    为什么必须每条都新会话：复用同一个页面去 navigate，第二条起就是**站内导航**，
+    而深链要的恰恰是"冷启动直接进这一页"。站内导航顺带会把上一条的状态带过来，
+    于是"这一条自己能不能立起来"就没人验了。
+
+    等挂载点必须**带截止期**（`wait_for`），不能固定 sleep：三个页面的冷加载耗时不同，
+    固定 sleep 会把慢的那个判成"没挂上"。
+    """
+    console_errors: list[Any] = []
+    failed_requests: list[Any] = []
+
+    def read(spec: dict) -> dict:
+        session = page_action.open_page(base, url=url + str(spec["path"]))
+        page = str(session.get("page") or "")
+        try:
+            if spec.get("own"):
+                # 挂载点没出现也要往下走：下面数出来的是 0，判据会如实报红，
+                # 而不是在这里抛异常把整轮带崩。
+                page_action.wait_for(base, page=page, selector=str(spec["own"]),
+                                     state="present", timeout=DEEP_LINK_WAIT)
+            if _console_matters(spec):
+                console_errors.extend(session.get("console_errors") or [])
+                failed_requests.extend(session.get("failed_requests") or [])
+
+            def count(css: str) -> int:
+                if not css:
+                    return 0
+                return int(page_action.locate(base, page=page, selector=css).get("count") or 0)
+
+            return {"own": count(str(spec.get("own") or "")),
+                    "foreign": [count(css) for css in (spec.get("foreign") or ())],
+                    "href": session.get("href")}
+        finally:
+            page_action.close_page(page)
+
+    state["deep_links"] = deep_link_facts(read)
+    state["deep_console_errors"] = console_errors
+    state["deep_failed_requests"] = failed_requests
 
 
 def _drive_stream(base: Path, state: dict[str, Any]) -> None:
@@ -553,6 +755,29 @@ def _why(failed: list[str], fresh: dict[str, Any], observed: dict[str, Any]) -> 
     if "console_clean" in failed or "no_failed_requests" in failed:
         reasons.append("console 有 %s 条错误、请求失败 %s 条" % (
             len(observed.get("console_errors") or []), len(observed.get("failed_requests") or [])))
+    deep_bad = [row for row in (observed.get("deep_links") or [])
+                if not row.get("own_seen") and row.get("own")]
+    if deep_bad:
+        reasons.append("这些深链没渲染出自己的挂载点：%s（标记是 %s）" % (
+            "、".join(str(row.get("path")) for row in deep_bad),
+            "、".join(str(row.get("own")) for row in deep_bad)))
+    cross = [row for row in (observed.get("deep_links") or []) if row.get("foreign_seen")]
+    if cross:
+        reasons.append("这些深链吐出了**别的**页面（不该出现的外来挂载点）：%s" % (
+            "、".join("%s→%s" % (row.get("path"), row.get("foreign_counts"))
+                      for row in cross)))
+    unknown_bad = [row for row in (observed.get("deep_links") or [])
+                   if row.get("unknown") and row.get("unknown_served_a_page")]
+    if unknown_bad:
+        reasons.append("不存在的路径却渲染出了一页（说明有 catch-all 把所有路径都回成某页）：%s" % (
+            unknown_bad[0].get("unknown_counts"),))
+    alias_bad = [row for row in (observed.get("deep_links") or [])
+                 if row.get("alias") and row.get("landed")
+                 and row.get("canonical") and row["landed"] != row["canonical"]]
+    if alias_bad:
+        reasons.append("这些别名没停在规范路径上：%s" % (
+            "、".join("%s→%s（应为 %s）" % (row.get("path"), row.get("landed"),
+                                          row.get("canonical")) for row in alias_bad),))
     return "；".join(reasons) or "有断言未成立"
 
 

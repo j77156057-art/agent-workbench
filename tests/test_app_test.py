@@ -515,7 +515,191 @@ class PreflightTests(Base):
 @unittest.skipUnless((Path(ROOT) / "web" / "index.html").is_file()
                      and (Path(ROOT) / "api.py").is_file(),
                      "跳过整页现场：没有可用的 web/ 构建产物")
+class DeepLinkTests(Base):
+    """深链整页那一档的判定（Wave24）。纯层，不起浏览器。
+
+    它补的是一个**今天完全没有守卫**的洞：三条页面路由（`/`、`/workbench`、`/trace`）
+    各自独立、**没有 catch-all**，所以"路由 A 返回了页面 B"不会让任何东西变红。
+    """
+
+    @staticmethod
+    def reader(own_counts=None, foreign_counts=None, landed=None, unknown=0):
+        """造一个假的 `read`：按 spec 给计数。默认形状是"三条路由都正常"。"""
+        own_counts = own_counts or {}
+        foreign_counts = foreign_counts or {}
+        landed = landed or {}
+
+        def read(spec):
+            path = str(spec["path"])
+            if spec.get("unknown"):
+                return {"own": 0, "foreign": [unknown] * len(spec.get("foreign") or ()),
+                        "href": "http://127.0.0.1:1" + path}
+            # 别名默认落在**规范路径**上（真页面跟完 307 就是这样），而不是停在别名自己
+            final = landed.get(path, spec.get("canonical") or path)
+            return {"own": own_counts.get(path, 1),
+                    "foreign": foreign_counts.get(path, [0] * len(spec.get("foreign") or ())),
+                    "href": "http://127.0.0.1:1" + final + "?docmind=7"}
+        return read
+
+    def observed(self, **kwargs):
+        rows = at.deep_link_facts(self.reader(**kwargs))
+        return {"deep_links": rows, "deep_console_errors": [], "deep_failed_requests": []}
+
+    # ---- 前提：三组标记互不相交，"A 路由吐了 B 页面"才可判定 ----
+
+    def test_the_three_routes_carry_pairwise_disjoint_markers(self):
+        """这一条是整档的地基：标记重叠的话，"外来页面在场"就永远判不出来。"""
+        marks = [row["own"] for row in at.DEEP_LINK_ROUTES]
+        self.assertEqual(len(marks), 3, marks)
+        self.assertEqual(len(set(marks)), 3, "两页用了同一个标记：%s" % marks)
+
+    def test_the_foreign_markers_are_derived_not_written_by_hand(self):
+        """外来标记必须**从同一张表推**，不能手写第二份。
+
+        手写的话，加第 4 个页面时手写那份会静默变陈旧——而"外来页面在场"正是靠它判的，
+        陈旧了等于那条判据悄悄失效（§9：上限写两处就等于写了一处旧的）。
+        """
+        for row in at.DEEP_LINK_ROUTES:
+            self.assertNotIn("foreign", row,
+                             "%s 又手写了一份 foreign" % row["path"])
+            self.assertEqual(sorted(at._foreign_for(str(row["own"]))),
+                             sorted(m["own"] for m in at.DEEP_LINK_ROUTES
+                                    if m["own"] != row["own"]),
+                             "%s 的外来标记不是另外两页" % row["path"])
+        # 别名同样走推导
+        for row in at.DEEP_LINK_ALIASES:
+            self.assertEqual(sorted(at._foreign_for(str(row["own"]))),
+                             sorted(m["own"] for m in at.DEEP_LINK_ROUTES
+                                    if m["own"] != row["own"]))
+
+    def test_the_unknown_path_is_asked_about_all_three_markers(self):
+        """盯一个具体的恒真坑：第一版给反向对照传了空的 foreign，
+        `any([])` 恒为 False，那条判据就永远绿——而它恰恰是"没有 catch-all"的唯一凭据。"""
+        asked = []
+        at.deep_link_facts(lambda spec: (asked.append(spec), {"own": 0, "foreign": [0] * 3,
+                                                            "href": ""})[1])
+        unknown = [spec for spec in asked if spec.get("unknown")]
+        self.assertEqual(len(unknown), 1, asked)
+        self.assertEqual(len(unknown[0]["foreign"]), len(at.DEEP_LINK_ROUTES),
+                         "反向对照只数了 %s 个标记" % len(unknown[0]["foreign"]))
+
+    # ---- href → 路径 ----
+
+    def test_href_path_strips_origin_query_and_fragment(self):
+        self.assertEqual(at._href_path("http://127.0.0.1:59555/workbench?docmind=9"),
+                         "/workbench")
+        self.assertEqual(at._href_path("http://x/"), "/")
+        self.assertEqual(at._href_path("http://x"), "/")
+        self.assertEqual(at._href_path("/trace#top"), "/trace")
+        self.assertEqual(at._href_path(""), "/")
+        self.assertEqual(at._href_path(None), "/")
+
+    # ---- 判定 ----
+
+    def test_an_honest_run_is_green(self):
+        checks = at.deep_link_checks(self.observed())
+        self.assertTrue(checks, "一条判据都没产出")
+        self.assertTrue(all(checks.values()), [k for k, v in checks.items() if not v])
+
+    def test_a_route_that_serves_another_page_is_red(self):
+        """A 路由吐了 B 页面：B 的挂载点也在场——只查 own 会照样绿。"""
+        checks = at.deep_link_checks(self.observed(
+            foreign_counts={"/trace": [0, 1]}))
+        self.assertFalse(checks["deeplink_trace_serves_no_other_page"])
+        self.assertTrue(checks["deeplink_trace_renders_its_own_page"],
+                        "own 还在场，所以只查 own 的判据不会红——这正是要挡的")
+
+    def test_a_route_that_mounts_nothing_is_red(self):
+        checks = at.deep_link_checks(self.observed(own_counts={"/": 0}))
+        self.assertFalse(checks["deeplink_root_renders_its_own_page"])
+        self.assertFalse(checks["deeplink_root_serves_no_other_page"])
+
+    def test_an_alias_landing_on_the_wrong_path_is_red(self):
+        checks = at.deep_link_checks(self.observed(
+            landed={"/workbench.html": "/trace"}))
+        self.assertFalse(checks["deeplink_alias_workbench_html_lands_on_the_canonical_path"])
+        self.assertTrue(checks["deeplink_alias_workbench_html_reaches_its_page"],
+                        "标记还在，但重定向停错了地方——所以这条判据不能省")
+
+    def test_a_catch_all_serving_a_page_for_everything_is_caught(self):
+        checks = at.deep_link_checks(self.observed(unknown=1))
+        self.assertFalse(checks["deeplink_unknown_path_serves_no_page"])
+
+    def test_a_missing_row_is_red_not_green(self):
+        """没读到那一行不许当成过——`rows.get(path) or {}` 给出的是空 dict，
+        判据必须因此为红，而不是"没数据所以没关系"。"""
+        checks = at.deep_link_checks({"deep_links": []})
+        self.assertFalse(checks["deeplink_every_route_was_visited"])
+        self.assertFalse(any(value for name, value in checks.items()
+                             if not name.startswith("deeplink_console")
+                             and not name.startswith("deeplink_no_failed")),
+                         "一行都没读到，路由判据却全绿")
+
+    def test_a_partially_read_run_is_red_too(self):
+        rows = at.deep_link_facts(self.reader())[:-1]
+        checks = at.deep_link_checks({"deep_links": rows})
+        self.assertFalse(checks["deeplink_every_route_was_visited"])
+
+    def test_the_unknown_path_is_excluded_from_the_console_cleanliness_checks(self):
+        """未知路径**理应**加载失败（实测 1 条 console 错误 + 1 条失败请求）。
+
+        把它算进"console 干净"的话那条判据永远红；反过来，真页面加载报错必须照样算进去。
+        """
+        self.assertFalse(at._console_matters({"path": at.DEEP_LINK_UNKNOWN, "unknown": True}))
+        for spec in at.DEEP_LINK_ROUTES:
+            self.assertTrue(at._console_matters(spec), spec)
+        for spec in at.DEEP_LINK_ALIASES:
+            self.assertTrue(at._console_matters(spec), spec)
+
+    def test_console_and_failed_requests_are_separate_checks(self):
+        observed = self.observed()
+        observed["deep_console_errors"] = ["boom"]
+        observed["deep_failed_requests"] = [{"url": "/x"}]
+        checks = at.deep_link_checks(observed)
+        self.assertFalse(checks["deeplink_console_clean"])
+        self.assertFalse(checks["deeplink_no_failed_requests"])
+
+    def test_the_table_is_merged_into_evaluate_only_when_asked(self):
+        base = {"ready": True, "isolated": True, "activated": True, "shell": 1,
+                "tabs": 4, "rows": 1, "fixture_in_tree": True, "console_errors": [],
+                "failed_requests": [], "click_ok": True, "active_before": "a",
+                "active_after": "b", "content_before": "x", "content_after": "y",
+                "body_truncated": False, "texts": {}}
+        fresh = {"built": True, "fresh": True}
+        cleanup = {"removed": True, "job_stopped": True, "live_pages": 0}
+        off = at.evaluate(dict(base), {"tab": "b", "texts": [], "tabs": 4}, fresh, cleanup)
+        self.assertFalse([k for k in off["assertions"] if k.startswith("deeplink_")],
+                         "没要求深链却把深链表并进红单了")
+        observed = dict(base)
+        observed.update(self.observed())
+        on = at.evaluate(observed, {"tab": "b", "texts": [], "tabs": 4,
+                                    "deep_link": True}, fresh, cleanup)
+        self.assertTrue([k for k in on["assertions"] if k.startswith("deeplink_")])
+        self.assertTrue(on["passed"], on["failed"])
+
+
 class LivePageTests(Base):
+    def test_the_deep_link_tier_visits_every_route_in_a_real_browser(self):
+        """真开一次浏览器：三条页面路由 + 两条别名 + 一条不存在的路径。
+
+        这是深链那档唯一的真凭据——纯层证不了"标记在真页面上真的能数到"。
+        顺带钉住那条只有现场能验的 scoping：未知路径**理应** 404（实测 1 条 console
+        错误 + 1 条失败请求），把它算进"console 干净"的话那条判据永远红。
+        """
+        got = at.run_app_test(ROOT, deep_link=True, timeout=180.0)
+        detail = json.dumps({"failed": got.get("failed"),
+                             "deep": (got.get("observed") or {}).get("deep_links"),
+                             "console": (got.get("observed") or {}).get("deep_console_errors"),
+                             "error": got.get("error")}, ensure_ascii=False)[:1200]
+        rows = (got.get("observed") or {}).get("deep_links") or []
+        self.assertEqual(len(rows), len(at.DEEP_LINK_ROUTES) + len(at.DEEP_LINK_ALIASES) + 1,
+                         detail)
+        if not at.bundle_freshness(ROOT)["fresh"]:
+            self.assertEqual(got["failed"], ["bundle_built_after_latest_source"], detail)
+        else:
+            self.assertTrue(got["ok"], detail)
+        self.assertEqual((got.get("observed") or {}).get("deep_console_errors"), [], detail)
+
     def test_the_real_page_passes_every_line(self):
         got = at.run_app_test(ROOT, texts="资源管理器", timeout=120.0)
         detail = json.dumps({"failed": got.get("failed"), "observed": got.get("observed"),

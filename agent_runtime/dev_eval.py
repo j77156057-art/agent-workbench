@@ -992,6 +992,78 @@ def _case_sandbox_process_budget_survives_a_real_tree(
     ]
 
 
+def _case_chat_sse_refuses_a_final_that_never_ran_a_tool(
+        root: str, run: Callable[..., dict]) -> list[dict]:
+    r"""`/api/chat`（前端问答页真正打的 SSE 端点）的判据表能不能挑出假象（Wave24）。
+
+    `agent.py` 里有六条**不调模型也能产出一个 `final`** 的早退路径，于是"收到了 final"
+    根本不等于"跑通了一轮问答"。而这个端点的既有 6 条用例**全部**打在 `Agent.run` 那一层，
+    所以经由它，ReAct 主循环与工具执行一条都没真跑过。
+
+    纯层题：只把判据表本身喂假象形状。真链路那条现场用例在
+    `tests/test_chat_sse.py::RealTurnTests`，不在门禁里重跑（门禁每题都有时限）。
+    """
+    from agent_runtime import chat_sse
+
+    def rows(*, final=None, action=None):
+        base = [{"type": "route", "route": "chat"},
+                {"type": "action", "text": action or "search_assets(像素风角色)"},
+                {"type": "observation",
+                 "text": "Observation: Pixel Platformer ［2d-sprites］ 像素风角色"},
+                {"type": "token", "text": "根"},
+                {"type": "done"}]
+        if final is None:
+            final = {"text": "根据检索到的内容：Pixel Platformer ［2d-sprites］ 这就是清单。"}
+        # final 插在 done 之前，保持真实流的收尾顺序
+        return base[:-1] + [{"type": "final", **final}, base[-1]]
+
+    honest = chat_sse.verdict(rows(), chunk_count=6)
+    capacity = chat_sse.verdict(rows(final={"text": "额度用完了", "offline": True}), chunk_count=6)
+    degraded = chat_sse.verdict(rows(final={"text": "证据：Pixel Platformer", "degraded": True}),
+                                chunk_count=6)
+    clarified = chat_sse.verdict(rows(final={"text": "你要我改哪个文件？",
+                                             "clarification_required": True}), chunk_count=6)
+    errored = chat_sse.verdict(rows(final={"text": "出错了", "status": "error",
+                                           "error_kind": "runtime"}), chunk_count=6)
+    invented = chat_sse.verdict(rows(final={"text": "根据检索到的内容：这是你要的答案。"}),
+                                chunk_count=6)
+    networked = chat_sse.verdict(rows(action="web_search(像素风角色)"), chunk_count=6)
+    lone = chat_sse.verdict([row for row in rows() if row.get("type") != "observation"],
+                            chunk_count=6)
+    buffered = chat_sse.verdict(rows(), chunk_count=1)
+    cut = chat_sse.verdict([row for row in rows() if row.get("type") != "done"], chunk_count=6)
+    nothing = chat_sse.verdict([{"type": "route"}, {"type": "done"}], chunk_count=2)
+    unnamed = chat_sse.verdict(rows(action="（没有工具名）"), chunk_count=6)
+    return [
+        _check("an_honest_turn_passes", honest["passed"], honest["failed"]),
+        _check("route_and_done_alone_are_not_evidence", not nothing["passed"], nothing["why"]),
+        _check("a_capacity_reply_is_refused",
+               "final_is_not_an_offline_capacity_reply" in capacity["failed"], capacity["why"]),
+        _check("a_degraded_final_is_refused",
+               "final_is_not_degraded" in degraded["failed"], degraded["why"]),
+        _check("a_clarification_is_not_an_answer",
+               "final_is_not_a_clarification_request" in clarified["failed"], clarified["why"]),
+        _check("an_error_final_is_refused",
+               "final_is_not_an_error" in errored["failed"], errored["why"]),
+        _check("a_final_with_no_tool_evidence_is_refused",
+               "final_quotes_a_tool_observation" in invented["failed"], invented["why"]),
+        _check("a_network_tool_turn_is_not_an_offline_turn",
+               "no_network_tool_was_called" in networked["failed"], networked["why"]),
+        _check("an_action_without_an_observation_is_a_broken_loop",
+               "every_action_has_an_observation" in lone["failed"], lone["why"]),
+        _check("one_chunk_is_not_a_stream",
+               "stream_had_more_than_one_chunk" in buffered["failed"], buffered["why"]),
+        _check("a_cut_stream_has_no_done",
+               "done_terminates_the_stream" in cut["failed"], cut["why"]),
+        _check("an_unreadable_action_is_not_treated_as_no_tool",
+               "every_action_names_its_tool" in unnamed["failed"], unnamed["why"]),
+        _check("the_tool_name_is_read_out_of_the_action_text",
+               chat_sse._tool_name({"type": "action",
+                                    "text": "search_assets(像素风角色)"}) == "search_assets",
+               chat_sse._tool_name({"type": "action", "text": "search_assets(像素风角色)"})),
+    ]
+
+
 DEV_DATASET: tuple[dict[str, Any], ...] = (
     {
         "id": "lookup-by-filename", "fixture": "ts-refs",
@@ -1168,6 +1240,13 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "note": "作业对象的进程预算必须撑得住门禁整集自己那棵树；4 会让 CreateProcess "
                 "回 1816，而它在检出与工作树里都红，会被差集归因当成噪声减掉。"
                 "真正的嵌套树现场检查在 tests/test_windows_sandbox.py，不在这里重跑",
+    },
+    {
+        "id": "chat-sse-refuses-a-final-that-never-ran-a-tool", "fixture": "plain",
+        "direct": _case_chat_sse_refuses_a_final_that_never_ran_a_tool,
+        "uses": [],
+        "note": "问答 SSE 的判据必须挑出那六条【不调模型也能产出 final】的早退——"
+                "收到 final 不等于跑通一轮问答。route 与 done 是无条件发的，不算证据",
     },
 )
 

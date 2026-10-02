@@ -1,5 +1,63 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-03 Vibecoding 能力补全 Wave24：深链整页断言 + `/api/chat` 的 SSE 真问答链路（本会话，不占 R 槽位）
+
+- **先纠正一个前提**：任务里写的 **`/api/ask` 不存在**（全仓零命中）。问答页真正打的端点是
+  **`POST /api/chat`**（`api.py:2100`；`frontend/src/workbench/api/chat.ts:36`；
+  `frontend/src/ask/AskApp.vue:508` 调的是 `aiApi.askGrounded`——那只是函数名）。
+- **两块缺口都是"今天零自动覆盖"**：① `dev_apptest` 早就有 `page:` 参数，但**没有**任何断言
+  证明"这一页真的渲染了自己"——三条页面路由各自独立、**没有 catch-all**（`api.py:3858`/`3863`/
+  `3636`），谁把 `/trace` 接到 `index.html` 上，整页守卫照样 14 条全绿；② `/api/chat` 早有 6 条
+  用例，但它们**全部**在 `Agent.run` 那一层打桩，也就是说经由这个端点，ReAct 主循环、
+  provider 分派、工具执行**一条都没真跑过**。
+- **深链（`dev_apptest deep_link: 1`）**：三条路由的挂载点**互不相交**
+  （`.ask-shell` / `.wb-shell` / `#tablewrap`），所以"渲染了自己"与"没渲染别人"都可判定；
+  每条路由开**新会话**（复用同一页面就是站内导航，证明不了冷启动）；两个 `.html` 别名
+  （307）还要求**停在规范路径**上（实测跟完 307 之后 `href` 就是 `/workbench`）；反向对照是
+  站内不存在的路径**必须不渲染任何一页**——没有它，一个 catch-all 会让上面全部照样绿。
+- **`/api/chat`（新模块 `agent_runtime/chat_sse.py`）**：判据的核心是"**收到 final 不等于
+  跑通一轮**"——`agent.py` 里有**六条不调模型也能产出一个 `final`** 的早退路径（容量兜底
+  `offline` / 歧义追问 / 强制收尾 `degraded` / 格式失守 / 截断 / 异常 `status=error`），
+  逐条挑出来；另两条协议层假象（`route` 与 `done` 是**无条件**发的）**不算证据**。
+  凭据照 §5.10：`final` 必须原样带着某条工具观察里的一截。
+- **为什么不用 `provider="mock"`（量出来的，不是偏好）**：mock 把 ReAct 循环与工具都跑起来了
+  （实测 345 个 chunk、332 个 token、两次 action/observation），但**结构性地收不了尾**——
+  `_mock_chat` 的「拿到观察 → 作答」分支吐的是**不带 `Final Answer:` 标记的裸文本**，而
+  `agent.py:3443` 的格式失守判定连拒两轮后发 `final(status="error")`。**即 mock provider
+  无法完成一次问答**，产品侧的离线演示模式同样跑不完。`llm.py` 正被别人改，**只报不改**
+  （§6 缺口 14）。改走**可注入的剧本 LLM**，零共享文件改动：走 `agent_mod.LLMClient` 这个
+  构造接缝（`agent.py:1703`），请求内任何新建的 Agent 都会拿到剧本对象。
+- **零网络的三个前提**（缺一个就红）：① 压 `llm_provider`；② **还必须**压 `embedding_provider`
+  ——分支条件是 `_prov == "ollama" or _emb == "ollama"`（`api.py:2168`），而 `.env` 把
+  `EMBEDDING_PROVIDER` 设成了 ollama；③ 断言没有 `web_search`、观察里没有「未找到」。
+  用例直接断言 `check_ollama` **零次调用**、剧本 LLM 真的被调用过。
+- **本轮踩的坑全部记进 `docs/HANDOFF-vibecoding.md` §9**，最贵的两条：
+  ① **电池接错线**——`battery_chat_sse` 的 `BIND` 写成 `"cs"`，而测试文件里的模块级名字是
+  `chat_sse`，于是引擎的 `setattr` 只新建了一个没人用的属性、**纯层从头到尾看的是真模块**，
+  11 条变异全部"活下来"，看着像守卫没牙；② **夹具形状抄错**——`action` 事件起初写成
+  `{"tool": "..."}`，而真实载荷的工具名在 `text` 里，于是"没调联网工具"那条判据**恒真**。
+  另有三条恒真/等价变异同型（反向对照传空 `foreign`、`rows.get() or {}` 把"没数据"当"没关系"、
+  "只认 `data:`"在真实协议形状下区分不出来）。
+- **产物与数量**：`agent_runtime/app_test.py` 深链那一档（`DEEP_LINK_ROUTES` / `_foreign_for` /
+  `_console_matters` / `deep_link_facts` / `deep_link_checks` / `_drive_deep_link`）；
+  `agent_runtime/chat_sse.py`（新模块，纯函数 `parse_events` / `verdict`）；
+  `tests/test_app_test.py` 新增 `DeepLinkTests` 15 项 + 1 条现场用例（46 → **56 条变异**，
+  `--no-live` 53/56 + 3 未验证）；`tests/test_chat_sse.py` **30 项**；
+  `battery_chat_sse` **20 条变异 / 全抓 / 6 秒**；门禁 +1 题
+  `chat-sse-refuses-a-final-that-never-ran-a-tool`（13 条断言），基线 26 → **27 题**。
+- **验证**：七套 **252 passed / 570 subtests / 70.08s**（现场类单列）；十一块电池
+  `--no-live` **275/292 抓到 + 17 条未验证 + 0 活下来 / 588 秒**；`battery_chat_sse` 20/20；
+  `app_test` 53/56 + 3 未验证；整集门禁 27/27。
+- **一条只有本机能看到的时序敏感（不是本轮代码问题）**：真浏览器那档本机**偶发**红，两种症状
+  ——`/api/health` 被前端自己的 2.5s 探测超时掐成 `ERR_ABORTED`、以及 `页面加载超时`。
+  **原有的** `LivePageTests::test_the_real_page_passes_every_line` 一样红，所以不是本轮的改动
+  引起的。深链那条现场用例因此**刻意不进** `battery_app_test` 的 `LIVE` 名单——它一红会让整块
+  电池的对照组作废，那比少一条凭据更糟；它仍在常规 pytest 里跑。
+- **边界**：不证明厂商行为、不证明模型理解了问题；剧本 LLM 是**注入**的，不是生产选 provider
+  那条路（`llm.py` 的 provider 选择是"`or` 链 + 字典查表"，没有 `register()` 钩子可挂）；
+  深链证的是"每一页渲染了它自己"，不证页面内容对不对；`dev_apptest` 上的问答回合（页面那一层）
+  仍没做（§6 缺口 15）。
+
 ## 2026-10-03 Vibecoding 能力补全 Wave23：处理三条"报出来但不是我的"红——两条动手，一条归还原主（本会话，不占 R 槽位）
 
 - **接到的三件事与实际归属**：① 干净 HEAD 上 `tests/test_orchestrator.py` 12 红；

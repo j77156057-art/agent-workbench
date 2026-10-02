@@ -12,7 +12,9 @@ TEST_MODULE = 'tests.test_app_test'
 BIND = 'at'
 UNIT_CLASSES = ('ArgShapeTests', 'SandboxTests', 'BundleFreshnessTests', 'ActivationTests',
                 'ProbeTests', 'EvaluateTableTests', 'RenderTests', 'PreflightTests',
-                'StreamParsingTests', 'StreamPlumbingTests')
+                'StreamParsingTests', 'StreamPlumbingTests',
+                # Wave24：深链整页那一档
+                'DeepLinkTests')
 LIVE = ('LivePageTests', ('test_nothing_is_left_behind',
                           'test_a_backend_that_cannot_start_is_red_not_silent',
                           'test_the_stream_tier_actually_hears_the_fake_microphone'))
@@ -21,7 +23,7 @@ LIVE = ('LivePageTests', ('test_nothing_is_left_behind',
 LAYER_EXEMPT = {'ToolSurfaceTests': '要 import tools 全量注册面，不属于守卫的层'}
 
 #: 本块电池的变异条数下限：删一条变异必须显式改这里，「守卫悄悄变少」不该是绿灯
-MINIMUM_MUTATIONS = 46
+MINIMUM_MUTATIONS = 56
 
 MUTATIONS = [
     # ---- 判定表：每一条都对应一类"看起来绿其实没测" ----
@@ -172,4 +174,41 @@ MUTATIONS = [
     ("开页时不带假设备（麦克风按钮根本不出现，整档只剩「没转写」这一种红）",
      '    flags = stream_flags(sandbox) if stream else []',
      '    flags = []', ("live",)),
+
+    # ---- Wave24：深链整页那一档 ----
+    # 三条页面路由没有 catch-all，所以"路由 A 吐了页面 B"今天没有任何东西会红。
+    # 下面这一组把"每一页必须渲染它自己、且不渲染别人"钉住。
+    ("深链只看 own：页面根本没挂载也算数",
+     '                     "own_seen": int(got.get("own") or 0) >= 1,',
+     '                     "own_seen": True,'),
+    ("外来标记一律当没看见：路由 A 吐了页面 B 也判绿",
+     '                     "foreign_seen": any(count >= 1 for count in foreign),',
+     '                     "foreign_seen": False,'),
+    ("外来标记被清空：整档退化成只查 own，跨页投递判不出来",
+     '    return tuple(spec["own"] for spec in DEEP_LINK_ROUTES if spec["own"] != own)',
+     '    return ()'),
+    ("「没吐别的页」那条判据整个删掉",
+     '        out["deeplink_%s_serves_no_other_page" % slug] = bool(row.get("own_seen")) \\\n            and not bool(row.get("foreign_seen"))\n    for spec in DEEP_LINK_ALIASES:',
+     '        out["deeplink_%s_serves_no_other_page" % slug] = True\n    for spec in DEEP_LINK_ALIASES:'),
+    ("别名不再要求停在规范路径上（307 停错地方也算过）",
+     '        out["deeplink_%s_lands_on_the_canonical_path" % slug] = bool(row) \\\n            and str(row.get("landed") or "") == str(spec.get("canonical") or "")',
+     '        out["deeplink_%s_lands_on_the_canonical_path" % slug] = True'),
+    ("反向对照失效：所有路径都被回成某一页也看不出来",
+     '    out["deeplink_unknown_path_serves_no_page"] = bool(unknown) \\\n        and not bool(unknown.get("unknown_served_a_page"))',
+     '    out["deeplink_unknown_path_serves_no_page"] = True'),
+    ("读到零行也算跑齐了（console 两条于是静默「没有错误」）",
+     '    out["deeplink_every_route_was_visited"] = \\\n        len(observed.get("deep_links") or []) == len(DEEP_LINK_ROUTES) \\\n        + len(DEEP_LINK_ALIASES) + 1',
+     '    out["deeplink_every_route_was_visited"] = True'),
+    ("深链表没要求也并进红单",
+     '    if wanted.get("deep_link"):',
+     '    if True:'),
+    ("判据名里的路径段被抹平：三条路由的判据互相覆盖",
+     '    return "root" if not text else text[:32]',
+     '    return ""'),
+    # 未知路径**理应** 404（实测就是 1 条 console 错误 + 1 条失败请求）；把它算进
+    # 「console 干净」的话那条判据永远红。这条判断已经从现场代码里抽成 `_console_matters()`，
+    # 所以它和别的判据一样在**纯层**就能验——不必依赖真浏览器。
+    ("未知路径的 404 也算进 console 干净：那条判据永远红",
+     '    return not bool(spec.get("unknown"))',
+     '    return True'),
 ]

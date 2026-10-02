@@ -401,11 +401,90 @@ cd frontend && npm run test:node
   让两个平台里必有一个红（那种变异在 ubuntu 上被纯层抓住、在 Windows 上却是活下来）。
   本轮**选择不写**那种变异，并在电池 docstring 里写明为什么——这比写一条让 CI 红的变异诚实。
 
+### 5.18 Wave24：深链整页断言 + `/api/chat` 的 SSE 真问答链路（今天零覆盖的那两块）
+
+**① 深链整页（`dev_apptest deep_link: 1`）**
+
+- **补什么**：`dev_apptest` 早就有 `page:` 参数，但它只是"开哪一页"；**没有**任何断言证明
+  "这一页真的渲染了自己"。而本仓三条页面路由（`/` → `web/index.html`、`/workbench`、
+  `/trace`）各自独立、**没有 catch-all**（`api.py:3858` / `3863` / `3636`），所以谁把
+  `/trace` 接到 `index.html` 上，整页守卫照样 14 条全绿。
+- **判定方式**：三条路由的**挂载点互不相交**（`.ask-shell` / `.wb-shell` / `#tablewrap`），
+  所以"这一页渲染了自己"和"它没渲染别人"是可判定的。`page_action` 的 `text:` 定位只在
+  **可交互元素**里找，`AI 操作记录` 那个 `<h1>` 实测命中 0 个（Wave17 的学费），所以标记
+  一律用 CSS 选择器。
+- **每条路由一个新会话**：复用同一个页面 navigate 就是**站内导航**，而深链要的正是冷启动。
+- **两个 `.html` 别名**（`/workbench.html`、`/trace.html`，307）还要求**停在规范路径**上——
+  实测浏览器跟完 307 之后 `href` 就是 `/workbench`（连 `page_action` 加的 `?docmind=`
+  缓存戳都掉了），所以"标记在"之外再加一条"落点对不对"。
+- **反向对照**：站内不存在的路径**必须不渲染任何一页**。没有它的话，一个把所有路径都回成
+  `index.html` 的 catch-all 会让上面那些断言**全部照样绿**。
+- **一条自己招的恒真判据**：反向对照那一行起初传了空的 `foreign`，`any([])` 恒为 False，
+  于是"没有 catch-all"这条唯一的凭据永远绿。改成必须数**三页的标记**，并立了一条元测试
+  盯着"反向对照到底问了几个标记"。
+- **`_foreign_for()` 从同一张表推**：`DEEP_LINK_ROUTES` 起初手写了 `foreign`，而 `_foreign_for`
+  又推了一遍——加第 4 个页面时手写那份会静默变陈旧（§9「上限写两处」）。现在只写 `own`。
+- **未知路径的 404 不算进"console 干净"**：实测未知路径就是 1 条 console 错误 + 1 条失败
+  请求（404 本来如此）。这条判断抽成了纯函数 `_console_matters()`，所以它在 CI 上可验，
+  不必依赖真浏览器。
+- 产物：`tests/test_app_test.py` 新增 `DeepLinkTests` 15 项（纯层）+ 1 条现场用例；
+  `battery_app_test` **46 → 56 条变异**（新增 10 条深链，`--no-live` 下 9 条被纯层抓到、
+  1 条记未验证）；门禁 +1 题见 ②。
+
+**② `/api/chat` 的 SSE 真问答链路（`agent_runtime/chat_sse.py`）**
+
+- **先纠正前提**：任务里写的 `/api/ask` **不存在**。问答页真正打的端点是 **`POST /api/chat`**
+  （`api.py:2100`，`frontend/src/workbench/api/chat.ts:36`；`askGrounded` 只是函数名）。
+- **缺口的确切位置**：`/api/chat` 早有 6 条用例，但它们**全部**在 `Agent.run` 那一层打桩
+  ——也就是说经由这个端点，`agent.py` 的 ReAct 主循环、`llm.py` 的 provider 分派、
+  `tools.py` 的工具执行**一条都没真跑过**。
+- **为什么不能直接用 `provider="mock"`**（先试了，量出来的）：mock 把 ReAct 循环与工具都
+  跑起来了（实测 345 个 chunk、332 个 token 事件、两次 action/observation），但**结构性地
+  结束不了一轮**——`_mock_chat` 的「拿到观察 → 作答」分支（`llm.py:1119-1122`）吐的是
+  **不带 `Final Answer:` 标记的裸文本**，而 `agent.py:3443` 的格式失守判定会连拒两轮，
+  然后发一条 `final(status="error")`。**即 mock provider 无法完成一次问答**——产品侧的
+  离线演示模式同样跑不完。`llm.py` 正在被别人改，本轮**只报不改**。
+- **改走可注入的剧本 LLM，仍零共享文件改动**：走 `agent_mod.LLMClient` 这个**构造接缝**
+  （`agent.py:1703` 的 `self.llm = llm or LLMClient()`），于是请求内**任何**新建的 Agent
+  都会拿到剧本对象。**不要**自己去猜 `_agent_for` 的缓存键——请求内外的 `_ctx_project_id()`
+  可以不同，键一错就换到了另一个 Agent 上（实测那样会**静默用回 mock**）。
+- **「收到 final」不等于「跑通一轮」**：`agent.py` 里有**六条不调模型也能产出一个 `final`**
+  的早退路径（容量兜底 `offline` / 歧义追问 `clarification_required` / 强制收尾 `degraded` /
+  格式失守 / 截断 / 任何异常 `status="error"`），判据逐条把它们挑出来。另有两条协议层的
+  假象：`route` 与 `done` 是**无条件**发出的（`api.py:2349`/`2430`），所以"收到了 route + done"
+  零信息量，判据**不把它们算作证据**。
+- **凭据设计（照 §5.10）**：`final` 必须**原样**带着某条工具观察里的一截（任意 12 字窗口）。
+  刻意**不**复刻 mock 的取片段方式——照抄会把判据和被测的桩绑成同一份代码，桩改格式判据
+  跟着改、照样绿。
+- **零网络的三个前提**（缺一个就红，且红的原因写清）：① 压 `llm_provider`；② **还必须**压
+  `embedding_provider`——分支条件是 `_prov == "ollama" or _emb == "ollama"`（`api.py:2168`），
+  而本仓 `.env` 把 `EMBEDDING_PROVIDER` 设成了 ollama，只压前者照样走 `check_ollama` 的真
+  socket 探活；③ 断言**没有** `web_search`、观察里**没有**「未找到」（mock 看见「未找到」就
+  改调联网）。用例直接断言 `check_ollama` **零次调用**、剧本 LLM 真的被调用过（被云端升级
+  覆盖掉的话它是 0 次）。
+- **一条自己招的恒真判据（同型）**：`_tool_name` 起初读 `payload["tool"]`，而真实 `action`
+  事件的工具名在 **`text`** 里（`"search_assets(像素风角色…)"`）——于是永远拿到 `None`，
+  "没调联网工具"那条判据恒真。现在从文本里解析，且**解析不出来也算红**（"没读出来"≠"没有工具"）。
+- 产物：`agent_runtime/chat_sse.py`（新模块，纯函数：`parse_events` / `verdict`），
+  `tests/test_chat_sse.py` **30 项**（真打一次 `/api/chat` 的 5 条 + 判据表 17 条 + 解析 8 条），
+  `battery_chat_sse` **20 条变异 / 全抓 / 6 秒**（几乎全在纯层，所以 **CI 上跑得到**）。
+- **边界**：不证明厂商行为、不证明模型理解了问题；剧本 LLM 是**注入**的，不是生产选
+  provider 那条路（生产那条路没有对称的注册表可挂——`llm.py` 的 provider 选择是
+  「`or` 链 + 字典查表」，没有 `register()` 钩子）；`RealTurnTests` **不作为电池的层**
+  （它验的是"真链路满足判据"，不是"判据会不会红"，且它在常规 pytest 里就会跑到）。
+
+**③ 一条只有本机能看到的时序敏感（不是本轮的代码问题）**
+
+真浏览器那档本机**偶发**红，两种症状：`/api/health` 被前端自己的 2.5s 探测超时掐成
+`ERR_ABORTED`（`no_failed_requests` 因此红）、以及 `页面加载超时`。**原有的**
+`LivePageTests::test_the_real_page_passes_every_line` 一样红，所以不是本轮的改动引起的；
+按 §9 的老规矩，读这条红之前先看同一时间有没有别的 lane 在起浏览器。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
 |---|---|---|---|
-| 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 已做 Wave17：`dev_vue` 第二层驱动共享状态（§5.7）+ `dev_apptest` 真后端整页（§5.8）。仍**没有**的是：深链到具体路由/文件的整页断言、真模型往返（`dev_apptest` 明确不点模型）|
+| 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）**；~~深链到具体路由/文件的整页断言~~ **已做（Wave24，§5.18）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 仍**没有**的是：真模型往返（`dev_apptest` 明确不点模型）、`dev_apptest` 上的问答回合（§5.18 ② 那条只在 HTTP 层做了，页面那一层还没走）|
 | 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；覆盖率入口仍无 | 实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | 覆盖率要先决定加不加依赖；记账由 `last-failed.json` 自己做 |
 | 3a | ~~真 ws 回合零自动覆盖~~ **已做（Wave19：`scripted` 适配器 + `dev_apptest stream`）** | 页面 + 麦克风 + `/api/vision/live-stream` 以前只有人对着说话才能验 | 厂商事件、打断语义、听感仍归 R12 的人跑 |
 | 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证），沙箱 push 不通 | 人 push 一次，把首跑结果记回本文件 |
@@ -416,6 +495,8 @@ cd frontend && npm run test:node
 | 11 | ~~引擎不查锚点唯一性~~ **已做（Wave23）** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点出现两次时只改第一处。**先量影响面**：十块电池 256 条锚点里只有 3 条不唯一，全在 `battery_head_check`（`render` 里有 12 空格缩进的同名块，4 空格那份是它的子串） | 已加 `source.count(old) == 1` → 报**问题**；3 条锚点改成带上下文。**仍有**：引擎没有"按平台分层"的概念，所以非 Windows fallback 分支的变异在两个平台里必有一个红（见 §5.17） |
 | 12 | ~~`run_isolated` 仍然零测试~~ **已做（Wave23）** | 它与 `spawn_isolated` 共用 `_create_job`，本次出事故的那行在两个函数里各有一份 | 已补 5 条跨平台 + 3 条 Windows-only 用例（含一条**加入失败后已起来的子进程必须被收掉**的漏进程判据），电池 19 → **25 条变异** |
 | 13 | `run_isolated` 的子进程输出**可能整个丢掉且不报错** | `Popen(..., text=True)` 没给 `encoding`，按本机区域编码解码；本机是 GBK，子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成 `None`（`stdout is None` 而不是报错） | 调用方要么传 ASCII 输出，要么给 `windows_sandbox` 加 `errors="replace"` + 显式 encoding。**本轮只报不改**——它会改变所有适配器进程的行为，不在 Wave23 范围内 |
+| 14 | **`mock` provider 无法完成一轮问答** | `_mock_chat` 的「拿到观察 → 作答」分支（`llm.py:1119-1122`）吐**不带 `Final Answer:` 标记的裸文本**，而 `agent.py:3443` 的格式失守判定连拒两轮后发 `final(status="error")`。实测走完 345 个 chunk 仍然收不了尾 | 让它也带上 `Final Answer:` 前缀（一行）。**只报不改**——`llm.py` 正在被别人改（Wave24） |
+| 15 | `dev_apptest` 的问答回合还没做 | §5.18 ② 只把 `/api/chat` 的真问答链路在 **HTTP 层**验了；页面那一层（深链到 `/` + 提问 + 断言答案进 DOM）还没走，缺的是"页面怎么把 SSE 消费者接稳"这半 | 可参考 §5.10 那条流式档的做法：`server_env` 里带 `LLM_PROVIDER=mock`（并在 TEST 里先解决缺口 14，否则 mock 收不了尾）|
 
 ## 7. 共享工作树里的提交规范（实测有效的那套）
 
@@ -599,6 +680,33 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   写变异之前，先问"CI 那条命令在这个平台上会看到什么"。修法有两条：把这类用例声明成
   `LIVE`（本环境未验证，既不算抓住也不算活下来），或者让用例不依赖平台。**别把"本机跑过
   全抓"当成 CI 会绿**——本仓 §6 第 3 条早就记着"CI 从未在 GitHub 真跑过"。
+
+- **电池接错线：`BIND` 写错时，纯层看的是真模块**（Wave24 实测）。`battery_chat_sse` 的
+  `BIND` 我写了 `"cs"`，而测试文件里的模块级名字是 `chat_sse`——引擎的
+  `setattr(测试模块, "cs", 变异副本)` 只是新建了一个**没人用**的属性，于是纯层从头到尾看的
+  是真模块，**11 条变异全部"活下来"**。看着像守卫没牙，其实是电池接错了线；那 9 条被抓住的
+  全是**门禁层**抓的（门禁题在函数体里 `from agent_runtime import chat_sse`，拿到的是
+  `sys.modules` 里的变异副本）。**教训**：报"活下来"时，先怀疑**接线**（BIND 对不对、
+  锚点唯一不唯一），再怀疑守卫。
+- **夹具形状抄错，等于整块纯层没跑**（Wave24，同一个电池的另一半）。`VerdictTableTests`
+  起初把 `action` 事件写成 `{"tool": "search_assets"}`，而**真实**载荷的工具名在
+  `text` 里（`"search_assets(像素风角色…)"`）。于是纯层压根没走到真实代码路径。
+  **教训**：写判据夹具之前，先把**一次真跑**的事件 dump 出来照抄——本会话就是这么发现
+  `_tool_name` 读错字段（永远 `None`）的，而那条"没调联网工具"的判据因此**恒真**。
+- **恒真判据的第三种形态：参数缺省让判据结构上不可能为假**（Wave24，两条同型）。
+  ① 反向对照（"不存在的路径不许渲染出任何一页"）那一行传了空的 `foreign`，`any([])` 恒为
+  `False`；② 深链判据里读不到行时 `rows.get(path) or {}` 给出空 dict，于是"没数据"被当成
+  "没关系"。两处的修法一样：**让它必须真的数过东西**（前者要求数三页的标记，后者加一条
+  "该读的路径都读了"）。对照 §9 上面那条"判据可以结构上永远为假"。
+- **抽成纯函数是把"只有现场能验"变成"CI 能验"的最省事办法**（Wave24）。"未知路径的 404
+  不该算进 console 干净"这条判断本来埋在 `_drive_deep_link` 里，只有真浏览器能验；抽成
+  `_console_matters(spec)` 之后它和别的判据一样在纯层就能被变异抓住。**边界**：抽出来的是
+  **判断**，不是"这条判断在真页面上对不对"——后者仍归现场档。
+- **等价变异的第四种来源：协议形状下根本区分不出来**（Wave24）。`if not line.startswith("data:")`
+  → `if False:` 看着是一条好变异，但真实 SSE 里非 `data:` 行去掉前缀后都不是合法 JSON
+  （`event: {...}` 会剩下 `: {...}`），所以"只认 data:"这道门在这个形状下**测不出来**。
+  换成"连切片一起去掉、于是裸 JSON 行也成事件"才能区分。**教训**：写变异时问一句
+  "**在真实的输入形状下**，这两个版本的行为真的不同吗"——不同才算变异。
 
 ## 10. 本会话未结事项
 
