@@ -1,4 +1,4 @@
-﻿"""LLM 客户端：用 OpenAI 兼容协议统一封装 通义千问 / DeepSeek / Ollama / mock。
+"""LLM 客户端：用 OpenAI 兼容协议统一封装 通义千问 / DeepSeek / Ollama / mock。
 
 设计意图（与 Android 端 AIApiClient 一致）：把不同厂商的大模型收敛到同一套
 OpenAI chat/completions 接口后面，运行时切换 provider 即可，业务代码无需改动。

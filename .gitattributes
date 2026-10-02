@@ -13,3 +13,17 @@
 # ============================================================================
 *.bat -text whitespace=cr-at-eol
 *.cmd -text whitespace=cr-at-eol
+
+# ============================================================================
+# 禁止 UTF-8 BOM
+# BOM 在源码里很难肉眼发现，但会让**基于 AST 的工具直接崩**：
+#   ast.parse / 某些 ruff 规则 / 部分 CI 的文本处理都会抛
+#   SyntaxError: invalid non-printable character U+FEFF
+# 实测踩过：llm.py 顶部带 BOM（PowerShell 的 Set-Content 加的），结果
+# 未定义名检查器在**最该查的文件上**直接 SyntaxError，看起来像"检查失败"。
+# 注意它不影响 pytest（Python import 时会吞掉 BOM），所以这类问题能潜伏很久。
+# ============================================================================
+*.py   working-tree-encoding=UTF-8
+*.ts   working-tree-encoding=UTF-8
+*.vue  working-tree-encoding=UTF-8
+*.mjs  working-tree-encoding=UTF-8
