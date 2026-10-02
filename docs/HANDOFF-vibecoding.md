@@ -31,11 +31,12 @@
 | 跑流式 | `dev_apptest stream: 1`（假麦克风 + `scripted` 适配器 + 真 `/api/vision/live-stream`）| 证明**自家协议与页面接线**；厂商事件与打断语义仍归 R12 人跑（§5.10） |
 | 验语音/摄像头 | `dev_media`（`build` / `run` / `voice`）| 假设备喂合成媒体；门限行为见 §5.3 |
 | 静态检查 | `dev_diagnostics`（ruff + vue-tsc）| 退出码非 0 却解析不出发现时**报错误不报干净** |
+| 守启动器 | `agent_runtime/bat_guard.py`（静态扫 `.bat`/`.cmd`，**不是工具**，由测试与门禁题驱动）| 只查**交给外部程序的实参**；`cd`/`set`/`if` 条件/`echo` 由 cmd 自己解析，有意不查（§5.11）|
 | 交付 | `dev_propose`（补丁+草稿，写进状态目录）/ `dev_ci_status`（只读 GET）| 不 add/commit/push；CI 读不到就明说 |
 | 提交自洽 | `dev_headcheck`（把 HEAD 挂成干净检出真 import 一遍）| 只读 + `worktree --detach`；抓的是"工作树能跑、单独检出必红"，见 §5.4 |
 | 多人防撞 | `dev_lanes`（TTL 认领登记表 + 可选 worktree）| 冲突默认拒绝，`force: true` 才共管 |
 | 对外出口 | `mcp_server`（harness 自己是 MCP server）/ `mcp_bridge`（连接器工具一等公民化）| 默认只读；写要 `--allow-writes`；`run_command` 等永不暴露 |
-| 能力回归 | `dev_eval`（22 题门禁 + 基线 + CI 步骤）| 测的是 harness，不是模型智商 |
+| 能力回归 | `dev_eval`（24 题门禁 + 基线 + CI 步骤）| 测的是 harness，不是模型智商 |
 
 ## 2. 环境事实（会咬人，先读）
 
@@ -59,14 +60,14 @@
 #   现场层是兜底：离线跑完仍有 2 条（整页的"就绪说谎"与"服务不回收"）验不了，
 #   要在有 Edge 与前端的机器上完整跑：
 #   .venv/Scripts/python.exe tests/mutation/run_all.py
-# 能力门禁（23 题，不联网、不需要浏览器；含基线对比）
+# 能力门禁（24 题，不联网、不需要浏览器；含基线对比）
 .venv/Scripts/python.exe -m agent_runtime.dev_eval --self-check \
     --baseline .github/dev-eval-baseline.json --json
 # 本程序新增的回归（其中少量需要 Edge / node / 能起后端）
 .venv/Scripts/python.exe -m pytest tests/test_media_fixture.py tests/test_page_action.py \
     tests/test_voice_loop.py tests/test_frontend_node_tests.py tests/test_head_check.py \
     tests/test_test_run.py tests/test_vue_component.py tests/test_app_test.py \
-    tests/test_mutation_batteries.py -q -p no:cacheprovider --basetemp=.tmp/pt-manual
+    tests/test_bat_guard.py tests/test_mutation_batteries.py \n    -p no:cacheprovider --basetemp=.tmp/pt-manual -q
 # 让工具自己跑一次组件守卫（真浏览器，5~20 秒）：
 #   dev_vue(component: src/workbench/components/WorkflowMembersDock.vue,
 #           props: {"active":true,"members":[{"id":"t1","label":"研究","role":"r",
@@ -101,7 +102,6 @@ cd frontend && npm run test:node
   并回候选清单。
 - 不做：drag/hover/scroll/文件选择/对话框；iframe 与 Shadow DOM 定位不到；不共享登录态；
   每个动作后是"观察多久"（`settle`）而不是条件等待（那要用 `wait`）。
-
 ### 5.2 `dev_media action: run`（Wave7）
 合成 WAV/Y4M 经 Chromium 假设备开关喂进真实 `getUserMedia`，回环 WS 探针按
 `realtime_protocol.parse_binary_packet` 逐包判定，畸形包记成协议违规而不是丢掉。
@@ -249,6 +249,63 @@ cd frontend && npm run test:node
   `ImportError`。测试 **43 项**（38 纯 + 5 现场），变异电池 **35/35**，门禁 +1 题（22→23）。
 - 边界：不点真模型、不听真网关、不替组件级断言背书；页面与接口一律锁在回环与站内路径上。
 
+### 5.10 `dev_apptest stream: 1`（Wave19）：整页真的走一轮实时对话，零网络
+
+- **为什么现在才做得动**：这条链路（真页面 + 真麦克风 + 真 ws）以前只能人工验——它要一个
+  "会回话的模型"。Wave19a 补的不是模型，是**一个离线剧本适配器**
+  （`agent_runtime/realtime_scripted.py`，`DOCMIND_REALTIME_PROVIDER=scripted` 选中）：
+  它走的是生产同一套注册表与事件契约（`RealtimeProvider` + `_emit(EVENT_TRANSCRIPT /
+  EVENT_TEXT_DELTA / EVENT_AUDIO_DELTA / EVENT_DONE)`），所以被测的是**我们自己的接线**，
+  不是厂商行为。注册只改了 `realtime_provider._BUILTIN_MODULES` 一行，`api.py` 一个字没动。
+- **凭据设计**：剧本回合的内容全是从**收到的 PCM 现算**出来的量（片数 / 字节数 / 峰值 RMS）。
+  于是页面字幕里出现这些数字，就只能解释为"麦克风真的流到了服务端"。判据不写死数字
+  （浏览器推几片取决于时钟与夹具循环位置），而是查**自洽**：
+  `字节数 == 片数 × 3200`（16k mono 100ms）、峰值落在 `(0.05, 1.0)`（喂静音凑不出这个带），
+  且助手回包引用的字节数与转写是**同一次实测**（两个独立事件互相印证），并至少出**两轮**。
+- 收轮规则故意照抄生产契约：**尾静音满 10 片**才算一轮说完（停止说话 ≠ 停止推流，Wave8 为
+  这条付过账）——所以"喂 9 片静音"必须没有回合，夹具与守卫同一条线。
+- 三条实测形状：① 假设备开关必须在**开页时**给（`page_action.open_page(flags=...)`，
+  页面起来之后再传无效），漏传的现象不是红而是"没有字幕"，一开始就把我带去查上行；
+  ② 「开麦对话」按钮在 `liveVisionActive` 之前**根本不存在**（`AutonomousCockpit.vue:2636`），
+  固定 sleep 1 秒会报"命中 0 个"，必须带截止期重试；③ 轮次正则必须**不跨行**——
+  `.*` 加 DOTALL 会把第一条转写配到最后一条轮次，两轮只认出一轮。
+- 默认行为没被动过：`test_the_default_path_is_untouched_when_no_provider_is_configured` 钉住
+  "没配 env 时 hello.ok 依旧报 `sampled-frames` + 原因"。
+- 测试：`tests/test_realtime_scripted.py` 21 项（15 纯 + 5 真 `TestClient` websocket + 注册表），
+  `tests/test_app_test.py` 55 项（50 纯 + 5 现场，现场含真流式那一档）；
+  电池 `app_test` 46 条变异（其中 11 条是流式那一档）。
+- 边界：**不**证明厂商事件、打断语义、听感；跑的是 `web/` 里那份构建产物；
+  假麦克风只在有 Edge 的机器上验（CI 上那条现场用例是 skip，不是通过）。
+
+### 5.11 `bat_guard`（Wave20）：启动器引号的静态门，第一天就抓到两个
+
+- **事故本身**：用户贴来 `run_desktop.bat` 的运行失败 `missing D:\WorkBuddy\rag-agent"\requirements.txt`。
+  根因是 `--root "%~dp0"`：`%~dp0` 展开后**以反斜杠结尾**，而外部程序按 MSVCRT 规则解析 argv，
+  `\"` 是「转义过的引号」→ 闭合引号消失 → 参数值尾部多一个字面 `"`。源码里看着完全正常，
+  只有双击运行才炸；这类东西必须静态层就咬住。
+- **前提是被量出来的，不是写在注释里的**：门禁题最后一条直接调 `subprocess.list2cmdline`
+  （Python 自己拼 argv 的实现）对比——值 `D:\my dir\` 的正确写法是 `"D:\my dir\\"`，
+  而手写 `"%~dp0"` 发出去的是 `"D:\my dir\"`，**两串字节不同**，后者恰好是"转义引号"那个形状。
+  不联网、不起进程、ubuntu 上也能跑。
+- **两条规则互为镜像**：`quoted_dir_expansion`（加了引号但展开后以 `\` 结尾）与
+  `unquoted_dir_expansion`（目录展开裸着传，路径有空格就裂）。只写前一条等于建议"别加引号"，
+  那是另一个 bug。正解只有一种：`"%~dp0."`（补一个点）或 `"%ROOT:~0,-1%"`（切掉尾字符）。
+- **门的价值全在"不越界"**：`cd /d "%~dp0"`、`if exist "%~dp0x.bat" goto y`、`set "R=%~dp0"`、
+  `echo %~dp0`、`call "%~dp0lib.bat" --root "%~dp0"` 都由 **cmd 自己解析**，不是 MSVCRT，
+  判红就是误报，而误报的门的下场就是被人关掉。所以 `arguments_of()` 是公开函数，
+  电池里一半的变异是用**结构断言**（实参清单逐词比对）钉住的，而不是"报没报错"。
+- **一跳追踪**：`set "ROOT=%~dp0"` 之后的 `--root "%ROOT%"` 是**同一个坑**，而且是把这行
+  "修掉"的最自然写法；不追这一跳的门等于鼓励误修。两跳以上（变量套变量）不追，写在文档里。
+- 测试：`tests/test_bat_guard.py` 40 项（+48 subtest），电池 35 条变异 `--no-live` **全抓、4 秒**，
+  门禁题 `bat-guard-refuses-an-escaped-closing-quote` 11 条断言。语料层分两格：
+  **工作树**扫（`RealRepoLauncherTests`，故意不进电池：它测的是别人的文件状态）与
+  **HEAD** 扫（`git show HEAD:<path>`，CI 上看到的那份）。
+- **第一天实测**：工作树层抓到 2 处 —— `run_desktop.bat:27` 与 `installer/uninstall.bat:9`
+  （`powershell.exe -InstallDir "%~dp0"`，同一 bug 类的第二个实例），两处都在**别人未提交**的
+  文件里，本程序不代改；HEAD 层绿（提交出去的那两份没这个问题）。
+- 边界：只查 `.bat`/`.cmd` 里"目录展开 + 引号"这一类；`%VAR:~0,-1%` 之类剪切写法是否真的
+  剪对了、PowerShell 自己那套引号规则、以及 `start`/`pushd` 之类的边缘行为都**没有**覆盖。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -294,9 +351,11 @@ cd frontend && npm run test:node
   每一层都干净，否则整块电池不作数——不然环境一红，每条变异都"被抓到"，分数好看而毫无意义；
   ② 锚点找不到原文＝电池与源码脱钩，报**失败**而不是跳过；③ 现场层跑不了（没浏览器/工具链）时
   相关变异记「本环境未验证」，**既不算抓住也不算活下来**。
-- `tests/mutation/battery_*.py`：五份声明式电池（`MODULE` / `TARGET` / `CASE_ID` / `TEST_MODULE`
+- `tests/mutation/battery_*.py`：九份声明式电池（`MODULE` / `TARGET` / `CASE_ID` / `TEST_MODULE`
   / `BIND` / `UNIT_CLASSES` / `LIVE` + `MUTATIONS`）。第 4 个元素 `("live",)` 表示
-  "只有真浏览器才看得见"。
+  "只有真浏览器才看得见"。**没有现场层的也要显式写 `LIVE = ()`**——元测试读 `battery.LIVE`
+  而不是 `getattr(..., ())`，缺属性就是 `AttributeError`（Wave20 第一天就撞在这上面）。
+  测"别人文件现在干不干净"的那一层要写进 `LAYER_EXEMPT`：把它当对照组，环境一脏整块电池作废。
 - `tests/test_mutation_batteries.py`：元测试（0.4 秒，`unittest discover` 会自动收到）。查
   锚点漂移、测试类/现场用例改名、门禁题号变更、**每块电池自己声明的 `MINIMUM_MUTATIONS`
   下限**（别的 lane 加电池不用改中央清单），以及**"新写的测试类有没有落到某一层"**——
@@ -304,8 +363,9 @@ cd frontend && npm run test:node
   原因不是守卫没牙，是电池根本不知道有新类。不想让它成为层的，必须写进
   `LAYER_EXEMPT` 并说明原因（如"要 import tools 全量注册面"）。
 - CI：`.github/workflows/harness.yml` 的 `Run mutation batteries` 一步，跑 `--no-live`，
-  只在 sqlite matrix 付费。本机实测：`--no-live` **118/120 抓到 + 2 条未验证 + 0 条活下来，
-  243 秒**（其中 `head_check` 一块就 182 秒，因为它要真建 `git worktree`）；带浏览器
+  只在 sqlite matrix 付费。本机实测（2026-10-02，九块电池）：`--no-live`
+  **200/207 抓到 + 7 条未验证 + 0 条活下来，229 秒**（`head_check` 一块就 182 秒，因为它要真建
+  `git worktree`；`bat_guard` 35/35 只用 4 秒——纯文本判据便宜到没有借口不跑全）；带浏览器
   `--only vue,app_test` **72/72，99 秒**。
 - **怎么读这份证据**：电池绿＝"这些测试确实会红"。它**不**保证变异集合覆盖了这个模块的每个守卫；
   新加一条守卫时同时加一条变异，否则那条守卫没有凭据。
@@ -315,13 +375,15 @@ cd frontend && npm run test:node
 `code_intel.py`(扩展) · `ts_index.py` · `diagnostics.py` · `patch_apply.py` · `lanes.py` ·
 `dev_server.py` · `mcp_server.py` · `mcp_bridge.py` · `dev_eval.py` · `proposal.py` · `ci_status.py` ·
 `media_fixture.py` · `page_action.py` · `voice_loop.py` · `head_check.py` · `test_run.py` ·
-`vue_component.py` · `app_test.py` · `realtime_scripted.py` ·（另有 `tests/mutation/engine.py` + `run_all.py` + `battery_*.py`，条数下限写在每块电池自己的 `MINIMUM_MUTATIONS` 里）·
+`vue_component.py` · `app_test.py` · `realtime_scripted.py` · `bat_guard.py` ·（另有 `tests/mutation/engine.py` + `run_all.py` + `battery_*.py`，条数下限写在每块电池自己的 `MINIMUM_MUTATIONS` 里）·
 `visual_acceptance.py`（被抽出 `browser_session` / `serve_static` / `stop_static` / `sanitize_flags`，
 并被别的 lane 加了作业对象回收）· 测试：`test_dev_glob_git_log` / `test_lanes_registry` /
 `test_ts_index` / `test_dev_diagnostics` / `test_dev_patch_move` / `test_mcp_server_expose` /
 `test_mcp_inline_tools` / `test_dev_serve_preview` / `test_dev_eval` / `test_dev_propose_ci` /
 `test_media_fixture` / `test_page_action` / `test_voice_loop` / `test_frontend_node_tests` /
-`test_head_check` / `test_test_run` / `test_vue_component` / `test_app_test` / `test_mutation_batteries` ·
+`test_head_check` / `test_test_run` / `test_vue_component` / `test_app_test` / `test_mutation_batteries` / `test_realtime_scripted` / `test_bat_guard` ·
+电池（可重跑的凭据，Wave18 入库）：`tests/mutation/battery_*.py` = vue / app_test / head_check /
+test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
 前端：`frontend/tests/liveAudioControl.test.mjs`（+ `test:node` 脚本与 CI 步骤）。
 
 ## 9. 事故与教训（避免重蹈）
@@ -352,6 +414,12 @@ cd frontend && npm run test:node
   结果把 `test_missing_component_...` 的函数体黏到了 `def` 行上；同一会话另一次同型错直接**吃掉**了
   `agent.py` 提示目录里的 `dev_testrun` 整行。流程教训：整行替换必须"旧串=新串的前缀关系"要清楚，
   改完立刻看 `git diff --stat` 的插入/删除计数对不对。
+- **同一个错我第三次才记住**（`Edit` 的锚点带上下相邻行）：Wave17 吃掉 `agent.py` 提示目录的
+  一整行，`dev_vue` 那次把函数体黏到 `def` 行上，Wave20 插入门禁题时又把
+  `DEV_DATASET` 第一题的 `steps` 那行删掉了——**两次都是"用下一行的前缀当锚点"**。
+  这次靠 `git diff --stat` 的插入/删除计数不对才看见（140/4 变成 139/1）。流程教训：
+  往共享的热文件里插东西，用**唯一且完整**的锚点，或者干脆走"读全文 → 替换 → `ast.parse` 过了
+  才落盘"的脚本；改完立刻核对 `git diff --stat` 的两个数字。
 - **子进程的句柄比"进程已终止"活得久**：`dev_apptest` 第一次跑完在系统临时目录留了两份
   沙箱——`process_runner.job_cancel` 回来时 uvicorn 自己开的 sqlite/状态文件句柄还没被 OS 收走，
   `clean_target` 默认的 4 次 ×0.25s（约 1s）不够，而几秒后手工能删。回收预算提到 10 次 ×0.4s 后
@@ -389,3 +457,9 @@ cd frontend && npm run test:node
    另一条 lane 未提交的 step-budget / capacity / game_workflow WIP（本程序不代修、不代提交）。
 4. 需要人做的两件：**push**（或 `git bundle` 离线备份），以及在配好 DashScope 的机器上跑一次
    真网关回路，把结果回写本文件 §5.3 与 §6#3。
+5. **Wave20 的门在别人在飞的两个文件上是红的**（本程序不代改、不代提交）：
+   `run_desktop.bat:27` 与 `installer/uninstall.bat:9`（后者还没入库）。改法各一个字符：
+   `"%~dp0"` → `"%~dp0."`。`tests/test_bat_guard.py::RealRepoLauncherTests` 就是为了让这两行
+   不能被无声带着走；HEAD 层（`test_head_committed_launchers_are_clean`）绿，所以 CI 不受影响。
+   基线 `.github/dev-eval-baseline.json` 按【我的提交】口径刷成 `23 → 24`；工作树里还有别人
+   那一题（`log-view-collapses-real-spam`），所以本地刷全量会得 25——那一行不由我提交。

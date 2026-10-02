@@ -1,5 +1,46 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-02 Vibecoding 能力补全 Wave20：`bat_guard` 启动器引号静态门（本会话，不占 R 槽位）
+
+- **为什么会做这个**：用户贴来一次运行失败——`[DocMind] 依赖准备失败：missing D:\WorkBuddy\rag-agent"\requirements.txt`。
+  根因是 `run_desktop.bat` 里的 `--root "%~dp0"`：`%~dp0` **展开后以反斜杠结尾**，而外部程序按
+  MSVCRT 规则解析 argv，`\"` 是「转义过的引号」→ 闭合引号消失 → 参数值尾部多一个字面 `"`。
+  静态检查看不出来、语法检查看不出来，只有双击运行才炸。用户给的口径是「不动别人的文件，加一条静态门」。
+- **前提是被量出来的，不是写在注释里的**：门禁题里有一条直接调 `subprocess.list2cmdline`
+  （Python 自己拼 argv 的实现）——值 `D:\my dir\` 的正确写法是 `"D:\my dir\\"`，而手写 `"%~dp0"`
+  发出去的是 `"D:\my dir\"`，**两串字节不同**，后者正是"转义引号"那个形状。零进程、零网络，ubuntu 也跑得动。
+- **两条规则互为镜像**：`quoted_dir_expansion`（加了引号但展开后以 `\` 结尾）与
+  `unquoted_dir_expansion`（目录展开裸着传给外部程序，路径有空格就裂成两个参数）。
+  只写前一条等于建议「别加引号」——那是另一个 bug。正解只有 `"%~dp0."` 或 `"%ROOT:~0,-1%"`，
+  判据里连这两个写法都必须绿，否则门会把人推向误修。
+- **门的全部价值在"不越界"**：`cd /d "%~dp0"`、`if exist "%~dp0x.bat" goto y`、`set "R=%~dp0"`、
+  `echo %~dp0`、`call "%~dp0lib.bat" --root "%~dp0"`（调批处理时参数交给 cmd，不交给 MSVCRT）
+  都是**正确写法**。所以 `arguments_of()` 是公开函数，35 条变异里一大半是用**逐词结构断言**钉的：
+  光看"报没报错"看不出实参认错了没有。
+- **一跳追踪**：`set "ROOT=%~dp0"` 之后的 `--root "%ROOT%"` 是同一个坑，而且是把这行「修掉」的
+  最自然写法——不追这一跳的门等于鼓励误修。两跳以上不追，写在模块文档的边界一节。
+  反向也钉住：`set "B=%A%"` 排在 `set "A=%~dp0"` 之前时**不该报**（cmd 按执行顺序展开，那时 A 还是空的），
+  这条有专门用例防止"顺手改成多遍扫"。
+- **产物与数量**：`agent_runtime/bat_guard.py`（新模块，不占工具面）、`tests/test_bat_guard.py`
+  **40 项 + 48 subtest**、`tests/mutation/battery_bat_guard.py` **35 条变异 / `--no-live` 全抓 / 4 秒**、
+  门禁新增 1 题 `bat-guard-refuses-an-escaped-closing-quote`（**11 条断言**），
+  基线按我的提交口径 `23 → 24 题`（工作树里还有别人那一题，本地刷全量是 25）。九块电池合起来 `--no-live`：**200/207 抓到 + 7 条本环境未验证 + 0 条活下来，229 秒**。
+- **第一天就抓到两处**（都在别人**未提交**的文件里，本程序不代改、不代提交，改法各一个字符）：
+  `run_desktop.bat:27` 与 `installer/uninstall.bat:9`（后者是 `powershell.exe -InstallDir "%~dp0"`，
+  同一 bug 类的第二个实例，而且还没入库）。语料层因此分成两格并各自钉住：
+  `test_working_tree_launchers_are_clean`（这台机器上要真跑的那份，现在为红）与
+  `test_head_committed_launchers_are_clean`（CI 看到的 HEAD 那份，绿）——
+  分开是因为它们会因不同的事而红，合成一格就只能说清一半。
+- **自己撞的三条**：① `Edit` 插入时又一次用「下一行的前缀」当锚点，把 `DEV_DATASET` 第一题的
+  `steps` 行**吃掉**了——靠 `git diff --stat` 的插入/删除计数不对才发现（这是本会话第三次同型错，
+  已写进 §9）；② 电池声明里没有 `LIVE = ()` 就被元测试 `AttributeError`（引擎读 `battery.LIVE`
+  而不是 `getattr`），"没有现场层"也要显式声明；③ 基线文件的 `total` 是**一行计数**，
+  没法按 lane 拆，我这次只能整文件带上并写明里面合并了别人那一题。
+- **边界（不许越界宣称）**：只覆盖 `.bat`/`.cmd` 里「目录展开 × 引号」这一类 bug；
+  `%VAR:~0,-1%` 剪的是不是真对、PowerShell 自己的引号规则、`start`/`pushd` 之类的边缘行为都**没有**；
+  它也不证明启动器能跑起来（那是双击/`dev_apptest` 的事），只证明参数不会被引号吃掉。
+
+
 ## 2026-10-02 Vibecoding 能力补全 Wave19：`scripted` 离线实时适配器 + `dev_apptest stream` 真流式回合（本会话，不占 R 槽位）
 
 - **补什么**：`dev_apptest`（Wave17b）明确写着"不听真网关"，而页面 + 麦克风 + `/api/vision/live-stream` 这条链路**以前只能靠人对着设备说话**（R12）。缺的不是模型，是"一个能自动被测的对面"。这一条补上：整条回路（真浏览器、真假麦克风、真 ws、真 DOM）第一次能被自动跑到，且**零网络、零 key、零模型调用**。

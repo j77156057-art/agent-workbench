@@ -803,6 +803,72 @@ def _case_voice_glue_would_catch_unconditional_pumping(root: str, run: Callable[
             _check("non_loopback_ws_%s" % shape, shape == "拒绝", shape)]
 
 
+def _case_bat_guard_refuses_an_escaped_closing_quote(root: str,
+                                                    run: Callable[..., dict]) -> list[dict]:
+    r"""批处理引号门：`--root "%~dp0"` 必须判红，正确写法与 cmd 自己解析的地方必须判绿。
+
+    存在的理由是本仓 2026-10-02 那次启动失败：`%~dp0` 展开后以反斜杠结尾，紧跟其后的
+    闭合引号被外部程序按 MSVCRT 规则当成「转义过的引号」，bootstrap 于是收到
+    `D:\WorkBuddy\rag-agent"`（路径末尾多一个字面引号）。最后一组检查是【把前提量出来】
+    而不是相信注释：连 Python 自己拼 argv 的 list2cmdline 都要在这种值前再补一个反斜杠，
+    所以手写的那对引号一定是转义、不是闭合。
+    """
+    from agent_runtime import bat_guard
+
+    def rules(text: str) -> list[str]:
+        return [row["rule"] for row in bat_guard.find_issues(text)]
+
+    bs, dq = chr(92), chr(34)
+    bad_quoted = "py -3 boot.py --root " + dq + "%~dp0" + dq
+    bad_unquoted = "py -3 boot.py --root %~dp0"
+    good_dot = "py -3 boot.py --root " + dq + "%~dp0." + dq
+    good_strip = ("set " + dq + "ROOT=%~dp0" + dq + "\npy x --root "
+                  + dq + "%ROOT:~0,-1%" + dq)
+    cmd_parsed = ("cd /d " + dq + "%~dp0" + dq + "\nif exist " + dq + "%~dp0a.bat" + dq
+                  + " goto x\nset " + dq + "OTHER=%ERRORLEVEL%" + dq)
+    inline_after_if = "if exist " + dq + "%DOCMIND_ENTRY%" + dq + " py x --root " + dq + "%~dp0" + dq
+    one_hop = "set " + dq + "ROOT=%~dp0" + dq + "\npy x --root " + dq + "%ROOT%" + dq
+    empty = Path(root) / "bg-nothing"
+    empty.mkdir(parents=True, exist_ok=True)
+    corpus = Path(root) / "bg-corpus"
+    corpus.mkdir(parents=True, exist_ok=True)
+    launcher = corpus / "run.bat"
+    launcher.write_bytes(("@echo off\r\npy x --root " + dq + "%~dp0" + dq
+                          + "\r\n").encode("gbk"))
+    clean_dir = Path(root) / "bg-clean"
+    clean_dir.mkdir(parents=True, exist_ok=True)
+    (clean_dir / "ok.bat").write_bytes(("cd /d " + dq + "%~dp0" + dq + "\r\n").encode("gbk"))
+    report = bat_guard.audit(corpus)
+    row = (report["findings"] or [{}])[0]
+    nothing = bat_guard.audit(empty)
+    all_clean = bat_guard.audit(clean_dir)
+    dir_value = "D:" + bs + "my dir" + bs
+    wire = subprocess.list2cmdline(["--root", dir_value])
+    hand = "--root " + dq + dir_value + dq
+    return [_check("the_shipped_bug_is_caught",
+                   rules(bad_quoted) == [bat_guard.RULE_QUOTED], rules(bad_quoted)),
+            _check("the_mirror_mistake_is_caught",
+                   rules(bad_unquoted) == [bat_guard.RULE_UNQUOTED], rules(bad_unquoted)),
+            _check("the_one_character_fix_is_clean", rules(good_dot) == [], rules(good_dot)),
+            _check("the_substring_fix_is_clean", rules(good_strip) == [], rules(good_strip)),
+            _check("cmd_parsed_places_are_not_arguments", rules(cmd_parsed) == [],
+                   rules(cmd_parsed)),
+            _check("an_inline_command_after_if_is_still_checked",
+                   rules(inline_after_if) == [bat_guard.RULE_QUOTED], rules(inline_after_if)),
+            _check("a_variable_holding_the_directory_is_the_same_bug",
+                   rules(one_hop) == [bat_guard.RULE_QUOTED], rules(one_hop)),
+            _check("a_real_file_reports_its_path_line_and_fix",
+                   row.get("path") == str(launcher) and row.get("line") == 2
+                   and "%~dp0." in str(row.get("fix", "")),
+                   {k: row.get(k) for k in ("path", "line", "rule", "token")}),
+            _check("nothing_scanned_is_never_reported_as_clean",
+                   not nothing["ok"] and nothing["files_scanned"] == 0, nothing),
+            _check("a_clean_corpus_is_green_and_counts_its_files",
+                   all_clean["ok"] and all_clean["files_scanned"] == 1, all_clean),
+            _check("a_correct_quoter_escapes_that_very_quote",
+                   bs + dq in wire and hand != wire, {"wire": wire, "hand": hand})]
+
+
 DEV_DATASET: tuple[dict[str, Any], ...] = (
     {
         "id": "lookup-by-filename", "fixture": "ts-refs",
@@ -964,6 +1030,13 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "direct": _case_voice_glue_would_catch_unconditional_pumping,
         "uses": ["dev_media"],
         "note": "语音接线行为回路：逐帧无条件推流必须判未通过，不能只会报绿",
+    },
+    {
+        "id": "bat-guard-refuses-an-escaped-closing-quote", "fixture": "plain",
+        "direct": _case_bat_guard_refuses_an_escaped_closing_quote,
+        "note": "启动器引号门只有一种失效方式：把 cmd 自己解析的地方也判红，那就没人会留着它。"
+                "红的是「展开后以反斜杠结尾的引号实参」与「裸的目录展开」；绿的是 "
+                "%~dp0. 与 %ROOT:~0,-1% 两种正解，外加 cd / if 条件 / set 这三处",
     },
 )
 

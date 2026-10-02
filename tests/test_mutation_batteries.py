@@ -22,7 +22,8 @@ from tests.mutation import run_all  # noqa: E402
 
 #: 我这块程序该有的五块电池（别的 lane 加新电池只要自己在文件里声明
 #: `MINIMUM_MUTATIONS`，不需要来这里登记——共享工作树里不该有一张中央登记表）
-MINE = ("voice_loop", "head_check", "test_run", "vue", "app_test")
+MINE = ("voice_loop", "head_check", "test_run", "vue", "app_test",
+        "bat_guard")
 
 
 def fake_battery(mutations, live=()):
