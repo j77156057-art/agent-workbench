@@ -3451,6 +3451,59 @@ async def session_detail_ep(session_id: str):
     }
 
 
+@app.get("/api/sessions/{session_id}/snapshots")
+async def session_snapshots_ep(session_id: str):
+    """列出该会话的轮次快照（rewind 的时间轴）。
+
+    不带 turns 全量：那份数据可能很大，而前端只需 seq / 时间 / 那轮的问题摘要。
+    """
+    items = session_store.snapshots(session_id, project_id=_request_project_id() or None)
+    return {"ok": True, "session_id": str(session_id or ""), "items": items}
+
+
+@app.post("/api/sessions/{session_id}/rewind")
+async def session_rewind_ep(session_id: str, seq: int = 0):
+    """回到第 seq 个快照那一刻的会话状态。
+
+    **有损且不可逆**：被回退掉的轮次会丢弃，所以先落在同一份会话文件里
+    （`snapshots` 字段），一旦 rewind 就真的没了。找不到快照时返回 ok=False
+    并给出原因，而不是 404——前端要能把这句话直接显示给用户。
+    """
+    result = session_store.restore_snapshot(
+        session_id, seq, project_id=_request_project_id() or None)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("reason") or "回退失败。",
+                "session_id": str(session_id or "")}
+    # 常驻 Agent 的内存历史必须一起退，否则重开工作台时旧历史又回来了。
+    agent = _SESSION_AGENTS.get(_agent_key(session_id))
+    if agent is not None:
+        try:
+            agent.history = [dict(t) for t in result["turns"]]
+            agent.summary = result.get("summary") or ""
+        except Exception:
+            pass
+    return {"ok": True, "session_id": str(session_id or ""),
+            "turns": result["turns"], "summary": result.get("summary") or "",
+            "message": result.get("reason") or ""}
+
+
+@app.post("/api/sessions/{session_id}/fork")
+async def session_fork_ep(session_id: str, new_id: str = "", at_seq: int = 0):
+    """从当前（或指定快照）分叉出一条新会话，原会话不动。
+
+    走"复制 turns 到新 id"而不是 git worktree，因此不要求当前是 git 工作树——
+    `dev_handoff` 在非 git 场景只能明说做不到，这里没有那个限制。
+    """
+    result = session_store.fork_session(
+        session_id, new_id, at_seq=(at_seq or None),
+        project_id=_request_project_id() or None)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("reason") or "分叉失败。"}
+    return {"ok": True, "session_id": result.get("session_id") or new_id,
+            "turns": result.get("turns") or [],
+            "message": result.get("reason") or ""}
+
+
 @app.delete("/api/sessions/{session_id}")
 async def session_delete_ep(session_id: str):
     import agent_memory

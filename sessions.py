@@ -105,6 +105,12 @@ def _apply_raw(data: dict, raw) -> dict:
             for t in turns if isinstance(t, dict)
         ] if isinstance(turns, list) else []
         data["updated_at"] = raw.get("updated_at") or ""
+        # 快照必须一起搬进来。这里漏掉它时症状特别隐蔽：snapshot() 写入成功、
+        # 没有任何报错，但下一次 load 读回来的 data 里没有 snapshots，
+        # 于是 restore_snapshot 永远说「还没有任何快照」——写得进、读不回来。
+        snaps = raw.get("snapshots")
+        data["snapshots"] = [s for s in snaps if isinstance(s, dict)] \
+            if isinstance(snaps, list) else []
     return data
 
 
@@ -279,6 +285,147 @@ def maybe_compact(session_id, turns, llm=None, trigger_tokens=None, keep_tokens=
     new_sum = _llm_summary(old, llm)
     summary = (prev + "\n" + new_sum).strip() if prev else new_sum
     return kept, summary
+
+
+# ---------------------------------------------------------------------------
+# 轮次快照（rewind / fork 的地基）
+# ---------------------------------------------------------------------------
+# 为什么需要：会话历史是**一条不断被覆写**的链——每轮问答都 save 一次，
+# 只留最新状态。于是"回到第 3 轮看看当时是什么样"这件事**根本做不到**，
+# 因为那个状态已经被覆盖掉了。这跟竞品（Claude Code 的 checkpoints、
+# Codex 的 worktree + resume）在能力上差一档。
+#
+# 快照记在**同一份会话文件**里而不是新开文件：rewind 必须和会话同生共死，
+# 否则会出现"会话删了、快照还在"的孤儿状态。代价是会话文件变大，
+# 所以 SNAPSHOT_LIMIT 保留最近若干条。
+SNAPSHOT_LIMIT = 50
+
+
+def snapshot(session_id, turns, *, label="", summary="", project_id=None) -> bool:
+    """在当前轮次落一个快照，供之后 rewind 回来。
+
+    快照存的是**当刻的 turns 副本**，不是引用——否则后续 save 会把它一起改掉，
+    那就不是快照而是别名。
+    """
+    turns = list(turns or [])
+    data = load(session_id, project_id=project_id)
+    snaps = data.get("snapshots")
+    if not isinstance(snaps, list):
+        snaps = []
+    snaps.append({
+        "seq": len(snaps) + 1,
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "label": str(label or "")[:200],
+        "turn_count": len(turns),
+        "turns": turns,
+        "summary": str(summary or data.get("summary") or ""),
+    })
+    data["snapshots"] = snaps[-SNAPSHOT_LIMIT:]
+    return _write(session_id, data, project_id)
+
+
+def snapshots(session_id, project_id=None) -> list:
+    """列出快照（元信息 + 该轮次的问答摘要，不带完整 turns 以免响应过大）。"""
+    data = load(session_id, project_id=project_id)
+    snaps = data.get("snapshots")
+    if not isinstance(snaps, list):
+        return []
+    out = []
+    for item in snaps:
+        if not isinstance(item, dict):
+            continue
+        turns = item.get("turns") or []
+        last_user = ""
+        for turn in reversed(turns):
+            if isinstance(turn, dict) and str(turn.get("user") or "").strip():
+                last_user = str(turn.get("user") or "").strip()
+                break
+        out.append({
+            "seq": item.get("seq"),
+            "at": item.get("at") or "",
+            "label": item.get("label") or "",
+            "turn_count": item.get("turn_count", len(turns)),
+            "question": last_user[:200],
+        })
+    return out
+
+
+def restore_snapshot(session_id, seq, *, project_id=None) -> dict:
+    """回到第 seq 个快照那一刻的状态（截断掉之后的轮次）。
+
+    返回 `{"ok": bool, "turns": [...], "summary": str, "reason": str}`。
+    找不到时不抛异常——调用方据此给用户一句能读懂的说明，而不是 500。
+    """
+    data = load(session_id, project_id=project_id)
+    snaps = data.get("snapshots")
+    if not isinstance(snaps, list) or not snaps:
+        return {"ok": False, "turns": [], "summary": "",
+                "reason": "这个会话还没有任何快照，没法回退。"}
+    target = None
+    for item in snaps:
+        if isinstance(item, dict) and int(item.get("seq") or 0) == int(seq or 0):
+            target = item
+            break
+    if target is None:
+        return {"ok": False, "turns": [], "summary": "",
+                "reason": "找不到 seq=%s 的快照（当前保留 %d 条）。" % (seq, len(snaps))}
+    turns = [dict(t) for t in (target.get("turns") or []) if isinstance(t, dict)]
+    summary = str(target.get("summary") or "")
+    data["turns"] = turns
+    data["summary"] = summary
+    # 被回退掉的快照一并丢弃：它们的 seq 已经对应不上了，留着会误导。
+    data["snapshots"] = [i for i in snaps
+                         if isinstance(i, dict) and int(i.get("seq") or 0) <= int(seq)]
+    _write(session_id, data, project_id)
+    return {"ok": True, "turns": turns, "summary": summary,
+            "reason": "已回到第 %s 个快照（%s 轮）。" % (seq, len(turns))}
+
+
+def fork_session(session_id, new_id, *, at_seq=None, project_id=None) -> dict:
+    """从某个快照分叉出一条新会话；不动原会话。
+
+    竞品对照：Codex 用 git worktree 隔离并行任务，Claude Code 用 checkpoints。
+    这里走的是"新会话 id + 复制 turns"的路子——它不需要 git，因此也不受
+    「当前不是 git 工作树」的限制（handoff 工具在那种场景下只能明说做不到）。
+    """
+    new_id = str(new_id or "").strip()
+    if not new_id:
+        return {"ok": False, "reason": "新会话 id 不能为空。"}
+    data = load(session_id, project_id=project_id)
+    if not data.get("turns") and not data.get("snapshots"):
+        return {"ok": False, "reason": "原会话没有可分叉的历史。"}
+    turns, summary = list(data.get("turns") or []), data.get("summary") or ""
+    if at_seq is not None:
+        got = restore_snapshot_snapshot_only(session_id, at_seq, project_id=project_id)
+        if not got.get("ok"):
+            return got
+        turns, summary = got["turns"], got["summary"]
+    data["session_id"] = new_id
+    data["turns"] = turns
+    data["summary"] = summary
+    # 分叉出来的新会话**不继承快照序列**：它的快照语义与原会话不同，
+    # 混用会让 restore 回到不属于这条链的状态。
+    data["snapshots"] = []
+    saved = _write(new_id, data, project_id)
+    return {"ok": bool(saved), "reason": "已分叉为新会话 %s。" % new_id if saved
+            else "分叉失败：新会话写盘未成功。", "session_id": new_id,
+            "turns": turns}
+
+
+def restore_snapshot_snapshot_only(session_id, seq, *, project_id=None) -> dict:
+    """只算不写：给 fork 用，避免分叉顺带改掉原会话的快照链。"""
+    data = load(session_id, project_id=project_id)
+    snaps = data.get("snapshots")
+    if not isinstance(snaps, list) or not snaps:
+        return {"ok": False, "turns": [], "summary": "", "reason": "没有可用快照。"}
+    for item in snaps:
+        if isinstance(item, dict) and int(item.get("seq") or 0) == int(seq or 0):
+            return {"ok": True,
+                    "turns": [dict(t) for t in (item.get("turns") or [])
+                              if isinstance(t, dict)],
+                    "summary": str(item.get("summary") or ""), "reason": ""}
+    return {"ok": False, "turns": [], "summary": "",
+            "reason": "找不到 seq=%s 的快照。" % seq}
 
 
 def list_sessions(limit=50, project_id=None):
