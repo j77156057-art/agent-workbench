@@ -33,7 +33,7 @@
 | 静态检查 | `dev_diagnostics`（ruff + vue-tsc）| 退出码非 0 却解析不出发现时**报错误不报干净** |
 | 守启动器 | `agent_runtime/bat_guard.py`（静态扫 `.bat`/`.cmd`，**不是工具**，由测试与门禁题驱动）| 只查**交给外部程序的实参**；`cd`/`set`/`if` 条件/`echo` 由 cmd 自己解析，有意不查（§5.11）|
 | 交付 | `dev_propose`（补丁+草稿，写进状态目录）/ `dev_ci_status`（只读 GET）| 不 add/commit/push；CI 读不到就明说 |
-| 提交自洽 | `dev_headcheck`（把 HEAD 挂成干净检出真 import 一遍）| 只读 + `worktree --detach`；抓的是"工作树能跑、单独检出必红"，见 §5.4 |
+| 提交自洽 | `dev_headcheck`（把 HEAD 挂成干净检出：真 import，`gate: 1` 再真跑门禁整集，`tests:` 真跑指定测试）| 只读 + `worktree --detach`；红了先重跑再拿工作树当对照组，**比两边失败题名单的差集**，见 §5.4 |
 | 多人防撞 | `dev_lanes`（TTL 认领登记表 + 可选 worktree）| 冲突默认拒绝，`force: true` 才共管 |
 | 对外出口 | `mcp_server`（harness 自己是 MCP server）/ `mcp_bridge`（连接器工具一等公民化）| 默认只读；写要 `--allow-writes`；`run_command` 等永不暴露 |
 | 能力回归 | `dev_eval`（24 题门禁 + 基线 + CI 步骤）| 测的是 harness，不是模型智商 |
@@ -133,7 +133,7 @@ cd frontend && npm run test:node
   `hello.ok` 后的标记片和第一片语音撞同一个序号，`sequence_monotonic` 当场变红。
 - 边界：`.vue` 的接线是**转写**的、不是 import 的；真网关（`api.py` + DashScope）仍归 R12 人跑。
 
-### 5.4 `dev_headcheck`（Wave14）：把 HEAD 挂成干净检出真 import 一遍
+### 5.4 `dev_headcheck`（Wave14，Wave21 加第二档）：把 HEAD 挂成干净检出真 import、真跑套件
 共享工作树里有一类错**在工作树里永远看不见**：提交引用了没入库的文件（漏 `git add`，
 或 `git commit -- <路径>` 绕过索引把别人的 WIP 一起提交掉）。本地测试全绿，CI / 别人的
 `git worktree add` / 任何 clone 第一批 `import agent` 就红。所以必须回到"只有已提交内容"
@@ -365,7 +365,8 @@ cd frontend && npm run test:node
 - CI：`.github/workflows/harness.yml` 的 `Run mutation batteries` 一步，跑 `--no-live`，
   只在 sqlite matrix 付费。本机实测（2026-10-02，九块电池）：`--no-live`
   **200/207 抓到 + 7 条未验证 + 0 条活下来，229 秒**（`head_check` 一块就 182 秒，因为它要真建
-  `git worktree`；`bat_guard` 35/35 只用 4 秒——纯文本判据便宜到没有借口不跑全）；带浏览器
+  `git worktree`；`bat_guard` 35/35 只用 4 秒——纯文本判据便宜到没有借口不跑全；
+  `head_check` 涨到 44 条、529 秒（第二档那 3 条真检出用例是主要成本））；带浏览器
   `--only vue,app_test` **72/72，99 秒**。
 - **怎么读这份证据**：电池绿＝"这些测试确实会红"。它**不**保证变异集合覆盖了这个模块的每个守卫；
   新加一条守卫时同时加一条变异，否则那条守卫没有凭据。
@@ -420,6 +421,21 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
   这次靠 `git diff --stat` 的插入/删除计数不对才看见（140/4 变成 139/1）。流程教训：
   往共享的热文件里插东西，用**唯一且完整**的锚点，或者干脆走"读全文 → 替换 → `ast.parse` 过了
   才落盘"的脚本；改完立刻核对 `git diff --stat` 的两个数字。
+- **一条变异把整块电池崩掉，而我差点把"崩掉"报成"全抓"**：Wave21 里我写了条只替换半句的变异，
+  `exec_module` 抛 `IndentationError`，整轮电池死在 traceback 上；而我第一次读结果时把汇总行
+  看成了 `44/44 抓到`（其实是 `41/44 + 3 条活下来`）。两条修法是同一件事的两面：
+  ① 引擎在**事前**用 `ast.parse` 检查"变异后的源码还编译得过吗"，编译不过就报成这条电池的
+  问题（不是"抓住"——一份装不进的代码证明不了任何判据有牙）；② 跑批不再 `| tail`，
+  管道会把退出码换成 `tail` 的（`$?` 说 0 而电池其实红着，这个坑本仓已经记过一次）。
+- **对照组要比"名单差集"，不能比"整集布尔值"**：拿真事故 commit（`f7ec14e`）跑这一档，两棵树
+  **都**因为 `diagnostics` 那两题在负载下抖而红；如果比布尔值，结论就成了"两棵树都红，
+  不是自洽问题"，而真正要指出的那一题（只在检出里红的 `page-action-...`）被埋掉。
+  改成 `checkout_failed - control_failed` 之后，公共噪声自己减掉，报告直接点名那一题。
+  教训通用：**任何"两边比一比"的判据，都要问比的是布尔值还是集合**。
+- **等价变异是自己写给自己的假分数**：`row["failed_names"] = [] or sorted(...)` 恒等于原式，
+  所以它"活下来"根本不是守卫没牙，是我那条变异写歪了。同一条批次里还有两条"活下来"是真的
+  ——`tests:` 那条路的失败题名单从来没被任何用例读过。两种"活下来"要分开处理：
+  等价变异换掉，真缺口补判据（`test_the_pytest_path_also_names_its_failed_tests`）。
 - **子进程的句柄比"进程已终止"活得久**：`dev_apptest` 第一次跑完在系统临时目录留了两份
   沙箱——`process_runner.job_cancel` 回来时 uvicorn 自己开的 sqlite/状态文件句柄还没被 OS 收走，
   `clean_target` 默认的 4 次 ×0.25s（约 1s）不够，而几秒后手工能删。回收预算提到 10 次 ×0.4s 后
@@ -461,5 +477,7 @@ test_run / voice_loop / **bat_guard** / page_action / log_view / job_logs。
    `run_desktop.bat:27` 与 `installer/uninstall.bat:9`（后者还没入库）。改法各一个字符：
    `"%~dp0"` → `"%~dp0."`。`tests/test_bat_guard.py::RealRepoLauncherTests` 就是为了让这两行
    不能被无声带着走；HEAD 层（`test_head_committed_launchers_are_clean`）绿，所以 CI 不受影响。
+   同一批账里 `dev_headcheck` 加了第二档（`gate: 1`）：**push 之前跑它**，因为 CI 看到的
+   是那棵树而不是这棵树；本会话就是靠它在事后抓到 `f7ec14e` 的行为红（见 §5.4）。
    基线 `.github/dev-eval-baseline.json` 按【我的提交】口径刷成 `23 → 24`；工作树里还有别人
    那一题（`log-view-collapses-real-spam`），所以本地刷全量会得 25——那一行不由我提交。

@@ -722,6 +722,69 @@ def _case_headcheck_catches_an_untracked_reference(root: str, run: Callable[...,
     fixed = head_check.check(str(repo), modules=("entry",), timeout=60)
     leftovers = list(head_check.worktree_base(str(repo)).glob("*")) if \
         head_check.worktree_base(str(repo)).is_dir() else []
+    # ---- 跑批层（第二档）：红了先重跑，仍然红才拿工作树当对照组 ----
+    # 直接用 run_suites 而不是 check(gate=...)：这道题不需要真检出目录，
+    # 而真挂检出会让这一题从秒级变成十几秒，电池就再也跑不动了。
+    from agent_runtime import process_runner
+
+    class Gate:
+        """假的跑批层：只回可控的结论，顺便记录【在哪棵树里跑的、状态根给了哪】。"""
+
+        def __init__(self, checkout_ok=True, repo_ok=True, green_from=0, explode=False,
+                     checkout_names=("x-case",), repo_names=("x-case",)):
+            self.checkout_ok, self.repo_ok = checkout_ok, repo_ok
+            self.green_from, self.explode = green_from, explode
+            self.checkout_names, self.repo_names = checkout_names, repo_names
+            self.root_norm = os.path.normpath(str(repo))
+            self.seen = []
+
+        def __call__(self, argv, **kw):
+            text = " ".join(str(row) for row in argv)
+            if "agent_runtime.dev_eval" not in text and "-m pytest" not in text:
+                return process_runner.run_bounded(argv, **kw)
+            cwd = os.path.normpath(str(kw.get("cwd") or ""))
+            in_checkout = cwd != self.root_norm
+            attempt = len([row for row in self.seen if row["in_checkout"]])
+            self.seen.append({"in_checkout": in_checkout, "cwd": cwd,
+                              "state": (kw.get("env") or {}).get("DOCMIND_STATE_ROOT") or ""})
+            if self.explode:
+                raise RuntimeError("假：子进程起不来")
+            ok = self.checkout_ok if in_checkout else self.repo_ok
+            if in_checkout and attempt >= self.green_from > 0:
+                ok = True
+            names = [] if ok else list(self.checkout_names if in_checkout
+                                        else self.repo_names)
+            payload = json.dumps({"report": {"ok": ok, "passed": 24 if ok else 22,
+                                             "scored": 24, "failed": names},
+                                  "gate": {"regressed": False, "regressions": []}})
+            return {"ok": ok, "exit_code": 0 if ok else 1, "timed_out": False,
+                    "truncated": False, "output": payload, "error": ""}
+
+    gate_dir = Path(root) / "fake-checkout"
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    run_state = Path(root) / "fake-state"
+    run_state.mkdir(parents=True, exist_ok=True)
+
+    def suites(runner):
+        return head_check.run_suites(gate_dir, str(repo), want_gate=True, tests=(),
+                                     state_root=run_state, timeout=30, runner=runner)
+
+    both_red = Gate(checkout_ok=False, repo_ok=False)
+    flaky = Gate(checkout_ok=False, repo_ok=False,
+                 checkout_names=("page-action-refuses", "diagnostics-flaky"),
+                 repo_names=("diagnostics-flaky",))
+    flip = Gate(checkout_ok=False, repo_ok=True, green_from=1)
+    stuck, clean = Gate(explode=True), Gate()
+    row_both, row_flip, row_stuck, row_clean, row_flaky = (
+        suites(runner)[0] for runner in (both_red, flip, stuck, clean, flaky))
+    argv_refused = ""
+    try:
+        head_check.pytest_argv([".." + os.sep + ".." + os.sep + "outside.py"], run_state)
+    except head_check.HeadCheckError as exc:
+        argv_refused = str(exc)
+    flip_text = head_check.render({"checks": {"worktree_added": True}, "suites": [row_flip],
+                                   "imported": [], "modules": ["entry"]})
+
     return [_check("broken_head_is_red", not broken["ok"], broken.get("error", "")),
             _check("untracked_reference_is_named",
                    failure.get("missing") == "helper_missing"
@@ -735,6 +798,35 @@ def _case_headcheck_catches_an_untracked_reference(root: str, run: Callable[...,
             _check("foreign_checkout_is_never_removed",
                    not refused["ok"] and stranger.exists(), refused),
             _check("no_checkout_left_behind", not leftovers, [str(p) for p in leftovers]),
+            _check("suite_command_stays_inside_the_commit",
+                   not os.path.isabs(head_check.GATE_BASELINE)
+                   and "agent_runtime.dev_eval" in " ".join(head_check.gate_argv())
+                   and head_check.GATE_BASELINE in head_check.gate_argv(),
+                   head_check.gate_argv()),
+            _check("outside_targets_are_refused_before_anything_runs", bool(argv_refused), argv_refused),
+            _check("zero_collected_is_never_a_pass",
+                   head_check.parse_pytest("no tests ran in 0.01s", 5)["ran"] == 0
+                   and head_check.parse_pytest("collected 0 items", 0)["ok"] is False, ""),
+            _check("a_shared_flake_does_not_bury_the_checkout_only_case",
+                   row_flaky["only_in_checkout"] == ["page-action-refuses"]
+                   and row_flaky["only_in_worktree"] == []
+                   and row_flaky["likely"].startswith("只有检出里红的题")
+                   and "page-action-refuses" in row_flaky["likely"], row_flaky),
+            _check("both_red_is_not_called_a_self_consistency_failure",
+                   row_both["likely"] == head_check.ATTR_BOTH_RED
+                   and row_both["attempts"] == 2
+                   and row_both["control"]["ok"] is False, row_both),
+            _check("a_flip_on_retry_is_green_but_said_out_loud",
+                   row_flip["ok"] and row_flip["flipped"] and "重跑才绿" in flip_text
+                   and "没发生过" in flip_text, row_flip),
+            _check("a_suite_that_could_not_start_gets_no_fake_attribution",
+                   not row_stuck["ok"] and not row_stuck["ran"]
+                   and row_stuck["likely"] == "" and row_stuck["attempts"] == 1, row_stuck),
+            _check("a_green_gate_does_not_pay_for_a_control_group",
+                   [row["in_checkout"] for row in clean.seen] == [True], clean.seen),
+            _check("the_run_state_never_lands_inside_the_checkout",
+                   all(row["state"] and not os.path.normpath(row["state"]).startswith(
+                       os.path.normpath(row["cwd"])) for row in clean.seen), clean.seen),
             _check("option_like_ref_refused", not head_check.resolve_ref(str(repo), "--help")["ok"],
                    "把 git 选项当 ref 收了")]
 

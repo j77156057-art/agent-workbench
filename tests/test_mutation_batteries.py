@@ -58,6 +58,21 @@ class EngineJudgementTests(unittest.TestCase):
         self.assertEqual(report["caught"], 0)
         self.assertFalse(engine.is_green(report))
 
+    def test_a_mutant_that_does_not_compile_is_a_problem_not_a_catch(self):
+        """变异把模块改到装不进 = **这条变异自己写歪了**，不能当成"守卫抓住了它"。
+
+        本会话撞上两次：① 一条只替换了半句的变异让整块电池崩在 IndentationError 上；
+        ② 更糟的是我第一版修法把它记成"抓到"——那等于给分数白送一分，
+        而分数正是这块电池唯一在产出的东西。事前检查 + 不作数，才是对的。
+        """
+        battery = fake_battery([("改到装不进", "VALUE = 1", "VALUE = (")])
+        clean = lambda _m: ([], 1)
+        report = self.run_it(battery, {"纯层": clean, "门禁": clean})
+        self.assertEqual(report["caught"], 0, report)
+        self.assertEqual(report["survivors"], [], "崩掉的变异不该被算成活下来，也不该算抓住")
+        self.assertTrue([row for row in report["problems"] if "编译不过" in row], report["problems"])
+        self.assertFalse(engine.is_green(report))
+
     def test_a_control_group_that_is_red_voids_the_whole_battery(self):
         """环境在红的时候，每条变异都会"被抓到"——那必须是【不作数】而不是满分。"""
         battery = fake_battery([("任何一条", "VALUE = 1", "VALUE = 9"),

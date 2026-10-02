@@ -1,5 +1,20 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-02 Vibecoding 能力补全 Wave21：`dev_headcheck` 加第二档——在干净检出里真跑套件（本会话，不占 R 槽位）
+
+- **补什么**：Wave14 那条回路只证一件事——HEAD 能被 **import**。而 2026-10-02 我自己犯的第二次事故正好卡在它证不到的地方：hunk 暂存收进了别人那段的**尾巴**（`dev_eval` 里 6 条 `_check`），它们读的局部量还在别人未提交的上半段里 → import 全绿、`dev_headcheck` 全绿、**行为红**。当时是手工挂干净检出跑测试才抓到的；这一档把它变成工具：`gate: 1` 在那棵检出里真跑 dev_eval 门禁整集，`tests: 仓内相对路径` 真跑指定测试。
+- **红了怎么归因（这条是设计核心）**：先重跑一次（门禁题里有计时敏感的，抖一下不算提交坏了；重跑绿了会**照样写在输出里**，不瞒），重跑仍红才拿**工作树**跑同一条当对照组，然后比**两边失败题名单的差集**而不是比布尔值。为什么：拿真事故 commit `f7ec14e` 实测，两棵树都因 `diagnostics` 两题在负载下抖而红——比布尔值就得出"两棵树都红，不是自洽问题"，把真正那一题埋了；差集一算，公共噪声自己减掉，报告点名 `only_in_checkout = [page-action-refuses-and-never-claims-success]`。
+- **它第一天就被同一个 commit 复验了一次**：`check(ref="59b0fe5~1", gate=True)` → attempts=2、only_in_checkout 就是那一题、`likely = 只有检出里红的题：page-action-...`。这就是"验过的东西"和"能重跑的凭据"的差别。
+- **两条被实测纠正的形状**：① `dev_eval --json` 一行 ~26 KB，而 `process_runner` 默认只留头 4000 字符 → JSON 被拦腰截断，"读不出结论"被当成"门禁没跑成"；这一档显式把窗口放到 120k，并有专门用例（结论能解析成字段本身就证明整行读全了）。② `run_bounded` 会把 `timeout` **静默削到 `MAX_TIMEOUT=300`**，所以我一开始写的 `suite_timeout: 600` 是谎报能力——上限改成钉在 `process_runner.MAX_TIMEOUT` 上（有元测试盯着这两个数字相等）。
+- **跑批的落点必须在检出之外**：`DOCMIND_STATE_ROOT` 指到检出外的临时目录，否则套件写进检出、`worktree remove` 与"没留东西"那条判据就成了自证。
+- **产物与数量**：`head_check.py` 新增 `safe_relative` / `gate_argv` / `pytest_argv` / `parse_gate` / `parse_pytest` / `attribute` / `run_suite` / `run_suites` 与 `check(gate=, tests=, suite_timeout=)`；`tests/test_head_check.py` 26 → **58 项**（+4 类：SuiteArgv / GateParsing / Attribution / CheckoutSuite / RealSuiteWiring / WholeRepoGate）；`battery_head_check` 14 → **44 条变异**；门禁题 `headcheck-catches-untracked-reference` 8 → **17 条断言**；三处注册齐（`tools.py` 函数 + `TOOLS` 描述 + `agent.py` 目录行）。
+- **引擎也被这一轮改了**：事前新增"变异后的源码还得编译得过"检查——一条只替换半句的变异让整块电池崩在 `IndentationError` 上，而我第一版修法把它记成"抓到"（**白送一分**）；正确立场是：装不进的代码证明不了任何判据有牙，所以它是**这块电池的问题**，不是它的分数。`test_a_mutant_that_does_not_compile_is_a_problem_not_a_catch` 钉住这条。
+- **两条"活下来"分开处理**：`row["failed_names"] = [] or sorted(...)` 是**等价变异**（恒等于原式）→ 换掉；另两条（`tests:` 那条路的失败题名单从没被读过）是**真缺口** → 补 `test_the_pytest_path_also_names_its_failed_tests`。
+- **我自己又犯的一次同类错**（记进 §9）：为了改假 runner 而**整段替换类体**，把夹在两个锚点之间的 3 条刚写的用例一起吃掉了——电池当场报 5 条活下来才暴露。教训：大块替换前先列出"这一段里有哪些用例"，替换后数一遍条数。
+- **验证**：`tests/test_head_check.py + tests/test_mutation_batteries.py` **78 passed / 92 subtests**（离线那 57 项 22 秒）；门禁整集在该题上 **17/17**；`--only head_check --no-live` 电池 **44/44 抓到、0 活下来、529 秒**；`--only bat_guard` **35/35、4 秒**；端到端那条真检出用例单跑 **37 秒**通过。
+- **边界（不许越界宣称）**：这一档验的是「**只有已提交内容时能不能跑成**」，不验行为对不对；需要未跟踪工具链（`frontend/node_modules`、`web/`）的套件在新检出里必然红——那种红是环境，报告靠差集把它减掉，而不是替它编一个解释；门禁整集在负载下有计时敏感的题（`diagnostics-*` 两题本会话实测在**两棵树里都抖过**），所以"重跑一次"是设计的一部分而不是遮羞布；`suite_timeout` 上限 300 秒是硬顶，慢机器上真可能超时，超时会明说而不是默认通过。
+
+
 ## 2026-10-02 Vibecoding 能力补全 Wave20：`bat_guard` 启动器引号静态门（本会话，不占 R 槽位）
 
 - **为什么会做这个**：用户贴来一次运行失败——`[DocMind] 依赖准备失败：missing D:\WorkBuddy\rag-agent"\requirements.txt`。

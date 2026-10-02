@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import io
@@ -134,6 +135,14 @@ def anchors_valid(battery: Any, source: str) -> list[str]:
             problems.append("%s：锚点在当前源码里找不到（电池已与源码脱钩）" % name)
         if old == new:
             problems.append("%s：变异前后一模一样，等于没变异" % name)
+        elif old in source:
+            # 变异后的那份代码必须**编译得过**：只替换半句的变异会当场崩掉解释器，
+            # 那种"红"证明不了任何判据有牙，把它记成抓住等于给自己加分。
+            try:
+                ast.parse(source.replace(old, new, 1))
+            except SyntaxError as exc:
+                problems.append("%s：变异后源码编译不过（这条变异自己写歪了）：%s" % (
+                    name, str(exc)[:90]))
         if name in seen:
             problems.append("变异名字重复：%s" % name)
         seen.add(name)
@@ -217,7 +226,17 @@ def _run_mutations(battery, source, layers, report, module_name, allow_live, ver
     for entry in battery.MUTATIONS:
         label, old, new = str(entry[0]), str(entry[1]), str(entry[2])
         wants_live = len(entry) > 3
-        module = load_mutated(module_name, source.replace(old, new, 1), label)
+        # 兜底：变异后的模块装不进。`anchors_valid` 已经在事前把它报成问题（这条变异写歪了，
+        # 不给它记分）；这里只是保证一块电池不会因一条坏变异崩掉整轮。
+        try:
+            module = load_mutated(module_name, source.replace(old, new, 1), label)
+        except BaseException as exc:  # noqa: BLE001 - 装不进就是这条电池写歪了
+            report["problems"].append("%s：变异后模块装不进（%s: %s）" % (
+                label, type(exc).__name__, str(exc)[:90]))
+            if verbose:
+                print("  ! %s（变异后模块装不进，不作数）" % label)
+            pristine_loader()
+            continue
         caught_by = []
         for tag in ("纯层", "门禁"):
             failed, _ran = layers[tag](module)

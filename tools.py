@@ -6656,6 +6656,9 @@ def dev_headcheck(arg=""):
       ref: HEAD                  # 任何能解析成提交的写法；先钉成 sha 再验
       modules: agent, tools      # 逗号/换行分隔；默认 config,tools,agent
       timeout: 120               # 单步（建检出 / import 一个模块）的秒数上限
+      gate: 1                    # 在那棵检出里真跑一遍 dev_eval 门禁整集（约 30~60 秒）
+      tests: tests/test_a.py     # 逗号/换行分隔的仓内相对路径，同样在检出里跑（≤12 个）
+      suite_timeout: 300         # 上面两档的单次秒数上限（30~300；跑批层被 process_runner 封顶）
     它为什么要独立存在：本仓 2026-10-01 出过一次 `git commit -- <路径>` 绕过索引，
     把别人未提交的 WIP 一起提交掉——引用那新文件的 import 进了 HEAD，新文件本身没进。
     于是【在这个工作树里跑测试永远是绿的】，只有单独检出 HEAD 才 ModuleNotFoundError，
@@ -6663,20 +6666,30 @@ def dev_headcheck(arg=""):
     失败会归因：缺的模块【在磁盘上但不在提交里】= 别人未提交的新文件被提交引用；
     【两边都不在】= 漏提交、改名，或它本该是第三方依赖。检出用完一定收回，且没有本工具的
     归属标记就绝不删（不拆别人的检出）。
-    边界：这验的是【能不能跑起来】，不验行为对不对；入口之外的深层 import 要靠 import 链
-    真的走到才暴露。真跑测试仍是 run_command / CI 的活。
+    为什么还要 `gate` / `tests`：2026-10-02 又付了一次同型的账——hunk 暂存时收进了别人那段
+    的**尾巴**（6 条断言），而它们读的局部量还在别人未提交的上半段里。import 全绿、只验
+    import 的自检也全绿，**行为**红。所以这一档在干净检出里真跑题集；红了先在**同一棵检出**
+    里重跑一次（门禁题里有计时敏感的，抖一下不算红），重跑仍红才拿工作树跑同一条当对照组：
+    「只有检出红」= 差别在没提交的那部分**或**未跟踪的工具链，报告会把失败项名字列出来让你
+    分辨是哪一种；「两边都红」= 负载、缺工具链或真坏了，那不是自洽问题。
+    边界：这验的是【只有已提交内容时能不能跑成】，不验行为对不对；入口之外的深层 import 要靠
+    import 链真的走到才暴露。要未跟踪工具链的套件（`frontend/node_modules`、`web/`）在
+    新检出里必然红，那是环境不是提交坏了——看对照组。
     """
     from agent_runtime import head_check
     root = _get_code_root()
     if not root:
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
-    fields = _parse_keyed(arg or "", ["ref", "modules", "timeout"])
+    fields = _parse_keyed(arg or "", ["ref", "modules", "timeout", "gate", "tests",
+                                      "suite_timeout"])
 
     def _one(key, default=""):
         value = (fields.get(key) or "").strip()
         return value.splitlines()[0].strip() if value else default
 
     names = [item.strip() for item in re.split(r"[,\s]+", _one("modules")) if item.strip()]
+    targets = [item.strip() for item in re.split(r"[,\s]+", _one("tests")) if item.strip()]
+    want_gate = _one("gate").lower() in ("1", "true", "yes", "on", "y")
     try:
         timeout = float(_one("timeout") or 120)
     except (TypeError, ValueError):
@@ -6684,9 +6697,18 @@ def dev_headcheck(arg=""):
     if not 5 <= timeout <= 600:
         return "timeout 只能在 5~600 秒之间。"
     try:
+        suite_timeout = float(_one("suite_timeout") or 300)
+    except (TypeError, ValueError):
+        return "suite_timeout 必须是秒数。"
+    if not 30 <= suite_timeout <= head_check.SUITE_TIMEOUT_MAX:
+        return "suite_timeout 只能在 30~%d 秒之间（跑批层的上限）。" % head_check.SUITE_TIMEOUT_MAX
+    if len(targets) > head_check.MAX_TEST_TARGETS:
+        return "tests 一次最多 %d 个目标。" % head_check.MAX_TEST_TARGETS
+    try:
         report = head_check.check(root, ref=_one("ref", "HEAD"),
                                   modules=tuple(names) if names else None,
-                                  timeout=timeout)
+                                  timeout=timeout, gate=want_gate, tests=tuple(targets),
+                                  suite_timeout=suite_timeout)
     except Exception as exc:  # noqa: BLE001 - 自检失败必须报原因，不能报通过
         return "dev_headcheck 失败：%s: %s" % (type(exc).__name__, str(exc)[:240])
     return head_check.render(report)
@@ -7536,12 +7558,23 @@ TOOLS = {
             "但 CI、别人的 `git worktree add`、任何 clone 都会在第一批 import 上红。\n"
             "输入 keyed 多行：`ref: HEAD`（任何能解析成提交的写法，先钉成 sha 再验，"
             "报告里回显这个 sha）、`modules: agent, tools`（默认 config,tools,agent）、"
-            "`timeout: 120`。只读 + `worktree add --detach/remove`：不占分支、不动索引、"
+            "`timeout: 120`、`gate: 1`、`tests: tests/test_a.py,...`、`suite_timeout: 300`"
+            "（跑批层单次秒数，30~300，上限由 `process_runner` 封顶）。"
+            "只读 + `worktree add --detach/remove`：不占分支、不动索引、"
             "不碰你的工作树；临时检出用完就收回，且没有本工具的归属标记就绝不删别人的目录。\n"
             "失败会归因，两种红不一样：缺的模块【在磁盘上但不在提交里】= 别人未提交的新文件"
             "被提交引用（先去把那个文件提交掉，或把引用摘出来）；【两边都不在】= 漏提交、改名，"
-            "或它本该在 requirements 里。边界：这验的是【能不能跑起来】，不验行为对不对——"
-            "真跑测试仍是 run_command 与 CI 的活。提交完之后、推之前跑一次，比事后 debug 便宜。\n"
+            "或它本该在 requirements 里。\n"
+            "还有第二档：`gate: 1` 在那棵检出里真跑 dev_eval 门禁整集，`tests: a.py,b.py` 真跑"
+            "指定测试（仓内相对路径，≤12 个）。为什么需要它：本仓 2026-10-02 出过一次 hunk 暂存"
+            "收进了别人那段的【尾巴】——6 条断言进了 HEAD，它们读的局部量还在别人未提交的上半段里。"
+            "import 全绿，只验 import 的自检也全绿，**行为**红。红了先在**同一棵检出**里重跑一次"
+            "（门禁题里有计时敏感的，抖一下不算红），重跑仍红才拿工作树跑同一条当对照组："
+            "「只有检出红」= 差别在没提交的那部分**或**未跟踪的工具链，报告会列出失败项名字让你"
+            "分辨哪一种；「两边都红」= 负载、缺工具链或真坏了，不是自洽问题。\n"
+            "边界：这验的是【只有已提交内容时能不能跑成】，不验行为对不对——真跑全套件仍是 CI 的活；"
+            "需要未跟踪工具链（`frontend/node_modules`、`web/`）的套件在新检出里必然红，那不是提交"
+            "坏了。提交完之后、推之前跑一次，比事后 debug 便宜。\n"
         ),
         "func": dev_headcheck,
     },
