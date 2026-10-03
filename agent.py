@@ -3532,7 +3532,32 @@ class Agent:
             truncated = finish_reason == "length"
             has_real_final = bool(_RE_HAS_REAL_FINAL.search(acc))
 
-            if parsed["final"]:
+            # 原生 function-calling 下，「有正文、无 tool_call」**按协议定义就是最终
+            # 答案**：API 已经通过 tool_calls 字段告诉了harness 模型想不想要工具，
+            # 模型选择写正文，那就是它的答案。这里再用 `Final Answer:` 标记去判，
+            # 是把文本协议的启发式套到了结构化通道上——一个范畴错误。
+            #
+            # 实测（godot_sample「扣多少血在哪算」）：模型给出了三层结构、逐行精确的
+            # 正确答案（enemy.gd:7 CONTACT_DAMAGE=10、player.gd:39 hp=maxi(0,hp-amount)，
+            # 逐条核对全部正确），却因为没有 `Final Answer:` 标记被判成「没给出结论」，
+            # 两轮后硬失败，用户只看到「请求失败」——**正确��答案被扔掉了**。
+            #
+            # 此前担心「无调用的散文可能是计划而非结论」，那个歧义**恰恰是提示词自相矛盾
+            # 造成的**（提示要求写标记、传输层不允许），模型因此不知道散文代表什么。
+            # 提示词已按通道分流（_prompt_for_channel），这个歧义随之消失。
+            # 因此这里可以安全放行——但仍要求内容非空、且本轮确实没有工具调用。
+            native_prose_final = (
+                self._native_enabled()
+                and not truncated
+                and finish_reason != "tool_calls"
+                and not self._pending_batch
+                and not native_override
+                and not parsed["action"]
+                and bool(acc.strip())
+            )
+            final_body = parsed["final"] or (acc if native_prose_final else "")
+
+            if final_body:
                 if truncated and not continuation_incomplete:
                     # parse_response 会 strip 掉结尾空格；在词边界截断时这会把
                     # "Hello " + "world" 错拼成 "Helloworld"，故保存原始正文。
@@ -3547,7 +3572,7 @@ class Agent:
                     yield {"type": "notice", "text": "模型单次输出已满，正在接续完整回答。"}
                     continue
 
-                final_text = _guard_transport_final(parsed["final"], question, trail, self.history)
+                final_text = _guard_transport_final(final_body, question, trail, self.history)
                 # 若上一步是"产出即答案"的工具且返回有效，强制透传工具结果，
                 # 避免小模型在 Final Answer 里改写数字/格式导致错误。
                 if self._is_verbatim_tool(last_action) and last_obs and not _is_failure(last_obs):
