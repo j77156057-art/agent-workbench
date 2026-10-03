@@ -1082,9 +1082,26 @@ def _dedup_docs(docs, metas):
 
 
 def search_knowledge(query):
-    """在已上传的知识库中检索与问题相关的文档片段。"""
-    retrieved = get_retriever(collection=get_runtime("knowledge_collection") or COLLECTION_NAME,
-                               top_k=TOP_K, embedding_client=_get_emb()).invoke(query)
+    """在已上传的知识库中检索与问题相关的文档片段。
+
+    检索失败**必须以可读文本返回，而不是抛异常**：本函数是 Agent 的工具，
+    裸异常会变成工具调用错误，让模型看到一段与「知识库里没有相关内容」完全不同
+    的东西——于是在没有证据的情况下更倾向于编造，而不是说"没查到"。
+
+    常见失败：向量维度与集合不符（Ollama 掉线后嵌入降级成哈希词袋）。
+    """
+    try:
+        retrieved = get_retriever(collection=get_runtime("knowledge_collection") or COLLECTION_NAME,
+                                  top_k=TOP_K, embedding_client=_get_emb()).invoke(query)
+    except Exception as exc:  # noqa: BLE001
+        detail = str(exc)
+        hint = ""
+        if "维度" in detail or "dimension" in detail.lower():
+            hint = ("向量维度与知识库索引不一致（多半是嵌入后端变了，或它曾不可用后降级）。"
+                    "处理办法：启动 Ollama 并拉取嵌入模型后重新上传文档，"
+                    "或在「⚙ 模型设置 → 知识库检索后端」里切换后端"
+                    "（切换会自动清空旧向量）。")
+        return "知识库检索失败：%s%s" % (detail, ("\n" + hint) if hint else "")
     docs = [item.page_content for item in retrieved]
     metas = [dict(item.metadata or {}) for item in retrieved]
     docs, metas = _dedup_docs(docs, metas)

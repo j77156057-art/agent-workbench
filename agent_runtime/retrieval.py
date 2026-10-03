@@ -832,18 +832,33 @@ class HybridRetriever(BaseRetriever):
                     allowed = set(self.source_allowlist)
                     corpus = [item for item in corpus
                               if str((item.metadata or {}).get("source") or "") in allowed]
-            if lexical_backend == "sqlite":
-                dense = ChromaRetriever(collection=self.collection_name, top_k=self.candidate_k,
-                                        embedding_client=self._embedding_client,
-                                        source_allowlist=self.source_allowlist).invoke(text)
-            elif not corpus:
-                span.update({"documents": 0, "returned": 0})
+            # dense 腿必须**独立可失败**。它最常见的失败原因是向量维度与集合不符
+            #（Ollama 掉线 -> EmbeddingClient 降级成 256 维哈希词袋，而集合是
+            # 1024 维）。此前这里没有 try/except，那个 ValueError 会掀掉整次
+            # 检索——可下面还有一条完好的 BM25 词法腿根本用不上。
+            # 名为 hybrid，就该真的是 hybrid：一腿断，另一腿还能出结果。
+            # 失败原因记进 span，让「检索质量下降」在观测里看得见，
+            # 而不是静默地少了一半候选。
+            dense: list[Document] = []
+            dense_error = ""
+            try:
+                if lexical_backend == "sqlite":
+                    dense = ChromaRetriever(
+                        collection=self.collection_name, top_k=self.candidate_k,
+                        embedding_client=self._embedding_client,
+                        source_allowlist=self.source_allowlist).invoke(text)
+                elif not corpus:
+                    span.update({"documents": 0, "returned": 0})
+                else:
+                    dense_k = min(self.candidate_k, len(corpus))
+                    dense = ChromaRetriever(
+                        collection=self.collection_name, top_k=dense_k,
+                        embedding_client=self._embedding_client,
+                        source_allowlist=self.source_allowlist).invoke(text)
+            except Exception as exc:  # noqa: BLE001
                 dense = []
-            else:
-                dense_k = min(self.candidate_k, len(corpus))
-                dense = ChromaRetriever(collection=self.collection_name, top_k=dense_k,
-                                        embedding_client=self._embedding_client,
-                                        source_allowlist=self.source_allowlist).invoke(text)
+                dense_error = "%s: %s" % (type(exc).__name__, exc)
+                span.update({"dense_error": dense_error, "dense_degraded": True})
             if corpus or lexical_backend == "sqlite":
                 dense_by_key = {_doc_key(item): item for item in dense}
                 dense_rank = {_doc_key(item): index for index, item in enumerate(dense)}

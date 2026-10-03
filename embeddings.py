@@ -32,6 +32,14 @@ class EmbeddingClient:
         self.client = None
         self.model = None
         self.dim = LOCAL_EMBED_DIM  # 兜底默认维度
+        #: 降级可见性：True = **本该用远程/本机模型却连不上**，于是退回了本地哈希词袋。
+        #:
+        #: 这与"用户主动把 embedding_provider 选成 local"是**两件不同的事**：
+        #: 前者是故障（维度可能与既有集合不符，且向量无意义），后者是决定。
+        #: 入库侧据此拒绝前者、放过后者——否则一次 Ollama 掉线就会把集合维度
+        #: 钉死在 256 维的无意义向量上，且**不报任何错**。
+        self.degraded = False
+        self.degraded_reason = ""
 
         if self.provider == "qwen":
             # 云端语义向量(需 key)
@@ -57,6 +65,13 @@ class EmbeddingClient:
                 )
                 self.client = None
                 self.dim = LOCAL_EMBED_DIM
+                self.degraded = True
+                self.degraded_reason = (
+                    "本机 Ollama 嵌入不可用（%s: %s），已降级为 %d 维哈希词袋（非语义）。"
+                    "若既有索引是用语义模型建的，这次查询会因维度不符而失败；"
+                    "若此刻上传文档，还会把集合维度钉死在哈希向量上。"
+                    % (type(e).__name__, e, LOCAL_EMBED_DIM)
+                )
 
     def _probe_dim(self):
         return len(self._remote_embed(["__dim_probe__"])[0])

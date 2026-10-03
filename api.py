@@ -1902,7 +1902,18 @@ async def ingest_code(root: str = Form(...)):
         # 重新索引前先清空代码集合：本端点语义是"把该目录完整重建索引"，
         # 不 reset 会导致同一切片被重复写入（实测 117 → 234 翻倍）。
         reset_collection(coll)
-        n = ingest_code_directory(root, collection=coll)
+        # 代码的**语义**索引是辅助能力：真正的代码检索走 grep / read_file /
+        # search_code，全程不需要向量。所以嵌入后端不可用时，这里必须**降级**
+        # 而不是让整个「选项目」流程失败——否则就成了「辅助能力绑住主能力」，
+        # 和刚修掉的检索封对话是同一个错误，只是换了一层。
+        # ingest_code_directory 仍在库层面严格拒绝写入哈希向量（宁可没有，
+        # 也不能让 search_code 静默返回无意义结果）。
+        code_index_note = ""
+        try:
+            n = ingest_code_directory(root, collection=coll)
+        except ValueError as exc:
+            n = 0
+            code_index_note = str(exc)
         abs_root = os.path.abspath(root)
         # 保证注册表里「该项目」的 root 正确（非当前项目也登记，但不改当前指针）
         try:
@@ -1925,6 +1936,12 @@ async def ingest_code(root: str = Form(...)):
         parts.extend(warnings)
         if not affects_current:
             parts.append(f"已为项目 {pid} 建立索引；当前项目未切换")
+        if code_index_note:
+            # 说清「项目仍可用」+「少了什么」+「怎么办」三件事。
+            parts.append(
+                "代码语义索引未建立（%s）；grep / 文件读取等代码检索不受影响"
+                % code_index_note.splitlines()[0]
+            )
         return {
             "ok": True,
             "chunks": n,

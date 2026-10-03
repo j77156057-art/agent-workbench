@@ -86,9 +86,35 @@ def chunk_text(text, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     return chunks
 
 
+def _reject_degraded_embeddings(emb):
+    """拒绝用**意外降级**的向量入库。
+
+    为什么这条必须存在：`add_documents` 里的维度冲突检查只保护"集合已存在"的
+    情况。集合为空或首次建库时，Chroma 会把维度**钉死在首次 insert 的值**上——
+    于是 Ollama 掉线期间上传的文档，会以 256 维哈希词袋（**无语义**）写进库里，
+    **全程不报任何错**。用户看到的是"上传成功"，之后知识库检索静默返回垃圾。
+
+    只拦"降级"，不拦"用户主动选 local"：后者是一个决定，且维度自洽。
+    """
+    if not getattr(emb, "degraded", False):
+        return
+    raise ValueError(
+        "向量模型当前不可用，已停止入库（否则会写入无意义的哈希向量并把集合"
+        "维度钉死，之后检索会静默返回错误结果）。\n"
+        "原因：%s\n"
+        "处理办法：\n"
+        "  1) 启动 Ollama 并确认已拉取嵌入模型，然后重新上传；\n"
+        "  2) 或在「⚙ 模型设置 → 知识库检索后端」里改用云端嵌入；\n"
+        "  3) 或明确选择「不启用（本地哈希兜底）」——那样所有文档都在同一维度下，"
+        "检索退化为字面词匹配，但至少结果是真的。"
+        % (getattr(emb, "degraded_reason", "") or "嵌入后端不可用")
+    )
+
+
 def ingest_file(path, emb=None, size=None, overlap=None):
     """摄取单个文件，返回切片数量。"""
     emb = emb or EmbeddingClient()
+    _reject_degraded_embeddings(emb)
     size = size or CHUNK_SIZE
     overlap = overlap or CHUNK_OVERLAP
 
@@ -540,6 +566,7 @@ def _code_file_records(path, root, emb):
 def ingest_code_file(path, root, emb=None, collection=CODE_COLLECTION_NAME):
     """摄取单个代码文件，返回切片数量。"""
     emb = emb or EmbeddingClient()
+    _reject_degraded_embeddings(emb)
     rec = _code_file_records(path, root, emb)
     if not rec:
         return 0
@@ -560,6 +587,7 @@ def ingest_code_directory(root, emb=None, collection=CODE_COLLECTION_NAME):
     所有切片先在内存中累积，按 _CODE_ADD_BATCH 批量写入向量库（而非每文件一次 add）。
     """
     emb = emb or EmbeddingClient()
+    _reject_degraded_embeddings(emb)
     root = os.path.abspath(root)
     total = 0
     texts_buf, embs_buf, metas_buf, ids_buf = [], [], [], []

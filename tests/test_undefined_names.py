@@ -108,20 +108,57 @@ def undefined_names(path):
 class NoStrayBomTests(unittest.TestCase):
     """BOM 会让某些工具链解析失败（ast、ruff 的部分规则、某些 CI 的 grep）。
 
-    本轮就在 llm.py 上踩到过：它带着 BOM，导致基于 AST 的检查直接抛
-    SyntaxError——检查器在最该查的文件上失效。所以把这件事钉成测试。
+    本轮在 llm.py 上踩到过：它带着 BOM，导致基于 AST 的检查直接抛
+    SyntaxError——检查器在最该查的文件上失效。
+
+    **扫全仓，不扫白名单。** 第一版只硬编码了 6 个核心模块，结果两周后又冒出
+    3 个带 BOM 的文件（其中一个是别的 lane 用 PowerShell ``Set-Content`` 写的）
+    ——而那条测试一直是绿的。
+
+    这本身就是本项目反复出现的那类 bug：一份**看起来在跑**的检查，实际有盲区。
+    硬编码清单等于把"我查了这些"当成"我查过了"。所以改成遍历。
     """
 
-    def test_core_modules_start_with_a_clean_hashbang_or_docstring(self):
-        for relpath in ("llm.py", "api.py", "tools.py", "agent.py",
-                        "sessions.py", "pricing.py"):
-            path = os.path.join(ROOT, relpath)
-            if not os.path.isfile(path):
-                continue
+    #: 不扫描的目录：第三方依赖与构建产物，与本仓库的编码规范无关。
+    SKIP_DIRS = frozenset({
+        ".venv", "venv", "node_modules", "__pycache__", ".git",
+        ".tmp", "artifacts", "dist", "build", ".pytest_cache", "uploads",
+    })
+
+    def _python_files(self):
+        for dirpath, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [d for d in dirnames if d not in self.SKIP_DIRS]
+            for name in filenames:
+                if name.endswith(".py"):
+                    yield os.path.join(dirpath, name)
+
+    def test_no_python_file_starts_with_a_bom(self):
+        offenders = []
+        for path in self._python_files():
             with open(path, "rb") as handle:
-                self.assertFalse(
-                    handle.read(3) == b"\xef\xbb\xbf",
-                    "%s 顶部有 UTF-8 BOM——某些工具链会因此解析失败" % relpath)
+                if handle.read(3) == b"\xef\xbb\xbf":
+                    offenders.append(os.path.relpath(path, ROOT).replace(os.sep, "/"))
+        self.assertEqual(
+            offenders, [],
+            "这些文件顶部有 UTF-8 BOM——pytest 能忍（import 时吞掉），但 ast / "
+            "ruff 部分规则 / 某些 CI 的文本处理会直接抛 "
+            "SyntaxError: invalid non-printable character U+FEFF：\n  %s"
+            % "\n  ".join(offenders))
+
+    def test_every_python_file_parses(self):
+        """顺带确认全仓源码都能被 ast 解析——BOM 只是其中一种破坏方式。
+
+        这条比 BOM 检查更宽：任何编码损坏、语法错误都会在这里暴露。
+        """
+        broken = []
+        for path in self._python_files():
+            try:
+                ast.parse(_read_source(path), filename=path)
+            except SyntaxError as exc:
+                broken.append("%s:%s %s" % (
+                    os.path.relpath(path, ROOT).replace(os.sep, "/"),
+                    exc.lineno, exc.msg))
+        self.assertEqual(broken, [], "这些文件无法解析：\n  %s" % "\n  ".join(broken))
 
 
 class CoreModulesHaveNoUndefinedNames(unittest.TestCase):
