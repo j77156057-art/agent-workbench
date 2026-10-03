@@ -1545,6 +1545,47 @@ _VERDICT_LABELS = {
 }
 
 
+def _evidence_remedy(audit, native_mode):
+    """针对**具体失败项**给出补救方式，而不是一律叫它"再读一遍"。
+
+    实测（godot_sample 定位扣血逻辑）：模型的引用写成了裸文件名
+    `enemy.gd` / `player.gd` / `hud.gd`（真实路径在 `behaviors/` 与 `ui/` 下），
+    闸门判FAIL 是**对的**。但纠偏文案一律说"调用 read_file 读取候选文件的相关行"，
+    于是模型把**已经完整读过的三个文件又读了一遍**——7 次额外调用、44 秒。
+
+    问题是**引用的写法**，不是"读得不够"。这两件事必须分开：
+
+    · 失败在``references_exist`` / ``reference_lines_valid`` ->改写引用即可，
+      **不要**要求重新读取（它手上已经有原文了）
+    · 只有在本轮确实没有成功读取记录时，才提示去读
+
+    这正是"过程项降级为参考"的用法：``read_file_present`` 不再决定**放不放行**，
+    但仍用来决定**该建议什么**。
+    """
+    audit = audit or {}
+    failed = [k for k, v in (audit.get("gate_checks") or {}).items() if v is False]
+    fixes = []
+    if "references_exist" in failed:
+        fixes.append("把打不开的引用改成**相对代码根目录的完整相对路径**"
+                     "（例如 `ui/hud.gd:20` 而不是 `hud.gd:20`）——"
+                     "路径写错不需要重新读文件，改对写法即可。")
+    if "reference_lines_valid" in failed:
+        fixes.append("行号越界：请按你已读到的原文修正行号，"
+                     "不要给出超出文件实际行数的行号。")
+    if "reference_present" in failed:
+        fixes.append("给出 `文件:行号` 形式的定位，让用户能直接点开核对。")
+    # 只有「本轮确实没读过」才建议去读——已读过就别让它白跑一趟。
+    if not (audit.get("checks") or {}).get("read_file_present", True):
+        fixes.append("本轮还没有成功的 read_file 记录：现在直接调用 read_file "
+                     "读取候选文件的相关行（search_code 摘要不算原文），"
+                     "读完再用自然语言给出结论。")
+    if not fixes:
+        fixes.append("按上面列出的具体问题改正后，重新给出结论。")
+    tail = "不需要写任何格式标记。" if native_mode else \
+        "然后重新给出 Final Answer。"
+    return "怎么改：\n%s\n%s" % ("\n".join("- " + f for f in fixes), tail)
+
+
 def _evidence_verdict_note(audit):
     """渲染用户可见的核验结论。
 
@@ -3772,12 +3813,7 @@ class Agent:
                         # 后硬失败（实测 stealth/space-bunny-alpha 就是这条路）。
                         _detail, _reflection = _evidence_failure_detail(evidence_audit)
                         native_mode = self._native_enabled()
-                        _how = ("现在直接调用 read_file 读取候选文件的相关行"
-                                "（不要把 search_code 摘要当作行为语义证据），"
-                                "读完再用自然语言给出结论，不需要写任何标记。"
-                                if native_mode else
-                                "请先调用 read_file 读取候选文件的相关行，再重新给出 "
-                                "Final Answer；不要把 search_code 摘要当作行为语义证据。")
+                        _how = _evidence_remedy(evidence_audit, native_mode)
                         trail.append({
                             "role": "user",
                             "content": (

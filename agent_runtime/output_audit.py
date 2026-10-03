@@ -73,7 +73,13 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             path = (root / path).resolve()
         exists = False
         in_root = True
-        line_ok = ref["start_line"] is None
+        # 行号检查只在**能打开文件**时才有意义。打不开时 line_count 从未数过，
+        # 此时判 line_ok=False 会让 `reference_lines_valid` 与 `references_exist`
+        # 一起失败，于是纠偏文案会说「行号超出了文件实际行数」——**而我们根本没数过
+        # 行数**。那条建议模型无法执行，也是不该给出的。
+        # （实测：模型写裸文件名 enemy.gd 时，两条失败同时出现。）
+        # 所以：打不开 -> 行号检查标记为「不适用」，只报路径问题。
+        line_ok = True
         try:
             exists = path.is_file()
             if root is not None:
@@ -84,7 +90,7 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
                 line_ok = 1 <= ref["start_line"] <= line_count and ref["end_line"] <= line_count
         except (OSError, ValueError):
             exists = False
-            line_ok = False
+            line_ok = True  # 同上：打不开 -> 行号问题不适用，不是「越界」
         file_checks.append(dict(ref, exists=exists, in_root=in_root, line_ok=line_ok))
     # A trace can be supplied by a workflow runner or by a direct Agent.  A
     # successful flag is the only portable signal; failure observations remain

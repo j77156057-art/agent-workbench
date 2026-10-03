@@ -256,5 +256,94 @@ class PartialMeansTwoDifferentThingsTests(unittest.TestCase):
                              "root=%r steps=%r 的 reason 不对" % (root, len(steps)))
 
 
+class RemedyMatchesTheActualProblemTests(unittest.TestCase):
+    """补救方式必须对准**真正的问题**，不能一律叫它"再读一遍"。
+
+    实测：模型把引用写成裸文件名 `enemy.gd` / `player.gd` / `hud.gd`
+    （真实路径在 `behaviors/`、`ui/` 下），闸门判 FAIL 是对的。但纠偏文案一律说
+    "调用 read_file 读取候选文件的相关行"，于是它把**已经完整读过的三个文件又读
+    了一遍**——7 次额外调用、44 秒。问题在引用写法，不在读得不够。
+    """
+
+    def _audit(self, failed, read_present=True):
+        return {"gate_checks": dict(failed, location_question=True),
+                "checks": {"read_file_present": read_present,
+                           "location_question": True},
+                "references": [], "verdict": "FAIL"}
+
+    def test_a_bad_path_does_not_ask_for_a_reread(self):
+        remedy = agent_mod._evidence_remedy(
+            self._audit({"references_exist": False}, read_present=True), native_mode=True)
+        self.assertIn("相对代码根目录的完整相对路径", remedy)
+        self.assertIn("不需要重新读文件", remedy,
+                      "引用写法错了却让它重新读——它手上已经有原文了")
+        self.assertNotIn("现在直接调用 read_file", remedy)
+
+    def test_only_when_nothing_was_read_does_it_suggest_reading(self):
+        remedy = agent_mod._evidence_remedy(
+            self._audit({"references_exist": False}, read_present=False), native_mode=True)
+        self.assertIn("现在直接调用 read_file", remedy,
+                      "本轮确实没读过原文时，必须让它去读")
+
+    def test_an_out_of_range_line_says_fix_the_number(self):
+        remedy = agent_mod._evidence_remedy(
+            self._audit({"reference_lines_valid": False}, read_present=True), native_mode=True)
+        self.assertIn("修正行号", remedy)
+        self.assertNotIn("现在直接调用 read_file", remedy)
+
+    def test_a_missing_reference_says_give_one(self):
+        remedy = agent_mod._evidence_remedy(
+            self._audit({"reference_present": False}, read_present=True), native_mode=True)
+        self.assertIn("文件:行号", remedy)
+
+    def test_the_text_protocol_tail_is_kept(self):
+        remedy = agent_mod._evidence_remedy(
+            self._audit({"references_exist": False}, read_present=True), native_mode=False)
+        self.assertIn("Final Answer", remedy,
+                      "文本协议下仍需说明用标记收尾——两套通道文案必须都可用")
+
+    def test_an_empty_audit_does_not_produce_an_empty_remedy(self):
+        remedy = agent_mod._evidence_remedy({}, native_mode=True)
+        self.assertTrue(remedy.strip())
+        self.assertIn("怎么改", remedy)
+
+
+@unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+class UnopenableFileMustNotAlsoBeReportedAsBadLinesTests(unittest.TestCase):
+    """打不开的文件**不能**同时被报成「行号越界」。
+
+    我们压根没打开那个文件、没数过行数，所以「行号超出了文件实际行数」是一句
+    我们不知道真不真的断言，而它给出的建议（按原文修正行号）模型也无法执行。
+    实测就是踩到这条：模型写裸文件名 `enemy.gd` 时，两条失败同时出现。
+    """
+
+    def test_only_the_path_problem_is_reported(self):
+        out = audit_evidence({"text": "数值在 enemy.gd:7。", "trace": {"steps": READ}},
+                             question=QUESTION, code_root=PROJECT)
+        self.assertFalse(out["gate_checks"]["references_exist"],
+                         "用例前提不成立：裸文件名本应打不开")
+        self.assertTrue(
+            out["gate_checks"]["reference_lines_valid"],
+            "打不开的文件被同时报成「行号越界」——我们从未数过行数，"
+            "这条建议模型也无法执行")
+
+    def test_the_remedy_does_not_talk_about_line_numbers(self):
+        out = audit_evidence({"text": "数值在 enemy.gd:7。", "trace": {"steps": READ}},
+                             question=QUESTION, code_root=PROJECT)
+        detail, _ = agent_mod._evidence_failure_detail(out)
+        self.assertNotIn("行号超出", detail,
+                         "纠偏文案里出现了从未验证过的行号问题")
+        self.assertIn("打不开", detail)
+
+    def test_a_real_out_of_range_line_is_still_caught(self):
+        """打不开 vs 真的越界，两者必须仍能区分开。"""
+        out = audit_evidence({"text": "数值在 behaviors/enemy.gd:999。",
+                              "trace": {"steps": READ}},
+                             question=QUESTION, code_root=PROJECT)
+        self.assertTrue(out["gate_checks"]["references_exist"])
+        self.assertFalse(out["gate_checks"]["reference_lines_valid"],
+                         "文件能打开、行号 999 越界——必须照常报出来")
+
+
 if __name__ == "__main__":
     unittest.main()
