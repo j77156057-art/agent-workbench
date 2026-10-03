@@ -1961,6 +1961,38 @@ def _child_trace(traj, thoughts, reflections=None, turn_record=None, used=None,
     }
 
 
+def _traj_evidence_block(traj, limit: int = 1600) -> str:
+    """把工具观察压成给反思器看的有界证据块。
+
+    取**尾部**而不是头部：子代理的最终写盘验证总在最后几步，头部只有最初的
+    目录探查。这里如实标注截断，不假装给全了——否则判据又会在"看不到的那段"
+    上做出「没有证据」的结论，而那正是本条判据要治的病。
+    """
+    steps = [step for step in (traj or []) if isinstance(step, dict)]
+    if not steps:
+        return "工具观察：无（这一步没有执行任何工具）"
+    lines = []
+    for step in steps:
+        action = _clip(str(step.get("action") or ""), 160)
+        obs = _clip(str(step.get("obs") or ""), 420)
+        ok = step.get("ok")
+        mark = "" if ok is None else (" [失败]" if ok is False else " [成功]")
+        lines.append("- %s%s\n  观察：%s" % (action or "(无动作)", mark, obs or "(空)"))
+    body = "\n".join(lines)
+    if len(body) <= limit:
+        return "工具观察（共 %d 步）：\n%s" % (len(steps), body)
+    kept = []
+    total = 0
+    for line in reversed(lines):
+        if total + len(line) > limit and kept:
+            break
+        kept.append(line)
+        total += len(line)
+    kept.reverse()
+    return ("工具观察（共 %d 步，下面是**最后 %d 步**，前面的未提供）：\n%s"
+            % (len(steps), len(kept), "\n".join(kept)))
+
+
 def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budget=None):
     """Run a bounded post-task reflection and retain a deterministic fallback."""
     failed_steps = sum(1 for step in (traj or []) if isinstance(step, dict)
@@ -1976,9 +2008,20 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
         "你是子代理任务反思器。只输出 JSON，不要 Markdown："
         '{"ok":true,"issues":[],"next_step":"..."}。\n'
         "检查：是否完成任务、结论是否有证据、工具步骤是否失败、是否需要主 Agent 重规划。\n"
+        # 这条判据的依据是**工具观察**，不是结论的复述长度。
+        # 旧版只给了 `步骤数：N；失败步骤：M`，于是判据在结构上只能问
+        # 「结论有没有把这些复述一遍」——而它压根不知道观察里有什么。
+        # 实测（wf-f3da9d3ffb32）：子代理的 python_exec 真实写盘并报告
+        # `WRITE_OK: True` / `actual == after: True` / `bom_preserved: True` /
+        # `diff_offsets: [121] b'2'->b'5'`，这些全在观察里；判据却判
+        # 「结论被截断，未展示写后重新读取 actual…」，于是**三次正确的
+        # 字节级写入被连续判失败**，逼出两轮 replan 重做同一件事。
+        "**证据以「工具观察」为准**：观察里有的结论不必逐字复述，"
+        "不算缺陷；但结论**不得声称观察里没有的东西**。\n"
         f"角色：{_clip(str(role), 40)}\n任务：{_clip(str(task), 600)}\n"
         f"结论：{_clip(str(conclusion), 900)}\n"
         f"步骤数：{len(traj or [])}；失败步骤：{failed_steps}\n"
+        f"{_traj_evidence_block(traj)}\n"
         f"上游上下文键：{', '.join(str(key) for key in (context or {})) or '无'}"
     )
     try:
@@ -3234,6 +3277,24 @@ class Agent:
                         if lookup_output_limit and isinstance(self.llm, LLMClient):
                             chat_kwargs["max_output_tokens"] = lookup_output_limit
                         acc = self.llm.chat(**chat_kwargs)
+                        # 上游给出 content=None 且这一轮没有 tool_calls 时，`chat()` 会把
+                        # None 原样返回（`llm.py` 的 `getattr(msg, "content", None)`）。
+                        # 那在「tool-call-only 消息」上是**对的**——原生 FC 通道正是靠
+                        # content=None 表示"这轮只调工具"，而
+                        # `tests/test_empty_provider_response.py::
+                        # test_a_message_with_none_content_is_still_returned`
+                        # 就把这条当成正确行为钉住了。
+                        #
+                        # 但「没有 tool_calls 的 None」是**空响应**，另一回事。旧代码把
+                        # 它原样赋给 acc，下一行 `acc.strip()` 立刻抛
+                        # `AttributeError: 'NoneType' object has no attribute 'strip'`：
+                        # 整个子代理失败、任务判红，而真实情况只是「模型这次什么都没说」。
+                        #
+                        # 归一成空串，让它走**本来就为它准备好的**那条路：
+                        # format_stalls（`_MAX_FORMAT_STALLS`）会纠偏两次，然后如实
+                        # 告诉用户「模型没按格式应答」——而不是伪装成一次崩溃。
+                        if acc is None:
+                            acc = ""
                         _raise_if_cancelled()
                 if turn is not None:
                     turn.llm_step((time.monotonic() - _t_llm) * 1000, finish_reason)
@@ -4109,9 +4170,18 @@ class Agent:
                     turn.outcome = "fallback_cleaned"
                 final_text = _clean_fallback_answer(acc)
                 self.history.append({"user": question, "assistant": final_text})
-                yield {"type": "final", "text": final_text}
+                # 下面这两条 yield 与 3029 那条证据兜底同型：**harness 代写的文字，
+                # 不是模型自己的 Final Answer**（一条是清洗后的残句，一条是空响应
+                # 诊断）。此前它们都没带 degraded，于是 `_run_child` 读到
+                # `final_degraded = bool(ev.get("degraded"))` = False，把一条
+                # **诊断**当成模型的正式答案交给下游任务——实测那条结论是
+                # 「模型连续 1 次调用都没有返回可用正文…」，而记录是
+                # `status: ok` / `degraded: False` / 结论非空。
+                # 下游于是以为上一个任务真给了答案。这就是本仓库反复出现的
+                # 那类错：把「没能答」记成「答了」。
+                yield {"type": "final", "degraded": True, "text": final_text}
                 return
-            yield {"type": "final", "text": final_text}
+            yield {"type": "final", "degraded": True, "text": final_text}
             return
 
     # ------------------------------------------------------------------

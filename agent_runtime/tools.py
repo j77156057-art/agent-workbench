@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -295,6 +296,44 @@ _IDEMPOTENCY_SCOPE: ContextVar[tuple[str, str] | None] = ContextVar(
     "tool_idempotency_scope", default=None)
 _PROJECT_STAGE_SCOPE: ContextVar[bool] = ContextVar("project_stage_scope", default=False)
 _IDEMPOTENCY_LOCK = threading.RLock()
+
+
+def stage_scope_active() -> bool:
+    """本线程是否在项目试做区作用域内。
+
+    刻意与 ``project_stage_scope`` 的置位点放在一起：那个 ContextVar 只表示
+    「作用域开着」，不表示**代码根真的被切到了试做区**——而后者才是隔离生效
+    的真条件（``python_exec`` 用 ``_get_code_root()`` 当cwd）。
+    """
+    return bool(_PROJECT_STAGE_SCOPE.get())
+
+
+def stage_cwd_report(cwd: str) -> str:
+    """在试做区里执行时，说清相对路径究竟落在哪个目录。
+
+    **为什么需要这一行**（实测，``wf-f3da9d3ffb32``）：一次真实工作流里，
+    子代理用 ``open("values/level.gd", "wb")`` 改了文件并报告
+    ``WRITE_OK: True``，而事后核对发现——
+
+        真实项目 values/level.gd   10-03 22:53:12   ← 改了
+        试做区 workspace           09-11 18:55:51   ← 从没被碰过
+
+    也就是说**写入绕过了试做区**，而 UI 仍在报「项目改动位于临时试做区」。
+    光看结果无法区分两种可能：(a) 执行时 cwd 就是真实项目（隔离没生效），
+    (b) cwd 是试做区、事后有别处把它拷回了真实项目。这两者修法完全不同，
+    而试做区 workspace 的 mtime 从未被更新——倾向于 (a)，但那是推断不是证据。
+
+    所以让工具**自报实际执行目录**。这一行只在试做区激活时出现，
+    平时运行不改变任何输出形状。
+    """
+    root = os.path.normcase(os.path.abspath(cwd or ""))
+    # 按**路径分段**判，不硬编码基址：`project_stage.create_stage` 用的是
+    # `Path(state_root)/"project_stages"/<wid>`，而生产的 state_root 是
+    # `<repo>/.docmind`、测试里是临时目录——写死 `config.STATE_ROOT` 会把
+    # 明明在试做区里的路径判成"不在"（第一版就是这么错的，探针当场抓到）。
+    inside = "project_stages" in root.replace("\\", "/").split("/")
+    return ("执行目录：%s%s"
+            % (cwd, "" if inside else "  ← **不在试做区内，相对路径会写进真实项目**"))
 
 _STAGE_ALLOWED_TOOLS = frozenset({
     "read_file", "search_code", "grep", "list_dir", "search_knowledge",

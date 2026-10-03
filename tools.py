@@ -3114,6 +3114,14 @@ def python_exec(code):
     except Exception as e:  # noqa: BLE001
         return f"执行失败: {e}"
     out = (proc.stdout or "") + (proc.stderr or "")
+    # 试做区里说清相对路径落在哪——见 agent_runtime/tools.py:stage_cwd_report 的理由。
+    # 只有作用域开着时才加这一行，平时运行不改变输出形状。
+    try:
+        from agent_runtime.tools import stage_cwd_report, stage_scope_active
+        if stage_scope_active():
+            out = stage_cwd_report(cwd) + "\n" + out
+    except Exception:
+        pass
     if not out.strip():
         return "（代码已执行，无输出）"
     # 保留开头与结尾：异常堆栈在末尾，单向截断会把真正的报错切掉。
