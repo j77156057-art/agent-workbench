@@ -1586,6 +1586,21 @@ test_run / voice_loop / **bat_guard** / **page_action** / **log_view** / **job_l
      真要兜住 hang，得靠 `run_isolated` 那套子进程 + 超时，而不是在同进程里计时。
    - 引擎仍**没有看门狗**：任何"变异让代码挂死"的场景都会挂到 CI 超时，
      而不是报「这条变异让测试挂住了」。这与 6c 那条是同一个洞。
+   - **提交后元测试从 24 passed 退回 `4 failed / 24 passed / 458 subtests`，
+     归因是另一条 lane 的 `a97f6c7`（改 `game_workflow.py` + 加新测试类），不是本 lane**。
+     两条实测依据：
+     ① `battery_plan_dag` 有两条锚点现在 `count=2`（引擎只替换第一处，会打错地方）——
+        `诊断不剥 ``` 围栏`（锚 `re.sub(r"^```(?:json)?\s*|\s*```$", "", text,`）
+        与 `诊断不认 plan.tasks 嵌套`（锚 `if inner is None and isinstance(raw.get("plan"), Mapping):`）
+        都在对方新加的那段诊断函数里**出现了第二份**。
+     ② `battery_workflow_events`：`tests/test_workflow_tool_events.py:219` 新增了
+        `ExecutionRootIsReportedTests`，而元测试要求每个带 `test_` 的类
+        必须在 `UNIT_CLASSES`/`LIVE`/`LAYER_EXEMPT` 三者之一，否则报"永远不会被拿来判变异"。
+     **为什么没顺手改**：`game_workflow.py` 与 `test_workflow_tool_events.py` 都在对方
+     正在动的范围里（双写者纪律）。锚点要改成"带更多上下文直到唯一"、
+     新类要归到哪一层，**得由改这些文件的那条 lane 决定**（也可能他们本来就在做这件事）。
+     **边界**：这两条红在对方提交落地的瞬间就存在，与本 lane 无关；
+     本 lane 自己那五块电池**带现场层跑仍是 40/40 全绿**（已复跑确认）。
    - **§10 第 3 条那个全量数字在本机一趟跑不出来**（实测 `exit=124`：
      `timeout 3000` 秒墙钟被杀，**50 分钟仍未结束**）。已定位到**不是**本轮改动引入：
      本仓 `tests/test_*.py` 共 **243 个文件**，而其中
