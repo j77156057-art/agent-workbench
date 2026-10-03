@@ -84,8 +84,11 @@ _EVIDENCE_IN_PROMPT = 'f"{_traj_evidence_block(traj)}\\n"'
 #: agent.py:2015，证据块函数签名（limit 是有界保证）。
 _BLOCK_SIG = 'def _traj_evidence_block(traj, limit: int = 1600) -> str:'
 
-#: agent.py:2038，截断时如实标注，不假装给全了。
-_TRUNC_NOTE = '"工具观察（共 %d 步，下面是**最后 %d 步**，前面的未提供）：\\n%s"'
+#: agent.py:2240，截断时如实标注，不假装给全了。
+#:
+#: 尾部多一个 `%s` 是**形状声明**（`_shape(...)`）——它排在正文之后，是刻意为之：
+#: 截断取尾部，声明若排在最前面，预算一紧就被切掉，而那正是判据最需要它的时刻。
+_TRUNC_NOTE = '"工具观察（共 %d 步，下面是**最后 %d 步**，前面的未提供）：\\n%s\\n%s"'
 
 #: agent.py:2026，失败步骤被标出来。
 _OK_MARK = 'mark = "" if ok is None else (" [失败]" if ok is False else " [成功]")'
@@ -115,13 +118,18 @@ MUTATIONS = [
     # 的 else 分支——`reversed()` 一次都没被调用。「活下来」看着像守卫没牙，
     # 其实是这份数据永远走不到那里（§9：先问「它依赖的是代码还是环境」）。
     # 现在改取真正被执行的两步：遍历方向、最后的顺序复位。
+    #
+    # 锚点在 2026-10 重写过一次：证据块新增了「声明哪些观察带行号」这一段，
+    # 截断循环随之从 `for line in reversed(lines)` 改成按下标倒着走
+    # （`kept_idx` 是给声明用的），旧锚点整段消失、`anchors_valid` 报「出现 0 次」。
+    # **变异意图没变**：仍要打掉「从尾部取」与「把顺序装回去」这两件事。
     ("证据块从尾部倒着拼——步骤顺序整个倒过来，判据读到的时间线是反的",
-     'for line in reversed(lines):\n        if total + len(line) > limit and kept:\n            break\n        kept.append(line)\n        total += len(line)\n    kept.reverse()',
-     'for line in lines:\n        if total + len(line) > limit and kept:\n            break\n        kept.append(line)\n        total += len(line)\n    kept.reverse()'),
+     'for i in range(len(lines) - 1, -1, -1):',
+     'for i in range(len(lines)):'),
 
     ("取到的片段不再复位顺序——保留的是头部的 N 步，只是被标成「最后 N 步」",
-     '        kept.append(line)\n        total += len(line)\n    kept.reverse()',
-     '        kept.append(line)\n        total += len(line)'),
+     '    kept.reverse()\n    kept_idx.reverse()',
+     '    pass'),
 
     # ---- ③ 有界性：limit 不传 / 大到没边 ----
     ("证据块默认 limit 抬到 10**9——「有界」这条判据名存实亡",

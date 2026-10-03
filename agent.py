@@ -2107,16 +2107,92 @@ def _child_trace(traj, thoughts, reflections=None, turn_record=None, used=None,
     }
 
 
+#: 判断一条工具观察里**有没有行号**。
+#:
+#: ## 为什么不能靠「某行是否以数字+冒号开头」来猜
+#:
+#: 那是第一版的做法，实测**在裸正文上有假阳性**：
+#:
+#:     === t.py ===  +  1: "one"（Python dict 字面量）   -> 判成带行号
+#:     === notes.md ===  +  2024: 年度回顾（md 标题）    -> 判成带行号
+#:     === c.yaml ===  +  0: 关（YAML 数字键）           -> 判成带行号
+#:
+#: 后果是反的：`_shape` 会对着一个**根本没有行号**的整文件读取宣布
+#: 「下面 1 条观察都带行号，行号可以逐条核验」，判据于是回去核验行号，
+#: 又连报三轮「无证据」——只是这次只对含数字键的文件发作，而 YAML /
+#: JSON dump / 日志 / 数据文件恰恰是常读的一类。
+#:
+#: ## 所以改成认工具自己写死的两种框
+#:
+#: 区间读与 grep/search_code 的输出格式是 `tools.py` 自己拼的，不是模型写的，
+#: 所以比「任意以数字冒号开头的行」硬得多：
+#:
+#:     read_file(..., start: 6, end: 8) → === f（第 6-8 行，共 42 行）===
+#:     grep / search_code             → [behaviors/player.gd:L20-L21 (godot-scene)]
+_RE_OBS_RANGE_HEADER = re.compile(r"（第\s*\d+\s*[-~]\s*\d+\s*行")
+_RE_OBS_TAGGED_BLOCK = re.compile(r"\[[^\]\n]*:L\d+(?:\s*[-~]\s*L?\d+)?\s*[^\]\n]*\]")
+
+#: 「不要因为缺行号而判失败」这句话**只写一次**。
+#:
+#: 它同时出现在证据块的形状声明与反思提示里。两处的措辞已经开始往不同方向长，
+#: 而漂移是看不见的——所以抽成常量，让两处共用一句话；测试也断言这个常量，
+#: 于是任何一侧想改措辞都会立刻被看见。
+_LINE_NUMBER_EXEMPTION = "**不要因为某条没有行号就判它无证据**。"
+
+
+def _obs_has_line_numbers(obs: str) -> bool:
+    """这条观察里有没有**工具给的**行号（而不是恰好长得像行号的正文）。
+
+    **只认工具自己写的两种框**，不做任何内容猜测：
+
+        read_file(..., start: 5)   → === a.gd（第 25-29 行，共 29 行）=== + 25: l25
+        grep / search_code          → [behaviors/player.gd:L20-L21 (godot-scene)]
+
+    刻意**没有**「整文件读取时就逐行判断」的兜底：实测 `=== t.py ===` 里跟着
+    `1: "one"`（dict 字面量）、`2024: 年度回顾`（md 标题）、`0: 关`（YAML 数字键）
+    都会被那种判断认成带行号——而 YAML / JSON dump / 日志 / 数据文件恰恰是常读的
+    一类。宁可漏判（说成裸正文、判据从内容判），不可错判（说成带行号、判据又回去
+    核验行号）。
+
+    区间读即使只给 `start:`，工具也会自行补出 `end:` 并打上抬头
+    （实测 `start: 25` → `第 25-29 行`），所以两种区间形状都覆盖到了。
+    """
+    text = str(obs or "")
+    return bool(_RE_OBS_RANGE_HEADER.search(text)
+                or _RE_OBS_TAGGED_BLOCK.search(text))
+
+
 def _traj_evidence_block(traj, limit: int = 1600) -> str:
     """把工具观察压成给反思器看的有界证据块。
 
     取**尾部**而不是头部：子代理的最终写盘验证总在最后几步，头部只有最初的
     目录探查。这里如实标注截断，不假装给全了——否则判据又会在"看不到的那段"
     上做出「没有证据」的结论，而那正是本条判据要治的病。
+
+    ## 为什么要声明「哪些观察带行号」
+
+    反思判据会被任务里的「每条结论带 `文件:行号`」带着走，去核验**行号**。
+    但 `read_file` 整文件读取的观察是**裸正文、零行号**（实测
+    `wf-2c5612c6ee53` 连续三轮都报「未获得完整行号证据」），只有区间读与
+    grep/search_code 才逐行编号。
+
+    于是判据在一份**没有行号的材料**上核验行号，连报三轮「无证据」——模型于是
+    反复重读同一批文件，每轮都败在同一处：**一条结构上不可能成功的路**。
+
+    所以这里**如实声明本块里哪些观察带行号**，让判据不必去猜、更不会去核验
+    材料里不存在的东西。这比在提示里写「不要要求行号」更硬：它把事实摆在判据
+    眼前，而不是指望判据记得。
+
+    ## `limit` 只管正文
+
+    表头与上面那句形状声明**不计入** `limit`：声明必须活着（测试把这条当契约），
+    而它固定约 150 字。所以整块实际比 `limit` 长 150-300 字。若调用方要精确控制
+    提示预算，得把这一段算进去——这里说清楚，免得下一个人以为 `limit` 是硬上限。
     """
     steps = [step for step in (traj or []) if isinstance(step, dict)]
     if not steps:
         return "工具观察：无（这一步没有执行任何工具）"
+    numbered = [_obs_has_line_numbers(step.get("obs")) for step in steps]
     lines = []
     for step in steps:
         action = _clip(str(step.get("action") or ""), 160)
@@ -2124,19 +2200,45 @@ def _traj_evidence_block(traj, limit: int = 1600) -> str:
         ok = step.get("ok")
         mark = "" if ok is None else (" [失败]" if ok is False else " [成功]")
         lines.append("- %s%s\n  观察：%s" % (action or "(无动作)", mark, obs or "(空)"))
+
+    def _shape(kept_idx):
+        """如实声明**保留下来的那几条**里几条带行号。
+
+        放在截断**之后**算：截断取的是尾部，声明若排在最前面，预算一紧就被切掉
+        ——而那正是判据最需要它的时刻（观察多、每条都长的时候）。
+
+        `kept_idx` 永不为空：截断循环要求 `kept` 非空才 break，非截断路径传的是
+        `range(len(steps))` 而上面已对空 `steps` 提前 return。所以这里没有
+        「一条都没有」的分支——那条语义由那个提前 return 承担。
+        """
+        hit = sum(1 for i in kept_idx if numbered[i])
+        if hit == len(kept_idx):
+            return "下面 %d 条观察**都带行号**，行号可以逐条核验。" % len(kept_idx)
+        if hit == 0:
+            return ("下面 %d 条观察**都不带行号**——`read_file` 整文件读取返回的是裸正文。"
+                    "请以「观察里是否真的出现过该内容」判断证据，%s" % (len(kept_idx),
+                    _LINE_NUMBER_EXEMPTION))
+        return ("下面 %d 条观察里只有 %d 条带行号（区间读与 grep/search_code 才有），"
+                "其余是裸正文——请按各自的实际形状判断证据，%s"
+                % (len(kept_idx), hit, _LINE_NUMBER_EXEMPTION))
+
     body = "\n".join(lines)
     if len(body) <= limit:
-        return "工具观察（共 %d 步）：\n%s" % (len(steps), body)
+        return ("工具观察（共 %d 步）：\n%s\n%s"
+                % (len(steps), _shape(range(len(steps))), body))
     kept = []
+    kept_idx = []
     total = 0
-    for line in reversed(lines):
-        if total + len(line) > limit and kept:
+    for i in range(len(lines) - 1, -1, -1):
+        if total + len(lines[i]) > limit and kept:
             break
-        kept.append(line)
-        total += len(line)
+        kept.append(lines[i])
+        kept_idx.append(i)
+        total += len(lines[i])
     kept.reverse()
-    return ("工具观察（共 %d 步，下面是**最后 %d 步**，前面的未提供）：\n%s"
-            % (len(steps), len(kept), "\n".join(kept)))
+    kept_idx.reverse()
+    return ("工具观察（共 %d 步，下面是**最后 %d 步**，前面的未提供）：\n%s\n%s"
+            % (len(steps), len(kept), _shape(kept_idx), "\n".join(kept)))
 
 
 def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budget=None):
@@ -2164,6 +2266,26 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
         # 字节级写入被连续判失败**，逼出两轮 replan 重做同一件事。
         "**证据以「工具观察」为准**：观察里有的结论不必逐字复述，"
         "不算缺陷；但结论**不得声称观察里没有的东西**。\n"
+        # 行号这一条必须写清楚，否则判据会去核验**材料里根本没有的东西**。
+        # 实测（wf-2c5612c6ee53，连续三轮全部这样判）：
+        #   「所有 read_file 观察均被截断，未获得完整行号证据」
+        #   「结论中不得声称观察里没有的内容，目前无任何带文件:行号的证据」
+        # 而 `read_file` **整文件读取时观察里一个行号都没有**（裸正文），
+        # 只有显式给了 `start`/`end` 的区间读才会逐行编号：
+        #   read_file(path: project.godot)                  -> === project.godot === + 裸正文
+        #   read_file(path: project.godot, start: 6, end: 8) -> 6: config/name="StarVoyager"
+        # 任务文本常写「每条结论带 文件:行号」，判据据此判「没有行号 → 无证据」——
+        # 可它手里只有裸正文。**这不是模型偷懒，是判据在核验材料里不存在的东西。**
+        # 后果具体表现为：子代理反复重读同一批文件、每轮都以「无行号证据」失败，
+        # 直到耗尽重规划次数——**那是一条结构上不可能成功的路**。
+        #
+        # 所以：行号**只在对应观察里本来就有行号时才可作为判据**。否则以
+        # 「观察里确实出现过该内容」为准——这仍然能拦住幻觉（声称观察里没有的
+        # 东西照样是缺陷），只是不再要求一件工具做不到的事。
+        "**行号不是默认判据**：只有当对应观察里本来就有行号（区间读或 grep/search_code）"
+        "时，才可以把「结论没给行号」算作缺陷。`read_file` 整文件读取的观察是裸正文、"
+        "没有行号，此时请以「观察里是否真的出现过该内容」判断证据，"
+        + _LINE_NUMBER_EXEMPTION + "——那会让重试永远无法成功。\n"
         f"角色：{_clip(str(role), 40)}\n任务：{_clip(str(task), 600)}\n"
         f"结论：{_clip(str(conclusion), 900)}\n"
         f"步骤数：{len(traj or [])}；失败步骤：{failed_steps}\n"
