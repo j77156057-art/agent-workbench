@@ -154,6 +154,58 @@ class LlmWaitEventTests(unittest.TestCase):
             self.assertIn(kind, SINK_FORWARDED_HOOKS,
                           "%s 没进转发集合 —— 面板按这些字面量过滤" % kind)
 
+    def test_both_kinds_are_declared_workflow_hooks(self):
+        """**这一条才是当初漏掉的那条。**
+
+        `hooks.run_workflow` 第一行是
+        `if kind not in _WORKFLOW_KINDS: return …` —— 不在那个元组里的 kind
+        会被**静默丢弃，连事件都不发布**。
+
+        上一条提交里 `llm_wait_*` 是在 `agent.py` 侧发的，进程内测试 spy
+        `run_workflow` 看到它被调用就通过了；而真实跑一次工作流后，
+        事件流里 `llm_wait_*` 出现 **0 次**，静默度仍 99%。
+
+        验「函数被调用」不是验「事件到了」—— 前者在调用边界，后者在用户
+        看得到的那条路。
+        """
+        from hooks import _WORKFLOW_KINDS
+        for kind in ("llm_wait_start", "llm_wait_end"):
+            self.assertIn(kind, _WORKFLOW_KINDS,
+                          "%s 不在 hooks._WORKFLOW_KINDS 里，run_workflow 会"
+                          "在第一行就 return，事件根本不会发布" % kind)
+
+    def test_run_workflow_actually_publishes_them_to_the_scope_sink(self):
+        """再往下一层：确认 `workflow_event_scope` 的 sink 真能收到。"""
+        import hooks
+
+        got = []
+
+        def sink(kind, payload, result):
+            got.append(kind)
+
+        for kind in ("llm_wait_start", "llm_wait_end"):
+            with hooks.workflow_event_scope(sink):
+                hooks.run_workflow(kind, {"purpose": "test", "duration_ms": 1})
+        self.assertIn("llm_wait_start", got,
+                      "sink 没收到 llm_wait_start —— 事件在 run_workflow 里被丢了")
+        self.assertIn("llm_wait_end", got)
+
+    def test_an_undeclared_kind_is_silently_dropped(self):
+        """把「静默丢弃」这件事本身钉住：它正是这次踩的坑的形状。"""
+        import hooks
+
+        got = []
+
+        def sink(kind, payload, result):
+            got.append(kind)
+
+        with hooks.workflow_event_scope(sink):
+            result = hooks.run_workflow("no_such_hook_kind", {})
+        self.assertEqual(got, [], "未声明的 kind 不该发布事件")
+        self.assertFalse(result.get("blocked"),
+                         "未声明的 kind 必须返回中性的不拦截结果，"
+                         "否则调用方会以为钩子真的跑过了")
+
 
 class StageCwdReportTests(unittest.TestCase):
     """诊断那一行必须**判得对**——第一版把试做区里的路径判成了"不在"。

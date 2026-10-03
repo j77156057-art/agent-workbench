@@ -166,7 +166,21 @@ SINK_TOOL_CHARS = int(os.getenv("DOCMIND_SINK_TOOL_CHARS", "400"))
 #: 因为开发舱「实际工具调用」面板是按 `kind in {before_tool, after_tool,
 #: before_mcp, after_mcp}` 从**持久化事件数组**里过滤的——另造类型它一样看不见。
 SINK_TOOL_HOOKS = ("before_tool", "after_tool", "before_mcp", "after_mcp")
-SINK_STEP_TYPES = {"thought", "action", "observation"} | set(SINK_TOOL_HOOKS)
+#: 「工具生命周期」+「模型等待」——**两者合并成一份**，因为下游对它们的要求
+#: 完全一样（沿用钩子原名、走同一条转发通道、按同一张表限长）。
+#:
+#: 这份集合此前在**两个地方各写一遍**（`SINK_TOOL_HOOKS` 与 `SINK_FORWARDED_HOOKS`），
+#: 而 `SINK_STEP_TYPES` 又只从前者推导——于是新增 `llm_wait_*` 时改了后者、
+#: 忘了前者，`emit_sink` 第一行就`return`，事件**静默消失**。
+#:
+#: 真实代价：那条事件写完提交后，一次真实工作流里 `llm_wait_*` 出现 **0 次**，
+#: 时间线静默度仍 99%——而三条测试全绿，因为它们都 spy 在**调用边界**上。
+#:
+#: §9 原话：「上限写两处，就等于写了一处旧的」。现在只有一处。
+SINK_LIFECYCLE_HOOKS = SINK_TOOL_HOOKS + ("llm_wait_start", "llm_wait_end")
+#: `emit_sink` 认这些类型。它**必须**由上面那份推导，不能另列——
+#: 上一轮的缺陷正是两处没同步。
+SINK_STEP_TYPES = {"thought", "action", "observation"} | set(SINK_LIFECYCLE_HOOKS)
 # 「不可并发」不再由本文件的一张名字表决定。
 #
 # 这张表曾经在这里（_NO_PARALLEL_TOOLS），运行期却从不读它——批内能否并发只看
@@ -1116,10 +1130,9 @@ def _clip(text, limit, suffix="…（内容过长，已截断）"):
 
 #: 需要转发到工作流事件流的钩子 kind。
 #:
-#: 工具那四个（`SINK_TOOL_HOOKS`）之外加上模型等待这一对——理由见
-#: `_llm_wait_emit`。开发舱面板按这些字面量从**持久化事件数组**里过滤，
-#: 前端与后端必须同源。
-SINK_FORWARDED_HOOKS = SINK_TOOL_HOOKS + ("llm_wait_start", "llm_wait_end")
+#: 别名，不再是第二份清单——上一轮它和 `SINK_TOOL_HOOKS` 各写一遍，
+#: `SINK_STEP_TYPES` 只从前者推导，于是新增的 `llm_wait_*` 被静默丢弃。
+SINK_FORWARDED_HOOKS = SINK_LIFECYCLE_HOOKS
 
 
 def _llm_wait_emit(kind: str, purpose: str, *, ms: int | None = None) -> None:
@@ -4420,7 +4433,11 @@ class Agent:
                          "before_tool": SINK_TOOL_CHARS,
                          "after_tool": SINK_TOOL_CHARS,
                          "before_mcp": SINK_TOOL_CHARS,
-                         "after_mcp": SINK_TOOL_CHARS}[step_type]
+                         "after_mcp": SINK_TOOL_CHARS,
+                         # 同病：`SINK_STEP_TYPES` 放行、这张限长表没放，
+                         # 于是 emit_sink 会在查表那一刻 KeyError。一起补。
+                         "llm_wait_start": SINK_TOOL_CHARS,
+                         "llm_wait_end": SINK_TOOL_CHARS}[step_type]
                 step_sink({"type": step_type, "text": _clip(str(text or ""), limit)})
             except Exception:
                 pass

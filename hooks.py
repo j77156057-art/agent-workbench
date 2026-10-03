@@ -43,9 +43,23 @@ from config import STATE_ROOT, state_path
 HOOKS_DIR = state_path("DOCMIND_HOOKS_DIR", os.path.join(STATE_ROOT, ".docmind", "hooks"))
 
 _lock = threading.Lock()
+#: 工作流生命周期钩子的**全集**。`run_workflow` 第一行就是
+#: `if kind not in _WORKFLOW_KINDS: return …` —— **不在这个元组里的 kind 会被
+#: 静默丢弃，连事件都不会发布**。
+#:
+#: `llm_wait_start` / `llm_wait_end` 曾因此完全不生效：它们不在这里，于是
+#: `_publish_workflow_event` 从没被调用，事件从没到达工作流事件流，而
+#: 开发舱时间线上的静默度仍是 99%。
+#:
+#: 那次为什么没测出来：进程内测试 spy 的是 `run_workflow` **本身**，看到它被
+#: 调用就以为通了。**验"函数被调用"不是验"事件到了"** —— 前者是调用边界，
+#: 后者才是用户看得到的那条路。
+#:
+#: 所以新增钩子名时，除了在调用侧发事件，**必须**把名字加进这个元组。
 _WORKFLOW_KINDS = ("before_node", "after_node", "before_wave", "after_wave",
                    "before_approval", "after_approval", "recovery",
                    "before_tool", "after_tool", "before_mcp", "after_mcp",
+                   "llm_wait_start", "llm_wait_end",
                    "mcp_retry", "network_timeout", "before_subagent", "after_subagent")
 _hooks = {"pre_tool": [], "post_tool": [], "pre_turn": [], "post_turn": [],
           **{kind: [] for kind in _WORKFLOW_KINDS}}
