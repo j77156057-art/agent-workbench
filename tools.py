@@ -3539,6 +3539,13 @@ def _strip_path_key(value: str) -> str:
 def read_file(path):
     """读取代码库中的文件内容（path 为相对 code_root 的路径或文件名）。
 
+    原生 function-calling 下 `path` / `start` / `end` 是**三个独立参数**
+    （见 agent_runtime.tools._SCHEMA_OVERRIDES），不需要拼进一个字符串。
+    文本协议下则用 `Action Input:` 传 `path: …`（可与 start/end 同行或分行）。
+    两种形态都要认——模型实际两种都用过，而历史上三次翻车都是因为只认其中一种。
+
+    同一区间在文件未变化时会返回一段短存根而不是重复内容（见 _unchanged_read_stub）。
+
     大文件默认只给前 12000 字；可在输入里附 `start: <1基行号>` 与可选 `end: <行号>`
     只看某个区间（如枚举/方法所在行段）。
 
@@ -3609,6 +3616,15 @@ def read_file(path):
                     + json.dumps(parsed, ensure_ascii=False, default=str)[:12000])
     except (DataFormatError, OSError) as exc:
         return f"读取失败：{exc}"
+    rel = os.path.relpath(target, root_abs)
+    # 未变化短路：区间已被本次会话读过且文件此后未改，就返回短存根。
+    # 放在二进制分支之后、真正读盘之前——存根只对文本读取有意义。
+    _stub = _unchanged_read_stub(target, rel, start_line, end_line)
+    if _stub:
+        # 仍要登记 _READ_FILES：本次调用确实"读"过这个文件，
+        # 否则 apply_edit 的"先读后写"护栏会误判成没读过。
+        _READ_FILES.add(os.path.normcase(target))
+        return "=== %s（未变化）===\n%s" % (rel, _stub)
     try:
         with open(target, encoding="utf-8", errors="ignore") as f:
             content = f.read()
@@ -3616,17 +3632,25 @@ def read_file(path):
         return f"读取失败: {e}"
     # 记录已读，供 apply_edit 的"先读后写"护栏使用
     _READ_FILES.add(os.path.normcase(target))
-    rel = os.path.relpath(target, root_abs)
     if start_line:
         all_lines = content.splitlines(keepends=True)
+        total = len(all_lines)
+        if start_line > total:
+            # 越界请求：此前会输出「第 70-60 行」这种倒置区间且正文为空，
+            # 模型只能看到一句莫名其妙的话。改成说清事实。
+            return (f"=== {rel}（共 {total} 行）===\n"
+                    f"请求的起始行 {start_line} 超出文件实际行数（1-{total}），未读到任何内容。"
+                    "请给出范围内的行号。")
         if not end_line:
             end_line = start_line + 199  # 区间默认 200 行
-        end_line = min(end_line, len(all_lines))
+        end_line = min(end_line, total)
         picked = all_lines[start_line - 1:end_line]
         shown = "".join(f"{i}: {ln}" for i, ln in enumerate(picked, start=start_line))
-        return f"=== {rel}（第 {start_line}-{end_line} 行，共 {len(all_lines)} 行）===\n{shown}"
+        _note_read_range(target, start_line, end_line)
+        return f"=== {rel}（第 {start_line}-{end_line} 行，共 {total} 行）===\n{shown}"
     if len(content) > 12000:
         content = content[:12000] + "\n…（已截断，仅显示前 12000 字；需要后续段落请用 start:/end: 指定行号）"
+    _note_read_range(target, None, None)
     return f"=== {rel} ===\n{content}"
 
 
@@ -4172,6 +4196,102 @@ def reject_edit(pid):
 def clear_read_files():
     """清空「已读文件」记录（重置代码库时调用，避免旧项目的读记录跨项目残留）。"""
     _READ_FILES.clear()
+    _READ_COVERAGE.clear()
+
+
+# ---------------------------------------------------------------------------
+# 未变化文件的短存根（借鉴 Claude Code 的 FILE_UNCHANGED_STUB）
+# ---------------------------------------------------------------------------
+#: 读过的文件 -> (变更指纹, 已覆盖的合并行区间列表)
+#:
+#: 指纹用 ``(st_mtime_ns, st_size)``：写入方改动文件必然改 mtime，
+#: 所以「指纹相同」足以判定内容未变，不需要算哈希（那是额外一次全文件读）。
+#:
+#: 为什么记**区间**而不是整文件：实际浪费发生在「先整文件读一遍、再读某几个区间」
+#: 这个组合上（本次会话实测：完整读过 enemy.gd/player.gd/hud.gd 之后，
+#: 又按 6-10 / 40-46 / 36-45 / 16-30 重读一遍）。只按整文件记，这些重读一个都拦不住。
+#:
+#: 已知局限：若更早那次读取的内容已被上下文预算裁掉，存根会让模型去引用一个
+#: 它已经看不到的内容。Claude Code 承担同样的风险；这里如实标注而不假装没有。
+_READ_COVERAGE: dict[str, tuple[tuple, list]] = {}
+
+#: 关掉存根：DOCMIND_READ_STUB=0
+_READ_STUB_ENABLED = os.getenv("DOCMIND_READ_STUB", "1").strip() not in ("0", "false", "no")
+
+#: 用一个够大的上界代表「整文件」，避免为整文件读单独维护一套状态。
+_FULL_FILE_END = 1 << 30
+
+
+def _read_stamp(target):
+    """文件变更指纹；取不到就返回 None（视为不可判定，不发存根）。"""
+    try:
+        st = os.stat(target)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _merge_ranges(ranges):
+    """把行区间合并成不重叠的升序列表。"""
+    out = []
+    for start, end in sorted(ranges):
+        if out and start <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+def _range_covered(ranges, start, end):
+    """``[start, end]`` 是否被 ``ranges`` 完全覆盖。"""
+    return any(lo <= start and end <= hi for lo, hi in ranges)
+
+
+def _unchanged_read_stub(target, rel, start_line, end_line):
+    """若该区间已在本次会话读过、且文件此后未变，返回一段短存根；否则 ``None``。
+
+    存根刻意保持**短**（Claude Code 的实测结论：报错/存根路径只花约 100 字节，
+    而重复返回内容要花上万 token），并且**明确指向那次已有的读取**——
+    它同时是一句「别再读了」的劝阻，这是治"验证躲避"的另一半。
+    """
+    if not _READ_STUB_ENABLED:
+        return None
+    entry = _READ_COVERAGE.get(os.path.normcase(target))
+    if not entry:
+        return None
+    stamp, ranges = entry
+    if stamp != _read_stamp(target):
+        return None
+    lo = start_line or 1
+    hi = end_line if end_line else _FULL_FILE_END
+    if not _range_covered(ranges, lo, hi):
+        return None
+    if start_line and end_line:
+        where = "第 %d-%d 行" % (start_line, end_line)
+    elif start_line:
+        where = "第 %d 行起" % start_line
+    else:
+        where = "整份文件"
+    return ("%s 自上次读取以来**未变化**（%s已在本次对话中读过，内容仍然有效）。"
+            "请直接引用那次读取的结果，不要重复读取。"
+            % (rel, where))
+
+
+def _note_read_range(target, start_line, end_line):
+    """记录本次真正**送达**的行区间（不是请求的区间——请求可能超出文件长度，
+    按请求记录会高估覆盖，让后续本该真读的行被存根挡掉）。"""
+    key = os.path.normcase(target)
+    stamp = _read_stamp(target)
+    if stamp is None:
+        return
+    lo = start_line or 1
+    hi = end_line if end_line else _FULL_FILE_END
+    if hi == _FULL_FILE_END and lo == 1:
+        ranges = [(1, _FULL_FILE_END)]
+    else:
+        old = _READ_COVERAGE.get(key)
+        ranges = _merge_ranges((old[1] if old else []) + [(lo, hi)])
+    _READ_COVERAGE[key] = (stamp, ranges)
 
 
 def apply_edit(arg):
