@@ -48,6 +48,60 @@ def _has_non_ascii(text):
     return any(ord(ch) > 127 for ch in text)
 
 
+class LauncherFailureVisibilityTests(unittest.TestCase):
+    """启动器**失败时不能一闪而过**（Wave31）。
+
+    实测形状：`启动DocMind.bat` 原来是 `call "%~dp0run_desktop.bat"` 紧接
+    `exit /b %ERRORLEVEL%`。而 `run_desktop.bat` 的三条失败分支都调了 `pause`，
+    **唯独成功路径**（`.venv\Scripts\python.exe desktop.py` 之后）没有——于是应用自己
+    崩掉时，脚本结束、窗口立刻关掉，错误刷过去就没了。用 stub callee 实测：
+
+        现状：exit=1，屏幕 25 字符，窗口**不停**
+        修后：exit=1，屏幕 87 字符，窗口停住，且明说退出码
+
+    这是"看得见的失败"与"闪退"的差别，不是行尾问题——同一台机器上实测这个文件
+    CRLF 与 LF 行为**完全一致**。
+    """
+
+    LAUNCHER = '启动DocMind.bat'
+
+    def _run_with_stub(self, callee: bytes):
+        """把真启动器放进临时目录、配一个 stub callee，跑一次并返回 (exit, 屏幕)。"""
+        import shutil
+        import subprocess
+        import tempfile
+        real = open(os.path.join(ROOT, self.LAUNCHER), 'rb').read()
+        root = tempfile.mkdtemp(prefix='dm_launcher_')
+        try:
+            with open(os.path.join(root, 'run_desktop.bat'), 'wb') as handle:
+                handle.write(callee)
+            with open(os.path.join(root, 'w.bat'), 'wb') as handle:
+                handle.write(real)
+            got = subprocess.run(['cmd.exe', '/c', os.path.join(root, 'w.bat')],
+                                 capture_output=True, cwd=root, timeout=60, input=b'\r\n')
+            return got.returncode, got.stdout.decode('utf-8', 'replace')
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    @unittest.skipUnless(os.name == 'nt', '批处理行为要在 cmd.exe 上验')
+    def test_a_failing_inner_launcher_keeps_the_window_and_names_the_code(self):
+        code, screen = self._run_with_stub(
+            b'@echo off\r\necho inner: ModuleNotFoundError\r\nexit /b 1\r\n')
+        self.assertEqual(code, 1)
+        self.assertIn('ModuleNotFoundError', screen, '内层的报错必须还在屏幕上')
+        self.assertIn('Press any key', screen,
+                      '窗口没有停住——一闪而过就等于没有报错')
+        self.assertIn('DocMind exited with code 1', screen, '失败时必须说出退出码')
+
+    @unittest.skipUnless(os.name == 'nt', '批处理行为要在 cmd.exe 上验')
+    def test_a_successful_run_is_not_held_open(self):
+        """反过来也要钉：成功路径**不能**被 pause 拖住（那会让正常启动看起来像卡住）。"""
+        code, screen = self._run_with_stub(
+            b'@echo off\r\necho inner: all good\r\nexit /b 0\r\n')
+        self.assertEqual(code, 0)
+        self.assertNotIn('Press any key', screen, '成功路径不该等人按键')
+
+
 class LauncherEncodingTests(unittest.TestCase):
     def test_primary_launcher_prefers_current_source(self):
         """仓库主启动器必须优先跑当前源码，不能再次默认命中过期 dist 快照。"""

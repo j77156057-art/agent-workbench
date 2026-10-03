@@ -874,6 +874,54 @@ cd frontend && npm run test:node
   "明显是别人的服务"，不是并发竞态；真正的端口重试仍需要能往 argv 注入端口，那要猜
   各家 dev server 的 flag（vite `--port`、next `-p`、webpack-dev-server `--port`），是产品决策。
 
+### 5.25 Wave31：交付环"真网络"的首跑排障 + 启动器失败不再一闪而过
+
+**为什么不是"推上去验"**：`git ls-remote` 现在也连不上 github.com:443（§2 记的是 10-02 可通），
+网络侧完全不可达。所以做的是**首跑排障**：把"第一次 GitHub run 会因为什么而失败"里
+**确定且可预防**的部分找出来。留下的预检脚本在 `.tmp/w31_preflight.py`，它查三件事：
+① `.bat`/`.cmd` 的 blob 是否守住 `.gitattributes` 的 `*{bat,cmd} -text`（即 CRLF）；
+② `.py` 的 blob 是否带 BOM；③ CI 里 `compileall` 那一步在本地等价跑一遍。
+
+**它当场抓到一条**：`启动DocMind.bat` 的 blob 是**纯 LF**（254 字节、8 个裸 LF），
+其余两个 `.bat` 都正确保住了 CRLF。来源是 `e651c9c chore: 归集多lane 的在途改动到仓库`
+——那个文件被重写成纯英文（cp936 乱码问题因此消失），但行尾没跟着回来。后果是
+`tests/test_launchers.py::LauncherEncodingTests::test_primary_launcher_prefers_current_source`
+**现在就红**（`.bat` 用 `-text`，blob 原样检出，所以 ubuntu 上会一样红，与平台无关）。
+
+**但用户报告"CRLF 的启动器我这边打不开"，于是去量了 —— 结果推翻了那条测试的立论**：
+① 把 `启动DocMind.bat` 的结构原样搬进临时目录、callee 换成无害 stub，**CRLF 与 LF 行为完全
+一致**（都 exit=0、callee 正常执行）；② 再测一个**带 `goto` 标签**的版本，**CRLF 与 LF 都能
+正常到达标签**。也就是说 `.gitattributes` 里"仅 LF 会导致 cmd 找不到 goto 标签并闪退"那句
+注释，在**这个 Windows 版本上不成立**。所以**恢复 CRLF 不会修好用户的启动器**，那条红只是
+"CI 会红"，两件事被混在一起了。
+
+**真正的闪退机制与行尾无关**：`启动DocMind.bat` 原来是
+`call "%~dp0run_desktop.bat"` 紧接 `exit /b %ERRORLEVEL%`。而 `run_desktop.bat` 的三条失败
+分支（`:missing` / `:no_python` / `:bootstrap_failed`）**都调了 `pause`**（双击时窗口停住），
+**唯独成功路径**（`.venv\Scripts\python.exe desktop.py` 之后）没有 —— 于是应用自己崩掉时，
+脚本结束、窗口立刻关掉，错误刷过去就没了。用 stub callee 实测（同一台机器、同一文件名）：
+
+| | exit | 屏幕字符 | 错误细节在 | 窗口停住 |
+|---|---|---|---|---|
+| 现状 | 1 | 25 | 是 | **否** |
+| 修后 | 1 | 87 | 是 | **是**（且明说 `DocMind exited with code 1`） |
+
+错误文本两种情况下都打印了 —— 差别只在**窗口会不会在你读到之前消失**。
+
+**改法（按用户口径：行尾一个字节没动，仍是 LF）**：在 `call` 之后接三行，把退出码存下来、
+失败时先 `echo` 出来再 `pause`。成功路径**不能**被拖住，所以 `pause` 只在非零时执行，
+并有一条测试专门钉这一半。
+
+- **产物**：`tests/test_launchers.py` 新增 `LauncherFailureVisibilityTests` **2 项**（用 stub
+  callee 真跑 `cmd.exe`，钉住"失败要停住并说出退出码"与"成功不许被拖住"）；
+  `启动DocMind.bat` 254 → 744 字节（只加 5 行，含 5 行说明为什么）。
+- **顺带发现（只报不改）**：原有那条 `test_primary_launcher_prefers_current_source` **还有第二个
+  问题** —— 它的后半段在这个文件里找 `if exist "%DOCMIND_PYTHON%"` / `"%DOCMIND_PACKAGED%"`，
+  而那段内容现在在 `run_desktop.bat` 里（`启动DocMind.bat` 已经变成薄包装）。所以即使 CRLF 那条
+  放行，它也会因为找不到字符串而失败。**未代改**。
+- **边界**：这些结论都来自**这台 Windows**；别的 Windows 版本上 `goto` 与行尾的关系我没有
+  证据，所以 `*.bat` 的 CRLF 规则**没有被放宽**，只是这个具体文件的行尾按用户口径保持原样。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -881,7 +929,7 @@ cd frontend && npm run test:node
 | 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）**；~~深链到具体路由/文件的整页断言~~ **已做（Wave24，§5.18）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 仍**没有**的是：真模型往返（`dev_apptest` 明确不点模型）、`dev_apptest` 上的问答回合（§5.18 ② 那条只在 HTTP 层做了，页面那一层还没走）|
 | 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；~~覆盖率入口仍无~~ **已做（Wave21 `coverage: true`，§5.12）** | 早先实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | Wave21 已加 `coverage>=7,<8` 并真跑。仍**没有**的是：分支覆盖率、`--source` 的配置化、以及给"改动行"本身（而不只是改动文件）的覆盖判定 |
 | 3a | ~~真 ws 回合零自动覆盖~~ **已做（Wave19：`scripted` 适配器 + `dev_apptest stream`）** | 页面 + 麦克风 + `/api/vision/live-stream` 以前只有人对着说话才能验 | 厂商事件、打断语义、听感仍归 R12 的人跑 |
-| 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证），沙箱 push 不通 | 人 push 一次，把首跑结果记回本文件 |
+| 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证）。2026-10-03 实测：git ls-remote 也连不上了（§2 记的是 10-02 可通），网络侧完全不可达 | ① 已做首跑排障（Wave31，§5.25）：预检脚本抓出**一条确定会红**（启动DocMind.bat 的 blob 是纯 LF，那条 CRLF 测试现在与本地就红）；② 仍需人 push 一次把首跑结果记回本文件；③ 那条红怎么收尾待定（恢复 CRLF / 收窄守卫 / 只记录），见 §5.25 |
 | 4 | ~~`dev_serve` 端口被抢不自动重试~~ **已换成可证的归属判定（Wave30，§5.24）** | 字面那条做不到：`dev_serve` 的 `argv` 里**没有端口参数**（`tools.py` 的 `_shell_argv`），端口是子进程自己选的。顺带挖到一个**确定性假绿**：用户给的端口上已有别人的服务时，`probe` 成功就被认成自己的服务并把那个 URL 交回去 | 已改：先认日志里它自报的端口（可证），且启动前就问"这个端口有没有别人在听"，是别人的就不判就绪；`parse_port_hint` 改成取**最后一个**地址行。**仍缺**：真正的端口重试要能往 argv 注入端口（各家 flag 不同），是产品决策 |
 | 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
 | 6 | 连接器 UI 未接 `inline_tools` 开关 | Wave10 未做项 | 小改，UI 侧 |
