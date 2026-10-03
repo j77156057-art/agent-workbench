@@ -30,8 +30,32 @@ _LOCATION_QUERY = re.compile(
 #:
 #: 改成 ASCII 路径字符集后仍能挡住「路径后缀」误匹配：
 #: `behaviors/enemy.gd` 里的 `enemy.gd` 前面是 `/`，在集合内 -> 被拒。
+#:
+#: ## 扩展名表为什么按「长的在前」排
+#:
+#: 实测（`wf-2a548e060abf` 的 `design_retry`）：模型交出 3769 字符的设计说明，
+#: 引用了 18 处**完全正确**的路径，却整份被 `review_output` 拒掉——
+#: `evidence_verified` 判红的真正原因是
+#:
+#:     "path": "behaviors/player.ts",  "exists": false
+#:
+#: **`.tscn` 被咬成 `.ts`**。原表里有 `ts` 却没有 `tscn`（Godot 场景文件，
+#: 本项目最核心的一类），正则匹配到 `ts` 就结束，剩下的 `cn` 被丢掉。
+#: 于是审计拿着一条**模型没写过的路径**说「路径打不开」。
+#:
+#: 同一张表里 `ts|tsx` 的顺序还有同一个毛病：`.tsx` 也会被咬成 `.ts`。
+#: 所以两处一起修：表按长度降序排，且尾部加 `(?![A-Za-z0-9_])` 兜底——
+#: 就算将来又有人往表里插一个前缀相同的扩展名，也不会再截断。
+#:
+#: 这已经是同一族里的第三次了（上一轮：`behaviors/enemy.gd` 被切成 `enemy.gd`）。
+#: **教训**：凡是「正则从正文里切路径」的地方，扩展名表就是**判据的一部分**，
+#: 补一条扩展名不是加个词，是让一类引用从「误判不存在」变成「真的去核验」。
 _FILE_REF = re.compile(
-    r"(?<![A-Za-z0-9_./\\-])([A-Za-z0-9_./\\-]+\.(?:gd|py|ts|tsx|js|jsx|vue|cs|cpp|cc|h|hpp|json|md))"
+    r"(?<![A-Za-z0-9_./\\-])([A-Za-z0-9_./\\-]+\.(?:tscn|tsx|import|gdshader|gdignore"
+    r"|tres|godot|json|jsonc|yaml|yml|toml|html|css|scss|vue|jsx|js|ts|py|pyi|md"
+    r"|txt|cfg|xml|sh|bat|ps1|sql|csv|cpp|cc|cxx|hpp|h|java|kt|go|rs|swift|cs|gd"
+    r"|svg|png|jpe?g|gif|webp|ico|mp3|wav|ogg|ttf|woff2?))"
+    r"(?![A-Za-z0-9_])"
     r"(?:\s*:\s*L?(\d+)(?:\s*[-~]\s*L?(\d+))?)?"
 )
 
