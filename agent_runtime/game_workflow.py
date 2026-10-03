@@ -107,6 +107,7 @@ class WorkflowGraphState(TypedDict, total=False):
     research_findings: str
     research_source: str
     plan_source: str
+    plan_offered: int
     event: str
     step_count: int
     replan_count: int
@@ -172,6 +173,49 @@ def _default_child_max_steps() -> int:
     try:
         from agent_runtime.capacity import get_settings
         return int(get_settings().get("child_max_steps", 0))
+    except Exception:
+        return 0
+
+
+#: 单个任务允许声明的依赖个数上界。
+#:
+#: 这个上界必须**独立于任务总数上限**（``max_subagents`` / ``max_tasks``）。
+#: 此前守卫写成了 ``len(clean_deps) > max_tasks``——拿「依赖个数」去比
+#: 「任务总数上限」，两个无关量。而 ``max_tasks=0`` 的约定是**不限**
+#: （见 ``max_tasks=max_subagents if max_subagents > 0 else 0``），
+#: 于是默认配置（``max_agents`` 未配 -> 0）下：
+#:
+#:     输入 5 步 DAG（survey -> implement -> testrun -> fix -> report）
+#:     实际存活 1 步：['survey']
+#:
+#: **任何声明了 ``depends_on`` 的任务都被静默丢弃**，多步 DAG 塌成只剩根任务，
+#: 而调用方照样把它当合法计划落库、照样发 ``plan`` 事件、照样弹审批框——
+#: 没有任何报错。计划生成的验证节点还存在，它只查"落库的计划能否执行"，
+#: 查不出"落库的计划已经少了一大半"。
+_MAX_TASK_DEPS = 16
+
+
+def _raw_task_count(raw: Any) -> int:
+    """Best-effort count of how many tasks the model actually offered.
+
+    Only feeds the ``plan_generation_truncated`` diagnostic, so it must never
+    raise — a diagnostic that can break planning is worse than no diagnostic.
+    Mirrors the shape handling in ``_parse_generated_tasks`` (fenced JSON string,
+    ``{"tasks": [...]}``, ``{"plan": {"tasks": [...]}}``, bare list).
+    """
+    try:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text,
+                              flags=re.I | re.S).strip()
+            raw = json.loads(text)
+        if isinstance(raw, Mapping):
+            inner = raw.get("tasks")
+            if inner is None and isinstance(raw.get("plan"), Mapping):
+                inner = raw["plan"].get("tasks")
+            raw = inner
+        return len(raw) if isinstance(raw, list) else 0
     except Exception:
         return 0
 
@@ -1845,6 +1889,7 @@ class GameWorkflowManager:
                                                  "ids": [t.get("id") for t in state.tasks]}
                 self._event(state, "plan", task_count=len(state.tasks),
                             task_source=graph_view.get("plan_source") or "llm", graph_node=True)
+                self._note_plan_truncation(state, graph_view)
             self._event(state, "choice", option=selected)
         return self._save(state).public()
 
@@ -1886,6 +1931,7 @@ class GameWorkflowManager:
                                              "ids": [t.get("id") for t in state.tasks]}
             self._event(state, "plan", task_count=len(state.tasks),
                         task_source=graph_view.get("plan_source") or "llm", graph_node=True)
+            self._note_plan_truncation(state, graph_view)
             self._save(state)
             if self._load(workflow_id).status == "interrupted":
                 return
@@ -2017,7 +2063,7 @@ class GameWorkflowManager:
                 deps = []
             clean_deps = [re.sub(r"[^A-Za-z0-9_-]", "", str(dep))[:48]
                           for dep in deps if str(dep).strip()]
-            if task_id in clean_deps or len(clean_deps) > max_tasks:
+            if task_id in clean_deps or len(clean_deps) > _MAX_TASK_DEPS:
                 continue
             seen.add(task_id)
             task = {"id": task_id, "role": role, "task": description,
@@ -2093,6 +2139,27 @@ class GameWorkflowManager:
             })
         return rows
 
+    def _note_plan_truncation(self, state: WorkflowState,
+                              graph_view: Mapping[str, Any]) -> None:
+        """把「模型给了 N 步、只落库 k 步」记成事件，不让截断再隐身。
+
+        解析器会静默丢弃不合规的任务（重 id、空描述、依赖未知）。全部丢弃时它
+        返回 []、调用方回退到确定性计划，那看得见；**部分丢弃看不见**——计划照样
+        落库、照样发 ``plan`` 事件、照样弹审批框，只是少了一部分步骤。
+
+        这不是理论风险：本文件里那个 ``len(clean_deps) > max_tasks`` 的守卫就是这么
+        藏下来的——它让默认配置（``max_agents`` 未配 -> 0）下的 5 步 DAG 只剩 1 步，
+        全程零报错。事件的意义就是让下一次同类问题在 trace 里直接可见。
+        """
+        try:
+            offered = int(graph_view.get("plan_offered") or 0)
+            kept = len(state.tasks)
+        except Exception:
+            return
+        if offered > kept:
+            self._event(state, "plan_generation_truncated",
+                        offered=offered, kept=kept, dropped=offered - kept)
+
     def plan(self, workflow_id: str, tasks: Iterable[Mapping[str, Any]] | None = None,
              task_generator: Callable[[str, Mapping[str, Any], ContextPlan], Any] | None = None) -> dict[str, Any]:
         state = self._load(workflow_id)
@@ -2120,6 +2187,17 @@ class GameWorkflowManager:
                 parsed = self._parse_generated_tasks(generated, max_tasks=policy.max_subagents)
                 if parsed:
                     tasks, task_source = parsed, "llm"
+                    # 解析器会**静默丢弃**不合规的任务（重 id、空描述、依赖未知等）。
+                    # 全部丢弃时它返回 []、调用方回退到确定性计划，看得见；
+                    # **部分丢弃看不见**——计划照样落库、照样发事件、照样弹审批，
+                    # 只是少了一部分步骤。上面那个 max_tasks/依赖个数守卫就是这么
+                    # 藏了不知道多久的：5 步计划只剩 1 步，全程零报错。
+                    # 所以这里把差额显式记成事件，不让截断再隐身。
+                    offered = _raw_task_count(generated)
+                    if offered and len(parsed) < offered:
+                        self._event(state, "plan_generation_truncated",
+                                    offered=offered, kept=len(parsed),
+                                    dropped=offered - len(parsed))
             except Exception as exc:
                 self._event(state, "plan_generation_failed", error=type(exc).__name__)
         if tasks is None:
@@ -2129,6 +2207,10 @@ class GameWorkflowManager:
         task_items = list(tasks)
         state.tasks = ([dict(t) for t in task_items] if policy.max_subagents <= 0 else
                        [dict(t) for t in task_items[:policy.max_subagents]])
+        if policy.max_subagents > 0 and len(task_items) > policy.max_subagents:
+            self._event(state, "plan_generation_truncated",
+                        offered=len(task_items), kept=len(state.tasks),
+                        dropped=len(task_items) - len(state.tasks))
         next_plan = [(item.get("id"), item.get("task")) for item in state.tasks]
         if previous_plan != next_plan or not state.acceptance_contract.get("items"):
             state.acceptance_contract = acceptance_on_plan_changed(
@@ -3208,6 +3290,12 @@ class GameWorkflowManager:
         state = self._load(workflow_id)
         if not state.pending_tasks:
             raise WorkflowError("当前工作流没有待审核的 DAG 修改")
+        # 下面 else 分支要用 policy.child_max_steps 重建 subagent 记录。
+        # 这行曾经是**缺失**的（从 request_dag_revision 复制过来时漏掉），于是
+        # 「用户批准 DAG 修订」一走到就抛 NameError——而这正是 vibecoding 主循环
+        # 里最核心的一次交互：模型改计划 → 用户点批准 → 真正开跑。
+        # 修的是这行，不是把测试改绿。
+        policy = WorkflowPolicy.from_state(state.policy)
         self._workflow_hook(state, "before_approval", approved=bool(approved),
                             task_count=len(state.pending_tasks), node="dag_revision")
         if not approved:
@@ -3693,6 +3781,7 @@ class GameWorkflowManager:
 
         def plan_node(state):
             tasks = list(state.get("tasks") or [])
+            offered_tasks = 0
             if not tasks:
                 source = "provided"
                 if task_generator is not None:
@@ -3703,13 +3792,26 @@ class GameWorkflowManager:
                     attempts = 1 + max(0, int(state.get("max_provider_retries", 2)))
                     for attempt in range(1, attempts + 1):
                         try:
-                            parsed = self._parse_generated_tasks(provider_call(
-                                state, "llm.plan", lambda: task_generator(
-                                str(state.get("request", "")), state.get("selected_option") or {}, plan)),
+                            # 把生成器的**原始产出**留下来，才能判断解析器丢了多少。
+                            # 解析器会静默丢弃重 id / 空描述 / 未知依赖的任务；全部丢弃
+                            # 时它返回 []、这里抛 invalid_task_dag 走确定性回退，看得见；
+                            # **部分丢弃看不见**——计划照样往下走，只是少了一部分步骤。
+                            raw_plan = {}
+
+                            def _call_plan():
+                                raw = task_generator(
+                                    str(state.get("request", "")),
+                                    state.get("selected_option") or {}, plan)
+                                raw_plan["raw"] = raw
+                                return raw
+
+                            parsed = self._parse_generated_tasks(
+                                provider_call(state, "llm.plan", _call_plan),
                                 max_tasks=int(state.get("max_subagents", _default_max_agents())))
                             if not parsed:
                                 raise ValueError("invalid_task_dag")
                             tasks, source = parsed, "llm"
+                            offered_tasks = _raw_task_count(raw_plan.get("raw"))
                             state.setdefault("provider_attempts", []).append({
                                 "provider": "plan", "attempt": attempt, "ok": True})
                             break
@@ -3743,6 +3845,7 @@ class GameWorkflowManager:
                     return {"phase": "plan", "status": "planning", "event": "plan_gate"}
                 return {"phase": "execute", "status": "planned", "event": "plan",
                         "tasks": tasks, "plan_source": source,
+                        "plan_offered": offered_tasks,
                         "provider_attempts": list(state.get("provider_attempts") or [])}
             return {"phase": "execute", "status": "planned", "event": "plan"}
 
@@ -3881,7 +3984,11 @@ class GameWorkflowManager:
             for item in parsed:
                 item["context_from"] = context_by_id.get(item["id"], [])
             history.append({"attempt": attempt, "failed": failed_ids, "status": "applied",
-                            "tasks": [item["id"] for item in parsed]})
+                            "tasks": [item["id"] for item in parsed],
+                            # 重排同样会静默丢任务（重 id / 空描述 / 未知依赖）。
+                            # 差额记进持久化历史，否则"重排后只剩两步"没人看得见。
+                            "offered": len(raw_tasks),
+                            "dropped": max(0, len(raw_tasks) - len(parsed))})
             return {"phase": "execute", "status": "executing", "event": "replan",
                     "replan_count": attempt, "failed_tasks": [], "tasks": parsed,
                     "replan_error": "", "replan_history": history}
