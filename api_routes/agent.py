@@ -1,6 +1,7 @@
 """Agent policy, approvals and connector discovery endpoints."""
 import asyncio
 import json
+import os
 import queue
 import threading
 from dataclasses import replace
@@ -172,13 +173,92 @@ class CockpitApprovalDecisionReq(BaseModel):
     approved: bool
 
 
+def _stage_workspace_root(state: dict, workflow_root: str,
+                              live_lookup=None) -> str:
+    """试做区工作流在执行期真正该绑的根：有试做区就绑 workspace，否则项目根。
+
+    ## 为什么不直接绑项目根
+
+    试做区的全部意义是「改动先落在副本上，用户看过 diff 再决定要不要落到真
+    项目」。写操作一旦绕过它落到真实项目，用户就没有回退——而 UI 仍在报
+    「改动位于临时试做区」。
+
+    实测这不是理论风险：`wf-3073fc5f2403` 之前，24 次工具调用**全部**落在真实
+    项目（`python_exec` 自报的「执行目录」也是它），而 `wf-3073fc5f2403` 修好
+    之后 24 次全部落在 `project_stages/wf-3073fc5f2403/workspace`。
+
+    ## 为什么必须每次调用时才读
+
+    试做区是在**执行时**才创建的（`_execute_unleased` 里
+    `if state.stage_enabled and not state.project_stage: create_stage(...)`），
+    而绑定发生在执行请求到达时、试做区存在**之前**。在绑定那一刻把根抓成字符串
+    的话，之后永远不会变——试做区建好了也没人重新读它。
+
+    ## 代价（如实说明）
+
+    试做区副本**不含 `.git`**（`enterprise_sandbox._EXCLUDED` 明确排除了
+    `.git`/`.docmind`/`.venv`/`node_modules`），所以绑到试做区之后，子代理在试
+    做区里跑 git 类只读检查会看不到仓库。这是隔离与 git 可见性之间的取舍，
+    本轮选隔离——「写进真项目」是两者里不可回退的那一种。
+
+    `live_lookup` 是为了测试与「读不到就退回项目根」的兜底：任何异常都不阻断
+    执行。
+    """
+    root = str(workflow_root or "")
+    lookup = live_lookup
+    if lookup is None:
+        wid = str((state or {}).get("workflow_id") or "")
+        if not wid:
+            return root
+        lookup = lambda: WORKFLOWS.get(wid) or {}  # noqa: E731
+    try:
+        live = lookup() or {}
+        stage = (live or {}).get("project_stage") or {}
+        workspace = str(stage.get("workspace_root") or "")
+        if workspace and os.path.isdir(workspace):
+            return workspace
+    except Exception:  # noqa: BLE001 —— 读不到就退回项目根，绝不阻断派发
+        pass
+    return root
+
+
 def build_router(ctx) -> APIRouter:
     router = APIRouter(prefix="/api/agent", tags=["agent"])
 
-    def project_bound(callback, project_root: str, project_id: str = ""):
-        """Run durable workflow callbacks in their stored project, not the UI's current one."""
+    def project_bound(callback, project_root, project_id: str = ""):
+        """Run durable workflow callbacks in their stored project, not the UI's current one.
+
+        `project_root` 可以是字符串，也可以是**零参可调用对象**——后者每次调用
+        时才解析出根。
+
+        ## 为什么执行期必须按调用解析
+
+        试做区是在**执行时**才创建的（`_execute_unleased` 里
+        `if state.stage_enabled and not state.project_stage: create_stage(...)`），
+        而绑定发生在执行请求到达时、试做区存在**之前**。所以在绑定那一刻把根
+        抓成字符串，之后永远不会变——试做区建好了也没人重新读它。
+
+        实测后果（`wf-7cc2e86620ce`、`wf-db3caef9623f`）：`scoped_runner` 把根设成
+        试做区 workspace，紧接着 `runner` 进来第一件事就是把它盖回真实项目。
+        探针在 `scoped_runner` 里读到 `want == actual == workspace`（`matches=True`），
+        而工具事件里全是 `@WorkBuddy/godot_sample`，`python_exec` 自报的「执行
+        目录」也是真实项目。
+
+        也就是说**试做区隔离从来没有生效过**，而 UI 一直在报「改动位于临时试
+        做区」。此前三次静态排查之所以判「scope 机制正常」，是因为只验了
+        `set_context_code_root` 本身成立——它在主线程里确实成立。
+        """
+        def _root():
+            if callable(project_root):
+                try:
+                    return str(project_root() or "")
+                except Exception:  # noqa: BLE001 —— 解析失败退回不绑，绝不崩派发
+                    return ""
+            return str(project_root or "")
+
         def scoped(*args, **kwargs):
-            root_token = set_context_code_root(project_root) if project_root else None
+            root = _root()
+            root_token = set_context_code_root(root) if root else None
             pid_token = ctx._CTX_PROJECT_ID.set(project_id) if project_id else None
             try:
                 return callback(*args, **kwargs)
@@ -210,6 +290,10 @@ def build_router(ctx) -> APIRouter:
         workflow_pid = str(state.get("project_id") or "")
 
         wid = str((state or {}).get("workflow_id") or "")
+
+        def _execution_root() -> str:
+            """见 `_stage_workspace_root` 的完整说明（隔离与 git 可见性的取舍写在那里）。"""
+            return _stage_workspace_root(state, workflow_root)
 
         def _step_sink(task_id, role):
             if not wid:
@@ -270,13 +354,17 @@ def build_router(ctx) -> APIRouter:
                 return None
 
         return {
-            "runner": project_bound(runner, workflow_root, workflow_pid),
+            # 这三个是**执行期**回调：传解析器（每次调用才读试做区），
+            # 而不是字符串。理由见 `project_bound` 的 docstring 与
+            # `_execution_root` 的说明。
+            "runner": project_bound(runner, _execution_root, workflow_pid),
             "synth_runner": project_bound(
-                lambda tasks, results: agent._synth(tasks, results), workflow_root, workflow_pid),
+                lambda tasks, results: agent._synth(tasks, results),
+                _execution_root, workflow_pid),
             "replanner": project_bound(
                 lambda failed, results, attempt: agent._replanner(
                     failed, results, attempt, llm=_replanner_llm()),
-                workflow_root, workflow_pid),
+                _execution_root, workflow_pid),
         }
 
     # Approval may arrive after a process restart.  The manager persists only

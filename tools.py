@@ -3375,6 +3375,68 @@ def _region_write_allowed(target):
 # 记录 Agent 本次会话内已用 read_file 读过的文件（绝对路径，normcase 归一），
 # 用于 apply_edit 的"先读后写"安全护栏：未确认过内容的文件不允许整体重写。
 _READ_FILES = set()
+# 「未变化存根」的覆盖表在文件末尾定义（`_READ_COVERAGE`）。
+#
+# 上面这两个是**主对话**的记录。子代理走 `_READ_CONV` 里自己那一份——
+# 原因见 `begin_read_conversation` 的说明，这里必须留默认那一份，
+# 因为大量调用点与测试都直接用模块级名字。
+_READ_CONV: "contextvars.ContextVar" = contextvars.ContextVar(
+    "docmind_read_conversation", default=None)
+
+
+def _read_store():
+    """当前对话的 ``(已读文件集合, 区间覆盖表)``。
+
+    没有子代理作用域时就是模块级那两份（主对话，行为与从前完全一致）。
+    """
+    conv = _READ_CONV.get()
+    if conv is None:
+        return _READ_FILES, _READ_COVERAGE
+    return conv
+
+
+def begin_read_conversation():
+    """给子代理一份**独立**的读记录，返回用于还原的 Token。
+
+    ## 为什么必须按对话隔离
+
+    「未变化存根」的前提是「**本次对话**中读过，且直接引用那次结果」。而模块级
+    全局会让**另一个子代理**拿到上一个子代理的读记录——那份内容它压根没见过。
+
+    实测 `wf-3073fc5f2403`（连错三轮的真正原因）：`research` 读完
+    `behaviors/enemy.gd` 全文后被反思判失败，重规划产生的
+    `research_behaviors_r2` 是一个**全新上下文**的子代理，它再读同一文件拿到的
+    却是——
+
+        === behaviors\\enemy.gd（未变化）===
+        整份文件已在本次对话中读过、且此后未改动；直接引用那次结果。
+
+    文件确实没被改过，所以存根必然触发。于是**每一次重试都必然拿不到正文**，
+    那个重试在结构上不可能成功，而界面上只看得到「子代理失败」。反思反复报的
+    「read_file 观察仅返回『已读过、不要重复读取』的缓存提示，没有展示正文」
+    就是它。
+
+    这与「任务要写文件却派给只读角色」是同一族：**一个注定完成不了的任务被
+    呈现成「模型没做好」**。
+
+    ## 为什么用 ContextVar 而不是 `clear_read_files()`
+
+    并行波次里多个子代理同时在跑。直接清全局会互相踩：一个子代理刚开始读，
+    另一个就把它的记录清了，存根在**同一个子代理内部**也会失效——那就等于把
+    「别重复读」这个功能整个关掉。ContextVar 天然随 `copy_context()` 复制，
+    各子代理互不干扰。
+    """
+    return _READ_CONV.set((set(), {}))
+
+
+def end_read_conversation(token) -> None:
+    """还原到外层对话的读记录（与 `begin_read_conversation` 配对，严格 try/finally）。"""
+    try:
+        _READ_CONV.reset(token)
+    except (ValueError, LookupError, RuntimeError):
+        pass
+
+
 _REGION_LOCKS = {}
 _FILE_LOCKS = {}
 _REGION_LOCKS_GUARD = threading.Lock()
@@ -3632,7 +3694,7 @@ def read_file(path):
     if _stub:
         # 仍要登记 _READ_FILES：本次调用确实"读"过这个文件，
         # 否则 apply_edit 的"先读后写"护栏会误判成没读过。
-        _READ_FILES.add(os.path.normcase(target))
+        _read_store()[0].add(os.path.normcase(target))
         return "=== %s（未变化）===\n%s" % (rel, _stub)
     try:
         with open(target, encoding="utf-8", errors="ignore") as f:
@@ -3640,7 +3702,7 @@ def read_file(path):
     except Exception as e:  # noqa: BLE001
         return f"读取失败: {e}"
     # 记录已读，供 apply_edit 的"先读后写"护栏使用
-    _READ_FILES.add(os.path.normcase(target))
+    _read_store()[0].add(os.path.normcase(target))
     if start_line:
         all_lines = content.splitlines(keepends=True)
         total = len(all_lines)
@@ -4168,7 +4230,7 @@ def confirm_edit(pid):
                     os.makedirs(parent, exist_ok=True)
                 with open(target, "w", encoding="utf-8") as f:
                     f.write(e["new_content"])
-            _READ_FILES.add(os.path.normcase(target))
+            _read_store()[0].add(os.path.normcase(target))
         elif kind == "delete_external_file":
             if not os.path.isfile(target):
                 return _discard(f"目标文件已不存在：{e['rel']}（暂存后已被删除，已取消）。")
@@ -4187,7 +4249,7 @@ def confirm_edit(pid):
                     return _discard("目标文件在暂存后被修改，内容已变化；请重新 read_file 后再改。")
                 with open(target, "w", encoding="utf-8") as f:
                     f.write(e["new_content"])
-            _READ_FILES.add(os.path.normcase(target))
+            _read_store()[0].add(os.path.normcase(target))
     except Exception as ex:  # noqa: BLE001
         return False, f"写入/删除失败: {ex}"
     with _PENDING_LOCK:
@@ -4205,8 +4267,8 @@ def reject_edit(pid):
 
 def clear_read_files():
     """清空「已读文件」记录（重置代码库时调用，避免旧项目的读记录跨项目残留）。"""
-    _READ_FILES.clear()
-    _READ_COVERAGE.clear()
+    _read_store()[0].clear()
+    _read_store()[1].clear()
 
 
 # ---------------------------------------------------------------------------
@@ -4272,7 +4334,7 @@ def _unchanged_read_stub(target, rel, start_line, end_line):
     """
     if not _READ_STUB_ENABLED:
         return None
-    entry = _READ_COVERAGE.get(os.path.normcase(target))
+    entry = _read_store()[1].get(os.path.normcase(target))
     if not entry:
         return None
     stamp, ranges, served = entry[0], entry[1], entry[2]
@@ -4313,11 +4375,11 @@ def _note_read_range(target, start_line, end_line, served_bytes=0):
     if hi == _FULL_FILE_END and lo == 1:
         ranges = [(1, _FULL_FILE_END)]
     else:
-        old = _READ_COVERAGE.get(key)
+        old = _read_store()[1].get(key)
         ranges = _merge_ranges((old[1] if old else []) + [(lo, hi)])
-    prev = _READ_COVERAGE.get(key)
+    prev = _read_store()[1].get(key)
     best = max(served_bytes, prev[2] if prev and len(prev) > 2 else 0)
-    _READ_COVERAGE[key] = (stamp, ranges, best)
+    _read_store()[1][key] = (stamp, ranges, best)
 
 
 def apply_edit(arg):
@@ -4367,7 +4429,7 @@ def apply_edit(arg):
         new_content = old_content.replace(old_text, new_text, 1)
     else:
         # 整体重写：必须先 read_file 确认过当前内容（防 Agent 凭空改写）
-        if os.path.normcase(target) not in _READ_FILES:
+        if os.path.normcase(target) not in _read_store()[0]:
             return ("安全限制：整体重写前请先调用 read_file 读取该文件确认当前内容，"
                     "或改用 old_text 参数做局部安全替换。")
         new_content = new_text
@@ -4671,7 +4733,7 @@ def create_file(arg):
         return f"写入失败: {e}"
 
     # 自己刚创建的文件，视为已"确认内容"，允许后续整体重写而无需再 read_file
-    _READ_FILES.add(os.path.normcase(target))
+    _read_store()[0].add(os.path.normcase(target))
     return f"已创建 {rel}（{nbytes} 字节，路径沙箱校验通过）。"
 
 

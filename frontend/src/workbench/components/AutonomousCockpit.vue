@@ -872,6 +872,10 @@ const timelineLabel: Record<string, string> = {
   // 派发错配：任务要写文件、角色却是只读的。这一条不阻断，只报——
   // 有了它，「任务失败」才看得出是**注定完成不了**而不是模型偷懒。
   task_role_mismatch: '⚠ 角色无法完成该任务',
+  // 试做区隔离的探针。这两条不是给用户看的礼貌提示，是**判据**：
+  // 此前隔离失效过好几轮而界面毫无察觉，因为没有任何事件携带执行目录。
+  stage_scope_probe: '试做区作用域检查',
+  stage_scope_missing: '⚠ 未进入试做区',
 }
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''

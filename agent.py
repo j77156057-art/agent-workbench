@@ -35,6 +35,7 @@ from tools import (TOOLS, tool_schemas, self_verify,
                    set_session_web_enabled, _session_web_enabled,
                    set_session_vision_mode, _session_vision_mode,
                    _query_relevant,
+                   begin_read_conversation, end_read_conversation,
                    _get_code_root as _tool_code_root)
 import agent_trace as _trace
 import sessions as _sessions
@@ -4629,6 +4630,13 @@ class Agent:
         # replan、再派一次，每次都基于同一份错配的证据，连错三次。
         traj, pending = [], deque()
         artifacts = []
+        # 子代理是**新对话**：给一份独立的读记录。
+        #
+        # 「未变化存根」的前提是「本次对话中读过」——而全局共享会让重规划产生的
+        # 新子代理拿到上一个子代理的读记录，那份内容它压根没见过。实测
+        # `wf-3073fc5f2403` 连错三轮就是这个：每次重试都必然拿不到正文，那个
+        # 重试在结构上不可能成功。
+        _read_conv_token = begin_read_conversation()
         try:
             # The child still gets its own client and history, but local model
             # generations share a bounded inference slot across all clones.
@@ -4699,6 +4707,9 @@ class Agent:
                 })
             failed["trace"] = _child_trace(traj, thoughts, hooks=hook_events)
             return failed
+        finally:
+            # 严格配对：异常路径也会 return，所以只能在 finally 里还原。
+            end_read_conversation(_read_conv_token)
 
         if turn is not None:
             turn.add_usage(getattr(child_llm, "last_usage", None))

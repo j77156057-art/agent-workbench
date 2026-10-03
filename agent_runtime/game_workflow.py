@@ -1490,6 +1490,46 @@ class GameWorkflowManager:
                 writable_roles=",".join(
                     sorted(name for name in _SUBAGENT_ROLES if role_can_write(name))))
 
+    def _stage_scope_probe(self, state: WorkflowState, task: Mapping[str, Any],
+                           token: Any) -> None:
+        """试做区隔离的探针：设了根之后，各处读到的根是不是同一个。
+
+        ## 为什么需要
+
+        隔离失效被观测到过两次，两次的表象相同（`python_exec` 报的执行目录是真实
+        项目），但**机理可能是两个**，修法完全不同：
+
+        (a) `set_context_code_root` 之后根被**改回去了**（某个并发的兄弟任务或
+            中间层用同一个 contextvar 写了别的值）；
+        (b) 根设对了，但工具执行发生在**另一个 context** 里（线程没复制
+            contextvar），于是它读到的是自己那份默认值。
+
+        这两者在「事件里看到根不对」面前长得一模一样。此前三次静态排查之所以
+        判「机制正常」，就是因为只验了 (a) 不成立就直接结了案——而那次验的
+        是在**主线程**里做的。
+
+        所以这里在两个位置各读一次：刚 `set` 完（此刻必然是试做区），以及
+        派发之前。两处不一致 = (a)；一致但工具仍报真实项目 = (b)。
+
+        探针不阻断：读不出来就如实记「探不到」，不能让诊断把工作流带崩。
+        """
+        want = str(state.project_stage.get("workspace_root") or "")
+        try:
+            from tools import _get_code_root
+            now = str(_get_code_root() or "")
+        except Exception as exc:  # noqa: BLE001 —— 探针不得让工作流失败
+            now = "探不到：%s: %s" % (type(exc).__name__, exc)
+        try:
+            from agent_runtime.tools import stage_scope_active
+            scope_on = bool(stage_scope_active())
+        except Exception:
+            scope_on = None
+        self._event(state, "stage_scope_probe",
+                    task_id=str(task.get("id") or "")[:80],
+                    want_root=want, actual_root=now,
+                    scope_active=scope_on,
+                    matches=(now == want))
+
     def _llm_wait_event(self, workflow_id: str, kind: str, text: str) -> None:
         """把「等模型」事件落到**正在执行的那个 state 对象**上。
 
@@ -3048,10 +3088,20 @@ class GameWorkflowManager:
                     "%s:%s" % (workflow_id, str(task.get("id") or "task")),
                     self.state_root):
                 if not state.project_stage:
+                    self._event(state, "stage_scope_missing", task_id=str(
+                        task.get("id") or "")[:80],
+                        reason="project_stage 为空——这个子代理直接跑在项目根上，"
+                               "试做区隔离对它完全不生效")
                     return runner(task, bounded_context)
                 token = set_context_code_root(state.project_stage["workspace_root"])
                 try:
                     with project_stage_scope():
+                        # 诊断：设置之后、派发之前，各读一次真实生效的根。
+                        # 此前这条路径被静态排查过三次都判「机制正常」，而实测
+                        # `wf-7cc2e86620ce` 里 python_exec 报的执行目录是**真实
+                        # 项目**。分不清是「没设」还是「设了但没生效」，所以两头
+                        # 都读一次：两者不一致就说明中间有人把它改回去了。
+                        self._stage_scope_probe(state, task, token)
                         return runner(task, bounded_context)
                 finally:
                     reset_context_code_root(token)
