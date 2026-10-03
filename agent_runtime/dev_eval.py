@@ -1142,6 +1142,69 @@ def _case_sandbox_process_budget_survives_a_real_tree(
     ]
 
 
+def _case_workflow_events_and_guards_survive_real_run(
+        root: str, run: Callable[..., dict]) -> list[dict]:
+    r"""工作流事件的四个白名单必须**互相一致**（Wave29）。
+
+    ## 为什么是「互相一致」而不是「某个常量等于某个值」
+
+    `llm_wait` 这对事件踩了两次同样的错，两次都是**同一个集合写在两处、只改了
+    一处**：
+
+    - `763119e` —— `SINK_STEP_TYPES` 没随 `SINK_FORWARDED_HOOKS` 更新
+    - `e394c4c` —— `hooks._WORKFLOW_KINDS` 白名单没放行，事件发出去被丢掉
+
+    这类缺陷是「常量形状检查」的**天敌**：断言 `llm_wait_start in
+    SINK_FORWARDED_HOOKS` 在上面两个状态下**都是绿的**，因为坏掉的是另外两个
+    集合。§9 的原话是「上限写两处，就等于写了一处旧的」——只查一端，恰好
+    看不见这一族。
+
+    所以这里断言的是**集合之间的包含关系**。已实测：注入 `763119e` /
+    `e394c4c` 两个真实断点，外加「新增钩子忘了进限长表」和「工具事件忘了
+    转发」两种同类漏改，本题**四个断点全红**；未变异时绿。
+
+    ## 为什么不重跑那些常量判据
+
+    这一题原来的四条判据有三条是既有 pytest 的**逐字重复**
+    （`test_reflection_sees_evidence.py` / `test_subagent_step_floor.py` /
+    `test_plan_dag_not_truncated.py`），第四条 `len(SINK_TOOL_HOOKS) == 4`
+    比 `test_workflow_tool_events.py` 里「逐个送进事件流验落流」更弱、而且
+    `== 4` 是魔数（合法加第 5 个工具 hook 就红，换掉一个仍然绿）。
+    重复的门禁判据只会拖慢门禁，不会多拦住任何东西。
+
+    真链路那些现场用例仍然在
+    `tests/test_workflow_tool_events.py` / `test_reflection_sees_evidence.py` /
+    `tests/test_llm_wait_reaches_stream.py`，不在门禁里重跑（门禁每题都有时限）。
+    """
+    import agent
+    import hooks
+
+    lifecycle = set(agent.SINK_LIFECYCLE_HOOKS)
+    forwarded = set(agent.SINK_FORWARDED_HOOKS)
+    tool_hooks = set(agent.SINK_TOOL_HOOKS)
+    step_types = set(agent.SINK_STEP_TYPES)
+    workflow_kinds = set(getattr(hooks, "_WORKFLOW_KINDS", ()) or ())
+
+    return [
+        _check("forwarded_kinds_are_a_subset_of_workflow_kinds",
+               not (forwarded - workflow_kinds),
+               "发了但 `run_workflow` 会丢弃：%s" % sorted(
+                   forwarded - workflow_kinds)),
+        _check("forwarded_kinds_are_a_subset_of_sink_step_types",
+               not (forwarded - step_types),
+               "发了但 `emit_sink` 查不到限长表、那一刻 KeyError：%s" % sorted(
+                   forwarded - step_types)),
+        _check("tool_lifecycle_hooks_are_all_forwarded",
+               not (tool_hooks - forwarded),
+               "工具生命周期事件不会被转发到工作流事件流：%s" % sorted(
+                   tool_hooks - forwarded)),
+        _check("lifecycle_hooks_are_all_in_sink_step_types",
+               not (lifecycle - step_types),
+               "生命周期事件不在 step_sink 的限长表里：%s" % sorted(
+                   lifecycle - step_types)),
+    ]
+
+
 def _case_chat_sse_refuses_a_final_that_never_ran_a_tool(
         root: str, run: Callable[..., dict]) -> list[dict]:
     r"""`/api/chat`（前端问答页真正打的 SSE 端点）的判据表能不能挑出假象（Wave24）。
@@ -1490,6 +1553,15 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "uses": [],
         "note": "端口归属要可证：dev_serve 的 argv 里没有端口参数，port 只是"
                 "『优先去探这里』，启动前就有人听的端口不能当成自己的服务",
+    },
+    {
+        "id": "workflow-events-and-guards-survive-real-run", "fixture": "plain",
+        "direct": _case_workflow_events_and_guards_survive_real_run,
+        "uses": [],
+        "note": "四个白名单（SINK_FORWARDED / SINK_TOOL / SINK_LIFECYCLE / "
+                "SINK_STEP_TYPES 与 hooks._WORKFLOW_KINDS）必须互相一致："
+                "同一集合写在两处而只改一处，事件就发不到用户那里——"
+                "llm_wait 这对事件已经因此丢过两次（763119e、e394c4c）",
     },
 )
 
