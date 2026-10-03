@@ -307,6 +307,97 @@ Final Answer: <最终答案正文>
 5. 证据不足时在 Final Answer 里说明缺什么，不要凭空断言。
 """
 
+#: 原生 function-calling 通道下的格式契约。
+#:
+#: 为什么必须另写一份：`_FORMAT_CONTRACT` 是**无条件**要求模型手写
+#: `Action:` / `Action Input:` / `Final Answer:` 的，而当 `_native_enabled()` 为真时
+#: 工具调用是由 API 的 `tools` 通道承载的——模型**无法**"手写"一个调用。两套契约同时
+#: 下发，模型收到的是矛盾指令。
+#:
+#: 实测后果（stealth/space-bunny-alpha，2026-10）：search_code / grep 走原生通道正常，
+#: 但证据纠偏文案要求它"再给出 Final Answer"，模型在原生通道里只能照做到最接近的程度
+#: ——输出散文叙述下一步；散文又被判成格式失守 → 再纠偏 → 两轮后硬失败，且模型已经
+#: 搜到的候选文件全部丢弃。
+#:
+#: 关键取舍：这里**不**要求模型给裸散文开路。原生通道下"无 tool call 的散文"到底是
+#: 结论还是计划，harness 无法可靠区分（上面那个 trace 里的散文就是计划）。所以契约
+#: 只把两件事说清：要查证就**发出真正的调用**，要收尾就**把结论写完整**；判定权仍在
+#: 解析层，不靠提示词去猜。
+_NATIVE_FORMAT_CONTRACT = """【工具调用方式 · 最高优先级 · 必须遵守】
+
+本轮工具调用走**原生 function-calling 通道**：工具清单已经随请求一并下发。
+
+1. 需要查证或执行动作时，**直接发出对应的工具调用**（在调用里填工具名与参数）。
+   不要在正文里手写 `Action:` / `Action Input:` / `Action Input:` 之类的标记——
+   通道不解析那些文本，写了等于没写。
+2. 不需要再查证时，**直接用自然语言把结论写完整**。不要写 `Final Answer:` 之类标记，
+   也不需要 `Thought:`——你的正文就是最终回答。
+3. 不要用正文描述"我接下来要调用什么"来代替真正的调用。要查就去调用；
+   不确定是否该查，就先把已有证据能支撑的结论写出来，并说明还缺什么。
+4. 结论必须给出可核验的定位（文件路径 + 行号）与依据；证据不足就说明缺什么，
+   不要凭空断言。
+5. 中文问题就用中文回答；命令、路径、代码保持原样。
+
+【若本提示词中段出现要求手写 `Action:` / `Final Answer:` 的段落】
+那是描述**文本协议**的遗留文字，本轮**不适用**。以本段为准：查证就发出真正的工具
+调用，收尾就把结论写完整，不要输出任何格式标记。
+"""
+
+_NATIVE_CONTRACT_MARK = "【工具调用方式 · 最高优先级 · 必须遵守】"
+_REACT_CONTRACT_MARK = "【输出格式契约 · 最高优先级 · 必须遵守】"
+
+#: 提示词**末尾**那段文本协议格式说明（原文里唯一，从这里一直到提示词结束）。
+#:
+#: 为什么必须单独处理：它不是"中段"，而是模型读到的**最后一段**——里面还写着
+#: 「**不要只写一段正文而不带任何标记**」。也就是说，哪怕开头换成了原生契约，
+#: 模型的最终指令仍是文本协议，而长提示词模型恰恰更看重末尾。
+#: 这正是实测失败的结构性原因：纠偏文案让它补标记，它照做了，
+#: 于是被判失守——因为传输层压根不解析那些标记。
+_REACT_TAIL_MARK = "请严格按以下格式回复："
+
+_NATIVE_TAIL = """【收尾要求 · 原生通道】
+本轮**不需要任何格式标记**。要查证就直接发出对应的工具调用；要给结论就直接把结论
+写完整即可。上面那段要求手写 `Thought:` / `Action:` / `Action Input:` /
+`Final Answer:` 的内容属于文本协议，本轮不适用，照它写会让系统无法判定你的意图。
+"""
+
+
+def _prompt_for_channel(system_prompt: str, native: bool) -> str:
+    """把系统提示里描述文本协议的两处内容换成本通道真正生效的说法。
+
+    两处都要换，缺一不可：
+      · 开头那份格式契约（`_REACT_CONTRACT_MARK`）
+      · **末尾**那段重申（`_REACT_TAIL_MARK`）——它是模型最后读到的指令
+
+    只换开头、指望中段/末尾的 override 条款压住，是本次实测失败的做法：
+    两套契约并存时，模型很可能照着**最后**读到的那份走。
+    """
+    if not native or _NATIVE_CONTRACT_MARK in system_prompt:
+        return system_prompt
+
+    tail_at = system_prompt.find(_REACT_TAIL_MARK)
+    if tail_at == -1:
+        return _NATIVE_FORMAT_CONTRACT + system_prompt
+    head = system_prompt[:tail_at].rstrip()
+
+    # 按**精确长度**切掉开头那份契约，不能按"第一个空行"截——契约块内部本来就有
+    # 空行（形状一 / 形状二 / 硬性要求之间），按空行切只会切掉前半段，
+    # 于是「任何情况下都要带上 Action: 或 Final Answer:」这类硬要求会**残留**。
+    # 这一点是被一条兜底断言抓出来的：它逐条检查"要求手写标记"的句子是否还在。
+    if head.startswith(_FORMAT_CONTRACT):
+        head = _NATIVE_FORMAT_CONTRACT + head[len(_FORMAT_CONTRACT):]
+    else:
+        start = head.find(_REACT_CONTRACT_MARK)
+        if start != -1:
+            cut = head.find("\n\n", start)
+            if cut == -1:
+                cut = start + len(_REACT_CONTRACT_MARK)
+            head = _NATIVE_FORMAT_CONTRACT + head[cut:].lstrip("\n")
+        else:
+            head = _NATIVE_FORMAT_CONTRACT + head
+
+    return head.rstrip() + "\n\n" + _NATIVE_TAIL
+
 
 _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
 你是一个严谨的多工具问答 Agent，可以调用以下工具来获取信息或执行动作。
@@ -1895,7 +1986,8 @@ class Agent:
         服务端无状态，ReAct 每次重放 head 都会带上图片；多轮历史只存文本，
         不在后续轮次重发旧图（避免上下文无谓膨胀）。
         """
-        messages = [{"role": "system", "content": self.system_prompt}]
+        messages = [{"role": "system", "content": _prompt_for_channel(
+            self.system_prompt, self._native_enabled())}]
         now = datetime.now().astimezone()
         messages.append({"role": "system", "content": (
             f"【当前时间】{now.isoformat(timespec='seconds')}。今天指 {now.date().isoformat()}，"
@@ -3465,12 +3557,22 @@ class Agent:
                     if evidence_nudges < 1:
                         evidence_nudges += 1
                         trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
+                        # 纠偏文案必须**说当前传输层的话**。原生 function-calling 下
+                        # 模型无法"写一行 Action"——它只能发出真正的 tool call。此前这条
+                        # 提示不论通道都要求"再给出 Final Answer"，于是模型在原生通道里
+                        # 只能尽力照做：输出散文叙述计划；散文又被判成格式失守，于是
+                        # 反复两轮后硬失败。实测（stealth/space-bunny-alpha）就是这条路。
                         trail.append({
                             "role": "user",
                             "content": (
-                                "Evidence check: 这是定位类问题，但最终回答缺少可核验的 read_file 原文。"
-                                "请先调用 read_file 读取候选文件的相关行，再重新给出 Final Answer；"
-                                "不要把 search_code 摘要当作行为语义证据。"
+                                ("Evidence check: 这是定位类问题，但最终回答缺少可核验的 "
+                                 "read_file 原文。现在直接调用 read_file 读取候选文件的相关行"
+                                 "（不要把 search_code 摘要当作行为语义证据），"
+                                 "读完再用自然语言给出结论，不需要写任何标记。")
+                                if self._native_enabled() else
+                                ("Evidence check: 这是定位类问题，但最终回答缺少可核验的 "
+                                 "read_file 原文。请先调用 read_file 读取候选文件的相关行，再"
+                                 "重新给出 Final Answer；不要把 search_code 摘要当作行为语义证据。")
                             ),
                         })
                         yield {"type": "reflection", "text": "定位回答缺少原文核验，已要求先读取候选文件。"}
@@ -3497,13 +3599,49 @@ class Agent:
                 if format_stalls >= _MAX_FORMAT_STALLS:
                     if turn is not None:
                         turn.outcome = "format_stall"
+                    # **不要丢掉 acc。** 此前这里直接把模型的实际输出换成一段固定
+                    # 文案，于是它已经产出的内容（工具观察、候选文件、推理）全部蒸发，
+                    # 用户只看到一句"执行失败"。trace 里模型明明已经搜到
+                    # player.gd L22-38 与 enemy.gd，结果一个字都没留下。
+                    #
+                    # 同时**不把这段散文当作答案**：本条 trace 恰好证明裸散文可能是
+                    # *计划*（"需要用 read_file 读取原文核验…"）而不是结论——把它当答案
+                    # 等于告诉用户"我再去查一下"，比报错更糟。所以原样回显并标明未核验。
+                    native = self._native_enabled()
+                    tail = (
+                        "\n\n──── 模型最后一次输出（**未完成、未核验，不要当作结论**）────\n"
+                        "%s\n%s" % (_clip(acc, 1200),
+                                "──── 以上内容未经 read_file 核验 ────"
+                                if native else "──── 以上内容缺少格式标记 ────")
+                    )
+                    if native:
+                        why = (
+                            "本轮走的是原生 function-calling 通道：工具调用由 API 负责，"
+                            "模型只负责发出真正的 tool call 或直接写最终回答。"
+                            "但本轮既没有 tool call，正文里也没有给出结论——"
+                            "这段话没能告诉系统「你要调用哪个工具」或「这就是答案」，"
+                            "所以无法判定它是没答完还是已经答完。"
+                        )
+                        todo = (
+                            "可下手的办法：\n"
+                            "  · 若要继续查证：让模型**直接调用工具**（不要手写 Action 标记）；\n"
+                            "  · 若证据已足够：让模型**直接用自然语言给出结论**，"
+                            "不需要 `Final Answer:` 标记；\n"
+                            "  · 换用更守格式的模型，或把 `DOCMIND_TOOL_MODE` 设回 `react` "
+                            "改用文本协议。"
+                        )
+                    else:
+                        why = (
+                            "本轮走的是 ReAct 文本协议，模型有正文、但既没写 `Action:` 也没写 "
+                            "`Final Answer:`，因此无法判断它是没答完还是已经答完。"
+                        )
+                        todo = (
+                            "可下手的办法：换一个更守格式的模型；或在项目规则里明确要求"
+                            "它以 `Final Answer:` 开头收尾。"
+                        )
                     final_text = (
-                        "模型连续 %d 轮没有按要求输出格式（既没有 `Action:` 也没有 "
-                        "`Final Answer:`），本轮已停止重试。\n\n"
-                        "它的回答其实是有内容的，但不带标记时 harness 无法判断"
-                        "「它是没答完」还是「它已经答完了」，只能反复要求重写。\n"
-                        "可下手的办法：换一个更守格式的模型；或在项目规则里明确要求"
-                        "它以 `Final Answer:` 开头收尾。" % format_stalls
+                        "模型连续 %d 轮没有给出可判定的动作或结论，本轮已停止重试。\n\n%s\n%s%s"
+                        % (format_stalls, why, todo, tail)
                     )
                     yield {"type": "final", "status": "error", "text": final_text}
                     return
@@ -3541,24 +3679,46 @@ class Agent:
                             "需要工具时继续调用；证据充分时给出完整的 `Final Answer: ...`。"
                         )
                 elif not acc.strip():
-                    hint = (
-                        "Nudge: 你上一轮没有输出任何正文内容。请严格按格式直接给出最终回答："
-                        "`Final Answer: ...`（中文、简洁、不要再只做思考）。"
-                    )
+                    if self._native_enabled():
+                        hint = (
+                            "Nudge: 你上一轮没有输出任何正文内容，也没有发出工具调用。"
+                            "请直接用自然语言给出最终回答（中文、简洁），"
+                            "不需要写 `Final Answer:` 标记；需要查证就直接调用工具。"
+                        )
+                    else:
+                        hint = (
+                            "Nudge: 你上一轮没有输出任何正文内容。请严格按格式直接给出最终回答："
+                            "`Final Answer: ...`（中文、简洁、不要再只做思考）。"
+                        )
                 else:
                     # 把上一轮的**实际输出**回显给它，并明确指出缺的是哪一段。
                     # 原来只说「你没给 Final Answer」，模型并不知道自己说了什么；
                     # 回显 + 指出缺口之后，它要做的改动是明确的（把已有正文挪到标记后面，
                     # 而不是重写一遍）——这也顺带避免了「换个说法再答一遍」导致内容漂移。
-                    hint = (
-                        "Nudge: 你上一轮的输出既没有 `Action:`，也没有 `Final Answer:`，"
-                        "所以系统无法判断你是不是已经答完了。下面是你上一轮的**实际输出**：\n"
-                        "----------\n%s\n----------\n"
-                        "请二选一，不要重写内容：\n"
-                        "· 已经答完了 → 在这段正文**前面**补一行 `Final Answer: `，其余一字不改；\n"
-                        "· 还需要查证 → 补上 `Thought:` / `Action: <工具名>` / `Action Input: <参数>`。"
-                        % _clip(acc, 1200)
-                    )
+                    #
+                    # 原生通道下**不能**要求它补 `Action:` / `Final Answer:`：传输层
+                    # 不支持"手写"一个调用。必须换成"直接调用工具 / 直接写结论"。
+                    if self._native_enabled():
+                        hint = (
+                            "Nudge: 你上一轮既没有发出工具调用，也没有直接给出结论，"
+                            "所以系统无法判断你是已经答完了还是打算继续。下面是你上一轮的"
+                            "**实际输出**：\n----------\n%s\n----------\n"
+                            "请二选一，**不要重写内容、不要写任何 Action:/Final Answer: 标记**：\n"
+                            "· 还需要查证 → 直接调用相应的工具（例如 read_file），"
+                            "把工具名和参数放进真正的调用里；\n"
+                            "· 已经答完了 → 直接用自然语言把结论写完整即可。"
+                            % _clip(acc, 1200)
+                        )
+                    else:
+                        hint = (
+                            "Nudge: 你上一轮的输出既没有 `Action:`，也没有 `Final Answer:`，"
+                            "所以系统无法判断你是不是已经答完了。下面是你上一轮的**实际输出**：\n"
+                            "----------\n%s\n----------\n"
+                            "请二选一，不要重写内容：\n"
+                            "· 已经答完了 → 在这段正文**前面**补一行 `Final Answer: `，其余一字不改；\n"
+                            "· 还需要查证 → 补上 `Thought:` / `Action: <工具名>` / `Action Input: <参数>`。"
+                            % _clip(acc, 1200)
+                        )
                 trail.append({"role": "user", "content": hint})
                 yield {"type": "notice", "text": "模型输出尚未结束，正在继续执行。"}
                 continue
