@@ -173,6 +173,15 @@ class NonStreamCancellationTests(unittest.TestCase):
         client.timeout = 2.0
         client.last_usage = {}
         client.last_tool_calls = []
+        # 诊断字段（`__init__` 里新增的那一组）。这个 fixture 用 `object.__new__`
+        # 绕过 `__init__`，所以它们**不会自动存在**——而 `chat()` 会读
+        # `last_call_probe` / `last_stream_ref`，缺了就 AttributeError。
+        # 这不是实现的问题，是 fixture 的义务跟着变了。
+        client.last_finish_reason = None
+        client.last_stream_ref = None
+        client.last_raw_head = ""
+        client.last_call_probe = False
+        client.last_messages = []
 
         class _Completions:
             def create(self, **kwargs):

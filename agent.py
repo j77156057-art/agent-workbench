@@ -1218,6 +1218,92 @@ def _tool_event_payload(tool, argument, *, depth=0, session_id="") -> dict:
     return payload
 
 
+#: 格式停滞时把出站消息落盘到哪个目录。空串 = 不落盘（默认）。
+#: 由 `DOCMIND_PROBE_LLM` 非空启用，与 `LLMClient.last_call_probe` 同一个开关。
+_STALL_PROBE_DIR = ".tmp/stall_probe"
+
+
+def _probe_finish_reason(llm):
+    """这一次调用此刻能拿到的 finish_reason。
+
+    流式下它要等消费完才定，此刻多半是 `None`——**而 None 本身就是信息**：
+    说明这条走的是流式、值还没定，需要连着 `usage` 一起看。
+    """
+    stream = getattr(llm, "last_stream_ref", None)
+    if stream is not None:
+        return getattr(stream, "finish_reason", None)
+    return getattr(llm, "last_finish_reason", None)
+
+
+def _dump_stall_probe(llm, messages, acc, turn=None, session_id=""):
+    """格式停滞的那一刻，把**出站消息**原样落盘。
+
+    ## 为什么必须是这一刻，而不是事后
+
+    实测阻断（`wf-2c5612c6ee53` / `wf-87c0df3224aa`）：原生 FC 通道上模型
+    **第 1 轮正常，第 2 轮起不产出可解析输出**。已排除的假设有一串——通道可用、
+    最简 schema 可用、111 个真实工具可用、schema 形状不畸形、`output_budget=43253`
+    充足、`last_tool_calls` 形状正确。
+
+    也就是说：**手上每个字段都「正常」，而现象不正常。** 剩下的唯一窄口就是
+    **第 2 轮发给模型的消息到底是什么样**——而那个对象在循环里每轮都被重建，
+    循环一退出就没了。事后从 trace 里反推不出来：trace 存的是**观察**，
+    不是**请求**。
+
+    ## 为什么这次落盘就能定位
+
+    落盘的是 `messages` 原样（含 assistant 历史与 tool 结果），所以能直接看：
+
+    - 第 2 轮的消息里有没有 `role="tool"` 但**没有**对应的 `tool_call_id`；
+    - 有没有 assistant 消息的 `tool_calls` 是空数组（那会让上游 400 或静默忽略）；
+    - 消息条数/总字符数在第 1 轮与第 2 轮之间跳变了多少；
+    - 最后一个 assistant 消息的形状与模型自己的输出是否对得上。
+
+    这四件事此前**一条都看不到**，而它们恰好覆盖「第 2 轮起坏掉」最常见的成因。
+
+    ## 刻意只在这里落盘
+
+    每轮都落会淹掉真正的那一轮，也白付 I/O。所以只在**判定为停滞**时写，
+    文件名带序号与时间戳，一次故障留下一个文件。
+
+    落盘失败必须吞掉：诊断绝不能让工作流失败。
+    """
+    try:
+        if not os.getenv("DOCMIND_PROBE_LLM", "").strip():
+            return
+        root = os.path.join(os.getcwd(), _STALL_PROBE_DIR)
+        os.makedirs(root, exist_ok=True)
+        stamp = time.strftime("%H%M%S")
+        seq = getattr(_dump_stall_probe, "_seq", 0) + 1
+        _dump_stall_probe._seq = seq
+        path = os.path.join(root, "stall-%s-%02d.json" % (stamp, seq))
+        usage = dict(getattr(llm, "last_usage", {}) or {})
+        payload = {
+            "ts": stamp,
+            "seq": seq,
+            "session_id": session_id,
+            "model": getattr(llm, "model", ""),
+            "provider": getattr(llm, "provider", ""),
+            "native": bool(getattr(llm, "capability", {}).get("native_tools")),
+            "message_count": len(messages or []),
+            "messages": list(messages or []),
+            "acc": str(acc or ""),
+            "acc_chars": len(str(acc or "")),
+            # 非流式下这是 llm 上留档的值；流式下此刻还是 None——
+            # **None 本身就是信息**（说明这条走的是流式，得看消费完之后的值）。
+            "finish_reason": _probe_finish_reason(llm),
+            "usage": usage,
+            "tool_calls_seen": len(getattr(llm, "last_tool_calls", []) or []),
+            "raw_head": getattr(llm, "last_raw_head", ""),
+            "turn_outcome": getattr(turn, "outcome", None),
+            "output_budget": getattr(llm, "output_budget", None),
+        }
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=1, default=str)
+    except Exception:  # noqa: BLE001 —— 诊断失败绝不能让工作流失败
+        pass
+
+
 def _short_root(root: str) -> str:
     """执行目录的短形式（最后两段），够区分三种根又不至于把事件行撑爆。
 
@@ -4438,6 +4524,8 @@ class Agent:
                     # 实测 `wf-87c0df3224aa` 的 `design_probe_2`：结论就是这段
                     # 447 字符的诊断、`degraded=False`，反思只能看出「结论与任务
                     # 无关」。这与 `613de0e` / `7bbc69b` 修的另两处同型。
+                    _dump_stall_probe(self.llm, messages, acc, turn,
+                                      session_id=self.session_id or "")
                     yield {"type": "final", "status": "error",
                            "degraded": True, "text": final_text}
                     return

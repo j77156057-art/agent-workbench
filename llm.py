@@ -558,6 +558,41 @@ class LLMClient:
         self.last_usage = {}
         # 最近一次调用返回的原生 tool_calls（[{id,name,arguments}]），供 agent 的原生通道读取
         self.last_tool_calls = []
+        # ------------------------------------------------------------------
+        # 「上一次调用到底发生了什么」的诊断字段——`last_usage` /
+        # `last_tool_calls` 之外的第三组。
+        #
+        # 实测阻断（`wf-2c5612c6ee53` / `wf-87c0df3224aa`）：原生 FC 通道上模型
+        # **第 1 轮正常、第 2 轮起不产出可解析输出**，连续两轮即触发格式停滞诊断。
+        # 此前已排除：通道可用、最简 schema 可用、111 个真实工具可用、schema 形状
+        # 不畸形、`output_budget` 充足、`last_tool_calls` 形状正确。
+        #
+        # 也就是说：**手上每一个字段都「正常」，而现象不正常。** 唯一还没量的是
+        # **出站请求本身**——第 2 轮发给模型的消息到底长什么样。
+        #
+        # 而原有字段全都答不了这个问题：
+        #
+        # - `last_tool_calls` 为空——「没返回 tool call」和「返回了但我们没接住」
+        #   在这里长得一模一样；
+        # - `last_usage` 只有 token 数——看得出「有没有生成」，看不出「**生成到了
+        #   哪一步被掐掉**」；
+        # - `finish_reason` 只在流对象上（消费完就随流一起没了），非流式路径上根本
+        #   没有这个信息。
+        #
+        # 所以补三样：**finish_reason、原始首段、以及完整出站消息**。
+        # `last_messages` 只在 `DOCMIND_PROBE_LLM=1` 时真的留一份拷贝，
+        # 否则每次调用白付一次 `list(messages)` 的钱。
+        #
+        # 为什么 `last_raw_head` 要单独留：「模型返回了空字符串」和「模型返回了
+        # 一句 4000 字的开场白然后被掐断」，对下一步的动作要求完全相反。而
+        # `completion_tokens` 只能告诉你后者**可能**发生——留一段真实文本，
+        # 才能一眼看出是哪一种。
+        self.last_finish_reason = None   # 非流式路径原本完全没有这个信息
+        self.last_stream_ref = None      # 流式下**记流对象本身**（值要消费完才定）
+        self.last_raw_head = ""          # 分辨「空」与「有开场白但被掐」
+        self.last_call_probe = bool(os.getenv("DOCMIND_PROBE_LLM", "").strip()
+                                    in ("1", "true", "yes"))
+        self.last_messages = []          # 出站消息快照，仅探针开启时真的留
         self.max_retries = LLM_RETRIES
         self.retry_base = LLM_RETRY_BASE
         self.timeout = LLM_TIMEOUT
@@ -662,11 +697,16 @@ class LLMClient:
                         供 Agent 转成 SSE 事件给前端"深度思考"窗口。
         cancel_event：可选 threading.Event；流式和带取消事件的非流式请求收到取消后
                      会关闭底层响应并终止本轮生成。
-        每次调用都重置 self.last_usage / self.last_tool_calls；成功后由 agent 读取。
-        可重试错误（429/5xx/网络/超时）按指数退避自动重试。
+        每次调用都重置 self.last_usage / self.last_tool_calls / last_finish_reason /
+        last_raw_head；成功后由 agent 读取。可重试错误（429/5xx/网络/超时）按指数
+        退避自动重试。
         """
         self.last_usage = {}
         self.last_tool_calls = []
+        self.last_finish_reason = None
+        self.last_stream_ref = None
+        self.last_raw_head = ""
+        self.last_messages = list(messages) if self.last_call_probe else []
         if reasoning_sink is not None:
             reasoning_sink.clear()
         if cancel_event is not None and cancel_event.is_set():
@@ -752,7 +792,13 @@ class LLMClient:
                     return _open(False)
 
             if stream:
-                return _open_with_fallback()
+                stream_obj = _open_with_fallback()
+                if self.last_call_probe:
+                    # 流式下 finish_reason 只存在于流对象上，而它消费完就随流消失；
+                    # 第 2 轮起「不产出可解析输出」时，唯一能分辨「被长度掐断」与
+                    # 「模型自己停了」的就是它。**刻意记流对象本身**而不是当时的值。
+                    self.last_stream_ref = stream_obj
+                return stream_obj
             # 只有提供取消事件时才进入此分支；保持 chat(stream=False) 的
             # 字符串返回值，并让 local_llm_slot 覆盖整个生成生命周期。
             with local_llm_slot(self.provider, self.model):
@@ -774,7 +820,16 @@ class LLMClient:
                 self._record_usage(resp)
                 msg = _first_message(resp)
                 self.last_tool_calls = normalize_tool_calls(getattr(msg, "tool_calls", None))
-                return getattr(msg, "content", None)
+                # 非流式路径原本**完全没有** finish_reason，而「第 2 轮起不产出
+                # 可解析输出」正是要靠它分辨：模型自己停了（stop）还是被长度掐了
+                # （length）——两者的下一步动作完全相反。
+                choice = (getattr(resp, "choices", None) or [None])[0]
+                self.last_finish_reason = getattr(choice, "finish_reason", None)
+                content = getattr(msg, "content", None)
+                if self.last_call_probe and content:
+                    # 留第一段原文：空串与「有开场白但被掐」必须能一眼分开。
+                    self.last_raw_head = str(content)[:400]
+                return content
 
             return retry_call(_complete, deadline=deadline, attempts=self.max_retries,
                               base=self.retry_base)
