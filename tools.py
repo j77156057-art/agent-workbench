@@ -3496,19 +3496,41 @@ def _path_within_real_root(root, target):
         return False
 
 
+#: read_file 的行号区间参数。**行内与独占行都认**（`grep` 的解析器本来就这么做，
+#: 两个工具不一致才是这次故障的根源）。
+#:
+#: 分隔符给到 空格/逗号/分号/换行 —— 模型实际输出的写法比工具说明里的示例更随意，
+#: 收紧语法等于让模型在一个纯语法问题上反复试错，而每次失败的报错都把整串
+#: 当成路径回显，模型只会去换路径分隔符（实测连试四次全失败）。
+_RE_READ_START = re.compile(r"(?:^|[\s,，;；])start\s*[:：]\s*(\d+)", re.I)
+_RE_READ_END = re.compile(r"(?:^|[\s,，;；])end\s*[:：]\s*(\d+)", re.I)
+#: 识别不出来的残留（`start=1`、`行1-55` 之类）——用于把语法问题与路径问题区分开。
+_RE_READ_STRAY = re.compile(
+    r"(?:^|[\s,，;；])(?:start|end)\s*(?:=|＝|：|:)\s*\d+"
+    r"|(?:^|[\s,，;；])(?:行|line)\s*\d+\s*[-—~]\s*\d+", re.I)
+
+
 def read_file(path):
     """读取代码库中的文件内容（path 为相对 code_root 的路径或文件名）。
 
     大文件默认只给前 12000 字；可在输入里附 `start: <1基行号>` 与可选 `end: <行号>`
-    只看某个区间（如枚举/方法所在行段），格式：路径换行后接 start:/end: 两行。
+    只看某个区间（如枚举/方法所在行段）。
+
+    **区间参数三种写法都认**：独占一行（工具说明里的写法）、行内空格分隔、
+    逗号/分号分隔。此前只认独占一行，而模型实际普遍写成行内
+    （`player.gd start: 1 end: 55`），结果整串被当成文件名-> 「文件不存在」，
+    且报错把整串原样回显，模型看不出是自己的语法问题，转而去换路径分隔符、
+    连试四次全失败。实测（godot_sample 定位扣血逻辑）走的正是这条死路。
+    对照：`grep` 的参数解析器本来就有行内处理（_RE_GREP_SCOPE_INLINE 等），
+    两个工具不一致才是根源，所以这里按同一套宽松规则来。
     """
     root = _get_code_root()
     if not root:
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
     root_abs = os.path.normpath(root)
     start_line = end_line = None
-    ms = re.search(r"(?:^|\n)\s*start\s*[:：]\s*(\d+)", path)
-    me = re.search(r"(?:^|\n)\s*end\s*[:：]\s*(\d+)", path)
+    ms = _RE_READ_START.search(path)
+    me = _RE_READ_END.search(path)
     cuts = []
     if ms:
         start_line = max(1, int(ms.group(1)))
@@ -3518,9 +3540,13 @@ def read_file(path):
         cuts.append(me.start())
     if cuts:
         path = path[:min(cuts)]
-    path = path.strip()
+    path = path.strip().strip(",，;；").strip()
     if start_line and end_line and end_line < start_line:
         end_line = start_line + 200
+    # 参数没被识别出来（例如写成 start=1 / 行 1-55）。此时 path 里会残留这些片段，
+    # 而「文件不存在：xxx start=1」这种报错会把语法问题伪装成路径问题——
+    # 必须在这里点破，否则模型会去改路径/换分隔符，而真实原因是参数写法。
+    leftover = _RE_READ_STRAY.search(path)
     target = os.path.normpath(path if os.path.isabs(path) else os.path.join(root_abs, path))
     # 路径越界防护：只允许读取 code_root 目录内的文件
     if not (target == root_abs or target.startswith(root_abs + os.sep)):
@@ -3530,6 +3556,13 @@ def read_file(path):
         else:
             return f"拒绝访问：{path} 不在代码根目录内。"
     if not os.path.isfile(target):
+        if leftover:
+            return (
+                f"文件不存在：{path[:40]} —— 但路径里混进了区间参数"
+                f"「{leftover.group(0).strip()}」，它没有被识别。"
+                "行号区间请写成 `start: <行号>` 与可选 `end: <行号>`，"
+                "用空格、逗号或换行与路径分隔开（例如 `a.gd start: 20 end: 45`）。"
+            )
         return f"文件不存在：{path}"
     if not _path_within_real_root(root_abs, target):
         return f"拒绝访问：{path} 经符号链接指向代码根目录之外。"

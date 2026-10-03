@@ -3743,12 +3743,31 @@ class Agent:
                 # 于是"重试一次就好"变成一个查不出原因的玄学问题。
                 # 与上面 truncated 那条刻意区分开：那是长度问题，这条是拿不到内容。
                 attempts = 1 + int(final_continuations) + int(format_stalls)
+                # 空响应**本身**未必是根因。若本轮工具反复失败，最可能的因果是
+                # 「工具一直报错 -> 模型放弃 -> 返回空」，而那种情况下让用户去查
+                # provider / thinking 预算就是把人引向错误的排查方向。
+                # 实测（godot_sample 定位扣血逻辑）：read_file 连续 5 次
+                # 「文件不存在」——根因是参数语法（start:/end: 写成行内不被识别），
+                # 但用户看到的归因是「中转返回空内容，直接重试通常就能拿到」。
+                # 重试多少次都没用。
+                tool_hint = ""
+                if fail_total:
+                    worst = max(tool_fail_streak.items(),
+                                key=lambda kv: kv[1], default=None)
+                    worst_txt = ("（最常失败：%s ×%d）" % (worst[0], worst[1])
+                                 if worst and worst[1] else "")
+                    tool_hint = (
+                        "\n\n注意：本轮有 **%d 次工具调用失败**%s。模型很可能是因为它们"
+                        "才放弃作答——请先看上面那些工具返回的具体报错，那里才是根因；"
+                        "本条「上游返回空内容」只是**结果**，不是原因。" % (fail_total, worst_txt)
+                    )
                 final_text = (
                     "模型连续 %d 次调用都没有返回可用正文。**这多半不是你的问题写得不清楚**，"
                     "而是上游/中转返回了空内容（瞬时故障），直接重试通常就能拿到。"
                     "若反复出现，依次检查：① 该 provider 是否可用（免费中转容易限流或"
                     "无上游容量）；② 若该模型开了思考模式，可能是思考阶段吃光了输出预算——"
-                    "关掉 thinking 或调小 max_tokens 再试。" % max(1, attempts)
+                    "关掉 thinking 或调小 max_tokens 再试。%s"
+                    % (max(1, attempts), tool_hint)
                 )
             else:
                 # 连纠偏后仍不合格式的残句：清洗 ReAct 标记后再兜底，不再把 Thought/Action 原样抛给用户
