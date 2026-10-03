@@ -280,24 +280,14 @@ def _raw_task_count(raw: Any) -> int:
 
     Only feeds the ``plan_generation_truncated`` diagnostic, so it must never
     raise — a diagnostic that can break planning is worse than no diagnostic.
-    Mirrors the shape handling in ``_parse_generated_tasks`` (fenced JSON string,
-    ``{"tasks": [...]}``, ``{"plan": {"tasks": [...]}}``, bare list).
+
+    形状处理**全部**在 `_as_task_list` 里，这里只取长度。这不是洁癖：
+    抽出 `_as_task_list` 之前这段逻辑在本文件里有**两份**，而
+    `tests/mutation/battery_plan_dag.py` 的锚点校验当场抓到「锚点在
+    ``agent_runtime/game_workflow.py`` 里出现 2 次」——只替换第一处的变异会改错
+    地方。§9 的原话：「上限写两处，就等于写了一处旧的」。
     """
-    try:
-        if isinstance(raw, str):
-            text = raw.strip()
-            if text.startswith("```"):
-                text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text,
-                              flags=re.I | re.S).strip()
-            raw = json.loads(text)
-        if isinstance(raw, Mapping):
-            inner = raw.get("tasks")
-            if inner is None and isinstance(raw.get("plan"), Mapping):
-                inner = raw["plan"].get("tasks")
-            raw = inner
-        return len(raw) if isinstance(raw, list) else 0
-    except Exception:
-        return 0
+    return len(_as_task_list(raw))
 
 
 def _effective_task_parallelism(requested: int) -> int:

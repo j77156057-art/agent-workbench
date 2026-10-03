@@ -71,6 +71,9 @@ UNIT_CLASSES = (
     'RetryEndpointContractTests',
     'ToolEventsReachTheWorkflowStreamTests',
     'ToolEventTextTests',
+    # 每次工具调用自报执行目录（试做区隔离的判据）。纯层：只碰
+    # `_tool_event_payload` / `_short_root` / `_tool_event_text` 三个纯函数。
+    'ExecutionRootIsReportedTests',
     'TracebackIsEvidenceTests',
 )
 # 现场层：真跑一次子代理，让 `record_hook` 真的被调用。

@@ -107,13 +107,17 @@ _MAX_DEPS = '_MAX_TASK_DEPS = 16'
 _DEP_GUARD = ('            if task_id in clean_deps or len(clean_deps) > _MAX_TASK_DEPS:\n'
               '                continue')
 
-#: 诊断函数的"绝不抛"兜底。注意 `except Exception: return 0` 在本文件出现**三次**
-#: （173/181/224），引擎 `replace(old,new,1)` 只打第一处——锚点必须带上一行消歧。
-_RAW_COUNT_FALLBACK = ('        return len(raw) if isinstance(raw, list) else 0\n'
-                       '    except Exception:\n        return 0')
+#: 诊断函数的"绝不抛"兜底。
+#:
+#: 位置在 `_as_task_list` 而不是 `_raw_task_count`：抽 `_as_task_list` 之前这段
+#: 形状处理在本文件里有**两份**，`_raw_task_count` 只取长度。元测试当场抓到
+#: 「锚点出现 2 次」——只替换第一处的变异会改错地方。现已消成一份，锚点也
+#: 跟着搬过来。§9：「上限写两处，就等于写了一处旧的」。
+_RAW_COUNT_FALLBACK = ('        return list(raw) if isinstance(raw, list) else []\n'
+                       '    except Exception:\n        return []')
 
 #: 诊断数的是列表长度（守卫断言裸数组与 tasks 包装都要数对）。
-_RAW_COUNT_LEN = '        return len(raw) if isinstance(raw, list) else 0'
+_RAW_COUNT_LEN = '        return list(raw) if isinstance(raw, list) else []'
 
 #: 剥``` 围栏。
 _FENCE_STRIP = ('                text = re.sub(r"^```(?:json)?\\s*|\\s*```$", "", text,\n'
@@ -155,12 +159,12 @@ MUTATIONS = [
     # ---- 诊断：被丢的任务必须"看得见"，否则又是静默 ----
     ("诊断不再兜底——模型给了非 JSON 时整个规划流程炸掉（守卫断言不抛）",
      _RAW_COUNT_FALLBACK,
-     '        return len(raw) if isinstance(raw, list) else 0\n'
+     '        return list(raw) if isinstance(raw, list) else []\n'
      '    except Exception:\n        raise'),
 
     ("诊断对非列表一律返回 0——模型给了 tasks 包装时被报成「只给了 0 个任务」",
      _RAW_COUNT_LEN,
-     '        return 0'),
+     '        return []'),
 
     ("诊断不剥``` 围栏——模型带围栏输出时被数成 0 个任务",
      _FENCE_STRIP,

@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 28,
- "scored": 28,
- "passed": 28,
+ "total": 29,
+ "scored": 29,
+ "passed": 29,
  "skipped": [],
  "results": [
   {
@@ -169,6 +169,12 @@
   },
   {
    "id": "devserver-refuses-to-claim-someone-elses-port",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "workflow-events-and-guards-survive-real-run",
    "passed": true,
    "skipped": "",
    "failed_checks": []
