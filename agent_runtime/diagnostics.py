@@ -263,16 +263,24 @@ def frontend_diagnostics(root: str, *, timeout: int = DEFAULT_TIMEOUT) -> dict[s
     if rep.get("truncated"):
         result["notes"].append("typecheck 输出被截断，条目可能不全。")
     result["notes"].append(f"命令在 {rel}/ 内执行（vue-tsc --noEmit + tsc --noEmit）。")
-    # Wave33：eslint 那一腿。**只报不卡**——它的发现不进 `issues`、不改 `ok`，
-    # 但必须在 notes 与报告里看得见；看不见就等于"假干净"（这份文件的既有规矩）。
+    # Wave34：eslint 那一腿，`LINT_GATES` 决定它的发现是否进入判定。
+    # 无论参不参与判定，它的发现与"没跑成"都必须在 notes 与报告里看得见——
+    # 看不见就等于"假干净"（这份文件的既有规矩）。
     result["lint"] = frontend_lint(root, timeout=timeout)
-    if result["lint"].get("issues"):
-        result["notes"].append(
-            "eslint 另报了 %s 条（只报不卡，见 dev_diagnostics 的 lint 一节）。"
-            % len(result["lint"]["issues"]))
-    result["notes"].extend(result["lint"].get("notes") or [])
-    if result["lint"].get("error"):
-        result["notes"].append("eslint 这一腿没跑成：%s" % result["lint"]["error"])
+    lint = result["lint"]
+    if lint.get("issues") and LINT_GATES:
+        result["issues"].extend(lint["issues"])
+    if lint.get("issues"):
+        result["notes"].append("eslint 报了 %s 条（%s）。"
+                               % (len(lint["issues"]),
+                                  "参与判定" if LINT_GATES else "只报不卡"))
+    result["notes"].extend(lint.get("notes") or [])
+    if lint.get("error"):
+        # 跑挂了必须让整个工具变红——`tests/test_dev_diagnostics.py` 的模块 docstring
+        # 写着「最要紧的不是能不能找出问题，而是跑不成时不能报成没问题」。
+        # 只挂 note 是不够的：报告顶部那句「没有发现问题」会盖住它。
+        result["error"] = (("%s；" % result["error"] if result.get("error") else "")
+                           + "eslint 没跑成：%s" % lint["error"].split("\n")[0])
     return result
 
 
@@ -296,6 +304,15 @@ def frontend_lint_configured(fe: str) -> tuple[bool, str]:
             return True, "有 %s" % name
     return False, "既没有 lint 脚本，也没有 eslint 配置文件"
 
+
+#: eslint 那一腿**参不参与判定**。Wave33 先搭骨架时是 False（只报不卡），Wave34 实测出
+#: 存量只有 15 条（见 docs §5.27）之后改成 True。
+#:
+#: 为什么当初要留这道开关：那份代码从没被 lint 过，`frontend/src` 有 129 个文件 / 39352 行，
+#: 而 node_modules 里连 eslint 都没有。**万一**规则集一上来就报几千条，那道红会变成噪声，
+#: 比没有 lint 更坏（它让人误以为有人在管）。现在数字量过了：vue/essential + 三条豁免
+#: = 15 条 error、0 warning，其中 5 条是死 import。
+LINT_GATES = True
 
 #: eslint `stylish` 输出的一行，长这样：
 #:   /abs/path/src/App.vue
@@ -383,15 +400,22 @@ def frontend_lint(root: str, *, timeout: int = DEFAULT_TIMEOUT) -> dict[str, Any
     raw = rep.get("output") or ""
     code = int(rep.get("exit_code") or 0)
     out["ran"] = True
-    out["ok"] = True
     out["exit_code"] = code
     out["issues"] = parse_eslint(raw, rel)
     if not out["issues"] and code != 0:
-        out["notes"].append("lint 退出码 %s 但没解析出条目，原始尾部：\n%s"
-                            % (code, raw.strip()[-500:]))
+        # **退出码非 0 却一条都没解析出来 = 它跑挂了，不等于"没问题"。**
+        # 第一版只加了条 note，于是 eslint 根本没装（`npm run lint` 报
+        # `'eslint' is not recognized`、退出码 1）时，报告照样写「没有发现问题」——
+        # 骨架自己变成了假干净的样本。这里必须报 error。
+        out["error"] = ("lint 退出码 %s 但没解析出任何条目——它多半没跑成，"
+                        "不能当成「没有问题」。原始尾部：\n%s"
+                        % (code, raw.strip()[-500:]))
+        return out
+    out["ok"] = True
     if rep.get("truncated"):
         out["notes"].append("lint 输出被截断，条目可能不全。")
-    out["notes"].append("eslint 在 %s/ 内执行；这一腿**只报不卡**，不参与判定。" % rel)
+    out["notes"].append("eslint 在 %s/ 内执行；这一腿**参与判定**（存量 15 条，见 docs §5.27）。"
+                       % rel)
     return out
 
 
@@ -475,7 +499,10 @@ def render(result: dict[str, Any]) -> str:
     for note in result.get("notes") or []:
         lines.append("提示: " + note)
     lint = ((result.get("engines") or {}).get("frontend") or {}).get("lint") or {}
-    if lint and not lint.get("ran") and not lint.get("error"):
+    if lint and lint.get("error"):
+        # 跑挂了比没跑更要紧：没跑是"不知道"，跑挂了是"它以为它跑过了"
+        lines.append("注意: eslint 这一腿**没跑成**——%s" % lint["error"].split("\n")[0])
+    elif lint and not lint.get("ran"):
         # 没跑就**说没跑**，而且要说清它不构成任何证据——只在 notes 里带一句会被淹掉
         lines.append("注意: eslint 这一腿**没跑**（%s）。"
                      "上面那些结论只覆盖类型检查，不覆盖写法。" % (lint.get("why") or "未配置"))
