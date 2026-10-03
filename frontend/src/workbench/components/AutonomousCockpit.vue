@@ -702,6 +702,74 @@ const statusLabel: Record<string, string> = {
   completed: '执行完成，等待验收', failed: '执行失败', interrupted: '已暂停',
   awaiting_research: '等待资料',
 }
+/**
+ * 「现在正在做什么」——**这一条是治「用户以为卡了」的**。
+ *
+ * 实测 `wf-f3da9d3ffb32`：全程 360 秒里 **98% 是静默的**，而每一段静默都是一次
+ * 模型调用（87s 在等重规划方案、58s 在等结论、41s 在等规划器…）。harness 全都
+ * 知道自己在等模型，只是没说；界面上状态一直是静态的「持续执行中」，
+ * 于是用户看到的就是「卡了」。
+ *
+ * 所以这里由**最新事件 + 心跳**推出当前动作，并把已等待时长一起说出来——
+ * 数字每秒在跳本身就是「它还活着」的凭据。
+ */
+const ACTIVITY_TEXT: Record<string, string> = {
+  clarify: 'AI 正在理解你的目标',
+  options_pending: 'AI 正在设计方案',
+  options_generated: 'AI 正在把方案拆成任务',
+  choice: '已选定方案，正在准备执行',
+  plan: '计划已生成，等待你批准',
+  project_stage_created: '正在建立临时试做区',
+  capability_lease_created: '正在授予工具权限',
+  auto_execute_start: '正在启动执行',
+  approval_required: '等待你批准执行计划',
+  approval_granted: '已批准，正在启动',
+  execute_start: '开始执行',
+  context_prepared: '正在准备上游上下文',
+  wave: '正在进入任务轮次',
+  wave_start: '正在启动本轮任务',
+  before_tool: '正在调用工具',
+  after_tool: '工具已返回，AI 正在判断下一步',
+  subagent_start: '子代理正在工作',
+  subagent_complete: '子代理已完成',
+  task_complete: '任务已完成',
+  task_blocked: '任务被阻塞',
+  wave_complete: '本轮已结束，准备下一轮',
+  graph_replan_start: 'AI 正在重新规划（这一步最慢，通常几十秒）',
+  graph_replan_proposal: '重规划已就绪',
+  graph_loop: '正在汇总与复核',
+  review: '正在验收复核',
+  experience: '正在记录本次经验',
+}
+/** 超过这个秒数就明确说「已经等了多久」——静默越久，越需要这句话。 */
+const ACTIVITY_AFTER_SECONDS = 8
+const activityTick = ref(Date.now())
+let activityTimer: ReturnType<typeof setInterval> | null = null
+
+const nowActivity = computed((): { text: string; waited: number; stale: boolean } | null => {
+  const status = workflow.value?.status || ''
+  if (!workflow.value) return null
+  if (['completed', 'failed', 'interrupted', 'awaiting_choice', 'awaiting_approval', 'planned'].includes(status)) {
+    // 终态与等人操作的节点不需要「正在做什么」——那种时候界面本来就该是静的。
+    return null
+  }
+  const events = workflow.value?.timeline || workflow.value?.events || []
+  // timeline 是倒序的（最新在前）；找不到就用数组末尾。
+  const latest = (events[0]?.ts && events.length ? events[0] : events[events.length - 1]) || null
+  const kind = String(latest?.kind || '')
+  const text = ACTIVITY_TEXT[kind] || (kind ? statusLabel[status] || '正在处理' : '')
+  const stamp = Date.parse(String(latest?.ts || ''))
+  const waited = Number.isFinite(stamp) ? Math.max(0, Math.floor((activityTick.value - stamp) / 1000)) : 0
+  return { text, waited, stale: waited >= ACTIVITY_AFTER_SECONDS }
+})
+function startActivityTicker() {
+  if (activityTimer) return
+  activityTimer = setInterval(() => { activityTick.value = Date.now() }, 1000)
+}
+function stopActivityTicker() {
+  if (activityTimer) { clearInterval(activityTimer); activityTimer = null }
+}
+
 const cockpitSteps = [
   { key: 'goal', label: '目标', hint: '描述想实现的结果' },
   { key: 'execute', label: '执行', hint: '计划、工具与修改' },
@@ -744,6 +812,26 @@ const timelineLabel: Record<string, string> = {
   approval_granted: '已批准', approval_denied: '已拒绝', project_checkpoint_created: '创建项目快照',
   project_checkpoint_restored: '恢复项目快照', visual_snapshot_saved: '保存视觉证据', review: '验收检查',
   acceptance_decided: '用户验收决定', interrupt: '已暂停', resume: '已恢复', evaluation: '质量评估',
+  // 下面这批此前**没有**标签，界面上直接显示英文 kind 名。
+  // 实测 `wf-f3da9d3ffb32` 一次运行发出 27 种 kind，其中 16 种是英文——
+  // 包括 `graph_replan_start` / `graph_replan_proposal` 这两个用户最需要看懂的
+  // （重规划开始/结束）。「时间线上一半是英文」这件事本身就在劝退人读它。
+  clarify: '正在理解你的目标',
+  options_pending: '等待方案生成',
+  options_generated: '方案已生成',
+  choice: '已选定方案',
+  plan: '任务计划已生成',
+  project_stage_created: '已建立临时试做区',
+  capability_lease_created: '已授予临时工具权限',
+  auto_execute_start: '自动开始执行',
+  context_prepared: '已准备上游上下文',
+  wave: '进入任务轮次',
+  wave_start: '本轮任务开始',
+  wave_complete: '本轮任务结束',
+  graph_replan_start: 'AI 正在重新规划',
+  graph_replan_proposal: '重规划方案已就绪',
+  graph_loop: '正在汇总与复核',
+  experience: '正在记录本次经验',
 }
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''
@@ -2478,8 +2566,12 @@ onMounted(() => {
   window.addEventListener('docmind:project-changed', onProjectChanged)
   offContextChanged = appEvents.on('docmind:project-context-changed', onProjectChanged)
   pollTimer = setInterval(() => { if (workflow.value) void hydrate(workflow.value.workflow_id) }, 10000)
+  // 心跳独立于 10 秒轮询：它只驱动「已等 N 秒」这个数字，
+  // 不发请求——10 秒跳一次的秒表没法让人相信系统还活着。
+  startActivityTicker()
 })
 onBeforeUnmount(() => {
+  stopActivityTicker()
   stopLiveVision()
   pendingDesktopDispatches.length = 0
   generation++
@@ -2698,6 +2790,11 @@ onBeforeUnmount(() => {
       </button>
       <aside class="acp-collaborator" aria-label="与 AI 协作">
         <div class="acp-collaborator-head"><b>与 AI 协作</b><span>{{ workflow ? statusLabel[workflow.status] || workflow.status : '准备开始' }}</span></div>
+        <p v-if="nowActivity" class="acp-activity" :class="{ 'is-stale': nowActivity.stale }" role="status" aria-live="polite">
+          <i class="acp-activity-dot" aria-hidden="true" />
+          <span>{{ nowActivity.text }}</span>
+          <span v-if="nowActivity.stale" class="acp-activity-wait">已等待 {{ nowActivity.waited }} 秒，仍在运行</span>
+        </p>
         <section class="acp-goal-region" aria-label="目标">
         <div class="acp-controls">
         <div class="acp-region-kicker acp-region-goal"><span>01</span><b>目标</b><small>告诉 AI 要实现的结果</small></div>
@@ -3067,6 +3164,14 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-acceptance-report > p { margin: 0; color: var(--text-muted); }
 .acp-collaborator-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
 .acp-collaborator-head span { font-size: 11px; color: var(--text-faint); }
+  /* 「正在做什么」：静态状态只说得出「持续执行中」，而实测 98% 的时间是静默的
+  （每次静默都是一次模型调用）。这一行给出当前动作，超过阈值再补一句已等待秒数。 */
+  .acp-activity { display: flex; align-items: center; gap: 6px; margin: 0 0 4px; font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+  .acp-activity-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; animation: acp-activity-pulse 1.4s ease-in-out infinite; }
+  .acp-activity.is-stale { color: var(--text-faint); }
+  .acp-activity-wait { color: var(--accent); }
+  @keyframes acp-activity-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .acp-activity-dot { animation: none; opacity: 1; } }
 .acp-collaborator-head { flex: 0 0 auto; }
 /* 不再用百分比 max-height（父级是内容高 flex 项时会按自身内容折算成很小的
    滚动窗，焦点一进来就把目标输入框滚走）；空间充足时完整展示，不足时才滚动 */
