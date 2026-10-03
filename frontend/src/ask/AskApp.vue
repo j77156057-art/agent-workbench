@@ -48,8 +48,14 @@ const {
     void loadPower()
     usage.value = null
     void loadAskContext()
-    if (info.ollama_status?.guidance) showToast('设置已保存，但 Ollama 状态需要关注')
-    else showToast('模型设置已保存')
+    // 只有「对话模型真的不可用」才值得打断式提示。仅检索降级时弹「Ollama 状态需要关注」
+    // 是又一次误导——embedding_provider 默认 ollama，云端用户每存一次设置就被告知
+    // 有一件他并不需要关心的事坏了。
+    if (info.ollama_status?.guidance) {
+      showToast(info.ollama_status.blocks_conversation
+        ? '设置已保存，但对话模型所在的 Ollama 不可用'
+        : '设置已保存（知识库检索暂不可用，不影响问答）')
+    } else showToast('模型设置已保存')
   },
 })
 

@@ -29,6 +29,52 @@ const ctxMsg = ref('')
 const ctxMsgOk = ref(false)
 const lookupResult = ref<ContextLookupResult | null>(null)
 
+// ---------------------------------------------------------------------------
+// 知识库检索向量后端（可选功能）
+//
+// 为什么放在这里：此前 embedding_provider 在整个前端**只被读取、从不被设置**——
+// 而 api.py 的报错文案却让用户「在⚙ 模型设置里把 embedding_provider 换成云端
+// 服务」。那条建议指向一个不存在的控件，用户无处可去。后端（api.py 的
+// ModelSaveReq.embedding_provider + set_embedding_provider + reset_collection）
+// 早就完整支持，只有 UI 没接上。
+//
+// 措辞是刻意的：向量检索**只服务于上传文档**，代码检索走 grep/read_file，
+// 与此无关。因此它被明确标成「可选」，不写成「必需」。
+// ---------------------------------------------------------------------------
+const embeddingProvider = ref<'ollama' | 'qwen' | 'local'>('ollama')
+//: 与后端 embeddings.py EmbeddingClient 的分支一一对应。
+//: 落不到这三者时后端会走 local 哈希词袋兜底（非语义），所以必须显式给出 local。
+const EMBEDDING_OPTIONS = [
+  {
+    value: 'ollama',
+    label: '本机 Ollama（需启动 Ollama 并拉取嵌入模型）',
+    hint: '语义检索，效果最好。零 Key，但要求本机 Ollama 正在运行。',
+  },
+  {
+    value: 'qwen',
+    label: '云端嵌入（DashScope）',
+    hint: '语义检索，效果最好，不占本机资源。',
+  },
+  {
+    value: 'local',
+    label: '不启用（本地哈希兜底）',
+    hint: '零依赖、零配置。但只匹配字面词，不理解同义表达——知识库检索质量会明显下降。对话与代码检索不受影响。',
+  },
+] as const
+
+const embeddingHint = computed(
+  () => EMBEDDING_OPTIONS.find((o) => o.value === embeddingProvider.value)?.hint || '',
+)
+const embeddingNeedsOllama = computed(() => embeddingProvider.value === 'ollama')
+
+// 云端嵌入会复用**对话模型的 API Key**（embeddings.py: api_key=get_runtime("llm_api_key")
+// or os.getenv("DASHSCOPE_API_KEY")）。所以对话模型不是 qwen 时，上方那个 Key 是别家厂商的，
+// 打 DashScope 会持续 401。必须在这里说破——否则这就是一个「选了才发现不能用」的控件，
+// 跟之前那个指向不存在控件的报错文案是同一类问题。
+const embeddingCloudKeyMismatch = computed(
+  () => embeddingProvider.value === 'qwen' && provider.value !== 'qwen',
+)
+
 // AI 越界访问模式：safe=仅限项目内；high=允许受控越界读写（须配置白名单目录）
 const accessMode = ref<'safe' | 'high'>('safe')
 const thinkingCapability = ref('')
@@ -118,6 +164,14 @@ function hydrateConfig(config: ModelConfigInfo) {
     ctxBusy.value = ''
     ctxMsg.value = ''
     lookupResult.value = null
+    // 收窄到受支持的三项。状态文件里若存了别的值（早期版本、手工编辑），
+// 直接赋给<select> 会让下拉框显示空白且用户看不出当前是什么——那又是一个
+// 「看起来配置了、实际没生效」。回落ollama 与后端默认值一致。
+    embeddingProvider.value = (
+      ['ollama', 'qwen', 'local'] as const
+    ).includes(config.embedding_provider as 'ollama' | 'qwen' | 'local')
+      ? (config.embedding_provider as 'ollama' | 'qwen' | 'local')
+      : 'ollama'
     hydratingConfig = false
 }
 
@@ -331,6 +385,10 @@ async function save() {
       // 固定 / 自动模式；自动时附带复杂任务所用云端预设
       llm_mode: llmMode.value,
       auto_cloud_preset_id: llmMode.value === 'auto' ? autoCloudPresetId.value : '',
+      // 知识库检索后端（可选）。此前这个字段**从未被前端发送**——后端早就支持，
+      // 但 UI 没有控件，导致报错文案让用户「去模型设置里改 embedding_provider」
+      // 时无处可去。
+      embedding_provider: embeddingProvider.value,
     })
     if (res.model_error) {
       // Ollama 探活失败：HTTP 200 + ok:false + model_error（切到 rawJson 后真正可达）
@@ -512,6 +570,36 @@ async function save() {
         </div>
       </div>
       <p v-else-if="lookupResult && !lookupResult.ok" class="ms-hint ms-hint-err">{{ lookupResult.error }}</p>
+
+      <div class="ms-sep"></div>
+
+      <!--
+        知识库检索（可选）。措辞刻意强调「可选」与「只影响上传文档」：
+        代码检索走 grep / read_file，本来就不经过向量。把这一点写在控件旁边，
+        是为了不让「没配向量模型」看起来像整套环境不完整。
+      -->
+      <label class="ms-label">
+        知识库检索后端（可选 · 仅用于上传文档，不影响问答与代码检索）
+      </label>
+      <select v-model="embeddingProvider" class="ms-input" :disabled="saving">
+        <option v-for="o in EMBEDDING_OPTIONS" :key="o.value" :value="o.value">
+          {{ o.label }}
+        </option>
+      </select>
+      <p class="ms-hint">{{ embeddingHint }}</p>
+      <p v-if="embeddingCloudKeyMismatch" class="ms-hint ms-hint-err">
+        当前对话模型是 {{ provider }}，它复用的是别家厂商的 Key，打DashScope 会认证失败。
+        请先设置环境变量 DASHSCOPE_API_KEY 并重启服务，再使用此项。
+      </p>
+      <p v-if="embeddingNeedsOllama && props.config?.ollama_status && !props.config.ollama_status.reachable"
+         class="ms-hint">
+        当前未检测到本机 Ollama 服务。留在此项也能正常问答——只是知识库检索不可用，
+        提问时会明确提示「本次不使用检索结果」。要真正启用检索，请启动 Ollama
+        并拉取嵌入模型。
+      </p>
+      <p class="ms-hint">
+        切换此项会清空已上传文档的向量并需要重新上传——因为不同后端的向量维度不通用。
+      </p>
 
       <div class="ms-sep"></div>
       <label class="ms-label">能力确认</label>

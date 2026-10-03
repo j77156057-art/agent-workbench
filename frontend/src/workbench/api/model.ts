@@ -164,6 +164,14 @@ export interface SaveModelReq {
   llm_mode?: 'fixed' | 'auto'
   /** 自动模式云端预设 id（'' 可清空） */
   auto_cloud_preset_id?: string
+  /**
+   * 知识库检索向量后端（可选功能）。undefined=不改动。
+   *
+   * 这个字段后端一直支持（api.py ModelSaveReq.embedding_provider），但前端此前
+   * 从未发送过——报错的引导文案却让用户去 UI 里改它。写进类型是为了让「漏传」
+   * 变成编译期可见，而不是运行时静默失效。
+   */
+  embedding_provider?: 'ollama' | 'qwen' | 'local'
 }
 
 export interface SavePresetReq {
