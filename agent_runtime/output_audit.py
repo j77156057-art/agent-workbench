@@ -60,6 +60,55 @@ _FILE_REF = re.compile(
 )
 
 
+def _tool_name(action: str) -> str:
+    """从动作文本里取出工具名：`read_file(path: x)` -> `read_file`。
+
+    工作流的 `_child_trace` 存的是带参数的整句（`traj` 里的
+    `{"action": "read_file(path: project.godot)"}`），不是裸工具名。此前这里
+    写的是 `action == "read_file"` 精确匹配，于是**工作流路径下 `read_steps`
+    恒为空**，`read_file_present` 恒为 False——而 `evidence_verified` 用的正是
+    含这一项的聚合。结果是每个工作流子代理的结论都被 Harness 复核拒掉，
+    无论内容多好（实测 `wf-87c0df3224aa` 的 `design_probe`：4028 字符、每条都
+    带 `文件:行号`，照样被拒）。
+    """
+    text = str(action or "").strip()
+    head = text.split("(", 1)[0].strip()
+    return head or text
+
+
+def _strip_uri_scheme(path: str) -> str:
+    """去掉 `res://` / `user://` 这类 URI 前缀，只留**相对代码根**的部分。
+
+    实测（`wf-87c0df3224aa` 的 `design_probe`）：模型交出 4028 字符、每条都带
+    `文件:行号` 的证据清单（`project.godot:6 config/name="StarVoyager"`…），
+    又被整份拒掉，理由是 6 条引用「路径打不开」：
+
+        //addons/docmind_bridge/docmind_bridge.gd
+        //behaviors/enemy.tscn
+        //scenes/Main.tscn
+        …
+
+    **模型写的是 Godot 原生的 `res://behaviors/player.gd`。** 正则的路径字符集
+    含 `/`，于是从 `res:` 后面那两个斜杠开始咬，把 **scheme 吃进了路径**。
+    结果是：模型**每写一个 Godot 原生路径，这条判据就误报一次**。
+
+    这个项目是 Godot 优先的，`res://` 是它的母语——所以这不是边角情况，
+    是主干路径。
+
+    顺带把 Windows 的反斜杠与前导 `./` 也归一掉：同一个目录的两种写法不该
+    被判成两个不同的引用。
+    """
+    text = str(path or "").replace("\\", "/").strip()
+    # `res://x` / `user://x` / `file://x` -> `x`；只去 scheme，不动后面的内容。
+    for scheme in ("res://", "user://", "file://"):
+        if text.lower().startswith(scheme):
+            text = text[len(scheme):]
+            break
+    while text.startswith("./"):
+        text = text[2:]
+    return text.lstrip("/")
+
+
 def _trace_steps(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     raw = (result.get("trace") or {}).get("steps")
     if raw is None:
@@ -83,16 +132,28 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     required = location_question if require_read is None else bool(require_read)
     steps = _trace_steps(result)
     actions = [str(item.get("action") or item.get("tool") or "").strip() for item in steps]
-    read_steps = [item for item, action in zip(steps, actions) if action == "read_file"]
+    # 动作文本在工作流路径里是 **带参数的整句**（`_child_trace` 存的是
+    # `traj` 里的 `{"action": "read_file(path: project.godot)"}`），而不是裸工具名。
+    # 此前写的是 `action == "read_file"` 精确匹配，于是工作流里 `read_steps`
+    # **恒为空**、`read_file_present` 恒为 False，而 `evidence_verified` 用的
+    # 正是含这一项的聚合 —— 结果是**每个工作流子代理的结论都被 Harness 复核
+    # 拒掉**，无论内容多好。实测 `wf-87c0df3224aa` 的 `design_probe`：
+    # 4028 字符、每条都带 `文件:行号`，照样被拒。
+    read_steps = [item for item, action in zip(steps, actions)
+                  if _tool_name(action) == "read_file"]
     refs = []
     for match in _FILE_REF.finditer(text):
-        refs.append({"path": match.group(1).replace("\\", "/"),
+        # 存**归一后**的路径：判定（`exists` / `line_ok`）是拿它去做的，
+        # 记录里若还留着 `res://` 的残渣，读到这条记录的人重新核验会得到
+        # 不同答案——那就成了「报告与事实不一致」。
+        refs.append({"path": _strip_uri_scheme(match.group(1)),
                      "start_line": int(match.group(2)) if match.group(2) else None,
                      "end_line": int(match.group(3) or match.group(2)) if match.group(2) else None})
     file_checks = []
     root = Path(code_root).resolve() if code_root else None
     for ref in refs[:50]:
-        path = Path(ref["path"])
+        rel = ref["path"]
+        path = Path(rel)
         if root is not None and not path.is_absolute():
             path = (root / path).resolve()
         exists = False
@@ -121,6 +182,13 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # evidence of an attempted read, not proof of verification.
     successful_read = any(item.get("ok", True) is not False for item in read_steps)
     valid_refs = [item for item in file_checks if item["exists"] and item["in_root"] and item["line_ok"]]
+    # 裸文件名（`player.tscn`，不带目录）**照常判定**：它在代码根下确实不
+    # 存在，那就是一个打不开的引用。本文件曾一度把它们从判定里摘出去，理由
+    # 是「我们没去找它在哪一份」——**那是把一条关于行号的规矩挪用到路径存在性
+    # 上了**。既有测试已经把裸文件名钉成「打不开且必须拦住门禁」
+    # （`test_a_bare_basename_is_caught_as_an_unopenable_reference`），其原则
+    # 出自 Claude Code：「If you can run the check, you must decide PASS or FAIL」——
+    # 这条检查跑得了，所以必须判。
     checks = {
         "location_question": location_question,
         "reference_present": bool(refs) if required else True,
@@ -228,6 +296,19 @@ def audit_final_output(result: Mapping[str, Any] | None, *, max_tool_failures: i
         "file_evidence_bounded": len(file_changes) <= 100,
         "test_evidence_bounded": len(tests) <= 100,
         "tests_ok": not failed_tests,
+        # 这里用 `ok`（含 `read_file_present`）是**刻意的**，不是漏改。
+        #
+        # `audit_evidence` 里另有 `gate_ok`（只看事实项）并注释说「调用方应当
+        # 用它驱动闸门」，`test_verification_gate_reshape.py` 也是按那条原则
+        # 写的；而 `test_output_audit.py::test_location_answer_requires_read_and_
+        # valid_line` 要求「定位类问题必须真读过文件」。两个契约互相矛盾。
+        #
+        # 本轮实测站在**更严的一边**：`read_file_present` 之所以在工作流路径下
+        # 恒为 False，是 `action == "read_file"` 精确匹配认不出
+        # `read_file(path: x)` 这个真实形状——那是**bug**，修掉之后这一项
+        # 本身就判得准了。既然 bug 已修，就没必要再把口径放宽：否则等于用
+        # 「过程项不可靠」当理由，放过一个「模型没读过也能报出 文件:行号」的
+        # 真实漏洞。
         "evidence_verified": evidence["ok"],
     }
     failures = []

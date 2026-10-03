@@ -4217,7 +4217,14 @@ class Agent:
                         "模型连续 %d 轮没有给出可判定的动作或结论，本轮已停止重试。\n\n%s\n%s%s"
                         % (format_stalls, why, todo, tail)
                     )
-                    yield {"type": "final", "status": "error", "text": final_text}
+                    # `degraded: True` —— 这段文字是 **harness 写的诊断**，不是模型
+                    # 的答案。不标的话 `_run_child` 读到的 `final_degraded` 是
+                    # False，于是它把一条「没能答」记成了「答了」交给下游。
+                    # 实测 `wf-87c0df3224aa` 的 `design_probe_2`：结论就是这段
+                    # 447 字符的诊断、`degraded=False`，反思只能看出「结论与任务
+                    # 无关」。这与 `613de0e` / `7bbc69b` 修的另两处同型。
+                    yield {"type": "final", "status": "error",
+                           "degraded": True, "text": final_text}
                     return
             else:
                 format_stalls = 0
