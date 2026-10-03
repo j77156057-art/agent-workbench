@@ -3593,12 +3593,13 @@ def read_file(path):
             return f"拒绝访问：{path} 不在代码根目录内。"
     if not os.path.isfile(target):
         if leftover:
-            return (
-                f"文件不存在：{path[:40]} —— 但路径里混进了区间参数"
-                f"「{leftover.group(0).strip()}」，它没有被识别。"
-                "行号区间请写成 `start: <行号>` 与可选 `end: <行号>`，"
-                "用空格、逗号或换行与路径分隔开（例如 `a.gd start: 20 end: 45`）。"
-            )
+            # 错误文本要**短但不含糊**。Claude Code 在 limits.ts 里记着他们的实测：
+            # 报错路径只花约 100 字节，而截断/重复返回内容要花上万 token。
+            # 但"更短"不是唯一目标——早先那句「文件不存在：xxx start=1」就太短了，
+            # 短到看不出是**参数写法**问题，模型于是去换路径分隔符、白试四次。
+            # 所以目标是：**一句话说清错在哪 + 给出正确写法**，不含解释性铺垫。
+            return ("区间参数未识别：%s。正确写法：`path start:20 end:45`"
+                    "（空格/逗号/换行分隔）。" % leftover.group(0).strip())
         return f"文件不存在：{path}"
     if not _path_within_real_root(root_abs, target):
         return f"拒绝访问：{path} 经符号链接指向代码根目录之外。"
@@ -3636,22 +3637,23 @@ def read_file(path):
         all_lines = content.splitlines(keepends=True)
         total = len(all_lines)
         if start_line > total:
-            # 越界请求：此前会输出「第 70-60 行」这种倒置区间且正文为空，
-            # 模型只能看到一句莫名其妙的话。改成说清事实。
+            # 越界：此前输出「第 70-60 行」这种倒置区间且正文为空。
+            # 短而具体：给出实际行数范围，让模型自己改。
             return (f"=== {rel}（共 {total} 行）===\n"
-                    f"请求的起始行 {start_line} 超出文件实际行数（1-{total}），未读到任何内容。"
-                    "请给出范围内的行号。")
+                    f"起始行 {start_line} 越界，合法范围 1-{total}。")
         if not end_line:
             end_line = start_line + 199  # 区间默认 200 行
         end_line = min(end_line, total)
         picked = all_lines[start_line - 1:end_line]
         shown = "".join(f"{i}: {ln}" for i, ln in enumerate(picked, start=start_line))
-        _note_read_range(target, start_line, end_line)
-        return f"=== {rel}（第 {start_line}-{end_line} 行，共 {total} 行）===\n{shown}"
+        out = f"=== {rel}（第 {start_line}-{end_line} 行，共 {total} 行）===\n{shown}"
+        _note_read_range(target, start_line, end_line, len(out.encode("utf-8")))
+        return out
     if len(content) > 12000:
         content = content[:12000] + "\n…（已截断，仅显示前 12000 字；需要后续段落请用 start:/end: 指定行号）"
-    _note_read_range(target, None, None)
-    return f"=== {rel} ===\n{content}"
+    out = f"=== {rel} ===\n{content}"
+    _note_read_range(target, None, None, len(out.encode("utf-8")))
+    return out
 
 
 def inspect_data_file(arg):
@@ -4221,6 +4223,12 @@ _READ_STUB_ENABLED = os.getenv("DOCMIND_READ_STUB", "1").strip() not in ("0", "f
 #: 用一个够大的上界代表「整文件」，避免为整文件读单独维护一套状态。
 _FULL_FILE_END = 1 << 30
 
+#: 存根只在它**比被替代的内容更短**时才发。
+#:
+#: 实测：对 10 行的小文件，存根 152 字节而内容只有 83 字节——发存根反而更费。
+#: 小文件的内容本来就便宜，重读的代价远低于解释"为什么这里没给你内容"。
+_STUB_MIN_SAVING = 400
+
 
 def _read_stamp(target):
     """文件变更指纹；取不到就返回 None（视为不可判定，不发存根）。"""
@@ -4259,8 +4267,11 @@ def _unchanged_read_stub(target, rel, start_line, end_line):
     entry = _READ_COVERAGE.get(os.path.normcase(target))
     if not entry:
         return None
-    stamp, ranges = entry
+    stamp, ranges, served = entry[0], entry[1], entry[2]
     if stamp != _read_stamp(target):
+        return None
+    # 内容太小的话，存根比内容还长——那就不是节省。直接重读。
+    if served < _STUB_MIN_SAVING:
         return None
     lo = start_line or 1
     hi = end_line if end_line else _FULL_FILE_END
@@ -4272,14 +4283,19 @@ def _unchanged_read_stub(target, rel, start_line, end_line):
         where = "第 %d 行起" % start_line
     else:
         where = "整份文件"
-    return ("%s 自上次读取以来**未变化**（%s已在本次对话中读过，内容仍然有效）。"
-            "请直接引用那次读取的结果，不要重复读取。"
-            % (rel, where))
+    # 文件名已经在上面的 `=== <rel>（未变化）===` 抬头里说过，这里不重复；
+    # 「未变化」也不重复强调。Claude Code 的存根约 100 字节，我们对齐这个量级——
+    # 存根的价值随文件增大而增大，但对小文件它本来就省不了多少。
+    return ("%s已在本次对话中读过、且此后未改动；直接引用那次结果，**不要重复读取**。"
+            % where)
 
 
-def _note_read_range(target, start_line, end_line):
+def _note_read_range(target, start_line, end_line, served_bytes=0):
     """记录本次真正**送达**的行区间（不是请求的区间——请求可能超出文件长度，
-    按请求记录会高估覆盖，让后续本该真读的行被存根挡掉）。"""
+    按请求记录会高估覆盖，让后续本该真读的行被存根挡掉）。
+
+    ``served_bytes`` 记本次响应字节数，供存根判断"它比内容更短吗"。
+    """
     key = os.path.normcase(target)
     stamp = _read_stamp(target)
     if stamp is None:
@@ -4291,7 +4307,9 @@ def _note_read_range(target, start_line, end_line):
     else:
         old = _READ_COVERAGE.get(key)
         ranges = _merge_ranges((old[1] if old else []) + [(lo, hi)])
-    _READ_COVERAGE[key] = (stamp, ranges)
+    prev = _READ_COVERAGE.get(key)
+    best = max(served_bytes, prev[2] if prev and len(prev) > 2 else 0)
+    _READ_COVERAGE[key] = (stamp, ranges, best)
 
 
 def apply_edit(arg):
@@ -7965,7 +7983,18 @@ TOOLS = {
         "func": search_code,
     },
     "read_file": {
-        "description": "读取代码库中的某个文件内容（path 为相对代码根目录的路径或文件名）。需要看完整文件、或某文件细节时用。默认返回前 12000 字，也可用 start/end 读取指定行。",
+        # 措辞借鉴 Claude Code 的 OFFSET_INSTRUCTION_DEFAULT：默认**劝整文件读**，
+        # 区间只作为「已经知道要看哪一段」时的例外。理由是区间会同时放大两件事——
+        # 参数面变大（path/start/end 三个字段任一写错都失败）与重复读取变多
+        #（整文件读过之后再按区间读，内容其实已在上下文里）。
+        # 另：同一文件未被改动时重复读取只会返回一段短存根，不会重复给内容。
+        "description": (
+            "读取代码库中的文件（path 为相对代码根目录的路径）。"
+            "**默认直接读整个文件**——这是最省事也最不容易出错的用法。"
+            "仅当文件很大、且你已经确切知道要看哪一段时，才用 start/end 指定行号"
+            "（start 为 1 基起始行，end 可选）。"
+            "同一文件若自上次读取以来未变化，重复读取只返回一段短提示，不会重复给内容。"
+        ),
         "func": read_file,
     },
     "read_external_file": {

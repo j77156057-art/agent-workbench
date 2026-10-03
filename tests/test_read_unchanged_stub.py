@@ -139,12 +139,16 @@ class ReadStubTests(unittest.TestCase):
                         "覆盖记账里出现了超出文件行数的区间：%r" % (ranges,))
 
     def test_an_out_of_range_start_is_reported_clearly(self):
-        """此前会输出「第 70-60 行」这种倒置区间且正文为空。"""
+        """此前会输出「第 70-60 行」这种倒置区间且正文为空。
+
+        现在的措辞是「起始行 N 越界，合法范围 1-M」——短，但把该给的信息给全了。
+        """
         out = self._read("path: behaviors/enemy.gd start: %d end: %d" % (LINES + 10, LINES + 20))
         self.assertNotIn("-%d 行" % LINES, out.split("===")[0],
                          "输出里仍出现倒置区间行号")
-        self.assertIn("超出文件实际行数", out,
-                      "越界请求必须说清事实，而不是给一个空正文 + 倒置区间")
+        self.assertIn("1-%d" % LINES, out,
+                      "越界必须给出真实行数范围，否则模型无从修正")
+        self.assertIn("越界", out)
 
     # ---- 护栏不能被破坏 ----
 
