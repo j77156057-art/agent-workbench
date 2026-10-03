@@ -1,0 +1,227 @@
+# -*- coding: utf-8 -*-
+"""任务要写文件、角色却不能写——派发前报出来（**只报不拦**）。
+
+## 实测依据（四次真实工作流，不是设想）
+
+`wf-9f121dec38a6` 的三个任务全是 `researcher` / `researcher` / `planner`：
+
+| 角色 | 工具列表有 `python_exec` 吗 | hint 写的什么 |
+|---|---|---|
+| `researcher` | **没有** | 「只负责查证…**不要改任何文件**」 |
+| `planner` | **没有** | 「只做分析和规划，**不修改文件**」 |
+
+**整轮没有一个人有权写文件**，而目标就是写一个文件。
+
+而 `wf-f3da9d3ffb32` 里任务一旦派给 `coder`（有 `python_exec`），模型立刻就用了
+——`WRITE_OK: True` 就是它写出来的。
+
+**所以曾把这件事归因为「模型不肯用指定工具」是错的。** 真实形状是
+**任务在结构上无法完成**，而界面上只看得到「任务失败」，看不出这是注定的。
+
+## 为什么先只报不拦
+
+拦下来要改规划器的重试语义，而「哪些动词算要写」这个判据本身有误报风险——
+误报会把正常的只读复核任务也判成不可能完成。**宁可先让人看见，别先让人动不了。**
+
+## 这与 `_run_child` 那道闸是同一族
+
+它拦住「角色**放大**工具范围」（planner 不得给只读角色加写工具）；
+没人检查「任务是否**超出**角色能力」。两边合起来才完整。
+"""
+import os
+import sys
+import tempfile
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from agent_runtime.game_workflow import (  # noqa: E402
+    GameWorkflowManager, role_can_write, role_mismatch_tasks, task_wants_write,
+)
+
+
+class RoleCapabilityTests(unittest.TestCase):
+    def test_the_known_read_only_roles_cannot_write(self):
+        for role in ("researcher", "planner", "dispatcher", "reviewer"):
+            self.assertFalse(role_can_write(role),
+                             "%s 应当判为不能写" % role)
+
+    def test_the_write_roles_can(self):
+        for role in ("coder", "tester", "artist", "designer"):
+            self.assertTrue(role_can_write(role),
+                            "%s 应当判为能写" % role)
+
+    def test_an_unknown_role_is_not_assumed_writable(self):
+        """未知角色一律按不能写处理——**fail-closed**。
+
+        猜它能写会导致「以为能写、实际不能」，那正好是这条要治的病。
+        """
+        self.assertFalse(role_can_write(""))
+        self.assertFalse(role_can_write("no_such_role"))
+
+
+class WriteVerbDetectionTests(unittest.TestCase):
+    """判据宁可漏报也不误报：误报会把正常的只读复核判成不可能完成。"""
+
+    def test_it_catches_the_real_mismatch_texts(self):
+        for text in ("修复仓库说明文档并新建一个 CHANGELOG",
+                     "新建 probe_isolation.gd 并写入两行",
+                     "把 HP_GROWTH 改成 0.15"):
+            self.assertTrue(task_wants_write(text),
+                            "漏了真实错配文本：%r" % text)
+
+    def test_it_does_not_fire_on_read_only_work(self):
+        """这三条都取自真实运行里的只读任务，误报会把它们全判成不可能完成。"""
+        for text in ("只读核查：检查 enemy.gd 里 CONTACT_DAMAGE 的值并给出 文件:行号",
+                     "评审这段代码，指出风险",
+                     "检索并列出所有用到 HP_GROWTH 的位置",
+                     "把目标拆成三个子任务并派发",
+                     "运行测试并报告结果"):
+            self.assertFalse(task_wants_write(text),
+                             "误报了正常的只读任务：%r" % text)
+
+
+class MismatchEventTests(unittest.TestCase):
+    """事件必须真的落进工作流事件流（别又只 spy 调用边界）。"""
+
+    def setUp(self):
+        self.manager = GameWorkflowManager(tempfile.mkdtemp())
+        state = self.manager.start("做一个 2D 游戏原型")
+        self.wid = state["workflow_id"]
+        self.manager.choose(self.wid, "recommended")
+
+    def _kinds(self):
+        return [e.get("kind") for e in self.manager.get(self.wid)["events"]]
+
+    def test_a_mismatched_task_emits_the_event(self):
+        state = self.manager._load(self.wid)
+        self.manager._note_role_capability(state, [
+            {"id": "t1", "role": "researcher",
+             "task": "新建 values/probe.gd 并写入两行内容"}])
+        self.assertIn("task_role_mismatch", self._kinds())
+
+    def test_a_capable_task_does_not_emit(self):
+        state = self.manager._load(self.wid)
+        self.manager._note_role_capability(state, [
+            {"id": "t1", "role": "coder", "task": "新建 values/probe.gd"}])
+        self.assertNotIn("task_role_mismatch", self._kinds())
+
+    def test_a_read_only_task_does_not_emit(self):
+        state = self.manager._load(self.wid)
+        self.manager._note_role_capability(state, [
+            {"id": "t1", "role": "researcher",
+             "task": "检索并列出所有用到 HP_GROWTH 的位置"}])
+        self.assertNotIn("task_role_mismatch", self._kinds())
+
+    def test_the_event_names_the_role_and_lists_who_can_write(self):
+        """只说「不行」不给出路，等于把问题原样退回给用户。"""
+        state = self.manager._load(self.wid)
+        self.manager._note_role_capability(state, [
+            {"id": "t1", "role": "researcher", "task": "新建 x.gd"}])
+        ev = [e for e in self.manager.get(self.wid)["events"]
+              if e.get("kind") == "task_role_mismatch"][0]
+        self.assertEqual(ev.get("role"), "researcher")
+        self.assertIn("coder", str(ev.get("writable_roles") or ""),
+                      "没给出哪些角色能写——这条信息没用")
+
+    def test_it_does_not_block_the_wave(self):
+        """只报不拦是本轮刻意的取舍：拦下来要改规划器重试语义。"""
+        state = self.manager._load(self.wid)
+        before_tasks = len(state.tasks)
+        before_status = state.status
+        before_phase = state.phase
+        self.manager._note_role_capability(state, [
+            {"id": "t1", "role": "researcher", "task": "新建 x.gd"}])
+        self.assertEqual(len(state.tasks), before_tasks,
+                         "它竟然改动了任务列表——这一轮只报不拦")
+        self.assertEqual(state.status, before_status,
+                         "它竟然改了状态——这一轮只报不拦")
+        self.assertEqual(state.phase, before_phase,
+                         "它竟然改了阶段——这一轮只报不拦")
+        # 事件本身要落下来，否则「什么都没发生」和「报了但没人看见」分不开。
+        self.assertIn("task_role_mismatch",
+                      [e.get("kind") for e in state.events],
+                      "没报也没拦——那这条诊断等于不存在")
+
+    def test_malformed_tasks_do_not_crash_it(self):
+        state = self.manager._load(self.wid)
+        self.manager._note_role_capability(state, [
+            None, "not a mapping", {"role": None, "task": None},
+            {"id": "x", "role": "coder", "task": "新建 a.gd"}])
+        self.assertNotIn("task_role_mismatch", self._kinds())
+
+
+class GraphIsRejectedNotTrimmedTests(unittest.TestCase):
+    """①：整图拒绝，**不静默删掉那几条**。
+
+    静默删任务正是本会话修掉的病（`e0d182d`：多步 DAG 被悄悄截成只剩根任务，
+    调用方照样落库、照样发事件、照样弹审批，零报错）。所以处置必须与
+    「未知依赖」同款——整图拒绝，让调用方回退到确定性计划。
+
+    而那条回退路径的角色分配是对的（实测 `generic` 画像派
+    `researcher` 只读且无写动词 / `coder` 能写 / `tester` 能写），
+    不会立刻再错一次。
+    """
+
+    def _graph(self):
+        return {"tasks": [
+            {"id": "impl", "role": "coder", "task": "实现最小可运行版本",
+             "depends_on": []},
+            {"id": "bad", "role": "researcher",
+             "task": "新建 values/probe.gd 并写入两行", "depends_on": ["impl"]},
+        ]}
+
+    def test_one_mismatched_task_rejects_the_whole_graph(self):
+        got = GameWorkflowManager._parse_generated_tasks(self._graph(), max_tasks=0)
+        self.assertEqual(got, [],
+                         "没有整图拒绝——那样会静默删掉两条任务，"
+                         "而调用方会把它当成一份合法计划落库")
+
+    def test_a_fully_capable_graph_still_parses(self):
+        good = {"tasks": [
+            {"id": "impl", "role": "coder", "task": "实现最小版本", "depends_on": []},
+            {"id": "verify", "role": "tester", "task": "运行测试并报告结果",
+             "depends_on": ["impl"]},
+        ]}
+        got = GameWorkflowManager._parse_generated_tasks(good, max_tasks=0)
+        self.assertEqual([t["id"] for t in got], ["impl", "verify"],
+                         "正常计划被这条守卫误伤了")
+
+    def test_the_rejection_names_the_offending_task(self):
+        bad = role_mismatch_tasks(self._graph()["tasks"])
+        self.assertEqual([b["id"] for b in bad], ["bad"])
+        self.assertEqual(bad[0]["role"], "researcher")
+
+    def test_it_handles_fenced_json_and_nested_shapes(self):
+        """规划器的产出形状有四种，全部要能取出任务来指名。"""
+        import json as _json
+
+        from agent_runtime.game_workflow import _as_task_list
+        raw = self._graph()["tasks"]
+        for shaped in (raw, {"tasks": raw}, {"plan": {"tasks": raw}},
+                       "```json\n" + _json.dumps({"tasks": raw}, ensure_ascii=False) + "\n```"):
+            self.assertEqual(_as_task_list(shaped), raw, "形状没被正确拆开")
+
+    def test_a_malformed_shape_yields_an_empty_list_not_a_crash(self):
+        from agent_runtime.game_workflow import _as_task_list
+        for bad in (None, 42, "not json", {"nope": 1}):
+            self.assertEqual(_as_task_list(bad), [])
+
+
+class DeterministicFallbackIsSoundTests(unittest.TestCase):
+    """回退计划自己不能带同样的错，否则「拒绝→回退」只是换一种方式失败。"""
+
+    def test_the_profile_fallback_has_no_role_mismatch(self):
+        from agent_runtime.workflow_profiles import get_profile
+        tasks = get_profile("generic").fallback_tasks()
+        shaped = [{"id": t.get("id"), "role": t.get("role"),
+                   "task": t.get("task") or t.get("desc") or ""} for t in tasks]
+        self.assertEqual(role_mismatch_tasks(shaped), [],
+                         "确定性回退计划自己就带角色能力错配——"
+                         "那样拒绝 LLM 计划只会换一种方式失败")
+        self.assertTrue(shaped, "回退计划为空")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -38,7 +38,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import agent  # noqa: E402
-from agent import SINK_TOOL_HOOKS, _exc_traceback, _tool_event_text  # noqa: E402
+from agent import (  # noqa: E402
+    SINK_TOOL_HOOKS, _exc_traceback, _short_root, _tool_event_payload,
+    _tool_event_text,
+)
 from agent_runtime.game_workflow import GameWorkflowManager  # noqa: E402
 
 ROUTE_FILE = os.path.join(ROOT, "api_routes", "agent.py")
@@ -211,6 +214,124 @@ class ToolEventTextTests(unittest.TestCase):
 
     def test_a_toolless_payload_does_not_crash(self):
         self.assertEqual(_tool_event_text("before_tool", {}, {}), "before_tool")
+
+
+class ExecutionRootIsReportedTests(unittest.TestCase):
+    """每次工具调用都要**自报执行目录**——读侧写侧都覆盖。
+
+    ## 为什么必须有
+
+    试做区隔离静态排查过三次，每次都判「scope 机制正常、是 contextvar 不跨
+    线程」，三次都没定位到问题。而判据其实一直在手上：子代理一次 grep 命中了
+    `.docmind\\web\\index.audio.position.worklet.js`——那个目录只存在于**真实
+    项目**和**仓库根**，**试做区副本里没有**（复制时排除了 `.docmind`）。
+    那次执行用的根根本不是试做区。
+
+    此前看不出来，是因为没有任何事件带过执行目录，只能靠「观察是空的」间接
+    猜，而那次的观察还是错配的（见 test_parallel_traj_pairing.py）。
+
+    之前给 `python_exec` 加的「执行目录」只覆盖写侧一条路，而且实测四次真跑
+    一次都没触发——计划从没派给有 `python_exec` 的角色。
+    """
+
+    #: 三个候选根：真实项目、试做区 workspace、仓库根。
+    #: `_get_code_root()` 在**什么都没设**时返回第三个——这一点很关键，
+    #: 说明「读到空结果」完全可能只是落到了仓库根，而不是试做区失效。
+    CANDIDATE_ROOTS = [
+        r"D:\WorkBuddy\godot_sample",
+        r"D:\WorkBuddy\rag-agent\.docmind\project_stages\wf-abc\workspace",
+        r"D:\WorkBuddy\rag-agent",
+    ]
+
+    def test_the_short_form_separates_all_three_roots(self):
+        """分不开就等于没报——这是这条诊断的全部意义。"""
+        shorts = [_short_root(r) for r in self.CANDIDATE_ROOTS]
+        self.assertEqual(len(set(shorts)), 3,
+                         "短形式分不开三个候选根：%s" % shorts)
+
+    def test_the_payload_carries_the_root(self):
+        payload = _tool_event_payload("read_file", "path: a.gd", depth=2,
+                                      session_id="s")
+        for key in ("tool", "argument_chars", "depth", "session_id", "code_root"):
+            self.assertIn(key, payload)
+        self.assertEqual(payload["tool"], "read_file")
+        self.assertEqual(payload["depth"], 2)
+
+    def test_the_event_text_shows_the_short_root(self):
+        payload = _tool_event_payload("read_file", "path: a.gd")
+        payload["code_root"] = self.CANDIDATE_ROOTS[1]
+        text = _tool_event_text("before_tool", payload, {})
+        self.assertIn("@wf-abc/workspace", text,
+                      "事件行里看不到执行目录——这条诊断就白加了")
+
+    def test_the_text_does_not_carry_the_full_path(self):
+        """完整路径会把事件行撑到没法看；payload 里留着完整值即可。"""
+        payload = {"tool": "grep", "code_root": self.CANDIDATE_ROOTS[1]}
+        text = _tool_event_text("before_tool", payload, {})
+        self.assertNotIn("project_stages\\wf-abc", text)
+        self.assertLess(len(text), 80, "事件行太长：%r" % text)
+
+    def test_an_empty_root_is_simply_omitted(self):
+        text = _tool_event_text("before_tool", {"tool": "grep",
+                                                "code_root": ""}, {})
+        self.assertNotIn("@", text)
+
+    def test_a_broken_root_lookup_cannot_break_the_tool_call(self):
+        """诊断字段取不到时不能把工具调用搞挂——那比没有诊断更坏。"""
+        import agent as agent_mod
+
+        orig = agent_mod._tool_code_root
+
+        def boom():
+            raise RuntimeError("取根失败")
+
+        agent_mod._tool_code_root = boom
+        try:
+            payload = _tool_event_payload("grep", "pattern: x")
+        finally:
+            agent_mod._tool_code_root = orig
+        self.assertEqual(payload.get("code_root"), "")
+        self.assertEqual(payload.get("tool"), "grep",
+                         "取根失败把工具名也弄丢了——那这条诊断成了负收益")
+        self.assertIn("grep", _tool_event_text("before_tool", payload, {}))
+
+    def test_both_call_sites_use_the_same_builder(self):
+        """顺序路径和并行批次路径各有一处 `before_tool`。
+
+        §9 的教训：「上限写两处，就等于写了一处旧的」。所以这里钉住两处
+        都走同一个构造函数——将来改字段只改一处。
+        """
+        import inspect
+
+        import agent as agent_mod
+
+        src = inspect.getsource(agent_mod)
+        # `argument_chars` 只允许出现在构造函数里。出现第二次就说明有人在调用
+        # 点又手写了一份 payload，字段会分叉。
+        self.assertEqual(
+            src.count('"argument_chars": len('), 1,
+            "「argument_chars: len(」出现了 %d 次——顺序/并行路径里有人自己手写"
+            "了一份 payload" % src.count('"argument_chars": len('))
+        # `before_tool` 一处在 `run`（顺序路径）、一处在 `_run_batch`（并行
+        # 批次），所以这里查整个模块而不是某一个方法。
+        self.assertGreaterEqual(
+            src.count('run_workflow("before_tool", _tool_event_payload('), 2,
+            "两处 before_tool 都该走统一构造函数")
+
+    def test_the_trace_keeps_the_root(self):
+        """事件文本里只有短形式；trace JSON 里要留完整值。
+
+        排查「读取全是空」时需要程序化比对每次调用落在哪个根上，而
+        `record_hook` 的字段白名单漏一个字段，trace 就少一份证据。
+        """
+        import inspect
+
+        import agent as agent_mod
+
+        src = inspect.getsource(agent_mod.Agent._run_child)
+        self.assertIn('"code_root"', src,
+                      "record_hook 的白名单里没有 code_root——"
+                      "trace 里就看不到执行目录，排查只能靠人眼扫文本")
 
 
 class TracebackIsEvidenceTests(unittest.TestCase):

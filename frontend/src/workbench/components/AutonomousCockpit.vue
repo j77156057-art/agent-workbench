@@ -869,6 +869,9 @@ const timelineLabel: Record<string, string> = {
   // 此前时间线上那段是**完全空的**，而它恰好是全程最长的一段（实测 98%）。
   llm_wait_start: '等待模型',
   llm_wait_end: '模型已返回',
+  // 派发错配：任务要写文件、角色却是只读的。这一条不阻断，只报——
+  // 有了它，「任务失败」才看得出是**注定完成不了**而不是模型偷懒。
+  task_role_mismatch: '⚠ 角色无法完成该任务',
 }
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''

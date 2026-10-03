@@ -49,7 +49,59 @@ from .workflow_profiles import DEFAULT_KIND, VALID_KINDS, get_profile, normalize
 #: 工具生命周期事件的四种 kind。放这里而不是各写一份字面量：
 #: 开发舱面板按这几个字面量过滤持久事件流，两边必须同源。
 #: 无循环依赖（已实测两个方向的导入顺序都成立）。
-from agent import SINK_FORWARDED_HOOKS, SINK_TOOL_HOOKS
+from agent import SINK_FORWARDED_HOOKS, SINK_TOOL_HOOKS, _SUBAGENT_ROLES
+
+#: 角色「能不能写文件」——按**工具列表**判，不按 hint 措辞。
+#:
+#: 实测（四次真实工作流）里最常见的失败形状不是模型偷懒，而是**任务要求写文件、
+#: 却被派给了只读角色**：`researcher` / `planner` / `dispatcher` / `reviewer`
+#: 的工具列表里根本没有 `python_exec` / `create_file`，而它们的 hint 明写
+#: 「不要改任何文件」。那种任务在结构上无法完成，模型只能去查证然后报告查不到。
+#:
+#: 曾把这一现象归因为「模型不肯用指定工具」——**归因错了**。同一批运行里，
+#: 任务一旦派给 `coder`（有 `python_exec`），模型立刻就用了。
+WRITE_CAPABLE_TOOLS = frozenset({
+    "apply_edit", "create_file", "python_exec", "run_command",
+    "dev_patch", "dev_move",
+})
+
+#: 任务文本里的「要写」信号。刻意保守：宁可漏报也不误报——
+#: 误报会把正常的只读复核任务也标成「不可能完成」，那比不报更坏。
+_WRITE_VERBS = (
+    "新建", "创建", "新增", "写入", "写一个", "写一个文件", "改成", "改为",
+    "修改", "重命名", "删除", "替换", "补充实现", "实现这个",
+    "create", "write", "modify", "rename", "delete", "implement", "edit ",
+)
+
+
+def role_mismatch_tasks(tasks: Iterable[Any]) -> list[dict[str, str]]:
+    """列出「要求写文件、角色却不能写」的任务。
+
+    给调用方**指名**用——整图被拒时只说一句"无效"等于把问题原样退回给用户。
+    """
+    out: list[dict[str, str]] = []
+    for item in (tasks or ()):
+        if not isinstance(item, Mapping):
+            continue
+        role = str(item.get("role") or "")
+        text = str(item.get("task") or item.get("description") or "")
+        if not role or not text or role_can_write(role):
+            continue
+        if task_wants_write(text):
+            out.append({"id": str(item.get("id") or "")[:80], "role": role[:60]})
+    return out
+
+
+def role_can_write(role: str) -> bool:
+    """该角色的工具列表里有没有任何写类工具。"""
+    tools = set((_SUBAGENT_ROLES.get(str(role or ""), {}) or {}).get("tools") or ())
+    return bool(tools & WRITE_CAPABLE_TOOLS)
+
+
+def task_wants_write(task: str) -> bool:
+    """任务文本里有没有「要写文件」的信号。"""
+    text = str(task or "").lower()
+    return any(verb in text for verb in _WRITE_VERBS)
 
 try:  # optional dependency: the harness remains usable without LangGraph
     from langgraph.graph import END, START, StateGraph
@@ -198,6 +250,29 @@ def _default_child_max_steps() -> int:
 #: 没有任何报错。计划生成的验证节点还存在，它只查"落库的计划能否执行"，
 #: 查不出"落库的计划已经少了一大半"。
 _MAX_TASK_DEPS = 16
+
+
+def _as_task_list(raw: Any) -> list[Any]:
+    """把规划器的原始产出拆成任务列表（不抛）。
+
+    与 `_raw_task_count` 走同一套形状处理：围栏 JSON 字符串、
+    ``{"tasks": [...]}``、``{"plan": {"tasks": [...]}}``、裸 list。
+    """
+    try:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text,
+                              flags=re.I | re.S).strip()
+            raw = json.loads(text)
+        if isinstance(raw, Mapping):
+            inner = raw.get("tasks")
+            if inner is None and isinstance(raw.get("plan"), Mapping):
+                inner = raw["plan"].get("tasks")
+            raw = inner
+        return list(raw) if isinstance(raw, list) else []
+    except Exception:
+        return []
 
 
 def _raw_task_count(raw: Any) -> int:
@@ -1381,6 +1456,40 @@ class GameWorkflowManager:
             state.context_layers = layers
         return changed
 
+    def _note_role_capability(self, state: WorkflowState,
+                              tasks: Iterable[Mapping[str, Any]]) -> None:
+        """派发前报出「任务要写、角色却不能写」的错配（**只报不拦**）。
+
+        先只报不拦：拦下来要改规划器的重试语义，而「哪些动词算要写」这个判据
+        本身有误报风险——宁可先让人看见，别先让人动不了。
+
+        实测依据（四次真实工作流）：`wf-9f121dec38a6` 的三个任务全是
+        `researcher`/`researcher`/`planner`，**整轮没有一个人有权写文件**，
+        而目标就是写一个文件。那不是模型偷懒，是任务在结构上无法完成——
+        而界面上看不出这件事，只能看到「任务失败」。
+
+        这与 `_run_child` 里那道闸是同一族问题：它拦住「角色**放大**工具范围」，
+        却没人检查「任务是否**超出**角色能力」。两边合起来才完整。
+        """
+        try:
+            items = [item for item in (tasks or ()) if isinstance(item, Mapping)]
+        except Exception:
+            return
+        for item in items:
+            role = str(item.get("role") or "")
+            task_id = str(item.get("id") or "")
+            task_text = str(item.get("task") or "")
+            if not role or not task_text or role_can_write(role):
+                continue
+            if not task_wants_write(task_text):
+                continue
+            self._event(
+                state, "task_role_mismatch", task_id=task_id[:80], role=role[:60],
+                reason="任务要求写文件，但该角色的工具列表里没有写类工具"
+                       "（%s），它在结构上无法完成这个任务" % role,
+                writable_roles=",".join(
+                    sorted(name for name in _SUBAGENT_ROLES if role_can_write(name))))
+
     def _llm_wait_event(self, workflow_id: str, kind: str, text: str) -> None:
         """把「等模型」事件落到**正在执行的那个 state 对象**上。
 
@@ -2150,6 +2259,18 @@ class GameWorkflowManager:
             done.update(ready)
             for tid in ready:
                 remaining.pop(tid, None)
+        # 角色能力错配：任务要求写文件，而它的角色工具列表里没有任何写类工具
+        # （`researcher` / `planner` / `dispatcher` / `reviewer` 都是只读的，
+        #  hint 里明写「不要改任何文件」）。这类任务在**结构上无法完成**——
+        # 实测 `wf-9f121dec38a6` 整轮三个任务全是只读角色，而目标就是写一个文件。
+        #
+        # 与上面「未知依赖」同一条处置：**整图拒绝**，不静默删掉那几条。
+        # 静默删任务正是本会话修掉的那个病（多步 DAG 被悄悄截成只剩根任务，
+        # 而调用方照样落库、照样发事件、照样弹审批，零报错）。
+        # 整图被拒后调用方回退到确定性画像计划——实测那条路径的角色分配是对的
+        # （researcher 只读且无写动词 / coder 能写 / tester 能写），不会立刻再错一次。
+        if role_mismatch_tasks(out):
+            return []
         return out
 
     @staticmethod
@@ -2226,6 +2347,19 @@ class GameWorkflowManager:
                 )
                 generated = task_generator(state.request, state.selected_option or {}, route_plan)
                 parsed = self._parse_generated_tasks(generated, max_tasks=policy.max_subagents)
+                if not parsed:
+                    # 整图被拒时**指名**原因。只说「计划无效」等于把问题原样退回
+                    # 给用户——他看到的是一份凭空消失的计划，不是有问题的计划。
+                    mismatch = role_mismatch_tasks(
+                        [item for item in _as_task_list(generated) if isinstance(item, Mapping)])
+                    if mismatch:
+                        self._event(state, "plan_rejected_role_mismatch",
+                                    rejected=len(mismatch),
+                                    tasks=",".join("%s(%s)" % (m["id"], m["role"])
+                                                   for m in mismatch[:6]),
+                                    reason="这些任务要求写文件，但它们的角色是只读的"
+                                           "（工具列表里没有 create_file / apply_edit /"
+                                           " python_exec），在结构上无法完成")
                 if parsed:
                     tasks, task_source = parsed, "llm"
                     # 解析器会**静默丢弃**不合规的任务（重 id、空描述、依赖未知等）。
@@ -2929,6 +3063,7 @@ class GameWorkflowManager:
             def execute_wave(tasks, prior_results, remaining_steps):
                 nonlocal graph_wave_index
                 self._refresh_workflow_lease(workflow_id)
+                self._note_role_capability(state, tasks)
                 # remaining_steps == 0 means unlimited when policy.max_steps == 0;
                 # it means exhausted only for a positive configured budget.
                 if policy.max_steps > 0 and remaining_steps <= 0:

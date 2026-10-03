@@ -9,6 +9,7 @@ import re
 import time
 import traceback as _traceback_mod
 import contextvars
+from collections import deque
 from datetime import datetime
 from contextlib import nullcontext as _nullcontext
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,8 @@ from llm import LLMClient, args_to_input
 from tools import (TOOLS, tool_schemas, self_verify,
                    set_session_web_enabled, _session_web_enabled,
                    set_session_vision_mode, _session_vision_mode,
-                   _query_relevant)
+                   _query_relevant,
+                   _get_code_root as _tool_code_root)
 import agent_trace as _trace
 import sessions as _sessions
 import agent_memory as _memory
@@ -1178,6 +1180,55 @@ def _llm_wait_text(kind: str, payload) -> str:
     return " · ".join(bits)
 
 
+def _tool_event_payload(tool, argument, *, depth=0, session_id="") -> dict:
+    """工具生命周期事件的统一 payload。
+
+    ## 为什么要带 `code_root`
+
+    试做区隔离此前被静态排查过三次，每次都判「scope 机制正常、是 contextvar
+    不跨线程」，三次都没定位到问题。真正的判据其实一直在手上：
+
+        子代理的一次 grep 命中了 `.docmind\\web\\index.audio.position.worklet.js`
+        ——那个目录只存在于**真实项目**和**仓库根**，**试做区副本里没有**
+        （复制时刻意排除了 `.docmind`）。
+
+    也就是说那次执行用的根**根本不是试做区**。此前看不出来，是因为没有任何
+    事件带过执行目录——只能靠「观察是空的」间接猜，而那次的观察还是错配的。
+
+    所以让**每次工具调用自报根**，读侧写侧都覆盖，不依赖模型选对工具。
+    之前给 `python_exec` 加的「执行目录」诊断只能覆盖写侧一条路，而且实测
+    四次真跑一次都没被触发（计划从没派给有 `python_exec` 的角色）。
+
+    ## 为什么是函数而不是各写各的
+
+    顺序路径和并行批次路径各有一处 `before_tool`，形状完全一样。§9 的教训：
+    「上限写两处，就等于写了一处旧的」。这里同理。
+    """
+    payload = {
+        "tool": str(tool or ""),
+        "argument_chars": len(str(argument or "")),
+        "depth": int(depth or 0),
+        "session_id": str(session_id or ""),
+    }
+    try:
+        payload["code_root"] = str(_tool_code_root() or "")
+    except Exception:  # noqa: BLE001 —— 诊断字段不得让工具调用失败
+        payload["code_root"] = ""
+    return payload
+
+
+def _short_root(root: str) -> str:
+    """执行目录的短形式（最后两段），够区分三种根又不至于把事件行撑爆。
+
+    `D:\\WorkBuddy\\godot_sample` -> `WorkBuddy/godot_sample`
+    `…\\project_stages\\wf-xxx\\workspace` -> `wf-xxx/workspace`
+    """
+    text = str(root or "").replace("\\", "/").rstrip("/")
+    if not text:
+        return ""
+    return "/".join(text.split("/")[-2:])
+
+
 def _tool_event_text(kind: str, payload,
                      result=None) -> str:
     """把一次工具生命周期事件压成一行可读文本。
@@ -1205,6 +1256,11 @@ def _tool_event_text(kind: str, payload,
             bits.append("%s=%s" % (label, value))
     if payload.get("side_effect"):
         bits.append("有副作用")
+    # 执行目录只放短形式：三个候选根（真实项目 / 试做区 workspace / 仓库根）
+    # 靠最后两段就能分开，而完整路径会把这一行撑到没法看。
+    short_root = _short_root(payload.get("code_root") or "")
+    if short_root:
+        bits.append("@%s" % short_root)
     return " · ".join(bits)
 
 
@@ -3678,10 +3734,9 @@ class Agent:
                     continue
                 action_arg = _harg
 
-                _before_tool = _hooks.run_workflow("before_tool", {
-                    "tool": action_name, "argument_chars": len(str(action_arg or "")),
-                    "depth": self.depth, "session_id": self.session_id or "",
-                })
+                _before_tool = _hooks.run_workflow("before_tool", _tool_event_payload(
+                    action_name, action_arg, depth=self.depth,
+                    session_id=self.session_id or ""))
                 if _before_tool.get("blocked"):
                     _obs = f"[钩子拦截] {action_name} 未执行：{_before_tool.get('reason') or '工具生命周期钩子拦截'}"
                     if turn is not None:
@@ -4328,10 +4383,9 @@ class Agent:
                 if blocked:
                     out[i] = (name, arg, f"[钩子拦截] {name} 未执行：{reason}", False, None)
                     return
-                lifecycle = _hooks.run_workflow("before_tool", {
-                    "tool": name, "argument_chars": len(str(arg2 or "")),
-                    "depth": self.depth, "session_id": self.session_id or "",
-                })
+                lifecycle = _hooks.run_workflow("before_tool", _tool_event_payload(
+                    name, arg2, depth=self.depth,
+                    session_id=self.session_id or ""))
                 if lifecycle.get("blocked"):
                     out[i] = (name, arg2, f"[钩子拦截] {name} 未执行：{lifecycle.get('reason') or '工具生命周期钩子拦截'}", False, None)
                     return
@@ -4467,7 +4521,11 @@ class Agent:
             for key, value in (payload or {}).items():
                 if key in {"tool", "connector", "role", "depth", "attempt", "wave",
                            "side_effect", "ok", "duration_ms", "argument_chars",
-                           "result_chars", "reflection_ok", "error_kind"}:
+                           "result_chars", "reflection_ok", "error_kind",
+                           # 执行目录也要进 trace：事件文本里只有短形式，
+                           # 而排查「读到了空结果」需要能程序化比对每次调用
+                           # 落在哪个根上。白名单漏一个字段，trace 就少一份证据。
+                           "code_root"}:
                     safe_payload[str(key)] = _clip(str(value), 120)
             hook_events.append({
                 "kind": str(kind),
@@ -4557,7 +4615,19 @@ class Agent:
         final_text, used = "", 0
         final_degraded = False     # 安全网兜底 final（非模型 Final Answer）→ 结论须标记降级
         thoughts, reflections, last_obs = [], [], ""
-        traj, pending = [], None          # traj: [{action, obs}] —— 有界的逐步轨迹
+        # traj: [{action, obs}] —— 有界的逐步轨迹
+        #
+        # `pending` 必须是**队列**而不是单个槽：并行工具批次路径（见 `run` 里
+        # `if self._pending_batch:` 那段）先 yield 全部 action、再 yield 全部
+        # observation。单槽时批次里第二个 action 会把第一个顶掉，第一个
+        # observation 填进第二个 pending，其余观察被 `not pending["obs"]` 丢掉。
+        #
+        # 后果不是「记录不好看」——`traj` 会喂给 `_traj_evidence_block` →
+        # `_reflection_result`，也就是**反思拿着动作与观察错配的轨迹判断该不该
+        # 重试这个子代理**。实测 `wf-2097b5fbf7c1`：子代理报告「所有读取都返回
+        # 空、无法核实」并放弃，而它那轮的真实观察其实是有的；父代理据此判失败、
+        # replan、再派一次，每次都基于同一份错配的证据，连错三次。
+        traj, pending = [], deque()
         artifacts = []
         try:
             # The child still gets its own client and history, but local model
@@ -4577,10 +4647,16 @@ class Agent:
                             used += int(ev.get("step_cost", 1))
                             emit_sink("action", ev.get("text") or "")
                             if len(traj) < ORCH_TRACE_STEPS:
-                                pending = {"action": ev.get("text") or "", "obs": ""}
-                                traj.append(pending)
+                                # 入队而不是覆盖：并行批次会连着来多个 action，
+                                # 队列先进先出才能让观察回到它自己那次调用。
+                                entry = {"action": ev.get("text") or "", "obs": ""}
+                                traj.append(entry)
+                                pending.append(entry)
                             else:
-                                pending = None    # 超出上限：只计数，不再累积（防止提示爆炸）
+                                # 超出上限：不入队。它的观察随后无人认领、直接丢弃
+                                # —— 这正是想要的（提示不能无限长），而且因为队列
+                                # 是 FIFO，它不会抢前面已记步骤的观察。
+                                pass
                         elif et == "thought":
                             thoughts.append(ev.get("text") or "")
                             emit_sink("thought", ev.get("text") or "")
@@ -4591,8 +4667,14 @@ class Agent:
                             for artifact in list(ev.get("artifacts") or []):
                                 if isinstance(artifact, dict) and len(artifacts) < 16:
                                     artifacts.append(dict(artifact))
-                            if pending is not None and not pending["obs"]:
-                                pending["obs"] = _clip(last_obs, ORCH_TRACE_OBS_CHARS)
+                            if pending:
+                                # 无条件出队：出队才能推进，否则一次重复的
+                                # observation 会把整条队列卡住，之后的观察全部
+                                # 错位。已写过观察的那一条只丢弃、不覆盖。
+                                entry = pending.popleft()
+                                if not entry["obs"]:
+                                    entry["obs"] = _clip(last_obs,
+                                                          ORCH_TRACE_OBS_CHARS)
                             emit_sink("observation", last_obs)
                         # The action event precedes tool execution; stop only after its
                         # observation so the final allowed call is not silently skipped.
