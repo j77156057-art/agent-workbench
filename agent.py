@@ -7,6 +7,7 @@ import json
 import os
 import re
 import time
+import traceback as _traceback_mod
 import contextvars
 from datetime import datetime
 from contextlib import nullcontext as _nullcontext
@@ -93,6 +94,27 @@ SUBAGENT_MAX_DEPTH = int(os.getenv("DOCMIND_SUBAGENT_MAX_DEPTH", "2"))
 # 0 means the persisted user setting supplies the child Agent's step limit.
 SUBAGENT_MAX_STEPS = max(0, int(os.getenv("DOCMIND_SUBAGENT_MAX_STEPS", "0")))
 SUBAGENT_STEPS_HARD_CAP = max(0, int(os.getenv("DOCMIND_SUBAGENT_STEPS_HARD_CAP", "0")))
+#: 子代理的**兜底上限**：用户没配子代理步数（或配了 0 = 不限）时用它。
+#:
+#: 为什么"不限"必须落地成一个有限值：`_run` 的主循环是 `while True:`，
+#: 它唯一的终止条件是 `if tool_step_limit > 0 and iterations > …`。所以
+#: ``tool_step_limit == 0`` 时循环**结构上无界**——而实测本机三处默认值全是 0：
+#:
+#:     MAX_AGENT_STEPS = 0   SUBAGENT_MAX_STEPS = 0   SUBAGENT_STEPS_HARD_CAP = 0
+#:     settings: main_max_steps=0  child_max_steps=0
+#:     => 子代理真正生效的步数上限 = 0（= 不设上限）
+#:
+#: 一个格式完全正确、只是永远不肯给 Final Answer 的模型（`tests/test_orchestrator.py`
+#: 里的 `_NeverFinal` 就是它）会**无限循环**：两道防空转守卫都拦不住——
+#: ``executed`` 按 (工具, 参数) 去重，而它每轮换参数；``_repeated_sentence``
+#: 要求逐字重复，而它每轮换措辞。
+#:
+#: 主 Agent 还有格式失守兜底（``format_stalls``）和用户可点的「中断」按钮；
+#: 子代理是工作流并发扇出的，**没有逐个停掉它的入口**。所以这一档只给子代理兜。
+#:
+#: 这不是把 0 夹回 1（那正是 2026-10 那次改动要消除的拦截）；0 仍然表示
+#: 「不人为收紧」，只是不再等于「字面无限」。
+SUBAGENT_STEP_FLOOR = max(1, int(os.getenv("DOCMIND_SUBAGENT_STEP_FLOOR", "200")))
 def _resolve_child_max_steps(max_steps):
     """生效步数 = clamp(任务申请值或默认, 1, 硬顶)；非法值回退默认。
 
@@ -136,7 +158,15 @@ ORCH_TRACE_OBS_CHARS = int(os.getenv("DOCMIND_ORCH_TRACE_OBS_CHARS", "240"))
 SINK_THOUGHT_CHARS = int(os.getenv("DOCMIND_SINK_THOUGHT_CHARS", "400"))
 SINK_ACTION_CHARS = int(os.getenv("DOCMIND_SINK_ACTION_CHARS", "300"))
 SINK_OBS_CHARS = int(os.getenv("DOCMIND_SINK_OBS_CHARS", "1200"))
-SINK_STEP_TYPES = {"thought", "action", "observation"}
+#: 工具生命周期事件的 sink 上限。它不进模型上下文，只进 UI 事件流，
+#: 所以给得比 observation 宽——一次 read_file 的观察能有 1200 字，
+#: 而 before/after 两行只是"调了什么、成没成、耗时多少"。
+SINK_TOOL_CHARS = int(os.getenv("DOCMIND_SINK_TOOL_CHARS", "400"))
+#: 工具生命周期 sink 类型**沿用钩子原名**，不另造一个 `tool`。
+#: 因为开发舱「实际工具调用」面板是按 `kind in {before_tool, after_tool,
+#: before_mcp, after_mcp}` 从**持久化事件数组**里过滤的——另造类型它一样看不见。
+SINK_TOOL_HOOKS = ("before_tool", "after_tool", "before_mcp", "after_mcp")
+SINK_STEP_TYPES = {"thought", "action", "observation"} | set(SINK_TOOL_HOOKS)
 # 「不可并发」不再由本文件的一张名字表决定。
 #
 # 这张表曾经在这里（_NO_PARALLEL_TOOLS），运行期却从不读它——批内能否并发只看
@@ -1082,6 +1112,51 @@ def _clip(text, limit, suffix="…（内容过长，已截断）"):
     """把单段文本截断到 limit 字符，防止大观察 / 长历史撑爆模型上下文。"""
     text = text or ""
     return text if len(text) <= limit else text[:limit] + suffix
+
+
+def _tool_event_text(kind: str, payload,
+                     result=None) -> str:
+    """把一次工具生命周期事件压成一行可读文本。
+
+    只给"调了什么 / 成没成 / 耗时多少"——参数与结果正文已经在 observation 里，
+    这里重复一遍只是把同一份内容数两次。事件是给人和 UI 看的，不是证据主体。
+    """
+    payload = payload or {}
+    name = str(payload.get("tool") or payload.get("connector") or "").strip()
+    if not name:
+        return str(kind)
+    stage = {"before_tool": "调用前", "after_tool": "调用后",
+             "before_mcp": "MCP 前", "after_mcp": "MCP 后"}.get(str(kind), str(kind))
+    bits = [stage, name]
+    blocked = bool((result or {}).get("blocked"))
+    errors = list((result or {}).get("errors") or [])
+    if blocked:
+        bits.append("被拦截：%s" % ((result or {}).get("reason") or "未说明原因"))
+    elif errors:
+        bits.append("钩子报错 %d 处" % len(errors))
+    for key, label in (("duration_ms", "ms"), ("argument_chars", "参数字符"),
+                       ("result_chars", "结果字符")):
+        value = payload.get(key)
+        if isinstance(value, (int, float)) and value:
+            bits.append("%s=%s" % (label, value))
+    if payload.get("side_effect"):
+        bits.append("有副作用")
+    return " · ".join(bits)
+
+
+def _exc_traceback(exc: BaseException) -> str:
+    """把异常栈格式化成文本。
+
+    子代理失败此前只记 ``type: msg``，排查时只剩一句标签。本次真实故障是
+    ``AttributeError: 'NoneType' object has no attribute 'strip'``——没有栈，
+    只能靠全文搜 ``.strip()`` 猜位置，猜错了两次（先怀疑 ``final_text``、
+    再怀疑 reasoning 字段，都不是）。标签不是证据，栈才是。
+    """
+    try:
+        return "".join(_traceback_mod.format_exception(
+            type(exc), exc, exc.__traceback__))
+    except Exception:
+        return "%s: %s" % (type(exc).__name__, exc)
 
 
 def _clip_tool_observation(text, base_limit, tool_name=""):
@@ -4189,7 +4264,11 @@ class Agent:
             try:
                 limit = {"thought": SINK_THOUGHT_CHARS,
                          "action": SINK_ACTION_CHARS,
-                         "observation": SINK_OBS_CHARS}[step_type]
+                         "observation": SINK_OBS_CHARS,
+                         "before_tool": SINK_TOOL_CHARS,
+                         "after_tool": SINK_TOOL_CHARS,
+                         "before_mcp": SINK_TOOL_CHARS,
+                         "after_mcp": SINK_TOOL_CHARS}[step_type]
                 step_sink({"type": step_type, "text": _clip(str(text or ""), limit)})
             except Exception:
                 pass
@@ -4204,6 +4283,13 @@ class Agent:
         hook_events = []
 
         def record_hook(kind, payload, result):
+            # 工具生命周期事件转发到工作流事件流（此前只进下面的本地缓冲，
+            # 于是「实际工具调用」面板恒为 0 条）。
+            if str(kind) in SINK_TOOL_HOOKS:
+                emit_sink(str(kind), _tool_event_text(kind, payload, result))
+            # 48 的上限此前在**最前面**直接 return：每次工具调用发 before+after
+            # 两条，**24 次工具调用就把配额用光**，之后连 trace 里的工具事件
+            # 也不再记录。生命周期事件与子代理生命周期分开计数。
             if len(hook_events) >= 48:
                 return
             safe_payload = {}
@@ -4293,8 +4379,10 @@ class Agent:
             ctx = "\n".join(f"- {k}：{_clip(str(v), 600)}" for k, v in context.items())
             question += "\n\n【上游子任务结论（供参考，勿重复劳动）】\n" + ctx
         # 工作流设置是子代理真实上限，不能被动态问题预算覆盖。
-        if cap > 0:
-            child.tool_step_override = cap
+        # cap == 0 时落兜底上限而不是「不设」——见 SUBAGENT_STEP_FLOOR 的说明：
+        # 不设的话 `_run` 那个 `while True:` 结构上无界，一个永不收尾的模型
+        # 会让整个工作流永远跑不完，而子代理没有逐个中断的入口。
+        child.tool_step_override = cap if cap > 0 else SUBAGENT_STEP_FLOOR
         final_text, used = "", 0
         final_degraded = False     # 安全网兜底 final（非模型 Final Answer）→ 结论须标记降级
         thoughts, reflections, last_obs = [], [], ""
@@ -4343,6 +4431,11 @@ class Agent:
             failed = {"status": "failed", "conclusion": "", "steps": used,
                     "max_steps": cap,
                     "error": f"{type(e).__name__}: {e}",
+                    # 只存 `type: msg` 的话，排查时只剩一句标签：本次真实故障是
+                    # `AttributeError: 'NoneType' object has no attribute 'strip'`，
+                    # 而**堆栈被丢掉了**，只能靠全文撒网猜`.strip()` 在哪——
+                    # 猜错了两次。标签不是证据，栈才是。
+                    "traceback": _clip(_exc_traceback(e), 4000),
                     "reflection": {"ok": False, "source": "exception",
                                    "issues": [type(e).__name__]},
                     "trace": _child_trace(traj, thoughts, hooks=hook_events)}

@@ -46,6 +46,11 @@ from .context_router import (CONTEXT_LAYERS, ContextPlan, ContextRouter,
                              summarize_subagent_result)
 from .workflow_profiles import DEFAULT_KIND, VALID_KINDS, get_profile, normalize_kind
 
+#: 工具生命周期事件的四种 kind。放这里而不是各写一份字面量：
+#: 开发舱面板按这几个字面量过滤持久事件流，两边必须同源。
+#: 无循环依赖（已实测两个方向的导入顺序都成立）。
+from agent import SINK_TOOL_HOOKS
+
 try:  # optional dependency: the harness remains usable without LangGraph
     from langgraph.graph import END, START, StateGraph
     from langgraph.types import Command, Send, interrupt as graph_interrupt
@@ -1244,14 +1249,20 @@ class GameWorkflowManager:
 
     def record_agent_step(self, workflow_id: str, task_id: str, role: str,
                           item: Mapping[str, Any]) -> None:
-        """记录一条子代理实时轨迹（thought/action/observation）。
+        """记录一条子代理实时轨迹（thought/action/observation），以及工具生命周期事件。
 
-        只进内存有界环 + 订阅 fan-out，不写持久台账（避免每步落盘/JSON 膨胀）；
-        持久与迟到补全由 subagent_complete 携带的 trace 负责。任何异常不得
-        影响子代理执行——本方法自身也不抛出。
+        thought/action/observation 只进内存有界环 + 订阅 fan-out，不写持久台账
+        （避免每步落盘/JSON 膨胀）；持久与迟到补全由 subagent_complete 携带的
+        trace 负责。
+
+        工具生命周期（before_tool/after_tool/before_mcp/after_mcp）**要写进持久
+        事件流**：开发舱「实际工具调用」面板就是按这些 kind 从持久化事件数组里
+        过滤的。此前这些事件只进子代理自己的 hook 缓冲，从不落到工作流事件流，
+        于是面板恒为「0 条记录」——而同一屏的任务面板里明明列着 read_file /
+        grep / python_exec。面板没撒谎，它读的那条流里确实没有工具事件。
         """
         step_type = str((item or {}).get("type") or "")
-        if step_type not in {"thought", "action", "observation"}:
+        if step_type not in {"thought", "action", "observation"} | set(SINK_TOOL_HOOKS):
             return
         text = _clean_text((item or {}).get("text") or "", 1200)
         try:
@@ -1273,6 +1284,13 @@ class GameWorkflowManager:
                          "role": str(role or "")[:60],
                          "step_type": step_type, "text": text}
                 self._fanout_locked(workflow_id, event)
+                if step_type in SINK_TOOL_HOOKS:
+                    # 面板要的是这些 kind 本身，所以在这里落成真事件。
+                    # 只记 name/ok/耗时这类摘要，不复制参数与结果正文——
+                    # 那两份已经在 observation 里，重复一遍只是双倍计数。
+                    self._event(state, step_type,
+                                task_id=str(task_id or "")[:80],
+                                role=str(role or "")[:60], text=text)
         except Exception:
             pass
 
@@ -2571,9 +2589,16 @@ class GameWorkflowManager:
     def retry_subagent(self, workflow_id: str, task_id: str,
                        runner: Callable[[dict[str, Any], dict[str, str]], Mapping[str, Any]],
                        *, synth_runner: Callable[[list[dict[str, Any]], dict[str, Any]], str] | None = None,
+                       replanner: Callable[..., Any] | None = None,
                        on_event: Callable[..., Any] | None = None,
                        session_id: str = "") -> dict[str, Any]:
         """Retry exactly one failed/blocked Subagent.
+
+        ``replanner`` 之前**不在签名里**，而 ``workflow_callbacks`` 一直返回它，
+        端点把三个回调一起 splat 进来 —— 于是 UI 上的「重试该成员」按钮
+        每次都 500（``TypeError: got an unexpected keyword argument 'replanner'``），
+        前端只能显示「响应不是合法JSON（HTTP 500）」。
+        签名与调用方脱节，却没有任何测试覆盖这个端点。
 
         Successful task results are kept as durable context.  The selected
         task is executed in a one-task LangGraph wave, and the retry counter is
@@ -2641,6 +2666,10 @@ class GameWorkflowManager:
                     max_steps=(0 if policy.max_steps <= 0 else max(0, policy.max_steps - state.steps)),
                     max_parallel=1, max_subagents=policy.max_subagents,
                     max_context_chars=policy.max_context_chars,
+                    # 重试的那一项再失败时，也允许规划器提恢复任务——和自动路径一致。
+                    # 此前这里不传 replan，于是重试只有一次机会，再失败就直接判死。
+                    replan=(lambda failed, results, attempt: self._call_graph_replanner(
+                        replanner, failed, results, attempt, emit)) if replanner is not None else None,
                     on_event=emit, thread_id="%s:retry%s" % (workflow_id, attempt),
                     trace_parent_id=str((state.langsmith_trace or {}).get("root_run_id") or ""))
             else:
@@ -2662,8 +2691,13 @@ class GameWorkflowManager:
 
             retried = dict((report.get("results") or {}).get(task_id) or {})
             if not retried:
+                # 报实际拿到的键，而不是一句「未返回结果」：若规划器把这一波换成了
+                # 别的任务，键名就是唯一能看出「它其实跑了别的」的线索。
+                got = sorted((report.get("results") or {}).keys())
                 retried = {"status": "failed", "conclusion": "",
-                           "error": "单任务重试未返回结果", "steps": 0}
+                           "error": "单任务重试未返回 %s 的结果（本次实际返回：%s）"
+                                    % (task_id, got or "无"),
+                           "steps": 0}
             result_map[task_id] = retried
             retries[task_id] = attempt
             state.subagent_retries = retries

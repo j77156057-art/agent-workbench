@@ -109,7 +109,11 @@ class RunPlanTests(unittest.TestCase):
         def runner(task, ctx):
             seen[task["id"]] = dict(ctx)
             if task["id"] == "a":
-                time.sleep(0.2)
+                time.sleep(1.0)
+        # 相对余量而非绝对余量（§6 缺口 7 的处方）：原来 sleep 0.2 /断言 < 0.32，
+        # 只有0.12s 余量，负载一高就红——而那条红会被读成"并行坏了"。
+        # 真正要判的是「同波是否并行」：并行 ≈ 1.0s，不并行 ≈ 2.0s，
+        # 1.6 正落在中间，且余量从 0.12s 变成 0.6s。
             return {"status": "ok", "conclusion": f"结论文本-{task['id']}", "steps": 1}
 
         t0 = time.monotonic()
@@ -118,7 +122,7 @@ class RunPlanTests(unittest.TestCase):
         self.assertTrue(rep["ok"])
         self.assertEqual(rep["waves"], [["a"], ["b", "c"]])
         self.assertEqual(rep["n_ok"], 3)
-        self.assertLess(elapsed, 0.32, f"同波未并行：{elapsed:.2f}s")
+        self.assertLess(elapsed, 1.6, f"同波未并行：{elapsed:.2f}s")
         # 下游拿到上游结论，上游拿不到下游
         self.assertEqual(seen["a"], {})
         self.assertEqual(seen["b"].get("a"), "结论文本-a")
@@ -594,7 +598,14 @@ class AgentOrchestrateTests(unittest.TestCase):
                 return 1
 
         a = agent_mod.Agent(llm=_NeverFinal())
-        out = a._run_child("researcher", "查一些东西")
+        # 显式给max_steps：这个用例要验的是「没给 Final Answer 时结论是过程要点」，
+        # 不是「要跑多少步才停」。此前不传，于是它落在 cap=0（不限）上，
+        # 而 `_run` 的 `while True:` 唯一上界是 `tool_step_limit > 0` ——
+        # **无限挂死**。本仓从没人跑这个文件（它不在常用的文件过滤器里），
+        # 所以一直没被发现；§6 缺口 7 记的是同文件的计时抖动，不是这个。
+        # 不在测试里修产品、也不靠测试的 max_steps 掩盖：产品的兜底上限
+        # 见 agent.SUBAGENT_STEP_FLOOR，另有一条用例专门钉它。
+        out = a._run_child("researcher", "查一些东西", max_steps=3)
         self.assertEqual(out["status"], "ok")
         self.assertTrue(out["conclusion"].strip(), "空结论会让下游失去上下文")
         self.assertTrue(out.get("degraded"), "应标记为降级（过程要点）")
