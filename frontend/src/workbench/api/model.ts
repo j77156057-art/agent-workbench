@@ -92,6 +92,10 @@ export interface OllamaStatus {
   present_models?: string[]
   missing_models?: string[]
   guidance?: string
+  /** 对话模型本身不可用 —— 真的没法聊天，横幅用告警语气。 */
+  blocks_conversation?: boolean
+  /** 仅向量检索不可用 —— 可降级，横幅用普通提示语气。 */
+  search_degraded?: boolean
 }
 
 export interface ModelConfigInfo {

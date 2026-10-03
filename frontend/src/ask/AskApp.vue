@@ -145,6 +145,8 @@ function deriveFollowups(text: string): string[] {
 
 // ---------------- 派生 ----------------
 const guidance = computed(() => config.value?.ollama_status?.guidance || '')
+// 后端已把「挡住对话」和「仅检索降级」分开；这里据此选横幅语气。
+const guidanceBlocks = computed(() => config.value?.ollama_status?.blocks_conversation === true)
 const canSend = computed(() => !sending.value && !historyLoading.value && !gateBlocking.value
   && (draft.value.trim().length > 0 || pendingImages.value.length > 0))
 
@@ -794,7 +796,11 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
       <div v-if="demoMode" class="banner info">
         示例演示模式：当前未连接本地 DocMind 服务，以下回答为演示数据。启动本机服务后刷新即可使用真实问答。
       </div>
-      <div v-else-if="guidance" class="banner warn">
+      <!-- 只有「对话模型」不可用才用告警语气。仅检索不可用时用 info：
+           embedding_provider 默认就是 ollama，若一律弹黄色横幅，云端对话用户
+           每次都会看到「当前模型配置依赖本机 Ollama / 或改用 qwen、deepseek」，
+           而他明明已经在用 deepseek——同一个误导信号的第二半。 -->
+      <div v-else-if="guidance" class="banner" :class="guidanceBlocks ? 'warn' : 'info'">
         <span>{{ guidance }}</span>
       </div>
 

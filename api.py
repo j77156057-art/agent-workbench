@@ -2162,17 +2162,44 @@ async def chat(
         inspect_guidance = question
         question = "【界面观察】请查看当前项目界面并按内部工作指令执行。"
 
-    # 若当前 provider / 嵌入依赖 Ollama，但服务不可达，提前给出明确引导（避免进入 SSE 后才泛化报错）
+    # Ollama 不可达时的处置：**分清它承担的是哪一件事**。
+    #
+    # 旧实现只问「有没有人依赖 Ollama」，于是 embedding_provider=ollama（默认值）时
+    # 会把**整个聊天入口**封掉，回一句「无法调用本地模型」——可用户明明选的是云端模型
+    # （实测：llm_provider=deepseek + embedding_provider=ollama，就要求装 Ollama、
+    # 提示 ollama pull bge-m3）。用户看到的是「我的云端模型坏了」，于是去查 API Key、
+    # 去换模型，全找错方向；而那 4 条建议里真正的解法（改 embedding_provider）藏在最后一条。
+    #
+    # 现在按它实际承担的角色分开处置：
+    #   · 对话模型本身是 Ollama -> 真的没法对话，必须拦（但要说清是**对话**模型不可用）；
+    #   · 只是向量检索依赖 Ollama -> **降级**，明确告知「本次检索不可用，直接作答」，
+    #     然后照常把问题送给云端模型。辅助能力不该成为主能力的前置依赖。
     _prov = get_runtime("llm_provider") or LLM_PROVIDER
     _emb = get_runtime("embedding_provider") or EMBEDDING_PROVIDER
-    if _prov == "ollama" or _emb == "ollama":
+    search_degraded_notice = ""
+    if _prov == "ollama":
         try:
-            # check_ollama 内部是同步 urllib（最坏阻塞 8s），丢到线程池避免卡住事件循环
+            # check_ollama 内部是同步 urllib（最坏阻塞数秒），丢线程池避免卡住事件循环
             _ol = await run_in_threadpool(check_ollama)
         except Exception:  # noqa: BLE001
             _ol = None
         if _ol is not None and not _ol["reachable"]:
             return StreamingResponse(_ollama_down_stream(_ol["guidance"]), media_type="text/event-stream", headers=SSE_HEADERS)
+    elif _emb == "ollama":
+        # 仅检索依赖 Ollama：不封对话。检索不可用时明确说清是哪一部分不可用。
+        try:
+            _ol = await run_in_threadpool(check_ollama)
+        except Exception:  # noqa: BLE001
+            _ol = None
+        if _ol is not None and not _ol["reachable"]:
+            search_degraded_notice = (
+                "注意：知识库检索当前不可用（向量后端 Ollama 未运行），"
+                "本次**不使用**检索结果作答，将直接基于已有上下文回答。"
+                "这与对话模型无关——你的对话模型照常可用。"
+                "如需启用检索：启动 Ollama 后执行 `ollama pull %s`，"
+                "或在「⚙ 模型设置」把 embedding_provider 换成云端服务。"
+                % (EMBEDDING_MODEL or "bge-m3")
+            )
 
     # 给 LLM 一个上下文提示：列出知识库里已有哪些文档，让它知道"里面/这个文档"指什么
     code_root = get_runtime("code_root") or CODE_ROOT
@@ -2182,6 +2209,10 @@ async def chat(
         hints.append(
             f"知识库中已上传以下文档：{names}。若用户问题涉及这些文档内容，请用 search_knowledge 检索后回答。"
         )
+    if search_degraded_notice:
+        # 告诉模型「检索不可用」，它才不会在拿不到证据时编造引用；也顺带让用户
+        # 在界面上看到是哪一部分坏了，而不只是看到一句含糊的「无法调用本地模型」。
+        hints.append(search_degraded_notice)
     if code_root:
         hints.append(
             f"当前项目根目录：{code_root}。用户说‘这个项目’时只指该目录中的项目。"
@@ -2349,6 +2380,10 @@ async def chat(
             yield f"data: {json.dumps({'type':'route','route':routing['route'],'complexity':routing['complexity'],'reason':routing['reason']}, ensure_ascii=False)}\n\n"
             if vision_audit.get("mode") not in ("none", "native"):
                 yield f"data: {json.dumps({'type':'notice','text':'图片已由 Harness 视觉链路处理：' + vision_audit.get('mode', 'unknown')}, ensure_ascii=False)}\n\n"
+            if search_degraded_notice:
+                # 必须让用户在界面上看到，而不只是喂给模型：这是「哪一部分坏了」的唯一
+                # 可见信号。之前用户只能看到「无法调用本地模型」，误以为是云端模型坏了。
+                yield f"data: {json.dumps({'type':'notice','text':search_degraded_notice}, ensure_ascii=False)}\n\n"
             cloud_question = redact_for_cloud(question) if is_cloud else question
             cloud_context = tuple(redact_for_cloud(item) for item in request_context) if is_cloud else request_context
             def produce():
@@ -4384,21 +4419,37 @@ def check_ollama(force: bool = False):
         missing = list(needed)
 
     guidance = ""
+    #: 只有「对话模型」不可用才真的挡住用户；仅检索不可用时是可降级项。
+    #: 这两个必须分开——旧实现只回一个 guidance，前端据此弹黄色横幅，于是
+    #: embedding_provider=ollama（默认值）时，云端对话用户每次都看到
+    #: 「当前模型配置依赖本机 Ollama / 或改用 qwen、deepseek」，
+    #: 而他明明已经在用 deepseek。
+    llm_blocked = bool(prov == "ollama" and not reachable)
+    search_degraded = bool(emb == "ollama" and not reachable and not llm_blocked)
     if needed and not reachable:
         pull_lines = "\n".join(f"     ollama pull {m}" for m in needed)
-        guidance = (
-            "未检测到 Ollama 服务（{base} 无响应），而当前模型配置依赖本机 Ollama。\n"
-            "解决步骤：\n"
-            "  1) 安装 Ollama：https://ollama.com/download\n"
-            "  2) 启动后在终端拉取模型：\n"
-            "{pull_lines}\n"
-            "  3) 若 Ollama 运行在其它地址，设置环境变量 OLLAMA_BASE=http://<host>:11434 后重启。\n"
-            "也可在「⚙ 模型设置」改用 qwen / deepseek（需 API Key），"
-            "或把 embedding_provider 设为 local（仅离线占位向量，非语义检索）。"
-        ).format(base=base, pull_lines=pull_lines)
+        if search_degraded and not llm_blocked:
+            guidance = (
+                "知识库检索当前不可用：向量后端 Ollama 未运行（{base} 无响应）。\n"
+                "**这不影响对话**——问答照常进行，只是不使用检索结果。\n"
+                "如需启用检索：\n"
+                "  1) 启动 Ollama 后拉取模型：\n{pull_lines}\n"
+                "  2) 或在「⚙ 模型设置」把 embedding_provider 换成云端嵌入服务。"
+            ).format(base=base, pull_lines=pull_lines)
+        else:
+            guidance = (
+                "未检测到 Ollama 服务（{base} 无响应），而**对话模型**配置为本机 Ollama。\n"
+                "解决步骤：\n"
+                "  1) 安装 Ollama：https://ollama.com/download\n"
+                "  2) 启动后在终端拉取模型：\n"
+                "{pull_lines}\n"
+                "  3) 若 Ollama 运行在其它地址，设置环境变量 OLLAMA_BASE=http://<host>:11434 后重启。\n"
+                "也可在「⚙ 模型设置」改用 qwen / deepseek（需 API Key）。"
+            ).format(base=base, pull_lines=pull_lines)
     elif missing:
+        missing_note = "（不影响对话，仅检索不可用）" if prov != "ollama" else ""
         guidance = (
-            "Ollama 已运行，但缺少所需模型：" + "、".join(missing) +
+            "Ollama 已运行，但缺少所需模型：" + "、".join(missing) + missing_note +
             "。请执行：\n  ollama pull " + "\n  ollama pull ".join(missing)
         )
     result = {
@@ -4410,6 +4461,9 @@ def check_ollama(force: bool = False):
         "present_models": present,
         "missing_models": missing,
         "guidance": guidance,
+        #: 前端据此决定横幅语气：true = 挡住对话（红/黄），false = 仅降级（灰/蓝）。
+        "blocks_conversation": llm_blocked or (bool(missing) and prov == "ollama"),
+        "search_degraded": search_degraded or (bool(missing) and prov != "ollama"),
     }
     _ollama_check_cache["ts"] = time.time()
     _ollama_check_cache["value"] = result
@@ -4417,8 +4471,16 @@ def check_ollama(force: bool = False):
 
 
 def _ollama_down_stream(guidance: str):
-    """Ollama 不可达时，给聊天接口返回一个清晰的引导 final（而非进入 SSE 后才报错）。"""
-    msg = "⚠️ 本机 Ollama 服务未运行或不可达，无法调用本地模型。\n\n" + (guidance or "")
+    """**对话模型**不可用时的引导 final（而非进入 SSE 后才泛化报错）。
+
+    只在 ``llm_provider == "ollama"`` 时才会走到这里——检索后端不可达已经改成降级，
+    不再封对话。文案必须说清是**对话**模型不可用：早先写「无法调用本地模型」，而
+    ``embedding_provider`` 默认也是 ollama，于是用户看到这句会以为自己的**云端**模型
+    坏了，去查 API Key、去换模型，方向全错。
+    """
+    msg = ("⚠️ 无法对话：**对话模型**配置为本机 Ollama，但服务未运行或不可达。\n"
+           "（这与向量检索无关——检索不可用只会降级，不会阻止对话。）\n\n"
+           + (guidance or ""))
     yield f"data: {json.dumps({'type': 'final', 'text': msg}, ensure_ascii=False)}\n\n"
     yield "data: {\"type\":\"done\"}\n\n"
 
