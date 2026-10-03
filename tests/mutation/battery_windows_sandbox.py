@@ -58,7 +58,7 @@ LIVE = ('WindowsOnlyLiveTests', (
 LAYER_EXEMPT = {}
 
 #: 本块电池的变异条数下限：删一条变异必须显式改这里。
-MINIMUM_MUTATIONS = 25
+MINIMUM_MUTATIONS = 28
 
 _FLAGS = ('    limits.BasicLimitInformation.LimitFlags = (\n'
           '        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_PROCESS_MEMORY |\n'
@@ -185,6 +185,21 @@ MUTATIONS = [
      '                 memory_bytes: int = 512 * 1024 * 1024',
      '                 memory_bytes: int = 1 * 1024 * 1024',
      ("live",)),
+
+    # ---- Wave29（§6 缺口 13）：子进程输出的解码 ----
+    # 原来 `text=True` 且不给 encoding，按**本机区域编码**（本机 cp936）解码：子进程吐一个
+    # 非 GBK 字节就让读线程抛 UnicodeDecodeError，`communicate()` 把那一路返回成 `None`
+    # ——实测中文 / 非 UTF-8 字节 / 只写 stderr 全都得到 `rc=0` + **空输出**。
+    ("解码又退回本机区域编码（非 GBK 输出会让整条流变 None）",
+     '                                   text=True, encoding=SUBPROCESS_ENCODING,\n'
+     '                                   errors=SUBPROCESS_DECODE_ERRORS, env=dict(env),',
+     '                                   text=True, env=dict(env),'),
+    ("解码错误改成 strict 而不是替换：非 UTF-8 输出又会让整条流消失",
+     '                                   errors=SUBPROCESS_DECODE_ERRORS, env=dict(env),',
+     '                                   errors="strict", env=dict(env),'),
+    ("固定的编码被换成 ascii（非 ASCII 输出全成乱码）",
+     'SUBPROCESS_ENCODING = "utf-8"',
+     'SUBPROCESS_ENCODING = "ascii"'),
 
     # ---- spawn_isolated：真作业对象才看得见的三条 ----
     ("内存上限小到装不下一棵正常的树",

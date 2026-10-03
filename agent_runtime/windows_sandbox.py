@@ -30,6 +30,20 @@ JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 CREATE_NO_WINDOW = 0x08000000
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 
+#: 子进程输出的解码方式。
+#:
+#: 原来是 `text=True` 而**没有 `encoding`** —— 于是按**本机区域编码**解码（本机 cp936/GBK）。
+#: 子进程只要吐一个非 GBK 字节，`Popen` 的读线程就抛 `UnicodeDecodeError`，而
+#: `communicate()` 把那一路返回成 **`None`**：实测中文、非 UTF-8 字节、甚至"只写 stderr"
+#: 都得到 `returncode=0` + `stdout=''` + `stderr=''`。**退出码 0 配空输出**，唯一线索是
+#: 一个打印到控制台、调用方永远看不见的后台线程异常。
+#:
+#: 这里固定成 **utf-8 + errors="replace"**：不匹配��字节变成 U+FFFD 而不是丢掉整条流，
+#: 调用方至少拿得到"有内容、里面有乱码"这个可判断的事实。代价是本机真按 GBK 输出的
+#: 子进程会看到少量替换字符——但**内容长度与结构仍然可见**，远好过整条流消失。
+SUBPROCESS_ENCODING = "utf-8"
+SUBPROCESS_DECODE_ERRORS = "replace"
+
 #: 作业对象里允许的**并发**进程数上限。
 #:
 #: 这里是 2026-10-02 那次门禁事故的根因：原值是裸字面量 ``4``，而门禁整集那条子进程树是
@@ -126,6 +140,8 @@ def run_isolated(command: list[str], *, cwd: str, env: Mapping[str, str], timeou
     """Run one process under a bounded Job Object and return CompletedProcess."""
     if os.name != "nt":
         return subprocess.run(command, cwd=cwd, capture_output=True, text=True,
+                              encoding=SUBPROCESS_ENCODING,
+                              errors=SUBPROCESS_DECODE_ERRORS,
                               timeout=timeout, env=dict(env))
     kernel32, job = _create_job(memory_bytes)
     process = None
@@ -136,7 +152,8 @@ def run_isolated(command: list[str], *, cwd: str, env: Mapping[str, str], timeou
         # terminated and never fall back to an unbounded run.
         process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, env=dict(env),
+                                   text=True, encoding=SUBPROCESS_ENCODING,
+                                   errors=SUBPROCESS_DECODE_ERRORS, env=dict(env),
                                    creationflags=CREATE_NO_WINDOW)
         process_handle = ctypes.c_void_p(int(getattr(process, "_handle", 0)))
         if not process_handle.value or not kernel32.AssignProcessToJobObject(job, process_handle):

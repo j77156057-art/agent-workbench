@@ -198,5 +198,11 @@ def run_staged_command(command: list[str], *, cwd: str, timeout: int = 30) -> su
         from .windows_sandbox import run_isolated
         return run_isolated(command, cwd=cwd, env=env, timeout=max(1, int(timeout)),
                             memory_bytes=1024 * 1024 * 1024)
+    # 非 Windows 分支要和 run_isolated 用**同一套**解码：原来两边都是 `text=True` 且
+    # 不给 encoding，于是子进程吐非本机区域编码的字节时整条流变 `None`（见
+    # `windows_sandbox.SUBPROCESS_ENCODING` 上那段注释）。两边不一致的话，跨平台复现
+    # 出来的现象就会不一样。
+    from .windows_sandbox import SUBPROCESS_DECODE_ERRORS, SUBPROCESS_ENCODING
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True,
+                          encoding=SUBPROCESS_ENCODING, errors=SUBPROCESS_DECODE_ERRORS,
                           timeout=max(1, int(timeout)), env=env)

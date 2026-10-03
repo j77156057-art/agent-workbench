@@ -794,6 +794,39 @@ cd frontend && npm run test:node
   test_api_routes / test_api_model_config / test_llm_resilience / test_model_capability /
   test_empty_provider_response / test_dev_eval / test_head_check` **244 passed / 41 subtests**。
 
+### 5.23 Wave29：`run_isolated` 的子进程输出不再"整条消失"（缺口 13）
+
+- **实测的形状比 Wave23 记的更糟**。原来 `run_isolated`（以及 `enterprise_sandbox` 的非
+  Windows 分支）都是 `text=True` 且**不给 `encoding`**，按**本机区域编码**解码（本机 cp936）。
+  子进程只要吐一个非 GBK 字节，`Popen` 的读线程就抛 `UnicodeDecodeError`，
+  `communicate()` 把那一路返回成 **`None`**：
+
+  | 子进程 | 改前 | 改后 |
+  |---|---|---|
+  | ASCII | `rc=0 stdout='adapter-output\n'` | 同左 |
+  | UTF-8 中文 | `rc=0 stdout='' stderr=''` | `rc=0 stdout='适配器输出\n'` |
+  | 只写 stderr 的中文 | `rc=0 stdout='' stderr=''` | `rc=0 stderr='适配器 stderr'` |
+  | 非 UTF-8 字节 | `rc=0 stdout='' stderr=''` | `rc=0 stdout='�� bad'` |
+
+  唯一线索是一个打印到控制台、**调用方永远看不见**的后台线程异常。
+- **`rc=0` 配空输出**最危险的地方是会被读成"跑成功了但没输出"。查了两个调用方：
+  `generated_adapter_runtime.py:314` 直接 `json.loads(stdout)`，被 `json.loads('')` 抛错
+  堵住了；`enterprise_sandbox.py` 只转发。所以今天**没有**"静默成功"，真实的危害是
+  **错误信息误导**（上层只看到「适配器没有返回合法 JSON」）+ **排查困难**（真实原因丢失）。
+- **取舍写明**：固定成 `utf-8` + `errors="replace"`——不匹配的字节变 U+FFFD 而不是丢掉
+  整条流，上层至少能判断"有输出、里面有乱码"。代价是本机真按 GBK 输出的子进程会看到
+  少量替换字符，但**内容长度与结构仍然可见**，远好过整条流消失。
+- **两条分支必须用同一套**（`enterprise_sandbox` 的非 Windows 分支也改了），否则跨平台
+  复现出来的现象会不一样——有一条测试专门钉这个。
+- **产物**：`tests/test_windows_sandbox.py` 的 `RunIsolatedOutputTests` +4 条（并入同一
+  测试文件而不是新开一个：一块电池只有一个 `TEST_MODULE`，放外面那几条变异就没有类能抓）；
+  `battery_windows_sandbox` **25 → 28 条变异**；`battery_chat_sse` 补注册
+  `MockProviderTests`（Wave28 加的那个类忘了登记，元测试当场报"没有落到某一层"）。
+- 一条自己写歪的变异：`SUBPROCESS_ENCODING = "utf-8"` → `locale.getpreferredencoding(False)`
+  看着好，但 `windows_sandbox` **没有 import locale**，变异后模块装不进 —— 按 §9 的规矩
+  装不进来的代码证明不了任何判据有牙（那条记成"这块电池的问题"）。换成
+  `= "ascii"`（同样表达"固定 vs 推断"，而且装得进）。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -811,7 +844,7 @@ cd frontend && npm run test:node
 | 10 | ~~交付到草稿为止~~ **已做（Wave21 `dev_handoff`，§5.15）** | `dev_propose` 停在草稿，人还要自己定分支名与 message | **有意不做**：建分支 / 开 PR / push。那是人的决定，与命令黑名单同一条纪律 |
 | 11 | ~~引擎不查锚点唯一性~~ **已做（Wave23）** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点出现两次时只改第一处。**先量影响面**：十块电池 256 条锚点里只有 3 条不唯一，全在 `battery_head_check`（`render` 里有 12 空格缩进的同名块，4 空格那份是它的子串） | 已加 `source.count(old) == 1` → 报**问题**；3 条锚点改成带上下文。**仍有**：引擎没有"按平台分层"的概念，所以非 Windows fallback 分支的变异在两个平台里必有一个红（见 §5.17） |
 | 12 | ~~`run_isolated` 仍然零测试~~ **已做（Wave23）** | 它与 `spawn_isolated` 共用 `_create_job`，本次出事故的那行在两个函数里各有一份 | 已补 5 条跨平台 + 3 条 Windows-only 用例（含一条**加入失败后已起来的子进程必须被收掉**的漏进程判据），电池 19 → **25 条变异** |
-| 13 | `run_isolated` 的子进程输出**可能整个丢掉且不报错** | `Popen(..., text=True)` 没给 `encoding`，按本机区域编码解码；本机是 GBK，子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成 `None`（`stdout is None` 而不是报错） | 调用方要么传 ASCII 输出，要么给 `windows_sandbox` 加 `errors="replace"` + 显式 encoding。**只报不改**——它会改变所有适配器进程的行为，不在 Wave23 范围内 |
+| 13 | ~~`run_isolated` 的子进程输出**可能整个丢掉且不报错**~~ **已修（Wave29，§5.23）** | `text=True` 没给 `encoding`，按本机区域编码（本机 cp936）解码：子进程吐一个非 GBK 字节 → 读线程抛 `UnicodeDecodeError` → `communicate()` 把那一路返回成 **`None`**。实测中文 / 非 UTF-8 字节 / 只写 stderr 全是 `rc=0` + 空输出 | 已固定 `utf-8` + `errors="replace"`，两条分支（Windows 与 `enterprise_sandbox` 的非 Windows）共用同一套并有测试钉住。**代价**：本机真按 GBK 输出的子进程会看到少量 U+FFFD，但内容长度与结构仍可见 |
 | 14 | ~~**`mock` provider 无法完成一轮问答**~~ **已修（Wave28，§5.22）** | `_mock_chat` 的「拿到观察 → 作答」分支吐**不带 `Final Answer:` 标记的裸文本**，而 `agent.py:3443` 的格式失守判定连拒两轮后发 `final(status="error")`。后果是**离线演示模式**（`mock` 是本仓唯一零网络的模型路径）同样跑不完 | 已加 `Thought:` + `Final Answer:` 前缀；`tests/test_chat_sse.py::MockProviderTests` 2 项钉住"能收尾且先调了工具" |
 | 15 | ~~`dev_apptest` 的问答回合~~ **已做（Wave27 `ask: 1`，§5.21）** | HTTP 层由 §5.18 ②（注入 LLM）与 §5.20（生产 provider 路径）补上；页面那一层由 §5.21 补上——点建议按钮发一轮、按 DOM 断言答案里带着那一次独有的随机夹具名 | **仍缺**：真模型往返（`dev_apptest` 明确不点模型）、以及"页面把答案渲染对了没有"（内容正确性）——本轮只证链路通 |
 | 16 | ~~**`GET /api/config` 冷启动 6.1 秒**~~ **已定位并缓解（Wave28，§5.22）** | 账算清了：`_live_capability` 4081ms（首次构造 `LLMClient` 的一次性实时探活）+ `check_ollama` 2030ms + 11ms。**根因是环境**——本机对关闭的回环端口裸 `connect()` 要 **2035ms**（正常 <1ms）。病根是 `_OLLAMA_CHECK_TTL=2.0` 与探活同量级 → 缓存几乎从不命中 | TTL 2.0 → **30.0**（同进程 A/B：隔 3 秒再打 `2047ms → 7ms`）。**仍剩**：首次冷启动 ~6.2 秒（`LLMClient` 首次构造的一次性探活），要再降得让 `check_ollama` 与 `probe_ollama_context` 共用一次探活——跨 `api.py`+`llm.py`，未做 |
@@ -976,6 +1009,21 @@ test_run / voice_loop / **bat_guard** / **page_action** / **log_view** / **job_l
   不该算进 console 干净"这条判断本来埋在 `_drive_deep_link` 里，只有真浏览器能验；抽成
   `_console_matters(spec)` 之后它和别的判据一样在纯层就能被变异抓住。**边界**：抽出来的是
   **判断**，不是"这条判断在真页面上对不对"——后者仍归现场档。
+- **`returncode=0` 配空输出，是最难读的一种"失败"**（Wave29 实测）。`text=True` 而不给
+  `encoding` 时按本机区域编码解码（本机 cp936），子进程吐一个非 GBK 字节就让 `Popen` 的读
+  线程抛 `UnicodeDecodeError`，而 `communicate()` 把那一路返回成 **`None`**——中文、非 UTF-8
+  字节、只写 stderr，全都得到 `rc=0` + 空输出，**唯一线索是一个打印到控制台、调用方永远
+  看不见的后台线程异常**。查了两个调用方确认今天**没有**"静默成功"
+  （`generated_adapter_runtime` 的 `json.loads('')` 会抛），真实危害是**错误信息误导** +
+  **排查困难**。**教训**：`text=True` 是个**隐式决策**（按谁的编码？），不是"打开文本模式"
+  这种无害的写法；凡是跨进程收文本的地方，编码必须是**显式常量**加**显式的错误策略**，
+  而且两条分支（Windows / 非 Windows）必须同一套，否则跨平台现象不一致。
+- **"看着好"的变异可能根本装不进模块**（Wave29 自己踩的）。把
+  `SUBPROCESS_ENCODING = "utf-8"` 变异成 `locale.getpreferredencoding(False)` 语义上很到位，
+  但那个模块**没有 import locale**——变异后模块装不进。按 §9 的规矩，装不进来的代码
+  证明不了任何判据有牙（引擎把它记成"这块电池的问题"而不是"抓住"）。
+  改成 `= "ascii"`：同样表达"固定 vs 推断"，而且装得进。**教训**：写变异时先确认
+  替换后的模块**编译得过**——引擎会替你报，但那时你已经浪费了一轮。
 - **缓存窗口小于操作耗时，等于没有缓存**（Wave28 实测）。`_OLLAMA_CHECK_TTL = 2.0`，
   而一次探活本身就要 ~2 秒、HTTP 超时写死 3 秒 —— 一个"看着像个合理的新鲜度"的数字，
   实际让缓存在冷路径上**几乎从不命中**（`ts` 还是在探活结束之后才写的）。原注释里作者

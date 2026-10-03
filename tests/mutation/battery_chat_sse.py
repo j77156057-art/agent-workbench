@@ -25,7 +25,10 @@ TEST_MODULE = 'tests.test_chat_sse'
 BIND = 'chat_sse'
 UNIT_CLASSES = (
     'VerdictTableTests',
-    'ParsingTests',)
+    'ParsingTests',
+    # Wave28（缺口 14）：mock provider 必须能收掉一轮问答——它抓的是
+    # `_mock_chat` 的作答支有没有 `Final Answer:` 标记，没有就是活下来。
+    'MockProviderTests',)
 LIVE = ()
 
 #: 现场档**不作为电池的层**，理由与 `bat_guard` 那条同类：它验的是"真链路满足判据"，

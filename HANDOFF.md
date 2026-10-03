@@ -1,5 +1,37 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-03 Wave29：`run_isolated` 的子进程输出不再"整条消失"（§6 缺口 13）
+
+- **实测的形状比 Wave23 记的更糟**。原来 `run_isolated`（以及 `enterprise_sandbox` 的非
+  Windows 分支）都是 `text=True` 且**不给 `encoding`**，按**本机区域编码**解码（本机 cp936）。
+  子进程只要吐一个非 GBK 字节，`Popen` 的读线程就抛 `UnicodeDecodeError`，
+  `communicate()` 把那一路返回成 **`None`**：
+
+  | 子进程 | 改前 | 改后 |
+  |---|---|---|
+  | UTF-8 中文 | `rc=0 stdout='' stderr=''` | `rc=0 stdout='适配器输出\n'` |
+  | 只写 stderr 的中文 | `rc=0 stdout='' stderr=''` | `rc=0 stderr='适配器 stderr'` |
+  | 非 UTF-8 字节 | `rc=0 stdout='' stderr=''` | `rc=0 stdout='�� bad'` |
+
+  唯一线索是一个打印到控制台、**调用方永远看不见**的后台线程异常。
+- **`rc=0` 配空输出**会被读成"跑成功了但没输出"。查了两个调用方确认今天**没有**"静默成功"：
+  `generated_adapter_runtime.py:314` 直接 `json.loads(stdout)`，被 `json.loads('')` 抛错堵住；
+  `enterprise_sandbox.py` 只转发。真实危害是**错误信息误导**（上层只看到「适配器没有返回
+  合法 JSON」）+ **排查困难**（真实原因在后台线程里丢失）。
+- **取舍写明**：固定 `utf-8` + `errors="replace"`——不匹配字节变 U+FFFD 而不是丢掉整条流，
+  上层至少能判断"有输出、里面有乱码"。代价是本机真按 GBK 输出的子进程会看到少量替换字符，
+  但**内容长度与结构仍然可见**。两条分支（Windows / 非 Windows）共用同一套并有测试钉住。
+- **产物**：`tests/test_windows_sandbox.py` 的 `RunIsolatedOutputTests` +4 条（**并入同一
+  测试文件**而不是新开一个：一块电池只有一个 `TEST_MODULE`，放外面那几条变异就没有类能抓）；
+  `battery_windows_sandbox` **25 → 28 条变异**；`battery_chat_sse` 补注册 `MockProviderTests`
+  ——Wave28 加那个类时忘了登记，元测试当场报"没有落到某一层"。
+- 一条自己写歪的变异：`SUBPROCESS_ENCODING = "utf-8"` → `locale.getpreferredencoding(False)`
+  语义到位但**那个模块没 import locale**，变异后装不进模块（按 §9 记成"这块电池的问题"
+  而不是"抓住"）。改成 `= "ascii"`，同样表达"固定 vs 推断"而且装得进。
+- **验证**：11 个文件回归 **236 passed / 460 subtests**；十一块电池 `--no-live`
+  **288/305 + 17 未验证 + 0 活下来 / 621 秒**；`windows_sandbox` 18/28 + 10 未验证；
+  `chat_sse` 20/20；元测试 48 passed / 371 subtests。
+
 ## 2026-10-03 Wave28：把两条"报出来不动手"的缺口修掉（`llm.py` / `api.py`，别人的模块但已入库）
 
 用户点名处理 §6 缺口 14 与 16。两者原本都在别人手上（按纪律只报不改）；另一条 lane 做了

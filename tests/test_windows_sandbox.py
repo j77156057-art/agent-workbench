@@ -218,6 +218,48 @@ class RunIsolatedOutputTests(unittest.TestCase):
         self.assertIn("ERR", result.stderr)
         self.assertNotIn("OUT", result.stderr)
 
+    # ---- Wave29（§6 缺口 13）：解码 ----
+
+    def test_utf8_text_is_not_swallowed_by_the_console_encoding(self):
+        """本机 cp936；GBK 解不了 UTF-8 中文——原来整条 stdout 变成 `None`。
+
+        `text=True` 而不给 `encoding` 时 `Popen` 按**本机区域编码**解码，读线程抛
+        `UnicodeDecodeError`，而 `communicate()` 把那一路返回成 `None`：实测中文、非 UTF-8
+        字节、甚至"只写 stderr"全都是 `rc=0` + 空输出，唯一线索是一个打印到控制台、
+        调用方永远看不见的后台线程异常。
+        """
+        result = _run_isolated("print('适配器输出')")
+        self.assertIsNotNone(result.stdout, "stdout 是 None：读线程抛了解码异常")
+        self.assertIn("适配器输出", result.stdout)
+
+    def test_stderr_is_not_swallowed_either(self):
+        """stdout 与 stderr 走两个独立的读线程，一条坏掉不该连累另一条。"""
+        result = _run_isolated("import sys; sys.stderr.write('适配器 stderr')")
+        self.assertIsNotNone(result.stderr, "stderr 是 None")
+        self.assertIn("适配器 stderr", result.stderr)
+
+    def test_undecodable_bytes_degrade_to_replacement_not_to_nothing(self):
+        """非 UTF-8 字节变成 U+FFFD，但**长度与结构仍然可见**。
+
+        这是这次取舍的核心：整条流消失（原来）比出现替换字符坏得多——上层据此至少能
+        判断"有输出、里面有乱码"，而不是"没有输出"。
+        """
+        result = _run_isolated(r"import sys; sys.stdout.buffer.write(b'\xff\xfe bad')")
+        self.assertIsNotNone(result.stdout)
+        self.assertTrue(result.stdout.strip(), "输出整条消失了——这正是要修的形状")
+        self.assertIn("�", result.stdout)
+        self.assertIn("bad", result.stdout)
+
+    def test_both_platform_branches_declare_the_same_decoding(self):
+        """Windows 与非 Windows 两条分支必须**用同一套**，否则跨平台现象不一致。"""
+        self.assertEqual(ws.SUBPROCESS_ENCODING, "utf-8")
+        self.assertEqual(ws.SUBPROCESS_DECODE_ERRORS, "replace")
+        source = Path(ROOT, "agent_runtime", "enterprise_sandbox.py").read_text(
+            encoding="utf-8")
+        self.assertIn("SUBPROCESS_ENCODING", source,
+                      "enterprise_sandbox 的非 Windows 分支没共用那套解码")
+        self.assertIn("SUBPROCESS_DECODE_ERRORS", source)
+
 
 class WindowsOnlyLiveTests(unittest.TestCase):
     """**本电池的 LIVE 层：只有 Windows 才验得了的那一层**——注意它与别的电池的
