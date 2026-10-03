@@ -99,6 +99,94 @@ class ReadFileArgumentSyntaxTests(unittest.TestCase):
                          "路径真的不存在时不该提区间参数——那会把人引向错误的排查方向")
 
 
+class PathArgumentIsConsistentAcrossToolsTests(unittest.TestCase):
+    """三个吃路径的工具，对"路径该怎么写"必须**一致**。
+
+    ## 为什么这条比逐个测试更重要
+
+    同一个问题在本次会话里连撞了三层，每层都是"上一层修好、下一层撞墙"：
+
+    | 层 | 模型写法 | 谁认 | 谁不认 |
+    |---|---|---|---|
+    | 1 | `a.gd start: 1 end: 55`（行内） | grep | read_file |
+    | 2 | `path: a.gd start: 1`（多一个键名） | grep / list_dir | read_file |
+    | 3 | 待观察 | ? | ? |
+
+    每层都是靠**用户拿真实 trace 来撞**才发现的，而不是被任何测试挡住。
+
+    所以这里不逐个列举写法，而是直接断言：`read_file` 必须接受 `list_dir` 与
+    `grep` 已经接受的那些形态。下一层若是这三者之一先坏掉，这条会红；
+    若是 read_file 又漏了新形态，下面那份「形态清单」会红。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        os.makedirs(os.path.join(self.tmp.name, "behaviors"), exist_ok=True)
+        for name in ("player.gd", "enemy.gd"):
+            with open(os.path.join(self.tmp.name, "behaviors", name),
+                      "w", encoding="utf-8") as handle:
+                handle.write("\n".join("line%d" % i for i in range(1, 61)))
+        for fn in ("_get_code_root",):
+            patcher = patch.object(tools, fn, return_value=self.tmp.name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        tools.clear_read_files()
+
+    def _ok(self, text):
+        return "不存在" not in text and "拒绝访问" not in text and bool(text.strip())
+
+    def test_read_file_accepts_the_key_prefix_that_list_dir_accepts(self):
+        """`path: a.gd` —— list_dir 认、grep 认，只有 read_file 不认。
+
+        实测（godot_sample 定位扣血逻辑）：模型写
+        `path: behaviors/player.gd start: 1 end: 55`，报「文件不存在：path:
+        behaviors/player.gd」——而那个文件明明就在那儿。
+        """
+        bare = tools.read_file("behaviors/player.gd")
+        keyed = tools.read_file("path: behaviors/player.gd")
+        self.assertTrue(self._ok(bare))
+        self.assertTrue(
+            self._ok(keyed),
+            "read_file 不接受 `path:` 键前缀，而 list_dir 与 grep 都接受——"
+            "模型按后两者的写法调用 read_file 就必然失败：%s" % keyed[:80])
+
+    def test_the_error_message_must_not_echo_the_key_prefix(self):
+        """真·文件不存在时，报错里不该留着 `path:` 这种键名。
+
+        「文件不存在：path: xxx」看起来像路径写错，实际上路径是对的、只是多了个键名。
+        这种报错会把模型引向换路径/换分隔符，而真实原因是它自己的参数写法。
+        """
+        out = tools.read_file("path: behaviors/nope.gd")
+        self.assertIn("文件不存在", out)
+        self.assertNotIn(
+            "path:", out.replace("path: behaviors/nope.gd", ""),
+            "报错把键名原样回显成路径的一部分，看起来像路径写错了：%r" % out[:90])
+
+    def test_key_prefix_with_range_is_still_accepted(self):
+        """本次 trace 里的**确切写法**。"""
+        out = tools.read_file("path: behaviors/player.gd start: 1 end: 55")
+        self.assertTrue(self._ok(out), out[:90])
+        self.assertIn("line55", out, "键名剥掉后区间必须照常生效")
+
+    def test_a_windows_drive_letter_is_not_mistaken_for_a_key(self):
+        """`C:\\...` 是盘符，不是 `file:` 键名——绝对路径不能被误剥。"""
+        out = tools.read_file("C:\\definitely\\not\\here.gd")
+        # 项目外的绝对路径走越界门禁（本项目的正确行为）。关键是整条路径**原样**
+        # 出现在报错里——若被误认成 `file:` 键剥成 "C"，这里会变成 "不在代码根目录内：C"。
+        self.assertIn("C:\\definitely\\not\\here.gd", out,
+                      "盘符路径被键名规则误伤了：%r" % out[:90])
+
+    def test_other_key_spellings_and_case_are_accepted(self):
+        """`file:` / `filename:` / 大写 —— 键名规则别只认一种拼法。"""
+        for arg in ("file: behaviors/player.gd",
+                    "filename: behaviors/player.gd",
+                    "FILE: behaviors/player.gd",
+                    "Path: behaviors/player.gd"):
+            self.assertTrue(self._ok(tools.read_file(arg)),
+                            "%r 未被接受：%s" % (arg, tools.read_file(arg)[:70]))
+
+
 class UnrecognisedRangeSyntaxIsNamedTests(unittest.TestCase):
     """认不出来的写法必须**点名**，否则报错会把语法问题伪装成路径问题。"""
 

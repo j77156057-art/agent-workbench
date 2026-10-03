@@ -3508,6 +3508,32 @@ _RE_READ_END = re.compile(r"(?:^|[\s,，;；])end\s*[:：]\s*(\d+)", re.I)
 _RE_READ_STRAY = re.compile(
     r"(?:^|[\s,，;；])(?:start|end)\s*(?:=|＝|：|:)\s*\d+"
     r"|(?:^|[\s,，;；])(?:行|line)\s*\d+\s*[-—~]\s*\d+", re.I)
+#: 键名式路径参数：`path: a.gd` / `file: a.gd`。
+#:
+#: 这是同一个问题的**第三层**：上一轮修好了行内 start:/end:，模型随即改写成
+#: `path: behaviors/player.gd start: 1 end: 55`，而 `path:` 这个**键名**没人剥——
+#: 于是路径变成字面量 "path: behaviors/player.gd"，报「文件不存在」，
+#: 而那个文件明明就在那儿。`grep`（_RE_GREP_PATH_LINE）与 `list_dir` 都能剥，
+#: 只有 read_file 不能。
+#:
+#: 与其再加一条专用正则，不如让三个吃路径的工具对"路径该怎么写"保持一致，
+#: 否则模型每修好一处就会在另一处撞墙（本次会话已连撞三层）。
+#:
+#: 注意 grep **故意**与这里不同：它的 `_RE_GREP_SCOPE_LINE` 只在 `i >= 1`（非首行）
+#: 时才把 `path:` 当作用域，因为单行的 `path: TODO` 在 grep 里是要搜索的字面文本。
+#: 那是另一个语义，不要为了"统一"而改grep——改了就搜不到含 "file: " 的正文。
+#: 一致性由 tests/test_tool_arg_syntax_tolerance.py 的跨工具断言守住。
+_RE_PATH_KEY_LINE = re.compile(r"^\s*(?:path|file|filename)\s*[:：]\s*(.+?)\s*$", re.I)
+
+
+def _strip_path_key(value: str) -> str:
+    """剥掉 `path: ` / `file: ` 这样的键名前缀（整串只有一个键时）。
+
+    只处理「键名 + 冒号 + 值」独占一行的形态，以及剥完区间参数后剩下的整串形态。
+    不处理行内 `xxx, path: yyy` —— 那是 grep 的 scope 语义，由它自己的解析器负责。
+    """
+    match = _RE_PATH_KEY_LINE.match(value or "")
+    return match.group(1).strip() if match else (value or "").strip()
 
 
 def read_file(path):
@@ -3543,6 +3569,9 @@ def read_file(path):
     path = path.strip().strip(",，;；").strip()
     if start_line and end_line and end_line < start_line:
         end_line = start_line + 200
+    # 剥掉 `path: ` / `file: ` 键名。与 grep / list_dir 同一套规则——
+    # 模型写键名式参数是完全正常的（工具说明里其它工具都这么写）。
+    path = _strip_path_key(path)
     # 参数没被识别出来（例如写成 start=1 / 行 1-55）。此时 path 里会残留这些片段，
     # 而「文件不存在：xxx start=1」这种报错会把语法问题伪装成路径问题——
     # 必须在这里点破，否则模型会去改路径/换分隔符，而真实原因是参数写法。
