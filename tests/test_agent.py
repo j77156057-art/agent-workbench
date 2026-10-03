@@ -153,8 +153,17 @@ class AgentGuardTests(unittest.TestCase):
                             if e["type"] == "observation"))
         self.assertIn("已检查当前项目代码", events[-1]["text"])
 
-    def test_location_answer_is_asked_to_read_source_before_final(self):
-        """search_code 摘要不足以交付定位答案，必须补一次 read_file。"""
+    def test_location_answer_with_a_checkable_citation_is_not_forced_to_read(self):
+        """引用**可核验**时，不再要求补一次 read_file。
+
+        旧版这条用例的前提是「search_code 摘要不足以交付定位答案，必须补 read_file」。
+        那个前提已经被否掉了——Claude Code 的验证 prompt 明确写着
+        "reading is not verification. Run it."，本次会话里它也已连续误报四次
+        （并行读取看不见、完整读取看不见、路径切分错误连累）。
+
+        判据换成了可核验的事实：路径能否打开、行号是否越界。本例两者都成立，
+        且答案本身是对的（第 2 行确实是 add_to_group），所以应当直接放行。
+        """
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "behaviors", "enemy.gd")
             os.makedirs(os.path.dirname(path))
@@ -165,23 +174,64 @@ class AgentGuardTests(unittest.TestCase):
 
             def search(_arg):
                 calls.append("search_code")
-                return "[behaviors/enemy.gd:L2] add_to_group(\\\"enemy\\\")"
+                return "[behaviors/enemy.gd:L2] add_to_group(\"enemy\")"
 
             def read(_arg):
                 calls.append("read_file")
-                return "=== behaviors/enemy.gd（第 1-2 行，共 2 行）===\n1: func _ready()\n2: add_to_group(\\\"enemy\\\")"
+                return "=== behaviors/enemy.gd（第 1-2 行，共 2 行）===\n1: func _ready()\n2: add_to_group(\"enemy\")"
 
             agent_mod.TOOLS = {"search_code": {"func": search}, "read_file": {"func": read}}
             a = agent_mod.Agent(llm=_ScriptedLLM([
                 _act("search_code", "enemy patrol"),
                 "Final Answer: 敌人分组在 behaviors/enemy.gd:2。",
-                "Thought: 读取原文\nAction: read_file\nAction Input: behaviors/enemy.gd",
+            ]))
+            events = list(a.run("敌人的巡逻逻辑在哪个文件？", stream=True))
+            self.assertEqual(calls, ["search_code"],
+                             "引用可核验却仍被强迫补一次 read_file——"
+                             "那正是本次会话连续误报四次的行为")
+            self.assertFalse(any(e["type"] == "reflection" for e in events),
+                             "不该再对可核验的引用发出补读纠偏")
+            self.assertIn("behaviors/enemy.gd:2", events[-1]["text"])
+
+    def test_location_answer_with_an_unopenable_citation_is_still_nudged(self):
+        """引用**打不开**时必须仍然要求模型自己核对——保留下来的那部分价值。
+
+        旧用例里「必须读原文」的保护意图没有丢，只是判据从「有没有读过」
+        换成了「能不能核验」。
+        """
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "behaviors", "enemy.gd")
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("func _ready():\n\tadd_to_group(\"enemy\")\n")
+            set_runtime("code_root", root)
+            calls = []
+
+            def search(_arg):
+                calls.append("search_code")
+                return "[behaviors/enemy.gd:L2] add_to_group(\"enemy\")"
+
+            def read(_arg):
+                calls.append("read_file")
+                return "=== behaviors/enemy.gd ===\nfunc _ready():\n\tadd_to_group(\"enemy\")"
+
+            agent_mod.TOOLS = {"search_code": {"func": search}, "read_file": {"func": read}}
+            a = agent_mod.Agent(llm=_ScriptedLLM([
+                _act("search_code", "enemy patrol"),
+                # 引用了一个打不开的路径：ui/enemy.gd 在本项目里不存在
+                "Final Answer: 敌人分组在 ui/enemy.gd:2。",
+                "Thought: 核对\nAction: read_file\nAction Input: behaviors/enemy.gd",
                 "Final Answer: 敌人分组在 behaviors/enemy.gd:2。",
             ]))
             events = list(a.run("敌人的巡逻逻辑在哪个文件？", stream=True))
-            self.assertEqual(calls, ["search_code", "read_file"])
-            self.assertTrue(any("缺少原文核验" in e.get("text", "") for e in events
-                                if e["type"] == "reflection"))
+            self.assertIn("read_file", calls,
+                          "引用打不开却没有要求模型去核对——门禁被放松过头了")
+            self.assertTrue(any(e["type"] == "reflection" for e in events),
+                            "打不开的引用必须触发纠偏")
+            reflection = " ".join(e.get("text", "") for e in events
+                                  if e["type"] == "reflection")
+            self.assertIn("ui/enemy.gd:2", reflection,
+                          "纠偏必须点名是哪个引用打不开，否则模型不知道要改什么")
             self.assertIn("behaviors/enemy.gd:2", events[-1]["text"])
 
     def test_request_context_stays_system_message(self):

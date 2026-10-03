@@ -562,6 +562,16 @@ _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
   4. 建议的下一步。不要直接粘贴原始 JSON、完整日志、工具调用过程或模型内部指令；历史 bugs/ 记录单独标注“历史归档”，不能混入“当前已确认”。
 - 工具已返回明确结果（尤其是数字/代码片段）时，Final Answer 应直接引用工具给出的内容，不要自行重算或改写其中的数字。
 - 没有实际重新执行测试/构建并看到成功输出前，禁止声称"测试通过""已修复""可以正常工作"；验证结果以 run_command 的真实输出为准，未复验只能说"建议修复为…"。
+
+【验证躲避自查 · 每轮都要问自己一遍】
+以下都是**验证躲避**，不是验证：
+  · "我打算读一下 player.gd 确认" —— 读了才算，叙述不算；
+  · "根据 search_code 的结果，这个函数应该…" —— 那是摘要，不是原文；
+  · "这个看起来没问题 / 应该可以工作" —— 「应该」不是验证结果；
+  · "测试已经通过了" —— 若那是你自己写的测试，它可能是重言式或只覆盖 happy path。
+判据只有一条：**你手上有没有那次执行/读取的真实输出？** 没有就去调用工具拿到它，
+不要用描述代替执行。拿不到就如实说"这一处我没核实"，不要写成已确认的结论。
+（此条与上一条同源：先有"以真实输出为准"，才有"不许用叙述顶替执行"。）
 - gen_video_prompt 等"产出即最终交付物"的工具，其返回内容（如 H3 三段结构提示词）应原样呈现给用户，不要改写成别的格式（例如不要改成"三幕结构"）。
 - 当用户给出【编号清单 / 多项检查点】（如"①边界条件 ②兼容性 ③约束"）时，Final Answer 必须逐项回应：能答的给明确结论；信息缺失或前提不成立的项明确标 `N/A` 并附一句原因（如"N/A：代码库未索引该实现，无法核验"）。禁止整段省略任意一项，也禁止用散文泛泛带过。
 
@@ -1470,9 +1480,15 @@ _EVIDENCE_CHECK_HINTS = {
 def _evidence_failure_detail(audit):
     """把证据门禁的失败项翻译成给模型看的一句话 + 给用户看的 reflection。
 
+    只报**门禁项**（事实）：路径能否打开、行号是否越界、有没有给出定位。
+    不报 ``read_file_present``——它已降级为参考项，闸门根本不看它。
+    报了它就会把「引用打不开」说成「你没读文件」，而后者已被证明常常不成立。
+
     返回 ``(给模型的补充说明, 给用户的 reflection 文案)``。
     """
-    checks = dict((audit or {}).get("checks") or {})
+    audit = audit or {}
+    # 优先用 gate_checks（事实项子集）；缺省才退回 checks，保持对旧结构的兼容。
+    checks = dict(audit.get("gate_checks") or audit.get("checks") or {})
     failed = [key for key in _EVIDENCE_CHECK_HINTS
               if key in checks and checks[key] is False]
     if not failed:
@@ -1506,9 +1522,60 @@ def _evidence_failure_detail(audit):
     prefix = ("定位回答缺少原文核验"
               if "read_file_present" in failed
               else "定位回答的证据未通过")
-    reflection = "%s：%s已把具体问题回给模型。" % (
-        prefix, "；".join(_EVIDENCE_CHECK_HINTS[key] for key in failed))
+    reflection = "%s：%s" % (prefix, "；".join(_EVIDENCE_CHECK_HINTS[key] for key in failed))
+    # 具体引用也要出现在**用户可见**的那一段里。此前只回给模型，用户只看到
+    # 「路径打不开」却不知道是哪一处——那等于让他自己再翻一遍 trace。
+    named = bad_paths + bad_lines
+    if named:
+        reflection += "（%s）" % "、".join(named[:6])
+    reflection += "已把具体问题回给模型。"
     return detail, reflection
+
+
+#: 三值判定的用户可见措辞。措辞参照 Claude Code 的 VERDICT 约定，
+#: 但**必须**满足它自己那条约束：PARTIAL 只留给环境限制，不给"我不确定"当出口。
+_VERDICT_LABELS = {
+    "PASS": "PASS",
+    "FAIL": "FAIL",
+    "PARTIAL": "PARTIAL（环境限制，无法核验）",
+}
+
+
+def _evidence_verdict_note(audit):
+    """渲染用户可见的核验结论。
+
+    与旧文案的关键差别：旧文案是一句**笼统的恐吓**（"请勿据此修改代码"），
+    且它断言的原因（没读过）常常不成立；现在给出的是**可核验的事实**——
+    哪几处引用被证实为真实且行号有效，哪几处打不开或越界。
+
+    PARTIAL 只在无法核验（没有代码根）时出现；"我不确定"不属于 PARTIAL，
+    那属于 FAIL——引用确实有问题，只是模型还没改对。
+    """
+    verdict = str((audit or {}).get("verdict") or "PASS")
+    refs = [r for r in ((audit or {}).get("references") or []) if isinstance(r, dict)]
+    verified = [r for r in refs if r.get("exists") and r.get("in_root", True)
+                and r.get("line_ok", True)]
+    bad = [r for r in refs if r not in verified]
+
+    def label(item):
+        return "%s:%s" % (item.get("path") or "?",
+                          item.get("start_line")
+                          if item.get("start_line") is not None else "?")
+
+    parts = ["（核验：%s" % _VERDICT_LABELS.get(verdict, verdict)]
+    if refs:
+        parts.append("· %d 处引用可核验" % len(verified))
+    if bad:
+        why = []
+        if any(not (r.get("exists") and r.get("in_root", True)) for r in bad):
+            why.append("路径打不开")
+        if any(not r.get("line_ok", True) for r in bad) and \
+                all((r.get("exists") and r.get("in_root", True)) for r in bad):
+            why.append("行号越界")
+        parts.append("· %d 处未通过（%s）：%s"
+                     % (len(bad), "、".join(why) or "未通过", "、".join(label(r) for r in bad[:6])))
+    parts.append("）")
+    return "".join(parts) + "\n未核实的引用请自行打开对应文件确认后再据此修改代码。"
 
 
 def _strip_internal_prompt_leak(text):
@@ -3667,7 +3734,11 @@ class Agent:
                 if self._is_verbatim_tool(last_action) and last_obs and not _is_failure(last_obs):
                     final_text = _format_verbatim(last_action, last_obs)
                 evidence_audit = _audit_live_answer(final_text, question, trail, audit_steps)
-                if evidence_audit.get("required") and not evidence_audit.get("ok"):
+                # 闸门只看**事实项**（引用能不能打开、行号是否越界）。
+                # `read_file_present` 已降级为参考——Claude Code 的验证 prompt 明确写着
+                # "reading is not verification. Run it."，拿"读过没有"当闸门是方向反了，
+                # 而且本次会话已因此连续误报四次。详见 output_audit.gate_checks。
+                if evidence_audit.get("required") and not evidence_audit.get("gate_ok"):
                     if evidence_nudges < 1:
                         evidence_nudges += 1
                         trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
@@ -3694,8 +3765,11 @@ class Agent:
                         })
                         yield {"type": "reflection", "text": _reflection}
                         continue
-                    # Do not silently turn an unverified summary into a fact.
-                    final_text = final_text.rstrip() + "\n\n（证据复核：以上文件/行号尚未完成 read_file 原文核验，请勿据此修改代码。）"
+                    # 事实项仍未通过：如实报 FAIL，并**点名具体引用**。
+                    # 旧文案是写死的「尚未完成 read_file 原文核验，请勿据此修改代码」——
+                    # 那句话即使在事实项失败时也不准确（真正的问题是路径/行号，不是读没读），
+                    # 而且它已被证明会误导。现在给出的是可核验的事实与三值判定。
+                    final_text = final_text.rstrip() + "\n\n" + _evidence_verdict_note(evidence_audit)
                 if continuation_incomplete:
                     if turn is not None:
                         turn.outcome = "truncated"

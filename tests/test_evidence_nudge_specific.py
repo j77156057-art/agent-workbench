@@ -138,5 +138,49 @@ class RealAuditBehaviourTests(unittest.TestCase):
         self.assertIn("hud.gd:20", detail)
 
 
+@unittest.skipUnless(HAVE_PROJECT, "需要真实的 godot_sample 项目")
+class CjkAdjacencyTests(unittest.TestCase):
+    """`**\\w**` 在 Python 3 的 str 模式下包含 CJK —— 前置断言用 `\\w` 会切错路径。
+
+    实测（godot_sample 定位扣血逻辑）：模型写「数值在**behaviors/enemy.gd**:7」，
+    前面紧贴中文「在」，`(?<!\\w)` 判定「在」是词字符 -> 拒绝匹配 -> 引擎挪到
+    `enemy.gd` 前才咬住 -> 把**正确**引用切成 `enemy.gd` -> 报「路径打不开」。
+
+    结果是白白多花一轮工具调用去「修」一个本来没写错的路径。
+    中文是本项目的主要语言，这个断言几乎必然踩中。
+    """
+
+    def test_path_glued_to_chinese_text_is_extracted_whole(self):
+        from agent_runtime.output_audit import _FILE_REF
+        paths = [m.group(1) for m in _FILE_REF.finditer("数值在behaviors/enemy.gd:7确定。")]
+        self.assertIn("behaviors/enemy.gd", paths,
+                      "紧贴中文的路径被切成了后半段：%r" % paths)
+
+    def test_the_full_answer_passes_with_chinese_adjacency(self):
+        out = audit_evidence(
+            {"text": "数值在behaviors/enemy.gd:7确定，扣血在behaviors/player.gd:39。",
+             "trace": {"steps": [{"action": "read_file", "ok": True, "input": "behaviors/enemy.gd"}]}},
+            question="玩家受伤扣多少血在哪算的？", code_root=PROJECT)
+        self.assertTrue(out["checks"]["references_exist"],
+                        "全部正确的引用被判成打不开——这会让模型去'修'本来没写错的路径")
+
+    def test_a_bare_filename_is_still_rejected(self):
+        """修断言不能把严格性一起修掉。"""
+        out = audit_evidence(
+            {"text": "显示在 hud.gd:20 处理。",
+             "trace": {"steps": [{"action": "read_file", "ok": True, "input": "ui/hud.gd"}]}},
+            question="HUD 在哪刷新？", code_root=PROJECT)
+        self.assertFalse(out["checks"]["references_exist"],
+                         "裸文件名 hud.gd 确实打不开——放行它等于放弃门禁")
+
+    def test_a_path_suffix_is_not_matched_on_its_own(self):
+        """新断言仍要挡住「路径后缀」误匹配。"""
+        from agent_runtime.output_audit import _FILE_REF
+        # 前置断言的作用：不会把 behaviors/enemy.gd 里的 enemy.gd 单独咬出来
+        for m in _FILE_REF.finditer("behaviors/enemy.gd:7"):
+            self.assertNotEqual(m.group(1), "enemy.gd",
+                                "路径后缀被单独匹配——说明前置断言失效了")
+
+
 if __name__ == "__main__":
     unittest.main()
