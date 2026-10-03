@@ -23,6 +23,7 @@ Windows 上 born-in-job，父进程被杀也带得走），浏览器走 `page_ac
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -761,6 +762,12 @@ def _open_with_retry(base: Path, target: str, *, timeout: float,
     `120 × 50ms`（`page_action.py` 的脚本里，不是参数；那个文件现阶段属别人），
     每条路由又都要重下整套资源（`open_page` 会给 URL 加 `?docmind=` 缓存戳）。
     深链与问答两档共用这一份——同一个逻辑写两处就是"其中一处迟早变陈旧"（§9）。
+
+    **重试之间必须先把上一个浏览器收干净、并给它退避时间**（第一版只 `sleep(1.0)`）：
+    `close_page` 只是从 `_sessions` 里摘掉记录，Edge 进程退出是**异步**的。实测表现为
+    **交替**失���——连着跑时第 1/2/5/7 次三次重试全超时、第 3/6 次却正常，而 `live_pages`
+    每次都是空的（说明会话没泄漏，是**进程**还没退出）。紧挨着重试等于把一次失败放大成
+    三次连续抢资源。所以这里每次失败都 `close_all()` 并按次数退避（2s / 4s）。
     """
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -772,8 +779,13 @@ def _open_with_retry(base: Path, target: str, *, timeout: float,
             last = exc
             if retries is not None:
                 retries.append("%s#%d" % (target, attempt))
-            time.sleep(1.0)
-    raise AppTestError("开了 %d 次都顶破 open_page 的就绪预算：%s" % (attempts, str(last)[:160]))
+            with contextlib.suppress(Exception):
+                page_action.close_all()
+            time.sleep(2.0 * attempt)             # 退避：给上一个浏览器真正退出的时间
+    raise AppTestError("开了 %d 次都顶破 open_page 的就绪预算（每次都已回收上一个会话"
+                       "并退避 %s 秒）：%s"
+                       % (attempts, "/".join(str(2 * n) for n in range(1, attempts)),
+                          str(last)[:160]))
 
 
 def _drive_ask(base: Path, state: dict[str, Any], url: str, *, fixture: str,

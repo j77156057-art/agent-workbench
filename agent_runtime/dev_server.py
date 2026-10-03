@@ -29,6 +29,15 @@ PROBE_TIMEOUT = 1.5
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 _PORT_LINE = re.compile(r"(?:127\.0\.0\.1|localhost|\[::1\]):(\d{2,5})")
 
+#: 日志里认端口时**只认最后一个**。
+#:
+#: dev server 撞了端口会自动往后挪（vite 5173 -> 5174），于是日志里会有**多个**端口行，
+#: 而第一个是**没起来那个**。原来用 `re.search` 取首个，于是认到的往往是死掉的那个地址；
+#: 更糟的是那个地址上可能正站着**别人的服务**（见 `owns_port`）。
+_PORT_IN_USE = re.compile(
+    r"EADDRINUSE|address already in use|port .*already in use|"
+    r"Only one usage of each socket address", re.I)
+
 
 def free_port(host: str = "127.0.0.1") -> int:
     """要一个当下空闲的端口，交给调用方的命令去 bind。
@@ -70,9 +79,24 @@ def loopback_url(raw: str, *, default_port: int = 0) -> tuple[str, str]:
 
 
 def parse_port_hint(text: str) -> int:
-    """从服务自己的日志里认端口（vite/next/webpack-dev-server 都会打印自己的地址）。"""
-    match = _PORT_LINE.search(str(text or ""))
-    return int(match.group(1)) if match else 0
+    """从服务自己的日志里认端口（vite/next/webpack-dev-server 都会打印自己的地址）。
+
+    取**最后一个**匹配而不是第一个：撞了端口时 dev server 会往后挪，地址行不止一条，
+    第一个往往是**没起来那个**（`Local: http://localhost:5173/` 之后才是 5174）。
+    """
+    found = _PORT_LINE.findall(str(text or ""))
+    return int(found[-1]) if found else 0
+
+
+def port_taken(port: int, host: str = "127.0.0.1") -> bool:
+    """这个端口现在有没有别人在听。"""
+    if not 1024 <= int(port) <= 65535:
+        return False
+    try:
+        with socket.create_connection((host, int(port)), timeout=PROBE_TIMEOUT):
+            return True
+    except OSError:
+        return False
 
 
 def probe(url: str, *, timeout: float = PROBE_TIMEOUT) -> tuple[bool, str]:
@@ -123,6 +147,14 @@ def start(root: str, command: str, *, argv: list[str], cwd: str = "", port: int 
     if not os.path.isdir(workdir):
         out["error"] = f"工作目录不存在：{cwd or '.'}"
         return out
+    # 必须在**启动子进程之前**问：启动之后再去问，那个端口上坐着的正是我们自己的进程，
+    # 于是 `port_taken` 永远为 True、"这个端口本来就有别人的服务"这句话永远成立
+    # （第一版就写在这里，正向路径当场被误伤成 ready=False）。
+    want_port = int(port or 0)
+    busy_before = bool(want_port) and port_taken(want_port)
+    if busy_before:
+        out["notes"].append("端口 %d 在启动前就已经有服务在听；那个服务不是本命令起的。"
+                            % want_port)
     rep = process_runner.start_job(list(argv), cwd=workdir, timeout=job_timeout, env=env,
                                    command_text=command or " ".join(argv))
     if not rep.get("ok"):
@@ -139,25 +171,47 @@ def start(root: str, command: str, *, argv: list[str], cwd: str = "", port: int 
     seen = 0
     offset = 0
     log = ""
-    want_port = int(port or 0)
     reason = ""
+    owned = False
     while time.monotonic() < deadline:
         view = _view(job_id, offset)
         chunk = str(view.get("logs") or "")
         if chunk:
             log += chunk
             offset = int(view.get("next_offset") or offset + len(chunk))
-        detected = want_port or parse_port_hint(log)
+        # **先认日志里它自己打印的端口**：那个是可证的归属（是本进程打印的）。
+        # 认不到才退回调用方给的 `port`，而那只是"优先去探这里"。
+        announced = parse_port_hint(log)
+        detected = announced or want_port
+        owned = bool(announced)          # 端口是它自己打印的 ⇒ 归属可证
         if detected:
             ready, reason = probe("http://127.0.0.1:%d/" % detected)
+            if ready and not owned and busy_before:
+                # 只有"启动前就有人在那儿听"才是**别人的**应答。启动前是空的 ⇒ 这个端口
+                # 上的应答只能是我们刚起的那个（哪怕它没在日志里报自己的端口）。
+                out.update({"ok": True, "ready": False, "port": detected,
+                            "url": "http://127.0.0.1:%d/" % detected})
+                out["error"] = (
+                    "端口 %d 在本命令启动前就已经有别的服务在听，而本命令的输出里"
+                    "没有认领任何端口——那个应答的**不是**本命令起的服务，所以不判就绪。"
+                    "请换一个端口（dev_serve start port: <另一个>）或先停掉占用它的进程。"
+                    % detected)
+                out["log_tail"] = log[-1200:]
+                return out
             if ready:
                 out.update({"ok": True, "ready": True, "port": detected,
                             "url": "http://127.0.0.1:%d/" % detected})
-                out["notes"].append("就绪探测：%s" % reason)
+                out["notes"].append(
+                    "就绪探测：%s（端口%s）"
+                    % (reason, "由服务自己的输出认领" if owned else "启动前为空，归属可推定"))
                 break
         state = str(view.get("state") or "")
         if state in ("done", "failed", "timeout", "cancelled"):
-            out["error"] = "服务进程已经退出（state=%s），看下面的输出尾部。" % state
+            detail = "服务进程已经退出（state=%s）" % state
+            if _PORT_IN_USE.search(log):
+                detail += ("；输出里有端口被占的迹象（EADDRINUSE / address already in use）"
+                           "——换个端口重试，或让该服务自动往后挪一个端口")
+            out["error"] = detail + "，看下面的输出尾部。"
             out["log_tail"] = log[-1200:]
             return out
         time.sleep(PROBE_INTERVAL)

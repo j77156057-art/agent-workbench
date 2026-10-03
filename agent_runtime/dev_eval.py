@@ -1214,6 +1214,78 @@ def _case_chat_sse_refuses_a_final_that_never_ran_a_tool(
     ]
 
 
+def _case_devserver_refuses_to_claim_someone_elses_port(
+        root: str, run: Callable[..., dict]) -> list[dict]:
+    r"""`dev_serve` 必须证得出"应答的那个服务是自己起的"（Wave30，§6 缺口 4）。
+
+    那个缺口记的是"端口被抢不自动重试"，而动手时发现更要紧的是另一件事：
+    `dev_serve` 传的 argv 里**没有端口参数**（`tools.py` 的 `_shell_argv(command)`），
+    所以 `port=` 只是"优先去探这里"。于是用户给的端口上若已有别人的服务，`probe` 成功、
+    `start()` 就**把别人的服务当成自己的**报就绪、并把那个 URL 交回去——确定性复现，
+    不需要任何竞态。后面所有整页断言于是都打在别人的服务上。
+
+    纯层题：起一个**不属于本项目**的回环服务占住端口，再让 `start` 去探它。
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from agent_runtime import dev_server
+
+    squatter = ThreadingHTTPServer(("127.0.0.1", 0), type(
+        "H", (BaseHTTPRequestHandler,), {
+            "protocol_version": "HTTP/1.1",
+            "log_message": lambda *a: None,
+            "do_GET": lambda self: (
+                self.send_response(200),
+                self.send_header("Content-Type", "text/html"),
+                self.send_header("Content-Length", "5"),
+                self.end_headers(),
+                self.wfile.write(b"other"))}))
+    squatter.daemon_threads = True
+    threading.Thread(target=squatter.serve_forever, daemon=True).start()
+    taken = int(squatter.server_address[1])
+    from unittest.mock import patch as _patch
+    try:
+        # squatter 还在听的时候问：它必须看得出来"这个端口有人"
+        looks_busy = dev_server.port_taken(taken)
+        with _patch.object(dev_server.process_runner, "start_job",
+                           return_value={"ok": True, "job_id": "gate-probe"}), \
+                _patch.object(dev_server, "_view",
+                              return_value={"logs": "", "state": "running"}), \
+                _patch.object(dev_server, "probe", return_value=(True, "HTTP 200")):
+            claimed = dev_server.start(root, "无关的服务", argv=["x"],
+                                      port=taken, wait=1.0)
+    finally:
+        squatter.shutdown()
+        squatter.server_close()
+
+    announced = dev_server.parse_port_hint(
+        "Port 5173 is in use, trying another one...\n"
+        "  ➜  Local:   http://127.0.0.1:5173/\n"
+        "  ➜  Network: http://127.0.0.1:5174/\n")
+    outside = dev_server.start(root, "越界", argv=["x"], cwd="../..")
+    url, err = dev_server.loopback_url("http://10.0.0.5:8080/")
+    return [
+        _check("a_taken_port_is_not_reported_as_our_service",
+               not claimed["ready"] and "不是" in claimed["error"],
+               {"ready": claimed["ready"], "error": claimed["error"][:120]}),
+        _check("it_says_which_port_it_refused_to_claim",
+               str(claimed.get("port")) == str(taken), claimed.get("port")),
+        _check("it_points_at_the_way_out",
+               "换" in claimed["error"] or "停掉" in claimed["error"],
+               claimed["error"][:120]),
+        _check("the_port_it_moves_to_is_the_last_one_announced",
+               announced == 5174, announced),
+        _check("port_taken_sees_a_live_listener",
+               looks_busy is True, looks_busy),
+        _check("the_loopback_fence_still_refuses_other_machines",
+               url == "" and "只允许本机回环地址" in err, err),
+        _check("starting_outside_the_code_root_is_refused",
+               not outside.get("ok") and "代码根目录外" in outside.get("error", ""),
+               outside.get("error", "")),
+    ]
+
+
 DEV_DATASET: tuple[dict[str, Any], ...] = (
     {
         "id": "lookup-by-filename", "fixture": "ts-refs",
@@ -1411,6 +1483,13 @@ DEV_DATASET: tuple[dict[str, Any], ...] = (
         "uses": [],
         "note": "问答 SSE 的判据必须挑出那六条【不调模型也能产出 final】的早退——"
                 "收到 final 不等于跑通一轮问答。route 与 done 是无条件发的，不算证据",
+    },
+    {
+        "id": "devserver-refuses-to-claim-someone-elses-port", "fixture": "plain",
+        "direct": _case_devserver_refuses_to_claim_someone_elses_port,
+        "uses": [],
+        "note": "端口归属要可证：dev_serve 的 argv 里没有端口参数，port 只是"
+                "『优先去探这里』，启动前就有人听的端口不能当成自己的服务",
     },
 )
 

@@ -1,8 +1,8 @@
 {
  "schema_version": 1,
- "total": 27,
- "scored": 27,
- "passed": 27,
+ "total": 28,
+ "scored": 28,
+ "passed": 28,
  "skipped": [],
  "results": [
   {
@@ -163,6 +163,12 @@
   },
   {
    "id": "chat-sse-refuses-a-final-that-never-ran-a-tool",
+   "passed": true,
+   "skipped": "",
+   "failed_checks": []
+  },
+  {
+   "id": "devserver-refuses-to-claim-someone-elses-port",
    "passed": true,
    "skipped": "",
    "failed_checks": []
