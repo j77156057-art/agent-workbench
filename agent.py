@@ -1414,19 +1414,38 @@ def _is_failure(obs):
     return any(marker in obs for marker in _FAILURE_MARKERS)
 
 
-def _audit_live_answer(text, question, trail):
-    """Build a bounded evidence trace for the direct-chat final-answer gate."""
-    steps = []
-    pending = None
-    for message in trail or []:
-        content = str(message.get("content") or "")
-        if message.get("role") == "assistant":
-            match = re.search(r"(?:^|\n)\s*Action:\s*([A-Za-z0-9_.-]+)", content)
-            if match:
-                pending = {"action": match.group(1), "ok": True}
-                steps.append(pending)
-        elif message.get("role") == "user" and content.startswith("Observation:") and pending is not None:
-            pending["ok"] = not _is_failure(content)
+def _audit_live_answer(text, question, trail, executed_steps=None):
+    """Build a bounded evidence trace for the direct-chat final-answer gate.
+
+    ``executed_steps`` 是本轮**真实执行记录**（``[{"action":…, "ok":…}]``）。
+    传了就直接用，不再从 trail 文本里反推——这是本项目反复踩的同一类坑：
+    判断信号来自一个**不适用的协议**，于是给出与事实相反的结论。
+
+    实测（godot_sample「扣血在哪算」）：模型并行read_file 了 enemy.gd:1-12、
+    enemy.gd:40-50、player.gd:30-49、ui/hud.gd:1-30，证据齐备，答案里的行号也全对，
+    但结尾挂上了「以上文件/行号尚未完成 read_file 原文核验，请勿据此修改代码」。
+    原因：原生 FC 的并行批次路径往 trail 写的是「（并行调用）read_file、read_file」，
+    **没有 `Action:` 标记**（只有顺序路径会合成），于是这里扫出来零步骤 -> 判未核验。
+
+    反推路径保留为``executed_steps`` 缺省时的兜底（其它调用方/历史结构），
+    但它**只对文本协议可靠**，所以新代码必须传 executed_steps。
+    """
+    if executed_steps is not None:
+        steps = [{"action": str(s.get("action") or ""), "ok": bool(s.get("ok"))}
+                 for s in executed_steps]
+    else:
+        steps = []
+        pending = None
+        for message in trail or []:
+            content = str(message.get("content") or "")
+            if message.get("role") == "assistant":
+                match = re.search(r"(?:^|\n)\s*Action:\s*([A-Za-z0-9_.-]+)", content)
+                if match:
+                    pending = {"action": match.group(1), "ok": True}
+                    steps.append(pending)
+            elif (message.get("role") == "user"
+                  and content.startswith("Observation:") and pending is not None):
+                pending["ok"] = not _is_failure(content)
     return audit_evidence(
         {"text": text, "trace": {"steps": steps}},
         question=_user_question(question), code_root=get_runtime("code_root", ""),
@@ -2701,6 +2720,11 @@ class Agent:
         forced_finals = 0  # 已发出的强制收尾提示次数（步数耗尽 / 重复空转共用一次机会）
         forced_final_reason = ""  # 触发强制收尾的原因，证据兜底 final 里原样告知用户
         evidence = []  # 本轮已执行工具的简要清单（action(input)），耗尽时兜底用
+        # 本轮**真实执行记录**（含成功/失败），供证据审计使用。
+        # 刻意不从trail 文本反推：原生 FC 的并行批次路径不写 `Action:` 标记，
+        # 反推会得到零步骤，于是把「证据齐备」误判成「未核验」并给用户挂上
+        # 误导性警告。见 _audit_live_answer。
+        audit_steps: list[dict] = []
         evidence_nudges = 0  # 定位类回答最多补读一次原文，避免复核本身形成死循环
         # 连续「输出无标记」的次数。与 nudges 分开计数，因为它的处置完全不同：
         # nudges 是「再给它一次机会」，而格式连续失守说明**这个模型在当前提示词下
@@ -2832,6 +2856,10 @@ class Agent:
                             _obs_msg["images"] = list(imgs)
                         trail.append(_obs_msg)
                     evidence.extend(f"{nm}({_clip(ar, 120)})" for nm, ar, _o, _k, _i in results)
+                    # 真实执行记录：证据审计必须读它，而不是回头扫trail 里的
+                    # `Action:` 文本——这条路径不写那种标记（见 _audit_live_answer）。
+                    audit_steps.extend({"action": nm, "ok": bool(_ok)}
+                                       for nm, _ar, _o, _ok, _i in results)
                     # 免费导航只消耗导航额度（与拆批时判定的 batch_free 同序），
                     # 其余结果按实际数量计入工具步数。
                     _nav_freed = sum(1 for _free in batch_free if _free)
@@ -3470,6 +3498,8 @@ class Agent:
                     fail_total = 0
                     if parsed["action"] in _WEB_ACTIONS:
                         web_family_failures.clear()
+                # 顺序路径的真实执行记录（与并行批次共用同一个 audit_steps）。
+                audit_steps.append({"action": parsed["action"], "ok": bool(_tool_ok)})
 
                 # 写操作改变了代码库状态：清空已执行记录，允许随后用【相同命令】
                 # 重新跑测试做验证（防重复护栏针对的是无意义空转，不是改后复验）。
@@ -3577,7 +3607,7 @@ class Agent:
                 # 避免小模型在 Final Answer 里改写数字/格式导致错误。
                 if self._is_verbatim_tool(last_action) and last_obs and not _is_failure(last_obs):
                     final_text = _format_verbatim(last_action, last_obs)
-                evidence_audit = _audit_live_answer(final_text, question, trail)
+                evidence_audit = _audit_live_answer(final_text, question, trail, audit_steps)
                 if evidence_audit.get("required") and not evidence_audit.get("ok"):
                     if evidence_nudges < 1:
                         evidence_nudges += 1
