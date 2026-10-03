@@ -58,10 +58,35 @@ def load_mutated(module_name: str, source: str, tag: str) -> Any:
     return module
 
 
-def _suite_from(test_module: str, bind_to: str, classes: tuple[str, ...],
+def _suite_from(test_module: str, bind_to: Any, classes: tuple[str, ...],
                 module: Any, cases: tuple[str, ...] = ()) -> unittest.TestSuite:
+    """把变异后的模块接到测试模块上。
+
+    `bind_to` 可以是**一个名字**（`BIND`），也可以是**一组 (测试模块里的名字, 源模块里的属性名)**
+    （`BINDS`）。两者的区别在导入形式：
+
+    - `import agent` + `agent.foo()` —— 名字 `agent` 就是模块，接一个 `BIND='agent'` 就够。
+    - `from agent_runtime.game_workflow import _MAX_TASK_DEPS, _raw_task_count` ——
+      这些名字在**导入时**就把旧模块的符号绑死在测试模块上了，`setattr` 换掉模块对象
+      也没用：测试读的还是那批旧符号，变异**永远打不进去**。
+      本会话实测踩过：`battery_plan_dag` 10 条里 8 条报"活下来"，逐层量下来纯层与现场层
+      全部照绿——根因就是这个，不是守卫没牙。
+
+    所以from-import 的测试模块必须用 `BINDS` 把每个名字单独换掉。
+    """
     imported = importlib.import_module(test_module)
-    setattr(imported, bind_to, module)
+    if isinstance(bind_to, str):
+        setattr(imported, bind_to, module)
+    else:
+        for test_name, source_name in bind_to:
+            # `'*'` 是「把整个模块绑上去」：测试里除了 from-import 的名字，
+            # 还有 `agent.Agent(...)` 这种走**模块对象属性**的用法。
+            # 只换from-import 的名字而漏掉模块本身，现场层真跑起来测的还是
+            # 真代码——实测 4 条用例全绿，一条变异都没抓到。
+            if source_name == "*":
+                setattr(imported, test_name, module)
+            else:
+                setattr(imported, test_name, getattr(module, source_name))
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
     for class_name in classes:
@@ -102,9 +127,17 @@ def gate_failures(case_id: str) -> Callable[[Any], tuple[list[str], int]]:
 
 def unit_layer(battery: Any) -> Callable[[Any], tuple[list[str], int]]:
     def layer(module: Any) -> tuple[list[str], int]:
-        return run_suite(_suite_from(battery.TEST_MODULE, battery.BIND,
+        return run_suite(_suite_from(battery.TEST_MODULE, _bind_spec(battery),
                                      battery.UNIT_CLASSES, module))
     return layer
+
+
+def _bind_spec(battery: Any) -> Any:
+    """这块电池要把变异模块接到测试模块的哪些名字上。"""
+    binds = getattr(battery, "BINDS", None)
+    if binds:
+        return tuple(tuple(row) for row in binds)
+    return battery.BIND
 
 
 def live_layer(battery: Any) -> Callable[[Any], tuple[list[str], int]] | None:
@@ -114,8 +147,8 @@ def live_layer(battery: Any) -> Callable[[Any], tuple[list[str], int]] | None:
 
     def layer(module: Any) -> tuple[list[str], int]:
         class_name, cases = live
-        return run_suite(_suite_from(battery.TEST_MODULE, battery.BIND, (class_name,),
-                                     module, tuple(cases)))
+        return run_suite(_suite_from(battery.TEST_MODULE, _bind_spec(battery),
+                                     (class_name,), module, tuple(cases)))
     return layer
 
 

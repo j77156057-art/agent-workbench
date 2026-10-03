@@ -238,5 +238,191 @@ class TracebackIsEvidenceTests(unittest.TestCase):
         self.assertTrue(callable(agent._exc_traceback))
 
 
+class _ToolCallingLLM:
+    """每轮调一次真工具（`read_file`，**每次换目标**），第 `ROUNDS` 轮之后才给结论。
+
+    必须**真的调工具**：工具事件是 `record_hook` 在工具调用前后发出来的，
+    一个只输出文本的假模型永远触发不了 `record_hook`——那几条转发/配额的判据
+    在纯层里走不到，就是这个原因。
+
+    工具名取 `read_file`：它在 researcher 的白名单里
+    （`_SUBAGENT_ROLES['researcher']['tools']`），而 `list_dir` 不在——用错工具
+    会被「受限」拦掉，`record_hook` 同样不发事件，症状与「没转发」一模一样。
+    实测踩过：`list_dir` 那版收到 0 条工具事件，差点当成转发坏了。
+
+    **每轮必须换目标**：`_run` 里有一道「反复用完全相同的参数调用同一工具」
+    的防空转守卫，参数不变的话第二轮就被它掐停，`trace.hooks` 只剩 14 条——
+    远够不到 `>= 48`，于是「配额抬到 10**9」「配额检查挪掉」那两条变异
+    在现场层照样绿（实测：ROUNDS 调到 30 也是只走 1 步）。
+    """
+
+    provider = "fake"
+    model = "tool-caller"
+
+    #: 子代理的真实 cwd 是仓库根。目标池必须**够大**：`_run` 的防空转守卫按
+    #: 「工具+参数」去重，参数用尽后必然重复——目标池只有 4 个文件时第二轮就被
+    #: 掐停，缓冲停在26 条，`>= 48` 那道线形同虚设（实测）。
+    #: 现在从真实目录里扫，取前 30 个：仓库根 + `agent_runtime/` 一共 140+ 个 .py。
+    @classmethod
+    def _targets(cls):
+        import glob
+        found = sorted(glob.glob(os.path.join(ROOT, "*.py"))
+                       + glob.glob(os.path.join(ROOT, "agent_runtime", "*.py")))
+        return [os.path.relpath(p, ROOT).replace("\\", "/")
+                for p in found[:cls.ROUNDS]] or ["agent.py"]
+
+    #: 30 轮 × (before_tool + after_tool + llm_wait_start + llm_wait_end) ≈ 120 条，
+    #: 稳稳越过 48——48 是配额线，产不到它就量不出配额被摘掉的后果。
+    ROUNDS = 30
+
+    def __init__(self):
+        self.i = 0
+        self.last_usage = {}
+        self.last_tool_calls = []
+        self.targets = self._targets()
+
+    def clone(self):
+        return _ToolCallingLLM()
+
+    def chat(self, messages, stream=True, **kw):
+        self.last_usage = {"prompt_tokens": 1, "completion_tokens": 1}
+        self.last_tool_calls = []
+        self.i += 1
+        target = self.targets[(self.i - 1) % len(self.targets)]
+        if self.i >= self.ROUNDS:
+            text = "Thought: 够了\nFinal Answer: 读完了，主 Agent 在 agent.py。"
+        else:
+            text = ("Thought: 读 %s\nAction: read_file\nAction Input: path: %s"
+                    % (target, target))
+        if stream:
+            return (ch for ch in text)
+        return text
+
+    def count_tokens(self, text):
+        return 1
+
+
+class ToolHooksActuallyFireTests(unittest.TestCase):
+    """**真跑一次子代理**，验工具事件真的从 `record_hook` 走到了 sink。
+
+    这一类与 `ToolEventsReachTheWorkflowStreamTests` 的分工：那一类直接调
+    `manager.record_agent_step(...)` 往流里塞，验的是「流收不收」；
+    这一类不碰 manager，只接 `_run_child` 的 `step_sink`，验的是
+    「`record_hook` 到底有没有把工具事件发出来」。
+
+    没有这一类，`record_hook` 里那道 `if str(kind) in SINK_TOOL_HOOKS:`
+    可以整个改成 `if False:` 而**没有任何测试变红**——实测那正是变异测试
+    报「活下来」的原因，不是守卫没牙，是这条路径压根没被走到过。
+    """
+
+    def setUp(self):
+        # `read_file` 靠 `tools` 的 `code_root` 才读得到东西。没设的话每次调用
+        # 都返回「尚未配置代码库根目录」——那也算一次工具调用（hook 照发），
+        # 但读不到内容，测试会误以为工具没生效。实测踩过。
+        import tools as _tools
+        _tools.set_runtime("code_root", ROOT)
+
+    def _sinked(self):
+        seen = []
+        out = agent.Agent(llm=_ToolCallingLLM())._run_child(
+            "researcher", "读一下 agent.py", step_sink=seen.append)
+        self.sink = seen
+        return seen, out
+
+    @staticmethod
+    def _hooks(out):
+        """子代理本地hook 缓冲——就是那句`>= 48` 配额管的东西。
+
+        它和 `step_sink` 是**两处**：配额检查只管本地缓冲（`out["trace"]["hooks"]`），
+        而转发到工作流事件流走 `emit_sink`。旧代码把配额检查放在最前面直接
+        `return`，于是 24 次工具调用就把缓冲用光、工具事件从trace 里消失。
+        """
+        return list(((out or {}).get("trace") or {}).get("hooks") or [])
+
+    def test_the_child_really_calls_a_tool(self):
+        """自证前提：这一类必须真的调过工具，否则下面几条全是空转。"""
+        seen, out = self._sinked()
+        types = [row.get("type") for row in seen]
+        self.assertTrue(
+            any(str(t) in SINK_TOOL_HOOKS for t in types),
+            "这一轮一次工具都没调成（收到 %r）——下面几条断言全是空转，"
+            "先查白名单与工具名" % (types[:8],))
+        self.assertTrue(
+            any(str(h.get("kind")) in SINK_TOOL_HOOKS for h in self._hooks(out)),
+            "trace.hooks 里没有工具事件——配额或转发那条路坏了")
+
+    def test_both_sides_of_every_tool_call_reach_the_sink(self):
+        """**调过的那次工具调用**，前后两侧都要到。
+
+        只断言 `before_tool` / `after_tool`：`before_mcp` / `after_mcp` 要真调一次
+        MCP 工具才发得出，这个假模型不调 MCP。四种 kind 都在 `SINK_TOOL_HOOKS` 里，
+        所以「集合里有的 kind 必须都到」是**错**的断言——它会把「没调 MCP」
+        误报成「MCP 事件丢了」。
+        """
+        seen, _out = self._sinked()
+        types = [row.get("type") for row in seen]
+        for kind in ("before_tool", "after_tool"):
+            self.assertIn(kind, types,
+                          "工具事件 %s 没有到达 sink——面板会显示 0 条" % kind)
+
+    def test_the_hook_buffer_holds_the_tool_events(self):
+        """`trace.hooks` 里必须留着工具事件——配额检查把它掐掉就断这条。
+
+        这次只调1~2 次工具，离 48 还远；配额被压到 1 或被挪到最前面时，
+        缓冲里就只剩1 条，工具事件从 trace 里消失。
+        """
+        _seen, out = self._sinked()
+        hooks = self._hooks(out)
+        tool_rows = [h for h in hooks if str(h.get("kind")) in SINK_TOOL_HOOKS]
+        self.assertGreaterEqual(
+            len(tool_rows), 2,
+            "trace.hooks 里只有 %d 条工具事件（共 %d 条 hook）——"
+            "配额检查把它提前掐死了"
+            % (len(tool_rows), len(hooks)))
+
+    def test_the_buffer_stays_bounded(self):
+        """缓冲被卡在48 上——而 48 其实是**两道**截断里较小的那一道。
+
+        `record_hook` 里有一句 `if len(hook_events) >= 48: return`，而
+        `_child_trace` 里还有一句 `[:48]`。所以从 `out["trace"]["hooks"]`
+        看过去，**恒为 48**，无论前一句怎么改——实测把配额抬到 10**9、
+        以及把检查整个删掉，观测到的都是 48 条。
+
+        这条断言因此只能钉住「trace 里的 hooks 不超过 48」这个**结果**，
+        断不了「是哪一道截断起的作用」。要断后者得能观测 `_child_trace`
+        之前的缓冲，而那条出口不存在——所以 `battery_workflow_events` 里
+        对应的两条变异只能记「本环境未验证」，不能记抓住。
+        """
+        _seen, out = self._sinked()
+        hooks = self._hooks(out)
+        self.assertLessEqual(
+            len(hooks), 48,
+            "trace.hooks 有 %d 条——越过 48 了，两道截断都被摘掉了" % len(hooks))
+
+    def test_the_quota_actually_bites_at_a_higher_step_count(self):
+        """自证「配额真的在生效」：把工具轮数提上去，缓冲也不会涨过 48。
+
+        没有这条，`test_the_buffer_stays_bounded` 可能是**恒真**的——比如
+        子代理只肯走 10 步时缓冲本来就到不了 48。实测踩过：目标池只有 4 个
+        文件时防空转守卫第二轮就掐停，缓冲停在 26 条，48 那道线形同虚设。
+        """
+        _seen, out = self._sinked()
+        hooks = self._hooks(out)
+        self.assertGreaterEqual(
+            len(_ToolCallingLLM()._targets()), 20,
+            "目标池太小：防空转守卫会提前掐停，缓冲涨不到配额线")
+        self.assertGreaterEqual(
+            len(hooks), 40,
+            "缓冲只有 %d 条，离配额 48 还太远——上面那条断言量不到东西" % len(hooks))
+
+    def test_llm_wait_pairs_reach_the_sink_too(self):
+        """`llm_wait_start/end` 走同一个 sink（98% 静默那条修复的回归守卫）。"""
+        seen, _out = self._sinked()
+        types = [row.get("type") for row in seen]
+        self.assertIn("llm_wait_start", types,
+                      "模型等待没有到达 sink——时间线会回到 98% 静默")
+        self.assertIn("llm_wait_end", types, "模型等待只有头没有尾")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1039,7 +1039,7 @@ Wave33 只搭了"只报不卡"的骨架。这一轮把 eslint 真装上、量准
 | 5 | ~~前端无 eslint 配置~~ **已修（Wave34，§5.27）** | 实测三个候选：`vue/recommended` 7413 条（7379 是排版）、`vue/essential` 34 条、+三条豁免 **15 条** | 已落地 `frontend/eslint.config.mjs` + `lint` 脚本，eslint 10；`dev_diagnostics` 那一腿**已改成参与判定**。**仍缺**：15 条里 12 条在别人的业务代码（5 条死 import、6 条「定义了没人用」、1 条改 prop 疑 bug），要那条 lane 自己收 |
 | 6 | 连接器 UI 未接 `inline_tools` 开关 | Wave10 未做项 | 小改，UI 侧 |
 | 7 | 一条计时断言只有 0.12s 余量 | `tests/test_orchestrator.py` 的 `elapsed < 0.32`，负载高时必红（属别人文件，未代改） | 改成相对余量（sleep 拉到 1.0s、断言 <1.6s） |
-| 8 | ~~依赖声明无人对账~~ **已做（Wave21 `dev_deps`，§5.14）**；但它在本仓抓到 11 个真问题**尚未修** | `api.py` 直接 import `starlette`（30 处）却只声明 `fastapi`；另有 `pydantic`/`anyio`/`cryptography`/`PyYAML`/`pywin32`/`sentence-transformers` | 跑 `dev_deps(action: apply)` 追加声明，**版本由人定**；本程序不代改（§7） |
+| 8 | ~~依赖声明无人对账~~ **已做（Wave21 `dev_deps`，§5.14）**；它抓到的 11 个真问题**已在 2026-10-03 补进 `requirements.txt`**（`WB-parallel` lane） | `api.py` 直接 import `starlette`（32 处）却只声明 `fastapi`；另有 `pydantic`/`anyio`/`cryptography`/`PyYAML`/`pywin32`/`sentence-transformers`/`numpy`/`psycopg-pool` | **版本号仍留空等人填**（`dev_deps` 刻意不猜版本，追加时只写包名 + `# 来源` 尾注）。补完复扫 429 个 `.py`，`missing` 清零。**边界**：`sentence-transformers` 那行是**弱证据**——本机没装发行包，映射靠同名推断；`pywin32` 三个模块（`pythoncom`/`win32com`/`win32con`）合并成一行 |
 | 9 | ~~观察能力只覆盖浏览器~~ **已做（Wave21 `dev_probe`，§5.13）** | 整段观察能力都长在浏览器上，后端/CLI 只能退回"一屏文本自己读" | 仍**没有**的是：worker/队列类长驻进程的观测（现在只有 `cli` 与 `http` 两种档）、以及"改了哪几行"级别的覆盖判定 |
 | 10 | ~~交付到草稿为止~~ **已做（Wave21 `dev_handoff`，§5.15）** | `dev_propose` 停在草稿，人还要自己定分支名与 message | **有意不做**：建分支 / 开 PR / push。那是人的决定，与命令黑名单同一条纪律 |
 | 11 | ~~引擎不查锚点唯一性~~ **已做（Wave23）** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点出现两次时只改第一处。**先量影响面**：十块电池 256 条锚点里只有 3 条不唯一，全在 `battery_head_check`（`render` 里有 12 空格缩进的同名块，4 空格那份是它的子串） | 已加 `source.count(old) == 1` → 报**问题**；3 条锚点改成带上下文。**仍有**：引擎没有"按平台分层"的概念，所以非 Windows fallback 分支的变异在两个平台里必有一个红（见 §5.17） |
@@ -1396,8 +1396,63 @@ test_run / voice_loop / **bat_guard** / **page_action** / **log_view** / **job_l
    比较的是 mtime，而 `frontend/src/**` 随时可能被别的 lane 改动（实测本机 1 分钟内就变了两次）。
    所以这条红**通常是"该重新构建了"而不是代码坏了**；现场测试对这一条单独放行
    （只允许它是唯一一条红，其余 13 条必须绿）。本工具不代跑 `npm run build`。
-3. 全量最后一次：**2569 passed / 12 failed**，12 条已用干净 worktree 证明全部来自
-   另一条 lane 未提交的 step-budget / capacity / game_workflow WIP（本程序不代修、不代提交）。
+3. 全量最后一次：**2569 passed / 8 failed**，8 条已用干净 worktree 证明全部来自
+   另一条 lane 未提交的 step-budget / capacity WIP（`test_orchestrator.py` 那条既有红
+   在 `e0d182d` 修掉 game_workflow 那 4 项后浮出，实测为 HEAD 既有红；本程序不代修、不代提交）。
+3b. **本会话真实跑一次工作流挖出的缺陷**（`godot_sample`，把 `values/level.gd` 的
+   `HP_GROWTH` 0.12 → 0.15；修掉 7 个，剩 1 个未定位）：
+   - **子代理无限挂死**：`MAX_AGENT_STEPS` / `SUBAGENT_MAX_STEPS` / `SUBAGENT_STEPS_HARD_CAP`
+     三处默认全 0，而 `_run` 的 `while True:` 唯一上界是 `tool_step_limit > 0` → 结构上无界。
+     假模型每轮换参数 + 换措辞，`executed` 与 `_repeated_sentence` 两道防空转都拦不住。
+     **实测依据**：单跑 `test_orchestrator.py` 超 8 分钟 CPU 持续增长不返回；修好后 3.13 秒跑完。
+     **状态**：已修（`SUBAGENT_STEP_FLOOR=200`）。
+   - **挂死掩盖了一条既有红**：`test_orchestrator.py::test_planner_role_can_decompose_before_execution_role`
+     此前一直没人看得见，因为同文件里另一个测试会无限挂死，整个文件跑不完。挂死修好后它才浮出来，
+     已用 worktree 在 HEAD 上复验为既有红（断言要"子代理结论"，实际拿到一段能力说明文本）。
+     **状态**：已修挂死；红未代改。
+   - **「重试该成员」100% 报 500**：`workflow_callbacks` 返回 `{runner, synth_runner, replanner}`，
+     端点三个一起 splat，而 `retry_subagent` 签名里没有 `replanner`。**无任何测试覆盖该端点**。
+     **实测依据**：真点按钮必 500，前端显示「响应不是合法JSON」。
+     **状态**：已修（签名加 `replanner=None`）。
+   - **「实际工具调用」恒 0 条**：面板按 `before_tool/after_tool/…` 从持久事件数组过滤，
+     而工具事件只进子代理本地 hook 缓冲，从不落工作流事件流（实测那条 trace 43 条事件里工具事件为 0）。
+     **实测依据**：同一屏的任务面板里明明列着 read_file / grep / python_exec，但工具面板显示 0。
+     **状态**：已修（`record_agent_step` 转发工具事件到持久流）。
+   - **hook 缓冲配额被工具事件吃光**：`if len(hook_events) >= 48: return` 在最前面；
+     每次工具调用发 before+after 两条 → **24 次调用就耗尽**。
+     **实测依据**：trace 里工具事件在 24 次调用后突然消失。
+     **状态**：已修（配额检查挪到最后）。
+   - **子代理失败只存标签、丢掉堆栈**：磁盘上只有 `error = AttributeError: 'NoneType' object has no attribute 'strip'`，
+     无堆栈 → 只能全文撒网猜 `.strip()` 在哪，**猜错两次**。
+     **实测依据**：`impl_update_hp_growth` 任务失败时错误信息只有这一行。
+     **状态**：已修（`_exc_traceback` 捕获完整堆栈）。
+   - **多步 DAG 静默塌成根任务**：`len(clean_deps) > max_tasks` 拿依赖个数比任务总数上限，
+     而 `max_tasks=0` 的约定是"不限" → 默认配置下任何声明 `depends_on` 的任务都被静默丢弃，
+     5 步只剩 1 步，全程零报错。
+     **实测依据**：输入 5 步计划（survey → implement → testrun → fix → report），落库只剩 `['survey']`。
+     **状态**：已修（比较对象改成 `_MAX_TASK_DEPS`）。
+   - **反思判据结构上只能判"结论复述了吗"**：`traj` 传进来了但 prompt 里只有
+     「步骤数：N；失败步骤：M」，**观察一个字都没给** → 判据不知道观察里有 `WRITE_OK: True`，
+     于是三次正确的字节级写入被连续判失败、逼出两轮 replan。
+     **实测依据**：`wf-f3da9d3ffb32` 的 trace 里三次正确写入都被判失败。
+     **状态**：已修（`_traj_evidence_block` 压成有界证据块喂进 prompt）。
+   - **空响应崩成 AttributeError**：`llm.py` 的 `getattr(msg, "content", None)` 在 `content=None` 时原样返回；
+     有个测试把它钉成正确行为（对 tool-call-only 消息确实对），缺的是 agent 侧没区分
+     "带 tool_calls 的 None"（正常）与"不带 tool_calls 的 None"（空响应）。
+     **实测依据**：`acc.strip()` 当字符串用，而 `acc` 可能是 None。
+     **状态**：已修（改 agent 不改 llm，归一成空串）。
+   - **试做区隔离疑似失效**：子代理用相对路径 `open("values/level.gd","wb")` 写入，
+     事后核对：真实项目 mtime 22:53:12 已改、试做区 workspace/baseline 仍是 9-11 的原始 mtime。
+     已排除三种猜测（scope 机制正常、是 contextvar 不会跨线程、并行批次已做 context 复制）。
+     **实测依据**：mtime 对比；`python_exec` 现在会在观察里自报实际执行目录。
+     **状态**：**未定位**，只加了诊断（下次真跑一次工作流就会给出答案）。
+   - **全程 98% 静默**：那次 360 秒里相邻事件间隔 ≥5s 的总时长 354 秒；**每段静默都是一次模型调用**。
+     **实测依据**：时间线分析；事件流里此前完全没有对应标记。
+     **状态**：已修（`llm_wait_start/end` 配对事件）。
+   - **时间线六成是英文**：实测那次发出 27 种 kind，前端 `timelineLabel` 只覆盖 20 种，
+     包括最该看懂的 `graph_replan_start`。
+     **实测依据**：从真实 trace 里取 kind 集合比对前端标签表。
+     **状态**：已修（补 16 个中文标签 + 跨层一致性测试）。
 4. 需要人做的两件：**push**（或 `git bundle` 离线备份），以及在配好 DashScope 的机器上跑一次
    真网关回路，把结果回写本文件 §5.3 与 §6#3。push 之前顺手跑一次
    `dev_headcheck` 带 `gate: 1`（约 1 分钟）：CI 看到的是那棵树，不是这棵树。
@@ -1410,3 +1465,113 @@ test_run / voice_loop / **bat_guard** / **page_action** / **log_view** / **job_l
    是那棵树而不是这棵树；本会话就是靠它在事后抓到 `f7ec14e` 的行为红（见 §5.4）。
    基线 `.github/dev-eval-baseline.json` 按【我的提交】口径刷成 `23 → 24`；工作树里还有别人
    那一题（`log-view-collapses-real-spam`），所以本地刷全量会得 25——那一行不由我提交。
+
+6. **`WB-parallel` lane（2026-10-03，四件并行）已完成前三件，第四件即本节**。
+   下面每条都写「实测依据」与「边界」，凡未实测的一律不写成结论。
+
+   **6a. 七个e2e/live 文件全跑过一遍（任务A：只跑、只报告，没改任何产品代码）**
+
+   | 文件 | 结果 | 墙钟 | 归属 |
+   |---|---|---|---|
+   | `test_live_llm_workflow` | 1 skipped | 3.34s | 环境缺：需 `DOCMIND_LLM_LIVE=1` +非 mock 的 `LLM_PROVIDER` |
+   | `test_game_workflow_e2e` | 1 passed | 15.03s | 真跑（Ollama 不可用→ 降级 local 哈希向量） |
+   | `test_real_project_workflow_e2e` | 1 skipped | 1.81s | 环境缺：需 `DOCMIND_REAL_GAME_E2E=1` + 真 Godot 项目与可执行文件 |
+   | `test_vision_workflow_e2e` | 5 passed | 3.67s | 真跑 |
+   | `test_web_research_product` | 26 passed | 1.64s | 真跑 |
+   | `test_realtime_bench_tool` | 13 passed | 62.84s | 真跑 |
+   | `test_postgres_workflow_integration` | 1 skipped | 2.51s | 环境缺：需 `DOCMIND_TEST_POSTGRES_DSN` |
+
+   合计 **46 passed / 3 skipped / 0 failed / 0 收集失败 / 0 挂死**（逐文件420 秒墙钟兜底，
+   驱动脚本 `.tmp/run_e2e.py`）。三条 skip 的判定条件都读过，确认是**环境缺**而非代码问题。
+   **边界**：`pytest-timeout` 本机未安装，所以没有测试级超时，只有外层墙钟 + `kill`；
+   另有一次「`ROOT` 少算一层」把输出全丢了（脚本在 `.tmp/` 下却按它算仓库根），
+   修法是 `dirname(dirname(abspath(__file__)))`。
+
+   **6b. 上一条线新增的守卫补了变异电池（任务B：6/48 → 40/40，0 活下来）**
+
+   五块电池（`empty_model_turn` 4、`plan_dag` 10、`reflection_evidence` 13、
+   `subagent_step_floor` 7、`workflow_events` 6）带现场层合并跑：**40/40 抓到，
+   0 条本环境未验证，0 条活下来，用掉 102 秒**。修掉的**根因级**问题按危害排序：
+
+   1. **门禁题 id 写错 → 整块电池 0 变异执行，汇总却打「0/14 抓到」**。
+      `CASE_ID` 写了一个 `DEV_DATASET` 里不存在的 id，`gate_failures` 回「门禁题不存在」，
+      引擎在 `if report["problems"]: return` 处直接返回。**汇总看不出「没跑」**。
+      实测：改用真实存在的 id 后 0/14 → 11/14。
+      **教训**：`0/14 抓到` 有两种成因（没牙 / 没开工），必须去看 `problems` 才分得清。
+   2. **from-import 接线失效（plan_dag 8 条、workflow_events 12 条）**。
+      测试写的是 `from agent_runtime.game_workflow import _MAX_TASK_DEPS, GameWorkflowManager, …`，
+      这些名字在**导入时**就把旧模块符号绑死在测试模块上了，引擎的 `BIND='gw'` 换掉模块对象
+      **没人用**——断言读的还是那批旧符号。实测纯层与现场层**全部照绿**，
+      连 `SINK_TOOL_HOOKS = ()` 这种一眼可见的破坏都断不住。
+      修法：引擎加 `BINDS`（复数绑定），`_bind_spec()` 优先读它。**2/10 → 10/10**。
+   3. **`BINDS` 漏掉模块对象本身 → 现场层 4 条全绿**。`BINDS` 换了那三个 from-import 名字，
+      但 `agent.Agent(llm=...)` 走的是**模块对象**上的属性，`agent.Agent` 仍是真模块的类，
+      现场层真跑起来测的还是真代码。加 `('agent', '*')` 特例后 3/9 → 5/9。
+   4. **变异与守卫错配**：reflection 前两条改的是 `_reflection_result`（调用点），
+      而守卫只测 `_traj_evidence_block` 这个纯函数本身。
+   5. **死代码路径**：`TrajEvidenceBlockTests` 名义在测「截断取尾部」，但它那 30 步正文只有
+      **639 字符 < limit 默认 1600**，走的是 `if len(body) <= limit` **早退分支**——
+      `reversed(lines)` 一次都没被调用。补了 `TruncatedEvidenceKeepsTheTailTests`（每步 300 字符
+      → 正文约 9000 字符，必然截断）。
+   6. **`_child_trace` 双重截断**：`record_hook` 内有 `if len(hook_events) >= 48: return`，
+      而 `_child_trace` 里还有 `[:48]`。`hook_events` 的**唯一出口**就是 `_child_trace`，
+      所以从 `out["trace"]["hooks"]` 观测**恒为 48**，与 `record_hook` 里配额怎么改无关。
+      两条变异（「配额抬到 10\*\*9」「配额检查整个挪掉」）因此**不可验证**——
+      已从电池删掉（不可验证 ≠ 活下来，也不能改写成别的形状骗抓取率），原因写进注释。
+   7. **探针自己制造假结论**：`.tmp/probe_quota.py` 用 `'10**9' in m[2]` 过滤变异，
+      而载荷写的是 `10 ** 9`（**带空格**）→ 列表为空 → for 循环**一次都没执行** →
+      前面残留的输出被误读成「变异后仍是 48」。空循环 + 陈旧输出 = 假结论的配方。
+   8. **元测试会咬掉 `BINDS` 改造**：`tests/test_mutation_batteries.py:223` 直接
+      `battery.BIND`，把 `BIND` 换成 `BINDS` 就 AttributeError。两块电池因此补回一个
+      兼容用的单数 `BIND`（真正生效的是 `BINDS`）。
+
+   **6c. 层归属量出来的两条硬事实（不是结论式描述）**
+
+   - **`plan_dag` 的 `LIVE` 初版是三元素**，而引擎 `engine.py:149` 与元测试
+     `test_mutation_batteries.py:231` 都写 `class_name, cases = battery.LIVE`（恰好两元素），
+     带现场层跑五块合并时崩：`ValueError: too many values to unpack (expected 2)`。
+     改成两元素只让崩溃消失，**层归属本身仍是错的**：探针量到
+     `TruncationMustNotBeSilentTests` 0.25s、`DagApprovalPathTests` 0.79s，
+     两个类只碰 `tempfile.mkdtemp()`，**不碰浏览器/工具链/网络** → 按引擎对现场层的定义
+     属纯层材料。且本电池一条 `("live",)` 标记的变异都没有，元测试
+     `test_live_marks_and_live_layer_agree_both_ways` 两个方向都查，会判「现场层是装饰」直接红。
+     处置：两个类移进 `UNIT_CLASSES`、`LIVE = ()`。
+   - **`subagent_step_floor` 的现场层必须删掉，理由是它会**挂死**整块电池**。
+     受控实验（`.tmp/probe_hang.py`，外层 40 秒墙钟，唯一差别是那一行改没改）：
+
+     | 组 | 结果 |
+     |---|---|
+     | 对照组（未变异） | `用时 0.9s ran=2 红=0`，exit=0 |
+     | 变异组（拆掉 `child.tool_step_override = cap if cap > 0 else SUBAGENT_STEP_FLOOR`） | 40 秒被杀，`exit=124`，一行输出都没有 |
+
+     原因就是这个电池要治的病：`while True:` 唯一上界 `tool_step_limit > 0`
+     重新变成**结构上无界**，那条 60 秒断言**根本没机会执行**——它不是「跑得慢然后红」，
+     是永不返回。而引擎对变异后的模块**没有超时**（`_run_mutations` 只有纯层/门禁/现场三层，
+     没有看门狗）。**现场层在这里不是慢，是死；慢还能靠超时兜，死不能。**
+     同时逐条量到 7 条变异**全部在纯层 0.00 秒内就红**（`.tmp/probe_pure4.py`，
+     抓它们的是 `test_the_child_gets_an_override_even_when_cap_resolves_to_zero`——
+     它用 spy 替换了 `Agent.run`，**只读 `child.tool_step_override` 这个数，不跑 ReAct**）。
+     处置：`LIVE = ()`，`SubagentRunTerminatesTests` 进 `LAYER_EXEMPT` 并写清实测依据。
+     **边界**：它仍是一条有价值的守卫（`tests/` 里跑 pytest 会真跑一遍 0.9s），
+     只是不能当**变异判据**的那一层。
+   - **修完之后** `tests/test_mutation_batteries.py` **24 passed / 462 subtests** 全绿
+     （修前 5 处红：2 处 `battery.BIND` AttributeError、1 处 `LIVE` 三元素只被算进第一个类名、
+     2 处「声明了 LIVE 却无 live 标记变异」）。
+
+   **6d. 依赖声明已补（任务C，版本由人定）**：`requirements.txt` **13 行纯追加、零删除**，
+   补完 `dev_deps` 复扫 429 个 `.py`，`missing` 清零。三行重复的 `pywin32` 收敛成一行
+   尾注。**边界**：`sentence-transformers` 是弱证据（本机未装发行包，映射靠同名）；
+   **版本号一律留空**——`dev_deps` 刻意不猜版本，任务书也明确要求版本由人定。
+
+   **6e. 未解决 / 留给下一个人**
+
+   - `record_hook` 的配额（`>= 48`）与 `_child_trace` 的 `[:48]` **双重截断**只做了规避
+     （把不可验证的两条变异移出电池），**没有改产品代码**。真要提高可观测性，
+     得让 `_child_trace` 暴露「被截断了多少」而不是静默取前 48 条。
+   - `SubagentRunTerminatesTests` 那道 60 秒断言在**真 hang** 时是**假的**
+     （`assertLess(elapsed, 60)` 永远执行不到）。它只能证「跑得慢」，证不了「挂死」。
+     真要兜住 hang，得靠 `run_isolated` 那套子进程 + 超时，而不是在同进程里计时。
+   - 引擎仍**没有看门狗**：任何"变异让代码挂死"的场景都会挂到 CI 超时，
+     而不是报「这条变异让测试挂住了」。这与 6c 那条是同一个洞。
+   - §10 第 3 条的全量数字是**上一轮**的 `2569 passed / 8 failed`；本轮全量结果见本条上方
+     更新后的数字（同样是本地工作树口径，**不是 CI 口径**）。

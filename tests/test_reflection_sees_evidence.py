@@ -276,6 +276,49 @@ class TrajEvidenceBlockTests(unittest.TestCase):
         self.assertIn("失败", block)
 
 
+class TruncatedEvidenceKeepsTheTailTests(unittest.TestCase):
+    """**真的触发了截断**之后，保留的那一段是不是尾部。
+
+    `TrajEvidenceBlockTests.test_it_takes_the_tail_where_the_write_verification_lives`
+    名义上在测「取尾部」，但它那30 步的正文只有 639 字符，小于 `limit` 默认的 1600，
+    `_traj_evidence_block` 走的是 `if len(body) <= limit` 的**早退分支**——
+    `reversed(lines)` 一次都没被调用。也就是说：把遍历方向改成正序、把
+    `kept.reverse()` 删掉，这个测试**照样绿**。
+
+    §9 的一条同族教训：断言写得像在断某个东西，得先确认那条代码路径**被走到过**。
+    这里用 `obs` 各 300 字符 × 30 步 = 9000 字符，稳进截断分支。
+    """
+
+    def _truncating(self):
+        #每步 300 字符 → 正文约 9000 字符，远超 limit=1600，必然截断
+        return [{"action": "s%d" % i, "obs": ("x%d" % i) * 150, "ok": True}
+                for i in range(30)]
+
+    def test_the_data_really_enters_the_truncation_branch(self):
+        """先自证：这份数据确实触发了截断，否则下面几条断言全是空转。"""
+        block = agent._traj_evidence_block(self._truncating())
+        self.assertIn("未提供", block,
+                      "这份数据没进截断分支——下面几条断言都证明不了任何东西")
+
+    def test_the_last_step_survives_truncation(self):
+        block = agent._traj_evidence_block(self._truncating())
+        self.assertIn("s29", block,
+                      "截断后最后一步被丢了——子代理的最终写盘验证就在最后一步")
+        self.assertNotIn("s0 ", block,
+                         "截断后保留了头部——那正是这条守卫要治的缺陷")
+
+    def test_the_kept_steps_stay_in_original_order(self):
+        block = agent._traj_evidence_block(self._truncating())
+        # 按行取步骤号，**不要用 `"s%d " % i` 这种子串匹配**：`s1` 是 `s10`…`s19`
+        # 的前缀，靠子串猜会漏掉或数错，等于把断言写成永远为真。
+        kept = [int(line.split()[1][1:])
+                for line in block.splitlines()
+                if line.startswith("- s") and line.split()[1][1:].isdigit()]
+        self.assertTrue(kept, "一条步骤都没保留，判据无从判断")
+        self.assertEqual(kept, sorted(kept),
+                         "保留的步骤顺序乱了（%r）——判据读到的时间线是反的" % (kept,))
+
+
 class ReflectionSeesEvidenceTests(unittest.TestCase):
     """判据的 prompt 必须真的带上观察。"""
 

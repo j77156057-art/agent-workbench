@@ -96,6 +96,57 @@ class SubagentStepFloorTests(unittest.TestCase):
         self.assertLess(agent.SUBAGENT_STEP_FLOOR, 100000,
                        "兜底上限大到等于没有上限")
 
+    def test_a_zero_in_the_env_still_yields_a_positive_floor(self):
+        """`max(1, …)` 那层下限就是为这件事存在的。
+
+        `DOCMIND_SUBAGENT_STEP_FLOOR=0` 是最容易被写进配置的值（也是「关闭限制」
+        的直觉写法）。少了 `max(1, …)`，兜底上限就真的成了 0，`_run` 重新变成
+        结构上无界——**而纯层那两条判据（`> 0` 与 `< 100000`）此时全都不红**：
+        0 确实不小于 100000。
+
+        关键在**怎么取那个值**：不能起子进程 `import agent`——那样读到的是仓库里
+        的真 `agent.py`，`max(1, …)` 永远在，断言变成永远为真（变异引擎注入的
+        副本只在当前进程里，子进程看不见）。要读的是**当前 `agent` 模块**在
+        环境变量为 0 时的取值：改 `os.environ` 后重新执行模块顶层那一行。
+        """
+        import importlib.util  # noqa: F401  - 保留给将来用
+        old_env = os.environ.get("DOCMIND_SUBAGENT_STEP_FLOOR")
+        os.environ["DOCMIND_SUBAGENT_STEP_FLOOR"] = "0"
+        try:
+            # 从**当前 agent 模块自己的文件**读那一定义行。变异引擎把副本装进
+            # `sys.modules['agent']`，副本的 `__file__` 指向 `.tmp/mut/agent_<hash>.py`；
+            # 若改用 `find_spec("agent")` 或硬编码 `agent.py`，读到的永远是磁盘上的
+            # 真源码，`max(1, …)` 永远在——断言就变成永远为真。
+            origin = getattr(agent, "__file__", None)
+            self.assertTrue(origin and os.path.exists(origin),
+                            "拿不到当前 agent 模块的源文件路径")
+            line = None
+            with open(origin, encoding="utf-8") as fh:
+                for row in fh:
+                    if row.startswith("SUBAGENT_STEP_FLOOR"):
+                        line = row
+                        break
+            self.assertIsNotNone(line, "agent.py 里找不到 SUBAGENT_STEP_FLOOR 的定义")
+            value = int(eval(line.split("=", 1)[1].strip(),  # noqa: S307 - 只跑这一行
+                             {"os": os, "int": int}))
+        finally:
+            if old_env is None:
+                os.environ.pop("DOCMIND_SUBAGENT_STEP_FLOOR", None)
+            else:
+                os.environ["DOCMIND_SUBAGENT_STEP_FLOOR"] = old_env
+
+        self.assertGreaterEqual(value, 1,
+                                "环境变量写 0 时兜底上限成了 0——无界回来了")
+
+    def test_the_default_floor_is_not_degenerate(self):
+        """默认 200 步。别把它改成 1：兜底上限还在，但等于每个子代理只准走一步。
+
+        判据是**下限之外还要有下限**——`> 0` 那条对 1 是绿的。
+        """
+        self.assertGreaterEqual(agent.SUBAGENT_STEP_FLOOR, 24,
+                                "兜底上限退化成%d 步：形式上还有上限，"
+                                "实际上任何真实子代理都跑不完" % agent.SUBAGENT_STEP_FLOOR)
+
     def test_the_child_gets_an_override_even_when_cap_resolves_to_zero(self):
         """cap=0 时也必须设 tool_step_override —— 否则 `_run` 结构上无界。"""
         self.assertEqual(agent._resolve_child_max_steps(None), 0,

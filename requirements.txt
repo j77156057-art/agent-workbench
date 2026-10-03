@@ -55,3 +55,16 @@ playwright>=1.40,<2
 # 真实画面验收（`agent_runtime.visual_acceptance`）的 CDP 控制通道。缺失时明确报
 # 「浏览器控制依赖 websocket-client 未安装」，而不是假装验收通过。
 websocket-client>=1.7,<2
+
+# dev_deps 2026-10-03：以下包被代码 import，但依赖清单里没有声明。
+# 本机恰好装过所以一直正常，干净检出时第一句 import 就 ModuleNotFoundError。
+# 版本约束留空由人定（工具刻意不猜版本），下列映射来自 dev_deps 的扫描结果。
+anyio            # api.py
+cryptography     # secrets_store.py
+numpy            # tests/test_asset_gen.py
+psycopg-pool     # agent_runtime/game_workflow.py, tests/test_postgres_workflow_integration.py
+pydantic         # agent_runtime/retrieval.py, api.py, api_routes/agent.py 等 8 处
+PyYAML           # data_formats.py
+sentence-transformers   # agent_runtime/retrieval.py（弱证据：本机未装发行包，映射靠同名）
+starlette        # api.py, api_routes/agent.py, api_routes/engine.py 等 32 处
+pywin32          # make_shortcut.py 的 pythoncom / win32com / win32con 三个模块（同一发行包）

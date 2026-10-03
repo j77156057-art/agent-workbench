@@ -147,5 +147,63 @@ class LlmContractTests(unittest.TestCase):
                         "归一写在 .strip() 之后——等于没修")
 
 
+class NativeToolCallStillReachesTheTextProtocolTests(unittest.TestCase):
+    """原生 FC 通道的 `last_tool_calls` 必须被归一进文本协议。
+
+    `agent.py:3400` 附近把 `llm.last_tool_calls` 取出来，翻译成
+    `Action: /Action Input:` 拼进 `acc`。这层归一一旦被摘掉（哪怕只是改成
+    `calls = []`），模型给的工具调用就**静默消失**：既不执行也不报错，子代理
+    拿着一个空结论继续往下走。
+
+    这层此前没有任何测试覆盖——`EmptyModelTurnTests` 的脚本全走文本协议
+    （回复里自带 `Action:`），模型从不设 `last_tool_calls`，所以那条分支
+    一次都没被走到过。
+    """
+
+    def test_the_native_tool_calls_are_translated_into_the_text_protocol(self):
+        import inspect
+
+        src = inspect.getsource(agent)
+        self.assertIn('getattr(self.llm, "last_tool_calls"', src,
+                      "原生 FC 的 last_tool_calls 归一不见了——工具调用会静默消失")
+        self.assertIn('f"Action: {_nm}\\nAction Input: {_nin}"', src,
+                      "单调用那条分支不再拼出 Action:/Action Input: 文本")
+        self.assertIn("native_override = (_nm, _nin)", src,
+                      "单调用分支不再设置 native_override")
+
+    def test_translation_happens_before_the_text_is_used(self):
+        """归一必须发生在 `acc` 被当成最终文本用掉之前。"""
+        import inspect
+
+        src = inspect.getsource(agent)
+        idx_fetch = src.index('getattr(self.llm, "last_tool_calls"')
+        idx_use = src.index('f"Action: {_nm}\\nAction Input: {_nin}"', idx_fetch)
+        self.assertLess(idx_fetch, idx_use,
+                        "先用了 acc 才去取 last_tool_calls——归一来不及生效")
+
+
+class CancellationBeatsEmptyTurnTests(unittest.TestCase):
+    """空响应归一**不能**盖过取消检查。
+
+    `agent.py:3391-3393` 的顺序是：先 `if acc is None: acc = ""`，再
+    `_raise_if_cancelled()`。两行调个位置看着无害，实则取消标记是在
+    `acc` 归一**之后**才被检查的——一旦调换，被取消的子代理会先拿到一个
+    空串继续往下走，取消就失效了。
+    """
+
+    def test_the_cancellation_check_still_runs_right_after_the_normalisation(self):
+        import inspect
+
+        src = inspect.getsource(agent)
+        idx_norm = src.index("if acc is None:")
+        tail = src[idx_norm:idx_norm + 200]
+        self.assertIn("_raise_if_cancelled()", tail,
+                      "归一之后 200 字符内看不到取消检查——它被挪走了，"
+                      "被取消的子代理会先把空串当正常一轮走完")
+        idx_cancel = src.index("_raise_if_cancelled()", idx_norm)
+        self.assertLess(idx_norm, idx_cancel,
+                        "取消检查跑在归一之前了——顺序反了")
+
+
 if __name__ == "__main__":
     unittest.main()
