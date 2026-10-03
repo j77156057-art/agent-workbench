@@ -81,8 +81,14 @@ MINIMUM_MUTATIONS = 13
 #: agent.py:2075，证据块以**尾部**为准进 prompt。
 _EVIDENCE_IN_PROMPT = 'f"{_traj_evidence_block(traj)}\\n"'
 
-#: agent.py:2015，证据块函数签名（limit 是有界保证）。
-_BLOCK_SIG = 'def _traj_evidence_block(traj, limit: int = 1600) -> str:'
+#: agent.py，证据块函数签名（limit 是有界保证）。
+#:
+#: 默认值 2026-10 从 1600 抬到 `_DEFAULT_EVIDENCE_CHARS`（6400）：实测
+#: `wf-2c5612c6ee53` 的 `design-fix` 读了 6 个文件合计 5614 字，1600 的预算下判据
+#: 只看到 3 步、每步 3 成，于是判了三句**都判得对但材料是 harness 饿出来的**结论
+#: （「所有观察均被截断」「无法核验输入映射」「缺少 Main.tscn 的读取证据」）。
+#: 有界性这条守卫**没有因此放松**：6400 仍然是硬上限，变异照样打得中。
+_BLOCK_SIG = 'def _traj_evidence_block(traj, limit: int = _DEFAULT_EVIDENCE_CHARS) -> str:'
 
 #: agent.py:2240，截断时如实标注，不假装给全了。
 #:
@@ -114,7 +120,7 @@ MUTATIONS = [
     # ---- ② 证据块取尾部：正好丢掉要judge 的那段 ----
     # 这两条必须落在**截断分支内部**。初版写的是把 `reversed(lines)` 改成 `lines`，
     # 实测那条是**死代码路径**：`test_it_takes_the_tail_where_the_write_verification_lives`
-    # 的 30 步数据正文只有 639 字符 < limit 默认 1600，根本不进`if len(body) <= limit`
+    # 的 30 步数据正文只有 639 字符，小于默认 `limit`，根本不进`if len(body) <= limit`
     # 的 else 分支——`reversed()` 一次都没被调用。「活下来」看着像守卫没牙，
     # 其实是这份数据永远走不到那里（§9：先问「它依赖的是代码还是环境」）。
     # 现在改取真正被执行的两步：遍历方向、最后的顺序复位。

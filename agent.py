@@ -2132,12 +2132,77 @@ def _child_trace(traj, thoughts, reflections=None, turn_record=None, used=None,
 _RE_OBS_RANGE_HEADER = re.compile(r"（第\s*\d+\s*[-~]\s*\d+\s*行")
 _RE_OBS_TAGGED_BLOCK = re.compile(r"\[[^\]\n]*:L\d+(?:\s*[-~]\s*L?\d+)?\s*[^\]\n]*\]")
 
+#: 证据块的**正文**预算（不含表头、形状声明与披露段）。
+#:
+#: ## 为什么给得这么大方
+#:
+#: 实测（`wf-2c5612c6ee53` 的 `design-fix`：读了 6 个文件、合计 5614 字）：
+#: 在原来的 1600 预算下，判据只看到**最后 3 步**，其余每条被砍到 420 字：
+#:
+#:     behaviors/player.gd   1388 字 -> 判据只看到 420 字 (30%)
+#:     behaviors/enemy.gd    1543 字 -> 判据只看到 420 字 (27%)
+#:     project.godot         1074 字 -> 判据只看到 420 字 (39%)
+#:
+#: 于是判据写下「所有工具观察均被截断」「无法据此核验输入映射」「缺少 Main.tscn 的
+#: 读取证据」——**三句都判得对，可材料是 harness 饿出来的**：它连
+#: `project.godot` 的 `[input]` 段都被砍掉了一半，而那正是任务要的输入映射。
+#:
+#: 6400 覆盖那 6 个文件的**全量**（5614 + 表头与动作行的开销 ≈ 6024）。
+#: 成本是每次子代理**反思那一次**辅助调用多几千字符——不是主循环每轮都花。
+#: 这是明确选择的取舍：**花 prompt token 换保真度**，而不是让判据在残缺的
+#: 材料上判一个它本不该下的结论。
+_DEFAULT_EVIDENCE_CHARS = 6400
+
+#: 单条观察的上限。**它是第二道闸**，防一条巨型观察吃掉整个预算；
+#: 不是主要手段——原先那个固定 420 才是真正的瓶颈（见 `_traj_evidence_block`）。
+#: 取 1600 是为了让上面那批 1388-1543 字的典型文件**整份**进得来。
+_MAX_OBS_CHARS = 1600
+
 #: 「不要因为缺行号而判失败」这句话**只写一次**。
 #:
 #: 它同时出现在证据块的形状声明与反思提示里。两处的措辞已经开始往不同方向长，
 #: 而漂移是看不见的——所以抽成常量，让两处共用一句话；测试也断言这个常量，
 #: 于是任何一侧想改措辞都会立刻被看见。
 _LINE_NUMBER_EXEMPTION = "**不要因为某条没有行号就判它无证据**。"
+
+#: 被预算丢掉的动作最多列这么多个；再多就只报个数。
+_ROSTER_CAP = 12
+
+
+def _withheld_roster(steps, kept_idx, limit):
+    """把**被预算丢掉**的步骤如实列出来。
+
+    ## 为什么必须列
+
+    实测（`wf-2c5612c6ee53`，任务 `design-fix` 读了 6 个文件、合计 5614 字，
+    而块的预算是 1600）：`behaviors/player.gd` 被**整个丢掉**。判据随后写下
+    「缺少 values 相关文件与主场景 `res://scenes/Main.tscn` 的读取证据」——
+    **它在替 harness 的截断背锅**，以为自己看到的就是全部。
+
+    原文只有一句「共 4 步，下面是最后 3 步，前面的未提供」，这足以让判据知道
+    「有东西没给」，却不足以让它知道**没给的是哪几步**——于是它把
+    「没看到证据」读成了「模型没读那个文件」，而模型明明读过。
+
+    这一段不增加正文预算（只列动作、不列观察），但它把误归因的入口堵上了。
+
+    ## 为什么要写「不得据此认为这些步骤没执行」
+
+    只列名字，判据仍可能说「读了但没产出结论」。所以这句话是**双向**约束：
+    不许因为没看到内容就判「没执行」，也不许因为列在这里就判「没产出结论」。
+    """
+    kept_set = set(kept_idx)
+    dropped = [i for i in range(len(steps)) if i not in kept_set]
+    if not dropped:
+        return ""
+    chars = sum(len(str(steps[i].get("obs") or "")) for i in dropped)
+    names = [_clip(str(steps[i].get("action") or "(无动作)"), 90) for i in dropped]
+    shown = names[:_ROSTER_CAP]
+    tail = "\n- ……还有 %d 步" % (len(names) - len(shown)) if len(names) > len(shown) else ""
+    return ("\n\n未提供的步骤（内容没有传到这里，合计约 %d 字）：\n%s\n"
+            "这些步骤**确实执行过**，只是观察没进这块证据；"
+            "**不得因为看不到内容就判它们「没执行」或「没读那个文件」**——"
+            "看不到是这里的预算造成的，不是模型没做。"
+            % (chars, "\n".join("- %s" % name for name in shown) + tail))
 
 
 def _obs_has_line_numbers(obs: str) -> bool:
@@ -2162,7 +2227,7 @@ def _obs_has_line_numbers(obs: str) -> bool:
                 or _RE_OBS_TAGGED_BLOCK.search(text))
 
 
-def _traj_evidence_block(traj, limit: int = 1600) -> str:
+def _traj_evidence_block(traj, limit: int = _DEFAULT_EVIDENCE_CHARS) -> str:
     """把工具观察压成给反思器看的有界证据块。
 
     取**尾部**而不是头部：子代理的最终写盘验证总在最后几步，头部只有最初的
@@ -2183,11 +2248,30 @@ def _traj_evidence_block(traj, limit: int = 1600) -> str:
     材料里不存在的东西。这比在提示里写「不要要求行号」更硬：它把事实摆在判据
     眼前，而不是指望判据记得。
 
+    ## 两道闸，各管一件事
+
+    `_MAX_OBS_CHARS`（单条上限）与 `limit`（正文总预算）是**两道不同的闸**，
+    以前只有一个数字，两种职责混在一起，结果谁也说不清是哪个在起作用：
+
+    - 单条闸防**一条巨型观察吃掉整个预算**（比如一次 grep 命中 300 个文件）。
+    - 总闸防**步数很多时整体膨胀**。
+
+    关键在于：总闸的 `limit` 只有在单条闸**放开**之后才起作用。
+    实测（`wf-2c5612c6ee53` 的 `design-fix`，6 个文件合计 5614 字）：
+
+    | | 单条上限 | 总预算 | 判据能看到 |
+    |---|---|---|---|
+    | 旧 | 420 | 1600 | 最后 3 条、每条 3 成，且**不知被砍** |
+    | 新 | 1600 | 6400 | 6 条**全量**（5614 + 开销 ≈ 6024） |
+
+    旧配置下 6×420 = 2520 > 1600，所以**总闸先动手、单条闸根本没用上**——
+    这就是为什么当初只抬总预算不会有任何效果。两个数字必须一起看。
+
     ## `limit` 只管正文
 
-    表头与上面那句形状声明**不计入** `limit`：声明必须活着（测试把这条当契约），
-    而它固定约 150 字。所以整块实际比 `limit` 长 150-300 字。若调用方要精确控制
-    提示预算，得把这一段算进去——这里说清楚，免得下一个人以为 `limit` 是硬上限。
+    表头、上面那句形状声明与末尾的未提供披露段**不计入** `limit`：它们必须活着
+    （测试把这条当契约）。所以整块实际比 `limit` 长 200-400 字。若调用方要精确
+    控制提示预算，得把这一段算进去——这里说清楚，免得下一个人以为 `limit` 是硬上限。
     """
     steps = [step for step in (traj or []) if isinstance(step, dict)]
     if not steps:
@@ -2196,7 +2280,15 @@ def _traj_evidence_block(traj, limit: int = 1600) -> str:
     lines = []
     for step in steps:
         action = _clip(str(step.get("action") or ""), 160)
-        obs = _clip(str(step.get("obs") or ""), 420)
+        raw_obs = str(step.get("obs") or "")
+        obs = _clip(raw_obs, _MAX_OBS_CHARS)
+        # 单条被砍时**说清砍到哪**，否则判据会以为文件本来就那么短。
+        # `_clip` 只说「已截断」，不说截掉了多少——而「文件只有 400 字」和
+        # 「这里只给了 400 字」对判据是完全不同的两件事。
+        if len(raw_obs) > _MAX_OBS_CHARS:
+            obs = ("%s（本条共 %d 字，这里只给了前 %d 字；"
+                   "没给出的部分不代表文件里没有）"
+                   % (obs, len(raw_obs), _MAX_OBS_CHARS))
         ok = step.get("ok")
         mark = "" if ok is None else (" [失败]" if ok is False else " [成功]")
         lines.append("- %s%s\n  观察：%s" % (action or "(无动作)", mark, obs or "(空)"))
@@ -2237,8 +2329,9 @@ def _traj_evidence_block(traj, limit: int = 1600) -> str:
         total += len(lines[i])
     kept.reverse()
     kept_idx.reverse()
-    return ("工具观察（共 %d 步，下面是**最后 %d 步**，前面的未提供）：\n%s\n%s"
+    head = ("工具观察（共 %d 步，下面是**最后 %d 步**，前面的未提供）：\n%s\n%s"
             % (len(steps), len(kept), _shape(kept_idx), "\n".join(kept)))
+    return head + _withheld_roster(steps, kept_idx, limit)
 
 
 def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budget=None):

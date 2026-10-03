@@ -266,9 +266,39 @@ class TrajEvidenceBlockTests(unittest.TestCase):
         self.assertNotIn("obs0 ", block)
 
     def test_it_is_bounded(self):
+        """有界这条**没有因为抬预算而放松**——只是上限跟着搬了家。
+
+        上限曾是 `2000`（默认 1600 + 表头开销）。现在默认 6400，所以断言跟着改成
+        「不超过 `limit` + 声明/披露段的开销」。写成**跟着常量走**而不是拍一个新
+        数字，是为了让将来再调预算时这条守卫仍然有意义，而不是变成一句永远为真的话。
+        """
         long = [{"action": "s%d" % i, "obs": "y" * 500, "ok": True} for i in range(60)]
-        self.assertLessEqual(len(agent._traj_evidence_block(long)), 2000,
+        block = agent._traj_evidence_block(long)
+        ceiling = agent._DEFAULT_EVIDENCE_CHARS + 1200
+        self.assertLessEqual(len(block), ceiling,
                              "证据块无界——它会被塞进每次反思的 prompt")
+        self.assertGreater(len(block), agent._DEFAULT_EVIDENCE_CHARS // 2,
+                           "预算抬了却几乎没内容进去——抬预算这件事本身没生效")
+
+    def test_a_single_huge_observation_cannot_eat_the_whole_budget(self):
+        """单条上限是**另一道闸**：一条巨型观察不能把其余步骤全挤掉。"""
+        huge = [{"action": "grep(pattern: x)", "obs": "z" * 60000, "ok": True},
+                {"action": "read_file(path: a.gd)", "obs": "k" * 900, "ok": True},
+                {"action": "read_file(path: b.gd)", "obs": "m" * 900, "ok": True}]
+        block = agent._traj_evidence_block(huge)
+        self.assertIn("b.gd", block, "巨型观察把后面的步骤挤掉了")
+        self.assertIn("a.gd", block)
+        self.assertLessEqual(len(block), agent._DEFAULT_EVIDENCE_CHARS + 1200)
+
+    def test_a_clipped_observation_says_how_much_was_withheld(self):
+        """「已截断」不等于「文件本来就那么短」——判据必须知道差多少。
+
+        实测（`wf-2c5612c6ee53`）：判据把 harness 的截断读成了「文件里没有那些内容」。
+        """
+        big = [{"action": "read_file(path: big.gd)", "obs": "Q" * (agent._MAX_OBS_CHARS * 4)}]
+        block = agent._traj_evidence_block(big)
+        self.assertIn("本条共", block)
+        self.assertIn("没给出的部分不代表文件里没有", block)
 
     def test_failed_steps_are_marked(self):
         block = agent._traj_evidence_block([
@@ -280,17 +310,23 @@ class TruncatedEvidenceKeepsTheTailTests(unittest.TestCase):
     """**真的触发了截断**之后，保留的那一段是不是尾部。
 
     `TrajEvidenceBlockTests.test_it_takes_the_tail_where_the_write_verification_lives`
-    名义上在测「取尾部」，但它那30 步的正文只有 639 字符，小于 `limit` 默认的 1600，
+    名义上在测「取尾部」，但它那30 步的正文只有 639 字符，小于默认 `limit`，
     `_traj_evidence_block` 走的是 `if len(body) <= limit` 的**早退分支**——
     `reversed(lines)` 一次都没被调用。也就是说：把遍历方向改成正序、把
     `kept.reverse()` 删掉，这个测试**照样绿**。
 
     §9 的一条同族教训：断言写得像在断某个东西，得先确认那条代码路径**被走到过**。
-    这里用 `obs` 各 300 字符 × 30 步 = 9000 字符，稳进截断分支。
+    这里用 `obs` 各 300 字符 × 30 步 = 9000 字符 > 6400，稳进截断分支。
+
+    这份数据**依赖默认预算**：默认 limit 再往上抬，它就不进截断分支了。
+    `test_the_data_really_enters_the_truncation_branch` 就是为挡住那种情况而存在。
     """
 
     def _truncating(self):
-        #每步 300 字符 → 正文约 9000 字符，远超 limit=1600，必然截断
+        # 每步 300 字符 → 正文约 9000 字符 > 默认 limit=6400，必然截断。
+        # 注意这里**依赖默认预算**：若 limit 再抬，这一组数据就进不了截断分支，
+        # 下面几条断言会全部变成空转。`test_the_data_really_enters_the_truncation_branch`
+        # 就是为了挡住那种情况而存在的。
         return [{"action": "s%d" % i, "obs": ("x%d" % i) * 150, "ok": True}
                 for i in range(30)]
 
@@ -300,19 +336,73 @@ class TruncatedEvidenceKeepsTheTailTests(unittest.TestCase):
         self.assertIn("未提供", block,
                       "这份数据没进截断分支——下面几条断言都证明不了任何东西")
 
+    #: 披露段的起始标记。**证据**与**披露**必须分开断言：被丢掉的步骤会出现在
+    #: 披露段里（这是刻意的，见 `_withheld_roster`），但绝不能出现在证据段里。
+    _ROSTER_MARK = "\n\n未提供的步骤（"
+
+    def _split(self, block):
+        if self._ROSTER_MARK in block:
+            evidence, roster = block.split(self._ROSTER_MARK, 1)
+            return evidence, roster
+        return block, ""
+
     def test_the_last_step_survives_truncation(self):
         block = agent._traj_evidence_block(self._truncating())
-        self.assertIn("s29", block,
+        evidence, _roster = self._split(block)
+        self.assertIn("s29", evidence,
                       "截断后最后一步被丢了——子代理的最终写盘验证就在最后一步")
-        self.assertNotIn("s0 ", block,
-                         "截断后保留了头部——那正是这条守卫要治的缺陷")
+        self.assertNotIn("s0 ", evidence,
+                         "截断后保留了头部**作为证据**——那正是这条守卫要治的缺陷")
+
+    def test_the_dropped_steps_are_disclosed_rather_than_vanishing(self):
+        """实测（`wf-2c5612c6ee53`）：判据写下「缺少 xxx 的读取证据」，而那一步
+        其实**读过**，只是被这块的预算丢掉了。
+
+        不披露的话，判据在替 harness 的截断背锅——它以为看到的就是全部。
+        """
+        block = agent._traj_evidence_block(self._truncating())
+        evidence, roster = self._split(block)
+        self.assertTrue(roster, "被丢掉的步骤没有披露——判据会以为模型没读那些文件")
+        self.assertIn("s0", roster, "披露段里没有列出被丢掉的动作")
+        self.assertIn("确实执行过", roster)
+        self.assertIn("不得因为看不到内容就判它们「没执行」", roster)
+        self.assertNotIn("s0 ", evidence,
+                         "披露不等于给证据——头部不能回到证据段里")
+
+    def test_the_roster_reports_how_much_was_withheld(self):
+        """只说「有东西没给」不够，判据还需要知道**没给多少**才能判断结论的可信度。"""
+        block = agent._traj_evidence_block(self._truncating())
+        _evidence, roster = self._split(block)
+        self.assertRegex(roster, r"合计约\s*\d+\s*字")
+
+    def test_the_roster_is_capped_so_it_cannot_eat_the_budget(self):
+        """披露段只列动作，但动作多了也不能挤掉正文——它正是被预算逼出来的。"""
+        many = [{"action": "step-%02d" % i, "obs": "x" * 300} for i in range(60)]
+        block = agent._traj_evidence_block(many)
+        _evidence, roster = self._split(block)
+        listed = [line for line in roster.splitlines() if line.startswith("- ")]
+        overflow = [line for line in listed if "还有" in line]
+        real = [line for line in listed if "还有" not in line]
+        self.assertEqual(len(real), agent._ROSTER_CAP,
+                         "披露段列了 %d 条，上限是 %d" % (len(real), agent._ROSTER_CAP))
+        self.assertEqual(len(overflow), 1,
+                         "多于上限却没报出还差多少——判据会以为披露是完整的")
+        self.assertRegex(overflow[0], r"还有\s*\d+\s*步")
+
+    def test_nothing_is_disclosed_when_nothing_was_dropped(self):
+        """没截断时不要出现披露段——那会让判据以为总有东西被藏起来。"""
+        short = [{"action": "a", "obs": "x"}, {"action": "b", "obs": "y"}]
+        block = agent._traj_evidence_block(short)
+        self.assertEqual(self._split(block)[1], "")
 
     def test_the_kept_steps_stay_in_original_order(self):
         block = agent._traj_evidence_block(self._truncating())
+        evidence, _roster = self._split(block)
         # 按行取步骤号，**不要用 `"s%d " % i` 这种子串匹配**：`s1` 是 `s10`…`s19`
         # 的前缀，靠子串猜会漏掉或数错，等于把断言写成永远为真。
+        # 只解析**证据段**：披露段里也有 `- sN` 行，那是「被丢掉」而不是「保留」。
         kept = [int(line.split()[1][1:])
-                for line in block.splitlines()
+                for line in evidence.splitlines()
                 if line.startswith("- s") and line.split()[1][1:].isdigit()]
         self.assertTrue(kept, "一条步骤都没保留，判据无从判断")
         self.assertEqual(kept, sorted(kept),
