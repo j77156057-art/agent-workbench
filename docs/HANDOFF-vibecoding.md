@@ -938,6 +938,32 @@ cd frontend && npm run test:node
   证据，所以只写"复现不出"，不写"LF 没问题"；`*.bat` 的 CRLF 约定在 `.gitattributes`
   里**没有被改动**。
 
+### 5.26 Wave33：前端 eslint 那一腿的骨架（**只报不卡**，§6 缺口 5 的前半）
+
+- **为什么它是缺口**：`dev_diagnostics` 的前端那条腿**只有 typecheck**
+  （`diagnostics.py` 跑的是 `npm run typecheck` = `vue-tsc --noEmit && tsc --noEmit`），
+  所以**类型**层面有人管、**写法**层面没人管。
+- **为什么先"只报不卡"**：作用域是 `frontend/src` **129 个文件 / 39352 行**（71 个 `.ts`
+  10486 行 + 58 个 `.vue` 28866 行，最大两个是 `AutonomousCockpit.vue` 3210 行与
+  `SettingsView.vue` 2306 行），而 `node_modules` 里**连 eslint 都没有**（连传递依赖都没有）。
+  贸然让它参与判定，第一天大概率是几千条；而几千条红会变成噪声——**比没有 lint 更坏，
+  因为它让人误以为有人在管**。所以这一腿的发现进 `issues`/`notes`，**不进** `run()` 的
+  `issues`、**不改** `ok`。等真装上 eslint、拿到存量数字，改一个常量就能切成卡。
+- **没有配就明说没跑**，而且说清它不构成任何证据。`render()` 里有一句独立的
+  「注意: eslint 这一腿**没跑**（…）。上面那些结论只覆盖类型检查，不覆盖写法。」
+  —— 只挂在 notes 里会被淹掉，看不见就等于"假干净"。
+- **接入形状照 typecheck 那条腿**：`frontend_lint_configured()`（有 `lint` 脚本**或**
+  eslint 配置文件即算配了 —— 只看脚本会漏"依赖没装"，只看配置会漏"没接进 npm run"）、
+  `parse_eslint()`、`frontend_lint()`，然后由 `frontend_diagnostics()` 调用。
+- **`parse_eslint` 的一个坑**：eslint `stylish` 结尾那行 `✖ 3 problems (2 errors, 1 warning)`
+  **不是条目**。不排除它，它会被读成一个"文件名就叫这个"的假条目。
+  同样地，**出现在任何文件行之前**的条目行不能硬归属——那说明输出被截断了。
+- **产物**：`tests/test_lint_leg.py` **12 项**（解析 5 + 配置检测 3 + 「没配就不许被当成跑了」2 +
+  渲染诚实性 2）。门禁那两道 diagnostics 题都写死 `scope: py`，**不受影响**。
+- **边界**：eslint 本身**没有安装**（装包需要批准外部来源），所以这一档从未真跑过 eslint；
+  解析器是对着 `stylish` 的**真实输出形状**测的，`npm run lint` 那条路只有 stub 级覆盖。
+  **规则集与阈值都还是空的**——那要等实测存量数字再定。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -947,7 +973,7 @@ cd frontend && npm run test:node
 | 3a | ~~真 ws 回合零自动覆盖~~ **已做（Wave19：`scripted` 适配器 + `dev_apptest stream`）** | 页面 + 麦克风 + `/api/vision/live-stream` 以前只有人对着说话才能验 | 厂商事件、打断语义、听感仍归 R12 的人跑 |
 | 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证）。2026-10-03 实测：git ls-remote 也连不上了（§2 记的是 10-02 可通），网络侧完全不可达 | ① 已做首跑排障（Wave31，§5.25）：预检脚本抓出**一条确定会红**（启动DocMind.bat 的 blob 是纯 LF，那条 CRLF 测试现在与本地就红）；② 仍需人 push 一次把首跑结果记回本文件；③ **已收尾（Wave32）**：那条 CRLF 断言按内容收窄成「用到 goto 标签的才要求 CRLF」（实测在本机复现不出原注释说的机制），并新增常驻守卫 	ests/test_repo_conventions.py 盯 .py 的 BOM 与「守卫自己有没有瞎」 |
 | 4 | ~~`dev_serve` 端口被抢不自动重试~~ **已换成可证的归属判定（Wave30，§5.24）** | 字面那条做不到：`dev_serve` 的 `argv` 里**没有端口参数**（`tools.py` 的 `_shell_argv`），端口是子进程自己选的。顺带挖到一个**确定性假绿**：用户给的端口上已有别人的服务时，`probe` 成功就被认成自己的服务并把那个 URL 交回去 | 已改：先认日志里它自报的端口（可证），且启动前就问"这个端口有没有别人在听"，是别人的就不判就绪；`parse_port_hint` 改成取**最后一个**地址行。**仍缺**：真正的端口重试要能往 argv 注入端口（各家 flag 不同），是产品决策 |
-| 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
+| 5 | ~~前端无 eslint 配置~~ **骨架已搭（Wave33，§5.26），规则集与阈值待定** | `frontend/src` 129 文件 / 39352 行从没 lint 过，node_modules 里连 eslint 都没有 | ① 已接成 `dev_diagnostics` 的第二腿：**只报不卡**、没配就明说没跑；② **仍缺**：eslint 本体与规则集（`recommended` vs 务实子集）、存量多少条、以及要不要卡。定这些要先装包实测（需批准外部来源）——`llm_stub` 那类 stub 不适用，eslint 必须真装 |
 | 6 | 连接器 UI 未接 `inline_tools` 开关 | Wave10 未做项 | 小改，UI 侧 |
 | 7 | 一条计时断言只有 0.12s 余量 | `tests/test_orchestrator.py` 的 `elapsed < 0.32`，负载高时必红（属别人文件，未代改） | 改成相对余量（sleep 拉到 1.0s、断言 <1.6s） |
 | 8 | ~~依赖声明无人对账~~ **已做（Wave21 `dev_deps`，§5.14）**；但它在本仓抓到 11 个真问题**尚未修** | `api.py` 直接 import `starlette`（30 处）却只声明 `fastapi`；另有 `pydantic`/`anyio`/`cryptography`/`PyYAML`/`pywin32`/`sentence-transformers` | 跑 `dev_deps(action: apply)` 追加声明，**版本由人定**；本程序不代改（§7） |

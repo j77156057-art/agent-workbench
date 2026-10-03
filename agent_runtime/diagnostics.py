@@ -263,7 +263,136 @@ def frontend_diagnostics(root: str, *, timeout: int = DEFAULT_TIMEOUT) -> dict[s
     if rep.get("truncated"):
         result["notes"].append("typecheck 输出被截断，条目可能不全。")
     result["notes"].append(f"命令在 {rel}/ 内执行（vue-tsc --noEmit + tsc --noEmit）。")
+    # Wave33：eslint 那一腿。**只报不卡**——它的发现不进 `issues`、不改 `ok`，
+    # 但必须在 notes 与报告里看得见；看不见就等于"假干净"（这份文件的既有规矩）。
+    result["lint"] = frontend_lint(root, timeout=timeout)
+    if result["lint"].get("issues"):
+        result["notes"].append(
+            "eslint 另报了 %s 条（只报不卡，见 dev_diagnostics 的 lint 一节）。"
+            % len(result["lint"]["issues"]))
+    result["notes"].extend(result["lint"].get("notes") or [])
+    if result["lint"].get("error"):
+        result["notes"].append("eslint 这一腿没跑成：%s" % result["lint"]["error"])
     return result
+
+
+def frontend_lint_configured(fe: str) -> tuple[bool, str]:
+    """这个前端目录**配了** eslint 吗？返回 (配了, 依据)。
+
+    两条依据任一即可：有 `lint` 脚本，或有 eslint 的配置文件。**只看脚本**不够——
+    脚本可能在而依赖没装；**只看配置**也不够——配置可能没接进 `npm run`。
+    """
+    try:
+        with open(os.path.join(fe, "package.json"), encoding="utf-8") as handle:
+            scripts = (json.load(handle).get("scripts") or {})
+    except (OSError, ValueError):
+        scripts = {}
+    if "lint" in scripts:
+        return True, "package.json 里有 lint 脚本"
+    for name in ("eslint.config.js", "eslint.config.mjs", "eslint.config.ts",
+                 ".eslintrc", ".eslintrc.js", ".eslintrc.cjs", ".eslintrc.json",
+                 ".eslintrc.yaml", ".eslintrc.yml"):
+        if os.path.isfile(os.path.join(fe, name)):
+            return True, "有 %s" % name
+    return False, "既没有 lint 脚本，也没有 eslint 配置文件"
+
+
+#: eslint `stylish` 输出的一行，长这样：
+#:   /abs/path/src/App.vue
+#:     12:3  error  Unexpected console statement  no-console
+_STYLISH_FILE = re.compile(r"^(?P<path>[^\s].*)$")
+_STYLISH_ITEM = re.compile(
+    r"^\s+(?P<line>\d+):(?P<col>\d+)\s+(?P<sev>error|warning)\s+"
+    r"(?P<msg>.+?)\s\s+(?P<rule>[\w@/-]+)\s*$")
+_STYLISH_SUMMARY = re.compile(r"^\s*(?P<problems>\d+)\s+problems?\b", re.I)
+
+
+def parse_eslint(payload: str, prefix: str) -> list[dict[str, Any]]:
+    """解析 eslint `stylish` 输出（默认 formatter）。
+
+    按**文件分组**读：文件行不带行列与 `error`/`warning`，条目行带。
+    结尾那行 `N problems (X errors, Y warnings)` 是汇总，不是条目——第一版没排除它，
+    于是会被当成一条"文件名是『12 problems (3 errors, 0 warnings)』"的假条目。
+    """
+    issues: list[dict[str, Any]] = []
+    current: str | None = None
+    for raw in str(payload or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        item = _STYLISH_ITEM.match(line)
+        if item:
+            if current is None:
+                continue                       # 条目出现在任何文件行之前：认不出归属，跳过
+            issues.append(_issue(
+                prefix, engine="eslint", file=current,
+                line=int(item.group("line")), column=int(item.group("col")),
+                rule=item.group("rule"),
+                message=item.group("msg").strip(),
+                severity=item.group("sev")))
+            continue
+        if _STYLISH_SUMMARY.match(line):
+            current = None                     # 汇总行之后不再有归属
+            continue
+        head = _STYLISH_FILE.match(line)
+        if head and not line.startswith((" ", "\t")):
+            current = head.group("path").strip()
+    return issues
+
+
+def frontend_lint(root: str, *, timeout: int = DEFAULT_TIMEOUT) -> dict[str, Any]:
+    """前端 lint 这一腿。**只报不卡**（Wave33 搭的骨架）。
+
+    为什么先"只报不卡"：`frontend/src` 有 129 个文件 / 39352 行，**从来没被 lint 过**
+    （node_modules 里连 eslint 都没有）。贸然让它参与判定，第一天大概率是几千条，
+    而几千条红会变成噪声——比没有 lint 更坏，因为它让人误以为有人在管。
+    所以这里把发现放进 `issues` 与 `notes`、**不进** `run()` 的 `issues`、**不改** `ok`；
+    等真装上 eslint、拿到存量数字，再决定要不要卡（改一个常量即可）。
+
+    **没配就明说没跑**，绝不报成"干净"（这份文件的既有规矩）。
+    """
+    out: dict[str, Any] = {"configured": False, "ran": False, "ok": False,
+                           "issues": [], "notes": [], "error": "", "why": ""}
+    fe = frontend_dir(root)
+    if not fe:
+        out["error"] = "没找到带 package.json 的前端目录。"
+        return out
+    configured, why = frontend_lint_configured(fe)
+    out["configured"] = configured
+    out["why"] = why
+    if not configured:
+        out["notes"].append(
+            "前端没有配置 eslint（%s）——**这一腿没跑**，它不构成「前端没有写法问题」的证据。"
+            % why)
+        return out
+    npm = os.getenv("DOCMIND_NPM_BIN") or shutil.which("npm")
+    if not npm:
+        out["error"] = "没找到 npm（可用 DOCMIND_NPM_BIN 指定路径）。"
+        return out
+    rel = _rel(root, fe)
+    argv = [npm, "run", "--silent", "lint"]
+    rep = process_runner.run_bounded(argv, cwd=fe, timeout=timeout,
+                                     head_chars=HEAD_CHARS, tail_chars=TAIL_CHARS,
+                                     command_text=" ".join(argv))
+    if rep.get("error"):
+        out["error"] = "npm 无法运行 lint：%s" % rep["error"]
+        return out
+    if rep.get("timed_out"):
+        out["error"] = "lint 超时（>%ss）。" % timeout
+        return out
+    raw = rep.get("output") or ""
+    code = int(rep.get("exit_code") or 0)
+    out["ran"] = True
+    out["ok"] = True
+    out["exit_code"] = code
+    out["issues"] = parse_eslint(raw, rel)
+    if not out["issues"] and code != 0:
+        out["notes"].append("lint 退出码 %s 但没解析出条目，原始尾部：\n%s"
+                            % (code, raw.strip()[-500:]))
+    if rep.get("truncated"):
+        out["notes"].append("lint 输出被截断，条目可能不全。")
+    out["notes"].append("eslint 在 %s/ 内执行；这一腿**只报不卡**，不参与判定。" % rel)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -345,4 +474,9 @@ def render(result: dict[str, Any]) -> str:
             lines.append(f"提示: 只显示前 {MAX_ISSUES} 条，用 target: 缩小范围再看剩下的。")
     for note in result.get("notes") or []:
         lines.append("提示: " + note)
+    lint = ((result.get("engines") or {}).get("frontend") or {}).get("lint") or {}
+    if lint and not lint.get("ran") and not lint.get("error"):
+        # 没跑就**说没跑**，而且要说清它不构成任何证据——只在 notes 里带一句会被淹掉
+        lines.append("注意: eslint 这一腿**没跑**（%s）。"
+                     "上面那些结论只覆盖类型检查，不覆盖写法。" % (lint.get("why") or "未配置"))
     return "\n".join(lines)
