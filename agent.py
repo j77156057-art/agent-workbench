@@ -1114,6 +1114,57 @@ def _clip(text, limit, suffix="…（内容过长，已截断）"):
     return text if len(text) <= limit else text[:limit] + suffix
 
 
+#: 需要转发到工作流事件流的钩子 kind。
+#:
+#: 工具那四个（`SINK_TOOL_HOOKS`）之外加上模型等待这一对——理由见
+#: `_llm_wait_emit`。开发舱面板按这些字面量从**持久化事件数组**里过滤，
+#: 前端与后端必须同源。
+SINK_FORWARDED_HOOKS = SINK_TOOL_HOOKS + ("llm_wait_start", "llm_wait_end")
+
+
+def _llm_wait_emit(kind: str, purpose: str, *, ms: int | None = None) -> None:
+    """在每次模型调用前后发一对事件，让时间线不再有大段静默。
+
+    **为什么要有它**：实测 `wf-f3da9d3ffb32` 全程 360 秒里 **98% 是静默的**，
+    而每一段静默都是一次模型调用——
+
+        87s  等重规划方案      58s  等结论      41s  等规划器
+        31s  等下一步          23s  等方案选项
+
+    harness 全都知道自己在等模型，事件流里也**已经有** `graph_replan_start`
+    这类标记，只是「开始等」与「等到了」之间没有事件，界面上就是一整段空白。
+    这一对事件把那段空白**填上**，时间线因此连续；开发舱的「正在做什么 +
+    已等 N 秒」也就有了真实的起止可依，而不是靠"最新事件有多老"去猜。
+    """
+    payload = {"purpose": str(purpose or "")[:120]}
+    if ms is not None:
+        payload["duration_ms"] = int(ms)
+    try:
+        _hooks.run_workflow(kind, payload)
+    except Exception:
+        # 事件绝不能影响执行：转发链路出错就当没发过。
+        pass
+
+
+def _llm_wait_text(kind: str, payload) -> str:
+    """把一次「等模型」事件压成一行。
+
+    只说"轮到谁说话、等了多久"，不复述提示词也不复述回答——那两样正文都在
+    别处，重复一遍只是把同一份内容数两次。
+    """
+    payload = payload or {}
+    purpose = str(payload.get("purpose") or "").strip()
+    ms = payload.get("duration_ms")
+    head = {"llm_wait_start": "等待模型", "llm_wait_end": "模型已返回"}.get(
+        str(kind), str(kind))
+    bits = [head]
+    if purpose:
+        bits.append(purpose)
+    if isinstance(ms, (int, float)) and ms >= 0:
+        bits.append("%.1f 秒" % (ms / 1000.0))
+    return " · ".join(bits)
+
+
 def _tool_event_text(kind: str, payload,
                      result=None) -> str:
     """把一次工具生命周期事件压成一行可读文本。
@@ -3206,6 +3257,11 @@ class Agent:
                     yield _evidence_final("（已达到本任务 Token 上限，已停止继续调用模型。）")
                     return
                 _t_llm = time.monotonic()
+                # 本次模型调用等的是「轮到主/子代理说话」这一步；子代理那几段
+                # 最长（实测 58s），而事件流里此前完全没有对应标记。
+                _llm_wait_t0 = _t_llm
+                _llm_wait_purpose = "%s#%d" % (
+                    "subagent" if self.depth else "main", iterations)
                 if stream:
                     # 思考流（reasoning_content / thinking）与正文分开收集，
                     # 每收到正文 token 就把已到达的思考片段作为 reasoning 事件上抛。
@@ -3236,8 +3292,27 @@ class Agent:
                             chat_kwargs["cancel_event"] = cancel_event
                         if lookup_output_limit and isinstance(self.llm, LLMClient):
                             chat_kwargs["max_output_tokens"] = lookup_output_limit
-                        chat_stream = self.llm.chat(**chat_kwargs)
-                        for tok in chat_stream:
+                        _raw_stream = self.llm.chat(**chat_kwargs)
+                        _llm_wait_emit("llm_wait_start", _llm_wait_purpose)
+
+                        def _traced_stream(_src=_raw_stream):
+                            """迭代结束（含异常关闭）时补上 llm_wait_end。
+
+                            刻意用生成器包装而不是在 for 循环**之后**发 end：
+                            流中途抛异常时那个语句根本走不到，界面就会永远停在
+                            「等待模型」——而这里恰恰是它最该说话的时刻。
+                            `finally` 在生成器被 close 时也会跑，两种情况都覆盖。
+                            """
+                            try:
+                                for _tok in _src:
+                                    yield _tok
+                            finally:
+                                _llm_wait_emit(
+                                    "llm_wait_end", _llm_wait_purpose,
+                                    ms=int((time.monotonic() - _llm_wait_t0) * 1000))
+
+                        chat_stream = _raw_stream
+                        for tok in _traced_stream():
                             while reasoning_q:
                                 yield {"type": "reasoning", "text": reasoning_q.pop(0)}
                             acc += tok
@@ -3276,7 +3351,14 @@ class Agent:
                             chat_kwargs["cancel_event"] = cancel_event
                         if lookup_output_limit and isinstance(self.llm, LLMClient):
                             chat_kwargs["max_output_tokens"] = lookup_output_limit
-                        acc = self.llm.chat(**chat_kwargs)
+                        _llm_wait_t0 = time.monotonic()
+                        _llm_wait_emit("llm_wait_start", _llm_wait_purpose)
+                        try:
+                            acc = self.llm.chat(**chat_kwargs)
+                        finally:
+                            _llm_wait_emit(
+                                "llm_wait_end", _llm_wait_purpose,
+                                ms=int((time.monotonic() - _llm_wait_t0) * 1000))
                         # 上游给出 content=None 且这一轮没有 tool_calls 时，`chat()` 会把
                         # None 原样返回（`llm.py` 的 `getattr(msg, "content", None)`）。
                         # 那在「tool-call-only 消息」上是**对的**——原生 FC 通道正是靠
@@ -4357,6 +4439,8 @@ class Agent:
             # 于是「实际工具调用」面板恒为 0 条）。
             if str(kind) in SINK_TOOL_HOOKS:
                 emit_sink(str(kind), _tool_event_text(kind, payload, result))
+            elif str(kind) in ("llm_wait_start", "llm_wait_end"):
+                emit_sink(str(kind), _llm_wait_text(kind, payload))
             # 48 的上限此前在**最前面**直接 return：每次工具调用发 before+after
             # 两条，**24 次工具调用就把配额用光**，之后连 trace 里的工具事件
             # 也不再记录。生命周期事件与子代理生命周期分开计数。

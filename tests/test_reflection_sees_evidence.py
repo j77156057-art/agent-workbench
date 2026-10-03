@@ -61,6 +61,100 @@ REAL_TRAJ = [
 ]
 
 
+class LlmWaitEventTests(unittest.TestCase):
+    """模型等待必须有头有尾——尤其**异常时也要有尾**。
+
+    实测 `wf-f3da9d3ffb32`：全程 360 秒里 98% 静默，而每段静默都是一次模型
+    调用（87s 等重规划、58s 等结论、41s 等规划器…）。事件流里此前**完全没有**
+    对应标记，所以界面上就是一整段空白，状态 346 秒不变，用户以为卡了。
+
+    配对失败比没有事件更糟：那会让「正在等模型」永远停在那里。所以异常路径
+    是这一对事件必须覆盖的重点——第一版就把 `llm_wait_end` 放在 for 循环
+    **之后**，流中途抛异常时那句话根本走不到。
+    """
+
+    def _run(self, chat_impl):
+        seen = []
+        orig = agent._hooks.run_workflow
+
+        def spy(kind, payload=None, **kw):
+            seen.append((kind, dict(payload or {})))
+            return orig(kind, payload, **kw)
+
+        agent._hooks.run_workflow = spy
+
+        class _L:
+            provider = "fake"
+            model = "x"
+            last_usage = {}
+            last_tool_calls = []
+
+            def clone(self):
+                return self
+
+            def chat(self, messages, stream=True, **kw):
+                return chat_impl(stream)
+
+            def count_tokens(self, text):
+                return 1
+
+        try:
+            out = agent.Agent(llm=_L())._run_child("researcher", "查一下")
+        finally:
+            agent._hooks.run_workflow = orig
+        starts = [p for k, p in seen if k == "llm_wait_start"]
+        ends = [p for k, p in seen if k == "llm_wait_end"]
+        return out, starts, ends
+
+    _ANSWER = "Thought: 看一下" + chr(10) + "Final Answer: 好了。"
+
+    def _boom(self, stream):
+        raise RuntimeError("模型调用炸了")
+
+    def test_non_streaming_pairs_up(self):
+        out, starts, ends = self._run(lambda st: self._ANSWER)
+        self.assertEqual(len(starts), len(ends))
+        self.assertTrue(starts, "一次模型调用都没有发 llm_wait_start")
+
+    def test_streaming_pairs_up(self):
+        out, starts, ends = self._run(lambda st: (c for c in self._ANSWER))
+        self.assertEqual(len(starts), len(ends))
+        self.assertTrue(starts)
+
+    def test_a_non_streaming_crash_still_closes_the_pair(self):
+        out, starts, ends = self._run(self._boom)
+        self.assertEqual(len(starts), 1, "应该已经发出了开始")
+        self.assertEqual(len(ends), 1,
+                         "模型调用抛异常时没有 llm_wait_end —— 界面会永远停在「等待模型」")
+        self.assertEqual(out.get("status"), "failed")
+
+    def test_a_streaming_crash_still_closes_the_pair(self):
+        out, starts, ends = self._run(self._boom)
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(len(ends), 1,
+                         "流中途抛异常时没有 llm_wait_end —— 生成器被 close 也必须发")
+
+    def test_the_end_carries_a_duration(self):
+        _out, _starts, ends = self._run(lambda st: self._ANSWER)
+        self.assertTrue(ends)
+        for payload in ends:
+            self.assertIn("duration_ms", payload,
+                          "结束事件必须带耗时，否则界面算不出「等了很久」")
+
+    def test_the_purpose_says_which_agent_and_which_turn(self):
+        _out, starts, _ends = self._run(lambda st: self._ANSWER)
+        self.assertTrue(starts)
+        self.assertIn("subagent", str(starts[0].get("purpose") or ""),
+                      "purpose 没标出是子代理 —— 界面上分不出是谁在等")
+
+    def test_both_kinds_are_forwarded_to_the_workflow_stream(self):
+        """它们必须真的进持久事件流，否则时间线上还是空的。"""
+        from agent import SINK_FORWARDED_HOOKS
+        for kind in ("llm_wait_start", "llm_wait_end"):
+            self.assertIn(kind, SINK_FORWARDED_HOOKS,
+                          "%s 没进转发集合 —— 面板按这些字面量过滤" % kind)
+
+
 class StageCwdReportTests(unittest.TestCase):
     """诊断那一行必须**判得对**——第一版把试做区里的路径判成了"不在"。
 

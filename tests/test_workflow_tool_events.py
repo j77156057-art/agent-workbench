@@ -130,6 +130,46 @@ class ToolEventsReachTheWorkflowStreamTests(unittest.TestCase):
                                            {"type": step, "text": "x"})
         self.assertEqual(self._kinds().count("subagent_step"), 0)
 
+    def test_the_cockpit_labels_and_the_backend_kinds_agree(self):
+        """跨层一致性：前端的中文标签必须覆盖后端会发的每一种 kind。
+
+        起因是实测那次运行发出 27 种 kind、前端只标了 20 种，**界面上一半是英文**
+        —— 包括最该看懂的 `graph_replan_start`。这里从**真实 trace** 里取 kind
+        集合，而不是硬编码一份：真实集合变了而标签没跟上，本用例会红。
+        """
+        import json
+        import os
+
+        wf_dir = os.path.join(ROOT, ".docmind", "workflows")
+        if not os.path.isdir(wf_dir):
+            self.skipTest("没有本机跑过的工作流状态可比对")
+        kinds = set()
+        for name in os.listdir(wf_dir):
+            if not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(wf_dir, name), encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception:
+                continue
+            for event in (data.get("events") or []):
+                if isinstance(event, dict) and event.get("kind"):
+                    kinds.add(str(event["kind"]))
+        if not kinds:
+            self.skipTest("工作流状态里没有事件可比对")
+
+        src = open(COCKPIT_VUE, encoding="utf-8").read()
+        start = src.index("const timelineLabel")
+        window = src[start:src.index("\n}", start)]
+        # 标签表里key 是**不带引号的标识符**（`after_tool: '工具调用前'`），
+        # 所以要按 `kind:` 找；第一版按 `'kind'` 找，结果连已标注的也报缺失。
+        unlabelled = sorted(k for k in kinds if ("%s:" % k) not in window)
+        # 这几个是子代理实时轨迹的 step_type，不是工作流事件 kind
+        unlabelled = [k for k in unlabelled
+                      if k not in {"thought", "action", "observation"}]
+        self.assertEqual(unlabelled, [],
+                         "这些 kind 在开发舱时间线上会显示成英文：%s" % unlabelled)
+
     def test_the_cockpit_filter_list_and_the_backend_constant_agree(self):
         """跨层一致性：面板的字面量与后端常量必须同源。
 

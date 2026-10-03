@@ -730,6 +730,8 @@ const ACTIVITY_TEXT: Record<string, string> = {
   wave_start: '正在启动本轮任务',
   before_tool: '正在调用工具',
   after_tool: '工具已返回，AI 正在判断下一步',
+  llm_wait_start: '正在等模型回答（这一步最慢，通常几十秒）',
+  llm_wait_end: '模型已返回，正在处理',
   subagent_start: '子代理正在工作',
   subagent_complete: '子代理已完成',
   task_complete: '任务已完成',
@@ -832,6 +834,10 @@ const timelineLabel: Record<string, string> = {
   graph_replan_proposal: '重规划方案已就绪',
   graph_loop: '正在汇总与复核',
   experience: '正在记录本次经验',
+  // 模型等待这一对把「开始等」与「等到了」之间那段空白填上——
+  // 此前时间线上那段是**完全空的**，而它恰好是全程最长的一段（实测 98%）。
+  llm_wait_start: '等待模型',
+  llm_wait_end: '模型已返回',
 }
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''

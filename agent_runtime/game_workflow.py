@@ -49,7 +49,7 @@ from .workflow_profiles import DEFAULT_KIND, VALID_KINDS, get_profile, normalize
 #: 工具生命周期事件的四种 kind。放这里而不是各写一份字面量：
 #: 开发舱面板按这几个字面量过滤持久事件流，两边必须同源。
 #: 无循环依赖（已实测两个方向的导入顺序都成立）。
-from agent import SINK_TOOL_HOOKS
+from agent import SINK_FORWARDED_HOOKS, SINK_TOOL_HOOKS
 
 try:  # optional dependency: the harness remains usable without LangGraph
     from langgraph.graph import END, START, StateGraph
@@ -1262,7 +1262,7 @@ class GameWorkflowManager:
         grep / python_exec。面板没撒谎，它读的那条流里确实没有工具事件。
         """
         step_type = str((item or {}).get("type") or "")
-        if step_type not in {"thought", "action", "observation"} | set(SINK_TOOL_HOOKS):
+        if step_type not in {"thought", "action", "observation"} | set(SINK_FORWARDED_HOOKS):
             return
         text = _clean_text((item or {}).get("text") or "", 1200)
         try:
@@ -1284,7 +1284,7 @@ class GameWorkflowManager:
                          "role": str(role or "")[:60],
                          "step_type": step_type, "text": text}
                 self._fanout_locked(workflow_id, event)
-                if step_type in SINK_TOOL_HOOKS:
+                if step_type in SINK_FORWARDED_HOOKS:
                     # 面板要的是这些 kind 本身，所以在这里落成真事件。
                     # 只记 name/ok/耗时这类摘要，不复制参数与结果正文——
                     # 那两份已经在 observation 里，重复一遍只是双倍计数。
