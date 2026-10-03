@@ -1,5 +1,63 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-04 收尾：Wave22–34 的净影响基线（分片实跑，**净影响 0 红**）
+
+- **为什么要有这一节**：Wave22–34 一共 13 个提交，此前**每一轮都只跑"我碰过的文件"**，
+  从没跑过一次全量 —— 所以"这些提交是净改善还是净恶化"一直没有答案。`PARALLEL-LANES.md`
+  §1 那条「**HEAD 单独检出才是 CI 看到的那棵树**」当时就该当真。这一节把它补上。
+- **怎么跑的**：全量 `unittest discover` **跑不完**（本仓有浏览器 / 起服务 / 真实工作流类
+  用例，27 分钟仍未结束），所以按"是否需要浏览器 / 服务 / Postgres / 真实网络"分成两片，
+  先跑**快片 188 个文件**。分片清单在 `.tmp/w36_classify.py`（保守：宁可多跑不漏）。
+- **结果**：`2511 passed / 8 skipped / 13 failed`，**1655 秒（27 分 35 秒）**。
+- **13 条红逐条归属**（用**干净 worktree 对照**，不是推测）：
+
+  | 归属 | 条数 | 依据 |
+  |---|---|---|
+  | 任务书 §3 已记的既有红 | **6** | `test_workflow_step_budget.py` 5 条 + `test_agent_capacity.py` 1 条，都在 §3 清单里 |
+  | `WB-parallel` 在途 | **6** | 5 条 SUBFAILED 是它正在写的电池（`plan_dag` / `workflow_events` / `reflection_evidence`）；1 条是它加了门禁题 `workflow-events-and-guards-survive-real-run` 而基线还没跟上（题集 29 / 基线 28，`new_cases` 非空） |
+  | **工作树 WIP 造成** | **1** | `test_evidence_audit_source.py::test_successful_reads_count_as_verified` —— 在 `D:\Temp\w37-baseline`（干净 HEAD worktree）上**通过**，只在本工作树红 |
+
+  **没有一条落在我这轮动过的模块上**（诊断 / dev_serve / app_test / dev_server /
+  windows_sandbox / chat_sse / llm_stub / launchers / repo_conventions / lint_leg / dev_eval）。
+- **顺带确认了一件事**：`tests/test_evidence_audit_source.py` 那条红只在工作树出现、干净检出绿，
+  这就是 `PARALLEL-LANES.md` §3 说的"看到红先归属"的一个实例 —— 不归属就动手，会去改别人的东西。
+- **慢片（53 个文件）没跑**：需要浏览器 / 服务 / Postgres / 真实网络，本轮未纳入基线。
+  按同样分类它们的红大概率仍是那三类，但这只是预期、**没有实测**，不算数。
+
+### 任务 A 可以关掉（前提不成立）
+
+`PARALLEL-LANES.md` 任务 A 说那 7 个 e2e/live 文件「**这 7 个一直没跑过**」。实测：
+
+- 其中 **~45 条会真跑的全部就在快片里、都过了**（`test_web_research_product` 26、
+  `test_realtime_bench_tool` 13、`test_vision_workflow_e2e` 5、`test_game_workflow_e2e` 1）。
+- 只剩 **3 条设计上就自我跳过**的：`test_live_llm_workflow`（opt-in 真 provider）、
+  `test_real_project_workflow_e2e`（opt-in 真 Godot 项目）、`test_postgres_workflow_integration`
+  （要真 Postgres DSN）。在这台机器上跑不了。
+
+所以任务 A 的**完成判据**（"一张表：每个文件 → 通过/失败/skip/收集失败"）其实由这一节
+顺带给出了；它真正的缺口只剩那 3 条环境跳过的，而**补它们需要环境，不在这里**。
+
+### 交接边界（这一轮结束时谁在做什么）
+
+- `WB-parallel` 领了 **任务 B/C/D**：`tests/mutation/battery_{workflow_events,reflection_
+  evidence,empty_model_turn,subagent_step_floor,plan_dag}.py`、`requirements.txt`、
+  `docs/HANDOFF-vibecoding.md`。**那 7 个路径本轮一个都没碰。**
+- `docs/HANDOFF-vibecoding.md` 的 §5.21 / §5.24 / §5.25 / §5.26 / §5.27 是本 lane 写的，
+  已全部入库。**任务 D 若要写同一批内容，先看这几节，避免重复。**
+- 本轮结束时本工作树对上述 7 个路径**无改动**。
+
+### 还没做的两件（不是忘了，是判断后收手）
+
+1. **`dev_diagnostics` 的 lint 那一腿目前是红的**（15 条，全部在别人的业务代码里）。
+   我按建议**没有**去删那 5 条死 import —— 它们在别人的文件里，属于他们的决定。
+   要清就清：`App.vue:3 Teleport`、`api/agent.ts:2 withProject`、`api/session.ts:2 request`、
+   `ask/AskApp.vue:5 watch`、`ask/AskApp.vue:22 AskPrefs`（**Teleport 那条是 eslint 的特例**：
+   `vue-eslint-parser` 不把 Vue 内置组件在模板里的使用算成对 script 绑定的引用，
+   实测同一文件里普通组件与 `{{ }}` 绑定都不误报，只有 `<Teleport>` 误报；删掉它是安全的，
+   因为内置组件在模板里本来��可用）。
+2. **`docs/HANDOFF-vibecoding.md` 从现在起不再由本 lane 改动**（在别人的 claim 里）。
+   本轮之后的发现写在这份 `HANDOFF.md`。
+
 ## 2026-10-03 Wave30：`dev_serve` 的端口归属要可证（§6 缺口 4 + 旁边那个假绿）
 
 - **缺口 4 字面写的"就绪失败时换端口重试一次"，在当前架构下做不到**：`dev_serve` 传的
