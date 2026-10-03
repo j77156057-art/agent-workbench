@@ -743,6 +743,33 @@ const ACTIVITY_TEXT: Record<string, string> = {
   review: '正在验收复核',
   experience: '正在记录本次经验',
 }
+
+//: 图节点那几段（`purpose` 形如 `llm.plan` / `llm.replan`）是**静默的大头**——
+//: 实测等重规划 87s、等规划器 41s、等方案选项 23s，三段合计 151s。
+//: 只显示「等待模型」四个字，用户仍然不知道卡在哪一步，所以逐个点名。
+const WAIT_PURPOSE_TEXT: Array<[RegExp, string]> = [
+  [/llm\.replan/, 'AI 正在重新规划（这一步最慢，通常几十秒）'],
+  [/llm\.plan/, 'AI 正在把方案拆成任务'],
+  [/llm\.options/, 'AI 正在设计方案'],
+  [/llm\.research_options/, 'AI 正在结合资料设计方案'],
+  [/tool\.research/, '正在检索资料'],
+  [/execute\.wave/, '正在跑本轮任务'],
+  [/^main#/, 'AI 正在思考'],
+  [/^subagent#/, '子代理正在思考'],
+]
+/** 把「等待模型 · llm.replan · 3.2 秒」翻成一句人话。 */
+function activityLine(event: { kind?: string; text?: string }): string {
+  const kind = String(event?.kind || '')
+  if (!kind.startsWith('llm_wait')) return ACTIVITY_TEXT[kind] || ''
+  const raw = String(event?.text || '')
+  const purpose = raw.split('·')[1]?.trim() || ''
+  const waited = raw.split('·')[2]?.trim() || ''
+  let label = '正在等待'
+  for (const [re, text] of WAIT_PURPOSE_TEXT) {
+    if (purpose && re.test(purpose)) { label = text; break }
+  }
+  return label + (waited ? `（${waited}）` : '')
+}
 /** 超过这个秒数就明确说「已经等了多久」——静默越久，越需要这句话。 */
 const ACTIVITY_AFTER_SECONDS = 8
 const activityTick = ref(Date.now())
@@ -759,7 +786,11 @@ const nowActivity = computed((): { text: string; waited: number; stale: boolean 
   // timeline 是倒序的（最新在前）；找不到就用数组末尾。
   const latest = (events[0]?.ts && events.length ? events[0] : events[events.length - 1]) || null
   const kind = String(latest?.kind || '')
-  const text = ACTIVITY_TEXT[kind] || (kind ? statusLabel[status] || '正在处理' : '')
+  // 等待事件要显示**具体在等什么**（「AI 正在重新规划」），不是四个字「等待模型」——
+  // 那三段（replan/plan/options）是静默的大头，不点名等于没信息。
+  const text = kind.startsWith('llm_wait')
+    ? activityLine(latest as { kind?: string; text?: string })
+    : (ACTIVITY_TEXT[kind] || (kind ? statusLabel[status] || '正在处理' : ''))
   const stamp = Date.parse(String(latest?.ts || ''))
   const waited = Number.isFinite(stamp) ? Math.max(0, Math.floor((activityTick.value - stamp) / 1000)) : 0
   return { text, waited, stale: waited >= ACTIVITY_AFTER_SECONDS }

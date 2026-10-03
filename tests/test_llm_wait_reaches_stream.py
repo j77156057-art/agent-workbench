@@ -123,5 +123,64 @@ class WaitEventsReachTheStreamTests(unittest.TestCase):
         self.assertIsNotNone(out.get("conclusion"))
 
 
+class GraphNodeWaitsTests(unittest.TestCase):
+    """图节点的 LLM 调用也要发等待事件——**那才是静默的大头**。
+
+    实测 `wf-f3da9d3ffb32`：等重规划 87s、等规划器 41s、等方案选项 23s，
+    三段合计 151s。而 `agent.py` 侧那对 `llm_wait_*` **只覆盖 ReAct 循环里的
+    调用**，这三段都在 `game_workflow` 的图节点上，一个都没覆盖到——
+    所以上一条提交说「时间线不再有大段静默」是**过头了**，这里补上。
+    """
+
+    def setUp(self):
+        self.manager = GameWorkflowManager(tempfile.mkdtemp())
+
+    def test_the_event_lands_on_the_state_the_caller_holds(self):
+        """图节点闭包只拿到 graph state dict，得按 workflow_id 回取到真对象。"""
+        state = self.manager.start("做一个 2D 游戏原型")
+        wid = state["workflow_id"]
+        self.manager._llm_wait_event(wid, "llm_wait_start", "等待模型 · llm.plan")
+        kinds = [e.get("kind") for e in self.manager.get(wid)["events"]]
+        self.assertIn("llm_wait_start", kinds,
+                      "按 workflow_id 回取 state 这条路走不通——"
+                      "事件会落到一个没人保存的副本上")
+
+    def test_the_lookup_uses_the_same_object_the_caller_holds(self):
+        """`_event` 是**就地**改对象的，所以必须是同一份。
+
+        `_load` 直接返回 `self._states[workflow_id]`，所以两者是同一个对象；
+        这条把它钉住——哪天 `_load` 改成返回副本，这里会红。
+        """
+        state = self.manager.start("做一个 2D 游戏原型")
+        wid = state["workflow_id"]
+        again = self.manager._load(wid)
+        with self.manager._lock:
+            cached = self.manager._states.get(wid)
+        self.assertIs(cached, again,
+                      "_load 不再返回缓存对象——_llm_wait_event 的回取就不可靠了")
+
+    def test_an_unknown_workflow_id_is_silently_skipped(self):
+        """只读路径（GET/SSE/启动扫描）故意不注册状态；这时必须安静跳过。"""
+        self.manager._llm_wait_event("wf-does-not-exist", "llm_wait_start", "x")
+
+    def test_only_llm_calls_are_labelled_as_waiting(self):
+        """`tool.research` 与 `execute.wave` 不是模型调用。"""
+        import inspect
+
+        src = inspect.getsource(GameWorkflowManager.build_langgraph)
+        self.assertIn('name.startswith("llm.")', src,
+                      "provider_call 少了 llm.* 的判定——"
+                      "会把 tool.research / execute.wave 也标成「等待模型」")
+
+    def test_the_end_event_is_in_a_finally(self):
+        """抛异常时那段等待同样真实存在，而 UI 恰恰在那时最需要知道等了多久。"""
+        import inspect
+
+        src = inspect.getsource(GameWorkflowManager.build_langgraph)
+        tail = src.split('llm_wait_start')[-1][:1500]
+        self.assertIn("finally:", tail,
+                      "结束事件没放 finally——模型调用抛异常时等待就消失了")
+
+
 if __name__ == "__main__":
     unittest.main()

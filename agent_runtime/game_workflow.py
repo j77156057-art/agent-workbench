@@ -1381,6 +1381,29 @@ class GameWorkflowManager:
             state.context_layers = layers
         return changed
 
+    def _llm_wait_event(self, workflow_id: str, kind: str, text: str) -> None:
+        """把「等模型」事件落到**正在执行的那个 state 对象**上。
+
+        必须拿调用方手里同一份 `WorkflowState`——`_event` 是就地改
+        `state.events` / `state.timeline` 的，拿到另一个副本就等于写到没人保存
+        的对象上。`_load` 返回的正是 `self._states[workflow_id]` 那个对象，
+        所以从这里取是安全的（已核：`_load` 第1002-1003 行直接返回缓存）。
+
+        图节点的闭包只拿到 `WorkflowGraphState`（一个 dict），不是
+        `WorkflowState`，所以这里按 `workflow_id` 回取，而不是让每个节点
+        都自己想办法传。
+        """
+        wid = str(workflow_id or "")
+        if not wid:
+            return
+        with self._lock:
+            state = self._states.get(wid)
+        if state is None:
+            # 只读路径（GET/SSE/启动扫描）故意不把状态注册进 _states，
+            # 那时没有可写的对象——静默跳过即可，不影响执行。
+            return
+        self._event(state, kind, text=text)
+
     def _event(self, state: WorkflowState, kind: str, **payload: Any) -> None:
         # LangGraph Send runs subagents concurrently. Serialize the bounded
         # event ledger so live UI polling and durable snapshots never observe
@@ -3583,14 +3606,44 @@ class GameWorkflowManager:
         graph = StateGraph(WorkflowGraphState)
 
         def provider_call(state: Mapping[str, Any], name: str, callback: Callable[[], Any]) -> Any:
-            """Trace one provider call as a bounded LLM/tool child run."""
+            """Trace one provider call as a bounded LLM/tool child run.
+
+            同时给**模型调用**发一对 `llm_wait_start` / `llm_wait_end`。
+            `agent.py` 侧那对只覆盖了 ReAct 循环里的调用，而实测最大的几段静默
+            根本不在那里（`wf-f3da9d3ffb32`：等重规划 87s、等规划器 41s、
+            等方案选项 23s，三段合计 151s，占全部静默的大头）——那些是本图节点的
+            LLM 调用，只能在这里补。
+
+            只对 `llm.*` 发：`tool.research` 与 `execute.wave` 不是模型调用，
+            标成「等待模型」就是错的。
+            """
+            if not name.startswith("llm."):
+                try:
+                    from .langsmith import workflow_span
+                except Exception:
+                    return callback()
+                with workflow_span(state, name, run_type="llm"):
+                    return callback()
+
+            wid = str(state.get("workflow_id") or workflow_id or "")
+            started = time.monotonic()
+            self._llm_wait_event(wid, "llm_wait_start",
+                                 "等待模型 · %s" % name)
             try:
-                from .langsmith import workflow_span
-            except Exception:
-                # Tracing must never alter provider behavior.
-                return callback()
-            with workflow_span(state, name, run_type="llm"):
-                return callback()
+                try:
+                    from .langsmith import workflow_span
+                except Exception:
+                    # Tracing must never alter provider behavior.
+                    return callback()
+                with workflow_span(state, name, run_type="llm"):
+                    return callback()
+            finally:
+                # 放finally：抛异常时那一段等待同样真实存在，
+                # 而 UI 恰恰在这时候最需要知道「刚才那下等了多久」。
+                self._llm_wait_event(
+                    wid, "llm_wait_end",
+                    "模型已返回 · %s · %.1f 秒"
+                    % (name, time.monotonic() - started))
 
         def route_node(state):
             if state.get("status") == "awaiting_research" or state.get("phase") == "research":
