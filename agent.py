@@ -1323,18 +1323,43 @@ def _missing_weather_location(question, history):
                              str(t.get("user") or "")) for t in history)
 
 
+#: 出行类词。**必须命中它才允许触发交通澄清**。
+#:
+#: 原实现里「从…到…」本身就算触发条件，实测（`wf-2a548e060abf` 的
+#: `design_retry2`）它匹配到了**上游结论里的一句扣血机制描述**——
+#:
+#:     「玩家血量从 100 降到 0 时触发死亡」
+#:              ^^^^^^^        ^^^^^
+#:              「从」          「降到」的「到」
+#:
+#: 「从…到…」在中文里既是「从 A 到 B」（出行），也是**任何区间变化**
+#: （从 0 到 100 / 从 100 降到 0 / 从小到大）。本项目是中文优先的，所以这条
+#: 断言几乎必然踩中。
+#:
+#: 后果是最坏的一种：harness 把模型的工作**静默替换**成一句写死的交通澄清，
+#: `yield final` 后立刻 return —— trace 里表现为「步骤数 0、一步工具没跑、
+#: 结论是一句客服话」。而反思只能看出「结论与任务无关」，看不出是谁塞进去的。
+_TRANSPORT_DIRECT = re.compile(
+    r"(?:票价|余票|机票|车票|车次|航班|行程|旅游|旅行|出游|交通|拼车|自驾|"
+    r"有什么票|有票吗|订票|怎么去|交通方式|高铁|火车|动车)"
+    r"|(?:高铁|飞机).{0,8}(?:飞机|高铁|多少钱|票)", re.I)
+_TRAVEL_INHERITED = re.compile(
+    r"(?:旅游|旅行|出游|攻略|景点|行程|高铁|火车|动车|航班|机票|车票|余票)", re.I)
+_COST_WORDS = re.compile(r"(?:多少钱|具体费用|预算|花费)")
+
+
 def _transport_request_clarification(question, history):
-    """交通票价/余票的前置澄清，防止模型凭空选择日期或地点。"""
+    """交通票价/余票的前置澄清，防止模型凭空选择日期或地点。
+
+    触发必须**有明确的出行词**。原来的「从…到…」裸模式会把「从 100 降到 0」
+    这类区间描述当成出行问句，进而把整个回合替换掉——那不是澄清，是劫持。
+    """
     text = str(question or "").strip()
     user_history = "\n".join(str(item.get("user") or "") for item in (history or [])[-6:])
     context = (user_history + "\n" + text).strip()
-    direct_ticket = re.search(
-        r"(?:票价|余票|机票|车票|有什么票|有票吗|订票|航班查询|怎么去|交通方式|"
-        r"高铁.{0,8}(?:飞机|多少钱|票)|飞机.{0,8}(?:高铁|多少钱|票)|"
-        r"(?:从|由|出发).{0,16}(?:到|至|去|前往)|(?:到|至|去).{0,16}(?:多少钱|票价|车次))",
-        text, re.I)
-    inherited_travel = re.search(r"(?:旅游|旅行|出游|攻略|景点|行程|高铁|火车|动车|航班|机票|车票|余票)", user_history, re.I)
-    if not direct_ticket and not (re.search(r"(?:多少钱|具体费用|预算|花费)", text) and inherited_travel):
+    direct_ticket = _TRANSPORT_DIRECT.search(text)
+    inherited_travel = _TRAVEL_INHERITED.search(user_history)
+    if not direct_ticket and not (_COST_WORDS.search(text) and inherited_travel):
         return ""
     # 已给出明确未来日期时允许继续；相对日期也必须先转换成具体日期，避免把今天误当成票价日期。
     date_match = re.search(r"20\d{2}\s*[年./-]\s*\d{1,2}\s*[月./-]\s*\d{1,2}\s*日?", context)
@@ -2908,7 +2933,8 @@ class Agent:
         if clarification:
             turn.outcome = "clarification_required"
             final_text = clarification
-            yield {"type": "final", "text": clarification, "clarification_required": True}
+            yield {"type": "final", "text": clarification,
+                   "clarification_required": True, "degraded": True}
             return
 
         aborted = False
@@ -2941,7 +2967,8 @@ class Agent:
                 if self.session_id:
                     _sessions.save(self.session_id, self.history, self.summary, self.project_id)
                 persist_checkpoint("completed")
-                yield {"type": "final", "text": final_text, "clarification_required": True}
+                yield {"type": "final", "text": final_text,
+                       "clarification_required": True, "degraded": True}
                 return
             transport_clarification = _transport_request_clarification(question, self.history)
             if transport_clarification:
@@ -2950,7 +2977,8 @@ class Agent:
                 if self.session_id:
                     _sessions.save(self.session_id, self.history, self.summary, self.project_id)
                 persist_checkpoint("completed")
-                yield {"type": "final", "text": final_text, "clarification_required": True}
+                yield {"type": "final", "text": final_text,
+                       "clarification_required": True, "degraded": True}
                 return
             inner = self._run(question, turn=turn, stream=stream, images=images, deadline=deadline,
                               cancel_event=cancel_event)
