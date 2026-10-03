@@ -876,6 +876,7 @@ const timelineLabel: Record<string, string> = {
   // 此前隔离失效过好几轮而界面毫无察觉，因为没有任何事件携带执行目录。
   stage_scope_probe: '试做区作用域检查',
   stage_scope_missing: '⚠ 未进入试做区',
+  context_snapshot_unavailable: '上下文快照不可用',
 }
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''

@@ -58,6 +58,10 @@ CONTEXT_LAYERS = ("route", "project", "task", "subagent", "output")
 _LAYER_WEIGHTS = {"route": 0.14, "project": 0.10, "task": 0.24,
                   "subagent": 0.34, "output": 0.18}
 _COMPRESSION_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="docmind-context")
+
+#: `os.replace` 的重试次数与退避基数（秒）。见 `_write` 里的说明。
+_REPLACE_RETRIES = 6
+_REPLACE_BACKOFF = 0.05
 # SQLite connections are intentionally short-lived, but the foreground save
 # and the durable worker can still touch the same database at the same time.
 # Serialize the complete connection/transaction lifecycle.  This avoids
@@ -299,7 +303,25 @@ class JsonCompressionWorker:
                 json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
+            # Windows 上 `os.replace` 会在目标正被另一个句柄读着时抛
+            # `PermissionError: [WinError 5]`（压缩执行器有 2 个 worker，
+            # 再加上杀毒/索引器也会短暂持有句柄）。这不是逻辑错误，重试即可。
+            #
+            # 实测（`wf-3784257fd6d1`）：未加重试时这一抛会让 `_save` 整个失败，
+            # 于是 **`/choose` 直接 500**——一个派生账本写不进去，把主状态也赔上了。
+            last: OSError | None = None
+            for attempt in range(_REPLACE_RETRIES):
+                try:
+                    os.replace(temporary, self.path)
+                    last = None
+                    break
+                except PermissionError as exc:
+                    last = exc
+                    if attempt + 1 >= _REPLACE_RETRIES:
+                        break
+                    time.sleep(_REPLACE_BACKOFF * (attempt + 1))
+            if last is not None:
+                raise last
         finally:
             try:
                 if os.path.exists(temporary):

@@ -1027,10 +1027,29 @@ class GameWorkflowManager:
             "output": {"review": state.review, "status": state.status,
                        "merged": str((state.results or {}).get("merged") or "")},
         })
-        snapshots, snapshot_meta = compress_layers_durable(
-            raw_layers, int((state.policy or {}).get("max_context_chars", 6000)),
-            db_path=str(self.state_root.parent / "context_compression.sqlite3"))
-        snapshot_meta["valid"] = True
+        # 压缩快照是**派生账本**（跨窗口交接用的补充材料），主状态才是事实来源。
+        # 所以这里绝不能让它的失败拖垮 `_save`：实测 `wf-3784257fd6d1` 里
+        # `context_compression.json` 的一次 `os.replace` 撞上 Windows 的
+        # `PermissionError: [WinError 5]`，异常从这行直接冒出 `_save`，
+        # **主状态根本没写下去**，`/choose` 于是返回 500。
+        #
+        # 派生材料写不进去就如实标成 `valid: False`，状态照常落库——
+        # 这也符合本文件一贯的取舍：增强信息不能成为主流程的单点。
+        try:
+            snapshots, snapshot_meta = compress_layers_durable(
+                raw_layers, int((state.policy or {}).get("max_context_chars", 6000)),
+                db_path=str(self.state_root.parent / "context_compression.sqlite3"))
+            snapshot_meta["valid"] = True
+        except Exception as exc:  # noqa: BLE001 —— 派生账本失败不得阻断状态落库
+            snapshots, snapshot_meta = {}, {
+                "valid": False,
+                "digest": "",
+                "error": "%s: %s" % (type(exc).__name__, exc)[:200],
+            }
+            self._event(state, "context_snapshot_unavailable",
+                        error=snapshot_meta["error"],
+                        reason="上下文快照写不进去，本次状态照常保存；"
+                               "跨窗口交接会缺少这些快照")
         state.context_layers["snapshots"] = snapshots
         state.context_layers["snapshot_meta"] = snapshot_meta
         state.context_layers["snapshot_digest"] = snapshot_meta["digest"]
