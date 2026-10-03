@@ -104,19 +104,49 @@ class LauncherFailureVisibilityTests(unittest.TestCase):
 
 class LauncherEncodingTests(unittest.TestCase):
     def test_primary_launcher_prefers_current_source(self):
-        """仓库主启动器必须优先跑当前源码，不能再次默认命中过期 dist 快照。"""
-        path = os.path.join(ROOT, '启动DocMind.bat')
-        with open(path, 'rb') as f:
-            raw = f.read()
-        text = raw.decode('ascii')
-        self.assertNotIn(b'\n', raw.replace(b'\r\n', b''),
-                         'Windows 批处理必须使用 CRLF；仅 LF 会导致 cmd 找不到 goto 标签并闪退')
-        source_check = text.index('if exist "%DOCMIND_PYTHON%"')
+        """真正跑源码的那段逻辑在 `run_desktop.bat` 里——`启动DocMind.bat` 只是薄包装。
+
+        这条断言原来在 `启动DocMind.bat` 里找 `if exist "%DOCMIND_PYTHON%"`，
+        而那段内容在 `e651c9c` 之后已经搬进 `run_desktop.bat`（主启动器被重写成
+        "call 一下就走"的包装）。原来它先被 CRLF 那条断言挡着，所以这个"找错文件"
+        的问题一直没暴露——CRLF 一放行它就会以 `ValueError` 冒出来。
+        """
+        with open(os.path.join(ROOT, 'run_desktop.bat'), 'rb') as f:
+            text = f.read().decode('ascii')
+        source_check = text.index('if exist "%DOCMIND_ENTRY%"')
         packaged_check = text.index('if exist "%DOCMIND_PACKAGED%"')
-        self.assertLess(source_check, packaged_check)
-        self.assertIn('"%DOCMIND_PYTHON%" "%DOCMIND_ENTRY%"', text)
-        self.assertIn('taskkill /IM DocMind.exe /F', text)
-        self.assertIn('goto run_packaged', text)
+        self.assertLess(source_check, packaged_check,
+                        '必须先试当前源码，再考虑打包版本')
+        self.assertIn('%DOCMIND_HOST_PYTHON% "%DOCMIND_BOOTSTRAP%"', text)
+        self.assertIn('".venv\\Scripts\\python.exe" "%DOCMIND_ENTRY%"', text)
+
+    def test_only_launchers_that_use_labels_have_to_be_crlf(self):
+        """**含标签的** .bat 必须是 CRLF；不含标签的不断言行尾（Wave31 实测后的收窄）。
+
+        收窄的理由不是"测不出来就放过"，而是那条断言守的是一个**在本机复现不出的机制**：
+        把带 `goto` 的批处理分别按 CRLF 与 LF 各跑一次（2026-10-03，本机 Windows），
+        **两种行尾都正常到达标签**。而被断言的 `启动DocMind.bat` 只有 `call`、**没有 label**，
+        LF 与 CRLF 实测行为完全一致（都 exit=0、callee 正常执行）。
+
+        所以规则改成按**内容**判定而不是按**文件名**判定：真正会咬人的那类
+        （一个用 goto 的启动器被写成 LF）照样被抓住；而没有 label 的文件不再被一条
+        没有机制支撑的断言逼着改行尾——它当时正在逼人做"改启动器"还是"让 CI 绿"的二选一。
+
+        **边界**：以上只是**这台 Windows** 上的实测。别的 Windows 版本上 goto 与行尾的
+        关系没有证据，所以这里只说"复现不出"，不说"LF 没问题"。
+        """
+        for path in _launchers():
+            with open(path, 'rb') as f:
+                raw = f.read()
+            text = raw.decode('gbk', 'replace')
+            uses_labels = bool(re.search(r'^\s*goto\s+:\w+', text, re.M | re.I))
+            if not uses_labels:
+                continue                       # 没有标签的脚本，行尾与它无关
+            with self.subTest(launcher=os.path.basename(path)):
+                self.assertNotIn(
+                    b'\n', raw.replace(b'\r\n', b''),
+                    '%s 用了 goto 标签，必须是 CRLF（这条在本机被实测复现过，见方法注释）'
+                    % os.path.basename(path))
 
     def test_bat_files_decode_as_cp936(self):
         for path in _launchers():

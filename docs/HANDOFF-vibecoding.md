@@ -915,12 +915,28 @@ cd frontend && npm run test:node
 - **产物**：`tests/test_launchers.py` 新增 `LauncherFailureVisibilityTests` **2 项**（用 stub
   callee 真跑 `cmd.exe`，钉住"失败要停住并说出退出码"与"成功不许被拖住"）；
   `启动DocMind.bat` 254 → 744 字节（只加 5 行，含 5 行说明为什么）。
-- **顺带发现（只报不改）**：原有那条 `test_primary_launcher_prefers_current_source` **还有第二个
-  问题** —— 它的后半段在这个文件里找 `if exist "%DOCMIND_PYTHON%"` / `"%DOCMIND_PACKAGED%"`，
-  而那段内容现在在 `run_desktop.bat` 里（`启动DocMind.bat` 已经变成薄包装）。所以即使 CRLF 那条
-  放行，它也会因为找不到字符串而失败。**未代改**。
-- **边界**：这些结论都来自**这台 Windows**；别的 Windows 版本上 `goto` 与行尾的关系我没有
-  证据，所以 `*.bat` 的 CRLF 规则**没有被放宽**，只是这个具体文件的行尾按用户口径保持原样。
+- **那条 CRLF 断言收窄了**（用户口径：不碰行尾）。原断言有一条**在本机复现不出的机制**
+  ——带 `goto` 的批处理按 CRLF 与 LF 各跑一次，两种都正常到达标签；而被断言的
+  `启动DocMind.bat` 根本没有 label（只有 `call`），LF 与 CRLF 实测行为完全一致。
+  改成**按内容判定**：用到 `goto :label` 的 .bat 才要求 CRLF。真正会咬人的那类照样被抓住
+  （`run_desktop.bat` 是唯一含 goto 的，本来就在 CRLF 上）。
+  **同时修好它的第二个问题**：它后半段在这个文件里找 `if exist "%DOCMIND_PYTHON%"`，
+  而那段内容在 `e651c9c` 之后已搬进 `run_desktop.bat`（主启动器变成薄包装）——
+  原来它先被 CRLF 那条挡着，所以这个"找错文件"一直没暴露。
+- **预检从脚本变成常驻守卫**（`tests/test_repo_conventions.py`，3 项）：扫的是 **git 里
+  真实入库的 blob**，不是工作树（"入库时丢了"这件事只存在于 blob 里；扫工作树会在 Windows
+  上因自动转换而看不出问题）。它守两件事：① `.py` 的 blob 不许带 BOM（`.gitattributes`
+  写了 `working-tree-encoding=UTF-8`，而 BOM 会让 `ast.parse` 直接 SyntaxError；
+  `7aaf365` 修过一次 `llm.py` 顶部残留的 BOM，说明会再犯）；② **守卫自己有没有瞎**——
+  它断言自己看得见那三个 `.bat` 且**看得见非 ASCII 文件名**（第一版预检脚本就是被
+  git 的路径转义整个跳过了 `启动DocMind.bat`，差点漏掉要找的东西本身）。
+- **CRLF 规则不在新守卫里**：`test_launchers.py` 那条已经是它的家。第一版我在两处各写一份
+  （一处收窄、一处全称），结果同一个文件一处绿一处红——**规则分散的代价不是"多写一次"，
+  是"两份会分叉，然后你不知道该信哪个"**。新守卫改为**验证收窄后的规则确实还有牙**
+  （构造一个"用 goto 却写成 LF"的坏例子喂给同一条判定）。
+- **边界**：所有结论都来自**这台 Windows**；别的 Windows 版本上 `goto` 与行尾的关系我没有
+  证据，所以只写"复现不出"，不写"LF 没问题"；`*.bat` 的 CRLF 约定在 `.gitattributes`
+  里**没有被改动**。
 
 ## 6. 已知缺口与建议下一步
 
@@ -929,7 +945,7 @@ cd frontend && npm run test:node
 | 1 | ~~`.vue` 接线层无组件级守卫~~ **已做（Wave16 `dev_vue`，零新依赖）**；~~深链到具体路由/文件的整页断言~~ **已做（Wave24，§5.18）** | vitest 那条量化过不走：1 critical + 3 moderate + 1 high dev 公告，且 vitest 3 要 vite 6/7 而本树 vite 5。改走"仓库自带的 compiler-sfc + esbuild + 真浏览器点击" | 仍**没有**的是：真模型往返（`dev_apptest` 明确不点模型）、`dev_apptest` 上的问答回合（§5.18 ② 那条只在 HTTP 层做了，页面那一层还没走）|
 | 2 | ~~没有"跑测试→读失败→只重跑失败"的结构化工具~~ **已做（Wave15 `dev_testrun`）**；~~覆盖率入口仍无~~ **已做（Wave21 `coverage: true`，§5.12）** | 早先实测 `.venv` 里 `coverage`/`pytest_cov` 都不存在；`.pytest_cache` 在本工作树是 Permission denied，`--lf` 不可用 | Wave21 已加 `coverage>=7,<8` 并真跑。仍**没有**的是：分支覆盖率、`--source` 的配置化、以及给"改动行"本身（而不只是改动文件）的覆盖判定 |
 | 3a | ~~真 ws 回合零自动覆盖~~ **已做（Wave19：`scripted` 适配器 + `dev_apptest stream`）** | 页面 + 麦克风 + `/api/vision/live-stream` 以前只有人对着说话才能验 | 厂商事件、打断语义、听感仍归 R12 的人跑 |
-| 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证）。2026-10-03 实测：git ls-remote 也连不上了（§2 记的是 10-02 可通），网络侧完全不可达 | ① 已做首跑排障（Wave31，§5.25）：预检脚本抓出**一条确定会红**（启动DocMind.bat 的 blob 是纯 LF，那条 CRLF 测试现在与本地就红）；② 仍需人 push 一次把首跑结果记回本文件；③ 那条红怎么收尾待定（恢复 CRLF / 收窄守卫 / 只记录），见 §5.25 |
+| 3 | 交付环"真网络"从未验证 | CI 新增的 pytest lane 与 dev_eval 门**从未在 GitHub 真跑过**（ubuntu 行为未证）。2026-10-03 实测：git ls-remote 也连不上了（§2 记的是 10-02 可通），网络侧完全不可达 | ① 已做首跑排障（Wave31，§5.25）：预检脚本抓出**一条确定会红**（启动DocMind.bat 的 blob 是纯 LF，那条 CRLF 测试现在与本地就红）；② 仍需人 push 一次把首跑结果记回本文件；③ **已收尾（Wave32）**：那条 CRLF 断言按内容收窄成「用到 goto 标签的才要求 CRLF」（实测在本机复现不出原注释说的机制），并新增常驻守卫 	ests/test_repo_conventions.py 盯 .py 的 BOM 与「守卫自己有没有瞎」 |
 | 4 | ~~`dev_serve` 端口被抢不自动重试~~ **已换成可证的归属判定（Wave30，§5.24）** | 字面那条做不到：`dev_serve` 的 `argv` 里**没有端口参数**（`tools.py` 的 `_shell_argv`），端口是子进程自己选的。顺带挖到一个**确定性假绿**：用户给的端口上已有别人的服务时，`probe` 成功就被认成自己的服务并把那个 URL 交回去 | 已改：先认日志里它自报的端口（可证），且启动前就问"这个端口有没有别人在听"，是别人的就不判就绪；`parse_port_hint` 改成取**最后一个**地址行。**仍缺**：真正的端口重试要能往 argv 注入端口（各家 flag 不同），是产品决策 |
 | 5 | 前端无 eslint 配置 | `frontend/` 无 eslint.config/.eslintrc | 先做配置决策，否则 `dev_diagnostics` 前端只有 typecheck 一条腿 |
 | 6 | 连接器 UI 未接 `inline_tools` 开关 | Wave10 未做项 | 小改，UI 侧 |
