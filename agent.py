@@ -1452,6 +1452,65 @@ def _audit_live_answer(text, question, trail, executed_steps=None):
     )
 
 
+#: 证据门禁各项失败时该说什么。键与 output_audit.audit_evidence 的 checks 一一对应。
+#:
+#: 此前这里只有一句写死的「缺少可核验的 read_file 原文」——**不管实际是哪一项失败**。
+#: 于是当真正的问题是「引用的路径打不开」或「行号超出文件行数」时，纠偏会把模型
+#: 导向「再读一遍文件」，而重读多少次都解决不了路径写错。实测（godot_sample 定位
+#: 扣血逻辑）：模型第一轮已完整读了三个文件，仍被判失败，于是被要求把同样的文件
+#: **带区间又读了一遍**——多花四次工具调用，而真正该改的那一处没人告诉它。
+_EVIDENCE_CHECK_HINTS = {
+    "reference_present": "回答里没有给出「文件:行号」形式的定位，无法核验。",
+    "read_file_present": "还没有成功读取过候选文件的原文（search_code 摘要不算证据）。",
+    "references_exist": "回答里引用的路径在当前代码库里打不开。",
+    "reference_lines_valid": "回答里引用的行号超出了文件实际行数。",
+}
+
+
+def _evidence_failure_detail(audit):
+    """把证据门禁的失败项翻译成给模型看的一句话 + 给用户看的 reflection。
+
+    返回 ``(给模型的补充说明, 给用户的 reflection 文案)``。
+    """
+    checks = dict((audit or {}).get("checks") or {})
+    failed = [key for key in _EVIDENCE_CHECK_HINTS
+              if key in checks and checks[key] is False]
+    if not failed:
+        return "", "定位回答缺少原文核验，已要求补齐证据。"
+
+    lines = [_EVIDENCE_CHECK_HINTS[key] for key in failed]
+
+    # 把「哪个引用有问题」说到具体路径/行号——只说「有错」模型无从下手。
+    refs = [r for r in ((audit or {}).get("references") or []) if isinstance(r, dict)]
+    bad_paths, bad_lines = [], []
+    for ref in refs:
+        label = "%s:%s" % (ref.get("path") or "?",
+                           ref.get("start_line")
+                           if ref.get("start_line") is not None else "?")
+        if not (ref.get("exists") and ref.get("in_root", True)):
+            bad_paths.append(label)
+        elif not ref.get("line_ok", True):
+            bad_lines.append(label)
+    if bad_paths:
+        lines.append("打不开的引用：%s。请改成相对代码根目录、能被 read_file 打开的"
+                     "完整相对路径（例如 `ui/hud.gd:20` 而不是 `hud.gd:20`）。"
+                     % "、".join(bad_paths[:6]))
+    if bad_lines:
+        lines.append("行号越界的引用：%s。请先 read_file 确认该文件的实际行数，"
+                     "再据此修正行号。" % "、".join(bad_lines[:6]))
+
+    detail = "\n".join("- " + line for line in lines)
+    # 旧文案「缺少原文核验」在 read_file 没跑过时是**准确**的，保留它（既有的界面文案
+    # 与 tests/test_agent.py 都依赖这句话）。只有在它会误导时——也就是失败原因其实是
+    # 路径写错/行号越界——才换成中性措辞并说清具体项。
+    prefix = ("定位回答缺少原文核验"
+              if "read_file_present" in failed
+              else "定位回答的证据未通过")
+    reflection = "%s：%s已把具体问题回给模型。" % (
+        prefix, "；".join(_EVIDENCE_CHECK_HINTS[key] for key in failed))
+    return detail, reflection
+
+
 def _strip_internal_prompt_leak(text):
     """Remove a legacy API routing prefix if a model echoes it verbatim."""
     value = str(text or "")
@@ -3612,25 +3671,28 @@ class Agent:
                     if evidence_nudges < 1:
                         evidence_nudges += 1
                         trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                        # 纠偏文案必须**说当前传输层的话**。原生 function-calling 下
-                        # 模型无法"写一行 Action"——它只能发出真正的 tool call。此前这条
-                        # 提示不论通道都要求"再给出 Final Answer"，于是模型在原生通道里
-                        # 只能尽力照做：输出散文叙述计划；散文又被判成格式失守，于是
-                        # 反复两轮后硬失败。实测（stealth/space-bunny-alpha）就是这条路。
+                        # 纠偏文案必须**说当前传输层的话**，并且**说清是哪一项没过**。
+                        # 原生 function-calling 下模型无法"写一行 Action"——它只能发出
+                        # 真正的 tool call；此前这条提示不论通道都要求"再给出 Final Answer"，
+                        # 于是模型只能尽力照做：输出散文；散文又被判成格式失守，反复两轮
+                        # 后硬失败（实测 stealth/space-bunny-alpha 就是这条路）。
+                        _detail, _reflection = _evidence_failure_detail(evidence_audit)
+                        native_mode = self._native_enabled()
+                        _how = ("现在直接调用 read_file 读取候选文件的相关行"
+                                "（不要把 search_code 摘要当作行为语义证据），"
+                                "读完再用自然语言给出结论，不需要写任何标记。"
+                                if native_mode else
+                                "请先调用 read_file 读取候选文件的相关行，再重新给出 "
+                                "Final Answer；不要把 search_code 摘要当作行为语义证据。")
                         trail.append({
                             "role": "user",
                             "content": (
-                                ("Evidence check: 这是定位类问题，但最终回答缺少可核验的 "
-                                 "read_file 原文。现在直接调用 read_file 读取候选文件的相关行"
-                                 "（不要把 search_code 摘要当作行为语义证据），"
-                                 "读完再用自然语言给出结论，不需要写任何标记。")
-                                if self._native_enabled() else
-                                ("Evidence check: 这是定位类问题，但最终回答缺少可核验的 "
-                                 "read_file 原文。请先调用 read_file 读取候选文件的相关行，再"
-                                 "重新给出 Final Answer；不要把 search_code 摘要当作行为语义证据。")
+                                "Evidence check: 这是定位类问题，但你的回答没通过证据核验。"
+                                "具体未通过的是：\n%s\n%s"
+                                % (_detail or "-（未给出具体项）", _how)
                             ),
                         })
-                        yield {"type": "reflection", "text": "定位回答缺少原文核验，已要求先读取候选文件。"}
+                        yield {"type": "reflection", "text": _reflection}
                         continue
                     # Do not silently turn an unverified summary into a fact.
                     final_text = final_text.rstrip() + "\n\n（证据复核：以上文件/行号尚未完成 read_file 原文核验，请勿据此修改代码。）"
