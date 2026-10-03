@@ -192,6 +192,53 @@ class RealTurnTests(ChatTurnCase):
         self.assertNotEqual(str(final.get("status") or ""), "error", final)
 
 
+class MockProviderTests(ChatTurnCase):
+    """缺口 14（Wave28）：`mock` provider 必须能**收掉**一轮问答。
+
+    它原来在「拿到观察 → 作答」那一支吐**裸文本**（没有 `Action:` 也没有 `Final Answer:`），
+    而 `agent.py:3443` 的格式失守判定会连拒两轮、发一条 `final(status="error")` ——
+    也就是说 **mock provider 结构上收不了一轮**，离线演示模式（本仓唯一零网络的模型路径）
+    同样跑不完。另两支都带 `Thought:` 与标记，只有这支漏了。
+    """
+
+    def turn(self, question: str = "像素风角色素材有哪些？", **extra):
+        """用 **mock** provider 真打一次——不注入剧本 LLM。"""
+        for key, value in (("llm_provider", "mock"), ("embedding_provider", "local")):
+            self.addCleanup(config.set_runtime, key, config.get_runtime(key))
+            config.set_runtime(key, value)
+        before = set(api._SESSION_AGENTS)
+        self.addCleanup(lambda: [api._SESSION_AGENTS.pop(k, None)
+                                 for k in list(api._SESSION_AGENTS) if k not in before])
+        with patch.object(api, "check_ollama", return_value={"reachable": True}) as probe:
+            response = self.client.post("/api/chat",
+                                        data={"question": question,
+                                              "session_id": self.SESSION, **extra})
+        self.assertEqual(probe.call_count, 0,
+                         "provider 是 mock、embedding 是 local，不该打 ollama 探活")
+        self.assertEqual(response.status_code, 200, response.text[:200])
+        body = response.content
+        events = chat_sse.parse_events(body)
+        return events, chat_sse.verdict(events, chunk_count=chat_sse._chunks(body))
+
+    def test_mock_completes_a_turn_instead_of_dying_at_the_format_gate(self):
+        _events, judged = self.turn()
+        final = judged["observed"]["final"]
+        self.assertNotEqual(str(final.get("status") or ""), "error",
+                            "mock 又死在格式失守上了：%r" % str(final.get("text"))[:200])
+        self.assertTrue(judged["passed"], chat_sse.render(judged))
+        # 标记是**被 agent 消费掉**的：`final` 事件里是 `Final Answer:` 之后的正文，
+        # 所以别去断言标记还在（第一版就这么写错了）。有意义的判据是"mock 的答复
+        # 真的到了客户端"。
+        self.assertIn("演示模式·mock LLM", str(final.get("text") or ""),
+                      "mock 的答复没到客户端：%r" % str(final.get("text"))[:160])
+
+    def test_mock_still_calls_a_real_tool_first(self):
+        """修它收尾的同时别把"先调工具"那一步弄丢。"""
+        _events, judged = self.turn()
+        self.assertTrue(judged["observed"]["actions"],
+                        judged["observed"])
+
+
 class VerdictTableTests(unittest.TestCase):
     """判据本身要被测：`chat_sse.verdict` 是这半的牙齿，它自己不能是装饰。"""
 

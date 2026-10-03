@@ -1116,8 +1116,14 @@ class LLMClient:
             # 已拿到有效检索结果，给出最终回答（演示用，引用首段观察内容）
             obs = last.split("Observation:")[-1]
             snippet = obs.strip().split("\n")[0][:200]
+            # **必须带 `Final Answer:`**：这一支原来吐的是裸文本，而 `agent.py:3443`
+            # 的格式失守判定要求"要么 `Action:` 要么 `Final Answer:`"，于是它连拒两轮、
+            # 发一条 `final(status="error")` ——即 **mock provider 结构上收不了一轮问答**，
+            # 离线演示模式（本仓唯一零网络的模型路径）同样跑不完。另外两支都带 `Thought:`
+            # 与标记，只有这支漏了。
             answer = (
-                "（演示模式·mock LLM）根据检索到的内容："
+                "Thought: 已拿到检索结果\n"
+                "Final Answer: （演示模式·mock LLM）根据检索到的内容："
                 f"{snippet} …… 综上所述，这就是与您问题相关的说明。"
             )
         else:

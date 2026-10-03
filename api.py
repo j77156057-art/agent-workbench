@@ -4316,10 +4316,19 @@ def _match_model_size(name: str, sizes: dict) -> int:
     return 0
 
 
-# Ollama 探测结果短 TTL 缓存：页面一次加载会打多次 /api/config（问答页/工作台/
-# 聊天前检查），而 Ollama 未运行时 Windows 上一次探测即便被拒绝也要 ~2s，
-# 串行叠加会拖慢所有依赖该状态的请求。存活状态 2s 内复用足够新鲜。
-_OLLAMA_CHECK_TTL = 2.0
+# Ollama 探测结果 TTL 缓存：页面一次加载会打多次 /api/config（问答页/工作台/
+# 聊天前检查），而 Ollama 未运行时**一次探测被拒绝本身就要 ~2s**（本机实测：裸
+# `socket.connect(("127.0.0.1", 11434))` 到关闭端口是 **2035ms**，不是正常的 <1ms
+# ——这台机器上有东西在拖回环连接；`urllib` 走同一条路，2071ms）。
+#
+# TTL 必须**明显大于**一次探测的耗时，否则缓存等于不存在：原值 2.0 与探测本身
+# （约 2s + 3s HTTP 超时）同量级，`ts` 又是在探测**结束**后才写的，于是隔两三秒重开
+# 面板就必然重付一次。实测 `/api/config` 冷启动 **6.1s** = `_live_capability`（首次构造
+# `LLMClient` 时的实时探活）4081ms + 本函数 2030ms + 其它 11ms。
+#
+# 30s 的代价是「启动 Ollama 后最多 30s 才看到状态翻转」；要即时结果的地方仍然可以
+# `check_ollama(force=True)`（`GET /api/ollama/probe` 走的就是它）。
+_OLLAMA_CHECK_TTL = 30.0
 _ollama_check_cache: dict = {"ts": 0.0, "value": None}
 # 与 _ollama_ps 一致：本机回环绝不走系统/企业代理，避免代理把 127.0.0.1
 # 请求挂到 8s 超时。

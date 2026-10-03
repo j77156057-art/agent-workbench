@@ -1,5 +1,44 @@
 # DocMind · MCP 自动连接模块 接手 handoff
 
+## 2026-10-03 Wave28：把两条"报出来不动手"的缺口修掉（`llm.py` / `api.py`，别人的模块但已入库）
+
+用户点名处理 §6 缺口 14 与 16。两者原本都在别人手上（按纪律只报不改）；另一条 lane 做了
+`e651c9c chore: 归集多lane 的在途改动到仓库` 把它们**入库**之后，两个文件的工作树是干净的，
+"别动别人的在途改动"这条约束在**未提交**这个意义上不再适用。改动仍保持最小。
+
+**① 缺口 14：`mock` provider 收不了一轮问答**（`llm.py` `_mock_chat`）
+
+- 它「拿到观察 → 作答」那一支吐**裸文本**（既没 `Action:` 也没 `Final Answer:`），而
+  `agent.py:3443` 的格式失守判定要求二者有其一 → 连拒两轮 → `final(status="error")`。
+  **另两支（素材/知识库）都带 `Thought:` 与标记，只有这支漏了。**
+- 后果不只是测试不好写：`mock` 是本仓**唯一零网络的模型路径**，也就是离线演示模式
+  （没装 Ollama / 没有 key 时用户看到的那条路）——它同样跑不完一轮。
+- 修法一行：加 `Thought: …` + `Final Answer: …` 前缀。验证：`/api/chat` 走 mock 打一轮，
+  `final.status` 不再是 error、`chat_sse.verdict` 全绿、第一条工具调用仍在。
+
+**② 缺口 16：`/api/config` 冷启动 6 秒**（`api.py` `_OLLAMA_CHECK_TTL`）
+
+- **根因是环境，不是代码逻辑**：本机对**关闭的回环端口**做裸
+  `socket.connect(("127.0.0.1", 11434))` 要 **2035ms**（正常应 <1ms；`urllib` 同路 2071ms）。
+- **账算清了**（逐项计时）：`_live_capability` **4081ms**（首次构造 `LLMClient` 时它自己的
+  实时探活）+ `check_ollama` **2030ms** + `_presets_payload` 11ms ≈ 6122ms（实测 6144ms）。
+  先前只报了"另约 4 秒来源未定"，那 4 秒就是 `_live_capability`。
+- **病根是 TTL 与探活同量级**：原值 2.0 秒，而探活本身约 2 秒（HTTP 超时 3 秒），
+  `ts` 又在探活**结束**后才写 → 隔两三秒重开面板必然重付。原注释里作者已知
+  "Windows 上一次被拒也要 ~2s"，但按业务新鲜度选了 2s，没意识到**缓存窗口小于操作耗时
+  等于没有缓存**。
+- 修法：TTL 2.0 → **30.0**，把这些数字写进注释。代价写明：启动 Ollama 后最多 30 秒才看到
+  状态翻转；要即时结果仍可 `check_ollama(force=True)`（`GET /api/ollama/probe`）。
+- **可重跑的同进程 A/B**（缓存从"已过期"起算，隔 3 秒再打）：`TTL=2.0 → 2047ms`
+  ／`TTL=30.0 → 7ms`。首次冷启动**仍是 ~6.2 秒**（那是 `LLMClient` 首次构造的一次性探活，
+  每进程一次，TTL 帮不到）。
+
+- **产物与验证**：`tests/test_ollama_probe_cache.py` **4 项**（钉"TTL 必须大于一次探活的
+  预算"这条不变量 + "窗口内第二次不再探活"这条**行为**判据）；`tests/test_chat_sse.py`
+  新增 `MockProviderTests` **2 项**。回归 11 个文件 **244 passed / 41 subtests**。
+- **边界**：`/api/config` 首次冷启动的 ~6.2 秒**没有降**（要降得让两次探活共用一次结果，
+  跨 `api.py`+`llm.py`，未做）；30 秒的 TTL 是产品取舍，不是"正确值"。
+
 ## 2026-10-03 Vibecoding 能力补全 Wave27：`dev_apptest ask: 1`——问答那一档真的走完一轮（本会话，不占 R 槽位）
 
 - **补的是 §6 缺口 15 的下半**：`/api/chat` 的真问答链路此前两处都停在 HTTP 层（§5.18 ②

@@ -746,6 +746,54 @@ cd frontend && npm run test:node
   问题文案是页面自带的建议问题（不是我们选的）；`llm_stub` 是测试双，生产上没人给
   `LLM_BASE_URL` 指回环地址。
 
+### 5.22 Wave28：把两条"报出来不动手"的缺口修掉（别人的模块，但已入库）
+
+这两条先前只记账（§6 缺口 14 / 16），因为文件在别人手上。按用户口径，这一轮动手修。
+
+**① 缺口 14：`mock` provider 收不了一轮问答**（`llm.py` 的 `_mock_chat`）
+
+- 它「拿到观察 → 作答」那一支吐的是**裸文本**（既没 `Action:` 也没 `Final Answer:`），
+  而 `agent.py:3443` 的格式失守判定要求二者有其一 → 连拒两轮 → 发 `final(status="error")`。
+  **另两支（素材/知识库）都带 `Thought:` 与标记，只有这支漏了。**
+- 后果不只是"测试不好写"：`mock` 是本仓**唯一零网络的模型路径**，也就是离线演示模式
+  （没装 Ollama、没有 key 时用户看到的那条路）——它同样跑不完一轮。
+- 修法一行：加 `Thought: … ` + `Final Answer: …` 前缀。验证：`/api/chat` 走 mock 打一轮，
+  `final.status` 不再是 error、`chat_sse.verdict` 全绿、而且**第一条工具调用还在**。
+- 一条自己写错的断言：起初我还断言 `final` 文本里应含 `Final Answer:` ——
+  那是**被 agent 消费掉**的标记，`final` 事件里是它之后的正文。改成断言
+  "mock 的答复真的到了客户端"（含 `演示模式·mock LLM`）。
+
+**② 缺口 16：`/api/config` 冷启动 6 秒**（`api.py` 的 `_OLLAMA_CHECK_TTL`）
+
+- **根因是环境，不是代码逻辑**：本机对**关闭的回环端口**做一次裸
+  `socket.connect(("127.0.0.1", 11434))` 要 **2035ms**（正常应 <1ms；`urllib` 走同一条路
+  2071ms）——这台机器上有东西在拖回环连接。所以任何"探活 Ollama"的代码在 Ollama 缺席时
+  都要付 2 秒。
+- **6.1 秒的账算清了**（逐项计时，不是估）：`_live_capability` **4081ms**（首次构造
+  `LLMClient` 时它自己的实时探活）+ `check_ollama` **2030ms** + `_presets_payload` 11ms
+  ≈ 6122ms，实测 6144ms。
+- **病根是 TTL 与探活同量级**：`_OLLAMA_CHECK_TTL` 原值 **2.0**，而探活本身约 2 秒
+  （HTTP 超时写死 3 秒），`ts` 又是在探活**结束**后才写——隔两三秒重开面板就必然重付。
+  原注释里作者已经知道"Windows 上一次被拒也要 ~2s"，但选了 2s 认为"足够新鲜"，
+  没意识到**缓存窗口小于操作耗时等于没有缓存**。
+- 修法：TTL 2.0 → **30.0**，并把上面这些数字写进注释。代价写明：启动 Ollama 后最多 30 秒
+  才看到状态翻转；要即时结果的地方仍可 `check_ollama(force=True)`（`GET /api/ollama/probe`）。
+- **可重跑的对照（同进程 A/B，缓存从"已过期"起算，隔 3 秒再打一次）**：
+  `TTL=2.0 → 2047ms`（又探一次）／`TTL=30.0 → 7ms`（命中缓存）。
+  首次冷启动**仍是 ~6.2 秒**（那份是 `LLMClient` 首次构造的一次性探活，每个进程一次，TTL 帮不到）。
+- 产物：`tests/test_ollama_probe_cache.py` **4 项**（钉住"TTL 必须大于一次探活的预算"
+  这条不变量，以及"窗口内第二次不再探活"这条**行为**判据——只断言常量不够，
+  `ts` 写在哪、`force` 怎么绕都能让一个"看着够大"的 TTL 形同虚设）。
+
+**③ 为什么这两条现在能修**：`llm.py` 与 `api.py` 原本是别人未提交的在途改动（按纪律只报不改）；
+另一条 lane 做了 `e651c9c chore: 归集多lane 的在途改动到仓库` 把它们**入库**之后，
+两个文件的工作树是干净的——"别动别人的在途改动"这条约束在**未提交**这个意义上不再适用。
+改动仍保持最小、且在两处注释里写明这是别人的模块。
+
+- 回归：`test_ollama_probe_cache / test_chat_sse / test_llm_stub / test_format_stall /
+  test_api_routes / test_api_model_config / test_llm_resilience / test_model_capability /
+  test_empty_provider_response / test_dev_eval / test_head_check` **244 passed / 41 subtests**。
+
 ## 6. 已知缺口与建议下一步
 
 | # | 缺口 | 实测依据 | 建议 |
@@ -764,9 +812,9 @@ cd frontend && npm run test:node
 | 11 | ~~引擎不查锚点唯一性~~ **已做（Wave23）** | `tests/mutation/engine.py` 做 `source.replace(old, new, 1)`，锚点出现两次时只改第一处。**先量影响面**：十块电池 256 条锚点里只有 3 条不唯一，全在 `battery_head_check`（`render` 里有 12 空格缩进的同名块，4 空格那份是它的子串） | 已加 `source.count(old) == 1` → 报**问题**；3 条锚点改成带上下文。**仍有**：引擎没有"按平台分层"的概念，所以非 Windows fallback 分支的变异在两个平台里必有一个红（见 §5.17） |
 | 12 | ~~`run_isolated` 仍然零测试~~ **已做（Wave23）** | 它与 `spawn_isolated` 共用 `_create_job`，本次出事故的那行在两个函数里各有一份 | 已补 5 条跨平台 + 3 条 Windows-only 用例（含一条**加入失败后已起来的子进程必须被收掉**的漏进程判据），电池 19 → **25 条变异** |
 | 13 | `run_isolated` 的子进程输出**可能整个丢掉且不报错** | `Popen(..., text=True)` 没给 `encoding`，按本机区域编码解码；本机是 GBK，子进程吐 UTF-8 中文时读线程抛 `UnicodeDecodeError`，那一路变成 `None`（`stdout is None` 而不是报错） | 调用方要么传 ASCII 输出，要么给 `windows_sandbox` 加 `errors="replace"` + 显式 encoding。**只报不改**——它会改变所有适配器进程的行为，不在 Wave23 范围内 |
-| 14 | **`mock` provider 无法完成一轮问答** | `_mock_chat` 的「拿到观察 → 作答」分支（`llm.py:1119-1122`）吐**不带 `Final Answer:` 标记的裸文本**，而 `agent.py:3443` 的格式失守判定连拒两轮后发 `final(status="error")`。实测走完 345 个 chunk 仍然收不了尾 | 让它也带上 `Final Answer:` 前缀（一行）。**只报不改**——`llm.py` 正在被别人改（Wave24） |
+| 14 | ~~**`mock` provider 无法完成一轮问答**~~ **已修（Wave28，§5.22）** | `_mock_chat` 的「拿到观察 → 作答」分支吐**不带 `Final Answer:` 标记的裸文本**，而 `agent.py:3443` 的格式失守判定连拒两轮后发 `final(status="error")`。后果是**离线演示模式**（`mock` 是本仓唯一零网络的模型路径）同样跑不完 | 已加 `Thought:` + `Final Answer:` 前缀；`tests/test_chat_sse.py::MockProviderTests` 2 项钉住"能收尾且先调了工具" |
 | 15 | ~~`dev_apptest` 的问答回合~~ **已做（Wave27 `ask: 1`，§5.21）** | HTTP 层由 §5.18 ②（注入 LLM）与 §5.20（生产 provider 路径）补上；页面那一层由 §5.21 补上——点建议按钮发一轮、按 DOM 断言答案里带着那一次独有的随机夹具名 | **仍缺**：真模型往返（`dev_apptest` 明确不点模型）、以及"页面把答案渲染对了没有"（内容正确性）——本轮只证链路通 |
-| 16 | **`GET /api/config` 冷启动 6.1 秒** | 实测：`check_ollama(force=True)` 自己只要 2.0 s，**另约 4 s 来源未定**；热了 15 ms。工作台把 UI 门控在它上面，于是"文档加载完"与"文件树有行"之间隔 3.3 s（§5.19）。它也是前端那条 `/api/health` 探针被自己掐掉的背景 | 先把那 4 秒定位出来（`api.py` 属别人，本轮只报）。方向：`/api/config` 上有没有别的同步初始化；`ollama_status` 是否可以只在真用到时才算 |
+| 16 | ~~**`GET /api/config` 冷启动 6.1 秒**~~ **已定位并缓解（Wave28，§5.22）** | 账算清了：`_live_capability` 4081ms（首次构造 `LLMClient` 的一次性实时探活）+ `check_ollama` 2030ms + 11ms。**根因是环境**——本机对关闭的回环端口裸 `connect()` 要 **2035ms**（正常 <1ms）。病根是 `_OLLAMA_CHECK_TTL=2.0` 与探活同量级 → 缓存几乎从不命中 | TTL 2.0 → **30.0**（同进程 A/B：隔 3 秒再打 `2047ms → 7ms`）。**仍剩**：首次冷启动 ~6.2 秒（`LLMClient` 首次构造的一次性探活），要再降得让 `check_ollama` 与 `probe_ollama_context` 共用一次探活——跨 `api.py`+`llm.py`，未做 |
 
 ## 7. 共享工作树里的提交规范（实测有效的那套）
 
@@ -928,6 +976,25 @@ test_run / voice_loop / **bat_guard** / **page_action** / **log_view** / **job_l
   不该算进 console 干净"这条判断本来埋在 `_drive_deep_link` 里，只有真浏览器能验；抽成
   `_console_matters(spec)` 之后它和别的判据一样在纯层就能被变异抓住。**边界**：抽出来的是
   **判断**，不是"这条判断在真页面上对不对"——后者仍归现场档。
+- **缓存窗口小于操作耗时，等于没有缓存**（Wave28 实测）。`_OLLAMA_CHECK_TTL = 2.0`，
+  而一次探活本身就要 ~2 秒、HTTP 超时写死 3 秒 —— 一个"看着像个合理的新鲜度"的数字，
+  实际让缓存在冷路径上**几乎从不命中**（`ts` 还是在探活结束之后才写的）。原注释里作者
+  其实已经记下"Windows 上一次被拒也要 ~2s"，但还是选了 2s，因为判断依据是
+  **业务上多新鲜算新鲜**，而不是**这个操作要多久**。**教训**：给一个昂贵操作设缓存时，
+  先量它的耗时，再问"窗口比它大吗"——TTL 的量纲是**秒**，参照物必须包含操作本身的耗时，
+  否则那行代码读起来像优化、实际是装饰。
+- **"2 秒的拒绝"不是 2 秒的逻辑，是 2 秒的环境**（Wave28）。追一条 6 秒的冷启动，
+  逐项计时只凑出 2 秒，剩下 4 秒怎么都对不上；最后量**最底下那一层**才发现：本机对
+  **关闭的回环端口**做裸 `socket.connect("127.0.0.1", 11434)` 要 **2035ms**
+  （正常应 <1ms，`ECONNREFUSED` 立刻返回）。**教训**：把"某次调用很慢"归因到代码之前，
+  先在**最底层的原语**上量一次——`connect`/`open`/`stat` 这些在别的机器上是微秒级的操作，
+  在这台机器上可能有三个数量级的差异，而应用层的每一层都在替它背锅。
+- **测试双要照契约活，不是照脚本活**（Wave28，缺口 14 的另一面）。`mock` provider 的
+  「作答」那一支漏了 `Final Answer:` 标记，于是被 `agent.py:3443` 的格式失守判定连拒两轮
+  ——**它不是"答得不好"，是根本没走完契约要求的形状**。同型的还有一批：另两支（素材/知识库）
+  都带了 `Thought:` 与标记，只有这支漏了，而它偏偏是本仓**唯一零网络**的模型路径
+  （离线演示模式）。**教训**：一个 provider 的五条分支里，四条对、一条不对，
+  在"默认走哪条"之前谁都不会发现。
 - **凭据不能按"位置"挑，要按"它是什么"挑**（Wave27，同一条实测错两次）。
   页面那一档要让桩引述工具输出里的一行当凭据。第一版取**首行**——`list_dir` 的首行是
   表头（`目录 (代码库根) 共 1 项：`），凭据（随机文件名）在第二行；改成取**末行**——观察的
