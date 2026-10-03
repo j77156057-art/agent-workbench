@@ -1534,10 +1534,14 @@ def _evidence_failure_detail(audit):
 
 #: 三值判定的用户可见措辞。措辞参照 Claude Code 的 VERDICT 约定，
 #: 但**必须**满足它自己那条约束：PARTIAL 只留给环境限制，不给"我不确定"当出口。
+#:
+#: PARTIAL 有**两种**含义，措辞必须分开（见 output_audit.verdict_reason）：
+#:   no_root       —— 无法核验：一个字都不能说，更不能说"路径打不开"
+#:   no_read_record—— 引用已逐一核实通过，只是本轮没有读取记录作为旁证
 _VERDICT_LABELS = {
     "PASS": "PASS",
     "FAIL": "FAIL",
-    "PARTIAL": "PARTIAL（环境限制，无法核验）",
+    "PARTIAL": "PARTIAL",
 }
 
 
@@ -1552,7 +1556,15 @@ def _evidence_verdict_note(audit):
     那属于 FAIL——引用确实有问题，只是模型还没改对。
     """
     verdict = str((audit or {}).get("verdict") or "PASS")
+    reason = str((audit or {}).get("verdict_reason") or "")
     refs = [r for r in ((audit or {}).get("references") or []) if isinstance(r, dict)]
+
+    # no_root：我们**根本没有检查过**。此时既不能说"可核验"，更不能说"路径打不开"
+    # ——后者是在断言一件不知道的事。只能说"未检查"。
+    if reason == "no_root":
+        return ("（核验：PARTIAL · 未绑定项目，%d 处引用**未检查**——"
+                "路径与行号都无法核实。绑定项目后可自动核验。）" % len(refs))
+
     verified = [r for r in refs if r.get("exists") and r.get("in_root", True)
                 and r.get("line_ok", True)]
     bad = [r for r in refs if r not in verified]
@@ -1564,7 +1576,7 @@ def _evidence_verdict_note(audit):
 
     parts = ["（核验：%s" % _VERDICT_LABELS.get(verdict, verdict)]
     if refs:
-        parts.append("· %d 处引用可核验" % len(verified))
+        parts.append(" · %d 处引用可核验" % len(verified))
     if bad:
         why = []
         if any(not (r.get("exists") and r.get("in_root", True)) for r in bad):
@@ -1572,10 +1584,21 @@ def _evidence_verdict_note(audit):
         if any(not r.get("line_ok", True) for r in bad) and \
                 all((r.get("exists") and r.get("in_root", True)) for r in bad):
             why.append("行号越界")
-        parts.append("· %d 处未通过（%s）：%s"
-                     % (len(bad), "、".join(why) or "未通过", "、".join(label(r) for r in bad[:6])))
+        parts.append(" · %d 处未通过（%s）：%s"
+                     % (len(bad), "、".join(why) or "未通过",
+                        "、".join(label(r) for r in bad[:6])))
     parts.append("）")
-    return "".join(parts) + "\n未核实的引用请自行打开对应文件确认后再据此修改代码。"
+    note = "".join(parts)
+    if reason == "no_read_record":
+        # 引用本身已核实通过，只说明缺旁证——不能和「无法核验」混为一谈。
+        note += "\n引用已逐一核实通过（路径存在、行号在范围内）；本轮没有读取记录作为旁证。"
+    # 「请自行确认」这句**只在有未通过项时**出现。
+    # 之前它是无条件拼在后面的，于是 PASS 的输出是
+    #   「（核验：PASS · 3 处引用可核验）未核实的引用请自行打开对应文件确认…」
+    # ——全部核实通过却仍让用户去逐个复查，正好抵消了给出正向信号的意义。
+    if bad:
+        note += "\n未核实的引用请自行打开对应文件确认后再据此修改代码。"
+    return note
 
 
 def _strip_internal_prompt_leak(text):
@@ -3776,6 +3799,15 @@ class Agent:
                     final_text += "\n\n（模型连续达到单次输出上限，以上为已生成正文，回答尚未结束；可继续本轮任务。）"
                     yield {"type": "final", "status": "error", "text": final_text}
                     return
+                # 定位类问题即使全通过也报一句结论。
+                #
+                # 此前只在**失败**时说话，于是这个设计**从不给正向信号**——用户看到
+                # 一串精确到行号的引用，却无从知道它们是否被检查过。这正是它长期
+                # 不可信的原因：只在出错时说话的系统，人们没法学会信任它。
+                #（另：上一版我在提交信息里声称"PASS 时会报N 处引用可核验"，
+                #  实际上并没有实现——那句是自己写的，这次补上并有测试钉住。）
+                if evidence_audit.get("required") and evidence_audit.get("references"):
+                    final_text = final_text.rstrip() + "\n\n" + _evidence_verdict_note(evidence_audit)
                 self.history.append({"user": question, "assistant": final_text})
                 yield {"type": "final", "text": final_text}
                 return

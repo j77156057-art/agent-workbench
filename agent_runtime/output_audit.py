@@ -118,14 +118,20 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # PARTIAL 只留给**环境限制**（无法核验），不给「我不确定」当逃逸口——
     # 这是 Claude Code 明确设计过的约束（"PARTIAL is for environmental limitations
     # only ... not for 'I'm unsure whether this is a bug'"）。
+    #
+    # 两种 PARTIAL 的**含义完全不同**，措辞必须分开：
+    #   no_root       —— 没有代码根，**根本无法检查**，一个字都不能说；
+    #   no_read_record—— 引用已逐一核实通过，只是本轮没有读取记录作为旁证。
+    # 早先两者共用「环境限制，无法核验」一句话，于是第二种明明核实过了却被说成
+    # "无法核验"；更糟的是第一种会把每一条引用都列成「未通过（路径打不开）」——
+    # 我们压根没检查过，凭什么断言路径有问题。**在说一件它不知道的事。**
     verdict = "PASS"
+    verdict_reason = ""
     if not gate_ok:
-        # 能查、且查出了问题 -> FAIL。这是事实问题，不是"不确定"。
         verdict = "FAIL"
     elif required and not successful_read:
-        # 引用全部可核验，但本轮没有成功读取记录：结论仍可用（引用能被打开且行号有效），
-        # 只是没有"本轮读过"这一条旁证。归为 PARTIAL 而非 FAIL。
         verdict = "PARTIAL"
+        verdict_reason = "no_read_record"
     # Without a project root, do not manufacture a filesystem failure; the
     # read_file trace is still useful and the caller can surface this gap.
     if required and refs and not root:
@@ -137,6 +143,7 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
         gate_checks["references_exist"] = True
         gate_checks["reference_lines_valid"] = True
         verdict = "PARTIAL" if successful_read else "FAIL"
+        verdict_reason = "no_root"
     return {"ok": bool(all(value for key, value in checks.items()
                              if key != "location_question")),
             # 只看事实项的判定结果。调用方应当用它驱动闸门与用户可见结论，
@@ -144,6 +151,7 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             "gate_ok": gate_ok,
             "gate_checks": gate_checks,
             "verdict": verdict,
+            "verdict_reason": verdict_reason,
             "required": required, "checks": checks,
             "references": file_checks, "verified_references": valid_refs,
             "read_steps": len(read_steps)}

@@ -109,7 +109,8 @@ class VerdictRenderingTests(unittest.TestCase):
 
     def _audit(self, **kw):
         base = {"checks": {}, "references": [], "verdict": "PASS",
-                "required": True, "gate_ok": True, "gate_checks": {}}
+                "verdict_reason": "", "required": True,
+                "gate_ok": True, "gate_checks": {}}
         base.update(kw)
         return agent_mod._evidence_verdict_note(base)
 
@@ -120,6 +121,31 @@ class VerdictRenderingTests(unittest.TestCase):
         self.assertIn("PASS", note)
         self.assertIn("2 处引用可核验", note)
 
+    def test_pass_must_not_tell_the_user_to_double_check(self):
+        """全部核实通过却仍让用户逐个复查，正好抵消了给出正向信号的意义。
+
+        之前这句是无条件拼在后面的：PASS 的输出是
+        「（核验：PASS · 3 处引用可核验）未核实的引用请自行打开对应文件确认…」。
+        """
+        refs = [{"path": "a.gd", "start_line": 7, "exists": True, "in_root": True, "line_ok": True}]
+        note = self._audit(verdict="PASS", references=refs)
+        self.assertNotIn("未核实的引用", note,
+                         "PASS 时仍要求用户自行复查——那等于没给出任何正向信号")
+
+    def test_pass_is_actually_rendered_by_the_agent_loop(self):
+        """上一版我在提交信息里声称「PASS 时会报 N 处引用可核验」，实际没实现。
+
+        这里把它钉住，避免又出现一次「文档说了、代码没做」。
+        """
+        import inspect
+        src = inspect.getsource(agent_mod.Agent._run)
+        self.assertIn(
+            'if evidence_audit.get("required") and evidence_audit.get("references"):', src,
+            "定位类问题全通过时不渲染任何核验结论——用户无从知道引用是否被检查过")
+        self.assertGreaterEqual(
+            src.count("_evidence_verdict_note(evidence_audit)"), 2,
+            "渲染点只有失败分支那一个，PASS 分支没接上")
+
     def test_fail_names_the_bad_references(self):
         refs = [{"path": "a.gd", "start_line": 7, "exists": True, "in_root": True, "line_ok": True},
                 {"path": "hud.gd", "start_line": 20, "exists": False, "in_root": True, "line_ok": False}]
@@ -128,10 +154,20 @@ class VerdictRenderingTests(unittest.TestCase):
         self.assertIn("hud.gd:20", note, "必须点名未通过的引用")
         self.assertIn("路径打不开", note, "要说清是哪一类问题")
 
-    def test_partial_is_labelled_as_an_environment_limit(self):
-        note = self._audit(verdict="PARTIAL", references=[])
-        self.assertIn("环境限制", note,
-                      "PARTIAL 必须标明是环境限制，否则它会退化成「我不确定」")
+    def test_partial_is_labelled_by_its_reason_not_by_a_single_phrase(self):
+        """PARTIAL 有两种含义，不能共用一句话。
+
+        早先的断言写的是「PARTIAL 必须标明是环境限制」——那把 bug 编码进去了：
+        "引用已核实通过、只是缺读取记录"根本不是环境限制。
+        """
+        no_root = self._audit(verdict="PARTIAL", verdict_reason="no_root", references=[])
+        self.assertIn("未检查", no_root,
+                      "无法核验时必须说「未检查」，而不是笼统一句 PARTIAL")
+
+        no_read = self._audit(verdict="PARTIAL", verdict_reason="no_read_record", references=[])
+        self.assertIn("引用已逐一核实通过", no_read,
+                      "引用已核实通过时要说清这一层，否则用户以为自己没被检查")
+        self.assertNotIn("无法核验", no_read)
 
     def test_the_old_scary_wording_is_gone(self):
         """旧文案把原因说错（是没读，不是路径/行号问题），且已被证明会误导。
@@ -176,6 +212,48 @@ class VerificationAvoidanceIsNamedTests(unittest.TestCase):
         import agent as A
         self.assertIn("我没核实", A.SYSTEM_PROMPT,
                       "必须允许如实声明未核实——否则模型只能假装确认过")
+
+
+@unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+class PartialMeansTwoDifferentThingsTests(unittest.TestCase):
+    """两种 PARTIAL 的含义完全不同，措辞必须分开。
+
+    早先两者共用「环境限制，无法核验」一句话，于是第二种明明核实过了却被说成
+    「无法核验」；更糟的是第一种会把每条引用都列成「未通过（路径打不开）」——
+    我们压根没检查过，**凭什么断言路径有问题**。
+    """
+
+    def test_no_read_record_says_the_refs_were_checked(self):
+        out = audit_evidence({"text": ANSWER, "trace": {"steps": []}},
+                             question=QUESTION, code_root=PROJECT)
+        self.assertEqual(out["verdict_reason"], "no_read_record")
+        note = agent_mod._evidence_verdict_note(out)
+        self.assertIn("2 处引用可核验", note)
+        self.assertNotIn("无法核验", note,
+                         "引用已核实通过，却报成「无法核验」——两回事")
+
+    def test_no_code_root_does_not_claim_the_path_is_bad(self):
+        out = audit_evidence({"text": ANSWER, "trace": {"steps": []}},
+                             question=QUESTION, code_root="")
+        self.assertEqual(out["verdict_reason"], "no_root")
+        note = agent_mod._evidence_verdict_note(out)
+        self.assertIn("未检查", note)
+        self.assertNotIn("路径打不开", note,
+                         "没有代码根时我们从未检查过路径，断言它打不开是在说不知道的事")
+        self.assertNotIn("未核实的引用请自行打开", note,
+                         "无法核验 ≠ 引用有问题，不该让用户去逐个自查")
+
+    def test_every_verdict_reason_is_carried_through(self):
+        """新增分支时若忘了带 reason，措辞会退回默认那套。"""
+        for steps, root, expected in (
+            (READ, PROJECT, ""),          # PASS
+            ([], PROJECT, "no_read_record"),
+            (READ, "", "no_root"),
+        ):
+            out = audit_evidence({"text": ANSWER, "trace": {"steps": steps}},
+                                 question=QUESTION, code_root=root)
+            self.assertEqual(out.get("verdict_reason"), expected,
+                             "root=%r steps=%r 的 reason 不对" % (root, len(steps)))
 
 
 if __name__ == "__main__":
