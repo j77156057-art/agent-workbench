@@ -188,7 +188,22 @@ class PathArgumentIsConsistentAcrossToolsTests(unittest.TestCase):
 
 
 class UnrecognisedRangeSyntaxIsNamedTests(unittest.TestCase):
-    """认不出来的写法必须**点名**，否则报错会把语法问题伪装成路径问题。"""
+    """认不出来的写法必须**点名**，否则报错会把语法问题伪装成路径问题。
+
+    ## `start=1` 为什么不再出现在这个类里
+
+    它原来拿 `start=1` 当「认不出的写法」的代表。2026-10 那轮把 `=` 加进
+    `_RE_READ_START` 的分隔符之后（连同 `start_line=` / `start-line:`），
+    **这一类已经合法可用**——继续断言它必须被点名，就是逼着把功能退回去。
+
+    所以这里换成**仍然**认不出的形状来守同一个意图。守住意图的是
+    「`区间参数未识别` 而不是 `文件不存在`」这条，不是某一个具体拼法。
+
+    另有一处同类修正：`=` 也加进了 `_RE_PATH_KEY_LINE` 的分隔符，否则会出现
+    「`start=` 认得、`path=` 不认」——**只放宽一半比不放宽更糟**，因为模型会
+    以为自己已经写对了。键名放宽只影响 `read_file`（该正则全仓库仅
+    `_strip_path_key` 使用，后者只在 `read_file` 里调用）。
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -201,15 +216,74 @@ class UnrecognisedRangeSyntaxIsNamedTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_equals_syntax_is_flagged_as_syntax_not_path(self):
+    def test_equals_syntax_is_accepted_not_flagged(self):
+        """`start=1` 现在直接可用——**别把功能退回去换一句更好听的报错**。"""
         out = tools.read_file("behaviors/player.gd start=1")
-        self.assertIn("区间参数", out,
-                      "start=1 没被识别时，报错必须说明是区间参数写法问题——"
-                      "否则「文件不存在：behaviors/player.gd start=1」会让人以为是路径错了")
+        self.assertIn("第 1-1 行", out,
+                      "`start=1` 又被当成语法错误了：%s" % out[:90])
+        self.assertNotIn("区间参数未识别", out)
+
+    def test_equals_works_on_the_key_prefix_too(self):
+        """只放宽区间参数、不放宽 `path=` 是不够的。"""
+        out = tools.read_file("path=behaviors/player.gd start=1")
+        self.assertNotIn("文件不存在", out,
+                         "`path=` 没被剥掉——而 `start=` 认得、键名不认，"
+                         "模型会以为自己已经写对了：%s" % out[:90])
 
     def test_line_range_shorthand_is_flagged(self):
         out = tools.read_file("behaviors/player.gd 行1-55")
         self.assertIn("区间参数", out)
+
+    def test_a_non_numeric_range_value_is_flagged(self):
+        """`start: abc` 曾落到裸「文件不存在」——语法问题伪装成路径问题。"""
+        out = tools.read_file("behaviors/player.gd start: abc")
+        self.assertIn("区间参数未识别", out, out[:90])
+        self.assertNotIn("文件不存在", out)
+
+    def test_ellipsis_range_is_flagged(self):
+        out = tools.read_file("behaviors/player.gd start..5")
+        self.assertIn("区间参数未识别", out, out[:90])
+
+    def test_chinese_natural_language_range_is_flagged(self):
+        """中文提示下模型会写「从1到5行」——同样不许报成「文件不存在」。"""
+        out = tools.read_file("behaviors/player.gd 从1到5行")
+        self.assertIn("区间参数未识别", out, out[:90])
+
+    def test_every_unrecognised_shape_is_named_rather_than_called_missing(self):
+        """一张表过一遍：每种形状都必须落在 `区间参数未识别`，绝不落进 `文件不存在`。"""
+        for tail in ("行1-55", "line 1-55", "lines 1-55", "start: abc",
+                     "start..5", "从1到5行", "从1至5行"):
+            with self.subTest(tail=tail):
+                out = tools.read_file("behaviors/player.gd " + tail)
+                self.assertIn("区间参数未识别", out, "%r → %s" % (tail, out[:90]))
+                self.assertNotIn("文件不存在", out, "%r 被报成路径问题" % tail)
+
+    def test_a_real_missing_file_is_still_reported_as_missing(self):
+        """点名语法问题不能反噬：真的不存在就是「文件不存在」。"""
+        out = tools.read_file("behaviors/nope.gd")
+        self.assertIn("文件不存在", out)
+        self.assertNotIn("区间参数未识别", out)
+
+    def test_paths_that_merely_look_like_syntax_are_not_flagged(self):
+        """真路径里带 `start` / `行1-55` / `end=` 的不许被当成参数。
+
+        前导的「行首/空白/逗号」边界就是为这件事准备的：这些 `start`
+        前面是 `/`、后面是 `_`，不构成独立词。
+        """
+        for rel in ("docs/start.md", "start_v2.gd", "behaviors/end.md",
+                    "lines.md", "行1-55.md"):
+            with self.subTest(rel=rel):
+                with tempfile.TemporaryDirectory() as tmp:
+                    full = os.path.join(tmp, rel.replace("/", os.sep))
+                    os.makedirs(os.path.dirname(full), exist_ok=True)
+                    with open(full, "w", encoding="utf-8") as handle:
+                        handle.write("ok\n")
+                    with patch.object(tools, "_get_code_root", return_value=tmp):
+                        out = tools.read_file("path: " + rel)
+                    self.assertNotIn("区间参数未识别", out,
+                                     "%r 被误判成参数写法问题：%s" % (rel, out[:90]))
+                    self.assertTrue(out.lstrip().startswith("==="),
+                                    "%r 应该读得到内容：%s" % (rel, out[:90]))
 
 
 class EmptyResponseBlamesTheToolFailuresTests(unittest.TestCase):

@@ -3572,12 +3572,53 @@ def _path_within_real_root(root, target):
 #: 分隔符给到 空格/逗号/分号/换行 —— 模型实际输出的写法比工具说明里的示例更随意，
 #: 收紧语法等于让模型在一个纯语法问题上反复试错，而每次失败的报错都把整串
 #: 当成路径回显，模型只会去换路径分隔符（实测连试四次全失败）。
-_RE_READ_START = re.compile(r"(?:^|[\s,，;；])start\s*[:：]\s*(\d+)", re.I)
-_RE_READ_END = re.compile(r"(?:^|[\s,，;；])end\s*[:：]\s*(\d+)", re.I)
+#:
+#: 分隔符同时接受 `:` `：` `=` `＝`；参数名同时接受 `start` / `start_line` /
+#: `startLine` / `start-line`。这是**把上一条修复贯彻到底**——只补 `:` 与
+#: `start_line` 等于让模型把 `:` 敲成 `=` 就又掉回同一个坑，而那正是这一层
+#: 要治的「文件明明在、报错说它不在」。实测三种死路形状完全一致。
+_RE_READ_START = re.compile(
+    r"(?:^|[\s,，;；])(?:start|start[_\-]?line)\s*(?:[:：=＝])\s*(\d+)", re.I)
+_RE_READ_END = re.compile(
+    r"(?:^|[\s,，;；])(?:end|end[_\-]?line)\s*(?:[:：=＝])\s*(\d+)", re.I)
 #: 识别不出来的残留（`start=1`、`行1-55` 之类）——用于把语法问题与路径问题区分开。
+#:
+#: **`start_line:` / `end_line:` 是第四层**（前三层见下面 `_RE_PATH_KEY_LINE` 的说明）。
+#: 实测（`wf-2c5612c6ee53`）：模型写
+#: `read_file(path: project.godot, start_line: 6, end_line: 8)`，得到
+#: `文件不存在：project.godot, start_line: 6, end_line: 8`
+#: ——**那个文件明明就在那儿**，而报错断言它不存在。模型于是去找别的路径写法，
+#: 连试四次全失败（与前三次同一形状）。
+#:
+#: 而重规划器给的任务里明写着「按行范围分段读取」——**它建议了一件工具做不到的事**。
+#: 参数 schema 里写的是 `start`/`end`，但 `start_line:` 是同样自然的写法，
+#: 而收紧语法等于让模型在一个纯语法问题上反复试错。所以两种都认。
+#: 区间参数**认不出来**时残留在 path 里的片段——用于把语法问题与路径问题区分开。
+#:
+#: 这个正则的**唯一职责**是：宁可点名，也不让「参数写法不对」伪装成「文件不存在」。
+#: 之前它只认两种形状（`start=1` / `行1-55`），于是实测还漏了四种：
+#:
+#:     path= b/a.gd start=1      → 文件不存在：path= b/a.gd      （键名的等号，见 _RE_PATH_KEY_LINE）
+#:     path: b/a.gd start: abc   → 文件不存在：…start: abc        （值不是数字）
+#:     path: b/a.gd 从1到5行      → 文件不存在：…从1到5行           （中文自然语言区间）
+#:     path: b/a.gd start..5     → 文件不存在：…start..5          （省略号）
+#:
+#: 四种都撞在同一句报错上——**和这一层要治的病一模一样**，只是换了几种拼法。
+#: 「放宽了主正则」不等于「覆盖了所有拼法」，所以这里按形状逐个补。
+#: 误伤防护靠前导的「行首/空白/逗号」边界：真路径里的 `start` 不会独立成词
+#: （`docs/start.md` 的 `start` 前面是 `/`、`start_v2.gd` 后面是 `_`），而中文那条
+#: 靠 `从` 字——路径里出现 `从` 的概率与出现 `行1-55` 一样低。
 _RE_READ_STRAY = re.compile(
-    r"(?:^|[\s,，;；])(?:start|end)\s*(?:=|＝|：|:)\s*\d+"
-    r"|(?:^|[\s,，;；])(?:行|line)\s*\d+\s*[-—~]\s*\d+", re.I)
+    # ① 值不是数字：`start: abc` / `end= ?`
+    r"(?:^|[\s,，;；])(?:start|end)(?:[_\-]?line)?\s*[:：=＝]\s*[^\s\d,，;；]"
+    # ② 省略号区间：`start..5` / `start…5`
+    r"|(?:^|[\s,，;；])(?:start|end)(?:[_\-]?line)?\s*(?:\.\.|\u2026)\s*\d+"
+    # ③ 正常写法在主正则失配时的兜底（当前形状下主正则先吃，这里是安全网）
+    r"|(?:^|[\s,，;；])(?:start|end)(?:[_\-]?line)?\s*(?:=|＝|：|:)\s*\d+"
+    # ④ `行1-55` / `line 1-55` / `lines 1-55`
+    r"|(?:^|[\s,，;；])(?:行|lines?)\s*\d+\s*[-—~]\s*\d+"
+    # ⑤ 中文自然语言区间：`从1到5行`（不要求前导边界——`从` 本身就够罕见）
+    r"|从\s*\d+\s*(?:到|至|~|-)\s*\d+\s*行", re.I)
 #: 键名式路径参数：`path: a.gd` / `file: a.gd`。
 #:
 #: 这是同一个问题的**第三层**：上一轮修好了行内 start:/end:，模型随即改写成
@@ -3593,7 +3634,7 @@ _RE_READ_STRAY = re.compile(
 #: 时才把 `path:` 当作用域，因为单行的 `path: TODO` 在 grep 里是要搜索的字面文本。
 #: 那是另一个语义，不要为了"统一"而改grep——改了就搜不到含 "file: " 的正文。
 #: 一致性由 tests/test_tool_arg_syntax_tolerance.py 的跨工具断言守住。
-_RE_PATH_KEY_LINE = re.compile(r"^\s*(?:path|file|filename)\s*[:：]\s*(.+?)\s*$", re.I)
+_RE_PATH_KEY_LINE = re.compile(r"^\s*(?:path|file|filename)\s*[:：=＝]\s*(.+?)\s*$", re.I)
 
 
 def _strip_path_key(value: str) -> str:
