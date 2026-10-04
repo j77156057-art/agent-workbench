@@ -30,6 +30,50 @@ def _append(rows: list[str], value: Any, *, limit: int = _MAX) -> None:
         rows.append(text)
 
 
+def _review_wording(workflow_review: Mapping[str, Any] | None) -> str:
+    """把复核结论写成一句**不撒谎**的话。
+
+    ## 为什么不能直接读 `review["ok"]`
+
+    `review["ok"]` 是 `agent_ok and project.ok` 的**与**，只有一个布尔，于是
+    「无法验证」被翻译成了「有未通过项」。
+
+    实测（六次真跑，`workflow_reflection.py` 旧第125 行**无条件**加那半句）：
+
+        wf-f609ea8daf22  已完成 3/3 个任务；仍需检查未通过项   <- 非ok任务：无
+        wf-fc3cf86c5eaf  已完成 4/4 个任务；仍需检查未通过项   <- 非ok任务：无
+        wf-fd543f79c197  已完成 3/3 个任务；仍需检查未通过项   <- 非ok任务：无
+        wf-e042489bf0fe  已完成 4/4 个任务；仍需检查未通过项   <- 非ok任务：无
+        wf-af6a2e4a9b2b  已完成 4/4 个任务；仍需检查未通过项   <- 非ok任务：无
+
+    `review.project.status` 是 `unverified`，四个原因**全都是「无法验证」**：
+
+        试做区没有容器级命令隔离 / 变更文件超过单轮审核上限
+        执行前快照有遗漏 / 项目有变更但未配置独立测试命令
+
+    那里**没有任何未通过项**。「仍需检查未通过项」这句话是在编造事实，
+    而且它和 `uncertainties` 里已经如实记着的「当前没有足够的独立验证证据」
+    自相矛盾。
+
+    ## 为什么只放行 `unverified`
+
+    `independent_review.py` 的 status 取值里还有一个 **`failed`**
+    （"独立测试失败或沙箱不可用"）——**那才是真的有东西没过**，必须照旧说
+    「仍需检查未通过项」。所以判据是 status 而不是 `project.ok`：
+    `ok=False` 有两种完全不同的含义，只有一种叫「未通过」。
+
+    与 `24c845c` / `3a5f8dc` 同一族：同一个被压扁的布尔，这是第三个下游消费者。
+    """
+    review = workflow_review if isinstance(workflow_review, Mapping) else {}
+    if review.get("ok") is True:
+        return "工作流复核通过"
+    project = review.get("project")
+    project = project if isinstance(project, Mapping) else {}
+    if review.get("agent_ok") is True and project.get("status") == "unverified":
+        return "内容复核通过 · 未做独立验证"
+    return "仍需检查未通过项"
+
+
 def _result_map(state: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     raw = state.get("results")
     if not isinstance(raw, Mapping):
@@ -114,6 +158,10 @@ def build_self_review(state: Mapping[str, Any] | None) -> dict[str, Any]:
         confidence = ok_count / task_count
     if workflow_review.get("ok") is True:
         confidence = min(1.0, confidence + 0.2)
+    # 注意 `confidence` 这里**刻意**继续读压扁的 `review["ok"]`：`unverified`
+    # 让它拿不到那 +0.2，是**对的**——没有独立验证就该少一点自信。
+    # 被改掉的是 summary 那句**陈述事实**的话（见 `_review_wording`）：
+    # 少一点自信是判断，宣称「有未通过项」是造谣，两者不该一起改。
     if uncertainties:
         confidence = max(0.0, confidence - min(0.4, len(uncertainties) * 0.05))
     return {
@@ -122,7 +170,7 @@ def build_self_review(state: Mapping[str, Any] | None) -> dict[str, Any]:
         "source": "execution_evidence",
         "confidence": round(max(0.0, min(1.0, confidence)), 2),
         "summary": _text(
-            "已完成 %d/%d 个任务；%s" % (ok_count, task_count, "工作流复核通过" if workflow_review.get("ok") else "仍需检查未通过项"),
+            "已完成 %d/%d 个任务；%s" % (ok_count, task_count, _review_wording(workflow_review)),
             240,
         ),
         "changed": changed[:_MAX],
