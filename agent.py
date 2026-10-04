@@ -1756,6 +1756,41 @@ def _is_failure(obs):
     return any(marker in obs for marker in _FAILURE_MARKERS)
 
 
+def _probe_audit_root(code_root, refs):
+    """复核那一刻把 `code_root` 与前几条引用落盘——**它此刻是空的**。
+
+    实测（`wf-36f98063aab9`，六次尝试 `references_exist` 全 False，而
+    `reflection issues=0`）：已排除的可能是
+    contextvar 不跨线程（实测 `copy_context` 后工作线程读到的就是试做区根）、
+    试做区里没有那些文件（实测 `behaviors/player.gd` 存在）、正则切错路径
+    （实测切出 `'behaviors/player.gd'` 带正确行号）。
+
+    剩下的唯一解释：`code_root` 是**空串**。`output_audit` 里
+    `root = Path(code_root).resolve() if code_root else None` -> `root=None`
+    -> 相对路径在**进程当前目录**下解析，而那是 DocMind 仓库 ->
+    `is_file()` False；而 `in_root` 因为 `root is None` 保持初值 `True`。
+    **这恰好就是实测到的那一对组合。**
+
+    落盘默认关闭（`DOCMIND_PROBE_LLM`），诊断不得变成常态开销。
+    """
+    try:
+        if not os.getenv("DOCMIND_PROBE_LLM", "").strip():
+            return
+        import time
+        root_dir = os.path.join(os.getcwd(), _STALL_PROBE_DIR)
+        os.makedirs(root_dir, exist_ok=True)
+        path = os.path.join(root_dir, "audit-root-%s.json" % time.strftime("%H%M%S"))
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"code_root": repr(code_root),
+                       "cwd": os.getcwd(),
+                       "get_runtime": repr(get_runtime("code_root", "")),
+                       "n_refs": len(refs or []),
+                       "refs": [dict(r) for r in (refs or [])[:5]]},
+                      handle, ensure_ascii=False, indent=1, default=str)
+    except Exception:  # noqa: BLE001 —— 诊断绝不能让复核失败
+        pass
+
+
 def _audit_live_answer(text, question, trail, executed_steps=None):
     """Build a bounded evidence trace for the direct-chat final-answer gate.
 
@@ -1788,10 +1823,13 @@ def _audit_live_answer(text, question, trail, executed_steps=None):
             elif (message.get("role") == "user"
                   and content.startswith("Observation:") and pending is not None):
                 pending["ok"] = not _is_failure(content)
-    return audit_evidence(
+    root = get_runtime("code_root", "")
+    result = audit_evidence(
         {"text": text, "trace": {"steps": steps}},
-        question=_user_question(question), code_root=get_runtime("code_root", ""),
+        question=_user_question(question), code_root=root,
     )
+    _probe_audit_root(root, (result or {}).get("references") or [])
+    return result
 
 
 #: 证据门禁各项失败时该说什么。键与 output_audit.audit_evidence 的 checks 一一对应。

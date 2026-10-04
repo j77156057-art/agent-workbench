@@ -116,6 +116,93 @@ def _trace_steps(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, (list, tuple)) else []
 
 
+def _read_paths_from_actions(actions: Any) -> list[str]:
+    """从动作文本里取出**本轮 read_file/grep/search_code 真正读过的路径**。
+
+    真实记录里动作是带参数的整句，而形状不止一种（实测三种都在用）：
+
+        read_file(path: behaviors/player.gd, start: 26, end: 49)
+        read_file(behaviors/player.gd)
+        grep(pattern: GRAVITY|detect path: behaviors/enemy)
+
+    第三种里 `path` 前面是空格、值后面跟着收尾括号；第一种里键名紧跟左括号；
+    第二种**根本没有键名**（原生 FC 通道的独立 `path` 参数拼回来的形状）。
+    所以两条正则都要：先找带键名的，找不到再退回「第一个像路径的实参」。
+
+    切不干净不会造成误命中：多出来的字符只会让 basename 带分隔符而匹配不上，
+    而**匹配不上等于退回原判定**，不会误判为通过。
+    """
+    found: list[str] = []
+    keyed = re.compile(r"(?:path|file|filename)\s*[:：]\s*([^\s,;()]+)", re.I)
+    bare = re.compile(r"^\s*([^\s,;()]+(?:\.[A-Za-z0-9_]+)+)\s*$")
+    for action in (actions or []):
+        text = str(action or "")
+        if not re.match(r"\s*(?:read_file|grep|search_code)\s*\(", text, re.I):
+            continue
+        for line in text.splitlines():
+            hit = keyed.search(line)
+            if hit:
+                found.append(_strip_uri_scheme(hit.group(1)))
+                continue
+            # 无键名：取括号内的第一个实参。`read_file(behaviors/player.gd)` 与
+            # `grep(pattern: X)path: y` 都靠这条（后者的 path: 已被 keyed 命中）。
+            inside = re.search(r"\(([^)]*)\)", line)
+            if not inside:
+                continue
+            for token in re.split(r"[,;]", inside.group(1)):
+                token = bare.match(token.strip())
+                if token:
+                    found.append(_strip_uri_scheme(token.group(1)))
+    return found
+
+
+def _basename_index(paths: Any) -> dict[str, list[str]]:
+    """本轮**实际读过**的路径，按裸文件名建索引。
+
+    ## 为什么需要它
+
+    实测（`wf-54651f11c4a0`）：子代理用 `read_file(path: behaviors/enemy.gd)` 成功
+    读到全文，结论里写的是裸文件名 `enemy.gd`——复核判 `exists=false`，于是
+    `references_exist: false` 把**整份结论**否掉，而同一份结论里的
+    `behaviors/player.gd:8`、`project.godot` 全部 `exists=true line_ok=true`。
+
+    ## 这不是放水
+
+    打不开的理由是「根下没有 `enemy.gd`」——但**子代理刚刚读过它**，观察里有
+    全文（`traj` 里那条 obs 就是证据），而 harness 自己记着这件事却不用。
+    拿「根下查不到」去否一条「我们自己看见它被读过」的引用，是判据在打自己的脸。
+
+    ## 与既有那条规矩的关系
+
+    本文件此前写过一条「裸文件名**照常判定**：它在根下确实不存在」——**那条注释的
+    推理方向错了**。它论证的是「该检查跑得了，所以必须判」，可它漏了自己手上
+    就有更好的证据来源：不是文件系统，而是**本轮真实执行记录**。
+
+    两者不冲突：文件系统查得到就直接判；查不到时**先问「这轮读过吗」**，读过就认。
+    只有两者都否才判打不开——那才是真的打不开。
+
+    ## 为什么不能用「宽松匹配」糊过去
+
+    只在**本轮 traj 里出现过**的路径上生效。凭空写一个 `foo.gd` 而这轮没读过，
+    依然判打不开。这里索引的是执行记录，不是全库文件名。
+
+    ## 索引的是**读过的完整路径的裸文件名部分**
+
+    输入是 `behaviors/enemy.gd` 这类**读过的完整路径**，而查询方拿着的是
+    `enemy.gd`。所以索引键取**最后一段**——之前写成「跳过带目录的路径」把索引
+    建空了，等于整条兜底从未生效（实测：路径提取全对，兜底仍不触发）。
+    """
+    index: dict[str, list[str]] = {}
+    for raw in (paths or []):
+        norm = _strip_uri_scheme(str(raw or "")).strip()
+        if not norm:
+            continue
+        base = norm.rsplit("/", 1)[-1]
+        if base and base not in (".", ".."):
+            index.setdefault(base.lower(), []).append(norm)
+    return index
+
+
 def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
                    code_root: str = "", require_read: bool | None = None) -> dict[str, Any]:
     """Check that a location answer is backed by a readable source file.
@@ -151,6 +238,8 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
                      "end_line": int(match.group(3) or match.group(2)) if match.group(2) else None})
     file_checks = []
     root = Path(code_root).resolve() if code_root else None
+    # 本轮真实读过的路径（从 action 文本里取），供裸文件名回退判定用。
+    read_basenames = _basename_index(_read_paths_from_actions(actions))
     for ref in refs[:50]:
         rel = ref["path"]
         path = Path(rel)
@@ -176,7 +265,20 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
         except (OSError, ValueError):
             exists = False
             line_ok = True  # 同上：打不开 -> 行号问题不适用，不是「越界」
-        file_checks.append(dict(ref, exists=exists, in_root=in_root, line_ok=line_ok))
+        # 裸文件名 + 文件系统查不到 -> 再问一次「这轮读过吗」。
+        # 见 `_basename_index` 的说明：子代理确实读过它，观察里有全文，
+        # 而 harness 自己记着这件事却不用，拿根下查不到去否它是在打自己的脸。
+        # `read_verified` 单独记一份，避免把「文件系统有」与「这轮读过」混成一件事。
+        read_verified = False
+        if not exists and read_basenames:
+            hits = read_basenames.get(rel.lower())
+            if hits:
+                exists = True
+                read_verified = True
+                if root is not None and not path.is_absolute():
+                    in_root = True  # 已确认存在，无需再判越界
+        file_checks.append(dict(ref, exists=exists, in_root=in_root,
+                                line_ok=line_ok, read_verified=read_verified))
     # A trace can be supplied by a workflow runner or by a direct Agent.  A
     # successful flag is the only portable signal; failure observations remain
     # evidence of an attempted read, not proof of verification.
