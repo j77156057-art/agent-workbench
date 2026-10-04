@@ -1043,8 +1043,37 @@ _CAPACITY_HELP_RE = re.compile(
 
 
 def _capacity_help_response(question, session_id="", llm=None, run_budget=None):
-    """Return a zero-token answer for explicit capacity/limit questions."""
-    user_question = _user_question(question)
+    """Return a zero-token answer for explicit capacity/limit questions.
+
+    ## 判定对象是**用户/任务自己的话**，不是整段提示词
+
+    实测（`tests/test_workflow_step_budget.py::NavFreeStepsTests` 四条 +
+    `tests/test_agent.py::test_planner_cannot_widen_tools_or_enable_mcp`，
+    五条同一个根因）：**每一个 `planner` 子代理都被短路成一张零 token 的能力说明**——
+
+        status=ok   steps=0   工具调用 0 次
+        conclusion = "这是本地能力说明，不会消耗模型 Token。…四项默认都是 0＝不限。"
+
+    模型**根本没被调用**，而 `status` 是 `ok`，上游因此认为子代理成功了。
+    这比失败更糟：它静悄悄地什么都没做。
+
+    命中的**不是任务文本**（「勘察目录与文件结构」本身不触发任何词），而是它前面
+    那段角色说明里的「决定是否以及**如何**派发后续执行**代理**」。
+
+    所以判定前先剥掉两段前缀——这与 `_user_question` 处理 `/api/chat` 的
+    【系统提示】是同一个模式，**同一个理由**。
+
+    ## 为什么不按「是不是子代理」划线
+
+    试过 `is_subagent`（子代理一律不进短路），**它废掉了一条真实能力**：
+    `test_capacity_help_is_available_after_task_token_budget_is_exhausted`
+    刻意用 `depth=1` 要求「共享任务预算耗尽后，子代理仍要能回答额度问题」。
+
+    那是真需求，不是测试写坏了。子代理**也会**被问到额度（比如上游预算耗尽后
+    让它自查），那时它同样需要一条不消耗模型的答复。
+    **判据应该是「这是不是一句真问句」，而不是「谁在问」。**
+    """
+    user_question = _child_task_text(_user_question(question))
     if not _CAPACITY_HELP_RE.search(user_question):
         return None
 
@@ -1683,6 +1712,44 @@ def _user_question(grounded):
     marker = "用户问题："
     idx = grounded.rfind(marker)
     return grounded[idx + len(marker):].strip() if idx >= 0 else grounded.strip()
+
+
+#: 子代理任务文本前面的标记，由 `_run_child` 拼 prompt 时写入（见 `question +=`）。
+_CHILD_TASK_MARKER = "子任务："
+
+
+def _child_task_text(grounded):
+    """从子代理 prompt 里取出**真正的任务文本**，剥掉前面的角色说明。
+
+    ## 为什么需要它
+
+    `_run_child` 把角色提示词与任务拼成一段交给子代理，而角色提示词里含
+    「决定是否以及**如何**派发后续执行**代理**」这类固定措辞——它命中
+    `_CAPACITY_HELP_RE` 的第二个分支（`如何 … 代理`）。
+
+    实测后果（`tests/test_workflow_step_budget.py::NavFreeStepsTests` 四条 +
+    `tests/test_agent.py::test_planner_cannot_widen_tools_or_enable_mcp`，
+    五条同一个根因）：**每一个 `planner` 子代理都被短路成一张零 token 的能力说明**——
+
+        status=ok   steps=0   工具调用 0 次
+        conclusion = "这是本地能力说明，不会消耗模型 Token。…四项默认都是 0＝不限。"
+
+    模型**根本没被调用**，而 `status` 是 `ok`，上游因此认为子代理成功了。
+    这比失败更糟：它静悄悄地什么都没做。
+
+    注意**不是**任务文本误伤——「勘察目录与文件结构」本身不命中任何触发词。
+    命中的是它前面那段角色说明。
+
+    ## 与 `_user_question` 是同一件事
+
+    `/api/chat` 会在用户问题前拼【系统提示】上下文，`_user_question` 用
+    `用户问题：` 把它剥掉，护栏文案只回带真实用户问题。子代理拼的是**角色说明**，
+    标记是 `子任务：`。同一个模式，同一个理由：**判据要看用户/任务自己的话，
+    而不是整段提示词里恰好出现的词。**
+    """
+    text = str(grounded or "")
+    idx = text.rfind(_CHILD_TASK_MARKER)
+    return text[idx + len(_CHILD_TASK_MARKER):].strip() if idx >= 0 else text.strip()
 
 
 def _empty_arg_obs(tool_name, question):
