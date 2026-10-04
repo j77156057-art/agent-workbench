@@ -153,9 +153,34 @@ PARALLEL_TOOLS = os.getenv("DOCMIND_PARALLEL_TOOLS", "1") != "0"
 PARALLEL_MAX = int(os.getenv("DOCMIND_PARALLEL_MAX", "4"))
 # 编排动态重规划：任务失败后最多追加几次补救（0 = 关闭）
 ORCH_MAX_REPLANS = int(os.getenv("DOCMIND_ORCH_MAX_REPLANS", "2"))
-# 子代理执行轨迹回传：保留多少步、每步观察截断多少字（喂给 replanner 做归因）
+# 子代理执行轨迹回传：保留多少步、每步观察截断多少字（喂给 replanner / 反思判据做归因）
 ORCH_TRACE_STEPS = int(os.getenv("DOCMIND_ORCH_TRACE_STEPS", "6"))
-ORCH_TRACE_OBS_CHARS = int(os.getenv("DOCMIND_ORCH_TRACE_OBS_CHARS", "240"))
+#: 每步观察的落库上限。**这个数字同时决定反思判据能看到什么**，所以它不是
+#: 「落库体积」问题，而是「判据据以判案的证据完整性」问题。
+#:
+#: 实测（`wf-f3f3279f355a`，`read-player-seg` / `read-player-fix` / `read-player`）：
+#: 240 在 `_clip` 里变成 **251 字**，而真实观察是
+#:
+#:     grep      495 字 -> 251 字（51%）
+#:     read_file 1388 字 -> 251 字（18%，砍掉文件头的 7 行之后就没了）
+#:
+#: 后果不是「判据看不到全部」这么轻，而是**判据据以不完整的证据判案，然后
+#: 它的指控完全正确**：
+#:
+#:     「结论声称文件共 50 行且完整返回，但观察显示已截断」
+#:     「大量行号（30、31-32、33、8、25-26）在 read_file 观察里并未出现」
+#:
+#: 两句都对——因为 251 字里真的只有文件头那几行。判据没有误判，它手上
+#: 就只有那么多材料。**证据在进判据之前就被砍掉了。**
+#:
+#: 更能说明问题的是同一个文件被报出**三个行数**（47 / 50 / 51）：模型在数
+#: 它看得见的那 251 字里有多少行。给了全文它根本不需要猜。
+#:
+#: 1600 让 `player.gd`（1388 字）整份进得来。代价是每个子代理最多 6 步 × 1600
+#: ≈ 9600 字的落库体积——而判据本来就只读其中一部分，那部分原来是**残缺的**。
+#: 证据正确性优先于落库体积：这是同一条线上第五次证明同一件事
+#: （`start_line:` 语法、`read_file` 键名、证据块 420/1600、并行 tool_call 误判）。
+ORCH_TRACE_OBS_CHARS = int(os.getenv("DOCMIND_ORCH_TRACE_OBS_CHARS", "1600"))
 # 工作流实时轨迹（step_sink → SSE）：面向 UI 的单条裁剪上限，比回传轨迹更宽，
 # 但仍然有界——实时流与内存轨迹环都不能携带未裁剪正文。
 SINK_THOUGHT_CHARS = int(os.getenv("DOCMIND_SINK_THOUGHT_CHARS", "400"))
