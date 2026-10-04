@@ -3,6 +3,8 @@
 // 执行中每个子代理的 thought/action/observation 通过 SSE 实时追加、可折叠查看。
 // 全部状态逻辑在 useWorkflowCard；展示常量在 workflow-format；本文件只做渲染。
 import { useWorkflowCard } from '../composables/useWorkflowCard'
+import { computed } from 'vue'
+import { reviewHeadlineOf } from '../composables/workflow-format'
 import type { WorkflowState } from '../api'
 import WorkflowGateDialog from './WorkflowGateDialog.vue'
 import WorkflowPreview from './WorkflowPreview.vue'
@@ -35,6 +37,17 @@ const {
   onChoose, onResearchSubmit, onResearchRun, onApprove, onReject,
   onRevise, onReviseApprove, onAcceptanceSave,
 } = useWorkflowCard(props, emit)
+
+/**
+ * 复核区标题的取值与语气。判定逻辑在 `workflow-format.reviewHeadlineOf`
+ * （后端已把 `agent_ok` / `project.ok` 分开存，前端只读不推断）；
+ * 本文件只做渲染。
+ */
+const reviewHeadline = computed(() => reviewHeadlineOf(state.value))
+const reviewHeadlineClass = computed(() => {
+  const tone = reviewHeadline.value.tone
+  return tone === 'ok' ? 'wf-ok' : tone === 'unverified' ? 'wf-unverified' : 'wf-bad'
+})
 
 async function applyReviewedStage() {
   if (!state.value?.workflow_id || busy.value) return
@@ -236,7 +249,7 @@ async function discardStage() {
         </template>
       </section>
       <div v-if="typeof state?.review?.ok === 'boolean'" class="wf-review">
-        <b :class="state.review.ok ? 'wf-ok' : 'wf-bad'">{{ state.review.ok ? '✓ 复核通过' : '! 复核未通过' }}</b>
+        <b :class="reviewHeadlineClass">{{ reviewHeadline }}</b>
         <div v-for="(f, i) in reviewFailures" :key="i" class="wf-review-fail">
           <span>{{ f.message }}</span><small v-if="f.recovery">建议：{{ f.recovery }}</small>
         </div>
@@ -587,6 +600,10 @@ async function discardStage() {
 .wf-review:has(.wf-bad) { border-color: rgba(214,78,78,.3); background: rgba(214,78,78,.04); }
 .wf-ok { color: var(--green); }
 .wf-bad { color: var(--danger); }
+/* 「内容交付了但这次结果不构成独立验证」——琥珀色，不该和真失败一样标红。
+   与 .wf-status-completed_unverified 用同一个 --amber，两处语气保持一致。 */
+.wf-unverified { color: var(--amber); }
+.wf-review:has(.wf-unverified) { border-color: rgba(214,158,46,.3); background: rgba(214,158,46,.05); }
 .wf-review-fail { display: grid; gap: 1px; width: 100%; font-size: 11px; color: var(--text-muted); }
 .wf-review-fail small { color: var(--text-faint); }
 .wf-project-review { width: 100%; border-top: 1px solid var(--border); padding-top: 5px; color: var(--text-muted); }

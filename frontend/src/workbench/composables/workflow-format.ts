@@ -56,6 +56,48 @@ export function displayStatusOf(state: { status?: string; review?: Record<string
   const projectOk = (review.project as Record<string, unknown> | undefined)?.ok === true
   return agentOk && !projectOk ? 'completed_unverified' : raw
 }
+/**
+ * 复核区标题：**分两维度说**，不读那个被压扁的 `review.ok`。
+ *
+ * ## 实测（`wf-af6a2e4a9b2b` 真跑）
+ *
+ * 那一轮：四任务全 `ok`、十项检查全 True、`evidence_verified: true`、
+ * 引用 50/30/28/2 条**不过 0 条**、`change_count: 0`（纯只读）。
+ * 后端把两个维度分开存了：`review.agent_ok`（内容+证据）与
+ * `review.project.ok`（独立验证）。但复核区原来直接渲染 `state.review.ok`，
+ * 于是同一张卡片上两句互相打架的话：
+ *
+ *     头部（statusLabel）        已完成 · 未做独立验证
+ *     复核区（这里）             ! 复核未通过
+ *
+ * 更糟的是那一轮 `review.failures` 是**空数组**（checks 全 True，一条都不追加），
+ * 所以复核区只剩一句指控，**没有任何失败条目、没有任何解释**。
+ *
+ * 与 `24c845c` 同一族：那一次修的是状态标签漏了改写，这一次是**同一个被压扁的
+ * 布尔还有第二个渲染点**没跟上。仍然**零后端改动**——判据直接读后端已存的
+ * `agent_ok` / `project.ok`，不在前端重新推断。
+ *
+ * ## 反向守卫
+ *
+ * 真失败（`agent_ok` 为假）**照旧**返回红色「! 复核未通过」——
+ * `frontend/tests/workflowReviewHeadline.test.mjs` 双向钉住。
+ */
+export type ReviewTone = 'ok' | 'unverified' | 'bad'
+export interface ReviewHeadline { text: string; tone: ReviewTone }
+
+export function reviewHeadlineOf(
+  state: { review?: Record<string, unknown> } | null | undefined,
+): ReviewHeadline {
+  const review = (state?.review || {}) as Record<string, unknown>
+  const project = (review.project || {}) as Record<string, unknown>
+  if (review.ok === true) return { text: '✓ 复核通过', tone: 'ok' }
+  if (review.agent_ok === true && project.ok !== true) {
+    const why = project.status ? `（独立复核：${project.status}）` : ''
+    return { text: `✓ 内容复核通过 · 未做独立验证${why}`, tone: 'unverified' }
+  }
+  return { text: '! 复核未通过', tone: 'bad' }
+}
+
 export const EVALUATION_CHECK_LABELS: Record<string, string> = {
   completed: '工作流完成', review_ok: '结果复核通过',
   no_failed_tasks: '没有失败或阻塞任务',
