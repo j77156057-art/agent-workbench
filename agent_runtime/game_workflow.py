@@ -507,6 +507,35 @@ def review_output(result: Mapping[str, Any] | None, *, max_tool_failures: int = 
     return report
 
 
+def _workflow_changed_files(raw: Mapping[str, Any]) -> bool:
+    """这一轮**实际改动了项目文件**吗？
+
+    ## 为什么要有「未知」这一档
+
+    回滚是一个**破坏性**动作的前置按钮，所以判据的方向必须是「宁可多给」。
+    复核结果缺失时（崩溃恢复路径上 `state.review` 可能还是空的）我们**不知道**
+    有没有改动——此时必须当作**有改动**处理，否则会把用户真正需要的回滚入口
+    一起藏掉。
+
+    实测里唯一能确定「没改动」的依据是独立复核那一项：
+
+        review.project.change_count / changes / diff
+
+    三者一致为 0 才算「没改动」。
+    """
+    review = raw.get("review")
+    if not isinstance(review, Mapping) or not review:
+        return True  # 复核没跑过 -> 未知 -> 不抑制
+    project_review = review.get("project")
+    if not isinstance(project_review, Mapping):
+        return True  # 同上：项目复核这一项不存在，别当成「零改动」
+    try:
+        change_count = int(project_review.get("change_count") or 0)
+    except (TypeError, ValueError):
+        return True
+    return bool(project_review.get("changes")) or change_count > 0
+
+
 def build_recovery_plan(state: Mapping[str, Any] | WorkflowState | None,
                         *, error: str = "") -> dict[str, Any]:
     """Build bounded, actionable recovery guidance from durable evidence.
@@ -562,7 +591,8 @@ def build_recovery_plan(state: Mapping[str, Any] | WorkflowState | None,
             "task_ids": failed,
             "requires_user": True,
         })
-    if raw.get("project_checkpoint", {}).get("id"):
+    changed = _workflow_changed_files(raw)
+    if changed and raw.get("project_checkpoint", {}).get("id"):
         options.append({
             "id": "restore_project_checkpoint",
             "action": "rollback",
@@ -572,6 +602,28 @@ def build_recovery_plan(state: Mapping[str, Any] | WorkflowState | None,
             "requires_user": True,
         })
     if not options:
+        if not failed and not uncertain and not changed:
+            # **什么都没发生就不要编一个「需要用户审核的失败下一步」。**
+            #
+            # 实测（`wf-f609ea8daf22` / `wf-fc3cf86c5eaf` / `wf-fd543f79c197` /
+            # `wf-e042489bf0fe` / `wf-af6a2e4a9b2b`，五次真跑形状完全一致）：
+            # 四任务全 `ok`、`failed_task_ids: []`、`uncertain_task_ids: []`、
+            # `review.project.change_count = 0`、`changes = []`、`diff = ""`，
+            # 却照样产出 `status: "required"` +「恢复执行前项目快照」。
+            #
+            # 而那一轮 `project_checkpoint.file_count = 87`——那 87 个文件**全都
+            # 是改动前就存在的**，这轮一个文件都没改。用户看到的是「失败后的下一步 ·
+            # 需要用户审核」外加一个恢复快照按钮，点下去只是把没动过的文件
+            # 「恢复」一遍。
+            #
+            # 这里**不碰** `review.project.status == "unverified"`：那是正确的安全
+            # 声明（试做区没有容器级命令隔离），它照旧显示在复核区里。修的是
+            # **恢复计划凭空造出不存在的动作**。
+            #
+            # 注意条件里带了 `not changed`：**有改动但没快照**（所以给不出回滚）
+            # 时仍然要留下「查看失败证据」那条路——那时确实有事要用户处理，
+            # 一并静默掉就成了另一种「看起来没事」。
+            return {}
         options.append({
             "id": "inspect_failure_evidence",
             "action": "inspect",
