@@ -52,6 +52,21 @@ def _check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
     return {"name": name, "ok": bool(ok), "detail": str(detail)[:240]}
 
 
+def _is_completed(status: Any) -> bool:
+    """「工作流完成」含「完成但未做独立验证」。
+
+    实测：只读工作流在独立复核为 `unverified` 时，后端三值结局给的是
+    `completed_unverified`（见 `game_workflow.settle_status`）。它**是**完成的
+    ——四任务全 ok、十项检查全 True、引用不过 0 条。若这里只认 `"completed"`，
+    「工作流完成」这项检查会恒为假，而这块评估此前因为同样的字面量判断
+    **从来没被启动过**（它要求 `status == "completed"` 才跑）。
+
+    注意本模块**不 import game_workflow**：那会造成循环导入（game_workflow
+    会 import 本模块）。这里独立判断，与 `SUCCESS_STATUSES` 保持同一取值。
+    """
+    return str(status or "") in ("completed", "completed_unverified")
+
+
 def evaluate_workflow(state: Mapping[str, Any] | None) -> dict[str, Any]:
     state = dict(state or {})
     policy = dict(state.get("policy") or {})
@@ -59,7 +74,7 @@ def evaluate_workflow(state: Mapping[str, Any] | None) -> dict[str, Any]:
     results = dict(report.get("results") or {})
     review = dict(state.get("review") or {})
     checks = [
-        _check("completed", state.get("status") == "completed", state.get("status", "")),
+        _check("completed", _is_completed(state.get("status")), state.get("status", "")),
         _check("review_ok", review.get("ok") is True, str(review.get("checks") or "")),
         _check("no_failed_tasks", not any(
             isinstance(item, Mapping) and item.get("status") in {"failed", "blocked"}
@@ -83,7 +98,7 @@ def evaluate_workflow(state: Mapping[str, Any] | None) -> dict[str, Any]:
         "replans": int(state.get("replans") or 0),
         "steps": int(state.get("steps") or 0),
         "metrics": {
-            "completed": bool(state.get("status") == "completed"),
+            "completed": bool(_is_completed(state.get("status"))),
             "review_ok": bool(review.get("ok") is True),
             "failed_tasks": sum(
                 1 for item in results.values()

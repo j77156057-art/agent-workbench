@@ -414,6 +414,127 @@ class WorkflowOption:
     requires_web: bool = False
 
 
+# ── 工作流的**三值结局** ─────────────────────────────────────────────
+#
+# ## 为什么要第三个值
+#
+# 实测（`wf-80dc902c8cae` 等连续多次只读真跑，四任务全 ok、十项检查全 True、
+# `evidence_verified`、引用不过 0 条、change_count=0）里，`status` 一直是
+# `failed`，唯一原因是 `review.ok = agent_ok and project.ok` 而
+# `project.status == "unverified"`（试做区没有容器级命令隔离）。
+#
+# 那个声明是**正确的安全声明**，不该被改弱；但把它和「真失败」压成同一个
+# 布尔，就会让下游要么谎报失败（已修的四处消费者）、要么整块功能不启动
+# （`evaluate_workflow` / `skill_candidate` 要求 `status == "completed"`）。
+#
+# 所以这里给**后端**一个能表达「完成了但没独立验证」的结局，而不是让每个
+# 消费者各自去猜。
+STATUS_COMPLETED = "completed"
+STATUS_COMPLETED_UNVERIFIED = "completed_unverified"
+STATUS_FAILED = "failed"
+STATUS_INTERRUPTED = "interrupted"
+
+#: 终态集合——**全仓唯一**列举处。新增结局时只改这里。
+#:
+#: 漏掉的后果不是「显示不对」，是**死锁**：`is_terminal()` 返 False →
+#: `active_for_project()` 认为这个工作流还活着 → 下一次 `start()` 被互斥拒绝。
+#: 所以下面所有终态判断都必须走 `is_terminal_status()`，不许再写字面量集合。
+TERMINAL_STATUSES = frozenset({
+    STATUS_COMPLETED, STATUS_COMPLETED_UNVERIFIED, STATUS_FAILED, STATUS_INTERRUPTED,
+})
+
+#: 「算成功」的结局。用户最终验收、质量评估、经验库都按这个口径。
+SUCCESS_STATUSES = frozenset({STATUS_COMPLETED, STATUS_COMPLETED_UNVERIFIED})
+
+
+def is_terminal_status(status: Any) -> bool:
+    return str(status or "") in TERMINAL_STATUSES
+
+
+def is_successful_status(status: Any) -> bool:
+    return str(status or "") in SUCCESS_STATUSES
+
+
+def review_status(review: Any, *, extra_ok: bool = True) -> str:
+    """从一份 `review` 字典定出三值结局。**所有 status 生产者都必须走它。**
+
+    ## 为什么要单独收一层「回退」
+
+    后端只在 **有 project_root 时** 才把两个维度分开存：
+
+        if state.project_root:
+            state.review["agent_ok"] = bool(state.review.get("ok"))
+            state.review["project"] = self._review_project(state)
+            state.review["ok"] = agent_ok and project["ok"]
+
+    没有项目目录时，`agent_ok` / `project` **两个键都不存在**，此时唯一可读的
+    就是 `review.ok` 本身。第一版三值实现直接 `bool(review.get("agent_ok"))`
+    ——在无 project_root 的工作流上恒为 False，于是把本来 completed 的全部
+    判成 failed（实测 10 条测试同时红：`'failed' != 'completed'`）。
+
+    所以回退必须写在这里，而不是让每个调用点各自 `if`——
+    三处生产者的口径一旦漂移，`report["ok"]` 的反推就会失真。
+    """
+    rv = review if isinstance(review, Mapping) else {}
+    plain_ok = bool(rv.get("ok"))
+    project = rv.get("project") if isinstance(rv.get("project"), Mapping) else {}
+    agent_ok = bool(rv.get("agent_ok")) if rv.get("agent_ok") is not None else plain_ok
+    project_ok = bool(project.get("ok")) if project else plain_ok
+    try:
+        change_count = int(project.get("change_count") or 0)
+    except (TypeError, ValueError):
+        change_count = 0
+    changed = bool(project.get("changes")) or change_count > 0
+    return settle_status(agent_ok=agent_ok, project_ok=project_ok,
+                         project_status=str(project.get("status") or ""),
+                         extra_ok=extra_ok, changed=changed)
+
+
+def _graph_review_status(review: Any) -> str:
+    """LangGraph `review_node` 用的三值结局。与直接赋值那侧同一个读取器。"""
+    return review_status(review)
+
+
+def settle_status(*, agent_ok: bool, project_ok: bool,
+                  project_status: str = "", extra_ok: bool = True,
+                  changed: bool = False) -> str:
+    """按两个维度定出三值结局。**所有 status 生产者都必须走它。**
+
+    实测教训：`status` 有**三个**生产者（LangGraph 的 `review_node`、execute
+    末尾的直接赋值、试做区重新复核），它们各自算一遍就会漂移——而
+    `report["ok"]` 又是从图状态里读 `status` **反推**出来的，任一处漏改都会
+    让另一处的判断失真。
+
+    `extra_ok` 是「执行本身有没有成」（`report.ok` / `all_ok`）：
+    它为假时无论复核结论如何都是 `failed`。
+
+    ## `changed` 为什么是必要条件（第一版漏了，被既有测试抓住）
+
+    第一版只按 `agent_ok` / `project_ok` 判定，于是
+    `tests/test_enterprise_sandbox_review.py::test_workflow_cannot_complete_when_
+    independent_review_is_unverified` 立刻红：那一轮
+    `DOCMIND_EXECUTION_MODE=enterprise` + `stage_enabled=True`，**runner 真的
+    写了文件**，却拿到 `completed_unverified`。
+
+    那条测试的名字就是一条**刻意的安全规则**：改动过项目的东西、独立验证没
+    做成，就不许报完成。而 `24c845c` 的原作者也写过「一次纯只读侦察
+    （change_count=0）本来就没打算跑测试」——所以这个结局**本来就只属于只读任务**。
+
+    于是收窄成：`completed_unverified` **只在没有任何文件改动时**才给。
+    改动过东西而缺独立验证 -> 仍是 `failed`。这是保守方向，也保住了既有守卫。
+    """
+    if not extra_ok or not agent_ok:
+        return STATUS_FAILED
+    if project_ok:
+        return STATUS_COMPLETED
+    # 只有「内容确实过了、缺的正是独立验证、且没动过任何文件」才算完成但未验证。
+    # `independent_review` 里另一个 ok=False 的取值是 `failed`
+    # （"独立测试失败或沙箱不可用"）——**那是真失败**，不能一起放行。
+    if str(project_status or "") == "unverified" and not changed:
+        return STATUS_COMPLETED_UNVERIFIED
+    return STATUS_FAILED
+
+
 @dataclass
 class WorkflowState:
     workflow_id: str
@@ -1151,9 +1272,9 @@ class GameWorkflowManager:
         except OSError as exc:
             if strict:
                 raise WorkflowError("工作流记录保存失败") from exc
-        if register or state.workflow_id in self._states or state.status in self._TERMINAL_STATUSES:
+        if register or state.workflow_id in self._states or is_terminal_status(state.status):
             self._states[state.workflow_id] = state
-        if state.status in {"completed", "failed"}:
+        if is_terminal_status(state.status):
             try:
                 from .langsmith import export_workflow, finish_workflow
                 finish_workflow(state.public())
@@ -1310,7 +1431,7 @@ class GameWorkflowManager:
     def is_terminal(self, workflow_id: str) -> bool:
         with self._lock:
             state = self._states.get(workflow_id)
-            return bool(state and state.status in {"completed", "failed", "interrupted"})
+            return bool(state and is_terminal_status(state.status))
 
     def active_for_project(self, project_id: str = "", project_root: str = "") -> dict[str, Any] | None:
         """同项目进程内未终结工作流的公开状态（与 start() 互斥判定同源）。
@@ -1324,7 +1445,7 @@ class GameWorkflowManager:
             state = self._active_workflow_for(project_id, project_root)
             return state.public() if state is not None else None
 
-    _TERMINAL_STATUSES = frozenset({"completed", "failed", "interrupted"})
+    _TERMINAL_STATUSES = TERMINAL_STATUSES  # 别名：老引用点保留，值只有一个来源
 
     def list_workflows(self, project_id: str = "", project_root: str = "",
                        limit: int = 50) -> list[dict[str, Any]]:
@@ -1733,7 +1854,7 @@ class GameWorkflowManager:
                 pass
             # SSE 实时 fan-out（最后做：此时事件已落台账，重放/实时两路顺序一致）
             self._fanout_locked(state.workflow_id, event)
-            if state.status in {"completed", "failed", "interrupted"}:
+            if is_terminal_status(state.status):
                 # 终态后实时环不再需要（完整 trace 已随 subagent_complete 落台账）
                 self._step_rings.pop(state.workflow_id, None)
 
@@ -3046,10 +3167,10 @@ class GameWorkflowManager:
             all_ok = all((item or {}).get("status") in {"ok", "deduped"}
                          or bool((item or {}).get("optional"))
                          for item in result_map.values())
-            state.status = "completed" if all_ok and state.review.get("ok") else "failed"
+            state.status = review_status(state.review, extra_ok=all_ok)
             state.phase = "review"
             state.recovery = (build_recovery_plan(state, error="单任务重试仍未通过")
-                              if state.status == "failed" else {})
+                              if state.status == STATUS_FAILED else {})
             self._event(state, "subagent_retry_complete", task_id=task_id,
                         attempt=attempt, previous_status=previous_status,
                         status=retried.get("status"), workflow_status=state.status,
@@ -3271,7 +3392,7 @@ class GameWorkflowManager:
             )
             current_report = graph_state.get("current_report") or {}
             report = {
-                "ok": graph_state.get("status") == "completed",
+                "ok": is_successful_status(graph_state.get("status")),
                 "tasks": list(graph_state.get("tasks") or current_report.get("tasks") or state.tasks),
                 "results": graph_state.get("results") or {},
                 "merged": "", "replans": int(graph_state.get("replan_count", 0)),
@@ -3356,11 +3477,12 @@ class GameWorkflowManager:
             "chars": len(merged), "review_ok": bool(state.review.get("ok")),
             "steps": report.get("steps_used", 0),
         }
-        state.status = "completed" if state.review.get("ok") and report.get("ok") else "failed"
+        state.status = review_status(state.review, extra_ok=bool(report.get("ok")))
         state.phase = "review"
         state.recovery = (build_recovery_plan(state, error="执行结果未通过复核")
-                          if state.status == "failed" else {})
-        self._event(state, "review", ok=state.review.get("ok"), status=state.status)
+                          if state.status == STATUS_FAILED else {})
+        self._event(state, "review", ok=state.review.get("ok"), status=state.status,
+                    agent_ok=bool(state.review.get("agent_ok")))
         if state.experience_enabled and not any(e.get("kind") == "experience" for e in state.events):
             try:
                 from experience import record_episode
@@ -3378,7 +3500,7 @@ class GameWorkflowManager:
                 self._event(state, "experience", recorded=bool(recorded), outcome=outcome)
             except Exception:
                 self._event(state, "experience", recorded=False, outcome="unavailable")
-        if state.status == "completed" and state.experience_enabled and not state.skill_candidate:
+        if is_successful_status(state.status) and state.experience_enabled and not state.skill_candidate:
             from .workflow_eval import evaluate_workflow
             skill_evaluation = evaluate_workflow(state.public())
             profile = get_profile(state.kind)
@@ -3485,7 +3607,10 @@ class GameWorkflowManager:
         """Record the user's final decision; a Harness review is only evidence."""
         with self._lock:
             state = self._load(workflow_id)
-            if state.status != "completed":
+            if not is_successful_status(state.status):
+                # 「完成了但没独立验证」**允许**用户最终验收——而且正该允许：
+                # 独立验证缺失时，用户本人就是最后一道核验。把它挡在外面等于
+                # 说「这次结果不值得你签字」，那既不成立也会让用户无法收尾。
                 raise WorkflowError("工作流尚未完成，不能最终验收")
             contract = dict(state.acceptance_contract or {})
             if not contract.get("items"):
@@ -3850,11 +3975,16 @@ class GameWorkflowManager:
         if agent_ok is None:
             agent_ok = bool(state.results.get("ok")) and not state.review.get("failures")
         state.review["ok"] = bool(agent_ok) and bool(project_review.get("ok"))
-        if state.review["ok"] and state.results.get("ok"):
-            state.status = "completed"
+        state.status = settle_status(
+            agent_ok=bool(agent_ok),
+            project_ok=bool(project_review.get("ok")),
+            project_status=str(project_review.get("status") or ""),
+            extra_ok=bool(state.results.get("ok")),
+            changed=(bool(project_review.get("changes"))
+                     or int(project_review.get("change_count") or 0) > 0))
+        if is_successful_status(state.status):
             state.recovery = {}
         else:
-            state.status = "failed"
             state.recovery = build_recovery_plan(state, error="重新复核未通过")
         self._event(state, "project_stage_reviewed", status=project_review.get("status"),
                     tests=len(project_review.get("tests") or []))
@@ -4298,7 +4428,7 @@ class GameWorkflowManager:
                 return {"phase": "review", "status": "failed", "event": "review_failed",
                         "review": {"ok": False}}
             if review.get("ok") is True:
-                return {"phase": "review", "status": "completed", "event": "review"}
+                return {"phase": "review", "status": STATUS_COMPLETED, "event": "review"}
             failed = list(state.get("failed_tasks") or [])
             if review.get("ok") is False or failed:
                 max_replans = int(state.get("max_replans", 2))
@@ -4306,7 +4436,13 @@ class GameWorkflowManager:
                 if failed and int(state.get("replan_count", 0)) < max_replans \
                         and (max_steps <= 0 or int(state.get("step_count", 0)) < max_steps):
                     return {"phase": "review", "status": "replanning", "event": "review_replan"}
-                return {"phase": "review", "status": "failed", "event": "review_failed"}
+                # 图状态里也用三值结局：`unverified` 不是失败。`report["ok"]` 是从
+                # 这里反推的（`is_successful_status(graph_state["status"])`），所以
+                # 这里若只回 "failed"，直接赋值那侧就再也拿不到「完成了」这个事实。
+                return {"phase": "review", "status": _graph_review_status(review),
+                        "event": ("review_unverified"
+                                  if _graph_review_status(review) == STATUS_COMPLETED_UNVERIFIED
+                                  else "review_failed")}
             # A checkpoint-only invocation has no execution result yet.  Keep
             # the adapter inspectable and terminate this dry run cleanly.
             return {"phase": "review", "status": "completed", "event": "review"}
@@ -4436,7 +4572,7 @@ class GameWorkflowManager:
             event = state.get("event")
             if event == "review_replan":
                 return "replan"
-            if state.get("status") == "completed":
+            if is_successful_status(state.get("status")):
                 return "complete"
             return "fail"
 

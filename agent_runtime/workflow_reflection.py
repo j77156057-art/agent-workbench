@@ -150,7 +150,7 @@ def build_self_review(state: Mapping[str, Any] | None) -> dict[str, Any]:
     if not verified:
         _append(uncertainties, "当前没有足够的独立验证证据")
         _append(next_steps, "补充自动测试、运行结果或视觉证据")
-    if not next_steps and status == "completed":
+    if not next_steps and status in ("completed", "completed_unverified"):
         _append(next_steps, "由用户完成最终验收；如不满足条件，提交具体反馈继续修改")
 
     confidence = 0.0
@@ -165,7 +165,7 @@ def build_self_review(state: Mapping[str, Any] | None) -> dict[str, Any]:
     if uncertainties:
         confidence = max(0.0, confidence - min(0.4, len(uncertainties) * 0.05))
     return {
-        "status": "ready" if status in {"completed", "failed", "interrupted"} else "in_progress",
+        "status": "ready" if status in {"completed", "completed_unverified", "failed", "interrupted"} else "in_progress",
         "generated_at": _now(),
         "source": "execution_evidence",
         "confidence": round(max(0.0, min(1.0, confidence)), 2),

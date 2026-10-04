@@ -49,6 +49,20 @@ const reviewHeadlineClass = computed(() => {
   return tone === 'ok' ? 'wf-ok' : tone === 'unverified' ? 'wf-unverified' : 'wf-bad'
 })
 
+/**
+ * 「算成功」的结局。后端从今天起给**三值** status
+ * （`completed` / `completed_unverified` / `failed`），见
+ * `game_workflow.settle_status`——只读工作流在独立复核为 `unverified` 时
+ * 不再被压成 `failed`。
+ *
+ * `completed_unverified` **算成功**：活儿确实干完了（四任务全 ok、十项检查全
+ * True），缺的只是「这次结果不构成独立验证」。因此用户**应当**能对它做最终
+ * 验收——后端 `record_acceptance` 也已经放行；前端若还只认 `'completed'`，
+ * 就会出现「后端允许、界面不给按钮」的死角，用户没法收尾。
+ */
+const isSuccessful = computed(() =>
+  status.value === 'completed' || status.value === 'completed_unverified')
+
 async function applyReviewedStage() {
   if (!state.value?.workflow_id || busy.value) return
   busy.value = true
@@ -237,7 +251,7 @@ async function discardStage() {
           <div><b>{{ item.statement }}</b><small>{{ item.method }} · 预期证据：{{ item.evidence.join('、') || '待补充' }}</small></div>
           <small v-if="criterionTaskResult(item.evidence)" class="wf-acceptance-result">任务结果：{{ criterionTaskResult(item.evidence)?.status }} · {{ criterionTaskResult(item.evidence)?.conclusion }}</small>
         </div>
-        <template v-if="status === 'completed'">
+        <template v-if="isSuccessful">
           <p v-if="state.acceptance_contract.final_decision === 'accepted'" class="wf-ok">用户已验收通过</p>
           <p v-else-if="state.acceptance_contract.final_decision === 'rejected'" class="wf-bad">用户未通过验收：{{ state.acceptance_contract.final_note || '请继续说明不满足的效果' }}</p>
           <div v-else class="wf-acceptance-final">
@@ -257,8 +271,8 @@ async function discardStage() {
           <summary>独立项目复核：{{ state.review.project.status }} · {{ state.review.project.change_count || 0 }} 个文件变化</summary>
           <p>{{ state.review.project.message }}</p>
           <button v-if="state.review.project.status === 'passed' && state.project_stage?.status === 'draft'" class="wf-mini-btn wf-mini-primary" :disabled="busy" @click="applyReviewedStage">将已验证改动应用到项目</button>
-          <button v-if="state.project_stage?.status === 'draft' && (status === 'completed' || status === 'failed' || status === 'interrupted')" class="wf-mini-btn" :disabled="busy" @click="reviewStageAgain">重新测试与复核</button>
-          <button v-if="state.project_stage?.status === 'draft' && (status === 'completed' || status === 'failed' || status === 'interrupted')" class="wf-mini-btn wf-mini-danger" :disabled="busy" @click="discardStage">丢弃试做区</button>
+          <button v-if="state.project_stage?.status === 'draft' && (isSuccessful || status === 'failed' || status === 'interrupted')" class="wf-mini-btn" :disabled="busy" @click="reviewStageAgain">重新测试与复核</button>
+          <button v-if="state.project_stage?.status === 'draft' && (isSuccessful || status === 'failed' || status === 'interrupted')" class="wf-mini-btn wf-mini-danger" :disabled="busy" @click="discardStage">丢弃试做区</button>
           <small v-if="state.review.project.checkpoint_skipped?.length">快照遗漏 {{ state.review.project.checkpoint_skipped.length }} 个文件，结果尚未完整验证。</small>
           <div v-for="(item, i) in state.review.project.tests || []" :key="i" class="wf-review-fail">
             <span>{{ item.ok ? '✓' : '✕' }} {{ item.command }} · {{ item.exit_code ?? item.error ?? '未运行' }}</span>
@@ -268,7 +282,7 @@ async function discardStage() {
         </details>
       </div>
       <WorkflowPreview v-if="state && (state.preview || state.visual_feedback?.length)" :key="state.workflow_id" :workflow="state" @activity="emit('activity')" />
-      <details v-if="state && (state.preview || state.status === 'completed' || state.status === 'failed' || state.status === 'interrupted')" class="wf-adapter-drawer"><summary>项目预览适配器与回滚设置</summary><AdapterManagerPanel :workflow="state" @activity="emit('activity')" /></details>
+      <details v-if="state && (state.preview || isSuccessful || status === 'failed' || status === 'interrupted')" class="wf-adapter-drawer"><summary>项目预览适配器与回滚设置</summary><AdapterManagerPanel :workflow="state" @activity="emit('activity')" /></details>
       <section v-if="state?.recovery?.status === 'required' && (status === 'failed' || status === 'interrupted')" class="wf-recovery">
         <div class="wf-recovery-head"><b>失败后的下一步</b><span>需要用户审核</span></div>
         <p>{{ state.recovery.summary || '执行未通过复核，请选择下一步。' }}</p>
