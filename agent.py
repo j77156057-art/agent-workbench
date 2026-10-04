@@ -3679,7 +3679,9 @@ class Agent:
                     evidence.extend(f"{nm}({_clip(ar, 120)})" for nm, ar, _o, _k, _i in results)
                     # 真实执行记录：证据审计必须读它，而不是回头扫trail 里的
                     # `Action:` 文本——这条路径不写那种标记（见 _audit_live_answer）。
-                    audit_steps.extend({"action": nm, "ok": bool(_ok)}
+                    # **带参数**，与顺序路径同形状（见上面那条的说明：只存裸工具名
+                    # 会让「本轮读过哪些路径」索引恒空，裸文件名引用全被判幻觉）。
+                    audit_steps.extend({"action": "%s(%s)" % (nm, _ar), "ok": bool(_ok)}
                                        for nm, _ar, _o, _ok, _i in results)
                     # 免费导航只消耗导航额度（与拆批时判定的 batch_free 同序），
                     # 其余结果按实际数量计入工具步数。
@@ -4372,7 +4374,19 @@ class Agent:
                     if parsed["action"] in _WEB_ACTIONS:
                         web_family_failures.clear()
                 # 顺序路径的真实执行记录（与并行批次共用同一个 audit_steps）。
-                audit_steps.append({"action": parsed["action"], "ok": bool(_tool_ok)})
+                #
+                # **必须带参数**：只记裸工具名会让下游拿不到路径。实测
+                # `wf-f609ea8daf22` 的 `t3` 结论尾部自带一行
+                # `（核验：FAIL · 28 处引用可核验 · 2 处未通过（路径打不开）：player.gd:?、enemy.gd:?）`
+                # ——而同一份结论在工作流侧 `review verdict=PASS`。
+                # 差别就在这里：裸文件名兜底靠「本轮读过哪些路径」建索引，
+                # 索引来源就是这个 `action` 字段，只存`read_file` 四个字时索引恒空，
+                # 于是**每一条裸文件名引用都被判成幻觉路径**。
+                # 形状与 `traj` 一致（`read_file(path: behaviors/player.gd)`），
+                # 这样 `_tool_name` 的切分也不受影响。
+                audit_steps.append({
+                    "action": "%s(%s)" % (parsed["action"], parsed["action_input"] or ""),
+                    "ok": bool(_tool_ok)})
 
                 # 写操作改变了代码库状态：清空已执行记录，允许随后用【相同命令】
                 # 重新跑测试做验证（防重复护栏针对的是无意义空转，不是改后复验）。

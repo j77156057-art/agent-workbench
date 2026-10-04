@@ -98,17 +98,54 @@ class BothExecutionPathsRecordTests(unittest.TestCase):
     def test_the_sequential_path_records_it(self):
         import inspect
         src = inspect.getsource(agent_mod.Agent._run)
-        self.assertIn(
-            'audit_steps.append({"action": parsed["action"]', src,
-            "顺序路径没有记录真实执行——单文件读取会重新开始挂假警告")
+        self.assertIn('audit_steps.append({', src,
+                      "顺序路径没有记录真实执行——单文件读取会重新开始挂假警告")
+        self.assertIn('parsed["action"]', src,
+                      "顺序路径的动作名没进记录")
 
     def test_the_parallel_batch_path_records_it(self):
         import inspect
         src = inspect.getsource(agent_mod.Agent._run)
-        self.assertIn(
-            'audit_steps.extend({"action": nm, "ok": bool(_ok)}', src,
-            "并行批次路径没有记录真实执行——而它恰恰不写 `Action:` 标记，"
+        self.assertIn('audit_steps.extend({', src,
+                      "并行批次路径没有记录真实执行——而它恰恰不写 `Action:` 标记，"
+                      "靠 trail 反推只能得到零步骤")
+
+    # ---- 记录必须**带参数**，否则下游拿不到路径 -----------------------------
+    #
+    # 实测（`wf-f609ea8daf22` 的 `t3`）：结论尾部自带一行
+    #     （核验：FAIL · 28 处引用可核验 · 2 处未通过（路径打不开）：player.gd:?、enemy.gd:?）
+    # 而同一份结论在工作流侧 `review verdict=PASS`。
+    #
+    # 差别在`action` 字段只存了 `read_file` 四个字：裸文件名兜底靠「本轮读过
+    # 哪些路径」建索引，索引来源就是这个字段，于是索引恒空，**每一条裸文件名
+    # 引用都被判成幻觉路径**。而它同时是模型自己写进结论里的那句话。
+
+    def test_the_record_carries_the_arguments(self):
+        """只记裸工具名 = 把路径丢掉 = 下游拿不到「这轮读过什么」。"""
+        import inspect
+        src = inspect.getsource(agent_mod.Agent._run)
+        self.assertNotRegex(
+            src, r'audit_steps\.(?:append|extend)\(\{"action":\s*(?:nm|parsed\["action"\])',
+            "audit_steps 只记了裸工具名——路径参数被丢掉，"
+            "「本轮读过哪些路径」的索引恒空，裸文件名引用全被判幻觉。"
             "是这次故障的直接来源")
+
+    def test_both_paths_use_the_full_action_shape(self):
+        import inspect
+        from agent_runtime.output_audit import _read_paths_from_actions
+        src = inspect.getsource(agent_mod.Agent._run)
+        # 断言用**不含裸引号**的稳定子串：早先直接抄源码片段 `'%s(%s)' % (parsed["action"]'`
+        # 本身就是一句不完整的 Python，第一跑就 SyntaxError。
+        self.assertIn('"%s(%s)"', src,
+                      "两条路径都没有用 `工具名(参数)` 的整句形状")
+        self.assertIn('parsed["action_input"]', src,
+                      "顺序路径没把 action_input 拼进记录——路径参数丢了")
+        self.assertIn("(nm, _ar)", src,
+                      "并行路径没把批次实参拼进记录——路径参数丢了")
+        # 端到端：拼出来的形状必须真的能被路径提取器认出来
+        self.assertEqual(
+            _read_paths_from_actions(["read_file(path: behaviors/player.gd)"]),
+            ["behaviors/player.gd"])
 
     def test_the_audit_is_called_with_the_records(self):
         import inspect
