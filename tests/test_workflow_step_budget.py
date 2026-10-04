@@ -258,17 +258,32 @@ class _EndlessActionsLLM:
 
 
 class RunChildStepCapTests(unittest.TestCase):
+    #: 这些用例要验证「硬顶把申请值夹到 12」，所以硬顶必须**只在它们跑的时候**
+    #: 是12。此前它写在 `setUp` 里，于是**整个类**都带着硬顶 12——
+    #: 包括 `test_global_child_step_limit_caps_task_override` 那条，而它断言的是
+    #: `_resolve_child_max_steps(120) == 24`（配置的 `child_max_steps=24`）。
+    #:
+    #: 夹取链是 `min(24, HARD_CAP=12)` = 12，所以它期望 24、实测 12，
+    #: **隔离单跑也红** —— 矛盾在类内部，与测试顺序无关。
+    #:
+    #: 那条测试的**意图**是「全局配置的上限能压住任务申请值」，而硬顶是**另一套
+    #: 机制**。让它继承硬顶等于让它同时验证两件事，且两件事互相矛盾。
+    _HARD_CAP = 12
+
     def setUp(self):
         self._old_default = agent_mod.SUBAGENT_MAX_STEPS
-        self._old_cap = agent_mod.SUBAGENT_STEPS_HARD_CAP
         agent_mod.SUBAGENT_MAX_STEPS = 6
-        agent_mod.SUBAGENT_STEPS_HARD_CAP = 12
 
     def tearDown(self):
         agent_mod.SUBAGENT_MAX_STEPS = self._old_default
-        agent_mod.SUBAGENT_STEPS_HARD_CAP = self._old_cap
 
-    def _run(self, max_steps):
+    def _with_hard_cap(self, value):
+        old = agent_mod.SUBAGENT_STEPS_HARD_CAP
+        agent_mod.SUBAGENT_STEPS_HARD_CAP = value
+        self.addCleanup(setattr, agent_mod, "SUBAGENT_STEPS_HARD_CAP", old)
+
+    def _run(self, max_steps, hard_cap=_HARD_CAP):
+        self._with_hard_cap(hard_cap)
         executed = []
 
         def fake_read(arg):
@@ -301,9 +316,36 @@ class RunChildStepCapTests(unittest.TestCase):
         self.assertEqual(len(executed), 6)
 
     def test_global_child_step_limit_caps_task_override(self):
+        """配置的 `child_max_steps` 能压住任务申请值。
+
+        这条要验证的是**配置上限**这一条路径，而它有两个前提——类里的 `setUp`
+        恰好把两个都破坏了，所以它此前**隔离单跑也红**：
+
+        | setUp 里的设置 | 后果 |
+        |---|---|
+        | `SUBAGENT_MAX_STEPS = 6` | `_resolve_child_max_steps` 里 `if SUBAGENT_MAX_STEPS <= 0 and configured_steps > 0` 整段跳过 -> **配置上限根本不生效**，返回 120 |
+        | `SUBAGENT_STEPS_HARD_CAP = 12` | 夹取链 `min(24, 12)` -> 返回 12 |
+
+        而它断言 24。所以这条必须把两者都归零，才是在测「配置上限」这一件事。
+        """
+        agent_mod.SUBAGENT_MAX_STEPS = 0   # 让配置上限这条路径生效
+        self._with_hard_cap(0)             # 0 = 不设硬顶
         with patch("agent_runtime.capacity.get_settings", return_value={
                 "max_agents": 8, "child_max_steps": 24, "local_auto_limit": True}):
             self.assertEqual(agent_mod._resolve_child_max_steps(120), 24)
+
+    def test_the_hard_cap_still_wins_over_the_configured_limit(self):
+        """反向也钉住：硬顶存在时它**确实**压过配置上限。
+
+        没有这一条，上面的修法可能变成「把两个开关都偷偷放开了」——测试会绿，
+        而夹取行为被削弱。那是本条最需要防的回归。
+        """
+        agent_mod.SUBAGENT_MAX_STEPS = 0
+        self._with_hard_cap(12)
+        with patch("agent_runtime.capacity.get_settings", return_value={
+                "max_agents": 8, "child_max_steps": 24, "local_auto_limit": True}):
+            self.assertEqual(agent_mod._resolve_child_max_steps(120), 12,
+                             "硬顶不再压住配置上限——夹取机制被削弱了")
 
 
 class _CyclicActionsLLM:
