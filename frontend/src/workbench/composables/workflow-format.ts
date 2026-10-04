@@ -10,6 +10,51 @@ export const STATUS_LABEL: Record<string, string> = {
   awaiting_choice: '等待选择', generating_options: '正在生成方案', awaiting_research: '等待检索',
   planned: '待执行', awaiting_approval: '等待审核', executing: '执行中',
   planning: '规划中', interrupted: '已暂停', completed: '已完成', failed: '执行失败',
+  // **纯展示态**，后端不产生这个 status。
+  //
+  // 实测（`wf-e042489bf0fe`）：四个子代理全 `ok`、十项复核检查全绿、
+  // `evidence_verified: true`、144 条引用 0 条不过、内容 4133 字全部正确交付——
+  // 而 `status` 是 `failed`，因为 `game_workflow.py:3245` 把两个维度压成一个布尔：
+  //
+  //     state.review["agent_ok"] = ...                 // 十项检查 + 证据核验
+  //     state.review["ok"] = agent_ok and project["ok"]  // 后者说的是另一件事
+  //
+  // `project.ok=false` 的原话是「试做区没有容器级命令隔离，**不能作为独立测试
+  // 通过的证据**」——那是**给这次结果标注证据等级**，不是「有东西坏了」。
+  // 而一次纯只读侦察（change_count=0）本来就没打算跑测试。
+  //
+  // 后端 `agent_ok` 已经把两者分开了（第 3243 行存了它），所以这里只读它、
+  // **零后端改动**——不动那17 处 `status in {completed,failed}` 的状态判断。
+  completed_unverified: '已完成 · 未做独立验证',
+}
+
+/**
+ * 只读任务的 `failed` 不是失败。
+ *
+ * 判定条件取自后端已经算好的两个字段，**不在前端重新推断**：
+ * `review.agent_ok`（十项检查 + 证据核验的结果）与 `review.project.ok`
+ *（独立验证的结果）。
+ *
+ * 只有**前者真、后者假**才改写展示 —— 那正是「内容交付了，但这次结果不构成
+ * 独立验证」。前者假就是真失败，一律照旧显示「执行失败」。
+ */
+export function statusLabelOf(state: { status?: string; review?: Record<string, unknown> } | null | undefined): string {
+  const raw = String(state?.status || 'preparing')
+  if (raw !== 'failed') return STATUS_LABEL[raw] || raw
+  const review = (state?.review || {}) as Record<string, unknown>
+  const agentOk = review.agent_ok === true
+  const projectOk = (review.project as Record<string, unknown> | undefined)?.ok === true
+  return agentOk && !projectOk ? STATUS_LABEL.completed_unverified : (STATUS_LABEL[raw] || raw)
+}
+
+/** 展示用的 status：`failed` 且「只是没做独立验证」时改写成 `completed_unverified`。 */
+export function displayStatusOf(state: { status?: string; review?: Record<string, unknown> } | null | undefined): string {
+  const raw = String(state?.status || 'preparing')
+  if (raw !== 'failed') return raw
+  const review = (state?.review || {}) as Record<string, unknown>
+  const agentOk = review.agent_ok === true
+  const projectOk = (review.project as Record<string, unknown> | undefined)?.ok === true
+  return agentOk && !projectOk ? 'completed_unverified' : raw
 }
 export const EVALUATION_CHECK_LABELS: Record<string, string> = {
   completed: '工作流完成', review_ok: '结果复核通过',

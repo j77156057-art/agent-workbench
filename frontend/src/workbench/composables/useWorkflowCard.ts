@@ -10,7 +10,8 @@ import { appEvents } from '../eventBus'
 import {
   DIRECT_GATE_STATUSES, EVALUATION_CHECK_LABELS, EVENT_LABELS, GATE_STATUSES, KIND_LABEL,
   STAGES, STATUS_LABEL, STEP_GLYPH, TERMINAL,
-  criterionTaskResultOf, fmtMs, roleMeta, stageIndexOf, stepSummary, stepTitle,
+  criterionTaskResultOf, displayStatusOf, fmtMs, roleMeta, stageIndexOf, statusLabelOf,
+  stepSummary, stepTitle,
   taskResults, timelineDetail, timelineTime,
   type MemberRow,
 } from './workflow-format'
@@ -88,7 +89,14 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
     if (!stepRaf) stepRaf = requestAnimationFrame(flushSteps)
   }
 
+  // `status` 保留**后端原值**——它驱动终止判断、SSE 关流、恢复/丢弃等逻辑，
+  // 一旦改写会让「已完成」被当成仍在运行。
   const status = computed(() => state.value?.status || String(props.seed?.status || 'preparing'))
+  // 展示用status：`failed` 但「只是没做独立验证」时改写成 `completed_unverified`，
+  // 让卡片不说「执行失败」。判据在后端已经算好的 `review.agent_ok` /
+  // `review.project.ok` 上，前端不重新推断。详见 workflow-format.statusLabelOf。
+  const displayStatus = computed(() => displayStatusOf(state.value))
+  const statusLabel = computed(() => statusLabelOf(state.value))
   const terminal = computed(() => TERMINAL.has(status.value))
   const gateNeeded = computed(() => GATE_STATUSES.has(status.value) && !terminal.value)
   const gateOpen = computed(() => gateNeeded.value && !gateDismissed.value)
@@ -572,6 +580,8 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
   return {
     // 模板直接使用的常量
     KIND_LABEL, STATUS_LABEL, STEP_GLYPH, EVALUATION_CHECK_LABELS, EVENT_LABELS,
+    // 展示层专用（见 workflow-format.statusLabelOf 的说明）
+    displayStatus, statusLabel,
     // 状态与计算属性
     state, loadError, busy, gateDismissed, gateNeeded, gateOpen,
     finalNote, recoveryRiskAcknowledged, showAllTimeline, evaluation,

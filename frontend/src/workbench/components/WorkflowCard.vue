@@ -25,6 +25,7 @@ const {
   state, loadError, busy, gateDismissed, gateNeeded, gateOpen,
   finalNote, recoveryRiskAcknowledged, showAllTimeline, evaluation,
   rootEl, status, stages, stageClass, headDetail,
+  displayStatus, statusLabel,
   members, completedCount, reviewFailures, uncertainTaskIds,
   timelineEvents, visibleTimeline,
   roleMeta, fmtMs, stepTitle, stepSummary,
@@ -92,9 +93,9 @@ async function discardStage() {
       <span class="wf-ico">🧭</span>
       <b class="wf-title">开发工作流</b>
       <span class="wf-kind">{{ KIND_LABEL[state?.kind || seed?.kind || 'generic'] || '开发流程' }}</span>
-      <span class="wf-status" :class="`wf-status-${status}`">{{ STATUS_LABEL[status] || status }}</span>
+      <span class="wf-status" :class="`wf-status-${displayStatus}`">{{ statusLabel }}</span>
       <span
-        v-if="state?.tasks?.length && (status === 'executing' || status === 'completed')"
+        v-if="state?.tasks?.length && (status === 'executing' || status === 'completed' || displayStatus === 'completed_unverified')"
         class="wf-count"
       >{{ completedCount }}/{{ state.tasks.length }}</span>
       <span class="wf-sep">·</span>
@@ -402,6 +403,9 @@ async function discardStage() {
 .wf-card.wf-executing { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37,96,212,.08), 0 10px 24px rgba(37,96,212,.06); }
 .wf-card.wf-failed { border-color: rgba(214,78,78,.5); box-shadow: 0 8px 20px rgba(214,78,78,.06); }
 .wf-card.wf-completed { border-color: rgba(52,168,112,.45); box-shadow: 0 8px 20px rgba(52,168,112,.06); }
+/* 卡片描边同样别用红色——边框转红会让整张卡看起来像出了故障，
+   而实际是「交付完成，独立验证那一步没做」。 */
+.wf-card.wf-completed_unverified { border-color: rgba(224,162,48,.45); box-shadow: 0 8px 20px rgba(224,162,48,.06); }
 .wf-head {
   display: flex; align-items: center; gap: 8px;
   padding: 9px 12px; user-select: none;
@@ -414,6 +418,10 @@ async function discardStage() {
 .wf-status-executing, .wf-status-generating_options, .wf-status-planning { color: var(--accent); }
 .wf-status-completed { color: var(--green); }
 .wf-status-failed { color: var(--danger); }
+/* 「已完成 · 未做独立验证」——**琥珀色**：内容确实交付了，而独立验证那一条是
+   **证据等级**的声明，不是失败。给绿色会和「已完成」混淆，给红色会误导成
+   「有东西坏了」；琥珀色正好是「完成，但有一处需要你知道」的既有语义。 */
+.wf-status-completed_unverified { color: var(--amber); }
 .wf-status-awaiting_choice, .wf-status-awaiting_approval { color: var(--amber); }
 .wf-status-executing::before { content: ''; display: inline-block; width: 6px; height: 6px; margin: 0 5px 1px 0; border-radius: 50%; background: currentColor; animation: wf-pulse 1.4s ease-in-out infinite; }
 .wf-sep { color: var(--text-faint); font-size: 10px; }
