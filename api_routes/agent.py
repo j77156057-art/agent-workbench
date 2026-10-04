@@ -336,8 +336,24 @@ def build_router(ctx) -> APIRouter:
                 max_steps=task.get("max_steps"),
                 step_sink=sink,
                 llm=routed_llm)
+            # `code_root` 必须显式传。缺省时`audit_evidence` 里`root = None`，相对路径
+            # 就落到**进程当前目录**（DocMind 自己仓库）去解析，于是每一个引用都
+            # `exists=False` —— 而 `in_root` 因`root is None` 保持初值 `True`，
+            # 两者组合起来看起来像「路径存在但判定矛盾」，实际是「压根没查」。
+            #
+            # 实测（`wf-6cd1ee3ca3c0`，八次尝试`references_exist` 全 False）：
+            # 子代理用 `read_file(path: behaviors/enemy.gd)` 读到了 1543 字全文，
+            # 结论 2390 字、行号齐备、反思 `issues=0`，却被这一行否掉。
+            # 而同一时刻 `_audit_live_answer`（它传了 `get_runtime("code_root")`）
+            # 对同一个引用给出 `exists=TRUE` —— **两份审计，两套根**。
+            #
+            # `workflow_callbacks`（line 249-269）已经在同一函数里用
+            # `set_context_code_root` 设好了根，这里只读不设，与那条保持一致。
             check = review_output(out, max_tool_failures=int(
-                (state.get("policy") or {}).get("max_tool_failures", 3)))
+                (state.get("policy") or {}).get("max_tool_failures", 3)),
+                question=state.get("request") or "",
+                code_root=str(state.get("project_root") or "")
+                or get_runtime("code_root", ""))
             out = dict(out or {})
             out["review"] = check
             if not check.get("ok"):
