@@ -507,6 +507,54 @@ def review_output(result: Mapping[str, Any] | None, *, max_tool_failures: int = 
     return report
 
 
+def _experience_outcome(review: Any, status: str) -> tuple[str, str]:
+    """这次工作流该按什么结局进经验库 -> ``(outcome, verdict 短句)``。
+
+    ## 为什么不能直接读 `status`
+
+    实测（四次只读真跑落盘的 experience 事件，形状完全一致）：
+
+        {"kind": "experience", "recorded": false, "outcome": "repeated-fail"}
+
+    那一轮四任务全 ok、十项检查全 True、`evidence_verified`、引用不过 0 条
+    —— **全程成功**，只因为 `status` 是 `failed`（`review.ok` 含 `project.ok`，
+    而它 `unverified`），就被记成「反复失败」。
+
+    这条比展示层的同类问题**更要紧**：经验库会被 `experience.recall_similar()`
+    检索出来**指导后续规划**，所以一次完全成功的分析一旦记进去就成了**反面教材**。
+    目前 `recorded: false` 只是因为嵌入不可用静默降级（Ollama 没起）、库还是
+    空的——**一旦嵌入可用就会真的写进去**。
+
+    ## 为什么映射到 success 而不是新增取值
+
+    `experience._OUTCOMES = ("success", "fail-then-fixed", "repeated-fail")`
+    是**封闭集合**，第 91 行就校验。而「缺独立验证」不落在后两者任何一格里：
+    活儿干完了，只是这次结果不构成独立验证。保留意见放进 `verdict` 那一行——
+    **标签不撒谎，披露也不丢**。
+
+    ## 反向守卫
+
+    `agent_ok` 为假、或 `project.status == "failed"`（独立测试真失败）、
+    或 `project` 这一项整个缺失（未知）—— 三种都仍记 `repeated-fail`。
+    只有「内容确实过了、且缺的是独立验证」这一种才记 `success`。
+
+    ## 与本族其他三处是同一个判据
+
+    `workflow_reflection._review_wording`（58ae8f5）、
+    `frontend reviewHeadlineOf`（ddf1df5）、
+    `build_recovery_plan` 的 `_workflow_changed_files`（3a5f8dc）。
+    前端无法共享（语言边界），后端这几处各写一行并互相指向——
+    这是**已知的重复**，不要在只改一处的情况下以为其他处也修好了。
+    """
+    rv = review if isinstance(review, Mapping) else {}
+    project = rv.get("project") if isinstance(rv.get("project"), Mapping) else {}
+    content_only = bool(rv.get("agent_ok") is True
+                         and project.get("status") == "unverified")
+    if status == "completed" or content_only:
+        return "success", ("内容通过·未做独立验证" if content_only else "通过")
+    return "repeated-fail", "未通过"
+
+
 def _workflow_changed_files(raw: Mapping[str, Any]) -> bool:
     """这一轮**实际改动了项目文件**吗？
 
@@ -3316,13 +3364,16 @@ class GameWorkflowManager:
         if state.experience_enabled and not any(e.get("kind") == "experience" for e in state.events):
             try:
                 from experience import record_episode
-                outcome = "success" if state.status == "completed" else "repeated-fail"
+                # 「只做了内容复核、没做独立验证」不是失败——判据与理由见
+                # `_experience_outcome`（同文件）。这里只负责把 verdict 拼进
+                # decision 那一行，让保留意见跟着进经验库。
+                outcome, verdict = _experience_outcome(state.review, state.status)
                 recorded = record_episode(
                     state.project_id or "default",
                     get_profile(state.kind).experience_title + state.request,
                     "方案=%s；重规划=%s；复核=%s" % (
                         (state.selected_option or {}).get("id", "未选择"),
-                        state.replans, state.review.get("ok", False)),
+                        state.replans, verdict),
                     outcome, lesson="仅保存脱敏的流程摘要；具体代码和凭据不入经验库")
                 self._event(state, "experience", recorded=bool(recorded), outcome=outcome)
             except Exception:
