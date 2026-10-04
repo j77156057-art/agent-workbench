@@ -3784,9 +3784,13 @@ class Agent:
                 # 关思考只作用于被截断后的那一次续写重试；用完即复位，避免影响后续正常轮次
                 self._suppress_thinking_once = False
                 calls = (getattr(self.llm, "last_tool_calls", None) or []) if use_tools else []
+                # 这一轮模型是否已经**用协议允许的方式**表达了动作。
+                # 只要是，就绝不参与「格式失守」判定——见下面 parallel_batch 那段。
+                native_calls_this_turn = False
                 if calls:
                     # 原生 tool_call 归一进文本协议：护栏 / 事件 / 账本完全复用
                     pairs = [(c["name"], args_to_input(c["arguments"])) for c in calls]
+                    native_calls_this_turn = True
                     if len(pairs) > 1:
                         # 多调用：走并行批次（不安全的批次会在循环顶自动退回顺序）
                         self._pending_batch = pairs
@@ -4469,7 +4473,32 @@ class Agent:
             # 格式连续失守：模型有正文、但既没 Action 也没 Final Answer。
             # 这与「被长度截断」是两回事（后者 acc 也可能没有完整标记，但要靠
             # finish_reason 区分），处置也不同，所以单独计数、单独早退。
-            if acc.strip() and not truncated and not has_real_final and not parsed["action"]:
+            #
+            # `native_calls_this_turn`：**并行 tool_call 那一轮必须排除**。
+            # 实测（`wf-a79129b8e691`，探针落盘 `.tmp/stall_probe/stall-075620-01.json`）：
+            # 模型正常发出 2 个 tool_call、`finish_reason="tool_calls"`、正文是一句
+            # 91 字符的散文（"I need to read the actual game source files…"）。
+            #
+            # 而 `len(pairs) > 1` 那支**只设 `_pending_batch`、不设 `native_override`
+            # 、不往 `acc` 里拼 `Action:`** —— 批次要到**循环顶**才执行，可这里
+            # 在到达循环顶之前就先 `parse_response(acc)`。于是在一句散文上解析出
+            # 「无 action、无 final」，紧接着判 `format_stall`：
+            #
+            #     finish_reason='tool_calls'   ← 模型明明用协议允许的方式表达了动作
+            #     tool_calls_seen=2
+            #     acc_chars=91  acc='I need to read…'
+            #     turn_outcome='format_stall'  ← 误判
+            #
+            # 后果不是「多纠偏一次」那么轻：`_MAX_FORMAT_STALLS` 耗尽后直接
+            # `return`，**这一轮的工具调用一次都没执行**——模型想做的事被 harness
+            # 判成「它什么都没说」。而纠偏文案还会告诉它「直接调用工具」，
+            # 于是它下一轮又说一遍同样的话，同样进不了批次：**一条死路**。
+            #
+            # 所以判据是「模型**有没有**按协议允许的方式表达动作」，不是
+            # 「`acc` 里**有没有** `Action:` 字样」——后者只是文本协议的形状，
+            # 而原生通道下它本来就不该出现。
+            if (acc.strip() and not truncated and not has_real_final
+                    and not parsed["action"] and not native_calls_this_turn):
                 format_stalls += 1
                 if format_stalls >= _MAX_FORMAT_STALLS:
                     if turn is not None:
