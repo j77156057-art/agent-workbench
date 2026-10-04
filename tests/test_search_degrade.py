@@ -200,23 +200,69 @@ class GuidanceSeverityTests(unittest.TestCase):
 
 
 class SourceGuardTests(unittest.TestCase):
-    """防回归：那个 `or _emb == "ollama"` 的条件不能被改回来。"""
+    """防回归：**拦截**条件不能被改回「有人依赖 ollama 就封对话」。
+
+    ## 这两条断言被重写过（原样会咬人）
+
+    原先靠两段源码文本钉住实现形状：
+
+        assertNotIn('if _prov == "ollama" or _emb == "ollama":')
+        assertIn('elif _emb == "ollama":')
+
+    改判定顺序（把 `route_for` 提到守卫之前，好让守卫知道这一轮会不会其实
+    由云端服务）之后，两条都不成立了：
+
+    · 第一条变成**误报**。`if _prov == "ollama" or _emb == "ollama":` 现在是
+      **探活**条件——「谁依赖 Ollama 就探一下」本来就该 or，它不拦截任何东西。
+      真正的拦截在下一行，条件里没有 `_emb`。断言盯错了行。
+
+    · 第二条**钉住了 bug**。它要求降级分支必须写成 `elif`，而 `elif` 恰恰是
+      「对话走云端、检索靠本机」时静默降级的原因：`_prov == "ollama"` 时
+      走完拦截分支（或不拦），降级提示就被跳过，用户既没被拦也没被告知检索没了。
+
+    所以改成盯**意图**而不是形状：找到真正 `return _ollama_down_stream(...)`
+    那一行的 `if` 条件，断言它只认 `_prov`；并断言降级分支与拦截分支**相互独立**
+    （不是 `elif`）。
+
+    「云端救回对话后仍如实披露检索降级」的**行为**回归由
+    `tests/test_cloud_route_survives_local_model_down.py::
+    SearchDegradationIsStillDisclosedTests` 钉住——那里是按事件断言的，
+    改源码形状不会让它失效。
+    """
 
     def _chat_src(self):
         import inspect
         return inspect.getsource(api.chat)
 
-    def test_the_blocking_branch_only_triggers_for_the_llm_provider(self):
-        src = self._chat_src()
-        self.assertNotIn(
-            'if _prov == "ollama" or _emb == "ollama":', src,
-            "拦截条件又变回「有人依赖 ollama 就封对话」了——那正是本测试要防的 bug")
+    def _blocking_condition(self):
+        """返回真正触发拦截的那行 `if` 条件（而不是探活那行）。"""
+        lines = self._chat_src().splitlines()
+        for i, ln in enumerate(lines):
+            if "return StreamingResponse(_ollama_down_stream(" in ln:
+                for j in range(i - 1, max(-1, i - 8), -1):
+                    if lines[j].lstrip().startswith("if "):
+                        return lines[j]
+        self.fail(
+            "找不到拦截分支的 if 条件。若实现改了形状，请同步更新本守卫——"
+            "**不要**因此删掉它：它是本文件唯一的防回归网")
 
-    def test_the_downgrade_path_exists(self):
+    def test_the_blocking_branch_only_triggers_for_the_llm_provider(self):
+        cond = self._blocking_condition()
+        self.assertIn("_prov", cond,
+                      "拦截条件必须认对话模型 provider：%r" % cond)
+        self.assertNotIn("_emb", cond,
+                         "拦截条件里混进了 embedding provider——检索不可用不得封对话：%r" % cond)
+
+    def test_the_downgrade_path_is_independent_of_the_blocking_branch(self):
+        """降级分支不能是拦截分支的 `elif`（那会造成静默降级）。"""
         src = self._chat_src()
         self.assertIn("search_degraded_notice", src,
                       "降级路径不见了：检索不可用时会退回旧的封闭行为")
-        self.assertIn("elif _emb == \"ollama\":", src)
+        self.assertNotIn("elif _emb", src,
+                         "降级分支又变回 elif 了：对话走云端时会被静默跳过，"
+                         "用户既没被拦也没被告知检索没了")
+        self.assertIn('if _emb == "ollama"', src,
+                      "降级分支应当是独立判断（_prov 为 ollama 时也要能披露降级）")
 
 
 if __name__ == "__main__":

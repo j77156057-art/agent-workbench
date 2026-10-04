@@ -2114,6 +2114,55 @@ def _desktop_review_feedback(request: Request, workflow_id: str, feedback_id: st
     return "", entry
 
 
+def _resolve_cloud_client(routing):
+    """本轮能否升级云端；能则返回 ``(provider, model, base_url, key)``，不能返回 ``None``。
+
+    ## 为什么抽出来
+
+    实测事故（`tests/test_cloud_agent_registration.py` 两条）：`llm_provider=ollama`
+    且 Ollama 没运行时，**即使本轮会升级云端且云端 key 齐全**，`/api/chat` 也在
+    构造云端 client **之前**就返回了：
+
+        ⚠️ 无法对话：**对话模型**配置为本机 Ollama，但服务未运行或不可达。
+        （已实测：`_FakeLLM.made` 条数 = 0 —— 云端 client 一个都没造）
+
+    用户看到的是「无法对话」，而这一轮**本来根本不需要本地模型**。
+    两个问题叠在一起：路由误判（说不能对话）+ 建议误导（让他去装 Ollama）。
+
+    早先的顺序是「守卫 → 路由 → 构造云端」，守卫根本看不到路由结果。
+    现在守卫和构造**共用这一个判定**，不再各算一遍——否则两份逻辑迟早漂移，
+    而漂移的方向恰好是「又拦掉一个云端能服务的回合」。
+    """
+    mode_auto = (get_runtime("llm_mode") or "fixed") == "auto"
+    if routing.get("route") != "cloud" or not (mode_auto or routing.get("auto_cloud_enabled")):
+        return None
+    cloud_provider = ""
+    cloud_model = ""
+    cloud_base_url = ""
+    key = ""
+    # 优先使用用户在自动模式中选定的云端模型预设
+    preset_id = (get_runtime("auto_cloud_preset_id") or "").strip()
+    preset = next((p for p in load_model_presets() if p["id"] == preset_id), None) if preset_id else None
+    if mode_auto and preset:
+        cloud_provider = preset["provider"]
+        cloud_model = preset.get("model") or ""
+        cloud_base_url = preset.get("base_url") or ""
+        _root = _project_root_or_error()
+        key = secrets_store.load(_root, _preset_secret_slot(preset["id"])) if _root else ""
+    if not cloud_provider:
+        # 旧路径：运行时/环境变量指定的云端厂商（默认 deepseek），仅在需要 key 时使用
+        cloud_provider = get_runtime("cloud_llm_provider") or os.getenv("AGENT_CLOUD_PROVIDER", "deepseek")
+    if cloud_provider not in PROVIDERS:
+        return None
+    if not key and PROVIDERS[cloud_provider].get("api_key_env"):
+        key = get_runtime("llm_api_key") or os.getenv(PROVIDERS[cloud_provider]["api_key_env"], "")
+    # 本地（ollama/llamacpp/mock）不承担「云端升级」；需要 key 的厂商没 key 也不能升级
+    if not (PROVIDERS[cloud_provider].get("cloud") and (
+            not PROVIDERS[cloud_provider].get("api_key_env") or key)):
+        return None
+    return cloud_provider, cloud_model, cloud_base_url, key
+
+
 @app.post("/api/chat")
 async def chat(
     # 默认 None 只为让既有代码能直接 `await api.chat(question=...)` 调处理器（测试就是这么调的）；
@@ -2194,29 +2243,36 @@ async def chat(
     _prov = get_runtime("llm_provider") or LLM_PROVIDER
     _emb = get_runtime("embedding_provider") or EMBEDDING_PROVIDER
     search_degraded_notice = ""
-    if _prov == "ollama":
+    #: 先算路由：守卫要知道「这一轮会不会其实由云端服务」，否则会把一个
+    #: 不需要本地模型的回合拦掉（见 `_resolve_cloud_client` 的实测记录）。
+    routing = route_for(question)
+    _cloud_plan = _resolve_cloud_client(routing)
+    _ollama_state = None
+    if _prov == "ollama" or _emb == "ollama":
         try:
             # check_ollama 内部是同步 urllib（最坏阻塞数秒），丢线程池避免卡住事件循环
-            _ol = await run_in_threadpool(check_ollama)
+            _ollama_state = await run_in_threadpool(check_ollama)
         except Exception:  # noqa: BLE001
-            _ol = None
-        if _ol is not None and not _ol["reachable"]:
-            return StreamingResponse(_ollama_down_stream(_ol["guidance"]), media_type="text/event-stream", headers=SSE_HEADERS)
-    elif _emb == "ollama":
+            _ollama_state = None
+    _ollama_down = bool(_ollama_state is not None and not _ollama_state["reachable"])
+    if _prov == "ollama" and _ollama_down and _cloud_plan is None:
+        # 只有「这一轮真的要走本地对话模型」才拦。若本轮会升级云端（`_cloud_plan`
+        # 有值），本地模型没起与它无关——早先在这里无条件返回，用户拿到的是
+        # 一句「无法对话」，而云端 client 连构造都没构造过。
+        return StreamingResponse(_ollama_down_stream(_ollama_state["guidance"]), media_type="text/event-stream", headers=SSE_HEADERS)
+    if _emb == "ollama" and _ollama_down:
         # 仅检索依赖 Ollama：不封对话。检索不可用时明确说清是哪一部分不可用。
-        try:
-            _ol = await run_in_threadpool(check_ollama)
-        except Exception:  # noqa: BLE001
-            _ol = None
-        if _ol is not None and not _ol["reachable"]:
-            search_degraded_notice = (
-                "注意：知识库检索当前不可用（向量后端 Ollama 未运行），"
-                "本次**不使用**检索结果作答，将直接基于已有上下文回答。"
-                "这与对话模型无关——你的对话模型照常可用。"
-                "如需启用检索：启动 Ollama 后执行 `ollama pull %s`，"
-                "或在「⚙ 模型设置」把 embedding_provider 换成云端服务。"
-                % (EMBEDDING_MODEL or "bge-m3")
-            )
+        # 这一条与上面的拦截是**两个独立判断**（早先写成 elif，于是「对话走云端、
+        # 检索靠本机」这种组合会静默降级，用户既没被拦也没被告知）。
+        search_degraded_notice = (
+            "注意：知识库检索当前不可用（向量后端 Ollama 未运行），"
+            "本次**不使用**检索结果作答，将直接基于已有上下文回答。"
+            + ("云端对话模型仍可正常使用——这与向量检索无关。"
+               if _cloud_plan is not None else "这与对话模型无关——你的对话模型照常可用。")
+            + "如需启用检索：启动 Ollama 后执行 `ollama pull %s`，"
+            "或在「⚙ 模型设置」把 embedding_provider 换成云端服务。"
+            % (EMBEDDING_MODEL or "bge-m3")
+        )
 
     # 给 LLM 一个上下文提示：列出知识库里已有哪些文档，让它知道"里面/这个文档"指什么
     code_root = get_runtime("code_root") or CODE_ROOT
@@ -2255,7 +2311,7 @@ async def chat(
             "dev_list_bugs 只表示 bugs/ 中的历史归档，不能作为首个工具、当前问题结论或唯一证据。"
             "最终用中文分成：已确认问题、可疑线索、未检查部分、建议；不要粘贴原始 JSON、完整日志或工具调用过程。"
         )
-    routing = route_for(question)
+    # `routing` 已在 Ollama 守卫之前算好（守卫要靠它判断本轮是否由云端服务）。
     # P3：会话 Agent 按「请求上下文里的项目」隔离（无上下文 → 纯 session_id，等价改动前）。
     selected_agent = _agent_for(session_id)
     if ui_context == "verify_realtime_alert":
@@ -2279,46 +2335,27 @@ async def chat(
                           if plan_mode.strip() else None)
     is_cloud = False
     cloud_llm = None
+    # `_cloud_plan` 是守卫那边算出的同一份判定（见 `_resolve_cloud_client`）：
+    # 守卫与构造共用，**不允许**在这里再算一遍。
     # 自动模式：UI 持久化开关 llm_mode=auto（用户在模型设置选的云端预设）
     # 与旧环境变量 AGENT_AUTO_CLOUD 两条路并存，任一开启即允许按复杂度升级云端。
-    mode_auto = (get_runtime("llm_mode") or "fixed") == "auto"
-    cloud_allowed = mode_auto or routing.get('auto_cloud_enabled')
-    if routing.get('route') == 'cloud' and cloud_allowed:
-        cloud_provider = ""
-        cloud_model = ""
-        cloud_base_url = ""
-        key = ""
-        # 优先使用用户在自动模式中选定的云端模型预设
-        preset_id = (get_runtime("auto_cloud_preset_id") or "").strip()
-        preset = next((p for p in load_model_presets() if p["id"] == preset_id), None) if preset_id else None
-        if mode_auto and preset:
-            cloud_provider = preset["provider"]
-            cloud_model = preset.get("model") or ""
-            cloud_base_url = preset.get("base_url") or ""
-            _root = _project_root_or_error()
-            key = secrets_store.load(_root, _preset_secret_slot(preset["id"])) if _root else ""
-        if not cloud_provider:
-            # 旧路径：运行时/环境变量指定的云端厂商（默认 deepseek），仅在需要 key 时使用
-            cloud_provider = get_runtime('cloud_llm_provider') or os.getenv('AGENT_CLOUD_PROVIDER', 'deepseek')
-        if cloud_provider in PROVIDERS:
-            if not key and PROVIDERS[cloud_provider].get('api_key_env'):
-                key = get_runtime('llm_api_key') or os.getenv(PROVIDERS[cloud_provider]['api_key_env'], '')
-            # 本地（ollama/llamacpp/mock）不承担「云端升级」；需要 key 的厂商没 key 也不能升级
-            if PROVIDERS[cloud_provider].get('cloud') and (
-                    not PROVIDERS[cloud_provider].get('api_key_env') or key):
-                # 云端路由只为本轮造一个云端 client，随 run(llm=cloud_llm) 临时覆盖，
-                # 请求结束即还原——不再新建 Agent、不再改 _SESSION_AGENTS。旧做法
-                # `_SESSION_AGENTS[sid] = cloud_agent` 会把模块级 agent（会话单例）
-                # 变成孤儿：set_config/ingest 等仍打旧对象、且本会话被永久黏到云端。
-                # LLMClient 构造可能同步探活（≤3s）：放到线程池，避免阻塞事件循环。
-                cloud_llm = await run_in_threadpool(
-                    lambda: LLMClient(
-                        provider=cloud_provider, model=cloud_model or None,
-                        api_key=key or None, base_url=cloud_base_url or None)
-                )
-                is_cloud = True
-            else:
-                routing = {**routing, 'route': 'local', 'reason': '云端模型未配置 API Key 或不可用，已回退本地'}
+    cloud_allowed = ((get_runtime("llm_mode") or "fixed") == "auto"
+                     or routing.get('auto_cloud_enabled'))
+    if _cloud_plan is not None:
+        cloud_provider, cloud_model, cloud_base_url, key = _cloud_plan
+        # 云端路由只为本轮造一个云端 client，随 run(llm=cloud_llm) 临时覆盖，
+        # 请求结束即还原——不再新建 Agent、不再改 _SESSION_AGENTS。旧做法
+        # `_SESSION_AGENTS[sid] = cloud_agent` 会把模块级 agent（会话单例）
+        # 变成孤儿：set_config/ingest 等仍打旧对象、且本会话被永久黏到云端。
+        # LLMClient 构造可能同步探活（≤3s）：放到线程池，避免阻塞事件循环。
+        cloud_llm = await run_in_threadpool(
+            lambda: LLMClient(
+                provider=cloud_provider, model=cloud_model or None,
+                api_key=key or None, base_url=cloud_base_url or None)
+        )
+        is_cloud = True
+    elif routing.get('route') == 'cloud' and cloud_allowed:
+        routing = {**routing, 'route': 'local', 'reason': '云端模型未配置 API Key 或不可用，已回退本地'}
     hints.append(f"模型路由建议：{routing['route']}（复杂度 {routing['complexity']}，{routing['reason']}）。若需云端模型，必须使用已配置且可审计的 provider。")
     # 逐请求开关：联网（默认关，空串也按关处理，避免漏传时误外联）；
     # 深度思考空串=沿用模型画像/全局默认，显式 1/0 才覆盖（None=不改）。

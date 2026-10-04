@@ -72,6 +72,24 @@ class CloudLlmOverrideTests(unittest.IsolatedAsyncioTestCase):
         self.local_fake = _FakeLLM(provider="local", model="local-1")
         self.agent_ref.llm = self.local_fake
 
+        # 钉住前置守卫依赖的两个键，否则本文件的结果取决于**跑测试那台机器的配置**。
+        #
+        # 实测：`/api/chat` 在构造云端 client 之前有一道 Ollama 探活守卫
+        # （`api.chat` 里 `_prov == "ollama"` 且服务不可达 -> 直接回「无法对话」）。
+        # `get_runtime` 取不到键时会回落到模块常量 `LLM_PROVIDER`/`EMBEDDING_PROVIDER`，
+        # 也就是 `.env`。于是「llm_provider=ollama 且 Ollama 没起」的机器上：
+        #   · 云端那一轮被守卫拦掉，`_FakeLLM.made == []`；
+        #   · 本地那一轮也被守卫拦掉，`Agent.run` 根本没被调用，
+        #     `seen[-1]` 仍是上一次云端请求留下的 client ——
+        #     报「本地路由应传 llm=None」，而这条测试压根没测到本地路由。
+        # 这两条测试要的是「云端覆盖后能还原」，与 Ollama 无关，不该被它决定生死。
+        #
+        # 注意这不是给实现「开口子」：守卫拦**本地**回合仍然是正确的（本地模型
+        # 确实没起）。云端那一轮不该被拦是另一件事，由
+        # `tests/test_cloud_route_survives_local_model_down.py` 单独钉住。
+        config.set_runtime("llm_provider", "deepseek")
+        config.set_runtime("embedding_provider", "deepseek")
+
     def tearDown(self):
         api.route_for = self._orig_route_for
         api.LLMClient = self._orig_llm_client
