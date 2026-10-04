@@ -3761,8 +3761,34 @@ def read_file(path):
         _note_read_range(target, start_line, end_line, len(out.encode("utf-8")))
         return out
     if len(content) > 12000:
-        content = content[:12000] + "\n…（已截断，仅显示前 12000 字；需要后续段落请用 start:/end: 指定行号）"
-    out = f"=== {rel} ===\n{content}"
+        # 抬头里的总行数按**完整文件**算，不是按截断后的片段——否则模型会把
+        # 「这里只给了前 12000 字」误读成「文件就这么长」，而它同时又在结论里
+        # 报一个自己数出来的行数。
+        total_lines = len(content.splitlines())
+        content = (content[:12000]
+                   + f"\n…（已截断，仅显示前 12000 字，共 {total_lines} 行；"
+                     "需要后续段落请用 start:/end: 指定行号）")
+        out = f"=== {rel}（共 {total_lines} 行，仅显示前 12000 字）===\n{content}"
+        _note_read_range(target, None, None, len(out.encode("utf-8")))
+        return out
+    # 整文件读取也给总行数。
+    #
+    # 实测（`wf-f609ea8daf22`）：同一个 `player.gd` 被模型报成**47 / 50 / 51 行**
+    # 三次，而真实是 49 行——因为区间读的抬头里有「共 49 行」，**整文件读的抬头里
+    # 什么都没有**，模型只能自己数裸正文，数错三次。反思判据随后写下
+    # 「结论声称文件共 50 行…无证据支持」，那条指控完全正确。
+    #
+    # 这不是「给模型加信息」，是**补上一个同族工具早就有的字段**：
+    #     区间读   === f（第 25-49 行，共 49 行）===   ✓ 早就有
+    #     只有 start === f（第 25-49 行，共 49 行）===   ✓ 早就有
+    #     start>end  === f（第 40-49 行，共 49 行）===   ✓ 早就有
+    #     超出末尾  === f（共 49 行）===                ✓ 早就有
+    #     整文件    === f ===                          ← 只有它缺
+    #
+    # 注意：**不加逐行行号**。那会让整文件读变大、并与区间读的形状混淆；
+    # 这里只给一个标量（总行数），够回答「这个文件多长」而不改变输出形态。
+    total_lines = len(content.splitlines())
+    out = f"=== {rel}（共 {total_lines} 行）===\n{content}"
     _note_read_range(target, None, None, len(out.encode("utf-8")))
     return out
 
