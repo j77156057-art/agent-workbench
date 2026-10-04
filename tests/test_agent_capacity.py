@@ -95,17 +95,28 @@ class AgentCapacityTests(unittest.TestCase):
         self.assertEqual(tasks[0]["max_steps"], 120)
 
     def test_workflow_plan_surfaces_configured_child_step_limit(self):
+        # `close()` 必须在 `with` **内部**调，不能靠 addCleanup/tearDown：
+        # `GameWorkflowManager.__init__` 默认开一个 sqlite 落地点
+        # （DOCMIND_LANGGRAPH_SQLITE_CHECKPOINT 默认 1），而 Windows 不允许删除
+        # 仍被打开的文件。`TemporaryDirectory.__exit__` 是在测试体里跑的，
+        # 排在 addCleanup 之前——于是清理阶段炸：
+        #   PermissionError: [WinError 32] ... langgraph_checkpoints.sqlite
+        # 失败点在 teardown 而非断言，很容易被误当成「环境问题」。
+        # 同一仓里 test_project_stage.py 等 10 处用的就是这个 try/finally 形状。
         with tempfile.TemporaryDirectory() as root:
             manager = GameWorkflowManager(root)
-            state = manager.start("capacity test", policy=WorkflowPolicy(
-                max_subagents=2, child_max_steps=42))
-            workflow_id = state["workflow_id"]
-            manager.choose(workflow_id, "recommended")
-            planned = manager.plan(workflow_id, [
-                {"id": "a", "role": "tester", "task": "check", "max_steps": 120},
-            ])
-            self.assertEqual(planned["policy"]["child_max_steps"], 42)
-            self.assertEqual(planned["subagents"][0]["max_steps"], 42)
+            try:
+                state = manager.start("capacity test", policy=WorkflowPolicy(
+                    max_subagents=2, child_max_steps=42))
+                workflow_id = state["workflow_id"]
+                manager.choose(workflow_id, "recommended")
+                planned = manager.plan(workflow_id, [
+                    {"id": "a", "role": "tester", "task": "check", "max_steps": 120},
+                ])
+                self.assertEqual(planned["policy"]["child_max_steps"], 42)
+                self.assertEqual(planned["subagents"][0]["max_steps"], 42)
+            finally:
+                manager.close()
 
 
 if __name__ == "__main__":
