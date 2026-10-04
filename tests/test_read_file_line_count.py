@@ -192,8 +192,30 @@ class TruncationKeepsTheRealCountTests(unittest.TestCase):
                       "截断说明没给总行数——只剩「仅显示前 12000 字」")
 
 
-class NoLineNumbersAddedToWholeFileReadsTests(unittest.TestCase):
-    """**不加逐行行号**——那会改变输出形态并与区间读混淆。"""
+class WholeFileReadsAreNumberedTooTests(unittest.TestCase):
+    """整文件读**逐行编号** —— 与区间读统一形态。
+
+    ## 为什么翻转了上一轮的决定
+
+    上一轮我刻意克制「不加逐行行号」，理由是「判据靠有没有行号区分两种形态」。
+
+    **那个理由是错的。** 区分两种形态的目的是「知道能不能核验行号」，而不是
+    「拒绝整文件读带行号」。拒绝的代价是判据永远无法核验整文件读的行号——
+    而整文件读是工具说明里的**推荐用法**，模型最常走的那条路。
+
+    实测（`wf-fd543f79c197`）：总行数补上后模型不再数错（报 53 / 49，与原文
+    一致），但紧接着 `verify-constants` 的反思写下：
+
+        「结论中给出的行号在工具观察中并不存在 —— read_file 整文件读取返回的
+          是裸正文，无行号，因此这些行号属于无依据的推测性标注」
+
+    **那条指控是对的**，而模型当时正在做的事是「自己纠正上游的行号偏差」——
+    它发现两份上游结论对同一段代码给了 `:31` 和 `:33`，因为两份都是各自数
+    裸正文数出来的。
+
+    前十层里九层是「已有的信息被丢掉」，这一层是「**从来没有过**」。
+    补它比继续在判据上开豁免更根本：豁免只是让判据不去查，给了行号它就能查。
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -205,21 +227,51 @@ class NoLineNumbersAddedToWholeFileReadsTests(unittest.TestCase):
         self.addCleanup(lambda: (config.set_runtime("code_root", self._prev or ""),
                                  tools.clear_read_files()))
 
-    def test_the_body_stays_bare(self):
-        """判据靠「有没有行号」区分两种形态，所以这里必须仍是裸正文。"""
+    def _read(self):
         tools.clear_read_files()
-        out = str(tools.read_file("path: a.gd"))
-        self.assertIn("line_01\nline_02", out)
-        # 逐行编号会留下 "1: line_01" 这种形状
-        self.assertNotIn("1: line_01", out,
-                         "整文件读被加上了逐行行号——判据将无法区分两种形态")
+        return str(tools.read_file("path: a.gd"))
 
-    def test_the_whole_file_is_still_recognised_as_unnumbered(self):
+    def test_every_line_is_numbered(self):
+        out = self._read()
+        self.assertIn("1: line_01", out)
+        self.assertIn("49: line_49", out)
+
+    def test_the_judge_can_now_recognise_it_as_numbered(self):
+        """这是整条改动的**目的**——判据得能核验它的行号。"""
         import agent
+        self.assertTrue(agent._obs_has_line_numbers(self._read()),
+                        "整文件读明明逐行编号了，判据却看成裸正文——"
+                        "它会转而去要求代码片段当依据")
+
+    def test_the_numbering_is_continuous_and_matches_the_header(self):
+        """编号必须连续且与抬头一致，否则行号本身就是新的一层不可信来源。"""
+        out = self._read()
+        head = out.splitlines()[0]
+        self.assertIn("共 49 行", head)
+        body = [ln for ln in out.splitlines()[1:] if ln.strip()]
+        self.assertEqual(len(body), 49)
+        for i, line in enumerate(body, start=1):
+            self.assertTrue(line.startswith("%d: " % i),
+                            "第 %d 行没有编号：%r" % (i, line[:40]))
+
+    def test_it_fits_the_trace_budget(self):
+        """加了编号就变大——**变大会被落库那道刀砍**，那正是前十层的病因。
+
+        所以这一条要钉住：典型文件在编号之后仍能整份进 `traj`。
+        """
+        import agent
+        self.assertLessEqual(len(self._read()), agent.ORCH_TRACE_OBS_CHARS,
+                             "编号之后超出回传预算——末尾会被砍掉，"
+                             "而砍掉的恰好是判据要核验的行号")
+
+    def test_both_shapes_look_the_same_to_the_judge(self):
+        """整文件读与区间读现在同形——判据不需要为它开特例。"""
+        import agent
+        whole = self._read()
         tools.clear_read_files()
-        obs = str(tools.read_file("path: a.gd"))
-        self.assertFalse(agent._obs_has_line_numbers(obs),
-                         "整文件读被判成带行号——那会让判据回去核验行号")
+        part = str(tools.read_file("path: a.gd, start: 5, end: 8"))
+        self.assertEqual(agent._obs_has_line_numbers(whole),
+                         agent._obs_has_line_numbers(part))
 
 
 if __name__ == "__main__":

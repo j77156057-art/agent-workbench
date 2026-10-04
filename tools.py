@@ -3760,35 +3760,42 @@ def read_file(path):
         out = f"=== {rel}（第 {start_line}-{end_line} 行，共 {total} 行）===\n{shown}"
         _note_read_range(target, start_line, end_line, len(out.encode("utf-8")))
         return out
+    all_lines = content.splitlines(keepends=True)
+    total = len(all_lines)
     if len(content) > 12000:
         # 抬头里的总行数按**完整文件**算，不是按截断后的片段——否则模型会把
         # 「这里只给了前 12000 字」误读成「文件就这么长」，而它同时又在结论里
         # 报一个自己数出来的行数。
-        total_lines = len(content.splitlines())
-        content = (content[:12000]
-                   + f"\n…（已截断，仅显示前 12000 字，共 {total_lines} 行；"
-                     "需要后续段落请用 start:/end: 指定行号）")
-        out = f"=== {rel}（共 {total_lines} 行，仅显示前 12000 字）===\n{content}"
+        body = "".join(f"{i}: {ln}" for i, ln in enumerate(all_lines, start=1))
+        body = (body[:12000]
+                + f"\n…（已截断，仅显示前 12000 字，共 {total} 行；"
+                  "需要后续段落请用 start:/end: 指定行号）")
+        out = f"=== {rel}（共 {total} 行，仅显示前 12000 字）===\n{body}"
         _note_read_range(target, None, None, len(out.encode("utf-8")))
         return out
-    # 整文件读取也给总行数。
+    # 整文件读取**逐行编号**，与区间读统一形态。
     #
-    # 实测（`wf-f609ea8daf22`）：同一个 `player.gd` 被模型报成**47 / 50 / 51 行**
-    # 三次，而真实是 49 行——因为区间读的抬头里有「共 49 行」，**整文件读的抬头里
-    # 什么都没有**，模型只能自己数裸正文，数错三次。反思判据随后写下
-    # 「结论声称文件共 50 行…无证据支持」，那条指控完全正确。
+    # 实测（`wf-fd543f79c197`）：总行数补上后模型不再数错行数（报 53 / 49，与
+    # 原文一致），但紧接着 `verify-constants` 的反思写下——
     #
-    # 这不是「给模型加信息」，是**补上一个同族工具早就有的字段**：
-    #     区间读   === f（第 25-49 行，共 49 行）===   ✓ 早就有
-    #     只有 start === f（第 25-49 行，共 49 行）===   ✓ 早就有
-    #     start>end  === f（第 40-49 行，共 49 行）===   ✓ 早就有
-    #     超出末尾  === f（共 49 行）===                ✓ 早就有
-    #     整文件    === f ===                          ← 只有它缺
+    #     「结论中给出的行号在工具观察中并不存在 —— read_file 整文件读取返回的
+    #       是裸正文，无行号，因此这些行号属于无依据的推测性标注」
     #
-    # 注意：**不加逐行行号**。那会让整文件读变大、并与区间读的形状混淆；
-    # 这里只给一个标量（总行数），够回答「这个文件多长」而不改变输出形态。
-    total_lines = len(content.splitlines())
-    out = f"=== {rel}（共 {total_lines} 行）===\n{content}"
+    # **那条指控是对的。** 而模型做的是「自己纠正上游的行号偏差」——它发现
+    # 两份上游结论对同一段代码给了 `:31` 和 `:33` 两个值，因为两份都是各自
+    # 数裸正文数出来的。
+    #
+    # ## 为什么这里推翻了上一轮「不加逐行行号」的克制
+    #
+    # 当时的理由是「判据靠有没有行号区分两种形态」。**那个理由是错的**：
+    # 区分两种形态的目的是「知道能不能核验行号」，而不是「拒绝整文件读带行号」。
+    # 拒绝的代价是判据永远无法核验整文件读的行号——而整文件读恰恰是工具说明里的
+    # **推荐用法**，模型最常走的那条路。
+    #
+    # 前十层里九层是「已有的信息被丢掉」，这一层是「从来没有过」。补它比继续
+    # 在判据上开豁免更根本：豁免只是让判据不去查，而给了行号它就能查。
+    body = "".join(f"{i}: {ln}" for i, ln in enumerate(all_lines, start=1))
+    out = f"=== {rel}（共 {total} 行）===\n{body}"
     _note_read_range(target, None, None, len(out.encode("utf-8")))
     return out
 

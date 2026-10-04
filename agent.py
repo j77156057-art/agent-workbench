@@ -180,7 +180,15 @@ ORCH_TRACE_STEPS = int(os.getenv("DOCMIND_ORCH_TRACE_STEPS", "6"))
 #: ≈ 9600 字的落库体积——而判据本来就只读其中一部分，那部分原来是**残缺的**。
 #: 证据正确性优先于落库体积：这是同一条线上第五次证明同一件事
 #: （`start_line:` 语法、`read_file` 键名、证据块 420/1600、并行 tool_call 误判）。
-ORCH_TRACE_OBS_CHARS = int(os.getenv("DOCMIND_ORCH_TRACE_OBS_CHARS", "1600"))
+#: `read_file` 整文件读改成**逐行编号**之后，一个典型文件从 1388 字涨到 1582 字、
+#: 一个 53 行的文件到 1753 字。预算若停在 1600，`enemy.gd` 会在落库时被砍掉
+#: 末尾一百多字——而那恰好是本会话反复出现的那道刀：证据完整地进了工具，
+#: 却在进判据之前被砍掉，然后判据判「无法核验」。
+#:
+#: 2200 让「整文件读一个 50-60 行的典型文件」完整进得来，同时仍是有界的
+#: （60 步 × 2200 是落库上限，不是无界）。任务模板要求「报告字节数与行数」
+#: 而模型典型输出 2000-3000 字结论，这个量级与它相称。
+ORCH_TRACE_OBS_CHARS = int(os.getenv("DOCMIND_ORCH_TRACE_OBS_CHARS", "2200"))
 # 工作流实时轨迹（step_sink → SSE）：面向 UI 的单条裁剪上限，比回传轨迹更宽，
 # 但仍然有界——实时流与内存轨迹环都不能携带未裁剪正文。
 SINK_THOUGHT_CHARS = int(os.getenv("DOCMIND_SINK_THOUGHT_CHARS", "400"))
@@ -2278,7 +2286,14 @@ def _child_trace(traj, thoughts, reflections=None, turn_record=None, used=None,
 #:
 #:     read_file(..., start: 6, end: 8) → === f（第 6-8 行，共 42 行）===
 #:     grep / search_code             → [behaviors/player.gd:L20-L21 (godot-scene)]
-_RE_OBS_RANGE_HEADER = re.compile(r"（第\s*\d+\s*[-~]\s*\d+\s*行")
+#: 区间读抬头：`=== f（第 5-8 行，共 49 行）===`
+#: 整文件读抬头：`=== f（共 49 行）===`——**两种都带行号，正文都逐行编号**。
+#:
+#: 第二种是 2026-10 加的（此前整文件读返回裸正文，于是判据无法核验它的行号，
+#: 只能写下「这些行号属于无依据的推测性标注」——那条指控是对的）。
+#: 加了编号却没让这里认出它，会得到更坏的结果：**判据被告知「这没有行号」，
+#: 而正文里明明每行都带编号**，于是它转而去要求代码片段当依据。
+_RE_OBS_RANGE_HEADER = re.compile(r"（(?:第\s*\d+\s*[-~]\s*\d+\s*行[，,]\s*)?共\s*\d+\s*行")
 _RE_OBS_TAGGED_BLOCK = re.compile(r"\[[^\]\n]*:L\d+(?:\s*[-~]\s*L?\d+)?\s*[^\]\n]*\]")
 
 #: 证据块的**正文**预算（不含表头、形状声明与披露段）。
