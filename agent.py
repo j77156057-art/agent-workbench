@@ -1152,11 +1152,28 @@ def _capacity_help_response(question, session_id="", llm=None, run_budget=None):
 # 工具失败文案白名单：工具观察里命中以下任一子串即判为失败（触发反思 / trace ok=False）。
 # 与各工具失败文案字面保持一致；新增工具失败文案时请同步补这里并更新 test_failure_markers。
 _FAILURE_MARKERS = (
-    "未找到相关内容", "计算失败", "表达式包含非法字符",
+    "计算失败", "表达式包含非法字符",
     "搜索失败", "搜索未返回结果", "搜索结果相关性不足", "交通票价查询失败", "交通票价需要先确认", "天气查询失败", "天气查询需要明确地点", "字幕提取失败", "没有公开字幕",   # 联网类
     "读取失败", "文件不存在", "拒绝访问",           # read_file 类（含路径越界拒绝）
     "未提供", "安全限制", "拒绝写入",
     "参数缺失",                                     # dev_* 等工具入参缺失/格式错（否则会被当成功→无限重试）
+)
+
+# 「检索没有匹配」是**合法答案**，不是失败。
+#
+# 「未找到相关内容」原先在 _FAILURE_MARKERS 里，代价实测得到（真跑
+# `wf-0c6374c4d612` / `wf-37f43a4c042f`；干净进程里确定性复现见
+# `.tmp/probe_empty_retrieval.py`）：
+#   _is_failure 命中 -> _tool_ok=False -> 触发「工具未返回有效结果」反思
+#   -> retry_budget_cost 计入 -> _TOOL_FAIL_LIMIT=3 熔断
+#   -> 子代理拿 3 次空结果就强制收尾，结论还误导成
+#      「工具 search_code 已连续失败 3 次，模型未能换出可用的调用方式」——
+#      而真因只是「确实没有匹配」。熔断甚至比步数上限（10）先触发。
+#
+# 「搜索未返回结果」**仍算失败**：那条文案自己就写着「可能是网络受限」，
+# 工具是在说「我可能没干成」，不是「没有匹配」。两者不能混。
+_NO_MATCH_MARKERS = (
+    "未找到相关内容",
 )
 
 _WEB_ACTIONS = {"web_search", "web_search_batch", "web_transport", "web_research"}
@@ -1825,9 +1842,36 @@ def _format_verbatim(action, obs):
     return obs
 
 
+def _is_no_match_only(obs):
+    """这条观察是不是**纯粹**一句「没有匹配」。
+
+    ## 为什么要「纯粹」而不是「含有」
+
+    放宽成「沾上『未找到相关内容』就算成功」会放过**真的**失败，比如
+    「未找到相关内容：索引读取失败，PermissionError」——那类必须仍然算数，
+    否则模型会对着一个必然失败的调用无限重试。所以判据是：命中无匹配标记，
+    **且**不含任何其他失败标记。
+
+    ## 为什么单独一个函数而不是内联
+
+    `_FAILURE_MARKERS` / `_NO_MATCH_MARKERS` 两张表的先后顺序就是语义本身，
+    内联进 `_is_failure` 会让那条顺序变成「藏在一个 any() 里的细节」。
+    """
+    text = str(obs or "")
+    if not text.strip():
+        return False
+    if not any(marker in text for marker in _NO_MATCH_MARKERS):
+        return False
+    return not any(marker in text for marker in _FAILURE_MARKERS)
+
+
+
 def _is_failure(obs):
     if not obs or not obs.strip():
         return True
+    # 「没有匹配」先出局：它是合法答案，不能计入失败配额、更不能触发熔断。
+    if _is_no_match_only(obs):
+        return False
     return any(marker in obs for marker in _FAILURE_MARKERS)
 
 
