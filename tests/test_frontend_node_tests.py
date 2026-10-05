@@ -100,16 +100,54 @@ class FrontendBehaviourTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, detail)
 
     def test_the_modules_under_test_are_the_ones_the_app_imports(self):
-        """用例必须真的在测生产模块，而不是测一份副本。"""
+        """用例必须真的在测生产模块，而不是测一份副本。
+
+        正则原来只认 `src/workbench/<名字>.ts`，**路径里不能有 `/`** —— 于是
+        `src/workbench/composables/workflow-format.ts`（`frontend/src/workbench`
+        下唯一被子目录引用的生产模块）整条漏掉，
+        `workflowReviewHeadline.test.mjs` 被判成「没有 import 生产模块」。
+
+        那是**守卫的漏洞，不是那份测试的问题**：它第 3 行明明写着
+        `from '../src/workbench/composables/workflow-format.ts'`，而且那个模块正是
+        `874a6d8` 改过的 `timelineLabel` 所在处。漏掉它等于让那条改动的守卫失效。
+        """
         per_file, _ = declared_cases()
         sources = (FRONTEND / "src" / "workbench")
+        # 允许子目录（`composables/`、`api/`、`components/` 下共 42 个生产模块）。
+        # 字符类里必须带 `-`：`workflow-format.ts` 含连字符 —— 我第一版写正则时
+        # 漏了它，于是这条守卫自己红着，正好说明了「正则收窄会让守卫失效」。
+        pattern = re.compile(
+            r"from '\.\./src/workbench/([A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)\.ts'")
         for name in per_file:
             body = (TEST_DIR / name).read_text(encoding="utf-8")
-            targets = re.findall(r"from '\.\./src/workbench/([A-Za-z0-9_]+)\.ts'", body)
+            targets = pattern.findall(body)
             self.assertTrue(targets, "%s 没有 import 生产模块" % name)
             for module in targets:
+                # 逐段查，且**不许**用 glob / 存在性近似 —— `api/foo` 与 `apifoo`
+                # 在 `is_file()` 面前无法区分，但它们在文件系统上是两个不同的东西。
                 self.assertTrue((sources / (module + ".ts")).is_file(),
                                 "%s import 的 %s.ts 不存在" % (name, module))
+                # 反向：引用的必须是**真实存在的生产文件**，不能是测试目录里的副本
+                self.assertNotIn("/tests/", module,
+                                 "%s 引用的像是测试目录里的东西：%s" % (name, module))
+
+    def test_the_guard_pattern_accepts_a_module_under_a_subdirectory(self):
+        """**反向守卫**：别再把正则收窄到「路径里不能有 `/`」。
+
+        上一版那个正则就是这么漏掉了 `composables/workflow-format.ts` —— 而
+        `src/workbench` 下明明有 `api/`（18 个 .ts）、`composables/`（23 个）、
+        `components/`（1 个）三个子目录共 42 个生产模块，那条改动（`874a6d8` 的
+        `timelineLabel`）就在里面。漏掉它的后果是「守卫变绿，但守的东西没被测」。
+        """
+        pattern = re.compile(
+            r"from '\.\./src/workbench/([A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)\.ts'")
+        for rel in ("liveVisionAlerts", "composables/workflow-format",
+                    "api/agent", "components/TopBar"):
+            self.assertTrue(pattern.findall("import x from '../src/workbench/%s.ts'" % rel),
+                            "正则认不出子目录形态 %r —— 那会让真被测的模块漏出守卫" % rel)
+        # 仍必须拒掉非生产路径与测试目录
+        self.assertFalse(pattern.findall("import x from '../src/other/x.ts'"))
+        self.assertFalse(pattern.findall("import x from '../tests/helper.ts'"))
 
     def test_an_empty_glob_is_green_for_node_so_counts_are_the_only_guard(self):
         """把陷阱本身钉住：空匹配时 node 退出码 0、tests 0。

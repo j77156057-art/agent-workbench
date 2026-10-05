@@ -64,10 +64,18 @@ class ErrorTextTests(unittest.TestCase):
         return len((out if isinstance(out, str) else str(out)).encode("utf-8"))
 
     def test_errors_stay_within_a_small_byte_budget(self):
-        """长错误不只是费token——它还会把模型引向错误的排查方向。"""
+        """长错误不只是费token——它还会把模型引向错误的排查方向。
+
+        `start=1` 原来被列在这里当「区间参数未识别」的样本，那是**分类错了**：
+        `_RE_READ_START` 明确收 `[:：=＝]` 四种分隔符（`tools.py:3683` 的注释写着
+        「模型把 `:` 敲成 `=` 就又掉回同一个坑」，是有意为之）。所以
+        `path: behaviors/a.gd start=1` 是一次**成功的**区间读取，返回第 1-40 行全文，
+        不是错误路径 —— 拿它当错误样本，这条测试就永远红，而且会把真正的错误路径
+        一起拖下水（我为此白改了一轮生产代码才发现）。
+        """
         cases = {
-            "区间参数未识别": "path: behaviors/a.gd start=1",
             "区间参数未识别(行)": "path: behaviors/a.gd 行1-20",
+            "区间参数未识别(start_line)": "path: behaviors/a.gd start_line 1-20",
             "路径不存在": "path: behaviors/nope.gd",
             "起始行越界": "path: behaviors/a.gd start: 99",
             "越界路径": "path: ../../etc/passwd",
@@ -78,13 +86,30 @@ class ErrorTextTests(unittest.TestCase):
                 n, ERROR_BUDGET_BYTES,
                 "%s 的返回有 %d 字节，超出预算——错误路径应该是廉价的" % (label, n))
 
+    def test_the_equals_form_of_a_range_is_accepted_not_an_error(self):
+        """**反向守卫**：`start=` / `end=` 是**有意支持**的写法，不是「未识别」。
+
+        上一版把 `path: behaviors/a.gd start=1` 当成「区间参数未识别」的样本，于是
+        这条测试要求工具对合法输入报错 —— 而工具行为是对的（它读了第 1-40 行并返回）。
+        那条注释说得很清楚：只补 `:` 等于让模型把 `:` 敲成 `=` 就又掉回同一个坑。
+
+        这里把该语义钉住，免得以后有人为了让那条预算测试变绿而把 `=` 从正则里删掉 ——
+        那是**把开关偷偷放开**的反面：从「本该支持」退化成「本该报错」。
+        """
+        out = str(T.read_file("path: behaviors/a.gd start=1 end=3"))
+        self.assertIn("line1", out)
+        self.assertIn("line3", out)
+        self.assertNotIn("line4", out, "end=3 就该只到第 3 行")
+        self.assertNotIn("区间参数未识别", out, "`=` 是有意支持的写法，不该报错")
+        self.assertNotIn("文件不存在", out, "更不该伪装成路径问题")
+
     def test_the_syntax_error_still_names_the_real_cause(self):
         """短**不等于**含糊：必须看得出是参数写法问题，而不是路径写错。
 
-        这条不能为了省字节而牺牲——早先「文件不存在：xxx start=1」就是反例，
+        这条不能为了省字节而牺牲——早先「文件不存在：xxx 行1-20」就是反例，
         模型因此去换路径分隔符、白试四次。
         """
-        out = T.read_file("path: behaviors/a.gd start=1")
+        out = T.read_file("path: behaviors/a.gd 行1-20")
         self.assertIn("区间参数", out, "没有点名是区间参数的问题")
         self.assertIn("start:20 end:45", out, "必须给出可直接照抄的正确写法")
         self.assertNotIn("文件不存在", out,

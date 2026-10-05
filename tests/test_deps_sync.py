@@ -341,13 +341,75 @@ class RealRepoTests(unittest.TestCase):
             self.assertTrue(row["distribution"], row)
             self.assertNotEqual(row["confidence"], "unknown", row)
 
-    def test_it_does_not_claim_this_repo_has_no_dependencies(self):
-        """本仓确实有一批「import 了但没声明」的（starlette/pydantic 只靠 fastapi
-        传递带进来）。如果哪天这个用例开始失败，先确认是真的修好了，而不是扫描
-        悄悄变瞎了。"""
-        result = ds.reconcile(ROOT, paths=["api.py"])
-        self.assertTrue(result["missing_total"] >= 1,
-                        "api.py 直接 import starlette 但清单里只声明了 fastapi")
+    def test_it_still_reports_a_dependency_that_is_actually_missing(self):
+        """**哨兵**：扫描器还能发现「import 了但没声明」的依赖。
+
+        原来这条拿真实仓库当样本 —— `api.py` 的 `from starlette.concurrency import
+        run_in_threadpool`（`api.py:176`）配上一份只声明 `fastapi` 的清单。
+        但那个样本**过期了**：`requirements.txt:69` 早已显式声明 `starlette`
+        （还带注释说明是哪 32 处），于是 `reconcile(ROOT, paths=["api.py"])` 诚实地
+        报 `missing_total=0`，而这条断言 `>= 1` 就一直红着。
+
+        注意**不能**靠给真实清单补声明来「修」它 —— 那恰好把这条要守的东西弄没了：
+        样本被补上之后 `missing_total` 变 0，测试照样红，而且从此再没有真实样本能证明
+        扫描器没变瞎。docstring 里那句「先确认是真的修好了，而不是扫描悄悄变瞎了」
+        正是这个意思。
+
+        所以样本换成**自造**的：一个未声明的第三方 import + 一份只声明了别的包的清单。
+        能力从此不受真实仓库清单变动影响。
+        """
+        import shutil
+        import tempfile
+        root = tempfile.mkdtemp(prefix="depssync_sentinel-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        write(os.path.join(root, "requirements.txt"), "fastapi\n")
+        write(os.path.join(root, "a.py"),
+              "import requests\n\nfrom starlette.concurrency import run_in_threadpool\n"
+              "print(requests, run_in_threadpool)\n")
+
+        result = ds.reconcile(root, paths=["a.py"])
+        self.assertTrue(result["complete"], result.get("notes"))
+        found = {row["module"]: row for row in result["missing"]}
+        # **集合相等**，不是「至少报出其中一个」。
+        # 第一版写的是两条独立的 `assertIn`，于是把其中一条换成恒真断言时另一条还在、
+        # 整条守卫照样绿 —— 变异实测把它放过去才发现。守「会发现」这件事，
+        # 必须让**任何漏报**都红，包括只报对一个的情况。
+        self.assertEqual(
+            sorted(found), ["requests", "starlette"],
+            "未声明的 import 必须**全部**被报出来（集合相等）。实际报：%r"
+            % [(r["module"], r["distribution"]) for r in result["missing"]])
+        for name in ("requests", "starlette"):
+            self.assertTrue(found[name]["distribution"], found[name])
+            self.assertNotEqual(found[name]["confidence"], "unknown", found[name])
+        # 而且要报成**正确的发行包名**——映射猜错时装了个不相干的包，真缺的那个还缺着
+        self.assertEqual(found["requests"]["distribution"], "requests")
+        self.assertEqual(found["starlette"]["distribution"], "starlette")
+        # 端到端再验一次：**真写进清单的那几行**必须包含这两个包。
+        # 上面那些都只是在读报告字段——把字段改成恒真、或映射写错而 apply 照样
+        # 能过。要让「能力」本身可验，就得看它最终会不会落到 requirements 里。
+        written = ds.missing_lines(result)
+        for want in ("requests", "starlette"):
+            self.assertTrue(any(line.strip().lower().startswith(want) for line in written),
+                            "「%s」必须出现在待写入的清单行里。实际：%r" % (want, written))
+
+    def test_this_repo_really_has_no_undeclared_dependency(self):
+        """与哨兵分开守：**真实仓库**的依赖清单是完整的。
+
+        这条**不能**替代上面那条哨兵：扫描器整个不工作时 `missing_total` 也是 0，
+        这条照样绿 —— 那恰好是它 docstring 警告的失效模式。所以两条各司其职：
+        哨兵用自造样本证明「会发现」，这条证明「真的没有」。
+        """
+        result = ds.reconcile(ROOT)
+        self.assertTrue(result["complete"], result.get("notes"))
+        self.assertGreater(result["files_scanned"], 100,
+                           "扫的文件太少，别是扫描悄悄变瞎了：%r" % result["files_scanned"])
+        self.assertEqual(result["unparsed"], [],
+                         "有文件没解析出来，报告说「没发现缺什么」不算数")
+        self.assertFalse(result["truncated"], "扫描被截断了，结论不完整")
+        self.assertEqual(
+            result["missing"], [],
+            "本仓有 import 了但没声明的依赖（module -> 建议补的发行包）：%r"
+            % [(r["module"], r["distribution"]) for r in result["missing"]])
 
 
 if __name__ == "__main__":
