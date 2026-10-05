@@ -863,6 +863,11 @@ const timelineLabel: Record<string, string> = {
   wave_complete: '本轮任务结束',
   graph_replan_start: 'AI 正在重新规划',
   graph_replan_proposal: '重规划方案已就绪',
+  // 这条是 `graph_replan_narrowed` 的配套：重规划把**上一版计划里的任务**弄丢了。
+  // 此前 `replan_history.dropped` 只算「提案内部被解析器丢掉多少」，提案本身变小时
+  // 它是 0 —— 于是「重排后只剩两步」这件事没人看得见（实测 wf-58a346c6cbec：
+  // 3 个必需任务消失而 dropped=0）。这条事件是那个洞的补上。
+  graph_replan_narrowed: '⚠ 重规划丢掉了部分已批准任务',
   graph_loop: '正在汇总与复核',
   experience: '正在记录本次经验',
   // 这条以前**从不出现**：产出可复用流程候选要求 `status === "completed"`，

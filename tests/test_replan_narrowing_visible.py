@@ -38,28 +38,38 @@
 """
 import os
 import sys
+import threading
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from agent_runtime.game_workflow import WorkflowState  # noqa: E402
+
 from agent_runtime.game_workflow import GameWorkflowManager  # noqa: E402
 
 
-class _Recorder:
-    def __init__(self):
-        self.events = []
-
-
 def _narrow(previous, new):
+    """走**真实** `_event`，并断言事件真的落进了 `state.events`。
+
+    第一版这个测试把 `_event` 换成记录器，于是它只证明了「函数调用发生过」——
+    而真实路径上 `replan_node` 传进来的是**图状态 dict**，`_event` 第一行
+    `state.events.append(...)` 就会抛 `AttributeError`，又被 `except: pass`
+    静默吞掉。测试全绿、事件一个没落盘，而那个修复已经提交。
+
+    所以这里用真的 `WorkflowState`，并直接检查 `state.events`。
+    """
     mgr = GameWorkflowManager.__new__(GameWorkflowManager)
-    rec = _Recorder()
-    mgr._event = lambda state, kind, **kw: rec.events.append((kind, kw))
-    class _S:
-        workflow_id = "wf-test"
-        status = "executing"
-    got = mgr._note_replan_narrowing(_S(), list(previous), list(new))
-    return got, rec.events
+    mgr._states = {}
+    mgr._lock = threading.RLock()
+    mgr._event_seq = 0
+    mgr._subscribers = {}
+    mgr._workflow_hook = lambda *a, **k: None
+    state = WorkflowState(workflow_id="wf-test", status="executing", phase="execute")
+    mgr._states["wf-test"] = state
+    got = mgr._note_replan_narrowing(
+        {"workflow_id": "wf-test"}, list(previous), list(new))
+    return got, list(state.events)
 
 
 class NarrowingIsReportedTests(unittest.TestCase):
@@ -77,13 +87,14 @@ class NarrowingIsReportedTests(unittest.TestCase):
         got, events = _narrow(["research", "implement", "verify"], ["research_retry"])
         self.assertEqual(got, ["research", "implement", "verify"])
 
-        kinds = [k for k, _ in events]
-        self.assertEqual(kinds, ["graph_replan_narrowed"])
-        payload = events[0][1]
+        self.assertEqual([e["kind"] for e in events], ["graph_replan_narrowed"])
+        payload = events[0]
         self.assertEqual(payload["dropped_tasks"], ["research", "implement", "verify"])
+        self.assertEqual(payload["dropped_count"], 3)
         self.assertEqual(payload["previous_count"], 3)
         self.assertEqual(payload["kept_count"], 1)
         self.assertIn("不会自动重跑", payload["reason"])
+        self.assertIn("seq", payload, "必须带 seq——事件台账靠它排序")
 
     def test_everything_replaced(self):
         got, _ = _narrow(["a", "b"], ["x", "y"])
@@ -122,6 +133,32 @@ class NormalReplansMustNotBeFlaggedTests(unittest.TestCase):
         got, _ = _narrow(["a", "b"], [])
         self.assertEqual(got, ["a", "b"],
                          "全灭确实算丢工作；replan_failed 那条分支会另外处理")
+
+
+class GraphStateDictIsResolvedProperlyTests(unittest.TestCase):
+    """`replan_node` 传进来的是**图状态 dict** —— 那正是第一版静默失效的原因。"""
+
+    def test_a_bare_graph_state_dict_still_lands_the_event(self):
+        got, events = _narrow(["a", "b", "c"], ["a"])
+        self.assertEqual(got, ["b", "c"])
+        self.assertEqual([e["kind"] for e in events], ["graph_replan_narrowed"],
+                         "图状态 dict 里只有 workflow_id，实现必须自己取回 WorkflowState")
+
+    def test_missing_runtime_state_raises_instead_of_swallowing(self):
+        """取不到状态时**必须抛**。
+
+        一个诊断事件静默失效，等于它要防的那类问题又变成看不见——所以这里
+        不能有 try/except。第一版那句 `except Exception: pass` 让修复提交了
+        却什么都没做。
+        """
+        mgr = GameWorkflowManager.__new__(GameWorkflowManager)
+        mgr._states = {}
+        mgr._lock = threading.RLock()
+        mgr._event_seq = 0
+        with self.assertRaises(RuntimeError) as ctx:
+            mgr._note_replan_narrowing({"workflow_id": "wf-不存在"},
+                                       ["a"], ["b"])
+        self.assertIn("不要", str(ctx.exception))
 
 
 class ReplanHistoryShapeTests(unittest.TestCase):

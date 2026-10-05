@@ -2753,6 +2753,18 @@ class GameWorkflowManager:
         plan 事件、照样弹审批框，只是少了一部分步骤…这不是理论风险」。这次是**换了个
         站点**的同一个病。
 
+        ## `state` 是**图状态 dict**，不是 WorkflowState（第一版的坑）
+
+        `replan_node` 拿到的 `state` 是 LangGraph 的图状态（dict），而 `_event` 需要
+        `WorkflowState`——它第一行就 `state.events.append(event)`。第一版把图状态直接
+        传进来，于是抛 `AttributeError`，而那句 `except Exception: pass` 把它**静默
+        吞了**：函数返回了正确的消失列表，事件却一个都没落进 trace。而当时的测试把
+        `_event` 换成了记录器，只证明了「调用发生过」。
+
+        所以这里按 `hooked_node` 的既有做法，从 `self._states` 取回真正的
+        `WorkflowState`。取不到就**不吞**——把失败暴露出来，不能让一个诊断事件
+        静默失效（那正是它本该防的那类问题）。
+
         ## 这里只报，不拦
 
         「重规划被允许丢掉用户批准的任务吗」是**权限模型**问题（要不要弹审批门），
@@ -2762,16 +2774,22 @@ class GameWorkflowManager:
         vanished = [t for t in previous_ids if str(t) not in kept]
         if not vanished:
             return []
-        try:
-            self._event(state, "graph_replan_narrowed",
-                        dropped_tasks=vanished[:12],
-                        dropped_count=len(vanished),
-                        previous_count=len(previous_ids),
-                        kept_count=len(new_ids),
-                        reason="重规划后的任务表里没有这些任务；它们不会自动重跑，"
-                               "而已批准的验收条件仍指向它们")
-        except Exception:  # noqa: BLE001 - 诊断事件失败不该影响主流程
-            pass
+        workflow_id = str((state or {}).get("workflow_id") or "") \
+            if isinstance(state, Mapping) else getattr(state, "workflow_id", "")
+        runtime_state = self._states.get(workflow_id) if workflow_id else None
+        if runtime_state is None:
+            raise RuntimeError(
+                "重规划诊断事件无法落账：拿不到 workflow_id=%r 的 WorkflowState"
+                "（图状态里只有 id）。**不要**用 try/except 吞掉它——"
+                "本事件就是为了让「计划被静默改小」看得见，"
+                "它自己静默失效就等于什么都没有。" % workflow_id)
+        self._event(runtime_state, "graph_replan_narrowed",
+                    dropped_tasks=vanished[:12],
+                    dropped_count=len(vanished),
+                    previous_count=len(previous_ids),
+                    kept_count=len(new_ids),
+                    reason="重规划后的任务表里没有这些任务；它们不会自动重跑，"
+                           "而已批准的验收条件仍指向它们")
         return vanished
 
     def plan(self, workflow_id: str, tasks: Iterable[Mapping[str, Any]] | None = None,

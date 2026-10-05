@@ -132,6 +132,7 @@ export const EVENT_LABELS: Record<string, string> = {
   subagent_start: '子代理开始', subagent_complete: '子代理完成',
   subagent_retry_start: '子代理重试', subagent_retry_complete: '重试完成',
   review: '结果复核中', review_replan: '复核未过，重规划', replan: '正在重规划',
+  graph_replan_narrowed: '⚠ 重规划丢掉了部分已批准任务',
   dag_revision_requested: '请求修改 DAG', dag_revision_approved: 'DAG 修改已批准', dag_revision_denied: 'DAG 修改被拒绝',
   complete: '工作流完成', fail: '工作流失败', interrupt: '工作流中断', resume: '工作流恢复',
   approval_granted: '审批通过', approval_denied: '审批驳回', auto_execute_start: '自动开始执行',
