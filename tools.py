@@ -1970,19 +1970,33 @@ def _query_relevant(query, text, title="", url=""):
     else:
         required = max(2, (len(terms) * 3 + 9) // 10)
         content_match = matched >= required
-    if not content_match:
+    if content_match:
+        return True
+    # 标题/URL 是**另一条通过路径**，不是「摘要命中之后还要再过一关」。
+    #
+    # 原来是这么写的：摘要命中之后，**还要求**标题或 URL 路径也命中
+    # `anchor_required`（3 词时需 2 个），否则 return False。而真实搜索结果的标题
+    # 常常又短又通用（「维基百科」「官方公告」「GitHub - xxx」），URL 的拉丁 slug
+    # 又对不上中文查询词——于是这一关几乎必然不通过。
+    #
+    # 实测（`.tmp/probe_candidate_drop.py`）：query=「深度求索 训练成本」+ 6 个**真实
+    # 形态**的候选，原写法存活 **0/6**（5 个完全切题的也被丢）；只按内容判存活 5/6。
+    # 英文查询同样中招（`deepseek training cost` + `Wikipedia` 也被丢）。
+    #
+    # 代价是连锁的：候选被**静默丢弃**（三处 `continue`，模型根本看不到）-> 全被丢
+    # -> 工具返回「搜索未返回结果」-> 那条在 `_FAILURE_MARKERS` 里 -> 计入失败额度
+    # -> 熔断。也就是说 agent 看到的「无匹配」有一部分是**这里制造出来的**。
+    if not (title or url):
         return False
-    if title or url:
-        try:
-            path = urllib.parse.urlparse(url).path
-        except Exception:
-            path = ""
-        anchor_text = re.sub(r"[^\w\u4e00-\u9fff]+", "", (str(title) + " " + path).lower())
-        anchor_matches = sum(term in anchor_text for term in terms)
-        anchor_required = 1 if len(terms) <= 2 else max(2, min(3, (len(terms) + 3) // 4))
-        if anchor_matches < anchor_required:
-            return False
-    return True
+    try:
+        path = urllib.parse.urlparse(url).path
+    except Exception:
+        path = ""
+    anchor_text = re.sub(r"[^\w\u4e00-\u9fff]+", "",
+                         (str(title) + " " + path).lower())
+    anchor_matches = sum(term in anchor_text for term in terms)
+    anchor_required = 1 if len(terms) <= 2 else max(2, min(3, (len(terms) + 3) // 4))
+    return anchor_matches >= anchor_required
 
 
 def _search_excerpt(query, snippet, limit=180):
