@@ -732,7 +732,8 @@ def proposal_offer_summary(proposal_map: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def replan_reject_reason(proposal_map: Mapping[str, Any], delta: Any,
-                         max_subagents: int, known_results: int) -> str:
+                         max_subagents: int, known_results: int,
+                         *, error: str = "") -> str:
     """重规划没采纳任何东西时，**说清是哪一种原因**。
 
     第一版三种情况都报 `empty_or_invalid_proposal`：
@@ -740,7 +741,13 @@ def replan_reject_reason(proposal_map: Mapping[str, Any], delta: Any,
       2. 提的全是**已执行**的任务（安全边界拒绝）
       3. **容量用尽**（`max_subagents` 已满）—— 这条最误导：用户会去检查提案怎么写，
          而真因是「没额度了」，改提示词一点用都没有。
+
+    `error` 非空表示**过程本身炸了**（重规划调用抛异常、或规范化 threw）。
+    这条必须排在最前面：模型压根没能把提案说出来，报「提案无效」是**谎报**——
+    用户会去检查提案怎么写，而真因是服务端/网络/解析炸了。
     """
+    if error:
+        return "replan_error(%s)" % error
     if not proposal_map:
         return "empty_proposal"
     ignored = list((delta or {}).get("ignored") or []) if isinstance(delta, Mapping) else []
@@ -750,6 +757,11 @@ def replan_reject_reason(proposal_map: Mapping[str, Any], delta: Any,
     if max_subagents > 0 and known_results >= max_subagents:
         return "subagent_capacity_exhausted(%d/%d)" % (known_results, max_subagents)
     if ignored:
+        # 「既有 ignored、又有采纳」——从**当前唯一调用点**到不了这里：
+        # 调用方只在 `not delta["changed"]` 时才问我，而 `apply_proposal` 里
+        # `changed = bool(added or dropped or replaced)`，所以 changed 为假时
+        # 三者必空，上面那条 `all_proposals_rejected_by_safety_boundary` 会先返回。
+        # 留着当防御：将来若多一个调用点，忽略条数这个信息值得报出来。
         return "empty_or_invalid_proposal(ignored=%d)" % len(ignored)
     return "empty_or_invalid_proposal"
 
@@ -5032,6 +5044,19 @@ class GameWorkflowManager:
                 return {"phase": "execute", "status": "executing", "event": "replan",
                         "replan_count": attempt, "failed_tasks": [],
                         "replan_history": history}
+            proposal_map: dict[str, Any] = {}
+            refused_drop: list[str] = []
+            delta: Any = None
+            # 下面这条「拒绝」分支会读上面这几个变量，而它们全都只在 `try` 里
+            # 赋值——于是**任何**在赋值之前抛出的异常（重规划调用炸了、规范化炸了）
+            # 都会让这条分支自己先崩：`UnboundLocalError`，整个图节点挂掉。
+            #
+            # 实测被探针 `.tmp/probe_rejected_tasks.py` 逮到，连撞三次
+            # （`proposal_map` → `error` → `max_subagents`），每次补一个。
+            # 一次给全，比一条条试省事。
+            error = ""
+            known_results: dict[str, Any] = dict(state.get("results") or {})
+            max_subagents = int(state.get("max_subagents", _default_max_agents()))
             try:
                 proposal = provider_call(
                     state, "llm.replan", lambda: replan(
@@ -5117,16 +5142,15 @@ class GameWorkflowManager:
                 delta = None
                 error = type(exc).__name__
                 demoted = []
-            else:
-                error = "" if (delta or {}).get("changed") else "empty_or_invalid_proposal"
-                if not error and refused_drop:
-                    error = ""
             if not (delta or {}).get("changed"):
-                # 「无效」的原因要分清：提案本身空 vs 被安全边界拒绝 vs 容量用尽。
+                # 「无效」的原因要分清：提案本身空 vs 被安全边界拒绝 vs 容量用尽
+                # vs **过程炸了**。
                 # 第一版三种都报 `empty_or_invalid_proposal`，其中**容量用尽**报成
                 # 「提案无效」最误导——用户会去检查提案怎么写，而真因是没额度了。
+                # 过程异常同理，而且更严重：那一次模型**压根没说出提案**，
+                # 报「提案无效」是谎报。`error` 必须在最前面那条判据里。
                 detail = replan_reject_reason(proposal_map, delta, max_subagents,
-                                              len(known_results))
+                                              len(known_results), error=error)
                 history.append({"attempt": attempt, "failed": failed_ids,
                                 "status": "rejected", "error": detail,
                                 "offered": proposal_offer_summary(proposal_map),
@@ -5134,7 +5158,13 @@ class GameWorkflowManager:
                                 "proposal_raw": _clean_text(json.dumps(
                                         proposal_map, ensure_ascii=False, default=str), 800)})
                 return {"phase": "fail", "status": "failed", "event": "replan_failed",
-                        "replan_count": attempt, "replan_error": detail, "tasks": [],
+                        "replan_count": attempt, "replan_error": detail,
+                        # **不要**在这里回 `"tasks": []`。图随后落到 fail，计划
+                        # 不会再被派发——但 `graph_state` 是落盘的审计记录，里面
+                        # 同时躺着这批任务的 results 和一份空计划，读的人（或读状态
+                        # 的工具/测试）会以为「压根没有任务」。真跑实测：
+                        # `graph.tasks=[]` 而 `state.tasks` 有 3 个、
+                        # `graph.results` 有 3 条。省略这个键即让 LangGraph 保留原值。
                         "replan_history": history}
             previous_ids = [str(item.get("id") or "") for item in (state.get("tasks") or [])
                             if isinstance(item, Mapping)]
