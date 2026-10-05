@@ -905,6 +905,13 @@ const timelineLabel: Record<string, string> = {
   stage_scope_probe: '试做区作用域检查',
   stage_scope_missing: '⚠ 未进入试做区',
   context_snapshot_unavailable: '上下文快照不可用',
+  // 代码索引这一组三条：工作流启动时若该项目代码索引为空，会先发
+  // `code_index_missing`（说清楚「search_code 检索不到任何内容」），再在**后台**
+  // 补一次 ingest。此前子代理在空索引上只能空转，而界面毫无察觉——实测
+  // `wf-0c6374c4d612` 三连任务失败，症状是「模型跑去追无关文档」。
+  code_index_missing: '代码索引为空，正在后台重建',
+  code_index_rebuilt: '代码索引已重建',
+  code_index_rebuild_failed: '⚠ 代码索引重建失败，检索能力已退化',
 }
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''

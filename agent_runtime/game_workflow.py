@@ -445,6 +445,11 @@ STATUS_INTERRUPTED = "interrupted"
 #: 漏掉的后果不是「显示不对」，是**死锁**：`is_terminal()` 返 False →
 #: `active_for_project()` 认为这个工作流还活着 → 下一次 `start()` 被互斥拒绝。
 #: 所以下面所有终态判断都必须走 `is_terminal_status()`，不许再写字面量集合。
+#: 正在后台重建的代码索引，键是 `<集合名>|<根>`。用来防重复启动时并发跑
+#: 同一个索引——两个 ingest 同时写一个集合，结果不可预期。
+_CODE_INDEX_REBUILDING: set[str] = set()
+
+
 TERMINAL_STATUSES = frozenset({
     STATUS_COMPLETED, STATUS_COMPLETED_UNVERIFIED, STATUS_FAILED, STATUS_INTERRUPTED,
 })
@@ -2408,6 +2413,84 @@ class GameWorkflowManager:
             return {}
         return self._invoke_graph(state, Command(resume=dict(response)), graph=graph)
 
+    def _ensure_code_index(self, state: WorkflowState, project_root: str,
+                           project_id: str = "") -> None:
+        """启动时保证「代码索引可用」——至少不能**静默**为空。
+
+        ## 为什么需要
+
+        实测（真跑 `wf-0c6374c4d612` / `wf-37f43a4c042f`）：探测项目从未 ingest，
+        `search_code` 返回空，而**没有任何提示**。子代理拿不到任何代码证据，转去
+        追 `search_knowledge` 里的无关文档，五步全花掉、任务失败。
+
+        `ingest_code_directory` 只被 `/api/ingest_code` 调用（api.py:1913），
+        工作流启动路径上完全没有索引检查——「项目没索引过 -> 工作流静默瞎跑」
+        是默认行为。更糟的是 `tests/test_retrieval_degradation.py` 记着：嵌入
+        后端不可用时 ingest 会**降级返回**（0 个代码向量也算成功），所以
+        「调过 ingest」本身也不是保证。
+
+        ## 三条不做
+
+        1. **不改写全局 `code_root` 指针**——那是
+           `tests/test_ingest_code_root_guard.py` 守着的���变量（带非当前项目头
+           的请求绝不能污染它）。自动补索引用的可能是**别的**项目。
+        2. **不停掉其它项目的引擎**——那是 `/api/ingest_code` 的「切换项目」
+           语义；后台停别人的引擎是不可接受的副作用。
+        3. **不在启动路径上同步做**——ingest 是重活（大仓要 walk + embedding），
+           同步做会把「启动工作流」拖住。改成 daemon 后台线程。
+
+        失败只记事件，**绝不让工作流失败**：索引是辅助能力
+        （`test_retrieval_degradation.py` 同一句话——宁可没有，也不能让辅助能力
+        绑住主能力）。
+        """
+        root = os.path.realpath(str(project_root or "").strip())
+        if not root or not os.path.isdir(root):
+            return
+        try:
+            import projects as _projects
+            import vectorstore as _vs
+            from ingest import ingest_code_directory as _ingest
+
+            if not _projects.enabled():
+                return
+            pid = str(project_id or _projects.current_project_id() or "")
+            if not pid:
+                return
+            collection = _projects.code_collection(pid)
+            if _vs.count(collection) > 0:
+                return
+        except Exception:  # noqa: BLE001 —— 取不到就当没这条路径，不阻断启动
+            return
+        # 上面已经确认索引为空：先**说**清楚，再去补。
+        self._event(state, "code_index_missing", root=root, collection=collection,
+                    project=pid, note="代码索引为空，子代理用 search_code 检索不到"
+                                      "任何内容；正在后台重建")
+        key = "%s|%s" % (collection, root)
+        with self._lock:
+            if key in _CODE_INDEX_REBUILDING:
+                return
+            _CODE_INDEX_REBUILDING.add(key)
+
+        def _rebuild() -> None:
+            try:
+                n = _ingest(root, collection=collection)
+                self._event(state, "code_index_rebuilt", root=root,
+                            collection=collection, project=pid, files=n,
+                            note="代码索引已在后台重建完成")
+            except Exception as exc:  # noqa: BLE001 —— 辅助能力失败不得牵连工作流
+                self._event(state, "code_index_rebuild_failed", root=root,
+                            collection=collection, project=pid,
+                            error=type(exc).__name__,
+                            note="代码索引重建失败；检索能力会退化，"
+                                 "但工作流照常继续")
+            finally:
+                with self._lock:
+                    _CODE_INDEX_REBUILDING.discard(key)
+
+        threading.Thread(target=_rebuild, name="code-index-rebuild",
+                         daemon=True).start()
+
+
     def start(self, request: str, *, project_id: str = "", project_root: str = "",
               web_enabled: bool = False, experience_enabled: bool = False,
               llm_enabled: bool = True, kind: str | None = None,
@@ -2477,6 +2560,13 @@ class GameWorkflowManager:
         state.policy["step_budget_explicit"] = bool(steps_explicit)
         defer_options = bool(defer_option_generation and llm_enabled and option_generator is not None
                              and StateGraph is not None and graph_interrupt is not None)
+        # 索引为空要**说**出来并在后台补一次——见 _ensure_code_index 的 docstring。
+        # 放在这里（所有路径都经过），不要放进 defer_options 分支：
+        # 放进分支里就只有「延迟生成选项」那条路会检查索引，实测漏掉了。
+        try:
+            self._ensure_code_index(state, project_root, project_id)
+        except Exception:  # noqa: BLE001 —— 索引是辅助能力，绝不阻断启动
+            pass
         if defer_options:
             # Return the deterministic candidates immediately.  The HTTP layer
             # schedules the optional LLM refinement after the response so a
