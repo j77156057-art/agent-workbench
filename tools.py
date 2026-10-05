@@ -3353,6 +3353,61 @@ def _get_code_root():
     return (get_runtime("code_root") or CODE_ROOT or "").strip()
 
 
+def _project_code_scope():
+    """当前该查哪个代码集合、以及过滤命中时以哪个根为界。
+
+    ## 为什么不能只信 `code_collection` 这个运行时键
+
+    `/api/ingest_code` 把代码索引进 `projects.code_collection(pid)`
+    （`docmind_code__<pid>`），而 `search_code` 读的是
+    `get_runtime("code_collection") or CODE_COLLECTION_NAME`——而**全仓从来
+    没有**任何地方 `set_runtime("code_collection", ...)`（扫遍 28 个
+    `set_runtime` 调用点，没有它）。结果是：项目的代码被索引进它自己的集合，
+    然后**永远不会被查询**，每一次 `search_code` 都在查 legacy 全局集合。
+
+    实测（真跑 `wf-0c6374c4d612`）：在一个只有 `calc.py` / `test_calc.py` /
+    `README.md` 的项目上，`search_code` 返回 `project.godot:L1-L39` /
+    `.docmind/web/index.js` / `MiniMax_H3_提示词速查.md`——全是 DocMind 自己
+    仓库的内容。子代理据此把调研结论写成了另一个项目，三连任务全 failed。
+
+    ## 返回值
+
+    `(collection_name, ingest_root)`；拿不到项目就返回 `(None, "")`，
+    调用方据此**不做任何过滤**——宁可少一道防护，也不把工具打死。
+    """
+    explicit = get_runtime("code_collection")
+    if explicit:
+        return str(explicit), ""
+    try:
+        import projects as _projects
+        if not _projects.enabled():
+            return None, ""
+        pid = _projects.current_project_id()
+        if not pid:
+            return None, ""
+        record = _projects.get_project(pid) or {}
+        return _projects.code_collection(pid), str(record.get("root") or "")
+    except Exception:  # noqa: BLE001 —— 取不到就退化成不过滤，不阻断检索
+        return None, ""
+
+
+def _hit_within_root(source, root):
+    """这条命中的文件是否落在 `root` 之内。
+
+    `source` 既可能是相对 ingest 根的路径（`pkg/a.py`），也可能是绝对路径，
+    两者都要认：只认相对路径会把合法的绝对路径命中误删掉。
+    脏 source（None / 空串 / 非字符串）一律放过——宁可少一道防护，也不丢内容。
+    """
+    if not root or not isinstance(source, str) or not source.strip():
+        return True
+    try:
+        target = source if os.path.isabs(source) else os.path.join(root, source)
+        return _path_within_real_root(root, target)
+    except (OSError, ValueError):
+        return True
+
+
+
 def _region_write_allowed(target):
     """When regions are configured, ordinary write tools cannot bypass region tools."""
     if get_runtime("region_edit_context"):
@@ -3515,13 +3570,32 @@ def search_code(query):
     if not _get_code_root():
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录后再问代码相关问题。"
     query = _clean_search_query(query)
-    collection = get_runtime("code_collection") or CODE_COLLECTION_NAME
-    retrieved = get_retriever(collection=collection, top_k=TOP_K,
-                               embedding_client=_get_emb()).invoke(query)
+    collection, ingest_root = _project_code_scope()
+    retrieved = get_retriever(collection=collection or CODE_COLLECTION_NAME,
+                              top_k=TOP_K,
+                              embedding_client=_get_emb()).invoke(query)
     docs = [item.page_content for item in retrieved]
     metas = [dict(item.metadata or {}) for item in retrieved]
     docs, metas = _dedup_docs(docs, metas)
+    # 集合切对了也可能命中项目外的内容：集合里留着上一次 ingest 的残留，或者
+    # 查的本来就是别人的 legacy 集合。所以按**该集合自己的 ingest 根**再兜一道。
+    #
+    # 这里**不能**拿 `_get_code_root()` 当界：工作流开项目舞台时它被覆盖成
+    # `.docmind/project_stages/<wid>/workspace` 这个临时副本，而索引是从项目
+    # **原根**建的，两者路径不同——按它过滤会把所有命中全删光。
+    dropped = 0
+    if ingest_root:
+        kept = [(d, m) for d, m in zip(docs, metas)
+                if _hit_within_root(m.get("source"), ingest_root)]
+        dropped = len(docs) - len(kept)
+        docs = [d for d, _m in kept]
+        metas = [m for _d, m in kept]
     if not docs:
+        if dropped:
+            # 不能报「未找到相关内容」——那句话会把用户引向「换个关键词再搜」，
+            # 而真因是「命中全在项目外」。与本次故障同一性质：证据与结论对不上。
+            return ("命中 %d 条，但都不在当前项目的代码目录内，已过滤。"
+                    "换个关键词，或用 grep / read_file 直接看项目内的文件。" % dropped)
         return "代码库未找到相关内容，建议改用 grep 搜索关键词或 read_file 查看具体文件。"
     out = []
     for d, m in zip(docs, metas):
