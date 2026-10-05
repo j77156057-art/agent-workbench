@@ -65,6 +65,12 @@ export interface WorkflowEvent {
   // subagent_step / subagent_start / subagent_complete 实时轨迹字段
   task_id?: string; role?: string; step_type?: string; text?: string
   task?: string; status?: string; phase?: string; elapsed_ms?: number
+    /**
+     * 这条结论**不是模型自己的答案** —— harness 写的安全网兜底（连续空响应、
+     * 清洗后的残句）。`status` 仍可能是 `ok`，所以不能靠它判断；此前后端压根没把
+     * 这个字段发出来，时间线上「子代理完成」看起来和正常完成一模一样。
+     */
+    degraded?: boolean
   conclusion?: string; error?: string; trace?: WorkflowChildTrace
   /** 部分事件（如 langsmith 导出状态）直接携带 LangSmith 状态体 */
   langsmith?: LangSmithStatus

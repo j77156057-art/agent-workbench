@@ -913,6 +913,21 @@ const timelineLabel: Record<string, string> = {
   code_index_rebuilt: '代码索引已重建',
   code_index_rebuild_failed: '⚠ 代码索引重建失败，检索能力已退化',
 }
+/**
+ * 时间线一行的标题。
+ *
+ * `timelineLabel` 那张表只看 `kind`，所以一个**降级**完成任务与一个正常完成的
+ * 任务显示得一模一样 ——「子代理完成」。而 `degraded` 标的是「这段结论**不是模型
+ * 自己的答案**」（harness 写的诊断，或清洗后的残句）。不标出来，用户就会把
+ * 「模型连续 1 次调用都没有返回可用正文…」当成模型给的答案。
+ *
+ * 后端此前压根没把 `degraded` 发出来（信号在 `game_workflow.py` 的事件 payload
+ * 那里断掉），所以这一行以前拿不到它。
+ */
+function timelineLabelOf(event: WorkflowEvent): string {
+  const base = timelineLabel[event.kind || ''] || event.kind || '事件'
+  return event.degraded ? `${base}（结论非模型原文）` : base
+}
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''
   const detail = event.error || event.conclusion || event.reason || event.summary || event.detail || event.status || ''
@@ -2942,7 +2957,7 @@ onBeforeUnmount(() => {
         <h3>任务时间线</h3>
         <div v-if="timelineEvents.length" class="acp-timeline">
           <details v-for="event in timelineEvents" :key="event.seq || `${event.kind}-${event.ts}`" class="acp-timeline-item">
-            <summary><span><b>{{ timelineLabel[event.kind || ''] || event.kind || '事件' }}</b><small v-if="event.task_id">{{ event.task_id }}</small></span><time>{{ event.ts }}</time></summary>
+            <summary><span><b>{{ timelineLabelOf(event) }}</b><small v-if="event.task_id">{{ event.task_id }}</small></span><time>{{ event.ts }}</time></summary>
             <p>{{ timelineDetail(event) }}</p>
             <button v-if="timelineCanReplay(event)" :disabled="busy" @click.stop="applyRecovery({ id: 'timeline-retry', action: 'retry_failed', title: '从此任务继续', detail: '', task_ids: [String(event.task_id)] })">从此任务继续</button>
           </details>

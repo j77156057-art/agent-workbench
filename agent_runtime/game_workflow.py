@@ -3378,6 +3378,14 @@ class GameWorkflowManager:
                 "role": str(task.get("role") or "coder")[:60],
                 "task": str(output.get("task") or task.get("task") or "")[:1200],
                 "status": str(output.get("status") or "unknown"),
+                # `degraded` 是 harness 自己打的标（`agent.py` 三处：安全网兜底的 final、
+                # 连续空响应、清洗残句），标的是「这段结论**不是模型自己的答案**」。
+                # 之前它只走到子代理结果（`agent.py` 的 `{"degraded": ...}`）就断了 ——
+                # 这里的事件没带，于是时间线上那条任务是「ok + 有一句结论」，
+                # 而那句话其实是 harness 写的诊断（例如「模型连续 1 次调用都没有返回
+                # 可用正文…」）。信号在到达判据前被丢掉，和本仓库反复出现的
+                # 「把没能答记成答了」是同一族。
+                "degraded": bool(output.get("degraded")),
                 "steps": int(output.get("steps") or 0),
                 "max_steps": int(output.get("max_steps") or 0),
                 "elapsed_ms": int(output.get("elapsed_ms") or 0),
@@ -3515,6 +3523,8 @@ class GameWorkflowManager:
                                "mcp": str(task_meta.get("mcp") or "auto"),
                                "reflection": dict((output or {}).get("reflection") or {}),
                                "status": (output or {}).get("status"),
+                               # 同上：这条也是事件流里的一条，不带就等于信号在这里又断一次。
+                               "degraded": bool((output or {}).get("degraded")),
                                "steps": (output or {}).get("steps"),
                                "elapsed_ms": (output or {}).get("elapsed_ms"),
                                "task_thread": wave_thread,
