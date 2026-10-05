@@ -39,6 +39,86 @@ from typing import Any, Callable
 
 from agent_runtime import dev_server, page_action, vue_component
 
+#: 诊断文本的长度上限。此前 `error` 排在 `failed` **之后**、整个 dict 又被 `[:1200]`
+#: 一刀切，于是失败判据一多（实测深链那条 20 条）就把唯一有信息量的 `error` 挤了出去 ——
+#: 报出来是一串判据全红，看不出原因。这正是「红得毫无信息量」的直接来源。
+DETAIL_LIMIT = 1200
+
+
+def detail_text(got: dict[str, Any], **extra: Any) -> str:
+    """整页守卫的失败诊断。
+
+    `error` **排第一**且**不被截断** —— 它是唯一说清「为什么」的字段；`failed`
+    逐条可能十几二十条，超预算时先砍它。
+    """
+    observed = got.get("observed") or {}
+    parts: dict[str, Any] = {"error": got.get("error") or ""}
+    parts.update(extra)
+    for key in ("failed", "deep", "console", "deep_console_errors"):
+        if key in parts:
+            continue
+        if key == "failed":
+            parts["failed"] = got.get("failed")
+        elif key == "deep":
+            parts["deep"] = observed.get("deep_links")
+        elif key == "console":
+            parts["console"] = observed.get("console_errors")
+        else:
+            parts["deep_console_errors"] = observed.get("deep_console_errors")
+    head = json.dumps(parts, ensure_ascii=False)
+    if len(head) <= DETAIL_LIMIT:
+        return head
+    # 超预算：保住 error（它已在最前），压缩 failed 的条数。
+    # 注意收尾**不能**再一刀切 —— error 自己就可能超长（实测堆栈信息两三千字），
+    # 那样砍掉的又正好是唯一说清「为什么」的那一段。第一版就是这么写的，
+    # 守卫 `test_detail_keeps_the_whole_error_even_when_failed_is_huge` 把它咬了出来。
+    shrunk = dict(parts)
+    failed = parts.get("failed") or []
+    keep = max(3, DETAIL_LIMIT // 60)
+    shrunk["failed"] = list(failed[:keep]) + (["…（另有 %d 条）" % (len(failed) - keep)]
+                                      if len(failed) > keep else [])
+    body = json.dumps(shrunk, ensure_ascii=False)
+    if len(body) <= DETAIL_LIMIT:
+        return body
+    # 仍然超长：砍别的字段，但 **error 一个字都不许丢**。
+    # 砍的顺序有讲究：先砍最不值钱的（deep/console 那几段原始观察），再砍 failed。
+    # 第一版是把除 error 外的字段拼起来对半砍，结果 **failed 的「另有 N 条」被一起
+    # 砍掉了** —— 而那正是「已压缩」的证据，守卫
+    # `test_when_the_budget_is_tight_failed_gets_shrunk_not_error` 把它咬了出来。
+    tail_parts = {k: v for k, v in shrunk.items() if k != "error"}
+    # 保底：failed 至少留「前 3 条 + 另有 N 条」，否则压缩发生过也无从得知
+    floor = {"failed": tail_parts["failed"][:3]
+             + (["…（另有 %d 条）" % (len(tail_parts["failed"]) - 3)]
+                if len(tail_parts["failed"]) > 3 else [])}
+    error_len = len(json.dumps(parts["error"], ensure_ascii=False))
+
+    def _fit(fields):
+        room = DETAIL_LIMIT - error_len - len('{"error": , ') - 2
+        return len(json.dumps(fields, ensure_ascii=False)) <= max(40, room)
+
+    for droppable in ("deep", "console", "deep_console_errors", "observed"):
+        if _fit(tail_parts):
+            break
+        tail_parts.pop(droppable, None)
+    if not _fit(tail_parts):
+        for keep in (10, 5, 3):
+            shrunk["failed"] = list(shrunk["failed"][:keep]) + [
+                "…（另有 %d 条）" % (len(failed) - keep)] if len(failed) > keep else []
+            tail_parts = {k: v for k, v in shrunk.items() if k != "error"}
+            if _fit(tail_parts):
+                break
+    if not _fit(tail_parts):
+        # 最后手段：只保留 failed 的压缩形态（floor），其余全丢
+        tail_parts = floor
+    prefix = '{"error": '
+    room = DETAIL_LIMIT - len(prefix) - 2
+    keep_error = parts["error"]
+    if error_len > room:
+        keep_error = keep_error[:max(0, room // 2)] + "…（error 过长已截）"
+    return prefix + json.dumps(keep_error, ensure_ascii=False) + ", " \
+        + json.dumps(tail_parts, ensure_ascii=False)[1:]
+
+
 MAX_TEXTS = 8
 DEFAULT_TAB = "素材"
 EXPECTED_TABS = 4

@@ -550,9 +550,10 @@ def open_page(root: str | Path, *, url: str = "", entry: str = "", timeout: floa
             timeout, visual.sanitize_flags(flags), cleanup))
         page_url = "%s%sdocmind=%d" % (target, "&" if "?" in target else "?", time.time_ns())
         devtools.call("Page.navigate", {"url": page_url})
-        devtools.evaluate(
-            "(async()=>{for(let n=0;n<120;n++){if(document.readyState==='complete')return true;"
-            "await new Promise(r=>setTimeout(r,50))}throw Error('页面加载超时')})()")
+        # 预算跟着 `timeout` 走（有上限），不再写死 120 次 × 50ms = 6 秒 ——
+        # 那 6 秒装不下「加载 bundle + 等 GET /api/config（含 Ollama 探活冷路径）」。
+        # 预算只有一份，在 visual_acceptance.page_ready_js。
+        devtools.evaluate(visual.page_ready_js(timeout))
         devtools.drain(0.5)
         probe = _probe(devtools)
         page = _evaluate(devtools, INSPECT_JS, {"selector": "html", "mode": "count"}) or {}

@@ -358,6 +358,84 @@ def _claim_profile(path: str) -> None:
     temp_state.claim(path)
 
 
+#: 端口文件里第一行是 CDP 端口。Windows 上 Edge 建好这个文件之后还会**短暂独占**它，
+#: 于是「文件已存在」与「文件可读」之间有一个窗口 —— 只等 `exists()` 就去读会拿到
+#: `[Errno 13] Permission denied`。实测整页守卫 4 次里撞到 1 次。
+#: 所以就绪判据必须是「**读得出第一行**」，读操作本身也要重试。
+_ACTIVE_PORT_NAME = "DevToolsActivePort"
+
+_ACTIVE_PORT_TIMEOUT_HINT = (
+    "浏览器调试端口未就绪：%s 在 %.1f 秒内没能读出 CDP 端口。"
+    "浏览器可能仍在启动，或被别的进程占着这个 profile 目录。"
+)
+
+
+#: 页面「加载完」的判据是 `document.readyState === 'complete'`。它此前在三个模块里
+#: 各抄了一份**写死**的 `for(let n=0;n<120;n++) ... setTimeout(50)` —— 固定 6 秒，
+#: 且与调用方传进来的 `timeout` **完全脱钩**（`timeout=180` 也不会多等一毫秒）。
+#:
+#: 实测代价：整页守卫要加载 bundle + vendor chunk，再拉 `GET /api/config`，而那条冷路径
+#: 要跑一次 Ollama 探活（`api.py` 的 `check_ollama` 注释自述**首次 6108 毫秒、之后
+#: 15 毫秒**，2s TTL 缓存）。6 秒装不下，于是间歇性 `页面加载超时`。
+#: `app_test._open_with_retry` 已在用「重试 3 次 + 退避 2s/4s」绕它，而那段注释自己
+#: 写着这招「把一次失败放大成三次连续抢资源」。
+#:
+#: 现在预算跟着 `timeout` 走，但**有上限**：单页加载不该独占整档预算（真挂死时要能
+#: 退出来）。上限覆盖实测最坏冷路径 5 倍余量。
+PAGE_READY_BUDGET_CAP = 30.0
+
+#: 就绪轮询的步长（毫秒）。预算按它换算成次数，保持原来的 50ms 粒度。
+_PAGE_READY_STEP_MS = 50
+
+#: 就绪脚本模板。`budget_ms` 必须由 `PAGE_READY_BUDGET_CAP` 与调用方的 `timeout` 派生，
+#: 不许再出现字面量次数 —— `tests/test_app_test_diagnosability.py` 钉住这一点。
+PAGE_READY_JS = (
+    "(async()=>{const d=%(budget_ms)d,s=%(step_ms)d;"
+    "for(let t=0;t<d;t+=s){if(document.readyState==='complete')return true;"
+    "await new Promise(r=>setTimeout(r,s))}throw Error('页面加载超时')})()"
+)
+
+
+def page_ready_budget(timeout: float) -> float:
+    """单页「加载完」要等多久：跟着 `timeout` 走，但不超过 `PAGE_READY_BUDGET_CAP`。"""
+    return max(0.0, min(float(timeout), PAGE_READY_BUDGET_CAP))
+
+
+def page_ready_js(timeout: float) -> str:
+    """按 `timeout` 派生就绪脚本 —— 三个模块共用这一份，别再各抄一遍。"""
+    return PAGE_READY_JS % {"budget_ms": int(page_ready_budget(timeout) * 1000),
+                            "step_ms": _PAGE_READY_STEP_MS}
+
+
+def _read_active_port(path: Path, *, timeout: float = 15.0,
+                      interval: float = 0.05) -> tuple[str, str]:
+    """读 `DevToolsActivePort`，返回 ``(端口, 浏览器 ws 路径)``。
+
+    重试到预算用完为止：把「文件出现了但还读不了」也当成「还没就绪」。此前这里只等
+    `exists()` 然后裸读一次，于是 Windows 上 Edge 独占该文件的窗口直接变成
+    `PermissionError`，而那句报错把人引去查文件系统（该查的是浏览器为什么没起来）。
+
+    顺带守住一个更隐蔽的形状：**空文件**也满足 `exists()`，而 `splitlines()[0]`
+    对它是 `IndexError` —— 所以就绪判据里必须包含「有首行」。
+    """
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    last: Exception | None = None
+    while True:
+        try:
+            text = path.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            if lines and lines[0].strip():
+                return lines[0].strip(), (lines[1].strip() if len(lines) > 1 else "")
+            last = ValueError("端口文件还没有内容")
+        except (OSError, ValueError, IndexError) as exc:
+            # OSError 覆盖 FileNotFoundError（还没建）与 PermissionError（被独占）
+            last = exc
+        if time.monotonic() >= deadline:
+            raise VisualAcceptanceError(
+                _ACTIVE_PORT_TIMEOUT_HINT % (path, max(0.0, float(timeout)))) from last
+        time.sleep(max(0.0, float(interval)))
+
+
 def _browser_still_listening(profile_dir: str | Path) -> bool:
     """这个 profile 对应的浏览器是否还活着 —— 直接证据，不靠归属标记推断。
 
@@ -499,13 +577,9 @@ def browser_session(timeout: float = 25.0, extra_flags: Any = (),
             creation)
         if process is None:
             raise BrowserSpawnError("浏览器未能创建在回收作业对象里：%s" % spawn_error)
-        active = Path(profile.name) / "DevToolsActivePort"
-        deadline = time.monotonic() + min(15.0, max(3.0, float(timeout) / 2))
-        while not active.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if not active.exists():
-            raise VisualAcceptanceError("浏览器调试端口未就绪。")
-        port = active.read_text(encoding="utf-8").splitlines()[0].strip()
+        active = Path(profile.name) / _ACTIVE_PORT_NAME
+        port, _ws_path = _read_active_port(
+            active, timeout=min(15.0, max(3.0, float(timeout) / 2)))
         with urllib.request.urlopen("http://127.0.0.1:%s/json" % port, timeout=5) as response:
             tabs = json.load(response)
         page = next((row for row in tabs if row.get("type") == "page"), None)
@@ -766,10 +840,7 @@ def capture_project_preview(root: str | Path, *, entry: str = "", evidence_dir: 
                                % (server.server_port, rel_entry, time.time_ns()))
                 shown_entry = rel_entry
             devtools.call("Page.navigate", {"url": preview_url})
-            devtools.evaluate(
-                "(async()=>{for(let n=0;n<120;n++){if(document.readyState==='complete')return true;"
-                "await new Promise(r=>setTimeout(r,50))}throw Error('页面加载超时')})()"
-            )
+            devtools.evaluate(page_ready_js(timeout))
             devtools.drain(min(2.0, max(0.5, timeout * 0.1)))
             title = str(devtools.evaluate("document.title || ''") or "")[:240]
             body_text = str(devtools.evaluate("document.body?.innerText || ''") or "")[:1200]

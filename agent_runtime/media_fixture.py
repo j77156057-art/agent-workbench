@@ -732,9 +732,9 @@ def run_media_loop(root: str | Path, *, script: str = "", video_frames: int = 0,
     try:
         with visual.browser_session(timeout, fixtures["flags"]) as devtools:
             devtools.call("Page.navigate", {"url": page_url})
-            devtools.evaluate(
-                "(async()=>{for(let n=0;n<120;n++){if(document.readyState==='complete')return true;"
-                "await new Promise(r=>setTimeout(r,50))}throw Error('页面加载超时')})()")
+            # 预算跟着 `timeout` 走（有上限），不再写死 120 次 × 50ms = 6 秒。
+            # 预算只有一份，在 visual_acceptance.page_ready_js。
+            devtools.evaluate(visual.page_ready_js(timeout))
             deadline = time.monotonic() + budget
             expected_packets = int(fixtures["expected_packets"]) + (frames or 0)
             while time.monotonic() < deadline:

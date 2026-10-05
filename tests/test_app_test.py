@@ -829,11 +829,10 @@ class LivePageTests(Base):
                                   server_env_extra=llm_stub.env_for(handle))
         finally:
             llm_stub.stop(handle)
-        detail = json.dumps({"failed": got.get("failed"),
-                             "credential": (got.get("observed") or {}).get("ask_credential"),
-                             "question": (got.get("observed") or {}).get("ask_question"),
-                             "text": str((got.get("observed") or {}).get("ask_text"))[:400],
-                             "error": got.get("error")}, ensure_ascii=False)[:1200]
+        detail = at.detail_text(got,
+                             credential=(got.get("observed") or {}).get("ask_credential"),
+                             question=(got.get("observed") or {}).get("ask_question"),
+                             text=str((got.get("observed") or {}).get("ask_text"))[:400])
         if not at.bundle_freshness(ROOT)["fresh"]:
             self.assertEqual(got["failed"], ["bundle_built_after_latest_source"], detail)
         else:
@@ -850,10 +849,7 @@ class LivePageTests(Base):
         错误 + 1 条失败请求），把它算进"console 干净"的话那条判据永远红。
         """
         got = at.run_app_test(ROOT, deep_link=True, timeout=180.0)
-        detail = json.dumps({"failed": got.get("failed"),
-                             "deep": (got.get("observed") or {}).get("deep_links"),
-                             "console": (got.get("observed") or {}).get("deep_console_errors"),
-                             "error": got.get("error")}, ensure_ascii=False)[:1200]
+        detail = at.detail_text(got)
         rows = (got.get("observed") or {}).get("deep_links") or []
         self.assertEqual(len(rows), len(at.DEEP_LINK_ROUTES) + len(at.DEEP_LINK_ALIASES) + 1,
                          detail)
@@ -865,9 +861,8 @@ class LivePageTests(Base):
 
     def test_the_real_page_passes_every_line(self):
         got = at.run_app_test(ROOT, texts="资源管理器", timeout=120.0)
-        detail = json.dumps({"failed": got.get("failed"), "observed": got.get("observed"),
-                             "error": got.get("error"), "cleanup": got.get("cleanup")},
-                            ensure_ascii=False)[:900]
+        detail = at.detail_text(got, observed=got.get("observed"),
+                             cleanup=got.get("cleanup"))
         if not at.bundle_freshness(ROOT)["fresh"]:
             # 别人正在改前端时会恰好卡在"旧构建"这一条：它必须是**唯一**的红，
             # 其余每条照样得绿——否则这条测试就成了"允许整页是坏的"。
@@ -913,11 +908,9 @@ class LivePageTests(Base):
         包括四条流式判据——都必须绿。
         """
         got = at.run_app_test(ROOT, stream=True, timeout=180.0)
-        detail = json.dumps({"failed": got.get("failed"),
-                             "observed": {k: (got.get("observed") or {}).get(k)
-                                          for k in ("native", "heard", "replied", "rounds",
-                                                    "stream_steps", "stream_captions")},
-                             "error": got.get("error")}, ensure_ascii=False)[:1200]
+        detail = at.detail_text(got, observed={k: (got.get("observed") or {}).get(k)
+                             for k in ("native", "heard", "replied", "rounds",
+                                       "stream_steps", "stream_captions")})
         if not at.bundle_freshness(ROOT)["fresh"]:
             self.assertEqual([row for row in (got.get("failed") or [])
                               if row != "bundle_built_after_latest_source"], [], detail)
