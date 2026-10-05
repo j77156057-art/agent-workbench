@@ -588,6 +588,102 @@ def _note_unmet_acceptance(state: Any, unmet: list[dict[str, Any]]) -> None:
     })
 
 
+def required_task_ids(contract: Any, *, only_approved: bool = True) -> set[str]:
+    """**用户批准的必需验收条件**指着哪些任务 id。
+
+    ## 「已批准」为什么是关键限定
+
+    验收条件有两种来源：
+      · `from_tasks` 自动派生（`user_approved` 起初是 False，批准后才 True）
+      · 用户自己写的（`user_approved` 直接为 True）
+
+    要守住的是**用户认可过的工作范围**，所以默认只认 `user_approved` 为真的条件。
+    连没被批准的条件也保护，等于把系统自己拟的草稿也当成契约。
+
+    ## 为什么只看 `task:` 证据
+
+    `evidence` 里还有「人工检查」这类写法，那些由用户自己判断，不该让机器
+    据此认定某个任务必须留在计划里。
+    """
+    items = contract.get("items") if isinstance(contract, Mapping) else None
+    if not isinstance(items, list):
+        return set()
+    ids: set[str] = set()
+    for item in items:
+        if not isinstance(item, Mapping) or not item.get("required"):
+            continue
+        if only_approved and not item.get("user_approved"):
+            continue
+        for token in item.get("evidence") or []:
+            text = str(token or "").strip()
+            if text.startswith("task:") and text[len("task:"):].strip():
+                ids.add(text[len("task:"):].strip())
+    return ids
+
+
+def keep_required_tasks(previous: Iterable[Mapping[str, Any]],
+                        proposal: list[dict[str, Any]],
+                        protected: set[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """重规划的提案若丢掉了**受保护**的任务，把它们放回去。-> ``(最终任务表, 保留的 id)``
+
+    ## 实测（wf-58a346c6cbec / wf-02f4a26bf38b，两轮真跑）
+
+    重规划**反复**把计划改小：
+
+        attempt 1:  proposal 1 个任务 -> 丢掉 research/implement/verify
+        attempt 2:  proposal 2 个任务 -> 又丢掉 research_retry
+
+    A 轮最终 tasks = [research_files_v2, research_godot_facts_v2]，原始 3 个必需
+    任务一个都没剩；B 轮 4 个必需任务全被丢掉。而每次重规划都「成功」了。
+
+    ## 为什么选「放回去」而不是「拒绝这次重规划」
+
+    拒绝的话，用户要的活儿一件没干，这个 harness 的目的是**把活干完**。放回去
+    守住的是「用户批准过的范围不许被系统单方面缩小」，而重规划该做的补救
+    （新加一个 research_retry）**照样生效**。
+
+    ## 三个必须处理的坑
+
+    1. **依赖悬空**：旧任务的 `depends_on` 可能指向已被丢弃的 id。这里把它们改成
+       `context_from`（跨波次上下文输入）而不是调度边——它们本来就跑过或有结果，
+       当上下文合理，当依赖会成环或悬空。
+    2. **撞 `max_subagents`**：放回的任务可能超上限。超了就**只放回受保护的那几个**，
+       并把丢弃的情况写进历史（不能让「放回」又变成一次静默丢弃）。
+    3. **打转**：「禁止丢弃」遇上「重规划就是想把它们丢掉」会循环。兜底是现成的
+       `max_replans`——重规划次数用完就不再重规划，所以最多循环到上限。
+
+    ## 反向守卫
+
+    · 没有受保护任务（合同未批准 / 无必需条件 / 全是人工检查）-> 原样返回提案
+    · 提案**没有**丢任何受保护任务 -> 原样返回，**不**加重复任务
+    · 旧任务里那些本来就没被要求的（optional / 不在保护集）-> 不放回
+    """
+    protected = {str(t) for t in protected if str(t)}
+    proposed_ids = {str(item.get("id") or "") for item in proposal}
+    lost = sorted(t for t in protected if t not in proposed_ids)
+    if not lost:
+        return list(proposal), []
+    by_id = {str(item.get("id") or ""): dict(item) for item in previous}
+    restored: list[dict[str, Any]] = []
+    known = set(proposed_ids)
+    for task_id in lost:
+        source = by_id.get(task_id)
+        if not isinstance(source, Mapping):
+            continue  # 已经不在上一版计划里，无从放回
+        item = dict(source)
+        deps = [str(d) for d in (item.get("depends_on") or [])]
+        item["context_from"] = sorted(
+            {*(str(d) for d in (item.get("context_from") or [])), *deps}
+            - known)
+        # 依赖只保留「还在计划里」的，避免悬空边
+        item["depends_on"] = [d for d in deps if d in known]
+        item["restored_after_replan"] = True
+        restored.append(item)
+    if not restored:
+        return list(proposal), []
+    return [*restored, *proposal], [str(i.get("id")) for i in restored]
+
+
 def review_status(review: Any, *, extra_ok: bool = True) -> str:
     """从一份 `review` 字典定出三值结局。**所有 status 生产者都必须走它。**
 
@@ -2725,6 +2821,25 @@ class GameWorkflowManager:
             self._event(state, "plan_generation_truncated",
                         offered=offered, kept=kept, dropped=offered - kept)
 
+    def _required_task_ids_for_graph(self, state: Any) -> set[str]:
+        """从真WorkflowState 取「用户批准的必需任务」。图状态里没有验收条件。
+
+        `_graph_payload` 带的只有 workflow_id / tasks / results / 计数，
+        **不含 acceptance_contract**，所以必须按 `hooked_node` 的做法从
+        `self._states` 取回。取不到就返回空集——**保守方向**：保护不了就
+        等于不保护（而 `_note_replan_narrowing` 那个诊断事件会照样把丢弃
+        记进 trace，用户仍然看得见）。
+        """
+        try:
+            workflow_id = str((state or {}).get("workflow_id") or "") \
+                if isinstance(state, Mapping) else ""
+            runtime_state = self._states.get(workflow_id) if workflow_id else None
+            if runtime_state is None:
+                return set()
+            return required_task_ids(runtime_state.acceptance_contract)
+        except Exception:  # noqa: BLE001 - 取不到就退化成「不保护」，不阻断重规划
+            return set()
+
     def _note_replan_narrowing(self, state: Any, previous_ids: list[str],
                                new_ids: list[str]) -> list[str]:
         """重规划把**上一版计划里的任务**弄丢了就发事件。-> 消失的任务 id。
@@ -4729,6 +4844,32 @@ class GameWorkflowManager:
                 item["context_from"] = context_by_id.get(item["id"], [])
             previous_ids = [str(item.get("id") or "") for item in (state.get("tasks") or [])
                             if isinstance(item, Mapping)]
+            # 用户批准过的必需任务**不许被重规划丢掉**。放回去而不是拒绝——
+            # 理由与三个坑见 `keep_required_tasks` 的 docstring。
+            previous_tasks = [dict(item) for item in (state.get("tasks") or [])
+                              if isinstance(item, Mapping)]
+            protected = self._required_task_ids_for_graph(state)
+            merged, restored_ids = keep_required_tasks(previous_tasks, parsed, protected)
+            if restored_ids:
+                cap = max_subagents if max_subagents > 0 else 0
+                if cap and len(merged) > cap:
+                    keep_new = {str(i.get("id") or "") for i in parsed}
+                    trimmed = [i for i in merged if str(i.get("id") or "") in keep_new]
+                    history.append({"attempt": attempt, "failed": failed_ids,
+                                    "status": "applied", "tasks": [
+                                        str(i.get("id")) for i in trimmed],
+                                    "offered": len(raw_tasks), "dropped": 0,
+                                    "restored": restored_ids,
+                                    "restore_refused_reason":
+                                        "放回受保护任务后会超过 max_subagents=%d，"
+                                        "已放回的部分未进入本轮" % cap,
+                                    "plan_dropped": [], "plan_kept": 0})
+                    parsed = trimmed
+                    return {"phase": "execute", "status": "executing", "event": "replan",
+                            "replan_count": attempt, "failed_tasks": [],
+                            "tasks": trimmed, "replan_error": "",
+                            "replan_history": history}
+                parsed = merged
             vanished_ids = self._note_replan_narrowing(
                 state, previous_ids, [str(item.get("id") or "") for item in parsed])
             history.append({"attempt": attempt, "failed": failed_ids, "status": "applied",
@@ -4742,7 +4883,14 @@ class GameWorkflowManager:
                             # offered=1 parsed=1 dropped=0，implement/verify 无声消失）。
                             # 所以另立一个字段说清「上一版计划里没了什么」。
                             "plan_dropped": vanished_ids,
-                            "plan_kept": len(previous_ids) - len(vanished_ids)})
+                            "plan_kept": len(previous_ids) - len(vanished_ids),
+                            # 留痕写在**这里**，不写在 task 的字段上：`_parse_
+                            # generated_tasks` 会「intentionally drop unknown
+                            # fields」，所以 `restored_after_replan` 那个标记活不到
+                            # 落盘（实测 wf-b49a04ee5594：tasks 上查不到）。
+                            # replan_history 是**实测能读到**的（`plan_dropped` /
+                            # `plan_kept` 都在），所以放这里。
+                            "restored_required": restored_ids})
             return {"phase": "execute", "status": "executing", "event": "replan",
                     "replan_count": attempt, "failed_tasks": [], "tasks": parsed,
                     "replan_error": "", "replan_history": history}
