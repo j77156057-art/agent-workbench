@@ -2725,6 +2725,55 @@ class GameWorkflowManager:
             self._event(state, "plan_generation_truncated",
                         offered=offered, kept=kept, dropped=offered - kept)
 
+    def _note_replan_narrowing(self, state: Any, previous_ids: list[str],
+                               new_ids: list[str]) -> list[str]:
+        """重规划把**上一版计划里的任务**弄丢了就发事件。-> 消失的任务 id。
+
+        ## 为什么必须有
+
+        `replan_history` 里那个 `dropped` 比的是 **`raw_tasks` vs `parsed`**，也就是
+        「LLM 提案内部被解析器丢掉多少」。它**没有**和上一版计划比过。所以当 LLM 自己
+        只提了 1 个任务时：
+
+            offered=1  parsed=1  dropped=0        而计划是 3 -> 1
+
+        那段注释写着「重排同样会静默丢任务…差额记进持久化历史，否则『重排后只剩
+        两步』没人看得见」——而它偏偏在这个场景失效：**提案本身变小了，差额是 0。**
+
+        实测（`wf-bdb1a54286bf` / `wf-0bbd6c9edf6e`）：
+
+            tasks   = [research_retry]        （原 research/implement/verify）
+            results = {research: failed, implement: blocked, verify: blocked,
+                       research_retry: ok}
+            status  = completed_unverified
+
+        ## 与 `_note_plan_truncation` 是同一件事
+
+        那条注释写着「整图被拒时看得见；**部分丢弃看不见**——计划照样落库、照样发
+        plan 事件、照样弹审批框，只是少了一部分步骤…这不是理论风险」。这次是**换了个
+        站点**的同一个病。
+
+        ## 这里只报，不拦
+
+        「重规划被允许丢掉用户批准的任务吗」是**权限模型**问题（要不要弹审批门），
+        不该在这里偷着改。本函数只负责让它**看得见**。
+        """
+        kept = {str(t) for t in new_ids}
+        vanished = [t for t in previous_ids if str(t) not in kept]
+        if not vanished:
+            return []
+        try:
+            self._event(state, "graph_replan_narrowed",
+                        dropped_tasks=vanished[:12],
+                        dropped_count=len(vanished),
+                        previous_count=len(previous_ids),
+                        kept_count=len(new_ids),
+                        reason="重规划后的任务表里没有这些任务；它们不会自动重跑，"
+                               "而已批准的验收条件仍指向它们")
+        except Exception:  # noqa: BLE001 - 诊断事件失败不该影响主流程
+            pass
+        return vanished
+
     def plan(self, workflow_id: str, tasks: Iterable[Mapping[str, Any]] | None = None,
              task_generator: Callable[[str, Mapping[str, Any], ContextPlan], Any] | None = None) -> dict[str, Any]:
         state = self._load(workflow_id)
@@ -2836,8 +2885,25 @@ class GameWorkflowManager:
             count = sum(len(proposal.get(key) or []) for key in ("add", "tasks", "replace", "revise"))
         else:
             count = len(proposal) if isinstance(proposal, list) else 0
+        # `accepted` 仍然只表示「提案非空」——**要不要改成需要用户批准是权限模型
+        # 问题，不在这里偷着改**。这里只补两个事实字段：提案里有几个任务、其中
+        # 几个是接着已失败的 id 做的。少了它们，trace 上只看得见「采纳了 N 个任务」，
+        # 看不见「上一版计划里有什么被换掉了」（那个在 replan_node 里补）。
+        proposed_ids: list[str] = []
+        if isinstance(proposal, Mapping):
+            for key in ("add", "tasks", "replace", "revise"):
+                proposed_ids = [str(item.get("id") or "") for item in (proposal.get(key) or [])
+                                if isinstance(item, Mapping)]
+                if proposed_ids:
+                    break
+        elif isinstance(proposal, list):
+            proposed_ids = [str(item.get("id") or "") for item in proposal
+                            if isinstance(item, Mapping)]
         emit("graph_replan_proposal", {"attempt": attempt, "task_count": count,
-                                        "accepted": count > 0})
+                                        "accepted": count > 0,
+                                        "proposed_ids": proposed_ids[:12],
+                                        "retries_failed": [str(item.get("id")) for item in failed
+                                                           if str(item.get("id")) in proposed_ids]})
         return proposal
 
     def _run_task_dag_langgraph(
@@ -4643,12 +4709,22 @@ class GameWorkflowManager:
                              for item in raw_tasks}
             for item in parsed:
                 item["context_from"] = context_by_id.get(item["id"], [])
+            previous_ids = [str(item.get("id") or "") for item in (state.get("tasks") or [])
+                            if isinstance(item, Mapping)]
+            vanished_ids = self._note_replan_narrowing(
+                state, previous_ids, [str(item.get("id") or "") for item in parsed])
             history.append({"attempt": attempt, "failed": failed_ids, "status": "applied",
                             "tasks": [item["id"] for item in parsed],
                             # 重排同样会静默丢任务（重 id / 空描述 / 未知依赖）。
-                            # 差额记进持久化历史，否则"重排后只剩两步"没人看得见。
                             "offered": len(raw_tasks),
-                            "dropped": max(0, len(raw_tasks) - len(parsed))})
+                            "dropped": max(0, len(raw_tasks) - len(parsed)),
+                            # 上面那个 dropped 只覆盖「提案**内部**被解析器丢掉多少」。
+                            # 提案本身比上一版计划小的时候它是 0 —— 而那正是最该
+                            # 看得见的情况（实测 wf-bdb1a54286bf：计划 3 -> 1，
+                            # offered=1 parsed=1 dropped=0，implement/verify 无声消失）。
+                            # 所以另立一个字段说清「上一版计划里没了什么」。
+                            "plan_dropped": vanished_ids,
+                            "plan_kept": len(previous_ids) - len(vanished_ids)})
             return {"phase": "execute", "status": "executing", "event": "replan",
                     "replan_count": attempt, "failed_tasks": [], "tasks": parsed,
                     "replan_error": "", "replan_history": history}
