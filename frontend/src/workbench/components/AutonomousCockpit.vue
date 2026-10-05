@@ -893,6 +893,13 @@ const timelineLabel: Record<string, string> = {
   // 派发错配：任务要写文件、角色却是只读的。这一条不阻断，只报——
   // 有了它，「任务失败」才看得出是**注定完成不了**而不是模型偷懒。
   task_role_mismatch: '⚠ 角色无法完成该任务',
+  // 「失败被补救成功」：那个失败的任务在成员列表里**仍然标红**（历史不抹），
+  // 这条另起一句告诉用户后来补上了。放在 `timelineLabel` 而不是只放
+  // `ACTIVITY_TEXT`——后���只管顶部那行「正在做什么」，时间线用的是这张表。
+  // 第一版只加进了 `ACTIVITY_TEXT`，时间线上仍然是英文 kind 名，而
+  // `test_the_cockpit_labels_and_the_backend_kinds_agree` 只扫真实状态里出现过的
+  // kind，所以它**抓不到**——真跑里任务从没失败到被补救过。
+  subagent_remediated: '失败已补救',
   // 试做区隔离的探针。这两条不是给用户看的礼貌提示，是**判据**：
   // 此前隔离失效过好几轮而界面毫无察觉，因为没有任何事件携带执行目录。
   stage_scope_probe: '试做区作用域检查',
