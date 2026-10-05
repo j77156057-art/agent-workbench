@@ -217,9 +217,17 @@ class ProviderPathTurnTests(unittest.TestCase):
                 (agent_trace, "TRACE_FILE", os.path.join(self.tmp, "traces.jsonl")),
                 (sessions, "SESSIONS_DIR", os.path.join(self.tmp, "sessions")),
                 (agent_memory, "DB_PATH", os.path.join(self.tmp, "memory.sqlite3"))):
+            # 原值必须在 setattr **之前**取：addCleanup 的实参在调用时求值，
+            # 写成 `addCleanup(setattr, m, n, getattr(m, n))` 记下的是刚写进去的
+            # 临时路径，cleanup 于是「还原」成临时路径本身，等于没还原。
+            # 那样会把 dm_llm_stub_* 留给后续用例，把
+            # tests/test_state_root_isolation.py 那 3 条顺序依赖地弄红。
+            original = getattr(module, name)
             setattr(module, name, value)
-            self.addCleanup(setattr, module, name, getattr(module, name))
+            self.addCleanup(setattr, module, name, original)
+        enabled = agent_trace.TRACE_ENABLED
         agent_trace.TRACE_ENABLED = True
+        self.addCleanup(setattr, agent_trace, "TRACE_ENABLED", enabled)
         self.handle = llm_stub.start()
         self.addCleanup(llm_stub.stop, self.handle)
         for key, value in (("llm_provider", "custom"), ("llm_base_url", self.handle["url"]),

@@ -105,9 +105,17 @@ class ChatTurnCase(unittest.TestCase):
                 (agent_trace, "TRACE_FILE", os.path.join(self.tmp, "traces.jsonl")),
                 (sessions, "SESSIONS_DIR", os.path.join(self.tmp, "sessions")),
                 (agent_memory, "DB_PATH", os.path.join(self.tmp, "memory.sqlite3"))):
+            # 原值必须在 setattr **之前**取：addCleanup 的实参在调用时求值，
+            # 写成 `addCleanup(setattr, m, n, getattr(m, n))` 记下的是刚写进去的
+            # 临时路径，cleanup 于是「还原」成临时路径本身，等于没还原。
+            # 与 tests/test_llm_stub.py 同病（守卫见
+            # tests/test_no_global_state_leak.py）。
+            original = getattr(module, name)
             setattr(module, name, value)
-            self.addCleanup(setattr, module, name, getattr(module, name))
+            self.addCleanup(setattr, module, name, original)
+        enabled = agent_trace.TRACE_ENABLED
         agent_trace.TRACE_ENABLED = True
+        self.addCleanup(setattr, agent_trace, "TRACE_ENABLED", enabled)
         for key in ("llm_provider", "embedding_provider", "code_root", "llm_mode"):
             self.addCleanup(config.set_runtime, key, config.get_runtime(key))
         config.set_runtime("llm_provider", "mock")
