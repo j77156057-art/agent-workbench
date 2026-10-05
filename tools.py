@@ -1072,7 +1072,12 @@ def _dedup_docs(docs, metas):
     seen = set()
     out_d, out_m = [], []
     for d, m in zip(docs, metas):
-        key = (m.get("source", "") if m else "", (d or "").strip())
+        # 键用**展示用** source（已剥 uuid 前缀），不是原始 source。
+        # 同一份文档被上传/索引 N 次时，原始 source 带 N 个不同 uuid 前缀，
+        # 用原始键去重**全都留下来了**（实测一次检索把同一段文字返回 3 遍）。
+        # 这个 docstring 写的意图正是防这个，键选错了意图就没兑现。
+        raw_src = (m.get("source", "") if m else "")
+        key = (pretty_source(raw_src) or raw_src, (d or "").strip())
         if key in seen:
             continue
         seen.add(key)
@@ -1114,7 +1119,15 @@ def search_knowledge(query):
             src = "?"
         # 截断单个 chunk 的长度：避免把大段原文塞给小模型逼它"逐条抄"
         text = d if len(d) <= 500 else d[:500].rstrip() + "…"
-        out.append(f"[{src}] {text}")
+        # 来源必须说清这是**知识库文档**，不是项目里的一个文件。
+        # 实测（真跑 `wf-37f43a4c042f`）：输出形如 `[MiniMax_H3_提示词速查.md] ...`，
+        # 输出里没有任何「这来自知识库」的标记，而文档正文还写着「**本机**节点」「**本地** ComfyUI 版」，
+        # 模型据此认定「本项目有 ComfyUI 节点」，随后五步都在 read_file / grep
+        # 追 `comfy_extras/nodes_minimax_h3.py`——那个文件根本不在项目里，
+        # 而项目真正的 `calc.py` 一眼没看。
+        # 知识库是**全局共享**集合（COLLECTION_NAME="docmind"），`projects.py` 只有
+        # `code_collection`、没有知识库集合的概念，所以这里不做项目隔离，只把来源讲明白。
+        out.append(f"[知识库文档：{src}] {text}")
     return "\n---\n".join(out)
 
 

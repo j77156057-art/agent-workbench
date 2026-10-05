@@ -11,8 +11,12 @@ _UUID_PREFIX = re.compile(r"^[0-9a-f]{32}_")
 def pretty_source(s):
     """把 chroma 里保存的 source（可能是 './uploads/<uuid>_xxx.md' 或 'xxx.md'）
     剥成干净的文档名，供 UI 状态栏与检索观察区展示。
+
+    非字符串（脏 metadata 里的 None / 数字 / 列表）一律当空处理：这是**展示层**
+    助手，会被任意检索结果调用，一次 `s.replace` 就能把整个检索打崩——
+    实测 `source=123` 时抛 `AttributeError: 'int' object has no attribute 'replace'`。
     """
-    if not s:
+    if not s or not isinstance(s, str):
         return ""
     s = s.replace("\\", "/").split("/")[-1]  # basename
     return _UUID_PREFIX.sub("", s)
