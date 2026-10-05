@@ -48,10 +48,16 @@ class ErrorTextTests(unittest.TestCase):
         with open(os.path.join(self.tmp.name, "behaviors", "a.gd"), "w",
                   encoding="utf-8") as fh:
             fh.write("\n".join("line%d" % i for i in range(1, 41)))
+        # 原值必须在 set 之前取；还原也必须还原成**原值**而不是 "" ——
+        # 还原成 "" 会让后续用例拿到空根而不是它自己设的根，同样是顺序依赖。
+        self._prev_code_root = C.get_runtime("code_root")
+        self._prev_rules = C.get_runtime("project_rules")
         C.set_runtime("code_root", self.tmp.name)
         C.set_runtime("project_rules", "")
         T.clear_read_files()
-        self.addCleanup(lambda: (C.set_runtime("code_root", ""), T.clear_read_files()))
+        self.addCleanup(lambda: (C.set_runtime("code_root", self._prev_code_root),
+                                 C.set_runtime("project_rules", self._prev_rules),
+                                 T.clear_read_files()))
 
     def _bytes(self, arg):
         out = T.read_file(arg)
@@ -120,7 +126,20 @@ class StubMustBeCheaperThanContentTests(unittest.TestCase):
         with open(os.path.join(self.tmp.name, "behaviors", "a.gd"), "w",
                   encoding="utf-8") as fh:
             fh.write("\n".join("line%d" % i for i in range(1, n_lines + 1)))
+        # 原来这里**只设不还原**：code_root 被留在一个随即被 tmp.cleanup 删掉的
+        # 临时目录上，后续任何依赖 code_root 的用例都会 `in_root=True` 而
+        # `exists=False`。实测害得 tests/test_evidence_audit_source.py 的
+        # 「四次成功 read_file 之后仍被判未核验」在**单跑时绿、与本文件同跑就红**。
+        # 守卫生成在 tests/test_no_global_state_leak.py。
+        #
+        # 原值必须**作为实参冻结**，不能写成 `lambda: …(self._prev_code_root)`：
+        # `_setup` 会被 `test_the_stub_is_never_longer_than_what_it_replaces` 在
+        # **一个循环里调 6 次**，后一次会覆盖 `self._prev_code_root`，而 lambda 是
+        # 晚绑定 -> 6 个 cleanup 全都还原成同一个「最后一次之前」的值。
+        # 第一版就是这么写的，探针照出来仍是 `code_root='D:\\Temp\\tmp9nk6gcnb'`。
+        self.addCleanup(C.set_runtime, "code_root", C.get_runtime("code_root"))
         C.set_runtime("code_root", self.tmp.name)
+        self.addCleanup(T.clear_read_files)
         T.clear_read_files()
 
     def test_tiny_files_are_reread_not_stubbed(self):
