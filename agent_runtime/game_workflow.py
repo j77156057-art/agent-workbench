@@ -4160,10 +4160,70 @@ class GameWorkflowManager:
             self._event(state, "skill_candidate", candidate_id=state.skill_candidate["id"])
         return self._save(state).public()
 
+    def _promote_to_approval_gate(self, workflow_id: str,
+                                  state: WorkflowState) -> WorkflowState:
+        """把停在 `planned` 的工作流推进到**真正的**审批门。
+
+        为什么需要它：界面把 `planned` 与 `awaiting_approval` **都**标成「等待计划审核」
+        （`AutonomousCockpit.vue:701` 的 `STATUS_LABEL`），而用户点批准走的就是
+        `approve()`、**从不先调 `execute()`**（同文件 2587 行）。原先 `approve()` 只认
+        `awaiting_approval`，于是屏幕写着「等待你批准执行计划」、点下去却得到一句
+        「当前工作流没有待审核执行」。
+
+        探针实测（`.tmp/probe_approve_matrix.py`）：
+
+            真实=planned          界面报=planned（等待计划审核）-> 拒绝：没有待审核执行
+            真实=awaiting_approval 界面报=awaiting_approval      -> 放行
+
+        而 `planned -> awaiting_approval` 那一步在 `execute()` 里，带着三件副作用，
+        缺一件就会出问题：
+
+        1. `interrupt_reason` —— 用户看到的「为什么停在这儿」
+        2. LangGraph 侧的 approval interrupt —— 不打它，后面
+           `_resume_gate(state, "approval", ...)` 会撞上「LangGraph 等待的是 choice，
+           而不是 approval」（探针实测的另一种拒绝）
+        3. 试做区与项目快照 —— `execute()` 在进门前就建好，用户审计划期间基线不变
+
+        **不复用 `execute()`**：它要求调用方提供 runner/synth_runner/replanner，
+        而「点批准」这条路上那些回调可能还没登记（进程重启后就丢了）。真正的执行在
+        `approve(auto_execute=True)` 分支里才会用到回调。
+        """
+        if WorkflowPolicy.from_state(state.policy).approval_mode != "safe":
+            # 高自主模式本来就没有审批门，planned 之后直接就是执行。
+            return state
+        try:
+            if state.stage_enabled and not state.project_stage:
+                state.project_stage = create_stage(
+                    state.project_root, str(self.state_root.parent), workflow_id)
+                self._event(state, "project_stage_created",
+                            file_count=state.project_stage.get("file_count", 0))
+            if state.project_root and not state.project_checkpoint:
+                self.create_project_checkpoint(workflow_id)
+                state = self._load(workflow_id)
+        except (OSError, ValueError, ProjectStageError) as exc:
+            raise WorkflowError("准备审批门失败：%s" % str(exc)[:180]) from exc
+        # 执行回调若一个都没有，登记一个空壳占位；auto_execute 分支会自己去 resolver 取。
+        self._execution_callbacks.setdefault(workflow_id, {})
+        state.status, state.phase = "awaiting_approval", "execute"
+        state.interrupt_reason = "执行计划包含可能产生副作用的操作，等待用户审核"
+        if StateGraph is not None and graph_interrupt is not None:
+            self._invoke_graph(state, self._graph_payload(state, approved=False))
+        self._event(state, "approval_required", reason=state.interrupt_reason)
+        return self._save(state)
+
     def approve(self, workflow_id: str, approved: bool, *, auto_execute: bool = False) -> dict[str, Any]:
         state = self._load(workflow_id)
+        # `planned` 也算数 —— 界面把它和 `awaiting_approval` 都标成「等待计划审核」，
+        # 而点批准走的正是这里。详见 `_promote_to_approval_gate` 的 docstring。
+        if state.status == "planned":
+            state = self._promote_to_approval_gate(workflow_id, state)
         if state.status != "awaiting_approval":
-            raise WorkflowError("当前工作流没有待审核执行")
+            # 报错要说清**现在在哪、下一步做什么**。原先那句「没有待审核执行」
+            # 只会让人盯着屏幕猜 —— 而界面上还写着「等待你批准执行计划」。
+            raise WorkflowError(
+                "工作流当前在「%s」，没有待批准的执行计划。"
+                "若要继续，请在任务列表里启动工作流，或在对话里让它继续。"
+                % (state.status or "未知状态"))
         self._workflow_hook(state, "before_approval", approved=bool(approved),
                             task_count=len(state.tasks))
         if not approved:
