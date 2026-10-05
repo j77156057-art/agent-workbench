@@ -440,8 +440,20 @@ class ToolHooksActuallyFireTests(unittest.TestCase):
         # `read_file` 靠 `tools` 的 `code_root` 才读得到东西。没设的话每次调用
         # 都返回「尚未配置代码库根目录」——那也算一次工具调用（hook 照发），
         # 但读不到内容，测试会误以为工具没生效。实测踩过。
+        #
+        # **必须还原**：这个 `code_root` 是**全局运行时状态**，原先设完就留着，
+        # 于是本类跑完之后整个进程里 `tools.search_code` 都带着它。后果是
+        # `tests/test_orchestrator.py::TraceFeedbackTests::test_child_trace_is_bounded`
+        # 单独跑绿、跟在���个类后面跑就红（断言报「3 not greater than 3」）。
+        #
+        # 症状之所以离得这么远：残留的 code_root 让 `search_code` 走真检索，
+        # 而那一步在本机恰好**空检索**；而「空检索」被子代理判成**工具失败**，
+        # 于是 `_TOOL_FAIL_LIMIT=3` 触发、只跑 3 步，`n_steps` 与保留的轨迹一样长，
+        # 断言「真实步数应大于保留轨迹长度」就炸了。
         import tools as _tools
+        previous = _tools.get_runtime("code_root")
         _tools.set_runtime("code_root", ROOT)
+        self.addCleanup(_tools.set_runtime, "code_root", previous)
 
     def _sinked(self):
         seen = []
