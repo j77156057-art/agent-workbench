@@ -455,6 +455,139 @@ def is_successful_status(status: Any) -> bool:
     return str(status or "") in SUCCESS_STATUSES
 
 
+def unmet_acceptance_items(contract: Any, results: Any) -> list[dict[str, Any]]:
+    """用户已批准的**必需**验收条件里，哪些指向的任务没能完成。
+
+    ## 实测事故（`wf-bdb1a54286bf` / `wf-0bbd6c9edf6e`，形状完全一致）
+
+    用户批准的验收条件（`revision=1, approved_revision=1`）要求三个任务：
+
+        accept-research    evidence=['task:research']
+        accept-implement   evidence=['task:implement']
+        accept-verify      evidence=['task:verify']
+
+    `research` 反思未通过 -> `implement` / `verify` 依次 blocked -> **重规划把整份
+    计划换成了单个 `research_retry`**（`replan_history.dropped` 还写着 0）。于是：
+
+        tasks    = [research_retry]
+        results  = {research: failed, implement: blocked, verify: blocked,
+                    research_retry: ok}
+        status   = completed_unverified      <- 「已完成 · 未做独立验证」
+        player.gd 含 'dash' = False           <- 用户要的东西一个没做
+
+    `report["ok"]` 只看**重规划之后**的任务表，那张表里唯一剩下的任务是 ok 的，
+    于是报「已完成」。**而 `implement` / `verify` 从此再也不会跑。**
+
+    ## 为什么这是完成判定的根问题
+
+    用户批准的是「三条验收条件」，不是「当前这张任务表」。重规划可以换掉任务表，
+    但它**不能**让用户批准过的验收条件失效——否则「完成」这个词就不再对应
+    任何用户认可过的东西。
+
+    ## 为什么只查 `task:` 证据
+
+    `evidence` 里还有 `task:<id>` 以外的写法（人工检查等），那些由用户自己判断，
+    机器不该替他判为「未满足」——那会把「需要你亲自看一眼」误报成失败。
+
+    ## 反向守卫
+
+    · 全部必需条件都被 `ok` / `deduped` / `failed`(已补救) 的任务支撑 -> 门开
+      （实测 `wf-80dc902c8cae`、`wf-23be9f18b3c6` 四条全 ok，必须仍能报完成；
+      `test_execute_uses_langgraph_for_single_wave_replan_and_context`
+      broken->repair 也必须仍能报 completed）
+    · 任务 `blocked`（因上游失败**从未被尝试**）-> 算未满足
+    · 任务连结果都没有（被重规划删掉）-> 算未满足
+    · 该任务 `optional` -> 不算未满足
+    · 没有任何必需条件 -> 门开（不拦没有验收条件的工作流）
+    """
+    items = contract.get("items") if isinstance(contract, Mapping) else None
+    if not isinstance(items, list):
+        return []
+    rows = results.get("results") if isinstance(results, Mapping) and isinstance(
+        results.get("results"), Mapping) else results
+    if not isinstance(rows, Mapping):
+        rows = {}
+    unmet: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, Mapping) or not item.get("required"):
+            continue
+        missing: list[str] = []
+        for token in item.get("evidence") or []:
+            text = str(token or "").strip()
+            if not text.startswith("task:"):
+                continue  # 人工检查等由用户自己判断，机器不代判
+            task_id = text[len("task:"):].strip()
+            if not task_id:
+                continue
+            row = rows.get(task_id)
+            if not isinstance(row, Mapping):
+                # 连结果都没有 -> 被重规划从计划里删掉了
+                missing.append(task_id)
+            elif row.get("optional"):
+                continue
+            elif str(row.get("status") or "") == "blocked":
+                # **只拦 blocked。** 这是本门唯一该管的形态：任务因为上游失败而
+                # **从未被尝试**，随后又被重规划从计划里删掉——用户批准过的那份
+                # 工作就这么静悄悄地消失了。
+                #
+                # 刻意**不拦 failed**：任务跑了、失败了、被 replanner 补救成功，
+                # 那是重规划的正当用途（实测
+                # `tests/test_game_workflow.py::test_execute_uses_langgraph_for_
+                # single_wave_replan_and_context` 正是这个形状：broken 失败 ->
+                # repair 成功 -> 断言 completed）。第一版把 failed 也算进去，
+                # 那条既有测试立刻红。
+                #
+                # 而且「有任务 failed」这件事本来就已经被拦住了：
+                # `all_ok` / `report["ok"]` 那一层就为 False，不需要这道门管。
+                missing.append(task_id)
+        if missing:
+            unmet.append({
+                "id": str(item.get("id") or ""),
+                "statement": _clean_text(item.get("statement"), 160),
+                "tasks": missing,
+            })
+    return unmet
+
+
+def acceptance_gate(state: Any) -> tuple[bool, list[dict[str, Any]]]:
+    """必需验收条件是否都能被已完成的任务支撑。-> ``(是否放行, 未满足明细)``"""
+    try:
+        unmet = unmet_acceptance_items(state.acceptance_contract, state.results)
+    except AttributeError:
+        return True, []
+    return (not unmet), unmet
+
+
+def _note_unmet_acceptance(state: Any, unmet: list[dict[str, Any]]) -> None:
+    """把「必需验收条件无法满足」记进 review failures，让用户看得见原因。
+
+    不这么做的话，工作流会显示「执行失败」却没有任何一条说明**为什么**——
+    而真实原因（重规划把任务丢了）恰恰是用户最需要知道的那件事。
+    """
+    if not unmet:
+        return
+    try:
+        review = state.review
+    except AttributeError:
+        return
+    if not isinstance(review, dict):
+        return
+    failures = review.setdefault("failures", [])
+    if not isinstance(failures, list):
+        return
+    names = "、".join(
+        "%s（缺任务 %s）" % (item.get("id") or "验收条件",
+                              "、".join(item.get("tasks") or []))
+        for item in unmet[:4])
+    failures.append({
+        "kind": "acceptance",
+        "message": "已批准的必需验收条件无法满足：%s" % names,
+        "recovery": "重规划后任务表里没有这些任务，它们不会自动重跑；"
+                    "请重新规划补回，或修改验收条件后重新提交。",
+        "items": unmet[:8],
+    })
+
+
 def review_status(review: Any, *, extra_ok: bool = True) -> str:
     """从一份 `review` 字典定出三值结局。**所有 status 生产者都必须走它。**
 
@@ -3167,7 +3300,9 @@ class GameWorkflowManager:
             all_ok = all((item or {}).get("status") in {"ok", "deduped"}
                          or bool((item or {}).get("optional"))
                          for item in result_map.values())
-            state.status = review_status(state.review, extra_ok=all_ok)
+            gate_ok, unmet = acceptance_gate(state)
+            _note_unmet_acceptance(state, unmet)
+            state.status = review_status(state.review, extra_ok=all_ok and gate_ok)
             state.phase = "review"
             state.recovery = (build_recovery_plan(state, error="单任务重试仍未通过")
                               if state.status == STATUS_FAILED else {})
@@ -3477,7 +3612,10 @@ class GameWorkflowManager:
             "chars": len(merged), "review_ok": bool(state.review.get("ok")),
             "steps": report.get("steps_used", 0),
         }
-        state.status = review_status(state.review, extra_ok=bool(report.get("ok")))
+        gate_ok, unmet = acceptance_gate(state)
+        _note_unmet_acceptance(state, unmet)
+        state.status = review_status(state.review,
+                                     extra_ok=bool(report.get("ok")) and gate_ok)
         state.phase = "review"
         state.recovery = (build_recovery_plan(state, error="执行结果未通过复核")
                           if state.status == STATUS_FAILED else {})
@@ -3975,11 +4113,13 @@ class GameWorkflowManager:
         if agent_ok is None:
             agent_ok = bool(state.results.get("ok")) and not state.review.get("failures")
         state.review["ok"] = bool(agent_ok) and bool(project_review.get("ok"))
+        gate_ok, unmet = acceptance_gate(state)
+        _note_unmet_acceptance(state, unmet)
         state.status = settle_status(
             agent_ok=bool(agent_ok),
             project_ok=bool(project_review.get("ok")),
             project_status=str(project_review.get("status") or ""),
-            extra_ok=bool(state.results.get("ok")),
+            extra_ok=bool(state.results.get("ok")) and gate_ok,
             changed=(bool(project_review.get("changes"))
                      or int(project_review.get("change_count") or 0) > 0))
         if is_successful_status(state.status):

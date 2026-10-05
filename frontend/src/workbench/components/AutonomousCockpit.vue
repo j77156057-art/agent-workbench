@@ -865,6 +865,12 @@ const timelineLabel: Record<string, string> = {
   graph_replan_proposal: '重规划方案已就绪',
   graph_loop: '正在汇总与复核',
   experience: '正在记录本次经验',
+  // 这条以前**从不出现**：产出可复用流程候选要求 `status === "completed"`，
+  // 而只读工作流在独立复核为 `unverified` 时一直被判成 `failed`
+  // -> `evaluate_workflow` / `skill_candidate` 整块功能对这类工作流从未启动。
+  // 状态改成三值结局（`completed_unverified` 也算完成）之后它开始出现，
+  // 于是时间线上第一次露出一个英文 kind。
+  skill_candidate: '已提炼可复用流程',
   // 模型等待这一对把「开始等」与「等到了」之间那段空白填上——
   // 此前时间线上那段是**完全空的**，而它恰好是全程最长的一段（实测 98%）。
   llm_wait_start: '等待模型',

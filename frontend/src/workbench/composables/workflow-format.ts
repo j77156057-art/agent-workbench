@@ -142,6 +142,10 @@ export const EVENT_LABELS: Record<string, string> = {
   project_checkpoint_created: '创建项目快照', project_checkpoint_restored: '恢复项目快照',
   visual_snapshot_saved: '保存画面证据', subagent_step: '成员执行步骤',
   capability_lease_created: '授予临时工具权限',
+  // 与 AutonomousCockpit.timelineLabel 同步：状态改成三值结局后
+  // `skill_candidate` 第一次真的会出现（它要求 status 为成功态，
+  // 而只读工作流以前一直被压成 failed）。两张表任一漏了，时间线上就是英文。
+  skill_candidate: '已提炼可复用流程',
 }
 
 export function roleMeta(role?: string) {
