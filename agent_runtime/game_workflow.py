@@ -466,6 +466,34 @@ def is_successful_status(status: Any) -> bool:
     return str(status or "") in SUCCESS_STATUSES
 
 
+def counts_as_ok(item: Any) -> bool:
+    """这个任务结果算不算「成功完成」——全仓库**唯一**一份判据。
+
+    ## 为什么 `status == "ok"` 不够
+
+    `agent.py` 在三处给结论打 `degraded`：安全网兜底的 final、连续空响应、
+    清洗残句。标的是「这段结论**不是模型自己的答案**」。可 `status` 仍然是
+    `"ok"` —— 子代理确实跑完了、确实返回了东西，只是那东西是 harness 自己
+    写的诊断（例如「模型连续 1 次调用都没有返回可用正文…」）。
+
+    于是判据只看 `status` 就会把这种任务算成成功完成：时间线上是绿的、计数
+    是过的、报告写着「全部完成」，而实际上一个子问题都没答。这就是本仓库
+    反复出现的「把没能答记成答了」，只是这次信号在**子代理结果**里活着、
+    在**判定**这里被丢掉。
+
+    ## 注意它**不改** `status`
+
+    这里只回答「算不算 ok」，不重写结果。`degraded` 的任务既不计入 `n_ok`，
+    也不计入 `n_failed` —— 它没失败，它只是**没答出来**，硬塞进任何一边都
+    会让计数撒谎。要改状态是别处的决定，不要在这里顺手做。
+
+    调用方：`_run_task_graph` 的 `wave_complete` 状态、整体 `ok`、`n_ok`，
+    以及图循环报告的 `n_ok`。
+    """
+    data = item if isinstance(item, Mapping) else {}
+    return str(data.get("status") or "") == "ok" and not bool(data.get("degraded"))
+
+
 def unmet_acceptance_items(contract: Any, results: Any) -> list[dict[str, Any]]:
     """用户已批准的**必需**验收条件里，哪些指向的任务没能完成。
 
@@ -3511,8 +3539,10 @@ class GameWorkflowManager:
             emit("wave_complete", {"wave": wave_index,
                                     "tasks": [task["id"] for task in prepared_runnable],
                                     "task_thread": wave_thread,
+                                    # 判据走 `counts_as_ok`：`degraded` 的结论是 harness
+                                    # 写的诊断，不是模型的答案，不能算这一波成功。
                                     "status": "ok" if all(
-                                        (item or {}).get("status") == "ok"
+                                        counts_as_ok(item)
                                         for item in batch.values()) else "failed"})
             for task_id, output in batch.items():
                 steps_used += int((output or {}).get("steps") or 0)
@@ -3564,7 +3594,7 @@ class GameWorkflowManager:
                     emit("dispatch", record)
             wave_index += 1
 
-        ok = all((item.get("status") == "ok") or bool(item.get("optional")) or
+        ok = all(counts_as_ok(item) or bool(item.get("optional")) or
                  bool((by_id.get(task_id) or {}).get("optional"))
                  for task_id, item in results.items())
         return {
@@ -3575,7 +3605,7 @@ class GameWorkflowManager:
             "dispatches": dispatches,
             "deduped": {"dropped": deduped_ids, "remap": dedup_remap},
             "dropped": [], "n_tasks": len(normalized),
-            "n_ok": sum(1 for item in results.values() if item.get("status") == "ok"),
+            "n_ok": sum(1 for item in results.values() if counts_as_ok(item)),
             "n_failed": sum(1 for item in results.values() if item.get("status") == "failed"),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
             "backend": "langgraph_send", "task_threads": task_threads,
@@ -4024,7 +4054,7 @@ class GameWorkflowManager:
                 "revisions": list(graph_state.get("replan_history") or []),
                 "n_tasks": len(graph_state.get("results") or {}),
                 "n_ok": sum(1 for item in (graph_state.get("results") or {}).values()
-                            if (item or {}).get("status") == "ok"),
+                            if counts_as_ok(item)),
                 "n_failed": sum(1 for item in (graph_state.get("results") or {}).values()
                                  if (item or {}).get("status") == "failed"),
             }
