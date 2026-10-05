@@ -799,7 +799,14 @@ class GameWorkflowTests(unittest.TestCase):
         self.assertEqual(done["status"], "failed")
         self.assertEqual(done["replans"], 1)
         self.assertEqual(done["graph_state"]["event"], "fail")
-        self.assertEqual(done["graph_state"]["replan_error"], "empty_or_invalid_proposal")
+        # 这条断言原来写死 `empty_or_invalid_proposal`。那个标签把至少三种原因混成
+        # 一句话——提案本身空 / 全被「已执行不可删改」的安全边界拒绝 / **容量用尽**。
+        # 其中「容量用尽」报成「提案无效」最误导：用户会去检查提案怎么写，而真因是
+        # 「没额度了」，改提示词一点用都没有。所以拆成了精确标签。
+        #
+        # 本测试的 replanner 返回 `[]`——提案**本来就是空的**，精确答案就是
+        # `empty_proposal`。它的意图是「不能无限循环」，不是「标签必须是哪句话」。
+        self.assertEqual(done["graph_state"]["replan_error"], "empty_proposal")
 
     def test_langgraph_send_fanout_runs_independent_tasks_in_one_wave(self):
         if self.manager.build_langgraph() is None:

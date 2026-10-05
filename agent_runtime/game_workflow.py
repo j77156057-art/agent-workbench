@@ -50,6 +50,12 @@ from .workflow_profiles import DEFAULT_KIND, VALID_KINDS, get_profile, normalize
 #: 开发舱面板按这几个字面量过滤持久事件流，两边必须同源。
 #: 无循环依赖（已实测两个方向的导入顺序都成立）。
 from agent import SINK_FORWARDED_HOOKS, SINK_TOOL_HOOKS, _SUBAGENT_ROLES
+# 完整的三键提案契约（add / drop / replace，revise/cancel 为别名；含「已执行任务
+# 不可删改」的安全边界与逐条 ignored 清单）**只在这里实现过一次**。
+# replan_node 曾自己写了份**退化版**：只取第一个非空键、drop 完全不读、
+# replace 当成「追加」而不是「原地改写」——于是 prompt 里承诺的能力一半不存在。
+# 详见 replan_node 里那段注释。
+from orchestrator import apply_proposal
 
 #: 角色「能不能写文件」——按**工具列表**判，不按 hint 措辞。
 #:
@@ -682,6 +688,135 @@ def keep_required_tasks(previous: Iterable[Mapping[str, Any]],
     if not restored:
         return list(proposal), []
     return [*restored, *proposal], [str(i.get("id")) for i in restored]
+
+
+_PROPOSAL_KEYS = ("add", "drop", "replace", "tasks", "revise", "cancel")
+
+
+def normalize_replan_proposal(proposal: Any) -> dict[str, Any]:
+    """把 replanner 的返回值整形成三键对象（`add` / `drop` / `replace`）。
+
+    prompt 里给模型的契约（`agent.py`）是：
+
+        {"add":[任务...],"drop":["要取消的任务id"],"replace":[改写后的任务...]}
+        // revise / cancel 是别名
+
+    而模型也可能只回一个**任务数组**（旧格式，`run_plan` 一直兼容）。这里两种都收。
+    刻意**不**做「只取第一个非空键」——那正是第一版的 bug：`drop` 从来没被读过、
+    `replace` 被当成追加、其余键无声丢弃，而 `accepted` 却数的是四键总和。
+    """
+    if isinstance(proposal, Mapping):
+        out: dict[str, Any] = {}
+        for key in ("add", "tasks", "replace", "revise", "drop", "cancel"):
+            value = proposal.get(key)
+            if isinstance(value, str):
+                value = [value]
+            if isinstance(value, list) and value:
+                out[key] = value
+        return out
+    if isinstance(proposal, list) and proposal:
+        return {"add": proposal}
+    return {}
+
+
+def proposal_offer_summary(proposal_map: Mapping[str, Any]) -> dict[str, Any]:
+    """提案里**每个键**各提了什么。用于让「未被采纳的键」不再无声消失。"""
+    summary: dict[str, Any] = {}
+    for key, value in (proposal_map or {}).items():
+        if isinstance(value, list):
+            summary[key] = [str((item.get("id") if isinstance(item, Mapping) else item) or "")
+                            for item in value][:12]
+        else:
+            summary[key] = value
+    return summary
+
+
+def replan_reject_reason(proposal_map: Mapping[str, Any], delta: Any,
+                         max_subagents: int, known_results: int) -> str:
+    """重规划没采纳任何东西时，**说清是哪一种原因**。
+
+    第一版三种情况都报 `empty_or_invalid_proposal`：
+      1. 提案本身为空 / 全是模型编的非法项
+      2. 提的全是**已执行**的任务（安全边界拒绝）
+      3. **容量用尽**（`max_subagents` 已满）—— 这条最误导：用户会去检查提案怎么写，
+         而真因是「没额度了」，改提示词一点用都没有。
+    """
+    if not proposal_map:
+        return "empty_proposal"
+    ignored = list((delta or {}).get("ignored") or []) if isinstance(delta, Mapping) else []
+    if ignored and not any((delta or {}).get(k) for k in ("added", "dropped", "replaced")
+                           if isinstance(delta, Mapping)):
+        return "all_proposals_rejected_by_safety_boundary"
+    if max_subagents > 0 and known_results >= max_subagents:
+        return "subagent_capacity_exhausted(%d/%d)" % (known_results, max_subagents)
+    if ignored:
+        return "empty_or_invalid_proposal(ignored=%d)" % len(ignored)
+    return "empty_or_invalid_proposal"
+
+
+def remediated_task_ids(replan_history: Iterable[Mapping[str, Any]] | None,
+                       results: Any) -> dict[str, str]:
+    """「失败过但已被补救成功」的任务 id -> 补救它的那个任务 id。
+
+    ## 为什么需要它（用户定下的口径）
+
+    > 失败可以先报出来、标红，下一条补一句补救成功，失败的历史留着给用户看；
+    > 但既然已经补救成功了，**程序那里可以通过**。
+
+    `experience._OUTCOMES` 里本来就有 `fail-then-fixed` 这个取值——**代码库早就
+    承认这种形态，而完成判定里没有它的位置**。于是「broken 失败 → repair 补上」
+    只能报 failed，用户看到红色卡片，而活儿其实干完了。
+
+    ## 判据必须可核验，不能靠模型自述
+
+    同时满足三条才算补救成功：
+
+      1. 该任务 `failed`（真的失败过，历史不会被抹掉）
+      2. 有一个**由重规划引入**的任务（`adopted.added` / `adopted.replaced`）
+      3. 那个补救任务**声明过对它的依赖**（`demoted_deps` 或仍在的依赖边），
+         **并且自己跑成了 ok**
+
+    只加一个无关任务不算数——否则模型只要随便追加一个成功任务就能把真失败洗白。
+
+    ## 注意这**不放宽任何安全边界**
+
+    被补救的任务在 `state.subagents` 里仍然是 `failed`（界面照旧标红），
+    验收门 `unmet_acceptance_items` 也照旧按它的真实状态判定。
+    本函数只回答「最终判定层面能不能通过」。
+    """
+    rows = results.get("results") if isinstance(results, Mapping) and isinstance(
+        results.get("results"), Mapping) else results
+    if not isinstance(rows, Mapping):
+        return {}
+    failed = {str(tid) for tid, row in rows.items()
+              if isinstance(row, Mapping) and str(row.get("status") or "") == "failed"}
+    if not failed:
+        return {}
+    out: dict[str, str] = {}
+    for entry in replan_history or []:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("status") or "") not in {"applied", "simulated"}:
+            continue
+        adopted = entry.get("adopted") if isinstance(entry.get("adopted"), Mapping) else {}
+        introduced = {*list(adopted.get("added") or []),
+                      *list(adopted.get("replaced") or [])}
+        demoted = {str(d.get("task") or ""): [str(x) for x in (d.get("demoted_deps") or [])]
+                   for d in (entry.get("demoted_deps") or [])
+                   if isinstance(d, Mapping)}
+        for task_id in failed:
+            if task_id in out:
+                continue
+            for helper in introduced:
+                row = rows.get(helper)
+                if not isinstance(row, Mapping) or str(row.get("status") or "") != "ok":
+                    continue
+                # 声明过依赖：要么被降级成上下文（依赖失败上游），要么依赖边仍在
+                declared = task_id in demoted.get(helper, []) or task_id in [
+                    str(d) for d in (row.get("depends_on") or [])]
+                if declared:
+                    out[task_id] = helper
+    return out
 
 
 def review_status(review: Any, *, extra_ok: bool = True) -> str:
@@ -3014,29 +3149,20 @@ class GameWorkflowManager:
         emit("graph_replan_start", {"attempt": attempt,
                                      "failed": [str(item.get("id")) for item in failed]})
         proposal = replanner(failed, results, attempt)
-        if isinstance(proposal, Mapping):
-            count = sum(len(proposal.get(key) or []) for key in ("add", "tasks", "replace", "revise"))
-        else:
-            count = len(proposal) if isinstance(proposal, list) else 0
-        # `accepted` 仍然只表示「提案非空」——**要不要改成需要用户批准是权限模型
-        # 问题，不在这里偷着改**。这里只补两个事实字段：提案里有几个任务、其中
-        # 几个是接着已失败的 id 做的。少了它们，trace 上只看得见「采纳了 N 个任务」，
-        # 看不见「上一版计划里有什么被换掉了」（那个在 replan_node 里补）。
-        proposed_ids: list[str] = []
-        if isinstance(proposal, Mapping):
-            for key in ("add", "tasks", "replace", "revise"):
-                proposed_ids = [str(item.get("id") or "") for item in (proposal.get(key) or [])
-                                if isinstance(item, Mapping)]
-                if proposed_ids:
-                    break
-        elif isinstance(proposal, list):
-            proposed_ids = [str(item.get("id") or "") for item in proposal
-                            if isinstance(item, Mapping)]
-        emit("graph_replan_proposal", {"attempt": attempt, "task_count": count,
-                                        "accepted": count > 0,
-                                        "proposed_ids": proposed_ids[:12],
-                                        "retries_failed": [str(item.get("id")) for item in failed
-                                                           if str(item.get("id")) in proposed_ids]})
+        shaped = normalize_replan_proposal(proposal)
+        # `accepted` 第一版是 `count > 0`，而 count 数的是 add/tasks/replace/revise
+        # **四个键的总和**——实测 `task_count=3` 而实际只会采纳一个键里的 1 条，
+        # `accepted` 却为 true。于是 trace 上出现「accepted: true」紧接着
+        # 「rejected: empty_or_invalid_proposal」，读的人会懵。
+        #
+        # 现在 `accepted` 只表示「提案非空」，真正的采纳结果由 replan_node 写进
+        # `replan_history.adopted`（added / dropped / replaced / ignored）。
+        emit("graph_replan_proposal", {
+            "attempt": attempt,
+            "accepted": bool(shaped),
+            "offered": proposal_offer_summary(shaped),
+            "keys": sorted(shaped),
+        })
         return proposal
 
     def _run_task_dag_langgraph(
@@ -3181,13 +3307,24 @@ class GameWorkflowManager:
             # judged necessary, instead of forcing a fixed team size.
             waves = topological_waves(normalized)
             pending = next((ids for ids in waves
-                            if any(task_id not in results for task_id in ids)), None)
+                            if any(task_id not in results
+                                   and task_id not in external for task_id in ids)), None)
             if pending is None:
                 break
             wave_ids = pending
             runnable: list[dict[str, Any]] = []
             for task_id in wave_ids:
-                if task_id in results:
+                # `external`（prior_results）里的任务**已经跑过了**，不能再派发一次。
+                #
+                # 以前这里只判 `task_id in results`，于是任何带 prior_results 的续跑
+                # 都会把已执行的任务重跑一遍——`external` 只在下面查依赖状态时用过，
+                # 从没参与「是否已完成」的判定。副作用是实打实的：重跑会再写一遍文件、
+                # 再花一遍 token，而调用序列里出现重复项。
+                #
+                # 这条以前没被抓出来，是因为失败任务会被重规划顺带从计划里删掉；
+                # 改成走 `apply_proposal` 完整契约后失败任务必须留在计划里（不能丢），
+                # 这个重复派发就露出来了。
+                if task_id in results or task_id in external:
                     continue
                 task = by_id[task_id]
                 reason = ""
@@ -3345,6 +3482,32 @@ class GameWorkflowManager:
                 workflow_id, runner, synth_runner=synth_runner,
                 replanner=replanner, on_event=on_event, session_id=session_id)
 
+    def _mark_remediated(self, state: WorkflowState,
+                         result_map: dict[str, Any],
+                         remediated: Mapping[str, str]) -> None:
+        """把「失败被补救成功」写进结果行与事件流。
+
+        ## 失败状态**不动**
+
+        被补救的任务在 `results` 与 `subagents` 里仍然是 `failed`，界面照旧标红——
+        用户要看得见那次失败。本方法只**补一句**说明后来由谁补上了。
+
+        ## 为什么抽成一处
+
+        这段原先在主 execute 路径和「单任务重试」路径各写了一份。两份的文案已经
+        漂移过一次（重试路径那句少了「界面照旧标红」），而只守其中一份的变异
+        电池会在另一份上**报活下来**——那不是守卫没牙，是压根有一份没人守。
+        判据只有一份（`remediated_task_ids`），留痕也只该有一份。
+        """
+        for dead_id, helper in remediated.items():
+            row = result_map.get(dead_id)
+            if isinstance(row, dict):
+                row.setdefault("remediated_by", helper)
+                row.setdefault("remediation_note",
+                               "该任务失败后由「%s」补救成功；失败记录保留。" % helper)
+            self._event(state, "subagent_remediated", task_id=dead_id, by=helper,
+                        note="失败历史保留（界面照旧标红），最终判定按补救成功计")
+
     def retry_subagent(self, workflow_id: str, task_id: str,
                        runner: Callable[[dict[str, Any], dict[str, str]], Mapping[str, Any]],
                        *, synth_runner: Callable[[list[dict[str, Any]], dict[str, Any]], str] | None = None,
@@ -3485,11 +3648,22 @@ class GameWorkflowManager:
                     row["reflection_result"] = dict(item.get("reflection") or {})
             merged = str(merged_report.get("merged") or "") or "\n".join(
                 str((item or {}).get("conclusion") or "") for item in result_map.values())
+            # 「失败被补救成功」要在 review_output **之前**算好：`status_ok`
+            # 这一项就取自这里的判定（漏掉的话 verdict 再怎么放行也还是 failed，
+            # 实测踩过）。判据只有一份，见 `remediated_task_ids`。
+            #
+            # 失败记录本身**不动**：row["status"] 仍是 failed、界面照旧标红。
+            remediated = remediated_task_ids(
+                (state.graph_state or {}).get("replan_history"),
+                {"results": result_map})
+            self._mark_remediated(state, result_map, remediated)
             state.review = review_output(
                 {"merged": merged,
-                 "status": "ok" if all((item or {}).get("status") in {"ok", "deduped"}
-                                         or bool((item or {}).get("optional"))
-                                         for item in result_map.values()) else "failed"},
+                 "status": "ok" if all(
+                     (item or {}).get("status") in {"ok", "deduped"}
+                     or bool((item or {}).get("optional"))
+                     or str(task_id) in remediated
+                     for task_id, item in result_map.items()) else "failed"},
                 max_tool_failures=policy.max_tool_failures,
                 question=state.request, code_root=state.project_root)
             if state.project_root:
@@ -3498,7 +3672,8 @@ class GameWorkflowManager:
                 state.review["ok"] = bool(state.review.get("ok")) and bool(state.review["project"]["ok"])
             all_ok = all((item or {}).get("status") in {"ok", "deduped"}
                          or bool((item or {}).get("optional"))
-                         for item in result_map.values())
+                         or str(task_id) in remediated
+                         for task_id, item in result_map.items())
             gate_ok, unmet = acceptance_gate(state)
             _note_unmet_acceptance(state, unmet)
             state.status = review_status(state.review, extra_ok=all_ok and gate_ok)
@@ -3767,6 +3942,15 @@ class GameWorkflowManager:
         state.steps += int(report.get("steps_used") or 0)
         state.replans = int(report.get("replans") or 0)
         result_map = dict(report.get("results") or {})
+        # 「失败被补救成功」必须在这里算，而不是等到复核之后：
+        #  1. `subagent_rows` 要带补救说明（界面照旧把失败标红，另起一条说补救成功）；
+        #  2. 下面的 `review_output` 的 status 判定就取自它（实测漏掉会让 status_ok
+        #     为假，verdict 再怎么放行也还是 failed）。
+        #
+        # 失败记录本身**不动**：`row["status"]` 仍是 failed，`results` 里也原样保留。
+        remediated = remediated_task_ids(
+            (state.graph_state or {}).get("replan_history"), {"results": result_map})
+        self._mark_remediated(state, result_map, remediated)
         subagent_rows = self._subagent_records(state.tasks, policy.child_max_steps)
         for row in subagent_rows:
             result = dict(result_map.get(str(row.get("id"))) or {})
@@ -3775,6 +3959,11 @@ class GameWorkflowManager:
             if result.get("max_steps"):
                 row["max_steps"] = int(result.get("max_steps") or 0) or row.get("max_steps")
             row["elapsed_ms"] = int(result.get("elapsed_ms") or 0)
+            if result.get("remediated_by"):
+                # 失败仍标红，但把「后来补上了」写进行里，界面要能显示这句。
+                row["remediated_by"] = str(result.get("remediated_by"))
+                row["remediation_note"] = _clean_text(
+                    result.get("remediation_note"), 200)
             if result.get("error"):
                 row["error"] = _clean_text(result.get("error"), 300)
             if result.get("reflection"):
@@ -3790,7 +3979,8 @@ class GameWorkflowManager:
         merged = report.get("merged") or "\n".join(
             str((item or {}).get("conclusion") or "")
             for item in result_map.values())
-        state.review = review_output({"merged": merged, "status": "ok" if report.get("ok") else "failed",
+        state.review = review_output({"merged": merged,
+                                      "status": "ok" if report.get("ok") else "failed",
                                       "trace": {"steps": sum((r.get("trace", {}).get("steps", []) for r in report.get("results", {}).values()), [])}},
                                      max_tool_failures=policy.max_tool_failures,
                                      question=state.request, code_root=state.project_root)
@@ -3813,8 +4003,15 @@ class GameWorkflowManager:
         }
         gate_ok, unmet = acceptance_gate(state)
         _note_unmet_acceptance(state, unmet)
+        # `remediated` 在建 subagent 行时已经算好了（那里必须先算，见上面的注释）。
+        # 这里只消费，不重算——同一份判据算两遍，迟早会有一遍口径变了而另一遍没跟上。
+        all_ok = all((item or {}).get("status") in {"ok", "deduped"}
+                     or bool((item or {}).get("optional"))
+                     or str(task_id) in remediated
+                     for task_id, item in result_map.items())
         state.status = review_status(state.review,
-                                     extra_ok=bool(report.get("ok")) and gate_ok)
+                                     extra_ok=(bool(report.get("ok")) or all_ok)
+                                     and gate_ok)
         state.phase = "review"
         state.recovery = (build_recovery_plan(state, error="执行结果未通过复核")
                           if state.status == STATUS_FAILED else {})
@@ -4738,18 +4935,56 @@ class GameWorkflowManager:
                     dict(state.get("results") or {}), remaining)) or {})
             merged_results = dict(state.get("results") or {})
             merged_results.update(report.get("results") or {})
-            current = report.get("results") or {}
             effective_tasks = list(report.get("tasks") or state.get("tasks") or [])
+            # 「已被补救成功」的任务不再算失败。
+            #
+            # 不修这里图永远收敛不到完成态。实测是**三重拦截**，每一处单独修都不够：
+            #  1. `run_plan` 的 report["ok"] 是 all(status==ok) -> False
+            #  2. `failed_tasks` 每波都把仍 failed 的 broken 算进去 -> 又被送去重规划
+            #  3. `review_node` 在 execution_ok 为假时**无条件**返回 review_failed，
+            #     `failed` 空不空它根本不看
+            # 于是「repair 明明跑成功了，图却落到 event=fail」。
+            #
+            # 失败记录本身**不动**（results/subagents 里它仍是 failed、界面照旧标红），
+            # 这里只是不再让它继续驱动流程。判据见 `remediated_task_ids`。
+            _remediated = remediated_task_ids(
+                state.get("replan_history"), {"results": merged_results})
+            # 按 merged_results **全量**算，不用 `current`——只看本波会漏掉更早波次
+            # 留下的失败。`blocked` 也算没做完（跟 run_plan 的 ok 口径一致：
+            # 只有 ok / deduped / 可选任务才算完）。
+            # `optional` 同时看**结果行**和**任务定义**：被阻断的可选任务在结果行里
+            # 没带 optional 标记，只有定义里有。
+            _opt_ids = {str(t.get("id")) for t in effective_tasks
+                        if isinstance(t, Mapping) and t.get("optional")}
+            _live_failed = sorted(
+                str(tid) for tid, row in merged_results.items()
+                if isinstance(row, Mapping)
+                and str(row.get("status") or "") not in {"ok", "deduped"}
+                and str(tid) not in _remediated
+                and not row.get("optional") and str(tid) not in _opt_ids)
+            _live_set = set(_live_failed)
             failed = [dict(task) for task in effective_tasks
-                      if (current.get(str(task.get("id"))) or {}).get("status") == "failed"]
+                      if str(task.get("id")) in _live_set]
             return {
                 "phase": "review", "status": "reviewing", "event": "execute_wave",
                 "step_count": int(state.get("step_count", 0)) + int(report.get("steps_used") or 0),
                 "results": merged_results, "current_report": report,
                 "tasks": effective_tasks,
-                "failed_tasks": failed, "execution_ok": bool(report.get("ok")),
+                "failed_tasks": failed,
+                # execution_ok 必须**两个条件同时成立**：
+                #   1. `report["ok"]` —— 本波自己没报错（步数上限、波级错误会在这里
+                #      变成 False，而那些任务压根没进 results，光看 _live_failed
+                #      会漏掉，于是撞上限反而报「完成」）；
+                #   2. `_live_failed` 为空 —— **全量**结果里没有仍然失败的活儿。
+                #
+                # 第 2 条以前是多余的：老代码每波都把已跑过的失败任务**再派一次**，
+                # 于是 report["ok"] 天然覆盖全量。不再重复派发（那会重写文件、
+                # 重花 token）之后，report["ok"] 只代表本波——不补这条，
+                # 「无关的补救任务」就能把真失败洗白（实测 completed）。
+                "execution_ok": bool(report.get("ok")) and not _live_failed,
+                "remediated": dict(sorted(_remediated.items())),
                 "task_threads": list(state.get("task_threads") or []) +
-                list(report.get("task_threads") or []),
+                (list(report.get("task_threads") or [])),
             }
 
         def review_node(state):
@@ -4802,97 +5037,145 @@ class GameWorkflowManager:
                     state, "llm.replan", lambda: replan(
                         list(state.get("failed_tasks") or []),
                         dict(state.get("results") or {}), attempt))
-                if isinstance(proposal, Mapping):
-                    proposal = (proposal.get("add") or proposal.get("tasks") or
-                                proposal.get("replace") or proposal.get("revise") or [])
+                # 提案是**三键对象**（add / drop / replace，revise/cancel 为别名），
+                # 这一点 prompt 里写得很清楚（agent.py 的 "请给出回溯式修订方案"）。
+                #
+                # 第一版只取**第一个非空键**，于是：
+                #   · `drop` 从来没被读过——prompt 说「取消尚未执行的任务」的能力
+                #     **完全不存在**；
+                #   · `replace`（prompt 说它「常用来把被阻断的下游任务救回来」）被当成
+                #     「追加到计划」，同 id 变成重复，而**任务正文根本没被改写**——
+                #     而被阻断的下游任务正是我们这几轮反复撞上的那个失败。
+                #   · 只用第一个键，其余键**无声丢弃**，而 `accepted` 却数的是四键总和
+                #     （实测 task_count=3 / proposed_ids 只有 1 个 / accepted=true）。
+                #
+                # 完整契约**仓库里早就实现了**：`orchestrator.apply_proposal`
+                # （原地改写 role/task/deps、drop 取消未执行任务、add 追加、
+                #  已执行任务不可删改的安全边界、以及逐条 ignored 清单）。
+                # 这里不再写第三份实现，直接用它。
+                proposal_map = normalize_replan_proposal(proposal)
+                # 「乙」：用户批准过的必需任务不许被 drop 取消。模型对可选任务该取消
+                # 仍然可以——但验收条件是用户明确签字的东西，系统不该单方面撤掉。
+                protected = self._required_task_ids_for_graph(state)
+                refused_drop: list[str] = []
+                if protected:
+                    asked = [str(t).strip() for t in
+                             (proposal_map.get("drop") or []) if str(t).strip()]
+                    refused_drop = [t for t in asked if t in protected]
+                    if refused_drop:
+                        proposal_map = dict(proposal_map)
+                        proposal_map["drop"] = [t for t in asked if t not in protected]
                 known_results = dict(state.get("results") or {})
-                raw_tasks = [dict(item) for item in proposal] if isinstance(proposal, list) else []
-                ids = {str(item.get("id") or "") for item in raw_tasks}
-                # Dependencies already settled in a previous graph wave become
-                # context inputs; only dependencies inside this wave remain as
-                # scheduler edges.
-                for item in raw_tasks:
-                    deps = item.get("depends_on", item.get("after", []))
-                    if isinstance(deps, str):
-                        deps = [deps]
-                    item["context_from"] = [str(dep) for dep in (deps or [])
-                                            if str(dep) in known_results]
-                    item["depends_on"] = [str(dep) for dep in (deps or []) if str(dep) in ids]
                 max_subagents = int(state.get("max_subagents", _default_max_agents()))
-                remaining_capacity = (max(0, max_subagents - len(known_results))
-                                      if max_subagents > 0 else 0)
-                parsed = ([] if max_subagents > 0 and remaining_capacity == 0 else
-                          self._parse_generated_tasks(
-                              raw_tasks,
-                              max_tasks=remaining_capacity if max_subagents > 0 else 0))
+                demoted: list[dict[str, Any]] = []
+                # 交给完整契约去应用。`by_id` 与 `task_list` 共享同一批 dict 对象，
+                # 所以 apply_proposal 的原地改写会体现在 task_list 上。
+                by_id = {str(item.get("id") or ""): dict(item)
+                         for item in (state.get("tasks") or []) if isinstance(item, Mapping)}
+                task_list = [by_id[tid] for tid in by_id]
+                delta = apply_proposal(proposal_map, by_id, task_list,
+                                       known_results,
+                                       max_subagents if max_subagents > 0 else 0)
+                # 已跑过但**没成功**的依赖 -> 降级成跨波次上下文输入。
+                #
+                # 这条以前是个**副作用**：`ids` 只含本次提案的 id，于是
+                # `item["depends_on"] = [d for d in deps if d in ids]` 顺手把任何
+                # 「不在本次提案里」的依赖都摘掉了——包括指向失败任务的。效果对，
+                # 但它同时也会摘掉**合法**的跨任务依赖，属于误伤。
+                #
+                # 现在写成明确规则，作用域限定在**本次重规划引入的任务**
+                # （added / replaced），判据是「那个依赖已跑过且没成功」：
+                #   · 依赖**没跑过** -> 保留为调度边（DAG 正常语义）
+                #   · 依赖已成功   -> 保留为调度边
+                #   · 依赖已失败/阻塞/被取消 -> 降级为 context_from
+                #
+                # 为什么需要降级：补救任务若依赖一个失败的上游，按级联规则它会
+                # **必然**被阻断 —— 那 `add` 式补救就救不回任何东西了（不依赖失败
+                # 任务的新任务，本来也不需要它的上下文）。
+                #
+                # 而 prompt 教模型用 `replace` 亲手去掉那条依赖，现在 `replace`
+                # 真的生效了（此前它被整个丢弃），所以两条路都通。
+                introduced = {*list(delta.get("added") or []),
+                              *list(delta.get("replaced") or [])}
+                unavailable = {tid for tid, row in known_results.items()
+                               if isinstance(row, Mapping)
+                               and str(row.get("status") or "") != "ok"}
+                demoted: list[dict[str, Any]] = []
+                for item in task_list:
+                    tid = str(item.get("id") or "")
+                    if tid not in introduced:
+                        continue
+                    deps = [str(d) for d in (item.get("depends_on") or [])]
+                    bad = [d for d in deps if d in unavailable]
+                    if not bad:
+                        continue
+                    item["depends_on"] = [d for d in deps if d not in unavailable]
+                    item["context_from"] = sorted(
+                        {*(str(d) for d in (item.get("context_from") or [])), *bad})
+                    demoted.append({"task": tid, "demoted_deps": bad})
             except Exception as exc:
-                parsed = []
+                delta = None
                 error = type(exc).__name__
+                demoted = []
             else:
-                error = "" if parsed else "empty_or_invalid_proposal"
-            if not parsed:
+                error = "" if (delta or {}).get("changed") else "empty_or_invalid_proposal"
+                if not error and refused_drop:
+                    error = ""
+            if not (delta or {}).get("changed"):
+                # 「无效」的原因要分清：提案本身空 vs 被安全边界拒绝 vs 容量用尽。
+                # 第一版三种都报 `empty_or_invalid_proposal`，其中**容量用尽**报成
+                # 「提案无效」最误导——用户会去检查提案怎么写，而真因是没额度了。
+                detail = replan_reject_reason(proposal_map, delta, max_subagents,
+                                              len(known_results))
                 history.append({"attempt": attempt, "failed": failed_ids,
-                                "status": "rejected", "error": error})
+                                "status": "rejected", "error": detail,
+                                "offered": proposal_offer_summary(proposal_map),
+                                "refused_drop": refused_drop,
+                                "proposal_raw": _clean_text(json.dumps(
+                                        proposal_map, ensure_ascii=False, default=str), 800)})
                 return {"phase": "fail", "status": "failed", "event": "replan_failed",
-                        "replan_count": attempt, "replan_error": error, "tasks": [],
+                        "replan_count": attempt, "replan_error": detail, "tasks": [],
                         "replan_history": history}
-            # _parse_generated_tasks intentionally drops unknown fields.  Add
-            # the cross-wave context references back after validation.
-            context_by_id = {str(item.get("id")): list(item.get("context_from") or [])
-                             for item in raw_tasks}
-            for item in parsed:
-                item["context_from"] = context_by_id.get(item["id"], [])
             previous_ids = [str(item.get("id") or "") for item in (state.get("tasks") or [])
                             if isinstance(item, Mapping)]
-            # 用户批准过的必需任务**不许被重规划丢掉**。放回去而不是拒绝——
+            # 第二张网：即使 drop 已被过滤（`protected`），仍兜一次——
             # 理由与三个坑见 `keep_required_tasks` 的 docstring。
-            previous_tasks = [dict(item) for item in (state.get("tasks") or [])
-                              if isinstance(item, Mapping)]
             protected = self._required_task_ids_for_graph(state)
-            merged, restored_ids = keep_required_tasks(previous_tasks, parsed, protected)
+            merged, restored_ids = keep_required_tasks(
+                previous_ids and [dict(item) for item in (state.get("tasks") or [])
+                                  if isinstance(item, Mapping)] or [],
+                task_list, protected)
             if restored_ids:
-                cap = max_subagents if max_subagents > 0 else 0
-                if cap and len(merged) > cap:
-                    keep_new = {str(i.get("id") or "") for i in parsed}
-                    trimmed = [i for i in merged if str(i.get("id") or "") in keep_new]
-                    history.append({"attempt": attempt, "failed": failed_ids,
-                                    "status": "applied", "tasks": [
-                                        str(i.get("id")) for i in trimmed],
-                                    "offered": len(raw_tasks), "dropped": 0,
-                                    "restored": restored_ids,
-                                    "restore_refused_reason":
-                                        "放回受保护任务后会超过 max_subagents=%d，"
-                                        "已放回的部分未进入本轮" % cap,
-                                    "plan_dropped": [], "plan_kept": 0})
-                    parsed = trimmed
-                    return {"phase": "execute", "status": "executing", "event": "replan",
-                            "replan_count": attempt, "failed_tasks": [],
-                            "tasks": trimmed, "replan_error": "",
-                            "replan_history": history}
-                parsed = merged
+                task_list = merged
+            parsed = task_list
             vanished_ids = self._note_replan_narrowing(
                 state, previous_ids, [str(item.get("id") or "") for item in parsed])
             history.append({"attempt": attempt, "failed": failed_ids, "status": "applied",
-                            "tasks": [item["id"] for item in parsed],
-                            # 重排同样会静默丢任务（重 id / 空描述 / 未知依赖）。
-                            "offered": len(raw_tasks),
-                            "dropped": max(0, len(raw_tasks) - len(parsed)),
-                            # 上面那个 dropped 只覆盖「提案**内部**被解析器丢掉多少」。
-                            # 提案本身比上一版计划小的时候它是 0 —— 而那正是最该
-                            # 看得见的情况（实测 wf-bdb1a54286bf：计划 3 -> 1，
-                            # offered=1 parsed=1 dropped=0，implement/verify 无声消失）。
-                            # 所以另立一个字段说清「上一版计划里没了什么」。
+                            "tasks": [item.get("id") for item in parsed],
+                            # `offered` 现在说清**每个键**各提了什么，而不再是一个
+                            # 会被四键总和撑大的数字（实测 task_count=3 而
+                            # proposed_ids 只有 1 个、accepted 却为 true）。
+                            "offered": proposal_offer_summary(proposal_map),
+                            # **实际采纳了什么**——这是第一版完全没有的字段。
+                            "adopted": {"added": list(delta.get("added") or []),
+                                        "dropped": list(delta.get("dropped") or []),
+                                        "replaced": list(delta.get("replaced") or [])},
+                            "ignored": list(delta.get("ignored") or [])[:12],
+                            "refused_drop": refused_drop,
+                            # 「补救任务依赖了失败上游 -> 降级为上下文」是**有意**的
+                            # 规则（原实现里它是 `ids` 过滤的副作用，还会误伤合法依赖）。
+                            # 写进历史，别让它又变成看不见的事。
+                            "demoted_deps": demoted[:8],
                             "plan_dropped": vanished_ids,
                             "plan_kept": len(previous_ids) - len(vanished_ids),
                             # 留痕写在**这里**，不写在 task 的字段上：`_parse_
                             # generated_tasks` 会「intentionally drop unknown
                             # fields」，所以 `restored_after_replan` 那个标记活不到
                             # 落盘（实测 wf-b49a04ee5594：tasks 上查不到）。
-                            # replan_history 是**实测能读到**的（`plan_dropped` /
-                            # `plan_kept` 都在），所以放这里。
                             "restored_required": restored_ids})
             return {"phase": "execute", "status": "executing", "event": "replan",
                     "replan_count": attempt, "failed_tasks": [], "tasks": parsed,
+                    "results": known_results,
                     "replan_error": "", "replan_history": history}
 
         def complete_node(state):

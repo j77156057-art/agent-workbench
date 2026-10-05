@@ -182,6 +182,11 @@ export interface WorkflowState {
     reflection_result?: { ok?: boolean; source?: string; issues?: string[]; next_step?: string }
     steps?: number; elapsed_ms?: number; error?: string
     retry_count?: number
+    /**
+     * 失败任务的补救留痕：`status` 仍是 `failed`（界面照旧标红），
+     * 这两个字段说明后来由哪个任务补上了，别把失败历史抹掉。
+     */
+    remediated_by?: string; remediation_note?: string
   }>
   results?: Record<string, Record<string, unknown>>; events?: WorkflowEvent[]; timeline?: WorkflowEvent[]
   dispatches?: Array<{ planner?: string; added?: string[]; kind?: string }>

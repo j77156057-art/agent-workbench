@@ -734,6 +734,7 @@ const ACTIVITY_TEXT: Record<string, string> = {
   llm_wait_end: '模型已返回，正在处理',
   subagent_start: '子代理正在工作',
   subagent_complete: '子代理已完成',
+  subagent_remediated: '失败已补救',
   task_complete: '任务已完成',
   task_blocked: '任务被阻塞',
   wave_complete: '本轮已结束，准备下一轮',
@@ -824,6 +825,15 @@ const taskResults = computed<Record<string, Record<string, unknown>>>(() => {
   const report = workflow.value?.results || {}
   return (report.results as Record<string, Record<string, unknown>> | undefined)
     || report as Record<string, Record<string, unknown>>
+})
+/** 成员行 -> 任务 id，用来在**标红**的失败行下面补一句「后来补上了」。 */
+const subagentById = computed<Record<string, NonNullable<typeof workflow.value>['subagents'] extends Array<infer T> | undefined ? T : never>>(() => {
+  const out: Record<string, { remediated_by?: string; remediation_note?: string }> = {}
+  for (const row of workflow.value?.subagents || []) {
+    const id = String(row?.id || '')
+    if (id) out[id] = row as { remediated_by?: string; remediation_note?: string }
+  }
+  return out
 })
 const doneCount = computed(() => Object.values(taskResults.value).filter(r => r.status === 'ok').length)
 const timelineEvents = computed(() => (workflow.value?.timeline || workflow.value?.events || []).slice().reverse())
@@ -2913,7 +2923,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
       <section class="acp-panel"><div class="acp-panel-head"><h3>执行现场</h3><span>{{ doneCount }}/{{ workflow.tasks?.length || 0 }} 个任务完成</span></div>
-        <div v-if="workflow.tasks?.length" class="acp-list"><div v-for="task in workflow.tasks" :key="String(task.id)" class="acp-row"><em>{{ String(taskResults[String(task.id)]?.status || task.status || '待执行') }}</em><span>{{ task.task }}<small>{{ taskResults[String(task.id)]?.conclusion || '' }}</small></span></div></div>
+        <div v-if="workflow.tasks?.length" class="acp-list"><div v-for="task in workflow.tasks" :key="String(task.id)" class="acp-row"><em>{{ String(taskResults[String(task.id)]?.status || task.status || '待执行') }}</em><span>{{ task.task }}<small>{{ taskResults[String(task.id)]?.conclusion || '' }}</small><small v-if="subagentById[String(task.id)]?.remediated_by" class="acp-remediated">已由「{{ subagentById[String(task.id)]?.remediated_by }}」补救成功（失败记录保留）</small></span></div></div>
         <p v-else class="acp-muted">方案确认后显示模型的任务分工。</p>
         <h3>任务时间线</h3>
         <div v-if="timelineEvents.length" class="acp-timeline">
@@ -3003,7 +3013,8 @@ onBeforeUnmount(() => {
 .acp-compose { display: flex; gap: 8px; margin: 16px 0; }.acp-compose textarea { flex: 1; resize: vertical; min-width: 0; border: 1px solid var(--border); border-radius: 9px; padding: 10px; color: var(--text); background: var(--bg-raised); font: inherit; }
 button { border: 1px solid var(--border); background: var(--bg-raised); color: var(--text); border-radius: 7px; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 12px; }
 button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }button:disabled { opacity: .5; cursor: default; }.acp-compose button { background: var(--accent); color: white; border-color: var(--accent); }
-.acp-grid { display: grid; grid-template-columns: minmax(220px,1fr) minmax(270px,1.3fr) minmax(200px,.8fr); gap: 12px; }.acp-panel { min-width: 0; border: 1px solid var(--border); border-radius: 11px; padding: 13px; display: flex; flex-direction: column; gap: 9px; }.acp-panel h3 { margin: 0; font-size: 13px; }.acp-panel-head span,.acp-muted { color: var(--text-faint); font-size: 11px; }.acp-goal { margin: 0; }.acp-option,.acp-list { display: grid; gap: 8px; }.acp-option small,.acp-row small { display: block; color: var(--text-faint); font-size: 11px; margin-top: 3px; }.acp-row { display: flex; gap: 7px; padding-top: 7px; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.5; }.acp-row em { font-size: 10px; color: var(--accent); font-style: normal; flex: 0 0 auto; }.acp-events { display: grid; gap: 5px; }.acp-events div { display: flex; justify-content: space-between; gap: 7px; font-size: 11px; color: var(--text-muted); }.acp-events small { color: var(--text-faint); }.acp-history { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.acp-history small { display: block; color: var(--text-faint); }.acp-error { color: var(--danger) !important; }.acp-ok { color: var(--green) !important; }.acp-empty { padding: 35px; text-align: center; color: var(--text-faint); font-size: 12px; }
+.acp-grid { display: grid; grid-template-columns: minmax(220px,1fr) minmax(270px,1.3fr) minmax(200px,.8fr); gap: 12px; }.acp-panel { min-width: 0; border: 1px solid var(--border); border-radius: 11px; padding: 13px; display: flex; flex-direction: column; gap: 9px; }.acp-panel h3 { margin: 0; font-size: 13px; }.acp-panel-head span,.acp-muted { color: var(--text-faint); font-size: 11px; }.acp-goal { margin: 0; }.acp-option,.acp-list { display: grid; gap: 8px; }.acp-option small,.acp-row small { display: block; color: var(--text-faint); font-size: 11px; margin-top: 3px; }.acp-row { display: flex; gap: 7px; padding-top: 7px; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.5; }.acp-row em { font-size: 10px; color: var(--accent); font-style: normal; flex: 0 0 auto; } /* 补救标记：失败仍是红的，补救另起一句，不改判词 */
+.acp-remediated { color: var(--green) !important; }.acp-events { display: grid; gap: 5px; }.acp-events div { display: flex; justify-content: space-between; gap: 7px; font-size: 11px; color: var(--text-muted); }.acp-events small { color: var(--text-faint); }.acp-history { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.acp-history small { display: block; color: var(--text-faint); }.acp-error { color: var(--danger) !important; }.acp-ok { color: var(--green) !important; }.acp-empty { padding: 35px; text-align: center; color: var(--text-faint); font-size: 12px; }
 .acp-timeline { display: grid; gap: 5px; max-height: 360px; overflow: auto; }
 .acp-timeline-item { border: 1px solid var(--border); border-radius: 6px; padding: 6px 7px; font-size: 11px; }
 .acp-timeline-item summary { display: flex; justify-content: space-between; gap: 8px; cursor: pointer; color: var(--text-muted); }
