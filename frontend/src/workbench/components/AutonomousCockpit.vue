@@ -843,6 +843,26 @@ const subagentById = computed<Record<string, NonNullable<typeof workflow.value>[
  */
 const doneCount = computed(() => Object.values(taskResults.value)
   .filter(r => r.status === 'ok' && !r.degraded).length)
+
+/**
+ * 任务行左边那个状态标签。
+ *
+ * 原先直接渲染原始 status 字符串，于是 `deduped` 会**原样显示英文**——
+ * 而它表示的是「这个任务被并进了另一个，所以从未独立执行过」。用户看到
+ * `deduped` 既看不懂、也不知道计划里这一条其实没跑，于是容易以为每条都被
+ * 独立验证过。这正是本仓库反复出现的「把没做的记成做了」在界面上的形状。
+ *
+ * 所以：这一类必须有中文标签，且必须说清「并进了谁」。
+ */
+const TASK_STATUS_LABEL: Record<string, string> = {
+  ok: '已完成', failed: '失败', blocked: '受阻', deduped: '已合并',
+  running: '进行中', pending: '待执行',
+}
+function taskStatusLabel(task: { id?: unknown; status?: unknown }): string {
+  const row = taskResults.value[String(task?.id)] || {}
+  const raw = String(row.status || task?.status || '').trim()
+  return TASK_STATUS_LABEL[raw] || raw || '待执行'
+}
 const timelineEvents = computed(() => (workflow.value?.timeline || workflow.value?.events || []).slice().reverse())
 const actualToolCalls = computed(() => timelineEvents.value.filter(event => ['before_tool', 'after_tool', 'before_mcp', 'after_mcp'].includes(String(event.kind))))
 const hasExecution = computed(() => !!(workflow.value?.steps || typeof workflow.value?.review?.ok === 'boolean' || timelineEvents.value.some(event => event.kind === 'execute_start')))
@@ -2976,7 +2996,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
       <section class="acp-panel"><div class="acp-panel-head"><h3>执行现场</h3><span>{{ doneCount }}/{{ workflow.tasks?.length || 0 }} 个任务完成</span></div>
-        <div v-if="workflow.tasks?.length" class="acp-list"><div v-for="task in workflow.tasks" :key="String(task.id)" class="acp-row"><em>{{ String(taskResults[String(task.id)]?.status || task.status || '待执行') }}</em><span>{{ task.task }}<small>{{ taskResults[String(task.id)]?.conclusion || '' }}</small><small v-if="subagentById[String(task.id)]?.remediated_by" class="acp-remediated">已由「{{ subagentById[String(task.id)]?.remediated_by }}」补救成功（失败记录保留）</small></span></div></div>
+        <div v-if="workflow.tasks?.length" class="acp-list"><div v-for="task in workflow.tasks" :key="String(task.id)" class="acp-row"><em>{{ taskStatusLabel(task) }}</em><span>{{ task.task }}<small>{{ taskResults[String(task.id)]?.conclusion || '' }}</small><small v-if="subagentById[String(task.id)]?.remediated_by" class="acp-remediated">已由「{{ subagentById[String(task.id)]?.remediated_by }}」补救成功（失败记录保留）</small><small v-if="taskResults[String(task.id)]?.status === 'deduped'" class="acp-deduped">与「{{ String(taskResults[String(task.id)]?.kept || '') }}」重复，已合并为同一任务，本条未单独执行</small></span></div></div>
         <p v-else class="acp-muted">方案确认后显示模型的任务分工。</p>
         <h3>任务时间线</h3>
         <div v-if="timelineEvents.length" class="acp-timeline">
@@ -3067,7 +3087,7 @@ onBeforeUnmount(() => {
 button { border: 1px solid var(--border); background: var(--bg-raised); color: var(--text); border-radius: 7px; padding: 7px 10px; cursor: pointer; font: inherit; font-size: 12px; }
 button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }button:disabled { opacity: .5; cursor: default; }.acp-compose button { background: var(--accent); color: white; border-color: var(--accent); }
 .acp-grid { display: grid; grid-template-columns: minmax(220px,1fr) minmax(270px,1.3fr) minmax(200px,.8fr); gap: 12px; }.acp-panel { min-width: 0; border: 1px solid var(--border); border-radius: 11px; padding: 13px; display: flex; flex-direction: column; gap: 9px; }.acp-panel h3 { margin: 0; font-size: 13px; }.acp-panel-head span,.acp-muted { color: var(--text-faint); font-size: 11px; }.acp-goal { margin: 0; }.acp-option,.acp-list { display: grid; gap: 8px; }.acp-option small,.acp-row small { display: block; color: var(--text-faint); font-size: 11px; margin-top: 3px; }.acp-row { display: flex; gap: 7px; padding-top: 7px; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.5; }.acp-row em { font-size: 10px; color: var(--accent); font-style: normal; flex: 0 0 auto; } /* 补救标记：失败仍是红的，补救另起一句，不改判词 */
-.acp-remediated { color: var(--green) !important; }.acp-events { display: grid; gap: 5px; }.acp-events div { display: flex; justify-content: space-between; gap: 7px; font-size: 11px; color: var(--text-muted); }.acp-events small { color: var(--text-faint); }.acp-history { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.acp-history small { display: block; color: var(--text-faint); }.acp-error { color: var(--danger) !important; }.acp-ok { color: var(--green) !important; }.acp-empty { padding: 35px; text-align: center; color: var(--text-faint); font-size: 12px; }
+.acp-remediated { color: var(--green) !important; }.acp-deduped { color: var(--text-muted) !important; }.acp-events { display: grid; gap: 5px; }.acp-events div { display: flex; justify-content: space-between; gap: 7px; font-size: 11px; color: var(--text-muted); }.acp-events small { color: var(--text-faint); }.acp-history { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.acp-history small { display: block; color: var(--text-faint); }.acp-error { color: var(--danger) !important; }.acp-ok { color: var(--green) !important; }.acp-empty { padding: 35px; text-align: center; color: var(--text-faint); font-size: 12px; }
 .acp-timeline { display: grid; gap: 5px; max-height: 360px; overflow: auto; }
 .acp-timeline-item { border: 1px solid var(--border); border-radius: 6px; padding: 6px 7px; font-size: 11px; }
 .acp-timeline-item summary { display: flex; justify-content: space-between; gap: 8px; cursor: pointer; color: var(--text-muted); }
