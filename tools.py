@@ -8257,6 +8257,14 @@ TOOLS = {
     "read_external_file": {
         "description": "读取【项目之外】白名单目录内的文件（受控越界读）。仅允许读取 DOCMIND_EXTERNAL_DIRS（分号分隔的绝对目录）之内的文件，越界拒绝；用于用户授权 AI 访问仓库外的资料（如其它项目、下载目录文档）。输入为文件绝对路径。未配置白名单时提示如何开启。注意：只有在「高权限模式」下越界读才被放行；安全模式下本工具会拒绝。",
         "func": read_external_file,
+        # 越界读必须与「读项目内」分开记账，否则只租用了项目内读的工作流
+        # 也能把文件读出去：实测租约只含 read_local 时它照常通过
+        # （`Agent._lease_blocked` 是按 capability 字面值比对的）。
+        # Capability.READ_EXTERNAL 早就定义了、前端也备好了标签
+        # （AutonomousCockpit.vue 的「读取外部资料」），只是没有任何工具落进去。
+        # 默认租约授全部 Capability（game_workflow 两处建租约都不传能力），
+        # 所以正常路径不受影响；只有显式窄租约会开始拦它 —— 那正是本意。
+        "capability": "read_external",
     },
     "create_external_file": {
         "description": "在白名单目录内【新建】文件（受控越界写，不覆盖已有文件）。仅在「高权限模式」+ 已配置 DOCMIND_EXTERNAL_DIRS 白名单时生效；安全模式或被列出白名单外一律拒绝。用于给其他项目新增文件/模块。输入同 create_file：第一行 path: <绝对路径>，最后 new_text: <文件内容（可多行）>。受单文件 200KB 上限与 .py 语法校验约束；「人工确认」开启时只暂存不落盘。",

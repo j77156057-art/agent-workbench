@@ -123,19 +123,35 @@ external 三兄弟之所以没泄漏，只是因为并集旁边手写了那份�
 4. ✅ 做了 —— 而且发现原来那条守卫**结构上就防不住**：它只防「agent.py 出现
    影子副本」，不防「权威表漏登记」。新守卫直接对着注册表声明查表齐不齐。
 
-## 刻意没做的两件事
+## 刻意没做的一件事
 
 - **`delete_external_file` 没改成 `IRREVERSIBLE`。** 探针查过：
-  `IRREVERSIBLE` 除了在 `coerce_tool_spec` 里覆盖 `side_effect` 之外**没有任何
+  `IRREVERSIBLE` 除了在 `coerce_tool_spec` 里覆盖 `side_effect` 之后**没有任何
   消费点**，而 `mutating` 已经拿到幂等账本的保护（`side_effect != PURE` 就走
   账本）。所以这是**零行为收益的空改**，还会撞上
   `test_no_write_tool_is_mistakenly_parallel_safe`。要做的话得先给
-  `IRREVERSIBLE` 找到真实消费者。
-- **`read_external_file` 仍判成 `read_local`，没改成 `read_external`。**
-  `Capability.READ_EXTERNAL` 这个枚举值全仓无人使用。改成 `read_external` 后，
-  「只租用项目内读」的租约会拦下越界读 —— 但探针确认**生产路径不可达**
-  （`game_workflow.py` 两处建租约都不传能力 → 授全部 Capability），只在
-  显式窄租约下可达。这是另一个族（读侧 vs 写侧），按规矩单独修。
+  `IRREVERSIBLE` 找到真实消费者 —— 也就是说「不可逆」这一档目前是**只有名字
+  没有语义**的，跟当初 `READ_EXTERNAL` 的处境一样。
+
+## 已单独修掉的一件事
+
+- **`read_external_file` 判成 `read_local`（另一个族，读侧）。**
+  `Capability.READ_EXTERNAL` 定义着、导出着，**一个工具都没落进去**；前端
+  `AutonomousCockpit.vue` 早就备好了标签「读取外部资料」。也就是说这一档是
+  预留好的，只是没人用。
+
+  后果实测（不是推断）：`Agent._lease_blocked` 是按 capability **字面值**比对
+  租约的，而 `read_external_file` 没声明 capability → 按默认值落到 `read_local`
+  → **只租用了「读项目内」的工作流，照样能把项目外的文件读出去**。租约就是用来
+  划权限边界的，而「项目外」和「项目内」在权限上是两件事。
+
+  探针确认这是**一处窄而真**的改动：全仓按 capability 字面值分流的地方只有
+  `_lease_blocked` 一处；`_is_write_tool` / `_web_blocked` / `_arg_required` /
+  `_is_verbatim_tool` 都不看 `read_local` 这一档。而且默认租约授**全部**
+  Capability（`game_workflow.py` 两处建租约都不传能力），所以正常路径不受影响，
+  只有显式窄租约才开始拦它 —— 那正是本意。
+
+  守卫：`tests/test_external_read_is_its_own_capability.py` 9 条 + 变异 7/7。
 
 ## 已被推翻的判断
 
