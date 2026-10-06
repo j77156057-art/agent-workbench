@@ -71,6 +71,11 @@ export interface WorkflowEvent {
      * 这个字段发出来，时间线上「子代理完成」看起来和正常完成一模一样。
      */
     degraded?: boolean
+  /**
+   * 派发这一波之前，依赖结论被压缩过多少。`truncated: true` 意味着子代理看到的
+   * 只是摘要——它「完成了」但可能没看到全部依据，所以这条不能只当性能指标藏起来。
+   */
+  context_compression?: ContextCompressionMeta
   conclusion?: string; error?: string; trace?: WorkflowChildTrace
   /** 部分事件（如 langsmith 导出状态）直接携带 LangSmith 状态体 */
   langsmith?: LangSmithStatus
@@ -79,6 +84,14 @@ export interface WorkflowEvent {
 export interface WorkflowTraceStep {
   action?: string; obs?: string; ok?: boolean; tool?: string; error?: string
   [key: string]: unknown
+}
+/** 一波子代理派发前的依赖上下文压缩情况（`compress_context` 的 metadata）。 */
+export interface ContextCompressionMeta {
+  original_chars?: number
+  compressed_chars?: number
+  /** 真的被截断了——不是「压缩率很高」，是确实丢了东西。 */
+  truncated?: boolean
+  items?: number
 }
 /** 子代理单条实时轨迹（step_sink → subagent_step SSE 事件），文本后端已按类型裁剪。 */
 export interface WorkflowStepItem {

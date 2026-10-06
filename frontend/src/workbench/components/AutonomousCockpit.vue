@@ -835,7 +835,14 @@ const subagentById = computed<Record<string, NonNullable<typeof workflow.value>[
   }
   return out
 })
-const doneCount = computed(() => Object.values(taskResults.value).filter(r => r.status === 'ok').length)
+/**
+ * 「完成了几个」。**必须排除 `degraded`** —— 那条结论是 harness 写的诊断，
+ * 不是模型的答案。后端判据已经是 `status == "ok" and not degraded`
+ * （`game_workflow.counts_as_ok`）；这里若还只按 `status` 数，标题上会出现
+ * 「3/3 个任务完成」而其中一个根本没答出子问题。
+ */
+const doneCount = computed(() => Object.values(taskResults.value)
+  .filter(r => r.status === 'ok' && !r.degraded).length)
 const timelineEvents = computed(() => (workflow.value?.timeline || workflow.value?.events || []).slice().reverse())
 const actualToolCalls = computed(() => timelineEvents.value.filter(event => ['before_tool', 'after_tool', 'before_mcp', 'after_mcp'].includes(String(event.kind))))
 const hasExecution = computed(() => !!(workflow.value?.steps || typeof workflow.value?.review?.ok === 'boolean' || timelineEvents.value.some(event => event.kind === 'execute_start')))
@@ -926,12 +933,29 @@ const timelineLabel: Record<string, string> = {
  */
 function timelineLabelOf(event: WorkflowEvent): string {
   const base = timelineLabel[event.kind || ''] || event.kind || '事件'
-  return event.degraded ? `${base}（结论非模型原文）` : base
+  if (event.degraded) return `${base}（结论非模型原文）`
+  // 派发前依赖结论被截断过：子代理看到的是摘要，「完成」不等于「看到了全部依据」
+  if (event.context_compression?.truncated) return `${base}（依赖上下文已截断）`
+  return base
 }
 function timelineDetail(event: WorkflowEvent): string {
   const task = event.task_id ? `任务 ${event.task_id} · ` : ''
   const detail = event.error || event.conclusion || event.reason || event.summary || event.detail || event.status || ''
-  return `${task}${String(detail || '已记录').replace(/\s+/g, ' ').slice(0, 320)}`
+  return `${task}${String(detail || '已记录').replace(/\s+/g, ' ').slice(0, 320)}${compressionNote(event)}`
+}
+/**
+ * 依赖上下文被压缩过多少。要紧的不是「压缩率高」，而是 `truncated`——
+ * 那表示确实丢了东西，子代理是在**部分依据**上完成的。用户没看到这个数，
+ * 就没法判断某个结论该不该信。
+ */
+function compressionNote(event: WorkflowEvent): string {
+  const meta = event.context_compression
+  if (!meta || !Number(meta.original_chars)) return ''
+  const from = Number(meta.original_chars) || 0
+  const to = Number(meta.compressed_chars) || 0
+  const items = Number(meta.items) || 0
+  const base = ` · 依赖上下文 ${from}→${to} 字${items ? `（${items} 项）` : ''}`
+  return meta.truncated ? `${base}，已截断，结论基于部分依据` : `${base}，未截断`
 }
 function timelineCanReplay(event: WorkflowEvent): boolean {
   const taskId = String(event.task_id || '')

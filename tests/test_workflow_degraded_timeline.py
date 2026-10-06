@@ -121,9 +121,22 @@ class TimelineShowsItTests(unittest.TestCase):
                       % summary_line.strip()[:110])
 
     def test_the_label_changes_when_degraded(self):
+        """按 degraded 分支——**不要绑死三目语法**。
+
+        这条曾经硬要求 `event.degraded ?`。后来为了多加一个「依赖上下文已截断」
+        的条件，三目被改成 `if` 链，行为一模一样，两条守卫却红了。这是守卫
+        **绑实现而不是绑意图**：换一种等价写法就来报警，久而久之只会逼人
+        不敢重构。
+
+        所以这里接受两种写法：`if (event.degraded)` 或 `event.degraded ?`。
+        要求的只是「degraded 参与了分支判断」。
+        """
         body = self._helper()
-        self.assertRegex(body, r"event\.degraded\s*\?",
-                         "timelineLabelOf 没有按 degraded 分支")
+        self.assertRegex(
+            body,
+            r"(if\s*\(\s*event\.degraded\s*\))|(event\.degraded\s*\?)",
+            "timelineLabelOf 没有按 degraded 分支",
+        )
 
     def test_it_says_the_conclusion_is_not_the_models_own_words(self):
         """文案要说清「结论不是模型原文」，而不是笼统的「失败」。"""
@@ -134,18 +147,27 @@ class TimelineShowsItTests(unittest.TestCase):
     def test_a_normal_completion_is_not_marked_degraded(self):
         """**反向守卫**：不得把所有完成都标成降级。
 
-        判据是「后缀只在 event.degraded 为真时出现」，所以这里查结构而不是查文案 ——
-        写成 `基线 + (event.degraded ? '（降级）' : '')` 之外的形状（例如用
-        `!event.degraded` 判断、或者无条件加后缀）都会在这里露出来。
+        要求的**意图**是两件事：① 有一个降级分支返回带后缀的值；② 还有一条
+        路径返回**不带后缀**的基线值。
+
+        同样不要绑死三目：`if (degraded) return 带后缀` + 末尾 `return base`
+        也是对的（而且要多加一个条件时只能这么写）。之前这里硬找
+        `event.degraded ?`，等价改写就被误报。
         """
         body = self._helper()
-        m = re.search(r"return\s+(.+)$", body, re.M)
-        self.assertIsNotNone(m, "timelineLabelOf 没有 return")
-        expr = m.group(1).strip()
-        self.assertIn("event.degraded ?", expr,
-                      "返回式必须以 event.degraded 为条件，否则会误标正常完成：%r" % expr)
-        self.assertRegex(expr, r"^\S.*\?\s*`.*`\s*:\s*\S",
-                         "降级分支与非降级分支都要有值：%r" % expr)
+        # 降级分支：带后缀的文案必须在某个 return 里
+        self.assertRegex(
+            body,
+            r"return\s+`\$\{base\}[^`]*`",
+            "没有找到返回「基线+后缀」的降级分支：%r" % body.strip()[:200],
+        )
+        # 非降级路径：必须存在一个**裸的** return base（没有后缀）
+        self.assertRegex(
+            body,
+            r"(return\s+base\b)|(\?\s*`\$\{base\}`\s*:)",
+            "没有找到不带后缀的非降级返回值——那样会把正常完成也标成降级：%r"
+            % body.strip()[:200],
+        )
 
     def test_the_static_table_still_exists_for_other_kinds(self):
         """不得把静态表删掉 —— 几十个 kind 靠它。"""
