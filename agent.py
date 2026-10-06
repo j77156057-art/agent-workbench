@@ -5188,30 +5188,37 @@ class Agent:
                 # 手抄一份工具名清单——它会与真实分类漂移，而漂移之后没人会发现：
                 # 那正是 `dev_apply_edits` 漏登记却一直绿灯的原因。
                 #
-                # 三表并集（写 + 执行 + 管理），因为「只读」的含义是「不改任何
-                # 东西」，而这三张表各自都会改：
-                #   WRITE_TOOLS  apply_edit / create_file / dev_apply_edits …
-                #   EXEC_TOOLS   python_exec / run_command —— 这两个能执行任意代码，
-                #                只看 WRITE_TOOLS 的话只读 planner 照样拿到 python_exec
-                #   ADMIN_TOOLS  dev_commit / dev_install_tool / start_workflow …
+                # 所以这里**不列名字**，而是逐个问「这个工具的 spec 说自己会改东西吗」。
+                # 「只读」的含义是「不改任何东西」，而判断依据必须来自运行期真实分类
+                # （`ToolSpec`），不是任何一张按名字索引的清单：
                 #
-                # ⚠ `_external_file` 三兄弟（create/edit/delete_external_file）真会
-                # 改磁盘，但**任何一张权威表里都没登记**——那是工具分类本身的既存
-                # 缺陷（按族的规矩单独修，不混进本次改动）。这里显式补上，免得
-                # 「只读」在它们身上失效。
-                from agent_runtime.tools import (
-                    ADMIN_TOOLS as _T_ADMIN,
-                    EXEC_TOOLS as _T_EXEC,
-                    WRITE_TOOLS as _T_WRITE,
-                )
-                _NOT_ALLOWED_READ_ONLY = (
-                    set(_T_WRITE) | set(_T_EXEC) | set(_T_ADMIN)
-                    | {"create_external_file", "edit_external_file",
-                       "delete_external_file"}
-                )
+                #   · 上一版用「三张权威表的并集」——实测漏了 14 个会改东西的工具
+                #     （dev_patch / dev_move / memory_save / dev_lanes …），
+                #     只读 planner 真的拿到了它们；而为了补 external 三兄弟，
+                #     又在并集旁边手写了一份例外名单，那正是本段开头警告的影子副本。
+                #   · 注册项里显式声明 capability 的工具，分类根本不经过那些表
+                #     （`coerce_tool_spec` 末尾 `value.get("capability", ...)`
+                #     声明优先），所以「把名字补进表」只能修这一次，
+                #     下一个人加了新工具照样会漏。
+                #
+                # capability 与 side_effect 两个维度都问：有的工具改的是共享状态
+                # 而不是工作区文件（dev_lanes / dev_commit 归 ADMIN），
+                # 有的声明了不可逆副作用。任一为真就说明它会改东西。
+                _MUTATING_CAPS = frozenset({
+                    Capability.WRITE_LOCAL, Capability.WRITE_EXTERNAL,
+                    Capability.ADMIN, Capability.EXEC,
+                })
+
+                def _mutates(name):
+                    spec = self._tool_spec(name)
+                    if spec is None:
+                        return False
+                    return (spec.capability in _MUTATING_CAPS
+                            or spec.side_effect is not SideEffect.PURE)
+
                 allowed = [str(name) for name in requested_tools
                            if str(name) in self.tools
-                           and str(name) not in _NOT_ALLOWED_READ_ONLY]
+                           and not _mutates(str(name))]
             else:
                 allowed = [str(name) for name in requested_tools
                            if str(name) in self.tools]

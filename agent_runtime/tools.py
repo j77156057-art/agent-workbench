@@ -131,6 +131,12 @@ _ADMIN_TOOLS = {
                       "dev_desktop_action", "dev_preview_adapter_test",
     "dev_preview_adapter_rollback",
     "start_workflow",
+    # 只改共享状态、不改工作区文件的工具（与 dev_commit 同性质）：
+    # 认领/心跳/释放、提案、计划落盘。归 ADMIN 而非 WRITE_LOCAL 是刻意的——
+    # 它们不需要用户授权，只需要并发与幂等保护（见 test_tool_taxonomy.py 的
+    # StateDirToolsAreNotSourceWritesTests）。
+    # **曾经漏在这里**，于是 agent.py 的只读角色护栏按 name 求并集时漏掉了它们。
+    "dev_lanes", "dev_plan", "dev_propose",
 }
 _WRITE_TOOLS = {
     "apply_edit", "create_file", "create_artifact", "dev_region_edit",
@@ -146,6 +152,18 @@ _WRITE_TOOLS = {
     "dev_preview_adapter_refresh",
     "dev_preview_adapter_rollback",
     "dev_desktop_action",
+    # 下面这一批在注册项里显式声明了 capability/side_effect（tools.py 的 TOOLS），
+    # 于是 coerce_tool_spec 不查表、直接采用声明 —— 分类本身是对的。但**名字表
+    # 漏了它们**，而 agent.py 的只读角色护栏正是按 name 求并集算出来的，于是
+    # **只读 planner 能拿到 dev_patch / dev_move / memory_save**：角色自称只读、
+    # 实际改了文件，而报告里这次改动仍记为只读分析。
+    # 同一个注册表里两套并存的分类机制（表 vs 注册声明）已经漂移了 14 个名字。
+    "dev_patch", "dev_move", "dev_deps", "dev_pricing", "dev_skill_create",
+    "generate_data_file", "memory_save", "memory_forget",
+    # 受控越界写（高权限 + 白名单内）。它们的 capability 是 write_external 而非
+    # write_local —— 分类仍由注册声明给出，这里补的是**名字表**，让按 name 求并集
+    # 的消费者（只读角色护栏等）也能看见它们，不必再手写例外名单。
+    "create_external_file", "edit_external_file", "delete_external_file",
 }
 _IRREVERSIBLE_TOOLS = {"run_command", "game_playtest", "dev_mcp_call"}
 _NO_ARG_TOOLS = {

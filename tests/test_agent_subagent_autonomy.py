@@ -121,29 +121,213 @@ def test_the_write_tool_set_is_not_a_shadow_copy():
         )
 
 
-def test_read_only_blocklist_covers_all_three_authoritative_tables():
-    """只读角色的拦截**必须**覆盖写 + 执行 + 管理三张表。
+def _effective_tools_for_read_only(registry: dict, requested: list[str]) -> str:
+    """真跑一次 `_run_child`，返回只读角色**实际**拿到的工具清单。
 
-    这条是被实测逼出来的：只用 `WRITE_TOOLS` 时，`python_exec` / `run_command`
-    不在其中（它们在 `EXEC_TOOLS`），于是**只读 planner 拿到了执行任意代码的
-    工具**——只读约束在最危险的那一类上失效。
-
-    `ADMIN_TOOLS` 也必须算进去：`dev_commit` / `dev_install_tool` 同样是「改了
-    东西」，只是改的不是工作区文件。
+    断言的是子代理提示里「允许工具=」那一行 —— 也就是真正生效的那份，
+    不是任何中间变量。
     """
     import agent as agent_mod
 
-    fn = _child_runner(ast.parse(source()))
-    body = ast.unparse(fn)
-    assert "_T_WRITE" in body and "_T_EXEC" in body and "_T_ADMIN" in body, (
-        "只读拦截没有同时引用 WRITE/EXEC/ADMIN 三张权威表"
-    )
-    # 真跑一次：python_exec 与 run_command 必须被拦住
     parent = agent_mod.Agent(llm=None)
-    parent.tools = {"read_file": {"func": lambda _a: ""},
-                    "python_exec": {"func": lambda _a: ""},
-                    "run_command": {"func": lambda _a: ""},
-                    "dev_commit": {"func": lambda _a: ""}}
+    parent.tools = registry
+    seen: list[str] = []
+
+    class _Capture:
+        provider = "p"
+        model = "m"
+
+        def clone(self):
+            return self
+
+        def chat(self, messages, stream=True, **kw):
+            for item in messages[-1:]:
+                if isinstance(item, dict):
+                    seen.append(str(item.get("content") or ""))
+            text = "Final Answer: 分析完成"
+            return iter([text]) if stream else text
+
+        def count_tokens(self, text):
+            return 1
+
+    parent.llm = _Capture()
+    parent._run_child("planner", "只读分析", tool_allowlist=requested,
+                      mcp_policy="deny", reflect=False)
+    prompt = "\n".join(seen)
+    assert "允许工具=" in prompt, prompt[:400]
+    line = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
+    return set(line.replace("，", ",").replace("、", ",")
+               .replace(" ", ",").split(",")) - {""}
+
+
+def test_read_only_roles_cannot_widen_into_any_mutating_tool():
+    """只读角色的拦截必须覆盖**每一个**会改东西的工具 —— 一个都不能漏。
+
+    这条是被三次实测逼出来的，每次漏得都不一样：
+
+    1. 最早只用 `WRITE_TOOLS` —— `python_exec` / `run_command` 在 `EXEC_TOOLS` 里，
+       只读 planner 拿到了执行任意代码的工具。
+    2. 后来改成三张表的并集 —— 实测**又漏了 14 个**会改东西的工具
+       （`dev_patch` / `dev_move` / `memory_save` / `dev_lanes` …）：那些工具在
+       注册项里显式声明了 capability，`coerce_tool_spec` 压根不查表。
+    3. 补进表之后，并集在**今天**恰好等价了 —— 于是「并集」和「逐个问 spec」
+       在行为上分不出来。没有守卫的话，下一个人加一个「注册声明、没进表」的
+       工具，并集就会重新漏，而没有任何东西会红。
+
+    所以这里刻意用**合成工具**造出「下一个新工具」的场景：它在注册项里声明
+    自己会改东西，但**不在任何一张按名字索引的表里**（那正是那 14 个当时的
+    处境）。判据只有逐个问 spec 才拦得住它。
+
+    用合成工具而不是真工具，是因为真注册表今天已经补齐了——拿真工具测不出
+    「并集 vs spec」的差别，那种测试会一直是绿的，而绿得没有意义。
+    """
+    mutating_but_unregistered = {
+        # 声明自己写本地文件，但没进 WRITE_TOOLS
+        "dev_write_thing": {"func": lambda _a: "", "capability": "write_local",
+                            "side_effect": "mutating", "parallel_safe": False},
+        # 声明自己改共享状态，但没进 ADMIN_TOOLS
+        "dev_touch_state": {"func": lambda _a: "", "capability": "admin",
+                            "side_effect": "mutating", "parallel_safe": False},
+        # capability 是 network、但副作用不可逆：只看 capability 会把它当无害
+        "dev_side_effect_call": {"func": lambda _a: "", "capability": "network",
+                                 "side_effect": "irreversible",
+                                 "parallel_safe": False},
+    }
+    registry = {"read_file": {"func": lambda _a: ""}, **mutating_but_unregistered}
+
+    effective = _effective_tools_for_read_only(
+        registry, ["read_file", *mutating_but_unregistered])
+    for banned in mutating_but_unregistered:
+        assert banned not in effective, (
+            f"只读 planner 拿到了 {banned}（它不在任何名字表里，只按名字算就会"
+            f"漏放它）：实际拿到 {sorted(effective)}"
+        )
+    assert "read_file" in effective, f"只读 planner 连读都读不了：{sorted(effective)}"
+
+
+def test_the_read_only_predicate_asks_both_capability_and_side_effect():
+    """反向守卫：**两个维度都要问**，少一个就等于把某一类工具放过去。
+
+    变异实测过：把 `or spec.side_effect is not SideEffect.PURE` 删掉，
+    全部守卫仍然绿 —— 因为我上一版查的是「函数体里有没有 `side_effect` 这个词」，
+    而 `_run_child` 里别处本来就出现过这个词。**形态匹配天生可被绕开**。
+
+    改成问行为，两个方向各造一个样本：
+
+    · capability 无害但副作用不可逆（真注册表里的 `dev_mcp_call` 就是
+      network + irreversible，可它被 `mcp_policy="deny"` 独立拦住了，
+      测不出差别）→ 只有问 side_effect 才拦得住；
+    · capability 说它改东西但 side_effect 写成了 pure → 只有问 capability
+      才拦得住。这一条在今天**所有真实工具上都测不出来**（探针实测：真实
+      注册表里 capability 会改东西的工具，side_effect 无一例外也是非 PURE，
+      两个判据碰巧等价），所以必须造一个自相矛盾的合成工具，把这一维钉住。
+      等价是巧合，不是判据——下一次有人给某个管理类工具标上 side_effect=pure
+      （比如「这个操作幂等」），就正好是这一维在起作用。
+    """
+    synthetic = {
+        "dev_network_but_irreversible": {
+            "func": lambda _a: "", "capability": "network",
+            "side_effect": "irreversible", "parallel_safe": False},
+        "dev_admin_but_claims_pure": {
+            "func": lambda _a: "", "capability": "admin",
+            "side_effect": "pure", "parallel_safe": False},
+    }
+    registry = {"read_file": {"func": lambda _a: ""}, **synthetic}
+    effective = _effective_tools_for_read_only(
+        registry, ["read_file", *synthetic])
+    assert "dev_network_but_irreversible" not in effective, (
+        "capability 是 network 就被当成无害了——只看 capability 的写法拦不住它："
+        f"实际拿到 {sorted(effective)}"
+    )
+    assert "dev_admin_but_claims_pure" not in effective, (
+        "自己声明 side_effect=pure 就被放过了——只看 side_effect 的写法拦不住它："
+        f"实际拿到 {sorted(effective)}"
+    )
+
+
+def test_every_mutating_tool_in_the_real_registry_is_blocked_for_read_only():
+    """全量行为守卫：对**真实注册表**里每一个会改东西的工具逐个试一遍。
+
+    上两条用合成工具是为了让「并集 vs spec」分得出来；这条负责兜住真实世界：
+    今天 48 个工具会改东西，一个都不许漏放给只读角色。
+
+    判据取自运行期 `ToolSpec`（capability ∈ 写/管/执行，或 side_effect 非 PURE），
+    不查任何名字表 —— 名字表正是会漂移的那份。
+    """
+    import agent as agent_mod
+    import tools as tools_mod
+    from agent_runtime.tools import Capability, SideEffect, coerce_tool_spec
+
+    caps = {Capability.WRITE_LOCAL, Capability.WRITE_EXTERNAL,
+            Capability.ADMIN, Capability.EXEC}
+    mutating = [n for n in tools_mod.TOOLS
+                if (lambda s: s.capability in caps
+                    or s.side_effect is not SideEffect.PURE)(
+                        coerce_tool_spec(n, tools_mod.TOOLS[n]))]
+    assert len(mutating) >= 40, (
+        f"会改东西的工具只有 {len(mutating)} 个——分类表被大改过，"
+        "这条守卫的前提需要重新确认")
+
+    parent = agent_mod.Agent(llm=None)
+    parent.tools = dict(tools_mod.TOOLS)
+    seen: list[str] = []
+
+    class _Capture:
+        provider = "p"
+        model = "m"
+
+        def clone(self):
+            return self
+
+        def chat(self, messages, stream=True, **kw):
+            for item in messages[-1:]:
+                if isinstance(item, dict):
+                    seen.append(str(item.get("content") or ""))
+            text = "Final Answer: 分析完成"
+            return iter([text]) if stream else text
+
+        def count_tokens(self, text):
+            return 1
+
+    parent.llm = _Capture()
+    parent._run_child("planner", "只读分析", tool_allowlist=mutating,
+                      mcp_policy="deny", reflect=False)
+    effective = set("\n".join(seen).rsplit("允许工具=", 1)[-1]
+                    .split("\n", 1)[0]
+                    .replace("，", ",").replace("、", ",").replace(" ", ",")
+                    .split(",")) - {""}
+    leaked = sorted(effective & set(mutating))
+    assert not leaked, (
+        "只读 planner 拿到了这些会改东西的工具：%s\n"
+        "角色自称只读、实际改了文件，而报告里这次改动仍记为只读分析" % leaked)
+
+
+def test_the_external_file_tools_are_now_in_the_authoritative_table():
+    """根因已修：external 三兄弟不再是「靠手写例外名单拦住」。
+
+    早先这条守卫钉的是**现状**：它们不在任何权威表里，`agent.py` 旁边手写
+    一份例外名单才拦住。那是影子副本——正是 `test_tool_taxonomy.py` 存在的
+    意义所反对的形态。
+
+    现在它们在 `WRITE_TOOLS` 里，行为不变（仍然拦得住），但拦住它们的是
+    权威表而不是那份名单。所以这条守卫改成断言**根因已修**：
+    在表里，且只读角色仍拿不到。
+    """
+    import agent as agent_mod
+    import tools
+    from agent_runtime.tools import WRITE_TOOLS
+
+    EXTERNAL = ("create_external_file", "edit_external_file",
+                "delete_external_file")
+    for name in EXTERNAL:
+        assert name in WRITE_TOOLS, (
+            f"{name} 仍不在权威写工具表里——只读角色拦住它靠的又是手写名单，"
+            "下一个新工具照样会漏"
+        )
+
+    parent = agent_mod.Agent(llm=None)
+    parent.tools = {"read_file": {"func": lambda _a: ""}}
+    parent.tools.update({name: dict(tools.TOOLS[name]) for name in EXTERNAL})
     seen: list[str] = []
 
     class _Capture:
@@ -167,65 +351,14 @@ def test_read_only_blocklist_covers_all_three_authoritative_tables():
 
     parent.llm = _Capture()
     parent._run_child("planner", "只读分析",
-                      tool_allowlist=["read_file", "python_exec",
-                                      "run_command", "dev_commit"],
+                      tool_allowlist=["read_file", *EXTERNAL],
                       reflect=False)
     effective = "\n".join(seen).rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
-    for banned in ("python_exec", "run_command", "dev_commit"):
+    for banned in EXTERNAL:
         assert banned not in effective, (
             f"只读 planner 拿到了 {banned}：{effective}"
         )
     assert "read_file" in effective, f"只读 planner 连读都读不了：{effective}"
-
-
-def test_the_external_file_gap_is_still_blocked_for_read_only_roles():
-    """钉住那个**已知缺陷**的现状，别让它悄悄变严重。
-
-    `create_external_file` / `edit_external_file` / `delete_external_file` 真会
-    改磁盘，但它们**不在任何权威分类表里**——那是工具分类本身的既存缺陷
-    （按族的规矩单独修）。在补上之前，只读角色至少不能拿到它们，否则「只读」
-    在它们身上完全失效。
-    """
-    import agent as agent_mod
-
-    parent = agent_mod.Agent(llm=None)
-    parent.tools = {"read_file": {"func": lambda _a: ""},
-                    "create_external_file": {"func": lambda _a: ""},
-                    "edit_external_file": {"func": lambda _a: ""},
-                    "delete_external_file": {"func": lambda _a: ""}}
-    seen: list[str] = []
-
-    class _Capture:
-        provider = "p"
-        model = "m"
-
-        def clone(self):
-            return self
-
-        def chat(self, messages, stream=True, **kw):
-            for item in messages[-1:]:
-                if isinstance(item, dict):
-                    seen.append(str(item.get("content") or ""))
-            text = "Final Answer: 分析完成"
-            if stream:
-                return iter([text])
-            return text
-
-        def count_tokens(self, text):
-            return 1
-
-    parent.llm = _Capture()
-    parent._run_child("planner", "只读分析",
-                      tool_allowlist=["read_file", "create_external_file",
-                                      "edit_external_file", "delete_external_file"],
-                      reflect=False)
-    effective = "\n".join(seen).rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
-    for banned in ("create_external_file", "edit_external_file",
-                   "delete_external_file"):
-        assert banned not in effective, (
-            f"只读 planner 拿到了 {banned}（它在权威表里没登记，"
-            f"这里显式拦住了才对）：{effective}"
-        )
 
 
 def test_the_nesting_denylist_is_not_reintroduced_on_the_main_branch():

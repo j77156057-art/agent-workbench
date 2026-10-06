@@ -1,4 +1,4 @@
-"""工具分类必须只有一个事实来源——否则"绿灯"会和真实行为分叉。
+"""工具分类必须只有一个事实来源——否则「绿灯」会和真实行为分叉。
 
 这个文件来自一次真实的假保障。`agent.py` 里曾有一批同名常量副本：
 
@@ -22,6 +22,29 @@
 
 死副本已删除。本文件的作用是让"又有人加一张自己的表"或"又漏登记一个写工具"
 立刻变红，而不是安静地错下去。
+
+---
+
+同一个病后来在**权威表内部**又发作了一次，而且更隐蔽。
+
+`coerce_tool_spec` 末尾是 `value.get("capability", capability)`：**注册项里
+显式声明的 capability 优先于表**。于是同一个注册表里并存两套分类机制：
+
+    · 按 name 索引的表（_WRITE_TOOLS / _ADMIN_TOOLS / _EXEC_TOOLS）
+    · 注册项里的 capability / side_effect 声明
+
+注册声明的那一批**根本不经过表**，于是按名字求并集的消费者看不见它们。实测
+后果：只读角色护栏（当时正是「三张表的并集」）漏掉了 **14 个**会改东西的
+工具——`dev_patch` / `dev_move` / `memory_save` / `dev_lanes` / external 三兄弟。
+只读 planner 真的能拿到它们：角色自称只读、实际改了文件，而报告里这次改动
+仍记为只读分析。
+
+修法有两层：
+
+    1. 只读护栏不再按名字算，改为**逐个问 spec**——判据对「下一个新工具」免疫。
+    2. 把漏掉的 14 个名字补进权威表，让表本身重新完整。
+
+本文件最后几类守的正是这两层。
 """
 
 import os
@@ -35,8 +58,8 @@ if ROOT not in sys.path:
 import agent  # noqa: E402
 import tools  # noqa: E402
 from agent_runtime.tools import (  # noqa: E402
-    ADMIN_TOOLS, EXEC_TOOLS, WRITE_TOOLS, Capability, SideEffect,
-    coerce_tool_spec,
+    ADMIN_TOOLS, EXEC_TOOLS, IRREVERSIBLE_TOOLS, WRITE_TOOLS, Capability,
+    SideEffect, coerce_tool_spec,
 )
 
 
@@ -61,6 +84,111 @@ class NoShadowTaxonomyTests(unittest.TestCase):
             self.assertTrue(table, "分类表不应为空")
 
 
+def _raw_registry() -> dict:
+    """重新 exec 出**注册前**的原始注册表（不含 upgrade 后的 ToolSpec）。
+
+    非做不可的原因：`tools.py` 文件末尾调了 `upgrade_registry(TOOLS)`，
+    它就地把原始 dict 换成 `ToolSpec` 对象；而 `coerce_tool_spec` 第一行是
+    `if isinstance(value, ToolSpec): return value` —— 于是直接读 `tools.TOOLS`
+    量到的全是冻结之后的结果，**表清空了也量不出变化**（我第一版探针就栽在
+    这上面，报了个假的「变化 0」）。要量表真实参与决策的那一刻，只能重新
+    exec 那段字面量。
+    """
+    src = open(os.path.join(ROOT, "tools.py"), encoding="utf-8").read().splitlines()
+    start = next(i for i, ln in enumerate(src) if ln.startswith("TOOLS = {"))
+    end = next(i for i, ln in enumerate(src[start:], start)
+               if ln.startswith("upgrade_registry("))
+    ns: dict = {}
+    exec(compile("\n".join(src[start:end]), "tools.py:TOOLS", "exec"),
+         vars(tools), ns)
+    return ns["TOOLS"]
+
+
+class RegistrationDeclarationsStayHonestTests(unittest.TestCase):
+    """注册项里显式声明的 capability 不得与权威表打架。"""
+
+    def test_declared_capability_matches_the_authoritative_table(self):
+        """声明与表不一致时，以声明为准（`coerce_tool_spec` 就是这么做的）——
+        所以表会**静默**给出另一个结论。任何这种分叉都要在这里变红。
+
+        注意写工具那一档接受**两个** capability：`write_local`（工作区）与
+        `write_external`（白名单目录内的受控越界写）是一等区分，`_WRITE_TOOLS`
+        是「会写盘的工具」这个集合，不是 capability 到名字的映射。我第一版
+        把它按 `write_local` 查，于是 external 三兄弟立刻冲突——那是守卫把
+        一个不该存在的映射当成了事实。
+        """
+        raw = _raw_registry()
+        conflicts = []
+        for name, value in raw.items():
+            if not isinstance(value, dict) or "capability" not in value:
+                continue
+            declared = value["capability"]
+            if name in WRITE_TOOLS:
+                implied = {"write_local", "write_external"}
+            elif name in EXEC_TOOLS:
+                implied = {"exec"}
+            elif name in ADMIN_TOOLS:
+                implied = {"admin"}
+            else:
+                continue
+            if declared not in implied:
+                conflicts.append((name, declared, sorted(implied)))
+        self.assertEqual(
+            conflicts, [],
+            "注册声明的 capability 与它所在的权威表冲突——表按名字被查到时会"
+            "推出另一个结论，而 coerce_tool_spec 取的是声明那份：%s" % conflicts)
+
+    def test_every_declared_capability_is_in_some_table(self):
+        """声明了写/管/执行能力的工具，必须同时在**某张**表里。
+
+        这条是这次真跑查出来的：14 个工具在注册项里显式声明了 capability，
+        却不在任何一张按名字索引的表里。按名字求并集的消费者（只读角色护栏）
+        因此完全看不见它们——只读 planner 实测拿到了 `dev_patch` / `dev_move` /
+        `memory_save`。
+
+        判据问的是「表齐不齐」，不靠工具名字猜——名字启发式天生可被命名绕过：
+        早先那条 `startswith(("dev_", "create_", "apply_"))` 的过滤就把
+        `edit_external_file` / `delete_external_file` 挡在检查之外了。
+        """
+        raw = _raw_registry()
+        every = set(WRITE_TOOLS) | set(EXEC_TOOLS) | set(ADMIN_TOOLS)
+        mutating = (Capability.WRITE_LOCAL, Capability.WRITE_EXTERNAL,
+                    Capability.ADMIN, Capability.EXEC)
+        missing = []
+        for name, value in raw.items():
+            if not isinstance(value, dict) or "capability" not in value:
+                continue
+            if value["capability"] in mutating and name not in every:
+                missing.append(name)
+        self.assertEqual(
+            missing, [],
+            "这些工具声明自己会改东西，却不在任何权威表里——按名字求并集的"
+            "消费者会漏放它们：%s" % missing)
+
+    def test_a_misspelled_capability_fails_loudly_instead_of_degrading(self):
+        """声明是字符串，拼错会怎样？
+
+        我第一版把这条写成「拼错不会报错，只会静默变成 read_local」，
+        然后加了一条「逐个检查注册项里有没有非法 capability」的守卫。
+        **实测两处都是错的**：
+
+        · `coerce_tool_spec` 末尾是 `Capability(value.get("capability", ...))`，
+          非法值直接 `ValueError` —— fail-fast，是对的；
+        · 于是那条「逐个检查」的守卫**根本跑不到**：模块在 import 期就炸了，
+          pytest 停在收集阶段、报的是 error 而不是 failure。一条永远不可能
+          失败的守卫比没有守卫更糟——读的人以为这里有覆盖。
+
+        所以改成钉**真实行为**：非法 capability 必须抛，而不是悄悄按 read_local
+        放行。后者才是真正危险的那个失效模式。
+        """
+        with self.assertRaises(ValueError):
+            coerce_tool_spec("dev_anything", {
+                "func": lambda _a: "",
+                "capability": "write_locall",   # 少一个字母
+                "side_effect": "mutating",
+            })
+
+
 class WriteToolRegistrationTests(unittest.TestCase):
     """每个会落盘的工具都必须被登记为写工具。漏一个就少一层护栏。"""
 
@@ -82,7 +210,14 @@ class WriteToolRegistrationTests(unittest.TestCase):
             self.assertEqual(getattr(batch, field), getattr(single, field), field)
 
     def test_no_write_tool_is_mistakenly_parallel_safe(self):
-        """写工具一律不可并发：两个写工具并跑就是竞态。"""
+        """写工具一律不可并发：两个写工具并跑就是竞态。
+
+        副作用这一项断言的是「**不是 PURE**」而不是「等于 MUTATING」：
+        `memory_forget` 声明的是 `idempotent_write`（删记忆，同一操作重复做结果
+        相同），它比 mutating 更精确，护栏要的也只是「确实有副作用」这一条。
+        早先这里写死 MUTATING，于是把 memory_forget 补进表的那一刻红了——
+        那是守卫过严，不是工具分类错了。判据按「查什么」写，不按某一个字面值写。
+        """
         for name in WRITE_TOOLS:
             if name not in tools.TOOLS:
                 continue
@@ -90,7 +225,9 @@ class WriteToolRegistrationTests(unittest.TestCase):
             self.assertFalse(
                 spec.parallel_safe,
                 "%s 是写工具却被判成可并发，批内会与其它工具同时写" % name)
-            self.assertEqual(spec.side_effect, SideEffect.MUTATING, name)
+            self.assertNotEqual(
+                spec.side_effect, SideEffect.PURE,
+                "%s 在写工具表里，却没有任何副作用——护栏会把它当只读放过" % name)
 
     def test_no_admin_tool_is_mistakenly_parallel_safe(self):
         for name in ADMIN_TOOLS:
@@ -218,7 +355,7 @@ class WriteIntentVocabularyTests(unittest.TestCase):
     """写意图靠**词表**判定，所以题面/用例必须用词表里的词。
 
     这不是凑合：dev_eval 的三道补丁题曾统一用默认问题"按步骤执行。"，
-    `应用`/`补丁` 都不在 `_RE_WRITE_INTENT` 里，于是被护栏拦掉。当时看起来像
+    `应用`/`补丁`都不在 `_RE_WRITE_INTENT` 里，于是被护栏拦掉。当时看起来像
     "新加了护栏把门禁搞红了"，实际是**题面不真实**——真实用户要求打补丁时
     说的是"改/应用补丁"，护栏拦的只应该是"用户没要求改却想改"的情况。
     """
