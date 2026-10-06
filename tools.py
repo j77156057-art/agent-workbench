@@ -4909,7 +4909,19 @@ def create_file(arg):
 
     # 自己刚创建的文件，视为已"确认内容"，允许后续整体重写而无需再 read_file
     _read_store()[0].add(os.path.normcase(target))
-    return f"已创建 {rel}（{nbytes} 字节，路径沙箱校验通过）。"
+    return ToolResult(
+        ok=True,
+        text=f"已创建 {rel}（{nbytes} 字节，路径沙箱校验通过）。",
+        artifacts=[{
+            "path": rel,
+            # 不写死 kind：预览侧有一份扩展名→类型映射（`infer_artifact_kind`），
+            # 那才是唯一的口径。这里写死后 `.md` 会被当成代码。
+            "label": os.path.basename(rel),
+            "summary": "新建 %s（%d 字节）" % (rel, nbytes),
+            "bytes": nbytes,
+            "evidence": ["tool:create_file"],
+        }],
+    )
 
 
 # ---------------------------------------------------------------------------

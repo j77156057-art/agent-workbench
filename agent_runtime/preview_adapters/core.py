@@ -185,7 +185,24 @@ def _iter_result_artifacts(workflow: Mapping[str, Any]) -> Iterable[tuple[str, M
         for index, raw in enumerate(list(result.get("artifacts") or [])):
             if isinstance(raw, Mapping):
                 yield str(task_id), dict(raw, evidence=list(raw.get("evidence") or []) + ["task:" + str(task_id)])
+        # `file_changes` 与 `artifacts` 在真子代理下**必然重叠**：写工具自报的
+        # 那一条 artifact 会被 `_run_child` 同时收进 artifacts 和 file_changes
+        # （后者是给 `output_audit` 的证据字段，前者是给预览的产物字段）。
+        # 实测同一个文件在最终 artifacts 里出现两次。
+        #
+        # 下面按 path 去重：`artifacts` 优先（它带 `bytes` 等更完整的元信息），
+        # `file_changes` 里同 path 的那条只作为**兜底**——只有当 artifacts 里
+        # 没有同 path 的条目时它才产出。这不是可有可无的整理，而是两条数据源
+        # 指向同一事实时的必要去重。
+        _already = {
+            str(item.get("path") or "").strip()
+            for item in list(result.get("artifacts") or [])
+            if isinstance(item, Mapping)
+        }
         for index, value in enumerate(list(result.get("file_changes") or [])):
+            _path = str((value.get("path") if isinstance(value, Mapping) else value) or "").strip()
+            if not _path or _path in _already:
+                continue
             if isinstance(value, Mapping):
                 yield str(task_id), dict(value, evidence=list(value.get("evidence") or []) + ["task:" + str(task_id)])
             else:

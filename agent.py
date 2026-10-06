@@ -10,6 +10,7 @@ import time
 import traceback as _traceback_mod
 import contextvars
 from collections import deque
+from collections.abc import Mapping
 from datetime import datetime
 from contextlib import nullcontext as _nullcontext
 from concurrent.futures import ThreadPoolExecutor
@@ -2844,6 +2845,9 @@ class Agent:
         self._pending_batch = []   # 并行批次用：一轮的多个只读 tool_calls
         self.last_turn_record = None   # 最近一回合的 trace 记录（父代理据此回传子代理轨迹）
         self.last_context = None       # 最近一次上下文用量快照（context 事件 / 查询接口共用）
+        # 本轮真落盘的文件（写工具在成功那一步自报）。`_run` 是生成器、没有返回值，
+        # 所以用实例属性把这份清单交给 `run` 层的 final 分支挂到事件上。
+        self._pending_file_changes: list[dict] = []
         self.context_router = ContextRouter(
             max_chars=int(os.getenv("DOCMIND_CONTEXT_ROUTER_CHARS", "6000")))
         self.last_context_plan = None
@@ -3678,6 +3682,11 @@ class Agent:
         forced_finals = 0  # 已发出的强制收尾提示次数（步数耗尽 / 重复空转共用一次机会）
         forced_final_reason = ""  # 触发强制收尾的原因，证据兜底 final 里原样告知用户
         evidence = []  # 本轮已执行工具的简要清单（action(input)），耗尽时兜底用
+        # 写工具真落盘的文件（由工具在成功那一步自报，不由 action 文本反推）。
+        # `_seen_file_changes` 只为去重——同一个文件被 create_file 之外的工具再改一次
+        # 时，「改了哪些文件」的清单里出现一次就够，不必按调用次数重复。
+        _file_changes: list[dict] = []
+        _seen_file_changes: set[str] = set()
         # 本轮**真实执行记录**（含成功/失败），供证据审计使用。
         # 刻意不从trail 文本反推：原生 FC 的并行批次路径不写 `Action:` 标记，
         # 反推会得到零步骤，于是把「证据齐备」误判成「未核验」并给用户挂上
@@ -5277,6 +5286,10 @@ class Agent:
         # replan、再派一次，每次都基于同一份错配的证据，连错三次。
         traj, pending = [], deque()
         artifacts = []
+        # 「改了哪些文件」：由写工具在真正落盘那一步自报（见下面 observation 分支的注释）。
+        # `_seen_file_changes` 只为去重——同一文件被改多次，清单里出现一次就够。
+        _file_changes: list[dict] = []
+        _seen_file_changes: set[str] = set()
         # 子代理是**新对话**：给一份独立的读记录。
         #
         # 「未变化存根」的前提是「本次对话中读过」——而全局共享会让重规划产生的
@@ -5322,6 +5335,43 @@ class Agent:
                             for artifact in list(ev.get("artifacts") or []):
                                 if isinstance(artifact, dict) and len(artifacts) < 16:
                                     artifacts.append(dict(artifact))
+                                # 「改了哪些文件」——由**写工具在真正落盘的那一刻**
+                                # 自报，随 observation 事件带上来。
+                                #
+                                # 为什么不让下游从 action 文本反推：实测被安全拦截的
+                                # `apply_edit`、被安全模式拒绝的 `create_external_file`，
+                                # action 文本里**同样带着 `path:`**——照文本解析会把
+                                # 没做的记成做了。而 `python_exec` / `run_command`
+                                # 真落盘了、路径却藏在 `code:`/命令行里，解析不到
+                                # ——漏报同样是说谎。所以只有工具自报这一条路。
+                                #
+                                # **为什么收在这里**（而不是 `_run` 里的执行点）：
+                                # `_run` 里有两条工具执行路径——`_run_batch`
+                                # （原生 FC 并行批次，子代理实际走这条）与文本协议的
+                                # 顺序路径。我最初挂在顺序路径的 `execute_tool` 之后，
+                                # 结果子代理永远走不到那里，`file_changes` 恒为空
+                                # （插桩确认：该分支一次都没进）。而 observation 事件
+                                # 是**两条路径的共同出口**——`artifacts` 早就靠它回到
+                                # 子代理结果里了（`workflow_reflection` 能显示文件名
+                                # 就是靠这条路）。收在这里，一处覆盖两条。
+                                if isinstance(artifact, Mapping):
+                                    _p = str(artifact.get("path") or "").strip()
+                                    if (_p and _p not in _seen_file_changes
+                                            and len(_file_changes) < 100):
+                                        _seen_file_changes.add(_p)
+                                        _file_changes.append({
+                                            "path": _p,
+                                            # 不填 `kind`：`preview_adapters` 的
+                                            # `_adapter_inputs` 拿它当**适配器路由键**
+                                            # （`adapter or domain or workflow["kind"]`），
+                                            # 路由不到就整条被丢。而协议认可的取值是
+                                            # 内容类型（code/text/image/…），我先填过
+                                            # `"file"`，实测产物清单直接变 0 条。
+                                            # 不填则由 `normalize_artifact` 按扩展名自推。
+                                            "label": str(artifact.get("label")
+                                                         or os.path.basename(_p)),
+                                            "summary": _clip(artifact.get("summary"), 160),
+                                        })
                             if pending:
                                 # 无条件出队：出队才能推进，否则一次重复的
                                 # observation 会把整条队列卡住，之后的观察全部
@@ -5384,6 +5434,11 @@ class Agent:
                 "max_steps": cap,
                 "error": error, "degraded": degraded, "reflection": reflection,
                 "artifacts": artifacts,
+                # 「改了哪些文件」。消费方有三处都只认这个字段：`output_audit`
+                # 的上界检查与证据回报、`preview_adapters` 的产物清单、以及人工
+                # 构造的 runner 一直在填的同一个字段（`agent_runtime/acceptance.py`）。
+                # 此前真子代理路径下这里恒为空。
+                "file_changes": [dict(row) for row in _file_changes],
                 "trace": _child_trace(traj, thoughts, reflections,
                                       getattr(child, "last_turn_record", None), used,
                                       hooks=hook_events)}
