@@ -71,10 +71,41 @@ class DelegateTests(_Iso):
         out = a._delegate("role: researcher\ntask: x")
         self.assertIn("最大嵌套深度", out)
 
-    def test_unknown_role_is_rejected(self):
+    def test_an_ad_hoc_role_is_accepted(self):
+        """自造角色**不再**被拒 —— 主 agent 需要什么角色就说什么角色。
+
+        这条以前叫 `test_unknown_role_is_rejected`，断言 `role: wizard` 会被拒。
+        那正是「harness 替模型决定该派什么角色」的那一层，已按「harness 兜底而非
+        限制」的取向移除（角色名不再限那 11 个枚举，见
+        `tests/test_agent_subagent_autonomy.py`）。
+
+        改的不只是断言方向：**被拒的原因**也换了。原来拒绝发生在「角色不认识」
+        这一步，现在它合法了，所以要么真正跑起来（成功），要么因为别的原因失败
+        （比如这里的假 LLM 被问空）。关键是不能**因为角色名**而失败。
+        """
         a = agent_mod.Agent(llm=_SeqLLM([]))
         out = a._delegate("role: wizard\ntask: x")
-        self.assertIn("角色错误", out)
+        self.assertNotIn("角色错误", out,
+                         "自造角色不该再被当成角色错误拒绝：%r" % out)
+        self.assertNotIn("未知角色", out,
+                         "自造角色不该再被当成未知角色：%r" % out)
+
+    def test_a_missing_role_name_is_still_refused(self):
+        """反向守卫：放开的是「自造角色」，不是「什么都不填」。
+
+        完全不给角色名要说清怎么办 —— 那不是解放，那是把输入校验也扔了。
+
+        注意这条**不**该断言文案是「参数错误」：缺角色名是在 `_run_child` 里
+        被拦的（那里才知道有哪些内置角色、也能告诉主 agent 它可以自造），
+        `_delegate` 只校验「有没有 role: 这一行」。实测断言「参数错误」会红——
+        那是断言写错，不是行为错（实测输出见该用例的错误信息）。
+        """
+        a = agent_mod.Agent(llm=_SeqLLM([]))
+        out = a._delegate("task: x")
+        self.assertIn("没给角色名", out,
+                      "缺角色名应被拒绝并说清怎么办：%r" % out)
+        # 提示要给出路：既列出内置角色，也说明可以自己起一个
+        self.assertIn("也可以自己起一个", out)
 
     def test_missing_task_is_rejected(self):
         a = agent_mod.Agent(llm=_SeqLLM([]))

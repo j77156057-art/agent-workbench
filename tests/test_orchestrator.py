@@ -727,9 +727,26 @@ class TraceFeedbackTests(unittest.TestCase):
 
 
 class _ReplanLLM:
-    """按提示内容分流：重规划请求回 JSON 补救任务，其余回 Final Answer。"""
+    """按提示内容分流：重规划请求回 JSON 补救任务，其余回 Final Answer。
+
+    ## `fail_marker`：制造一个**真的做不成**的任务
+
+    这几条重规划测试以前靠 `role: "wizard"`（一个不存在的角色）让任务失败。
+    那条路已经拆掉了：子代理的角色名不再限于枚举，主 agent 自己起名字即可
+    （见 `agent._run_child` 与 `tests/test_agent_subagent_autonomy.py`）。角色
+    不再被拒，任务自然也就不失败了。
+
+    所以改用**模型本身答不出来**来制造失败：任务里带 `_fail_marker`，LLM 见到
+    就回一句没有 Final Answer 的残句，走证据兜底判失败。
+
+    这比旧办法更贴近真实——重规划本来就是为「任务真的没做成」准备的，不是为
+    「参数写错了」准备的。而「任务做不成」和「角色叫什么」本来就无关。
+    """
     provider = "deepseek"
     model = "replan"
+
+    #: 出现在任务描述里就让这次调用回残句（做不成）
+    fail_marker = "@@做不成@@"
 
     def __init__(self, remediation):
         self.remediation = remediation
@@ -749,6 +766,15 @@ class _ReplanLLM:
         self.last_tool_calls = []
         if "重规划" in prompt:
             content = json.dumps(self.remediation, ensure_ascii=False)
+        elif self.fail_marker in prompt:
+            # 真失败：模型这一轮直接崩了。
+            #
+            # 试过「回一句没有 Final Answer 的残句」——**不够**：那会触发证据兜底
+            # 的「请重答」，而这个假 LLM 无脑回 Final Answer，于是任务反而成功了
+            # （实测 `replans=0`）。抛异常才是真的做不成：`_run_child` 捕获它、
+            # 记 `status=failed` + 堆栈 + **空 trace**，而空 trace 正是
+            # `test_orchestrate_end_to_end_trace_reaches_replanner` 要验的东西。
+            raise RuntimeError("这一轮模型调用炸了（测试注入）")
         else:
             content = "Final Answer: 子代理结论 OK"
         if stream:
@@ -797,11 +823,16 @@ class AgentReplanTests(unittest.TestCase):
         a = agent_mod.Agent(llm=_NotJson([]))
         self.assertEqual(a._replanner([{"id": "a", "task": "甲"}], {}, 1), [])
 
+    #: 制造一个真的做不成的任务。role 用枚举里的合法角色——任务失败要来自
+    #: **模型没答出来**，而不是参数写错了。
+    _fail_task = {"id": "a", "role": "researcher",
+                  "task": "查清 %s 这件事" % _ReplanLLM.fail_marker}
+
     def test_orchestrate_replans_failed_task_end_to_end(self):
-        # role "wizard" 不存在 → 任务 a 必然 failed → 触发重规划 → r1 成功
+        # 任务 a 做不成 → failed → 触发重规划 → r1 成功
         llm = _ReplanLLM([{"id": "r1", "role": "researcher", "task": "换一种查法"}])
         a = agent_mod.Agent(llm=llm)
-        rep = a.orchestrate({"tasks": [{"id": "a", "role": "wizard", "task": "坏角色"}]},
+        rep = a.orchestrate({"tasks": [dict(self._fail_task)]},
                             synth=False, replan=True)
         self.assertEqual(rep["replans"], 1, rep.get("results"))
         self.assertEqual(rep["results"]["a"]["status"], "failed")
@@ -811,7 +842,7 @@ class AgentReplanTests(unittest.TestCase):
     def test_orchestrate_replan_disabled(self):
         llm = _ReplanLLM([{"id": "r1", "role": "researcher", "task": "补救"}])
         a = agent_mod.Agent(llm=llm)
-        rep = a.orchestrate({"tasks": [{"id": "a", "role": "wizard", "task": "坏角色"}]},
+        rep = a.orchestrate({"tasks": [dict(self._fail_task)]},
                             synth=False, replan=False)
         self.assertEqual(rep["replans"], 0)
         self.assertEqual(rep["n_tasks"], 1)
@@ -846,22 +877,22 @@ class AgentReplanTests(unittest.TestCase):
         self.assertIn("未留下可用执行轨迹", llm.prompts[-1])
 
     def test_orchestrate_end_to_end_trace_reaches_replanner(self):
-        # 真链路：坏角色任务失败 → 子代理无轨迹 → 提示词里出现"未留下可用执行轨迹"
+        # 真链路：任务做不成 → 子代理无轨迹 → 提示词里出现"未留下可用执行轨迹"
         llm = _ReplanLLM([])
         a = agent_mod.Agent(llm=llm)
-        rep = a.orchestrate({"tasks": [{"id": "a", "role": "wizard", "task": "坏角色"}]},
+        rep = a.orchestrate({"tasks": [dict(self._fail_task)]},
                             synth=False, replan=True)
         self.assertEqual(rep["replans"], 0)
         self.assertIn("未留下可用执行轨迹", llm.prompts[-1])
         self.assertEqual(rep["results"]["a"]["status"], "failed")
 
     def test_orchestrate_backtracking_replace_rescues_task(self):
-        # a 是坏角色 → 必然失败；b 依赖 a 本会被阻断，replanner 用 replace 把 b 的依赖摘掉
+        # a 做不成 → 必然失败；b 依赖 a 本会被阻断，replanner 用 replace 把 b 的依赖摘掉
         llm = _ReplanLLM({"replace": [{"id": "b", "role": "researcher",
                                        "task": "换一种做法", "depends_on": []}]})
         a = agent_mod.Agent(llm=llm)
         rep = a.orchestrate({"tasks": [
-            {"id": "a", "role": "wizard", "task": "坏角色"},
+            dict(self._fail_task),
             {"id": "b", "role": "researcher", "task": "原任务", "depends_on": ["a"]},
         ]}, synth=False, replan=True)
         self.assertEqual(rep["replans"], 1)
@@ -873,7 +904,7 @@ class AgentReplanTests(unittest.TestCase):
     def test_orchestrate_tool_passes_replan_flags(self):
         llm = _ReplanLLM([{"id": "r1", "role": "researcher", "task": "补救"}])
         a = agent_mod.Agent(llm=llm)
-        payload = {"tasks": [{"id": "a", "role": "wizard", "task": "坏角色"}],
+        payload = {"tasks": [dict(self._fail_task)],
                    "synth": False, "replan": True, "max_replans": 1}
         out = a._orchestrate_tool(json.dumps(payload))
         self.assertIn("编排完成", out)

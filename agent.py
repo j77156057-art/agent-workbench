@@ -2325,6 +2325,17 @@ _SUBAGENT_ROLES = {
 }
 
 
+#: 只读角色：这两个名字本身就是「只分析、不改文件」的承诺。
+#:
+#: 它们**不能**通过 `tool_allowlist` 给自己扩权到写文件——否则会出现
+#: 「角色自称只读、实际改了文件，而报告里这次改动仍记为只读分析」。记录与
+#: 事实不符，是比"限制模型"严重得多的一类错。
+#:
+#: 与此相对，主 agent **自造**的角色不受此约束：名字是自己起的、人设是自己
+#: 写的，要能写就在人设里说明、要能写就直说。
+_READ_ONLY_ROLES = frozenset({"planner", "dispatcher"})
+
+
 def _delegate_tool(arg):
     """TOOLS 注册用的占位实现；真正的委派在 Agent._delegate 内按父代理执行。"""
     return ("delegate 需要在 Agent 回合内调用（子代理要继承父代理的模型与会话）。"
@@ -5039,9 +5050,10 @@ class Agent:
                    max_steps=None, step_sink=None, llm=None):
         """跑一个受限子代理，返回 {status, conclusion, steps, error}（delegate 与 orchestrate 共用）。
 
-        - 角色决定工具白名单与角色提示（researcher / coder / reviewer / tester）；
+        - 角色决定**默认**工具集与角色提示（researcher / coder / reviewer / tester）；
+          主 agent 可以指定自己的工具集，也可以自造角色名，不再受那 11 个枚举约束；
         - 子代理持**独立** LLMClient、独立会话（不落盘、不污染父会话历史）；
-        - 递归深度受 SUBAGENT_MAX_DEPTH 限制，白名单不含 delegate/orchestrate（天然防套娃）；
+        - 递归深度受 SUBAGENT_MAX_DEPTH 限制（套娃由这个兜住）；
         - `context`（{上游id: 结论}）会被注入子任务提示——这是"下游看得见上游"的关键；
         - 子代理 token 计入父回合账本；
         - `step_sink(item)` 可选：每产生一条 thought/action/observation 实时回调
@@ -5066,10 +5078,26 @@ class Agent:
                 step_sink({"type": step_type, "text": _clip(str(text or ""), limit)})
             except Exception:
                 pass
-        spec = _SUBAGENT_ROLES.get(role or "")
-        if spec is None:
-            return {"status": "failed", "conclusion": "", "steps": 0,
-                    "error": f"未知角色「{role}」（可选：{'、'.join(_SUBAGENT_ROLES)}）"}
+        # 角色不再限于 `_SUBAGENT_ROLES` 那 11 个。
+        #
+        # harness 的职责是**给模型兜底**，不是**替模型决定**。那 11 个角色是
+        # 手写枚举，覆盖游戏/EDA/开发三域；域一变就得改代码，而「该派个 agent
+        # 去读那份长文档」这类判断本该由看过问题的主 agent 自己做——它需要
+        # 什么角色就说什么角色。
+        #
+        # 命中枚举：沿用那一行的 hint 与默认工具集（保持既有行为不变）。
+        # 未命中：**不拒绝**，用主 agent 给的 `persona` 当人设，工具集取
+        # `self.tools`（由下面的 requested_tools 分支再按需收窄）。
+        role_name = str(role or "").strip()
+        spec = _SUBAGENT_ROLES.get(role_name)
+        ad_hoc_role = spec is None
+        if ad_hoc_role:
+            if not role_name:
+                return {"status": "failed", "conclusion": "", "steps": 0,
+                        "error": "没给角色名。可以用已有角色"
+                                f"（{'、'.join(_SUBAGENT_ROLES)}），"
+                                "也可以自己起一个并说明这个角色要做什么。"}
+            spec = {"tools": list(self.tools), "hint": ""}
         if self.depth >= SUBAGENT_MAX_DEPTH:
             return {"status": "failed", "conclusion": "", "steps": 0,
                     "error": f"已达子代理最大嵌套深度 {SUBAGENT_MAX_DEPTH}"}
@@ -5129,15 +5157,59 @@ class Agent:
         # the role's safety boundary.  This is especially important for the
         # read-only planner: a malformed LLM proposal must not smuggle
         # apply_edit/create_file into its tool list.
-        role_tools = {str(name) for name in spec["tools"]}
         if isinstance(requested_tools, (list, tuple, set)) and requested_tools:
-            allowed = [str(name) for name in requested_tools
-                       if str(name) in role_tools and str(name) in self.tools
-                       and str(name) not in {"delegate", "orchestrate", "start_workflow"}]
+            # 主 agent 指定了工具集 → **以它为准**，只在两个范围内筛：
+            # 「工具真的存在」+「这个角色是只读的」。
+            #
+            # 此前这里是与**整张角色表**取交集，等于「角色表是上限、主 agent 只能
+            # 往下收窄」。于是它造不出「能读文件、也能写设计文档、但不改代码」
+            # 这种角色——`tester` 里没有 `create_file`，`researcher` 里没有写工具。
+            # 那一层已放开。
+            #
+            # 但**只读角色不在放开范围内**，这是两回事：
+            # `planner` / `dispatcher` 这两个名字本身就是「只做分析不改文件」的
+            # 承诺（见 `_SUBAGENT_ROLES` 里那两句 hint）。若允许它们通过
+            # `tool_allowlist` 拿到 `apply_edit`，就会出现「角色自称只读、实际
+            # 改了文件，而这份改动在报告里仍记为只读分析」——**记录与事实不符**，
+            # 和本仓库反复出现的「把没做的记成做了」是同一族。
+            #
+            # 要写文件就用 `coder`，或自造一个能写的角色名——两条路都通。
+            if role_name in _READ_ONLY_ROLES:
+                # 权威分类只有一份（`agent_runtime.tools`）。**不要**在这里
+                # 手抄一份工具名清单——它会与真实分类漂移，而漂移之后没人会发现：
+                # 那正是 `dev_apply_edits` 漏登记却一直绿灯的原因。
+                #
+                # 三表并集（写 + 执行 + 管理），因为「只读」的含义是「不改任何
+                # 东西」，而这三张表各自都会改：
+                #   WRITE_TOOLS  apply_edit / create_file / dev_apply_edits …
+                #   EXEC_TOOLS   python_exec / run_command —— 这两个能执行任意代码，
+                #                只看 WRITE_TOOLS 的话只读 planner 照样拿到 python_exec
+                #   ADMIN_TOOLS  dev_commit / dev_install_tool / start_workflow …
+                #
+                # ⚠ `_external_file` 三兄弟（create/edit/delete_external_file）真会
+                # 改磁盘，但**任何一张权威表里都没登记**——那是工具分类本身的既存
+                # 缺陷（按族的规矩单独修，不混进本次改动）。这里显式补上，免得
+                # 「只读」在它们身上失效。
+                from agent_runtime.tools import (
+                    ADMIN_TOOLS as _T_ADMIN,
+                    EXEC_TOOLS as _T_EXEC,
+                    WRITE_TOOLS as _T_WRITE,
+                )
+                _NOT_ALLOWED_READ_ONLY = (
+                    set(_T_WRITE) | set(_T_EXEC) | set(_T_ADMIN)
+                    | {"create_external_file", "edit_external_file",
+                       "delete_external_file"}
+                )
+                allowed = [str(name) for name in requested_tools
+                           if str(name) in self.tools
+                           and str(name) not in _NOT_ALLOWED_READ_ONLY]
+            else:
+                allowed = [str(name) for name in requested_tools
+                           if str(name) in self.tools]
         else:
             allowed = list(spec["tools"])
         policy = str(mcp_policy or "auto").strip().lower()
-        if role in {"planner", "dispatcher"}:
+        if role_name in _READ_ONLY_ROLES:
             # Planner/dispatcher are analysis-only roles by contract. Even if a model
             # asks for MCP access, keep it read-only and surface the effective
             # policy in the child prompt/trace.
@@ -5170,6 +5242,11 @@ class Agent:
         child.web_enabled = self.web_enabled
         child.thinking_enabled = self.thinking_enabled
         question = spec["hint"]
+        if ad_hoc_role:
+            # 自造角色：`spec["hint"]` 是空的。如果不补，子代理收到的第一句话
+            # 直接跳到「工具策略」，它不知道主 agent 为什么派它出来。
+            question = (f"你是【{_clip(role_name, 60)}】：这个角色由主 Agent 为本次任务"
+                        "专门设定，下面是主 Agent 给你的专项要求。")
         if persona:
             question += "\n你的本次专项人设：" + _clip(str(persona), 500)
         question += ("\n工具策略：MCP=" + (policy if policy in {"allow", "deny", "auto"} else "auto") +
