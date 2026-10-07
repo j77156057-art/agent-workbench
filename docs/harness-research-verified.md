@@ -294,19 +294,25 @@ A/B/D 三节反复记录的那个问题（否定只取消它自己管的那个�
 （`COMPLETE list` vs `PARTIAL - N of M shown`）；配 `tools.$codemode.search`
 做确定性字段加权检索（路径精确 20 / 路径子串 8 / 描述子串 4 / 可搜文本 2）。
 
-**这一条对我们直接相关**：DocMind 有 **111 个已注册工具**。核实过两条装载路径
-（`Agent.__init__` 里）：
+**这一条对我们直接相关，但我们已经有等价物了。** 核实后发现
+`agent.py:690-698` 早就实现了同一思路，`DOCMIND_TOOL_EXPANSION=progressive`
+**默认开启**：
 
-| 路径 | 提示里怎么来的 |
-|---|---|
-| `application_id == "developer"`（顶层 agent） | 用模块级 `SYSTEM_PROMPT`，其中**逐条写死 22 个工具说明**（`agent.py:505-526`），带 `dev_serve`/`preview_project`/`dev_page_action` 那几句很长的用法指引 |
-| 其他（受限应用 agent） | **运行时按 `self.tools` 动态拼**：`"- %s: %s" % (name, meta.description)` 逐条 join，**111 个工具的 description 全部进提示** |
+* `CORE_TOOL_NAMES` 14 个核心工具给完整用法
+* 其余进 `【扩展工具索引】`，只给名称 + 42 字概要（`_short_desc` 的 `limit=42`）
+* 需要时用 `tool_search(工具名)` 取回完整用法
+* 注释里明写「**参考 Claude Code 的同名设计**」
 
-**所以「全内联」对受限应用 agent 成立、对顶层 agent 不成立** —— 我第一遍写文档时
-把两者混成一句「111 个全内联」，是错的，已按上面更正。
+所以**不需要按 codemode 再建一套目录**。实测 `SYSTEM_PROMPT` 16442 字符
+（≈4110 tokens）：核心 14 + 索引 83。
 
-codemode 的「预算 + 明确告知不完整 + 提供检索」对**第二条路径**直接适用：
-那 111 条 description 是每次会话都要付的钱，而模型用不到其中大部分。
+**但那条机制漏了 22 个工具** —— 它们从未被写进 `_SYSTEM_PROMPT_FULL`，
+既不在核心也不在索引，模型**完全不知道它们存在**（`dev_patch` 出现 0 次）。
+已修，见 `docs/known-defect-tool-visibility-and-dual-text.md`。
+
+**反方向也不适用**：把两级目录接进提示是**降级** ——
+`SYSTEM_PROMPT` 里 96 个工具的说明是**独立手写**的（长度中位数 60 字符），
+`ToolSpec.description` 中位数 163 字符。手写版是刻意精简的，不是 desc 的复制。
 
 ### 3.6 `http-recorder`：**Public beta，且真的能用**（核实）
 

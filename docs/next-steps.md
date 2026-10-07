@@ -165,12 +165,28 @@ agent：大概三步
 
 ### 建议做的（按性价比，见核实文档 4.3）
 
-1. **工具目录预算 + 明确告知不完整 + 检索** —— codemode 的 `Discovery`。核实过：我们
-   **受限应用 agent** 的提示里 111 条 description 全部进（`Agent.__init__` 动态 join），
-   顶层 agent 是模块级 `SYSTEM_PROMPT` 里写死 22 条。是真实成本
+1. ~~**工具目录预算 + 检索**~~ —— **已否决，见下**。`tool_search` + progressive
+   早就实现了（`DOCMIND_TOOL_EXPANSION=progressive` 默认开启，14 核心 + 扩展索引 +
+   按需取回，注释里明写参考 Claude Code 同名设计）。**不需要再建一个目录。**
 2. **cassette 治两条随机红** —— http-recorder 模式（我们是 Python 栈，实现搬不了，模式可搬）
 3. **写路径 denylist + safe-root** —— Hermes `HERMES_WRITE_SAFE_ROOT`，我们现在只有 `code_root`
 4. 给适配器边界加 conformance suite —— **但先说清「要解决什么」**
+
+### ⚠ 已否决：把两级目录接进系统提示
+
+我曾按 codemode 的 `Discovery` 提议「工具目录预算 + 下钻」。**动手前实测后否决：**
+
+* `SYSTEM_PROMPT` 里 96 个工具的说明是**独立手写**的，与 `ToolSpec.description`
+  **内容不同**：提示版长度中位数 **60** 字符、desc 版 **163** 字符。
+  **手写版是刻意精简的** —— 用目录替换它是**降级**（60 字精准 → 163 字泛泛）。
+* 「动态 join 全量 description」那条代码在 `Agent.__init__` 的受限应用分支，
+  而 116 个工具的 `applications` 全是 `developer` —— **死路径，从不执行**。
+
+按需披露这条路**已经通了**，真正缺的不是目录，是**22 个工具从未被写进提示**
+（已修，见 `docs/known-defect-tool-visibility-and-dual-text.md`）。
+
+`agent_runtime/tool_domains.py` 的两级分类**已建成并有守卫**，但**刻意不接进提示**，
+留作将来划清「是什么 / 怎么用」分工后的备选。
 
 ### 建议放弃的
 

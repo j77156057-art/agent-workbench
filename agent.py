@@ -819,10 +819,17 @@ _TOOL_BLOCKS_CACHE = None
 
 
 def _tool_blocks():
-    """工具完整描述表（懒加载 + 缓存）。"""
+    """工具完整描述表（懒加载 + 缓存）。
+
+    **必须走 `_backfill_tool_section`** —— 否则那 22 个从注册表补进去的工具
+    出现在扩展索引里（模型看得见名字），却取不回完整用法（`tool_search` 说
+    「没有匹配的工具」）。我第一版只补了 `SYSTEM_PROMPT`，没补这里，
+    于是披露只做了一半：模型知道有 `web_weather`，一调却查不到用法。
+    """
     global _TOOL_BLOCKS_CACHE
     if _TOOL_BLOCKS_CACHE is None:
-        _TOOL_BLOCKS_CACHE = _split_tool_blocks(_tools_section(_SYSTEM_PROMPT_FULL))[0]
+        filled = _backfill_tool_section(_SYSTEM_PROMPT_FULL)
+        _TOOL_BLOCKS_CACHE = _split_tool_blocks(_tools_section(filled))[0]
     return _TOOL_BLOCKS_CACHE
 
 
@@ -871,8 +878,77 @@ def _progressive_tools_text(tools_full):
     return "\n\n".join(parts)
 
 
+def _tool_blocks_from_registry():
+    """从 `ToolSpec` 派生出工具块文本，key 为工具名。
+
+    为什么要它：`_SYSTEM_PROMPT_FULL` 里的「可用工具」段是**手工维护**的，
+    实测 116 个注册工具里**只有 94 个**在里面（`dev_patch`、`memory_forget`、
+    `web_weather`、`dev_mcp_*`、`*_external_file` 等 22 个从未被写进去）。
+
+    后果不是「少几个工具」而是**模型完全不知道它们存在** —— 既不在核心工具里，
+    也不在扩展索引里，而扩展索引是 progressive 模式唯一的兜底披露。
+    `dev_patch`（原子打 unified diff）在整份系统提示里出现 0 次。
+
+    所以从注册表派生，而不是再手写 22 条：手写的下一次新增工具又会漏，
+    而漏了不会报错 —— 正是 `tests/test_tool_domains.py` 记的那类静默失效。
+    """
+    try:
+        import tools as tools_mod
+    except Exception:  # noqa: BLE001 - 派生失败不该让整个模块不可用
+        return {}
+    out = {}
+    for name, spec in tools_mod.TOOLS.items():
+        desc = (getattr(spec, "description", "") or "").strip()
+        if not desc:
+            continue
+        schema = getattr(spec, "input_schema", None) or {}
+        required = [p for p in (schema.get("required") or [])]
+        optional = [p for p in (schema.get("properties") or {}) if p not in required]
+        args = ",".join(required + [f"{p}?" for p in optional])
+        out[name] = "- %s(%s): %s" % (name, args, desc)
+    return out
+
+
+def _missing_tool_blocks(full_prompt):
+    """`_SYSTEM_PROMPT_FULL` 里有、但注册表里没有的名字 —— 应当为空。
+
+    反向守卫用：若提示里出现了某个工具名而注册表里查无此工具，那说明
+    提示与注册表**脱节**了（曾经 `dev_apply_edits` 一例，见 `_NO_PARALLEL_TOOLS`）。
+    """
+    blocks, _ = _split_tool_blocks(_tools_section(full_prompt))
+    try:
+        import tools as tools_mod
+    except Exception:  # noqa: BLE001
+        return set()
+    return {n for n in blocks if n not in tools_mod.TOOLS}
+
+
+def _backfill_tool_section(full_prompt):
+    """把注册表里存在、而提示里缺失的工具补进「可用工具」段。
+
+    补的是**完整用法**（`- name(args): description`），progressive 模式会把
+    非核心工具压成一行概要（`_short_desc`，limit=42），所以最终提示只增加
+    22 条 × ≈43 字符 ≈ 946 字符（≈236 tokens）—— 与它们本来应该被披露的成本相比可忽略。
+
+    刻意**不**改 `_SYSTEM_PROMPT_FULL` 本身：那是手工维护的正文，补全只发生在
+    组装期，`full` 模式（`DOCMIND_TOOL_EXPANSION=full`）保持逐字不变。
+    """
+    blocks, _extra = _split_tool_blocks(_tools_section(full_prompt))
+    if not blocks:
+        return full_prompt
+    derived = _tool_blocks_from_registry()
+    missing = {n: b for n, b in derived.items() if n not in blocks}
+    if not missing:
+        return full_prompt
+    guide = _guide_section(full_prompt)
+    addition = "\n".join(sorted(missing.values()))
+    return full_prompt.replace(guide, addition + "\n\n" + guide, 1) \
+        if guide else full_prompt + "\n" + addition
+
+
 def _assemble_system_prompt(full_prompt):
     """按开关组装系统提示：full=原样；progressive=工具段分层。"""
+    full_prompt = _backfill_tool_section(full_prompt)
     if _TOOL_EXPANSION != "progressive":
         return full_prompt
     out = full_prompt

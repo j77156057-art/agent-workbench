@@ -39,6 +39,7 @@ from agent_runtime.retrieval import get_retriever
 from ingest import _CODE_EXT, _SKIP_DIRS
 from data_formats import DataFormatError, read_file as read_data_file, write_data_file
 from agent_runtime.tools import ToolResult, ToolSpec, coerce_tool_spec, upgrade_registry
+from agent_runtime.tool_catalog import catalog_tool
 from agent_runtime.enterprise_sandbox import SandboxUnavailable as EnterpriseSandboxUnavailable
 from agent_runtime.enterprise_sandbox import (execution_mode, host_fallback_active, run_agent_command,
                                                stage_execution_active, stage_backend)
@@ -8757,6 +8758,16 @@ TOOLS = {
     "dev_tool_install_audit": {
         "description": "查看项目内工具安装审计记录。输入可选 limit: 50；不会执行安装。",
         "func": dev_tool_install_audit,
+    },
+    "tool_catalog": {
+        "description": (
+            "按大类查工具清单与用法。内置工具超过百个，系统提示里只放两级目录"
+            "（14 个大类 + 定位），不逐条展开——确定要哪一类再查这一类，省上下文。"
+            "输入大类 code：files / verify / frontend / preview_adapter / mcp / "
+            "plan / task / git / data / jobs / web / knowledge / game / net；"
+            "留空返回目录本身。**查工具用法前先调它**，别凭名字猜参数。"
+        ),
+        "func": catalog_tool,
     },
 }
 

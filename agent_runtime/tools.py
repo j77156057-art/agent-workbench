@@ -8,7 +8,7 @@ machine-readable instead of scattering name lists through the Agent loop.
 from collections.abc import Iterator, Mapping
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
 import json
@@ -67,6 +67,13 @@ class ToolSpec(Mapping[str, Any]):
     applications: frozenset[str] = field(default_factory=lambda: frozenset({"developer"}))
     group: str = "general"
     verbatim: bool = False
+    #: 两级分类（见 `agent_runtime.tool_domains`）。
+    #:
+    #: 与 `capability` **正交**：capability 管「能不能做」（护栏查它），
+    #: domain/facet 管「做什么、怎么找」（模型查它）。两者都从声明式的
+    #: `TOOL_DOMAINS` 取值，**不按名字推断** —— 推断就是拼词表，会无限 regress。
+    domain: str = ""
+    facet: str = ""
 
     @property
     def capability_type(self) -> Capability:
@@ -290,12 +297,34 @@ def coerce_tool_spec(name: str, value: Any) -> ToolSpec:
         applications=frozenset(apps),
         group=str(value.get("group") or _infer_group(name)),
         verbatim=bool(value.get("verbatim", name in _VERBATIM_TOOLS)),
+        domain=str(value.get("domain") or ""),
+        facet=str(value.get("facet") or ""),
     )
+
+
+def _apply_domains(spec: ToolSpec) -> ToolSpec:
+    """把 `tool_domains.TOOL_DOMAINS` 里声明的分类贴到 `ToolSpec` 上。
+
+    注册项里**没有**写 `domain=` 时回落到声明表 —— 声明表是唯一真相，
+    而它就摆在 `agent_runtime/tool_domains.py` 里，改分类只改那一处。
+    """
+    if spec.domain and spec.facet:
+        return spec
+    from .tool_domains import TOOL_DOMAINS
+
+    declared = TOOL_DOMAINS.get(spec.name)
+    if not declared:
+        return spec
+    return replace(spec, domain=declared[0], facet=declared[1])
+
+
+def _unclassified(spec: ToolSpec) -> str:
+    return "" if spec.domain else spec.name
 
 
 def upgrade_registry(registry: dict[str, Any]) -> dict[str, ToolSpec]:
     for name, value in list(registry.items()):
-        registry[name] = coerce_tool_spec(name, value)
+        registry[name] = _apply_domains(coerce_tool_spec(name, value))
     return registry
 
 
