@@ -3131,6 +3131,55 @@ class Agent:
         spec = self._tool_spec(action_name)
         return bool(spec and spec.capability == Capability.NETWORK)
 
+    def _intent_for_delegated(self, action_name):
+        """委派子代理（depth > 0）的写意图判定：**只认结构，不读散文**。
+
+        为什么不能读 `question`：子代理的 `question` 是 `spec["hint"]`（角色提示词），
+        不是用户的请求（`agent.py:5669` / `5614`）。拿它判写授权会出两个方向都错
+        的结论 —— 实测 11 个角色里 10 个碰巧对，**唯一错的就是 coder**
+        （「在授权范围内**改**代码」里的裸「改」不在词表，而它的职责就是改代码）。
+
+        权威来自两处，二者都要成立：
+
+        1. **`tool_allowlist`** —— 本方法之外的 4571 已拦不在名单里的工具，
+           且 `_READ_ONLY_ROLES` 会按 `ToolSpec` 把写工具从只读角色请求里滤掉。
+        2. **父 agent 的授权租约** —— `_run_child` 已继承（5430）。
+
+        注意 `_lease_blocked` 在**没有租约时返回不拦**（`if not lease: return
+        False, ""`），所以必须**额外要求租约存在**：否则父 agent 从未授权时
+        委派子代理照样能写。第一版就漏了这一句，由探针当场抓出。
+        """
+        if not self.capability_lease:
+            return _WRITE_INTENT_DENIED
+        blocked, _reason = self._lease_blocked(action_name)
+        return _WRITE_INTENT_DENIED if blocked else _WRITE_INTENT_GRANTED
+
+    def _intent_for_top_turn(self, question, action_name):
+        """顶层回合（depth == 0）的写意图判定 + 租约铸造/让位。
+
+        委派子代理**不走这里** —— 它按 `tool_allowlist` 与继承来的租约判定，
+        因为它手里的 `question` 是角色提示词而不是用户的请求。
+
+        会话内授权租约：用户在这一轮说过「改吧」，那是个**事实**，比从「改吧」
+        这种孤立一句里猜出来的 denied 更权威。所以租约有效时 denied 让位。
+
+        但**撤回句永远压过租约**：「取消修改」不能因为上一轮批准过就放行 ——
+        用户改主意了。`_RE_WRITE_WITHDRAW` 已实测能识别这一族（句首谓语判据），
+        所以这里显式排除它，而不是靠「租约在同轮内有效」这种巧合兜着。
+
+        只在 granted 时**铸造**租约：uncertain 时铸会让用户问完还是不能写。
+        """
+        _intent = _write_intent(question)
+        if _intent == _WRITE_INTENT_GRANTED:
+            self.capability_lease = self._mint_write_lease()
+        elif (self.capability_lease
+              and not _RE_WRITE_WITHDRAW.search(
+                  _write_intent_text(_user_question(question)))
+              and not _RE_NEGATION_RE.search(_user_question(question))
+              and not self._lease_blocked(action_name)[0]):
+            _intent = _WRITE_INTENT_GRANTED
+        return _intent
+
     def _mint_write_lease(self, *, ttl_seconds=None, capabilities=None):
         """铸一张写租约：本轮用户已授权写入的**物化凭证**。
 
@@ -4401,27 +4450,25 @@ class Agent:
                 # 说成用户的意思。
                 if self._is_write_tool(parsed["action"]) and parsed[
                         "action"] not in {"memory_save", "memory_forget"}:
-                    _intent = _write_intent(question)
-                    # 会话内授权租约：用户在这一轮说过「改吧」，那是个**事实**，
-                    # 比从「改吧」这种孤立一句里猜出来的 denied 更权威。所以租约
-                    # 有效时，denied 让位。
-                    #
-                    # 但**撤回句永远压过租约**：「取消修改」不能因为上一轮批准过
-                    # 就放行 —— 用户改主意了。`_RE_WRITE_WITHDRAW` 已实测能识别
-                    # 这一族（句首谓语判据），所以这里显式排除它，而不是靠
-                    # 「租约在同轮内有效」这种巧合兜着。
-                    #
-                    # 另外只在 granted 时**铸造**租约：uncertain 时铸会让用户
-                    # 问完还是不能写。
-                    if _intent == _WRITE_INTENT_GRANTED:
-                        self.capability_lease = self._mint_write_lease()
-                    elif (self.capability_lease
-                          and not _RE_WRITE_WITHDRAW.search(
-                              _write_intent_text(_user_question(question)))
-                          and not _RE_NEGATION_RE.search(
-                              _user_question(question))
-                          and not self._lease_blocked(parsed["action"])[0]):
-                        _intent = _WRITE_INTENT_GRANTED
+                    if self.depth > 0:
+                        # 委派子代理：**不从角色提示词猜权限**。
+                        #
+                        # `question` 在这里是 `spec["hint"]`（角色提示词），不是用户的
+                        # 请求 —— 拿它判写授权会出两个方向都错的结论：
+                        #   coder     「在授权范围内**改**代码」-> denied（职责就是改代码）
+                        #   designer  「可以**创建**设计文档」   -> granted（与用户无关）
+                        # 实测 11 个角色里 10 个碰巧对，**唯一错的就是 coder** ——
+                        # 那个职责就是改代码的角色，永远被拦。
+                        #
+                        # 权威改由两处结构性来源给：
+                        #   1. `tool_allowlist`（4571 已拦不在名单里的工具；
+                        #      且 `_READ_ONLY_ROLES` 已按 ToolSpec 把写工具滤掉）
+                        #   2. 父 agent 的授权租约（`_run_child` 已继承，见 5430）
+                        # 二者都要成立，缺一即拒 —— 与 opencode 查授权表、
+                        # Hermes 查工具开关同一个思路：权威来自结构，不来自散文。
+                        _intent = self._intent_for_delegated(parsed["action"])
+                    else:
+                        _intent = self._intent_for_top_turn(question, parsed["action"])
                     if _intent != _WRITE_INTENT_GRANTED:
                         _uncertain = _intent == _WRITE_INTENT_UNCERTAIN
                         _note = (_WRITE_UNCERTAIN_OBS if _uncertain
