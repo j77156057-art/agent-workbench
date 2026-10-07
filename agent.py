@@ -1866,22 +1866,78 @@ _WRITE_BLOCKED_OBS = (
     "请不要再次调用写工具，直接基于已有观察，在 Final Answer 中报告问题、"
     "文件行号与建议改法（供用户自行决定是否修改）。"
 )
+# 「拿不准」与「没要求」是两件事，**说法必须不同**：
+# 对前者说「用户没有要求」，是在把我们的判不准说成用户的意思 —— 那正是这一族
+# 本体（「把没做的记成做了」的近亲：把不知道的说成知道了）。
+_WRITE_UNCERTAIN_OBS = (
+    "安全拦截：用户本轮的表述**不足以确定**是否授权写操作（例如「先确认方案再修改」"
+    "这类条件式说法，或只问「能不能改」而没说清目标）。写操作本轮不执行。"
+    "请不要重复调用同一个写工具，也不要自行推测用户意图 —— "
+    "直接在 Final Answer 里向用户确认：要改哪个文件、改成什么。"
+)
+
+# 写意图的**三种**判定结果。为什么要三值：二值时任何判定错误都是硬失败 ——
+# 判「有」就静默放行（用户明令禁止也写），判「没有」就硬拦（用户要求改也不改）。
+# 加一档「拿不准」，让不确定**显式化**，交回用户裁决，而不是替用户决定。
+_WRITE_INTENT_GRANTED = "granted"
+_WRITE_INTENT_DENIED = "denied"
+_WRITE_INTENT_UNCERTAIN = "uncertain"
+
+# 条件式/将来式授权：「先……再……」「确认之后再改」「等我确认下再改」。
+#
+# 两条边界都是实测出来的，别凭感觉调：
+#  · 「先…再…」**允许跨一个逗号** —— 「先不要改代码，让我确认方案再修改」是极常见
+#    的说法，不跨标点就打不中。这与「否定不许跨标点」不矛盾：那讲的是**否定作用域**，
+#    条件式的作用域本来就跨小句。
+#  · 「之后/以后」单独出现太宽 —— 「改完之后记得重构一下」「修复之后把测试补上」
+#    都是明确授权，被误抓成「拿不准」等于把正常的写请求变成提问。所以必须要求
+#    「先…（再/之后/才）」的配对结构。
+# 在 17 句「不能被误抓」的句子上零误触发（审查类 10 + 明确禁止 4 + 含条件字样的
+# 明确授权 3），命中 3 句真条件式。
+_RE_WRITE_INTENT_CONDITIONAL = re.compile(
+    r"(?:先[^。；]{0,20}?(?:，[^。；]{0,16}?)?(?:再|之后|以后|才)"
+    r"|确认(?:完|过)?(?:之后|以后|了)?再|等我(?:确认|同意|回复)|定了再说|回头再)"
+)
+
+
+def _write_intent(question):
+    """判定用户本轮是否授权写操作，返回 granted / denied / uncertain。
+
+    分支顺序有讲究：
+
+    1. 先挖掉被否定的写动词（「不要修改任何文件」含「修改」，原先被判成**有**写
+       意图，于是那道「用户没要求就别写」的护栏反而放行 —— 用户明确禁止被读成
+       明确授权。实测 12 句否定问法里 9 句是这个方向的误判）。
+    2. 没有任何写信号 -> **denied**。审查类问题（「分析一下架构」）必须落在这里，
+       绝不能变成「拿不准」—— 那会让每个审查请求都变成一次提问，比现在更糟。
+    3. 能力问句（拿**原文**判，见下）-> **uncertain**。「能不能改一下」是在问
+       可行性，不是在授权。
+    4. 条件式说法 -> **uncertain**。「确认之后再改」现在还没授权落盘。
+    5. 其余 -> **granted**。
+    """
+    raw = _user_question(question)
+    value = _write_intent_text(raw)
+    if not _RE_WRITE_INTENT.search(value):
+        return _WRITE_INTENT_DENIED
+    # 能力问句必须拿**原文**判：`value` 已经被 `_write_intent_text` 遮掉了
+    # 「能不能」这类词，在它上面搜等于搜一个已经不存在的东西。
+    # （上一版就是在这儿把判断写在了遮罩后的文本上，于是这个分支成了死代码，
+    #   靠 `run()` 开头那次早退掩盖着 —— 一次条件变更就会变成活的口子。）
+    if _WRITE_CAPABILITY_QUESTION.search(raw) and not _WRITE_DETAIL.search(raw):
+        return _WRITE_INTENT_UNCERTAIN
+    if _RE_WRITE_INTENT_CONDITIONAL.search(value):
+        return _WRITE_INTENT_UNCERTAIN
+    return _WRITE_INTENT_GRANTED
 
 
 def _has_write_intent(question):
-    # 先挖掉被否定的写动词：「不要修改任何文件」含「修改」，原先被判成**有**写
-    # 意图 —— 于是 `agent.py` 里那道「用户没要求就别写」的同意护栏反而放行。
-    # 用户明确禁止被读成明确授权，护栏朝着危险方向失效。实测 12 句否定问法里
-    # 9 句是这个方向的误判。
-    value = _write_intent_text(_user_question(question))
-    if not _RE_WRITE_INTENT.search(value):
-        return False
-    # Capability questions are clarification requests, not authorization to
-    # mutate the project.  A concrete path or explicit old/new transformation
-    # turns the same wording into an actionable request.
-    if _WRITE_CAPABILITY_QUESTION.search(value) and not _WRITE_DETAIL.search(value):
-        return False
-    return True
+    """布尔版：只认「明确授权」。
+
+    「拿不准」在这里算 False —— 护栏仍然不执行写入，这与二值时代的行为一致。
+    区别在于**说法**：护栏会改用 `_WRITE_UNCERTAIN_OBS` 让模型去问用户，
+    而不是告诉模型「用户没有要求」。
+    """
+    return _write_intent(question) == _WRITE_INTENT_GRANTED
 
 
 def _ambiguous_write_request(question):
@@ -4141,29 +4197,39 @@ class Agent:
                     yield _evidence_final(forced_final_reason)
                     return
 
-                # 写操作同意护栏：审查/问答类问题未明确要求修改时，拒绝真正落盘，
-                # 以一条 Observation 把模型引导回"只报告"模式（不消耗工具步数）。
+                # 写操作同意护栏：没有明确授权时拒绝真正落盘，以一条 Observation 把模型引导
+                # 回「只报告 / 去问用户」模式（不消耗工具步数）。
                 # Memory writes update advisory state, not project source files;
                 # capability leases and preference evidence checks still apply.
-                if (self._is_write_tool(parsed["action"])
-                        and parsed["action"] not in {"memory_save", "memory_forget"}
-                        and not _has_write_intent(question)):
-                    trail.append(
-                        {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                    )
-                    trail.append(
-                        {"role": "user", "content": "Observation: " + _WRITE_BLOCKED_OBS}
-                    )
-                    executed.add(sig)  # 再试同样的写调用会被防重复逻辑拦住
-                    yield {
-                        "type": "action",
-                        "text": f"{parsed['action']}({parsed['action_input']}) [已拦截：未授权写操作]",
-                    }
-                    yield {
-                        "type": "observation",
-                        "text": f"[安全拦截] {parsed['action']} 未执行：用户没有要求创建或修改文件。",
-                    }
-                    continue
+                #
+                # 三值判定：denied（没要求）与 uncertain（拿不准）**都不放行**，但
+                # 说法必须不同 —— 对「拿不准」说「用户没有要求」，是把我们的判不准
+                # 说成用户的意思。
+                if self._is_write_tool(parsed["action"]) and parsed[
+                        "action"] not in {"memory_save", "memory_forget"}:
+                    _intent = _write_intent(question)
+                    if _intent != _WRITE_INTENT_GRANTED:
+                        _uncertain = _intent == _WRITE_INTENT_UNCERTAIN
+                        _note = (_WRITE_UNCERTAIN_OBS if _uncertain
+                                 else _WRITE_BLOCKED_OBS)
+                        _why = ("拿不准用户是否授权" if _uncertain
+                                else "用户没有要求创建或修改文件")
+                        trail.append(
+                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                        )
+                        trail.append(
+                            {"role": "user", "content": "Observation: " + _note}
+                        )
+                        executed.add(sig)  # 再试同样的写调用会被防重复逻辑拦住
+                        yield {
+                            "type": "action",
+                            "text": f"{parsed['action']}({parsed['action_input']}) [已拦截：未授权写操作]",
+                        }
+                        yield {
+                            "type": "observation",
+                            "text": f"[安全拦截] {parsed['action']} 未执行：{_why}。",
+                        }
+                        continue
 
                 # 防重复空转：同参数调用结果已在上文 Observation，不再执行第二次
                 if sig in executed:
