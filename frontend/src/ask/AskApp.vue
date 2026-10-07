@@ -445,6 +445,9 @@ const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
   onFrame: () => followScroll(),
   onStructural: () => followScroll(),
   onContext: (ev) => applyUsage(ev),
+  // 中断快照要跟正文走，不能只跟 final 走：savePartial() 的守卫读的就是这个字段，
+  // 只在 onFinal 里赋值等于"只有回答完整结束才允许恢复中断"，恰好错过它存在的场景。
+  onTextFlushed: (t) => { if (partial) partial.assistant = t.text },
   onFinal: (t, text) => {
     drain()
     if (finalApplied) { t.notices.push(text); return }

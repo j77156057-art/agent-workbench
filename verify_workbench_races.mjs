@@ -119,10 +119,18 @@ try {
   await chat.locator('.composer textarea').fill('DUPLICATE')
   await chat.locator('.composer textarea').press('Enter')
   assert.equal(await chat.evaluate(() => window.__chatRequests), 1)
-  await chat.goto(base + '/workbench')
+  // 中断快照按会话分域，跨面读不到：web/session.js 按 URL 给 id 分 ask-/web- 前缀，
+  // AskApp 写 docmind.interrupted:<pid>:ask-…，而 ChatDock 读的是
+  // docmind.interrupted:<pid>:<docmind.cockpitSession:<pid>> —— 第三个命名空间。
+  // 原先断言"首页提问后切到工作台还能看到"在这个架构下永远不成立（该断言写于
+  // 2026-09-18，比 ask 页落地早一周）。改成同面刷新恢复，这才是产品实际保证的行为。
+  await chat.reload()
   await chat.getByText('HOME-QUESTION', { exact: true }).waitFor()
-  await chat.getByText('上次回答因离开页面', { exact: false }).waitFor()
-  console.log('PASS homepage prevents concurrent sends and shares interrupted draft with workbench')
+  await chat.getByText('上次回答已中断', { exact: false }).waitFor()
+  console.log('PASS homepage prevents concurrent sends and recovers its own interrupted answer')
+  // 回工作台跑场景画布段（原先是借上面那次 goto 顺带过去的，改成同面恢复后要显式导航）
+  await chat.goto(base + '/workbench')
+  await chat.waitForSelector('.ft-row')
   // 运行游戏触发钮由 SceneRuntimePanel teleport 进菜单槽位，菜单收起时不可见
   await chat.locator('.wb-menu-trigger').click()
   await chat.locator('.wb-menu-slot-item .sr-trigger').click()
