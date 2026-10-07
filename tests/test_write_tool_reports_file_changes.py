@@ -311,6 +311,22 @@ def _run_real_child(tmp_path):
             return 1
 
     parent = agent_mod.Agent(llm=_LLM(), tool_registry=tools_mod.TOOLS)
+    # 父 agent 必须**已获授权**才能派发写任务。
+    #
+    # 委派子代理的写权限不再从角色提示词推断，而是要求父持有有效的写租约
+    # （`Agent._intent_for_delegated`：无租约 -> denied）。这个测试原先直接在一个
+    # 全新 parent 上调 `_run_child`，而那个 parent 从没获得任何授权 ——
+    # 按新模型那就是**未授权委派**，被拒绝是正确行为。
+    #
+    # 这里显式铸一份租约，让 parent 处在真实被授权的状态下；本文件要验的是
+    # 「真写了文件，`file_changes` 里有没有它」，不是「未授权时该不该写」。
+    #
+    # ⚠ 这条**曾经因为漏了租约而红**：委派权限改成结构化之后，这个未授权的 setup
+    # 就被正确拒绝了，于是两条行为级守卫挂在「探针自己没写成文件」上。
+    # 而我当时跑的所有组合里都没包含这个文件 —— 是全量回归抓到的。
+    # 教训：**改了委派/权限路径，必须扫一遍所有真跑子代理的测试文件**，
+    # 只跑自己新写的守卫会漏。
+    parent.capability_lease = parent._mint_write_lease()
     return parent._run_child(
         "文档撰写专员", "把说明写进 guard_probe.md",
         tool_allowlist=["create_file"], reflect=False,
@@ -324,7 +340,12 @@ def test_a_real_write_is_reported(tmp_path):
     `file_changes` 恒为空。这条真跑一次。
     """
     out, target = _run_real_child(tmp_path)
-    assert target.is_file(), "探针自己没写成文件，后面的断言没有意义"
+    assert target.is_file(), (
+        "探针自己没写成文件，后面的断言没有意义。"
+        "若本文件刚被 `fa81aa3` 那笔改成结构化委派权限后变红，"
+        "看 `_run_real_child` 里有没有铸租约——"
+        "委派子代理的写需要父持有有效写租约"
+    )
     changes = out.get("file_changes")
     assert isinstance(changes, list) and changes, (
         f"真写了文件却没有 file_changes：{changes!r}"
