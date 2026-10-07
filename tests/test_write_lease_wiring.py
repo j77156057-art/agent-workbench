@@ -202,26 +202,62 @@ def test_the_negation_branch_uses_the_compiled_pattern():
     assert agent_mod._write_intent(question) == G
 
 
-def test_the_neg_only_first_clause_shape_is_a_known_defect_not_yet_fixed():
-    """记录一条**已知缺陷**：「不必X，只要X」当前判 granted。
+def test_the_scoped_negation_shape_is_granted_and_that_is_correct():
+    """**撤回一条我误判的「缺陷」。**
 
-    用户明说「不必重构」，后半句却又出现「重构」，于是 `_RE_NEGATED_WRITE` 只挖掉
-    前半句的，后半句的写动词活下来 -> granted。**安全方向的失效开放。**
+    我曾把「不必X，只要X」记成**安全方向缺陷**（用户明说「不必重构」，护栏却放行）。
+    **那是误读语义。**
 
-    这条与本笔**不是同一族**（本笔是租约接线），所以只记录不改：断言写成
-    「当前是 granted」。将来有人为它做了跨分句的否定作用域，这条会红。
+    「不必重构，只要重构一下」= 「不用大改，小改一下就行」—— 这是**正当的范围限定
+    请求**，与「不要改 README，改一下代码」同一形状。`granted` 是对的。
 
-    但它**直接决定了本笔接线里那句否定检查是必需的**：正是这种句子（有否定、
-    有写动词、会走到租约分支）若被租约放行，就是护栏在用户明说「不必」时继续改。
+    实测这类句子 5/6 granted 且全部正确：
+
+        不要改 README，改一下代码        granted
+        别动 b.py，a.py 改一下          granted
+        不必重构，只要重构一下。          granted
+        不必修复，只要修复它。            granted
+        不必动配置，把 a.py 改一下        granted
+
+    所以**没有缺陷可修**，而我原先那条断言「当前是 granted，尚未修」把误读当成了
+    事实钉住 —— 那会挡住任何想正确处理它的人。本条把它改成断言「granted 是对的」。
+
+    真正在这一族里出问题的是**反方向**（过拦），见
+    `test_the_scoped_negation_with_a_bare_verb_is_still_blocked`。
     """
     for question in ("不必重构，只要重构一下。",
                      "不必修复，只要修复它。",
-                     "不必修改，只要修改这个文件。"):
+                     "不必动配置，把 a.py 改一下。",
+                     "不要改 README，改一下代码",
+                     "别动 b.py，a.py 改一下"):
         assert agent_mod._write_intent(question) == G, (
             f"{question!r} 现在判成 {agent_mod._write_intent(question)!r} —— "
-            "「不必X，只要X」这一族被修了，请把这条记录改成断言它应当 denied 的形式，"
-            "并重新评估本笔接线里那句否定检查是否还需要"
+            "「否定 A、授权 B」是正当的范围限定请求，不该被拦"
         )
+
+
+def test_the_scoped_negation_with_a_bare_verb_is_still_blocked():
+    """这一族真正的缺陷在**反方向**：过拦。
+
+    「不要改 a.txt，改 b.txt」被 denied —— 原因是第二句用了**裸「改」**，
+    而裸动词刻意不进表（加了会误伤「分析一下写操作和读操作的区别」那 5 句名词用法）。
+
+    这是 `bf19098` 那个**谓语动词缺口**的残余，不是新缺陷，所以只记录：
+
+        不要改 a.txt，改 b.txt          denied   <- 裸「改」
+        不要动这个文件，改一下那个文件    granted  <- 「改一下」在表里
+
+    断言写成「当前是 denied」：事实记录，不是认可。
+    """
+    assert agent_mod._write_intent("不要改 a.txt，改 b.txt") == D, (
+        "裸动词缺口被补上了 —— 请重新评估它对"
+        "「分析一下写操作和读操作的区别」这类名词用法的影响，"
+        "再决定要不要把这条改成断言 granted"
+    )
+    assert agent_mod._write_intent("不要动这个文件，改一下那个文件") == G, (
+        "同一形状、只差「一下」二字却判 denied —— "
+        "谓语动词缺口仍在这族里留着"
+    )
 
 
 def test_a_plain_prohibition_also_beats_the_lease():
