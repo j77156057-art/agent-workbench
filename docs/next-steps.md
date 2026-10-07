@@ -133,23 +133,50 @@ agent：大概三步
 
 ---
 
-## 3. 调研结论（三个 harness，尚**未**转化为改动）
+## 3. 调研结论（三个 harness）
 
-| harness | 关键事实 |
-|---|---|
-| `earendil-works/pi`（TS/MIT/113k★） | **刻意不做权限系统**，推给容器（Gondolin micro-VM / Docker / OpenShell）。7 包分层：`chord`/`telemetry`/`ai`/`durable`/`agent`/`coding-agent`/`tui`。`telemetry` 带 **conformance tests**。跳过 sub-agents 与 plan mode。供应链：`save-exact` + **`min-release-age=2`** + lockfile 唯一真相 + 生命周期脚本白名单 |
-| `NousResearch/hermes-agent`（Py/MIT） | 内置学习闭环：FTS5 会话检索 + LLM 摘要、周期性 nudge、自主创建并自我改进 skill。**「写 Python 脚本经 RPC 调工具，把多步流水线压成 zero-context-cost turn」**。7 种终端后端。interrupt-and-redirect |
-| `anomalyco/opencode` | 29 包。`codemode`：模型写 JS 程序编排调用，**只调宿主供给的工具，拿不到 ambient 权限**（acorn 静态解析 + limits）。**但 README 明写该包尚未发布**。`http-recorder`：录真实 HTTP/WebSocket 再确定性重放 |
+> **已完成一手来源核实（2026-10-08）** —— 逐条原文与更正见
+> **`docs/harness-research-verified.md`**。本节只留结论，细节与出处在那篇。
 
-**由此得到的方向**（尚未动工）：
+三个 harness 在「agent 能不能越权」上给了**三种不同立场**：
 
-- `codemode` 的价值是**「越权在语法上不可表达」**，不是省上下文。已确认
-  `ToolSpec.capability` **111 个工具全部已声明**（`READ_LOCAL`50 / `WRITE_LOCAL`21 /
-  `ADMIN`19 / `NETWORK`13 / `EXEC`4 / `WRITE_EXTERNAL`3 / `READ_EXTERNAL`1），
-  前提已具备。护栏的权威依据可以从「猜用户意图」换成「查工具 capability + 本轮授权事实」。
-- **「本轮授权事实」我们没有** —— 这正是第 1 节多轮失效的根因。
-- **省上下文那一半建议放弃**：Python 栈要用 `exec` + 受限 builtins，比 acorn 静态解析明显更不安全。
-- `http-recorder` 思路（别自己编 fixture，录真实交互）能治「测试在说谎」这一类病。
+| harness | 立场 | 一句话 |
+|---|---|---|
+| **Pi** | **弃权** | 不做权限系统；**transcript 审查不构成安全边界**；推给容器 |
+| **Hermes** | **双轨** | 审批（LLM 辅助风险判定 / 三模式 / 超时 fail-closed / 非交互默认拒）**且**容器隔离；并明说写守卫只是纵深防御 |
+| **opencode codemode** | **语法化** | 让越权在语法上不可表达；**但授权在 `Non-Goals` 里，归宿主** |
+
+**关键发现**：我们做的 `_write_intent()`（从用户那句话猜授权）**正是 Pi 明说
+「do not create a security boundary」的那一类**。已核实我们自己的实现并分类：
+
+- ❌ 不是边界：`_write_intent()`、`_ambiguous_write_request()`（都是 watching the transcript）
+- ✅ 是边界：`_lease_blocked()`、`_intent_for_delegated()`、`ToolSpec.capability`（结构化）
+
+**这不否定已提交的 17 笔**（词表那部分修的是过拦与误判，方向安全），但给出一条硬约束：
+**别再往写意图词表里加词。** 这与第 1 节我们独立得出的结论一致，现在有外部一手来源背书。
+
+### 已修正的旧结论
+
+- Hermes **有**完整审批系统（旧记录只记了 FTS5 + zero-context-cost，漏了最有参考价值的部分）
+- codemode **不能**替代我们的租约 —— `Non-Goals` 明确排除 `Generic permission prompts`
+- codemode 三个执行限额**默认全是「无」**，且警告「不设 `maxOutputBytes` 会静默淹没上下文」
+- `http-recorder` 是 **Public beta 且可用**（codemode 才是 private），但它只治**上游 HTTP 依赖**，
+  治不了「探针脱离 pytest 看见缓存」那类
+
+### 建议做的（按性价比，见核实文档 4.3）
+
+1. **工具目录预算 + 明确告知不完整 + 检索** —— codemode 的 `Discovery`。核实过：我们
+   **受限应用 agent** 的提示里 111 条 description 全部进（`Agent.__init__` 动态 join），
+   顶层 agent 是模块级 `SYSTEM_PROMPT` 里写死 22 条。是真实成本
+2. **cassette 治两条随机红** —— http-recorder 模式（我们是 Python 栈，实现搬不了，模式可搬）
+3. **写路径 denylist + safe-root** —— Hermes `HERMES_WRITE_SAFE_ROOT`，我们现在只有 `code_root`
+4. 给适配器边界加 conformance suite —— **但先说清「要解决什么」**
+
+### 建议放弃的
+
+- **继续往写意图词表加词**（Pi 否定整类 + Hermes「heuristics, not semantic intent detection」）
+- **零上下文成本那半边**（需 `exec`，比 acorn 静态解析更不安全，且授权仍要自建）
+- **录放批准状态**（见 `docs/write-intent-corpus.md` J1）
 
 ---
 
