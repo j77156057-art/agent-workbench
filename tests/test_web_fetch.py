@@ -64,11 +64,20 @@ class WebSearchFailoverTests(unittest.TestCase):
         self.assertEqual(out, bing_result)
         mb.assert_called_once_with(tools._search_recency_query("今天新闻").split(" after:")[0])
 
+        # _baidu_search 也必须打桩：本条用 uiltin_auto，而
+        # _builtin_search 在 provider 不是三选一时会**扇出到全部三个后端**
+        #（order = [provider] if provider in backends else ["ddg","baidu","bing"]）。
+        # 漏了它就等于**每次跑都赌 baidu 通不通**：
+        #   baidu 通   -> 聚合结果多一个来源 -> 断言红
+        #   baidu 不通 -> 只剩 ddg -> 绿
+        # 本文件另两条 builtin_auto 的测试都打桩了全部三个后端，只有这一条漏了。
+        # 实测它真的随机红过：全量里报「来源：ddg、baidu」。
     def test_ddg_success_can_merge_parallel_backends(self):
         ddg_result = "· DDG 标题\n  摘要\n  https://ddg.test/x"
         with patch.dict(tools.os.environ, self._env_no_recency(), clear=True), \
                 patch("tools.get_web_search_provider", return_value="builtin_auto"), \
                 patch("tools._ddg_search", return_value=ddg_result), \
+                patch("tools._baidu_search", return_value="搜索未返回结果，可能是网络受限或该关键词无结果。"), \
                 patch("tools._bing_search") as mb:
             self.assertEqual(tools.web_search("q"), ddg_result)
         mb.assert_called_once_with("q")
