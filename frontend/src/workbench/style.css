@@ -513,7 +513,6 @@ html[data-material='glass'] .wb-proj-notice {
   margin-left: auto;
   font-size: 10px;
   font-weight: 600;
-  opacity: .9;
   padding-left: 8px;
 }
 
@@ -534,12 +533,12 @@ html[data-material='glass'] .wb-proj-notice {
   background: var(--bg);
   border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
 }
-.ft-chip-code  { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.ft-chip-code  { color: var(--accent-text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .ft-chip-data  { color: var(--amber); border-color: var(--amber); background: rgba(200,129,28,.10); }
 .ft-chip-web   { color: var(--accent-2); border-color: var(--accent-2); background: color-mix(in srgb, var(--accent-2) 8%, transparent); }
 .ft-chip-doc   { color: var(--text-muted); }
 .ft-chip-media { color: var(--green); border-color: var(--green); background: rgba(28,158,102,.10); }
-.ft-chip-lib   { color: #8b97a8; }
+.ft-chip-lib   { color: var(--muted); }
 .ft-chip-plain { color: var(--text-faint); background: transparent; border-color: transparent; }
 
 .ft-gitdot {

@@ -98,7 +98,7 @@ function pick(key: WorkspaceView) {
 .ws-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, white); outline-offset: 1px; }
 .ws-tab:active:not(:disabled) { transform: translateY(0); }
 .ws-active {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--bg-raised);
   border-color: var(--border);
   box-shadow: 0 3px 9px rgba(35,52,84,.08);

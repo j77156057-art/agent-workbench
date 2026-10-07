@@ -3,7 +3,7 @@
 // 分区根目录（depth=0 且带 region）使用分区色描边与中文区名。
 import { computed, ref, watch } from 'vue'
 import type { TreeNode, SemanticTagRecord } from '../api'
-import { regionColor, fileChip, gitState } from '../theme'
+import { regionColor, regionTextColor, fileChip, gitState } from '../theme'
 
 const props = defineProps<{
   node: TreeNode
@@ -28,6 +28,7 @@ const isRegionRoot = computed(
   () => props.depth === 0 && props.node.type === 'dir' && !!props.node.region,
 )
 const accent = computed(() => regionColor(props.node.region))
+const accentText = computed(() => regionTextColor(props.node.region))
 const chip = computed(() => fileChip(props.node.name))
 const git = computed(() => gitState(props.node.tracked, props.node.dirty))
 const isOpen = computed(() => props.openPaths.has(props.node.path))
@@ -108,7 +109,7 @@ function onClick() {
     <span class="ft-name" :title="node.path">{{ node.name }}</span>
 
     <!-- 分区根：中文区名 -->
-    <span v-if="isRegionRoot && node.region_name" class="ft-region-tag" :style="{ color: accent }">
+    <span v-if="isRegionRoot && node.region_name" class="ft-region-tag" :style="{ color: accentText }">
       {{ node.region_name }}
     </span>
 

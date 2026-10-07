@@ -21,6 +21,14 @@ export function regionColor(key: string | null | undefined): string {
   return `hsl(${h % 360} 62% 64%)`
 }
 
+/** 分区色**当文字用**时的版本：留 36% 色相、混向 --ink。
+ *  皮肤决定 --ink 的明暗，所以同一个混合式在纸底与石墨底都自动达标；
+ *  36% 是对 0–359 全色相扫出来的下限（亮黄最吃亏），再高就破 4.5:1。
+ *  填色/描边仍用 regionColor —— 那是图形不是文本。 */
+export function regionTextColor(key: string | null | undefined): string {
+  return `color-mix(in srgb, ${regionColor(key)} 36%, var(--ink))`
+}
+
 export type ChipKind = 'code' | 'data' | 'web' | 'doc' | 'media' | 'lib' | 'plain'
 
 const CHIP_RULES: Array<{ exts: string[]; kind: ChipKind }> = [

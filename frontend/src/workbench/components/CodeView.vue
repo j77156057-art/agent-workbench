@@ -9,7 +9,7 @@ import type { EditorState } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import type { EditorTab } from '../composables/workbench-types'
 import { useWorkbench } from '../composables/workbench'
-import { regionColor, formatMtime, gitState } from '../theme'
+import { regionColor, regionTextColor, formatMtime, gitState } from '../theme'
 import OverviewView from './OverviewView.vue'
 
 const props = defineProps<{ tab: EditorTab | null }>()
@@ -192,6 +192,9 @@ watch(tabs, (list) => {
 function accent(tab: EditorTab) {
   return regionColor(tab.region)
 }
+function accentText(tab: EditorTab) {
+  return regionTextColor(tab.region)
+}
 function git(tab: EditorTab) {
   return gitState(tab.tracked, tab.gitDirty)
 }
@@ -221,7 +224,7 @@ function savedLabel(tab: EditorTab): string {
       </div>
       <div class="cv-meta">
         <span v-if="tab.regionName" class="cv-badge cv-region-badge"
-              :style="{ color: accent(tab), borderColor: accent(tab) + '66', background: accent(tab) + '14' }">
+              :style="{ color: accentText(tab), borderColor: accent(tab) + '66', background: accent(tab) + '14' }">
           {{ tab.regionName }}
         </span>
         <span class="cv-badge cv-lang">{{ tab.lang }}</span>

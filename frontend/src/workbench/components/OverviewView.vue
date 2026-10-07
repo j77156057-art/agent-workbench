@@ -323,7 +323,7 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 .ov-step-num {
   flex: 0 0 19px; height: 19px; margin-top: 1px;
   display: grid; place-items: center;
-  border-radius: 6px; font-size: 10.5px; font-weight: 800; color: #fff;
+  border-radius: 6px; font-size: 10.5px; font-weight: 800; color: var(--accent-ink);
   background: var(--accent);
 }
 .ov-step-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
