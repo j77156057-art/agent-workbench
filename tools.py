@@ -7270,7 +7270,7 @@ def dev_page_action(arg=""):
     输入（多行 keyed）：
       action: open|click|type|press|wait|read|locate|list|close
       page: <会话 id>                # open 之外必填；open 的返回里就有
-      url: http://127.0.0.1:5173/    # open 用；只允许本机回环
+      url: http://127.0.0.1:<实际端口>/  # open 用；只允许本机回环。端口取 dev_serve 返回的那个，别写死
       entry: index.html              # open 的另一种：项目里的静态入口，临时起静态站
       selector: button.submit        # 定位一：CSS
       text: 保存                     # 定位二：可见文字（整串相等优先，落空才退到包含）
@@ -7622,9 +7622,11 @@ def preview_project(arg=""):
     已启用的 EDA MCP），不能把缺少画面误报成通过。
 
     两种打法：① 不给 url 时，把项目目录当静态站临时服务并打开 entry（默认
-    index.html / web/index.html）；② 给 `url: http://127.0.0.1:5173/` 时直接打这个
+    index.html / web/index.html）；② 给 `url: http://127.0.0.1:<实际端口>/` 时直接打这个
     【已经在跑的本机服务】——Vite/Vue 这类必须起 dev server 的前端要用这种，
-    服务由 dev_serve 起来。url 只允许回环地址。
+    服务由 dev_serve 起来。url 只允许回环地址，且**端口要用 dev_serve 返回的那个**：
+    端口被占时 vite 会往后挪（5173→5174），写死会打到死地址，或打到**别人的**服务上、
+    拍到别的项目还报成功。给定地址不通时会报错并列出在应答的候选端口，由你核对。
 
     还能注入合成媒体：`flags:` 后面每行一条浏览器启动参数，直接用 dev_media
     （action: build）返回的那几条，把麦克风/摄像头换成 WAV/Y4M 夹具的内容，这样项目
@@ -8405,7 +8407,7 @@ TOOLS = {
             "在本机网页里【真的做动作】：点、填、按键、等条件、读状态。harness 原来只能看画面"
             "（preview_project），所以「点一下才复现」的 bug 只能靠猜——本工具补的就是这一半。\n"
             "输入 keyed 多行：`action: open|click|type|press|wait|read|locate|list|close`、"
-            "`page: <会话 id>`（open 之外必填）、`url: http://127.0.0.1:5173/` 或 `entry: index.html`、"
+            "`page: <会话 id>`（open 之外必填）、`url: http://127.0.0.1:<实际端口>/` 或 `entry: index.html`、"
             "`selector:`/`text:`/`nth:` 定位、`value:` 文本、`key: Enter`、`state: present|absent|visible|hidden|text`、"
             "`mode: text|value|attr|html|count|contains`、`attr: href`、`needle: 要找的词`"
             "（contains 用）、`settle: 600`、`screenshot: true|false`。\n"
@@ -8555,8 +8557,8 @@ TOOLS = {
         "description": (
             "正式开发舱真实视觉验收：用真实 Edge/Chromium 截取当前画面并把截图"
             "送给视觉模型，同时登记工作流预览证据。输入可选 entry/index.html、width、height、timeout；"
-            "也可以给 `url: http://127.0.0.1:5173/` 直接打【已经在跑的本机服务】（服务由 dev_serve 起，"
-            "url 只允许回环地址）——Vite/Vue 这类必须跑 dev server 的前端要用这种。\n"
+            "也可以给 `url: http://127.0.0.1:<实际端口>/` 直接打【已经在跑的本机服务】（服务由 dev_serve 起，"
+            "url 只允许回环地址，端口取 dev_serve 返回的那个，别写死）——Vite/Vue 这类必须跑 dev server 的前端要用这种。\n"
             "还能注入合成媒体：`flags:` 后面每行一条浏览器启动参数，用 dev_media（action: build）"
             "返回的那几条，把麦克风/摄像头换成 WAV/Y4M 夹具的内容，没有真设备也能跑语音/摄像头回路。"
             "参数只接受 `--开关` 形态，`--user-data-dir`、`--load-extension` 一类会改写浏览器行为的一律拒绝。\n"

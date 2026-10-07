@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Iterable
 
 from . import process_runner
 
@@ -99,8 +99,63 @@ def port_taken(port: int, host: str = "127.0.0.1") -> bool:
         return False
 
 
+def owns_port(port: int, *, host: str = "127.0.0.1",
+              markers: Iterable[str] = (), timeout: float = PROBE_TIMEOUT,
+             ) -> tuple[bool, str]:
+    """这个端口上是不是**我要的那个服务**。
+
+    为什么需要它：`probe()` 只判「通不通」，而**通不通不足以证明归属**。
+    实测过的真实事故：5173 上站着另一个 worktree 项目的 vite，于是
+    `preview_project` 拍到了**别人的画面**并报成功 —— 一个假绿灯。
+    端口漂移（vite 5173 -> 5174）让这件事更容易发生：模型照着一个写死的
+    端口去访问，撞上的可能是任何服务。
+
+    判据是「页面上有没有我期望的标记」，而不是「端口通不通」：
+
+    * ``markers`` 是调用方给的项目指纹（如项目名），任一命中即认领。
+    * 一个都不给时**只做安全检查**并返回「无法判归属」—— 不猜。
+      宁可让调用方多传一个标记，也不要静默把别人的服务认成自己的。
+
+    返回 ``(是不是我的, 说明)``。说明里带上实际看到的内容摘要，好让
+    「认不出来」这件事对人可读，而不是只返回一个 False。
+    """
+    if not markers:
+        try:
+            ok, why = probe("http://%s:%d/" % (host, port), timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - 判归属失败不该抛
+            return False, "无法探测 %s:%d：%s" % (host, port, exc)
+        return False, ("端口 %d 有服务应答（%s），但没给项目标记，无法判归属 —— "
+                       "请传 markers（项目名等指纹）再判" % (port, why))
+    url, err = loopback_url("http://%s:%d/" % (host, port))
+    if err:
+        return False, err
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = response.read(20000)
+            charset = "utf-8"
+            ctype = (getattr(response, "headers", {}) or {}).get("Content-Type", "")
+            if "charset=" in str(ctype):
+                charset = str(ctype).split("charset=", 1)[1].split(";")[0].strip()
+            text = body.decode(charset, "replace")
+    except urllib.error.HTTPError as exc:
+        text = ""
+    except (OSError, ValueError) as exc:
+        return False, "端口 %d 上取不到页面（%s）" % (port, exc)
+    wanted = [str(m) for m in markers if str(m)]
+    for marker in wanted:
+        if marker in text:
+            return True, "端口 %d 命中标记 %r" % (port, marker)
+    head = " ".join(text.split())[:120]
+    return False, ("端口 %d 应答正常，但页面上没有 %s（实际开头：%r）"
+                   % (port, "、".join(repr(m) for m in wanted), head))
+
+
 def probe(url: str, *, timeout: float = PROBE_TIMEOUT) -> tuple[bool, str]:
-    """先看端口通不通，再发一次 GET。返回 (是否就绪, 说明)。"""
+    """先看端口通不通，再发一次 GET。返回 (是否就绪, 说明)。
+
+    **只判「通不通」，不判「是谁」。** 要判归属用 `owns_port()` ——
+    通不通不足以证明这个端口上跑的是我的项目。
+    """
     target, err = loopback_url(url)
     if err:
         return False, err

@@ -22,8 +22,9 @@ import tempfile
 import threading
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 
+from . import dev_server
 from .dev_server import loopback_url
 import temp_state
 import urllib.request
@@ -775,11 +776,69 @@ def _entry_file(root: Path, entry: str = "") -> Path:
     raise VisualAcceptanceError("当前项目没有可用于真实网页验收的 index.html 入口。")
 
 
+def resolve_live_url(url: str = "", *, candidates=(5173, 5174, 5175, 4173, 3000),
+                     probe: Callable[[str], tuple[bool, str]] | None = None,
+                     ) -> tuple[str, str]:
+    """解析一个**确实活着**的本机预览地址，返回 (url, 说明)。
+
+    为什么需要它：vite 撞了端口会自动往后挪（5173 -> 5174），而工具清单里
+    教模型用的是**写死的** `http://127.0.0.1:5173/`。于是模型照着那个地址访问时，
+    两种结局都不对：
+
+    * 打到一个已经死掉的地址 -> 探测超时，而报告说「没认到端口」，指向一个错地址
+    * 打到**别的**服务上     -> 拍到别人的画面**并报成功**（假绿灯，实测踩过）
+
+    ## 为什么不静默换一个端口
+
+    我第一版是「给定地址不通就按候选端口逐个探，取第一个能应答的」。**那是错的**：
+    **能应答不等于是我的项目** —— 静默换端口只是把「打错端口」换成
+    「打到别人的服务并报成功」，后者更难发现，因为它看起来成功。
+
+    所以这里**只在给定地址自己应答时沿用它**；不通就把候选端口**列出来**，
+    让调用方/用户自己认领，不替它选。
+
+    边界要说清：本函数只判「通不通」，**不判「是谁在服务」** —— 归属判断是
+    `dev_server.owns_port()` 的事，它需要项目指纹。这里不做猜测。
+    """
+    probe = probe or dev_server.probe
+    if not str(url or "").strip():
+        return "", "没给 url —— 无法确定要预览哪个服务。"
+    target, err = dev_server.loopback_url(url)
+    if err:
+        return "", err
+    ok, why = probe(target)
+    if ok:
+        return target, "沿用给定地址：%s" % why
+    notes = ["给定地址 %s 不通（%s）" % (target, why)]
+    alive = []
+    for port in candidates:
+        candidate = "http://127.0.0.1:%d/" % int(port)
+        if candidate.rstrip("/") == target.rstrip("/"):
+            continue  # 刚探过，不重复探也不重复报告
+        try:
+            hits, detail = probe(candidate)
+        except Exception as exc:  # noqa: BLE001 - 探测失败不该中断解析
+            notes.append("%s 探测异常：%s" % (candidate, exc))
+            continue
+        if hits:
+            alive.append(candidate)
+        notes.append("%s %s（%s）" % (candidate, "在应答" if hits else "不通", detail))
+    tail = ("；另有在应答的候选端口：%s —— **请确认哪个才是你的服务**，"
+            "不要默认就是它：能应答不代表那上面跑的是本项目"
+            % "、".join(alive)) if alive else ""
+    lead = "没找到在跑的本机预览服务" if not alive else "给定地址不通"
+    return "", "%s。%s%s" % (lead, "；".join(notes), tail)
+
+
 def preview_target(root: str | Path, entry: str = "",
                    url: str = "") -> tuple[str, "Path | None"]:
     """这次要打开的本机地址：给了 `url` 就用已经在跑的服务，否则用项目里的 HTML 入口。
 
     拆出来是为了让「url 模式不需要 index.html」这件事可以不启动浏览器就验证到。
+
+    注意：给了 `url` 时**只做回环校验**，不在这里改端口 —— 端口解析由
+    `resolve_live_url()` 负责，调用方（`preview_project`）决定要不要用。
+    拆在这里是为了不让「校验」与「解析」两件事混成一次隐式的重试。
     """
     root_path = Path(root).resolve()
     if not root_path.is_dir():
@@ -808,6 +867,13 @@ def capture_project_preview(root: str | Path, *, entry: str = "", evidence_dir: 
     root_path = Path(root).resolve()
     if not root_path.is_dir():
         raise VisualAcceptanceError("当前项目目录不存在。")
+    url_resolution = ""
+    if str(url or "").strip():
+        # 给定地址不通时**早失败并说清候选**，不去打一个「也在应答」的端口：
+        # 能应答不等于那是本项目，静默替换会拍到别人的画面并报成功（假绿灯）。
+        live, url_resolution = resolve_live_url(url)
+        if not live:
+            raise VisualAcceptanceError(url_resolution)
     target, entry_path = preview_target(root_path, entry, url)
     width = max(320, min(1920, int(width)))
     height = max(220, min(1200, int(height)))
@@ -863,6 +929,7 @@ def capture_project_preview(root: str | Path, *, entry: str = "", evidence_dir: 
             result = {
                 "ok": all(checks.values()), "passed": all(checks.values()),
                 "checks": checks, "title": title, "body_excerpt": body_text,
+                "url_resolution": url_resolution,
                 "runtime_errors": devtools.runtime_errors,
                 "console_errors": console_errors,
                 "console_warnings": console_warnings,
