@@ -4451,6 +4451,23 @@ class Agent:
                 if self._is_write_tool(parsed["action"]) and parsed[
                         "action"] not in {"memory_save", "memory_forget"}:
                     if self.depth > 0:
+                        # 委派层被挡时，除了拦下来，还要**把「需要用户确认」上浮**。
+                        # 子代理手里没有用户的原始请求，所以它无法自己去问 ——
+                        # 而父 agent 有。让父去问，才问得对人。
+                        _d_intent = self._intent_for_delegated(parsed["action"])
+                        if _d_intent != _WRITE_INTENT_GRANTED:
+                            _needs_confirmation = {
+                                "action": parsed["action"],
+                                "reason": ("子代理拿不到用户的原始请求，"
+                                           "无法自行确认写授权"),
+                            }
+                            yield {
+                                "type": "needs_confirmation",
+                                "text": ("[需要用户确认] %s 未执行：委派子代理没有可用的"
+                                         "写授权租约，需由主 Agent 向用户确认后继续。"
+                                         % parsed["action"]),
+                                "action": parsed["action"],
+                            }
                         # 委派子代理：**不从角色提示词猜权限**。
                         #
                         # `question` 在这里是 `spec["hint"]`（角色提示词），不是用户的
@@ -5694,6 +5711,9 @@ class Agent:
         # replan、再派一次，每次都基于同一份错配的证据，连错三次。
         traj, pending = [], deque()
         artifacts = []
+        # 「需要用户确认」的上浮载体：子代理被授权问题卡住时，从事件流收进来，
+        # 最后进 `output["needs_confirmation"]`（必填，无内容时是空 dict）。
+        _needs_confirm: dict = {}
         # 「改了哪些文件」：由写工具在真正落盘那一步自报（见下面 observation 分支的注释）。
         # `_seen_file_changes` 只为去重——同一文件被改多次，清单里出现一次就够。
         _file_changes: list[dict] = []
@@ -5715,7 +5735,12 @@ class Agent:
                                     purpose=f"subagent:{role}"):
                     for ev in child.run(question, stream=False):
                         et = ev.get("type")
-                        if et == "final":
+                        if et == "needs_confirmation":
+                            # 子代理被授权问题卡住 —— 收下来，稍后上浮给父。
+                            _needs_confirm["action"] = ev.get("action", "")
+                            _needs_confirm["reason"] = (
+                                "子代理拿不到用户的原始请求，无法自行确认写授权")
+                        elif et == "final":
                             final_text = ev.get("text") or ""
                             final_degraded = bool(ev.get("degraded"))
                         elif et == "action":
@@ -5841,6 +5866,15 @@ class Agent:
         output = {"status": status, "conclusion": conclusion, "steps": used,
                 "max_steps": cap,
                 "error": error, "degraded": degraded, "reflection": reflection,
+                # 「需要用户确认」的上浮通道。**必填**（无确认时是 dict()，不是
+                # 省略）—— 缺失会让老消费点静默把它当成普通结果，于是子代理
+                # 被授权卡住时父 agent 只会看到「失败」，不知道该去问用户什么。
+                #
+                # 为什么需要它：子代理的 `question` 是角色提示词，而它拿不到用户
+                # 的原始请求，所以「拿不准，请向用户确认」这个判断在子代理层是
+                # **真实**的（顶层那句是猜的）。而父 agent 手里**有**用户的原话，
+                # 由它去问才问得对人。
+                "needs_confirmation": dict(_needs_confirm),
                 "artifacts": artifacts,
                 # 「改了哪些文件」。消费方有三处都只认这个字段：`output_audit`
                 # 的上界检查与证据回报、`preview_adapters` 的产物清单、以及人工
@@ -5877,6 +5911,14 @@ class Agent:
         if turn is not None:
             turn.subagents_dispatched = dispatched + 1
         out = self._run_child(role, task, turn=turn)
+        if out.get("needs_confirmation"):
+            # 第三种状态：不是失败，是**等用户拍板**。措辞不能说「失败」——
+            # 那会让主 Agent 去重试或放弃，而正确做法是去问用户。
+            need = out["needs_confirmation"]
+            return ("[delegate 需要用户确认] %s：%s。"
+                    "子代理无法自行确认写授权（它拿不到用户的原话），"
+                    "请在 Final Answer 里向用户确认后再继续，不要重试同一调用。"
+                    % (need.get("action", "写操作"), need.get("reason", "")))
         if out["status"] != "ok":
             err = out["error"]
             # 保持既有文案契约：角色问题报"角色错误"，深度问题报"停止"，其余为"失败"
@@ -5904,7 +5946,17 @@ class Agent:
         parts = []
         for t in tasks:
             r = results.get(t["id"]) or {}
-            if r.get("status") == "ok" and r.get("conclusion"):
+            if r.get("needs_confirmation"):
+                # 合成时把它当**待用户确认项**，而不是失败项 —— 第 3 条
+                # 「列出仍未解决、需要用户确认的点」本来就要求这个，
+                # 只是收不到这个信号。
+                need = r["needs_confirmation"]
+                parts.append(
+                    f"### {t['id']}（{t.get('role')}）**需要用户确认**："
+                    f"{need.get('action', '写操作')} 未执行 —— "
+                    f"{need.get('reason', '子代理无法自行确认写授权')}。"
+                    f"必须在答复中就此向用户提问，不要当成失败重试。")
+            elif r.get("status") == "ok" and r.get("conclusion"):
                 parts.append(f"### {t['id']}（{t.get('role')}）任务：{t['task']}\n{r['conclusion']}")
             else:
                 parts.append(f"### {t['id']}（{t.get('role')}）状态：{r.get('status')}"
@@ -5944,6 +5996,15 @@ class Agent:
         brief = []
         for t in failed:
             r = results.get(t["id"]) or {}
+            if r.get("needs_confirmation"):
+                # 「等用户拍板」不是失败，**不该进重规划** —— 换个角色再试一遍
+                # 还是缺那份租约。把它如实写进 brief，让模型知道重规划无用。
+                brief.append(
+                    f"- 任务 {t['id']}（{t.get('role')}）目标：{t['task']}\n"
+                    f"  状态：**需要用户确认**（{r['needs_confirmation'].get('action', '写操作')}）"
+                    f" —— 这不是失败，重规划解决不了；应由主 Agent 向用户确认"
+                    f"写授权后再派发。")
+                continue
             brief.append(f"- 任务 {t['id']}（{t.get('role')}）目标：{t['task']}\n"
                          f"  失败原因：{r.get('error') or '未知'}")
             # 关键：把子代理的**执行轨迹**给到模型，让它能定位"为什么没成"，
