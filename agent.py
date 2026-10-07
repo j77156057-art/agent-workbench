@@ -4402,6 +4402,26 @@ class Agent:
                 if self._is_write_tool(parsed["action"]) and parsed[
                         "action"] not in {"memory_save", "memory_forget"}:
                     _intent = _write_intent(question)
+                    # 会话内授权租约：用户在这一轮说过「改吧」，那是个**事实**，
+                    # 比从「改吧」这种孤立一句里猜出来的 denied 更权威。所以租约
+                    # 有效时，denied 让位。
+                    #
+                    # 但**撤回句永远压过租约**：「取消修改」不能因为上一轮批准过
+                    # 就放行 —— 用户改主意了。`_RE_WRITE_WITHDRAW` 已实测能识别
+                    # 这一族（句首谓语判据），所以这里显式排除它，而不是靠
+                    # 「租约在同轮内有效」这种巧合兜着。
+                    #
+                    # 另外只在 granted 时**铸造**租约：uncertain 时铸会让用户
+                    # 问完还是不能写。
+                    if _intent == _WRITE_INTENT_GRANTED:
+                        self.capability_lease = self._mint_write_lease()
+                    elif (self.capability_lease
+                          and not _RE_WRITE_WITHDRAW.search(
+                              _write_intent_text(_user_question(question)))
+                          and not _RE_NEGATION_RE.search(
+                              _user_question(question))
+                          and not self._lease_blocked(parsed["action"])[0]):
+                        _intent = _WRITE_INTENT_GRANTED
                     if _intent != _WRITE_INTENT_GRANTED:
                         _uncertain = _intent == _WRITE_INTENT_UNCERTAIN
                         _note = (_WRITE_UNCERTAIN_OBS if _uncertain
