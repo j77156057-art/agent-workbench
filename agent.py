@@ -1792,9 +1792,71 @@ _RE_WRITE_INTENT = re.compile(
     r"生成|制作|导出|补全|删掉|删除|移除|替换|重写|提交代码|帮我改|动手改|"
     r"fix|refactor|create|generate|export"
 )
+
+# 否定词清单，故意按「长」的排前面：正则的 alternation 是从左往右逐位试的，
+# 「不要修改」必须先匹配到「不要」，否则先匹到「不」就只吃掉一个字，「要修改」
+# 留在原地，照样被判成写意图。
+#
+# `别(?!忘)` 是个必须加的例外：「别忘了帮我改一下 README」里的「别」**不是**否定，
+# 整句是在**授权**。不排除它的话，filler「忘了」会把「帮我改」一起吃掉，
+# 于是「禁止删除，别忘了帮我改一下 README」这种明明授权了的句子被判成没意图
+# —— 实测正是这样错的，属于这次改动自己引入的方向性缺陷。
+_RE_NEGATION_RE = re.compile(r"不要|不用|不必|无需|不需要|没必要|用不着|"
+                        r"不许|不能|不得|禁止|暂不|暂勿|先别|甭|勿|别|不")
+_RE_NEGATION = (r"不要|不用|不必|无需|不需要|没必要|用不着|不许|不能|不得|"
+                r"禁止|暂不|暂勿|先别|甭|勿|别(?!忘)|不")
+
+# 「否定词」与「它所否定的那个动词」之间允许一小段填充（「去」「再」「重新」…），
+# 但**不许跨标点**——否则「不需要解释，直接修改」里的「不需要」会一路吃到逗号
+# 后面的「修改」，把一句明确授权的请求判成没有授权。
+#
+# 上界 3 个字是量出来的两头：
+#   下界要容得下真实填充 —— 「不需要**重新**生成」「不许**擅自**重构」「不要**去**修改」；
+#   上界不能伸进内容词 —— 预算放到 4 时，「别磨蹭了快帮我改一下」里的「别」会
+#   越过「磨蹭了快」把「帮我改」吃掉，而那里的「别」否定的是「磨蹭」不是「帮我改」。
+#     被吃掉的动词同样是被授权的，于是模型在用户明确要求修改时不动手。
+_RE_NEGATED_WRITE = re.compile(
+    r"(?:%s)[^，。；、！？\n]{0,3}?(?:%s)" % (_RE_NEGATION, "|".join(
+        ("修改", "修复", "改正", "改一下", "改成", "改好", "重构", "新建", "创建",
+         "新增", "添加", "加上", "生成", "制作", "导出", "补全", "删掉", "删除",
+         "移除", "替换", "重写", "提交代码", "帮我改", "动手改",
+         "fix", "refactor", "create", "generate", "export")))
+)
+
+
+def _write_intent_text(value):
+    """把文本整理成「可以交给 `_RE_WRITE_INTENT` 判」的形式。
+
+    两步，顺序不能换：
+
+    1. **先遮掉能力问句**。`能不能改一下` 里含有「**不能**」—— 直接扫否定会
+       把它当成否定词，连带 filler「能」把「改一下」一起吃掉，于是
+       「能不能帮我改一下这个文件」这种最常见的说法会被判成没意图。
+       复用已有的 `_WRITE_CAPABILITY_QUESTION`，不另造一份清单 ——
+       两份清单必然会漂移，而漂移之后没人会发现。
+    2. **再挖掉被否定的那个写动词**。
+
+    为什么第 2 步不能整句清零：中文否定只覆盖它自己管的那个动词。实测这两句
+    必须有区别：
+
+        「不要修改文档，直接重写整个实现」  -> 否定「修改」，但「重写」被授权
+        「不要修改。」                      -> 什么都没授权
+
+    整句清零会把第一句也判成没意图，于是模型在该写的时候不写 —— 那是反方向的
+    事故，而且更隐蔽（表现为「模型不听指令」而不是「模型乱改」）。
+
+    为什么用「挖掉」而不是「加个否定标志」：挖掉只会**移除**已有的授权，
+    不可能凭空造出授权。方向上天然安全。
+    """
+    text = value or ""
+    masked = _WRITE_CAPABILITY_QUESTION.sub(_WRITE_INTENT_MASK, text)
+    return _RE_NEGATED_WRITE.sub(" ", masked)
 _WRITE_CAPABILITY_QUESTION = re.compile(
     r"(?i)(?:能不能|能否|可不可以|是否可以|可以不可以|支持不支持|能帮我|可以帮我)"
 )
+# 遮掉能力问句时替换成的占位符：必须既不含否定词、也不含任何写动词，
+# 否则遮罩本身会重新制造出一次误判。一个空格就够 —— 它不进任何一条词表。
+_WRITE_INTENT_MASK = " "
 _WRITE_DETAIL = re.compile(
     r"(?i)(?:把.+?(?:改成|替换为|换成)|将.+?(?:改为|替换成)|"
     r"(?:old_text|new_text|path\s*[:：])|[\w./\\-]+\.(?:gd|py|ts|tsx|js|jsx|vue|cs|cpp|json))"
@@ -1807,7 +1869,11 @@ _WRITE_BLOCKED_OBS = (
 
 
 def _has_write_intent(question):
-    value = _user_question(question)
+    # 先挖掉被否定的写动词：「不要修改任何文件」含「修改」，原先被判成**有**写
+    # 意图 —— 于是 `agent.py` 里那道「用户没要求就别写」的同意护栏反而放行。
+    # 用户明确禁止被读成明确授权，护栏朝着危险方向失效。实测 12 句否定问法里
+    # 9 句是这个方向的误判。
+    value = _write_intent_text(_user_question(question))
     if not _RE_WRITE_INTENT.search(value):
         return False
     # Capability questions are clarification requests, not authorization to
@@ -1820,9 +1886,17 @@ def _has_write_intent(question):
 
 def _ambiguous_write_request(question):
     """Return a short clarification for capability-only edit questions."""
-    value = _user_question(question).strip()
-    if not (_WRITE_CAPABILITY_QUESTION.search(value) and
-            _RE_WRITE_INTENT.search(value) and not _WRITE_DETAIL.search(value)):
+    raw = _user_question(question).strip()
+    # 「是不是能力问句」必须拿**原文**判：`_write_intent_text` 会把
+    # 「能不能」这类词遮掉，若拿遮罩后的文本判，这里就再也认不出能力问句，
+    # 于是「能不能改一下这个文件？」永远等不到澄清话术。
+    if not _WRITE_CAPABILITY_QUESTION.search(raw):
+        return ""
+    # 而「有没有写意图」必须用挖掉否定之后的文本：否则用户说
+    # 「不要修改，能不能直接改」，这里会回一句「可以修改文件，但当前还没有执行
+    # 任何写操作」—— 把用户的明令禁止原样顶回去。
+    if not (_RE_WRITE_INTENT.search(_write_intent_text(raw))
+            and not _WRITE_DETAIL.search(raw)):
         return ""
     return (
         "可以修改文件，但当前还没有执行任何写操作。请先选择你想要的方式：\n"
