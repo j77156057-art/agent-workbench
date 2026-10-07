@@ -97,20 +97,50 @@ class VisualAcceptanceRuntimeTests(unittest.TestCase):
             parent, job, error = spawn_browser_in_job(
                 [sys.executable, "-c",
                  "import subprocess,sys,time;"
-                 "gp=subprocess.Popen([sys.executable,'-c',%r]);open(%r,'w').write(str(gp.pid));"
+                 "gp=subprocess.Popen([sys.executable,'-c',%r]);"
+                 # 末尾那个 chr(10) 是**写入完成的标记**：读的人只在看见换行时
+                 # 才认这个 pid，于是「只读到一半」被排除掉了。
+                 "open(%r,'w').write(str(gp.pid)+chr(10));"
                  "time.sleep(120)" % (sleeper, pidfile)])
             self.assertIsNotNone(parent, "进程没能创建在作业对象里：%s" % error)
             grandchild = None
             try:
-                deadline = time.time() + 10
-                while not os.path.exists(pidfile) and time.time() < deadline:
+                # 等 pidfile 里出现**带结束标记的正 pid**。
+                #
+                # 原来只等 `os.path.exists()`，而父进程做的是 `open(f,'w').write(...)`：
+                # `exists()` 在 `open()` 那一刻就为真，写还在后面。撞进那个窗口时
+                # `read_text()` 返回空，`or "0"` 兜成 0 —— 而 `pid_alive(0)` 恒为 True
+                # （它刻意的失败关闭：宁可不删，绝不误删）。于是最后那句 assertFalse
+                # **恒失败**，而作业对象回收机制一点问题都没有：一条恒红的测试。
+                #
+                # 实测这个窗口在段 6 的负载下真会被撞上（3 轮红 1 轮），而失败消息与
+                # 「孙进程真的没死」**完全无法区分** —— 这才是必须先堵它的原因。
+                deadline = time.time() + 30
+                raw = ""
+                while time.time() < deadline:
+                    try:
+                        raw = pathlib.Path(pidfile).read_text()
+                    except OSError:
+                        raw = ""
+                    if raw.endswith("\n") and raw.strip().isdigit():
+                        break
                     time.sleep(0.05)
-                grandchild = int(pathlib.Path(pidfile).read_text() or "0")
+                self.assertTrue(
+                    raw.endswith("\n") and raw.strip().isdigit(),
+                    "没读到孙进程 pid（读到 %r）—— 下面每一条关于孙进程的断言都是空的，"
+                    "这条测试什么也没断" % (raw,))
+                grandchild = int(raw.strip())
+                self.assertNotEqual(grandchild, parent.pid,
+                                    "读到的是父进程自己的 pid，pidfile 没写对：%d"
+                                    % grandchild)
                 self.assertIsNone(parent.poll(), "子进程应当还活着，否则这条测试什么都没断")
                 # 正向对照：探针必须先证明「活着」，后面那句 assertFalse 才有意义。
-                # 少了这一步，一个恒返回 False 的探针会让整条测试永远为真。
+                # 少了这一步，一个恒返回 False 的探针会让整条测试永远为真；反过来，
+                # 一个恒返回 True 的探针会让它永远为假。所以这里把**实际读到的 pid**
+                # 写进消息 —— 红的时候不必再回头猜读到了什么。
                 self.assertTrue(_pid_alive(grandchild),
-                                "存活探针失效（孙进程明明在跑却报没有），后面的断言是空的")
+                                "存活探针失效（孙进程 %d 明明在跑却报没有），"
+                                "后面的断言是空的" % grandchild)
                 self.assertTrue(_pid_alive(parent.pid), "探针要能认出活进程，两个都要成立")
                 _close_reaper(job)
                 job = None
@@ -122,7 +152,9 @@ class VisualAcceptanceRuntimeTests(unittest.TestCase):
                 while _pid_alive(grandchild) and time.time() < deadline:
                     time.sleep(0.2)
                 self.assertFalse(_pid_alive(grandchild),
-                                 "孙进程不在作业里，Chromium 的 renderer/gpu 子进程就是这么漏掉的")
+                                 "孙进程 %d 不在作业里，Chromium 的 renderer/gpu 子进程"
+                                 "就是这么漏掉的（父进程 pid=%d，作业句柄已关）"
+                                 % (grandchild, parent.pid))
             finally:
                 if job is not None:
                     _close_reaper(job)
