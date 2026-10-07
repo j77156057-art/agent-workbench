@@ -75,14 +75,31 @@ try {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e)))
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()) })
-  page.on('response', (r) => { if (r.status() >= 400) errors.push(`HTTP ${r.status()} ${r.url()}`) })
+  // 本机访问 fonts.googleapis.com 会间歇性 ERR_CONNECTION_RESET，那是沙箱网络
+  // 状况而不是应用缺陷。资源加载失败的 console 消息带 location().url，按来源判定：
+  // 同源失败照报，第三方 CDN 才忽略；拿不到 URL 时保守计入。
+  const sameOrigin = u => { try { return new URL(u).origin === new URL(BASE).origin } catch { return true } }
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return
+    const text = m.text()
+    if (/Failed to load resource/.test(text)) {
+      const u = m.location()?.url || ''
+      if (!u || sameOrigin(u)) errors.push(`${text} ${u}`)
+      return
+    }
+    errors.push(text)
+  })
+  page.on('requestfailed', (r) => { if (sameOrigin(r.url())) errors.push(`FAILED ${r.url()}`) })
+  page.on('response', (r) => { if (r.status() >= 400 && sameOrigin(r.url())) errors.push(`HTTP ${r.status()} ${r.url()}`) })
 
   await page.goto(`${BASE}/workbench`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('.wb-shell', { timeout: 20000 })
   check('工作台外壳渲染', true)
 
-  await page.click('.sr-trigger')
+  // 运行游戏触发钮由 SceneRuntimePanel teleport 进顶栏「更多」菜单槽位，
+  // 菜单收起时在 DOM 里但不可见，必须先开菜单再点槽内那一个。
+  await page.click('.wb-menu-trigger')
+  await page.click('.wb-menu-slot-item .sr-trigger')
   await page.waitForSelector('.pb-pop', { timeout: 10000 })
   check('试玩器弹出', true)
 

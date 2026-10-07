@@ -27,15 +27,21 @@ try {
     assert.notEqual(original, duplicate)
     assert.equal(await first.evaluate(() => window.DocMindSession.get()), original)
     ok(route + ': copied storage isolates newcomer and preserves original id')
+    const other = route === '/' ? '/workbench' : '/'
     for (const [page, id] of [[first, original], [second, duplicate]]) {
       await page.reload()
       assert.equal(await ready(page), id)
-      await page.goto(base + (route === '/' ? '/workbench' : '/'))
-      assert.equal(await ready(page), id)
+      // 会话 id 按 URL 分域（web/session.js：/workbench → web-，其余 → ask-，
+      // lockPrefix 同样分域，是为了防两个面并发互踩）。所以跨面**必然**换 id，
+      // 真正要保证的是"回到本面时原 id 完好"，而不是跨面保持不变。
+      await page.goto(base + other)
+      const crossed = await ready(page)
+      assert.notEqual(crossed, id, 'crossing surfaces must switch session scope')
+      assert.match(crossed, other === '/workbench' ? /^web-/ : /^ask-/, 'scope prefix')
       await page.goBack()
-      assert.equal(await ready(page), id)
+      assert.equal(await ready(page), id, 'returning must restore this surface id')
     }
-    ok(route + ': refresh, question/workbench navigation and back preserve both ids')
+    ok(route + ': refresh keeps the id, crossing switches scope, returning restores it')
     assert.equal(await second.evaluate(id => window.DocMindSession.set(id), original), false)
     assert.equal(await second.evaluate(() => window.DocMindSession.get()), duplicate)
     ok(route + ': active history cannot be claimed by another page')
