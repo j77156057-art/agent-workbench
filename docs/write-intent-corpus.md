@@ -1,0 +1,277 @@
+# 写意图缺陷题库（真跑量出来的，非自编）
+
+> 生成于 HEAD `449ebf9`。全量回归进行中，本文件不含回归结果。
+>
+> 每一句都来自**实测**——要么是探针复现出来的，要么从既有守卫里抠出来的。
+> 没有一条是我凭想象编的。
+>
+> 将来可直接转成参数化测试：每个条目给出 `句子 / 判定 / 守卫文件`。
+
+## 怎么读这份题库
+
+| 状态 | 含义 |
+|---|---|
+| `已修` | 有守卫钉住，改动后会红 |
+| `已立档` | 守卫断言的是「**当前是** X」——事实记录，不是认可。修好后会红 |
+| `未查` | 只知现象，未定性 |
+
+**重要**：标 `已立档` 的条目，断言里刻意写成「当前是什么」而不是「应该是什么」。
+这样将来有人修了它，守卫会红 —— 变化必须被看见。
+
+---
+
+## A. 撤回句被当成授权（`fc00341` 已修）
+
+用户说「取消修改」，护栏读成「授权修改」。**安全方向的失效开放。**
+
+| 句子 | 修前 | 修后 | 备注 |
+|---|---|---|---|
+| 取消修改 | granted | denied | |
+| 撤销修改 | granted | denied | |
+| 停止修改 | granted | denied | |
+| 放弃修改 | granted | denied | |
+| 撤回修改 | granted | denied | |
+| 终止修改 | granted | denied | |
+| 作废修改 | granted | denied | |
+| 中止修改 | granted | denied | |
+| 取消这个修改 | granted | denied | filler 2 字 |
+| 撤销这次修改 | granted | denied | filler 2 字 |
+| 取消掉这个修改 | granted | denied | filler 3 字 |
+| 取消之前的修改 | granted | denied | filler 3 字 |
+| 取消这次的修改 | granted | denied | filler 3 字 |
+
+守卫：`tests/test_write_intent_withdrawal.py`
+
+### 反向语料（含撤回字但**不是**撤回）
+
+| 句子 | 修前 | 修后 | 备注 |
+|---|---|---|---|
+| 添加放弃按钮 | granted | granted | 「放弃」在句中=定语 |
+| 把停止服务加上 | granted | granted | 同上 |
+| 帮我实现取消按钮 | denied | denied | **另一族缺陷**，见 D |
+| 设计撤回机制 | denied | denied | 同上 |
+
+### 关键分界：位置而非词表
+
+```
+取消|修改        取消在句首 = 谓语 -> 撤回
+实现|取消|按钮     取消在句中 = 定语 -> 授权
+```
+
+**否决过的做法**：把撤回词塞进 `_RE_NEGATION`—— 实测 7/9 正常请求被误伤
+（`帮我实现取消按钮` → denied）。根因是语法不同类：`不要改` 里「不要」是
+修饰语，而「取消按钮」不是「不要按钮」，**「取消」本身就是那个动作**。
+
+---
+
+## B. 谓语动词缺口（`bf19098` 已修）
+
+用户说「加个打开文件的按钮」，agent 不动手。方向是**过拦**（不会误改文件，
+症状是「模型不听指令」）。
+
+| 句子 | 修前 | 修后 |
+|---|---|---|
+| 加个打开文件的按钮 | denied | granted |
+| 构建这个项目 | denied | granted |
+| 搭建一个服务 | denied | granted |
+| 加个停止服务按钮 | denied | granted |
+
+守卫：`tests/test_write_intent_predicate.py`
+
+### 否决过的词
+
+| 候选 | 否决理由（实测）|
+|---|---|
+| 裸「写」 | 22 句必须denied 里出现 5 次；加入后漏 2 句 |
+| 裸「实现」 | 名词/副词用法：「这个实现有什么问题」「移动策略是怎么实现的」 |
+| **「设计」** | **撞否定作用域**：「不必重构，只要解释清楚设计。」denied → granted |
+
+「设计」那条特别值得记 —— 前两档语料都量它 0 误放行，是**组合跑守卫时**才发现的。
+
+---
+
+## C. 多轮批准语被拒（未修，靠租约间接解决）
+
+`_write_intent` 逐条消息、无状态，于是多轮里最自然的批准语全被判 denied。
+
+| 句子 | 现状 | 纯函数 | 有租约时（接线后）|
+|---|---|---|---|
+| 改吧 | denied | denied | **放行** |
+| 动手吧 | denied | denied | denied |
+| 那就修吧 | denied | denied | 放行（吧 -> uncertain，非 granted）|
+| 写吧 | denied | denied | denied |
+| 开始改 | denied | denied | 放行 |
+| 就这么改 | denied | denied | 放行 |
+| 你改吧 | denied | denied | 放行 |
+| 修吧 | denied | denied | 放行 |
+| 改 | denied | denied | 放行 |
+| 动手改 | granted | granted | 放行 |
+| 改一下 | granted | granted | 放行 |
+
+**注意「吧」类落到的是「放行」但靠的是租约，不是词表** —— 纯函数层它们仍 denied。
+
+### 否决过的做法：加裸动词
+
+临时加裸「改|修」→ **3 条守卫红**：
+
+| 被破的守卫 | 破坏了什么 |
+|---|---|
+| `test_a_sentence_with_only_a_bare_verb_is_not_granted` | `6069386` 的裸动词限制记录 |
+| `test_the_clarification_prompt_also_respects_a_prohibition` | 否定作用域（`e0bdb53`）|
+| `test_a_conditional_sentence_with_an_unlisted_verb_falls_back_to_denied` | 条件式fallback（`966212a`）|
+
+**结构性理由**：词表逐条消息，而缺陷跨轮。加跨轮批准语必然要处理
+「否定+批准语」「条件式+批准语」的组合 —— 无限 regress。
+
+---
+
+## D. 含取消/回滚/终止字的正常请求被拦（未修，`fc00341` 提交信息里记为「另一族」）
+
+| 句子 | 现状 |
+|---|---|
+| 帮我实现取消按钮 | denied |
+| 加个停止服务按钮 | denied |
+| 写一个终止超时的函数 | denied |
+| 设计撤回机制 | denied |
+| 这个取消逻辑写在哪里 | denied |
+| 分析取消操作的影响 | denied |
+| 写取消函数 | denied |
+| 实现撤销操作 | denied |
+| 实现回滚功能 | denied |
+
+**归因更正**：这批**不是**因为「取消/回滚/终止」被拦。换成无关词一样被拦：
+
+```
+帮我实现取消按钮   denied
+帮我实现保存按钮   denied     <- 与「取消」无关
+写一个读取文件的函数 denied    <- 纯名词性
+帮我实现导出按钮   granted    <- 只因「导出」在表里
+```
+
+根因是**谓语动词缺口**（见 B），而 B 只修了 3 个词，`实现`/`写` 没修。
+
+守卫：`test_write_intent_predicate.py` 里以 **skip** 形式立档，skip 消息写明
+「属另一族，本笔不动它，避免两族混在一起」。
+
+---
+
+## E. 「不必X，只要X」判 granted（`449ebf9` 已立档，未修）
+
+用户明说「不必」，后半句的写动词活下来。**安全方向的失效开放。**
+
+| 句子 | 现状 |
+|---|---|
+| 不必重构，只要重构一下。 | granted |
+| 不必修复，只要修复它。 | granted |
+| 不必修改，只要修改这个文件。 | granted |
+
+机制：`_RE_NEGATED_WRITE` 只挖掉否定作用域内的那一个动词。
+
+守卫：`tests/test_write_lease_wiring.py::test_the_neg_only_first_clause_shape_is_a_known_defect_not_yet_fixed`
+
+**这一族直接决定了租约接线里那句否定检查是必需的** —— 正是这种句子（有否定、
+有写动词）会被租约放行。
+
+---
+
+## F. 写租约的三条约束（`73404af` 已修）
+
+### F1 租约不能把 agent 锁在「能写但不能读」
+
+`_lease_blocked` 的语义是**收窄**。只含 `write_*` 的租约会把 `read_file` 一起拦掉，
+agent 连要改的文件都读不到。**比原缺陷更糟。**
+
+铸出后必须一并授予 `read_local` / `read_external`，但**不加** ADMIN/EXEC/NETWORK。
+
+### F2 判空必须在补只读**之前**
+
+补完只读再判空，`selected` 永远非空，于是一份「只含只读」的租约会顶着写租约的
+名字被铸出来。
+
+### F3 TTL 是「本轮批准过」，不是长期授权
+
+默认 300s、硬上限 900s、下界 1s。放长意味着一句「改吧」之后整个会话都能写。
+
+守卫：`tests/test_write_lease.py`
+
+---
+
+## G. 租约接线的优先级规则（`449ebf9` 已修）
+
+| 护栏判定 | 有效租约 | 结果 |
+|---|---|---|
+| granted | 任意 | 放行 + 铸造租约 |
+| 撤回句 / 一般否定 | 有 | **拦** |
+| denied（无写信号）| 有 | 放行（租约赢）|
+| denied | 无/过期 | 拦 |
+
+**若只写「有租约就放行」**：租约铸出后 TTL 内**所有 denied 轮次都放行**，
+包括「不要修改」「取消修改」—— 护栏在用户叫停时继续改。
+
+守卫：`tests/test_write_lease_wiring.py`（必须**带着有效租约**跑主循环才验得到）
+
+---
+
+## H. 测试自身恒红的两个洞
+
+### H1 reaper 的 pid 读空（`773deaf` 已修）
+
+```
+while not os.path.exists(pidfile) and ...:   # open() 那一刻就为真
+    time.sleep(0.05)
+grandchild = int(pathlib.Path(pidfile).read_text() or "0")   # 写还在后面
+```
+
+`pid_alive(0)` 恒为 True（刻意的失败关闭）→ 112 行守卫恒成立、124 行恒失败。
+**作业对象回收机制完全正常**，红的是测试。
+
+修法：父进程写完追加 `chr(10)` 作结束标记，读端只见换行才认。
+
+### H2 写死的墙钟预算（`ab45a56` 已修）
+
+```
+AssertionError: 3.6553988456726074 not less than 3.5 : 超时没有立刻生效
+```
+
+超了 4%，而且它在真正的判据（标记文件）**之前**，所以「超时有没有收干净整棵树」
+在负载下从来没被判过。
+
+删掉 3.5 秒常数，改用 `_TIMEOUT_CHILD` 自己造的刻度（孙进程 6 秒后写标记）。
+
+---
+
+## I. 会随机红的测试（未修）
+
+两条都是**网络依赖**，让「全量绿」这个信号失去可信度。已污染全量判读多次。
+
+| 测试 | 状态 |
+|---|---|
+| `test_web_fetch::test_ddg_success_can_merge_parallel_backends` | 根因已定位：`_baidu_search` 未 stub（实测三后端都被调用）+缓存 + 扇出规模，三个随机源。修法未验证 |
+| `test_app_test::test_the_deep_link_tier_visits_every_route_in_a_real_browser` | 未定性：路由本身全对，唯一不成立的是一条 `ERR_CONNECTION_RESET`，消息未指明是哪个 URL |
+
+---
+
+## J. 已撤回的结论（别重查）
+
+| 曾报 | 实际 |
+|---|---|
+| 「6 处 capability 与分类表不一致」 | **全错**。3 处是多类别成员（`capability` 与 `side_effect` 是不同维度），1 处是 `web_` 前缀兜底（消费点 `agent_runtime/tools.py:259`），2 处本就一致 |
+| `IRREVERSIBLE_TOOLS` 无消费点 | 已过期，现在有（`agent_runtime/tools.py:273`）|
+| 护栏「拿不到会话历史」 | 不准确。`self.history` 完全可达，只是护栏没读 |
+
+---
+
+## K. 探针自身的坑（这一晚栽了七次，全部有记录）
+
+| 现象 | 真因 |
+|---|---|
+| 「111 个工具全无 capability 声明」 | `TOOLS` 的值是 `ToolSpec` 不是 dict，`isinstance` 对每个都失败 |
+| 「没解析出 durations」 | 表头前面一串 `=`，`startswith("slowest durations")` 不匹配 |
+| 「4 处 capability 漂移」 | 拿「数量相等」当「逐项相等」|
+| 「裸动词 0 误放行 0 破坏」 | 判据用了 `_write_intent != DENIED`，守卫要的是 `_has_write_intent is False`；且只跑了一个文件 |
+| 「修好 0 句」 | `_RE_WRITE_INTENT` 是 import 时编译的，替换 `_WRITE_VERBS` 字符串无效 |
+| 3 条变异没咬住 | 门级测试让撤回句跑时**没给租约**，排除条件走不到；还写了 `assert not X or True`恒真断言 |
+| 1 条变异没咬住 | 语义无效：铸出的租约恒含写能力，去掉那个条件不改变行为 |
+
+**三条规则**：先怀疑探针再怀疑被测物；单个读数不足以定性；变异与回归一律打
+**全部**相关文件（只跑新文件会全绿并提交，冲突在组合跑时才暴露 —— 今天印证三次）。
