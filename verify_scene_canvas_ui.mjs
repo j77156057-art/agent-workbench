@@ -96,6 +96,36 @@ try {
   await page.waitForSelector('.wb-shell', { timeout: 20000 })
   check('工作台外壳渲染', true)
 
+  // 字体断言：本机访问 fonts.googleapis.com 会间歇性 ERR_CONNECTION_RESET，那时整页
+  // 回退到系统字形 —— 同一份 CSS 两次跑出两种观感，是最难查的"时好时坏"。
+  // 用宽度度量而不是 document.fonts.check()：后者在 @font-face 根本没注册时对任意
+  // 字族都返回 true（实测连从没请求过的 JetBrains Mono / Rajdhani 都算"可用"），
+  // 不能当断言。度量法已做阳性对照：Arial/Times/Impact 判为已加载，
+  // 伪造字族判为未加载。
+  await page.evaluate(() => document.fonts.ready)
+  const fontState = await page.evaluate(() => {
+    const probe = fam => {
+      const s = document.createElement('span')
+      s.textContent = 'mmmmmmwwwWQ123'
+      s.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font-size:64px;font-weight:900'
+      document.body.appendChild(s)
+      s.style.fontFamily = 'monospace'
+      const base = s.offsetWidth
+      s.style.fontFamily = `'${fam}', monospace`
+      const got = s.offsetWidth
+      s.remove()
+      return base !== got
+    }
+    return {
+      faces: document.fonts.size,
+      missing: ['Archivo Black', 'Space Grotesk', 'Space Mono'].filter(f => !probe(f)),
+    }
+  })
+  const fontDetail = `@font-face ${fontState.faces} 个，缺失：${fontState.missing.join('、') || '无'}`
+  const allowFallback = !!process.env.DOCMIND_ALLOW_FALLBACK_FONT
+  check('应用 webfont 已加载（否则截图为系统回退字形）', fontState.missing.length === 0 || allowFallback,
+    allowFallback && fontState.missing.length ? `${fontDetail}  [DOCMIND_ALLOW_FALLBACK_FONT 显式放行]` : fontDetail)
+
   // 运行游戏触发钮由 SceneRuntimePanel teleport 进顶栏「更多」菜单槽位，
   // 菜单收起时在 DOM 里但不可见，必须先开菜单再点槽内那一个。
   await page.click('.wb-menu-trigger')
