@@ -27,6 +27,7 @@
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -109,6 +110,16 @@ time.sleep(300)
 #: 「终止整个作业对象」两个机制**互为冗余**——只去掉其中一个，那条变异照样绿，
 #: 电池就报两条"活下来"。而这两个机制的区别恰恰在于**孙进程**：作业对象能带走整棵树，
 #: `process.kill()` 只能带走直接那一个。
+#: 孙进程睡多久之后写标记。这个数字是**判据的刻度**，不是性能指标：
+#: 「超时有没有立刻生效」= 「标记有没有在它该出现的时候出现」。
+_TIMEOUT_MARKER_DELAY = 6
+
+#: 等到什么时候再判标记。等得**比刻度更晚**才有意义 ——
+#: 早于刻度去判，标记当然还没写，断言会永远为真（一个空断言）。
+#: 余量 4 秒用来吸收调度抖动，但不给它大到能掩盖真问题：真漏了树，
+#: 孙进程会一直活到 `time.sleep(30)`，那时候标记早就写了。
+_TIMEOUT_GRACE = _TIMEOUT_MARKER_DELAY + 4
+
 _TIMEOUT_CHILD = r'''
 import subprocess, sys, time
 marker = sys.argv[1]
@@ -120,6 +131,36 @@ time.sleep(30)
 
 class JobLimitDeclarationTests(unittest.TestCase):
     """限位表是怎么摆的。纯层——不碰内核，所以在任何平台都能跑，CI 上也有牙。"""
+
+    def test_the_marker_delay_in_the_fixture_matches_the_declared_scale(self):
+        """守卫：判据的刻度必须和 `_TIMEOUT_CHILD` 里真正睡的秒数一致。
+
+        这条断的是「改了 fixture 里的 6 却没改刻度」。那种情况下测试不会红 ——
+        它只是**提前**去判标记，标记当然还没写，于是 `assertFalse(marker.exists())`
+        变成一个永远成立的空断言，整条测试静默失效。
+
+        同族教训见提交 `10172af`（就绪预算写死 6 秒）：只要判据用的是墙钟常数
+        而不是测试自己造的刻度，它在负载下就必然假红，或在改动后必然失效。
+        """
+        fixture = _TIMEOUT_CHILD
+        slept = re.search(r"time\.sleep\((\d+)\); open\(", fixture)
+        self.assertIsNotNone(slept, "认不出 `_TIMEOUT_CHILD` 里标记前的 sleep 秒数")
+        self.assertEqual(int(slept.group(1)), _TIMEOUT_MARKER_DELAY,
+                         "_TIMEOUT_CHILD 里的 sleep(%s) 与 _TIMEOUT_MARKER_DELAY(%d) "
+                         "不一致 —— 判据的刻度必须等于 fixture 真正等的秒数，"
+                         "否则标记出现前就去判，断言会永远为真"
+                         % (slept.group(1), _TIMEOUT_MARKER_DELAY))
+
+    def test_the_grace_period_is_later_than_the_marker_scale(self):
+        """反向守卫：等到的时刻必须**晚于**刻度，否则断言是空的。
+
+        早于刻度去判，标记还没写，`assertFalse(marker.exists())` 恒成立 ——
+        一条永远为真的测试比一条永远为假的更危险，因为它让人以为机制被覆盖了。
+        """
+        self.assertGreater(_TIMEOUT_GRACE, _TIMEOUT_MARKER_DELAY,
+                           "_TIMEOUT_GRACE(%d) 必须晚于刻度(%d)，"
+                           "否则在标记该出现之前就判了"
+                           % (_TIMEOUT_GRACE, _TIMEOUT_MARKER_DELAY))
 
     def limits(self, memory_bytes: int = 1 << 20):
         return ws.job_limits(memory_bytes)
@@ -369,17 +410,27 @@ class WindowsOnlyLiveTests(unittest.TestCase):
         判据是那个标记文件：孩子拉一个孙进程，孙进程 6 秒后写标记。若只杀掉直接那个孩子
         （`process.kill()` 而不终止作业对象），孙进程会活下来把标记写出来——这正是
         `KILL_ON_JOB_CLOSE` / `TerminateJobObject` 存在的理由，也正是 99°C 事故的形状。
+
+        **原来这里还有一句 `assertLess(time.time() - start, 3.5, "超时没有立刻生效")`**，
+        已被删除：那个 3.5 秒是墙钟常数，与机器负载无关而与被测机制无关。全量回归
+        实测它在负载下必然假红——「超时没有立刻生效」报出 `3.655 not less than 3.5`，
+        超了 4%，而真正的判据（标记文件）压根没被走到。
+
+        现在只留一个判据，它用的是**这条测试自己造的刻度**而不是机器性能：孙进程
+        6 秒后写标记，所以「超时是否立刻生效」= 「标记有没有出现」。收干净了，标记
+        就不会出现；没收干净，它一定会出现。这个判据在负载下依然有牙，因为 6 秒
+        来自 `_TIMEOUT_CHILD`，不随机器快慢变化。
         """
         with tempfile.TemporaryDirectory() as root:
             marker = Path(root) / "late.txt"
             child = Path(root) / "timeout_child.py"
             child.write_text(_TIMEOUT_CHILD, encoding="utf-8")
-            start = time.time()
             with self.assertRaises(subprocess.TimeoutExpired):
                 ws.run_isolated([sys.executable, str(child), str(marker)], cwd=root,
                                 env=dict(os.environ), timeout=1)
-            self.assertLess(time.time() - start, 3.5, "超时没有立刻生效")
-            time.sleep(8)
+            # 等到标记**本该出现之后**再判，而不是靠 sleep 一个猜出来的秒数。
+            # 孙进程 6 秒后写标记，所以等到超过 6 秒，标记若仍在就说明树没收干净。
+            time.sleep(_TIMEOUT_GRACE)
             self.assertFalse(marker.exists(),
                              "超时之后孙进程还在跑并写出了标记——只收了直接那个孩子，"
                              "整棵树没收走")
