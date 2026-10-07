@@ -1836,6 +1836,34 @@ _RE_NEGATED_WRITE = re.compile(
     r"(?:%s)[^，。；、！？\n]{0,3}?(?:%s)" % (_RE_NEGATION, _WRITE_VERBS)
 )
 
+# 「取消型动作」—— 撤回一次写授权（"取消修改"、"撤销这次修改"）。
+#
+# 为什么**不能**把它们塞进 `_RE_NEGATION`（实测否决，7/9 正常请求被误伤）：
+# `_RE_NEGATED_WRITE` 表达的是「不要**改**」，否定词是修饰语，被否定的是写动作。
+# 而「取消按钮」不是「不要按钮」—— **「取消」本身就是那个动作**。当否定词用，
+# 等于把「实现取消按钮」读成「实现不要按钮」，于是 denied。
+# 「撤回词」与「否定词」语法不同类，混在一张表必然出错。
+#
+# 改用**句首位置**判据：「取消」在句首才是谓语（取消|修改），在句中就是定语
+# （实现|取消|按钮）。实测三条候选判据里这是唯一 0 误伤的：
+#   撤回词在句首   漏判 0/14  误拦 0/12
+#   后接写动词     漏判 0/14  误拦 0/12   ← 同样干净，但位置判据更直白
+#   短句裸成分     漏判 0/14  误拦 0/12
+#
+# filler 同样是 3 字，量出来的（`tests/test_write_intent_withdrawal.py`）：
+#   2 字 漏拦 4/14「取消这个修改」等（危险方向：用户说取消，agent 照样改）
+#   3 字 漏拦 0/14、误拦 0/12，代价是命中 1 句对抗样本
+#        「放弃重试再帮我改一下代码」——该句语义是授权
+#   6 字 开始误拦「放弃重试这个策略改成继续」（filler 伸进内容词）
+# 选 3 是拿 1 句摩擦换 0 句漏放行，与 `_RE_NEGATED_WRITE` 当年量出 3 字同一权衡。
+_WRITE_WITHDRAW_HEAD = (
+    r"取消|撤销|停止|放弃|撤回|终止|中止|作废|算了|关掉|搁置"
+)
+_RE_WRITE_WITHDRAW = re.compile(
+    r"^(?:先|帮我|那就|请|你)?\s*(?:%s)"
+    r"[^，。；、！？\n]{0,3}?(?:%s)" % (_WRITE_WITHDRAW_HEAD, _WRITE_VERBS)
+)
+
 
 def _write_intent_text(value):
     """把文本整理成「可以交给 `_RE_WRITE_INTENT` 判」的形式。
@@ -1950,11 +1978,17 @@ def _write_intent(question):
     5. 语气词/句末问号 -> **uncertain**。它们同样出现在合法请求里
        （「帮我改一下，可以吗？」），判 denied 会误伤，只能降成「拿不准」。
     6. 条件式说法 -> **uncertain**。「确认之后再改」现在还没授权落盘。
-    7. 其余 -> **granted**。
+    7. **撤回句**（「取消修改」「撤销这次修改」）-> **denied**。见下。
+    8. 其余 -> **granted**。
     """
     raw = _user_question(question)
     value = _write_intent_text(raw)
     if not _RE_WRITE_INTENT.search(value):
+        return _WRITE_INTENT_DENIED
+    # 撤回句必须排在能力问句/疑问词**之前**：那些分支都会提前返回，撤回句若落到
+    # 它们之后就永远走不到这里。而「取消修改」既不是能力问句也不是疑问句，
+    # 所以先判它不会抢走任何现有分支的归属。
+    if _RE_WRITE_WITHDRAW.search(value):
         return _WRITE_INTENT_DENIED
     # 能力问句必须拿**原文**判：`value` 已经被 `_write_intent_text` 遮掉了
     # 「能不能」这类词，在它上面搜等于搜一个已经不存在的东西。
