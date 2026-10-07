@@ -135,19 +135,21 @@ def test_bare_verbs_stay_out_of_the_vocabulary():
 
 
 def test_asking_about_effort_is_not_an_authorization():
-    """已知限制（**既存缺陷**，另一族）：已列在表里的动词也会被问句带偏。
+    """问工作量/问风险**不是**授权 —— 这一族已修。
 
-    「修复这个 bug 一般要几步」「看看重构会带来什么风险」都被判成 granted ——
-    因为 `修复` / `重构` 就在词表里。这与裸形式同族但根不同：要判「疑问句 vs
-    祈使句」，而不是往表里加词。
+    早先这里记的是一条**既存缺陷**：`修复` / `重构` 就在词表里，于是
+    「修复这个 bug 一般要几步」「看看重构会带来什么风险」被判成 granted，
+    护栏在审查类上失效开放。
 
-    断言写成「**当前是 granted**」—— 那是事实记录，不是认可。将来有人修了它，
-    这条会红，那正是我们要的：变化必须被看见。
+    与裸形式同族但根不同：裸形式要靠**加词**解决（而加词只会让误放行更多），
+    这一族要靠**判疑问句**解决。现在按疑问词（为什么/几步/哪些/多久/难不难…）
+    判 denied，与合法请求零重叠。
+
+    断言从「当前是 granted」翻成「应当 denied」—— 那次翻转就是这一族被修好的证据。
     """
     for question in ("修复这个 bug 一般要几步", "看看重构会带来什么风险"):
-        assert agent._has_write_intent(question) is True, (
-            f"{question!r} 现在判成 denied —— 「疑问句 vs 祈使句」那一族被修了，"
-            "请把这条记录改成断言它应当 denied 的形式"
+        assert agent._has_write_intent(question) is False, (
+            f"{question!r} 是在问工作量/风险，不是写授权，却被判成有写意图"
         )
 
 

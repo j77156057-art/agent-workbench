@@ -1911,6 +1911,20 @@ _RE_WRITE_INTENT_CONDITIONAL = re.compile(
     r"|确认(?:完|过)?(?:之后|以后|了)?再|等我(?:确认|同意|回复)|定了再说|回头再)"
 )
 
+# 「问方法 / 问代价 / 问影响」的疑问词。带着写动词出现在**问句**里时，那是在问，
+# 不是授权 —— 而护栏恰恰在审查类上最该生效。实测（`tests/test_write_intent_question_form.py`）：
+# 10 句这样的问句，改动前**全部**被判成 granted。
+#
+# 这批词与合法请求零重叠，所以判 denied 是净收益。
+_RE_WRITE_INTENT_QUESTION = re.compile(
+    r"(?:为什么|为何|多少|几步|哪些|什么|多久|难不难|怎么|怎样|如何|"
+    r"是不是|有何|哪个|会不会有)"
+)
+# 句末语气词与问号。这一批**不能**判 denied —— 它们同样出现在合法请求里
+# （「帮我改一下这个文件，可以吗？」），判 denied 会把上一笔刚修好的方向倒回去。
+# 所以只降成 uncertain：让模型去问用户一句，而不是断言用户没要求。
+_RE_WRITE_INTENT_HEDGED = re.compile(r"(?:吗|呢|吧)\s*[？?]?\s*$|[？?]\s*$")
+
 
 def _write_intent(question):
     """判定用户本轮是否授权写操作，返回 granted / denied / uncertain。
@@ -1923,9 +1937,12 @@ def _write_intent(question):
     2. 没有任何写信号 -> **denied**。审查类问题（「分析一下架构」）必须落在这里，
        绝不能变成「拿不准」—— 那会让每个审查请求都变成一次提问，比现在更糟。
     3. 能力问句（拿**原文**判，见下）-> **uncertain**。「能不能改一下」是在问
-       可行性，不是在授权。
-    4. 条件式说法 -> **uncertain**。「确认之后再改」现在还没授权落盘。
-    5. 其余 -> **granted**。
+       可行性，不是在授权。**必须排在第 4 步之前**，否则问号会被当成「没要求」。
+    4. 疑问词（问方法/代价/影响）-> **denied**。「修复要几步」是在问工作量。
+    5. 语气词/句末问号 -> **uncertain**。它们同样出现在合法请求里
+       （「帮我改一下，可以吗？」），判 denied 会误伤，只能降成「拿不准」。
+    6. 条件式说法 -> **uncertain**。「确认之后再改」现在还没授权落盘。
+    7. 其余 -> **granted**。
     """
     raw = _user_question(question)
     value = _write_intent_text(raw)
@@ -1936,6 +1953,14 @@ def _write_intent(question):
     # （上一版就是在这儿把判断写在了遮罩后的文本上，于是这个分支成了死代码，
     #   靠 `run()` 开头那次早退掩盖着 —— 一次条件变更就会变成活的口子。）
     if _WRITE_CAPABILITY_QUESTION.search(raw) and not _WRITE_DETAIL.search(raw):
+        return _WRITE_INTENT_UNCERTAIN
+    if _RE_WRITE_INTENT_QUESTION.search(value):
+        return _WRITE_INTENT_DENIED
+    # 句末问号/语气词只降成 uncertain，而且**有具体细节时不算**：
+    # 「能不能把 a.txt 改成 b？」带着明确的路径与转换动作（`_WRITE_DETAIL` 命中），
+    # 它是请求，不是拿不准。判据与上面能力问句分支一致 —— 都是「够具体就不追问」。
+    if (not _WRITE_DETAIL.search(raw)
+            and _RE_WRITE_INTENT_HEDGED.search(value)):
         return _WRITE_INTENT_UNCERTAIN
     if _RE_WRITE_INTENT_CONDITIONAL.search(value):
         return _WRITE_INTENT_UNCERTAIN
