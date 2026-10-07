@@ -114,7 +114,7 @@ html[data-material='glass'][data-skin='graphite'] {
    刻意不加 ::after —— ::after 已被圆点/图标等元素占用，
    高光用 ::before 会被内容盖住，改用 inset box-shadow 表达厚度更稳。
 
-   ⚠️ 圆角必须带 !important：覆盖层 brutalist-overrides.css:391 给这批类写了
+   ⚠️ 圆角必须带 !important：style.css 组件级收口区段给这批类写了
    `border-radius: var(--r-sm) !important`，而 --r-sm 在纸色皮肤是 0px，
    不提权就把玻璃的圆角压成 0 —— 半透明的方块不会被读成"玻璃片"。 */
 html[data-material='glass'] :is(

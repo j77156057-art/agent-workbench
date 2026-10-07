@@ -35,9 +35,13 @@ try {
     v.dispatch({ changes: { from: v.state.doc.length, insert: '\n# UNSAVED-REGRESSION' } })
   })
   await page.locator('.cd-input').fill('未发送的工作台问题')
-  await page.locator('.wb-question-link').click()
+  // 顶栏「问答页」<a> 与「AI 对话」<button> 自 c19aacfa 起共用 .wb-question-link，
+  // 本用例要的是跳去问答页的 <a>，用标签名消歧。
+  await page.locator('a.wb-question-link').click()
   await page.getByText(turn.assistant, { exact: true }).waitFor()
-  await page.locator('#q').fill('未发送的首页问题')
+  // 问答页输入框没有 id（历史上也没有过 id="q"），用 composer 容器定位
+  const askInput = page.locator('.composer textarea')
+  await askInput.fill('未发送的首页问题')
   await page.goto(base + '/workbench')
   await page.waitForFunction(() => window.__docmind_cm?.state.doc.toString().includes('UNSAVED-REGRESSION'))
   assert.equal(await page.locator('.cd-input').inputValue(), '未发送的工作台问题')
@@ -46,15 +50,18 @@ try {
   check('page roundtrip preserves history, editor draft and chat draft without disk writes')
   await page.goto(base + '/')
   await page.getByText(turn.assistant, { exact: true }).waitFor()
-  assert.equal(await page.locator('#q').inputValue(), '未发送的首页问题')
+  assert.equal(await page.locator('.composer textarea').inputValue(), '未发送的首页问题')
   await page.goto(base + '/workbench')
   await page.waitForSelector('.ft-row')
   check('Q&A draft and history survive repeated navigation')
 
   for (const width of [1600, 1280]) {
     await page.setViewportSize({ width, height: 1000 })
-    for (const prefix of ['ap', 'te', 'gp']) {
-      await page.locator('.' + prefix + '-trigger').click()
+    // ap/te/gp 的触发按钮已收进隐藏宿主（style.css .wb-tool-host），
+    // 面板改由顶栏「更多」菜单唤起（App.vue teRef/gpRef/apRef?.show()）。
+    for (const [menuItem, prefix] of [['AI 运行设置', 'ap'], ['任务与生成', 'te'], ['GPU 监控', 'gp']]) {
+      await page.locator('.wb-menu-trigger').click()
+      await page.locator('.wb-menu-item', { hasText: menuItem }).click()
       const panel = page.locator('.' + prefix + '-pop')
       await panel.waitFor()
       assert.equal(await panel.evaluate(el => {
@@ -103,8 +110,12 @@ try {
     { id: 'undated', type: 'undated_event', source: 'test', data: { hp: 90 } },
   ]
   await page.route('**/api/runtime/events*', route => route.fulfill({ json: { events: fixtureEvents } }))
-  await page.locator('.sr-trigger').click()
-  await page.locator('.pb-tl-empty').waitFor()
+  // 运行游戏触发钮由 SceneRuntimePanel teleport 进顶栏「更多」菜单槽位（App.vue #wb-sr-slot），
+  // 菜单收起时该按钮在 DOM 里但不可见，必须先开菜单再点槽内的那一个。
+  await page.locator('.wb-menu-trigger').click()
+  await page.locator('.wb-menu-slot-item .sr-trigger').click()
+  // .pb-tl-empty 同时是时间线和 Bug 两处空态的类名，必须限定容器
+  await page.locator('.pb-tl .pb-tl-empty').waitFor()
   assert.equal(await page.locator('.pb-ev').count(), 0)
   await page.evaluate(() => window.postMessage({ source: 'docmind-runtime', eid: 'fake', type: 'fake' }, location.origin))
   await page.getByLabel('历史事件').check()

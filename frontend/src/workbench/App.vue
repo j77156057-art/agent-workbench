@@ -36,7 +36,7 @@ const AssetCenterView = defineAsyncComponent(() => import('./components/AssetCen
 // 自主开发舱：重型工作流面板独立分包，切到该工作区才加载
 const AutonomousCockpit = defineAsyncComponent(() => import('./components/AutonomousCockpit.vue'))
 
-// J 双色 Risograph 印刷语言层 + 双色纠偏（在 style.css / brutalist-overrides.css 之后加载）
+// J 双色 Risograph 印刷语言层 + 双色纠偏（在 main.ts 引入的 style.css / skins.css 之后加载）
 import './workbench-riso.css'
 // 排版令牌系统（"重做排版"版式共享基础层；仅挂载令牌、不覆写 body 13px 密度，详见 workbench-typo.css）
 import './workbench-typo.css'

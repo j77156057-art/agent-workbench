@@ -20,7 +20,6 @@ import { appEvents } from '../eventBus'
 import { costLabel, money, type PricingState } from '../composables/costLabel'
 import { SKINS, loadSkin, setSkin, onSkinChange, type SkinKey } from '../skins'
 import { loadMaterial, setMaterial, onMaterialChange, type Material } from '../glassPointer'
-import { STYLES, loadStyle, setStyle, onStyleChange, type StyleKey } from '../styleMode'
 import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '../layoutMode'
 
 const props = defineProps<{ visible: boolean; initialTab?: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'appearance' }>()
@@ -65,19 +64,8 @@ function chooseMaterial(m: Material) {
 
 onMaterialChange((m) => { material.value = m })
 
-// ---------------- 风格（造型语言）----------------
-// 皮肤管颜色、风格管造型（圆角/描边/阴影/字体/纹理/字重）、材质管表面，三者正交。
-const style = ref<StyleKey>(loadStyle())
-
-/** 每次切换都派发事件，让顶栏提示「现在是什么」—— 否则用户在弹窗里点完
- *  看到界面变了但不知道变成了什么（实测反馈：「选了啥按钮没提示」）。 */
-function chooseStyle(k: StyleKey) {
-  style.value = setStyle(k)
-  const s = STYLES.find((x) => x.key === k)
-  appEvents.emit('docmind:appearance-changed', { kind: 'style', label: s?.name ?? k })
-}
-
-onStyleChange((k) => { style.value = k })
+// 风格（造型语言）选择器已随造型收敛移除：造型固定为 brutal（零圆角 + 2px 墨描边
+// + 硬阴影 + 孔版颗粒），令牌在 skins.css，data-style 仍由 styleMode.initStyle() 写入。
 
 // ---------------- 布局（空间构成）----------------
 // 皮肤管颜色、风格管造型、布局管空间：侧栏在哪、主区多宽、该居中还是铺满。
@@ -1852,37 +1840,8 @@ function openModelSettings() {
               </button>
             </div>
 
-            <!-- 风格：造型语言（圆角/描边/阴影/字体/纹理/字重） -->
-            <div class="sv-section-head" style="margin-top: 18px;">
-              <div>
-                <h4 class="sv-h4">风格</h4>
-                <p class="sv-hint">风格决定造型的六个维度：圆角、描边、阴影、字体、纹理、字重。配色由上面的皮肤决定，两者互不影响。</p>
-              </div>
-            </div>
-
-            <div class="sv-styles" role="radiogroup" aria-label="风格">
-              <button
-                v-for="s in STYLES"
-                :key="s.key"
-                type="button"
-                class="sv-style"
-                :class="{ on: style === s.key }"
-                role="radio"
-                :aria-checked="style === s.key"
-                @click="chooseStyle(s.key)"
-              >
-                <span class="sv-style-demo" :data-style-demo="s.key" aria-hidden="true">
-                  <i class="d1" /><i class="d2" /><i class="d3" />
-                </span>
-                <span class="sv-skin-text">
-                  <b>{{ s.name }}</b>
-                  <small>{{ s.desc }}</small>
-                </span>
-                <span class="sv-skin-check" aria-hidden="true">
-                  <Icon v-if="style === s.key" name="circle-check" :size="16" />
-                </span>
-              </button>
-            </div>
+            <!-- 风格：造型语言 —— 2026-10-07 收敛：造型固定为 brutal（零圆角 + 墨描边 + 硬阴影），
+                 5 种造型与 8 套皮肤的 40+ 组合谁也调不过来，砍掉选择器只留精调的两套皮肤。 -->
 
             <!-- 材质：实体 / 玻璃 -->
             <div class="sv-section-head" style="margin-top: 18px;">
@@ -1930,8 +1889,9 @@ function openModelSettings() {
             </div>
 
             <p class="sv-note" data-tone="neutral">
-              四层互相独立、可自由组合：<b>皮肤</b>（8 种配色）·<b>风格</b>（5 种造型语言）·<b>材质</b>（实体/玻璃）·<b>布局</b>（5 种空间构成）。
-              调形状参数改 <code>layout-modes.css</code> 与 <code>style-modes.css</code>，改材质参数改 <code>glass.css</code>，改完刷新即生效，不需要重新构建。
+              可调的三层互相独立：<b>皮肤</b>（{{ SKINS.length }} 种配色：素纸朱红 / 石墨夜航）·<b>材质</b>（实体/玻璃）·<b>布局</b>（5 种空间构成）。
+              造型固定为粗野硬边（零圆角 + 墨描边 + 硬阴影），不再单独提供选项。
+              调形状参数改 <code>layout-modes.css</code>，改材质参数改 <code>glass.css</code>，改完刷新即生效，不需要重新构建。
             </p>
           </section>
         </div>
@@ -2037,45 +1997,8 @@ function openModelSettings() {
 .sv-layout-demo[data-layout-demo='grid'] .rail { left: 0; top: 0; width: 4px; height: 100%; }
 .sv-layout-demo[data-layout-demo='grid'] .main { left: 7px; top: 0; right: 0; height: 100%; }
 
-/* 风格示意缩略图：五张必须**看得出区别**，
-   所以每张按自己那套语言画（圆角/描边粗细/阴影形态/字体），而不是同一张换配色。
-   i.d1/d2/d3 是三层错落的卡片，直观呈现「浮起方式」的差异。 */
-.sv-styles { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 10px; margin-top: 12px; }
-.sv-style {
-  display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
-  padding: 11px 12px; text-align: left; cursor: pointer;
-  background: var(--bg-raised); border: 2px solid var(--border);
-  border-radius: var(--radius-md); color: var(--text);
-  transition: background var(--motion-base) var(--ease-standard);
-}
-.sv-style:hover { background: var(--bg-hover); }
-.sv-style.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
-.sv-style:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.sv-style:not(.on) .sv-skin-check { color: transparent; }
-.sv-style-demo { position: relative; width: 44px; height: 44px; flex: none; background: var(--bg-hover); }
-.sv-style-demo i { position: absolute; display: block; background: var(--bg-raised); border: 1px solid var(--ink); }
-.sv-style-demo i.d1 { left: 4px; top: 5px; width: 26px; height: 9px; }
-.sv-style-demo i.d2 { left: 9px; top: 18px; width: 26px; height: 9px; }
-.sv-style-demo i.d3 { left: 14px; top: 31px; width: 26px; height: 9px; }
-/* ① brutal：零圆角 + 2px 黑边 + 错位硬投影（每层往右下错开） */
-.sv-style-demo[data-style-demo='brutal'] i { border-width: 2px; border-color: var(--ink); border-radius: 0;
-  box-shadow: 3px 3px 0 var(--ink); }
-/* ② soft：大圆角 + 半透明细边 + 极淡软阴影（不投影，靠色阶分层） */
-.sv-style-demo[data-style-demo='soft'] i { border-width: 1px; border-radius: 5px;
-  border-color: color-mix(in srgb, var(--ink) 16%, transparent); box-shadow: none; opacity: .95; }
-.sv-style-demo[data-style-demo='soft'] i.d2 { opacity: .78; }
-.sv-style-demo[data-style-demo='soft'] i.d3 { opacity: .6; }
-/* ③ outline：零圆角 + 强调色 1px 线 + 零阴影（纯线条） */
-.sv-style-demo[data-style-demo='outline'] i { border-width: 1px; border-radius: 0;
-  border-color: var(--accent); box-shadow: none; background: transparent; }
-/* ④ neon：小圆角 + 强调色辉光（两层 box-shadow 叠出光晕） */
-.sv-style-demo[data-style-demo='neon'] i { border-width: 1px; border-radius: 3px; border-color: var(--accent);
-  box-shadow: 0 0 4px var(--accent), 0 0 10px color-mix(in srgb, var(--accent) 55%, transparent); }
-/* ⑤ flat：零圆角 + 无描边 + 无阴影（纯色块，靠透明度差分层） */
-.sv-style-demo[data-style-demo='flat'] i { border-width: 0; border-radius: 0; box-shadow: none; }
-.sv-style-demo[data-style-demo='flat'] i.d1 { background: var(--ink); }
-.sv-style-demo[data-style-demo='flat'] i.d2 { background: color-mix(in srgb, var(--ink) 58%, transparent); }
-.sv-style-demo[data-style-demo='flat'] i.d3 { background: color-mix(in srgb, var(--ink) 30%, transparent); }
+/* 风格示意缩略图（.sv-styles / .sv-style / .sv-style-demo）已随风格选择器移除：
+   造型收敛为 brutal 一种，无需预览卡（2026-10-07）。 */
 
 /* 材质：实体 / 玻璃 */
 .sv-mats { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 10px; margin-top: 12px; }

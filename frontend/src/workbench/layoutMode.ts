@@ -6,10 +6,10 @@
 // 用户说「风格大改」指的就是这个 —— 侧栏该在哪、主区该多宽、该居中还是铺满。
 //
 // 四层总览：
-//   data-skin      配色       skins.css         key: docmind.skin
-//   data-style     造型语言   style-modes.css   key: docmind.style
-//   data-material  材质       glass.css         key: docmind.material
-//   data-layout    空间构成   layout-modes.css  key: docmind.layout  ← 本文件
+//   data-skin      配色（含造型令牌） skins.css        key: docmind.skin
+//   data-style     造型语言           skins.css 令牌   key: docmind.style（已收敛为 brutal 一种）
+//   data-material  材质               glass.css        key: docmind.material
+//   data-layout    空间构成           layout-modes.css key: docmind.layout  ← 本文件
 //
 // 切换不需要刷新：改 <html data-layout> 后浏览器立即重排。
 // 纯 CSS 实现，不改任何 DOM 结构与业务逻辑。

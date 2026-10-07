@@ -1,17 +1,17 @@
 /* =============================================================
-   DocMind 皮肤层 —— 多风格切换（8 套，全部通过 WCAG AA 对比度审计）
+   DocMind 皮肤层 —— 配色切换（2026-10-07 收敛为 2 套，全部通过 WCAG AA 对比度审计）
 
-   用法：给 <html> 加 data-skin="<key>"：paper / graphite / celadon / kraft / swiss / noir / terminal / blueprint
+   用法：给 <html> 加 data-skin="<key>"：paper / graphite
    不设或设未知值时回落到 paper（= 现有默认外观，零回归）。
 
-   本文件只覆盖**令牌**（颜色 / 圆角 / 阴影 / 纹理），不写任何组件规则 ——
-   组件层一律引用 var(--token)，因此换皮肤不需要动组件。
-   覆盖层里原先写死的 border-radius:0 / 硬阴影已令牌化（--r-* / --sh-*），
-   否则非粗野皮肤（celadon 3px / kraft 2px）会被写死值锁死。
+   本文件管三件事：
+     ① 皮肤令牌（paper / graphite 两块）——颜色 / 圆角 / 阴影 / 纹理
+     ② 造型令牌默认值（--edge-* / --style-* / --r-full）——造型统一为 brutal 后
+        由原 style-modes.css 迁入（两页共用，style.css 只有工作台导入）
+     ③ 造型令牌接到全局元素的接驳规则（body / 标题字体字重）
+   组件层一律引用 var(--token)，换皮肤不需要动组件。
 
-   配色由技能脚本 gen_skins.py 解算生成：只指定底色与强调色相，
-   次级灰 / 第三级灰 / 状态色 / 纸底强调字全部二分明度自动调到达标，
-   勿手改色值（手改必塌对比度）。
+   ⚠️ 色值是按 WCAG AA（正文 4.5:1 / 描边 3:1）解算过的，勿手改色值（手改必塌对比度）。
    ============================================================= */
 
 /* ---------- 纸面纹理强度 + 圆角梯度（默认=素纸） ---------- */
@@ -20,6 +20,40 @@
   --skin-vignette: 16%;    /* 四角压暗强度 */
   --skin-dots: 0.5;        /* 荧光网点层不透明度 */
   --r-xs: 0px; --r-sm: 0px; --r-md: 0px; --r-lg: 0px;
+}
+
+/* ---------- 造型令牌默认值（= brutal，自 style-modes.css 迁入） ---------- */
+:root:root:root {
+  /* 圆角梯度（--r-full 例外：圆点 / 滑块永远是圆的，不参与皮肤圆角） */
+  --r-full: 999px;
+  /* 描边 */
+  --edge-w: 1px;  --edge-w-strong: 2px;
+  --edge-ink: var(--ink);
+  /* 字体与字重（风格层可以改「声音」，不只改色） */
+  --style-font-ui: var(--font-ui, 'Inter', 'Space Grotesk', 'Noto Sans SC', sans-serif);
+  --style-font-display: var(--font-display, 'Archivo', 'Space Grotesk', 'Noto Sans SC', sans-serif);
+  --style-font-mono: var(--font-mono, 'IBM Plex Mono', 'JetBrains Mono', monospace);
+  --style-weight-title: 800;
+  --style-weight-body: 400;
+  --style-tracking: 0em;
+  /* 纹理（与 skin 的 --skin-* 叠加：风格决定「要不要」，皮肤决定「多强」） */
+  --style-grain: 1;
+  --style-texture: 1;
+}
+
+/* ---------- 造型令牌接到真实元素（自 style-modes.css 迁入） ----------
+   body 字体字重走 --style-font-ui，标题 h1–h5 走 --style-font-display。
+   ⚠️ 这两条在问答页是承重墙：ask.css 的 .md-h 没设字族，
+   问答页的标题字族/字重全靠这里接上（Archivo Black / 800），删了会塌回正文字体。 */
+html[data-style] body {
+  font-family: var(--style-font-ui);
+  font-weight: var(--style-weight-body);
+  letter-spacing: var(--style-tracking);
+}
+html[data-style] :is(h1, h2, h3, h4, h5) {
+  font-family: var(--style-font-display);
+  font-weight: var(--style-weight-title);
+  letter-spacing: var(--style-tracking);
 }
 
 /* ==========================================================
@@ -127,331 +161,3 @@
   --skin-vignette: 22%;
   --skin-dots: 0.35;
 }
-
-/* ==========================================================
-   celadon（青瓷素雅）
-   淡青灰 + 靛青，3px 圆角 + 极淡软阴影，长文阅读最省眼
-   ========================================================== */
-:root:root:root[data-skin='celadon'] {
-  /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
-     于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
-     颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
-  color: #1e2b28;
-  background-color: #e6ece8;
-
-  /* 表面 */
-  --bg: #e6ece8;
-  --surface: #f1f5f2;
-  --bg-raised: #f8fbf9;
-  --bg-hover: #dbe4de;
-  /* 墨与文字（ink 兼作描边色） */
-  --ink: #1e2b28;
-  --text: #1e2b28;
-  --muted: #586763;
-  --text-muted: #586763;
-  --faint: #586763;
-  --text-faint: #586763;
-  --border: #1e2b28;
-  --border-strong: #1e2b28;
-  /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
-  --accent: #2d6b66;
-  --accent-loud: #2d6b66;
-  --accent-deep: #1e4744;
-  --accent-ink: #ffffff;
-  --accent-2: var(--accent);
-  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --accent-text: #27534e;   /* color-mix(accent 62%, ink) 解算值 */
-  /* 状态色（已按 4.5:1 解算） */
-  --danger: #b3473f;
-  --amber: #86651c;
-  --green: #2b775a;
-  --bg-selected: #f8fbf9;
-  --tool: #1f6f7a;
-  /* 圆角 */
-  --r-xs: 3px; --r-sm: 3px; --r-md: 3px; --r-lg: 3px;
-  /* 阴影 */
-  --sh-hard: 0 1px 2px rgba(0, 0, 0, .10);
-  --sh-hard-sm: 0 1px 2px rgba(0, 0, 0, .08);
-  --sh-hard-lg: 0 2px 6px rgba(0, 0, 0, .12);
-  --shadow-pop: 0 2px 8px rgba(0, 0, 0, .12);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, .07);
-  /* 纸面纹理 */
-  --skin-grain: 0.03;
-  --skin-vignette: 8%;
-  --skin-dots: 0;
-}
-
-/* ==========================================================
-   kraft（牛皮纸工坊）
-   暖褐纸 + 赭橙，2px 圆角 + 无投影，柔和低对比的纸质手感
-   ========================================================== */
-:root:root:root[data-skin='kraft'] {
-  /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
-     于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
-     颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
-  color: #2c241d;
-  background-color: #e3d7c1;
-
-  /* 表面 */
-  --bg: #e3d7c1;
-  --surface: #ece2ce;
-  --bg-raised: #f5ecda;
-  --bg-hover: #d9caae;
-  /* 墨与文字（ink 兼作描边色） */
-  --ink: #2c241d;
-  --text: #2c241d;
-  --muted: #685a49;
-  --text-muted: #685a49;
-  --faint: #685a49;
-  --text-faint: #685a49;
-  --border: #2c241d;
-  --border-strong: #2c241d;
-  /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
-  --accent: #b8541c;
-  --accent-loud: #b8541c;
-  --accent-deep: #8c4015;
-  --accent-ink: #ffffff;
-  --accent-2: var(--accent);
-  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --accent-text: #83421c;   /* color-mix(accent 62%, ink) 解算值 */
-  /* 状态色（已按 4.5:1 解算） */
-  --danger: #a53b32;
-  --amber: #7b5910;
-  --green: #2e694b;
-  --bg-selected: #f5ecda;
-  --tool: #1d6872;
-  /* 圆角 */
-  --r-xs: 2px; --r-sm: 2px; --r-md: 2px; --r-lg: 2px;
-  /* 阴影 */
-  --sh-hard: 0 1px 2px rgba(0, 0, 0, .10);
-  --sh-hard-sm: 0 1px 2px rgba(0, 0, 0, .08);
-  --sh-hard-lg: 0 2px 6px rgba(0, 0, 0, .12);
-  --shadow-pop: 0 2px 8px rgba(0, 0, 0, .12);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, .07);
-  /* 纸面纹理 */
-  --skin-grain: 0.07;
-  --skin-vignette: 10%;
-  --skin-dots: 0.2;
-}
-
-/* ==========================================================
-   swiss（纯黑白报）
-   纯白 + 纯黑 + 信号红，零圆角 + 硬阴影，瑞士国际主义
-   ========================================================== */
-:root:root:root[data-skin='swiss'] {
-  /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
-     于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
-     颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
-  color: #000000;
-  background-color: #ffffff;
-
-  /* 表面 */
-  --bg: #ffffff;
-  --surface: #ffffff;
-  --bg-raised: #fafafa;
-  --bg-hover: #efefef;
-  /* 墨与文字（ink 兼作描边色） */
-  --ink: #000000;
-  --text: #000000;
-  --muted: #525252;
-  --text-muted: #525252;
-  --faint: #525252;
-  --text-faint: #525252;
-  --border: #000000;
-  --border-strong: #000000;
-  /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
-  --accent: #e8112d;
-  --accent-loud: #e8112d;
-  --accent-deep: #b80e24;
-  --accent-ink: #fdfdfd;
-  --accent-2: var(--accent);
-  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --accent-text: #900b1c;   /* color-mix(accent 62%, ink) 解算值 */
-  /* 状态色（已按 4.5:1 解算） */
-  --danger: #c8102e;
-  --amber: #8a6100;
-  --green: #1a7f4b;
-  --bg-selected: #fafafa;
-  --tool: #1f6f7a;
-  /* 圆角 */
-  --r-xs: 0px; --r-sm: 0px; --r-md: 0px; --r-lg: 0px;
-  /* 阴影 */
-  --sh-hard: 5px 5px 0 var(--ink);
-  --sh-hard-sm: 3px 3px 0 var(--ink);
-  --sh-hard-lg: 8px 8px 0 var(--ink);
-  --shadow-pop: 5px 5px 0 var(--ink);
-  --shadow-soft: 0 2px 0 color-mix(in srgb, var(--ink) 8%, transparent);
-  /* 纸面纹理 */
-  --skin-grain: 0;
-  --skin-vignette: 0%;
-  --skin-dots: 0;
-}
-
-/* ==========================================================
-   noir（暗夜琥珀）
-   暖调深色 + 琥珀金，12px 大圆角 + 分层软阴影。夜间暖光环境，与冷调 graphite 互补
-   ========================================================== */
-:root:root:root[data-skin='noir'] {
-  /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
-     于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
-     颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
-  color: #f2ece3;
-  background-color: #1c1917;
-
-  /* 表面 */
-  --bg: #1c1917;
-  --surface: #231f1c;
-  --bg-raised: #2b2521;
-  --bg-hover: #38302a;
-  /* 墨与文字（ink 兼作描边色） */
-  --ink: #f2ece3;
-  --text: #f2ece3;
-  --muted: #b8a894;
-  --text-muted: #b8a894;
-  --faint: #b8a894;
-  --text-faint: #b8a894;
-  --border: #f2ece3;
-  --border-strong: #f2ece3;
-  /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
-  --accent: #f0a92e;
-  --accent-loud: #f0a92e;
-  --accent-deep: #f3bd5e;
-  --accent-ink: #000000;
-  --accent-2: var(--accent);
-  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --accent-text: #f1c273;   /* color-mix(accent 62%, ink) 解算值 */
-  /* 状态色（已按 4.5:1 解算） */
-  --danger: #f2705f;
-  --amber: #e8b44a;
-  --green: #5fc08a;
-  --bg-selected: #2b2521;
-  --tool: #288e9c;
-  /* 圆角 */
-  --r-xs: 12px; --r-sm: 12px; --r-md: 12px; --r-lg: 12px;
-  /* 阴影 */
-  --sh-hard: 0 1px 2px rgba(0, 0, 0, .55);
-  --sh-hard-sm: 0 2px 4px rgba(0, 0, 0, .40);
-  --sh-hard-lg: 0 10px 30px rgba(0, 0, 0, .52);
-  --shadow-pop: 0 16px 44px rgba(0, 0, 0, .46);
-  --shadow-soft: 0 1px 0 rgba(255, 255, 255, .07);
-  /* 纸面纹理 */
-  --skin-grain: 0.06;
-  --skin-vignette: 20%;
-  --skin-dots: 0.3;
-  --font-ui: 'Inter', 'Space Grotesk', 'Noto Sans SC', sans-serif;
-  --font-display: 'Fraunces', 'Archivo', serif;
-  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', monospace;
-}
-
-/* ==========================================================
-   terminal（终端绿）
-   近黑底 + 磷光绿，全等宽字体 + 零圆角 + 无投影。开发者/HUD 质感，代码友好
-   ========================================================== */
-:root:root:root[data-skin='terminal'] {
-  /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
-     于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
-     颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
-  color: #d7e6dc;
-  background-color: #0b0e0c;
-
-  /* 表面 */
-  --bg: #0b0e0c;
-  --surface: #101513;
-  --bg-raised: #161c19;
-  --bg-hover: #1f2723;
-  /* 墨与文字（ink 兼作描边色） */
-  --ink: #d7e6dc;
-  --text: #d7e6dc;
-  --muted: #8fa898;
-  --text-muted: #8fa898;
-  --faint: #8fa898;
-  --text-faint: #8fa898;
-  --border: #d7e6dc;
-  --border-strong: #d7e6dc;
-  /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
-  --accent: #5ee08a;
-  --accent-loud: #5ee08a;
-  --accent-deep: #89e8a9;
-  --accent-ink: #000000;
-  --accent-2: var(--accent);
-  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --accent-text: #8ce2a9;   /* color-mix(accent 62%, ink) 解算值 */
-  /* 状态色（已按 4.5:1 解算） */
-  --danger: #f2604c;
-  --amber: #d9b64a;
-  --green: #5ee08a;
-  --bg-selected: #161c19;
-  --tool: #258693;
-  /* 圆角 */
-  --r-xs: 0px; --r-sm: 0px; --r-md: 0px; --r-lg: 0px;
-  /* 阴影 */
-  --sh-hard: none;
-  --sh-hard-sm: none;
-  --sh-hard-lg: none;
-  --shadow-pop: none;
-  --shadow-soft: none;
-  /* 纸面纹理 */
-  --skin-grain: 0.10;
-  --skin-vignette: 26%;
-  --skin-dots: 0.5;
-  --font-ui: 'JetBrains Mono', 'IBM Plex Mono', monospace;
-  --font-display: 'JetBrains Mono', 'IBM Plex Mono', monospace;
-  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', monospace;
-}
-
-/* ==========================================================
-   blueprint（蓝图）
-   靛青纸 + 描图纸白，技术制图感。Inter 正文 + Rajdhani 标题，网格纹理
-   ========================================================== */
-:root:root:root[data-skin='blueprint'] {
-  /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
-     于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
-     颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
-  color: #16243d;
-  background-color: #e4e9f2;
-
-  /* 表面 */
-  --bg: #e4e9f2;
-  --surface: #eef1f7;
-  --bg-raised: #f5f7fb;
-  --bg-hover: #d6ddea;
-  /* 墨与文字（ink 兼作描边色） */
-  --ink: #16243d;
-  --text: #16243d;
-  --muted: #5a6a84;
-  --text-muted: #5a6a84;
-  --faint: #5a6a84;
-  --text-faint: #5a6a84;
-  --border: #16243d;
-  --border-strong: #16243d;
-  /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
-  --accent: #2f5fd0;
-  --accent-loud: #2f5fd0;
-  --accent-deep: #264ca6;
-  --accent-ink: #ffffff;
-  --accent-2: var(--accent);
-  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --accent-text: #264998;   /* color-mix(accent 62%, ink) 解算值 */
-  /* 状态色（已按 4.5:1 解算） */
-  --danger: #be392f;
-  --amber: #8a6100;
-  --green: #1b7849;
-  --bg-selected: #f5f7fb;
-  --tool: #1f6f7a;
-  /* 圆角 */
-  --r-xs: 6px; --r-sm: 6px; --r-md: 6px; --r-lg: 6px;
-  /* 阴影 */
-  --sh-hard: 0 1px 2px rgba(0, 0, 0, .10);
-  --sh-hard-sm: 0 1px 2px rgba(0, 0, 0, .08);
-  --sh-hard-lg: 0 2px 6px rgba(0, 0, 0, .12);
-  --shadow-pop: 0 2px 8px rgba(0, 0, 0, .12);
-  --shadow-soft: 0 1px 2px rgba(0, 0, 0, .07);
-  /* 纸面纹理 */
-  --skin-grain: 0.02;
-  --skin-vignette: 6%;
-  --skin-dots: 0;
-  --font-ui: 'Inter', 'Space Grotesk', 'Noto Sans SC', sans-serif;
-  --font-display: 'Rajdhani', 'Archivo', 'Space Grotesk', sans-serif;
-  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', monospace;
-}
-

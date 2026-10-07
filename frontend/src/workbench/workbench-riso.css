@@ -1,8 +1,7 @@
 /* DocMind「J 双色 Risograph」印刷语言层 + 双色纠偏覆盖层（工作台 / 开发舱）。
-   本文件由 frontend/src/workbench/App.vue 在 style.css / brutalist-overrides.css
-   之后导入（main.ts 先 import 这两个，再 import App.vue → 触发本文件），
-   因此可对 workbench/style.css 的令牌级缺陷做"覆盖式"修复，而不触碰并发写者
-   正在改动的 main.ts / style.css / workbench.html。
+   本文件由 frontend/src/workbench/App.vue 在 style.css / skins.css 等主样式
+   之后导入（main.ts 先 import 主样式，再 import App.vue → 触发本文件），
+   因此可对 workbench/style.css 的令牌级缺陷做"覆盖式"修复。
 
    严格双色纪律：全文件仅使用 ink(#14110f) 与 accent(#ff674d) 两色相，
    不引入任何第三色相（蓝 / 绿 / 琥珀等）。所有颜色均取自 J 令牌或墨/朱红。 */
@@ -62,18 +61,15 @@ body::after {
      改墨字后 6.54:1，达 WCAG AA。 */
   --accent-ink: #14110f;
   /* 消除蓝第三色相：--accent-2 原本 #1f5fe0，违反严格双色，统一指向朱红。
-     这会同时修正 style.css:482(color:var(--accent-2)) 与 style.css:917
-     (linear-gradient(accent, accent-2))、WorkspaceTabs.vue:114、SemanticLocateBar.vue:305、
-      brutalist-overrides.css:134 等所有令牌级蓝用法。 */
+     这会同时修正 style.css 里 .et-active::after 的渐变与 WorkspaceTabs.vue、
+     SemanticLocateBar.vue 等所有令牌级蓝用法。 */
   --accent-2: var(--accent);
   /* 标题字体栈补离线兜底（与 ask/ask-riso.css 同值，原因见那里）：
      原栈 'Archivo Black','Space Grotesk',… 缺本地打包的 'Archivo'，
      离线时标题会静默掉到系统字。 */
   --font-display: 'Archivo Black', 'Archivo', 'Space Grotesk', 'Noto Sans SC', sans-serif;
-  /* hover 压深用的深朱红：workbench/style.css 里**没有定义**，导致
-     brutalist-overrides.css:311 (.wb-proj-go:hover) 与 :326
-     (.wb-save-btn/.wb-question-link/.dg-primary:hover) 的
-     background: var(--accent-deep) 在计算值阶段失效 → hover 时按钮漏底变透明。
-     这里补上定义，值沿用落地页真源 #d83a1e。 */
+  /* hover 压深用的深朱红：style.css 里的 #c9301a 偏暗，这里统一成落地页真源
+     #d83a1e（与 ask/ask-riso.css 同值），.wb-proj-go / .wb-save-btn /
+     .wb-question-link / .dg-primary 的 hover 压深都用它。 */
   --accent-deep: #d83a1e;
 }

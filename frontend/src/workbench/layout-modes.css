@@ -3,9 +3,9 @@
    -------------------------------------------------------------
    触发：<html data-layout="fixed|focus|dock|split|grid">
 
-   四层分工（四者完全正交，可任意组合）：
-     data-skin     配色       skins.css        8 套
-     data-style    造型语言   style-modes.css  5 套
+   四层分工（2026-10-07 起：造型收敛为 brutal 一种，皮肤收敛为两套）：
+     data-skin     配色       skins.css        2 套
+     data-style    造型语言   skins.css 令牌   1 套（brutal）
      data-material 材质       glass.css        2 套
      data-layout   **空间构成** 本文件          5 套 ← 本层
 

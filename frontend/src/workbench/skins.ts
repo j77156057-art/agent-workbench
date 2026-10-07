@@ -15,10 +15,10 @@
 //  ④ localStorage 在隐私模式 / 策略禁用时直接抛，读写一律吞异常回退默认，
 //     绝不能让设置页或主界面因为存不下而白屏。
 
-export type SkinKey =
-  | 'paper' | 'graphite' | 'celadon' | 'kraft' | 'swiss'
-  // 第二批（2026-10-02）：补三个缺口
-  | 'noir' | 'terminal' | 'blueprint'
+// 2026-10-07 收敛：8 套 × 5 种造型的组合矩阵（40+ 种，谁也调不过来）砍到
+// 两套精调皮肤 × 1 种造型（brutal）。被砍皮肤的 localStorage 残值由
+// isSkinKey 校验拦下，自动回默认 paper，不需要迁移。
+export type SkinKey = 'paper' | 'graphite'
 
 export interface SkinDef {
   key: SkinKey
@@ -32,16 +32,8 @@ const KEY = 'docmind.skin'
 export const SKIN_CHANGE_EVENT = 'docmind:skin'
 
 export const SKINS: SkinDef[] = [
-  // —— 基础五套 ——
   { key: 'paper', name: '素纸朱红', desc: '暖骨白纸 + 朱红，零圆角 + 硬阴影。印刷感最强', swatch: ['#ece7db', '#14110f', '#ff674d', '#000000'] },
   { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e8e6e0', '#4dd0e1', '#000000'] },
-  { key: 'celadon', name: '青瓷素雅', desc: '淡青灰 + 靛青，3px 圆角 + 极淡软阴影。长文阅读省眼', swatch: ['#e6ece8', '#1e2b28', '#2d6b66', '#ffffff'] },
-  { key: 'kraft', name: '牛皮纸工坊', desc: '暖褐纸 + 赭橙，2px 圆角 + 无投影。柔和低对比纸质感', swatch: ['#e3d7c1', '#2c241d', '#b8541c', '#ffffff'] },
-  { key: 'swiss', name: '纯黑白报', desc: '纯白 + 纯黑 + 信号红，零圆角 + 硬阴影。瑞士国际主义', swatch: ['#ffffff', '#000000', '#e8112d', '#ffffff'] },
-  // —— 第二批：暖调深色 / 大圆角 / 字体换声 ——
-  { key: 'noir', name: '暗夜琥珀', desc: '暖调深色 + 琥珀金，12px 大圆角 + 分层软阴影。与石墨夜航互补', swatch: ['#1c1917', '#f2ece3', '#f0a92e', '#000000'] },
-  { key: 'terminal', name: '终端绿', desc: '近黑底 + 磷光绿，全等宽字体 + 零投影。开发者 / HUD 质感', swatch: ['#0b0e0c', '#d7e6dc', '#5ee08a', '#000000'] },
-  { key: 'blueprint', name: '蓝图', desc: '靛青纸 + 描图纸白，技术制图感。Inter 正文 + Rajdhani 标题', swatch: ['#e4e9f2', '#16243d', '#2f5fd0', '#ffffff'] },
 ]
 
 export const DEFAULT_SKIN: SkinKey = 'paper'

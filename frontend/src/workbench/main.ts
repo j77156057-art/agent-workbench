@@ -1,11 +1,10 @@
 import { createApp } from 'vue'
 import App from './App.vue'
+// 2026-10-07 并层：brutalist-overrides.css / style-modes.css / hierarchy-fix.css
+// 三个覆盖补丁已分别折进 style.css（组件级收口区段）与 skins.css（造型令牌）。
 import './style.css'
-import './brutalist-overrides.css'
 import './skins.css'
-import './style-modes.css'
 import './layout-modes.css'
-import './hierarchy-fix.css'
 import './glass.css'
 import { applyStoredSkin } from './skins'
 import { initStyle } from './styleMode'
