@@ -1173,7 +1173,10 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-card:hover { border-color: var(--border-strong) !important; box-shadow: var(--shadow-pop); transform: translateY(-1px); }
 @media (prefers-reduced-motion: reduce) { .wb-card { transition: none; } }
 @keyframes wb-modal-fade { from { opacity: 0; } to { opacity: 1; } }
-@keyframes wb-modal-rise { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+/* 用独立变换属性而非 transform：本规则带 !important，写 transform 会压掉
+   组件自己的居中位移（.pb-pop 的 translate(-50%,-50%) 曾被整条顶掉，
+   导致面板右移出屏）。translate/scale 与 transform 合成而非互斥。 */
+@keyframes wb-modal-rise { from { opacity: 0; translate: 0 8px; scale: .985; } to { opacity: 1; translate: 0 0; scale: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .wb-modal-backdrop, .wb-modal-shell, .wb-modal-shell button { animation: none !important; transition: none !important; }
 }
