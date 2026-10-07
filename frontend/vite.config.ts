@@ -111,8 +111,9 @@ export default defineConfig({
   server: {
     port: 5173,
     // 默认只绑 IPv6 loopback，用 http://127.0.0.1:5173 打不开（必须写 localhost），
-    // 排查时极易误判成"前端起不来"。显式绑所有地址。
-    host: true,
+    // 排查时极易误判成"前端起不来"。绑 IPv4 loopback 即可修好，且不暴露局域网
+    // （host: true 会绑 0.0.0.0，而 /api 代理指向有写能力的后端）。
+    host: '127.0.0.1',
     proxy: {
       '/api': 'http://127.0.0.1:8000',
     },
