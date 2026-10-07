@@ -7,11 +7,12 @@ import json
 import os
 import re
 import time
+import uuid
 import traceback as _traceback_mod
 import contextvars
 from collections import deque
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import nullcontext as _nullcontext
 from concurrent.futures import ThreadPoolExecutor
 
@@ -1925,6 +1926,13 @@ _RE_WRITE_INTENT_QUESTION = re.compile(
 # 所以只降成 uncertain：让模型去问用户一句，而不是断言用户没要求。
 _RE_WRITE_INTENT_HEDGED = re.compile(r"(?:吗|呢|吧)\s*[？?]?\s*$|[？?]\s*$")
 
+# 写租约的存续期。默认按「一次交互往返」给，不是按分钟 ——
+# 它要覆盖的是「agent 问用户『要改吗』→ 用户回『改吧』」这一段，外加本轮执行。
+_WRITE_LEASE_TTL_SECONDS = 300.0
+# 硬上限。租约是「本轮批准过」的物化，不是长期授权：放长意味着一句「改吧」
+# 之后整个会话都能写，而用户的意思是「这次可以」。
+_WRITE_LEASE_MAX_TTL_SECONDS = 900.0
+
 
 def _write_intent(question):
     """判定用户本轮是否授权写操作，返回 granted / denied / uncertain。
@@ -2997,6 +3005,9 @@ class Agent:
         # 工作流可临时授予一组能力。它只收窄当前 Agent 的工具执行范围，
         # 不替代用户审批、工具白名单或 execute_tool 的副作用保护。
         self.capability_lease = dict(capability_lease or {})
+        # 挂在类上供守卫引用 —— 测试要能直接读到上下界，否则「被夹住了」这句断言
+        # 就只能照抄一个魔数，那样测的是魔数不是行为。
+        self._WRITE_LEASE_MAX_TTL_SECONDS = _WRITE_LEASE_MAX_TTL_SECONDS
         # 子代理逐任务步数覆盖（_run_child 按工作流任务 max_steps 注入）：
         # None = 沿用 _step_budget(question) 的动态预算。
         self.tool_step_override = None
@@ -3059,6 +3070,92 @@ class Agent:
         """Whether a tool crosses a network/MCP boundary for timeout hooks."""
         spec = self._tool_spec(action_name)
         return bool(spec and spec.capability == Capability.NETWORK)
+
+    def _mint_write_lease(self, *, ttl_seconds=None, capabilities=None):
+        """铸一张写租约：本轮用户已授权写入的**物化凭证**。
+
+        为什么需要它：`_write_intent` 是**逐条消息、无状态**的纯函数，它只看
+        当前这一句话。于是多轮会话里最自然的批准语全部失效 ——
+        「改吧」「动手吧」「那就修吧」「你改吧」都判 denied（实测 8/10 批准语被拦）。
+        用户明确批准了，agent 仍然不动，而用户已经答过了，无从再答。
+
+        词表这条路已实测否决：加裸「改」/「修」会破三条守卫，其中两条伤的是
+        `e0bdb53`（否定作用域）与 `966212a`（条件式 fallback）刚修好的东西。
+        根因是结构性的 —— 词表逐条消息，而缺陷跨轮，往里加跨轮批准语必然要开始
+        处理「否定+批准语」「条件式+批准语」的组合，那是无限 regress。
+
+        所以改成在**判定结果**上做文章：本方法由 granted 轮次调用，把「用户已批准」
+        落成 `_lease_blocked` 能消费的结构。检查侧（`agent.py:4418` / `5146`）本来就
+        是活的，只是对话路径下 `capability_lease` 恒为空、永远放行 —— 这里补的就是
+        那座缺失的桥。
+
+        租约字段与 `game_workflow._ensure_capability_lease` 完全一致
+        （id / capabilities / created_at / expires_at / expires_at_epoch / status /
+        source），这样检查侧不需要为两种来源写两套判定。
+
+        `capabilities` 缺省时取全部写能力，**从工具声明反推**而不是硬编码 ——
+        依据是 `_is_write_tool`（同文件），与 `agent_runtime.tools._WRITE_TOOLS`
+        同源。
+
+        本方法**只铸造、不接判定**。故意留这个中间态：这样「铸了但没人消费」是可测的，
+        而不是在接上判定之后才发现铸造点选错了地方。
+        """
+        if capabilities is None:
+            write_caps = sorted({spec.capability.value for name in
+                                 (self.tool_allowlist or self.tools)
+                                 if (spec := self._tool_spec(name)) is not None
+                                 and spec.capability in (Capability.WRITE_LOCAL,
+                                                         Capability.WRITE_EXTERNAL)})
+            if not write_caps:
+                # 没有写能力就别铸租约。**这个判据必须在补只读之前**：
+                # 补完只读再判空，`selected` 永远非空，于是一份「只含只读」的
+                # 租约会被铸出来 —— 名字叫写租约，内容却是纯只读。
+                # （守卫 `test_no_lease_is_minted_when_no_write_capability_exists`
+                #   抓到的就是这个。）
+                return {}
+            selected = list(write_caps)
+        else:
+            selected = [str(item) for item in capabilities if str(item)]
+            write_caps = [c for c in selected
+                          if c in (Capability.WRITE_LOCAL.value,
+                                   Capability.WRITE_EXTERNAL.value)]
+            if not write_caps:
+                return {}
+        # 只读能力**必须**一并授予，否则这份租约会把 agent 锁在「能写但不能读」——
+        # 连要改的那个文件都读不到。而 `_lease_blocked` 的语义是**收窄**
+        # （不在 capabilities 里就拦），所以「只授写能力」会被当成「禁止读」。
+        # 实测：无租约时 read_file 放行，铸出只含 write_* 的租约后它变成
+        # 「当前工作流未租用 read_local 能力」。这比原缺陷更糟。
+        #
+        # 只加**只读**能力、不加 ADMIN/EXEC/NETWORK：授权写操作不蕴含授权跑命令
+        # 或改配置，那三类的边界另有其人。
+        selected += [cap.value for cap in (Capability.READ_LOCAL,
+                                           Capability.READ_EXTERNAL)]
+        selected = list(dict.fromkeys(selected))
+        selected = list(dict.fromkeys(selected))
+        if not selected:
+            return {}
+        now = time.time()
+        try:
+            ttl = float(ttl_seconds if ttl_seconds is not None
+                        else _WRITE_LEASE_TTL_SECONDS)
+        except (TypeError, ValueError):
+            ttl = float(_WRITE_LEASE_TTL_SECONDS)
+        # 上限刻意收紧到一轮：租约是「本轮批准过」的物化，不是长期授权。
+        # 放长意味着一句「改吧」之后整个会话都能写 —— 那不是用户的意思。
+        ttl = max(1.0, min(ttl, _WRITE_LEASE_MAX_TTL_SECONDS))
+        expires = now + ttl
+        return {
+            "id": "lease-" + uuid.uuid4().hex[:16],
+            "capabilities": selected,
+            "created_at": datetime.fromtimestamp(
+                now, timezone.utc).isoformat(timespec="seconds"),
+            "expires_at": datetime.fromtimestamp(
+                expires, timezone.utc).isoformat(timespec="seconds"),
+            "expires_at_epoch": expires,
+            "status": "active",
+            "source": "write_intent",
+        }
 
     def _lease_blocked(self, action_name):
         """Return ``(blocked, reason)`` for an expired or insufficient lease."""
