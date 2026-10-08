@@ -436,6 +436,30 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
    * 同一轮还修了一个**真跑才能发现**的缺陷：守卫漏了并行批次路径，
      而真模型恰好每轮批量发调用 —— `7f9d246`
 
+6. **深度思考模式的两个上游硬约束（DeepSeek 官方文档）** —— 一条是结构性地雷，一条是静默偏差。
+   都已写进 `llm.py` 的 `chat()` 里那段 `thinking == "toggle"` 注释，这里是索引。
+
+   **① `tool_choice` + 思考模式 = 400（地雷，现在没炸是运气）**
+   DeepSeek 文档原文：*required and named tool choices are not supported in
+   thinking mode; the API returns a 400 error.*
+   → 全仓目前**从不发 `tool_choice`**（只发 `tools`，走默认 auto），所以没踩到。
+     但这不是设计，是没人用过。**谁为了「强制让模型用工具」加上它，
+     所有开了思考的用户会全线 400，且报错不会指向思考模式。**
+   → 真要加时：必须先判 `thinking_on` 并二选一，或把工具轮降级为非思考轮。
+
+   **② `temperature` 在思考模式下静默失效（已存在的偏差）**
+   DeepSeek 文档原文：*...will not trigger an error but will also have no effect.*
+   → `llm.py` 的 `create()` 无条件发 `temperature`。用户设 1.0 想有创造性，
+     开思考后实际用 provider 默认值，**不报错、无任何信号**。
+   → **待决定**：抑制该参数并在 UI 说明，还是接受这个偏差。
+     我倾向前者（显式告知）而不是默默发一个不生效的参数。
+
+7. **`b710f2d`（deepseek-flash 思考画像修复）尚未真跑验证。**
+   只核实到：参数形状合文档、`tool_choice` 不发、`reasoning_content` 的映射已存在。
+   剩下只有一次真实请求能回答：**用户的 key + endpoint 真的返回 `reasoning_content` 吗？**
+   ⚠ 它的失效模式恰好是「开关能点但没效果」—— 最难发现的那类，
+   而用户每天在用这个模型。**验它比继续加新功能更值。**
+
 ### 该由人决定的（我不替人做）
 
 5. **Python 侧全量 `--require-hashes`** —— 42 行 → **172 行**；
@@ -448,6 +472,9 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
    `^` 只在**有人主动改依赖**时才产生漂移。
 7. **定时 `npm audit`** —— 加它之前得先决定「**报出来之后怎么办**」：
    一开就是一批已知的传递依赖漏洞告警，没有处置流程就是噪声。
+8. **开深度思考后，`temperature` 要不要抑制并在 UI 说明**
+   （DeepSeek 在思考模式下静默忽略它，见上面「还欠着的」第 6 条 ②）——
+   我倾向抑制 + 明确告知，而不是默默发一个不生效的参数。但这是产品取舍，你定。
 
 ### 已完成 / 已撤回（**别重做**）
 
