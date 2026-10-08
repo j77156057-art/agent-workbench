@@ -2178,6 +2178,7 @@ async def chat(
     plan_mode: str = Form(""),
     web_mode: str = Form(""),
     thinking_mode: str = Form(""),
+    narration_mode: str = Form(""),
     images: list[UploadFile] = File(default=None),
 ):
     question = (question or "").strip()
@@ -2363,6 +2364,19 @@ async def chat(
     web_enabled_override = web_mode.strip().lower() in ("1", "true", "yes", "on")
     thinking_enabled_override = (thinking_mode.strip().lower() in ("1", "true", "yes", "on")
                                  if thinking_mode.strip() else None)
+    # 过程解说：**空字符串 = 不覆盖**，于是 agent.NARRATION 的默认（开）生效。
+    # ⚠ 不能写成 `in (...)` 无条件 —— 那样前端不传这个字段时会把解说关掉，
+    # 变成「只有显式开启才开」，与默认开的契约相反。
+    #
+    # ⚠⚠ 这里的 `isinstance` 不是洁癖，是**踩过的坑**：本处理器允许被测试与脚本
+    # 直接调用（见上面 request/question 的注释「测试就是这么调的」），那种调用方式下
+    # **默认值不会被 FastAPI 注入**，拿到的是 `Form("")` 这个对象本身而不是字符串。
+    # 于是 `narration_mode.strip()` 抛 `AttributeError: 'Form' object has no attribute
+    # 'strip'` —— 而且是在**加了新参数之后**才炸，因为既有测试都显式传了旧参数。
+    # 只判一次类型比让每个直接调用方都记得补一个参数可靠。
+    _narration_raw = narration_mode if isinstance(narration_mode, str) else ""
+    narration_override = (_narration_raw.strip().lower() in ("1", "true", "yes", "on")
+                          if _narration_raw.strip() else None)
     # Routing metadata belongs in a real system message.  Prefixing it onto
     # the user question made small models echo the internal prompt verbatim
     # (and polluted the conversation history with implementation details).
@@ -2454,6 +2468,7 @@ async def chat(
                         web_enabled=web_enabled_override,
                         thinking_enabled=thinking_enabled_override,
                         tool_mode=tool_mode_override,
+                        narration=narration_override,
                         plan_mode=plan_mode_override,
                         cancel_event=worker_stop,
                     )

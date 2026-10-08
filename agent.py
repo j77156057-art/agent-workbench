@@ -94,6 +94,33 @@ TOOL_MODE = os.getenv("DOCMIND_TOOL_MODE", "auto").strip().lower()
 #: 未知 provider 一律不在此集合，`_native_enabled()` 会退回文本协议，所以这份名单
 #: 漏一个的后果是"退回更保守的通道"，不是"炸掉"。
 _NATIVE_CAPABLE = {"qwen", "deepseek", "ollama", "llamacpp", "openai", "azure", "custom"}
+
+#: 是否允许模型在工具调用之间说话（默认开）。
+#:
+#: **先说清这个开关为什么存在**，因为它的名字容易让人误解：
+#: 它**不是**「要不要显示模型的话」—— 只要模型说话，DocMind 早就把内容原样
+#: 收进 `turn.reasoning` 了（实测一次提问 129270 字符）。它管的是更靠上游的一件事：
+#: **要不要在提示词里允许模型写「工具调用之间的话」**。
+#:
+#: 核实到的三家做法（见 `docs/harness-research-verified.md`）：
+#:   · **opencode 没有这个开关**。它的渲染侧对模型散文只有一个判据：非空
+#:     （`message-part.tsx:717`、`index.tsx:1690`）。散文多少**由提示词决定** ——
+#:     `prompt/gpt.txt:81-97` 要求写进度更新，`prompt/default.txt:17-19` 要求
+#:     「MUST answer concisely with fewer than 4 lines」。
+#:   · **Hermes 有**（`interim_assistant_messages` / `show_commentary`，均默认 true）。
+#:
+#: 也就是说：DocMind 这个开关**不是 opencode 那种东西**。DocMind 的
+#: `_NATIVE_FORMAT_CONTRACT` 第 3 条明文禁止轮中说话（「不要用正文描述我接下来要调用
+#: 什么来代替真正的调用」），而 opencode 的提示词在某些模型下反而**要求**写。
+#:
+#: ⚠ **默认开的同时必须带标签剥离**，否则默认行为是倒退：
+#: 实测（2026-10-08, qwen3.6:35b-a3b）模型在该契约下仍然吐 `Thought:` 协议文本，
+#: 把它原样放进活动时间线就是给用户看协议垃圾。所以 `narration` 开启时，
+#: `_PromptNarrationFilter` 会剥掉协议标记后才放行（见其 docstring 的实测数据）。
+NARRATION = os.getenv("DOCMIND_NARRATION", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
 # 子代理最大递归深度（父=0）
 SUBAGENT_MAX_DEPTH = int(os.getenv("DOCMIND_SUBAGENT_MAX_DEPTH", "2"))
 # 0 means the persisted user setting supplies the child Agent's step limit.
@@ -444,7 +471,38 @@ _NATIVE_TAIL = """【收尾要求 · 原生通道】
 """
 
 
-def _prompt_for_channel(system_prompt: str, native: bool) -> str:
+#: `NARRATION` 开启时追加的条款。
+#:
+#: **为什么放在 `_NATIVE_TAIL` 之后而不是改 `_NATIVE_FORMAT_CONTRACT` 第 3 条**：
+#: 第 3 条（「不要用正文描述"我接下来要调用什么"来代替真正的调用」）不是写错了，
+#: 它在**防一件真实的事** —— 模型用散文代替真正的工具调用，于是工具没派发出去。
+#: 那个坑不能重新打开。所以这里**只撤销它的副作用**（不许说），**不动它的本意**
+#: （不许用散文代替调用）：调用照发，只是允许在**调用之外**补一句人话。
+#:
+#: ⚠ 位置也有讲究：`_prompt_for_channel` 的 docstring 记了一条实测教训 ——
+#: 两套契约并存时模型「很可能照着**最后**读到的那份走」。所以本条款必须排在
+#: `_NATIVE_TAIL` **之后**，而 `_NATIVE_TAIL` 本身就是全文最后一段。
+_NARRATION_CLAUSE = """
+
+【过程解说 · 可选 · 只影响你说话，不影响你怎么调用】
+除上面的要求外，本轮**额外允许**你在发出工具调用**之前或之后**，用一两句自然
+语言说明你正在做什么、为什么这么做。
+
+三条硬约束：
+1. **话说完了，调用照发。** 上面第 3 条继续生效：不要用正文代替真正的调用。
+   顺序是「先说一句，再发调用」，不是「说一句就不调用了」。
+2. **不要写任何格式标记。** 不写 `Thought:` / `Action:` / `Final Answer:`，
+   也不要把内部推理过程贴给用户 —— 你的内部推理另有专门通道呈现。
+   这里只写**面向用户的进展说明**，一两句即可。
+3. **说完结论就停。** 最后一轮（不再需要调用）直接给完整答案，
+   不要先写一段「我要整理一下」再写答案。
+
+用户能看到你每一步的说明，这是本轮特意开启的。
+"""
+
+
+def _prompt_for_channel(system_prompt: str, native: bool,
+                        narration: bool = False) -> str:
     """把系统提示里描述文本协议的两处内容换成本通道真正生效的说法。
 
     两处都要换，缺一不可：
@@ -454,12 +512,18 @@ def _prompt_for_channel(system_prompt: str, native: bool) -> str:
     只换开头、指望中段/末尾的 override 条款压住，是本次实测失败的做法：
     两套契约并存时，模型很可能照着**最后**读到的那份走。
     """
+    # ⚠ **每条出口都要显式带上叙述条款**，漏一条就意味着「那条路径上叙述没开」。
+    # 顺序有讲究：条款必须排在**全文最后**（`_NATIVE_TAIL` 之后）。依据就是上面
+    # docstring 那条实测 —— 两套契约并存时模型照最后读到的那份走。
+    _with_narration = narration and _NARRATION_CLAUSE not in system_prompt
+
     if not native or _NATIVE_CONTRACT_MARK in system_prompt:
-        return system_prompt
+        return system_prompt + (_NARRATION_CLAUSE if _with_narration else "")
 
     tail_at = system_prompt.find(_REACT_TAIL_MARK)
     if tail_at == -1:
-        return _NATIVE_FORMAT_CONTRACT + system_prompt
+        return (_NATIVE_FORMAT_CONTRACT + system_prompt
+                + (_NARRATION_CLAUSE if _with_narration else ""))
     head = system_prompt[:tail_at].rstrip()
 
     # 按**精确长度**切掉开头那份契约，不能按"第一个空行"截——契约块内部本来就有
@@ -478,7 +542,8 @@ def _prompt_for_channel(system_prompt: str, native: bool) -> str:
         else:
             head = _NATIVE_FORMAT_CONTRACT + head
 
-    return head.rstrip() + "\n\n" + _NATIVE_TAIL
+    return (head.rstrip() + "\n\n" + _NATIVE_TAIL
+            + (_NARRATION_CLAUSE if _with_narration else ""))
 
 
 _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
@@ -2614,6 +2679,146 @@ class _ReactTokenFilter:
         return out
 
 
+class _PromptNarrationFilter:
+    """把「工具轮里模型写的散文」从协议文本里剥出来，供活动时间线使用。
+
+    ## 它存在的理由（实测，不是推断）
+
+    2026-10-08 用真模型 `qwen3.6:35b-a3b` 跑只读工具题，逐事件读数：
+
+    ```
+    thought (2) 用户问的是 a.py 里的 add 函数、b.py 里的对应函数，以及
+                test_a.py 是否测试了它。我需要读取这三个文件来给出准确答案。
+                先读取 a.py 和 b.py 来看 add 函数
+    thought (2) （与上一条**逐字相同**）
+    ```
+
+    三件事同时暴露：
+
+    1. **模型确实会写轮中散文** —— 所以「让模型说话」这件事有供给，不需要造。
+    2. **它写的是 `Thought:` 协议形态** —— 而 `_NATIVE_FORMAT_CONTRACT` 第 3 条
+       明文禁止这个形态。**提示词说了不算，模型照样写。**
+    3. **同一条被发了两遍** —— 一次工具轮产两个逐字相同的 `thought`。
+       对应 Hermes 记录的问题（`cli_stream_mixin.py:658-661`，注释引 issue
+       **#10478**）：一批同工具调用会重复播报同一行。**DocMind 现在就有这个症状。**
+
+    所以这个过滤器做两件事：**剥协议标记** + **同轮去重**。
+    不做去重的话，开启叙述后活动时间线会出现逐字重复的行 —— 那比不叙述更糟。
+
+    ## 为什么不复用 `_ReactTokenFilter`
+
+    因为那个是**协议状态机**（要判断标记跨 chunk、要在 `Final Answer:` 处切换到正文），
+    而这里要在**已收齐的一整段文本**上做整体裁剪。把两者混在一起会让状态机多出一个
+    「旁路已产出」的分支 —— 而那个分支永远没人测。分开之后各自可单独测。
+
+    ## 单标签源（借 Hermes 的一条经验）
+
+    Hermes 把所有 reasoning 标签名收成一份 `THINK_TAG_NAMES`
+    （`agent/think_scrubber.py:18-28`），注释说明「所有隐藏 reasoning 的入口都绑到
+    这一份；在这里加一个标签就处处生效」。本类照做 —— 标签只在这一处定义。
+    """
+
+    #: **单一标签源。** 加标签只改这里（中文标签一并收，与 Hermes 一致）。
+    LABELS = (
+        "Thought:", "Action:", "Action Input:", "Observation:",
+        "Final Answer:", "Reflection:",
+        "思考:", "推理:", "反思:", "行动:", "观察:", "最终答案:",
+    )
+
+    #: 标签分两类，这个区分**是本类的核心**，第一版就是漏了它：
+    #:
+    #: · `prose` —— 标记后面**就是人话**（`Thought:` 就是模型的自言自语）。
+    #:   剥掉标记、保留内容。
+    #: · `body` —— 标记后面是**协议正文**（工具名、参数、返回）。
+    #:   连内容一起丢，否则活动时间线会混进 `read_file(path=a.py)` 这种行。
+    #:
+    #: ⚠ 第一版把两类当一类处理（凡是行首带标记就丢整行），
+    #: 结果 `Thought: 用户问的是…` 被整行丢掉 —— 实测那条 80 字解说**全部消失**。
+    #: 是 1 秒自检的第 1 项抓出来的，不是读代码看出来的。
+    _KIND = {
+        "Thought:": "prose", "Reflection:": "prose",
+        "思考:": "prose", "推理:": "prose", "反思:": "prose",
+        "Action:": "body", "Action Input:": "body", "Observation:": "body",
+        "Final Answer:": "body", "行动:": "body", "观察:": "body",
+        "最终答案:": "body",
+    }
+
+    def __init__(self, dedupe: bool = True):
+        #: 已产出过的指纹集合 —— 挡住「同一条被发两遍」。
+        self._seen: set[str] = set()
+        self._dedupe = bool(dedupe)
+        # 长标签优先，避免 `Action:` 抢在 `Action Input:` 前面匹配
+        # （实测两者不会互相误判，但按长度排是零成本的保险）。
+        self._ordered = tuple(sorted(self.LABELS, key=len, reverse=True))
+
+    @staticmethod
+    def _fingerprint(text: str) -> str:
+        """忽略空白与 Markdown 装饰后的指纹。
+
+        模型两次写同一件事时，标点与换行常常不同（实测两次**完全**相同，但那是运气），
+        所以指纹必须去掉空白，否则去重形同虚设。
+        """
+        cleaned = "".join(ch for ch in text if not ch.isspace())
+        return cleaned.replace("*", "").replace("`", "")[:400]
+
+    def _classify(self, line: str):
+        """返回 `(kind, label)`；没命中任何标签返回 `("", "")`。"""
+        for lab in self._ordered:
+            if line.startswith(lab):
+                return self._KIND.get(lab, "body"), lab
+        return "", ""
+
+    def strip_protocol(self, text: str) -> str:
+        """剥掉协议文本，只留人能读的那部分。
+
+        规则（按实测形态定，不是照抄 ReAct 协议）：
+
+        * `prose` 标签（`Thought:` / `思考:` …）：**剥掉标记、保留后面的人话**
+        * `body` 标签（`Action:` / `Action Input:` / `Observation:` /
+          `Final Answer:` …）：**整行丢掉** —— 那是协议正文，属于工具轨迹
+        * 压掉连续空行
+        """
+        if not text:
+            return ""
+        kept: list[str] = []
+        for raw in str(text).splitlines():
+            line = raw.strip()
+            if not line:
+                if kept and kept[-1] != "":
+                    kept.append("")
+                continue
+            kind, lab = self._classify(line)
+            if kind == "body":
+                continue
+            if kind == "prose":
+                line = line[len(lab):].strip()
+            if line:
+                kept.append(line)
+        return "\n".join(kept).strip()
+
+    def offer(self, text: str) -> str:
+        """返回「可以放进活动时间线」的文本；不可用时返回空串。
+
+        **三道门依次过**：剥协议 → 去掉没有实质内容的空壳 → 同轮去重。
+        """
+        if not text:
+            return ""
+        cleaned = self.strip_protocol(text)
+        # ⚠ 不能只判 `if not cleaned`：模型有时只写「好的。」这类空壳，
+        # 放进活动时间线等于噪音。门限取 8 字符 —— 低于它的人类可读叙述不存在。
+        if len(cleaned) < 8:
+            return ""
+        if self._dedupe:
+            fp = self._fingerprint(cleaned)
+            if fp in self._seen:
+                return ""
+            self._seen.add(fp)
+        return cleaned
+
+    def reset(self) -> None:
+        self._seen.clear()
+
+
 class _ReasoningCoalescer:
     """把逐 token 的思考流合并成段落级事件。
 
@@ -3216,7 +3421,7 @@ class Agent:
     def __init__(self, llm=None, session_id=None, tool_mode=None, plan_mode=False,
                  depth=0, tool_allowlist=None, project_id=None, tool_registry=None,
                  application_id="developer", system_prompt=None, capability_lease=None,
-                 run_budget=None):
+                 run_budget=None, narration=None):
         self.llm = llm or LLMClient()
         # session_id 为空 = 纯内存会话（测试/临时，行为与旧版一致）；
         # 非空则按会话落盘、跨重启恢复，并启用超阈值摘要压缩。
@@ -3271,6 +3476,9 @@ class Agent:
             except Exception:
                 pass
         self.tool_mode = (tool_mode or TOOL_MODE or "auto")
+        # `narration=None` 表示「不覆盖」，于是模块级 `NARRATION`（默认开）生效。
+        # 传 False 才关 —— 所以「默认开」是这里的**真默认**，不是靠调用方记得传。
+        self.narration = bool(NARRATION if narration is None else narration)
         self.plan_mode = bool(plan_mode)
         self.depth = int(depth or 0)
         # A top-level turn creates this budget; child agents inherit the same
@@ -3581,7 +3789,7 @@ class Agent:
         不在后续轮次重发旧图（避免上下文无谓膨胀）。
         """
         messages = [{"role": "system", "content": _prompt_for_channel(
-            self.system_prompt, self._native_enabled())}]
+            self.system_prompt, self._native_enabled(), narration=self.narration)}]
         now = datetime.now().astimezone()
         messages.append({"role": "system", "content": (
             f"【当前时间】{now.isoformat(timespec='seconds')}。今天指 {now.date().isoformat()}，"
@@ -3867,6 +4075,7 @@ class Agent:
 
     def run(self, question, stream=True, images=None, deadline=None, *,
             web_enabled=None, thinking_enabled=None, tool_mode=None, plan_mode=None,
+            narration=None,
             llm=None, system_context=None, ingested_sources=None, cancel_event=None):
         """执行一次问答（逐请求开关注入 + trace 埋点与会话落盘的外壳）。
 
@@ -3886,7 +4095,7 @@ class Agent:
         """
         # 生成器体开头：快照原值，None 表示不改动该项。
         prev = (self.web_enabled, self.thinking_enabled, self.tool_mode, self.plan_mode,
-                self._request_system_context, self.ingested_sources)
+                self.narration, self._request_system_context, self.ingested_sources)
         prev_llm = self.llm
         if web_enabled is not None:
             self.web_enabled = bool(web_enabled)
@@ -3894,6 +4103,8 @@ class Agent:
             self.thinking_enabled = bool(thinking_enabled)
         if tool_mode is not None:
             self.tool_mode = tool_mode
+        if narration is not None:
+            self.narration = bool(narration)
         if plan_mode is not None:
             self.plan_mode = bool(plan_mode)
         if llm is not None:
@@ -3929,7 +4140,7 @@ class Agent:
             _memory.reset(memory_token)
             reset_project_intro_request(project_intro_token)
             (self.web_enabled, self.thinking_enabled,
-             self.tool_mode, self.plan_mode,
+             self.tool_mode, self.plan_mode, self.narration,
              self._request_system_context, self.ingested_sources) = prev
             self.llm = prev_llm
             for _token, _var in ((web_ctx_token, _session_web_enabled),
@@ -4296,6 +4507,10 @@ class Agent:
         last_action = None
         last_obs = None
         forced_finals = 0  # 已发出的强制收尾提示次数（步数耗尽 / 重复空转共用一次机会）
+        # 过程解说的剥协议 + 同轮去重器。**每轮 run() 一个**，因为去重集合必须
+        # 只在「同一轮的工具调用之间」生效 —— 跨轮去重会把用户第二次问同一件事时
+        # 模型 legitimately 重复说的话也吃掉。
+        narration_filter = _PromptNarrationFilter()
         forced_final_reason = ""  # 触发强制收尾的原因，证据兜底 final 里原样告知用户
         evidence = []  # 本轮已执行工具的简要清单（action(input)），耗尽时兜底用
         # 写工具真落盘的文件（由工具在成功那一步自报，不由 action 文本反推）。
@@ -4670,6 +4885,16 @@ class Agent:
                           "action_input": native_override[1], "final": None}
             if parsed["thought"]:
                 yield {"type": "thought", "text": parsed["thought"]}
+            elif self.narration and parsed["action"]:
+                # 工具轮里模型自己写的散文（没写 `Thought:` 标记的那种）。
+                # 剥掉协议标记后才敢用 —— 实测模型在该契约下仍会吐 `Thought:`。
+                #
+                # ⚠⚠ **`parsed["action"]` 这个条件不能省**：少了它，最后一轮
+                # （不派发工具、直接给答案）会把**最终答案本身**当成解说塞进
+                # 活动时间线，用户看到同一段话出现两次，且时间线里那份是残句。
+                _narration = narration_filter.offer(acc)
+                if _narration:
+                    yield {"type": "thought", "text": _narration}
             # 计划模式：从首轮输出抽取计划，作为 plan 事件上抛一次（正文仍走原流程）
             if self.plan_mode and not plan_emitted:
                 _steps = _extract_plan(acc)
