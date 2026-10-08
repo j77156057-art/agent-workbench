@@ -423,7 +423,44 @@ proxy_tools 的全部版本：0.1.0（2014-05-05，sdist only，作者 Jonathan 
 > 或者对这类「已知只有 sdist 的传递依赖」用 `<constraints>` 文件加界。
 
 **而全量的 `--require-hashes` 能一次性覆盖它** —— 但那是 B 路的代价。
-**两件事该分开决定：钉死这个包是十分钟的活；hash 全量钉死是契约变更。**
+**两件事该分开决定。**
+
+##### ✅ 已钉：`proxy_tools==0.1.0`（`requirements.txt` 末尾独立分组）
+
+**动手前先答了一个可能让「十分钟小活」变成「全量工程」的问题**：
+单独给那一行加 `--hash`，会不会让 pip 要求**整个文件**都进 hash 模式？
+
+`probe_pin_one_hash.py` 实测（全程 `--dry-run` + `--ignore-installed`）：
+
+| 组 | 结果 |
+|---|---|
+| A. 只钉版本 `==0.1.0` | ✅ 可行 |
+| B. **单文件单行**带 `--hash` | ✅ 可行 |
+| C. **多行文件里混一个带 `--hash`** | ❌ `ERROR: In --require-hashes mode, all requirements must have their versions pinned with ==` |
+| D. **故意写错 hash** | ❌ `THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE` |
+
+**D 组是 hash 的唯一强判据** —— 正确 hash 通过只是弱证据（可能根本没校验），
+**错 hash 必须失败**才证明 pip 真的在校验内容。
+
+**所以结论是「只钉版本，不加 hash」**：加一行 hash 就等于变成全量 hash 钉死
+（42 行 → 172 行），**那个决定不该被这一行顺带拖进来**。
+
+⚠ **这个实验第一版是无效的，而它一开始给出的答案是错的**：
+
+第一版没加 `--ignore-installed`，四组全返回
+`Requirement already satisfied` —— pip 看到本地已装就跳过了，
+**根本没下载任何东西**，于是「hash 会不会强制校验」这个问题
+**一次都没被验证**。而「跳过」与「成功」是**同一个读数**（退出码 0）。
+
+> **判据必须排除「什么都没发生」这个可能。**
+> 这是今晚第六次同类（恒真判据 → 无效变异 → 编造路径 →
+> 分母算错 → 抽样当全量 → 跳过当成功）。
+
+守卫 `tests/test_proxy_tools_pinned.py` 三条，五条变异实测全部符合预期
+（删整行 / 改成裸包名 / 顺手加 hash / 删掉那段解释 / 无效对照）。
+**第二、三条挡的都是「顺着人的直觉走」的动作** ——
+下一个人看到「没人 import 它」「版本号好老」「钉死更彻底」就动手，
+那完全合理，而它会把洞重新打开或把契约改掉。
 
 #### 「暴露面」分析 —— 为什么 npm 那两条差距其实不大（两次更正后的结论）
 

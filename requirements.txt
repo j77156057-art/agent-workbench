@@ -68,3 +68,30 @@ PyYAML           # data_formats.py
 sentence-transformers   # agent_runtime/retrieval.py（弱证据：本机未装发行包，映射靠同名）
 starlette        # api.py, api_routes/agent.py, api_routes/engine.py 等 32 处
 pywin32          # make_shortcut.py 的 pythoncom / win32com / win32con 三个模块（同一发行包）
+
+# ---- 传递依赖里唯一的「无版本约束 + 只有 sdist」那个，显式钉死 ----
+#
+# proxy_tools 不是我们的直接依赖，是 pywebview==6.2.1 的 requires_dist 拉进来的，
+# 而那条声明**没有版本上下界**。于是每次 `pip install --upgrade`（见
+# dependency_bootstrap.py:394）都会去 PyPI 重新解析它。
+#
+# 为什么这个包值得单独钉：
+#   * 它**不在**上面任何一组里 —— 也就是说在本次改动之前，
+#     **我们没有任何版本约束保护它**；
+#   * PyPI 上它**六年只发过 0.1.0 一个版本**（2014-05-05），
+#     抢注 / 接管成本极低；
+#   * npm 侧我们已经用 `frontend/.npmrc` 的 `min-release-age=2` 防这一类，
+#     而 Python 侧当时**零防护**（pip 调用无 --only-binary / --require-hashes）。
+#
+# 为什么**不加 --hash**（这一点是实测出来的，不是省事）：
+#   给这一行加 `--hash=sha256:...` 会让 pip 进入 `--require-hashes` 模式，
+#   而那个模式要求**本文件所有行**都用 `==` 钉死。实测报错原文：
+#     ERROR: In --require-hashes mode, all requirements must have their
+#     versions pinned with ==.
+#   也就是说加一行 hash = 变成「全量 hash 钉死」（本文件 42 行 -> 172 行）。
+#   那件事该单独决定，不该被这一行顺带拖进来。
+#
+# 依据与探针：docs/harness-research-verified.md §1.4，
+# 探针 tools/mutation/probe_pin_one_hash.py（可复算），
+# 守卫 tests/test_proxy_tools_pinned.py
+proxy_tools==0.1.0
