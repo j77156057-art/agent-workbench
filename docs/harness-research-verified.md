@@ -152,11 +152,61 @@ README 的 "Supply-chain hardening" 一节：
 | 1 | 「`lib/index.mjs` 是 postinstall 的产物，包里没有」 | **不成立** | `npm pack --dry-run` 显示 tarball 里**有**（21 个文件） |
 | 2 | 「postinstall 会把 v3 变体复制上去」 | **机制对，但幂等** | `copy()` 里 `content.replace(/'vue'/g, "'vue'")` —— 我们装的就是 vue，替换等于原样。实测 `index.mjs` 与 `v3/index.mjs` **逐字哈希相同** |
 | 3 | 「`esbuild` 的 postinstall 在下载二进制，关了 CI 的 build 会失败」 | **不成立** | 二进制来自 **optionalDependency**（`@esbuild/win32-x64`，已装）。`install.js` 的正常路径是 `require.resolve('@esbuild/win32-x64/bin/esbuild')`（行255）；下载只在 optional 包缺失时兜底，而它自己的报错文案（行259-262）明说「**用 `--no-optional` 才会走那条路**」 |
-| 4 | 「`--ignore-scripts` 大概率可行」 | **仍未验证** | 理由（3）指向可行，但**读代码 ≠ 跑过** |
+| 4 | 「`--ignore-scripts` 大概率可行」 | **✅ 实测：确实可行，且零影响** | 见下方实测 |
 
-**所以净状态是：目标明确（不让任意 lifecycle 脚本跑）、手段未定、实测待做。**
-证它需要真跑一次 `npm ci --ignore-scripts` 再比对构建产物 ——
-那会动 `node_modules`，**前端 agent 正在用这棵树，本轮不做**。
+#### ✅ 实测已做（`probe_npm_ignore_scripts.py`）—— **零影响，可以加**
+
+```
+npm ci --ignore-scripts     退出码 0（34.8s）
+npm run build               退出码 0（44.2s）
+产物 vs 基线（25 个 .js）    逐字节相同，零差异
+复原校验                    逐字节回到基线
+```
+
+**判据是产物 SHA256 逐文件比对，不是「build 成没成功」** ——
+后者只覆盖构建那一刻，测不出「产物其实不一样」。
+
+⚠ **它顺带证伪了上表第 3 条**：
+`node_modules/@esbuild/win32-x64/esbuild.exe`（9.9 MB）在包里，
+**不靠 postinstall 下载**；关掉脚本后 `esbuild --version` 仍输出 `0.21.5`。
+
+**结论：可以给两条 `npm ci` 路径（`dependency_bootstrap.py:414` 与
+`harness.yml:59`）加 `--ignore-scripts`。** 这正是 Pi「显式白名单」在我们树上的
+等价物 —— 而实测说明**全禁就够，不需要白名单**。
+
+##### ⚠ 这个探针自己有缺陷：3 条判据里 2 条是我编的路径
+
+它报的 `**缺** esbuild 平台二进制` 与 `**缺** vue 入口` **都是假缺**：
+
+| 判据 | 我写的路径 | 实际 |
+|---|---|---|
+| esbuild 二进制 | `@esbuild/win32-x64/bin/esbuild` | **`@esbuild/win32-x64/esbuild.exe`**（在包根，无 `bin/`） |
+| vue 入口 | `vue/lib/index.mjs` | **`dist/vue.runtime.esm-bundler.js`** —— `vue` 根本没有 `lib/index.mjs` |
+| vue-demi 入口 | `vue-demi/lib/index.mjs` | ✅ 对（因为它的 `package.json` 我读过） |
+
+**编路径的代价是具体的**：那两条若被当成结论依据，就会得出
+「关掉脚本会坏」—— **恰好是我第 3 次那个错判**。结论侥幸对了，
+是因为它靠产物哈希比对，**不靠那两条**。
+
+**教训**：「文件存在吗」这类判据，路径**必须从 `package.json` 的
+`main`/`module`/`exports` 取，不能凭印象写**。
+与 `docs/next-steps.md` §5 同源，但更具体：**判据本身可以是编的，
+而它的读数看起来完全正常。**
+
+##### 另一条：破坏性探针必须前置自检
+
+第一版脚本崩在 `npm ci` 调用处 —— Windows 上 `npm` 是 `npm.cmd`，
+`shell=False` 的 `subprocess` 不解析它。
+
+**崩在破坏性操作之前纯属侥幸**：`web/assets/` 在 `.gitignore` 里
+（**没有 git 兜底**），若那个 `npm ci` 调通而崩在下一步，
+就得手工复原一棵无版本控制的构建产物树。
+
+所以加了 `preflight()`（`npm --version` + lockfile 存在性）并**接到流程最前面**：
+
+> **破坏性探针的第一步必须是「确认工具链可用」，而不是「开始破坏」。**
+
+**实验与复原在同一脚本内**（`finally` 语义），不依赖操作者记得跑复原。
 
 **探针 `tools/mutation/probe_supply_chain_scripts.py` 的判据一
 （`lib/index.mjs` 哈希）只能证明 postinstall **跑过**，不能证明「不跑就坏」** ——
