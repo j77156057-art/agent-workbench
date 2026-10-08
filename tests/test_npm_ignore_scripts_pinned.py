@@ -41,6 +41,7 @@
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -159,15 +160,52 @@ def _drive_sync() -> None:
 
 
 def test_ci_passes_the_flag():
-    """CI 那条路径也必须带 —— 解析 YAML 结构，不是 grep 整份文件。
+    """CI 那条路径也必须带 —— **真解析 YAML**，不是 grep 整份文件。
 
-    解析的意义：flag 写在 YAML 注释里不会被算成 `run` 的一部分。
+    ⚠ **第一版的 docstring 说「解析 YAML 结构」而代码是「grep 行首 npm ci」**
+    —— 那是**说谎的 docstring**，且判据有两个洞：
+
+    * 有人在注释里或别处写一行 `npm ci`（比如留个备选方案）→ **误报红**
+    * 有人改成 `cd frontend && npm ci` 或 `npm  ci`（多空格）→ **漏掉**
+
+    判据改成：解析 YAML → 收集所有 `run:` 的值 → 只在**真正执行**的命令行里
+    找 `npm ci`。注释行与 `run:` 之外的文本一律不算。
     """
-    text = CI_FILE.read_text(encoding="utf-8")
-    ci_lines = [ln.strip() for ln in text.splitlines()
-                if ln.strip().startswith("npm ci")]
-    assert ci_lines, "CI 里找不到 npm ci —— harness.yml 结构变了？"
-    for line in ci_lines:
+    import yaml
+
+    doc = yaml.safe_load(CI_FILE.read_text(encoding="utf-8"))
+
+    def run_commands(node):
+        """递归收集 YAML 里所有 `run:` 的值（CI 的 run 可以是 str 或 list）。"""
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "run":
+                    if isinstance(value, str):
+                        yield value
+                    elif isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str):
+                                yield item
+                else:
+                    yield from run_commands(value)
+        elif isinstance(node, list):
+            for item in node:
+                yield from run_commands(item)
+
+    npm_ci_lines = []
+    for script in run_commands(doc):
+        for raw in script.splitlines():
+            line = raw.strip()
+            if line.startswith("#"):
+                continue
+            if re.search(r"\bnpm\s+ci\b", line):
+                npm_ci_lines.append(line)
+
+    assert npm_ci_lines, (
+        "CI 的 run: 里找不到 `npm ci` —— harness.yml 结构变了？"
+        "（判定走 YAML 解析，注释里的 npm ci 不算执行路径）")
+
+    for line in npm_ci_lines:
         assert "--ignore-scripts" in line, (
             "CI 的 npm ci 缺 --ignore-scripts: %r —— CI 与启动同步必须一致，"
             "否则「本地安全、CI 跑任意脚本」" % line)

@@ -72,6 +72,22 @@ MUTATIONS = [
         "expect": "red",
     },
     {
+        "name": "【YAML 解析判据】CI 改成 `cd frontend && npm ci` 多空格变体",
+        "path": ROOT / ".github/workflows/harness.yml",
+        "old": "          npm ci --ignore-scripts\n",
+        # 第一版守卫是「grep 行首 npm ci」，这个变体会让它**完全看不见**
+        # —— 那正是 docstring 说谎的地方。改成 YAML 解析后必须仍能抓到。
+        "new": "          cd . && npm  ci --ignore-scripts\n",
+        "expect": "green",
+    },
+    {
+        "name": "【YAML 解析判据】注释里写一行 npm ci —— 守卫**不该**红",
+        "path": ROOT / ".github/workflows/harness.yml",
+        "old": "          npm ci --ignore-scripts\n",
+        "new": "          npm ci --ignore-scripts\n          # 备选方案：npm ci\n",
+        "expect": "green",
+    },
+    {
         "name": "【无效变异对照】只加注释痕迹、**不动真实代码** —— 守卫不该红",
         "path": ROOT / "dependency_bootstrap.py",
         "old": '        _run([npm, "ci", "--ignore-scripts"], project / "frontend",',
