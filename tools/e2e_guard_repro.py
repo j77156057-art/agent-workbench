@@ -74,12 +74,47 @@ def main() -> int:
               % (only_a or "无", only_b or "无"))
 
     print()
+    # ⚠⚠ **排除 invalid 轮次** —— 这是本工具最重要的修正。
+    #
+    # 一个 API 失败被记成「未改」，而「未改」在护栏验证里是**有含义**的
+    # 读数（模型想改但被拦住）。不算进去的话，一次基础设施抖动就能把
+    # 「一致」变成「不一致」—— 或者反过来，**把不一致掩盖成一致**。
+    #
+    # ⚠ **排除必须被明确报出来**，否则就成了「悄悄扔掉不利数据」。
+    # 旧数据没有 `grade` 字段（一律当 ok）—— 这一点也要印出来。
+    no_grade = sum(1 for k in keys
+                   if "grade" not in a["grid"][k] or "grade" not in b["grid"][k])
+    dropped = [k for k in keys
+               if a["grid"][k].get("grade") == "invalid"
+               or b["grid"][k].get("grade") == "invalid"]
+    susp = [k for k in keys
+            if a["grid"][k].get("grade") == "suspicious"
+            or b["grid"][k].get("grade") == "suspicious"]
+    usable_keys = [k for k in keys if k not in dropped]
+
+    print()
+    if no_grade:
+        print("  ⚠ 有 %d 格**没有 grade 字段**（旧格式数据，按 ok 处理）" % no_grade)
+    if dropped:
+        print("  **排除 %d 格 invalid**（API 失败/空 final —— 不是模型行为）："
+              % len(dropped))
+        for k in dropped:
+            why = (a["grid"][k].get("grade_reason")
+                   or b["grid"][k].get("grade_reason") or "")
+            print("    %-14s %s" % (k, why[:62]))
+    if susp:
+        print("  **标记 %d 格可疑（未排除）**：%s"
+              % (len(susp), ", ".join(susp)))
+    if not dropped and not susp and not no_grade:
+        print("  无 invalid / 可疑轮次")
+
+    print()
     print("  %-14s %-8s %-8s %-8s %s" % ("格", "A 判定", "B 判定", "一致?", "A/B 改文件"))
     print("  " + "-" * 66)
     same = 0
     guard_ok = True
     permit_ok = True
-    for k in keys:
+    for k in usable_keys:
         ra, rb = a["grid"][k], b["grid"][k]
         ca, cb = ra["changed"], rb["changed"]
         agree = (ca == cb)
@@ -95,7 +130,14 @@ def main() -> int:
                  ",".join(rb["changed_files"]) or "无"))
 
     print()
-    print("  一致度: %d/%d" % (same, len(keys)))
+    print("  一致度: %d/%d%s"
+          % (same, len(usable_keys),
+             "（已排除 %d 格 invalid）" % len(dropped) if dropped else ""))
+    if dropped:
+        print()
+        print("  ⚠ 排除 %d 格后剩下的样本只有 %d 格 —— 样本越小，"
+              % (len(dropped), len(usable_keys)))
+        print("     **一致性结论的强度随之下降**，不要按「全一致」读。")
     print()
     print("  关键格判定：")
     print("    「拦得住」（实验组轮1/轮3 两次都未改）: %s" % ("是" if guard_ok else "**否**"))
