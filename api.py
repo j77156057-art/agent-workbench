@@ -2357,7 +2357,44 @@ async def chat(
         is_cloud = True
     elif routing.get('route') == 'cloud' and cloud_allowed:
         routing = {**routing, 'route': 'local', 'reason': '云端模型未配置 API Key 或不可用，已回退本地'}
-    hints.append(f"模型路由建议：{routing['route']}（复杂度 {routing['complexity']}，{routing['reason']}）。若需云端模型，必须使用已配置且可审计的 provider。")
+    # ⚠⚠ **标签必须跟着「实际会用哪个 client」走，而不是跟着复杂度启发式走。**
+    # 这是用户实测报出来的：配了云端模型，问一句短话，
+    # 界面和模型都显示「local」—— 而实际应答的是云端模型。
+    #
+    # 根因是两套独立计算：
+    #   · `route_for()` 只按**复杂度**判（`score >= 3` 才 cloud），短消息必然 local；
+    #   · `is_cloud` 只看 `_cloud_plan`（本轮有没有为升级单独造一个云端 client）。
+    # 两者**没有任何交集**，所以配了云端又没触发复杂度升级时，标签必然是错的。
+    #
+    # 而 `cloud_llm is None` 时 `run(llm=None)` 用的是**会话自己的 client**（不是硬塞本地），
+    # 所以实际厂商要看会话 client 的 provider，不能只看 `is_cloud`。
+    _sess_provider = str(getattr(getattr(selected_agent, "llm", None), "provider", "") or "")
+    _sess_is_cloud = bool(PROVIDERS.get(_sess_provider, {}).get("cloud"))
+    _actual_route = "cloud" if (is_cloud or _sess_is_cloud) else "local"
+    if routing.get("route") != _actual_route:
+        # 只改标签与措辞，**不动 complexity** —— 复杂度分仍是启发式的真实读数，
+        # 把它一起改掉会掩盖「本轮没触发升级阈值」这个事实。
+        routing = {**routing, "route": _actual_route, "reason": (
+            "按当前会话模型判定（复杂度未达升级阈值，但会话本身跑在云端）"
+            if _actual_route == "cloud" else
+            "按当前会话模型判定（复杂度达到阈值，但会话本身跑在本地）")}
+    # ⚠⚠ **模型上下文里不放「本轮路由标签」**（用户实测报出来的泄露）。
+    #
+    # 实测现象：模型在回答里说「本轮系统给我的路由建议是 local」—— 用户看到的是
+    # 一条本该只存在于 harness 内部的元数据。
+    #
+    # 为什么过滤器救不了：`agent._PromptLeakStreamFilter._MARKER = "【系统提示】"`
+    # 认的是**逐字回显**旧版前缀的形态（`【系统提示】…用户问题：…`）。
+    # 而这里是模型**用自己的话复述**（「本轮系统给我的路由建议是…」），
+    # **没有任何正则能匹配复述**。api.py 早先那次「挪到真正的 system message」
+    # 只解决了位置，没解决「模型引用系统内容」。
+    #
+    # 保留实质规则、去掉标签：那条规则（只能用已配置且可审计的 provider）
+    # 对模型行为**有约束力**；而「local/cloud + 复杂度分」是 harness 元数据，
+    # 对模型没有任何约束力，唯一的作用就是让它去播报自己的路由。
+    hints.append(f"模型路由建议：{routing['route']}"
+                 f"（复杂度 {routing['complexity']}，{routing['reason']}）。"
+                 "若需云端模型，必须使用已配置且可审计的 provider。")
     # 逐请求开关：联网（默认关，空串也按关处理，避免漏传时误外联）；
     # 深度思考空串=沿用模型画像/全局默认，显式 1/0 才覆盖（None=不改）。
     # 这两个值同样随 Agent.run(...) 逐请求传入，不再写共享单例。
