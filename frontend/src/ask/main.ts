@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import AskApp from './AskApp.vue'
+import '../fonts'
 import './ask.css'
 import './ask-riso.css'
 import './ask-typo.css'

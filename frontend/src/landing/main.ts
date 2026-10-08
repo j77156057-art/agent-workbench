@@ -1,5 +1,6 @@
 import { createApp } from 'vue'
 import LandingApp from './App.vue'
+import '../fonts'
 import './styles/tokens.css'
 import './styles/base.css'
 import './styles/components.css'

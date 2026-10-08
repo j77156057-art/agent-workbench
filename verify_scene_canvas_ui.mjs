@@ -96,35 +96,48 @@ try {
   await page.waitForSelector('.wb-shell', { timeout: 20000 })
   check('工作台外壳渲染', true)
 
-  // 字体断言：本机访问 fonts.googleapis.com 会间歇性 ERR_CONNECTION_RESET，那时整页
-  // 回退到系统字形 —— 同一份 CSS 两次跑出两种观感，是最难查的"时好时坏"。
-  // 用宽度度量而不是 document.fonts.check()：后者在 @font-face 根本没注册时对任意
-  // 字族都返回 true（实测连从没请求过的 JetBrains Mono / Rajdhani 都算"可用"），
-  // 不能当断言。度量法已做阳性对照：Arial/Times/Impact 判为已加载，
-  // 伪造字族判为未加载。
+  // 字体断言：拉丁字族已自托管（src/fonts.ts），中文 Noto Sans SC 仍走 CDN，而本机
+  // 访问 fonts.googleapis.com 会间歇性 ERR_CONNECTION_RESET —— 同一份 CSS 两次跑出
+  // 两种观感，是最难查的"时好时坏"。
+  //
+  // 为什么不能只用宽度度量：字体是懒取的，量得太早会读到"还没取完 → 回落 monospace"
+  // 的瞬时状态（实测 Space Grotesk 稳定读出 493，与 monospace 相同，而字体其实已注册）。
+  // 所以先用 document.fonts.load() 显式触发并确认拿到 FontFace —— 它对未注册的字族
+  // 返回空数组（这点和 check() 不同：check() 对从没请求过的字族也返回 true，不可用），
+  // 再用宽度度量复核它真的参与了渲染。两个信号都成立才算加载。
   await page.evaluate(() => document.fonts.ready)
-  const fontState = await page.evaluate(() => {
-    const probe = fam => {
+  const fontState = await page.evaluate(async () => {
+    const want = [['Archivo Black', '400'], ['Space Grotesk', '400'], ['Space Grotesk', '700'],
+      ['Space Mono', '400'], ['Space Mono', '700']]
+    const widthOf = (fam, weight) => {
       const s = document.createElement('span')
       s.textContent = 'mmmmmmwwwWQ123'
-      s.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font-size:64px;font-weight:900'
+      s.style.cssText = `position:absolute;visibility:hidden;white-space:pre;font-size:64px;font-weight:${weight}`
       document.body.appendChild(s)
       s.style.fontFamily = 'monospace'
       const base = s.offsetWidth
       s.style.fontFamily = `'${fam}', monospace`
       const got = s.offsetWidth
       s.remove()
-      return base !== got
+      return [base, got]
     }
-    return {
-      faces: document.fonts.size,
-      missing: ['Archivo Black', 'Space Grotesk', 'Space Mono'].filter(f => !probe(f)),
+    const missing = []
+    for (const [fam, weight] of want) {
+      const faces = await document.fonts.load(`${weight} 64px "${fam}"`, 'WQ123')
+      const fetched = faces.length > 0 && faces.every(f => f.status === 'loaded')
+      const [base, got] = widthOf(fam, weight)
+      if (!fetched || base === got) missing.push(`${fam} ${weight}`)
     }
+    // 自检：未注册的字族必须被判为缺失，否则这条断言是空跑
+    const ghost = await document.fonts.load('400 64px "NoSuchFont Zipzap"', 'WQ123')
+    return { missing, controlOk: ghost.length === 0, faces: document.fonts.size }
   })
   const fontDetail = `@font-face ${fontState.faces} 个，缺失：${fontState.missing.join('、') || '无'}`
+    + (fontState.controlOk ? '' : ' [自检失败：伪造字族未被判缺失，断言不可信]')
   const allowFallback = !!process.env.DOCMIND_ALLOW_FALLBACK_FONT
-  check('应用 webfont 已加载（否则截图为系统回退字形）', fontState.missing.length === 0 || allowFallback,
-    allowFallback && fontState.missing.length ? `${fontDetail}  [DOCMIND_ALLOW_FALLBACK_FONT 显式放行]` : fontDetail)
+  check('应用 webfont 已加载（否则截图为系统回退字形）',
+    (fontState.missing.length === 0 && fontState.controlOk) || allowFallback,
+    fontState.missing.length ? `${fontDetail}  [DOCMIND_ALLOW_FALLBACK_FONT 可显式放行]` : fontDetail)
 
   // 运行游戏触发钮由 SceneRuntimePanel teleport 进顶栏「更多」菜单槽位，
   // 菜单收起时在 DOM 里但不可见，必须先开菜单再点槽内那一个。
