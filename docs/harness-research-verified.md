@@ -427,19 +427,30 @@ settle 后调用惰性 / 不可读遥测失败必须被吞掉」等**可观测�
 
 **结论：暂不做，除非将来出现新的「上游 HTTP 抖动导致随机红」。**
 
-#### ③ 写路径 denylist + safe-root —— **真缺口，但要先确认现状**
+#### ③ 写路径 denylist + safe-root —— **真缺口，已立档**
 
 依据：Hermes 有 `HERMES_WRITE_SAFE_ROOT`（可选沙箱，越界即硬拦）
 与一份**永远阻塞**的 denylist（`~/.ssh/`、`~/.aws/`、`/etc/sudoers` …），
 且明说「写守卫是纵深防御**不是**硬边界」。
 
-**核实我们的现状**：`flows.py` 有 `_safe_root()`，但那是**路径规范化**，
-**不是**写沙箱。我们只有 `code_root`（一个根目录约束）。
+**核实我们的现状**（探针 `tools/mutation/probe_write_denylist_gap.py`，可复算）：
 
-**这可能是剩下最有价值的一项**，但它要改写工具的落盘检查，
-属生产代码改动，且需要先列「哪些路径必须硬拦」的清单。
+```
+项目内写 .env                -> 放行
+项目内写 .ssh/id_rsa         -> 放行
+code_root=$HOME 时写 ~/.ssh/id_rsa -> 放行     <- 真敞口
+```
 
-**结论：值得做，但要单独立项**，不在本轮调研收尾里顺手做。
+`tools.py` 里 `.env` 只出现 1 次，且是在 `game_release_check` 的 description 里
+（功能描述，不是保护）；那 2 处 `BLOCKED` 是 `_BLOCKED_CMDS`（shell 命令黑名单）。
+
+**所以我们完全没有凭据路径保护**，而项目内的 `.env` 是最常见的凭据存放处。
+Hermes 对它是「**写可、读不回**」。
+
+**结论：值得做，但要单独立项。** 完整实测、判据选项与
+「哪些是敞口 / 哪些只是设计债」见
+**`docs/known-defect-no-write-path-floor.md`**（含我三次自我更正 ——
+初判的差距比实测大得多）。
 
 ### 4.3 已否决（带依据，别重做）
 
