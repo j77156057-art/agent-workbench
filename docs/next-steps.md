@@ -430,11 +430,11 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
    * 那 6.9 万字全在 **▸ 深度思考（点击展开）** 里——内容已经在那里，只是被折叠
    * 三家里 Hermes show_reasoning 默认开、opencode session-ui 默认显示，
      **DocMind 是唯一默认折叠的**
-   * 我做的「让模型在工具调用之间说话」开关（18cf7bd，默认开）**真跑后无效**：
-     模型在工具轮里 cc 是 **0 字**，内容全在 reasoning。
-     见 docs/known-defect-narration-supply-empty.md
+   * 我做的「让模型在工具调用之间说话」开关（`18cf7bd`，默认开）**真跑后无效**：
+     模型在工具轮里 `acc` 是 **0 字**，内容全在 reasoning。
+     见 `docs/known-defect-narration-supply-empty.md`
    * 同一轮还修了一个**真跑才能发现**的缺陷：守卫漏了并行批次路径，
-     而真模型恰好每轮批量发调用 —— 7f9d246
+     而真模型恰好每轮批量发调用 —— `7f9d246`
 
 ### 该由人决定的（我不替人做）
 
