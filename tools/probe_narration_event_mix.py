@@ -174,11 +174,20 @@ def main() -> int:
         print()
         if counts.get("thought", 0) == 0 and tools > 0:
             print("  ⚠ **thought = 0 而 action/observation > 0**")
-            print("     这就是你观察到的现象，且原因可定位：")
-            print("     `thought` 只在模型文本里写了 `Thought:` 时才产出")
-            print("     （agent.py:4576 `if parsed[\"thought\"]:`）；")
-            print("     而 `native_override` 路径下它恒为空 —— 走原生工具调用，")
-            print("     模型不写 `Thought:`，于是**中间过程没有任何人话**。")
+            print("     这是**观测事实**，但**原因本探针测不出来** —— 不要据此下结论。")
+            print()
+            print("     ⚠ 第一版这里写死了一个解释，并且引用了 `agent.py:4576`：")
+            print("       「thought 只在模型写了 `Thought:` 时产出，native 路径下恒为空」。")
+            print("       **那个解释已被同一天的真跑推翻**：thinking 关闭时 thought = 2，")
+            print("       thinking 开启时 thought = 0 —— 方向正好相反。")
+            print("       它还写死了行号，而行号会随代码改动腐化（本文件就有过 4576 -> 漂移）。")
+            print()
+            print("     要定性需要另配判据，本探针给不出。已知的两种可能，")
+            print("     单靠事件计数**无法区分**：")
+            print("       (a) 模型把叙述全放进 reasoning，正文散文为空")
+            print("       (b) 模型确实没写任何正文散文（与 thinking 开关无关）")
+            print("     区分它们要落到「模型在 tool_call 那一轮到底吐了多少**正文** token」，")
+            print("     而 token 事件里混着最终答案，本探针分不开。")
         # ⚠⚠ **这里一律不得从计数推断分布。**
         # 第一版写的是 if reasoning > 0 and tools > 5: → 「思考只在开头」。
         # 那是**恒真式**：任何「有思考 + 有工具块」的跑都输出同一句话，
