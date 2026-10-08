@@ -54,15 +54,26 @@ function toggleReason() {
 }
 
 // ---------------- ReAct 轨迹折叠 ----------------
+// 与开发台对话台同一套语义：流式中整轮摊开（偏好可关），回合结束回落。
+// 两个集合是为了让「手动收起」能盖过自动展开——只记展开的单一集合会让用户在
+// 流式中点一条想收起来时点了没反应。
 const openSteps = ref<Set<number>>(new Set())
+const mutedSteps = ref<Set<number>>(new Set())
 function stepOpen(i: number) {
-  return openSteps.value.has(i) || (streaming.value && i === props.msg.trace.length - 1)
+  if (openSteps.value.has(i)) return true
+  if (mutedSteps.value.has(i)) return false
+  return prefs.value.autoExpandTrace && streaming.value
 }
 function toggleStep(i: number) {
-  const next = new Set(openSteps.value)
-  if (next.has(i)) next.delete(i)
-  else next.add(i)
-  openSteps.value = next
+  const open = stepOpen(i)
+  const nextOpen = new Set(openSteps.value)
+  const nextMute = new Set(mutedSteps.value)
+  nextOpen.delete(i)
+  nextMute.delete(i)
+  if (open) nextMute.add(i)
+  else nextOpen.add(i)
+  openSteps.value = nextOpen
+  mutedSteps.value = nextMute
 }
 
 const TRACE_LABEL: Record<string, string> = {
@@ -98,7 +109,10 @@ function stepSummary(item: ChatTraceItem): string {
     const len = raw.replace(/\s+/g, '').length
     return len > 0 ? `返回 ${len} 个字符` : '返回结果'
   }
-  return oneLine(raw, 72)
+  // 解说类（分析/复核）实测 71–165 字，砍到 72 等于「只剩开头」；全文交给 CSS
+  // 两行 clamp 收，长度跟着容器宽度走。工具行仍压成一行参数，观察行仍只报字符数
+  // ——那两类是技术串和噪声，摊开反而更杂。
+  return raw.replace(/\s+/g, ' ')
 }
 function fmtElapsed(ms?: number): string {
   if (!ms) return ''
@@ -186,7 +200,9 @@ const phaseLabel = computed(() => {
           <div v-for="row in visibleTrace" :key="row.index" class="step">
             <button class="step-head" @click="toggleStep(row.index)">
               <span class="step-tag" :class="row.item.type">{{ stepTitle(row.item) }}</span>
-              <span class="step-summary">{{ stepSummary(row.item) }}</span>
+              <!-- 展开后摘要与正文是同一段字，不再排两遍；但观察行的摘要是
+                   「返回 N 个字符」这种派生信息，展开后仍然要留着 -->
+              <span v-if="!stepOpen(row.index) || row.item.type === 'observation'" class="step-summary">{{ stepSummary(row.item) }}</span>
               <span v-if="fmtElapsed(row.item.elapsedMs)" class="step-time">{{ fmtElapsed(row.item.elapsedMs) }}</span>
               <span class="chev" :class="{ open: stepOpen(row.index) }">⌄</span>
             </button>
@@ -385,9 +401,11 @@ border-radius: var(--r-sm); background: var(--bg-raised); overflow: hidden; }
 .step-summary {
   flex: 1;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   color: var(--text-muted);
 }
 .step-time { flex: 0 0 auto; color: var(--text-faint); font-size: 11px; font-family: var(--font-mono); }

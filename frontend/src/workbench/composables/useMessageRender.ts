@@ -2,6 +2,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { mdToHtml, extractFileRefs, extractWebRefs } from '../markdown'
 import type { FileRef } from '../markdown'
 import { useWorkbench } from './workbench'
+import { prefs } from '../../ask/askPrefs'
 
 /** 消息渲染所需的最小结构（ChatMsg 等具体消息类型按结构鸭子匹配） */
 export interface RenderMessage {
@@ -95,7 +96,6 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
   const TRACE_GLYPH: Record<string, string> = {
     thought: '◌', action: '↗', observation: '✓', reflection: '↻',
   }
-  const activityOpen = ref<Set<string>>(new Set())
   const nowTick = ref(Date.now())
   let elapsedTimer: number | null = null
   // 计时钟只在「有活动回合」时走：空闲/全部结束后不再每 500ms 触发响应式刷新。
@@ -111,16 +111,35 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     }
   })
 
+  /**
+   * 步骤行的展开状态：手动展开与手动收起各记一个集合。
+   * 为什么要两个：加了「流式中整轮摊开」之后，只记「展开」的单一集合会让用户
+   * 点一条想收起来时点了没反应（自动规则仍然判它该开着）。显式操作必须能盖过自动规则。
+   */
+  const activityPinned = ref<Set<string>>(new Set())
+  const activityMuted = ref<Set<string>>(new Set())
   function activityKey(id: number, index: number) { return `${id}:${index}` }
-  function toggleActivity(id: number, index: number) {
-    const key = activityKey(id, index)
-    const next = new Set(activityOpen.value)
-    if (next.has(key)) next.delete(key)
-    else next.add(key)
-    activityOpen.value = next
-  }
   function activityIsOpen(id: number, index: number, msg: T) {
-    return activityOpen.value.has(activityKey(id, index)) || (msg.status === 'streaming' && index === msg.trace.length - 1)
+    const key = activityKey(id, index)
+    if (activityPinned.value.has(key)) return true
+    if (activityMuted.value.has(key)) return false
+    // 旧规则是「只展开最新一条」：实测解说有 71–165 字，新步骤一来上一条就折回去，
+    // 想读完整轮要么靠滚要么挨个点。现在整轮摊开，回合结束自动回落成两行摘要。
+    // （旧写法还有个边角：本轮最后一步若是被 visibleTrace 过滤掉的 start_workflow
+    // 观察，就没有任何一行满足「index === 最后一条」，等于整轮不展开。）
+    return prefs.autoExpandTrace && msg.status === 'streaming'
+  }
+  function toggleActivity(id: number, index: number, msg: T) {
+    const key = activityKey(id, index)
+    const open = activityIsOpen(id, index, msg)
+    const nextPin = new Set(activityPinned.value)
+    const nextMute = new Set(activityMuted.value)
+    nextPin.delete(key)
+    nextMute.delete(key)
+    if (open) nextMute.add(key)
+    else nextPin.add(key)
+    activityPinned.value = nextPin
+    activityMuted.value = nextMute
   }
   function traceTitle(item: { type: string; text: string }) {
     const raw = item.text.trim()
@@ -137,14 +156,21 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     }
     return TRACE_LABEL[item.type] || item.type
   }
+  /**
+   * 折叠行的摘要文案。
+   * 以前在这里砍到 89 字 + '…'。实测每轮解说的长度是 71–165 字，也就是说**正常长度
+   * 的解说也会被砍**，而砍完这一刀 CSS 那边还有一层 ellipsis —— 两层截断叠在一起，
+   * 用户看到的就是「只剩开头」。现在 JS 不砍了，长度交给 CSS 的两行 line-clamp：
+   * 一行放得下多少字取决于对话台宽度（1440 视口下摘要列约 1030px ≈ 86 个中文字），
+   * 只有 CSS 这一层能跟着宽度走。全文始终在展开的事件详情里。
+   */
   function traceSummary(item: { type: string; text: string }) {
     const raw = item.text.trim().replace(/\s+/g, ' ')
     if (item.type === 'action') {
       const open = raw.indexOf('(')
       if (open > 0) return raw.slice(open).replace(/\s*\[已拦截.*$/, '')
     }
-    if (raw.length <= 92) return raw
-    return raw.slice(0, 89) + '…'
+    return raw
   }
   /** 把相邻工具步骤归到用户能理解的动作阶段，供时间线做连续动作分组。 */
   function traceGroup(item: { type: string; text: string }): string {
@@ -201,13 +227,27 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     return `已经 ${Math.round(quiet / 1000)} 秒没有收到新进展；模型可能仍在推理或执行工具。现场会保留，必要时可停止后继续。`
   }
 
-  // 深度思考面板折叠态（reasoning_content 独立窗口）
-  const reasonOpen = ref<Set<number>>(new Set())
-  function toggleReason(id: number) {
-    const next = new Set(reasonOpen.value)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    reasonOpen.value = next
+  // 深度思考面板折叠态（reasoning_content 独立窗口）。
+  // 语义与问答页 AskMessage 一致：流式中自动摊开，回合结束按偏好回落，
+  // 用户手动点过的那条不再被自动规则搅动（所以同样要 pinned / muted 两个集合）。
+  const reasonPinned = ref<Set<number>>(new Set())
+  const reasonMuted = ref<Set<number>>(new Set())
+  function reasonIsOpen(id: number, msg: T) {
+    if (reasonPinned.value.has(id)) return true
+    if (reasonMuted.value.has(id)) return false
+    if (msg.status === 'streaming') return true
+    return prefs.reasonOpen
+  }
+  function toggleReason(id: number, msg: T) {
+    const open = reasonIsOpen(id, msg)
+    const nextPin = new Set(reasonPinned.value)
+    const nextMute = new Set(reasonMuted.value)
+    nextPin.delete(id)
+    nextMute.delete(id)
+    if (open) nextMute.add(id)
+    else nextPin.add(id)
+    reasonPinned.value = nextPin
+    reasonMuted.value = nextMute
   }
 
   /** 清空对话时重置全部渲染缓存与待渲染计时器 */
@@ -219,8 +259,10 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     liveMdTimers.clear()
     liveMdLastAt.clear()
     liveHtml.clear()
-    reasonOpen.value = new Set()
-    activityOpen.value = new Set()
+    reasonPinned.value = new Set()
+    reasonMuted.value = new Set()
+    activityPinned.value = new Set()
+    activityMuted.value = new Set()
   }
 
   // 组件卸载时清掉计时器，避免离开对话台后仍触发响应式刷新
@@ -240,7 +282,6 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     webRefsOf,
     openRef,
     TRACE_GLYPH,
-    activityOpen,
     toggleActivity,
     activityIsOpen,
     traceTitle,
@@ -253,7 +294,7 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     traceElapsed,
     elapsedLabel,
     slowResponseLabel,
-    reasonOpen,
+    reasonIsOpen,
     toggleReason,
     resetRenderState,
   }

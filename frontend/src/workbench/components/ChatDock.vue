@@ -20,6 +20,9 @@ import { useChatStream } from '../composables/useChatStream'
 import type { ChatActivityKind, ChatMsg } from '../composables/chat-types'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { useMessageRender } from '../composables/useMessageRender'
+// 展示偏好与问答页同源（一份 localStorage + 一个变更事件）：这里必须真的消费它，
+// 否则「设置里关掉推理轨迹」在开发台对话台不生效。
+import { prefs as displayPrefs } from '../../ask/askPrefs'
 // 设置弹窗低频且体积大（117KB）：异步组件 + v-if，打开时才拉取
 const ModelSettingsDialog = defineAsyncComponent(() => import('./ModelSettingsDialog.vue'))
 const ModelSwitcherPopover = defineAsyncComponent(() => import('./ModelSwitcherPopover.vue'))
@@ -321,6 +324,11 @@ function visibleTrace(msg: ChatMsg) {
     }
   })
   return msg.trace.map((item, index) => ({ item, index })).filter(x => !hidden.has(x.index))
+}
+/** 答案下方引用 chips 上限（0 = 不限制），与问答页同一份偏好、同一个语义。 */
+function shownRefs(msg: ChatMsg) {
+  const all = refsOf(msg)
+  return displayPrefs.maxRefs > 0 ? all.slice(0, displayPrefs.maxRefs) : all
 }
 const traceSegmentOpen = ref<Set<number>>(new Set())
 function toggleTraceSegment(id: number) {
@@ -1127,7 +1135,7 @@ const {
   scheduleLiveMd, finishLiveMd, streamHtmlOf,
   answerHtml, refsOf, webRefsOf, openRef, TRACE_GLYPH,
   toggleActivity, activityIsOpen, traceTitle, traceSummary, traceGroup, traceGroupLabel, traceGroupStart, traceState, traceStateLabel,
-  traceElapsed, elapsedLabel, reasonOpen, toggleReason, resetRenderState,
+  traceElapsed, elapsedLabel, reasonIsOpen, toggleReason, resetRenderState,
 } = useMessageRender<ChatMsg>(() =>
   sending.value
   || messages.value.some(m => m.status === 'streaming' || (m.workflow?.workflowId && !m.finishedAt))
@@ -1317,13 +1325,13 @@ const webTitle = computed(() => webOn.value
               </div>
             </div>
             <div v-if="m.reasoning" class="cd-reason">
-              <button class="cd-reason-head" @click="toggleReason(m.id)">
-                {{ reasonOpen.has(m.id) ? '▾ 深度思考' : '▸ 深度思考（点击展开）' }}
+              <button class="cd-reason-head" :aria-expanded="reasonIsOpen(m.id, m)" @click="toggleReason(m.id, m)">
+                {{ reasonIsOpen(m.id, m) ? '▾ 深度思考' : '▸ 深度思考（点击展开）' }}
                 <span v-if="m.status === 'streaming'" class="cd-dots">模型思考中…</span>
               </button>
-              <div v-if="reasonOpen.has(m.id)" class="cd-reason-body">{{ m.reasoning }}</div>
+              <div v-if="reasonIsOpen(m.id, m)" class="cd-reason-body">{{ m.reasoning }}</div>
             </div>
-            <div v-if="visibleTrace(m).length" class="cd-activity">
+            <div v-if="displayPrefs.showTrace && visibleTrace(m).length" class="cd-activity">
               <button class="cd-activity-segment" :aria-expanded="traceSegmentIsOpen(m)" @click="toggleTraceSegment(m.id)">
                 <span class="cd-activity-segment-copy"><b>本轮任务动作</b><span>{{ traceSegmentTitle(m) }}</span></span>
                 <span class="cd-activity-segment-count">{{ visibleTrace(m).length }} 条记录</span>
@@ -1336,13 +1344,14 @@ const webTitle = computed(() => webOn.value
                   class="cd-activity-row"
                   :aria-expanded="activityIsOpen(m.id, row.index, m)"
                   :aria-label="`${traceTitle(row.item)}，${traceStateLabel(traceState(m, row.item, row.index))}，点击查看详情`"
-                  @click="toggleActivity(m.id, row.index)"
+                  @click="toggleActivity(m.id, row.index, m)"
                 >
                   <span class="cd-activity-glyph">{{ TRACE_GLYPH[row.item.type] || '·' }}</span>
                   <span class="cd-activity-main">
                     <span class="cd-activity-kicker">{{ row.item.type === 'action' ? '工具调用' : row.item.type === 'observation' ? '工具返回' : row.item.type === 'reflection' ? '执行提示' : '执行记录' }}</span>
                     <span class="cd-activity-title">{{ traceTitle(row.item) }}</span>
-                    <span class="cd-activity-summary">{{ traceSummary(row.item) }}</span>
+                    <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
+                    <span v-if="!activityIsOpen(m.id, row.index, m)" class="cd-activity-summary">{{ traceSummary(row.item) }}</span>
                   </span>
                   <span class="cd-activity-meta">
                     <span class="cd-activity-state">{{ traceStateLabel(traceState(m, row.item, row.index), row.item) }}</span>
@@ -1372,9 +1381,9 @@ const webTitle = computed(() => webOn.value
               </a>
             </details>
             <div v-if="m.status === 'error'" class="cd-error">⚠ {{ m.error }}</div>
-            <div v-if="m.status === 'done' && refsOf(m).length" class="cd-refs">
+            <div v-if="m.status === 'done' && shownRefs(m).length" class="cd-refs">
               <button
-                v-for="r in refsOf(m)"
+                v-for="r in shownRefs(m)"
                 :key="r.path + ':' + r.line"
                 class="cd-ref"
                 :title="'打开 ' + r.path + (r.line ? ':' + r.line : '')"
@@ -1750,7 +1759,10 @@ const webTitle = computed(() => webOn.value
 .cd-activity-kicker { grid-column: 1 / -1; color: var(--text-faint); font-size: 10px; line-height: 1.2; letter-spacing: .04em; text-transform: uppercase; }
 .cd-activity-title { min-width: 0; color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cd-activity-summary {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* 解说长度实测 71–165 字，一行放不下；以前靠 JS 砍到 89 字，等于「只剩开头」。
+     现在全文交给这两行 clamp：跟着容器宽度走，比按字数砍准。 */
+  min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere;
   color: var(--text-muted); font-size: 12px;
 }
 .cd-activity-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }

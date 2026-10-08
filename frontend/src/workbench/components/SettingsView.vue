@@ -21,6 +21,9 @@ import { costLabel, money, type PricingState } from '../composables/costLabel'
 import { SKINS, loadSkin, setSkin, onSkinChange, type SkinKey } from '../skins'
 import { loadMaterial, setMaterial, onMaterialChange, type Material } from '../glassPointer'
 import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '../layoutMode'
+// 对话展示偏好：与问答页 / 模型设置弹窗同一份（reactive 视图 + localStorage）。
+// 这里不复制状态，直接绑到共享对象上，改完写存储并派发事件让两个入口同时刷新。
+import { ASK_PREFS_EVENT, prefs as dp, saveAskPrefs, type AskPrefs } from '../../ask/askPrefs'
 
 const props = defineProps<{ visible: boolean; initialTab?: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'appearance' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -50,6 +53,19 @@ function chooseSkin(key: SkinKey) {
 
 // 另一个入口（问答页 / 另一个窗口）改了皮肤时同步本组件的选中态
 onSkinChange((k) => { skin.value = k })
+
+// ---------------- 对话与运行展示偏好 ----------------
+// v-model 已经把新值写进共享的 dp 对象了，这里只负责落盘 + 广播：
+// ChatDock / AskMessage 读的是同一个 dp，所以本窗口即时生效；
+// 事件是给「自己 ref(loadAskPrefs()) 另存一份」的消费方（AskMessage）和别的入口用的。
+function saveDisplayPrefs() {
+  saveAskPrefs({ ...dp } as AskPrefs)
+  window.dispatchEvent(new Event(ASK_PREFS_EVENT))
+}
+function setMaxRefs(e: Event) {
+  dp.maxRefs = Number((e.target as HTMLSelectElement).value)
+  saveDisplayPrefs()
+}
 
 // ---------------- 材质（玻璃 / 实体）----------------
 // 材质与皮肤正交：皮肤管颜色，材质管表面。玻璃 = 半透明 + 背后模糊 + 高光描边。
@@ -1894,6 +1910,26 @@ function openModelSettings() {
               锌白细线 = 1px 灰边 + 6px 圆角 + 零阴影），全部走 <code>skins.css</code> 的令牌。
               调形状参数改 <code>layout-modes.css</code>，改材质参数改 <code>glass.css</code>，改完刷新即生效，不需要重新构建。
             </p>
+
+            <div class="sv-section-head" style="margin-top: 18px;">
+              <div>
+                <h4 class="sv-h4">对话与运行展示</h4>
+                <p class="sv-hint">这一组管「流式输出时看得清看不清」。问答页与开发台对话台共用同一份，改完立即生效；只存本机，不写后端配置。</p>
+              </div>
+            </div>
+
+            <label class="sv-toggle-row"><input v-model="dp.showTrace" type="checkbox" @change="saveDisplayPrefs" />显示推理轨迹步骤（分析 / 工具调用 / 返回结果 / 复核）</label>
+            <label class="sv-toggle-row"><input v-model="dp.autoExpandTrace" type="checkbox" @change="saveDisplayPrefs" />输出过程中把本轮步骤整轮摊开（关掉＝只跟随最新一条）</label>
+            <label class="sv-toggle-row"><input v-model="dp.reasonOpen" type="checkbox" @change="saveDisplayPrefs" />深度思考在回答结束后保持展开</label>
+            <label class="sv-pref-row">
+              <span>答案下方文件引用最多显示</span>
+              <select class="sv-input sv-pref-select" :value="dp.maxRefs" @change="setMaxRefs($event)">
+                <option value="0">不限制</option>
+                <option value="3">3 条</option>
+                <option value="6">6 条</option>
+                <option value="12">12 条</option>
+              </select>
+            </label>
           </section>
         </div>
       </div>
@@ -2077,6 +2113,9 @@ function openModelSettings() {
 .sv-field { display: flex; flex-direction: column; gap: 5px; margin-top: 7px; font-size: 12px; color: var(--text-muted); }
 .sv-toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--text); cursor: pointer; }
 .sv-toggle-row input { width: 16px; height: 16px; }
+/* 一行一个参数的偏好行（复选框那种放不下 select，单独一档） */
+.sv-pref-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: 13px; color: var(--text); }
+.sv-pref-select { width: auto; flex: 0 0 auto; }
 .sv-sep { height: 1px; background: var(--border); margin: 16px 0 4px; }
 .sv-err { font-size: 12px; color: var(--danger); margin: 8px 0 0; }
 .sv-ok { font-size: 12px; color: var(--green); margin: 8px 0 0; }
