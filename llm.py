@@ -770,11 +770,38 @@ class LLMClient:
         # `model="deepseek-flash"`）。发成 `chat_template_kwargs` 的话，
         # 上游要么忽略要么 400 —— 表现为「开关能点了但思考没开」，
         # 比诚实地报「不支持」更难排查。
+        #
+        # `disabled` 是官方文档明确列出的合法值（api-docs.deepseek.com/api/create-chat-completion：
+        # "Possible values: [enabled, disabled]"），不是我们推的。
         if self.capability.get("thinking") == "toggle":
             if (self.provider or "").strip().lower() == "deepseek":
                 kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking_on else "disabled"}}
             else:
                 kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": bool(thinking_on)}}
+
+            # ⚠⚠⚠ **开思考时的两条硬约束，都来自 DeepSeek 官方 API 文档**
+            # （api-docs.deepseek.com/api/create-chat-completion）。改这段之前先读：
+            #
+            # **1) `tool_choice="required"` / 具名函数 + 思考模式 = 整个请求 400。**
+            #    文档原文："required and named tool choices are not supported in
+            #    thinking mode; the API returns a 400 error. Disable thinking
+            #    mode first to use them."
+            #
+            #    → **现在没踩到，只因为全仓从不发 `tool_choice`**（只发 `tools`，
+            #    走默认 auto）。这是运气，不是设计。哪天有人为了「强制让模型用工具」
+            #    在上面的 `kwargs` 里加 `tool_choice`，**所有开了思考的用户会全线
+            #    400，且报错信息不会提示是思考模式的冲突**。
+            #    → 真要加 tool_choice 时，必须先判 `thinking_on` 并二选一，
+            #    或者把工具调用降级为非思考轮。
+            #
+            # **2) `temperature` / `presence_penalty` / `frequency_penalty`
+            #    在思考模式下被静默忽略。**
+            #    文档原文："...will not trigger an error but will also have no effect."
+            #
+            #    → 下面 `create()` 是**无条件**发 `temperature=temperature` 的。
+            #    用户设了 1.0 想让它有创造性，开思考后实际用的是 provider 默认值，
+            #    **不报错、没有任何信号**。已立 TODO（见 docs/next-steps.md §7），
+            #    待决定：抑制该参数并在 UI 说明，还是接受这个偏差。
         call_timeout = self.timeout if timeout is None else timeout
         if tools:
             kwargs["tools"] = tools
