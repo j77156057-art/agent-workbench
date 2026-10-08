@@ -174,6 +174,34 @@ npm run build               退出码 0（44.2s）
 `harness.yml:59`）加 `--ignore-scripts`。** 这正是 Pi「显式白名单」在我们树上的
 等价物 —— 而实测说明**全禁就够，不需要白名单**。
 
+**✅ 已实施**（守卫 `tests/test_npm_ignore_scripts_pinned.py`，变异实测通过）：
+
+| 守卫 | 判据 | 变异实测 |
+|---|---|---|
+| `test_bootstrap_passes_the_flag` | 桩掉 `_run`、**真跑一次 `ensure_dependencies`**、断言捕获到的**真实 argv** | 去掉 flag → 红 |
+| `test_ci_passes_the_flag` | 解析 `harness.yml` 的 `run:`（**不是 grep 整份文件**） | 去掉 flag → 红 |
+| `test_no_new_lifecycle_script_dependency_slips_in` | lockfile 里带 install 脚本的包**恰好是已实测的 4 个** | 新增一个 → 红 |
+| （对照）无效变异：只加注释痕迹、**不动真实代码** | —— | **保持绿** |
+
+**第三条是防「第 2 种破坏」的**：将来新增一个带 install 脚本的依赖，
+「关掉脚本安全」这个前提就需要重验 —— 那时这条守卫会**逼人重跑探针**，
+而不是让人稀里糊涂继承一个只对 4 个包成立的安全前提。
+
+⚠ **写守卫时踩了两个坑，都记在那个文件的注释里**：
+
+1. **判据位置换过一次**：第一版桩 `subprocess.run`，结果 `ensure_dependencies`
+   先要建 venv、建 venv 也要走 subprocess —— 一路桩下去链条长到
+   「信号被噪声淹没」，最后红在一个**与要验的东西无关**的地方
+   （`virtual environment is incomplete`）。改成桩 `_run`
+   （`dependency_bootstrap.py:51`，就是那个接收 argv 并执行的函数）。
+2. **桩必须模拟被桩对象的副作用**：只记 argv 不造文件，第 328 行
+   `python.is_file()` 为假 → 同样红在无关处。桩里补上创建占位 venv 文件。
+
+以及**我自己的无效变异**（记在 `mutate_npm_ignore_scripts_guard.py` 里）：
+第一版那个「无效变异对照」写错了 —— 它把 flag 挪进注释的**同时真从 argv 删了它**，
+守卫变红是**完全正确的**。若当时为了「让对照通过」去放宽守卫，
+那才是把守卫改坏。**无效变异的形态是「表面有动作，行为没变」。**
+
 ##### ⚠ 这个探针自己有缺陷：3 条判据里 2 条是我编的路径
 
 它报的 `**缺** esbuild 平台二进制` 与 `**缺** vue 入口` **都是假缺**：

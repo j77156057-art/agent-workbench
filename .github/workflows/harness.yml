@@ -55,8 +55,11 @@ jobs:
       - name: Build workbench frontend
         if: matrix.backend == 'sqlite'
         working-directory: frontend
+        # `--ignore-scripts` 与 dependency_bootstrap.py 那条同步路径保持一致。
+        # 实测依据（产物逐字节相同）：docs/harness-research-verified.md §1.4；
+        # 守卫 tests/test_npm_ignore_scripts_pinned.py 会同时钉住这两处。
         run: |
-          npm ci
+          npm ci --ignore-scripts
           npm run build
       - name: Run frontend behaviour tests (node:test)
         if: matrix.backend == 'sqlite'

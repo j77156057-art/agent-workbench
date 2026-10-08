@@ -411,7 +411,15 @@ def ensure_dependencies(root: str | os.PathLike[str], *, force: bool = False,
     })
 
     if frontend_outdated:
-        _run([npm, "ci"], project / "frontend", label="同步前端依赖")
+        # `--ignore-scripts` 是**实测过的结论**，不是预防性洁癖：
+        # `npm ci --ignore-scripts` + `npm run build` 的产物与正常安装**逐字节相同**
+        # （25 个 .js 零差异），而 lockfile 里带 install 脚本的包只有 4 个，其中
+        # 生产依赖那两个（vue-demi）的 postinstall 在我们的场景下是**幂等**的
+        # （`copy()` 做的是 `replace(/'vue'/g, "'vue'")`，我们装的就是 vue）。
+        # 依据与探针见 docs/harness-research-verified.md §1.4，
+        # 守卫在 tests/test_npm_ignore_scripts_pinned.py。
+        _run([npm, "ci", "--ignore-scripts"], project / "frontend",
+             label="同步前端依赖")
         _run([npm, "run", "build"], project / "frontend", label="构建前端资源")
         report["frontend_changed"] = True
         _write_snapshot(project, SNAPSHOT_LOCK,
