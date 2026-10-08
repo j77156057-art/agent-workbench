@@ -431,7 +431,34 @@ class OmniRealtimeProvider(RealtimeProvider):
             session["turn_detection"] = None
         # 留空就用出厂人设：没有 instructions 时模型按厂商默认助手答话，会说出
         # 「我没法帮你改」这种和产品定位冲突的话（见 DEFAULT_INSTRUCTIONS）。
-        instructions = _env("DOCMIND_OMNI_INSTRUCTIONS") or DEFAULT_INSTRUCTIONS
+        #
+        # ⚠⚠ **这里注入实时能力**：把当前会话真正拥有的能力（音频/视频/文字/语音/打断）
+        # 告诉模型，防止它说"我不支持语音"或"我看不了视频"。
+        # 这是它的**真实能力**，不是启发式猜测，必须给模型看。
+        #
+        # ⚠ **环境变量覆盖优先级**：显式设置了 DOCMIND_OMNI_INSTRUCTIONS 时，
+        # 尊重用户意图**不再追加**能力清单（用户可能想完全自定义）；
+        # 只有用默认人设时才注入，保持向后兼容。
+        env_instructions = _env("DOCMIND_OMNI_INSTRUCTIONS")
+        if env_instructions:
+            instructions = env_instructions
+        else:
+            instructions = DEFAULT_INSTRUCTIONS
+            live_caps = self.capabilities()
+            if live_caps:
+                cap_labels = {
+                    "audio.in": "麦克风音频输入",
+                    "video.in": "视频帧输入",
+                    "text.out": "文字回复",
+                    "audio.out": "语音回复",
+                    "interrupt": "可打断",
+                }
+                caps_text = "、".join(cap_labels.get(c, c) for c in live_caps)
+                instructions += (
+                    "\n\n【当前会话实时能力】"
+                    f"你拥有：{caps_text}。"
+                    "用户问你能不能说话/听/看/打断，必须按这份清单回答。"
+                )
         session["instructions"] = instructions
         return self._event("session.update", session=session)
 
