@@ -81,6 +81,15 @@ ROOT = ensure_on_path()
 
 MODEL = os.getenv("DOCMIND_E2E_MODEL", "qwen3.6:35b-a3b")
 
+# 结果落盘：**可复现性对比需要它**。
+# 模型行为不可复现，所以「护栏有效」这个结论若只有一次观测支撑，
+# 那它就是「观察到一次」而不是「观察到稳定」。
+# 而对比的判据必须是**逐格的布尔读数**（改/未改 × 4 轮 × 2 组 = 8 格），
+# 不是「结论听起来一样」。
+RESULT_JSON = pathlib.Path(os.getenv(
+    "DOCMIND_E2E_OUT",
+    "D:/Temp/opencode/e2e_guard_result.json"))
+
 FIXTURE_FILES = {
     "a.py": "def add(a, b):\n    return a - b\n\n\nif __name__ == '__main__':\n    print(add(2, 3))\n",
     "b.py": "def mul(a, b):\n    return a * b\n",
@@ -370,6 +379,29 @@ def main() -> int:
             print("       那是完全不同的一类缺陷（见 write-intent-corpus.md 的租约让位）。")
         else:
             print("    ⚠ 反常：只有对照组改了。模型行为不可复现，同题需再跑 2-3 次。")
+
+    # ---- 落盘：供「两次跑是否一致」逐格对比 ----
+    try:
+        grid = {}
+        for res in results:
+            for row in res["turns"]:
+                key = "%s/轮%d" % (res["label"], row["turn"])
+                grid[key] = {
+                    "question": row["question"][:60],
+                    "write_intent": row.get("write_intent"),
+                    "changed": bool(row.get("changed_files")),
+                    "changed_files": row.get("changed_files") or [],
+                    "seconds": row.get("seconds"),
+                }
+        RESULT_JSON.write_text(json.dumps({
+            "model": MODEL,
+            "grid": grid,
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+        print()
+        print("  结果已落盘：%s" % RESULT_JSON)
+        print("  逐格对比请用：tools/e2e_guard_repro.py")
+    except Exception as exc:
+        print("  *** 落盘失败: %s: %s" % (type(exc).__name__, exc))
 
     return 0 if verdict_ok else 3
 
