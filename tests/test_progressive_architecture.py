@@ -21,13 +21,33 @@ class ProgressiveArchitectureTests(unittest.TestCase):
         self.assertEqual(schema["parameters"]["properties"]["query"]["type"], "string")
         self.assertIn("input", schema["parameters"]["properties"])
 
-    def test_context_router_only_exposes_web_when_needed(self):
+    def test_web_exposure_follows_the_switch_not_the_wording(self):
+        """外网工具暴露**只由用户的联网开关决定**，不再要求问题措辞也命中。
+
+        ⚠ **2026-10-08 改了本条的前提。** 原断言是：
+
+            ordinary = route("请解释这个函数", web_enabled=True)
+            assertNotIn("web", ordinary.tool_groups)     # 靠 _WEB 正则不命中
+
+        那要求「关键词也猜中」才给外网工具，而实测有**两个**坏处：
+
+        1. **授权已给而能力不可达** —— 用户打开联网开关，问「查下高铁票」，
+           而 `_WEB` 不命中（它只认名词），于是 `web_search` 调不到。
+        2. 三个 harness 都不按措辞挑工具（Pi 不涉及、Hermes 显式配置、
+           opencode 预算截断 + 轮转），我们的关键词判定是唯一异类。
+
+        所以闸门改成 `web_enabled` 本身。这条现在断言新契约：
+        **开则 web 组在、关则连 sources 里都没有 web**。
+        """
         router = ContextRouter()
-        ordinary = router.route("请解释这个函数", code_root="D:/project", web_enabled=True)
-        current = router.route("请搜索最新 Godot 文档", code_root="D:/project", web_enabled=True)
-        self.assertNotIn("web", ordinary.tool_groups)
-        self.assertIn("web", current.tool_groups)
-        self.assertIn("web", current.sources)
+        off = router.route("查下高铁票", code_root="D:/project", web_enabled=False)
+        on = router.route("查下高铁票", code_root="D:/project", web_enabled=True)
+        self.assertNotIn("web", off.tool_groups)
+        self.assertNotIn("web", off.sources)
+        self.assertIn("web", on.tool_groups)
+        self.assertIn("web", on.sources)
+        # 开关关着时，正文里也不该出现 web 工具组
+        self.assertTrue(all(g != "web" for g in off.tool_groups), off.tool_groups)
 
     def test_project_bug_questions_use_project_audit_context(self):
         router = ContextRouter()

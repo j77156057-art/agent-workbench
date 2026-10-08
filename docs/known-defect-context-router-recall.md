@@ -1,6 +1,7 @@
-# `ContextRouter` 召回不足导致关键工具被收窄掉（已修）
+# `ContextRouter` 召回不足导致关键工具被收窄掉（**已修：撤除相关性收窄**）
 
-> 立档：**2026-10-08**，同笔修复并留档。
+> 立档：**2026-10-08**。状态：**已修** —— 撤除按关键词决定工具组的机制，
+> 详见 §11。
 > 与 `docs/known-defect-tool-visibility-and-dual-text.md` 是**不同族**：
 > 那篇是「工具从未被披露」，本篇是「披露了但按需收窄把它收走了」。
 
@@ -214,4 +215,70 @@ opencode 同一节：
 独立一笔，不该顺手做。
 
 **另一个方向是取消收窄**（三家的做法），代价见 §10.2 —— 那是产品取舍不是 bug 修复，
-需要人来定。
+需要人来定。**→ 已决：撤除。见 §11。**
+
+---
+
+## 11. 已撤除相关性收窄（2026-10-08，用户明选「撤」）
+
+`ContextRouter.route()` 现在**恒定**给出全部非外网工具组，
+外网组只由用户的 `web_enabled` 决定：
+
+```python
+groups.update(("code", "developer", "general", "game", "assets",
+                "knowledge", "orchestration"))
+if web_enabled:
+    groups.add("web")
+```
+
+### 代价（实测，原生通道 tool schema，**每次模型调用都付**）
+
+| | 工具数 | tokens/轮 |
+|---|---|---|
+| 撤除前（动词型请求） | 26 / 116 | 2 947 |
+| **撤除后（联网关）** | **109** | **13 832**（**4.7 倍**） |
+| 撤除后（联网开） | 116 | 14 490 |
+
+撤除后各类请求拿到**同一套**工具，`dev_testrun` / `dev_deps` / `dev_commit` /
+`game_screenshot` / `dev_find_references` 全部到位。
+
+### 外网组为什么一并改
+
+原先 `web_enabled and _WEB.search(query)` —— 而实测「查下高铁票」「查高铁」
+**都不命中**，于是**用户把联网开关打开了，`web_search` 却调不到**。
+授权已给而能力不可达，与 `developer` 那条同病。
+
+现在**开关本身就是闸门**：用户显式表达的意图不该再被关键词猜一遍。
+
+### 保留的收窄
+
+| 机制 | 为什么留 |
+|---|---|
+| 系统提示的 progressive 分层（`CORE_TOOL_NAMES` + `【扩展工具索引】`） | 那是**预算截断**，正是 opencode `Discovery` 明确保留的那一半（「Every tool namespace is always listed ... budget」），且有预算上限 |
+| `web_enabled` 开关 | 安全开关，不是相关性猜测 |
+| `tool_search` 检索即放行 | 机制保留，**场景变了**：从「补救收窄错误」变成「按需读长用法」（`dev_vue` 说明 1167 字符，模型不必一开始就背） |
+| 证据侧 `sources` 仍按问题判定 | 它会作为系统消息注入「本轮证据来源」，说 web 而没查 web 是不诚实的 |
+
+### 被这一笔改变的三处前提（都改了，**不是删测试**）
+
+撤除动作消灭了「某工具本来不在有效集里」这个前提，三处守卫/测试因此红：
+
+1. `test_tool_search_expands_visibility.py` 的 5 条 —— 「检索前 26 个」
+   不再成立。改成断言**机制本身**（检索确实记录命中、只多检索过的那些、
+   有效集不超过注册表、重置生效），并在 docstring 里写明前提变更与原因。
+2. `test_progressive_architecture.py::test_context_router_only_exposes_web_when_needed`
+   —— 它断言的正是被撤掉的「靠措辞决定 web 组」。改写成
+   `test_web_exposure_follows_the_switch_not_the_wording`：开则 web 组在、
+   关则连 `sources` 里都没有。**改了断言的前提，没有删它。**
+3. `test_no_relevance_narrowing.py`（新增 8 条）—— 含一条
+   **「撤相关性不等于撤联网安全开关」**，一条**「代价就是 13832 tokens」**
+   （将来有人想优化回去会先撞到它，从而知道自己在撤掉什么）。
+
+**我没有为了让套件变绿而删任何一条。**
+
+### 守卫
+
+`tests/test_no_relevance_narrowing.py` 8 条。变异实测两次都咬：
+恢复按 `_CODE` 收窄 → 3 failed；web 组无视开关 → 1 failed。
+
+组合回归 **296 passed**。

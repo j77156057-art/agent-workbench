@@ -733,19 +733,47 @@ class ContextRouter:
 
         # Ambiguous questions may use both local stores.  A configured code
         # project alone does not force code RAG for ordinary conversation.
+        #
+        # ## `developer` 与 `code` 不再靠相关性召回（2026-10-08）
+        #
+        # 原来靠 `_CODE` 命中与否决定给不给这两组，而那个正则只认**名词**
+        # （`代码|函数|类|报错…`）。实测「跑一下测试」「装个依赖」「这条能提交吗」
+        # **一个都不命中** —— 有效工具从 116 掉到 26，而 `dev_testrun` /
+        # `dev_deps` / `dev_commit` 全在外面。
+        #
+        # 那不是小漏：`dev_testrun` 的说明里明写着「别再 `run_command("pytest -q")`
+        # 自己读一整屏文本」，而现在恰好是它被收走 —— 机制与召回互相打脸。
+        #
+        # 核实三个 harness 后确认**它们都不按问题相关性挑工具**：
+        #   · Pi —— 不涉及工具选择（安全模型是进程边界）
+        #   · Hermes —— 用户/平台显式 toolsets，零自动召回
+        #   · opencode codemode `Discovery` —— 预算截断 + 轮转公平 + 检索，
+        #     原文「Every tool namespace is always listed ... round-robin」
+        #
+        # 我们的关键词判定是**三家里唯一的异类**，也是唯一失效的那个。
+        #
+        # 代价（实测，原生通道 tool schema，每次模型调用都付）：
+        #   26 工具 / 2947 tok  ->  87 工具 / 11707 tok（**4.0 倍**）
+        #
+        # **外网组（web）不在此列** —— 它由用户的 `web_enabled` 开关控制
+        # （`Agent._web_blocked`），那是**安全开关**不是相关性猜测，不撤。
+        groups.update(("code", "developer", "general", "game", "assets",
+                        "knowledge", "orchestration"))
         if wants_code:
             sources.append("code")
-            groups.update(("code", "developer", "game"))
         if wants_knowledge:
             sources.append("knowledge")
-            groups.add("knowledge")
-        if wants_web:
-            sources.append("web")
+        if web_enabled:
+            # **开关本身就是闸门，不再要求正则也猜中。**
+            #
+            # 原来要求 `web_enabled and _WEB.search(query)`，而 `_WEB` 同样只认名词
+            # —— 实测「查下高铁票」「查高铁」都不命中，于是**用户把联网开关打开
+            # 了，web 工具却调不到**。那是授权已给而能力不可达，属于静默失效。
+            #
+            # `web_enabled` 是用户的显式意图，它该是**唯一**判据；
+            # 真要限制外网，该由开关与 `_web_blocked` 管，不该由关键词猜。
             groups.add("web")
-        if wants_mcp:
-            groups.add("developer")
-        if wants_adapter:
-            groups.add("developer")
+            sources.append("web")
         if wants_experience:
             sources.append("experience")
         if not sources:

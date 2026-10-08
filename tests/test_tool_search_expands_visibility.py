@@ -86,67 +86,78 @@ def _agent_for(question: str) -> agent_mod.Agent:
 # --------------------------------------------------------------------------
 
 def test_a_searched_tool_becomes_callable():
-    """**本笔的主张**：查了用法就能调。"""
+    """**本笔的主张**：查了用法就能调。
+
+    ⚠ **2026-10-08 前提已变**：撤除相关性收窄后
+    （`docs/known-defect-context-router-recall.md` 的撤除决定），
+    `dev_testrun` **本来就在有效集里**，所以「检索后多出来」这条不再成立。
+
+    本笔的机制仍有价值，只是**场景变了**：`tool_search` 从
+    「补救收窄错误」变成「按需读长用法」（`dev_vue` 的说明有 1167 字符，
+    模型不必一开始就背它）。
+
+    所以这里改成断言**机制本身**：检索确实把命中写进了 expansions，
+    且该集合参与有效集计算。
+    """
     a = _agent_for("跑一下测试")
-    assert "dev_testrun" not in set(a._effective_tool_names()), (
-        "前置条件不成立：`dev_testrun` 本来就在有效集里 —— "
-        "若召回已修好，本条失去意义，请改写它")
     agent_mod._tool_search("dev_testrun")
-    assert "dev_testrun" in set(a._effective_tool_names()), (
-        "检索了用法却仍然调不到 —— 这正是本笔要修的最后一环")
+    assert a.tool_search_expansions == {"dev_testrun"}, (
+        "检索没有记录命中 —— 机制本身坏了，与收窄是否撤除无关")
 
 
 def test_the_gain_is_exactly_what_was_searched():
     """反向守卫：搜一个只多一个，不许顺带放开一串。
 
-    这是「收窄还在」的具体形态。实测：检索前 26、检索 `dev_testrun` 后 27。
+    「只多检索过的那几个」这个性质与收窄撤没撤无关 ——
+    即使目标工具本就在有效集里，多出来的也应当只有检索过的。
     """
     a = _agent_for("跑一下测试")
     before = set(a._effective_tool_names())
     agent_mod._tool_search("dev_testrun")
     after = set(a._effective_tool_names())
     gained = after - before
-    assert gained == {"dev_testrun"}, (
-        "放开的比检索的多：多出 %s —— 那说明过滤规则的例外写宽了"
+    assert gained <= {"dev_testrun"}, (
+        "放开的比检索的多：多出 %s —— 过滤规则的例外写宽了"
         % sorted(gained - {"dev_testrun"}))
 
 
 def test_narrowing_is_not_disabled():
-    """反向守卫：收窄仍然生效。
+    """反向守卫：**有效集不得达全量**，除非联网开关开着。
 
-    progressive 的意义是「模型用不到的工具不占上下文」。若检索一次就全放开，
-    那个机制就没了 —— 所以即使搜到东西，未搜过的工具仍必须在有效集外。
+    2026-08-08 更正：本条原先断言 `len(eff) < len(TOOLS)` 且 `dev_vue` 不在 ——
+    那两条在**撤除相关性之前**成立。撤除后有效集是 109/116（联网关），
+    只差外网那一组。所以判据改成「外网组仍受开关控制」，
+    那才是真正不能被放开的东西。
     """
     a = _agent_for("跑一下测试")
     agent_mod._tool_search("dev_testrun")
     eff = set(a._effective_tool_names())
-    assert len(eff) < len(tools_mod.TOOLS), (
-        "有效集已达全量 %d —— 收窄失效" % len(eff))
-    assert "dev_vue" not in eff, "`dev_vue` 没被检索过却进了有效集"
+    leaked = [n for n in eff if tools_mod.TOOLS[n].group == "web"]
+    assert not leaked, (
+        "联网关闭时外网工具在有效集里：%s —— 撤相关性不等于撤安全开关" % leaked)
 
 
 # --------------------------------------------------------------------------
 # 滥用必须可见（无上限的已知代价）
 # --------------------------------------------------------------------------
 
-def test_mass_search_widens_a_lot_and_that_is_recorded():
-    """**记录一个已知代价**：无上限意味着一次检索能放大到接近全量。
+def test_mass_search_is_recorded_and_cannot_exceed_the_registry():
+    """**记录一个已知代价**：检索无数量上限（用户明选），所以放大必须可观测。
 
-    实测：检索前 26；把 developer 组全部搜一遍 -> **97**（全量 116 的 84%）。
+    ⚠ **2026-10-08 前提已变**：撤除相关性收窄后有效集已接近全量，
+    所以「放大 3 倍」那种度量不再有意义。改为断言两件仍然要成立的事：
 
-    本笔不设上限（用户明选），所以**放大必须可观测** ——
-    `tool_search_expansions` 记下本轮放开了谁。
+    1. 放开了谁，`tool_search_expansions` 里**如实记着**
+    2. 有效集**不超过注册表**（越权放大不可能，但记录必须完整）
     """
     a = _agent_for("跑一下测试")
-    before = len(set(a._effective_tool_names()))
-    dev_names = [n for n, s in tools_mod.TOOLS.items() if s.group == "developer"]
+    dev_names = [n for n, s in tools_mod.TOOLS.items() if s.group == "web"]
     for name in dev_names:
         agent_mod._TOOL_SEARCH_EXPANSIONS.get().add(name)
-    after = set(a._effective_tool_names())
-    assert len(after) > before * 3, (
-        "预期放大很明显（实测 26 -> 97），实测 %d -> %d" % (before, len(after)))
     assert a.tool_search_expansions == set(dev_names), (
-        "放大没有被记录 —— 那它就是**无声退化**，下一个人不会知道收窄失效了")
+        "放大没有被记录 —— 那它就是**无声退化**")
+    effective = set(a._effective_tool_names())
+    assert effective <= set(tools_mod.TOOLS), "有效集里出现了注册表没有的工具"
 
 
 # --------------------------------------------------------------------------
@@ -226,10 +237,10 @@ def test_a_granted_turn_after_searching_still_works():
 # --------------------------------------------------------------------------
 
 def test_expansions_reset_every_turn():
-    """反向守卫：检索得到的可见性**不跨轮**。
+    """反向守卫：检索得到的记录**不跨轮**。
 
-    不重置的话，上一轮搜过的工具会永久留在有效集里，
-    多轮下来 progressive 就被逐步绕光 —— 而那正是它要防的。
+    不重置的话，`tool_search_expansions` 只增不减，
+    变成一份看不出「这一轮到底搜了什么」的脏账。
     """
     a = _agent_for("跑一下测试")
     agent_mod._tool_search("dev_testrun")
@@ -237,8 +248,7 @@ def test_expansions_reset_every_turn():
     # 下一轮：`_run` 开头会重置
     a.tool_search_expansions = set()
     agent_mod._TOOL_SEARCH_EXPANSIONS.set(a.tool_search_expansions)
-    assert "dev_testrun" not in set(a._effective_tool_names()), (
-        "重置后仍在有效集里")
+    assert not a.tool_search_expansions, "重置后仍有上一轮的记录"
 
 
 def test_the_run_loop_actually_resets_it():
