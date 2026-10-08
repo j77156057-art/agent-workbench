@@ -200,7 +200,7 @@ try {
       fs.writeFileSync(out, Buffer.from(d.diffPng, 'base64'))
       failed++
     }
-    console.log(`${bad ? 'FAIL' : 'PASS'}   ${c.name}  变化像素 ${d.changed}/${d.total} (${d.pct.toFixed(3)}%)  最大通道差 ${d.worst}`
+    console.log(`${bad ? 'FAIL' : 'PASS'}   ${c.name}  变化像素 ${d.changed}/${d.total} (${d.pct.toFixed(3)}%)  最大通道差 ${d.worst}${info}`
       + (bad ? `  → 标红图 ${out}` : ''))
   }
   console.log(`\n${CASES.length - failed}/${CASES.length} 视觉基线一致`

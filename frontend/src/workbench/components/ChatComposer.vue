@@ -25,6 +25,8 @@ const props = defineProps<{
   usageTitle: string
   voiceActive: boolean
   voiceSupported: boolean
+  /** 语音为什么不可用（开发舱内才有意义）；空串 = 不解释（普通对话台本来就没这个通道） */
+  voiceHint?: string
 }>()
 
 const emit = defineEmits<{
@@ -89,6 +91,11 @@ function onVideoPick(ev: Event) {
       </button>
       <button v-if="voiceSupported" class="cd-chip cd-attach" :class="{ 'cd-chip-on': voiceActive }" :aria-pressed="voiceActive" title="语音协作：发言时段会匹配当前项目画面；无同步画面时明确说明" @click="emit('toggle-voice')">
         <span aria-hidden="true">{{ voiceActive ? '◼' : '◉' }}</span><span>{{ voiceActive ? '听取中' : '语音' }}</span>
+      </button>
+      <!-- 能力缺失时不能只是让按钮消失：用户分不清「这里没有语音」和「语音坏了」。
+           禁用态 + tooltip 点名缺的是哪一项、怎么补。普通对话台不传 hint，仍然不渲染。 -->
+      <button v-else-if="voiceHint" type="button" class="cd-chip cd-attach" disabled :title="voiceHint">
+        <span aria-hidden="true">◌</span><span>语音不可用</span>
       </button>
       <span v-if="pendingImages.length" class="cd-attachments">
         <span v-for="(img, i) in pendingImages" :key="img.name + i" class="cd-attachment">
@@ -217,6 +224,10 @@ function onVideoPick(ev: Event) {
   max-width: 60%;
 }
 .cd-chip:hover:not(:disabled):not(.cd-chip-off) { border-color: var(--border-strong); color: var(--text); }
+/* 禁用态此前没有任何视觉差别（只有 .cd-send:disabled 有），图片/视频按钮在演示模式
+   下看着和可点一样。语音不可用那颗更需要看得出来是「不能点」。
+   .55 而不是 .4：禁用态虽豁免 AA，但这颗的文案本身就是给人读的。 */
+.cd-chip:disabled { opacity: .55; cursor: not-allowed; }
 .cd-chip:disabled { cursor: default; }
 .cd-chip-text {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

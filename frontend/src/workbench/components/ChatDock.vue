@@ -39,7 +39,19 @@ import type { PreviewFeedbackRequest } from '../previewFeedback'
 const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
 const voiceActive = ref(false)
 // 语音是自主开发舱的协作通道；普通项目对话台不显示也不启动语音资源。
-const voiceSupported = ref(props.scope === 'cockpit' && typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window))
+// 转写有两条独立通路：浏览器自带 Web Speech，或后端配了 STT（服务端转写）。
+// 必须分开记 —— 合成一个布尔就没法在被禁时说清到底缺的是哪一条。
+const hasWebSpeech = typeof window !== 'undefined'
+  && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
+const voiceSttConfigured = ref(false)
+const voiceSupported = computed(() => props.scope === 'cockpit' && (hasWebSpeech || voiceSttConfigured.value))
+const voiceHint = computed(() => {
+  if (props.scope !== 'cockpit' || voiceSupported.value) return ''
+  const missing: string[] = []
+  if (!hasWebSpeech) missing.push('本机浏览器没有 Web Speech（缺 SpeechRecognition）')
+  if (!voiceSttConfigured.value) missing.push('后端也没配置语音转写（STT）')
+  return `语音协作不可用：${missing.join('；')}。两条通路上打通任意一条即可（换 Edge / Chrome，或在设置里配好语音服务）。`
+})
 const voiceTtsConfigured = ref(false)
 const voiceForwardQueue = ref<string[]>([])
 const voiceCompanionBusy = ref(false)
@@ -1104,7 +1116,7 @@ onMounted(() => {
   if (props.scope === 'cockpit') {
     void voiceApi.status().then(status => {
       voiceTtsConfigured.value = !!status.tts_configured
-      voiceSupported.value = voiceSupported.value || !!status.stt_configured
+      voiceSttConfigured.value = !!status.stt_configured
     }).catch(() => { voiceTtsConfigured.value = false })
   }
   // 全局事件统一走类型化事件总线（eventBus.ts），返回值即取消订阅
@@ -1454,7 +1466,8 @@ const webTitle = computed(() => webOn.value
         :usage="usage"
         :usage-title="usageTitle"
         :voice-active="voiceActive"
-        :voice-supported="props.scope === 'cockpit' && voiceSupported"
+        :voice-supported="voiceSupported"
+        :voice-hint="voiceHint"
         @submit="send()"
         @stop="stop"
         @images-picked="onImagesPicked"

@@ -106,11 +106,12 @@ async function openDockAndAsk(page, question) {
   await page.click('button.cd-send')
 }
 
-async function boot(prefs, route = '/workbench', frames = FRAMES, tail = TAIL) {
+async function boot(prefs, route = '/workbench', frames = FRAMES, tail = TAIL, extraInit = '') {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
   page.setDefaultTimeout(20000)
   await page.exposeFunction('__gate', () => new Promise(res => { release = res }))
   await page.addInitScript(`localStorage.setItem("docmind.askPrefs", ${JSON.stringify(JSON.stringify(prefs))})`)
+  if (extraInit) await page.addInitScript(extraInit)
   await page.addInitScript(fakeChat(frames, tail))
   await page.goto(base + route, { waitUntil: 'domcontentloaded' })
   // 夹具是共享的，会被其它套件跑脏（几十个 custom_*/regression_* 目录），
@@ -324,8 +325,39 @@ try {
       `展开后应 ${PREFS_REF.maxRefs + before.hidden} 条，实际 ${after.shown}`)
   })
   await page.close()
+
+  // ⑥ 语音能力缺失时不能只是让按钮消失：要说出缺的是哪一条通路
+  const NO_SPEECH = `(() => {
+    delete window.SpeechRecognition
+    delete window.webkitSpeechRecognition
+    const native = window.fetch.bind(window)
+    window.fetch = (input, init) => (typeof input === 'string' && input.startsWith('/api/voice/status'))
+      ? Promise.resolve(new Response(JSON.stringify({ browser_fallback: false, stt_configured: false, tts_configured: false }),
+          { headers: { 'content-type': 'application/json' } }))
+      : native(input, init)
+  })()`
+  page = await boot(DEFAULTS, '/workbench', FRAMES, TAIL, NO_SPEECH)
+  // 切到开发舱用工作区快捷键 Alt+4（App.vue 的 setWorkspace('cockpit')），
+  // 比按文案点标签稳 —— 「开发舱」三个字在界面上出现多处。裸按 4 不生效，
+  // onWorkspaceHotkey 第一行就要求 e.altKey。
+  await page.click('.wb-brand')
+  await page.keyboard.press('Alt+4')
+  await page.waitForSelector('#wb-cockpit-chat-slot .cd-inputbar', { timeout: 30000 })
+  const voice = await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('#wb-cockpit-chat-slot .cd-attach')]
+      .find(b => (b.textContent || '').includes('语音'))
+    return btn ? { text: btn.textContent.trim(), disabled: btn.disabled, title: btn.title } : null
+  })
+  check('开发舱里语音不可用时给出禁用按钮 + 点名缺哪条通路（不再静默消失）', () => {
+    assert.ok(voice, '语音按钮整个不见了 —— 用户无从知道是坏了还是这里本来没有')
+    assert.equal(voice.disabled, true, '不可用的语音按钮必须是禁用态')
+    assert.match(voice.text, /语音不可用/, `按钮文案应说明状态，读到 ${JSON.stringify(voice.text)}`)
+    assert.ok(voice.title.includes('SpeechRecognition'), `tooltip 没点名浏览器通路：${voice.title}`)
+    assert.ok(voice.title.includes('STT'), `tooltip 没点名后端通路：${voice.title}`)
+  })
+  await page.close()
 } finally {
   await browser.close()
 }
-console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}：对话展示层 14 项断言`)
+console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}：对话展示层 15 项断言`)
 process.exit(failed ? 1 : 0)
