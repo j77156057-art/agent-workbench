@@ -857,6 +857,14 @@ class LLMClient:
                 self._record_usage(resp)
                 msg = _first_message(resp)
                 self.last_tool_calls = normalize_tool_calls(getattr(msg, "tool_calls", None))
+                # ⚠⚠ **非流式路径曾在此丢掉 `reasoning_content`**（真跑发现的）。
+                # 流式那条（`StreamChat`）一直有映射，所以只有非流式会静默丢思考 ——
+                # 表现为「同样的题，非流式就是不出思考内容」，而没有任何报错。
+                # 2026-10-09 真跑 deepseek-flash 验证：流式开思考拿到 937 字 reasoning，
+                # 非流式拿到 0 字，而 content 长度明显不同（说明参数生效了、只是内容被丢）。
+                reasoning = getattr(msg, "reasoning_content", None)
+                if reasoning and reasoning_sink is not None:
+                    reasoning_sink.append(str(reasoning))
                 # 非流式路径原本**完全没有** finish_reason，而「第 2 轮起不产出
                 # 可解析输出」正是要靠它分辨：模型自己停了（stop）还是被长度掐了
                 # （length）——两者的下一步动作完全相反。
@@ -1106,6 +1114,12 @@ class LLMClient:
         msg = body.get("message") or {}
         if tool_sink is not None:
             tool_sink.extend(normalize_tool_calls(msg.get("tool_calls")))
+        # ⚠⚠ **非流式路径曾在此丢掉 `message.thinking`**（与云侧同一个洞）。
+        # `_OllamaStream`（流式）一直把它追加进 reasoning_sink，非流式却没有 ——
+        # 于是同一道题走非流式就「不出思考」。无报错，纯静默。
+        thinking = msg.get("thinking")
+        if thinking and reasoning_sink is not None:
+            reasoning_sink.append(str(thinking))
         return msg.get("content", "")
 
     def count_tokens(self, text):
