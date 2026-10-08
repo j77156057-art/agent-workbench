@@ -107,6 +107,63 @@ def test_a_dead_port_is_not_owned():
     assert ok is False, why
 
 
+def test_it_still_has_no_production_caller():
+    """**记录一个未接线的状态**：本模块至今**没有生产调用点**。
+
+    这不是「忘了接线」，是**接不了** —— `owns_port` 的判据是「页面上有没有
+    markers 里的字串」，而实测三个候选指纹全部不可用：
+
+    * `<title>` —— 三个入口都以 `DocMind` 开头，而另一个 worktree 跑的是
+      **同一份代码**，标题完全相同
+    * 项目名注入页面 —— `git grep "APP_ID|PROJECT_NAME|VITE_APP" -- frontend`
+      **零命中**
+    * dev URL / 路径 —— `http://127.0.0.1:5173/` 不含项目路径
+
+    而那个假绿灯事故恰恰是 worktree 撞端口。
+
+    真正的修法是**前端在 dev 时注入项目身份**
+    （`docs/frontend-task-project-identity.md`），注入落地后本模块直接接上即可。
+
+    这条守卫的作用：一旦有人接线，它会红并提醒「记得同步更新
+    `docs/known-defect-port-ownership-has-no-fingerprint.md` 的状态」——
+    免得文档继续说「未接线」而代码已接。
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    callers = []
+    # 用 **AST** 而不是正则或逐行形态判断。
+    #
+    # 前两版都栽在同一个地方：
+    #   1) 正则 `(?<![\w.])owns_port\s*\(` 的 `.` 否定断言把 `dev_server.owns_port(...)`
+    #      整个排除 —— 它**从来没匹配过任何真实调用**，而我当时用**无效变异**
+    #      （插在 docstring 里的语句，语法合法但永���执行）验出「7 passed」，
+    #      误以为守卫有效。
+    #   2) 放开前导 `模块.` 后逐行排除 docstring —— 结果又把
+    #      「要判归属用 `owns_port()`」这句散文算成调用。
+    #
+    # AST 没有这些歧义：只有 `Call` 节点是调用，字符串里的散文根本不是。
+    import ast as _ast
+
+    for path in list(root.glob("*.py")) + list((root / "agent_runtime").glob("*.py")):
+        try:
+            tree = _ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Call):
+                continue
+            func = node.func
+            name = getattr(func, "attr", None) or getattr(func, "id", None)
+            if name == "owns_port":
+                callers.append("%s:%d  %s" % (path.name, node.lineno, name))
+    assert not callers, (
+        "owns_port 现在有生产调用点了：\n  " + "\n  ".join(callers) +
+        "\n若这是有意的，请更新 docs/known-defect-port-ownership-has-no-fingerprint.md"
+        " 的状态，并确认前端是否已注入项目身份")
+
+
 def test_probe_still_only_answers_reachability():
     """**记录边界**：`probe()` 仍然只判「通不通」，它没有被改成判归属。
 

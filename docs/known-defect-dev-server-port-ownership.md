@@ -157,15 +157,30 @@ vite 不漂移了，日志只有一行，「认端口 + `owns_port` 验归属」
 
 ## 9. 仍未做
 
-* **`preview_project` 不知道本会话 `dev_serve` 起的服务在哪个端口。**
-  第 6 节原文建议的是「与本会话 `dev_serve` 记录的实际端口比对」——
-  这一条**没做**，因为 `capture_project_preview` 与 `dev_serve` 之间没有会话态传递，
-  要做需要把 `dev_serve` 的 job 记录带进 `preview_project` 的入参契约。
-  现在做的是**第 8.2 节那个更弱但安全的版本**：不通就说清，不猜。
-* **`owns_port` 还没有生产调用点。** 它现在只有守卫在用（`test_dev_server_owns_port.py`）。
-  真接上需要第 9 节第一点先做 —— 有会话态才谈得上「本会话的服务」。
+> **2026-10-08 补充**：`owns_port` **接不了生产**，原因不是忘了接线，
+> 而是**页面里没有能区分项目的指纹**。完整核实与修法见
+> **`docs/known-defect-port-ownership-has-no-fingerprint.md`**。
+> 简版：三个候选指纹（`<title>` / 项目名注入 / dev URL）实测**全部不可用** ——
+> 三个入口的 title 都以 `DocMind` 开头，而 worktree 跑的是**同一份代码**。
+> 真正的修法是**前端在 dev 时注入项目身份**
+> （约定见 `docs/frontend-task-project-identity.md`，属前端域）。
+
+* ~~**`preview_project` 不知道本会话 `dev_serve` 起的服务在哪个端口。**~~
+  这条已不是主要障碍：`dev_server` 没有「按 job_id 查状态」、
+  `process_runner` 也没有「列出活跃 job」，但**更重要的是归属判据本身用不了**。
+  且即便传了 `job_id:`，撞端口的 worktree vite 也不是经 `dev_serve` 起的。
+* **`owns_port` 还没有生产调用点** —— 已用守卫
+  `test_it_still_has_no_production_caller` 把这个状态钉住，
+  一旦有人接线它会红并提醒同步更新文档。
 * **IPv6 那条监听仍然看不见**（第 2 节）。`netstat -ano -P TCPv4` 看不到 `[::1]`，
   排查者会误判成「那个进程没了」。这条属于运维排查体验，不在本次范围。
+
+### 两个洞，不是一个
+
+第 8.2 节挡的是「**地址不通时换一个**」；
+而「**地址通、但不是我的项目**」这个洞要等前端注入身份后才堵得上。
+
+**只有前者被堵住了。** 别把 8.2 当成归属校验已完成。
 
 ## 10. 复现
 
