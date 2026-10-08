@@ -85,16 +85,50 @@ README 原文：
 
 ### 1.4 供应链硬化（核实，逐条）
 
-README 的 "Supply-chain hardening" 一节：
+README 的 "Supply-chain hardening" 一节（**2026-10-08 取回原文逐条核实**；
+以下引文里的「第 N 行」**指 Pi README 的行号，不是本仓库的**）：
 
-- `We treat npm dependency changes as reviewed code changes.`
-- 直接依赖**钉到精确版本**（`save-exact=true`）
-- `.npmrc` 设 **`min-release-age=2`**，避免解析到当天发布的依赖
-- `package-lock.json` 是「the dependency ground truth」
-- pre-commit 阻止误提交 lockfile，除非 `PI_ALLOW_LOCKFILE_CHANGE=1`
-- 生命周期脚本有**显式白名单**，新依赖若带 lifecycle 脚本则检查失败直到人工审
-- 安装器从 `install-lock/` 装，把**传递依赖**也钉住
-- 定时 workflow 跑 `npm audit --omit=dev` + `npm audit signatures`
+> - Direct external dependencies are **pinned to exact versions**. Internal workspace packages remain version-ranged.
+> - `.npmrc` sets `save-exact=true` and `min-release-age=2` to avoid same-day dependency releases during npm resolution.
+> - `package-lock.json` is the **dependency ground truth**. Pre-commit blocks accidental lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
+> - `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated coding-agent install lock.
+> - The pi.dev installer installs from `packages/coding-agent/install-lock/`, **generated from the root lockfile**, to pin transitive deps. **The npm package does not pin transitive deps.**
+> - Local release installs, documented npm installs, and `pi update --self` use `--ignore-scripts` where supported.
+> - CI installs with `npm ci --ignore-scripts`, and a scheduled GitHub workflow runs `npm audit --omit=dev` plus `npm audit signatures --omit=dev`.
+> - Install lock generation has an **explicit allowlist** for dependency lifecycle scripts; new lifecycle-script deps fail checks until reviewed.
+
+⚠ **我原先把「生命周期脚本」记成「Pi 用白名单，我们全禁」—— 那是不准确的对照。**
+原文把**两条不同的路径**分开了：
+
+| 路径 | Pi 的做法 |
+|---|---|
+| **开发 / CI / 日常安装** | **`--ignore-scripts`（全禁）** —— 第 178、179 行两处明写 |
+| **打包时的 install-lock 生成** | 显式白名单（第 180 行） |
+
+而**我们只做日常安装**（不分发 npm 包），所以 **`--ignore-scripts` 全禁就是 Pi 自己的做法**，
+不需要白名单 —— 这与我实测「产物逐字节相同」的结论一致，
+而当时的理由记错了（我以为那是「我们更严」）。
+
+##### 我原记录里唯一真正「不适用」的一条：pre-commit 拦 lockfile
+
+原文明说 `package-lock.json` 是 **ground truth** 且它是 `install-lock/` 的**生成源**
+（第 176 行）—— **所以 lockfile 必须进 git**。那条 pre-commit 挡的不是
+「lockfile 进 git」，而是「**顺手改** lockfile」：要改得显式设
+`PI_ALLOW_LOCKFILE_CHANGE=1`，也就是**逼你承认这是一次有意变更**。
+
+**对照我们的处境**：lockfile 进 git（130 KB）✓、CI 用 `npm ci` ✓ ——
+那 Pi 的目标（"We treat npm dependency changes as **reviewed code changes**"）
+**我们已经通过 git 自身的 code review 达到了**。
+
+**结论：不照抄那条 pre-commit。** 它在我们这种
+「多 agent 共享工作树、并行改文件」的设定下**只会制造摩擦而不增加安全**
+—— 而摩擦在共享工作树场景下是有真实代价的（今晚我自己的两次
+「定位失败」与「分母算错」就是摩擦的代价）。
+
+**另有一条我们不需要的**：Pi 的 `install-lock/` 是为了**钉传递依赖**，
+因为它**分发的 npm 包不钉传递依赖**（第 176 行后半句明说）。
+**我们分发的不是 npm 包**（是预构建的 `web/assets` + Python venv），
+所以那套机制对我们不适用。
 
 #### 我们的现状（核实，2026-10-08）—— **差距比清单看起来小，但有一处 Pi 没有的洞**
 
@@ -103,13 +137,21 @@ README 的 "Supply-chain hardening" 一节：
 | `.npmrc` 设 `min-release-age=2` | ✅ **已加**（`frontend/.npmrc`）—— 实测生效，见下方专节 |
 | 直接依赖钉精确版本（`save-exact=true`） | ⚠ **未钉** —— 33 个前端依赖（deps 22 + dev 11）里 **29 个**是 `^`/`~` 范围；**只有 4 个** `@fontsource/*` 是精确版。**但 `package-lock.json` 钉住了实际解析结果**，所以 `^` 只在**有人主动改依赖**时才产生漂移 | `frontend/package.json` |
 | `package-lock.json` 是唯一真相 | ✅ **是** —— CI 用 `npm ci`（`.github/workflows/harness.yml:62`），启动同步器也用 `npm ci`（`dependency_bootstrap.py:421`） | 实测 |
-| 生命周期脚本**白名单** | ⚠ **只在一条路径上有，且不能照抄** —— `agent_runtime/tool_install.py:92`（agent 装 MCP 工具）用 `--ignore-scripts`（全禁）；启动同步的 `npm ci`（`dependency_bootstrap.py:421`）与 CI（`harness.yml:62`）**都没加，而加了会坏**（见下） | 实测 |
-| pre-commit 阻止误提交 lockfile | ❌ 无 | 实测 |
-| 传递依赖钉住（`install-lock/`） | ⚠ 部分 —— `package-lock.json` 本身含传递依赖，但**没有 Pi 那种「只从 install-lock 装」的通道** | 实测 |
-| 定时 `npm audit` | ❌ 无 | 实测 |
+| **开发/CI 安装一律 `--ignore-scripts`** | ✅ **已完成**（2/2 安装路径；agent 装 MCP 工具那条本来就有） | 实测 |
+| pre-commit 阻止**顺手改** lockfile | ⛔ **不适用** —— 那条挡的不是「lockfile 进 git」（Pi 的 lockfile 就在 git 里，它是 `install-lock/` 的**生成源**），而是「未经审查的改动」。**我们的 code review 已达成同一目标**，而 pre-commit 在共享工作树里**只制造摩擦不增加安全** | 原文 + 核实 |
+| 传递依赖钉住（`install-lock/`） | ⛔ **不需要** —— 那套是为「**分发的 npm 包不钉传递依赖**」补的（第 176 行原文后半句）；我们分发的是预构建 `web/assets` + venv，**不经 npm** | 原文 |
+| 定时 `npm audit` | ❌ 无 —— 但**加它之前得先决定「报出来之后怎么办」**：一开就是一批已知的传递依赖漏洞告警 | 实测 |
+| （Pi 的打包路径）install-lock 生成用 lifecycle 白名单 | ⛔ **不适用** —— 我们没有打包 npm 包的路径 | 原文 |
 
-**结论：npm 那半边的差距在 lockfile 已提供等价保护的情况下不大 ——
-但 `--ignore-scripts` 只覆盖了一条路径（见下）。**
+**结论：11 条里我们已达成 3 条、4 条经核实不适用，剩 2 条各有代价。**
+
+⚠ **「照抄 Pi 那七条」这个框架本身就是错的** —— 取回原文才发现它把
+**日常安装**（`--ignore-scripts` 全禁，第 178/179 行）与
+**打包生成**（白名单，第 180 行）分成了两条路径，而我们只需要前者。
+
+**当时我是把「白名单」当成 Pi 的做法，然后以为自己更严。**
+实际上一手原文说 Pi 自己在日常安装里就是全禁 —— 而我实测「产物逐字节相同」
+的结论**恰好是对的，只是理由记错了**。
 
 ⚠ **核实出一条我先前说反了的事** —— 我先写「`--ignore-scripts` 比 Pi 的白名单
 更严，所以 npm 侧强于 Pi」。**那是只看了 `agent_runtime/tool_install.py:92` 一处**。
