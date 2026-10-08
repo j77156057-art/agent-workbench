@@ -96,6 +96,133 @@ README 的 "Supply-chain hardening" 一节：
 - 安装器从 `install-lock/` 装，把**传递依赖**也钉住
 - 定时 workflow 跑 `npm audit --omit=dev` + `npm audit signatures`
 
+#### 我们的现状（核实，2026-10-08）—— **差距比清单看起来小，但有一处 Pi 没有的洞**
+
+| Pi 的做法 | 我们 | 依据 |
+|---|---|---|
+| `.npmrc` 设 `min-release-age=2` | ⚠ **无 `.npmrc`**（根与 `frontend/` 都无）—— 但见下方「暴露面」一节，**lockfile 已把大部分关掉了** | 实测 |
+| 直接依赖钉精确版本（`save-exact=true`） | ⚠ **未钉** —— 33 个前端依赖（deps 22 + dev 11）里 **29 个**是 `^`/`~` 范围；**只有 4 个** `@fontsource/*` 是精确版。**但 `package-lock.json` 钉住了实际解析结果**，所以 `^` 只在**有人主动改依赖**时才产生漂移 | `frontend/package.json` |
+| `package-lock.json` 是唯一真相 | ✅ **是** —— CI 用 `npm ci`（`.github/workflows/harness.yml:59`），启动同步器也用 `npm ci`（`dependency_bootstrap.py:414`） | 实测 |
+| 生命周期脚本**白名单** | ⚠ **只在一条路径上有，且不能照抄** —— `tool_install.py:92`（agent 装 MCP 工具）用 `--ignore-scripts`（全禁）；启动同步的 `npm ci`（`dependency_bootstrap.py:414`）与 CI（`harness.yml:59`）**都没加，而加了会坏**（见下） | 实测 |
+| pre-commit 阻止误提交 lockfile | ❌ 无 | 实测 |
+| 传递依赖钉住（`install-lock/`） | ⚠ 部分 —— `package-lock.json` 本身含传递依赖，但**没有 Pi 那种「只从 install-lock 装」的通道** | 实测 |
+| 定时 `npm audit` | ❌ 无 | 实测 |
+
+**结论：npm 那半边的差距在 lockfile 已提供等价保护的情况下不大 ——
+但 `--ignore-scripts` 只覆盖了一条路径（见下）。**
+
+⚠ **核实出一条我先前说反了的事** —— 我先写「`--ignore-scripts` 比 Pi 的白名单
+更严，所以 npm 侧强于 Pi」。**那是只看了 `tool_install.py:92` 一处**。
+逐条列全仓的 npm 调用点后：
+
+| 调用点 | 有 `--ignore-scripts` 吗 |
+|---|---|
+| `tool_install.py:92`（agent 装 MCP 工具） | ✅ 有 |
+| `dependency_bootstrap.py:414`（**启动时同步前端依赖**） | ❌ **无** |
+| `harness.yml:59`（CI） | ❌ **无** |
+
+即 **lockfile 里任何一个带 lifecycle 脚本的包，都会在用户启动应用或跑 CI 时执行它**。
+而「agent 自己请求装的包」反而是安全的 —— **安全与风险的分配正好反过来**。
+
+##### ⚠ 「能不能给 `npm ci` 加 `--ignore-scripts`」—— **我没有证据，两次都说过头了**
+
+查 `package-lock.json` 的 263 个包条目，**4 个标了 `hasInstallScript`**：
+
+| 包 | dev? | optional? | 备注 |
+|---|---|---|---|
+| `@vueuse/{core,shared}/vue-demi` | ❌ **生产依赖** | — | `@vueuse/core` 由 `@vue-flow/core` 传递引入，而后者被 `FlowCanvas.vue` / `SceneCanvas.vue` / `SceneNodeCard.vue` import，`vite.config.ts:70-73` 还有专门的 chunk 规则 |
+| `esbuild` | ✅ dev | — | 构建工具 |
+| `fsevents` | ✅ dev | ✅ optional | macOS only |
+
+**我先断言「加了会弄坏前端」，两次都被自己的数据推翻：**
+
+1. 第一次写「`lib/index.mjs` 是 postinstall 的产物，包里没有」→ **不成立**。
+   `npm pack vue-demi@0.14.10 --dry-run` 显示 tarball 里**有** `lib/index.mjs`
+   （21 个文件，含 `lib/v2|2.7|v3/index.{cjs,mjs,d.ts}`）。
+2. 改写「postinstall 在我们场景下是**幂等**的」—— 这条**成立**且可复算：
+   `scripts/utils.js` 的 `copy()` 做的是
+   `content.replace(/'vue'/g, "'${vue}'")`，而我们装的就是 `vue`，
+   所以**替换等于原样**。实测 `lib/index.mjs` 与 `lib/v3/index.mjs`
+   **逐字哈希相同**（`56d7ae03…`），文件里仍有 2 处裸 `'vue'`。
+
+⚠ **这一节我连续四次说过头，逐条记下来 —— 因为它正是「恒红/恒绿判据」的样本。**
+
+| # | 我先说 | 实测 | 真因 |
+|---|---|---|---|
+| 1 | 「`lib/index.mjs` 是 postinstall 的产物，包里没有」 | **不成立** | `npm pack --dry-run` 显示 tarball 里**有**（21 个文件） |
+| 2 | 「postinstall 会把 v3 变体复制上去」 | **机制对，但幂等** | `copy()` 里 `content.replace(/'vue'/g, "'vue'")` —— 我们装的就是 vue，替换等于原样。实测 `index.mjs` 与 `v3/index.mjs` **逐字哈希相同** |
+| 3 | 「`esbuild` 的 postinstall 在下载二进制，关了 CI 的 build 会失败」 | **不成立** | 二进制来自 **optionalDependency**（`@esbuild/win32-x64`，已装）。`install.js` 的正常路径是 `require.resolve('@esbuild/win32-x64/bin/esbuild')`（行255）；下载只在 optional 包缺失时兜底，而它自己的报错文案（行259-262）明说「**用 `--no-optional` 才会走那条路**」 |
+| 4 | 「`--ignore-scripts` 大概率可行」 | **仍未验证** | 理由（3）指向可行，但**读代码 ≠ 跑过** |
+
+**所以净状态是：目标明确（不让任意 lifecycle 脚本跑）、手段未定、实测待做。**
+证它需要真跑一次 `npm ci --ignore-scripts` 再比对构建产物 ——
+那会动 `node_modules`，**前端 agent 正在用这棵树，本轮不做**。
+
+**探针 `tools/mutation/probe_supply_chain_scripts.py` 的判据一
+（`lib/index.mjs` 哈希）只能证明 postinstall **跑过**，不能证明「不跑就坏」** ——
+那正是恒真判据的典型形态。已在探针输出里写明这条边界。
+
+**教训（与 `docs/next-steps.md` §5 那四条同源）**：
+我读了三处源码就下了四次结论，而**一次都没跑过 npm**。
+「esbuild 要下载二进制」这个判断听起来非常合理 —— 它**看起来就该成立**，
+所以更容易被当成事实写下来。**先跑，再写。**
+
+⚠ **但核实出一条 Pi 清单里没有、我们独有的洞：Python 那半边会跑 lifecycle 脚本。**
+
+`dependency_bootstrap.py:394`：
+
+```python
+_run([str(pip), "install", "--upgrade", "-r", str(requirements)], project,
+     label="同步 Python 依赖")
+```
+
+**没有 `--only-binary` / `--require-hashes` / 任何 source 过滤**，而
+`requirements.txt` 里**没有一行是钉死的**：70 行中 42 行有效 ——
+**裸包名 26 条**（`openai`、`chromadb`、`fastapi`…）、
+**带范围 16 条**（`websockets>=12,<17`、`pytest>=9.1,<10`…）、
+**`==` 精确 0 条、`--hash` 0 条**。所以：
+
+* ⚠ **更正一（我先写「每次启动都解析最新版」，不成立）**：
+  `dependency_bootstrap.py:331` 有
+  `python_changed = ... previous.get("requirements_hash") != req_hash`
+  —— **`requirements.txt` 的 SHA-256 没变就不跑 pip**。
+  所以不是「每次启动」，而是「**清单一改，下次启动就重解析**」。
+  触发频率远低于我原先的说法，**但那正是最坏情况**：
+  「改了清单」与「跑供应链」是同一个动作。
+* 也就是说 Pi 的 `min-release-age` 想防的场景（解析到当天发布的新版本）
+  在 Python 侧**完全无防护** —— 因为**只要真跑，就必然去解析范围最新版**。
+  `min-release-age` 若照抄，**恰好能覆盖这一条**（npm 侧同理）。
+* sdist 安装会执行 `setup.py` —— **任意代码执行**，而 npm 侧我们用
+  `--ignore-scripts` 关掉了等价的东西
+* 包名可被劫持（依赖混淆 / typosquatting）而版本约束护不住 —— 16 条带范围的
+  至少限了大版本，**26 条裸包名的连那个都没有**
+
+**这与 §1.4 的 npm 硬化不是同一个问题**，但严重度更高：npm 侧我们知道要关脚本，
+Python 侧连「关脚本」这个概念都没有。
+
+#### 「暴露面」分析 —— 为什么 npm 那两条差距其实不大（两次更正后的结论）
+
+我先判「npm 无 `min-release-age` + 未钉精确版本 = 两处弱」，**两次都高估了**：
+
+1. **「每次启动都解析最新版」→ 不成立**（见上，`requirements_hash` 门控）
+2. **「`^` 没钉 = 会漂移」→ 大体不成立** —— `package-lock.json`（130 KB）
+   钉住了实际解析结果，而 `dependency_bootstrap.py:414` 与 CI 都用 **`npm ci`**
+   （`npm ci` 严格按 lockfile 装，不重新解析范围）。所以 `^` 只在
+   **有人主动改 `package.json`** 时才产生漂移，而那正是人工审查的时刻。
+
+**真正的暴露窗口只有一个**：改完 `package.json`、跑 `npm install` 解析新版本，
+到那次解析发生为止 —— 这段时间里 `min-release-age` 才有意义。
+**这是一个窄窗口，不是常态。**（若把 `--ignore-scripts` 也算上，
+那个窗口里唯一还能出事的就是**装上包的代码本身**，而不是它的 install 脚本。）
+
+⚠ **所以两条更正之后的判断是**：npm 侧**不值得**照抄 Pi 那七条
+（除 `--ignore-scripts` 我们已经做得更严）。**Python 侧才是真洞。**
+
+**代价要说清**：修 Python 侧不是加个 flag —— `--require-hashes` 要求
+`requirements.txt` 每行带 sha256（**42 行有效行全部要重生成**，且以后每次加
+依赖都要更新），`--only-binary=:all:` 会**排除掉一部分只有 sdist 的包**。
+属供应链契约变更，且会让「加个依赖」这件事变重。
+
 ### 1.5 遥测 conformance tests（核实）
 
 `packages/telemetry/README.md` —— 核实**不是**「给遥测写了测试」，而是
@@ -221,7 +348,59 @@ A/B/D 三节反复记录的那个问题（否定只取消它自己管的那个�
 - **zero-context-cost turn**：`Write Python scripts that call tools via RPC, collapsing
   multi-step pipelines into zero-context-cost turns` ✅
 - **七种终端后端**：local / Docker / SSH / Singularity / Modal / Daytona / Vercel Sandbox ✅
-- **interrupt-and-redirect** ✅
+- **interrupt-and-redirect** ✅ —— 详见 §2.10（**三种模式**，不只是「有」）
+
+### 2.10 interrupt-and-redirect：**三种模式，不是一个开关**（核实）
+
+来源：`docs/user-guide/cli`，"Redirecting the Agent Mid-Turn" 一节。
+配置键 `display.busy_input_mode`：
+
+| 模式 | 原文行为 |
+|---|---|
+| `"interrupt"`（默认） | "Your message **redirects the active turn**. Model generation restarts with **displayed reasoning and completed work preserved**. A running foreground terminal command is **moved to the background (not killed** — you get a completion notification**) so your message is read immediately; other running tools finish first" |
+| `"queue"` | "Your message is **silently queued** and sent as the next turn after the agent finishes" |
+| `"steer"` | "Your message is **injected into the current run** via `/steer`, arriving at the agent **after the next tool call** — **no interrupt, no new turn**" |
+
+⚠ **一条容易漏的约束**（原文单独一行）：
+
+> "Completed tool work and reasoning already shown stay in context"
+> "**A running tool reaches its safe boundary before the correction is applied**"
+
+即：**中断不是立即杀掉在途工具**，而是等它到安全边界。这与「`rm -rf` 跑到一半被砍」
+是两件不同的事 —— 前者保数据完整性，后者留半个文件。
+
+`Ctrl+C` 是另一件事（"interrupt the current operation, press twice within 2s to force exit"），
+与 busy-input 的 `interrupt` 模式不是同一个东西。
+
+#### 我们的现状（核实，**与 Hermes 三种模式都不对应**）
+
+| Hermes | 我们 | 核实依据 |
+|---|---|---|
+| `interrupt`：消息**重定向当前轮**，已展示的推理与已完成工作保留 | **没有**。运行时 `canSend = !sending.value`（`frontend/src/ask/AskApp.vue:156`）→ **发送按钮禁用**，用户中途**根本无法输入** | 源码 |
+| `queue`：静默排队，下一轮送达 | **没有排队概念** —— 用户不发送，就没有待发消息 | 全仓无 pending-user 队列 |
+| `steer`：注入当前 run，下一个工具调用后到达 | **没有** | `agent.py` 无注入点 |
+| `Ctrl+C`：中断当前操作 | ✅ **有，但语义不同** —— 前端 `stop()` 走 `abortCtl?.abort()`（`AskApp.vue:556`）→ SSE 断连 → `api.py:2512` `worker_stop.set()` → `agent.py:4272` 抛 `GeneratorExit` → **整轮作废** | 见下 |
+
+⚠ **我们那条不是「转向」，是「停止」** —— 这是必须说清的差别：
+
+* `worker_stop` 在 `api.py:2428` **局部创建**，`set()` 只出现在 `2512`（客户端断连的 `finally`），
+  **没有任何 HTTP/WS 端点能触它** → 「停止」是靠**断开连接**实现的，不是独立控制指令。
+* `GeneratorExit` 走 `agent.py:4076` 的 `aborted` 分支，`4101` 按
+  "请求停止或客户端断连" 记账 —— **该轮不续跑**。
+* 已完成的工具调用结果与恢复现场**保留**（`4129` `aborted=aborted` 落 trace），
+  这一点与 Hermes 的 "completed work preserved" 一致。
+* 那条 websocket 的 `cancel`（`api.py:2984`）是**语音抢话**（打断 TTS / provider 生成），
+  **不碰 `run()` 的生成器**，与文本改向是两件事。
+
+**所以缺口是一条**：用户在 agent 干活时**想说「等下，改成 X」**，必须先点停止、
+丢掉当前轮、再重发。Hermes 的 `interrupt` 保留了已完成工作与推理，
+我们**整轮作废**。
+
+⚠ **但这条缺口的成本比看上去高**：它不是加个按钮，而是要给
+`run()` 加一条**注入路径**（消息进当前 run 的哪个点）+ 定清
+「已在途的工具调用怎么办」（Hermes 明确选「到安全边界」）+
+前端解开 `canSend` 后**并发两条 SSE 怎么归属会话**。
+属生产代码改动，且要改模型可见的输入。**不在调研收尾里顺手做。**
 - SSRF 防护：拦 RFC1918 / loopback / link-local / CGNAT / **云元数据地址**
   （含 `169.254.169.254` 与 `metadata.google.internal`），**DNS 失败按拦处理**
   （fail-closed），**重定向每一跳都重新校验**
