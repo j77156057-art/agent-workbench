@@ -395,8 +395,11 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
   font-size: 12px; line-height: 1.8; color: var(--text-muted);
 }
 .ov-empty-btn {
-  border: 1px solid #b9d0f5; background: rgba(47,111,237,.06);
-  color: var(--accent); font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+  /* 原为 color: var(--accent)：朱红当正文色，实测压在这颗淡蓝底上只有
+     2.51:1（paper 皮肤，12px）——不达 AA。按仓库约定「纸底强调字走 --accent-text」修。
+     边同理：#b9d0f5 是 --border-2 的字面值，写死就不会跟皮肤。 */
+  border: var(--edge-w) solid var(--border-2); background: rgba(47,111,237,.06);
+  color: var(--accent-text); font-family: var(--font-ui); font-size: 12px; font-weight: 600;
   padding: 8px 20px; border-radius: 8px; cursor: pointer;
   transition: background .12s;
 }

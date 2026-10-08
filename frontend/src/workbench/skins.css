@@ -1,11 +1,11 @@
 /* =============================================================
-   DocMind 皮肤层 —— 配色切换（2026-10-07 收敛为 2 套，全部通过 WCAG AA 对比度审计）
+   DocMind 皮肤层 —— 配色切换（3 套，全部通过 WCAG AA 对比度审计）
 
-   用法：给 <html> 加 data-skin="<key>"：paper / graphite
+   用法：给 <html> 加 data-skin="<key>"：paper / graphite / zinc
    不设或设未知值时回落到 paper（= 现有默认外观，零回归）。
 
    本文件管三件事：
-     ① 皮肤令牌（paper / graphite 两块）——颜色 / 圆角 / 阴影 / 纹理
+     ① 皮肤令牌（paper / graphite / zinc 三块）——颜色 / 圆角 / 阴影 / 纹理
      ② 造型令牌默认值（--edge-* / --style-* / --r-full）——造型统一为 brutal 后
         由原 style-modes.css 迁入（两页共用，style.css 只有工作台导入）
      ③ 造型令牌接到全局元素的接驳规则（body / 标题字体字重）
@@ -26,9 +26,15 @@
 :root:root:root {
   /* 圆角梯度（--r-full 例外：圆点 / 滑块永远是圆的，不参与皮肤圆角） */
   --r-full: 999px;
-  /* 描边 */
-  --edge-w: 1px;  --edge-w-strong: 2px;
-  --edge-ink: var(--ink);
+  /* 描边宽度三档：细线 / 结构边 / 重边（面板分隔、卡片框）。
+     3px 这一档全仓只有 7 处（问答页侧栏卡片 / 用户气泡 / 顶栏，工作台树错误面板），
+     之前全是写死的字面量，所以 zinc 要「所有边都回到 1px」必须给它一档令牌。 */
+  --edge-w: 1px;  --edge-w-strong: 2px;  --edge-w-heavy: 3px;
+  /* 描边色走 --border 而不是 --ink：paper / graphite 下两者本就同值（#14110f /
+     #e8e6e0），所以这条对现有两套皮肤是逐像素等价的改动；但 zinc 要「字是深灰、
+     线是浅灰」两档分离，绑死 --ink 的话换肤时描边会跟着变黑。
+     37 处 var(--edge-ink) + 27 处 --edge-w-strong 全从这一个默认值取色。 */
+  --edge-ink: var(--border);
   /* 字体与字重（风格层可以改「声音」，不只改色） */
   --style-font-ui: var(--font-ui, 'Inter', 'Space Grotesk', 'Noto Sans SC', sans-serif);
   --style-font-display: var(--font-display, 'Archivo', 'Space Grotesk', 'Noto Sans SC', sans-serif);
@@ -160,4 +166,87 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --skin-grain: 0.05;
   --skin-vignette: 22%;
   --skin-dots: 0.35;
+}
+
+/* ==========================================================
+   zinc（锌白细线）
+   冷白底 + 1px 灰细线 + 6px 圆角 + 零硬阴影 + 无纹理，青绿强调。
+   这套存在的意义是证明「杂」来自造型而不是配色：同一个组件树，
+   把 2px 墨边→1px 灰边、硬偏移影→无、零圆角→6px、孔版纹理→关，
+   观感就从印刷海报变成常规 agent 界面。全部由令牌表达。
+
+   色值解算（对四个浅底 bg #fcfcfd / surface #ffffff / hover #f2f2f5 /
+   selected #ececf1 取最差那一档，脚本 = 本次会话的 zinc_solve.py + zinc_sel.py）：
+     文字 ≥4.5:1  ink 12.65 / muted 4.77 / accent-text 6.96 / accent 4.65
+                danger 4.74 / amber 4.72 / green 4.72 / tool 5.69
+     描边 ≥3:1    border 3.46 · border-strong 11.98
+     填色上的字   白字压 accent 5.47
+   ⚠️ 描边这一档是 AA 的下限：#7d7d86 是「还能叫浅灰细线」的最深解，
+      再淡一档（Tailwind 的 #e5e5ea）只剩 1.26:1 —— 好看但不满足 1.4.11，
+      所以本文件头部那句「描边 3:1」不允许为审美让步。要更 airy 的话
+      唯一正确的做法是少画线（用留白/底色差分识别组件），不是把线调淡。
+   ========================================================== */
+:root:root:root[data-skin='zinc'] {
+  /* <html> 自身也要显式给色，理由见 paper / graphite 两块的同名注释。 */
+  color: #27272a;
+  background-color: #fcfcfd;
+
+  /* 表面：冷白，纸底与卡片只差一档，层次交给描边 */
+  --bg: #fcfcfd;
+  --surface: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-hover: #f2f2f5;
+  /* selected 不能再深一档：状态色（danger/amber/green 沿用 paper 的解算值）压到
+     #e6e6ec 上只剩 4.47:1，差 0.03 不达 AA。#ececf1 让全部角色 ≥4.65，
+     且与 hover 的差仍是 1.05 倍（选中态另有 --border-strong 描边作第二信号）。 */
+  --bg-selected: #ececf1;
+  /* 墨与文字：字与线分离成两档（brutal 两套里它们是同一个值） */
+  --ink: #27272a;
+  --text: #27272a;
+  --muted: #67676d;
+  --text-muted: #67676d;
+  --faint: #67676d;
+  --text-faint: #67676d;
+  --border: #7d7d86;
+  --border-strong: #27272a;
+  /* style.css 里那 14 处 --border-2（淡蓝细线）在 zinc 收成同一档灰，
+     否则 hover / 气泡边会留一条不属于这套配色的蓝线。 */
+  --border-2: var(--border);
+  /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
+  --accent: #0f766e;
+  --accent-loud: #0f766e;
+  --accent-deep: #0b5e57;
+  --accent-ink: #ffffff;
+  --accent-2: var(--accent);
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --accent-text: #185854;   /* color-mix(accent 62%, ink) 解算值 */
+  /* 状态色（沿用 paper 的解算值——它们本就是按浅底 4.5:1 定的） */
+  --danger: #c23127;
+  --amber: #8d5f14;
+  --green: #15774d;
+  /* 工具色必须与青绿强调分得开，否则「原生工具调用」标记和主色撞成一个色 */
+  --tool: #1d4ed8;
+  /* 圆角：brutal 全 0，这套给回常规梯度（--r-full 例外，由默认块给） */
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px;
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px; --radius-xl: 12px;
+  --radius-pill: 999px;
+  --modal-radius: 10px;
+  /* 造型：2px 墨边降为 1px 灰边，硬偏移阴影全关 */
+  --edge-w: 1px; --edge-w-strong: 1px; --edge-w-heavy: 1px;
+  --shadow-pop: none;
+  --shadow-soft: none;
+  --sh-hard: none;
+  --sh-hard-sm: none;
+  --sh-hard-lg: none;
+  /* 浮层（弹层 / 模态）不给硬影，但保留一层柔和投影：它们浮在内容之上，
+     只靠 1px 细线撑不起 z 轴。卡片/按钮/输入框的阴影是 0。 */
+  --modal-shadow: 0 18px 44px rgba(17, 17, 22, .16);
+  /* 纸面纹理：孔版颗粒 / 暗角 / 荧光网点全部关掉（0 = 该层不显示） */
+  --skin-grain: 0;
+  --skin-vignette: 0%;
+  --skin-dots: 0;
+  /* 标题改用 Space Grotesk 700：Archivo Black 的墨量在细线体系里过重。
+     --style-font-display 是 var(--font-display) 的间接引用，这里改上游即可。 */
+  --font-display: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  --style-weight-title: 700;
 }

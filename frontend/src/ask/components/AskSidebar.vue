@@ -177,7 +177,7 @@ function sessTime(v?: string): string {
   overflow-x: hidden;
   padding: 12px 12px 14px;
   background: var(--bg-raised);
-  border-right: 3px solid var(--ink);
+  border-right: var(--edge-w-heavy) solid var(--edge-ink);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -192,7 +192,8 @@ function sessTime(v?: string): string {
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; }
 .brand-mark {
   width: 30px; height: 30px;
-  border: 3px solid var(--ink);
+  border: var(--edge-w-heavy) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   background: var(--accent);
   display: flex; align-items: center; justify-content: center;
   box-shadow: var(--sh-hard-sm);
@@ -202,7 +203,8 @@ function sessTime(v?: string): string {
 
 .card {
   flex: 0 0 auto;
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   background: var(--bg-raised);
   box-shadow: var(--sh-hard-sm);
   padding: 9px;
@@ -265,7 +267,8 @@ function sessTime(v?: string): string {
   font-weight: 700;
   color: #fff;
   background: var(--ink);
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   padding: 1px 5px;
 }
 .file-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -278,7 +281,8 @@ function sessTime(v?: string): string {
   display: flex;
   align-items: stretch;
   gap: 6px;
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   background: var(--bg);
   box-shadow: var(--sh-hard-sm);
 }
@@ -316,7 +320,7 @@ function sessTime(v?: string): string {
   flex: 0 0 auto;
   width: 30px;
   border: none;
-  border-left: 2px solid var(--ink);
+  border-left: var(--edge-w-strong) solid var(--edge-ink);
   background: none;
   color: var(--text-muted);
   font-size: 16px;
@@ -344,11 +348,12 @@ function sessTime(v?: string): string {
   display: flex;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
-.gear:hover { background: var(--bg-hover); color: var(--accent); border-color: var(--ink); }
+.gear:hover { background: var(--bg-hover); color: var(--accent); border-color: var(--border-strong); }
 .power { margin: 6px 0 0; padding-top: 6px; border-top: 2px dashed var(--border); display: flex; flex-direction: column; gap: 6px; }
 
 .btn {
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   background: var(--accent);
   color: var(--accent-ink);
   font-family: var(--font-mono);

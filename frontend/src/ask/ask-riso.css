@@ -5,21 +5,29 @@
    严格双色纪律：全文件仅使用 ink(#14110f) 与 accent(#ff674d) 两色相，
    不引入任何第三色相（蓝 / 绿 / 琥珀等）。所有颜色均取自 J 令牌或墨/朱红。 */
 
-/* ---------- 印刷语言层：孔版颗粒 + 暗角（叠在 body 背景之上、内容之下） ---------- */
+/* ---------- 印刷语言层：孔版颗粒 + 暗角（叠在 body 背景之上、内容之下） ----------
+   三层强度一律读皮肤令牌，与 workbench-riso.css 同一份实现。
+   ⚠️ 这里原先是硬编码的：::before 没有 opacity（=1，只靠 SVG 内那句 opacity='0.09'），
+   暗角写死 16%，::after 写死 0.5。后果有两条：换深色皮肤时问答页的颗粒/网点不降
+   （Multiply 压深底会显脏），且加一套「无纹理」皮肤时它关不掉。
+   顺带一条实测差异：工作台是 element opacity 0.09 × SVG 内 0.09 = 0.0081，
+   问答页只有 0.09 —— 同一个 paper 皮肤两页墨量差 11 倍。归一到令牌后两页一致
+   （都按 workbench 的解算值），问答页默认外观的颗粒因此变浅。 */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
+  opacity: var(--skin-grain);
   mix-blend-mode: multiply;            /* 与纸张底色相乘，产生孔版压墨感 */
   background-image:
     /* 孔版颗粒：fractalNoise 低透明度，随机微暗 */
     url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.09'/%3E%3C/svg%3E"),
-    /* 暗角：四角均匀压暗（ellipse 125% 居中，边缘 16% 墨色） */
+    /* 暗角：四角均匀压暗（ellipse 125% 居中，边缘强度由皮肤给） */
     radial-gradient(ellipse 125% 125% at 50% 50%,
       transparent 58%,
-      color-mix(in srgb, var(--ink) 16%, transparent) 100%);
+      color-mix(in srgb, var(--ink) var(--skin-vignette), transparent) 100%);
   background-size: 140px 140px, 100% 100%;
   background-repeat: repeat, no-repeat;
 }
@@ -35,7 +43,7 @@ body::after {
     color-mix(in srgb, var(--accent) 12%, transparent) 1.2px,
     transparent 1.4px);
   background-size: 32px 32px;
-  opacity: 0.5;
+  opacity: var(--skin-dots);
 }
 
 /* ---------- 双色纠偏：修复 ask.css 的令牌级缺陷（覆盖式） ----------
@@ -96,7 +104,7 @@ body::after {
 .md-pre { border-radius: 0; }
 .md-ic { border-radius: 0; }
 .ask-modal {
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: 0;
   box-shadow: var(--sh-hard);
 }

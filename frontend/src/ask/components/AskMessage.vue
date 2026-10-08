@@ -253,18 +253,20 @@ const phaseLabel = computed(() => {
   max-width: min(560px, 82%);
   background: var(--accent);
   color: #fff;
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   box-shadow: var(--sh-hard-sm);
 }
 .user-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-sans); }
 .user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.user-imgs img { max-width: 180px; max-height: 180px; border: 2px solid var(--ink); }
+.user-imgs img { max-width: 180px; max-height: 180px; border: var(--edge-w-strong) solid var(--edge-ink);
+border-radius: var(--r-sm); }
 
 .ai-avatar {
   flex: 0 0 32px;
   width: 32px;
   height: 32px;
-  border: 3px solid var(--ink);
+  border: var(--edge-w-heavy) solid var(--edge-ink);
   border-radius: 0;
   background: var(--ink);
   display: flex;
@@ -275,7 +277,8 @@ const phaseLabel = computed(() => {
 .ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .ai-bubble {
   background: var(--bg-raised);
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   box-shadow: var(--sh-hard-sm);
   padding: 14px 18px;
   width: fit-content;
@@ -317,7 +320,8 @@ const phaseLabel = computed(() => {
 .flag.error { color: var(--danger); }
 
 /* 深度思考 */
-.reason { border: 2px solid var(--ink); background: rgba(31, 95, 224, .06); overflow: hidden; }
+.reason { border: var(--edge-w-strong) solid var(--edge-ink);
+border-radius: var(--r-sm); background: rgba(31, 95, 224, .06); overflow: hidden; }
 .reason-head {
   width: 100%;
   display: flex;
@@ -349,7 +353,8 @@ const phaseLabel = computed(() => {
 
 /* 轨迹 */
 .trace { display: flex; flex-direction: column; gap: 4px; }
-.step { border: 2px solid var(--ink); background: var(--bg-raised); overflow: hidden; }
+.step { border: var(--edge-w-strong) solid var(--edge-ink);
+border-radius: var(--r-sm); background: var(--bg-raised); overflow: hidden; }
 .step-head {
   width: 100%;
   display: flex;
@@ -389,7 +394,7 @@ const phaseLabel = computed(() => {
 .step-body {
   margin: 0;
   padding: 8px 12px;
-  border-top: 2px solid var(--ink);
+  border-top: var(--edge-w-strong) solid var(--edge-ink);
   max-height: 280px;
   overflow: auto;
   font-family: var(--font-mono);
@@ -408,7 +413,8 @@ const phaseLabel = computed(() => {
   align-items: center;
   gap: 4px;
   max-width: 320px;
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   background: var(--bg-raised);
   padding: 3px 9px;
   font-family: var(--font-mono);
@@ -417,7 +423,7 @@ const phaseLabel = computed(() => {
   cursor: pointer;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
-.ref-chip:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--ink); }
+.ref-chip:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
 .ref-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref-line { color: var(--text-muted); font-family: var(--font-mono); }
 .ref-chip:hover .ref-line { color: var(--accent-ink); }

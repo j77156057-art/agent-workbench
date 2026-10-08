@@ -66,8 +66,18 @@ const MAX_CHANGED_PCT = 0.4
 const CASES = [
   { name: 'workbench-paper', route: '/workbench', skin: 'paper', stable: '.ft-head-title' },
   { name: 'workbench-graphite', route: '/workbench', skin: 'graphite', stable: '.ft-head-title' },
-  { name: 'ask', route: '/', skin: 'paper', stable: '.composer textarea' },
+  { name: 'workbench-zinc', route: '/workbench', skin: 'zinc', stable: '.ft-head-title' },
+  { name: 'ask', route: '/', skin: 'paper', stable: '.composer textarea', stubModelStatus: true },
+  { name: 'ask-zinc', route: '/', skin: 'zinc', stable: '.composer textarea', stubModelStatus: true },
 ]
+
+// 问答页侧栏的「显存 x.x GB / N 个模型驻留」读的是真后端 GET /api/model_status，
+// 夹具服务只代理不伪造，所以这台机器上模型加载/释放之间它会变（实测 6.1 GB/2 个
+// ↔ 6.5 GB/1 个，361 像素、最大通道差 231）。这是数据抖动不是回归，必须钉死。
+const MODEL_STATUS = {
+  ok: true, reachable: true, needs_ollama: false, vram_gb: 6.1,
+  loaded: [{ name: 'qwen3.6:35b-a3b-agent25', size_vram_gb: 6.1, size_gb: 6.1, expires_minutes: null, processor: 'ollama' }],
+}
 
 // 关掉动效与光标闪烁，否则同一状态两次截图就会差几像素。
 //
@@ -92,16 +102,27 @@ const STABILIZE = () => {
 async function shoot(browser, base, c) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
   await page.addInitScript(`localStorage.setItem("docmind.skin","${c.skin}")`)
+  let stubbed = 0
+  if (c.stubModelStatus) {
+    await page.route('**/api/model_status*', async (route) => {
+      stubbed++
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(MODEL_STATUS) })
+    })
+  }
   await page.goto(base + c.route, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector(c.stable, { timeout: 25000 })
   await page.waitForTimeout(1500)
   const hits = await page.evaluate(STABILIZE)
   await page.waitForTimeout(400)
+  // 桩没生效就等于这个用例还在读真后端 —— 会天天误报，必须吵出来。
+  const shown = c.stubModelStatus
+    ? await page.evaluate(() => document.body.innerText.includes('6.1 GB'))
+    : true
   const buf = await page.screenshot({ type: 'png' })
   await page.close()
   // 把归一化命中数带出去：万一哪天路径不再出现在界面上（或选择器变了），
   // hits 掉到 0 就是"归一化失效"的信号，不能让它静默变成 no-op。
-  return { buf, hits }
+  return { buf, hits, stubbed, shown }
 }
 
 // 交给浏览器解码 PNG 并逐像素比：省掉一个 npm 依赖。
@@ -158,20 +179,22 @@ try {
   console.log(`夹具：${fixture.base}${reused ? '（复用外部服务，可能与基线不同源）' : '（本脚本新起，干净）'}\n`)
   for (const c of CASES) {
     const file = path.join(DIR, `${c.name}.png`)
-    const { buf: shot, hits } = await shoot(browser, fixture.base, c)
+    const { buf: shot, hits, stubbed, shown } = await shoot(browser, fixture.base, c)
     // 工作台界面上必然出现随机夹具路径；一次都没抹平 = 归一化失效，要吵出来
     const warn = c.route === '/workbench' && hits === 0 ? '  ⚠ 未抹平任何随机路径，归一化可能失效' : ''
-    const info = `  抹平随机路径 ${hits} 处${warn}`
+    const stubWarn = c.stubModelStatus && (stubbed === 0 || !shown)
+      ? `  ⚠ model_status 桩未生效（拦截 ${stubbed} 次，界面出现钉死读数=${shown}）` : ''
+    const info = `  抹平随机路径 ${hits} 处${warn}${stubWarn}`
     if (UPDATE || !fs.existsSync(file)) {
       fs.writeFileSync(file, shot)
       console.log(`BASELINE ${c.name}  ${(shot.length / 1024).toFixed(0)}KB  ${info}`
         + (UPDATE ? '' : '  （基线缺失，已生成）'))
-      if (!UPDATE) failed++
+      if (!UPDATE || stubWarn) failed++
       continue
     }
     const basePng = fs.readFileSync(file)
     const d = await diff(browser, basePng, shot)
-    const bad = d.changed > MAX_CHANGED_ABS || d.pct > MAX_CHANGED_PCT
+    const bad = d.changed > MAX_CHANGED_ABS || d.pct > MAX_CHANGED_PCT || !!stubWarn
     const out = path.join(DIR, `diff-${c.name}.png`)
     if (bad) {
       fs.writeFileSync(out, Buffer.from(d.diffPng, 'base64'))

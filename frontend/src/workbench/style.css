@@ -241,9 +241,9 @@ button { font-family: inherit; }
   font-weight: 600;
   color: var(--text);
   background: var(--bg-raised);
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm);
-  box-shadow: 4px 4px 0 var(--ink);
+  box-shadow: var(--sh-hard);
   pointer-events: none;
   animation: wb-notice-pop .2s var(--ease-spring, ease-out);
 }
@@ -286,8 +286,11 @@ html[data-material='glass'] .wb-proj-notice {
   padding: 7px 9px; border: 2px solid transparent; background: transparent; border-radius: var(--r-sm);
   text-align: left; cursor: pointer; color: var(--text); font-size: 12px; font-family: var(--font-sans, var(--font-ui));
 }
-.wb-proj-item:hover { background: var(--bg-hover); border-color: var(--ink); }
-.wb-proj-item.active { background: var(--bg-selected); color: var(--accent); border-color: var(--ink); }
+.wb-proj-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+/* 当前项目行：纸底上的强调字一律走 --accent-text（仓库约定）。
+   原来写的是 var(--accent)，实测压在 --bg-selected 上 paper 只有 2.71:1（12px），
+   是这套皮肤里唯一一个还在用「填色当文字色」的主屏条目。 */
+.wb-proj-item.active { background: var(--bg-selected); color: var(--accent-text); border-color: var(--border-strong); }
 .wb-proj-item:disabled { opacity: .6; cursor: default; }
 .wb-proj-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-proj-item-check { color: var(--accent); flex: 0 0 auto; }
@@ -316,13 +319,13 @@ html[data-material='glass'] .wb-proj-notice {
   background: var(--bg-raised); color: var(--text);
   box-shadow: var(--sh-hard-sm);
 }
-.wb-proj-browse:hover { background: var(--bg-hover); border-color: var(--ink); }
+.wb-proj-browse:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .wb-proj-go {
   border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
   background: var(--accent); color: var(--accent-ink);
   box-shadow: var(--sh-hard-sm);
 }
-.wb-proj-go:hover { background: var(--accent-deep); border-color: var(--ink); }
+.wb-proj-go:hover { background: var(--accent-deep); border-color: var(--border-strong); }
 .wb-proj-go:disabled { opacity: .6; cursor: default; }
 
 .wb-region-pill {
@@ -342,7 +345,7 @@ html[data-material='glass'] .wb-proj-notice {
   cursor: pointer;
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms;
 }
-.wb-region-pill:hover { transform: translate(-2px,-2px); box-shadow: var(--sh-hard); border-color: var(--ink); background: var(--bg-hover); }
+.wb-region-pill:hover { transform: translate(-2px,-2px); box-shadow: var(--sh-hard); border-color: var(--border-strong); background: var(--bg-hover); }
 .wb-region-pill.off { color: var(--text-faint); border-color: var(--text-faint); box-shadow: none; }
 .wb-region-pill.off:hover { border-color: var(--text-faint); background: var(--bg-raised); transform: none; box-shadow: none; }
 .wb-region-dot {
@@ -422,7 +425,7 @@ html[data-material='glass'] .wb-proj-notice {
   cursor: pointer;
   transition: color .15s, border-color .15s, background .15s;
 }
-.ft-refresh:hover { color: var(--accent); border-color: var(--ink); background: var(--bg-hover); }
+.ft-refresh:hover { color: var(--accent); border-color: var(--border-strong); background: var(--bg-hover); }
 .ft-refresh:disabled { opacity: .5; cursor: default; }
 .ft-refresh .spinning { animation: ft-spin 0.9s linear infinite; }
 @keyframes ft-spin { to { transform: rotate(360deg); } }
@@ -450,7 +453,7 @@ html[data-material='glass'] .wb-proj-notice {
 }
 .ft-row:hover {
   background: var(--bg-hover);
-  border-color: var(--ink);
+  border-color: var(--border-strong);
   box-shadow: var(--sh-hard-sm);
   transform: translate(-1px,-1px);
 }
@@ -474,7 +477,7 @@ html[data-material='glass'] .wb-proj-notice {
 
 .ft-selected {
   background: var(--bg-selected) !important;
-  border-color: var(--ink) !important;
+  border-color: var(--border-strong) !important;
   box-shadow: var(--sh-hard-sm);
 }
 .ft-selected .ft-name { color: var(--ink); }
@@ -710,7 +713,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-tree-error {
   width: 288px;
   flex: 0 0 288px;
-  border-right: 3px solid var(--ink);
+  border-right: var(--edge-w-heavy) solid var(--edge-ink);
   background: var(--bg-raised);
   padding: 18px 16px;
 }
@@ -729,7 +732,7 @@ html[data-material='glass'] .wb-proj-notice {
   cursor: pointer;
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms;
 }
-.wb-retry:hover { transform: translate(-2px,-2px); box-shadow: var(--sh-hard); border-color: var(--ink); }
+.wb-retry:hover { transform: translate(-2px,-2px); box-shadow: var(--sh-hard); border-color: var(--border-strong); }
 
 .wb-booting {
   flex: 1;
@@ -804,7 +807,7 @@ html[data-material='glass'] .wb-proj-notice {
   font-size: 12px;
   color: var(--text);
 }
-.wb-menu-item:hover { background: var(--bg-hover); border-color: var(--ink); }
+.wb-menu-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .wb-menu-item-name { font-size: 12px; font-weight: 600; }
 .wb-menu-item small { font-size: 10px; color: var(--text-faint); line-height: 1.35; }
 .wb-menu-label {
@@ -870,13 +873,13 @@ html[data-material='glass'] .wb-proj-notice {
   color: var(--accent-ink);
   box-shadow: var(--sh-hard-sm);
   transition: border-color .15s, background .15s, color .15s; }
-.wb-question-link:hover { color: var(--accent-ink); border-color: var(--ink); background: var(--accent-deep); filter: none; }
+.wb-question-link:hover { color: var(--accent-ink); border-color: var(--border-strong); background: var(--accent-deep); filter: none; }
 .wb-settings-btn {
   border-color: var(--border-strong);
   background: var(--bg-raised);
   color: var(--text-muted);
 }
-.wb-settings-btn:hover:not(:disabled) { filter: none; border-color: var(--ink); background: var(--bg-hover); color: var(--accent); }
+.wb-settings-btn:hover:not(:disabled) { filter: none; border-color: var(--border-strong); background: var(--bg-hover); color: var(--accent); }
 .wb-save-btn {
   position: relative;
   display: inline-flex;
@@ -894,7 +897,7 @@ html[data-material='glass'] .wb-proj-notice {
   box-shadow: var(--sh-hard-sm);
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, border-color 130ms;
 }
-.wb-save-btn:hover:not(:disabled) { background: var(--accent-deep); border-color: var(--ink); filter: none; }
+.wb-save-btn:hover:not(:disabled) { background: var(--accent-deep); border-color: var(--border-strong); filter: none; }
 .wb-save-btn:disabled { opacity: .45; cursor: default; }
 /* 历史版本（中性描边）/ 回滚（警示琥珀色） */
 .wb-history-btn {
@@ -902,7 +905,7 @@ html[data-material='glass'] .wb-proj-notice {
   background: var(--bg-raised);
   color: var(--text-muted);
 }
-.wb-history-btn:hover:not(:disabled) { filter: none; border-color: var(--ink); background: var(--bg-hover); color: var(--accent); }
+.wb-history-btn:hover:not(:disabled) { filter: none; border-color: var(--border-strong); background: var(--bg-hover); color: var(--accent); }
 .wb-revert-btn {
   border-color: var(--amber);
   background: linear-gradient(180deg, var(--amber-soft), var(--amber));
@@ -1270,7 +1273,7 @@ html[data-material='glass'] .wb-proj-notice {
   cursor: pointer;
   transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease, filter .16s ease;
 }
-.dg-btn:hover { border-color: var(--ink); background: var(--bg-hover); }
+.dg-btn:hover { border-color: var(--border-strong); background: var(--bg-hover); }
 .dg-primary {
   border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
   background: var(--accent);
@@ -1278,7 +1281,7 @@ html[data-material='glass'] .wb-proj-notice {
   color: var(--accent-ink);
   box-shadow: var(--sh-hard-sm);
 }
-.dg-primary:hover { background: var(--accent-deep); border-color: var(--ink); filter: none; }
+.dg-primary:hover { background: var(--accent-deep); border-color: var(--border-strong); filter: none; }
 .dg-primary:disabled { opacity: .45; cursor: default; filter: none; }
 .dg-danger,
 .dg-btn.dg-danger {
@@ -1508,7 +1511,8 @@ select:focus-visible,
    OverviewView.vue、RegionHomeView.vue、ChatDock.vue、AutonomousCockpit.vue）。
    合并规则：能进上面基础规则的全部折回；这里只留必须带 #app 前缀 +
    !important 才能赢 scoped 特异度的条目。noir / terminal 皮肤的修补块
-   随皮肤删除（皮肤已收敛为 paper / graphite）。
+   随皮肤删除（当时收敛为 paper / graphite；2026-10-08 加的 zinc 不需要这种块，
+   因为它只改令牌值，不改造型特异度）。
    ============================================================= */
 
 /* —— 顶栏右侧触发器（通用粗野按钮；!important 压组件 scoped 描边） —— */
@@ -1622,7 +1626,7 @@ select:focus-visible,
 }
 #app .acp-live-vision-button.on,
 #app .acp-live-bar .acp-stream-trigger.on {
-  border-color: var(--ink) !important;
+  border-color: var(--border-strong) !important;
   color: var(--accent-ink) !important;
   background: var(--accent) !important;
 }
@@ -1812,7 +1816,7 @@ select:focus-visible,
   background-color: color-mix(in srgb, var(--bg-raised) 70%, transparent) !important;
 }
 /* 主分区（对话坞）保留描边 —— 结构骨架，去掉会失去方位感 */
-#app .cd-dock { border-color: var(--ink) !important; }
+#app .cd-dock { border-color: var(--border-strong) !important; }
 /* 相邻块用留白分开 */
 #app .ov-columns { gap: calc(var(--style-space-l, 16px) * 1.5) !important; }
 #app .rh-grid { gap: calc(var(--style-space-l, 16px) * 1.25) !important; }

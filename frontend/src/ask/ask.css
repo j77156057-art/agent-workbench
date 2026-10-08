@@ -125,6 +125,6 @@ button { font-family: inherit; }
   background-color: color-mix(in srgb, var(--bg-raised) 62%, transparent) !important;
 }
 #app .ask-side,
-#app .ask-topbar { border-color: var(--ink) !important; }
+#app .ask-topbar { border-color: var(--border-strong) !important; }
 #app .ask-side { border-right: var(--edge-w, 1px) solid var(--edge-ink, var(--ink)) !important; }
 #app .ask-topbar { border-bottom: var(--edge-w, 1px) solid var(--edge-ink, var(--ink)) !important; }

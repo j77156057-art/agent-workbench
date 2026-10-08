@@ -1,7 +1,8 @@
 // 风格层（造型语言）—— 2026-10-07 收敛：5 种造型（brutal/soft/outline/neon/flat）
-// 砍到只留 brutal（零圆角 + 2px 墨描边 + 硬阴影 + 孔版颗粒），与皮肤（paper/graphite）、
-// 材质（实体/玻璃）正交。造型维度由 skins.css 的 --r-* / --edge-* / --sh-* / --style-*
-// 令牌定义，本模块只负责把 data-style='brutal' 写到 <html> 上。
+// 砍到只留 brutal，本模块只负责把 data-style='brutal' 写到 <html> 上。
+// ⚠️ 2026-10-08：「造型」并没有消失，只是换了归属 —— 硬边还是细线现在由**皮肤**带
+// （skins.css 的 --r-* / --edge-* / --sh-* / --style-* 逐套覆写，zinc 就是细线档）。
+// 所以别再假设 data-style 与 data-skin 正交；仍然正交的是材质（实体/玻璃）。
 //
 // 保留 data-style 机制而非彻底删除：切皮肤/材质的链路已经依赖它存在
 // （CSS 里有 html[data-style] 接驳规则），且日后若要再加造型，机制还在。

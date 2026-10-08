@@ -1889,8 +1889,9 @@ function openModelSettings() {
             </div>
 
             <p class="sv-note" data-tone="neutral">
-              可调的三层互相独立：<b>皮肤</b>（{{ SKINS.length }} 种配色：素纸朱红 / 石墨夜航）·<b>材质</b>（实体/玻璃）·<b>布局</b>（5 种空间构成）。
-              造型固定为粗野硬边（零圆角 + 墨描边 + 硬阴影），不再单独提供选项。
+              可调的三层互相独立：<b>皮肤</b>（{{ SKINS.map((s) => s.name).join(' / ') }}）·<b>材质</b>（实体/玻璃）·<b>布局</b>（5 种空间构成）。
+              造型不再是一个独立开关：硬边还是细线，由所选皮肤自己带（素纸朱红 / 石墨夜航 = 零圆角 + 墨描边 + 硬阴影，
+              锌白细线 = 1px 灰边 + 6px 圆角 + 零阴影），全部走 <code>skins.css</code> 的令牌。
               调形状参数改 <code>layout-modes.css</code>，改材质参数改 <code>glass.css</code>，改完刷新即生效，不需要重新构建。
             </p>
           </section>

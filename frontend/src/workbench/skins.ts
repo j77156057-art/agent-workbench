@@ -18,7 +18,15 @@
 // 2026-10-07 收敛：8 套 × 5 种造型的组合矩阵（40+ 种，谁也调不过来）砍到
 // 两套精调皮肤 × 1 种造型（brutal）。被砍皮肤的 localStorage 残值由
 // isSkinKey 校验拦下，自动回默认 paper，不需要迁移。
-export type SkinKey = 'paper' | 'graphite'
+//
+// 2026-10-08 加回第三套 zinc：brutal 那两套的「杂」不在配色而在**造型**——
+// 2px 墨黑描边 + 硬偏移阴影 + 孔版颗粒 + Archivo Black 标题，四件事同时压在每个
+// 元素上。zinc 是同一套组件在「1px 灰细线 + 零阴影 + 6px 圆角 + 无纹理」下的样子。
+// 为了让这套真的能成立，两页里 64 处「把 --ink 当描边色」+ 26 处「压根没写圆角」
+// 的规则收编到了 --border / --edge-* / --r-* 上；这些替换在 paper / graphite 下
+// 逐像素等价（--border 与 --ink 在那两套里同值，--r-sm 本就是 0），
+// 由 verify_visual_regression.mjs 的「paper / graphite 用例 0 像素差」证明。
+export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'zinc'
 
 export interface SkinDef {
   key: SkinKey
@@ -34,6 +42,7 @@ export const SKIN_CHANGE_EVENT = 'docmind:skin'
 export const SKINS: SkinDef[] = [
   { key: 'paper', name: '素纸朱红', desc: '暖骨白纸 + 朱红，零圆角 + 硬阴影。印刷感最强', swatch: ['#ece7db', '#14110f', '#ff674d', '#000000'] },
   { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e8e6e0', '#4dd0e1', '#000000'] },
+  { key: 'zinc', name: '锌白细线', desc: '冷白底 + 1px 灰细线 + 6px 圆角 + 零阴影，青绿强调。常规 agent 界面那种', swatch: ['#fcfcfd', '#7d7d86', '#0f766e', '#ffffff'] },
 ]
 
 export const DEFAULT_SKIN: SkinKey = 'paper'

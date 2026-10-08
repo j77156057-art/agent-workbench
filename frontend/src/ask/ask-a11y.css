@@ -185,7 +185,7 @@
 #app .ask-main .suggestion:hover {
   background: var(--bg-raised);
   color: var(--accent);
-  border-color: var(--ink);
+  border-color: var(--border-strong);
   box-shadow: var(--sh-hard);
   transform: translate(-2px, -2px);
 }
@@ -194,7 +194,7 @@
 #app .ask-main .cap-chip:hover {
   background: var(--bg-hover);
   color: var(--accent);
-  border-color: var(--ink);
+  border-color: var(--border-strong);
   box-shadow: var(--sh-hard-sm);
   transform: translate(-1px, -1px);
 }
@@ -203,7 +203,7 @@
 #app .ask-main .followup:hover {
   background: var(--bg-raised);
   color: var(--accent);
-  border-color: var(--ink);
+  border-color: var(--border-strong);
   box-shadow: var(--sh-hard);
   transform: translate(-2px, -2px);
 }
@@ -213,7 +213,7 @@
 #app .ask-main .ref-chip:hover {
   background: var(--bg-hover);
   color: var(--accent);
-  border-color: var(--ink);
+  border-color: var(--border-strong);
 }
 #app .ask-main .ref-chip:hover .ref-line { color: var(--text-muted); }
 
@@ -222,7 +222,7 @@
 #app .ask-main .chip.on {
   background: var(--bg-raised);
   color: var(--accent);
-  border-color: var(--ink);
+  border-color: var(--border-strong);
   box-shadow: var(--sh-hard-sm);
 }
 
@@ -234,7 +234,8 @@
 #app .ask-main .user-bubble {
   background: var(--bg-raised);
   color: var(--ink);
-  border: 2px solid var(--ink);
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
   border-top: 3px solid var(--accent);
   box-shadow: var(--sh-hard-sm);
 }
