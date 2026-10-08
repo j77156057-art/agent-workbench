@@ -165,6 +165,40 @@ export interface RestoreResp extends SaveResp {
   restored: boolean
 }
 
+/** P4：改动总览里的 6 种语义（后端 _classify_change 的取值） */
+export type GitChangeKind =
+  | 'conflict' | 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked'
+
+export interface GitChangeFile {
+  /** 仓库内相对路径；改名时为**源（旧名）** */
+  path: string
+  /** 改名/复制时的目标路径（新名） */
+  path_to?: string
+  kind: GitChangeKind
+  /** 后端给的中文标签（冲突/修改/新增/删除/改名/未跟踪） */
+  label: string
+  /** porcelain 原始两列状态码，供排查用 */
+  xy: string
+}
+
+export interface GitChangeRepo {
+  name: string
+  /** 相对 code_root 的正斜杠路径；根仓库为 '' */
+  dir: string
+  branch: string
+  files: GitChangeFile[]
+  /** 单个仓库读取失败时的原因（不影响其他仓库） */
+  error?: string
+}
+
+export interface GitChangesResp {
+  ok: boolean
+  repos: GitChangeRepo[]
+  total: number
+  truncated: boolean
+  empty: boolean
+}
+
 /** P1：符号（func/class/const/var/signal/enum/node ...） */
 export interface SymbolInfo {
   name: string
@@ -349,6 +383,10 @@ export const fsApi = {
     return request<GitLogResp>(
       `/api/fs/gitlog?path=${encodeURIComponent(path)}&limit=${limit}`,
     )
+  },
+  /** P4：仓库级未提交改动总览（只读）。 */
+  gitChanges(): Promise<GitChangesResp> {
+    return request<GitChangesResp>('/api/fs/git-changes')
   },
   revert(path: string): Promise<RevertResp> {
     return postJson<RevertResp>('/api/fs/revert', { path })

@@ -62,6 +62,11 @@ const flowOpen = ref(false)
 function openFlow() { flowOpen.value = true }
 function closeFlow() { flowOpen.value = false }
 
+// P4：改动总览（只读）——跨文件列出所有未提交改动，是文件树状态点的汇总视图。
+const changesOpen = ref(false)
+function openChanges() { changesOpen.value = true }
+function closeChanges() { changesOpen.value = false }
+
 export function useRuntime() {
   return {
     workspace, setWorkspace,
@@ -71,5 +76,6 @@ export function useRuntime() {
     relationGraphOpen, openRelationGraph, closeRelationGraph,
     unityGraphOpen, openUnityGraph, closeUnityGraph,
     flowOpen, openFlow, closeFlow,
+    changesOpen, openChanges, closeChanges,
   }
 }

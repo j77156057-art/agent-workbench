@@ -24,6 +24,13 @@ def git(args, cwd):
     subprocess.run(["git"] + args, cwd=cwd, capture_output=True, timeout=30, check=False)
 
 
+def git_out(args, cwd):
+    """跑 git 并取回 stdout（`git()` 丢弃输出，某些断言需要比对文本）。"""
+    return subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=30,
+                          check=False).stdout
+
+
 def find(nodes, path):
     """按相对路径在嵌套树中查找节点。"""
     target = path.replace("\\", "/")
@@ -465,6 +472,152 @@ class GitRevertTests(WbTestBase):
         self.assertTrue(back["reverted"])
         with open(os.path.join(repo, "a.gd"), encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "var v = 2\n")
+
+
+@unittest.skipUnless(have_git(), "无 git")
+class GitChangesTests(WbTestBase):
+    """P4：仓库级「改动总览」。
+
+    与文件树状态点的区别：状态点只有 tracked/dirty 布尔，看不出**是新增还是
+    删除还是改名**——而总览面板恰恰要靠这个分类来分组显示、并决定图标。
+    所以这里逐条钉住 6 种语义的归类，以及 R 记录的**路径方向**。
+
+    R 记录方向是本轮实际写错过的地方：`git status --porcelain -z` 的改名记录
+    是 `R  <新名>\\0<旧名>\\0`（**新名在前**），与"源在前"的直觉相反，
+    写反了界面会显示成 `新名 -> 旧名` 的倒序。
+    """
+
+    def _commit_all(self, repo, msg):
+        git(["add", "-A"], cwd=repo)
+        git(["commit", "-q", "-m", msg], cwd=repo)
+
+    def test_no_repo_returns_empty_not_error(self):
+        """不在任何仓库里不是错误——面板该显示「无改动」而不是报错。"""
+        self.write("a.txt", "x\n")
+        r = wb.git_changes(self.root)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["repos"], [])
+        self.assertEqual(r["total"], 0)
+        self.assertTrue(r["empty"])
+
+    def test_clean_repo_is_empty(self):
+        repo = self.init_repo(".")
+        self.write("a.txt", "x\n")
+        self._commit_all(repo, "c1")
+        r = wb.git_changes(self.root)
+        self.assertEqual(len(r["repos"]), 1)
+        self.assertEqual(r["repos"][0]["files"], [])
+        self.assertTrue(r["empty"])
+        self.assertEqual(r["repos"][0]["branch"], "master")
+
+    def test_all_five_working_states_are_classified(self):
+        repo = self.init_repo(".")
+        self.write("mod.txt", "1\n")
+        self.write("del.txt", "1\n")
+        self._commit_all(repo, "base")
+
+        self.write("mod.txt", "2\n")            # 修改
+        os.remove(os.path.join(repo, "del.txt"))  # 删除
+        self.write("untracked.txt", "n\n")      # 未跟踪
+        self.write("staged.txt", "s\n")         # 新增（已暂存）
+        git(["add", "staged.txt"], cwd=repo)
+
+        r = wb.git_changes(self.root)
+        got = {f["path"]: f["kind"] for f in r["repos"][0]["files"]}
+        self.assertEqual(got.get("mod.txt"), "modified")
+        self.assertEqual(got.get("del.txt"), "deleted")
+        self.assertEqual(got.get("untracked.txt"), "untracked")
+        self.assertEqual(got.get("staged.txt"), "added")
+        self.assertEqual(r["total"], 4)
+
+    def test_rename_keeps_source_and_target_in_the_right_order(self):
+        """改名必须显示成 `旧 -> 新`。porcelain 是**新名在前**，容易写反。"""
+        repo = self.init_repo(".")
+        self.write("old.txt", "x\n")
+        self._commit_all(repo, "c1")
+        git(["mv", "old.txt", "new.txt"], cwd=repo)
+
+        files = wb.git_changes(self.root)["repos"][0]["files"]
+        self.assertEqual(len(files), 1)
+        f = files[0]
+        self.assertEqual(f["kind"], "renamed")
+        self.assertEqual(f["path"], "old.txt", "path 必须是源（旧名）")
+        self.assertEqual(f["path_to"], "new.txt", "path_to 必须是目标（新名）")
+
+    def test_conflict_ranks_first(self):
+        """冲突排最前——它是唯一必须人工介入的状态，不该被淹没在几十条里。"""
+        repo = self.init_repo(".")
+        self.write("c.txt", "base\n")
+        self._commit_all(repo, "base")
+        git(["checkout", "-q", "-b", "other"], cwd=repo)
+        self.write("c.txt", "other\n")
+        self._commit_all(repo, "other")
+        git(["checkout", "-q", "master"], cwd=repo)
+        self.write("c.txt", "mine\n")
+        self._commit_all(repo, "mine")
+        git(["merge", "other"], cwd=repo)  # 故意冲突，不 check 返回值
+        self.write("plain.txt", "p\n")     # 一条普通未跟踪，用来验排序
+
+        files = wb.git_changes(self.root)["repos"][0]["files"]
+        self.assertTrue(files, "冲突状态下不该是空列表")
+        self.assertEqual(files[0]["kind"], "conflict",
+                         "冲突必须排在第一条")
+
+    def test_multiple_repos_are_listed_separately(self):
+        """根目录 + 分区各是独立仓库时，两个都要收（与文件树口径一致）。"""
+        self.enable_regions()
+        root_repo = self.init_repo(".")
+        self.write("root.txt", "r\n")
+        self._commit_all(root_repo, "root")
+        self.write("root.txt", "r2\n")
+
+        sub = self.init_repo("values")
+        self.write("values/v.gd", "pass\n")
+        self._commit_all(sub, "v1")
+        self.write("values/v.gd", "pass  # changed\n")
+
+        r = wb.git_changes(self.root)
+        by_dir = {repo["dir"]: repo for repo in r["repos"]}
+        self.assertIn("", by_dir)
+        self.assertIn("values", by_dir)
+        root_paths = {f["path"] for f in by_dir[""]["files"]}
+        self.assertIn("root.txt", root_paths)
+        sub_paths = {f["path"] for f in by_dir["values"]["files"]}
+        self.assertIn("v.gd", sub_paths)
+
+    def test_truncates_instead_of_exploding(self):
+        """巨型仓库不能把前端拖垮：超上限要截断并置 truncated 标志。"""
+        repo = self.init_repo(".")
+        self.write("seed.txt", "x\n")
+        self._commit_all(repo, "base")
+        for i in range(wb.WB_CHANGES_MAX + 5):
+            self.write("f%04d.txt" % i, "n\n")
+
+        r = wb.git_changes(self.root)
+        files = r["repos"][0]["files"]
+        self.assertEqual(len(files), wb.WB_CHANGES_MAX)
+        self.assertTrue(r["truncated"], "截断时必须置位，否则前端以为这就是全部")
+
+    def test_cjk_path_is_not_escaped(self):
+        """中文路径必须原样返回（-z 的用途），否则前端显示乱码。"""
+        repo = self.init_repo(".")
+        self.write("docs/说明.txt", "x\n")
+        self._commit_all(repo, "base")
+        self.write("docs/说明.txt", "y\n")
+
+        files = wb.git_changes(self.root)["repos"][0]["files"]
+        self.assertEqual([f["path"] for f in files], ["docs/说明.txt"])
+
+    def test_it_never_writes_to_disk(self):
+        """只读承诺：跑完前后，仓库的 git status 必须逐字一致。"""
+        repo = self.init_repo(".")
+        self.write("a.txt", "1\n")
+        self._commit_all(repo, "base")
+        self.write("a.txt", "2\n")
+        before = git_out(["status", "--porcelain"], repo)
+        wb.git_changes(self.root)
+        after = git_out(["status", "--porcelain"], repo)
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

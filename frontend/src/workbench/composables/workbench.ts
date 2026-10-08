@@ -79,6 +79,7 @@ const {
   relationGraphOpen, openRelationGraph, closeRelationGraph,
   unityGraphOpen, openUnityGraph, closeUnityGraph,
   flowOpen, openFlow, closeFlow,
+  changesOpen, openChanges, closeChanges,
 } = useRuntime()
 
 // 最近打开的文件抽到 workbench-recent.ts（tree/openPath 在文件末尾注入）
@@ -662,6 +663,8 @@ export function useWorkbench() {
     closeAllTabs,
     // P3 git 回滚 / 历史版本
     revertPath, history, openHistory, closeHistory, selectHistoryVersion, restoreSelectedVersion,
+    // P4 改动总览（只读）
+    changesOpen, openChanges, closeChanges,
     // fs ops
     createAt, renameNode, deleteNode,
     // menus / dialogs

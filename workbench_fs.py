@@ -735,6 +735,145 @@ def git_log(root, rel, limit: int = 20) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# P4：仓库级「改动总览」（只读）
+# ---------------------------------------------------------------------------
+# 与 _git_snapshot 的区别：那个只产出 {path} 两个集合给文件树打状态点，
+# 丢了「是新增还是修改还是删除」。总览必须保留状态字母，所以单独跑。
+# XY 两列（index 与 worktree）合并成一个用户语义：
+#   untracked(??) / added(A) / deleted(D) / renamed(R) / modified(M) / conflict(U,AA,DD…)
+_CHANGE_ORDER = {"conflict": 0, "modified": 1, "added": 2, "deleted": 3,
+                 "renamed": 4, "untracked": 5}
+_CHANGE_LABEL = {"conflict": "冲突", "modified": "修改", "added": "新增",
+                 "deleted": "删除", "renamed": "改名", "untracked": "未跟踪"}
+# 单仓库最多返回的改动条目（防巨型仓库拖垮前端；截断时置 truncated 标志）
+WB_CHANGES_MAX = 500
+
+
+def _classify_change(xy: str) -> str:
+    """把 porcelain 的两列状态码归一成 6 种用户语义之一。"""
+    x, y = xy[0], xy[1]
+    if x == "?" or y == "?":
+        return "untracked"
+    if "U" in xy or xy in ("AA", "DD"):
+        return "conflict"
+    if "R" in xy or "C" in xy:
+        return "renamed"
+    if x == "A" or y == "A":
+        return "added"
+    if x == "D" or y == "D":
+        return "deleted"
+    return "modified"
+
+
+def _repo_for_root(root_abs: str) -> list:
+    """列出本次总览要扫的仓库根（绝对路径）。
+
+    与 _git_snapshot 保持同一口径：根目录本身可能是仓库（普通项目），
+    每个 region 目录也可能是独立仓库。两者都收，去重。
+    """
+    repos = []
+    root_abs = os.path.abspath(str(root_abs))
+    if os.path.isdir(os.path.join(root_abs, ".git")):
+        repos.append(root_abs)
+    for d in _region_dirs(root_abs):
+        rd = os.path.join(root_abs, d.replace("/", os.sep))
+        if os.path.isdir(os.path.join(rd, ".git")):
+            repos.append(rd)
+    # 去重且保持顺序（realpath 归一，避免大小写/软链造成的重复项）
+    seen, out = set(), []
+    for r in repos:
+        key = os.path.realpath(r)
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def git_changes(root) -> dict:
+    """只读：列出所有 git 仓库里的未提交改动。
+
+    返回 ``{"ok": True, "repos": [...], "total": n, "truncated": bool}``，
+    每个 repo 含 ``{"name", "dir", "branch", "files": [...]}``。
+    ``dir`` 是相对 code_root 的正斜杠路径（根仓库为 ``""``），供前端跳转/分组。
+
+    **完全不写盘**：只跑 ``rev-parse`` / ``status`` / ``branch`` 三个只读命令，
+    也不碰 5 秒状态缓存（那是给文件树用的，语义更粗）。
+    """
+    root_abs = os.path.abspath(str(root))
+    if not os.path.isdir(root_abs):
+        raise FsError(400, "代码库根目录不存在。")
+
+    repos_out: list = []
+    total = 0
+    truncated = False
+
+    for repo in _repo_for_root(root_abs):
+        rel_dir = os.path.relpath(repo, root_abs).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
+        name = os.path.basename(repo) or os.path.basename(root_abs)
+
+        # 分支名：detached HEAD 时 symbolic-ref 失败，退回短哈希
+        branch = ""
+        ok, out = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo)
+        if ok and out.strip():
+            branch = out.strip()
+            if branch == "HEAD":  # detached
+                ok2, out2 = _git(["rev-parse", "--short", "HEAD"], cwd=repo)
+                branch = f"(detached {out2.strip()})" if ok2 else "(detached)"
+        if not branch:
+            branch = "(未知)"
+
+        ok, out = _git(["status", "--porcelain", "-z", "--untracked-files=all"],
+                       cwd=repo)
+        if not ok:
+            # 单个仓库读失败不该让整个总览 500；记下原因让前端能显示
+            repos_out.append({"name": name, "dir": rel_dir, "branch": branch,
+                              "files": [], "error": out[:200]})
+            continue
+
+        files: list = []
+        if out:
+            tokens = out.split("\x00")
+            i = 0
+            while i < len(tokens):
+                rec = tokens[i]
+                if not rec:
+                    i += 1
+                    continue
+                xy, path = rec[:2], rec[3:]
+                p = path.replace("\\", "/")
+                kind = _classify_change(xy)
+                item = {"path": p, "kind": kind, "label": _CHANGE_LABEL[kind],
+                        "xy": xy}
+                # R/C 记录：**第一个 token 是新路径**，NUL 之后那个才是旧路径
+                # （实测 `git mv old.txt new.txt` → `R  new.txt\0old.txt\0`）。
+                # 这跟"源在前"的直觉相反，写反了会显示成 `新 -> 旧` 的倒序。
+                if xy[0] in ("R", "C") and i + 1 < len(tokens):
+                    nxt = tokens[i + 1]
+                    if nxt:
+                        item["path"] = nxt.replace("\\", "/")   # 源（旧名）
+                        item["path_to"] = p                     # 目标（新名）
+                    i += 1
+                files.append(item)
+                i += 1
+
+        # 稳定排序：冲突最优先（要人处理），其次按语义组，组内按路径
+        files.sort(key=lambda f: (_CHANGE_ORDER.get(f["kind"], 9), f["path"]))
+
+        if len(files) > WB_CHANGES_MAX:
+            files = files[:WB_CHANGES_MAX]
+            truncated = True
+
+        total += len(files)
+        repos_out.append({"name": name, "dir": rel_dir, "branch": branch,
+                          "files": files})
+
+    return {"ok": True, "repos": repos_out, "total": total,
+            "truncated": truncated, "empty": total == 0}
+
+
+# ---------------------------------------------------------------------------
 # P3：git 一键回滚（文件级）+ 历史版本读取/恢复
 # ---------------------------------------------------------------------------
 # 只接受提交哈希（gitlog 返回值），拒绝任意 ref 表达式/选项注入
@@ -1495,6 +1634,15 @@ def delete_ep(req: DeleteReq):
 def gitlog_ep(path: str, limit: int = 20):
     try:
         return git_log(_runtime_root(), path, limit=limit)
+    except FsError as e:
+        return _err(e)
+
+
+@router.get("/git-changes")
+def git_changes_ep():
+    """P4：仓库级未提交改动总览（只读）。前端「改动总览」面板的数据源。"""
+    try:
+        return git_changes(_runtime_root())
     except FsError as e:
         return _err(e)
 

@@ -11,6 +11,7 @@ import SymbolMap from './components/SymbolMap.vue'
 import SelectionToolbar from './components/SelectionToolbar.vue'
 import SelectionAiPanel from './components/SelectionAiPanel.vue'
 import GitHistoryDialog from './components/GitHistoryDialog.vue'
+import GitChangesPanel from './components/GitChangesPanel.vue'
 import RewriteDiffDialog from './components/RewriteDiffDialog.vue'
 import TaskEnginePanel from './components/TaskEnginePanel.vue'
 import SceneRuntimePanel from './components/SceneRuntimePanel.vue'
@@ -53,8 +54,9 @@ const {
   openSymbolMap, openRelationGraph,
   openUnityGraph, openFlow,
   revertPath, openHistory,
+  openChanges,
   openRegionMap,
-  relationGraphOpen, unityGraphOpen, flowOpen, regionMapOpen,
+  relationGraphOpen, unityGraphOpen, flowOpen, regionMapOpen, changesOpen,
   aiPanelOpen,
   workspace, setWorkspace, seedDemoRegionCards,
   closeAllTabs, closeRuntime,
@@ -85,7 +87,7 @@ function onOpenSettings(ev: Event) {
  * 重型弹层首次打开才挂载（异步 chunk 届时才下载）；挂载后常驻、关闭不销毁，
  * 保留已加载数据与缩放状态——与原先"始终挂载 + 根 v-if 隐藏"的体验一致。
  */
-const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, settings: false, cockpit: false })
+const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, changes: false, settings: false, cockpit: false })
 watch(workspace, v => {
   if (v !== 'cockpit') return
   everMounted.cockpit = true
@@ -100,6 +102,7 @@ watch(workspace, v => {
 watch(relationGraphOpen, (v) => { if (v) everMounted.relation = true })
 watch(unityGraphOpen, (v) => { if (v) everMounted.unity = true })
 watch(flowOpen, (v) => { if (v) everMounted.flow = true })
+watch(changesOpen, (v) => { if (v) everMounted.changes = true })
 watch(regionMapOpen, (v) => { if (v) everMounted.region = true })
 /** 当前标签可回滚：已纳入 git 且磁盘或编辑器存在改动 */
 const canRevertActive = computed(() => {
@@ -507,6 +510,10 @@ onBeforeUnmount(() => {
               <span class="wb-menu-item-name">流程图</span>
               <small>每轮问答「提问→思考→调工具→回答」</small>
             </button>
+            <button v-if="tree" type="button" class="wb-menu-item" @click="openChanges">
+              <span class="wb-menu-item-name">改动总览</span>
+              <small>所有未提交改动（只读，各仓库分列）</small>
+            </button>
             <div class="wb-menu-sep" />
             <div class="wb-menu-label">工具与运行</div>
             <button type="button" class="wb-menu-item" @click="teRef?.show()">
@@ -709,6 +716,7 @@ onBeforeUnmount(() => {
     <RelationGraph v-if="everMounted.relation" />
     <UnityGraph v-if="everMounted.unity" />
     <FlowCanvas v-if="everMounted.flow" />
+    <GitChangesPanel v-if="everMounted.changes" />
     <SelectionToolbar />
     <SettingsView v-if="everMounted.settings" :visible="settingsVisible" :initial-tab="settingsSection" @close="settingsVisible = false" />
   </div>
