@@ -134,9 +134,84 @@ expansions = {'dev_testrun'}
 **召回正则仍未修。** 「跑一下测试」依然只命中 26 个工具 ——
 本笔只是让模型**能自救**（检索即放行），没有让路由**更聪明**。
 
-若要修召回，可考虑的方向是让 `_CODE` 之类的判据看**工具组与请求的对应关系**
-而不是关键词 —— 但那要先说清「解决什么」，且属于另一族。
+### 10.1 已试过并否决：文本算法修召回（实测，非推测）
 
-`docs/known-defect-tool-search-substring-mismatch.md` 记的
-`tool_search` 子串匹配缺陷也仍未修；本笔顺带加了「精确名排最前」这一半，
-另一半（模糊命中要标注）未做。
+两条路都写了探针（`tools/mutation/probe_recall_scoring.py`、
+`probe_recall_ngram.py`，可复算）：
+
+| 方案 | 目标进前 3 |
+|---|---|
+| `_TERM_SPLIT` 切词（复用同文件 `_skill_score` 的判据） | **1 / 12** |
+| n-gram（2~4 字，中文无空格的标准做法） | **5 / 12** |
+
+**n-gram 失败的两个独立模式：**
+
+**模式 A：用户写法不是连续子串**
+
+```
+用户: '截个图看看页面'   含连续「截图」吗? False
+```
+
+「截个图」中间插了量词「个」。要救得先剥量词 —— 那又是一个词表。
+
+**模式 B：那个词压根不在描述里**
+
+```
+web_search       描述含「高铁」? False
+dev_diagnostics  描述含「报错」? False
+```
+
+**这是词汇差异，任何文本重合算法都救不了。** 要救只能改 112 条描述的措辞 ——
+那是另一笔大改，且会动模型输入。
+
+### 10.2 放宽召回的代价（实测）
+
+原生通道 tool schema 成本，**每次模型调用都付**：
+
+| 方案 | 工具数 | tokens |
+|---|---|---|
+| 现状（动词型请求） | 26 | **2 947** |
+| 永远含 developer 组 | 97 | 12 842（4.4 倍） |
+| 全量 | 116 | 14 490 |
+
+### 10.3 三个 harness 都不做相关性召回（2026-10-08 核实）
+
+| harness | 怎么决定暴露什么 |
+|---|---|
+| **Pi** | **不涉及工具选择** —— 安全模型是「进程边界」而非「工具边界」。`security.md` 通篇讲文件/凭据/进程/网络的可达性与三种隔离运行方式，**没有任何按问题挑工具的机制** |
+| **Hermes** | **用户/平台显式 toolsets**（`hermes tools`、`--toolsets "web,terminal"`），另有平台 preset 与动态 `mcp-<server>` 工具集。**零自动召回** |
+| **opencode** | **预算截断 + 轮转公平 + 检索** |
+
+opencode codemode `Discovery` 一节原文：
+
+> **Every tool namespace is always listed** with its tool count regardless of
+> budget. Selection is **round-robin** across namespaces for fairness.
+
+**没有相关性打分。** 我们的 `_CODE`/`_WEB` 关键词判定是三家里**唯一的异类**，
+也是唯一失效的那个。
+
+> ⚠ **更正**：本节早前写「Pi 有 4 个工具（read/write/edit/bash）」——
+> **核实不到**。`security.md` 与 `README.md` 都没写工具数量，那个数字来自第三方
+> 站点（搜索摘要）。已删掉 —— **不拿二手来源的数字当事实**。
+
+### 10.4 已抄的一条（无争议）
+
+opencode 同一节：
+
+> The instructions state exactly **how comprehensive the list is**, both overall
+> (`COMPLETE list` vs `PARTIAL - N of M shown`)
+
+已照做，并补了 opencode 没有的一层 —— 我们还有 `_effective_tool_names()`
+的**运行期按组收窄**，所以段头额外说明「本轮实际可调的通常比这少，
+看到某个工具却调不动时先 `tool_search` 再重试，仍不可用就如实说明」。
+
+守卫：`tests/test_tool_index_completeness.py`。
+
+### 10.5 若将来要真修，得换判据类型
+
+不是文本重合，是**语义相似度**（embedding）。但那是新依赖 + 每次请求有成本，
+且 `retrieval` 那套向量检索是给**代码检索**用的，不是给**工具召回**用的 ——
+独立一笔，不该顺手做。
+
+**另一个方向是取消收窄**（三家的做法），代价见 §10.2 —— 那是产品取舍不是 bug 修复，
+需要人来定。

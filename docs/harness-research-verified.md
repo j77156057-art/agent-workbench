@@ -314,6 +314,30 @@ A/B/D 三节反复记录的那个问题（否定只取消它自己管的那个�
 `SYSTEM_PROMPT` 里 96 个工具的说明是**独立手写**的（长度中位数 60 字符），
 `ToolSpec.description` 中位数 163 字符。手写版是刻意精简的，不是 desc 的复制。
 
+### 3.6 核实：三家里**没有一家**按问题相关性挑工具（2026-10-08 追加）
+
+这是查 opencode 的 `Discovery` 时顺带发现的，比上面那条更根本：
+
+| harness | 怎么决定暴露什么 |
+|---|---|
+| **Pi** | **不涉及工具选择** —— 它的安全模型是「进程边界」而非「工具边界」。`security.md` 通篇讲文件/凭据/进程/网络的可达性与三种隔离运行方式；**没有任何按问题挑工具的机制** |
+| **Hermes** | **用户/平台显式 toolsets**（`hermes tools`、`--toolsets "web,terminal"`），另有平台 preset 与动态 `mcp-<server>` 工具集。**零自动召回** |
+| **opencode** | **预算截断 + 轮转公平 + 检索**，**无相关性打分** |
+
+opencode 原文：
+
+> **Every tool namespace is always listed** with its tool count regardless of
+> budget. Selection is **round-robin** across namespaces for fairness.
+
+我们此前的 `ContextRouter` 关键词判定（`_CODE` / `_WEB`）是**三家里唯一的异类**，
+也是唯一失效的那个（动词型请求「跑一下测试」一个都不命中）。
+详见 `docs/known-defect-context-router-recall.md`。
+
+> ⚠ **更正**：本节早前写「Pi 有 4 个工具（read/write/edit/bash）」——
+> **核实不到**。`security.md` 与 `README.md` 都没写工具数量，那个数字来自第三方
+> 站点（搜索摘要）。已删掉 —— **不拿二手来源的数字当事实**。上表改为只陈述
+> 一手来源里确实写了的机制。
+
 ### 3.6 `http-recorder`：**Public beta，且真的能用**（核实）
 
 > **Public beta.** The API depends on Effect 4 beta and may change.

@@ -897,10 +897,33 @@ def _progressive_tools_text(tools_full):
               if _TOOL_BLOCK_RE.match(b) else 99)
     parts = ["可用工具（核心，完整用法如下）：\n" + "\n".join(core)]
     if index:
+        # 照 opencode codemode 的 `Discovery` 一节做「明示完整度」：
+        #   The instructions state exactly how comprehensive the list is, both
+        #   overall (`COMPLETE list` vs `PARTIAL - N of M shown`).
+        #
+        # 抄它是因为那一节还说了另一半更重要的话：**每个命名空间无论预算如何
+        # 都必须列出**，且**轮转**挑选以保公平 —— 也就是说 opencode **不按问题
+        # 相关性挑工具**。我们此前的 `_CODE`/`_WEB` 关键词判定是三家里唯一的异类，
+        # 详见 docs/known-defect-context-router-recall.md。
+        #
+        # 而我们比 opencode 多一坑：它只有「目录截断」这一层，我们还有
+        # `_effective_tool_names()` 的**运行期按组收窄**。实测「跑一下测试」那轮
+        # 提示里说 115 个工具，实际只有 26 个可调 —— 不说清就是**失败时没有声音**。
+        #
+        # 分母取「核心 + 索引」本身，**不取注册表**：系统提示在 import 期构建，
+        # 那时 `agent.py` 还没注入 `tool_search`/`delegate`/`orchestrate`/
+        # `dev_use_skill` 这 4 个，取注册表会拿到导入期快照 112，
+        # 报出「共 112 个，以下 115 个」这种自相矛盾的话（我第一版就那样了）。
+        core_n, index_n = len(core), len(index)
         parts.append(
-            "\n【扩展工具索引】以下工具只给名称与概要。确定要用时，"
-            "**必须先调用 tool_search(工具名) 取回完整用法**，再按格式调用；"
-            "不要凭名称臆测参数：\n" + "\n".join(sorted(index))
+            "\n【扩展工具索引】共 %d 个工具（%d 个核心工具在上面给了完整用法，"
+            "以下 %d 个只给名称与概要）。确定要用时，"
+            "**必须先调用 tool_search(工具名) 取回完整用法**，"
+            "再按格式调用；不要凭名称臆测参数。\n"
+            "**本轮实际可调的通常比这少**——工具还会按本轮任务收窄，"
+            "看到某个工具却调不动时，**先 tool_search 取回用法再重试**，"
+            "仍不可用就如实说明它当前不可用，别换个工具硬凑：\n"
+            % (core_n + index_n, core_n, index_n) + "\n".join(sorted(index))
         )
     if extra:
         parts.append("\n" + "\n".join(extra))
