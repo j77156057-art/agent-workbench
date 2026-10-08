@@ -102,8 +102,8 @@ README 的 "Supply-chain hardening" 一节：
 |---|---|---|
 | `.npmrc` 设 `min-release-age=2` | ✅ **已加**（`frontend/.npmrc`）—— 实测生效，见下方专节 |
 | 直接依赖钉精确版本（`save-exact=true`） | ⚠ **未钉** —— 33 个前端依赖（deps 22 + dev 11）里 **29 个**是 `^`/`~` 范围；**只有 4 个** `@fontsource/*` 是精确版。**但 `package-lock.json` 钉住了实际解析结果**，所以 `^` 只在**有人主动改依赖**时才产生漂移 | `frontend/package.json` |
-| `package-lock.json` 是唯一真相 | ✅ **是** —— CI 用 `npm ci`（`.github/workflows/harness.yml:59`），启动同步器也用 `npm ci`（`dependency_bootstrap.py:414`） | 实测 |
-| 生命周期脚本**白名单** | ⚠ **只在一条路径上有，且不能照抄** —— `tool_install.py:92`（agent 装 MCP 工具）用 `--ignore-scripts`（全禁）；启动同步的 `npm ci`（`dependency_bootstrap.py:414`）与 CI（`harness.yml:59`）**都没加，而加了会坏**（见下） | 实测 |
+| `package-lock.json` 是唯一真相 | ✅ **是** —— CI 用 `npm ci`（`.github/workflows/harness.yml:62`），启动同步器也用 `npm ci`（`dependency_bootstrap.py:421`） | 实测 |
+| 生命周期脚本**白名单** | ⚠ **只在一条路径上有，且不能照抄** —— `agent_runtime/tool_install.py:92`（agent 装 MCP 工具）用 `--ignore-scripts`（全禁）；启动同步的 `npm ci`（`dependency_bootstrap.py:421`）与 CI（`harness.yml:62`）**都没加，而加了会坏**（见下） | 实测 |
 | pre-commit 阻止误提交 lockfile | ❌ 无 | 实测 |
 | 传递依赖钉住（`install-lock/`） | ⚠ 部分 —— `package-lock.json` 本身含传递依赖，但**没有 Pi 那种「只从 install-lock 装」的通道** | 实测 |
 | 定时 `npm audit` | ❌ 无 | 实测 |
@@ -112,14 +112,14 @@ README 的 "Supply-chain hardening" 一节：
 但 `--ignore-scripts` 只覆盖了一条路径（见下）。**
 
 ⚠ **核实出一条我先前说反了的事** —— 我先写「`--ignore-scripts` 比 Pi 的白名单
-更严，所以 npm 侧强于 Pi」。**那是只看了 `tool_install.py:92` 一处**。
+更严，所以 npm 侧强于 Pi」。**那是只看了 `agent_runtime/tool_install.py:92` 一处**。
 逐条列全仓的 npm 调用点后：
 
 | 调用点 | 有 `--ignore-scripts` 吗 |
 |---|---|
-| `tool_install.py:92`（agent 装 MCP 工具） | ✅ 有 |
-| `dependency_bootstrap.py:414`（**启动时同步前端依赖**） | ❌ **无** |
-| `harness.yml:59`（CI） | ❌ **无** |
+| `agent_runtime/tool_install.py:92`（agent 装 MCP 工具） | ✅ 有 |
+| `dependency_bootstrap.py:421`（**启动时同步前端依赖**） | ❌ **无** |
+| `harness.yml:62`（CI） | ❌ **无** |
 
 即 **lockfile 里任何一个带 lifecycle 脚本的包，都会在用户启动应用或跑 CI 时执行它**。
 而「agent 自己请求装的包」反而是安全的 —— **安全与风险的分配正好反过来**。
@@ -211,8 +211,8 @@ npm run build               退出码 0（44.2s）
 `node_modules/@esbuild/win32-x64/esbuild.exe`（9.9 MB）在包里，
 **不靠 postinstall 下载**；关掉脚本后 `esbuild --version` 仍输出 `0.21.5`。
 
-**结论：可以给两条 `npm ci` 路径（`dependency_bootstrap.py:414` 与
-`harness.yml:59`）加 `--ignore-scripts`。** 这正是 Pi「显式白名单」在我们树上的
+**结论：可以给两条 `npm ci` 路径（`dependency_bootstrap.py:421` 与
+`harness.yml:62`）加 `--ignore-scripts`。** 这正是 Pi「显式白名单」在我们树上的
 等价物 —— 而实测说明**全禁就够，不需要白名单**。
 
 **✅ 已实施**（守卫 `tests/test_npm_ignore_scripts_pinned.py`，变异实测通过）：
@@ -232,6 +232,31 @@ npm run build               退出码 0（44.2s）
 两个洞（注释里的 `npm ci` 误报红 / `cd frontend && npm ci` 完全漏掉）由后两条
 对照变异暴露，现已改为真解析。**教训：docstring 声称的判据要和代码一致，
 否则下一个人会照着 docstring 相信一个不存在的保证。**
+
+##### ⚠ 一条贯穿今晚的引用坑：**PowerShell 的 `Get-Content` 按 ANSI 读文件**
+
+核实「42 行有效行」时，Python 读出 **70 行 / 42 有效**，
+PowerShell 的 `Get-Content | Where-Object` 却读出 **59 行 / 35 有效**。
+
+**根因**：Windows PowerShell 的 `Get-Content` 默认按**系统 ANSI 编码**读文件，
+把 UTF-8 中文注释读成乱码，某些字节被解释成控制符 → **行数变了**。
+实测 `.github/workflows/harness.yml` 同样：Python **174 行** / PowerShell **166 行**。
+
+**后果**：所有用 `Select-String` / `Get-Content` 拿到的**行号系统性偏小 7-11 行**。
+本篇因此修掉 **9 处**错的行号引用（`harness.yml:59` → `:62`、
+`dependency_bootstrap.py:414` → `:421`）+ **4 处**路径不完整
+（`tool_install.py` / `dev_server.py` 实际在 `agent_runtime/` 下）。
+
+⚠ 另有 1 处**行号与路径都错**：`dev_server.py:36` —— 第 36 行只是一条
+提到 `owns_port` 的注释，**函数本体在第 102 行**。
+
+**错行号比没有行号更坏** —— 它让下一个人以为「去看那一行」就能找到，
+而实际上他看的是别的地方，而且**不会发现**。
+
+> **含中文的文件，行号/计数一律用 Python（显式 `encoding="utf-8"`）取，
+> 不用 `Get-Content` / `Select-String`。**
+> 修正脚本 `tools/mutation/fix_doc_line_refs.py` 写盘后
+> **逐条回到文件里读那一行**复核 —— 错的引用当场暴露，不留给下一个人。
 
 ##### ⚠ 验证状态：`4cbec54`（守卫修正）**没有被全量回归验过**
 
@@ -347,13 +372,66 @@ _run([str(pip), "install", "--upgrade", "-r", str(requirements)], project,
 **这与 §1.4 的 npm 硬化不是同一个问题**，但严重度更高：npm 侧我们知道要关脚本，
 Python 侧连「关脚本」这个概念都没有。
 
+##### ✅ 已量化代价（`probe_python_supply_chain_cost.py`，只读诊断）
+
+| 数字 | 值 |
+|---|---|
+| `requirements.txt` 声明 | **42 条**（16 条带范围约束 + **26 条裸包名**） |
+| 当前 venv 实际装 | **172 个包** |
+| 只有 sdist、没有 wheel 的 | **1 个**（`proxy_tools==0.1.0`） |
+| 有多个发行文件的 | 52 个（hash 要按**文件**给，不是按包给） |
+
+**三条路的代价**：
+
+| 路 | 代价 | 判断 |
+|---|---|---|
+| **A. 只钉直接依赖版本（`==`）** | 改 42 行；不防投毒，只防「静默漂移」 | 低风险，但收益小 |
+| **B. 全量 `--require-hashes`** | `requirements.txt` 42 行 → **约 172 行（4 倍）**；每次加依赖都要重生成 hash | 可行，但是**契约变更，该由人决定** |
+| **C. `--only-binary=:all:`** | ⚠ **会排除 `proxy_tools`** → 连带 `pywebview` 装不上 → **这条路直接不通** | 不可行 |
+
+⚠ **C 那条我第一版差点判成可行。** 探针抽样 60/172 时报「只有 sdist 的: 0 个」，
+**我把它读成了全量结论**（「这一条**可行**」）—— 而全量查是 **1 个**。
+**「`--only-binary` 可行」正是要拿去建议人的那句话，它不能建立在 35% 的覆盖率上。**
+
+##### 🔴 顺带查出一个**具体的**传递依赖敞口：`proxy_tools`
+
+反查发现那个只有 sdist 的包不是随机的：
+
+```
+pywebview==6.2.1  的 requires_dist 里写着：  proxy_tools     ← 无版本约束
+proxy_tools 的全部版本：0.1.0（2014-05-05，sdist only，作者 Jonathan Tushman）
+```
+
+**这不是 typosquatting**（作者真实、包名对应 github.com/jtushman/proxy_tools），
+但它是一个**真实的投毒面**：
+
+1. `proxy_tools` **不在我们的 `requirements.txt` 里**（不是直接依赖）
+   → **我们没有任何版本约束保护它**
+2. `pywebview` 声明它时**没有版本上下界** → 我们每次
+   `pip install --upgrade` 都会**去 PyPI 解析最新版**
+3. 这个名字**六年内只发过 0.1.0 一个版本**（2014-05-05）
+   —— 一个**六年没动**的名字，注册/接管成本极低
+
+**这正是 npm 侧 `min-release-age=2` 在防的同一件事**（抢注、投毒后当天发版），
+**而 Python 侧对此零防护**：`dependency_bootstrap.py:394` 那个
+`pip install --upgrade -r requirements.txt` 无 `--only-binary`、
+无 `--require-hashes`、无任何 source 过滤。
+
+**能立刻做、代价极小的一条**（不动契约，只加约束）：
+
+> 在 `requirements.txt` 里**显式钉住 `proxy_tools==0.1.0`**，
+> 或者对这类「已知只有 sdist 的传递依赖」用 `<constraints>` 文件加界。
+
+**而全量的 `--require-hashes` 能一次性覆盖它** —— 但那是 B 路的代价。
+**两件事该分开决定：钉死这个包是十分钟的活；hash 全量钉死是契约变更。**
+
 #### 「暴露面」分析 —— 为什么 npm 那两条差距其实不大（两次更正后的结论）
 
 我先判「npm 无 `min-release-age` + 未钉精确版本 = 两处弱」，**两次都高估了**：
 
 1. **「每次启动都解析最新版」→ 不成立**（见上，`requirements_hash` 门控）
 2. **「`^` 没钉 = 会漂移」→ 大体不成立** —— `package-lock.json`（130 KB）
-   钉住了实际解析结果，而 `dependency_bootstrap.py:414` 与 CI 都用 **`npm ci`**
+   钉住了实际解析结果，而 `dependency_bootstrap.py:421` 与 CI 都用 **`npm ci`**
    （`npm ci` 严格按 lockfile 装，不重新解析范围）。所以 `^` 只在
    **有人主动改 `package.json`** 时才产生漂移，而那正是人工审查的时刻。
 
@@ -703,7 +781,7 @@ opencode 原文：
 | 做了什么 | 依据 | 提交 |
 |---|---|---|
 | **工具说明不再教模型写死端口** | codemode `Discovery` 的「按需披露」 | `5cbe94b` |
-| **端口归属判据 `owns_port`** | `dev_server.py:36` 那条注释引用的符号，此前**从未定义** | `5cbe94b` |
+| **端口归属判据 `owns_port`** | `agent_runtime/dev_server.py:102` 那条注释引用的符号，此前**从未定义** | `5cbe94b` |
 | **22 个工具从未被披露** | 逐条核实 `ToolSpec.description` vs `SYSTEM_PROMPT` | `bbc0207` |
 | **索引段明示完整度 + 本轮可调更少** | codemode：`The instructions state exactly how comprehensive the list is` | `59c1cda` |
 | **撤除按关键词收窄工具组** | 三家都不按措辞挑工具（见 §3.6） | `e8db3ea` |
