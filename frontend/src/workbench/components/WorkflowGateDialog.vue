@@ -323,11 +323,11 @@ function submitRevise() {
   margin: 10px 0 12px; padding: 9px 11px;
   border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg-surface, var(--bg-hover));
-  font-size: 12.5px; line-height: 1.6; color: var(--text);
+  font-size: 12px; line-height: 1.6; color: var(--text);
 }
 .wg-hint {
   margin: -4px 0 10px; display: flex; align-items: center; gap: 7px;
-  font-size: 11.5px; color: var(--accent);
+  font-size: 12px; color: var(--accent);
 }
 .wg-hint-dot {
   width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
@@ -358,18 +358,18 @@ function submitRevise() {
 .wg-tasks { margin: 10px 0; display: grid; gap: 7px; max-height: 38vh; overflow-y: auto; }
 .wg-task { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface, var(--bg-hover)); transition: border-color .15s ease, background .15s ease, transform .15s ease; }.wg-task:hover { border-color: var(--border-strong); background: var(--bg-selected); transform: translateX(2px); }
 .wg-task b { flex: 0 0 auto; font-size: 11px; color: var(--accent); font-family: ui-monospace, monospace; padding-top: 1px; }
-.wg-task-main { min-width: 0; display: grid; gap: 2px; font-size: 12.5px; line-height: 1.5; }
+.wg-task-main { min-width: 0; display: grid; gap: 2px; font-size: 12px; line-height: 1.5; }
 .wg-task-role { font-size: 11px; color: var(--text-faint); font-weight: 600; }
-.wg-task-main small { color: var(--text-faint); font-size: 10.5px; }
+.wg-task-main small { color: var(--text-faint); font-size: 10px; }
 .wg-pending { display: grid; gap: 7px; margin: 8px 0; padding: 10px; border: 1px dashed var(--amber); border-radius: 9px; background: rgba(214,158,46,.07); }
 .wg-pending-item { font-size: 12px; color: var(--text-muted); }
 .wg-revise { display: grid; gap: 7px; margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; }
-.wg-revise small { color: var(--text-faint); font-size: 10.5px; }
+.wg-revise small { color: var(--text-faint); font-size: 10px; }
 textarea, input, select {
   width: 100%; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: 7px;
   background: var(--bg-raised); color: var(--text);
-  font: inherit; font-size: 12.5px; padding: 7px 9px; resize: vertical;
+  font: inherit; font-size: 12px; padding: 7px 9px; resize: vertical;
 }
 textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent); }
 .wg-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
@@ -378,7 +378,7 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 .wg-btn {
   height: 30px; padding: 0 14px; border-radius: 7px;
   border: 1px solid var(--border-strong); background: var(--bg-raised);
-  color: var(--text); font-size: 12.5px; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
+  color: var(--text); font-size: 12px; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 .wg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(35,52,84,.08); }
 .wg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

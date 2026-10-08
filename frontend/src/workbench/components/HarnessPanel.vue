@@ -500,13 +500,13 @@ defineExpose({ show })
   padding: 15px 16px 14px;
 }
 .hp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.hp-head b { font-size: 14.5px; color: #1b2433; }
-.hp-head p { margin: 3px 0 0; font-size: 11.5px; color: #98a3b4; }
+.hp-head b { font-size: 14px; color: #1b2433; }
+.hp-head p { margin: 3px 0 0; font-size: 12px; color: #98a3b4; }
 .hp-x { border: none; background: transparent; font-size: 18px; line-height: 1; color: #98a3b4; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .hp-x:hover { background: #f3f6fb; color: #222b38; }
-.hp-demo { margin-top: 10px; font-size: 11.5px; line-height: 1.6; color: #8a5a16; background: #fdf2e0; border: 1px solid #f0d29a; border-radius: 8px; padding: 7px 10px; }
+.hp-demo { margin-top: 10px; font-size: 12px; line-height: 1.6; color: #8a5a16; background: #fdf2e0; border: 1px solid #f0d29a; border-radius: 8px; padding: 7px 10px; }
 .hp-err { margin: 8px 0 0; font-size: 12px; color: #d23b42; }
-.hp-actionmsg { margin: 8px 0 0; font-size: 11.5px; color: #1c9e66; }
+.hp-actionmsg { margin: 8px 0 0; font-size: 12px; color: #1c9e66; }
 .hp-tabs { display: flex; gap: 4px; margin: 12px 0 10px; background: #f3f6fb; padding: 3px; border-radius: 9px; }
 .hp-tabs button {
   flex: 1; border: none; background: transparent; cursor: pointer;
@@ -516,11 +516,11 @@ defineExpose({ show })
 .hp-pane { font-size: 12px; }
 .hp-statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
 .hp-stat { background: #f7f9fc; border: 1px solid #e4e9f2; border-radius: 11px; padding: 10px 11px; display: flex; flex-direction: column; gap: 3px; }
-.hp-stat span { font-size: 10.5px; color: #98a3b4; }
+.hp-stat span { font-size: 10px; color: #98a3b4; }
 .hp-stat b { font-size: 17px; color: #1b2433; font-variant-numeric: tabular-nums; }
 .hp-stat b.hp-none { color: #1c9e66; font-size: 14px; }
 .hp-stat em { font-style: normal; font-size: 10px; color: #a7b2c2; line-height: 1.4; }
-.hp-plain { margin: 10px 0 0; font-size: 11.5px; line-height: 1.75; color: #5a6778; }
+.hp-plain { margin: 10px 0 0; font-size: 12px; line-height: 1.75; color: #5a6778; }
 .hp-row { display: flex; gap: 7px; margin-top: 10px; }
 .hp-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid #c4cedd; border-radius: 7px; font: inherit; color: #222b38; background: #f6f8fb; outline: none; }
 .hp-row select { min-width: 170px; padding: 7px 9px; border: 1px solid #c4cedd; border-radius: 7px; font: inherit; color: #222b38; background: #f6f8fb; outline: none; }
@@ -542,10 +542,10 @@ defineExpose({ show })
 .hp-item-main span { font-size: 11px; color: #5a6778; }
 .hp-item-main em { font-style: normal; font-size: 10px; color: #a7b2c2; }
 .hp-item.on { border-color: #9fc0f5; background: #f2f7ff; box-shadow: 0 0 0 2px rgba(47,111,237,.10); }
-.hp-cur { margin-left: 6px; font-size: 9.5px; font-weight: 700; color: #2f6fed; background: #eaf1fe; border: 1px solid #c8dcfa; border-radius: 999px; padding: 0 6px; }
+.hp-cur { margin-left: 6px; font-size: 10px; font-weight: 700; color: #2f6fed; background: #eaf1fe; border: 1px solid #c8dcfa; border-radius: 999px; padding: 0 6px; }
 .hp-sesshead { display: flex; align-items: center; gap: 10px; }
 .hp-sesshead .hp-plain { flex: 1; margin: 0; }
-.hp-sumline { font-size: 11.5px; color: #5a6778; background: #f7f9fc; border: 1px solid #e4e9f2; border-radius: 9px; padding: 8px 10px; line-height: 1.8; }
+.hp-sumline { font-size: 12px; color: #5a6778; background: #f7f9fc; border: 1px solid #e4e9f2; border-radius: 9px; padding: 8px 10px; line-height: 1.8; }
 .hp-sumline b { color: #1b2433; }
 .hp-sumline b.bad { color: #d23b42; }
 .hp-trace { background: #fafbfd; border: 1px solid #e4e9f2; border-radius: 10px; padding: 8px 11px; }
@@ -566,11 +566,11 @@ defineExpose({ show })
 .hp-linkline { font-size: 12px; color: #2f6fed; text-decoration: none; }
 .hp-linkline:hover { text-decoration: underline; }
 .hp-subhead { display: flex; align-items: center; justify-content: space-between; }
-.hp-subhead b { font-size: 12.5px; color: #1b2433; }
+.hp-subhead b { font-size: 12px; color: #1b2433; }
 .hp-skill { background: #fafbfd; border: 1px solid #e4e9f2; border-radius: 10px; padding: 9px 11px; display: flex; flex-direction: column; gap: 3px; }
 .hp-skill b { font-size: 12px; color: #1b2433; }
-.hp-skill span { font-size: 11.5px; color: #5a6778; line-height: 1.6; }
-.hp-skill em { font-style: normal; font-size: 10.5px; color: #8a4fd1; }
+.hp-skill span { font-size: 12px; color: #5a6778; line-height: 1.6; }
+.hp-skill em { font-style: normal; font-size: 10px; color: #8a4fd1; }
 .hp-skill small { font-size: 10px; color: #7b8796; }
 .hp-skill-history { color: #5374a5 !important; }
 .hp-skill-rollback { align-self: flex-start; margin-top: 4px; }
@@ -587,13 +587,13 @@ defineExpose({ show })
 .hp-ls { margin:8px 0 10px; padding:9px 10px; border:1px solid #e4e9f2; border-radius:9px; background:#fbfcfe; }
 .hp-ls.on { border-color:#bfe6d2; background:#f5fcf8; }
 .hp-ls-head { display:flex; align-items:center; gap:7px; }
-.hp-ls-head b { font-size:11.5px; }
-.hp-ls-badge { display:inline-flex; align-items:center; height:17px; padding:0 7px; border-radius:9px; font-size:9.5px; font-style:normal; font-weight:700; }
+.hp-ls-head b { font-size:12px; }
+.hp-ls-badge { display:inline-flex; align-items:center; height:17px; padding:0 7px; border-radius:9px; font-size:10px; font-style:normal; font-weight:700; }
 .hp-ls-badge.ok { color:#128053; background:#ddf5e7; }
 .hp-ls-badge.off { color:#8a6216; background:#fcefd6; }
 .hp-ls-text { color:#8a95a6; font-size:10px; }
-.hp-ls-line { margin:6px 0 0; color:#5a6778; font-size:10.5px; line-height:1.6; }
-.hp-ls-guide { margin:6px 0 0; color:#6b5530; font-size:10.5px; line-height:1.7; }
-.hp-ls-err { display:inline-block; margin-right:4px; padding:0 5px; border-radius:4px; background:#fdecec; color:#b32d33; font-size:9.5px; font-style:normal; }
+.hp-ls-line { margin:6px 0 0; color:#5a6778; font-size:10px; line-height:1.6; }
+.hp-ls-guide { margin:6px 0 0; color:#6b5530; font-size:10px; line-height:1.7; }
+.hp-ls-err { display:inline-block; margin-right:4px; padding:0 5px; border-radius:4px; background:#fdecec; color:#b32d33; font-size:10px; font-style:normal; }
 .hp-ls .hp-linkline { display:inline-block; margin-top:7px; }
 </style>

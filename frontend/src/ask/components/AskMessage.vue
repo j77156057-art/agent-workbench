@@ -288,7 +288,7 @@ const phaseLabel = computed(() => {
 .typing { color: var(--text-muted); font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--font-sans); }
 .typing-phase { color: var(--text); font-weight: 600; }
 .typing-time {
-  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);
   background: var(--bg-hover); border: 1px solid var(--border); padding: 1px 8px;
 }
 .td {
@@ -340,7 +340,7 @@ const phaseLabel = computed(() => {
 .reason-body {
   padding: 2px 12px 10px 27px;
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
   white-space: pre-wrap;
   max-height: 260px;
@@ -360,14 +360,14 @@ const phaseLabel = computed(() => {
   background: none;
   cursor: pointer;
   font-family: var(--font-sans);
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: left;
 }
 .step-head:hover { background: var(--bg-hover); }
 .step-tag {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   padding: 1px 7px;

@@ -427,7 +427,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="wb-proj-empty">暂无项目，先「打开项目」</div>
             <div class="wb-proj-sep" />
-            <div style="font-size:10.5px;line-height:1.5;color:var(--text-faint);padding:2px 8px 6px;">快捷键 Alt+P 可随时打开本菜单</div>
+            <div style="font-size:10px;line-height:1.5;color:var(--text-faint);padding:2px 8px 6px;">快捷键 Alt+P 可随时打开本菜单</div>
             <button class="wb-proj-open-toggle" @click="openFormVisible = !openFormVisible">＋ 打开项目…</button>
             <div v-if="openFormVisible" class="wb-proj-form">
               <input

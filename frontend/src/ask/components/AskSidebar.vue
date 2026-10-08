@@ -244,7 +244,7 @@ function sessTime(v?: string): string {
 .project-hint {
   margin: 6px 0 0;
   font-family: var(--font-sans);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
   color: var(--text-muted);
 }
@@ -364,5 +364,5 @@ function sessTime(v?: string): string {
 .btn.ghost { background: var(--bg-raised); color: var(--text); }
 .btn.ghost:hover { transform: translate(-2px, -2px); background: var(--ink); color: var(--bg); }
 .btn.block { width: 100%; }
-.btn.sm { padding: 5px 10px; font-size: 12.5px; }
+.btn.sm { padding: 5px 10px; font-size: 12px; }
 </style>

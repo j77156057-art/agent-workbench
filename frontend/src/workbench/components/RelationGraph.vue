@@ -865,7 +865,7 @@ const colorOf = regionColor
 }
 .rg-title { display: flex; align-items: center; gap: 9px; flex: 1; }
 .rg-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.rg-stats { font-size: 11.5px; color: var(--text-faint); }
+.rg-stats { font-size: 12px; color: var(--text-faint); }
 .rg-iconbtn {
   border: 1px solid transparent;
   background: transparent;
@@ -916,13 +916,13 @@ const colorOf = regionColor
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   font-family: inherit;
   min-width: 0;
 }
 .rg-clear {
   font-style: normal;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   cursor: pointer;
   border: 1px solid var(--border);
@@ -938,7 +938,7 @@ const colorOf = regionColor
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   padding: 3px 10px;
   border-radius: 11px;
   cursor: pointer;
@@ -963,7 +963,7 @@ const colorOf = regionColor
   background: transparent;
   color: var(--text-muted);
   border-radius: 4px;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
   padding: 0 7px;
 }
@@ -992,7 +992,7 @@ const colorOf = regionColor
 .rg-elabel-bg-inh { fill: var(--bg); stroke: #4d7fc055; stroke-width: 0.8; }
 .rg-elabel-bg-mnt { fill: var(--bg); stroke: #c9762f55; stroke-width: 0.8; }
 .rg-elabel-bg-call { fill: var(--bg); stroke: #1c9e6666; stroke-width: 0.8; }
-.rg-elabel-tx { font-size: 8.5px; }
+.rg-elabel-tx { font-size: 8px; }
 .rg-elabel-tx.inherits { fill: #1b3c73; }
 .rg-elabel-tx.mounts { fill: #8a4d12; }
 .rg-elabel-tx.calls { fill: #0c6b58; }
@@ -1002,10 +1002,10 @@ const colorOf = regionColor
 .rg-node:hover rect { stroke-width: 2; filter: brightness(1.08); }
 .rg-node.selected rect { stroke-width: 2.4; filter: drop-shadow(0 2px 6px rgba(47,111,237,.35)); }
 .rg-node.dim { opacity: 0.13; }
-.rg-mark { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; text-anchor: middle; }
+.rg-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; }
 .rg-label { font-size: 12px; font-weight: 600; }
-.rg-sub { font-size: 9.5px; fill: var(--text-faint); font-family: var(--font-mono); }
-.rg-doc { font-size: 9.5px; fill: var(--text-muted); }
+.rg-sub { font-size: 10px; fill: var(--text-faint); font-family: var(--font-mono); }
+.rg-doc { font-size: 10px; fill: var(--text-muted); }
 
 /* 节点详情卡 */
 .rg-detail {
@@ -1020,7 +1020,7 @@ const colorOf = regionColor
   border-radius: 8px;
   box-shadow: 0 10px 30px rgba(35, 52, 84, 0.16);
   padding: 11px 13px;
-  font-size: 11.5px;
+  font-size: 12px;
   z-index: 5;
 }
 .rg-d-head { display: flex; align-items: center; gap: 8px; }
@@ -1042,10 +1042,10 @@ const colorOf = regionColor
 .rg-d-ext { color: #8a4d12 !important; border-color: #c9762f66 !important; }
 .rg-d-doc { margin: 4px 0 6px; color: var(--text); line-height: 1.5; }
 .rg-d-rel { margin: 0 0 6px; word-break: break-all; }
-.rg-d-path { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
-.rg-d-line { font-family: var(--font-mono); font-size: 10.5px; color: #2f6fed; }
+.rg-d-path { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+.rg-d-line { font-family: var(--font-mono); font-size: 10px; color: #2f6fed; }
 .rg-d-faint { color: var(--text-faint); }
-.rg-d-sec { font-size: 10.5px; font-weight: 600; color: var(--text-faint); margin: 8px 0 3px; }
+.rg-d-sec { font-size: 10px; font-weight: 600; color: var(--text-faint); margin: 8px 0 3px; }
 .rg-d-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .rg-d-list li { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
 .rg-d-arrow { font-style: normal; font-family: var(--font-mono); width: 14px; text-align: center; flex: 0 0 auto; }
@@ -1055,7 +1055,7 @@ const colorOf = regionColor
 .rg-d-link { color: #2f6fed; cursor: pointer; word-break: break-all; }
 .rg-d-link:hover { text-decoration: underline; }
 .rg-d-list em { font-style: normal; color: var(--text-faint); font-size: 10px; }
-.rg-d-empty { margin: 0 0 2px; font-size: 10.5px; color: var(--text-faint); }
+.rg-d-empty { margin: 0 0 2px; font-size: 10px; color: var(--text-faint); }
 .rg-d-open {
   width: 100%; margin-top: 10px;
   border: 1px solid #2560d4; background: #2f6fed; color: #fff;
@@ -1074,7 +1074,7 @@ const colorOf = regionColor
   justify-content: center;
   gap: 10px;
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .rg-error { color: #c23a40; }
 .rg-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
@@ -1090,7 +1090,7 @@ const colorOf = regionColor
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 12px;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   pointer-events: none;
 }

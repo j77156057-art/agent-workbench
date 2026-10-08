@@ -128,13 +128,13 @@ function go(s: SymbolInfo) {
   background: #ffffff;
 }
 .so-title {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--text-muted);
 }
 .so-count {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-faint);
   background: var(--bg-hover);
   border: 1px solid var(--border);
@@ -159,7 +159,7 @@ function go(s: SymbolInfo) {
 .so-body { flex: 1; overflow-y: auto; padding: 6px 0 12px; }
 .so-hint {
   padding: 12px 10px;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
   color: var(--text-faint);
 }
@@ -218,7 +218,7 @@ function go(s: SymbolInfo) {
 .so-mark {
   font-style: normal;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
   width: 13px;
   text-align: center;

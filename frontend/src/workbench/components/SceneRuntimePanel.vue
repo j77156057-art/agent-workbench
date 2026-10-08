@@ -1168,13 +1168,13 @@ onUnmounted(() => {
 .pb-ev.mid .pb-ev-type { color: #2f6fed; }
 .pb-ev.sys .pb-ev-type { color: var(--text-faint); }
 
-.pb-hint { color: var(--text-faint); font-size: 10.5px; }
+.pb-hint { color: var(--text-faint); font-size: 10px; }
 .pb-check { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); cursor: pointer; white-space: nowrap; }
 .pb-check.off { opacity: .5; cursor: not-allowed; }
 .pb-chip { font-size: 10px; border: 1px solid var(--border-strong); border-radius: 4px; padding: 2px 6px; color: var(--text-muted); }
 .pb-chip.embedded { color: #146c48; border-color: #8fd4b3; background: #e9f7f0; }
 .pb-chip.failed { color: #c23a40; border-color: #eeb7ba; background: #fdecec; }
-.pb-hintline { font-size: 10.5px; color: var(--text-faint); line-height: 1.7; }
+.pb-hintline { font-size: 10px; color: var(--text-faint); line-height: 1.7; }
 .pb-empty2 { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-faint); border: 1px dashed var(--border); border-radius: 8px; text-align: center; line-height: 1.8; }
 .pb-empty2 small { font-size: 11px; }
 
@@ -1195,7 +1195,7 @@ onUnmounted(() => {
 .pb-bugwrap { flex: 1 1 52%; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
 .pb-bug-loading { color: var(--text-faint); font-size: 10px; }
 .pb-bugtool { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid rgba(35, 52, 84, 0.08); }
-.pb-bugtitle { flex: 1 1 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 7px; border-radius: 5px; font-size: 11.5px; }
+.pb-bugtitle { flex: 1 1 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 5px 7px; border-radius: 5px; font-size: 12px; }
 .pb-bugsel { flex: 0 1 auto; max-width: 46%; background: var(--bg); border: 1px solid var(--border); color: var(--text-muted); padding: 4px 6px; border-radius: 5px; font-size: 11px; }
 .pb-bugs { flex: 1; overflow: auto; padding: 4px 0; }
 .pb-bug { padding: 8px 10px; border-bottom: 1px solid rgba(35, 52, 84, 0.08); display: flex; flex-direction: column; gap: 3px; transition: background .15s ease, border-color .15s ease, transform .15s ease; }

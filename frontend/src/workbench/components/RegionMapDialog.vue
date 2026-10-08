@@ -396,7 +396,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-top-actions { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
 .rm-refresh {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11.5px; padding: 4px 10px; border-radius: 6px;
+  font-size: 12px; padding: 4px 10px; border-radius: 6px;
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted); cursor: pointer;
 }
 .rm-refresh:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
@@ -439,9 +439,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-contract.bad { background: rgba(224,72,79,.08); border: 1px solid #eeb7ba; color: #c23a40; box-shadow: inset 3px 0 #e0484f; }
 .rm-contract svg { flex: 0 0 auto; margin-top: 1px; }
 .rm-contract-text { min-width: 0; }
-.rm-contract-text strong { font-size: 12.5px; }
+.rm-contract-text strong { font-size: 12px; }
 .rm-contract-text ul { margin: 5px 0 0; padding-left: 18px; line-height: 1.7; }
-.rm-contract-off { color: var(--text-faint); font-size: 11.5px; }
+.rm-contract-off { color: var(--text-faint); font-size: 12px; }
 
 .rm-section { margin-bottom: 18px; }
 .rm-section h3 {
@@ -474,13 +474,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-node.missing rect { stroke-dasharray: 4 3; fill-opacity: 0.35; }
 .rm-node-name {
   fill: #222b38;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   font-family: inherit;
 }
 .rm-node-dir {
   fill: #5a6778;
-  font-size: 9.5px;
+  font-size: 10px;
   font-family: 'Cascadia Code', Consolas, monospace;
 }
 .rm-node.missing .rm-node-name { fill: #98a3b4; }
@@ -506,22 +506,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-card-bar { flex: 0 0 3px; }
 .rm-card-main { flex: 1 1 auto; min-width: 0; padding: 9px 11px 10px; }
 .rm-card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
-.rm-card-name { font-size: 12.5px; font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
+.rm-card-name { font-size: 12px; font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .rm-card-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .rm-card-dir {
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
 }
 .rm-card-desc {
   margin: 0 0 7px;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.55;
   color: var(--text-muted);
 }
 .rm-card-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 .rm-badge {
-  font-size: 10.5px;
+  font-size: 10px;
   line-height: 17px;
   padding: 0 7px;
   border-radius: 9px;
@@ -552,7 +552,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   background: var(--bg-hover);
   border: 1px solid var(--border-strong);
@@ -562,7 +562,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-chip i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .rm-export {
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 10.5px;
+  font-size: 10px;
   color: #8a6a1f;
   background: var(--bg-hover);
   border-radius: 4px;
@@ -626,7 +626,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   align-items: center;
   justify-content: center;
   gap: 10px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-faint);
 }
 .rm-error { color: #c23a40; }
@@ -651,8 +651,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   .rm-title { min-width: 0; }
   .rm-root { display: none; }
   .rm-top-actions { gap: 4px; }
-  .rm-top-actions .rm-refresh { padding: 4px 7px; font-size: 10.5px; }
-  .rm-contract { font-size: 11.5px; }
+  .rm-top-actions .rm-refresh { padding: 4px 7px; font-size: 10px; }
+  .rm-contract { font-size: 12px; }
   .rm-card-main { padding: 8px 9px 9px; }
 }
 @media (prefers-reduced-motion: reduce) {

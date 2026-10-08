@@ -7,17 +7,49 @@
 // 用法：
 //   node verify_visual_regression.mjs              比对，发现差异则退出码 1
 //   node verify_visual_regression.mjs --update     重新生成基线
-// 需要 verify_scene_canvas.py --serve 8011 提供有数据的夹具。
+//
+// 本脚本【自己起一个一次性夹具服务】，不复用 8011。原因是其它 verify_*.mjs 会改写
+// 夹具内容（新增分区、建 nested_/custom_ 文件、改文件数计数），一旦先跑过它们，
+// 工作台界面就和基线对不上了 —— 实测这样会差 7.9% 像素。自己起干净夹具可以把
+// 执行顺序从等式里拿掉。设 DOCMIND_UI_TEST_URL 可改为复用已有服务。
 import { createRequire } from 'node:module'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE
   || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 
-const BASE = process.env.DOCMIND_UI_TEST_URL || 'http://127.0.0.1:8011'
+const PY = ['.venv/Scripts/python.exe', '.venv/bin/python', 'python', 'py']
+  .filter(c => !c.includes('/') || fs.existsSync(c))
 const DIR = 'docs/screenshots/visual'
 const UPDATE = process.argv.includes('--update')
+
+function freePort() {
+  return new Promise((res, rej) => {
+    const s = net.createServer()
+    s.on('error', rej)
+    s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)) })
+  })
+}
+
+async function startFixture() {
+  const port = await freePort()
+  const base = `http://127.0.0.1:${port}`
+  const py = PY.find(c => c === 'python' || c === 'py' || fs.existsSync(c)) || 'python'
+  const child = spawn(py, ['verify_scene_canvas.py', '--serve', String(port)], { stdio: 'ignore' })
+  const deadline = Date.now() + 60000
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(base + '/api/projects', { signal: AbortSignal.timeout(1500) })
+      if (r.ok) return { base, child }
+    } catch { /* 还没起来 */ }
+    await new Promise(r => setTimeout(r, 400))
+  }
+  child.kill()
+  throw new Error('夹具服务 60s 内没起来')
+}
 // 阈值来自实测，不是拍的：
 //   干净态噪声底（同一构建连跑，eps=4）最多 7 个像素，eps=2/8 为 0；
 //   而一次"很小的真实改动"（把 paper 的 --accent 从 #ff674d 改成 #ff7755）
@@ -38,24 +70,38 @@ const CASES = [
 ]
 
 // 关掉动效与光标闪烁，否则同一状态两次截图就会差几像素。
+//
+// 还要抹掉一个非确定性来源：夹具服务用 tempfile.mkdtemp(prefix="docmind_verify_scene_")
+// 造工程目录（verify_scene_canvas.py:61），每次启动后缀都不同，而这段路径会渲染进工作台
+// 的「资源管理器」标题与项目路径行。不归一化的话服务一重启基线就必然误报。
 const STABILIZE = () => {
   const s = document.createElement('style')
   s.textContent = '*,*::before,*::after{animation:none !important;transition:none !important;'
     + 'caret-color:transparent !important}'
   document.head.appendChild(s)
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+  let hits = 0
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (!/docmind_verify_scene_/.test(n.nodeValue)) continue
+    n.nodeValue = n.nodeValue.replace(/docmind_verify_scene_[A-Za-z0-9_-]+/g, 'docmind_verify_scene_FIXED')
+    hits++
+  }
+  return hits
 }
 
-async function shoot(browser, c) {
+async function shoot(browser, base, c) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
   await page.addInitScript(`localStorage.setItem("docmind.skin","${c.skin}")`)
-  await page.goto(BASE + c.route, { waitUntil: 'domcontentloaded' })
+  await page.goto(base + c.route, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector(c.stable, { timeout: 25000 })
   await page.waitForTimeout(1500)
-  await page.evaluate(STABILIZE)
+  const hits = await page.evaluate(STABILIZE)
   await page.waitForTimeout(400)
   const buf = await page.screenshot({ type: 'png' })
   await page.close()
-  return buf
+  // 把归一化命中数带出去：万一哪天路径不再出现在界面上（或选择器变了），
+  // hits 掉到 0 就是"归一化失效"的信号，不能让它静默变成 no-op。
+  return { buf, hits }
 }
 
 // 交给浏览器解码 PNG 并逐像素比：省掉一个 npm 依赖。
@@ -105,19 +151,26 @@ async function diff(browser, aBuf, bBuf) {
 
 fs.mkdirSync(DIR, { recursive: true })
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const reused = !!process.env.DOCMIND_UI_TEST_URL
+const fixture = reused ? { base: process.env.DOCMIND_UI_TEST_URL, child: null } : await startFixture()
 let failed = 0
 try {
+  console.log(`夹具：${fixture.base}${reused ? '（复用外部服务，可能与基线不同源）' : '（本脚本新起，干净）'}\n`)
   for (const c of CASES) {
     const file = path.join(DIR, `${c.name}.png`)
-    const shot = await shoot(browser, c)
+    const { buf: shot, hits } = await shoot(browser, fixture.base, c)
+    // 工作台界面上必然出现随机夹具路径；一次都没抹平 = 归一化失效，要吵出来
+    const warn = c.route === '/workbench' && hits === 0 ? '  ⚠ 未抹平任何随机路径，归一化可能失效' : ''
+    const info = `  抹平随机路径 ${hits} 处${warn}`
     if (UPDATE || !fs.existsSync(file)) {
       fs.writeFileSync(file, shot)
-      console.log(`BASELINE ${c.name}  ${(shot.length / 1024).toFixed(0)}KB` + (UPDATE ? '' : '  （基线缺失，已生成）'))
+      console.log(`BASELINE ${c.name}  ${(shot.length / 1024).toFixed(0)}KB  ${info}`
+        + (UPDATE ? '' : '  （基线缺失，已生成）'))
       if (!UPDATE) failed++
       continue
     }
-    const base = fs.readFileSync(file)
-    const d = await diff(browser, base, shot)
+    const basePng = fs.readFileSync(file)
+    const d = await diff(browser, basePng, shot)
     const bad = d.changed > MAX_CHANGED_ABS || d.pct > MAX_CHANGED_PCT
     const out = path.join(DIR, `diff-${c.name}.png`)
     if (bad) {
@@ -131,5 +184,6 @@ try {
     + `（阈值：单像素通道差 >${CHANNEL_EPS} 的像素超过 ${MAX_CHANGED_ABS} 个，或占比 >${MAX_CHANGED_PCT}%）`)
 } finally {
   await browser.close()
+  if (fixture.child) fixture.child.kill()
 }
 process.exit(failed ? 1 : 0)

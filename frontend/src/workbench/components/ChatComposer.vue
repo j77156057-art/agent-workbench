@@ -194,7 +194,7 @@ function onVideoPick(ev: Event) {
   flex: 1; resize: none;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border); border-radius: 7px;
-  padding: 7px 10px; font-size: 12.5px; font-family: inherit;
+  padding: 7px 10px; font-size: 12px; font-family: inherit;
   outline: none; max-height: 110px;
 }
 .cd-input:focus { border-color: var(--accent); }

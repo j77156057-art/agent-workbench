@@ -101,7 +101,7 @@ function press(_e: MouseEvent) {}
   to { opacity: 1; transform: translateY(0); }
 }
 .sel-ai-meta {
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   padding: 0 4px 5px;
   white-space: nowrap;

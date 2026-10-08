@@ -105,13 +105,13 @@ function sessionTime(value: string): string {
 }
 .ah-new b, .ah-new small { display: block; }
 .ah-new b { font-size: 12px; }
-.ah-new small { margin-top: 2px; color: var(--text-muted, #667085); font-size: 10.5px; }
+.ah-new small { margin-top: 2px; color: var(--text-muted, #667085); font-size: 10px; }
 .ah-error {
   padding: 6px 8px; margin-top: 6px;
   color: var(--danger, #dc4c52); background: #fff4f4;
   border: 1px solid #f2caca; border-radius: 6px; font-size: 11px;
 }
-.ah-empty { padding: 14px 5px; color: var(--text-faint, #8a93a5); font-size: 11.5px; text-align: center; }
+.ah-empty { padding: 14px 5px; color: var(--text-faint, #8a93a5); font-size: 12px; text-align: center; }
 .ah-item { display: flex; align-items: stretch; border-top: 1px solid var(--border, #e4e8ef); }
 .ah-item.active { background: var(--bg-selected, #f1f5fb); }
 .ah-main {
@@ -126,7 +126,7 @@ function sessionTime(value: string): string {
 .ah-copy { min-width: 0; display: block; }
 .ah-copy strong, .ah-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ah-copy strong { font-size: 12px; font-weight: 600; }
-.ah-copy small { margin-top: 2px; color: var(--text-faint, #8a93a5); font-size: 10.5px; }
+.ah-copy small { margin-top: 2px; color: var(--text-faint, #8a93a5); font-size: 10px; }
 .ah-delete {
   align-self: center; margin-right: 5px; width: 24px; height: 24px;
   border: 0; background: transparent; color: var(--text-faint, #8a93a5);

@@ -124,7 +124,7 @@ function contractText(c: RegionCard): string {
   gap: 12px; margin-bottom: 14px;
 }
 .rh-head h3 { margin: 0; font-size: 16px; color: var(--text); font-weight: 750; letter-spacing: -.01em; }
-.rh-head p { margin: 3px 0 0; font-size: 11.5px; color: var(--text-faint); }
+.rh-head p { margin: 3px 0 0; font-size: 12px; color: var(--text-faint); }
 .rh-refresh {
   flex: 0 0 auto; border: 1px solid var(--border); background: var(--bg-raised);
   color: var(--text-muted); font-size: 11px; border-radius: 6px;
@@ -173,7 +173,7 @@ function contractText(c: RegionCard): string {
 }
 .rh-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .rh-name { font-size: 14px; font-weight: 750; color: var(--text); }
-.rh-dir { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.rh-dir { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
 .rh-branch {
   margin-left: auto; flex: 0 0 auto;
   font-size: 10px; color: var(--text-muted);
@@ -204,7 +204,7 @@ function contractText(c: RegionCard): string {
 /* 最近提交一行：小字 + 省略号 */
 .rh-commit {
   display: flex; align-items: center; gap: 6px;
-  font-size: 10.5px; color: var(--text-faint);
+  font-size: 10px; color: var(--text-faint);
   min-width: 0;
 }
 .rh-hash {
@@ -229,7 +229,7 @@ function contractText(c: RegionCard): string {
 .rh-missing-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   border: none; background: transparent; cursor: pointer;
-  font-family: var(--font-ui); font-size: 11.5px; color: var(--text-faint);
+  font-family: var(--font-ui); font-size: 12px; color: var(--text-faint);
   padding: 2px 0;
 }
 .rh-missing-toggle:hover { color: var(--text-muted); }
@@ -238,7 +238,7 @@ function contractText(c: RegionCard): string {
 .rh-caret-open { transform: rotate(180deg); }
 .rh-missing-go {
   border: none; background: transparent; cursor: pointer;
-  font-family: var(--font-ui); font-size: 11.5px; color: var(--accent);
+  font-family: var(--font-ui); font-size: 12px; color: var(--accent);
   padding: 2px 0;
 }
 .rh-missing-go:hover { text-decoration: underline; }
@@ -250,11 +250,11 @@ function contractText(c: RegionCard): string {
 }
 .rh-missing-list li {
   display: flex; align-items: center; gap: 8px;
-  font-size: 11.5px; color: var(--text-muted);
+  font-size: 12px; color: var(--text-muted);
 }
 .rh-missing-list b { font-weight: 600; color: var(--text); }
 .rh-missing-list code {
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-faint);
 }
 .rh-missing-list .rh-line-faint { margin-left: auto; }
 .rh-dot { width: 7px; height: 7px; border-radius: 2px; flex: 0 0 7px; }

@@ -222,7 +222,7 @@ watch(
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
   letter-spacing: 0.02em;
@@ -240,20 +240,20 @@ watch(
 .ai-icon-btn, .ai-stop, .ai-send, .ai-replace, .ai-copy { transition: color .16s ease, background .16s ease, border-color .16s ease, transform .16s ease, filter .16s ease; }
 .ai-stop {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 9px; font-size: 11.5px; border-radius: 6px;
+  padding: 3px 9px; font-size: 12px; border-radius: 6px;
   border: 1px solid #eeb7ba; background: #fdecec; color: #c23a40; cursor: pointer;
 }
 .ai-stop:hover { background: #fbe0e0; }
 
 .ai-compose { padding: 10px 12px; border-bottom: 1px solid var(--border); background: #ffffff; }
 .ai-compose-meta { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
-.ai-compose-pin { font-size: 11.5px; color: #2f6fed; }
-.ai-compose-hint { font-size: 10.5px; color: var(--text-faint); }
+.ai-compose-pin { font-size: 12px; color: #2f6fed; }
+.ai-compose-hint { font-size: 10px; color: var(--text-faint); }
 .ai-compose-input {
   width: 100%; box-sizing: border-box; resize: vertical;
   background: #f6f8fb; color: var(--text);
   border: 1px solid var(--border-strong); border-radius: 8px;
-  padding: 8px 10px; font-size: 12.5px; line-height: 1.55;
+  padding: 8px 10px; font-size: 12px; line-height: 1.55;
   font-family: inherit; outline: none;
 }
 .ai-compose-input:focus { border-color: #b9d0f5; }
@@ -276,12 +276,12 @@ watch(
 }
 .ai-card-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
 .ai-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-.ai-card-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.ai-card-title { font-size: 12px; font-weight: 600; color: var(--text); }
 .ai-card-origin {
-  font-size: 10.5px; color: var(--text-muted); font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 10px; color: var(--text-muted); font-family: 'Cascadia Code', Consolas, monospace;
   max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.ai-card-status { margin-left: auto; font-size: 10.5px; color: var(--text-faint); }
+.ai-card-status { margin-left: auto; font-size: 10px; color: var(--text-faint); }
 .ai-card-status.st-streaming { color: #2f6fed; }
 .ai-card-status.st-error { color: #c23a40; }
 .ai-card-status.st-stopped { color: #8a5a16; }
@@ -322,8 +322,8 @@ watch(
 }
 
 /* markdown */
-.ai-md { font-size: 12.5px; line-height: 1.66; color: var(--text); word-break: break-word; }
-.ai-md :deep(.md-h) { font-weight: 600; color: var(--text); margin: 9px 0 5px; font-size: 12.5px; }
+.ai-md { font-size: 12px; line-height: 1.66; color: var(--text); word-break: break-word; }
+.ai-md :deep(.md-h) { font-weight: 600; color: var(--text); margin: 9px 0 5px; font-size: 12px; }
 .ai-md :deep(.md-p) { margin: 0 0 7px; white-space: pre-wrap; }
 .ai-md :deep(.md-ul) { margin: 2px 0 8px; padding-left: 18px; }
 .ai-md :deep(.md-ul li) { margin: 2px 0; list-style: disc; }
@@ -337,7 +337,7 @@ watch(
   border: 1px solid var(--border); border-radius: 8px; overflow-x: auto;
 }
 .ai-md :deep(.md-pre code) {
-  font-family: 'Cascadia Code', Consolas, monospace; font-size: 11.5px;
+  font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px;
   line-height: 1.55; color: #243044; white-space: pre;
 }
 
@@ -346,7 +346,7 @@ watch(
   position: relative; margin: 2px 0 8px; padding: 9px 10px;
   background: #f6f8fb; border: 1px solid #b7dcc7; border-radius: 8px;
   overflow-x: auto;
-  font-family: 'Cascadia Code', Consolas, monospace; font-size: 11.5px;
+  font-family: 'Cascadia Code', Consolas, monospace; font-size: 12px;
   line-height: 1.55; color: #1c6b46; white-space: pre;
 }
 .ai-caret {
@@ -365,7 +365,7 @@ watch(
   border: 1px solid #15804f; background: linear-gradient(180deg, #2bb57a, #1c9e66); color: #fff;
 }
 .ai-replace:hover { background: #1c9e66; }
-.ai-replaced { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: #1c9e66; }
+.ai-replaced { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #1c9e66; }
 .ai-copy {
   padding: 5px 12px; font-size: 12px; border-radius: 7px; cursor: pointer;
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted);

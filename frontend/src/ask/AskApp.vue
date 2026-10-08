@@ -976,7 +976,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
 .tb-btn {
   display: inline-flex; align-items: center; gap: 6px;
   border: 2px solid var(--ink); background: var(--bg-raised); color: var(--ink);
-  font-family: var(--font-mono); font-size: 12.5px; font-weight: 700;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
   padding: 8px 14px; cursor: pointer; text-decoration: none;
   box-shadow: var(--sh-hard-sm);
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), background 130ms, box-shadow 130ms;
@@ -994,7 +994,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   background: var(--bg-raised);
   box-shadow: var(--sh-hard-sm);
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
 }
 .banner.info { background: rgba(31, 95, 224, .10); border-color: var(--accent-2); color: var(--accent-2); }
@@ -1029,7 +1029,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   border: 2px solid var(--ink);
   background: var(--bg-raised);
   box-shadow: var(--sh-hard-sm);
-  font-family: var(--font-sans); font-size: 13.5px; color: var(--text);
+  font-family: var(--font-sans); font-size: 14px; color: var(--text);
   padding: 14px 16px; cursor: pointer;
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
 }
@@ -1057,7 +1057,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
 .cap-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 6px 8px; }
 .cap-chip {
   border: 2px solid var(--ink); background: var(--bg); color: var(--text);
-  font-family: var(--font-mono); font-size: 11.5px; font-weight: 700;
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
   padding: 4px 10px; cursor: pointer; line-height: 1.4;
   transition: background 130ms, color 130ms, border-color 130ms, transform 130ms;
 }
@@ -1093,7 +1093,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   font-size: 12px; line-height: 1; cursor: pointer;
   display: grid; place-items: center;
 }
-.attach-err { padding: 0 6px 6px; font-family: var(--font-mono); font-size: 11.5px; color: var(--danger); }
+.attach-err { padding: 0 6px 6px; font-family: var(--font-mono); font-size: 12px; color: var(--danger); }
 
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; border-top: 2px solid var(--ink); }
 .bar-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -1132,7 +1132,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
 .toast {
   position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: #fff;
-  font-family: var(--font-mono); font-size: 12.5px;
+  font-family: var(--font-mono); font-size: 12px;
   padding: 10px 18px; border: 2px solid var(--ink); box-shadow: var(--sh-hard-sm);
   z-index: 200; max-width: 70vw;
 }

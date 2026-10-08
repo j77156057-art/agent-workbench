@@ -3348,7 +3348,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-chat-slot :deep(.cd-user-bubble) { font-size: 12px; padding: 5px 9px; }
 .acp-chat-slot :deep(.cd-inputbar) { gap: 5px; padding: 6px 8px 7px; }
 .acp-chat-slot :deep(.cd-tools) { gap: 4px; }
-.acp-chat-slot :deep(.cd-chip) { height: 21px; padding: 0 7px; font-size: 10.5px; border-radius: 11px; }
+.acp-chat-slot :deep(.cd-chip) { height: 21px; padding: 0 7px; font-size: 10px; border-radius: 11px; }
 .acp-chat-slot :deep(.cd-input) { padding: 6px 9px; font-size: 12px; }
 .acp-chat-slot :deep(.cd-send) { height: 28px; }
 .acp-inspector { position: absolute; inset: 82px 18px 18px; z-index: 8; overflow: auto; padding: 14px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 14px 40px #15264026; }

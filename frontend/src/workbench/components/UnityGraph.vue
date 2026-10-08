@@ -833,7 +833,7 @@ const externalIds = computed<Set<string>>(
 }
 .ug-title { display: flex; align-items: center; gap: 9px; flex: 1; }
 .ug-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.ug-stats { font-size: 11.5px; color: var(--text-faint); }
+.ug-stats { font-size: 12px; color: var(--text-faint); }
 .ug-warn { color: #b5791f; font-style: normal; }
 .ug-bad { color: #c23a40; font-style: normal; font-weight: 600; }
 .ug-iconbtn {
@@ -885,13 +885,13 @@ const externalIds = computed<Set<string>>(
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   font-family: inherit;
   min-width: 0;
 }
 .ug-clear {
   font-style: normal;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   cursor: pointer;
   border: 1px solid var(--border);
@@ -921,7 +921,7 @@ const externalIds = computed<Set<string>>(
   background: transparent;
   color: var(--text-muted);
   border-radius: 4px;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
   padding: 0 7px;
 }
@@ -955,9 +955,9 @@ const externalIds = computed<Set<string>>(
 .ug-node:hover rect { stroke-width: 2; filter: brightness(1.25); }
 .ug-node.sel rect { stroke-width: 2.4; }
 .ug-node.dim { opacity: 0.12; }
-.ug-mark { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; text-anchor: middle; }
+.ug-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; }
 .ug-label { font-size: 12px; font-weight: 600; }
-.ug-sub { font-size: 9.5px; fill: var(--text-faint); font-family: var(--font-mono); }
+.ug-sub { font-size: 10px; fill: var(--text-faint); font-family: var(--font-mono); }
 
 .ug-state {
   position: absolute;
@@ -968,12 +968,12 @@ const externalIds = computed<Set<string>>(
   justify-content: center;
   gap: 10px;
   color: var(--text-faint);
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: center;
   padding: 0 40px;
 }
 .ug-error { color: #c23a40; }
-.ug-hint { font-size: 11.5px; }
+.ug-hint { font-size: 12px; }
 .ug-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
 
 .ug-legend {
@@ -987,7 +987,7 @@ const externalIds = computed<Set<string>>(
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 12px;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   pointer-events: none;
 }
@@ -1003,15 +1003,15 @@ const externalIds = computed<Set<string>>(
 }
 .ug-d-head { display: flex; justify-content: space-between; align-items: center; }
 .ug-d-badge {
-  font-size: 10.5px;
+  font-size: 10px;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 1px 9px;
 }
-.ug-d-name { margin: 10px 0 4px; font-size: 13.5px; word-break: break-all; }
+.ug-d-name { margin: 10px 0 4px; font-size: 14px; word-break: break-all; }
 .ug-d-rel {
   margin: 0 0 10px;
-  font-size: 10.5px;
+  font-size: 10px;
   font-family: var(--font-mono);
   color: var(--text-faint);
   word-break: break-all;
@@ -1037,7 +1037,7 @@ const externalIds = computed<Set<string>>(
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 10px;
   border-radius: 4px;
   padding: 1px 8px;
   cursor: pointer;
@@ -1050,7 +1050,7 @@ const externalIds = computed<Set<string>>(
   border: 1px solid var(--border-strong);
   background: transparent;
   color: var(--text);
-  font-size: 11.5px;
+  font-size: 12px;
   border-radius: 5px;
   padding: 6px 0;
   cursor: pointer;
@@ -1070,7 +1070,7 @@ const externalIds = computed<Set<string>>(
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: 12px;
   padding: 4px 6px;
   border-radius: 4px;
   cursor: pointer;
@@ -1089,7 +1089,7 @@ const externalIds = computed<Set<string>>(
   font-size: 10px;
   color: var(--text-faint);
 }
-.ug-d-empty { color: var(--text-faint) !important; cursor: default !important; font-size: 10.5px; }
+.ug-d-empty { color: var(--text-faint) !important; cursor: default !important; font-size: 10px; }
 .ug-d-empty:hover { background: transparent !important; }
 
 @keyframes ug-overlay-in { from { opacity: 0; } to { opacity: 1; } }

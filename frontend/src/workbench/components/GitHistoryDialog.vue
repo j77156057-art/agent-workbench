@@ -153,7 +153,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .gh-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
 .gh-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
 .gh-path {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
   font-family: 'Cascadia Code', Consolas, monospace;
   overflow: hidden;
@@ -200,7 +200,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .gh-commit:hover { background: var(--bg-hover); transform: translateX(2px); }
 .gh-commit.active { background: #2f6fed14; border-color: #2f6fed44; }
 .gh-commit-msg {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   line-height: 1.4;
   word-break: break-all;
@@ -213,7 +213,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .gh-commit-meta code {
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 10.5px;
+  font-size: 10px;
   color: #2f6fed;
   background: #2f6fed12;
   border-radius: 3px;
@@ -221,7 +221,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .gh-commit-meta i {
   font-style: normal;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -263,7 +263,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .gh-preview-size {
   font-style: normal;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-faint);
   flex: 0 0 auto;
   margin-left: auto;
@@ -292,7 +292,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   overflow: auto;
   padding: 12px 16px;
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
   color: #243044;
   white-space: pre;
@@ -310,7 +310,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   text-align: center;
 }
 .gh-preview-state { min-height: 120px; }
-.gh-state p { margin: 0; font-size: 12.5px; }
+.gh-state p { margin: 0; font-size: 12px; }
 .gh-faint { color: var(--text-faint); }
 .gh-error { color: #c23a40; }
 @keyframes gh-overlay-in { from { opacity: 0; } to { opacity: 1; } }

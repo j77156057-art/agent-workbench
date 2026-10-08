@@ -246,7 +246,7 @@ function kindOf(kind: string) {
 }
 .sm-title { display: flex; align-items: center; gap: 9px; flex: 1; }
 .sm-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.sm-stats { font-size: 11.5px; color: var(--text-faint); }
+.sm-stats { font-size: 12px; color: var(--text-faint); }
 .sm-iconbtn {
   border: 1px solid transparent;
   background: transparent;
@@ -285,12 +285,12 @@ function kindOf(kind: string) {
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   font-family: inherit;
 }
 .sm-clear {
   font-style: normal;
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-muted);
   cursor: pointer;
   border: 1px solid var(--border);
@@ -306,24 +306,24 @@ function kindOf(kind: string) {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   padding: 2px 9px;
   border-radius: 11px;
   cursor: pointer;
 }
-.sm-chip i { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+.sm-chip i { font-style: normal; font-size: 10px; color: var(--text-faint); }
 .sm-chip:hover { border-color: var(--border-strong); color: var(--text); }
 .sm-chip.active { background: #e4edfc; border-color: #2560d4; color: #1b3c73; }
 .sm-chip.active i { color: #2560d4; }
 .sm-content { flex: 1; overflow-y: auto; padding: 8px 10px 20px; }
-.sm-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: 12.5px; }
+.sm-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: 12px; }
 .sm-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
 .sm-group { margin: 10px 6px 0; }
 .sm-group-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -334,7 +334,7 @@ function kindOf(kind: string) {
   z-index: 1;
 }
 .sm-group-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.sm-group-head em { font-style: normal; font-size: 10.5px; color: var(--text-faint); }
+.sm-group-head em { font-style: normal; font-size: 10px; color: var(--text-faint); }
 .sm-file { margin: 2px 0 2px 14px; border-left: 1px solid var(--border); padding-left: 4px; }
 .sm-file-head {
   width: 100%;
@@ -371,7 +371,7 @@ function kindOf(kind: string) {
   white-space: nowrap;
   min-width: 0;
 }
-.sm-file-count { font-style: normal; font-size: 10.5px; color: var(--text-faint); margin-left: auto; flex: 0 0 auto; }
+.sm-file-count { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: auto; flex: 0 0 auto; }
 .sm-syms { list-style: none; margin: 0; padding: 0 0 4px 26px; }
 .sm-sym {
   width: 100%;
@@ -393,7 +393,7 @@ function kindOf(kind: string) {
   font-style: normal;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 10.5px;
+  font-size: 10px;
   width: 12px;
   flex: 0 0 12px;
   align-self: center;
@@ -402,7 +402,7 @@ function kindOf(kind: string) {
 .sm-sym-name { font-family: var(--font-mono); color: var(--text); flex: 0 0 auto; align-self: center; }
 .sm-sym-detail {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;

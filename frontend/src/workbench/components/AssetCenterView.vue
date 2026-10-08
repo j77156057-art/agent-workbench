@@ -808,7 +808,7 @@ onMounted(() => {
 .ac-kind-seg { display: flex; gap: 2px; }
 .ac-kind {
   border: 1px solid var(--border); background: #fff; color: var(--text-muted);
-  font-family: var(--font-ui); font-size: 11.5px; font-weight: 500;
+  font-family: var(--font-ui); font-size: 12px; font-weight: 500;
   padding: 4px 11px; border-radius: 14px; cursor: pointer; transition: all .12s;
 }
 .ac-kind:hover { color: var(--accent); border-color: rgba(47,111,237,.4); }
@@ -883,7 +883,7 @@ button.ac-card { font: inherit; color: inherit; }
 }
 .ac-card-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 3px; }
 .ac-card-name {
-  margin: 0; font-size: 12.5px; font-weight: 600; color: var(--text);
+  margin: 0; font-size: 12px; font-weight: 600; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ac-card-meta { margin: 0; font-size: 11px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -892,7 +892,7 @@ button.ac-card { font: inherit; color: inherit; }
   margin-top: 6px; align-self: flex-start;
   border: 1px solid rgba(47,111,237,.4); background: rgba(47,111,237,.07);
   color: var(--accent); border-radius: 6px; padding: 4px 12px;
-  font-family: var(--font-ui); font-size: 11.5px; font-weight: 600; cursor: pointer;
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600; cursor: pointer;
 }
 .ac-pack-open:hover { background: rgba(47,111,237,.14); }
 .ac-grid-foot { display: flex; justify-content: center; align-items: center; gap: 14px; padding: 16px 0 4px; }
@@ -904,14 +904,14 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-more-load:hover { background: rgba(47,111,237,.06); }
 .ac-loading { color: var(--text-muted); font-size: 12px; }
 .ac-err { color: #c0452e; font-size: 12px; }
-.ac-empty { color: var(--text-faint); font-size: 12.5px; padding: 30px 0; text-align: center; grid-column: 1 / -1; }
+.ac-empty { color: var(--text-faint); font-size: 12px; padding: 30px 0; text-align: center; grid-column: 1 / -1; }
 
 /* 素材库 */
 .ac-lib-head { display: flex; align-items: center; gap: 12px; padding: 4px 0 12px; }
 .ac-lib-count { font-size: 12px; color: var(--text-muted); }
 .ac-refresh {
   margin-left: auto; border: 1px solid var(--border); background: #fff;
-  border-radius: 6px; padding: 4px 12px; font-size: 11.5px; cursor: pointer;
+  border-radius: 6px; padding: 4px 12px; font-size: 12px; cursor: pointer;
   font-family: var(--font-ui); color: var(--text-muted);
 }
 .ac-refresh:hover { color: var(--accent); border-color: rgba(47,111,237,.4); }
@@ -971,14 +971,14 @@ button.ac-card { font: inherit; color: inherit; }
 }
 .ac-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin: 0 0 10px; }
 .ac-meta-grid div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ac-meta-grid dt { font-size: 10.5px; color: var(--text-faint); margin: 0; }
+.ac-meta-grid dt { font-size: 10px; color: var(--text-faint); margin: 0; }
 .ac-meta-grid dd { margin: 0; font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
 .ac-meta-grid a { color: var(--accent); text-decoration: none; }
 .ac-cc0 { color: #2b7a52; font-weight: 600; }
 .ac-summary { margin: 4px 0 10px; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
 .ac-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
 .ac-tag {
-  font-size: 10.5px; padding: 2px 8px; border-radius: 10px;
+  font-size: 10px; padding: 2px 8px; border-radius: 10px;
   background: #eef2f8; color: #4a5f86;
 }
 .ac-import-row { display: flex; gap: 10px; margin-top: 6px; }
@@ -992,11 +992,11 @@ button.ac-card { font: inherit; color: inherit; }
   flex: 0 0 auto; border-top: 1px solid var(--border); padding: 12px 16px;
   display: flex; align-items: center; gap: 10px;
 }
-.ac-imported-ok { margin: 0; font-size: 11.5px; color: #2b7a52; flex: 1 1 auto; overflow-wrap: anywhere; }
+.ac-imported-ok { margin: 0; font-size: 12px; color: #2b7a52; flex: 1 1 auto; overflow-wrap: anywhere; }
 .ac-primary {
   margin-left: auto;
   border: none; border-radius: 8px; background: var(--accent); color: #fff;
-  font-family: var(--font-ui); font-size: 12.5px; font-weight: 600;
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600;
   padding: 8px 18px; cursor: pointer;
 }
 .ac-primary:hover:not(:disabled) { background: #245fd0; }
@@ -1030,8 +1030,8 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-peek-body { flex: 1 1 auto; min-height: 0; display: flex; }
 .ac-peek-files { flex: 1 1 55%; overflow-y: auto; border-right: 1px solid var(--border); padding: 10px 12px; }
 .ac-dir-group { margin-bottom: 12px; }
-.ac-dir-head { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text); }
-.ac-dir-head i { font-style: normal; font-size: 10.5px; color: var(--text-faint); font-weight: 400; }
+.ac-dir-head { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text); }
+.ac-dir-head i { font-style: normal; font-size: 10px; color: var(--text-faint); font-weight: 400; }
 .ac-file-list { list-style: none; margin: 5px 0 0; padding: 0 0 0 24px; }
 .ac-file-row {
   display: flex; align-items: center; gap: 7px; padding: 2px 4px;
@@ -1045,7 +1045,7 @@ button.ac-card { font: inherit; color: inherit; }
 }
 .ac-file-name:disabled { cursor: default; color: var(--text); }
 .ac-file-name:not(:disabled):hover { color: var(--accent); text-decoration: underline; }
-.ac-file-size { font-size: 10.5px; color: var(--text-faint); flex: 0 0 auto; }
+.ac-file-size { font-size: 10px; color: var(--text-faint); flex: 0 0 auto; }
 .ac-peek-preview {
   flex: 1 1 45%; min-width: 0; padding: 14px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
@@ -1065,8 +1065,8 @@ button.ac-card { font: inherit; color: inherit; }
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; height: 26px;
   font-family: var(--font-ui); font-size: 12px; background: #fff;
 }
-.ac-selected-n { font-size: 11.5px; color: var(--text-muted); }
-.ac-peek-result { font-size: 11.5px; color: #2b7a52; }
+.ac-selected-n { font-size: 12px; color: var(--text-muted); }
+.ac-peek-result { font-size: 12px; color: #2b7a52; }
 .ac-foot-spacer { flex: 1 1 auto; }
 
 /* toast */

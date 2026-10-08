@@ -69,11 +69,11 @@ function focus(id: string) {
   height: 28px; padding: 0 11px;
   border: 1px solid var(--border-strong); border-radius: 99px;
   background: var(--bg-raised); box-shadow: 0 4px 14px rgba(35,52,84,.16);
-  color: var(--text); font-size: 11.5px; cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease;
+  color: var(--text); font-size: 12px; cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease;
 }
 .wmd-strip:hover { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(35,52,84,.18); }.wmd-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wmd-strip b { font-weight: 600; }
-.wmd-strip em { font-style: normal; color: var(--text-faint); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.wmd-strip em { font-style: normal; color: var(--text-faint); font-size: 10px; font-variant-numeric: tabular-nums; }
 .wmd-arrow {
   display: inline-flex; align-items: center; color: var(--text-faint);
   transform: rotate(0deg); transform-origin: center;
@@ -104,7 +104,7 @@ function focus(id: string) {
 }
 @media (prefers-reduced-motion: reduce) { .wmd-panel { animation: none; } }
 .wmd-head { display: flex; align-items: baseline; gap: 8px; padding: 2px 4px 6px; }
-.wmd-head b { font-size: 11.5px; color: var(--text); }
+.wmd-head b { font-size: 12px; color: var(--text); }
 .wmd-head small { font-size: 10px; color: var(--text-faint); }
 .wmd-item {
   display: flex; align-items: center; gap: 8px;
@@ -117,9 +117,9 @@ function focus(id: string) {
 .wmd-item.is-ok .wmd-dot { background: var(--green); }
 .wmd-item.is-bad .wmd-dot { background: var(--danger); }
 .wmd-main { flex: 1; min-width: 0; display: grid; gap: 1px; }
-.wmd-main b { font-size: 11.5px; color: var(--text); font-weight: 600; }
-.wmd-main small { color: var(--text-faint); font-weight: 400; font-family: ui-monospace, monospace; font-size: 9.5px; }
-.wmd-task { font-size: 10.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmd-main b { font-size: 12px; color: var(--text); font-weight: 600; }
+.wmd-main small { color: var(--text-faint); font-weight: 400; font-family: ui-monospace, monospace; font-size: 10px; }
+.wmd-task { font-size: 10px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmd-state { font-style: normal; font-size: 10px; color: var(--text-faint); flex: 0 0 auto; border: 1px solid currentColor; border-radius: 99px; padding: 1px 5px; }
 .wmd-item.is-running .wmd-state { color: var(--accent); }
 .wmd-item.is-ok .wmd-state { color: var(--green); }

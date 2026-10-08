@@ -98,7 +98,7 @@ watch(() => props.path, load, { immediate: true })
   max-height: 70vh;
   background: #fcfdff;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.6;
 }
 .fv-ln { display: flex; gap: 12px; padding: 0 14px; }
@@ -110,6 +110,6 @@ watch(() => props.path, load, { immediate: true })
 }
 .fv-src { flex: 1; min-width: 0; color: #334055; white-space: pre-wrap; word-break: break-word; }
 .fv-ln.hl { background: rgba(47, 111, 237, .12); box-shadow: inset 3px 0 0 var(--accent); }
-.fv-note { padding: 10px 16px; color: var(--text-faint); font-size: 12.5px; }
+.fv-note { padding: 10px 16px; color: var(--text-faint); font-size: 12px; }
 .fv-err { padding: 16px 18px; color: var(--amber); font-size: 13px; line-height: 1.7; }
 </style>

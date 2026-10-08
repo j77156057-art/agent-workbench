@@ -409,14 +409,14 @@ function exportJson() {
 .rt-zoom b { font-family: var(--font-mono); font-weight: 400; color: var(--text-muted); }
 
 .rt-filters { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; padding-bottom: 7px; }
-.rt-flabel { font-size: 10.5px; color: var(--text-faint); }
-.rt-pill { border: 1px solid var(--border); background: transparent; color: var(--text-muted); border-radius: 10px; padding: 2px 8px; font-size: 10.5px; cursor: pointer; font-family: var(--font-mono); transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease; }.rt-pill:hover { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); }
+.rt-flabel { font-size: 10px; color: var(--text-faint); }
+.rt-pill { border: 1px solid var(--border); background: transparent; color: var(--text-muted); border-radius: 10px; padding: 2px 8px; font-size: 10px; cursor: pointer; font-family: var(--font-mono); transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease; }.rt-pill:hover { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); }
 .rt-pill i { font-style: normal; color: var(--text-faint); margin-left: 3px; }
 .rt-pill.on { background: linear-gradient(180deg,#3b7ef2,#2f6fed); border-color: #2560d4; color: #fff; }
 .rt-pill.good.on { background: #e6f7ee; border-color: #8fd4b3; color: #146c48; }
 .rt-pill.bad.on { background: #fdecec; border-color: #eeb7ba; color: #c23a40; }
 .rt-msg { font-size: 11px; color: var(--amber); padding-bottom: 7px; }
-.rt-legend { font-size: 10.5px; color: var(--text-faint); line-height: 1.7; padding-bottom: 7px; }
+.rt-legend { font-size: 10px; color: var(--text-faint); line-height: 1.7; padding-bottom: 7px; }
 .rt-legend b { color: var(--text-muted); }
 .rt-legend code { font-family: var(--font-mono); color: var(--text-muted); background: var(--bg); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
 .rt-dim { color: var(--text-faint); font-size: 11px; }
@@ -429,7 +429,7 @@ function exportJson() {
 .rt-track + .rt-track { border-top: 1px solid rgba(35,52,84,.08); }
 .rt-label { flex: 0 0 150px; position: sticky; left: 0; z-index: 2; background: rgba(255,255,255,.96); border-right: 1px solid var(--border); padding: 0 9px; display: flex; flex-direction: column; justify-content: center; gap: 1px; backdrop-filter: blur(4px); }
 .rt-label b { font-size: 11px; font-weight: 600; color: var(--text); font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rt-label small { font-size: 9.5px; color: var(--text-faint); }
+.rt-label small { font-size: 10px; color: var(--text-faint); }
 .rt-label.good b { color: #146c48; }
 .rt-label.bad b { color: #c23a40; }
 .rt-label.mid b { color: #2f6fed; }
@@ -442,12 +442,12 @@ function exportJson() {
 .rt-mark.good { background: #1c9e66; }
 .rt-mark.bad { background: #e0484f; }
 .rt-mark.sys { background: #98a3b4; }
-.rt-empty { padding: 22px 16px; color: var(--text-faint); font-size: 11.5px; line-height: 1.8; }
+.rt-empty { padding: 22px 16px; color: var(--text-faint); font-size: 12px; line-height: 1.8; }
 
 .rt-detail { width: 268px; flex: 0 0 268px; border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; overflow: auto; display: flex; flex-direction: column; gap: 4px; background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised)); box-shadow: 0 5px 16px rgba(35,52,84,.04); }
 .rt-detail-head { display: flex; align-items: baseline; justify-content: space-between; }
 .rt-detail-head b { font-size: 12px; }
-.rt-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 10.5px; border-bottom: 1px dashed rgba(35,52,84,.08); padding: 2px 0; }
+.rt-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; border-bottom: 1px dashed rgba(35,52,84,.08); padding: 2px 0; }
 .rt-kv span { color: var(--text-faint); font-family: var(--font-mono); }
 .rt-kv b { color: var(--text); font-weight: 500; text-align: right; overflow: hidden; text-overflow: ellipsis; }
 .rt-kv b.good { color: #146c48; }

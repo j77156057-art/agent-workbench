@@ -134,7 +134,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rd-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
 .rd-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
 .rd-path {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
   font-family: 'Cascadia Code', Consolas, monospace;
   overflow: hidden;
@@ -172,7 +172,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   align-items: center;
   gap: 12px;
   padding: 7px 16px;
-  font-size: 11.5px;
+  font-size: 12px;
   border-bottom: 1px solid var(--border);
   background: #f6f8fb;
 }
@@ -180,14 +180,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rd-stat-add { color: #146c48; font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
 .rd-stat-del { color: #b32d33; font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
 .rd-stat-equal { color: #b5791f; }
-.rd-stat-hint { margin-left: auto; color: var(--text-faint); font-size: 10.5px; }
+.rd-stat-hint { margin-left: auto; color: var(--text-faint); font-size: 10px; }
 
 .rd-body {
   flex: 1 1 auto;
   overflow: auto;
   background: #f6f8fb;
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.65;
   padding: 6px 0;
 }
@@ -233,13 +233,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   background: var(--bg);
 }
 .rd-cancel {
-  padding: 6px 18px; font-size: 12.5px; border-radius: 7px; cursor: pointer;
+  padding: 6px 18px; font-size: 12px; border-radius: 7px; cursor: pointer;
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted);
 }
 .rd-cancel:hover { background: var(--bg-hover); color: var(--text); }
 .rd-accept {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 18px; font-size: 12.5px; border-radius: 7px; cursor: pointer;
+  padding: 6px 18px; font-size: 12px; border-radius: 7px; cursor: pointer;
   border: 1px solid #15804f; background: linear-gradient(180deg,#2bb57a,#1c9e66); color: #fff;
 }
 .rd-accept:hover:not(:disabled) { background: #1c9e66; }

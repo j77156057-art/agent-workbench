@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
 .lb-icon { color: var(--text-faint); flex: 0 0 auto; }
 .lb-input {
   flex: 1; min-width: 0; border: 0; outline: none; background: transparent;
-  font-size: 12.5px; color: var(--text); font-family: var(--font-ui);
+  font-size: 12px; color: var(--text); font-family: var(--font-ui);
 }
 .lb-input::placeholder { color: var(--text-faint); }
 .lb-clear {
@@ -256,7 +256,7 @@ onBeforeUnmount(() => {
 .lb-pop-head {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-bottom: 1px solid var(--border);
-  font-size: 11.5px; color: var(--text-muted);
+  font-size: 12px; color: var(--text-muted);
 }
 .lb-spacer { flex: 1; }
 .lb-count { white-space: nowrap; }
@@ -282,16 +282,16 @@ onBeforeUnmount(() => {
 .lb-item.lb-active { background: var(--bg-selected); }
 .lb-region-rail { width: 3px; border-radius: 2px; flex: 0 0 3px; }
 .lb-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.lb-item-title { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text); }
+.lb-item-title { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); }
 .lb-folder-glyph { font-size: 13px; }
 .lb-file-name { font-weight: 600; }
 .lb-symbol {
   font-family: var(--font-mono); font-size: 11px; color: var(--accent);
   background: rgba(47,111,237,.08); border-radius: 4px; padding: 0 5px;
 }
-.lb-region-dir { font-style: normal; color: var(--text-faint); font-size: 11.5px; }
+.lb-region-dir { font-style: normal; color: var(--text-faint); font-size: 12px; }
 .lb-region-chip {
-  font-size: 10.5px; font-style: normal; font-weight: 600;
+  font-size: 10px; font-style: normal; font-weight: 600;
   border: 1px solid; border-radius: 5px; padding: 0 5px; white-space: nowrap;
 }
 .lb-item-sub {
@@ -302,12 +302,12 @@ onBeforeUnmount(() => {
 .lb-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-tags { display: flex; gap: 5px; flex-wrap: wrap; }
 .lb-tags i {
-  font-style: normal; font-size: 10.5px; color: var(--accent-2);
+  font-style: normal; font-size: 10px; color: var(--accent-2);
   background: rgba(122, 90, 248, .09); border-radius: 4px; padding: 0 5px;
 }
 .lb-kind-tag {
   align-self: center; flex: 0 0 auto;
-  font-size: 10.5px; color: var(--text-muted);
+  font-size: 10px; color: var(--text-muted);
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
 }
 .lb-reasons {
@@ -322,7 +322,7 @@ onBeforeUnmount(() => {
 .lb-pop-foot {
   display: flex; gap: 12px; padding: 6px 10px;
   border-top: 1px solid var(--border);
-  font-size: 10.5px; color: var(--text-faint);
+  font-size: 10px; color: var(--text-faint);
   background: var(--bg-hover);
 }
 </style>

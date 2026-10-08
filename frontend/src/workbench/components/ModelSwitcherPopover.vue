@@ -109,12 +109,12 @@ function providerLabel(p: ModelPreset) {
 .msp-item-main { min-width: 0; flex: 1; }
 .msp-item-main strong, .msp-item-main small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msp-item-main strong { font-size: 12px; }
-.msp-item-main small { margin-top: 2px; color: var(--text-faint); font-size: 10.5px; }
-.msp-state { flex: none; color: var(--accent); font-size: 10.5px; }
+.msp-item-main small { margin-top: 2px; color: var(--text-faint); font-size: 10px; }
+.msp-state { flex: none; color: var(--accent); font-size: 10px; }
 .current-state { font-weight: 600; }
 .msp-empty { margin: 14px 0; color: var(--text-faint); font-size: 12px; }
 .msp-error { margin: 0 0 8px; color: var(--danger); font-size: 11px; }
-.msp-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 10.5px; }
+.msp-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 10px; }
 .msp-manage { flex: none; padding: 5px 9px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; font-size: 11px; }
 @media (max-width: 560px) { .msp-pop { right: 8px; bottom: 70px; width: calc(100vw - 16px); } }
 </style>

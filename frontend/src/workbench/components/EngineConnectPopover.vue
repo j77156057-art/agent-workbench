@@ -348,9 +348,9 @@ function connectorGuide(s: McpServer) {
 
 .cd-server-result { margin-top: 4px; font-size: 11px; word-break: break-all; }
 
-.cd-server-help { margin-top: 3px; font-size: 10.5px; color: var(--text-faint); }
+.cd-server-help { margin-top: 3px; font-size: 10px; color: var(--text-faint); }
 
-.cd-server-guide { margin: 4px 0 0 20px; font-size: 10.5px; color: var(--text-dim); line-height: 1.45; }
+.cd-server-guide { margin: 4px 0 0 20px; font-size: 10px; color: var(--text-dim); line-height: 1.45; }
 
 .cd-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
 

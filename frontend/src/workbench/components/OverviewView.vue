@@ -268,13 +268,13 @@ const ASK_CHIPS = [
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   max-width: 560px;
 }
-.ov-strip-stats { font-size: 11.5px; color: var(--text-faint); }
+.ov-strip-stats { font-size: 12px; color: var(--text-faint); }
 .ov-strip-stats b { color: var(--text-muted); font-weight: 700; }
 .ov-strip-stats em { color: var(--amber); font-style: normal; }
 .ov-restore {
   margin-left: auto; flex: 0 0 auto;
   border: none; background: transparent; cursor: pointer;
-  color: var(--text-faint); font-size: 11.5px; font-family: var(--font-ui);
+  color: var(--text-faint); font-size: 12px; font-family: var(--font-ui);
   padding: 4px 8px; border-radius: 6px;
 }
 .ov-restore:hover { color: var(--accent); background: var(--bg-hover); }
@@ -323,20 +323,20 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 .ov-step-num {
   flex: 0 0 19px; height: 19px; margin-top: 1px;
   display: grid; place-items: center;
-  border-radius: 6px; font-size: 10.5px; font-weight: 800; color: var(--accent-ink);
+  border-radius: 6px; font-size: 10px; font-weight: 800; color: var(--accent-ink);
   background: var(--accent);
 }
 .ov-step-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ov-step-text b { font-size: 12px; color: var(--text); font-weight: 600; }
 .ov-step-text i {
-  font-style: normal; font-size: 10.5px; line-height: 1.5;
+  font-style: normal; font-size: 10px; line-height: 1.5;
   color: var(--text-faint);
 }
 .ov-guide-foot {
   margin-top: 9px; padding-top: 9px;
   border-top: 1px solid var(--border);
   display: flex; gap: 12px; flex-wrap: wrap;
-  font-size: 10.5px; color: var(--text-faint);
+  font-size: 10px; color: var(--text-faint);
 }
 
 .ov-group {
@@ -369,7 +369,7 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 .ov-chip {
   text-align: left; border: none;
   background: transparent; color: var(--text-muted);
-  font-size: 11.5px; line-height: 1.5;
+  font-size: 12px; line-height: 1.5;
   padding: 6px 8px; border-radius: 7px; cursor: pointer;
   font-family: var(--font-ui);
   transition: color .12s, background .12s;
@@ -392,11 +392,11 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 .ov-empty h3 { margin: 0 0 8px; font-size: 14px; color: var(--text); font-weight: 700; }
 .ov-empty p {
   margin: 0 auto 18px; max-width: 440px;
-  font-size: 12.5px; line-height: 1.8; color: var(--text-muted);
+  font-size: 12px; line-height: 1.8; color: var(--text-muted);
 }
 .ov-empty-btn {
   border: 1px solid #b9d0f5; background: rgba(47,111,237,.06);
-  color: var(--accent); font-family: var(--font-ui); font-size: 12.5px; font-weight: 600;
+  color: var(--accent); font-family: var(--font-ui); font-size: 12px; font-weight: 600;
   padding: 8px 20px; border-radius: 8px; cursor: pointer;
   transition: background .12s;
 }
@@ -406,7 +406,7 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 .ov-noproj .ov-empty-ic { color: var(--accent); }
 .ov-noproj-hint {
   margin: 14px auto 0; max-width: 460px;
-  font-size: 11.5px; line-height: 1.7; color: var(--text-faint);
+  font-size: 12px; line-height: 1.7; color: var(--text-faint);
   padding-top: 12px; border-top: 1px dashed var(--border);
 }
 

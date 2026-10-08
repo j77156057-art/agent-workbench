@@ -113,7 +113,7 @@ function sessionTime(value: string): string {
   animation: sh-pop-in .2s cubic-bezier(.2,.8,.2,1) both;
 }
 .cd-session-head { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
-.cd-session-subtitle { color: var(--text-faint); font-size: 10.5px; line-height: 1.45; margin-top: -4px; }
+.cd-session-subtitle { color: var(--text-faint); font-size: 10px; line-height: 1.45; margin-top: -4px; }
 .cd-session-new {
   width: 100%; display: flex; align-items: center; gap: 9px; margin: 8px 0;
   padding: 8px 9px; border: 1px solid #c8dcfa; border-radius: 6px;
@@ -123,7 +123,7 @@ function sessionTime(value: string): string {
 .cd-session-new:disabled { opacity: .55; cursor: default; }
 .cd-session-new-icon { width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid currentColor; border-radius: 50%; font-size: 16px; line-height: 1; }
 .cd-session-new b, .cd-session-new small { display: block; }
-.cd-session-new b { font-size: 11.5px; }
+.cd-session-new b { font-size: 12px; }
 .cd-session-new small { margin-top: 2px; color: var(--text-muted); font-size: 10px; }
 .cd-session-clear {
   width: 100%;
@@ -139,7 +139,7 @@ function sessionTime(value: string): string {
 }
 .cd-session-clear:hover:not(:disabled) { background: rgba(220,76,82,.08); }
 .cd-session-clear:disabled { opacity: .45; cursor: default; }
-.cd-session-error { padding: 6px 8px; color: var(--danger); background: #fff4f4; border: 1px solid #f2caca; border-radius: 5px; font-size: 10.5px; }
+.cd-session-error { padding: 6px 8px; color: var(--danger); background: #fff4f4; border: 1px solid #f2caca; border-radius: 5px; font-size: 10px; }
 .cd-session-empty { padding: 12px 5px; color: var(--text-faint); font-size: 11px; text-align: center; }
 .cd-session-item { display: flex; align-items: stretch; border-top: 1px solid var(--border); }
 .cd-session-item.active { background: var(--bg-selected); }
@@ -150,7 +150,7 @@ function sessionTime(value: string): string {
 .cd-session-item.active .cd-session-current { color: var(--accent); }
 .cd-session-copy { min-width: 0; display: block; }
 .cd-session-copy strong, .cd-session-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cd-session-copy strong { font-size: 11.5px; font-weight: 600; }
+.cd-session-copy strong { font-size: 12px; font-weight: 600; }
 .cd-session-copy small { margin-top: 2px; color: var(--text-faint); font-size: 10px; }
 .cd-session-delete { align-self: center; margin-right: 5px; width: 22px; height: 22px; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 16px; }
 .cd-session-delete:hover { color: var(--danger); }
