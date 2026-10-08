@@ -96,19 +96,26 @@ try {
   await page.waitForSelector('.wb-shell', { timeout: 20000 })
   check('工作台外壳渲染', true)
 
-  // 字体断言：拉丁字族已自托管（src/fonts.ts），中文 Noto Sans SC 仍走 CDN，而本机
-  // 访问 fonts.googleapis.com 会间歇性 ERR_CONNECTION_RESET —— 同一份 CSS 两次跑出
-  // 两种观感，是最难查的"时好时坏"。
+  // 字体断言：全站字体已自托管（src/fonts.ts），不再依赖外部 CDN。这条断言的作用就是
+  // 守住这一点 —— 历史上中文 Noto Sans SC 曾走 fonts.googleapis.com，而本机访问它会
+  // 间歇性 ERR_CONNECTION_RESET（实测同一份构建一次拿到 16 个 woff2、一次一个都没有），
+  // 整页中文就在 Noto 与 Microsoft YaHei 之间来回跳；两者中文同宽（全角 1em）但墨量差
+  // 9.6%~13.5%，宽度量不出来，所以断言必须查 FontFace 而不是只看排版。
   //
   // 为什么不能只用宽度度量：字体是懒取的，量得太早会读到"还没取完 → 回落 monospace"
   // 的瞬时状态（实测 Space Grotesk 稳定读出 493，与 monospace 相同，而字体其实已注册）。
   // 所以先用 document.fonts.load() 显式触发并确认拿到 FontFace —— 它对未注册的字族
-  // 返回空数组（这点和 check() 不同：check() 对从没请求过的字族也返回 true，不可用），
-  // 再用宽度度量复核它真的参与了渲染。两个信号都成立才算加载。
+  // 返回空数组（这点和 check() 不同：check() 对从没请求过的字族也返回 true，不可用）。
   await page.evaluate(() => document.fonts.ready)
   const fontState = await page.evaluate(async () => {
-    const want = [['Archivo Black', '400'], ['Space Grotesk', '400'], ['Space Grotesk', '700'],
-      ['Space Mono', '400'], ['Space Mono', '700']]
+    // test 串必须落在该字族 unicode-range 覆盖的码区内：chinese-simplified-*.css 只声明
+    // CJK 字域，用拉丁串去 load() 会因字域不匹配返回空数组，误判成"没加载"。
+    const want = [['Archivo Black', '400', 'WQmmwww 0123'], ['Space Grotesk', '400', 'WQmmwww 0123'],
+      ['Space Grotesk', '700', 'WQmmwww 0123'], ['Space Mono', '400', 'WQmmwww 0123'],
+      ['Space Mono', '700', 'WQmmwww 0123'], ['Noto Sans SC', '400', '项目分区资源管理器'],
+      ['Noto Sans SC', '700', '项目分区资源管理器'], ['Noto Sans SC', '900', '项目分区资源管理器']]
+    // 宽度位移只对拉丁有意义：CJK 是全角 1em，Noto 与雅黑、甚至与 monospace 回落同宽，
+    // 量不出来。所以拉丁走「load + 宽度」双信号，中文只走 load（它对未注册字族返回空）。
     const widthOf = (fam, weight) => {
       const s = document.createElement('span')
       s.textContent = 'mmmmmmwwwWQ123'
@@ -119,18 +126,19 @@ try {
       s.style.fontFamily = `'${fam}', monospace`
       const got = s.offsetWidth
       s.remove()
-      return [base, got]
+      return base !== got
     }
     const missing = []
-    for (const [fam, weight] of want) {
-      const faces = await document.fonts.load(`${weight} 64px "${fam}"`, 'WQ123')
+    for (const [fam, weight, test] of want) {
+      const faces = await document.fonts.load(`${weight} 64px "${fam}"`, test)
       const fetched = faces.length > 0 && faces.every(f => f.status === 'loaded')
-      const [base, got] = widthOf(fam, weight)
-      if (!fetched || base === got) missing.push(`${fam} ${weight}`)
+      const renders = test.includes('WQ') ? widthOf(fam, weight) : true
+      if (!fetched || !renders) missing.push(`${fam} ${weight}`)
     }
-    // 自检：未注册的字族必须被判为缺失，否则这条断言是空跑
-    const ghost = await document.fonts.load('400 64px "NoSuchFont Zipzap"', 'WQ123')
-    return { missing, controlOk: ghost.length === 0, faces: document.fonts.size }
+    // 自检：未注册的字族必须被判为取不到，否则这条断言是空跑
+    const ghost = await document.fonts.load('400 64px "NoSuchFont Zipzap"', 'WQmmwww 0123')
+    const ghostCjk = await document.fonts.load('900 64px "NoSuchFont Zipzap"', '项目分区')
+    return { missing, controlOk: ghost.length === 0 && ghostCjk.length === 0, faces: document.fonts.size }
   })
   const fontDetail = `@font-face ${fontState.faces} 个，缺失：${fontState.missing.join('、') || '无'}`
     + (fontState.controlOk ? '' : ' [自检失败：伪造字族未被判缺失，断言不可信]')
