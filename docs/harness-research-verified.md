@@ -100,7 +100,7 @@ README 的 "Supply-chain hardening" 一节：
 
 | Pi 的做法 | 我们 | 依据 |
 |---|---|---|
-| `.npmrc` 设 `min-release-age=2` | ⚠ **无 `.npmrc`**（根与 `frontend/` 都无）—— 但见下方「暴露面」一节，**lockfile 已把大部分关掉了** | 实测 |
+| `.npmrc` 设 `min-release-age=2` | ✅ **已加**（`frontend/.npmrc`）—— 实测生效，见下方专节 |
 | 直接依赖钉精确版本（`save-exact=true`） | ⚠ **未钉** —— 33 个前端依赖（deps 22 + dev 11）里 **29 个**是 `^`/`~` 范围；**只有 4 个** `@fontsource/*` 是精确版。**但 `package-lock.json` 钉住了实际解析结果**，所以 `^` 只在**有人主动改依赖**时才产生漂移 | `frontend/package.json` |
 | `package-lock.json` 是唯一真相 | ✅ **是** —— CI 用 `npm ci`（`.github/workflows/harness.yml:59`），启动同步器也用 `npm ci`（`dependency_bootstrap.py:414`） | 实测 |
 | 生命周期脚本**白名单** | ⚠ **只在一条路径上有，且不能照抄** —— `tool_install.py:92`（agent 装 MCP 工具）用 `--ignore-scripts`（全禁）；启动同步的 `npm ci`（`dependency_bootstrap.py:414`）与 CI（`harness.yml:59`）**都没加，而加了会坏**（见下） | 实测 |
@@ -124,7 +124,48 @@ README 的 "Supply-chain hardening" 一节：
 即 **lockfile 里任何一个带 lifecycle 脚本的包，都会在用户启动应用或跑 CI 时执行它**。
 而「agent 自己请求装的包」反而是安全的 —— **安全与风险的分配正好反过来**。
 
-##### ⚠ 「能不能给 `npm ci` 加 `--ignore-scripts`」—— **我没有证据，两次都说过头了**
+##### ✅ `min-release-age=2` 已加（`frontend/.npmrc`）—— 三道门都实测过
+
+动手前先答了三个问题，**每一个都是「不实测就会搞错」的**：
+
+| 门 | 实测 | 探针 |
+|---|---|---|
+| 这个特性在本机 npm 上**生效**吗 | ✅ 生效。设 `9999` 天后 `npm install vite` 报 **`ENOVERSIONS` / `No versions available for vite`**（对照组装成功） | `probe_min_release_age.py` |
+| 它会**破坏我们的 `npm ci`** 吗 | ❌ 不会。设 `9999` 天（lockfile 里任何包都不可用）时 `npm ci` 仍装上 **215 个包** | `probe_min_release_age_vs_ci.py` |
+| 设 `2` 会**让人工安装失败**吗 | ❌ 不会。lockfile 里**最年轻的依赖是 33.9 天**（`@codemirror/state@6.7.4`），远高于 2 | `probe_min_release_age_value.py` |
+
+⚠ **「对 `npm ci` 无影响」是实测出来的，不是推理出来的。**
+推理上 `npm ci` 严格按 lockfile 装、不重新解析，所以一个**解析阶段**的特性
+不该影响它 —— 但今晚的教训正是「推理听起来合理 ≠ 事实」。
+若实测显示会影响，**这一行就不能加**（应用启动失败 + CI 全红）。
+
+**覆盖面要说准，别高估**：`npm ci` 不受影响 = 这一行**只覆盖人工
+`npm install`**。我们 6 处 `npm install` 全是文档/错误提示里的手写指令，
+自动化路径全走 `npm ci`。所以它防的是「有人手动装一个当天发布的包」，
+**不是「启动时被投毒」**（后者本来就被 lockfile + `npm ci` 关着了）。
+
+**为什么是 2 而不是更大**：Pi 用 2。实测 7 也安全（最年轻的依赖 33.9 天），
+但更严的代价是**真正的安全补丁也要等几天才能装**。
+**照抄 Pi 的值，不自行加码。**
+
+##### ⚠ 一个会把人带沟里的怪癖（守卫专门挡它）
+
+设了之后 **`npm config get min-release-age` 回读 `null`** —— 但**行为生效**
+（npm 的 config schema 没登记这个键）。
+
+**不写清楚的话，下一个人查一下就会以为配置坏了、删掉它，而删掉后
+没有任何测试会红。** `tests/test_min_release_age_pinned.py` 三条守卫：
+
+| 守卫 | 挡什么 | 变异实测 |
+|---|---|---|
+| `_the_file_ships_with_the_flag` | 删文件 / 删行 / 改成 `0` / 改成 `9999` | red |
+| `_the_npm_version_supports_it` | CI 换 node 导致特性消失，配置静默变成废话 | 需改 CI 才验 |
+| `_the_flag_is_not_pointless` | **反向守卫**：加入「回读 null 即无效」这种**错误结论**也会红 | red |
+
+五条变异（注释掉 / 改 0 / 改 9999 / 加坏注释 / 无关注释对照）
+**全部符合预期**，见 `tools/mutation/mutate_min_release_age_guard.py`。
+
+##### ⚠ 「能不能给 `npm ci` 加 `--ignore-scripts`」—— 当时的判断，两次都说过头了
 
 查 `package-lock.json` 的 263 个包条目，**4 个标了 `hasInstallScript`**：
 
