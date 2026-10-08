@@ -338,7 +338,7 @@ opencode 原文：
 > 站点（搜索摘要）。已删掉 —— **不拿二手来源的数字当事实**。上表改为只陈述
 > 一手来源里确实写了的机制。
 
-### 3.6 `http-recorder`：**Public beta，且真的能用**（核实）
+### 3.7 `http-recorder`：**Public beta，且真的能用**（核实）
 
 > **Public beta.** The API depends on Effect 4 beta and may change.
 > Install: `bun add -d @opencode-ai/http-recorder@beta`
@@ -367,43 +367,104 @@ opencode 原文：
 
 ---
 
-## 4. 对我们的方向（已按核实结果修正）
+## 4. 对我们的方向（2026-10-08 按实测结果重写）
 
-### 4.1 站得住的
+> 本节早前是一张「候选清单」，但**没跟上已完成的改动**。现在改成
+> 「已完成 / 待做（带前置与代价）/ 已否决」三段，每项都能核到提交或实测。
 
-| 方向 | 依据 | 我们已有的 |
+### 4.1 已完成（可核到提交）
+
+| 做了什么 | 依据 | 提交 |
 |---|---|---|
-| **权威来自结构，不来自散文** | codemode `Authority Boundary` + Hermes 非交互 `deny` + Pi 否掉 transcript 审查 | `_lease_blocked`、`_intent_for_delegated`、`ToolSpec.capability` 111 个全声明 |
-| **三值判定 + 不确定上浮** | Hermes `smart` 模式默认行为 | `_WRITE_INTENT_UNCERTAIN`（今天做出） |
-| **非交互上下文默认拒** | Hermes `cron/single_query/unattended_mode: deny` | `_intent_for_delegated` 要求父租约 |
-| **超时 fail-closed** | Hermes `timeout: 300` 默认拒绝 | 租约 TTL 300/900s |
-| **不给标记就不下结论** | codemode「只调宿主给的工具」 | `owns_port()` 无 markers 返回「无法判归属」 |
-| **限制资源而非推断意图** | Pi 三层运行方式 + Hermes safe-root | `code_root`、`loopback_url` |
+| **工具说明不再教模型写死端口** | codemode `Discovery` 的「按需披露」 | `5cbe94b` |
+| **端口归属判据 `owns_port`** | `dev_server.py:36` 那条注释引用的符号，此前**从未定义** | `5cbe94b` |
+| **22 个工具从未被披露** | 逐条核实 `ToolSpec.description` vs `SYSTEM_PROMPT` | `bbc0207` |
+| **索引段明示完整度 + 本轮可调更少** | codemode：`The instructions state exactly how comprehensive the list is` | `59c1cda` |
+| **撤除按关键词收窄工具组** | 三家都不按措辞挑工具（见 §3.6） | `e8db3ea` |
+| **外网开关成为唯一闸门** | 用户显式意图不该被关键词再猜一遍 | `e8db3ea` |
+| **删除失效的「检索即放行」** | 撤除后实测 8 种场景零变化 | `393b5e1` |
+| **两条随机红的取证缺口** | http-recorder 的 cassette 思路（仅取证那一半） | `7526f4e` |
 
-### 4.2 建议放弃的
+### 4.2 待做（按性价比，含前置与代价）
 
-| 方向 | 为什么放弃 |
+#### ① 给适配器边界加 conformance suite —— **需要先回答「解决什么」**
+
+依据：Pi `pi-telemetry` 的 `createTelemetryAdapterConformance()` 是
+**runner-independent 的一致性套件**，fixture 提供一个适配器与快照读取器，
+套件检查「同步单次准入 / 返回值与 rejection 的**同一性** / 属性合并 /
+settle 后调用惰性 / 不可读遥测失败必须被吞掉」等**可观测语义**。
+
+**我们有适配器边界**：`probe` / `owns_port`、preview adapter、MCP connector。
+
+⚠ **但「加一套 conformance 测试」本身不是目标。** 必须先说清要解决什么：
+
+| 候选问题 | 是否值得 |
 |---|---|
-| **继续往写意图词表加词** | Pi 明说那一整类不是边界；Hermes 明说「heuristics, not semantic intent detection」。今天 17 笔的实测也指向同一处 |
-| **零上下文成本那半边（Python 脚本调工具）** | 需要 `exec` + 受限 builtins，比 acorn 静态解析明显更不安全；且 `Non-Goals` 把授权划给宿主，我们仍要自建 |
-| **录放批准状态** | 见 `docs/write-intent-corpus.md` J1 |
+| 有多个实现同一契约、行为已经漂移 | 那才值得 —— 但得先有**第二个实现** |
+| 只是想让测试更整齐 | **不值得** —— 那是在给一个没有问题的边界加仪式 |
 
-### 4.3 值得单独拿出来做的（按性价比）
+**核实结果：目前没有第二个实现。** `mcp_bridge` 里 `transport` 只出现 4 处，
+而且**不是两条实现** —— 是同一份代码把 transport 记成 `entry["http"]` 这个布尔字段，
+再据此打不同的 `group` 标签（`group = "web" if entry.get("http") else "mcp"`）。
+`discover` / `attach` / `build_specs` 都**只有一份**。
 
-| 候选 | 依据 | 代价 |
+**结论：暂不做。** 等真出现第二个实现（或第三个 transport）时再用这个模式。
+`test_web_fetch_stub_completeness.py` 已经是这个思路的一个实例 ——
+**结构性扫桩**而非逐条打桩，那条已落地。
+
+#### ② cassette 治上游 HTTP 依赖 —— **只对仍未修的那条有意义**
+
+依据：http-recorder 三条可抄的设计：
+1. `CI=true` 时**缺 cassette 直接失败**，不录制
+2. **没有覆盖模式**，只能删除后重录 —— 让刷新范围在 diff 里可见
+3. 落盘前扫凭据，**不安全就拒写**
+
+⚠ **但我们最需要它的那条已经修好了** —— `test_web_fetch` 那条随机红
+根因是 `_baidu_search` 没打桩，`9362e65` 已补，并加了结构性扫桩守卫
+（连跑 5 次全绿）。**所以「治两条随机红」这个目标已经不存在。**
+
+剩下的 `ERR_CONNECTION_RESET` 是**前端字体 CDN**（已定性），不是 HTTP 依赖问题。
+
+**结论：暂不做，除非将来出现新的「上游 HTTP 抖动导致随机红」。**
+
+#### ③ 写路径 denylist + safe-root —— **真缺口，但要先确认现状**
+
+依据：Hermes 有 `HERMES_WRITE_SAFE_ROOT`（可选沙箱，越界即硬拦）
+与一份**永远阻塞**的 denylist（`~/.ssh/`、`~/.aws/`、`/etc/sudoers` …），
+且明说「写守卫是纵深防御**不是**硬边界」。
+
+**核实我们的现状**：`flows.py` 有 `_safe_root()`，但那是**路径规范化**，
+**不是**写沙箱。我们只有 `code_root`（一个根目录约束）。
+
+**这可能是剩下最有价值的一项**，但它要改写工具的落盘检查，
+属生产代码改动，且需要先列「哪些路径必须硬拦」的清单。
+
+**结论：值得做，但要单独立项**，不在本轮调研收尾里顺手做。
+
+### 4.3 已否决（带依据，别重做）
+
+| 方向 | 否决依据 |
+|---|---|
+| **文本算法修召回** | 实测：`_TERM_SPLIT` 切词 **1/12**、n-gram **5/12**。且「高铁」压根不在 `web_search` 描述里 —— **任何文本重合算法都救不了**。探针留在 `tools/mutation/probe_recall_*.py` |
+| **把两级目录接进提示** | `SYSTEM_PROMPT` 里 96 个工具说明是**手写**的（中位数 **60** 字符），`ToolSpec.description` 中位数 **163** —— 换是**降级** |
+| **录放批准状态** | 根因是词表逐条消息判定；且结构化授权（租约）已存在。见 `write-intent-corpus.md` J1 |
+| **零上下文成本那半边**（Python 脚本调工具） | 需 `exec` + 受限 builtins，比 acorn 静态解析更不安全；且 codemode `Non-Goals` 把授权划给宿主 |
+| **`strictPort: true`** | 会让 `parse_port_hint` 的**存在意义消失**（它存在的唯一理由是「从含死地址的日志里认活的」）。见 `known-defect-dev-server-port-ownership.md` §8.5 |
+| **`owns_port` 接生产（在注入身份之前）** | 页面里没有能区分项目的指纹 —— 三个入口 title 全以 `DocMind` 开头，而 worktree 跑的是同一份代码。见 `known-defect-port-ownership-has-no-fingerprint.md` |
+| **Claude Code 泄露源码** | 纪律 |
+
+### 4.4 还没转化为改动的观察
+
+这些**核实过但没做**，记在这里免得重新查一遍：
+
+| 观察 | 出处 | 为什么没做 |
 |---|---|---|
-| **工具目录预算 + 明确告知不完整 + 检索** | codemode `Discovery` | **受限应用 agent** 的提示里 111 条 description 全部进（`Agent.__init__` 动态 join）；顶层 agent 是写死 22 条 |
-| **给适配器边界加 conformance suite** | Pi telemetry conformance | 我们有适配器边界（`probe`/`owns_port`、preview adapter、MCP connector），但**得先说清「要解决什么」** |
-| **cassette 治两条随机红** | http-recorder | 我们是 Python 栈，Effect 实现搬不了，**但模式可搬** |
-| **写路径 denylist + safe-root** | Hermes `HERMES_WRITE_SAFE_ROOT` | 我们现在只有 `code_root` |
-| **解析失败即拒** | Hermes quote-parsing fail-closed | 与我们无关（我们不解析 shell） |
-
-### 4.4 **明确不做**
-
-- **`strictPort: true`**（今天已决，见 `docs/known-defect-dev-server-port-ownership.md` 第 8.5 节）
-- **Claude Code 泄露源码**（纪律）
-- **`owns_port` 的生产接线**在契约定下来之前不做 —— 它需要把 `dev_serve` 的 job 记录
-  带进 `preview_project` 入参，而**契约该怎么定取决于 4.3 里前两条的方向选择**
+| **辅助 LLM 判风险 + 三值上浮** | Hermes `approvals.mode: smart` | 我们已有三值判定（`_WRITE_INTENT_UNCERTAIN`），**但判据是词表不是 LLM**。换 LLM 是成本问题不是设计问题 |
+| **非交互上下文默认 `deny`** | Hermes `cron_mode/single_query_mode/unattended_mode` | 我们已有等价物（`_intent_for_delegated` 要求父租约），独立得出同一条规则 |
+| **超时 fail-closed** | Hermes `approvals.timeout: 300` 默认拒绝 | 我们的租约 TTL 是 300/900s，同量级 |
+| **硬地板在 `--yolo` 之下** | Hermes hardline blocklist | 我们的 `run_command` 有黑名单，但**没有「不可绕过」这一层** —— 待确认是否需要 |
+| **从历史审批挖 allowlist 建议** | Hermes `hermes approvals suggest` | 有意思但依赖跨会话审批数据库，我们没有 |
+| **子集化的字体** | Hermes/Pi 未涉及，是我们前端在做 | 前端域 |
 
 ---
 
