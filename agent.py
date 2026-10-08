@@ -833,30 +833,30 @@ def _tool_blocks():
     return _TOOL_BLOCKS_CACHE
 
 
-#: 本轮被 `tool_search` 取回过用法的工具名。由 `Agent._run` 在进入模型循环前
-#: 设成那个 agent 的集合，`_tool_search` 命中时写入。
+# ~~本轮被 `tool_search` 取回过用法的工具名~~ —— **2026-10-08 删除**。
 #:
-#: 用 ContextVar 而不是给 `_tool_search` 加参数：它注册为普通工具
-#: （`"func": _tool_search`，`agent.py:3052`），调用方是通用的工具执行器，
-#: 不认识 Agent 实例 —— 与既有的 `_IDEMPOTENCY_SCOPE` 同一手法。
-#:
-#: 命中即放行：`_effective_tool_names()` 会把这些工具纳入本轮有效集，
-#: 否则模型「查得到用法却调不到」。
-#:
-#: **这不是授权** —— 检索是 discovery，写工具仍走写意图判定。
-_TOOL_SEARCH_EXPANSIONS: "contextvars.ContextVar[set | None]" = contextvars.ContextVar(
-    "docmind_tool_search_expansions", default=None)
+#: 它原本配 `_effective_tool_names()` 里一条「命中即放行」的例外，
+#: 而 `e8db3ea` 撤除关键词收窄后那条例外**彻底不生效**（实测 8 种场景全部零变化），
+#: 且在 `tool_allowlist` 场景下是**越权**（子代理靠检索扩权）。
+#: 详见 `_effective_tool_names()` 的 docstring 与
+#: `docs/known-defect-context-router-recall.md` §11。
 
 
 def _tool_search(arg):
     """按工具名或关键词取回工具的完整用法（渐进式暴露的按需取回通道）。
 
-    **命中即放行**：查到的工具进入本轮有效集（`_effective_tool_names`）。
-    否则链条会断在最后一环 —— 模型看得见名字、查得到用法，原生通道却调不到。
-    实测「跑一下测试」正是如此：`dev_testrun` 被 `ContextRouter` 收走，
-    而它的说明明写着「别再自己 `run_command("pytest -q")` 读一整屏文本」。
+    ## 它的价值：按需读长用法
 
-    命中只算discovery，**不构成授权**：写工具被搜出来仍要过写意图判定。
+    系统提示里 `dev_vue` 的说明有 **1167 字符**、`dev_page_action` 1046 ——
+    模型不必一开始就背这些，需要时取回完整用法即可。这是 opencode codemode
+    `Discovery` 那套「预算截断 + 检索」里的检索那一半。
+
+    ## 它曾经还负责「命中即放行」，2026-10-08 删除
+
+    那是为修「模型查得到用法、却调不到」——`ContextRouter` 按关键词收窄时，
+    `dev_testrun` 在「跑一下测试」那轮被收走了。`e8db3ea` 撤除关键词收窄后，
+    那条例外彻底不生效（实测 8 种场景全部零变化），且在 `tool_allowlist`
+    场景下是**越权**。详见 `_effective_tool_names()` 的 docstring。
     """
     query = (arg or "").strip().lower()
     blocks = _tool_blocks()
@@ -871,9 +871,6 @@ def _tool_search(arg):
                 f"（{'、'.join(CORE_TOOL_NAMES)}）或如实说明无法完成。")
     # 精确名排最前：靠 dict 顺序不算「精确」，而模糊命中的第一个未必是它
     hits = exact + [n for n in hits if n not in exact]
-    sink = _TOOL_SEARCH_EXPANSIONS.get()
-    if sink is not None:
-        sink.update(hits)
     parts = []
     for n in hits[:4]:
         parts.append(blocks[n])
@@ -3217,15 +3214,6 @@ class Agent:
         self.context_router = ContextRouter(
             max_chars=int(os.getenv("DOCMIND_CONTEXT_ROUTER_CHARS", "6000")))
         self.last_context_plan = None
-        #: 本轮被 `tool_search` 取回过用法的工具名 -> 该工具进入有效集。
-        #:
-        #: 检索是 **discovery**，不是授权 —— 写工具被搜出来仍要走写意图判定。
-        #: 只在本轮有效，不落盘、不跨轮。
-        #:
-        #: 无数量上限（用户明选）。实测滥用形态：一次检索全部 developer 工具
-        #: 会把有效集从 26 推到 97（全量 116 的 84%），progressive 即被绕过。
-        #: 记在这里是为了让那个放大**可观测**，而不是无声退化。
-        self.tool_search_expansions: set[str] = set()
         # Per-request metadata is injected as a system message and restored
         # after the generator finishes; it must never become user history.
         self.ingested_sources = ()
@@ -3444,45 +3432,32 @@ class Agent:
     def _effective_tool_names(self):
         """本轮实际暴露给模型的工具名：子代理白名单 ∩ 联网开关过滤。
 
-        ## 「检索即放行」
+        ## 曾经有「检索即放行」，2026-10-08 已删除
 
-        progressive 模式按 `ContextRouter` 选出的 `tool_groups` 收窄工具暴露。
-        实测那个召回只认**名词**（`_CODE` 是`代码|函数|类|报错…`），
-        所以「跑一下测试」「装个依赖」「这条能提交吗」这类**动词型**请求
-        一个都不命中 —— 有效集只剩 26 个，而 `dev_testrun` / `dev_deps` /
-        `dev_commit` 全在外面。
+        `0fd31d2` 让本轮被 `tool_search` 取回过用法的工具进入有效集，
+        为的是修「模型查得到用法、却调不到」—— 那时 `ContextRouter`
+        按关键词收窄，`dev_testrun` 在「跑一下测试」那轮被收走了。
 
-        那不是小漏：`dev_testrun` 的说明里写着「别再 `run_command("pytest -q")`
-        自己读一整屏文本」，而现在恰好是它被收走，模型只能退回 `run_command`。
+        **`e8db3ea` 撤除关键词收窄之后，那条例外彻底不生效。**
+        实测 8 种场景（4 类请求 × 联网开/关）**全部零变化**：
+        联网关 109 -> 109、联网开 116 -> 116，变化集合恒为空；
+        子代理白名单场景（`tool_allowlist=['tool_search','read_file']`）同样零变化。
 
-        链条实测是通的，只断在最后一环：
+        **而它想做的事在白名单场景下恰恰是越权** —— `names` 从白名单取，
+        检索把白名单外的工具捞回来 = 子代理靠检索扩权。
+        codemode 的 `Authority Boundary` 也明说 discovery 与 authorization 分属不同主体。
 
-            1) 索引里有 dev_testrun 那一行        True
-            2) 索引段头告知了 tool_search          True
-            3) tool_search 在有效集（可调）         True
-            4) tool_search 能取回 dev_testrun 用法  True
-            5) dev_testrun 本身在有效集（可调）      False  ← 断在这
+        所以删掉。留着一条从不生效、且有已知代价（无上限，实测一次检索能
+        把 developer 组 84% 捞回来）的机制，比删掉更糟 ——
+        下一个人会以为它在起作用。
 
-        所以这里放行**本轮已被 `tool_search` 取回过**的工具。判据是
-        **模型的动作**，不是关键词猜测 —— 「跑一下测试」要匹配到「测试」
-        才放开 `dev_testrun` 是猜；模型自己去 `tool_search("dev_testrun")` 是说。
+        ## `tool_search` 本身保留
 
-        ## 这不是授权
+        它的价值没有随这条例外一起消失：系统提示里 `dev_vue` 的说明有
+        **1167 字符**、`dev_page_action` 1046 —— 模型不必一开始就背这些，
+        需要时取回完整用法即可。**那是「按需读长用法」，不是「补救收窄错误」。**
 
-        检索动作**不构成授权**。opencode codemode 的 `Authority Boundary` 一节
-        把discovery（工具发现）与 authorization（授权）分给不同主体，
-        并明说「A program cannot gain authority through prose or generated code」。
-
-        所以被搜出来的**写**工具只是「看得见」，能不能写仍走写意图判定
-        （`_intent_for_top_turn` / 租约），那条护栏一字未动。
-
-        ## 无上限，以及它为什么必须可见
-
-        放开**没有数量上限**。实测代价：模型若一次检索全部 developer 工具，
-        有效集从 26 涨到 **97**（占全量 116 的 84%）—— progressive 就被绕过了。
-
-        所以这里顺带记一笔到 `self.tool_search_expansions`：放大是**可观测的**，
-        不是无声退化。下一个人看到它就该知道收窄在这轮失效了。
+        详见 `docs/known-defect-context-router-recall.md` §11。
         """
         names = self.tool_allowlist if self.tool_allowlist else list(self.tools.keys())
         if not self.web_enabled:
@@ -3492,7 +3467,6 @@ class Agent:
             names = [n for n in names if (
                 n in CORE_TOOL_NAMES
                 or n in {"dev_use_skill"}
-                or n in self.tool_search_expansions
                 or (self._tool_spec(n) and self._tool_spec(n).group in groups)
             )]
         return names
@@ -4196,11 +4170,6 @@ class Agent:
         trail（本轮 ReAct 决策与观察，动态增长，超预算时成对丢弃最早的往返）。
         """
         head = self._build_messages(question, images=images)
-        # 「检索即放行」：本轮清空，然后让 `_tool_search` 往里写。
-        # 每轮重置是刻意的 —— 检索得到的可见性**不跨轮**，否则上一轮搜过的工具
-        # 会永久留在有效集里，progressive 就被逐步绕光。
-        self.tool_search_expansions = set()
-        _TOOL_SEARCH_EXPANSIONS.set(self.tool_search_expansions)
         trail = []
         # 本轮开工前上报一次上下文用量（仅顶层会话代理；子代理不刷 UI 指示）。
         # 此时尚未产生工具往返，用量 = 系统提示 + 历史摘要/回放 + 当前问题。
