@@ -763,8 +763,18 @@ class LLMClient:
         kwargs = {"max_tokens": output_limit}
         # qwen3 toggle 家族（含 DashScope 兼容模式/自建端点）：按开关透传 enable_thinking。
         # 不支持思考的模型绝不带这个参数，避免 400；native 模型本身始终推理，无需传。
+        #
+        # ⚠⚠ **参数形状按 provider 分支，不能统一发 qwen 那一种。**
+        # DeepSeek V4/V4.1 的开关是 `{"thinking": {"type": "enabled"|"disabled"}}`
+        # （一手依据：api-docs.deepseek.com/guides/thinking_mode，示例直接用
+        # `model="deepseek-flash"`）。发成 `chat_template_kwargs` 的话，
+        # 上游要么忽略要么 400 —— 表现为「开关能点了但思考没开」，
+        # 比诚实地报「不支持」更难排查。
         if self.capability.get("thinking") == "toggle":
-            kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": thinking_on}}
+            if (self.provider or "").strip().lower() == "deepseek":
+                kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking_on else "disabled"}}
+            else:
+                kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": bool(thinking_on)}}
         call_timeout = self.timeout if timeout is None else timeout
         if tools:
             kwargs["tools"] = tools

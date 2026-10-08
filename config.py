@@ -297,12 +297,29 @@ _NATIVE_THINK_HINTS = (
 )
 
 # 支持 enable_thinking 开关的家族：(provider, 模型名前缀/子串)
+#
+# ⚠ **这里只回答「能不能开关」，不回答「参数长什么样」** —— 形状在 `llm.py` 里按
+# provider 分支。两者必须同时改：只把 provider 加进来而不改形状，会发一个
+# 上游不认的参数，**上游要么 400 要么静默忽略**，结果是「开关能点了但思考没开」，
+# 比原来更坏（原来至少是诚实地报「不支持」）。
 _TOGGLE_THINK_RULES = (
     ("qwen", "qwen3"),       #  DashScope 兼容模式 qwen3 系列支持 extra_body 开关
     ("ollama", "qwen3"),
     ("llamacpp", "qwen3"),
     ("custom", "qwen3"),
     ("siliconflow", "qwen3"),
+    # DeepSeek V4 / V4.1-Flash：**可开关**，但参数形状与 qwen 完全不同。
+    # 一手依据：官方 Thinking Mode 文档（api-docs.deepseek.com/guides/thinking_mode）
+    # 的示例直接用 `model="deepseek-flash"` 配
+    # `extra_body={"thinking": {"type": "enabled"}}` + `reasoning_effort`，
+    # 流式返回 `chunk.choices.delta.reasoning_content`；
+    # Change Log（api-docs.deepseek.com/updates）记 V4-Pro/V4-Flash 支持
+    # low/high/max 三档 thinking effort。
+    #
+    # 旧名 `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 已退役并路由到
+    # 同一模型，所以一并覆盖。
+    ("deepseek", "deepseek-flash"),
+    ("deepseek", "deepseek-v4-flash"),
 )
 
 # 视觉能力画像。未知模型不自动把图片交给原模型，除非用户在设置里确认；
