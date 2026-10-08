@@ -500,8 +500,11 @@ def main() -> int:
                     "changed_files": row.get("changed_files") or [],
                     "seconds": row.get("seconds"),
                     "n_events": row.get("n_events"),
-                    # ⚠ **等级必须落盘** —— 否则对比工具无从知道哪些格子
-                    # 该排除，而「排除无效轮次」正是这次修正的核心。
+                    # ⚠ **inal_text 必须落盘** —— 它是 grade 的**判据输入**。
+                    # 第一版修 grade 时我只加了 grade/n_events 却漏了它，
+                    # 于是「落了结论、没落依据」，grade 无法被事后复核。
+                    # 与今晚第 6 条教训同源：**判据的输入要能重算**。
+                    "final_text": (row.get("final_text") or "")[:400],
                     "grade": row.get("grade", "ok"),
                     "grade_reason": row.get("grade_reason", ""),
                 }
