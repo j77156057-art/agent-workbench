@@ -4885,13 +4885,27 @@ class Agent:
                           "action_input": native_override[1], "final": None}
             if parsed["thought"]:
                 yield {"type": "thought", "text": parsed["thought"]}
-            elif self.narration and parsed["action"]:
+            elif self.narration and (parsed["action"] or native_override is not None
+                                     or self._pending_batch):
                 # 工具轮里模型自己写的散文（没写 `Thought:` 标记的那种）。
                 # 剥掉协议标记后才敢用 —— 实测模型在该契约下仍会吐 `Thought:`。
                 #
-                # ⚠⚠ **`parsed["action"]` 这个条件不能省**：少了它，最后一轮
-                # （不派发工具、直接给答案）会把**最终答案本身**当成解说塞进
-                # 活动时间线，用户看到同一段话出现两次，且时间线里那份是残句。
+                # ⚠⚠ **守卫必须覆盖全部三条「派发了工具」的路径**，这是真跑打出来的：
+                #
+                #   1. `native_override`（单调用）—— `acc` 被追加了合成的 `Action:` 行
+                #   2. `parsed["action"]`（文本协议）—— 模型自己写了 `Action:`
+                #   3. `self._pending_batch`（**并行批次，多调用**）
+                #
+                # 第 3 条是实测踩到的：真模型一次发 3 个 `read_file`，走批次分支，
+                # 而批次分支**只设 `_pending_batch`、不设 `native_override`**，
+                # `acc` 里也没有合成的 `Action:` —— 于是 `parsed["action"]` 恒空。
+                # **只判 `parsed["action"]` 的话，叙述恰好在最常见的路径上被静默关掉**，
+                # 而且不报错、不掉事件，只是「一直没解说」。单调用假 LLM 测不到这条。
+                #
+                # 三条路径里**没有一条是「最终答案」**（那一轮三者皆空），
+                # 所以这个守卫仍然拦得住「答案漏进时间线」—— 承重性由
+                # `test_the_action_guard_is_load_bearing` 与
+                # `test_final_answer_never_enters_the_activity_timeline` 盯住。
                 _narration = narration_filter.offer(acc)
                 if _narration:
                     yield {"type": "thought", "text": _narration}

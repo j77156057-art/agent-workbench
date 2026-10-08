@@ -48,6 +48,14 @@ class ScriptedLLM:
                 {"id": "c%d" % i, "name": n, "arguments": json.dumps(a)}
                 for i, (n, a) in enumerate(spec[1])
             ]
+        elif spec[0] == "tools_prose":
+            # ⚠ **必须能表达这个形态**：真模型在**同一条消息里**既写散文又发 tool_call。
+            # 没有它，批次路径的散文永远是空串，测试就测不到「散文有没有被路由」。
+            content = spec[1]
+            self.last_tool_calls = [
+                {"id": "c%d" % i, "name": n, "arguments": json.dumps(a)}
+                for i, (n, a) in enumerate(spec[2])
+            ]
         else:
             content = spec[1]
         if stream:
@@ -193,6 +201,52 @@ class TestNarrationRouting:
                  if (e.get("text") or "").strip()
                  and not (e.get("text") or "").startswith(("检测到", "工具 ", "事实项"))]
         assert not stray, "关掉后仍有解说事件：%r" % stray
+
+    def test_narration_fires_on_the_PARALLEL_BATCH_path(self):
+        """⚠⚠ 这一条是**真跑发现的缺陷**，单调用假 LLM 测不到。
+
+        实测（2026-10-08 真模型）一次发 3 个 `read_file` -> 走**并行批次**分支。
+        而批次分支（`agent.py:4841`）**只设 `_pending_batch`、不设 `native_override`**，
+        所以 `acc` 里没有合成的 `Action:` 标记 -> `parse_response(acc)` 得到
+        `parsed["action"] == ""`。
+
+        于是守卫写成 `elif self.narration and parsed["action"]:` 时，
+        **恰好在最常见的路径上永远是假的** —— 叙述功能被静默关掉，
+        而且不报错、不掉事件，只是「一直没解说」。
+
+        真模型才批量派发；写单调用假 LLM 的测试永远走不到这条分支。
+        """
+        prose = "我先把这三个文件都读一遍，再判断 add 到底是加还是减。"
+        events = _run([
+            # 同一条消息里既写散文又发**两个** tool_call -> 并行批次分支
+            ("tools_prose", prose,
+             [("read_file", {"path": "a.py"}), ("read_file", {"path": "b.py"})]),
+            ("text", REAL_ANSWER),
+        ], narration=True)
+
+        batch_actions = _events(events, "action")
+        assert len(batch_actions) >= 2, \
+            "前提不成立：这一轮没走批量（%d 个 action），测的不是目标路径" % len(batch_actions)
+        thoughts = [t for t in _events(events, "thought")
+                    if prose[:12] in (t.get("text") or "")]
+        assert thoughts, (
+            "**并行批次路径上散文没成为解说** —— 守卫把 `parsed[\"action\"]` 当成唯一入口，"
+            "而批次分支（agent.py:4841）只设 `_pending_batch`、不设 `native_override`，"
+            "于是 `parsed[\"action\"]` 恒空")
+        assert not any(REAL_ANSWER[:30] in (t.get("text") or "")
+                       for t in _events(events, "thought")), \
+            "答案又漏进时间线了"
+
+    def test_narration_fires_on_the_SINGLE_call_path_too(self):
+        """单调用分支（`native_override`）也必须能出解说 —— 两个入口都要通。"""
+        prose = "我先读一下 a.py，确认 add 的实现。"
+        events = _run([
+            ("tools_prose", prose, [("read_file", {"path": "a.py"})]),
+            ("text", REAL_ANSWER),
+        ], narration=True)
+        assert _events(events, "action"), "前提不成立：没派发工具"
+        assert any(prose[:12] in (t.get("text") or "")
+                   for t in _events(events, "thought")), "单调用分支上散文没成为解说"
 
 
 # ---------------------------------------------------------------------------

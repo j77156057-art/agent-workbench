@@ -55,6 +55,13 @@ class ScriptedLLM:
                 {"id": "c%d" % i, "name": n, "arguments": json.dumps(a)}
                 for i, (n, a) in enumerate(spec[1])
             ]
+        elif spec[0] == "tools_prose":
+            # 同一条消息里既写散文又发调用 —— 真模型就是这个形态
+            content = spec[1]
+            self.last_tool_calls = [
+                {"id": "c%d" % i, "name": n, "arguments": json.dumps(a)}
+                for i, (n, a) in enumerate(spec[2])
+            ]
         else:
             content = spec[1]
         if stream:
@@ -214,7 +221,11 @@ def main() -> int:
     # 「thought 事件 0 条」正是这个条件换来的。
     f = F()
     would_leak = f.offer(REAL_ANSWER)
-    guard_present = 'elif self.narration and parsed["action"]:' in src
+    # ⚠ 锚点已随修复变过（加了两条路径）。写死一个字符串的时候
+    # 会在以后的改动里静默失效。这里只断言「三条路径都在」。
+    guard_present = (
+        'elif self.narration and (parsed["action"] or native_override is not None' in src
+        and 'or self._pending_batch' in src)
     print("      路由层条件存在: %s" % guard_present)
     print("      若无条件，offer(答案) 会放行 %d 字: %s"
           % (len(would_leak), bool(would_leak)))
@@ -225,9 +236,25 @@ def main() -> int:
     else:
         print("      OK —— 条件承重：它在，答案不漏；它不在，答案必漏")
 
+    # ---- [8b] 并行批次路径（真跑打出来的分支）----
+    print()
+    print("  [8b] 并行批次路径（同一条消息两个 tool_call）也要能出解说")
+    prose = "我先把这三个文件都读一遍，再判断 add 到底是加还是减。"
+    ev_b = run([("tools_prose", prose,
+                 [("read_file", {"path": "a.py"}), ("read_file", {"path": "b.py"})]),
+                ("text", REAL_ANSWER)], narration=True)
+    acts_b = events_of(ev_b, "action")
+    got_b = [t for t in events_of(ev_b, "thought") if prose[:12] in (t.get("text") or "")]
+    print("      批次 action %d 个；解说命中 %d 条" % (len(acts_b), len(got_b)))
+    if len(acts_b) < 2:
+        print("      ⚠ 这一轮没走批量（前提不成立），本项不作判定")
+    elif not got_b:
+        ok = False
+        print("      *** 批次路径上散文没成为解说 —— 而真模型**恰恰**走这条路径 ***")
+
     print()
     print("=" * 74)
-    print("  结论：%s" % ("八项全过" if ok else "*** 有失败 ***"))
+    print("  结论：%s" % ("全部通过" if ok else "*** 有失败 ***"))
     print("=" * 74)
     return 0 if ok else 1
 
