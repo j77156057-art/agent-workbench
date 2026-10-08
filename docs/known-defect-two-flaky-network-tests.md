@@ -121,27 +121,69 @@ bing 桩被调用?       True
 
 ---
 
-## 缺陷二：`test_app_test.py` 深链接，**未定性**
+## 缺陷二：`test_app_test.py` 的 `ERR_CONNECTION_RESET` —— **已定性**
+
+> **2026-10-08 定性：不是测试的随机故障，是前端缺陷的真实暴露。**
+
+### 结论
+
+红的那条是 `LivePageTests::test_the_ask_tier_really_runs_a_turn_through_the_page`
+（**不是**本节标题原先写的深链接那条），失败清单：
 
 ```
-LivePageTests::test_the_deep_link_tier_visits_every_route_in_a_real_browser
-"failed": ["deeplink_console_clean", "deeplink_no_failed_requests"]
-"deep_console_errors": [{"level":"error","text":"network: Failed to load resource: net::ERR_CONNECTION_RESET"}]
+"failed": ["console_clean", "no_failed_requests"]
+"console": [{"level":"error","text":"network: Failed to load resource: net::ERR_CONNECTION_RESET"}]
 ```
 
-### 已知：路由本身是对的
+根因在**前端**：工作树里未提交的 `frontend/src/fonts.ts`（前端 agent 正在做）
+注释写着：
 
-同一次运行里，6 条路径的判定**全部正确**——`/`、`/workbench`、`/trace` 三条 canonical 的
-`own_seen` 均为真且 `landed` 正确；`/workbench.html`、`/trace.html` 两条别名的
-`canonical` 收敛正确；`/no-such-page-for-deeplink` 的 `unknown_served_a_page` 为 `false`（404 行为正确）。
+> 原先这四个字族全部依赖 **fonts.googleapis.com**，实测本机访问会**间歇性
+> ERR_CONNECTION_RESET** —— 同一份 CSS 两次跑出两种观感
 
-**唯一不成立的是「console 干净」与「无失败请求」，原因只有一条 `ERR_CONNECTION_RESET`。**
+**症状字面相同。** 而那个 agent 已经诊断出同一根因并正在修
+（改用 `@fontsource` 自托管）。所以这条红**该红** —— 它忠实地报出了真实缺陷。
 
-### 未知
+**同源的另外三条**：第 1 次全量里 `test_app_test.py::LivePageTests` 一共红 **4** 条 ——
+`test_the_ask_tier_really_runs_a_turn_through_the_page`、
+`test_the_deep_link_tier_visits_every_route_in_a_real_browser`、
+`test_the_real_page_passes_every_line`、
+`test_the_stream_tier_actually_hears_the_fake_microphone`。
+第 2 次全量只剩 `ask_tier` 一条。
 
-- 只有一个样本。`ERR_CONNECTION_RESET` 是瞬时特征，但它也可能指向某个具体资源的稳定问题。
-- 失败消息**没说是哪个 URL**——这是取证缺口，重跑时需加诊断才能定位。
-- 会不会与 harness 服务重启有关（历史上出现过）——未查。
+**四条的 `console` 里都是同一条 `ERR_CONNECTION_RESET`**，所以是**同一个根因**
+（字体 CDN），不是四个独立问题。深链接那条**红过一次**（我第一版写「至今没有
+复现过」，**是错的** —— 手上第 1 次的清单里就有它）。
+
+### 同时修了一个**取证缺口**
+
+「失败消息没说是哪个 URL」——那不是运气问题，是采集缺陷：
+
+**缺口一：重定向被丢掉。** CDP 在重定向时**复用同一个 `requestId`** 再发一次
+`requestWillBeSent`，`request.url` 变成新地址，而跳转前的地址在上一次的记录里。
+旧代码只覆盖记最新 URL，于是重定向链上的失败只能指向最后一个地址 ——
+而字体 CDN（`fonts.googleapis.com` → `fonts.gstatic.com`）正是重灾区。
+
+**缺口二：反查不到 URL 时静默。** `loadingFailed` 的参数里**没有 URL**，
+只能靠 `requestId` 反查；查不到就成了空字符串，而代码当时什么都不说。
+
+现在报告会说「经 N 跳重定向：A -> B」，反查不到时会带 `requestId` + CDP 的
+`type` 并明说「该请求的 `requestWillBeSent` 未被记录」。
+
+守卫：`tests/test_failed_request_forensics.py`（8 条，变异 2 次全咬住），
+含一条**不许靠删 `no_failed_requests` 判定来变绿**的反向守卫。
+
+### 实现上我写错了一次，被守卫抓住
+
+第一版把 `redirectResponse.url` 当成「上一跳地址」，于是报出
+「重定向自 fonts.gstatic.com」—— **目标当成来源**，信息量零。
+
+真相：CDP 里 `redirectResponse.url` 就是**本次**这条（已等于 `request.url`），
+真正的上一跳是**上一次记的** `request.url`。守卫
+`test_the_redirect_source_is_the_previous_request_url` 钉住了正确取法。
+
+我还把「一次重定向 = 两次 `requestWillBeSent`」误当成「两跳」，
+是跑探针看到链尾重复才发现的 —— 守卫也跟着写错，一并改了。
 
 ---
 

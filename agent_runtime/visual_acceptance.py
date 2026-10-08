@@ -649,6 +649,9 @@ class _DevTools:
         self.failure_events = 0
         self.runtime_events = 0
         self._requests: dict[str, str] = {}
+        #: requestId -> 发生重定向**前**的 URL。CDP 复用同一个 requestId，
+        #: 而失败往往发生在重定向目标上，所以两条都要记。
+        self._redirected: dict[str, list[str]] = {}
 
     def _record_console(self, level: str, text: str) -> None:
         if "favicon.ico" in str(text).lower():
@@ -699,7 +702,25 @@ class _DevTools:
                 self._record_console(level, f"{entry.get('source') or ''}: {entry.get('text') or ''}".strip(": ").strip())
         elif method == "Network.requestWillBeSent":
             request = params.get("request") or {}
-            self._requests[str(params.get("requestId"))] = str(request.get("url") or "")
+            rid = str(params.get("requestId"))
+            url = str(request.get("url") or "")
+            # 重定向时 CDP **复用同一个 requestId** 再发一次 `requestWillBeSent`，
+            # 这一次 `request.url` 已是新地址，而**跳转前的地址在
+            # `redirectResponse.url`**（CDP 规范：`redirectResponse` is
+            # `Network.Response` — Redirect response data）。
+            # 旧代码只覆盖记最新 URL，于是重定向链上的失败只会指向最后一个地址，
+            # 而字体 CDN（fonts.googleapis.com -> fonts.gstatic.com）正是重灾区。
+            # 两条都记，报告里才看得出是哪一跳坏的。
+            redirect = params.get("redirectResponse") or {}
+            if redirect:
+                # **来源是上一次记的那个 `request.url`，不是 `redirectResponse.url`。**
+                # CDP 里 `redirectResponse.url` 就是**本次**这条（已在 `request.url` 里），
+                # 把它当来源会报出「A -> A」这种重复链 —— 我第一版就是这么错的，
+                # 被 tests/test_failed_request_forensics.py 抓住。
+                previous = self._requests.get(rid)
+                if previous and previous != url:
+                    self._redirected.setdefault(rid, []).append(previous)
+            self._requests[rid] = url
         elif method == "Network.responseReceived":
             response = params.get("response") or {}
             try:
@@ -710,8 +731,25 @@ class _DevTools:
                 url = str(response.get("url") or self._requests.get(str(params.get("requestId")), ""))
                 self._record_failure(f"http_{status}", url, response.get("statusText") or "")
         elif method == "Network.loadingFailed":
-            url = self._requests.get(str(params.get("requestId")), "")
-            self._record_failure("network", url, params.get("errorText") or "")
+            rid = str(params.get("requestId"))
+            url = self._requests.get(rid, "")
+            detail = str(params.get("errorText") or "")
+            # 重定向链：反查到的是跳转前的地址，而失败发生在重定向目标上。
+            # 整条链都报出来，否则读者会去查一个没坏的地址。
+            chain = self._redirected.get(rid) or []
+            if chain:
+                detail = "%s（经 %d 跳重定向：%s）" % (
+                    detail, len(chain), " -> ".join(chain + [url or "(未知)"]))
+            elif not url:
+                # **反查不到 URL 时不许静默**：这正是取证缺口 ——
+                # 报告只说「ERR_CONNECTION_RESET」而不说是哪个请求，
+                # 读的人无法判断是偶发还是某个稳定资源。
+                # 带上 requestId 与 CDP 给的 type，至少能定位到那一次请求。
+                detail = ("%s（requestId=%s type=%s，未捕获到 URL；"
+                          "该请求的 requestWillBeSent 未被记录）"
+                          % (detail or "加载失败", rid,
+                             params.get("type") or "?"))
+            self._record_failure("network", url, detail)
 
     def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self.sequence += 1
