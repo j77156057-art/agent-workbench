@@ -2614,6 +2614,96 @@ class _ReactTokenFilter:
         return out
 
 
+class _ReasoningCoalescer:
+    """把逐 token 的思考流合并成段落级事件。
+
+    ## 实测依据（2026-10-08，真模型 `qwen3.6:35b-a3b`）
+
+    一个只读工具的提问，事件流共 **56222** 个，其中 **reasoning 56210 个（100%）**，
+    合计 129270 字符 —— **平均 2.30 字符/事件**，35.7% 是单字符。
+
+    每个 `reasoning` 事件在 `useChatStream.ts` 里都会触发
+    `bufferFor(turn).reasoning += …` + `hooks.onReasoning?.(turn)` + `scheduleFlush()`，
+    也就是 **56210 次响应式通知**。这不是体验问题，是性能问题。
+
+    ## 为什么按段落切、而不是按固定长度切
+
+    Hermes 的同类机制旁留了一条理由（`hermes_cli/cli_stream_mixin.py:147-179`）：
+    *Some providers stream reasoning in tiny word/punctuation chunks; buffering keeps
+    the preview path from printing one line per token.* —— 它按**换行/段落终止符/
+    目标行宽**切，而不是按固定块长。
+
+    固定长度会在句子中间断开，读起来像卡顿；段落边界切开则每一条都是完整一句。
+
+    ## 阈值为什么是这个量级
+
+    目标是让 56210 个事件降到**几百个**（~50-200 倍降幅），同时保持「正在想」的
+    实时感。`min_chars=200` 意味着最快也要 200 字符才吐一条 —— 以实测 129270 字符
+    计约 640 条；`max_chars=1200` 是为了防「模型一口气写一整段不带换行」时无限缓冲。
+
+    ⚠ 这两个值是**从上面那次实测的字符量级推出来的**，不是拍脑袋；
+    换模型/换思考深度后应当用 `tools/probe_narration_event_mix.py` 重测再调。
+    """
+
+    #: 段落终止符（中文/英文都收）。按这些切而不是按固定长度，读起来不断句。
+    _TERMINATORS = "。！？；!?;\n"
+
+    def __init__(self, min_chars: int = 200, max_chars: int = 1200):
+        self._buf = ""
+        self._min = max(1, int(min_chars))
+        self._max = max(self._min, int(max_chars))
+
+    # ---- 内部：找切点 --------------------------------------------------
+    def _cut_at(self, text: str) -> int:
+        """返回切点下标；0 表示现在还不该切。"""
+        if len(text) < self._min:
+            return 0
+        # 1) 段落边界优先：取第一个 >= min 的 \n\n
+        idx = text.find("\n\n", self._min - 1)
+        if idx != -1:
+            return idx + 2
+        # 2) 否则在 [min, max] 区间内找最后一个句末/换行
+        window = text[self._min - 1:self._max]
+        best = -1
+        for i, ch in enumerate(window):
+            if ch in self._TERMINATORS or ch == " ":
+                best = i
+        if best != -1:
+            return self._min + best + 1
+        # 3) 实在没有边界（超长无标点段）才硬切，防止无限缓冲
+        if len(text) >= self._max:
+            return self._max
+        return 0
+
+    # ---- 对外 ----------------------------------------------------------
+    def take(self, pending: list, final: bool = False) -> list[str]:
+        """把 `pending` 里的新片段并进缓冲，返回本次该发出的完整块列表。
+
+        ⚠ **必须原地清空 `pending`** —— 它是 `chat_kwargs["reasoning_sink"]`，
+        上游 LLM 适配器会持续往里 append，不清会重复发。
+        """
+        for item in pending:
+            self._buf += str(item)
+        pending.clear()
+
+        out: list[str] = []
+        while True:
+            if final:
+                if self._buf:
+                    out.append(self._buf)
+                    self._buf = ""
+                break
+            cut = self._cut_at(self._buf)
+            if cut <= 0:
+                break
+            out.append(self._buf[:cut])
+            self._buf = self._buf[cut:]
+        return out
+
+    def reset(self) -> None:
+        self._buf = ""
+
+
 # ---------------------------------------------------------------------------
 # 子代理（受限委派）与技能工具
 # ---------------------------------------------------------------------------
@@ -4402,6 +4492,11 @@ class Agent:
                     # 思考流（reasoning_content / thinking）与正文分开收集，
                     # 每收到正文 token 就把已到达的思考片段作为 reasoning 事件上抛。
                     reasoning_q = []
+                    # 逐 token 的思考流按段落合并后再上抛。**不加这个合并器时，
+                    # 一次提问会产生 56210 个 reasoning 事件**（实测，见
+                    # `_ReasoningCoalescer` 的 docstring），而前端每个事件都触发一次
+                    # 响应式通知。内容一个字不少，只是切点从 token 变成段落。
+                    reasoning_coalescer = _ReasoningCoalescer()
                     prompt_leak_filter = _PromptLeakStreamFilter()
                     react_token_filter = _ReactTokenFilter()
                     try:
@@ -4449,14 +4544,14 @@ class Agent:
 
                         chat_stream = _raw_stream
                         for tok in _traced_stream():
-                            while reasoning_q:
-                                yield {"type": "reasoning", "text": reasoning_q.pop(0)}
+                            for _chunk in reasoning_coalescer.take(reasoning_q):
+                                yield {"type": "reasoning", "text": _chunk}
                             acc += tok
                             visible = react_token_filter.feed(prompt_leak_filter.feed(tok))
                             if visible:
                                 yield {"type": "token", "text": visible}
-                        while reasoning_q:
-                            yield {"type": "reasoning", "text": reasoning_q.pop(0)}
+                        for _chunk in reasoning_coalescer.take(reasoning_q, final=True):
+                            yield {"type": "reasoning", "text": _chunk}
                         _raise_if_cancelled()
                         visible = react_token_filter.feed(prompt_leak_filter.flush())
                         visible += react_token_filter.flush()
