@@ -19,7 +19,7 @@ import FileViewer from './components/FileViewer.vue'
 // 设置弹窗体积大（117KB）且低频：异步组件 + v-if，打开时才拉取
 const ModelSettingsDialog = defineAsyncComponent(() => import('../workbench/components/ModelSettingsDialog.vue'))
 import type { ChatMsg, ChatTraceItem } from '../workbench/composables/chat-types'
-import { ASK_PREFS_EVENT, loadAskPrefs, type AskPrefs } from './askPrefs'
+import { prefs } from './askPrefs'
 
 // ---------------- 全局状态 ----------------
 const power = ref<ModelStatus | null>(null)
@@ -59,17 +59,16 @@ const {
   },
 })
 
-// 问答「默认开关」：设置弹窗里勾的「深度思考/联网搜索默认开启」写进 docmind.chatThinking / chatWeb
+// 问答「默认开关」：设置里勾的「深度思考/联网搜索默认开启」写进 docmind.chatThinking / chatWeb
 // （useModelConfig 自己存的那份，问答页与工作台对话台共享），这里把 chip 状态跟着翻。
 // 正在回答时不搅 —— 改设置不该影响已经在跑的这一轮。
-function syncDefaultSwitches() {
+// 绑共享 prefs 而不是自己挂 ASK_PREFS_EVENT：只有这两个值真的变了才翻 chip，
+// 改「引用条数上限」之类无关偏好不再顺带搅动输入区。
+watch(() => [prefs.defaultThinking, prefs.defaultWeb] as const, ([t, w]) => {
   if (sending.value) return
-  const p = loadAskPrefs()
-  thinkingOn.value = p.defaultThinking
-  webOn.value = p.defaultWeb
-}
-onMounted(() => window.addEventListener(ASK_PREFS_EVENT, syncDefaultSwitches))
-onUnmounted(() => window.removeEventListener(ASK_PREFS_EVENT, syncDefaultSwitches))
+  thinkingOn.value = t
+  webOn.value = w
+})
 
 const viewer = ref<{ path: string; line: number } | null>(null)
 

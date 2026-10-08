@@ -2,9 +2,9 @@
 // 单条对话气泡：用户消息（含图片）/ 助手消息。
 // 助手消息支持 SSE 流式渲染：深度思考折叠块、ReAct 轨迹（分析/动作/观察/复核）、
 // Markdown 正文、文件行号引用 chips（点击打开只读源码弹窗）。
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { mdToHtml, extractFileRefs } from '../../workbench/markdown'
-import { ASK_PREFS_EVENT, loadAskPrefs, type AskPrefs } from '../askPrefs'
+import { prefs } from '../askPrefs'
 // 工作流卡片 104KB，只有触发工作流的消息才渲染：按需加载，问答首屏不背
 const WorkflowCard = defineAsyncComponent(() => import('../../workbench/components/WorkflowCard.vue'))
 import type { ChatMsg, ChatTraceItem } from '../../workbench/composables/chat-types'
@@ -20,32 +20,33 @@ const html = computed(() => mdToHtml(props.msg.text || ''))
 const refs = computed(() => extractFileRefs(props.msg.text || ''))
 const streaming = computed(() => props.msg.status === 'streaming')
 
-// 问答偏好：设置弹窗改完派发 ASK_PREFS_EVENT，这里即时重载，已渲染的旧消息也跟着变
-const prefs = ref<AskPrefs>(loadAskPrefs())
-const onPrefsChanged = () => { prefs.value = loadAskPrefs() }
-onMounted(() => window.addEventListener(ASK_PREFS_EVENT, onPrefsChanged))
-onBeforeUnmount(() => window.removeEventListener(ASK_PREFS_EVENT, onPrefsChanged))
+// 展示偏好直接读 askPrefs 里那份共享 reactive —— 不再自己 ref(loadAskPrefs()) + 挂
+// ASK_PREFS_EVENT 监听器。同一件事两套机制，漏挂或时序差就是「设置改了界面不跟」。
 
-// 引用条数上限（0 = 不限制）：答案里可能引用几十处代码，默认只挑前几条展示
+// 引用条数上限（0 = 不限制）：答案里可能引用几十处代码，默认只挑前几条展示。
+// 但截断不能是静默的 —— 少掉的那几条要数得出来、点得开，否则用户以为答案只引用了这些。
+const refsAll = ref(false)
 const shownRefs = computed(() => {
   const all = refs.value
-  const n = prefs.value.maxRefs
-  return n > 0 ? all.slice(0, n) : all
+  const n = prefs.maxRefs
+  return n > 0 && !refsAll.value ? all.slice(0, n) : all
 })
+const hiddenRefs = computed(() => refs.value.length - shownRefs.value.length)
+const canCollapseRefs = computed(() => refsAll.value && prefs.maxRefs > 0 && refs.value.length > prefs.maxRefs)
 
 // ---------------- 深度思考折叠 ----------------
 // 初始展开与否由「问答偏好」决定（设置弹窗里可改，存 localStorage）；
 // 关掉该偏好时，答案生成完自动折叠翻回默认折叠。
-const reasonOpen = ref(prefs.value.reasonOpen)
+const reasonOpen = ref(prefs.reasonOpen)
 let reasonManual = false
 watch(() => props.msg.reasoning, (v) => {
   if (v && streaming.value && !reasonManual) reasonOpen.value = true
 })
 watch(() => props.msg.status, (s) => {
-  if (s !== 'streaming' && !reasonManual && !prefs.value.reasonOpen) reasonOpen.value = false
+  if (s !== 'streaming' && !reasonManual && !prefs.reasonOpen) reasonOpen.value = false
 })
 // 设置弹窗里改「深度思考默认展开」时，已渲染的折叠块要跟着翻（手动点开过的那条不搅）
-watch(() => prefs.value.reasonOpen, (v) => {
+watch(() => prefs.reasonOpen, (v) => {
   if (!reasonManual) reasonOpen.value = v
 })
 function toggleReason() {
@@ -62,7 +63,7 @@ const mutedSteps = ref<Set<number>>(new Set())
 function stepOpen(i: number) {
   if (openSteps.value.has(i)) return true
   if (mutedSteps.value.has(i)) return false
-  return prefs.value.autoExpandTrace && streaming.value
+  return prefs.autoExpandTrace && streaming.value
 }
 function toggleStep(i: number) {
   const open = stepOpen(i)
@@ -232,7 +233,7 @@ const phaseLabel = computed(() => {
           <div v-if="msg.status === 'error'" class="flag error">{{ msg.error || '请求失败' }}</div>
         </div>
 
-        <!-- 文件引用（条数上限由问答偏好控制） -->
+        <!-- 文件引用（条数上限由展示偏好控制；被截断的条数必须数得出来、点得开） -->
         <div v-if="shownRefs.length" class="refs">
           <button
             v-for="(r, i) in shownRefs" :key="i"
@@ -243,6 +244,11 @@ const phaseLabel = computed(() => {
             <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M6 2h8l4 4v16H6V2zm7 1.5V7h3.5L13 3.5zM8 11h8v1.5H8V11zm0 3.5h8V16H8v-1.5zm0 3.5h5v1.5H8V18z"/></svg>
             <span class="ref-path">{{ r.path }}</span><span v-if="r.line" class="ref-line">:{{ r.line }}</span>
           </button>
+          <button v-if="hiddenRefs > 0" type="button" class="ref-chip ref-more"
+                  :title="'还有 ' + hiddenRefs + ' 处引用未显示'"
+                  @click="refsAll = true">+{{ hiddenRefs }} 处</button>
+          <button v-else-if="canCollapseRefs" type="button" class="ref-chip ref-more"
+                  @click="refsAll = false">收起</button>
         </div>
 
         <!-- 通知 -->
@@ -437,11 +443,14 @@ border-radius: var(--r-sm); background: var(--bg-raised); overflow: hidden; }
   padding: 3px 9px;
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--accent);
+  /* 填色令牌不能当文字色：var(--accent) 压在 --bg-raised 上 paper 皮肤实测 2.71:1。
+     仓库约定是纸底强调字走 --accent-text（graphite 下同样已按 4.5:1 解算）。 */
+  color: var(--accent-text);
   cursor: pointer;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .ref-chip:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
+.ref-more { font-weight: 700; letter-spacing: .02em; }
 .ref-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref-line { color: var(--text-muted); font-family: var(--font-mono); }
 .ref-chip:hover .ref-line { color: var(--accent-ink); }

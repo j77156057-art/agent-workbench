@@ -23,7 +23,7 @@ import { loadMaterial, setMaterial, onMaterialChange, type Material } from '../g
 import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '../layoutMode'
 // 对话展示偏好：与问答页 / 模型设置弹窗同一份（reactive 视图 + localStorage）。
 // 这里不复制状态，直接绑到共享对象上，改完写存储并派发事件让两个入口同时刷新。
-import { ASK_PREFS_EVENT, prefs as dp, saveAskPrefs, type AskPrefs } from '../../ask/askPrefs'
+import { prefs as dp, saveAskPrefs } from '../../ask/askPrefs'
 
 const props = defineProps<{ visible: boolean; initialTab?: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'appearance' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -55,12 +55,10 @@ function chooseSkin(key: SkinKey) {
 onSkinChange((k) => { skin.value = k })
 
 // ---------------- 对话与运行展示偏好 ----------------
-// v-model 已经把新值写进共享的 dp 对象了，这里只负责落盘 + 广播：
-// ChatDock / AskMessage 读的是同一个 dp，所以本窗口即时生效；
-// 事件是给「自己 ref(loadAskPrefs()) 另存一份」的消费方（AskMessage）和别的入口用的。
+// 控件直接绑共享 dp（v-model 已经把新值写进这份 reactive），这里只负责落盘。
+// 全仓只有这一份内存状态，所以不需要再广播什么 —— 见 askPrefs.ts 顶部注释。
 function saveDisplayPrefs() {
-  saveAskPrefs({ ...dp } as AskPrefs)
-  window.dispatchEvent(new Event(ASK_PREFS_EVENT))
+  saveAskPrefs({ ...dp })
 }
 function setMaxRefs(e: Event) {
   dp.maxRefs = Number((e.target as HTMLSelectElement).value)

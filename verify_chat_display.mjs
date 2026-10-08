@@ -37,9 +37,27 @@ const FRAMES = [
 ]
 const TAIL = [{ type: 'token', text: '两处不一致。' }, { type: 'done' }]
 
-// 页面侧假 /api/chat：把 FRAMES 全推下去后卡在闸门上不放行，Node 侧就能在
-// 「流式进行中」这个状态里量 DOM；放行后才补完答案并关流。
-const fakeChat = () => `(() => {
+// 引用上限那条用例要的素材：答案里点名的路径必须真的存在于夹具文件树
+// （refsOf 会按文件树过滤掉幻觉路径），所以从 /api/fs/tree 现取，不写死 ——
+// 夹具会被其它套件跑脏（多出一堆 regression_*/custom_* 文件），写死的路径说没就没。
+const tree = await (await fetch(base + '/api/fs/tree')).json()
+const FILES = []
+;(function walk(node) {
+  // 树是 nodes → 每层 children 的两套键名（顶层 nodes，子节点 children），
+  // 且判文件要看 type === 'file'：用「有没有子节点」判会误收空目录。
+  for (const c of node.children || node.nodes || []) {
+    if (c.type === 'file' && c.path) FILES.push(c.path)
+    walk(c)
+  }
+})(tree)
+assert.ok(FILES.length >= 8, `夹具文件树只剩 ${FILES.length} 个文件，引用用例没法造截断`)
+const REF_PATHS = FILES.slice(0, 8)
+const REF_FRAMES = [{ type: 'token', text: REF_PATHS.map((p, i) => `- ${p}:${i + 1}`).join('\n\n') }]
+const REF_TAIL = [{ type: 'done' }]
+
+// 页面侧假 /api/chat：把 frames 全推下去后卡在闸门上不放行，Node 侧就能在
+// 「流式进行中」这个状态里量 DOM；放行后才补完 tail 并关流。
+const fakeChat = (frames, tail) => `(() => {
   const native = window.fetch.bind(window)
   const frame = o => 'data: ' + JSON.stringify(o) + '\\n\\n'
   window.__chatDone = false
@@ -48,12 +66,16 @@ const fakeChat = () => `(() => {
     const enc = new TextEncoder()
     const stream = new ReadableStream({
       async start(controller) {
-        for (const f of ${JSON.stringify(FRAMES)}) {
+        window.__held = false
+        for (const f of ${JSON.stringify(frames)}) {
           controller.enqueue(enc.encode(frame(f)))
           await new Promise(r => setTimeout(r, 60))
         }
+        // 闸门真的挂上了才算「流式中」：只等 DOM 会和这里抢时序（token 先渲染、
+        // 下一拍才调用 __gate），Node 侧 finish() 就会拿到一个空的 resolver。
+        window.__held = true
         await window.__gate()
-        for (const f of ${JSON.stringify(TAIL)}) controller.enqueue(enc.encode(frame(f)))
+        for (const f of ${JSON.stringify(tail)}) controller.enqueue(enc.encode(frame(f)))
         controller.close()
         window.__chatDone = true
       },
@@ -63,6 +85,8 @@ const fakeChat = () => `(() => {
 })()`
 
 const DEFAULTS = { showTrace: true, reasonOpen: false, autoExpandTrace: true, maxRefs: 6, defaultThinking: false, defaultWeb: false }
+// 引用截断用例专用：上限压到 3，保证 8 个真实引用一定被截（不依赖夹具文件数）
+const PREFS_REF = { ...DEFAULTS, maxRefs: 3 }
 
 let release = null
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
@@ -82,14 +106,16 @@ async function openDockAndAsk(page, question) {
   await page.click('button.cd-send')
 }
 
-async function boot(prefs) {
+async function boot(prefs, route = '/workbench', frames = FRAMES, tail = TAIL) {
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
   page.setDefaultTimeout(20000)
   await page.exposeFunction('__gate', () => new Promise(res => { release = res }))
   await page.addInitScript(`localStorage.setItem("docmind.askPrefs", ${JSON.stringify(JSON.stringify(prefs))})`)
-  await page.addInitScript(fakeChat())
-  await page.goto(base + '/workbench', { waitUntil: 'domcontentloaded' })
-  await page.waitForSelector('.ft-row')
+  await page.addInitScript(fakeChat(frames, tail))
+  await page.goto(base + route, { waitUntil: 'domcontentloaded' })
+  // 夹具是共享的，会被其它套件跑脏（几十个 custom_*/regression_* 目录），
+  // 树首屏偶尔要 20 秒以上 —— 实测撞过一次，这里给足余量而不是让它变成假红。
+  await page.waitForSelector(route === '/workbench' ? '.ft-row' : '.composer textarea', { timeout: 60000 })
   return page
 }
 
@@ -110,17 +136,64 @@ const snapshot = page => page.evaluate(() => {
   }
 })
 
+/** 数引用：shown = 真实文件 chip 条数（不含 +N / 收起那颗），hidden = 「+N 处」里的 N。 */
+const readRefs = (page, boxSel, chipSel, moreSel) => page.evaluate(([box, chip, more]) => {
+  const el = document.querySelector(box)
+  if (!el) return { shown: 0, moreLabel: null, hidden: 0 }
+  const moreClass = more.split('.').pop()
+  const chips = [...el.querySelectorAll(chip)].filter(x => !x.classList.contains(moreClass))
+  const label = el.querySelector(more)?.textContent?.trim() ?? null
+  const m = label ? /^\+(\d+) 处$/.exec(label) : null
+  return { shown: chips.length, moreLabel: label, hidden: m ? Number(m[1]) : 0 }
+}, [boxSel, chipSel, moreSel])
+
+// 文字对比度：只看渲染结果（半透明底逐层合成），不看 CSS 里声明了什么。
+// 引用 chip 以前用 var(--accent) 当文字色 —— 那是填色令牌，压在淡底上 paper 只有 2.71:1。
+const textContrast = (page, sel) => page.evaluate((s) => {
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const parse = v => {
+    let m = v.match(/^color\(\s*srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\s*\)/)
+    if (m) return { rgb: [+m[1] * 255, +m[2] * 255, +m[3] * 255], a: m[4] === undefined ? 1 : +m[4] }
+    m = v.match(/rgba?\(([^)]+)\)/)
+    if (!m) return null
+    const p = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+    return { rgb: [p[0], p[1], p[2]], a: p[3] === undefined ? 1 : p[3] }
+  }
+  const el = document.querySelector(s)
+  if (!el) return null
+  const stack = []
+  for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+    const c = parse(getComputedStyle(n).backgroundColor)
+    if (c) { stack.push(c); if (c.a >= .999) break }
+  }
+  let bg = { rgb: [255, 255, 255], a: 1 }
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const c = stack[i]
+    bg = { rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + bg.rgb[k] * (1 - c.a)), a: 1 }
+  }
+  const fg = parse(getComputedStyle(el).color)
+  const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + bg.rgb[k] * (1 - fg.a)) }
+  const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
+  return +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
+}, sel)
+
 async function holdMidStream(page) {
   await openDockAndAsk(page, '伤害公式哪里和设计文档不一致？')
-  await page.waitForSelector('.cd-activity-item', { timeout: 15000 })
+  await page.waitForSelector('.cd-activity-item', { timeout: 30000 })
   await page.waitForTimeout(500)
   return snapshot(page)
 }
 
 async function finish(page) {
+  // 夹具是共享的，被其它套件跑脏后首屏和流式管线都可能慢到几十秒（实测撞过一次），
+  // 这些等待给足余量，否则偶发超时会变成假红。
+  await page.waitForFunction(() => window.__held === true, null, { timeout: 30000 })
   const r = release; release = null
-  r?.()
-  await page.waitForFunction(() => window.__chatDone === true, null, { timeout: 10000 })
+  // 闸门还没被页面调用就 finish() 是用例写错了，直接说清楚，别留一个 10 秒超时
+  assert.ok(r, 'finish() 时闸门还没被页面调用（发送没发生，或等错了选择器）')
+  r()
+  await page.waitForFunction(() => window.__chatDone === true, null, { timeout: 30000 })
   await page.waitForTimeout(400)
   return snapshot(page)
 }
@@ -178,7 +251,7 @@ try {
   // ③ 关掉「显示推理轨迹」——这条偏好此前对开发台完全无效
   page = await boot({ ...DEFAULTS, showTrace: false })
   await openDockAndAsk(page, '再来一轮')
-  await page.waitForSelector('.cd-reason', { timeout: 15000 })
+  await page.waitForSelector('.cd-reason', { timeout: 30000 })
   await page.waitForTimeout(400)
   s = await snapshot(page)
   check('开关「显示推理轨迹步骤」在开发台真的生效（此前是假设置）', () => {
@@ -199,8 +272,60 @@ try {
   })
   await finish(page)
   await page.close()
+
+  // ⑤ 引用条数上限：截断必须数得出来、点得开（两页都是以前静默吞掉）
+  page = await boot(PREFS_REF, '/workbench', REF_FRAMES, REF_TAIL)
+  await openDockAndAsk(page, '把所有相关文件列出来')
+  // 先等到「流式中」这个证据再放行：抢在页面调用 __gate 之前 finish() 会去 release
+  // 一个还不存在的 resolver，闸门就永远卡不住。
+  await page.waitForSelector('.cd-answer-live', { timeout: 30000 })
+  await finish(page)
+  const dockChip = await textContrast(page, '.cd-refs .cd-ref')
+  const dockMore = await textContrast(page, '.cd-refs .cd-ref-more')
+  let before = await readRefs(page, '.cd-refs', '.cd-ref', '.cd-ref-more')
+  check('开发台引用超上限时露出「+N 处」，不是静默少几条', () => {
+    assert.equal(before.shown, PREFS_REF.maxRefs, `默认应只显 ${PREFS_REF.maxRefs} 条，实际 ${before.shown}`)
+    assert.match(before.moreLabel || '', /^\+\d+ 处$/, `没看到 +N 按钮：${JSON.stringify(before.moreLabel)}`)
+    assert.ok(before.hidden >= 1, `+N 里的 N 应当 ≥1，读到 ${before.moreLabel}`)
+  })
+  check('开发台引用 chip 文字达 AA（曾经用填色令牌当文字色）', () => {
+    assert.ok(dockChip >= 4.5, `引用 chip 文字对比度只有 ${dockChip}:1`)
+    assert.ok(dockMore >= 4.5, `+N 按钮文字对比度只有 ${dockMore}:1`)
+  })
+  await page.click('.cd-refs .cd-ref-more')
+  let after = await readRefs(page, '.cd-refs', '.cd-ref', '.cd-ref-more')
+  check('点开「+N 处」补齐剩下的，并给出收起入口', () => {
+    assert.equal(after.shown, PREFS_REF.maxRefs + before.hidden,
+      `展开后应 ${PREFS_REF.maxRefs + before.hidden} 条，实际 ${after.shown}`)
+    assert.equal(after.moreLabel, '收起', '展开后没有收起入口')
+  })
+  await page.close()
+
+  page = await boot(PREFS_REF, '/', REF_FRAMES, REF_TAIL)
+  await page.locator('.composer textarea').fill('把所有相关文件列出来')
+  await page.click('button.send-btn')
+  await page.waitForSelector('.refs', { timeout: 30000 })
+  await page.waitForTimeout(400)
+  before = await readRefs(page, '.refs', '.ref-chip', '.ref-more')
+  const askChip = await textContrast(page, '.refs .ref-chip')
+  const askMore = await textContrast(page, '.refs .ref-more')
+  check('问答页同样露出 +N 并可展开', () => {
+    assert.equal(before.shown, PREFS_REF.maxRefs, `默认应只显 ${PREFS_REF.maxRefs} 条，实际 ${before.shown}`)
+    assert.match(before.moreLabel || '', /^\+\d+ 处$/, `问答页没看到 +N：${JSON.stringify(before.moreLabel)}`)
+  })
+  check('问答页引用 chip 文字达 AA', () => {
+    assert.ok(askChip >= 4.5, `引用 chip 文字对比度只有 ${askChip}:1`)
+    assert.ok(askMore >= 4.5, `+N 按钮文字对比度只有 ${askMore}:1`)
+  })
+  await page.click('.refs .ref-more')
+  after = await readRefs(page, '.refs', '.ref-chip', '.ref-more')
+  check('问答页展开后条数对得上', () => {
+    assert.equal(after.shown, PREFS_REF.maxRefs + before.hidden,
+      `展开后应 ${PREFS_REF.maxRefs + before.hidden} 条，实际 ${after.shown}`)
+  })
+  await page.close()
 } finally {
   await browser.close()
 }
-console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}：对话展示层 8 项断言`)
+console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}：对话展示层 14 项断言`)
 process.exit(failed ? 1 : 0)

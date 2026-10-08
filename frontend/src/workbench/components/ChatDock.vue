@@ -325,10 +325,20 @@ function visibleTrace(msg: ChatMsg) {
   })
   return msg.trace.map((item, index) => ({ item, index })).filter(x => !hidden.has(x.index))
 }
-/** 答案下方引用 chips 上限（0 = 不限制），与问答页同一份偏好、同一个语义。 */
+/** 答案下方引用 chips 上限（0 = 不限制），与问答页同一份偏好、同一个语义。
+ *  截断不能是静默的：少掉的条数要数得出来、点得开，否则用户以为答案只引用了这些。 */
+const refsExpanded = ref<Set<number>>(new Set())
 function shownRefs(msg: ChatMsg) {
   const all = refsOf(msg)
-  return displayPrefs.maxRefs > 0 ? all.slice(0, displayPrefs.maxRefs) : all
+  if (displayPrefs.maxRefs <= 0 || refsExpanded.value.has(msg.id)) return all
+  return all.slice(0, displayPrefs.maxRefs)
+}
+function hiddenRefs(msg: ChatMsg) { return refsOf(msg).length - shownRefs(msg).length }
+function toggleRefs(msg: ChatMsg) {
+  const next = new Set(refsExpanded.value)
+  if (next.has(msg.id)) next.delete(msg.id)
+  else next.add(msg.id)
+  refsExpanded.value = next
 }
 const traceSegmentOpen = ref<Set<number>>(new Set())
 function toggleTraceSegment(id: number) {
@@ -1393,6 +1403,11 @@ const webTitle = computed(() => webOn.value
                 <span class="cd-ref-path">{{ r.path }}</span>
                 <span v-if="r.line" class="cd-ref-line">:{{ r.line }}</span>
               </button>
+              <button v-if="hiddenRefs(m) > 0" type="button" class="cd-ref cd-ref-more"
+                      :title="'还有 ' + hiddenRefs(m) + ' 处引用未显示'"
+                      @click="toggleRefs(m)">+{{ hiddenRefs(m) }} 处</button>
+              <button v-else-if="displayPrefs.maxRefs > 0 && refsOf(m).length > displayPrefs.maxRefs"
+                      type="button" class="cd-ref cd-ref-more" @click="toggleRefs(m)">收起</button>
             </div>
           </template>
         </div>
@@ -1787,10 +1802,13 @@ const webTitle = computed(() => webOn.value
   display: inline-flex; align-items: center; gap: 4px;
   height: 22px; padding: 0 8px;
   border: 1px solid var(--border-2); border-radius: 5px;
-  background: var(--accent-soft); color: var(--accent);
+  /* color 不能取 var(--accent)：那是填色令牌，压在 --accent-soft 底上 paper 实测
+     约 2.5:1。仓库约定纸底强调字走 --accent-text。 */
+  background: var(--accent-soft); color: var(--accent-text);
   font-family: var(--font-mono); font-size: 11px; cursor: pointer;
 }
 .cd-ref:hover { background: var(--bg-selected); border-color: var(--accent); }
+.cd-ref-more { font-weight: 700; }
 .cd-ref-line { color: var(--amber); }
 .cd-web-sources { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 5px; max-width: 96%; }
 .cd-web-sources summary { cursor: pointer; color: var(--text-muted); font-size: 11px; }

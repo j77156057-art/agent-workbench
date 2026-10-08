@@ -29,8 +29,11 @@ const KEY = 'docmind.askPrefs'
 const THINKING_KEY = 'docmind.chatThinking'
 const WEB_KEY = 'docmind.chatWeb'
 
-// 设置弹窗改完偏好后派发这个事件，让已渲染的旧消息立刻跟着变（同标签页不触发 storage 事件）
-export const ASK_PREFS_EVENT = 'docmind:askprefs'
+// 2026-10-08 删掉了原来的 ASK_PREFS_EVENT（'docmind:askprefs'）：偏好改成一份共享
+// reactive 之后，唯一的监听者是本模块自己「事件 → 重读 localStorage」，而写路径
+// saveAskPrefs 已经 Object.assign 过一遍 —— 自己派发给自己，纯空转。
+// 真要跨标签页同步应该监听 window 的 storage 事件（skins.ts 的 onSkinChange 那样），
+// 这个自定义事件从来没有覆盖过那个场景。别再往回加。
 
 export const ASK_PREFS_DEFAULT: AskPrefs = { showTrace: true, reasonOpen: false, autoExpandTrace: true, maxRefs: 6, defaultThinking: false, defaultWeb: false }
 
@@ -65,8 +68,8 @@ function readStored(key: string): boolean {
 }
 
 export function saveAskPrefs(p: AskPrefs): void {
-  // 先同步内存视图再写存储：存储可能因隐私模式/策略被拒，但本次会话内的
-  // 生效不能依赖它成功（下面 catch 里就不 return，偏好照旧派发事件）。
+  // 先同步内存视图再写存储：存储可能因隐私模式/策略被拒，但本次会话内的生效
+  // 不能依赖它成功（所以下面 catch 里不 return —— 界面已经跟着变了）。
   Object.assign(prefs, p)
   try {
     window.localStorage.setItem(KEY, JSON.stringify(p))
@@ -79,14 +82,12 @@ export function saveAskPrefs(p: AskPrefs): void {
   }
 }
 
-// 单一响应式视图：消费方 import 这一个对象即可，改设置 = 写存储 + 派发事件。
-// 避免每个组件各自 ref(loadAskPrefs()) + 挂监听器（漏挂就是一个不起眼的假设置）。
-// AskMessage 仍保留它自己那份监听（同源于 localStorage，不会打架），不在本次改动里顺手重构。
+// 单一响应式视图：全仓只此一份内存状态。写路径只有 saveAskPrefs（落盘 + 同步这份），
+// 读路径只有 import 这个对象 —— AskMessage / AskApp / ChatDock / useMessageRender /
+// 两个设置面板都绑它。以前是「各自 ref(loadAskPrefs()) + 挂事件监听」的第二套机制，
+// 同一状态两份副本，弹窗开着时另一边改过就读到旧的。
 //
 // ⚠️ 必须放在文件末尾：这里在模块求值期调用 loadAskPrefs()，而它读 ASK_PREFS_DEFAULT。
 // 挪到上面去就是 TDZ 报错「Cannot access 'A' before initialization」，整站白屏
 // （实测踩过：vite build 不报错、vue-tsc 不报错，只有真打开页面才炸）。
 export const prefs: AskPrefs = reactive(loadAskPrefs())
-if (typeof window !== 'undefined') {
-  window.addEventListener(ASK_PREFS_EVENT, () => Object.assign(prefs, loadAskPrefs()))
-}

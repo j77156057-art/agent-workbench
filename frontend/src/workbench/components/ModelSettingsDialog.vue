@@ -5,7 +5,7 @@
 import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import { modelApi } from '../api'
 import type { ModelConfigInfo, ContextLookupResult, ModelPreset } from '../api'
-import { ASK_PREFS_EVENT, loadAskPrefs, saveAskPrefs, type AskPrefs } from '../../ask/askPrefs'
+import { prefs as sharedPrefs, saveAskPrefs, type AskPrefs } from '../../ask/askPrefs'
 
 const props = defineProps<{ visible: boolean; config: ModelConfigInfo | null }>()
 const emit = defineEmits<{
@@ -212,13 +212,13 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => window.addEventListener('keydown', onKeydown))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
-// 问答页「展示偏好」：纯前端开关，不落后端 /api/config（那是 api.py 交叠热点）。
-// 改完立刻写 localStorage 并派发事件，问答页已渲染的旧消息也会即时跟着变。
-const ap = ref<AskPrefs>(loadAskPrefs())
+// 「展示偏好」：纯前端开关，不落后端 /api/config（那是 api.py 交叠热点）。
+// 绑的是 askPrefs 那份共享 reactive（与设置页 / 问答页 / 对话台同一个对象），
+// 这里不再自己 ref(loadAskPrefs()) 存一份 —— 同一状态两份内存副本，
+// 一边改了另一边就是旧的（弹窗打开期间设置页改过就中招）。
+const ap = sharedPrefs
 function apSet(patch: Partial<AskPrefs>) {
-  ap.value = { ...ap.value, ...patch }
-  saveAskPrefs(ap.value)
-  window.dispatchEvent(new Event(ASK_PREFS_EVENT))
+  saveAskPrefs({ ...sharedPrefs, ...patch })
 }
 
 // Ollama /api/show 实时探测模型真实窗口：成功后仅填入输入框，保存才生效
