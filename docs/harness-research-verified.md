@@ -220,9 +220,37 @@ npm run build               退出码 0（44.2s）
 | 守卫 | 判据 | 变异实测 |
 |---|---|---|
 | `test_bootstrap_passes_the_flag` | 桩掉 `_run`、**真跑一次 `ensure_dependencies`**、断言捕获到的**真实 argv** | 去掉 flag → 红 |
-| `test_ci_passes_the_flag` | 解析 `harness.yml` 的 `run:`（**不是 grep 整份文件**） | 去掉 flag → 红 |
+| `test_ci_passes_the_flag` | **真解析 YAML** → 收集所有 `run:` 的值 → 只在**真正执行**的命令行里找 | 去掉 flag → 红 |
 | `test_no_new_lifecycle_script_dependency_slips_in` | lockfile 里带 install 脚本的包**恰好是已实测的 4 个** | 新增一个 → 红 |
 | （对照）无效变异：只加注释痕迹、**不动真实代码** | —— | **保持绿** |
+| （对照）CI 写成 `cd . && npm  ci`（多空格变体） | —— | **保持绿**（旧 grep 判据会**漏掉**） |
+| （对照）注释里写一行 `npm ci` | —— | **保持绿**（旧 grep 判据会**误报红**） |
+
+⚠ **`test_ci_passes_the_flag` 的第一版 docstring 说谎**：它写着
+「解析 YAML 结构，不是 grep 整份文件」，而代码是
+`[ln.strip() for ln in lines if ln.strip().startswith("npm ci")]` —— 就是 grep 行首。
+两个洞（注释里的 `npm ci` 误报红 / `cd frontend && npm ci` 完全漏掉）由后两条
+对照变异暴露，现已改为真解析。**教训：docstring 声称的判据要和代码一致，
+否则下一个人会照着 docstring 相信一个不存在的保证。**
+
+##### ⚠ 验证状态：`4cbec54`（守卫修正）**没有被全量回归验过**
+
+全量在 `d29950f` 上跑（**failed=0 / 4615 passed / 1035 subtests**，六段全绿），
+而 `test_npm_ignore_scripts_pinned.py` 的 YAML 解析修正提交于 `4cbec54` ——
+**在全量跑的过程中**（该文件落在段 3，约第 14-17 分钟，正好落在我编辑它的窗口里）。
+
+**所以「4615 passed」不能被读成「`4cbec54` 也验过了」。**
+用户明确接受组合证据：**该文件单独跑过（3 passed）+ 六条变异实测全部符合预期**。
+
+**判读全量结果时的一条教训**（今晚第四次「判据选错」）：
+我先查「段日志里有没有提及这两个新测试文件」，答「没有」，差点当成「没跑」。
+**pytest `-q` 成功时根本不列测试名** —— 「没提及」是正常的，推不出「没跑」。
+正确的判据是 `passed` 数与新增守卫条数的算术核对：
+`4609 → 4615 = +6 = 3（ignore_scripts）+ 3（min_release_age）`。
+
+**而逐段数字不能比**：文件数从 303 变305，分段边界移位了
+（段 3 末从 `test_persisted_state_lifespan.py` 提前到 `test_parallel_native_not_stall.py`），
+「段 3 少 8 条」是文件被推到别的段，不是丢了测试。**唯一可靠的判据是总数。**
 
 **第三条是防「第 2 种破坏」的**：将来新增一个带 install 脚本的依赖，
 「关掉脚本安全」这个前提就需要重验 —— 那时这条守卫会**逼人重跑探针**，
