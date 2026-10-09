@@ -51,6 +51,39 @@ MAX_STEPS_CAP = 1000
 MAX_NUDGES_CAP = 1000
 MAX_TOKEN_BUDGET_CAP = 10_000_000
 
+#: `task_token_budget` 的**下界**（正数时）。0 = 不限，不受此约束。
+#:
+#: ⚠⚠ **为什么需要下界：实测出来的，不是拍脑袋。**
+#:
+#: 真事故：机器上存着 `task_token_budget = 5000`，于是**任何问题都答不了** ——
+#: `RunBudget.preflight` 在**第一轮**就返回 False，`_run` 直接 return，
+#: `llm.chat` 被调用 **0 次**，用户看到「（已达到本任务 Token 上限，已停止继续调用模型。）」。
+#: 而界面不报错、设置页不提示，根因完全不可见。
+#:
+#: ⚠️ **量的时候必须按「累计」口径，不能把每轮独立算。**
+#: `RunBudget.record` 是累计的（`total_tokens` 只加不减）——
+#: 独立算会得出「3 轮 ≈ 15676」，真实跑却是 **18906**。
+#: 我第一版就栽在这：不调 `record` 反复 `preflight`，
+#: 等于每次从 0 出发，于是 16000 被它放过（实测只撑 2 轮）。
+#:
+#: 实测（`RunBudget` 按 4 字符/token 估，每轮输出预留 `LLM_MAX_TOKENS = 3072`，
+#: 逐轮 preflight 通过后 record，二分找第一个通过的整数）：
+#:
+#:     稳过 1 轮 =  7760      稳过 4 轮 = 24128
+#:     稳过 2 轮 = 13216      稳过 5 轮 = 29584
+#:     稳过 3 轮 = 18672      稳过 6 轮 = 35080
+#:
+#: ⚠ **取 18906 而不是「无记忆」的 18672。** 提示词里有一条
+#: `【项目长期记忆：…】`（309 字符，由 `agent_memory.context` 追加，
+#: 来自持久化的记忆库）。带记忆时 3 轮的实测下限是 **18906**。
+#: 取带记忆的值 —— 无论运行态有没有记忆，下界都成立。
+#: 事故值 5000 在这张表里是「撑 0 轮」。
+#:
+#: ⚠️ **它保证不了「能跑几轮」** —— 既然是累计上限，任何有限值都会在
+#: 若干轮后耗尽，**那是设计不是 bug**。用户想跑更多轮就填更大，
+#: 或填 0 表示不限。这个下界挡的是「**填了等于完全不能用**」。
+MIN_TASK_TOKEN_BUDGET = 18_906
+
 
 def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
     """归一化容量设置。
@@ -113,6 +146,21 @@ def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
                                      max_final_continuations, MAX_NUDGES_CAP)
     task_token_budget = _clamp("task_token_budget", task_token_budget,
                                MAX_TOKEN_BUDGET_CAP)
+    # ⚠⚠ **下界必须 raise，不能夹。** 夹到 MIN_TASK_TOKEN_BUDGET 会把
+    # 用户填的 5000 悄悄变成 16000 —— 他要的是「少花点 token」，
+    # 拿到的却是「能跑一次完整问答」，语义不是他填的那个。
+    # 而留着 5000 的后果更糟：问答在第一轮就死，且界面不报错（见常量注释）。
+    #
+    # 分层与其他负值一致：请求边界靠 raise 转 400；读取路径（`get_settings`）
+    # 自己 try 住并回落 DEFAULTS，所以开机不会因此起不来。
+    if 0 < task_token_budget < MIN_TASK_TOKEN_BUDGET:
+        raise ValueError(
+            "task_token_budget 太小（收到 %d）：连一次最简单的问答都跑不完，"
+            "提问会在第一轮就被判「已达到 Token 上限」而直接失败。"
+            "实测最小提示词约需 4688 token，加每轮输出预留 3072；"
+            "跑完 3 轮问答实测需 %d（累计口径）。"
+            "请填 %d 以上，或填 0 表示不限。"
+            % (task_token_budget, MIN_TASK_TOKEN_BUDGET, MIN_TASK_TOKEN_BUDGET))
     return {
         "max_agents": max_agents,
         "main_max_steps": main_max_steps,

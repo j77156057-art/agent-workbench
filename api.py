@@ -4273,6 +4273,11 @@ async def get_agent_capacity():
             "max_nudges": agent_capacity.MAX_NUDGES_CAP,
             "max_final_continuations": agent_capacity.MAX_NUDGES_CAP,
             "task_token_budget": agent_capacity.MAX_TOKEN_BUDGET_CAP,
+            # ⚠ 下界与上界一起下发。实测填 5000 会让**任何问题都答不了**
+            # （第一轮 preflight 就 False，模型一次都不被调用），
+            # 而界面不报错、设置页不提示 —— 根因完全不可见。
+            # 前端读到它就能在输入框上标出「至少要这么多」。
+            "task_token_budget_min": agent_capacity.MIN_TASK_TOKEN_BUDGET,
         },
         "model": {"provider": provider, "name": model, "local_endpoint": local_endpoint},
         "resources": snapshot,
