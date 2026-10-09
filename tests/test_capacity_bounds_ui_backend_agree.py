@@ -12,15 +12,32 @@
 
 B 不消除重复，它让漂移**立刻可见** —— 这正是当前最疼的点。
 
-## ⚠ 这条测试不修的那个真 bug
+## ⚠ 那个「填 5000 被静默写成不限」的 bug：**已修**（不是这条测试修的）
 
-后端 `normalize_settings` 越界时回落到 `DEFAULTS`，而 WIP 把
-`max_nudges` / `max_final_continuations` 的默认改成了 **0 = 不限**。
-于是用户填 5000 会被静默写成不限 —— 行为与意图相反。
+⚠⚠ **本段曾是过期描述，害得前端 agent 误判后端行为，已于本轮更正。**
 
-A、B 两条都不修它（A 只让前端显示正确范围，`type=number` 的 max 并不阻止
-输入）。真正该做的是**越界夹到边界**（5000→1000）而不是回落默认。
-已立 TODO，见 `docs/next-steps.md`。
+原文写的是：「后端 `normalize_settings` 越界时回落到 `DEFAULTS`，而默认
+已改成 0=不限，于是用户填 5000 会被静默写成不限 —— 行为与意图相反。
+真正该做的是越界夹到边界。已立 TODO。」
+
+那是 capacity **还在 WIP、契约尚未落地**时写的。契约落地后我没回头改这段，
+前端 agent 读到它就以为后端仍是老行为，据此在界面上做了多余的兜底。
+
+实测（端到端 POST 5000 → GET）：
+
+    max_agents                 5000 -> 64          夹到上界
+    main_max_steps             5000 -> 1000        夹到上界
+    child_max_steps            5000 -> 1000        夹到上界
+    max_nudges                 5000 -> 1000        夹到上界
+    max_final_continuations    5000 -> 1000        夹到上界
+    task_token_budget          5000 -> 5000        上界是 10000000，5000 在范围内
+
+契约与权威实现见 `agent_runtime/capacity.py::_clamp`，
+锁定它的测试是 `tests/test_capacity_clamp_not_default.py`
+与 `tests/test_unlimited_defaults.py`。
+
+**仍然成立的一点**：界面上 `type=number` 的 max 只影响步进器，不阻止输入，
+所以后端的夹取是唯一防线 —— 前端那条「当场拒绝」属于 UX 加固，不是修 bug。
 
 ## 与 tests/test_ui_guidance_reachability.py 同形状
 
