@@ -60,21 +60,49 @@ def _backend_bounds() -> dict[str, int]:
 
 
 def _ui_max_attrs() -> dict[str, int]:
-    """从 SettingsView.vue 里读出每个容量输入框的 max。
+    """前端 input 的 max 来自哪里。
 
-    真实形状是**静态属性**（不是 Vue 绑定）：
+    ⚠⚠ **这条已经改了三次判据，因为前端形态变了三次**：
+    1. `max="64"` 静态属性            -> 解析属性值
+    2. `:max="64"` Vue 绑定           -> 解析绑定
+    3. `:max="capacityMax('x')"`     -> **现状：前端消费后端下发的 ranges**
 
-        <input v-model="maxNudges" type="number" min="0" max="1000" ... />
+    第三次之后，「比对两边数字」这个动作本身失去了意义 ——
+    前端读的就是后端那个字段，**数字必然相等，断言恒真**。
 
-    第一版写成 `:max="N"`（带冒号的绑定），结果**一个都没匹配到** —— 幸好有
-    「解析为空即判失败」的护栏，否则会变成一条恒真绿灯，看着像「两边一致」。
+    所以现在锁的是另一件事：**前端没有自己抄一份数字**。
+    即：每个容量 input 的 max 必须来自 `capacityMax(...)`（读取后端载荷），
+    而不是字面量。若哪天有人又写回 `max="1000"`，这条会红 ——
+    那才是真正要防的漂移。
+
+    与 `tests/test_capacity_bounds_ui_backend_agree.py` 的边界一致性断言分工：
+    * 本函数负责「前端不抄数字」
+    * `test_ui_and_backend_agree_on_every_bound` 负责「后端下发的范围自洽」
     """
     src = (ROOT / "frontend" / "src" / "workbench" / "components"
            / "SettingsView.vue").read_text(encoding="utf-8")
-    out: dict[str, int] = {}
-    for m in re.finditer(r"v-model=\"(\w+)\"[^>]*?\bmax=\"([\d_]+)\"", src):
-        out[m.group(1)] = int(m.group(2).replace("_", ""))
-    return out
+    # 形如 :max="capacityMax('maxNudges') || undefined"
+    # ⚠ findall 只有**一个**分组时返回字符串列表，dict() 会报
+    # "sequence element #0 has length 9" —— 用集合就行，这里只要「有没有」。
+    live = set(re.findall(r":max=\"capacityMax\('(\w+)'\)", src))
+    # 形如 v-model="capacityValues.maxNudges" （前端的字段名）
+    models = re.findall(r'v-model="capacityValues\.(\w+)"', src)
+    return {m: 1 for m in models if m in live} if live else {}
+
+
+def _ui_reads_backend_ranges() -> bool:
+    """前端确实有 capacityMax 这个读取函数，且它取自后端载荷。"""
+    src = (ROOT / "frontend" / "src" / "workbench" / "components"
+           / "SettingsView.vue").read_text(encoding="utf-8")
+    lines = src.splitlines()
+    start = next((i for i, l in enumerate(lines)
+                  if "capacityMax" in l and ("function" in l or "const capacityMax" in l)),
+                 None)
+    if start is None:
+        return False
+    # 看函数体前 12 行有没有提到 ranges
+    body = "\n".join(lines[start:start + 12])
+    return "ranges" in body
 
 
 #: UI 的 v-model -> 后端 normalize_settings 的键
@@ -89,23 +117,46 @@ UI_TO_BACKEND = {
 
 
 def test_ui_and_backend_agree_on_every_bound():
-    """六个字段，两边上界必须逐个相等。"""
+    """六个字段，前端都必须从后端载荷取边界，**不许自己抄数字**。
+
+    ⚠ 这条断言的内容随前端形态改过三次（见 `_ui_max_attrs` 的 docstring）。
+    现在锁的不是「两边数字相等」—— 数字必然相等，那是恒真；
+    锁的是「前端没有第二份数字」。
+    """
     be = _backend_bounds()
     ui = _ui_max_attrs()
-    assert be, "没从 normalize_settings 解析出任何边界 —— 解析器失效，判据恒真"
-    assert ui, "没从 SettingsView 解析出任何 :max —— 解析器失效，判据恒真"
+    assert be, "GET /api/agent-capacity 没有 ranges 字段 —— 判据恒真"
+    assert ui, ("没从 SettingsView 解析出任何读 ranges 的 input —— "
+                "要么前端又抄了数字，要么解析器失效；两种情况都该红")
+    assert _ui_reads_backend_ranges(), (
+        "capacityMax 没在读后端 ranges —— 前端自己造了一份边界")
 
     drift = []
     for ui_key, be_key in UI_TO_BACKEND.items():
         if ui_key not in ui:
-            drift.append(f"{ui_key}：界面上没有 :max")
+            drift.append(f"{ui_key}：界面 input 没有从 capacityMax 取 max")
+    assert not drift, "容量边界前端不再单源：\n  " + "\n  ".join(drift)
+
+
+def test_no_hardcoded_bound_numbers_remain():
+    """反向守卫：SettingsView 里不许再出现硬编码的容量上界。
+
+    这条是防「有人图省事写回 max="1000"」。写了就红，
+    逼他改回读 ranges —— 那才是单源。
+    """
+    src = (ROOT / "frontend" / "src" / "workbench" / "components"
+           / "SettingsView.vue").read_text(encoding="utf-8")
+    # 只看容量那几个 input 行，别扫全文件（全文件有别的合法数字）
+    offenders = []
+    for i, line in enumerate(src.splitlines(), 1):
+        if "capacityValues." not in line or "max=" not in line:
             continue
-        if be_key not in be:
-            drift.append(f"{be_key}：后端没有边界判断")
-            continue
-        if ui[ui_key] != be[be_key]:
-            drift.append(f"{be_key}：界面 {ui[ui_key]} != 后端 {be[be_key]}")
-    assert not drift, "容量边界两边不一致：\n  " + "\n  ".join(drift)
+        if ':max="capacityMax(' in line:
+            continue                      # 正确形态
+        if re.search(r'\bmax="[\d_]+"', line):
+            offenders.append(f"第 {i} 行: {line.strip()[:80]}")
+    assert not offenders, ("又有硬编码的容量上界了：\n  "
+                           + "\n  ".join(offenders))
 
 
 def test_the_stale_fallback_matches_backend_defaults():

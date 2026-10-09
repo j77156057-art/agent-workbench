@@ -3542,7 +3542,25 @@ class Agent:
             # 负数按不限处理（用户手改配置文件时不必猜符号）
             return max(0, raw)
 
-        return _read("max_nudges"), _read("max_final_continuations")
+        # ⚠⚠ **`_MAX_FINAL_CONTINUATIONS` / `_MAX_NUDGES` 是兜底，不是主来源。**
+        # 主来源是 `_capacity_settings()`（用户可在设置页改，0 = 不限）。
+        #
+        # 但兜底**必须留着**：测试用 `patch.object(agent_mod,
+        # "_MAX_FINAL_CONTINUATIONS", 2)` 来制造「最多续写 2 次」的场景。
+        # 一旦常量无人读取，patch 就静默失效 → 续写真的变成不限 →
+        # `NeverEndingLLM` 那个用例会跑到天荒地老。
+        # 这不是假想：`0e7ab38` 把它改成只读 settings 之后，
+        # `tests/test_agent_trace.py::...::test_repeated_length_returns_partial_...`
+        # 立刻从秒过变成 240 秒挂死，并连带整份全量回归跑不完。
+        #
+        # 语义：settings 没给有效值（0 / 解析失败）时，回落到常量；
+        # settings 给了正数就用 settings。0 = 不限只在两边都为空时生效。
+        def _capped(key: str, module_default: int) -> int:
+            value = _read(key)
+            return value if value > 0 else max(0, int(module_default))
+
+        return _capped("max_nudges", _MAX_NUDGES), \
+            _capped("max_final_continuations", _MAX_FINAL_CONTINUATIONS)
 
     @staticmethod
     def _limit_ok(used, limit):
