@@ -51,9 +51,17 @@ export interface AgentCapacitySettings {
   local_auto_limit: boolean
 }
 
+/** 与 AgentCapacitySettings 同键，但值是每个字段的**上界**。
+ *  由 GET /api/agent-capacity 下发（api.py 的 ranges 字段），界面必须读它而不是
+ *  再抄一份数字 —— 抄一份就多了「界面允许填、后端越界回落默认值」的漂移空间，
+ *  而那个默认值现在是 0（不限），越界的后果与用户意图正好相反。 */
+export type AgentCapacityRanges = { [K in keyof AgentCapacitySettings]-?: number }
+
 export interface AgentCapacityInfo {
   ok?: boolean
   settings: AgentCapacitySettings
+  /** 老后端可能没有这个字段，所以可选；缺省时界面不设上界（见 bound()）。 */
+  ranges?: Partial<AgentCapacityRanges>
   model: { provider: string; name: string; local_endpoint: boolean }
   resources: {
     available: boolean

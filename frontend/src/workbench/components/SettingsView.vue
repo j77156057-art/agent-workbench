@@ -2,7 +2,7 @@
 // 统一设置页：左侧分组导航（用量费用 / 网络搜索 / MCP / 智能体），右侧对应面板。
 // 网络搜索与 URL 获取走 settingsApi（复用 /api/config 的保存通道，密钥不回显）；
 // MCP 走 mcpApi；智能体为本地预设（localStorage），后续可升级为后端持久化。
-import { ref, watch, computed, onUnmounted } from 'vue'
+import { reactive, ref, watch, computed, onUnmounted } from 'vue'
 import {
   settingsApi, agentCapacityApi, mcpApi, harnessApi,
   agentApi,
@@ -294,73 +294,80 @@ const showWfKey = ref(false)
 const searchSaving = ref(false)
 
 // ---------------- Agent 工作负载 / 显存感知 ----------------
+// 六个字段的键名只在这张表里出现一次：上界、校验、报错文案、确认清单全部由它推导。
+// 界面上不再有任何硬编码的容量数字 —— 数字的唯一来源是 GET /api/agent-capacity
+// 的 ranges（后端 c457301 起下发）。以前是「前端抄一份 + 一条测试锁住两份相等」，
+// 那是事后报警；消费载荷才是单源。
+const CAPACITY_FIELDS = {
+  maxAgents: 'max_agents',
+  mainMaxSteps: 'main_max_steps',
+  childMaxSteps: 'child_max_steps',
+  maxNudges: 'max_nudges',
+  maxFinalContinuations: 'max_final_continuations',
+  taskTokenBudget: 'task_token_budget',
+} as const
+type CapacityField = keyof typeof CAPACITY_FIELDS
+const CAPACITY_KEYS = Object.keys(CAPACITY_FIELDS) as CapacityField[]
+const CAPACITY_LABEL: Record<CapacityField, string> = {
+  maxAgents: 'Agent 数量', mainMaxSteps: '主 Agent 工具步数', childMaxSteps: '子代理工具步数',
+  maxNudges: '纠偏次数', maxFinalContinuations: '续写次数', taskTokenBudget: '任务 Token 上限',
+}
+
 const capacityInfo = ref<AgentCapacityInfo | null>(null)
-const maxAgents = ref('8')
-const mainMaxSteps = ref('8')
-const childMaxSteps = ref('24')
-const maxNudges = ref('2')
-const maxFinalContinuations = ref('2')
-const taskTokenBudget = ref('50000')
+// 初值一律空串：真实值由 loadAgentCapacity() 填。以前这里写着 '8' / '24' / '50000'，
+// 后端默认全改成 0（不限）之后它们就是过期复制 —— 加载失败时界面会亮着一排
+// 谁都没同意的数字。空框用户看得见，比塞个错值诚实。
+// ⚠ 类型必须是 string | number：v-model 绑在 <input type="number"> 上，Vue 写回来的是
+// **数字**，把它声明成 string 会让 .trim() 在运行时抛 TypeError（vue-tsc 不报，因为
+// 声明就是假的 —— 实测踩过：保存按钮点了没任何反应，异常只出现在 console 里）。
+const capacityValues = reactive<Record<CapacityField, string | number>>({
+  maxAgents: '', mainMaxSteps: '', childMaxSteps: '', maxNudges: '', maxFinalContinuations: '', taskTokenBudget: '',
+})
+/** 读某个容量框的当前值，统一成字符串。 */
+function capRaw(field: CapacityField): string {
+  const v = capacityValues[field]
+  return v === null || v === undefined ? '' : String(v).trim()
+}
+function capNum(field: CapacityField): number {
+  return Number(capRaw(field))
+}
 const localAutoLimit = ref(true)
 const capacitySaving = ref(false)
 const capacityError = ref('')
 const capacitySaved = ref('')
-const unlimitedAgentsConfirmed = ref(false)
-const unlimitedMainStepsConfirmed = ref(false)
-const unlimitedStepsConfirmed = ref(false)
-const unlimitedNudgesConfirmed = ref(false)
-const unlimitedContinuationsConfirmed = ref(false)
-const unlimitedBudgetConfirmed = ref(false)
+
+/** 上界只从载荷取。载荷没到（还在加载 / 老后端没有 ranges）时返回 0，
+ *  调用方据此**不设 max** —— 回落到一个硬编码数字就等于把刚删掉的第二份拷贝请回来。 */
+function capacityMax(field: CapacityField): number {
+  return capacityInfo.value?.ranges?.[CAPACITY_FIELDS[field]] ?? 0
+}
+
+function validateCapacity(): string {
+  for (const field of CAPACITY_KEYS) {
+    const raw = capRaw(field)
+    const v = Number(raw)
+    if (raw === '' || !Number.isInteger(v) || v < 0) return `${CAPACITY_LABEL[field]}需为非负整数；0 表示不设固定上限。`
+    const hi = capacityMax(field)
+    // 越界必须当场拒绝：后端 normalize_settings 越界时回落到默认值，而默认现在是
+    // 0 = 不限 —— 用户填 5000 会被静默改成「不限」，行为与意图正好相反。
+    if (hi > 0 && v > hi) return `${CAPACITY_LABEL[field]}不能大于服务端下发的上限 ${hi}。`
+  }
+  return ''
+}
 
 const unlimitedRisk = '不设固定上限可能显著增加模型调用次数和 Token 消耗，也可能延长任务时间；关闭本地显存自动控制时还可能导致显存不足。确认吗？'
-
-function confirmUnlimitedAgents() {
-  if (maxAgents.value !== '0') { unlimitedAgentsConfirmed.value = false; return }
-  if (window.confirm(unlimitedRisk)) unlimitedAgentsConfirmed.value = true
-  else maxAgents.value = String(capacityInfo.value?.settings.max_agents ?? '')
-}
-
-function confirmUnlimitedSteps() {
-  if (childMaxSteps.value !== '0') { unlimitedStepsConfirmed.value = false; return }
-  if (window.confirm(unlimitedRisk)) unlimitedStepsConfirmed.value = true
-  else childMaxSteps.value = String(capacityInfo.value?.settings.child_max_steps ?? '')
-}
-
-function confirmUnlimitedMainSteps() {
-  if (mainMaxSteps.value !== '0') { unlimitedMainStepsConfirmed.value = false; return }
-  if (window.confirm(unlimitedRisk)) unlimitedMainStepsConfirmed.value = true
-  else mainMaxSteps.value = String(capacityInfo.value?.settings.main_max_steps ?? '')
-}
-
-function confirmUnlimitedBudget() {
-  if (taskTokenBudget.value !== '0') { unlimitedBudgetConfirmed.value = false; return }
-  if (window.confirm(unlimitedRisk)) unlimitedBudgetConfirmed.value = true
-  else taskTokenBudget.value = String(capacityInfo.value?.settings.task_token_budget ?? '')
-}
-
-function confirmUnlimitedNudges() {
-  if (maxNudges.value !== '0') { unlimitedNudgesConfirmed.value = false; return }
-  if (window.confirm(unlimitedRisk)) unlimitedNudgesConfirmed.value = true
-  else maxNudges.value = String(capacityInfo.value?.settings.max_nudges ?? '')
-}
-
-function confirmUnlimitedContinuations() {
-  if (maxFinalContinuations.value !== '0') { unlimitedContinuationsConfirmed.value = false; return }
-  if (window.confirm(unlimitedRisk)) unlimitedContinuationsConfirmed.value = true
-  else maxFinalContinuations.value = String(capacityInfo.value?.settings.max_final_continuations ?? '')
-}
+// 「哪些字段被确认过设为不限」记在集合里，blur 级不弹框：默认值现在全是 0，
+// 六个 @change 各弹一次原生 confirm + 保存再弹一次 = 一轮七次模态，
+// 而 pywebview 内嵌窗口里原生模态会阻塞 JS 线程。合并成保存时一次问清。
+const unlimitedConfirmed = ref<Set<CapacityField>>(new Set())
+const unlimitedPending = () => CAPACITY_KEYS.filter(f => capNum(f) === 0 && !unlimitedConfirmed.value.has(f))
 
 async function loadAgentCapacity() {
   capacityError.value = ''
   try {
     const info = await agentCapacityApi.get()
     capacityInfo.value = info
-    maxAgents.value = String(info.settings.max_agents)
-    mainMaxSteps.value = String(info.settings.main_max_steps)
-    childMaxSteps.value = String(info.settings.child_max_steps)
-    maxNudges.value = String(info.settings.max_nudges)
-    maxFinalContinuations.value = String(info.settings.max_final_continuations)
-    taskTokenBudget.value = String(info.settings.task_token_budget)
+    for (const field of CAPACITY_KEYS) capacityValues[field] = String(info.settings[CAPACITY_FIELDS[field]])
     localAutoLimit.value = info.settings.local_auto_limit
   } catch (e) {
     capacityError.value = (e as { message?: string }).message || '读取 Agent 容量设置失败'
@@ -368,51 +375,24 @@ async function loadAgentCapacity() {
 }
 
 async function saveAgentCapacity() {
-  const max = Number(maxAgents.value)
-  const mainSteps = Number(mainMaxSteps.value)
-  const steps = Number(childMaxSteps.value)
-  const nudges = Number(maxNudges.value)
-  const continuations = Number(maxFinalContinuations.value)
-  const tokenBudget = Number(taskTokenBudget.value)
-  if (!Number.isInteger(max) || max < 0 || max > 64 ||
-      !Number.isInteger(mainSteps) || mainSteps < 0 || mainSteps > 1000 ||
-      !Number.isInteger(steps) || steps < 0 || steps > 1000) {
-    capacityError.value = 'Agent 数量需为 0–64，工具步数需为 0–1000；0 表示不设固定上限。'
-    return
-  }
-  // 纠偏/续写上界与工具步数对齐（1000）。原先 20 会让"想设 50 次"被拒或被
-  // 后端静默改回默认值；且默认已改为 0（不限），校验必须接受 0 并明确提示。
-  if (![nudges, continuations].every(Number.isInteger) || nudges < 0 || nudges > 1000 ||
-      continuations < 0 || continuations > 1000 ||
-      !Number.isInteger(tokenBudget) || tokenBudget < 0 || tokenBudget > 10000000) {
-    capacityError.value = '纠偏/续写次数需为 0–1000，任务 Token 上限需为 0–10000000；0 表示不限。'
-    return
-  }
-  if ((max === 0 && !unlimitedAgentsConfirmed.value) ||
-      (mainSteps === 0 && !unlimitedMainStepsConfirmed.value) ||
-      (steps === 0 && !unlimitedStepsConfirmed.value) ||
-      (nudges === 0 && !unlimitedNudgesConfirmed.value) ||
-      (continuations === 0 && !unlimitedContinuationsConfirmed.value) ||
-      (tokenBudget === 0 && !unlimitedBudgetConfirmed.value)) {
-    if (!window.confirm(unlimitedRisk)) return
-    if (max === 0) unlimitedAgentsConfirmed.value = true
-    if (mainSteps === 0) unlimitedMainStepsConfirmed.value = true
-    if (steps === 0) unlimitedStepsConfirmed.value = true
-    if (nudges === 0) unlimitedNudgesConfirmed.value = true
-    if (continuations === 0) unlimitedContinuationsConfirmed.value = true
-    if (tokenBudget === 0) unlimitedBudgetConfirmed.value = true
+  const bad = validateCapacity()
+  if (bad) { capacityError.value = bad; return }
+  const pending = unlimitedPending()
+  if (pending.length) {
+    if (!window.confirm(`${pending.map(f => CAPACITY_LABEL[f]).join('、')} 将设为「不限」。\n${unlimitedRisk}`)) return
+    unlimitedConfirmed.value = new Set([...unlimitedConfirmed.value, ...pending])
   }
   capacitySaving.value = true
   capacityError.value = ''
   capacitySaved.value = ''
   try {
     const result = await agentCapacityApi.save({
-      max_agents: max,
-      main_max_steps: mainSteps,
-      child_max_steps: steps,
-      max_nudges: nudges,
-      max_final_continuations: continuations,
-      task_token_budget: tokenBudget,
+      max_agents: Number(capacityValues.maxAgents),
+      main_max_steps: Number(capacityValues.mainMaxSteps),
+      child_max_steps: Number(capacityValues.childMaxSteps),
+      max_nudges: Number(capacityValues.maxNudges),
+      max_final_continuations: Number(capacityValues.maxFinalContinuations),
+      task_token_budget: Number(capacityValues.taskTokenBudget),
       local_auto_limit: localAutoLimit.value,
     })
     if (!result.ok) {
@@ -420,12 +400,7 @@ async function saveAgentCapacity() {
       return
     }
     capacitySaved.value = 'Agent 容量设置已保存'
-    unlimitedAgentsConfirmed.value = false
-    unlimitedMainStepsConfirmed.value = false
-    unlimitedStepsConfirmed.value = false
-    unlimitedNudgesConfirmed.value = false
-    unlimitedContinuationsConfirmed.value = false
-    unlimitedBudgetConfirmed.value = false
+    unlimitedConfirmed.value = new Set()
     await loadAgentCapacity()
   } catch (e) {
     capacityError.value = (e as { message?: string }).message || '保存失败'
@@ -1672,27 +1647,27 @@ function openModelSettings() {
             <div class="sv-form-grid">
               <label class="sv-field">
                 <span>最多 Agent 数（0 = 不设上限）</span>
-                <input v-model="maxAgents" class="sv-input" type="number" min="0" max="64" step="1" @change="confirmUnlimitedAgents" />
+                <input v-model="capacityValues.maxAgents" class="sv-input" type="number" min="0" :max="capacityMax('maxAgents') || undefined" step="1" />
               </label>
               <label class="sv-field">
                 <span>主 Agent 工具步数（0 = 不设上限）</span>
-                <input v-model="mainMaxSteps" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedMainSteps" />
+                <input v-model="capacityValues.mainMaxSteps" class="sv-input" type="number" min="0" :max="capacityMax('mainMaxSteps') || undefined" step="1" />
               </label>
               <label class="sv-field">
                 <span>每个子 Agent 工具步数（0 = 不设上限）</span>
-                <input v-model="childMaxSteps" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedSteps" />
+                <input v-model="capacityValues.childMaxSteps" class="sv-input" type="number" min="0" :max="capacityMax('childMaxSteps') || undefined" step="1" />
               </label>
               <label class="sv-field">
                 <span>任务 Token 上限（0 = 不限）</span>
-                <input v-model="taskTokenBudget" class="sv-input" type="number" min="0" max="10000000" step="1000" @change="confirmUnlimitedBudget" />
+                <input v-model="capacityValues.taskTokenBudget" class="sv-input" type="number" min="0" :max="capacityMax('taskTokenBudget') || undefined" step="1000" />
               </label>
               <label class="sv-field">
                 <span>自动纠偏次数（0 = 不限）</span>
-                <input v-model="maxNudges" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedNudges" />
+                <input v-model="capacityValues.maxNudges" class="sv-input" type="number" min="0" :max="capacityMax('maxNudges') || undefined" step="1" />
               </label>
               <label class="sv-field">
                 <span>最终续写次数（0 = 不限）</span>
-                <input v-model="maxFinalContinuations" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedContinuations" />
+                <input v-model="capacityValues.maxFinalContinuations" class="sv-input" type="number" min="0" :max="capacityMax('maxFinalContinuations') || undefined" step="1" />
               </label>
             </div>
             <label class="sv-toggle-row">
@@ -1700,6 +1675,8 @@ function openModelSettings() {
               <span>本地模型按当前显存余量自动控制并发</span>
             </label>
             <div v-if="capacityInfo" class="sv-note">
+              <!-- 上限从哪来的，直接写在界面上：用户能看到它是服务端给的，不是页面自己定的 -->
+              <div>服务端下发上限：{{ CAPACITY_KEYS.map(f => `${CAPACITY_LABEL[f]} ${capacityMax(f) || '不限'}`).join(' · ') }}</div>
               <div>{{ capacityInfo.model.provider }} / {{ capacityInfo.model.name || '默认模型' }} ·
                 {{ capacityInfo.model.local_endpoint ? '本机推理端点' : '远程推理端点' }}</div>
               <div v-if="capacityInfo.resources.available">
