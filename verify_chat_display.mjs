@@ -13,6 +13,16 @@ const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE
   || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 const base = process.env.DOCMIND_UI_TEST_URL || 'http://127.0.0.1:8011'
+// 先确认夹具在，否则下面每个用例都会以一句看不懂的 Playwright 堆栈收场
+// （本脚本依赖外部起的 verify_scene_canvas.py --serve 8011，和其余 verify_*.mjs 一样）。
+try {
+  const r = await fetch(base + '/api/health', { signal: AbortSignal.timeout(4000) })
+  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+} catch (e) {
+  console.error(`夹具没起来：${base} 不可用（${e.message}）\n`
+    + '  先跑：.venv/Scripts/python.exe verify_scene_canvas.py --serve 8011')
+  process.exit(2)
+}
 
 // 用户给的实测口径：每轮解说 71–165 字。两条都造出来，短的用来确认「本来就没被砍」，
 // 长的用来确认「不再只剩开头」。纯中文（不含空白）以免和 traceSummary 的空白归一化打架。
@@ -50,8 +60,10 @@ const FILES = []
     walk(c)
   }
 })(tree)
-assert.ok(FILES.length >= 8, `夹具文件树只剩 ${FILES.length} 个文件，引用用例没法造截断`)
-const REF_PATHS = FILES.slice(0, 8)
+// 用例只需要 maxRefs(3) + 至少 1 条被截掉。干净夹具的文件树就只有 7 个文件
+// （被其它套件跑脏时会有几十个），所以门槛按"用例真正需要什么"定，不照某一次观察到的大小写。
+assert.ok(FILES.length >= 5, `夹具文件树只有 ${FILES.length} 个文件，凑不出「截断 + 剩余」`)
+const REF_PATHS = FILES.slice(0, Math.min(8, FILES.length))
 const REF_FRAMES = [{ type: 'token', text: REF_PATHS.map((p, i) => `- ${p}:${i + 1}`).join('\n\n') }]
 const REF_TAIL = [{ type: 'done' }]
 

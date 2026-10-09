@@ -67,16 +67,45 @@ const CASES = [
   { name: 'workbench-paper', route: '/workbench', skin: 'paper', stable: '.ft-head-title' },
   { name: 'workbench-graphite', route: '/workbench', skin: 'graphite', stable: '.ft-head-title' },
   { name: 'workbench-zinc', route: '/workbench', skin: 'zinc', stable: '.ft-head-title' },
-  { name: 'ask', route: '/', skin: 'paper', stable: '.composer textarea', stubModelStatus: true },
-  { name: 'ask-zinc', route: '/', skin: 'zinc', stable: '.composer textarea', stubModelStatus: true },
+  { name: 'ask', route: '/', skin: 'paper', stable: '.composer textarea' },
+  { name: 'ask-zinc', route: '/', skin: 'zinc', stable: '.composer textarea' },
 ]
 
-// 问答页侧栏的「显存 x.x GB / N 个模型驻留」读的是真后端 GET /api/model_status，
-// 夹具服务只代理不伪造，所以这台机器上模型加载/释放之间它会变（实测 6.1 GB/2 个
-// ↔ 6.5 GB/1 个，361 像素、最大通道差 231）。这是数据抖动不是回归，必须钉死。
+// 两个端点必须钉死，否则 ask 基线是抛硬币（实测，不是推测）：
+//   · /api/model_status —— 读真后端：本机模型加载/释放之间显存会变（6.1 GB/2 个 ↔
+//     6.5 GB/1 个，361 像素、最大通道差 231）。
+//   · /api/config —— 两宗罪：① 冷启动第一发实测 >6 秒（页面没开时外部 GET 6s 超时，
+//     页面开过之后同一发 6ms 返回），而本脚本只等 1500ms 就截图，所以侧栏的模型名和
+//     文档列表有时进画面有时不进（这就是那 19% / 2.4% 的来历，跟排版无关）；
+//     ② ingested_files 来自**全局** KB 存储，夹具只隔离了 code_root 和 STATE_FILE
+//     （verify_scene_canvas.py:282-290），所以画的是这台机器上传过什么文档。
+// 做法：config 先向夹具取一次真载荷（保住 providers / capability 等几十个真实字段），
+// 只覆盖会漂的那三项 —— 不造假数据结构，只钉住不稳定值。
+const PINNED_MODEL = 'qwen3.6:35b-a3b-agent25'
 const MODEL_STATUS = {
   ok: true, reachable: true, needs_ollama: false, vram_gb: 6.1,
-  loaded: [{ name: 'qwen3.6:35b-a3b-agent25', size_vram_gb: 6.1, size_gb: 6.1, expires_minutes: null, processor: 'ollama' }],
+  loaded: [{ name: PINNED_MODEL, size_vram_gb: 6.1, size_gb: 6.1, expires_minutes: null, processor: 'ollama' }],
+}
+async function pinConfig(base) {
+  const res = await fetch(base + '/api/config', { signal: AbortSignal.timeout(90000) })
+  if (!res.ok) throw new Error(`/api/config 预热失败（HTTP ${res.status}）`)
+  const live = await res.json()
+  return {
+    ...live,
+    llm_provider: 'ollama',
+    llm_model: PINNED_MODEL,
+    ingested_files: ['战斗规则.md', '数值设计案.pdf'],
+    warnings: [],
+    // 顶部那条告警横幅读的是 config.ollama_status.guidance（AskApp.vue:152），
+    // 而 guidance 是后端把「本机 Ollama 探测结果 + 要拉哪些模型」现场拼出来的字符串
+    // （api.py:4573-4592）—— 里面直接印着真实模型名，机器状态一变横幅就变。
+    // 保留横幅本身（warn 态的样式要留在视觉覆盖里），只把文案钉成一句不含机器信息的。
+    ollama_status: {
+      reachable: false, needed_models: ['pinned-model'], present_models: [], missing_models: ['pinned-model'],
+      blocks_conversation: true, search_degraded: false,
+      guidance: '未检测到本地模型服务（夹具钉死文案，不代表本机状态）。',
+    },
+  }
 }
 
 // 关掉动效与光标闪烁，否则同一状态两次截图就会差几像素。
@@ -99,30 +128,38 @@ const STABILIZE = () => {
   return hits
 }
 
-async function shoot(browser, base, c) {
+async function shoot(browser, base, c, config) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
   await page.addInitScript(`localStorage.setItem("docmind.skin","${c.skin}")`)
-  let stubbed = 0
-  if (c.stubModelStatus) {
-    await page.route('**/api/model_status*', async (route) => {
-      stubbed++
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(MODEL_STATUS) })
-    })
-  }
+  // 两个桩都要计数：拦到 0 次就等于这个用例还在读真后端（端点改名 / 请求路径变了），
+  // 那会让基线重新变成抛硬币，而且是静默的。
+  const hit = { config: 0, status: 0 }
+  await page.route('**/api/config*', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    hit.config++
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(config) })
+  })
+  await page.route('**/api/model_status*', async (route) => {
+    hit.status++
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(MODEL_STATUS) })
+  })
   await page.goto(base + c.route, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector(c.stable, { timeout: 25000 })
-  await page.waitForTimeout(1500)
+  // 钉死之后不再靠固定时长赌时序：等钉进去的那个模型名真的出现在画面上。
+  // 超时不抛（workbench 未必显示模型名），把「有没有出现」交给下面的断言材料。
+  await page.waitForFunction(m => document.body.innerText.includes(m), PINNED_MODEL, { timeout: 8000 })
+    .catch(() => {})
+  await page.waitForTimeout(600)
   const hits = await page.evaluate(STABILIZE)
   await page.waitForTimeout(400)
   // 桩没生效就等于这个用例还在读真后端 —— 会天天误报，必须吵出来。
-  const shown = c.stubModelStatus
-    ? await page.evaluate(() => document.body.innerText.includes('6.1 GB'))
-    : true
+  const shown = await page.evaluate(() => document.body.innerText.includes('6.1 GB'))
+  const modelShown = await page.evaluate((m) => document.body.innerText.includes(m), PINNED_MODEL)
   const buf = await page.screenshot({ type: 'png' })
   await page.close()
   // 把归一化命中数带出去：万一哪天路径不再出现在界面上（或选择器变了），
   // hits 掉到 0 就是"归一化失效"的信号，不能让它静默变成 no-op。
-  return { buf, hits, stubbed, shown }
+  return { buf, hits, hit, shown, modelShown }
 }
 
 // 交给浏览器解码 PNG 并逐像素比：省掉一个 npm 依赖。
@@ -176,15 +213,20 @@ const reused = !!process.env.DOCMIND_UI_TEST_URL
 const fixture = reused ? { base: process.env.DOCMIND_UI_TEST_URL, child: null } : await startFixture()
 let failed = 0
 try {
-  console.log(`夹具：${fixture.base}${reused ? '（复用外部服务，可能与基线不同源）' : '（本脚本新起，干净）'}\n`)
+  console.log(`夹具：${fixture.base}${reused ? '（复用外部服务，可能与基线不同源）' : '（本脚本新起，干净）'}`)
+  const config = await pinConfig(fixture.base)
+  console.log(`已钉住 /api/config 的易漂字段：模型=${config.llm_model} · 文档 ${config.ingested_files.length} 篇（其余字段用夹具真实值）\n`)
   for (const c of CASES) {
     const file = path.join(DIR, `${c.name}.png`)
-    const { buf: shot, hits, stubbed, shown } = await shoot(browser, fixture.base, c)
+    const { buf: shot, hits, hit, shown, modelShown } = await shoot(browser, fixture.base, c, config)
     // 工作台界面上必然出现随机夹具路径；一次都没抹平 = 归一化失效，要吵出来
     const warn = c.route === '/workbench' && hits === 0 ? '  ⚠ 未抹平任何随机路径，归一化可能失效' : ''
-    const stubWarn = c.stubModelStatus && (stubbed === 0 || !shown)
-      ? `  ⚠ model_status 桩未生效（拦截 ${stubbed} 次，界面出现钉死读数=${shown}）` : ''
-    const info = `  抹平随机路径 ${hits} 处${warn}${stubWarn}`
+    // 命中次数常驻打印（不只出错时才说）：桩静默失效 = 基线重新开始赌机器状态，
+    // 而这种失效只有出现在每一行输出里才看得见。
+    const stubs = `数据桩 config×${hit.config}（钉死模型可见=${modelShown}）· model_status×${hit.status}（显存可见=${shown}）`
+    const stubWarn = (!hit.config || !modelShown || (c.route === '/' && (!hit.status || !shown)))
+      ? `  ⚠ 数据桩未生效 —— 这一例又开始读真后端了` : ''
+    const info = `  抹平随机路径 ${hits} 处 · ${stubs}${warn}${stubWarn}`
     if (UPDATE || !fs.existsSync(file)) {
       fs.writeFileSync(file, shot)
       console.log(`BASELINE ${c.name}  ${(shot.length / 1024).toFixed(0)}KB  ${info}`
