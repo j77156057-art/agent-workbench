@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 
 from llm import retry_call, is_retryable, _OllamaStream, StreamChat, LLMClient
+import config
 
 
 class _Err(Exception):
@@ -523,7 +524,26 @@ class OllamaContextProbeTests(unittest.TestCase):
         self.assertEqual(mk.call_count, 1)
         self.assertEqual(c.context_source, "probe")
         self.assertEqual(c.capability["context_window"], 40960)
-        self.assertEqual(c.prompt_budget, int(40960 * 0.75))
+        # ⚠⚠ **这条断言原为 `int(40960 * 0.75)`（=30720）。**
+        # 那个 75% 是旧公式：把窗口的四分之三全给 prompt，**输出侧不留余量**。
+        # `config.prompt_token_budget` 已改为
+        #     reserve = max(LLM_MAX_TOKENS, output_token_budget(...)) + OUTPUT_TOKEN_RESERVE
+        #     prompt_budget = window - reserve
+        # 所以现在 prompt_budget 必然**小于** 75%。
+        #
+        # 为什么不直接写 26932：写死数字会让公式下次调整时这条测试又红一遍，
+        # 而那时人得重新推导一遍才敢改。**断言契约，不断言结果数字**：
+        #   ① prompt + 输出预留 必须不越过窗口（这是这次改动要修的事）
+        #   ② prompt_budget 必须小于 75%（证明余量真的被留出来了）
+        budget = c.prompt_budget
+        reserve = max(config.LLM_MAX_TOKENS,
+                      config.output_token_budget("ollama", "zz-unit-probe:1b", 40960)) \
+            + config.OUTPUT_TOKEN_RESERVE
+        self.assertEqual(budget, 40960 - reserve,
+                         "prompt_budget 不符合「窗口减预留」的新契约")
+        self.assertLess(budget, int(40960 * 0.75),
+                        "prompt 仍占 75% 以上 —— 输出侧没有余量，正是这次要修的")
+        self.assertGreater(budget, 0)
 
         # 手填覆盖存在时跳过探测，窗口以覆盖为准
         set_context_window_override("ollama", "zz-unit-custom:1b", 20000)

@@ -395,11 +395,41 @@ _OLLAMA_CTX_CACHE = {}
 
 
 def _ollama_native_base(base_url: str = "") -> str:
-    """OpenAI 兼容地址（.../v1）还原成 Ollama 原生地址（去掉末尾 /v1）。"""
+    """OpenAI 兼容地址（.../v1）还原成 Ollama 原生地址（去掉末尾 /v1）。
+
+    ⚠⚠ **顺带把主机名 localhost 归一成 127.0.0.1**，这不是洁癖，是**实测省 2 秒**：
+
+        probe_ollama_context(model, 'http://localhost:11434/v1')   4110ms
+        probe_ollama_context(model, 'http://127.0.0.1:11434/v1')   2068ms
+
+    根因是 Windows 上 `getaddrinfo("localhost", 11434)` 返回顺序是
+    **`::1` 在前、`127.0.0.1` 在后`**。Ollama 只听 IPv4，于是 urllib 先连
+    `::1` 被拒、再回落 `127.0.0.1` 又被拒 —— 而**本机拒绝一个回环端口就要
+    约 2 秒**（实测 `socket.create_connection(("127.0.0.1", 11434))` 到关闭
+    端口 = 2035ms，见 api.py:4498 的同一记录）。两次 = 约 4 秒。
+
+    `LLMClient.__init__` 每次构造都要探一次，于是「冷开机」要付这 4 秒，
+    再叠上 `check_ollama` 的 2 秒，就是 `/api/config` 冷启动 6.1s 的构成。
+
+    **为什么改这里而不是改 `config.py` 里的 base_url**：
+    * `localhost` 是用户可见的配置值，有人可能只想听 IPv6
+    * 这里只影响**探测用的地址**，不影响真正发对话请求用的地址
+    * 归一后探测必然更快，且不改变任何语义（Ollama 两个都听）
+
+    只归一**主机名**，端口与路径原样保留；已经是 IP 的（含 127.0.0.1 / ::1）
+    一律不动。
+    """
     b = (base_url or "").strip().rstrip("/")
     if b.endswith("/v1"):
         b = b[:-3].rstrip("/")
-    return b or os.getenv("OLLAMA_BASE", "http://127.0.0.1:11434")
+    b = b or os.getenv("OLLAMA_BASE", "http://127.0.0.1:11434")
+    # scheme://authority/... -> 只动 authority 里的主机名
+    m = re.match(r"^(https?://)(\[[^\]]+\]|[^/:]+)(:\d+)?(/.*)?$", b, re.I)
+    if m:
+        scheme, host, port, rest = m.groups()
+        if host.lower() == "localhost":
+            b = f"{scheme}127.0.0.1{port or ''}{rest or ''}"
+    return b
 
 
 def parse_ollama_show_context(data) -> int:
