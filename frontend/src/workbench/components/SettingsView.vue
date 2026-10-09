@@ -9,6 +9,7 @@ import {
   WEB_SEARCH_PROVIDERS, WEB_FETCH_PROVIDERS,
   type SettingsConfigInfo, type ModelConfigInfo, type ProviderOption, type McpServer,
   type AgentCapacityInfo,
+  type AgentCapacityRanges,
   type McpCapabilityCandidate,
   type BudgetStatus, type TraceSummary,
   type McpAutoConnectCandidate, type McpAutoConnectConfig, type McpProbeRes, type McpDirectoryResult,
@@ -342,6 +343,14 @@ function capacityMax(field: CapacityField): number {
   return capacityInfo.value?.ranges?.[CAPACITY_FIELDS[field]] ?? 0
 }
 
+/** 下界也走载荷（`<字段>_min`），与上界同一个来源。
+ *  只有 task_token_budget 有正数下界：0 是合法的「不限」，所以它不是 input 的
+ *  min 属性（那会把 0 判成非法），只用于提前拦住「填了正数却小到跑不完一轮」。 */
+function capacityFloor(field: CapacityField): number {
+  const key = `${CAPACITY_FIELDS[field]}_min` as keyof AgentCapacityRanges
+  return Number(capacityInfo.value?.ranges?.[key] ?? 0) || 0
+}
+
 function validateCapacity(): string {
   for (const field of CAPACITY_KEYS) {
     const raw = capRaw(field)
@@ -351,6 +360,10 @@ function validateCapacity(): string {
     // 越界必须当场拒绝：后端 normalize_settings 越界时回落到默认值，而默认现在是
     // 0 = 不限 —— 用户填 5000 会被静默改成「不限」，行为与意图正好相反。
     if (hi > 0 && v > hi) return `${CAPACITY_LABEL[field]}不能大于服务端下发的上限 ${hi}。`
+    const lo = capacityFloor(field)
+    // 后端对 0 < 值 < 下界 是 raise → 400（不是夹取），所以这里拦的是「提交必然失败」，
+    // 报错文案与后端一致：要么够大，要么填 0。
+    if (lo > 0 && v > 0 && v < lo) return `${CAPACITY_LABEL[field]}至少要 ${lo} 才跑得完一轮问答（实测值）；想完全不限就填 0。`
   }
   return ''
 }
@@ -1660,6 +1673,7 @@ function openModelSettings() {
               <label class="sv-field">
                 <span>任务 Token 上限（0 = 不限）</span>
                 <input v-model="capacityValues.taskTokenBudget" class="sv-input" type="number" min="0" :max="capacityMax('taskTokenBudget') || undefined" step="1000" />
+                <span v-if="capacityFloor('taskTokenBudget')" class="sv-field-sub">正数至少 {{ capacityFloor('taskTokenBudget') }}，再小连一轮问答都跑不完；完全不限请填 0</span>
               </label>
               <label class="sv-field">
                 <span>自动纠偏次数（0 = 不限）</span>
@@ -1677,6 +1691,12 @@ function openModelSettings() {
             <div v-if="capacityInfo" class="sv-note">
               <!-- 上限从哪来的，直接写在界面上：用户能看到它是服务端给的，不是页面自己定的 -->
               <div>服务端下发上限：{{ CAPACITY_KEYS.map(f => `${CAPACITY_LABEL[f]} ${capacityMax(f) || '不限'}`).join(' · ') }}</div>
+              <!-- 下界单独一行：它只约束「填了正数」的情况，0 仍是合法的不限，
+                   所以不能并进上面那句，也不能做成 input 的 min。 -->
+              <div v-if="capacityFloor('taskTokenBudget')">
+                服务端下发下界：{{ CAPACITY_LABEL.taskTokenBudget }} 填正数时不得小于
+                {{ capacityFloor('taskTokenBudget') }}（低于此值一轮问答都跑不完，服务端会直接拒绝）
+              </div>
               <div>{{ capacityInfo.model.provider }} / {{ capacityInfo.model.name || '默认模型' }} ·
                 {{ capacityInfo.model.local_endpoint ? '本机推理端点' : '远程推理端点' }}</div>
               <div v-if="capacityInfo.resources.available">
@@ -2109,6 +2129,8 @@ function openModelSettings() {
 .sv-note { margin: 8px 0 0; padding-left: 9px; border-left: 2px solid var(--accent); color: var(--text-muted); font-size: 11px; line-height: 1.55; }
 .sv-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
 .sv-field { display: flex; flex-direction: column; gap: 5px; margin-top: 7px; font-size: 12px; color: var(--text-muted); }
+/* 字段内的服务端约束说明（如 Token 下界）：跟标签同色、比标签小一号 */
+.sv-field-sub { font-size: 11px; line-height: 1.45; color: var(--text-muted); }
 .sv-toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--text); cursor: pointer; }
 .sv-toggle-row input { width: 16px; height: 16px; }
 /* 一行一个参数的偏好行（复选框那种放不下 select，单独一档） */

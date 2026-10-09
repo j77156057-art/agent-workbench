@@ -51,11 +51,15 @@ export interface AgentCapacitySettings {
   local_auto_limit: boolean
 }
 
-/** 与 AgentCapacitySettings 同键，但值是每个字段的**上界**。
+/** 与 AgentCapacitySettings 同键，但值是每个字段的**上界**；
+ *  另带 `<字段>_min` 形式的**正数下界**（目前只有 task_token_budget 有）。
  *  由 GET /api/agent-capacity 下发（api.py 的 ranges 字段），界面必须读它而不是
  *  再抄一份数字 —— 抄一份就多了「界面允许填、后端越界回落默认值」的漂移空间，
  *  而那个默认值现在是 0（不限），越界的后果与用户意图正好相反。 */
-export type AgentCapacityRanges = { [K in keyof AgentCapacitySettings]-?: number }
+export type AgentCapacityRanges = { [K in keyof AgentCapacitySettings]-?: number } & {
+  /** task_token_budget 填正数时的最小值；0（不限）不受此约束。老后端没有这个键。 */
+  task_token_budget_min?: number
+}
 
 export interface AgentCapacityInfo {
   ok?: boolean
