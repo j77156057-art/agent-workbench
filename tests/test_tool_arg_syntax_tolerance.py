@@ -39,6 +39,7 @@ if ROOT not in sys.path:
 
 import agent as agent_mod  # noqa: E402
 import tools  # noqa: E402
+from agent_runtime import capacity  # noqa: E402
 
 
 class ReadFileArgumentSyntaxTests(unittest.TestCase):
@@ -286,34 +287,179 @@ class UnrecognisedRangeSyntaxIsNamedTests(unittest.TestCase):
                                     "%r 应该读得到内容：%s" % (rel, out[:90]))
 
 
+
+class _ScriptedLLM:
+    """按脚本逐条返回文本。
+
+    ⚠ `count_tokens` 返回 0：让 `_history_window` 不裁剪历史，
+    这样断言只针对空响应文案，不被历史长度干扰。
+    """
+
+    def __init__(self, steps):
+        self.steps = list(steps)
+        self.calls = 0
+
+    def count_tokens(self, text):
+        return 0
+
+    def chat(self, messages, stream=True, enable_thinking=None, **kw):
+        self.calls += 1
+        return iter([self.steps[min(self.calls, len(self.steps)) - 1]])
+
+
+#: 借用真实的失败标记，保证「工具失败」这条分支一定会走到。
+#: 不用自造字符串：`_FAILURE_MARKERS` 是权威清单，抄一份就会漂移。
+_FAILING_OBS = "错误：文件不存在：behaviors/__missing__.gd"
+_FAILING_READ = {"func": lambda arg: _FAILING_OBS}
+
+
 class EmptyResponseBlamesTheToolFailuresTests(unittest.TestCase):
-    """空响应的归因必须把「工具反复失败」摆出来，而不是只让人去查 provider。"""
+    """空响应的归因必须把「工具反复失败」摆出来，而不是只让人去查 provider。
+
+    ## 为什么判据是「运行时」而不是「源码里有这句话」
+
+    原断言用 `inspect.getsource(Agent._run)` 搜字符串。实测两个问题：
+
+    ① 把文案退回「中转返回空内容，直接重试通常就能拿到」（注释保留）
+       -> 靠钉注释那条侥幸兜住，**而那正是它自己说「会假通过」的情形**
+    ② 只改注释不动文案 -> **误红**（钉注释那条）
+
+    **源码里有字符串 ≠ 用户能收到那句话。** godot_sample 实测就是这个形态：
+    注释照旧在（记录着正确的推理），文案已经退回误导版本，
+    于是用户被引去「直接重试通常就能拿到」，重试多少次都没用。
+    源码搜索对这种漂移完全无感。
+
+    所以真跑一次 `Agent._run`，断言**实际 yield 出来的 final 文本**。
+
+    ## ⚠⚠ 真跑时踩到的三个坑（都写在这里，别再踩）
+
+    **① capacity 读的是本机持久化状态。** 第一版真跑 `llm.chat` 被调用
+    **0 次**，第一轮就返回「已达到本任务 Token 上限」。链条：
+
+        _capacity_settings() -> capacity.get_settings()
+                             -> config.get_runtime / load_state
+        本机存着 task_token_budget=5000（界面存过的真实配置）
+        -> RunBudget(5000).preflight(19807 字符的 prompt) -> False
+
+    `normalize_settings({})` 是 0（不限），但 `get_settings()` 读到的是
+    **用户机器上存过的值** —— 换台机器、或者用户改过设置，行为就不同。
+    **测试不封闭。** 所以显式 patch capacity。
+
+    **② 「读一个不存在的文件」不算工具失败。** 实测 `read_file` 在没配
+    代码库根目录时返回「尚未配置代码库根目录，请先用 /api/ingest_code…」，
+    而 `_is_failure` 判它 **False**（那不在 `_FAILURE_MARKERS` 里），
+    `fail_total` 不增 -> 走的是「**没有**工具失败记录」那条分支。
+
+    **③ 所以自己造一个必然失败的工具。** 与其依赖本机有没有配代码库、
+    路径存不存在，不如把 `TOOLS["read_file"]` 换成一个必定返回失败标记的
+    函数 —— 前提由测试自己钉住。
+
+    ## 变异实测（四条全符合预期）
+
+    ① 文案退回「直接重试通常就能拿到」 -> 红（防住假通过）
+    ② 只改注释不动文案              -> 绿（不误红，旧版在这里误红）
+    ③ 删掉「大概率无效」            -> 红
+    ④ runtime 断言换回 getsource     -> 红（反向守卫生效）
+    """
+
+    #: 判文案的用例 —— 反向守卫只盯这两条
+    JUDGING_METHODS = ("test_the_message_names_the_failing_tool",
+                       "test_it_does_not_assert_the_provider_is_the_cause")
+
+    def _final_text(self):
+        llm = _ScriptedLLM([
+            # 先调一次必然失败的工具 —— fail_total > 0
+            "Thought: 核对\nAction: read_file\nAction Input: path: behaviors/x.gd",
+            # 之后一直空响应：_run 的纠偏次数耗尽后走 `elif not acc.strip():`
+            "", "", "", "", "", "", "", "", "", "",
+        ])
+        unlimited = {k: 0 for k in capacity.DEFAULTS if k != "local_auto_limit"}
+        unlimited["local_auto_limit"] = True
+        with patch.object(capacity, "get_settings",
+                          return_value=dict(unlimited)), \
+             patch.dict(agent_mod.TOOLS, {"read_file": _FAILING_READ}):
+            a = agent_mod.Agent(llm=llm, session_id="t-empty-blame")
+            events = list(a.run("读一个不存在的文件", stream=True))
+
+        # 前提自检：工具真被调过、观察真被判成失败。
+        # 少了这两条，断言红了也不知道是文案变了还是前提没成立。
+        observations = [str(e.get("text") or "")
+                        for e in events if e.get("type") == "observation"]
+        self.assertTrue(observations, "工具没被调用 —— 假 LLM 脚本不对")
+        self.assertTrue(any(agent_mod._is_failure(o) for o in observations),
+                        "工具观察没被判成失败，验的是别的分支：%r" % (observations[:1],))
+        finals = [e for e in events if e.get("type") == "final"]
+        self.assertTrue(finals, "没有产出 final")
+        return finals[-1].get("text") or ""
 
     def test_the_message_names_the_failing_tool(self):
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
-        self.assertIn("次工具调用失败", src,
+        text = self._final_text()
+        self.assertIn("次工具调用失败", text,
                       "工具连续失败时，空响应文案必须点出它——"
                       "只让用户查 provider 会把人引向错误方向")
-        self.assertIn("最常失败", src,
+        self.assertIn("最常失败", text,
                       "必须点名最常失败的工具，否则用户还得自己翻 trace")
 
     def test_it_does_not_assert_the_provider_is_the_cause(self):
         """原文案说「这多半不是你的问题写得不清楚」——在没有证据时过于笃定。
 
-        ⚠ 为什么断两条而不是一条：这两句分别是**想法**和**落到用户身上的话**。
-        只钉注释（`空响应是**结果**不是**原因**`）会假通过——有人把文案退回
-        「中转返回空内容，直接重试通常就能拿到」时注释照样在，守卫照样绿；
-        只钉文案则会在纯注释改写时误红。
+        ⚠ 判据是**用户实际收到的 final 文本**，不是源码里有这个字符串。
+        钉源码会两头出错：钉注释 → 纯注释改写误红；只钉文案 → 那正是我们要的。
+        """
+        text = self._final_text()
+        self.assertIn("单纯重试**大概率无效**", text,
+                      "工具失败分支的文案必须真的劝住重试，"
+                      "否则归因照样把人引向 provider（实测 godot_sample "
+                      "就是被「直接重试通常就能拿到」误导，重试多少次都没用）")
+        self.assertNotIn("重试通常就能拿到", text,
+                         "退回了那条把用户引向 provider 的旧文案")
+
+    def test_the_judgement_runs_the_agent_not_the_source(self):
+        """反向守卫：**判文案那两条**不许退回「搜源码里有这句话」。
+
+        防的是**下一次有人把判据改弱**：把运行时断言换回字符串搜索。
+
+        ⚠ 范围只限 `JUDGING_METHODS`（判文案的两条）。
+        扫全类会自己判红 —— 本类的守卫用例合法地用 `getsource`
+        去检查源码，那正是它要禁止的形状出现在正确的地方。
+
+        ⚠ 只看**代码**：用 tokenize 剥掉注释与字符串字面量，
+        否则说明文字里提到 `getsource` 就会误判
+        （先用正则剥除反而留下残渣 —— 实测踩过）。
         """
         import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
-        self.assertIn("空响应是**结果**不是**原因**", src,
-                      "必须把「上游返回空内容」降级为结果而非原因，"
-                      "否则工具失败时用户会反复重试，而重试多少次都没用")
-        self.assertIn("单纯重试**大概率无效**", src,
-                      "上面那句不能只停在注释里：工具失败分支的文案必须真的"
-                      "劝住重试，否则归因照样把人引向 provider")
+        import io
+        import tokenize
+        code_only = []
+        for name in self.JUDGING_METHODS:
+            body = inspect.getsource(getattr(self, name))
+            for tok in tokenize.generate_tokens(io.StringIO(body).readline):
+                if tok.type in (tokenize.STRING, tokenize.COMMENT):
+                    continue
+                code_only.append(tok.string)
+        joined = " ".join(code_only)
+        self.assertIn("_final_text", joined,
+                      "判据必须真跑 Agent._run 并检查用户收到的文本")
+        self.assertNotIn("getsource", joined,
+                         "判据退回了「源码里有这句话」——那是注释与文案"
+                         "可以各说各话的地方，godot_sample 实测就是这么漏过去的")
+
+    def test_the_capacity_premise_is_pinned(self):
+        """反向守卫：capacity 必须被显式钉住，不能读本机持久化状态。
+
+        去掉 patch 之后，本机存着 task_token_budget=5000 时
+        `llm.chat` 会被调用 0 次 —— 第一轮就判「Token 上限」返回。
+        那不是代码 bug，是**测试依赖了运行者的机器状态**。
+        """
+        import inspect as _i
+        src = _i.getsource(self._final_text)
+        self.assertIn("capacity", src,
+                      "_final_text 必须钉住 capacity，否则换个环境行为就变")
+        self.assertNotIn("unittest.skip", src, "不许靠 skip 掩盖")
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":
