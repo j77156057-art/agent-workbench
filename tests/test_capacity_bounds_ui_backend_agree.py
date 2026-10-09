@@ -37,31 +37,26 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _backend_bounds() -> dict[str, int]:
-    """从 agent_runtime/capacity.py 读出「字段 -> 上界」。
+    """从**真实 API 载荷**读出上界 —— 不再从源码正则扒。
 
-    读的是 `_clamp(<字段>, <CONST>)` 调用点，再把 CONST 解析成数字。
+    ⚠ 为什么换：前两版分别解析 `if x < 0 or x > N:` 和 `MAX_*_CAP` 常量。
+    第二版有个隐患：它读的是**实现细节**（常量叫什么、怎么调用），
+    后端哪天把越界逻辑换个写法（例如改成表驱动），解析器就失效 ——
+    而失效时我的护栏会报「判据恒真」，那是一次**失败的测试**，
+    不是一次通过的测试。
 
-    ⚠ 为什么不读 `if x < 0 or x > N:`：后来把越界逻辑收进 `_clamp()` 后，
-    那串判断从源码里消失了，解析器返回空、护栏报「判据恒真」。那次失败是
-    有用的：**边界必须有一个可被外部读到的具名处**，而不是藏在调用点里。
-    这也是把数字提成 `MAX_*_CAP` 常量的原因。
+    现在直接问 API：`GET /api/agent-capacity` 的 `ranges` 字段。
+    那是**契约**，与内部怎么实现无关。内部重写不影响这条测试。
 
-    ⚠ 为什么不手写「常量名 -> 字段」别名表：`child_max_steps` 与
-    `main_max_steps` 共用 `MAX_STEPS_CAP`，`max_final_continuations` 与
-    `max_nudges` 共用 `MAX_NUDGES_CAP` —— 手写别名会漏，而漏了不会报错，
-    只会让那条字段 silently 不参与比对。直接解析调用点才对得上。
+    ⚠ 这是 async，所以要走 IsolatedAsyncioTestCase；见下面那个用例。
     """
-    src = (ROOT / "agent_runtime" / "capacity.py").read_text(encoding="utf-8")
-    caps = {m.group(1): int(m.group(2).replace("_", ""))
-            for m in re.finditer(r"^(MAX_\w+)\s*=\s*([\d_]+)\s*$", src, re.M)}
-    assert caps, "没解析到任何 MAX_*_CAP 常量 —— 判据恒真"
-
-    out: dict[str, int] = {}
-    for m in re.finditer(r"_clamp\(\s*[\"'](\w+)[\"']\s*,\s*\w+\s*,\s*(MAX_\w+)\s*\)", src):
-        field, const = m.group(1), m.group(2)
-        if const in caps:
-            out[field] = caps[const]
-    return out
+    import asyncio
+    import api
+    payload = asyncio.run(api.get_agent_capacity())
+    ranges = payload.get("ranges")
+    assert isinstance(ranges, dict) and ranges, (
+        "GET /api/agent-capacity 没有 ranges 字段 —— 判据恒真")
+    return {k: int(v) for k, v in ranges.items()}
 
 
 def _ui_max_attrs() -> dict[str, int]:

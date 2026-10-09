@@ -4258,6 +4258,22 @@ async def get_agent_capacity():
     return {
         "ok": True,
         "settings": settings,
+        # ⚠⚠ **边界由后端下发，前端不自己写数字。**
+        # 之前前端 input 把 max 硬编码在模板里，后端 normalize_settings 另外写一套，
+        # 两边靠一条锁测试保证相等。相等不等于单源：哪天后端改上界，前端不改，
+        # 那条测试会红 —— 但红色是「事后报警」，不是「前端自动跟着变」。
+        #
+        # 下发之后：前端读这个字段设置 input 的 max，后端 `_clamp` 用同一批常量，
+        # 两边不可能不一致。锁测试仍然保留（它现在比对「载荷 ranges vs 界面 max」），
+        # 但比对的双方都来自后端 —— 那才是真正的单源。
+        "ranges": {
+            "max_agents": agent_capacity.MAX_AGENTS_CAP,
+            "main_max_steps": agent_capacity.MAX_STEPS_CAP,
+            "child_max_steps": agent_capacity.MAX_STEPS_CAP,
+            "max_nudges": agent_capacity.MAX_NUDGES_CAP,
+            "max_final_continuations": agent_capacity.MAX_NUDGES_CAP,
+            "task_token_budget": agent_capacity.MAX_TOKEN_BUDGET_CAP,
+        },
         "model": {"provider": provider, "name": model, "local_endpoint": local_endpoint},
         "resources": snapshot,
         "loaded_models": model_memory,
