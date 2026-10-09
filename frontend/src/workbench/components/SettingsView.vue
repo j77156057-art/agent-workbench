@@ -308,6 +308,8 @@ const capacitySaved = ref('')
 const unlimitedAgentsConfirmed = ref(false)
 const unlimitedMainStepsConfirmed = ref(false)
 const unlimitedStepsConfirmed = ref(false)
+const unlimitedNudgesConfirmed = ref(false)
+const unlimitedContinuationsConfirmed = ref(false)
 const unlimitedBudgetConfirmed = ref(false)
 
 const unlimitedRisk = '不设固定上限可能显著增加模型调用次数和 Token 消耗，也可能延长任务时间；关闭本地显存自动控制时还可能导致显存不足。确认吗？'
@@ -315,25 +317,37 @@ const unlimitedRisk = '不设固定上限可能显著增加模型调用次数和
 function confirmUnlimitedAgents() {
   if (maxAgents.value !== '0') { unlimitedAgentsConfirmed.value = false; return }
   if (window.confirm(unlimitedRisk)) unlimitedAgentsConfirmed.value = true
-  else maxAgents.value = String(capacityInfo.value?.settings.max_agents ?? 8)
+  else maxAgents.value = String(capacityInfo.value?.settings.max_agents ?? '')
 }
 
 function confirmUnlimitedSteps() {
   if (childMaxSteps.value !== '0') { unlimitedStepsConfirmed.value = false; return }
   if (window.confirm(unlimitedRisk)) unlimitedStepsConfirmed.value = true
-  else childMaxSteps.value = String(capacityInfo.value?.settings.child_max_steps ?? 24)
+  else childMaxSteps.value = String(capacityInfo.value?.settings.child_max_steps ?? '')
 }
 
 function confirmUnlimitedMainSteps() {
   if (mainMaxSteps.value !== '0') { unlimitedMainStepsConfirmed.value = false; return }
   if (window.confirm(unlimitedRisk)) unlimitedMainStepsConfirmed.value = true
-  else mainMaxSteps.value = String(capacityInfo.value?.settings.main_max_steps ?? 8)
+  else mainMaxSteps.value = String(capacityInfo.value?.settings.main_max_steps ?? '')
 }
 
 function confirmUnlimitedBudget() {
   if (taskTokenBudget.value !== '0') { unlimitedBudgetConfirmed.value = false; return }
   if (window.confirm(unlimitedRisk)) unlimitedBudgetConfirmed.value = true
-  else taskTokenBudget.value = String(capacityInfo.value?.settings.task_token_budget ?? 50000)
+  else taskTokenBudget.value = String(capacityInfo.value?.settings.task_token_budget ?? '')
+}
+
+function confirmUnlimitedNudges() {
+  if (maxNudges.value !== '0') { unlimitedNudgesConfirmed.value = false; return }
+  if (window.confirm(unlimitedRisk)) unlimitedNudgesConfirmed.value = true
+  else maxNudges.value = String(capacityInfo.value?.settings.max_nudges ?? '')
+}
+
+function confirmUnlimitedContinuations() {
+  if (maxFinalContinuations.value !== '0') { unlimitedContinuationsConfirmed.value = false; return }
+  if (window.confirm(unlimitedRisk)) unlimitedContinuationsConfirmed.value = true
+  else maxFinalContinuations.value = String(capacityInfo.value?.settings.max_final_continuations ?? '')
 }
 
 async function loadAgentCapacity() {
@@ -366,19 +380,26 @@ async function saveAgentCapacity() {
     capacityError.value = 'Agent 数量需为 0–64，工具步数需为 0–1000；0 表示不设固定上限。'
     return
   }
-  if (![nudges, continuations].every(Number.isInteger) || nudges < 0 || nudges > 20 || continuations < 0 || continuations > 20 ||
+  // 纠偏/续写上界与工具步数对齐（1000）。原先 20 会让"想设 50 次"被拒或被
+  // 后端静默改回默认值；且默认已改为 0（不限），校验必须接受 0 并明确提示。
+  if (![nudges, continuations].every(Number.isInteger) || nudges < 0 || nudges > 1000 ||
+      continuations < 0 || continuations > 1000 ||
       !Number.isInteger(tokenBudget) || tokenBudget < 0 || tokenBudget > 10000000) {
-    capacityError.value = '纠偏/续写次数需为 0–20，任务 Token 上限需为 0–10000000；0 表示不限。'
+    capacityError.value = '纠偏/续写次数需为 0–1000，任务 Token 上限需为 0–10000000；0 表示不限。'
     return
   }
   if ((max === 0 && !unlimitedAgentsConfirmed.value) ||
       (mainSteps === 0 && !unlimitedMainStepsConfirmed.value) ||
       (steps === 0 && !unlimitedStepsConfirmed.value) ||
+      (nudges === 0 && !unlimitedNudgesConfirmed.value) ||
+      (continuations === 0 && !unlimitedContinuationsConfirmed.value) ||
       (tokenBudget === 0 && !unlimitedBudgetConfirmed.value)) {
     if (!window.confirm(unlimitedRisk)) return
     if (max === 0) unlimitedAgentsConfirmed.value = true
     if (mainSteps === 0) unlimitedMainStepsConfirmed.value = true
     if (steps === 0) unlimitedStepsConfirmed.value = true
+    if (nudges === 0) unlimitedNudgesConfirmed.value = true
+    if (continuations === 0) unlimitedContinuationsConfirmed.value = true
     if (tokenBudget === 0) unlimitedBudgetConfirmed.value = true
   }
   capacitySaving.value = true
@@ -402,6 +423,8 @@ async function saveAgentCapacity() {
     unlimitedAgentsConfirmed.value = false
     unlimitedMainStepsConfirmed.value = false
     unlimitedStepsConfirmed.value = false
+    unlimitedNudgesConfirmed.value = false
+    unlimitedContinuationsConfirmed.value = false
     unlimitedBudgetConfirmed.value = false
     await loadAgentCapacity()
   } catch (e) {
@@ -1664,12 +1687,12 @@ function openModelSettings() {
                 <input v-model="taskTokenBudget" class="sv-input" type="number" min="0" max="10000000" step="1000" @change="confirmUnlimitedBudget" />
               </label>
               <label class="sv-field">
-                <span>自动纠偏次数</span>
-                <input v-model="maxNudges" class="sv-input" type="number" min="0" max="20" step="1" />
+                <span>自动纠偏次数（0 = 不限）</span>
+                <input v-model="maxNudges" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedNudges" />
               </label>
               <label class="sv-field">
-                <span>最终续写次数</span>
-                <input v-model="maxFinalContinuations" class="sv-input" type="number" min="0" max="20" step="1" />
+                <span>最终续写次数（0 = 不限）</span>
+                <input v-model="maxFinalContinuations" class="sv-input" type="number" min="0" max="1000" step="1" @change="confirmUnlimitedContinuations" />
               </label>
             </div>
             <label class="sv-toggle-row">
