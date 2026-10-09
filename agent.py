@@ -1323,6 +1323,10 @@ def _capacity_help_response(question, session_id="", llm=None, run_budget=None):
     # 所以显式写成「不限」——数字 0 本身不是自解释的。
     unlimited = lambda v: "不限" if int(v or 0) <= 0 else f"{int(v):,}"
     task_text = unlimited(task_limit)
+    _cap_now = _capacity_settings()
+    nudges_limit = max(
+        int(_cap_now.get("max_nudges", 0) or 0),
+        int(_cap_now.get("max_final_continuations", 0) or 0))
     agents_text = unlimited(max_agents)
     steps_text = unlimited(main_steps)
     child_text = unlimited(child_steps)
@@ -1333,7 +1337,8 @@ def _capacity_help_response(question, session_id="", llm=None, run_budget=None):
         "调整路径：工作台 → 设置 → 智能体 → 任务 Token 上限；填 0 表示不限，"
         "但可能明显增加 Token 消耗、运行时间和本地显存压力。"
         f"同一页还可调整 Agent 数（当前 {agents_text}）、主 Agent 步数（{steps_text}）"
-        f"和子 Agent 步数（{child_text}）。四项默认都是 0＝不限。\n"
+        f"和子 Agent 步数（{child_text}），以及自动纠偏 / 最终续写次数"
+        f"（均当前 {unlimited(nudges_limit)}）。六项默认都是 0＝不限。\n"
         f"费用预算是另一套限制：全局 {global_text}，当前会话 {session_text}；"
         f"每分钟调用次数上限：{rate_text}。费用预算耗尽时，在设置 → 用量与费用中提高累计预算上限或清零。\n"
         f"当前模型：{provider} / {model}；上下文窗口约 {context_text}，{prompt_text}。"
@@ -3518,16 +3523,33 @@ class Agent:
         self._request_system_context = ()
 
     def _execution_policy(self):
+        """返回 (max_nudges, max_final_continuations)。
+
+        **0 = 不限**（2026-10 起）。此前 `min(20, ...)` 把用户填的任何值硬夹到 20，
+        且 0 被当成"没有值"而非"不限"——于是「设为 0 放开」在设置页看起来生效、
+        实际仍被压回上限。这与 `_step_budget`（main_max_steps=0 已表示不限）
+        的语义必须一致：同一套设置里，0 只能有一种含义。
+
+        返回 `None` 表示不限，调用方用 `_limit_ok()` 判定，不要直接做数值比较。
+        """
         settings = _capacity_settings()
-        try:
-            nudges = max(0, min(20, int(settings.get("max_nudges", 2))))
-        except (TypeError, ValueError):
-            nudges = 2
-        try:
-            continuations = max(0, min(20, int(settings.get("max_final_continuations", 2))))
-        except (TypeError, ValueError):
-            continuations = 2
-        return nudges, continuations
+
+        def _read(key):
+            try:
+                raw = int(settings.get(key, 0))
+            except (TypeError, ValueError):
+                return 0
+            # 负数按不限处理（用户手改配置文件时不必猜符号）
+            return max(0, raw)
+
+        return _read("max_nudges"), _read("max_final_continuations")
+
+    @staticmethod
+    def _limit_ok(used, limit):
+        """`limit` 为 0/None 表示不限；否则要求 used < limit。"""
+        if not limit or limit <= 0:
+            return True
+        return used < limit
 
     def _budget_allows(self, messages, output_tokens=0):
         if self.run_budget is None:
@@ -4591,14 +4613,24 @@ class Agent:
                 return
             # 免费目录导航额外占用迭代轮次（不占工具步数），硬顶同步放宽，
             # 否则免费 list_dir 会先撞迭代上限，预算形同虚设。
-            if tool_step_limit > 0 and iterations > tool_step_limit + max_nudges + max_final_continuations + _MAX_FORCED_FINALS + 4 + NAV_FREE_STEPS:
-                if turn is not None:
-                    turn.outcome = "max_steps"
-                yield {
-                    "type": "final",
-                    "text": "（已达到最大推理步数，请尝试更具体的问题，或补充知识库内容。）",
-                }
-                return
+            # 注意：nudges/continuations 为 0（=不限）时不能用它们去"放宽"硬顶——
+            # 原式 `iterations > limit + 0 + 0 + ...` 反而把硬顶收到 limit+7，
+            # 于是「设为不限」比「设为一个正数」更早被中止。这里只在两者都有
+            # 明确上限时才把它们计入放宽量。
+            if tool_step_limit > 0:
+                _slack = _MAX_FORCED_FINALS + 4 + NAV_FREE_STEPS
+                if max_nudges > 0:
+                    _slack += max_nudges
+                if max_final_continuations > 0:
+                    _slack += max_final_continuations
+                if iterations > tool_step_limit + _slack:
+                    if turn is not None:
+                        turn.outcome = "max_steps"
+                    yield {
+                        "type": "final",
+                        "text": "（已达到最大推理步数，请尝试更具体的问题，或补充知识库内容。）",
+                    }
+                    return
 
             # 并行批次：一轮返回多个 tool_call 且【全部只读安全】→ 并发执行后一次回填，
             # 省掉逐条往返。批内只要含写/副作用工具（或超并发上限）就整体退回顺序路径。
@@ -4853,7 +4885,8 @@ class Agent:
             if pending_final is not None:
                 # 这是上一段 Final Answer 的续写，不再把正文解释成新的工具动作。
                 pending_final = _join_final_continuation(pending_final, acc)
-                if finish_reason == "length" and final_continuations < max_final_continuations:
+                if finish_reason == "length" and self._limit_ok(
+                        final_continuations, max_final_continuations):
                     final_continuations += 1
                     trail.append({"role": "assistant", "content": acc[-TRAIL_ASSISTANT_CHARS:]})
                     trail.append({"role": "user", "content": (
@@ -5689,7 +5722,8 @@ class Agent:
             else:
                 format_stalls = 0
 
-            if nudges < max_nudges and (truncated or not acc.strip() or not has_real_final):
+            if self._limit_ok(nudges, max_nudges) and (
+                    truncated or not acc.strip() or not has_real_final):
                 nudges += 1
                 if truncated:
                     self._suppress_thinking_once = True   # 重试关思考，避免再烧预算
@@ -5776,40 +5810,39 @@ class Agent:
             elif not acc.strip():
                 if turn is not None:
                     turn.outcome = "empty"
-                # 这条文案原来写的是「请重试或换一个更具体的问题」——**归因错了**。
-                # 走到这里之前，格式纠偏（_MAX_FORMAT_STALLS）与续写纠偏
-                # （_MAX_FINAL_CONTINUATIONS）都已经用尽仍一个字都没拿到，
-                # 那基本是上游回了个 200 空信封（瞬时故障），而不是用户问题含糊。
-                # 归因错的后果很具体：用户会去改自己的问题，而真正该做的是重试，
-                # 于是"重试一次就好"变成一个查不出原因的玄学问题。
-                # 与上面 truncated 那条刻意区分开：那是长度问题，这条是拿不到内容。
+                # 走到这里时，格式纠偏（_MAX_FORMAT_STALLS）与续写纠偏
+                # （_MAX_FINAL_CONTINUATIONS）都已用尽仍一个字都没拿到。
+                # 空响应是**结果**不是**原因**，归因必须二选一（见下）：
+                # · fail_total > 0 → 「工具一直报错 -> 模型拿不到信息 -> 放弃作答」，
+                #   此时让用户去重试 / 改问题 / 查 provider 全是错误方向；
+                # · 否则 → 才轮到「上游回了个空信封」这个瞬时故障假设。
+                # 实测（godot_sample 定位扣血逻辑）：read_file 连续 5 次「文件不存在」，
+                # 根因是参数语法（start:/end: 写成行内不被识别），但用户看到的归因是
+                # 「中转返回空内容，直接重试通常就能拿到」——重试多少次都没用。
+                # 与上面 truncated 那条刻意区分开：那是长度被截，这条是拿不到内容。
                 attempts = 1 + int(final_continuations) + int(format_stalls)
-                # 空响应**本身**未必是根因。若本轮工具反复失败，最可能的因果是
-                # 「工具一直报错 -> 模型放弃 -> 返回空」，而那种情况下让用户去查
-                # provider / thinking 预算就是把人引向错误的排查方向。
-                # 实测（godot_sample 定位扣血逻辑）：read_file 连续 5 次
-                # 「文件不存在」——根因是参数语法（start:/end: 写成行内不被识别），
-                # 但用户看到的归因是「中转返回空内容，直接重试通常就能拿到」。
-                # 重试多少次都没用。
-                tool_hint = ""
                 if fail_total:
                     worst = max(tool_fail_streak.items(),
                                 key=lambda kv: kv[1], default=None)
                     worst_txt = ("（最常失败：%s ×%d）" % (worst[0], worst[1])
                                  if worst and worst[1] else "")
-                    tool_hint = (
-                        "\n\n注意：本轮有 **%d 次工具调用失败**%s。模型很可能是因为它们"
-                        "才放弃作答——请先看上面那些工具返回的具体报错，那里才是根因；"
-                        "本条「上游返回空内容」只是**结果**，不是原因。" % (fail_total, worst_txt)
+                    final_text = (
+                        "模型连续 %d 次调用都没有产出可用正文，而本轮有 **%d 次工具调用失败**%s。"
+                        "**最可能的原因就在这里**：工具一直报错 -> 模型拿不到任何可用信息 -> "
+                        "放弃作答。请先看上面那些工具返回的具体报错，那里才是根因；"
+                        "单纯重试**大概率无效**，得先把工具调用修对（参数名、路径、用户是否"
+                        "需要开联网等）。修好之后再重问一次即可。"
+                        % (max(1, attempts), fail_total, worst_txt)
                     )
-                final_text = (
-                    "模型连续 %d 次调用都没有返回可用正文。**这多半不是你的问题写得不清楚**，"
-                    "而是上游/中转返回了空内容（瞬时故障），直接重试通常就能拿到。"
-                    "若反复出现，依次检查：① 该 provider 是否可用（免费中转容易限流或"
-                    "无上游容量）；② 若该模型开了思考模式，可能是思考阶段吃光了输出预算——"
-                    "关掉 thinking 或调小 max_tokens 再试。%s"
-                    % (max(1, attempts), tool_hint)
-                )
+                else:
+                    final_text = (
+                        "模型连续 %d 次调用都没有返回可用正文，而本轮**没有**工具失败记录，"
+                        "因此更像是上游/中转回了个空信封（瞬时故障）——重试通常就能拿到。"
+                        "若反复出现，依次检查：① 该 provider 是否可用（免费中转容易限流或"
+                        "无上游容量）；② 若该模型开了思考模式，可能是思考阶段吃光了输出预算——"
+                        "关掉 thinking 或调小 max_tokens 再试。"
+                        % max(1, attempts)
+                    )
             else:
                 # 连纠偏后仍不合格式的残句：清洗 ReAct 标记后再兜底，不再把 Thought/Action 原样抛给用户
                 if turn is not None:

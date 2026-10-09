@@ -30,14 +30,45 @@ DEFAULTS = {
     "max_agents": 0,               # 0 = 不限并发子代理
     "main_max_steps": 0,           # 0 = 不限工具步数
     "child_max_steps": 0,          # 0 = 不限子代理步数
-    "max_nudges": 2,               # 纠偏次数仍保留：它防的是"同一提示重复 8 遍"
-    "max_final_continuations": 2,  # 续写仍保留：防输出被长度截断后答一半
+    # 2026-10：默认改为 0（不限），与上面三项语义对齐 —— 长任务不再被纠偏次数掐断。
+    # 此前是 2，理由是"防同一提示重复 8 遍"；但那条风险由 `_MAX_FORMAT_STALLS`
+    # （格式连续失守即早退）、连续失败熔断、用户取消、截止时间各自兜住，
+    # 不需要用"只给 2 次"这种粗粒度上限来兼任。用户可在设置页自己填正数收紧。
+    "max_nudges": 0,               # 0 = 不限纠偏次数
+    "max_final_continuations": 0,  # 0 = 不限续写次数
     "task_token_budget": 0,        # 0 = 不限 token
     "local_auto_limit": True,      # 本地模型显存自适应（不是步数上限，保留）
 }
 
+#: 各字段的上界。**这些数字同时是前端 input 的 `max`** ——
+#: 两边一致性由 `tests/test_capacity_bounds_ui_backend_agree.py` 锁住。
+#: 提成具名常量（而不是散在 `_clamp(x, 1000)` 里）的原因：调用点处看不出
+#: 哪个数字对应哪个字段，而外部测试要能读到「后端声明的边界」才能与界面对照。
+MAX_AGENTS_CAP = 64
+MAX_STEPS_CAP = 1000
+#: 上界 20 -> 1000：与 main_max_steps 对齐。原上界 20 会让"用户想设 50 次纠偏"
+#: 被静默改回 DEFAULTS（现在是 0=不限），即"改了个大数反而变成不限"，行为不可预期。
+MAX_NUDGES_CAP = 1000
+MAX_TOKEN_BUDGET_CAP = 10_000_000
+
 
 def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """归一化容量设置。
+
+    ⚠⚠ **负值在这里 raise，不静默修正。** 但调用方要分两层看：
+
+    * **请求边界**（`api.set_agent_capacity`）：负值 = 用户这次提交无效，
+      应当 400 拒绝。这是 raise 的**预期用途**。
+    * **读取持久化状态**（`config._apply_persisted_state` / `get_settings`）：
+      状态文件里的负值会让 `normalize_settings` 抛异常，
+      **开机恢复就会炸**。所以这两处必须 try 住并回落到 DEFAULTS。
+
+    「越界」与「负值」也是两种处理：
+    * 超过上界 -> **夹到上界**（用户想收紧，5000 -> 1000，语义仍是收紧）
+    * 负值 -> **raise**（无法推断意图；夹到 0 反而变成「不限」，
+      那是安全方向的反面 —— 手滑打 -1 的人拿到最宽松配置）
+    * 非数字 / None -> 回落 DEFAULTS（无法解析，不是用户明确表达的值）
+    """
     raw = value if isinstance(value, Mapping) else {}
     try:
         max_agents = int(raw.get("max_agents", DEFAULTS["max_agents"]))
@@ -66,18 +97,22 @@ def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
     # 0 是**合法的"不限"**，必须原样保留。实测踩过：这几行原本写成
     # `if x < 0 or x > 1000: x = DEFAULTS[...]`，而当时的 DEFAULTS 是 8/24——
     # 于是用户填 0 会被"修正"回 8，看起来像改了却没生效，比不改更难查。
-    if max_agents < 0 or max_agents > 64:
-        max_agents = DEFAULTS["max_agents"]
-    if main_max_steps < 0 or main_max_steps > 1000:
-        main_max_steps = DEFAULTS["main_max_steps"]
-    if child_max_steps < 0 or child_max_steps > 1000:
-        child_max_steps = DEFAULTS["child_max_steps"]
-    if max_nudges < 0 or max_nudges > 20:
-        max_nudges = DEFAULTS["max_nudges"]
-    if max_final_continuations < 0 or max_final_continuations > 20:
-        max_final_continuations = DEFAULTS["max_final_continuations"]
-    if task_token_budget < 0 or task_token_budget > 10_000_000:
-        task_token_budget = DEFAULTS["task_token_budget"]
+
+    def _clamp(field: str, value: int, high: int) -> int:
+        # 上界夹住；下界 raise（不夹到 0 —— 那等于「不限」）
+        if value < 0:
+            raise ValueError(
+                f"{field} 不能为负（收到 {value}）；0 表示不限，正数表示上限")
+        return min(int(value), high)
+
+    max_agents = _clamp("max_agents", max_agents, MAX_AGENTS_CAP)
+    main_max_steps = _clamp("main_max_steps", main_max_steps, MAX_STEPS_CAP)
+    child_max_steps = _clamp("child_max_steps", child_max_steps, MAX_STEPS_CAP)
+    max_nudges = _clamp("max_nudges", max_nudges, MAX_NUDGES_CAP)
+    max_final_continuations = _clamp("max_final_continuations",
+                                     max_final_continuations, MAX_NUDGES_CAP)
+    task_token_budget = _clamp("task_token_budget", task_token_budget,
+                               MAX_TOKEN_BUDGET_CAP)
     return {
         "max_agents": max_agents,
         "main_max_steps": main_max_steps,

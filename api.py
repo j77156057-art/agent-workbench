@@ -4222,12 +4222,17 @@ async def get_config():
 
 class AgentCapacityReq(BaseModel):
     # 默认全 0 = 不限（与 agent_runtime.capacity.DEFAULTS 保持一致）。
-    # 0 是合法取值而非"未设置"：normalize_settings 只拒绝 <0，所以填 0 会被原样保留。
+    # 0 是合法取值而非"未设置"：normalize_settings 对 0 原样保留，
+    # 对负值 raise，对超上界夹到上界。前端 input 的 `min="0"` / `max="N"`
+    # 与后端这套口径一致（tests/test_capacity_bounds_ui_backend_agree.py 锁住）。
     max_agents: int = 0
     main_max_steps: int = 0
     child_max_steps: int = 0
-    max_nudges: int = 2
-    max_final_continuations: int = 2
+    # 2026-10：纠偏/续写默认也放开为 0（不限），与上面三项一致。
+    # 此前是 2 —— 长任务会被 2 次纠偏掐断，而"同一提示重复"的风险已由
+    # _MAX_FORMAT_STALLS / 连续失败熔断 / 取消 / 截止时间各自兜住。
+    max_nudges: int = 0
+    max_final_continuations: int = 0
     task_token_budget: int = 0
     local_auto_limit: bool = True
 
@@ -4267,18 +4272,32 @@ async def get_agent_capacity():
 
 @app.post("/api/agent-capacity")
 async def set_agent_capacity(req: AgentCapacityReq):
-    if not 0 <= req.max_agents <= 64:
-        return JSONResponse({"ok": False, "error": "最大 Agent 数需为 0（不设限制）或 1–64。"}, status_code=400)
-    if not 0 <= req.main_max_steps <= 1000:
-        return JSONResponse({"ok": False, "error": "主 Agent 工具步数需为 0（不设限制）或 1–1000。"}, status_code=400)
-    if not 0 <= req.child_max_steps <= 1000:
-        return JSONResponse({"ok": False, "error": "子 Agent 工具步数需为 0（不设限制）或 1–1000。"}, status_code=400)
-    if not 0 <= req.max_nudges <= 20 or not 0 <= req.max_final_continuations <= 20:
-        return JSONResponse({"ok": False, "error": "自动纠偏和最终续写次数需为 0–20。"}, status_code=400)
-    if not 0 <= req.task_token_budget <= 10_000_000:
-        return JSONResponse({"ok": False, "error": "任务 Token 上限需为 0（不设限制）或 1–10000000。"}, status_code=400)
+    # ⚠⚠ 这里只拒**负值**，不再拒超上界。
+    # 原先是 `0 <= x <= 上界`，把 5000 判成 400。但「想设很多」是合理意图，
+    # 拒掉不合理；超上界由 `normalize_settings` 夹到上界（5000 -> 1000），
+    # 语义仍是「收紧」，用户得到的也是他能用的最大值。
+    # 而这个「夹」只有一个权威实现（capacity.py 的 _clamp），不在这里重复一遍
+    # —— 重复就会漂移，而漂移的方向正好是「界面放行、后端拒绝」。
+    if req.max_agents < 0:
+        return JSONResponse({"ok": False, "error": "最大 Agent 数不能为负；0（不设限制）或 1–64。"}, status_code=400)
+    if req.main_max_steps < 0:
+        return JSONResponse({"ok": False, "error": "主 Agent 工具步数不能为负；0（不设限制）或 1–1000。"}, status_code=400)
+    if req.child_max_steps < 0:
+        return JSONResponse({"ok": False, "error": "子 Agent 工具步数不能为负；0（不设限制）或 1–1000。"}, status_code=400)
+    if req.max_nudges < 0 or req.max_final_continuations < 0:
+        return JSONResponse({"ok": False, "error": "自动纠偏和最终续写次数不能为负；0（不限）或 1–1000。"}, status_code=400)
+    if req.task_token_budget < 0:
+        return JSONResponse({"ok": False, "error": "任务 Token 上限不能为负；0（不设限制）或 1–10000000。"}, status_code=400)
     fields = req.model_dump() if hasattr(req, "model_dump") else req.dict()
-    settings = agent_capacity.normalize_settings(fields)
+    # 上面的逐字段校验已经挡掉负值与超上界，正常情况下走不到这里。
+    # 但 `normalize_settings` 对负值是 **raise**（`agent_runtime.capacity` 的
+    # 契约：请求边界靠它拒绝，读取路径自己 try 住）。所以这里也要接住 ——
+    # 否则某个漏网字段（例如将来新增的字段忘了加校验）会让整请求 500，
+    # 而用户看到的是「服务异常」而不是「这个数不合法」。
+    try:
+        settings = agent_capacity.normalize_settings(fields)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     set_runtime(agent_capacity.SETTING_KEY, settings)
     save_state(agent_capacity.SETTING_KEY, settings)
     return {"ok": True, "settings": settings}

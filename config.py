@@ -252,6 +252,10 @@ COMPACT_TRIGGER_RATIO = float(os.getenv("DOCMIND_COMPACT_TRIGGER_RATIO", "0.8"))
 # 单次补全上限（含思考型模型的 reasoning）：防止模型不按格式收尾时无限生成，
 # 到顶后 finish_reason=length，Agent 会保留已有正文并接续生成。
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "3072"))
+# prompt 预算与输出预算之间的安全余量（token）。原为散落的字面量 512，
+# 已提为常量：两处（prompt_token_budget / output_token_budget）必须用同一个值，
+# 否则会出现「prompt 算出的可用量 + 输出预算 > 窗口」的静默越界。
+OUTPUT_TOKEN_RESERVE = int(os.getenv("DOCMIND_OUTPUT_RESERVE", "512"))
 # 是否允许思考型模型把预算花在 reasoning_content 上。ReAct 工具路由不需要长思考，
 # 实测关思考后同类请求 55 token/4s 给出 Action（开思考时偶发烧满 3072 token 不行动）。
 # 仅对本地 OpenAI 兼容服务（llamacpp/ollama）透传 chat_template_kwargs。
@@ -266,7 +270,18 @@ LLM_ENABLE_THINKING = os.getenv("LLM_ENABLE_THINKING", "0") == "1"
 # 画像按 (provider, 模型名子串) 匹配，未命中走 provider 默认值。
 
 # (provider, 模型名小写子串) -> 上下文窗口 token 数
+#
+# 匹配顺序：**字典插入顺序**，首个命中即返回（见 model_context_window）。
+# 因此更具体的名（deepseek-flash）必须排在更宽泛的名（deepseek）之前，
+# 否则后者会先把前者吃掉。
 _MODEL_CONTEXT_OVERRIDES = {
+    # DeepSeek V4.1-Flash：官方 1M 上下文（一手：api-docs.deepseek.com 模型页
+    # 标 1M / 2026-09 起）。此前**没有这一条**，于是落到 provider 默认 131072，
+    # 只拿到真实窗口的 1/8 —— 实测 trace 里 prompt_tokens 最大已到 295,074，
+    # 早已越过 131,072 的"假窗口"，说明这个默认值既不真实、也没能起到保护作用。
+    # 旧名 deepseek-v4-flash(-vision-exp) 已路由到同一模型，一并覆盖。
+    ("deepseek", "deepseek-flash"): 1048576,
+    ("deepseek", "deepseek-v4-flash"): 1048576,
     ("deepseek", "reasoner"): 65536,
     ("openai", "gpt-4o"): 128000,
     ("openai", "gpt-4-"): 65536,
@@ -359,7 +374,7 @@ def prompt_token_budget(provider: str, model: str, context_window: int = None) -
 
     - env PROMPT_TOKEN_BUDGET 显式设置时强制采用（排障/压测用）；
     - context_window 可传入实时探测/自定义的窗口值（缺省走 model_context_window）；
-    - 默认取「窗口的 75%」与「窗口 - 输出上限 - 512 余量」的较小值，
+    - 默认取「窗口的 75%」与「窗口 - 输出上限 - 余量」的较小值，
       并保 6144 下限（但受窗口可用量约束）。16k 本地模型 ≈ 12k，131k 云端 ≈ 98k，
       1M 模型 ≈ 786k；窗口过小时退化为窗口的一半（至少 256），绝不越过窗口。
     """
@@ -370,7 +385,11 @@ def prompt_token_budget(provider: str, model: str, context_window: int = None) -
         except ValueError:
             pass
     win = int(context_window) if context_window else model_context_window(provider, model)
-    reserve = LLM_MAX_TOKENS + 512
+    # 预留量：取「输出上限」与 OUTPUT_TOKEN_RESERVE 的较大者。
+    # 原来写死 LLM_MAX_TOKENS(3072)+512，与真实输出预算（可到 346k）脱节——
+    # 大窗口模型会把 75% 全给 prompt，输出侧实际没有余量。
+    reserve = max(LLM_MAX_TOKENS, output_token_budget(provider, model, win)) \
+        + OUTPUT_TOKEN_RESERVE
     usable = win - reserve
     if usable <= 0:
         # 窗口连输出预留都放不下：退化为窗口的一半（至少 256）
@@ -388,15 +407,23 @@ def prompt_token_budget(provider: str, model: str, context_window: int = None) -
 # 本地小窗口模型则保底 LLM_MAX_TOKENS，避免单次生成撑爆显存/时延。
 OUTPUT_TOKEN_FRACTION = float(os.getenv("DOCMIND_OUTPUT_FRACTION", "0.33"))
 OUTPUT_TOKEN_MIN = int(os.getenv("DOCMIND_OUTPUT_MIN_TOKENS", str(LLM_MAX_TOKENS)))   # 默认保底 3072
-OUTPUT_TOKEN_MAX = int(os.getenv("DOCMIND_OUTPUT_MAX_TOKENS", "65536"))
+# 单次输出上限。**0 = 不设全局硬顶**（2026-10 起），只受「窗口 * FRACTION」约束。
+#
+# 此前写死 65536，对 1M 窗口的 deepseek-flash 意味着**只给到真实能力的 6%**：
+#   1M * 0.33 = 346,030  →  被钳到 65,536
+# 用户报告「模型有 100 万上下文，系统只给 4.3 万输出」正是这条 + 窗口画像缺条目
+# （见 _MODEL_CONTEXT_OVERRIDES）叠加的结果：4.3 万 = 131072*0.33。
+# 两个都修掉后，deepseek-flash → 346,030；想再压回一个硬顶就把本值设成正数。
+OUTPUT_TOKEN_MAX = int(os.getenv("DOCMIND_OUTPUT_MAX_TOKENS", "0"))
 
 
 def output_token_budget(provider: str, model: str, context_window: int = None) -> int:
     """单次补全可输出的最大 token，按模型真实窗口派生。
 
     - 环境变量 LLM_MAX_TOKENS 显式设置时强制采用（排障/压测用，等价于旧硬上限）；
-    - 否则取「窗口 * OUTPUT_TOKEN_FRACTION」，夹在 [OUTPUT_TOKEN_MIN, OUTPUT_TOKEN_MAX] 之间，
-      且不超过窗口本身（减 512 余量）。1M 窗口 → ≈64k；131k → ≈43k；32k 本地 → ≈10k（仍≥保底 3k）。
+    - 否则取「窗口 * OUTPUT_TOKEN_FRACTION」，下限 OUTPUT_TOKEN_MIN，
+      上限 OUTPUT_TOKEN_MAX（**0 = 不限**），且不超过窗口本身（减 OUTPUT_TOKEN_RESERVE 余量）。
+      1M 窗口 → ≈346k；131k → ≈43k；32k 本地 → ≈10k（仍≥保底 3k）。
     """
     env = os.getenv("LLM_MAX_TOKENS", "").strip()
     if env:
@@ -406,8 +433,10 @@ def output_token_budget(provider: str, model: str, context_window: int = None) -
             pass
     win = int(context_window) if context_window else model_context_window(provider, model)
     out = int(win * OUTPUT_TOKEN_FRACTION)
-    out = max(OUTPUT_TOKEN_MIN, min(OUTPUT_TOKEN_MAX, out))
-    out = min(out, max(256, win - 512))   # 绝不越过窗口本身
+    out = max(OUTPUT_TOKEN_MIN, out)
+    if OUTPUT_TOKEN_MAX > 0:          # 0 = 不设硬顶，交给窗口本身约束
+        out = min(OUTPUT_TOKEN_MAX, out)
+    out = min(out, max(256, win - OUTPUT_TOKEN_RESERVE))
     return out
 
 
@@ -913,8 +942,15 @@ def _apply_persisted_state():
 
     capacity = data.get("agent_capacity_settings")
     if isinstance(capacity, dict) and "agent_capacity_settings" not in _RUNTIME:
-        from agent_runtime.capacity import normalize_settings
-        _RUNTIME["agent_capacity_settings"] = normalize_settings(capacity)
+        from agent_runtime.capacity import normalize_settings, DEFAULTS
+        # ⚠⚠ 持久化状态**可能含负值**（手改状态文件 / 旧版本写入 / 导入），
+        # 而 normalize_settings 对负值是 raise（请求边界靠它 400 拒绝）；
+        # 但这里是**开机恢复路径**，一个坏字段不能让服务起不来。
+        # 所以 try 住并回落到 DEFAULTS，与 get_settings() 同一策略。
+        try:
+            _RUNTIME["agent_capacity_settings"] = normalize_settings(capacity)
+        except ValueError:
+            _RUNTIME["agent_capacity_settings"] = dict(DEFAULTS)
 
     # 网络搜索 / URL 获取配置恢复
     _apply_web_search_state(data)

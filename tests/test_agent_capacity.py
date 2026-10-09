@@ -13,33 +13,55 @@ from orchestrator import parse_plan
 
 class AgentCapacityTests(unittest.TestCase):
     def test_defaults_and_unlimited_values_are_normalized(self):
-        """默认四项**全是 0（不限）**——2026-10-02 起。
+        """默认**六项全是 0（不限）**——2026-10 起（纠偏/续写本轮并入）。
 
-        这条断言以前写的是 8/8/24/50000。它是"默认值"的唯一凭据：一旦默认值改了而
-        这里没同步，测试会红；反过来若有人只改了这里，行为与断言就脱钩了。
+        这条断言以前写的是 8/8/24/50000，后改为 0/0/0/2/2/0，现为全 0。
+        它是"默认值"的唯一凭据：一旦默认值改了而这里没同步，测试会红；
+        反过来若有人只改了这里，行为与断言就脱钩了。
         """
         self.assertEqual(normalize_settings(None), {
             "max_agents": 0, "main_max_steps": 0, "child_max_steps": 0,
-            "max_nudges": 2, "max_final_continuations": 2,
+            "max_nudges": 0, "max_final_continuations": 0,
             "task_token_budget": 0, "local_auto_limit": True,
         })
         # 只给一部分时，未给的那几项沿用默认（也必须是 0，而不是旧默认）。
         self.assertEqual(normalize_settings({
             "max_agents": 4, "local_auto_limit": False,
         }), {"max_agents": 4, "main_max_steps": 0, "child_max_steps": 0,
-              "max_nudges": 2, "max_final_continuations": 2,
+              "max_nudges": 0, "max_final_continuations": 0,
               "task_token_budget": 0, "local_auto_limit": False})
         # 显式 0 必须原样保留（这是"填 0 = 不限"能成立的前提）。
         self.assertEqual(normalize_settings({
             "max_agents": 0, "child_max_steps": 0,
         })["child_max_steps"], 0)
 
-    def test_invalid_limits_fall_back_to_safe_defaults(self):
+    def test_oversized_limits_clamp_to_the_cap(self):
+        """超上界 -> 夹到上界（原断言是回落成 0）。"""
         self.assertEqual(normalize_settings({
-            "max_agents": 65, "child_max_steps": -1, "local_auto_limit": "false",
-        }), {"max_agents": 0, "main_max_steps": 0, "child_max_steps": 0,
-              "max_nudges": 2, "max_final_continuations": 2,
+            "max_agents": 65, "local_auto_limit": "false",
+        }), {"max_agents": 64, "main_max_steps": 0, "child_max_steps": 0,
+              "max_nudges": 0, "max_final_continuations": 0,
               "task_token_budget": 0, "local_auto_limit": True})
+
+    def test_negative_limits_raise_instead_of_silently_becoming_unlimited(self):
+        """负值 -> raise。
+
+        ⚠ 原用例把「越上界」和「负值」混在一条断言里（`max_agents: 65`
+        与 `child_max_steps: -1` 一起）。新契约对这两者处理**不同**，
+        所以必须拆开：上界夹住，负值 raise。
+
+        负值不能夹到 0 —— 那等于「不限」，是安全方向的反面：
+        手滑打 -1 的人会拿到最宽松的配置，且没有任何提示。
+        """
+        with self.assertRaises(ValueError):
+            normalize_settings({"child_max_steps": -1})
+        with self.assertRaises(ValueError):
+            normalize_settings({"max_agents": -1})
+
+    def test_non_numeric_still_falls_back_to_defaults(self):
+        """无法解析的值（非数字/None）仍回落默认 —— 那不是用户明确表达的意图。"""
+        self.assertEqual(normalize_settings({"max_nudges": "abc"})["max_nudges"], 0)
+        self.assertEqual(normalize_settings({"max_nudges": None})["max_nudges"], 0)
 
     def test_gpu_snapshot_reports_per_device_and_process_occupancy(self):
         memory = {

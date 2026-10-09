@@ -117,32 +117,73 @@ class ThinkingModeTests(unittest.TestCase):
 
 
 class PromptBudgetScalingTests(unittest.TestCase):
-    """prompt 预算必须随模型真实窗口缩放，不能所有模型一刀切 11k。"""
+    """prompt 预算必须随模型真实窗口缩放，不能所有模型一刀切 11k。
+
+    2026-10 起：预算 = min(窗口 - 输出预留, 窗口*0.75)，其中输出预留 =
+    max(LLM_MAX_TOKENS, output_token_budget(...)) + OUTPUT_TOKEN_RESERVE。
+    此前输出预留写死 3072+512，与真实输出预算脱节 —— 大窗口模型会把 75%
+    全给 prompt、输出侧实际没有余量。断言改为**从函数计算**，不再本地复制公式。
+    """
+
+    def _expected(self, provider, model, win):
+        from config import output_token_budget, OUTPUT_TOKEN_RESERVE
+        reserve = max(3072, output_token_budget(provider, model, win)) + OUTPUT_TOKEN_RESERVE
+        usable = win - reserve
+        scaled = int(win * 0.75)
+        if usable <= 0:
+            return max(256, int(win * 0.5))
+        return max(256, max(min(6144, usable), min(usable, scaled)))
 
     def test_small_local_window_scales_down(self):
-        # 16k 本地模型：75% 窗口 = 12288，受输出预留约束的 usable=12800，取 12288
-        self.assertEqual(prompt_token_budget("ollama", "qwen3:8b"), 12288)
+        # 16k 本地模型：受输出预留约束，取到接近 10.5k（此前写死 12288 未扣输出）
+        b = prompt_token_budget("ollama", "qwen3:8b")
+        self.assertEqual(b, self._expected("ollama", "qwen3:8b", 16384))
+        self.assertGreater(b, 8192)
 
     def test_large_cloud_window_scales_up(self):
-        # 131k 云端模型：预算应放到约 98k（旧逻辑只给 11k，浪费 90% 窗口）
+        # 131k 云端模型：预算应放到约 87k（旧逻辑只给 11k，浪费 90% 窗口）
         b = prompt_token_budget("qwen", "qwen-plus")
-        self.assertEqual(b, int(131072 * 0.75))
-        self.assertGreater(b, 90000)
+        self.assertEqual(b, self._expected("qwen", "qwen-plus", 131072))
+        self.assertGreater(b, 80000)
 
     def test_one_million_window_formula(self):
-        # 1M 窗口模型（如 gemini-1.5-pro / qwen-long 级别）：75% ≈ 786k，
-        # 8000 字符（约 5k token）级历史在该预算下占比不到 1%，绝不会触发压缩。
+        # 1M 窗口模型：75% ≈ 786k 与「窗口 - 真实输出预算」取小 → 约 702k
         win = 1048576
         budget = prompt_token_budget("custom", "zz-unit-only-model", context_window=win)
-        self.assertEqual(budget, 786432)
+        self.assertEqual(budget, self._expected("custom", "zz-unit-only-model", win))
         trigger = int(budget * 0.8)
         self.assertLess(5000, trigger)
-        self.assertGreater(trigger, 600_000)
+        self.assertGreater(trigger, 500_000)
 
     def test_medium_window_scales_down(self):
-        # 16k 窗口：75% = 12288，受输出预留约束的 usable=12800，取 12288
         budget = prompt_token_budget("custom", "zz-unit-only-model", context_window=16384)
-        self.assertEqual(budget, 12288)
+        self.assertEqual(budget, self._expected("custom", "zz-unit-only-model", 16384))
+
+    def test_deepseek_flash_gets_its_real_window(self):
+        """deepseek-flash 是 1M 窗口模型，画像里必须有独立条目。
+
+        此前 `_MODEL_CONTEXT_OVERRIDES` **没有** deepseek-flash 条目，于是落到
+        provider 默认 131072（128k）—— 只拿到真实窗口的 1/8，且叠加
+        OUTPUT_TOKEN_MAX=65536 后输出只剩 4.3 万。实测 trace 里 prompt_tokens
+        最大已到 295,074，早已越过那个"假窗口"，说明它既不真实也没起保护作用。
+        """
+        self.assertEqual(model_context_window("deepseek", "deepseek-flash"), 1048576)
+        self.assertEqual(model_context_window("deepseek", "deepseek-v4-flash"), 1048576)
+        # 输出预算不再被 65536 硬顶：1M * 0.33 = 346,030
+        from config import output_token_budget
+        self.assertEqual(output_token_budget("deepseek", "deepseek-flash"), 346030)
+        self.assertGreater(output_token_budget("deepseek", "deepseek-flash"), 65536)
+
+    def test_prompt_plus_output_never_exceeds_window(self):
+        """prompt 预算 + 输出预算是同一窗口的两半，相加绝不允许越窗。"""
+        from config import output_token_budget
+        for provider, model in (("deepseek", "deepseek-flash"), ("qwen", "qwen-plus"),
+                                ("ollama", "qwen3:8b"), ("openai", "gpt-4o"),
+                                ("custom", "zz-unit-only-model")):
+            win = model_context_window(provider, model)
+            pb = prompt_token_budget(provider, model, win)
+            ob = output_token_budget(provider, model, win)
+            self.assertLessEqual(pb + ob, win, f"{provider}/{model} 预算越窗")
 
     def test_tiny_window_budget_never_exceeds_window(self):
         # 极小窗口：预算必须严格小于窗口本身（否则提示词会被服务端静默截断），
@@ -169,7 +210,13 @@ class ContextWindowOverrideTests(unittest.TestCase):
         # 手填覆盖后压过探测值
         set_context_window_override(self.P, self.M, 50000)
         self.assertEqual(model_context_window(self.P, self.M, live_window=99000), 50000)
-        self.assertEqual(prompt_token_budget(self.P, self.M), int(50000 * 0.75))
+        # prompt 预算 = min(窗口*0.75, 窗口 - 输出预留)；50000 窗口下输出预留
+        # (10813 + 512) 更紧，故取 32988 而非 37500。从函数算，不复制公式。
+        from config import output_token_budget, OUTPUT_TOKEN_RESERVE
+        reserve = max(3072, output_token_budget(self.P, self.M, 50000)) + OUTPUT_TOKEN_RESERVE
+        self.assertEqual(prompt_token_budget(self.P, self.M),
+                         max(256, max(min(6144, 50000 - reserve),
+                                      min(50000 - reserve, int(50000 * 0.75)))))
         # 清除覆盖后探测值重新生效
         clear_context_window_override(self.P, self.M)
         self.assertEqual(model_context_window(self.P, self.M, live_window=99000), 99000)

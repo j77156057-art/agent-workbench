@@ -37,16 +37,30 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _backend_bounds() -> dict[str, int]:
-    """从 agent_runtime/capacity.py 的 normalize_settings 里读出上界。
+    """从 agent_runtime/capacity.py 读出「字段 -> 上界」。
 
-    解析 `if <key> < 0 or <key> > N:` 这一形状 —— 与源码里那一串
-    `if x < 0 or x > N:` 逐字对应。**不自己重算边界**，那会让这条测试
-    退化成恒真（改后端不红）。
+    读的是 `_clamp(<字段>, <CONST>)` 调用点，再把 CONST 解析成数字。
+
+    ⚠ 为什么不读 `if x < 0 or x > N:`：后来把越界逻辑收进 `_clamp()` 后，
+    那串判断从源码里消失了，解析器返回空、护栏报「判据恒真」。那次失败是
+    有用的：**边界必须有一个可被外部读到的具名处**，而不是藏在调用点里。
+    这也是把数字提成 `MAX_*_CAP` 常量的原因。
+
+    ⚠ 为什么不手写「常量名 -> 字段」别名表：`child_max_steps` 与
+    `main_max_steps` 共用 `MAX_STEPS_CAP`，`max_final_continuations` 与
+    `max_nudges` 共用 `MAX_NUDGES_CAP` —— 手写别名会漏，而漏了不会报错，
+    只会让那条字段 silently 不参与比对。直接解析调用点才对得上。
     """
     src = (ROOT / "agent_runtime" / "capacity.py").read_text(encoding="utf-8")
+    caps = {m.group(1): int(m.group(2).replace("_", ""))
+            for m in re.finditer(r"^(MAX_\w+)\s*=\s*([\d_]+)\s*$", src, re.M)}
+    assert caps, "没解析到任何 MAX_*_CAP 常量 —— 判据恒真"
+
     out: dict[str, int] = {}
-    for m in re.finditer(r"if\s+(\w+)\s*<\s*0\s+or\s+\1\s*>\s*([\d_]+)\s*:", src):
-        out[m.group(1)] = int(m.group(2).replace("_", ""))
+    for m in re.finditer(r"_clamp\(\s*[\"'](\w+)[\"']\s*,\s*\w+\s*,\s*(MAX_\w+)\s*\)", src):
+        field, const = m.group(1), m.group(2)
+        if const in caps:
+            out[field] = caps[const]
     return out
 
 
