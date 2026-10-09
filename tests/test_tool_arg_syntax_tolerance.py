@@ -299,12 +299,21 @@ class EmptyResponseBlamesTheToolFailuresTests(unittest.TestCase):
                       "必须点名最常失败的工具，否则用户还得自己翻 trace")
 
     def test_it_does_not_assert_the_provider_is_the_cause(self):
-        """原文案说「这多半不是你的问题写得不清楚」——在没有证据时过于笃定。"""
+        """原文案说「这多半不是你的问题写得不清楚」——在没有证据时过于笃定。
+
+        ⚠ 为什么断两条而不是一条：这两句分别是**想法**和**落到用户身上的话**。
+        只钉注释（`空响应是**结果**不是**原因**`）会假通过——有人把文案退回
+        「中转返回空内容，直接重试通常就能拿到」时注释照样在，守卫照样绿；
+        只钉文案则会在纯注释改写时误红。
+        """
         import inspect
         src = inspect.getsource(agent_mod.Agent._run)
-        self.assertIn("只是**结果**，不是原因", src,
+        self.assertIn("空响应是**结果**不是**原因**", src,
                       "必须把「上游返回空内容」降级为结果而非原因，"
                       "否则工具失败时用户会反复重试，而重试多少次都没用")
+        self.assertIn("单纯重试**大概率无效**", src,
+                      "上面那句不能只停在注释里：工具失败分支的文案必须真的"
+                      "劝住重试，否则归因照样把人引向 provider")
 
 
 if __name__ == "__main__":
