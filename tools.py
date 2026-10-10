@@ -5250,7 +5250,35 @@ def init_regions_tool(arg):
 # ---------------------------------------------------------------------------
 def _parse_keyed(arg, keys):
     """通用 keyed 解析：从多行文本里提取指定字段（region/path/old_text/new_text/...）。
-    字段值可同行或换行续写、可多行；用于分区工具输入解析，逻辑与 _parse_edit_input 一致。"""
+    字段值可同行或换行续写、可多行；用于分区工具输入解析，逻辑与 _parse_edit_input 一致。
+
+    ⚠⚠ **未知键必须报出来，不许静默污染上一个字段**（2026-10-10 修）。
+
+    原来的实现只认 `keys` 里的名字：某个已知键的值会一路吃到下一个已知键的
+    开头，之后再没有已知键就吃到字符串末尾。于是写错一个键名时：
+
+        action: open
+        url: http://127.0.0.1:8099/
+        width: 1280        ← keys 里没有这个键
+        height: 720
+
+    `url` 会取到 `'http://127.0.0.1:8099/\\nwidth: 1280\\nheight: 720'`，
+    拼出 `http://127.0.0.1:8099/width: 1280height: 720` -> 404 -> 标题
+    "Error response" -> 工具还回报「打开时就有 1 条 console 错误」，
+    把账算在网页头上，而真正的原因是**参数里有个它不认识的键**。
+
+    实测那次就是把 `preview_project` 的 width/height 喂给了
+    `dev_page_action`（后者的 keys 里没有这两个）。
+
+    这不是一个工具的问题：全仓 61 处调用 `_parse_keyed`，任何一处键名写错
+    都会静默毁掉上一个字段的值。
+
+    现在 `_parse_keyed` 额外在返回的 dict 里放一个特殊键 `"__unknown__"`
+    （形如 `["width", "height"]`）。**原有的 61 处调用点一行都不用改** ——
+    它们照旧从 dict 里取自己认识的键。是否理会未知键由各工具自己决定；
+    本文件里 `dev_page_action` / `preview_project` / `dev_serve` 这几个
+    "键名最容易被记混"的会显式检查并回报。
+    """
     arg = (arg or "").lstrip("\n")
     spans = []
     for key in keys:
@@ -5266,6 +5294,24 @@ def _parse_keyed(arg, keys):
         if val_end < len(arg):
             val = val.rstrip("\n")
         fields[key] = val
+    # 找出「长得像键但不在 keys 里」的行。判定：`^[ \t]*名字[ \t]*:` ——
+    # 与已知键同一形状，只是名字不在名单上。
+    #
+    # ⚠ 不要试图用"位置"去排除已知键：已知键的正则是 `^\s*`（`\s` 连换行
+    # 一起吃），这里的是 `^[ \t]*`（不吃换行），同一个键两种起点差一个 `\n`，
+    # 位置永远对不上 —— 实测就把每个已知键都误报成了未知。直接比名字即可。
+    #
+    # 残留风险：某个**字段值**里若有独立的 `名字:` 行（如 new_text 里写 YAML），
+    # 会被当成未知键。这只是个提示列表，是否理会由调用方决定；本文件里只有
+    # dev_page_action / preview_project 会检查它，而它们的值都很短。
+    unknown = []
+    for m in re.finditer(r"^[ \t]*([A-Za-z_][A-Za-z0-9_.\-]*)[ \t]*:", arg, re.M):
+        name = m.group(1)
+        if name in keys or name in unknown:
+            continue
+        unknown.append(name)
+    if unknown:
+        fields["__unknown__"] = unknown
     return fields
 
 
@@ -7298,8 +7344,27 @@ def dev_page_action(arg=""):
     if not root:
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
     keys = ["action", "page", "url", "entry", "selector", "text", "nth", "scope", "value",
-            "key", "state", "mode", "attr", "needle", "timeout", "settle", "screenshot"]
+            "key", "state", "mode", "attr", "needle", "timeout", "settle", "screenshot",
+            # ⚠⚠ width / height 是 `preview_project` 的键，**不是本工具的**。
+            # 实测有人把两者记混，喂进来后旧解析器把它们整块吞进 url，
+            # 拼出 `http://127.0.0.1:8099/width: 1280height: 720` -> 404，
+            # 而工具还回报「打开时就有 1 条 console 错误」，把账算在网页头上。
+            # 现在列进来，好在下面**显式拒绝**并说清"那是 preview_project 的键"，
+            # 而不是让它们悄悄毁掉 url。见 `_parse_keyed` 的说明。
+            "width", "height"]
     fields = _parse_keyed(arg or "", keys)
+    _unknown = fields.pop("__unknown__", None)
+    _borrowed = [k for k in ("width", "height") if k in fields]
+    if _borrowed:
+        return ("dev_page_action 不接受 %s（那是 preview_project 的键，窗口大小由它管）。"
+                "本工具只用 dev_serve 返回的那个回环地址，删掉 %s 再试。"
+                % (", ".join(_borrowed), ", ".join(_borrowed)))
+    if _unknown:
+        return ("dev_page_action 有不认识的参数名：%s。"
+                "可用：action/page/url/entry/selector/text/nth/scope/value/key/"
+                "state/mode/attr/needle/timeout/settle/screenshot。"
+                "（提示：写错的键名不会报错、会把上一个字段的值一起毁掉，"
+                "所以这里直接拦下。）" % ", ".join(_unknown))
 
     def _one(key, default=""):
         value = fields.get(key)

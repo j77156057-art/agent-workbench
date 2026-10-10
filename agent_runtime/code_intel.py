@@ -40,8 +40,43 @@ _RENDERED_REFS = 80
 _SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules", "dist", "dist-ssr",
     "build", "build.bak", "coverage", "__pycache__", ".pytest_cache", ".mypy_cache",
-    ".ruff_cache", ".tox", ".docmind", "site-packages", "_archived_builds", ".tmp",
+    ".ruff_cache", ".tox", "site-packages", "_archived_builds", ".tmp",
 })
+
+# `.docmind/` 是 DocMind 自己的状态根，但**产物也会写在这里** —— Godot 的 Web
+# 导出默认就在 `.docmind/web/index.html`（见 export_presets.cfg 的 export_path）。
+#
+# ⚠ 这里曾经把整个 `.docmind` 塞进 `_SKIP_DIRS`。实测后果：Agent 在
+# `D:\WorkBuddy\godot_sample` 里 `dev_glob('**/*.html')` 回报
+# 「没有命中文件」，而 `.docmind/web/index.html` 就在脚下 ——
+# 一个**没有任何保留的假否定**，比"扫到一半被截断"危险得多，因为它读起来
+# 就是"这个项目没有 html"。
+#
+# 现在改成**按名修剪状态子目录**：DocMind 自己写的临时/状态目录不扫（实测
+# project_stages 一个就 752MB/6978 文件，projects 下还有 headcheck 的整仓
+# 影子副本 —— 见 docs/known-defect-docmind-shadow-repo-copies.md），
+# 但产物目录（web/ 等）保持可见。
+#
+# 为什么用黑名单而不是"只允许产物目录"的白名单：白名单会让**新出现的产物目录**
+# 重新变成静默假否定 —— 那正是本次要修的缺陷本身。黑名单最坏情况是多扫一点，
+# 由 `_GLOB_MAX_SCANNED` 兜底，且会在 notes 里明说被修剪了什么。
+_DOCMIND_STATE_DIRS = frozenset({
+    "project_stages",        # 工作流临时副本（实测 752MB / 6978 文件）
+    "project_checkpoints",   # 检查点（172MB / 3647 文件）
+    "projects",              # 每项目状态，含 headcheck 整仓副本（影子）
+    "projects-orphan-backup",# 旧备份（前缀匹配）
+    "media-fixture",         # 测试素材，tools.py 注记"已 gitignore"
+    "page-action",           # 页面动作截图
+    "visual-evidence",       # 视觉验收截图
+    "screenshots",           # 截图
+    "retrieval",             # 检索中间产物
+    "workflows",             # 工作流状态
+    "cockpit-validation",    # 驾驶舱验收
+    "dependency-state",      # 依赖状态
+    "skills",                # 技能缓存
+})
+# 动态命名的状态目录前缀（一次性的 visual 证据目录等）。
+_DOCMIND_STATE_PREFIXES = ("docmind-production-visual-",)
 
 _SOURCE_EXTS = frozenset({
     ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
@@ -367,6 +402,25 @@ def _contained_path(root_abs: str, raw: str) -> tuple[str, str]:
     return candidate, ""
 
 
+def _prune(dirnames: list[str], rel_dir: str) -> list[str]:
+    """就地修剪要跳过的子目录名，返回被剪掉的名字（供调用方如实回报）。
+
+    * 任何地方都跳过 `_SKIP_DIRS`；
+    * **只在 `.docmind/` 直接下一层**额外跳过 `_DOCMIND_STATE_DIRS` /
+      `_DOCMIND_STATE_PREFIXES` —— 状态目录不参与内容检索，但产物目录
+      （Godot 的 `web/` 等）必须可见。
+    """
+    kept = [d for d in dirnames if d not in _SKIP_DIRS]
+    pruned = [d for d in dirnames if d in _SKIP_DIRS]
+    if rel_dir == ".docmind":
+        for d in list(kept):
+            if d in _DOCMIND_STATE_DIRS or d.startswith(_DOCMIND_STATE_PREFIXES):
+                kept.remove(d)
+                pruned.append(d)
+    dirnames[:] = kept
+    return sorted(pruned)
+
+
 def glob_files(root: str, pattern: str, *, scope: str = "",
                limit: int = _GLOB_MAX_LIMIT) -> dict[str, Any]:
     """Find files by name pattern under the code root; ``grep`` only sees contents.
@@ -377,7 +431,7 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
     result: dict[str, Any] = {
         "ok": False, "pattern": "", "root": root, "scope": "", "files": [],
         "count": 0, "truncated": False, "scanned": 0, "scan_capped": False,
-        "error": "", "notes": [],
+        "pruned_dirs": [], "error": "", "notes": [],
     }
     pat = str(pattern or "").strip().strip("'\"")
     if not pat:
@@ -409,15 +463,31 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
     cap = max(1, min(cap, _GLOB_MAX_LIMIT))
     rel_scope = os.path.relpath(base, root_abs).replace("\\", "/")
     result["scope"] = "" if rel_scope == "." else rel_scope
+    # `.docmind/` 是 DocMind 自己的状态根：状态子目录不扫，但产物目录要可见
+    # （Godot Web 导出默认就在 `.docmind/web/`）。这里把被剪掉的名字如实带回，
+    # 否则"没有命中文件"会被读成"这个项目没有这种文件"。
+    # ⚠ 只披露 `.docmind/` 下的状态目录，不要把 `_SKIP_DIRS` 里的通用项
+    # （.git/.venv/node_modules…）也列出来 —— 那些本来就不该被当成
+    # "DocMind 的状态"，混在一处会让人以为 `.git` 也能用 scope: 指进去。
+    _dm = os.path.join(root_abs, ".docmind")
+    if os.path.normpath(base) == os.path.normpath(root_abs) and os.path.isdir(_dm):
+        _probe_dirs = sorted(
+            d for d in os.listdir(_dm)
+            if os.path.isdir(os.path.join(_dm, d))
+            and (d in _DOCMIND_STATE_DIRS or d.startswith(_DOCMIND_STATE_PREFIXES)))
+        result["pruned_dirs"] = [".docmind/" + d for d in _probe_dirs]
 
     matches: list[str] = []
     scanned = 0
     scan_capped = False
+    pruned: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
         rel_dir = os.path.relpath(dirpath, root_abs).replace("\\", "/")
         if rel_dir == ".":
             rel_dir = ""
+        pruned.update(_prune(dirnames, rel_dir))
+    # 只披露 `.docmind/` 的状态目录：`_SKIP_DIRS` 的通用项（.git/.venv/…）
+    # 是"任何项目都不扫"，不是"DocMind 的状态"，混在一处会造成误导。
         for name in sorted(filenames):
             scanned += 1
             if scanned > _GLOB_MAX_SCANNED:
@@ -428,9 +498,18 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
                 matches.append(rel)
         if scan_capped:
             break
+    # 只披露 `.docmind/` 的状态目录。`_SKIP_DIRS` 的通用项（.git/.venv/…）
+    # 是"任何项目都不扫"，不是"DocMind 的状态"，混在一处会造成误导 ——
+    # 实测第一版就把 `.git` 列成了"没扫的 DocMind 状态目录"。
+    pruned = {d for d in pruned
+              if d in _DOCMIND_STATE_DIRS or d.startswith(_DOCMIND_STATE_PREFIXES)}
     result["ok"] = True
     result["scanned"] = scanned
     result["scan_capped"] = scan_capped
+    # 如实交代"我没看哪里"：修剪掉的状态目录要列出来，否则"没有命中"会被
+    # 读成"这里没有"。实测那次就是：整个 `.docmind` 被剪掉、notes 为空，
+    # Agent 只能得出"这个项目没有 html"的结论。
+    result["pruned_dirs"] = sorted(pruned)
     matches.sort(key=lambda rel: (rel.count("/"), rel))
     result["count"] = len(matches)
     result["truncated"] = len(matches) > cap
@@ -448,13 +527,21 @@ def render_glob(result: dict[str, Any]) -> str:
     files = result.get("files") or []
     title = f"匹配 {pat!r}" + (f"（限定 {scope}/）" if scope else "")
     if not files:
-        lines = [title + "：没有命中文件。检查拼写，或去掉 scope 再看一次。"]
+        # ⚠ 措辞必须是"在我看过的范围里没有"，不是"这里没有"。
+        # 实测事故：整个 `.docmind` 被剪掉、notes 为空，Agent 只能得出
+        # "这个项目没有 html"，而 `.docmind/web/index.html` 就在脚下。
+        lines = [title + "：在我扫过的范围里没有命中。检查拼写，或用 scope: 指到具体子目录再看。"]
     else:
         more = f"，只显示前 {len(files)} 个" if result.get("truncated") else ""
         lines = [f"{title}：命中 {result.get('count')} 个{more}（相对代码根目录，浅层优先）"]
         lines += [f"  {rel}" for rel in files]
     for note in result.get("notes") or []:
         lines.append("提示: " + note)
+    pruned = result.get("pruned_dirs") or []
+    if pruned:
+        shown = ", ".join(pruned[:12]) + ("…" if len(pruned) > 12 else "")
+        lines.append("提示: 这几个目录没扫（DocMind 自己的状态/临时目录，不是项目内容）：%s。" % shown)
+        lines.append("      要找的文件若可能在这些目录里，请用 scope: 直接指进去。")
     if result.get("truncated"):
         lines.append("提示: 用更具体的 pattern（如 **/workbench/live*.ts）或加 scope: 收窄。")
     return "\n".join(lines)

@@ -38,6 +38,7 @@ from __future__ import annotations
 import atexit
 import base64
 import contextlib
+import hashlib
 import json
 import threading
 import time
@@ -349,6 +350,13 @@ class _Session:
         self.last_used = time.monotonic()
         self.opened_at = time.monotonic()
         self.counter = 0
+        # 上一张截图的摘要。`_verdict` 只看 DOM 变更数 / console / 失败请求 /
+        # 地址 / 标题，对 **canvas 类页面**（Godot/WebGL 游戏、地图、可视化）
+        # 永远是 no_change —— 实测那次按了方向键，三张截图大小各不相同
+        # （14914 / 14728 / 14445 字节），工具仍回报「没有观察到变化」，
+        # Agent 只能拿它当负面证据，最后任务结论悬空。
+        # 现在同一会话内记住上一张摘要，动作后比一次：字节不同即画面变了。
+        self.last_shot_digest = ""
 
     def close(self) -> dict[str, Any]:
         # cleanup 是 browser_session 在 finally 里填的：必须等 stack.close() 之后再取快照，
@@ -468,15 +476,24 @@ def _verdict(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     return {"verdict": verdict, "delta": delta, "navigated": navigated}
 
 
-def _capture(row: _Session, action: str) -> str:
+def _capture(row: _Session, action: str) -> tuple[str, str]:
+    """截图并返回 `(相对路径, 摘要)`。
+
+    ⚠ 摘要是 sha256 前 16 位，只用于**同一会话内前后两帧比对**，不是安全用途。
+    PNG 是无损且 Chromium 的 `Page.captureScreenshot` 不写时间戳，所以同一画面
+    两次截图字节一致、不同画面字节不同 —— 这是一个可靠的"画面变了"信号，
+    而且不需要 PIL（实测环境里就没有 PIL，那条路走不通）。
+    """
     directory = row.root / ".docmind" / "page-action" / time.strftime("%Y%m%d-%H%M%S")
     directory.mkdir(parents=True, exist_ok=True)
     encoded = str((row.devtools.call("Page.captureScreenshot", {"format": "png"}) or {}).get("data") or "")
     if not encoded:
-        return ""
+        return "", ""
+    raw = base64.b64decode(encoded)
+    digest = hashlib.sha256(raw).hexdigest()[:16]
     path = directory / ("%s-%d.png" % (action, row.counter))
-    path.write_bytes(base64.b64decode(encoded))
-    return path.relative_to(row.root).as_posix()
+    path.write_bytes(raw)
+    return path.relative_to(row.root).as_posix(), digest
 
 
 def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: float,
@@ -491,6 +508,26 @@ def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: fl
     # 只有真的观察到变化才算成功。`no_change` 交给结构化消费方就是"成功"，那正是本仓库
     # 反复付学费的假干净：点了没生效必须让 ok 也是 False。
     ok = verdict in ("changed", "navigated", "reloaded")
+    # ⚠⚠ canvas 类页面的补救：DOM 一点没变，但**画面变了**。
+    #
+    # `_verdict` 只看 DOM/地址/标题，对 Godot/WebGL 这类 canvas 页面结构性失效
+    # （点击与按键都不产生 mutation）。于是"按了方向键、角色真的动了"与
+    # "按了个没绑定的键、什么都没发生"回报一模一样 —— 前者是假阴性，
+    # 会把 Agent 引向"点错了地方"的错误结论。
+    #
+    # 现在同一会话内比前后两帧的 sha256：不同即 `pixels`。只有真的截了图
+    # （`screenshot=True`）才有这个信号；没截图就照旧只有 DOM 判据，不会虚增。
+    shot_path, shot_digest = "", ""
+    if screenshot:
+        shot_path, shot_digest = _capture(row, action)
+    prev_digest = row.last_shot_digest
+    if shot_digest:
+        row.last_shot_digest = shot_digest
+    pixels_changed = bool(shot_digest and prev_digest
+                          and shot_digest != prev_digest)
+    if verdict == "no_change" and pixels_changed:
+        verdict = "pixels"
+        ok = True
     left_loopback = not _loopback(page.get("href"))
     if left_loopback or verdict == "error_seen":
         ok = False
@@ -501,7 +538,12 @@ def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: fl
     result = {"action": action, "page": row.id, "effect": verdict, "delta": delta, "ok": ok,
               "element": matched, "left_loopback": left_loopback,
               "url": page.get("href"), "title": page.get("title"),
-              "screenshot": _capture(row, action) if screenshot else "",
+              "screenshot": shot_path,
+              # 给结构化消费方一个可判的依据：比了哪两帧、是否真有两帧。
+              # 没有上一帧（本会话第一次截图）时 `prev_shot` 为空 ——
+              # 这时**不能**说"画面没变"，只能说不构成证据。
+              "shot_digest": shot_digest, "prev_shot": prev_digest,
+              "pixels_changed": pixels_changed,
               "console_errors": console_new[-3:], "failed_requests": failed_new[-3:]}
     result.update(extra)
     return result
@@ -863,7 +905,10 @@ def render(result: dict[str, Any]) -> str:
     delta = result.get("delta") or {}
     outcome = {"changed": "生效（DOM 变了）", "navigated": "生效（页面跳转了）",
                "reloaded": "生效（文档被重新加载）",
-               "error_seen": "【未通过】动作后出现新报错", "no_change": "【没有观察到变化】"} \
+               "error_seen": "【未通过】动作后出现新报错", "no_change": "【没有观察到变化】",
+               # canvas 类页面（Godot/WebGL/地图）点击与按键都不产生 DOM 变更，
+               # 旧判据下"真的动了"和"什么都没发生"回报一模一样。
+               "pixels": "生效（画面变了，DOM 没变 —— canvas 类页面看这个）"} \
         .get(result.get("effect"), str(result.get("effect")))
     lines = ["%s：%s —— DOM %+d，console %+d，失败请求 %+d；当前地址 %s。" % (
         action, outcome, delta.get("mutations", 0), delta.get("console", 0),
@@ -887,6 +932,18 @@ def render(result: dict[str, Any]) -> str:
     if result.get("effect") == "no_change":
         lines.append("没有观察到任何变化：可能点到的不是你要的控件，或这个控件本来就不改 DOM（"
                      "这时用 read/locate 取具体状态再判断，不要当成成功）。")
+        # ⚠ 只有"截了图且拿不到上一帧"时才提醒。没有上一帧时，
+        # 「画面没变」这句**不构成证据** —— 必须说清，否则又是一次假否定。
+        if result.get("screenshot") and not result.get("prev_shot"):
+            lines.append("注意：这是本会话第一张截图，没有上一帧可比 —— "
+                         "所以「画面没变」这次不构成证据。再做一个带 screenshot: true "
+                         "的动作，才能比出画面是否真的变了。")
+    if result.get("effect") == "pixels":
+        lines.append("画面变了但 DOM 没变：这类页面（Godot/WebGL 游戏、地图、可视化）"
+                     "的点击与按键本就不产生 DOM 变更，所以要以这一条为准。")
+    if result.get("shot_digest"):
+        lines.append("截图摘要：%s（上一帧 %s）"
+                     % (result["shot_digest"], result.get("prev_shot") or "无"))
     return "\n".join(lines)
 
 
