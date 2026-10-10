@@ -37,6 +37,8 @@ export interface ChatMsg {
   reasoning: string
   /** SSE notice 事件（提示性通知，如上下文自动压缩） */
   notices: string[]
+  /** 运行期提示（后端标了 transient 的 notice）：只在流式中显示，回合结束即清 */
+  progress?: string
   /** 计划模式步骤（plan 事件） */
   plan: string[]
   /** 本回合发起的开发工作流：消息内直接挂卡片 */

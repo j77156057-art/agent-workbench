@@ -251,6 +251,8 @@ const phaseLabel = computed(() => {
                   @click="refsAll = false">收起</button>
         </div>
 
+        <!-- 运行期提示（transient notice）：只在流式中显示，不进历史 -->
+        <div v-if="msg.progress && streaming" class="notice">{{ msg.progress }}</div>
         <!-- 通知 -->
         <div v-for="(n, i) in msg.notices" :key="'n' + i" class="notice">{{ n }}</div>
       </div>

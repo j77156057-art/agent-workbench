@@ -14,6 +14,8 @@ export interface ChatStreamTurn {
   text: string
   reasoning: string
   notices: string[]
+  /** transient notice 的落点：只在流式中显示的运行期提示，不进历史 */
+  progress?: string
   trace: ChatTraceItem[]
   plan?: string[]
   workflow?: ChatWorkflowRef
@@ -94,6 +96,10 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     if (ev.type === 'context') { hooks.onContext?.(ev); return }
     if (!turn) return
     hooks.onActivity?.(turn)
+    // 运行期提示（「正在继续执行」这类现在时）到此作废：回合已经结束，再挂着它
+    // 界面就是在宣称一件已经不做完的事。final / done 两条都判，因为出错收尾时
+    // final 可能没有正文（下面那条 final 分支要求 ev.text 非空）。
+    if (ev.type === 'final' || ev.type === 'done') turn.progress = ''
     if (ev.type === 'token' && typeof ev.text === 'string') {
       bufferFor(turn).text += ev.text
       scheduleFlush()
@@ -109,10 +115,14 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       hooks.onReasoning?.(turn)
       scheduleFlush()
     } else if (ev.type === 'notice' && ev.text) {
-      // Old servers may still send these progress notices; the compact running
-      // indicator owns that state. Keep only actionable notices in the history.
-      const transient = /^(已进入模型处理|模型仍在处理|正在准备本轮上下文|正在等待模型输出)/.test(ev.text)
-      if (!transient && !turn.notices.includes(ev.text)) turn.notices.push(ev.text)
+      // 「这条是不是运行期进度」由**发 notice 的后端**用 transient 说，不由前端比文案猜。
+      // 旧版这里是一份四条文案白名单（已进入模型处理 / 模型仍在处理 / 正在准备本轮上下文 /
+      // 正在等待模型输出），与后端**零交集**：那 4 条后端一条都不发，而它实际发的 3 条
+      // 一条都没被过滤掉 —— 于是「模型输出尚未结束，正在继续执行。」在任务完成后
+      // 仍挂在横幅上。逐条列举已经失效过一次，所以不再回到那种写法。
+      // 见 docs/known-defect-notice-whitelist-detached.md。
+      if (ev.transient === true) turn.progress = ev.text
+      else if (!turn.notices.includes(ev.text)) turn.notices.push(ev.text)
     } else if (ev.type === 'plan' && Array.isArray(ev.steps)) {
       turn.plan = ev.steps as string[]
     } else if (ev.type === 'thought' || ev.type === 'action'

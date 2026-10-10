@@ -1320,6 +1320,12 @@ const webTitle = computed(() => webOn.value
               </span>
               <span class="cd-run-time" v-if="elapsedLabel(m)">· {{ elapsedLabel(m) }}</span>
             </div>
+            <!-- 运行期提示（后端标了 transient 的 notice）只活在这里：流式一结束就没了。
+                 同一句话挂在「已完成」下面就是在宣称一件已经不做完的事。 -->
+            <div v-if="m.progress && m.status === 'streaming'" class="cd-notice">
+              <svg width="11" height="11" viewBox="0 0 11 11"><circle cx="5.5" cy="5.5" r="4.6" fill="none" stroke="currentColor" stroke-width="1"/><path d="M5.5 4.6 V7.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/><circle cx="5.5" cy="3" r=".75" fill="currentColor"/></svg>
+              <span>{{ m.progress }}</span>
+            </div>
             <div v-for="(n, i) in m.notices" :key="'n' + i" class="cd-notice">
               <svg width="11" height="11" viewBox="0 0 11 11"><circle cx="5.5" cy="5.5" r="4.6" fill="none" stroke="currentColor" stroke-width="1"/><path d="M5.5 4.6 V7.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/><circle cx="5.5" cy="3" r=".75" fill="currentColor"/></svg>
               <span>{{ n }}</span>

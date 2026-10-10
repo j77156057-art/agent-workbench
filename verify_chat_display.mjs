@@ -103,8 +103,12 @@ const PREFS_REF = { ...DEFAULTS, maxRefs: 3 }
 let release = null
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
 let failed = 0
+// 汇总里的项数必须是**数出来的**，不是写死的 —— 之前那行印死「15 项断言」，
+// 加一条用例它就变成一句过期的假话（而且往好了骗）。
+let checks = 0
 
 function check(name, fn) {
+  checks++
   try { fn(); console.log(`PASS   ${name}`) }
   catch (e) { failed++; console.log(`FAIL   ${name}\n      ${String(e.message).split('\n')[0]}`) }
 }
@@ -368,8 +372,60 @@ try {
     assert.ok(voice.title.includes('STT'), `tooltip 没点名后端通路：${voice.title}`)
   })
   await page.close()
+
+  // ⑦ 运行期提示（后端标 transient: true 的 notice）只活在流式里，事实类通知结束后仍留着。
+  // 这里喂的是**桩帧**：后端目前还没发 transient 标记（agent.py 那两处 yield 归后端），
+  // 所以这条锁的是前端契约 —— 标记一到就生效，不需要再改界面代码。
+  const LIVE = '模型输出尚未结束，正在继续执行。'
+  const FACT = '模型单次输出已满，正在接续完整回答。'
+  const liveTail = [{ type: 'final', text: '完整答案。' }, { type: 'done' }]
+  const notices = pg => pg.evaluate(() => [...document.querySelectorAll('.cd-notice')]
+    .map(el => (el.textContent || '').trim()))
+  page = await boot(DEFAULTS, '/workbench',
+    [{ type: 'notice', text: LIVE, transient: true }, { type: 'notice', text: FACT }, { type: 'token', text: '初步结论：' }],
+    liveTail)
+  await openDockAndAsk(page, '这两条提示分别该去哪')
+  await page.waitForSelector('.cd-answer-live', { timeout: 30000 })
+  const during = await notices(page)
+  check('流式中：运行期提示与事实通知都看得见（前者没被吞、后者没被延后）', () => {
+    assert.ok(during.includes(LIVE), `运行期提示没显示：${JSON.stringify(during)}`)
+    assert.ok(during.includes(FACT), `事实通知没显示：${JSON.stringify(during)}`)
+  })
+  await finish(page)
+  const after2 = await notices(page)
+  check('回合结束后：「正在继续执行」消失，「输出已满被截断」留下', () => {
+    assert.ok(!after2.includes(LIVE),
+      `结束后仍挂着现在时的进度句（就是那张截图的 bug）：${JSON.stringify(after2)}`)
+    assert.ok(after2.includes(FACT),
+      `答案被截断这个事实一起被吞掉了：${JSON.stringify(after2)}`)
+  })
+  await page.close()
+
+  // ⑦b 中途**停止**：这条走的是另一个机制。ChatDock 的 AbortError 分支只把
+  // t.status 改成 'stopped'（ChatDock.vue:601-604），**不** dispatch final / done，
+  // 所以 turn.progress 此刻仍然有值 —— 挡住那句假陈述的只有渲染闸门
+  // （m.status === 'streaming'）。两条用例各钉一道防线，缺一条就看不见另一道失效。
+  // 得给一条 trace：回合标题是 v-if="trace.length || reasoning || streaming"，
+  // 停止后既没正文也没流式，不塞一条步骤的话「已停止」那颗 chip 根本不渲染，
+  // 断言就会读到一个空串（实测撞过一次）。
+  page = await boot(DEFAULTS, '/workbench',
+    [{ type: 'notice', text: LIVE, transient: true }, { type: 'thought', text: '先看目录结构再决定读哪个文件。' }, { type: 'token', text: '初步结论：' }],
+    liveTail)
+  await openDockAndAsk(page, '中途停下来会怎样')
+  await page.waitForSelector('.cd-answer-live', { timeout: 30000 })
+  await page.click('.cd-stop')
+  await page.waitForTimeout(700)
+  const stopped = await notices(page)
+  const stoppedHead = await page.locator('.cd-run-status').last().innerText().catch(() => '')
+  const anywhere = await page.locator(`text=${LIVE}`).count()
+  check('用户中途停止（没有 final / done）：运行提示同样不再显示', () => {
+    assert.match(stoppedHead, /已停止/, `回合没走到已停止，读到 ${JSON.stringify(stoppedHead)}`)
+    assert.equal(anywhere, 0, `界面上还有 ${anywhere} 处「正在继续执行」`)
+    assert.ok(!stopped.includes(LIVE), `停止后仍挂着「正在继续执行」：${JSON.stringify(stopped)}`)
+  })
+  await page.close()
 } finally {
   await browser.close()
 }
-console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}：对话展示层 15 项断言`)
+console.log(`\n${failed ? failed + ' 项失败' : '全部通过'}：对话展示层 ${checks} 项断言`)
 process.exit(failed ? 1 : 0)

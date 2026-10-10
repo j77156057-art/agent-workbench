@@ -8,6 +8,10 @@ export interface SseEvent {
     | 'reasoning' | 'notice' | 'plan' | 'route' | 'final' | 'done'
     | 'context' | string
   text?: string
+  /** notice 专用：true = **运行期进度**（「正在继续执行」这类，回合结束就成假陈述），
+   *  只进流式中的运行指示；缺省 / false = 本轮**事实**（输出被截断、上下文已压缩），
+   *  留在通知里。语义由发事件的后端定，前端不再比文案。 */
+  transient?: boolean
   status?: 'error' | string
   error_kind?: string
   steps?: string[]
