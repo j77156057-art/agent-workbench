@@ -105,14 +105,71 @@ class SessionScopedCodeRootTests(unittest.TestCase):
                          str(self.proj_a),
                          "新会话没记住建立时的代码库 —— 下次回落就又串了")
 
-    def test_switching_projects_does_not_move_a_bound_session(self):
-        """**这条才是隔离的意义**：切项目不该让进行中的对话换库。"""
-        self._make("s-bound", self.proj_a)
-        # 同一个 session_id，但请求现在绑的是项目 B
-        self._make("s-bound", self.proj_b)
-        self.assertEqual(config.get_runtime("code_root"), str(self.proj_a),
-                         "切项目把已绑定会话的代码库顶掉了 —— "
+    def test_inside_a_turn_switching_projects_does_not_move_that_session(self):
+        """**回合内**隔离：切项目不该让进行中的对话换库。
+
+        ⚠ 会话级由 `run()` 按回合 set，所以必须在**回合内**断言 ——
+        构造之后、run 之前那段时间按设计不生效（回合外的一切都不该被
+        这个会话的代码库影响，那正是缺陷本身）。
+        """
+        a = self._make("s-bound", self.proj_a)
+        seen = {}
+
+        def _probe(messages, stream=True, enable_thinking=None, **kw):
+            # 在模型调用点读一次 —— 这正处于回合内
+            seen["root"] = config.get_runtime("code_root")
+            return iter(["Final Answer: ok"])
+
+        a.llm = type("L", (), {"count_tokens": lambda s, t: 1,
+                               "chat": staticmethod(_probe)})()
+        # 回合进行中把项目切到 B
+        config.set_context_code_root(str(self.proj_b))
+        list(a.run("随便问点什么", stream=True))
+        self.assertEqual(seen.get("root"), str(self.proj_a),
+                         "回合内切项目把该会话的代码库顶掉了 —— "
                          "这正是原缺陷的形态")
+
+    def test_outside_a_turn_the_session_root_does_not_apply(self):
+        """**回合外**不生效：否则值会留在进程里污染后来的一切。
+
+        实测后果：`tests/test_mcp_self_assembly_tools.py` 构造 Agent 时
+        把会话级挂上而它的 tearDown 只还原 `_RUNTIME` -> 值留在进程里 ->
+        本轮全量 **93 条**测试读到别的测试的临时目录。
+        """
+        self._make("s-outside", self.proj_a)          # 会话绑到 projA
+        config.set_context_code_root(str(self.proj_b))  # 项目切到 projB
+        self.assertEqual(
+            config.get_runtime("code_root"), str(self.proj_b),
+            "回合外会话级仍在生效 —— 它只该活一个回合")
+
+    def test_constructing_an_agent_leaves_no_session_context(self):
+        """反向守卫：**构造** Agent 绝不许留下非空会话级。
+
+        这是那次 93 条失败的直接锁。构造期只取值并落盘（`self._session_code_root`
+        + `sessions.bind_code_root`），绑定由 `run()` 负责。
+        """
+        before = config._CTX_SESSION_CODE_ROOT.get()
+        self._make("s-nocontext", self.proj_a)
+        self.assertEqual(
+            config._CTX_SESSION_CODE_ROOT.get(), before,
+            "构造 Agent 时设置了会话级 contextvar —— 它没有任何 reset 点，"
+            "会留在整个进程里")
+
+    def test_a_turn_restores_the_context_even_on_exception(self):
+        """回合结束（含异常/断连）必须还原 —— 否则同样泄漏。"""
+        self._make("s-finally", self.proj_a)
+        before = config._CTX_SESSION_CODE_ROOT.get()
+
+        a = self._make("s-finally", self.proj_a)
+        a.llm = type("L", (), {
+            "count_tokens": lambda s, t: 1,
+            "chat": staticmethod(lambda *a_, **k: (_ for _ in ()).throw(
+                RuntimeError("boom"))),
+        })()
+        with self.assertRaises(Exception):
+            list(a.run("会炸的回合", stream=True))
+        self.assertEqual(config._CTX_SESSION_CODE_ROOT.get(), before,
+                         "回合抛异常后会话级没还原")
 
     def test_the_binding_is_written_once_not_refreshed(self):
         """绑一次终身沿用；若每轮跟着项目变，等于没隔离。"""
