@@ -110,34 +110,74 @@ def test_the_withdrawal_check_reaches_every_withdrawal_verb():
 # 反向守卫：含撤回字但不撤回的，必须放行
 # --------------------------------------------------------------------------
 
+#: ⚠⚠ **原先 8 句里有 2 句本来就该 denied —— 是这份表的期望写错了。**
+#:
+#:     这个取消逻辑写在哪里   在问**位置**，不是请求
+#:     分析取消操作的影响     在问**影响**，不是请求
+#:
+#: 把它们列进「必须放行」就等于要求：**用户问「写在哪里」时，
+#: agent 当成授权去改文件**。按 `_write_intent` 的既有语义
+#: （疑问词 → denied，见 `docs/write-intent-corpus.md` A 节）
+#: 它们判 denied 是**正确行为**。
+#:
+#: 已移到下面的 `MUST_STAY_DENIED`。这次改的是**测试的期望**，不是判据。
 BENIGN = [
     # 撤回词在句中 = 定语，修饰名词
     "帮我实现取消按钮",
     "加个停止服务按钮",
     "写一个终止超时的函数",
     "设计撤回机制",
-    "这个取消逻辑写在哪里",
-    "分析取消操作的影响",
     "写取消函数",
     "实现撤销操作",
+]
+
+#: 问句，含撤回字但**不是**写请求 —— 必须 denied。
+#: 移出 `BENIGN` 的那 2 句，附移出理由，钉住「不许改回去」。
+MUST_STAY_DENIED = [
+    ("这个取消逻辑写在哪里", "问位置"),
+    ("分析取消操作的影响", "问影响"),
 ]
 
 
 @pytest.mark.parametrize("question", BENIGN)
 def test_a_withdrawal_word_inside_a_request_is_still_a_request(question):
-    """**只对已在改动前的正确行为钉断言。**
+    """含撤回字的真写请求必须放行。
 
-    这批句里有一部分改动前就是 denied（那是**另一族**既存缺陷：含取消/回滚/
-    终止字的正常请求被拦，与撤回句方向相反）。本笔不许顺手修那个 ——
-    两族混在一笔里，出问题时无法判断是哪一半造成的。
+    ⚠ skip 消息里的归因**曾经是错的**，已更正：
+    原写「属含撤回字的正常请求被拦那一族」—— 实测根因是**谓语动词缺口**
+    （`写`/`实现`/`设计` 不在 `_WRITE_VERBS` 表里），
+    换成无关词一样被拦（`帮我实现保存按钮` 也是 denied）。
+    详见 `docs/write-intent-corpus.md` D 节的「归因更正」。
+
+    改成准确归因的理由：下一个人若照旧归因去查「撤回词」，会查错方向。
     """
     currently = intent(question)
     if currently == D:
         pytest.skip(
-            f"{question!r} 当前 denied —— 属「含撤回字的正常请求被拦」那一族，"
-            f"尚未修。本笔不动它，避免两族混在一起。"
+            f"{question!r} 当前 denied —— 根因是谓语动词缺口"
+            f"（写/实现/设计 不在 _WRITE_VERBS 表），**与撤回词无关**。"
+            f"实测：换成无关词（帮我实现保存按钮）同样 denied。"
+            f"已试三条修法（加裸词/全裸加/句首位置判据）全部不通，"
+            f"根因见 agent.py _WRITE_VERBS 注释与 docs/write-intent-corpus.md D 节。"
         )
     assert currently == G, f"{question!r} 被判成 {currently!r}"
+
+
+@pytest.mark.parametrize("question,why", MUST_STAY_DENIED)
+def test_a_question_is_not_an_authorization_even_with_withdrawal_words(question, why):
+    """反向守卫：问句即便含撤回字也必须 denied。
+
+    ⚠ 这 2 句原先被列在 `BENIGN`（要求 granted）—— 那是**期望写错了**：
+    用户问「写在哪里」「分析影响」时，agent 若当成授权去改文件，
+    正是这个护栏要防的方向。
+
+    这条钉的是「它们必须留在 denied 一侧」——
+    若哪天有人把它们挪回 `BENIGN`，这里会红。
+    """
+    assert intent(question) == D, (
+        f"{question!r}（{why}）被判成 {intent(question)!r} —— "
+        f"问句被当成写授权，护栏会朝放行落盘的方向失效"
+    )
 
 
 def test_the_rule_is_position_based_not_wordlist_based():
