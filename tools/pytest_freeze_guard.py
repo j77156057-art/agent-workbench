@@ -26,7 +26,36 @@
 
 用法：
 
-    python -m pytest tests/ -p tools.pytest_freeze_guard ...
+    $env:PYTHONPATH='<repo>\\tools'
+    pytest ... -p pytest_freeze_guard
+
+⚠ 必须走 `PYTHONPATH` + 裸模块名。`-p tools.pytest_freeze_guard` 导入不了
+（`tools/` 故意不是包，没有 `__init__.py` —— 加了会改变那个目录的性质），
+而 `-p .\\tools\\xxx.py` 会被 pytest 判成相对导入而报错。
+
+## 实测
+
+* 四关自验（`tools/verify_freeze_guard.py`）：正例抓到 `agent.py` 并定位到
+  具体用例；无改动不误报；**删掉核心比对就抓不到** —— 证明真在干活。
+* 真实场景（`tools/verify_freeze_real.py`）：与那 26 条源码扫描测试同跑时
+  正确报出污染。
+* 真实批量（2026-10-10）：30 个测试文件、**595 passed、10 分 19 秒**，
+  冻结工作树全程未碰任何文件 -> **零误报**。
+
+## 自验时的两个坑（都记在这，免得重犯）
+
+1. **只在 `sessionstart` 登记 = 漏掉之后才 import 的模块。**
+   `pytest_sessionstart` 早于收集，那一刻大部分被测模块还没加载，
+   基线里根本没有 `agent.py`。改成每条用例结束时**懒补登记**
+   （按当时指纹记，那一刻它确实没被改过，所以不算污染）。
+
+2. **第一版验证脚本自己恒真。** 它只看 stdout 里有没有「测量被污染」——
+   插件**压根没加载成功**时（`ModuleNotFoundError`），自然也没有那串字，
+   于是 A 关判 False、B/C 关判 True，看起来「三关都过」，其实是
+   「守卫根本没运行」。加**加载自检关**（stdout 必须出现「已盯 N 个」）
+   才暴露。
+
+同型事故见 `docs/transform-script-false-success.md`。
 """
 
 from __future__ import annotations
