@@ -405,6 +405,20 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
 > 却仍列在「待办」里 —— **下一个人照着做会做已经做完的事。**
 > 核实依据在每条后面的括号里。
 
+### ⚠ 查资料前先看这条：`.docmind/` 下有整个仓库的副本
+
+`.docmind/projects/<项目>/<checkpoint>/` 下可能是**完整仓库副本**
+（实测 856 个文件，含 `agent.py` / `tests/` / `docs/` 全套）。
+全仓 grep 可能**先撞到副本**，而副本是过期快照
+（实测副本 `write-intent-corpus.md` 17.4 KB vs 本体 17.0 KB，六个测试文件哈希全不一致）。
+
+**读到疑似副本里的文件时，先比哈希，以本体为准。**
+自查一句话：**我引用的那个文件，在本体里存在吗？**
+
+→ 详见 `docs/known-defect-docmind-shadow-repo-copies.md`
+（含正确的搜索命令，以及 `.docmind/` 里**哪些是真数据**：用户提问原文在
+`.docmind_memory.sqlite3` 的 `checkpoints.question`，trace 只存长度不存原文）。
+
 ### 还欠着的（真的要做）
 
 1. **第 6 节（真业务题端到端）—— 唯一一个从未执行过的。**
