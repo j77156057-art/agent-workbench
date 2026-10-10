@@ -26,8 +26,14 @@
 
 用法：
 
-    $env:PYTHONPATH='<repo>\\tools'
-    pytest ... -p pytest_freeze_guard
+    **默认已加载**（仓库根 conftest.py 声明了 pytest_plugins）。
+    直接 `pytest tests/` 就会生效，不需要任何额外参数。
+
+    想降级成「只警告、不改退出码」：
+        $env:DOCMIND_FREEZE_WARN_ONLY='1'
+
+    想看到它盯了多少文件（默认静默）：
+        $env:DOCMIND_FREEZE_VERBOSE='1'
 
 ⚠ 必须走 `PYTHONPATH` + 裸模块名。`-p tools.pytest_freeze_guard` 导入不了
 （`tools/` 故意不是包，没有 `__init__.py` —— 加了会改变那个目录的性质），
@@ -206,6 +212,20 @@ def pytest_sessionfinish(session, exitstatus):
     print("  完整记录: %s" % REPORT)
     print("  处置: 冻结工作树重跑（见 docs/measure-freeze-discipline.md）")
     print("=" * 74 + "\n")
+
+    # ⚠⚠ 抓到污染就**让这一轮失败**，不只是打印。
+    #
+    # 实测教训（2026-10-10~11）：守卫原本只打印，而它还需要人记得手动
+    # `-p` 加载 —— 于是我两次「全量跑到一半改被测文件」它一声没响，
+    # 一份被污染的测量结果看起来完全合格。silent green 比响一声危险得多。
+    #
+    # 逃生门：`DOCMIND_FREEZE_WARN_ONLY=1` 显式降级为只警告。
+    if not os.environ.get("DOCMIND_FREEZE_WARN_ONLY"):
+        pytest.exit(
+            "freeze-guard：测试运行期间有 %d 个被测文件被改写，本轮结果不可信。"
+            "冻结工作树后重跑（见 docs/measure-freeze-discipline.md）；"
+            "确有必要边跑边改请设 DOCMIND_FREEZE_WARN_ONLY=1。"
+            % len(_VIOLATIONS), returncode=1)
 
 
 def pytest_report_header(config):
