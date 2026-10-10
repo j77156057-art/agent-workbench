@@ -59,6 +59,57 @@ _FILE_REF = re.compile(
     r"(?:\s*:\s*L?(\d+)(?:\s*[-~]\s*L?(\d+))?)?"
 )
 
+#: 否定语境：这条路径**不是引用**，而是「我试错了 / 它不存在」的说明。
+#:
+#: ⚠⚠ **为什么必须有这个（实测 `wf` 任务连续 3 轮 research 全部失败的直接原因）**
+#:
+#: `_FILE_REF.finditer(text)` 扫的是**结论文本**，它分不清两种句子：
+#:
+#:     实现见 addons/godot_ai/utils/port_resolver.gd:303   <- 引用，该核验
+#:     路径更正：addons/godot_ai/port_resolver.gd 不存在   <- **不是引用**
+#:
+#: 审计把第二句里的路径也当成引用，去代码根找，找不到 ->
+#: 「路径打不开」-> 核验 FAIL。
+#:
+#: **方向完全反了：模型越如实报告自己的试错，越过不了门禁。**
+#: 实测那一轮 research 的结论已经把路径全部改对（44 处引用可核验），
+#: 却因为正文里如实点名了两个错路径而被拒；重规划两次仍然是同一个死法，
+#: 上游 research failed 连累 implement/verify 全部 blocked，最终 0/5。
+#:
+#: 判据覆盖两个方向（真实文本里两种都出现过）：
+#:     前置否定：`不存在 xxx.gd` / `xxx.gd 不存在` / `xxx.gd 是错的`
+_NEGATED = re.compile(
+    r"(?:不存在|没有|读不到|读不出|打不开|找不到|是错的|写错了|已更正|"
+    r"真实路径|实际路径|应该是|更正为|不是真实路径|路径陷阱|路径陷阱是)"
+)
+
+#: 子句分隔符。**判否定必须按子句切，不能按固定字符窗口。**
+#:
+#: 实测踩过：用 24 字窗口时，下面这句会把**正面引用**一起误伤
+#: （否定词与下一条路径只隔 14 字符，正在窗口内）：
+#:
+#:     不存在 `a/does_not_exist.gd` 这个文件；真实实现见 `b/port_resolver.gd`。
+#:                                              ^^^^^^^^ 被当成否定
+#:
+#: 按「；」切成两个子句后，前者在子句 0（否定的），后者在子句 1（干净的）。
+_CLAUSE_SPLIT = re.compile(r"[。；！？\n]")
+
+
+def _ref_is_negated(text: str, start: int, end: int) -> bool:
+    """这条「引用」在**它自己那个子句**里被否定吗（是的话它不是引用）。
+
+    只看同一子句：向前找最近的子句分隔符，向后找最近的，
+    判定词必须落在这两个分隔符**之间**。
+    """
+    prev = 0
+    for m in _CLAUSE_SPLIT.finditer(text, 0, start):
+        prev = m.end()
+    nxt = len(text)
+    m = _CLAUSE_SPLIT.search(text, end)
+    if m:
+        nxt = m.start()
+    return bool(_NEGATED.search(text[prev:nxt]))
+
 
 def _tool_name(action: str) -> str:
     """从动作文本里取出工具名：`read_file(path: x)` -> `read_file`。
@@ -229,7 +280,14 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     read_steps = [item for item, action in zip(steps, actions)
                   if _tool_name(action) == "read_file"]
     refs = []
+    skipped_negated = 0
     for match in _FILE_REF.finditer(text):
+        # ⚠ 否定语境里的路径**不是引用**。模型如实写「xxx.gd 不存在，真实路径是
+        # yyy.gd」是在**帮你**找出问题；把它当引用会判成「路径打不开」，
+        # 于是越诚实越 FAIL（实测 wf 任务连续 3 轮 research 死在这里）。
+        if _ref_is_negated(text, match.start(1), match.end(1)):
+            skipped_negated += 1
+            continue
         # 存**归一后**的路径：判定（`exists` / `line_ok`）是拿它去做的，
         # 记录里若还留着 `res://` 的残渣，读到这条记录的人重新核验会得到
         # 不同答案——那就成了「报告与事实不一致」。
@@ -354,6 +412,9 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             "verdict_reason": verdict_reason,
             "required": required, "checks": checks,
             "references": file_checks, "verified_references": valid_refs,
+            # 否定语境里被跳过的路径数（诊断用）。**不是**「有几处引用失败」——
+            # 这些恰恰是模型**正确**指出的问题（试错路径 / 不存在的路径）。
+            "skipped_negated_refs": skipped_negated,
             "read_steps": len(read_steps)}
 
 
