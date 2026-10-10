@@ -637,6 +637,28 @@ _RUNTIME = {}
 # 行为（它们本就非请求作用域）。
 _CTX_CODE_ROOT: contextvars.ContextVar = contextvars.ContextVar("docmind_ctx_code_root", default=None)
 
+#: 会话级代码库（比「按项目」更窄）。由 api 的会话入口按 session_id 绑定 ——
+#: 读了该会话记录里记下的 code_root。空 = 未绑定，回落到项目/全局。
+_CTX_SESSION_CODE_ROOT: contextvars.ContextVar = contextvars.ContextVar(
+    "docmind_ctx_session_code_root", default=None)
+
+
+def set_ctx_session_code_root(value):
+    """把当前执行上下文绑定到某个**会话**的代码库；返回用于 reset 的 Token。
+
+    ⚠ 与 `set_context_code_root`（按项目）**配对使用**，严格 try/finally。
+    优先级：会话 > 项目 > 全局（见 `get_runtime`）。
+    """
+    return _CTX_SESSION_CODE_ROOT.set(value or None)
+
+
+def reset_ctx_session_code_root(token) -> None:
+    """按 Token 还原会话级上下文（必须与 set_ctx_session_code_root 配对）。"""
+    try:
+        _CTX_SESSION_CODE_ROOT.reset(token)
+    except (ValueError, LookupError, RuntimeError):
+        pass
+
 
 def set_context_code_root(value):
     """把当前执行上下文绑定到某个项目 root；返回用于 reset 的 Token。"""
@@ -651,14 +673,46 @@ def reset_context_code_root(token) -> None:
         pass
 
 
+def get_runtime_excluding_session(key, default=None):
+    """**不含会话级**的取值：只按 项目 > 全局。
+
+    ⚠ 这是给「新会话首次绑定代码库」专用的。**不要**在别处用它替代
+    `get_runtime` —— 那才是常规读取路径（含会话级）。
+
+    为什么需要它：新会话绑定时要决定「用哪个库」，那一刻
+    `get_runtime` 的第一优先级是**会话级**，而那个值可能是**上一个会话**
+    泄漏下来的（同一进程内连续构造多个 Agent 时实测会发生）——
+    于是新会话会继承上一个会话的代码库，比原缺陷更隐蔽。
+    """
+    if key == "code_root":
+        ctx_root = _CTX_CODE_ROOT.get()
+        if ctx_root:
+            return ctx_root
+    return _RUNTIME.get(key, default)
+
+
 def set_runtime(key, value):
     _RUNTIME[key] = value
 
 
 def get_runtime(key, default=None):
-    # code_root 走请求上下文优先：项目化请求返回该项目 root，无上下文时回落全局
-    # （行为与改动前完全一致）。
+    # code_root 的优先级：**会话 > 请求上下文（按项目） > 全局**。
+    #
+    # ⚠⚠ **会话级优先是治「换了任务、检索器还在旧代码里翻」那个缺陷**（2026-10-10）。
+    # 实测事故：一个会话的探针目录被设成全局 code_root，四天后同一项目的另一个新会话
+    # 问别的事，中间件某一环没设成上下文 -> 静默用全局残留 -> 检索器在上一个任务的
+    # 代码里搜，5 个子任务 0/5 全败。详见
+    # `docs/known-defect-code-root-scope-too-coarse.md`。
+    #
+    # 为什么会话优先于项目：会话是**更窄**的作用域，而用户在一个会话里
+    # 要的就是稳定用同一个库 —— 切项目不该让正在进行的对话换库。
+    #
+    # 读不到会话值时（老会话没这字段 / 还没落盘）依次回落项目、最后回落全局，
+    # **与改动前行为一致**。这里不做任何静默改写。
     if key == "code_root":
+        sess_root = _CTX_SESSION_CODE_ROOT.get()
+        if sess_root:
+            return sess_root
         ctx_root = _CTX_CODE_ROOT.get()
         if ctx_root:
             return ctx_root

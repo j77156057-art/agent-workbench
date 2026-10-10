@@ -31,6 +31,9 @@ from config import (
     COMPACT_TRIGGER_RATIO,
     LLM_MAX_TOKENS,
     get_runtime,
+    # 会话级代码库绑定（2026-10-10，见 docs/known-defect-code-root-scope-too-coarse.md）
+    set_ctx_session_code_root as _set_ctx_session_code_root,
+    get_runtime_excluding_session as _get_runtime_excl_session,
 )
 from llm import LLMClient, args_to_input
 from tools import (TOOLS, tool_schemas, self_verify,
@@ -3467,6 +3470,35 @@ class Agent:
         if session_id:
             self.history = _sessions.history(session_id, self.project_id)
             self.summary = _sessions.summary_text(session_id, self.project_id)
+            # ⚠⚠ **会话级代码库绑定**（2026-10-10，治「换了任务、检索器还在旧代码
+            # 里翻」那个缺陷）。
+            #
+            # 实测事故：mean 题那次的探针目录被设成全局 code_root；四天后在同一项目
+            # 里开新会话问「优化界面」，中间件某一环没设成上下文 -> 静默回落到那个
+            # 全局值 -> research 在 mean 题的 `calc.py` 底下搜 mean -> 0/5 全败。
+            # 详见 `docs/known-defect-code-root-scope-too-coarse.md`。
+            #
+            # 形状：
+            #   已有绑定 -> 用它，且**不理会当前项目**（切项目不该让进行中的对话换库）
+            #   还没有   -> 用当前项目 root（= 改动前的行为），并**绑一次**
+            #
+            # 绑一次终身沿用；若每轮跟着项目变，等于没隔离 —— 那正是缺陷本身。
+            # 老会话读不到这个字段 -> 走「还没有」分支，行为与改动前完全一致。
+            _sess_root = _sessions.current_code_root(session_id, self.project_id)
+            if _sess_root:
+                _set_ctx_session_code_root(_sess_root)
+            else:
+                try:
+                    # ⚠ 必须用「不含会话级」的取值：此刻会话级可能还挂着
+                    # **上一个会话**的库（同一进程内连续构造 Agent 时实测会泄漏），
+                    # 用 get_runtime 会让新会话继承上一个会话的代码库 ——
+                    # 那比原缺陷更隐蔽。
+                    _bind = (_get_runtime_excl_session("code_root") or "").strip()
+                except Exception:   # noqa: BLE001 - 读不到不是错误
+                    _bind = ""
+                if _bind:
+                    _set_ctx_session_code_root(_bind)
+                    _sessions.bind_code_root(session_id, _bind, self.project_id)
         else:
             self.history = []
             self.summary = ""

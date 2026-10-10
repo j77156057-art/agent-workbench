@@ -84,6 +84,12 @@ class RoutingBase(unittest.TestCase):
         self._old_state_file = config.STATE_FILE
         self._old_sessions_dir = sessions.SESSIONS_DIR
         self._old_runtime = dict(config._RUNTIME)
+        # ⚠ 会话级 code_root 上下文（2026-10-10 新增，`get_runtime` 里优先级最高）。
+        # 必须与其他状态一样存-还：否则**上一个用例**残留的会话级值会盖过
+        # setUp 刚设的 `_RUNTIME["code_root"]`，断言就会读到别的用例的临时目录。
+        # 这个测试文件此前没有这一层可清，所以它当时是对的；加了层就得一起清。
+        self._old_session_ctx = config._CTX_SESSION_CODE_ROOT.get()
+        config._CTX_SESSION_CODE_ROOT.set(None)
         config.STATE_FILE = os.path.join(self.tmp, ".docmind_state.json")
         sessions.SESSIONS_DIR = os.path.join(self.tmp, "sessions")
         self._env = mock.patch.dict(os.environ, {"DOCMIND_PROJECTS": "1"})
@@ -104,6 +110,8 @@ class RoutingBase(unittest.TestCase):
         sessions.SESSIONS_DIR = self._old_sessions_dir
         config._RUNTIME.clear()
         config._RUNTIME.update(self._old_runtime)
+        # 还原会话级上下文（与 setUp 里置空对称）
+        config._CTX_SESSION_CODE_ROOT.set(self._old_session_ctx)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _mkdir(self, name):

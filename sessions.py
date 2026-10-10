@@ -105,6 +105,19 @@ def _apply_raw(data: dict, raw) -> dict:
             for t in turns if isinstance(t, dict)
         ] if isinstance(turns, list) else []
         data["updated_at"] = raw.get("updated_at") or ""
+        # ⚠⚠ **会话要记住自己用的是哪个代码库**（2026-10-10 加）。
+        #
+        # 实测事故：mean 题那次的探针目录被设成**全局** code_root；四天后在同一项目
+        # 里开新会话问「优化界面」，中间件某一环没设成上下文 -> 静默回落到那个全局值
+        # -> research 在 `calc.py`（mean 题的代码）底下搜 mean -> 5 个子任务 0/5 全败。
+        #
+        # 会话隔离**做到了**（不同 session_id、不同文件）。没做到的是代码库隔离 ——
+        # 代码库从来没「跟着会话走」这个概念，只挂在项目/全局上，于是四天后被继承。
+        #
+        # 这里记下会话建立时的代码库，之后该会话一直用它。老会话没这字段时为空串，
+        # 调用方回落原有优先级 —— **行为与改动前完全一致**，不做静默改写。
+        raw_root = raw.get("code_root")
+        data["code_root"] = raw_root.strip() if isinstance(raw_root, str) else ""
         # 快照必须一起搬进来。这里漏掉它时症状特别隐蔽：snapshot() 写入成功、
         # 没有任何报错，但下一次 load 读回来的 data 里没有 snapshots，
         # 于是 restore_snapshot 永远说「还没有任何快照」——写得进、读不回来。
@@ -121,7 +134,9 @@ def _dirs_for_read(bucket: str) -> list:
 
 
 def _default() -> dict:
-    return {"session_id": "", "updated_at": "", "summary": "", "turns": []}
+    # code_root 见 _apply_raw 的说明：会话级代码库归属，老会话为空串
+    return {"session_id": "", "updated_at": "", "summary": "",
+            "turns": [], "code_root": ""}
 
 
 def load(session_id, project_id=None) -> dict:
@@ -173,11 +188,39 @@ def summary_text(session_id, project_id=None) -> str:
     return load(session_id, project_id).get("summary", "") or ""
 
 
+def bind_code_root(session_id, root, project_id=None) -> bool:
+    """把该会话的代码库**固定**为 `root`；已绑定的会话**不改**。
+
+    绑一次，终身沿用 —— 这是整个隔离的核心。若每轮跟着当前项目变，
+    等于没隔离，那正是本缺陷本身。
+    """
+    with _lock:
+        data = load(session_id, project_id)
+        if data.get("code_root"):
+            return False            # 已绑定：不动
+        data["code_root"] = str(root or "").strip()
+        return _write(session_id, data, project_id)
+
+
+def current_code_root(session_id, project_id=None) -> str:
+    """这个会话记住的代码库；没记住则空串（调用方回落项目/全局）。"""
+    if not session_id:
+        return ""
+    try:
+        return str(load(session_id, project_id).get("code_root") or "").strip()
+    except Exception:               # noqa: BLE001 - 读不到不是错误，回落即可
+        return ""
+
+
 def save(session_id, turns, summary=None, project_id=None) -> bool:
     """整体落盘一个会话（turns = [{user, assistant}]）。"""
     with _lock:
         data = load(session_id, project_id)
         data["session_id"] = str(session_id or "default")
+        # ⚠ 会话**首次**落盘时把当时的代码库记下来，之后不再变。
+        # 这里刻意不读 get_runtime —— 那会形成循环（config 依赖 sessions），
+        # 而且 sessions 是纯存储层，不该知道"当前项目是什么"。
+        # 真正的绑定由 api 入口调用 bind_code_root() 完成。
         if summary is not None:
             data["summary"] = summary
         data["turns"] = [
