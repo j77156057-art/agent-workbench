@@ -457,10 +457,21 @@ class ProjectCrudTests(QABase):
                         "删除项目绝不得删向量集合目录")
 
     def test_sessions_scoped_per_project(self):
+        """项目隔离仍在，但机制从"分桶"换成了"归属字段"（丙，2026-10-11）。
+
+        ⚠ 构造必须走 `bind_code_root`（生产路径，`Agent.__init__` 走的就是它）——
+        `save()` 不写 `owner_project_id`，直接 save 出来的会话没有归属，
+        会被归属过滤当成"老会话"处理，产品语义就测不到了。
+        """
+        self.assertTrue(sessions.bind_code_root("sA", self.root_a, self.pid_a))
+        self.assertTrue(sessions.bind_code_root("sB", self.root_b, self.pid_b))
         self.assertTrue(sessions.save("sA", [{"user": "qa", "assistant": "ra"}],
                                       project_id=self.pid_a))
         self.assertTrue(sessions.save("sB", [{"user": "qb", "assistant": "rb"}],
                                       project_id=self.pid_b))
+        # 自检：归属真的写进去了，否则下面全是空判
+        self.assertEqual(sessions.owned_by("sA", self.pid_a), self.pid_a)
+        self.assertEqual(sessions.owned_by("sB", self.pid_b), self.pid_b)
         a = self.client.get("/api/sessions", headers={"X-DocMind-Project": self.pid_a}).json()
         b = self.client.get("/api/sessions", headers={"X-DocMind-Project": self.pid_b}).json()
         a_ids = {x["session_id"] for x in a["items"]}

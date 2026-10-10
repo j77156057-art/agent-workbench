@@ -48,7 +48,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # 指到沙箱，否则测试会污染用户真实会话数据。
 _SANDBOX = pathlib.Path(tempfile.mkdtemp(prefix="docmind_sessiso_"))
 os.environ["DOCMIND_STATE_DIR"] = str(_SANDBOX)
-os.environ["DOCMIND_SESSIONS_DIR"] = str(_SANDBOX / "sessions")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

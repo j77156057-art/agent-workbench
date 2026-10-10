@@ -44,11 +44,16 @@ class CompactProjectBase(unittest.TestCase):
 
         self.pid_a = projects.ensure_project(self._mkdir("Alpha"))
         self.pid_b = projects.ensure_project(self._mkdir("Beta"))
-        # 为 A、B 各写一段**不同**的旧摘要（同一 session_id）
-        self.assertTrue(sessions.save(self.SID, [{"user": "a1", "assistant": "r1"}],
-                                      summary=self.SUM_A, project_id=self.pid_a))
-        self.assertTrue(sessions.save(self.SID, [{"user": "b1", "assistant": "r1"}],
-                                      summary=self.SUM_B, project_id=self.pid_b))
+        # ⚠⚠ 前提变了（2026-10-10 乙方案）：一个 session_id 就是一个会话，
+        # 摘要跟着**会话**走，不属于项目。旧前提「同一 SID 在 A/B 各存一份
+        # 不同摘要」已不成立 —— 第二次 save 会读回第一次的内容再覆盖。
+        # 现在改用**两个不同 session_id** 来验证「互不串」。
+        self.SID_A = "compact-sid-a"
+        self.SID_B = "compact-sid-b"
+        self.assertTrue(sessions.save(self.SID_A, [{"user": "a1", "assistant": "r1"}],
+                                      summary=self.SUM_A))
+        self.assertTrue(sessions.save(self.SID_B, [{"user": "b1", "assistant": "r1"}],
+                                      summary=self.SUM_B))
 
     def tearDown(self):
         self._env.stop()
@@ -67,71 +72,76 @@ class CompactProjectBase(unittest.TestCase):
     def _turns(n):
         return [{"user": f"问题{i}-需要被压缩进摘要", "assistant": f"回答{i}"} for i in range(n)]
 
-    def _trigger(self, project_id, n=6):
+    def _trigger(self, sid, n=6):
         """强制触发压缩：trigger/keep 取极小值，轮数 > KEEP_TURNS_MIN。"""
-        return sessions.maybe_compact(self.SID, self._turns(n), llm=None,
-                                      trigger_tokens=1, keep_tokens=1,
-                                      project_id=project_id)
+        return sessions.maybe_compact(sid, self._turns(n), llm=None,
+                                      trigger_tokens=1, keep_tokens=1)
 
 
 class CompactIsolationTests(CompactProjectBase):
-    def test_compaction_reads_and_keeps_own_project_summary(self):
-        kept, summary = self._trigger(self.pid_a)
-        self.assertIn(self.SUM_A, summary, "压缩结果必须基于 A 自己的旧摘要")
-        self.assertNotIn(self.SUM_B, summary, "不得把 B 项目的摘要混入 A")
+    def test_compaction_reads_and_keeps_own_session_summary(self):
+        """压缩必须基于**这个会话自己的**旧摘要。
+        旧断言「A 项目的摘要」已改为「SID_A 的摘要」—— 摘要不属于项目。"""
+        kept, summary = self._trigger(self.SID_A)
+        self.assertIn(self.SUM_A, summary, "压缩结果必须基于 SID_A 自己的旧摘要")
+        self.assertNotIn(self.SUM_B, summary, "不得把别的会话的摘要混入")
         self.assertLess(len(kept), 6, "应确实发生了压缩")
-        # 未写回 B 桶：B 的旧摘要保持不变
-        self.assertEqual(sessions.summary_text(self.SID, self.pid_b), self.SUM_B)
+        # 未写回另一个会话：它的旧摘要保持不变
+        self.assertEqual(sessions.summary_text(self.SID_B), self.SUM_B)
 
-    def test_compaction_for_other_project_isolated(self):
-        _, summary_b = self._trigger(self.pid_b)
+    def test_compaction_for_other_session_isolated(self):
+        """另一个会话的压缩不得看到本会话的摘要（隔离换了维度：session_id）。"""
+        _, summary_b = self._trigger(self.SID_B)
         self.assertIn(self.SUM_B, summary_b)
         self.assertNotIn(self.SUM_A, summary_b)
-        self.assertEqual(sessions.summary_text(self.SID, self.pid_a), self.SUM_A)
+        self.assertEqual(sessions.summary_text(self.SID_A), self.SUM_A)
 
-    def test_none_project_id_uses_current_project(self):
-        # 当前 = A：不带 project_id 时按 A 的旧摘要压缩
+    def test_summary_is_not_scoped_by_project(self):
+        """乙方案的核心：摘要跟会话走，换项目仍然读得到。
+        旧前提「不带 project_id 时按当前项目」已推翻 —— project_id 不再
+        影响存储位置，同一 session_id 在任何项目下都是同一份。"""
         self.assertTrue(projects.set_current(self.pid_a))
-        _, s_a = sessions.maybe_compact(self.SID, self._turns(6), llm=None,
+        _, s_a = sessions.maybe_compact(self.SID_A, self._turns(6), llm=None,
                                         trigger_tokens=1, keep_tokens=1)
         self.assertIn(self.SUM_A, s_a)
         self.assertNotIn(self.SUM_B, s_a)
-        # 当前切到 B：不带 project_id 时按 B 的旧摘要压缩（回归：仍随「当前项目」）
+        # 当前切到 B：同一 session_id 的摘要仍在（不再随项目切换）
         self.assertTrue(projects.set_current(self.pid_b))
-        _, s_b = sessions.maybe_compact(self.SID, self._turns(6), llm=None,
+        _, s_b = sessions.maybe_compact(self.SID_A, self._turns(6), llm=None,
                                         trigger_tokens=1, keep_tokens=1)
-        self.assertIn(self.SUM_B, s_b)
-        self.assertNotIn(self.SUM_A, s_b)
+        self.assertIn(self.SUM_A, s_b,
+                      "切项目后读不到同一会话的摘要 —— 又成分桶了")
+        self.assertNotIn(self.SUM_B, s_b,
+                         "读到了别的会话的摘要 —— 隔离丢了")
 
 
 class CompactAllReadBranchesTests(CompactProjectBase):
-    """逐一覆盖 maybe_compact 内三处 summary_text 读取分支都遵守 project_id。"""
+    """逐一覆盖 maybe_compact 内三处 summary_text 读取分支。
 
-    def test_branch_not_triggered_returns_project_summary(self):
+    旧契约「读取遵守 project_id」已改为**遵守 session_id**：摘要属于会话。
+    """
+
+    def test_branch_not_triggered_returns_session_summary(self):
         # 不触发（trigger 极大）→ 走第一个 return 分支
         turns = self._turns(3)
-        out_turns, summary = sessions.maybe_compact(self.SID, turns, llm=None,
+        out_turns, summary = sessions.maybe_compact(self.SID_A, turns, llm=None,
                                                     trigger_tokens=10 ** 9,
-                                                    keep_tokens=10 ** 9,
-                                                    project_id=self.pid_a)
+                                                    keep_tokens=10 ** 9)
         self.assertEqual(out_turns, turns, "未触发时应原样返回 turns")
         self.assertEqual(summary, self.SUM_A)
-        _, summary_b = sessions.maybe_compact(self.SID, turns, llm=None,
-                                              trigger_tokens=10 ** 9, keep_tokens=10 ** 9,
-                                              project_id=self.pid_b)
+        _, summary_b = sessions.maybe_compact(self.SID_B, turns, llm=None,
+                                              trigger_tokens=10 ** 9, keep_tokens=10 ** 9)
         self.assertEqual(summary_b, self.SUM_B)
 
-    def test_branch_kept_unchanged_returns_project_summary(self):
+    def test_branch_kept_unchanged_returns_session_summary(self):
         # over 阈但轮数 ≤ KEEP_TURNS_MIN → 走「kept >= len(turns)」分支
         turns = self._turns(sessions.KEEP_TURNS_MIN)
-        out_turns, summary = sessions.maybe_compact(self.SID, turns, llm=None,
-                                                    trigger_tokens=1, keep_tokens=1,
-                                                    project_id=self.pid_a)
+        out_turns, summary = sessions.maybe_compact(self.SID_A, turns, llm=None,
+                                                    trigger_tokens=1, keep_tokens=1)
         self.assertEqual(out_turns, turns)
         self.assertEqual(summary, self.SUM_A)
-        _, summary_b = sessions.maybe_compact(self.SID, turns, llm=None,
-                                              trigger_tokens=1, keep_tokens=1,
-                                              project_id=self.pid_b)
+        _, summary_b = sessions.maybe_compact(self.SID_B, turns, llm=None,
+                                              trigger_tokens=1, keep_tokens=1)
         self.assertEqual(summary_b, self.SUM_B)
 
 

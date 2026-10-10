@@ -112,17 +112,36 @@ class MigrationTests(ProjectsBase):
 
 
 class SessionBucketTests(ProjectsBase):
-    def test_sessions_isolated_per_project(self):
-        a, b = "prj-aaa", "prj-bbb"
-        self.assertTrue(sessions.save("s1", [{"user": "u", "assistant": "a"}], project_id=a))
-        dir_a = os.path.join(sessions.SESSIONS_DIR, sessions._slug(a))
-        dir_b = os.path.join(sessions.SESSIONS_DIR, sessions._slug(b))
-        self.assertTrue(os.path.isfile(os.path.join(dir_a, sessions._slug("s1") + ".json")))
-        self.assertFalse(os.path.isdir(dir_b), "B 项目不应有目录/文件")
+    def test_one_session_is_globally_one_regardless_of_project(self):
+        """一个 session_id 就是一个会话，**与项目无关**（乙方案，2026-10-10）。
 
-        self.assertIn("s1", [x["session_id"] for x in sessions.list_sessions(project_id=a)])
-        self.assertEqual(sessions.list_sessions(project_id=b), [])
-        self.assertEqual(sessions.load("s1", project_id=b).get("turns"), [])
+        旧前提「会话按项目隔离」已推翻：分桶时同一 session_id 在项目 A 绑 A、
+        切到 B 再问就绑 B —— 原缺陷「切项目顶掉会话的库」换个形式重演
+        （`docs/known-defect-code-root-scope-too-coarse.md` §末）。
+        隔离改由 session_id 本身承担：不同 id 互不可见，同一 id 跨项目是同一个。
+
+        原「落盘位置 + 跨项目不可见」的覆盖没有丢：前者移到
+        `tests/test_session_is_global.py`（含直接打 `_path` 的判据），
+        后者在这里换成新契约的等价断言。
+        """
+        a, b = "prj-aaa", "prj-bbb"
+        self.assertTrue(sessions.save("s1", [{"user": "u", "assistant": "a"}],
+                                      project_id=a))
+        # 同一 session_id 换项目仍读到同一份
+        self.assertEqual(len(sessions.load("s1", project_id=b).get("turns")), 1,
+                         "同一 session_id 被 project_id 分成了两个会话")
+        # 不同 session_id 仍然互不可见（隔离没有丢，只是换了维度）
+        self.assertEqual(sessions.load("s2", project_id=a).get("turns"), [])
+        self.assertNotIn("s2", [x["session_id"] for x in
+                                sessions.list_sessions(project_id=a)])
+
+    def test_session_files_land_flat_not_in_a_project_subdir(self):
+        """落盘位置：全局扁平，不再建 `<pid>/` 子目录。"""
+        a = "prj-aaa"
+        sessions.save("s1", [{"user": "u", "assistant": "a"}], project_id=a)
+        self.assertFalse(os.path.isdir(os.path.join(sessions.SESSIONS_DIR,
+                                                    sessions._slug(a))),
+                         "会话又按项目分桶了")
 
     def test_default_project_is_current(self):
         d = self._mkdir("CurProj")
@@ -134,8 +153,8 @@ class SessionBucketTests(ProjectsBase):
         self.assertEqual(sessions.history("sid-cur")[0]["user"], "q")
         self.assertEqual(sessions.summary_text("sid-cur"), "")
         self.assertIn("sid-cur", [x["session_id"] for x in sessions.list_sessions()])
-        # 落在「当前项目」桶里
-        expect = os.path.join(sessions.SESSIONS_DIR, sessions._slug(pid), sessions._slug("sid-cur") + ".json")
+        # 落在全局扁平目录（旧前提：落在「当前项目」桶里）
+        expect = os.path.join(sessions.SESSIONS_DIR, sessions._slug("sid-cur") + ".json")
         self.assertTrue(os.path.isfile(expect))
 
     def test_remove_project_only_unregisters(self):
@@ -218,18 +237,32 @@ class LegacyReadThroughTests(ProjectsBase):
         self.assertTrue(sessions.delete(self.legacy_sid))
         self.assertFalse(os.path.isfile(self.legacy_file), "删除必须同时清掉旧扁平目录文件")
 
-    def test_save_writes_bucket_only(self):
+    def test_save_writes_flat_only(self):
+        """新会话只写全局扁平路径，不再建项目子目录（乙方案）。
+        旧前提「只写项目桶」已推翻 —— 分桶让「同一会话跨项目」不存在，
+        实测切项目会重新绑定代码库（原缺陷重演）。"""
         self.assertTrue(sessions.save("fresh-9", [{"user": "u", "assistant": "a"}]))
-        bucket = os.path.join(sessions.SESSIONS_DIR, sessions._slug(self.pid), sessions._slug("fresh-9") + ".json")
         flat = os.path.join(sessions.SESSIONS_DIR, sessions._slug("fresh-9") + ".json")
-        self.assertTrue(os.path.isfile(bucket))
-        self.assertFalse(os.path.isfile(flat), "新会话不得写进旧扁平目录")
+        bucket = os.path.join(sessions.SESSIONS_DIR, sessions._slug(self.pid),
+                              sessions._slug("fresh-9") + ".json")
+        self.assertTrue(os.path.isfile(flat))
+        self.assertFalse(os.path.isdir(os.path.join(sessions.SESSIONS_DIR,
+                                                    sessions._slug(self.pid))),
+                         "又建了项目子目录 —— 分桶回来了")
 
-    def test_bucket_priority_over_legacy_same_sid(self):
-        # 同一 sid 两处内容不同 → 项目桶优先，去重稳定（不抖动）
+    def test_same_sid_flat_wins_over_stale_bucket(self):
+        """同一 sid 在全局与**旧分桶**都有时，全局优先（迁移后的唯一真源）。"""
+        # 造一个旧分桶文件（模拟迁移前的历史）
+        bdir = os.path.join(sessions.SESSIONS_DIR, sessions._slug(self.pid))
+        os.makedirs(bdir, exist_ok=True)
+        with open(os.path.join(bdir, sessions._slug("dup-1") + ".json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"session_id": "dup-1", "updated_at": "2024-01-01T00:00:00",
+                       "turns": [{"user": "bucket-q", "assistant": "bucket-a"}],
+                       "code_root": "D:/Bucket"}, f)
         self._write_flat("dup-1", [{"user": "legacy-q", "assistant": "legacy-a"}])
-        sessions.save("dup-1", [{"user": "bucket-q", "assistant": "bucket-a"}])
-        self.assertEqual(sessions.load("dup-1")["turns"][0]["user"], "bucket-q")
+        self.assertEqual(sessions.load("dup-1")["turns"][0]["user"], "legacy-q",
+                         "旧分桶盖过了全局文件")
         rows = [x for x in sessions.list_sessions() if x["session_id"] == "dup-1"]
         self.assertEqual(len(rows), 1, "同一 sid 只出现一次")
 

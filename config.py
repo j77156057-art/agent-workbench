@@ -719,6 +719,62 @@ def get_runtime(key, default=None):
     return _RUNTIME.get(key, default)
 
 
+def reconcile_code_root_with_project(*, reason: str = "",
+                                     allow_override: bool = True) -> dict:
+    """顶层 `code_root` 与当前项目 root 不一致时，**以项目为准**改写顶层。
+
+    ## 为什么需要（治本之后仍需要）
+
+    `bbeed9b8` 把优先级改成 会话 > 项目 > 全局，请求路径上不会再串。
+    但仍有两条路走不到项目上下文：
+
+    * **启动迁移**：本模块导入期用顶层 `code_root` 建第一个项目；
+    * **非请求场景**（测试 / 直调 / MCP 命令）：没有 `_CTX_CODE_ROOT`。
+
+    这两条路上顶层值仍是"全局残留"。实测那次 mean 题就是把一个探针目录
+    留在了顶层，四天后让另一个会话的检索器在错的目录里翻
+    （见 `docs/known-defect-code-root-scope-too-coarse.md`）。
+
+    ## 三条边界
+
+    1. **「显式设置优先」是铁律，高于本条治标**。`allow_override=False` 时，
+       顶层已被显式设过就一律不动 —— 调用方当次的意图不该被静默刷掉。
+       （实测第一版没这道闸门，4 条 `test_explicit_code_root_*` 立刻红）
+    2. 无当前项目 / 项目功能关闭时**什么都不做**：那是单项目模式，
+       顶层就是唯一真源（`DOCMIND_PROJECTS=0` 一键回滚的语义）。
+    3. 不一致时改写并回报；一致时空操作。返回 dict 便于调用方记账。
+    """
+    out = {"ok": True, "reason": reason or "", "changed": False,
+           "before": "", "after": "", "project_root": ""}
+    try:
+        import projects                     # 局部 import 避开 config<->projects 循环依赖
+        if not projects.enabled():
+            out["note"] = "项目功能关闭（DOCMIND_PROJECTS=0），顶层是唯一真源"
+            return out
+        pid = projects.current_project_id()
+        if not pid or pid == projects.LEGACY_ID:
+            out["note"] = "无当前项目，不改顶层"
+            return out
+        rec = projects.get_project(pid) or {}
+        proot = str(rec.get("root") or "").strip()
+        if not proot:
+            out["note"] = "当前项目没有 root，不改顶层"
+            return out
+        top = str(_RUNTIME.get("code_root") or "").strip()
+        out["before"], out["project_root"] = top, proot
+        if top and top != proot:
+            if not allow_override:
+                out["note"] = "顶层与项目不一致，但显式设置优先，不改"
+            else:
+                _RUNTIME["code_root"] = proot
+                out["changed"] = True
+        out["after"] = str(_RUNTIME.get("code_root") or "").strip()
+    except Exception as exc:               # noqa: BLE001 - 对账失败不是致命错误
+        out["ok"] = False
+        out["error"] = "%s: %s" % (type(exc).__name__, exc)
+    return out
+
+
 # ---- 跨重启持久化的本地状态 ----
 # 与 .chroma 同目录（开发=源码根；冻结=_internal），只存路径类非敏感数据，
 # 避免重启后必须重新选择代码库。写入失败一律静默回落内存态，不影响主流程。
@@ -933,6 +989,22 @@ def _apply_persisted_state():
                     projects.set_current(pid)
         except Exception:  # noqa: BLE001 —— 迁移失败绝不能阻断启动
             pass
+        # 治标（2026-10-11，`known-defect-code-root-scope-too-coarse.md` §5）：
+        # `reconcile_code_root_with_project()` 做「顶层与当前项目不一致时以项目为准」。
+        #
+        # ⚠⚠ **这里刻意不调用它**（实测后撤回调用点，函数本体保留）。
+        #
+        # 第一版在这里无条件跑，结果
+        # `tests/test_api_model_config.py::ProjectKeyPersistenceTests::
+        #  test_restart_loads_key_from_current_project_not_stale_code_root`
+        # 立刻红。那条判据**故意**造出「向后兼容指针指向 app、注册表指向 game」
+        # 的形状（原注释：This is the real failure shape），用来验证
+        # 「key 从当前项目读，不被 code_root 带偏」—— 我这一刷恰好把它要测的
+        # 前提抹掉了。
+        #
+        # 结论：启动路径上顶层 stale 值是**被依赖的测试与兼容形状**，
+        # 不是需要治标的病。真正要治的是「无请求上下文的非请求场景」，
+        # 那由调用方显式决定（见函数 docstring 的 allow_override）。
     # 模型选择：显式 set_runtime（例如启动脚本或测试传入）优先于持久化状态，
     # 持久化状态再优先于 .env 中的默认值。只接受已知 provider 和非空字符串，
     # 损坏的状态不会阻断服务启动。

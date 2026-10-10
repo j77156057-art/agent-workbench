@@ -1,31 +1,67 @@
 # 下一步清单（写给上下文重置后的自己 / 接手的人）
 
-> 生成于 HEAD `12f25a3`。目的是**上下文满掉之后不丢线索**。
-> 详细缺陷分析见 `docs/known-defect-two-flaky-network-tests.md`。
+> **本文档是累积追加式的**：下面的历史章节（1~7）是当晚的侦查记录，仍然有效，
+> **不要删**。每次续做只更新第 0 节「当前状态」—— 那是唯一指路的入口。
+> 上次更新：2026-10-11（HEAD `efde8a6`）。
 
 ## 0. 当前状态
 
-- **HEAD `12f25a3`**，工作树里有 3 个前端文件被改（`skins.css` / `skins.ts` / `styleMode.ts`，-424/+63）
-  —— **那是别人的工作，不是本会话改的，不要 reset、不要提交它们**。
-- 本会话的提交全部用私有索引（`GIT_INDEX_FILE=.tmp/private-*.index`）只 add 自己的路径。
+- **HEAD `efde8a6`**（A/B/C 三缺陷 + 乙/丙方案的会话存储改造）。
+  工作树里 `sessions.py` / `api.py` / 三个测试文件**未提交** —— 那是
+  ①丙方案的在途改动，等全量结果出来连同一笔提交。
+- **前端 agent 在途**：`ChatDock.vue` 等，**不要 reset、不要提交**。
+- 提交一律用私有索引（`GIT_INDEX_FILE=.tmp/private-*.index`）只 add 自己的路径。
 
-提交序列：
+### 提交序列（倒序，新→旧）
 
 | commit | 内容 | 动生产代码？ |
 |---|---|---|
-| `e0bdb53` | 否定句：否定只挖掉它自己管的那个动词 | `agent.py` |
-| `966212a` | 写意图改三值 granted/denied/uncertain | `agent.py` |
-| `6069386` | 词表缺口（合法写请求被误拦 14/14 → 1/17） | `agent.py` |
-| `cd21017` | 疑问句带写动词 = 在问，不是授权 | `agent.py` |
-| `773deaf` | reaper pid 洞：读空 → 0，而 `pid_alive(0)` 恒真 → 测试恒红 | **只改测试** |
-| `ab45a56` | 删掉写死的 3.5 秒预算，判据改用 fixture 造的刻度 | **只改测试** |
-| `12f25a3` | 记录两条随机红 + 撤回 6 处 capability 误报 | 只加 docs |
+| `efde8a6` | A/B/C 三缺陷：glob 看不见 `.docmind` 产物 / 未知键毁字段 / canvas 判假阴性 | `code_intel.py` `tools.py` `page_action.py` |
+| `bbed9b8` | 会话级代码库活一个回合：修 93 条跨文件污染 | `agent.py` |
+| `3bc6602` | 追 27 failed：全是「跑测期间改被测文件」，不是缺陷 | 只加 docs |
+| `83207f4` | 守卫：30 个测试文件 595 passed 零误报 | `tools/pytest_freeze_guard.py` |
+| `477c84e` | 立档：判据纪律 —— 没有覆盖的判据不能算通过 | 只加 docs |
+| `52d4be1` | 立档：`.docmind/` 下有整个仓库的副本，grep 会先撞到影子 | 只加 docs |
+| `7bc5b92` | 会话级代码库隔离：换任务后检索器不再留在上一个任务的代码里 | `sessions.py` `config.py` `agent.py` |
 
-全量验收：**4445 passed / 2 failed / 10 skipped / 1035 subtests**，与改动前 4441 正好 **+6**
-（新增守卫数），`subtests` 仍 1035 —— **六笔没动任何带 subtest 的既有契约**。
-**两条红都不由这六笔引起。**
+### 最近的验收数字
+
+* **A/B/C 修完**：`4786 passed / 3 failed / 14 skipped`，3 failed 是当时挂起的
+  `/api/sessions` 按项目过滤（现已由丙方案解决，见下）。
+* **丙方案后（相关子集）**：`432 passed / 0 failed`。
+
+### 今天晚上新立的四条纪律（同一病根）
+
+| 文档 | 病根 |
+|---|---|
+| `verifier-discipline.md` | **没有覆盖**的判据不能算通过 |
+| `transform-script-false-success.md` | **没有落盘**的改动不能算改过 |
+| `measure-freeze-discipline.md` | **没有被保护的环境**不能算测量 |
+| `transform-script-false-success.md` 同型 | **没有跑通的变异**不算证据 |
+
+共同点：**没被验证的那一步，被当成验证过了。**
+
+### 还挂着的
+
+1. **② 治标两件只做了一半**（`known-defect-code-root-scope-too-coarse.md` §5）：
+   * ✅ `/api/code_root_status`（只读端点，报三层来源 + 一致性）已做；
+   * ⚠ `reconcile_code_root_with_project()` 写好了但**启动迁移里不调用** ——
+     实测在那里无条件跑会把 `test_api_model_config.py::
+     test_restart_loads_key_from_current_project_not_stale_code_root`
+     的前提抹掉（那条判据故意让"向后兼容指针"指向 app、注册表指向 game）。
+     **顶层 stale 值在启动路径上是被依赖的兼容形状，不是要治标的病。**
+     当前产品行为 = 治本（`bbed9b8`）+ 只读状态端点。
+   * 界面显示「当前代码根」：前端 agent 已做 cockpit scope（`bbe6d1a`），
+     问答页（`scope='default'`）仍没有 —— 那是他的文件。
+2. 那 5 句写意图：**已决定不修**，实测数据留在 `docs/write-intent-corpus.md` D 节。
+3. `known-defect-*.md` 有 16 个，其中至少 4 个可能已过时（写路径/工具可见性
+    tonight 被多次改动），**需逐个核对**，别照文档办事。
+4. 交付代理那段「操作浏览器」实录的三个缺陷已修并端到端复跑通过（8/8），
+   复跑脚本在 `tools/e2e_verify.py`。
 
 ---
+
+## 【历史章节 · 2026-10-10 及更早】以下仍然有效，不要删
 
 ## 1. 【已确证缺陷】多轮批准会失效 —— 最高优先级
 

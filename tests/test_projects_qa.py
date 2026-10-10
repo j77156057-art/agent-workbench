@@ -358,33 +358,42 @@ class B5_BucketPriorityStable(QABase):
         rows = [x for x in sessions.list_sessions() if x["session_id"] == "dup-1"]
         self.assertEqual(len(rows), 1, "同 sid 只出现一次")
 
-    def test_bucket_with_empty_turns_falls_back_to_legacy(self):
-        self._write_flat("fb-1", [{"user": "legacy-q", "assistant": "legacy-a"}])
-        # 桶内写一个 turns 为空的同名文件
-        bucket = os.path.join(sessions.SESSIONS_DIR, sessions._slug(projects.current_project_id()))
-        os.makedirs(bucket, exist_ok=True)
-        with open(os.path.join(bucket, sessions._slug("fb-1") + ".json"), "w", encoding="utf-8") as f:
-            json.dump({"session_id": "fb-1", "updated_at": "2025-01-01", "turns": []}, f)
-        self.assertEqual(sessions.load("fb-1")["turns"][0]["user"], "legacy-q",
-                         "桶内 turns 为空应回退读旧扁平目录")
+    def test_global_file_is_the_only_record(self):
+        """会话只有**一份**（全局扁平），不存在「桶内 turns 为空要回退」的场景。
+
+        旧判据的前提是分桶：桶里一份、扁平目录另有一份。乙方案后只剩一份，
+        这条改为钉住新契约 —— 全局文件里 turns 为空就是空，不许从别处拼出来。
+        """
+        self._write_flat("fb-1", [])
+        self.assertEqual(sessions.load("fb-1")["turns"], [],
+                         "空会话凭空多出了轮次")
+        self._write_flat("fb-2", [{"user": "legacy-q", "assistant": "legacy-a"}])
+        self.assertEqual(sessions.load("fb-2")["turns"][0]["user"], "legacy-q")
 
 
 class B7_RemoveProjectNoDiskDelete(QABase):
     def test_remove_project_keeps_sessions_on_disk(self):
+        """注销项目只改注册表，绝不动磁盘上的会话文件。
+
+        旧断言「桶文件仍在」已改为「全局会话文件仍在」—— 会话不再按项目分桶，
+        但「注销不删会话」这个承诺本身不变。
+        """
         _, pid = self._seed_current_project()
         sessions.save("keep", [{"user": "u", "assistant": "a"}], project_id=pid)
         legacy = self._write_flat("keep-old", [{"user": "o", "assistant": "o"}])
-        bucket_file = os.path.join(sessions.SESSIONS_DIR, sessions._slug(pid),
+        global_file = os.path.join(sessions.SESSIONS_DIR,
                                    sessions._slug("keep") + ".json")
 
         self.assertTrue(projects.remove_project(pid))
         self.assertIsNone(projects.get_project(pid))
-        self.assertTrue(os.path.isfile(bucket_file), "注销不得删除磁盘上的会话桶文件")
+        self.assertTrue(os.path.isfile(global_file),
+                        "注销不得删除磁盘上的会话文件")
         self.assertTrue(os.path.isfile(legacy), "注销不得删除旧扁平目录文件")
         self.assertFalse(projects.remove_project(pid), "重复注销应返回 False")
         # 注销当前项目后 current 清空（并观察 runtime 残留）
         self.assertEqual(config.load_state("current_project_id", ""), "")
-        print(f"[B] remove_project 后 桶文件存在={os.path.isfile(bucket_file)} "
+        print(f"[B] remove_project 后 会话文件存在="
+              f"{os.path.isfile(global_file)} "
               f"runtime_project_id={config.get_runtime('project_id')!r}")
 
 

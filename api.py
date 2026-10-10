@@ -3459,6 +3459,66 @@ async def trace_clear_ep():
     return {"ok": agent_trace.clear()}
 
 
+@app.get("/api/code_root_status")
+async def code_root_status_ep():
+    """【只读】当前代码根 + 它与当前项目 root 是否一致（治标第二件）。
+
+    `docs/known-defect-code-root-scope-too-coarse.md` §5 要求"让人能发现自己
+    搜错地方"。`/api/config` 只给一个 `code_root`，看不出它是不是**全局残留**；
+    这里补上三层来源与一致性判断，前端据此在界面上标出来。
+
+    三层（与 `config.get_runtime` 的优先级一致）：
+        会话级 > 请求上下文（按项目） > 全局顶层
+
+    只读，不改任何状态；任何一步读不到都如实回报，不猜。
+    """
+    from config import (get_runtime, _CTX_SESSION_CODE_ROOT, _CTX_CODE_ROOT,
+                        _RUNTIME, reconcile_code_root_with_project)
+    import projects
+
+    sess = str(_CTX_SESSION_CODE_ROOT.get() or "").strip()
+    ctx = str(_CTX_CODE_ROOT.get() or "").strip()
+    # ⚠⚠ **真顶层必须读 `_RUNTIME`**，不能用 `get_runtime_excluding_session`。
+    # 后者在请求上下文存在时返回的是**上下文值**（它的语义就是"不含会话级、
+    # 仍含项目级"），于是"全局残留"永远测不出来 —— 实测 TestClient 走中间件时
+    # 它返回项目 root，而 `_RUNTIME["code_root"]` 才是真正的全局那个值。
+    top = str(_RUNTIME.get("code_root") or "").strip()
+    effective = str(get_runtime("code_root") or "").strip()
+
+    pid = _request_project_id() or ""
+    proot = ""
+    if pid:
+        proot = str((projects.get_project(pid) or {}).get("root") or "").strip()
+
+    # 哪一层最终说了算
+    if sess:
+        source = "session"
+    elif ctx:
+        source = "project_context"
+    else:
+        source = "global"
+
+    # 顶层与项目不一致 = 全局残留的形状（治标要响一声的就是这个）
+    mismatch = bool(top and proot and top != proot)
+
+    return {
+        "ok": True,
+        "effective": effective,
+        "source": source,
+        "layers": {"session": sess, "project_context": ctx, "global": top},
+        "project_id": pid,
+        "project_root": proot,
+        # 顶层与项目不一致时为 True —— 前端据此提示"检索可能跑在旧目录"
+        "mismatch_top_vs_project": mismatch,
+        # 不一致时给出建议值（以项目为准），但**不自动改**：那是显式动作
+        "suggested": proot or "",
+        "reconcile_available": bool(proot),
+        "hint": ("顶层 code_root 与当前项目不一致；按 docs/known-defect-"
+                 "code-root-scope-too-coarse.md §5，以项目为准。"
+                 if mismatch else ""),
+    }
+
+
 @app.get("/api/sessions")
 async def sessions_ep(limit: int = 50):
     """会话概览：每个 session_id 的轮数、是否有摘要、最后更新时间（限本请求项目）。"""
@@ -3575,8 +3635,22 @@ async def session_detail_ep(session_id: str):
 
     会话不存在或为空时返回空洞（ok=True + 空 turns，不 404），前端据此静默处理。
     与同路径的 DELETE 是不同 HTTP 方法，FastAPI 允许二者共存。
+
+    ⚠⚠ **归属校验**（丙方案，2026-10-11）：会话存储已全局化（一个 session_id
+    就是一个会话，跨项目仍是同一个），但"项目 B 不该读到项目 A 的会话内容"
+    这条产品语义还在。以前靠按项目分桶天然做到，现在必须显式查
+    `owner_project_id`。老会话没有归属字段 -> 放行（否则迁移后一夜之间所有
+    历史会话都打不开，那比串台更糟）。
     """
-    data = session_store.load(session_id, project_id=_request_project_id() or None)
+    pid = _request_project_id() or None
+    data = session_store.load(session_id, project_id=pid)
+    if pid:
+        owner = str(data.get("owner_project_id") or "").strip()
+        if owner and owner != pid:
+            # 归属是别的项目：按"不存在"处理 —— 与上面"会话不存在返回空洞"
+            # 一致，前端据此静默处理，不暴露"这个 id 其实存在"。
+            data = {"session_id": session_id, "turns": [],
+                    "summary": "", "updated_at": ""}
     import agent_memory
     try:
         saved = agent_memory.latest_checkpoint(agent_memory.scope_key(_request_project_id() or None), session_id)

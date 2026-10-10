@@ -331,7 +331,19 @@ class ProjectCrudTests(RoutingBase):
 
 
 class ProjectSessionRoutingTests(RoutingBase):
-    """⑦ 会话按项目隔离（走真实 api.app）。"""
+    """⑦ 会话按项目隔离（走真实 api.app）。
+
+    ⚠⚠ 2026-10-11 起，构造方式与判据都变了（乙 + 丙方案）：
+
+    乙：会话存储**全局唯一**（一个 session_id 就是一个会话，跨项目仍是同一个）。
+        以前 setUp 一句 `sessions.save(sid, turns, project_id=pid_a)` 就够 ——
+        那时 project_id 决定**存在哪**。现在它只决定**归属**，而且归属要走
+        生产路径 `bind_code_root` 才写得进去（`save` 不写归属字段）。
+        所以 setUp 改成 `bind_code_root`，与 `Agent.__init__` 真实走的那条一致。
+
+    丙：产品语义"项目 B 不该看到 A 的会话"**保留**，靠 `owner_project_id`
+        过滤，不再靠分桶。
+    """
 
     def setUp(self):
         super().setUp()
@@ -340,8 +352,14 @@ class ProjectSessionRoutingTests(RoutingBase):
         self._eng.start()
         self.client = TestClient(api.app)
         self.sid = "sessA-1"
+        # 走生产路径：先有归属绑定，再有内容。
+        # `bind_code_root` 内部对已绑定的会话直接返回 False，所以重复 setUp 也安全。
+        self.assertTrue(sessions.bind_code_root(self.sid, self.root_a, self.pid_a))
         self.assertTrue(sessions.save(self.sid, [{"user": "qa", "assistant": "ra"}],
                                       project_id=self.pid_a))
+        # 自检：归属确实落盘了，否则下面几条全是空判。
+        self.assertEqual(sessions.owned_by(self.sid, self.pid_a), self.pid_a,
+                         "归属没写进去 —— 后面的项目隔离判据测不到东西")
 
     def tearDown(self):
         self._eng.stop()
@@ -362,6 +380,24 @@ class ProjectSessionRoutingTests(RoutingBase):
         b = self.client.get(f"/api/sessions/{self.sid}",
                             headers={"X-DocMind-Project": self.pid_b}).json()
         self.assertEqual(b["turns"], [], "B 项目不得读到 A 项目的会话内容")
+
+    def test_same_session_is_one_session_across_projects(self):
+        """**乙方案的核心**：存储全局一份，跨项目仍是同一个会话。
+
+        上面两条守住"B 看不到 A"；这一条守住反面 —— 隔离不是靠
+        "拆成两个会话"实现的。若哪天又改回按项目分桶，这条会红。
+        """
+        # 同一个 sid 在 B 项目下读取：内容是通的（同一个会话）
+        got = sessions.load(self.sid, project_id=self.pid_b)
+        self.assertEqual([t["user"] for t in got["turns"]], ["qa"],
+                         "跨项目读不到同一会话的内容 —— 又成分桶了")
+        # 但归属仍属于 A
+        self.assertEqual(sessions.owned_by(self.sid, self.pid_b), self.pid_a,
+                         "归属被请求项目改了 —— 归属必须跟着会话，不跟着请求")
+        # 代码库也仍是 A 的（会话终身沿用，切项目不改）
+        self.assertEqual(sessions.current_code_root(self.sid, self.pid_b),
+                         str(self.root_a),
+                         "切项目把会话的代码库顶掉了 —— 原缺陷重演")
 
     def test_agent_registry_scoped_by_project_context(self):
         """内存 Agent 亦须按项目隔离：不同项目同名会话不得共用同一 Agent。
