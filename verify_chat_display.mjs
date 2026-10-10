@@ -424,6 +424,84 @@ try {
     assert.ok(!stopped.includes(LIVE), `停止后仍挂着「正在继续执行」：${JSON.stringify(stopped)}`)
   })
   await page.close()
+
+  // ⑧ 开发舱对话台要说出「当前代码库」：侧栏资源管理器在开发舱是隐藏的，
+  //    而代码库根目录决定 AI 读写的到底是哪个目录。
+  const rootRaw = (await (await fetch(base + '/api/fs/tree', { signal: AbortSignal.timeout(60000) })).json()).code_root
+  assert.ok(typeof rootRaw === 'string' && rootRaw, '夹具没给出 code_root，⑧ 无从判')
+  const BASENAME = rootRaw.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
+  page = await boot(DEFAULTS)
+  const inDefault = await page.locator('#wb-chat-slot .cd-root').count()
+  await page.click('.wb-brand')
+  await page.keyboard.press('Alt+4')
+  await page.waitForSelector('#wb-cockpit-chat-slot .cd-inputbar', { timeout: 60000 })
+  const chip = page.locator('#wb-cockpit-chat-slot .cd-root')
+  const chipText = (await chip.locator('.cd-root-name').innerText()).trim()
+  const chipTitle = await chip.getAttribute('title')
+  const rootContrast = await textContrast(page, '#wb-cockpit-chat-slot .cd-root-name')
+  check('开发舱对话台标出当前代码库，且普通对话台不重复显示（旁边就是资源管理器）', () => {
+    assert.equal(inDefault, 0, `普通对话台也渲染了代码库标签（${inDefault} 个），与侧栏重复`)
+    assert.equal(chipText, BASENAME, `标签应是根目录名 ${BASENAME}，读到 ${chipText}`)
+    assert.ok(chipTitle?.includes(rootRaw.replace(/[\\/]$/, '')), `title 没给完整路径：${chipTitle}`)
+    assert.ok(rootContrast >= 4.5, `代码库标签文字对比度只有 ${rootContrast}:1`)
+  })
+  // 窄窗口下必须截断，而不是把右边的「会话 / 展开」按钮挤出头部
+  await page.setViewportSize({ width: 820, height: 900 })
+  await page.waitForTimeout(300)
+  const squeezed = await page.evaluate(() => {
+    const head = document.querySelector('#wb-cockpit-chat-slot .cd-head')
+    const name = head?.querySelector('.cd-root-name')
+    const btn = head?.querySelector('.cd-btn')
+    return {
+      overflowing: !!head && head.scrollWidth > head.clientWidth + 1,
+      truncated: !!name && name.scrollWidth > name.clientWidth,
+      btnVisible: !!btn && btn.getBoundingClientRect().width > 0,
+    }
+  })
+  check('窄窗口下头部不溢出、右侧按钮不被挤没（截断本身由 ⑧b 用长路径钉）', () => {
+    assert.equal(squeezed.overflowing, false, '头部内容溢出容器')
+    assert.equal(squeezed.btnVisible, true, '「会话」按钮被挤没了')
+    console.log(`      （标签是否已截断：${squeezed.truncated ? '是' : '否，夹具路径还不长 —— 长路径见 ⑧b'}）`)
+  })
+  await page.close()
+
+  // ⑧b 标签本身太长时必须截断（显示的是**最后一段目录名**，所以要让最后一段长）。
+  // 同时这也钉住了数据来源 —— 标签跟着 /api/fs/tree 的载荷走；
+  // 若有人改成读 /api/config 那个遗留指针，这条会红。
+  const LONG_SEG = 'enemies_and_projectiles_behavior_tree_shared_definitions_v2'
+  const LONG_ROOT = `D:\\Projects\\客户A-存档\\2026-Q1\\godot-level-design-pack-导出\\scenes\\${LONG_SEG}`
+  const p8 = await browser.newPage({ viewport: { width: 820, height: 900 } })
+  p8.setDefaultTimeout(20000)
+  await p8.route('**/api/fs/tree*', async route => {
+    const res = await route.fetch()
+    const body = await res.json()
+    body.code_root = LONG_ROOT
+    await route.fulfill({ response: res, body: JSON.stringify(body), headers: { ...res.headers(), 'content-type': 'application/json' } })
+  })
+  await p8.addInitScript(`localStorage.setItem("docmind.askPrefs", ${JSON.stringify(JSON.stringify(DEFAULTS))})`)
+  await p8.goto(base + '/workbench', { waitUntil: 'domcontentloaded' })
+  await p8.waitForSelector('.ft-row', { timeout: 60000 })
+  await p8.click('.wb-brand')
+  await p8.keyboard.press('Alt+4')
+  await p8.waitForSelector('#wb-cockpit-chat-slot .cd-inputbar', { timeout: 60000 })
+  const long = await p8.evaluate(() => {
+    const head = document.querySelector('#wb-cockpit-chat-slot .cd-head')
+    const name = head?.querySelector('.cd-root-name')
+    const btn = head?.querySelector('.cd-btn')
+    return {
+      text: (name?.textContent || '').trim(),
+      truncated: !!name && name.scrollWidth > name.clientWidth,
+      overflowing: !!head && head.scrollWidth > head.clientWidth + 1,
+      btnVisible: !!btn && btn.getBoundingClientRect().width > 0,
+    }
+  })
+  check('长目录名：标签截断出省略号，头部不溢出、按钮仍在，且标签跟着 tree 载荷变', () => {
+    assert.equal(long.text, LONG_SEG, `标签应取载荷最后一段，读到 ${JSON.stringify(long.text.slice(0, 24))}`)
+    assert.equal(long.truncated, true, '长路径没有截断')
+    assert.equal(long.overflowing, false, '头部内容溢出容器')
+    assert.equal(long.btnVisible, true, '「会话」按钮被挤没了')
+  })
+  await p8.close()
 } finally {
   await browser.close()
 }

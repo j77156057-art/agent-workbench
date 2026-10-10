@@ -20,6 +20,10 @@ import { useChatStream } from '../composables/useChatStream'
 import type { ChatActivityKind, ChatMsg } from '../composables/chat-types'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { useMessageRender } from '../composables/useMessageRender'
+// 当前代码库：与资源管理器同源（tree 在切项目时会用新项目头重拉）。
+// 不用 /api/config 的 code_root —— 那个字段是遗留指针，后端自己写明「切换项目后可能
+// 滞后」（api.py 的 _project_root_or_error 注释），标错库比不标更糟。
+import { useWorkbench } from '../composables/workbench'
 // 展示偏好与问答页同源（一份 localStorage + 一个变更事件）：这里必须真的消费它，
 // 否则「设置里关掉推理轨迹」在开发台对话台不生效。
 import { prefs as displayPrefs } from '../../ask/askPrefs'
@@ -37,6 +41,14 @@ import type { WorkflowSummary } from '../api'
 import type { PreviewFeedbackRequest } from '../previewFeedback'
 
 const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
+// 开发舱里侧栏文件树是隐藏的，「在问哪个库」只剩顶栏那颗项目名，而对话就在这块下方。
+// 所以把代码库根目录搬到输入框同一行；普通对话台不显示（旁边就是资源管理器，重复了）。
+const { tree } = useWorkbench()
+const codeRoot = computed(() => tree.value?.code_root || '')
+const codeRootLabel = computed(() => {
+  const parts = codeRoot.value.replace(/[\\/]+$/, '').split(/[\\/]/)
+  return parts[parts.length - 1] || ''
+})
 const voiceActive = ref(false)
 // 语音是自主开发舱的协作通道；普通项目对话台不显示也不启动语音资源。
 // 转写有两条独立通路：浏览器自带 Web Speech，或后端配了 STT（服务端转写）。
@@ -1233,6 +1245,11 @@ const webTitle = computed(() => webOn.value
         </span>
       </span>
       <span class="cd-hint">用大白话问代码：数值在哪 · 逻辑怎么走 · 报错怎么改</span>
+      <!-- 开发舱专属：把当前代码库搬到对话台同一行（完整路径在 title 里） -->
+      <span v-if="props.scope === 'cockpit' && codeRootLabel" class="cd-root" :title="`当前代码库：${codeRoot}`">
+        <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 3 Q1 2.2 1.8 2.2 H4.6 L5.6 3.2 H10.2 Q11 3.2 11 4 V9 Q11 9.8 10.2 9.8 H1.8 Q1 9.8 1 9 Z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
+        <span class="cd-root-name">{{ codeRootLabel }}</span>
+      </span>
       <span class="cd-spacer" />
       <button
         class="cd-btn"
@@ -1582,6 +1599,13 @@ const webTitle = computed(() => webOn.value
 .cd-chevron.rotated { transform: rotate(90deg); }
 .cd-title { font-size: 12px; font-weight: 600; color: var(--text); }
 .cd-hint { font-size: 11px; color: var(--text-faint); }
+/* 代码库标签：头部只有 32px 高、宽度随窗口变，目录名太长时要截断而不是把右边的按钮挤没 */
+.cd-root {
+  display: inline-flex; align-items: center; gap: 4px;
+  min-width: 0; max-width: 260px; font-size: 11px; color: var(--text-muted);
+}
+.cd-root svg { flex: 0 0 auto; }
+.cd-root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cd-live { font-size: 11px; color: var(--amber); margin-left: 4px; }
 /* 折叠态工作流后台指示：脉冲点 + 文字，位于标题折叠热区内 */
 .cd-live-wf {
