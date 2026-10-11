@@ -205,6 +205,9 @@ function onVideoPick(ev: Event) {
   outline: none; max-height: 110px;
 }
 .cd-input:focus { border-color: var(--accent); }
+/* 不给 ::placeholder 上色的话，Chromium 用 UA 默认 #757575 —— 实测三套皮 3.73 /
+   3.85 / 4.49:1，全部不过 AA。占位符是输入框里唯一的说明文字，不能靠浏览器默认色。 */
+.cd-input::placeholder { color: var(--text-muted); opacity: 1; }
 .cd-send {
   height: 30px; padding: 0 16px; border-radius: 7px;
   border: 1px solid #2560d4; background: linear-gradient(180deg,#3b7ef2,#2f6fed);

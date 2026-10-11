@@ -166,7 +166,9 @@ const readRefs = (page, boxSel, chipSel, moreSel) => page.evaluate(([box, chip, 
 
 // 文字对比度：只看渲染结果（半透明底逐层合成），不看 CSS 里声明了什么。
 // 引用 chip 以前用 var(--accent) 当文字色 —— 那是填色令牌，压在淡底上 paper 只有 2.71:1。
-const textContrast = (page, sel) => page.evaluate((s) => {
+// 第三个参数 pseudo（如 '::placeholder'）用来量**伪元素**上的文字 —— 元素级
+// computed color 看不见 placeholder，这条正是补那个盲区的。
+const textContrast = (page, sel, pseudo) => page.evaluate(([s, ps]) => {
   const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
     return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
   const parse = v => {
@@ -189,11 +191,11 @@ const textContrast = (page, sel) => page.evaluate((s) => {
     const c = stack[i]
     bg = { rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + bg.rgb[k] * (1 - c.a)), a: 1 }
   }
-  const fg = parse(getComputedStyle(el).color)
+  const fg = parse(getComputedStyle(el, ps).color)
   const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + bg.rgb[k] * (1 - fg.a)) }
   const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
   return +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
-}, sel)
+}, [sel, pseudo || null])
 
 async function holdMidStream(page) {
   await openDockAndAsk(page, '伤害公式哪里和设计文档不一致？')
@@ -502,6 +504,21 @@ try {
     assert.equal(long.btnVisible, true, '「会话」按钮被挤没了')
   })
   await p8.close()
+
+  // ⑨ 输入框占位符对比度（impeccable 的 URL 扫描照出来的盲区）。
+  // 元素级 computed color 看不见 ::placeholder，所以我们此前所有对比度断言都跳过了它；
+  // 不给它上色时 Chromium 用 UA 默认 #757575 —— 修之前实测 paper 3.73 / graphite 3.85 /
+  // zinc 4.49，三套皮全不过 4.5。这条因此自带反例：删掉 .cd-input::placeholder 就红。
+  for (const skin of ['paper', 'graphite', 'zinc']) {
+    const p9 = await boot(DEFAULTS, '/workbench', FRAMES, TAIL, `localStorage.setItem("docmind.skin","${skin}")`)
+    await p9.click('button.wb-question-link[title*="AI 对话"]')
+    await p9.waitForSelector('.cd-dock textarea', { timeout: 60000 })
+    const c = await textContrast(p9, '.cd-dock textarea', '::placeholder')
+    check(`${skin}：输入框占位符对比度 ≥ 4.5:1`, () => {
+      assert.ok(c >= 4.5, `实测 ${c}:1`)
+    })
+    await p9.close()
+  }
 } finally {
   await browser.close()
 }
