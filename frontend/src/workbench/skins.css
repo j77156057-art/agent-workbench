@@ -94,7 +94,9 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --accent-ink: #000000;
   --accent-2: var(--accent);
   --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --accent-text: #a64635;   /* color-mix(accent 62%, ink) 解算值 */
+  --accent-text: #9c4333;   /* color-mix(accent 58%, ink) 解算值：62% 压在 --bg-hover
+                             #e3dccd 上只有 4.34，退到 58% 才让五个面全过 4.5
+                             （bg 5.21 / raised 6.06 / hover 4.71 / 纯白 6.43 / panel 5.76） */
   /* 状态色（已按 4.5:1 解算） */
   --danger: #c23127;
   --amber: #8d5f14;

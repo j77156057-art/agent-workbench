@@ -31,7 +31,11 @@ try {
 }
 
 const PAIRS = [['--accent', '--accent-ink'], ['--green', '--green-ink'], ['--amber', '--amber-ink'],
-  ['--accent-2', '--accent-2-ink'], ['--danger', '--danger-ink'], ['--ink', '--bg']]
+  ['--accent-2', '--accent-2-ink'], ['--danger', '--danger-ink'], ['--ink', '--bg'],
+  // --accent-text 是「压在表面上的强调字」，它自己也得在每个面上过 4.5 ——
+  // paper 原来取 color-mix(accent 62%, ink)，压在 --bg-hover 上只有 4.34，
+  // 而这条当时不存在，所以没人发现。加进来之后它必须逐面判。
+  ['--accent-text', '--bg'], ['--accent-text', '--bg-raised'], ['--accent-text', '--bg-hover']]
 // 把每个 *-ink 强制改成 #fff 之后，各套皮应当有几对不达标
 const EXPECT_WEAK_MUTATED = { paper: 2, graphite: 5, zinc: 0 }
 const FLOOR = 4.5
@@ -56,6 +60,46 @@ const MEASURE = ps => {
   })
   probe.remove()
   return out
+}
+
+/** 死令牌引用：用了某个 var(--x) 但没有任何一张表定义过 --x。
+ *  为什么需要：`--accent-text / --bg-input` 这种「我以为存在的契约」根本测不准 ——
+ *  实测 --bg-input 从未被任何皮肤定义过，两处引用让设置页导航的 hover 与选中底
+ *  一直是透明的。静态扫引用比人工配对可靠。 */
+const DEAD_TOKENS = () => {
+  const defined = new Set(), used = new Map()
+  let skipped = 0
+  for (const sheet of document.styleSheets) {
+    let rules = null
+    try { rules = sheet.cssRules } catch { skipped++; continue }
+    const walk = list => { for (const r of list) {
+      if (r.cssRules && r.cssRules.length) { walk(r.cssRules); continue }
+      const txt = r.cssText || ''
+      for (const m of txt.matchAll(/(--[\w-]+)\s*:/g)) defined.add(m[1])
+      for (const m of txt.matchAll(/var\(\s*(--[\w-]+)/g))
+        if (!used.has(m[1])) used.set(m[1], (r.selectorText || '?').slice(0, 44))
+    } }
+    if (rules) walk(rules)
+  }
+  for (const el of document.querySelectorAll('[style]'))
+    for (const m of (el.getAttribute('style') || '').matchAll(/var\(\s*(--[\w-]+)/g))
+      if (!used.has(m[1])) used.set(m[1], 'inline style')
+  return { dead: [...used.entries()].filter(([t]) => !defined.has(t))
+      .map(([t, where]) => `${t} ← ${where}`),
+    定义: defined.size, 引用: used.size, 读不到的表: skipped }
+}
+
+// 已知未修的死引用：4 个从未在任何皮肤里定义的令牌，共 36 处引用。
+// 列在这里不是放过它们，是让门禁只对**新增**的死引用变红 —— 一上来就红的门禁会被无视。
+// 每条都写了"该由谁定"：--amber-deep 要逐皮解算（深色皮下它不能是同一个棕），
+// 其余三个是纯别名，定一次即可。
+const KNOWN_DEAD_TOKENS = {
+  '--font-sans': '21 处引用（问答页为主）。从未定义 → 字体回落继承值。该定成 var(--font-ui)',
+  '--text-dim': '7 处引用（对话台/开发舱/连接弹层）。从未定义 → 字色回落继承值，'
+    + '所以这些行"碰巧"看得清，但没有任何一处跟着皮肤走',
+  '--amber-deep': '7 处引用（脏状态徽标/状态点）。从未定义 → 回落继承色。'
+    + '定值要逐皮肤解算：深色皮下不能沿用浅色皮那个棕',
+  '--font-base': '1 处引用（SceneRuntimePanel .pb-tl-empty）。从未定义',
 }
 
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
@@ -96,6 +140,15 @@ try {
       if (!mutate) {
         ok(`${skin} 现状：${PAIRS.length} 对全部 ≥ ${FLOOR}:1`, weak.length === 0,
           weak.length ? `不达标：${weak.map(w => `${w.对}=${w.值}`).join(' ')}` : detail)
+        const dt = await page.evaluate(DEAD_TOKENS)
+        const names = dt.dead.map(d => d.split(' ')[0])
+        const fresh = names.filter(n => !(n in KNOWN_DEAD_TOKENS))
+        ok(`${skin} 没有新增未定义的令牌引用`, fresh.length === 0 && dt.读不到的表 === 0,
+          `定义 ${dt.定义} / 引用 ${dt.引用} · 命中已知清单 ${names.length - fresh.length} 条`
+          + (fresh.length ? ` · 新增死引用：${fresh.join(' ')}` : '')
+          + (dt.读不到的表 ? ` · 有 ${dt.读不到的表} 张表读不到，判据不完整` : ''))
+        const gone = Object.keys(KNOWN_DEAD_TOKENS).filter(t => !names.includes(t))
+        if (gone.length) console.log(`      ⚠ 已知清单里的 ${gone.join(' ')} 这次没出现 —— 修好了就把那条删掉`)
       } else {
         const expect = EXPECT_WEAK_MUTATED[skin]
         ok(`${skin} 变异（ink 全改白）：应掉 ${expect} 对`,

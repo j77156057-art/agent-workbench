@@ -1990,8 +1990,10 @@ function openModelSettings() {
   background: transparent; color: var(--text); cursor: pointer; font-size: 13px;
   pointer-events: auto;
 }
-.sv-nav-item:hover { background: var(--bg-input); }
-.sv-nav-item.on { background: var(--bg-input); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* --bg-input 从来没在任何皮肤里定义过 —— 两处引用让导航项的 hover 与选中底
+   一直是透明的，选中态只剩描边 + 字色。收回到确实存在的抬起面。 */
+.sv-nav-item:hover { background: var(--bg-raised); }
+.sv-nav-item.on { background: var(--bg-raised); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 
 /* 外观：皮肤卡片（色板 + 名称 + 说明 + 选中态）
    色板用 SKINS 里的 swatch 四色直接内联，**不读当前皮肤的 CSS 变量** ——
@@ -2123,7 +2125,7 @@ function openModelSettings() {
 /* 缓存命中：有命中才上色——满屏灰色「—」没有信息量，命中那行才该被看见。
    数字用等宽，避免长数字在 grid 里抖动。 */
 .sv-provider-row .sv-cache { font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0.55; }
-.sv-provider-row .sv-cache.on { opacity: 1; color: var(--accent); }
+.sv-provider-row .sv-cache.on { opacity: 1; color: var(--accent-text); }
 .sv-meter-sub { display: block; margin-top: 4px; font-size: 11px; line-height: 1.45; color: var(--text-faint); }
 .sv-provider-row.simulated { background: color-mix(in srgb, var(--bg-selected) 55%, transparent); }
 .sv-note { margin: 8px 0 0; padding-left: 9px; border-left: 2px solid var(--accent); color: var(--text-muted); font-size: 11px; line-height: 1.55; }

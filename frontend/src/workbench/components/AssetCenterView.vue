@@ -768,8 +768,8 @@ onMounted(() => {
   transition: background .12s, color .12s;
 }
 .ac-seg:hover { background: rgba(47,111,237,.08); color: var(--text); }
-.ac-seg.on { background: #fff; border-color: var(--border); color: var(--accent); box-shadow: 0 1px 2px rgba(35,52,84,.07); }
-.ac-sub.on { background: #fff; color: var(--accent); box-shadow: 0 1px 2px rgba(35,52,84,.08); }
+.ac-seg.on { background: #fff; border-color: var(--border); color: var(--accent-text); box-shadow: 0 1px 2px rgba(35,52,84,.07); }
+.ac-sub.on { background: #fff; color: var(--accent-text); box-shadow: 0 1px 2px rgba(35,52,84,.08); }
 .ac-seg:focus-visible, .ac-sub:focus-visible, .ac-kind:focus-visible,
 .ac-search-btn:focus-visible, .ac-more-item:focus-visible, .ac-pack-open:focus-visible,
 .ac-card:focus-visible, .ac-refresh:focus-visible, .ac-mini-btn:focus-visible,
@@ -780,7 +780,7 @@ onMounted(() => {
 }
 .ac-sub-count {
   display: inline-block; margin-left: 4px; min-width: 17px; padding: 0 4px;
-  border-radius: 9px; background: rgba(47,111,237,.12); color: var(--accent);
+  border-radius: 9px; background: rgba(47,111,237,.12); color: var(--accent-text);
   font-size: 10px; line-height: 16px; text-align: center;
 }
 .ac-more-wrap { position: relative; }
@@ -891,14 +891,14 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-pack-open {
   margin-top: 6px; align-self: flex-start;
   border: 1px solid rgba(47,111,237,.4); background: rgba(47,111,237,.07);
-  color: var(--accent); border-radius: 6px; padding: 4px 12px;
+  color: var(--accent-text); border-radius: 6px; padding: 4px 12px;
   font-family: var(--font-ui); font-size: 12px; font-weight: 600; cursor: pointer;
 }
 .ac-pack-open:hover { background: rgba(47,111,237,.14); }
 .ac-grid-foot { display: flex; justify-content: center; align-items: center; gap: 14px; padding: 16px 0 4px; }
 .ac-more-load {
   border: 1px solid var(--border); background: #fff; border-radius: 7px;
-  padding: 6px 18px; font-size: 12px; color: var(--accent); font-weight: 600;
+  padding: 6px 18px; font-size: 12px; color: var(--accent-text); font-weight: 600;
   font-family: var(--font-ui); cursor: pointer;
 }
 .ac-more-load:hover { background: rgba(47,111,237,.06); }
