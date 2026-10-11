@@ -32,28 +32,49 @@ try {
 
 // 每个状态都要真的走到，否则量的是空气。走到之后如果元素没出现，探针会抛错 ——
 // 这比"静默扫了默认视图然后报干净"好。
+// 「更多」下拉里能直达的面板。每个都必须等到自己的根节点出现 ——
+// 等不到就抛错、记 -1，绝不记成"扫了默认视图的 0 处"。
+async function openMore (p, item, appear) {
+  await p.click('.wb-menu-trigger')
+  await p.locator('.wb-menu-item').filter({ hasText: item }).first().click()
+  await p.waitForSelector(appear, { timeout: 30000 })
+}
 const STATES = {
   async ask () {},
   async workbench (p) { await p.waitForSelector('.ft-row', { timeout: 60000 }) },
-  'settings': async p => {
+  async settings (p) {
     await p.click('.wb-settings-btn')
     await p.waitForSelector('.sv-nav-item.on', { timeout: 30000 })
     // 用量页有缓存行、智能体页有表单，两个都走一遍再扫
     await p.locator('.sv-nav-item').filter({ hasText: '智能体' }).first().click()
     await p.waitForTimeout(600)
   },
-  'assets': async p => {
+  async assets (p) {
     await p.waitForSelector('.ft-row', { timeout: 60000 })
     await p.locator('button').filter({ hasText: '素材' }).first().click()
     await p.waitForTimeout(2500)
   },
-  'cockpit': async p => {
+  async cockpit (p) {
     await p.click('.wb-brand')
     await p.keyboard.press('Alt+4')
     await p.waitForSelector('#wb-cockpit-chat-slot .cd-inputbar', { timeout: 60000 })
   },
+  async harness (p) { await openMore(p, 'AI 运行台', '.hp-backdrop') },
+  async gpu (p) { await openMore(p, 'GPU 监控', '.gp-backdrop') },
+  // .te-panel 是常驻包裹层且不可见（Playwright 默认等"可见"，等它必超时）；
+  // 真正的面板根是点开后才出现的 .te-pop。
+  async tasks (p) { await openMore(p, '任务与生成', '.te-pop') },
+  async flow (p) { await openMore(p, '流程图', '.fl-panel') },
+  async changes (p) { await openMore(p, '改动总览', '.gc-panel') },
+  async relation (p) { await openMore(p, '关系图', '.rg-panel') },
+  async unity (p) { await openMore(p, 'Unity 图', '.ug-panel') },
+  async symbolmap (p) { await openMore(p, '代码地图', '.sm-panel') },
 }
-const ROUTES = { '/workbench': ['workbench', 'settings', 'assets', 'cockpit'], '/': ['ask'] }
+const ROUTES = {
+  '/workbench': ['workbench', 'settings', 'assets', 'cockpit',
+    'harness', 'gpu', 'tasks', 'flow', 'changes', 'relation', 'unity', 'symbolmap'],
+  '/': ['ask'],
+}
 const SKINS = ['paper', 'graphite', 'zinc']
 
 const SWEEP = () => {
