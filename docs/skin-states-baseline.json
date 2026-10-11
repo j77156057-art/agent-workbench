@@ -1,0 +1,17 @@
+{
+  "/workbench|workbench|paper": 0,
+  "/workbench|settings|paper": 0,
+  "/workbench|assets|paper": 24,
+  "/workbench|cockpit|paper": 0,
+  "/workbench|workbench|graphite": 0,
+  "/workbench|settings|graphite": 0,
+  "/workbench|assets|graphite": 24,
+  "/workbench|cockpit|graphite": 0,
+  "/workbench|workbench|zinc": 0,
+  "/workbench|settings|zinc": 0,
+  "/workbench|assets|zinc": 24,
+  "/workbench|cockpit|zinc": 0,
+  "/|ask|paper": 0,
+  "/|ask|graphite": 0,
+  "/|ask|zinc": 0
+}
