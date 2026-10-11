@@ -2,15 +2,22 @@
 
 > **本文档是累积追加式的**：下面的历史章节（1~7）是当晚的侦查记录，仍然有效，
 > **不要删**。每次续做只更新第 0 节「当前状态」—— 那是唯一指路的入口。
-> 上次更新：2026-10-12（HEAD `f148169`）。
+> 上次更新：2026-10-12（HEAD `da84646`）。
 
 ## 0. 当前状态
 
-- **HEAD `f148169`** —— 三笔待跑全量验：`97b33e2` 收窄丙方案豁免 /
-  `3dc6efe` 能力基线判据 / `f148169` 项目上下文泄漏立档。
-  **工作树有未提交改动**：`docs/next-steps.md`（本判据 + 本轮更新）与
-  `tests/test_nav_doc_matches_reality.py`（新判据）尚在途，未提交。
-  其余文件内容与 HEAD 一致（`git status` 的 `M` 是 stat 缓存陈旧）。
+- **HEAD `da84646`** —— 待跑全量验的有六笔：`97b33e2` 收窄丙方案豁免 /
+  `3dc6efe` 能力基线判据 / `f148169` 项目上下文泄漏立档 / `c558df5` 能力基线漏复位
+  （后被 `52cae73` 反向抵消，由 `e043715` 补回）/ `da84646` danger-ink 收编。
+  **工作树内容干净**：`git diff HEAD` 与 `git diff --cached HEAD` 均为空，
+  `git status` 里那批 `M` 是 stat 缓存陈旧，不是真改动。
+  唯一在途文件是**未跟踪**的 `docs/cockpit-v2-redesign.md`（自主舱 v2 重构设计，本次调研产出）。
+- **143-failed 的根因已修回 HEAD**：`c558df5` 的修复被 `52cae73`（前端 CSS 令牌收编）
+  反向抵消（44 增/11 删 → 11 增/44 删），HEAD 一度回落为 `api.set_context_code_root`
+  且不复位的旧版，全量因此 143 failed。已用私有索引补提交为 `e043715`，
+  只提交 `tests/test_capability_baseline.py` 一个文件；工作树其余改动一概没碰。
+  组合跑 `test_capability_baseline.py` + `test_code_root_reconcile.py` = **32 passed**（170s）。
+  **全量仍未重跑**（约 3.5h），所以「4720 passed / 143 failed」这组旧数字还没被证伪。
 - 全量已跑过一次绿：`4831 passed / 0 failed`，守卫 491 个文件零误报。
   那次验的是 `34213c7`（守卫默认化）。**之后三笔没过全量。**
 - 上一轮全量 PID 30060，输出 `D:\Temp\opencode\full_final.txt`，云端
