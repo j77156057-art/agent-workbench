@@ -468,11 +468,21 @@ print("JSON:" + json.dumps(out))
         os.makedirs(sd, exist_ok=True)
         legacy_sid = "web-118ac75087ff"
         raw_bytes = _real_legacy_bytes()
-        with open(os.path.join(sd, legacy_sid + ".json"), "wb") as f:
+        proj_root = self._mkdir("ApiProj")
+        # ⚠ 桶目录名**必须等于**迁移后的当前项目 id —— 见类 docstring。
+        #
+        # `api.sessions_ep` 走 `_request_project_id()` 拿当前项目，
+        # 归属过滤要拿它跟会话的 owner 比。归属现在有两个来源：
+        # 文件里的 `owner_project_id`，或（缺失时）**桶目录名**。
+        # 所以这里先按 `proj_root` 算出项目 id，再用它命名桶目录 ——
+        # 不能随手写个名字，那样过滤会把这条历史滤掉（第一版就栽在这）。
+        bucket_pid = projects.project_id(proj_root)
+        legacy_bucket = os.path.join(sd, bucket_pid)
+        os.makedirs(legacy_bucket, exist_ok=True)
+        with open(os.path.join(legacy_bucket, legacy_sid + ".json"), "wb") as f:
             f.write(raw_bytes if raw_bytes is not None
                     else json.dumps({"session_id": legacy_sid, "turns": [{"user": "q", "assistant": "a"}],
                                      "summary": "", "updated_at": "2024-01-01"}).encode("utf-8"))
-        proj_root = self._mkdir("ApiProj")
         with open(os.path.join(root, ".docmind_state.json"), "w", encoding="utf-8") as f:
             json.dump({"code_root": proj_root}, f, ensure_ascii=False)
 
@@ -493,6 +503,100 @@ print("JSON:" + json.dumps(out))
         self.assertEqual(data["current"], projects.project_id(proj_root))
         print(f"[B] api /api/sessions before={data['before']} after={data['after']} "
               f"current={data['current']}")
+
+
+class B10b_OwnerlessStillReachable(QABase):
+    """反向守卫：**无归属的老会话没有消失** —— 收窄不许把它砍掉。
+
+    ## 为什么需要这条
+
+    B10 的前提在 2026-10-11 改了：读穿透改用**旧桶目录**里的老会话。
+    因为「无归属一律放行」那条豁免把 311 个旧副本一起放行了，
+    把归属过滤淹没（实测：只有 4 个会话的项目，列表里出现 336 条）。
+
+    但那条豁免**同时**在保护一类真实数据：**扁平目录里、无归属的存量老会话**
+    —— 那可能是真实用户历史，不只是夹具。收窄不该把它们从「拿得到」
+    变成「拿不到」。
+
+    所以这里钉住收窄的**下界**：不传 `project_id` 时仍全部可见；
+    按 id 定点读也仍拿得到。丢的只是「按项目过滤的列表视图」，不是数据。
+
+    ⚠ 沙箱在 STATE_ROOT 之下（`QABase._mkdir` 就是这么做的）。
+    """
+
+    def test_ownerless_legacy_session_is_still_readable(self):
+        """扁平目录里无 `owner_project_id` 的老会话，不传 pid 仍可见。"""
+        root = self._mkdir("B10bRoot")
+        sd = os.path.join(root, "sessions")
+        os.makedirs(sd, exist_ok=True)
+        sid = "web-ownerless-legacy"
+        with open(os.path.join(sd, sid + ".json"), "w", encoding="utf-8") as f:
+            json.dump({"session_id": sid,
+                       "turns": [{"user": "q", "assistant": "a"}],
+                       "summary": "", "updated_at": "2024-01-01"}, f)
+
+        env = dict(os.environ)
+        env["DOCMIND_STATE_ROOT"] = root
+        env["DOCMIND_SESSIONS_DIR"] = sd
+        env["DOCMIND_PROJECTS"] = "1"
+        script = "\n".join([
+            "import json, sys",
+            "import sessions as S",
+            "sid = %r" % sid,
+            "rows = S.list_sessions(limit=1000)",
+            "print('JSON:' + json.dumps([r['session_id'] for r in rows]))",
+            "print('LOAD:' + json.dumps(bool(S.load(sid))))",
+        ])
+        proc = subprocess.run([sys.executable, "-B", "-c", script],
+                              cwd=_REPO_ROOT, env=env,
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        ids = json.loads([ln for ln in proc.stdout.splitlines()
+                          if ln.startswith("JSON:")][-1][5:])
+        self.assertIn(sid, ids,
+                      "无归属的老会话在**不传 pid** 时也看不到了 —— "
+                      "收窄把真实用户数据砍掉了")
+
+        loaded = json.loads([ln for ln in proc.stdout.splitlines()
+                             if ln.startswith("LOAD:")][-1][5:])
+        self.assertTrue(loaded,
+                        "无归属的老会话按 id 也读不到了 —— 历史真的消失了")
+
+    def test_ownerless_session_is_excluded_from_project_view_only(self):
+        """收窄的**边界**：只在「按项目过滤的列表」里排除，数据本身不动。
+
+        与 B10 是同一个道理的两个方向：B10 说「读穿透要读得到」，
+        这条说「过滤要滤得掉」。两条都在，收窄才不是乱砍。
+        """
+        root = self._mkdir("B10bFilter")
+        sd = os.path.join(root, "sessions")
+        os.makedirs(sd, exist_ok=True)
+        sid = "web-ownerless-for-filter"
+        with open(os.path.join(sd, sid + ".json"), "w", encoding="utf-8") as f:
+            json.dump({"session_id": sid,
+                       "turns": [{"user": "q", "assistant": "a"}],
+                       "summary": "", "updated_at": "2024-01-01"}, f)
+
+        env = dict(os.environ)
+        env["DOCMIND_STATE_ROOT"] = root
+        env["DOCMIND_SESSIONS_DIR"] = sd
+        env["DOCMIND_PROJECTS"] = "1"
+        script = "\n".join([
+            "import json",
+            "import sessions as S",
+            "a = [r['session_id'] for r in S.list_sessions(limit=1000,"
+            " project_id='prj-A')]",
+            "print('FILTER:' + json.dumps(a))",
+        ])
+        proc = subprocess.run([sys.executable, "-B", "-c", script],
+                              cwd=_REPO_ROOT, env=env,
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        got = json.loads([ln for ln in proc.stdout.splitlines()
+                          if ln.startswith("FILTER:")][-1][7:])
+        self.assertNotIn(sid, got,
+                         "无归属会话仍出现在项目列表里 —— 收窄没生效")
 
 
 # =====================================================================

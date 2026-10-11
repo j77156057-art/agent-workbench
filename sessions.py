@@ -634,8 +634,15 @@ def list_sessions(limit=50, project_id=None):
     会话存储已全局化，但「用户在项目 B 里不该看到 A 的会话」这条产品语义还在。
     以前靠按项目分桶天然做到；现在改成读 `owner_project_id` 字段。
 
-    * 传了 pid -> 只返回归属为 pid 的会话，**外加无归属的老会话**；
+    * 传了 pid -> 只返回归属为 pid 的会话；
     * 不传 -> 全部返回。
+
+    **归属从哪来（2026-10-11 收窄）**：先取文件里的 `owner_project_id`，
+    缺失时回退到**旧分桶的目录名**（`prj-<hex>`）。此前是「无归属一律放行」，
+    那条豁免把 308 个没有该字段的旧副本一起放行了 —— 实测只有 4 个会话的
+    项目，列表里出现 336 条，过滤形同虚设。归属本来就在目录名里，读出来即可。
+    真正无归属的（`golden-*` 基线夹具，住在扁平目录、无对应桶）按用户拍板
+    **不再出现在项目列表里**，但不传 pid 时仍全都可见 —— 数据不会消失。
 
     ⚠⚠ 为什么无归属的老会话在显式过滤时**也要返回**：P2 的明确意图是
     「确保迁移后用户既有历史不消失（用户原始 Bug 不复发）」
@@ -656,6 +663,15 @@ def list_sessions(limit=50, project_id=None):
             names = os.listdir(d)
         except OSError:
             continue
+        # 旧分桶目录名本身就是归属（`prj-<hex>`）。`bind_code_root` 是丙方案
+        # 之后才写的，所以这些历史文件里**没有** `owner_project_id` 字段 ——
+        # 但归属并没有丢，它就在目录名里。不读出来的话，缺字段的会话会被
+        # 当成「无归属 → 放行」，把归属过滤彻底淹没（实测：只有 4 个会话的
+        # 项目，列表里出现 336 条）。
+        dir_owner = ""
+        base = os.path.basename(os.path.normpath(d))
+        if base.startswith("prj-"):
+            dir_owner = base
         for name in names:
             if not name.endswith(".json"):
                 continue
@@ -665,13 +681,20 @@ def list_sessions(limit=50, project_id=None):
             sid = raw.get("session_id") or name[:-5]
             if sid in seen:
                 continue  # 全局先遍历 → 全局条目优先
-            # 归属过滤（丙）。**无归属的老会话一律放行** —— 见 docstring 里
-            # 关于 B10 的说明：宁可让项目 B 的列表混进几个老会话，也不能
-            # 让升级一次就把用户历史全弄丢。
-            if want_pid:
-                owner = str(raw.get("owner_project_id") or "").strip()
-                if owner and owner != want_pid:
-                    continue
+            # 归属：**文件里的字段优先**，缺失时回退到目录名。
+            owner = str(raw.get("owner_project_id") or "").strip() or dir_owner
+            # 归属过滤（丙）。**与我要的不一致就排除** —— 包括「无归属」。
+            #
+            # ⚠ 此前是「有归属且不是我要的才排除」，无归属一律放行。那条豁免
+            # 是为保 B10 的用户历史不消失，但它把 308 个没有该字段的旧副本
+            # 一起放行了，过滤形同虚设（实测：只有 4 个会话的项目，列表里
+            # 出现 336 条）。
+            # 现在归属从目录名读出来了，旧历史照样读得到（B10 仍成立）；
+            # 而真正无归属的（`golden-*` 基线夹具，按用户拍板）不再出现。
+            # ⚠ 两条判据盯着这次改动：`tests/test_owner_filter_narrow.py`
+            #   与 `tests/test_projects_qa.py::B10`。前者是收窄，后者是读穿透。
+            if want_pid and owner != want_pid:
+                continue
             turns = raw.get("turns") or []
             first_user = ""
             for turn in turns:
@@ -684,9 +707,9 @@ def list_sessions(limit=50, project_id=None):
                 "turns": len(turns),
                 "has_summary": bool(raw.get("summary")),
                 "updated_at": raw.get("updated_at") or "",
-                # 归属项目（丙）。老会话为空串 —— 调用方若要做"补归属"提示，
-                # 靠这个字段就能识别出哪些还没归属。
-                "owner_project_id": str(raw.get("owner_project_id") or "").strip(),
+                # 归属项目（丙）。**回退到桶目录名** —— 见上面 dir_owner。
+                # 读穿透拿到的旧记录因此也带着归属，不再是一串空串。
+                "owner_project_id": owner,
                 # 首条用户问题作为可读标题；不保存额外数据，兼容旧会话文件。
                 "title": preview[:72] or "未命名对话",
                 "preview": preview[:180],

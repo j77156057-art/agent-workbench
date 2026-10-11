@@ -182,13 +182,39 @@ class ListFilterTests(unittest.TestCase):
         self.assertEqual(b, {"b1"})
 
     def test_ownerless_legacy_sessions_are_still_listed(self):
-        """**无归属的老会话必须仍被列出来** —— 哪怕显式按 pid 过滤。
+        """⚠⚠ **前提已被用户改掉（2026-10-11）** —— 这条现在断言的是**相反**的事。
 
-        这条是 `tests/test_projects_qa.py::B10` 教我的：第一版丙方案在
-        显式过滤时把无归属会话一刀切掉，B10 立刻红 —— 那是**真回归**，
-        P2 的明确意图就是"迁移后用户既有历史不消失"。
+        ## 它原来断言什么
 
-        代价是项目 B 的列表会混进几个老会话；跑过 backfill_owner 后就没有了。
+        「无归属的老会话必须仍被列出来 —— 哪怕显式按 pid 过滤」。
+        理由是 `tests/test_projects_qa.py::B10` 教的：第一版丙方案在显式
+        过滤时把无归属会话一刀切掉，B10 立刻红 —— 那是**真回归**。
+
+        ## 为什么改
+
+        那条豁免把 **311 个旧桶副本**（都没有 `owner_project_id` 字段）
+        一起放行了，归属过滤形同虚设 —— 实测只有 4 个会话的项目，
+        列表里出现 336 条。归属其实就写在**桶目录名**里。
+
+        现在改成：先取文件字段，缺失时回退**桶目录名**；
+        **谁都不属于的**不再放行（用户拍板：`golden-*` 基线夹具不该
+        出现在用户列表里）。
+
+        ## 「历史不消失」那层**没有被破坏**
+
+        实测那 28 条无归属会话：全是测试/探针数据
+        （`golden-*` 18 / `verify_*` 4 / `webtest` 2 / `probe` 1），
+        **不传 pid 全部可见（0 条看不见）、按 id `load()` 8/8 成功**。
+        丢的只是「按项目过滤的列表视图」，不是数据。
+
+        这层由两条判据守着，本条不再守：
+        * `tests/test_projects_qa.py::B10b_OwnerlessStillReachable`
+        * `tests/test_owner_filter_narrow.py::test_ownerless_fixture_still_visible_without_filter`
+
+        ## 下面两条断言**没有**被改动，仍然有效
+
+        * 同项目的会话不会消失；
+        * **别的项目**的会话不会漏进来 —— 这才是过滤的本体。
         """
         S.save("legacy", [{"user": "x", "assistant": "y"}])       # 无归属
         S.bind_code_root("a1", ROOT_A, PID_A)
@@ -196,18 +222,27 @@ class ListFilterTests(unittest.TestCase):
         S.bind_code_root("b1", ROOT_B, PID_B)
         S.save("b1", [{"user": "x", "assistant": "y"}])
         ids_b = {r["session_id"] for r in S.list_sessions(project_id=PID_B)}
-        self.assertIn("legacy", ids_b, "无归属的老会话被过滤掉了 —— 历史会消失")
+        # ⚠ 前提已改：无归属的**不再**放行（下面那条新判据钉住收窄）
+        self.assertNotIn("legacy", ids_b,
+                         "无归属的老会话仍在项目列表里 —— 豁免没收窄")
         self.assertIn("b1", ids_b, "同项目的会话也没了")
         self.assertNotIn("a1", ids_b, "A 的会话漏进 B 的列表了")
         # 有归属的**别的**项目会话在 A 的列表里仍必须被挡住
         ids_a = {r["session_id"] for r in S.list_sessions(project_id=PID_A)}
         self.assertNotIn("b1", ids_a, "B 的会话漏进 A 的列表了")
         self.assertIn("a1", ids_a)
-        self.assertIn("legacy", ids_a, "无归属老会话在 A 的列表里也该在")
-        # 行里带 owner，前端可自行区分
+        self.assertNotIn("legacy", ids_a,
+                          "无归属老会话仍出现在 A 的列表里 —— 豁免没收窄")
+        # 「行里带 owner，前端可自行区分」这层改在**有归属**的会话上验证 ——
+        # 无归属的行现在默认不出现在项目视图里，取它会 IndexError。
         row = [r for r in S.list_sessions(project_id=PID_A)
-               if r["session_id"] == "legacy"][0]
-        self.assertEqual(row["owner_project_id"], "")
+               if r["session_id"] == "a1"][0]
+        self.assertEqual(row["owner_project_id"], PID_A)
+        # 不传 pid 时无归属的那条仍在，且 owner 是空串（数据没丢）
+        legacy_row = [r for r in S.list_sessions()
+                      if r["session_id"] == "legacy"][0]
+        self.assertEqual(legacy_row["owner_project_id"], "",
+                         "不传 pid 时它应仍是空归属 —— 那是「谁都不属于」")
 
     def test_filter_still_blocks_other_projects_sessions(self):
         """有归属的别项目会话必须被挡住（隔离本身没丢）。"""
