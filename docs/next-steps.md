@@ -9,9 +9,11 @@
 - **HEAD `da84646`** —— 待跑全量验的有六笔：`97b33e2` 收窄丙方案豁免 /
   `3dc6efe` 能力基线判据 / `f148169` 项目上下文泄漏立档 / `c558df5` 能力基线漏复位
   （后被 `52cae73` 反向抵消，由 `e043715` 补回）/ `da84646` danger-ink 收编。
-  **工作树内容干净**：`git diff HEAD` 与 `git diff --cached HEAD` 均为空，
-  `git status` 里那批 `M` 是 stat 缓存陈旧，不是真改动。
-  唯一在途文件是**未跟踪**的 `docs/cockpit-v2-redesign.md`（自主舱 v2 重构设计，本次调研产出）。
+  **在途改动属于前端 agent**（一批 `.vue`，随时会变）——共享树里不要断言
+  「工作树干净」，那是个会来回抖的性质。我这两笔已入库：143-fix 补回 `e043715`、
+  本文档 §0 对齐 `375d676`。另有未跟踪的 `docs/cockpit-v2-redesign.md`
+  （自主舱 v2 重构设计，本次调研产出）。另有几个文件在 `git status` 里是 `M`
+  但 `git diff HEAD` 无内容差异 —— stat 缓存陈旧，见 `docs/PARALLEL-LANES.md`。
 - **143-failed 的根因已修回 HEAD**：`c558df5` 的修复被 `52cae73`（前端 CSS 令牌收编）
   反向抵消（44 增/11 删 → 11 增/44 删），HEAD 一度回落为 `api.set_context_code_root`
   且不复位的旧版，全量因此 143 failed。已用私有索引补提交为 `e043715`，
