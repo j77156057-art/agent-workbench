@@ -45,6 +45,10 @@
   --green-ink: var(--ink);
   --amber-ink: var(--ink);
   --accent-2-ink: #ffffff;
+  /* default 档的 --danger #d8453a 压白字只有 4.35、压 ink 4.33 —— 两个方向都不到
+     4.5，要治得改填色。这里给白是「最接近」而非「达标」，且 default 只在挂载前
+     那一帧生效（两页 main.ts 都在 mount 前 applyStoredSkin），三套真皮各自覆写。 */
+  --danger-ink: #ffffff;
   /* 2026-10-02 色值重构：色相归并后需要「淡底」档（原来这些淡底是写死的，
      换皮肤时不跟随 —— 深色皮肤下会在深底上留一片浅块）。 */
   --amber-soft: #fdf6e7;

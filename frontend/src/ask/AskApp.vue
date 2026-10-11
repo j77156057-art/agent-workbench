@@ -1170,7 +1170,7 @@ border-radius: var(--r-sm); }
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .wf-orphan-btn:hover { background: var(--ink); color: var(--bg); }
-.wf-orphan-btn.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+.wf-orphan-btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--danger-ink); }
 .wf-orphan-btn:disabled { opacity: .55; cursor: default; }
 .gate-hint { flex: 0 0 auto; margin: 0 28px 8px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--amber); }
 .composer.blocked { opacity: .7; }

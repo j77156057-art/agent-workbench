@@ -485,9 +485,9 @@ async function discardStage() {
 .wf-stage-label { font-size: 10px; color: var(--text-faint); white-space: nowrap; }
 .wf-stage-line { flex: 1; height: 1px; background: var(--border); margin: 0 4px; min-width: 8px; }
 .wf-stage-line-done { background: linear-gradient(90deg, var(--green), rgba(52,168,112,.35)); }
-.wf-stage-active .wf-stage-dot { border-color: var(--accent); color: #fff; background: var(--accent); }
+.wf-stage-active .wf-stage-dot { border-color: var(--accent); color: var(--accent-ink); background: var(--accent); }
 .wf-stage-active .wf-stage-label { color: var(--accent); font-weight: 600; }
-.wf-stage-done .wf-stage-dot { border-color: var(--green); background: var(--green); color: #fff; }
+.wf-stage-done .wf-stage-dot { border-color: var(--green); background: var(--green); color: var(--green-ink); }
 .wf-stage-done .wf-stage-label { color: var(--text-muted); }
 .wf-stage:last-child .wf-stage-line { display: none; }
 .wf-goal {
@@ -520,7 +520,7 @@ async function discardStage() {
 .wf-mini-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); transform: translateY(-1px); }
 .wf-mini-btn:disabled { opacity: .5; cursor: default; }
 .wf-mini-danger { color: var(--danger); border-color: var(--danger); }
-.wf-mini-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.wf-mini-danger:hover:not(:disabled) { background: var(--danger); color: var(--danger-ink); }
 .wf-mini-primary { color: var(--accent); border-color: var(--accent); }
 .wf-tasks { display: grid; gap: 4px; }
 .wf-task {

@@ -610,6 +610,7 @@ try {
     const pairs = await tokenPairContrast(p10, [
       ['--ink', '--bg'], ['--accent', '--accent-ink'],
       ['--green', '--green-ink'], ['--amber', '--amber-ink'], ['--accent-2', '--accent-2-ink'],
+      ['--danger', '--danger-ink'],
     ])
     check(`${route} ${skin}：填色/文字令牌对全部 ≥ 4.5:1`, () => {
       const weak = pairs.filter(x => x.比值 < 4.5)

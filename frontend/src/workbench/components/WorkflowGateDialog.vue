@@ -383,10 +383,10 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 .wg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(35,52,84,.08); }
 .wg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wg-btn:disabled { opacity: .55; cursor: default; }
-.wg-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.wg-primary:hover:not(:disabled) { background: var(--accent-strong, var(--accent)); color: #fff; }
+.wg-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.wg-primary:hover:not(:disabled) { background: var(--accent-strong, var(--accent)); color: var(--accent-ink); }
 .wg-danger { border-color: var(--danger); color: var(--danger); }
-.wg-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.wg-danger:hover:not(:disabled) { background: var(--danger); color: var(--danger-ink); }
 .wg-ghost { border-style: dashed; }
 .wg-acceptance { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; }
 .wg-acceptance-head { display: flex; align-items: center; justify-content: space-between; }

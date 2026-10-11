@@ -328,7 +328,7 @@ function sessTime(v?: string): string {
   cursor: pointer;
   transition: background 130ms, color 130ms;
 }
-.sess-del:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.sess-del:hover:not(:disabled) { background: var(--danger); color: var(--danger-ink); }
 .sess-del:disabled { opacity: .4; cursor: default; }
 .sess-empty { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); padding: 4px 2px; }
 

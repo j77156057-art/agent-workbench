@@ -26,6 +26,9 @@
   --green-ink: var(--ink);
   --amber-ink: var(--ink);
   --accent-2-ink: #ffffff;
+  /* 同 default 档：#d8453a 压白字 4.35，不到 4.5；问答页也在 mount 前套皮，
+     所以这三套真皮的覆写值才是实际生效的那一个 */
+  --danger-ink: #ffffff;
   --shadow-soft: 0 2px 0 rgba(20, 17, 15, .08);
   --shadow-pop: 6px 6px 0 var(--ink);
   --sh-hard: 4px 4px 0 var(--ink);
