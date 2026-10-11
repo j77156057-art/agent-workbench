@@ -1098,7 +1098,7 @@ border-radius: var(--r-sm); }
   position: absolute; top: -8px; right: -8px;
   width: 18px; height: 18px;
   border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm); background: var(--ink); color: #fff;
+  border-radius: var(--r-sm); background: var(--ink); color: var(--bg);
   font-size: 12px; line-height: 1; cursor: pointer;
   display: grid; place-items: center;
 }
@@ -1142,7 +1142,7 @@ border-radius: var(--r-sm); }
 /* toast */
 .toast {
   position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
-  background: var(--ink); color: #fff;
+  background: var(--ink); color: var(--bg);
   font-family: var(--font-mono); font-size: 12px;
   padding: 10px 18px; border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); box-shadow: var(--sh-hard-sm);

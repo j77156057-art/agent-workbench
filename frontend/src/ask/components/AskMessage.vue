@@ -401,7 +401,7 @@ border-radius: var(--r-sm); background: var(--bg-raised); overflow: hidden; }
   text-transform: uppercase;
   padding: 1px 7px;
   background: var(--ink);
-  color: #fff;
+  color: var(--bg);
 }
 .step-tag.observation { background: var(--green); color: #fff; }
 .step-tag.reflection { background: var(--amber); color: #fff; }

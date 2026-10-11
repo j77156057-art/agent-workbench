@@ -224,7 +224,7 @@ function sessTime(v?: string): string {
 .card-count {
   margin-left: auto;
   background: var(--ink);
-  color: #fff;
+  color: var(--bg);
   font-family: var(--font-mono);
   font-size: 11px;
   padding: 1px 7px;
@@ -235,7 +235,7 @@ function sessTime(v?: string): string {
   margin-top: 8px;
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
   border-bottom: 2px solid transparent;
 }

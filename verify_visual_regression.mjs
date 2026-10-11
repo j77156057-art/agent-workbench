@@ -238,12 +238,16 @@ try {
     const d = await diff(browser, basePng, shot)
     const bad = d.changed > MAX_CHANGED_ABS || d.pct > MAX_CHANGED_PCT || !!stubWarn
     const out = path.join(DIR, `diff-${c.name}.png`)
+    const now = path.join(DIR, `now-${c.name}.png`)
     if (bad) {
       fs.writeFileSync(out, Buffer.from(d.diffPng, 'base64'))
+      // 标红图只说"哪里变了"，不说"现在长什么样"——排查时每次都要重跑一遍才能看见
+      // 当前渲染。失败路径上顺手存一张，成本是几百 KB。
+      fs.writeFileSync(now, shot)
       failed++
     }
     console.log(`${bad ? 'FAIL' : 'PASS'}   ${c.name}  变化像素 ${d.changed}/${d.total} (${d.pct.toFixed(3)}%)  最大通道差 ${d.worst}${info}`
-      + (bad ? `  → 标红图 ${out}` : ''))
+      + (bad ? `  → 标红图 ${out}\n      → 当前截图 ${now}` : ''))
   }
   console.log(`\n${CASES.length - failed}/${CASES.length} 视觉基线一致`
     + `（阈值：单像素通道差 >${CHANNEL_EPS} 的像素超过 ${MAX_CHANGED_ABS} 个，或占比 >${MAX_CHANGED_PCT}%）`)

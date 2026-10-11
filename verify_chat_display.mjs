@@ -109,6 +109,9 @@ let checks = 0
 
 function check(name, fn) {
   checks++
+  // 第二参必须是函数。写成 check(name, 布尔) 时原来只会得到一句没头没脑的
+  // "fn is not a function"（实测连踩两次），这里把话说明白。
+  if (typeof fn !== 'function') { failed++; console.log(`FAIL   ${name}\n      用例写错了：check 的第二参要是函数，收到 ${typeof fn}`); return }
   try { fn(); console.log(`PASS   ${name}`) }
   catch (e) { failed++; console.log(`FAIL   ${name}\n      ${String(e.message).split('\n')[0]}`) }
 }
@@ -196,6 +199,47 @@ const textContrast = (page, sel, pseudo) => page.evaluate(([s, ps]) => {
   const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
   return +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
 }, [sel, pseudo || null])
+
+/** 整页文字对比度扫描。此前我们的对比度检查全是「指点名选择器」，
+ *  只能覆盖想得到要测的那些；这里遍历所有直接含文本节点的元素，按合成底色算比值。
+ *  两条 WCAG 自身规定的豁免必须实现，否则门禁会狼来了：
+ *   · 大字号（≥24px，或 ≥18.66px 且加粗）门槛降到 3:1
+ *   · inactive 控件（disabled / aria-disabled）豁免 —— 发送按钮禁用态实测 4.34，
+ *     但 WCAG 1.4.3 不要求禁用元素达标，启用态实测 7.3
+ *  伪元素（::placeholder 等）仍看不见，那部分由 ⑨ 单独钉。 */
+const sweepContrast = page => page.evaluate(() => {
+  const parse = v => { const m = /rgba?\(([^)]+)\)/.exec(v); if (!m) return null
+    const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const bgOf = el => { const acc = []
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor); if (c) { acc.push(c); if (c.a >= .999) break } }
+    let bg = { rgb: [255, 255, 255], a: 1 }
+    for (let i = acc.length - 1; i >= 0; i--) { const c = acc[i]
+      bg = { rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + bg.rgb[k] * (1 - c.a)), a: 1 } }
+    return bg }
+  const bad = []
+  for (const el of document.querySelectorAll('body *')) {
+    if (![...el.childNodes].some(n => n.nodeType === 3 && (n.textContent || '').trim())) continue
+    if (el.disabled || el.closest('[disabled]') || el.getAttribute('aria-disabled') === 'true') continue
+    const cs = getComputedStyle(el)
+    if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue
+    const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue
+    const fg = parse(cs.color); if (!fg) continue
+    const bg = bgOf(el)
+    const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + bg.rgb[k] * (1 - fg.a)) }
+    const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
+    const ratio = +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
+    const px = parseFloat(cs.fontSize) || 16
+    const need = (px >= 24 || (px >= 18.66 && Number(cs.fontWeight) >= 700)) ? 3 : 4.5
+    if (ratio < need) bad.push({
+      元素: el.tagName.toLowerCase() + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : ''),
+      比值: ratio, 门槛: need, 文本: (el.textContent || '').trim().slice(0, 18) })
+  }
+  return bad
+})
 
 async function holdMidStream(page) {
   await openDockAndAsk(page, '伤害公式哪里和设计文档不一致？')
@@ -518,6 +562,25 @@ try {
       assert.ok(c >= 4.5, `实测 ${c}:1`)
     })
     await p9.close()
+  }
+  // ⑩ 整页文字对比度穷举扫描：两个面 × 三套皮。
+  // 这条是这轮加的能力 —— 我们原来的对比度断言全是「点名式」（想到哪个元素测哪个），
+  // 穷举第一次跑就照出 6 处真缺陷：5 处 `color: #fff` 配 `background: var(--ink)`
+  // 在 graphite 上塌成 1.25:1（ink 是浅色），以及侧栏 .card-link 拿填色令牌 --accent
+  // 当文字色（paper 2.71:1）。
+  for (const [route, skin] of [['/', 'paper'], ['/', 'graphite'], ['/', 'zinc'],
+                               ['/workbench', 'paper'], ['/workbench', 'graphite'], ['/workbench', 'zinc']]) {
+    const p10 = await boot(DEFAULTS, route, FRAMES, TAIL, `localStorage.setItem("docmind.skin","${skin}")`)
+    if (route === '/workbench') {
+      await p10.click('button.wb-question-link[title*="AI 对话"]')
+      await p10.waitForSelector('.cd-dock textarea', { timeout: 60000 })
+    }
+    await p10.waitForTimeout(600)
+    const bad = await sweepContrast(p10)
+    check(`${route} ${skin}：整页无低于 AA 门槛的文字`, () => {
+      assert.equal(bad.length, 0, bad.slice(0, 3).map(b => `${b.元素} ${b.比值}(需 ${b.门槛})`).join(' · '))
+    })
+    await p10.close()
   }
 } finally {
   await browser.close()
