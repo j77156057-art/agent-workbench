@@ -1740,7 +1740,7 @@ const webTitle = computed(() => webOn.value
 .cd-run-avatar {
   width: 17px; height: 17px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  color: #fff; background: var(--accent); font-size: 10px;
+  color: var(--accent-ink); background: var(--accent); font-size: 10px;
 }
 .cd-run-role { color: var(--text); font-weight: 600; }
 .cd-run-status { color: var(--text-faint); }
@@ -1893,7 +1893,7 @@ const webTitle = computed(() => webOn.value
 .cd-plan-step + .cd-plan-step { margin-top: 3px; }
 .cd-plan-idx {
   flex: 0 0 15px; width: 15px; height: 15px; margin-top: 1px;
-  border-radius: 50%; background: var(--accent); color: #fff;
+  border-radius: 50%; background: var(--accent); color: var(--accent-ink);
   font-size: 10px; display: inline-flex; align-items: center; justify-content: center;
 }
 

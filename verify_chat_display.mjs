@@ -265,6 +265,33 @@ const tokenPairContrast = (page, pairs) => page.evaluate((ps) => {
   return out
 }, pairs)
 
+/** 读一个**实际渲染出来**的元素的字色与合成底色并算比值（带明细，便于失败时看清）。
+ *  与 tokenPairContrast 的分工：那个证「令牌对本身达标」，这个证「某个站点真的在用
+ *  这对令牌」—— 收编类改动若只测令牌，改了定义没改用法就会漏过。 */
+const renderedPairContrast = (page, sel) => page.evaluate((s) => {
+  const el = document.querySelector(s)
+  if (!el) return null
+  const parse = v => { const m = /rgba?\(([^)]+)\)/.exec(v); if (!m) return null
+    const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const acc = []
+  for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+    const c = parse(getComputedStyle(n).backgroundColor)
+    if (c) { acc.push(c); if (c.a >= .999) break }
+  }
+  let bg = { rgb: [255, 255, 255], a: 1 }
+  for (let i = acc.length - 1; i >= 0; i--) { const c = acc[i]
+    bg = { rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + bg.rgb[k] * (1 - c.a)), a: 1 } }
+  const cs = getComputedStyle(el)
+  const fg = parse(cs.color); if (!fg) return null
+  const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + bg.rgb[k] * (1 - fg.a)) }
+  const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
+  return { 字: cs.color, 底: `rgb(${bg.rgb.map(Math.round).join(', ')})`,
+    比值: +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2)) }
+}, sel)
+
 async function holdMidStream(page) {
   await openDockAndAsk(page, '伤害公式哪里和设计文档不一致？')
   await page.waitForSelector('.cd-activity-item', { timeout: 30000 })
@@ -492,6 +519,15 @@ try {
     assert.match(stoppedHead, /已停止/, `回合没走到已停止，读到 ${JSON.stringify(stoppedHead)}`)
     assert.equal(anywhere, 0, `界面上还有 ${anywhere} 处「正在继续执行」`)
     assert.ok(!stopped.includes(LIVE), `停止后仍挂着「正在继续执行」：${JSON.stringify(stopped)}`)
+  })
+  // 这批收编里有 14 处白字压 --accent，而它们全都不在视觉基线的渲染路径内
+  // （实测五个用例都 0 像素），像素门禁照不到。这里挑一个真画出来的 —— 回合头的
+  // ✦ 徽标 —— 从 DOM 上验它用的是令牌对而不是写死的白：改之前实测 2.88（白字压橙）。
+  const avatar = await renderedPairContrast(page, '.cd-run-avatar')
+  console.log(`      （✦ 徽标实测 ${avatar?.比值}:1 —— ${avatar?.字} on ${avatar?.底}；收编前是白字压橙 2.88）`)
+  check('回合头 ✦ 徽标：实际渲染的字/底就是 --accent-ink / --accent', () => {
+    assert.ok(avatar, '没找到 .cd-run-avatar，这条断言是空跑')
+    assert.ok(avatar.比值 >= 4.5, `实测只有 ${avatar.比值}（${avatar.字} on ${avatar.底}）`)
   })
   await page.close()
 

@@ -812,7 +812,7 @@ onMounted(() => {
   padding: 4px 11px; border-radius: 14px; cursor: pointer; transition: all .12s;
 }
 .ac-kind:hover { color: var(--accent); border-color: rgba(47,111,237,.4); }
-.ac-kind.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ac-kind.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .ac-search { display: flex; gap: 6px; flex: 1 1 260px; max-width: 460px; }
 .ac-search input {
   flex: 1 1 auto; height: 30px; padding: 0 10px;
@@ -823,7 +823,7 @@ onMounted(() => {
 .ac-search input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(47,111,237,.12); }
 .ac-search-btn {
   height: 30px; padding: 0 14px; border: none; border-radius: 7px;
-  background: var(--accent); color: #fff; font-size: 12px; font-weight: 600;
+  background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600;
   font-family: var(--font-ui); cursor: pointer;
 }
 .ac-search-btn:disabled { opacity: .6; cursor: default; }
@@ -995,7 +995,7 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-imported-ok { margin: 0; font-size: 12px; color: #2b7a52; flex: 1 1 auto; overflow-wrap: anywhere; }
 .ac-primary {
   margin-left: auto;
-  border: none; border-radius: 8px; background: var(--accent); color: #fff;
+  border: none; border-radius: 8px; background: var(--accent); color: var(--accent-ink);
   font-family: var(--font-ui); font-size: 12px; font-weight: 600;
   padding: 8px 18px; cursor: pointer;
 }

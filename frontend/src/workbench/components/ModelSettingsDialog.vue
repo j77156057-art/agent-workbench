@@ -905,7 +905,7 @@ async function save() {
   cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 .ms-btn:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 3px 9px rgba(35,52,84,.08); }.ms-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.ms-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ms-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .ms-primary:disabled { opacity: .5; cursor: default; }
 @keyframes ms-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ms-rise { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }

@@ -475,7 +475,7 @@ onBeforeUnmount(() => {
 .vp-pop-head button { border: 0; font-size: 16px; }
 .vp-feedback-pop textarea, .vp-image-feedback textarea { box-sizing: border-box; width: 100%; margin: 8px 0; padding: 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--bg-raised); font: inherit; resize: vertical; }
 .vp-pop-foot small { color: var(--text-faint); }
-.vp-pop-foot button, .vp-image-feedback button { border-color: var(--accent); color: #fff; background: var(--accent); }
+.vp-pop-foot button, .vp-image-feedback button { border-color: var(--accent); color: var(--accent-ink); background: var(--accent); }
 .vp-image-feedback-btn { margin-top: 7px; }
 .vp-image-feedback { display: grid; justify-items: end; }
 .vp-history { border-top: 1px solid var(--border); padding-top: 8px; }

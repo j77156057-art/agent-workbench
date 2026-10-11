@@ -2145,7 +2145,7 @@ function openModelSettings() {
   border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;
 }
 .sv-btn:hover { border-color: var(--accent); }
-.sv-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sv-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .sv-primary:disabled { opacity: .5; cursor: default; }
 .sv-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .sv-list-item {

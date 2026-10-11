@@ -351,9 +351,10 @@ function submitRevise() {
 .wg-tag {
   font-style: normal; font-size: 10px; font-weight: 600;
   padding: 1px 6px; border-radius: 99px;
-  color: #fff; background: var(--accent);
+  color: var(--accent-ink); background: var(--accent);
 }
-.wg-tag-web { background: var(--amber); }
+/* 修饰符只换填色、字色继承基规则 —— 换了底就得同时换字色 */
+.wg-tag-web { background: var(--amber); color: var(--amber-ink); }
 .wg-custom { margin-top: 10px; display: grid; gap: 8px; }
 .wg-tasks { margin: 10px 0; display: grid; gap: 7px; max-height: 38vh; overflow-y: auto; }
 .wg-task { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface, var(--bg-hover)); transition: border-color .15s ease, background .15s ease, transform .15s ease; }.wg-task:hover { border-color: var(--border-strong); background: var(--bg-selected); transform: translateX(2px); }
