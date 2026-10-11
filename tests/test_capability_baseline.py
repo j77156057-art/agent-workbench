@@ -50,8 +50,20 @@
 
 ## 前置条件
 
-大部分工具要 `code_root`。这里用 `api.set_context_code_root` 显式设上
-（不是绕开它），并在 `tearDown` 里还原。
+大部分工具要 `code_root`。这里用 `config.set_context_code_root` 显式设上
+（**不是绕开它**），并在 `tearDownModule` 里**复位后再删沙箱**。
+
+⚠⚠ var 的真实名字是 `config._CTX_CODE_ROOT`（`config.py:638`）——
+**不是** `api._CTX_CODE_ROOT`。第一版两处都错：
+
+1. 从没查它在哪个模块，`getattr(api, "_CTX_CODE_ROOT", None)` 拿到 `None`
+   还以为「设置前本就是 None」；
+2. `tearDownModule` 只删沙箱、**没有复位 contextvar** —— 于是之后的测试
+   读到的是一个**已删除的目录**，全量 143 failed。
+
+这与同一晚立档的「项目上下文跨文件泄漏」是**同一个病**：上下文级状态
+跨文件泄漏。可参照的正确范式在 `tests/test_code_root_reconcile.py:212-233`
+（先 `get()` 记住、用完 `set()` 回去）。
 """
 
 import os
@@ -62,6 +74,11 @@ import subprocess
 import sys
 import time
 import unittest
+
+import config                       # noqa: E402  code_root 的 ContextVar 在这
+import tools as T                   # noqa: E402
+
+REG = T.TOOLS
 
 
 def _box():
@@ -86,20 +103,37 @@ def _box():
 
 
 BOX = None
-_SAVED_ROOT = None
+_SAVED_CODE_ROOT = None
 
 
 def setUpModule():
-    global BOX, _SAVED_ROOT
-    import api
-    _SAVED_ROOT = getattr(api, "_CTX_CODE_ROOT", None)
+    """设上 code_root，并**记住原值**。
+
+    ⚠ 必须记住原值 —— 第一版没记，于是无法复位。
+    """
+    global BOX, _SAVED_CODE_ROOT
+    _SAVED_CODE_ROOT = config._CTX_CODE_ROOT.get()
     BOX = _box()
-    api.set_context_code_root(str(BOX))
+    config.set_context_code_root(str(BOX))
 
 
 def tearDownModule():
-    if BOX:
-        shutil.rmtree(BOX, ignore_errors=True)
+    """**先复位 contextvar，再删沙箱** —— 顺序不能反。
+
+    顺序反了（或干脆不复位）的话，同进程后面的测试会读到一个
+    已删除的目录，报「文件不存在：sub/a.gd」这种失败。
+    全量 143 failed 就是这么来的。
+    """
+    global BOX, _SAVED_CODE_ROOT
+    try:
+        if _SAVED_CODE_ROOT is not None:
+            config.set_context_code_root(_SAVED_CODE_ROOT)
+        else:
+            config._CTX_CODE_ROOT.set(None)
+    finally:
+        if BOX:
+            shutil.rmtree(BOX, ignore_errors=True)
+            BOX = None
 
 
 def tx(v):
@@ -107,8 +141,7 @@ def tx(v):
 
 
 def call(nm, *a, **kw):
-    import tools
-    return tx(tools.TOOLS[nm].func(*a, **kw))
+    return tx(REG[nm].func(*a, **kw))
 
 
 class CodeBaseToolsTests(unittest.TestCase):
