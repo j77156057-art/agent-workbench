@@ -99,6 +99,11 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --danger: #c23127;
   --amber: #8d5f14;
   --green: #15774d;
+  /* 状态色上的文字色（--accent-ink 同族）：paper 三档状态色都够暗，白字 5.56；
+     但 --accent-2 = --accent 是橙，白字只有 2.88 → 走 ink */
+  --green-ink: #ffffff;
+  --amber-ink: #ffffff;
+  --accent-2-ink: var(--ink);
   --bg-selected: #faf8f2;
   --tool: #1f6f7a;
   /* 圆角 */
@@ -152,6 +157,11 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --danger: #f2726a;
   --amber: #d9a441;
   --green: #4cc38a;
+  /* graphite 的状态色全是浅色：白字压上去只有 2.22 / 2.25 / 1.84，
+     所以三档一律走 --bg（深色 knockout），不是 #fff */
+  --green-ink: var(--bg);
+  --amber-ink: var(--bg);
+  --accent-2-ink: var(--bg);
   --bg-selected: #22262e;
   --tool: #278d9a;
   /* 圆角 */
@@ -224,6 +234,10 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --danger: #c23127;
   --amber: #8d5f14;
   --green: #15774d;
+  /* zinc 的 --accent-2 = --accent = #0f766e（深青），白字 5.47 → 三档统一白 */
+  --green-ink: #ffffff;
+  --amber-ink: #ffffff;
+  --accent-2-ink: #ffffff;
   /* 工具色必须与青绿强调分得开，否则「原生工具调用」标记和主色撞成一个色 */
   --tool: #1d4ed8;
   /* 圆角：brutal 全 0，这套给回常规梯度（--r-full 例外，由默认块给） */

@@ -403,9 +403,9 @@ border-radius: var(--r-sm); background: var(--bg-raised); overflow: hidden; }
   background: var(--ink);
   color: var(--bg);
 }
-.step-tag.observation { background: var(--green); color: #fff; }
-.step-tag.reflection { background: var(--amber); color: #fff; }
-.step-tag.thought { background: var(--accent-2); color: #fff; }
+.step-tag.observation { background: var(--green); color: var(--green-ink); }
+.step-tag.reflection { background: var(--amber); color: var(--amber-ink); }
+.step-tag.thought { background: var(--accent-2); color: var(--accent-2-ink); }
 .step-summary {
   flex: 1;
   min-width: 0;

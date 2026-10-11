@@ -241,6 +241,30 @@ const sweepContrast = page => page.evaluate(() => {
   return bad
 })
 
+/** 令牌对契约：把 (--fill, --on-fill) 成对读出来解析成实际颜色再算比值。
+ *  为什么不只测 DOM：step-tag / 工作流徽标这些只在有数据时才渲染，穷举扫描看不见；
+ *  而 scoped 样式让外部探针元素拿不到类。用内联 var() 解析既绕过这两点，
+ *  也顺带覆盖所有用同一对令牌的站点。 */
+const tokenPairContrast = (page, pairs) => page.evaluate((ps) => {
+  const probe = document.createElement('span')
+  document.body.appendChild(probe)
+  const resolve = tok => { probe.style.color = `var(${tok})`; return getComputedStyle(probe).color }
+  const parse = v => { const m = /rgba?\(([^)]+)\)/.exec(v); const q = m[1].split(/[\s,\/]+/).map(Number)
+    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const out = ps.map(([fill, ink]) => {
+    const f = resolve(fill), i = resolve(ink)
+    const fb = parse(f), ib = parse(i)
+    const L1 = lum(ib.rgb), L2 = lum(fb.rgb)
+    return { 对: `${fill} / ${ink}`, 底: f, 字: i,
+      比值: +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2)) }
+  })
+  // 摘掉之后 getComputedStyle 解析不了 var()，所以必须最后一步才移走
+  probe.remove()
+  return out
+}, pairs)
+
 async function holdMidStream(page) {
   await openDockAndAsk(page, '伤害公式哪里和设计文档不一致？')
   await page.waitForSelector('.cd-activity-item', { timeout: 30000 })
@@ -579,6 +603,18 @@ try {
     const bad = await sweepContrast(p10)
     check(`${route} ${skin}：整页无低于 AA 门槛的文字`, () => {
       assert.equal(bad.length, 0, bad.slice(0, 3).map(b => `${b.元素} ${b.比值}(需 ${b.门槛})`).join(' · '))
+    })
+    // ⑪ 令牌对契约（挂在同一个循环里，省掉 6 次页面加载）：
+    // 只测「文字压在某个填色上」的成对令牌。step-tag / 工作流徽标这类不渲染就
+    // 看不见，而穷举扫描对它们无能为 —— 这条从令牌层把它们钉住。
+    const pairs = await tokenPairContrast(p10, [
+      ['--ink', '--bg'], ['--accent', '--accent-ink'],
+      ['--green', '--green-ink'], ['--amber', '--amber-ink'], ['--accent-2', '--accent-2-ink'],
+    ])
+    check(`${route} ${skin}：填色/文字令牌对全部 ≥ 4.5:1`, () => {
+      const weak = pairs.filter(x => x.比值 < 4.5)
+      assert.equal(weak.length, 0,
+        weak.map(x => `${x.对} 只有 ${x.比值}（${x.字} on ${x.底}）`).join(' · '))
     })
     await p10.close()
   }

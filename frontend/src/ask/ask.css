@@ -22,6 +22,10 @@
   --danger: #d8453a;
   --amber: #c8861c;
   --green: #1c9e66;
+  /* 状态色上的文字色：绿/amber 压白字只有 3.42 / 3.05，走 ink 档 */
+  --green-ink: var(--ink);
+  --amber-ink: var(--ink);
+  --accent-2-ink: #ffffff;
   --shadow-soft: 0 2px 0 rgba(20, 17, 15, .08);
   --shadow-pop: 6px 6px 0 var(--ink);
   --sh-hard: 4px 4px 0 var(--ink);

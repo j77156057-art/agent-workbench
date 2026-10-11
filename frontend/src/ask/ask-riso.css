@@ -66,6 +66,8 @@ body::after {
   --accent-ink: #14110f;
   /* 消除蓝第三色相：--accent-2 原本 #1f5fe0，违反严格双色，统一指向朱红。 */
   --accent-2: var(--accent);
+  /* 双色纪律下 accent-2 就是朱红，白字压不住（2.88），跟 accent-ink 走 */
+  --accent-2-ink: var(--accent-ink);
   /* 标题字体栈补离线兜底：ask.css 写的是 'Archivo Black','Space Grotesk',…，
      中间**没有本地打包的可变字 'Archivo'**。canvas 实测（900 30px 同串字）：
      "Archivo Black" 331.7px / "Archivo" 319.9px / sans-serif 319.9px

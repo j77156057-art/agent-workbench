@@ -40,6 +40,11 @@
   --danger: #d8453a;
   --amber: #c8861c;
   --green: #1c9e66;
+  /* 状态色上的文字色（--accent-ink 同族）。默认档的绿/ amber 不够暗，
+     白字压上去只有 3.42 / 3.05，必须用 ink 档 */
+  --green-ink: var(--ink);
+  --amber-ink: var(--ink);
+  --accent-2-ink: #ffffff;
   /* 2026-10-02 色值重构：色相归并后需要「淡底」档（原来这些淡底是写死的，
      换皮肤时不跟随 —— 深色皮肤下会在深底上留一片浅块）。 */
   --amber-soft: #fdf6e7;
