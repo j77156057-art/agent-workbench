@@ -191,11 +191,11 @@ onMounted(() => {
   white-space: nowrap;
 }
 .cmb-seg-opt:last-child { border-right: 0; }
-.cmb-seg-opt:hover:not(:disabled) { color: var(--text); background: rgba(47,111,237,.07); }
+.cmb-seg-opt:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
 .cmb-seg-opt:disabled { opacity: .55; cursor: default; }
-.cmb-seg-on { color: var(--accent); font-weight: 600; background: rgba(47,111,237,.1); }
+.cmb-seg-on { color: var(--accent-text); font-weight: 600; background: var(--bg-selected); }
 .cmb-seg-opt:focus-visible, .cmb-select:focus-visible, .cmb-manage:focus-visible {
-  outline: 2px solid rgba(47,111,237,.6);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .cmb-seg-opt { transition: color .16s ease, background .16s ease, opacity .16s ease; }

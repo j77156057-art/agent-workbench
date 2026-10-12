@@ -532,7 +532,7 @@ function providerLabel(p: string) {
   padding: 8px 10px; cursor: pointer; font: inherit; display: flex; flex-direction: column; gap: 3px; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 .fl-turn:hover { border-color: var(--border); background: var(--bg-selected); transform: translateX(2px); box-shadow: 0 3px 9px rgba(35,52,84,.08); }.fl-turn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.fl-turn.on { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
+.fl-turn.on { border-color: var(--accent); background: var(--bg-selected); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
 .fl-turn-row { display: flex; align-items: center; justify-content: space-between; }
 .fl-turn-time { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .fl-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
@@ -573,9 +573,9 @@ function providerLabel(p: string) {
   font-size: 11px; font-weight: 700;
 }
 .fl-n-glyph.start { background: var(--accent-soft); color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 32%, transparent); }
-.fl-n-glyph.end.ok { background: color-mix(in srgb, var(--green) 12%, transparent); color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
-.fl-n-glyph.end.err { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
-.fl-n-glyph.end.stop, .fl-n-glyph.end.warn { background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+.fl-n-glyph.end.ok { background: var(--bg-raised); color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+.fl-n-glyph.end.err { background: var(--bg-raised); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.fl-n-glyph.end.stop, .fl-n-glyph.end.warn { background: var(--bg-raised); color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
 .fl-n-idx { margin-left: auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .fl-n-fail {
   font-size: 10px; font-weight: 700; color: var(--danger-ink); background: var(--danger);
@@ -589,8 +589,8 @@ function providerLabel(p: string) {
   font-size: 10px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-2);
   border-radius: 5px; padding: 1px 7px; font-variant-numeric: tabular-nums;
 }
-.fl-n-ok.good { color: var(--green) !important; background: color-mix(in srgb, var(--green) 12%, transparent) !important; border-color: color-mix(in srgb, var(--green) 35%, transparent) !important; }
-.fl-n-ok.bad { color: var(--danger) !important; background: color-mix(in srgb, var(--danger) 10%, transparent) !important; border-color: color-mix(in srgb, var(--danger) 35%, transparent) !important; font-weight: 700; }
+.fl-n-ok.good { color: var(--green) !important; background: var(--bg-raised) !important; border-color: color-mix(in srgb, var(--green) 35%, transparent) !important; }
+.fl-n-ok.bad { color: var(--danger) !important; background: var(--bg-raised) !important; border-color: color-mix(in srgb, var(--danger) 35%, transparent) !important; font-weight: 700; }
 .fl-n-tool.fail { border-color: color-mix(in srgb, var(--danger) 45%, transparent); box-shadow: 0 3px 12px color-mix(in srgb, var(--danger) 22%, transparent); }
 .fl-n-think {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;

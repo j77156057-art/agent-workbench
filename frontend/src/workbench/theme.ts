@@ -37,9 +37,17 @@ export function regionTextColor(key: string | null | undefined): string {
  *  要当文字用请走 regionTextColor 那档 36%（4.5:1），别拿这个糊小字。 */
 export const cat = (hex: string) => `color-mix(in srgb, ${hex} 55%, var(--ink))`
 
-/** 同一个身份色的半透明版（节点底板、光晕这类），仍走派生后的色相。 */
+/** 同一个身份色的半透明版（光晕、淡底这类，允许透出后面的东西）。 */
 export const catAlpha = (hex: string, pct: number) =>
   `color-mix(in srgb, ${cat(hex)} ${pct}%, transparent)`
+
+/** 身份色压进**不透明**表面令牌：节点卡底板用它。
+ *  为什么不用 catAlpha —— 半透明底的最终颜色取决于卡片后面是什么，
+ *  实测同一张卡在 paper 上成像 rgb(221,222,211)，比 --bg-raised 暗了 29 个通道值，
+ *  于是压在上面的 --text-muted 掉到 4.38:1 而没人看得见（画布底、点阵网格、
+ *  卡片色底三层叠出来的）。改成不透明之后底是确定的，模型和现实必然一致。 */
+export const catOn = (hex: string, pct: number) =>
+  `color-mix(in srgb, ${cat(hex)} ${pct}%, var(--bg-raised))`
 
 export type ChipKind = 'code' | 'data' | 'web' | 'doc' | 'media' | 'lib' | 'plain'
 
@@ -122,5 +130,5 @@ export function graphNodeStyle(kind: string): GraphNodeStyle {
   // 8% 既留得住"按类型分组"的那层淡色，又把标签推回 4.5 以上。
   // text 不再回那批调死的浅色（#d6e7ff 在纸底上等于隐形）—— 标签走中性色，
   // 色相由卡片描边和底色承担。
-  return { ...s, stroke: cat(s.stroke), fill: catAlpha(s.stroke, 8), text: 'var(--text)' }
+  return { ...s, stroke: cat(s.stroke), fill: catOn(s.stroke, 8), text: 'var(--text)' }
 }

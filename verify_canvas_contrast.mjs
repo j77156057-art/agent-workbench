@@ -51,28 +51,42 @@ const SWEEP = (rootSel, FLOOR, dark) => {
       const f = s.length === 3 || s.length === 4 ? s.split('').map(c => c + c).join('') : s.slice(0, 6)
       const a = s.length >= 8 ? parseInt(f ? s.slice(6, 8) : 'ff', 16) / 255 : 1
       return { rgb: [parseInt(f.slice(0, 2), 16), parseInt(f.slice(2, 4), 16), parseInt(f.slice(4, 6), 16)], a } }
+    // color-mix() 解出来的颜色，Chromium 序列化成 color(srgb r g b / a)（0..1）。
+    // 不认它，派生色板（cat()/catOn()）在探针里就等于不存在。
+    const cs = /^color\(\s*srgb\s+([^)]*)\)/.exec((v || '').trim())
+    if (cs) { const [trip, alpha] = cs[1].split('/')
+      const q = trip.trim().split(/\s+/).map(Number)
+      return { rgb: q.slice(0, 3).map(x => Math.round(x * 255)), a: alpha === undefined ? 1 : Number(alpha.trim()) } }
     return null
   }
   const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
     return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
   const over = (c, bg) => ({ rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + bg.rgb[k] * (1 - c.a)), a: 1 })
   const bgOf = el => {
-    const acc = []
+    // 与 verify_skin_states.mjs 同一套算法：逐层收集、**由外向内**折叠、
+    // 每层只留最亮/最暗两个极端，遇到不透明顶层重置而不是停止。
+    // 旧版"看到渐变就返回最浅色标压在白上"，于是 .rg-svg 的点阵底把真正的
+    // 面板色遮住，量出来的底永远是纯白 —— 关系图的节点卡全被判成 1.18:1。
+    const stack = []
     for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
-      const gi = n.nodeType === 1 ? getComputedStyle(n).backgroundImage : 'none'
-      if (gi && gi !== 'none') {   // 渐变底：取最浅那个色标，别把"透明"当真
-        const stops = (gi.match(/rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}\b/g) || []).map(parse).filter(Boolean)
-        if (stops.length) { let best = null
-          for (const s of stops) { const c = over(s, { rgb: [255, 255, 255], a: 1 })
-            if (!best || lum(c.rgb) > lum(best.rgb)) best = c }
-          return best } }
-      const c = parse(getComputedStyle(n).backgroundColor)
-      if (c) { if (c.a >= .999) return over(c, { rgb: [255, 255, 255], a: 1 })
-        acc.push(c) }
+      const cs2 = getComputedStyle(n)
+      const layers = []
+      const bc = parse(cs2.backgroundColor); if (bc) layers.push(bc)
+      for (const s of (cs2.backgroundImage || '').match(/rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}\b|color\([^)]*\)/g) || []) {
+        const c = parse(s); if (c) layers.push(c)
+      }
+      if (layers.length) stack.push(layers)
     }
-    let bg = { rgb: [255, 255, 255], a: 1 }
-    for (let i = acc.length - 1; i >= 0; i--) bg = over(acc[i], bg)
-    return bg
+    let cands = [{ rgb: [255, 255, 255], a: 1 }]
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const next = []
+      for (const base of cands) for (const L of stack[i]) next.push(over(L, base))
+      next.sort((a, b) => lum(a.rgb) - lum(b.rgb))
+      cands = [next[0], next[next.length - 1]]
+      const top = stack[i][stack[i].length - 1]
+      if (top.a >= .999) cands = [over(top, { rgb: [255, 255, 255], a: 1 })]
+    }
+    return cands
   }
   const ratio = (c, bg) => { const L1 = lum(c.rgb), L2 = lum(bg.rgb)
     return +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2)) }
@@ -113,7 +127,7 @@ const SWEEP = (rootSel, FLOOR, dark) => {
       if (/(color|fill|stroke|background)/i.test(p) && v && !CSS.supports(p, v))
         invalid.push(`${tag}.${typeof el.className === 'string' ? el.className : ''} ${p}:${v}`)
     }
-    const bg = bgOf(el)
+    const grounds = bgOf(el)
     if (dark) {
       const own = parse(el.ownerSVGElement ? cs.fill : cs.backgroundColor)
       if (own && own.a > .9 && lum(own.rgb) > .55) {
@@ -127,17 +141,26 @@ const SWEEP = (rootSel, FLOOR, dark) => {
     const push = (what, col, note) => {
       const c = parse(col)
       if (!c || c.a === 0) return
-      if (what === '填充' && isPlate(c)) return   // 底板不算身份图形
-      const eff = over(c, bg)
+      if (what === '填充' && (isPlate(c) || stroked)) return
+      //   ^ 两种"垫板"：填充色本身就是某个表面令牌；或者这个图形已经有描边 ——
+      // 节点卡的身份由那圈 1.3px 色边说，里面的淡色只是垫色，1.4.11 管不着。
+      let worst = null
+      for (const bg of grounds) {
+        const eff = over(c, bg)
+        const rr = ratio(eff, bg)
+        if (worst === null || rr < worst.rr) worst = { rr, bg }
+      }
+      const { rr: ratioV, bg } = worst
       if (c.a < .999) return marks.push({ what, skip: true })   // 半透明不算身份色（是遮罩/阴影）
       marks.push({ what, col: col.trim(), bg: `rgb(${bg.rgb.map(Math.round).join(',')})`,
-        ratio: ratio(eff, bg), kind, note,
+        ratio: ratioV, kind, note,
         tag: tag + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : '') })
       const last = marks[marks.length - 1]
       if (last.ratio < FLOOR) bad.push(last)
     }
+    const stroked = cs.stroke !== 'none' && sw >= 1
     if (kind === 'svg') {
-      if (cs.stroke !== 'none' && sw >= 1) push('描边', cs.stroke, `${sw}px`)
+      if (stroked) push('描边', cs.stroke, `${sw}px`)
       if (cs.fill !== 'none' && r.width * r.height >= 60) push('填充', cs.fill, `${Math.round(r.width)}×${Math.round(r.height)}`)
     } else {
       for (const side of ['Top', 'Right', 'Bottom', 'Left']) {

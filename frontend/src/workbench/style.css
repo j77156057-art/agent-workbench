@@ -1660,11 +1660,13 @@ select:focus-visible,
 }
 #app .acp-stage-chips span:hover { border-color: var(--accent) !important; background: var(--bg-hover) !important; }
 
-/* 选中态冷蓝淡染 → 朱红淡染 */
+/* 选中态冷蓝淡染 → 朱红淡染。淡染必须混在**不透明表面**上而不是 transparent：
+   压在半透明底上时，最终颜色取决于背后是哪一层（这里 .cmb 条是 --bg-hover），
+   实测 --accent-text 从 4.80:1 掉到 4.38:1，而门禁此前根本看不见这层底。 */
 #app .acp-flow-step.active,
 #app .cmb-seg-opt.cmb-seg-on {
   border-color: var(--accent) !important;
-  background: color-mix(in srgb, var(--accent) 9%, transparent) !important;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-raised)) !important;
 }
 
 /* 颜色三角色落地（无障碍红线）：纸底朱红字用 --accent-text（4.80:1，直接 --accent 只有 2.71:1）；

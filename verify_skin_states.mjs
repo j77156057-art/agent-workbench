@@ -80,9 +80,19 @@ const ROUTES = {
 const SKINS = ['paper', 'graphite', 'zinc']
 
 const SWEEP = () => {
-  const parse = v => { const m = /rgba?\(([^)]+)\)/.exec(v); if (!m) return null
-    const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
-    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const parse = v => {
+    let m = /^rgba?\(([^)]+)\)/.exec(v)
+    if (m) { const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+      return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+    // color-mix() 解出来的颜色，Chromium 序列化成 color(srgb r g b / a)，分量是 0..1。
+    // 不认它 = 把所有"派生出来的底"当成透明，实测连不透明节点卡底板都漏掉。
+    // 其它色彩空间一律抛不了就报错，不拿假换算蒙混。
+    m = /^color\(\s*srgb\s+([^)]*)\)/.exec(v)
+    if (m) { const [trip, alpha] = m[1].split('/')
+      const q = trip.trim().split(/\s+/).map(Number)
+      return { rgb: q.slice(0, 3).map(x => Math.round(x * 255)), a: alpha === undefined ? 1 : Number(alpha.trim()) } }
+    return null
+  }
   const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
     return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
   // 底要连祖先的 background-image 一起算。以前只累加 backgroundColor，
@@ -100,7 +110,7 @@ const SWEEP = () => {
       const cs2 = getComputedStyle(n)
       const layers = []
       const bc = parse(cs2.backgroundColor); if (bc) layers.push(bc)
-      for (const s of (cs2.backgroundImage || '').match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) || []) {
+      for (const s of (cs2.backgroundImage || '').match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|color\([^)]*\)/g) || []) {
         const c = parse(s); if (c) layers.push(c)
       }
       if (layers.length) stack.push(layers)
@@ -112,6 +122,11 @@ const SWEEP = () => {
       for (const base of cands) for (const L of stack[i]) next.push(over(L, base))
       next.sort((a, b) => lum(a) - lum(b))
       cands = [next[0], next[next.length - 1]]
+      // 该层最上面的油漆若不透明，它**外面**的东西就全被遮住：把候选重置成它自己，
+      // 但循环要继续往内层走 —— 内层是画在它上面的，直接 break 会把元素自己的
+      // 背景一起跳过（于是"白字压 --danger"被量成"白字压 --bg"= 1.23:1 的假账）。
+      const top = stack[i][stack[i].length - 1]
+      if (top.a >= .999) cands = [over(top, [255, 255, 255])]
     }
     return cands
   }
@@ -124,10 +139,10 @@ const SWEEP = () => {
     const cs = getComputedStyle(el)
     if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue
     const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue
-    const fg = parse(el.ownerSVGElement && /^(text|tspan|tref)$/i.test(el.tagName)
-      // SVG 文字的油漆是 fill 不是 color：画布里的类名/标签一直是个盲区，
-      // 两个探针都读 color，于是 #1b3c73 压深色底 1.40:1 这种账从来没进过表。
-      ? getComputedStyle(el).fill : cs.color)
+    // SVG 文字的油漆是 fill 不是 color：两个探针以前都只读 color，
+    // 于是 #1b3c73 压深色底 1.40:1 这类账从来没进过表。
+    const svgText = !!(el.ownerSVGElement && /^(text|tspan|tref)$/i.test(el.tagName))
+    const fg = parse(svgText ? getComputedStyle(el).fill : cs.color)
     if (!fg) continue
     // 每个可能的底都算一遍，取最差那一档（渐变里最浅的色标对浅字最不利）。
     const grounds = groundsOf(el)
@@ -138,7 +153,11 @@ const SWEEP = () => {
       const plate = g && g.querySelector('rect, circle')
       if (plate) {
         const pf = parse(getComputedStyle(plate).fill)
-        if (pf && pf.a > 0) for (const base of grounds.slice())
+        if (pf && pf.a >= .999) {
+          // 不透明的板会把它后面的一切（含画布点阵）遮住：底就是它，别再拿别的候选档
+          grounds.length = 0
+          grounds.push([0, 1, 2].map(k => pf.rgb[k]))
+        } else if (pf && pf.a > 0) for (const base of grounds.slice())
           grounds.push([0, 1, 2].map(k => pf.rgb[k] * pf.a + base[k] * (1 - pf.a)))
       }
     }
@@ -157,7 +176,7 @@ const SWEEP = () => {
     if (ratio < need) bad.push({ 元素: el.tagName.toLowerCase()
       + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : '')
       + (grad ? '〔含渐变底·取最差档〕' : ''),
-      比值: ratio, 字: cs.color, 底: `rgb(${bg.rgb.map(Math.round).join(',')})`,
+      比值: ratio, 字: svgText ? `fill:${cs.fill}` : cs.color, 底: `rgb(${bg.rgb.map(Math.round).join(',')})`,
       字号: px, 文本: (el.textContent || '').trim().slice(0, 14) })
   }
   return bad
