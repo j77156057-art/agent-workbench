@@ -873,12 +873,16 @@ button.ac-card { font: inherit; color: inherit; }
   background: color-mix(in srgb, var(--bg-raised) 92%, transparent); color: var(--text);
   border: 1px solid var(--border);
 }
-.ac-kind-model { color: #2f6fed; }
-.ac-kind-texture { color: #b0742a; }
-.ac-kind-hdri { color: #6d4bbf; }
-.ac-kind-audio { color: #2b9a6a; }
-.ac-kind-2d { color: #c0467a; }
-.ac-kind-animation { color: #0f8f8f; }
+/* 类别色相挪到「填充 + 描边」，字统一继承 .ac-thumb-badge 的 --text：
+   这六个值直接做 10px 小字，三套皮肤里没有一个过 4.5（paper 实测 3.33）。
+   类别本来就印在字上（3D / 贴图 / HDR / 音 / 2D / 动画），色相只是第二线索，
+   所以让它退到环与底上，不再新造颜色值。 */
+.ac-kind-model { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, var(--bg-raised)); }
+.ac-kind-texture { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, var(--bg-raised)); }
+.ac-kind-hdri { border-color: var(--tool); background: color-mix(in srgb, var(--tool) 16%, var(--bg-raised)); }
+.ac-kind-audio { border-color: var(--green); background: color-mix(in srgb, var(--green) 16%, var(--bg-raised)); }
+.ac-kind-2d { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 16%, var(--bg-raised)); }
+.ac-kind-animation { border-color: var(--accent-deep); background: color-mix(in srgb, var(--accent-deep) 16%, var(--bg-raised)); }
 .ac-dup-badge {
   position: absolute; right: 6px; bottom: 6px;
   font-size: 10px; font-weight: 600; padding: 2px 7px; border-radius: 10px;

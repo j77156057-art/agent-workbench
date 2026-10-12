@@ -102,14 +102,26 @@ const SWEEP = () => {
     if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue
     const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue
     const fg = parse(cs.color); if (!fg) continue
-    const bg = bgOf(el)
-    const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + bg.rgb[k] * (1 - fg.a)) }
-    const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
-    const ratio = +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
+    const base = bgOf(el)
+    // 渐变底不能当成"透明往上找父级"：那样白字压蓝渐变会被算成白压卡片 = 1.06:1，
+    // 是探针造假出来的数字。把每个色标各自压到父底上，取最浅那一档（对文字最不利）。
+    const stops = (cs.backgroundImage || '').match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) || []
+    const bgs = stops.map(s => parse(s)).filter(Boolean)
+      .map(c => ({ rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + base.rgb[k] * (1 - c.a)), a: 1 }))
+    const grad = bgs.length > 0
+    let worst = null
+    for (const bg of (grad ? bgs : [base])) {
+      const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + bg.rgb[k] * (1 - fg.a)) }
+      const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
+      const ratio = +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
+      if (worst === null || ratio < worst.ratio) worst = { ratio, bg }
+    }
+    const { ratio, bg } = worst
     const px = parseFloat(cs.fontSize) || 16
     const need = (px >= 24 || (px >= 18.66 && Number(cs.fontWeight) >= 700)) ? 3 : 4.5
     if (ratio < need) bad.push({ 元素: el.tagName.toLowerCase()
-      + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : ''),
+      + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : '')
+      + (grad ? '〔渐变底·取最浅色标〕' : ''),
       比值: ratio, 字: cs.color, 底: `rgb(${bg.rgb.map(Math.round).join(',')})`,
       字号: px, 文本: (el.textContent || '').trim().slice(0, 14) })
   }

@@ -834,8 +834,8 @@ const externalIds = computed<Set<string>>(
 .ug-title { display: flex; align-items: center; gap: 9px; flex: 1; }
 .ug-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
 .ug-stats { font-size: 12px; color: var(--text-faint); }
-.ug-warn { color: #b5791f; font-style: normal; }
-.ug-bad { color: #c23a40; font-style: normal; font-weight: 600; }
+.ug-warn { color: var(--amber); font-style: normal; }
+.ug-bad { color: var(--danger); font-style: normal; font-weight: 600; }
 .ug-iconbtn {
   border: 1px solid transparent;
   background: transparent;
@@ -853,7 +853,7 @@ const externalIds = computed<Set<string>>(
 .ug-d-mini:focus-visible,
 .ug-d-open:focus-visible,
 .ug-retry:focus-visible {
-  outline: 2px solid #2f6fed88;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -878,7 +878,7 @@ const externalIds = computed<Set<string>>(
   color: var(--text-faint);
   max-width: 420px;
 }
-.ug-search:focus-within { border-color: #2f6fed66; box-shadow: 0 0 0 2px #2f6fed18; }
+.ug-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
 .ug-search input {
   flex: 1;
   border: none;
@@ -912,8 +912,8 @@ const externalIds = computed<Set<string>>(
 .ug-chip:hover { filter: brightness(1.25); }
 .ug-chip.off { opacity: 0.3; }
 .ug-chip { transition: opacity .16s ease, filter .16s ease, background .16s ease, border-color .16s ease; }
-.ug-chip:not(.off) { background: #2f6fed0d; }
-.ug-chip-missing { color: #c23a40 !important; border-color: #c23a4066 !important; }
+.ug-chip:not(.off) { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.ug-chip-missing { color: var(--danger) !important; border-color: color-mix(in srgb, var(--danger) 40%, transparent) !important; }
 .ug-zoom { display: flex; gap: 4px; }
 .ug-zoom button {
   min-width: 26px; height: 24px;
@@ -972,7 +972,7 @@ const externalIds = computed<Set<string>>(
   text-align: center;
   padding: 0 40px;
 }
-.ug-error { color: #c23a40; }
+.ug-error { color: var(--danger); }
 .ug-hint { font-size: 12px; }
 .ug-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
 
@@ -991,7 +991,7 @@ const externalIds = computed<Set<string>>(
   color: var(--text-muted);
   pointer-events: none;
 }
-.ug-legend-warn { color: #b5791f; }
+.ug-legend-warn { color: var(--amber); }
 
 /* ------------------------------------------------------------ 详情侧栏 */
 .ug-detail {
@@ -1076,7 +1076,7 @@ const externalIds = computed<Set<string>>(
   cursor: pointer;
 }
 .ug-d-section li:hover { background: var(--bg-hover); }
-.ug-d-section li.miss .ug-d-li-label { color: #c23a40; }
+.ug-d-section li.miss .ug-d-li-label { color: var(--danger); }
 .ug-d-dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
 .ug-d-li-label {
   flex: 1;

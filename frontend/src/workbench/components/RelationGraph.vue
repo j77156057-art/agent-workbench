@@ -1086,7 +1086,7 @@ const colorOf = regionColor
   display: flex;
   align-items: center;
   gap: 14px;
-  background: rgba(255, 255, 255, 0.92);
+  background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 12px;

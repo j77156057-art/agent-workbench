@@ -180,7 +180,7 @@ function kindOf(kind: string) {
                   <path d="M3.5 2.5 L7 5 L3.5 7.5 Z" fill="currentColor" />
                 </svg>
                 <i v-if="mf.f.region" class="sm-region-tag"
-                   :style="{ color: regionColor(mf.f.region), borderColor: regionColor(mf.f.region) + '66' }">
+                   :style="{ borderColor: regionColor(mf.f.region) }">
                   {{ mf.f.region_name }}
                 </i>
                 <span class="sm-file-name">{{ mf.f.rel }}</span>
@@ -193,7 +193,7 @@ function kindOf(kind: string) {
               <ul v-show="!collapsed.has(mf.f.rel) || query" class="sm-syms">
                 <li v-for="s in mf.syms" :key="`${s.start}-${s.name}`">
                   <button class="sm-sym" @click="go(mf.f, s)" :title="s.doc || s.signature">
-                    <i class="sm-sym-mark" :style="{ color: kindOf(s.kind).color }">{{ kindOf(s.kind).mark }}</i>
+                    <i class="sm-sym-mark">{{ kindOf(s.kind).mark }}</i>
                     <span class="sm-sym-name">{{ s.name }}</span>
                     <span v-if="s.detail" class="sm-sym-detail">{{ s.detail }}</span>
                     <span v-else-if="s.kind === 'function' && s.signature" class="sm-sym-detail">{{ s.signature }}</span>
@@ -356,13 +356,14 @@ function kindOf(kind: string) {
   font-style: normal;
   font-size: 10px;
   border: 1px solid;
+  color: var(--text);
   border-radius: 4px;
   padding: 0 5px;
   line-height: 15px;
   flex: 0 0 auto;
 }
 .sm-file-name { font-family: var(--font-mono); font-size: 12px; color: var(--text); flex: 0 0 auto; }
-.sm-file-class { font-family: var(--font-mono); font-size: 11px; color: #2f6fed; flex: 0 0 auto; }
+.sm-file-class { font-family: var(--font-mono); font-size: 11px; color: var(--accent-text); flex: 0 0 auto; }
 .sm-file-doc {
   font-size: 11px;
   color: var(--text-faint);
@@ -394,6 +395,9 @@ function kindOf(kind: string) {
   font-family: var(--font-mono);
   font-weight: 700;
   font-size: 10px;
+  /* 类别色相原来直接当 10px 字色（paper 实测 2.04:1）。字形本身就是类别记号
+     （R / ▣ / x / f），色相只是第二线索，所以字回归中性，色相留给分区标签的描边。 */
+  color: var(--text);
   width: 12px;
   flex: 0 0 12px;
   align-self: center;

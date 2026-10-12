@@ -296,11 +296,11 @@ defineExpose({ show })
   padding: 5px 9px; cursor: pointer; font-size: 11px; white-space: nowrap;
 }
 .gp-trigger:hover { color: var(--text); }
-.gp-busy { border-color: #dfb067; color: #8a5a16; }
+.gp-busy { border-color: color-mix(in srgb, var(--amber) 45%, transparent); color: var(--amber); }
 .gp-trigger { transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease; }
 .gp-trigger:hover { background: var(--bg-hover); }
 .gp-trigger:active { transform: translateY(1px); }
-.gp-trigger:focus-visible, .gp-link:focus-visible, .gp-mini:focus-visible, .gp-mini-danger:focus-visible, .gp-danger:focus-visible, .gp-input:focus-visible { outline: 2px solid #2f6fed88; outline-offset: 2px; }
+.gp-trigger:focus-visible, .gp-link:focus-visible, .gp-mini:focus-visible, .gp-mini-danger:focus-visible, .gp-danger:focus-visible, .gp-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .gp-backdrop { position: fixed; inset: 0; z-index: 299; background: rgba(35,52,84,.16); backdrop-filter: blur(1px); animation: gp-fade-in .16s ease-out both; }
 .gp-pop {
   position: fixed; right: 16px; top: 64px; width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 80px); overflow-y: auto;
@@ -314,38 +314,38 @@ defineExpose({ show })
 .gp-head b { color: var(--text); font-size: 13px; }
 .gp-mode { color: var(--text-muted); font-size: 11px; }
 .gp-spacer { flex: 1; }
-.gp-link { background: none; border: none; color: #2f6fed; cursor: pointer; font-size: 11px; padding: 0; }
+.gp-link { background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: 11px; padding: 0; }
 .gp-link { transition: color .16s ease, opacity .16s ease; }
-.gp-link:hover:not(:disabled) { color: #174ca8; }
-.gp-warn { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: rgba(200, 129, 28, 0.12); color: #8a5a16; font-size: 11px; }
-.gp-err { margin: 8px 0 0; color: #c23a40; font-size: 11px; }
+.gp-link:hover:not(:disabled) { color: var(--accent-text); }
+.gp-warn { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: rgba(200, 129, 28, 0.12); color: var(--amber); font-size: 11px; }
+.gp-err { margin: 8px 0 0; color: var(--danger); font-size: 11px; }
 .gp-faint { color: var(--text-muted); font-size: 11px; }
 
 .gp-chart-wrap { margin: 10px 0 4px; }
-.gp-chart { width: 100%; height: 56px; display: block; background: #f6f8fb; border-radius: 4px; }
+.gp-chart { width: 100%; height: 56px; display: block; background: var(--bg-raised); border-radius: 4px; }
 .gp-grid { stroke: var(--border-strong); stroke-width: 0.5; stroke-dasharray: 2 3; }
 .gp-legend { display: flex; gap: 10px; margin-top: 3px; font-size: 10px; color: var(--text-muted); }
 .gp-legend i { display: inline-flex; align-items: center; gap: 4px; font-style: normal; }
 .gp-legend b { width: 8px; height: 3px; border-radius: 1px; display: inline-block; }
 
 .gp-card { margin-top: 10px; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: 6px; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
-.gp-card:hover { border-color: #9fb0c6; box-shadow: 0 4px 12px rgba(35,52,84,.07); transform: translateY(-1px); }
+.gp-card:hover { border-color: var(--border); box-shadow: 0 4px 12px rgba(35,52,84,.07); transform: translateY(-1px); }
 .gp-card-head { display: flex; align-items: baseline; gap: 8px; }
 .gp-card-head b { font-size: 12px; color: var(--text); font-weight: 600; }
 .gp-card-head em { font-style: normal; font-weight: 400; color: var(--text-muted); font-size: 11px; }
 .gp-bar { height: 6px; border-radius: 3px; background: rgba(35, 52, 84, 0.08); margin-top: 6px; overflow: hidden; }
-.gp-bar i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #2f6fed, #6f9cf5); transition: width .35s ease; }
+.gp-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .35s ease; }
 .gp-bar-row { display: flex; justify-content: space-between; margin-top: 3px; font-size: 11px; color: var(--text-muted); }
 
 .gp-holder { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; }
 .gp-wait .gp-owner { color: var(--text-muted); }
 .gp-tag { padding: 0 6px; border-radius: 8px; font-size: 10px; line-height: 16px; }
-.gp-tag-on { background: rgba(224, 72, 79, 0.12); color: #c23a40; }
-.gp-tag-wait { background: rgba(47, 111, 237, 0.12); color: #2f6fed; }
+.gp-tag-on { background: rgba(224, 72, 79, 0.12); color: var(--danger); }
+.gp-tag-wait { background: rgba(47, 111, 237, 0.12); color: var(--accent-text); }
 .gp-owner { color: var(--text); }
 .gp-mini { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 4px; font-size: 10px; padding: 1px 7px; cursor: pointer; }
-.gp-mini:hover:not(:disabled) { color: var(--text); border-color: #2f6fed; }
-.gp-mini-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: #c23a40; border-radius: 4px; font-size: 10px; padding: 1px 7px; cursor: pointer; }
+.gp-mini:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.gp-mini-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 4px; font-size: 10px; padding: 1px 7px; cursor: pointer; }
 .gp-mini-danger:hover:not(:disabled) { background: rgba(224, 72, 79, 0.1); }
 .gp-mini, .gp-mini-danger, .gp-danger { transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease, opacity .16s ease; }
 .gp-mini:active:not(:disabled), .gp-mini-danger:active:not(:disabled), .gp-danger:active:not(:disabled) { transform: translateY(1px); }
@@ -358,7 +358,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 .gp-idle-meta { margin-top: 4px; }
 
 .gp-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-.gp-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: #c23a40; border-radius: 5px; font-size: 11px; padding: 4px 10px; cursor: pointer; }
+.gp-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 5px; font-size: 11px; padding: 4px 10px; cursor: pointer; }
 .gp-danger:hover:not(:disabled) { background: rgba(224, 72, 79, 0.1); }
 @keyframes gp-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes gp-pop-in { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
