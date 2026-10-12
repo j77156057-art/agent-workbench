@@ -865,20 +865,32 @@ class LiveComponentTests(Base):
         self.addCleanup(path.unlink, missing_ok=True)
         return ".tmp/vue-guard-mut/store-bad.ts"
 
+    def guard_dirs(self) -> set:
+        """`.tmp/vue-guard` 下现存的全部 `guard-*` 产物目录。"""
+        holder = FRONTEND / ".tmp" / "vue-guard"
+        return set(holder.glob("guard-*")) if holder.is_dir() else set()
+
     def test_nothing_is_left_behind_in_the_working_tree(self):
         """本次产物目录必须真的消失，而不是 `ignore_errors=True` 报"删过了"。
 
         这条不是洁癖：旧写法用 `shutil.rmtree(..., ignore_errors=True)`，浏览器刚关掉时
         `app.mjs` 还被句柄占着，一次删不掉就再没人知道——仓库里确实躺着这么一套孤儿目录。
+
+        "别的产物目录"按**增量**判定，不按绝对数量：机器历史上遗留的孤儿（别的会话/
+        被中断的跑批留下的）不是本次要修的东西，断言 `orphans == []` 会让这条测试
+        随机器脏不脏而随机红——真缺陷（本次漏的）反而被噪声盖住。增量仍然抓得住本次泄漏：
+        本次自己的目录名（`guard-<时间戳>`）也落在同一前缀里，漏了就必进 `new_orphans`。
         """
+        before = self.guard_dirs()
         result = self.guard()
         self.assertTrue(result["cleaned"]["removed"], result.get("cleaned"))
         self.assertFalse(Path(result["artifacts_dir"]).exists(),
                          "本次产物目录还在：%s" % result["artifacts_dir"])
         self.assertGreaterEqual(result["cleaned"]["attempts"], 0)
-        orphans = list((FRONTEND / ".tmp" / "vue-guard").glob("guard-*")) \
-            if (FRONTEND / ".tmp" / "vue-guard").is_dir() else []
-        self.assertEqual(orphans, [], "留下了别的产物目录：%s" % orphans)
+        self.assertEqual(result.get("page_close", ""), "",
+                         "页面没收回干净，产物删不掉的上游就在这里：%s" % result.get("cleaned"))
+        new_orphans = sorted(self.guard_dirs() - before)
+        self.assertEqual(new_orphans, [], "本次跑出了新的产物目录：%s" % new_orphans)
 
 
 if __name__ == "__main__":

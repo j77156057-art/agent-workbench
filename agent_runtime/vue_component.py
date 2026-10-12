@@ -639,6 +639,7 @@ def run_guard(root: str | Path, *, component: str, props: str = "", clicks: str 
     cleaned: dict[str, Any] = {"removed": False, "error": "没走到收回"}
     state: dict[str, Any] = {}
     start_error = ""
+    page_close_error = ""    # 关页面失败要留痕：它是"删不掉产物"的直接上游
     try:
         server, thread = visual.serve_static(target)
         url = "http://127.0.0.1:%d/%s" % (server.server_port, page.name)
@@ -664,10 +665,22 @@ def run_guard(root: str | Path, *, component: str, props: str = "", clicks: str 
         start_error = "组件守卫异常：%s: %s" % (type(exc).__name__, str(exc)[:200])
     finally:
         if page_id:
-            with contextlib.suppress(Exception):
-                page_action.close_page(page_id)
+            # 不能 `contextlib.suppress(Exception)` 静默吞掉：关不掉页面 = 浏览器进程还按着
+            # `app.mjs` 的句柄，紧接着的 rmtree 必然 PermissionError → 留下 `guard-*` 孤儿，
+            # 而调用方只看到"删不干净"，永远查不到上游是页面没收回去（2026-10-12 实测）。
+            try:
+                closed = page_action.close_page(page_id)
+            except Exception as exc:  # noqa: BLE001 - 收回失败要留原因，不能连原因都没有
+                page_close_error = "关页面异常：%s: %s" % (type(exc).__name__, str(exc)[:160])
+            else:
+                if not closed.get("ok"):
+                    page_close_error = "页面没收回干净：%s" % json.dumps(
+                        closed.get("cleanup") or closed, ensure_ascii=False)[:200]
         visual.stop_static(server, thread)
         cleaned = clean_target(target)
+        if page_close_error and not cleaned.get("removed"):
+            cleaned["error"] = "%s；上游：%s" % (
+                cleaned.get("error") or "产物目录没删干净", page_close_error)
     if start_error:
         return {"ok": False, "passed": False, "checks": {"compiled": True, "mounted": False},
                 "error": start_error, "component": str(comp)}
@@ -685,12 +698,13 @@ def run_guard(root: str | Path, *, component: str, props: str = "", clicks: str 
                         "effect": (outcome.get("effect") or "?")}
                        for row, outcome in zip(plan, click_results)],
             "console_errors": console_errors[:5], "failed_requests": failed_requests[:5],
+            "page_close": page_close_error,
             "cleaned": cleaned, "artifacts_dir": str(target),
             "elapsed": round(time.monotonic() - started, 2),
             "error": "" if cleaned.get("removed") else cleaned.get("error", "")}
 
 
-def clean_target(target: Path, *, attempts: int = 4,
+def clean_target(target: Path, *, attempts: int = 8,
                  remover: Callable[[Path], None] = shutil.rmtree,
                  pause: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """删掉本次的临时产物目录，并【如实回报有没有删干净】。
@@ -698,6 +712,23 @@ def clean_target(target: Path, *, attempts: int = 4,
     `shutil.rmtree(..., ignore_errors=True)` 会把失败吞掉：浏览器刚关掉时 `app.mjs` 还可能
     被句柄占着，一次删不掉就再没人知道（实测就是这样留下了孤儿目录）。删不干净要红出来。
     `remover`/`pause` 可注入是为了能测"删不干净"这一路——真句柄占用没法稳定复现。
+
+    次数与间隔是量出来的，不是随手调的（2026-10-12 实测）：
+    · 句柄是**异步**释放的（关页面 → 浏览器进程退出 → 内核回收 → 目录才可删），
+      所以"删不掉"必须重试，一次定生死必然留下 `guard-*` 孤儿；
+    · 单次 `remover` 失败的成本远不止 `pause`：本机 `shutil.rmtree` 被沙箱换成
+      "移入回收站"（`sitecustomize._safe_shutil_rmtree` → genie-trash），**成功也要 ~1.9s**；
+    · 目录里有文件被句柄占着时，回收站操作抛 `OSError: Some operations were aborted`
+      （是 `OSError` 子类，能被这里的 `except OSError` 接住并重试）。
+    4 次 ×0.25s 的窗口等于只肯等 ~8s；这里放宽到 8 次 ×0.5s，且**一删掉就立刻返回**，
+    正常路径不多花时间，只有真撞上句柄占用才付重试成本。
+
+    ⚠ 另有一种"删不掉"**不该由这段代码兜**：WorkBuddy 沙箱的 safe-delete 钩子
+    对本轮（per-turn）删除量有配额（实测 `threshold:50`），超了之后 `rmtree`
+    直接 `SystemExit(1)` 而不是返回失败。那是环境闸、不是产品缺陷，
+    且 `SystemExit` 属 `BaseException` —— 这里**故意不接**（接了等于绕过 fail-closed）。
+    单变量对照：同一批用例在 `CODEBUDDY_SAFE_DELETE_ENABLED=0` 下 3 passed，
+    开着钩子就 2 failed（报 `SAFE_DELETE_BULK_CONFIRM_REQUIRED`）。
     """
     error = ""
     for attempt in range(attempts):
@@ -707,7 +738,7 @@ def clean_target(target: Path, *, attempts: int = 4,
             remover(target)
         except OSError as exc:
             error = str(exc)[:180]
-            pause(0.25)
+            pause(0.5)
     return {"removed": not target.exists(), "attempts": attempts,
             "error": "" if not target.exists() else "产物目录没删干净：%s（%s）" % (target, error)}
 
