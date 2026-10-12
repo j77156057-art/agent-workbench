@@ -20,6 +20,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE
 const base = process.env.DOCMIND_UI_TEST_URL || 'http://127.0.0.1:8011'
 const BASELINE_FILE = 'docs/skin-states-baseline.json'
 const RECORD = process.argv.includes('--record')
+// 排查时放大样本量：SHOW=60 node verify_skin_states.mjs --record
+const SHOW = Number(process.env.SHOW || 6)
 
 try {
   const r = await fetch(base + '/api/health', { signal: AbortSignal.timeout(4000) })
@@ -132,7 +134,7 @@ try {
       await page.waitForTimeout(900)
       const bad = await page.evaluate(SWEEP)
       counts[key] = bad.length
-      if (bad.length) samples[key] = bad.slice(0, 3)
+      if (bad.length) samples[key] = bad.slice(0, SHOW)
     } catch (e) {
       counts[key] = -1   // 状态没走到：记成 -1，绝不记成 0
       samples[key] = [{ 元素: '探针失败', 比值: 0, 文本: String(e.message).split('\n')[0].slice(0, 44) }]
@@ -173,6 +175,7 @@ for (const [key, now] of Object.entries(counts)) {
     for (const s of (samples[key] || [])) console.log(`         ${s.元素} ${s.比值}:1  ${s.字} on ${s.底} 「${s.文本}」`)
   } else if (now < allowed) {
     console.log(`PASS↓  ${key}  不达标 ${now} 处 < 基线 ${allowed} 处  → 变好了，记得 --record 把基线降下来`)
+    if (SHOW > 6) for (const s of (samples[key] || [])) console.log(`         ${s.元素} ${s.比值}:1  ${s.字} on ${s.底} 「${s.文本}」`)
   } else {
     console.log(`PASS   ${key}  ${now} 处（与基线一致）`)
   }
