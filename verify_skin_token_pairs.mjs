@@ -89,6 +89,40 @@ const DEAD_TOKENS = () => {
     定义: defined.size, 引用: used.size, 读不到的表: skipped }
 }
 
+/** 硬投影方向不变量：阴影是遮挡，必须比它落的底**更暗**。
+ *  为什么单独一条：graphite 的弹层阴影以前取的是 var(--ink)（浅色），于是深色皮肤里
+ *  每个模态带一圈 8px 白边 —— 像素基线看不见弹层、文字棘轮只读 color，
+ *  这条债当时没有任何门禁能报出来。 */
+const SHADOWS = () => {
+  const probe = document.createElement('span')
+  document.body.appendChild(probe)
+  const resolve = v => { probe.style.color = '#000'; probe.style.color = v; return getComputedStyle(probe).color }
+  const parse = v => { const m = /^rgba?\(([^)]+)\)/.exec(v || ''); if (!m) return null
+    const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const rs = getComputedStyle(document.documentElement)
+  const bg = parse(resolve((rs.getPropertyValue('--bg') || '#fff').trim()))
+  const bad = []
+  for (const t of ['--modal-shadow', '--shadow-pop', '--shadow-soft',
+    '--sh-hard', '--sh-hard-sm', '--sh-hard-lg']) {
+    const raw = (rs.getPropertyValue(t) || '').trim()
+    if (!raw || raw === 'none') continue
+    for (const part of raw.split(/,(?![^(]*\))/)) {
+      const colM = part.match(/rgba?\([^)]*\)|#[0-9a-fA-F]{3,8}|var\([^)]*\)/)
+      if (!colM) continue
+      const nums = part.replace(colM[0], ' ').trim().split(/\s+/).map(parseFloat).filter(n => !isNaN(n))
+      if ((nums[2] || 0) > 0 || !((nums[0] || 0) || (nums[1] || 0))) continue   // 只判硬投影
+      const c = parse(resolve(colM[0]))
+      if (c && lum(c.rgb) > lum(bg.rgb))
+        bad.push(`${t} = ${colM[0]} 比 --bg 还亮（${lum(c.rgb).toFixed(2)} > ${lum(bg.rgb).toFixed(2)}）`)
+    }
+  }
+  probe.remove()
+  return bad
+}
+
 // 已知未修的死引用：4 个从未在任何皮肤里定义的令牌，共 36 处引用。
 // 列在这里不是放过它们，是让门禁只对**新增**的死引用变红 —— 一上来就红的门禁会被无视。
 // 每条都写了"该由谁定"：--amber-deep 要逐皮解算（深色皮下它不能是同一个棕），
@@ -140,6 +174,17 @@ try {
       if (!mutate) {
         ok(`${skin} 现状：${PAIRS.length} 对全部 ≥ ${FLOOR}:1`, weak.length === 0,
           weak.length ? `不达标：${weak.map(w => `${w.对}=${w.值}`).join(' ')}` : detail)
+        const sh = await page.evaluate(SHADOWS)
+        ok(`${skin} 硬投影都比自己落的底暗`, sh.length === 0, sh.join(' · '))
+        // 变异：把模态阴影改回"取 --ink"。只有深色皮肤应当变红 ——
+        // paper / zinc 的 --ink 本来就比底暗，它们不红才证明这条判据在判方向而不是在报"浅色"。
+        await page.evaluate(() => document.documentElement.style
+          .setProperty('--modal-shadow', '8px 8px 0 var(--ink)'))
+        const shM = await page.evaluate(SHADOWS)
+        const shouldRed = skin === 'graphite'
+        ok(`${skin} 变异（模态阴影改回取 --ink）：${shouldRed ? '应当红' : '不该红'}`,
+          shM.length > 0 === shouldRed, shouldRed ? shM.join(' · ') : '未报（正确）')
+        await page.evaluate(() => document.documentElement.style.removeProperty('--modal-shadow'))
         const dt = await page.evaluate(DEAD_TOKENS)
         const names = dt.dead.map(d => d.split(' ')[0])
         const fresh = names.filter(n => !(n in KNOWN_DEAD_TOKENS))

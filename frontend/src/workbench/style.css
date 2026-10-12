@@ -73,7 +73,11 @@
   --radius-xl: 0;
   --radius-pill: 0;
   --modal-radius: 0;
-  --modal-shadow: 8px 8px 0 var(--ink);
+  /* 模态阴影属于"阴影族"，不属于"墨色族"：以前直接写 var(--ink)，
+     于是 graphite 的弹层带出一条 8px 浅色硬影（那套皮肤里其它阴影全是 #05070a 暗色），
+     看起来像多了一圈白边框。改成引用 --sh-hard-lg 后，三套皮肤各自继承自己的
+     阴影语言：paper 仍是 8px 墨影（像素级不变），graphite 转暗，zinc 自己覆盖成柔影。 */
+  --modal-shadow: var(--sh-hard-lg);
 
   /* 间距 */
   --space-1: 4px;
