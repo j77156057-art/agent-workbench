@@ -116,10 +116,10 @@ function kindOf(kind: string) {
       <header class="sm-top">
         <div class="sm-title">
           <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
-            <circle cx="4" cy="4" r="1.6" fill="none" stroke="#bc8cff" stroke-width="1.1" />
-            <circle cx="11" cy="3.5" r="1.6" fill="none" stroke="#58a6ff" stroke-width="1.1" />
-            <circle cx="9.5" cy="11.5" r="1.6" fill="none" stroke="#45c98c" stroke-width="1.1" />
-            <path d="M5.3 4.8 L9.6 3.9 M5 5.2 L8.5 10.4 M10.2 5 L9.9 9.9" stroke="#3a4658" stroke-width="0.9" />
+            <circle cx="4" cy="4" r="1.6" fill="none" style="stroke: color-mix(in srgb, #bc8cff 55%, var(--ink))" stroke-width="1.1" />
+            <circle cx="11" cy="3.5" r="1.6" fill="none" style="stroke: color-mix(in srgb, #58a6ff 55%, var(--ink))" stroke-width="1.1" />
+            <circle cx="9.5" cy="11.5" r="1.6" fill="none" style="stroke: color-mix(in srgb, #45c98c 55%, var(--ink))" stroke-width="1.1" />
+            <path d="M5.3 4.8 L9.6 3.9 M5 5.2 L8.5 10.4 M10.2 5 L9.9 9.9" style="stroke: color-mix(in srgb, #3a4658 55%, var(--ink))" stroke-width="0.9" />
           </svg>
           <h2>符号语义地图</h2>
           <span v-if="data" class="sm-stats">

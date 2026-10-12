@@ -29,6 +29,18 @@ export function regionTextColor(key: string | null | undefined): string {
   return `color-mix(in srgb, ${regionColor(key)} 36%, var(--ink))`
 }
 
+/** 画布身份色的皮肤派生层：色相保留 55%，其余混向本皮肤 --ink。
+ *  这些色相当年是照深色底调的（GitHub 深色系那批值），实测在 paper / zinc 上
+ *  只有 2.0–2.5:1，而 graphite 反而全过 —— 也就是说缺的不是"新配色"，是明度跟皮肤。
+ *  往 --ink 靠是双向的：浅色皮肤压暗、深色皮肤提亮，一个比例两边都变好。
+ *  55% 是扫出来的（三套皮肤 × 两种画布底最差 3.47 / 4.22 / 3.65，过 1.4.11 的 3:1）。
+ *  要当文字用请走 regionTextColor 那档 36%（4.5:1），别拿这个糊小字。 */
+export const cat = (hex: string) => `color-mix(in srgb, ${hex} 55%, var(--ink))`
+
+/** 同一个身份色的半透明版（节点底板、光晕这类），仍走派生后的色相。 */
+export const catAlpha = (hex: string, pct: number) =>
+  `color-mix(in srgb, ${cat(hex)} ${pct}%, transparent)`
+
 export type ChipKind = 'code' | 'data' | 'web' | 'doc' | 'media' | 'lib' | 'plain'
 
 const CHIP_RULES: Array<{ exts: string[]; kind: ChipKind }> = [
@@ -104,5 +116,9 @@ const GRAPH_NODE_STYLES: Record<string, GraphNodeStyle> = {
 }
 
 export function graphNodeStyle(kind: string): GraphNodeStyle {
-  return GRAPH_NODE_STYLES[kind] ?? GRAPH_NODE_STYLES.external
+  const s = GRAPH_NODE_STYLES[kind] ?? GRAPH_NODE_STYLES.external
+  // 表里那几个值是"身份"，出口一律派生：描边过 3:1、底板用同色相压 14%。
+  // text 不再回那批调死的浅色（#d6e7ff 在纸底上等于隐形）—— 标签走中性色，
+  // 色相由卡片描边和底色承担。
+  return { ...s, stroke: cat(s.stroke), fill: catAlpha(s.stroke, 14), text: 'var(--text)' }
 }

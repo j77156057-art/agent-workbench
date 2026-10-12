@@ -6,6 +6,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { fsApi } from '../api'
 import type { UnityGraphResp, UnityNode, UnityEdge } from '../api'
 import { useWorkbench } from '../composables/workbench'
+import { cat, catAlpha } from '../theme'
 
 const { unityGraphOpen, closeUnityGraph, jumpToLine } = useWorkbench()
 
@@ -39,10 +40,15 @@ const KIND_STYLE: Record<string, { stroke: string; mark: string; label: string }
   missing: { stroke: '#ff7b72', mark: '?', label: '缺失/外部' },
 }
 function styleOf(kind: string) {
-  return KIND_STYLE[kind] || { stroke: '#8b97a7', mark: '•', label: kind }
+  const s = KIND_STYLE[kind] || { stroke: '#8b97a7', mark: '•', label: kind }
+  // 这批 stroke 全是 GitHub 深色系，纸底/锌底实测 2.0–2.5:1；出口统一派生，
+  // 表里的原值继续当"身份"，只在渲染前混向 --ink。
+  return { ...s, stroke: cat(s.stroke) }
 }
 function fillOf(kind: string) {
-  return styleOf(kind).stroke + '1f'
+  // 以前是 stroke + '1f' 拼字符串：换成派生色之后那会拼出非法 CSS（静默回落），
+  // 半透明一律走 color-mix。
+  return catAlpha((KIND_STYLE[kind] || { stroke: '#8b97a7' }).stroke, 12)
 }
 
 interface Sim {
@@ -609,10 +615,10 @@ const externalIds = computed<Set<string>>(
       <header class="ug-top">
         <div class="ug-title">
           <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
-            <rect x="1.5" y="2" width="5" height="4" rx="1" fill="none" stroke="#f0883e" stroke-width="1.1" />
-            <rect x="8.8" y="2" width="5" height="4" rx="1" fill="none" stroke="#2ec4b6" stroke-width="1.1" />
-            <rect x="5" y="9.5" width="5" height="4" rx="1" fill="none" stroke="#58a6ff" stroke-width="1.1" />
-            <path d="M4.5 4.5 L8.8 3.6 M6 6 L7 9.5 M11 5.8 L9.2 9.5" stroke="#7d90aa" stroke-width="0.85" />
+            <rect x="1.5" y="2" width="5" height="4" rx="1" fill="none" style="stroke: color-mix(in srgb, #f0883e 55%, var(--ink))" stroke-width="1.1" />
+            <rect x="8.8" y="2" width="5" height="4" rx="1" fill="none" style="stroke: color-mix(in srgb, #2ec4b6 55%, var(--ink))" stroke-width="1.1" />
+            <rect x="5" y="9.5" width="5" height="4" rx="1" fill="none" style="stroke: color-mix(in srgb, #58a6ff 55%, var(--ink))" stroke-width="1.1" />
+            <path d="M4.5 4.5 L8.8 3.6 M6 6 L7 9.5 M11 5.8 L9.2 9.5" style="stroke: color-mix(in srgb, #7d90aa 55%, var(--ink))" stroke-width="0.85" />
           </svg>
           <h2>Unity 引用图</h2>
           <span v-if="stats" class="ug-stats">
@@ -641,7 +647,7 @@ const externalIds = computed<Set<string>>(
             :key="c.kind"
             class="ug-chip"
             :class="{ off: hiddenKinds.has(c.kind) }"
-            :style="{ borderColor: styleOf(c.kind).stroke + '88', color: styleOf(c.kind).stroke }"
+            :style="{ borderColor: styleOf(c.kind).stroke, color: 'var(--text)' }"
             :title="`${c.label} ${c.count} 个（点击隐藏/显示）`"
             @click="toggleKind(c.kind)"
           >{{ c.label }} {{ c.count }}</button>
@@ -681,11 +687,11 @@ const externalIds = computed<Set<string>>(
             <defs>
               <marker id="ug-arrow" viewBox="0 0 10 10" refX="8.5" refY="5"
                       markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                <path d="M0 0 L9 5 L0 10 Z" fill="#6e7f96" />
+                <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #6e7f96 55%, var(--ink))" />
               </marker>
               <marker id="ug-arrow-miss" viewBox="0 0 10 10" refX="8.5" refY="5"
                       markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                <path d="M0 0 L9 5 L0 10 Z" fill="#ff7b72" />
+                <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #ff7b72 55%, var(--ink))" />
               </marker>
             </defs>
 
@@ -718,15 +724,14 @@ const externalIds = computed<Set<string>>(
                     :width="geometry[n.id]?.w || 100"
                     :height="geometry[n.id]?.h || 32"
                     rx="7"
-                    :fill="n.external ? 'transparent' : fillOf(n.kind)"
-                    :stroke="styleOf(n.kind).stroke"
+                    :style="{ fill: n.external ? 'transparent' : fillOf(n.kind), stroke: styleOf(n.kind).stroke }"
                     :stroke-dasharray="n.external ? '4 3' : undefined"
                   />
-                  <text class="ug-mark" :fill="styleOf(n.kind).stroke" x="13"
+                  <text class="ug-mark" x="13"
                         :y="(geometry[n.id]?.h || 32) / 2 + 3.6">
                     {{ styleOf(n.kind).mark }}
                   </text>
-                  <text class="ug-label" :fill="styleOf(n.kind).stroke" x="26"
+                  <text class="ug-label" x="26"
                         :y="geometry[n.id]?.sub ? 17 : ((geometry[n.id]?.h || 32) / 2 + 4)">
                     {{ geometry[n.id]?.label }}
                   </text>
@@ -750,7 +755,7 @@ const externalIds = computed<Set<string>>(
 
         <aside v-if="selectedNode" class="ug-detail">
           <div class="ug-d-head">
-            <span class="ug-d-badge" :style="{ color: styleOf(selectedNode.kind).stroke, borderColor: styleOf(selectedNode.kind).stroke + '88' }">
+            <span class="ug-d-badge" :style="{ color: 'var(--text)', borderColor: styleOf(selectedNode.kind).stroke }">
               {{ styleOf(selectedNode.kind).label }}
             </span>
             <button class="ug-iconbtn" title="关闭详情" @click="selectedId = ''">
@@ -955,8 +960,10 @@ const externalIds = computed<Set<string>>(
 .ug-node:hover rect { stroke-width: 2; filter: brightness(1.25); }
 .ug-node.sel rect { stroke-width: 2.4; }
 .ug-node.dim { opacity: 0.12; }
-.ug-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; }
-.ug-label { font-size: 12px; font-weight: 600; }
+.ug-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; fill: var(--text-muted); }
+/* 节点名以前用分类色当字色（纸底 2.0–2.5:1，两个探针都看不见 SVG 文字的 fill）。
+   色相交给卡片描边与小圆点，字回归中性。 */
+.ug-label { font-size: 12px; font-weight: 600; fill: var(--text); }
 .ug-sub { font-size: 10px; fill: var(--text-faint); font-family: var(--font-mono); }
 
 .ug-state {

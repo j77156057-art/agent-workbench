@@ -1832,3 +1832,19 @@ select:focus-visible,
 
 /* ⑤ 标题换行更匀（中文标题排版） */
 #app .ov-group-head { text-wrap: balance; }
+
+/* ============ Vue Flow 库默认值覆盖（流程图 / 场景图共用这套画布库）
+   这三条不是审美调整，是第三方默认值从来没跟过皮肤：
+   · 连线 #b1b1b7 —— 实测 paper 2.01:1、zinc 2.13:1，两套浅色皮肤下连线几乎看不见
+   · 控件底 #fefefe + 图标 #5a6778 —— graphite 下是一块亮度 0.99 的白岛
+   · 点阵底纹 fill="#cfd8e6"（写在 pattern 的 circle 属性上）—— 不跟皮肤
+   选择器刻意多带一层 .vue-flow：和库自己的规则同特异度时谁在后面谁赢，
+   而打包顺序不该被依赖。 */
+.vue-flow .vue-flow__edge-path { stroke: var(--border); }
+.vue-flow .vue-flow__controls-button {
+  background: var(--bg-raised); border-color: var(--border-2); fill: var(--text);
+}
+.vue-flow .vue-flow__controls-button:hover { background: var(--bg-hover); fill: var(--text); }
+.vue-flow .vue-flow__background circle { fill: var(--border-2); }
+.vue-flow .vue-flow__minimap { background: var(--bg); }
+.vue-flow .vue-flow__selection { background: var(--accent-soft); border: 1px solid var(--border-2); }

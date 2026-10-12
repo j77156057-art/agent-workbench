@@ -614,10 +614,10 @@ const colorOf = regionColor
       <header class="rg-top">
         <div class="rg-title">
           <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
-            <circle cx="3.6" cy="4" r="1.7" fill="none" stroke="#58a6ff" stroke-width="1.1" />
-            <circle cx="11.4" cy="4" r="1.7" fill="none" stroke="#2ec4b6" stroke-width="1.1" />
-            <circle cx="7.5" cy="11.2" r="1.7" fill="none" stroke="#f0883e" stroke-width="1.1" />
-            <path d="M5 4.8 L9.6 4.8 M4.6 5.4 L6.6 9.7 M10.4 5.4 L8.4 9.7" stroke="#7d90aa" stroke-width="0.9" />
+            <circle cx="3.6" cy="4" r="1.7" fill="none" style="stroke: color-mix(in srgb, #58a6ff 55%, var(--ink))" stroke-width="1.1" />
+            <circle cx="11.4" cy="4" r="1.7" fill="none" style="stroke: color-mix(in srgb, #2ec4b6 55%, var(--ink))" stroke-width="1.1" />
+            <circle cx="7.5" cy="11.2" r="1.7" fill="none" style="stroke: color-mix(in srgb, #f0883e 55%, var(--ink))" stroke-width="1.1" />
+            <path d="M5 4.8 L9.6 4.8 M4.6 5.4 L6.6 9.7 M10.4 5.4 L8.4 9.7" style="stroke: color-mix(in srgb, #7d90aa 55%, var(--ink))" stroke-width="0.9" />
           </svg>
           <h2>关系图</h2>
           <span v-if="stats" class="rg-stats">
@@ -683,18 +683,21 @@ const colorOf = regionColor
           @click="onBgClick"
           @wheel="onWheel"
         >
+          <!-- 箭头颜色跟各自那条线同源（以前是三个更浅的写死值）。
+               用 style 而不是 fill 属性：属性里写 var()/color-mix() 不解析，
+               会静默回落到黑色 —— 深色皮肤下就是"看不见"，浅色皮肤下是凭空变色。 -->
           <defs>
             <marker id="rg-arrow-inh" viewBox="0 0 10 10" refX="8.5" refY="5"
                     markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-              <path d="M0 0 L9 5 L0 10 Z" fill="#7fa3d0" />
+              <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #4d7fc0 55%, var(--ink))" />
             </marker>
             <marker id="rg-arrow-mnt" viewBox="0 0 10 10" refX="8.5" refY="5"
                     markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-              <path d="M0 0 L9 5 L0 10 Z" fill="#f0883e" />
+              <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #c9762f 55%, var(--ink))" />
             </marker>
             <marker id="rg-arrow-call" viewBox="0 0 10 10" refX="8.5" refY="5"
                     markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-              <path d="M0 0 L9 5 L0 10 Z" fill="#4f9e6a" />
+              <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #1c9e66 55%, var(--ink))" />
             </marker>
           </defs>
 
@@ -737,22 +740,21 @@ const colorOf = regionColor
                   :width="geometry[n.id]?.w || 100"
                   :height="geometry[n.id]?.h || 32"
                   rx="7"
-                  :fill="styleOf(n.kind).fill"
-                  :stroke="styleOf(n.kind).stroke"
+                  :style="{ fill: styleOf(n.kind).fill, stroke: styleOf(n.kind).stroke }"
                   :stroke-dasharray="styleOf(n.kind).dashed ? '4 3' : undefined"
                 />
                 <circle
                   v-if="n.region"
                   class="rg-region-dot"
                   :cx="9" :cy="(geometry[n.id]?.h || 32) / 2" r="3"
-                  :fill="colorOf(n.region)"
+                  :style="{ fill: colorOf(n.region) }"
                 />
-                <text class="rg-mark" :fill="styleOf(n.kind).stroke"
+                <text class="rg-mark"
                       :x="n.region ? 17 : 12"
                       :y="(geometry[n.id]?.h || 32) / 2 + 3.6">
                   {{ styleOf(n.kind).mark }}
                 </text>
-                <text class="rg-label" :fill="styleOf(n.kind).text" x="30"
+                <text class="rg-label" x="30"
                       :y="geoY(n.id, 'label')">
                   {{ geometry[n.id]?.label }}
                 </text>
@@ -947,9 +949,9 @@ const colorOf = regionColor
 .rg-toggle { transition: color .16s ease, border-color .16s ease, background .16s ease, opacity .16s ease; }
 .rg-toggle:not(.off) { background: #2f6fed0d; border-color: #2f6fed55; }
 .rg-toggle.off { opacity: 0.42; }
-.rg-tg-line { width: 14px; height: 0; border-top: 2px solid #4d7fc0; display: inline-block; }
-.rg-tg-line.mnt { border-top: 2px dashed #f0883e; }
-.rg-tg-line.call { border-top: 2px solid #1c9e66; }
+.rg-tg-line { width: 14px; height: 0; border-top: 2px solid color-mix(in srgb, #4d7fc0 55%, var(--ink)); display: inline-block; }
+.rg-tg-line.mnt { border-top: 2px dashed color-mix(in srgb, #c9762f 55%, var(--ink)); }
+.rg-tg-line.call { border-top: 2px solid color-mix(in srgb, #1c9e66 55%, var(--ink)); }
 .rg-tg-ext {
   width: 11px; height: 9px;
   border: 1.5px dashed #98a3b4;
@@ -984,26 +986,31 @@ const colorOf = regionColor
 }
 .rg-svg.grabbing { cursor: grabbing; }
 
+/* 这批线色是照深色底调的，纸底实测 2.2–2.4:1。统一走 theme.ts cat() 同一档：
+   色相留 55%、其余混向本皮肤 --ink，浅色皮肤压暗、深色皮肤提亮，一个比例两边都好。
+   边标签是 8px 小字（要 4.5:1），所以它走 regionTextColor 那档 36%，别混用。 */
 .rg-line { fill: none; stroke-width: 1.3; }
-.rg-line.inherits { stroke: #4d7fc0; }
-.rg-line.mounts { stroke: #c9762f; stroke-dasharray: 6 4; }
-.rg-line.calls { stroke: #1c9e66; }
+.rg-line.inherits { stroke: color-mix(in srgb, #4d7fc0 55%, var(--ink)); }
+.rg-line.mounts { stroke: color-mix(in srgb, #c9762f 55%, var(--ink)); stroke-dasharray: 6 4; }
+.rg-line.calls { stroke: color-mix(in srgb, #1c9e66 55%, var(--ink)); }
 .rg-edge-g.dim { opacity: 0.10; }
-.rg-elabel-bg-inh { fill: var(--bg); stroke: #4d7fc055; stroke-width: 0.8; }
-.rg-elabel-bg-mnt { fill: var(--bg); stroke: #c9762f55; stroke-width: 0.8; }
-.rg-elabel-bg-call { fill: var(--bg); stroke: #1c9e6666; stroke-width: 0.8; }
+.rg-elabel-bg-inh { fill: var(--bg); stroke: color-mix(in srgb, #4d7fc0 55%, var(--ink)); stroke-width: 0.8; }
+.rg-elabel-bg-mnt { fill: var(--bg); stroke: color-mix(in srgb, #c9762f 55%, var(--ink)); stroke-width: 0.8; }
+.rg-elabel-bg-call { fill: var(--bg); stroke: color-mix(in srgb, #1c9e66 55%, var(--ink)); stroke-width: 0.8; }
 .rg-elabel-tx { font-size: 8px; }
-.rg-elabel-tx.inherits { fill: #1b3c73; }
-.rg-elabel-tx.mounts { fill: #8a4d12; }
-.rg-elabel-tx.calls { fill: #0c6b58; }
+.rg-elabel-tx.inherits { fill: color-mix(in srgb, #4d7fc0 36%, var(--ink)); }
+.rg-elabel-tx.mounts { fill: color-mix(in srgb, #c9762f 36%, var(--ink)); }
+.rg-elabel-tx.calls { fill: color-mix(in srgb, #1c9e66 36%, var(--ink)); }
 
 .rg-node { cursor: pointer; }
 .rg-node rect { stroke-width: 1.3; transition: stroke-width .14s ease, filter .14s ease, opacity .14s ease; }
 .rg-node:hover rect { stroke-width: 2; filter: brightness(1.08); }
-.rg-node.selected rect { stroke-width: 2.4; filter: drop-shadow(0 2px 6px rgba(47,111,237,.35)); }
+.rg-node.selected rect { stroke-width: 2.4; filter: drop-shadow(0 2px 6px color-mix(in srgb, var(--accent) 35%, transparent)); }
 .rg-node.dim { opacity: 0.13; }
-.rg-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; }
-.rg-label { font-size: 12px; font-weight: 600; }
+/* 角标与标签以前用 :fill 画成分类色（#d6e7ff 那批浅色在纸底上等于隐形）。
+   现在色相由卡片描边+底色说，字回归中性。 */
+.rg-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; fill: var(--text-muted); }
+.rg-label { font-size: 12px; font-weight: 600; fill: var(--text); }
 .rg-sub { font-size: 10px; fill: var(--text-faint); font-family: var(--font-mono); }
 .rg-doc { font-size: 10px; fill: var(--text-muted); }
 
@@ -1096,10 +1103,12 @@ const colorOf = regionColor
 }
 .rg-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .rg-lg { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-.rg-lg-class { background: rgba(47, 111, 237, 0.3); border: 1px solid #2f6fed; }
-.rg-lg-script { background: rgba(46, 196, 182, 0.25); border: 1px solid #2ec4b6; }
-.rg-lg-scene { background: rgba(240, 136, 62, 0.25); border: 1px solid #f0883e; }
-.rg-lg-ext { background: rgba(152, 163, 180, 0.1); border: 1px dashed #98a3b4; }
+/* 图例必须和画布用同一个派生式，否则"钥匙"对不上"锁"：
+   以前命名类的图例是 #2f6fed，节点描边却是 #58a6ff，两套浅色皮肤下还各自不达标。 */
+.rg-lg-class { background: color-mix(in srgb, #58a6ff 55%, var(--ink)); border: 1px solid color-mix(in srgb, #58a6ff 55%, var(--ink)); }
+.rg-lg-script { background: color-mix(in srgb, #2ec4b6 55%, var(--ink)); border: 1px solid color-mix(in srgb, #2ec4b6 55%, var(--ink)); }
+.rg-lg-scene { background: color-mix(in srgb, #f0883e 55%, var(--ink)); border: 1px solid color-mix(in srgb, #f0883e 55%, var(--ink)); }
+.rg-lg-ext { background: color-mix(in srgb, #6b7686 30%, var(--ink)); border: 1px dashed color-mix(in srgb, #6b7686 55%, var(--ink)); }
 .rg-legend-tip { color: var(--text-faint); }
 
 @keyframes rg-overlay-in { from { opacity: 0; } to { opacity: 1; } }

@@ -101,7 +101,11 @@ const SWEEP = () => {
     const cs = getComputedStyle(el)
     if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue
     const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue
-    const fg = parse(cs.color); if (!fg) continue
+    const fg = parse(el.ownerSVGElement && /^(text|tspan|tref)$/i.test(el.tagName)
+      // SVG 文字的油漆是 fill 不是 color：画布里的类名/标签一直是个盲区，
+      // 两个探针都读 color，于是 #1b3c73 压深色底 1.40:1 这种账从来没进过表。
+      ? getComputedStyle(el).fill : cs.color)
+    if (!fg) continue
     const base = bgOf(el)
     // 渐变底不能当成"透明往上找父级"：那样白字压蓝渐变会被算成白压卡片 = 1.06:1，
     // 是探针造假出来的数字。把每个色标各自压到父底上，取最浅那一档（对文字最不利）。

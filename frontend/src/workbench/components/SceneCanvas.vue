@@ -10,6 +10,7 @@
 //   * 实例（instance）与脚本引用（ExtResource）另外画成"文件卡"，边用不同颜色区分，
 //     双击文件卡即在编辑器里打开该文件——场景图和代码因此连成一条线。
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { cat } from '../theme'
 import {
   VueFlow, applyNodeChanges, applyEdgeChanges, MarkerType,
 } from '@vue-flow/core'
@@ -193,7 +194,9 @@ function layout(): { nodes: Node[]; edges: Edge[]; maxX: number; minY: number } 
     }
     placed.set(node.id, pos)
     const isRoot = node.id === g.root_id
-    const color = isRoot ? COLORS.root : node.instance_id ? COLORS.instance : COLORS[node.space]
+    const rawColor = isRoot ? COLORS.root : node.instance_id ? COLORS.instance : COLORS[node.space]
+    // 空间分色（2D 蓝 / 3D 紫 / 根 金 / 实例 青）也是照深色底调的，出口派生一次
+    const color = cat(rawColor)
     out.push({
       id: node.id,
       type: 'sceneNode',
@@ -743,15 +746,15 @@ function buildSceneSvg(): string {
     const name = esc(node ? node.name : (file ? (file.rel || file.raw) : n.id))
     const sub = esc(node ? node.type : (file ? (file.kind === 'script' ? '脚本' : file.kind === 'scene' ? '被实例化场景' : '资源') : ''))
     body += `<g transform="translate(${n.position.x},${n.position.y})">`
-      + `<rect width="${W}" height="${H}" rx="8" fill="#ffffff" stroke="#c4cedd"/>`
+      + `<rect width="${W}" height="${H}" rx="8" style="fill: var(--bg-raised); stroke: var(--border-2)"/>`
       + `<rect width="4" height="${H}" rx="2" fill="${col}"/>`
-      + `<text x="14" y="22" font-family="Consolas,monospace" font-size="12.5" fill="#1f2733">${name}</text>`
-      + `<text x="14" y="40" font-family="Consolas,monospace" font-size="10" fill="#5b6675">${sub}</text>`
+      + `<text x="14" y="22" font-family="Consolas,monospace" font-size="12.5" style="fill: var(--text)">${name}</text>`
+      + `<text x="14" y="40" font-family="Consolas,monospace" font-size="10" style="fill: var(--text-muted)">${sub}</text>`
       + `</g>`
   }
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${vbW}" height="${vbH}" viewBox="${vbX} ${vbY} ${vbW} ${vbH}">`
-    + `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5b6675"/></marker></defs>`
-    + `<rect x="${vbX}" y="${vbY}" width="${vbW}" height="${vbH}" fill="#f5f8fc"/>`
+    + `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill: color-mix(in srgb, #5b6675 55%, var(--ink))"/></marker></defs>`
+    + `<rect x="${vbX}" y="${vbY}" width="${vbW}" height="${vbH}" style="fill: var(--bg)"/>`
     + body + `</svg>`
 }
 
@@ -1108,14 +1111,14 @@ defineExpose({ reload, undo, redo, addChildNew })
 /* Vue Flow 主题覆盖（非 scoped：这些类由库渲染在组件外层） */
 .sc-canvas .vue-flow__node-sceneNode,
 .sc-canvas .vue-flow__node-sceneFile { padding: 0 !important; border: none; background: transparent; }
-.sc-canvas .vue-flow__attribution { background: transparent !important; color: #98a3b4 !important; }
+.sc-canvas .vue-flow__attribution { background: transparent !important; color: var(--text-muted) !important; }
 .sc-canvas .vue-flow__controls { box-shadow: none !important; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
-.sc-canvas .vue-flow__controls-button { background: #ffffff; border-bottom: 1px solid var(--border); fill: #5a6778; width: 24px; height: 24px; }
+.sc-canvas .vue-flow__controls-button { background: var(--bg-raised); border-bottom: 1px solid var(--border); fill: var(--text); width: 24px; height: 24px; }
 .sc-canvas .vue-flow__controls-button:hover { background: var(--bg-hover); fill: var(--text); }
-.sc-canvas .vue-flow__minimap { background: #ffffff !important; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
-.sc-canvas .vue-flow__minimap-mask { fill: rgba(228, 233, 242, .55); }
-.sc-canvas .vue-flow__edge.selected .vue-flow__edge-path { stroke: #2f6fed; }
-.sc-canvas .vue-flow__selection { background: rgba(47, 111, 237, .08); border: 1px solid #b9d0f5; }
+.sc-canvas .vue-flow__minimap { background: var(--bg-raised) !important; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.sc-canvas .vue-flow__minimap-mask { fill: color-mix(in srgb, var(--bg) 55%, transparent); }
+.sc-canvas .vue-flow__edge.selected .vue-flow__edge-path { stroke: var(--accent); }
+.sc-canvas .vue-flow__selection { background: var(--accent-soft); border: 1px solid var(--border-2); }
 
 .sc-node {
   width: 244px;

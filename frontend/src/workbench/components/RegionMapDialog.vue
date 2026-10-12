@@ -6,7 +6,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useWorkbench, askConfirm } from '../composables/workbench'
 import { appEvents } from '../eventBus'
 import { withProject } from '../api'
-import { regionColor } from '../theme'
+import { regionColor, cat, catAlpha } from '../theme'
 import type { RegionInfo } from '../api'
 
 const {
@@ -243,7 +243,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
               >
                 <rect
                   :width="NODE_W" :height="NODE_H" rx="7"
-                  :stroke="regionColor(r.key)" :fill="regionColor(r.key) + '14'"
+                  :style="{ stroke: cat(regionColor(r.key)), fill: catAlpha(regionColor(r.key), 8) }"
                   stroke-width="1.1"
                 />
                 <circle cx="11" cy="15" r="3.4" :fill="regionColor(r.key)" />

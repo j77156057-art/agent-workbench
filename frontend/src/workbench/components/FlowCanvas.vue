@@ -5,6 +5,7 @@
 // 每个节点显示真实元数据（耗时 / 输入输出规模 / 成败 / token / 花费），失败节点标红，
 // 点节点看右侧详情。trace 按隐私设计只存元数据（不存提问正文与文件路径），这里不伪造跳转。
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { cat, catAlpha } from '../theme'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -270,7 +271,7 @@ function providerLabel(p: string) {
       <div class="fl-head">
         <div class="fl-title">
           <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
-            <circle cx="3.5" cy="3" r="1.6" fill="none" style="stroke: var(--accent)" stroke-width="1.1" />
+            <circle cx="3.5" cy="3" r="1.6" fill="none" style="stroke: var(--accent-text)" stroke-width="1.1" />
             <rect x="1.8" y="7.4" width="3.4" height="2.4" rx="0.6" fill="none" style="stroke: var(--amber)" stroke-width="1.1" />
             <circle cx="12.5" cy="12.5" r="1.6" fill="none" style="stroke: var(--green)" stroke-width="1.1" />
             <path d="M3.5 4.6 V7.4 M3.5 9.8 C3.5 11.4 6 11 8 11.6 C10 12.2 11 11.4 11.2 10.9" fill="none" style="stroke: var(--text-muted)" stroke-width="1" stroke-dasharray="2 2" />
@@ -353,7 +354,9 @@ function providerLabel(p: string) {
               :fit-view-on-init="true"
               @node-click="onNodeClick"
             >
-              <Background :gap="18" :size="1.2" pattern-color="#cfd8e6" />
+              <!-- 点阵色交给 style.css 的 .vue-flow__background circle：库把这个值写成
+                   pattern 里的 fill 属性，写死值不跟皮肤 -->
+              <Background :gap="18" :size="1.2" />
               <Controls position="bottom-right" :show-interactive="false" />
 
               <!-- 起点：提问 -->
@@ -380,7 +383,7 @@ function providerLabel(p: string) {
                   <div class="fl-n-head">
                     <span
                       class="fl-n-glyph"
-                      :style="{ background: (CAT_META[stepMeta(data.step!).cat].color) + '1f', borderColor: CAT_META[stepMeta(data.step!).cat].color + '66' }"
+                      :style="{ background: catAlpha(CAT_META[stepMeta(data.step!).cat].color, 12), borderColor: cat(CAT_META[stepMeta(data.step!).cat].color) }"
                     >{{ CAT_META[stepMeta(data.step!).cat].glyph }}</span>
                     <b>{{ stepMeta(data.step!).label }}</b>
                     <span class="fl-n-idx">{{ (data.index ?? 0) + 1 }}/{{ data.total }}</span>

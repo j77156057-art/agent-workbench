@@ -77,6 +77,18 @@ const SWEEP = (rootSel, FLOOR, dark) => {
   const ratio = (c, bg) => { const L1 = lum(c.rgb), L2 = lum(bg.rgb)
     return +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2)) }
 
+  // 表面令牌的实际值：填充色等于其中任何一个 = 这是"底板"（节点标签垫色），
+  // 不是身份线索，1.4.11 管不着它。不排掉的话关系图会一直报 4 处 1.23:1 的假债。
+  const SURF_NAMES = ['--bg', '--surface', '--bg-raised', '--bg-hover', '--bg-selected']
+  const probe = document.createElement('div')
+  document.body.appendChild(probe)
+  const resolve = v => { probe.style.color = '#000'; probe.style.color = v || ''
+    return parse(getComputedStyle(probe).color) }
+  const rs = getComputedStyle(document.documentElement)
+  const surfaces = SURF_NAMES.map(n => resolve(rs.getPropertyValue(n).trim())).filter(Boolean)
+    .map(c => over(c, { rgb: [255, 255, 255], a: 1 }))
+  const isPlate = c => surfaces.some(s => [0, 1, 2].every(k => Math.abs(s.rgb[k] - c.rgb[k]) <= 2))
+  probe.remove()
   const marks = [], bad = [], invalid = [], islands = []
   for (const el of root.querySelectorAll('*')) {
     if (el.closest('defs')) continue
@@ -115,6 +127,7 @@ const SWEEP = (rootSel, FLOOR, dark) => {
     const push = (what, col, note) => {
       const c = parse(col)
       if (!c || c.a === 0) return
+      if (what === '填充' && isPlate(c)) return   // 底板不算身份图形
       const eff = over(c, bg)
       if (c.a < .999) return marks.push({ what, skip: true })   // 半透明不算身份色（是遮罩/阴影）
       marks.push({ what, col: col.trim(), bg: `rgb(${bg.rgb.map(Math.round).join(',')})`,

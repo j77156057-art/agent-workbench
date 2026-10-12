@@ -6,7 +6,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useWorkbench } from '../composables/workbench'
 import { demoMode, demoLocateFiles, demoLocateRegions } from '../composables/demo'
-import { regionColor } from '../theme'
+import { regionColor, regionTextColor, cat, catAlpha } from '../theme'
 import type { LocateFileHit, LocateRegionHit } from '../api'
 
 const {
@@ -186,7 +186,7 @@ onBeforeUnmount(() => {
             <span class="lb-item-title">
               <span class="lb-file-name">{{ f.name }}</span>
               <span v-if="f.symbol" class="lb-symbol">{{ f.symbol }}()<template v-if="f.line">:{{ f.line }}</template></span>
-              <span v-if="f.region_name" class="lb-region-chip" :style="{ color: regionColor(f.region), borderColor: regionColor(f.region) + '66', background: regionColor(f.region) + '14' }">{{ f.region_name }}</span>
+              <span v-if="f.region_name" class="lb-region-chip" :style="{ color: regionTextColor(f.region), borderColor: cat(regionColor(f.region)), background: catAlpha(regionColor(f.region), 8) }">{{ f.region_name }}</span>
             </span>
             <span class="lb-item-sub">
               <span class="lb-path">{{ f.path }}</span>
