@@ -33,7 +33,7 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-from . import dev_server, process_runner
+from . import dev_server, loopback_http, process_runner
 
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 120
@@ -124,6 +124,17 @@ def scan_output(text: str, *, truncated: bool = False) -> dict[str, Any]:
 # http：真的打一个请求
 # --------------------------------------------------------------------------- #
 
+def _loopback_opener() -> urllib.request.OpenerDirector:
+    """直连回环的 opener：**显式禁用环境代理**。
+
+    `urllib.request.urlopen()` 默认读 `HTTP_PROXY` / `http_proxy` 等环境变量。
+    本函数只被 `http_probe` 用，而目标已由 `dev_server.loopback_url()` 保证是回环
+    地址 —— 对回环地址走代理是纯粹的错：代理会替目标应答（实测拿到 502），
+    于是「连不上」被读成「服务端应答了」，fail-closed 语义被静默反转。
+    """
+    return loopback_http.loopback_opener()
+
+
 def http_probe(url: str, *, method: str = "GET", body: str = "",
                headers: dict[str, str] | None = None, timeout: int = 15) -> dict[str, Any]:
     """对一个**回环**地址发一次请求，回结构化凭据。"""
@@ -153,7 +164,7 @@ def http_probe(url: str, *, method: str = "GET", body: str = "",
         request.add_header("Content-Type", "application/json")
     started = time.monotonic()
     try:
-        with urllib.request.urlopen(request, timeout=max(1, int(timeout))) as response:
+        with _loopback_opener().open(request, timeout=max(1, int(timeout))) as response:
             raw = response.read(BODY_LIMIT + 1)
             result["status"] = int(getattr(response, "status", 0) or 0)
             result["content_type"] = str(response.headers.get("Content-Type") or "")

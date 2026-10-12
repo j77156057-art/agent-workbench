@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterable
 
-from . import process_runner
+from . import loopback_http, process_runner
 
 DEFAULT_WAIT = 20.0
 MAX_WAIT = 120.0
@@ -130,7 +130,7 @@ def owns_port(port: int, *, host: str = "127.0.0.1",
     if err:
         return False, err
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with loopback_http.urlopen(url, timeout=timeout) as response:
             body = response.read(20000)
             charset = "utf-8"
             ctype = (getattr(response, "headers", {}) or {}).get("Content-Type", "")
@@ -168,7 +168,7 @@ def probe(url: str, *, timeout: float = PROBE_TIMEOUT) -> tuple[bool, str]:
     except OSError as exc:
         return False, "端口 %d 还没有在听：%s" % (port, exc)
     try:
-        with urllib.request.urlopen(target, timeout=timeout) as response:
+        with loopback_http.urlopen(target, timeout=timeout) as response:
             return True, "HTTP %s" % (getattr(response, "status", 200) or 200)
     except urllib.error.HTTPError as exc:
         # 4xx/5xx 也说明服务已经起来并且能应答——这同样算就绪

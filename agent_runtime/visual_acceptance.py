@@ -24,7 +24,7 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import dev_server
+from . import dev_server, loopback_http
 from .dev_server import loopback_url
 import temp_state
 import urllib.request
@@ -581,7 +581,7 @@ def browser_session(timeout: float = 25.0, extra_flags: Any = (),
         active = Path(profile.name) / _ACTIVE_PORT_NAME
         port, _ws_path = _read_active_port(
             active, timeout=min(15.0, max(3.0, float(timeout) / 2)))
-        with urllib.request.urlopen("http://127.0.0.1:%s/json" % port, timeout=5) as response:
+        with loopback_http.urlopen("http://127.0.0.1:%s/json" % port, timeout=5) as response:
             tabs = json.load(response)
         page = next((row for row in tabs if row.get("type") == "page"), None)
         if not page or not page.get("webSocketDebuggerUrl"):

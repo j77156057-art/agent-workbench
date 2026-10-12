@@ -37,7 +37,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from agent_runtime import dev_server, page_action, vue_component
+from agent_runtime import dev_server, loopback_http, page_action, vue_component
 
 #: 诊断文本的长度上限。此前 `error` 排在 `failed` **之后**、整个 dict 又被 `[:1200]`
 #: 一刀切，于是失败判据一多（实测深链那条 20 条）就把唯一有信息量的 `error` 挤了出去 ——
@@ -477,7 +477,7 @@ def http_json(url: str, payload: dict[str, Any] | None = None, *,
     request = urllib.request.Request(url, data=body, method="POST" if body else "GET",
                                      headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with loopback_http.urlopen(request, timeout=timeout) as response:
             raw, status = response.read(), int(getattr(response, "status", 200) or 200)
     except urllib.error.HTTPError as exc:
         raw, status = exc.read(), int(exc.code)

@@ -83,8 +83,12 @@ class AgentCapacityTests(unittest.TestCase):
         self.assertEqual(result["compute_apps"][0]["used_mb"], 7000)
 
     def test_ollama_snapshot_reads_loaded_model_vram(self):
+        # 打桩点必须是 `loopback_http.urlopen`，不能是 `urllib.request.urlopen`：
+        # 回环调用已统一走 `loopback_http`（显式禁代理），它走 `build_opener().open()`
+        # 而**不经过** `urllib.request.urlopen` —— 打在后者上桩不生效，
+        # 请求会真的打到本地 Ollama 上（实测拿到真机模型 qwen3.6:35b-a3b-agent256k）。
         payload = b'{"models":[{"name":"local-model","size":900,"size_vram":700}]}'
-        with patch("agent_runtime.capacity.urllib.request.urlopen",
+        with patch("agent_runtime.capacity.loopback_http.urlopen",
                    return_value=io.BytesIO(payload)) as open_url:
             result = local_model_memory_snapshot("ollama", "http://127.0.0.1:11434/v1")
         self.assertTrue(result["available"])

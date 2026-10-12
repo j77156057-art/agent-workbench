@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import urllib.error
-import urllib.request
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
+
+from . import loopback_http
 
 SETTING_KEY = "agent_capacity_settings"
 
@@ -237,7 +238,7 @@ def local_model_memory_snapshot(provider: str, base_url: str, timeout: float = 2
         if path.endswith("/v1"):
             path = path[:-3]
         endpoint = urlunsplit((parts.scheme, parts.netloc, path + "/api/ps", "", ""))
-        with urllib.request.urlopen(endpoint, timeout=timeout) as response:
+        with loopback_http.urlopen(endpoint, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
         models = payload.get("models") if isinstance(payload, dict) else None
         if not isinstance(models, list):
