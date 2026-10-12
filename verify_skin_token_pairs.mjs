@@ -123,6 +123,35 @@ const SHADOWS = () => {
   return bad
 }
 
+/** 遮罩方向不变量：遮罩必须让底**沉下去**，而且要有可感幅度。
+ *  这条存在的原因：全仓 23 处遮罩以前各写各的"海军蓝"，压在 paper 上是 −53% 亮度，
+ *  压在 graphite（#16181d）上却是 **+34% 变亮** —— 深色皮肤里打开弹层，
+ *  背景发灰发白而不是变暗，而像素基线没有一条用例开着弹层，所以没人发现。 */
+const SCRIMS = () => {
+  const probe = document.createElement('span')
+  document.body.appendChild(probe)
+  const resolve = v => { probe.style.color = '#000'; probe.style.color = v; return getComputedStyle(probe).color }
+  const parse = v => { const m = /^rgba?\(([^)]+)\)/.exec(v || ''); if (!m) return null
+    const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const rs = getComputedStyle(document.documentElement)
+  const bg = parse(resolve((rs.getPropertyValue('--bg') || '#fff').trim()))
+  const bad = []
+  for (const t of ['--scrim', '--scrim-soft']) {
+    const raw = (rs.getPropertyValue(t) || '').trim()
+    if (!raw) { bad.push(`${t} 没定义`); continue }
+    const c = parse(resolve(raw))
+    if (!c) { bad.push(`${t} 解不出颜色：${raw}`); continue }
+    const over = [0, 1, 2].map(k => c.rgb[k] * c.a + bg.rgb[k] * (1 - c.a))
+    const drop = (lum(over) / lum(bg.rgb) - 1) * 100
+    if (drop > -8) bad.push(`${t} 在 --bg 上${drop > 0 ? '反而把底提亮' : '只压暗'} ${Math.abs(drop).toFixed(0)}%（要求至少压暗 8%）`)
+  }
+  probe.remove()
+  return bad
+}
+
 // 已知未修的死引用：4 个从未在任何皮肤里定义的令牌，共 36 处引用。
 // 列在这里不是放过它们，是让门禁只对**新增**的死引用变红 —— 一上来就红的门禁会被无视。
 // 每条都写了"该由谁定"：--amber-deep 要逐皮解算（深色皮下它不能是同一个棕），
@@ -185,6 +214,17 @@ try {
         ok(`${skin} 变异（模态阴影改回取 --ink）：${shouldRed ? '应当红' : '不该红'}`,
           shM.length > 0 === shouldRed, shouldRed ? shM.join(' · ') : '未报（正确）')
         await page.evaluate(() => document.documentElement.style.removeProperty('--modal-shadow'))
+        const sc = await page.evaluate(SCRIMS)
+        ok(`${skin} 遮罩把底压暗了`, sc.length === 0, sc.join(' · '))
+        // 变异：把遮罩换回原来那族"海军蓝"。同样只该在 graphite 红 ——
+        // 蓝压在浅底上仍然变暗（所以浅皮不红是对的），压在深底上会提亮。
+        await page.evaluate(() => document.documentElement.style
+          .setProperty('--scrim', 'rgba(27, 39, 61, .34)'))
+        const scM = await page.evaluate(SCRIMS)
+        const scRed = skin === 'graphite'
+        ok(`${skin} 变异（遮罩换回海军蓝）：${scRed ? '应当红' : '不该红'}`,
+          scM.length > 0 === scRed, scRed ? scM.join(' · ') : '未报（正确）')
+        await page.evaluate(() => document.documentElement.style.removeProperty('--scrim'))
         const dt = await page.evaluate(DEAD_TOKENS)
         const names = dt.dead.map(d => d.split(' ')[0])
         const fresh = names.filter(n => !(n in KNOWN_DEAD_TOKENS))

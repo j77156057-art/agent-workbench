@@ -807,7 +807,7 @@ const externalIds = computed<Set<string>>(
 .ug-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(38, 52, 77, 0.38);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   z-index: 90;
   display: flex;

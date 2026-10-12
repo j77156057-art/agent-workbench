@@ -275,7 +275,7 @@ function submitRevise() {
 .wg-mask {
   position: fixed; inset: 0; z-index: 1100;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(38, 52, 77, .30);
+  background: var(--scrim);
   backdrop-filter: blur(1.5px);
   pointer-events: none;
   animation: wg-fade .12s ease-out;

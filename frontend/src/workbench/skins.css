@@ -35,6 +35,15 @@
      线是浅灰」两档分离，绑死 --ink 的话换肤时描边会跟着变黑。
      37 处 var(--edge-ink) + 27 处 --edge-w-strong 全从这一个默认值取色。 */
   --edge-ink: var(--border);
+  /* 遮罩两档：模态级 / 浮层级。必须是**黑**，不能是"海军蓝"也不能是 --ink ——
+     以前全仓 23 处遮罩各写各的蓝（rgba(38,52,77,.38) 那一族），实测压在
+     paper #ece7db 上是 −53% 亮度（正常变暗），压在 graphite #16181d 上却是
+     **+34% 变亮** —— 深色皮肤里打开任何弹层，背景会发灰发白而不是沉下去。
+     0.28 / 0.14 是照"浅色皮肤维持原观感"反解的：黑 .28 在 paper 上 −52%
+     （原来 −53%），黑 .14 在 paper 上 −29%（原来 −29%），而 graphite 两档
+     都变成 −37% / −20%。浅色皮几乎无感，深色皮被修好。 */
+  --scrim: rgba(0, 0, 0, .28);
+  --scrim-soft: rgba(0, 0, 0, .14);
   /* 字体与字重（风格层可以改「声音」，不只改色） */
   --style-font-ui: var(--font-ui, 'Inter', 'Space Grotesk', 'Noto Sans SC', sans-serif);
   --style-font-display: var(--font-display, 'Archivo', 'Space Grotesk', 'Noto Sans SC', sans-serif);

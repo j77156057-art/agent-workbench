@@ -471,7 +471,7 @@ function providerLabel(p: string) {
 <style scoped>
 .fl-overlay {
   position: fixed; inset: 0; z-index: 90;
-  background: rgba(38, 52, 77, 0.38);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   display: flex; align-items: center; justify-content: center;
   padding: 22px;

@@ -98,7 +98,7 @@ button { font-family: inherit; }
 .ask-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(20, 28, 45, .42);
+  background: var(--scrim);
   display: flex;
   align-items: center;
   justify-content: center;

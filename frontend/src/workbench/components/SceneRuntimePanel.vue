@@ -1112,7 +1112,7 @@ onUnmounted(() => {
 .sr-trigger { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted); border-radius: 5px; padding: 5px 9px; cursor: pointer; white-space: nowrap; transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease; }
 .sr-trigger:hover { color: var(--text); border-color: #b9d0f5; background: var(--bg-hover); transform: translateY(-1px); }
 
-.pb-mask { position: fixed; inset: 0; background: rgba(38, 52, 77, 0.38); z-index: 65; animation: pb-mask-in .2s ease-out both; }
+.pb-mask { position: fixed; inset: 0; background: var(--scrim); z-index: 65; animation: pb-mask-in .2s ease-out both; }
 .pb-pop { position: fixed; z-index: 66; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 1360px; max-width: 96vw; height: 840px; max-height: 92vh; background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: 0 24px 70px rgba(35, 52, 84, 0.16); display: flex; flex-direction: column; overflow: hidden; animation: pb-pop-in .24s cubic-bezier(.2,.8,.2,1) both; }
 .pb-head { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, var(--bg-raised), var(--bg-hover)); }
 .pb-tabs { display: flex; gap: 6px; }

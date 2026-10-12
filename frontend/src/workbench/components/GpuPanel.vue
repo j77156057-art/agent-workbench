@@ -301,7 +301,7 @@ defineExpose({ show })
 .gp-trigger:hover { background: var(--bg-hover); }
 .gp-trigger:active { transform: translateY(1px); }
 .gp-trigger:focus-visible, .gp-link:focus-visible, .gp-mini:focus-visible, .gp-mini-danger:focus-visible, .gp-danger:focus-visible, .gp-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.gp-backdrop { position: fixed; inset: 0; z-index: 299; background: rgba(35,52,84,.16); backdrop-filter: blur(1px); animation: gp-fade-in .16s ease-out both; }
+.gp-backdrop { position: fixed; inset: 0; z-index: 299; background: var(--scrim-soft); backdrop-filter: blur(1px); animation: gp-fade-in .16s ease-out both; }
 .gp-pop {
   position: fixed; right: 16px; top: 64px; width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 80px); overflow-y: auto;
   padding: 12px; background: var(--bg-raised);

@@ -942,7 +942,7 @@ button.ac-card { font: inherit; color: inherit; }
 /* 抽屉 */
 .ac-drawer-mask {
   position: absolute; inset: 0; z-index: 40;
-  background: rgba(35,52,84,.28);
+  background: var(--scrim);
   display: flex; justify-content: flex-end;
 }
 .ac-drawer {
@@ -1015,7 +1015,7 @@ button.ac-card { font: inherit; color: inherit; }
 /* Kenney modal */
 .ac-modal-mask {
   position: absolute; inset: 0; z-index: 42;
-  background: rgba(35,52,84,.32);
+  background: var(--scrim);
   display: flex; align-items: center; justify-content: center; padding: 28px;
 }
 .ac-modal {

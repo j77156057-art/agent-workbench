@@ -1140,7 +1140,7 @@ html[data-material='glass'] .wb-proj-notice {
 
 /* ---------- 对话框 ---------- */
 .wb-modal-backdrop {
-  background: rgba(27, 39, 61, .34) !important;
+  background: var(--scrim) !important;
   backdrop-filter: blur(4px) !important;
   animation: wb-modal-fade var(--motion-panel) var(--ease-standard) both !important;
 }
@@ -1199,7 +1199,7 @@ html[data-material='glass'] .wb-proj-notice {
   position: fixed;
   inset: 0;
   z-index: 1100;
-  background: rgba(38, 52, 77, .38);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   display: flex;
   align-items: center;

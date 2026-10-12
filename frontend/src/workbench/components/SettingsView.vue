@@ -1958,7 +1958,7 @@ function openModelSettings() {
 <style scoped>
 .sv-mask {
   position: fixed; inset: 0; z-index: 2100;
-  background: rgba(20, 24, 33, .34);
+  background: var(--scrim);
   display: flex; align-items: center; justify-content: center;
 }
 .sv-box {

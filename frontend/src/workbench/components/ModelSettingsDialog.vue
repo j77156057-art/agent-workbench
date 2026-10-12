@@ -736,7 +736,7 @@ async function save() {
 <style scoped>
 .ms-mask {
   position: fixed; inset: 0; z-index: 2000; box-sizing: border-box;
-  background: rgba(20, 24, 33, .32);
+  background: var(--scrim);
   display: flex; align-items: center; justify-content: center;
   overflow: auto; overscroll-behavior: contain;
   backdrop-filter: blur(2px); animation: ms-fade .18s ease-out both;

@@ -249,7 +249,7 @@ function connectorGuide(s: McpServer) {
   position: fixed;
   inset: 0;
   z-index: 59;
-  background: rgba(35,52,84,.16);
+  background: var(--scrim-soft);
   backdrop-filter: blur(1px);
   animation: cd-mask-in .16s ease-out both;
 }

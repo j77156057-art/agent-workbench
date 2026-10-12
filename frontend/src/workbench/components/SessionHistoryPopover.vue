@@ -84,7 +84,7 @@ function sessionTime(value: string): string {
   position: fixed;
   inset: 0;
   z-index: 59;
-  background: rgba(35,52,84,.14);
+  background: var(--scrim-soft);
   backdrop-filter: blur(1px);
   animation: sh-fade-in .16s ease-out both;
 }

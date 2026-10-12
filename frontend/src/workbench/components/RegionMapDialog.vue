@@ -354,7 +354,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(38, 52, 77, 0.38);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
   z-index: 92;
   display: flex;

@@ -948,7 +948,7 @@ onBeforeUnmount(stopTimer)
 .ag-bar i { display: block; height: 100%; background: #2f6fed; transition: width .3s ease; }
 .ag-job-note { margin: 0; font-size: 10px; color: var(--text-faint); }
 
-.ag-modal-mask { position: fixed; inset: 0; background: rgba(20,30,48,.32); display: flex; align-items: center; justify-content: center; z-index: 60; }
+.ag-modal-mask { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: 60; }
 .ag-modal { width: min(720px, 92vw); max-height: 80vh; display: flex; flex-direction: column; background: #fff; border-radius: 8px; border: 1px solid var(--border); overflow: hidden; }
 .ag-modal header { display: flex; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .ag-modal header b { flex: 1 1 auto; font-size: 13px; }
