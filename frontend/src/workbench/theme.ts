@@ -117,8 +117,10 @@ const GRAPH_NODE_STYLES: Record<string, GraphNodeStyle> = {
 
 export function graphNodeStyle(kind: string): GraphNodeStyle {
   const s = GRAPH_NODE_STYLES[kind] ?? GRAPH_NODE_STYLES.external
-  // 表里那几个值是"身份"，出口一律派生：描边过 3:1、底板用同色相压 14%。
+  // 表里那几个值是"身份"，出口一律派生：描边过 3:1、底板只压 8% 同色相。
+  // 8% 是量出来的：14% 时卡片标签在 paper 上掉到 4.38:1（底被色相染暗了，字还是中性色），
+  // 8% 既留得住"按类型分组"的那层淡色，又把标签推回 4.5 以上。
   // text 不再回那批调死的浅色（#d6e7ff 在纸底上等于隐形）—— 标签走中性色，
   // 色相由卡片描边和底色承担。
-  return { ...s, stroke: cat(s.stroke), fill: catAlpha(s.stroke, 14), text: 'var(--text)' }
+  return { ...s, stroke: cat(s.stroke), fill: catAlpha(s.stroke, 8), text: 'var(--text)' }
 }

@@ -85,13 +85,36 @@ const SWEEP = () => {
     return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
   const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
     return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
-  const bgOf = el => { const acc = []
+  // 底要连祖先的 background-image 一起算。以前只累加 backgroundColor，
+  // 于是 ChatDock 那种"整块面板刷 98% 白渐变"的皮肤泄漏被量成了深色底 ——
+  // 浅字压白底本该 1.2:1，却报成浅字压深底 14:1。渐变画在底色之上，
+  // 每一层色标都是一个可能的底。
+  // 组合会爆炸，所以每层只保留"最亮 / 最暗"两个极端底：合成对亮度单调，
+  // 任一文字色的最差对比度必然出现在这两个里面。
+  const groundsOf = el => {
+    // 先把每一层的油漆收集起来，再**由外向内**折叠：渲染时子元素的底盖在父元素之上，
+    // 反过来合成会让最外层那块不透明的 --bg 把内层渐变全抹掉，于是渐变泄漏
+    // 又量不出来（第一版就栽在这里，报出来一片 0）。
+    const stack = []
     for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
-      const c = parse(getComputedStyle(n).backgroundColor); if (c) { acc.push(c); if (c.a >= .999) break } }
-    let bg = { rgb: [255, 255, 255], a: 1 }
-    for (let i = acc.length - 1; i >= 0; i--) { const c = acc[i]
-      bg = { rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + bg.rgb[k] * (1 - c.a)), a: 1 } }
-    return bg }
+      const cs2 = getComputedStyle(n)
+      const layers = []
+      const bc = parse(cs2.backgroundColor); if (bc) layers.push(bc)
+      for (const s of (cs2.backgroundImage || '').match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) || []) {
+        const c = parse(s); if (c) layers.push(c)
+      }
+      if (layers.length) stack.push(layers)
+    }
+    let cands = [[255, 255, 255]]
+    const over = (c, base) => [0, 1, 2].map(k => c.rgb[k] * c.a + base[k] * (1 - c.a))
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const next = []
+      for (const base of cands) for (const L of stack[i]) next.push(over(L, base))
+      next.sort((a, b) => lum(a) - lum(b))
+      cands = [next[0], next[next.length - 1]]
+    }
+    return cands
+  }
   const bad = []
   for (const el of document.querySelectorAll('body *')) {
     // 只判"自己直接写着文字"的元素；容器交给它的子元素自己算
@@ -106,26 +129,34 @@ const SWEEP = () => {
       // 两个探针都读 color，于是 #1b3c73 压深色底 1.40:1 这种账从来没进过表。
       ? getComputedStyle(el).fill : cs.color)
     if (!fg) continue
-    const base = bgOf(el)
-    // 渐变底不能当成"透明往上找父级"：那样白字压蓝渐变会被算成白压卡片 = 1.06:1，
-    // 是探针造假出来的数字。把每个色标各自压到父底上，取最浅那一档（对文字最不利）。
-    const stops = (cs.backgroundImage || '').match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) || []
-    const bgs = stops.map(s => parse(s)).filter(Boolean)
-      .map(c => ({ rgb: [0, 1, 2].map(k => c.rgb[k] * c.a + base.rgb[k] * (1 - c.a)), a: 1 }))
-    const grad = bgs.length > 0
-    let worst = null
-    for (const bg of (grad ? bgs : [base])) {
-      const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + bg.rgb[k] * (1 - fg.a)) }
-      const L1 = lum(eff.rgb), L2 = lum(bg.rgb)
-      const ratio = +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
-      if (worst === null || ratio < worst.ratio) worst = { ratio, bg }
+    // 每个可能的底都算一遍，取最差那一档（渐变里最浅的色标对浅字最不利）。
+    const grounds = groundsOf(el)
+    // SVG 文字的底常常不是 CSS，而是同组里那块 <rect fill>（节点卡片就是这么画的）。
+    // 不把它当候选底，量出来的就是"点阵网格的颜色"，等于没量。
+    if (el.ownerSVGElement) {
+      const g = el.closest('g')
+      const plate = g && g.querySelector('rect, circle')
+      if (plate) {
+        const pf = parse(getComputedStyle(plate).fill)
+        if (pf && pf.a > 0) for (const base of grounds.slice())
+          grounds.push([0, 1, 2].map(k => pf.rgb[k] * pf.a + base[k] * (1 - pf.a)))
+      }
     }
-    const { ratio, bg } = worst
+    const grad = grounds.length > 1
+    let worst = null
+    for (const rgb of grounds) {
+      const eff = { rgb: [0, 1, 2].map(k => fg.rgb[k] * fg.a + rgb[k] * (1 - fg.a)) }
+      const L1 = lum(eff.rgb), L2 = lum(rgb)
+      const ratio = +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
+      if (worst === null || ratio < worst.ratio) worst = { ratio, rgb }
+    }
+    const { ratio, rgb: gbg } = worst
+    const bg = { rgb: gbg, a: 1 }
     const px = parseFloat(cs.fontSize) || 16
     const need = (px >= 24 || (px >= 18.66 && Number(cs.fontWeight) >= 700)) ? 3 : 4.5
     if (ratio < need) bad.push({ 元素: el.tagName.toLowerCase()
       + (typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/)[0] : '')
-      + (grad ? '〔渐变底·取最浅色标〕' : ''),
+      + (grad ? '〔含渐变底·取最差档〕' : ''),
       比值: ratio, 字: cs.color, 底: `rgb(${bg.rgb.map(Math.round).join(',')})`,
       字号: px, 文本: (el.textContent || '').trim().slice(0, 14) })
   }

@@ -1934,16 +1934,16 @@ const webTitle = computed(() => webOn.value
 
 /* ---------- 对话区视觉细化 ---------- */
 .cd-dock {
-  background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(248,250,254,.98));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 98%, transparent), color-mix(in srgb, var(--bg-raised) 90%, transparent));
   box-shadow: 0 -8px 26px rgba(35,52,84,.06);
 }
 .cd-head {
-  background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(247,249,253,.92));
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, white);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 96%, transparent), color-mix(in srgb, var(--bg-raised) 88%, transparent));
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, var(--bg-raised));
 }
 .cd-body {
   scroll-behavior: smooth;
-  background: linear-gradient(180deg, rgba(248,250,253,.5), rgba(255,255,255,.8));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 50%, transparent), color-mix(in srgb, var(--bg-raised) 80%, transparent));
 }
 .cd-msg { animation: cd-message-in .22s var(--ease-spring) both; }
 .cd-user-bubble {
@@ -1960,7 +1960,7 @@ const webTitle = computed(() => webOn.value
 .cd-activity-row:hover { background: rgba(47,111,237,.06); transform: translateX(2px); }
 .cd-activity-detail { animation: cd-detail-in .18s var(--ease-spring) both; border-radius: 0 5px 5px 0; }
 .cd-notice { border: 1px solid rgba(152,163,180,.22); background: rgba(244,247,251,.8); }
-.cd-inputbar { background: linear-gradient(180deg, rgba(250,252,255,.88), rgba(245,248,252,.96)); border-top: 1px solid var(--border); }
+.cd-inputbar { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 88%, transparent), color-mix(in srgb, var(--bg-raised) 96%, transparent)); border-top: 1px solid var(--border); }
 .cd-input { box-shadow: inset 0 1px 2px rgba(35,52,84,.03); transition: border-color .16s, box-shadow .16s, background .16s; }
 .cd-input:focus { background: #fff; box-shadow: 0 0 0 3px rgba(47,111,237,.11), inset 0 1px 2px rgba(35,52,84,.03); }
 .cd-send { box-shadow: 0 4px 11px rgba(47,111,237,.18); transition: transform .16s var(--ease-spring), box-shadow .16s, filter .16s; }

@@ -1122,7 +1122,7 @@ onUnmounted(() => {
 .pb-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 5px; padding: 2px 6px; transition: color .16s ease, background .16s ease, transform .16s ease; }
 .pb-x:hover { color: var(--text); background: var(--bg-selected); transform: rotate(90deg); }
 .pb-body { flex: 1; display: flex; min-height: 0; }
-.pb-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; padding: 10px 12px; gap: 8px; background: linear-gradient(180deg, rgba(246,249,255,.45), transparent 35%); }
+.pb-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; padding: 10px 12px; gap: 8px; background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 45%, transparent), transparent 35%); }
 .pb-side { width: 320px; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised)); }
 .pb-side-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .pb-side-head > div { display: flex; align-items: center; gap: 8px; }

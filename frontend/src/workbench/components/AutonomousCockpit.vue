@@ -3373,7 +3373,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp {
   background:
     radial-gradient(circle at 16% 0%, rgba(122,90,248,.08), transparent 34%),
-    linear-gradient(135deg, #f2f5fa 0%, #edf1f7 100%);
+    linear-gradient(135deg, var(--bg-raised) 0%, color-mix(in srgb, var(--bg-raised) 90%, var(--bg)) 100%);
   scrollbar-gutter: stable;
 }
 .acp-head { animation: acp-rise .3s var(--ease-spring) both; }

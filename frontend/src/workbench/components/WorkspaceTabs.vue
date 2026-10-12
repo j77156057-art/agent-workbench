@@ -67,7 +67,7 @@ function pick(key: WorkspaceView) {
   gap: 2px;
   padding: 0 12px;
   height: 38px;
-  background: linear-gradient(180deg, #f8faff 0%, #eef3f9 100%);
+  background: linear-gradient(180deg, var(--bg-raised) 0%, color-mix(in srgb, var(--bg-raised) 90%, var(--bg)) 100%);
   border-bottom: 1px solid var(--border);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.75);
   user-select: none;

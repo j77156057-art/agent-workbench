@@ -252,7 +252,7 @@ const ASK_CHIPS = [
   padding: 14px 16px;
   border: 1px solid #dbe4f1;
   border-radius: 13px;
-  background: linear-gradient(135deg, #ffffff 0%, #f7faff 100%);
+  background: linear-gradient(135deg, var(--bg-raised) 0%, color-mix(in srgb, var(--bg-raised) 90%, var(--bg)) 100%);
   box-shadow: 0 5px 18px rgba(35,52,84,.055);
 }
 .ov-folder { color: var(--accent); display: inline-flex; padding: 7px; border-radius: 9px; background: #eaf2ff; }
@@ -346,7 +346,7 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
   background: rgba(255,255,255,.78);
   box-shadow: 0 4px 16px rgba(35,52,84,.045);
 }
-.ov-guide { border-color: #d5e2f5; background: linear-gradient(180deg, #fafdff, #f5f8fd); }
+.ov-guide { border-color: var(--border-2); background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 100%, transparent), color-mix(in srgb, var(--bg-raised) 90%, transparent)); }
 
 /* 最近打开 */
 .ov-recent { list-style: none; margin: 0; padding: 0; }
@@ -405,7 +405,7 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 }
 .ov-empty-btn:hover { background: rgba(47,111,237,.12); }
 .ov-empty-btn:active, .ov-step:active, .ov-recent-item:active, .ov-chip:active { transform: translateY(1px); }
-.ov-noproj { border-style: solid; border-color: #cfe0fb; background: linear-gradient(180deg, #fbfdff, #f6f9fd); }
+.ov-noproj { border-style: solid; border-color: var(--border-2); background: linear-gradient(180deg, var(--bg-raised), color-mix(in srgb, var(--bg-raised) 90%, var(--bg))f9fd); }
 .ov-noproj .ov-empty-ic { color: var(--accent); }
 .ov-noproj-hint {
   margin: 14px auto 0; max-width: 460px;

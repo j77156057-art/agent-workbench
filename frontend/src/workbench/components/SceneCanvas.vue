@@ -1037,7 +1037,7 @@ defineExpose({ reload, undo, redo, addChildNew })
 .sc-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-faint); border: 1px dashed var(--border); border-radius: 8px; }
 .sc-empty small { max-width: 380px; text-align: center; line-height: 1.7; }
 .sc-body { flex: 1; display: flex; min-height: 0; gap: 10px; }
-.sc-canvas { flex: 1; min-width: 0; position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: linear-gradient(180deg, #f7f9fd, #eef2f8); box-shadow: 0 7px 20px rgba(35,52,84,.06); transition: border-color .18s ease, box-shadow .18s ease; }.sc-canvas:focus-within { border-color: #b9d0f5; box-shadow: 0 0 0 3px rgba(47,111,237,.08), 0 7px 20px rgba(35,52,84,.08); }
+.sc-canvas { flex: 1; min-width: 0; position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: linear-gradient(180deg, var(--bg-raised) 0%, color-mix(in srgb, var(--bg-raised) 90%, var(--bg)) 100%); box-shadow: 0 7px 20px rgba(35,52,84,.06); transition: border-color .18s ease, box-shadow .18s ease; }.sc-canvas:focus-within { border-color: #b9d0f5; box-shadow: 0 0 0 3px rgba(47,111,237,.08), 0 7px 20px rgba(35,52,84,.08); }
 .sc-canvas-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; color: var(--text-muted); background: rgba(247, 249, 253, .92); pointer-events: none; text-align: center; }
 .sc-canvas-empty b { font-size: 12px; font-weight: 600; }
 .sc-canvas-empty small { max-width: 330px; color: var(--text-faint); font-size: 11px; line-height: 1.6; }

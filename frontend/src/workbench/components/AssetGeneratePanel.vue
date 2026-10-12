@@ -874,7 +874,7 @@ onBeforeUnmount(stopTimer)
   border: 1px solid var(--border); border-radius: 8px; padding: 14px;
   display: flex; flex-direction: column; gap: 10px; background: var(--panel, #fff);
 }
-.ag-card-cloud { border-color: #d8ccf5; background: linear-gradient(180deg, #fcfaff 0%, #fff 60%); }
+.ag-card-cloud { border-color: #d8ccf5; background: linear-gradient(180deg, var(--bg-raised) 0%, color-mix(in srgb, var(--bg-raised) 90%, var(--bg)) 100%); }
 .ag-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .ag-card-head h3 { margin: 0; font-size: 14px; }
 .ag-tag { font-size: 10px; color: var(--text-faint); }
