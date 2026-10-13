@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -401,6 +402,138 @@ def check(root: str, path: Any, *, exclude_lane: Any = "", now: Any = None) -> d
                            "patterns": hit, "seconds_left": round(_seconds_left(row, now), 1)})
     return {"ok": True, "action": "check", "path": rel, "owners": owners,
             "free": not owners}
+
+
+# --------------------------------------------------------------------------- #
+# write gate (决策 7 第二层) + 写账本 (决策 17)
+# --------------------------------------------------------------------------- #
+#
+# 设计要点（来自 docs/cockpit-v2-redesign.md §7 / 决策 5·7·17）：
+#   · lanes 原本是「君子协定」——只有 dev_lanes 工具被 agent 主动调用，没有任何
+#     写路径在落盘前反查归属。第二层把安全性从「靠自觉」变成「靠拦截」。
+#   · 本进程内用 thread-local 记录「当前写入方属于哪个 lane」，子对话（小对话）
+#     在各自线程里 set_current_lane 后落盘，互不串扰。
+#   · **零开销透传**：当前写入方未绑定 lane（单用户 / 编排主代理）时，write_gate
+#     直接放行、不碰登记表——绝不允许这道附加安全层打断正常的单用户写路径。
+#   · 防御式：任何异常一律放行（宁可放过，不可误伤正常写）。
+#   · 写账本只在「有 lane 上下文」时记录，单用户模式零 I/O。
+# --------------------------------------------------------------------------- #
+
+_lane_local = threading.local()
+
+
+def set_current_lane(name: Any) -> None:
+    """绑定当前线程的写入方到某个 lane（小对话开工时调用）。传空/None 解除绑定。"""
+    cleaned = str(name or "").strip() if name is not None else ""
+    _lane_local.name = cleaned or None
+
+
+def get_current_lane() -> str:
+    return getattr(_lane_local, "name", None) or ""
+
+
+@contextlib.contextmanager
+def lane_context(name: Any) -> Iterator[None]:
+    """上下文管理器版：进入时绑定、退出时恢复，便于子对话一次性包裹。"""
+    prev = get_current_lane()
+    set_current_lane(name)
+    try:
+        yield
+    finally:
+        set_current_lane(prev)
+
+
+def write_gate(root: str, rel_path: Any, *, lane: Any = None, now: Any = None) -> str | None:
+    """落盘前反查 lane 归属；越界返回阻塞原因（中文），放行返回 None。
+
+    仅在「写入方绑定了 lane」时才查登记表——单用户 / 编排主代理（无 lane 上下文）
+    恒为 None（透传）。当文件被某个 live lane 认领、且当前写入方不在认领者之列时
+    拦截（不落盘）。其余情况（free、自己认领的、无 lane 上下文）一律放行。
+
+    防御式：任何异常返回 None（放行），绝不因登记表不可用而误伤正常写。
+    """
+    name = lane if lane is not None else get_current_lane()
+    if not name:
+        return None  # 零开销透传：无 lane 上下文
+    try:
+        rel = normalize_pattern(rel_path)
+        if not rel:
+            return None
+        result = check(root, rel, exclude_lane=name, now=now)
+        if not result.get("ok") or result.get("free"):
+            return None
+        owners = result.get("owners") or []
+        if any(str(o.get("lane") or "") == str(name) for o in owners):
+            return None  # 当前 lane 拥有该文件，放行
+        owner_desc = "、".join(
+            f"{o.get('lane')}({o.get('owner') or '未署名'})" for o in owners[:5])
+        return (f"拒绝写入 {rel}：该文件已被 lane {owner_desc} 认领，"
+                f"当前写入方 lane {name} 无权越界写入。"
+                "请先 claim 该范围，或用 dev_lanes 协调归属后再写。")
+    except Exception:  # noqa: BLE001 - 附加安全层故障必须 fail-open，不可误伤正常写
+        return None
+
+
+# ---- 写账本（决策 17 数据侧）-------------------------------------------- #
+
+def _ledger_path(root: str) -> Path:
+    return Path(project_state.path(root, "lane_writes.json"))
+
+
+def _read_ledger(root: str) -> dict[str, Any]:
+    target = _ledger_path(root)
+    try:
+        raw = target.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return {"schema": SCHEMA, "writes": []}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {"schema": SCHEMA, "writes": []}
+    if not isinstance(data, dict) or not isinstance(data.get("writes"), list):
+        return {"schema": SCHEMA, "writes": []}
+    return data
+
+
+def _write_ledger(root: str, data: dict[str, Any]) -> None:
+    target = _ledger_path(root)
+    tmp = target.with_name("lane_writes.json.tmp")
+    payload = json.dumps({"schema": SCHEMA, "writes": data.get("writes", [])},
+                         ensure_ascii=False, indent=2, sort_keys=True)
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, target)
+
+
+def record_write(root: str, lane: Any, path: Any, op: str,
+                 before_sha256: str, *, now: Any = None) -> None:
+    """决策 17：在写账本里记一笔「某 lane 实际写了什么」。
+
+    仅当写入方绑定了 lane 才记录（单用户模式零 I/O）。lane 级回滚（决策 11/17）
+    只有这里能拿到权威归属。best-effort：任何异常静默跳过，不拖累主写路径。
+    """
+    name = str(lane or "").strip() if lane is not None else ""
+    if not name:
+        return
+    try:
+        entry = {"lane": name, "path": normalize_pattern(path), "op": op,
+                 "before_sha256": str(before_sha256 or ""),
+                 "at": _now(now)}
+        with _locked(root):
+            data = _read_ledger(root)
+            data.setdefault("writes", []).append(entry)
+            _write_ledger(root, data)
+    except Exception:  # noqa: BLE001
+        return
+
+
+def read_write_ledger(root: str, *, lane: Any = "") -> dict[str, Any]:
+    """读取写账本；可按 lane 过滤。供 lane 级回滚（决策 17）消费。"""
+    data = _read_ledger(root)
+    writes = data.get("writes", [])
+    name = str(lane or "").strip()
+    if name:
+        writes = [w for w in writes if str(w.get("lane") or "") == name]
+    return {"ok": True, "count": len(writes), "writes": writes}
 
 
 # --------------------------------------------------------------------------- #

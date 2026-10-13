@@ -4587,6 +4587,13 @@ def apply_edit(arg):
     if not os.path.isfile(target):
         return f"文件不存在：{path}（apply_edit 只修改已存在文件，不会新建文件）。"
 
+    # 决策 7 第二层：落盘前反查 lane 归属；单用户（无 lane 上下文）零开销透传。
+    from agent_runtime import lanes
+    _rel = os.path.relpath(target, root_abs)
+    _gate = lanes.write_gate(root_abs, _rel)
+    if _gate:
+        return _gate
+
     try:
         with open(target, encoding="utf-8", errors="ignore") as f:
             old_content = f.read()
@@ -4654,6 +4661,9 @@ def apply_edit(arg):
                 return "并行修改冲突：文件在本次编辑准备后已发生变化，请重新 read_file 后再改。"
             with open(target, "w", encoding="utf-8") as f:
                 f.write(new_content)
+            lanes.record_write(
+                root_abs, lanes.get_current_lane(), rel, "modify",
+                hashlib.sha256(old_content.encode("utf-8")).hexdigest())
     except Exception as e:  # noqa: BLE001
         return f"写入失败: {e}"
 
@@ -4695,6 +4705,7 @@ def dev_apply_edits(arg):
     回滚已写文件。批量编辑强制要求 old_text（整体重写请用 apply_edit 单文件走）。
     """
     blocks = _split_edit_blocks(arg)
+    from agent_runtime import lanes
     if not blocks:
         return ("未解析到任何编辑块。格式：每块 `path:` + `old_text:` + `new_text:`，"
                 "块之间用单独一行 `---` 分隔。")
@@ -4727,6 +4738,12 @@ def dev_apply_edits(arg):
         seen.add(key)
         if not _region_write_allowed(target):
             errors.append(f"块 {i}（{path}）：属于已配置分区，请改用 dev_region_edit。")
+            continue
+        # 决策 7 第二层：落盘前反查 lane 归属；单用户（无 lane 上下文）零开销透传。
+        _rel = os.path.relpath(target, root_abs)
+        _gate = lanes.write_gate(root_abs, _rel)
+        if _gate:
+            errors.append(f"块 {i}（{path}）：{_gate}")
             continue
         if not os.path.isfile(target):
             errors.append(f"块 {i}（{path}）：文件不存在（新建请用 create_file）。")
@@ -4797,6 +4814,10 @@ def dev_apply_edits(arg):
                     raise RuntimeError(f"{p['path']}：并行修改冲突，文件在预检后已变化。")
                 with open(p["target"], "w", encoding="utf-8") as fh:
                     fh.write(p["new_content"])
+                lanes.record_write(
+                    p["root_abs"], lanes.get_current_lane(),
+                    os.path.relpath(p["target"], p["root_abs"]), "modify",
+                    hashlib.sha256(p["old_content"].encode("utf-8")).hexdigest())
             written.append(p)
     except Exception as e:  # noqa: BLE001
         rolled = []
@@ -4861,6 +4882,13 @@ def create_file(arg):
     if os.path.exists(target):
         return f"文件已存在：{path}（create_file 不覆盖已有文件；要修改请用 apply_edit）。"
 
+    # 决策 7 第二层：落盘前反查 lane 归属；单用户（无 lane 上下文）零开销透传。
+    from agent_runtime import lanes
+    _rel = os.path.relpath(target, root_abs)
+    _gate = lanes.write_gate(root_abs, _rel)
+    if _gate:
+        return _gate
+
     if len(content.encode("utf-8", "ignore")) > _APPLY_MAX_BYTES:
         return f"拒绝写入：新文件大小超过上限（{_APPLY_MAX_BYTES // 1024}KB）。"
 
@@ -4905,6 +4933,7 @@ def create_file(arg):
                 return "并行创建冲突：目标文件已被另一个代理创建，请改用 apply_edit。"
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content)
+            lanes.record_write(root_abs, lanes.get_current_lane(), rel, "create", "")
     except Exception as e:  # noqa: BLE001
         return f"写入失败: {e}"
 

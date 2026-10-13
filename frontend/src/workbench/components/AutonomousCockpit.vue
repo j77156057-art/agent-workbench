@@ -2786,7 +2786,6 @@ onBeforeUnmount(() => {
           </section>
           <section class="acp-preview-region" aria-label="预览">
           <div class="acp-region-kicker acp-region-preview"><span>03</span><b>实时画面</b><small>与 AI 边看边聊</small><button class="acp-inspect-button" :disabled="visualInspecting" @click="inspectCurrentInterface()">{{ visualInspecting ? 'AI 正在查看…' : 'AI 浏览当前界面' }}</button><button class="acp-live-vision-button" :class="{ on: liveVisionActive && !screenSharing && !cameraSharing }" @click="toggleLiveVision()">{{ liveVisionActive && !screenSharing && !cameraSharing ? '停止观察项目' : '观察项目画面' }}</button><button class="acp-live-vision-button" :class="{ on: screenSharing }" @click="screenSharing ? stopLiveVision('屏幕共享已停止。') : startScreenShare()">{{ screenSharing ? '停止共享屏幕' : '共享屏幕给 AI' }}</button><button class="acp-live-vision-button" :class="{ on: cameraSharing }" @click="cameraSharing ? stopLiveVision('摄像头已停止。') : startCameraShare()">{{ cameraSharing ? '关闭摄像头' : '打开摄像头' }}</button></div>
-          <div id="wb-cockpit-runtime-slot" v-show="stageMode === 'runtime'" class="acp-runtime-slot" />
           <div v-show="stageMode === 'outputs'" class="acp-preview-output">
           <div v-if="!workflow && !previewArtifacts.length" class="acp-stage-empty">
             <div class="acp-stage-glyph" aria-hidden="true">⌘</div>
@@ -2954,7 +2953,6 @@ onBeforeUnmount(() => {
         <button v-if="workflow" class="acp-talk-button" @click="openChat">与 AI 沟通下一步</button>
         </div>
         </section>
-        <div id="wb-cockpit-chat-slot" class="acp-chat-slot" />
         <section class="acp-acceptance-region" aria-label="验收">
           <div class="acp-region-kicker"><span>04</span><b>验收</b><small>检查证据并作最终决定</small></div>
           <p v-if="!workflow" class="acp-muted">开始任务后，验收条件和审批会显示在这里。</p>
@@ -3290,7 +3288,6 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-stage-evidence .acp-preview img,.acp-stage-evidence .acp-preview video { max-height: 540px; }
 .acp-stage-evidence .acp-preview summary { font-size: 12px; }
 .acp-stage-evidence .acp-live-viewport { min-height: 320px; }
-.acp-runtime-slot { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; overflow: auto; }
 .acp-collaborator { flex: 0 1 390px; width: 390px; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--bg-raised); overflow: hidden; transition: flex-basis .2s var(--ease-standard), width .2s var(--ease-standard), padding .2s var(--ease-standard), border-width .2s var(--ease-standard); }
 /* 收起：宽度归零、内边距/边框同步收起；内部对话台等组件不卸载，展开即恢复 */
 .acp-studio.is-collab-collapsed .acp-collaborator { flex: 0 0 0; width: 0; padding: 0; border-left-width: 0; border-right-width: 0; gap: 0; }
@@ -3327,30 +3324,6 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-approval-drawer > summary { cursor: pointer; color: var(--text-muted); }
 .acp-model-drawer { font-size: 11px; color: var(--text-muted); }
 .acp-model-drawer > summary { cursor: pointer; padding: 4px 0; }
-/* 对话槽独占剩余空间并保留保底高度：内部输入栏不可压缩，
-   没有保底时消息区会被挤成 0 高度（对话被“挡”住） */
-.acp-chat-slot { display: flex; flex-direction: column; flex: 1 1 0; min-height: 240px; min-width: 0; }
-/* 对话台折叠时槽位收成 33px，把空间还给目标区/验收区 */
-.acp-chat-slot:has(.cd-dock.cd-collapsed) { flex: 0 0 auto; min-height: 0; }
-.acp-chat-slot :deep(.cd-dock) { flex: 1; width: 100%; min-height: 0; height: 100%; max-height: none; border-radius: 8px; border: 1px solid var(--border); }
-.acp-chat-slot :deep(.cd-dock.cd-collapsed) { flex: 0 0 auto; height: 33px; min-height: 0; }
-.acp-chat-slot :deep(.cd-head) { flex: 0 0 auto; flex-wrap: wrap; height: auto; min-height: 34px; gap: 5px; padding: 7px; }
-.acp-chat-slot :deep(.cd-hint) { display: none; }
-.acp-chat-slot :deep(.cd-body) { overflow: auto; }
-.acp-chat-slot :deep(.cd-orphan), .acp-chat-slot :deep(.cd-inputbar) { flex-shrink: 0; }
-.acp-chat-slot :deep(.cd-head-toggle) { min-width: 100px; }
-/* 消息区保底可见高度，避免被不可压缩的输入栏吃成 0 */
-.acp-chat-slot :deep(.cd-body) { padding: 8px 10px; min-height: 44px; }
-/* 开发舱槽位专用紧凑密度：窄栏里工具芯片换行是输入区最大的纵向开销，
-   只在槽位内覆写，不影响问答页与工作台底部对话台 */
-.acp-chat-slot :deep(.cd-msg) { margin-bottom: 8px; }
-.acp-chat-slot :deep(.cd-answer) { font-size: 12px; line-height: 1.65; }
-.acp-chat-slot :deep(.cd-user-bubble) { font-size: 12px; padding: 5px 9px; }
-.acp-chat-slot :deep(.cd-inputbar) { gap: 5px; padding: 6px 8px 7px; }
-.acp-chat-slot :deep(.cd-tools) { gap: 4px; }
-.acp-chat-slot :deep(.cd-chip) { height: 21px; padding: 0 7px; font-size: 10px; border-radius: 11px; }
-.acp-chat-slot :deep(.cd-input) { padding: 6px 9px; font-size: 12px; }
-.acp-chat-slot :deep(.cd-send) { height: 28px; }
 .acp-inspector { position: absolute; inset: 82px 18px 18px; z-index: 8; overflow: auto; padding: 14px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 14px 40px #15264026; }
 .acp-error-banner { padding: 8px 10px; margin: 0 0 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-raised); }
 .acp-active-banner { display: flex; justify-content: space-between; gap: 10px; align-items: center; margin-bottom: 10px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); font-size: 12px; }
@@ -3424,7 +3397,6 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 .acp-talk-button:hover:not(:disabled),
 .acp-compose button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 16px rgba(47,111,237,.23); }
 .acp-approval-drawer { background: rgba(247,249,253,.72); }
-.acp-chat-slot :deep(.cd-dock) { box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 4px 14px rgba(35,52,84,.05); }
 .acp-feedback-pop { animation: acp-pop .2s var(--ease-spring) both; }
 .acp-live-frame { /*__KEEP13__*/; }
 

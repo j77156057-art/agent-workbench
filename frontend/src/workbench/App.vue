@@ -644,6 +644,11 @@ onBeforeUnmount(() => {
         <WorkspaceTabs />
         <!-- 阶段 4：运行面板常驻（docked）承载槽（主区，左侧文件树/示例保留，便于边玩边改） -->
         <div id="wb-playpane-slot" class="wb-playpane-slot" v-show="runtimeResident" />
+        <!-- v2 重构（§7.0）：窗口嵌入槽位从 AutonomousCockpit 迁出到工作台主区。
+             常驻（在文档中始终存在）+ v-show，禁用 v-if，确保 Teleport 目标在挂载期
+             始终可解析；并为 Task #5 删除开发舱组件后保留窗口嵌入能力。 -->
+        <div id="wb-cockpit-runtime-slot" class="acp-runtime-slot" v-show="workspace === 'cockpit' && cockpitRuntime" />
+        <div id="wb-cockpit-chat-slot" class="acp-chat-slot" v-show="workspace === 'cockpit'" />
         <!-- 页面切换只隐藏编辑区，不卸载 ChatDock。否则 ChatDock 的卸载钩子会
              把正在进行的 SSE 当成用户主动停止，导致切到运行面板时回答被中断。 -->
         <!-- 自主开发舱：独立工作区，描述目标后由模型规划/执行/验证，用户审核计划与结果 -->
@@ -696,7 +701,7 @@ onBeforeUnmount(() => {
     <Teleport v-if="cockpitReady" defer to="#wb-cockpit-chat-slot"><ChatDock scope="cockpit" /></Teleport>
     <SceneRuntimePanel :mode="runtimeResident || (workspace === 'cockpit' && cockpitReady && cockpitRuntime) ? 'docked' : 'popup'"
       :host="workspace === 'cockpit' && cockpitReady && cockpitRuntime ? '#wb-cockpit-runtime-slot' : '#wb-playpane-slot'"
-      @close="cockpitRuntime = false; cockpitRef?.showOutputs()" />
+      @close="cockpitRuntime = false" />
 
     <!-- 高级工具面板宿主：自带触发按钮隐藏（入口已收进顶栏「工具」菜单），
          弹层 teleport 到 body，经模板 ref 调 show() 唤起。 -->

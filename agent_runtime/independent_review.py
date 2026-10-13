@@ -29,8 +29,10 @@ def review_project(project_root: str, checkpoint: Mapping[str, Any],
     visible as unverified. Model-generated test claims never satisfy this gate.
     """
     if execution_mode() != "enterprise":
-        return {"ok": True, "status": "local_mode", "independent": False,
-                "message": "本地兼容模式未执行企业级独立复核"}
+        # 决策 9（fail-closed）：非企业环境无法提供容器级隔离的独立复核证据，
+        # 不得放行，显式失败而非静默通过。
+        return {"ok": False, "status": "unverified", "independent": True,
+                "message": "非企业环境未执行独立复核，按 fail-closed 视为未通过"}
     root = Path(project_root).resolve() if project_root else None
     if not root or not root.is_dir() or not checkpoint.get("id"):
         return {"ok": False, "status": "unverified", "independent": True,
