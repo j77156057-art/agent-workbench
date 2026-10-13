@@ -72,3 +72,56 @@ def test_workflow_capability_lease_persists_and_releases_on_terminal_state(tmp_p
     interrupted = manager.interrupt(workflow_id, "测试结束")
     assert interrupted["capability_lease"]["status"] == "released"
     assert "released_at" in interrupted["capability_lease"]
+
+
+# --------------------------------------------------------------------------
+# _UNSET sentinel：显式空 capabilities 不得被扩成全能力
+# --------------------------------------------------------------------------
+
+
+def _make_manager(tmp_path):
+    from agent_runtime.game_workflow import GameWorkflowManager
+    return GameWorkflowManager(state_root=str(tmp_path))
+
+
+def test_capability_lease_sentinel_distinguishes_omitted_from_empty(tmp_path):
+    """`_ensure_capability_lease` 必须区分「未传」与「显式空集合」。
+
+    之前 `capabilities=[]` 会被 `capabilities or ()` 折叠到默认全能力；
+    调用方传空集合本来想表达「零权限」，却被扩成全能力。
+    """
+    from agent_runtime.game_workflow import _UNSET, WorkflowState
+
+    mgr = _make_manager(tmp_path)
+    state = WorkflowState(workflow_id="wf-sentinel")
+    state.status = "planning"
+
+    # 未传 → 默认全能力
+    lease = mgr._ensure_capability_lease(state, capabilities=_UNSET)
+    assert set(lease["capabilities"]) >= {"read_local", "write_local", "network", "admin"}
+
+    # 显式空列表 → 零权限（**不能**扩成全能力）
+    state2 = WorkflowState(workflow_id="wf-empty")
+    state2.status = "planning"
+    lease = mgr._ensure_capability_lease(state2, capabilities=[])
+    assert lease["capabilities"] == []
+
+    # 显式空集合 → 同样是零权限
+    state3 = WorkflowState(workflow_id="wf-empty-set")
+    state3.status = "planning"
+    lease = mgr._ensure_capability_lease(state3, capabilities=set())
+    assert lease["capabilities"] == []
+
+
+def test_create_capability_lease_omitted_vs_empty(tmp_path):
+    """`create_capability_lease` 公共入口同样区分。"""
+    from agent_runtime.game_workflow import GameWorkflowManager
+    mgr = GameWorkflowManager(state_root=str(tmp_path))
+    wid_a = mgr.start("测试A", kind="generic")["workflow_id"]
+    wid_b = mgr.start("测试B", kind="generic")["workflow_id"]
+    # 未传 capabilities → 默认全能力
+    lease = mgr.create_capability_lease(wid_a)
+    assert set(lease["capabilities"]) >= {"read_local", "write_local"}
+    # 显式空列表 → 零权限（不同 workflow，避免已有 lease 缓存干扰）
+    lease_empty = mgr.create_capability_lease(wid_b, capabilities=[])
+    assert lease_empty["capabilities"] == []

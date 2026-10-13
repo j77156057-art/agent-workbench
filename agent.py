@@ -3531,7 +3531,7 @@ class Agent:
         # A top-level turn creates this budget; child agents inherit the same
         # object so their calls, reflections, synthesis and replanning share it.
         self.run_budget = run_budget
-        self.tool_allowlist = list(tool_allowlist) if tool_allowlist else None
+        self.tool_allowlist = (None if tool_allowlist is None else list(tool_allowlist))
         # 工作流可临时授予一组能力。它只收窄当前 Agent 的工具执行范围，
         # 不替代用户审批、工具白名单或 execute_tool 的副作用保护。
         self.capability_lease = dict(capability_lease or {})
@@ -3633,8 +3633,9 @@ class Agent:
 
     def _web_blocked(self, action_name) -> bool:
         """联网关闭时，外网工具一律拒绝（文本通道与原生通道共用此判定）。"""
-        spec = self.tools.get(action_name)
-        return bool(spec and spec.group == "web" and not self.web_enabled)
+        spec = self._tool_spec(action_name)
+        return bool(spec and not self.web_enabled and (
+            spec.group == "web" or spec.capability == Capability.NETWORK))
 
     def _is_network_tool(self, action_name) -> bool:
         """Whether a tool crosses a network/MCP boundary for timeout hooks."""
@@ -3844,7 +3845,7 @@ class Agent:
 
         详见 `docs/known-defect-context-router-recall.md` §11。
         """
-        names = self.tool_allowlist if self.tool_allowlist else list(self.tools.keys())
+        names = self.tool_allowlist if self.tool_allowlist is not None else list(self.tools.keys())
         if not self.web_enabled:
             names = [n for n in names if not self._web_blocked(n)]
         if _TOOL_EXPANSION == "progressive" and self.last_context_plan is not None:
@@ -5233,7 +5234,7 @@ class Agent:
                     yield {"type": "observation", "text": _obs}
                     continue
                 # 子代理白名单：不在名单内的工具直接拒绝（防止受限子代理越权）
-                if self.tool_allowlist and action_name not in self.tool_allowlist:
+                if self.tool_allowlist is not None and action_name not in self.tool_allowlist:
                     _obs = (f"[受限] 本子代理只允许使用：{'、'.join(self.tool_allowlist)}。"
                             f"{action_name} 不在白名单内，已拒绝。")
                     trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
@@ -5647,6 +5648,39 @@ class Agent:
                 and not parsed["action"]
                 and bool(acc.strip())
             )
+            # 未知 action 兜底：模型写了 action 但该工具不存在（白名单/拼写错误/
+            # 工具被临时禁用）。反馈一条 Observation 让模型用其他工具重试或收尾，
+            # 否则下面 `if final_body` 会把整轮当作"已收尾"放过去 → 用户侧完全
+            # 看不到模型调了不存在的工具。重复出现 → 强制收尾。
+            # 未知 action 兜底：模型写了 action 但该工具不存在（白名单/拼写错误/
+            # 工具被临时禁用）。反馈一条 Observation 让模型用其他工具重试或收尾，
+            # 否则下面 `if final_body` 会把整轮当作"已收尾"放过去 → 用户侧完全
+            # 看不到模型调了不存在的工具。连续 2 次同未知 action 直接强制收尾
+            # 并 yield final（不再 continue，否则会进入下一轮死循环）。
+            if parsed["action"] and parsed["action"] not in self.tools:
+                if parsed["action"] not in tool_fail_streak:
+                    tool_fail_streak[parsed["action"]] = 0
+                streak = tool_fail_streak[parsed["action"]] + 1
+                tool_fail_streak[parsed["action"]] = streak
+                if streak >= 2:
+                    _obs = ("[未知工具] " + str(parsed["action"]) + " 不在可用列表中；"
+                             "已连续 2 次触发，强制收尾。请用已注册工具重试或"
+                             "直接在 Final Answer 中说明。")
+                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
+                    trail.append({"role": "user", "content": "Observation: " + _obs})
+                    yield {"type": "action", "text": f"{parsed['action']}({parsed['action_input'] or ''}) [已拦截：未知工具，强制收尾]"}
+                    yield {"type": "observation", "text": _obs}
+                    yield {"type": "reflection", "text": _obs}
+                    yield _evidence_final(
+                        f"（工具 {parsed['action']} 不存在，已要求模型停止再写这个 Action 并收尾。）")
+                    return
+                _obs = ("[未知工具] " + str(parsed["action"]) + " 不在可用列表中。"
+                         "可调用的工具请按系统提示中的列表选择；如需新增工具请到设置页启用。")
+                trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
+                trail.append({"role": "user", "content": "Observation: " + _obs})
+                yield {"type": "action", "text": f"{parsed['action']}({parsed['action_input'] or ''}) [已拦截：未知工具]"}
+                yield {"type": "observation", "text": _obs}
+                continue
             final_body = parsed["final"] or (acc if native_prose_final else "")
 
             if final_body:
@@ -6189,8 +6223,11 @@ class Agent:
         # 开发舱 auto 模式可按子任务复杂度传入升级模型；None 时沿用会话自身模型的克隆
         child_llm = llm if llm is not None else self._child_llm()
         requested_tools = tool_allowlist
+        allowlist_provided = requested_tools is not None
         if isinstance(requested_tools, str):
             requested_tools = [item.strip() for item in requested_tools.split(",") if item.strip()]
+        elif allowlist_provided and not isinstance(requested_tools, (list, tuple, set)):
+            requested_tools = []
         # The planner/主 Agent may narrow a role's tools, but may not widen
         # the role's safety boundary.  This is especially important for the
         # read-only planner: a malformed LLM proposal must not smuggle
@@ -6251,8 +6288,10 @@ class Agent:
             else:
                 allowed = [str(name) for name in requested_tools
                            if str(name) in self.tools]
-        else:
+        elif not allowlist_provided:
             allowed = list(spec["tools"])
+        else:
+            allowed = []
         policy = str(mcp_policy or "auto").strip().lower()
         if role_name in _READ_ONLY_ROLES:
             # Planner/dispatcher are analysis-only roles by contract. Even if a model
@@ -6264,7 +6303,7 @@ class Agent:
                      if name in self.tools]
         if policy == "deny":
             allowed = [name for name in allowed if name not in mcp_tools]
-        elif policy == "allow":
+        elif policy == "allow" and not allowlist_provided:
             allowed = list(dict.fromkeys(allowed + mcp_tools))
         allowed = [name for name in allowed if name in self.tools]
         cap = _resolve_child_max_steps(max_steps)
@@ -6275,7 +6314,7 @@ class Agent:
             plan_mode=False,
             depth=self.depth + 1,
             project_id=self.project_id,
-            tool_allowlist=allowed or list(spec["tools"]),
+            tool_allowlist=allowed,
             tool_registry=self.tools,
             application_id=self.application_id,
             system_prompt=self.system_prompt,
@@ -6295,7 +6334,7 @@ class Agent:
         if persona:
             question += "\n你的本次专项人设：" + _clip(str(persona), 500)
         question += ("\n工具策略：MCP=" + (policy if policy in {"allow", "deny", "auto"} else "auto") +
-                     "；允许工具=" + ", ".join(allowed or spec["tools"]))
+                     "；允许工具=" + ", ".join(allowed))
         question += "\n\n子任务：" + task
         if context:
             ctx = "\n".join(f"- {k}：{_clip(str(v), 600)}" for k, v in context.items())

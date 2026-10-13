@@ -153,6 +153,13 @@ class WorkflowError(ValueError):
     pass
 
 
+#: Sentinel used to distinguish "caller did not provide capabilities" from
+#: "caller explicitly provided an empty iterable". `_ensure_capability_lease`
+#: relies on it; `create_capability_lease` accepts the same sentinel via its
+#: default.
+_UNSET = object()
+
+
 CHECKPOINT_SCHEMA_VERSION = 1
 
 
@@ -1807,9 +1814,24 @@ class GameWorkflowManager:
             self._event_seq = max(self._event_seq, len(state.events))
 
     def subscribe(self, workflow_id: str, *, maxsize: int = 256) -> queue.Queue:
-        """注册一个 SSE 订阅队列（每连接独立，有界，满则丢最旧）。"""
+        """注册一个 SSE 订阅队列（每连接独立，有界，满则丢最旧）。
+
+        原子校验 + 注册：SSE handler 顺序通常是
+        ``WORKFLOWS.get(wid) → require_workflow_project → subscribe``。
+        如果在 `get` 与 `subscribe` 之间 workflow 已被 `delete_workflow`
+        清掉，旧实现会照常注册 queue；后续 SSE 循环里
+        `is_terminal(wid)` 永远 False（state 不在内存），但
+        `events_since` 返回 `(None, latest_seq)`，循环一直 ping 且
+        队列泄漏（`_subscribers[wid]` 持续持有已删 workflow 的 queue）。
+
+        现在 subscribe 在同一 `with self._lock` 内同时校验 state 存
+        在 + 注册；state 不在就抛 WorkflowError，由 SSE handler 转 404。
+        """
         q: queue.Queue = queue.Queue(maxsize=max(32, min(2048, int(maxsize))))
         with self._lock:
+            state = self._states.get(workflow_id)
+            if state is None and not self._path(workflow_id).is_file():
+                raise WorkflowError("工作流不存在：%s" % workflow_id)
             self._subscribers.setdefault(workflow_id, set()).add(q)
         return q
 
@@ -1864,10 +1886,20 @@ class GameWorkflowManager:
         recover_pending 同原则——纯扫描绝不 register，避免把门控态塞进
         _states 武装互斥。已在内存中的状态（含当前活跃工作流）优先取内存，
         保证看到最新的 status/updated_at。
+
+        ## 2026-10-14：AND 语义 + Windows 路径规范化
+
+        之前用 OR 匹配（任一字段相等即视为同一项目）→ 混绑 state
+        （A 项目的 project_id + B 项目的 project_root）会被 A、B 任一
+        项目看见。改为所有**已提供**的绑定条件必须全部匹配（AND），
+        并对路径做 `os.path.normcase(normpath(...))` 归一，避免
+        Windows 大小写/尾斜杠/symlink 绕过。两者皆空时返回所有工作
+        流（与 `active_for_project` 同口径），保持离线/测试用法的
+        既有用法。
         """
         limit = max(1, min(int(limit or 50), 200))
         want_pid = str(project_id or "").strip()
-        want_root = str(project_root or "").strip().rstrip("/\\")
+        want_root = _canonical_project_root(project_root)
         with self._lock:
             paths = list(self.state_root.glob("*.json")) if self.state_root.is_dir() else []
         items: list[dict[str, Any]] = []
@@ -1883,11 +1915,12 @@ class GameWorkflowManager:
             if not isinstance(raw, Mapping):
                 continue
             raw_pid = str(raw.get("project_id") or "").strip()
-            raw_root = str(raw.get("project_root") or "").strip().rstrip("/\\")
-            if (want_pid or want_root) and not (
-                (want_pid and raw_pid == want_pid) or (want_root and raw_root == want_root)
-            ):
-                continue
+            raw_root = _canonical_project_root(raw.get("project_root") or "")
+            if (want_pid or want_root):
+                pid_ok = (not want_pid and not raw_pid) or (want_pid and want_pid == raw_pid)
+                root_ok = (not want_root and not raw_root) or (want_root and want_root == raw_root)
+                if not (pid_ok and root_ok):
+                    continue
             tasks = raw.get("tasks")
             tasks = tasks if isinstance(tasks, list) else []
             done = sum(1 for t in tasks
@@ -1950,14 +1983,29 @@ class GameWorkflowManager:
         两条生产启动路径都会解析出真实 project_root（project_id 为补充匹配）。
         两者皆空（直接实例化的测试/离线调用）时不做互斥，保持单 manager
         多目标的既有用法。
+
+        ## 2026-10-14：AND 语义 + Windows 路径规范化
+
+        之前用 OR 匹配：`state.project_root == project_root or
+        state.project_id == project_id`。混绑 state（A 项目 id + B 项目
+        root）会被任意一边命中 → 跨项目可见。改为：所有**已提供**的
+        绑定条件必须全部匹配（AND），缺一不可；并把路径通过
+        `os.path.normcase(normpath(...))` 归一，避免 Windows 大小写/尾
+        斜杠/symlink 绕过。`projects.project_id` 也走同样归一，所以
+        project_id 与 canonical root 一定相容。
         """
         if not project_root and not project_id:
             return None
+        want_pid = str(project_id or "").strip()
+        want_root = _canonical_project_root(project_root)
         for state in self._states.values():
             if state.status in self._TERMINAL_STATUSES:
                 continue
-            if (project_root and state.project_root == project_root) or \
-               (project_id and state.project_id == project_id):
+            have_pid = str(state.project_id or "").strip()
+            have_root = _canonical_project_root(state.project_root)
+            pid_ok = (not want_pid and not have_pid) or (want_pid and want_pid == have_pid)
+            root_ok = (not want_root and not have_root) or (want_root and want_root == have_root)
+            if pid_ok and root_ok:
                 return state
         return None
 
@@ -2297,8 +2345,18 @@ class GameWorkflowManager:
 
     def _ensure_capability_lease(self, state: WorkflowState,
                                  *, ttl_seconds: int | float | None = None,
-                                 capabilities: Iterable[str] | None = None) -> dict[str, Any]:
-        """Create or reuse the temporary capability scope for execution."""
+                                 capabilities: Iterable[str] | _UNSET = _UNSET) -> dict[str, Any]:
+        """Create or reuse the temporary capability scope for execution.
+
+        `capabilities` 三种含义：
+        - 未传（sentinel）→ 默认授予全部 Capability；
+        - 显式可迭代对象 → 严格按调用方列出的能力授予；
+        - 显式空列表/集合 → **零权限**，与未传区分。
+
+        之前的实现把 `None` 和 `[]` 混为一谈：调用方明确传空集合也会被
+        解读为「给我全部」，等于显式零权限被扩成全权限，这是同一族
+        fail-open 风险。
+        """
         now = time.time()
         current = dict(state.capability_lease or {})
         try:
@@ -2312,9 +2370,10 @@ class GameWorkflowManager:
         except (TypeError, ValueError):
             ttl = float(self._capability_lease_ttl_s)
         ttl = max(300.0, min(7200.0, ttl))
-        selected = [str(item) for item in (capabilities or ()) if str(item)]
-        if not selected:
+        if capabilities is _UNSET:
             selected = [item.value for item in Capability]
+        else:
+            selected = [str(item) for item in (capabilities or ()) if str(item)]
         expires = now + ttl
         lease = {
             "id": "lease-" + uuid.uuid4().hex[:16],
@@ -2331,8 +2390,11 @@ class GameWorkflowManager:
         return lease
 
     def create_capability_lease(self, workflow_id: str, *, ttl_seconds: int | float | None = None,
-                                capabilities: Iterable[str] | None = None) -> dict[str, Any]:
-        """Explicitly arm a workflow capability lease for callers/tests."""
+                                capabilities: Iterable[str] | _UNSET = _UNSET) -> dict[str, Any]:
+        """Explicitly arm a workflow capability lease for callers/tests.
+
+        `capabilities` 同样区分未传（默认全能力）与显式空集合（零权限）。
+        """
         state = self._load(workflow_id)
         if state.status in self._TERMINAL_STATUSES:
             raise WorkflowError("终态工作流不能创建工具权限租约")
@@ -5498,6 +5560,26 @@ class GameWorkflowManager:
         graph.add_edge("complete", END)
         graph.add_edge("fail", END)
         return graph.compile(checkpointer=checkpointer or self._graph_checkpointer)
+
+
+def _canonical_project_root(value: Any) -> str:
+    """把项目根路径归一为「同一项目」恒等的形式。
+
+    `os.path.normpath` 处理 `..` / 多余斜杠；`os.path.normcase` 在 Windows
+    上是 `lower()`，保证 `D:/A` 与 `d:\\a\\` 视为同一根。空串原样返回。
+
+    `projects.project_id()` 走 `os.path.normcase(os.path.abspath(...))`；
+    这里用 `normpath` + `normcase`（不去 `abspath`），因为 `state.project_root`
+    在写入时已是绝对路径，去 `abspath` 反而会改变既有行为。两侧只要同
+    形归一就能匹配。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(text))
+    except (OSError, ValueError):
+        return text
 
 
 WORKFLOWS = GameWorkflowManager()

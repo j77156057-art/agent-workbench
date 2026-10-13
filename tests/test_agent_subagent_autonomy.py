@@ -121,8 +121,9 @@ def test_the_write_tool_set_is_not_a_shadow_copy():
         )
 
 
-def _effective_tools_for_read_only(registry: dict, requested: list[str]) -> str:
-    """真跑一次 `_run_child`，返回只读角色**实际**拿到的工具清单。
+def _effective_tools_for_read_only(registry: dict, requested: list[str] | None, *,
+                                   role: str = "planner", mcp_policy: str = "deny") -> set[str]:
+    """真跑一次 `_run_child`，返回子代理**实际**拿到的工具清单。
 
     断言的是子代理提示里「允许工具=」那一行 —— 也就是真正生效的那份，
     不是任何中间变量。
@@ -151,13 +152,66 @@ def _effective_tools_for_read_only(registry: dict, requested: list[str]) -> str:
             return 1
 
     parent.llm = _Capture()
-    parent._run_child("planner", "只读分析", tool_allowlist=requested,
-                      mcp_policy="deny", reflect=False)
+    kwargs = {"mcp_policy": mcp_policy, "reflect": False}
+    if requested is not None:
+        kwargs["tool_allowlist"] = requested
+    parent._run_child(role, "只读分析", **kwargs)
     prompt = "\n".join(seen)
     assert "允许工具=" in prompt, prompt[:400]
     line = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
     return set(line.replace("，", ",").replace("、", ",")
                .replace(" ", ",").split(",")) - {""}
+
+
+def test_explicit_allowlist_filtered_empty_does_not_restore_role_defaults():
+    registry = {
+        "read_file": {"func": lambda _a: ""},
+        "dev_mcp_call": {"func": lambda _a: "", "capability": "network",
+                         "side_effect": "irreversible", "parallel_safe": False},
+        "apply_edit": {"func": lambda _a: "", "capability": "write_local",
+                       "side_effect": "mutating", "parallel_safe": False},
+    }
+    assert _effective_tools_for_read_only(
+        registry, ["dev_mcp_call"], role="planner", mcp_policy="deny") == set()
+    assert _effective_tools_for_read_only(
+        registry, ["missing_tool"], role="coder", mcp_policy="auto") == set()
+    assert _effective_tools_for_read_only(
+        registry, ["apply_edit"], role="planner", mcp_policy="deny") == set()
+
+
+def test_missing_allowlist_still_uses_role_defaults():
+    import agent as agent_mod
+    parent = agent_mod.Agent(llm=None)
+    parent.tools = {"read_file": {"func": lambda _a: ""}}
+    assert _effective_tools_for_read_only(
+        parent.tools, None, role="planner", mcp_policy="deny") == {"read_file"}
+
+
+def test_explicit_allowlist_blocks_mcp_allow_promotion():
+    """`mcp_policy=allow` 不得向显式 `tool_allowlist` 追加 MCP 工具。
+
+    显式白名单是**硬上限**；`allow` 只是「未指定时给默认权限」的策略信号，
+    不是「把 MCP 工具强制塞进去」的命令。回退到 OR 拼接会让 `[read_file]`
+    + `allow` 实际拿到 `dev_mcp_call`，绕过调用方边界。
+    """
+    import agent as agent_mod
+    from agent_runtime.tools import Capability, SideEffect
+
+    registry = {
+        "read_file": {"func": lambda _a: ""},
+        "dev_mcp_call": {
+            "func": lambda _a: "", "capability": Capability.NETWORK,
+            "side_effect": SideEffect.IRREVERSIBLE, "parallel_safe": False,
+        },
+    }
+    # 显式 allowlist=[read_file] + mcp_policy=allow → 只剩 read_file
+    assert _effective_tools_for_read_only(
+        registry, ["read_file"], role="coder", mcp_policy="allow") == {"read_file"}
+    # 未提供 allowlist + mcp_policy=allow → 仍可拿 MCP（policy 仍生效）
+    parent = agent_mod.Agent(llm=None)
+    parent.tools = registry
+    assert _effective_tools_for_read_only(
+        registry, None, role="coder", mcp_policy="allow") >= {"read_file", "dev_mcp_call"}
 
 
 def test_read_only_roles_cannot_widen_into_any_mutating_tool():
