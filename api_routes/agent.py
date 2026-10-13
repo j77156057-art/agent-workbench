@@ -122,6 +122,14 @@ class WorkflowStageApplyReq(BaseModel):
     approved: bool = False
 
 
+class StageUnavailableError(RuntimeError):
+    """试做区在执行期不可用时抛出。
+
+    `_stage_workspace_root` 在声明启用试做区但读不到 / 验证失败时抛此异常；
+    `project_bound` 捕获后阻断 callback，而不是回退到真实项目根。
+    """
+
+
 class PreviewAdapterConfigReq(BaseModel):
     adapters: list[str] = []
 
@@ -201,29 +209,123 @@ def _stage_workspace_root(state: dict, workflow_root: str,
     做区里跑 git 类只读检查会看不到仓库。这是隔离与 git 可见性之间的取舍，
     本轮选隔离——「写进真项目」是两者里不可回退的那一种。
 
-    `live_lookup` 是为了测试与「读不到就退回项目根」的兜底：任何异常都不阻断
-    执行。
+    ## fail-closed（2026-10-14）：stage_enabled 时试做区不可用就阻断
+
+    之前 `live_lookup` 异常 / workspace 目录被删 / 状态读取失败时一律
+    回退到 `workflow_root`（真实项目）——一旦回退，写工具会**直接落真
+    项目**，但 UI 仍在报「改动位于临时试做区」。这是 fail-open。
+
+    现在：
+    - `state.stage_enabled is True`：试做区不可用 → 抛 `StageUnavailableError`；
+      `project_bound` 捕获后阻断 callback，写工具不会执行。
+    - `state.stage_enabled is False`（明确未启用）：维持旧行为，落真实项目根。
+
+    旧测试 `tests/test_stage_execution_root.py::test_a_broken_lookup_falls_back_...`
+    把「失败回退」写成了预期；该测试需要更新（**它把 bug 固化成了契约**）。
     """
     root = str(workflow_root or "")
+    stage_enabled = bool((state or {}).get("stage_enabled"))
     lookup = live_lookup
     if lookup is None:
         wid = str((state or {}).get("workflow_id") or "")
         if not wid:
+            # 没有 workflow_id 也不存在 stage_enabled 概念 → 退到真实根（旧契约）
             return root
         lookup = lambda: WORKFLOWS.get(wid) or {}  # noqa: E731
+    live = None
+    lookup_error = ""
     try:
         live = lookup() or {}
+    except Exception as exc:  # noqa: BLE001
+        live = None
+        lookup_error = "%s: %s" % (type(exc).__name__, exc)
+    if stage_enabled:
+        if live is None:
+            raise StageUnavailableError(
+                "试做区状态读取失败（%s），已阻断写操作以免绕过隔离"
+                % (lookup_error or "未知错误"))
         stage = (live or {}).get("project_stage") or {}
         workspace = str(stage.get("workspace_root") or "")
-        if workspace and os.path.isdir(workspace):
-            return workspace
-    except Exception:  # noqa: BLE001 —— 读不到就退回项目根，绝不阻断派发
-        pass
+        if not workspace:
+            raise StageUnavailableError(
+                "试做区声明启用但缺少 workspace_root，已阻断写操作以免绕过隔离")
+        if not os.path.isdir(workspace):
+            raise StageUnavailableError(
+                "试做区 workspace 目录不存在或不可访问：%s" % workspace)
+        return workspace
+    # stage_enabled=False：维持旧行为，落在真实根
+    if not live:
+        return root
+    stage = (live or {}).get("project_stage") or {}
+    workspace = str(stage.get("workspace_root") or "")
+    if workspace and os.path.isdir(workspace):
+        return workspace
     return root
 
 
 def build_router(ctx) -> APIRouter:
     router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+    def _canonicalize_root(value: str) -> str:
+        """Windows 下做大小写无关 + 尾斜杠归一，避免「同一项目」因大小写/symlink 漂移。
+
+        `os.path.normcase` 在 Windows 上是 `lower()`，配合 `os.path.normpath`
+        统一尾斜杠与斜杠方向。空串原样返回。
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            return os.path.normcase(os.path.normpath(text))
+        except (OSError, ValueError):
+            return text
+
+    def require_workflow_project(workflow_id: str, state) -> dict | None:
+        """校验收到的 `state` 是否真的属于当前项目；不通过时返回 404 body。
+
+        之前所有按 `workflow_id` 访问的端点（读取、approve、execute、SSE 等）
+        都直接调 `WORKFLOWS.get(workflow_id)` 然后信任返回值——知道 ID 就能
+        跨项目读到状态、订阅事件、触发执行/审批/回滚/删除。
+
+        这里用 AND 语义比较 `project_id` 与 `project_root`，二者全部命中才放行；
+        任一缺失时拒绝。同时用 `normcase(normpath(...))` 做路径规范化，
+        避免 Windows 大小写/尾斜杠/symlink 绕过。
+
+        失败返回 `{"ok": False, "error": "...", "_status": 404}`，
+        路由 handler 识别到 `_status` 后转 `JSONResponse(404)`。
+        """
+        current_root = _canonicalize_root(ctx._project_root_or_error() or "")
+        workflow_root = _canonicalize_root(state.get("project_root") or "")
+        current_id = str(ctx._request_project_id() or "")
+        workflow_id_field = str(state.get("project_id") or "")
+        root_ok = (not current_root and not workflow_root) or (current_root and current_root == workflow_root)
+        id_ok = (not current_id and not workflow_id_field) or (current_id and current_id == workflow_id_field)
+        if root_ok and id_ok:
+            return None
+        return {"ok": False,
+                "error": "workflow 不属于当前项目",
+                "_status": 404,
+                "_workflow_id": str(workflow_id or "")}
+
+    def _ownership_blocked(payload):
+        """`require_workflow_project` 拒绝时转 404 响应，去掉内部字段。"""
+        return JSONResponse(
+            {k: v for k, v in (payload or {}).items() if not k.startswith("_")},
+            status_code=int((payload or {}).get("_status") or 404),
+        )
+
+    def _deny_if_cross_project(workflow_id: str) -> dict | None:
+        """对不直接拿 `state` 但仍按 `workflow_id` 调管理器的端点做一次 owner 校验。
+
+        返回 None 表示放行；返回 `{"_status": 404, ...}` 时路由 handler 转 404。
+        优于 `require_workflow_project` 的地方：它自己完成 `WORKFLOWS.get`
+        + 校验，handler 拿到 deny 直接返回，避免重复 try/except。
+        """
+        try:
+            state = WORKFLOWS.get(workflow_id)
+        except WorkflowError:
+            return {"ok": False, "error": "工作流不存在", "_status": 404}
+        return require_workflow_project(workflow_id, state or {})
 
     def project_bound(callback, project_root, project_id: str = ""):
         """Run durable workflow callbacks in their stored project, not the UI's current one.
@@ -250,15 +352,24 @@ def build_router(ctx) -> APIRouter:
         """
         def _root():
             if callable(project_root):
+                # 解析失败：原版"返回空字符串"会让 root_token 不绑定、callback
+                # 继续跑、写工具直接落真项目——这是 fail-open。改为：试做区
+                # 解析失败要阻断（避免绕过隔离），其它情况下保持阻断。
                 try:
                     return str(project_root() or "")
-                except Exception:  # noqa: BLE001 —— 解析失败退回不绑，绝不崩派发
-                    return ""
+                except Exception as exc:  # noqa: BLE001
+                    raise StageUnavailableError(
+                        "执行期根解析失败（%s），已阻断 callback 以免写到错误项目"
+                        % type(exc).__name__) from exc
             return str(project_root or "")
 
         def scoped(*args, **kwargs):
             root = _root()
-            root_token = set_context_code_root(root) if root else None
+            if not root:
+                # 没有真实根（也意味着没有试做区 workspace）→ 阻断 callback
+                raise StageUnavailableError(
+                    "无法解析执行根（既无试做区也无项目根），已阻断 callback")
+            root_token = set_context_code_root(root)
             pid_token = ctx._CTX_PROJECT_ID.set(project_id) if project_id else None
             try:
                 return callback(*args, **kwargs)
@@ -393,10 +504,38 @@ def build_router(ctx) -> APIRouter:
 
         schedule_options(wid) 决定方案生成在何处异步跑（端点用 BackgroundTasks，
         工具线程内用守护线程）；工作流本身始终停在方案选择门，不直接执行。
+
+        ## 启动时一致性校验（2026-10-14）
+
+        之前调用方可以显式传 `project_id` 又拿到「当前项目」的根 `root`，
+        两字段不强制一致 → 后续 `WORKFLOWS.start(..., project_id=B, project_root=A)`
+        把跨项目组合写进 workflow state；活跃/列表过滤使用 OR 匹配，混绑状态
+        被 A、B 任一项目看见。
+
+        现在：显式 `project_id` 与 `ctx._request_project_id()` / `root` 反查
+        得到的 project_id **必须全部一致**；不一致就拒绝启动。
         """
         root = ctx._project_root_or_error() or ""
         policy = (policy or WorkflowPolicy()).normalized()
-        project_id = project_id or ctx._request_project_id()
+        request_pid = ctx._request_project_id()
+        # 反查根对应的 project_id：必须存在 + 匹配 request_pid
+        root_pid = ""
+        if root:
+            try:
+                root_pid = projects.project_id(root) or ""
+            except Exception:  # noqa: BLE001
+                root_pid = ""
+        # 三个 project_id：调用方显式传入、请求头反查、根反查
+        effective_pid = project_id or request_pid
+        if project_id and request_pid and project_id != request_pid:
+            raise WorkflowError(
+                "project_id 不一致：调用方 %r，HTTP 请求头 %r"
+                % (project_id, request_pid))
+        if effective_pid and root_pid and effective_pid != root_pid:
+            raise WorkflowError(
+                "project_id 与 project_root 不匹配：project_id=%r, project_root=%r 解析为 %r"
+                % (effective_pid, root, root_pid))
+        project_id = effective_pid
         profile = get_profile(kind)
         provider = get_runtime("llm_provider") or LLM_PROVIDER
         model = (get_runtime("llm_model") or LLM_MODEL or
@@ -618,9 +757,16 @@ def build_router(ctx) -> APIRouter:
     @router.get("/workflow/{workflow_id}")
     async def workflow_get(workflow_id: str):
         try:
-            return {"ok": True, "workflow": WORKFLOWS.get(workflow_id)}
+            state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
+        denied = require_workflow_project(workflow_id, state or {})
+        if denied:
+            return _ownership_blocked(denied)
+        return {"ok": True, "workflow": state}
 
     @router.get("/workflow/{workflow_id}/events")
     async def workflow_events(workflow_id: str, request: Request, after: int = 0):
@@ -632,10 +778,18 @@ def build_router(ctx) -> APIRouter:
         - 客户端断开即注销队列。注册先于重放，按 seq 去重，无丢事件/无裂缝。
         """
         try:
-            WORKFLOWS.get(workflow_id)
+            state = WORKFLOWS.get(workflow_id)
         except WorkflowError:
             return JSONResponse({"ok": False, "error": "工作流不存在"}, status_code=404)
-        q = WORKFLOWS.subscribe(workflow_id)
+        denied = require_workflow_project(workflow_id, state or {})
+        if denied:
+            return _ownership_blocked(denied)
+        # 原子订阅：state 在 get 与 subscribe 之间被 delete 会抛 WorkflowError，
+        # 避免 ghost queue 永久泄漏。
+        try:
+            q = WORKFLOWS.subscribe(workflow_id)
+        except WorkflowError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
         loop = asyncio.get_event_loop()
 
         def _drain(timeout):
@@ -683,12 +837,18 @@ def build_router(ctx) -> APIRouter:
     async def workflow_skill_candidate(workflow_id: str):
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
             return {"ok": True, "candidate": state.get("skill_candidate") or None}
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
 
     @router.get("/workflow/{workflow_id}/evaluation")
     async def workflow_evaluation(workflow_id: str):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "evaluation": WORKFLOWS.evaluate(workflow_id)}
         except WorkflowError as exc:
@@ -731,6 +891,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/skill-candidate/approve")
     async def workflow_skill_candidate_approve(workflow_id: str, req: WorkflowSkillApprovalReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "workflow": WORKFLOWS.approve_skill_candidate(
                 workflow_id, req.approved)}
@@ -758,6 +921,9 @@ def build_router(ctx) -> APIRouter:
     async def workflow_research(workflow_id: str, req: WorkflowResearchReq):
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
             project_id = state.get("project_id") or ctx._request_project_id()
             def option_generator(prompt, context_plan):
                 llm_agent = ctx._agent_for("workflow-options-research", project_id or None)
@@ -789,6 +955,9 @@ def build_router(ctx) -> APIRouter:
         """
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
             if state.get("status") != "awaiting_research":
                 raise WorkflowError("当前工作流不在等待联网检索")
             query = (req.query or state.get("request") or "").strip()
@@ -827,6 +996,9 @@ def build_router(ctx) -> APIRouter:
             task_generator = None
             if req.tasks is None:
                 state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
                 project_id = state.get("project_id") or ctx._request_project_id()
                 if not state.get("llm_enabled", True):
                     task_generator = None
@@ -874,6 +1046,9 @@ def build_router(ctx) -> APIRouter:
     async def workflow_preview(workflow_id: str):
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
             return {"ok": True, "preview": state.get("preview") or {}}
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
@@ -889,6 +1064,9 @@ def build_router(ctx) -> APIRouter:
         """
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
         except WorkflowError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
         preview = state.get("preview") or {}
@@ -922,6 +1100,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/acceptance/decide")
     async def workflow_acceptance_decide(workflow_id: str, req: WorkflowFinalAcceptanceReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "workflow": WORKFLOWS.decide_acceptance(
                 workflow_id, req.approved, req.note)}
@@ -939,9 +1120,8 @@ def build_router(ctx) -> APIRouter:
 
     def feedback_project(workflow_id: str):
         state = WORKFLOWS.get(workflow_id)
-        current_root = ctx._project_root_or_error()
-        workflow_root = str(state.get("project_root") or "")
-        if not current_root or not workflow_root or Path(current_root).resolve() != Path(workflow_root).resolve():
+        # 复用统一 ownership 校验：规范化 + project_id 双重比对。
+        if require_workflow_project(workflow_id, state or {}):
             raise WorkflowError("反馈不属于当前项目")
         return state
 
@@ -973,6 +1153,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/checkpoint")
     async def workflow_checkpoint(workflow_id: str, req: WorkflowCheckpointReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "checkpoint": WORKFLOWS.checkpoint(
                 workflow_id, approved=req.approved)}
@@ -981,6 +1164,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/project-checkpoint")
     async def workflow_project_checkpoint(workflow_id: str):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "checkpoint": WORKFLOWS.create_project_checkpoint(workflow_id)}
         except WorkflowError as exc:
@@ -988,6 +1174,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/project-rollback")
     async def workflow_project_rollback(workflow_id: str, req: WorkflowProjectRollbackReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "rollback": WORKFLOWS.rollback_project_checkpoint(
                 workflow_id, approved=req.approved, paths=req.paths)}
@@ -1017,6 +1206,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/stage/apply")
     async def workflow_stage_apply(workflow_id: str, req: WorkflowStageApplyReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "result": await run_in_threadpool(
                 WORKFLOWS.apply_project_stage, workflow_id, approved=req.approved)}
@@ -1025,6 +1217,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/stage/review")
     async def workflow_stage_review(workflow_id: str):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "review": await run_in_threadpool(
                 WORKFLOWS.rerun_project_review, workflow_id)}
@@ -1033,6 +1228,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/stage/cleanup")
     async def workflow_stage_cleanup(workflow_id: str):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "result": await run_in_threadpool(
                 WORKFLOWS.cleanup_project_stage, workflow_id)}
@@ -1063,6 +1261,9 @@ def build_router(ctx) -> APIRouter:
     async def workflow_acceptance_report(workflow_id: str):
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
             evaluation = WORKFLOWS.evaluate(workflow_id)
             return {"ok": True, "report": {
                 "workflow_id": workflow_id,
@@ -1081,6 +1282,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/interrupt")
     async def workflow_interrupt(workflow_id: str, req: WorkflowInterruptReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "workflow": WORKFLOWS.interrupt(workflow_id, req.reason)}
         except WorkflowError as exc:
@@ -1089,6 +1293,9 @@ def build_router(ctx) -> APIRouter:
     @router.delete("/workflow/{workflow_id}")
     async def workflow_delete(workflow_id: str):
         """删除终态工作流并清理磁盘状态文件；非终态返回 ok:false（请先中断）。"""
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return await run_in_threadpool(WORKFLOWS.delete_workflow, workflow_id)
         except WorkflowError as exc:
@@ -1096,6 +1303,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/resume")
     async def workflow_resume(workflow_id: str):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "workflow": WORKFLOWS.resume(workflow_id)}
         except WorkflowError as exc:
@@ -1103,6 +1313,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/revise")
     async def workflow_revise(workflow_id: str, req: WorkflowDagRevisionReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             if req.approved:
                 return {"ok": True, "workflow": WORKFLOWS.approve_dag_revision(workflow_id, True)}
@@ -1112,6 +1325,9 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/workflow/{workflow_id}/revise/approve")
     async def workflow_revise_approve(workflow_id: str, req: WorkflowApprovalReq):
+        denied = _deny_if_cross_project(workflow_id)
+        if denied:
+            return _ownership_blocked(denied)
         try:
             return {"ok": True, "workflow": WORKFLOWS.approve_dag_revision(workflow_id, req.approved)}
         except WorkflowError as exc:
@@ -1122,6 +1338,9 @@ def build_router(ctx) -> APIRouter:
         """Run planned tasks through existing Agent subagent personalities."""
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
             callbacks = workflow_callbacks(state, req.session_id)
 
             result = await run_in_threadpool(
@@ -1138,6 +1357,9 @@ def build_router(ctx) -> APIRouter:
         """Retry one failed/blocked Subagent while preserving other results."""
         try:
             state = WORKFLOWS.get(workflow_id)
+            denied = require_workflow_project(workflow_id, state or {})
+            if denied:
+                return _ownership_blocked(denied)
             callbacks = workflow_callbacks(state, req.session_id)
             result = await run_in_threadpool(
                 WORKFLOWS.retry_subagent, workflow_id, task_id,
