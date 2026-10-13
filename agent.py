@@ -48,6 +48,7 @@ import sessions as _sessions
 import agent_memory as _memory
 import hooks as _hooks
 import skills as _skills
+import agent_runtime.agent_log as _agent_log
 import pricing as _pricing
 from artifact_tools import bind_project_intro_request, reset_project_intro_request
 try:
@@ -3562,6 +3563,11 @@ class Agent:
         # after the generator finishes; it must never become user history.
         self.ingested_sources = ()
         self._request_system_context = ()
+        # agent 自身结构化日志：见 agent_runtime/agent_log.py。仅绑定方法引用，
+        # 实际写入在工具失败 / 关键决策点显式调 `self._agent_log_event(root, kind, **fields)`。
+        # 与 `_request_system_context` 一样按值存放，run() 期间可读但不持久化。
+        self._agent_log = _agent_log
+        self._agent_log_event = _agent_log.event
 
     def _execution_policy(self):
         """返回 (max_nudges, max_final_continuations)。
@@ -5575,6 +5581,16 @@ class Agent:
                         yield {"type": "observation", "text": _sv_obs}
                         turn.verification_targets[_target] = _sv_passed
                         turn.verified = all(turn.verification_targets.values())
+                        # agent 自身结构化日志：self_verify 失败事件（与现有 verdict
+                        # 字段并列；不引入新决策，只是「agent 看自己」的可观测面）。
+                        # 永静默：失败时 event() 内部 try/except 全包，不影响主流程。
+                        if not _sv_passed:
+                            self._agent_log_event(
+                                self._session_code_root or "",
+                                "self_verify_failed",
+                                files=list(_written or ()),
+                                turn_id=getattr(turn, "turn_id", None),
+                            )
 
                 # "产出即答案"的工具：结果已经正确，直接作为最终回答返回，
                 # 不再给模型多一轮（避免小模型反复调用同一工具导致步数耗尽 / 死循环）。
