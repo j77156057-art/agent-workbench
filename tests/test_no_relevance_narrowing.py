@@ -229,3 +229,22 @@ def test_web_tools_stay_blocked_when_the_switch_is_off():
         "联网关闭时这些外网工具仍可调：%s —— "
         "撤相关性不等于撤安全开关" % leaked)
     assert a._web_blocked("web_search") is True, "_web_blocked 判定被改坏了"
+
+
+def test_network_capability_is_blocked_when_web_is_disabled():
+    import agent as agent_mod
+    from agent_runtime.tools import Capability, SideEffect
+
+    a = agent_mod.Agent(llm=None)
+    a.tools = {
+        "remote_tool": {
+            "func": lambda _arg: "should not run",
+            "capability": Capability.NETWORK,
+            "side_effect": SideEffect.IRREVERSIBLE,
+            "parallel_safe": False,
+        },
+    }
+    a.web_enabled = False
+    assert a._web_blocked("remote_tool") is True
+    a.web_enabled = True
+    assert a._web_blocked("remote_tool") is False

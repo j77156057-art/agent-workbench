@@ -140,7 +140,10 @@ def test_api_roundtrip_and_project_isolation(workflow, tmp_path):
     manager, wid = workflow
     root = manager.get(wid)["project_root"]
     current = {"root": root}
-    ctx = SimpleNamespace(_project_root_or_error=lambda: current["root"])
+    ctx = SimpleNamespace(
+        _project_root_or_error=lambda: current["root"],
+        _request_project_id=lambda: "",
+    )
     app = FastAPI()
     with patch("api_routes.agent.WORKFLOWS", manager):
         app.include_router(build_router(ctx))

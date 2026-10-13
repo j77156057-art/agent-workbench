@@ -73,12 +73,54 @@ class StageRootWinsTests(unittest.TestCase):
         self.assertEqual(got, PROJECT)
 
     def test_a_broken_lookup_falls_back_instead_of_raising(self):
-        """读不到持久状态不该让派发崩掉——退回项目根是明确的降级，不是静默。"""
+        """读不到持久状态不该让派发崩掉——退回项目根是明确的降级，不是静默。
+
+        本测试在 **未启用试做区**（state 默认不含 `stage_enabled`）的场景
+        下成立。stage_enabled=True 的同场景见下面新加的 `test_*_when_stage_enabled_*`。
+        """
         def boom():
             raise RuntimeError("state 读不出来")
 
         got = _stage_workspace_root(self.state, PROJECT, live_lookup=boom)
         self.assertEqual(got, PROJECT)
+
+    def test_stage_enabled_broken_lookup_raises_to_block_write(self):
+        """stage_enabled=True 时，live_lookup 异常必须 fail-closed。
+
+        旧版本回退到项目根 → 写工具落到真实项目、UI 仍报「改动位于临时
+        试做区」。这是 fail-open；现在阻断 callback，写操作不执行。
+        """
+        from api_routes.agent import StageUnavailableError
+        enabled = dict(self.state, stage_enabled=True)
+        def boom():
+            raise RuntimeError("state 读不出来")
+        with self.assertRaises(StageUnavailableError):
+            _stage_workspace_root(enabled, PROJECT, live_lookup=boom)
+
+    def test_stage_enabled_missing_workspace_raises_to_block_write(self):
+        """stage_enabled=True 但 live state 没有 workspace_root → 阻断。"""
+        from api_routes.agent import StageUnavailableError
+        enabled = dict(self.state, stage_enabled=True)
+        # live state 完全空 → 没有 project_stage 字段
+        with self.assertRaises(StageUnavailableError):
+            _stage_workspace_root(enabled, PROJECT, live_lookup=lambda: {})
+
+    def test_stage_enabled_workspace_directory_missing_raises_to_block_write(self):
+        """stage_enabled=True 但 workspace 目录被删 → 阻断。"""
+        from api_routes.agent import StageUnavailableError
+        enabled = dict(self.state, stage_enabled=True)
+        live = {"project_stage": {"workspace_root": os.path.join(self.tmp, "gone")}}
+        with self.assertRaises(StageUnavailableError):
+            _stage_workspace_root(enabled, PROJECT, live_lookup=lambda: live)
+
+    def test_stage_enabled_with_valid_workspace_returns_workspace(self):
+        """stage_enabled=True + workspace 存在 → 返回 workspace（happy path）。"""
+        enabled = dict(self.state, stage_enabled=True)
+        live = {"project_stage": {"workspace_root": self.workspace}}
+        got = _stage_workspace_root(enabled, PROJECT, live_lookup=lambda: live)
+        self.assertEqual(got, self.workspace,
+                         "stage_enabled+workspace 应回 workspace，"
+                         "回真项目就回到原 bug")
 
     def test_a_lookup_returning_none_is_handled(self):
         self.assertEqual(
