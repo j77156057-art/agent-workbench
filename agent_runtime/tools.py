@@ -12,12 +12,15 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
 import threading
 import time
 from typing import Any, Callable
+
+_log = logging.getLogger(__name__)
 
 
 class Capability(str, Enum):
@@ -489,10 +492,12 @@ def execute_tool(function: Callable, argument: str, legacy_failure: Callable, *,
     if side_effect != SideEffect.PURE:
         try:
             key, db_path, replay = _idempotency_claim(tool_name, argument)
-        except Exception:
+        except Exception as exc:
             # Never execute a mutating/irreversible tool without its durable
             # claim.  A transient filesystem/SQLite failure is safer as a
             # blocked tool result than as an untracked side effect.
+            _log.warning("幂等 claim 失败：tool=%s, exc=%s",
+                          tool_name, type(exc).__name__, exc_info=True)
             return ToolResult(False, "幂等保护不可用，工具未执行。",
                               error_kind="idempotency_unavailable")
         if replay is not None:
@@ -514,6 +519,11 @@ def execute_tool(function: Callable, argument: str, legacy_failure: Callable, *,
         reason_name = type(reason).__name__.lower() if reason is not None else ""
         is_timeout = (isinstance(exc, TimeoutError) or "timeout" in exc_name.lower()
                       or "timed out" in exc_text or "timeout" in reason_name)
+        # 工具真实异常 traceback 进日志（安全方向不变：对外仍只暴露
+        # 类型名，不暴露 message）。用户侧排查时按 tool_name 检索日志
+        # 即可看到完整栈；不写日志 = 永久只有「工具执行失败（X）」一行。
+        _log.warning("工具执行异常：tool=%s, exc_name=%s", tool_name, exc_name,
+                      exc_info=True)
         result = ToolResult(False, "工具执行失败（%s）。" % exc_name,
                             error_kind="timeout" if is_timeout else "exception")
     if key:
@@ -522,8 +532,14 @@ def execute_tool(function: Callable, argument: str, legacy_failure: Callable, *,
                             idempotency_key=key, replayed=False)
         try:
             _idempotency_complete(db_path, key, result)
-        except Exception:
+        except Exception as exc:
             # Keep the side-effect result observable, but leave the claim in
             # ``running`` so a later recovery refuses an ambiguous replay.
-            pass
+            # 现在记日志：之前完全静默 → 长期 `idempotency_in_doubt` 没
+            # 任何线索，靠用户报「上次执行好像没成功」来发现。
+            _log.warning(
+                "幂等 complete 失败：tool=%s, key=%s, db=%s, exc=%s",
+                tool_name, key, db_path, type(exc).__name__,
+                exc_info=True,
+            )
     return result
