@@ -34,8 +34,8 @@ const FlowCanvas = defineAsyncComponent(() => import('./components/FlowCanvas.vu
 const RegionMapDialog = defineAsyncComponent(() => import('./components/RegionMapDialog.vue'))
 const SettingsView = defineAsyncComponent(() => import('./components/SettingsView.vue'))
 const AssetCenterView = defineAsyncComponent(() => import('./components/AssetCenterView.vue'))
-// 自主开发舱：重型工作流面板独立分包，切到该工作区才加载
-const AutonomousCockpit = defineAsyncComponent(() => import('./components/AutonomousCockpit.vue'))
+// 自主开发舱已删除（v2 重构 §1.1 范围「只保留 ①实时对话视频流 ②窗口嵌入」；
+// 原 AutonomousCockpit 组件于 commit E 阶段移除；实时流与 SceneRuntimePanel 嵌入仍由 ChatDock + SceneRuntimePanel 承担）
 
 // J 双色 Risograph 印刷语言层 + 双色纠偏（在 main.ts 引入的 style.css / skins.css 之后加载）
 import './workbench-riso.css'
@@ -65,9 +65,11 @@ const {
 } = useWorkbench()
 
 const dirtyCount = computed(() => tabs.value.filter((t) => t.dirty).length)
+// 自主开发舱（AutonomousCockpit.vue）于 v2 重构 E 阶段移除；
+// 但实时对话视频流（保留项 ①）由 ChatDock scope="cockpit" 承担、窗口嵌入（保留项 ②）由 SceneRuntimePanel 承担，
+// 仍需 cockpitReady / cockpitRuntime 状态控制 v-show 与 Teleport 目标；cockpitFiles / cockpitRef 移除
 const cockpitReady = ref(false)
 const cockpitRuntime = ref(false)
-const cockpitFiles = ref(false)
 const cockpitRef = ref<{ showOutputs: () => void } | null>(null)
 /** 统一设置页（用量费用 / 网络搜索 / MCP / 智能体）显隐 */
 const settingsVisible = ref(false)
@@ -87,18 +89,7 @@ function onOpenSettings(ev: Event) {
  * 重型弹层首次打开才挂载（异步 chunk 届时才下载）；挂载后常驻、关闭不销毁，
  * 保留已加载数据与缩放状态——与原先"始终挂载 + 根 v-if 隐藏"的体验一致。
  */
-const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, changes: false, settings: false, cockpit: false })
-watch(workspace, v => {
-  if (v !== 'cockpit') return
-  everMounted.cockpit = true
-  // 复位开发舱内部滚动：输入框 focus 的浏览器默认 scrollIntoView 会把整页
-  // .acp 标题顶出视口、目标区/预览区也会停在中段，切回开发舱时统一回到顶部
-  nextTick(() => {
-    document.querySelector<HTMLElement>('.acp')?.scrollTo({ top: 0 })
-    document.querySelector<HTMLElement>('.acp-stage-content')?.scrollTo({ top: 0 })
-    document.querySelector<HTMLElement>('.acp-controls')?.scrollTo({ top: 0 })
-  })
-}, { immediate: true })
+const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, changes: false, settings: false })
 watch(relationGraphOpen, (v) => { if (v) everMounted.relation = true })
 watch(unityGraphOpen, (v) => { if (v) everMounted.unity = true })
 watch(flowOpen, (v) => { if (v) everMounted.flow = true })
@@ -341,7 +332,7 @@ function onWorkspaceHotkey(e: KeyboardEvent) {
   if (e.key === '1') { e.preventDefault(); setWorkspace('overview') }
   else if (e.key === '2' && tabs.value.length) { e.preventDefault(); setWorkspace('code') }
   else if (e.key === '3') { e.preventDefault(); setWorkspace('assets') }
-  else   if (e.key === '4') { e.preventDefault(); setWorkspace('cockpit') }
+  // 注：原 '4' → setWorkspace('cockpit') 快捷键在 v2 重构 E 阶段移除（cockpit workspace 已删）
   else if ((e.key === 'p' || e.key === 'P') && !demoMode.value) { e.preventDefault(); toggleProjectMenu() }
 }
 
@@ -600,7 +591,7 @@ onBeforeUnmount(() => {
 
       <FileTree
         v-else-if="tree"
-        v-show="workspace !== 'cockpit' || cockpitFiles"
+        v-show="!runtimeResident"
         :tree="tree"
         :selected-path="selectedPath"
         :loading="treeLoading"
@@ -644,17 +635,14 @@ onBeforeUnmount(() => {
         <WorkspaceTabs />
         <!-- 阶段 4：运行面板常驻（docked）承载槽（主区，左侧文件树/示例保留，便于边玩边改） -->
         <div id="wb-playpane-slot" class="wb-playpane-slot" v-show="runtimeResident" />
-        <!-- v2 重构（§7.0）：窗口嵌入槽位从 AutonomousCockpit 迁出到工作台主区。
-             常驻（在文档中始终存在）+ v-show，禁用 v-if，确保 Teleport 目标在挂载期
-             始终可解析；并为 Task #5 删除开发舱组件后保留窗口嵌入能力。 -->
-        <div id="wb-cockpit-runtime-slot" class="acp-runtime-slot" v-show="workspace === 'cockpit' && cockpitRuntime" />
-        <div id="wb-cockpit-chat-slot" class="acp-chat-slot" v-show="workspace === 'cockpit'" />
+        <!-- v2 重构（E 阶段）：#wb-cockpit-runtime-slot 与 #wb-cockpit-chat-slot 在 AutonomousCockpit 移除后
+             不再有 v-show=true 的窗口（workspace === 'cockpit' 状态已删），两个 slot 整行删除。
+             窗口嵌入（保留项 ②）由 #wb-playpane-slot + SceneRuntimePanel 承担，实时流（保留项 ①）
+             由 #wb-chat-slot + ChatDock scope="cockpit" 承担。 -->
         <!-- 页面切换只隐藏编辑区，不卸载 ChatDock。否则 ChatDock 的卸载钩子会
              把正在进行的 SSE 当成用户主动停止，导致切到运行面板时回答被中断。 -->
-        <!-- 自主开发舱：独立工作区，描述目标后由模型规划/执行/验证，用户审核计划与结果 -->
-        <AutonomousCockpit ref="cockpitRef" v-if="everMounted.cockpit" v-show="workspace === 'cockpit' && !runtimeResident"
-          @ready="cockpitReady = true" @runtime-preview="cockpitRuntime = $event" @toggle-files="cockpitFiles = !cockpitFiles" />
-        <div v-if="workspace !== 'cockpit'" class="wb-editor-shell" :style="{ display: runtimeResident ? 'none' : 'contents' }">
+        <!-- 自主开发舱（v2 重构 E 阶段）：AutonomousCockpit 组件已删除；主区不再挂载该组件 -->
+        <div class="wb-editor-shell" :style="{ display: runtimeResident ? 'none' : 'contents' }">
           <AssetCenterView v-if="workspace === 'assets'" />
           <template v-else-if="tree">
             <EditorTabs v-if="workspace === 'code'" />
@@ -685,7 +673,7 @@ onBeforeUnmount(() => {
             </footer>
           </template>
         </div>
-        <div id="wb-chat-slot" class="wb-chat-host" v-show="workspace !== 'cockpit' && !runtimeResident" />
+        <div id="wb-chat-slot" class="wb-chat-host" v-show="!runtimeResident" />
       </main>
 
       <div v-if="!treeError && !tree && !demoMode" class="wb-booting">
@@ -698,9 +686,9 @@ onBeforeUnmount(() => {
          docked 主体 teleport 进主区 #wb-playpane-slot；同实例仅切 mode，不重建，
          故 iframe 与引擎嵌入状态得以保留。触发按钮由该实例 teleport 回顶栏 #wb-sr-slot。 -->
     <Teleport defer to="#wb-chat-slot"><ChatDock scope="default" /></Teleport>
-    <Teleport v-if="cockpitReady" defer to="#wb-cockpit-chat-slot"><ChatDock scope="cockpit" /></Teleport>
-    <SceneRuntimePanel :mode="runtimeResident || (workspace === 'cockpit' && cockpitReady && cockpitRuntime) ? 'docked' : 'popup'"
-      :host="workspace === 'cockpit' && cockpitReady && cockpitRuntime ? '#wb-cockpit-runtime-slot' : '#wb-playpane-slot'"
+    <Teleport v-if="cockpitReady" defer to="#wb-chat-slot"><ChatDock scope="cockpit" /></Teleport>
+    <SceneRuntimePanel :mode="runtimeResident ? 'docked' : 'popup'"
+      host="#wb-playpane-slot"
       @close="cockpitRuntime = false" />
 
     <!-- 高级工具面板宿主：自带触发按钮隐藏（入口已收进顶栏「工具」菜单），

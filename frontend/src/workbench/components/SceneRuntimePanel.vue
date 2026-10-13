@@ -88,7 +88,8 @@ async function inspectCurrentView() {
     if (ticket !== visualGeneration || projectId !== getProjectId()) return
     visualSending.value = true
     visualStatus.value = '正在交给 AI 观察…'
-    const target = props.host === '#wb-cockpit-runtime-slot' ? 'cockpit' : 'default'
+    // v2 重构 E 阶段：AutonomousCockpit 已删，host 永远为 '#wb-playpane-slot'，固定走 'default' 通道
+    const target = 'default'
     appEvents.emit('docmind:send-chat', {
       target, projectId, images: blob ? [blob] : [],
       uiContext: 'app_interface_inspect',
@@ -121,7 +122,8 @@ function sendVisualFeedback() {
   visualSending.value = true
   visualStatus.value = '正在交给 AI…'
   appEvents.emit('docmind:send-chat', {
-    target: props.host === '#wb-cockpit-runtime-slot' ? 'cockpit' : 'default',
+    // v2 重构 E 阶段：固定走 'default'（见 :91 同款）
+    target: 'default',
     projectId: visualProject.value, images: [visualBlob.value],
     prompt: visualNote.value.trim(),
     uiContext: 'web_preview_feedback',
@@ -850,8 +852,8 @@ watch(tab, v => {
 
 /** 关闭面板：docked 关常驻态，popup 关弹窗（互斥，行为与既有入口一致）。 */
 function closePane() {
-  if (docked.value && props.host === '#wb-cockpit-runtime-slot') emit('close')
-  else if (docked.value) closeRuntimeResident()
+  // v2 重构 E 阶段：AutonomousCockpit 已删，host 永远为 '#wb-playpane-slot'，docked 走 closeRuntimeResident
+  if (docked.value) closeRuntimeResident()
   else open.value = false
 }
 

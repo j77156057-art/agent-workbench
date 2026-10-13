@@ -2,7 +2,9 @@
  * R1/R6 前端媒体模块：实时视频流的自适应发送与会话状态归类。
  *
  * 不包含任何协议包字段（那在 realtimeProtocol.ts，属 R0 冻结范围）。这里全部是
- * 纯逻辑，由 AutonomousCockpit.vue 驱动，可脱离浏览器直接做行为契约测试。
+ * 纯逻辑，由 App.vue 主区承载的 ChatDock scope="cockpit" 驱动（v2 重构前曾由
+ * AutonomousCockpit.vue 接线，E 阶段舱组件删除后改由 ChatDock 承担实时流入口），
+ * 可脱离浏览器直接做行为契约测试。
  * 「正在听」属 R2 音频链路，本模块暂不产生该状态。
  */
 

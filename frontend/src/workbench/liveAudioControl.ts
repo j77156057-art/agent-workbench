@@ -1,7 +1,8 @@
 /**
  * R2 语音闭环前端纯逻辑：PCM 采集数学、能量 VAD、静音尾契约、分片泵与上行封包。
  *
- * 不含任何浏览器 API（采集与播放接口留在 AutonomousCockpit 接线层），
+ * 不含任何浏览器 API（采集与播放接口留在 ChatDock scope="cockpit" 接线层，
+ * v2 重构前曾由 AutonomousCockpit.vue 承担，E 阶段舱组件删除后改由 ChatDock 接管），
  * 因此可脱离页面用 node 做行为契约测试。
  *
  * 关键契约（来自 AI-D 真机实测，HANDOFF 2026-09-29 / commit 0db20ff）：
