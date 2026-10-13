@@ -9,6 +9,7 @@ import contextvars
 import io
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -259,25 +260,35 @@ def _get_emb():
     return _emb
 
 def dev_mcp_call(arg):
-    """MCP 调用外层审计：允许用户在连接器边界插入断点/拦截。"""
+    """MCP 调用外层审计：允许用户在连接器边界插入断点/拦截。
+
+    ## fail-closed（2026-10-14）：hook 异常不再被吞
+
+    之前 `import hooks` 或 `before_mcp` 抛异常时一律 `_workflow_hooks = None`
+    并继续执行实际 MCP 调用——hook 是审计/审批边界，崩溃后还照样跑
+    等于把审计当空气。现在 hook 异常时返回明确失败，调用方知道
+    「此次 MCP 没经过审计」；外层会按失败处理。
+    """
+    import hooks as _workflow_hooks
     try:
-        import hooks as _workflow_hooks
         before = _workflow_hooks.run_workflow("before_mcp", {
             "argument_chars": len(str(arg or "")),
         })
         if before.get("blocked"):
             return "MCP 调用已被钩子拦截：" + str(before.get("reason") or "需要人工审核")
-    except Exception:
-        _workflow_hooks = None
+    except Exception as exc:
+        return ("MCP 调用前钩子异常（%s），拒绝执行以免绕过审计。"
+                "请检查 hooks 配置后重试。" % type(exc).__name__)
     result = _dev_mcp_call_impl(arg)
-    if _workflow_hooks is not None:
-        try:
-            _workflow_hooks.run_workflow("after_mcp", {
-                "ok": not str(result or "").startswith("MCP 调用失败"),
-                "result_chars": len(str(result or "")),
-            })
-        except Exception:
-            pass
+    try:
+        _workflow_hooks.run_workflow("after_mcp", {
+            "ok": not str(result or "").startswith("MCP 调用失败"),
+            "result_chars": len(str(result or "")),
+        })
+    except Exception as exc:
+        # after_mcp 异常不影响 MCP 已完成的事实，但记日志让排查可见
+        logging.getLogger(__name__).warning(
+            "MCP 调用后钩子异常：%s", type(exc).__name__, exc_info=True)
     return result
 
 
