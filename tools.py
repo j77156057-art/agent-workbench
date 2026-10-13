@@ -5866,6 +5866,88 @@ def dev_lanes(arg):
     return lanes.render(res)
 
 
+def dev_agent_log(arg=""):
+    """让 agent 自身**只读**地看自己的结构化日志 —— agent_log.event() 写入的「agent 看自己」事件。
+
+    设计原则（与 dev_plan / dev_lanes 同族）：
+    - **只读**：agent 不应能写自己的日志（写由 `_agent_log_event` 在关键失败点自动
+      发生；让 agent 改自己日志容易 noise flood，且与 `verification.py` 的
+      "absence of evidence is not success" 原则冲突）
+    - **限上限**：limit 上限 200 条（防 agent 一次性把全文件读进 prompt 烧 token）
+    - **kind 过滤**：默认只返回 5 个白名单 kind（self_verify_failed / tool_call_failed /
+      policy_decision / agent_init / tool_call）；传 kind: 任意值可破白名单但仍受 limit 限制
+    - **失败静默**：root 为空 / 文件不存在 / JSON 损坏一律返回可读字符串（LLM 友好）
+    - **不抛异常**：try/except 全包，不影响主流程
+
+    输入（多行 keyed）：
+      action: read|summary   # 必填，默认 read
+      kind: tool_call_failed # 可选，过滤事件类型（不传 = 5 个白名单）
+      limit: 20              # 可选，最多返回条数（1..200，默认 20）
+
+    例子：
+      action: read                              # 最近 20 条白名单 kind 事件
+      action: read / kind: self_verify_failed   # 只看自验证失败
+      action: read / limit: 100                 # 拉多点
+      action: summary                           # 紧凑字符串列表（给 UI 调试面板用）
+
+    文件路径：项目状态目录下 `agent-log-v1.jsonl`（见 agent_runtime/agent_log.py）。
+    该文件由 `Agent._agent_log_event`（agent.py:3571）在 self_verify 失败等关键点
+    写入；agent 通过本工具读这些事件来「看自己」——例如「我最近为什么自验证失败」、
+    「最近调了哪些工具失败」等。
+    """
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+
+    keys = ["action", "kind", "limit"]
+    fields = _parse_keyed(arg, keys)
+
+    def _one(key):
+        return (fields.get(key) or "").splitlines()[0].strip() if fields.get(key) else ""
+
+    action = _one("action").lower() or "read"
+
+    # limit 上限 200（防 agent 一次性把全文件读进 prompt 烧 token）
+    try:
+        limit = int(_one("limit") or "20")
+    except (TypeError, ValueError):
+        limit = 20
+    if limit < 1:
+        limit = 1
+    if limit > 200:
+        limit = 200
+
+    kind = _one("kind") or None
+
+    from agent_runtime import agent_log as _agent_log
+
+    try:
+        if action == "summary":
+            return json.dumps(_agent_log.tail_summary(root, limit=limit), ensure_ascii=False)
+        if action == "read":
+            events = _agent_log.read(root, kind=kind, limit=limit)
+            payload = {
+                "count": len(events),
+                "limit": limit,
+                "truncated": len(events) >= limit,
+                "events": events,
+            }
+            return json.dumps(payload, ensure_ascii=False, default=str)
+        # 未知 action：与 dev_plan 行为一致，fallback 到 read
+        events = _agent_log.read(root, kind=kind, limit=limit)
+        payload = {
+            "count": len(events),
+            "limit": limit,
+            "truncated": len(events) >= limit,
+            "events": events,
+            "note": "未知 action: %s（已 fallback 到 read）" % action,
+        }
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception as exc:  # noqa: BLE001 - 工具失败不应影响主流程
+        return "dev_agent_log 未完成（%s: %s）。请稍后重试或检查 agent-log-v1.jsonl 是否可访问。" \
+            % (type(exc).__name__, str(exc)[:200])
+
+
 def dev_probe(arg=""):
     """给**后端与命令行**一条真观察凭据——浏览器那套（preview_project / dev_page_action /
     dev_vue / dev_apptest）对纯后端项目、一条 CLI、一个 worker 一样都够不着。
@@ -8730,6 +8812,31 @@ TOOLS = {
         "capability": "admin",
         "side_effect": "mutating",
         "parallel_safe": False,
+    },
+    "dev_agent_log": {
+        "description": (
+            "让你（agent）**只读**地看自己最近的结构化日志：每次自验证失败、工具调用失败、"
+            "关键决策点会被自动记录到项目状态目录的 `agent-log-v1.jsonl`（`Agent._agent_log_event`"
+            "在 `agent.py:5581` 等位置自动写入），本工具是这个文件的只读入口。"
+            "**何时该调**：（1）用户问「你刚才为什么失败」「你最近做了什么」「自验证为什么没过」"
+            "——先调它看证据再回答；（2）连续多轮 LLM 决策后想「复盘自己最近 20 步的走向」"
+            "——按 `kind:` 过滤看特定类型事件。**不该调**：用户没问 agent 自身、"
+            "也不是复盘场景时不要主动拉日志——日志通常与用户当前任务无关，会烧 token。\n"
+            "**只读纪律**：本工具不允许 agent 写自己的日志（写由自动钩子完成，"
+            "让 agent 改自己日志容易 noise flood，且与 verification 的 'absence of evidence is not success' "
+            "原则冲突）。如果想记录「用户接受了我的方案」之类的人为标记，"
+            "请走任务清单 dev_plan / handoff 文档，不要走本工具。\n"
+            "**限上限**：`limit` 上限 200 条（默认 20）；防 agent 一次性把全文件读进 prompt 烧 token。"
+            "**kind 过滤**：传 `kind: <具体值>` 仅返回该 kind；不传则按写入顺序返回。\n"
+            "输入 keyed：`action: read|summary`（默认 read）、`kind: <可选过滤>`、`limit: <1..200>`。"
+            "例子：`action: read`（最近 20 条）/ `action: read / kind: self_verify_failed`"
+            "（只看过往失败）/ `action: read / limit: 100`（拉多点）/ `action: summary`"
+            "（UI 调试面板用的紧凑字符串列表）。"
+        ),
+        "func": dev_agent_log,
+        "capability": "read_local",
+        "side_effect": "pure",
+        "parallel_safe": True,
     },
     "dev_diagnostics": {
         "description": "拿【结构化诊断】而不是「过/不过」加一坨尾部日志：Python 走 ruff、前端走 `npm run typecheck`（vue-tsc），输出归一成 文件:行:列 + 规则号 + 说明 + 严重度。改完一段代码、跑测试之前先调用它，比 self_verify 更早发现问题；重命名/搬文件之后用它确认没留下未定义引用。输入：target: <文件或目录，逗号/换行分隔，留空=按 scope 扫整个代码根目录>、scope: auto|py|frontend|all（auto 按扩展名选引擎）、rules: <ruff 规则覆盖，默认只查会咬人的 E9,F401,F811,F821,F822,F841,E722；要风格全检写 rules: ALL 或 rules: E,W,F>、timeout: <秒，上限 300>、config: <项目内 ruff 配置文件>；直接把路径当输入也可以。只读：从不传 --fix，从不写文件。工具没装时会【明确说「未安装」并给出安装命令】，绝不把「没跑成」报成「没问题」；输出被截断导致解析不出条目时同样如实报，不会谎称干净。前端诊断需要在 frontend/ 里有 typecheck 脚本且能找到 npm（可用 DOCMIND_NPM_BIN 指定）。",
