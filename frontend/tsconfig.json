@@ -13,5 +13,6 @@
     "noEmit": true,
     "useDefineForClassFields": true
   },
-  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.vue"]
+  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.vue"],
+  "exclude": ["src/**/*.test.ts"]
 }

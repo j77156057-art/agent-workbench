@@ -423,15 +423,29 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
       const id = props.workflowId
       if (wasWaiting) {
         const r = await agentApi.workflowApprove(id, true, true)
-        // 后端秒回 planned（执行已转后台），不要用它盖掉乐观执行态
-        if (!r.workflow) return r
+        // 后端秒回 planned（执行已转后台），不要用它盖掉乐观执行态。
+        // 但无 workflow 时 SSE 可能没起来或服务端没回最新状态——
+        // 显式 hydrate 一次拿真实进度，否则会卡在乐观 executing 永远
+        // 看不到后续状态变化。
+        if (!r.workflow) {
+          await hydrate()
+          return { ok: true }
+        }
         return { ok: true }
       }
       // planned=首次执行：execute 先落审批门（快），再批准并后台开跑
       const r = await agentApi.workflowExecute(id)
       if (r.workflow && r.workflow.status === 'awaiting_approval') {
         const continued = await agentApi.workflowApprove(id, true, true)
-        return continued.workflow ? { ok: true } : continued
+        if (!continued.workflow) {
+          await hydrate()
+          return { ok: true }
+        }
+        return { ok: true }
+      }
+      if (!r.workflow) {
+        await hydrate()
+        return { ok: true }
       }
       return r.workflow ? { ok: true } : r
     })

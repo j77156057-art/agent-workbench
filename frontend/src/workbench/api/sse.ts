@@ -132,6 +132,7 @@ export async function openSse(
   url: string,
   signal: AbortSignal,
   onEvent: (ev: SseEvent) => void,
+  onProtocolError?: (info: { kind: 'malformed_data'; payload: string; count: number }) => void,
 ): Promise<void> {
   let res: Response
   try {
@@ -160,6 +161,11 @@ export async function openSse(
   const decoder = new TextDecoder()
   let buf = ''
   let streamDone = false
+  // 协议畸形计数：之前每条 malformed data 行被静默吞掉，代理截断 /
+  // 后端协议改动时客户端没有错误信号，只能等 EOF/重连。累计到阈值
+  // 后通知调用方，让 UI 决定重连或展示错误。
+  let malformedCount = 0
+  const MALFORMED_REPORT_THRESHOLD = 5
   const handleChunk = (chunk: string) => {
     for (const raw of chunk.split('\n')) {
       const line = raw.trimStart()
@@ -171,7 +177,14 @@ export async function openSse(
         if ((event as unknown as { kind?: string }).kind === '__stream_done__') streamDone = true
         onEvent(event)
       } catch {
-        /* 忽略半条/非 JSON 心跳 */
+        malformedCount++
+        // 心跳行（`:` 开头的注释）由 line 不以 `data:` 过滤掉；这条
+        // 已经走到 JSON.parse 失败，说明是后端发了我们认不出的 data
+        // 行。报错出来比静默吞掉更安全——长跑 SSE 看不到业务事件时，
+        // 用户至少知道协议变了。
+        if (onProtocolError && malformedCount === MALFORMED_REPORT_THRESHOLD) {
+          onProtocolError({ kind: 'malformed_data', payload, count: malformedCount })
+        }
       }
     }
   }

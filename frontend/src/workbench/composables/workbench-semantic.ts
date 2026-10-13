@@ -56,6 +56,9 @@ const locateQuery = ref('')
 const locateLoading = ref(false)
 const locatePaths = ref<Set<string>>(new Set())
 const locateResult = shallowRef<LocateResp | null>(null)
+/** 定位请求失败时的错误信息（finally 已保证 loading 复位，但 UI
+之前没有错误状态 → 失败时旧结果仍占位、用户不知道已过期）。 */
+const locateError = ref<string>('')
 
 async function runLocate(q: string) {
   const query = q.trim()
@@ -65,10 +68,17 @@ async function runLocate(q: string) {
     return
   }
   locateLoading.value = true
+  locateError.value = ''
   try {
     const r = await semanticApi.locate(query)
     locateResult.value = r
     locatePaths.value = new Set((r.files || []).map((f) => f.path))
+  } catch (e) {
+    // 失败时清掉旧结果（避免过期数据误导）+ 暴露错误给 UI
+    locateResult.value = null
+    locatePaths.value = new Set()
+    locateError.value = (e as { message?: string })?.message
+      || '定位失败，请检查后端服务是否可用'
   } finally {
     locateLoading.value = false
   }
@@ -78,6 +88,7 @@ function clearLocate() {
   locateQuery.value = ''
   locateResult.value = null
   locatePaths.value = new Set()
+  locateError.value = ''
 }
 
 /** 命中某文件：打开并跳到符号所在行，同时让文件树展开/闪烁，定位高亮保留。 */
@@ -121,7 +132,7 @@ function seedDemoRegionCards(cards: RegionCard[]) {
 export function useSemantic() {
   return {
     tagMap, tagLoading, tagError, tagMeta, loadTags, refreshTags,
-    locateQuery, locateLoading, locatePaths, locateResult,
+    locateQuery, locateLoading, locatePaths, locateResult, locateError,
     runLocate, clearLocate, openLocateFile, openLocateRegion,
     regionCards, regionCardsLoading, loadRegionCards, seedDemoRegionCards,
   }
