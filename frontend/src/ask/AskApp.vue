@@ -152,7 +152,7 @@ function deriveFollowups(text: string): string[] {
 const guidance = computed(() => config.value?.ollama_status?.guidance || '')
 // 后端已把「挡住对话」和「仅检索降级」分开；这里据此选横幅语气。
 const guidanceBlocks = computed(() => config.value?.ollama_status?.blocks_conversation === true)
-const canSend = computed(() => !sending.value && !historyLoading.value && !gateBlocking.value
+const canSend = computed(() => !historyLoading.value && !gateBlocking.value
   && (draft.value.trim().length > 0 || pendingImages.value.length > 0))
 
 // 最后一条已完成的助手回答 → 相关追问（仅对话态、无草稿且未在发送时显示）
@@ -464,7 +464,14 @@ function savePartial() {
 }
 
 async function send(preset?: string) {
-  if (sending.value || historyLoading.value) return
+  if (historyLoading.value) return
+  // ④ interrupt-and-redirect：运行时输入即打断当前轮并重定向（旧流失配由 chatEpoch 守卫停写）
+  const redirecting = sending.value
+  if (redirecting) {
+    ++chatEpoch
+    if (abortCtl) { abortCtl.abort(); abortCtl = null }
+    sending.value = false
+  }
   if (gateBlocking.value) { showToast('工作流正在等待你的选择或审批，请先在卡片中处理'); return }
   const q = (preset ?? draft.value).trim()
   if (!q && pendingImages.value.length === 0) return
@@ -913,7 +920,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
               <button v-if="sending" class="send-btn stop" title="停止回答" @click="stop">
                 <span class="stop-ico"></span> 停止
               </button>
-              <button v-else class="send-btn" :disabled="!canSend" title="发送（Enter）" @click="send()">
+              <button class="send-btn" :disabled="!canSend" title="发送（Enter）；运行中发送＝打断当前轮并重定向" @click="send()">
                 发送
                 <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
               </button>

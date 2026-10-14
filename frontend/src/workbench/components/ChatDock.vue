@@ -518,7 +518,14 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
     const extension = liveVisionFrame.type === 'image/jpeg' ? 'jpg' : 'png'
     imgs.push(new File([liveVisionFrame], `current-view-${Date.now()}.${extension}`, { type: liveVisionFrame.type || 'image/png' }))
   }
-  if ((!q && !imgs.length) || sending.value) return false
+  if (!q && !imgs.length) return false
+  // ④ interrupt-and-redirect：运行时输入即打断当前轮并重定向（旧流失配由 chatEpoch 守卫停写）
+  const redirecting = sending.value
+  if (redirecting) {
+    ++chatEpoch
+    if (abortCtl) { abortCtl.abort(); abortCtl = null }
+    sending.value = false
+  }
   // 审批门打开期间禁止发起新问答（CSS 已挡鼠标，这里挡 Ctrl+Enter 键盘发送）
   if (gateBlocking.value) {
     void askAlert({

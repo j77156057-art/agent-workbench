@@ -622,6 +622,12 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
    `canSend = !sending.value` 让运行时**根本无法输入**）。
    要给 `run()` 加消息注入路径 + 定清在途工具怎么办 + 前端并发 SSE 归属。
    见 `docs/harness-research-verified.md` §2.10。
+   **【已落地 2026-10-14】MVP 只做 interrupt 安全版**（运行时输入即打断当前轮并重定向，已完成工作/推理保留）：
+   后端 per-session run 串行化（`_session_run_scope` 上下文管理器，防 `self.history` 并发损坏）
+   + 重定向提示注入（`_REDIRECT_HINT`）；前端放开双层阻断（ChatComposer/ChatDock/AskApp 运行时「发送」常驻可点、
+   `send()` 内 `++chatEpoch` + `abort()` 让旧 SSE 停写）。
+   设计 `docs/interrupt-redirect-design.md`；单测 `tests/test_interrupt_redirect.py`（4/4）+ `test_api_routes.py`（10/10）全过；
+   `npm run typecheck` 与 `npm run build` 全绿。
 
 5. **「边干边说话」—— 真跑证实的**，且**真正的瓶颈不在提示词**。
    用户观察：只有开头深度思考出声，之后就是一串工具调用。实测（2026-10-08）：

@@ -188,7 +188,7 @@ function onVideoPick(ev: Event) {
         @dragover="onDragover"
       />
       <button v-if="sending" class="cd-send cd-stop" title="停止当前请求" aria-label="停止当前请求" @click="emit('stop')">停止</button>
-      <button v-else class="cd-send" :disabled="!modelValue.trim() && !pendingImages.length" title="发送消息（Ctrl+Enter）" @click="emit('submit')">发送</button>
+      <button class="cd-send" :disabled="(!modelValue.trim() && !pendingImages.length)" title="发送消息（Ctrl+Enter）；运行中发送＝打断当前轮并重定向" @click="emit('submit')">发送</button>
     </div>
   </footer>
 </template>

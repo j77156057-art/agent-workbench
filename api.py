@@ -23,7 +23,7 @@ import threading
 import asyncio
 import anyio
 from urllib.parse import urlsplit
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 
 # SSE 心跳仅提示前端连接仍活跃，不改变模型请求超时或单轮截止策略。
@@ -327,6 +327,52 @@ app = FastAPI(title="DocMind RAG Agent", lifespan=_app_lifespan)
 # 无项目上下文时键退化为纯 session_id（等价改动前）；有项目时为 "pid::session_id"（内存隔离）。
 # 不再共用一个模块级单例 —— 那会让不同用户/不同会话/不同项目的历史串台。
 _SESSION_AGENTS: dict = {}
+
+# ④ interrupt-and-redirect：同一会话同时只允许一个 run() 在跑。
+# 运行时若收到新消息（重定向），先中断并等待旧 run 退到安全边界，再串行启动新 run，
+# 杜绝两条线程并发写同一 Agent 的 self.history / _sessions.save（会话文件交错损坏）。
+_ACTIVE_RUN: dict[str, dict] = {}
+_RUN_LOCKS: dict[str, "threading.Lock"] = {}
+
+def _run_lock_for(key: str) -> "threading.Lock":
+    lock = _RUN_LOCKS.get(key)
+    if lock is None:
+        lock = threading.Lock()
+        _RUN_LOCKS[key] = lock
+    return lock
+
+
+@contextmanager
+def _session_run_scope(key: str, worker_stop: "threading.Event", worker: "threading.Thread"):
+    """④ interrupt-and-redirect：进入同会话 run 临界区。
+
+    若同会话已有活跃 run，先中断它并等其退到安全边界（在途工具返回后），再串行进入，
+    杜绝两条线程并发写同一 Agent 的 self.history / _sessions.save。退出（正常/异常/
+    中止）即清理注册表，释放串行锁。两个 run 的 worker 线程不同，不会自 join 死锁。
+    """
+    lock = _run_lock_for(key)
+    prev = _ACTIVE_RUN.get(key)
+    if prev is not None and prev.get("thread") is not None and prev["thread"].is_alive() and prev["thread"] is not worker:
+        prev["stop"].set()
+        prev["thread"].join()
+    with lock:
+        _ACTIVE_RUN[key] = {"stop": worker_stop, "thread": worker}
+        try:
+            yield
+        finally:
+            cur = _ACTIVE_RUN.get(key)
+            if cur is not None and cur.get("thread") is worker:
+                _ACTIVE_RUN.pop(key, None)
+
+
+# ④ 重定向系统提示：声明「上轮已完成工作/推理保留、以新指令为准」，对应 Hermes
+# "completed tool work and reasoning already shown stay in context" 语义。
+_REDIRECT_HINT = (
+    "【用户中途重定向】用户在本轮回答生成途中打断了上一轮并给出新指令。"
+    "上一轮已执行的工具结果、已展示的推理与对话历史均保留在上下文中；"
+    "请以用户本轮的新指令为准继续，不要重复已完成的工作，也不要把上轮未完成的"
+    "内容当作既定结论。"
+)
 
 # P3：本请求绑定的项目 pid（由 project_context_middleware 设置；未设置则回落当前项目）。
 _CTX_PROJECT_ID: contextvars.ContextVar = contextvars.ContextVar("docmind_ctx_project_id", default=None)
@@ -2469,6 +2515,12 @@ async def chat(
             "禁止复述、禁止把它当作用户提问或向用户确认：\n" + inspect_guidance
             + "\n本轮用户意图就是触发「浏览当前界面」，请直接执行，不要回答“没有新问题”。"
         )
+    # ④ interrupt-and-redirect：若同一会话已有活跃 run，本次请求即「运行中新消息」，
+    # 注入重定向提示（具体的中断 + 串行化在 event_stream/produce 里执行）。
+    _redir_key = _agent_key(session_id, _ctx_project_id() or None)
+    _active_run = _ACTIVE_RUN.get(_redir_key)
+    if _active_run is not None and _active_run.get("thread") is not None and _active_run["thread"].is_alive():
+        hints.append(_REDIRECT_HINT)
     request_context = tuple(hints) + tuple(vision_context)
     # StreamingResponse 在响应返回后才迭代；Agent 又在独立 Thread 中运行。
     # ContextVar 不会自动传入 Thread，必须在请求仍绑定项目时捕获执行上下文。
@@ -2497,29 +2549,32 @@ async def chat(
             def produce():
                 """在独立线程消费同步 Agent，让 SSE 可在模型无 token 时发心跳。"""
                 nonlocal gen
-                try:
-                    # 逐请求覆盖（含云端 llm）全部随 run(...) 传入：run 在 finally 里还原，
-                    # 不污染共享单例；本地路由时 llm=None（用回会话自身的本地 client）。
-                    gen = selected_agent.run(
-                        cloud_question, stream=True, images=vision_images,
-                        llm=cloud_llm,
-                        system_context=cloud_context,
-                        ingested_sources=tuple(sorted(_INGESTED)),
-                        web_enabled=web_enabled_override,
-                        thinking_enabled=thinking_enabled_override,
-                        tool_mode=tool_mode_override,
-                        narration=narration_override,
-                        plan_mode=plan_mode_override,
-                        cancel_event=worker_stop,
-                    )
-                    for ev in gen:
-                        if worker_stop.is_set():
-                            break
-                        events.put(("event", ev))
-                except BaseException as exc:  # propagate to the streaming owner
-                    events.put(("error", exc))
-                finally:
-                    events.put(("done", None))
+                # ④ interrupt-and-redirect：经 _session_run_scope 保证同会话串行 + 旧 run 退到安全边界
+                key = _redir_key
+                with _session_run_scope(key, worker_stop, worker):
+                    try:
+                        # 逐请求覆盖（含云端 llm）全部随 run(...) 传入：run 在 finally 里还原，
+                        # 不污染共享单例；本地路由时 llm=None（用回会话自身的本地 client）。
+                        gen = selected_agent.run(
+                            cloud_question, stream=True, images=vision_images,
+                            llm=cloud_llm,
+                            system_context=cloud_context,
+                            ingested_sources=tuple(sorted(_INGESTED)),
+                            web_enabled=web_enabled_override,
+                            thinking_enabled=thinking_enabled_override,
+                            tool_mode=tool_mode_override,
+                            narration=narration_override,
+                            plan_mode=plan_mode_override,
+                            cancel_event=worker_stop,
+                        )
+                        for ev in gen:
+                            if worker_stop.is_set():
+                                break
+                            events.put(("event", ev))
+                    except BaseException as exc:  # propagate to the streaming owner
+                        events.put(("error", exc))
+                    finally:
+                        events.put(("done", None))
 
             worker = threading.Thread(target=lambda: agent_context.run(produce),
                                       name="docmind-chat-agent", daemon=True)
