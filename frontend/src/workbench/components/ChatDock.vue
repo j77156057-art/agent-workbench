@@ -1829,17 +1829,19 @@ const webTitle = computed(() => webOn.value
 /* 过程流（执行计划 + 深度思考 + 任务动作）：流式自动展开，结束回缩为摘要 */
 .cd-process-stream { display: flex; flex-direction: column; gap: 8px; }
 .cd-process-stream[open] { gap: 8px; }
+/* 2026-10-14：去方框——摘要行退化为一行等宽小字（与问答页 .process-summary 对齐） */
 .cd-process-summary {
   display: flex; align-items: center; gap: 8px;
   list-style: none; cursor: pointer; user-select: none;
-  padding: 6px 10px;
-  border: 1px solid var(--border); border-radius: var(--radius-md);
-  background: var(--bg-raised);
-  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
-  color: var(--text-muted);
+  padding: 2px 0;
+  border: none; border-radius: 0;
+  background: transparent;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: .02em;
 }
 .cd-process-summary::-webkit-details-marker { display: none; }
-.cd-process-summary:hover { background: var(--bg-hover); }
+.cd-process-summary:hover { color: var(--text-muted); }
 .cd-process-summary-text { flex: 1; min-width: 0; }
 .cd-process-summary-chev {
   flex: 0 0 auto; color: var(--text-faint);
@@ -1849,19 +1851,21 @@ const webTitle = computed(() => webOn.value
 .cd-process-body { display: flex; flex-direction: column; gap: 8px; }
 
 /* 聊天内的纵向活动流：动作按 SSE 到达顺序实时追加，详情按行折叠。 */
+/* 2026-10-14：去方框——容器本身不可见，动作就是一行行文字 + 左侧虚线时间线（对齐问答页 .trace） */
 .cd-activity {
-  position: relative; margin: 6px 0 9px;
-  border: 1px solid var(--border); border-radius: var(--radius-lg);
-  background: var(--bg-raised); overflow: hidden;
+  position: relative; margin: 4px 0 6px;
+  border: none; border-radius: 0;
+  background: transparent; overflow: visible;
 }
-.cd-activity-segment { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border: 0; background: var(--bg-hover); padding: 8px 10px; text-align: left; color: var(--text-muted); cursor: pointer; }
-.cd-activity-segment:hover { background: var(--bg-selected); }
-.cd-activity-segment:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cd-activity-segment { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border: 0; background: transparent; padding: 3px 0; text-align: left; color: var(--text-muted); cursor: pointer; }
+.cd-activity-segment:hover { color: var(--text); }
+.cd-activity-segment:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cd-activity-segment-copy { display: grid; min-width: 0; flex: 1; gap: 2px; }
 .cd-activity-segment-copy b { color: var(--text); font-size: 11px; }
-.cd-activity-segment-copy span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent); font-size: 11px; }
+/* 纸底强调字走 --accent-text：--accent 是填色令牌，直接当字色 paper 实测约 2.5:1（同 .cd-ref 约定） */
+.cd-activity-segment-copy span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-text); font-size: 11px; }
 .cd-activity-segment-count { white-space: nowrap; color: var(--text-faint); font-size: 10px; }
-.cd-activity-steps { margin: 7px 10px 9px 17px; padding-left: 16px; border-left: 1px solid var(--border); }
+.cd-activity-steps { margin: 5px 0 7px 17px; padding-left: 16px; border-left: 1px dashed color-mix(in srgb, var(--accent) 25%, var(--border)); }
 .cd-activity-item { position: relative; margin: 0; }
 .cd-activity-group-label {
   margin: 8px 0 2px -2px;
@@ -1872,9 +1876,9 @@ const webTitle = computed(() => webOn.value
 }
 .cd-activity-item:first-child .cd-activity-group-label { margin-top: 2px; }
 .cd-activity-item::before {
-  content: ''; position: absolute; left: -20px; top: 9px;
+  content: ''; position: absolute; left: -19px; top: 9px;
   width: 7px; height: 7px; border-radius: 50%;
-  background: var(--text-faint); border: 2px solid var(--bg-raised);
+  background: var(--text-faint);
   box-sizing: content-box;
 }
 .cd-activity-running::before { background: var(--accent); box-shadow: 0 0 0 3px rgba(37,96,212,.12); }
@@ -1915,8 +1919,8 @@ const webTitle = computed(() => webOn.value
 .cd-activity-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .cd-activity-chevron { color: var(--text-faint); font-size: 10px; }
 .cd-activity-detail {
-  margin: 0 0 4px 22px; padding: 5px 8px;
-  border-left: 2px solid var(--border); background: var(--bg-hover);
+  margin: 0 0 4px 22px; padding: 3px 0 3px 8px;
+  border-left: 2px solid var(--border);
   color: var(--text-dim); font: 10.5px/1.5 var(--font-mono, monospace);
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow: auto;
 }
@@ -1967,9 +1971,10 @@ const webTitle = computed(() => webOn.value
 .cd-resume:hover { background: rgba(47,111,237,.15); }
 
 /* 计划步骤 */
+/* 执行计划：2026-10-14 去方框，退化为带序号圆点的纯文字列表 */
 .cd-plan {
-  margin: 2px 0 6px; padding: 7px 9px;
-  border: 1px solid var(--border); border-radius: 7px; background: var(--bg-hover);
+  margin: 2px 0 6px; padding: 0;
+  border: none; border-radius: 0; background: transparent;
 }
 .cd-plan-title { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-bottom: 5px; }
 .cd-plan-step { display: flex; gap: 7px; align-items: flex-start; font-size: 11px; color: var(--text-dim); line-height: 1.55; }
@@ -2037,14 +2042,10 @@ const webTitle = computed(() => webOn.value
   box-shadow: 0 3px 10px rgba(47,111,237,.08);
 }
 .cd-answer { line-height: 1.7; padding: 0; background: transparent; border: none; box-shadow: none; }
-.cd-activity {
-  padding-top: 3px;
-  padding-bottom: 3px;
-  border-left-color: color-mix(in srgb, var(--accent) 25%, var(--border));
-}
+.cd-activity { padding-top: 2px; padding-bottom: 2px; }
 .cd-activity-row { border-radius: 6px; padding: 5px 6px; transition: background .16s, color .16s, transform .16s var(--ease-spring); }
 .cd-activity-row:hover { background: rgba(47,111,237,.06); transform: translateX(2px); }
-.cd-activity-detail { animation: cd-detail-in .18s var(--ease-spring) both; border-radius: 0 5px 5px 0; }
+.cd-activity-detail { animation: cd-detail-in .18s var(--ease-spring) both; }
 .cd-notice { border: 1px solid rgba(152,163,180,.22); background: rgba(244,247,251,.8); }
 .cd-inputbar { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 88%, transparent), color-mix(in srgb, var(--bg-raised) 96%, transparent)); border-top: 1px solid var(--border); }
 .cd-input { box-shadow: inset 0 1px 2px rgba(35,52,84,.03); transition: border-color .16s, box-shadow .16s, background .16s; }
