@@ -499,6 +499,11 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
   // ④ interrupt-and-redirect：运行时输入即打断当前轮并重定向（旧流失配由 chatEpoch 守卫停写）
   const redirecting = sending.value
   if (redirecting) {
+    // 旧轮必须在此显式收尾：abort 之后旧 send() 的 catch 里 live() 已因 epoch
+    // 前进失配（if (!t) return false），status 会永远停在 streaming——工作台
+    // 表现为旧消息头顶「正在执行」+ elapsedLabel 跟着 nowTick 一直走字，
+    // useMessageRender 的 500ms 计时器也永远不会停。
+    finalizeRedirectedTurn()
     ++chatEpoch
     if (abortCtl) { abortCtl.abort(); abortCtl = null }
     sending.value = false
@@ -616,6 +621,20 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
     await nextTick(scrollToBottom)
   }
   return finished
+}
+
+/** 重定向时收尾被抛弃的旧回合：落 stopped + 截止计时 + 空答案给一句人话。
+ *  没有这一笔，旧消息会永远挂在「正在执行」，计时器还一直走字。 */
+function finalizeRedirectedTurn() {
+  const prev = messages.value[messages.value.length - 1]
+  if (!prev || prev.role !== 'assistant' || prev.status !== 'streaming') return
+  prev.status = 'stopped'
+  prev.finishedAt = Date.now()
+  if (!prev.text) prev.text = '（已切换到新问题，本轮未完成）'
+  if (!prev.notices.includes('已切换到新问题，本轮回答中断；已执行的工具操作不会自动撤销。')) {
+    prev.notices.push('已切换到新问题，本轮回答中断；已执行的工具操作不会自动撤销。')
+  }
+  finishLiveMd(prev.id, () => answerHtml(prev))
 }
 
 function stop() {
