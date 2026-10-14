@@ -37,6 +37,10 @@ const canCollapseRefs = computed(() => refsAll.value && prefs.maxRefs > 0 && ref
 // ---------------- 深度思考折叠 ----------------
 // 初始展开与否由「问答偏好」决定（设置弹窗里可改，存 localStorage）；
 // 关掉该偏好时，答案生成完自动折叠翻回默认折叠。
+// 2026-10-14：单条 message 内的「深度思考 + ReAct 轨迹 + 工作流卡片」合并为单一
+// 过程流（<details class="process-stream">），流式中自动展开，结束后回缩为一行
+// 摘要（"N 步推理 · 深度思考 Xk 字 · ..."），点击可再展开。`reasonOpen` 仍保留：
+// 「深度思考在回答结束后保持展开」偏好下，过程流整体被钉在展开态。
 const reasonOpen = ref(prefs.reasonOpen)
 let reasonManual = false
 watch(() => props.msg.reasoning, (v) => {
@@ -52,6 +56,29 @@ watch(() => prefs.reasonOpen, (v) => {
 function toggleReason() {
   reasonManual = true
   reasonOpen.value = !reasonOpen.value
+}
+
+// ---------------- 过程流整体折叠（reason + trace + workflow） ----------------
+// 单一来源：流式 = 自动展开，结束 = 自动回缩为摘要；用户手动点过则记入 override。
+// override 语义：null = 跟随流式状态自动；true = 强制展开；false = 强制收起。
+const streamOverride = ref<boolean | null>(null)
+const streamOpen = computed(() => {
+  if (streamOverride.value !== null) return streamOverride.value
+  return streaming.value || reasonOpen.value
+})
+function toggleStream() {
+  streamOverride.value = !streamOpen.value
+}
+function streamSummary(): string | null {
+  const parts: string[] = []
+  const steps = visibleTrace.value.length
+  if (steps > 0) parts.push(`${steps} 步推理`)
+  if (props.msg.reasoning) {
+    const n = props.msg.reasoning.replace(/\s/g, '').length
+    parts.push(`深度思考 ${n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n} 字`)
+  }
+  if (props.msg.workflow?.workflowId) parts.push('工作流进行中')
+  return parts.length > 0 ? parts.join(' · ') : null
 }
 
 // ---------------- ReAct 轨迹折叠 ----------------
@@ -186,42 +213,60 @@ const phaseLabel = computed(() => {
         <svg viewBox="0 0 24 24" width="16" height="16"><path fill="#fff" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
       </div>
       <div class="ai-col">
-        <!-- 深度思考 -->
-        <div v-if="msg.reasoning" class="reason">
-          <button class="reason-head" @click="toggleReason">
-            <span class="reason-dot" :class="{ on: streaming }"></span>
-            深度思考
-            <span class="chev" :class="{ open: reasonOpen }">⌄</span>
-          </button>
-          <div v-if="reasonOpen" class="reason-body">{{ msg.reasoning }}</div>
-        </div>
+        <!-- 过程流：深度思考 + ReAct 轨迹 + 工作流卡片。
+             流式自动展开，结束后回缩为摘要行（"N 步推理 · 深度思考 Xk 字 · ..."）。
+             点击摘要可重新展开；展开态时各子块（思考 / 轨迹步骤）仍按各自折叠状态。
+             没有过程内容时这一节整体不渲染。 -->
+        <details
+          v-if="msg.reasoning || visibleTrace.length || msg.workflow?.workflowId"
+          class="process-stream"
+          :open="streamOpen"
+          @toggle="toggleStream"
+        >
+          <summary class="process-summary">
+            <span v-if="streamSummary()" class="process-summary-text">{{ streamSummary() }}</span>
+            <span v-else class="process-summary-text">推理过程</span>
+            <span class="process-summary-chev" :class="{ open: streamOpen }">⌄</span>
+          </summary>
+          <div class="process-body">
+            <!-- 深度思考 -->
+            <div v-if="msg.reasoning" class="reason">
+              <button class="reason-head" @click="toggleReason">
+                <span class="reason-dot" :class="{ on: streaming }"></span>
+                深度思考
+                <span class="chev" :class="{ open: reasonOpen }">⌄</span>
+              </button>
+              <div v-if="reasonOpen" class="reason-body">{{ msg.reasoning }}</div>
+            </div>
 
-        <!-- ReAct 轨迹（问答偏好「显示推理轨迹步骤」可整体关掉） -->
-        <div v-if="prefs.showTrace && visibleTrace.length" class="trace">
-          <div v-for="row in visibleTrace" :key="row.index" class="step">
-            <button class="step-head" @click="toggleStep(row.index)">
-              <span class="step-tag" :class="row.item.type">{{ stepTitle(row.item) }}</span>
-              <!-- 展开后摘要与正文是同一段字，不再排两遍；但观察行的摘要是
-                   「返回 N 个字符」这种派生信息，展开后仍然要留着 -->
-              <span v-if="!stepOpen(row.index) || row.item.type === 'observation'" class="step-summary">{{ stepSummary(row.item) }}</span>
-              <span v-if="fmtElapsed(row.item.elapsedMs)" class="step-time">{{ fmtElapsed(row.item.elapsedMs) }}</span>
-              <span class="chev" :class="{ open: stepOpen(row.index) }">⌄</span>
-            </button>
-            <pre v-if="stepOpen(row.index)" class="step-body">{{ row.item.text.trim() }}</pre>
+            <!-- ReAct 轨迹（问答偏好「显示推理轨迹步骤」可整体关掉） -->
+            <div v-if="prefs.showTrace && visibleTrace.length" class="trace">
+              <div v-for="row in visibleTrace" :key="row.index" class="step">
+                <button class="step-head" @click="toggleStep(row.index)">
+                  <span class="step-tag" :class="row.item.type">{{ stepTitle(row.item) }}</span>
+                  <!-- 展开后摘要与正文是同一段字，不再排两遍；但观察行的摘要是
+                       「返回 N 个字符」这种派生信息，展开后仍然要留着 -->
+                  <span v-if="!stepOpen(row.index) || row.item.type === 'observation'" class="step-summary">{{ stepSummary(row.item) }}</span>
+                  <span v-if="fmtElapsed(row.item.elapsedMs)" class="step-time">{{ fmtElapsed(row.item.elapsedMs) }}</span>
+                  <span class="chev" :class="{ open: stepOpen(row.index) }">⌄</span>
+                </button>
+                <pre v-if="stepOpen(row.index)" class="step-body">{{ row.item.text.trim() }}</pre>
+              </div>
+            </div>
+
+            <!-- 工作流卡片：进度/方案选择/审批都在问答页内完成 -->
+            <WorkflowCard
+              v-if="msg.workflow?.workflowId"
+              :key="msg.workflow.workflowId"
+              :workflow-id="msg.workflow.workflowId"
+              :seed="msg.workflow.seed"
+              @activity="emit('wfActivity')"
+              @gate="(open: boolean) => emit('wfGate', open)"
+            />
           </div>
-        </div>
+        </details>
 
-        <!-- 工作流卡片：进度/方案选择/审批都在问答页内完成 -->
-        <WorkflowCard
-          v-if="msg.workflow?.workflowId"
-          :key="msg.workflow.workflowId"
-          :workflow-id="msg.workflow.workflowId"
-          :seed="msg.workflow.seed"
-          @activity="emit('wfActivity')"
-          @gate="(open: boolean) => emit('wfGate', open)"
-        />
-
-        <!-- 正文 -->
+        <!-- 正文（永远在最下、常驻展开、不会因过程流回缩而消失） -->
         <div class="bubble ai-bubble">
           <div v-if="!msg.text && streaming" class="typing" :title="`已等待 ${elapsedLabel || '0s'}`">
             <span class="typing-phase">{{ phaseLabel }}</span>
@@ -342,6 +387,37 @@ border-radius: var(--r-sm); }
 .flag { margin-top: 8px; font-family: var(--font-mono); font-size: 12px; }
 .flag.stopped { color: var(--text-faint); }
 .flag.error { color: var(--danger); }
+
+/* 过程流（深度思考 + 轨迹 + 工作流卡片）：流式自动展开，结束回缩为摘要 */
+.process-stream { display: flex; flex-direction: column; gap: 8px; }
+.process-stream[open] { gap: 8px; }
+.process-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  padding: 6px 10px;
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
+  background: var(--bg-hover);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.process-summary::-webkit-details-marker { display: none; }
+.process-summary:hover { background: var(--bg-raised); }
+.process-summary-text { flex: 1; min-width: 0; }
+.process-summary-chev {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+  transition: transform .15s;
+  display: inline-block;
+}
+.process-summary-chev.open { transform: rotate(180deg); }
+.process-body { display: flex; flex-direction: column; gap: 8px; }
 
 /* 深度思考 */
 .reason { border: var(--edge-w-strong) solid var(--edge-ink);

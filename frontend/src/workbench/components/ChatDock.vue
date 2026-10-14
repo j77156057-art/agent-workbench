@@ -383,6 +383,33 @@ function traceSegmentTitle(msg: ChatMsg) {
   }
   return stages.length ? stages.join(' → ') : '分析与复核'
 }
+
+// 2026-10-14：执行计划 + 深度思考 + 任务动作 → 单一可折叠过程流。
+// 流式自动展开，结束回缩为摘要（"N 步 · 深度思考 Xk 字"），点击可重新展开。
+// override 语义与 AskMessage 一致：null = 跟随 status, true = 强制展开, false = 强制收起。
+const streamOverride = ref<Map<number, boolean>>(new Map())
+function cdStreamIsOpen(msg: ChatMsg) {
+  const ov = streamOverride.value.get(msg.id)
+  if (ov !== undefined) return ov
+  return msg.status === 'streaming'
+}
+function cdToggleStream(id: number, msg: ChatMsg) {
+  const cur = cdStreamIsOpen(msg)
+  const next = new Map(streamOverride.value)
+  next.set(id, !cur)
+  streamOverride.value = next
+}
+function cdStreamSummary(msg: ChatMsg): string | null {
+  const parts: string[] = []
+  const steps = visibleTrace(msg).length
+  if (steps > 0) parts.push(`${steps} 步推理`)
+  if (msg.reasoning) {
+    const n = msg.reasoning.replace(/\s/g, '').length
+    parts.push(`深度思考 ${n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n} 字`)
+  }
+  if (msg.workflow?.workflowId) parts.push('工作流进行中')
+  return parts.length > 0 ? parts.join(' · ') : null
+}
 function onCardActivity() {
   // 卡片内部子代理步骤频率高：按帧合批跟随，不做每事件 nextTick
   scheduleFollow()
@@ -1370,54 +1397,69 @@ const webTitle = computed(() => webOn.value
               <span class="cd-wf-spinner" aria-hidden="true" />
               正在创建工作流，方案马上在对话中展开…
             </div>
-            <div v-if="m.plan.length" class="cd-plan">
-              <div class="cd-plan-title">执行计划</div>
-              <div v-for="(s, i) in m.plan" :key="'p' + i" class="cd-plan-step">
-                <span class="cd-plan-idx">{{ i + 1 }}</span><span>{{ s }}</span>
-              </div>
-            </div>
-            <div v-if="m.reasoning" class="cd-reason">
-              <button class="cd-reason-head" :aria-expanded="reasonIsOpen(m.id, m)" @click="toggleReason(m.id, m)">
-                {{ reasonIsOpen(m.id, m) ? '▾ 深度思考' : '▸ 深度思考（点击展开）' }}
-                <span v-if="m.status === 'streaming'" class="cd-dots">模型思考中…</span>
-              </button>
-              <div v-if="reasonIsOpen(m.id, m)" class="cd-reason-body">{{ m.reasoning }}</div>
-            </div>
-            <div v-if="displayPrefs.showTrace && visibleTrace(m).length" class="cd-activity">
-              <button class="cd-activity-segment" :aria-expanded="traceSegmentIsOpen(m)" @click="toggleTraceSegment(m.id)">
-                <span class="cd-activity-segment-copy"><b>本轮任务动作</b><span>{{ traceSegmentTitle(m) }}</span></span>
-                <span class="cd-activity-segment-count">{{ visibleTrace(m).length }} 条记录</span>
-                <span aria-hidden="true">{{ traceSegmentIsOpen(m) ? '▾' : '▸' }}</span>
-              </button>
-              <div v-if="traceSegmentIsOpen(m)" class="cd-activity-steps">
-              <div v-for="row in visibleTrace(m)" :key="row.index" class="cd-activity-item" :class="`cd-activity-${traceState(m, row.item, row.index)}`">
-                <div v-if="traceGroupStart(m, row.index)" class="cd-activity-group-label">{{ traceGroupLabel(row.item) }}</div>
-                <button
-                  class="cd-activity-row"
-                  :aria-expanded="activityIsOpen(m.id, row.index, m)"
-                  :aria-label="`${traceTitle(row.item)}，${traceStateLabel(traceState(m, row.item, row.index))}，点击查看详情`"
-                  @click="toggleActivity(m.id, row.index, m)"
-                >
-                  <span class="cd-activity-glyph">{{ TRACE_GLYPH[row.item.type] || '·' }}</span>
-                  <span class="cd-activity-main">
-                    <span class="cd-activity-kicker">{{ row.item.type === 'action' ? '工具调用' : row.item.type === 'observation' ? '工具返回' : row.item.type === 'reflection' ? '执行提示' : '执行记录' }}</span>
-                    <span class="cd-activity-title">{{ traceTitle(row.item) }}</span>
-                    <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
-                    <span v-if="!activityIsOpen(m.id, row.index, m)" class="cd-activity-summary">{{ traceSummary(row.item) }}</span>
-                  </span>
-                  <span class="cd-activity-meta">
-                    <span class="cd-activity-state">{{ traceStateLabel(traceState(m, row.item, row.index), row.item) }}</span>
-                    <span v-if="traceElapsed(row.item)" class="cd-activity-time">{{ traceElapsed(row.item) }}</span>
-                    <span class="cd-activity-chevron">{{ activityIsOpen(m.id, row.index, m) ? '▾' : '▸' }}</span>
-                  </span>
-                </button>
-                <div v-if="activityIsOpen(m.id, row.index, m)" class="cd-activity-detail">
-                  <span class="cd-activity-detail-label">事件详情</span>
-                  <code>{{ row.item.text }}</code>
+            <!-- 过程流：执行计划 + 深度思考 + 任务动作。流式自动展开，结束回缩为
+                 摘要行（"N 步推理 · 深度思考 Xk 字"），点击可重新展开。 -->
+            <details
+              v-if="m.plan.length || m.reasoning || (displayPrefs.showTrace && visibleTrace(m).length)"
+              class="cd-process-stream"
+              :open="cdStreamIsOpen(m)"
+              @toggle="cdToggleStream(m.id, m)"
+            >
+              <summary class="cd-process-summary">
+                <span class="cd-process-summary-text">{{ cdStreamSummary(m) || '推理过程' }}</span>
+                <span class="cd-process-summary-chev" :class="{ open: cdStreamIsOpen(m) }">⌄</span>
+              </summary>
+              <div class="cd-process-body">
+                <div v-if="m.plan.length" class="cd-plan">
+                  <div class="cd-plan-title">执行计划</div>
+                  <div v-for="(s, i) in m.plan" :key="'p' + i" class="cd-plan-step">
+                    <span class="cd-plan-idx">{{ i + 1 }}</span><span>{{ s }}</span>
+                  </div>
+                </div>
+                <div v-if="m.reasoning" class="cd-reason">
+                  <button class="cd-reason-head" :aria-expanded="reasonIsOpen(m.id, m)" @click="toggleReason(m.id, m)">
+                    {{ reasonIsOpen(m.id, m) ? '▾ 深度思考' : '▸ 深度思考（点击展开）' }}
+                    <span v-if="m.status === 'streaming'" class="cd-dots">模型思考中…</span>
+                  </button>
+                  <div v-if="reasonIsOpen(m.id, m)" class="cd-reason-body">{{ m.reasoning }}</div>
+                </div>
+                <div v-if="displayPrefs.showTrace && visibleTrace(m).length" class="cd-activity">
+                  <button class="cd-activity-segment" :aria-expanded="traceSegmentIsOpen(m)" @click="toggleTraceSegment(m.id)">
+                    <span class="cd-activity-segment-copy"><b>本轮任务动作</b><span>{{ traceSegmentTitle(m) }}</span></span>
+                    <span class="cd-activity-segment-count">{{ visibleTrace(m).length }} 条记录</span>
+                    <span aria-hidden="true">{{ traceSegmentIsOpen(m) ? '▾' : '▸' }}</span>
+                  </button>
+                  <div v-if="traceSegmentIsOpen(m)" class="cd-activity-steps">
+                  <div v-for="row in visibleTrace(m)" :key="row.index" class="cd-activity-item" :class="`cd-activity-${traceState(m, row.item, row.index)}`">
+                    <div v-if="traceGroupStart(m, row.index)" class="cd-activity-group-label">{{ traceGroupLabel(row.item) }}</div>
+                    <button
+                      class="cd-activity-row"
+                      :aria-expanded="activityIsOpen(m.id, row.index, m)"
+                      :aria-label="`${traceTitle(row.item)}，${traceStateLabel(traceState(m, row.item, row.index))}，点击查看详情`"
+                      @click="toggleActivity(m.id, row.index, m)"
+                    >
+                      <span class="cd-activity-glyph">{{ TRACE_GLYPH[row.item.type] || '·' }}</span>
+                      <span class="cd-activity-main">
+                        <span class="cd-activity-kicker">{{ row.item.type === 'action' ? '工具调用' : row.item.type === 'observation' ? '工具返回' : row.item.type === 'reflection' ? '执行提示' : '执行记录' }}</span>
+                        <span class="cd-activity-title">{{ traceTitle(row.item) }}</span>
+                        <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
+                        <span v-if="!activityIsOpen(m.id, row.index, m)" class="cd-activity-summary">{{ traceSummary(row.item) }}</span>
+                      </span>
+                      <span class="cd-activity-meta">
+                        <span class="cd-activity-state">{{ traceStateLabel(traceState(m, row.item, row.index), row.item) }}</span>
+                        <span v-if="traceElapsed(row.item)" class="cd-activity-time">{{ traceElapsed(row.item) }}</span>
+                        <span class="cd-activity-chevron">{{ activityIsOpen(m.id, row.index, m) ? '▾' : '▸' }}</span>
+                      </span>
+                    </button>
+                    <div v-if="activityIsOpen(m.id, row.index, m)" class="cd-activity-detail">
+                      <span class="cd-activity-detail-label">事件详情</span>
+                      <code>{{ row.item.text }}</code>
+                    </div>
+                  </div>
+                  </div>
                 </div>
               </div>
-              </div>
-            </div>
+            </details>
             <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
                  DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
             <div v-if="m.text" class="ai-md cd-answer" :class="{ 'cd-answer-live': m.status === 'streaming' }">
@@ -1771,6 +1813,28 @@ const webTitle = computed(() => webOn.value
   animation: cd-wf-spin .7s linear infinite;
 }
 @keyframes cd-wf-spin { to { transform: rotate(360deg); } }
+
+/* 过程流（执行计划 + 深度思考 + 任务动作）：流式自动展开，结束回缩为摘要 */
+.cd-process-stream { display: flex; flex-direction: column; gap: 8px; }
+.cd-process-stream[open] { gap: 8px; }
+.cd-process-summary {
+  display: flex; align-items: center; gap: 8px;
+  list-style: none; cursor: pointer; user-select: none;
+  padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  color: var(--text-muted);
+}
+.cd-process-summary::-webkit-details-marker { display: none; }
+.cd-process-summary:hover { background: var(--bg-hover); }
+.cd-process-summary-text { flex: 1; min-width: 0; }
+.cd-process-summary-chev {
+  flex: 0 0 auto; color: var(--text-faint);
+  transition: transform .15s; display: inline-block;
+}
+.cd-process-summary-chev.open { transform: rotate(180deg); }
+.cd-process-body { display: flex; flex-direction: column; gap: 8px; }
 
 /* 聊天内的纵向活动流：动作按 SSE 到达顺序实时追加，详情按行折叠。 */
 .cd-activity {
