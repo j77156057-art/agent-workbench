@@ -5,7 +5,8 @@
 //  3) notice / plan / workflow / context / final 事件分类分发，业务差异通过钩子注入。
 // 不持有 messages 数组、不绑定请求生命周期（abort/epoch 仍由调用方管理）。
 import type { SseEvent } from '../api'
-import type { ChatTraceItem, ChatTraceKind, ChatWorkflowRef } from './chat-types'
+import type { ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef } from './chat-types'
+import { flowKindOf } from './chat-types'
 
 export type { ChatTraceKind, ChatTraceItem, ChatMsg, ChatMsgStatus, ChatWorkflowRef } from './chat-types'
 
@@ -17,6 +18,8 @@ export interface ChatStreamTurn {
   /** transient notice 的落点：只在流式中显示的运行期提示，不进历史 */
   progress?: string
   trace: ChatTraceItem[]
+  /** 思考与工具调用的交错流（think 节点随帧生长，动作事件处切断） */
+  flow?: ChatFlowItem[]
   plan?: string[]
   workflow?: ChatWorkflowRef
   status?: string
@@ -41,9 +44,27 @@ export interface ChatStreamHooks<T extends ChatStreamTurn> {
 }
 
 export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T>) {
-  interface StreamBuffer { turn: T; text: string; reasoning: string }
+  interface StreamBuffer { turn: T; text: string; reasoning: string; think: string }
   const buffers = new Map<number, StreamBuffer>()
   let raf = 0
+  // 每个 turn 当前是否有一个「敞开的」think 节点（reasoning 分段进行中）。
+  // 为什么不能等动作事件才整段落进 flow：那会让思考在动作发生前一直不可见，
+  // 违背「思考是实时外露」；所以首帧就建节点，之后随帧 append。
+  const thinkOpen = new Map<number, boolean>()
+
+  /** 把本帧累积的思考文本结算进交错的 think 节点（没有就新建）。 */
+  function syncThink(turn: T, text: string) {
+    if (!text) return
+    const flow = (turn.flow ??= [])
+    if (thinkOpen.get(turn.id)) {
+      const last = flow[flow.length - 1]
+      if (last && last.kind === 'think') { last.text += text; return }
+    }
+    flow.push({ kind: 'think', text })
+    thinkOpen.set(turn.id, true)
+  }
+  /** 切断当前思考分段：下一个 reasoning  chunk 将开新节点（动作/答案前的最后一跳）。 */
+  function closeThink(turn: T) { thinkOpen.delete(turn.id) }
 
   function flush() {
     raf = 0
@@ -51,6 +72,8 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     for (const buf of buffers.values()) {
       if (buf.text) { buf.turn.text += buf.text; hooks.onTextFlushed?.(buf.turn) }
       if (buf.reasoning) buf.turn.reasoning += buf.reasoning
+      if (buf.think) syncThink(buf.turn, buf.think)
+      buf.think = ''
     }
     buffers.clear()
     // Vue 的 DOM 刷新也排在微任务里，挂在其后读到的是本帧最新布局
@@ -66,6 +89,8 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     for (const buf of buffers.values()) {
       if (buf.text) buf.turn.text += buf.text
       if (buf.reasoning) buf.turn.reasoning += buf.reasoning
+      if (buf.think) syncThink(buf.turn, buf.think)
+      buf.think = ''
     }
     buffers.clear()
   }
@@ -73,6 +98,7 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
   function reset() {
     if (raf) { cancelAnimationFrame(raf); raf = 0 }
     buffers.clear()
+    thinkOpen.clear()
   }
 
   function appendTrace(turn: T, type: ChatTraceKind, text: string) {
@@ -83,12 +109,21 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       if (pending?.at) pending.elapsedMs = Math.max(0, at - pending.at)
     }
     turn.trace.push({ type, text, at })
+    // 轨迹事件即轮次边界：先切断思考分段，再把动作节点接进交错流
+    closeThink(turn)
+    const flow = (turn.flow ??= [])
+    flow.push({ kind: flowKindOf(type), trace: turn.trace.length - 1 })
   }
 
   function bufferFor(turn: T): StreamBuffer {
     let buf = buffers.get(turn.id)
-    if (!buf) { buf = { turn, text: '', reasoning: '' }; buffers.set(turn.id, buf) }
+    if (!buf) { buf = { turn, text: '', reasoning: '', think: '' }; buffers.set(turn.id, buf) }
     return buf
+  }
+  /** 结构性事件（thought/action/…）到达前，先把未结算的思考文本落进节点。 */
+  function settleThink(turn: T) {
+    const buf = buffers.get(turn.id)
+    if (buf?.think) { syncThink(turn, buf.think); buf.think = '' }
   }
 
   function dispatch(ev: SseEvent, turn: T | undefined) {
@@ -99,11 +134,18 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     // 运行期提示（「正在继续执行」这类现在时）到此作废：回合已经结束，再挂着它
     // 界面就是在宣称一件已经不做完的事。final / done 两条都判，因为出错收尾时
     // final 可能没有正文（下面那条 final 分支要求 ev.text 非空）。
-    if (ev.type === 'final' || ev.type === 'done') turn.progress = ''
+    if (ev.type === 'final' || ev.type === 'done') {
+      turn.progress = ''
+      // done 兜底切断：abort 等路径没有 final，别把半段思考一直敞着
+      if (ev.type === 'done') { settleThink(turn); closeThink(turn) }
+    }
     if (ev.type === 'token' && typeof ev.text === 'string') {
       bufferFor(turn).text += ev.text
       scheduleFlush()
     } else if (ev.type === 'final' && typeof ev.text === 'string' && ev.text) {
+      // 答案落定前，把最后一段思考（动作之后、答案之前的那一跳）收进 flow
+      settleThink(turn)
+      closeThink(turn)
       buffers.delete(turn.id)
       hooks.onFinal?.(turn, ev.text)
       if (ev.status === 'error') {
@@ -111,7 +153,9 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
         turn.error = ev.error_kind || '请求失败'
       }
     } else if (ev.type === 'reasoning' && typeof ev.text === 'string') {
-      bufferFor(turn).reasoning += ev.text
+      const buf = bufferFor(turn)
+      buf.reasoning += ev.text
+      buf.think += ev.text
       hooks.onReasoning?.(turn)
       scheduleFlush()
     } else if (ev.type === 'notice' && ev.text) {
@@ -127,7 +171,8 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       turn.plan = ev.steps as string[]
     } else if (ev.type === 'thought' || ev.type === 'action'
                || ev.type === 'observation' || ev.type === 'reflection') {
-      if (ev.text) appendTrace(turn, ev.type, ev.text)
+      // 轮次边界：先结算未提交的思考文本（保住实时节奏），再切断分段、接动作节点
+      if (ev.text) { settleThink(turn); appendTrace(turn, ev.type, ev.text) }
     } else if (ev.type === 'workflow') {
       // start_workflow 已执行：卡片直接挂在当前助手回合内，后续由卡片自己连 SSE。
       const w = ev as unknown as { workflow_id?: string; status?: string; phase?: string; kind?: string; request?: string }

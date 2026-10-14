@@ -1937,8 +1937,7 @@ function openModelSettings() {
             </div>
 
             <label class="sv-toggle-row"><input v-model="dp.showTrace" type="checkbox" @change="saveDisplayPrefs" />显示推理轨迹步骤（分析 / 工具调用 / 返回结果 / 复核）</label>
-            <label class="sv-toggle-row"><input v-model="dp.autoExpandTrace" type="checkbox" @change="saveDisplayPrefs" />输出过程中把本轮步骤整轮摊开（关掉＝只跟随最新一条）</label>
-            <label class="sv-toggle-row"><input v-model="dp.reasonOpen" type="checkbox" @change="saveDisplayPrefs" />深度思考在回答结束后保持展开</label>
+            <label class="sv-toggle-row"><input v-model="dp.autoExpandTrace" type="checkbox" @change="saveDisplayPrefs" />输出过程中自动摊开最新一条工具行（关掉＝工具行只显示摘要，思考始终外露）</label>
             <label class="sv-pref-row">
               <span>答案下方文件引用最多显示</span>
               <select class="sv-input sv-pref-select" :value="dp.maxRefs" @change="setMaxRefs($event)">

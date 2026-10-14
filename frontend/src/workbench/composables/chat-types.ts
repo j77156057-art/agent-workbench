@@ -14,6 +14,22 @@ export interface ChatTraceItem {
   elapsedMs?: number
 }
 
+/**
+ * 交错流节点：模型思考与工具调用按**发生顺序**排成一条故事线
+ * （think → 调用 → 返回 → think → … → 答案），不再是「思考整块在上、
+ * 调用整块在下」的两段式。
+ *
+ * - `think`：reasoning_content 的一个分段。ReAct 每轮先流思考再动作，
+ *   轮次边界即切点（useChatStream 在 thought/action 事件处切断）。
+ * - `thought`/`action`/`result`：trace 条目的引用（**下标**而非拷贝——
+ *   observation 会回头回填前一个 action 的 elapsedMs，拷快照就丢了）。
+ */
+export type ChatFlowItem =
+  | { kind: 'think'; text: string }
+  | { kind: 'thought'; trace: number }
+  | { kind: 'action'; trace: number }
+  | { kind: 'result'; trace: number }
+
 export type ChatMsgStatus = 'streaming' | 'done' | 'stopped' | 'error'
 
 /** 挂在助手回合内的工作流卡片引用（卡片自己连 SSE 推进度） */
@@ -33,8 +49,11 @@ export interface ChatMsg {
   status: ChatMsgStatus
   /** ReAct 工具轨迹（问答页展示精简步骤，工作台展示完整时间线） */
   trace: ChatTraceItem[]
-  /** 深度思考模型的 reasoning_content 流 */
+  /** 深度思考模型的 reasoning_content 流（整块；交错展示用 flow） */
   reasoning: string
+  /** 思考与工具调用按发生顺序的交错流（流式期由 useChatStream 构建；
+   *  历史/演示等绕开管线的路径为空，由 flowOf 兜底合成） */
+  flow?: ChatFlowItem[]
   /** SSE notice 事件（提示性通知，如上下文自动压缩） */
   notices: string[]
   /** 运行期提示（后端标了 transient 的 notice）：只在流式中显示，回合结束即清 */
@@ -55,4 +74,44 @@ export interface ChatMsg {
   imageCount?: number
   /** role==='activity' 时的活动类型 */
   activityKind?: ChatActivityKind
+}
+
+/** start_workflow 动作行与其观察由工作流卡片承载，交错流里不重复展示。 */
+function isWorkflowStart(text: string): boolean {
+  return /^start_workflow\s*\(/.test(text.trim())
+}
+
+export function flowKindOf(type: ChatTraceKind): 'thought' | 'action' | 'result' {
+  if (type === 'action') return 'action'
+  if (type === 'thought') return 'thought'
+  return 'result'
+}
+/**
+ * 渲染用的交错流。流式期 useChatStream 已按轮次切好 reasoning；历史回放、
+ * 演示模式、中断恢复等绕开管线的路径没有 flow，在此按 trace 顺序兜底合成
+ * （reasoning 只剩整块，当作第一个 think——分段信息没留下来，不能假装知道
+ * 切点）。两条路都过滤 start_workflow 行。
+ */
+export function flowOf(msg: {
+  trace: ChatTraceItem[]
+  reasoning?: string
+  flow?: ChatFlowItem[]
+}): ChatFlowItem[] {
+  const skip = new Set<number>()
+  msg.trace.forEach((item, i) => {
+    if (item.type === 'action' && isWorkflowStart(item.text)) {
+      skip.add(i)
+      if (msg.trace[i + 1]?.type === 'observation') skip.add(i + 1)
+    }
+  })
+  if (msg.flow && msg.flow.length) {
+    return msg.flow.filter((node) => node.kind === 'think' || !skip.has(node.trace))
+  }
+  const items: ChatFlowItem[] = []
+  if (msg.reasoning) items.push({ kind: 'think', text: msg.reasoning })
+  msg.trace.forEach((item, i) => {
+    if (skip.has(i)) return
+    items.push({ kind: flowKindOf(item.type), trace: i })
+  })
+  return items
 }

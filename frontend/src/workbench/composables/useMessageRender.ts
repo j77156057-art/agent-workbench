@@ -1,6 +1,8 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { mdToHtml, extractFileRefs, extractWebRefs } from '../markdown'
 import type { FileRef } from '../markdown'
+import { flowOf } from './chat-types'
+import type { ChatFlowItem } from './chat-types'
 import { useWorkbench } from './workbench'
 import { prefs } from '../../ask/askPrefs'
 
@@ -10,6 +12,10 @@ export interface RenderMessage {
   text: string
   status: string
   trace: { type: string; text: string; at?: number; elapsedMs?: number }[]
+  /** 深度思考整块（交错流切分信息只在 flow 里；无 flow 时兜底合成第一个 think） */
+  reasoning?: string
+  /** 思考与工具调用的交错流（流式期构建；历史/演示路径为空） */
+  flow?: ChatFlowItem[]
   startedAt?: number
   lastActivityAt?: number
   finishedAt?: number
@@ -113,8 +119,12 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
 
   /**
    * 步骤行的展开状态：手动展开与手动收起各记一个集合。
-   * 为什么要两个：加了「流式中整轮摊开」之后，只记「展开」的单一集合会让用户
-   * 点一条想收起来时点了没反应（自动规则仍然判它该开着）。显式操作必须能盖过自动规则。
+   * 为什么要两个：显式操作必须能盖过自动规则——只记「展开」的单一集合会让用户
+   * 点一条想收起来时点了没反应（自动规则仍然判它该开着）。
+   *
+   * 2026-10-14：交错流常态可见后，自动规则从「流式中整轮摊开」收成「只摊开
+   * 最新一条」——思考节点已全程外露，每条动作行再全文本展开会把流式画面撑爆；
+   * 历史行想读全文点开即可。
    */
   const activityPinned = ref<Set<string>>(new Set())
   const activityMuted = ref<Set<string>>(new Set())
@@ -123,11 +133,7 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     const key = activityKey(id, index)
     if (activityPinned.value.has(key)) return true
     if (activityMuted.value.has(key)) return false
-    // 旧规则是「只展开最新一条」：实测解说有 71–165 字，新步骤一来上一条就折回去，
-    // 想读完整轮要么靠滚要么挨个点。现在整轮摊开，回合结束自动回落成两行摘要。
-    // （旧写法还有个边角：本轮最后一步若是被 visibleTrace 过滤掉的 start_workflow
-    // 观察，就没有任何一行满足「index === 最后一条」，等于整轮不展开。）
-    return prefs.autoExpandTrace && msg.status === 'streaming'
+    return prefs.autoExpandTrace && msg.status === 'streaming' && index === msg.trace.length - 1
   }
   function toggleActivity(id: number, index: number, msg: T) {
     const key = activityKey(id, index)
@@ -172,31 +178,6 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     }
     return raw
   }
-  /** 把相邻工具步骤归到用户能理解的动作阶段，供时间线做连续动作分组。 */
-  function traceGroup(item: { type: string; text: string }): string {
-    if (item.type === 'thought') return '分析'
-    if (item.type === 'observation') return '结果'
-    if (item.type === 'reflection') return '进度'
-    const tool = item.text.trim().match(/^([\w.-]+)\s*\(/)?.[1] || ''
-    if (/^(web_search|web_fetch|search_|grep|dev_mcp_search|lookup)/i.test(tool)) return '搜索'
-    if (/^(read_|list_|fetch_|dev_list_connector_tools|inspect|stat)/i.test(tool)) return '读取'
-    if (/^(apply_edit|create_file|write_|delete_|move_|rename_)/i.test(tool)) return '修改'
-    if (/^(run_|test|lint|build|game_playtest|verify|check)/i.test(tool)) return '验证'
-    return '执行'
-  }
-  function traceGroupLabel(item: { type: string; text: string }) {
-    return `${traceGroup(item)}阶段`
-  }
-  function traceGroupStart(msg: T, index: number) {
-    if (index <= 0) return true
-    // 返回结果属于紧邻的工具动作，复核记录也不另起一个动作组；
-    // 这样连续的“搜索 → 读取 → 修改 → 验证”只显示一次阶段标题。
-    if (msg.trace[index].type !== 'action') return false
-    for (let i = index - 1; i >= 0; i -= 1) {
-      if (msg.trace[i].type === 'action') return traceGroup(msg.trace[index]) !== traceGroup(msg.trace[i])
-    }
-    return true
-  }
   function traceState(msg: T, item: { type: string; text: string }, index: number): 'running' | 'ok' | 'warn' | 'error' {
     const raw = item.text
     if (/重复调用|重复空转/.test(raw)) return 'warn'
@@ -227,30 +208,6 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     return `已经 ${Math.round(quiet / 1000)} 秒没有收到新进展；模型可能仍在推理或执行工具。现场会保留，必要时可停止后继续。`
   }
 
-  // 深度思考面板折叠态（reasoning_content 独立窗口）。
-  // 语义与问答页 AskMessage 一致：流式中自动摊开，回合结束按偏好回落，
-  // 用户手动点过的那条不再被自动规则搅动（所以同样要 pinned / muted 两个集合）。
-  // 2026-10-14：默认始终展开（外露），不跟随 status/prefs 自动翻转——思考是
-  // agent 思考的实时可见，不该被自动折叠。用户手动 toggle 仍可收合（pin/mute）。
-  const reasonPinned = ref<Set<number>>(new Set())
-  const reasonMuted = ref<Set<number>>(new Set())
-  function reasonIsOpen(id: number, msg: T) {
-    if (reasonPinned.value.has(id)) return true
-    if (reasonMuted.value.has(id)) return false
-    return true  // 默认展开
-  }
-  function toggleReason(id: number, msg: T) {
-    const open = reasonIsOpen(id, msg)
-    const nextPin = new Set(reasonPinned.value)
-    const nextMute = new Set(reasonMuted.value)
-    nextPin.delete(id)
-    nextMute.delete(id)
-    if (open) nextMute.add(id)
-    else nextPin.add(id)
-    reasonPinned.value = nextPin
-    reasonMuted.value = nextMute
-  }
-
   /** 清空对话时重置全部渲染缓存与待渲染计时器 */
   function resetRenderState() {
     answerHtmlCache.clear()
@@ -260,8 +217,6 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     liveMdTimers.clear()
     liveMdLastAt.clear()
     liveHtml.clear()
-    reasonPinned.value = new Set()
-    reasonMuted.value = new Set()
     activityPinned.value = new Set()
     activityMuted.value = new Set()
   }
@@ -287,16 +242,11 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     activityIsOpen,
     traceTitle,
     traceSummary,
-    traceGroup,
-    traceGroupLabel,
-    traceGroupStart,
     traceState,
     traceStateLabel,
     traceElapsed,
     elapsedLabel,
     slowResponseLabel,
-    reasonIsOpen,
-    toggleReason,
     resetRenderState,
   }
 }

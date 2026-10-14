@@ -11,11 +11,7 @@ import { reactive } from 'vue'
 export type AskPrefs = {
   // ReAct 轨迹（分析/动作/观察/复核）是否跟着答案一起显示
   showTrace: boolean
-  // 深度思考块在答案生成完毕后是否保持展开。默认开（对齐 Hermes/opencode 默认显示 reasoning：
-  // ⑤ 的真杠杆是模型工具轮正文恒空、用户想听的「边干边说话」全躺在 reasoning 里，折叠即失声；
-  // reason-body 已有 max-height+滚动，长推理不会铺开刷屏）。关=回合结束自动折叠。
-  reasonOpen: boolean
-  // 流式进行中是否把本轮所有轨迹步骤都摊开（关=只跟随最新一条）
+  // 流式进行中是否自动摊开最新一条工具行（关=只显示摘要行，点开才看全文）
   autoExpandTrace: boolean
   // 答案下方文件引用 chips 最多显示几条（0 = 不限制）
   maxRefs: number
@@ -37,7 +33,9 @@ const WEB_KEY = 'docmind.chatWeb'
 // 真要跨标签页同步应该监听 window 的 storage 事件（skins.ts 的 onSkinChange 那样），
 // 这个自定义事件从来没有覆盖过那个场景。别再往回加。
 
-export const ASK_PREFS_DEFAULT: AskPrefs = { showTrace: true, reasonOpen: true, autoExpandTrace: true, maxRefs: 6, defaultThinking: false, defaultWeb: false }
+// 2026-10-14：删掉 reasonOpen（「深度思考在回答结束后保持展开」）——交错流里
+// 思考节点全程外露、随帧生长，这个开关已无任何消费方，留着就是假设置。
+export const ASK_PREFS_DEFAULT: AskPrefs = { showTrace: true, autoExpandTrace: true, maxRefs: 6, defaultThinking: false, defaultWeb: false }
 
 // localStorage 在隐私模式/被策略禁用时会直接抛，读写都必须吞掉异常：
 // 存不下顶多回退默认值，不能让问答页白屏。
@@ -48,7 +46,6 @@ export function loadAskPrefs(): AskPrefs {
     const p = JSON.parse(raw) as Partial<AskPrefs>
     return {
       showTrace: typeof p.showTrace === 'boolean' ? p.showTrace : ASK_PREFS_DEFAULT.showTrace,
-      reasonOpen: typeof p.reasonOpen === 'boolean' ? p.reasonOpen : ASK_PREFS_DEFAULT.reasonOpen,
       autoExpandTrace: typeof p.autoExpandTrace === 'boolean' ? p.autoExpandTrace : ASK_PREFS_DEFAULT.autoExpandTrace,
       maxRefs: typeof p.maxRefs === 'number' && p.maxRefs >= 0 ? p.maxRefs : ASK_PREFS_DEFAULT.maxRefs,
       // 老用户的这两个开关可能早就在 localStorage 里（点过一次 chip 就写进去了），

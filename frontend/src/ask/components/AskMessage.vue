@@ -34,71 +34,43 @@ const shownRefs = computed(() => {
 const hiddenRefs = computed(() => refs.value.length - shownRefs.value.length)
 const canCollapseRefs = computed(() => refsAll.value && prefs.maxRefs > 0 && refs.value.length > prefs.maxRefs)
 
-// ---------------- 深度思考折叠 ----------------
-// 2026-10-14：思考块独立显示，默认始终展开（外露），不收进过程流。
-// 用户手动点 toggle 仍可收合，状态记 manual（不跟随 status 自动翻转）。
-// 「深度思考在回答结束后保持展开」偏好（prefs.reasonOpen）不再控制这块——
-// 因为我们认为 thinking 应该是 agent 思考的实时可见，**不**该被自动折叠。
-// （如果未来有用户强烈想要折叠，单独加一个 prefs.thinkingCollapsible，不与
-// reasonOpen 共享。）
-const reasonOpen = ref(true)
-let reasonManual = false
-function toggleReason() {
-  reasonManual = true
-  reasonOpen.value = !reasonOpen.value
+// ---------------- 交错流（思考 ↔ 工具调用按发生顺序） ----------------
+// 2026-10-14 重构：不再是「思考整块在上 + 过程流整块在下」的两段式，而是
+// think → 调用 → 返回 → think → … 的一条故事线，答案之前全部可见、无边框。
+// reasoning 的轮次切分发生在 useChatStream（动作事件即切点，思考随帧实时
+// 生长）；历史回放/演示等绕开管线的路径没有 flow，由 flowOf 兜底按 trace
+// 顺序合成（reasoning 只剩整块，当第一个 think——切点没留下来，不假装知道）。
+import { flowOf } from '../../workbench/composables/chat-types'
+const flowItems = computed(() => flowOf(props.msg))
+/** 交错流是否有可见节点：思考类（reasoning 分段 / Thought）恒显示，
+ *  动作/返回行随「显示推理轨迹」偏好。全不可见时不渲染容器，避免留一条
+ *  空虚线在答案上方。 */
+const hasFlow = computed(() => prefs.showTrace
+  || flowItems.value.some((n) => n.kind === 'think' || n.kind === 'thought'))
+function traceAt(node: { trace: number }): ChatTraceItem {
+  return props.msg.trace[node.trace]
 }
 
-// ---------------- 过程流整体折叠（trace + workflow） ----------------
-// 默认全程收缩（流式也不自动展开），用户点开才展开；点合再次收缩。
-// override 语义：null = 默认收缩；true = 强制展开；false = 强制收起。
-//
-// 反馈环陷阱：与 ChatDock 同——以 e.target.open 为事实源，cur === newOpen 时
-// noop，新态与 auto 一致时清 override。
-const streamOverride = ref<boolean | null>(null)
-const streamOpen = computed(() => {
-  if (streamOverride.value !== null) return streamOverride.value
-  return false  // 默认收缩：一块一块的步骤看着碎，主动想看再点
-})
-function onStreamToggle(e: Event) {
-  const newOpen = (e.target as HTMLDetailsElement).open
-  const cur = streamOverride.value
-  if (cur === newOpen) return
-  const auto = false
-  streamOverride.value = (newOpen === auto) ? null : newOpen
+// 动作/返回行的全文展开：手动展开与手动收起各记一个集合——显式操作必须能
+// 盖过「流式中最新一条自动摊开」的自动规则（只记展开的单一集合会让用户点
+// 一条想收起来时点了没反应）。
+const openRows = ref<Set<number>>(new Set())
+const mutedRows = ref<Set<number>>(new Set())
+function rowOpen(i: number) {
+  if (openRows.value.has(i)) return true
+  if (mutedRows.value.has(i)) return false
+  return prefs.autoExpandTrace && streaming.value && i === flowItems.value.length - 1
 }
-function streamSummary(): string | null {
-  const parts: string[] = []
-  const steps = visibleTrace.value.length
-  if (steps > 0) parts.push(`${steps} 步推理`)
-  if (props.msg.reasoning) {
-    const n = props.msg.reasoning.replace(/\s/g, '').length
-    parts.push(`深度思考 ${n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n} 字`)
-  }
-  if (props.msg.workflow?.workflowId) parts.push('工作流进行中')
-  return parts.length > 0 ? parts.join(' · ') : null
-}
-
-// ---------------- ReAct 轨迹折叠 ----------------
-// 与开发台对话台同一套语义：流式中整轮摊开（偏好可关），回合结束回落。
-// 两个集合是为了让「手动收起」能盖过自动展开——只记展开的单一集合会让用户在
-// 流式中点一条想收起来时点了没反应。
-const openSteps = ref<Set<number>>(new Set())
-const mutedSteps = ref<Set<number>>(new Set())
-function stepOpen(i: number) {
-  if (openSteps.value.has(i)) return true
-  if (mutedSteps.value.has(i)) return false
-  return prefs.autoExpandTrace && streaming.value
-}
-function toggleStep(i: number) {
-  const open = stepOpen(i)
-  const nextOpen = new Set(openSteps.value)
-  const nextMute = new Set(mutedSteps.value)
+function toggleRow(i: number) {
+  const open = rowOpen(i)
+  const nextOpen = new Set(openRows.value)
+  const nextMute = new Set(mutedRows.value)
   nextOpen.delete(i)
   nextMute.delete(i)
   if (open) nextMute.add(i)
   else nextOpen.add(i)
-  openSteps.value = nextOpen
-  mutedSteps.value = nextMute
+  openRows.value = nextOpen
+  mutedRows.value = nextMute
 }
 
 const TRACE_LABEL: Record<string, string> = {
@@ -143,20 +115,6 @@ function fmtElapsed(ms?: number): string {
   if (!ms) return ''
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
 }
-
-// start_workflow 工具行与其观察由工作流卡片承载，轨迹里不重复展示
-const visibleTrace = computed(() => {
-  const hidden = new Set<number>()
-  props.msg.trace.forEach((item, i) => {
-    if (item.type === 'action' && /^start_workflow\s*\(/.test(item.text.trim())) {
-      hidden.add(i)
-      if (props.msg.trace[i + 1]?.type === 'observation') hidden.add(i + 1)
-    }
-  })
-  return props.msg.trace
-    .map((item, index) => ({ item, index }))
-    .filter((x) => !hidden.has(x.index))
-})
 
 // 流式阶段指示：把「取证在跑」做成看得见的状态行 + 秒表（对齐工作台的确定感）
 const now = ref(Date.now())
@@ -210,54 +168,38 @@ const phaseLabel = computed(() => {
         <svg viewBox="0 0 24 24" width="16" height="16"><path fill="#fff" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
       </div>
       <div class="ai-col">
-        <!-- 2026-10-14：思考块独立显示 + 默认展开（外露），不收进过程流。
-             视觉层级 = 三层折叠：L1 默认可见（思考 + 答案 + 工作流卡片）、
-             L2 点开过程流（trace 动作行）、L3 点开 trace 行（详细文本）。
-             reasoning 不再被过程流"代为呈现"——它就该是 agent 思考的实时外露。 -->
-        <div v-if="msg.reasoning" class="reason">
-          <button class="reason-head" @click="toggleReason">
-            <span class="reason-dot" :class="{ on: streaming }"></span>
-            思考
-            <span class="chev" :class="{ open: reasonOpen }">⌄</span>
-          </button>
-          <div v-if="reasonOpen" class="reason-body">{{ msg.reasoning }}</div>
+        <!-- 2026-10-14：交错流——思考（reasoning 分段 / ReAct Thought）与工具
+             调用按发生顺序排成一条故事线：think → 调用 → 返回 → think → …
+             答案之前全部可见、无边框（容器只有左侧一条虚线时间线）。
+             点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
+        <div v-if="hasFlow" class="flow">
+          <template v-for="(node, i) in flowItems" :key="i">
+            <div v-if="node.kind === 'think' || node.kind === 'thought'" class="flow-think">
+              <span class="flow-dot" :class="{ on: streaming && i === flowItems.length - 1 }"></span>
+              <div class="flow-think-body">{{ node.kind === 'think' ? node.text : traceAt(node).text.trim() }}</div>
+            </div>
+            <template v-else-if="prefs.showTrace">
+              <button class="flow-row" :class="node.kind" @click="toggleRow(i)">
+                <span class="flow-glyph">{{ node.kind === 'action' ? '↗' : '↳' }}</span>
+                <span class="flow-title">{{ stepTitle(traceAt(node)) }}</span>
+                <span v-if="!rowOpen(i)" class="flow-summary">{{ stepSummary(traceAt(node)) }}</span>
+                <span v-if="fmtElapsed(traceAt(node).elapsedMs)" class="flow-time">{{ fmtElapsed(traceAt(node).elapsedMs) }}</span>
+                <span class="chev" :class="{ open: rowOpen(i) }">⌄</span>
+              </button>
+              <pre v-if="rowOpen(i)" class="flow-detail">{{ traceAt(node).text.trim() }}</pre>
+            </template>
+          </template>
         </div>
 
-        <!-- 过程流：ReAct 轨迹 + 工作流卡片。默认全程收缩，点开看动作。 -->
-        <details
-          v-if="visibleTrace.length || msg.workflow?.workflowId"
-          class="process-stream"
-          :open="streamOpen"
-          @toggle="onStreamToggle"
-        >
-          <summary class="process-summary">
-            <span v-if="streamSummary()" class="process-summary-text">{{ streamSummary() }}</span>
-            <span v-else class="process-summary-text">推理过程</span>
-            <span class="process-summary-chev" :class="{ open: streamOpen }">⌄</span>
-          </summary>
-          <div class="process-body">
-            <div v-if="prefs.showTrace && visibleTrace.length" class="trace">
-              <div v-for="row in visibleTrace" :key="row.index" class="step">
-                <button class="step-head" @click="toggleStep(row.index)">
-                  <span class="step-tag" :class="row.item.type">{{ stepTitle(row.item) }}</span>
-                  <span v-if="!stepOpen(row.index) || row.item.type === 'observation'" class="step-summary">{{ stepSummary(row.item) }}</span>
-                  <span v-if="fmtElapsed(row.item.elapsedMs)" class="step-time">{{ fmtElapsed(row.item.elapsedMs) }}</span>
-                  <span class="chev" :class="{ open: stepOpen(row.index) }">⌄</span>
-                </button>
-                <pre v-if="stepOpen(row.index)" class="step-body">{{ row.item.text.trim() }}</pre>
-              </div>
-            </div>
-
-            <WorkflowCard
-              v-if="msg.workflow?.workflowId"
-              :key="msg.workflow.workflowId"
-              :workflow-id="msg.workflow.workflowId"
-              :seed="msg.workflow.seed"
-              @activity="emit('wfActivity')"
-              @gate="(open: boolean) => emit('wfGate', open)"
-            />
-          </div>
-        </details>
+        <!-- 工作流卡片：start_workflow 的动作与观察由卡片承载，不进交错流 -->
+        <WorkflowCard
+          v-if="msg.workflow?.workflowId"
+          :key="msg.workflow.workflowId"
+          :workflow-id="msg.workflow.workflowId"
+          :seed="msg.workflow.seed"
+          @activity="emit('wfActivity')"
+          @gate="(open: boolean) => emit('wfGate', open)"
+        />
 
         <!-- 正文（永远在最下、常驻展开、不会因过程流回缩而消失） -->
         <div class="bubble ai-bubble">
@@ -305,7 +247,7 @@ const phaseLabel = computed(() => {
 @keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
   .msg-row { animation: none !important; }
-  .td, .reason-dot.on { animation: none !important; }
+  .td, .flow-dot.on { animation: none !important; }
   .td { opacity: .5; }
   .answer.streaming::after { animation: none !important; opacity: .6; }
 }
@@ -383,104 +325,39 @@ border-radius: var(--r-sm); }
 .flag.stopped { color: var(--text-faint); }
 .flag.error { color: var(--danger); }
 
-/* 过程流（深度思考 + 轨迹 + 工作流卡片）：流式自动展开，结束回缩为摘要 */
-.process-stream { display: flex; flex-direction: column; gap: 8px; }
-.process-stream[open] { gap: 8px; }
-.process-summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  list-style: none;
-  cursor: pointer;
-  user-select: none;
-  padding: 2px 0;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-faint);
-  letter-spacing: .02em;
-}
-.process-summary::-webkit-details-marker { display: none; }
-.process-summary:hover { color: var(--text-muted); }
-.process-summary-text { flex: 1; min-width: 0; }
-.process-summary-chev {
-  flex: 0 0 auto;
-  color: var(--text-faint);
-  transition: transform .15s;
-  display: inline-block;
-  font-size: 10px;
-}
-.process-summary-chev.open { transform: rotate(180deg); }
-.process-body {
+/* 交错流（2026-10-14）：思考 ↔ 工具调用按发生顺序的一条故事线。
+   无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning
+   分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
+   替代了旧的「reason 独立块 + 可折叠过程流」两段式。 */
+.flow {
   display: flex;
   flex-direction: column;
-  gap: 0;  /* 2026-10-14：紧凑 trace row——gap 0 让多条 row 看着像一气呵成 */
-  margin: 4px 0 4px 12px;
-  border-left: 1px dashed var(--border);
+  margin: 2px 0 6px 3px;
   padding-left: 12px;
-}
-
-/* 2026-10-14：思考块独立显示 + 无边框 + 始终可见。
-   文字"思考"小标 + 小点表示 streaming；body 整段外露，最多 max-height 滚。 */
-.reason {
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  overflow: visible;
-  margin: 0;
-}
-.reason-head {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  border: none;
-  background: none;
-  padding: 2px 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-faint);
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  cursor: pointer;
-  text-align: left;
-}
-.reason-head:hover { color: var(--text-muted); }
-.reason-dot { width: 6px; height: 6px; background: var(--text-faint); }
-.reason-dot.on { background: var(--accent-2); animation: reason-pulse 1.1s infinite; }
-@keyframes reason-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-.reason-body {
-  padding: 4px 0 8px 12px;
-  font-family: var(--font-sans);
-  font-size: 12.5px;
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  max-height: 320px;
-  overflow: auto;
-  line-height: 1.6;
   border-left: 1px dashed var(--border);
-  margin-left: 3px;
+}
+.flow-think { display: flex; gap: 8px; padding: 2px 0; }
+.flow-dot {
+  flex: 0 0 6px; width: 6px; height: 6px; margin-top: 6px;
+  border-radius: 50%; background: var(--text-faint);
+}
+.flow-dot.on { background: var(--accent-2); animation: reason-pulse 1.1s infinite; }
+@keyframes reason-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+.flow-think-body {
+  min-width: 0; flex: 1;
+  font-family: var(--font-sans);
+  font-size: 12.5px; line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 220px; overflow: auto;
 }
 
-/* 轨迹 — 2026-10-14：去卡片框，gap 0，多条 step 看着像一气呵成的"动作流" */
-.trace { display: flex; flex-direction: column; gap: 0; }
-.step {
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  overflow: visible;
-  border-top: 1px dashed var(--border);
-}
-.step:first-child { border-top: none; }
-.step-head {
+/* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
+.flow-row {
   width: 100%;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: baseline;
+  gap: 7px;
   padding: 3px 0;
   border: none;
   background: none;
@@ -490,49 +367,33 @@ border-radius: var(--r-sm); }
   text-align: left;
   color: var(--text-muted);
 }
-.step-head:hover { color: var(--text); }
-.step-tag {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  padding: 0 5px;
-  background: transparent;
-  color: var(--text-faint);
-  border: 1px solid var(--border);
-}
-.step-tag.observation { color: var(--green); border-color: var(--green); }
-.step-tag.reflection { color: var(--amber); border-color: var(--amber); }
-.step-tag.thought { color: var(--accent-2); border-color: var(--accent-2); }
-.step-summary {
+.flow-row:hover { color: var(--text); }
+.flow-glyph { flex: 0 0 13px; color: var(--text-faint); font-size: 12px; }
+.flow-title { flex: 0 0 auto; color: var(--text); font-weight: 650; }
+.flow-summary {
   flex: 1;
   min-width: 0;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-muted);
 }
-.step-time { flex: 0 0 auto; color: var(--text-faint); font-size: 11px; font-family: var(--font-mono); }
-.step-body {
-  margin: 0;
-  padding: 4px 0 4px 12px;
-  border-top: none;
-  border-left: 1px solid var(--border);
-  margin-left: 4px;
-  max-height: 240px;
-  overflow: auto;
+/* 返回行缩进挂在对应动作行下，读作「这次调用的结果」 */
+.flow-row.result { padding-left: 20px; color: var(--text-faint); font-size: 11.5px; }
+.flow-row.result .flow-summary { color: var(--text-faint); }
+.flow-time { flex: 0 0 auto; color: var(--text-faint); font-size: 10.5px; font-family: var(--font-mono); }
+.flow-detail {
+  margin: 0 0 4px 20px;
+  padding: 3px 0 3px 8px;
+  border-left: 2px solid var(--border);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.6;
   color: var(--text-muted);
-  background: transparent;
   white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--bg-hover);
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
 }
 
 /* 文件引用 chips */

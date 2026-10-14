@@ -18,6 +18,7 @@ import { useWorkflowGate } from '../composables/useWorkflowGate'
 import { useOrphanWorkflow } from '../composables/useOrphanWorkflow'
 import { useChatStream } from '../composables/useChatStream'
 import type { ChatActivityKind, ChatMsg } from '../composables/chat-types'
+import { flowOf } from '../composables/chat-types'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { useMessageRender } from '../composables/useMessageRender'
 // 当前代码库：与资源管理器同源（tree 在切项目时会用新项目头重拉）。
@@ -338,17 +339,6 @@ const input = ref(readDraft())
 watch(input, v => { try { sessionStorage.setItem(draftKey(), v) } catch {} }, { flush: 'sync' })
 const sending = ref(false)
 let abortCtl: AbortController | null = null
-/** 工作流主 Agent 的 start_workflow 动作行与其观察不在对话重复展示（卡片即反馈）。 */
-function visibleTrace(msg: ChatMsg) {
-  const hidden = new Set<number>()
-  msg.trace.forEach((item, i) => {
-    if (item.type === 'action' && /^start_workflow\s*\(/.test(item.text.trim())) {
-      hidden.add(i)
-      if (msg.trace[i + 1]?.type === 'observation') hidden.add(i + 1)
-    }
-  })
-  return msg.trace.map((item, index) => ({ item, index })).filter(x => !hidden.has(x.index))
-}
 /** 答案下方引用 chips 上限（0 = 不限制），与问答页同一份偏好、同一个语义。
  *  截断不能是静默的：少掉的条数要数得出来、点得开，否则用户以为答案只引用了这些。 */
 const refsExpanded = ref<Set<number>>(new Set())
@@ -364,61 +354,11 @@ function toggleRefs(msg: ChatMsg) {
   else next.add(msg.id)
   refsExpanded.value = next
 }
-const traceSegmentOpen = ref<Set<number>>(new Set())
-function toggleTraceSegment(id: number) {
-  const next = new Set(traceSegmentOpen.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  traceSegmentOpen.value = next
-}
-function traceSegmentIsOpen(msg: ChatMsg) {
-  return traceSegmentOpen.value.has(msg.id) || msg.status === 'streaming'
-}
-function traceSegmentTitle(msg: ChatMsg) {
-  const stages: string[] = []
-  for (const row of visibleTrace(msg)) {
-    if (row.item.type !== 'action') continue
-    const stage = traceGroup(row.item)
-    if (stages[stages.length - 1] !== stage) stages.push(stage)
-  }
-  return stages.length ? stages.join(' → ') : '分析与复核'
-}
-
-// 2026-10-14：执行计划 + 深度思考 + 任务动作 → 单一可折叠过程流。
-// 默认全程收缩（不随 status 变化），用户点开才展开；点合再次收缩。
-// override 语义：未设置 = 默认 false（收缩）；true = 强制展开；false = 强制收起。
-//
-// 反馈环陷阱：Vue 更新 :open 时浏览器会反向触发 toggle 事件——若处理器按
-// 「!cdStreamIsOpen(msg)」写 override，会与 Vue 改 :open 来回抖动。正确做法
-// 是以浏览器 e.target.open 为事实源，只在 override 与 DOM 新态不一致时同步
-// 到 override（且如果新态与 auto 一致则清掉 override）。
-const streamOverride = ref<Map<number, boolean>>(new Map())
-function cdStreamIsOpen(msg: ChatMsg) {
-  const ov = streamOverride.value.get(msg.id)
-  if (ov !== undefined) return ov
-  return false  // 默认收缩：一块一块的步骤看着碎，主动想看再点
-}
-function cdToggleStream(e: Event, id: number, msg: ChatMsg) {
-  const target = e.target as HTMLDetailsElement
-  const newOpen = target.open
-  const cur = streamOverride.value.get(id)
-  if (cur === newOpen) return  // 已一致，无需更新
-  const auto = false  // 同 cdStreamIsOpen 默认
-  const next = new Map(streamOverride.value)
-  if (newOpen === auto) next.delete(id)  // 回到 auto 态 → 清 override
-  else next.set(id, newOpen)
-  streamOverride.value = next
-}
-function cdStreamSummary(msg: ChatMsg): string | null {
-  const parts: string[] = []
-  const steps = visibleTrace(msg).length
-  if (steps > 0) parts.push(`${steps} 步推理`)
-  if (msg.reasoning) {
-    const n = msg.reasoning.replace(/\s/g, '').length
-    parts.push(`深度思考 ${n >= 1000 ? (n / 1000).toFixed(1) + 'k' : n} 字`)
-  }
-  if (msg.workflow?.workflowId) parts.push('工作流进行中')
-  return parts.length > 0 ? parts.join(' · ') : null
+/** 交错流是否有可见节点（供模板决定是否渲染 .cd-flow 容器）：
+ *  思考类（reasoning 分段 / Thought）恒显示，动作/返回行随「显示推理轨迹」偏好。 */
+function cdHasFlow(msg: ChatMsg) {
+  if (displayPrefs.showTrace) return true
+  return flowOf(msg).some((n) => n.kind === 'think' || n.kind === 'thought')
 }
 function onCardActivity() {
   // 卡片内部子代理步骤频率高：按帧合批跟随，不做每事件 nextTick
@@ -769,7 +709,6 @@ function clearMessages() {
   messages.value = []
   usage.value = null
   resetRenderState()
-  traceSegmentOpen.value = new Set()
   // 卡片随消息一起卸载，不会再发 team 事件；这里同步清掉左下角成员抽屉，
   // 否则会残留指向已消失卡片的幽灵成员
   wfTeams.value = []
@@ -1208,12 +1147,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', onBeforeLeave)
 })
 
-// 消息展示层（流式 markdown 节流/成稿引用缓存/trace 步骤/计时/思考折叠）
+// 消息展示层（流式 markdown 节流/成稿引用缓存/trace 步骤/计时）
 const {
   scheduleLiveMd, finishLiveMd, streamHtmlOf,
   answerHtml, refsOf, webRefsOf, openRef, TRACE_GLYPH,
-  toggleActivity, activityIsOpen, traceTitle, traceSummary, traceGroup, traceGroupLabel, traceGroupStart, traceState, traceStateLabel,
-  traceElapsed, elapsedLabel, reasonIsOpen, toggleReason, resetRenderState,
+  toggleActivity, activityIsOpen, traceTitle, traceSummary,
+  traceState, traceStateLabel,
+  traceElapsed, elapsedLabel, resetRenderState,
 } = useMessageRender<ChatMsg>(() =>
   sending.value
   || messages.value.some(m => m.status === 'streaming' || (m.workflow?.workflowId && !m.finishedAt))
@@ -1407,71 +1347,51 @@ const webTitle = computed(() => webOn.value
               <span class="cd-wf-spinner" aria-hidden="true" />
               正在创建工作流，方案马上在对话中展开…
             </div>
-            <!-- 过程流：执行计划 + 深度思考 + 任务动作。流式自动展开，结束回缩为
-                 摘要行（"N 步推理 · 深度思考 Xk 字"），点击可重新展开。 -->
-            <!-- 2026-10-14：思考块独立显示（始终外露，不收进过程流）。 -->
-            <div v-if="m.reasoning" class="cd-reason">
-              <button class="cd-reason-head" :aria-expanded="reasonIsOpen(m.id, m)" @click="toggleReason(m.id, m)">
-                {{ reasonIsOpen(m.id, m) ? '▾ 思考' : '▸ 思考' }}
-                <span v-if="m.status === 'streaming'" class="cd-dots">模型思考中…</span>
-              </button>
-              <div v-if="reasonIsOpen(m.id, m)" class="cd-reason-body">{{ m.reasoning }}</div>
-            </div>
-
-            <details
-              v-if="m.plan.length || (displayPrefs.showTrace && visibleTrace(m).length)"
-              class="cd-process-stream"
-              :open="cdStreamIsOpen(m)"
-              @toggle="(e) => cdToggleStream(e, m.id, m)"
-            >
-              <summary class="cd-process-summary">
-                <span class="cd-process-summary-text">{{ cdStreamSummary(m) || '推理过程' }}</span>
-                <span class="cd-process-summary-chev" :class="{ open: cdStreamIsOpen(m) }">⌄</span>
-              </summary>
-              <div class="cd-process-body">
-                <div v-if="m.plan.length" class="cd-plan">
-                  <div class="cd-plan-title">执行计划</div>
-                  <div v-for="(s, i) in m.plan" :key="'p' + i" class="cd-plan-step">
-                    <span class="cd-plan-idx">{{ i + 1 }}</span><span>{{ s }}</span>
-                  </div>
-                </div>
-                <div v-if="displayPrefs.showTrace && visibleTrace(m).length" class="cd-activity">
-                  <button class="cd-activity-segment" :aria-expanded="traceSegmentIsOpen(m)" @click="toggleTraceSegment(m.id)">
-                    <span class="cd-activity-segment-copy"><b>本轮任务动作</b><span>{{ traceSegmentTitle(m) }}</span></span>
-                    <span class="cd-activity-segment-count">{{ visibleTrace(m).length }} 条记录</span>
-                    <span aria-hidden="true">{{ traceSegmentIsOpen(m) ? '▾' : '▸' }}</span>
-                  </button>
-                  <div v-if="traceSegmentIsOpen(m)" class="cd-activity-steps">
-                  <div v-for="row in visibleTrace(m)" :key="row.index" class="cd-activity-item" :class="`cd-activity-${traceState(m, row.item, row.index)}`">
-                    <div v-if="traceGroupStart(m, row.index)" class="cd-activity-group-label">{{ traceGroupLabel(row.item) }}</div>
-                    <button
-                      class="cd-activity-row"
-                      :aria-expanded="activityIsOpen(m.id, row.index, m)"
-                      :aria-label="`${traceTitle(row.item)}，${traceStateLabel(traceState(m, row.item, row.index))}，点击查看详情`"
-                      @click="toggleActivity(m.id, row.index, m)"
-                    >
-                      <span class="cd-activity-glyph">{{ TRACE_GLYPH[row.item.type] || '·' }}</span>
-                      <span class="cd-activity-main">
-                        <span class="cd-activity-kicker">{{ row.item.type === 'action' ? '工具调用' : row.item.type === 'observation' ? '工具返回' : row.item.type === 'reflection' ? '执行提示' : '执行记录' }}</span>
-                        <span class="cd-activity-title">{{ traceTitle(row.item) }}</span>
-                        <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
-                        <span v-if="!activityIsOpen(m.id, row.index, m)" class="cd-activity-summary">{{ traceSummary(row.item) }}</span>
-                      </span>
-                      <span class="cd-activity-meta">
-                        <span class="cd-activity-state">{{ traceStateLabel(traceState(m, row.item, row.index), row.item) }}</span>
-                        <span v-if="traceElapsed(row.item)" class="cd-activity-time">{{ traceElapsed(row.item) }}</span>
-                        <span class="cd-activity-chevron">{{ activityIsOpen(m.id, row.index, m) ? '▾' : '▸' }}</span>
-                      </span>
-                    </button>
-                    <div v-if="activityIsOpen(m.id, row.index, m)" class="cd-activity-detail">
-                      <span class="cd-activity-detail-label">事件详情</span>
-                      <code>{{ row.item.text }}</code>
-                    </div>
-                  </div>
-                  </div>
+            <!-- 2026-10-14：交错流——思考（reasoning 分段 / ReAct Thought）与
+                 工具调用按发生顺序排成一条故事线：think → 调用 → 返回 → think
+                 → … 答案之前全部可见、无边框（容器只有左侧一条虚线时间线）。
+                 reasoning 的轮次切分在 useChatStream（动作事件即切点，思考随帧
+                 实时生长）；历史/演示路径没有 flow，由 flowOf 兜底合成。
+                 点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
+            <div v-if="cdHasFlow(m)" class="cd-flow">
+              <div v-if="m.plan.length" class="cd-plan">
+                <div class="cd-plan-title">执行计划</div>
+                <div v-for="(s, i) in m.plan" :key="'p' + i" class="cd-plan-step">
+                  <span class="cd-plan-idx">{{ i + 1 }}</span><span>{{ s }}</span>
                 </div>
               </div>
-            </details>
+              <template v-for="(node, i) in flowOf(m)" :key="i">
+                <div v-if="node.kind === 'think' || node.kind === 'thought'" class="cd-flow-think">
+                  <span class="cd-flow-dot" :class="{ on: m.status === 'streaming' && i === flowOf(m).length - 1 }"></span>
+                  <div class="cd-flow-think-body">{{ node.kind === 'think' ? node.text : m.trace[node.trace].text.trim() }}</div>
+                </div>
+                <template v-else-if="displayPrefs.showTrace">
+                  <button
+                    class="cd-flow-row"
+                    :class="[node.kind, `cd-flow-${traceState(m, m.trace[node.trace], node.trace)}`]"
+                    :aria-expanded="activityIsOpen(m.id, node.trace, m)"
+                    :aria-label="`${traceTitle(m.trace[node.trace])}，${traceStateLabel(traceState(m, m.trace[node.trace], node.trace), m.trace[node.trace])}，点击查看详情`"
+                    @click="toggleActivity(m.id, node.trace, m)"
+                  >
+                    <span class="cd-flow-glyph">{{ node.kind === 'action' ? (TRACE_GLYPH[m.trace[node.trace].type] || '↗') : '↳' }}</span>
+                    <span class="cd-flow-main">
+                      <span class="cd-flow-title">{{ traceTitle(m.trace[node.trace]) }}</span>
+                      <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
+                      <span v-if="!activityIsOpen(m.id, node.trace, m)" class="cd-flow-summary">{{ traceSummary(m.trace[node.trace]) }}</span>
+                    </span>
+                    <span class="cd-flow-meta">
+                      <span class="cd-flow-state">{{ traceStateLabel(traceState(m, m.trace[node.trace], node.trace), m.trace[node.trace]) }}</span>
+                      <span v-if="traceElapsed(m.trace[node.trace])" class="cd-flow-time">{{ traceElapsed(m.trace[node.trace]) }}</span>
+                      <span class="cd-flow-chevron">{{ activityIsOpen(m.id, node.trace, m) ? '▾' : '▸' }}</span>
+                    </span>
+                  </button>
+                  <div v-if="activityIsOpen(m.id, node.trace, m)" class="cd-flow-detail">
+                    <span class="cd-flow-detail-label">事件详情</span>
+                    <code>{{ m.trace[node.trace].text }}</code>
+                  </div>
+                </template>
+              </template>
+            </div>
             <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
                  DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
             <div v-if="m.text" class="ai-md cd-answer" :class="{ 'cd-answer-live': m.status === 'streaming' }">
@@ -1826,106 +1746,70 @@ const webTitle = computed(() => webOn.value
 }
 @keyframes cd-wf-spin { to { transform: rotate(360deg); } }
 
-/* 过程流（执行计划 + 深度思考 + 任务动作）：流式自动展开，结束回缩为摘要 */
-.cd-process-stream { display: flex; flex-direction: column; gap: 8px; }
-.cd-process-stream[open] { gap: 8px; }
-/* 2026-10-14：去方框——摘要行退化为一行等宽小字（与问答页 .process-summary 对齐） */
-.cd-process-summary {
-  display: flex; align-items: center; gap: 8px;
-  list-style: none; cursor: pointer; user-select: none;
-  padding: 2px 0;
-  border: none; border-radius: 0;
-  background: transparent;
-  font-family: var(--font-mono); font-size: 11px; font-weight: 600;
-  color: var(--text-faint);
-  letter-spacing: .02em;
+/* 交错流（2026-10-14）：思考 ↔ 工具调用按发生顺序的一条故事线。
+   无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning
+   分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
+   替代了旧的「cd-reason 块 + 可折叠过程流（cd-process-stream）」两段式。 */
+.cd-flow {
+  display: flex; flex-direction: column;
+  margin: 4px 0 6px 3px; padding-left: 12px;
+  border-left: 1px dashed color-mix(in srgb, var(--accent) 25%, var(--border));
 }
-.cd-process-summary::-webkit-details-marker { display: none; }
-.cd-process-summary:hover { color: var(--text-muted); }
-.cd-process-summary-text { flex: 1; min-width: 0; }
-.cd-process-summary-chev {
-  flex: 0 0 auto; color: var(--text-faint);
-  transition: transform .15s; display: inline-block;
+.cd-flow-think { display: flex; gap: 8px; padding: 2px 0; }
+.cd-flow-dot {
+  flex: 0 0 6px; width: 6px; height: 6px; margin-top: 6px;
+  border-radius: 50%; background: var(--text-faint);
 }
-.cd-process-summary-chev.open { transform: rotate(180deg); }
-.cd-process-body { display: flex; flex-direction: column; gap: 8px; }
+.cd-flow-dot.on { background: var(--accent); animation: cd-run-pulse 1.1s infinite; }
+.cd-flow-think-body {
+  min-width: 0; flex: 1;
+  font-size: 12px; line-height: 1.6; color: var(--text-muted);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 220px; overflow: auto;
+}
 
-/* 聊天内的纵向活动流：动作按 SSE 到达顺序实时追加，详情按行折叠。 */
-/* 2026-10-14：去方框——容器本身不可见，动作就是一行行文字 + 左侧虚线时间线（对齐问答页 .trace） */
-.cd-activity {
-  position: relative; margin: 4px 0 6px;
-  border: none; border-radius: 0;
-  background: transparent; overflow: visible;
-}
-.cd-activity-segment { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; border: 0; background: transparent; padding: 3px 0; text-align: left; color: var(--text-muted); cursor: pointer; }
-.cd-activity-segment:hover { color: var(--text); }
-.cd-activity-segment:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.cd-activity-segment-copy { display: grid; min-width: 0; flex: 1; gap: 2px; }
-.cd-activity-segment-copy b { color: var(--text); font-size: 11px; }
-/* 纸底强调字走 --accent-text：--accent 是填色令牌，直接当字色 paper 实测约 2.5:1（同 .cd-ref 约定） */
-.cd-activity-segment-copy span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--accent-text); font-size: 11px; }
-.cd-activity-segment-count { white-space: nowrap; color: var(--text-faint); font-size: 10px; }
-.cd-activity-steps { margin: 5px 0 7px 17px; padding-left: 16px; border-left: 1px dashed color-mix(in srgb, var(--accent) 25%, var(--border)); }
-.cd-activity-item { position: relative; margin: 0; }
-.cd-activity-group-label {
-  margin: 8px 0 2px -2px;
-  color: var(--text-faint);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .05em;
-}
-.cd-activity-item:first-child .cd-activity-group-label { margin-top: 2px; }
-.cd-activity-item::before {
-  content: ''; position: absolute; left: -19px; top: 9px;
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--text-faint);
-  box-sizing: content-box;
-}
-.cd-activity-running::before { background: var(--accent); box-shadow: 0 0 0 3px rgba(37,96,212,.12); }
-.cd-activity-ok::before { background: var(--green); }
-.cd-activity-warn::before { background: var(--amber); }
-.cd-activity-error::before { background: var(--danger); }
-.cd-activity-row {
+/* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
+.cd-flow-row {
   width: 100%; min-width: 0; display: flex; align-items: center; gap: 7px;
   border: 0; background: transparent; padding: 4px 0; text-align: left;
   color: var(--text-muted); cursor: pointer;
 }
-.cd-activity-row:hover { color: var(--text); }
-.cd-activity-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.cd-activity-glyph {
+.cd-flow-row:hover { color: var(--text); }
+.cd-flow-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cd-flow-glyph {
   flex: 0 0 15px; width: 15px; text-align: center;
   color: var(--text-faint); font-size: 13px; line-height: 1;
 }
-.cd-activity-running .cd-activity-glyph { color: var(--accent); }
-.cd-activity-ok .cd-activity-glyph { color: var(--green); }
-.cd-activity-warn .cd-activity-glyph { color: var(--amber); }
-.cd-activity-error .cd-activity-glyph { color: var(--danger); }
-.cd-activity-main { min-width: 0; flex: 1; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; column-gap: 7px; row-gap: 1px; }
-.cd-activity-kicker { grid-column: 1 / -1; color: var(--text-faint); font-size: 10px; line-height: 1.2; letter-spacing: .04em; text-transform: uppercase; }
-.cd-activity-title { min-width: 0; color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cd-activity-summary {
-  /* 解说长度实测 71–165 字，一行放不下；以前靠 JS 砍到 89 字，等于「只剩开头」。
-     现在全文交给这两行 clamp：跟着容器宽度走，比按字数砍准。 */
-  min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
-  overflow: hidden; overflow-wrap: anywhere;
+.cd-flow-running .cd-flow-glyph { color: var(--accent); }
+.cd-flow-ok .cd-flow-glyph { color: var(--green); }
+.cd-flow-warn .cd-flow-glyph { color: var(--amber); }
+.cd-flow-error .cd-flow-glyph { color: var(--danger); }
+.cd-flow-main { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 7px; }
+.cd-flow-title { flex: 0 0 auto; color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.cd-flow-summary {
+  min-width: 0; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text-muted); font-size: 12px;
 }
-.cd-activity-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }
-.cd-activity-state { padding: 2px 6px; border-radius: 999px; color: var(--text-faint); background: var(--bg-hover); white-space: nowrap; }
-.cd-activity-running .cd-activity-state { color: var(--accent); background: rgba(47,111,237,.1); }
-.cd-activity-ok .cd-activity-state { color: var(--green); background: rgba(28,158,102,.09); }
-.cd-activity-warn .cd-activity-state { color: var(--amber); background: rgba(200,129,28,.11); }
-.cd-activity-error .cd-activity-state { color: var(--danger); background: rgba(224,72,79,.1); }
-.cd-activity-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.cd-activity-chevron { color: var(--text-faint); font-size: 10px; }
-.cd-activity-detail {
-  margin: 0 0 4px 22px; padding: 3px 0 3px 8px;
+/* 返回行缩进挂在对应动作行下，读作「这次调用的结果」 */
+.cd-flow-row.result { padding-left: 20px; }
+.cd-flow-row.result .cd-flow-summary { color: var(--text-faint); font-size: 11.5px; }
+.cd-flow-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }
+.cd-flow-state { padding: 2px 6px; border-radius: 999px; color: var(--text-faint); background: var(--bg-hover); white-space: nowrap; }
+.cd-flow-running .cd-flow-state { color: var(--accent); background: rgba(47,111,237,.1); }
+.cd-flow-ok .cd-flow-state { color: var(--green); background: rgba(28,158,102,.09); }
+.cd-flow-warn .cd-flow-state { color: var(--amber); background: rgba(200,129,28,.11); }
+.cd-flow-error .cd-flow-state { color: var(--danger); background: rgba(224,72,79,.1); }
+.cd-flow-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.cd-flow-chevron { color: var(--text-faint); font-size: 10px; }
+.cd-flow-detail {
+  margin: 0 0 4px 20px; padding: 3px 0 3px 8px;
   border-left: 2px solid var(--border);
   color: var(--text-dim); font: 10.5px/1.5 var(--font-mono, monospace);
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow: auto;
 }
-.cd-activity-detail-label { display: block; margin-bottom: 3px; color: var(--text-faint); font: 9.5px/1.2 var(--font-ui); letter-spacing: .04em; }
-.cd-activity-detail code { display: block; color: inherit; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cd-flow-detail-label { display: block; margin-bottom: 3px; color: var(--text-faint); font: 9.5px/1.2 var(--font-ui); letter-spacing: .04em; }
+.cd-flow-detail code { display: block; color: inherit; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .cd-refs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .cd-ref {
@@ -1985,28 +1869,6 @@ const webTitle = computed(() => webOn.value
   font-size: 10px; display: inline-flex; align-items: center; justify-content: center;
 }
 
-/* 深度思考窗口（reasoning_content 流）— 2026-10-14：无边框 + 始终外露 */
-.cd-reason {
-  margin: 0 0 6px; border: none;
-  background: transparent; overflow: visible;
-}
-.cd-reason-head {
-  width: 100%; text-align: left;
-  border: none; background: none; padding: 2px 0; cursor: pointer;
-  font-size: 11px; color: var(--text-faint);
-  font-family: var(--font-mono); font-weight: 600; letter-spacing: .04em;
-  text-transform: uppercase;
-}
-.cd-reason-head:hover { color: var(--text-muted); }
-.cd-reason-body {
-  padding: 4px 0 8px 12px;
-  font-size: 12px; line-height: 1.6; color: var(--text-muted);
-  white-space: pre-wrap; word-break: break-word;
-  max-height: 320px; overflow-y: auto;
-  border-left: 1px dashed var(--border);
-  margin-left: 3px;
-}
-
 /* 新功能按钮增多后，窄宽度下逐级收起装饰性文字，保证头部不溢出 */
 @media (max-width: 1280px) {
   .cd-hint { display: none; }
@@ -2042,10 +1904,10 @@ const webTitle = computed(() => webOn.value
   box-shadow: 0 3px 10px rgba(47,111,237,.08);
 }
 .cd-answer { line-height: 1.7; padding: 0; background: transparent; border: none; box-shadow: none; }
-.cd-activity { padding-top: 2px; padding-bottom: 2px; }
-.cd-activity-row { border-radius: 6px; padding: 5px 6px; transition: background .16s, color .16s, transform .16s var(--ease-spring); }
-.cd-activity-row:hover { background: rgba(47,111,237,.06); transform: translateX(2px); }
-.cd-activity-detail { animation: cd-detail-in .18s var(--ease-spring) both; }
+/* 交错流的行悬停 feedback：极淡的底色 + 2px 右移，不搞卡片感 */
+.cd-flow-row { border-radius: 6px; padding: 4px 6px; margin: 0 -6px; transition: background .16s, color .16s, transform .16s var(--ease-spring); }
+.cd-flow-row:hover { background: rgba(47,111,237,.06); transform: translateX(2px); }
+.cd-flow-detail { animation: cd-detail-in .18s var(--ease-spring) both; }
 .cd-notice { border: 1px solid rgba(152,163,180,.22); background: rgba(244,247,251,.8); }
 .cd-inputbar { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 88%, transparent), color-mix(in srgb, var(--bg-raised) 96%, transparent)); border-top: 1px solid var(--border); }
 .cd-input { box-shadow: inset 0 1px 2px rgba(35,52,84,.03); transition: border-color .16s, box-shadow .16s, background .16s; }
@@ -2073,16 +1935,17 @@ const webTitle = computed(() => webOn.value
   .cd-body { padding-left: 9px; padding-right: 9px; }
   .cd-user-bubble { max-width: 94%; }
   .cd-answer { max-width: 100%; }
-  .cd-activity-main { grid-template-columns: 1fr; gap: 1px; }
-  .cd-activity-summary { grid-column: 1; }
-  .cd-activity-meta { margin-left: auto; }
+  /* 窄屏：动作行的标题与摘要换行，meta 靠右 */
+  .cd-flow-main { flex-wrap: wrap; }
+  .cd-flow-summary { flex-basis: 100%; }
+  .cd-flow-meta { margin-left: auto; }
   .cd-pop { left: 6px; bottom: 52px; width: calc(100vw - 12px); }
   .cd-orphan { align-items: flex-start; flex-wrap: wrap; margin-inline: 8px; }
   .cd-orphan-body { flex-basis: calc(100% - 28px); }
   .cd-orphan .cd-mini { margin-left: 22px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .cd-mini, .cd-jump-bottom, .cd-quick, .cd-activity-row { transition: none; }
+  .cd-mini, .cd-jump-bottom, .cd-quick, .cd-flow-row { transition: none; }
   .cd-pop, .cd-run-streaming::before { animation: none; }
 }
 </style>

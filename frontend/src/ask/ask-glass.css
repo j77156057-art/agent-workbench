@@ -27,7 +27,6 @@ html[data-material='glass'] :is(
   .suggestion,        /* 欢迎页的建议入口 */
   .msg.assistant,     /* 助手消息气泡 */
   .msg.user,          /* 用户消息气泡 */
-  .trace, .reason,    /* 轨迹 / 思考块 */
   .refs,              /* 引用区 */
   .model-pop, .gear-pop  /* 弹层 */
 ) {

@@ -703,10 +703,6 @@ async function save() {
                 :aria-pressed="ap.showTrace" @click="apSet({ showTrace: !ap.showTrace })">
           <span class="ms-box-tick" aria-hidden="true">✓</span><span>显示推理轨迹步骤</span>
         </button>
-        <button type="button" class="ms-check" :class="{ 'ms-check-on': ap.reasonOpen }"
-                :aria-pressed="ap.reasonOpen" @click="apSet({ reasonOpen: !ap.reasonOpen })">
-          <span class="ms-box-tick" aria-hidden="true">✓</span><span>深度思考默认展开</span>
-        </button>
         <label class="ms-pref-row">
           <span>答案下方文件引用最多显示</span>
           <select class="ms-input ms-pref-select"
