@@ -1409,8 +1409,17 @@ const webTitle = computed(() => webOn.value
             </div>
             <!-- 过程流：执行计划 + 深度思考 + 任务动作。流式自动展开，结束回缩为
                  摘要行（"N 步推理 · 深度思考 Xk 字"），点击可重新展开。 -->
+            <!-- 2026-10-14：思考块独立显示（始终外露，不收进过程流）。 -->
+            <div v-if="m.reasoning" class="cd-reason">
+              <button class="cd-reason-head" :aria-expanded="reasonIsOpen(m.id, m)" @click="toggleReason(m.id, m)">
+                {{ reasonIsOpen(m.id, m) ? '▾ 思考' : '▸ 思考' }}
+                <span v-if="m.status === 'streaming'" class="cd-dots">模型思考中…</span>
+              </button>
+              <div v-if="reasonIsOpen(m.id, m)" class="cd-reason-body">{{ m.reasoning }}</div>
+            </div>
+
             <details
-              v-if="m.plan.length || m.reasoning || (displayPrefs.showTrace && visibleTrace(m).length)"
+              v-if="m.plan.length || (displayPrefs.showTrace && visibleTrace(m).length)"
               class="cd-process-stream"
               :open="cdStreamIsOpen(m)"
               @toggle="(e) => cdToggleStream(e, m.id, m)"
@@ -1425,13 +1434,6 @@ const webTitle = computed(() => webOn.value
                   <div v-for="(s, i) in m.plan" :key="'p' + i" class="cd-plan-step">
                     <span class="cd-plan-idx">{{ i + 1 }}</span><span>{{ s }}</span>
                   </div>
-                </div>
-                <div v-if="m.reasoning" class="cd-reason">
-                  <button class="cd-reason-head" :aria-expanded="reasonIsOpen(m.id, m)" @click="toggleReason(m.id, m)">
-                    {{ reasonIsOpen(m.id, m) ? '▾ 深度思考' : '▸ 深度思考（点击展开）' }}
-                    <span v-if="m.status === 'streaming'" class="cd-dots">模型思考中…</span>
-                  </button>
-                  <div v-if="reasonIsOpen(m.id, m)" class="cd-reason-body">{{ m.reasoning }}</div>
                 </div>
                 <div v-if="displayPrefs.showTrace && visibleTrace(m).length" class="cd-activity">
                   <button class="cd-activity-segment" :aria-expanded="traceSegmentIsOpen(m)" @click="toggleTraceSegment(m.id)">
@@ -1978,23 +1980,26 @@ const webTitle = computed(() => webOn.value
   font-size: 10px; display: inline-flex; align-items: center; justify-content: center;
 }
 
-/* 深度思考窗口（reasoning_content 流） */
+/* 深度思考窗口（reasoning_content 流）— 2026-10-14：无边框 + 始终外露 */
 .cd-reason {
-  margin: 2px 0 6px; border: 1px solid var(--border);
-  border-left: 2px solid var(--tool);
-  border-radius: 6px; background: var(--bg-hover); overflow: hidden;
+  margin: 0 0 6px; border: none;
+  background: transparent; overflow: visible;
 }
 .cd-reason-head {
   width: 100%; text-align: left;
-  border: none; background: none; padding: 5px 9px; cursor: pointer;
-  font-size: 11px; color: var(--tool);
+  border: none; background: none; padding: 2px 0; cursor: pointer;
+  font-size: 11px; color: var(--text-faint);
+  font-family: var(--font-mono); font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase;
 }
-.cd-reason-head:hover { color: var(--text); }
+.cd-reason-head:hover { color: var(--text-muted); }
 .cd-reason-body {
-  padding: 2px 10px 8px 20px;
-  font-size: 11px; line-height: 1.65; color: var(--text-dim);
+  padding: 4px 0 8px 12px;
+  font-size: 12px; line-height: 1.6; color: var(--text-muted);
   white-space: pre-wrap; word-break: break-word;
-  max-height: 220px; overflow-y: auto;
+  max-height: 320px; overflow-y: auto;
+  border-left: 1px dashed var(--border);
+  margin-left: 3px;
 }
 
 /* 新功能按钮增多后，窄宽度下逐级收起装饰性文字，保证头部不溢出 */
@@ -2031,7 +2036,7 @@ const webTitle = computed(() => webOn.value
   border: 1px solid rgba(47,111,237,.1);
   box-shadow: 0 3px 10px rgba(47,111,237,.08);
 }
-.cd-answer { line-height: 1.7; }
+.cd-answer { line-height: 1.7; padding: 0; background: transparent; border: none; box-shadow: none; }
 .cd-activity {
   padding-top: 3px;
   padding-bottom: 3px;

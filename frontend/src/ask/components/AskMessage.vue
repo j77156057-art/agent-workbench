@@ -35,30 +35,20 @@ const hiddenRefs = computed(() => refs.value.length - shownRefs.value.length)
 const canCollapseRefs = computed(() => refsAll.value && prefs.maxRefs > 0 && refs.value.length > prefs.maxRefs)
 
 // ---------------- 深度思考折叠 ----------------
-// 初始展开与否由「问答偏好」决定（设置弹窗里可改，存 localStorage）；
-// 关掉该偏好时，答案生成完自动折叠翻回默认折叠。
-// 2026-10-14：单条 message 内的「深度思考 + ReAct 轨迹 + 工作流卡片」合并为单一
-// 过程流（<details class="process-stream">），流式中自动展开，结束后回缩为一行
-// 摘要（"N 步推理 · 深度思考 Xk 字 · ..."），点击可再展开。`reasonOpen` 仍保留：
-// 「深度思考在回答结束后保持展开」偏好下，过程流整体被钉在展开态。
-const reasonOpen = ref(prefs.reasonOpen)
+// 2026-10-14：思考块独立显示，默认始终展开（外露），不收进过程流。
+// 用户手动点 toggle 仍可收合，状态记 manual（不跟随 status 自动翻转）。
+// 「深度思考在回答结束后保持展开」偏好（prefs.reasonOpen）不再控制这块——
+// 因为我们认为 thinking 应该是 agent 思考的实时可见，**不**该被自动折叠。
+// （如果未来有用户强烈想要折叠，单独加一个 prefs.thinkingCollapsible，不与
+// reasonOpen 共享。）
+const reasonOpen = ref(true)
 let reasonManual = false
-watch(() => props.msg.reasoning, (v) => {
-  if (v && streaming.value && !reasonManual) reasonOpen.value = true
-})
-watch(() => props.msg.status, (s) => {
-  if (s !== 'streaming' && !reasonManual && !prefs.reasonOpen) reasonOpen.value = false
-})
-// 设置弹窗里改「深度思考默认展开」时，已渲染的折叠块要跟着翻（手动点开过的那条不搅）
-watch(() => prefs.reasonOpen, (v) => {
-  if (!reasonManual) reasonOpen.value = v
-})
 function toggleReason() {
   reasonManual = true
   reasonOpen.value = !reasonOpen.value
 }
 
-// ---------------- 过程流整体折叠（reason + trace + workflow） ----------------
+// ---------------- 过程流整体折叠（trace + workflow） ----------------
 // 默认全程收缩（流式也不自动展开），用户点开才展开；点合再次收缩。
 // override 语义：null = 默认收缩；true = 强制展开；false = 强制收起。
 //
@@ -220,12 +210,22 @@ const phaseLabel = computed(() => {
         <svg viewBox="0 0 24 24" width="16" height="16"><path fill="#fff" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
       </div>
       <div class="ai-col">
-        <!-- 过程流：深度思考 + ReAct 轨迹 + 工作流卡片。
-             流式自动展开，结束后回缩为摘要行（"N 步推理 · 深度思考 Xk 字 · ..."）。
-             点击摘要可重新展开；展开态时各子块（思考 / 轨迹步骤）仍按各自折叠状态。
-             没有过程内容时这一节整体不渲染。 -->
+        <!-- 2026-10-14：思考块独立显示 + 默认展开（外露），不收进过程流。
+             视觉层级 = 三层折叠：L1 默认可见（思考 + 答案 + 工作流卡片）、
+             L2 点开过程流（trace 动作行）、L3 点开 trace 行（详细文本）。
+             reasoning 不再被过程流"代为呈现"——它就该是 agent 思考的实时外露。 -->
+        <div v-if="msg.reasoning" class="reason">
+          <button class="reason-head" @click="toggleReason">
+            <span class="reason-dot" :class="{ on: streaming }"></span>
+            思考
+            <span class="chev" :class="{ open: reasonOpen }">⌄</span>
+          </button>
+          <div v-if="reasonOpen" class="reason-body">{{ msg.reasoning }}</div>
+        </div>
+
+        <!-- 过程流：ReAct 轨迹 + 工作流卡片。默认全程收缩，点开看动作。 -->
         <details
-          v-if="msg.reasoning || visibleTrace.length || msg.workflow?.workflowId"
+          v-if="visibleTrace.length || msg.workflow?.workflowId"
           class="process-stream"
           :open="streamOpen"
           @toggle="onStreamToggle"
@@ -236,23 +236,10 @@ const phaseLabel = computed(() => {
             <span class="process-summary-chev" :class="{ open: streamOpen }">⌄</span>
           </summary>
           <div class="process-body">
-            <!-- 深度思考 -->
-            <div v-if="msg.reasoning" class="reason">
-              <button class="reason-head" @click="toggleReason">
-                <span class="reason-dot" :class="{ on: streaming }"></span>
-                深度思考
-                <span class="chev" :class="{ open: reasonOpen }">⌄</span>
-              </button>
-              <div v-if="reasonOpen" class="reason-body">{{ msg.reasoning }}</div>
-            </div>
-
-            <!-- ReAct 轨迹（问答偏好「显示推理轨迹步骤」可整体关掉） -->
             <div v-if="prefs.showTrace && visibleTrace.length" class="trace">
               <div v-for="row in visibleTrace" :key="row.index" class="step">
                 <button class="step-head" @click="toggleStep(row.index)">
                   <span class="step-tag" :class="row.item.type">{{ stepTitle(row.item) }}</span>
-                  <!-- 展开后摘要与正文是同一段字，不再排两遍；但观察行的摘要是
-                       「返回 N 个字符」这种派生信息，展开后仍然要留着 -->
                   <span v-if="!stepOpen(row.index) || row.item.type === 'observation'" class="step-summary">{{ stepSummary(row.item) }}</span>
                   <span v-if="fmtElapsed(row.item.elapsedMs)" class="step-time">{{ fmtElapsed(row.item.elapsedMs) }}</span>
                   <span class="chev" :class="{ open: stepOpen(row.index) }">⌄</span>
@@ -261,7 +248,6 @@ const phaseLabel = computed(() => {
               </div>
             </div>
 
-            <!-- 工作流卡片：进度/方案选择/审批都在问答页内完成 -->
             <WorkflowCard
               v-if="msg.workflow?.workflowId"
               :key="msg.workflow.workflowId"
@@ -350,17 +336,19 @@ border-radius: var(--r-sm); }
   justify-content: center;
   margin-top: 2px;
 }
-.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+/* 2026-10-14：无边框 chat——去 background / border / box-shadow / padding，让答案
+   就是文字流；max-width 仍按容器 100% 跑，不挤压但也不再"卡在一个框里"。 */
 .ai-bubble {
-  background: var(--bg-raised);
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  box-shadow: var(--sh-hard-sm);
-  padding: 14px 18px;
-  width: fit-content;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  width: 100%;
   max-width: 100%;
 }
-.answer { word-break: break-word; font-family: var(--font-sans); }
+.answer { word-break: break-word; font-family: var(--font-sans); line-height: 1.65; }
 .answer :deep(.md-link) { color: var(--accent); border-bottom: 2px solid transparent; }
 .answer :deep(.md-link:hover) { border-bottom-color: var(--accent); }
 
@@ -399,96 +387,125 @@ border-radius: var(--r-sm); }
 .process-stream { display: flex; flex-direction: column; gap: 8px; }
 .process-stream[open] { gap: 8px; }
 .process-summary {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   list-style: none;
   cursor: pointer;
   user-select: none;
-  padding: 6px 10px;
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  background: var(--bg-hover);
+  padding: 2px 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-faint);
+  letter-spacing: .02em;
 }
 .process-summary::-webkit-details-marker { display: none; }
-.process-summary:hover { background: var(--bg-raised); }
+.process-summary:hover { color: var(--text-muted); }
 .process-summary-text { flex: 1; min-width: 0; }
 .process-summary-chev {
   flex: 0 0 auto;
   color: var(--text-faint);
   transition: transform .15s;
   display: inline-block;
+  font-size: 10px;
 }
 .process-summary-chev.open { transform: rotate(180deg); }
-.process-body { display: flex; flex-direction: column; gap: 8px; }
+.process-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;  /* 2026-10-14：紧凑 trace row——gap 0 让多条 row 看着像一气呵成 */
+  margin: 4px 0 4px 12px;
+  border-left: 1px dashed var(--border);
+  padding-left: 12px;
+}
 
-/* 深度思考 */
-.reason { border: var(--edge-w-strong) solid var(--edge-ink);
-border-radius: var(--r-sm); background: rgba(31, 95, 224, .06); overflow: hidden; }
+/* 2026-10-14：思考块独立显示 + 无边框 + 始终可见。
+   文字"思考"小标 + 小点表示 streaming；body 整段外露，最多 max-height 滚。 */
+.reason {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  margin: 0;
+}
 .reason-head {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   border: none;
   background: none;
-  padding: 8px 12px;
+  padding: 2px 0;
   font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--accent-2);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: .04em;
+  text-transform: uppercase;
   cursor: pointer;
   text-align: left;
 }
-.reason-head:hover { background: rgba(31, 95, 224, .10); }
-.reason-dot { width: 7px; height: 7px; background: var(--text-faint); }
+.reason-head:hover { color: var(--text-muted); }
+.reason-dot { width: 6px; height: 6px; background: var(--text-faint); }
 .reason-dot.on { background: var(--accent-2); animation: reason-pulse 1.1s infinite; }
 @keyframes reason-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 .reason-body {
-  padding: 2px 12px 10px 27px;
+  padding: 4px 0 8px 12px;
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-muted);
   white-space: pre-wrap;
-  max-height: 260px;
+  max-height: 320px;
   overflow: auto;
+  line-height: 1.6;
+  border-left: 1px dashed var(--border);
+  margin-left: 3px;
 }
 
-/* 轨迹 */
-.trace { display: flex; flex-direction: column; gap: 4px; }
-.step { border: var(--edge-w-strong) solid var(--edge-ink);
-border-radius: var(--r-sm); background: var(--bg-raised); overflow: hidden; }
+/* 轨迹 — 2026-10-14：去卡片框，gap 0，多条 step 看着像一气呵成的"动作流" */
+.trace { display: flex; flex-direction: column; gap: 0; }
+.step {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  border-top: 1px dashed var(--border);
+}
+.step:first-child { border-top: none; }
 .step-head {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 6px;
+  padding: 3px 0;
   border: none;
   background: none;
   cursor: pointer;
   font-family: var(--font-sans);
   font-size: 12px;
   text-align: left;
+  color: var(--text-muted);
 }
-.step-head:hover { background: var(--bg-hover); }
+.step-head:hover { color: var(--text); }
 .step-tag {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
-  padding: 1px 7px;
-  background: var(--ink);
-  color: var(--bg);
+  letter-spacing: .04em;
+  padding: 0 5px;
+  background: transparent;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
 }
-.step-tag.observation { background: var(--green); color: var(--green-ink); }
-.step-tag.reflection { background: var(--amber); color: var(--amber-ink); }
-.step-tag.thought { background: var(--accent-2); color: var(--accent-2-ink); }
+.step-tag.observation { color: var(--green); border-color: var(--green); }
+.step-tag.reflection { color: var(--amber); border-color: var(--amber); }
+.step-tag.thought { color: var(--accent-2); border-color: var(--accent-2); }
 .step-summary {
   flex: 1;
   min-width: 0;
@@ -502,14 +519,17 @@ border-radius: var(--r-sm); background: var(--bg-raised); overflow: hidden; }
 .step-time { flex: 0 0 auto; color: var(--text-faint); font-size: 11px; font-family: var(--font-mono); }
 .step-body {
   margin: 0;
-  padding: 8px 12px;
-  border-top: var(--edge-w-strong) solid var(--edge-ink);
-  max-height: 280px;
+  padding: 4px 0 4px 12px;
+  border-top: none;
+  border-left: 1px solid var(--border);
+  margin-left: 4px;
+  max-height: 240px;
   overflow: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.6;
   color: var(--text-muted);
+  background: transparent;
   white-space: pre-wrap;
   word-break: break-word;
   background: var(--bg-hover);

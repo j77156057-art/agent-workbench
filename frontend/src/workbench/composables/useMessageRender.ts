@@ -230,13 +230,14 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
   // 深度思考面板折叠态（reasoning_content 独立窗口）。
   // 语义与问答页 AskMessage 一致：流式中自动摊开，回合结束按偏好回落，
   // 用户手动点过的那条不再被自动规则搅动（所以同样要 pinned / muted 两个集合）。
+  // 2026-10-14：默认始终展开（外露），不跟随 status/prefs 自动翻转——思考是
+  // agent 思考的实时可见，不该被自动折叠。用户手动 toggle 仍可收合（pin/mute）。
   const reasonPinned = ref<Set<number>>(new Set())
   const reasonMuted = ref<Set<number>>(new Set())
   function reasonIsOpen(id: number, msg: T) {
     if (reasonPinned.value.has(id)) return true
     if (reasonMuted.value.has(id)) return false
-    if (msg.status === 'streaming') return true
-    return prefs.reasonOpen
+    return true  // 默认展开
   }
   function toggleReason(id: number, msg: T) {
     const open = reasonIsOpen(id, msg)
