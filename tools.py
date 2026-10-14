@@ -3549,16 +3549,26 @@ def _file_lock(target):
 
 
 def _resolve_in_root(path):
-    """把 path 解析为 code_root 内的绝对路径；越界返回 (None, root_abs)。"""
+    """把 path 解析为 code_root 内的绝对路径；越界返回 (None, root_abs, reason)。
+
+    reason 在任一拒绝（越界或与 root 无关的地板）时给出人类可读原因，
+    调用方应优先用 reason 作报错文案，避免把「凭据地板拦截」误报成「不在根目录内」。
+    """
     root = _get_code_root()
     root_abs = os.path.normpath(root)
     target = os.path.normpath(path if os.path.isabs(path) else os.path.join(root_abs, path))
+    floor = _hard_floor_reason(target)
+    if floor:
+        return None, root_abs, floor
     if not (target == root_abs or target.startswith(root_abs + os.sep)):
         alt = os.path.normpath(os.path.join(root_abs, path.lstrip("./\\")))
         if os.path.isfile(alt) and (alt == root_abs or alt.startswith(root_abs + os.sep)):
+            alt_floor = _hard_floor_reason(alt)
+            if alt_floor:
+                return None, root_abs, alt_floor
             return alt, root_abs
-        return None, root_abs
-    return target, root_abs
+        return None, root_abs, "拒绝访问：路径不在代码根目录内（禁止越界读/写）。"
+    return target, root_abs, None
 
 
 def _clean_symbol(p):
@@ -3677,6 +3687,122 @@ def _path_within_real_root(root, target):
         return os.path.normcase(os.path.commonpath((root_real, os.path.realpath(target)))) == os.path.normcase(root_real)
     except ValueError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# 与 code_root 无关的地板（Hermes hardline blocklist 移植）
+#
+# 背景：所有写约束都依赖 `code_root`（一处根目录），没有一层与 root 无关的禁止项。
+# 一旦 `code_root` 被设成 `$HOME` 或其上级，凭据文件与普通项目文件就无差别
+# （见 docs/known-defect-no-write-path-floor.md §2 实测：code_root=$HOME 时能写
+# ~/.ssh/id_rsa）。这一层不依赖 root，任何 root 下都生效，无 override。
+#
+# 两类硬拦：
+#   ① 凭据存储类（读写都拦，无 override）：~/.ssh ~/.aws ~/.kube ~/.netrc ~/.gnupg、
+#      /etc/sudoers，以及 Windows APPDATA 下的凭据/令牌子目录。即使 code_root 指到
+#      HOME，也禁止读写这些路径（Hermes 同语义：safe-root 指到 $HOME 仍禁 ~/.ssh）。
+#   ② NT 设备命名空间路径（读写都拦）：\??\ \\.\ \\?\GLOBALROOT \\?\UNC 等。
+#      Hermes 明确：merely resolving such a path triggers outbound SMB
+#      authentication and can leak the user's NTLM hash。我们此前是靠「前缀不匹配
+#      本机 root」的副作用顺带拒（见同文档 §5 三次更正），这里改为显式前缀识别，
+#      任何平台、任何 root 形态下都生效——消除「靠巧合成立」的设计债。
+# ---------------------------------------------------------------------------
+
+#: NT 设备命名空间前缀（按 Windows 实际写法，slash/backslash 都归一）。
+#: 注意：这里用普通字符串、每个反斜杠转义两次，避免 raw string 以反斜杠结尾导致的
+#: 「unterminated string literal」。顺序：更具体的（GLOBALROOT/UNC）在前。
+_NT_DEVICE_PREFIXES = (
+    "\\\\?\\GLOBALROOT",
+    "\\\\?\\UNC",
+    "\\\\?\\",
+    "\\\\.\\",
+    "\\??\\",
+)
+
+
+def _nt_device_prefix(p):
+    """显式识别 NT 设备命名空间路径；命中返回规范前缀串，否则 None。"""
+    if not p:
+        return None
+    variants = {p.replace("/", "\\")}
+    try:
+        variants.add(os.path.normpath(p).replace("/", "\\"))
+    except (OSError, ValueError):
+        pass
+    for pre in _NT_DEVICE_PREFIXES:
+        norm = pre.replace("/", "\\")
+        for v in variants:
+            if v == norm or v.startswith(norm):
+                return pre
+    return None
+
+
+def _is_credential_store(target, low):
+    """target 是否为凭据存储路径——与 code_root 无关，任意位置都拦。
+
+    覆盖：① 路径中任意一级目录名为 .ssh/.aws/.kube/.gnupg（其下全部内容）；
+    ② basename 为 .netrc（凭据文件）；③ /etc/sudoers；
+    ④ Windows APPDATA 下的凭据/令牌子目录。这样无论 code_root 被设成 HOME、
+    其上级、还是包含同名目录的项目，凭据路径都永远与普通文件有区别。
+    low 为分隔符归一为 "/" 的小写串，故 Windows 下 /etc/sudoers 也能命中。
+    """
+    # ①/② 按路径分量命中（任意位置，分隔符无关）
+    parts = [p for p in re.split(r"[\\/]", low) if p]
+    for cred in (".ssh", ".aws", ".kube", ".gnupg"):
+        if cred in parts:
+            return True
+    if parts and parts[-1] == ".netrc":
+        return True
+    # ③ /etc/sudoers（分隔符无关）
+    if low == "etc/sudoers" or low.endswith("/etc/sudoers"):
+        return True
+    # ④ Windows APPDATA 下的凭据/令牌子目录
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        al = os.path.normpath(appdata).lower().replace("\\", "/")
+        if low.startswith(al + "/"):
+            for sub in ("microsoft/credentials", "microsoft/crypto",
+                        "microsoft/protect", "microsoft/systemcertificates",
+                        "gnupg", "gcloud", "azure", "powershell"):
+                csub = os.path.normpath(os.path.join(appdata, sub)).lower().replace("\\", "/")
+                if low == csub or low.startswith(csub + "/"):
+                    return True
+    return False
+
+
+def _hard_floor_reason(target):
+    """与 code_root 无关的地板：返回拒绝原因（str）或 None（放行）。
+
+    target 应为 normpath 后的路径字符串。覆盖凭据存储类 + NT 设备命名空间两类，
+    读写都拦，无 override。这是 Hermes hardline blocklist 的移植——在 root 约束
+    之外再兜一层，使 code_root 被设成 HOME 或其上级时，凭据路径仍与普通文件有区别。
+    """
+    if not target:
+        return None
+    t = os.path.normpath(target)
+    low = t.lower().replace("\\", "/")
+    np = _nt_device_prefix(t)
+    if np:
+        return ("安全策略拒绝：NT 设备命名空间路径（%s…）会被系统尝试 SMB 认证并可能"
+                "泄漏 NTLM 哈希，禁止任何解析。" % np)
+    if _is_credential_store(t, low):
+        return ("安全策略拒绝：凭据存储路径（%s）禁止读写——与 code_root 无关，无 override。"
+                % os.path.basename(t))
+    return None
+
+
+#: 项目内 .env 类文件：写可读禁（Hermes 同语义），避免 agent 把用户凭据读回。
+_ENV_READ_DENY = (".env", ".envrc")
+
+
+def _env_read_denied(target):
+    """项目内 .env 类文件禁止读取（写仍允许），返回 True 即拦。"""
+    name = os.path.basename(os.path.normpath(target)).lower()
+    if name in _ENV_READ_DENY:
+        return True
+    if name.startswith(".env."):
+        return True
+    return False
 
 
 #: read_file 的行号区间参数。**行内与独占行都认**（`grep` 的解析器本来就这么做，
@@ -3808,10 +3934,21 @@ def read_file(path):
     # 必须在这里点破，否则模型会去改路径/换分隔符，而真实原因是参数写法。
     leftover = _RE_READ_STRAY.search(path)
     target = os.path.normpath(path if os.path.isabs(path) else os.path.join(root_abs, path))
+    # 与 code_root 无关的地板：凭据存储类 / NT 设备命名空间，读写都拦，无 override。
+    floor = _hard_floor_reason(target)
+    if floor:
+        return floor
+    if _env_read_denied(target):
+        return "安全策略拒绝：.env 类凭据文件禁止读取（写可读禁，与 Hermes 一致）。"
     # 路径越界防护：只允许读取 code_root 目录内的文件
     if not (target == root_abs or target.startswith(root_abs + os.sep)):
         alt = os.path.normpath(os.path.join(root_abs, path.lstrip("./\\")))
         if os.path.isfile(alt) and (alt == root_abs or alt.startswith(root_abs + os.sep)):
+            alt_floor = _hard_floor_reason(alt)
+            if alt_floor:
+                return alt_floor
+            if _env_read_denied(alt):
+                return "安全策略拒绝：.env 类凭据文件禁止读取（写可读禁，与 Hermes 一致）。"
             target = alt
         else:
             return f"拒绝访问：{path} 不在代码根目录内。"
@@ -3926,6 +4063,11 @@ def inspect_data_file(arg):
             raise DataFormatError("path 不能为空")
         root_abs = os.path.abspath(root)
         target = os.path.abspath(path if os.path.isabs(path) else os.path.join(root_abs, path))
+        floor = _hard_floor_reason(target)
+        if floor:
+            raise DataFormatError(floor)
+        if _env_read_denied(target):
+            raise DataFormatError(".env 类凭据文件禁止读取（写可读禁，与 Hermes 一致）。")
         if not (target == root_abs or target.startswith(root_abs + os.sep)):
             raise DataFormatError("路径越界")
         if not _path_within_real_root(root_abs, target):
@@ -4035,6 +4177,10 @@ def _resolve_external_path(path):
                       "例如 D:/OtherProject;D:/Downloads。")
     allowed = [os.path.normpath(d) for d in re.split(r"[;；]", dirs_raw) if d.strip()]
     target = os.path.normpath(os.path.abspath(path))
+    floor = _hard_floor_reason(target)
+    if floor:
+        # 即便目标落在外部白名单目录内，凭据存储类 / NT 设备命名空间仍硬拦（无 override）。
+        return None, floor
     ok = any(target == d or target.startswith(d + os.sep) for d in allowed)
     if not ok:
         return None, f"拒绝访问：{path} 不在允许越界的目录白名单内（{', '.join(allowed)}）。"
@@ -4590,9 +4736,9 @@ def apply_edit(arg):
     if not root:
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
 
-    target, root_abs = _resolve_in_root(path)
+    target, root_abs, reason = _resolve_in_root(path)
     if target is None:
-        return f"拒绝写入：{path} 不在代码根目录内（禁止越界写）。"
+        return reason or f"拒绝写入：{path} 不在代码根目录内（禁止越界写）。"
     if not _region_write_allowed(target):
         return "拒绝写入：该路径属于已配置分区，请使用 dev_region_edit 以确保分区边界和先读后写护栏。"
     if not os.path.isfile(target):
@@ -4738,9 +4884,9 @@ def dev_apply_edits(arg):
         if new_text is None:
             errors.append(f"块 {i}（{path}）：缺少 new_text。")
             continue
-        target, root_abs = _resolve_in_root(path)
+        target, root_abs, reason = _resolve_in_root(path)
         if target is None:
-            errors.append(f"块 {i}（{path}）：拒绝写入，路径不在代码根目录内。")
+            errors.append(f"块 {i}（{path}）：{reason or '拒绝写入，路径不在代码根目录内。'}")
             continue
         key = os.path.normcase(target)
         if key in seen:
@@ -4858,13 +5004,16 @@ def dev_apply_edits(arg):
 # 受控路径，而不是凭空生成导致堆叠。
 # ---------------------------------------------------------------------------
 def _resolve_create_path(path):
-    """解析新建文件的绝对路径；越界返回 (None, root_abs)。不要求文件已存在。"""
+    """解析新建文件的绝对路径；越界返回 (None, root_abs, reason)。不要求文件已存在。"""
     root = _get_code_root()
     root_abs = os.path.normpath(root)
     target = os.path.normpath(path if os.path.isabs(path) else os.path.join(root_abs, path))
+    floor = _hard_floor_reason(target)
+    if floor:
+        return None, root_abs, floor
     if not (target == root_abs or target.startswith(root_abs + os.sep)):
-        return None, root_abs
-    return target, root_abs
+        return None, root_abs, "拒绝访问：路径不在代码根目录内（禁止越界写）。"
+    return target, root_abs, None
 
 
 def create_file(arg):
@@ -4885,9 +5034,9 @@ def create_file(arg):
     if not root:
         return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
 
-    target, root_abs = _resolve_create_path(path)
+    target, root_abs, reason = _resolve_create_path(path)
     if target is None:
-        return f"拒绝写入：{path} 不在代码根目录内（禁止越界写）。"
+        return reason or f"拒绝写入：{path} 不在代码根目录内（禁止越界写）。"
     if not _region_write_allowed(target):
         return "拒绝写入：该路径属于已配置分区，请使用 dev_region_edit 以确保分区边界和先读后写护栏。"
     if os.path.exists(target):
@@ -5388,6 +5537,9 @@ def _resolve_region_path(root, rmap, region_key, path):
     elif rel.startswith(rdir + "/"):
         rel = rel[len(rdir) + 1:]
     target = os.path.normpath(os.path.join(region_abs, rel)) if rel else region_abs
+    floor = _hard_floor_reason(target)
+    if floor:
+        return None, floor
     if target != region_abs and not target.startswith(region_abs + os.sep):
         return None, f"拒绝写入：{path} 不在分区 {rdir}/ 内（禁止越区写）。"
     return target, None
@@ -6607,9 +6759,9 @@ def list_dir(arg):
         bare = (arg or "").strip().strip("'\"")
         if bare and not re.search(r"^\s*[A-Za-z_]\w*\s*:", bare, re.M):
             rel = bare
-    target, root_abs = _resolve_in_root(rel if rel else root)
+    target, root_abs, reason = _resolve_in_root(rel if rel else root)
     if target is None:
-        return f"拒绝访问：{rel} 不在代码根目录内。"
+        return reason or f"拒绝访问：{rel} 不在代码根目录内。"
     if not os.path.isdir(target):
         return f"不是目录：{rel or '(根目录)'}（请用 list_dir 浏览目录，不要传文件路径）。"
     try:

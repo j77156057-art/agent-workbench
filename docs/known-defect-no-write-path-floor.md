@@ -156,3 +156,54 @@ path triggers outbound SMB authentication and can leak the user's NTLM hash」�
 因为 Hermes 的 hardline blocklist 是在**审批层之前**生效的，语义上更接近「统一出口」。
 
 **这一项需要单独立项**，不在调研收尾里顺手做。
+
+---
+
+## 8. 实现落地（2026-10-14）
+
+已按 A 方案落地（本仓库没有 `execute_tool` 统一出口，24 个写工具全部经 5 个
+`_resolve_*` 入口函数收口，故入口函数拦截即为「统一收口」；B 的兜底诉求已被 A 覆盖）。
+
+### 8.1 新增与 root 无关的地板（`tools.py`）
+
+- 新增纯函数（位于 `_path_within_real_root` 之后）：
+  - `_hard_floor_reason(target)` → 返回拒绝原因或 `None`；覆盖凭据存储类 + NT 设备命名空间。
+  - `_nt_device_prefix(p)` → 显式识别 NT 设备命名空间前缀（`\??\` `\\.\` `\\?\GLOBALROOT` `\\?\UNC`），
+    **消除 §5「靠巧合成立」的护栏**——不再依赖「前缀不匹配本机 root」的副作用。
+  - `_is_credential_store(target, low)` → 凭据存储类按路径分量任意位置命中（不只 HOME）：
+    `.ssh/.aws/.kube/.gnupg` 任一上级目录、`basename == .netrc`、`/etc/sudoers`、
+    Windows `APPDATA` 下的凭据/令牌子目录。
+  - `_env_read_denied(target)` → `.env`/`.env.*`/`.envrc` 读被拒、写仍允许（§3 差距二）。
+- 接线点：
+  - `_resolve_in_root` / `_resolve_create_path`：返回形态由 `(target, root_abs)` 改为
+    `(target, root_abs, reason)`，地板拒绝时 `reason` 为人类可读安全文案（调用方优先用 reason，
+    避免把「凭据地板拦截」误报成「不在根目录内」）。
+  - `_resolve_region_path` / `_resolve_external_path`：保留 `(target, reason)` 形态，地板拒绝时返回原因。
+  - `read_file` / `inspect_data_file`：解析后先查地板 + `.env` 读拒。
+  - `data_formats._safe_output`（写数据文件的出口）：延迟 `from tools import _hard_floor_reason`，
+    避免与 `tools` 的循环依赖，使 `generate_data_file` 也受地板约束。
+
+### 8.2 三件待答事项的最终裁定
+
+| 待答 | 裁定 | 依据 |
+|---|---|---|
+| 硬拦哪些路径 | 凭据存储类（任意位置）+ NT 设备命名空间 | Hermes hardline blocklist，无 override |
+| 读是否也拦 | 凭据存储类**读写都拦**；`.env` 类**写可读禁** | 私钥/令牌不该被读也不该被写；`.env` 仅写可读禁 |
+| 能否 override | **不能**（无 flag） | Hermes 硬地板无 override |
+
+### 8.3 验收（可复算）
+
+- 探针 `tools/mutation/probe_write_denylist_gap.py` 现输出「**没有敞口**」：
+  `code_root=HOME` 写 `~/.ssh/id_rsa` → 拒绝；上级目录写 `.netrc` → 拒绝（§2 全部行关闭）。
+- 新增单测 `tests/test_write_path_floor.py`（7 例全过）：凭据任意位置被拦、普通路径放行、
+  NT 前缀显式识别且合法 UNC（`\\server\share`）不被误伤、`_resolve_in_root` 不论 root 如何都拦凭据。
+- 回归：相关文件工具测试模块（test_agent_code_tools / test_read_file_* / test_data_formats /
+  test_write_* / test_file_conflict / test_subagent_write_auth / test_agent 等）134 例通过；
+  唯一失败 `test_planner_cannot_widen_tools_or_enable_mcp` 经 `git stash` 验证为**改动前既有失败**，
+  与本次无关。
+
+### 8.4 已知残留（非安全敞口，记一笔）
+
+- 合法 UNC（`\\server\share`）仍被 root 越界判定顺带拒（§5 已记：Hermes 不拦合法 UNC）。
+  这是「过度拒绝」而非敞口；本次未动，因不在 §2 敞口范围内，且改它需权衡 Windows 行为。
+- 项目内恰好含同名目录（如 `.ssh`/`.aws`）时也会被拦——属有意的强化，已在探针与单测中固化。

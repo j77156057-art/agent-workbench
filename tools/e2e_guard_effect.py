@@ -80,6 +80,9 @@ from _repo_root import ensure_on_path  # noqa: E402
 
 ROOT = ensure_on_path()
 
+# provider/model 可配：默认仍是 ollama（本地）。真跑云端时改 env。
+# 例：DOCMIND_E2E_PROVIDER=deepseek DOCMIND_E2E_MODEL=deepseek-flash
+PROVIDER = os.getenv("DOCMIND_E2E_PROVIDER", "ollama")
 MODEL = os.getenv("DOCMIND_E2E_MODEL", "qwen3.6:35b-a3b")
 
 # 结果落盘：**可复现性对比需要它**。
@@ -157,7 +160,10 @@ def classify_round(final_text: str, n_events: int) -> tuple[str, str]:
 
 
 FIXTURE_FILES = {
-    "a.py": "def add(a, b):\n    return a - b\n\n\nif __name__ == '__main__':\n    print(add(2, 3))\n",
+    # fixture 保持「逻辑一致」：add 正确返回 a+b，test_a 期望 a+b。这样对照组在
+    # 被放行时模型确实会写（恢复 §6 关键判据的区分力）；否则聪明模型会因
+    # 「补文档会固化错误行为」而拒绝，导致两组都不改、判据失效。
+    "a.py": "def add(a, b):\n    return a + b\n\n\nif __name__ == '__main__':\n    print(add(2, 3))\n",
     "b.py": "def mul(a, b):\n    return a * b\n",
     "test_a.py": "from a import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
 }
@@ -176,6 +182,12 @@ TURN3 = "改吧"
 # 判据：这一轮**两组都该改文件**。若实验组（真实判定 granted）也不改，
 # 说明问题在护栏的执行侧（判定对了但没放行），而不在词表。
 TURN4 = "请修改 a.py，给 add 函数加一行 docstring"
+
+# 第 5 轮：**bare「改吧」，踩在 TURN4（granted）铸造的租约之上** —— 验 ② 多轮批准。
+# 对照：TURN3 的「改吧」没有任何前置 grant → 被护栏拦下；这一轮因 TURN4 已铸租约
+# → 应放行。关键判据不是「改没改文件」，而是「护栏有没有拦截」：放行时 final 不会出现
+# 「安全策略拦截」类话术（模型可能认为已做完而选择不动，但那是模型决定，不是护栏）。
+TURN5 = "改吧"
 
 
 def find_repo_root() -> pathlib.Path:
@@ -236,7 +248,7 @@ def run_group(label: str, guard_on: bool, client_factory) -> dict:
             agent = agent_mod.Agent(llm=client,
                                     tool_registry=dict(tools_mod.TOOLS))
 
-            for turn_no, question in enumerate((TURN1, TURN2, TURN3, TURN4), 1):
+            for turn_no, question in enumerate((TURN1, TURN2, TURN3, TURN4, TURN5), 1):
                 # ⚠ **用 `question == TURN4` 判断，不�� `turn_no == 4`。**
                 # 第一版我把重置块插到了 `for` 语句**外面**，
                 # 于是 `UnboundLocalError: cannot access local variable 'turn_no'`。
@@ -281,12 +293,19 @@ def run_group(label: str, guard_on: bool, client_factory) -> dict:
                 grade, why = classify_round(str(final.get("text", "")), len(events))
                 if grade != "ok":
                     print("    **轮次等级: %s** —— %s" % (grade, why))
+                text = str(final.get("text", "")).strip().replace("\n", " ")
+                lease = getattr(agent, "capability_lease", None) or {}
+                lease_active = bool(lease.get("status") == "active")
+                intercepted = ("拦截" in text) or ("未授权" in text) \
+                    or ("安全策略" in text)
                 print("    **文件系统变化: %s**"
                       % (", ".join(changed) if changed else "无（未动任何文件）"))
-                text = str(final.get("text", "")).strip().replace("\n", " ")
+                print("    租约活跃: %s   护栏拦截: %s"
+                      % (lease_active, intercepted))
                 print("    final: %s" % (text[:150] or "(空)"))
                 rec.add(turn=turn_no, question=question, write_intent=intent,
                         seconds=round(dt, 1), changed_files=changed,
+                        lease_active=lease_active, intercepted=intercepted,
                         final_text=text[:400], n_events=len(events),
                         grade=grade, grade_reason=why)
             after = fixture_state(root)
@@ -310,6 +329,7 @@ def main() -> int:
     print("=" * 74)
     print("  仓库: %s" % repo)
     print("  模型: %s" % MODEL)
+    print("  provider: %s" % PROVIDER)
     print("  预计: 2 组 × 3 轮 ≈ 6 次 run()，35B 约 100s/轮 -> 约 10 分钟")
 
     try:
@@ -319,7 +339,7 @@ def main() -> int:
         return 1
 
     def client_factory():
-        return LLMClient(provider="ollama", model=MODEL)
+        return LLMClient(provider=PROVIDER, model=MODEL)
 
     results = []
     for label, guard_on in (("对照组", False), ("实验组", True)):

@@ -145,7 +145,7 @@ def main() -> int:
     print()
 
     if same == len(keys) and guard_ok and permit_ok:
-        print("  => **8/8 一致，且两个关键结论都成立。**")
+        print("  => **%d/%d 一致，且两个关键结论都成立。**" % (same, len(keys)))
         print("     「护栏拦得住也放得过」从「观察到一次」升级到「观察到稳定」。")
         return 0
     if not guard_ok:

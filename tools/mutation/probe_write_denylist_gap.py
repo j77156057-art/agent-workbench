@@ -75,9 +75,9 @@ def main() -> None:
 
     print()
     print("  === 结论判据 ===")
-    ok_home, _ = with_root(home, lambda: T._resolve_in_root(
+    ok_home, _, _ = with_root(home, lambda: T._resolve_in_root(
         os.path.join(home, ".ssh", "id_rsa")))
-    ok_project_ssh, _ = with_root(project, lambda: T._resolve_in_root(
+    ok_project_ssh, _, _ = with_root(project, lambda: T._resolve_in_root(
         os.path.join(project, ".ssh", "id_rsa")))
     print("  code_root=HOME 时能写 ~/.ssh/id_rsa : %s" % ("能" if ok_home else "不能"))
     print("  项目内能写 .ssh/id_rsa              : %s" % ("能" if ok_project_ssh else "不能"))

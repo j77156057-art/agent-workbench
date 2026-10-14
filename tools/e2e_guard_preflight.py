@@ -54,6 +54,9 @@ def _find_repo_root() -> pathlib.Path:
 ROOT = _find_repo_root()
 sys.path.insert(0, str(ROOT))
 
+# provider/model 可配：默认仍是 ollama（本地），真跑云端时改 env。
+# 例：DOCMIND_E2E_PROVIDER=deepseek DOCMIND_E2E_MODEL=deepseek-flash
+PROVIDER = os.getenv("DOCMIND_E2E_PROVIDER", "ollama")
 MODEL = os.getenv("DOCMIND_E2E_MODEL", "qwen3.6:35b-a3b")
 
 
@@ -69,10 +72,11 @@ def main() -> int:
     print("  前置检查：真模型端到端的工具链")
     print("=" * 74)
     print("  模型: %s" % MODEL)
+    print("  provider: %s" % PROVIDER)
     print("  DocMind: %s" % ROOT)
 
     # ---------- 1. LLMClient ----------
-    step("1", "LLMClient(provider=ollama) 建起来并回一句话")
+    step("1", "LLMClient(provider=%s) 建起来并回一句话" % PROVIDER)
     try:
         from llm import LLMClient
     except Exception as exc:
@@ -81,7 +85,7 @@ def main() -> int:
 
     t0 = time.time()
     try:
-        client = LLMClient(provider="ollama", model=MODEL)
+        client = LLMClient(provider=PROVIDER, model=MODEL)
     except Exception as exc:
         print("  *** 建client 失败: %s: %s" % (type(exc).__name__, exc))
         return 1
