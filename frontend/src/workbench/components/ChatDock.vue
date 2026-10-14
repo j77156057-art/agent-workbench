@@ -385,8 +385,8 @@ function traceSegmentTitle(msg: ChatMsg) {
 }
 
 // 2026-10-14：执行计划 + 深度思考 + 任务动作 → 单一可折叠过程流。
-// 流式自动展开，结束回缩为摘要（"N 步 · 深度思考 Xk 字"），点击可重新展开。
-// override 语义：null = 跟随 status, true = 强制展开, false = 强制收起。
+// 默认全程收缩（不随 status 变化），用户点开才展开；点合再次收缩。
+// override 语义：未设置 = 默认 false（收缩）；true = 强制展开；false = 强制收起。
 //
 // 反馈环陷阱：Vue 更新 :open 时浏览器会反向触发 toggle 事件——若处理器按
 // 「!cdStreamIsOpen(msg)」写 override，会与 Vue 改 :open 来回抖动。正确做法
@@ -396,14 +396,14 @@ const streamOverride = ref<Map<number, boolean>>(new Map())
 function cdStreamIsOpen(msg: ChatMsg) {
   const ov = streamOverride.value.get(msg.id)
   if (ov !== undefined) return ov
-  return msg.status === 'streaming'
+  return false  // 默认收缩：一块一块的步骤看着碎，主动想看再点
 }
 function cdToggleStream(e: Event, id: number, msg: ChatMsg) {
   const target = e.target as HTMLDetailsElement
   const newOpen = target.open
   const cur = streamOverride.value.get(id)
   if (cur === newOpen) return  // 已一致，无需更新
-  const auto = msg.status === 'streaming'
+  const auto = false  // 同 cdStreamIsOpen 默认
   const next = new Map(streamOverride.value)
   if (newOpen === auto) next.delete(id)  // 回到 auto 态 → 清 override
   else next.set(id, newOpen)

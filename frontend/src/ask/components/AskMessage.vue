@@ -59,21 +59,21 @@ function toggleReason() {
 }
 
 // ---------------- 过程流整体折叠（reason + trace + workflow） ----------------
-// 单一来源：流式 = 自动展开，结束 = 自动回缩为摘要；用户手动点过则记入 override。
-// override 语义：null = 跟随流式状态自动；true = 强制展开；false = 强制收起。
+// 默认全程收缩（流式也不自动展开），用户点开才展开；点合再次收缩。
+// override 语义：null = 默认收缩；true = 强制展开；false = 强制收起。
 //
-// 反馈环陷阱：与 ChatDock 同——Vue 更新 :open 时浏览器会反向触发 toggle，
-// 处理器按「!streamOpen」写 override 会与 Vue 抖动。以 e.target.open 为事实源。
+// 反馈环陷阱：与 ChatDock 同——以 e.target.open 为事实源，cur === newOpen 时
+// noop，新态与 auto 一致时清 override。
 const streamOverride = ref<boolean | null>(null)
 const streamOpen = computed(() => {
   if (streamOverride.value !== null) return streamOverride.value
-  return streaming.value || reasonOpen.value
+  return false  // 默认收缩：一块一块的步骤看着碎，主动想看再点
 })
 function onStreamToggle(e: Event) {
   const newOpen = (e.target as HTMLDetailsElement).open
   const cur = streamOverride.value
   if (cur === newOpen) return
-  const auto = streaming.value || reasonOpen.value
+  const auto = false
   streamOverride.value = (newOpen === auto) ? null : newOpen
 }
 function streamSummary(): string | null {
