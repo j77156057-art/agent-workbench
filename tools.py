@@ -3566,8 +3566,15 @@ def _resolve_in_root(path):
             alt_floor = _hard_floor_reason(alt)
             if alt_floor:
                 return None, root_abs, alt_floor
-            return alt, root_abs
+            alt_resolved = _resolve_floor_checked(root_abs, alt)
+            if alt_resolved:
+                return None, root_abs, alt_resolved
+            return alt, root_abs, None
         return None, root_abs, "拒绝访问：路径不在代码根目录内（禁止越界读/写）。"
+    # ③ symlink 闭合（审计 F1/F3 统一入口）：字面地板 + 根检查已过，realpath 再跑一次
+    resolved = _resolve_floor_checked(root_abs, target)
+    if resolved:
+        return None, root_abs, resolved
     return target, root_abs, None
 
 
@@ -3791,6 +3798,43 @@ def _hard_floor_reason(target):
     return None
 
 
+def _floor_check_resolved(root_abs, target, check_root=True):
+    """③ symlink 闭合（审计 F1 修复）：字面路径已过地板 + 根检查后，对 realpath 解析结果再跑一次。
+
+    open() / os.path.isdir 按 OS 契约跟随符号链接，而 _resolve_* 与根检查基于 normpath 字面路径，
+    故 code_root 内指向凭据 / 越界目标的 symlink 会绕过（审计 F1）。此处对 realpath(target)
+    重跑 _hard_floor_reason + _path_within_real_root：凭据目的地（如 code_root=$HOME 下的
+    ~/.ssh/id_rsa）被地板拦，越界目的地被根闭合拦；指向普通文件的合法 symlink 解析后仍命中
+    普通路径 → 放行（不破坏合法 symlink）。realpath 解析失败（坏链 / 特权不足）一律按拒绝处理
+    （fail-closed）。check_root=False 时（外部白名单路径）只重跑地板、不做根闭合。
+    """
+    try:
+        real_target = os.path.realpath(target)
+    except (OSError, ValueError):
+        return "拒绝访问：路径解析失败（符号链接无法解析）。"
+    floor = _hard_floor_reason(real_target)
+    if floor:
+        return floor
+    if check_root and not _path_within_real_root(root_abs, real_target):
+        return "拒绝访问：路径经符号链接指向代码根目录之外（或解析异常）。"
+    return None
+
+
+def _resolve_floor_checked(root_abs, target, check_root=True):
+    """地板 + symlink 闭合的统一入口（审计 F3 重构，消除 6 个 _resolve_* 入口的重复）。
+
+    先对字面 target 跑 _hard_floor_reason（凭据存储 / NT 设备命名空间），
+    再对 realpath 解析结果跑 _hard_floor_reason + _path_within_real_root（F1 symlink 闭合）。
+    根包容判定（root 变量 / 文案各异）由各入口在完成自身字面根检查后调用本函数，
+    本函数只负责「凭据地板 + realpath 闭合」这一层——避免后续新增入口漏加 realpath 复核
+    （F1 的根因正是 6 入口里写工具完全没做 realpath 复核）。返回拒绝原因或 None（放行）。
+    """
+    floor = _hard_floor_reason(target)
+    if floor:
+        return floor
+    return _floor_check_resolved(root_abs, target, check_root=check_root)
+
+
 #: 项目内 .env 类文件：写可读禁（Hermes 同语义），避免 agent 把用户凭据读回。
 _ENV_READ_DENY = (".env", ".envrc")
 
@@ -3962,8 +4006,11 @@ def read_file(path):
             return ("区间参数未识别：%s。正确写法：`path start:20 end:45`"
                     "（空格/逗号/换行分隔）。" % leftover.group(0).strip())
         return f"文件不存在：{path}"
-    if not _path_within_real_root(root_abs, target):
-        return f"拒绝访问：{path} 经符号链接指向代码根目录之外。"
+    # ③ symlink 闭合（审计 F1/F3 统一入口）：realpath 后既防越界（_path_within_real_root）
+    # 也防凭据地板漏拦（_resolve_floor_checked 内含 _hard_floor_reason 复核 realpath）
+    resolved = _resolve_floor_checked(root_abs, target)
+    if resolved:
+        return f"拒绝访问：{path} 经符号链接越界或被凭据地板拦截——{resolved}"
     # Godot 缓存和通用二进制资源不得用 errors="ignore" 当文本读取：
     # 这会静默丢字节，并让 Agent 误以为已核对完整文件内容。
     try:
@@ -4070,8 +4117,9 @@ def inspect_data_file(arg):
             raise DataFormatError(".env 类凭据文件禁止读取（写可读禁，与 Hermes 一致）。")
         if not (target == root_abs or target.startswith(root_abs + os.sep)):
             raise DataFormatError("路径越界")
-        if not _path_within_real_root(root_abs, target):
-            raise DataFormatError("路径经符号链接越界")
+        resolved = _resolve_floor_checked(root_abs, target)
+        if resolved:
+            raise DataFormatError(f"路径经符号链接越界或被凭据地板拦截——{resolved}")
         parsed = read_data_file(target)
         if isinstance(parsed.get("text"), str):
             parsed["text"] = parsed["text"][:16000]
@@ -4184,6 +4232,11 @@ def _resolve_external_path(path):
     ok = any(target == d or target.startswith(d + os.sep) for d in allowed)
     if not ok:
         return None, f"拒绝访问：{path} 不在允许越界的目录白名单内（{', '.join(allowed)}）。"
+    # ③ symlink 闭合（审计 F1/F3 统一入口）：外部白名单路径只重跑地板（check_root=False），
+    # 不闭合回 code_root——外部本就是受控越界，但凭据地板仍硬拦。
+    resolved = _resolve_floor_checked(None, target, check_root=False)
+    if resolved:
+        return None, resolved
     return target, None
 
 
@@ -5013,6 +5066,10 @@ def _resolve_create_path(path):
         return None, root_abs, floor
     if not (target == root_abs or target.startswith(root_abs + os.sep)):
         return None, root_abs, "拒绝访问：路径不在代码根目录内（禁止越界写）。"
+    # ③ symlink 闭合（审计 F1/F3 统一入口）：字面地板 + 根检查已过，realpath 再跑一次
+    resolved = _resolve_floor_checked(root_abs, target)
+    if resolved:
+        return None, root_abs, resolved
     return target, root_abs, None
 
 
@@ -5542,6 +5599,10 @@ def _resolve_region_path(root, rmap, region_key, path):
         return None, floor
     if target != region_abs and not target.startswith(region_abs + os.sep):
         return None, f"拒绝写入：{path} 不在分区 {rdir}/ 内（禁止越区写）。"
+    # ③ symlink 闭合（审计 F1/F3 统一入口）：分区目标越界/凭据由 realpath 复核兜底
+    resolved = _resolve_floor_checked(root, target)
+    if resolved:
+        return None, resolved
     return target, None
 
 

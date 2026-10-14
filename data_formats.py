@@ -22,9 +22,13 @@ import tempfile
 import tomllib
 import unicodedata
 import xml.etree.ElementTree as ET
+import logging
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+
+logger = logging.getLogger(__name__)
 
 
 MAX_READ_BYTES = 32 * 1024 * 1024
@@ -421,14 +425,18 @@ def _safe_output(root: str | os.PathLike[str], path: str) -> Path:
         raise DataFormatError("输出路径越界")
     # 与 code_root 无关的地板（凭据存储 / NT 设备命名空间），无 override。
     # 延迟导入避免与 tools 的循环依赖（tools 导入本模块）。
+    # F2 修复（审计 #10/#11）：导入失败不再静默 fail-open——改为 fail-closed
+    # （拒绝写入）+ 告警，杜绝「护栏不可用却悄悄放行凭据写」的敞口。
     try:
         from tools import _hard_floor_reason as _floor  # type: ignore
-    except Exception:  # noqa: BLE001
-        _floor = None
-    if _floor is not None:
-        reason = _floor(str(target))
-        if reason:
-            raise DataFormatError(reason)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "凭据地板不可用（延迟导入 tools._hard_floor_reason 失败），"
+            "为防绕过拒绝写入：%s", exc, exc_info=True)
+        raise DataFormatError("安全护栏（凭据地板）不可用，拒绝写入。") from exc
+    reason = _floor(str(target))
+    if reason:
+        raise DataFormatError(reason)
     return target
 
 

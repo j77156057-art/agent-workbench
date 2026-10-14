@@ -207,3 +207,66 @@ path triggers outbound SMB authentication and can leak the user's NTLM hash」�
 - 合法 UNC（`\\server\share`）仍被 root 越界判定顺带拒（§5 已记：Hermes 不拦合法 UNC）。
   这是「过度拒绝」而非敞口；本次未动，因不在 §2 敞口范围内，且改它需权衡 Windows 行为。
 - 项目内恰好含同名目录（如 `.ssh`/`.aws`）时也会被拦——属有意的强化，已在探针与单测中固化。
+
+### 8.5 审计 F1 修复：符号链接绕过地板（2026-10-14）
+
+**根因（审计 #10/#11 发现的实质缺口）**：③ 的地板与根检查都基于 `normpath` 的**字面路径**，
+但 `open()` / `os.path.isdir` 等按 OS 契约**跟随符号链接**解析真实目的地。于是 code_root 内一个
+指向 `~/.ssh/id_rsa`（或越界目标）的符号链接，字面路径既不在凭据地板内、又落在 code_root 内，
+会**绕过**地板与根检查——真实读取/写入发生在链接目的地。写工具
+（`apply_edit`/`create_file`/`dev_apply_edits`/`list_dir` 经 `_resolve_in_root`/`_resolve_create_path`）
+此前**完全无 realpath 复核**；`read_file`/`inspect_data_file` 虽有 realpath 根闭合，但地板只查字面、
+**根内凭据 symlink 漏拦**。
+
+**修复方案（realpath 重跑，不 blanket 拒绝合法 symlink）**：新增 helper
+`_floor_check_resolved(root_abs, target, check_root=True)`——字面路径已过地板 + 根检查后，
+对 `os.path.realpath(target)` 的解析结果**再跑一次** `_hard_floor_reason` + `_path_within_real_root`：
+- 解析目的地是凭据 → 被地板拦；
+- 解析目的地越界 → 被根闭合拦；
+- 解析目的地是普通文件（合法 symlink）→ 放行，**不破坏合法符号链接**；
+- realpath 解析失败（坏链 / 特权不足）→ 一律按拒绝处理（**fail-closed**）。
+`check_root=False` 用于 `_resolve_external_path`（外部白名单本就是受控越界，只重跑地板）。
+
+**接线点（6 处）**：`_resolve_in_root`、`_resolve_create_path`、`_resolve_region_path`、
+`_resolve_external_path`、`read_file`、`inspect_data_file`。写工具经前两个 resolve，改这两个即覆盖。
+另：③ 提交里 `_resolve_in_root` 的 alt 分支曾返回 2 元组 `(alt, root_abs)`，但 3 个调用方
+（`apply_edit`/`create_file`/`list_dir`）均按 3 元组解包——本次一并升级为 `(alt, root_abs, None)`，
+消除潜在 `ValueError` 隐患。
+
+**平台说明**：本沙箱（Windows 测试机）`os.symlink` 创建的是**惰性桩**（`islink=False`、
+`open` 不跟随、`realpath` 不跟随），故漏洞在本机不会真实触发；上述修复针对真实部署
+（Linux / 开发者模式 Windows 下 symlink 被跟随）闭合敞口，且对合法 symlink 无副作用。
+
+**验收（可复算）**：
+- `tests/test_write_path_floor.py` 新增 `SymlinkFloorTest`（7 例全过）：
+  凭据 symlink 被拦 / 越界 symlink 被拦 / 普通 symlink 放行 / realpath 抛错 fail-closed /
+  `_resolve_in_root` 与 `_resolve_create_path` 在 code_root 内 symlink→凭据时均被安全策略拒绝 /
+  普通 symlink 正常放行。
+- 因本机 symlink 惰性，测试用 `unittest.mock` 模拟 OS 跟随 symlink 的契约（patch `tools.os.path.realpath`
+  返回目的地），与平台无关、直接覆盖 F1 逻辑。
+- 修复单独成一笔提交，可 bisect。
+
+### 8.6 审计 F2/F3 修复：静默 fail-open + 6 入口重复（2026-10-14）
+
+**F2（静默 fail-open）**：`data_formats._safe_output` 延迟导入 `tools._hard_floor_reason`
+（避循环依赖），原 `except Exception: _floor = None` 在导入失败时**悄悄关掉输出地板**——
+凭据写被静默放行（fail-open）。修复：**fail-closed**——导入失败改抛 `DataFormatError("安全护栏
+（凭据地板）不可用，拒绝写入。")` 并 `logger.warning(...)` 告警（不再静默）。正常时 `data_formats`
+用 `Path(path).resolve()` 已 realpath 化，对凭据 symlink 反而是 6 入口里最稳的一处，此处只补「导入失败
+不静默」这一条。新增 `tests/test_safe_output_floor.py`：`_safe_output` 地板触发仍拦 / 地板 None 放行 /
+**导入失败 fail-closed + 告警**（delattr 模拟 `from tools import` 失败）。
+
+**F3（6 入口重复）**：③ 地板逻辑（字面地板 + realpath 闭合）在 6 个 `_resolve_*` 入口重复粘贴，
+后续新增入口极易漏加 realpath 复核（F1 正是写工具漏加 realpath 所致）。修复：新增统一入口
+`_resolve_floor_checked(root_abs, target, check_root=True)` = `_hard_floor_reason(target)`（字面地板）
++ `_floor_check_resolved(root_abs, target, check_root)`（realpath 地板 + realpath 根闭合），6 个入口
+全部改调它（含 `_resolve_external_path` 传 `check_root=False`）。各入口的**字面根包容判定**
+（root 变量 / 文案各异，如「禁止越界写」/「禁止越区写」/「不在白名单内」）保留在各自入口、不在统一函数内。
+
+**验收（可复算）**：
+- `tests/test_write_path_floor.py` 新增 `FloorCheckedTest`：`_resolve_floor_checked` 字面凭据拦 /
+  字面普通文件放行 / symlink→凭据 realpath 拦 / 外部白名单 `check_root=False` 不闭合回 code_root。
+- 回归：`tests/test_safe_output_floor.py`（F2，3 例）、`tests/test_write_path_floor.py`（F1+F3，含原 7 例）、
+  `tests/test_agent_code_tools.py`（39 passed，核心写/读路径）、`tests/test_data_formats.py` +
+  `tests/test_file_conflict.py`（12 passed，`inspect_data_file`/冲突路径）均无回归。
+- F1/F2/F3 一起单独成一笔提交，可 bisect。

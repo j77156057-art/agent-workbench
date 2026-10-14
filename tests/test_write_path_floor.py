@@ -6,6 +6,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -89,6 +90,118 @@ class HardFloorTest(unittest.TestCase):
         # 正常项目文件：要么解析成功，要么因越界被拒（但不会是安全策略拒绝）
         if target is None:
             self.assertNotIn("安全策略拒绝", reason or "")
+
+
+class SymlinkFloorTest(unittest.TestCase):
+    """审计 F1 回归：code_root 内的符号链接若经 realpath 解析到凭据 / 越界目标，必须被拦；
+    指向普通文件的合法 symlink 放行。本沙箱 symlink 惰性（不跟随），故用 mock 模拟
+    OS 跟随 symlink 的契约（realpath 返回目的地），使测试与平台无关、直接覆盖 F1 逻辑。"""
+
+    def _fake_realpath(self, link_path, resolved_path):
+        real = os.path.realpath
+        lp = os.path.normpath(link_path)
+        rp = os.path.normpath(resolved_path)
+
+        def fake(p):
+            if os.path.normpath(p) == lp:
+                return rp
+            return real(p)
+
+        return mock.patch.object(T.os.path, "realpath", side_effect=fake)
+
+    def test_floor_check_resolved_blocks_credential_symlink(self):
+        home = os.path.normpath(os.path.expanduser("~"))
+        root_abs = os.path.normpath(ROOT)
+        link = os.path.join(ROOT, "innocent_link.py")
+        cred = os.path.join(home, ".ssh", "id_rsa")
+        with self._fake_realpath(link, cred):
+            r = T._floor_check_resolved(root_abs, link)
+        self.assertIsNotNone(r)
+        self.assertIn("安全策略拒绝", r)
+
+    def test_floor_check_resolved_blocks_root_escape(self):
+        root_abs = os.path.normpath(ROOT)
+        link = os.path.join(ROOT, "escape_link.py")
+        outside = os.path.normpath(os.path.join(ROOT, "..", "sibling", "x.txt"))
+        with self._fake_realpath(link, outside):
+            r = T._floor_check_resolved(root_abs, link)
+        self.assertIsNotNone(r)
+        self.assertIn("代码根目录之外", r)
+
+    def test_floor_check_resolved_allows_normal_symlink(self):
+        root_abs = os.path.normpath(ROOT)
+        link = os.path.join(ROOT, "normal_link.py")
+        normal = os.path.join(ROOT, "real_file.py")
+        with self._fake_realpath(link, normal):
+            r = T._floor_check_resolved(root_abs, link)
+        self.assertIsNone(r)
+
+    def test_floor_check_resolved_fail_closed_on_realpath_error(self):
+        root_abs = os.path.normpath(ROOT)
+        link = os.path.join(ROOT, "broken_link.py")
+
+        def raise_fn(p):
+            raise OSError("bad symlink")
+
+        with mock.patch.object(T.os.path, "realpath", side_effect=raise_fn):
+            r = T._floor_check_resolved(root_abs, link)
+        self.assertIsNotNone(r)
+        self.assertIn("路径解析失败", r)
+
+    def test_resolve_in_root_blocks_credential_symlink(self):
+        link = os.path.join(ROOT, "innocent_link.py")
+        home = os.path.normpath(os.path.expanduser("~"))
+        cred = os.path.join(home, ".ssh", "id_rsa")
+        with mock.patch.object(T, "_get_code_root", return_value=ROOT):
+            with self._fake_realpath(link, cred):
+                target, _root_abs, reason = T._resolve_in_root(link)
+        self.assertIsNone(target)
+        self.assertIn("安全策略拒绝", reason)
+
+    def test_resolve_create_path_blocks_credential_symlink(self):
+        link = os.path.join(ROOT, "innocent_link.py")
+        home = os.path.normpath(os.path.expanduser("~"))
+        cred = os.path.join(home, ".ssh", "id_rsa")
+        with mock.patch.object(T, "_get_code_root", return_value=ROOT):
+            with self._fake_realpath(link, cred):
+                target, _root_abs, reason = T._resolve_create_path(link)
+        self.assertIsNone(target)
+        self.assertIn("安全策略拒绝", reason)
+
+    def test_resolve_in_root_allows_normal_symlink(self):
+        link = os.path.join(ROOT, "normal_link.py")
+        normal = os.path.join(ROOT, "real_file.py")
+        with mock.patch.object(T, "_get_code_root", return_value=ROOT):
+            with self._fake_realpath(link, normal):
+                target, _root_abs, reason = T._resolve_in_root(link)
+        self.assertIsNotNone(target)
+        self.assertIsNone(reason)
+
+
+class FloorCheckedTest(unittest.TestCase):
+    """审计 F3 回归：_resolve_floor_checked 统一入口 = 字面地板 + realpath 闭合（F1）。"""
+
+    def test_bundles_literal_floor_and_symlink_closure(self):
+        home = os.path.normpath(os.path.expanduser("~"))
+        root_abs = os.path.normpath(ROOT)
+        # 字面凭据（无需 realpath）→ 被拦
+        self.assertIsNotNone(
+            T._resolve_floor_checked(root_abs, os.path.join(home, ".ssh", "id_rsa")))
+        # 字面普通项目文件 → 放行
+        self.assertIsNone(
+            T._resolve_floor_checked(root_abs, os.path.join(ROOT, "a.py")))
+        # symlink → 凭据（realpath 解析）→ 被拦
+        link = os.path.join(ROOT, "link.py")
+        cred = os.path.join(home, ".ssh", "id_rsa")
+        real = os.path.realpath
+        with mock.patch.object(
+                T.os.path, "realpath",
+                side_effect=lambda p: cred if os.path.normpath(p) == os.path.normpath(link) else real(p)):
+            self.assertIsNotNone(T._resolve_floor_checked(root_abs, link))
+        # 外部白名单路径只重跑地板（check_root=False），越界目的地不闭合回 code_root
+        outside = os.path.normpath(os.path.join(ROOT, "..", "sibling", "x.txt"))
+        self.assertIsNone(
+            T._resolve_floor_checked(None, outside, check_root=False))
 
 
 if __name__ == "__main__":
