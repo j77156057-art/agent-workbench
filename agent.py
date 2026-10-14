@@ -4302,6 +4302,35 @@ class Agent:
         ② 把更新后的会话历史落盘并按阈值做摘要压缩。
         客户端断连（生成器被 close）走 aborted 分支，仍留一条可观测记录。
         """
+        # P1：每轮问答前自动摘要压缩。
+        # 原 sessions.maybe_compact 已写好但 run() 入口没接，导致长会话
+        # 50+KB 抖动、模型窗口超限时直接报「上下文超出」。此处按模型真实窗口
+        # 算 trigger / keep 阈值，跑完压缩后立即落盘，下次回复窗口就干净了。
+        try:
+            from sessions import maybe_compact as _sessions_maybe_compact
+            window = int(self.context_window or 0)
+            # 与 sessions.py 的常量口径一致：trigger=window*0.8 / keep=window*0.4
+            _trigger = max(1, window // 5 * 4) if window > 0 else None
+            _keep = max(1, window // 5 * 2) if window > 0 else None
+            new_history, new_summary = _sessions_maybe_compact(
+                self.session_id or "", list(self.history or []),
+                llm=self.llm,
+                trigger_tokens=_trigger,
+                keep_tokens=_keep,
+                project_id=self.project_id,
+            )
+            if new_history != self.history or new_summary != self.summary:
+                self.history = list(new_history)
+                self.summary = str(new_summary or "")
+                try:
+                    _sessions.save(self.session_id or "", self.history,
+                                   self.summary, project_id=self.project_id)
+                except Exception:  # noqa: BLE001
+                    # 落盘失败不能阻塞本轮（缩了；下次起进程会话文件兜底）
+                    pass
+        except Exception:  # noqa: BLE001
+            # 压缩失败绝不能阻塞本轮对话
+            pass
         # Every top-level request gets a fresh task budget.  Child Agents keep
         # the inherited object instead of creating a separate allowance.
         if self.depth == 0 or self.run_budget is None:
