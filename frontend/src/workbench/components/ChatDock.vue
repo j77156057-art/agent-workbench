@@ -355,10 +355,14 @@ function toggleRefs(msg: ChatMsg) {
   refsExpanded.value = next
 }
 /** 交错流是否有可见节点（供模板决定是否渲染 .cd-flow 容器）：
- *  思考类（reasoning 分段 / Thought）恒显示，动作/返回行随「显示推理轨迹」偏好。 */
+ *  先看有没有节点——历史消息不落 trace/reasoning，flowOf 合成结果为空，
+ *  早年只看 showTrace 会给每条历史消息渲染一个空容器（死 DOM）。
+ *  有节点时：思考类恒显示，动作/返回行随「显示推理轨迹」偏好。 */
 function cdHasFlow(msg: ChatMsg) {
+  const items = flowOf(msg)
+  if (!items.length) return false
   if (displayPrefs.showTrace) return true
-  return flowOf(msg).some((n) => n.kind === 'think' || n.kind === 'thought')
+  return items.some((n) => n.kind === 'think' || n.kind === 'thought')
 }
 function onCardActivity() {
   // 卡片内部子代理步骤频率高：按帧合批跟随，不做每事件 nextTick

@@ -42,11 +42,14 @@ const canCollapseRefs = computed(() => refsAll.value && prefs.maxRefs > 0 && ref
 // 顺序合成（reasoning 只剩整块，当第一个 think——切点没留下来，不假装知道）。
 import { flowOf } from '../../workbench/composables/chat-types'
 const flowItems = computed(() => flowOf(props.msg))
-/** 交错流是否有可见节点：思考类（reasoning 分段 / Thought）恒显示，
- *  动作/返回行随「显示推理轨迹」偏好。全不可见时不渲染容器，避免留一条
- *  空虚线在答案上方。 */
-const hasFlow = computed(() => prefs.showTrace
-  || flowItems.value.some((n) => n.kind === 'think' || n.kind === 'thought'))
+/** 交错流是否有可见节点：先看有没有节点——历史消息不落 trace/reasoning，
+ *  合成结果为空时不能渲染容器（只看 showTrace 会给历史消息留个空 flow）。
+ *  有节点时：思考类恒显示，动作/返回行随「显示推理轨迹」偏好。 */
+const hasFlow = computed(() => {
+  const items = flowItems.value
+  if (!items.length) return false
+  return prefs.showTrace || items.some((n) => n.kind === 'think' || n.kind === 'thought')
+})
 function traceAt(node: { trace: number }): ChatTraceItem {
   return props.msg.trace[node.trace]
 }
