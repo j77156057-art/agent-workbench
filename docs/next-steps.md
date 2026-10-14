@@ -606,18 +606,38 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
 
 ### 还欠着的（真的要做）
 
+> ⚠ **2026-10-14 末轮：§7 七项全部收口。** ①②⑥⑦ 用 deepseek-flash live 端到端跑过
+> （`tools/e2e_guard_effect.py` 10/10 + `probe_deepseek_thinking_live.py` 真返回 reasoning_content
+> + `probe_deepseek_thinking_constraints.py` 复现 400/静默失效），③④⑤ 加 审计修复
+> 全部入库并推到 `origin/main`（11 笔，`a514caa` 为最新 tip）。详见下文逐条 + 日志
+> `.workbuddy/memory/2026-10-14.md` 续4/续6/续7b/续7d/续7i/续7k/续7l。
+
 1. **第 6 节（真业务题端到端）—— 唯一一个从未执行过的。**
    验证「护栏在真实主循环里有没有真的改变模型行为」。单元绿 ≠ 端到端绿。
    ⚠ 现有的 4 个 `*_e2e.py` 测试**不是它** —— 那是游戏/视觉/实时链路的端到端，
    与「多轮批准护栏」无关。（核实：文件存在但与第 6 节意图不符）
+   **【已落地 2026-10-14】deepseek-flash live 端到端**：`tools/e2e_guard_effect.py` run2 关键格
+   TURN1 对照组改=True / 实验组=False（护栏改变行为，拦得住）；TURN4 granted 两组都改（放得过）；
+   ③ 修复 FIXTURE 一致后 repro run2↔run3 = 10/10 一致。Harness fixture 一致性 = 对照基线
+   成立的硬条件（run1 对照组也拒绝 → 基线失效，已修）。
 2. **第 1 节（多轮批准）的真实验证。**
    结论已定（「别再往词表里加词」，有 Pi/Hermes 两个一手来源背书），
    **但「六笔词表改动在真场景下是否真的有效」从未端到端验过** ——
    与第 6 节是同一件事，可合并做。
+   **【已落地 2026-10-14】同上一节（与 ① 合并跑）**：加 TURN5=bare『改吧』踩 TURN4 租约。
+   核心证据：同样 bare『改吧』—— TURN3 无前置 grant(租约活跃=False, 护栏拦截=True)被拦；
+   TURN5 有 TURN4 铸的租约(租约活跃=True, 护栏拦截=False)放行。stateless `_write_intent` 两次都
+   denied，差异仅在租约 → 证明放行由租约决定而非『改吧』一词，多轮批准按设计工作。
 3. **写路径缺一层与 root 无关的地板** —— 真敞口（`code_root=$HOME` 时
    凭据路径与普通文件无差别）。**需先答「地板加在哪一层」**：
    `tools.py` 里 `code_root` 出现 86 次，5 个路径解析函数各管一段，
    24 个写工具**不共用一个入口**。见 `docs/known-defect-no-write-path-floor.md`。
+   **【已落地 2026-10-14】两批**：
+   ③ 写路径地板（`0d42f05`）：新增 `_hard_floor_reason` + 6 入口收口 + 凭证存储类/NT 设备
+   命名空间 + `.env` 写可读禁 + `data_formats._safe_output` 出口。134 例相关测试通过。
+   审计 F1+F2+F3 修复（`a514caa`）：symlink 绕过地板（realpath 闭合） + 静默 fail-open
+   fail-closed + 6 入口重复统一 `_resolve_floor_checked`。18 passed + 16 subtests
+   + 51 passed 回归零退化。详见 `docs/known-defect-no-write-path-floor.md` §8.5/§8.6。
 4. **interrupt-and-redirect** —— 缺口已核实（Hermes 三种模式我们一个都没有；
    `canSend = !sending.value` 让运行时**根本无法输入**）。
    要给 `run()` 加消息注入路径 + 定清在途工具怎么办 + 前端并发 SSE 归属。
@@ -655,6 +675,9 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
      但这不是设计，是没人用过。**谁为了「强制让模型用工具」加上它，
      所有开了思考的用户会全线 400，且报错不会指向思考模式。**
    → 真要加时：必须先判 `thinking_on` 并二选一，或把工具轮降级为非思考轮。
+   **【已 live 验证 2026-10-14】**：`tools/probe_deepseek_thinking_constraints.py` 真跑 →
+   `tool_choice="required"+tools` → BadRequestError 400「Thinking mode does not support this tool_choice」；
+   对照只发 tools(auto) → 成功 reasoning=434字。地雷坐实，规避策略（从不发 tool_choice）当前有效。
 
    **② `temperature` 在思考模式下静默失效（已存在的偏差）**
    DeepSeek 文档原文：*...will not trigger an error but will also have no effect.*
@@ -662,12 +685,19 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
      开思考后实际用 provider 默认值，**不报错、无任何信号**。
    → **待决定**：抑制该参数并在 UI 说明，还是接受这个偏差。
      我倾向前者（显式告知）而不是默默发一个不生效的参数。
+   **【已 live 验证 2026-10-14】**：`probe_deepseek_thinking_constraints.py` 真跑 → temperature=2.0+思考模式
+   成功无报错；结合 `llm.py:844/885` 无条件下发 temperature，坐实「用户在思考模式设的温度
+   无效且无信号」无声偏差。抑制策略 = 后续产品决策（见下面 §7.8「该由人决定的」第 4 项）。
 
 7. **`b710f2d`（deepseek-flash 思考画像修复）尚未真跑验证。**
    只核实到：参数形状合文档、`tool_choice` 不发、`reasoning_content` 的映射已存在。
    剩下只有一次真实请求能回答：**用户的 key + endpoint 真的返回 `reasoning_content` 吗？**
    ⚠ 它的失效模式恰好是「开关能点但没效果」—— 最难发现的那类，
    而用户每天在用这个模型。**验它比继续加新功能更值。**
+   **【已 live 验证 2026-10-14】**：`tools/probe_deepseek_thinking_live.py`（已补 DEEPSEEK_API_KEY
+   env 兜底）真跑 → deepseek-flash 能力画像 `thinking='toggle'`，思考开 reasoning=216字/content=327字，
+   思考关 reasoning=0字/content=195字 → 开/关被参数真实区分，`b710f2d` 从「文档正确」升级为
+   「真跑验证过」，排除「开关能点但没效果」失效模式。
 
 ### 该由人决定的（我不替人做）
 
