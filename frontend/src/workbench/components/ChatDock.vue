@@ -713,6 +713,57 @@ function restoreInterrupted(turns: { user: string; assistant: string }[]) {
       notices: ['上次回答因离开页面或切换项目中断，已保留原始问题和执行上下文；可以点击“继续上次任务”或输入“继续”。'] })
   } catch {}
 }
+/** P2：进页面时拉 in-flight turn，把已退化的所有事件按 reducer 还原到 messages。
+ *  保留 turn.turnId 供后续 send() 沿用；status=done/stopped/error 按原 final 收尾。 */
+async function recoverActiveTurns() {
+  const sid = currentSessionId()
+  try {
+    const list = await aiApi.listActiveTurns(sid)
+    if (!list.ok || !Array.isArray(list.turns) || list.turns.length === 0) return
+    // 只取第一条；同一会话并发 in-flight 罕见，多条都拉只会乱序
+    const target = list.turns[list.turns.length - 1]
+    const partial = await aiApi.getTurnPartial(target.turn_id)
+    if (!partial.ok) return
+    const events = Array.isArray(partial.events) ? partial.events : []
+    const finalEv = partial.final
+    // 用户消息：turn event 之前的用户输入已在 sessionStorage / 历史里；这里只挂助手回合
+    const turn: ChatMsg = {
+      id: msgSeq++, role: 'assistant', text: '', status: 'streaming',
+      trace: [], reasoning: '', notices: [], plan: [],
+      startedAt: Date.now(), turnId: target.turn_id,
+      recoverable: false,
+    }
+    messages.value.push(turn)
+    // 按事件 reducer 回放，复用 useChatStream 的 dispatch（同一管线保证渲染口径一致）
+    for (const ev of events) {
+      dispatch(ev as unknown as SseEvent, turn)
+    }
+    // 终态收尾：有 final 就 stop sending，让用户能继续
+    if (finalEv) {
+      sending.value = false
+      turn.recoverable = !finalEv.status || finalEv.status === 'error'
+      const noticeMsg = '⚠ 上次页面刷新中断，已恢复到最后状态。'
+      if (!turn.notices.includes(noticeMsg)) turn.notices.unshift(noticeMsg)
+    } else {
+      // 还在 in-flight：把它标 recoverable=true 让用户可以继续
+      turn.recoverable = true
+    }
+    void nextTick(scrollToBottom)
+  } catch (e) {
+    // partial 拉起失败不影响主流程：用户可以正常发新消息
+    console.warn('[recovery] failed to recover active turns', e)
+  }
+}
+/** P1：把 final.error_kind 三态映射到模板 className。
+ *  - permanent  → 红条
+ *  - retried_failed → 黄条
+ *  - 其他（兼容旧「服务异常」/未知字符串） → 灰条
+ */
+function errorKindClass(kind?: string): string {
+  if (kind === 'permanent') return 'cd-error-permanent'
+  if (kind === 'retried_failed') return 'cd-error-warn'
+  return 'cd-error-soft'
+}
 function resetChatContext() {
   liveVisionFrame = null
   liveVisionTimeline = []
@@ -1020,6 +1071,10 @@ async function restoreHistory(force = false) {
       await nextTick(scrollToBottom)
     }
     restoreInterrupted(turns)
+    // P2：拉起 in-flight turn —— 服务端还有该会话正在跑的回合时按 partial 重建。
+    // 必须在 restoreInterrupted 之后做：旧的 sessionStorage 兜底覆盖了部分场景，
+    // 这里再补一次「服务端也认」的双重兜底，让刷新后的窗口期也能恢复。
+    await recoverActiveTurns()
   } catch (e) {
     if (epoch === chatEpoch) { historyError.value = '历史加载失败：' + (e as Error).message; restoreInterrupted([]) }
   }
@@ -1418,6 +1473,12 @@ const webTitle = computed(() => webOn.value
             <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
                  DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
             <div v-if="m.text" class="ai-md cd-answer" :class="{ 'cd-answer-live': m.status === 'streaming' }">
+              <!-- P0：摘要一致性自检 —— observation 关键词命中率 < 50% 时给用户一个不挡眼但可见的提示。
+                   不改 status，只提示「可能漏报，建议展开上方过程流核验」。 -->
+              <div v-if="m.status === 'done' && m.consistency === 'warn'" class="cd-consistency-warn" role="status">
+                ⚠ 摘要可能漏报：原 observation 关键词命中率
+                {{ Math.round((m.consistencyRatio || 0) * 100) }}%，建议展开上方过程流核验。
+              </div>
               <template v-if="m.status === 'streaming'"><span v-html="streamHtmlOf(m)" /><span class="cd-caret" aria-hidden="true" /></template>
               <span v-else v-html="answerHtml(m)" />
             </div>
@@ -1429,7 +1490,7 @@ const webTitle = computed(() => webOn.value
                 <span v-if="s.score" class="cd-web-source-score">参考 {{ s.score }}</span>
               </a>
             </details>
-            <div v-if="m.status === 'error'" class="cd-error">⚠ {{ m.error }}</div>
+            <div v-if="m.status === 'error'" class="cd-error" :class="errorKindClass(m.errorKind)">⚠ {{ m.error }}</div>
             <div v-if="m.status === 'done' && shownRefs(m).length" class="cd-refs">
               <button
                 v-for="r in shownRefs(m)"
@@ -1735,6 +1796,26 @@ const webTitle = computed(() => webOn.value
 .cd-thinking { border-left: 2px solid var(--accent); }
 .cd-slow-notice { margin: 6px 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius: 6px; color: var(--text-muted); background: color-mix(in srgb, var(--amber) 10%, transparent); font-size: 11px; line-height: 1.45; }
 .cd-error { color: var(--danger); border: 1px solid rgba(214,78,78,.22); background: rgba(214,78,78,.05); }
+/* P1 重试层错误染色：按 final.error_kind 三态分流。
+ *   cd-error-permanent  — 不可恢复（fallback 也失败 / 非网络错）→ 红条
+ *   cd-error-warn       — 重试用尽 + 无 fallback → 黄条（温和但可见）
+ *   cd-error-soft       — 旧的「服务异常」/未识别 → 灰条（不显眼）
+ */
+.cd-error-permanent { color: var(--danger); border: 1px solid rgba(214,78,78,.22); background: rgba(214,78,78,.05); }
+.cd-error-warn { color: #a66f00; border: 1px solid rgba(200,129,28,.28); background: rgba(200,129,28,.06); }
+.cd-error-soft { color: var(--text-muted); border: 1px solid var(--border-soft); background: var(--bg-hover); }
+/* P0 一致性自检提示：observation 关键词命中率 < 50% 时给用户一个不挡眼但可见的提示。
+ * 位置在 .cd-answer 顶部第一行；不挡后续内容、不改 status。 */
+.cd-consistency-warn {
+  font-size: 11.5px;
+  color: #a66f00;
+  background: rgba(200,129,28,.06);
+  border: 1px solid rgba(200,129,28,.22);
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
 
 .cd-run-head {
   display: flex; align-items: center; gap: 6px;

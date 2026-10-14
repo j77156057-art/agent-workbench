@@ -90,6 +90,14 @@ function oneLine(s: string, n = 80): string {
   const t = s.trim().replace(/\s+/g, ' ')
   return t.length > n ? t.slice(0, n) + '…' : t
 }
+
+/** P1：错误条按 final.error_kind 分流到样式 class。
+ *  与 ChatDock.errorKindClass 同款口径，避免两边各写一份飘走。 */
+function errorKindClass(kind?: string): string {
+  if (kind === 'permanent') return 'flag-permanent'
+  if (kind === 'retried_failed') return 'flag-warn'
+  return 'flag-soft'
+}
 function stepTitle(item: ChatTraceItem): string {
   const raw = item.text.trim()
   if (item.type === 'action') {
@@ -211,9 +219,18 @@ const phaseLabel = computed(() => {
             <span v-if="elapsedLabel" class="typing-time">{{ elapsedLabel }}</span>
             <span class="td"></span><span class="td"></span><span class="td"></span>
           </div>
-          <div v-else-if="msg.text" class="answer" :class="{ streaming }" v-html="html"></div>
+          <div v-else-if="msg.text" class="answer" :class="{ streaming }">
+            <!-- P0：摘要一致性自检提示。observation 关键词命中率 < 50% 时显示，不挡眼。 -->
+            <div v-if="msg.status === 'done' && msg.consistency === 'warn'" class="flag warn">
+              ⚠ 摘要可能漏报：原 observation 关键词命中率
+              {{ Math.round((msg.consistencyRatio || 0) * 100) }}%，建议展开上方过程流核验。
+            </div>
+            <span v-html="html"></span>
+          </div>
           <div v-if="msg.status === 'stopped' && msg.text" class="flag stopped">已停止</div>
-          <div v-if="msg.status === 'error'" class="flag error">{{ msg.error || '请求失败' }}</div>
+          <!-- P1：错误条按 error_kind 分流（permanent=红 / retried_failed=黄 / 其他=灰）。
+               老的「服务异常」/异常类名字符串走默认灰条，与 ChatDock 同款口径。 -->
+          <div v-if="msg.status === 'error'" class="flag error" :class="errorKindClass(msg.errorKind)">{{ msg.error || '请求失败' }}</div>
         </div>
 
         <!-- 文件引用（条数上限由展示偏好控制；被截断的条数必须数得出来、点得开） -->
@@ -327,6 +344,27 @@ border-radius: var(--r-sm); }
 .flag { margin-top: 8px; font-family: var(--font-mono); font-size: 12px; }
 .flag.stopped { color: var(--text-faint); }
 .flag.error { color: var(--danger); }
+/* P1 重试层错误染色（与 ChatDock 同款口径）：
+ *   flag-permanent — 不可恢复（fallback 也失败 / 非网络错）→ 红
+ *   flag-warn      — 重试用尽 + 无 fallback → 黄（温和但可见）
+ *   flag-soft      — 旧的「服务异常」/未识别 → 灰（不显眼）
+ */
+.flag.error.flag-permanent { color: var(--danger); font-weight: 600; }
+.flag.error.flag-warn { color: #a66f00; }
+.flag.error.flag-soft { color: var(--text-faint); }
+/* P0 一致性自检提示：observation 关键词命中率 < 50% 时给用户一个不挡眼但可见的提示。
+ * 位置在 .answer 顶部第一行；不挡后续内容、不改 status。 */
+.flag.warn {
+  display: block;
+  color: #a66f00;
+  background: rgba(200,129,28,.06);
+  border: 1px solid rgba(200,129,28,.22);
+  border-radius: 6px;
+  padding: 4px 8px;
+  margin: 0 0 8px;
+  font-family: var(--font-ui);
+  line-height: 1.45;
+}
 
 /* 交错流（2026-10-14）：思考 ↔ 工具调用按发生顺序的一条故事线。
    无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning

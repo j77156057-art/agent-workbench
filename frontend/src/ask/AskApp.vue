@@ -439,6 +439,14 @@ let partial: { user: string; assistant: string } | null = null
 // 只接受第一条作为正文，后续降级为通知，避免覆盖正确答案。每轮发送重置。
 let finalApplied = false
 
+// P2/P5：与 ChatDock 同款的中断识别 —— 用户在恢复行写「继续」/「继续完成任务」
+// 等字样时，把本轮当作「续发」处理，让后端用 continuationQuestion 拼新 prompt，
+// 而不是当成一条新独立问题。否则模型会把「继续」理解成「继续做什么」答非所问。
+function isContinuationRequest(value: string): boolean {
+  const normalized = value.trim().replace(/[。！!？?，,、；;：:"“”‘’\s]/g, '')
+  return /^(继续|继续完成任务|继续上次任务|继续回答|继续执行|接着做|接着完成|恢复任务|恢复回答|从中断处继续)$/.test(normalized)
+}
+
 // 流式接收管线与工作台共用 useChatStream：rAF 帧合批、trace 计时、事件分类
 const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
   onFrame: () => followScroll(),
@@ -507,6 +515,13 @@ async function send(preset?: string) {
   messages.value.push(userMsg, turn)
   pendingImages.value = []
   attachmentError.value = ''
+  // 关键硬化：清掉 sessionStorage 里的中断现场，避免「点继续」后又叠出半条 user 消息
+  try { sessionStorage.removeItem(interruptedKey()) } catch { /* ignore */ }
+  // 标记上一条「recoverable」已消费：续发之后那条就不能再点继续（避免循环）
+  if (isContinuationRequest(q)) {
+    const prev = messages.value[messages.value.length - 2]  // 跳过刚 push 的 user/assistant
+    if (prev?.recoverable) prev.recoverable = false
+  }
   draft.value = ''
   autosize()
   sending.value = true

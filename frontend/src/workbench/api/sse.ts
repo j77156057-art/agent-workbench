@@ -6,14 +6,19 @@ export interface SseEvent {
   type:
     | 'token' | 'thought' | 'action' | 'observation' | 'reflection'
     | 'reasoning' | 'notice' | 'plan' | 'route' | 'final' | 'done'
-    | 'context' | string
+    | 'context' | 'turn' | string
   text?: string
   /** notice 专用：true = **运行期进度**（「正在继续执行」这类，回合结束就成假陈述），
    *  只进流式中的运行指示；缺省 / false = 本轮**事实**（输出被截断、上下文已压缩），
    *  留在通知里。语义由发事件的后端定，前端不再比文案。 */
   transient?: boolean
   status?: 'error' | string
-  error_kind?: string
+  /** P1：重试层错误分类
+   *  - "permanent" — 不可恢复（fallback 也失败 / 非网络错误）→ 红条
+   *  - "retried_failed" — 重试用尽 + 无 fallback → 黄条
+   *  - 其他 — 旧的「服务异常」灰条
+   *  旧的「服务异常」/异常类名字符串继续兼容，未识别按灰条处理。 */
+  error_kind?: 'permanent' | 'retried_failed' | string
   steps?: string[]
   /** type=context 时的上下文窗口用量 */
   used_tokens?: number
@@ -25,6 +30,14 @@ export interface SseEvent {
   history_tokens?: number
   compact_trigger_tokens?: number
   compact_percent?: number
+  /** P2：type=turn 时携带本轮的 turn_id，便于刷新后 GET partial 拉起 */
+  turn_id?: string
+  session_id?: string
+  /** P0：final 事件自带的「observation 摘要命中率」自检结果。
+   *  "warn" 时前端在 .cd-answer 顶部加一行不显眼但可见的提示。 */
+  consistency?: 'ok' | 'warn' | string
+  /** 自检命中率（0..1），与 consistency 一起下发，便于前端调试。 */
+  consistency_ratio?: number
 }
 
 /** 上下文窗口占用（GET /api/context 与 SSE context 事件同构） */

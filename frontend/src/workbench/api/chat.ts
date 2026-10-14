@@ -1,16 +1,37 @@
 // /api/chat 问答流式入口（aiApi）（由原 workbench/api.ts 按域切分；调用方继续从 barrel ../api 引入）。
-import { SelectionAiRequest, SseStreamHandlers, postSse } from './sse'
+import { SelectionAiRequest, SseEvent, SseStreamHandlers, postSse } from './sse'
 import { getSessionId } from './session'
+import { withProject } from './_base'
 import type { ChatUiContext } from '../previewFeedback'
+
+export interface ActiveTurnRef {
+  turn_id: string
+  status: string
+  created_at: number
+  event_count: number
+  has_final: boolean
+}
+export interface TurnPartialResponse {
+  ok: boolean
+  turn_id: string
+  session_id: string
+  project_id?: string | null
+  status: string
+  created_at: number
+  events: SseEvent[]
+  final?: SseEvent
+}
 
 export const aiApi = {
   /** 解释 / Review / 自由提问：走 ReAct agent（可 search_code/read_file/grep，引用文件行号）。
    *  web/thinking：逐请求的联网搜索 / 深度思考开关（后端默认均为关/模型默认）。
-   *  session_id：当前标签页会话，用于隔离并发请求的逐请求开关。 */
+   *  session_id：当前标签页会话，用于隔离并发请求的逐请求开关。
+   *  turn_id：可选；进页面后从 /api/turn/active 拿到 in-flight turn_id 后可继续用同一 id，
+   *  便于刷新后 GET partial 拉到这条 turn 的所有事件。 */
   askGrounded(
     question: string,
     h: SseStreamHandlers,
-    opts: { web?: boolean; thinking?: boolean | null; images?: Blob[]; sessionId?: string; uiContext?: ChatUiContext; visualTimeline?: { at: string; observation: string }[]; workflowId?: string; feedbackId?: string } = {},
+    opts: { web?: boolean; thinking?: boolean | null; images?: Blob[]; sessionId?: string; uiContext?: ChatUiContext; visualTimeline?: { at: string; observation: string }[]; workflowId?: string; feedbackId?: string; turnId?: string } = {},
   ): Promise<void> {
     const fd = new FormData()
     fd.append('question', question)
@@ -29,6 +50,8 @@ export const aiApi = {
     fd.append('web_mode', opts.web ? '1' : '0')
     if (opts.thinking === true) fd.append('thinking_mode', '1')
     else if (opts.thinking === false) fd.append('thinking_mode', '0')
+    // P2：复用既有 turn_id，让 GET partial 拉到这条 turn 的所有事件
+    if (opts.turnId) fd.append('turn_id', opts.turnId)
     // 多模态：附带图片（后端按 filename 扩展名 + 文件头魔数双重校验）
     for (const img of opts.images || []) {
       fd.append('images', img, (img as File).name || 'image.png')
@@ -46,6 +69,26 @@ export const aiApi = {
       },
       h,
     )
+  },
+  /** P2：列出该会话当前所有 in-flight turn（用于刷新后 partial 拉起） */
+  listActiveTurns(sessionId: string): Promise<{ ok: boolean; session_id: string; turns: ActiveTurnRef[] }> {
+    const url = `/api/turn/active?session_id=${encodeURIComponent(sessionId || getSessionId())}`
+    return fetch(url, withProject({ headers: { Accept: 'application/json' } }))
+      .then(async (res) => {
+        if (res.status === 404) return { ok: false, session_id: sessionId, turns: [] }
+        const body = await res.json()
+        return body
+      })
+  },
+  /** P2：拉起一条 turn 的 partial（已发事件 + final） */
+  async getTurnPartial(turnId: string): Promise<TurnPartialResponse> {
+    const res = await fetch(`/api/turn/${encodeURIComponent(turnId)}/partial`,
+      withProject({ headers: { Accept: 'application/json' } }))
+    if (res.status === 404) {
+      return { ok: false, turn_id: turnId, session_id: '', status: 'expired', created_at: 0, events: [] }
+    }
+    const body = await res.json()
+    return body
   },
 }
 

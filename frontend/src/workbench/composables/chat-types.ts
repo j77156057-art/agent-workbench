@@ -38,6 +38,10 @@ export interface ChatWorkflowRef {
   seed?: Partial<WorkflowState>
 }
 
+/** P1：错误分类 + 自检信号（final 事件下游消费）。 */
+export type ChatErrorKind = 'permanent' | 'retried_failed' | string
+export type ChatConsistency = 'ok' | 'warn' | string
+
 /** 应用自身发起的活动（如「AI 浏览当前界面」）：渲染为居中小字条，
  *  不是用户气泡——其完整指令只作为系统上下文发给模型 */
 export type ChatActivityKind = 'inspect'
@@ -66,6 +70,9 @@ export interface ChatMsg {
   lastActivityAt?: number
   finishedAt?: number
   error?: string
+  /** P1：final.error_kind 三态（permanent / retried_failed / 其他）。
+   *  模板按此分配 css class：红条 / 黄条 / 灰条。 */
+  errorKind?: string
   /** 问答页：用户消息附带的图片（objectURL/dataURL） */
   images?: string[]
   /** 工作台：失败回合允许「继续完成任务」续跑 */
@@ -74,6 +81,12 @@ export interface ChatMsg {
   imageCount?: number
   /** role==='activity' 时的活动类型 */
   activityKind?: ChatActivityKind
+  /** P2：后端 SSE turn 事件分发的 turn_id，用于刷新后 GET partial 拉起。 */
+  turnId?: string
+  /** P0：摘要一致性自检结果（final.consistency 转发到此处，模板按此染色） */
+  consistency?: ChatConsistency
+  /** 一致性自检命中率（前端调试用，模板不必显示） */
+  consistencyRatio?: number
 }
 
 /** start_workflow 动作行与其观察由工作流卡片承载，交错流里不重复展示。 */

@@ -24,6 +24,14 @@ export interface ChatStreamTurn {
   workflow?: ChatWorkflowRef
   status?: string
   error?: string
+  /** P1：final.error_kind 三态（permanent / retried_failed / 其他）。
+   *  模板按此分配 css class：红条 / 黄条 / 灰条。 */
+  errorKind?: string
+  /** P2：后端 turn 事件分发的 turn_id，用于刷新后 GET partial 拉起 */
+  turnId?: string
+  /** P0：摘要一致性自检结果（final.consistency 转发到此处） */
+  consistency?: 'ok' | 'warn' | string
+  consistencyRatio?: number
 }
 
 export interface ChatStreamHooks<T extends ChatStreamTurn> {
@@ -129,6 +137,12 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
   function dispatch(ev: SseEvent, turn: T | undefined) {
     // 上下文用量是全局指示，不挂在某条消息上
     if (ev.type === 'context') { hooks.onContext?.(ev); return }
+    // turn 事件用于「本轮 ID」分发；不绑定到具体回合，只透传给上层
+    if (ev.type === 'turn') {
+      if (turn) turn.turnId = ev.turn_id || turn.turnId
+      hooks.onStructural?.()
+      return
+    }
     if (!turn) return
     hooks.onActivity?.(turn)
     // 运行期提示（「正在继续执行」这类现在时）到此作废：回合已经结束，再挂着它
@@ -147,11 +161,29 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       settleThink(turn)
       closeThink(turn)
       buffers.delete(turn.id)
+      // P0：自检结果直接挂在回合上，模板按 consistency 分色
+      if (ev.consistency === 'warn' || ev.consistency === 'ok') {
+        turn.consistency = ev.consistency
+        if (typeof ev.consistency_ratio === 'number') {
+          turn.consistencyRatio = ev.consistency_ratio
+        }
+      }
       hooks.onFinal?.(turn, ev.text)
       if (ev.status === 'error') {
         turn.status = 'error'
         turn.error = ev.error_kind || '请求失败'
+        // P1：把 error_kind 分出来供模板染色
+        turn.errorKind = ev.error_kind
       }
+    } else if (ev.type === 'final' && ev.status === 'error') {
+      // 错误收尾 final 可能 text 为空（被服务端「请求失败」剥离成空文本）；
+      // 仍要让上层知道这是终态、并把 error_kind 分流。
+      settleThink(turn)
+      closeThink(turn)
+      buffers.delete(turn.id)
+      turn.status = 'error'
+      turn.error = ev.error_kind || '请求失败'
+      turn.errorKind = ev.error_kind
     } else if (ev.type === 'reasoning' && typeof ev.text === 'string') {
       const buf = bufferFor(turn)
       buf.reasoning += ev.text

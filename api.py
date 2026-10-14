@@ -374,6 +374,186 @@ _REDIRECT_HINT = (
     "内容当作既定结论。"
 )
 
+# P2：流中刷新恢复 —— 在 /api/chat 处理函数里分配 turn_id，写进 in-flight 注册表，
+# 所有 SSE 事件除了流式回写给前端，同时追加到 partial buffer。客户端 GET
+# /api/turn/{turn_id}/partial 即可拿到恢复时点之前的所有事件。turn 在终态
+# （final / done / 异常）时从注册表下线，但保留 60s 缓冲（用户在 60s 内刷新
+# 仍能拉起 partial），过后才真正清掉。
+#
+# 不取代 _ACTIVE_RUN：前者是「**该会话** 当前是否在跑」（用于同会话串行化），
+# 后者是「**该 turn** 是否在飞」（用于刷新后 partial 拉起）。两者各管一段。
+_IN_FLIGHT_TURNS: dict[str, dict] = {}
+_IN_FLIGHT_TURNS_LOCK = threading.Lock()
+_IN_FLIGHT_TURN_GRACE_S = 60.0
+# BLOCK_LLM_TEST: 1 = 模拟瞬断（produce 内抛 APIConnectionError，触发重试）
+#                2 = 模拟 fallback 也失败（连续两次 APIConnectionError，最终发 permanent）
+# 仅供 P1 重试层 e2e 用，平时不设；后端默认行为不变。
+BLOCK_LLM_TEST = os.getenv("BLOCK_LLM_TEST", "")
+
+
+def _register_in_flight_turn(turn_id: str, session_id: str, project_id: Optional[str]) -> dict:
+    """注册一条 in-flight turn；返回 partial buffer + cancel 句柄。
+
+    buffer.events 是 list[dict]，按到达顺序追加 SSE 事件（含已序列化的 dict）。
+    status 字段由调用方在终态时更新（streaming/done/stopped/error）。
+    """
+    rec = {
+        "turn_id": turn_id,
+        "session_id": session_id,
+        "project_id": project_id,
+        "created_at": time.time(),
+        "events": [],          # list[dict] —— 已发向客户端的原始事件
+        "observations": [],    # list[str] —— observation 文本，供一致性自检
+        "final": None,         # final 事件 dict（终态时落）
+        "status": "streaming",
+        "stop": threading.Event(),
+    }
+    with _IN_FLIGHT_TURNS_LOCK:
+        # 同 turn_id 不会重复分配（uuid4().hex 32 字节）；只去重项
+        _IN_FLIGHT_TURNS[turn_id] = rec
+    return rec
+
+
+def _append_in_flight_event(rec: dict, ev: dict) -> None:
+    """追加一条事件到 in-flight buffer（用于刷新后 partial 回放）。"""
+    if rec is None:
+        return
+    try:
+        rec["events"].append(dict(ev))
+        # 单独累积 observation 文本，方便一致性自检复算
+        if isinstance(ev, dict) and ev.get("type") == "observation" and isinstance(ev.get("text"), str):
+            rec["observations"].append(ev["text"])
+        # final 是终态标志，单独保存方便 GET 直接返回
+        if isinstance(ev, dict) and ev.get("type") == "final":
+            rec["final"] = dict(ev)
+    except Exception:  # noqa: BLE001
+        # in-flight 是 best-effort，缓冲异常绝不能拖垮 SSE 主链路
+        pass
+
+
+def _mark_in_flight_terminal(rec: dict, status: str = "done") -> None:
+    if rec is None:
+        return
+    rec["status"] = status
+    # 60s 缓冲：到期后才真正从注册表下线，期间 GET 仍能拿到 partial
+    def _evict():
+        with _IN_FLIGHT_TURNS_LOCK:
+            _IN_FLIGHT_TURNS.pop(rec["turn_id"], None)
+    threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict).daemon = True
+    threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict).start()
+
+
+def _get_in_flight_turn(turn_id: str) -> Optional[dict]:
+    with _IN_FLIGHT_TURNS_LOCK:
+        rec = _IN_FLIGHT_TURNS.get(turn_id)
+    if rec is None:
+        return None
+    # 兜底期：即便已被踢出注册表，只要进程未重启、调用方缓存里还有，也仍能取到。
+    # 这里靠「终态后 60s 内不踢」来覆盖刷新窗口期，所以只需读注册表即可。
+    return rec
+
+
+def _list_in_flight_turns(session_id: str, project_id: Optional[str]) -> list[dict]:
+    """列出该会话当前所有 in-flight turn（注册表里的简化视图）。"""
+    out: list[dict] = []
+    with _IN_FLIGHT_TURNS_LOCK:
+        snapshot = list(_IN_FLIGHT_TURNS.values())
+    for rec in snapshot:
+        if rec.get("session_id") != session_id:
+            continue
+        if (project_id or None) != (rec.get("project_id") or None):
+            continue
+        out.append({
+            "turn_id": rec["turn_id"],
+            "status": rec.get("status", "streaming"),
+            "created_at": rec.get("created_at"),
+            "event_count": len(rec.get("events") or []),
+            "has_final": bool(rec.get("final")),
+        })
+    return out
+
+
+# 一致性自检（P0 摘要漏报无信号）：收集本轮 observation 里的「关键标识」——
+# 行号（\d+:\d+）、绝对路径、≥6 字节的标识词 —— 在 final 文本里查出现率。
+# < 50% 即认为摘要漏报。本算法**不依赖 LLM 自检**（那会拖慢首字延迟且有抖动），
+# 只做关键字命中率，是合理的轻量信号。
+_CONSISTENCY_RATIO_WARN = 0.5
+_CONSISTENCY_MIN_KEYWORDS = 3
+_OBS_LINE_RE = re.compile(r"\b\d+:\d+\b")
+_OBS_PATH_RE = re.compile(r"(?:/[A-Za-z0-9_.\-]+){2,}")
+_OBS_TOKEN_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{5,}\b")
+
+
+def _observation_keywords(observations: list[str]) -> list[str]:
+    """从 observation 文本里抽取稳定可重复的关键词集合（去重 + 长度过滤）。"""
+    keys: list[str] = []
+    seen: set[str] = set()
+    for text in observations or []:
+        if not isinstance(text, str):
+            continue
+        for pat in (_OBS_LINE_RE, _OBS_PATH_RE, _OBS_TOKEN_RE):
+            for hit in pat.findall(text):
+                norm = hit.strip()
+                if not norm or len(norm) < 4:
+                    continue
+                if norm in seen:
+                    continue
+                seen.add(norm)
+                keys.append(norm)
+        if len(keys) >= 64:
+            break  # 截断避免极长会话拖慢计算
+    return keys
+
+
+def _compute_consistency(observations: list[str], final_text: str) -> tuple[str, float]:
+    """根据 observation 关键词在 final 文本里的命中率算 consistency。
+
+    返回 (consistency, hit_ratio)：consistency ∈ {"ok", "warn"}；hit_ratio 是 0..1。
+    关键词数 < _CONSISTENCY_MIN_KEYWORDS 时直接视为「无 observation 可核验」，
+    一律按 ok 处理，避免空观察体误报。
+    """
+    keys = _observation_keywords(observations)
+    if len(keys) < _CONSISTENCY_MIN_KEYWORDS:
+        return "ok", 1.0
+    final = final_text or ""
+    hit = sum(1 for k in keys if k in final)
+    ratio = hit / max(1, len(keys))
+    return ("warn" if ratio < _CONSISTENCY_RATIO_WARN else "ok"), ratio
+
+
+# P1 重试层辅助：让 BLOCK_LLM_TEST 模拟 transient 异常走重试路径。
+import random as _random  # noqa: E402
+
+
+class _FakeConnError(ConnectionError):
+    """BLOCK_LLM_TEST 用：模拟「网络瞬断」，让 is_retryable 走 True 分支。
+    必须是 ConnectionError 子类（llm.is_retryable 显式认这点）。
+    """
+
+
+def _select_fallback_llm(primary):
+    """为当前 LLM 选一个备用模型客户端；无 fallback 时返回 None。
+
+    备用约定写在 primary._docmind_fallback 上：dict(provider, model)。
+    测试 / e2e 可临时挂一个 fallback 上去；正常业务不在此处预设兜底模型
+    —— 模型降级是用户配置项，由 chat.routing 决定，本接口留口子不绑死。
+    """
+    if primary is None:
+        return None
+    try:
+        fb = getattr(primary, "_docmind_fallback", None) or {}
+        if not isinstance(fb, dict):
+            return None
+        provider = str(fb.get("provider") or "").strip()
+        model = str(fb.get("model") or "").strip()
+        if not provider or provider == getattr(primary, "provider", ""):
+            return None
+        from llm import LLMClient
+        return LLMClient(provider=provider, model=model or None)
+    except Exception:
+        return None
+
+
 # P3：本请求绑定的项目 pid（由 project_context_middleware 设置；未设置则回落当前项目）。
 _CTX_PROJECT_ID: contextvars.ContextVar = contextvars.ContextVar("docmind_ctx_project_id", default=None)
 
@@ -2226,7 +2406,13 @@ async def chat(
     thinking_mode: str = Form(""),
     narration_mode: str = Form(""),
     images: list[UploadFile] = File(default=None),
+    turn_id: str = Form(""),
 ):
+    # P2：分配 / 复用本轮的 turn_id。前端进页面后调 GET /api/turn/active 拿到
+    # 已存在的 turn_id，可用同一个 id 继续走 SSE 之外的 partial 拉起逻辑。
+    # 没传时由本端 uuid4 分配；同一 session 短时间内反复提交会用新 id（避免
+    # 旧的 partial 串到新轮）。
+    turn_id = (turn_id or "").strip() or uuid.uuid4().hex
     question = (question or "").strip()
     # 图片必须在进入 SSE 流之前完成读取与校验，错误才能以 400 JSON 返回给前端
     try:
@@ -2536,49 +2722,116 @@ async def chat(
         # 注册本流的工作流待取队列：start_workflow 在 agent 生成器内部执行，
         # 必须用跨线程持久的持有者（不能用 contextvars，见 tools.py 注释）。
         wf_holder = push_pending_stream()
+        # P2：注册 in-flight turn。所有 SSE 事件双写：原路给前端 + 落进 rec.events
+        # 供 GET /api/turn/{turn_id}/partial 拉起。终态由 _mark_in_flight_terminal
+        # 在 finally 里设，60s 后才从注册表下线（覆盖刷新兜底期）。
+        inflight = _register_in_flight_turn(turn_id, session_id, _ctx_project_id() or None)
+        # 首条 SSE 事件同步告知前端本轮 turn_id，便于刷新后回查 partial
+        _append_in_flight_event(inflight, {"type": "turn", "turn_id": turn_id,
+                                            "session_id": session_id})
         try:
+            yield f"data: {json.dumps({'type':'turn','turn_id':turn_id,'session_id':session_id}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type':'route','route':routing['route'],'complexity':routing['complexity'],'reason':routing['reason']}, ensure_ascii=False)}\n\n"
+            _append_in_flight_event(inflight, {"type": "route",
+                                               "route": routing['route'],
+                                               "complexity": routing['complexity'],
+                                               "reason": routing['reason']})
             if vision_audit.get("mode") not in ("none", "native"):
-                yield f"data: {json.dumps({'type':'notice','text':'图片已由 Harness 视觉链路处理：' + vision_audit.get('mode', 'unknown')}, ensure_ascii=False)}\n\n"
+                notice_ev = {"type":"notice","text":'图片已由 Harness 视觉链路处理：' + vision_audit.get('mode', 'unknown')}
+                yield f"data: {json.dumps(notice_ev, ensure_ascii=False)}\n\n"
+                _append_in_flight_event(inflight, notice_ev)
             if search_degraded_notice:
                 # 必须让用户在界面上看到，而不只是喂给模型：这是「哪一部分坏了」的唯一
                 # 可见信号。之前用户只能看到「无法调用本地模型」，误以为是云端模型坏了。
-                yield f"data: {json.dumps({'type':'notice','text':search_degraded_notice}, ensure_ascii=False)}\n\n"
+                notice_ev = {"type":"notice","text":search_degraded_notice}
+                yield f"data: {json.dumps(notice_ev, ensure_ascii=False)}\n\n"
+                _append_in_flight_event(inflight, notice_ev)
             cloud_question = redact_for_cloud(question) if is_cloud else question
             cloud_context = tuple(redact_for_cloud(item) for item in request_context) if is_cloud else request_context
+
             def produce():
-                """在独立线程消费同步 Agent，让 SSE 可在模型无 token 时发心跳。"""
+                """在独立线程消费同步 Agent，让 SSE 可在模型无 token 时发心跳。
+
+                P1 重试层：在 _session_run_scope 之内，对瞬断类异常做两轮退避；
+                重试用尽后再尝试一次 fallback 模型（按 chat.routing.fallback_model）；
+                仍失败则把异常原样上抛 —— event_stream 主循环的 except BaseException
+                会转成 final error_kind=permanent。
+                """
                 nonlocal gen
-                # ④ interrupt-and-redirect：经 _session_run_scope 保证同会话串行 + 旧 run 退到安全边界
                 key = _redir_key
-                with _session_run_scope(key, worker_stop, worker):
+                # 标记哪一类异常属于「值得重试」的瞬断，避免动非网络异常
+                # （GeneratorExit/KeyboardInterrupt 等不走重试）。
+                from llm import is_retryable as _llm_is_retryable
+                attempts_left = 2  # 第一层：瞬断退避重试 2 次
+                fallback_done = False
+                fallback_notice_emitted = False
+                current_llm = cloud_llm
+                while True:
                     try:
-                        # 逐请求覆盖（含云端 llm）全部随 run(...) 传入：run 在 finally 里还原，
-                        # 不污染共享单例；本地路由时 llm=None（用回会话自身的本地 client）。
-                        gen = selected_agent.run(
-                            cloud_question, stream=True, images=vision_images,
-                            llm=cloud_llm,
-                            system_context=cloud_context,
-                            ingested_sources=tuple(sorted(_INGESTED)),
-                            web_enabled=web_enabled_override,
-                            thinking_enabled=thinking_enabled_override,
-                            tool_mode=tool_mode_override,
-                            narration=narration_override,
-                            plan_mode=plan_mode_override,
-                            cancel_event=worker_stop,
-                        )
-                        for ev in gen:
-                            if worker_stop.is_set():
-                                break
-                            events.put(("event", ev))
-                    except BaseException as exc:  # propagate to the streaming owner
-                        events.put(("error", exc))
-                    finally:
+                        with _session_run_scope(key, worker_stop, worker):
+                            # 逐请求覆盖（含云端 llm）全部随 run(...) 传入：run 在 finally 里还原，
+                            # 不污染共享单例；本地路由时 llm=None（用回会话自身的本地 client）。
+                            gen = selected_agent.run(
+                                cloud_question, stream=True, images=vision_images,
+                                llm=current_llm,
+                                system_context=cloud_context,
+                                ingested_sources=tuple(sorted(_INGESTED)),
+                                web_enabled=web_enabled_override,
+                                thinking_enabled=thinking_enabled_override,
+                                tool_mode=tool_mode_override,
+                                narration=narration_override,
+                                plan_mode=plan_mode_override,
+                                cancel_event=worker_stop,
+                            )
+                            for ev in gen:
+                                if worker_stop.is_set():
+                                    break
+                                events.put(("event", ev))
+                        # 成功跑完一轮 run()，跳出循环
                         events.put(("done", None))
+                        return
+                    except BaseException as exc:  # propagate to the streaming owner
+                        # BLOCK_LLM_TEST=1：模拟瞬断；=2：模拟 fallback 也失败
+                        if BLOCK_LLM_TEST == "1" and not fallback_done:
+                            exc = _FakeConnError("BLOCK_LLM_TEST=1")
+                        elif BLOCK_LLM_TEST == "2" and not fallback_done:
+                            exc = _FakeConnError("BLOCK_LLM_TEST=2")
+                        # 已经 fallback 也炸了，不再重试，直接给 error
+                        if fallback_done or not _llm_is_retryable(exc):
+                            events.put(("error", exc))
+                            return
+                        attempts_left -= 1
+                        if attempts_left >= 0:
+                            # 瞬断退避：0.5s / 1.5s 抖动
+                            delay = 0.5 if attempts_left == 1 else 1.5
+                            delay *= (0.7 + 0.6 * _random.random())
+                            time.sleep(delay)
+                            # 通知前端「正在重试」，但不假装是 final
+                            events.put(("event", {"type": "notice",
+                                                  "text": f"网络瞬断，正在第 {2 - attempts_left} 次重试…",
+                                                  "transient": True}))
+                            continue
+                        # 重试用尽 —— 走 fallback 模型
+                        fb = _select_fallback_llm(current_llm or getattr(selected_agent, "llm", None))
+                        if fb is not None and fb is not current_llm:
+                            fallback_done = True
+                            current_llm = fb
+                            if not fallback_notice_emitted:
+                                fallback_notice_emitted = True
+                                events.put(("event", {"type": "notice",
+                                                      "text": "已自动切换到备用模型。",
+                                                      "transient": False}))
+                            # 重置 attempts_left 让 fallback 也走两轮退避
+                            attempts_left = 2
+                            continue
+                        # 没有 fallback 或 fallback == 当前 llm：原异常上抛
+                        events.put(("error", exc))
+                        return
 
             worker = threading.Thread(target=lambda: agent_context.run(produce),
                                       name="docmind-chat-agent", daemon=True)
             worker.start()
+            last_terminal_kind = "done"
             while True:
                 try:
                     kind, payload = events.get(timeout=CHAT_STREAM_HEARTBEAT_S)
@@ -2587,9 +2840,30 @@ async def chat(
                     yield ": keep-alive\n\n"
                     continue
                 if kind == "done":
+                    last_terminal_kind = "done"
                     break
                 if kind == "error":
+                    last_terminal_kind = "error"
                     raise payload
+                # 终态识别前的 final：再算一次 consistency，写进 in-flight 缓冲。
+                # 注意：_compute_consistency 是无副作用的纯函数，前后端契约不破。
+                if isinstance(payload, dict) and payload.get("type") == "final":
+                    try:
+                        obs_list = list(inflight.get("observations") or [])
+                        # final.text 若为空（错误收尾）就不算 consistency，
+                        # 错误 final 不该被自检逻辑污染。
+                        final_text = str(payload.get("text") or "")
+                        if final_text and payload.get("status") != "error":
+                            consistency, ratio = _compute_consistency(obs_list, final_text)
+                            payload = {**payload, "consistency": consistency,
+                                       "consistency_ratio": round(ratio, 3)}
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _append_in_flight_event(inflight, payload)
+                    inflight["final"] = dict(payload)
+                    inflight["status"] = str(payload.get("status") or "done")
+                else:
+                    _append_in_flight_event(inflight, payload)
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 # start_workflow 工具成功后补发结构化事件：前端据此在对话内
                 # 直接挂载工作流卡片并连接 SSE（取走即清，最多补发一次）。
@@ -2615,7 +2889,33 @@ async def chat(
                 pass
             # SystemExit 等多由外部钩子/环境触发，归为「服务异常」并提示重启，避免暴露内部类名、被误读成网络问题。
             friendly_kind = "服务异常" if type(e).__name__ == "SystemExit" else type(e).__name__
-            yield f"data: {json.dumps({'type':'final','status':'error','text':'本轮请求失败，未完成。已保留问题与工具现场，可继续重试；如频繁出现请重启 DocMind 服务。','error_kind':friendly_kind}, ensure_ascii=False)}\n\n"
+            # P1 重试层：error_kind 三态：
+            #   - permanent 不可恢复（fallback 也失败 / 非网络类错误）→ 红条
+            #   - retried_failed 临时类（重试用尽 + 无 fallback）→ 黄条
+            #   - 其他 → 旧逻辑（灰条）
+            from llm import is_retryable as _llm_is_retryable2
+            if type(e).__name__ == "SystemExit":
+                err_kind = "permanent"
+                err_text = "本轮请求失败（服务异常），未完成。已保留问题与工具现场，可继续重试；如频繁出现请重启 DocMind 服务。"
+            elif not _llm_is_retryable2(e):
+                err_kind = "permanent"
+                err_text = "本轮请求失败，未完成。请稍后重试，或检查模型设置/网络。"
+            else:
+                err_kind = "retried_failed"
+                err_text = "已自动重试 2 次仍失败（疑似网络或上游服务不稳定），未完成。可稍后再试，或检查网络与模型设置。"
+            final_ev = {"type": "final", "status": "error",
+                        "text": err_text, "error_kind": err_kind}
+            try:
+                consistency, ratio = _compute_consistency(list(inflight.get("observations") or []), "")
+                # 错误 final 仍记 ratio（前端可选用），但 consistency 强制 ok
+                final_ev["consistency"] = "ok"
+                final_ev["consistency_ratio"] = round(ratio, 3)
+            except Exception:
+                pass
+            _append_in_flight_event(inflight, final_ev)
+            inflight["final"] = dict(final_ev)
+            inflight["status"] = "error"
+            yield f"data: {json.dumps(final_ev, ensure_ascii=False)}\n\n"
         finally:
             # 客户端断连时 Starlette 关闭本生成器（抛 GeneratorExit）：显式关闭内层
             # agent 生成器，触发其 aborted 分支 —— 落一条 trace 并停止后续工具调用。
@@ -2626,9 +2926,51 @@ async def chat(
                 except Exception:  # noqa: BLE001
                     pass
             pop_pending_stream(wf_holder)
+            # P2：终态后 60s 才下线 in-flight turn，覆盖用户刷新窗口期
+            terminal_status = str(inflight.get("status") or "done")
+            _mark_in_flight_terminal(inflight, status=terminal_status)
         yield "data: {\"type\":\"done\"}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+# P2：流中刷新恢复 — 拉起一条 turn 的已发事件，按客户端 reducer 重建消息。
+# 终态 60s 兜底期内（_IN_FLIGHT_TURN_GRACE_S）仍能拉到；过期后端点会返 404，
+# 客户端应转「无 partial」路径（保留消息可恢复的 notice 仍由会话历史兜底）。
+@app.get("/api/turn/{turn_id}/partial")
+async def get_turn_partial(turn_id: str, request: Request = None):
+    turn_id = (turn_id or "").strip()
+    if not turn_id:
+        return JSONResponse({"ok": False, "error": "turn_id 缺失。"}, status_code=400)
+    if not _http_origin_allowed(request):
+        return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
+    rec = _get_in_flight_turn(turn_id)
+    if rec is None:
+        return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
+                            status_code=404)
+    events_snapshot = list(rec.get("events") or [])
+    final_ev = rec.get("final")
+    return {
+        "ok": True,
+        "turn_id": turn_id,
+        "session_id": rec.get("session_id"),
+        "project_id": rec.get("project_id"),
+        "status": rec.get("status", "streaming"),
+        "created_at": rec.get("created_at"),
+        "events": events_snapshot,
+        "final": final_ev,
+    }
+
+
+# P2：会话进入页面时调用，按 session_id 列当前所有 in-flight turn，便于前端
+# 快速发现「刷新时还有没结束的回合」并拉起 partial。
+@app.get("/api/turn/active")
+async def list_active_turns(session_id: str = "default", request: Request = None):
+    session_id = (session_id or "").strip() or "default"
+    if not _http_origin_allowed(request):
+        return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
+    items = _list_in_flight_turns(session_id, _ctx_project_id() or None)
+    return {"ok": True, "session_id": session_id, "turns": items}
 
 
 @app.post("/api/vision/video")
