@@ -66,11 +66,9 @@ const {
 
 const dirtyCount = computed(() => tabs.value.filter((t) => t.dirty).length)
 // 自主开发舱（AutonomousCockpit.vue）于 v2 重构 E 阶段移除；
-// 但实时对话视频流（保留项 ①）由 ChatDock scope="cockpit" 承担、窗口嵌入（保留项 ②）由 SceneRuntimePanel 承担，
-// 仍需 cockpitReady / cockpitRuntime 状态控制 v-show 与 Teleport 目标；cockpitFiles / cockpitRef 移除
-const cockpitReady = ref(false)
-const cockpitRuntime = ref(false)
-const cockpitRef = ref<{ showOutputs: () => void } | null>(null)
+// 实时对话视频流（保留项 ①）由 ChatDock scope="cockpit" 承担、窗口嵌入（保留项 ②）由 SceneRuntimePanel 承担。
+// 早期遗留的 cockpitReady / cockpitRuntime / cockpitRef 三个 ref 在 2026-10-14 末轮收口清理：
+// 它们的初值与赋值都已无来源（恒假/恒 null），属于舱删除后未清干净的 dead code。
 /** 统一设置页（用量费用 / 网络搜索 / MCP / 智能体）显隐 */
 const settingsVisible = ref(false)
 const settingsSection = ref<'usage' | 'search' | 'mcp' | 'agent' | 'model'>('usage')
@@ -686,10 +684,8 @@ onBeforeUnmount(() => {
          docked 主体 teleport 进主区 #wb-playpane-slot；同实例仅切 mode，不重建，
          故 iframe 与引擎嵌入状态得以保留。触发按钮由该实例 teleport 回顶栏 #wb-sr-slot。 -->
     <Teleport defer to="#wb-chat-slot"><ChatDock scope="default" /></Teleport>
-    <Teleport v-if="cockpitReady" defer to="#wb-chat-slot"><ChatDock scope="cockpit" /></Teleport>
     <SceneRuntimePanel :mode="runtimeResident ? 'docked' : 'popup'"
-      host="#wb-playpane-slot"
-      @close="cockpitRuntime = false" />
+      host="#wb-playpane-slot" />
 
     <!-- 高级工具面板宿主：自带触发按钮隐藏（入口已收进顶栏「工具」菜单），
          弹层 teleport 到 body，经模板 ref 调 show() 唤起。 -->
