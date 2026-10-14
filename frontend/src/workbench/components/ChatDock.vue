@@ -386,17 +386,27 @@ function traceSegmentTitle(msg: ChatMsg) {
 
 // 2026-10-14：执行计划 + 深度思考 + 任务动作 → 单一可折叠过程流。
 // 流式自动展开，结束回缩为摘要（"N 步 · 深度思考 Xk 字"），点击可重新展开。
-// override 语义与 AskMessage 一致：null = 跟随 status, true = 强制展开, false = 强制收起。
+// override 语义：null = 跟随 status, true = 强制展开, false = 强制收起。
+//
+// 反馈环陷阱：Vue 更新 :open 时浏览器会反向触发 toggle 事件——若处理器按
+// 「!cdStreamIsOpen(msg)」写 override，会与 Vue 改 :open 来回抖动。正确做法
+// 是以浏览器 e.target.open 为事实源，只在 override 与 DOM 新态不一致时同步
+// 到 override（且如果新态与 auto 一致则清掉 override）。
 const streamOverride = ref<Map<number, boolean>>(new Map())
 function cdStreamIsOpen(msg: ChatMsg) {
   const ov = streamOverride.value.get(msg.id)
   if (ov !== undefined) return ov
   return msg.status === 'streaming'
 }
-function cdToggleStream(id: number, msg: ChatMsg) {
-  const cur = cdStreamIsOpen(msg)
+function cdToggleStream(e: Event, id: number, msg: ChatMsg) {
+  const target = e.target as HTMLDetailsElement
+  const newOpen = target.open
+  const cur = streamOverride.value.get(id)
+  if (cur === newOpen) return  // 已一致，无需更新
+  const auto = msg.status === 'streaming'
   const next = new Map(streamOverride.value)
-  next.set(id, !cur)
+  if (newOpen === auto) next.delete(id)  // 回到 auto 态 → 清 override
+  else next.set(id, newOpen)
   streamOverride.value = next
 }
 function cdStreamSummary(msg: ChatMsg): string | null {
@@ -1403,7 +1413,7 @@ const webTitle = computed(() => webOn.value
               v-if="m.plan.length || m.reasoning || (displayPrefs.showTrace && visibleTrace(m).length)"
               class="cd-process-stream"
               :open="cdStreamIsOpen(m)"
-              @toggle="cdToggleStream(m.id, m)"
+              @toggle="(e) => cdToggleStream(e, m.id, m)"
             >
               <summary class="cd-process-summary">
                 <span class="cd-process-summary-text">{{ cdStreamSummary(m) || '推理过程' }}</span>

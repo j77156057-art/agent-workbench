@@ -61,13 +61,20 @@ function toggleReason() {
 // ---------------- 过程流整体折叠（reason + trace + workflow） ----------------
 // 单一来源：流式 = 自动展开，结束 = 自动回缩为摘要；用户手动点过则记入 override。
 // override 语义：null = 跟随流式状态自动；true = 强制展开；false = 强制收起。
+//
+// 反馈环陷阱：与 ChatDock 同——Vue 更新 :open 时浏览器会反向触发 toggle，
+// 处理器按「!streamOpen」写 override 会与 Vue 抖动。以 e.target.open 为事实源。
 const streamOverride = ref<boolean | null>(null)
 const streamOpen = computed(() => {
   if (streamOverride.value !== null) return streamOverride.value
   return streaming.value || reasonOpen.value
 })
-function toggleStream() {
-  streamOverride.value = !streamOpen.value
+function onStreamToggle(e: Event) {
+  const newOpen = (e.target as HTMLDetailsElement).open
+  const cur = streamOverride.value
+  if (cur === newOpen) return
+  const auto = streaming.value || reasonOpen.value
+  streamOverride.value = (newOpen === auto) ? null : newOpen
 }
 function streamSummary(): string | null {
   const parts: string[] = []
@@ -221,7 +228,7 @@ const phaseLabel = computed(() => {
           v-if="msg.reasoning || visibleTrace.length || msg.workflow?.workflowId"
           class="process-stream"
           :open="streamOpen"
-          @toggle="toggleStream"
+          @toggle="onStreamToggle"
         >
           <summary class="process-summary">
             <span v-if="streamSummary()" class="process-summary-text">{{ streamSummary() }}</span>
