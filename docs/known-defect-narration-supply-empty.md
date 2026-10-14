@@ -143,6 +143,14 @@ list_dir 或者 search_code 应该都能找到。
 * 其他 provider（deepseek / qwen 云端）的供给侧读数
 * 更长的多轮会话（现在只是单轮问答，模型可能在后续轮才开口）
 
+## 落地（2026-10-14）
+
+本条立档指出的**真杠杆**（reasoning 默认折叠）已修：`askPrefs.ts:38` `reasonOpen:false→true`，
+问答页与工作台对话台（共用同一 `askPrefs`）回合结束即保持展开，对齐 Hermes/opencode 默认显示。
+reason-body 早有 `max-height`(260/220px)+滚动，长推理（实测 6.9 万字）不铺开刷屏。
+存量 localStorage 已存 `false` 的用户保留显式选择；新装/未存用户默认展开。
+narration 开关（`18cf7bd`）保留不动——对本模型无收益，但「换模型可能有收益」的推翻条件仍成立。
+
 ## 相关
 
 * `tools/probe_narration_supply.py` —— 供给侧探针（含恒真防护）

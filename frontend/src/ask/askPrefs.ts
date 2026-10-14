@@ -11,7 +11,9 @@ import { reactive } from 'vue'
 export type AskPrefs = {
   // ReAct 轨迹（分析/动作/观察/复核）是否跟着答案一起显示
   showTrace: boolean
-  // 深度思考块在答案生成完毕后是否保持展开（关=自动折叠，避免长推理轨迹铺开）
+  // 深度思考块在答案生成完毕后是否保持展开。默认开（对齐 Hermes/opencode 默认显示 reasoning：
+  // ⑤ 的真杠杆是模型工具轮正文恒空、用户想听的「边干边说话」全躺在 reasoning 里，折叠即失声；
+  // reason-body 已有 max-height+滚动，长推理不会铺开刷屏）。关=回合结束自动折叠。
   reasonOpen: boolean
   // 流式进行中是否把本轮所有轨迹步骤都摊开（关=只跟随最新一条）
   autoExpandTrace: boolean
@@ -35,7 +37,7 @@ const WEB_KEY = 'docmind.chatWeb'
 // 真要跨标签页同步应该监听 window 的 storage 事件（skins.ts 的 onSkinChange 那样），
 // 这个自定义事件从来没有覆盖过那个场景。别再往回加。
 
-export const ASK_PREFS_DEFAULT: AskPrefs = { showTrace: true, reasonOpen: false, autoExpandTrace: true, maxRefs: 6, defaultThinking: false, defaultWeb: false }
+export const ASK_PREFS_DEFAULT: AskPrefs = { showTrace: true, reasonOpen: true, autoExpandTrace: true, maxRefs: 6, defaultThinking: false, defaultWeb: false }
 
 // localStorage 在隐私模式/被策略禁用时会直接抛，读写都必须吞掉异常：
 // 存不下顶多回退默认值，不能让问答页白屏。

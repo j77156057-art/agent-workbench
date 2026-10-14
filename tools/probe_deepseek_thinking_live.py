@@ -49,6 +49,11 @@ def key_state() -> tuple[bool, str, str]:
     **把「找到一个不相关的 key」当成「有 key」**，于是发了个空 key 上去拿 401。
     """
     import config
+    # 环境变量优先（live 真跑注入，不落盘到 secrets_store）
+    env_key = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
+    if env_key:
+        config.set_runtime("llm_api_key", env_key)
+        return True, "环境变量 DEEPSEEK_API_KEY", env_key
     if (config.get_runtime("llm_api_key") or "").strip():
         return True, "config.set_runtime('llm_api_key')", config.get_runtime("llm_api_key")
     # 与 _restore_persisted_llm 同路：从项目 secrets_store 读

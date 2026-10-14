@@ -640,6 +640,10 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
      见 `docs/known-defect-narration-supply-empty.md`
    * 同一轮还修了一个**真跑才能发现**的缺陷：守卫漏了并行批次路径，
      而真模型恰好每轮批量发调用 —— `7f9d246`
+   **【已落地 2026-10-14】reasoning 默认显示**：`askPrefs.ts:38` `reasonOpen:false→true` 一行，
+   两页（AskMessage/ChatDock 共用同一 `askPrefs`）回合结束即保持展开，对齐 Hermes/opencode 默认显示。
+   reason-body 早有 `max-height`(260/220px)+滚动兜住长推理不铺开。存量 localStorage 已存 `false` 的用户
+   保留显式选择，新装/未存用户默认展开。narration 开关 `18cf7bd` 保留（对本模型无收益，换模型可能生效）。
 
 6. **深度思考模式的两个上游硬约束（DeepSeek 官方文档）** —— 一条是结构性地雷，一条是静默偏差。
    都已写进 `llm.py` 的 `chat()` 里那段 `thinking == "toggle"` 注释，这里是索引。
