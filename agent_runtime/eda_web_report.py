@@ -169,7 +169,9 @@ def gate_online_report(*, tool: str, kind: str,
                        out_size: int = 256,
                        ssim_threshold: float = 0.98,
                        delta_threshold: float = 8.0,
-                       grid: int = 8) -> dict[str, Any]:
+                       grid: int = 8,
+                       changeset_id: Optional[str] = None,
+                       project_root: Optional[str] = None) -> dict[str, Any]:
     """取一页在线正文 → M3 解析 →（可选）M5 ROI golden diff → M6 双信号合并门（只判不动手）。
 
     取页源优先级：注入的 `page_source` > `content`（inline）> `fetch` 后端默认抓取。
@@ -222,6 +224,8 @@ def gate_online_report(*, tool: str, kind: str,
                 "rollback_result": None,
             },
             "executes_rollback": False,
+            "approval_requested": False,
+            "changeset_id": changeset_id or "",
             "note": "取不到在线正文 → 不喂解析器、不造事实，直接判不确定并升级人工/下一段核实。",
         }
 
@@ -236,6 +240,17 @@ def gate_online_report(*, tool: str, kind: str,
     gate = vg.gate_and_maybe_rollback(
         structured=fact.to_dict(), visual=visual,
         vlm_verified=vlm_verified, critical=critical, auto_rollback=False)
+
+    # ---- 3b) 门判 rollback → 登记审批请求（桥线：gate→人工审批队列，绝不自动 revert）----
+    approval_requested = False
+    if (gate.get("decision", {}).get("action") == "rollback"
+            and changeset_id and project_root):
+        try:
+            from agent_runtime.cockpit_policy import record_gate_request
+            record_gate_request(project_root, "rollback_changeset", changeset_id)
+            approval_requested = True
+        except Exception:  # 队列写不进也绝不崩门，只是不登记（降级为纯建议）
+            pass
 
     note = ("在线正文已解析；判定由 M3 事实 + M6 门给出"
             + ("（视觉走 M5 ROI golden diff 现算）" if visual_source == "regression"
@@ -257,5 +272,7 @@ def gate_online_report(*, tool: str, kind: str,
         "visual_error": visual_error,
         "gate": gate,
         "executes_rollback": False,
+        "approval_requested": approval_requested,
+        "changeset_id": changeset_id or "",
         "note": note,
     }

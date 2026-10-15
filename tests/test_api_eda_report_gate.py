@@ -16,6 +16,7 @@ import os
 import sys
 
 import pytest
+from unittest import mock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -121,6 +122,59 @@ def test_gate_visual_regression_unmet_advises_rollback_but_not_executes():
     assert r["executes_rollback"] is False
     assert r["gate"]["rollback_attempted"] is False
 
+
+# ---- 门→审批队列桥线（gate 判 rollback 时登记人工审批请求，绝不自动 revert）----
+
+def test_gate_rollback_with_changeset_enqueues_approval():
+    """UNMET→rollback + changeset_id → record_gate_request 被调用，approval_requested=True。"""
+    with mock.patch("agent_runtime.cockpit_policy.record_gate_request") as rg:
+        r = ewr.gate_online_report(
+            tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,
+            visual={"verdict": "regression"},
+            changeset_id="cs-test-001", project_root="/tmp/fake")
+    rg.assert_called_once_with("/tmp/fake", "rollback_changeset", "cs-test-001")
+    assert r["approval_requested"] is True
+    assert r["changeset_id"] == "cs-test-001"
+    assert r["executes_rollback"] is False  # 铁律不破：登记≠执行
+
+
+def test_gate_rollback_without_changeset_no_enqueue():
+    """UNMET→rollback 但没给 changeset_id → 不登记（纯建议），approval_requested=False。"""
+    with mock.patch("agent_runtime.cockpit_policy.record_gate_request") as rg:
+        r = ewr.gate_online_report(
+            tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,
+            visual={"verdict": "regression"})
+    rg.assert_not_called()
+    assert r["approval_requested"] is False
+    assert r["executes_rollback"] is False
+
+
+def test_gate_escalate_with_changeset_no_enqueue():
+    """UNCERTAIN→escalate（非 rollback）即使有 changeset_id 也不登记。"""
+    with mock.patch("agent_runtime.cockpit_policy.record_gate_request") as rg:
+        r = ewr.gate_online_report(
+            tool="vivado", kind="timing", fetch="inline", content=EDA_NEWS_BODY,
+            visual={"verdict": "pass"},
+            changeset_id="cs-test-002", project_root="/tmp/fake")
+    assert r["gate"]["decision"]["action"] == "escalate"
+    rg.assert_not_called()
+    assert r["approval_requested"] is False
+
+
+def test_gate_enqueue_failure_degrades_to_advisory():
+    """record_gate_request 抛异常 → 门仍返回判定、approval_requested=False，不崩。"""
+    with mock.patch("agent_runtime.cockpit_policy.record_gate_request",
+                    side_effect=OSError("disk full")):
+        r = ewr.gate_online_report(
+            tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,
+            visual={"verdict": "regression"},
+            changeset_id="cs-test-003", project_root="/tmp/fake")
+    assert r["gate"]["decision"]["action"] == "rollback"  # 判定本身不受队列故障影响
+    assert r["approval_requested"] is False
+    assert r["executes_rollback"] is False
+
+
+# ---- 原有测试继续 ----
 
 def test_gate_violated_timing_is_unmet():
     r = ewr.gate_online_report(tool="vivado", kind="timing",

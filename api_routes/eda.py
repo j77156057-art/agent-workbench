@@ -87,6 +87,7 @@ class ReportGateReq(BaseModel):
     ssim_threshold: float = 0.98
     delta_threshold: float = 8.0
     grid: int = 8
+    changeset_id: Optional[str] = None    # 门判 rollback 时，登记"回滚此变更集"审批请求；缺省不登记（纯建议）
 
 
 def resolve_capture(capture: Optional[str]) -> str:
@@ -211,10 +212,11 @@ def build_router(ctx) -> APIRouter:
         """
         from agent_runtime import eda_web_report as ewr
 
+        root = ctx._project_root_or_error() if hasattr(ctx, "_project_root_or_error") else None
+
         kwargs: dict = {}
         visual_active = bool(req.golden_key and (req.view or req.bbox_norm))
         if visual_active:
-            root = ctx._project_root_or_error()
             if not root:
                 return {"ok": False, "error": "未配置代码库"}
             pid = ctx._request_project_id() if hasattr(ctx, "_request_project_id") else None
@@ -237,7 +239,9 @@ def build_router(ctx) -> APIRouter:
             ewr.gate_online_report,
             tool=req.tool, kind=req.kind, url=req.url, content=req.content,
             fetch=req.fetch, visual=req.visual, vlm_verified=req.vlm_verified,
-            critical=req.critical, **kwargs)
+            critical=req.critical,
+            changeset_id=req.changeset_id, project_root=root,
+            **kwargs)
 
     @router.post("/api/eda/visual-regression")
     async def visual_regression(req: VisualRegressionReq):
