@@ -2954,6 +2954,7 @@ def _eda_report_gate_summary(r):
         "source": r.get("source"),
         "url": r.get("url"),
         "fetch_failed": bool(r.get("fetch_failed")),
+        "visual_source": r.get("visual_source"),
         "tool": r.get("tool"),
         "kind": r.get("kind"),
         "structured": None if not fact else {
@@ -2986,16 +2987,21 @@ def _eda_report_gate_summary(r):
 
 
 def eda_report_gate(arg):
-    """抓取在线 EDA 报告/文档页 → M3 结构化解析 → M6 双信号合并门（**只判不执行回滚**）。
+    """抓取在线 EDA 报告/文档页 → M3 结构化解析 →（可选 M4/M5 视觉回归）→ M6 双信号合并门（**只判不执行回滚**）。
 
     输入为 JSON：`{"tool":"vivado","kind":"timing","url":"...","content":"...","fetch":"auto",
-    "visual":{"verdict":"..."},"vlm_verified":bool,"critical":[...]}`。
+    "visual":{"verdict":"..."},"golden_key":"blkA","view":"layout","bbox_norm":[..],"capture":"auto",
+    "vlm_verified":bool,"critical":[...]}`。
     - 取页源可切换、其余零改动：给 `content` 或 `fetch="inline"` 用调用方（例如通用浏览器）
       已抓回的正文；否则用 `web_fetch`(urllib) 抓 `url`。
     - 解析器按 (tool,kind) 选：vivado 的 timing/utilization、klayout 的 drc、verdi 的 simulation。
+    - 视觉通道双路径、同样可插拔：直接透传已算好的 `visual` verdict；或给 `golden_key` + ROI
+      （`view`/`bbox_norm`）+ 可选 `capture`(auto/gdi/x11/vnc)，内部复用 M4 取像 + M5 ROI golden
+      diff **现算** verdict，喂进同一个 M6 门。没配视觉入参 / 取不到帧 / 没 golden → 视觉 uncertain。
     全程 fail-closed：取不到正文 → no_report_text；取到但非本类报告 → M3 判 fact_ok=false；
     两者都由 M6 归一为 uncertain → escalate，**绝不谎报通过**。只有 met 才 accept；
-    unmet 的 rollback 只是建议信号，本工具从不执行任何 revert。视觉/VLM 结论 verified:false 起步。
+    unmet 的 rollback 只是建议信号，本工具从不执行任何 revert、也不存 golden。视觉/在线正文/
+    未核实结论 verified:false 起步。
     """
     req = _parse_eda_report_gate_request(arg)
     tool = str(req.get("tool") or "").strip()
@@ -3028,9 +3034,41 @@ def eda_report_gate(arg):
     vlm_verified = req.get("vlm_verified") if isinstance(req.get("vlm_verified"), bool) else None
     critical = req.get("critical") if isinstance(req.get("critical"), list) else None
 
+    # ---- 可选视觉回归通道：给了 golden_key + ROI 就复用路由的 make_frame_source 现算 M5 diff ----
+    # fail-closed：没配代码库根 / 建源失败 → 不塞视觉入参，gate 按"视觉缺证据→uncertain"处理，绝不假绿。
+    extra: dict = {}
+    golden_key = str(req.get("golden_key") or "").strip()
+    view = req.get("view")
+    bbox_norm = req.get("bbox_norm") if isinstance(req.get("bbox_norm"), list) else None
+    if golden_key and (view or bbox_norm):
+        root = _get_code_root()
+        if root:
+            try:
+                from api_routes.eda import make_frame_source, VisualRegressionReq
+                vsr = VisualRegressionReq(
+                    golden_key=golden_key, view=view, bbox_norm=bbox_norm,
+                    capture=str(req.get("capture") or "auto"),
+                    source=str(req.get("source") or "foreground"),
+                    hwnd=req.get("hwnd"), window_id=req.get("window_id"),
+                    vnc_host=req.get("vnc_host"), vnc_port=req.get("vnc_port"),
+                    out_size=int(req.get("out_size") or 256))
+                extra = {
+                    "frame_source": make_frame_source(vsr),
+                    "golden_root": os.path.join(root, ".docmind", "eda_golden"),
+                    "golden_key": golden_key,
+                    "view": view,
+                    "bbox_norm": bbox_norm,
+                    "out_size": int(req.get("out_size") or 256),
+                    "ssim_threshold": float(req.get("ssim_threshold") or 0.98),
+                    "delta_threshold": float(req.get("delta_threshold") or 8.0),
+                    "grid": int(req.get("grid") or 8),
+                }
+            except Exception:
+                extra = {}  # 建源失败：退回单通道，视觉 uncertain，不 500、不假绿
+
     result = gate_online_report(
         tool=tool, kind=kind, url=(url or None), content=(content if has_content else None),
-        fetch=fetch, visual=visual, vlm_verified=vlm_verified, critical=critical)
+        fetch=fetch, visual=visual, vlm_verified=vlm_verified, critical=critical, **extra)
     return json.dumps(_eda_report_gate_summary(result), ensure_ascii=False)
 
 
@@ -8673,7 +8711,7 @@ TOOLS = {
     "web_research": {"description": "联网研究：先搜索，再读取多个公开网页正文（默认最多 5 个，可配置），返回来源和证据。适合教程、GitHub、引擎文档和需要最新资料的问题。推荐采用多轮策略：第一轮发现候选；看到候选后用 web_search_batch 并行查评价、口碑、教程或做法；若评价一般或证据不足，排除已见 URL/标题后提交下一批候选，最后再对关键来源调用 web_fetch。输入研究主题。", "func": web_research},
     "web_fetch": {"description": "读取公开网页正文并返回来源、标题和清理后的文本。输入完整 http/https URL。联网研究时先 web_search，再对关键来源调用。", "func": web_fetch},
     "eda_report_gate": {
-        "description": "抓取在线 EDA 报告/文档页 → M3 结构化解析（Vivado 时序/面积、KLayout DRC、Verdi 仿真）→ M6 双信号合并门，输出三态结论(met/unmet/uncertain)与验收建议(accept/rollback/escalate)。输入 JSON：{tool:vivado|klayout|verdi, kind:timing|utilization|drc|simulation, url?, content?, fetch?:auto|web_fetch|inline, visual?:{verdict}, vlm_verified?:bool, critical?}。取页源可切换：给 content 或 fetch=inline 用调用方（如通用浏览器）已抓回的正文；否则用 web_fetch 抓 url。全程 fail-closed：取不到正文或非本类报告一律判 uncertain，绝不谎报通过；只有 met 才 accept；unmet 的 rollback 只是建议、本工具从不执行回滚。视觉/在线正文/未核实结论一律 verified:false，不得当作通过。",
+        "description": "抓取在线 EDA 报告/文档页 → M3 结构化解析（Vivado 时序/面积、KLayout DRC、Verdi 仿真）→（可选 M4/M5 视觉回归）→ M6 双信号合并门，输出三态结论(met/unmet/uncertain)与验收建议(accept/rollback/escalate)。输入 JSON：{tool:vivado|klayout|verdi, kind:timing|utilization|drc|simulation, url?, content?, fetch?:auto|web_fetch|inline, visual?:{verdict}, golden_key?, view?, bbox_norm?, capture?:auto|gdi|x11|vnc, vlm_verified?:bool, critical?}。取页源可切换：给 content 或 fetch=inline 用调用方（如通用浏览器）已抓回的正文；否则用 web_fetch 抓 url。视觉通道双路径：直接透传已算好的 visual verdict；或给 golden_key+ROI(view/bbox_norm)+取像后端，内部复用 M4 取像 + M5 ROI golden diff 现算 verdict 喂进同一个门。全程 fail-closed：取不到正文、非本类报告、取不到帧或没 golden 一律判 uncertain，绝不谎报通过；只有 met 才 accept；unmet 的 rollback 只是建议、本工具从不执行回滚、也不存 golden。视觉/在线正文/未核实结论一律 verified:false，不得当作通过。",
         "func": eda_report_gate,
         "input_schema": {
             "type": "object",
@@ -8683,7 +8721,11 @@ TOOLS = {
                 "url": {"type": "string", "description": "在线报告/文档页地址（走抓取时用）"},
                 "content": {"type": "string", "description": "已抓回的正文（浏览器抓取走这条，优先于 url）"},
                 "fetch": {"type": "string", "description": "auto | web_fetch | inline"},
-                "visual": {"type": "object", "description": "可选视觉信号 {verdict: pass|identical|regression|localized|...}"},
+                "visual": {"type": "object", "description": "可选视觉信号 verdict dict {verdict: pass|identical|regression|localized|...}；透传优先于现算"},
+                "golden_key": {"type": "string", "description": "给了就内部现算 M5 ROI golden diff（与 /api/eda/visual-regression 同源）；需配合 view/bbox_norm"},
+                "view": {"type": "string", "description": "layout | waveform | schematic | heatmap（ROI 预设）"},
+                "bbox_norm": {"type": "array", "items": {"type": "number"}, "description": "显式 [x1,y1,x2,y2] 归一框，覆盖 view"},
+                "capture": {"type": "string", "description": "auto | gdi | x11 | vnc：平台可切换取像后端（现算视觉时用）"},
                 "vlm_verified": {"type": "boolean", "description": "仅上层明确 VLM 已核实通过才置 true"},
                 "critical": {"type": "array", "items": {"type": "string"}, "description": "纳入门禁的判定量键（默认 timing_met/drc_clean/lvs_clean）"},
             },

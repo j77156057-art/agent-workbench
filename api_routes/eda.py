@@ -72,6 +72,21 @@ class ReportGateReq(BaseModel):
     visual: Optional[dict] = None         # 可选视觉信号（含 verdict）；缺省 → 视觉 UNCERTAIN
     vlm_verified: Optional[bool] = None   # 仅上层明确"VLM 已核实通过"才置 True
     critical: Optional[list] = None       # 显式纳入门禁的判定量键；缺省 timing_met/drc_clean/lvs_clean
+    # ---- 可选视觉回归通道（给了 golden_key + ROI + 取像后端就现算 M5 diff，喂进同一个 M6 门）----
+    # 缺省不配 → 视觉退回 uncertain（纯文本单通道，行为同以前）。
+    golden_key: Optional[str] = None      # 与 /api/eda/visual-regression 同一 golden 根，保证同源可比
+    view: Optional[str] = None            # layout/waveform/schematic/heatmap（EDA_VIEWS）
+    bbox_norm: Optional[list] = None      # 显式 [x1,y1,x2,y2] 归一框，覆盖 view
+    capture: str = "auto"                 # auto/gdi/x11/vnc：平台可切换取像后端（复用 make_frame_source）
+    source: str = "foreground"            # 仅 capture=gdi 生效："foreground"|"embedded"|"hwnd"
+    hwnd: Optional[int] = None            # capture=gdi & source=hwnd：目标窗口句柄
+    window_id: Optional[int] = None       # capture=x11：X11 window id（缺省回退用 hwnd）
+    vnc_host: Optional[str] = None        # capture=vnc：VNC 服务地址（默认 127.0.0.1）
+    vnc_port: Optional[int] = None        # capture=vnc：VNC 端口（默认 5900）
+    out_size: int = 256
+    ssim_threshold: float = 0.98
+    delta_threshold: float = 8.0
+    grid: int = 8
 
 
 def resolve_capture(capture: Optional[str]) -> str:
@@ -176,22 +191,53 @@ def build_router(ctx) -> APIRouter:
 
     @router.post("/api/eda/report-gate")
     async def report_gate(req: ReportGateReq):
-        """在线 EDA 报告页 → M3 解析 → M6 合并门 的一整条链（**只判不执行回滚**）。
+        """在线 EDA 报告页 → M3 解析 →（可选 M4/M5 视觉回归）→ M6 合并门 的一整条链（**只判不执行回滚**）。
 
         取页源可切换、其余零改动（对齐平台可切换取像源同套路）：
         - `fetch="inline"`：直接用调用方已备好的 `content`——通用浏览器（agent 编排层的
           `builtin_browser`）抓回的正文就走这条，产品运行时不碰网络、不依赖扩展。
         - `fetch="web_fetch"|"auto"`：用仓库已有的 `tools.web_fetch`（urllib）抓 `url`。
-        全程 fail-closed：取不到正文 → `no_report_text` + 判 uncertain（绝不喂空壳造假）；
-        取到但非本类报告 → M3 判 ok:false → M6 uncertain → escalate。**不**执行回滚。
+        视觉通道同样双路径、可插拔：
+        - 直接透传已算好的 `visual`（含 verdict）：由上层（例如已跑过 `/api/eda/visual-regression`
+          或浏览器截图归一）拿 verdict 进来。
+        - 或给 `golden_key` + ROI（`view`/`bbox_norm`）+ 取像后端（`capture`=auto/gdi/x11/vnc）：
+          本路由用 `make_frame_source` 归一取像源、golden 根与 `/api/eda/visual-regression` 同源，
+          在 `gate_online_report` 内部**现算**一次 M5 ROI golden diff，把 verdict 喂进同一个 M6 门。
+        全程 fail-closed：取不到正文 → `no_report_text` + uncertain；取到但非本类报告 → M3 判 ok:false →
+        uncertain；取不到帧/没 golden → M5 判 no_frame/needs_golden → uncertain。**不**执行回滚，
+        也不在在线链里存 golden（存基线是写盘动作，留给 visual-regression mode=save）。
+        诚实边界：本机通常没装 Vivado/KLayout，被摄窗口是**替身**、非真版图；但比对是**真算的**
+        确定性 diff，verdict 由像素得出、`verified:false` 起步，与 M6 门一致。
         """
         from agent_runtime import eda_web_report as ewr
-        # web_fetch 是阻塞 urllib，落线程池；inline/注入源即便同池也无副作用。
+
+        kwargs: dict = {}
+        visual_active = bool(req.golden_key and (req.view or req.bbox_norm))
+        if visual_active:
+            root = ctx._project_root_or_error()
+            if not root:
+                return {"ok": False, "error": "未配置代码库"}
+            pid = ctx._request_project_id() if hasattr(ctx, "_request_project_id") else None
+            # 复用平台可切换取像装配（capture=gdi/x11/vnc）；ReportGateReq 带齐 make_frame_source 所需字段。
+            frame_source = make_frame_source(req, pid)
+            kwargs = {
+                "frame_source": frame_source,
+                "golden_root": os.path.join(root, ".docmind", "eda_golden"),
+                "golden_key": req.golden_key,
+                "view": req.view,
+                "bbox_norm": req.bbox_norm,
+                "out_size": req.out_size,
+                "ssim_threshold": req.ssim_threshold,
+                "delta_threshold": req.delta_threshold,
+                "grid": req.grid,
+            }
+
+        # web_fetch 是阻塞 urllib、视觉回归是阻塞取像/比对，都落线程池；inline/注入源同池也无副作用。
         return await run_in_threadpool(
             ewr.gate_online_report,
             tool=req.tool, kind=req.kind, url=req.url, content=req.content,
             fetch=req.fetch, visual=req.visual, vlm_verified=req.vlm_verified,
-            critical=req.critical)
+            critical=req.critical, **kwargs)
 
     @router.post("/api/eda/visual-regression")
     async def visual_regression(req: VisualRegressionReq):

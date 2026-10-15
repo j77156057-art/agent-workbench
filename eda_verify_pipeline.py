@@ -10,6 +10,12 @@
   `check_eda_regression`（内部走 M2 `engine.check_visual_regression` → M1 `visual_regression.compare`）。
 - §6 合并门 + §7 验收/回滚：M6 `verification_gate`。
 
+> **在线版双通道**（取正文 → M3 解析 → M5 ROI golden diff → M6 门）已接进
+> `agent_runtime.eda_web_report.gate_online_report`——给它 `frame_source`/`grabber` +
+> `golden_key`/`golden_root`/`view`/`bbox_norm` 就会在门内部现算视觉 verdict，与本脚本演示的
+> **本地 facts 版**同一条链、同一批零件。本脚本是离线编排的活文档；在线链的测试见
+> `tests/test_api_eda_report_gate.py` 的双通道那组用例。
+
 信条（§0）：
 - 本机没有 X11/VNC/ImageMagick/EDA 工具 → 全部走注入 source / fact dict；
   真实取像路径不在本机执行，样例只做离线编排。

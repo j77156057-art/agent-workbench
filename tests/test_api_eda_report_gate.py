@@ -1,13 +1,16 @@
 """在线 EDA 报告页 → M3 解析 → M6 门 的取页胶水链路测试（**离线，无网络**）。
 
-覆盖两层：
+覆盖三层：
 1) `agent_runtime.eda_web_report` 单元：取页源归一（inline / 注入 / web_fetch 失败规整 None）、
    gate_online_report 的三态与 fail-closed（取不到正文不喂解析器、非报告正文由 M3 判 ok:false）。
-2) `/api/eda/report-gate` 路由：经 TestClient + stub ctx 验整链装配，重点断言**只判不执行回滚**
+2) **双通道**：给 golden + 帧来源时，gate 内部真跑 M5 ROI golden diff（复用合成 RGB 帧，离线）：
+   双绿→met/accept、视觉 gross→unmet（只判不动手）、没 golden/取不到帧/取像抛错→uncertain，
+   绝不假绿；没配视觉入参→退回纯文本单通道（visual uncertain）。
+3) `/api/eda/report-gate` 路由：经 TestClient + stub ctx 验整链装配，重点断言**只判不执行回滚**
    （executes_rollback 恒 False），以及浏览器抓回的正文走 inline 这条路能打通 M3→M6。
 
 复用 tests/test_eda_tcl.py 里的真实报告样本。web_fetch 后端一律 monkeypatch 掉 tools._fetch_page，
-保证测试不触网。
+保证测试不触网。合成帧来自 eda_verify_pipeline（需 numpy，仅双通道那组用例用到）。
 """
 import os
 import sys
@@ -20,6 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agent_runtime.eda_web_report as ewr  # noqa: E402
 import api_routes.eda as eda_routes  # noqa: E402
+from agent_runtime import visual_regression as vr  # noqa: E402
+from agent_runtime import eda_visual_regression as ev  # noqa: E402
+
+# 合成 RGB 帧工厂 + 版图生成器：直接借已提交的演示样例，避免测试里另写像素逻辑。
+from eda_verify_pipeline import _rgb_source_factory, _synth_layout  # noqa: E402
 
 # ---- 真实形状的报告样本（同 test_eda_tcl.py）----
 TIMING_MET = """
@@ -174,6 +182,105 @@ def test_gate_web_fetch_backend_parses_fetched_report(monkeypatch):
     assert r["source"] == "web_fetch"
     assert r["fact"]["metrics"]["timing_met"] is True
     assert r["gate"]["merged"]["state"] == "met"
+
+
+# ---- 双通道：gate 内部真跑 M5 ROI golden diff（注入合成 RGB 帧，离线）----
+
+def _save_green_golden(root, key, *, out_size=256):
+    """先把"通过态"版图 ROI 存成 golden，之后 check 用同一 ROI，保证同源可比。"""
+    store = vr.GoldenStore(root=root)
+    saved = ev.save_eda_golden(store, key, view="layout",
+                               source=_rgb_source_factory(_synth_layout()),
+                               out_size=out_size, meta={"why": "gate dual-channel baseline"})
+    assert saved.get("saved"), saved
+    return store
+
+
+def test_gate_dual_channel_both_green_met(tmp_path):
+    root = str(tmp_path / "golden")
+    _save_green_golden(root, "blkA")
+    r = ewr.gate_online_report(
+        tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,
+        golden_key="blkA", golden_root=root, view="layout",
+        frame_source=_rgb_source_factory(_synth_layout()))   # 同源绿帧 → identical/pass
+    assert r["fact"]["metrics"]["timing_met"] is True
+    assert r["visual_source"] == "regression"
+    assert r["gate"]["visual_state"] == "met"
+    assert r["gate"]["merged"]["state"] == "met"
+    assert r["gate"]["decision"]["action"] == "accept"
+    assert r["executes_rollback"] is False
+
+
+def test_gate_dual_channel_visual_gross_unmet_not_executed(tmp_path):
+    root = str(tmp_path / "golden")
+    _save_green_golden(root, "blkB")
+    r = ewr.gate_online_report(
+        tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,   # 结构化绿
+        golden_key="blkB", golden_root=root, view="layout",
+        frame_source=_rgb_source_factory(_synth_layout(gross=True)))        # 视觉 gross → regression
+    assert r["visual_source"] == "regression"
+    assert r["gate"]["visual_state"] == "unmet"
+    assert r["gate"]["merged"]["state"] == "unmet"
+    assert r["gate"]["decision"]["action"] == "rollback"
+    # 关键安全断言：视觉明确否决、建议回滚，但绝不执行、也绝不自动动手。
+    assert r["gate"]["rollback_attempted"] is False
+    assert r["executes_rollback"] is False
+
+
+def test_gate_dual_channel_missing_golden_uncertain(tmp_path):
+    # 全新根、没存过 golden → check 判 needs_golden → 视觉 uncertain → 不假绿。
+    root = str(tmp_path / "empty_golden")
+    r = ewr.gate_online_report(
+        tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,   # 结构化绿
+        golden_key="never_saved", golden_root=root, view="layout",
+        frame_source=_rgb_source_factory(_synth_layout()))
+    assert r["visual_source"] == "regression"
+    assert r["gate"]["visual_state"] == "uncertain"
+    assert r["gate"]["merged"]["state"] == "uncertain"
+    assert r["gate"]["decision"]["action"] == "escalate"
+    assert r["executes_rollback"] is False
+
+
+def test_gate_dual_channel_no_frame_uncertain(tmp_path):
+    root = str(tmp_path / "golden")
+    _save_green_golden(root, "blkD")
+    r = ewr.gate_online_report(
+        tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,
+        golden_key="blkD", golden_root=root, view="layout",
+        frame_source=lambda: None)          # 取不到帧 → no_frame → uncertain
+    assert r["gate"]["visual_state"] == "uncertain"
+    assert r["gate"]["merged"]["state"] == "uncertain"
+    assert r["gate"]["decision"]["action"] == "escalate"
+    assert r["executes_rollback"] is False
+
+
+def test_gate_dual_channel_capture_raises_fail_closed(tmp_path):
+    root = str(tmp_path / "golden")
+    _save_green_golden(root, "blkE")
+
+    def _boom():
+        raise RuntimeError("capture exploded")
+
+    r = ewr.gate_online_report(
+        tool="vivado", kind="timing", fetch="inline", content=TIMING_MET,
+        golden_key="blkE", golden_root=root, view="layout",
+        frame_source=_boom)                 # 取像抛错 → 收敛 uncertain，不 500、不假绿
+    assert r["gate"]["merged"]["state"] == "uncertain"
+    assert r["gate"]["decision"]["action"] == "escalate"
+    # 比对里任何异常都记 visual_error 供审计；结论仍不放过。
+    assert r.get("visual_error") or r["gate"]["visual_state"] == "uncertain"
+    assert r["executes_rollback"] is False
+
+
+def test_gate_no_visual_params_is_text_only_single_channel():
+    # 只给文本、没配任何视觉入参 → 视觉 uncertain（退回单通道），visual_source=="none"。
+    r = ewr.gate_online_report(tool="vivado", kind="timing", fetch="inline", content=TIMING_MET)
+    assert r["fact"]["metrics"]["timing_met"] is True     # 结构化绿
+    assert r["visual_source"] == "none"
+    assert r["gate"]["visual_state"] == "uncertain"        # 但没视觉证据 → 不静默放行
+    assert r["gate"]["merged"]["state"] == "uncertain"
+    assert r["gate"]["decision"]["action"] == "escalate"
+    assert r["executes_rollback"] is False
 
 
 # ---- /api/eda/report-gate 路由装配 ----
