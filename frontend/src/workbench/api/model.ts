@@ -24,12 +24,12 @@ export interface ModelCapability {
 
 export const visionApi = {
   realtimeStatus(): Promise<{
-    ok: boolean; mode?: 'sampled-frames' | 'native' | 'unavailable'; mode_label?: string
+    ok: boolean; mode?: 'sampled-frames' | 'native-realtime' | 'native' | 'unavailable' | string; mode_label?: string
     mode_reason?: string; native_provider?: string | null; native_available?: boolean
     native_reason?: string; limitations?: string[]; error?: string
   }> {
     return fetch('/api/vision/realtime-status', withProject()).then(async (res) => (await res.json()) as {
-      ok: boolean; mode?: 'sampled-frames' | 'native' | 'unavailable'; mode_label?: string
+      ok: boolean; mode?: 'sampled-frames' | 'native-realtime' | 'native' | 'unavailable' | string; mode_label?: string
       mode_reason?: string; native_provider?: string | null; native_available?: boolean
       native_reason?: string; limitations?: string[]; error?: string
     })
