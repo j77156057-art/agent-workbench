@@ -62,6 +62,18 @@ class VisualRegressionReq(BaseModel):
     grid: int = 8
 
 
+class ReportGateReq(BaseModel):
+    # 在线 EDA 报告页 → M3 解析 → M6 门：取页 → 判定的整链入参。
+    tool: str                             # vivado/klayout/verdi
+    kind: str                             # timing/utilization/drc/simulation
+    url: Optional[str] = None             # 在线报告/文档页地址（fetch=web_fetch 时取这里）
+    content: Optional[str] = None         # 调用方已备好的正文（fetch=inline；浏览器抓回走这条）
+    fetch: str = "auto"                   # auto/web_fetch=urllib 直抓；inline=直接用 content
+    visual: Optional[dict] = None         # 可选视觉信号（含 verdict）；缺省 → 视觉 UNCERTAIN
+    vlm_verified: Optional[bool] = None   # 仅上层明确"VLM 已核实通过"才置 True
+    critical: Optional[list] = None       # 显式纳入门禁的判定量键；缺省 timing_met/drc_clean/lvs_clean
+
+
 def resolve_capture(capture: Optional[str]) -> str:
     """把 'auto' 按平台解析成具体取像后端；显式值原样校验。未知值保守回落 'gdi'。
 
@@ -161,6 +173,25 @@ def build_router(ctx) -> APIRouter:
             "executes_rollback": False,
             "note": "只判不执行回滚；真实回滚须经 regions.rollback_changeset 的 require_approval 人工门。",
         }
+
+    @router.post("/api/eda/report-gate")
+    async def report_gate(req: ReportGateReq):
+        """在线 EDA 报告页 → M3 解析 → M6 合并门 的一整条链（**只判不执行回滚**）。
+
+        取页源可切换、其余零改动（对齐平台可切换取像源同套路）：
+        - `fetch="inline"`：直接用调用方已备好的 `content`——通用浏览器（agent 编排层的
+          `builtin_browser`）抓回的正文就走这条，产品运行时不碰网络、不依赖扩展。
+        - `fetch="web_fetch"|"auto"`：用仓库已有的 `tools.web_fetch`（urllib）抓 `url`。
+        全程 fail-closed：取不到正文 → `no_report_text` + 判 uncertain（绝不喂空壳造假）；
+        取到但非本类报告 → M3 判 ok:false → M6 uncertain → escalate。**不**执行回滚。
+        """
+        from agent_runtime import eda_web_report as ewr
+        # web_fetch 是阻塞 urllib，落线程池；inline/注入源即便同池也无副作用。
+        return await run_in_threadpool(
+            ewr.gate_online_report,
+            tool=req.tool, kind=req.kind, url=req.url, content=req.content,
+            fetch=req.fetch, visual=req.visual, vlm_verified=req.vlm_verified,
+            critical=req.critical)
 
     @router.post("/api/eda/visual-regression")
     async def visual_regression(req: VisualRegressionReq):
