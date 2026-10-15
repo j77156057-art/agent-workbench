@@ -8370,9 +8370,13 @@ def _sv_changed_via_git(root):
 
 
 def _sv_classify(targets):
-    """把文件列表分到各 scope 的桶里，返回 (py, frontend, scene, engine) 绝对路径列表。"""
+    """把文件列表分到各 scope 的桶里，返回 (py, frontend, scene, engine, web) 绝对路径列表。
+
+    web 桶收 .html/.htm 静态网页：这类产物只有真跑起浏览器截图才能验证（语法/类型检查看不出
+    黑屏、脚本运行期异常），故单列一桶，供 scope:auto 自动挂上 visual（真实浏览器画面验收）。
+    """
     import re as _re
-    py, fe, scene, engine = [], [], [], []
+    py, fe, scene, engine, web = [], [], [], [], []
     for t in targets:
         p = str(t)
         low = p.lower()
@@ -8384,7 +8388,9 @@ def _sv_classify(targets):
             scene.append(p)
         if "engine_embed" in low or ("embed" in low and "desktop" in low) or low.endswith("desktop_bridge.py"):
             engine.append(p)
-    return py, fe, scene, engine
+        if low.endswith((".html", ".htm")):
+            web.append(p)
+    return py, fe, scene, engine, web
 
 
 def _sv_verify_backend(py_files, root, result):
@@ -8587,10 +8593,13 @@ def self_verify(arg=""):
                                        "error": "校验目标超出当前项目范围"})
     targets = safe_targets
 
-    py_files, fe_files, scene_files, engine_files = _sv_classify(targets)
+    py_files, fe_files, scene_files, engine_files, web_files = _sv_classify(targets)
 
     # 2) 选 scope：auto 按改动文件类型自动选策略。
     #    backend(.py) / frontend(.ts/.vue) / scene(场景子系统，无 GUI 可自动) 始终纳入；
+    #    visual(.html/.htm) 默认纳入——静态网页只有真起浏览器截图才验得出黑屏/运行期异常，
+    #      这正是「产出可视化产物→自动开浏览器自审→拿像素+console 证据再报状态」的接点；
+    #      如需关闭（例如 CI 无浏览器）显式设 DOCMIND_SELF_VERIFY_VISUAL=0，则优雅降级为 skip。
     #    engine(引擎嵌入) 需真 Godot GUI 且会拉起引擎进程，默认不自动跑（避免每次写都启
     #    Godot 打断并发写入者）——仅当用户显式开 DOCMIND_SELF_VERIFY_ENGINE=1 才纳入自动，
     #    或经 scope:engine / scope:all 显式触发。其余情况优雅降级为 skip（见 _sv_verify_script）。
@@ -8602,6 +8611,13 @@ def self_verify(arg=""):
             scopes.append("frontend")
         if scene_files:
             scopes.append("scene")
+        if web_files and os.getenv("DOCMIND_SELF_VERIFY_VISUAL") != "0":
+            scopes.append("visual")
+        elif web_files:
+            result.setdefault("skipped", []).append("visual:skip（自动浏览器自审已禁用）")
+            result["note"] = ((result.get("note") or "") +
+                              "（检测到 .html 网页改动，浏览器画面自审默认会跑，但已被 "
+                              "DOCMIND_SELF_VERIFY_VISUAL=0 关闭；未截图不等于验证通过）")
         if engine_files and os.getenv("DOCMIND_SELF_VERIFY_ENGINE") == "1":
             scopes.append("engine")
         elif engine_files:
@@ -8610,7 +8626,7 @@ def self_verify(arg=""):
                               "（engine 域自检需真 Godot 且默认关闭，已跳过；"
                               "显式 scope:engine 或开 DOCMIND_SELF_VERIFY_ENGINE=1 可启用）")
     elif scope == "all":
-        scopes = ["backend", "frontend", "scene", "engine"]
+        scopes = ["backend", "frontend", "scene", "engine", "visual"]
     else:
         scopes = [scope]
 

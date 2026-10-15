@@ -178,15 +178,75 @@ class SelfVerifyScopeAutoTest(unittest.TestCase):
         self.assertTrue(any("engine" in r for r in data["ran"]))
 
 
+class SelfVerifyVisualAutoTest(unittest.TestCase):
+    """写 .html 静态网页 → scope:auto 自动挂真实浏览器视觉自审（离线：mock 掉截图）。"""
+
+    def setUp(self):
+        self.proj = _TmpProject()
+
+    def tearDown(self):
+        self.proj.close()
+
+    def _capture_patch(self, ret=None, exc=None):
+        def _fake(root, **kw):
+            if exc is not None:
+                raise exc
+            return ret
+        return mock.patch("agent_runtime.visual_acceptance.capture_project_preview", _fake)
+
+    def test_auto_html_runs_visual_and_passes(self):
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        report = {"passed": True, "checks": {"console_errors": 0, "failed_requests": 0},
+                  "screenshot": ".docmind/visual-evidence/x/preview.png"}
+        with self._capture_patch(ret=report):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertTrue(data["passed"])
+        self.assertTrue(any("visual" in r for r in data["ran"]))
+
+    def test_auto_html_console_error_fails(self):
+        # 页面黑屏/脚本报错 → capture 报 passed=False → 整体未通过（这正是能抓到 localStorage 崩溃的路径）
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        report = {"passed": False,
+                  "checks": {"console_errors": 1, "errors": ["SecurityError: storage blocked"]},
+                  "screenshot": ""}
+        with self._capture_patch(ret=report):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any(fl["scope"] == "visual" for fl in data["failures"]))
+
+    def test_auto_html_capture_exception_fail_closed(self):
+        # 起不了浏览器/截图抛异常 → 记 failure，绝不假绿（无证据 ≠ 通过）
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        with self._capture_patch(exc=RuntimeError("no browser")):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any(fl["scope"] == "visual" for fl in data["failures"]))
+
+    def test_visual_optout_env_skips_not_passed(self):
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        with mock.patch.dict(os.environ, {"DOCMIND_SELF_VERIFY_VISUAL": "0"}):
+            with self._capture_patch(ret={"passed": True, "checks": {}, "screenshot": ""}):
+                data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertFalse(data["passed"])
+        self.assertFalse(any("visual" in r for r in data["ran"]))
+        self.assertIn("DOCMIND_SELF_VERIFY_VISUAL", data.get("note", ""))
+
+
 class ClassifyTest(unittest.TestCase):
     def test_classify_scene(self):
-        _py, _fe, scene, engine = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
+        _py, _fe, scene, engine, _web = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
         self.assertTrue(scene)
         self.assertFalse(engine)
 
     def test_classify_engine(self):
-        _py, _fe, scene, engine = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
+        _py, _fe, scene, engine, _web = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
         self.assertTrue(engine)
+
+    def test_classify_web(self):
+        _py, _fe, _scene, _engine, web = tools._sv_classify(
+            ["index.html", "game.HTM", "style.css", "main.py"])
+        self.assertEqual(len(web), 2)  # .html + 大写 .HTM 都收，css/py 不进
+        self.assertTrue(any(p.endswith("index.html") for p in web))
 
 
 if __name__ == "__main__":
