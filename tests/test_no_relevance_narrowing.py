@@ -232,6 +232,20 @@ def test_web_tools_stay_blocked_when_the_switch_is_off():
 
 
 def test_network_capability_is_blocked_when_web_is_disabled():
+    """联网开关拦的是 group=="web"，capability=NETWORK 只服务于超时分类。
+
+    2026-10-15 修正契约：本用例曾经造一个「只有 capability=NETWORK、没有 group」
+    的工具并断言它被拦。但那正好是 bug 本体——`mcp_bridge` 给所有内联 MCP
+    工具标 NETWORK（保守标记，给 `_is_network_tool` 超时钩子用），旧规则
+    `group=="web" or capability==NETWORK` 于是把 **stdio 本地连接器**
+    （godot/unity）的工具也在联网关闭时全部滤掉，而开关默认关 ⇒
+    9b801d5 的连接器一等工具功能默认失效。
+
+    正确契约：group 才表达「是否跨外网」。bridge 自己就分
+    `"web" if http else "mcp"`。所以：
+      · group=="web"（真上网）→ 开关关时拦（安全属性保留）；
+      · capability==NETWORK 但 group=="mcp"（stdio 本地）→ 不拦。
+    """
     import agent as agent_mod
     from agent_runtime.tools import Capability, SideEffect
 
@@ -242,9 +256,20 @@ def test_network_capability_is_blocked_when_web_is_disabled():
             "capability": Capability.NETWORK,
             "side_effect": SideEffect.IRREVERSIBLE,
             "parallel_safe": False,
+            "group": "web",
+        },
+        "mcp__godot__run": {
+            "func": lambda _arg: "local engine bridge",
+            "capability": Capability.NETWORK,
+            "side_effect": SideEffect.MUTATING,
+            "parallel_safe": False,
+            "group": "mcp",
         },
     }
     a.web_enabled = False
-    assert a._web_blocked("remote_tool") is True
+    assert a._web_blocked("remote_tool") is True, "group=web 的真上网工具必须被拦"
+    assert a._web_blocked("mcp__godot__run") is False, \
+        "stdio 本地连接器工具不该被联网开关拦（默认关=功能全灭）"
     a.web_enabled = True
     assert a._web_blocked("remote_tool") is False
+    assert a._web_blocked("mcp__godot__run") is False

@@ -2,7 +2,7 @@
 
 > **本文档是累积追加式的**：下面的历史章节（1~7）是当晚的侦查记录，仍然有效，
 > **不要删**。每次续做只更新第 0 节「当前状态」—— 那是唯一指路的入口。
-> 上次更新：2026-10-13（HEAD `9813170`，v3 全量验后无新增真缺陷）。
+> 上次更新：2026-10-15（HEAD `790178d`，全量失败归因 + 六个模块修复后重跑通过）。
 >
 > ⚠ **本节故意不单独提交**：提交本身会改变 HEAD，一提交这条声明就立刻变陈。
 > 做法是把 §0 留在工作树里，随下一笔**真实改动**一起入库 —— 这样判据在
@@ -10,8 +10,31 @@
 
 ## 0. 当前状态
 
-- **HEAD `9813170`** —— 待跑全量验的有 **19 笔**（下面 17 笔 + 本次两笔
-  `98e8b32` / `9813170`）。原九笔：`97b33e2` 收窄丙方案豁免 /
+- **HEAD `790178d`** —— 2026-10-15 全量（4110 用例，隔离 `DOCMIND_STATE_ROOT`）
+  失败归因完毕，六个模块的既有红已全部修掉并两两同进程复跑验证：
+  - `test_sse_atomic_subscribe` 换 `api_agent.WORKFLOWS` 后**从不还原**（模块级
+    全局泄漏）→ 按字母序污染其后所有碰 workflow 路由的模块。修：addCleanup 还原。
+  - `test_workflow_profiles` 的 `_FakeCtx` 每次返回新临时目录 + 硬编码 pid，被
+    10-14 启动一致性校验拒（ok:false）。修：pid 改由纯函数 `projects.project_id(root)`
+    算，零注册表污染。
+  - `game_workflow._active_workflow_for` / `list_workflows` 的 AND 匹配把「没提供的
+    维度」当成「state 该字段必须为空」→ 只传 pid/root 时全部滤掉。**真产品 bug**：
+    工作台历史弹层按项目筛会少条目、互斥锁在只带 root 的启动路径下漏判（同项目双开）。
+    修：未提供的维度是通配符；`test_workflow_list_and` 里那条与自身 docstring 矛盾
+    的锁定测试同步改正。
+  - `agent._web_blocked` 多一个 `or capability == NETWORK` 子句，把
+    `mcp_bridge` 的 `group="web" if http else "mcp"` 区分整个覆盖 → **联网开关默认关，
+    stdio 本地连接器（godot/unity）工具全灭**。修：判据回到文档契约 `group == "web"`。
+  - `_run_child` 里点名工具被只读规则/MCP=deny 全部筛掉时 `allowed=[]` → planner
+    子代理零工具。修：退回角色默认工具集（显式传空名单不兜底）。
+  - `capacity.MIN_TASK_TOKEN_BUDGET` 18906 → 18951：提示词从 18672 涨到 18816 字符
+    （+36 token/轮），带记忆 3 轮门槛水涨船高。已用 `git archive 548cdf0` 对照确认
+    膨胀在本次改动之前。**record 与 preflight 口径不同**（output_chars/4 vs 原值），
+    重标定别用线性外推。
+  另：`dev_page_action` 的 type 假阴性（文本已落入却报 ok:false，790178d 本体）、
+  SSE 测试按真实契约带 `X-DocMind-Project` 头（7612dd1）、问答页禁用态对比度
+  4.34→6.45（ff6040a）同属本轮。
+- **原九笔**（历史记录，见下方展开）：`97b33e2` 收窄丙方案豁免 /
   `3dc6efe` 能力基线判据 / `f148169` 项目上下文泄漏立档 / `c558df5` 能力基线漏复位
   （后被 `52cae73` 反向抵消，由 `e043715` 补回）/ `da84646` danger-ink 收编 /
   `1880fdb` paper 的 `--accent-text` 退到 58% + 门禁加死令牌引用检查 /

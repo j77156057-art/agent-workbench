@@ -1,9 +1,11 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { mdToHtml, extractFileRefs, extractWebRefs } from '../markdown'
 import type { FileRef } from '../markdown'
-import { flowOf } from './chat-types'
-import type { ChatFlowItem } from './chat-types'
-import { useWorkbench } from './workbench'
+// 同 useChatStream：node --experimental-strip-types 直接跑这些模块，
+// 相对导入必须带扩展名（tests/test_frontend_node_tests.py 的守卫链）。
+import { flowOf } from './chat-types.ts'
+import type { ChatFlowItem } from './chat-types.ts'
+import { useWorkbench } from './workbench.ts'
 import { prefs } from '../../ask/askPrefs'
 
 /** 消息渲染所需的最小结构（ChatMsg 等具体消息类型按结构鸭子匹配） */

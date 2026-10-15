@@ -252,13 +252,25 @@ class WorkflowStartApiKindTests(unittest.TestCase):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from api_routes.agent import build_router
+        import projects as projects_mod
 
+        # 2026-10-15：`launch_workflow` 的启动一致性校验（10-14 加的）要求
+        # 请求头 project_id 与 root 反查得到的 project_id **必须一致**。
+        # 旧 fake 每次调 `_project_root_or_error()` 都返回一个新临时目录、
+        # 又硬编码 `_request_project_id() == "p-test"`，于是每发一次请求都被判
+        # 「project_id 与 project_root 不匹配」→ ok:false，三个用例全红。
+        # `projects.project_id(root)` 是纯函数（prj-sha1(路径)），不碰注册表，
+        # 所以让它俩同源即满足校验，且不污染任何全局状态。
         class _FakeCtx:
+            def __init__(self):
+                self._root = tempfile.mkdtemp()
+                self._pid = projects_mod.project_id(self._root)
+
             def _project_root_or_error(self):
-                return tempfile.mkdtemp()
+                return self._root
 
             def _request_project_id(self):
-                return "p-test"
+                return self._pid
 
         app = FastAPI()
         app.include_router(build_router(_FakeCtx()))

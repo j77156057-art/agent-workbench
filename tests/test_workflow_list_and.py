@@ -60,15 +60,19 @@ class ProjectListAndMatchTests(unittest.TestCase):
         self.assertIn(wid, [item["workflow_id"] for item in items])
 
     def test_only_pid_provided_root_matches(self):
-        """只传 pid（root 留空）→ 该 pid 的所有 root state 都返回。"""
+        """只传 pid（root 留空）→ 该 pid 的所有 root state 都返回。
+
+        2026-10-15 修正：本条曾经的断言与它自己的 docstring 相反——旧写法
+        `(not want_root and not raw_root)` 把「没问 root」当成「state 必须
+        没有 root」，只传 pid 时任何带 root 的 state 都被滤掉。AND 语义约束
+        的是【已提供】的条件，没提供的维度是通配符。混绑保护不受影响：
+        那条查询两个条件都给了，root 不匹配照样滤掉（见上一条用例）。
+        """
         wid = self.mgr.start("A", project_id=self.pid_a,
                               project_root=str(self.project_a))["workflow_id"]
-        # 只传 pid：因 AND 语义，root 缺省时只匹配 raw_root 也缺省的 state；
-        # 但 raw_root 非空，所以 want_root="" 且 raw_root="..." → root_ok=False。
         items = self.mgr.list_workflows(self.pid_a, "")
-        # 期望：当前 AND 严格实现会过滤掉
-        self.assertNotIn(wid, [item["workflow_id"] for item in items],
-                          "只传 pid、root 不空时，AND 严格匹配应不返回")
+        self.assertIn(wid, [item["workflow_id"] for item in items],
+                      "只传 pid 时该 pid 的 state 应返回（未提供的 root 是通配符）")
 
     def test_empty_filters_returns_all(self):
         """两者皆空时返回全部工作流（与 active_for_project 同口径）。"""

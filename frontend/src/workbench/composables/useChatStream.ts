@@ -6,7 +6,10 @@
 // 不持有 messages 数组、不绑定请求生命周期（abort/epoch 仍由调用方管理）。
 import type { SseEvent } from '../api'
 import type { ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef } from './chat-types'
-import { flowKindOf } from './chat-types'
+// ⚠ 相对导入必须带 `.ts` 扩展名：`frontend/tests/*.test.mjs` 用
+// `node --experimental-strip-types` 直接跑生产模块（见 tests/test_frontend_node_tests.py），
+// node 的 ESM 解析器不认无扩展名路径（Vite 认，所以只有 node 这条链会炸）。
+import { flowKindOf } from './chat-types.ts'
 
 export type { ChatTraceKind, ChatTraceItem, ChatMsg, ChatMsgStatus, ChatWorkflowRef } from './chat-types'
 

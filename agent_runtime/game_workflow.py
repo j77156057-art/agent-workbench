@@ -1917,8 +1917,14 @@ class GameWorkflowManager:
             raw_pid = str(raw.get("project_id") or "").strip()
             raw_root = _canonical_project_root(raw.get("project_root") or "")
             if (want_pid or want_root):
-                pid_ok = (not want_pid and not raw_pid) or (want_pid and want_pid == raw_pid)
-                root_ok = (not want_root and not raw_root) or (want_root and want_root == raw_root)
+                # 只要求【已提供】的条件匹配：没提供的维度是通配符，不是
+                # 「state 的该字段必须为空」。旧写法
+                # `(not want_root and not raw_root)` 把「没问 root」当成
+                # 「state 必须没有 root」，于是只传 project_id 时任何带 root
+                # 的 state 都被滤掉——工作台历史弹层按项目筛会凭空少条目，
+                # 互斥锁在只带 root 的启动路径下也会漏判（同项目双开）。
+                pid_ok = (not want_pid) or (want_pid == raw_pid)
+                root_ok = (not want_root) or (want_root == raw_root)
                 if not (pid_ok and root_ok):
                     continue
             tasks = raw.get("tasks")
@@ -2003,8 +2009,12 @@ class GameWorkflowManager:
                 continue
             have_pid = str(state.project_id or "").strip()
             have_root = _canonical_project_root(state.project_root)
-            pid_ok = (not want_pid and not have_pid) or (want_pid and want_pid == have_pid)
-            root_ok = (not want_root and not have_root) or (want_root and want_root == have_root)
+            # 与 list_workflows 同口径：只要求已提供的条件匹配。旧写法要求
+            # 「没提供的维度上 state 也必须为空」，于是只带 project_root 的
+            # 启动路径（对话内 start_workflow 按 code_root 解析）看不到
+            # 带 project_id 的活跃工作流 → 同项目双开，互斥锁失效。
+            pid_ok = (not want_pid) or (want_pid == have_pid)
+            root_ok = (not want_root) or (want_root == have_root)
             if pid_ok and root_ok:
                 return state
         return None

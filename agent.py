@@ -3632,10 +3632,30 @@ class Agent:
         self.run_budget.record(usage, prompt_chars=prompt_chars, output_chars=len(str(output or "")))
 
     def _web_blocked(self, action_name) -> bool:
-        """联网关闭时，外网工具一律拒绝（文本通道与原生通道共用此判定）。"""
+        """联网关闭时，外网工具一律拒绝（文本通道与原生通道共用此判定）。
+
+        ## 判据是 `spec.group == "web"`，不是 capability == NETWORK
+
+        曾经还加过 `or spec.capability == Capability.NETWORK`，2026-10-15 删除。
+        后果实测：`mcp_bridge.build_specs` 给所有内联 MCP 工具标
+        `capability=NETWORK`（注释写明是「保守标记」，为超时钩子
+        `_is_network_tool` 服务），于是**联网开关一关，stdio 连接器
+        （godot/unity 本地进程）的工具全部从有效集消失**——而联网开关默认
+        关闭，9b801d5「连接器工具提升为一等工具」的核心功能等于默认失效。
+
+        group 才是表达「是否跨外网」的正确字段，bridge 自己就分得很好：
+        `group = "web" if entry.get("http") else "mcp"` —— http 传输的连接器
+        算跨网络、尊重开关；stdio 是本地进程、不该被开关管。NETWORK 子句把
+        这个区分整个覆盖掉了。
+
+        capability=NETWORK 的手注册工具（无 group）若要尊重开关，显式声明
+        `group="web"`——与所有内置 web_* 工具一致（它们两者都标）。
+        真上网的 7 个 web_* 工具 group 本来就是 "web"，拦截行为不变；
+        放行的 6 个 dev_mcp_*/dev_http_request 各有自己的护栏
+        （EXTERNAL_API_ALLOWLIST 域名白名单 / 本地进程），不依赖本开关。
+        """
         spec = self._tool_spec(action_name)
-        return bool(spec and not self.web_enabled and (
-            spec.group == "web" or spec.capability == Capability.NETWORK))
+        return bool(spec and not self.web_enabled and spec.group == "web")
 
     def _is_network_tool(self, action_name) -> bool:
         """Whether a tool crosses a network/MCP boundary for timeout hooks."""
@@ -6334,6 +6354,17 @@ class Agent:
             allowed = [name for name in allowed if name not in mcp_tools]
         elif policy == "allow" and not allowlist_provided:
             allowed = list(dict.fromkeys(allowed + mcp_tools))
+        # 主 agent 点名要的工具被只读规则 / MCP=deny **全部**筛掉时，退回角色
+        # 默认工具集——不要把子代理留在「零工具」状态。曾经的实测：planner
+        # 拿到 ["apply_edit", "dev_mcp_call"]，前者被只读规则筛掉、后者被
+        # MCP=deny 筛掉 ⇒ allowed 空 ⇒ 子代理连只读分析都做不了，而它的
+        # 职责恰恰是读代码做规划。退回后仍受同一套安全规则约束（下面那行
+        # 再按 self.tools 收敛；deny 分支已先滤过 mcp_tools）。
+        # 注意只在「点名过且非空」时兜底：显式传空名单是调用方的意图，不覆盖。
+        if allowlist_provided and requested_tools and not allowed:
+            allowed = [name for name in spec["tools"] if name in self.tools]
+            if policy == "deny":
+                allowed = [name for name in allowed if name not in mcp_tools]
         allowed = [name for name in allowed if name in self.tools]
         cap = _resolve_child_max_steps(max_steps)
         child = Agent(

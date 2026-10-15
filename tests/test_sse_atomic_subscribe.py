@@ -38,9 +38,20 @@ class _Ctx:
         return self._pid
 
 
-def _build_client(manager, root, pid):
+def _build_client(case, manager, root, pid):
+    """建一个只挂 agent 路由的 TestClient。
+
+    ⚠⚠ 换 `api_agent.WORKFLOWS` 之后**必须还原**。它是模块级全局，路由在调用时
+    直接读它（build_router 不透传 manager）。漏还原的后果实测过：本文件按字母序
+    排在 test_workflow_chat_stream / test_workflow_ownership / test_workflow_profiles
+    / test_workflow_start_consistency 等一批之前，那些测试用**原始 singleton**
+    建 workflow，路由读的却是被换掉的这个 → 全线 404「工作流不存在」。
+    用 addCleanup 而不是 finally：异常路径也保证还原。
+    """
     import api_routes.agent as api_agent
+    original = api_agent.WORKFLOWS
     api_agent.WORKFLOWS = manager
+    case.addCleanup(setattr, api_agent, "WORKFLOWS", original)
     app = FastAPI()
     app.include_router(api_agent.build_router(_Ctx(root, pid)))
     return TestClient(app)
@@ -114,7 +125,7 @@ class SseAtomicSubscribeTests(unittest.TestCase):
         def boom(_wid):
             raise WorkflowError("工作流不存在：%s" % _wid)
 
-        client = _build_client(self.mgr, str(self.project), self.pid)
+        client = _build_client(self, self.mgr, str(self.project), self.pid)
         api_agent.WORKFLOWS.subscribe = boom
         try:
             resp = client.get(f"/api/agent/workflow/{wid}/events")
