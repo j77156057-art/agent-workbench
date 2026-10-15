@@ -70,6 +70,7 @@ import hashlib
 import json
 import os
 import pathlib
+import sys
 
 import pytest
 
@@ -81,6 +82,21 @@ REPORT = pathlib.Path(os.environ.get(
 _BASELINE: dict[str, tuple] = {}
 _VIOLATIONS: list[dict] = []
 _armed = False
+
+
+def _emit(msg: str = "") -> None:
+    """安全打印：控制台编码装不下的字符（如 Windows GBK 下的 ⚠ / ✓）自动降级替换，
+    绝不因 UnicodeEncodeError 崩掉。
+
+    为什么必须这样：守卫的告警横幅是「这轮结果不可信」的唯一出口。若它在 GBK 控制台
+    打印 ⚠ 时抛异常，崩溃会把整轮 pytest 的收尾和汇总一起盖掉——比少一个符号危险得多
+    （实测：2026-10-15 全量跑抓到污染，正要报横幅就崩在 ⚠ 上，真实结果被 traceback 淹没）。
+    """
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(msg.encode(enc, errors="replace").decode(enc, errors="replace"))
 
 
 def _fingerprint(path: pathlib.Path):
@@ -189,7 +205,7 @@ def pytest_runtest_teardown(item):
 def pytest_sessionfinish(session, exitstatus):
     if not _VIOLATIONS:
         if os.environ.get("DOCMIND_FREEZE_VERBOSE"):
-            print("\n[freeze-guard] 全程无污染 ✓")
+            _emit("\n[freeze-guard] 全程无污染 ✓")
         return
 
     REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -200,18 +216,18 @@ def pytest_sessionfinish(session, exitstatus):
     for v in _VIOLATIONS:
         by_file[v["file"]] = by_file.get(v["file"], 0) + 1
 
-    print("\n" + "=" * 74)
-    print("  ⚠⚠⚠ 测量被污染：测试运行期间被测文件被改写")
-    print("=" * 74)
+    _emit("\n" + "=" * 74)
+    _emit("  ⚠⚠ 测量被污染：测试运行期间被测文件被改写")
+    _emit("=" * 74)
     for f, n in sorted(by_file.items(), key=lambda kv: -kv[1]):
         rel = os.path.relpath(f, os.getcwd())
-        print("    %-44s 被发现改动 %d 次" % (rel, n))
-    print()
-    print("  这轮的结果**不可信** —— 源码扫描类测试（inspect.getsource）")
-    print("  读到的是错位切出来的片段，报红是假象。")
-    print("  完整记录: %s" % REPORT)
-    print("  处置: 冻结工作树重跑（见 docs/measure-freeze-discipline.md）")
-    print("=" * 74 + "\n")
+        _emit("    %-44s 被发现改动 %d 次" % (rel, n))
+    _emit()
+    _emit("  这轮的结果**不可信** —— 源码扫描类测试（inspect.getsource）")
+    _emit("  读到的是错位切出来的片段，报红是假象。")
+    _emit("  完整记录: %s" % REPORT)
+    _emit("  处置: 冻结工作树重跑（见 docs/measure-freeze-discipline.md）")
+    _emit("=" * 74 + "\n")
 
     # ⚠⚠ 抓到污染就**让这一轮失败**，不只是打印。
     #

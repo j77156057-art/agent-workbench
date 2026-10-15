@@ -28,6 +28,13 @@ import pathlib
 import subprocess
 import sys
 
+# 本脚本会回显子进程捕获到的守卫输出（含 ⚠/✓ 等），Windows GBK 控制台编不出会抛
+# UnicodeEncodeError 把验证流程整个崩掉。保留控制台原生编码，只把编不出的字符替换成 '?'。
+try:
+    sys.stdout.reconfigure(errors="replace")
+except (AttributeError, ValueError):  # 老 Python / stdout 被替换成非 TextIO 时优雅跳过
+    pass
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPORT = pathlib.Path(r"D:\Temp\opencode\freeze_violations.json")
 AGENT = ROOT / "agent.py"
