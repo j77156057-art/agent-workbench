@@ -47,18 +47,25 @@
 #app .ask-side .btn:disabled {
   opacity: 1;
   background: var(--bg-hover);
-  color: var(--text-muted);
+  /* 2026-10-15 实测修正：原用 var(--text-muted)（#6b6356）压 --bg-hover（#e3dccd）
+     只有 4.34:1，差 AA 的 4.5 一线。改成往墨色混 72%：paper 皮肤实测 6.46:1，
+     且深色皮肤（graphite/zinc）往 ink（亮）混同样抬高对比，三套皮肤都稳。
+     「禁用」由中性底 + 虚线边 + not-allowed 光标表达，不靠把字淡到读不清。 */
+  color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover));
   border-style: dashed;
   box-shadow: none;
   cursor: not-allowed;
   transform: none;
 }
 
-/* 2) 输入区「发送」按钮禁用态：与侧栏按钮同源缺陷，一并中性化 */
+/* 2) 输入区「发送」按钮禁用态：与侧栏按钮同源缺陷，一并中性化。
+   2026-10-15 实测修正：同上，var(--text-muted) 压 --bg-hover 只有 4.34:1
+   （空输入是最高频状态，等于默认就顶着一枚不达标的按钮），改往墨色混 72%，
+   paper 皮肤实测 6.46:1；三套皮肤均靠 color-mix 向 ink 收敛保证达标。 */
 #app .ask-main .send-btn:disabled {
   opacity: 1;
   background: var(--bg-hover);
-  color: var(--text-muted);
+  color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover));
   border-style: dashed;
   box-shadow: none;
   cursor: not-allowed;
