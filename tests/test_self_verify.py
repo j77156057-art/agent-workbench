@@ -178,6 +178,98 @@ class SelfVerifyScopeAutoTest(unittest.TestCase):
         self.assertTrue(any("engine" in r for r in data["ran"]))
 
 
+class SelfVerifyWebTest(unittest.TestCase):
+    """静态产物 scope=web：单文件 HTML / CSS 的写后校验。
+
+    为什么这一族存在：`.html` 原先不属于任何 scope → `ran` 为空 → status 判
+    skipped → 收尾门把最终答复整段替换成「不能确认任务成功」。单文件 HTML 是
+    vibecoding 最高频产物，这个洞正卡在主路上。
+    """
+    def setUp(self):
+        self.proj = _TmpProject()
+
+    def tearDown(self):
+        self.proj.close()
+
+    def _node(self):
+        import shutil
+        return os.getenv("DOCMIND_NODE_BIN") or shutil.which("node")
+
+    def test_html_no_longer_falls_into_the_no_validator_gap(self):
+        # 回归：改动文件只有 .html 时，不能再落到「无对应校验器」
+        self.proj.write("game.html", "<!DOCTYPE html>\n<html><body><p>hi</p></body></html>\n")
+        data = json.loads(tools.self_verify("scope: auto\nfiles: game.html"))
+        self.assertTrue(data["ran"], "html 仍然没有任何检查被执行：%s" % data)
+        self.assertNotIn("无对应校验器", data.get("note") or "")
+        self.assertTrue(any("html_structure" in r for r in data["ran"]))
+
+    def test_valid_html_with_valid_script_passes(self):
+        self.proj.write("game.html", textwrap.dedent(
+            "<!DOCTYPE html>\n"
+            "<html><head><title>t</title></head><body>\n"
+            "<canvas id='c'></canvas>\n"
+            "<script>\n"
+            "  var a = 1;\n"
+            "  function go() { return a + 1; }\n"
+            "  go();\n"
+            "</script>\n"
+            "</body></html>\n"
+        ))
+        data = json.loads(tools.self_verify("scope: auto\nfiles: game.html"))
+        self.assertEqual(data["failures"], [])
+        self.assertTrue(any("html_structure" in r for r in data["ran"]))
+        if self._node():
+            self.assertTrue(data["passed"])
+            self.assertTrue(any("node_check" in r for r in data["ran"]))
+        else:
+            self.skipTest("本机无 node，只能验证 HTML 结构检查已执行")
+
+    def test_broken_inline_script_fails(self):
+        if not self._node():
+            self.skipTest("本机无 node，无法做脚本语法校验")
+        self.proj.write("game.html", textwrap.dedent(
+            "<html><body>\n"
+            "<script>\n"
+            "  function go( { return 1; }\n"     # 括号不成对 → 语法错误
+            "</script>\n"
+            "</body></html>\n"
+        ))
+        data = json.loads(tools.self_verify("scope: auto\nfiles: game.html"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any(fl["scope"] == "web" for fl in data["failures"]),
+                        "内联脚本语法错误没有被 web scope 抓到：%s" % data)
+
+    def test_mismatched_tag_fails(self):
+        self.proj.write("game.html", "<html><body><div><span>x</div></body></html>\n")
+        data = json.loads(tools.self_verify("scope: web\nfiles: game.html"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any("web" == fl["scope"] for fl in data["failures"]))
+
+    def test_optional_end_tags_do_not_false_fail(self):
+        # `<p>a<p>b` 是合法 HTML5（结束标签可省略）。收尾门一旦在这里假红，
+        # 模型会去改本来正确的文件 —— 比漏检更糟，所以单独钉住。
+        self.proj.write("index.html", "<!DOCTYPE html>\n<html><body><p>a<p>b</body></html>\n")
+        data = json.loads(tools.self_verify("scope: web\nfiles: index.html"))
+        self.assertEqual(data["failures"], [], "合法的可省略结束标签被误判：%s" % data)
+
+    def test_unbalanced_css_fails(self):
+        self.proj.write("style.css", "body { color: red;\n")
+        data = json.loads(tools.self_verify("scope: web\nfiles: style.css"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any(fl["scope"] == "web" for fl in data["failures"]))
+
+    def test_empty_html_fails(self):
+        self.proj.write("empty.html", "   \n")
+        data = json.loads(tools.self_verify("scope: web\nfiles: empty.html"))
+        self.assertFalse(data["passed"])
+
+    def test_missing_file_is_failure_not_skip(self):
+        # 与 backend scope 同判据：校验一个不存在的文件 = 路径写错，不能假通过
+        data = json.loads(tools.self_verify("scope: web\nfiles: nope.html"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any("不存在" in str(fl.get("error")) for fl in data["failures"]))
+
+
 class ClassifyTest(unittest.TestCase):
     def test_classify_scene(self):
         _py, _fe, scene, engine = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])

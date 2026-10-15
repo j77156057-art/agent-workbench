@@ -8168,7 +8168,11 @@ def start_workflow(arg=""):
 # 校验策略按改动文件类型分 scope（auto 模式自动选）：
 #   backend  (.py)            → py_compile 每个改动文件 + 命中则跑对应 tests/test_<module>.py
 #   frontend (.ts/.vue)       → npm run typecheck（严禁 build，并发铁律）
-#   scene   (场景子系统文件)  → 自动跑 verify_scene_canvas.py（无 GUI，进程内 FastAPI 自检）
+#   web      (.html/.htm/.css)  → HTML 标签闭合（stdlib html.parser）+ 内联 <script>
+#                                 node --check 语法校验（无 node 则降级 skip）。
+#                                 单文件 HTML 是 vibecoding 最高频产物，原先没有校验器
+#                                 → status 判 skipped → 收尾门把最终答复整段换成
+#                                 「不能确认任务成功」，用户看着文件已落盘却被判未验证。
 #   engine  (引擎嵌入模块)    → 需真 Godot GUI，默认仅 scope 显式指定 / scope:all /
 #                              开 DOCMIND_SELF_VERIFY_ENGINE=1 时运行 verify_engine_embed.py，
 #                              否则自动策略里降级为 skip（避免每次写都拉起 Godot 打断并发写入者）
@@ -8244,6 +8248,23 @@ def _sv_classify(targets):
         if "engine_embed" in low or ("embed" in low and "desktop" in low) or low.endswith("desktop_bridge.py"):
             engine.append(p)
     return py, fe, scene, engine
+
+
+# 前端**静态产物**扩展名（单文件 HTML / 样式表）。与 `_sv_classify` 分开是刻意的：
+# 那个函数的 4 元组返回值已被既有测试按位解包，加一位会连坐；而 web 桶只服务
+# 新增的 `web` scope，独立成函数零风险。
+_WEB_EXTS = (".html", ".htm", ".css")
+
+
+def _sv_web_files(targets):
+    """挑出可用纯前端方式校验的静态产物（.html/.htm/.css）。
+
+    为什么必须单列：`.html` 既不是 backend(.py) 也不是 frontend(frontend/**)，
+    原先一个桶都不进 → `ran` 为空 → status 判 skipped → 收尾门把最终答复整段
+    替换成「修改尚未完成验证，不能确认任务成功」。用户明明看着文件落盘了，却被
+    判未验证。单文件 HTML 是 vibecoding 最高频的产物，这个洞卡在主路上。
+    """
+    return [str(t) for t in targets if str(t).lower().endswith(_WEB_EXTS)]
 
 
 def _sv_verify_backend(py_files, root, result):
@@ -8343,6 +8364,164 @@ def _sv_verify_frontend(fe_files, root, result):
     except Exception as e:  # noqa: BLE001
         result["failures"].append({"scope": "frontend", "file": fe_dir,
                                    "error": "typecheck 无法运行：" + str(e)[:200]})
+
+
+def _sv_verify_web(web_files, root, result):
+    """静态产物校验：HTML 标签闭合（stdlib）+ 内联脚本 node --check（无 node 则降级）。
+
+    刻意不 build、不联网、不写仓库：这是**每次写后**都跑的收尾门，任何副作用都会
+    打断并发写入者（frontend scope 只跑 typecheck 也是同一个理由）。
+    `node --check` 只做语法解析、不执行，可以安全地作用在刚生成的脚本上。
+    """
+    import shutil
+    import tempfile
+    from html.parser import HTMLParser
+
+    # HTML5 允许省略结束标签的元素。不把它们算进「未闭合」，否则 `<p>a<p>b`
+    # 这种完全合法的写法会被判失败 —— 收尾门一旦假红，模型就会去改本来正确的
+    # 文件，比漏检更糟。
+    void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+                 "link", "meta", "param", "source", "track", "wbr"}
+    optional_end = {"html", "head", "body", "p", "li", "dt", "dd", "rt", "rp",
+                    "option", "optgroup", "thead", "tbody", "tfoot", "tr", "td",
+                    "th", "colgroup", "caption", "frameset", "legend"}
+
+    class _Balance(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.stack = []
+            self.errors = []
+            self.scripts = []          # [(起始行号, 正文)]
+
+        def handle_starttag(self, tag, attrs):
+            if tag in void_tags:
+                return
+            # 同名标签重复出现时，前一个由 HTML 规范自动闭合（<p>a<p>b、<td>x<td>y）
+            if tag in optional_end and self.stack and self.stack[-1][0] == tag:
+                self.stack.pop()
+            self.stack.append((tag, self.getpos()[0]))
+
+        def handle_endtag(self, tag):
+            if tag in void_tags:
+                return
+            # 结束标签到来时，栈顶的「可省略结束标签」元素按规范隐式闭合：
+            # `<p>a<p>b</body>` 里两个 <p> 都是被 </body> 关掉的。不先弹就会把
+            # 合法 HTML 判成错配 —— 收尾门假红会诱导模型去改本来正确的文件。
+            while (self.stack and self.stack[-1][0] != tag
+                   and self.stack[-1][0] in optional_end):
+                self.stack.pop()
+            if not self.stack:
+                if tag not in optional_end:
+                    self.errors.append("第 %d 行多余的 </%s>" % (self.getpos()[0], tag))
+                return
+            if self.stack[-1][0] != tag:
+                self.errors.append(
+                    "第 %d 行 </%s> 与第 %d 行未闭合的 <%s> 错配"
+                    % (self.getpos()[0], tag, self.stack[-1][1], self.stack[-1][0]))
+                # 栈里找同名标签并连它上面的全部出栈，避免一处错配连锁报 N 条
+                for i in range(len(self.stack) - 1, -1, -1):
+                    if self.stack[i][0] == tag:
+                        del self.stack[i:]
+                        return
+                return
+            self.stack.pop()
+
+        def handle_data(self, data):
+            # script/style 走 CDATA 模式，这里拿到的是未解析标签的原文
+            if self.stack and self.stack[-1][0] == "script":
+                self.scripts.append((self.getpos()[0], data))
+
+    for f in web_files:
+        rel = os.path.relpath(f, root) if root else f
+        if not os.path.isfile(f):
+            # 与 backend scope 同判据：让校验一个不存在的文件 = 写/路径出错，
+            # 不能降级成 skip 假通过。
+            result["failures"].append({"scope": "web", "file": f,
+                                       "error": "待校验文件不存在：" + f})
+            continue
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except Exception as e:  # noqa: BLE001
+            result["failures"].append({"scope": "web", "file": f,
+                                       "error": "读取失败：" + str(e)[:200]})
+            continue
+        if not text.strip():
+            result["failures"].append({"scope": "web", "file": f,
+                                       "error": "文件为空，无法确认产物有效"})
+            continue
+
+        if f.lower().endswith(".css"):
+            if text.count("{") != text.count("}"):
+                result["failures"].append({
+                    "scope": "web", "file": f,
+                    "error": "CSS 花括号不闭合（{ %d 个 / } %d 个）"
+                             % (text.count("{"), text.count("}"))})
+            else:
+                result["ran"].append("css_balance:" + rel)
+            continue
+
+        parser = _Balance()
+        try:
+            parser.feed(text)
+            parser.close()
+        except Exception as e:  # noqa: BLE001
+            result["failures"].append({
+                "scope": "web", "file": f,
+                "error": "HTML 解析失败：%s：%s" % (type(e).__name__, str(e)[:200])})
+            continue
+        for tag, line in parser.stack:
+            if tag not in optional_end:
+                parser.errors.append("第 %d 行的 <%s> 未闭合" % (line, tag))
+        if parser.errors:
+            result["failures"].append({
+                "scope": "web", "file": f,
+                "error": "HTML 结构校验失败：" + "；".join(parser.errors[:4])})
+        else:
+            result["ran"].append("html_structure:" + rel)
+
+        scripts = [(ln, s) for ln, s in parser.scripts if s.strip()]
+        if not scripts:
+            continue
+        node = os.getenv("DOCMIND_NODE_BIN") or shutil.which("node")
+        if not node:
+            # 与 frontend scope 对 npm 的处理一致：工具缺失是 skip，不是失败
+            result["ran"].append(
+                "web:skip（未找到 node，跳过 %d 段内联脚本语法校验）" % len(scripts))
+            continue
+        for idx, (line, src) in enumerate(scripts, 1):
+            # 含 import/export 的内联脚本按 ESM 解析（.mjs），否则 node --check
+            # 会把合法的模块语法当成语法错误
+            suffix = ".mjs" if re.search(r"^\s*(import|export)\s", src, re.M) else ".js"
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=suffix, prefix="docmind_sv_")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(src)
+                r = _self_verify_command([node, "--check", tmp],
+                                         project_root=root or os.getcwd(), timeout=60)
+                if r.returncode != 0:
+                    tail = ((r.stdout or "") + (r.stderr or "")).strip()[-600:]
+                    result["failures"].append({
+                        "scope": "web", "file": f,
+                        "error": "第 %d 行起的内联脚本 #%d 语法错误：\n%s"
+                                 % (line, idx, tail)})
+                else:
+                    result["ran"].append("node_check:%s#%d" % (rel, idx))
+            except subprocess.TimeoutExpired:
+                result["failures"].append({
+                    "scope": "web", "file": f,
+                    "error": "内联脚本 #%d 语法校验超时（>60s）。" % idx})
+            except Exception as e:  # noqa: BLE001
+                result["failures"].append({
+                    "scope": "web", "file": f,
+                    "error": "内联脚本 #%d 语法校验无法运行：%s" % (idx, str(e)[:200])})
+            finally:
+                if tmp:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
 
 
 def _sv_verify_script(script_name, kind, root, result):
@@ -8447,6 +8626,7 @@ def self_verify(arg=""):
     targets = safe_targets
 
     py_files, fe_files, scene_files, engine_files = _sv_classify(targets)
+    web_files = _sv_web_files(targets)
 
     # 2) 选 scope：auto 按改动文件类型自动选策略。
     #    backend(.py) / frontend(.ts/.vue) / scene(场景子系统，无 GUI 可自动) 始终纳入；
@@ -8461,6 +8641,8 @@ def self_verify(arg=""):
             scopes.append("frontend")
         if scene_files:
             scopes.append("scene")
+        if web_files:
+            scopes.append("web")
         if engine_files and os.getenv("DOCMIND_SELF_VERIFY_ENGINE") == "1":
             scopes.append("engine")
         elif engine_files:
@@ -8469,7 +8651,7 @@ def self_verify(arg=""):
                               "（engine 域自检需真 Godot 且默认关闭，已跳过；"
                               "显式 scope:engine 或开 DOCMIND_SELF_VERIFY_ENGINE=1 可启用）")
     elif scope == "all":
-        scopes = ["backend", "frontend", "scene", "engine"]
+        scopes = ["backend", "frontend", "scene", "web", "engine"]
     else:
         scopes = [scope]
 
@@ -8483,6 +8665,8 @@ def self_verify(arg=""):
                 _sv_verify_script("verify_scene_canvas.py", "scene", root, result)
             elif sc == "engine":
                 _sv_verify_script("verify_engine_embed.py", "engine", root, result)
+            elif sc == "web":
+                _sv_verify_web(web_files, root, result)
             elif sc == "visual":
                 _sv_verify_visual(root, result)
             else:
@@ -8714,7 +8898,7 @@ TOOLS = {
         "func": create_file,
     },
     "self_verify": {
-        "description": "写后自验证工具（Phase 1 闭环收尾门）。系统会在你成功执行 apply_edit/create_file 后自动调用它，对改动做轻量校验（后端 py_compile+对应单测、前端 npm run typecheck），并把结果回填给你；若返回「未通过」，请基于失败信息修复后重试，不要跳过校验直接声称完成。网页项目需要真实画面时可显式调用 scope: visual（正式开发舱会启动临时浏览器并保存截图证据）；你也可以主动调用它来复验指定文件。Action Input 格式：第一行 scope: <auto/backend/frontend/scene/engine/visual/all/skip>，之后可跟多行 files: <文件路径>（缺省时自动用 git diff 发现改动）。",
+        "description": "写后自验证工具（Phase 1 闭环收尾门）。系统会在你成功执行 apply_edit/create_file 后自动调用它，对改动做轻量校验（后端 py_compile+对应单测、前端 npm run typecheck、静态产物 HTML 结构+内联脚本语法），并把结果回填给你；若返回「未通过」，请基于失败信息修复后重试，不要跳过校验直接声称完成。网页项目需要真实画面时可显式调用 scope: visual（正式开发舱会启动临时浏览器并保存截图证据）；你也可以主动调用它来复验指定文件。Action Input 格式：第一行 scope: <auto/backend/frontend/scene/web/engine/visual/all/skip>，之后可跟多行 files: <文件路径>（缺省时自动用 git diff 发现改动）。",
         "func": self_verify,
     },
     "recall_experience": {
