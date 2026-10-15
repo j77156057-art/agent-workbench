@@ -106,6 +106,67 @@ export interface SkillResp {
   skill: string
 }
 
+/** M6 合并门在 report-gate 里的嵌套载荷（同 gate_and_maybe_rollback 的返回形状）。
+ *  rollback_attempted 恒 false / rollback_result 恒 null：在线门只判不执行回滚。 */
+export interface GatePayload {
+  structured_state: 'met' | 'unmet' | 'uncertain'
+  visual_state: 'met' | 'unmet' | 'uncertain'
+  merged: MergedSignals
+  decision: AcceptanceDecision
+  rollback_attempted?: boolean
+  rollback_result?: unknown
+}
+
+/** POST /api/eda/report-gate 请求：在线报告页正文 → M3 解析 →（可选 M4/M5 视觉回归）
+ *  → M6 门 的整链入参。后端见 api_routes/eda.py::ReportGateReq。
+ *  - fetch='inline'：直接用调用方已备好的 content（浏览器抓回的正文走这条）。
+ *  - fetch='web_fetch'|'auto'：后端用 tools.web_fetch（urllib）抓 url。
+ *  - 视觉通道可插拔：直接透传 visual（含 verdict）；或给 golden_key + ROI(view/bbox_norm)
+ *    + capture 后端，让后端现算一次 M5 ROI golden diff 喂进同一个 M6 门。 */
+export interface ReportGateReq {
+  tool: string
+  kind: string
+  url?: string | null
+  content?: string | null
+  fetch?: 'auto' | 'web_fetch' | 'inline'
+  visual?: VisualResult | null
+  vlm_verified?: boolean | null
+  critical?: string[] | null
+  golden_key?: string | null
+  view?: string | null
+  bbox_norm?: number[] | null
+  capture?: 'auto' | 'gdi' | 'x11' | 'vnc'
+  source?: 'foreground' | 'embedded' | 'hwnd'
+  hwnd?: number | null
+  window_id?: number | null
+  vnc_host?: string | null
+  vnc_port?: number | null
+  out_size?: number
+  ssim_threshold?: number
+  delta_threshold?: number
+  grid?: number
+}
+
+/** 在线报告门响应：一次跑完整链的结构化事实 + 视觉来源标注 + M6 合并门 + 验收决策。
+ *  fail-closed：取不到正文 → ok:false / error='no_report_text' / fact=null / 判 uncertain。
+ *  executes_rollback 恒 false（只判不动手）；visual_source 记视觉通道来源，供审计。 */
+export interface ReportGateResp {
+  ok: boolean
+  error?: string
+  source: string
+  url?: string | null
+  tool: string
+  kind: string
+  fetch_failed: boolean
+  fact: EdaFact | null
+  visual_source: 'passthrough' | 'regression' | 'none'
+  visual_error: string | null
+  gate: GatePayload
+  /** 恒 false：在线门只判不执行回滚。 */
+  executes_rollback: boolean
+  note: string
+}
+
 export const edaApi = {
   /** POST /api/eda/parse-report：把工具报告文本解析成结构化事实。 */
   parseReport(tool: string, kind: string, text: string) {
@@ -119,6 +180,13 @@ export const edaApi = {
    *  mode='save' 存基线，mode='check' 比对；verdict 由像素得出，不再手选。 */
   visualRegression(body: VisualRegressionReq) {
     return postJson<VisualRegressionResp>('/api/eda/visual-regression', body)
+  },
+  /** POST /api/eda/report-gate：一次跑完「取正文 → M3 解析 →（可选 M4/M5 视觉回归）→ M6 门」
+   *  整条在线链。fetch='inline' 用已备好 content；'web_fetch'|'auto' 由后端抓 url。
+   *  带 golden_key + ROI + capture 后端时视觉通道现算 M5 diff，与结构化一起进同一个 M6 门。
+   *  **只读**：executes_rollback 恒 false；取不到正文/帧一律 fail-closed 判 uncertain，不造假。 */
+  reportGate(body: ReportGateReq) {
+    return postJson<ReportGateResp>('/api/eda/report-gate', body)
   },
   /** GET /api/eda/skills?tool=：取该 EDA 工具的 skill 说明书。 */
   skills(tool: string) {

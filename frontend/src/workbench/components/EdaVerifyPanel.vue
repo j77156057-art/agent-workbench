@@ -7,7 +7,7 @@
 //   （后端 executes_rollback 恒 false；真实回滚须经 regions.rollback_changeset 人工审批门）。
 // 组件自管状态，不进工作台全局；入口收在顶栏「更多 → 工具与运行」。
 import { computed, ref } from 'vue'
-import { edaApi, type EdaFact, type VerifyResp, type VisualResult, type VisualRegressionResp } from '../api'
+import { edaApi, type EdaFact, type VerifyResp, type VisualResult, type VisualRegressionResp, type ReportGateReq } from '../api'
 
 // 复用 SceneRuntimePanel 的「可嵌入」惯用法：popup（固定弹层，行为不变）/ docked（内联常驻主区）。
 // 同一组件实例仅由父组件的 mode prop 切形态，绝不重建，故已解析的 fact / 门结果等状态在
@@ -64,6 +64,8 @@ const vlmVerified = ref(false)
 
 // ---- 合并门结果（M6）----
 const result = ref<VerifyResp | null>(null)
+// 在线整链（/api/eda/report-gate）溯源标注：取页后端 · 视觉通道来源 · 异常，供审计。
+const reportNote = ref('')
 
 const stateMeta: Record<string, { label: string; cls: string; hint: string }> = {
   met: { label: 'MET · 通过', cls: 'ev-met', hint: '结构化 + 视觉双绿，放行。' },
@@ -179,6 +181,61 @@ async function runGate() {
     })
   } catch (e) {
     error.value = (e as Error).message || '合并门调用失败'
+    result.value = null
+  } finally {
+    busy.value = false
+  }
+}
+
+// 在线整链：一次跑完「正文(inline) → M3 解析 →（live 时后端现算 M5 视觉回归）→ M6 合并门」。
+// 与分步「解析 → 跑回归 → 跑合并门」等价，但走 /api/eda/report-gate 单一只读入口，
+// 视觉通道带 golden_key+ROI+capture 时由后端现算 diff，喂进同一个门；仍只判不执行回滚。
+async function runReportGate() {
+  error.value = ''
+  busy.value = true
+  reportNote.value = ''
+  try {
+    const body: ReportGateReq = {
+      tool: tool.value, kind: kind.value,
+      fetch: 'inline', content: reportText.value,
+      vlm_verified: vlmVerified.value ? true : null,
+    }
+    if (visualMode.value === 'live' && goldenKey.value.trim()) {
+      // 复用取像参数装配（_vrBody 的 mode 对本接口无意义，只取其取像字段）。
+      const vr = _vrBody('check')
+      body.golden_key = vr.golden_key ?? goldenKey.value.trim()
+      body.view = vr.view ?? null
+      body.capture = vr.capture ?? 'auto'
+      if (vr.source) body.source = vr.source
+      if (vr.hwnd != null) body.hwnd = vr.hwnd
+      if (vr.window_id != null) body.window_id = vr.window_id
+      if (vr.vnc_host) body.vnc_host = vr.vnc_host
+      if (vr.vnc_port != null) body.vnc_port = vr.vnc_port
+    } else {
+      // manual 兜底：把已算/手选的 verdict 直接透传给视觉通道。
+      body.visual = currentVisual()
+    }
+    const r = await edaApi.reportGate(body)
+    // 嵌套 gate → 现有 result（VerifyResp 形状），复用三态卡片渲染，不动模板主体。
+    result.value = {
+      ok: r.ok,
+      structured_state: r.gate.structured_state,
+      visual_state: r.gate.visual_state,
+      merged: r.gate.merged,
+      decision: r.gate.decision,
+      executes_rollback: r.executes_rollback,
+      note: r.note,
+    }
+    if (r.fact) fact.value = r.fact
+    reportNote.value =
+      `取页 ${r.source} · 视觉 ${r.visual_source}` +
+      (r.visual_error ? ` · ${r.visual_error}` : '') +
+      (r.fetch_failed ? ' · 正文取不到（fail-closed，未造事实）' : '')
+    if (!r.ok && r.error === 'no_report_text') {
+      error.value = '在线正文取不到 → 判不确定，交人工/下一段核实（未喂解析器、未造假）。'
+    }
+  } catch (e) {
+    error.value = (e as Error).message || '在线报告门调用失败'
     result.value = null
   } finally {
     busy.value = false
@@ -409,6 +466,7 @@ defineExpose({ show })
             <p class="ev-faint ev-hint">live：verdict 由真实截屏 + 确定性像素比对得出（本机无 EDA 工具，被摄窗口是<b>替身</b>，比对链路是真算的）。regression=硬否决；localized/needs_golden/no_frame/…=未核实→UNCERTAIN；pass/identical=通过。视觉结论默认 verified:false；仅经<b>人工核实</b>（VLM 只解释、不决策）才置 verified:true，门才可能据此解除不确定——决定权在人工核实，不在 VLM。</p>
 
             <button class="ev-btn ev-btn-gate" :disabled="busy" @click="runGate">跑合并门 →</button>
+            <button class="ev-btn ev-btn-gate" :disabled="busy" title="一次跑完 正文→M3 解析→（live 现算 M5 视觉回归）→M6 门；只读、不执行回滚" @click="runReportGate">在线报告门 · 整链跑一次 →</button>
 
             <div v-if="result && stateInfo" class="ev-gate wb-card" :class="stateInfo.cls">
               <div class="ev-state">
@@ -429,6 +487,7 @@ defineExpose({ show })
                 </li>
               </ul>
               <div class="ev-exec">{{ result.note }}</div>
+              <div v-if="reportNote" class="ev-faint ev-prov-line">在线整链溯源：{{ reportNote }}</div>
             </div>
           </section>
         </div>
@@ -524,6 +583,7 @@ button:disabled { opacity: .5; cursor: default; }
 .ev-rs-tag { background: rgba(0,0,0,.06); border-radius: 8px; padding: 0 6px; font-size: 10px; color: var(--text-muted); }
 .ev-rs { font-size: 11px; color: var(--text); }
 .ev-exec { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-strong); font-size: 10px; color: var(--text-muted); }
+.ev-prov-line { margin-top: 4px; }
 
 .ev-radio { cursor: pointer; user-select: none; }
 .ev-input { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: 11px; font-family: var(--mono, monospace); }
