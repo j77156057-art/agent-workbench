@@ -395,9 +395,16 @@ class AgentIntegrationCases(_BridgeCase):
                 raise AssertionError("不该在这里调用模型")
 
         instance = agent_mod.Agent(llm=_NullLLM())
+        # 工具权威：注入发生在实例上、来自操作者配置（不是 prompt）。但注入的
+        # 连接器工具一律是 NETWORK 能力，`_web_blocked`（9f8ef17，2026-10-14 防御
+        # 兜底）在联网关时把它们对模型隐藏 —— 默认 web_enabled=False。
         self.assertIn("mcp__demo__search", instance.tools)
+        self.assertNotIn("mcp__demo__search", instance._effective_tool_names())
+        # 联网开：这批外网连接器工具才真正暴露给模型（同一实例，按回合开关）。
+        instance.web_enabled = True
         self.assertIn("mcp__demo__search", instance._effective_tool_names())
-        # 工具权威：注入只发生在实例上，全局注册表（所有会话共用）不能被撑大
+        # 全局注册表（所有会话共用）不能被撑大 —— 注入只进实例。
+        instance.web_enabled = False
         self.assertNotIn("mcp__demo__search", agent_mod.TOOLS)
 
     def test_default_config_injects_nothing(self):
