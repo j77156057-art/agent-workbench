@@ -528,6 +528,15 @@ def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: fl
     if verdict == "no_change" and pixels_changed:
         verdict = "pixels"
         ok = True
+    # type_text 的直接证据，与 pixels 同类：`Input.insertText` 只改 `.value`，
+    # MutationObserver 结构性看不到它（实测真实浏览器里往 input 打字 mutations 恒 0），
+    # 于是「文本已落入」在纯 DOM 判据下永远是 no_change。type_text 已回读证实
+    # value_landed——这是比 DOM 计数更直接的证据，不能因此判假阴性
+    # （否则 Agent 收到 ok:false 会去重试或回报「填不进去」，而字其实已经在框里）。
+    value_landed = bool(extra.get("value_landed"))
+    if verdict == "no_change" and value_landed:
+        verdict = "typed"
+        ok = True
     left_loopback = not _loopback(page.get("href"))
     if left_loopback or verdict == "error_seen":
         ok = False
@@ -675,7 +684,9 @@ def type_text(root: str | Path, *, page: str = "", value: str = "", selector: st
         seen = str(read.get("text") or "")
     return _finish(row, "type", before, settle_ms=settle, screenshot=screenshot,
                    matched=matched, focused=bool(held.get("focused")),
-                   value_seen=seen[:200], value_landed=payload in seen)
+                   value_seen=seen[:200],
+                   # 空 payload 时 `"" in seen` 恒真——那等于「什么都没做也算成功」。
+                   value_landed=bool(payload) and payload in seen)
 
 
 def press_key(root: str | Path, *, page: str = "", key: str = "", selector: str = "",
@@ -908,7 +919,10 @@ def render(result: dict[str, Any]) -> str:
                "error_seen": "【未通过】动作后出现新报错", "no_change": "【没有观察到变化】",
                # canvas 类页面（Godot/WebGL/地图）点击与按键都不产生 DOM 变更，
                # 旧判据下"真的动了"和"什么都没发生"回报一模一样。
-               "pixels": "生效（画面变了，DOM 没变 —— canvas 类页面看这个）"} \
+               "pixels": "生效（画面变了，DOM 没变 —— canvas 类页面看这个）",
+               # 输入框的 value 不走 MutationObserver，DOM 判据结构性看不到；
+               # 这一条以回读到的 value 为准。
+               "typed": "生效（文本已填入，回读对得上）"} \
         .get(result.get("effect"), str(result.get("effect")))
     lines = ["%s：%s —— DOM %+d，console %+d，失败请求 %+d；当前地址 %s。" % (
         action, outcome, delta.get("mutations", 0), delta.get("console", 0),
@@ -941,6 +955,9 @@ def render(result: dict[str, Any]) -> str:
     if result.get("effect") == "pixels":
         lines.append("画面变了但 DOM 没变：这类页面（Godot/WebGL 游戏、地图、可视化）"
                      "的点击与按键本就不产生 DOM 变更，所以要以这一条为准。")
+    if result.get("effect") == "typed":
+        lines.append("文本进去了但 DOM 没变：输入框的 value 不走 MutationObserver，"
+                     "所以「没有观察到变化」这次不构成否定证据——以回读到的内容为准。")
     if result.get("shot_digest"):
         lines.append("截图摘要：%s（上一帧 %s）"
                      % (result["shot_digest"], result.get("prev_shot") or "无"))

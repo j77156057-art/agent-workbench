@@ -360,7 +360,11 @@ class ActionDispatchTests(unittest.TestCase):
 
     def test_type_inserts_text_and_evidences_that_it_landed(self):
         # 真页面里 <input> 的 innerText 是空的，只有 value 能读到；fake 按 mode 分开回话。
-        fake = FakeDevTools(probe=4, probe_after=6,
+        # ⚠ probe_after 不传 = 与 probe 相等 = **零 mutation**，这是真实浏览器的形态：
+        # `Input.insertText` 只改 .value，MutationObserver 结构性看不到（实测恒 0）。
+        # 以前这里传 probe_after=6 造出 2 个 mutation，把「no_change 假阴性」正好掩盖掉——
+        # 测试因此一直是绿的，而真世界上打字全部回报 ok:false。
+        fake = FakeDevTools(probe=4,
                             inspect_by_mode={"value": "你好", "text": ""})
         row = self._session(fake)
         try:
@@ -373,6 +377,23 @@ class ActionDispatchTests(unittest.TestCase):
         self.assertTrue(result["focused"])
         self.assertTrue(result["value_landed"], "回读必须证实文本真的进了元素")
         self.assertEqual(result["value_seen"], "你好")
+        # 判定也必须站在证据这边：文本已落入 ⇒ ok，且 effect 是 typed 而不是 no_change。
+        self.assertEqual(result["effect"], "typed", result)
+        self.assertTrue(result["ok"], "字已经进框了，ok 不能是 False（假阴性会让 Agent 去重试）")
+        self.assertEqual(result["delta"]["mutations"], 0, "fake 必须复现零 mutation 的真实现场")
+
+    def test_type_with_empty_payload_is_not_a_success(self):
+        """空 payload 时 `"" in seen` 恒真——不拦就等于「什么都没做也算成功」。"""
+        fake = FakeDevTools(probe=4, inspect_by_mode={"value": "已有内容", "text": ""})
+        row = self._session(fake)
+        try:
+            result = pa.type_text(row.root, page=row.id, selector="#name", value="",
+                                 screenshot=False)
+        finally:
+            pa.close_all()
+        self.assertFalse(result["value_landed"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["effect"], "no_change")
 
     def test_type_reports_when_the_text_did_not_land(self):
         fake = FakeDevTools(probe=4, probe_after=6, inspect_by_mode={"value": "", "text": ""})
@@ -383,6 +404,8 @@ class ActionDispatchTests(unittest.TestCase):
         finally:
             pa.close_all()
         self.assertFalse(result["value_landed"])
+        # 没落入时 ok 必须仍由 DOM 判据说话：这里 fake 造了 mutation，所以是 changed。
+        self.assertEqual(result["effect"], "changed")
 
     def test_press_on_an_inert_page_is_no_change_not_changed(self):
         """页面前一刻的地址/标题必须真读回来。以前拿硬编码空标题当基线，任何一次按键

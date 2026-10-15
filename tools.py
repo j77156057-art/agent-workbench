@@ -7667,8 +7667,9 @@ def dev_page_action(arg=""):
       timeout: 4                    # wait 的等待秒数
       settle: 600                   # 动作后观察多久（毫秒，上限 5000）
       screenshot: true|false        # click/shot 是否需要截图
-    动作后会给 effect：changed / navigated / reloaded / error_seen / no_change，并附 DOM 变更、
+    动作后会给 effect：changed / navigated / reloaded / typed / error_seen / no_change，并附 DOM 变更、
     新 console 错误、新失败请求的计数。`no_change` 就是「没观察到变化」，不要当成功；
+    `typed` 是输入框专用：value 不走 MutationObserver，DOM 计数恒 0，以回读到的内容为准。
     隐藏/禁用/歧义元素一律拒绝执行。用完必须 action: close 回收（同时最多 3 个会话）。
     `read` 的文本/结构输出有 4000 字上限（会明确标「已截断」），所以**别拿整页文本判断
     「这句话在不在」**：用 `mode: contains` + `selector: <容器>` + `needle: <词>`，命中数与周围

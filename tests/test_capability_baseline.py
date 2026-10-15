@@ -98,7 +98,10 @@ def _box():
         "<!doctype html><meta charset=utf-8><title>P</title>\n"
         "<h1 id=hi>hello</h1>\n"
         "<button id=btn onclick=\"document.getElementById('hi')"
-        ".textContent='clicked'\">go</button>\n", encoding="utf-8")
+        ".textContent='clicked'\">go</button>\n"
+        # type 链路要一个真 input：value 不走 MutationObserver，正是
+        # 「no_change 假阴性」的现场（见 test_page_action 的 typed 用例）。
+        "<input id=fld type=text value=''>\n", encoding="utf-8")
     return d
 
 
@@ -293,6 +296,31 @@ class BrowserChainTests(unittest.TestCase):
                    "action: read\npage: %s\nselector: #hi\n" % self.page)
         self.assertIn("clicked", got,
                       "点完读回仍是 hello —— 点击没真生效（或判定方法不对）")
+
+    def test_type_then_read_back_proves_it_landed(self):
+        """type 的回归：文本已落入必须判 `typed`/ok，不能是 no_change/ok:false。
+
+        这一条钉的是真出过的事故：`Input.insertText` 只改 `.value`，
+        MutationObserver 看不到，纯 DOM 判据下打字恒 no_change，于是
+        「字已经进框了」也回报 ok:false——Agent 会去重试或回报填不进去。
+        """
+        self.assertTrue(self.page, "前置：本轮没能开出会话")
+        out = call("dev_page_action",
+                   "action: type\npage: %s\nselector: #fld\n"
+                   "value: 基线 typed\nsettle: 700\n" % self.page)
+        # 判定同样读回 DOM，不匹配文案；但 effect 必须是 typed 而非 no_change
+        # （这条正是被修的东西，所以两个都要钉）。判定行的格式是
+        # "type：<outcome> —— DOM..."，no_change 时 outcome 是「【没有观察到变化】」，
+        # 所以要带前缀匹配，别把解释行里的引语也算进去。
+        self.assertIn("type：生效（文本已填入", out,
+                      "type 后没判生效：%s" % out[:200])
+        self.assertNotIn("type：【没有观察到变化】", out,
+                         "type 落入成功却报 no_change —— 假阴性回归了：%s" % out[:200])
+        got = call("dev_page_action",
+                   "action: read\npage: %s\nselector: #fld\nmode: value\n"
+                   % self.page)
+        self.assertIn("基线 typed", got,
+                      "读回 value 里没有输入的字 —— type 没真生效：%s" % got[:200])
 
 
 class DesktopAndGameTests(unittest.TestCase):
