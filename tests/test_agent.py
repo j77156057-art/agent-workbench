@@ -793,9 +793,13 @@ class SubagentPlanningRoleTests(unittest.TestCase):
                              if isinstance(item, dict))
         self.assertIn("MCP=deny", prompt)
         effective = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
-        self.assertIn("search_code", effective)
         self.assertNotIn("apply_edit", effective)
         self.assertNotIn("dev_mcp_call", effective)
+        # 显式 allowlist 是**硬上限**（见 9f8ef17）：这里只请求了写工具 apply_edit
+        # 与被禁的 dev_mcp_call，被过滤后有效集为空，**不再回填角色默认工具**（旧的
+        # search_code 回填语义已废除）。只读 planner「仍能读」由不传 allowlist 的用例覆盖。
+        self.assertEqual(effective.strip(), "",
+                         f"只请求写/禁工具时有效集应为空（硬上限，不回填默认）：{effective!r}")
 
     def test_dispatcher_cannot_enable_mcp(self):
         class CaptureLLM(_ScriptedLLM):
