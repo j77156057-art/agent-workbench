@@ -3,6 +3,7 @@
 chat 流 workflow 事件、start_workflow pending 登记。"""
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -167,15 +168,47 @@ class ManagerEventBusTests(unittest.TestCase):
 
 
 class WorkflowEventsSseTests(unittest.TestCase):
-    """通过真实 FastAPI 路由验证 SSE 端点（重放 + 终态自关 + 404）。"""
+    """通过真实 FastAPI 路由验证 SSE 端点（重放 + 终态自关 + 404）。
+
+    2026-10-15：本类此前固定 404——路由层的跨项目归属校验
+    （`require_workflow_project`，AND 语义：project_id 与 project_root 都要命中，
+    任一缺失即拒）是在这些用例写完之后加的，而用例只给了 `project_root` 却没给
+    请求侧项目上下文，于是每次都被判「workflow 不属于当前项目」。
+
+    修法不是在守卫上开口子（那会重新打开跨项目读取），而是让用例按真实契约
+    携带项目上下文：服务端认 `X-DocMind-Project` 头（api.py 的请求上下文读取），
+    前端 `withProject()` 发的也是它。
+
+    **刻意不改全局 `projects.current_project_id()`**：那是进程级持久状态，
+    改了会跨测试文件泄漏（见 tests/test_project_context_isolation.py 与
+    docs/known-defect-project-context-leaks-across-tests.md 立档的既知限制）。
+    带请求头就完全不必动它——用例因此是隔离的，也不会把临时项目留给后续进程。
+    """
 
     def setUp(self):
+        import projects as projects_mod
         self.root = tempfile.mkdtemp()
-        state = WORKFLOWS.start("SSE 端点验证", project_root=self.root,
+        self.pid = projects_mod.ensure_project(self.root, name="SSE 端点验证")
+        state = WORKFLOWS.start("SSE 端点验证", project_id=self.pid,
+                                project_root=self.root,
                                 policy=WorkflowPolicy(approval_mode="high"))
         self.wid = state["workflow_id"]
         WORKFLOWS.choose(self.wid, "recommended")
         WORKFLOWS.plan(self.wid, [{"id": "a", "role": "tester", "task": "验证"}])
+
+    def tearDown(self):
+        import projects as projects_mod
+        # 注销临时项目：注册表不该积压指向已删目录的项目（current 一旦悬在
+        # 这种项目上，后续进程解析到的项目根就不存在了，密钥会跟着失效）。
+        projects_mod.remove_project(self.pid)
+        try:
+            WORKFLOWS.delete_workflow(self.wid)
+        except Exception:  # noqa: BLE001 - 不存在/非终态都无需处理
+            pass
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _headers(self, pid=None):
+        return {"X-DocMind-Project": pid or self.pid}
 
     def _complete(self):
         def runner(_task, _context):
@@ -189,7 +222,8 @@ class WorkflowEventsSseTests(unittest.TestCase):
         import api
         self._complete()
         with TestClient(api.app) as client:
-            resp = client.get("/api/agent/workflow/%s/events" % self.wid)
+            resp = client.get("/api/agent/workflow/%s/events" % self.wid,
+                              headers=self._headers())
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/event-stream", resp.headers.get("content-type", ""))
         payloads = [json.loads(line[5:].strip())
@@ -209,7 +243,8 @@ class WorkflowEventsSseTests(unittest.TestCase):
         last_seq = done["events"][-1]["seq"]
         with TestClient(api.app) as client:
             resp = client.get(
-                "/api/agent/workflow/%s/events?after=%d" % (self.wid, last_seq))
+                "/api/agent/workflow/%s/events?after=%d" % (self.wid, last_seq),
+                headers=self._headers())
         payloads = [json.loads(line[5:].strip())
                     for line in resp.text.splitlines()
                     if line.startswith("data: ")]
@@ -219,8 +254,30 @@ class WorkflowEventsSseTests(unittest.TestCase):
         from starlette.testclient import TestClient
         import api
         with TestClient(api.app) as client:
-            resp = client.get("/api/agent/workflow/no-such-wf/events")
+            resp = client.get("/api/agent/workflow/no-such-wf/events",
+                              headers=self._headers())
         self.assertEqual(resp.status_code, 404)
+
+    def test_cross_project_workflow_returns_404(self):
+        """别项目的工作流不能被当前项目订阅事件（就是本类当初固定 404 的那条守卫）。
+
+        知道 workflow_id 不等于有权读它——这条钉住「守卫不能被顺手放松」。
+        用请求头换成另一个项目，全程不改全局 current_project_id。
+        """
+        from starlette.testclient import TestClient
+        import api
+        import projects as projects_mod
+        other_root = tempfile.mkdtemp()
+        other_pid = projects_mod.ensure_project(other_root, name="别项目")
+        try:
+            with TestClient(api.app) as client:
+                resp = client.get("/api/agent/workflow/%s/events" % self.wid,
+                                  headers=self._headers(other_pid))
+            self.assertEqual(resp.status_code, 404)
+            self.assertIn("不属于当前项目", resp.json().get("error", ""))
+        finally:
+            projects_mod.remove_project(other_pid)
+            shutil.rmtree(other_root, ignore_errors=True)
 
     def test_backend_status_includes_langsmith_diagnostics(self):
         from starlette.testclient import TestClient
