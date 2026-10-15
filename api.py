@@ -6354,6 +6354,7 @@ from api_routes.projects import build_router as build_projects_router
 from api_routes.agent import build_router as build_agent_router
 from api_routes.engine import build_router as build_engine_router
 from api_routes.resources import build_router as build_resources_router
+from api_routes.eda import build_router as build_eda_router
 # FastAPI 0.141 keeps included routers as lazy wrapper routes.  The project has
 # route-integrity checks and diagnostics that enumerate concrete APIRoute
 # objects, so domain routers are flattened deliberately at this composition
@@ -6364,6 +6365,7 @@ for _domain_router in (
     build_agent_router(sys.modules[__name__]),
     build_engine_router(sys.modules[__name__]),
     build_resources_router(sys.modules[__name__]),
+    build_eda_router(sys.modules[__name__]),
 ):
     app.router.routes.extend(_domain_router.routes)
 
