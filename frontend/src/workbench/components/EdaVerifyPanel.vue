@@ -7,7 +7,7 @@
 //   （后端 executes_rollback 恒 false；真实回滚须经 regions.rollback_changeset 人工审批门）。
 // 组件自管状态，不进工作台全局；入口收在顶栏「更多 → 工具与运行」。
 import { computed, ref } from 'vue'
-import { edaApi, type EdaFact, type VerifyResp, type VisualResult, type VisualRegressionResp, type ReportGateReq } from '../api'
+import { edaApi, changesetApi, type EdaFact, type VerifyResp, type VisualResult, type VisualRegressionResp, type ReportGateReq } from '../api'
 
 // 复用 SceneRuntimePanel 的「可嵌入」惯用法：popup（固定弹层，行为不变）/ docked（内联常驻主区）。
 // 同一组件实例仅由父组件的 mode prop 切形态，绝不重建，故已解析的 fact / 门结果等状态在
@@ -67,12 +67,30 @@ const result = ref<VerifyResp | null>(null)
 // 在线整链（/api/eda/report-gate）溯源标注：取页后端 · 视觉通道来源 · 异常，供审计。
 const reportNote = ref('')
 
+// ---- 门→人工审批→执行回滚 桥线（本面板仍不自动 revert，仅把 gate 的 rollback 建议
+//      经后端登记成审批请求；下面按钮点下去才走 regions.rollback_changeset 的 require_approval 门）----
+// 待绑定的真实变更集 id：留空 → 门只判不登记审批（行为同以前）。
+const changesetId = ref('')
+// 最近一次在线门返回的审批桥状态：requested=后端已登记审批请求；changesetId=实际绑定的 id。
+const gateApproval = ref<{ requested: boolean; changesetId: string } | null>(null)
+// 点「执行回滚」后的调用状态与回执（未经审批会被后端 403 拦下，如实回显）。
+const rollbackBusy = ref(false)
+const rollbackMsg = ref('')
+const rollbackErr = ref('')
+
 const stateMeta: Record<string, { label: string; cls: string; hint: string }> = {
   met: { label: 'MET · 通过', cls: 'ev-met', hint: '结构化 + 视觉双绿，放行。' },
   unmet: { label: 'UNMET · 否决', cls: 'ev-unmet', hint: '有信号明确否决，拒绝放行（建议回滚，但需人工审批）。' },
   uncertain: { label: 'UNCERTAIN · 拿不准', cls: 'ev-unc', hint: '未核实/缺证据，绝不静默放行，升级人工/下一段核实。' },
 }
 const stateInfo = computed(() => stateMeta[result.value?.merged.state || ''] || null)
+
+// 只有「在线整链跑过 + 门判 rollback + 后端确实登记了审批请求 + 绑了真实 cs id」才亮回滚按钮。
+// 手选/分步门（runGate/loadPreset）不登记审批，故不出现此按钮——绝不给"看起来能一键回滚"的假象。
+const showRollback = computed(() =>
+  !!gateApproval.value?.requested &&
+  !!gateApproval.value?.changesetId &&
+  result.value?.decision.action === 'rollback')
 
 // 数值展示：SSIM/均值差等可能是 undefined（缺 golden/取像失败）→ 给 '—' 而非崩。
 function fmtNum(v: number | undefined | null): string {
@@ -173,6 +191,8 @@ async function runRegression() {
 async function runGate() {
   error.value = ''
   busy.value = true
+  gateApproval.value = null      // 分步门不登记审批：清掉回滚桥状态
+  rollbackMsg.value = ''; rollbackErr.value = ''
   try {
     result.value = await edaApi.verify({
       structured: fact.value,
@@ -194,11 +214,14 @@ async function runReportGate() {
   error.value = ''
   busy.value = true
   reportNote.value = ''
+  gateApproval.value = null      // 每次在线整链重跑：清掉上一轮回滚桥状态
+  rollbackMsg.value = ''; rollbackErr.value = ''
   try {
     const body: ReportGateReq = {
       tool: tool.value, kind: kind.value,
       fetch: 'inline', content: reportText.value,
       vlm_verified: vlmVerified.value ? true : null,
+      changeset_id: changesetId.value.trim() || null,
     }
     if (visualMode.value === 'live' && goldenKey.value.trim()) {
       // 复用取像参数装配（_vrBody 的 mode 对本接口无意义，只取其取像字段）。
@@ -226,6 +249,8 @@ async function runReportGate() {
       executes_rollback: r.executes_rollback,
       note: r.note,
     }
+    // 审批桥：后端在门判 rollback 且绑了 cs id 时登记人工审批请求，回此两字段。
+    gateApproval.value = { requested: !!r.approval_requested, changesetId: r.changeset_id || '' }
     if (r.fact) fact.value = r.fact
     reportNote.value =
       `取页 ${r.source} · 视觉 ${r.visual_source}` +
@@ -239,6 +264,33 @@ async function runReportGate() {
     result.value = null
   } finally {
     busy.value = false
+  }
+}
+
+// 「执行回滚」：只有门已把 rollback 建议登记成人工审批请求（showRollback 为真）才出现此按钮。
+// 点下去走 changesetApi.rollback → regions.rollback_changeset：内部仍过 require_approval 人工门，
+// 未获批会被后端 403 拦下（approval_required），本函数如实回显"待审批"，绝不假装回滚成功。
+async function rollbackNow() {
+  const cs = gateApproval.value?.changesetId || ''
+  if (!cs) { rollbackErr.value = '未绑定变更集 id，无法回滚。'; return }
+  if (rollbackBusy.value) return
+  rollbackBusy.value = true
+  rollbackMsg.value = ''; rollbackErr.value = ''
+  try {
+    const r = await changesetApi.rollback(cs) as {
+      ok?: boolean; blocked?: boolean; approval_required?: boolean; message?: string; error?: string
+    }
+    if (r && (r.blocked || r.approval_required)) {
+      rollbackErr.value = `回滚被人工审批门拦下（待审批）：${r.message || r.error || '需先审批 rollback_changeset'}`
+    } else if (!r.ok) {
+      rollbackErr.value = `回滚失败：${r.error || '未知错误'}`
+    } else {
+      rollbackMsg.value = `已执行回滚（cs：${cs}）——生成新提交撤销，历史未破坏。`
+    }
+  } catch (e) {
+    rollbackErr.value = (e as Error).message || '回滚调用失败'
+  } finally {
+    rollbackBusy.value = false
   }
 }
 
@@ -268,6 +320,8 @@ async function loadPreset(p: Preset) {
   visualMode.value = 'manual'; liveResult.value = null; liveThumb.value = ''
   verdict.value = p.verdict; vlmVerified.value = p.vlm
   error.value = ''
+  gateApproval.value = null      // 预置走分步门，不登记审批
+  rollbackMsg.value = ''; rollbackErr.value = ''
   busy.value = true
   try {
     fact.value = await edaApi.parseReport(p.tool, p.kind, p.report)
@@ -317,7 +371,7 @@ defineExpose({ show })
           <button class="ev-link" @click="docked ? collapse() : (open = false)">{{ docked ? '收起' : '关闭' }}</button>
         </div>
 
-        <p class="ev-note">本面板<b>只判不执行回滚</b>（后端 <code>executes_rollback:false</code>）；真实回滚须经 <code>regions.rollback_changeset</code> 的人工审批门。视觉结论 <b>verified:false</b> 起步。</p>
+        <p class="ev-note">本面板<b>自身不自动回滚</b>（后端 <code>executes_rollback:false</code>）。绑定<b>变更集 id</b> 后跑在线门，若判 rollback，会经 <code>regions.rollback_changeset</code> 的<em>人工审批门</em>登记一条审批请求；只有审批通过、再点「执行回滚」才真正 revert。视觉结论 <b>verified:false</b> 起步。</p>
 
         <!-- 预置用例 -->
         <div class="ev-presets">
@@ -465,6 +519,11 @@ defineExpose({ show })
 
             <p class="ev-faint ev-hint">live：verdict 由真实截屏 + 确定性像素比对得出（本机无 EDA 工具，被摄窗口是<b>替身</b>，比对链路是真算的）。regression=硬否决；localized/needs_golden/no_frame/…=未核实→UNCERTAIN；pass/identical=通过。视觉结论默认 verified:false；仅经<b>人工核实</b>（VLM 只解释、不决策）才置 verified:true，门才可能据此解除不确定——决定权在人工核实，不在 VLM。</p>
 
+            <div class="ev-row">
+              <label>变更集 id（回滚桥）
+                <input v-model="changesetId" class="ev-input" type="text" size="16" placeholder="绑定后 rollback 会登记人工审批；留空=只判" />
+              </label>
+            </div>
             <button class="ev-btn ev-btn-gate" :disabled="busy" @click="runGate">跑合并门 →</button>
             <button class="ev-btn ev-btn-gate" :disabled="busy" title="一次跑完 正文→M3 解析→（live 现算 M5 视觉回归）→M6 门；只读、不执行回滚" @click="runReportGate">在线报告门 · 整链跑一次 →</button>
 
@@ -488,6 +547,16 @@ defineExpose({ show })
               </ul>
               <div class="ev-exec">{{ result.note }}</div>
               <div v-if="reportNote" class="ev-faint ev-prov-line">在线整链溯源：{{ reportNote }}</div>
+
+              <div v-if="showRollback" class="ev-rollback">
+                <div class="ev-rollback-h">
+                  <span class="ev-rollback-badge">已请求人工回滚审批 · cs:{{ gateApproval?.changesetId }}</span>
+                </div>
+                <p class="ev-faint">门判 rollback，已在审批队列登记一条 <code>rollback_changeset</code> 请求（本面板未自动 revert）。<b>须人工审批通过后</b>，下方「执行回滚」才会真正生成撤销提交；未获批将被后端 403 拦下。</p>
+                <button class="ev-btn ev-btn-rollback" :disabled="rollbackBusy" @click="rollbackNow">{{ rollbackBusy ? '回滚执行中…' : '执行回滚 →' }}</button>
+                <p v-if="rollbackMsg" class="ev-vr-msg">{{ rollbackMsg }}</p>
+                <p v-if="rollbackErr" class="ev-err">{{ rollbackErr }}</p>
+              </div>
             </div>
           </section>
         </div>
@@ -584,6 +653,13 @@ button:disabled { opacity: .5; cursor: default; }
 .ev-rs { font-size: 11px; color: var(--text); }
 .ev-exec { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-strong); font-size: 10px; color: var(--text-muted); }
 .ev-prov-line { margin-top: 4px; }
+
+.ev-rollback { margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--border-strong); }
+.ev-rollback-h { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.ev-rollback-badge { background: rgba(224,72,79,.14); color: var(--danger); border-radius: 8px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+.ev-rollback p code { background: rgba(0,0,0,.06); padding: 0 3px; border-radius: 3px; }
+.ev-btn-rollback { border-color: var(--danger); color: var(--danger); }
+.ev-btn-rollback:hover:not(:disabled) { background: rgba(224,72,79,.10); }
 
 .ev-radio { cursor: pointer; user-select: none; }
 .ev-input { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: 11px; font-family: var(--mono, monospace); }

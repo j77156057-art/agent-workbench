@@ -132,6 +132,8 @@ export interface ReportGateReq {
   visual?: VisualResult | null
   vlm_verified?: boolean | null
   critical?: string[] | null
+  /** 真实变更集 id：门判 rollback 且此项非空时，后端登记一条人工回滚审批请求（绝不自动 revert）。 */
+  changeset_id?: string | null
   golden_key?: string | null
   view?: string | null
   bbox_norm?: number[] | null
@@ -164,6 +166,10 @@ export interface ReportGateResp {
   gate: GatePayload
   /** 恒 false：在线门只判不执行回滚。 */
   executes_rollback: boolean
+  /** 门判 rollback 且带 changeset_id 时，是否已成功登记人工回滚审批请求（桥线，非自动执行）。 */
+  approval_requested: boolean
+  /** 本次门请求绑定的真实变更集 id（未提供则为空串）。 */
+  changeset_id: string
   note: string
 }
 
