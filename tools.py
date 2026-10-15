@@ -2930,6 +2930,110 @@ def web_research(query):
     return text
 
 
+def _parse_eda_report_gate_request(arg):
+    """把工具入参规整成 dict：JSON 对象直接用，否则空 dict（缺字段走 needs 提示）。"""
+    if isinstance(arg, dict):
+        return arg
+    text = str(arg or "").strip()
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _eda_report_gate_summary(r):
+    """把 gate_online_report 的结果压成给模型看的紧凑观察：只留判定与依据，不塞原始正文。"""
+    fact = r.get("fact")
+    gate = r.get("gate") or {}
+    merged = gate.get("merged") or {}
+    decision = gate.get("decision") or {}
+    state = merged.get("state")
+    out = {
+        "ok": bool(r.get("ok")),
+        "source": r.get("source"),
+        "url": r.get("url"),
+        "fetch_failed": bool(r.get("fetch_failed")),
+        "tool": r.get("tool"),
+        "kind": r.get("kind"),
+        "structured": None if not fact else {
+            "fact_ok": fact.get("ok"),
+            "metrics": fact.get("metrics"),
+            "missing": fact.get("missing"),
+            "provenance_count": len(fact.get("provenance") or []),
+            "error": fact.get("error"),
+        },
+        "gate": {
+            "structured_state": gate.get("structured_state"),
+            "visual_state": gate.get("visual_state"),
+            "state": state,
+            "decision": decision.get("action"),
+            "reason": decision.get("reason"),
+        },
+        "executes_rollback": False,
+    }
+    if state == "met" and decision.get("action") == "accept":
+        out["message"] = ("结构化事实 + 视觉双绿 → met/accept。数值均带 provenance，"
+                          "可回溯原始报告行；结论以真实报告为准。")
+    elif state == "unmet":
+        out["message"] = ("有信号明确否决 → unmet：建议回滚，但本工具不执行回滚，"
+                          "须经带人工审批门的动作接口。")
+    else:
+        out["message"] = ("证据不足或未核实 → uncertain：升级人工/下一段核实，绝不静默放行。"
+                          "在线正文不是可信结构化事实、或取页失败、或视觉结论 verified:false "
+                          "时一律按不确定处理，不得据此当作『通过』。")
+    return out
+
+
+def eda_report_gate(arg):
+    """抓取在线 EDA 报告/文档页 → M3 结构化解析 → M6 双信号合并门（**只判不执行回滚**）。
+
+    输入为 JSON：`{"tool":"vivado","kind":"timing","url":"...","content":"...","fetch":"auto",
+    "visual":{"verdict":"..."},"vlm_verified":bool,"critical":[...]}`。
+    - 取页源可切换、其余零改动：给 `content` 或 `fetch="inline"` 用调用方（例如通用浏览器）
+      已抓回的正文；否则用 `web_fetch`(urllib) 抓 `url`。
+    - 解析器按 (tool,kind) 选：vivado 的 timing/utilization、klayout 的 drc、verdi 的 simulation。
+    全程 fail-closed：取不到正文 → no_report_text；取到但非本类报告 → M3 判 fact_ok=false；
+    两者都由 M6 归一为 uncertain → escalate，**绝不谎报通过**。只有 met 才 accept；
+    unmet 的 rollback 只是建议信号，本工具从不执行任何 revert。视觉/VLM 结论 verified:false 起步。
+    """
+    req = _parse_eda_report_gate_request(arg)
+    tool = str(req.get("tool") or "").strip()
+    kind = str(req.get("kind") or "").strip()
+    url = str(req.get("url") or "").strip()
+    content = req.get("content")
+    has_content = bool(content and str(content).strip())
+
+    if not tool or not kind:
+        return json.dumps({
+            "ok": False, "needs": ["tool", "kind"],
+            "message": "必须指定 tool(vivado/klayout/verdi) 与 kind(timing/utilization/drc/simulation)。",
+        }, ensure_ascii=False)
+    if not url and not has_content:
+        return json.dumps({
+            "ok": False, "needs": ["url 或 content"],
+            "message": "要么给在线报告页 url，要么给已抓回的正文 content（浏览器抓回走这条）。",
+        }, ensure_ascii=False)
+
+    try:
+        from agent_runtime.eda_web_report import gate_online_report
+    except Exception as exc:  # 链路不可用也如实回，不抛（抛了会被当异常吞成笼统失败）
+        return json.dumps({
+            "ok": False, "error": "chain_unavailable",
+            "message": "EDA 报告门链路不可用：%s" % type(exc).__name__,
+        }, ensure_ascii=False)
+
+    fetch = str(req.get("fetch") or ("inline" if has_content else "auto")).strip().lower()
+    visual = req.get("visual") if isinstance(req.get("visual"), dict) else None
+    vlm_verified = req.get("vlm_verified") if isinstance(req.get("vlm_verified"), bool) else None
+    critical = req.get("critical") if isinstance(req.get("critical"), list) else None
+
+    result = gate_online_report(
+        tool=tool, kind=kind, url=(url or None), content=(content if has_content else None),
+        fetch=fetch, visual=visual, vlm_verified=vlm_verified, critical=critical)
+    return json.dumps(_eda_report_gate_summary(result), ensure_ascii=False)
+
+
 def _detect_source_conflicts(chunks):
     """标记不同来源对带单位数字的明显分歧，不替用户裁决事实。"""
     values = {}
@@ -8568,6 +8672,24 @@ TOOLS = {
     "web_transport": {"description": "查询指定日期的高铁/飞机交通候选。输入 JSON 或多行 origin/destination/departure_date/mode；缺出发地、目的地或日期会返回 needs 并要求补充。必须使用未来的具体日期，返回 verified_fare=false；搜索摘要不是实时余票或支付价，禁止据此估算或编造价格。", "func": web_transport},
     "web_research": {"description": "联网研究：先搜索，再读取多个公开网页正文（默认最多 5 个，可配置），返回来源和证据。适合教程、GitHub、引擎文档和需要最新资料的问题。推荐采用多轮策略：第一轮发现候选；看到候选后用 web_search_batch 并行查评价、口碑、教程或做法；若评价一般或证据不足，排除已见 URL/标题后提交下一批候选，最后再对关键来源调用 web_fetch。输入研究主题。", "func": web_research},
     "web_fetch": {"description": "读取公开网页正文并返回来源、标题和清理后的文本。输入完整 http/https URL。联网研究时先 web_search，再对关键来源调用。", "func": web_fetch},
+    "eda_report_gate": {
+        "description": "抓取在线 EDA 报告/文档页 → M3 结构化解析（Vivado 时序/面积、KLayout DRC、Verdi 仿真）→ M6 双信号合并门，输出三态结论(met/unmet/uncertain)与验收建议(accept/rollback/escalate)。输入 JSON：{tool:vivado|klayout|verdi, kind:timing|utilization|drc|simulation, url?, content?, fetch?:auto|web_fetch|inline, visual?:{verdict}, vlm_verified?:bool, critical?}。取页源可切换：给 content 或 fetch=inline 用调用方（如通用浏览器）已抓回的正文；否则用 web_fetch 抓 url。全程 fail-closed：取不到正文或非本类报告一律判 uncertain，绝不谎报通过；只有 met 才 accept；unmet 的 rollback 只是建议、本工具从不执行回滚。视觉/在线正文/未核实结论一律 verified:false，不得当作通过。",
+        "func": eda_report_gate,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "description": "vivado | klayout | verdi"},
+                "kind": {"type": "string", "description": "timing | utilization | drc | simulation"},
+                "url": {"type": "string", "description": "在线报告/文档页地址（走抓取时用）"},
+                "content": {"type": "string", "description": "已抓回的正文（浏览器抓取走这条，优先于 url）"},
+                "fetch": {"type": "string", "description": "auto | web_fetch | inline"},
+                "visual": {"type": "object", "description": "可选视觉信号 {verdict: pass|identical|regression|localized|...}"},
+                "vlm_verified": {"type": "boolean", "description": "仅上层明确 VLM 已核实通过才置 true"},
+                "critical": {"type": "array", "items": {"type": "string"}, "description": "纳入门禁的判定量键（默认 timing_met/drc_clean/lvs_clean）"},
+            },
+            "required": ["tool", "kind"],
+        },
+    },
     "web_subtitles": {"description": "读取公开 B 站视频字幕。输入包含 BV 号或 av 号的完整视频 URL；没有公开字幕、需要登录或被风控时返回明确原因。", "func": web_subtitles},
     "dev_mcp_call": {"description": "调用已启用的 MCP 游戏引擎连接器。输入 key: 服务器key、name: 工具名、arguments: JSON；可选 fallback_keys 或 hint 触发有界故障转移。先用 dev_list_connectors 看清可用连接器、用 dev_route_connector 按任务语义挑 top 作为 key、用 dev_list_connector_tools 确认 name 与参数；外部连接器需已启用并遵守审批。涉及写入时传 side_effect: true，默认不会跨连接器重试；只有明确传 allow_side_effect_fallback: true 才允许。", "func": dev_mcp_call},
     "dev_list_connectors": {"description": "列出已配置 MCP 连接器（key/label/engine/transport/启用状态/能力标签/适用说明），供 Agent 自主挑选最合适的引擎连接器。输入留空。", "func": dev_list_connectors},
