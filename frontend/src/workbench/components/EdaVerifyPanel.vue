@@ -7,7 +7,7 @@
 //   （后端 executes_rollback 恒 false；真实回滚须经 regions.rollback_changeset 人工审批门）。
 // 组件自管状态，不进工作台全局；入口收在顶栏「更多 → 工具与运行」。
 import { computed, ref } from 'vue'
-import { edaApi, type EdaFact, type VerifyResp, type VisualResult } from '../api'
+import { edaApi, type EdaFact, type VerifyResp, type VisualResult, type VisualRegressionResp } from '../api'
 
 // 复用 SceneRuntimePanel 的「可嵌入」惯用法：popup（固定弹层，行为不变）/ docked（内联常驻主区）。
 // 同一组件实例仅由父组件的 mode prop 切形态，绝不重建，故已解析的 fact / 门结果等状态在
@@ -35,6 +35,22 @@ const reportText = ref('')
 const fact = ref<EdaFact | null>(null)
 
 // ---- 视觉信号（M1/M5）----
+// 两种取源：live=真取像回归（抓真实窗口 ROI → 真算 SSIM+块哈希 → verdict 由像素得出，
+// 不再手选）；manual=手选 verdict 演示（无 EDA 工具/无窗口时仍能演三态否决）。默认 live。
+const visualMode = ref<'live' | 'manual'>('live')
+
+// live 取像回归入参（对齐后端 VisualRegressionReq）。
+const vrSource = ref<'foreground' | 'embedded' | 'hwnd'>('foreground')
+const vrHwnd = ref('')                 // source='hwnd' 时的窗口句柄（字符串，提交时转 int）
+const goldenKey = ref('layout_default')
+const vrView = ref<'layout' | 'waveform' | 'schematic' | 'heatmap'>('layout')
+const vrBusy = ref(false)
+const vrMsg = ref('')                  // 存基线成功/失败提示
+const vrError = ref('')                // 取像/比对错误
+const liveResult = ref<VisualRegressionResp | null>(null)   // check 算出的三态
+const liveThumb = ref('')              // escalation.roi_data_url（有变化时才有）
+
+// manual 兜底：本机没窗口/没 golden 时，仍可手选 verdict 演示合并门否决逻辑。
 const VERDICTS = [
   'identical', 'pass', 'localized', 'regression',
   'needs_golden', 'no_frame', 'capture_error',
@@ -52,6 +68,21 @@ const stateMeta: Record<string, { label: string; cls: string; hint: string }> = 
 }
 const stateInfo = computed(() => stateMeta[result.value?.merged.state || ''] || null)
 
+// 数值展示：SSIM/均值差等可能是 undefined（缺 golden/取像失败）→ 给 '—' 而非崩。
+function fmtNum(v: number | undefined | null): string {
+  if (v === undefined || v === null || Number.isNaN(v)) return '—'
+  return (Math.round(v * 1000) / 1000).toString()
+}
+
+// live verdict → 卡片配色：regression 否决(红)；pass/identical 通过(绿)；其余未核实(琥珀)。
+const liveVerdictCls = computed(() => {
+  const v = liveResult.value?.verdict
+  if (!v) return ''
+  if (v === 'regression') return 'ev-unmet'
+  if (v === 'pass' || v === 'identical') return 'ev-met'
+  return 'ev-unc'
+})
+
 async function parseReport() {
   error.value = ''
   busy.value = true
@@ -66,7 +97,57 @@ async function parseReport() {
 }
 
 function currentVisual(): VisualResult {
+  // live 模式且已跑出比对结果 → 用像素算出的 verdict（真回归）；否则回退手选演示。
+  if (visualMode.value === 'live' && liveResult.value) {
+    return liveResult.value
+  }
   return { verdict: verdict.value, passed: verdict.value === 'pass' || verdict.value === 'identical' }
+}
+
+function _vrBody(mode: 'save' | 'check'): Parameters<typeof edaApi.visualRegression>[0] {
+  const body: Parameters<typeof edaApi.visualRegression>[0] = {
+    mode, source: vrSource.value, golden_key: goldenKey.value.trim() || 'layout_default',
+    view: vrView.value,
+  }
+  if (vrSource.value === 'hwnd') {
+    const h = parseInt(vrHwnd.value.trim(), 10)
+    if (!Number.isNaN(h)) body.hwnd = h
+  }
+  return body
+}
+
+// 存基线：在"当前即通过态"抓一帧 ROI 存 golden（无损 PNG），后续 check 与之比对。
+async function saveBaseline() {
+  vrError.value = ''; vrMsg.value = ''; vrBusy.value = true
+  try {
+    const r = await edaApi.visualRegression(_vrBody('save'))
+    if (r.saved) vrMsg.value = `已存基线「${r.golden_key || goldenKey.value}」（golden 落盘）。`
+    else vrError.value = r.reason || `未存（${r.verdict}）。`
+  } catch (e) {
+    vrError.value = (e as Error).message || '存基线失败'
+  } finally {
+    vrBusy.value = false
+  }
+}
+
+// 跑视觉回归：抓当前窗口 ROI → vs golden 真算 SSIM + 8×8 块哈希 → 得出 verdict。
+async function runRegression() {
+  vrError.value = ''; vrMsg.value = ''; vrBusy.value = true
+  liveResult.value = null; liveThumb.value = ''
+  try {
+    const r = await edaApi.visualRegression(_vrBody('check'))
+    liveResult.value = r
+    if (r.escalation?.roi_data_url) liveThumb.value = r.escalation.roi_data_url
+    if (r.verdict === 'no_frame' || r.verdict === 'capture_error' || r.verdict === 'no_source') {
+      vrError.value = r.reason || `取像失败：${r.verdict}`
+    } else if (r.verdict === 'needs_golden') {
+      vrMsg.value = '该 golden_key 还没有基线，先「存基线」再跑回归。'
+    }
+  } catch (e) {
+    vrError.value = (e as Error).message || '视觉回归调用失败'
+  } finally {
+    vrBusy.value = false
+  }
 }
 
 async function runGate() {
@@ -108,6 +189,8 @@ const PRESETS: Preset[] = [
 
 async function loadPreset(p: Preset) {
   tool.value = p.tool; kind.value = p.kind; reportText.value = p.report
+  // 预置是"手选 verdict 喂门"的演示：切到 manual 并清掉 live 结果，确保喂的就是该 verdict。
+  visualMode.value = 'manual'; liveResult.value = null; liveThumb.value = ''
   verdict.value = p.verdict; vlmVerified.value = p.vlm
   error.value = ''
   busy.value = true
@@ -212,16 +295,76 @@ defineExpose({ show })
 
           <!-- 右：视觉 + 门 -->
           <section class="ev-col">
-            <div class="ev-col-h">② 视觉信号（verdict 由引擎产出，此处手选演示）</div>
+            <div class="ev-col-h">② 视觉信号（live=真取像回归 · verdict 由像素算，非手选）</div>
             <div class="ev-row">
+              <label class="ev-radio"><input type="radio" value="live" v-model="visualMode" /> 真取像回归</label>
+              <label class="ev-radio"><input type="radio" value="manual" v-model="visualMode" /> 手选演示</label>
+            </div>
+
+            <!-- live：抓真实窗口 ROI → vs golden 真算 SSIM + 8×8 块哈希 → 得出 verdict -->
+            <div v-if="visualMode === 'live'" class="ev-vr">
+              <div class="ev-row">
+                <label>取像源
+                  <select v-model="vrSource">
+                    <option value="foreground">前台窗口</option>
+                    <option value="embedded">嵌入引擎窗</option>
+                    <option value="hwnd">指定 HWND</option>
+                  </select>
+                </label>
+                <label v-if="vrSource === 'hwnd'">HWND
+                  <input v-model="vrHwnd" class="ev-input" type="text" size="9" placeholder="如 196876" />
+                </label>
+              </div>
+              <div class="ev-row">
+                <label>golden_key
+                  <input v-model="goldenKey" class="ev-input" type="text" size="14" placeholder="layout_default" />
+                </label>
+                <label>view
+                  <select v-model="vrView">
+                    <option value="layout">layout</option>
+                    <option value="waveform">waveform</option>
+                    <option value="schematic">schematic</option>
+                    <option value="heatmap">heatmap</option>
+                  </select>
+                </label>
+              </div>
+              <div class="ev-row">
+                <button class="ev-btn" :disabled="vrBusy" title="把当前 ROI 存成 golden 基线（无损 PNG）" @click="saveBaseline">存基线</button>
+                <button class="ev-btn ev-btn-run" :disabled="vrBusy" title="抓当前 ROI 与 golden 做确定性 diff" @click="runRegression">跑视觉回归 →</button>
+              </div>
+              <p v-if="vrBusy" class="ev-faint">取像比对中…</p>
+              <p v-if="vrMsg" class="ev-vr-msg">{{ vrMsg }}</p>
+              <p v-if="vrError" class="ev-err">{{ vrError }}</p>
+
+              <div v-if="liveResult" class="ev-vr-res wb-card" :class="liveVerdictCls">
+                <div class="ev-vr-verdict">
+                  <b>{{ liveResult.verdict }}</b>
+                  <span class="ev-vr-verified">verified:false</span>
+                </div>
+                <div class="ev-vr-metrics">
+                  <span>SSIM <b>{{ fmtNum(liveResult.ssim) }}</b></span>
+                  <span>均值差 <b>{{ fmtNum(liveResult.mean_abs_delta) }}</b></span>
+                  <span>变化块 <b>{{ liveResult.blocks?.count ?? 0 }}/{{ liveResult.blocks?.total ?? 0 }}</b></span>
+                </div>
+                <div v-if="liveResult.golden_key" class="ev-vr-key">
+                  golden_key：{{ liveResult.golden_key }}<span v-if="liveResult.hwnd"> · hwnd {{ liveResult.hwnd }}</span><span v-if="liveResult.full_size"> · 帧 {{ liveResult.full_size[0] }}×{{ liveResult.full_size[1] }}</span>
+                </div>
+                <img v-if="liveThumb" :src="liveThumb" class="ev-thumb" alt="变化 ROI 局部图" />
+                <p v-if="liveResult.reason" class="ev-faint">{{ liveResult.reason }}</p>
+              </div>
+            </div>
+
+            <!-- manual：手选 verdict 兜底演示（无窗口/无 golden 时仍能演三态否决） -->
+            <div v-else class="ev-row">
               <label>verdict
                 <select v-model="verdict">
                   <option v-for="v in VERDICTS" :key="v" :value="v">{{ v }}</option>
                 </select>
               </label>
-              <label class="ev-check"><input type="checkbox" v-model="vlmVerified" /> 已人工核实通过（verified:true）</label>
             </div>
-            <p class="ev-faint ev-hint">regression=硬否决；localized/needs_golden/no_frame/…=未核实→UNCERTAIN；pass/identical=通过。视觉结论默认 verified:false；仅经<b>人工核实</b>（VLM 只解释、不决策）才置 verified:true，门才可能据此解除不确定——决定权在人工核实，不在 VLM。</p>
+            <label class="ev-check"><input type="checkbox" v-model="vlmVerified" /> 已人工核实通过（verified:true）</label>
+
+            <p class="ev-faint ev-hint">live：verdict 由真实截屏 + 确定性像素比对得出（本机无 EDA 工具，被摄窗口是<b>替身</b>，比对链路是真算的）。regression=硬否决；localized/needs_golden/no_frame/…=未核实→UNCERTAIN；pass/identical=通过。视觉结论默认 verified:false；仅经<b>人工核实</b>（VLM 只解释、不决策）才置 verified:true，门才可能据此解除不确定——决定权在人工核实，不在 VLM。</p>
 
             <button class="ev-btn ev-btn-gate" :disabled="busy" @click="runGate">跑合并门 →</button>
 
@@ -339,6 +482,27 @@ button:disabled { opacity: .5; cursor: default; }
 .ev-rs-tag { background: rgba(0,0,0,.06); border-radius: 8px; padding: 0 6px; font-size: 10px; color: var(--text-muted); }
 .ev-rs { font-size: 11px; color: var(--text); }
 .ev-exec { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-strong); font-size: 10px; color: var(--text-muted); }
+
+.ev-radio { cursor: pointer; user-select: none; }
+.ev-input { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: 11px; font-family: var(--mono, monospace); }
+.ev-vr { margin-top: 2px; }
+.ev-btn-run { border-color: var(--accent); color: var(--accent-text); }
+.ev-vr-msg { margin: 4px 0 0; color: var(--green, #3a965a); font-size: 11px; }
+.ev-vr-res { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--border-strong); border-radius: 6px; }
+.ev-vr-verdict { display: flex; align-items: center; gap: 6px; }
+.ev-vr-verdict b { font-size: 13px; color: var(--text); }
+.ev-met .ev-vr-verdict b { color: var(--green, #3a965a); }
+.ev-unmet .ev-vr-verdict b { color: var(--danger); }
+.ev-unc .ev-vr-verdict b { color: var(--amber); }
+.ev-vr-verified { margin-left: auto; background: rgba(224,140,50,.14); color: var(--amber); border-radius: 8px; padding: 0 6px; font-size: 10px; }
+.ev-vr-metrics { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px; font-size: 11px; color: var(--text-muted); }
+.ev-vr-metrics b { color: var(--text); font-family: var(--mono, monospace); }
+.ev-vr-key { margin-top: 4px; font-size: 10px; color: var(--text-muted); font-family: var(--mono, monospace); }
+.ev-thumb { display: block; margin-top: 6px; width: 128px; height: 128px; image-rendering: pixelated; border: 1px solid var(--border-strong); border-radius: 4px; }
+
+.ev-vr-res.ev-met { border-color: rgba(58,150,90,.5); }
+.ev-vr-res.ev-unmet { border-color: rgba(224,72,79,.5); }
+.ev-vr-res.ev-unc { border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
 
 @media (max-width: 720px) { .ev-grid { grid-template-columns: 1fr; } .ev-pop { left: 8px; right: 8px; width: auto; } }
 </style>

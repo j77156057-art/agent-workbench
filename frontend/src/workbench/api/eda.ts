@@ -27,6 +27,37 @@ export interface VisualResult {
   [k: string]: unknown
 }
 
+/** POST /api/eda/visual-regression 请求：抓真实窗口 ROI → 与 golden 确定性 diff。
+ *  后端见 api_routes/eda.py；本机无 EDA 工具时 source 取真实 GDI 截屏（被摄窗口是替身）。 */
+export interface VisualRegressionReq {
+  golden_key?: string
+  view?: string | null            // layout/waveform/schematic/heatmap（EDA_VIEWS）
+  bbox_norm?: number[] | null     // 显式 [x1,y1,x2,y2] 归一框，覆盖 view
+  mode?: 'check' | 'save'         // check=比对 | save=存基线
+  source?: 'foreground' | 'embedded' | 'hwnd'
+  hwnd?: number | null            // source='hwnd' 时的目标窗口句柄
+  overwrite?: boolean             // save 模式是否覆盖已存在 golden
+  out_size?: number
+  ssim_threshold?: number
+  delta_threshold?: number
+  grid?: number
+}
+
+/** 视觉回归响应：check 模式带 verdict/块信息（同 VisualResult），save 模式带 saved/entry。
+ *  escalate_to_vlm 为真时附 escalation.roi_data_url（局部 ROI 缩略图，供 VLM/人看）。 */
+export interface VisualRegressionResp extends VisualResult {
+  ok: boolean
+  mode: 'check' | 'save'
+  saved?: boolean
+  golden_key?: string
+  entry?: Record<string, unknown>
+  hwnd?: number | null
+  full_size?: number[]
+  roi_sha256?: string
+  escalation?: { roi_data_url?: string; question?: string; localized_blocks?: unknown }
+  [k: string]: unknown
+}
+
 /** M6 合并门三态。state ∈ met/unmet/uncertain。 */
 export interface MergedSignals {
   state: 'met' | 'unmet' | 'uncertain'
@@ -78,6 +109,11 @@ export const edaApi = {
   /** POST /api/eda/verify：结构化 × 视觉 → 三态合并门 + 验收决策（只判不回滚）。 */
   verify(body: VerifyReq) {
     return postJson<VerifyResp>('/api/eda/verify', body)
+  },
+  /** POST /api/eda/visual-regression：抓真实窗口 ROI → SSIM+8×8 块哈希 vs golden → 算 verdict。
+   *  mode='save' 存基线，mode='check' 比对；verdict 由像素得出，不再手选。 */
+  visualRegression(body: VisualRegressionReq) {
+    return postJson<VisualRegressionResp>('/api/eda/visual-regression', body)
   },
   /** GET /api/eda/skills?tool=：取该 EDA 工具的 skill 说明书。 */
   skills(tool: string) {
