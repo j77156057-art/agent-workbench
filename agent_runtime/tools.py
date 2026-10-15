@@ -128,6 +128,7 @@ class ToolSpec(Mapping[str, Any]):
 
 _NETWORK_TOOLS = {
     "web_search", "web_search_batch", "web_transport", "web_fetch", "web_research", "web_subtitles",
+    "eda_report_gate",
     "dev_http_request", "dev_mcp_call", "dev_list_connector_tools",
     "dev_mcp_probe", "dev_mcp_discover",
     "dev_mcp_search",
@@ -391,6 +392,7 @@ _STAGE_ALLOWED_TOOLS = frozenset({
     "self_verify", "dev_list_regions", "dev_region_read", "dev_region_edit",
     "dev_region_verify", "web_search", "web_search_batch", "web_fetch",
     "web_research", "tool_search", "inspect_data_file", "generate_data_file",
+    "eda_report_gate",
     "preview_project", "game_screenshot", "dev_desktop_capture",
 })
 

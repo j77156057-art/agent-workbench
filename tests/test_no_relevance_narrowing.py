@@ -185,17 +185,24 @@ def test_the_web_switch_is_consulted_without_the_keyword_regex():
 def test_the_cost_is_the_documented_one():
     """**记录代价**：4.7 倍，每次模型调用都付。
 
-    这条存在的意义是：将来有人看到 `13832` 这个数字想「优化」回去时，
+    这条存在的意义是：将来有人看到 `14663` 这个数字想「优化」回去时，
     会先撞到它，从而知道自己在撤掉什么。
+
+    数字**随工具集变化**，改工具就要更新它（2026-10-16 合并
+    feature/multimodal-verification 后 13832 → 14663，已归因到两处，
+    都不是「撤除没生效」）：
+      +522  eda_report_gate（分支新增的 EDA 报告门工具，schema 本身大）
+      +309  dev_agent_log（分支给它补了 domain/facet 声明，才进入有效集）
+    判据「撤除仍然生效」是有效集 111 < 注册表 114，且联网关时 web_* 被排除。
     """
     a = _agent(web_enabled=False)
     schemas = tools_mod.tool_schemas(
         sorted(a._effective_tool_names()), registry=a.tools) or []
     cost = len(json.dumps(schemas, ensure_ascii=False)) // 4
-    assert 13000 < cost < 14500, (
-        "撤除后的 schema 成本实测 %d tokens，与记录的 13832 差得远 —— "
+    assert 14000 < cost < 15500, (
+        "撤除后的 schema 成本实测 %d tokens，与记录的 14663 差得远 —— "
         "要么工具数变了（请更新文档里的数字），要么撤除没生效" % cost)
-    assert len(schemas) >= 100, "有效工具数远低于记录的 109：%d" % len(schemas)
+    assert len(schemas) >= 100, "有效工具数远低于记录的 111：%d" % len(schemas)
 
 
 def test_progressive_prompt_compression_still_applies():

@@ -179,14 +179,29 @@ class SelfVerifyScopeAutoTest(unittest.TestCase):
 
 
 class SelfVerifyWebTest(unittest.TestCase):
-    """静态产物 scope=web：单文件 HTML / CSS 的写后校验。
+    """静态产物 scope=web：单文件 HTML / CSS 的**第一级**写后校验（离线、零依赖）。
 
     为什么这一族存在：`.html` 原先不属于任何 scope → `ran` 为空 → status 判
     skipped → 收尾门把最终答复整段替换成「不能确认任务成功」。单文件 HTML 是
     vibecoding 最高频产物，这个洞正卡在主路上。
+
+    与 SelfVerifyVisualAutoTest 的分工：这里验「产物本身有没有写坏」（结构/语法），
+    那里验「跑起来画面有没有坏」（真浏览器截图）。合并两条并行分支时两套实现都
+    留下了 —— 它们不是重复品，是两个不同失效面的门。
     """
+
     def setUp(self):
         self.proj = _TmpProject()
+        # 本类只钉 web 门（结构/语法），所以把第二级浏览器门 mock 成「通过」：
+        # 不 mock 就会真起浏览器截图，既慢又让「这条测的是哪一级」变模糊。
+        # 为什么不用 DOCMIND_SELF_VERIFY_VISUAL=0 关掉它——关掉的门会进 `skipped`，
+        # 而 finalize_verification 把「有 skip + 有执行」判成 partial（不通过），
+        # 于是每条断言 passed 的用例都会红在跟本类无关的那一档上。
+        patcher = mock.patch("agent_runtime.visual_acceptance.capture_project_preview",
+                             lambda root, **kw: {"passed": True, "checks": {},
+                                                 "screenshot": "x/preview.png"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.proj.close()
@@ -268,17 +283,140 @@ class SelfVerifyWebTest(unittest.TestCase):
         data = json.loads(tools.self_verify("scope: web\nfiles: nope.html"))
         self.assertFalse(data["passed"])
         self.assertTrue(any("不存在" in str(fl.get("error")) for fl in data["failures"]))
+class SelfVerifyVisualAutoTest(unittest.TestCase):
+    """写 .html 静态网页 → scope:auto 自动挂真实浏览器视觉自审（离线：mock 掉截图）。
+
+    这是 web 门之上的**第二级**：结构/语法过得去，不代表跑起来不是黑屏。
+    """
+
+    def setUp(self):
+        self.proj = _TmpProject()
+
+    def tearDown(self):
+        self.proj.close()
+
+    def _capture_patch(self, ret=None, exc=None):
+        def _fake(root, **kw):
+            if exc is not None:
+                raise exc
+            return ret
+        return mock.patch("agent_runtime.visual_acceptance.capture_project_preview", _fake)
+
+    def test_auto_html_runs_visual_and_passes(self):
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        report = {"passed": True, "checks": {"console_errors": 0, "failed_requests": 0},
+                  "screenshot": ".docmind/visual-evidence/x/preview.png"}
+        with self._capture_patch(ret=report):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertTrue(data["passed"])
+        self.assertTrue(any("visual" in r for r in data["ran"]))
+
+    def test_auto_html_console_error_fails(self):
+        # 页面黑屏/脚本报错 → capture 报 passed=False → 整体未通过（这正是能抓到 localStorage 崩溃的路径）
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        report = {"passed": False,
+                  "checks": {"console_errors": 1, "errors": ["SecurityError: storage blocked"]},
+                  "screenshot": ""}
+        with self._capture_patch(ret=report):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any(fl["scope"] == "visual" for fl in data["failures"]))
+
+    def test_auto_html_capture_exception_fail_closed(self):
+        # 起不了浏览器/截图抛异常 → 记 failure，绝不假绿（无证据 ≠ 通过）
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        with self._capture_patch(exc=RuntimeError("no browser")):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertFalse(data["passed"])
+        self.assertTrue(any(fl["scope"] == "visual" for fl in data["failures"]))
+
+    def test_auto_html_runs_both_gates(self):
+        # 合并语义的核心判据：网页改动 auto 档一次挂两级门，不是二选一
+        self.proj.write("index.html", "<!doctype html><title>t</title><p>hi</p>")
+        report = {"passed": True, "checks": {"console_errors": 0, "failed_requests": 0},
+                  "screenshot": ".docmind/visual-evidence/x/preview.png"}
+        with self._capture_patch(ret=report):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertTrue(any("html_structure" in r for r in data["ran"]),
+                        "web 门没跑（单级实现回归了）：%s" % data)
+        self.assertTrue(any("visual" in r for r in data["ran"]),
+                        "visual 门没跑（单级实现回归了）：%s" % data)
+
+    def test_css_does_not_trigger_visual(self):
+        # 样式表没有「画面」可截，不该为改一行 CSS 起一次浏览器
+        self.proj.write("style.css", "body { color: red; }\n")
+        with mock.patch("agent_runtime.visual_acceptance.capture_project_preview") as m:
+            m.return_value = {"passed": True, "checks": {}, "screenshot": ""}
+            data = json.loads(tools.self_verify("scope: auto\nfiles: style.css"))
+        self.assertTrue(any("css_balance" in r for r in data["ran"]))
+        self.assertFalse(any("visual" in r for r in data["ran"]))
+        m.assert_not_called()
+
+    def test_auto_passes_changed_page_as_entry(self):
+        """产物不叫 index.html 也必须截得到画面。
+
+        visual 门原本只在项目里找 index.html，找不到就 fail-closed 判未通过。
+        vibecoding 的产物叫 snake.html / game.html —— 那会让「文件已落盘却被判
+        未验证」的收尾门 bug 换个形式放回来（web scope 那次修的就是它）。
+        所以 auto 档必须把本次改动的网页当入口传进去。
+        """
+        self.proj.write("snake.html", "<!doctype html><title>snake</title><canvas></canvas>")
+        seen = {}
+
+        def _fake(root, **kw):
+            seen["entry"] = kw.get("entry")
+            return {"passed": True, "checks": {"console_errors": 0},
+                    "screenshot": ".docmind/visual-evidence/x/preview.png"}
+
+        with mock.patch("agent_runtime.visual_acceptance.capture_project_preview", _fake):
+            data = json.loads(tools.self_verify("scope: auto\nfiles: snake.html"))
+        self.assertEqual(seen.get("entry"), "snake.html")
+        self.assertTrue(data["passed"])
+        self.assertTrue(any("snake.html" in r for r in data["ran"]))
+
+    def test_visual_optout_env_skips_not_passed(self):
+        """关掉画面自审 = 那扇门没跑，于是整体只能到 partial（不是通过）。
+
+        与 engine 门同判据：主动关掉的门会进 `skipped`，finalize_verification 把
+        「有 skip + 有执行」判成 partial 而非 passed —— 关掉一扇门不等于它过了。
+        合并时这条的判据**原样保留**（它不是该被合并抹掉的东西），只补两行把
+        「web 门此时仍然出证据」钉住：opt-out 下不再是「无任何校验器」的未验证态，
+        但画面结论确实缺失，所以 passed 仍为 False、note 必须写出来。
+        """
+        self.proj.write("index.html", "<!doctype html><title>t</title>")
+        with mock.patch.dict(os.environ, {"DOCMIND_SELF_VERIFY_VISUAL": "0"}):
+            with self._capture_patch(ret={"passed": True, "checks": {}, "screenshot": ""}):
+                data = json.loads(tools.self_verify("scope: auto\nfiles: index.html"))
+        self.assertFalse(any("visual" in r for r in data["ran"]),
+                         "视觉门被关了却仍出现在 ran 里（假绿）：%s" % data)
+        self.assertIn("DOCMIND_SELF_VERIFY_VISUAL", data.get("note", ""))
+        self.assertTrue(any("visual:skip" in s for s in data.get("skipped", [])))
+        # web 门仍在出证据：opt-out 不是「无任何校验器」，但画面结论确实缺失
+        self.assertTrue(any("html_structure" in r for r in data["ran"]))
+        self.assertEqual(data["failures"], [])
+        self.assertFalse(data["passed"])  # 关掉的门没跑 → partial，不是通过
+
 
 
 class ClassifyTest(unittest.TestCase):
     def test_classify_scene(self):
-        _py, _fe, scene, engine = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
+        _py, _fe, scene, engine, _web = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
         self.assertTrue(scene)
         self.assertFalse(engine)
 
     def test_classify_engine(self):
-        _py, _fe, scene, engine = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
+        _py, _fe, scene, engine, _web = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
         self.assertTrue(engine)
+
+    def test_classify_web(self):
+        _py, _fe, _scene, _engine, web = tools._sv_classify(
+            ["index.html", "game.HTM", "style.css", "main.py"])
+        # 合并后 web 桶统一取 `_WEB_EXTS`（.html/.htm/.css）：.css 也收，因为 web 门
+        # 有 CSS 花括号平衡校验器；.py 仍不进桶。两个并行分支曾各自定义一套 web
+        # 集合（一边含 css 一边不含），合并时收敛成一个真源，避免 auto 档判定分叉。
+        self.assertEqual(len(web), 3)
+        self.assertTrue(any(p.endswith("index.html") for p in web))
+        self.assertFalse(any(p.endswith("main.py") for p in web))
 
 
 if __name__ == "__main__":

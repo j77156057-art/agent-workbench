@@ -79,7 +79,7 @@ _reg("files", "移动", "dev_move")
 _reg("verify", "测试", "dev_testrun", "dev_ci_status", "dev_list_changesets")
 _reg("verify", "写后自验证", "self_verify")
 _reg("verify", "契约与对账", "dev_verify_contracts", "dev_diagnostics",
-     "dev_headcheck", "dev_patch")
+     "dev_headcheck", "dev_patch", "dev_agent_log")
 _reg("verify", "依赖与索引", "dev_deps", "dev_rebuild_index", "dev_probe")
 _reg("verify", "回滚", "dev_rollback_changeset")
 
@@ -123,7 +123,7 @@ _reg("jobs", "执行", "run_command", "python_exec")
 _reg("jobs", "后台任务", "dev_job_logs", "dev_job_cancel")
 
 _reg("web", "检索与抓取", "web_search", "web_search_batch", "web_fetch",
-     "web_research", "web_subtitles")
+     "web_research", "web_subtitles", "eda_report_gate")
 _reg("web", "其他", "web_transport", "web_weather")
 
 _reg("knowledge", "资料检索", "search_knowledge")

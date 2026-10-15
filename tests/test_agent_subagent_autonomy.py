@@ -695,7 +695,16 @@ def test_read_only_roles_still_cannot_widen_into_write_tools():
     assert "允许工具=" in prompt, prompt[:300]
     effective = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
     assert "apply_edit" not in effective, f"只读 planner 拿到了写工具：{effective}"
-    assert "search_code" in effective, f"只读 planner 仍要能读：{effective}"
+    assert "python_exec" not in effective, f"只读 planner 拿到了执行工具：{effective}"
+    # 显式 allowlist 是**硬上限**（见 9f8ef17 /
+    # test_explicit_allowlist_filtered_empty_does_not_restore_role_defaults）：
+    # 本例请求的全是写/执行工具，被 _mutates 过滤后有效集应为空——绝不因"空了
+    # 就回填角色默认工具"而变相放宽。只读承诺据此守住：没有任何写工具进有效集。
+    # 「只读 planner 仍能读」这条能力由 test_missing_allowlist_still_uses_role_defaults
+    # （不传 allowlist → 角色默认只读集）单独覆盖，不在这里用旧的回填语义重复钉。
+    assert effective.strip() == "", (
+        f"只请求写工具时有效集应为空（硬上限，不回填默认）：{effective!r}"
+    )
     # python_exec / run_command / dev_commit 那三张表的覆盖由
     # test_read_only_blocklist_covers_all_three_authoritative_tables 钉，不重复。
 

@@ -2930,6 +2930,148 @@ def web_research(query):
     return text
 
 
+def _parse_eda_report_gate_request(arg):
+    """把工具入参规整成 dict：JSON 对象直接用，否则空 dict（缺字段走 needs 提示）。"""
+    if isinstance(arg, dict):
+        return arg
+    text = str(arg or "").strip()
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _eda_report_gate_summary(r):
+    """把 gate_online_report 的结果压成给模型看的紧凑观察：只留判定与依据，不塞原始正文。"""
+    fact = r.get("fact")
+    gate = r.get("gate") or {}
+    merged = gate.get("merged") or {}
+    decision = gate.get("decision") or {}
+    state = merged.get("state")
+    out = {
+        "ok": bool(r.get("ok")),
+        "source": r.get("source"),
+        "url": r.get("url"),
+        "fetch_failed": bool(r.get("fetch_failed")),
+        "visual_source": r.get("visual_source"),
+        "tool": r.get("tool"),
+        "kind": r.get("kind"),
+        "structured": None if not fact else {
+            "fact_ok": fact.get("ok"),
+            "metrics": fact.get("metrics"),
+            "missing": fact.get("missing"),
+            "provenance_count": len(fact.get("provenance") or []),
+            "error": fact.get("error"),
+        },
+        "gate": {
+            "structured_state": gate.get("structured_state"),
+            "visual_state": gate.get("visual_state"),
+            "state": state,
+            "decision": decision.get("action"),
+            "reason": decision.get("reason"),
+        },
+        "executes_rollback": False,
+    }
+    if state == "met" and decision.get("action") == "accept":
+        out["message"] = ("结构化事实 + 视觉双绿 → met/accept。数值均带 provenance，"
+                          "可回溯原始报告行；结论以真实报告为准。")
+    elif state == "unmet":
+        out["message"] = ("有信号明确否决 → unmet：建议回滚，但本工具不执行回滚，"
+                          "须经带人工审批门的动作接口。")
+    else:
+        out["message"] = ("证据不足或未核实 → uncertain：升级人工/下一段核实，绝不静默放行。"
+                          "在线正文不是可信结构化事实、或取页失败、或视觉结论 verified:false "
+                          "时一律按不确定处理，不得据此当作『通过』。")
+    return out
+
+
+def eda_report_gate(arg):
+    """抓取在线 EDA 报告/文档页 → M3 结构化解析 →（可选 M4/M5 视觉回归）→ M6 双信号合并门（**只判不执行回滚**）。
+
+    输入为 JSON：`{"tool":"vivado","kind":"timing","url":"...","content":"...","fetch":"auto",
+    "visual":{"verdict":"..."},"golden_key":"blkA","view":"layout","bbox_norm":[..],"capture":"auto",
+    "vlm_verified":bool,"critical":[...]}`。
+    - 取页源可切换、其余零改动：给 `content` 或 `fetch="inline"` 用调用方（例如通用浏览器）
+      已抓回的正文；否则用 `web_fetch`(urllib) 抓 `url`。
+    - 解析器按 (tool,kind) 选：vivado 的 timing/utilization、klayout 的 drc、verdi 的 simulation。
+    - 视觉通道双路径、同样可插拔：直接透传已算好的 `visual` verdict；或给 `golden_key` + ROI
+      （`view`/`bbox_norm`）+ 可选 `capture`(auto/gdi/x11/vnc)，内部复用 M4 取像 + M5 ROI golden
+      diff **现算** verdict，喂进同一个 M6 门。没配视觉入参 / 取不到帧 / 没 golden → 视觉 uncertain。
+    全程 fail-closed：取不到正文 → no_report_text；取到但非本类报告 → M3 判 fact_ok=false；
+    两者都由 M6 归一为 uncertain → escalate，**绝不谎报通过**。只有 met 才 accept；
+    unmet 的 rollback 只是建议信号，本工具从不执行任何 revert、也不存 golden。视觉/在线正文/
+    未核实结论 verified:false 起步。
+    """
+    req = _parse_eda_report_gate_request(arg)
+    tool = str(req.get("tool") or "").strip()
+    kind = str(req.get("kind") or "").strip()
+    url = str(req.get("url") or "").strip()
+    content = req.get("content")
+    has_content = bool(content and str(content).strip())
+
+    if not tool or not kind:
+        return json.dumps({
+            "ok": False, "needs": ["tool", "kind"],
+            "message": "必须指定 tool(vivado/klayout/verdi) 与 kind(timing/utilization/drc/simulation)。",
+        }, ensure_ascii=False)
+    if not url and not has_content:
+        return json.dumps({
+            "ok": False, "needs": ["url 或 content"],
+            "message": "要么给在线报告页 url，要么给已抓回的正文 content（浏览器抓回走这条）。",
+        }, ensure_ascii=False)
+
+    try:
+        from agent_runtime.eda_web_report import gate_online_report
+    except Exception as exc:  # 链路不可用也如实回，不抛（抛了会被当异常吞成笼统失败）
+        return json.dumps({
+            "ok": False, "error": "chain_unavailable",
+            "message": "EDA 报告门链路不可用：%s" % type(exc).__name__,
+        }, ensure_ascii=False)
+
+    fetch = str(req.get("fetch") or ("inline" if has_content else "auto")).strip().lower()
+    visual = req.get("visual") if isinstance(req.get("visual"), dict) else None
+    vlm_verified = req.get("vlm_verified") if isinstance(req.get("vlm_verified"), bool) else None
+    critical = req.get("critical") if isinstance(req.get("critical"), list) else None
+
+    # ---- 可选视觉回归通道：给了 golden_key + ROI 就复用路由的 make_frame_source 现算 M5 diff ----
+    # fail-closed：没配代码库根 / 建源失败 → 不塞视觉入参，gate 按"视觉缺证据→uncertain"处理，绝不假绿。
+    extra: dict = {}
+    golden_key = str(req.get("golden_key") or "").strip()
+    view = req.get("view")
+    bbox_norm = req.get("bbox_norm") if isinstance(req.get("bbox_norm"), list) else None
+    if golden_key and (view or bbox_norm):
+        root = _get_code_root()
+        if root:
+            try:
+                from api_routes.eda import make_frame_source, VisualRegressionReq
+                vsr = VisualRegressionReq(
+                    golden_key=golden_key, view=view, bbox_norm=bbox_norm,
+                    capture=str(req.get("capture") or "auto"),
+                    source=str(req.get("source") or "foreground"),
+                    hwnd=req.get("hwnd"), window_id=req.get("window_id"),
+                    vnc_host=req.get("vnc_host"), vnc_port=req.get("vnc_port"),
+                    out_size=int(req.get("out_size") or 256))
+                extra = {
+                    "frame_source": make_frame_source(vsr),
+                    "golden_root": os.path.join(root, ".docmind", "eda_golden"),
+                    "golden_key": golden_key,
+                    "view": view,
+                    "bbox_norm": bbox_norm,
+                    "out_size": int(req.get("out_size") or 256),
+                    "ssim_threshold": float(req.get("ssim_threshold") or 0.98),
+                    "delta_threshold": float(req.get("delta_threshold") or 8.0),
+                    "grid": int(req.get("grid") or 8),
+                }
+            except Exception:
+                extra = {}  # 建源失败：退回单通道，视觉 uncertain，不 500、不假绿
+
+    result = gate_online_report(
+        tool=tool, kind=kind, url=(url or None), content=(content if has_content else None),
+        fetch=fetch, visual=visual, vlm_verified=vlm_verified, critical=critical, **extra)
+    return json.dumps(_eda_report_gate_summary(result), ensure_ascii=False)
+
+
 def _detect_source_conflicts(chunks):
     """标记不同来源对带单位数字的明显分歧，不替用户裁决事实。"""
     values = {}
@@ -8173,6 +8315,10 @@ def start_workflow(arg=""):
 #                                 单文件 HTML 是 vibecoding 最高频产物，原先没有校验器
 #                                 → status 判 skipped → 收尾门把最终答复整段换成
 #                                 「不能确认任务成功」，用户看着文件已落盘却被判未验证。
+#   visual   (.html/.htm 网页)   → 真浏览器截图 + console 错误/失败请求门（web 门之上
+#                                 的第二级：只验画面与运行期异常）。auto 档与 web 门
+#                                 一起挂起，DOCMIND_SELF_VERIFY_VISUAL=0 可关，起不了
+#                                 浏览器 fail-closed（无像素证据绝不判通过）。
 #   engine  (引擎嵌入模块)    → 需真 Godot GUI，默认仅 scope 显式指定 / scope:all /
 #                              开 DOCMIND_SELF_VERIFY_ENGINE=1 时运行 verify_engine_embed.py，
 #                              否则自动策略里降级为 skip（避免每次写都拉起 Godot 打断并发写入者）
@@ -8233,7 +8379,13 @@ def _sv_changed_via_git(root):
 
 
 def _sv_classify(targets):
-    """把文件列表分到各 scope 的桶里，返回 (py, frontend, scene, engine) 绝对路径列表。"""
+    """把文件列表分到各 scope 的桶里，返回 (py, frontend, scene, engine, web) 绝对路径列表。
+
+    web 桶 = 前端**静态产物**（.html/.htm/.css），定义唯一真源是 `_sv_web_files`
+    （合并两侧实现时统一：一个「web 集合」两种说法会让 auto 档的判定出现分叉）。
+    静态产物在 auto 档会挂两级门：`web`（离线结构/语法）与——仅 .html/.htm——
+    `visual`（真浏览器画面），见 self_verify 的 scope 选择。
+    """
     import re as _re
     py, fe, scene, engine = [], [], [], []
     for t in targets:
@@ -8247,13 +8399,14 @@ def _sv_classify(targets):
             scene.append(p)
         if "engine_embed" in low or ("embed" in low and "desktop" in low) or low.endswith("desktop_bridge.py"):
             engine.append(p)
-    return py, fe, scene, engine
+    return py, fe, scene, engine, _sv_web_files(targets)
 
 
-# 前端**静态产物**扩展名（单文件 HTML / 样式表）。与 `_sv_classify` 分开是刻意的：
-# 那个函数的 4 元组返回值已被既有测试按位解包，加一位会连坐；而 web 桶只服务
-# 新增的 `web` scope，独立成函数零风险。
+# 前端**静态产物**扩展名（单文件 HTML / 样式表）——web 桶的唯一真源，
+# `_sv_classify` 与 `web` scope 都从这里取，避免两个「web 集合」各说各话。
 _WEB_EXTS = (".html", ".htm", ".css")
+# 能截出画面的子集：样式表没有「画面」可验，visual 门只对网页跑。
+_WEB_PAGE_EXTS = (".html", ".htm")
 
 
 def _sv_web_files(targets):
@@ -8265,6 +8418,15 @@ def _sv_web_files(targets):
     判未验证。单文件 HTML 是 vibecoding 最高频的产物，这个洞卡在主路上。
     """
     return [str(t) for t in targets if str(t).lower().endswith(_WEB_EXTS)]
+
+
+def _sv_web_pages(targets):
+    """从 web 桶里挑出**有画面**的网页（.html/.htm），供 visual 门截图。
+
+    .css 也在 web 桶里（有花括号平衡校验器），但它没有画面，起浏览器截图对它
+    无意义 —— 不给它挂 visual，否则「改一行样式就开一次浏览器」。
+    """
+    return [str(t) for t in targets if str(t).lower().endswith(_WEB_PAGE_EXTS)]
 
 
 def _sv_verify_backend(py_files, root, result):
@@ -8552,27 +8714,54 @@ def _sv_verify_script(script_name, kind, root, result):
         result["ran"].append(kind + ":skip（%s）" % type(e).__name__)
 
 
-def _sv_verify_visual(root, result):
-    """Use the formal browser adapter as an explicit visual verification gate."""
+_SV_VISUAL_MAX_PAGES = 3
+
+
+def _sv_verify_visual(root, result, pages=None):
+    """真实浏览器画面验收（web 门之上的第二级）。
+
+    `pages` = 本次触发它的网页（auto 档传入）。传了就**逐个当入口截图** —— 否则
+    visual 门只在项目里找 index.html，而 vibecoding 的产物叫 snake.html / game.html，
+    找不到入口会直接 fail-closed 判未通过，把「文件已落盘却被判未验证」的收尾门
+    bug 换个形式放回来。没传（显式 `scope: visual`）时沿用原入口发现逻辑。
+    """
     try:
         from agent_runtime.visual_acceptance import capture_project_preview
-        report = capture_project_preview(root)
-        result["ran"].append("visual:browser_preview")
-        result["visual"] = {
-            "checks": dict(report.get("checks") or {}),
-            "screenshot": report.get("screenshot", ""),
-        }
-        if not report.get("passed"):
-            result["failures"].append({
-                "scope": "visual", "file": root,
-                "error": "真实浏览器画面验收未通过：" + json.dumps(
-                    report.get("checks") or {}, ensure_ascii=False),
-            })
     except Exception as exc:  # noqa: BLE001
         result["failures"].append({
             "scope": "visual", "file": root,
-            "error": "真实浏览器画面验收失败：%s：%s" % (type(exc).__name__, str(exc)[:240]),
+            "error": "真实浏览器画面验收不可用：%s：%s" % (type(exc).__name__, str(exc)[:200]),
         })
+        return
+
+    targets = []
+    for p in (pages or []):
+        rel = os.path.relpath(p, root) if root else os.path.basename(p)
+        targets.append(rel.replace("\\", "/"))
+    targets = targets[:_SV_VISUAL_MAX_PAGES]
+    if not targets:
+        targets = [""]
+
+    for entry in targets:
+        label = "visual:browser_preview" + (":" + entry if entry else "")
+        try:
+            report = capture_project_preview(root, entry=entry)
+            result["ran"].append(label)
+            result.setdefault("visual", {}).update({
+                "checks": dict(report.get("checks") or {}),
+                "screenshot": report.get("screenshot", ""),
+            })
+            if not report.get("passed"):
+                result["failures"].append({
+                    "scope": "visual", "file": entry or root,
+                    "error": "真实浏览器画面验收未通过：" + json.dumps(
+                        report.get("checks") or {}, ensure_ascii=False),
+                })
+        except Exception as exc:  # noqa: BLE001 —— 起不了浏览器/截图失败一律 fail-closed
+            result["failures"].append({
+                "scope": "visual", "file": entry or root,
+                "error": "真实浏览器画面验收失败：%s：%s" % (type(exc).__name__, str(exc)[:240]),
+            })
 
 
 def self_verify(arg=""):
@@ -8625,11 +8814,19 @@ def self_verify(arg=""):
                                        "error": "校验目标超出当前项目范围"})
     targets = safe_targets
 
-    py_files, fe_files, scene_files, engine_files = _sv_classify(targets)
-    web_files = _sv_web_files(targets)
+    py_files, fe_files, scene_files, engine_files, web_files = _sv_classify(targets)
+    web_pages = _sv_web_pages(targets)
 
     # 2) 选 scope：auto 按改动文件类型自动选策略。
     #    backend(.py) / frontend(.ts/.vue) / scene(场景子系统，无 GUI 可自动) 始终纳入；
+    #    web(.html/.htm/.css) 静态产物**两级门**，auto 档一次挂两个 scope：
+    #      - `web`：离线、零依赖，HTML 标签闭合 + 内联 <script> node --check + CSS
+    #        花括号平衡。永远跑（无浏览器/无 node 的机器也有结论）。
+    #      - `visual`：只有真网页(.html/.htm)才挂，真起浏览器截图 + console 门，
+    #        验的是 `web` 门看不出的黑屏与运行期异常。起不了浏览器一律 fail-closed；
+    #        显式 DOCMIND_SELF_VERIFY_VISUAL=0 则 skip 并在 note 里写明「未截图
+    #        不等于画面已验证」（此时结论只来自 web 门，不再退回「无任何校验器」
+    #        的未验证态 —— 那正是 vibecoding 收尾门被整段替换的根因）。
     #    engine(引擎嵌入) 需真 Godot GUI 且会拉起引擎进程，默认不自动跑（避免每次写都启
     #    Godot 打断并发写入者）——仅当用户显式开 DOCMIND_SELF_VERIFY_ENGINE=1 才纳入自动，
     #    或经 scope:engine / scope:all 显式触发。其余情况优雅降级为 skip（见 _sv_verify_script）。
@@ -8643,6 +8840,14 @@ def self_verify(arg=""):
             scopes.append("scene")
         if web_files:
             scopes.append("web")
+        if web_pages and os.getenv("DOCMIND_SELF_VERIFY_VISUAL") != "0":
+            scopes.append("visual")
+        elif web_pages:
+            result.setdefault("skipped", []).append("visual:skip（自动浏览器自审已禁用）")
+            result["note"] = ((result.get("note") or "") +
+                              "（检测到 .html/.htm 网页改动，浏览器画面自审默认会跑，但已被 "
+                              "DOCMIND_SELF_VERIFY_VISUAL=0 关闭；此时 web 门只验了结构与脚本"
+                              "语法，未截图不等于画面已验证）")
         if engine_files and os.getenv("DOCMIND_SELF_VERIFY_ENGINE") == "1":
             scopes.append("engine")
         elif engine_files:
@@ -8651,7 +8856,7 @@ def self_verify(arg=""):
                               "（engine 域自检需真 Godot 且默认关闭，已跳过；"
                               "显式 scope:engine 或开 DOCMIND_SELF_VERIFY_ENGINE=1 可启用）")
     elif scope == "all":
-        scopes = ["backend", "frontend", "scene", "web", "engine"]
+        scopes = ["backend", "frontend", "scene", "web", "engine", "visual"]
     else:
         scopes = [scope]
 
@@ -8668,7 +8873,9 @@ def self_verify(arg=""):
             elif sc == "web":
                 _sv_verify_web(web_files, root, result)
             elif sc == "visual":
-                _sv_verify_visual(root, result)
+                # auto 档把本次网页传进去当截图入口（产物不叫 index.html 也要验得到画面）；
+                # 显式 scope:visual 不传，沿用项目入口发现。
+                _sv_verify_visual(root, result, pages=web_pages if scope == "auto" else None)
             else:
                 result["ran"].append("skip:未知 scope=" + str(sc))
         except Exception as e:  # noqa: BLE001 —— 单个 scope 校验器故障绝不阻断整体
@@ -8753,6 +8960,28 @@ TOOLS = {
     "web_transport": {"description": "查询指定日期的高铁/飞机交通候选。输入 JSON 或多行 origin/destination/departure_date/mode；缺出发地、目的地或日期会返回 needs 并要求补充。必须使用未来的具体日期，返回 verified_fare=false；搜索摘要不是实时余票或支付价，禁止据此估算或编造价格。", "func": web_transport},
     "web_research": {"description": "联网研究：先搜索，再读取多个公开网页正文（默认最多 5 个，可配置），返回来源和证据。适合教程、GitHub、引擎文档和需要最新资料的问题。推荐采用多轮策略：第一轮发现候选；看到候选后用 web_search_batch 并行查评价、口碑、教程或做法；若评价一般或证据不足，排除已见 URL/标题后提交下一批候选，最后再对关键来源调用 web_fetch。输入研究主题。", "func": web_research},
     "web_fetch": {"description": "读取公开网页正文并返回来源、标题和清理后的文本。输入完整 http/https URL。联网研究时先 web_search，再对关键来源调用。", "func": web_fetch},
+    "eda_report_gate": {
+        "description": "抓取在线 EDA 报告/文档页 → M3 结构化解析（Vivado 时序/面积、KLayout DRC、Verdi 仿真）→（可选 M4/M5 视觉回归）→ M6 双信号合并门，输出三态结论(met/unmet/uncertain)与验收建议(accept/rollback/escalate)。输入 JSON：{tool:vivado|klayout|verdi, kind:timing|utilization|drc|simulation, url?, content?, fetch?:auto|web_fetch|inline, visual?:{verdict}, golden_key?, view?, bbox_norm?, capture?:auto|gdi|x11|vnc, vlm_verified?:bool, critical?}。取页源可切换：给 content 或 fetch=inline 用调用方（如通用浏览器）已抓回的正文；否则用 web_fetch 抓 url。视觉通道双路径：直接透传已算好的 visual verdict；或给 golden_key+ROI(view/bbox_norm)+取像后端，内部复用 M4 取像 + M5 ROI golden diff 现算 verdict 喂进同一个门。全程 fail-closed：取不到正文、非本类报告、取不到帧或没 golden 一律判 uncertain，绝不谎报通过；只有 met 才 accept；unmet 的 rollback 只是建议、本工具从不执行回滚、也不存 golden。视觉/在线正文/未核实结论一律 verified:false，不得当作通过。",
+        "func": eda_report_gate,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "description": "vivado | klayout | verdi"},
+                "kind": {"type": "string", "description": "timing | utilization | drc | simulation"},
+                "url": {"type": "string", "description": "在线报告/文档页地址（走抓取时用）"},
+                "content": {"type": "string", "description": "已抓回的正文（浏览器抓取走这条，优先于 url）"},
+                "fetch": {"type": "string", "description": "auto | web_fetch | inline"},
+                "visual": {"type": "object", "description": "可选视觉信号 verdict dict {verdict: pass|identical|regression|localized|...}；透传优先于现算"},
+                "golden_key": {"type": "string", "description": "给了就内部现算 M5 ROI golden diff（与 /api/eda/visual-regression 同源）；需配合 view/bbox_norm"},
+                "view": {"type": "string", "description": "layout | waveform | schematic | heatmap（ROI 预设）"},
+                "bbox_norm": {"type": "array", "items": {"type": "number"}, "description": "显式 [x1,y1,x2,y2] 归一框，覆盖 view"},
+                "capture": {"type": "string", "description": "auto | gdi | x11 | vnc：平台可切换取像后端（现算视觉时用）"},
+                "vlm_verified": {"type": "boolean", "description": "仅上层明确 VLM 已核实通过才置 true"},
+                "critical": {"type": "array", "items": {"type": "string"}, "description": "纳入门禁的判定量键（默认 timing_met/drc_clean/lvs_clean）"},
+            },
+            "required": ["tool", "kind"],
+        },
+    },
     "web_subtitles": {"description": "读取公开 B 站视频字幕。输入包含 BV 号或 av 号的完整视频 URL；没有公开字幕、需要登录或被风控时返回明确原因。", "func": web_subtitles},
     "dev_mcp_call": {"description": "调用已启用的 MCP 游戏引擎连接器。输入 key: 服务器key、name: 工具名、arguments: JSON；可选 fallback_keys 或 hint 触发有界故障转移。先用 dev_list_connectors 看清可用连接器、用 dev_route_connector 按任务语义挑 top 作为 key、用 dev_list_connector_tools 确认 name 与参数；外部连接器需已启用并遵守审批。涉及写入时传 side_effect: true，默认不会跨连接器重试；只有明确传 allow_side_effect_fallback: true 才允许。", "func": dev_mcp_call},
     "dev_list_connectors": {"description": "列出已配置 MCP 连接器（key/label/engine/transport/启用状态/能力标签/适用说明），供 Agent 自主挑选最合适的引擎连接器。输入留空。", "func": dev_list_connectors},
@@ -8898,7 +9127,7 @@ TOOLS = {
         "func": create_file,
     },
     "self_verify": {
-        "description": "写后自验证工具（Phase 1 闭环收尾门）。系统会在你成功执行 apply_edit/create_file 后自动调用它，对改动做轻量校验（后端 py_compile+对应单测、前端 npm run typecheck、静态产物 HTML 结构+内联脚本语法），并把结果回填给你；若返回「未通过」，请基于失败信息修复后重试，不要跳过校验直接声称完成。网页项目需要真实画面时可显式调用 scope: visual（正式开发舱会启动临时浏览器并保存截图证据）；你也可以主动调用它来复验指定文件。Action Input 格式：第一行 scope: <auto/backend/frontend/scene/web/engine/visual/all/skip>，之后可跟多行 files: <文件路径>（缺省时自动用 git diff 发现改动）。",
+        "description": "写后自验证工具（Phase 1 闭环收尾门）。系统会在你成功执行 apply_edit/create_file 后自动调用它，对改动做轻量校验（后端 py_compile+对应单测、前端 npm run typecheck、静态产物 HTML 结构+内联脚本语法），并把结果回填给你；若返回「未通过」，请基于失败信息修复后重试，不要跳过校验直接声称完成。**写入 .html/.htm 网页时 auto 档会一次挂两级门**：先做结构+脚本语法（web），再真起浏览器截图并采集 console 错误做画面自审（visual，起不了浏览器会判未通过而不是悄悄跳过）；DOCMIND_SELF_VERIFY_VISUAL=0 可关画面自审，但关闭后结论只来自 web 门，未截图不等于画面已验证；你也可以主动调用它来复验指定文件。Action Input 格式：第一行 scope: <auto/backend/frontend/scene/web/engine/visual/all/skip>，之后可跟多行 files: <文件路径>（缺省时自动用 git diff 发现改动）。",
         "func": self_verify,
     },
     "recall_experience": {

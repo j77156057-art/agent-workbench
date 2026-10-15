@@ -18,6 +18,7 @@ import SceneRuntimePanel from './components/SceneRuntimePanel.vue'
 import ChatDock from './components/ChatDock.vue'
 import AgentPolicyPanel from './components/AgentPolicyPanel.vue'
 import GpuPanel from './components/GpuPanel.vue'
+import EdaVerifyPanel from './components/EdaVerifyPanel.vue'
 import HarnessPanel from './components/HarnessPanel.vue'
 import SemanticLocateBar from './components/SemanticLocateBar.vue'
 import WorkspaceTabs from './components/WorkspaceTabs.vue'
@@ -125,6 +126,9 @@ function closeTopMenus() {
 }
 const teRef = ref<InstanceType<typeof TaskEnginePanel> | null>(null)
 const gpRef = ref<InstanceType<typeof GpuPanel> | null>(null)
+const evRef = ref<InstanceType<typeof EdaVerifyPanel> | null>(null)
+// EDA 面板嵌入态：false=弹窗（默认），true=停靠主区常驻（复用 SceneRuntimePanel 的 dock 惯用法）。
+const edaResident = ref(false)
 const hpRef = ref<InstanceType<typeof HarnessPanel> | null>(null)
 const apRef = ref<InstanceType<typeof AgentPolicyPanel> | null>(null)
 function openEngineConnect() {
@@ -513,6 +517,10 @@ onBeforeUnmount(() => {
               <span class="wb-menu-item-name">GPU 监控</span>
               <small>显存占用、任务排队、空闲自动释放</small>
             </button>
+            <button type="button" class="wb-menu-item" @click="evRef?.show()">
+              <span class="wb-menu-item-name">EDA 多模态验收</span>
+              <small>结构化报告 × 视觉回归 → 三态合并门（只判不回滚）</small>
+            </button>
             <button type="button" class="wb-menu-item" @click="hpRef?.show()">
               <span class="wb-menu-item-name">AI 运行台</span>
               <small>花费、历史会话、操作记录、技能与断点</small>
@@ -633,6 +641,9 @@ onBeforeUnmount(() => {
         <WorkspaceTabs />
         <!-- 阶段 4：运行面板常驻（docked）承载槽（主区，左侧文件树/示例保留，便于边玩边改） -->
         <div id="wb-playpane-slot" class="wb-playpane-slot" v-show="runtimeResident" />
+        <!-- EDA 多模态验收面板常驻（docked）承载槽：EdaVerifyPanel 的 docked 主体 teleport 到此，
+             在主区内联填充（左栏文件树保留）。 -->
+        <div id="wb-eda-slot" class="wb-eda-slot" v-show="edaResident" />
         <!-- v2 重构（E 阶段）：#wb-cockpit-runtime-slot 与 #wb-cockpit-chat-slot 在 AutonomousCockpit 移除后
              不再有 v-show=true 的窗口（workspace === 'cockpit' 状态已删），两个 slot 整行删除。
              窗口嵌入（保留项 ②）由 #wb-playpane-slot + SceneRuntimePanel 承担，实时流（保留项 ①）
@@ -640,7 +651,7 @@ onBeforeUnmount(() => {
         <!-- 页面切换只隐藏编辑区，不卸载 ChatDock。否则 ChatDock 的卸载钩子会
              把正在进行的 SSE 当成用户主动停止，导致切到运行面板时回答被中断。 -->
         <!-- 自主开发舱（v2 重构 E 阶段）：AutonomousCockpit 组件已删除；主区不再挂载该组件 -->
-        <div class="wb-editor-shell" :style="{ display: runtimeResident ? 'none' : 'contents' }">
+        <div class="wb-editor-shell" :style="{ display: (runtimeResident || edaResident) ? 'none' : 'contents' }">
           <AssetCenterView v-if="workspace === 'assets'" />
           <template v-else-if="tree">
             <EditorTabs v-if="workspace === 'code'" />
@@ -671,7 +682,7 @@ onBeforeUnmount(() => {
             </footer>
           </template>
         </div>
-        <div id="wb-chat-slot" class="wb-chat-host" v-show="!runtimeResident" />
+        <div id="wb-chat-slot" class="wb-chat-host" v-show="!runtimeResident && !edaResident" />
       </main>
 
       <div v-if="!treeError && !tree && !demoMode" class="wb-booting">
@@ -692,6 +703,8 @@ onBeforeUnmount(() => {
     <div class="wb-tool-host" aria-hidden="true">
       <TaskEnginePanel ref="teRef" :key="currentProjectId" />
       <GpuPanel ref="gpRef" />
+      <EdaVerifyPanel ref="evRef" :mode="edaResident ? 'docked' : 'popup'" host="#wb-eda-slot"
+        @dock="edaResident = true" @undock="edaResident = false" />
       <HarnessPanel ref="hpRef" />
       <AgentPolicyPanel ref="apRef" />
     </div>

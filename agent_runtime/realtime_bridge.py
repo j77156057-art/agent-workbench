@@ -109,6 +109,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import json
 import threading
 import time
 from typing import Any, Callable
@@ -164,7 +165,70 @@ def _could_be_discovery_opening(candidate: str) -> bool:
     return any(opening.startswith(candidate) for opening in _DISCOVERY_ALL_OPENINGS)
 
 
-MAX_DISCOVERY_CHARS = 300
+# ---- M2·②：严格 `flag_anomaly` JSON 事件（替代句首前缀匹配） --------------------
+# 为什么要改成 tool-call 式结构：句首前缀是"换说法就漏报"的脆弱契约（开工文档 §4 M2 明确
+# 列为验收不可接受）。模型必须吐一段扁平 JSON：`{"anomaly": {"target": "...", "evidence":
+# "...", "confidence": 0.0~1.0}}`，网关用严格 schema 校验；不合规的一律**不**当发现，
+# 也就不会出现"模型换了措辞 → 明明报了却静默漏掉"或反过来"随便一句话被误判异常"。
+# 旧的句首前缀路径保留为 **兼容别名**（`trigger="phrase-legacy"`），只作旧会话切换窗口用。
+ANOMALY_SCHEMA_VERSION = "flag_anomaly.v1"
+ANOMALY_MIN_CONFIDENCE = 0.8          # 对齐 visual_targeting.parse_visual_target 的门槛
+ANOMALY_TARGET_MAX_CHARS = 80
+ANOMALY_EVIDENCE_MAX_CHARS = 200
+
+
+def _parse_anomaly_marker(text: str) -> dict[str, Any] | None:
+    """在流式缓冲里找一个合规的 `{"anomaly": {...}}` JSON 块并返回结构化字段。
+
+    用 `json.JSONDecoder.raw_decode` 从每个 '{' 位置起试解析——能吃到嵌套花括号，
+    不像 `\\{[^{}]*\\}` 那种正则在嵌套结构上会截半。多个候选时取**最后一个
+    通过校验的**（模型自我修正时后说的更可信）。confidence<门槛/target 空/evidence 空
+    /字段超长一律拒；这就是 fail-closed——不合规就当没报，绝不用自由文本兜底。
+    """
+    if not text or "anomaly" not in text:
+        return None
+    decoder = json.JSONDecoder()
+    found: dict[str, Any] | None = None
+    pos = 0
+    while True:
+        start = text.find("{", pos)
+        if start < 0:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, start)
+        except ValueError:
+            pos = start + 1
+            continue
+        pos = max(end, start + 1)
+        if not isinstance(obj, dict):
+            continue
+        inner = obj.get("anomaly")
+        if not isinstance(inner, dict):
+            continue
+        target = str(inner.get("target") or "").strip()
+        evidence = str(inner.get("evidence") or "").strip()
+        raw_conf = inner.get("confidence")
+        try:
+            conf = float(raw_conf)
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 <= conf <= 1.0):
+            continue
+        if conf < ANOMALY_MIN_CONFIDENCE:
+            continue
+        if not target or len(target) > ANOMALY_TARGET_MAX_CHARS:
+            continue
+        if not evidence or len(evidence) > ANOMALY_EVIDENCE_MAX_CHARS:
+            continue
+        stripped = (text[:start] + text[end:]).strip()
+        found = {
+            "target": target, "evidence": evidence, "confidence": round(conf, 3),
+            "text": stripped,
+        }
+    return found
+
+
+MAX_DISCOVERY_CHARS = 800
 DISCOVERY_DEDUPE_WINDOW_SECONDS = 45.0
 DISCOVERY_THROTTLE_SECONDS = 2.0
 
@@ -532,42 +596,62 @@ class SessionBridge:
         return relayed
 
     def _discovery_from_delta(self, event: RealtimeEvent) -> dict[str, Any] | None:
-        """Relay explicitly marked visual claims as unverified, bounded notices."""
+        """Relay explicitly marked visual claims as unverified, bounded notices.
+
+        M2·②：优先走严格 `flag_anomaly` JSON 结构（tool-call 契约），句首前缀降为兼容别名。
+        provider 常见行为是先增量、final 时复读整段——所以如果 final delta 本身就带合法
+        marker 或以旧句首开头，直接以它为准，避免"增量+复述"两份拼到一起把 marker 挤掉。
+        没拿到 final 一律不发（半截 JSON 不猜、半截句首也不猜，fail-closed）。
+        """
         if str(event.payload.get("role") or "assistant") != "assistant":
             return None
         delta = str(event.payload.get("text") or "")
-        # Providers commonly emit incremental text and then repeat the complete
-        # transcript in the final event. Treat that final transcript as authoritative.
-        if event.payload.get("final") is True and _discovery_remainder(delta.lstrip()) is not None:
-            self._discovery_text = delta.strip()[:MAX_DISCOVERY_CHARS + _MAX_OPENING_CHARS]
-            self._discovery_prefix_state = None
-        elif delta:
-            self._discovery_text = (self._discovery_text + delta)[-MAX_DISCOVERY_CHARS - _MAX_OPENING_CHARS:]
-        if self._discovery_prefix_state is None:
-            candidate = self._discovery_text.lstrip()
-            remainder = _discovery_remainder(candidate)
-            if remainder is not None:
-                self._discovery_prefix_state = True
-                self._discovery_text = remainder.strip()
-            elif _could_be_discovery_opening(candidate):
-                return None
-            else:
-                self._discovery_prefix_state = False
-                return None
-        elif self._discovery_prefix_state is False:
+        is_final = event.payload.get("final") is True
+        authoritative_final = False
+        if is_final and delta:
+            if _discovery_remainder(delta.lstrip()) is not None:
+                self._discovery_text = delta.strip()[:MAX_DISCOVERY_CHARS + _MAX_OPENING_CHARS]
+                authoritative_final = True
+            elif _parse_anomaly_marker(delta) is not None:
+                self._discovery_text = delta.strip()[-(MAX_DISCOVERY_CHARS + _MAX_OPENING_CHARS):]
+                authoritative_final = True
+        if delta and not authoritative_final:
+            self._discovery_text = (self._discovery_text + delta)[
+                -MAX_DISCOVERY_CHARS - _MAX_OPENING_CHARS:]
+        if not is_final:
             return None
-        elif delta and not self._discovery_text.endswith(delta):
-            self._discovery_text = (self._discovery_text + delta)[-MAX_DISCOVERY_CHARS:]
+        text_raw = self._discovery_text.strip()
+        marker = _parse_anomaly_marker(text_raw)
+        if marker is not None:
+            nl_text = (marker["text"] or marker["evidence"])[:MAX_DISCOVERY_CHARS]
+            return self._emit_discovery(
+                event, text=nl_text, target=marker["target"],
+                evidence=marker["evidence"], confidence=marker["confidence"],
+                trigger="json-marker")
+        remainder = _discovery_remainder(text_raw.lstrip())
+        if remainder is None:
+            return None
+        legacy_text = remainder.strip()[:MAX_DISCOVERY_CHARS]
+        if not legacy_text:
+            return None
+        return self._emit_discovery(event, text=legacy_text, trigger="phrase-legacy")
 
-        if event.payload.get("final") is not True:
-            return None
-        text = self._discovery_text.strip()[:MAX_DISCOVERY_CHARS]
-        if not text:
-            return None
+    def _emit_discovery(self, event: RealtimeEvent, *, text: str,
+                        target: str | None = None, evidence: str | None = None,
+                        confidence: float | None = None,
+                        trigger: str = "phrase-legacy") -> dict[str, Any] | None:
+        """JSON 与旧句首两条路径共用的收口：去重 + 节流 + verified:false 落账。
+
+        去重归一化 key：JSON 路径按 `target|evidence`——换个说法再报同一个位置/证据，
+        不该被当成新异常刷给用户；旧句首路径按整句（原本也没结构化字段可用）。
+        """
         now = self._clock()
+        key_src = ("%s|%s" % (target, evidence)) if target is not None else text
+        normalized = " ".join(str(key_src).casefold().split())
+        if not normalized:
+            return None
         self._recent_discoveries = [(stamp, previous) for stamp, previous in self._recent_discoveries
                                     if now - stamp <= DISCOVERY_DEDUPE_WINDOW_SECONDS]
-        normalized = " ".join(text.casefold().split())
         if any(difflib.SequenceMatcher(None, normalized, previous).ratio() >= 0.82
                for _, previous in self._recent_discoveries):
             return None
@@ -576,11 +660,20 @@ class SessionBridge:
         self._discovery_last_sent_at = now
         self._recent_discoveries.append((now, normalized))
         self._recent_discoveries = self._recent_discoveries[-64:]
-        return realtime_protocol.server_event(
-            "model.observation", captured_at=event.captured_at,
-            session_id=self.session_id or None, source="realtime-model",
-            verified=False, text=text,
-        )
+        kwargs: dict[str, Any] = {
+            "captured_at": event.captured_at,
+            "session_id": self.session_id or None,
+            "source": "realtime-model",
+            "verified": False,
+            "text": text,
+            "trigger": trigger,
+        }
+        if target is not None:
+            kwargs["schema_version"] = ANOMALY_SCHEMA_VERSION
+            kwargs["target"] = target
+            kwargs["evidence"] = evidence
+            kwargs["confidence"] = confidence
+        return realtime_protocol.server_event("model.observation", **kwargs)
 
     def _reset_discovery_turn(self) -> None:
         self._discovery_text = ""

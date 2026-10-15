@@ -395,10 +395,47 @@ class AgentIntegrationCases(_BridgeCase):
                 raise AssertionError("不该在这里调用模型")
 
         instance = agent_mod.Agent(llm=_NullLLM())
+        # 工具权威：注入发生在实例上、来自操作者配置（不是 prompt）；全局注册表
+        # （所有会话共用）永不被撑大。
+        #
+        # 联网门判据是 `spec.group`（合并 2026-10-16 后统一），不是 capability：
+        #   - **stdio 连接器 = 本地子进程**（godot/unity 等），group="mcp"，
+        #     不归联网开关管 —— 否则联网默认关闭时这批「一等工具」会整体消失
+        #     （main 侧 4e2cadb 修的就是这个：capability=NETWORK 是 bridge 给所有
+        #     内联工具打的**保守标记**，不代表真的跨外网）；
+        #   - **http 连接器才真的跨外网**，group="web"，联网关时隐藏（见下面
+        #     test_http_connector_tools_are_hidden_when_web_disabled）。
+        # 这里 demo 是 stdio，所以联网关时仍然可用。
         self.assertIn("mcp__demo__search", instance.tools)
         self.assertIn("mcp__demo__search", instance._effective_tool_names())
-        # 工具权威：注入只发生在实例上，全局注册表（所有会话共用）不能被撑大
         self.assertNotIn("mcp__demo__search", agent_mod.TOOLS)
+
+    def test_http_connector_tools_are_hidden_when_web_disabled(self):
+        """跨外网的连接器（http 传输）仍受联网门约束。
+
+        main 侧把 `_web_blocked` 的判据从 capability 换成 group 时，不能把「外网
+        连接器联网关时隐藏」这条一起丢掉 —— 丢掉就等于联网开关对真外网工具失效。
+        所以这里用 http 传输把这条门单独钉住（stdio 分支见上一条）。
+        """
+        import agent as agent_mod
+        self.install(FakeMCP(servers={"web1": _server(transport="http")},
+                             tools={"web1": [_tool("search",
+                                                   props={"query": {"type": "string"}},
+                                                   description="外部检索")]}))
+
+        class _NullLLM:
+            provider = "mock"
+
+            def chat(self, messages, stream=True, **kwargs):
+                raise AssertionError("不该在这里调用模型")
+
+        instance = agent_mod.Agent(llm=_NullLLM())
+        self.assertIn("mcp__web1__search", instance.tools)
+        # 联网关（默认）：跨外网工具对模型隐藏
+        self.assertNotIn("mcp__web1__search", instance._effective_tool_names())
+        # 联网开：才暴露给模型（同一实例，按回合开关）
+        instance.web_enabled = True
+        self.assertIn("mcp__web1__search", instance._effective_tool_names())
 
     def test_default_config_injects_nothing(self):
         import agent as agent_mod

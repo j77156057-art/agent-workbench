@@ -17,6 +17,24 @@ export type RealtimeServerEvent = {
   [key: string]: unknown
 }
 
+/**
+ * `hello.ok` 在 M2·③ 之后**保证携带**的模式字段（`realtime_bridge.SessionBridge.hello_fields`）。
+ * 前端接 WS 时把 `event` 转成这个窄类型直接喂 `describeRealtimeMode`，降级就不再隐形。
+ * `degraded_to` 后端为 null 或字符串；未知态用 `null` 表达，不用 `undefined`。
+ */
+export interface HelloOkEvent extends RealtimeServerEvent {
+  type: 'hello.ok'
+  mode: 'native-realtime' | 'sampled-frames' | 'unavailable' | string
+  degraded_to: string | null
+  reason: string
+  provider: string
+  provider_capabilities: string[]
+}
+
+export function isHelloOk(event: RealtimeServerEvent): event is HelloOkEvent {
+  return event.type === 'hello.ok'
+}
+
 export function realtimeHello(projectId: string, sessionId = ''): RealtimeClientControl {
   return { v: REALTIME_PROTOCOL_VERSION, type: 'hello', project_id: projectId,
     ...(sessionId ? { session_id: sessionId } : {}), capabilities: ['video.frame', 'audio.chunk', 'interrupt'] }
