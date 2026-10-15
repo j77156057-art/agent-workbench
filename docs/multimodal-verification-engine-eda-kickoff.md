@@ -5,6 +5,10 @@
 > 分支：`feature/multimodal-verification`（已从 `main` 切出）。
 > 工作树：`D:/WorkBuddy/rag-agent-multimodal-verify`（本仓根的平行 worktree，避免污染 `D:/WorkBuddy/rag-agent` 主检出）。
 
+> **状态：✅ 全部完工。** M1–M6 六段 + 两个收尾增强（七段端到端样例、EDA 只读验证 API）均已提交，工作树干净，里程碑自有测试 182 passed 无回退。
+> 里程碑提交：`1f97005`(M1) → `f0f1f16`/`443f0f6`/`58e1fcc`/`e9c05d3`(M2) → `6dbaf6e`(M3) → `3d608d3`(M4) → `45cdbcd`(M5) → `49f51b5`(M6) → `8bf2f37`(样例) → `1aca0ca`(API)。
+> **接续前务必先读 §8「实际落地与偏差」**：本文档诚实地标清了哪些是离线替身验的、哪些真机路径（X11/VNC 取像、真 EDA 报告、真 Unity/Godot 回归、人工审批回滚、前端消费）本机还欠着——别当已验证蒙混，也别重造已完成零件。
+
 ---
 
 ## 0. 一句话目标与信条
@@ -140,25 +144,29 @@
 
 ## 4. 里程碑与验收标准（按此顺序建）
 
-- **M1 `visual_regression.py`（先不接域）**
+- **M1 `visual_regression.py`（先不接域） — ✅ 已完成 `1f97005`**
   - 提供：ROI 裁剪（复用 `target_fingerprint` 思路）、`ssim(a,b)`（纯 numpy 实现优先，避免强依赖 scikit-image；见 5.环境）、`region_hash`（区域精确哈希）、golden 存取（参考 `docs/canvas-contrast-baseline.json` 的 JSON 形状）、`compare(...) -> {passed, score, roi_changed, verdict}`。
   - 验收：单测覆盖"同图 diff=0"、"改动超阈值 diff>阈值→escalate"、"区域像素级小改（1px）被 region_hash 抓到而 mean-delta 抓不到"。
-- **M2 接游戏引擎一条链**
+- **M2 接游戏引擎一条链 — ✅ 已完成 `f0f1f16`+`443f0f6`+`58e1fcc`+`e9c05d3`（拆 4 段提交）**
   - 一个真实 Unity/Godot 场景：`grab_embedded` → ROI 视口 → golden SSIM → 超阈值才 VLM。
   - 把 discovery 从"句首前缀匹配"改成 tool-call（新增一个 `flag_anomaly(target,evidence,confidence)` 结构；`realtime_bridge` + 对应 prompt 同步改）。
-  - 验收：拿它做 3 次美术/HUD 回归验收，能抓到注入的明显回退。
-- **M3 EDA 结构化通路（不碰视觉）**
+  - 验收：拿它做 3 次美术/HUD 回归验收，能抓到注入的明显回退。（**偏差见 §7**：真机 3 次回归未在本机执行，用注入替身帧验。）
+- **M3 EDA 结构化通路（不碰视觉） — ✅ 已完成 `6dbaf6e`**
   - `eda_adapters` + `eda_tcl.py`，Vivado/KLayout/Verdi 三家的 report 解析跑通。
-  - 验收：一个样例工程能拿到"综合后时序/面积/DRC 数"结构化结果。
-- **M4 Linux 取像**
+  - 验收：一个样例工程能拿到"综合后时序/面积/DRC 数"结构化结果。（**偏差见 §7**：真实工具报告未在本机跑，用 baked 报告文本 + 注入 runner 离线验。）
+- **M4 Linux 取像 — ✅ 已完成 `3d608d3`**
   - X11/VNC `frame_grabber`，签名对齐 `capture_window`。
-  - 验收：注入替身 + 真机各截一帧，形状一致，上层不改。
-- **M5 版图/波形 ROI golden diff 上线**
+  - 验收：注入替身 + 真机各截一帧，形状一致，上层不改。（**偏差见 §7**：真机 X11/VNC 截图未在本机执行，本机无 X11/VNC；仅注入替身 + baked PNG 验形状一致。）
+- **M5 版图/波形 ROI golden diff 上线 — ✅ 已完成 `45cdbcd`**
   - 先做"和上次比"（最稳），**别一上来做"看图找 bug"**。
   - 验收：同 testcase 两版图，注入一个 via 缺失能被 region_hash/SSIM 抓到。
-- **M6 合并门 + 回滚**
+- **M6 合并门 + 回滚 — ✅ 已完成 `49f51b5`**
   - 第6段三态合并 + 第7段 `dev_changesets` 回滚接线。
-  - 验收：结构化全绿 + 视觉 unmet 的用例，被判 unmet 且可回滚。
+  - 验收：结构化全绿 + 视觉 unmet 的用例，被判 unmet 且可回滚。（回滚回调注入假实现验"可回滚"，真实 `regions.rollback_changeset` 的 `require_approval` 人工门未自动执行。）
+
+- **收尾增强（用户追加"两个都要"） — ✅ 已完成**
+  - 七段端到端样例脚本 `eda_verify_pipeline.py` — ✅ `8bf2f37`。
+  - EDA 合并门/解析 REST 路由 `api_routes/eda.py`（只读判，不执行回滚） — ✅ `1aca0ca`。
 
 ---
 
@@ -188,8 +196,8 @@
 1. `cd D:/WorkBuddy/rag-agent-multimodal-verify`（worktree）；确认在分支 `feature/multimodal-verification`。
 2. 读本文件 `docs/multimodal-verification-engine-eda-kickoff.md`。
 3. 扫第 1.8 节列的纪律文档 + 直接读关键源码：`screen_capture.py`、`agent_runtime/visual_targeting.py`、`agent_runtime/visual_acceptance.py`、`agent_runtime/realtime_bridge.py`。
-4. 从 **M1 `agent_runtime/visual_regression.py`** 开始写（先不接域），带单测。
-5. 每完成一个里程碑提交一次，commit message 前缀 `verify(mm):`。
+4. **M1–M6 + 两个收尾已全部完成并提交**——先读 §8「实际落地与偏差」，看清每段落了什么、哪些是离线替身验的、哪些真机路径还欠着，别当已验证蒙混、也别重造已完成零件。
+5. 若要接续，从 §8.3「真机还欠着的」挑一项做（真 X11/VNC 取像、真 EDA 报告回归、真 Unity/Godot 视觉回归、人工审批回滚闭环、EDA 前端消费方）。每完成一段提交一次，前缀 `verify(mm):`（文档/收尾用 `feat(mm):`/`docs(verify-mm):`）。
 
 ### 恢复/清理命令（worktree 生命周期）
 - 列出：`git worktree list`
@@ -202,3 +210,60 @@
 - 不提交 `.env`、`.docmind_*`、`.chroma`、`*.sqlite3`、`.venv`、`__pycache__`。
 - 一个里程碑一个 commit，小而可回滚。
 - 代码注释解释"为什么"，沿用仓库现有中文注释风格。
+
+---
+
+## 8. 实际落地与偏差（交接记录 · 本轮全部完成）
+
+> 六段里程碑 + 两个收尾增强均已提交，工作树干净。本节如实记录**每段落了什么、
+> 哪些是"离线替身验"、哪些真机路径本机（Windows，无 EDA/Linux/VNC/FastAPI 生产运行）
+> 还欠着**，供下一个有真环境的人接续，不当已验证蒙混。
+
+### 8.1 交付物清单（按段）
+
+| 段 | 文件 | commit | 状态 |
+|----|------|--------|------|
+| M1 | `agent_runtime/visual_regression.py` | `1f97005` | 纯 numpy SSIM + 8×8 区域块哈希 + golden 存取 + `compare` 三态；单测全绿 |
+| M2① | `agent_runtime/engine_visual_regression.py` | `f0f1f16` | source 可注入→`crop_roi`→`GoldenStore.compare_against_golden`→VLM 升级包 |
+| M2② | realtime discovery → `flag_anomaly` JSON tool-call | `443f0f6` | 句首前缀匹配改严格 JSON（`realtime_bridge` + prompt 同步） |
+| M2③/③b | 视觉模式展示归一 + 接线层 | `58e1fcc`/`e9c05d3` | 降级不再隐形；**只做接线不假装挂载**（无 cockpit 消费点则不强挂 UI） |
+| M3 | `agent_runtime/eda_tcl.py` + `eda_adapters.py` + `.trae/skills/eda-adapters/SKILL.md` | `6dbaf6e` | Vivado 时序/利用率、KLayout DRC XML、Verdi 仿真解析→`EdaFact`；未知组合 fail-closed |
+| M4 | `agent_runtime/frame_grabber_linux.py` | `3d608d3` | X11（ImageMagick `import` PNG）+ 最小 VNC RFB raw；签名对齐 `capture_window`，BGRX 字节布局 |
+| M5 | `agent_runtime/eda_visual_regression.py` | `45cdbcd` | 版图/波形/原理图/热力图四类 ROI；`frame_source_from_grabber` 桥 3→4 元组；复用 M2 `check_visual_regression` 零上层改动 |
+| M6 | `agent_runtime/verification_gate.py` | `49f51b5` | 三态合并（任一 UNMET→UNMET，否则任一 UNCERTAIN→UNCERTAIN，全 MET 才 MET）+ `acceptance_decision` + `gate_and_maybe_rollback`（回滚只在 UNMET+`auto_rollback`+注入回调时触发） |
+| 收尾 | `eda_verify_pipeline.py` | `8bf2f37` | 七段端到端样例：域注册→结构化→取像存 golden→ROI diff→合并门+回滚；CLI 打 4 个合成用例 |
+| 收尾 | `api_routes/eda.py`（+ `api.py` flatten 循环加一行） | `1aca0ca` | `POST /api/eda/parse-report`、`GET /api/eda/skills`、`POST /api/eda/verify`——**全只读，`executes_rollback:false`** |
+
+### 8.2 离线替身验的（逻辑成立，但非真机证据）
+
+- **M2/M4/M5 取像**：全部用**注入的假 grabber / baked PNG** 出帧验形状一致与 diff 逻辑。本机是 Windows，无 X11、无 VNC server、无运行中的 Unity/Godot 编辑器 viewport。`(bgra,w,h)` 契约、BGRX 布局、crop/SSIM 通路都单测覆盖，但"真截一帧游戏/版图画面"未做。
+- **M3 报告解析**：用 **baked 报告文本 + 注入 `tcl_runner`** 验解析器输出。未在本机真跑 Vivado/KLayout/Verdi（无工具、无 license）。解析器正则按公开报告格式手写，真实工具的版本差异（表头/列名漂移）未经真样本回归。
+- **M4 X11**：走 ImageMagick `import -window <id> png:-`。**故意不手搓 XWD 二进制头解析**——本机无法验证头布局，写死 `struct.unpack` 反而造假风险。仅有 xwd、无 ImageMagick 的环境列为已知后续。VNC 只实现 raw 编码单矩形整屏，tight/zrle、多矩形、DES 认证一律 `fail-closed` 返 `None`。
+- **M6 回滚**：用**注入的假 `rollback` 回调**证明"被判 unmet 且可回滚"这条验收。真实 `regions.rollback_changeset` 内的 `require_approval` 人工审批门未自动执行（本就不该自动执行，见 8.3）。
+- **前端消费**：合并门结果**未接入任何 UI 面板**——当前 workbench 无 EDA 面板消费方（与 M2③"不假装挂载"同一处境）。只交后端 API，不虚构前端接线。
+
+### 8.3 真机还欠着的（下一个有环境的人接续）
+
+1. **真 X11/VNC 取像**：在 Linux 桌面或真 VNC 上截 KLayout/Verdi/GTKWave 窗口，验 `png_to_frame`/`rfb_grab_frame` 出帧与 GDI 字节布局完全一致、上层零改动确成立。
+2. **真 EDA 工具报告**：拿真实 Vivado `report_timing`/`report_utilization`、KLayout DRC XML deck、Verdi 仿真日志回归 M3 解析器，补齐版本差异与告警噪声分类。
+3. **真 Unity/Godot 视觉回归**：跑 M2 计划的"3 次美术/HUD 回归"，注入明显回退看能否抓到；顺带补 cockpit 的降级模式显示（§5 第 4 条 R13）。
+4. **人工审批回滚闭环**：把 M6 的 `gate_and_maybe_rollback` 接上真实 `regions.rollback_changeset` + `require_approval`，验"UNMET→升级给人→人批准→回滚"全链。**HTTP 层永不自动 revert**（fail-closed 信条）。
+5. **EDA 前端消费方**：若建 EDA 工作台，用 `vision.attach_tool_observation` 那套 `verified:false` 语境消费 `/api/eda/verify` 结果，视觉结论不得当已核实事实直接播给用户。
+
+### 8.4 测试基线（全离线，`D:/WorkBuddy/rag-agent/.venv`）
+
+- Python：里程碑自有测试集 **182 passed**，无回退（本轮实测）。
+  - `test_frame_grabber_linux` 25、`test_eda_visual_regression` 14、`test_verification_gate` 34、`test_verification_gate_reshape` (含)、`test_eda_verify_pipeline` 10、`test_api_eda_routes` 9（TestClient + 桩 ctx）——这 5 个文件单跑 = 92。
+  - 另 `test_visual_regression`(M1)、`test_engine_visual_regression`(M2①)、`test_realtime_flag_anomaly`(M2②)、`test_eda_tcl`(M3)、`test_verification_gate_reshape` 单跑 = 90。
+- 前端：`node --test` realtimeModeDisplay + Tracker **17 passed**，未受影响。
+- 复跑：`cd D:/WorkBuddy/rag-agent-multimodal-verify && D:/WorkBuddy/rag-agent/.venv/Scripts/python.exe -m pytest tests/test_visual_regression.py tests/test_engine_visual_regression.py tests/test_realtime_flag_anomaly.py tests/test_eda_tcl.py tests/test_frame_grabber_linux.py tests/test_eda_visual_regression.py tests/test_verification_gate.py tests/test_verification_gate_reshape.py tests/test_eda_verify_pipeline.py tests/test_api_eda_routes.py -q`。
+
+### 8.5 本轮真机补充验证（Windows 桌面会话 · Godot 4.7.2 + 工作台前端）
+
+- **Godot 原生 SetParent 嵌入（真机）**：`verify_engine_embed.py --godot <4.7.2>` 实机 **82 passed / 4 failed / 2 skipped / 0 未证实**。真机确证：真实启动 → 按 PID 枚举引擎窗口 → `SetParent` 嵌入 → fill/rect 两种几何 → 宿主 resize 跟随重排 → 150% DPI 下严格对齐 → detach 可逆 → 停止无孤儿窗口/进程 → 崩溃看门狗兜底 → HTTP `/api/engine/embed` → UI 调用路径。渲染证据：`docs/screenshots/engine-embed.png`（宿主窗口内的真机渲染面）。
+  - 4 项 FAIL 全部收敛到 `[0]` 一条：合成按键 `SendInput` 插入 2 条、自建窗口收到 **0** 条消息——本会话（从服务端 Bash 起的进程）拒绝把合成输入送达交互桌面的消息队列（UIPI/session 隔离），**非产品缺陷**。遮挡已排除：最小化 QoderWork 后"点击点未被遮挡"由未证实转为通过（未证实 1→0）。
+  - 按信条：「合成键鼠 → 引擎回显」这一段仍记为**未证实**，不得写成已验证。
+- **EDA 多模态验收面板（真机点击路径）**：在完整 boot 的工作台里经真实点击（更多 → EDA 多模态验收）可达、渲染正常，消费 live `/api/eda/*`（parseReport + verify → 正确三态）。面板已复用 `SceneRuntimePanel` 的 dock 惯用法实现**弹窗 + 停靠常驻双形态**（`mode`/`host` prop + `Teleport defer`，同实例切换、绝不重建）。
+- **原生桌面壳（pywebview / WebView2）在本会话无法复现**：`desktop.py` 创建的 WebView2 原生窗口初始化失败（`无效的 URI/端口`，换干净 user-data 目录同样失败），`loaded` 事件不触发 → 宿主 HWND 注册不上。**环境限制，非代码问题**。
+  - 改走 **Web 导出预览**路（同源 `/play/<token>/index.html`，服务端带 COOP/COEP 启用 SharedArrayBuffer）：真实点击「更多 → 运行游戏 → 导出并试玩」，Godot 导出 WASM（~7s）后在工作台「Web 试玩」面板里**实时渲染**（同源 canvas 采样非空、右侧时间线记到 `__bridge_ready__ [web]`）。证据：`outputs/workbench-godot-embed-preview.png`。
+  - 诚实边界：这是 **Web 导出预览**，不等于原生 `SetParent` 嵌入；面板自身也如实标注「浏览器模式下无法嵌入原生窗口，请用桌面端启动 DocMind」。Godot WASM 默认字体缺中文字形，标签中文显示为方框，与产品无关。
