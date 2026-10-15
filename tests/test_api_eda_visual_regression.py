@@ -164,5 +164,70 @@ def test_missing_project_root_fails_gracefully(monkeypatch):
     assert "未配置代码库" in (body.get("error") or "")
 
 
+# ---- 平台可切换取像后端（gdi/x11/vnc）分派 ----
+
+def _client_for(tmp_path):
+    app = FastAPI()
+    app.include_router(eda_routes.build_router(_Ctx(str(tmp_path))))
+    return TestClient(app)
+
+
+def test_resolve_capture_auto_by_platform(monkeypatch):
+    monkeypatch.setattr(eda_routes.os, "name", "nt")
+    assert eda_routes.resolve_capture("auto") == "gdi"
+    assert eda_routes.resolve_capture(None) == "gdi"          # 缺省即 auto
+    monkeypatch.setattr(eda_routes.os, "name", "posix")
+    assert eda_routes.resolve_capture("auto") == "x11"        # Linux 目标机默认走 X11
+    assert eda_routes.resolve_capture("vnc") == "vnc"         # 显式值原样透传
+    assert eda_routes.resolve_capture("bogus") == "gdi"       # 未知值保守回落
+
+
+def test_make_frame_source_x11_wraps_m4_grabber(monkeypatch):
+    frame = _frame(0)                                         # (bgra_bytes, w, h)
+    seen = {}
+
+    def fake_x11_grabber(window_id=None, **k):
+        seen["wid"] = window_id
+
+        def grabber(hwnd):
+            return frame
+        return grabber
+
+    monkeypatch.setattr("agent_runtime.frame_grabber_linux.x11_grabber", fake_x11_grabber)
+    req = eda_routes.VisualRegressionReq(capture="x11", window_id=777, view="layout")
+    src = eda_routes.make_frame_source(req)
+    out = src()
+    assert seen["wid"] == 777                                 # window_id 透传给 M4 grabber
+    assert out is not None and out[3] == 777                  # 第 4 位是 window_id（FrameSource 契约）
+    assert out[1] == frame[1] and out[2] == frame[2]
+
+
+def test_route_x11_save_then_check(tmp_path, monkeypatch):
+    frame = _frame(0)
+    monkeypatch.setattr("agent_runtime.frame_grabber_linux.x11_grabber",
+                        lambda window_id=None, **k: (lambda hwnd: frame))
+    client = _client_for(tmp_path)
+    r = client.post("/api/eda/visual-regression", json={
+        "mode": "save", "capture": "x11", "window_id": 55, "view": "layout", "golden_key": "x11k"})
+    b = r.json()
+    assert b["ok"] is True and b["capture"] == "x11" and b["saved"] is True, b
+    r2 = client.post("/api/eda/visual-regression", json={
+        "mode": "check", "capture": "x11", "window_id": 55, "view": "layout", "golden_key": "x11k"})
+    b2 = r2.json()
+    assert b2["capture"] == "x11" and b2["verdict"] in ("identical", "pass") and b2["passed"] is True, b2
+
+
+def test_route_vnc_fail_closed(tmp_path, monkeypatch):
+    # VNC 连不上（grabber 返回 None）→ 路由照旧 fail-closed 成 no_frame，绝不假绿。
+    monkeypatch.setattr("agent_runtime.frame_grabber_linux.vnc_frame_grabber",
+                        lambda host="127.0.0.1", port=5900, **k: (lambda hwnd=None: None))
+    client = _client_for(tmp_path)
+    r = client.post("/api/eda/visual-regression", json={
+        "mode": "check", "capture": "vnc", "vnc_host": "10.0.0.9", "vnc_port": 5901,
+        "view": "layout", "golden_key": "v"})
+    b = r.json()
+    assert b["capture"] == "vnc" and b["verdict"] == "no_frame" and b["passed"] is False, b
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

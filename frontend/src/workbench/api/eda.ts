@@ -34,8 +34,12 @@ export interface VisualRegressionReq {
   view?: string | null            // layout/waveform/schematic/heatmap（EDA_VIEWS）
   bbox_norm?: number[] | null     // 显式 [x1,y1,x2,y2] 归一框，覆盖 view
   mode?: 'check' | 'save'         // check=比对 | save=存基线
-  source?: 'foreground' | 'embedded' | 'hwnd'
-  hwnd?: number | null            // source='hwnd' 时的目标窗口句柄
+  capture?: 'auto' | 'gdi' | 'x11' | 'vnc'  // 取像后端：auto 按平台（Win→gdi，其余→x11）
+  source?: 'foreground' | 'embedded' | 'hwnd'  // 仅 capture=gdi 生效
+  hwnd?: number | null            // capture=gdi & source=hwnd：目标窗口句柄
+  window_id?: number | null       // capture=x11：X11 window id（缺省回退用 hwnd）
+  vnc_host?: string | null        // capture=vnc：VNC 地址（默认 127.0.0.1）
+  vnc_port?: number | null        // capture=vnc：VNC 端口（默认 5900）
   overwrite?: boolean             // save 模式是否覆盖已存在 golden
   out_size?: number
   ssim_threshold?: number
@@ -48,6 +52,7 @@ export interface VisualRegressionReq {
 export interface VisualRegressionResp extends VisualResult {
   ok: boolean
   mode: 'check' | 'save'
+  capture?: string               // 实际生效的取像后端：gdi/x11/vnc
   saved?: boolean
   golden_key?: string
   entry?: Record<string, unknown>

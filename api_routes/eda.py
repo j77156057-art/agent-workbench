@@ -47,13 +47,74 @@ class VisualRegressionReq(BaseModel):
     view: Optional[str] = None            # layout/waveform/schematic/heatmap（EDA_VIEWS）
     bbox_norm: Optional[list] = None      # 显式 [x1,y1,x2,y2] 归一框，覆盖 view
     mode: str = "check"                   # "check"（比对）| "save"（存基线）
-    source: str = "foreground"            # "foreground" | "embedded" | "hwnd"
-    hwnd: Optional[int] = None            # source="hwnd" 时的目标窗口句柄
+    # 取像后端（平台可切换）：auto=按平台选（nt→gdi，其余→x11）；
+    # gdi=Windows 真窗口截屏；x11=Linux/X11（M4 ImageMagick import）；vnc=远端 framebuffer。
+    capture: str = "auto"
+    source: str = "foreground"            # 仅 capture=gdi 生效："foreground"|"embedded"|"hwnd"
+    hwnd: Optional[int] = None            # capture=gdi & source=hwnd：目标窗口句柄
+    window_id: Optional[int] = None       # capture=x11：X11 window id（缺省回退用 hwnd）
+    vnc_host: Optional[str] = None        # capture=vnc：VNC 服务地址（默认 127.0.0.1）
+    vnc_port: Optional[int] = None        # capture=vnc：VNC 端口（默认 5900）
     overwrite: bool = True                # save 模式：是否覆盖已存在 golden
     out_size: int = 256
     ssim_threshold: float = 0.98
     delta_threshold: float = 8.0
     grid: int = 8
+
+
+def resolve_capture(capture: Optional[str]) -> str:
+    """把 'auto' 按平台解析成具体取像后端；显式值原样校验。未知值保守回落 'gdi'。
+
+    - auto：nt（Windows）→ gdi；其余（Linux/…）→ x11（EDA 工具真跑起来的机器多在 X11/VNC）。
+    - 显式 gdi/x11/vnc：直接用（跨平台调试/指定远端时用）。
+    """
+    cap = str(capture or "auto").strip().lower()
+    if cap == "auto":
+        return "gdi" if os.name == "nt" else "x11"
+    return cap if cap in ("gdi", "x11", "vnc") else "gdi"
+
+
+def make_frame_source(req: "VisualRegressionReq", pid: Any = None):
+    """按 req.capture 归一成一个零参 FrameSource -> (bgra, w, h, hwnd) | None。
+
+    正是 eda_visual_regression / engine_visual_regression 要的取像契约，于是"换后端其余
+    零改动"。三条后端都 fail-closed：任何取不到帧的情况一律返回 None，上层照旧判
+    no_frame，绝不拼一个看着像的帧。重模块（screen_capture / frame_grabber_linux /
+    eda_visual_regression）全部惰性导入，保证无 PIL / 无 X11 / 无网络时 import 本路由也不炸。
+    """
+    backend = resolve_capture(req.capture)
+
+    if backend == "x11":
+        from agent_runtime import frame_grabber_linux as fgl
+        from agent_runtime import eda_visual_regression as ev
+        wid = req.window_id if req.window_id is not None else req.hwnd
+        grabber = fgl.x11_grabber(window_id=wid)
+        return ev.frame_source_from_grabber(grabber, wid)
+
+    if backend == "vnc":
+        from agent_runtime import frame_grabber_linux as fgl
+        from agent_runtime import eda_visual_regression as ev
+        grabber = fgl.vnc_frame_grabber(req.vnc_host or "127.0.0.1",
+                                        int(req.vnc_port or 5900))
+        return ev.frame_source_from_grabber(grabber, req.window_id)
+
+    # gdi（Windows 域）：沿用原 source 语义——前台 / 嵌入引擎窗 / 指定 HWND。
+    import screen_capture
+
+    def _gdi_source():
+        if req.source == "embedded":
+            return screen_capture.grab_embedded(pid)
+        if req.source == "hwnd":
+            if not req.hwnd:
+                return None
+            frame = screen_capture.capture_window(req.hwnd)
+            if not frame:
+                return None
+            raw, w, h = frame
+            return raw, w, h, int(req.hwnd)
+        return screen_capture.grab_foreground()
+
+    return _gdi_source
 
 
 def build_router(ctx) -> APIRouter:
@@ -106,48 +167,40 @@ def build_router(ctx) -> APIRouter:
         """第 3~5 段真机视觉回归：抓一个**真实窗口**的 ROI → SSIM + 8×8 块哈希 vs golden →
         算出 verdict（不再手选）。复用已提交的 M1/M2/M4/M5 零件，本层只做取像源装配。
 
-        诚实边界：本机通常没装 Vivado/KLayout，`source` 取的是**真实 GDI 截屏**（前台窗口 /
-        嵌入引擎窗口 / 指定 HWND），被摄窗口是**替身**、非真版图；但比对链路是真算的确定性
-        diff，verdict 由像素得出、`verified:false` 起步，与 M6 门一致。取不到帧/没 golden →
-        管线照旧 fail-closed 成 no_frame/needs_golden，绝不假绿。
+        取像后端平台可切换（`capture`）：auto 按平台选（Windows→gdi，其余→x11）；
+        gdi=真实 GDI 截屏（前台/嵌入窗/指定 HWND），x11=Linux/X11（M4 ImageMagick import），
+        vnc=远端 framebuffer（M4 最小 RFB）。三条后端都归一成同一个 FrameSource 契约，
+        **换后端其余零改动**，故交付物在别的机器上是"选个后端"而非"必须换平台/装某工具"。
+        诚实边界：本机通常没装 Vivado/KLayout，被摄窗口是**替身**、非真版图；但比对链路是
+        真算的确定性 diff，verdict 由像素得出、`verified:false` 起步，与 M6 门一致。取不到
+        帧/没 golden → 管线照旧 fail-closed 成 no_frame/needs_golden，绝不假绿。
         """
         root = ctx._project_root_or_error()
         if not root:
             return {"ok": False, "error": "未配置代码库"}
         from agent_runtime import eda_visual_regression as ev
         from agent_runtime import visual_regression as vr
-        import screen_capture
 
         pid = ctx._request_project_id() if hasattr(ctx, "_request_project_id") else None
-
-        def _source():
-            # 归一成 (bgra, w, h, hwnd) 或 None——正是 FrameSource 契约，上层零改动。
-            if req.source == "embedded":
-                return screen_capture.grab_embedded(pid)
-            if req.source == "hwnd":
-                if not req.hwnd:
-                    return None
-                frame = screen_capture.capture_window(req.hwnd)
-                if not frame:
-                    return None
-                raw, w, h = frame
-                return raw, w, h, int(req.hwnd)
-            return screen_capture.grab_foreground()
+        backend = resolve_capture(req.capture)
+        # 按平台/参数归一取像源（gdi/x11/vnc）；三条后端都 fail-closed，取不到帧→None。
+        source = make_frame_source(req, pid)
 
         store = vr.GoldenStore(root=os.path.join(root, ".docmind", "eda_golden"))
-        common = dict(view=req.view, bbox_norm=req.bbox_norm, source=_source,
+        common = dict(view=req.view, bbox_norm=req.bbox_norm, source=source,
                       out_size=req.out_size)
         if req.mode == "save":
             r = await run_in_threadpool(
                 ev.save_eda_golden, store, req.golden_key,
-                meta={"source": req.source, "view": req.view, "bbox_norm": req.bbox_norm},
+                meta={"capture": backend, "source": req.source, "view": req.view,
+                      "bbox_norm": req.bbox_norm},
                 overwrite=req.overwrite, **common)
-            return {"ok": True, "mode": "save", **r}
+            return {"ok": True, "mode": "save", "capture": backend, **r}
 
         r = await run_in_threadpool(
             ev.check_eda_regression, store, req.golden_key,
             ssim_threshold=req.ssim_threshold, delta_threshold=req.delta_threshold,
             grid=req.grid, **common)
-        return {"ok": True, "mode": "check", **r}
+        return {"ok": True, "mode": "check", "capture": backend, **r}
 
     return router

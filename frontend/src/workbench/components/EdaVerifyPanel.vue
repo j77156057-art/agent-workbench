@@ -40,8 +40,12 @@ const fact = ref<EdaFact | null>(null)
 const visualMode = ref<'live' | 'manual'>('live')
 
 // live 取像回归入参（对齐后端 VisualRegressionReq）。
-const vrSource = ref<'foreground' | 'embedded' | 'hwnd'>('foreground')
-const vrHwnd = ref('')                 // source='hwnd' 时的窗口句柄（字符串，提交时转 int）
+const vrCapture = ref<'auto' | 'gdi' | 'x11' | 'vnc'>('auto')  // 取像后端（平台可切换）
+const vrSource = ref<'foreground' | 'embedded' | 'hwnd'>('foreground')  // 仅 gdi 生效
+const vrHwnd = ref('')                 // gdi + source=hwnd：窗口句柄（字符串，提交时转 int）
+const vrWinId = ref('')                // x11：X11 window id
+const vrVncHost = ref('127.0.0.1')     // vnc：服务地址
+const vrVncPort = ref('5900')          // vnc：端口
 const goldenKey = ref('layout_default')
 const vrView = ref<'layout' | 'waveform' | 'schematic' | 'heatmap'>('layout')
 const vrBusy = ref(false)
@@ -106,12 +110,26 @@ function currentVisual(): VisualResult {
 
 function _vrBody(mode: 'save' | 'check'): Parameters<typeof edaApi.visualRegression>[0] {
   const body: Parameters<typeof edaApi.visualRegression>[0] = {
-    mode, source: vrSource.value, golden_key: goldenKey.value.trim() || 'layout_default',
+    mode, capture: vrCapture.value, golden_key: goldenKey.value.trim() || 'layout_default',
     view: vrView.value,
   }
-  if (vrSource.value === 'hwnd') {
-    const h = parseInt(vrHwnd.value.trim(), 10)
-    if (!Number.isNaN(h)) body.hwnd = h
+  const cap = vrCapture.value
+  if (cap === 'gdi' || cap === 'auto') {
+    // auto 在 Windows 后端即 gdi，仍带上 source/hwnd 以便本机直接用。
+    body.source = vrSource.value
+    if (vrSource.value === 'hwnd') {
+      const h = parseInt(vrHwnd.value.trim(), 10)
+      if (!Number.isNaN(h)) body.hwnd = h
+    }
+  }
+  if (cap === 'x11') {
+    const w = parseInt(vrWinId.value.trim(), 10)
+    if (!Number.isNaN(w)) body.window_id = w
+  }
+  if (cap === 'vnc') {
+    body.vnc_host = vrVncHost.value.trim() || '127.0.0.1'
+    const p = parseInt(String(vrVncPort.value).trim(), 10)
+    if (!Number.isNaN(p)) body.vnc_port = p
   }
   return body
 }
@@ -304,6 +322,16 @@ defineExpose({ show })
             <!-- live：抓真实窗口 ROI → vs golden 真算 SSIM + 8×8 块哈希 → 得出 verdict -->
             <div v-if="visualMode === 'live'" class="ev-vr">
               <div class="ev-row">
+                <label>取像后端
+                  <select v-model="vrCapture">
+                    <option value="auto">auto（按平台）</option>
+                    <option value="gdi">gdi · Windows 截屏</option>
+                    <option value="x11">x11 · Linux/X11</option>
+                    <option value="vnc">vnc · 远端 framebuffer</option>
+                  </select>
+                </label>
+              </div>
+              <div v-if="vrCapture === 'gdi' || vrCapture === 'auto'" class="ev-row">
                 <label>取像源
                   <select v-model="vrSource">
                     <option value="foreground">前台窗口</option>
@@ -313,6 +341,20 @@ defineExpose({ show })
                 </label>
                 <label v-if="vrSource === 'hwnd'">HWND
                   <input v-model="vrHwnd" class="ev-input" type="text" size="9" placeholder="如 196876" />
+                </label>
+              </div>
+              <div v-else-if="vrCapture === 'x11'" class="ev-row">
+                <label>X11 window id
+                  <input v-model="vrWinId" class="ev-input" type="text" size="12" placeholder="如 0x1a 或 26" />
+                </label>
+                <span class="ev-faint">走 M4 ImageMagick import</span>
+              </div>
+              <div v-else class="ev-row">
+                <label>VNC host
+                  <input v-model="vrVncHost" class="ev-input" type="text" size="12" placeholder="127.0.0.1" />
+                </label>
+                <label>port
+                  <input v-model="vrVncPort" class="ev-input" type="text" size="6" placeholder="5900" />
                 </label>
               </div>
               <div class="ev-row">
@@ -347,7 +389,7 @@ defineExpose({ show })
                   <span>变化块 <b>{{ liveResult.blocks?.count ?? 0 }}/{{ liveResult.blocks?.total ?? 0 }}</b></span>
                 </div>
                 <div v-if="liveResult.golden_key" class="ev-vr-key">
-                  golden_key：{{ liveResult.golden_key }}<span v-if="liveResult.hwnd"> · hwnd {{ liveResult.hwnd }}</span><span v-if="liveResult.full_size"> · 帧 {{ liveResult.full_size[0] }}×{{ liveResult.full_size[1] }}</span>
+                  <span v-if="liveResult.capture">后端 {{ liveResult.capture }} · </span>golden_key：{{ liveResult.golden_key }}<span v-if="liveResult.hwnd"> · hwnd {{ liveResult.hwnd }}</span><span v-if="liveResult.full_size"> · 帧 {{ liveResult.full_size[0] }}×{{ liveResult.full_size[1] }}</span>
                 </div>
                 <img v-if="liveThumb" :src="liveThumb" class="ev-thumb" alt="变化 ROI 局部图" />
                 <p v-if="liveResult.reason" class="ev-faint">{{ liveResult.reason }}</p>
