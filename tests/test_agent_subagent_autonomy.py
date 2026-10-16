@@ -155,8 +155,19 @@ def _effective_tools_for_read_only(registry: dict, requested: list[str] | None, 
     kwargs = {"mcp_policy": mcp_policy, "reflect": False}
     if requested is not None:
         kwargs["tool_allowlist"] = requested
-    parent._run_child(role, "只读分析", **kwargs)
+    result = parent._run_child(role, "只读分析", **kwargs)
     prompt = "\n".join(seen)
+    if not prompt:
+        # fail-closed 路径（2026-10-16 起）：点名了非空工具却全被安全边界筛掉时，
+        # 子代理**不再被建出来**——它没有任何工具可调，对着空工具集跑模型只会
+        # 编出纯文本，并把「护栏筛掉了工具」伪装成「模型没给出结论」。
+        # 有效工具集在这种情形下仍然是**空集**，所以这里照实返回：
+        # 「没有回填角色默认工具」这条判据由本模块的用例继续钉住，
+        # fail-closed 本身由 `tests/test_task_role_capability.py::ZeroToolRunFailsClosedTests` 钉。
+        assert "零工具" in str(result.get("error") or ""), (
+            "子代理既没被建出来、也没判零工具故障——那是一条没人知道的失败：%r"
+            % result)
+        return set()
     assert "允许工具=" in prompt, prompt[:400]
     line = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
     return set(line.replace("，", ",").replace("、", ",")
@@ -653,18 +664,24 @@ def test_read_only_roles_still_cannot_widen_into_write_tools():
     """
     import agent as agent_mod
 
-    parent = agent_mod.Agent(llm=None)
-    parent.tools = {
+    registry = {
         "search_code": {"func": lambda _a: ""},
         "read_file": {"func": lambda _a: ""},
         "apply_edit": {"func": lambda _a: ""},
         "python_exec": {"func": lambda _a: ""},
     }
+    parent = agent_mod.Agent(llm=None)
+    parent.tools = registry
     out = parent._run_child(
         "planner", "拆解文件和依赖",
         tool_allowlist=["apply_edit", "python_exec"],
         mcp_policy="deny", reflect=False,
     )
+    # 2026-10-16：这两个点名项全被只读边界筛掉 → **零工具 → fail-closed**，
+    # 子代理不再被建出来。原实现让它照常跑模型，于是「只读角色拿到了写工具吗」
+    # 这个真问题被「模型没给出结论」盖住了。现在真问题直接以 dropped_tools 回答。
+    assert out["status"] == "failed", out
+    assert out["dropped_tools"] == ["apply_edit", "python_exec"], out
     # 断言真正生效的地方：子代理收到的提示里写了哪些「允许工具」
     seen: list[str] = []
 
@@ -691,20 +708,11 @@ def test_read_only_roles_still_cannot_widen_into_write_tools():
     parent._run_child("planner", "拆解文件和依赖",
                       tool_allowlist=["apply_edit", "python_exec"],
                       mcp_policy="deny", reflect=False)
-    prompt = "\n".join(seen)
-    assert "允许工具=" in prompt, prompt[:300]
-    effective = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
-    assert "apply_edit" not in effective, f"只读 planner 拿到了写工具：{effective}"
-    assert "python_exec" not in effective, f"只读 planner 拿到了执行工具：{effective}"
-    # 显式 allowlist 是**硬上限**（见 9f8ef17 /
-    # test_explicit_allowlist_filtered_empty_does_not_restore_role_defaults）：
-    # 本例请求的全是写/执行工具，被 _mutates 过滤后有效集应为空——绝不因"空了
-    # 就回填角色默认工具"而变相放宽。只读承诺据此守住：没有任何写工具进有效集。
+    assert seen == [], (
+        "零工具的子代理被建出来并调了模型——它没有任何工具可调，"
+        "对着空工具集只会编出纯文本，把护栏故障伪装成「模型没结论」")
     # 「只读 planner 仍能读」这条能力由 test_missing_allowlist_still_uses_role_defaults
-    # （不传 allowlist → 角色默认只读集）单独覆盖，不在这里用旧的回填语义重复钉。
-    assert effective.strip() == "", (
-        f"只请求写工具时有效集应为空（硬上限，不回填默认）：{effective!r}"
-    )
+    # （不传 allowlist → 角色默认只读集）单独覆盖。
     # python_exec / run_command / dev_commit 那三张表的覆盖由
     # test_read_only_blocklist_covers_all_three_authoritative_tables 钉，不重复。
 

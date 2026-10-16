@@ -306,6 +306,34 @@ def coerce_tool_spec(name: str, value: Any) -> ToolSpec:
     )
 
 
+#: 「这个工具会不会改东西」的权威判据 —— capability 与 side_effect **两个维度都问**。
+#:
+#: 为什么两个都要：有的工具改的是**共享状态**而不是工作区文件（`dev_lanes` /
+#: `dev_commit` 归 ADMIN）；有的声明了**不可逆副作用**。任一为真就说明它会改东西，
+#: 只看 `WRITE_*` 会漏掉前一半，只看 `side_effect` 会漏掉显式声明 capability 的新工具。
+#:
+#: 为什么放在这里：这是**唯一**一份判据。此前 `agent.py` 的只读角色过滤与
+#: `game_workflow.WRITE_CAPABLE_TOOLS` 各有一份，两份都会漂 —— 前者曾实测漏 14 个
+#: 会改东西的工具（`dev_apply_edits` 漏登记却一直绿灯），后者只有 6 个名字。
+#: 名字表是会 regress 的：下一个人加了新工具没人记得往表里补。
+_MUTATING_CAPABILITIES = frozenset({
+    Capability.WRITE_LOCAL, Capability.WRITE_EXTERNAL,
+    Capability.ADMIN, Capability.EXEC,
+})
+
+
+def tool_mutates(spec: ToolSpec | None) -> bool:
+    """这个工具**会不会改东西**。判据来自运行期真实分类，不按名字推断。
+
+    `spec=None`（工具不在注册表里）判 `False`：未知不等于危险，且调用方通常
+    已经先做了「名字真的存在」这一层检查 —— 这里只回答「存在的东西会不会改」。
+    """
+    if spec is None:
+        return False
+    return (spec.capability in _MUTATING_CAPABILITIES
+            or spec.side_effect is not SideEffect.PURE)
+
+
 def _apply_domains(spec: ToolSpec) -> ToolSpec:
     """把 `tool_domains.TOOL_DOMAINS` 里声明的分类贴到 `ToolSpec` 上。
 

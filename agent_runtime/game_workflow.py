@@ -37,7 +37,7 @@ from .project_checkpoint import create_checkpoint, restore_checkpoint
 from .independent_review import review_project
 from .project_stage import ProjectStageError, apply_stage, cleanup_stage, create_stage
 from .enterprise_sandbox import stage_execution_scope
-from .tools import Capability
+from .tools import Capability, tool_mutates
 from .context_router import (CONTEXT_LAYERS, ContextPlan, ContextRouter,
                              allocate_layer_budgets, compress_context,
                              compress_context_async, compress_layers,
@@ -71,6 +71,10 @@ WRITE_CAPABLE_TOOLS = frozenset({
     "dev_patch", "dev_move",
 })
 
+#: 只读角色：名字本身就是「只做分析、不改文件」的承诺。与 `agent._READ_ONLY_ROLES`
+#: 同一份语义，这里按角色表交集收口，避免两份名单各自漂移。
+READ_ONLY_ROLES = frozenset(_SUBAGENT_ROLES) & frozenset({"planner", "dispatcher"})
+
 #: 任务文本里的「要写」信号。刻意保守：宁可漏报也不误报——
 #: 误报会把正常的只读复核任务也标成「不可能完成」，那比不报更坏。
 _WRITE_VERBS = (
@@ -84,6 +88,17 @@ def role_mismatch_tasks(tasks: Iterable[Any]) -> list[dict[str, str]]:
     """列出「要求写文件、角色却不能写」的任务。
 
     给调用方**指名**用——整图被拒时只说一句"无效"等于把问题原样退回给用户。
+
+    两个维度都要查（2026-10-16 修第二维）：
+
+    1. **任务文本**说「要写」，但角色不能写；
+    2. **点名工具**里全是只读角色禁用的工具 —— 即便任务文本不提写。
+
+    第 2 维原先**完全漏了**。实测：planner 被派 `tools=["apply_edit","dev_mcp_call"]`、
+    任务文本写「勘察目录与文件结构」，本函数返回 `[]` → 整图放行 →
+    子代理零工具开跑 → 报「模型没给出结论」。错因不在文本，在派单点名了什么。
+
+    判据不按名字：`_named_tools_are_all_dropped` 逐个问 `ToolSpec`「会不会改东西」。
     """
     out: list[dict[str, str]] = []
     for item in (tasks or ()):
@@ -91,11 +106,88 @@ def role_mismatch_tasks(tasks: Iterable[Any]) -> list[dict[str, str]]:
             continue
         role = str(item.get("role") or "")
         text = str(item.get("task") or item.get("description") or "")
-        if not role or not text or role_can_write(role):
+        task_id = str(item.get("id") or "")[:80]
+        if not role:
             continue
-        if task_wants_write(text):
-            out.append({"id": str(item.get("id") or "")[:80], "role": role[:60]})
+        if _named_tools_are_all_dropped(item, role):
+            out.append({"id": task_id, "role": role[:60],
+                        "why": "点名的工具全部被安全边界筛掉，子代理会零工具"})
+        elif text and not role_can_write(role) and task_wants_write(text):
+            out.append({"id": task_id, "role": role[:60],
+                        "why": "任务要求写文件，但该角色的工具列表里没有写类工具"})
     return out
+
+
+def _named_tools_are_all_dropped(item: Mapping[str, Any], role: str) -> bool:
+    """点名了非空工具集、但对 `role` 而言一个都留不下 → 这条派单必然零工具。
+
+    **只对只读角色查**：非只读角色点名 `["read_file"]` 落空是「名字不存在」，
+    属于另一族问题（且运行时 `_run_child` 会 fail-closed 指名），不该在这里拦整图。
+    """
+    if role not in READ_ONLY_ROLES:
+        return False
+    named = item.get("tools")
+    if isinstance(named, str):
+        # 字符串形态（`"read_file"` / `"read_file,grep"`）要与 `_run_child` 一样
+        # 逗号切分并去掉空白项。实测踩过：`""` 被当成长度 1 的 `[""]`，
+        # 空名查不到 spec 就归为「被筛掉」，把一次**没传工具**的正常派单
+        # 判成零工具。
+        named = [part.strip() for part in named.split(",")]
+    if not isinstance(named, (list, tuple, set)):
+        return False
+    named = [str(name) for name in named if str(name).strip()]
+    if not named:
+        return False
+    kept = [
+        str(name) for name in named
+        if not _tool_is_dropped_for_read_only(str(name), role)
+    ]
+    return not kept
+
+
+def _lookup_tool_spec(name: str):
+    """查工具的 `ToolSpec`；查不到返回 `None`。
+
+    **惰性导入** `tools`：本模块已经在顶层 `from agent import ...`，而 `agent`
+    又导入 `tools`；顶层再加一条会把这个环变成硬依赖。函数内导入在首次调用
+    （校验派单时）才发生，那时 `tools` 必然已在 `sys.modules` 里。
+    """
+    from .tools import coerce_tool_spec
+
+    import tools as tools_mod
+
+    value = (tools_mod.TOOLS or {}).get(name)
+    if value is None:
+        return None
+    try:
+        return coerce_tool_spec(name, value)
+    except TypeError:
+        return None
+
+
+def _tool_is_dropped_for_read_only(name: str, role: str) -> bool:
+    """这个工具会不会在只读角色的边界下被丢掉。
+
+    三种丢法，与 `agent._run_child` 逐条对齐（**必须对齐**，否则这里放过、
+    运行时仍会零工具 fail-closed，整图白拒）：
+
+    - 不在本会话工具注册表 → 丢；
+    - `domain == "mcp"`（连接器工具）→ 丢。只读角色的 `mcp_policy` 恒被收敛成
+      `deny`，而**否掉的是整族**，不是某一个名字；
+    - 按 `ToolSpec` 会改东西（`tool_mutates`）→ 丢。
+
+    这里原本写的是三个硬编码名字（MCP 三兄弟）。变异测试逮到它为什么是
+    **必需的**：`dev_route_connector` 的 spec 是 `read_local` + `pure`，
+    `tool_mutates` 判它无害 —— 只按名字拦就漏了，改成「按能力拦」反而
+    会把它放进来。真相是判据该用 `domain`，那才是把连接器工具标出来的那一维
+    （`agent_runtime/tool_domains.py` 的声明表）。
+    """
+    spec = _lookup_tool_spec(name)
+    if spec is None:
+        return True
+    if spec.domain == "mcp" or spec.group == "mcp":
+        return True
+    return tool_mutates(spec)
 
 
 def role_can_write(role: str) -> bool:

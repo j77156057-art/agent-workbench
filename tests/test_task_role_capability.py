@@ -37,7 +37,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from agent_runtime.game_workflow import (  # noqa: E402
-    GameWorkflowManager, role_can_write, role_mismatch_tasks, task_wants_write,
+    GameWorkflowManager, _tool_is_dropped_for_read_only, role_can_write,
+    role_mismatch_tasks, task_wants_write,
 )
 
 
@@ -221,6 +222,269 @@ class DeterministicFallbackIsSoundTests(unittest.TestCase):
                          "确定性回退计划自己就带角色能力错配——"
                          "那样拒绝 LLM 计划只会换一种方式失败")
         self.assertTrue(shaped, "回退计划为空")
+
+
+class ZeroToolDispatchTests(unittest.TestCase):
+    """第二维：**任务文本不提写，点名的工具却全被筛掉**。
+
+    ## 实测依据（`.tmp/repro_planner_zero_tools.py`，2026-10-16）
+
+    派单 `role=planner, task="勘察目录与文件结构", tools=["apply_edit","dev_mcp_call"]`
+    时，`role_mismatch_tasks` 原先返回 `[]` —— 整图放行 → 子代理被建出来 →
+    有效工具集为空 → 对着空工具集跑模型 → 上层看到
+    「模型连续 2 轮没有给出可判定的动作或结论」。
+
+    **归因完全错了**：真因是派单点名了写工具与 MCP 工具，却被只读边界和
+    `MCP=deny` 全筛掉。子代理静悄悄地什么都没做、还把锅甩给模型。
+
+    原判据只查任务文本里的写动词，而这条派单的文本**恰好是纯只读的**
+    （"勘察目录与文件结构" 不含任何写动词）——所以它从旁边溜了过去。
+
+    这一族钉住**两维都要查**，且第二维不得误伤合法派单。
+    """
+
+    def test_the_real_zero_tool_dispatch_is_now_reported(self):
+        got = role_mismatch_tasks([{
+            "id": "a", "role": "planner",
+            "task": "勘察目录与文件结构，决定分工",
+            "tools": ["apply_edit", "dev_mcp_call"],
+        }])
+        self.assertEqual([g["id"] for g in got], ["a"],
+                         "零工具派单没有被报出来——它会一路滑到运行期")
+
+    def test_the_reason_says_why_rather_than_only_that_it_failed(self):
+        got = role_mismatch_tasks([{
+            "id": "a", "role": "planner", "task": "勘察目录",
+            "tools": ["apply_edit"],
+        }])
+        self.assertTrue(got)
+        self.assertIn("零工具", got[0]["why"],
+                      "只说「不匹配」等于把问题原样退回给用户")
+
+    def test_a_mixed_list_is_not_zero_tools(self):
+        """点名 `[apply_edit, read_file]` 对 planner 仍留下 `read_file` —— 能干活。"""
+        self.assertEqual(role_mismatch_tasks([{
+            "id": "a", "role": "planner", "task": "勘察目录",
+            "tools": ["apply_edit", "read_file"],
+        }]), [], "把「有一部分工具被丢」误判成零工具，会拒掉能跑的派单")
+
+    def test_an_omitted_or_empty_tool_list_is_not_a_mismatch(self):
+        """不传 / 传空 = 用角色默认只读集，那条路本来就能干活。"""
+        for tools in (None, [], (), ""):
+            got = role_mismatch_tasks([{
+                "id": "a", "role": "planner", "task": "勘察目录", "tools": tools,
+            }])
+            self.assertEqual(got, [], "tools=%r 不该被判零工具" % (tools,))
+
+    def test_a_read_only_list_on_a_read_only_role_passes(self):
+        self.assertEqual(role_mismatch_tasks([{
+            "id": "a", "role": "planner", "task": "勘察目录",
+            "tools": ["read_file", "grep", "search_code"],
+        }]), [], "planner 点名只读工具是最正常的用法，不该被拒")
+
+    def test_non_read_only_roles_are_not_judged_by_this_dimension(self):
+        """`coder` 点名写工具 / `tester` 点名 MCP 工具都是正常派单。
+
+        名字不存在的情形属于**另一族**问题：由运行期 `_run_child` fail-closed
+        指名（单任务失败、其余任务照跑）。在这里整图拒掉会误伤：一次笔误
+        不该让整份计划作废。
+        """
+        for task in (
+            {"id": "a", "role": "coder", "task": "实现功能", "tools": ["apply_edit"]},
+            {"id": "b", "role": "tester", "task": "跑测试", "tools": ["dev_mcp_call"]},
+            {"id": "c", "role": "sre-bot", "task": "查日志", "tools": ["run_command"]},
+            {"id": "d", "role": "coder", "task": "实现功能", "tools": ["no_such_tool"]},
+        ):
+            self.assertEqual(role_mismatch_tasks([task]), [],
+                             "非只读角色被这一维误伤了：%r" % task)
+
+    def test_a_tools_field_written_as_a_string_still_works(self):
+        """规划器把 `tools` 写成 `"read_file"` 而不是 `["read_file"]` 是可能的形状。"""
+        self.assertEqual(role_mismatch_tasks([{
+            "id": "a", "role": "planner", "task": "勘察目录", "tools": "read_file",
+        }]), [], "字符串形态的 tools 没被处理")
+
+    def test_it_rejects_the_whole_graph_like_the_text_dimension(self):
+        got = GameWorkflowManager._parse_generated_tasks({"tasks": [
+            {"id": "probe", "role": "planner", "task": "勘察目录与文件结构",
+             "tools": ["apply_edit"], "depends_on": []},
+            {"id": "impl", "role": "coder", "task": "实现最小版本",
+             "depends_on": ["probe"]},
+        ]}, max_tasks=0)
+        self.assertEqual(got, [], "零工具派单没有被整图拒绝")
+
+    def test_every_connector_tool_is_dropped_for_a_read_only_role(self):
+        """**整个连接器族**都得被丢，不只是 `dev_mcp_call`。
+
+        变异测试逮到的洞：这条判据原先写死三个 MCP 工具名，而
+        `dev_route_connector` 的 `ToolSpec` 是 `read_local` + `pure`
+        （纯读、路由一个连接器）—— 只按「会不会改东西」判，它会被**放进来**，
+        于是只读 planner 能拿到连接器路由能力。真相是判据该用 `domain == "mcp"`，
+        那才是把这一族标出来的那一维。
+
+        所以这里逐个点名，而不是只测 `dev_mcp_call`：只测后者的话，
+        那个洞永远不会被发现（`dev_mcp_call` 是 `irreversible`，被另一层拦住了）。
+        """
+        import tools as tools_mod
+        from agent_runtime.tools import coerce_tool_spec, tool_mutates
+
+        connectors = [n for n, v in tools_mod.TOOLS.items()
+                      if coerce_tool_spec(n, v).domain == "mcp"]
+        self.assertGreaterEqual(len(connectors), 3,
+                                "连接器工具不足三个——本测试的前提变了，请重新评估")
+        for name in connectors:
+            spec = coerce_tool_spec(name, tools_mod.TOOLS[name])
+            self.assertTrue(
+                _tool_is_dropped_for_read_only(name, "planner"),
+                "只读 planner 能拿到连接器工具 %s（domain=%s cap=%s side=%s）"
+                % (name, spec.domain, spec.capability.value, spec.side_effect.value))
+
+    def test_the_read_only_role_set_comes_from_one_place(self):
+        """只读角色名单不允许两份各自漂。"""
+        from agent_runtime.game_workflow import READ_ONLY_ROLES
+        self.assertEqual(READ_ONLY_ROLES, frozenset({"planner", "dispatcher"}))
+
+
+class ZeroToolRunFailsClosedTests(unittest.TestCase):
+    """运行期：零工具子代理必须**当场失败**，不能静悄悄地跑。
+
+    这是「只报不拦」在运行期的对偶：任务图校验是**预防**（整图拒），
+    而 `delegate` 这种单任务直调绕过任务图——那条路上唯一的闸就是
+    `_run_child` 这里的 fail-closed。
+
+    原实现让零工具子代理照常建出来、照常拿模型，于是 `status=ok` +
+    结论写成「模型没给出可判定动作」——**把护栏故障记成了模型的错**。
+    """
+
+    def _parent(self):
+        import agent as agent_mod
+        from agent_runtime.tools import Capability, SideEffect
+
+        class _NoLLM:
+            provider = "fake"
+            model = "fake"
+            capability: dict = {}
+
+            def clone(self):
+                return self
+
+            def count_tokens(self, text):
+                return 1
+
+            def chat(self, messages, stream=True, **kwargs):
+                # 消息里**不要**出现「零工具」三个字：下面两条反向守卫就用这三个字
+                # 判「这条闸有没有触发」，写在异常消息里会把量具自己污染掉。
+                raise AssertionError("LLM_WAS_CALLED_UNEXPECTEDLY")
+
+        registry = {
+            "read_file": {"func": lambda _a: ""},
+            "grep": {"func": lambda _a: ""},
+            "apply_edit": {"func": lambda _a: "",
+                           "capability": Capability.WRITE_LOCAL,
+                           "side_effect": SideEffect.MUTATING, "parallel_safe": False},
+            "dev_mcp_call": {"func": lambda _a: "",
+                             "capability": Capability.NETWORK,
+                             "side_effect": SideEffect.IRREVERSIBLE, "parallel_safe": False},
+        }
+        return agent_mod.Agent(llm=_NoLLM(), tool_registry=registry)
+
+    def test_zero_tools_fails_instead_of_silently_succeeding(self):
+        res = self._parent()._run_child(
+            "planner", "勘察目录与文件结构",
+            tool_allowlist=["apply_edit", "dev_mcp_call"],
+            mcp_policy="allow", reflect=False)
+        self.assertEqual(res["status"], "failed",
+                         "零工具子代理仍然报成功——那等于把护栏故障记成模型没干活")
+        self.assertIn("零工具", res["error"])
+
+    def test_the_error_names_the_dropped_tools_and_the_way_out(self):
+        res = self._parent()._run_child(
+            "planner", "勘察目录", tool_allowlist=["apply_edit"],
+            mcp_policy="deny", reflect=False)
+        self.assertEqual(res["dropped_tools"], ["apply_edit"])
+        self.assertIn("coder", res["error"],
+                      "只说「不行」不给改法，等于把问题原样退回给调用方")
+
+    def _hit_the_zero_tools_gate(self, res):
+        """这条闸有没有触发？——看 error 文本，不看别的字段。
+
+        不用 `_NoLLM` 抛不抛异常来间接判断：闸**不**触发时子代理会正常走到调
+        模型那一步，异常就混进 `error`，和闸触发的 `error` 长得一样。
+        """
+        return "零工具" in str(res.get("error") or "")
+
+    def test_a_survivable_list_still_runs(self):
+        """反向守卫：留得下工具时**不许**被这条闸拦住。"""
+        res = self._parent()._run_child(
+            "planner", "勘察目录", tool_allowlist=["read_file", "apply_edit"],
+            mcp_policy="deny", reflect=False)
+        self.assertFalse(self._hit_the_zero_tools_gate(res),
+                         "planner 点名 [read_file, apply_edit] 仍有 read_file 可用，"
+                         "不该被判零工具")
+
+    def test_an_empty_allowlist_is_still_respected_as_intent(self):
+        """显式传空名单是调用方的意图，不归这条闸管。"""
+        res = self._parent()._run_child(
+            "planner", "勘察目录", tool_allowlist=[], mcp_policy="deny", reflect=False)
+        self.assertFalse(self._hit_the_zero_tools_gate(res),
+                         "显式传空名单被当成零工具故障——那是调用方的意图")
+
+    def test_an_omitted_allowlist_still_gets_the_role_defaults(self):
+        res = self._parent()._run_child(
+            "planner", "勘察目录", mcp_policy="deny", reflect=False)
+        self.assertFalse(self._hit_the_zero_tools_gate(res),
+                         "不传 allowlist 时用的是 planner 的只读默认集，本该有工具")
+
+
+class ToolMutatesIsTheSingleAuthorityTests(unittest.TestCase):
+    """「这个工具会不会改东西」只能有一份判据。
+
+    合并前 `agent.py` 的只读过滤与 `game_workflow.WRITE_CAPABLE_TOOLS` 各有一份，
+    两份都按名字列工具名，两份都会漂：前者曾实测漏 14 个会改东西的工具
+    （`dev_apply_edits` 漏登记却一直绿灯），后者只有 6 个名字。
+    下一个人加了新工具，没人记得往名字表里补 —— 护栏就这么静悄悄地失效。
+    """
+
+    def test_it_reads_capability_and_side_effect(self):
+        from agent_runtime.tools import (Capability, SideEffect, ToolSpec,
+                                         tool_mutates)
+        def _spec(**kw):
+            base = {"func": lambda _a: ""}
+            base.update(kw)
+            return ToolSpec(name="t", description="", **{
+                "func": base["func"], **kw})
+
+        self.assertFalse(tool_mutates(_spec(capability=Capability.READ_LOCAL)))
+        self.assertTrue(tool_mutates(_spec(capability=Capability.WRITE_LOCAL)))
+        self.assertTrue(tool_mutates(_spec(capability=Capability.WRITE_EXTERNAL)))
+        # 改**共享状态**而不是工作区文件的那一半：只看 WRITE_* 会漏掉它们。
+        self.assertTrue(tool_mutates(_spec(capability=Capability.ADMIN)))
+        self.assertTrue(tool_mutates(_spec(capability=Capability.EXEC)))
+        # 声明了不可逆副作用的那一半。
+        self.assertTrue(tool_mutates(
+            _spec(capability=Capability.READ_LOCAL,
+                  side_effect=SideEffect.IRREVERSIBLE)))
+
+    def test_an_unknown_tool_is_not_assumed_dangerous(self):
+        from agent_runtime.tools import tool_mutates
+        self.assertFalse(tool_mutates(None))
+
+    def test_it_agrees_with_the_registry_on_the_real_write_tools(self):
+        """拿真实注册表过一遍：凡是 `_SUBAGENT_ROLES` 判为可写的角色，
+        其默认工具集里至少有一个被 `tool_mutates` 认成会改东西。"""
+        from agent_runtime.tools import coerce_tool_spec, tool_mutates
+        import tools as tools_mod
+        from agent_runtime.game_workflow import role_can_write
+
+        for role in ("coder", "tester", "artist", "designer"):
+            self.assertTrue(role_can_write(role), "%s 本该可写" % role)
+            names = tools_mod.TOOLS
+            role_tools = __import__("agent")._SUBAGENT_ROLES[role]["tools"]
+            self.assertTrue(
+                any(tool_mutates(coerce_tool_spec(n, names[n]))
+                    for n in role_tools if n in names),
+                "%s 的默认工具集里一个会改东西的都没有——角色表与真实分类对不上"
+                % role)
 
 
 if __name__ == "__main__":

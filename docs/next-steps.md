@@ -2,7 +2,7 @@
 
 > **本文档是累积追加式的**：下面的历史章节（1~7）是当晚的侦查记录，仍然有效，
 > **不要删**。每次续做只更新第 0 节「当前状态」—— 那是唯一指路的入口。
-> 上次更新：2026-10-15（HEAD `4e2cadb`，全量失败归因 + 六个模块修复后重跑通过）。
+> 上次更新：2026-10-16（planner 零工具修掉；HEAD 仍是 `5f78b59`，本节随下笔入库）。
 >
 > ⚠ **本节故意不单独提交**：提交本身会改变 HEAD，一提交这条声明就立刻变陈。
 > 做法是把 §0 留在工作树里，随下一笔**真实改动**一起入库 —— 这样判据在
@@ -10,7 +10,73 @@
 
 ## 0. 当前状态
 
-- **HEAD `4e2cadb`** —— 2026-10-15 全量（4110 用例，隔离 `DOCMIND_STATE_ROOT`）
+- **最新一笔（未记 hash，随下笔入库）：planner 子代理零工具** —— 上面「未解决」
+  里那条遗留项已修掉。两处根因，两处都修：
+  - **现象（实测非推断）**：`role=planner, tools=["apply_edit","dev_mcp_call"]` →
+    `status=ok` + 有效工具集 `''` + 结论写「模型连续 2 轮没有给出可判定的动作」。
+    **归因全错**：真因是点名了写工具与 MCP 工具却被只读边界与 `MCP=deny` 全筛掉，
+    子代理静悄悄什么都没做，还把锅甩给模型。
+  - **入口只有一个**（此条纠正了一个错误假设）：`delegate` 的 `_parse_role_task`
+    只解析 role/task，结构上没有 `tools` 字段；唯一入口是 `orchestrate` 任务图的
+    `tools` → `_task_runner` → `tool_allowlist`。
+  - **根因一（校验层漏一维）**：`role_mismatch_tasks` 只查**任务文本**的写动词，
+    而这条派单文本是纯只读的（"勘察目录与文件结构"）→ 整图放行。现已补上
+    `tools` 字段这一维，沿用既有的整图拒绝。
+  - **根因二（运行期无闸）**：零工具子代理照样建出来、照样拿模型。现改为
+    fail-closed：点名过非空名单却被筛光 → 当场 `status=failed` + `dropped_tools`
+    + 指名改法。**不覆盖**显式传空名单（调用方意图），也不管角色默认集为空。
+    `agent._replanner` 直接读 `r.get("error")`，所以改法会进重规划提示词。
+  - **判据收敛**：新增 `agent_runtime.tools.tool_mutates(spec)`（capability +
+    side_effect 两维）为唯一真源，消掉 `agent.py` 与 `WRITE_CAPABLE_TOOLS` 两份
+    影子（前者实测漏过 14 个会改东西的工具）。
+  - **变异测试揭出的洞比它验证的更多**：存活 mutant 我**先假设**是等价变异
+    （第一层 MCP 检查多余），对照实验**证伪**了它——`dev_route_connector` 的 spec
+    是 `read_local`+`pure`，`tool_mutates` 判它无害 → 第一层必需、测试真有洞。
+    真相是判据该用 `domain == "mcp"` 而非硬编码三个名字。补测试逐个点名整族
+    （只测 `dev_mcp_call` 的话永远发现不了，因为它被另一层拦住了）。
+  - 途中另一个真 bug：`tools=""` 被当成长度 1 的 `[""]` → 把没传工具的正常派单
+    判成零工具。
+  - 验证：test_task_role_capability 35 / 子代理全族+test_agent 147 / 工作流族 166 /
+    误伤检查 14/14 / 直接读数（子代理自己的计数器）：零工具那次调模型 **0 次**，
+    其余四种 2 次。
+- **HEAD `5f78b59`** —— 2026-10-16 **合并 feature/multimodal-verification**（28 提交，
+  EDA 多模态验收 + 引擎视觉回归 + realtime 模式接线 + 前端面板）。两条分支各自
+  独立实现了「写 .html 后自动自审」（main `bfdfb23` 的 `web` scope / 分支 `f4c9df1`
+  的 auto→visual），**按失效面并成两级门**而不是取一边：
+  - `web`（离线、零依赖、永远跑）：HTML 标签闭合 + 内联 `<script>` node --check
+    + CSS 花括号平衡 —— 验「产物有没有写坏」。
+  - `visual`（真浏览器、仅 .html/.htm）：截图 + console 门 —— 验「跑起来画面有没有
+    坏」。auto 档**把本次改动的网页当入口传进去**（原实现只找 index.html，找不到
+    就 fail-closed，vibecoding 的 snake.html 会把「已落盘却判未验证」换个形式放回
+    来）。`DOCMIND_SELF_VERIFY_VISUAL=0` 关掉时进 skipped → partial（与 engine 门
+    同判据：关掉的门没跑 ≠ 通过）。
+  - **agent.py 两处语义撞车**（文本不冲突，跑全量才暴露）：① 子代理显式 allowlist
+    被全筛后**不回填**角色默认工具（取 9f8ef17 的硬上限契约，撤掉 main 侧的回填
+    兜底）；② 联网门判据用 `group=="web"` 而非 capability（stdio 本地连接器不该被
+    联网开关管），并把 http 连接器「联网关时隐藏」单独钉成用例。
+- **未解决**
+  - 合并后**全量 4110 用例未重跑**：本轮只跑了受影响的模块（self_verify 34 / EDA
+    核心 75 / agent 相关 + 写意图 221 / 三模块复跑 78 / 子代理 147 / 工作流 166）。
+    分支带来的 EDA 视觉回归、前端面板等需要浏览器或真服务的慢片未跑。
+  - `.ask-side .btn:disabled` 的 `background: var(--bg-hover)` 不生效（仅虚线边框
+    生效，对比度 7.3:1 达标），根因未确证。
+- **`bfdfb23`**（合并前 main 末笔）—— 2026-10-16 真机 vibecoding 回归两连修（真实跑 harness、读截图验证）：
+  - `e65ef6b` **「写 + 量词」被安全护栏拦死**（真产品 bug）：「帮我在 vibe_test/ 下
+    写一个单文件 HTML 贪吃蛇」被 create_file 拦（`[安全拦截] 用户没有要求创建或修改
+    文件`）—— vibecoding 最高频说法卡死整个主用法。裸「写」不能进词表（22 句必须
+    denied 里 5 次名词/疑问用法，实测加入误放行 2/22），改成带作用域正则
+    `写[一个段份些篇首封]|写下`：误放行 0/22、目标句漏放行 0/6。How-to 问句
+    （「怎么写一个…」）由疑问词分支 + uncertain 档兜住仍拦。全族 200 passed。
+  - `bfdfb23` **self_verify 缺 web scope**（harness 能力缺口）：`.html` 不属于任何
+    scope → `ran` 空 → status=skipped → 收尾门把最终答复**整段替换**成「修改尚未
+    完成验证，不能确认任务成功」，用户看着文件落盘却被判未验证。新增 `web` scope：
+    HTML 标签闭合（stdlib html.parser）+ 内联 `<script>` node --check（无 node 降级
+    skip）；HTML5 可省略结束标签不算未闭合（防收尾门假红诱导模型改对的文件）。
+    真机产物 0 假阳性；二轮 e2e 最终答复恢复为正常交付说明（含「写后自验证通过」）。
+  - 二轮真机 e2e 证据：`godot_sample/vibe_e2e2/snake.html`（9645 字节）真实落盘、
+    `blocked=0`、真 Edge 截图（`.docmind/page-action/vibe-e2e2/1-initial.png` 起始态、
+    `2-running.png` 运行态、零 pageerror）证明可玩。
+- **2026-10-15 全量（4110 用例，隔离 `DOCMIND_STATE_ROOT`）**
   失败归因完毕，六个模块的既有红已全部修掉并两两同进程复跑验证：
   - `test_sse_atomic_subscribe` 换 `api_agent.WORKFLOWS` 后**从不还原**（模块级
     全局泄漏）→ 按字母序污染其后所有碰 workflow 路由的模块。修：addCleanup 还原。
@@ -27,6 +93,9 @@
     stdio 本地连接器（godot/unity）工具全灭**。修：判据回到文档契约 `group == "web"`。
   - `_run_child` 里点名工具被只读规则/MCP=deny 全部筛掉时 `allowed=[]` → planner
     子代理零工具。修：退回角色默认工具集（显式传空名单不兜底）。
+    ⚠ **本条在 `5f78b59` 合并时被推翻**：那条回填与 9f8ef17「显式 allowlist = 硬
+    上限，过滤后为空就保持为空」直接冲突，合并取了更保守、有设计记录的一侧
+    （回填已撤，见 §0）。**planner 零工具这个现象本身没被解决**，根因在生成端。
   - `capacity.MIN_TASK_TOKEN_BUDGET` 18906 → 18951：提示词从 18672 涨到 18816 字符
     （+36 token/轮），带记忆 3 轮门槛水涨船高。已用 `git archive 548cdf0` 对照确认
     膨胀在本次改动之前。**record 与 preflight 口径不同**（output_chars/4 vs 原值），

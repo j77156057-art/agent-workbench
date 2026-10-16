@@ -65,7 +65,10 @@ from agent_runtime.output_audit import audit_evidence
 from agent_runtime.context_router import ContextRouter
 from agent_runtime.run_budget import RunBudget
 from agent_runtime.local_runtime import effective_parallelism, local_llm_slot
-from agent_runtime.tools import Capability, SideEffect, coerce_tool_spec, execute_tool, upgrade_registry
+from agent_runtime.tools import (
+    Capability, SideEffect, coerce_tool_spec, execute_tool, tool_mutates,
+    upgrade_registry,
+)
 from agent_runtime import tool_failure as _tool_failure
 from agent_runtime import mcp_bridge as _mcp_bridge
 from agent_runtime import langsmith as _langsmith
@@ -6330,17 +6333,10 @@ class Agent:
                 # capability 与 side_effect 两个维度都问：有的工具改的是共享状态
                 # 而不是工作区文件（dev_lanes / dev_commit 归 ADMIN），
                 # 有的声明了不可逆副作用。任一为真就说明它会改东西。
-                _MUTATING_CAPS = frozenset({
-                    Capability.WRITE_LOCAL, Capability.WRITE_EXTERNAL,
-                    Capability.ADMIN, Capability.EXEC,
-                })
-
+                # 判据本身在 `agent_runtime.tools.tool_mutates`（唯一真源）；
+                # 这里**不再**本地重写一份 —— 那正是影子副本的由来。
                 def _mutates(name):
-                    spec = self._tool_spec(name)
-                    if spec is None:
-                        return False
-                    return (spec.capability in _MUTATING_CAPS
-                            or spec.side_effect is not SideEffect.PURE)
+                    return tool_mutates(self._tool_spec(str(name)))
 
                 allowed = [str(name) for name in requested_tools
                            if str(name) in self.tools
@@ -6377,6 +6373,38 @@ class Agent:
         #     写工具），不该靠放宽校验端来救。该生成端问题仍未解决，记在
         #     docs/next-steps.md，不在本提交里改。
         allowed = [name for name in allowed if name in self.tools]
+        # 显式点名了非空名单、过滤后却一个不剩 → **结构上无法完成**，当场失败。
+        #
+        # 为什么不放它跑（2026-10-16 实测，见 `.tmp/repro_planner_zero_tools.py`）：
+        # 零工具的子代理不会被安全规则挡住，它照样被建出来、照样拿到模型，
+        # 于是模型对着空工具集只能输出纯文本。上层看到的是
+        #   status=ok + 「模型连续 2 轮没有给出可判定的动作或结论」
+        # ——**归因完全错了**：真因是派单点名了 `apply_edit` / `dev_mcp_call`
+        # 却被只读边界与 MCP=deny 全筛掉，而这条被伪装成「模型不行」。
+        # 子代理静悄悄地什么都没做、还把锅甩给模型，比直接失败坏得多。
+        #
+        # 为什么是「点名了非空」而不是「最终为空」：显式传空名单是调用方的意图，
+        # 不覆盖；而角色默认工具集为空（自造角色可能如此）也不归这里管。
+        # 只处理**点名了、却被边界筛光**这一种——它的成因明确、可指名。
+        if allowlist_provided and requested_tools and not allowed:
+            dropped = sorted({str(n) for n in requested_tools} - set(allowed))
+            reason = (
+                "子代理零工具：点名的 %d 个工具（%s）全部被安全边界筛掉，"
+                "它没有任何可用工具、结构上无法完成这个子任务。"
+                % (len(dropped), "、".join(dropped[:8]) + ("…" if len(dropped) > 8 else ""))
+            )
+            if role_name in _READ_ONLY_ROLES:
+                reason += ("%s 是只读角色：点名写工具会被丢弃、MCP 恒为 deny。"
+                           "要写文件请派 coder；要读文件请点名 read_file/grep/search_code，"
+                           "或不传 tools 用角色默认集。" % role_name)
+            else:
+                reason += ("这些工具要么不在本会话工具注册表里，要么不在本角色可用范围。"
+                           "请核实工具名，或不传 tools 用角色默认集。")
+            return {"status": "failed", "conclusion": "", "steps": 0,
+                    "error": reason, "dropped_tools": dropped,
+                    "reflection": {"ok": False, "source": "allowlist",
+                                   "issues": ["zero_effective_tools"]},
+                    "trace": _child_trace([], [], hooks=hook_events)}
         cap = _resolve_child_max_steps(max_steps)
         child = Agent(
             llm=child_llm,

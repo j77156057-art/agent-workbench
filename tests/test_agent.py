@@ -788,18 +788,58 @@ class SubagentPlanningRoleTests(unittest.TestCase):
         result = parent._run_child(
             "planner", "拆解文件和依赖", tool_allowlist=["apply_edit", "dev_mcp_call"],
             mcp_policy="allow", reflect=False)
+
+        # 2026-10-16：判据从「跑起来、提示里不得出现写工具」升级为
+        # **零工具直接 fail-closed**。原来只点名的两个工具（写工具 + 被禁的
+        # dev_mcp_call）会被全筛掉，代码仍把子代理建出来、给它模型，于是
+        # 上层读到 status=ok +「模型没给出结论」——护栏故障被记成了模型的错。
+        #
+        # 同一份派单若带一个能用的只读工具（search_code），闸不该触发，
+        # 那条判据由 test_planner_with_a_usable_tool_still_runs 继续钉。
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["dropped_tools"], ["apply_edit", "dev_mcp_call"])
+        self.assertEqual(llm.messages, [],
+                         "零工具的子代理不该调模型——它没有任何工具可调")
+        # 显式 allowlist 是**硬上限**（见 9f8ef17）：被过滤后为空**不回填**
+        # 角色默认工具（旧的 search_code 回填语义已废除）。这条现在由
+        # `dropped_tools` 直接证明——若哪天回填了，这里会变空列表。
+        self.assertIn("零工具", result["error"])
+        # 只读角色被点名写工具时必须给出改法，不能只说「不行」。
+        self.assertIn("coder", result["error"])
+
+    def test_planner_with_a_usable_tool_still_runs_and_cannot_widen(self):
+        """反向守卫：留得下工具时闸不触发，且写工具仍然进不去。"""
+        class CaptureLLM(_ScriptedLLM):
+            def __init__(self):
+                super().__init__([_FINAL_OK])
+                self.messages = []
+
+            def clone(self):
+                return self
+
+            def chat(self, messages, stream=True, **kwargs):
+                self.messages.append(messages)
+                return super().chat(messages=messages, stream=stream, **kwargs)
+
+        llm = CaptureLLM()
+        registry = {
+            "search_code": {"func": lambda _arg: "代码证据"},
+            "apply_edit": {"func": lambda _arg: "不应调用"},
+            "dev_mcp_call": {"func": lambda _arg: "不应调用"},
+        }
+        parent = agent_mod.Agent(llm=llm, tool_registry=registry)
+        result = parent._run_child(
+            "planner", "拆解文件和依赖",
+            tool_allowlist=["search_code", "apply_edit", "dev_mcp_call"],
+            mcp_policy="allow", reflect=False)
         self.assertEqual(result["status"], "ok")
         prompt = "\n".join(str(item.get("content") or "") for item in llm.messages[-1]
-                             if isinstance(item, dict))
+                           if isinstance(item, dict))
         self.assertIn("MCP=deny", prompt)
         effective = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
+        self.assertIn("search_code", effective)
         self.assertNotIn("apply_edit", effective)
         self.assertNotIn("dev_mcp_call", effective)
-        # 显式 allowlist 是**硬上限**（见 9f8ef17）：这里只请求了写工具 apply_edit
-        # 与被禁的 dev_mcp_call，被过滤后有效集为空，**不再回填角色默认工具**（旧的
-        # search_code 回填语义已废除）。只读 planner「仍能读」由不传 allowlist 的用例覆盖。
-        self.assertEqual(effective.strip(), "",
-                         f"只请求写/禁工具时有效集应为空（硬上限，不回填默认）：{effective!r}")
 
     def test_dispatcher_cannot_enable_mcp(self):
         class CaptureLLM(_ScriptedLLM):
@@ -819,13 +859,28 @@ class SubagentPlanningRoleTests(unittest.TestCase):
                     "dev_mcp_call": {"func": lambda _arg: "不应调用"}}
         parent = agent_mod.Agent(llm=llm, tool_registry=registry)
         result = parent._run_child("dispatcher", "拆解文件并分派任务",
-                                   tool_allowlist=["dev_mcp_call"],
+                                   tool_allowlist=["search_code", "dev_mcp_call"],
                                    mcp_policy="allow", reflect=False)
+        # 同上：带一个能用的只读工具 → 闸不触发；但 MCP 仍然进不去，
+        # 且 dispatcher 的 mcp_policy 被收敛成 deny。
         self.assertEqual(result["status"], "ok")
         prompt = "\n".join(str(item.get("content") or "")
-                             for item in llm.messages[-1] if isinstance(item, dict))
+                           for item in llm.messages[-1] if isinstance(item, dict))
         self.assertIn("MCP=deny", prompt)
-        self.assertNotIn("dev_mcp_call", prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0])
+        effective = prompt.rsplit("允许工具=", 1)[-1].split("\n", 1)[0]
+        self.assertIn("search_code", effective)
+        self.assertNotIn("dev_mcp_call", effective)
+
+    def test_dispatcher_named_only_mcp_tools_fails_closed(self):
+        """只点名 `dev_mcp_call` → 零工具，fail-closed 且指名。"""
+        registry = {"search_code": {"func": lambda _arg: "代码证据"},
+                    "dev_mcp_call": {"func": lambda _arg: "不应调用"}}
+        parent = agent_mod.Agent(llm=None, tool_registry=registry)
+        result = parent._run_child("dispatcher", "拆解文件",
+                                   tool_allowlist=["dev_mcp_call"],
+                                   mcp_policy="allow", reflect=False)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["dropped_tools"], ["dev_mcp_call"])
 
 
 class CalculateToolTests(unittest.TestCase):
