@@ -2,7 +2,7 @@
 
 > **本文档是累积追加式的**：下面的历史章节（1~7）是当晚的侦查记录，仍然有效，
 > **不要删**。每次续做只更新第 0 节「当前状态」—— 那是唯一指路的入口。
-> 上次更新：2026-10-16（planner 零工具修掉；HEAD 仍是 `5f78b59`，本节随下笔入库）。
+> 上次更新：2026-10-16（HEAD `3c6c543` = planner 零工具 + MCP 失败分级；本节随下笔入库）。
 >
 > ⚠ **本节故意不单独提交**：提交本身会改变 HEAD，一提交这条声明就立刻变陈。
 > 做法是把 §0 留在工作树里，随下一笔**真实改动**一起入库 —— 这样判据在
@@ -10,6 +10,18 @@
 
 ## 0. 当前状态
 
+- **最新一笔（未记 hash，随下笔入库）：MCP 连接器失败被判成功** —— 真机 UI
+  「交付代理 dev_list_connector_tools(key: godot) 正在执行 127s」反推出来的。
+  两层 bug 叠在一起：表层是 `uvx godot-ai attach` 起不来（要占 8000 端口，撞上
+  DocMind 后端），一次失败实测 67.9s；真 bug 是 MCP 族五条失败文案**全都不在**
+  `agent._FAILURE_MARKERS` 里 → `_is_failure` 判 False → `_tool_ok=True` →
+  **agent 把失败当成功**，模型自然地再调一次 → 又一次 67.9s → 127s。
+  修法三层：① 补五条 marker（含正常 MCP 回包不得误伤的反向守卫）；
+  ② `tool_failure` 加 `_PERMANENT_TEXT_HINTS`——`dev_mcp_call` 的失败是返回值
+  字符串、`error_kind` 空，会掉进 `TRANSIENT` 的 `""` 桶，主循环据此说「可以用
+  完全相同的参数直接重试一次」，那正是 127s 的指令来源；文本检查必须放在类别桶
+  **之前**才看得见；③ `_mcp_failure_hint()` 从 stderr 噪声里提炼真因（端口被占）。
+  顺手修 `failure_guidance` 的标签自相矛盾（「legacy_failure 重试必然同样失败」）。
 - **最新一笔（未记 hash，随下笔入库）：planner 子代理零工具** —— 上面「未解决」
   里那条遗留项已修掉。两处根因，两处都修：
   - **现象（实测非推断）**：`role=planner, tools=["apply_edit","dev_mcp_call"]` →
@@ -39,7 +51,7 @@
   - 验证：test_task_role_capability 35 / 子代理全族+test_agent 147 / 工作流族 166 /
     误伤检查 14/14 / 直接读数（子代理自己的计数器）：零工具那次调模型 **0 次**，
     其余四种 2 次。
-- **HEAD `5f78b59`** —— 2026-10-16 **合并 feature/multimodal-verification**（28 提交，
+- **HEAD `3c6c543`** —— 2026-10-16 **合并 feature/multimodal-verification**（28 提交，
   EDA 多模态验收 + 引擎视觉回归 + realtime 模式接线 + 前端面板）。两条分支各自
   独立实现了「写 .html 后自动自审」（main `bfdfb23` 的 `web` scope / 分支 `f4c9df1`
   的 auto→visual），**按失效面并成两级门**而不是取一边：
@@ -55,8 +67,14 @@
     兜底）；② 联网门判据用 `group=="web"` 而非 capability（stdio 本地连接器不该被
     联网开关管），并把 http 连接器「联网关时隐藏」单独钉成用例。
 - **未解决**
+  - **godot-ai 与 DocMind 端口撞车（环境侧，非代码 bug）**：godot 连接器的默认配置
+    是 `uvx godot-ai attach`，它的 bridge 要 attach 到 **8000** 端口，而那是 DocMind
+    后端自己的端口 → `PORT_OCCUPIED` → 进程退出 code=98。代码侧现在能快速且可行动地
+    报错了（见下一条），但要真正跑通 Godot 连接器，仍需改 godot-ai 的端口配置或停掉
+    占用进程。
   - 合并后**全量 4110 用例未重跑**：本轮只跑了受影响的模块（self_verify 34 / EDA
-    核心 75 / agent 相关 + 写意图 221 / 三模块复跑 78 / 子代理 147 / 工作流 166）。
+    核心 75 / agent 相关 + 写意图 221 / 三模块复跑 78 / 子代理 147 / 工作流 166 /
+    失败分级 148）。
     分支带来的 EDA 视觉回归、前端面板等需要浏览器或真服务的慢片未跑。
   - `.ask-side .btn:disabled` 的 `background: var(--bg-hover)` 不生效（仅虚线边框
     生效，对比度 7.3:1 达标），根因未确证。

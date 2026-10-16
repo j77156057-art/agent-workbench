@@ -340,7 +340,10 @@ def _dev_mcp_call_impl(arg):
         except mcp_client.MCPError as exc:
             attempts = getattr(exc, 'attempts', [])
             suffix = (' 尝试记录：' + json.dumps(attempts, ensure_ascii=False)) if attempts else ''
-            return f'MCP 调用失败：{exc}{suffix}（可改用内置工具或人工检查连接器）'
+            hint = _mcp_failure_hint(str(exc))
+            return (f'MCP 调用失败：{exc}{suffix}'
+                    + (f'（{hint}）' if hint else
+                       '（可改用内置工具或人工检查连接器）'))
         return json.dumps(result, ensure_ascii=False)[:6000]
     except Exception as e: return f'MCP 调用失败：{e}（若怀疑是连接器选择有误，可先调用 dev_route_connector 重新挑选已启用连接器）'
 
@@ -375,6 +378,26 @@ def dev_route_connector(arg):
         return f'连接器路由失败：{e}'
 
 
+def _mcp_failure_hint(exc_text: str) -> str:
+    """把 MCP 失败文本里的关键信号提炼成一句**可行动**的话。
+
+    为什么需要：`mcp_client` 抛的 `MCPError` 带着子进程 stderr 尾迹（上限 800 字），
+    真信号（`PORT_OCCUPIED` / `Port 8000 is occupied`）埋在 "Installed 73 packages"
+    这类安装噪声里。Agent 拿到原始尾迹要自己翻，而这一步它在 60~70 秒的失败之后
+    做——每翻错一次就是又一次同样的失败。
+
+    实测现场（2026-10-16）：Godot 连接器的 `uvx godot-ai attach` 起不来，真因是
+    它的 bridge 想用 **8000** 端口，而那是 DocMind 后端自己的端口。
+    """
+    low = str(exc_text or "")
+    if "port_occupied" in low.lower() or "address already in use" in low.lower():
+        return ("连接器要用的端口被占用了（很可能是 DocMind 后端自己占着）——"
+                "改端口或停掉占用进程后再试；这类失败重试不会变好。")
+    if "引擎未运行" in low or "编辑器处于打开状态" in low:
+        return "目标引擎/编辑器没有打开——先打开它再重试。"
+    return ""
+
+
 def dev_list_connector_tools(arg):
     """列出某连接器暴露的工具（name/description/input_schema），确定 dev_mcp_call 的 name 与参数。
 
@@ -390,7 +413,10 @@ def dev_list_connector_tools(arg):
         r = mcp_client.list_tools(root, key)
         return json.dumps(r, ensure_ascii=False)[:6000]
     except Exception as e:
-        return f'工具清单失败：{e}（连接器可能未启用或引擎未运行，可先用 dev_route_connector 换一个）'
+        hint = _mcp_failure_hint(str(e))
+        return (f'工具清单失败：{e}'
+                + (f'（{hint}）' if hint else
+                   '（连接器可能未启用或引擎未运行，可先用 dev_route_connector 换一个）'))
 
 
 # ---------------------------------------------------------------------------

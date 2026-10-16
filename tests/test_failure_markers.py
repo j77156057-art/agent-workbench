@@ -30,6 +30,18 @@ FAILURE_CASES = [
     ("工具入参格式错", "参数缺失：请提供 regions: <JSON 数组或 {\"regions\":[...]} 分区清单>。", True),
     ("安全策略拦截", "安全限制：该操作被拒绝。", True),
     ("写操作护栏", "拒绝写入：未授权写操作。", True),
+    # MCP 连接器族（2026-10-16 补，真机 UI「正在执行 127s」）。
+    # 这五条原先全都不在表里 → 连接器起不来时 `_is_failure` 判 False →
+    # `_tool_ok=True` → 失败分级不触发、重试预算不计、熔断不计数。
+    # Godot 连接器一次失败要 60~70 秒（uvx 装 73 个包 + attach 重试），
+    # agent 把失败当成功，模型自然地再调一次，两次叠起来就是 127s。
+    ("MCP 调用失败（连接器起不来）",
+     "MCP 调用失败：MCP 进程意外退出（code=98）。godot-ai attach [PORT_OCCUPIED]", True),
+    ("MCP 调用被钩子拦截", "MCP 调用已被钩子拦截：需要人工审核", True),
+    ("MCP 工具清单失败",
+     "工具清单失败：MCPError: MCP 进程已退出（code=1）。", True),
+    ("连接器列表失败", "连接器列表失败：未配置代码库。", True),
+    ("连接器路由失败", "连接器路由失败：OSError: boom", True),
 ]
 
 # 「检索没有匹配」是**合法答案**，不是失败（用户定的口径）。
@@ -60,6 +72,14 @@ NORMAL_CASES = [
     ("检索命中", "已找到 2 处匹配：a.py:12、b.py:34", False),
     ("网页正文", "网页内容如下：Hello world", False),
     ("计算结果回填", "计算结果为：2", False),
+    # MCP **成功**返回不得被这五条 marker 误伤：连接器正常工作时的回包
+    # 也带 "MCP" / "连接器" 字样（工具名、连接器 key 都在里面）。
+    ("MCP 工具成功回包",
+     '{"ok": true, "server": "godot", "tools": [{"name": "godot_scene_open", '
+     '"description": "打开场景"}], "count": 1}', False),
+    ("连接器列表成功回包",
+     '{"ok": true, "connectors": [{"key": "godot", "label": "Godot 4", '
+     '"enabled": true}], "count": 1}', False),
 ]
 
 

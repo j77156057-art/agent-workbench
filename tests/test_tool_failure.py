@@ -82,6 +82,69 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(tf.classify_failure(""), "transient")
 
 
+class McpConnectorFailureTests(unittest.TestCase):
+    """MCP 连接器起不来 → 必须判 permanent，**不能**鼓励原样重试。
+
+    ## 实测代价（2026-10-16，真机 UI「正在执行 127s」）
+
+    `dev_list_connector_tools` / `dev_mcp_call` 把失败写成**返回值字符串**
+    （「MCP 调用失败：…」），不抛异常，于是 `error_kind` 是空的 —— 空串落在
+    `TRANSIENT_ERROR_KINDS` 里，主循环据此告诉模型「这是一次**可重试**的失败，
+    可以用完全相同的参数直接重试一次」。
+
+    而 Godot 连接器的 `uvx godot-ai attach` 起不来（编辑器没开 / 8000 端口被
+    DocMind 后端自己占着）时，一次失败要 **60~70 秒**。agent 按提示再调一次，
+    两次叠起来就是 UI 上那个 127s，且第二次必然同样失败。
+
+    **失败本身没错，错的是让它失败两遍。**
+    """
+
+    def test_a_dead_connector_process_is_permanent_even_with_no_error_kind(self):
+        """没有 error_kind（字符串失败路径）也要认出来。"""
+        texts = (
+            "MCP 进程意外退出（code=98）。godot-ai attach [PORT_OCCUPIED]",
+            "工具清单失败：MCPError: MCP 进程已退出（code=1）。",
+            "MCP 调用失败：Address already in use",
+            "引擎未运行，请先打开 Godot 编辑器",
+            "连接器未启用，请先在工作台启用并审批",
+        )
+        for text in texts:
+            with self.subTest(text=text[:40]):
+                self.assertEqual(tf.classify_failure("", text), "permanent")
+
+    def test_it_does_not_swallow_a_genuine_timeout(self):
+        """反向守卫：超时仍然该鼓励原样重试，别把这一类也禁掉。"""
+        self.assertEqual(tf.classify_failure("timeout", "工具执行超时"), "transient")
+        # 文本里带 "timeout" 但 kind 明确是 timeout → 仍 transient
+        self.assertEqual(
+            tf.classify_failure("timeout", "MCP initialize 超时（180s）"), "transient")
+
+    def test_an_unrelated_string_failure_is_not_permanent(self):
+        """不相关的字符串失败不得被这条判据顺手禁掉。"""
+        for text in ("检索无果", "参数格式不对，缺少 name", "返回结果为空"):
+            with self.subTest(text=text):
+                self.assertNotEqual(tf.classify_failure("", text), "permanent")
+
+    def test_the_guidance_tells_the_model_not_to_retry_the_connector(self):
+        category, guidance = tf.failure_guidance(
+            "", "MCP 调用失败：MCP 进程意外退出（code=98）。PORT_OCCUPIED")
+        self.assertEqual(category, "permanent")
+        self.assertIn("重试必然同样失败", guidance)
+
+    def test_the_failure_hint_names_the_real_cause(self):
+        """提示要点出真因（端口被占），而不是让 Agent 从安装噪声里自己翻。"""
+        from tools import _mcp_failure_hint
+        hint = _mcp_failure_hint(
+            "MCP 进程意外退出（code=98）。Installed 73 packages in 4.94s\n"
+            "godot-ai attach [PORT_OCCUPIED]: Port 8000 is occupied")
+        self.assertIn("端口", hint)
+        self.assertIn("DocMind", hint)
+
+    def test_an_unrelated_failure_gets_no_hint(self):
+        from tools import _mcp_failure_hint
+        self.assertEqual(_mcp_failure_hint("连接器未启用"), "")
+
+
 class GuidanceTests(unittest.TestCase):
     """措辞必须明确回答"能不能再试"——这是本模块存在的全部理由。"""
 

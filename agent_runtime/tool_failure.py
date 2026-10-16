@@ -59,21 +59,49 @@ _BUG_HINTS = (
     "recursionerror", "zerodivision", "importerror", "modulenotfound",
 )
 
+#: 文本层面的「重试必然同样失败」特征。
+#:
+#: 为什么需要它：一批工具（`dev_list_connector_tools` / `dev_mcp_call` /
+#: `dev_route_connector`）把失败写成**返回值字符串**（「MCP 调用失败：…」），
+#: 而不是抛异常。于是 `error_kind` 是空的 —— 而空串在 `TRANSIENT_ERROR_KINDS`
+#: 里，主循环据此告诉模型「这是一次**可重试**的失败，可以用完全相同的参数
+#: 直接重试一次」。
+#:
+#: 实测代价（2026-10-16，真机 UI「正在执行 127s」）：Godot 连接器的
+#: `uvx godot-ai attach` 起不来（编辑器没开 / 8000 端口被 DocMind 自己占着），
+#: 一次失败要 60~70 秒。agent 按"可重试"的提示再调一次，两次叠起来就是 127s，
+#: 而第二次必然同样失败。**失败本身没错，错的是让它失败两遍。**
+#:
+#: 判据刻意保守：只收「环境/配置不会自己变好」的特征。超时（timeout）不在此列 ——
+#: 那是 `TRANSIENT_ERROR_KINDS` 明确要原样重试的一类，混进来会把真该重试的也禁掉。
+_PERMANENT_TEXT_HINTS = (
+    "进程意外退出", "进程已退出", "端口被占", "port_occupied",
+    "eadrinuse", "address already in use",
+    "引擎未运行", "编辑器处于打开状态", "连接器未启用",
+)
+
 
 def classify_failure(error_kind: str, text: str = "") -> str:
     """把一次工具失败归成 transient / permanent / unknown。
 
-    返回 `permanent` 的两种来源：
-      · 类别本身就在PERMANENT_ERROR_KINDS 里；
-      · 类别是 exception，但错误文本带代码 bug 的特征。
+    返回 `permanent` 的三种来源：
+      · 类别本身就在 PERMANENT_ERROR_KINDS 里；
+      · 类别是 exception，但错误文本带代码 bug 的特征；
+      · 错误文本带 `_PERMANENT_TEXT_HINTS` 特征（工具把失败写成返回值字符串时，
+        `error_kind` 是空的，只有这一维能认出它）。
+
+    文本检查放在类别桶**之前**：空 `error_kind` 落在 transient 桶里，若先判桶，
+    这些特征永远没机会被看到 —— 那正是「127s 重试两遍」的来路。
     """
     kind = str(error_kind or "")
+    low = str(text or "").lower()
+    if any(hint in low for hint in _PERMANENT_TEXT_HINTS):
+        return "permanent"
     if kind in PERMANENT_ERROR_KINDS:
         return "permanent"
     if kind in TRANSIENT_ERROR_KINDS:
         return "transient"
     if kind == "exception":
-        low = str(text or "").lower()
         if any(hint in low for hint in _BUG_HINTS):
             return "permanent"
         return "unknown"
@@ -103,9 +131,21 @@ def failure_guidance(error_kind: str, text: str = "") -> tuple:
 
     类别用于主循环决定计数策略（permanent 不该累加"连续失败"到熔断），
     句子用于拼进 Reflection 提示。
+
+    标签不直接照抄 `error_kind`：当类别是被**文本特征**改写的时候（连接器起不来
+    那一族，`error_kind` 空或 `legacy_failure`），照抄会给出自相矛盾的一句话 ——
+    实测出现过「这类失败（legacy_failure）**重试必然同样失败**」，而
+    `legacy_failure` 按设计恰恰是可重试的。那种句子会让模型怀疑整条提示。
     """
     category = classify_failure(error_kind, text)
-    label = str(error_kind or "unspecified")
+    if category == "permanent" and not (
+            str(error_kind or "") in PERMANENT_ERROR_KINDS
+            or (str(error_kind or "") == "exception"
+                and any(h in str(text or "").lower() for h in _BUG_HINTS))):
+        # 结论来自文本特征，不是来自类别本身 —— 标签要说清是"什么内容"不可重试。
+        label = "连接器/环境不可用（%s）" % (str(error_kind or "").strip() or "无类别")
+    else:
+        label = str(error_kind or "unspecified")
     return category, _GUIDANCE[category].format(kind=label)
 
 
