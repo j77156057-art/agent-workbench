@@ -5854,6 +5854,18 @@ async def reset_code():
         save_state("code_root", "")  # 同步清除持久化选择，避免重启后又恢复
         set_runtime("project_rules", "")
     clear_read_files()
+    # 主对话读记录已改「按会话」存（每个 Agent 实例持一份 self._read_store），
+    # 模块全局那份只是无人绑定时的回落。重置代码库必须连各 live 会话的 store 一起清，
+    # 否则重索引后新会话首读仍会命中「本次对话已读过、未变化」的过期存根——正是
+    # clear_read_files 当初要治的「旧项目读记录跨项目残留」，只是从进程级挪到了会话级。
+    for _ag in list(_SESSION_AGENTS.values()):
+        try:
+            _st = getattr(_ag, "_read_store", None)
+            if _st:
+                _st[0].clear()
+                _st[1].clear()
+        except Exception:  # noqa: BLE001 - 重置不应因单个会话结构异常而失败
+            pass
     # P3：清的是「本请求上下文所属项目」的默认会话 Agent（无上下文等价改动前）
     _agent_for("default").history = []
     return {"ok": True, "code_sources": count(coll)}

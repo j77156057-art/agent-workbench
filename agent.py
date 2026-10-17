@@ -43,6 +43,7 @@ from tools import (TOOLS, tool_schemas, self_verify,
                    set_session_vision_mode, _session_vision_mode,
                    _query_relevant,
                    begin_read_conversation, end_read_conversation,
+                   bind_read_conversation,
                    _get_code_root as _tool_code_root)
 import agent_trace as _trace
 import sessions as _sessions
@@ -3591,6 +3592,13 @@ class Agent:
         # 与 `_request_system_context` 一样按值存放，run() 期间可读但不持久化。
         self._agent_log = _agent_log
         self._agent_log_event = _agent_log.event
+        # 「未变化存根」的读记录：本会话**一份长活 store**（`(已读文件集合, 区间覆盖表)`），
+        # 由 run() 用 `bind_read_conversation` 绑进上下文、退出还原。为什么要按会话而不是
+        # 从前那样全进程共享一份模块全局：会话 B 首次读会话 A 读过的文件会命中「本次对话
+        # 已读过、不要重复读取」的存根——那句对 B **是假的**（B 从没见过那次读取），损害
+        # 定位/引用题的可靠性。store 的生命周期 = 本 Agent 实例 = 一个会话；同会话跨轮仍
+        # 命中（省 token 的收益保留），不同会话各用各的（互不污染）。
+        self._read_store = (set(), {})
 
     def _execution_policy(self):
         """返回 (max_nudges, max_final_continuations)。
@@ -4274,11 +4282,17 @@ class Agent:
             re.search(r"(?:项目|游戏).{0,24}(?:介绍|简介|概览|说明书)", question)
             and re.search(r"(?:生成|制作|导出|写|做).{0,30}(?:PDF|pdf|文档|docx|word)", question)
         ))
+        # 「未变化存根」按会话隔离：把本实例那份长活 store 绑进上下文，退出还原。
+        # 从前主对话不绑 → 走进程级模块全局 → 会话 B 首读会话 A 读过的文件被挡成
+        # 「本次对话已读过」的假存根。store 在实例上、跨轮复用（省 token 收益保留），
+        # 不同会话各用各的（互不污染）。子代理另有 begin_read_conversation 开独立份。
+        _read_conv_token = bind_read_conversation(self._read_store)
         try:
             yield from self._run_shell(question, stream=stream, images=images, deadline=deadline,
                                        cancel_event=cancel_event)
         finally:
             # 任何出口（含 close()/断连）都还原为原值，杜绝逐请求覆盖污染共享单例。
+            end_read_conversation(_read_conv_token)
             _memory.reset(memory_token)
             reset_project_intro_request(project_intro_token)
             (self.web_enabled, self.thinking_enabled,

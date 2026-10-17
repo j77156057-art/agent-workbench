@@ -3773,6 +3773,23 @@ def end_read_conversation(token) -> None:
         pass
 
 
+def bind_read_conversation(store):
+    """把一份**已存在**的读记录绑进当前上下文，返回用于还原的 Token。
+
+    与 `begin_read_conversation` 的区别：后者总是新开一份空 `(set(), {})`，
+    那是**子代理**要的语义（每个子代理都是全新对话，读记录不该从外层继承）。
+    主对话要的粒度是「一个会话」而不是「一个回合」——同一会话跨轮重读同一文件
+    应当省 token（命中存根），而不同会话之间绝不能互串。于是让会话的 Agent
+    实例**持有一份长活 store**，每进一个 `run()` 就用本函数把它绑进 ContextVar、
+    退出时 `end_read_conversation` 还原。store 的生命周期由实例决定（随会话销毁），
+    ContextVar 只负责让 `run()` 期间的工具调用读到正确那一份。
+
+    这样主对话与子代理共用同一套隔离机制：`_read_store()` 读 ContextVar，
+    有人绑就用绑的、没人绑才回落到模块全局（兼容测试与临时单例）。
+    """
+    return _READ_CONV.set(store)
+
+
 _REGION_LOCKS = {}
 _FILE_LOCKS = {}
 _REGION_LOCKS_GUARD = threading.Lock()
