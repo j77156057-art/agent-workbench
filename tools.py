@@ -2956,16 +2956,90 @@ def web_research(query):
     return text
 
 
+def _eda_gate_schema_keys():
+    """从注册表里 `eda_report_gate` 的 `input_schema.properties` 取字段名。
+
+    单一真相：键名单跟着 schema 走，不在这里另抄一份——下一个人加/改字段只动 schema。
+    spec 可能是裸 dict，也可能是 `upgrade_registry` 转出来的 `ToolSpec`，两种都读；
+    取不到就回空表（调用方据此放弃兜底、退回旧的"只认 JSON"行为）。
+    """
+    try:
+        meta = TOOLS.get("eda_report_gate")
+        schema = (meta.get("input_schema") if isinstance(meta, dict)
+                  else getattr(meta, "input_schema", None)) or {}
+        props = schema.get("properties") or {}
+        return [k for k in props if isinstance(k, str)]
+    except Exception:  # noqa: BLE001 —— 取 schema 失败不该拖垮入参解析
+        return []
+
+
+def _coerce_eda_gate_value(key, raw):
+    """把 `_parse_keyed` 取出的字符串按 schema 类型还原；只动结构化字段，其余原样返回。
+
+    原生通道 `args_to_input` 用 `f"{v}"` 扁平化，dict/list/bool 会变成 Python repr
+    （`{'verdict': 'pass'}` / `['timing_met']` / `True`），故先试 JSON 再试 `literal_eval`。
+    解析不出类型的结构化字段一律返回 None（丢弃 → 上层按缺证据处理，fail-closed，绝不猜）。
+    """
+    s = (raw or "").strip()
+    if key == "vlm_verified":
+        low = s.lower()
+        if low in ("true", "yes", "1"):
+            return True
+        if low in ("false", "no", "0"):
+            return False
+        return None
+    if key in ("visual", "critical", "bbox_norm"):
+        for loader in (json.loads, ast.literal_eval):
+            try:
+                v = loader(s)
+            except (ValueError, SyntaxError, TypeError):
+                continue
+            if key == "visual" and isinstance(v, dict):
+                return v
+            if key in ("critical", "bbox_norm") and isinstance(v, list):
+                return v
+        if key == "critical":  # 兜底：逗号分隔的判定量名
+            parts = [p.strip().strip("\"'") for p in s.split(",") if p.strip()]
+            return parts or None
+        return None
+    return raw
+
+
 def _parse_eda_report_gate_request(arg):
-    """把工具入参规整成 dict：JSON 对象直接用，否则空 dict（缺字段走 needs 提示）。"""
+    """把工具入参规整成 dict：JSON 优先，失败时兜底解析 `key: value` 多行。
+
+    A1 修复：`eda_report_gate` 要的是多字段 JSON，但模型 ReAct 首拍常把它写成换行
+    `key: value`（YAML 风格），原生 function-calling 通道经 `llm.args_to_input` 也会把
+    多字段 dict 扁平成同一形状（`tool: vivado\nkind: timing\nvisual: {...}`）。此前只认
+    JSON，于是这两种**合理**写法一律被打回 `{}` → `needs[tool,kind]` → 首拍必坏、逼模型
+    第二轮自纠。这里复用本仓库既有的通用 keyed 解析器 `_parse_keyed` 兜底，字段名从 schema
+    取、结构化字段按类型还原。**仍 fail-closed**：兜底后认不出 tool/kind 就返回 `{}` 交给
+    上层 needs 提示，绝不猜。JSON 路径行为一字未改（只在 json.loads 失败后才走兜底）。
+    """
     if isinstance(arg, dict):
         return arg
     text = str(arg or "").strip()
+    if not text:
+        return {}
     try:
         value = json.loads(text)
+        if isinstance(value, dict):
+            return value
     except (TypeError, ValueError):
+        pass
+    # ---- JSON 失败 → 兜底解析 `key: value` 多行（模型 YAML 风格 / 原生通道扁平化）----
+    keys = _eda_gate_schema_keys()
+    if not keys:
         return {}
-    return value if isinstance(value, dict) else {}
+    try:
+        fields = _parse_keyed(text, keys)
+    except Exception:  # noqa: BLE001 —— 兜底解析异常也退回 {}（旧行为），不抛
+        return {}
+    out = {k: _coerce_eda_gate_value(k, fields[k]) for k in keys if k in fields}
+    # 只在认出了 tool/kind 之一时才接管；否则维持 {}（旧行为：交给 needs 提示，fail-closed）。
+    if not out.get("tool") and not out.get("kind"):
+        return {}
+    return out
 
 
 def _eda_report_gate_summary(r):
