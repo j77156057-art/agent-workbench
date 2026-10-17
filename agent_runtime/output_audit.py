@@ -223,6 +223,47 @@ def _count_breakdown_conflict(text: str):
             "total": total, "sum": s, "items": items}
 
 
+#: 乙方案·触发一：答案用**确定性口吻**声称一个数字。要求出现
+#: 准确/精确/确切/实际/最终 之类的词，并在同一短句内（不跨句读/换行）紧跟一个数字。
+#: 光有"总数: 194"而**无**确定性口吻词的，不在此列——那是②甲（分项加总核对）的活。
+#: 与触发二（证据截断）**同时**成立才判红，缺一不碰，误伤面极小。
+_ACCURACY_TOTAL_CLAIM = re.compile(
+    r"(?:准确|精确|确切|实际|最终)(?:的)?(?:总数|总量|总个数|个数|数量|合计|共计)?"
+    r"[^。\n]{0,8}?(\d{1,7})")
+
+#: 乙方案·触发二：本轮**代码检索工具**的原始返回里自报了"会少计"的截断。
+#: 只认这几处措辞（都是 grep/search_code/dev_glob 触顶时**如实追加**、且已被各自
+#: 测试锁定的字样）。**不含** grep 的"已跳过 DocMind 状态目录"——那是影子副本去重、
+#: 不是少计，把它当截断会误伤。
+_CODE_UNDERCOUNT_NOTE = re.compile(
+    r"条上限并"            # grep：已达 40 条上限并**截断**
+    r"|2MB 的文件未搜索"    # grep：>2MB 文件跳过（可能少计）
+    r"|已取满"            # search_code：top-K 配额取满
+    r"|结果可能不完整"      # dev_glob：目录条目超扫描上限
+    r"|只显示前"           # dev_glob：命中过多只显示前 N
+    r"|或加 scope: 收窄")   # dev_glob：命中被截断的收窄提示
+
+#: 只有这三类"跨文件计数最常靠它、且会静默少计"的工具，其截断才算数。
+#: read_file 单文件截断、web 正文截断与"全仓计数"不同口径，不计（枚举一个函数
+#: 不需要读文件尾段——把它们算进来会大面积误伤）。
+_CODE_COUNT_TOOLS = frozenset({"grep", "search_code", "dev_glob"})
+
+
+def obs_reports_code_undercount(action: str, obs: str) -> bool:
+    """本轮某次代码检索工具的**原始返回**里，是否自报了"会少计"型截断。
+
+    只对 grep / search_code / dev_glob 生效（见 `_CODE_COUNT_TOOLS` 的口径说明）。
+    **必须在工具执行时拿原始 obs 判定**：trail 里的观测正文会被 `_clip` 裁掉尾部，
+    而截断提示恰恰在末尾——事后扫 trail 会漏（假阴），这里从源头打标、只认原始返回。
+
+    审计（`audit_evidence`）拿这个信号去和答案的"确定性计数口吻"对撞，补②甲够不着的
+    那类"分项各自漏计、加总却自洽"的内部一致错报。
+    """
+    if _tool_name(str(action or "")) not in _CODE_COUNT_TOOLS:
+        return False
+    return bool(_CODE_UNDERCOUNT_NOTE.search(str(obs or "")))
+
+
 def _ref_is_negated(text: str, start: int, end: int) -> bool:
     """这条「引用」在**它自己那个子句**里被否定吗（是的话它不是引用）。
 
@@ -538,6 +579,15 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     except Exception:  # noqa: BLE001 —— 核验数据解析不得拖垮门禁
         count_conflict = None
     count_judged = bool(count_conflict and count_conflict.get("present"))
+    # ---- ④之②·乙 截断证据 × 确定性计数口吻 对撞（**双条件，窄触发**）-------------
+    # 补②甲够不着的那类错报：模型的分项加总恰好等于它写的总数（内部自洽），但那个总数
+    # 是拿**被截断的观察**拼出来的——"准确总数 194"（真值 196）正是这种。判据两条**同时**
+    # 成立才可能红：(1) 答案用确定性口吻声称一个数字；(2) 本轮产出该数字的代码检索证据
+    # 自报过"会少计"型截断（step.truncated，由调用方在工具执行时拿原始 obs 打标）。
+    # 只给总数、无确定性口吻 -> 交回②甲；证据没截断 -> 不碰（judged 仍可能 True 但判通过）。
+    accuracy_claim = _ACCURACY_TOTAL_CLAIM.search(text)
+    evidence_truncated = any(bool(item.get("truncated")) for item in steps)
+    count_evidence_judged = bool(accuracy_claim)
     checks = {
         "location_question": location_question,
         "reference_present": bool(refs) if required else True,
@@ -552,6 +602,11 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # 同理：只有抽取器**判得出来**时才加这一项；判不了就不碰门禁（零回归面）。
     if count_judged:
         checks["count_consistent"] = bool(count_conflict["consistent"])
+    # 乙：只有答案**确实用了确定性口吻**（judged）才加这一项。加了之后：证据未被截断
+    # -> True（如实放行）；证据自报少计型截断 -> False（声称准确却没看全，判红）。
+    # 不做确定性声称的普通答案完全不碰这一项（零回归面，守住"越诚实越 FAIL 是事故"）。
+    if count_evidence_judged:
+        checks["count_evidence_complete"] = not evidence_truncated
     # ---- 门禁项 vs 参考项 -------------------------------------------------
     #
     # ``read_file_present``（「这一轮有没有调 read_file」）是**过程**指标，不是**事实**
@@ -603,6 +658,11 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     if count_judged and not count_conflict["consistent"]:
         verdict = "FAIL"
         verdict_reason = ""
+    # 乙：确定性口吻的计数 + 本轮代码检索证据自报少计型截断 = 声称"准确"却明知道没看全，
+    # 是过度声称（内容/口吻问题），不该被"无代码根/环境限制"降级成 PARTIAL 原样放出去。
+    if count_evidence_judged and evidence_truncated:
+        verdict = "FAIL"
+        verdict_reason = ""
     return {"ok": bool(all(value for key, value in checks.items()
                              if key != "location_question")),
             # 只看事实项的判定结果。调用方应当用它驱动闸门与用户可见结论，
@@ -624,6 +684,12 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             # ④之② 确定性计数自检：`名称: 数字` 分项表与声称总数的加总矛盾详情
             # （判不了则为 None）。调用方据此点名 total/sum，给模型可执行的纠偏。
             "count_conflict": count_conflict,
+            # ④之②·乙 截断证据对撞：答案声称的确定性数字、本轮是否代码检索证据被截断、
+            # 以及**具体是哪几个**工具自报了少计（调用方点名用，说到工具名才可能被纠正）。
+            "accuracy_count": (int(accuracy_claim.group(1)) if accuracy_claim else None),
+            "evidence_truncated": evidence_truncated,
+            "truncated_evidence_tools": sorted({_tool_name(a) for item, a in zip(steps, actions)
+                                                 if item.get("truncated") and _tool_name(a)}),
             "read_steps": len(read_steps)}
 
 

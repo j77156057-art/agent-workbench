@@ -63,7 +63,7 @@ except Exception:  # noqa: BLE001 —— 经验记忆模块不可用时降级（
     _exp = None
 import orchestrator as _orchestrator
 from agent_runtime.verification import verification_message
-from agent_runtime.output_audit import audit_evidence
+from agent_runtime.output_audit import audit_evidence, obs_reports_code_undercount
 from agent_runtime.context_router import ContextRouter
 from agent_runtime.run_budget import RunBudget
 from agent_runtime.local_runtime import effective_parallelism, local_llm_slot
@@ -2387,7 +2387,8 @@ def _audit_live_answer(text, question, trail, executed_steps=None):
     但它**只对文本协议可靠**，所以新代码必须传 executed_steps。
     """
     if executed_steps is not None:
-        steps = [{"action": str(s.get("action") or ""), "ok": bool(s.get("ok"))}
+        steps = [{"action": str(s.get("action") or ""), "ok": bool(s.get("ok")),
+                  "truncated": bool(s.get("truncated"))}
                  for s in executed_steps]
     else:
         steps = []
@@ -2438,6 +2439,12 @@ _EVIDENCE_CHECK_HINTS = {
                         "无需外部数据就能证伪的内部矛盾。请把分项补齐后再核对总数，"
                         "或把「准确总数」改成如实表述（例如「以下是已列出部分的合计，"
                         "可能有遗漏」）。",
+    "count_evidence_complete": "回答用「准确/精确/实际」这类确定性口吻报了一个数字，可"
+                        "本轮支撑它的代码检索证据**自报了截断**（grep 命中触顶、"
+                        "search_code 取满 top-K、dev_glob 命中过多收窄等）——既然没看全，"
+                        "就不能称其为准确。请改走稳妥计数：先用 dev_glob 定文件全集再逐文件"
+                        "精确数、或用 python_exec 真跑聚合；拿不到全量时把「准确总数」改成"
+                        "如实的估计/下限表述（例如「至少 N，基于已覆盖的部分」）。",
 }
 
 
@@ -2504,6 +2511,22 @@ def _evidence_failure_detail(audit):
                      "（可能有遗漏）」，不要以『准确总数』的口径给出。"
                      % (cc.get("total"), len(cc.get("items") or []), cc.get("sum")))
 
+    # ④之②·乙 截断证据 × 确定性计数口吻：只有门禁**确实因这一项失败**时才点名。
+    # 把"哪个数字自称准确、又是哪几个工具自报了截断"说到具体，模型才知道该换计数法。
+    ev_label = ""
+    _checks = audit.get("checks") or {}
+    if _checks.get("count_evidence_complete") is False:
+        tools_hit = [str(t) for t in (audit.get("truncated_evidence_tools") or []) if t]
+        acc = audit.get("accuracy_count")
+        acc_txt = str(acc) if acc is not None else "某个数字"
+        tools_txt = "、".join(tools_hit) if tools_hit else "代码检索工具"
+        ev_label = "确定性计数 %s ↔ 证据截断（%s）" % (acc_txt, tools_txt)
+        lines.append("你把「%s」当成准确结果给出，但本轮支撑它的代码检索证据自报了截断"
+                     "（%s 命中被截/取满，没看全）——既然没看全，这个数就不能说「准确」。"
+                     "请用稳妥路径重算：先 dev_glob 定文件全集再逐文件精确数，或用 "
+                     "python_exec 真跑聚合；实在拿不到全量就如实改成「至少 %s（基于已覆盖"
+                     "部分）」这类下限表述。" % (acc_txt, tools_txt, acc_txt))
+
     detail = "\n".join("- " + line for line in lines)
     # 旧文案「缺少原文核验」在 read_file 没跑过时是**准确**的，保留它（既有的界面文案
     # 与 tests/test_agent.py 都依赖这句话）。只有在它会误导时——也就是失败原因其实是
@@ -2517,6 +2540,8 @@ def _evidence_failure_detail(audit):
     named = bad_paths + bad_lines + prov_labels
     if count_label:
         named.append(count_label)
+    if ev_label:
+        named.append(ev_label)
     if named:
         reflection += "（%s）" % "、".join(named[:6])
     reflection += "已把具体问题回给模型。"
@@ -4900,7 +4925,9 @@ class Agent:
                     # `Action:` 文本——这条路径不写那种标记（见 _audit_live_answer）。
                     # **带参数**，与顺序路径同形状（见上面那条的说明：只存裸工具名
                     # 会让「本轮读过哪些路径」索引恒空，裸文件名引用全被判幻觉）。
-                    audit_steps.extend({"action": "%s(%s)" % (nm, _ar), "ok": bool(_ok)}
+                    audit_steps.extend({"action": "%s(%s)" % (nm, _ar), "ok": bool(_ok),
+                                        # 乙：并行批同样拿原始 obs（_o，未 clip）打截断标。
+                                        "truncated": obs_reports_code_undercount(nm, _o)}
                                        for nm, _ar, _o, _ok, _i in results)
                     # 免费导航只消耗导航额度（与拆批时判定的 batch_free 同序），
                     # 其余结果按实际数量计入工具步数。
@@ -5680,7 +5707,9 @@ class Agent:
                 # 这样 `_tool_name` 的切分也不受影响。
                 audit_steps.append({
                     "action": "%s(%s)" % (parsed["action"], parsed["action_input"] or ""),
-                    "ok": bool(_tool_ok)})
+                    "ok": bool(_tool_ok),
+                    # 乙：拿**原始 obs**（此处尚未 clip）判这次代码检索有没有自报少计型截断。
+                    "truncated": obs_reports_code_undercount(parsed["action"], obs)})
 
                 # 写操作改变了代码库状态：清空已执行记录，允许随后用【相同命令】
                 # 重新跑测试做验证（防重复护栏针对的是无意义空转，不是改后复验）。
