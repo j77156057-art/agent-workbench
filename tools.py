@@ -3889,6 +3889,9 @@ def search_code(query):
     retrieved = get_retriever(collection=collection or CODE_COLLECTION_NAME,
                               top_k=TOP_K,
                               embedding_client=_get_emb()).invoke(query)
+    # 检索器内部已把候选切到 top_k=TOP_K，所以这里 len(retrieved)==TOP_K 就意味着
+    # 「后面还有更靠后的相关片段被配额截掉了」——与 grep 的 _HIT_CAP 触顶同一性质。
+    retrieved_count = len(retrieved)
     docs = [item.page_content for item in retrieved]
     metas = [dict(item.metadata or {}) for item in retrieved]
     docs, metas = _dedup_docs(docs, metas)
@@ -3944,7 +3947,16 @@ def search_code(query):
         if doc:
             shown = f"# 文档: {doc.splitlines()[0]}\n" + shown
         out.append(f"[{label}]\n{shown}")
-    return "\n---\n".join(out)
+    # 如实交代「我没看全」：语义检索按相关度最多返回 TOP_K 条，取满就意味着排序靠后的
+    # 相关片段被配额截掉。不标注的话，模型会把这几条当成全部命中、据此报"总数/都找到了"
+    # ——与本次故障同性质（grep 触顶那条教训的检索版）。
+    note = ""
+    if retrieved_count >= TOP_K:
+        note = ("\n（提示：本次为语义检索，按相关度最多返回前 %d 条，已取满；"
+                "排序靠后的相关代码未被返回，**不要把这几条当全部**，也不要据此统计总数——"
+                "要精确计数或穷尽定位，请缩小关键词、提高 TOP_K，或改用 grep 直接匹配。）"
+                % TOP_K)
+    return "\n---\n".join(out) + note
 
 
 def _path_within_real_root(root, target):
