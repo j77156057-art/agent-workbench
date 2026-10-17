@@ -598,8 +598,32 @@ def ingest_code_directory(root, emb=None, collection=CODE_COLLECTION_NAME):
             add_documents(texts_buf, embs_buf, metas_buf, ids_buf, collection=collection)
         texts_buf, embs_buf, metas_buf, ids_buf = [], [], [], []
 
+    # `.docmind/` 是 DocMind 自己的状态根：里面既有临时/状态目录（project_stages /
+    # projects 等工作流副本、检查点、headcheck 影子整仓 —— 实测单个 project_stages
+    # 就 752MB/6978 文件），也有**合法产物**（Godot Web 导出 .docmind/web/）。建库时
+    # 若照单全收，会把项目原文件与 .docmind 里的副本双双 embed 进同一集合，让
+    # search_code 返回重复 / 陈旧命中 —— 这正是 grep 之前踩过的同一坑。此处与
+    # grep/glob 同源：只按名修剪**状态目录**，产物目录照常入库。复用 code_intel 的
+    # 状态目录名单，保证三处检索层口径一致（黑名单，非白名单 —— 白名单会让新出现的
+    # 产物目录重新变成静默假否定）。
+    try:
+        from agent_runtime import code_intel as _ci
+        _state_dirs = _ci._DOCMIND_STATE_DIRS
+        _state_prefixes = _ci._DOCMIND_STATE_PREFIXES
+    except Exception:  # noqa: BLE001 —— 拿不到就当无额外状态目录，绝不影响建库主流程
+        _state_dirs = frozenset()
+        _state_prefixes = ()
+
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d not in _SKIP_DIRS]
+        # 仅在 `.docmind/` 直接下一层修剪状态目录（与 glob/grep 一致）。
+        if os.path.relpath(dp, root).replace("\\", "/") == ".docmind":
+            pruned = [d for d in dns
+                      if d in _state_dirs or d.startswith(_state_prefixes)]
+            if pruned:
+                dns[:] = [d for d in dns if d not in pruned]
+                print("[ingest_code] 已跳过 .docmind 状态目录（产物目录照常入库）："
+                      "%s" % "、.docmind/".join(sorted(set(pruned))))
         for fn in sorted(fns):
             if os.path.splitext(fn)[1].lower() not in _CODE_EXT:
                 continue
