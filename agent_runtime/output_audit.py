@@ -13,8 +13,19 @@ _CREDENTIAL_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
 _SENSITIVE_TERMS = re.compile(r"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|private[_-]?key)\b")
+#: 判定"这是不是一个代码定位问题"。
+#:
+#: 英文项**必须加词边界** `\b`：裸 `line`/`where` 会命中 `inline`、`pipeline`、
+#: `outline`、`deadline`、`online`、`elsewhere`、`whereas` 这类含子串的常见词，
+#: 于是把与"定位代码"毫无关系的问题（工具观察、EDA 门禁、纯计算、知识库问答…）
+#: 误判成定位问题，套上"必须给 `文件:行号`"的证据门——正文本就无引用时三项齐翻
+#: False，把一条如实的 fail-closed 结论倒盖成 `（核验：FAIL）`，还 nudge 模型去补
+#: 不存在的行号（可能诱导编造）。加 `\b` 后只认独立的 line/where/which file。
+#: 中文项**不加**：CJK 无词边界，且 `在哪/哪个文件/逻辑/行号/定位/实现/路径` 都是
+#: 多字聚合词、误伤面小，现有测试也都靠中文触发。
 _LOCATION_QUERY = re.compile(
-    r"(?i)(?:在哪|哪个文件|文件位置|路径|行号|定位|逻辑|实现|定义在哪|where|which file|line)"
+    r"(?i)(?:在哪|哪个文件|文件位置|路径|行号|定位|逻辑|实现|定义在哪"
+    r"|\bwhere\b|\bwhich file\b|\bline\b)"
 )
 #: 从结论正文里切「文件引用」。
 #:
