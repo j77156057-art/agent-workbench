@@ -2433,6 +2433,10 @@ _EVIDENCE_CHECK_HINTS = {
     "provenance_traceable": "回答声称这些内容「来自真实读取、不是推断」，但被引区间的正文"
                             "本轮从未送达——这是一条会被证伪的来源断言。请先按行号重新读取"
                             "该区间、确有所见再作此声明；否则撤回来源断言，如实说明依据。",
+    "count_consistent": "回答给出的「总数」与你自己列出的分项加总对不上——这是一条"
+                        "无需外部数据就能证伪的内部矛盾。请把分项补齐后再核对总数，"
+                        "或把「准确总数」改成如实表述（例如「以下是已列出部分的合计，"
+                        "可能有遗漏」）。",
 }
 
 
@@ -2488,6 +2492,17 @@ def _evidence_failure_detail(audit):
                      "读取结果里——请重新按行号读取，或撤回该来源断言。"
                      % "、".join(prov_labels[:6]))
 
+    # ④之② 计数自检：把「声称总数 vs 自己列出的分项加总」说到具体数字。
+    cc = audit.get("count_conflict")
+    count_label = ""
+    if isinstance(cc, dict) and cc.get("present") and not cc.get("consistent"):
+        count_label = "总数 %s ↔ 分项 %d 条加总 %s" % (
+            cc.get("total"), len(cc.get("items") or []), cc.get("sum"))
+        lines.append("你给出的总数是 %s，但你列出的 %d 个分项加总只有 %s——两者对不上。"
+                     "请补齐遗漏的分项再核对总数，或把这个数字如实改成「已列出部分的合计"
+                     "（可能有遗漏）」，不要以『准确总数』的口径给出。"
+                     % (cc.get("total"), len(cc.get("items") or []), cc.get("sum")))
+
     detail = "\n".join("- " + line for line in lines)
     # 旧文案「缺少原文核验」在 read_file 没跑过时是**准确**的，保留它（既有的界面文案
     # 与 tests/test_agent.py 都依赖这句话）。只有在它会误导时——也就是失败原因其实是
@@ -2499,6 +2514,8 @@ def _evidence_failure_detail(audit):
     # 具体引用也要出现在**用户可见**的那一段里。此前只回给模型，用户只看到
     # 「路径打不开」却不知道是哪一处——那等于让他自己再翻一遍 trace。
     named = bad_paths + bad_lines + prov_labels
+    if count_label:
+        named.append(count_label)
     if named:
         reflection += "（%s）" % "、".join(named[:6])
     reflection += "已把具体问题回给模型。"

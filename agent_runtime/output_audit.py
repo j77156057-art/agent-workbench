@@ -130,6 +130,99 @@ def _ranges_cover(ranges, start, end):
     return any(lo <= start and end <= hi for lo, hi in (ranges or []))
 
 
+#: 声称**总数**的一行：`总数: 194` / `合计 194 个` / `准确总数 194` / `共计：194`。
+_COUNT_TOTAL_LINE = re.compile(
+    r"(?:准确|精确|确切|实际|最终)?\s*"
+    r"(?:总数|总量|总个数|总计|合计|共计|一共|总共|全部|共)\s*"
+    r"(?:为|是|[:：=])?\s*(\d+)")
+
+#: **整行**只是「名称: 数字」的分项（行内没有其它句读，数字收尾）——
+#: 这是分项清单在纯文本里最稳的形状；散文几乎不会以 `xxx：123` 独占一行。
+_COUNT_ITEM_LINE = re.compile(
+    r"^\s*(?P<label>[^\n:：]{1,48}?)\s*[:：]\s*(?P<num>\d{1,7})\s*$")
+
+#: 分项 label 若本身就是"总数"类词，它是合计行、不是分项。
+_COUNT_TOTAL_LABEL = re.compile(
+    r"(?:总数|总量|总个数|总计|合计|共计|一共|总共|全部|平均|均)")
+
+#: 分项 label 若像**文件路径 / 带代码扩展名**，多半是"逐文件属性表"（每行是某文件的
+#: 行数、大小等），彼此不求和、与总数不同口径——拿它去核对总数是跨口径误伤。
+_COUNT_PATHISH_LABEL = re.compile(
+    r"(?:[/\\~]|\.(?:gd|py|js|ts|jsx|tsx|cs|java|go|rs|c|h|cpp|hpp|lua|rb|php|swift|"
+    r"kt|vue|svelte|md|markdown|json|jsonl|ya?ml|toml|tscn|tres|glsl|hlsl|sh|proto|sql)$)")
+
+
+def _count_breakdown_conflict(text: str):
+    """「声称总数 vs 自己列出的分项加总」是否内部矛盾（候选修法④之②·窄触发）。
+
+    这是纯文本里**可稳定判定**的一类过度声称：模型给出一张 `名称: 数字` 的分项表，
+    又写了一个总数，可两者对不上——无需任何外部真值即可证伪，属硬错误。
+
+    为守住本文件「越诚实越 FAIL 是事故」的信条，**判不了就返回 None（不判定）**，只在
+    结构足够无歧义时才下结论：
+      * 必须恰好出现**一个**不同的总数值（出现两个不同总数 → 无法确定谁是总计，跳过）；
+      * 必须有 **≥3** 个独立成行的 `名称: 数字` 分项（少于 3 条不构成"一张表"，跳过）；
+      * 分项 label 去重（同 label 重复 → 结构含糊，跳过）；分项 label 不得是总数词本身。
+
+    注意**覆盖边界**：若模型的分项本身就加总等于它写的总数（现场"准确总数 194"那类），
+    内部并无矛盾，本检查判 `consistent=True` 并放行——因为"每个分项各自漏计、总数却
+    自洽"是**外部真值**问题，审计侧拿不到全仓、不可判定，硬判 FAIL 就是误伤。那类
+    只能靠工具层如实交代截断（grep/ingest 已做）或乙方案（截断证据对撞）兜。
+
+    返回 None 表示不可判定；否则返回 dict(present=True, consistent=bool,
+    total=int, sum=int, items=[(label, num), ...])。
+    """
+    if not text:
+        return None
+    lines = text.splitlines()
+
+    totals = set()
+    for ln in lines:
+        m = _COUNT_TOTAL_LINE.search(ln)
+        if m:
+            try:
+                totals.add(int(m.group(1)))
+            except (TypeError, ValueError):
+                continue
+    # 无总数，或出现多个不同总数（分不清哪个是总计）-> 不可判定。
+    if len(totals) != 1:
+        return None
+    total = totals.pop()
+
+    items: list[tuple[str, int]] = []
+    seen_labels = set()
+    for ln in lines:
+        # 先排除"总数行"本身：它匹配 item 形状（label 含总数词 + 数字），但不是分项。
+        im = _COUNT_ITEM_LINE.match(ln)
+        if not im:
+            continue
+        label = im.group("label").strip()
+        if not label or _COUNT_TOTAL_LABEL.search(label):
+            continue
+        try:
+            num = int(im.group("num"))
+        except (TypeError, ValueError):
+            return None  # 分项里冒出解析不了的数 -> 结构不可信，整体跳过
+        key = label.lower()
+        if key in seen_labels:
+            return None  # 同 label 重复，分不清是分项还是修订，跳过
+        seen_labels.add(key)
+        items.append((label, num))
+
+    # 防守：任一 label 像文件路径 / 带代码扩展名 -> 这是「逐文件属性表」（每行是某个
+    # 文件的行数/大小等属性），彼此**不求和**、与总数不同口径。拿它去对总数就是跨口径
+    # 误伤（例：`总数: 194` 配的是 `enemy.gd: 30` 这类行数清单）。整体不判定。
+    if any(_COUNT_PATHISH_LABEL.search(label) for label, _n in items):
+        return None
+
+    if len(items) < 3:
+        return None  # 少于 3 个分项不构成"一张可核对的表"，太弱，不判定
+
+    s = sum(n for _l, n in items)
+    return {"present": True, "consistent": s == total,
+            "total": total, "sum": s, "items": items}
+
+
 def _ref_is_negated(text: str, start: int, end: int) -> bool:
     """这条「引用」在**它自己那个子句**里被否定吗（是的话它不是引用）。
 
@@ -436,6 +529,15 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
                 unverified_provenance.append({
                     "path": item["path"], "start_line": lo, "end_line": hi,
                     "served": [list(r) for r in cov]})
+    # ---- ④之② 确定性计数自检（候选修法甲：内部矛盾，**窄触发**）--------------
+    # 纯文本里能**无外部真值**判定的一类过度声称：模型给一张 `名称: 数字` 分项表 +
+    # 一个总数，两者加总对不上。抽取器判不了就返回 None（不判定），只在结构无歧义时
+    # 才下结论——守住「越诚实越 FAIL 是事故」。取数异常绝不让门禁本身崩（对齐 ③）。
+    try:
+        count_conflict = _count_breakdown_conflict(text)
+    except Exception:  # noqa: BLE001 —— 核验数据解析不得拖垮门禁
+        count_conflict = None
+    count_judged = bool(count_conflict and count_conflict.get("present"))
     checks = {
         "location_question": location_question,
         "reference_present": bool(refs) if required else True,
@@ -447,6 +549,9 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # checks——否则既有测试与不做断言的普通答案完全不受影响（零回归面）。
     if provance_judged:
         checks["provenance_traceable"] = not unverified_provenance
+    # 同理：只有抽取器**判得出来**时才加这一项；判不了就不碰门禁（零回归面）。
+    if count_judged:
+        checks["count_consistent"] = bool(count_conflict["consistent"])
     # ---- 门禁项 vs 参考项 -------------------------------------------------
     #
     # ``read_file_present``（「这一轮有没有调 read_file」）是**过程**指标，不是**事实**
@@ -493,6 +598,11 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
         gate_checks["reference_lines_valid"] = True
         verdict = "PARTIAL" if successful_read else "FAIL"
         verdict_reason = "no_root"
+    # 一条"总数 ≠ 分项加总"的内部矛盾是**内容错误**，绝不该被"无代码根/环境限制"
+    # 降级成 PARTIAL——那会把明明自相矛盾的结论原样放出去。有反证就必须红。
+    if count_judged and not count_conflict["consistent"]:
+        verdict = "FAIL"
+        verdict_reason = ""
     return {"ok": bool(all(value for key, value in checks.items()
                              if key != "location_question")),
             # 只看事实项的判定结果。调用方应当用它驱动闸门与用户可见结论，
@@ -511,6 +621,9 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             # **有送达记录却没覆盖**（"声称读过、实际从未送达"）。调用方据此点名。
             "provenance_claim": provenance_claim,
             "unverified_provenance": unverified_provenance,
+            # ④之② 确定性计数自检：`名称: 数字` 分项表与声称总数的加总矛盾详情
+            # （判不了则为 None）。调用方据此点名 total/sum，给模型可执行的纠偏。
+            "count_conflict": count_conflict,
             "read_steps": len(read_steps)}
 
 
