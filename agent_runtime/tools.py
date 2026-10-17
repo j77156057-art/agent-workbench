@@ -77,6 +77,12 @@ class ToolSpec(Mapping[str, Any]):
     #: `TOOL_DOMAINS` 取值，**不按名字推断** —— 推断就是拼词表，会无限 regress。
     domain: str = ""
     facet: str = ""
+    #: 该工具返回的观察**本身就是一条算出来的结构化判定**（如 eda_report_gate 的
+    #: met/unmet/rollback，来自真取像/报告解析），可直接顶替「文件:行号」作为终答证据。
+    #: `output_audit.audit_evidence` 据此在「正文无引用 + 本轮有成功权威观察」时不再按
+    #: 定位门凭空判 FAIL。声明在 spec 上、经 `coerce_tool_spec` 透传，**不靠名字表**
+    #: （本文件在 `tool_mutates` 处已论证：名字表会因「下一个人加了工具忘了登记」而 regress）。
+    verdict_authoritative: bool = False
 
     @property
     def capability_type(self) -> Capability:
@@ -303,6 +309,7 @@ def coerce_tool_spec(name: str, value: Any) -> ToolSpec:
         verbatim=bool(value.get("verbatim", name in _VERBATIM_TOOLS)),
         domain=str(value.get("domain") or ""),
         facet=str(value.get("facet") or ""),
+        verdict_authoritative=bool(value.get("verdict_authoritative", False)),
     )
 
 

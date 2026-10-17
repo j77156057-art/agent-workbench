@@ -266,7 +266,8 @@ def _basename_index(paths: Any) -> dict[str, list[str]]:
 
 
 def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
-                   code_root: str = "", require_read: bool | None = None) -> dict[str, Any]:
+                   code_root: str = "", require_read: bool | None = None,
+                   authority_tools: Sequence[str] | None = None) -> dict[str, Any]:
     """Check that a location answer is backed by a readable source file.
 
     This is intentionally a narrow, deterministic gate.  It does not claim to
@@ -360,6 +361,22 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # （`test_a_bare_basename_is_caught_as_an_unopenable_reference`），其原则
     # 出自 Claude Code：「If you can run the check, you must decide PASS or FAIL」——
     # 这条检查跑得了，所以必须判。
+    # ---- ② 工具观察豁免（authority-backed evidence 顶替 文件:行号）--------------
+    # 本轮若有一次**成功返回、且自带结构化判定**的权威工具观察（`authority_tools` 里的
+    # 工具，如 eda_report_gate 直接算出 met/unmet/rollback，来自真取像/报告解析），那
+    # 终答的证据就是这条观察本身，而不是 repo 里的「文件:行号」。此时正文合理地不含
+    # 任何引用（`refs` 为空），不该再按定位门凭空要求引用、把如实的结论倒盖成 FAIL。
+    # **只在无引用时豁免**：正文一旦写了引用，照旧逐一核验——幻觉路径 / 越界行号仍 FAIL。
+    # 这保住 `test_no_reference_at_all_fails_the_gate` 等锁测：它们的 trace 里没有这种
+    # 权威工具观察（只有 read_file），豁免分支根本不触发。
+    authority_names = {_tool_name(n) for n in (authority_tools or []) if n}
+    authority_exempt = False
+    if authority_names and required and not refs:
+        for _item, _act in zip(steps, actions):
+            if _item.get("ok") is True and _tool_name(_act) in authority_names:
+                required = False
+                authority_exempt = True
+                break
     checks = {
         "location_question": location_question,
         "reference_present": bool(refs) if required else True,
@@ -422,6 +439,7 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             "verdict": verdict,
             "verdict_reason": verdict_reason,
             "required": required, "checks": checks,
+            "authority_exempt": authority_exempt,
             "references": file_checks, "verified_references": valid_refs,
             # 否定语境里被跳过的路径数（诊断用）。**不是**「有几处引用失败」——
             # 这些恰恰是模型**正确**指出的问题（试错路径 / 不存在的路径）。

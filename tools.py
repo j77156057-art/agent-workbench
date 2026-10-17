@@ -8989,6 +8989,10 @@ TOOLS = {
     "eda_report_gate": {
         "description": "抓取在线 EDA 报告/文档页 → M3 结构化解析（Vivado 时序/面积、KLayout DRC、Verdi 仿真）→（可选 M4/M5 视觉回归）→ M6 双信号合并门，输出三态结论(met/unmet/uncertain)与验收建议(accept/rollback/escalate)。输入 JSON：{tool:vivado|klayout|verdi, kind:timing|utilization|drc|simulation, url?, content?, fetch?:auto|web_fetch|inline, visual?:{verdict}, golden_key?, view?, bbox_norm?, capture?:auto|gdi|x11|vnc, vlm_verified?:bool, critical?}。取页源可切换：给 content 或 fetch=inline 用调用方（如通用浏览器）已抓回的正文；否则用 web_fetch 抓 url。视觉通道双路径：直接透传已算好的 visual verdict；或给 golden_key+ROI(view/bbox_norm)+取像后端，内部复用 M4 取像 + M5 ROI golden diff 现算 verdict 喂进同一个门。全程 fail-closed：取不到正文、非本类报告、取不到帧或没 golden 一律判 uncertain，绝不谎报通过；只有 met 才 accept；unmet 的 rollback 只是建议、本工具从不执行回滚、也不存 golden。视觉/在线正文/未核实结论一律 verified:false，不得当作通过。",
         "func": eda_report_gate,
+        # ② 证据豁免标记：本工具返回的 verdict(met/unmet/rollback) 就是终答的权威证据，
+        # 由真实取像/报告解析算出，不需要 repo 里的「文件:行号」引用。output_audit 据此在
+        # 「正文无引用 + 本轮有成功的本类工具观察」时不再按定位门判 FAIL（见 audit_evidence）。
+        "verdict_authoritative": True,
         "input_schema": {
             "type": "object",
             "properties": {
@@ -9672,3 +9676,25 @@ def tool_schemas(names=None, registry=None):
             },
         })
     return out
+
+
+def evidence_authority_tool_names():
+    """返回"自带结构化判定、可替代 文件:行号 作为终答证据"的工具名集合。
+
+    判据是 ToolSpec 上的 `verdict_authoritative` 标记（目前只有 `eda_report_gate`）。
+    这类工具的观察本身就是一条算出来的验收结论（met/unmet/rollback，来自真取像/报告解析），
+    终答的证据就是这条观察，不该再被 `output_audit` 的定位门要求"给出可核验的仓库引用"。
+    从这里取集合再传给 `audit_evidence(authority_tools=…)`，避免 output_audit 反向 import
+    tools 造成循环依赖。spec 既可能是裸 dict，也可能是 ToolSpec 对象，两种都读。
+    """
+    names = set()
+    for name, spec in TOOLS.items():
+        try:
+            flag = (spec.get("verdict_authoritative")
+                    if isinstance(spec, dict)
+                    else getattr(spec, "verdict_authoritative", False))
+        except Exception:
+            flag = False
+        if flag:
+            names.add(name)
+    return names

@@ -38,6 +38,7 @@ from config import (
 )
 from llm import LLMClient, args_to_input
 from tools import (TOOLS, tool_schemas, self_verify,
+                   evidence_authority_tool_names,
                    set_session_web_enabled, _session_web_enabled,
                    set_session_vision_mode, _session_vision_mode,
                    _query_relevant,
@@ -2403,6 +2404,7 @@ def _audit_live_answer(text, question, trail, executed_steps=None):
     result = audit_evidence(
         {"text": text, "trace": {"steps": steps}},
         question=_user_question(question), code_root=root,
+        authority_tools=evidence_authority_tool_names(),
     )
     _probe_audit_root(root, (result or {}).get("references") or [])
     return result
