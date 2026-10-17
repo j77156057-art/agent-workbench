@@ -4724,37 +4724,77 @@ def grep(pattern):
         if err:
             return err
 
+    # 复用 glob 的**同一套**剪枝口径：`_SKIP_DIRS` 全局不扫，且只在 `.docmind/` 直接
+    # 下一层跳过 DocMind 状态目录（project_stages / projects 等整仓影子副本），产物
+    # 目录（Godot Web 导出的 `web/` 等）照旧可见。此前 grep 只按 `_SKIP_DIRS` 过滤，
+    # 会一头扎进 `.docmind/projects/<id>/headcheck/…` 这类影子副本——和 glob 口径不一致，
+    # 还命中过期副本。（`code_intel` 不引 tools、tools 这里惰性引它，无循环。）
+    from agent_runtime import code_intel as _ci
+
+    pruned_state: set[str] = set()
+
     def _iter_candidate_files():
         if scope_abs and os.path.isfile(scope_abs):
             if os.path.splitext(scope_abs)[1].lower() in _CODE_EXT:
                 yield scope_abs
             return
-        for dp, dns, fns in os.walk(scope_abs or root_abs):
-            dns[:] = [d for d in dns if d not in _SKIP_DIRS]
+        for dp, dns, fns in os.walk(scope_abs or root_abs, followlinks=False):
+            rel_dir = os.path.relpath(dp, root_abs).replace("\\", "/")
+            if rel_dir == ".":
+                rel_dir = ""
+            for d in _ci._prune(dns, rel_dir):
+                # 只披露 `.docmind/` 下的状态目录（与 glob 一致）：`_SKIP_DIRS` 的通用项
+                # （.git / .venv / node_modules…）是"任何项目都不扫"，不该被说成"DocMind 状态"。
+                if (d in _ci._DOCMIND_STATE_DIRS
+                        or d.startswith(_ci._DOCMIND_STATE_PREFIXES)):
+                    pruned_state.add(d)
             for fn in fns:
                 if os.path.splitext(fn)[1].lower() not in _CODE_EXT:
                     continue
                 yield os.path.join(dp, fn)
 
+    _HIT_CAP = 40
     hits = []
+    skipped_big = 0
+    truncated = False
     for fp in _iter_candidate_files():
         if os.path.getsize(fp) > 2_000_000:
+            skipped_big += 1
             continue
         try:
             with open(fp, encoding="utf-8", errors="ignore") as f:
                 for i, line in enumerate(f, 1):
                     if rx.search(line):
                         hits.append(f"{os.path.relpath(fp, root_abs)}:{i}: {line.rstrip()}")
-                        if len(hits) >= 40:
+                        if len(hits) >= _HIT_CAP:
                             break
         except Exception:  # noqa: BLE001
             pass
-        if len(hits) >= 40:
+        if len(hits) >= _HIT_CAP:
+            truncated = True
             break
+
+    # 如实交代"我没看全 / 没看哪里"——三处都必须显式带回，否则会被读成完整结论：
+    #   · 触顶：命中数达到 40 就截断，实测模型把这 40 条当全部，把真值 196 报成 194
+    #     还自称"准确总数"。不标注 = 默许这种过度声称。
+    #   · 跳过大文件：>2MB 直接不搜，不说的话"没命中"其实是"没看"。
+    #   · 被剪的 `.docmind` 状态目录：与 glob 同一条教训——"没有命中"不等于"这里没有"。
+    notes = []
+    if truncated:
+        notes.append("已达 %d 条上限并**截断**，实际匹配可能更多——不要把这 %d 条当全部、"
+                     "也不要据此统计总数；要精确计数请缩小 path: 范围或换更具体的正则。"
+                     % (_HIT_CAP, _HIT_CAP))
+    if skipped_big:
+        notes.append("另有 %d 个 >2MB 的文件未搜索。" % skipped_big)
+    if pruned_state:
+        notes.append("已跳过 DocMind 状态目录（产物目录仍会搜索）：.docmind/%s。"
+                     % "、.docmind/".join(sorted(pruned_state)))
+    note_block = ("\n（提示：" + "；".join(notes) + "）") if notes else ""
+
     if not hits:
         scope_note = f"（范围：{scope_rel}）" if scope_rel else ""
-        return f"代码库中未匹配到：{pattern}{scope_note}"
-    return "\n".join(hits[:40])
+        return f"代码库中未匹配到：{pattern}{scope_note}{note_block}"
+    return "\n".join(hits[:_HIT_CAP]) + note_block
 
 
 # ---------------------------------------------------------------------------
