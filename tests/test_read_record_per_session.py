@@ -64,7 +64,12 @@ class MainConversationIsPerSessionTests(unittest.TestCase):
     """机制层（无需 LLM）：用两份不同的 store 模拟两个会话。"""
 
     def _read(self):
-        return T.read_file("path: big.gd")
+        # 用**送达窗口内的有界区间**而非整文件读：整读在大文件上会被截断，
+        # 而截断整读的覆盖只到送达的那几十行（见 tools.py 修复），此时"整份重读
+        # 命中存根"是**假**的（尾段从没送过），正是根因①要消灭的语义。本测试的
+        # 真意图是"同一 store 跨轮复用会 stub / 换 store 首读不 stub"，用完整送达
+        # 的区间来验证既忠于意图、又不依赖被修掉的旧行为。
+        return T.read_file("path: big.gd, start: 1, end: 20")
 
     def test_session_b_first_read_is_not_blocked_by_session_a(self):
         """核心：会话 A 读过全文，会话 B 首读必须真读到内容、不吃假存根。"""

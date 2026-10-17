@@ -58,7 +58,10 @@ class _Project:
 
 class _ReadBase(unittest.TestCase):
     def _first_read(self):
-        return T.read_file("path: big.gd")
+        # 送达窗口内的有界区间，避免依赖"截断整读的整份重读会 stub"这条**假**语义
+        # （已被根因①修掉：截断整读只登记送达的那几十行）。本文件测的是"按对话隔离
+        # + 同对话复用 stub"，用完整送达的区间验证，意图不变。
+        return T.read_file("path: big.gd, start: 1, end: 20")
 
     def _abs(self, name):
         return os.path.normcase(os.path.join(C.get_runtime("code_root"), name))

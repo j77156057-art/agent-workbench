@@ -4323,11 +4323,24 @@ def read_file(path):
         # 「这里只给了前 12000 字」误读成「文件就这么长」，而它同时又在结论里
         # 报一个自己数出来的行数。
         body = "".join(f"{i}: {ln}" for i, ln in enumerate(all_lines, start=1))
-        body = (body[:12000]
+        shown = body[:12000]
+        # 本次真正送达的**完整行数**：截断点多半落在某行中间，这里按换行数下取整，
+        # 宁可少记一行也不高估覆盖（少记 → 那行顶多再真读一次，安全；
+        #  多记 → 会把从没送达的尾段判成「已读过」，见下方注释）。
+        last_shown_line = shown.count("\n")
+        body = (shown
                 + f"\n…（已截断，仅显示前 12000 字，共 {total} 行；"
                   "需要后续段落请用 start:/end: 指定行号）")
         out = f"=== {rel}（共 {total} 行，仅显示前 12000 字）===\n{body}"
-        _note_read_range(target, None, None, len(out.encode("utf-8")))
+        # 只登记**送达**的区间，不登记整文件。此前用 (None, None) → 折叠成
+        # [(1, _FULL_FILE_END)]，等于宣称"全文件已读过"：后续任何 start:/end: 补读
+        # 从未送达的尾段都会命中 `_unchanged_read_stub` 的假存根「已读过、不要重复
+        # 读取」，模型被永久挡在正文之外、只能凭脑补作答（甚至谎称"来自真实读取"）。
+        # 这违反 `_note_read_range` 自己的契约（记送达、不记请求）。
+        if last_shown_line >= 1:
+            _note_read_range(target, 1, last_shown_line, len(out.encode("utf-8")))
+        # 首行就超 12000 字（极端单行文件）：一行都没送达，干脆不记覆盖，
+        # 让后续任意区间都能真读。_READ_FILES 仍已在上面登记（供 apply_edit 护栏）。
         return out
     # 整文件读取**逐行编号**，与区间读统一形态。
     #
