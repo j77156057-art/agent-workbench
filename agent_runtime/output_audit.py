@@ -105,6 +105,30 @@ _NEGATED = re.compile(
 #: 按「；」切成两个子句后，前者在子句 0（否定的），后者在子句 1（干净的）。
 _CLAUSE_SPLIT = re.compile(r"[。；！？\n]")
 
+#: 可证伪的**证据来源断言**：模型白纸黑字说这段正文是它一手读来的、不是猜的。
+#:
+#: 「来源可溯」核验（候选修法③）**只在结论主动作出这类断言时才触发**——
+#: 因为普通答案即便引用行号也不声称"我逐字读过"，那是如实表达、不该被门禁误伤
+#: （本文件反复强调：越诚实越 FAIL 是设计事故）。而一旦模型写下"来自真实读取/
+#: 不是推断"，这句话就成了一条**可证伪的事实主张**：若那段正文本轮根本没送达，
+#: 它就是在捏造来源。实测根因①那轮——模型凭空写出第 757-768 行函数体，还专门加
+#: 一句"上面的行号与函数体来自那次真实读取，不是推断"，恰好骗过了只验"行是否存在"
+#: 的一致性度量。这条正则就是为了把这类话揪出来送去核验。
+_PROVENANCE_CLAIM = re.compile(
+    r"(?:来自真实读取|来自那次真实读取|真实读取|实际读取|逐行读|逐字读"
+    r"|并非推断|不是推断|不是推测|不是猜测|非推测|非推断"
+    r"|工具确认|确已读|本轮已读|已在本次对话中读|原文核验|一手读取)")
+
+
+def _ranges_cover(ranges, start, end):
+    """``[start, end]`` 是否被 ``ranges`` 里某条送达区间完全覆盖。
+
+    与 tools 的 `_range_covered` 同义，但这里**刻意复制一份**：`output_audit`
+    不得反向 import tools（tools 才是调用方，见 tools.py 里那条说明），
+    否则成环。逻辑只有两行，复制成本远低于引入一个跨模块依赖。
+    """
+    return any(lo <= start and end <= hi for lo, hi in (ranges or []))
+
 
 def _ref_is_negated(text: str, start: int, end: int) -> bool:
     """这条「引用」在**它自己那个子句**里被否定吗（是的话它不是引用）。
@@ -267,7 +291,8 @@ def _basename_index(paths: Any) -> dict[str, list[str]]:
 
 def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
                    code_root: str = "", require_read: bool | None = None,
-                   authority_tools: Sequence[str] | None = None) -> dict[str, Any]:
+                   authority_tools: Sequence[str] | None = None,
+                   served_ranges: Mapping[str, Sequence[Sequence[int]]] | None = None) -> dict[str, Any]:
     """Check that a location answer is backed by a readable source file.
 
     This is intentionally a narrow, deterministic gate.  It does not claim to
@@ -377,6 +402,40 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
                 required = False
                 authority_exempt = True
                 break
+    # ---- ③ 来源可溯（候选修法③，**窄触发**）--------------------------------
+    # 只有当结论**主动**写下「来自真实读取 / 不是推断」这类可证伪的来源断言时，
+    # 才去核那段正文本轮**是否真送达**。不做来源断言的如实答案一律不碰（零冲击面，
+    # 也守住本文件「越诚实越 FAIL 是事故」的信条）。
+    # 数据源是 `tools.read_served_ranges()`——①修好后它如实记录**送达**区间，
+    # 截断读的尾段不再被谎记成已覆盖。
+    # 关键分寸：**只对「有该文件送达记录、却没覆盖被引区间」的情形判红**。
+    # 查不到该文件的覆盖（路径写法/symlink 归一对不齐、或本轮没读过它）一律
+    # 视为**不可判定**、跳过——绝不凭"查不到"就断言失败（对齐本文件 `no_root`：
+    # 没检查过就别硬判 FAIL）。这样这道门只可能因"确有反证"而红，不会误伤。
+    provenance_claim = bool(_PROVENANCE_CLAIM.search(text))
+    unverified_provenance: list[dict[str, Any]] = []
+    provance_judged = False
+    if provenance_claim and served_ranges is not None and root is not None:
+        provance_judged = True
+        for item in file_checks:
+            if item.get("start_line") is None:
+                continue  # 没有行号的引用不纳入来源核验
+            try:
+                _p = Path(item["path"])
+                if not _p.is_absolute():
+                    _p = (root / _p).resolve()
+                _key = os.path.normcase(str(_p))
+            except (OSError, ValueError):
+                continue
+            cov = served_ranges.get(_key)
+            if not cov:
+                continue  # 无送达记录 -> 不可判定，跳过（不制造 FAIL）
+            lo = item["start_line"]
+            hi = item["end_line"] if item.get("end_line") is not None else lo
+            if not _ranges_cover(cov, lo, hi):
+                unverified_provenance.append({
+                    "path": item["path"], "start_line": lo, "end_line": hi,
+                    "served": [list(r) for r in cov]})
     checks = {
         "location_question": location_question,
         "reference_present": bool(refs) if required else True,
@@ -384,6 +443,10 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
         "references_exist": all(item["exists"] and item["in_root"] for item in file_checks) if refs else not required,
         "reference_lines_valid": all(item["line_ok"] for item in file_checks) if refs else not required,
     }
+    # 只有真正进入来源核验（有断言 + 有覆盖数据 + 有代码根）时，才把这一项**加进**
+    # checks——否则既有测试与不做断言的普通答案完全不受影响（零回归面）。
+    if provance_judged:
+        checks["provenance_traceable"] = not unverified_provenance
     # ---- 门禁项 vs 参考项 -------------------------------------------------
     #
     # ``read_file_present``（「这一轮有没有调 read_file」）是**过程**指标，不是**事实**
@@ -444,6 +507,10 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             # 否定语境里被跳过的路径数（诊断用）。**不是**「有几处引用失败」——
             # 这些恰恰是模型**正确**指出的问题（试错路径 / 不存在的路径）。
             "skipped_negated_refs": skipped_negated,
+            # ③ 来源可溯：本轮结论是否作了可证伪的来源断言，以及哪些被引区间
+            # **有送达记录却没覆盖**（"声称读过、实际从未送达"）。调用方据此点名。
+            "provenance_claim": provenance_claim,
+            "unverified_provenance": unverified_provenance,
             "read_steps": len(read_steps)}
 
 

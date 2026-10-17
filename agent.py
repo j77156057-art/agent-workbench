@@ -38,7 +38,7 @@ from config import (
 )
 from llm import LLMClient, args_to_input
 from tools import (TOOLS, tool_schemas, self_verify,
-                   evidence_authority_tool_names,
+                   evidence_authority_tool_names, read_served_ranges,
                    set_session_web_enabled, _session_web_enabled,
                    set_session_vision_mode, _session_vision_mode,
                    _query_relevant,
@@ -2402,10 +2402,17 @@ def _audit_live_answer(text, question, trail, executed_steps=None):
                   and content.startswith("Observation:") and pending is not None):
                 pending["ok"] = not _is_failure(content)
     root = get_runtime("code_root", "")
+    # ③ 来源可溯的数据源：本轮**实际送达**的行覆盖（①修好后如实）。取失败就当没有，
+    # 审计侧据此跳过来源核验、绝不因取不到数据就误判 FAIL。
+    try:
+        served = read_served_ranges()
+    except Exception:  # noqa: BLE001 —— 核验数据源不得让门禁本身崩
+        served = None
     result = audit_evidence(
         {"text": text, "trace": {"steps": steps}},
         question=_user_question(question), code_root=root,
         authority_tools=evidence_authority_tool_names(),
+        served_ranges=served,
     )
     _probe_audit_root(root, (result or {}).get("references") or [])
     return result
@@ -2423,6 +2430,9 @@ _EVIDENCE_CHECK_HINTS = {
     "read_file_present": "还没有成功读取过候选文件的原文（search_code 摘要不算证据）。",
     "references_exist": "回答里引用的路径在当前代码库里打不开。",
     "reference_lines_valid": "回答里引用的行号超出了文件实际行数。",
+    "provenance_traceable": "回答声称这些内容「来自真实读取、不是推断」，但被引区间的正文"
+                            "本轮从未送达——这是一条会被证伪的来源断言。请先按行号重新读取"
+                            "该区间、确有所见再作此声明；否则撤回来源断言，如实说明依据。",
 }
 
 
@@ -2464,6 +2474,20 @@ def _evidence_failure_detail(audit):
         lines.append("行号越界的引用：%s。请先 read_file 确认该文件的实际行数，"
                      "再据此修正行号。" % "、".join(bad_lines[:6]))
 
+    # ③ 来源可溯：模型声称「读过」却从未送达的具体区间——点名到 path:start-end。
+    unverified = [r for r in (audit.get("unverified_provenance") or []) if isinstance(r, dict)]
+    prov_labels = []
+    for r in unverified:
+        if r.get("end_line") and r.get("end_line") != r.get("start_line"):
+            prov_labels.append("%s:%s-%s" % (r.get("path") or "?",
+                                             r.get("start_line"), r.get("end_line")))
+        else:
+            prov_labels.append("%s:%s" % (r.get("path") or "?", r.get("start_line")))
+    if prov_labels:
+        lines.append("声称「来自真实读取」但本轮从未送达的区间：%s。这些行的正文不在任何一次"
+                     "读取结果里——请重新按行号读取，或撤回该来源断言。"
+                     % "、".join(prov_labels[:6]))
+
     detail = "\n".join("- " + line for line in lines)
     # 旧文案「缺少原文核验」在 read_file 没跑过时是**准确**的，保留它（既有的界面文案
     # 与 tests/test_agent.py 都依赖这句话）。只有在它会误导时——也就是失败原因其实是
@@ -2474,7 +2498,7 @@ def _evidence_failure_detail(audit):
     reflection = "%s：%s" % (prefix, "；".join(_EVIDENCE_CHECK_HINTS[key] for key in failed))
     # 具体引用也要出现在**用户可见**的那一段里。此前只回给模型，用户只看到
     # 「路径打不开」却不知道是哪一处——那等于让他自己再翻一遍 trace。
-    named = bad_paths + bad_lines
+    named = bad_paths + bad_lines + prov_labels
     if named:
         reflection += "（%s）" % "、".join(named[:6])
     reflection += "已把具体问题回给模型。"

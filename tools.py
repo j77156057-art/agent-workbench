@@ -5040,6 +5040,28 @@ def _note_read_range(target, start_line, end_line, served_bytes=0):
     _read_store()[1][key] = (stamp, ranges, best)
 
 
+def read_served_ranges():
+    """当前会话**实际送达**的行覆盖快照：``{normcase(绝对路径): [(lo, hi), ...]}``。
+
+    这是 `_note_read_range` 攒下来的真值——记的是**送达**、不是请求（见其文档）。
+    输出审计拿它做「来源可溯」核验：结论若声称某段正文"来自真实读取"，就去这里查
+    那段区间本轮**是否真送达过**。根因①修好后，截断整读只记 `(1, last_shown_line)`，
+    这里的数据因此可信：没送达的尾段不会被谎记成已覆盖。
+
+    纯只读，不改动任何状态；审计侧拿不到（键对不齐）时应判「不可判定」而非 FAIL，
+    所以这里如实返回当前 store 的内容即可，不做补全。
+    """
+    out = {}
+    for key, entry in (_read_store()[1] or {}).items():
+        try:
+            ranges = entry[1]
+        except (TypeError, IndexError):
+            continue
+        if ranges:
+            out[key] = list(ranges)
+    return out
+
+
 def apply_edit(arg):
     """受控修改代码库中的【已存在】文件。详见 _parse_edit_input 的输入格式。
 
