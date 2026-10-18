@@ -603,9 +603,11 @@ def ingest_code_directory(root, emb=None, collection=CODE_COLLECTION_NAME):
     # 就 752MB/6978 文件），也有**合法产物**（Godot Web 导出 .docmind/web/）。建库时
     # 若照单全收，会把项目原文件与 .docmind 里的副本双双 embed 进同一集合，让
     # search_code 返回重复 / 陈旧命中 —— 这正是 grep 之前踩过的同一坑。此处与
-    # grep/glob 同源：只按名修剪**状态目录**，产物目录照常入库。复用 code_intel 的
-    # 状态目录名单，保证三处检索层口径一致（黑名单，非白名单 —— 白名单会让新出现的
-    # 产物目录重新变成静默假否定）。
+    # grep/glob 同源：按名修剪**状态目录**，产物目录照常入库；复用 code_intel 的
+    # 状态目录名单（黑名单，非白名单 —— 白名单会让新出现的产物目录重新变成静默假否定）。
+    # 注意：状态目录名单只覆盖 `.docmind/` 下这一层；**通用点目录（.workbuddy 等）与点
+    # 文件（.docmind_*.jsonl）由下面遍历里的"剪点目录 + 跳点文件"另行处理**，与 grep 的
+    # _walk_source_files 剪点目录口径对齐（见下）。
     try:
         from agent_runtime import code_intel as _ci
         _state_dirs = _ci._DOCMIND_STATE_DIRS
@@ -615,8 +617,14 @@ def ingest_code_directory(root, emb=None, collection=CODE_COLLECTION_NAME):
         _state_prefixes = ()
 
     for dp, dns, fns in os.walk(root):
-        dns[:] = [d for d in dns if d not in _SKIP_DIRS]
-        # 仅在 `.docmind/` 直接下一层修剪状态目录（与 glob/grep 一致）。
+        # 修剪与 grep 建索引层（code_intel._walk_source_files:725）对齐：剪 _SKIP_DIRS，
+        # 再剪**所有点开头目录**——但单独放行 `.docmind`（它的产物子目录 web/ 需照常入库，
+        # 只在其直接下一层按名剪状态目录）。原实现只剪 _SKIP_DIRS、不剪点目录，于是 Agent
+        # 私有记忆 `.workbuddy/memory/*.md` 被整篇 embed 进语义向量库、被 search_code 当
+        # "项目代码片段"命中引用（RETR-Pollution）；grep 那条一直剪点目录，这里补齐口径。
+        dns[:] = [d for d in dns
+                  if d not in _SKIP_DIRS and (d == ".docmind" or not d.startswith("."))]
+        # 仅在 `.docmind/` 直接下一层修剪状态目录（产物目录照常入库，黑名单非白名单）。
         if os.path.relpath(dp, root).replace("\\", "/") == ".docmind":
             pruned = [d for d in dns
                       if d in _state_dirs or d.startswith(_state_prefixes)]
@@ -625,6 +633,11 @@ def ingest_code_directory(root, emb=None, collection=CODE_COLLECTION_NAME):
                 print("[ingest_code] 已跳过 .docmind 状态目录（产物目录照常入库）："
                       "%s" % "、.docmind/".join(sorted(set(pruned))))
         for fn in sorted(fns):
+            # 跳过以点开头的文件：`.docmind_mcp.json` / `.docmind_runtime.jsonl` /
+            # `.docmind_tasks.jsonl` 这类 DocMind 运行时/遥测台账不是项目源码，
+            # 不该进语义库被 search_code 当权威来源返回（RETR-Pollution 点文件侧）。
+            if fn.startswith("."):
+                continue
             if os.path.splitext(fn)[1].lower() not in _CODE_EXT:
                 continue
             fp = os.path.join(dp, fn)

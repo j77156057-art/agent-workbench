@@ -435,14 +435,37 @@ def _check_python_syntax(content: str, rel_n: str):
         )
 
 
+def _code_write_collection() -> str:
+    """写侧（增量重索引 / 删除 / 重命名）必须与读侧 `search_code` 落在**同一个** chroma 集合。
+
+    多项目模式下读侧查 `docmind_code__<pid>`（`projects.code_collection(pid)`），而写侧若
+    写死 legacy `docmind_code`，就会出现「改了文件、删了文件，但项目集合里的旧块永不被清、
+    新块 search_code 又看不见」的脑裂——语义首查系统性返回改前/已删代码。
+
+    这里复用**读侧唯一事实来源** `tools._project_code_scope`：显式 `code_collection` →
+    `enabled()` + `current_project_id()` → `projects.code_collection(pid)`；拿不到时回落
+    legacy 名，与 search_code 里 `collection or CODE_COLLECTION_NAME` 完全同构。
+    取集合名失败绝不阻断写盘（调用方本就 try/except 兜底）。
+    """
+    from config import CODE_COLLECTION_NAME
+    try:
+        from tools import _project_code_scope
+        coll, _root = _project_code_scope()
+        if coll:
+            return str(coll)
+    except Exception:  # noqa: BLE001 —— 退化成 legacy 名，宁可少一道隔离也不打死保存
+        pass
+    return CODE_COLLECTION_NAME
+
+
 def _reindex_one(root_abs: str, target: str, rel_n: str) -> int:
     """保存后增量更新代码问答集合；调用方负责捕获所有异常。"""
     from ingest import ingest_code_file
-    from config import CODE_COLLECTION_NAME
     from vectorstore import delete_by_source
 
-    delete_by_source(rel_n, collection=CODE_COLLECTION_NAME)
-    return ingest_code_file(target, root_abs, collection=CODE_COLLECTION_NAME)
+    coll = _code_write_collection()
+    delete_by_source(rel_n, collection=coll)
+    return ingest_code_file(target, root_abs, collection=coll)
 
 
 # ---------------------------------------------------------------------------
@@ -598,9 +621,8 @@ def rename_path(root, rel, new_rel, reindex: bool = False) -> dict:
     warnings: list = []
     if reindex and os.path.isfile(dst) and os.path.splitext(dst)[1].lower() in _CODE_EXT:
         try:
-            from config import CODE_COLLECTION_NAME
             from vectorstore import delete_by_source
-            delete_by_source(rel_n, collection=CODE_COLLECTION_NAME)
+            delete_by_source(rel_n, collection=_code_write_collection())
             _reindex_one(root_abs, dst, new_n)
         except Exception as e:  # noqa: BLE001
             warnings.append(f"代码索引更新失败（可点「重新索引」修复）：{type(e).__name__}: {e}")
@@ -673,9 +695,8 @@ def delete_path(root, rel, recursive: bool = False, force: bool = False) -> dict
     invalidate_status(root)
     if os.path.splitext(target)[1].lower() in _CODE_EXT:
         try:
-            from config import CODE_COLLECTION_NAME
             from vectorstore import delete_by_source
-            delete_by_source(rel_n, collection=CODE_COLLECTION_NAME)
+            delete_by_source(rel_n, collection=_code_write_collection())
         except Exception:  # noqa: BLE001
             pass
     try:

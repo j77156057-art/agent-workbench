@@ -117,6 +117,38 @@ class IngestDocmindScopeTests(unittest.TestCase):
         self.assertNotIn("node_modules/pkg/lib.gd", seen,
                          "改动不得削弱 ingest 原有的 _SKIP_DIRS 过滤")
 
+    # ---- RETR-Pollution：通用点目录（含 Agent 私有记忆）必须**不**入库 -----
+    def test_dot_dirs_pruned_including_agent_memory(self):
+        """grep 的 _walk_source_files 一直剪所有点开头目录，ingest 建库此前不剪，
+        导致 `.workbuddy/memory/*.md` 被整篇 embed 进语义向量库、被 search_code
+        当"项目代码片段"命中引用。修复后必须与 grep 同口径剪掉。"""
+        seen = self._run([
+            ".workbuddy/memory/2026-09-23.md",
+            ".hidden/config.json",
+        ])
+        self.assertNotIn(".workbuddy/memory/2026-09-23.md", seen,
+                         "Agent 私有记忆正文不得进向量库（RETR-Pollution）")
+        self.assertNotIn(".hidden/config.json", seen,
+                         "通用点目录应与 grep 一致被剪")
+
+    # ---- RETR-Pollution：DocMind 运行/遥测点文件不得入库 --------------------
+    def test_dot_files_pruned(self):
+        seen = self._run([
+            ".docmind_mcp.json",
+            ".docmind_runtime.jsonl",
+            ".docmind_tasks.jsonl",
+        ])
+        for rel in (".docmind_mcp.json", ".docmind_runtime.jsonl", ".docmind_tasks.jsonl"):
+            self.assertNotIn(rel, seen,
+                             "%s 属 DocMind 运行时/遥测台账，不得进语义库" % rel)
+
+    # ---- 剪点目录/点文件只针对点开头，真实同名非点目录必须照常入库 --------
+    def test_non_dot_same_name_dirs_not_over_pruned(self):
+        seen = self._run(["memory/notes.md", "docmind_rules/keep.py"])
+        self.assertIn("memory/notes.md", seen,
+                      "非点目录 memory/ 不得被误剪——剪枝仅限点开头目录")
+        self.assertIn("docmind_rules/keep.py", seen)
+
 
 if __name__ == "__main__":
     unittest.main()

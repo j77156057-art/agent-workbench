@@ -3931,9 +3931,19 @@ def _hit_within_root(source, root):
 
 
 
+#: 分区编辑豁免标志：必须是**上下文级 ContextVar**，不能放进程全局 `_RUNTIME`。
+#: 并行工具批用 `ThreadPoolExecutor + copy_context().run` 执行（见 agent 并行派发），
+#: `copy_context` 只隔离 ContextVar、对裸字典 `_RUNTIME` 无能为力——若把此豁免存进
+#: `_RUNTIME`，一条在飞的 `dev_region_edit` 就会把豁免广播给同批兄弟任务的普通
+#: `apply_edit`/`create_file`，让它们越过分区护栏（fail-open）。ContextVar 让豁免只沿
+#: `dev_region_edit → 其内部 apply_edit` 这条同步调用链生效，worker 间互不可见。
+_REGION_EDIT_CTX: "contextvars.ContextVar" = contextvars.ContextVar(
+    "docmind_region_edit_context", default=False)
+
+
 def _region_write_allowed(target):
     """When regions are configured, ordinary write tools cannot bypass region tools."""
-    if get_runtime("region_edit_context"):
+    if _REGION_EDIT_CTX.get():
         return True
     root = _get_code_root()
     if not root or not os.path.isfile(os.path.join(root, "regions.json")):
@@ -6271,13 +6281,13 @@ def dev_region_edit(arg):
         return reason
     lock = _region_lock(region)
     with lock:
-        set_runtime("region_edit_context", True)
+        _tok = _REGION_EDIT_CTX.set(True)
         try:
             if os.path.isfile(target):
                 return apply_edit(_emit_edit_arg(target, old_text, new_text))
             return create_file(_emit_edit_arg(target, None, new_text))
         finally:
-            set_runtime("region_edit_context", False)
+            _REGION_EDIT_CTX.reset(_tok)
 
 
 def _run_region_cmd(region_dir_abs, cmd):
