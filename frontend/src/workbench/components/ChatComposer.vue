@@ -2,7 +2,7 @@
 // P0 对话输入条（薄封装）：只持有两个隐藏 file input 与 textarea 焦点；
 // 附件列表/视频分析/发送判定等状态与逻辑全部留在 ChatDock 父级，
 // 事件经显式 emit 上抛，避免父子双数据源。
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import type { ContextUsage } from '../api'
 
 const props = defineProps<{
@@ -41,6 +41,11 @@ const emit = defineEmits<{
   (e: 'open-model-switcher'): void
   (e: 'toggle-voice'): void
 }>()
+
+// BUG-8：与后端 _meaningless_input_clarification 同规则——纯空白/纯符号
+// （无任何字母或数字，如"？""。。。"）的输入没有可检索意图。这里只做发送按钮的
+// 视觉置灰（真正的 fail-closed 拦截在后端入口）；带附件时照常放行。
+const canSendText = computed(() => /[\p{L}\p{N}]/u.test(props.modelValue || ''))
 
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const imageInput = ref<HTMLInputElement | null>(null)
@@ -188,7 +193,7 @@ function onVideoPick(ev: Event) {
         @dragover="onDragover"
       />
       <button v-if="sending" class="cd-send cd-stop" title="停止当前请求" aria-label="停止当前请求" @click="emit('stop')">停止</button>
-      <button class="cd-send" :disabled="(!modelValue.trim() && !pendingImages.length)" title="发送消息（Ctrl+Enter）；运行中发送＝打断当前轮并重定向" @click="emit('submit')">发送</button>
+      <button class="cd-send" :disabled="(!canSendText && !pendingImages.length)" :title="canSendText || pendingImages.length ? '发送消息（Ctrl+Enter）；运行中发送＝打断当前轮并重定向' : '请描述你的问题（至少包含文字或数字）'" @click="emit('submit')">发送</button>
     </div>
   </footer>
 </template>

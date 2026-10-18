@@ -53,6 +53,19 @@ def _ts_literals(segment: str) -> set[str]:
     return set(re.findall(r"'([^']+)'", segment))
 
 
+def _server_event_union_segment(source: str) -> str:
+    """只截 `RealtimeServerEvent` 声明本体（到它自己的 `sent_at: number` 信封字段为止）。
+
+    早先这里用 `end_marker="export function realtimeHello"` 圈整段，会把紧随其后、
+    夹在类型定义与该函数之间的 `HelloOkEvent` 接口一起扫进来——它的
+    `mode: 'native-realtime' | 'sampled-frames' | 'unavailable'` 是【实时模式取值】、
+    不是服务端事件类型。严格相等断言因此被这三个假阳性撞红，看着像前后端词汇表漂移，
+    其实是测试把窗口开太宽。真正要钉的是 `type:` 那一行的联合类型，
+    所以收到紧邻其下的 `sent_at: number` 为止。
+    """
+    return _ts_segment(source, "export type RealtimeServerEvent", "sent_at: number")
+
+
 def _binary_packet(payload: bytes = b"jpeg-frame", *, version: int = 1,
                    kind: str = "video.frame", sequence: object = 1,
                    captured_at: object = None, **extra: object) -> bytes:
@@ -74,8 +87,7 @@ def test_protocol_version_matches_the_frontend_constant():
 
 
 def test_server_event_vocabulary_matches_the_frontend_union():
-    segment = _ts_segment(_ts_source(), "export type RealtimeServerEvent",
-                          "export function realtimeHello")
+    segment = _server_event_union_segment(_ts_source())
     assert _ts_literals(segment) == proto.SERVER_TYPES, (
         "服务端事件词汇表与前端 RealtimeServerEvent 联合类型不一致")
 
@@ -110,8 +122,7 @@ def test_every_provider_event_kind_maps_onto_a_declared_server_event():
 
 def test_model_observation_is_a_declared_server_event():
     assert "model.observation" in proto.SERVER_TYPES
-    assert "model.observation" in _ts_literals(_ts_segment(
-        _ts_source(), "export type RealtimeServerEvent", "export function realtimeHello"))
+    assert "model.observation" in _ts_literals(_server_event_union_segment(_ts_source()))
 
 
 @pytest.mark.parametrize("kind", provider.EVENT_KINDS)

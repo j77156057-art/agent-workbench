@@ -406,7 +406,17 @@ def _derive_experience_outcome(turn):
 #: 不带任何标记 → 解析器判「没答完」→ 触发续写纠偏最多 8 次 → 用户看到同一句话
 #: 重复 8 遍。把契约前置到开头后，同一批问题裸正文降到 0（2026-10-02 实测）。
 #: 长提示词模型遵循「首尾」远好过「中段」，所以两头各放一次。
-_FORMAT_CONTRACT = """【输出格式契约 · 最高优先级 · 必须遵守】
+_FORMAT_CONTRACT = """【语言铁律 · 先于一切 · 最高优先级】
+你的**全部输出**——包括内部思考 / 推理链（reasoning / thinking）、每一步旁白、
+以及最终答案——都必须、且只用**用户提问所用的那一种语言**。用户中文提问 → 全程
+中文思考与回答；用户英文提问 → 全程英文。**严禁**用户用中文提问、你却用英文推理。
+下列英文推理开头一律禁止出现（这是实测反复犯的毛病）：
+`Now I need to…` / `Let me check…` / `Let me consider…` / `I have the actual
+file content…` / `Actually the rules say…` / `Maybe check…`——这些句子必须改写成
+中文。唯一可以保留原文的，只有命令、文件路径、代码里的标识符（函数名 / 类名 /
+API 名 / 变量名）。除这些专有名词外，任何一句叙述都不许中英混杂。
+
+【输出格式契约 · 最高优先级 · 必须遵守】
 你每次回复只允许下面两种形状之一。标记必须原样照抄，大小写、空格、冒号都不能改：
 
 形状一 · 还需要查证据或执行动作时：
@@ -422,7 +432,9 @@ Final Answer: <最终答案正文>
 2. 不要在标记之外先写一段解释性正文，也不要只输出正文而漏掉标记——
    不带标记的回复会被判为「没答完」并被反复重试。
 3. `Final Answer:` 的正文里不要再出现 `Final Answer:` 这几个字。
-4. 中文问题就用中文回答；命令、路径、代码保持原样。
+4. 中文问题就用中文回答；**展示给用户看的 `Thought:`、过程解说、每一步旁白**
+   同样一律用用户的语言（中文问题就全中文），不得中英混杂。只有命令、路径、
+   代码里的标识符（函数名 / 类名 / API 名）保持原样。
 5. 证据不足时在 Final Answer 里说明缺什么，不要凭空断言。
 """
 
@@ -442,7 +454,17 @@ Final Answer: <最终答案正文>
 #: 结论还是计划，harness 无法可靠区分（上面那个 trace 里的散文就是计划）。所以契约
 #: 只把两件事说清：要查证就**发出真正的调用**，要收尾就**把结论写完整**；判定权仍在
 #: 解析层，不靠提示词去猜。
-_NATIVE_FORMAT_CONTRACT = """【工具调用方式 · 最高优先级 · 必须遵守】
+_NATIVE_FORMAT_CONTRACT = """【语言铁律 · 先于一切 · 最高优先级】
+你的**全部输出**——包括内部思考 / 推理链（reasoning / thinking）、每一步旁白、
+以及最终答案——都必须、且只用**用户提问所用的那一种语言**。用户中文提问 → 全程
+中文思考与回答；用户英文提问 → 全程英文。**严禁**用户用中文提问、你却用英文推理。
+下列英文推理开头一律禁止出现（这是实测反复犯的毛病）：
+`Now I need to…` / `Let me check…` / `Let me consider…` / `I have the actual
+file content…` / `Actually the rules say…` / `Maybe check…`——这些句子必须改写成
+中文。唯一可以保留原文的，只有命令、文件路径、代码里的标识符（函数名 / 类名 /
+API 名 / 变量名）。除这些专有名词外，任何一句叙述都不许中英混杂。
+
+【工具调用方式 · 最高优先级 · 必须遵守】
 
 本轮工具调用走**原生 function-calling 通道**：工具清单已经随请求一并下发。
 
@@ -455,7 +477,9 @@ _NATIVE_FORMAT_CONTRACT = """【工具调用方式 · 最高优先级 · 必须�
    不确定是否该查，就先把已有证据能支撑的结论写出来，并说明还缺什么。
 4. 结论必须给出可核验的定位（文件路径 + 行号）与依据；证据不足就说明缺什么，
    不要凭空断言。
-5. 中文问题就用中文回答；命令、路径、代码保持原样。
+5. 中文问题就用中文回答；**你的思考、推理、过程解说、每一步旁白**（凡是会展示
+   给用户看的过程文字）也一律用用户的语言（中文问题就全中文），不得中英混杂。
+   只有命令、路径、代码里的标识符（函数名 / 类名 / API 名）保持原样。
 
 【若本提示词中段出现要求手写 `Action:` / `Final Answer:` 的段落】
 那是描述**文本协议**的遗留文字，本轮**不适用**。以本段为准：查证就发出真正的工具
@@ -498,7 +522,7 @@ _NARRATION_CLAUSE = """
 除上面的要求外，本轮**额外允许**你在发出工具调用**之前或之后**，用一两句自然
 语言说明你正在做什么、为什么这么做。
 
-三条硬约束：
+四条硬约束：
 1. **话说完了，调用照发。** 上面第 3 条继续生效：不要用正文代替真正的调用。
    顺序是「先说一句，再发调用」，不是「说一句就不调用了」。
 2. **不要写任何格式标记。** 不写 `Thought:` / `Action:` / `Final Answer:`，
@@ -506,6 +530,9 @@ _NARRATION_CLAUSE = """
    这里只写**面向用户的进展说明**，一两句即可。
 3. **说完结论就停。** 最后一轮（不再需要调用）直接给完整答案，
    不要先写一段「我要整理一下」再写答案。
+4. **解说语言跟随用户提问的语言。** 用户用中文提问就用中文解说，用英文就用
+   英文；**不要中英混杂**（一句里半中半英尤其禁止）。只有命令、文件路径、
+   代码里的标识符（函数名 / 类名 / API 名）保持原文，其余叙述一律用用户的语言。
 
 用户能看到你每一步的说明，这是本轮特意开启的。
 """
@@ -2293,6 +2320,83 @@ def _ambiguous_write_request(question):
     )
 
 
+# BUG-8：一个"？"/纯符号输入没有可检索的意图，却照样跑满一整条 ReAct 链、
+# 生成一段"看起来很有道理"的自信答案（实测轮次6：1 字符问题 → 1491 字完成态），
+# 既是幻觉温床也白烧 token。入口先用"有没有实质字符"挡一道——判据保守：
+# 只要含任一字母/数字/CJK 汉字就放行，绝不拦"好""x""0.8秒"这类虽短却真实的问题。
+_SUBSTANTIVE_CHAR_RE = re.compile(r'[0-9A-Za-z\u4e00-\u9fff]')
+
+
+def _meaningless_input_clarification(question):
+    """无实质字符（空 / 纯标点符号 / 纯空白）时返回一句澄清话术，否则返回空串。"""
+    raw = _user_question(question).strip()
+    if not raw:
+        return ("我还不能从这条消息里看出你想问什么。请用一句话描述你的问题，"
+                "比如某个文件/函数怎么工作、报了什么错、或想改什么行为。")
+    if not _SUBSTANTIVE_CHAR_RE.search(raw):
+        # 有内容但全是标点/符号/空白（如"？""。。。""!!!"）：同样无可检索意图。
+        return ("这条消息看起来只有标点或符号。请补充具体想问的内容"
+                "（文件/函数、报错信息，或你想达成的改动），我才能帮你定位和解答。")
+    return ""
+
+
+# P0（BUG-11）：悬空指代的先行词判据。时间性回指词（刚才/之前/上次…）叠上"改动/
+# 修改/这个/它"这类被指对象，却【没有】给出具体路径时，指代目标是否能在本会话里落地，
+# 完全取决于有没有前文。首问（history 为空）时先行词在本会话内【根本不存在】——此时
+# 绝不该去借跨会话记忆把"刚才的改动"脑补成某个文件再动手（这正是锚/A/E/G/J 的翻车面）。
+_RE_ANAPHOR = re.compile(
+    r"(?:刚才|刚刚|之前|上次|上回|先前|前面|上面|前述|这?次|这?回|那?些|它)"
+    r"[^。；\n]{0,6}?(?:改动?|修改|变更|调整|编辑|操作|文件|代码|内容|那个|这个)"
+    r"|(?:优化|改一下|调整一下|改改|修修)\s*$"
+)
+
+
+def _unresolved_anaphor_clarification(question, history):
+    """首问里出现悬空写指代、又没给具体路径时，返回澄清 + 结构化 ask；否则空串。
+
+    只在**本会话没有任何前文**时触发：有前文时先行词多半能在会话内落地（R/S/M 证明
+    会话内可核对时模型不犯），强行弹问反而是过度打扰。判据保守——必须同时满足：
+      1) 有写动词信号（复用 `_RE_WRITE_INTENT`，与护栏同一把尺）；
+      2) 命中悬空指代（`_RE_ANAPHOR`）；
+      3) 没有给出可落地的具体路径/细节（`_WRITE_DETAIL` 不命中）。
+    三者齐备 = "用户想写、但没说要写哪儿、也没上文可追"，唯一正确动作是问。
+    """
+    if history:
+        return ""
+    raw = _user_question(question).strip()
+    if not raw:
+        return ""
+    value = _write_intent_text(raw)
+    if not _RE_WRITE_INTENT.search(value):
+        return ""
+    if not _RE_ANAPHOR.search(raw):
+        return ""
+    if _WRITE_DETAIL.search(raw):
+        return ""
+    text = (
+        "这条请求要修改文件，但用的是「刚才/这个改动」这类回指说法，而本次对话里"
+        "并没有可供对应的前文。我不能凭记忆替你猜测指的是哪个文件、改成什么——那会把"
+        "并不存在的授权当成你说的。请点选下面任一项，或直接补充「文件路径 + 要改的行为 + "
+        "期望结果」。"
+    )
+    return {
+        "text": text,
+        "ask": {
+            "kind": "clarify",
+            "question": "这次想让我改哪个文件、改什么？",
+            "allow_free_text": True,
+            "options": [
+                {"label": "我来指定具体文件和改法",
+                 "value": "我来指定具体文件和改法：文件路径、要改的行为、期望结果如下——"},
+                {"label": "先列出项目里的候选文件让我挑",
+                 "value": "先列出项目里跟这次改动相关的候选文件，我从中挑一个再告诉你怎么改。"},
+                {"label": "只是想先看方案，暂不改文件",
+                 "value": "先不要改任何文件，只给我修改方案和影响，我确认后再决定。"},
+            ],
+        },
+    }
+
+
 def _format_verbatim(action, obs):
     if action == "calculate":
         return f"计算结果为：{obs}"
@@ -2300,6 +2404,44 @@ def _format_verbatim(action, obs):
         return f"代码执行结果：\n{obs}"
     # gen_video_prompt：提示词本身即交付物，原样输出
     return obs
+
+
+# BUG-7：python_exec 有时被模型用来把某个源文件逐行 echo 出来（`for i,l in enumerate(...)`
+# 或直接 print(open(...).read()) 带行号），harness 若照旧走"产出即答案"的 verbatim 捷径，
+# 就会把一整份代码清单当最终回答甩给用户（实测轮次4 dump player.gd、轮次12 dump enemy.gd，
+# final_chars≈文件大小）。这不是"答案"，是没综合。检测到"逐行源码裸铺"就不要走捷径，
+# 逼模型回到正常的 Final Answer 合成。判据刻意保守：行数够多 + 高比例是"行号+代码"形态，
+# 数字/短结论（caseB=3.2）永远不命中，避免误伤真正的计算结果。
+_DUMP_MIN_LINES = 10
+_DUMP_NUMBERED_RATIO = 0.7
+# "12: code" / "12. code" / "12) code" —— read_file / 带行号 echo 的典型形状；
+# "12 | code" / "   12| code" —— search_code 的 gutter 格式，也是模型 echo 时偏爱的
+# 编辑器风格（BUG-14：此前只认冒号/点/括号，竖线 dump 整段漏网）。允许数字与分隔符
+# 间有空白，分隔符字符类加 `|`；仍锚定行首、要求分隔符后紧跟空白再跟非空白，
+# 纯数字/一句话结论（如"9.9 更大"）不含"行号+分隔符+空格+代码"结构，不会误伤。
+_NUMBERED_SRC_LINE_RE = re.compile(r'^\s*\d+\s*[.):|]\s+\S')
+
+
+def _is_raw_source_echo(text):
+    """这条工具输出是否主要是**逐行带行号的源码清单**（而非真正回答问题的结果）。"""
+    if not text or not str(text).strip():
+        return False
+    lines = [ln for ln in str(text).splitlines() if ln.strip()]
+    if len(lines) < _DUMP_MIN_LINES:
+        return False
+    numbered = sum(1 for ln in lines if _NUMBERED_SRC_LINE_RE.match(ln))
+    return numbered >= _DUMP_NUMBERED_RATIO * len(lines)
+
+
+def _should_verbatim_passthrough(action, obs):
+    """产出即答案的工具是否真的"产出即答案"。
+
+    python_exec 例外：它可能只是回吐源码，此时不该 verbatim 透传（BUG-7）。
+    calculate / gen_video_prompt 的结果本身就是交付物，照常透传。
+    """
+    if action == "python_exec" and _is_raw_source_echo(obs):
+        return False
+    return True
 
 
 def _is_no_match_only(obs):
@@ -4536,6 +4678,17 @@ class Agent:
             return
         question = _q
 
+        # BUG-8：空 / 纯符号（如"？""。。。"）没有可检索意图，绝不该跑满一条
+        # ReAct 链去硬生成一段自信答案（实测轮次6：1 字符→1491 字完成态）。
+        # 在调任何工具/provider 之前先挡下，回一句澄清，走 clarification_required 早退。
+        meaningless = _meaningless_input_clarification(question)
+        if meaningless:
+            turn.outcome = "clarification_required"
+            final_text = meaningless
+            yield {"type": "final", "text": meaningless,
+                   "clarification_required": True, "degraded": True}
+            return
+
         # "能不能修改文件？" is a capability question.  It must not reach
         # the model as an implicit write authorization: ask for the target and
         # desired change first, without invoking any tool or provider.
@@ -4544,7 +4697,33 @@ class Agent:
             turn.outcome = "clarification_required"
             final_text = clarification
             yield {"type": "final", "text": clarification,
-                   "clarification_required": True, "degraded": True}
+                   "clarification_required": True, "degraded": True,
+                   "ask": {
+                       "kind": "clarify",
+                       "question": "你希望我做哪一种？",
+                       "allow_free_text": True,
+                       "options": [
+                           {"label": "修改现有逻辑",
+                            "value": "修改现有逻辑，我会请你给出文件路径、要改的行为和期望结果。"},
+                           {"label": "新增功能或文件",
+                            "value": "新增功能或文件，我会请你描述功能、放置位置和验收标准。"},
+                           {"label": "修复报错",
+                            "value": "修复报错，我会请你提供报错信息和相关文件。"},
+                           {"label": "只看修改方案",
+                            "value": "只查看修改方案：先检索并给出方案，等你确认后再改。"},
+                       ],
+                   }}
+            return
+
+        # P0（BUG-11）：首问用悬空写指代（"刚才的改动/优化下"）又没给具体路径时，
+        # 本会话无先行词可落地，禁借跨会话记忆脑补目标 —— 弹提问框请用户指明。
+        anaphor = _unresolved_anaphor_clarification(question, self.history)
+        if anaphor:
+            turn.outcome = "clarification_required"
+            final_text = anaphor["text"]
+            yield {"type": "final", "text": final_text,
+                   "clarification_required": True, "degraded": True,
+                   "ask": anaphor["ask"]}
             return
 
         aborted = False
@@ -4701,6 +4880,23 @@ class Agent:
                     inner.close()
                 except Exception:  # noqa: BLE001
                     pass
+            # BUG-1/6 fail-closed 交付门：收尾判定必须校验"本轮是否真的交付了可用答案"，
+            # 不能只看模型 finish_reason。agent_trace.to_record 里
+            #   outcome = self.outcome or self.finish_reason or "completed"
+            # ——只要 turn.outcome 没被显式设成非完成态，就会被上一次 LLM 的
+            # finish_reason="completed"（或兜底字面量）落成"完成"。实测铁证：
+            # aborted=true、final_chars=0 的中断轮仍记 completed。
+            # 以下两类是"没能答"，绝不落成 completed：
+            #   · 本轮被中断（GeneratorExit / 客户端断连）——哪怕 finish_reason 残留 completed；
+            #   · 没有任何非空最终正文（且非显式错误、非澄清）——空 / 纯空白 final。
+            # 只在 outcome 为空或"completed"时覆盖，保留内层已设的更具体终态
+            # （truncated / empty / verification_incomplete / clarification_required）。
+            if aborted and turn.outcome in (None, "", "completed"):
+                turn.outcome = "interrupted"
+            elif (not aborted and not error
+                  and not (final_text or "").strip()
+                  and turn.outcome in (None, "", "completed")):
+                turn.outcome = "empty"
             turn.finish(
                 reason=None if aborted else (turn.outcome or "completed"),
                 final_text=final_text,
@@ -4802,6 +4998,10 @@ class Agent:
         # 误导性警告。见 _audit_live_answer。
         audit_steps: list[dict] = []
         evidence_nudges = 0  # 定位类回答最多补读一次原文，避免复核本身形成死循环
+        # BUG-7 终态守卫：模型把「带行号的源码整段铺出」当 Final Answer 交付时（实测 X：
+        # enemy/hud/player 三份源码裸铺、几乎无综合），最多**逼它综合一次**；仍裸铺就
+        # 如实标 degraded 交付，绝不把「原始 dump」冒充成综合结论（fail-closed，不假完成）。
+        verbatim_dump_nudges = 0
         # 连续「输出无标记」的次数。与 nudges 分开计数，因为它的处置完全不同：
         # nudges 是「再给它一次机会」，而格式连续失守说明**这个模型在当前提示词下
         # 稳定地不遵守契约**——继续喂 nudge 只会让界面上重复同一条提示（实测最多 8 遍），
@@ -5151,7 +5351,7 @@ class Agent:
                         "上一段最终回答仍未结束。紧接末尾继续正文，不要重述前文，"
                         "不要重新写 Final Answer 标记，也不要调用工具；完成时自然结束。"
                     )})
-                    yield {"type": "notice", "text": "模型单次输出已满，正在接续完整回答。"}
+                    yield {"type": "notice", "text": "模型单次输出已满，正在接续完整回答。", "transient": True}
                     continue
                 continuation_incomplete = finish_reason == "length"
                 acc = "Final Answer: " + pending_final
@@ -5245,6 +5445,20 @@ class Agent:
                                          "写授权租约，需由主 Agent 向用户确认后继续。"
                                          % parsed["action"]),
                                 "action": parsed["action"],
+                                "ask": {
+                                    "kind": "permission",
+                                    "question": ("是否授权执行写操作「%s」？"
+                                                 % parsed["action"]),
+                                    "allow_free_text": True,
+                                    "options": [
+                                        {"label": "批准执行",
+                                         "value": "确认授权：请执行刚才被拦下的写操作。"},
+                                        {"label": "先给我看会改哪些文件/影响再决定",
+                                         "value": "先不要落盘，列出这次写操作会改哪些文件、影响范围，我看过再决定。"},
+                                        {"label": "取消这次写操作",
+                                         "value": "取消这次写操作，不要修改任何文件。"},
+                                    ],
+                                },
                             }
                         # 委派子代理：**不从角色提示词猜权限**。
                         #
@@ -5773,7 +5987,8 @@ class Agent:
 
                 # "产出即答案"的工具：结果已经正确，直接作为最终回答返回，
                 # 不再给模型多一轮（避免小模型反复调用同一工具导致步数耗尽 / 死循环）。
-                if self._is_verbatim_tool(parsed["action"]) and _tool_ok:
+                if (self._is_verbatim_tool(parsed["action"]) and _tool_ok
+                        and _should_verbatim_passthrough(parsed["action"], obs)):
                     if turn is not None:
                         turn.outcome = "verbatim"
                     final_text = _format_verbatim(parsed["action"], obs)
@@ -5873,14 +6088,48 @@ class Agent:
                         "保留所有审查发现、证据和结论；不要压缩、重写或重复前文，"
                         "不要重新写 Final Answer 标记，也不要调用工具。"
                     )})
-                    yield {"type": "notice", "text": "模型单次输出已满，正在接续完整回答。"}
+                    yield {"type": "notice", "text": "模型单次输出已满，正在接续完整回答。", "transient": True}
                     continue
 
                 final_text = _guard_transport_final(final_body, question, trail, self.history)
                 # 若上一步是"产出即答案"的工具且返回有效，强制透传工具结果，
                 # 避免小模型在 Final Answer 里改写数字/格式导致错误。
-                if self._is_verbatim_tool(last_action) and last_obs and not _is_failure(last_obs):
+                if (self._is_verbatim_tool(last_action) and last_obs
+                        and not _is_failure(last_obs)
+                        and _should_verbatim_passthrough(last_action, last_obs)):
                     final_text = _format_verbatim(last_action, last_obs)
+                # BUG-7 终态守卫：模型**自己**把带行号的源码整段裸铺当 Final Answer
+                # （python_exec 捷径那条已由 `_should_verbatim_passthrough` 在更早处挡下；
+                # 这里管的是模型在自己的最终回答里重贴 `12: 代码` 清单，实测 X 三份源码裸铺）。
+                # 判据复用保守的 `_is_raw_source_echo`（≥10 行且 ≥70% 是"行号+代码"形态），
+                # 数字/结论型答案永不命中。最多逼它综合一次；仍裸铺→如实标 degraded 交付，
+                # 绝不把原始 dump 冒充成综合结论（fail-closed）。
+                if _is_raw_source_echo(final_text):
+                    if verbatim_dump_nudges < 1:
+                        verbatim_dump_nudges += 1
+                        trail.append(
+                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                        )
+                        trail.append({
+                            "role": "user",
+                            "content": (
+                                "你给出的是**带行号的源码整段铺出**（一屏 `12: 代码` 这样的清单），"
+                                "这不是对问题的回答。请把这些原文**消化成综合结论**：讲清各文件/"
+                                "函数各自负责什么、彼此如何衔接、关键行号点到为止，不要把源码逐行"
+                                "重贴。直接用自然语言重写这段最终回答，不要再调用工具。"
+                            ),
+                        })
+                        yield {"type": "reflection",
+                               "text": "最终回答疑似源码裸铺，正在要求综合成结论。"}
+                        continue
+                    final_text = final_text.rstrip() + (
+                        "\n\n──── 以上为原始源码清单，未能综合成结论（已如实标注，"
+                        "请视为未直接回答该问题）────")
+                    if turn is not None:
+                        turn.outcome = "verbatim_dump_unsynthesized"
+                    self.history.append({"user": question, "assistant": final_text})
+                    yield {"type": "final", "text": final_text, "degraded": True}
+                    return
                 evidence_audit = _audit_live_answer(final_text, question, trail, audit_steps)
                 # 闸门只看**事实项**（引用能不能打开、行号是否越界）。
                 # `read_file_present` 已降级为参考——Claude Code 的验证 prompt 明确写着
@@ -6103,7 +6352,7 @@ class Agent:
                             % _clip(acc, 1200)
                         )
                 trail.append({"role": "user", "content": hint})
-                yield {"type": "notice", "text": "模型输出尚未结束，正在继续执行。"}
+                yield {"type": "notice", "text": "模型输出尚未结束，正在继续执行。", "transient": True}
                 continue
 
             # 续写纠偏后仍不完整：给出明确错误，不再把半句 Thought 冒充答案；

@@ -14,7 +14,17 @@ const emit = defineEmits<{
   (e: 'openFile', path: string, line: number): void
   (e: 'wfGate', open: boolean): void
   (e: 'wfActivity'): void
+  (e: 'ask', value: string): void
 }>()
+
+// 选项框一经点选即锁定：后端把选择当"下一轮用户消息"处理，同一条 ask 重复点会
+// 触发多次发送，所以本地记一次 answered、点后续按钮不再响应（自由文本另说）。
+const askAnswered = ref(false)
+function chooseAsk(value: string) {
+  if (askAnswered.value) return
+  askAnswered.value = true
+  emit('ask', value)
+}
 
 const html = computed(() => mdToHtml(props.msg.text || ''))
 const refs = computed(() => extractFileRefs(props.msg.text || ''))
@@ -50,6 +60,11 @@ const hasFlow = computed(() => {
   if (!items.length) return false
   return prefs.showTrace || items.some((n) => n.kind === 'think' || n.kind === 'thought')
 })
+// 展示优化 B：一轮跑完后，整条中文推理链默认折叠成一行「推理过程 · N 步」，
+// 点开展开看全文。流式中恒展开（用户要看着思考实时生长）；done/stopped 才收。
+const flowExpanded = ref(false)
+const flowOpen = computed(() => streaming.value || flowExpanded.value)
+const flowStepCount = computed(() => flowItems.value.length)
 function traceAt(node: { trace: number }): ChatTraceItem {
   return props.msg.trace[node.trace]
 }
@@ -183,23 +198,37 @@ const phaseLabel = computed(() => {
              调用按发生顺序排成一条故事线：think → 调用 → 返回 → think → …
              答案之前全部可见、无边框（容器只有左侧一条虚线时间线）。
              点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
-        <div v-if="hasFlow" class="flow">
-          <template v-for="(node, i) in flowItems" :key="i">
-            <div v-if="node.kind === 'think' || node.kind === 'thought'" class="flow-think">
-              <span class="flow-dot" :class="{ on: streaming && i === flowItems.length - 1 }"></span>
-              <div class="flow-think-body">{{ node.kind === 'think' ? node.text : traceAt(node).text.trim() }}</div>
-            </div>
-            <template v-else-if="prefs.showTrace">
-              <button class="flow-row" :class="node.kind" @click="toggleRow(i)">
-                <span class="flow-glyph">{{ node.kind === 'action' ? '↗' : '↳' }}</span>
-                <span class="flow-title">{{ stepTitle(traceAt(node)) }}</span>
-                <span v-if="!rowOpen(i)" class="flow-summary">{{ stepSummary(traceAt(node)) }}</span>
-                <span v-if="fmtElapsed(traceAt(node).elapsedMs)" class="flow-time">{{ fmtElapsed(traceAt(node).elapsedMs) }}</span>
-                <span class="chev" :class="{ open: rowOpen(i) }">⌄</span>
-              </button>
-              <pre v-if="rowOpen(i)" class="flow-detail">{{ traceAt(node).text.trim() }}</pre>
+        <div v-if="hasFlow" class="flow-wrap">
+          <button
+            v-if="!streaming"
+            class="flow-toggle"
+            type="button"
+            :aria-expanded="flowExpanded"
+            @click="flowExpanded = !flowExpanded"
+          >
+            <span class="flow-toggle-glyph" aria-hidden="true">◈</span>
+            <span class="flow-toggle-label">推理过程</span>
+            <span class="flow-toggle-count">{{ flowStepCount }} 步</span>
+            <span class="chev" :class="{ open: flowExpanded }">⌄</span>
+          </button>
+          <div v-show="flowOpen" class="flow">
+            <template v-for="(node, i) in flowItems" :key="i">
+              <div v-if="node.kind === 'think' || node.kind === 'thought'" class="flow-think">
+                <span class="flow-dot" :class="{ on: streaming && i === flowItems.length - 1 }"></span>
+                <div class="flow-think-body">{{ node.kind === 'think' ? node.text : traceAt(node).text.trim() }}</div>
+              </div>
+              <template v-else-if="prefs.showTrace">
+                <button class="flow-row" :class="node.kind" @click="toggleRow(i)">
+                  <span class="flow-glyph">{{ node.kind === 'action' ? '↗' : '↳' }}</span>
+                  <span class="flow-title">{{ stepTitle(traceAt(node)) }}</span>
+                  <span v-if="!rowOpen(i)" class="flow-summary">{{ stepSummary(traceAt(node)) }}</span>
+                  <span v-if="fmtElapsed(traceAt(node).elapsedMs)" class="flow-time">{{ fmtElapsed(traceAt(node).elapsedMs) }}</span>
+                  <span class="chev" :class="{ open: rowOpen(i) }">⌄</span>
+                </button>
+                <pre v-if="rowOpen(i)" class="flow-detail">{{ traceAt(node).text.trim() }}</pre>
+              </template>
             </template>
-          </template>
+          </div>
         </div>
 
         <!-- 工作流卡片：start_workflow 的动作与观察由卡片承载，不进交错流 -->
@@ -220,10 +249,25 @@ const phaseLabel = computed(() => {
             <span class="td"></span><span class="td"></span><span class="td"></span>
           </div>
           <div v-else-if="msg.text" class="answer" :class="{ streaming }">
-            <!-- P0：摘要一致性自检提示。observation 关键词命中率 < 50% 时显示，不挡眼。 -->
+            <!-- P0：摘要一致性自检。observation 关键词命中率 < 阈值时，本回合的
+                 「摘要对过程证据的覆盖度」偏低——明确标注为「覆盖存疑」终态，而非静默
+                 记完成（BUG-4）。措辞刻意避开「核验」二字：它与后端追加的
+                 「（核验：PASS · N 处引用可核验）」说的是两件不同的事（引用能不能定位
+                 vs 摘要有没有漏掉过程细节），同屏出现不能让它们看着互相打架。 -->
             <div v-if="msg.status === 'done' && msg.consistency === 'warn'" class="flag warn">
-              ⚠ 摘要可能漏报：原 observation 关键词命中率
-              {{ Math.round((msg.consistencyRatio || 0) * 100) }}%，建议展开上方过程流核验。
+              <span class="flag-badge">覆盖存疑</span>
+              本回合摘要对过程证据的关键词覆盖率仅
+              {{ Math.round((msg.consistencyRatio || 0) * 100) }}%——结论未必有错，但可能有细节没纳入摘要。
+              展开上方「推理过程」可逐项核对。
+            </div>
+            <!-- BUG-7：与覆盖率徽章正交的另一条终态标记。逐行裸铺源码的「答案」把观察里的
+                 行号/路径原样抄了进来，关键词命中率反而≈100% → 上面那条徽章不弹（假阴）。
+                 后端用 `_consistency_reason` 单独识别 dump 下发 consistency_reason，这里给一句
+                 **语义正确**的话：问题不是「没纳入摘要」，而是「全是原文、没归纳」。 -->
+            <div v-if="msg.status === 'done' && msg.consistencyReason === 'verbatim_dump'" class="flag warn">
+              <span class="flag-badge">未综合结论</span>
+              本回合的回答以**原始源码逐行罗列**为主，缺少针对你问题的归纳结论——它读起来像证据、
+              但不是答案。展开上方「推理过程」可查看模型实际读到了什么。
             </div>
             <span v-html="html"></span>
           </div>
@@ -233,8 +277,28 @@ const phaseLabel = computed(() => {
           <div v-if="msg.status === 'error'" class="flag error" :class="errorKindClass(msg.errorKind)">{{ msg.error || '请求失败' }}</div>
         </div>
 
+        <!-- P0 结构化「提问 / 授权」出口：拿不准 / 歧义写 / 安全门拦下时弹可点选项框 -->
+        <div v-if="msg.ask && !streaming" class="ask-box" :class="msg.ask.kind === 'permission' ? 'is-perm' : 'is-clarify'">
+          <div class="ask-head">
+            <span class="ask-badge">{{ msg.ask.kind === 'permission' ? '请求授权' : '请你确认' }}</span>
+            <span class="ask-q">{{ msg.ask.question }}</span>
+          </div>
+          <div class="ask-opts">
+            <button
+              v-for="(o, i) in msg.ask.options" :key="i"
+              type="button" class="ask-opt" :disabled="askAnswered"
+              @click="chooseAsk(o.value)"
+            ><span class="ask-opt-arrow" aria-hidden="true">→</span>{{ o.label }}</button>
+          </div>
+          <div v-if="askAnswered" class="ask-done">已选择，正在按你的答复继续…</div>
+          <div v-else-if="msg.ask.allow_free_text" class="ask-freetext">
+            也可以忽略上面的选项，直接在下方输入框补充你的答案。
+          </div>
+        </div>
+
         <!-- 文件引用（条数上限由展示偏好控制；被截断的条数必须数得出来、点得开） -->
         <div v-if="shownRefs.length" class="refs">
+          <span class="refs-label">引用</span>
           <button
             v-for="(r, i) in shownRefs" :key="i"
             class="ref-chip"
@@ -365,11 +429,46 @@ border-radius: var(--r-sm); }
   font-family: var(--font-ui);
   line-height: 1.45;
 }
+.flag-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid rgba(200,129,28,.5);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: #a66f00;
+  background: rgba(200,129,28,.12);
+  vertical-align: baseline;
+}
 
 /* 交错流（2026-10-14）：思考 ↔ 工具调用按发生顺序的一条故事线。
    无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning
    分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
    替代了旧的「reason 独立块 + 可折叠过程流」两段式。 */
+.flow-wrap { display: flex; flex-direction: column; gap: 4px; }
+.flow-toggle {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px dashed var(--border);
+  background: var(--bg-hover);
+  border-radius: var(--r-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  transition: background 130ms, color 130ms, border-color 130ms;
+}
+.flow-toggle:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-raised); }
+.flow-toggle-glyph { color: var(--accent-2); font-size: 11px; }
+.flow-toggle-label { font-weight: 700; color: var(--text); }
+.flow-toggle-count {
+  color: var(--text-faint);
+  border-left: 1px solid var(--border);
+  padding-left: 7px;
+}
 .flow {
   display: flex;
   flex-direction: column;
@@ -438,7 +537,15 @@ border-radius: var(--r-sm); }
 }
 
 /* 文件引用 chips */
-.refs { display: flex; flex-wrap: wrap; gap: 6px; }
+.refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.refs-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: var(--text-faint);
+  margin-right: 2px;
+}
 .ref-chip {
   display: inline-flex;
   align-items: center;
@@ -461,6 +568,55 @@ border-radius: var(--r-sm); }
 .ref-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref-line { color: var(--text-muted); font-family: var(--font-mono); }
 .ref-chip:hover .ref-line { color: var(--accent-ink); }
+
+/* ===== P0 提问 / 授权 选项框 ===== */
+.ask-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  box-shadow: var(--sh-hard-sm);
+  padding: 10px 12px;
+}
+.ask-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ask-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  padding: 1px 7px;
+  border: 1px solid var(--edge-ink);
+  border-radius: 4px;
+}
+.ask-box.is-clarify .ask-badge { color: var(--accent-text); background: var(--bg-hover); }
+.ask-box.is-perm .ask-badge { color: #a66f00; background: rgba(200,129,28,.12); border-color: rgba(200,129,28,.5); }
+.ask-q { font-family: var(--font-sans); font-weight: 650; color: var(--text); }
+.ask-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.ask-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: var(--edge-w-strong) solid var(--edge-ink);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text);
+  padding: 6px 12px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 130ms, color 130ms, border-color 130ms, transform 90ms;
+}
+.ask-opt:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
+.ask-opt:active:not(:disabled) { transform: translateY(1px); }
+.ask-opt:disabled { opacity: .45; cursor: default; }
+.ask-opt-arrow { color: var(--accent-2); font-weight: 700; }
+.ask-opt:hover:not(:disabled) .ask-opt-arrow { color: var(--accent-ink); }
+.ask-box.is-perm .ask-opt:hover:not(:disabled) { background: #a66f00; color: #fff; border-color: #a66f00; }
+.ask-box.is-perm .ask-opt:hover:not(:disabled) .ask-opt-arrow { color: #fff; }
+.ask-done { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
+.ask-freetext { font-family: var(--font-sans); font-size: 12px; color: var(--text-muted); }
 
 .notice {
   font-family: var(--font-sans);

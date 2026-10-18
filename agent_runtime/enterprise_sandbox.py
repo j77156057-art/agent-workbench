@@ -29,6 +29,25 @@ _MAX_COPY_FILES = 20000
 _STAGE_ACTIVE: ContextVar[bool] = ContextVar("docmind_stage_active", default=False)
 _IMAGE_DIGEST = re.compile(r"^(?:sha256:|[^\s@]+@sha256:)[0-9a-fA-F]{64}$")
 
+# BUG-10：子进程 stdout 是管道（非控制台）时，CPython 按本机区域编码写中文
+# （中文 Windows=cp936/GBK）；而父端多处按 utf-8 + errors=replace 解码，GBK 字节
+# 不是合法 UTF-8 序列 → 被静默替换成 ◆（U+FFFD），即"到 0 时刻"变"◆◆0◆◆"那种乱码。
+# 统一约定：给子进程强制 PYTHONIOENCODING=utf-8（吐 UTF-8 字节），父端统一 utf-8 解码，
+# 两侧编码对齐，任何执行路径都不会再出现方向相反的错配。
+SUBPROCESS_ENCODING = "utf-8"
+SUBPROCESS_DECODE_ERRORS = "replace"
+
+
+def utf8_child_env(base_env=None):
+    """Return a copy of ``base_env`` (defaults to os.environ) forcing UTF-8 child stdio.
+
+    Always overwrites PYTHONIOENCODING rather than setdefault: a stray locale/gbk
+    value inherited from the server process would defeat the parent-side utf-8 decode.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
 
 @contextmanager
 def stage_execution_scope():
@@ -112,7 +131,7 @@ def run_project_command(command: list[str], *, project_root: str, timeout: int =
                   "--tmpfs", "/tmp:rw,noexec,nosuid,mode=1777,size=128m",
                   "--mount", f"type=bind,source={copied},target=/workspace", "--workdir", "/workspace",
                   "--env", "HOME=/tmp", "--env", "HTTP_PROXY=", "--env", "HTTPS_PROXY=",
-                  "--env", "ALL_PROXY=", image, *command]
+                  "--env", "ALL_PROXY=", "--env", "PYTHONIOENCODING=utf-8", image, *command]
         try:
             result = subprocess.run(launch, capture_output=True, text=True,
                                     encoding="utf-8", errors="replace", timeout=max(1, int(timeout)))
@@ -162,7 +181,8 @@ def run_bounded_host_command(command: list[str], *, cwd: str, timeout: int = 30,
         result = run_staged_command(command, cwd=cwd, timeout=seconds)
     else:
         result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
-                                timeout=seconds, env=clean_environment())
+                                encoding=SUBPROCESS_ENCODING, errors=SUBPROCESS_DECODE_ERRORS,
+                                timeout=seconds, env=utf8_child_env(clean_environment()))
     return subprocess.CompletedProcess(command, result.returncode,
                                        window_text(result.stdout or ""),
                                        window_text(result.stderr or ""))
@@ -181,7 +201,8 @@ def run_agent_command(command: list[str], *, project_root: str, timeout: int = 3
                 raise
             return run_bounded_host_command(command, cwd=project_root, timeout=timeout)
     return subprocess.run(command, cwd=project_root, capture_output=True, text=True,
-                          timeout=timeout)
+                          encoding=SUBPROCESS_ENCODING, errors=SUBPROCESS_DECODE_ERRORS,
+                          timeout=timeout, env=utf8_child_env())
 
 
 def run_staged_command(command: list[str], *, cwd: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:

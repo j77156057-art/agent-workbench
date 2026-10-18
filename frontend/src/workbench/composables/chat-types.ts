@@ -46,6 +46,19 @@ export type ChatConsistency = 'ok' | 'warn' | string
  *  不是用户气泡——其完整指令只作为系统上下文发给模型 */
 export type ChatActivityKind = 'inspect'
 
+/** 结构化「向用户提问 / 请求授权」载荷（P0）：后端在拿不准、歧义写授权、
+ *  安全门拦下对外写时下发，前端渲染成可点选项框；点某项即把其 value 作为
+ *  下一轮用户消息发回（复用 send(preset)）。 */
+export interface ChatAskOption { label: string; value: string }
+export interface ChatAsk {
+  /** clarify = 请用户澄清目标；permission = 请用户授权一次写操作。 */
+  kind: 'clarify' | 'permission' | string
+  question: string
+  options: ChatAskOption[]
+  /** 是否同时允许用户忽略选项、自己打字回答。 */
+  allow_free_text?: boolean
+}
+
 export interface ChatMsg {
   id: number
   role: 'user' | 'assistant' | 'activity'
@@ -87,6 +100,15 @@ export interface ChatMsg {
   consistency?: ChatConsistency
   /** 一致性自检命中率（前端调试用，模板不必显示） */
   consistencyRatio?: number
+  /** 与命中率正交的原因标签：'verbatim_dump' 等。模板据此显示语义正确的提示。 */
+  consistencyReason?: string
+  /** final：本轮是澄清反问（后端未起工具，直接请用户补充）。问答页据此
+   *  抑制「猜你想问」chip（BUG-3）。 */
+  clarificationRequired?: boolean
+  /** final：本轮为降级收尾（信息不足 / 未核验等），非干净的完整交付。 */
+  degraded?: boolean
+  /** 结构化「向用户提问 / 请求授权」载荷：存在时渲染成可点选项框。 */
+  ask?: ChatAsk
 }
 
 /** start_workflow 动作行与其观察由工作流卡片承载，交错流里不重复展示。 */

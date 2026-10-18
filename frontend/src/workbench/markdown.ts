@@ -96,7 +96,7 @@ export interface FileRef {
 const CODE_EXT =
   'gd|gdshader|tscn|tres|godot|cfg|toml|py|cs|ts|js|vue|json|java|kt|cpp|h|hpp|c|go|rs|shader|uxml|uss|yaml|yml|md|shader|lua|rb'
 const REF_TOKEN = new RegExp(
-  `(?:res://)?((?:[A-Za-z0-9_.\\-]+/)*[A-Za-z0-9_.\\-]+\\.(?:${CODE_EXT}))`,
+  `(?:res://)?((?:[A-Za-z0-9_.\\-]+/)*[A-Za-z0-9_.\\-]+\\.(?:${CODE_EXT})(?![A-Za-z0-9_]))`,
   'g',
 )
 

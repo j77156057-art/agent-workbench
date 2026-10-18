@@ -1,5 +1,6 @@
 // SSE 事件类型与 POST/GET 流式通道（由原 workbench/api.ts 按域切分；调用方继续从 barrel ../api 引入）。
 import { FsApiError, withProject } from './_base'
+import type { ChatAsk } from '../composables/chat-types.ts'
 
 // ---------------------------------------------------------------- P2：选区 AI（SSE 流式）
 export interface SseEvent {
@@ -38,6 +39,17 @@ export interface SseEvent {
   consistency?: 'ok' | 'warn' | string
   /** 自检命中率（0..1），与 consistency 一起下发，便于前端调试。 */
   consistency_ratio?: number
+  /** 与命中率正交的「原因」标签：如 'verbatim_dump'（回答以逐行裸铺源码为主、未综合）。
+   *  缺省=无特殊原因。前端据此显示语义正确的提示，而非复用覆盖率徽章的文案。 */
+  consistency_reason?: string
+  /** final：本轮是「澄清反问」（后端未起任何工具/provider，直接请用户补充）。
+   *  前端据此抑制「猜你想问」等把澄清当正常答案的下游渲染（BUG-3）。 */
+  clarification_required?: boolean
+  /** final：本轮为降级收尾（信息不足 / 未核验等），非一次干净的完整交付。 */
+  degraded?: boolean
+  /** 结构化「向用户提问 / 请求授权」载荷：终态澄清 final 与 needs_confirmation
+   *  事件都可携带；前端渲染成可点选项框，点某项即把其 value 作为下一轮消息发回。 */
+  ask?: ChatAsk
 }
 
 /** 上下文窗口占用（GET /api/context 与 SSE context 事件同构） */

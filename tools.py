@@ -3354,6 +3354,233 @@ def dev_http_request(arg):
     return f"HTTP {status}  content-type: {ctype}\n{preview}{tail}"
 
 
+# ---------------------------------------------------------------------------
+# python_exec 文件系统牢笼（PEP-578 审计钩）——堵「绕过 dev_* 审批轨直写磁盘」的洞
+#
+# 背景（钻测 AA 实据）：python_exec 把代码交给 `python -c` 子进程跑。企业容器路径
+# 本就把写丢进一次性副本（--read-only，天然隔离），但**无 Docker 的 Windows 默认
+# 降级到全权限宿主解释器**（run_bounded_host_command），子进程里的
+# `open(path,'w')` / `os.remove` 可以任意越出 code_root、覆盖用户真实文件、读取凭据。
+# dev_* 写工具那一整套护栏（写意图门 + `_resolve_in_root` 路径牢 + `_hard_floor_reason`
+# 凭据地板 + edit-confirm 暂存）对子进程**完全够不着**。
+#
+# 为什么不在 agent 循环里把 python_exec 纳入写意图门：`test_admin_and_exec_are_uncovered_by_design`
+# 明确钉死「EXEC 不受写意图护栏」是**刻意设计**（写动词表会误伤「提交一下/回滚」这类），
+# EXEC 的隔离按设计应落在沙箱边界。故本牢笼是「EXEC 另有控制」这一设计里缺的那一块，
+# 装在**子进程内部**（审计钩无法被被审计代码移除），而非去动 `_is_write_tool`。
+#
+# 策略（保守、够用即止）：
+#   · 凭据 / NT 设备命名空间路径：读+写一律拦（对齐 `_hard_floor_reason`「读写都拦」）。
+#   · 写操作越出 code_root：拦——但放行落在临时/缓存目录（tempfile / ~/.cache）的写，
+#     否则 pytest 临时文件、matplotlib/HF 缓存等合法脚本会连不动（过度拦 = agent 瘫）。
+#   · 读越出 code_root：不拦（读 site-packages / 系统库是合法刚需；读的危险只在凭据）。
+#   · 禁止再 `subprocess.Popen` 拉起 python 子解释器：那是最省事的「跳出牢笼」逃逸口。
+#   · 校验自身出任何错 → 拒绝该操作（fail-closed，与全项目一致）。
+# 已知残留（如实标注，不假装密不透风）：混淆构造路径、或 exec 原生写 syscall 仍可绕——
+# 本钩针对的是 AA 那种「直接 open(...,'w')」的一阶绕过；真·对抗性逃逸仍需容器隔离兜底。
+# ---------------------------------------------------------------------------
+
+#: 装进子进程牢笼代码体里的策略占位由 `_python_exec_jail_prefix` 用 repr 注入。
+#: 该字符串是**静态常量**（其内部的 %s/%r 属子进程运行期格式化，绝不能在构造时
+#: 被外层 `%` 处理），故与注入头分离。
+_PJ_JAIL_BODY = '''
+import os as _pj_os, sys as _pj_sys
+
+_PJ_WFLAGS = (_pj_os.O_WRONLY | _pj_os.O_RDWR | _pj_os.O_CREAT
+              | _pj_os.O_TRUNC | _pj_os.O_APPEND)
+
+
+def _pj_norm(p):
+    if isinstance(p, (bytes, bytearray)):
+        try:
+            p = _pj_os.fsdecode(p)
+        except Exception:
+            p = p.decode("utf-8", "replace")
+    p = str(p)
+    try:
+        rp = _pj_os.path.realpath(_pj_os.path.abspath(_pj_os.path.expanduser(p)))
+    except Exception:
+        return None
+    return rp.replace("\\\\", "/").lower()
+
+
+def _pj_floor(low):
+    if low is None:
+        return "路径无法解析"
+    bs = low.replace("/", "\\\\")
+    for pre in _PJ_NT:
+        n = pre.replace("/", "\\\\").lower()
+        if bs == n or bs.startswith(n):
+            return "NT 设备命名空间路径（凭据泄漏风险）"
+    parts = [x for x in low.split("/") if x] if low else []
+    if any(d in parts for d in _PJ_CRED_DIRS):
+        return "凭据存储目录"
+    if parts and parts[-1] in _PJ_CRED_FILES:
+        return "凭据文件"
+    if low == "etc/sudoers" or low.endswith("/etc/sudoers"):
+        return "特权配置文件"
+    for c in _PJ_CRED_FULL:
+        if low == c or low.startswith(c.rstrip("/") + "/"):
+            return "凭据/令牌子目录"
+    return None
+
+
+def _pj_under_any(low, prefixes):
+    for c in prefixes:
+        cc = c.rstrip("/")
+        if low == cc or low.startswith(cc + "/"):
+            return True
+    return False
+
+
+def _pj_check(path, write):
+    low = _pj_norm(path)
+    f = _pj_floor(low)
+    if f:
+        raise PermissionError("python_exec 安全拦截：命中%s，禁止操作 %s。"
+                              "（如需改项目文件请用 dev_* 写工具并走确认流程）" % (f, path))
+    if write and _PJ_ROOT and not (low == _PJ_ROOT or low.startswith(_PJ_ROOT + "/")):
+        if not _pj_under_any(low, _PJ_ALLOW):
+            raise PermissionError(
+                "python_exec 安全拦截：写操作越出代码根目录，禁止 %s。"
+                "要修改项目文件请改用 apply_edit/create_file/dev_region_edit"
+                "（会走写意图授权与确认暂存），不要在 python_exec 里直接落盘。" % path)
+
+
+def _pj_is_write(mode, flags):
+    for x in (mode, flags):
+        if isinstance(x, str) and any(c in x for c in "wax+"):
+            return True
+        if isinstance(x, int) and x and (x & _PJ_WFLAGS):
+            return True
+    return False
+
+
+_PJ_OS_WRITE = frozenset((
+    "os.remove", "os.unlink", "os.rename", "os.replace", "os.rmdir", "os.mkdir",
+    "os.link", "os.symlink", "os.truncate", "os.chmod", "os.chown",
+))
+
+
+def _pj_is_python(args):
+    try:
+        exe = args[0]
+        if isinstance(exe, (bytes, bytearray)):
+            exe = _pj_os.fsdecode(exe)
+        base = _pj_os.path.basename(str(exe)).lower()
+        return base in ("python", "python.exe", "python3", "python3.exe", "py",
+                        "py.exe", "pythonw", "pythonw.exe")
+    except Exception:
+        return False
+
+
+def _pj_hook(event, args):
+    if not args:
+        return
+    if event == "open":
+        path = args[0]
+        if isinstance(path, int):
+            return
+        writing = _pj_is_write(
+            args[1] if len(args) > 1 else None,
+            args[2] if len(args) > 2 else None)
+        if writing:
+            try:
+                _pj_check(path, True)
+            except PermissionError:
+                raise
+            except Exception as e:
+                raise PermissionError(
+                    "python_exec 安全拦截：写校验异常，按 fail-closed 拒绝：%r" % (e,))
+        else:
+            # 读：只认「故意地板拒绝」（凭据/NT）；校验自身出任何岔都放行——
+            # 否则 import 期成百上千次只读 open 里任一次小异常都会把脚本整个跑挂。
+            try:
+                _pj_check(path, False)
+            except PermissionError:
+                raise
+            except Exception:
+                return
+    elif event in _PJ_OS_WRITE:
+        try:
+            for p in args:
+                if isinstance(p, int):
+                    continue
+                if isinstance(p, (str, bytes, bytearray)) or hasattr(p, "__fspath__"):
+                    _pj_check(p, True)
+        except PermissionError:
+            raise
+        except Exception as e:
+            raise PermissionError(
+                "python_exec 安全拦截：%s 校验异常，按 fail-closed 拒绝：%r" % (event, e,))
+    elif event == "subprocess.Popen" and _pj_is_python(args):
+        raise PermissionError(
+            "python_exec 安全拦截：禁止再拉起未受约束的 Python 子解释器以逃逸沙箱。")
+
+
+try:
+    _pj_sys.addaudithook(_pj_hook)
+except Exception:
+    raise PermissionError("python_exec 安全拦截：文件系统审计钩安装失败，拒绝执行代码。")
+'''
+
+
+def _pj_child_policy():
+    """为子进程牢笼算出当前作用域的策略（根目录 / 凭据地板 / 允许写越界的临时目录）。"""
+    root = (_get_code_root() or "").strip()
+    root_low = ""
+    if root:
+        try:
+            root_low = os.path.realpath(os.path.abspath(root)).replace("\\", "/").lower()
+        except Exception:
+            root_low = os.path.normpath(root).replace("\\", "/").lower()
+    cred_full = ["etc/sudoers"]
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        base = os.path.normpath(appdata).replace("\\", "/").lower()
+        for sub in ("microsoft/credentials", "microsoft/crypto", "microsoft/protect",
+                    "microsoft/systemcertificates", "gnupg", "gcloud", "azure", "powershell"):
+            cred_full.append(base + "/" + sub)
+    allow = []
+    try:
+        import tempfile
+        t = os.path.realpath(tempfile.gettempdir()).replace("\\", "/").lower()
+        if t:
+            allow.append(t)
+    except Exception:
+        pass
+    try:
+        home = os.path.expanduser("~")
+        if home:
+            c = os.path.realpath(os.path.join(home, ".cache")).replace("\\", "/").lower()
+            if c:
+                allow.append(c)
+    except Exception:
+        pass
+    return {
+        "root": root_low,
+        "creddirs": [".ssh", ".aws", ".kube", ".gnupg"],
+        "credfiles": [".netrc"],
+        "credfull": cred_full,
+        "nt": list(_NT_DEVICE_PREFIXES),
+        "allow": allow,
+    }
+
+
+def _python_exec_jail_prefix():
+    """渲染牢笼 bootstrap：把策略以 repr 注入头部常量，再拼静态代码体。"""
+    pol = _pj_child_policy()
+    header = (
+        "_PJ_ROOT=%(root)r\n"
+        "_PJ_CRED_DIRS=%(creddirs)r\n"
+        "_PJ_CRED_FILES=%(credfiles)r\n"
+        "_PJ_CRED_FULL=%(credfull)r\n"
+        "_PJ_NT=%(nt)r\n"
+        "_PJ_ALLOW=%(allow)r\n" % pol
+    )
+    return header + _PJ_JAIL_BODY + "\n"
+
+
 def python_exec(code):
     """执行 Python 代码，返回 stdout/stderr（截断到 1500 字）。
 
@@ -3382,10 +3609,25 @@ def python_exec(code):
     # 已索引代码库时在代码根目录内执行：脚本里的相对路径（如 open("app/src/...")）
     # 才能按项目语义解析；未配置代码库时维持旧行为（服务端目录）。
     cwd = _get_code_root() or os.path.dirname(__file__)
+    # 文件系统牢笼：容器路径本就 --read-only 把写丢进一次性副本（天然隔离），且其内
+    # 路径与宿主 code_root 不同，装了会误拦合法写 → 只在宿主/本地回退（真实可写盘）时注入。
+    # 审计钩随 `python -c` 一起进子进程，先于用户代码装好，用户代码无法移除已注册的钩。
+    run_code = code
     try:
-        command = ([sys.executable if stage_execution_active() and stage_backend() == "host_compat" else "python", "-c", code]
+        container_isolates = (execution_mode() == "enterprise"
+                              and stage_execution_active() and stage_backend() == "container")
+    except Exception:
+        container_isolates = False
+    if not container_isolates:
+        try:
+            run_code = _python_exec_jail_prefix() + code
+        except Exception as e:  # noqa: BLE001
+            # 牢笼构造失败 = 宁可拒绝执行，不放行无约束写（fail-closed）。
+            return f"拒绝执行：文件系统牢笼初始化失败（{e!r}），请改用 dev_* 写工具。"
+    try:
+        command = ([sys.executable if stage_execution_active() and stage_backend() == "host_compat" else "python", "-c", run_code]
                    if execution_mode() == "enterprise"
-                   else [sys.executable, "-c", code])
+                   else [sys.executable, "-c", run_code])
         proc = run_agent_command(command, project_root=cwd, timeout=_PYTHON_EXEC_TIMEOUT)
     except subprocess.TimeoutExpired:
         return (f"代码执行超时（>{_PYTHON_EXEC_TIMEOUT}s），可能被死循环阻塞。"

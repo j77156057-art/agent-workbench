@@ -1473,11 +1473,24 @@ const webTitle = computed(() => webOn.value
             <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
                  DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
             <div v-if="m.text" class="ai-md cd-answer" :class="{ 'cd-answer-live': m.status === 'streaming' }">
-              <!-- P0：摘要一致性自检 —— observation 关键词命中率 < 50% 时给用户一个不挡眼但可见的提示。
-                   不改 status，只提示「可能漏报，建议展开上方过程流核验」。 -->
+              <!-- P0：摘要一致性自检 —— 命中率 < 阈值时本回合「摘要对过程证据的覆盖度」
+                   偏低，明确标注为「覆盖存疑」终态，而非静默记完成（BUG-4）。措辞避开
+                   「核验」二字，不与后端「（核验：PASS · N 处引用可核验）」同屏打架。 -->
               <div v-if="m.status === 'done' && m.consistency === 'warn'" class="cd-consistency-warn" role="status">
-                ⚠ 摘要可能漏报：原 observation 关键词命中率
-                {{ Math.round((m.consistencyRatio || 0) * 100) }}%，建议展开上方过程流核验。
+                <span class="cd-warn-badge">覆盖存疑</span>
+                本回合摘要对过程证据的关键词覆盖率仅
+                {{ Math.round((m.consistencyRatio || 0) * 100) }}%——结论未必有错，但可能有细节没纳入摘要。
+                展开上方推理过程可逐项核对。
+              </div>
+              <!-- BUG-7：与覆盖率徽章正交的另一条终态标记（workbench parity，对齐 AskMessage）。
+                   逐行裸铺源码的「答案」把行号/路径原样抄进正文，关键词命中率反而≈100% →
+                   上面那条徽章不弹（假阴）。后端用 _consistency_reason 单独识别 dump 下发
+                   consistency_reason，这里给语义正确的一句：问题不是「没纳入摘要」，而是
+                   「全是原文、没归纳」。 -->
+              <div v-if="m.status === 'done' && m.consistencyReason === 'verbatim_dump'" class="cd-consistency-warn" role="status">
+                <span class="cd-warn-badge">未综合结论</span>
+                本回合的回答以原始源码逐行罗列为主，缺少针对你问题的归纳结论——它读起来像证据、
+                但不是答案。展开上方推理过程可查看模型实际读到了什么。
               </div>
               <template v-if="m.status === 'streaming'"><span v-html="streamHtmlOf(m)" /><span class="cd-caret" aria-hidden="true" /></template>
               <span v-else v-html="answerHtml(m)" />
@@ -1815,6 +1828,19 @@ const webTitle = computed(() => webOn.value
   padding: 4px 8px;
   margin: 0 0 8px;
   line-height: 1.45;
+}
+.cd-warn-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid rgba(200,129,28,.5);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  color: #a66f00;
+  background: rgba(200,129,28,.12);
+  vertical-align: baseline;
 }
 
 .cd-run-head {

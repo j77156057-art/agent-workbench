@@ -156,9 +156,16 @@ const canSend = computed(() => !historyLoading.value && !gateBlocking.value
   && (draft.value.trim().length > 0 || pendingImages.value.length > 0))
 
 // 最后一条已完成的助手回答 → 相关追问（仅对话态、无草稿且未在发送时显示）
+// BUG-3 终态门：只有「真正交付了实质答案」的回合才给「猜你想问」。
+// 澄清反问 / 降级收尾 / 摘要自检告警 / 正文过空的假完成残句，一律不弹 chip——
+// 否则一个「？」「（没有返回内容）」或 19 字空壳底下照样摆一排追问，误导用户。
+const FOLLOWUP_MIN_ANSWER_CHARS = 24
 const followups = computed<string[]>(() => {
   const last = messages.value[messages.value.length - 1]
   if (!last || last.role !== 'assistant' || last.status !== 'done') return []
+  if (last.clarificationRequired || last.degraded) return []
+  if (last.consistency === 'warn') return []
+  if ((last.text || '').trim().length < FOLLOWUP_MIN_ANSWER_CHARS) return []
   return deriveFollowups(last.text)
 })
 
@@ -868,15 +875,16 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
             <AskMessage
               v-for="m in messages" :key="m.id" :msg="m"
               @open-file="openFile"
+              @ask="(v: string) => send(v)"
               @wf-gate="(open: boolean) => onWfGate(m.workflow!.workflowId, open)"
               @wf-activity="onWfActivity"
             />
           </template>
 
           <div v-if="followups.length && !draft.trim() && !sending" class="followups">
-            <span class="followups-label">猜你想问</span>
+            <span class="followups-label"><span class="followups-ico" aria-hidden="true">✦</span>猜你想问</span>
             <div class="followups-row">
-              <button v-for="(q, i) in followups" :key="i" class="followup" type="button" @click="send(q)">{{ q }}</button>
+              <button v-for="(q, i) in followups" :key="i" class="followup" type="button" @click="send(q)"><span class="followup-arrow" aria-hidden="true">→</span>{{ q }}</button>
             </div>
           </div>
         </div>
@@ -1116,18 +1124,21 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
 }
-.followups { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 0 4px; }
-.followups-label { font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: .04em; }
+.followups { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding: 8px 4px 0; border-top: 1px dashed var(--border); }
+.followups-label { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: .04em; }
+.followups-ico { color: var(--accent-2); font-size: 11px; }
 .followups-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .followup {
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm); background: var(--bg-raised); color: var(--text);
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm); background: var(--bg); color: var(--text);
   font-family: var(--font-sans); font-size: 13px;
-  padding: 9px 14px; cursor: pointer; text-align: left;
-  box-shadow: var(--sh-hard-sm);
-  transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
+  padding: 7px 13px; cursor: pointer; text-align: left; line-height: 1.4;
+  transition: transform 130ms cubic-bezier(.2,.8,.2,1), background 130ms, color 130ms, border-color 130ms;
 }
-.followup:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); background: var(--accent); color: var(--accent-ink); }
+.followup-arrow { color: var(--accent-2); font-weight: 700; transition: color 130ms; }
+.followup:hover { transform: translate(-1px, -1px); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
+.followup:hover .followup-arrow { color: var(--accent-ink); }
 
 .img-preview { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 6px 8px; }
 .img-thumb { position: relative; }

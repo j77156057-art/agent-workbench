@@ -41,7 +41,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from agent import Agent
+from agent import Agent, _is_raw_source_echo
 from config import (
     PROVIDERS,
     LLM_PROVIDER,
@@ -519,6 +519,26 @@ def _compute_consistency(observations: list[str], final_text: str) -> tuple[str,
     hit = sum(1 for k in keys if k in final)
     ratio = hit / max(1, len(keys))
     return ("warn" if ratio < _CONSISTENCY_RATIO_WARN else "ok"), ratio
+
+
+def _consistency_reason(observations: list[str], final_text: str) -> str | None:
+    """给 final 一个**独立于命中率**的原因标签，让前端能用对得上的话去说。
+
+    为什么不能只靠 `_compute_consistency` 的命中率：那个指标是「observation 关键词在
+    final 里的字面重合率」。而一屏**逐行裸铺源码**恰恰把观察里的行号 / 路径 / 标识符
+    原样抄进了 final——命中率≈1 → 判 ok → 钻测里最差的「非答案」反而不弹任何徽章（假阴）。
+    这里补一个正交信号：识别出「答案主要是原始源码清单」就返回 `'verbatim_dump'`，
+    前端据此显示一句**语义正确**的提示，而不是把命中率徽章的「可能有细节没纳入摘要」
+    套到「其实全贴了、就是没综合」这种正相反的情形上（那会既显示 100%、又说不通）。
+
+    永静默：任何异常都吞掉返回 None，绝不因为这层诊断打断终态 SSE。
+    """
+    try:
+        if final_text and _is_raw_source_echo(final_text):
+            return "verbatim_dump"
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 # P1 重试层辅助：让 BLOCK_LLM_TEST 模拟 transient 异常走重试路径。
@@ -2857,6 +2877,10 @@ async def chat(
                             consistency, ratio = _compute_consistency(obs_list, final_text)
                             payload = {**payload, "consistency": consistency,
                                        "consistency_ratio": round(ratio, 3)}
+                            # 正交原因标签（如逐行裸铺源码）：仅在非空时下发，缺省不破旧契约。
+                            _reason = _consistency_reason(obs_list, final_text)
+                            if _reason:
+                                payload = {**payload, "consistency_reason": _reason}
                     except Exception:  # noqa: BLE001
                         pass
                     _append_in_flight_event(inflight, payload)

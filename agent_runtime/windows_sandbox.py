@@ -138,6 +138,10 @@ def _create_job(memory_bytes: int):
 def run_isolated(command: list[str], *, cwd: str, env: Mapping[str, str], timeout: int,
                  memory_bytes: int = 512 * 1024 * 1024):
     """Run one process under a bounded Job Object and return CompletedProcess."""
+    # BUG-10：本函数按 utf-8+errors=replace 解码子进程输出，但子进程（stdout 是管道时）
+    # 默认用本机区域编码（中文 Windows=GBK）写中文 → GBK 字节被当非法 UTF-8 替换成 ◆。
+    # 这里给子进程强制 PYTHONIOENCODING=utf-8，让输出字节与父端解码对齐。
+    env = {**env, "PYTHONIOENCODING": "utf-8"}
     if os.name != "nt":
         return subprocess.run(command, cwd=cwd, capture_output=True, text=True,
                               encoding=SUBPROCESS_ENCODING,

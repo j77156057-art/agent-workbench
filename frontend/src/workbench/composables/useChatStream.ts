@@ -5,7 +5,7 @@
 //  3) notice / plan / workflow / context / final 事件分类分发，业务差异通过钩子注入。
 // 不持有 messages 数组、不绑定请求生命周期（abort/epoch 仍由调用方管理）。
 import type { SseEvent } from '../api'
-import type { ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef } from './chat-types'
+import type { ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef, ChatAsk } from './chat-types'
 // ⚠ 相对导入必须带 `.ts` 扩展名：`frontend/tests/*.test.mjs` 用
 // `node --experimental-strip-types` 直接跑生产模块（见 tests/test_frontend_node_tests.py），
 // node 的 ESM 解析器不认无扩展名路径（Vite 认，所以只有 node 这条链会炸）。
@@ -35,6 +35,17 @@ export interface ChatStreamTurn {
   /** P0：摘要一致性自检结果（final.consistency 转发到此处） */
   consistency?: 'ok' | 'warn' | string
   consistencyRatio?: number
+  /** 与覆盖率正交的原因标签（final.consistency_reason 转发）：如 'verbatim_dump'。
+   *  覆盖率只说「摘要漏没漏过程细节」，这里补一句「答案是不是通篇原文裸铺没归纳」，
+   *  模板据此显示语义正确的提示，而非把 dump 误报成覆盖存疑。 */
+  consistencyReason?: string
+  /** final：本轮是澄清反问（后端未起工具，直接请用户补充）。供上层抑制
+   *  「猜你想问」等把澄清当正常答案的渲染（BUG-3）。 */
+  clarificationRequired?: boolean
+  /** final：本轮为降级收尾（信息不足 / 未核验等），非干净的完整交付。 */
+  degraded?: boolean
+  /** 结构化「向用户提问 / 请求授权」载荷（来自 final 或 needs_confirmation 事件）。 */
+  ask?: ChatAsk
 }
 
 export interface ChatStreamHooks<T extends ChatStreamTurn> {
@@ -148,6 +159,10 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     }
     if (!turn) return
     hooks.onActivity?.(turn)
+    // 结构化「提问 / 授权」载荷：终态澄清 final 与流中的 needs_confirmation 都可能带。
+    // 抢先于下面的类型分支统一捕获，否则 needs_confirmation（无专门分支）会被整条丢弃。
+    // 只在事件确实带了 ask 时才写，避免后续无 ask 的事件把先前的框擦掉。
+    if (ev.ask) turn.ask = ev.ask
     // 运行期提示（「正在继续执行」这类现在时）到此作废：回合已经结束，再挂着它
     // 界面就是在宣称一件已经不做完的事。final / done 两条都判，因为出错收尾时
     // final 可能没有正文（下面那条 final 分支要求 ev.text 非空）。
@@ -171,6 +186,15 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
           turn.consistencyRatio = ev.consistency_ratio
         }
       }
+      // 与命中率正交的原因标签（如逐行裸铺源码）：即便 consistency=ok 也要接，
+      // 因为 dump 的关键词命中率≈100% 恰恰会被判成 ok。模板据此显示语义正确的提示。
+      if (typeof ev.consistency_reason === 'string') {
+        turn.consistencyReason = ev.consistency_reason
+      }
+      // 澄清 / 降级标志：后端说这轮不是干净的完整交付，上层据此抑制
+      // 「猜你想问」等把澄清当正常答案的渲染（BUG-3）。
+      if (ev.clarification_required === true) turn.clarificationRequired = true
+      if (ev.degraded === true) turn.degraded = true
       hooks.onFinal?.(turn, ev.text)
       if (ev.status === 'error') {
         turn.status = 'error'

@@ -155,8 +155,12 @@ class PromptContractTests(unittest.TestCase):
         self.prompt = agent_mod._SYSTEM_PROMPT_FULL
 
     def test_contract_is_at_the_head(self):
-        self.assertTrue(self.prompt.lstrip().startswith("【输出格式契约"),
-                        "契约必须在系统提示词最前面")
+        # 头部现在以「语言铁律」开篇（BUG-5 二轮：思维链语言锚点必须最靠首），
+        # 紧随其后才是格式契约——两者都在**头部区**，没被埋进三万字工具说明。
+        self.assertTrue(self.prompt.lstrip().startswith("【语言铁律"),
+                        "语言铁律必须在系统提示词最前面（模型对首段最敏感）")
+        self.assertIn("【输出格式契约", self.prompt[:600],
+                      "格式契约必须紧跟语言铁律、留在头部区，不能下沉到中段")
 
     def test_contract_is_restated_at_the_tail(self):
         self.assertIn("【再强调一次 · 输出格式】", self.prompt[-1600:],
