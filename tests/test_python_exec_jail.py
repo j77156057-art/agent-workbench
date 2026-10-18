@@ -37,8 +37,13 @@ from config import set_runtime  # noqa: E402
 
 class PythonExecJailTests(unittest.TestCase):
     def _run(self, root, code):
+        # 本文件锁的是**运行期审计钩硬拦**语义（改动前的 fail-closed 行为，对应
+        # env DOCMIND_EXEC_APPROVAL=0 的回退档）。三档分级同意默认开启时，越界写会
+        # 先转「待确认」而非当场 PermissionError——那属于新护栏，另见
+        # test_exec_approval_flow.py。这里显式关掉，让 python_exec 走 ceiling=1 硬拦。
         with patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"}):
             set_runtime("code_root", root)
+            set_runtime("exec_approval", False)
             return tools_mod.python_exec(code)
 
     def test_write_inside_root_is_allowed(self):
@@ -59,7 +64,7 @@ class PythonExecJailTests(unittest.TestCase):
                 out = self._run(d, code)
                 # 判据用**权威信号**：子进程 traceback 会把源码行原样回显，故不能靠
                 # 「标记串不在输出里」判放行——只能看「文件没落盘」+「明确拒绝文案」。
-                self.assertTrue("安全拦截" in out and "越出代码根目录" in out,
+                self.assertTrue("安全拦截" in out and "code_root 外" in out,
                                 "应给出明确的越界拒绝文案：%r" % out)
                 self.assertIn("PermissionError", out, "越界写应以 PermissionError 中止：%r" % out)
                 self.assertFalse(os.path.exists(esc),
@@ -98,6 +103,71 @@ class PythonExecJailTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = self._run(d, "import json, statistics; print(json.dumps(statistics.mean([1,2,3])))")
             self.assertIn("2", out, "正常 import/计算不该被牢笼误伤：%r" % out)
+
+
+class PythonExecCeilingTests(unittest.TestCase):
+    """锁**运行期审计钩的天花板分档**——用户确认某档后，confirm_exec 会以该档为
+    ceiling 真跑（tools.py:_python_exec_run(ceiling=tier)）。这里是钩的权威判据：
+    ≤ 天花板放行、> 天花板拦、硬底线（凭据/系统目录/格式化）无论多高天花板恒拦。
+    绕过执行前的静态预扫描（_python_exec_classify），直接喂子进程跑。"""
+
+    def _run(self, root, code, ceiling):
+        with patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"}):
+            set_runtime("code_root", root)
+            return tools_mod._python_exec_run(code, ceiling=ceiling, allow_escalate=False)
+
+    def test_outside_root_write_allowed_at_ceiling2(self):
+        """code_root 外新建文件=第二档：ceiling=1 拦，ceiling=2（已一次确认）放行落盘。"""
+        home = os.path.expanduser("~")
+        esc = os.path.join(home, "__docmind_ceiling_probe__.txt")
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                code = "open(%r,'w').write('x'); print('CEIL_OK')" % esc
+                blocked = self._run(d, code, 1)
+                self.assertIn("安全拦截", blocked, "ceiling=1 应拦越界写：%r" % blocked)
+                self.assertFalse(os.path.exists(esc), "被拦时绝不能落盘")
+                allowed = self._run(d, code, 2)
+                self.assertIn("CEIL_OK", allowed, "ceiling=2 应放行越界新建：%r" % allowed)
+                self.assertTrue(os.path.exists(esc), "放行后文件应真的落盘")
+        finally:
+            if os.path.exists(esc):
+                os.remove(esc)
+
+    def test_in_root_write_allowed_at_any_ceiling(self):
+        """根内写=第一档，任何天花板（含默认 1）都放行。"""
+        with tempfile.TemporaryDirectory() as d:
+            out = self._run(d, "open('inroot.txt','w').write('x'); print('ROOT_OK')", 1)
+            self.assertIn("ROOT_OK", out, "根内写不应被拦：%r" % out)
+            self.assertTrue(os.path.exists(os.path.join(d, "inroot.txt")))
+
+    def test_credential_never_floor_even_at_ceiling3(self):
+        """凭据地板是永不放行硬底线：即使最高天花板 3（三连确认）仍 PermissionError。"""
+        home = os.path.expanduser("~")
+        probe = os.path.join(home, ".ssh", "docmind_ceiling_probe_key")
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                out = self._run(d, "open(%r,'w').write('x')" % probe, 3)
+                self.assertIn("安全拦截", out, "凭据写应被拒：%r" % out)
+                self.assertIn("PermissionError", out,
+                              "硬底线应以 PermissionError 中止：%r" % out)
+                self.assertFalse(os.path.exists(probe), "三连确认也绝不能写出凭据文件")
+        finally:
+            if os.path.exists(probe):
+                os.remove(probe)
+
+    def test_system_dir_never_floor_even_at_ceiling3(self):
+        """系统关键目录（C:\\Windows）同为永不放行硬底线，天花板 3 也拦。"""
+        with tempfile.TemporaryDirectory() as d:
+            out = self._run(d, "open(r'C:/Windows/System32/docmind_evil.dll','w').write('x')", 3)
+            self.assertIn("安全拦截", out, "系统目录写应被拒：%r" % out)
+            self.assertIn("PermissionError", out, "应 PermissionError 中止：%r" % out)
+
+    def test_disk_destruction_never_floor_even_at_ceiling3(self):
+        """格式化/磁盘级命令=硬底线，ceiling=3 也直接拦（同意三次也毁不起）。"""
+        with tempfile.TemporaryDirectory() as d:
+            out = self._run(d, "import os; os.system('format C: /Y')", 3)
+            self.assertIn("安全拦截", out, "格式化命令应被拒：%r" % out)
+            self.assertIn("PermissionError", out, "应 PermissionError 中止：%r" % out)
 
 
 if __name__ == "__main__":

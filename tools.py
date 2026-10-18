@@ -30,7 +30,8 @@ from artifact_tools import create_artifact
 from textutil import as_text
 
 from config import (TOP_K, COLLECTION_NAME, CODE_COLLECTION_NAME, CODE_ROOT, get_runtime, set_runtime,
-                     edit_confirm_enabled, external_access_high, EXTERNAL_API_ALLOWLIST,
+                     edit_confirm_enabled, exec_approval_enabled, exec_tier_confirm,
+                     external_access_high, EXTERNAL_API_ALLOWLIST,
                      get_web_search_provider, get_web_search_api_key, get_web_search_api_url,
                      get_web_fetch_provider, get_web_fetch_api_key, get_web_fetch_api_url)
 from config import STATE_ROOT
@@ -3433,18 +3434,90 @@ def _pj_under_any(low, prefixes):
     return False
 
 
-def _pj_check(path, write):
+def _pj_in_root(low):
+    return bool(_PJ_ROOT) and (low == _PJ_ROOT or low.startswith(_PJ_ROOT + "/"))
+
+
+def _pj_in_allow(low):
+    return _pj_under_any(low, _PJ_ALLOW)
+
+
+def _pj_in_zone(low):
+    # code_root 内，或放行的临时/缓存区（tempfile / ~/.cache）
+    return _pj_in_root(low) or _pj_in_allow(low)
+
+
+def _pj_never_dir(low):
+    # 系统关键目录（写/删的永不放行硬底线，与凭据/NT 并列）
+    for pre in _PJ_NEVER_DIRS:
+        pp = str(pre).lower().replace("\\\\", "/").rstrip("/")
+        if pp and (low == pp or low.startswith(pp + "/")):
+            return pre
+    return None
+
+
+def _pj_tier_path(path, writing, deleting=False):
+    """把一次路径操作映射到档位：-1=永不放行，1=免批，2=一次确认，3=三连确认。"""
     low = _pj_norm(path)
     f = _pj_floor(low)
-    if f:
-        raise PermissionError("python_exec 安全拦截：命中%s，禁止操作 %s。"
-                              "（如需改项目文件请用 dev_* 写工具并走确认流程）" % (f, path))
-    if write and _PJ_ROOT and not (low == _PJ_ROOT or low.startswith(_PJ_ROOT + "/")):
-        if not _pj_under_any(low, _PJ_ALLOW):
-            raise PermissionError(
-                "python_exec 安全拦截：写操作越出代码根目录，禁止 %s。"
-                "要修改项目文件请改用 apply_edit/create_file/dev_region_edit"
-                "（会走写意图授权与确认暂存），不要在 python_exec 里直接落盘。" % path)
+    if f:  # 凭据 / NT 设备命名空间：读+写都 NEVER（与旧硬拦一致）
+        return -1, f
+    if writing or deleting:
+        nd = _pj_never_dir(low)
+        if nd:
+            return -1, "系统关键目录（%s）" % nd
+        if deleting:
+            if _pj_in_root(low):
+                return 2, "删除 code_root 内文件"
+            if _pj_in_allow(low):
+                return 1, "删除临时/缓存文件（可弃）"
+            return 3, "删除 code_root 外文件（不可回滚）"
+        # 新建 / 覆盖（写）
+        if _pj_in_zone(low):
+            return 1, "根内/临时区写"
+        try:
+            exists = _pj_os.path.exists(path)
+        except Exception:
+            exists = True  # 拿不准按覆盖处理，往安全侧靠
+        if exists:
+            return 3, "覆盖 code_root 外既有文件（不可回滚）"
+        return 2, "在 code_root 外新建文件"
+    return 1, "读"
+
+
+def _pj_gate(tier, reason, path=None):
+    """按本次授予的天花板 _PJ_CEILING 放行/拦停。"""
+    if tier == -1:
+        raise PermissionError("python_exec 安全拦截（永不放行硬底线）：%s%s。"
+                              % (reason, (" — " + str(path)) if path else ""))
+    if tier > _PJ_CEILING:
+        raise PermissionError(
+            "python_exec 安全拦截：%s（免批档=%d，本操作需第 %d 档人工确认）。"
+            "__EXEC_APPROVAL__ tier=%d reason=%s"
+            % (reason, _PJ_CEILING, tier, tier, reason))
+
+
+def _pj_cmdstr(args):
+    parts = []
+    for a in (args if isinstance(args, (list, tuple)) else [args]):
+        if isinstance(a, int):
+            continue
+        if isinstance(a, (bytes, bytearray)):
+            try:
+                a = _pj_os.fsdecode(a)
+            except Exception:
+                a = ""
+        if a is None:
+            continue
+        parts.append(str(a))
+    return " ".join(parts).lower()
+
+
+def _pj_cmd_tier(cmdstr):
+    for sig in _PJ_DANGER:
+        if sig in cmdstr:
+            return -1, "磁盘/系统级破坏命令（%s）" % sig
+    return 3, "拉起未受审计的子进程 / shell / 解释器（越出 python_exec 计算用途）"
 
 
 def _pj_is_write(mode, flags):
@@ -3456,10 +3529,12 @@ def _pj_is_write(mode, flags):
     return False
 
 
+_PJ_OS_DELETE = frozenset(("os.remove", "os.unlink", "os.rmdir"))
 _PJ_OS_WRITE = frozenset((
-    "os.remove", "os.unlink", "os.rename", "os.replace", "os.rmdir", "os.mkdir",
-    "os.link", "os.symlink", "os.truncate", "os.chmod", "os.chown",
+    "os.rename", "os.replace", "os.mkdir", "os.link", "os.symlink",
+    "os.truncate", "os.chmod", "os.chown",
 ))
+_PJ_NET = frozenset(("socket.connect", "socket.sendto", "socket.getaddrinfo"))
 
 
 def _pj_is_python(args):
@@ -3486,7 +3561,8 @@ def _pj_hook(event, args):
             args[2] if len(args) > 2 else None)
         if writing:
             try:
-                _pj_check(path, True)
+                tier, reason = _pj_tier_path(path, True)
+                _pj_gate(tier, reason, path)
             except PermissionError:
                 raise
             except Exception as e:
@@ -3496,26 +3572,44 @@ def _pj_hook(event, args):
             # 读：只认「故意地板拒绝」（凭据/NT）；校验自身出任何岔都放行——
             # 否则 import 期成百上千次只读 open 里任一次小异常都会把脚本整个跑挂。
             try:
-                _pj_check(path, False)
+                tier, reason = _pj_tier_path(path, False)
+                if tier == -1:
+                    raise PermissionError(
+                        "python_exec 安全拦截：命中%s，禁止操作 %s。" % (reason, path))
             except PermissionError:
                 raise
             except Exception:
                 return
+    elif event in _PJ_OS_DELETE:
+        try:
+            tier, reason = _pj_tier_path(args[0], True, deleting=True)
+            _pj_gate(tier, reason, args[0])
+        except PermissionError:
+            raise
+        except Exception as e:
+            raise PermissionError(
+                "python_exec 安全拦截：%s 校验异常，按 fail-closed 拒绝：%r" % (event, e,))
     elif event in _PJ_OS_WRITE:
         try:
             for p in args:
                 if isinstance(p, int):
                     continue
                 if isinstance(p, (str, bytes, bytearray)) or hasattr(p, "__fspath__"):
-                    _pj_check(p, True)
+                    tier, reason = _pj_tier_path(p, True)
+                    _pj_gate(tier, reason, p)
         except PermissionError:
             raise
         except Exception as e:
             raise PermissionError(
                 "python_exec 安全拦截：%s 校验异常，按 fail-closed 拒绝：%r" % (event, e,))
-    elif event == "subprocess.Popen" and _pj_is_python(args):
-        raise PermissionError(
-            "python_exec 安全拦截：禁止再拉起未受约束的 Python 子解释器以逃逸沙箱。")
+    elif event in ("os.system", "os.exec", "os.spawn"):
+        tier, reason = _pj_cmd_tier(_pj_cmdstr(args))
+        _pj_gate(tier, reason)
+    elif event == "subprocess.Popen":
+        tier, reason = _pj_cmd_tier(_pj_cmdstr(args))
+        _pj_gate(tier, reason)
+    elif event in _PJ_NET:
+        _pj_gate(2, "出网访问（socket）")
 
 
 try:
@@ -3557,6 +3651,28 @@ def _pj_child_policy():
                 allow.append(c)
     except Exception:
         pass
+    never = [
+        # Windows 系统关键目录（写/删 = 永不放行硬底线，与凭据/NT 并列）
+        "c:/windows/system32", "c:/windows/syswow64",
+        "c:/program files", "c:/program files (x86)", "c:/programdata",
+        # Unix 系统关键目录
+        "/etc", "/boot", "/usr", "/bin", "/sbin", "/lib", "/sys", "/proc", "/dev",
+    ]
+    try:
+        windir = os.getenv("SystemRoot") or os.getenv("WINDIR")
+        if windir:
+            w = os.path.normpath(windir).replace("\\", "/").lower()
+            for sub in ("", "/system32", "/syswow64"):
+                cand = w + sub
+                if cand not in never:
+                    never.append(cand)
+    except Exception:
+        pass
+    danger = [
+        "format ", "format.exe", "mkfs", "diskpart", "dd of=/dev/",
+        "rm -rf /", "rm -rf /*", "del /f /s", "rd /s /q", "reg delete",
+        "shutdown", "chmod -R 777 /", "chown -r", "> /dev/sda",
+    ]
     return {
         "root": root_low,
         "creddirs": [".ssh", ".aws", ".kube", ".gnupg"],
@@ -3564,28 +3680,40 @@ def _pj_child_policy():
         "credfull": cred_full,
         "nt": list(_NT_DEVICE_PREFIXES),
         "allow": allow,
+        "never": never,
+        "danger": danger,
     }
 
 
-def _python_exec_jail_prefix():
-    """渲染牢笼 bootstrap：把策略以 repr 注入头部常量，再拼静态代码体。"""
+def _python_exec_jail_prefix(granted_tier=1):
+    """渲染牢笼 bootstrap：把策略以 repr 注入头部常量，再拼静态代码体。
+
+    granted_tier = 本次运行已获得的天花板档位（1=只免批；2=放行一次确认；3=放行三连确认）。
+    子进程钩按 _PJ_CEILING 决定放行/拦停；默认 1 复现旧的硬拦语义。
+    """
     pol = _pj_child_policy()
+    pol = dict(pol)
+    pol["ceiling"] = int(granted_tier)
     header = (
         "_PJ_ROOT=%(root)r\n"
         "_PJ_CRED_DIRS=%(creddirs)r\n"
         "_PJ_CRED_FILES=%(credfiles)r\n"
         "_PJ_CRED_FULL=%(credfull)r\n"
         "_PJ_NT=%(nt)r\n"
-        "_PJ_ALLOW=%(allow)r\n" % pol
+        "_PJ_ALLOW=%(allow)r\n"
+        "_PJ_CEILING=%(ceiling)r\n"
+        "_PJ_NEVER_DIRS=%(never)r\n"
+        "_PJ_DANGER=%(danger)r\n" % pol
     )
     return header + _PJ_JAIL_BODY + "\n"
 
 
-def python_exec(code):
-    """执行 Python 代码，返回 stdout/stderr（截断到 1500 字）。
+def _python_exec_run(code, ceiling=1, allow_escalate=True):
+    """实际执行已决定要跑的代码。ceiling=本次授予的免批天花板档位（1/2/3）。
 
-    用于数值计算、数据处理、文本变换等"让 agent 真正动手"的场景。
-    企业模式在隔离的临时项目副本中运行；本地兼容模式以当前用户权限运行。
+    allow_escalate=True 时，若子进程运行期钩撞到「超过天花板」的操作（输出里带
+    __EXEC_APPROVAL__ 标记），会把该操作如实转成一条待确认项并回报「未执行完」——
+    绝不把被拦的操作说成已跑成（fail-closed，与交付门同口径）。
     """
     code = (code or "").strip()
     # 清理模型可能包裹的代码围栏 / 语言提示词，避免把 "```python" 当代码执行
@@ -3620,7 +3748,7 @@ def python_exec(code):
         container_isolates = False
     if not container_isolates:
         try:
-            run_code = _python_exec_jail_prefix() + code
+            run_code = _python_exec_jail_prefix(ceiling) + code
         except Exception as e:  # noqa: BLE001
             # 牢笼构造失败 = 宁可拒绝执行，不放行无约束写（fail-closed）。
             return f"拒绝执行：文件系统牢笼初始化失败（{e!r}），请改用 dev_* 写工具。"
@@ -3637,6 +3765,18 @@ def python_exec(code):
     except Exception as e:  # noqa: BLE001
         return f"执行失败: {e}"
     out = (proc.stdout or "") + (proc.stderr or "")
+    # 运行期升级：钩在跑的过程中撞到超天花板的写（静态预扫描漏判的动态路径），
+    # 把那一步转成待确认、如实说「已中断、未继续」，而不是把被拦的操作当跑完。
+    if allow_escalate and not container_isolates:
+        esc = _parse_exec_escalation(out)
+        if esc:
+            rtier, rreason = esc
+            pid = stage_exec(code, rtier, rreason, source="runtime")
+            need = exec_tier_confirm(rtier)
+            return ("__EXEC_PENDING__ pid=%s tier=%d need=%d\n"
+                    "代码执行被安全钩中断：命中第 %d 档操作（%s），已登记为待人工确认 #%s"
+                    "（需确认 %d 次），此后未继续执行。请在界面上确认后再运行。"
+                    % (pid, rtier, need, rtier, rreason, pid, need))
     # 试做区里说清相对路径落在哪——见 agent_runtime/tools.py:stage_cwd_report 的理由。
     # 只有作用域开着时才加这一行，平时运行不改变输出形状。
     try:
@@ -3649,6 +3789,279 @@ def python_exec(code):
         return "（代码已执行，无输出）"
     # 保留开头与结尾：异常堆栈在末尾，单向截断会把真正的报错切掉。
     return _window_output(out)
+
+
+def _parse_exec_escalation(out):
+    """从子进程输出里解析运行期钩抛出的 __EXEC_APPROVAL__ 标记 → (tier, reason) 或 None。"""
+    m = re.search(r"__EXEC_APPROVAL__ tier=(\d+)(?: reason=([^\n]*))?", out or "")
+    if not m:
+        return None
+    tier = int(m.group(1))
+    reason = (m.group(2) or "").strip() or "越界操作"
+    return tier, reason
+
+
+def _pj_under(low, prefixes):
+    for c in prefixes:
+        cc = str(c).lower().replace("\\", "/").rstrip("/")
+        if cc and (low == cc or low.startswith(cc + "/")):
+            return True
+    return False
+
+
+def _python_exec_classify(code):
+    """静态预扫描整段代码，估计【最坏档位】(tier, reason)，tier∈{-1,1,2,3}。
+
+    权威判定仍在子进程运行期钩；这里只决定「跑不跑 / 执行前要不要先弹窗请求同意」。
+    拿不准的动态路径、无法解析的代码，一律往保守侧靠（宁可多问一次）。
+    命中凭据/系统关键目录/格式化命令 = -1（永不放行）。
+    """
+    try:
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return 2, "代码静态解析失败，按人工确认处理"
+    pol = _pj_child_policy()
+    root = pol["root"]
+    allow = pol["allow"]
+    never = [str(x).lower().replace("\\", "/") for x in pol["never"]]
+    danger = pol["danger"]
+
+    state = {"tier": 1, "reason": "仅只读 / 根内写（免批）"}
+
+    def bump(t, r):
+        if t == -1:
+            state["tier"] = -1
+            state["reason"] = r
+        elif t > state["tier"]:
+            state["tier"] = t
+            state["reason"] = r
+
+    def _is_never(low):
+        for nd in never:
+            nds = nd.rstrip("/")
+            if nds and (low == nds or low.startswith(nds + "/")):
+                return nd
+        return None
+
+    def _resolve(raw):
+        # 与子进程 _pj_norm 同口径解析：展开 ~ → 相对「子进程 cwd」→ realpath → 归一小写。
+        # 子进程 cwd 取 code_root（未配置时回退模块目录），静态预扫描必须用同一基准，
+        # 否则 'a.txt' 这种相对路径在预扫描里落到调用方进程 cwd、与运行期判定不一致。
+        base = root or os.path.dirname(os.path.abspath(__file__))
+        ap = os.path.expanduser(str(raw))
+        if not os.path.isabs(ap):
+            ap = os.path.join(base, ap)
+        return os.path.realpath(ap)
+
+    def write_tier(raw):
+        """一次对字面路径 raw 的【写/覆盖】落到哪档。非字面/拿不准 → 保守按 2。"""
+        if not isinstance(raw, str) or not raw:
+            return 2, "写到路径不明处（保守按人工确认）"
+        try:
+            rp = _resolve(raw)
+        except Exception:
+            return 2, "写到路径无法解析处（保守按人工确认）"
+        low = rp.replace("\\", "/").lower()
+        if _hard_floor_reason(low):
+            return -1, "凭据 / NT 设备命名空间路径"
+        nd = _is_never(low)
+        if nd:
+            return -1, "系统关键目录（%s）" % nd
+        inzone = (root and (low == root or low.startswith(root + "/"))) or _pj_under(low, allow)
+        if inzone:
+            return 1, "根内/临时区写"
+        return (3, "覆盖 code_root 外既有文件（不可回滚）") if os.path.exists(rp) else (2, "在 code_root 外新建文件")
+
+    def del_tier(raw):
+        if not isinstance(raw, str) or not raw:
+            return 3, "删除路径不明的文件（不可回滚）"
+        try:
+            rp = _resolve(raw)
+        except Exception:
+            return 3, "删除路径无法解析（不可回滚）"
+        low = rp.replace("\\", "/").lower()
+        if _hard_floor_reason(low):
+            return -1, "凭据 / NT 设备命名空间路径"
+        nd = _is_never(low)
+        if nd:
+            return -1, "系统关键目录（%s）" % nd
+        in_root = bool(root) and (low == root or low.startswith(root + "/"))
+        if in_root:
+            return 2, "删除 code_root 内文件"
+        if _pj_under(low, allow):
+            return 1, "删除临时/缓存文件（可弃）"
+        return 3, "删除 code_root 外文件（不可回滚）"
+
+    def cmd_signal(cmd):
+        if isinstance(cmd, (list, tuple)):
+            cmd = " ".join(str(x) for x in cmd if isinstance(x, (str, bytes)))
+        cs = str(cmd or "").lower()
+        for sig in danger:
+            if sig in cs:
+                return -1, "磁盘/系统级破坏命令（%s）" % sig
+        return 3, "拉起未受审计的子进程 / shell / 解释器"
+
+    def call_name(node):
+        parts = []
+        cur = node
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+        # parts 以「最内层属性名」开头（如 os.remove → ['remove', 'os']），
+        # 故 tail[0] 就是被调用的方法名——调用方据此匹配 remove/system/replace 等。
+        return ".".join(reversed(parts)).lower(), parts
+
+    for n in ast.walk(tree):
+        if state["tier"] == -1:
+            break
+        if isinstance(n, ast.Call):
+            full, tail = call_name(n.func)
+            last = tail[0] if tail else ""
+            args = n.args
+            is_os = full.startswith("os.")
+            is_shutil = full.startswith("shutil.")
+            is_sub = full.startswith("subprocess.")
+            if last == "open" and args:
+                # 只认字面 mode 的写；bare open / pathlib .open 由运行期钩兜底
+                mode = args[1].value if len(args) > 1 and isinstance(args[1], ast.Constant) else None
+                writing = isinstance(mode, str) and any(c in mode for c in "wax+")
+                if writing:
+                    t, r = write_tier(args[0].value if isinstance(args[0], ast.Constant) else None)
+                    bump(t, r)
+            elif (is_os and last in ("remove", "unlink", "rmdir")) or \
+                 (is_shutil and last in ("rmtree", "remove")):
+                t, r = del_tier(args[0].value if args and isinstance(args[0], ast.Constant) else None)
+                bump(t, r)
+            elif (is_os and last in ("rename", "replace", "mkdir", "makedirs",
+                                     "link", "symlink", "truncate", "chmod", "chown")) or \
+                 (is_shutil and last in ("copy", "copy2", "copyfile", "move")):
+                for a in args:
+                    t, r = write_tier(a.value if isinstance(a, ast.Constant) else None)
+                    bump(t, r)
+                    if state["tier"] == -1:
+                        break
+            elif (is_os and last in ("system", "popen", "execv", "execve",
+                                     "execl", "execle", "spawnl", "spawnv")) or \
+                 (is_sub and last in ("run", "call", "check_call", "check_output", "Popen")):
+                t, r = cmd_signal(args[0].value if args and isinstance(args[0], ast.Constant) else (args if args else None))
+                bump(t, r)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            names = [a.name for a in n.names]
+            mod = getattr(n, "module", None) or ""
+            joined = (mod + " " + " ".join(names)).lower()
+            if "subprocess" in joined or "os.system" in joined:
+                bump(3, "导入 subprocess / os.system（可拉起未受审计子进程）")
+            if "socket" in joined or "urllib" in joined or "requests" in joined or "http" in joined:
+                bump(2, "导入网络库（可出网）")
+
+    return state["tier"], state["reason"]
+
+
+def python_exec(code):
+    """执行 Python 代码，返回 stdout/stderr（截断到 1500 字）。
+
+    用于数值计算、数据处理、文本变换等"让 agent 真正动手"的场景。
+    企业模式在隔离的临时项目副本中运行；本地兼容模式以当前用户权限运行。
+
+    三档分级同意（无 Docker 的宿主/本地回退分支，容器分支天然隔离不弹窗）：
+      · 免批档（1）：读任意非凭据路径 + code_root 内增/改 → 模型自审、直接跑。
+      · 一次确认（2）：删除根内文件 / 根外新建 / 出网 → 执行前先登记待确认，确认 1 次才跑。
+      · 三连确认（3）：删除/覆盖 code_root 外既有文件、拉起子进程 → 红色高危，连确认 3 次。
+      · 永不放行（-1）：凭据/NT、系统关键目录、格式化/磁盘级破坏 → 确认多少次都直接拒。
+    """
+    if not exec_approval_enabled():
+        # 旧语义回退：一律 ceiling=1 硬拦、不弹窗、不升级（等同改动前）。
+        return _python_exec_run(code, ceiling=1, allow_escalate=False)
+    tier, reason = _python_exec_classify(code)
+    if tier == -1:
+        return ("__EXEC_BLOCKED__ reason=%s\n"
+                "拒绝执行：python_exec 安全拦截（永不放行硬底线）：%s。"
+                "此类操作即使连续确认多次也不会放行。" % (reason, reason))
+    if tier <= 1:
+        # 看起来只涉及只读 / 根内写：直接跑；运行期钩仍是权威兜底，
+        # 若实际撞到越界会即时中断并转待确认（不谎报执行完成）。
+        return _python_exec_run(code, ceiling=1, allow_escalate=True)
+    # 第二/三档：不可逆损害必须在执行【前】取得同意（跑完再问已铸成损害）
+    # → 先登记待确认、暂不运行。
+    pid = stage_exec(code, tier, reason, source="preexec")
+    need = exec_tier_confirm(tier)
+    return ("__EXEC_PENDING__ pid=%s tier=%d need=%d\n"
+            "该代码含第 %d 档操作（%s），需人工确认后才会执行——已登记待确认 #%s"
+            "（需确认 %d 次），尚未运行。请在界面上确认后再执行。"
+            % (pid, tier, need, tier, reason, pid, need))
+
+
+# ---------------------------------------------------------------------------
+# python_exec 待确认暂存：第二/三档代码在执行前登记于此，由人工在界面确认后
+# 才真正落子进程运行（点击计数门：二档 1 次、三档 3 次）。与 _PENDING_EDITS 同形。
+# ---------------------------------------------------------------------------
+_PENDING_EXEC = {}       # id -> {code, tier, reason, source, confirms, need}
+_EXEC_PENDING_LOCK = threading.Lock()
+_exec_seq = [0]
+
+
+def stage_exec(code, tier, reason, source="preexec"):
+    """登记一次「已分类但尚未执行」的代码，返回 pending id。"""
+    with _EXEC_PENDING_LOCK:
+        _exec_seq[0] += 1
+        pid = "E" + str(_exec_seq[0])
+        _PENDING_EXEC[pid] = {
+            "code": code,
+            "tier": int(tier),
+            "reason": reason,
+            "source": source,          # "preexec" 执行前分类命中 | "runtime" 运行期钩升级
+            "confirms": 0,
+            "need": exec_tier_confirm(tier),
+        }
+        return pid
+
+
+def list_pending_execs():
+    with _EXEC_PENDING_LOCK:
+        return [
+            {
+                "id": pid,
+                "tier": e["tier"],
+                "reason": e["reason"],
+                "source": e["source"],
+                "confirms": e["confirms"],
+                "need": e["need"],
+                "code": e["code"],
+            }
+            for pid, e in _PENDING_EXEC.items()
+        ]
+
+
+def confirm_exec(pid):
+    """累计一次确认；达到档位阈值才真正执行。返回 (ok, 文本)。
+
+    未达阈值只递增计数（返回「还需 N 次」）；达标后以该档为天花板真跑——
+    运行期钩仍会对凭据/系统目录/格式化【硬拦】，等于确认时二次复核硬底线。
+    """
+    with _EXEC_PENDING_LOCK:
+        e = _PENDING_EXEC.get(pid)
+    if not e:
+        return False, f"未找到待确认执行 #{pid}（可能已确认/拒绝或重启后失效）。"
+    tier = e["tier"]
+    need = e["need"]
+    with _EXEC_PENDING_LOCK:
+        e["confirms"] += 1
+        got = e["confirms"]
+    if got < need:
+        return False, ("第 %d 档需连续确认 %d 次，当前已确认 %d 次，还需 %d 次。"
+                       "（尚未执行）" % (tier, need, got, need - got))
+    with _EXEC_PENDING_LOCK:
+        _PENDING_EXEC.pop(pid, None)
+    # 以批准档位为天花板执行；不再次升级（已获授权），NEVER 由运行期钩兜底硬拦。
+    res = _python_exec_run(e["code"], ceiling=tier, allow_escalate=False)
+    return True, res
+
+
+def reject_exec(pid):
+    with _EXEC_PENDING_LOCK:
+        return bool(_PENDING_EXEC.pop(pid, None))
 
 
 # ---------------------------------------------------------------------------

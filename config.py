@@ -572,6 +572,13 @@ def resolve_context_from_docs(provider, model, web_fn, cache=None):
 CODE_ROOT = os.getenv("CODE_ROOT", "")  # 代码问答模式的代码库根目录；为空表示未配置
 CODE_CHUNK = int(os.getenv("CODE_CHUNK", "1200"))  # 单个代码切片的最大字符数
 EDIT_CONFIRM = os.getenv("EDIT_CONFIRM", "0") == "1"  # 写工具是否需要人工确认（改前出 diff）
+# python_exec 分级同意护栏：开=按三档分类（根内读写增改免批 / 删除或越界=弹窗确认 /
+# 不可逆=红三连确认，凭据·系统·格式化=永不放行硬底线）；关=退回旧的"越界/凭据一律硬拦"。
+# 默认开；env DOCMIND_EXEC_APPROVAL=0 可一键回退到旧硬拦语义。
+EXEC_APPROVAL = os.getenv("DOCMIND_EXEC_APPROVAL", "1") == "1"
+# 各档需要的连续确认次数：第二档一次、第三档三次（红）。第一档 0（免批）。
+EXEC_TIER2_CONFIRM = int(os.getenv("DOCMIND_EXEC_TIER2_CONFIRM", "1"))
+EXEC_TIER3_CONFIRM = int(os.getenv("DOCMIND_EXEC_TIER3_CONFIRM", "3"))
 API_TOKEN = os.getenv("DOCMIND_API_TOKEN", "").strip()  # 为空保持本机免鉴权
 
 # ---- 外部接入 DocMind API 的 CORS ----
@@ -1094,6 +1101,25 @@ def edit_confirm_enabled():
     if v is not None:
         return bool(v)
     return EDIT_CONFIRM
+
+
+def exec_approval_enabled():
+    """python_exec 是否走「三档分级同意」护栏：运行时覆盖优先，其次 .env DOCMIND_EXEC_APPROVAL。
+    关时退回旧的硬拦语义（越界/凭据一律拒），可一键回退。"""
+    v = get_runtime("exec_approval")
+    if v is not None:
+        return bool(v)
+    return EXEC_APPROVAL
+
+
+def exec_tier_confirm(tier):
+    """某档需要的连续确认次数：第一档 0（免批），第二档 EXEC_TIER2_CONFIRM，第三档 EXEC_TIER3_CONFIRM。"""
+    t = int(tier)
+    if t <= 1:
+        return 0
+    if t == 2:
+        return EXEC_TIER2_CONFIRM
+    return EXEC_TIER3_CONFIRM
 
 
 # ---- AI 越界访问模式 ----

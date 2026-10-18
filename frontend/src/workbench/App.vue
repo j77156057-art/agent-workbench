@@ -17,6 +17,7 @@ import TaskEnginePanel from './components/TaskEnginePanel.vue'
 import SceneRuntimePanel from './components/SceneRuntimePanel.vue'
 import ChatDock from './components/ChatDock.vue'
 import AgentPolicyPanel from './components/AgentPolicyPanel.vue'
+import ExecApprovalDialog from './components/ExecApprovalDialog.vue'
 import GpuPanel from './components/GpuPanel.vue'
 import EdaVerifyPanel from './components/EdaVerifyPanel.vue'
 import HarnessPanel from './components/HarnessPanel.vue'
@@ -713,6 +714,7 @@ onBeforeUnmount(() => {
     <AppDialog />
     <GitHistoryDialog />
     <RewriteDiffDialog />
+    <ExecApprovalDialog />
     <RegionMapDialog v-if="everMounted.region" />
     <SymbolMap />
     <RelationGraph v-if="everMounted.relation" />

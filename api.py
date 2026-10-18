@@ -56,6 +56,7 @@ from config import (
     save_state,
     load_state,
     edit_confirm_enabled,
+    exec_approval_enabled,
     get_external_access_mode,
     set_external_access_mode,
     get_web_search_provider,
@@ -124,6 +125,9 @@ from tools import (
     list_pending_edits,
     confirm_edit as apply_pending_edit,
     reject_edit as drop_pending_edit,
+    list_pending_execs,
+    confirm_exec as apply_pending_exec,
+    reject_exec as drop_pending_exec,
     clear_read_files,
     dev_asset_get,
     dev_asset_register,
@@ -5900,6 +5904,11 @@ async def pending_edits():
     return {"pending": list_pending_edits(), "edit_confirm": edit_confirm_enabled()}
 
 
+@app.get("/api/pending_execs")
+async def pending_execs():
+    return {"pending": list_pending_execs(), "exec_approval": exec_approval_enabled()}
+
+
 # ---------------------------------------------------------------------------
 # 分区开发（Region-based Development）：一键初始化分工区域 + 查询分区状态。
 # init_regions 建目录 / 每区 git init / 写 DEV_INDEX.md 与 DOCMIND_RULES.md；
@@ -6376,6 +6385,18 @@ async def confirm_edit(req: PendingId):
 async def reject_edit(req: PendingId):
     removed = drop_pending_edit(req.id)
     return {"ok": removed, "message": "已拒绝并丢弃该修改。" if removed else f"未找到待确认修改 #{req.id}。"}
+
+
+@app.post("/api/confirm_exec")
+async def confirm_exec(req: PendingId):
+    ok, msg = apply_pending_exec(req.id)
+    return {"ok": ok, "message": msg}
+
+
+@app.post("/api/reject_exec")
+async def reject_exec_ep(req: PendingId):
+    removed = drop_pending_exec(req.id)
+    return {"ok": removed, "message": "已拒绝并丢弃该待执行代码。" if removed else f"未找到待确认执行 #{req.id}。"}
 
 
 # 开发工作台文件系统接口（P0）：/api/fs/tree|file|save|create|rename|delete|gitlog

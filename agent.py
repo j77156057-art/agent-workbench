@@ -733,6 +733,7 @@ _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
   · 当项目尚未初始化分区、或默认 8 个分区不完全贴合真实代码库时，由你研判分区（默认分区仅作初始建议，真实分区以你判断为准）：先用 list_dir 勘察顶层目录与资源类型，再调用 dev_propose_regions 获取带证据的基线建议（每区标 detected 是否检出 / included 是否建议启用）；据检出信号增删/调整分区，把最终清单（JSON 数组，每项含 key/dir/name/depends_on 等）交给 dev_apply_regions 落地（或仅用 dev_add_region 增补单个分区）。应用后写操作即被约束到新分区内，后续继续走 dev_region_* / dev_commit_* 等受控流程。
 - 调用 python_exec 时，Action Input 必须是完整、可直接执行的 Python 代码（用 print 输出结果）；
   不要加 ``` 代码围栏，也不要只写 "python" 等语言名。
+  · 若 python_exec 返回以 `__EXEC_PENDING__` 或 `__EXEC_BLOCKED__` 开头（这行是机器标记，展示给用户时请去掉），说明代码【并未执行】：PENDING 表示命中第二/三档风险、已登记为待人工确认（第二档确认 1 次、第三档需连续确认 3 次后才真正运行），BLOCKED 表示命中永不放行硬底线（凭据/系统关键目录/格式化），确认多少次都不会放行。此时你应如实转述"该操作已登记待你在界面确认（或已被安全策略永久拦截），尚未运行"，绝不可声称代码已执行、更不得编造执行输出；需要同类计算请改用只读/根内的写法，或提示用户到界面确认。
 
 回答质量要求（Final Answer）：
 - Thought 只写【决策】——下一步调哪个工具、为什么这么调，一两句话即可；严禁把检索结果、文档原文、Observation 内容或大段复述写进 Thought。给出 Final Answer 后即视为回答结束：禁止在 Final Answer 之后再补 Thought / Action 或重复检索；Final Answer 应一次性完整，不要把同一结论拆到多轮里慢慢给。
@@ -2437,10 +2438,16 @@ def _should_verbatim_passthrough(action, obs):
     """产出即答案的工具是否真的"产出即答案"。
 
     python_exec 例外：它可能只是回吐源码，此时不该 verbatim 透传（BUG-7）。
+    另外若返回里带三档同意标记（__EXEC_PENDING__ / __EXEC_BLOCKED__），代码根本
+    没执行，绝不能被包装成「代码执行结果」甩给用户当最终答案——必须回到正常观察
+    轮，由模型如实说明「待确认 / 被硬拦、尚未运行」。
     calculate / gen_video_prompt 的结果本身就是交付物，照常透传。
     """
-    if action == "python_exec" and _is_raw_source_echo(obs):
-        return False
+    if action == "python_exec":
+        if "__EXEC_PENDING__" in obs or "__EXEC_BLOCKED__" in obs:
+            return False
+        if _is_raw_source_echo(obs):
+            return False
     return True
 
 
