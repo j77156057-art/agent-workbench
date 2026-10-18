@@ -15,6 +15,29 @@ const pending = ref<PendingExec[]>([])
 const msg = ref<Record<string, string>>({})
 const busy = ref<Record<string, boolean>>({})
 
+// 执行成功后该条会从 pending 消失，卡片随即卸载——若不在本地留一份，用户就永远
+// 看不到 confirm_exec 返回的真实执行输出。done 暂存"刚执行完"的结果，短暂展示后自动收起。
+interface DoneExec {
+  id: string
+  tier: number
+  reason: string
+  code: string
+  message: string
+}
+const done = ref<DoneExec[]>([])
+const doneTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+
+function dismissDone(id: string) {
+  const t = doneTimers[id]
+  if (t) { clearTimeout(t); delete doneTimers[id] }
+  done.value = done.value.filter(d => d.id !== id)
+}
+
+function scheduleDoneAutoDismiss(id: string) {
+  if (doneTimers[id]) clearTimeout(doneTimers[id])
+  doneTimers[id] = setTimeout(() => dismissDone(id), 15000)
+}
+
 async function load() {
   try {
     const resp = await pendingApi.execs()
@@ -23,7 +46,7 @@ async function load() {
 }
 usePolling(load, 3000)
 
-const count = computed(() => pending.value.length)
+const hasCards = computed(() => pending.value.length > 0 || done.value.length > 0)
 
 function tierOf(item: PendingExec): 2 | 3 {
   return item.tier >= 3 ? 3 : 2
@@ -34,9 +57,25 @@ async function confirm(item: PendingExec) {
   busy.value[item.id] = true
   try {
     const res = await pendingApi.confirmExec(item.id)
-    // ok=true 表示已达阈值并真正执行：message 即执行输出/摘要；该条会从待确认列表消失。
-    // ok=false 表示三档还没点够：message 是「还需 N 次」，稍后 load 刷新进度。
-    msg.value[item.id] = res.message || (res.ok ? '已执行。' : '尚未达到确认次数。')
+    // ok=true 表示已达阈值并真正执行：message 即执行输出/摘要；该条会从待确认列表消失，
+    // 故把它转存进 done 本地展示，否则用户看不到跑出来的结果。
+    // ok=false 表示三档还没点够：message 是「还需 N 次」，留在原卡片上，稍后 load 刷新进度。
+    if (res.ok) {
+      done.value = [
+        {
+          id: item.id,
+          tier: item.tier,
+          reason: item.reason,
+          code: item.code,
+          message: res.message || '（已执行，无输出）',
+        },
+        ...done.value,
+      ]
+      delete msg.value[item.id]
+      scheduleDoneAutoDismiss(item.id)
+    } else {
+      msg.value[item.id] = res.message || '尚未达到确认次数。'
+    }
     await load()
   } catch (error) {
     msg.value[item.id] = '确认失败：' + (error as Error).message
@@ -63,7 +102,7 @@ async function reject(item: PendingExec) {
 <template>
   <Teleport to="body">
     <Transition name="ea-pop">
-      <div v-if="count" class="ea-root" role="region" aria-label="待确认的高危代码执行">
+      <div v-if="hasCards" class="ea-root" role="region" aria-label="待确认的高危代码执行">
         <div v-for="item in pending" :key="item.id" class="ea-card" :class="tierOf(item) === 3 ? 'ea-danger' : 'ea-warn'">
           <div class="ea-head">
             <span class="ea-badge">{{ tierOf(item) === 3 ? '高危 · 需连续确认 3 次' : '需确认 · 1 次即可执行' }}</span>
@@ -86,6 +125,18 @@ async function reject(item: PendingExec) {
             <button class="ea-reject" :disabled="busy[item.id]" @click="reject(item)">拒绝</button>
           </div>
           <small v-if="msg[item.id]" class="ea-msg">{{ msg[item.id] }}</small>
+        </div>
+        <div v-for="d in done" :key="'done-' + d.id" class="ea-card ea-done">
+          <div class="ea-head">
+            <span class="ea-badge ea-ok">已执行</span>
+            <button class="ea-close" aria-label="关闭" @click="dismissDone(d.id)">×</button>
+          </div>
+          <p class="ea-reason">{{ d.reason }}</p>
+          <details class="ea-code">
+            <summary>查看已执行的代码</summary>
+            <pre>{{ d.code }}</pre>
+          </details>
+          <pre class="ea-out">{{ d.message }}</pre>
         </div>
       </div>
     </Transition>
@@ -118,6 +169,11 @@ async function reject(item: PendingExec) {
 .ea-reject{background:transparent;border-color:var(--border-strong);color:var(--text-muted)}
 .ea-reject:hover:not(:disabled){border-color:var(--danger);color:var(--danger)}
 .ea-msg{display:block;margin-top:6px;color:var(--text-muted)}
+.ea-done{border-color:var(--green)}
+.ea-ok{color:var(--green)}
+.ea-out{max-height:160px;overflow:auto;margin:6px 0 0;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font:10px/1.5 var(--font-mono);white-space:pre-wrap;word-break:break-word}
+.ea-close{background:transparent;border:none;color:var(--text-faint);font-size:16px;line-height:1;cursor:pointer;padding:0 2px}
+.ea-close:hover{color:var(--text-muted)}
 .ea-card:focus-within .ea-actions button:focus-visible{outline:2px solid #2f6fed88;outline-offset:2px}
 .ea-pop-enter-active,.ea-pop-leave-active{transition:opacity .18s ease,transform .18s ease}
 .ea-pop-enter-from,.ea-pop-leave-to{opacity:0;transform:translateY(8px)}
