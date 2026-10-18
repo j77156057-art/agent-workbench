@@ -663,11 +663,22 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     if count_evidence_judged and evidence_truncated:
         verdict = "FAIL"
         verdict_reason = ""
+    # ---- 外显判定：答案**自招**的过度声称，与问题是否定位无关，必须外显 ----------
+    # 这三项只会在结论**自己**写下"准确总数 / 来自真实读取 / 分项加总"时才被激活
+    # （窄触发），因此它们的 FAIL 是**内容/口吻**问题——纯计数题谎报"准确总数"
+    # 与定位题引用打不开一样是真错误。它们不该被 `required`（定位类）这道**消费者门**
+    # 吞掉：此前消费者 `if required and not gate_ok` 让非定位题即便 verdict=FAIL 也
+    # 一个 reflection 都不发。调用方据此（`content_fail`）把外显通道对这类过度声称打开。
+    _OVERCLAIM_KEYS = ("count_consistent", "count_evidence_complete", "provenance_traceable")
+    content_fail = any(checks.get(k) is False for k in _OVERCLAIM_KEYS)
     return {"ok": bool(all(value for key, value in checks.items()
                              if key != "location_question")),
             # 只看事实项的判定结果。调用方应当用它驱动闸门与用户可见结论，
             # ``ok`` 保留给需要"过程也达标"的旧调用方。
             "gate_ok": gate_ok,
+            # 答案**自招**的过度声称（计数/来源）判红——与 `required` 无关，调用方据此
+            # 对非定位题也外显核验结论。见上方 _OVERCLAIM_KEYS 注释。
+            "content_fail": content_fail,
             "gate_checks": gate_checks,
             "verdict": verdict,
             "verdict_reason": verdict_reason,

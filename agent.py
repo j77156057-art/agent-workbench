@@ -2531,9 +2531,11 @@ def _evidence_failure_detail(audit):
     # 旧文案「缺少原文核验」在 read_file 没跑过时是**准确**的，保留它（既有的界面文案
     # 与 tests/test_agent.py 都依赖这句话）。只有在它会误导时——也就是失败原因其实是
     # 路径写错/行号越界——才换成中性措辞并说清具体项。
-    prefix = ("定位回答缺少原文核验"
+    # 非定位题（纯计数/来源断言自招的过度声称）不该被叫成"定位回答"——那会说错对象。
+    _subject = "定位回答" if (audit or {}).get("required") else "回答"
+    prefix = ("%s缺少原文核验" % _subject
               if "read_file_present" in failed
-              else "定位回答的证据未通过")
+              else "%s的证据未通过" % _subject)
     reflection = "%s：%s" % (prefix, "；".join(_EVIDENCE_CHECK_HINTS[key] for key in failed))
     # 具体引用也要出现在**用户可见**的那一段里。此前只回给模型，用户只看到
     # 「路径打不开」却不知道是哪一处——那等于让他自己再翻一遍 trace。
@@ -2655,6 +2657,25 @@ def _evidence_verdict_note(audit):
     # ——全部核实通过却仍让用户去逐个复查，正好抵消了给出正向信号的意义。
     if bad:
         note += "\n未核实的引用请自行打开对应文件确认后再据此修改代码。"
+    # 无未通过引用、却因答案**自招**的过度声称判 FAIL（纯计数/来源断言）——
+    # 光一个"（核验：FAIL）"没头没尾，用户不知错在哪。点名那条声称。
+    if verdict == "FAIL" and not bad:
+        _chk = (audit or {}).get("checks") or {}
+        _why = []
+        if _chk.get("count_evidence_complete") is False:
+            _acc = (audit or {}).get("accuracy_count")
+            _tools = "、".join(str(t) for t in ((audit or {}).get("truncated_evidence_tools") or []) if t) or "代码检索"
+            _why.append("声称%s为「准确总数」，但支撑它的检索证据被截断（%s，没看全）"
+                        % (("「%s」" % _acc) if _acc is not None else "某数字", _tools))
+        _cc = (audit or {}).get("count_conflict")
+        if _chk.get("count_consistent") is False and isinstance(_cc, dict) and _cc.get("present"):
+            _why.append("总数 %s 与自己列出的分项加总 %s 对不上" % (_cc.get("total"), _cc.get("sum")))
+        if _chk.get("provenance_traceable") is False:
+            _n = len((audit or {}).get("unverified_provenance") or [])
+            if _n:
+                _why.append("有 %d 处引用声称「来自真实读取」但正文本轮未送达" % _n)
+        if _why:
+            note += "\n核验未通过原因：%s。请撤回确定性口径、改走稳妥计数，或补齐证据后再据此采信。" % "；".join(_why)
     return note
 
 
@@ -5865,7 +5886,8 @@ class Agent:
                 # `read_file_present` 已降级为参考——Claude Code 的验证 prompt 明确写着
                 # "reading is not verification. Run it."，拿"读过没有"当闸门是方向反了，
                 # 而且本次会话已因此连续误报四次。详见 output_audit.gate_checks。
-                if evidence_audit.get("required") and not evidence_audit.get("gate_ok"):
+                if (evidence_audit.get("required") or evidence_audit.get("content_fail")) \
+                        and not evidence_audit.get("gate_ok"):
                     if evidence_nudges < 1:
                         evidence_nudges += 1
                         trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
@@ -5877,12 +5899,16 @@ class Agent:
                         _detail, _reflection = _evidence_failure_detail(evidence_audit)
                         native_mode = self._native_enabled()
                         _how = _evidence_remedy(evidence_audit, native_mode)
+                        # 定位类与"答案自招的过度声称"是两类问题，措辞必须分开：
+                        # 前者要它补引用/改路径，后者要它撤回确定性口径或换稳妥计数法。
+                        _kind = ("这是定位类问题" if evidence_audit.get("required")
+                                 else "这是一次带确定性声称（准确计数／来源断言）的回答")
                         trail.append({
                             "role": "user",
                             "content": (
-                                "Evidence check: 这是定位类问题，但你的回答没通过证据核验。"
+                                "Evidence check: %s，但你的回答没通过证据核验。"
                                 "具体未通过的是：\n%s\n%s"
-                                % (_detail or "-（未给出具体项）", _how)
+                                % (_kind, _detail or "-（未给出具体项）", _how)
                             ),
                         })
                         yield {"type": "reflection", "text": _reflection}
