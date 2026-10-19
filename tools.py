@@ -7051,7 +7051,8 @@ def dev_glob(arg):
 
     from agent_runtime import code_intel
     res = code_intel.glob_files(root, pattern,
-                                scope=(fields.get("scope") or "").strip(), limit=limit)
+                                scope=(fields.get("scope") or "").strip(), limit=limit,
+                                skip_predicate=_hard_floor_reason)
     return code_intel.render_glob(res)
 
 
@@ -8009,8 +8010,13 @@ def list_dir(arg):
     except Exception as e:  # noqa: BLE001
         return f"读取目录失败: {e}"
     rows = []
+    skipped = 0
     for name in entries:
         p = os.path.join(target, name)
+        # 同一道凭据地板：单层浏览也不报凭据目录/文件的存在性（与 glob 同口径：只报数不报名。）
+        if _hard_floor_reason(p):
+            skipped += 1
+            continue
         if os.path.isdir(p):
             try:
                 n = sum(1 for _ in os.scandir(p))
@@ -8026,7 +8032,11 @@ def list_dir(arg):
     rel_disp = os.path.relpath(target, root_abs)
     rel_disp = "(代码库根)" if rel_disp in (".", "") else rel_disp
     header = f"目录 {rel_disp} 共 {len(rows)} 项："
-    return header + "\n" + "\n".join(rows) if rows else header + "（空）"
+    body = (header + "\n" + "\n".join(rows)) if rows else header + "（空）"
+    if skipped:
+        # 只报数量、绝不打印被扣条目名：list_dir 的输出本身就是名称，列名=反向泄露。
+        body += ("\n提示: 已跳过 %d 个凭据路径条目（与 read_file/grep/glob 同一道地板：.ssh/.aws/.kube/.gnupg/.netrc/sudoers 等）——这些**未列出**，故'没有该项'不代表其不存在，别据此下否定结论。" % skipped)
+    return body
 
 
 def dev_propose_regions(arg):

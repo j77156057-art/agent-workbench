@@ -422,16 +422,25 @@ def _prune(dirnames: list[str], rel_dir: str) -> list[str]:
 
 
 def glob_files(root: str, pattern: str, *, scope: str = "",
-               limit: int = _GLOB_MAX_LIMIT) -> dict[str, Any]:
+               limit: int = _GLOB_MAX_LIMIT,
+               skip_predicate=None) -> dict[str, Any]:
     """Find files by name pattern under the code root; ``grep`` only sees contents.
 
     ``_SOURCE_EXTS`` deliberately does not apply here: looking files up by name
     is exactly how an agent finds ``Dockerfile``, lockfiles and ``*.yml``.
+
+    ``skip_predicate`` (optional, injected by the caller): a callable taking
+    the absolute candidate path that returns truthy to withhold it from the
+    results even when it matches ``pattern``. ``code_intel`` never imports
+    ``tools``, so the credential floor (``_hard_floor_reason``) is supplied by
+    ``dev_glob`` as this callback instead of being hard-wired here. Withheld
+    paths land in ``result["skipped"]`` and are disclosed as a note so a
+    withheld file does not read as "this project has no such file".
     """
     result: dict[str, Any] = {
         "ok": False, "pattern": "", "root": root, "scope": "", "files": [],
         "count": 0, "truncated": False, "scanned": 0, "scan_capped": False,
-        "pruned_dirs": [], "error": "", "notes": [],
+        "pruned_dirs": [], "skipped": [], "error": "", "notes": [],
     }
     pat = str(pattern or "").strip().strip("'\"")
     if not pat:
@@ -478,6 +487,7 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
         result["pruned_dirs"] = [".docmind/" + d for d in _probe_dirs]
 
     matches: list[str] = []
+    skipped: list[str] = []
     scanned = 0
     scan_capped = False
     pruned: set[str] = set()
@@ -495,6 +505,14 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
                 break
             rel = f"{rel_dir}/{name}" if rel_dir else name
             if _glob_hits(rel, pat):
+                # Only floor-check candidates that would actually match, so the
+                # agent does not learn about credential files it never searched
+                # for, while still disclosing what we withheld. The predicate is
+                # injected by dev_glob (code_intel never imports tools, so there
+                # is no circular dependency).
+                if skip_predicate is not None and skip_predicate(os.path.join(dirpath, name)):
+                    skipped.append(rel)
+                    continue
                 matches.append(rel)
         if scan_capped:
             break
@@ -510,6 +528,16 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
     # 读成"这里没有"。实测那次就是：整个 `.docmind` 被剪掉、notes 为空，
     # Agent 只能得出"这个项目没有 html"的结论。
     result["pruned_dirs"] = sorted(pruned)
+    result["skipped"] = sorted(skipped)
+    if skipped:
+        _sk = sorted(skipped)
+        # Count only, never the concrete paths: glob output IS paths, so
+        # naming a withheld credential file would re-leak exactly what the
+        # floor hides. This is stricter than grep (which names skips): grep
+        # leaks contents, glob leaks locations.
+        result["notes"].append(
+            "已跳过 %d 个凭据路径下本会命中的文件（与 read_file/grep 同一道地板：.ssh/.aws/.kube/.gnupg/.netrc/sudoers 等）——这些被扣未列出，故'没有命中'不代表其不存在，别据此下否定结论。" % (len(_sk),))
+
     matches.sort(key=lambda rel: (rel.count("/"), rel))
     result["count"] = len(matches)
     result["truncated"] = len(matches) > cap
