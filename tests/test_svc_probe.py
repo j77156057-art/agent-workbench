@@ -180,6 +180,44 @@ class HttpProbeTests(ServerCase):
         self.assertIn("**不在**", sp.render_http(sp.http_probe(self.url("/ok")),
                                                 expect_text="not-there"))
 
+    def test_unmet_expectation_headline_does_not_claim_pass(self):
+        """修法①锁点：200 配 expect_status=201 时，底行已老实写「凭据不符」，
+        抬头词不能再谎报【通过】——改口【观察完成·验收未达】。"""
+        result = sp.http_probe(self.url("/ok"))
+        rendered = sp.render_http(result, expect_status=201)
+        self.assertIn("观察完成·验收未达", rendered)
+        self.assertNotIn("【通过】", rendered)
+
+    def test_unmet_expectation_leaves_health_verdict_untouched(self):
+        """措辞只能改抬头词，不许动 result["ok"]：4xx 仍是有效观察（健康层=ok）。"""
+        result = sp.http_probe(self.url("/ok"))
+        self.assertTrue(result["ok"], "健康语义不该被验收措辞影响")
+        sp.render_http(result, expect_status=201)
+        self.assertTrue(result["ok"], "render 不该回写 ok")
+
+    def test_unmet_expect_text_headline_also_relabelled(self):
+        rendered = sp.render_http(sp.http_probe(self.url("/ok")),
+                                  expect_text="not-there")
+        self.assertIn("观察完成·验收未达", rendered)
+        self.assertNotIn("【通过】", rendered)
+
+    def test_met_expectation_headline_still_pass(self):
+        """符合预期时别把【通过】也一并降级——那会反向说谎。"""
+        rendered = sp.render_http(sp.http_probe(self.url("/ok")), expect_status=200)
+        self.assertIn("【通过】", rendered)
+        self.assertNotIn("验收未达", rendered)
+
+    def test_no_expectation_headline_unchanged(self):
+        """没设 expect 时行为完全不变，抬头词照旧认健康判定。"""
+        rendered = sp.render_http(sp.http_probe(self.url("/ok")))
+        self.assertIn("【通过】", rendered)
+
+    def test_real_health_failure_stays_unpassed(self):
+        """5xx 是真·不健康：不管 expect 怎么写，抬头都得是【未通过】，不能降级成中性词。"""
+        rendered = sp.render_http(sp.http_probe(self.url("/boom")), expect_status=200)
+        self.assertIn("【未通过】", rendered)
+        self.assertNotIn("验收未达", rendered)
+
 
 class FakeRunner:
     """假 subprocess：回放一段输出与退出码。"""

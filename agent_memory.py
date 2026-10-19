@@ -63,6 +63,7 @@ def _connect():
             scope TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL,
             title TEXT NOT NULL, content TEXT NOT NULL, evidence TEXT NOT NULL,
             source TEXT NOT NULL, repeats INTEGER NOT NULL, updated TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active', supersedes TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(scope, id));
         CREATE TABLE IF NOT EXISTS checkpoints (
             scope TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL,
@@ -76,6 +77,14 @@ def _connect():
             goals TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '',
             updated TEXT NOT NULL);
     """)
+    # 缺口 C · A：生命周期列的幂等补列。CREATE TABLE IF NOT EXISTS 对已存在的表
+    # 不会补列，老库必须靠这段 ALTER。默认 active = fail-closed：既有记忆不静默
+    # 丢弃，只有被显式 supersede/retire 才停止浮出。
+    _cols = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+    if "status" not in _cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if "supersedes" not in _cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''")
     return conn
 
 
@@ -83,26 +92,37 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
-def remember(scope, kind, title, content, evidence="", *, source="agent", key=None):
+def remember(scope, kind, title, content, evidence="", *, source="agent", key=None, supersedes=None):
     if kind not in KINDS or not str(content or "").strip():
         raise ValueError("需要有效的 kind 和非空 content")
     title, content, evidence = scrub(title, 200), scrub(content, 4000), scrub(evidence, 1200)
     mid = hashlib.sha256((kind + "|" + str(key or title or content)).encode()).hexdigest()[:24]
     with _LOCK, closing(_connect()) as conn, conn:
-        conn.execute("""INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+        conn.execute("""INSERT INTO memories
+            (scope, id, kind, title, content, evidence, source, repeats, updated, status, supersedes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'active', ?)
             ON CONFLICT(scope, id) DO UPDATE SET content=excluded.content,
             title=excluded.title, evidence=excluded.evidence, source=excluded.source,
             repeats=memories.repeats+1, updated=excluded.updated""",
-            (scope, mid, kind, title, content, evidence, source, _now()))
+            (scope, mid, kind, title, content, evidence, source, _now(), str(supersedes or "")))
+        # 缺口 C · A：显式取代——把被推翻的旧行标 superseded，从此不再被 recall 浮出。
+        # 不传 supersedes 时这段完全不执行，行为与今天逐字节一致。ON CONFLICT 分支
+        # 故意不改 status，避免重记同一 id 把一条已 retire/supersede 的行悄悄复活。
+        if supersedes:
+            conn.execute("UPDATE memories SET status='superseded' WHERE scope=? AND id=?",
+                (scope, str(supersedes)))
         conn.execute("DELETE FROM memories WHERE scope=? AND id NOT IN (SELECT id FROM memories WHERE scope=? ORDER BY updated DESC LIMIT 500)", (scope, scope))
     return mid
 
 
-def recall(scope, query="", limit=8, *, include_preferences=False):
+def recall(scope, query="", limit=8, *, include_preferences=False, include_all=False):
     terms = set(re.findall(r"[a-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", str(query).lower()))
     terms |= {term[i:i+2] for term in list(terms) if re.fullmatch(r"[\u4e00-\u9fff]{3,}", term) for i in range(len(term)-1)}
+    # 缺口 C · A：默认只浮出 active 记忆——被 supersede/retire 的旧错误结论不再回到
+    # 注入上下文（这才是"修好后旧教训自动作废"的落点）。include_all=True 仅供审计。
+    where = "scope=?" if include_all else "scope=? AND status='active'"
     with _LOCK, closing(_connect()) as conn:
-        rows = [dict(row) for row in conn.execute("SELECT * FROM memories WHERE scope=? ORDER BY updated DESC", (scope,))]
+        rows = [dict(row) for row in conn.execute("SELECT * FROM memories WHERE " + where + " ORDER BY updated DESC", (scope,))]
     ranked = []
     for row in rows:
         text = (row["title"] + " " + row["content"]).lower()
@@ -110,14 +130,40 @@ def recall(scope, query="", limit=8, *, include_preferences=False):
         preference = include_preferences and row["kind"] == "preference" and row["source"] == "user_explicit"
         if not terms or score or preference:
             row.pop("scope", None)
-            ranked.append((100 if preference else score, row))
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [row for _, row in ranked[:max(1, min(30, int(limit)))]]
+            # 生命周期列是内部元数据，不进 per-row dict：保证 context() 注入串与
+            # memory_search/API 的 JSON 逐字节不变（MEMORY_CHARS=309 校准、test 里的
+            # repeats 断言都不受影响）。
+            row.pop("status", None)
+            row.pop("supersedes", None)
+            # 信任档：未核实的 model_report episode（每轮自动存的 final_text，
+            # "尚需核对验收"）记低档，避免"重复=更新=正确"的回音室靠 recency
+            # 把它顶到已核实记忆之上（MEM-ErrorEchoChamber 方向②）。
+            # 注意：SQL 输入已是 updated DESC，sort 稳定，recency 只在同档内做平手裁决。
+            trust = -1 if (row["kind"] == "episode" and row["source"] == "model_report") else 0
+            ranked.append((100 if preference else score, trust, row))
+    ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [row for _, __, row in ranked[:max(1, min(30, int(limit)))]]
 
 
 def forget(scope, mid):
     with _LOCK, closing(_connect()) as conn, conn:
         return conn.execute("DELETE FROM memories WHERE scope=? AND id=?", (scope, str(mid))).rowcount > 0
+
+
+def retire(scope, mid):
+    """软作废：置 status='retired'，行保留（审计留痕），但不再被 recall 浮出。
+    区别于 forget() 的硬删——默认不销毁证据，只是停止呈现（fail-closed）。"""
+    with _LOCK, closing(_connect()) as conn, conn:
+        return conn.execute("UPDATE memories SET status='retired' WHERE scope=? AND id=?",
+            (scope, str(mid))).rowcount > 0
+
+
+def is_active(scope, mid):
+    """精确单行判定：该 id 在本 scope 是否存在且仍 active。供工具层诚实校验
+    supersedes 指针——指到不存在的 id 时不能谎称"旧记忆已作废"。"""
+    with _LOCK, closing(_connect()) as conn:
+        return conn.execute("SELECT 1 FROM memories WHERE scope=? AND id=? AND status='active'",
+            (scope, str(mid))).fetchone() is not None
 
 
 def checkpoint(scope, session, question, *, cid=None, status="running", reason="", events=(), answer=""):

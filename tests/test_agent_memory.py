@@ -193,6 +193,82 @@ class MemoryTests(_IsoBase):
             fetched = client.get("/api/agent/profile", headers={"X-DocMind-User": "api-user"}).json()["profile"]
             self.assertEqual(fetched["language"], "中文")
 
+    def test_memory_save_rejects_supersedes_typos(self):
+        """BUG-MEM-TYPO fail-closed 锁：拼错 supersedes 变体一律整次拒绝，不落新记忆、不作废旧记忆。
+
+        覆盖两条通道 + 4 种常见拼错 + 无关未知键的容忍性回归锁。见 tools.py::memory_save 顶部注释。
+        """
+        _TYPO_KEYS = ["supersede", "superseded", "supersed_id", "supersede_id"]
+
+        # --- 通道 A：keyed 文本 Action-Input（`__unknown__` 路径） ---
+        for typo_key in _TYPO_KEYS:
+            scope = memory.current_scope()[0]
+            seed = json.loads(tools.memory_save(json.dumps({
+                "kind": "fact", "title": "seed_" + typo_key,
+                "content": "旧错", "evidence": "e"}, ensure_ascii=False)))
+            self.assertTrue(seed.get("ok"), "seed 应成功: %s" % seed)
+            old_id = seed["id"]
+            rows_before = {r["id"] for r in memory.recall(scope, limit=20)}
+            typo_arg = ("kind: fact\ntitle: 更正_%s\ncontent: 新正解\nevidence: e\n%s: %s"
+                        % (typo_key, typo_key, old_id))
+            ret = json.loads(tools.memory_save(typo_arg))
+            self.assertFalse(ret.get("ok"),
+                             "[%s] keyed 通道必须拒绝拼错的 supersedes 变体, 实际=%s" % (typo_key, ret))
+            self.assertIn("supersedes", ret.get("error", ""),
+                          "[%s] 错误信息必须提到正确拼写 'supersedes'" % typo_key)
+            rows_after = {r["id"] for r in memory.recall(scope, limit=20)}
+            self.assertEqual(rows_before, rows_after,
+                             "[%s] keyed 通道拼错时不得改状态; before=%s after=%s"
+                             % (typo_key, rows_before, rows_after))
+            self.assertIn(old_id, rows_after,
+                          "[%s] 旧记忆必须仍然 active（未作废）" % typo_key)
+            self.assertNotIn("更正_" + typo_key,
+                             [r.get("title") for r in memory.recall(scope, limit=20)],
+                             "[%s] 新记忆必须未落库" % typo_key)
+
+        # --- 通道 B：原生 function-calling JSON 路径（typo 键直接在顶层 dict） ---
+        for typo_key in _TYPO_KEYS:
+            scope = memory.current_scope()[0]
+            seed = json.loads(tools.memory_save(json.dumps({
+                "kind": "fact", "title": "seedJ_" + typo_key,
+                "content": "旧错", "evidence": "e"}, ensure_ascii=False)))
+            self.assertTrue(seed.get("ok"))
+            old_id = seed["id"]
+            rows_before = {r["id"] for r in memory.recall(scope, limit=20)}
+            payload = {"kind": "fact", "title": "更正J_" + typo_key,
+                       "content": "新正解", "evidence": "e", typo_key: old_id}
+            ret = json.loads(tools.memory_save(json.dumps(payload, ensure_ascii=False)))
+            self.assertFalse(ret.get("ok"),
+                             "[%s] JSON 通道必须拒绝拼错的 supersedes 变体, 实际=%s" % (typo_key, ret))
+            self.assertIn("supersedes", ret.get("error", ""))
+            rows_after = {r["id"] for r in memory.recall(scope, limit=20)}
+            self.assertEqual(rows_before, rows_after,
+                             "[%s] JSON 通道拼错时不得改状态" % typo_key)
+            self.assertIn(old_id, rows_after)
+
+        # --- 正拼回归：supersedes 仍正常工作 ---
+        scope = memory.current_scope()[0]
+        seed = json.loads(tools.memory_save(json.dumps({
+            "kind": "fact", "title": "正拼种子", "content": "旧错", "evidence": "e"}, ensure_ascii=False)))
+        self.assertTrue(seed.get("ok"))
+        ret_ok = json.loads(tools.memory_save(json.dumps({
+            "kind": "fact", "title": "正拼更正", "content": "新正解", "evidence": "e",
+            "supersedes": seed["id"]}, ensure_ascii=False)))
+        self.assertTrue(ret_ok.get("ok"), "正拼 supersedes 必须照旧生效: %s" % ret_ok)
+        self.assertEqual(ret_ok.get("superseded"), seed["id"])
+        active_titles = [r["title"] for r in memory.recall(scope, limit=20)]
+        self.assertNotIn("正拼种子", active_titles,
+                         "正拼取代后旧错误结论应从 active 消失")
+        self.assertIn("正拼更正", active_titles, "正拼新记忆应落入 active")
+
+        # --- 无关未知键的容忍性回归：_parse_keyed docstring 明说"61 处调用点一行都不用改"，
+        #     本 fail-closed 只针对 supersedes 家族，不能把未知键检测扩展成全局拒绝。
+        ret_foobar = json.loads(tools.memory_save(
+            "kind: fact\ntitle: 无关未知键\nevidence: e\ncontent: 内容\nfoobar: hello"))
+        self.assertTrue(ret_foobar.get("ok"),
+                        "非 supersedes 家族的未知键必须容忍（回归锁 _parse_keyed 既有设计）: %s"
+                        % ret_foobar)
+
 
 if __name__ == "__main__":
     unittest.main()

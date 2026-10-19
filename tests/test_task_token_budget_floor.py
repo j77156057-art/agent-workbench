@@ -86,7 +86,11 @@ def _smallest_prompt_chars() -> int:
     不影响「下界保证能跑完一次不带工具的问答」这个承诺。
     """
     import agent_memory
-    with patch.object(agent_memory, "context", return_value=""):
+    # 只 stub 长期记忆还不够：profile_context() 会读本机 user_profiles 表（实测本机
+    # 有 ~61 字符画像），会让「裸提示词」随运行者机器微变，进而让「MIN-1 必须不足」
+    # 这条贴线断言在无画像机器上翻绿。一并置空，量到的才是真正与用户数据无关的下界。
+    with patch.object(agent_memory, "context", return_value=""), \
+            patch.object(agent_memory, "profile_context", return_value=""):
         a = agent_mod.Agent(llm=_LLM(), session_id="min")
         head = a._build_messages("你好")
     chars = sum(len(str(m.get("content") or ""))
@@ -99,9 +103,9 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
 
     # ---------- 下界本身贴着真实需求（判据问权威实现，不复刻公式）----------
 
-    #: 下界要保证「跑完 3 轮问答」。实测（2026-10-15 重标定）：
-    #:   无长期记忆时 3 轮 = 18720（裸提示词 18816 字符 = 4704 token/轮）
-    #:   带 309 字符记忆时 = 18951   <- 下界取这个（保守侧）
+    #: 下界要保证「跑完 3 轮问答」。实测（2026-10-19 重标定，轻度瘦身 + stub profile_context 后）：
+    #:   无长期记忆时 3 轮 = 20013（裸提示词 20541 字符 = 5135 token/轮）
+    #:   带 309 字符记忆时 = 20244   <- 下界取这个（保守侧）
     MIN_ROUNDS = 3
 
     #: 带 `【项目长期记忆：…】` 时的提示词长度（实测 309 字符）。

@@ -4729,8 +4729,12 @@ def _hard_floor_reason(target):
         return ("安全策略拒绝：NT 设备命名空间路径（%s…）会被系统尝试 SMB 认证并可能"
                 "泄漏 NTLM 哈希，禁止任何解析。" % np)
     if _is_credential_store(t, low):
-        return ("安全策略拒绝：凭据存储路径（%s）禁止读写——与 code_root 无关，无 override。"
-                % os.path.basename(t))
+        return ("安全策略拒绝：路径含凭据目录名（.ssh/.aws/.kube/.gnupg）或凭据文件"
+                "（.netrc/sudoers），按名一律禁读写——与 code_root 无关、无 override。"
+                "这是**有意的保守地板**：即便该路径实为项目内同名普通文件"
+                "（如仓库自带的 .aws/ 示例配置、fixture 里的 .ssh/）也会被拦，"
+                "属宁可误拦不误放的过度保守，并非断言此文件确为真实凭据；"
+                "若确为真实凭据则绝不放行。")
     return None
 
 
@@ -4783,6 +4787,58 @@ def _env_read_denied(target):
     if name.startswith(".env."):
         return True
     return False
+
+
+def _decode_text_bytes(raw):
+    """把文件字节稳健解成文本，**绝不用 errors='ignore'**。
+
+    返回 `(text, encoding_label, warned)`：
+      · UTF-8（含 BOM）strict 成功 → 高置信，`warned=False`；
+      · 否则用 charset_normalizer 探测（gb18030/big5/…），命中即 `warned=True`；
+      · 探测不可用时退到显式 gb18030 / big5；
+      · 全失败用 latin-1 兜底（永不抛异常但**低置信**，`warned=True`）。
+
+    为什么不能用 `errors='ignore'`（ENC-GBK-SilentDrop）：GBK/GB18030 落盘的中文
+    文件没有 NUL、高位字节也不被计成控制字符，会**绕过二进制嗅探**落进文本分支，
+    再被 `errors='ignore'` 静默丢字节 → 中文毁成乱码而 ASCII 字段幸存，返回长得像
+    一次成功读取，**Agent 误以为已核对完整文件内容**、据错乱文本作答。这里改为
+    尽最大努力正确解码，且凡非 UTF-8 一律 `warned=True`，让调用方**显式披露编码
+    不确定**（宁可不给虚假完备感，也不给假的）。
+    """
+    try:
+        return raw.decode("utf-8-sig"), "utf-8", False
+    except UnicodeDecodeError:
+        pass
+    try:
+        from charset_normalizer import from_bytes  # 延迟导入：非硬依赖
+        best = from_bytes(raw).best()
+        if best is not None:
+            return str(best), (best.encoding or "unknown"), True
+    except Exception:  # noqa: BLE001 — 探测失败不致命，继续走显式回退
+        pass
+    for enc in ("gb18030", "big5"):
+        try:
+            return raw.decode(enc), enc, True
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1"), "latin-1(低置信)", True
+
+
+#: 可"按原编码无损写回"的高置信编码集合（与 _decode_text_bytes 的解码结果配套）。
+_SAFE_ROUNDTRIP_ENCODINGS = {"utf-8", "gb18030", "gbk", "big5", "ascii"}
+
+
+def _roundtrip_codec(enc):
+    """决定写回编码——只在**高置信、可无损往返**的编码下保留原编码写回。
+    返回 `(codec, ok)`：`ok=False` 表示编码不可靠（latin-1 低置信兜底，或
+    charset_normalizer 猜出的怪异编码），调用方须**拒写**并让用户先规范成 UTF-8——
+    宁可不写，也不冒"按猜错的编码 re-encode、把原文件字节改坏"的险
+    （ENC-GBK-SilentDrop 写侧的 fail-closed 底线：绝不静默转码/丢字/毁字节）。
+    高置信时 `codec` 即原始编码（ascii 归一到 utf-8，无损且更通用）。"""
+    e = (enc or "").lower().replace("_", "-")
+    if e in _SAFE_ROUNDTRIP_ENCODINGS:
+        return ("utf-8" if e == "ascii" else e), True
+    return None, False
 
 
 #: read_file 的行号区间参数。**行内与独占行都认**（`grep` 的解析器本来就这么做，
@@ -4971,10 +5027,17 @@ def read_file(path):
         _read_store()[0].add(os.path.normcase(target))
         return "=== %s（未变化）===\n%s" % (rel, _stub)
     try:
-        with open(target, encoding="utf-8", errors="ignore") as f:
-            content = f.read()
+        with open(target, "rb") as f:
+            _raw = f.read()
     except Exception as e:  # noqa: BLE001
         return f"读取失败: {e}"
+    content, _enc, _warned = _decode_text_bytes(_raw)
+    # 非 UTF-8 一律显式披露（ENC-GBK-SilentDrop）：不再静默丢字节让模型误以为
+    # 拿到了完整文件；给出探测到的编码 + "勿据此断言内容完整"。
+    _enc_note = ""
+    if _warned:
+        _enc_note = ("⚠ 该文件非 UTF-8，已按 %s 解码；若结论依赖其中的中文，请复核编码，"
+                     "勿据此断言内容完整。\n" % _enc)
     # 记录已读，供 apply_edit 的"先读后写"护栏使用
     _read_store()[0].add(os.path.normcase(target))
     if start_line:
@@ -4992,7 +5055,7 @@ def read_file(path):
         shown = "".join(f"{i}: {ln}" for i, ln in enumerate(picked, start=start_line))
         out = f"=== {rel}（第 {start_line}-{end_line} 行，共 {total} 行）===\n{shown}"
         _note_read_range(target, start_line, end_line, len(out.encode("utf-8")))
-        return out
+        return _enc_note + out
     all_lines = content.splitlines(keepends=True)
     total = len(all_lines)
     if len(content) > 12000:
@@ -5018,7 +5081,7 @@ def read_file(path):
             _note_read_range(target, 1, last_shown_line, len(out.encode("utf-8")))
         # 首行就超 12000 字（极端单行文件）：一行都没送达，干脆不记覆盖，
         # 让后续任意区间都能真读。_READ_FILES 仍已在上面登记（供 apply_edit 护栏）。
-        return out
+        return _enc_note + out
     # 整文件读取**逐行编号**，与区间读统一形态。
     #
     # 实测（`wf-fd543f79c197`）：总行数补上后模型不再数错行数（报 53 / 49，与
@@ -5043,7 +5106,7 @@ def read_file(path):
     body = "".join(f"{i}: {ln}" for i, ln in enumerate(all_lines, start=1))
     out = f"=== {rel}（共 {total} 行）===\n{body}"
     _note_read_range(target, None, None, len(out.encode("utf-8")))
-    return out
+    return _enc_note + out
 
 
 def inspect_data_file(arg):
@@ -5393,6 +5456,11 @@ def grep(pattern):
                 return None, f"拒绝访问：{rel} 不在代码根目录内。"
         if not os.path.exists(target):
             return None, f"路径不存在：{rel}"
+        # 与 read_file/apply_edit 同一道凭据地板：显式把 path: 指到凭据路径 → 直接拒，
+        # 绝不递归进去搜（FLOOR-Grep-Floor-Bypass：grep 此前不跑地板）。
+        floor = _hard_floor_reason(target)
+        if floor:
+            return None, floor
         return target, None
 
     scope_abs = None
@@ -5409,10 +5477,11 @@ def grep(pattern):
     from agent_runtime import code_intel as _ci
 
     pruned_state: set[str] = set()
+    floor_skipped: set[str] = set()
 
     def _iter_candidate_files():
         if scope_abs and os.path.isfile(scope_abs):
-            if os.path.splitext(scope_abs)[1].lower() in _CODE_EXT:
+            if os.path.splitext(scope_abs)[1].lower() in _CODE_EXT and not _hard_floor_reason(scope_abs):
                 yield scope_abs
             return
         for dp, dns, fns in os.walk(scope_abs or root_abs, followlinks=False):
@@ -5428,7 +5497,13 @@ def grep(pattern):
             for fn in fns:
                 if os.path.splitext(fn)[1].lower() not in _CODE_EXT:
                     continue
-                yield os.path.join(dp, fn)
+                fp = os.path.join(dp, fn)
+                # 与 read_file 同一道凭据地板：递归撞进凭据路径也不读其内容
+                # （FLOOR-Grep-Floor-Bypass），并记下供诚实披露——不静默假否定。
+                if _hard_floor_reason(fp):
+                    floor_skipped.add(os.path.relpath(fp, root_abs).replace("\\", "/"))
+                    continue
+                yield fp
 
     _HIT_CAP = 40
     hits = []
@@ -5439,23 +5514,26 @@ def grep(pattern):
             skipped_big += 1
             continue
         try:
-            with open(fp, encoding="utf-8", errors="ignore") as f:
-                for i, line in enumerate(f, 1):
-                    if rx.search(line):
-                        hits.append(f"{os.path.relpath(fp, root_abs)}:{i}: {line.rstrip()}")
-                        if len(hits) >= _HIT_CAP:
-                            break
+            with open(fp, "rb") as f:
+                _txt, _enc, _warned = _decode_text_bytes(f.read())
+            for i, line in enumerate(_txt.splitlines(), 1):
+                if rx.search(line):
+                    hits.append(f"{os.path.relpath(fp, root_abs)}:{i}: {line}")
+                    if len(hits) >= _HIT_CAP:
+                        break
         except Exception:  # noqa: BLE001
             pass
         if len(hits) >= _HIT_CAP:
             truncated = True
             break
 
-    # 如实交代"我没看全 / 没看哪里"——三处都必须显式带回，否则会被读成完整结论：
+    # 如实交代"我没看全 / 没看哪里"——四处都必须显式带回，否则会被读成完整结论：
     #   · 触顶：命中数达到 40 就截断，实测模型把这 40 条当全部，把真值 196 报成 194
     #     还自称"准确总数"。不标注 = 默许这种过度声称。
     #   · 跳过大文件：>2MB 直接不搜，不说的话"没命中"其实是"没看"。
     #   · 被剪的 `.docmind` 状态目录：与 glob 同一条教训——"没有命中"不等于"这里没有"。
+    #   · 凭据地板跳过的路径：读了就是越权，但若不吭声，"没命中"会被读成"这内容不存在"
+    #     （SYM-Absence-Overclaim 同一条教训）——必须明说是"没许看"而非"没有"。
     notes = []
     if truncated:
         notes.append("已达 %d 条上限并**截断**，实际匹配可能更多——不要把这 %d 条当全部、"
@@ -5466,6 +5544,12 @@ def grep(pattern):
     if pruned_state:
         notes.append("已跳过 DocMind 状态目录（产物目录仍会搜索）：.docmind/%s。"
                      % "、.docmind/".join(sorted(pruned_state)))
+    if floor_skipped:
+        _fs = sorted(floor_skipped)
+        _shown = "、".join(_fs[:5]) + ("…" if len(_fs) > 5 else "")
+        notes.append("已跳过 %d 个凭据路径下的文件（与 read_file 同一道地板：.ssh/.aws/.kube/.gnupg/"
+                     ".netrc/sudoers 等）——这些**未搜索**，故'没命中'不代表内容不存在，别据此下否定结论：%s"
+                     % (len(_fs), _shown))
     note_block = ("\n（提示：" + "；".join(notes) + "）") if notes else ""
 
     if not hits:
@@ -5616,13 +5700,18 @@ def confirm_edit(pid):
                     return _discard(f"目标文件已不存在：{e['rel']}")
                 # 防「暂存后被改动」：内容不一致则拒绝，避免覆盖他人在暂存期间的修改
                 try:
-                    with open(target, encoding="utf-8", errors="ignore") as f:
-                        cur = f.read()
+                    with open(target, "rb") as f:
+                        cur, _enc, _ = _decode_text_bytes(f.read())
                 except Exception as ex:  # noqa: BLE001
                     return False, f"读取目标失败: {ex}"
+                cur = cur.replace("\r\n", "\n").replace("\r", "\n")
                 if cur != e["old_content"]:
                     return _discard("目标文件在暂存后被修改，内容已变化；请重新 read_file 后再改。")
-                with open(target, "w", encoding="utf-8") as f:
+                _codec, _ok = _roundtrip_codec(_enc)
+                if not _ok:
+                    return False, ("拒绝写入：无法可靠判定该文件编码（%s 不可无损往返），"
+                                   "请先规范成 UTF-8 后再确认。" % (_enc or "unknown"))
+                with open(target, "w", encoding=_codec) as f:
                     f.write(e["new_content"])
             _read_store()[0].add(os.path.normcase(target))
     except Exception as ex:  # noqa: BLE001
@@ -5826,10 +5915,21 @@ def apply_edit(arg):
         return _gate
 
     try:
-        with open(target, encoding="utf-8", errors="ignore") as f:
-            old_content = f.read()
+        with open(target, "rb") as f:
+            _raw = f.read()
     except Exception as e:  # noqa: BLE001
         return f"读取原文件失败: {e}"
+    old_content, _enc, _warned = _decode_text_bytes(_raw)
+    # 字节解码会原样保留 \r\n / \r；旧的文本模式读会归一成 \n。为**完全复刻原换行往返
+    # 行为**（写回仍走默认 newline=None，Windows 下 \n→\r\n），这里先把解码结果归一到 \n。
+    old_content = old_content.replace("\r\n", "\n").replace("\r", "\n")
+    # 写侧 fail-closed：编码不可靠（latin-1 兜底 / charset_normalizer 怪异猜测）时
+    # 拒写，避免"按猜错的编码 re-encode 毁原字节"；请用户先规范成 UTF-8 再编辑。
+    _write_codec, _rt_ok = _roundtrip_codec(_enc)
+    if not _rt_ok:
+        return ("拒绝写入：无法可靠判定该文件编码（探测结果 %s 不可无损往返），"
+                "贸然写回可能损坏原始字节。请先将文件另存/转换为 UTF-8 后再编辑。"
+                % (_enc or "unknown"))
 
     # 决定新内容 + 局部/整体模式
     if old_text is not None:
@@ -5886,11 +5986,14 @@ def apply_edit(arg):
         with _file_lock(target):
             # Parallel subagents may have written the file after the initial
             # read. Re-check the base before writing to fail closed.
-            with open(target, encoding="utf-8", errors="ignore") as f:
-                current = f.read()
+            # 用与初次读一致的解码（_decode_text_bytes），faithful-vs-faithful 比较，
+            # 避免非 UTF-8 文件因两侧解码不一致而误报"并行修改冲突"。
+            with open(target, "rb") as f:
+                current, _enc2, _ = _decode_text_bytes(f.read())
+            current = current.replace("\r\n", "\n").replace("\r", "\n")
             if current != old_content:
                 return "并行修改冲突：文件在本次编辑准备后已发生变化，请重新 read_file 后再改。"
-            with open(target, "w", encoding="utf-8") as f:
+            with open(target, "w", encoding=_write_codec) as f:
                 f.write(new_content)
             lanes.record_write(
                 root_abs, lanes.get_current_lane(), rel, "modify",
@@ -5980,10 +6083,21 @@ def dev_apply_edits(arg):
             errors.append(f"块 {i}（{path}）：文件不存在（新建请用 create_file）。")
             continue
         try:
-            with open(target, encoding="utf-8", errors="ignore") as fh:
-                old_content = fh.read()
+            with open(target, "rb") as fh:
+                _raw = fh.read()
         except Exception as e:  # noqa: BLE001
             errors.append(f"块 {i}（{path}）：读取失败 {e}")
+            continue
+        old_content, _enc, _warned = _decode_text_bytes(_raw)
+        # 复刻 apply_edit：字节解码原样保留 \r\n / \r，归一到 \n 以匹配旧的文本模式读
+        # 往返语义（写回走默认 newline=None，Windows 下 \n→\r\n）。
+        old_content = old_content.replace("\r\n", "\n").replace("\r", "\n")
+        # 写侧 fail-closed：编码不可无损往返时拒写该块，避免按猜错的编码 re-encode 毁原字节。
+        _write_codec, _rt_ok = _roundtrip_codec(_enc)
+        if not _rt_ok:
+            errors.append(
+                f"块 {i}（{path}）：无法可靠判定编码（探测结果 {_enc or 'unknown'} "
+                "不可无损往返），贸然写回可能损坏原始字节；请先转换为 UTF-8 再编辑。")
             continue
         cnt = old_content.count(old_text)
         if cnt == 0:
@@ -6017,7 +6131,8 @@ def dev_apply_edits(arg):
                     os.remove(tmp)
         plans.append({"path": path, "target": target, "root_abs": root_abs,
                       "old_text": old_text, "new_text": new_text,
-                      "old_content": old_content, "new_content": new_content})
+                      "old_content": old_content, "new_content": new_content,
+                      "write_codec": _write_codec})
 
     if errors:
         return "未写入任何文件（原子性保护），请修正后重试：\n- " + "\n- ".join(errors)
@@ -6039,11 +6154,14 @@ def dev_apply_edits(arg):
     try:
         for p in plans:
             with _file_lock(p["target"]):
-                with open(p["target"], encoding="utf-8", errors="ignore") as fh:
-                    current = fh.read()
+                # 与初次读一致的解码，faithful-vs-faithful 比较，避免非 UTF-8 文件
+                # 因两侧解码不一致而误报"并行修改冲突"。
+                with open(p["target"], "rb") as fh:
+                    current, _enc2, _ = _decode_text_bytes(fh.read())
+                current = current.replace("\r\n", "\n").replace("\r", "\n")
                 if current != p["old_content"]:
                     raise RuntimeError(f"{p['path']}：并行修改冲突，文件在预检后已变化。")
-                with open(p["target"], "w", encoding="utf-8") as fh:
+                with open(p["target"], "w", encoding=p["write_codec"]) as fh:
                     fh.write(p["new_content"])
                 lanes.record_write(
                     p["root_abs"], lanes.get_current_lane(),
@@ -6054,7 +6172,7 @@ def dev_apply_edits(arg):
         rolled = []
         for p in reversed(written):
             try:
-                with open(p["target"], "w", encoding="utf-8") as fh:
+                with open(p["target"], "w", encoding=p["write_codec"]) as fh:
                     fh.write(p["old_content"])
                 rolled.append(p["path"])
             except Exception:  # noqa: BLE001
@@ -6242,10 +6360,18 @@ _GIT_OPTS_WITH_VALUE = {
     "-C", "-c", "--git-dir", "--work-tree", "--namespace",
     "--exec-path", "--super-prefix", "--list-submodules",
 }
+# ⚠ 补枚举（2026-10-19，BUG-GIT-GATE-RESTORE-RM）：原黑名单漏了三个"直接毁数据、
+#   且各有已拦同义兄弟"的写子命令——`restore` 是 `git checkout --`（已拦）的现代替代、
+#   丢弃未提交改动且无 reflog 可救；`rm` 删跟踪文件（`clean` 删未跟踪的反而拦了）；
+#   `filter-branch`/`replace` 重写历史/对象，无任何只读用途。只增拦，不碰 `git mv`
+#   （dev_move 明写的非破坏性重命名出口）与只读子命令。
+#   注：config/branch/tag/gc/update-index/symbolic-ref 属读写两用（如 `git config --get`、
+#   `git branch` 列分支），粗暴全拦会破只读用途 → 留待"只读白名单"根治方案一并裁定。
 _GIT_WRITE_SUBCMDS = {
     "commit", "push", "merge", "rebase", "revert", "reset", "clean",
     "checkout", "switch", "apply", "cherry-pick", "stash", "am",
     "update-ref", "worktree",
+    "restore", "rm", "filter-branch", "replace",
 }
 
 
@@ -6685,6 +6811,21 @@ def dev_region_edit(arg):
     path = (f.get("path") or "").strip()
     old_text = f.get("old_text")
     new_text = f.get("new_text")
+    # ⚠ fail-closed（2026-10-19，BUG-OLDBLOCK-REWRITE）：`old_text` 是"局部安全替换 vs
+    #   整体重写"的模式指针。docstring 明写"省略 old_text = 整体重写"——本意没错，
+    #   但**拼错 old_text**（`oldText` / `oldtext` / `old_key`）时 `f.get("old_text")`
+    #   = None → 静默落到 apply_edit 的整体重写分支，`new_text`（本意只是"那一小段替换"）
+    #   会覆盖整份文件，除那 3 行外全丢。护栏"必须 read_file 过"（缓存命中）在提示词纪律
+    #   下几乎必然成立、挡不住。修法：拒绝 old 家族的拼错、把"整体重写"限定为"完全省略
+    #   old_text 行"（不引入近似键）。
+    _KNOWN = {"region", "path", "old_text", "new_text"}
+    _cands = (set(f.keys()) - _KNOWN - {"__unknown__"}) | set((f.get("__unknown__") or []))
+    _typo = next((k for k in _cands
+                  if str(k).lower().startswith("old") and str(k).lower() != "old_text"), None)
+    if _typo:
+        return ("未知键 '%s' 疑似 'old_text' 拼错——拒绝执行以避免静默整体重写覆盖原文件。"
+                "若要局部安全替换请正确拼 'old_text'；若确要整体重写请完全省略 old_text 行"
+                "（前提：已用 dev_region_read 读过该文件）。" % _typo)
     if not region or not path:
         return "参数缺失：请提供 region: <分区key> 与 path: <分区内相对路径>。"
     if new_text is None:
@@ -7634,9 +7775,26 @@ def dev_patch(arg):
     text = (arg or "").replace("\r\n", "\n")
     first, sep, rest = text.partition("\n")
     dry_run = False
-    if re.match(r"^\s*dry_run\s*[:：]", first):
-        dry_run = first.split(":", 1)[-1].strip().strip("：").lower() in ("1", "true", "yes", "y", "on", "是")
-        text = rest
+    # ⚠ fail-closed（2026-10-19，BUG-PATCH-DRYRUN-FAILOPEN）：原实现匹配正则接受
+    #   半角 ":" 与全角 "："，但取值却用 first.split(":", 1) 只按半角切——于是
+    #   `dry_run：true`（值就是 true、只是全角冒号）切出整行落到白名单外 → 静默
+    #   dry_run=False → 把"只想空跑校验"的大补丁直接落盘；`dry_run: t`/`真` 等近义值
+    #   同样静默真写。改：两种冒号对称取值，再三态判定——真词=预览、假词=真应用、
+    #   其余（拼错/不可判定）=拒绝整次执行，绝不在意图不明时落盘。省略 dry_run 行
+    #   仍走"真应用"（既有契约不变）。
+    _dm = re.match(r"^\s*dry_run\s*[:：]\s*(.*)$", first)
+    if _dm:
+        val = _dm.group(1).strip().rstrip("：:").lower()
+        _TRUE = ("1", "true", "yes", "y", "on", "是")
+        _FALSE = ("0", "false", "no", "n", "off", "否")
+        if val in _TRUE:
+            dry_run, text = True, rest
+        elif val in _FALSE:
+            dry_run, text = False, rest
+        else:
+            return ("无法确定 dry_run 的值（收到 '%s'）：预览请用 `dry_run: true`（半角冒号），"
+                    "确认要真正打补丁请用 `dry_run: false` 或**完全省略 dry_run 行**。"
+                    "为避免在你意图不明时误写盘，本次未执行任何改动。" % (val or "空"))
     from agent_runtime import patch_apply
     try:
         res = patch_apply.apply_patch(root, text, dry_run=dry_run)
@@ -8031,10 +8189,27 @@ def dev_approve(arg):
     MCP 工具返回 blocked / approval_required 时必须等待用户在工作台确认；
     不要调用本工具代替用户审批，也不要绕过阻断。"""
     f = _parse_keyed(arg or "", ["action", "target"])
+    # ⚠ fail-closed（2026-10-19，BUG-APPROVE-WILDCARD）：`target` 是审批"作用范围"的
+    #   唯一指针——一旦拼错就落到 (原代码的) `or "*"` 兜底，授权范围**比模型本意更宽**，
+    #   30 分钟内所有对象通配放行。这与函数 docstring 明写的 "target 精确匹配、不是通配符"
+    #   相反；本修把"通配"从"缺值兜底"降级为"必须显式表达"，并拒绝 target 家族的拼错变体。
+    _KNOWN = {"action", "target"}
+    _cands = (set(f.keys()) - _KNOWN - {"__unknown__"}) | set((f.get("__unknown__") or []))
+    _typo = next((k for k in _cands
+                  if str(k).lower().startswith("target") and str(k).lower() != "target"), None)
+    if _typo:
+        return ("target 键拼错（收到 '%s'），应写 'target'；本次调用未审批任何操作。"
+                "commit_region 传分区 key，rollback_changeset 传变更集 id，"
+                "commit_all / apply_regions 显式传 target: *；不允许缺省或换名。" % _typo)
     action = (f.get("action") or "").strip()
-    target = (f.get("target") or "*").strip() or "*"
     if not action:
         return "参数缺失：请提供 action: <操作名>（如 commit_all / rollback_changeset / install_tool）。"
+    if "target" not in f or not (f.get("target") or "").strip():
+        return ("参数缺失：请显式提供 target: <对象>。commit_region 传分区 key，"
+                "rollback_changeset 传变更集 id，install_tool 传 <manager>:<package[==version]>，"
+                "commit_all / apply_regions 显式传 target: *。"
+                "（缺 target 不再默认 * —— 防拼错静默降为通配、放大授权范围。）")
+    target = (f.get("target") or "").strip()
     if action in ("mcp_server", "mcp_capability"):
         return ("MCP 连接和能力路由必须由用户在工作台明确确认，Agent 不能自行审批。"
                 "请展示 blocked 详情后等待用户在 MCP 设置中点击确认。")
@@ -8993,6 +9168,20 @@ def dev_headcheck(arg=""):
     fields = _parse_keyed(arg or "", ["ref", "modules", "timeout", "gate", "tests",
                                       "suite_timeout"])
 
+    # ⚠ fail-closed（2026-10-19，BUG-GATE-SILENT-OFF）：`gate` 是发布门禁是否阻塞的开关。
+    #   拼错（`gates` / `gate_flag` / `gate_` 等）时 want_gate 静默 = False，
+    #   head_check 会跑但不阻塞——把"发布前把关"降级为"建议"，返回体不区分两种模式，
+    #   模型误以为"已作为门禁验证过"。拒绝 gate 家族的拼错、把"非门禁模式"限定为"完全省略
+    #   gate 行"（不引入近似键）。
+    _KNOWN = {"ref", "modules", "timeout", "gate", "tests", "suite_timeout"}
+    _cands = (set(fields.keys()) - _KNOWN - {"__unknown__"}) | set((fields.get("__unknown__") or []))
+    _typo = next((k for k in _cands
+                  if str(k).lower().startswith("gate") and str(k).lower() != "gate"), None)
+    if _typo:
+        return ("gate 键拼错（收到 '%s'），应写 'gate'；本次调用未执行 headcheck。"
+                "若要跑发布门禁请传 gate: 1；若只要 import 自检请完全省略 gate 行"
+                "（不允许近似键，防拼错静默把阻塞门禁降级为建议模式）。" % _typo)
+
     def _one(key, default=""):
         value = (fields.get(key) or "").strip()
         return value.splitlines()[0].strip() if value else default
@@ -9769,15 +9958,40 @@ def memory_save(arg):
     """保存当前项目的有用事实、明确用户偏好或可复用流程。"""
     import agent_memory as memory
     try:
-        data = json.loads(str(arg)) if str(arg).lstrip().startswith("{") else _parse_keyed(str(arg), ["kind", "title", "content", "evidence"])
+        data = json.loads(str(arg)) if str(arg).lstrip().startswith("{") else _parse_keyed(str(arg), ["kind", "title", "content", "evidence", "supersedes"])
+        # ⚠ fail-closed（2026-10-19，BUG-MEM-TYPO）：拼错的 supersedes 变体一律**整次拒绝**——
+        #   不落新记忆、不作废旧记忆。supersedes 是"防旧错误结论继续回灌"的安全关键指针；
+        #   若把它拼错就静默"部分成功"，用户本意（纠正旧结论）没达成，模型还以为已纠正——
+        #   恰恰是本次 MEM-C 要堵的回音室。工具**不确定**就不动状态，返回明确 error 教正确拼写。
+        #   覆盖两条通道：keyed 走 `__unknown__` 列表；JSON 走"键名不在白名单"直接检测。
+        _KNOWN = {"kind", "title", "content", "evidence", "supersedes"}
+        _cands = (set(data.keys()) - _KNOWN - {"__unknown__"}) | set((data.get("__unknown__") or []))
+        _typo = next((k for k in _cands
+                      if str(k).lower().startswith("supersed") and str(k).lower() != "supersedes"), None)
+        if _typo:
+            return json.dumps({"ok": False,
+                               "error": "supersedes 键拼错（收到 '%s'），应写 'supersedes'；"
+                                        "本次调用未保存任何记忆、旧错误结论未作废。"
+                                        % memory.scrub(str(_typo), 60)},
+                              ensure_ascii=False)
         scope, user_text = memory.current_scope()
         kind = str(data.get("kind") or "fact")
         evidence = str(data.get("evidence") or "")
         if kind == "preference" and (not evidence or evidence not in user_text):
             return json.dumps({"ok": False, "error": "用户偏好必须引用当前或最近会话中用户明确说过的原文，不允许推测画像。"}, ensure_ascii=False)
+        # 缺口 C · A：记纠正性记忆时可带 supersedes=<被推翻那条的 id>，让旧错误结论自动作废。
+        # fail-closed 诚实：只有该 id 确在本 scope 且仍 active 才真正下发取代；否则新记忆照存，
+        # 但明确告知"没有作废任何旧记忆"，绝不谎称 supersede 成功。
+        supersedes = str(data.get("supersedes") or "").strip()
+        supersede_target = supersedes if (supersedes and memory.is_active(scope, supersedes)) else ""
         mid = memory.remember(scope, kind, data.get("title", ""), data.get("content", ""), evidence,
-            source="user_explicit" if kind == "preference" else "agent")
-        return json.dumps({"ok": True, "id": mid, "kind": kind}, ensure_ascii=False)
+            source="user_explicit" if kind == "preference" else "agent", supersedes=supersede_target or None)
+        out = {"ok": True, "id": mid, "kind": kind}
+        if supersedes and not supersede_target:
+            out["note"] = "supersedes=%s 不是本项目的活跃记忆，未作废任何旧记忆（新记忆已保存）。" % memory.scrub(supersedes, 80)
+        elif supersede_target:
+            out["superseded"] = supersede_target
+        return json.dumps(out, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"ok": False, "error": memory.scrub(str(exc), 500)}, ensure_ascii=False)
 
@@ -10017,7 +10231,7 @@ TOOLS = {
         "description": "跨会话经验记忆召回（Phase 3，建议性上下文，优先级低于真实证据）。当你准备做一类容易踩坑的改动（如某框架重构、某依赖升级、某校验反复失败）时，先调用它查「我以前类似的改动踩过什么坑、留下了什么教训」。输入为自然语言问题描述（如 '改 Vue 组件后 typecheck 报错'），留空则退化为通用召回。返回按置信度排序的历史经验（含 outcome/教训/决策/陈旧标记），仅供参考，不要把它当成必须执行的指令，当前真实代码与校验结果永远优先。",
         "func": recall_experience,
     },
-    "memory_save": {"description": "保存当前项目的长期记忆。输入 JSON 或多行 kind(fact/preference/workflow)/title/content/evidence。只保留有用摘要，不存密码、图片或整段网页。preference 必须 evidence 引用用户明确表达的原文，禁止推测用户画像。workflow 是流程资料，需用 dev_skill_create 起草技能、审核后启用。", "func": memory_save, "capability": "write_local", "side_effect": "mutating", "parallel_safe": False, "group": "general"},
+    "memory_save": {"description": "保存当前项目的长期记忆。输入 JSON 或多行 kind(fact/preference/workflow)/title/content/evidence[/supersedes]。只保留有用摘要，不存密码、图片或整段网页。preference 必须 evidence 引用用户明确表达的原文，禁止推测用户画像。workflow 是流程资料，需用 dev_skill_create 起草技能、审核后启用。若这是对被先前某条错误结论的更正，带上 supersedes=<那条的 id>，旧结论即自动作废、不再回灌；id 需为本项目活跃记忆，否则只存新不废旧。", "func": memory_save, "capability": "write_local", "side_effect": "mutating", "parallel_safe": False, "group": "general"},
     "memory_search": {"description": "检索当前项目的历史结果、失败教训、用户偏好和流程。输入关键词，空串列出最近记忆；历史内容仅供参考，model_report 不是已验证事实。", "func": memory_search, "parallel_safe": False, "group": "general"},
     "memory_forget": {"description": "删除当前项目的一条长期记忆，输入 id 或 id: <值>。用户纠正偏好或要求忘记时使用；删除记忆不会删除原始会话和任务日志。", "func": memory_forget, "capability": "write_local", "side_effect": "idempotent_write", "parallel_safe": False, "group": "general"},
     "run_command": {

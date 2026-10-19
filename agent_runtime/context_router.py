@@ -782,9 +782,37 @@ class ContextRouter:
         # 时效/外部资料意图时才把 web 工具组加入本轮暴露集合，避免
         # progressive 模式下每个普通问题都携带整组外网工具。
 
+        # 缺口 A · A2(fail-closed tiebreaker):同等相关度里,把"已评估且回归"的技能
+        # 挤出前 max_skills 位。
+        #   - 只在排序 key 里加一个中间位:regressed=1 排在 regressed=0 之后;score>0
+        #     这条相关性硬门、[:max_skills] 截断、tool groups/sources 追加、budget、
+        #     schema 表**一律不动**——正交于 test_no_relevance_narrowing 那几条锁。
+        #   - 无评估数据(skills.skill_regression 现有语义 scored=False → "证据缺失
+        #     不是失败") → regressed=False → 中性,不惩罚冷启动。
+        #   - **只降级、不删除**:若 regressed 技能是仅剩候选,仍会入选,agent 可显式
+        #     dev_use_skill 走它——因为"曾经回归过"≠"现在必然不行"。
+        #   - 惰性 import 避免循环依赖;拿不到 skills 模块 = 全体中性 = 等价于旧排序。
+        try:
+            import skills as _skills_mod
+        except ImportError:  # pragma: no cover — 环境缺 skills 模块时排序退化
+            _skills_mod = None
+
+        def _regressed_flag(name: str) -> int:
+            if _skills_mod is None or not name:
+                return 0
+            try:
+                info = _skills_mod.skill_regression(name)
+            except Exception:  # noqa: BLE001 — 统计层任何异常一律降级为中性
+                return 0
+            return 1 if info.get("regressed") else 0
+
         ranked = sorted(
             ((_skill_score(query, item), item) for item in skill_items),
-            key=lambda pair: (-pair[0], str(pair[1].get("name") or "")),
+            key=lambda pair: (
+                -pair[0],
+                _regressed_flag(str(pair[1].get("name") or "")),
+                str(pair[1].get("name") or ""),
+            ),
         )
         selected = [item for score, item in ranked if score > 0][:self.max_skills]
         if selected:

@@ -414,21 +414,51 @@ _SUMMARY_PROMPT = (
 )
 
 
+def _clip_with_mark(text, limit):
+    """裁到 limit，但绝不"静默腰斩"：原样更长时显式加"…（截断）"标记，
+    避免把 ALPHA-7731-OMEGA 这类精确标识符截成"看着完整的错值"（LONGCTX-Compaction-FactMangle）。
+    切点若落在一段较短（<32 字符）的字母数字/_/- token 末尾，则回退到其起点，
+    尽量不腰斩 token；残 token 过长则不强退（交给标记兜底）。返回 (串, 是否被截断)。"""
+    text = (text or "").strip().replace("\n", " ")
+    if len(text) <= limit:
+        return text, False
+    cut = text[:limit]
+    m = re.search(r"[A-Za-z0-9_\-]+$", cut)
+    if m and m.start() >= limit - 32 and m.start() > 0:
+        cut = cut[:m.start()].rstrip(" ,，。;；:：")
+    return cut + "…（截断）", True
+
+
 def _naive_summary(turns) -> str:
-    """LLM 不可用时的确定性兜底：抽取每轮问题首句拼成要点。"""
+    """LLM 不可用/失败/返回空时的确定性兜底：抽取每轮【问答双方】首段拼要点。
+    截断一律显式标"…（截断）"，并把助手侧要点也纳入（此前完全丢弃 assistant 事实）；
+    头注明"可能不完整/被截断，勿当已验证事实"——防下游把残缺/错值当完整事实用。"""
     bits = []
     for t in turns:
-        q = (t.get("user") or "").strip().replace("\n", " ")[:60]
-        if q:
-            bits.append("· " + q)
-    return "（早期对话摘要·本地兜底）\n" + "\n".join(bits)
+        uq, _ = _clip_with_mark(t.get("user") or "", 160)
+        ans, _ = _clip_with_mark(t.get("assistant") or "", 120)
+        seg = []
+        if uq:
+            seg.append("问：" + uq)
+        if ans:
+            seg.append("答：" + ans)
+        if seg:
+            bits.append("· " + " ／ ".join(seg))
+    return ("（早期对话摘要·本地兜底，可能不完整/被截断，勿当已验证事实；"
+            "需要精确标识符/数值请重读来源或追问）\n" + "\n".join(bits))
 
 
 def _llm_summary(turns, llm) -> str:
     if llm is None:
         return _naive_summary(turns)
+    # 与 _naive_summary 一致：切片一律走 _clip_with_mark，超长时显式带"…（截断）"，
+    # 不再用裸 [:400] 把落在 400 字之后的精确标识符静默腰斩后喂给摘要器
+    # （LONGCTX-LLMSlice-Leak：修复此前只装了兜底、主路径漏装）。
     convo = "\n".join(
-        f"用户：{(t.get('user') or '')[:400]}\n助手：{(t.get('assistant') or '')[:400]}"
+        "用户：%s\n助手：%s" % (
+            _clip_with_mark(t.get("user") or "", 400)[0],
+            _clip_with_mark(t.get("assistant") or "", 400)[0],
+        )
         for t in turns
     )
     try:

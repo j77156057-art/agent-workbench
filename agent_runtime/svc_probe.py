@@ -362,12 +362,26 @@ def render_http(result: dict[str, Any], *, expect_status: int = 0,
         return "dev_probe(http) 未完成（没有发出任何请求）：" + str(result["error"])
     checks = result.get("checks") or {}
     status = result.get("status")
-    verdict = "通过" if result.get("ok") else "未通过"
+    health_ok = bool(result.get("ok"))
+    want = int(expect_status or 0)
+    needle = str(expect_text or "").strip()
+    body = str(result.get("body_excerpt") or "")
+    # 两层分开：health_ok 只说「服务有没有正常应答、是不是 5xx」，跟调用方想验收
+    # 什么无关；验收层只在显式设了 expect 时才判达没达标。以前抬头词只认 health_ok，
+    # 于是 401 配 expect_status=200 时底行已老实写「凭据不符」，抬头却还报【通过】，
+    # 把这句细糠盖掉了——这里让抬头词如实反映「观察完成但验收未达」，不动 result["ok"]。
+    expect_set = bool(want) or bool(needle)
+    expect_met = (not want or status == want) and (not needle or needle in body)
+    if not health_ok:
+        verdict = "未通过"
+    elif expect_set and not expect_met:
+        verdict = "观察完成·验收未达"
+    else:
+        verdict = "通过"
     lines = ["HTTP 观察【%s】：%s → %s（%s 秒）" % (
         verdict, result.get("url") or "?",
         "HTTP %s" % status if status else "没有应答",
         result.get("elapsed"))]
-    want = int(expect_status or 0)
     if want and status != want:
         lines.append("期望 HTTP %d，实际 %s——这是凭据不符，不是「服务没起」。" % (want, status))
     elif want:
@@ -376,10 +390,8 @@ def render_http(result: dict[str, Any], *, expect_status: int = 0,
         lines.append("Content-Type：%s" % result["content_type"])
     if result.get("json_error_fields"):
         lines.append("响应 JSON 里带错误字段：%s" % ", ".join(result["json_error_fields"]))
-    needle = str(expect_text or "").strip()
     if needle:
-        lines.append("要找的 %r：%s" % (needle[:60], "在响应里" if needle in (result.get("body_excerpt") or "") else "**不在**响应里"))
-    body = str(result.get("body_excerpt") or "")
+        lines.append("要找的 %r：%s" % (needle[:60], "在响应里" if needle in body else "**不在**响应里"))
     if body:
         head = body[:1200]
         lines.append("响应正文（前 %d 字%s）：\n%s" % (
