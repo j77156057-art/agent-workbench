@@ -8,6 +8,7 @@
 // 组件自管状态，不进工作台全局；入口收在顶栏「更多 → 工具与运行」。
 import { computed, ref } from 'vue'
 import { edaApi, changesetApi, type EdaFact, type VerifyResp, type VisualResult, type VisualRegressionResp, type ReportGateReq } from '../api'
+import { noProjectHint } from '../projectHint'
 import { askConfirm } from '../composables/workbench'
 
 // 复用 SceneRuntimePanel 的「可嵌入」惯用法：popup（固定弹层，行为不变）/ docked（内联常驻主区）。
@@ -113,7 +114,7 @@ async function runScript() {
       runMsg.value = `已跑完并解析：${r.tool}/${r.kind}`
     }
   } catch (e) {
-    runErr.value = (e as Error).message || '运行失败'
+    runErr.value = noProjectHint((e as Error).message) || '运行失败'
   } finally {
     runBusy.value = false
   }
@@ -198,7 +199,7 @@ async function parseReport() {
   try {
     fact.value = await edaApi.parseReport(tool.value, kind.value, reportText.value)
   } catch (e) {
-    error.value = (e as Error).message || '解析失败'
+    error.value = noProjectHint((e as Error).message) || '解析失败'
     fact.value = null
   } finally {
     busy.value = false
@@ -289,7 +290,7 @@ async function runGate() {
       critical: criticalList(),
     })
   } catch (e) {
-    error.value = (e as Error).message || '合并门调用失败'
+    error.value = noProjectHint((e as Error).message) || '合并门调用失败'
     result.value = null
   } finally {
     busy.value = false
@@ -354,7 +355,7 @@ async function runReportGate() {
       error.value = '在线正文取不到 → 判不确定，交人工/下一段核实（未喂解析器、未造假）。'
     }
   } catch (e) {
-    error.value = (e as Error).message || '在线报告门调用失败'
+    error.value = noProjectHint((e as Error).message) || '在线报告门调用失败'
     result.value = null
   } finally {
     busy.value = false

@@ -14,6 +14,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { engineApi, type EngineCatalogEntry } from '../api'
+import { noProjectHint } from '../projectHint'
 
 const catalog = ref<EngineCatalogEntry[]>([])
 const detected = ref<{ engine: string; path: string }[]>([])
@@ -56,7 +57,7 @@ async function load() {
       fillExecutable(engine.value)
     }
   } catch (e) {
-    error.value = `读取引擎配置失败：${(e as Error).message}`
+    error.value = noProjectHint(`读取引擎配置失败：${(e as Error).message}`)
   }
   await scan()
 }
@@ -83,7 +84,7 @@ async function save() {
     if (!r.ok) { error.value = r.error || '保存失败'; return }
     okMsg.value = `已保存：${currentName.value}（${r.executable}）`
   } catch (e) {
-    error.value = `保存失败：${(e as Error).message}`
+    error.value = noProjectHint(`保存失败：${(e as Error).message}`)
   } finally {
     saving.value = false
   }
@@ -105,7 +106,7 @@ async function prepare() {
     okMsg.value = `${currentName.value} 已就绪，项目配置已写入。`
     await scan()
   } catch (e) {
-    error.value = `准备失败：${(e as Error).message}`
+    error.value = noProjectHint(`准备失败：${(e as Error).message}`)
   } finally {
     preparing.value = false
   }

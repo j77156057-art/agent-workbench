@@ -3432,7 +3432,7 @@ def eda_run_script(arg):
     script = str(f.get("script") or "")
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     if not script.strip():
         return json.dumps({"ok": False, "needs": ["script"],
                            "message": "必须给出 script（要交给 EDA 工具执行的脚本正文）。"},
@@ -4113,29 +4113,42 @@ def _ptc_bridge_write_tier(name, arg):
 # 与 _PENDING_EXEC / _PENDING_EDITS 同形：父侧持有 in-memory 队列，人工出带确认后才
 # 经注入的执行器落盘。服务环内**只登记、绝不执行**——即便 tier=1 免批也延后（压缩动作
 # 里用户只看到 1 步，无法逐写点确认，故连免批写也保守按需确认 ≥1 次）。
-# 执行器经模块全局 `_PTC_BRIDGE_WRITE_EXECUTOR` 注入（步 6 由 Agent 在桥接范围内接
-# 完整 execute_tool+归因）；**未注入时 fail-closed**：确认到阈值也不落盘、保留待确认，
-# 绝不谎报成功。tools↔agent 解耦：tools 不 import execute_tool。
+# 执行器经模块全局 `_PTC_BRIDGE_WRITE_EXECUTOR` 注入（轨道 B：由 Agent 在**会话作用域**
+# 注入，存续至带外确认时刻，故 confirm 时执行器在场即可带外直执）；**未注入时 fail-closed**：
+# 确认到阈值也不落盘、保留待确认，绝不谎报成功。tools↔agent 解耦：tools 不 import execute_tool。
+# 会话隔离：台账 entry 带 `session`，去重键含 session 前缀，list/confirm/reject 可按 session
+# 过滤，杜绝并发多会话互相看到/确认对方的待落盘写。
 # ---------------------------------------------------------------------------
-_PENDING_BRIDGE_WRITES = {}   # pid -> {id,name,arg,tier,reason,path,arg_hash,confirms,need}
+_PENDING_BRIDGE_WRITES = {}   # pid -> {id,name,arg,tier,reason,path,arg_hash,confirms,need,session}
 _BRIDGE_WRITE_LOCK = threading.Lock()
 _bridge_write_seq = [0]
-_bridge_write_by_hash = {}     # "name|arg_hash" -> pid（同参写去重，指向同一 pid）
+_bridge_write_by_hash = {}     # "<session>|<name>|<arg_hash>" -> pid（同会话同参写去重，指向同一 pid）
+
+#: 当前活跃桥接会话标识：由 Agent 的 `_ptc_server_scope` 随 `_PTC_BRIDGE_SERVER` 对称发布/恢复，
+#: 服务环读取它给延后写打上 session，实现跨会话隔离。关态/非桥接期恒空串。
+_PTC_BRIDGE_SESSION_ID = ""
 
 #: 延后写执行器接缝：签名 `executor(name: str, arg: str) -> (ok: bool, result_text: str)`，
-#: 内部走完整 execute_tool 治理 + turn 归因。**未注入时确认到阈值也 fail-closed 不落盘。**
+#: 内部走完整 execute_tool 治理 + 独立审计归因。**未注入时确认到阈值也 fail-closed 不落盘。**
 _PTC_BRIDGE_WRITE_EXECUTOR = None
 
 
-def _ptc_write_arg_hash(name, arg):
-    """父侧去重键：与子侧 `__BRIDGE_PLAN__` 的 arg_hash 同算法（sha256[:16]），前缀工具名。"""
+def _ptc_write_arg_hash(name, arg, session_id=""):
+    """父侧去重键：与子侧 `__BRIDGE_PLAN__` 的 arg_hash 同算法（sha256[:16]），
+    前缀 session + 工具名——不同会话的同参写各自独立去重，互不串台。"""
     h = hashlib.sha256((arg if isinstance(arg, str) else str(arg)).encode("utf-8")).hexdigest()[:16]
-    return "%s|%s" % (name, h)
+    return "%s|%s|%s" % (session_id or "", name, h)
 
 
-def _peek_bridge_write(name, arg):
-    """查同参写是否已登记待确认——返回既有 pid 或 None，**无副作用**。"""
-    key = _ptc_write_arg_hash(name, arg)
+def _bridge_pid_prefix(session_id):
+    """会话短标识：仅留字母数字、截断 8 字符，空/异常回 'anon'。用于 pid 可读命名空间。"""
+    cleaned = "".join(ch for ch in (session_id or "") if ch.isalnum())[:8]
+    return cleaned or "anon"
+
+
+def _peek_bridge_write(name, arg, session_id=""):
+    """查同会话同参写是否已登记待确认——返回既有 pid 或 None，**无副作用**。"""
+    key = _ptc_write_arg_hash(name, arg, session_id)
     with _BRIDGE_WRITE_LOCK:
         pid = _bridge_write_by_hash.get(key)
         if pid is not None and pid in _PENDING_BRIDGE_WRITES:
@@ -4143,20 +4156,20 @@ def _peek_bridge_write(name, arg):
         return None
 
 
-def stage_bridge_write(name, arg, tier, reason, path=None):
+def stage_bridge_write(name, arg, tier, reason, path=None, session_id=""):
     """登记一次延后的 bridged 写（**当场绝不落盘**）。返回 (pid, replayed)。
 
-    同段/同参（工具名 + arg 哈希相同）已在待确认队列 → 复用同一 pid、`replayed=True`、
-    不重复登记。确认门槛沿用三档语义，但 bridged 写至少需 1 次人工确认（tier=1 免批
-    也保守按需确认 1 次）。
+    同会话/同参（session + 工具名 + arg 哈希相同）已在待确认队列 → 复用同一 pid、
+    `replayed=True`、不重复登记。不同会话的同参写各自独立登记（session 前缀隔离）。
+    确认门槛沿用三档语义，但 bridged 写至少需 1 次人工确认（tier=1 免批也保守按需确认 1 次）。
     """
-    key = _ptc_write_arg_hash(name, arg)
+    key = _ptc_write_arg_hash(name, arg, session_id)
     with _BRIDGE_WRITE_LOCK:
         prev = _bridge_write_by_hash.get(key)
         if prev is not None and prev in _PENDING_BRIDGE_WRITES:
             return prev, True
         _bridge_write_seq[0] += 1
-        pid = "W" + str(_bridge_write_seq[0])
+        pid = "W%d-%s" % (_bridge_write_seq[0], _bridge_pid_prefix(session_id))
         _PENDING_BRIDGE_WRITES[pid] = {
             "id": pid,
             "name": name,
@@ -4167,15 +4180,19 @@ def stage_bridge_write(name, arg, tier, reason, path=None):
             "arg_hash": key,
             "confirms": 0,
             "need": max(1, exec_tier_confirm(tier)),
+            "session": session_id or "",
         }
         _bridge_write_by_hash[key] = pid
         return pid, False
 
 
-def list_bridge_writes():
+def list_bridge_writes(session_id=None):
     with _BRIDGE_WRITE_LOCK:
-        return [
-            {
+        out = []
+        for e in _PENDING_BRIDGE_WRITES.values():
+            if session_id is not None and e.get("session", "") != session_id:
+                continue
+            out.append({
                 "id": e["id"],
                 "tool": e["name"],
                 "tier": e["tier"],
@@ -4183,22 +4200,27 @@ def list_bridge_writes():
                 "path": e["path"],
                 "confirms": e["confirms"],
                 "need": e["need"],
-            }
-            for e in _PENDING_BRIDGE_WRITES.values()
-        ]
+                "session": e.get("session", ""),
+            })
+        return out
 
 
-def confirm_bridge_write(pid):
-    """累计一次确认；达阈值才经注入执行器真正落盘（走完整治理+归因）。
+def confirm_bridge_write(pid, session_id=None):
+    """累计一次确认；达阈值才经注入执行器真正落盘（走完整治理 + 硬底线二次复核）。
 
-    未达阈值只递增计数（回「还需 N 次·未执行」）。**执行器未注入时 fail-closed**：
-    回退本次无效确认、保留待确认、绝不落盘、绝不谎报成功。达阈值且有执行器时先移除
-    待确认项（已获人工授权），再执行并如实返回执行器结果。
+    - 跨会话确认：`session_id` 给定且与登记项 session 不符 → 视同"未找到"（不泄露他人队列）。
+    - 未达阈值：只递增计数（回「还需 N 次·未执行」）。
+    - 达阈值且**执行器未注入**：fail-closed——回退本次确认、保留待确认、绝不落盘、绝不谎报。
+    - 达阈值且执行器在场：**先重算 `_ptc_bridge_write_tier`（二次复核硬底线）**；若此刻已变
+      `tier==-1`（路径漂移到凭据/系统关键目录/格式化）→ 撤销待确认、当场拒、绝不落盘；
+      否则移除待确认项（已获人工授权）再执行并如实返回执行器结果。
     """
     with _BRIDGE_WRITE_LOCK:
         e = _PENDING_BRIDGE_WRITES.get(pid)
     if not e:
-        return False, "未找到待确认写 #%s（可能已确认/拒绝或重启后失效）。" % pid
+        return False, "未找到待确认写 #%s（可能已确认/拒绝、重启后失效、或不属于本会话）。" % pid
+    if session_id is not None and e.get("session", "") != session_id:
+        return False, "未找到待确认写 #%s（可能已确认/拒绝、重启后失效、或不属于本会话）。" % pid
     tier, need = e["tier"], e["need"]
     with _BRIDGE_WRITE_LOCK:
         e["confirms"] += 1
@@ -4210,8 +4232,16 @@ def confirm_bridge_write(pid):
     if executor is None:
         with _BRIDGE_WRITE_LOCK:
             e["confirms"] = got - 1  # 回退本次确认，保留待人工在活跃桥接范围内重试
-        return False, ("bridge 写执行服务未就绪（当前会话不在 python_exec 活跃桥接范围内），"
+        return False, ("bridge 写执行服务未就绪（当前会话不在活跃桥接范围内），"
                        "未执行、保留待确认。")
+    # 二次复核硬底线：确认时按当前策略重算档位，漂移进凭据/系统关键目录/格式化 → 撤销、拒执行。
+    tier2, reason2, _ = _ptc_bridge_write_tier(e["name"], e["arg"])
+    if tier2 == -1:
+        with _BRIDGE_WRITE_LOCK:
+            _PENDING_BRIDGE_WRITES.pop(pid, None)
+            _bridge_write_by_hash.pop(e["arg_hash"], None)
+        return False, ("写 #%s 在确认时二次复核命中永不放行硬底线（%s），已撤销待确认、未执行。"
+                       % (pid, reason2))
     with _BRIDGE_WRITE_LOCK:
         _PENDING_BRIDGE_WRITES.pop(pid, None)
         _bridge_write_by_hash.pop(e["arg_hash"], None)
@@ -5387,7 +5417,7 @@ _SYMBOL_KW = {
 def search_code(query):
     """在已索引的源代码/配置中检索相关函数、类、配置片段。"""
     if not _get_code_root():
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录后再问代码相关问题。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目），之后再问代码相关问题。"
     query = _clean_search_query(query)
     collection, ingest_root = _project_code_scope()
     retrieved = get_retriever(collection=collection or CODE_COLLECTION_NAME,
@@ -5784,7 +5814,7 @@ def read_file(path):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     root_abs = os.path.normpath(root)
     start_line = end_line = None
     ms = _RE_READ_START.search(path)
@@ -6260,7 +6290,7 @@ def grep(pattern):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     # 解析可选 path: 作用域（独立行优先），剩余文本才是正则
     scope_rel = None
     kept = []
@@ -6736,7 +6766,7 @@ def apply_edit(arg):
 
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
 
     target, root_abs, reason = _resolve_in_root(path)
     if target is None:
@@ -6883,7 +6913,7 @@ def dev_apply_edits(arg):
         return ("未解析到任何编辑块。格式：每块 `path:` + `old_text:` + `new_text:`，"
                 "块之间用单独一行 `---` 分隔。")
     if not _get_code_root():
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
 
     plans = []
     errors = []
@@ -7067,7 +7097,7 @@ def create_file(arg):
         return "参数缺失：请提供 new_text: <文件内容（可多行）>。"
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
 
     target, root_abs, reason = _resolve_create_path(path)
     if target is None:
@@ -7340,7 +7370,7 @@ def run_command(cmd):
         return "未提供命令。"
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     blocked, why = _cmd_is_blocked(command)
     if blocked:
         return f"拒绝执行：命令被安全策略拦截（命中「{why}」）。"
@@ -7551,7 +7581,7 @@ def _require_regions():
     """返回 (root, rmap) 或 (None, error_msg)。rmap = {key: region_meta}。"""
     root = _get_code_root()
     if not root:
-        return None, "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return None, "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     try:
         from regions import get_region_map
         rmap = get_region_map(root)
@@ -7837,7 +7867,7 @@ def dev_git_diff(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["paths", "staged", "stat", "context", "timeout"]
     fields = _parse_keyed(arg, keys)
     bare = [ln.strip() for ln in (arg or "").splitlines()
@@ -7876,7 +7906,7 @@ def dev_glob(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["pattern", "scope", "limit"]
     fields = _parse_keyed(arg, keys)
     bare = [ln.strip() for ln in (arg or "").splitlines()
@@ -7913,7 +7943,7 @@ def dev_git_log(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["paths", "limit", "since", "until", "author", "at", "files", "timeout"]
     fields = _parse_keyed(arg, keys)
     bare = [ln.strip() for ln in (arg or "").splitlines()
@@ -7969,7 +7999,7 @@ def dev_plan(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     from agent_runtime import plan_state
 
     keys = ["action", "title", "items", "item"]
@@ -8039,7 +8069,7 @@ def dev_lanes(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["action", "lane", "owner", "paths", "ttl_minutes", "note", "path",
             "exclude_lane", "base_ref", "discard", "force", "timeout"]
     fields = _parse_keyed(arg, keys)
@@ -8123,7 +8153,7 @@ def dev_agent_log(arg=""):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
 
     keys = ["action", "kind", "limit"]
     fields = _parse_keyed(arg, keys)
@@ -8202,7 +8232,7 @@ def dev_probe(arg=""):
     from agent_runtime import svc_probe
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     fields = _parse_keyed(arg or "", ["mode", "url", "method", "body", "headers",
                                       "expect_status", "expect_text", "command",
                                       "forbid_text", "allow_silent", "timeout"])
@@ -8294,7 +8324,7 @@ def dev_handoff(arg=""):
     from agent_runtime import handoff
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     fields = _parse_keyed(arg or "", ["files", "title", "timeout"])
 
     def _one(key):
@@ -8444,7 +8474,7 @@ def dev_deps(arg=""):
     from agent_runtime import deps_sync
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     fields = _parse_keyed(arg or "", ["paths", "action", "source"])
 
     def _one(key):
@@ -8482,7 +8512,7 @@ def dev_propose(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["title", "body", "files", "staged", "test_plan", "lane", "timeout"]
     fields = _parse_keyed(arg, keys)
 
@@ -8523,7 +8553,7 @@ def dev_ci_status(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["branch", "ref", "per_page", "jobs", "log_url", "timeout"]
     fields = _parse_keyed(arg, keys)
 
@@ -8576,7 +8606,7 @@ def dev_diagnostics(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["target", "scope", "rules", "timeout", "config"]
     fields = _parse_keyed(arg, keys)
     bare = [ln.strip() for ln in (arg or "").splitlines()
@@ -8611,7 +8641,7 @@ def dev_patch(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     text = (arg or "").replace("\r\n", "\n")
     first, sep, rest = text.partition("\n")
     dry_run = False
@@ -8655,7 +8685,7 @@ def dev_move(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["from", "to", "src", "dst", "timeout"]
     fields = _parse_keyed(arg, keys)
 
@@ -8695,7 +8725,7 @@ def dev_find_references(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["symbol", "scope", "kind", "limit"]
     fields = _parse_keyed(arg, keys)
     symbol = (fields.get("symbol") or "").strip()
@@ -8830,7 +8860,7 @@ def list_dir(arg):
     这是 Agent 研判分区前的「勘察」工具：看清顶层有哪些模块/资源目录，再决定分区方案。"""
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     f = _parse_keyed(arg or "", ["path"])
     rel = (f.get("path") or "").strip().strip("'\"")
     if not rel:
@@ -8884,7 +8914,7 @@ def dev_propose_regions(arg):
     用法：先用 list_dir 勘察 → 调用本工具获取基线方案 → 据 detected/included 增删分区 → 用 dev_apply_regions 落地。"""
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     try:
         from regions import propose_regions
         res = propose_regions(root)
@@ -8968,7 +8998,7 @@ def dev_apply_regions(arg):
     这是把「Agent 判断的分区」落地的关键一步；应用后 Agent 写操作即被约束到这些分区内。"""
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     regions_list, err = _parse_regions_payload(arg)
     if regions_list is None:
         return err
@@ -9572,7 +9602,7 @@ def dev_serve(arg):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["action", "cmd", "cwd", "port", "wait", "job_id"]
     fields = _parse_keyed(arg, keys)
     bare = [ln.strip() for ln in (arg or "").splitlines()
@@ -9647,7 +9677,7 @@ def dev_media(arg=""):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["action", "script", "video", "out", "wait", "tail"]
     fields = _parse_keyed(arg or "", keys)
 
@@ -9723,7 +9753,7 @@ def dev_page_action(arg=""):
     """
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     keys = ["action", "page", "url", "entry", "selector", "text", "nth", "scope", "value",
             "key", "state", "mode", "attr", "needle", "timeout", "settle", "screenshot",
             # ⚠⚠ width / height 是 `preview_project` 的键，**不是本工具的**。
@@ -9847,7 +9877,7 @@ def dev_vue(arg=""):
     from agent_runtime import vue_component
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     fields = _parse_keyed(arg or "", ["component", "props", "clicks", "expect_present",
                                       "expect_absent", "counts", "texts", "expect_emit",
                                       "expect_emit_args", "composable", "store_call",
@@ -9907,7 +9937,7 @@ def dev_apptest(arg=""):
     from agent_runtime import app_test
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     fields = _parse_keyed(arg or "", ["page", "text", "tab", "stream", "timeout"])
 
     def _one(key, default=""):
@@ -9958,7 +9988,7 @@ def dev_testrun(arg=""):
     from agent_runtime import test_run
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     fields = _parse_keyed(arg or "", ["paths", "keyword", "only_failed", "related",
                                       "coverage", "timeout"])
 
@@ -10013,7 +10043,7 @@ def dev_headcheck(arg=""):
     from agent_runtime import head_check
     root = _get_code_root()
     if not root:
-        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
     fields = _parse_keyed(arg or "", ["ref", "modules", "timeout", "gate", "tests",
                                       "suite_timeout"])
 
@@ -11357,7 +11387,7 @@ TOOLS = {
         "需要持久化状态、人工方案/审批门、失败重规划与跨窗口恢复才用 start_workflow。子代理不得调用本工具。"
     ), "func": start_workflow},
     "init_regions": {
-        "description": "初始化「分区开发」结构：在代码库根目录建 assets/（素材区）、values/（数值区）、bugs/（bug 区）、behaviors/（角色行为区）等独立子目录（具体分区以 regions.json 为准），每个目录 git init 独立仓库，并生成 DEV_INDEX.md、DOCMIND_RULES.md（分区契约，会被注入 Agent 系统提示，强制越区写被拦截）。用于游戏等分工开发，防止代码堆叠与混乱。输入留空即可；需先配置代码库根目录（/api/ingest_code）。",
+        "description": "初始化「分区开发」结构：在代码库根目录建 assets/（素材区）、values/（数值区）、bugs/（bug 区）、behaviors/（角色行为区）等独立子目录（具体分区以 regions.json 为准），每个目录 git init 独立仓库，并生成 DEV_INDEX.md、DOCMIND_RULES.md（分区契约，会被注入 Agent 系统提示，强制越区写被拦截）。用于游戏等分工开发，防止代码堆叠与混乱。输入留空即可；需先在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。",
         "func": init_regions_tool,
     },
     "dev_list_regions": {
