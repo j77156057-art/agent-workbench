@@ -2602,6 +2602,58 @@ def _episode_is_backed(final_text, tool_evidence):
         return False
 
 
+def _episode_number_audit(final_text, tool_evidence):
+    """对 final 里的数字做 per-number 来源审计（B3：W-C 背书粒度细化，§5 高估问题的可观测化）。
+
+    与 `_episode_is_backed` **共用同一抽取器**（`_PROV_NUM_RE` + `_prov_norm` + `numbers_strong`），
+    只是把「final 任一数字命中强池即 True」的粗信号**摊开成逐个数**：
+      - `backed`   —— final 中命中本回合强池 `numbers_strong` 的数（确有 derive 工具强产出背书）；
+      - `unbacked` —— final 出现、却不在强池的数（含程序内自算的头条聚合数，§5 那个 20100 类高估来源）。
+
+    **零漂移不变式**：`backed_hit` 恒等于 `_episode_is_backed(final_text, tool_evidence)`——
+    episode 级 `backed` bool 语义一字不动，本函数只提供它背后的明细，不改 `backed`/trust 升序、
+    不进 `to_record`、不改 `_memory.remember` 注入串。纯函数、无副作用；任何异常 fail-closed 回空审计。
+    """
+    empty = {"fnums": [], "backed": [], "unbacked": [], "backed_hit": False}
+    try:
+        strong = set((tool_evidence or {}).get("numbers_strong") or [])
+        fnums = {n for n in (_prov_norm(x) for x in _PROV_NUM_RE.findall(final_text or "")) if n}
+        return {"fnums": sorted(fnums),
+                "backed": sorted(fnums & strong),
+                "unbacked": sorted(fnums - strong),
+                "backed_hit": bool(fnums & strong)}
+    except Exception:  # noqa: BLE001 - 审计绝不影响主流程
+        return empty
+
+
+def _provenance_audit_emit(audit, *, key=""):
+    """把 per-number 审计落一条 JSONL 到侧信道（B3 落点，§5）。
+
+    **默认关**——仅当 env `DOCMIND_PROVENANCE_AUDIT` 指向某文件才写（仿 `_probe_audit_root`：
+    `诊断不得变成常态开销`）。写失败/未配置一律静默降级（回 False），绝不抛、绝不影响主流程。
+    只记数（backed/unbacked 列表 + 计数），**不写 final 全文**，规避任何注入/泄漏面。
+    本函数不改 `backed`、不进 `to_record`、不碰 `_memory.remember`——纯旁路观测。
+    """
+    path = os.getenv("DOCMIND_PROVENANCE_AUDIT", "").strip()
+    if not path:
+        return False
+    try:
+        rec = {"ts": int(time.time()),
+               "key": (key or "")[:120],
+               "backed_hit": bool(audit.get("backed_hit")),
+               "n_fnums": len(audit.get("fnums") or []),
+               "backed": list(audit.get("backed") or []),
+               "unbacked": list(audit.get("unbacked") or [])}
+        d = os.path.dirname(os.path.abspath(path))
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return True
+    except Exception:  # noqa: BLE001 - 埋点绝不能影响主流程
+        return False
+
+
 def _is_no_match_only(obs):
     """这条观察是不是**纯粹**一句「没有匹配」。
 
@@ -5068,6 +5120,17 @@ class Agent:
                     _memory.remember(self.memory_scope, "episode", _memory.scrub(question, 200),
                         ("未完成：" + (error or "停止/中断") if error or not final_text else "模型报告（尚需核对验收）：" + final_text),
                         "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed)
+                    # B3：per-number 背书审计旁路（§5 高估观测化）。**只观测、不改 backed/trust/
+                    # recall/to_record**；默认关，仅当 DOCMIND_PROVENANCE_AUDIT 落盘才写。自包一层
+                    # try——审计异常一律吞掉，绝不影响上面已完成的落库。
+                    try:
+                        _provenance_audit_emit(
+                            _episode_number_audit(
+                                final_text,
+                                getattr(turn, "tool_evidence", None) if turn is not None else None),
+                            key=question)
+                    except Exception:  # noqa: BLE001
+                        pass
                 except Exception:
                     pass
             # 断连时关闭内层循环，确保不再执行后续工具调用（已耗尽时 close 是空操作）。
