@@ -23,6 +23,18 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture
+def client_with_root(tmp_path):
+    """带项目根的 ctx：/api/eda/run 需要它（工作目录锁在项目根）。"""
+    class _Ctx:
+        def _project_root_or_error(self):
+            return str(tmp_path)
+
+    app = FastAPI()
+    app.include_router(eda_routes.build_router(_Ctx()))
+    return TestClient(app)
+
+
 def _fact(ok=True, **metrics):
     return {"ok": ok, "tool": "vivado", "kind": "timing",
             "metrics": metrics, "missing": [], "provenance": [], "error": None}
@@ -129,6 +141,66 @@ def test_verify_multi_fact_folding(client):
     body = r.json()
     assert body["structured_state"] == "unmet"
     assert body["merged"]["state"] == "unmet"
+
+
+# ---- run（2026-10-20 新增：真跑 EDA 脚本的唯一出口）----
+
+def test_run_requires_explicit_confirm(client):
+    # 没有 confirm 一律拒（HTTP 400），并且**不执行**任何东西。
+    r = client.post("/api/eda/run", json={
+        "tool": "vivado", "kind": "timing", "script": "report_timing_summary",
+    })
+    assert r.status_code == 400
+    body = r.json()
+    assert body["ok"] is False
+    assert "确认" in (body.get("error") or "")
+
+
+def test_run_rejects_unregistered_tool(client):
+    # 执行面只认登记在册的三个二进制：不是任意 shell。
+    r = client.post("/api/eda/run", json={
+        "tool": "rm", "kind": "timing", "script": "-rf /", "confirm": True,
+    })
+    assert r.status_code == 400
+    assert "vivado/klayout/verdi" in (r.json().get("error") or "")
+
+
+def test_run_rejects_empty_script(client):
+    r = client.post("/api/eda/run", json={
+        "tool": "vivado", "kind": "timing", "script": "   ", "confirm": True,
+    })
+    assert r.status_code == 400
+
+
+def test_run_fails_closed_when_tool_missing(client_with_root):
+    # 工具不可用 → fail-closed：ok=false + tool_unavailable，**绝不**返回空 stdout
+    # 让上层误当成"报告显示通过"。
+    r = client_with_root.post("/api/eda/run", json={
+        "tool": "vivado", "kind": "timing", "script": "report_timing_summary",
+        "confirm": True, "timeout": 20,
+    })
+    body = r.json()
+    assert body["ok"] is False
+    assert "tool_unavailable" in (body.get("error") or "") or "run_failed" in (body.get("error") or "")
+
+
+def test_run_requires_project_root(client):
+    # 没有代码库 → 明确拒绝，不执行。
+    r = client.post("/api/eda/run", json={
+        "tool": "vivado", "kind": "timing", "script": "x", "confirm": True,
+    })
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert "代码库" in (r.json().get("error") or "")
+
+
+def test_skills_now_returns_real_sections(client):
+    # SKILL.md 已入库（.trae/skills/eda-adapters/SKILL.md），按工具切段 + Shared workflow。
+    r = client.get("/api/eda/skills?tool=klayout")
+    body = r.json()
+    assert body["ok"] is True
+    assert "## KLayout" in body["skill"]
+    assert "## Shared workflow" in body["skill"]
 
 
 if __name__ == "__main__":

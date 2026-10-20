@@ -2,7 +2,7 @@
 // 后端见 api_routes/eda.py：三条只读接口——解析报告、跑合并门、取 skill。
 // 关键边界：/api/eda/verify 只「判 + 建议」，executes_rollback 恒为 false；
 // 真实回滚须经 regions.rollback_changeset 的 require_approval 人工门，不在本层。
-import { postJson, request } from './_base'
+import { postJson, rawJson, request } from './_base'
 
 /** M3 EdaFact.to_dict()：结构化真值。timing_met/drc_clean/lvs_clean 为布尔判定量。 */
 export interface EdaFact {
@@ -13,6 +13,8 @@ export interface EdaFact {
   missing: string[]
   provenance: { field: string; excerpt: string }[]
   error: string | null
+  /** 失败体里的补充原因（如 run_exception 的异常摘要）；解析成功时为空。 */
+  reason?: string
 }
 
 /** M1/M5 视觉比对结果（compare 的三态 + 块信息）。 */
@@ -174,6 +176,16 @@ export interface ReportGateResp {
 }
 
 export const edaApi = {
+  /** POST /api/eda/run：真跑 EDA 工具脚本 → 解析成结构化事实（M3）。
+   *  **执行类接口**：后端只认登记在册的三个二进制（vivado/klayout/verdi），
+   *  且必须 confirm=true（后端 400 拒掉未确认的调用）—— 调用方要自己先取得
+   *  用户的明确确认。工具不可用时后端 fail-closed（tool_unavailable:<tool>），
+   *  绝不返回空输出冒充"报告显示通过"。
+   *  用 rawJson 而非 postJson：失败体（ok:false）里带着 error/reason，
+   *  postJson 遇 ok:false 会直接抛异常，失败细节就只剩一句 error。 */
+  run(tool: string, kind: string, script: string) {
+    return rawJson<EdaFact>('/api/eda/run', { tool, kind, script, confirm: true })
+  },
   /** POST /api/eda/parse-report：把工具报告文本解析成结构化事实。 */
   parseReport(tool: string, kind: string, text: string) {
     return postJson<EdaFact>('/api/eda/parse-report', { tool, kind, text })

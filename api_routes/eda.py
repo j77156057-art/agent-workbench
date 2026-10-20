@@ -1,13 +1,17 @@
-"""EDA 域验证路由：结构化解析 / skill 查表 / 双信号合并门（**只读**，不执行回滚）。
+"""EDA 域验证路由：结构化解析 / skill 查表 / 双信号合并门（**只判不执行回滚**）/ 真跑工具脚本。
 
 领域路由约定同 `engine.py`：`build_router(ctx)` 里 `ctx` 即 `api` 模块本体（依赖容器），
 用 `ctx._project_root_or_error` 拿代码库根。
 
 安全边界（对齐开工文档 §0 + M6）：
-- **本路由只"判 + 建议"，绝不执行 git 回滚。** 真实回滚须经 `regions.rollback_changeset`
+- **本路由绝不执行 git 回滚。** 真实回滚须经 `regions.rollback_changeset`
   的 `require_approval` 人工审批门；HTTP 层开一个"自动 revert"入口 = 静默放行风险，
   与全链 fail-closed 信条冲突。合并门返回 `decision.action ∈ {accept,rollback,escalate}`，
   `rollback` 只是"建议回滚"的信号，交由人工/下一道有审批门的动作接口执行。
+- **唯一执行类端点是 `/api/eda/run`**（真跑 Vivado/KLayout/仿真器）：它执行的是
+  **EDA 工具脚本**而非任意 shell —— 执行面由 `eda_tcl._TOOL_COMMAND` 的固定 argv
+  模板限定（只认 vivado/klayout/verdi 三个二进制），且必须 `confirm=true` 显式确认、
+  工作目录锁在项目根、脚本长度与超时都有上限。找不到二进制一律 fail-closed。
 - 视觉结论坚持 `verified:false` 起步：`/api/eda/verify` 只有显式传 `vlm_verified=true`
   才允许把 `localized` 提级为 MET（映射逻辑在 `verification_gate.visual_state`）。
 - 解析/合并全程 fail-closed：拿不到证据一律 `uncertain`/`needs_golden`，不返回假绿。
@@ -20,6 +24,7 @@ import os
 from typing import Any, Optional
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -60,6 +65,20 @@ class VisualRegressionReq(BaseModel):
     ssim_threshold: float = 0.98
     delta_threshold: float = 8.0
     grid: int = 8
+
+
+class EdaRunReq(BaseModel):
+    """真跑 EDA 工具脚本的入参。
+
+    `confirm` 是**必过的人工确认位**：跑脚本会真的调起 Vivado/KLayout/仿真器并
+    执行这段脚本（工具以当前用户权限读写文件），所以没有显式确认一律拒。
+    与 `unreal-bridge/install` 的 confirm 门同一范式。
+    """
+    tool: str                             # vivado/klayout/verdi
+    kind: str                             # timing/utilization/drc/simulation
+    script: str                           # 工具脚本正文（Vivado 为 TCL）
+    confirm: bool = False                 # 必须显式置 true
+    timeout: int = 600                    # 秒（上限 900）
 
 
 class ReportGateReq(BaseModel):
@@ -167,6 +186,48 @@ def build_router(ctx) -> APIRouter:
             return {"ok": True, "tool": tool, "skill": skill_for_tool(tool)}
         except Exception as exc:
             return {"ok": False, "tool": tool, "skill": "", "error": str(exc)[:200]}
+
+    @router.post("/api/eda/run")
+    async def run(req: EdaRunReq):
+        """真跑 EDA 工具脚本 → 解析成结构化事实（M3）。**需要显式确认。**
+
+        这是"连接 EDA 工具"唯一的出口：后端本来就有 `eda_tcl.run_and_parse`，
+        但此前既没有 HTTP 端点也没有 agent 工具，前端自然无从连。
+
+        安全边界（与本路由其余部分一致，fail-closed）：
+        - **必须显式确认**：跑脚本会真的调起工具二进制并执行这段脚本
+          （工具以当前用户权限读写文件），没有 `confirm` 一律拒（HTTP 400）。
+        - **只认登记在册的三个工具**（vivado/klayout/verdi）：执行面由
+          `eda_tcl._TOOL_COMMAND` 的固定 argv 模板限定，**不是任意 shell**。
+        - 工作目录锁在项目根；脚本长度与超时都有上限。
+        - 工具不可用 → `tool_unavailable:<tool>`（fail-closed，绝不返回空 stdout
+          让上层误判成"报告显示通过"）。
+        """
+        tool = str(req.tool or "").strip().lower()
+        kind = str(req.kind or "").strip().lower()
+        if tool not in ("vivado", "klayout", "verdi"):
+            return JSONResponse({"ok": False, "error": "不支持的 EDA 工具（只认 vivado/klayout/verdi）。"}, status_code=400)
+        script = req.script or ""
+        if not script.strip():
+            return JSONResponse({"ok": False, "error": "脚本为空。"}, status_code=400)
+        if len(script) > 200_000:
+            return JSONResponse({"ok": False, "error": "脚本过长（上限 200KB）。"}, status_code=400)
+        if not req.confirm:
+            return JSONResponse(
+                {"ok": False, "error": "运行 EDA 脚本会真的调起工具并执行这段脚本，需要显式确认。"},
+                status_code=400)
+        root = ctx._project_root_or_error() if hasattr(ctx, "_project_root_or_error") else None
+        if not root:
+            return {"ok": False, "error": "未配置代码库"}
+        from agent_runtime import eda_tcl
+        timeout = max(10, min(int(req.timeout or 600), 900))
+        try:
+            fact = await run_in_threadpool(
+                eda_tcl.run_and_parse, tool, kind, script, cwd=root, timeout=timeout)
+        except Exception as exc:  # 执行异常归一成失败体，不 500
+            return {"ok": False, "tool": tool, "kind": kind,
+                    "error": "run_exception", "reason": str(exc)[:200]}
+        return fact.to_dict()
 
     @router.post("/api/eda/verify")
     async def verify(req: VerifyReq):

@@ -8,6 +8,7 @@
 // 组件自管状态，不进工作台全局；入口收在顶栏「更多 → 工具与运行」。
 import { computed, ref } from 'vue'
 import { edaApi, changesetApi, type EdaFact, type VerifyResp, type VisualResult, type VisualRegressionResp, type ReportGateReq } from '../api'
+import { askConfirm } from '../composables/workbench'
 
 // 复用 SceneRuntimePanel 的「可嵌入」惯用法：popup（固定弹层，行为不变）/ docked（内联常驻主区）。
 // 同一组件实例仅由父组件的 mode prop 切形态，绝不重建，故已解析的 fact / 门结果等状态在
@@ -33,6 +34,90 @@ const tool = ref('vivado')
 const kind = ref('timing')
 const reportText = ref('')
 const fact = ref<EdaFact | null>(null)
+
+// ---- 在线报告页：地址 + 取正文方式（2026-10-20 补参数）----
+// 后端 report-gate 一直支持 `url` + `fetch='web_fetch'`（由后端 urllib 直抓），
+// 但面板此前**只固定用** `fetch:'inline'` + 手贴正文 —— 于是"把报告页地址交给
+// DocMind 自己抓"这条最自然的用法在前端根本不存在。
+const reportUrl = ref('')
+const fetchMode = ref<'inline' | 'web_fetch'>('inline')
+
+// ---- 自定义判定量键（critical）----
+// 后端 verify/report-gate 都支持 `critical`（显式指定纳入门禁的判定量键），
+// 缺省才用 timing_met/drc_clean/lvs_clean。面板此前从不传 → 项目自己的
+// 决定性指标（如 slack_met）永远进不了门。
+const criticalKeys = ref('')
+
+// ---- 显式 ROI（bbox_norm）----
+// 后端支持显式 [x1,y1,x2,y2] 归一框覆盖 `view`；面板此前只传 view。
+const bboxNorm = ref('')
+
+function criticalList(): string[] | null {
+  const parts = criticalKeys.value.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)
+  return parts.length ? parts : null
+}
+function bboxList(): number[] | null {
+  const parts = bboxNorm.value.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean).map(Number)
+  return parts.length === 4 && parts.every((n) => Number.isFinite(n)) ? parts : null
+}
+
+// ---- 适配说明（skill）：后端按工具切段返回 SKILL.md 正文 ----
+const skillText = ref('')
+const skillBusy = ref(false)
+async function loadSkill() {
+  skillBusy.value = true
+  try {
+    const r = await edaApi.skills(tool.value)
+    skillText.value = r.ok ? (r.skill || '（该工具暂无适配说明）') : '（读取失败）'
+  } catch (e) {
+    skillText.value = `（读取失败：${(e as Error).message}）`
+  } finally {
+    skillBusy.value = false
+  }
+}
+
+// ---- 真跑 EDA 工具脚本（POST /api/eda/run）----
+// 这是"连接 EDA 工具"唯一的出口：后端本来就能跑 Vivado/KLayout/仿真器，
+// 但此前既无 HTTP 端点也无前端入口。执行面由后端限定为登记在册的三个二进制，
+// 且必须 confirm=true —— 所以这里**必须先弹确认**，绝不"点一下就跑"。
+const scriptText = ref('')
+const runBusy = ref(false)
+const runMsg = ref('')
+const runErr = ref('')
+async function runScript() {
+  if (!scriptText.value.trim()) { runErr.value = '脚本为空。'; return }
+  const ok = await askConfirm({
+    title: '运行 EDA 脚本？',
+    message: `将调用 ${tool.value} 执行这段脚本，并以项目根为工作目录。`,
+    detail: '工具以当前用户权限读写文件；脚本内容与执行结果都会记入本次面板。工具不可用时后端一律 fail-closed，不会返回空输出冒充"通过"。',
+    confirmText: '运行',
+  })
+  if (!ok) return
+  runBusy.value = true
+  runMsg.value = ''
+  runErr.value = ''
+  try {
+    const r = await edaApi.run(tool.value, kind.value, scriptText.value)
+    if (!r.ok) {
+      // 后端的失败码是人话之外的机器码，这里翻一下再显示（不猜、不美化）。
+      const code = r.error || '未知错误'
+      const explain = code.startsWith('tool_unavailable:')
+        ? `本机没找到 ${code.slice('tool_unavailable:'.length)} 可执行文件 —— 先装好该工具再跑。`
+        : code.startsWith('no_command_template:')
+          ? '该工具没有配置执行模板。'
+          : code
+      runErr.value = `未拿到事实：${explain}${r.reason ? '（' + r.reason + '）' : ''}`
+      fact.value = null
+    } else {
+      fact.value = r
+      runMsg.value = `已跑完并解析：${r.tool}/${r.kind}`
+    }
+  } catch (e) {
+    runErr.value = (e as Error).message || '运行失败'
+  } finally {
+    runBusy.value = false
+  }
+}
 
 // ---- 视觉信号（M1/M5）----
 // 两种取源：live=真取像回归（抓真实窗口 ROI → 真算 SSIM+块哈希 → verdict 由像素得出，
@@ -133,6 +218,9 @@ function _vrBody(mode: 'save' | 'check'): Parameters<typeof edaApi.visualRegress
     mode, capture: vrCapture.value, golden_key: goldenKey.value.trim() || 'layout_default',
     view: vrView.value,
   }
+  // 显式 ROI 覆盖 view（后端 bbox_norm 优先于 view）。
+  const box = bboxList()
+  if (box) body.bbox_norm = box
   const cap = vrCapture.value
   if (cap === 'gdi' || cap === 'auto') {
     // auto 在 Windows 后端即 gdi，仍带上 source/hwnd 以便本机直接用。
@@ -198,6 +286,7 @@ async function runGate() {
       structured: fact.value,
       visual: currentVisual(),
       vlm_verified: vlmVerified.value ? true : null,
+      critical: criticalList(),
     })
   } catch (e) {
     error.value = (e as Error).message || '合并门调用失败'
@@ -219,8 +308,12 @@ async function runReportGate() {
   try {
     const body: ReportGateReq = {
       tool: tool.value, kind: kind.value,
-      fetch: 'inline', content: reportText.value,
+      // 取正文方式：inline=用下面的正文框；web_fetch=由后端直抓下面的地址。
+      fetch: fetchMode.value,
+      url: fetchMode.value === 'web_fetch' ? (reportUrl.value.trim() || null) : null,
+      content: fetchMode.value === 'inline' ? reportText.value : null,
       vlm_verified: vlmVerified.value ? true : null,
+      critical: criticalList(),
       changeset_id: changesetId.value.trim() || null,
     }
     if (visualMode.value === 'live' && goldenKey.value.trim()) {
@@ -228,6 +321,7 @@ async function runReportGate() {
       const vr = _vrBody('check')
       body.golden_key = vr.golden_key ?? goldenKey.value.trim()
       body.view = vr.view ?? null
+      if (vr.bbox_norm) body.bbox_norm = vr.bbox_norm
       body.capture = vr.capture ?? 'auto'
       if (vr.source) body.source = vr.source
       if (vr.hwnd != null) body.hwnd = vr.hwnd
@@ -403,8 +497,35 @@ defineExpose({ show })
                 </select>
               </label>
             </div>
-            <textarea v-model="reportText" class="ev-text" rows="5" placeholder="粘贴工具 report 原文（如 Vivado report_timing_summary）…" />
+            <div class="ev-row">
+              <label>取正文
+                <select v-model="fetchMode">
+                  <option value="inline">手贴正文</option>
+                  <option value="web_fetch">由后端抓取报告页</option>
+                </select>
+              </label>
+              <label v-if="fetchMode === 'web_fetch'" class="ev-grow">报告地址
+                <input v-model="reportUrl" class="ev-input ev-grow" type="text" placeholder="https://…/report.html" spellcheck="false" />
+              </label>
+            </div>
+            <textarea v-if="fetchMode === 'inline'" v-model="reportText" class="ev-text" rows="5" placeholder="粘贴工具 report 原文（如 Vivado report_timing_summary）…" />
+            <div class="ev-row">
+              <label class="ev-grow">判定量键 critical（逗号分隔；留空用默认）
+                <input v-model="criticalKeys" class="ev-input ev-grow" type="text" placeholder="timing_met, drc_clean" spellcheck="false" />
+              </label>
+              <button class="ev-btn" :disabled="skillBusy" @click="loadSkill">{{ skillBusy ? '读取中…' : '适配说明' }}</button>
+            </div>
+            <pre v-if="skillText" class="ev-skill">{{ skillText }}</pre>
             <button class="ev-btn" :disabled="busy" @click="parseReport">解析成结构化事实</button>
+
+            <!-- 连接 EDA 工具：真跑脚本（后端只认登记在册的三个二进制，且要显式确认） -->
+            <details class="ev-run">
+              <summary>连接 EDA 工具（真跑脚本）</summary>
+              <textarea v-model="scriptText" class="ev-text" rows="4" placeholder="工具脚本正文（Vivado 为 TCL，如 report_timing_summary）…" />
+              <button class="ev-btn" :disabled="runBusy" @click="runScript">{{ runBusy ? '运行中…' : '运行并解析' }}</button>
+              <p v-if="runMsg" class="ev-ok">{{ runMsg }}</p>
+              <p v-if="runErr" class="ev-err">{{ runErr }}</p>
+            </details>
 
             <div v-if="fact" class="ev-fact wb-card">
               <div class="ev-fact-h">
@@ -480,6 +601,9 @@ defineExpose({ show })
                     <option value="schematic">schematic</option>
                     <option value="heatmap">heatmap</option>
                   </select>
+                </label>
+                <label>ROI 归一框 x1,y1,x2,y2（留空按 view）
+                  <input v-model="bboxNorm" class="ev-input" type="text" size="16" placeholder="0.1,0.1,0.6,0.4" spellcheck="false" />
                 </label>
               </div>
               <div class="ev-row">
@@ -668,6 +792,20 @@ button:disabled { opacity: .5; cursor: default; }
 
 .ev-radio { cursor: pointer; user-select: none; }
 .ev-input { background: var(--bg); border: 1px solid var(--border-graphic); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: var(--fs-cap); font-family: var(--font-mono); }
+/* ev-grow：让输入框吃掉整行剩余宽度（报告地址 / 判定量键这类长文本）。 */
+.ev-grow { flex: 1 1 180px; min-width: 0; }
+.ev-ok { margin: 6px 0 0; color: var(--green); font-size: var(--fs-cap); }
+/* skill 文本：等宽小字，限高可滚。 */
+.ev-skill {
+  margin: 6px 0 0; max-height: 220px; overflow: auto; padding: 6px 8px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-muted); font-family: var(--font-mono); font-size: var(--fs-cap);
+  line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+/* 真跑脚本：默认收起（执行类能力不该和只读解析并列在第一屏）。 */
+.ev-run { margin-top: 8px; }
+.ev-run > summary { cursor: pointer; font-size: var(--fs-cap); color: var(--text-muted); }
+.ev-run > summary:hover { color: var(--accent-text); }
 .ev-vr { margin-top: 2px; }
 .ev-btn-run { border-color: var(--accent); color: var(--accent-text); }
 .ev-vr-msg { margin: 4px 0 0; color: var(--green, #3a965a); font-size: var(--fs-cap); }

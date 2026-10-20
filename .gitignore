@@ -66,7 +66,15 @@ web/favicon.ico
 .docmind_web_search_cache.json
 
 # AI 工具目录 / 运行日志（2026-09-16 补）
-.trae/
+# .trae/ 整体是本地资产（文档、spec、各工具的 SKILL.md 都不入库）。
+# 例外：eda-adapters 的 SKILL.md **入库** —— 它是产品的一部分：
+# /api/eda/skills 有端点、前端面板有「适配说明」按钮，而它此前**根本没有这个文件**
+# → 接口恒返回空串。规则按 git 的限制逐级放行（父目录被排除时不能直接放行子文件）。
+.trae/*
+!.trae/skills/
+.trae/skills/*
+!.trae/skills/eda-adapters/
+!.trae/skills/eda-adapters/SKILL.md
 logs/
 
 # ===== 黄金题实验输出（一次性跑题结果，不入库；baseline 与正式基线保留）=====

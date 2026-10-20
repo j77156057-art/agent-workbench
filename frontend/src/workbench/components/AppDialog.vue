@@ -37,12 +37,21 @@ function onKey(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div
-    v-if="dialog"
-    class="dg-mask wb-modal-backdrop"
-    @mousedown.self="resolveDialog(dialog.kind === 'alert')"
-    @keydown="onKey"
-    tabindex="-1"
+  <!-- 2026-10-20：teleport 到 body。
+       `.wb-shell` 带 `isolation: isolate`（自建层叠上下文），所以本对话框的
+       z-index 只在壳内排序；而凡是 teleport 到 body 的面板（EDA 面板 z:300 /
+       实时面板 z:120 / 顶栏菜单 z:61）都在**根**层叠上下文里 —— 根上下级一律压过壳内，
+       表现为「点了确认，确认框的按钮却点不动」（实测：命中的是面板里的 textarea）。
+       teleport 后本对话框进根上下文，z-index 1100 高于所有 body 级面板。
+       反过来也修好了另一处同类问题：设置弹窗（壳内 z:2100）里弹出的确认框
+       原本被设置弹窗自己盖住，现在确认框在它上面。 -->
+  <Teleport to="body">
+    <div
+      v-if="dialog"
+      class="dg-mask wb-modal-backdrop"
+      @mousedown.self="resolveDialog(dialog.kind === 'alert')"
+      @keydown="onKey"
+      tabindex="-1"
   >
     <div class="dg-box wb-modal-shell" role="dialog" aria-modal="true">
       <!-- confirm -->
@@ -107,4 +116,5 @@ function onKey(e: KeyboardEvent) {
       </template>
     </div>
   </div>
+  </Teleport>
 </template>
