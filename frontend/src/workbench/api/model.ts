@@ -22,7 +22,33 @@ export interface ModelCapability {
   cloud: boolean
 }
 
+/** 实时通道的只读观测（R5 时间线 + R10 指标）。**不含模式** —— 模式的唯一来源是
+ *  `/api/vision/realtime-status` 与每次会话的 hello.ok.mode；这里再报一份会出现
+ *  两个可能互相矛盾的 mode（后端 status_snapshot 的注释写明了这一点）。 */
+export interface RealtimeMetricScope {
+  histograms: Record<string, { count: number; window: number; min: number | null; max: number | null; p50: number | null; p95: number | null }>
+  counters: Record<string, number>
+  gauges: Record<string, number | null>
+}
+export interface RealtimeTimelineEntry {
+  kind: string
+  captured_at: number
+  session_id?: string
+  sequence?: number
+  text?: string
+  [k: string]: unknown
+}
+export interface RealtimeStatusResp {
+  timeline: { project_id: string; count: number; dropped_other_project: number; entries: RealtimeTimelineEntry[]; active_sessions: number } | null
+  timeline_projects: string[]
+  metrics: { global: RealtimeMetricScope; sessions: Record<string, RealtimeMetricScope> }
+}
+
 export const visionApi = {
+  /** 实时通道指标与时间线（项目级；project_id 为空时只有进程级视图）。 */
+  realtimeChannelStatus(): Promise<RealtimeStatusResp> {
+    return fetch('/api/vision/realtime/status', withProject()).then((res) => res.json() as Promise<RealtimeStatusResp>)
+  },
   realtimeStatus(): Promise<{
     ok: boolean; mode?: 'sampled-frames' | 'native-realtime' | 'native' | 'unavailable' | string; mode_label?: string
     mode_reason?: string; native_provider?: string | null; native_available?: boolean

@@ -45,7 +45,7 @@ import {
 import { encodeVideoFrame, type RealtimeServerEvent } from '../realtimeProtocol'
 import { createLiveTransport, type LiveSocketState, type LiveTransport } from '../liveTransport'
 import { describeRealtimeMode, type RealtimeModeView } from '../realtimeModeDisplay'
-import { getProjectId, visionApi } from '../api'
+import { getProjectId, visionApi, type RealtimeStatusResp } from '../api'
 
 export interface LiveObservation {
   at: number
@@ -80,6 +80,12 @@ export interface UseLiveSession {
   videoEnabled: Ref<boolean>
   audioEnabled: Ref<boolean>
   cameraState: Ref<'idle' | 'on' | 'denied' | 'unavailable'>
+  /** 圈选聚焦的归一矩形（0..1）；null=不聚焦，上行整帧。 */
+  focusRegion: Ref<{ x: number; y: number; w: number; h: number } | null>
+  /** 通道指标与时间线（后端只读端点，2 秒一轮询）。 */
+  channelStatus: Ref<RealtimeStatusResp | null>
+  /** 手动刷新一次通道指标。 */
+  refreshChannelStatus: () => Promise<void>
   /** 把面板里的 <video> 交给接线层：**所见即所发**，用户看到的画面就是送出去的那一帧。 */
   bindVideo: (element: HTMLVideoElement | null) => void
   /** 单独开关麦克风（音频走 WS 上行到实时模型，不经过对话台）。 */
@@ -265,6 +271,34 @@ export function useLiveSession(): UseLiveSession {
   }
 
   // ---- 视频上行 ---------------------------------------------------------
+  // ---- 圈选聚焦（focused region）----
+  // 归一化矩形（0..1，相对预览画面）。设了它，上行的帧**就是**这块区域，
+  // 且包头带 focused=true —— 后端据此把观察范围收窄到这块（api.py 的
+  // focused_region="1" if header.get("focused")）。
+  const focusRegion = ref<{ x: number; y: number; w: number; h: number } | null>(null)
+
+  // ---- 通道指标（R10）：只读端点给的首字延迟/队列深度/连接数等 ----
+  const channelStatus = ref<RealtimeStatusResp | null>(null)
+  let metricsTimer: ReturnType<typeof setInterval> | null = null
+
+  async function refreshChannelStatus() {
+    try {
+      channelStatus.value = await visionApi.realtimeChannelStatus()
+    } catch {
+      /* 指标拿不到不影响会话本身（它只是观测） */
+    }
+  }
+
+  function startMetricsPolling() {
+    if (metricsTimer) return
+    void refreshChannelStatus()
+    metricsTimer = setInterval(() => { void refreshChannelStatus() }, 2000)
+  }
+
+  function stopMetricsPolling() {
+    if (metricsTimer) { clearInterval(metricsTimer); metricsTimer = null }
+  }
+
   async function captureAndSendFrame() {
     if (!active.value || paused.value) return
     const t = transport
@@ -293,14 +327,24 @@ export function useLiveSession(): UseLiveSession {
     const plan = sender.plan()
     const width = video.videoWidth
     const height = video.videoHeight
-    const scale = Math.min(1, plan.maxEdge / width, plan.maxEdge / height)
-    const targetWidth = Math.max(1, Math.round(width * scale))
-    const targetHeight = Math.max(1, Math.round(height * scale))
+    const focus = focusRegion.value
+    // 圈选时只取那块区域：上行帧 = 选区内容（所见即所发），并标 focused。
+    const crop = focus
+      ? { sx: Math.max(0, Math.round(focus.x * width)), sy: Math.max(0, Math.round(focus.y * height)),
+          sw: Math.max(1, Math.round(focus.w * width)), sh: Math.max(1, Math.round(focus.h * height)) }
+      : null
+    const scale = Math.min(1, plan.maxEdge / (crop ? crop.sw : width), plan.maxEdge / (crop ? crop.sh : height))
+    const targetWidth = Math.max(1, Math.round((crop ? crop.sw : width) * scale))
+    const targetHeight = Math.max(1, Math.round((crop ? crop.sh : height) * scale))
     if (surface.width !== targetWidth) surface.width = targetWidth
     if (surface.height !== targetHeight) surface.height = targetHeight
     const context = surface.getContext('2d')
     if (!context) return
-    context.drawImage(video, 0, 0, targetWidth, targetHeight)
+    if (crop) {
+      context.drawImage(video, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, targetWidth, targetHeight)
+    } else {
+      context.drawImage(video, 0, 0, targetWidth, targetHeight)
+    }
 
     const capturedAt = Date.now()
     const blob = await new Promise<Blob | null>((resolve) => {
@@ -310,7 +354,7 @@ export function useLiveSession(): UseLiveSession {
     const gen = t.generation()
     const current = sequence++
     const result = await sendLiveVideoPacket({
-      encode: () => encodeVideoFrame(current, capturedAt, blob),
+      encode: () => encodeVideoFrame(current, capturedAt, blob, Boolean(crop)),
       isCurrent: () => t.isCurrent(gen) && active.value && !paused.value,
       bufferedAmount: () => t.bufferedAmount(),
       send: (packet) => { t.sendBinary(packet) },
@@ -488,6 +532,7 @@ export function useLiveSession(): UseLiveSession {
     sender.reset()
     ledger.clear()
     transport.connect()
+    startMetricsPolling()
     if (options.video !== false) await startVideo()
     if (options.audio) await startAudio()
     if (videoEnabled.value) scheduleNextFrame()
@@ -506,6 +551,7 @@ export function useLiveSession(): UseLiveSession {
   function stop() {
     active.value = false
     paused.value = false
+    stopMetricsPolling()
     if (captureTimer) { clearTimeout(captureTimer); captureTimer = null }
     transport?.close('client')
     transport = null
@@ -542,6 +588,7 @@ export function useLiveSession(): UseLiveSession {
   return {
     phase, active, paused, modeView, modePayload, captions, observations, error, notice, stats,
     capabilities, videoEnabled, audioEnabled, cameraState, bindVideo, enableAudio: startAudio, disableAudio,
+    focusRegion, channelStatus, refreshChannelStatus,
     start, pause, resume, stop, cancel, refreshMode,
   }
 }

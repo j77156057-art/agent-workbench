@@ -504,9 +504,12 @@ class OmniRealtimeProvider(RealtimeProvider):
             except Exception:
                 if self._running:
                     self._emit(EVENT_ERROR, code="stream_broken", retryable=True,
-                               message="服务端关闭了连接；若音频一进流就被断开，先确认模型是否"
-                                       "已下线（qwen-omni-turbo-realtime 于 2026-10-10 下线）"
-                                       "或音色是否被当前模型支持")
+                               message="服务端关闭了连接。两种常见原因："
+                                       "①若音频一进流就被断开，先确认模型是否已下线"
+                                       "（qwen-omni-turbo-realtime 于 2026-10-10 下线）"
+                                       "或音色是否被当前模型支持；"
+                                       "②若始终没有音频输入，纯图像会话同样会被服务端关闭"
+                                       "（实测：只发视频必断，带音频即稳）")
                 self._running = False
                 return
             if raw in (None, ""):

@@ -127,7 +127,47 @@ WS 事件    hello.ok 1 · audio.transcript 99 · model.delta 42 · cancel.ok 4 
 | 旁路"画面观察"始终 0 条 | 旁路走**项目的 LLM**，而该项目配的 `deepseek-flash` 调视觉时返回 **HTTP 402 Insufficient Balance**（账户余额）。原生模式下旁路失败按设计被静默丢弃（"旁路探针失败绝不能打扰主链路"），所以是 0 条而不是报错。**注意：deepseek-flash 本身是有原生视觉的**（`config.py:346-348` 在 `_NATIVE_VISION_HINTS` 里），我一度用"DeepSeek 无视觉"的通识误判过这一点 |
 | 供应商报 `Error append image before append audio.` | 该会话要求**一轮里音频在前、图像在后**；静音期只推帧就会踩到。客户端改为：开麦时若最近 1.2s 没有音频上行，先补一块静音再推帧 |
 
-## 6. 已知限制
+## 6. 续做（同日晚些时候）：圈选聚焦 + 通道指标 + 一个实测结论
+
+初版面板能看、能听、能说话，但**没有两样东西**：
+
+| 补的 | 后端 | 做法 |
+| --- | --- | --- |
+| **圈选聚焦** | 包头 `focused`（`api.py` 的 `focused_region="1" if header.get("focused")`） | 预览上拖拽画框 → 上行帧**就是**这块区域（所见即所发）+ 包头带 `focused=true`。鼠标坐标要按 `object-fit: contain` 的信箱留白换算，否则框的位置会偏 |
+| **通道指标** | `GET /api/vision/realtime/status`（R5 时间线 + R10 指标） | 2 秒轮询，显示首字/首音/观察延迟（p50/p95）、队列深度、发帧/丢帧、模型拒绝、连接数。**这个端点此前前端零调用** —— R5/R10 的一等产物一直躺在后端 |
+
+### 6.1 实测发现：音频是这条链路的**必需输入**，不是可选项
+
+做圈选时顺带撞上一个怪现象：有时会话开几秒就 `stream_broken` 断流，有时稳跑 30 秒。
+做了两轮对照实验（每轮 20 秒，Edge + Y4M 假摄像头 + JFK 语音）：
+
+| 配置 | 结果 |
+| --- | --- |
+| 只发视频（不开麦） | **稳定断流**（stream_broken），转写 0~11 条 |
+| 视频 + 音频（开麦） | **稳定正常**，转写 85~98 条，零错误 |
+
+而且**音频一停**（先开麦跑几秒再关掉），会话过一会儿照样断 —— 供应商要求持续的音频输入，
+纯图像会话会被服务端关掉。
+
+后端原来那句提示恰好指向反了（"若音频一进流就被断开…"），实际是**音频没进流**才断。
+于是两处都改：
+
+- 后端 `realtime_omni.py` 的 stream_broken 文案改成**两个方向都讲**（含"实测：只发视频必断，
+  带音频即稳"）。
+- 前端「开始」改成**同时开麦**（麦克风从"可选项"变成这条链路的必需输入），关麦时明说代价；
+  麦克风没开成时给可执行的提示 + 重试按钮。
+
+### 6.2 圈选的实机证据
+
+上行的是**二进制媒体包，包头是 JSON**，所以可以在探针里直接解出来看 `focused` 标记：
+
+```
+圈选前：上行视频帧 12，其中 focused=true 的 0
+圈选后：上行视频帧 33，其中 focused=true 的 20
+选区样式：left 24.9% top 24.9% width 45.1% height 50.0%（与拖拽的 25%→70% 一致）
+```
+
+## 7. 已知限制
 
 1. **旁路"画面观察"依赖项目的视觉模型**：原生模式下画面由实时模型直接理解（结果体现在
    面板上方的回复里），那一栏只在降级（抽帧）模式下有意义。
@@ -143,8 +183,10 @@ WS 事件    hello.ok 1 · audio.transcript 99 · model.delta 42 · cancel.ok 4 
 | 文件 | 角色 |
 | --- | --- |
 | `frontend/src/workbench/liveTransport.ts` | **新**：WS 连接生命周期 + 会话代数 |
-| `frontend/src/workbench/composables/useLiveSession.ts` | **新**：接线层（采集/编码/上行/归约/播放） |
-| `frontend/src/workbench/components/LiveStreamPanel.vue` | **新**：面板 UI |
+| `frontend/src/workbench/composables/useLiveSession.ts` | **新**：接线层（采集/编码/上行/归约/播放）+ 圈选聚焦 + 通道指标轮询 |
+| `frontend/src/workbench/components/LiveStreamPanel.vue` | **新**：面板 UI（预览/圈选/字幕/观察/指标/控制） |
+| `frontend/src/workbench/api/model.ts` | 改：新增 `realtimeChannelStatus()` 客户端 |
+| `agent_runtime/realtime_omni.py` | 改：stream_broken 文案改成两个方向都讲（音频缺失也会断流） |
 | `frontend/src/workbench/liveStreamControl.ts` | 改：字幕归约（草稿替换 / final 取长 / 保留空格） |
 | `frontend/src/workbench/components/ChatDock.vue` | 改：解开语音的 cockpit 门控（5 处） |
 | `frontend/vite.config.ts` | 改：dev 代理支持 WS + 同源 |
