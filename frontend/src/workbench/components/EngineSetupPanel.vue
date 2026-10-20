@@ -133,6 +133,7 @@ const toolDetail = ref<Record<string, unknown> | null>(null)
 const checkPath = ref('')
 const diagText = ref('')
 const playtestCmd = ref('')
+const perfCmd = ref('')
 
 async function runTool(name: string, fn: () => Promise<Record<string, unknown>>) {
   toolBusy.value = name
@@ -198,6 +199,8 @@ const toolRows = computed(() => {
     }
   }
   if (d.output) out.push({ label: '输出', value: String(d.output).slice(0, 400) })
+  if (d.metric) out.push({ label: '口径', value: String(d.metric) })
+  if (d.duration !== undefined && d.duration !== null) out.push({ label: '耗时', value: `${d.duration}s` })
   // path 在「脚本校验」里是**被检查的文件**，在「装探针/装桥」里才是**写入的文件**，
   // 所以这里只能叫「路径」——叫「写入」会把"检查了哪个文件"说成"写了哪个文件"。
   if (d.path) out.push({ label: '路径', value: String(d.path) })
@@ -275,6 +278,12 @@ const toolRows = computed(() => {
         <input v-model="playtestCmd" class="esp-input esp-grow" placeholder="玩测命令（留空=自动探测测试框架）" spellcheck="false">
         <button class="esp-btn" :disabled="toolBusy !== ''" @click="runTool('玩测', () => engineApi.playtest(playtestCmd.trim()))">
           {{ toolBusy === '玩测' ? '运行中…' : '跑玩测' }}
+        </button>
+      </div>
+      <div class="esp-tools-row">
+        <input v-model="perfCmd" class="esp-input esp-grow" placeholder="要剖析的 .py 路径（相对项目根，如 tools/x.py）" spellcheck="false">
+        <button class="esp-btn" :disabled="toolBusy !== '' || !perfCmd.trim()" @click="runTool('性能剖析', () => engineApi.performance(perfCmd.trim()))">
+          {{ toolBusy === '性能剖析' ? '剖析中…' : '性能剖析' }}
         </button>
       </div>
       <p v-if="toolMsg" class="esp-msg" :class="{ 'esp-msg--bad': toolDetail?.ok === false }">{{ toolMsg }}</p>

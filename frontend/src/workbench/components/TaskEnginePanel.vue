@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { engineApi, taskApi, comfyApi, getProjectId, getActiveTask, setActiveTask } from '../api'
 import { usePolling } from '../composables/polling'
-import { useWorkbench } from '../composables/workbench'
+import { useWorkbench, askConfirm } from '../composables/workbench'
 import { useEngineConfig } from '../composables/useEngineConfig'
 const { jumpToLine } = useWorkbench()
 // 引擎取自项目配置（设置页「引擎与项目」），不再写死 Godot。
@@ -17,10 +17,71 @@ async function loadTasks() { if (disposed || panelProject !== getProjectId()) re
 async function refresh() { if (disposed || panelProject !== getProjectId()) return; try { running.value = (await engineApi.status()).running; const r = await engineApi.logs(); logs.value = r.lines.slice(-8); errors.value = r.errors } catch(e) { result.value='引擎状态读取失败：'+(e as Error).message } }
 async function analyze() {
   busy.value = true; busyAction.value = 'analyze'; result.value = ''
-  try { const r = await taskApi.impact({ title: title.value, region: region.value, files: files.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean), allowed_paths: region.value ? [region.value] : [] }); impact.value = r.files || []; result.value = `影响文件 ${impact.value.length} 个` } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' }
+  try { const r = await taskApi.impact({ title: title.value, region: region.value, files: files.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean), allowed_paths: region.value ? [region.value] : [] }); if (!r.ok) { scopeErrors.value = r.scope?.errors || []; result.value = r.scope?.errors?.length ? `影响范围算不了：任务范围有 ${scopeErrors.value.length} 处越界` : (r.error || '影响范围分析失败'); return } scopeErrors.value = []; impact.value = r.files || []; result.value = `影响文件 ${impact.value.length} 个` } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' }
 }
 async function saveTask() { busy.value = true; busyAction.value = 'save'; try { const r = await taskApi.create({ title: title.value, region: region.value, files: files.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean), allowed_paths: region.value ? [region.value] : [], status: 'open' }); taskId.value = String(r.task?.id || ''); if (taskId.value) { setActiveTask({ id: taskId.value, region: region.value, allowedPaths: region.value ? [region.value] : [] }, panelProject) } result.value = r.ok ? `任务已保存 ${taskId.value}` : (r.error || '保存失败'); await loadTasks() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
 async function createBranch() { busy.value = true; busyAction.value = 'branch'; try { const r=await taskApi.branch({id:taskId.value,title:title.value}); result.value=r.ok?`已切换分支 ${r.branch}`:(r.error||'创建分支失败') } catch(e){ result.value=(e as Error).message } finally { busy.value = false; busyAction.value = '' } }
+// ---- 任务范围 / 快照 / 回滚（这三个端点的客户端早就有，调用点一直是零）----
+const scopeErrors = ref<{ path: string; error: string }[]>([])
+const taskSnapshot = ref<Record<string, unknown> | null>(null)
+
+function taskPayload() {
+  return {
+    id: taskId.value, title: title.value, region: region.value,
+    files: files.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean),
+    allowed_paths: region.value ? [region.value] : [],
+  }
+}
+async function validateScope() {
+  busy.value = true; busyAction.value = 'validate'; scopeErrors.value = []
+  try {
+    const r = await taskApi.validate(taskPayload())
+    // validate 直接返回 TaskScope 本体：errors 就在顶层。
+    scopeErrors.value = r.errors || []
+    result.value = r.ok
+      ? `任务范围校验通过（分区 ${r.region || '未限定'}，允许路径 ${(r.allowed_paths || []).length} 条）`
+      : `任务范围有 ${scopeErrors.value.length} 处越界`
+  } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' }
+}
+async function saveSnapshot() {
+  busy.value = true; busyAction.value = 'snapshot'
+  try {
+    const r = await taskApi.snapshot(taskPayload())
+    if (!r.ok) {
+      // 422：范围越界。后端把具体越界项放在 body.scope.errors 里，别把它吞了。
+      scopeErrors.value = r.scope?.errors || []
+      result.value = `存快照失败：任务范围有 ${scopeErrors.value.length} 处越界`
+      return
+    }
+    taskSnapshot.value = (r.snapshot || null) as Record<string, unknown> | null
+    scopeErrors.value = []
+    const n = Object.keys((r.snapshot?.files || {}) as object).length
+    result.value = `已存快照（${n} 个文件，可用于回滚）`
+  } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' }
+}
+async function revertSnapshot() {
+  if (!taskSnapshot.value) { result.value = '还没有快照，先点「存快照」。'; return }
+  const ok = await askConfirm({
+    title: '回滚到快照？',
+    message: '会覆盖（或删除）这个任务里的文件，回到快照时的内容。',
+    detail: '这是破坏性操作：快照之后做的改动会丢失。',
+    confirmText: '回滚',
+    danger: true,
+  })
+  if (!ok) return
+  busy.value = true; busyAction.value = 'revert'
+  try {
+    const r = await taskApi.revert({ ...taskPayload(), snapshot: taskSnapshot.value })
+    if (!r.ok) {
+      scopeErrors.value = r.scope?.errors || []
+      result.value = r.error || `回滚失败：任务范围有 ${scopeErrors.value.length} 处越界`
+      return
+    }
+    const n = (r.results || []).filter(x => x.ok).length
+    scopeErrors.value = []
+    result.value = `已回滚 ${n} 个文件`
+  } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' }
+}
 async function verifyTask() { busy.value = true; busyAction.value = 'verify'; try { const r = await taskApi.verify({ id: taskId.value, title: title.value, region: region.value, files: files.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean), allowed_paths: region.value ? [region.value] : [] }); result.value = r.ok ? '任务验证通过' : '任务验证失败：请查看检查结果' } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
 async function toggleEngine() { busy.value = true; busyAction.value = 'engine'; try { await engineCfg.load(); const r = running.value ? await engineApi.stop() : await engineApi.start(engineCfg.engine.value); running.value = 'running' in r ? !!r.running : false; await refresh() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
 async function reloadEngine() { busy.value = true; busyAction.value = 'reload'; try { const r = await engineApi.reload(); result.value = r.ok ? `${engineCfg.engineName.value} 已热重载` : (r.error || '热重载失败'); running.value = !!r.running; await refresh() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
@@ -86,7 +147,9 @@ defineExpose({ show })
       <input v-model="region" placeholder="分区，例如 behaviors" />
       <textarea v-model="files" placeholder="文件路径，每行或逗号分隔" />
       <button class="te-action" :aria-busy="busyAction === 'save'" :disabled="busy" @click="saveTask">{{ busyAction === 'save' ? '保存中…' : '保存任务' }}</button><button class="te-action" :aria-busy="busyAction === 'branch'" :disabled="busy" @click="createBranch">{{ busyAction === 'branch' ? '创建中…' : '任务分支' }}</button><button class="te-action" :aria-busy="busyAction === 'analyze'" :disabled="busy" @click="analyze">{{ busyAction === 'analyze' ? '分析中…' : '分析影响范围' }}</button><button class="te-action" :aria-busy="busyAction === 'verify'" :disabled="busy" @click="verifyTask">{{ busyAction === 'verify' ? '验证中…' : '执行验证' }}</button>
+      <button class="te-action" :aria-busy="busyAction === 'validate'" :disabled="busy" @click="validateScope">{{ busyAction === 'validate' ? '校验中…' : '校验范围' }}</button><button class="te-action" :aria-busy="busyAction === 'snapshot'" :disabled="busy" @click="saveSnapshot">{{ busyAction === 'snapshot' ? '存中…' : '存快照' }}</button><button class="te-action te-action-warn" :aria-busy="busyAction === 'revert'" :disabled="busy || !taskSnapshot" @click="revertSnapshot">{{ busyAction === 'revert' ? '回滚中…' : '回滚快照' }}</button>
       <p v-if="result" class="te-result">{{ result }}</p>
+      <ul v-if="scopeErrors.length" class="te-list te-list-warn"><li v-for="e in scopeErrors" :key="e.path">{{ e.path }} · {{ e.error }}</li></ul>
       <ul v-if="impact.length" class="te-list"><li v-for="p in impact" :key="p">{{ p }}</li></ul>
       <div class="te-engine"><span :class="{ live: running }" /> Godot {{ running ? '运行中' : '未运行' }} <button :disabled="busy" @click="verifyEngine">{{ busyAction === 'engine' ? '校验中…' : '校验' }}</button><button v-if="running" :disabled="busy" @click="reloadEngine">热重载</button><button :disabled="busy" @click="toggleEngine">{{ busyAction === 'engine' ? (running ? '停止中…' : '启动中…') : (running ? '停止' : '启动') }}</button></div>
       <div class="te-unreal"><b>Unreal 连接：{{ unrealState }}</b><button @click="refreshUnreal">刷新</button><small>Blueprint {{ unrealAssets.length }} · Actor {{ unrealActors.length }}</small></div>
@@ -107,6 +170,9 @@ defineExpose({ show })
 .te-params{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:5px 0}.te-params label{font-size: var(--fs-cap);color:var(--text-muted)}.te-params input{margin:2px 0!important;padding:3px!important;font-size: var(--fs-cap)}.te-params button{grid-column:1/-1}
 .te-outputs{margin-top:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:7px;max-height:240px;overflow:auto}.te-output{display:flex;flex-direction:column;align-items:stretch;gap:4px;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size: var(--fs-cap);transition:border-color .16s ease,box-shadow .16s ease}.te-output:hover{border-color:var(--border-strong);box-shadow:0 4px 12px rgba(35,52,84,.08)}.te-output img{width:100%;height:86px;object-fit:cover;border-radius:4px}.te-output audio,.te-output video{width:100%;max-height:86px}.te-output span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono)}.te-output button{--btn-fill:var(--accent);background:var(--accent);border:1px solid var(--accent-deep);color:var(--accent-ink);border-radius:5px;padding:3px 7px;cursor:pointer;transition:filter .16s ease,transform .16s ease}
 .te-unreal{margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size: var(--fs-cap);color:var(--text-muted);display:flex;gap:6px;align-items:center}.te-unreal small{margin-left:2px}.te-unreal button{margin-left:auto;--btn-fill:var(--accent);background:var(--accent);border:1px solid var(--accent-deep);color:var(--accent-ink);border-radius:5px;padding:4px 7px;cursor:pointer;transition:filter .16s ease,transform .16s ease}.te-unreal-list{max-height:110px;overflow:auto;margin-top:4px;padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:5px;font:10px var(--font-mono);color:var(--text-muted)}
+/* 回滚是破坏性操作 → 用琥珀色，和旁边的普通动作区分开（--btn-fill 顺带照顾玻璃材质）。 */
+.te-action-warn{--btn-fill:var(--amber);background:var(--amber);border-color:var(--amber);color:var(--amber-ink)}
+.te-list-warn li{color:var(--amber)}
 @keyframes te-fade-in{from{opacity:0}to{opacity:1}}@keyframes te-pop-in{from{opacity:0;transform:translateY(-6px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}@keyframes te-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--green) 35%, transparent)}50%{box-shadow:0 0 0 5px transparent}}
 @media (max-width:640px){.te-pop{right:8px;top:8px;bottom:8px;width:auto;max-width:none;max-height:none;border-radius:10px}.te-label{display:none}.te-engine,.te-unreal{flex-wrap:wrap}.te-engine button,.te-unreal button{margin-left:auto}}
 @media (prefers-reduced-motion:reduce){.te-trigger,.te-backdrop,.te-pop,.te-engine span.live,.te-output,.te-action,.te-engine button,.te-comfy button,.te-output button{animation:none!important;transition:none!important}}

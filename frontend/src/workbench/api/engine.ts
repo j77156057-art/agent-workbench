@@ -5,11 +5,29 @@ import { DesktopHost, EmbedRect, EngineStatus, TaskScope } from './fs'
 export const taskApi = {
   list() { return request<{ ok: boolean; tasks: Record<string, unknown>[] }>('/api/tasks') },
   create(payload: Record<string, unknown>) { return postJson<{ ok: boolean; task?: Record<string, unknown>; error?: string }>('/api/tasks', payload) },
-  validate(payload: Record<string, unknown>) { return postJson<{ ok: boolean; scope: TaskScope }>('/api/tasks/validate', payload) },
-  impact(payload: Record<string, unknown>) { return postJson<{ ok: boolean; files: string[]; direct_files: string[]; related_files: string[] }>('/api/tasks/impact', payload) },
-  snapshot(payload: Record<string, unknown>) { return postJson<{ ok: boolean; snapshot: Record<string, unknown> }>('/api/tasks/snapshot', payload) },
+  // 这几个端点用「HTTP 422 + body.scope.errors」表达"任务范围越界"，
+  // 不是用 error 字段。走 request()/postJson 会在 ok:false 时抛异常，
+  // 越界文件列表就整个丢了 —— 所以一律用 rawJson 拿原始失败体。
+  // validate 本身返回的就是 TaskScope 本体（ok/errors/region/allowed_paths）。
+  validate(payload: Record<string, unknown>) { return rawJson<TaskScope & { error?: string }>('/api/tasks/validate', payload) },
+  // 影响范围会走语义检索（可能调模型），实测合法范围下能挂 2 分钟以上不给回音。
+  // 所以给 30s 上限：超时按"业务失败"返回，而不是让按钮一直转圈。
+  impact(payload: Record<string, unknown>) {
+    type ImpactResult = { ok: boolean; files?: string[]; direct_files?: string[]; semantic_files?: string[]; related_files?: string[]; error?: string; scope?: { errors?: { path: string; error: string }[] } }
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 30_000)
+    return rawJson<ImpactResult>('/api/tasks/impact', payload, ctl.signal)
+      .catch((e) => {
+        if (ctl.signal.aborted) return { ok: false, error: '影响范围分析超时（语义检索 30 秒没返回）。可先用「校验范围」确认任务分区。' } as ImpactResult
+        throw e
+      })
+      .finally(() => clearTimeout(timer))
+  },
+  snapshot(payload: Record<string, unknown>) { return rawJson<{ ok: boolean; error?: string; snapshot?: { created_at?: string; files: Record<string, { mtime_ns?: number; size?: number; content?: string } | null> }; scope?: { errors?: { path: string; error: string }[] } }>('/api/tasks/snapshot', payload) },
   verify(payload: Record<string, unknown>) { return postJson<{ ok: boolean; checks: { command: string; ok: boolean; output?: string; error?: string }[] }>('/api/tasks/verify', payload) },
   branch(payload: Record<string, unknown>) { return postJson<{ ok: boolean; branch?: string; error?: string }>('/api/tasks/branch', payload) },
+  /** 回滚到快照：**破坏性操作**（会覆盖/删除任务文件），调用方必须先取得用户确认。 */
+  revert(payload: Record<string, unknown>) { return rawJson<{ ok: boolean; results?: { ok: boolean; path: string; restored?: string; error?: string }[]; error?: string; scope?: { errors?: { path: string; error: string }[] } }>('/api/tasks/revert', payload) },
 }
 
 export interface EngineCatalogEntry {
@@ -48,6 +66,10 @@ export const engineApi = {
   installRuntimeProbe() { return postJson<{ ok:boolean; path?:string; created?:boolean; error?:string }>('/api/runtime/probe', {}) },
   /** 跑一次玩测（自动探测测试框架或自定义命令）。 */
   playtest(command = '', timeout = 30) { return postJson<{ ok:boolean; error?:string; output?:string; exit_code?:number; timed_out?:boolean }>('/api/playtest', { command, timeout }) },
+  /** 性能剖析：Python 脚本走真实 cProfile（累计耗时前 15），其余只测墙钟。
+   *  用 rawJson：失败体里**没有 error 字段**，真正有用的是 output（命令的报错原文），
+   *  走 postJson 会在 ok:false 时抛异常，把这段原文整个丢掉。 */
+  performance(command: string) { return rawJson<{ ok:boolean; metric?:string; error?:string; output?:string; duration?:number }>('/api/performance', { command }) },
   /** 扫描项目里有没有引擎工程文件（project.godot / ProjectVersion.txt / *.uproject）。 */
   scan() { return request<{ ok: boolean; projects: { engine: string; path: string }[] }>('/api/engine/scan') },
   /** 探测可执行文件并写入项目配置；ready=false 时带下载链接。
