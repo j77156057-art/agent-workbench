@@ -4214,37 +4214,42 @@ def confirm_bridge_write(pid, session_id=None):
     - 达阈值且执行器在场：**先重算 `_ptc_bridge_write_tier`（二次复核硬底线）**；若此刻已变
       `tier==-1`（路径漂移到凭据/系统关键目录/格式化）→ 撤销待确认、当场拒、绝不落盘；
       否则移除待确认项（已获人工授权）再执行并如实返回执行器结果。
+    - **并发恰一次**：判阈值 + 取执行器 + 摘除待确认项全在**同一把锁**内原子完成，只有真正
+      摘到活跃项的调用方才进执行器——杜绝多路并发确认把同一条写重复落盘（第60批评审 HIGH 修复）。
     """
+    # 原子认领段：取项 + 会话校验 + 递增确认 + 判阈值 + 取执行器 + 摘除待确认项，
+    # 必须在同一把 _BRIDGE_WRITE_LOCK 内一次做完。旧实现把这三步拆成三段锁（confirms 一把、
+    # tier 重算裸 I/O 在锁外、pop 另一把且不校验删到项），并发下多路同读 got>=need、同过
+    # tier2!=-1、同 pop → 全部落到 executor=双/多落盘。此处以"锁内 pop 且校验 claimed is e"
+    # 作独占认领，抢空者（并发已被删）视同"未找到"早返回，恰好一路进入执行。
     with _BRIDGE_WRITE_LOCK:
         e = _PENDING_BRIDGE_WRITES.get(pid)
-    if not e:
-        return False, "未找到待确认写 #%s（可能已确认/拒绝、重启后失效、或不属于本会话）。" % pid
-    if session_id is not None and e.get("session", "") != session_id:
-        return False, "未找到待确认写 #%s（可能已确认/拒绝、重启后失效、或不属于本会话）。" % pid
-    tier, need = e["tier"], e["need"]
-    with _BRIDGE_WRITE_LOCK:
+        if not e:
+            return False, "未找到待确认写 #%s（可能已确认/拒绝、重启后失效、或不属于本会话）。" % pid
+        if session_id is not None and e.get("session", "") != session_id:
+            return False, "未找到待确认写 #%s（可能已确认/拒绝、重启后失效、或不属于本会话）。" % pid
+        tier, need = e["tier"], e["need"]
         e["confirms"] += 1
         got = e["confirms"]
-    if got < need:
-        return False, ("第 %d 档写需连续确认 %d 次，当前已确认 %d 次，还需 %d 次。（尚未执行）"
-                       % (tier, need, got, need - got))
-    executor = _PTC_BRIDGE_WRITE_EXECUTOR
-    if executor is None:
-        with _BRIDGE_WRITE_LOCK:
+        if got < need:
+            return False, ("第 %d 档写需连续确认 %d 次，当前已确认 %d 次，还需 %d 次。（尚未执行）"
+                           % (tier, need, got, need - got))
+        executor = _PTC_BRIDGE_WRITE_EXECUTOR
+        if executor is None:
             e["confirms"] = got - 1  # 回退本次确认，保留待人工在活跃桥接范围内重试
-        return False, ("bridge 写执行服务未就绪（当前会话不在活跃桥接范围内），"
-                       "未执行、保留待确认。")
-    # 二次复核硬底线：确认时按当前策略重算档位，漂移进凭据/系统关键目录/格式化 → 撤销、拒执行。
+            return False, ("bridge 写执行服务未就绪（当前会话不在活跃桥接范围内），"
+                           "未执行、保留待确认。")
+        # 达阈值且执行器在场：锁内摘除待确认项=独占认领；摘不到（并发已被别人删）→ 视为已处理。
+        claimed = _PENDING_BRIDGE_WRITES.pop(pid, None)
+        _bridge_write_by_hash.pop(e["arg_hash"], None)
+        if claimed is not e:
+            return False, "未找到待确认写 #%s（可能已确认/拒绝、重启后失效、或不属于本会话）。" % pid
+    # 二次复核硬底线（锁外，绝不持锁做 I/O）：按当前策略重算档位，漂移进凭据/系统关键目录/
+    # 格式化 → 撤销（认领时已 pop）、当场拒、绝不落盘。
     tier2, reason2, _ = _ptc_bridge_write_tier(e["name"], e["arg"])
     if tier2 == -1:
-        with _BRIDGE_WRITE_LOCK:
-            _PENDING_BRIDGE_WRITES.pop(pid, None)
-            _bridge_write_by_hash.pop(e["arg_hash"], None)
         return False, ("写 #%s 在确认时二次复核命中永不放行硬底线（%s），已撤销待确认、未执行。"
                        % (pid, reason2))
-    with _BRIDGE_WRITE_LOCK:
-        _PENDING_BRIDGE_WRITES.pop(pid, None)
-        _bridge_write_by_hash.pop(e["arg_hash"], None)
     try:
         ok, result = executor(e["name"], e["arg"])
     except Exception as ex:  # noqa: BLE001

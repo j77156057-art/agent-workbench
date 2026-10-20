@@ -1084,5 +1084,112 @@ class DecisionEAuditEventTests(unittest.TestCase):
         self.assertTrue(ok)
 
 
+class ConcurrentExactlyOnceTests(unittest.TestCase):
+    """第60批评审 HIGH 修复回归：多线程并发确认**同一 pid**，执行器必须恰被调用一次。
+
+    旧 `confirm_bridge_write` 是 check-then-act 三段锁（`confirms+=1` 一把锁 → `_ptc_bridge_write_tier`
+    重算裸 I/O 在锁外 → `pop` 另一把锁且不校验删到项），并发下多路同读 `got>=need`、同过 `tier2!=-1`、
+    同 pop → **全部落到 executor**（双/多落盘）。本测把 tier 重算窗口刻意加宽（sleep 复现生产文件
+    stat I/O 释放 GIL 效应）+ 8 路 barrier 齐发，旧代码必现 exec_count>1；(a) 原子认领修复后恒为 1。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        set_runtime("code_root", self.tmp)
+        tools_mod.clear_bridge_writes()
+
+    def tearDown(self):
+        tools_mod.clear_bridge_writes()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_concurrent_confirm_same_pid_executes_exactly_once(self):
+        import threading
+        arg = "path: race\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 1, "t")   # tier1 → need=1，最尖锐
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        self.assertEqual(need, 1)
+
+        call_lock = threading.Lock()
+        calls = []
+
+        def executor(name, a):
+            with call_lock:
+                calls.append((name, a))
+            return (True, "RAN")
+
+        def slow_tier(name, a):
+            import time
+            time.sleep(0.05)                 # 模拟生产 tier 重算的文件 stat I/O（释放 GIL 拉宽窗口）
+            return (1, "t", None)
+
+        N = 8
+        barrier = threading.Barrier(N)
+        results = []
+
+        def worker():
+            barrier.wait()                   # 尽量让 N 路在同一瞬间冲进 confirm
+            ok, msg = tools_mod.confirm_bridge_write(pid)
+            with call_lock:
+                results.append(ok)
+
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR", executor), \
+                patch.object(tools_mod, "_ptc_bridge_write_tier", slow_tier), \
+                patch.object(tools_mod, "_PTC_TRACE_PATH", None):
+            ts = [threading.Thread(target=worker) for _ in range(N)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join(timeout=10)
+
+        self.assertEqual(len(calls), 1)                       # 执行器恰一次落盘（原子认领核心断言）
+        self.assertEqual(calls, [("apply_edit", arg)])        # 透传原参
+        self.assertEqual(sum(1 for ok in results if ok), 1)   # 只有一个调用方拿到"成功"
+        self.assertEqual(len(results), N)
+        self.assertFalse(any(e["id"] == pid for e in tools_mod.list_bridge_writes()))  # 已认领移除
+
+    def test_concurrent_confirm_need_multi_executes_exactly_once(self):
+        # need 多档（tier3 默认需 3 次）：先串行逼近阈值，最后一步多路并发冲进来——
+        # 达阈值那一刻仍只有一路认领执行，其余得"未找到/未执行"。tier-agnostic 取 need，
+        # need=1 时串行 0 次、全部走并发，仍应恰一次（同测一语义），故只断言 >=1。
+        import threading
+        arg = "path: race3\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 3, "t")   # tier3 → 通常 need=3
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        self.assertGreaterEqual(need, 1)
+
+        call_lock = threading.Lock()
+        calls = []
+
+        def executor(name, a):
+            with call_lock:
+                calls.append(name)
+            return (True, "RAN")
+
+        # 先用 need-1 次串行确认逼近阈值（留最后一步给并发冲击）。
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR", executor), \
+                patch.object(tools_mod, "_ptc_bridge_write_tier", lambda n, a: (3, "t", None)), \
+                patch.object(tools_mod, "_PTC_TRACE_PATH", None):
+            for _ in range(need - 1):
+                ok, _ = tools_mod.confirm_bridge_write(pid)
+                self.assertFalse(ok)                          # 未达阈值，绝不执行
+            self.assertEqual(calls, [])
+
+            N = 6
+            barrier = threading.Barrier(N)
+
+            def worker():
+                barrier.wait()
+                tools_mod.confirm_bridge_write(pid)           # 最后一步多路同发
+
+            ts = [threading.Thread(target=worker) for _ in range(N)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join(timeout=10)
+
+        self.assertEqual(calls, ["apply_edit"])               # 达阈值后仍恰一次（不会因多路重复落盘）
+
+
 if __name__ == "__main__":
     unittest.main()
