@@ -49,6 +49,145 @@ from agent_runtime.enterprise_sandbox import (execution_mode, host_fallback_acti
 
 _PYTHON_EXEC_TIMEOUT = int(os.getenv("DOCMIND_PYTHON_EXEC_TIMEOUT", "60") or 60)
 
+# ---------------------------------------------------------------------------
+# PTC（Programmatic Tool Calling）路径 B —— 独立 opt-in 模式，默认关（第43批拍板）。
+# 关：_python_exec_run 走今天阻塞式直跑、不向 bridge 暴露任何工具、system_prompt 不变，
+#     三处逐字节等于旧行为（本模式对默认态零影响）。
+# 开：_python_exec_run 切到 Popen 双读服务环，子程序内 bridge 桩经父 execute_tool 回调，
+#     走完整治理 + provenance 归因 + 侧信道 trace（步 2-6 逐步落地）。
+# 与 DOCMIND_TOOL_MODE / DOCMIND_EXPERIENCE_RECALL 同族命名，读同一 env 字符串为单一事实源。
+# ---------------------------------------------------------------------------
+_PTC_BRIDGE_ENABLED = os.getenv("DOCMIND_PTC_BRIDGE", "0") != "0"
+
+#: v1 只读白名单（第45批拍板：本地确定集 + 联网只读）。
+#: 注意 side_effect=PURE 只是必要条件非充分——web_* 虽 PURE 但出网/慢/有成本，
+#: 靠步 5 的联网限次 + 整段上限兜；NON-PURE（apply_edit/create_file/memory_save/
+#: run_command/python_exec 等）一律不 bridge，递归护栏因 python_exec 属 NON-PURE 天然成立。
+_PTC_BRIDGE_WHITELIST = frozenset({
+    "calculate", "memory_search", "search_knowledge", "search_code",
+    "grep", "read_file", "list_dir",
+    "web_search", "web_fetch", "web_research",
+})
+
+#: 联网只读子集：白名单里但要出网/慢/有成本，靠额外限次兜（第45批）。
+_PTC_WEB_TOOLS = frozenset({"web_search", "web_fetch", "web_research"})
+
+# ---- PTC 模式专属硬护栏（"整段计 1 步"移除每调用 governor 后的硬前置，缺一不上线）----
+#: 单次 PTC 动作子调用总数上限：默认 32，env 可下调，但硬夹在 [1,32] 以坐实"≤32"不变式。
+_PTC_MAX_CALLS = min(32, max(1, int(os.getenv("DOCMIND_PTC_MAX_CALLS", "32") or 32)))
+#: 联网类子调用额外限次（一段里叠多次外呼会慢/贵，墙钟+限次是主要防线）。
+_PTC_MAX_WEB_CALLS = max(0, int(os.getenv("DOCMIND_PTC_MAX_WEB_CALLS", "5") or 5))
+#: 结果累计字节上限（防单段刷屏撑爆上下文）。
+_PTC_MAX_RESULT_BYTES = max(1024, int(os.getenv("DOCMIND_PTC_MAX_RESULT_BYTES", "200000") or 200000))
+#: 整段墙钟上限：默认取 python_exec 超时口径，可 env 收紧。
+_PTC_WALL_CLOCK = float(os.getenv("DOCMIND_PTC_WALL_CLOCK", str(_PYTHON_EXEC_TIMEOUT)) or _PYTHON_EXEC_TIMEOUT)
+
+
+def _ptc_bridge_enabled():
+    """本轮是否启用 PTC bridge 模式（读模块级常量，测试可 monkeypatch）。"""
+    return _PTC_BRIDGE_ENABLED
+
+
+def _ptc_bridge_tool_names():
+    """bridge 可向子程序暴露的工具名集合。
+
+    步 1 工具注册 seam：**关模式返回空集** → 调用方（步 2 jail 前缀注入 / 步 4
+    父服务环白名单校验）据此不暴露、不校验任何 bridge 工具，逐字节维持旧行为。
+    开模式返回 v1 只读白名单。
+    """
+    if not _ptc_bridge_enabled():
+        return frozenset()
+    return _PTC_BRIDGE_WHITELIST
+
+
+def _ptc_bridge_stub_src():
+    """生成子程序侧 bridge 桩源码（步 2；随 jail 前缀注入，不碰提示词、不碰 _PJ_JAIL_BODY）。
+
+    协议：每个工具包装函数被调用时，把 {"seq","tool","arg"} 以 `__BRIDGE_REQ__` 前缀写
+    sys.__stdout__（flush）后阻塞读 stdin 一行回执，返回 (ok, result)。父服务环（步 3）
+    据此经 execute_tool 走完整治理并回写结果。
+
+    仅【定义】桩、不自动调用，故开模式在步 3 服务环落地前、跑普通 print 脚本也不死锁。
+    工具名来自 `_ptc_bridge_tool_names()`：关模式返回空集 → 不生成任何包装函数。
+    """
+    names = sorted(_ptc_bridge_tool_names())
+    lines = [
+        "# --- PTC bridge stub (agent_tool_bridge) ---",
+        "import sys as _b_sys, json as _b_json, hashlib as _b_hash",
+        "_BRIDGE_SEQ = [0]",
+        "_BRIDGE_TOOLS = " + repr(names) + "",
+        "def _bridge_call(tool, arg):",
+        "    _BRIDGE_SEQ[0] += 1",
+        "    _h = _b_hash.sha256((arg if isinstance(arg, str) else str(arg)).encode('utf-8')).hexdigest()[:16]",
+        "    _b_sys.__stderr__.write('__BRIDGE_PLAN__' + _b_json.dumps({'seq': _BRIDGE_SEQ[0], 'tool': tool, 'arg_hash': _h}, ensure_ascii=False) + '\\n')",
+        "    _b_sys.__stderr__.flush()",
+        "    _req = {'seq': _BRIDGE_SEQ[0], 'tool': tool, 'arg': arg}",
+        "    _b_sys.__stdout__.write('__BRIDGE_REQ__' + _b_json.dumps(_req, ensure_ascii=False) + '\\n')",
+        "    _b_sys.__stdout__.flush()",
+        "    _line = _b_sys.__stdin__.readline()",
+        "    if not _line:",
+        "        raise RuntimeError('bridge disconnected: parent closed stdin')",
+        "    _resp = _b_json.loads(_line)",
+        "    return (_resp.get('ok'), _resp.get('result'))",
+        "def list_tools():",
+        "    return list(_BRIDGE_TOOLS)",
+    ]
+    for n in names:
+        # n 来自白名单 frozenset，均为合法标识符；用 repr 固定工具名字符串
+        lines.append("def %s(arg):" % n)
+        lines.append("    return _bridge_call(%s, arg)" % repr(n))
+    lines.append("# --- end PTC bridge stub ---")
+    return "\n".join(lines) + "\n"
+
+
+#: PTC 服务回调接缝：由 Agent 在派发 python_exec 前注入（步 6 接线）。
+#: 签名 `server(name: str, arg: str) -> (ok: bool, result_text: str)`，内部走完整
+#: execute_tool 治理 + turn 归因。tools.py 服务环据此服务每个子调用；**未注入时
+#: fail-closed**——直接回 ok=False「服务未就绪」，绝不静默成功、绝不让子进程挂起。
+#: 此接缝解耦 tools↔agent：tools 不必知道 Agent 的 self.tools / turn 结构。
+_PTC_BRIDGE_SERVER = None
+
+#: 服务环每次运行回收的子 stderr trace 行（步 6 解析落账前先收集，绕开 stdout 截断）。
+#: 供测试读取验证「双通道均排空」；单服务环结束时整体替换。
+_PTC_LAST_TRACE = []
+
+#: 服务环每次运行结束时暂存的 executed/rejected/error 计数（步 4 拒绝断言 +
+#: 步 6 planned==ran 落账/测试读取）。单服务环结束时整体替换。
+_PTC_LAST_STATS = {}
+
+#: 父侧 trace.jsonl 侧信道落盘路径接缝（Agent 按会话注入；None → 只返回记录不落文件）。
+#: 独立于 stdout/stderr 合并截断，全量留痕"这条结论是不是 PTC 产出、哪些子调用真跑了"。
+_PTC_TRACE_PATH = None
+
+
+def _ptc_parse_plans(trace_lines):
+    """从子 stderr 解析 `__BRIDGE_PLAN__` 行 → [{seq,tool,arg_hash}, ...]（子侧 planned 台账）。"""
+    plans = []
+    for ln in trace_lines or []:
+        if "__BRIDGE_PLAN__" not in ln:
+            continue
+        payload = ln.split("__BRIDGE_PLAN__", 1)[1].strip()
+        try:
+            d = json.loads(payload)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(d, dict):
+            plans.append(d)
+    return plans
+
+
+def _ptc_reconcile(trace_lines, handled):
+    """planned==ran 硬不变式交叉校验。
+
+    planned = 子进程侧记台账的 bridge 调用数（绕开 stdout 截断，独立于父）；
+    handled = 父服务环实际已响应（执行/拒绝/拦停）的子调用数。
+    reconciled = (planned == handled)。不等 → 有子调用没拿到响应（丢失/半途 kill）→ fail-closed。
+    """
+    plans = _ptc_parse_plans(trace_lines)
+    planned = len(plans)
+    return {"planned": planned, "handled": handled,
+            "reconciled": planned == handled, "plans": plans}
+
 
 def _window_output(text: str) -> str:
     """Keep the head and tail of a command output; the tail holds the traceback."""
@@ -3705,10 +3844,240 @@ def _python_exec_jail_prefix(granted_tier=1):
         "_PJ_NEVER_DIRS=%(never)r\n"
         "_PJ_DANGER=%(danger)r\n" % pol
     )
-    return header + _PJ_JAIL_BODY + "\n"
+    body = header + _PJ_JAIL_BODY + "\n"
+    if _ptc_bridge_enabled():
+        # 审计钩(_PJ_JAIL_BODY)在前、bridge 桩在后：桩定义在钩装好之后，无法移除已注册钩。
+        body = body + _ptc_bridge_stub_src() + "\n"
+    return body
 
 
 def _python_exec_run(code, ceiling=1, allow_escalate=True):
+    """python_exec 执行入口（步 1 三锚点之一：分派开关）。
+
+    关（默认）：直接走 `_python_exec_direct`，逐字节等于旧阻塞式行为，本模式对默认态零影响。
+    开：走 `_python_exec_ptc_run`（PTC 路径 B 服务环）。
+    """
+    if _ptc_bridge_enabled():
+        return _python_exec_ptc_run(code, ceiling=ceiling, allow_escalate=allow_escalate)
+    return _python_exec_direct(code, ceiling=ceiling, allow_escalate=allow_escalate)
+
+
+def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
+    """PTC 路径 B 服务环（步 3：Popen 双读线程 + IPC 回调 execute_tool）。
+
+    子程序在 jail 前缀里已注入 bridge 桩（步 2）；每次 bridge.<tool>(arg) 调用 = 向
+    父进程发一条 `__BRIDGE_REQ__` 请求、阻塞等 stdin 回执。父服务环在环里对每条请求经
+    `_PTC_BRIDGE_SERVER`（步 6 由 Agent 注入完整 execute_tool+归因）服务后回写，
+    子程序最终 print 的答案按原样截断回给模型。
+
+    fail-closed：server 未注入 → 每条请求回 ok=False「服务未就绪」，绝不静默成功、
+    绝不让子进程挂起；超时 kill 并诚实报未跑完。
+    """
+    # ---- 代码规整（与 direct 同源口径，独立实现以免动 direct 破坏默认字节等价）----
+    code = (code or "").strip()
+    code = re.sub(r"^```(?:python|py)?\s*", "", code)
+    code = re.sub(r"\s*```$", "", code)
+    code = re.sub(r"^\s*(?:python|py)\s*$", "", code, flags=re.I | re.M)
+    code = code.strip().strip("`").strip()
+    if not code:
+        return "未提供有效代码。"
+    if getattr(sys, "frozen", False):
+        return "分发版（DocMind.exe）未内置 Python 解释器，python_exec 仅在源码/venv 环境可用。"
+    try:
+        compile(code, "<python_exec>", "exec")
+    except SyntaxError:
+        if "\\n" in code and "\n" not in code:
+            code = code.replace("\\n", "\n").replace("\\t", "\t")
+    cwd = _get_code_root() or os.path.dirname(__file__)
+    # 容器天然隔离路径不装 jail 前缀 → 无 bridge 桩 → 不支持 PTC；诚实回退直跑。
+    try:
+        container_isolates = (execution_mode() == "enterprise"
+                              and stage_execution_active() and stage_backend() == "container")
+    except Exception:
+        container_isolates = False
+    if container_isolates:
+        return _python_exec_direct(code, ceiling=ceiling, allow_escalate=allow_escalate)
+    try:
+        run_code = _python_exec_jail_prefix(ceiling) + code  # 开模式含 bridge 桩（步 2）
+    except Exception as e:  # noqa: BLE001
+        return "拒绝执行：文件系统牢笼初始化失败（%r），请改用 dev_* 写工具。" % (e,)
+    py = (sys.executable if (execution_mode() == "enterprise"
+                             and stage_execution_active() and stage_backend() == "host_compat")
+          else "python")
+    command = [py, "-c", run_code]
+
+    server = _PTC_BRIDGE_SERVER
+    # 步 4：父侧白名单二次校验（纵深防御）——即便子脚本绕过命名包装直接
+    # _bridge_call("apply_edit", ...)，非白名单工具也在 execute_tool【之前】被拒、
+    # 绝不经 server 归因。集合在环开始捕获。
+    allowed = _ptc_bridge_tool_names()
+    deadline = time.monotonic() + _PTC_WALL_CLOCK  # 整段墙钟截止点
+    final_out = []
+    trace_lines = []
+    records = []  # 父侧 handled 台账（每响应一条），用于 planned==ran 交叉校验
+    state = {"error": None, "rejected": 0, "executed": 0,
+             "web": 0, "result_bytes": 0, "blocked": 0, "limit_hit": None}
+
+    def _serve(name, arg):
+        if server is None:
+            return (False, "bridge 服务未就绪（父侧未注册 execute_tool 回调）")
+        try:
+            ok, result = server(name, arg)
+            return (bool(ok), result)
+        except Exception as e:  # noqa: BLE001
+            return (False, "bridge 服务异常：%s" % type(e).__name__)
+
+    def _read_stdout():
+        try:
+            for line in proc.stdout:
+                if line.startswith("__BRIDGE_REQ__"):
+                    payload = line[len("__BRIDGE_REQ__"):].strip()
+                    try:
+                        req = json.loads(payload)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if not isinstance(req, dict):
+                        continue
+                    name = req.get("tool")
+                    # 步 4 fail-closed：非白名单工具在 execute_tool 之前直接拒、不服务、不归因。
+                    if name not in allowed:
+                        state["rejected"] += 1
+                        resp = {"seq": req.get("seq"), "ok": False,
+                                "result": "工具 %r 不在 PTC bridge 白名单，已拒绝（未执行）。" % (name,)}
+                    else:
+                        # 步 5 护栏（"整段计1步"移除 governor 后的硬前置）：命中即拦、不执行、
+                        # 单列 blocked（区别于白名单安全拒绝 rejected）、executed 只计真实 execute_tool 次数。
+                        _now = time.monotonic()
+                        _refusal = None
+                        if state["executed"] >= _PTC_MAX_CALLS:
+                            _refusal = "子调用数达上限 %d（未执行）" % _PTC_MAX_CALLS
+                            state.setdefault("_lh", "max_calls")
+                        elif name in _PTC_WEB_TOOLS and state["web"] >= _PTC_MAX_WEB_CALLS:
+                            _refusal = "联网子调用达上限 %d（未执行）" % _PTC_MAX_WEB_CALLS
+                            state.setdefault("_lh", "max_web")
+                        elif _now > deadline:
+                            _refusal = "整段墙钟超限（未执行）"
+                            state.setdefault("_lh", "wall_clock")
+                        elif state["result_bytes"] >= _PTC_MAX_RESULT_BYTES:
+                            _refusal = "结果累计字节超限（未执行）"
+                            state.setdefault("_lh", "bytes")
+                        if _refusal is not None:
+                            state["blocked"] += 1
+                            if state["limit_hit"] is None:
+                                state["limit_hit"] = state.get("_lh")
+                            resp = {"seq": req.get("seq"), "ok": False, "result": _refusal}
+                        else:
+                            state["executed"] += 1
+                            if name in _PTC_WEB_TOOLS:
+                                state["web"] += 1
+                            ok, result = _serve(name, req.get("arg"))
+                            state["result_bytes"] += len((result or "").encode("utf-8"))
+                            resp = {"seq": req.get("seq"), "ok": ok, "result": result}
+                    records.append({"seq": resp.get("seq"), "tool": name, "ok": resp.get("ok")})
+                    try:
+                        proc.stdin.write(json.dumps(resp, ensure_ascii=False) + "\n")
+                        proc.stdin.flush()
+                    except Exception as e:  # noqa: BLE001
+                        state["error"] = "stdin 回写失败：%s" % type(e).__name__
+                        break
+                else:
+                    final_out.append(line)
+        except Exception as e:  # noqa: BLE001
+            if state["error"] is None:
+                state["error"] = "stdout 读取异常：%s" % type(e).__name__
+
+    def _read_stderr():
+        try:
+            for line in proc.stderr:
+                trace_lines.append(line)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        # 子进程 stdio 强制 utf-8（Windows 默认按本地 GBK 编码子 stdout/stdin，
+        # 与父 encoding=utf-8 管道不一致 → bridge 请求/回执里的中文会被解码成乱码）。
+        _child_env = dict(os.environ)
+        _child_env["PYTHONUTF8"] = "1"
+        _child_env["PYTHONIOENCODING"] = "utf-8"
+        proc = subprocess.Popen(command, cwd=cwd, env=_child_env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True, encoding="utf-8", errors="replace", bufsize=1)
+    except Exception as e:  # noqa: BLE001
+        return "执行失败: %s" % (e,)
+
+    t_out = threading.Thread(target=_read_stdout, daemon=True)
+    t_err = threading.Thread(target=_read_stderr, daemon=True)
+    t_out.start()
+    t_err.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=_PYTHON_EXEC_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
+    # 子进程退出 → stdout/stderr 到 EOF → drain 线程自然收尾
+    t_out.join(timeout=5)
+    t_err.join(timeout=5)
+    try:
+        proc.stdin.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+    _PTC_LAST_TRACE[:] = trace_lines  # 步 6 解析落账前先暂存
+    handled = len(records)
+    rec = _ptc_reconcile(trace_lines, handled)
+    # 侧信道 trace.jsonl：独立于 stdout/stderr 截断，全量留痕（best-effort，写失败不影响返回）。
+    if _PTC_TRACE_PATH:
+        try:
+            with io.open(_PTC_TRACE_PATH, "a", encoding="utf-8") as _tf:
+                _tf.write(json.dumps({"event": "ptc_run_summary",
+                                      "planned": rec["planned"], "handled": handled,
+                                      "executed": state["executed"], "rejected": state["rejected"],
+                                      "blocked": state["blocked"], "reconciled": rec["reconciled"],
+                                      "returncode": proc.returncode}, ensure_ascii=False) + "\n")
+                for _r in records:
+                    _tf.write(json.dumps({"event": "ptc_call", **_r}, ensure_ascii=False) + "\n")
+                _tf.flush()
+        except Exception:  # noqa: BLE001
+            pass  # 写侧信道失败不回吞主结果，但也不借此谎报成功
+    _PTC_LAST_STATS.clear()
+    _PTC_LAST_STATS.update({
+        "executed": state["executed"], "rejected": state["rejected"],
+        "blocked": state["blocked"], "web": state["web"],
+        "result_bytes": state["result_bytes"], "limit_hit": state["limit_hit"],
+        "planned": rec["planned"], "handled": handled, "reconciled": rec["reconciled"],
+        "error": state["error"], "returncode": proc.returncode,
+    })
+    if timed_out:
+        return ("PTC 代码执行超时（>%ds），已中断，未跑完。"
+                "需要更久请改用 run_command。" % _PYTHON_EXEC_TIMEOUT)
+    if state["error"]:
+        return "PTC 服务环异常：%s（未确认全部子调用执行完成）" % state["error"]
+    out = "".join(final_out)
+    # 护栏触发 → 诚实标注未全部执行（与超时报错同口径，绝不把被拦的说成跑成）。
+    if state["blocked"] > 0 or state["limit_hit"]:
+        out += ("\n注：本次有 %d 个子调用因护栏上限被拦、未执行"
+                "（首个触发：%s）；不得把被拦的说成已跑成。\n"
+                % (state["blocked"], state["limit_hit"] or "unknown"))
+    # planned==handled 交叉校验 fail-closed：不等即不确认完整落账。
+    if not rec["reconciled"]:
+        out += ("\n⚠ planned≠handled（子侧计划 %d，父侧响应 %d）："
+                "不确认全部子调用落账，不得声称完整。\n"
+                % (rec["planned"], handled))
+    if not out.strip():
+        return "（代码已执行，无输出）"
+    return _window_output(out)
+
+
+def _python_exec_direct(code, ceiling=1, allow_escalate=True):
     """实际执行已决定要跑的代码。ceiling=本次授予的免批天花板档位（1/2/3）。
 
     allow_escalate=True 时，若子进程运行期钩撞到「超过天花板」的操作（输出里带

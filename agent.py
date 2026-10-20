@@ -13,7 +13,7 @@ import contextvars
 from collections import deque
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from contextlib import nullcontext as _nullcontext
+from contextlib import nullcontext as _nullcontext, contextmanager as _contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 from config import (
@@ -276,6 +276,69 @@ _SELF_VERIFY_ENABLED = os.getenv("DOCMIND_SELF_VERIFY", "1") != "0"
 # 跨会话经验自动召回开关（Phase 3）。默认关闭：避免无关上下文噪声、保持 1083 基线稳定；
 # 设 DOCMIND_EXPERIENCE_RECALL=1 才在回合开始注入 top-k 历史经验作为建议性上下文。
 _EXPERIENCE_RECALL_ENABLED = os.getenv("DOCMIND_EXPERIENCE_RECALL", "0") != "0"
+
+# PTC（Programmatic Tool Calling）路径 B —— 独立 opt-in 模式，默认关（第43批拍板）。
+# 步 1 三锚点之一（system_prompt 组装 gate）：关模式 system_prompt 用默认常量、逐字节不变；
+# 开模式才组装独立 PTC 变体提示词（按 _native_enabled 同款条件拼，不追加到 SYSTEM_PROMPT，
+# token-floor 刀尖不受威胁）。与 tools.py:_PTC_BRIDGE_ENABLED 读同一 env 字符串为单一事实源。
+_PTC_BRIDGE_ENABLED = os.getenv("DOCMIND_PTC_BRIDGE", "0") != "0"
+
+
+def _ptc_variant_system_prompt(channel_prompt: str) -> str:
+    """PTC 开模式的系统提示拼装（步 1 三锚点之一：system_prompt 组装 gate）。
+
+    关模式根本不调此函数（走默认 SYSTEM_PROMPT 常量，逐字节不变）。
+    开模式在此独立拼装 PTC 变体提示——**不追加到 SYSTEM_PROMPT 常量**，token-floor 刀尖不受威胁。
+
+    步 1 语义：真实变体文本（bridge 用法说明 + `list_tools()` 自发现提示）在步 2-6 分化；
+    此占位当前原样返回传入的通道提示，保证接缝已建立但暂不改变实际发给模型的字节。
+    """
+    return channel_prompt
+
+
+def _ptc_build_server(*, tool_lookup, spec_lookup, execute_tool_fn, is_failure,
+                      evidence_fn, turn, side_effect_default):
+    """PTC 服务回调构造器（步 6c）——纯依赖注入，便于用桩单测归因流。
+
+    返回内层 `_server(name, arg) -> (ok, obs_text)`：把子进程 bridge 请求经父侧
+    `execute_tool` 走**完整治理**（stage 门 + 幂等 claim + 异常脱敏），并持锁把每次
+    子调用归因进当前 `turn`（tool_step + add_tool_evidence）→ provenance 在 PTC 下不丢。
+
+    fail-closed：未知/无实现工具、execute_tool 抛异常 → 一律回 ok=False，绝不静默成功。
+    """
+    def _server(name, arg):
+        entry = tool_lookup(name)
+        if not entry:
+            return (False, "bridge 拒绝：未知工具 %r（未执行）" % (name,))
+        fn = entry.get("func") if isinstance(entry, dict) else None
+        if fn is None:
+            return (False, "bridge 拒绝：工具 %r 无可调用实现（未执行）" % (name,))
+        spec = None
+        try:
+            spec = spec_lookup(name)
+        except Exception:  # noqa: BLE001
+            spec = None
+        se = spec.side_effect if spec is not None else side_effect_default
+        _t0 = time.monotonic()
+        try:
+            result = execute_tool_fn(fn, arg, is_failure, tool_name=name, side_effect=se)
+        except Exception as e:  # noqa: BLE001
+            return (False, "bridge 服务异常：%s（未确认执行）" % type(e).__name__)
+        obs = getattr(result, "text", "") or ""
+        ok = bool(getattr(result, "ok", False)) and not is_failure(obs)
+        dur_ms = int((time.monotonic() - _t0) * 1000)
+        if turn is not None:
+            turn.tool_step(name, arg, dur_ms, obs, ok=ok)
+            try:
+                _ev = evidence_fn(name, obs, ok)
+            except Exception:  # noqa: BLE001
+                _ev = None
+            if _ev:
+                turn.add_tool_evidence(**_ev)
+        return (ok, obs)
+
+    return _server
+
 
 _PROJECT_AUDIT = re.compile(
     r"(?:当前|目前|现有|这个).*(?:游戏|项目).*(?:bug|问题|异常|故障)|"
@@ -4177,6 +4240,36 @@ class Agent:
         value = self.tools.get(name)
         return coerce_tool_spec(name, value) if value is not None else None
 
+    @_contextmanager
+    def _ptc_server_scope(self, action_name, turn):
+        """PTC 开模式 + python_exec 派发期间临时注入 bridge 服务回调（步 6c）。
+
+        关模式或非 python_exec → 严格空操作：连 tools._PTC_BRIDGE_SERVER 都不碰，
+        默认路径逐字节不变。开模式 python_exec → 用 _ptc_build_server 造出带
+        完整治理（execute_tool）+ 持锁归因（turn）的 server，装进 tools 模块全局，
+        供子进程 service loop 回调；退出时（含异常）务必恢复旧值，
+        避免并发/后续轮次误用过期的 turn。
+        """
+        if not (_PTC_BRIDGE_ENABLED and action_name == "python_exec"):
+            yield
+            return
+        import tools as tools_mod
+        server = _ptc_build_server(
+            tool_lookup=lambda n: self.tools.get(n),
+            spec_lookup=self._tool_spec,
+            execute_tool_fn=execute_tool,
+            is_failure=_is_failure,
+            evidence_fn=_tool_evidence_from_obs,
+            turn=turn,
+            side_effect_default=SideEffect.PURE,
+        )
+        prev = getattr(tools_mod, "_PTC_BRIDGE_SERVER", None)
+        tools_mod._PTC_BRIDGE_SERVER = server
+        try:
+            yield
+        finally:
+            tools_mod._PTC_BRIDGE_SERVER = prev
+
     def _is_write_tool(self, name):
         spec = self._tool_spec(name)
         return bool(spec and spec.capability in {
@@ -4252,8 +4345,11 @@ class Agent:
         服务端无状态，ReAct 每次重放 head 都会带上图片；多轮历史只存文本，
         不在后续轮次重发旧图（避免上下文无谓膨胀）。
         """
-        messages = [{"role": "system", "content": _prompt_for_channel(
-            self.system_prompt, self._native_enabled(), narration=self.narration)}]
+        _channel_prompt = _prompt_for_channel(
+            self.system_prompt, self._native_enabled(), narration=self.narration)
+        if _PTC_BRIDGE_ENABLED:
+            _channel_prompt = _ptc_variant_system_prompt(_channel_prompt)
+        messages = [{"role": "system", "content": _channel_prompt}]
         now = datetime.now().astimezone()
         messages.append({"role": "system", "content": (
             f"【当前时间】{now.isoformat(timespec='seconds')}。今天指 {now.date().isoformat()}，"
@@ -5827,7 +5923,7 @@ class Agent:
                         input_chars=len(str(action_arg or "")))
                 except Exception:
                     _tool_trace = _nullcontext()
-                with _tool_trace:
+                with self._ptc_server_scope(action_name, turn), _tool_trace:
                     _result = execute_tool(
                         _fn, action_arg, _is_failure, tool_name=action_name,
                         side_effect=_spec.side_effect if _spec is not None else SideEffect.PURE,
