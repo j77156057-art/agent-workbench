@@ -340,6 +340,51 @@ def _ptc_build_server(*, tool_lookup, spec_lookup, execute_tool_fn, is_failure,
     return _server
 
 
+def _ptc_build_write_executor(*, tool_lookup, spec_lookup, execute_tool_fn,
+                              is_failure, side_effect_default):
+    """PTC 轨道 B · 写执行器构造器（决策 A「带外直执」+ 决策 E「独立审计」）。
+
+    返回内层 `executor(name, arg) -> (ok, result_text)`：人工确认达阈值后，把延后的
+    bridged 写经父侧 `execute_tool` 走**完整治理**（stage 门 + 幂等 claim + 异常脱敏）
+    真正落盘。语义仿 `_ptc_build_server`，**关键差异**：
+
+    · **完全不持 `turn`**——确认发生在带外（原回合多半已结束），故不做 `tool_step` /
+      `add_tool_evidence` 归因（决策 E：执行写绝不进原回合 `numbers_strong` 背书，
+      审计留痕由 tools 侧 `confirm_bridge_write` 落 `ptc_write_executed` 事件承担）。
+
+    fail-closed：未知/无实现工具、execute_tool 抛异常 → 一律回 ok=False，绝不静默成功。
+    """
+    def _executor(name, arg):
+        entry = tool_lookup(name)
+        if not entry:
+            return (False, "确认执行拒绝：未知工具 %r（未执行）" % (name,))
+        fn = None
+        try:
+            # 兼容两种注册表视图：测试里的裸 dict 与生产 self.tools 的 ToolSpec
+            # （collections.abc.Mapping，非 dict 子类）——二者都支持 .get("func")。
+            if hasattr(entry, "get"):
+                fn = entry.get("func")
+        except Exception:  # noqa: BLE001
+            fn = None
+        if fn is None:
+            return (False, "确认执行拒绝：工具 %r 无可调用实现（未执行）" % (name,))
+        spec = None
+        try:
+            spec = spec_lookup(name)
+        except Exception:  # noqa: BLE001
+            spec = None
+        se = spec.side_effect if spec is not None else side_effect_default
+        try:
+            result = execute_tool_fn(fn, arg, is_failure, tool_name=name, side_effect=se)
+        except Exception as e:  # noqa: BLE001
+            return (False, "确认执行异常：%s（未确认成功）" % type(e).__name__)
+        obs = getattr(result, "text", "") or ""
+        ok = bool(getattr(result, "ok", False)) and not is_failure(obs)
+        return (ok, obs)
+
+    return _executor
+
+
 _PROJECT_AUDIT = re.compile(
     r"(?:当前|目前|现有|这个).*(?:游戏|项目).*(?:bug|问题|异常|故障)|"
     r"(?:游戏|项目).*(?:有什么|有哪些|哪些).*(?:bug|问题|异常|故障)|"
@@ -4301,6 +4346,12 @@ class Agent:
         完整治理（execute_tool）+ 持锁归因（turn）的 server，装进 tools 模块全局，
         供子进程 service loop 回调；退出时（含异常）务必恢复旧值，
         避免并发/后续轮次误用过期的 turn。
+
+        B2 轨道 B（决策 C 会话隔离）：写 bridge 启用时，对称发布 `_PTC_BRIDGE_SESSION_ID`
+        （= self.session_id or "default"）——服务环据此给延后写打会话标签（stage_bridge_write），
+        使多会话待确认队列互不串台。写关时连 session 都不碰，逐字节回 B1。
+        写执行器（`_PTC_BRIDGE_WRITE_EXECUTOR`）属**带外确认**时才需要的执行件，由 confirm
+        入口（api.py）临时注入，不在本 scope 常驻——见 `_ptc_bridge_write_confirm`。
         """
         if not (_PTC_BRIDGE_ENABLED and action_name == "python_exec"):
             yield
@@ -4317,10 +4368,55 @@ class Agent:
         )
         prev = getattr(tools_mod, "_PTC_BRIDGE_SERVER", None)
         tools_mod._PTC_BRIDGE_SERVER = server
+        _write_on = False
+        prev_sid = None
+        try:
+            _write_on = bool(tools_mod._ptc_bridge_write_enabled())
+        except Exception:  # noqa: BLE001
+            _write_on = False
+        if _write_on:
+            prev_sid = getattr(tools_mod, "_PTC_BRIDGE_SESSION_ID", "")
+            tools_mod._PTC_BRIDGE_SESSION_ID = self.session_id or "default"
         try:
             yield
         finally:
             tools_mod._PTC_BRIDGE_SERVER = prev
+            if _write_on:
+                tools_mod._PTC_BRIDGE_SESSION_ID = prev_sid
+
+    def ptc_bridge_write_confirm(self, pid, session_id):
+        """轨道 B 带外确认落盘（方案 A：带外直执 + 硬底线二次复核）。
+
+        把会话级写执行器（`_ptc_build_write_executor`，走完整 `execute_tool` 治理、
+        **不持 turn → 决策 E 归因零污染**）与 session 临时注入 tools 全局，调
+        `tools.confirm_bridge_write` 达阈值落这一笔写；退出（含异常）务必恢复旧值，
+        绝不把执行件常驻污染并发/后续请求。executor 缺失时 tools 层仍 fail-closed
+        （不落盘、保留待确认、不谎报）——本方法只在写 bridge 启用时提供执行件。
+        """
+        import tools as tools_mod
+        _write_on = False
+        try:
+            _write_on = bool(tools_mod._ptc_bridge_write_enabled())
+        except Exception:  # noqa: BLE001
+            _write_on = False
+        prev_exec = getattr(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR", None)
+        prev_sid = getattr(tools_mod, "_PTC_BRIDGE_SESSION_ID", "")
+        if _write_on:
+            executor = _ptc_build_write_executor(
+                tool_lookup=lambda n: self.tools.get(n),
+                spec_lookup=self._tool_spec,
+                execute_tool_fn=execute_tool,
+                is_failure=_is_failure,
+                side_effect_default=SideEffect.PURE,
+            )
+            tools_mod._PTC_BRIDGE_WRITE_EXECUTOR = executor
+            tools_mod._PTC_BRIDGE_SESSION_ID = session_id or (self.session_id or "default")
+        try:
+            return tools_mod.confirm_bridge_write(pid, session_id=session_id)
+        finally:
+            if _write_on:
+                tools_mod._PTC_BRIDGE_WRITE_EXECUTOR = prev_exec
+                tools_mod._PTC_BRIDGE_SESSION_ID = prev_sid
 
     def _is_write_tool(self, name):
         spec = self._tool_spec(name)

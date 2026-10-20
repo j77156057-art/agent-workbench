@@ -6,6 +6,7 @@
   GET  /            演示前端页面
 """
 import json
+import logging
 import math
 import os
 import re
@@ -128,6 +129,9 @@ from tools import (
     list_pending_execs,
     confirm_exec as apply_pending_exec,
     reject_exec as drop_pending_exec,
+    list_bridge_writes,
+    reject_bridge_write,
+    _ptc_bridge_write_enabled,
     clear_read_files,
     dev_asset_get,
     dev_asset_register,
@@ -6397,6 +6401,47 @@ async def confirm_exec(req: PendingId):
 async def reject_exec_ep(req: PendingId):
     removed = drop_pending_exec(req.id)
     return {"ok": removed, "message": "已拒绝并丢弃该待执行代码。" if removed else f"未找到待确认执行 #{req.id}。"}
+
+
+# ---------------------------------------------------------------------------
+# B2 轨道 B · PTC 桥接写带外确认（仿 /api/pending_execs + /api/confirm_exec）。
+# 鉴权口径对齐既有 exec 端点：无独立 token，作用域（session/项目）即边界；
+# 但强制 session 隔离——list/confirm/reject 均按 session 过滤，杜绝跨会话确认。
+# ---------------------------------------------------------------------------
+logger = logging.getLogger("docmind.api")
+
+
+class BridgeWriteReq(BaseModel):
+    id: str
+    session: str = ""
+
+
+@app.get("/api/bridge_writes")
+async def bridge_writes_ep(session: str = ""):
+    _sid = (session or "").strip() or None  # 空 → None = 不过滤（与 pending_execs 全队列同口径）
+    return {"pending": list_bridge_writes(_sid),
+            "write_bridge": bool(_ptc_bridge_write_enabled())}
+
+
+@app.post("/api/confirm_bridge_write")
+async def confirm_bridge_write_ep(req: BridgeWriteReq):
+    _sid = (req.session or "").strip() or "default"
+    agent = _agent_for(_sid)
+    try:
+        ok, msg = agent.ptc_bridge_write_confirm(req.id, _sid)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "message": "桥接写确认异常：%s（未确认成功）。" % type(e).__name__}
+    logger.info("ptc_bridge_write confirm session=%s pid=%s ok=%s", _sid, req.id, bool(ok))
+    return {"ok": bool(ok), "message": msg}
+
+
+@app.post("/api/reject_bridge_write")
+async def reject_bridge_write_ep(req: BridgeWriteReq):
+    _sid = (req.session or "").strip() or "default"
+    removed = reject_bridge_write(req.id, session_id=_sid)
+    logger.info("ptc_bridge_write reject session=%s pid=%s removed=%s", _sid, req.id, bool(removed))
+    return {"ok": removed,
+            "message": "已拒绝并丢弃该待确认写。" if removed else f"未找到待确认写 #{req.id}（或不属于本会话）。"}
 
 
 # 开发工作台文件系统接口（P0）：/api/fs/tree|file|save|create|rename|delete|gitlog

@@ -4249,15 +4249,33 @@ def confirm_bridge_write(pid, session_id=None):
         ok, result = executor(e["name"], e["arg"])
     except Exception as ex:  # noqa: BLE001
         return False, "bridge 写执行异常：%s（未确认成功）。" % type(ex).__name__
+    # 决策 E：带外落盘 = 独立审计事件 ptc_write_executed，写进既有侧信道 _PTC_TRACE_PATH
+    # （仿服务环 trace 落法，best-effort、异常吞掉，绝不扰动已落盘结果）；
+    # **绝不归因进原 turn 的 numbers_strong 背书**（确认时 turn 多半已结束，且执行写非观测背书）。
+    if _PTC_TRACE_PATH:
+        try:
+            with io.open(_PTC_TRACE_PATH, "a", encoding="utf-8") as _tf:
+                _tf.write(json.dumps(
+                    {"event": "ptc_write_executed", "pid": pid, "tool": e["name"],
+                     "tier": tier, "session": e.get("session", ""),
+                     "ok": bool(ok)}, ensure_ascii=False) + "\n")
+                _tf.flush()
+        except Exception:  # noqa: BLE001
+            pass
     return bool(ok), result
 
 
-def reject_bridge_write(pid):
+def reject_bridge_write(pid, session_id=None):
+    """拒绝并撤销一条待确认写。session_id 非空时按会话隔离：跨会话不回显存在性。"""
     with _BRIDGE_WRITE_LOCK:
-        e = _PENDING_BRIDGE_WRITES.pop(pid, None)
-        if e:
-            _bridge_write_by_hash.pop(e["arg_hash"], None)
-        return bool(e)
+        e = _PENDING_BRIDGE_WRITES.get(pid)
+        if not e:
+            return False
+        if session_id is not None and e.get("session", "") != session_id:
+            return False  # 不属于本会话：不回显存在性，与 confirm 同口径防泄漏
+        _PENDING_BRIDGE_WRITES.pop(pid, None)
+        _bridge_write_by_hash.pop(e["arg_hash"], None)
+        return True
 
 
 def clear_bridge_writes():
@@ -4269,7 +4287,7 @@ def clear_bridge_writes():
         return n
 
 
-def _ptc_bridge_write_dispatch(name, arg, state):
+def _ptc_bridge_write_dispatch(name, arg, state, session_id=""):
     """B2 写子调用的服务环处理——**一律延后，当场绝不落盘**（第54批核心不变式）。
 
     步 3 接线（延后执行）——
@@ -4290,7 +4308,7 @@ def _ptc_bridge_write_dispatch(name, arg, state):
                            % (name, reason)),
                 "pending": None, "tier": tier, "replayed": False}
     # 同参去重：已在待确认队列 → 复用同一 pid、不重复登记、不占新名额、不受上限影响。
-    _existing = _peek_bridge_write(name, arg)
+    _existing = _peek_bridge_write(name, arg, session_id)
     if _existing is not None:
         state["replayed"] = state.get("replayed", 0) + 1
         return {"ok": False,
@@ -4304,7 +4322,7 @@ def _ptc_bridge_write_dispatch(name, arg, state):
         return {"ok": False,
                 "result": "写待登记数达上限 %d（未登记·未执行）。" % _PTC_MAX_CALLS,
                 "pending": None, "tier": tier, "replayed": False}
-    pid, replayed = stage_bridge_write(name, arg, tier, reason, path)
+    pid, replayed = stage_bridge_write(name, arg, tier, reason, path, session_id)
     if replayed:  # 极窄竞态兜底（单服务环内理论不会命中）：仍复用同一 pid、不重复计数
         state["replayed"] = state.get("replayed", 0) + 1
         return {"ok": False,
@@ -4363,6 +4381,10 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
     command = [py, "-c", run_code]
 
     server = _PTC_BRIDGE_SERVER
+    # 决策 C（会话隔离）：服务环运行在 _ptc_server_scope 内，该 scope 已对称发布
+    # _PTC_BRIDGE_SESSION_ID（与 _PTC_BRIDGE_SERVER 同生命周期）。此处捕获当前会话，
+    # 供写延后登记/去重按会话作用域；默认空串（未发布时）向后兼容。
+    session_id = _PTC_BRIDGE_SESSION_ID
     # 步 4：父侧白名单二次校验（纵深防御）——即便子脚本绕过命名包装直接
     # _bridge_call("apply_edit", ...)，非白名单工具也在 execute_tool【之前】被拒、
     # 绝不经 server 归因。集合在环开始捕获。
@@ -4409,7 +4431,7 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
                         # B2（步 3）：写子调用一律延后——走 _ptc_bridge_write_dispatch 做父侧
                         # tier 补闸 + 同参去重 + stage_bridge_write 登记待确认 pid，**绝不经
                         # _serve/execute_tool 内联执行、当场绝不落盘**（人工确认后才落）。
-                        _wd = _ptc_bridge_write_dispatch(name, req.get("arg"), state)
+                        _wd = _ptc_bridge_write_dispatch(name, req.get("arg"), state, session_id)
                         resp = {"seq": req.get("seq"), "ok": _wd["ok"], "result": _wd["result"]}
                         if _wd.get("pending") is not None:
                             resp["pending"] = _wd["pending"]

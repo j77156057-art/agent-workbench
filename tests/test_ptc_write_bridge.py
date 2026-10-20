@@ -14,6 +14,7 @@
 import os
 import sys
 import json
+import io
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -774,6 +775,313 @@ class WriteAbnormalTerminationTests(unittest.TestCase):
                          "断连下延后写绝不该落盘")
         self.assertIsNotNone(proc)
         self.assertIsNotNone(proc.poll(), "断连后子进程未被收尸 → 孤儿")
+
+
+# ===========================================================================
+# 轨道 B 接线（决策 A+C+E）· 第59批 S4 —— 会话隔离 / 硬底线二次复核 /
+# 写执行器工厂 DI / 带外确认恰一次落盘 / 决策 E 落盘审计事件。
+# ===========================================================================
+class _ResB(object):
+    def __init__(self, ok, text=""):
+        self.ok = ok
+        self.text = text
+
+
+class _SpecB(object):
+    def __init__(self, se):
+        self.side_effect = se
+
+
+class SessionIsolationTests(unittest.TestCase):
+    """决策 C：延后写台账按会话隔离——list/confirm/reject 均据 session 过滤，杜绝跨会话。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        set_runtime("code_root", self.tmp)
+        tools_mod.clear_bridge_writes()
+
+    def tearDown(self):
+        tools_mod.clear_bridge_writes()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_list_filters_by_session(self):
+        pa, _ = tools_mod.stage_bridge_write("apply_edit", "path: a\nnew_text: 1", 2, "t", None, "sA")
+        pb, _ = tools_mod.stage_bridge_write("apply_edit", "path: b\nnew_text: 2", 2, "t", None, "sB")
+        la = [e["id"] for e in tools_mod.list_bridge_writes("sA")]
+        lb = [e["id"] for e in tools_mod.list_bridge_writes("sB")]
+        self.assertEqual(la, [pa])
+        self.assertEqual(lb, [pb])
+        self.assertEqual({e["id"] for e in tools_mod.list_bridge_writes()}, {pa, pb})  # 无过滤=全队列
+
+    def test_same_arg_diff_session_no_dedup(self):
+        # 同参不同会话各自独立登记（去重键含 session），互不串台。
+        p1, r1 = tools_mod.stage_bridge_write("apply_edit", "path: same\nnew_text: x", 2, "t", None, "sA")
+        p2, r2 = tools_mod.stage_bridge_write("apply_edit", "path: same\nnew_text: x", 2, "t", None, "sB")
+        self.assertFalse(r1)
+        self.assertFalse(r2)
+        self.assertNotEqual(p1, p2)
+        self.assertEqual(len(tools_mod.list_bridge_writes()), 2)
+
+    def test_confirm_cross_session_not_found(self):
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", "path: c\nnew_text: 1", 2, "t", None, "sA")
+        calls = []
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR",
+                          lambda n, a: calls.append(n) or (True, "RAN")):
+            ok, msg = tools_mod.confirm_bridge_write(pid, session_id="sB")  # 跨会话
+        self.assertFalse(ok)
+        self.assertIn("\u672a\u627e\u5230", msg)         # "未找到"：不泄露他人队列
+        self.assertEqual(calls, [])                       # 绝不执行
+        self.assertTrue(any(e["id"] == pid for e in tools_mod.list_bridge_writes()))
+
+    def test_reject_cross_session_false(self):
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", "path: r\nnew_text: 1", 2, "t", None, "sA")
+        self.assertFalse(tools_mod.reject_bridge_write(pid, session_id="sB"))  # 跨会话拒不动
+        self.assertTrue(any(e["id"] == pid for e in tools_mod.list_bridge_writes()))
+        self.assertTrue(tools_mod.reject_bridge_write(pid, session_id="sA"))   # 本会话可拒
+        self.assertFalse(any(e["id"] == pid for e in tools_mod.list_bridge_writes()))
+
+    def test_pid_carries_session_namespace(self):
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", "path: n\nnew_text: 1", 2, "t", None, "acct42")
+        self.assertTrue(pid.startswith("W"))          # 既有测试锁 W 前缀不破
+        self.assertIn("acct42", pid)                   # pid 含会话可读命名空间
+        self.assertEqual(tools_mod.list_bridge_writes("acct42")[0]["session"], "acct42")
+
+    def test_no_session_backward_compat(self):
+        # 默认（不传 session）逐字节回旧行为：pid 仍 W 前缀、confirm 无过滤可执行。
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", "path: old\nnew_text: 1", 2, "t")
+        self.assertTrue(pid.startswith("W"))
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        calls = []
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR",
+                          lambda n, a: calls.append(n) or (True, "RAN")):
+            ok = None
+            for _ in range(need):
+                ok, msg = tools_mod.confirm_bridge_write(pid)     # session_id=None → 不过滤
+        self.assertTrue(ok)
+        self.assertEqual(calls, ["apply_edit"])
+
+
+class HardLineSecondReviewTests(unittest.TestCase):
+    """决策 A：达阈值确认时重算 tier——若漂移到硬底线（-1）→ 撤销待确认、当场拒、绝不落盘。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        set_runtime("code_root", self.tmp)
+        tools_mod.clear_bridge_writes()
+
+    def tearDown(self):
+        tools_mod.clear_bridge_writes()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_drift_to_never_at_confirm_rejected_no_exec(self):
+        arg = "path: e\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 2, "t")
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        calls = []
+        executor = lambda n, a: calls.append(n) or (True, "RAN")
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR", executor):
+            with patch.object(tools_mod, "_ptc_bridge_write_tier",
+                              lambda name, a: (2, "t", None)):
+                for _ in range(need - 1):
+                    tools_mod.confirm_bridge_write(pid)          # 逼近阈值，档位仍 2
+            # 最后一次确认前，路径漂移 → 重算命中硬底线 -1
+            with patch.object(tools_mod, "_ptc_bridge_write_tier",
+                              lambda name, a: (-1, "\u51ed\u636e\u76ee\u5f55", None)):
+                ok, msg = tools_mod.confirm_bridge_write(pid)
+        self.assertFalse(ok)
+        self.assertIn("\u786c\u5e95\u7ebf", msg)                 # "硬底线"
+        self.assertEqual(calls, [])                               # 漂移后绝不执行
+        self.assertFalse(any(e["id"] == pid for e in tools_mod.list_bridge_writes()))  # 已撤销
+
+    def test_still_safe_at_confirm_executes(self):
+        arg = "path: ok\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 2, "t")
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        calls = []
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR",
+                          lambda n, a: calls.append((n, a)) or (True, "RAN")):
+            with patch.object(tools_mod, "_ptc_bridge_write_tier",
+                              lambda name, a: (2, "t", None)):
+                ok = None
+                for _ in range(need):
+                    ok, msg = tools_mod.confirm_bridge_write(pid)
+        self.assertTrue(ok)
+        self.assertEqual(calls, [("apply_edit", arg)])            # 未漂移 → 恰一次执行
+
+
+class BuildWriteExecutorTests(unittest.TestCase):
+    """决策 E：_ptc_build_write_executor DI 工厂——走完整 execute_tool、不持 turn、异常 fail-closed。"""
+
+    def _mk(self, tools=None, execute=None, is_failure=lambda obs: False, spec=None):
+        tools = tools or {}
+        return agent_mod._ptc_build_write_executor(
+            tool_lookup=lambda n: tools.get(n),
+            spec_lookup=lambda n: spec,
+            execute_tool_fn=execute or (lambda fn, arg, f, tool_name="", side_effect=None: _ResB(True, "R")),
+            is_failure=is_failure,
+            side_effect_default="default_se",
+        )
+
+    def test_unknown_tool_fail_closed(self):
+        ex = self._mk(tools={})
+        ok, msg = ex("nope", "x")
+        self.assertFalse(ok)
+        self.assertIn("\u672a\u77e5\u5de5\u5177", msg)          # "未知工具"
+
+    def test_entry_without_func_fail_closed(self):
+        ex = self._mk(tools={"apply_edit": {"description": "no func"}})
+        ok, msg = ex("apply_edit", "x")
+        self.assertFalse(ok)
+        self.assertIn("\u65e0\u53ef\u8c03\u7528\u5b9e\u73b0", msg)  # "无可调用实现"
+
+    def test_happy_runs_execute_tool_no_turn(self):
+        seen = {}
+
+        def execute(fn, arg, f, tool_name="", side_effect=None):
+            seen["tool_name"] = tool_name
+            seen["side_effect"] = side_effect
+            return _ResB(True, "applied")
+
+        ex = self._mk(tools={"apply_edit": {"func": lambda a: "applied"}},
+                      execute=execute, spec=_SpecB("mutating"))
+        ok, obs = ex("apply_edit", "path: p\nnew_text: q")
+        self.assertTrue(ok)
+        self.assertEqual(obs, "applied")
+        self.assertEqual(seen["tool_name"], "apply_edit")
+        self.assertEqual(seen["side_effect"], "mutating")   # spec 优先于 default
+
+    def test_execute_exception_fail_closed(self):
+        def boom(fn, arg, f, tool_name="", side_effect=None):
+            raise RuntimeError("underlying")
+
+        ex = self._mk(tools={"apply_edit": {"func": lambda a: "x"}}, execute=boom)
+        ok, msg = ex("apply_edit", "x")
+        self.assertFalse(ok)
+        self.assertIn("\u786e\u8ba4\u6267\u884c\u5f02\u5e38", msg)  # "确认执行异常"
+
+    def test_is_failure_marks_not_ok(self):
+        ex = self._mk(
+            tools={"create_file": {"func": lambda a: "BAD"}},
+            execute=lambda fn, arg, f, tool_name="", side_effect=None: _ResB(True, "BAD"),
+            is_failure=lambda obs: obs == "BAD",
+        )
+        ok, obs = ex("create_file", "x")
+        self.assertFalse(ok)
+
+
+class AgentConfirmWiringTests(unittest.TestCase):
+    """轨道 B 带外确认：Agent.ptc_bridge_write_confirm 临时注入执行件 + 恰一次落盘 + 退出恢复全局。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        set_runtime("code_root", self.tmp)
+        tools_mod.clear_bridge_writes()
+
+    def tearDown(self):
+        tools_mod.clear_bridge_writes()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _agent(self):
+        return agent_mod.Agent(llm=None, tool_registry={})
+
+    def test_confirm_injects_executor_once_and_restores_global(self):
+        a = self._agent()
+        a.tools = {"apply_edit": {"func": lambda arg: "done"}}   # 裸 dict 注册表，供执行器取 func
+        arg = "path: ob\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 2, "t", None, "sX")
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        sentinel = object()
+        ran = []
+
+        def fake_execute(fn, arg_, f, tool_name="", side_effect=None):
+            ran.append(tool_name)
+            return _ResB(True, "done")
+
+        with patch.object(tools_mod, "_ptc_bridge_write_enabled", lambda: True), \
+                patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR", sentinel), \
+                patch.object(tools_mod, "_PTC_BRIDGE_SESSION_ID", "PRE"), \
+                patch.object(tools_mod, "_ptc_bridge_write_tier", lambda name, arg_: (2, "t", None)), \
+                patch.object(agent_mod, "execute_tool", fake_execute):
+            for _ in range(need - 1):
+                ok, _ = a.ptc_bridge_write_confirm(pid, "sX")
+                self.assertFalse(ok)
+            ok, msg = a.ptc_bridge_write_confirm(pid, "sX")    # 达阈值 → 执行件落这一笔
+            # 退出务必恢复：方法调用后执行件/session 回到进入时捕获的 prev（不残留注入件）。
+            self.assertIs(tools_mod._PTC_BRIDGE_WRITE_EXECUTOR, sentinel)
+            self.assertEqual(tools_mod._PTC_BRIDGE_SESSION_ID, "PRE")
+        self.assertTrue(ok)
+        self.assertEqual(ran, ["apply_edit"])                  # 经完整 execute_tool 恰一次
+        self.assertFalse(any(e["id"] == pid for e in tools_mod.list_bridge_writes()))  # 已 pop
+
+    def test_write_disabled_confirm_fail_closed_no_injection(self):
+        # 写 bridge 关闭态（生产默认）→ ptc_bridge_write_confirm 不注入执行件，
+        # tools 层 executor=None → confirm fail-closed：回退确认、保留待确认、绝不谎报。
+        a = self._agent()
+        arg = "path: off\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 2, "t", None, "sY")
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        with patch.object(tools_mod, "_ptc_bridge_write_enabled", lambda: False), \
+                patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR", None):
+            ok = None
+            msg = ""
+            for _ in range(need):
+                ok, msg = a.ptc_bridge_write_confirm(pid, "sY")
+            self.assertIsNone(tools_mod._PTC_BRIDGE_WRITE_EXECUTOR)  # 关时根本没注入
+        self.assertFalse(ok)                                         # 不谎报成功
+        self.assertIn("未就绪", msg)                                         # "未就绪"
+        self.assertTrue(any(e["id"] == pid for e in tools_mod.list_bridge_writes()))  # 保留待确认
+
+
+class DecisionEAuditEventTests(unittest.TestCase):
+    """决策 E：confirm 落盘写 = 独立 trace 事件 ptc_write_executed，绝不进原 turn numbers_strong。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        set_runtime("code_root", self.tmp)
+        self.trace = os.path.join(self.tmp, "trace.jsonl")
+        tools_mod.clear_bridge_writes()
+
+    def tearDown(self):
+        tools_mod.clear_bridge_writes()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_executed_write_lands_audit_event(self):
+        arg = "path: aud\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 2, "t", None, "sZ")
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        with patch.object(tools_mod, "_PTC_TRACE_PATH", self.trace), \
+                patch.object(tools_mod, "_ptc_bridge_write_tier", lambda name, a_: (2, "t", None)), \
+                patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR",
+                             lambda n, a_: (True, "RAN")):
+            ok = None
+            for _ in range(need):
+                ok, msg = tools_mod.confirm_bridge_write(pid, session_id="sZ")
+        self.assertTrue(ok)
+        with io.open(self.trace, "r", encoding="utf-8") as f:
+            events = [json.loads(line) for line in f if line.strip()]
+        executed = [e for e in events if e.get("event") == "ptc_write_executed"]
+        self.assertEqual(len(executed), 1)                     # 恰一条落盘审计
+        self.assertEqual(executed[0]["pid"], pid)
+        self.assertEqual(executed[0]["tool"], "apply_edit")
+        self.assertTrue(executed[0]["ok"])
+        self.assertEqual(executed[0]["session"], "sZ")
+
+    def test_no_trace_path_no_crash(self):
+        # _PTC_TRACE_PATH=None（默认）→ 审计 best-effort 静默跳过，落盘结果不受扰动。
+        arg = "path: notrace\nnew_text: hi"
+        pid, _ = tools_mod.stage_bridge_write("apply_edit", arg, 2, "t")
+        need = next(e["need"] for e in tools_mod.list_bridge_writes() if e["id"] == pid)
+        with patch.object(tools_mod, "_PTC_TRACE_PATH", None), \
+                patch.object(tools_mod, "_ptc_bridge_write_tier", lambda name, a_: (2, "t", None)), \
+                patch.object(tools_mod, "_PTC_BRIDGE_WRITE_EXECUTOR", lambda n, a_: (True, "RAN")):
+            ok = None
+            for _ in range(need):
+                ok, msg = tools_mod.confirm_bridge_write(pid)
+        self.assertTrue(ok)
 
 
 if __name__ == "__main__":
