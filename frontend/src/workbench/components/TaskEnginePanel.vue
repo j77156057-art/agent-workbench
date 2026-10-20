@@ -43,6 +43,31 @@ async function cancelComfy() { if (!promptId.value) return; const r = await comf
 async function retryComfy() { if (!promptId.value) return; const r = await comfyApi.retry(promptId.value, comfyUrl.value); if (r.ok) { promptId.value=String(r.response?.prompt_id||''); comfyResult.value=`已重试（第 ${r.retry_count||1} 次）` } else comfyResult.value=r.error||'重试失败' }
 async function selectComfyHistory(id: string) { promptId.value = id; await pollComfy() }
 async function refreshUnreal() { try { const s = await engineApi.unrealBridgeStatus(); unrealState.value = s.available ? '已连接' : '未连接'; if (s.available) { const [a,b] = await Promise.all([engineApi.unrealAssets(), engineApi.unrealActors()]); unrealAssets.value = a.assets || []; unrealActors.value = b.actors || [] } } catch { unrealState.value = '未连接' } }
+// 蓝图 / Actor 详情：客户端早就有，调用点一直是零 —— 列表里点一下就能看。
+const unrealDetail = ref('')
+const unrealDetailBusy = ref(false)
+async function showBlueprint(path: string) {
+  unrealDetailBusy.value = true
+  unrealDetail.value = ''
+  try {
+    const r = await engineApi.unrealBlueprint(path)
+    if (!r.ok || !r.available) { unrealDetail.value = r.error || '读取失败（Unreal bridge 未连接？）'; return }
+    const nodes = r.nodes?.length ? `，节点 ${r.nodes.length}` : ''
+    const vars = r.variables?.length ? `，变量 ${r.variables.length}` : ''
+    unrealDetail.value = `蓝图 ${path}${nodes}${vars}\n${(r.blueprint || '').slice(0, 600)}`
+  } catch (e) { unrealDetail.value = '读取失败：' + (e as Error).message } finally { unrealDetailBusy.value = false }
+}
+async function showActor(name: string) {
+  unrealDetailBusy.value = true
+  unrealDetail.value = ''
+  try {
+    const r = await engineApi.unrealActor(name)
+    if (!r.ok || !r.available) { unrealDetail.value = r.error || '读取失败（Unreal bridge 未连接？）'; return }
+    const comps = r.components?.length ? `，组件 ${r.components.length}` : ''
+    const props = r.properties?.length ? `，属性 ${r.properties.length}` : ''
+    unrealDetail.value = `Actor ${name}${comps}${props}\n${(r.actor || '').slice(0, 600)}`
+  } catch (e) { unrealDetail.value = '读取失败：' + (e as Error).message } finally { unrealDetailBusy.value = false }
+}
 async function importOutput(o: Record<string, unknown>) { const v=await comfyApi.validateProvenance(o); if (!v.ok) { comfyResult.value=`来源信息无效：${(v.errors||[]).join('、')}`; return }; const x = await comfyApi.import(promptId.value, o, comfyUrl.value); comfyResult.value = x.ok ? (v.review_required ? `已导入 ${x.path}（许可证待人工审核）` : `已导入 ${x.path}`) : (x.error || '导入失败') }
 async function loadComfyTemplate(id: string) { const meta = comfyTemplates.value.find(x => x.id === id); comfySelected.value = meta || null; const r = await comfyApi.template(id); if (r.ok && r.workflow) { workflow.value = JSON.stringify(r.workflow, null, 2); comfyResult.value = `已加载模板（${r.format || 'api'}）` } else comfyResult.value = r.error || '模板加载失败' }
 async function applyComfyParams() { try { const r=await comfyApi.apply(JSON.parse(workflow.value), comfyParams.value); if (r.ok && r.workflow) { workflow.value=JSON.stringify(r.workflow,null,2); comfyResult.value='参数已应用并完成节点校验' } else comfyResult.value=r.error||'参数应用失败' } catch { comfyResult.value='Workflow JSON 无效' } }
@@ -65,7 +90,8 @@ defineExpose({ show })
       <ul v-if="impact.length" class="te-list"><li v-for="p in impact" :key="p">{{ p }}</li></ul>
       <div class="te-engine"><span :class="{ live: running }" /> Godot {{ running ? '运行中' : '未运行' }} <button :disabled="busy" @click="verifyEngine">{{ busyAction === 'engine' ? '校验中…' : '校验' }}</button><button v-if="running" :disabled="busy" @click="reloadEngine">热重载</button><button :disabled="busy" @click="toggleEngine">{{ busyAction === 'engine' ? (running ? '停止中…' : '启动中…') : (running ? '停止' : '启动') }}</button></div>
       <div class="te-unreal"><b>Unreal 连接：{{ unrealState }}</b><button @click="refreshUnreal">刷新</button><small>Blueprint {{ unrealAssets.length }} · Actor {{ unrealActors.length }}</small></div>
-      <div v-if="unrealAssets.length || unrealActors.length" class="te-unreal-list"><div v-for="a in unrealAssets.slice(0,8)" :key="a">BP · {{ a }}</div><div v-for="a in unrealActors.slice(0,8)" :key="a.name">Actor · {{ a.name }} ({{ a.class }})</div></div>
+      <div v-if="unrealAssets.length || unrealActors.length" class="te-unreal-list"><button v-for="a in unrealAssets.slice(0,8)" :key="a" class="te-unreal-item" :disabled="unrealDetailBusy" @click="showBlueprint(a)">BP · {{ a }}</button><button v-for="a in unrealActors.slice(0,8)" :key="a.name" class="te-unreal-item" :disabled="unrealDetailBusy" @click="showActor(a.name)">Actor · {{ a.name }} ({{ a.class }})</button></div>
+      <pre v-if="unrealDetail" class="te-unreal-detail">{{ unrealDetail }}</pre>
       <pre v-if="logs.length" class="te-logs">{{ logs.join('\n') }}</pre>
       <button v-for="e in errors" :key="`${e.path}:${e.line}`" class="te-error" @click="jumpToLine(e.path, e.line)">{{ e.path }}:{{ e.line }} · {{ e.message }}</button>
       <div class="te-comfy"><b>AI 画图 / 视频（ComfyUI）</b><button @click="startComfy">启动</button><button @click="stopComfy">停止</button><button @click="loadComfyHistory()">刷新历史</button><input v-model="comfyUrl" @change="checkComfy" /><div class="te-templates"><button v-for="t in comfyTemplates" :key="t.id" @click="showFailure(() => loadComfyTemplate(t.id))">{{ t.name }}</button></div><div v-if="comfySelected?.schema" class="te-params"><label v-for="(_,key) in comfySelected.schema" :key="key">{{ key }}<input v-model="comfyParams[key]" /></label><button @click="applyComfyParams">应用参数</button></div><div class="te-history-pager"><button :disabled="comfyPage <= 1" @click="loadComfyHistory(comfyPage - 1)">上一页</button><span>{{ comfyPage }} / {{ Math.max(1, Math.ceil(comfyTotal / 20)) }}</span><button :disabled="comfyPage * 20 >= comfyTotal" @click="loadComfyHistory(comfyPage + 1)">下一页</button></div><div v-if="comfyHistory.length" class="te-history"><button v-for="id in comfyHistory" :key="id" @click="selectComfyHistory(id)">{{ id.slice(0,8) }}</button></div><textarea v-model="workflow" placeholder="粘贴 workflow JSON" /><button @click="queueComfy">提交生成</button><button v-if="promptId" @click="pollComfy">查询结果</button><button v-if="promptId" class="te-cancel" @click="showFailure(cancelComfy)">取消生成</button><button v-if="promptId" @click="showFailure(retryComfy)">失败重试</button><span>{{ comfyState }} {{ comfyResult }}</span></div>

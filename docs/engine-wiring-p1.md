@@ -109,15 +109,51 @@ await engineApi.verify()                                       // 默认值 'god
 这些属于同一类"后端有、前端没入口"，但**优先级低于本轮**：
 先让"引擎是什么、能选什么"这件事存在，剩下的是逐个补面板。
 
+## 5. 续做（同日晚些时候）：引擎工具区 + Unreal 资产详情
+
+上一节列的缺口里，**一次性能接的都接了**（只剩任务域的 validate/snapshot/revert 未接）：
+
+### 5.1 「引擎工具」分区（设置页「运行与引擎」）
+
+| 工具 | 端点 | 说明 |
+| --- | --- | --- |
+| 索引资产 | `GET /api/engine/inspect` | Unity/Unreal 的清单/场景/预制体/资产/符号/蓝图/关卡 |
+| 脚本校验 | `POST /api/engine/check` | 单文件 GDScript（`godot --headless --check-only`，不开编辑器） |
+| 诊断解析 | `POST /api/engine/diagnostics` | Unreal/MSVC 编译输出 → 统一诊断结构 |
+| 装运行时探针 | `POST /api/runtime/probe` | 写 `addons/docmind_runtime/probe.gd` |
+| 安装 Unreal 桥 | `POST /api/engine/unreal-bridge/install` | 写编辑器桥接脚本（**需用户确认**，走 `askConfirm`） |
+| 跑玩测 | `POST /api/playtest` | 自动探测测试框架或自定义命令 |
+
+### 5.2 Unreal 蓝图 / Actor 详情（TaskEnginePanel）
+
+Unreal 区块原来只是**纯文本列表**（`BP · xxx` / `Actor · xxx`），点不了 ——
+所以 `unrealBlueprint()` / `unrealActor()` 这两个客户端的**调用点一直是零**。
+现在列表项是按钮，点了显示蓝图文本/节点数/变量数、Actor 组件与属性。
+
+### 5.3 实机验证（真实后端 + 本机 Godot 4.7.2）
+
+| 验证项 | 结果 |
+| --- | --- |
+| 脚本校验 `addons/godot_ai/plugin.gd` | **真跑了 Godot**（输出 "Godot Engine v4.7.2.stable.official…"），路径回显 ✅ |
+| 诊断解析（两行 MSVC 输出） | 两条分别出来：`error D:/p/Foo.cpp:12 C2065: undeclared identifier` / `warning D:/p/Bar.h:4 C4101: unreferenced local variable` ✅ |
+| 索引资产（当前是 Godot） | 明确回「资产索引只支持 Unity / Unreal（当前是 Godot）——Godot 的场景结构走工作台的场景画布。」✅ |
+
+途中修掉两个自己引入的问题：
+
+1. **诊断文本框用了 `<input>`** —— 单行输入框放不下多行编译输出，浏览器把换行吞掉，
+   两条诊断被粘成一条。改成 `<textarea>`。
+2. **结果表把 `path` 标成「写入」** —— 在"脚本校验"里 `path` 是**被检查的文件**，
+   在"装探针/装桥"里才是写入的文件。统一标「路径」，不把"检查了哪个文件"说成"写了哪个文件"。
+
 ## 6. 相关文件
 
 | 文件 | 角色 |
 | --- | --- |
-| `frontend/src/workbench/components/EngineSetupPanel.vue` | **新**：引擎与项目设置块 |
+| `frontend/src/workbench/components/EngineSetupPanel.vue` | **新**：引擎与项目设置块（含引擎工具区） |
 | `frontend/src/workbench/composables/useEngineConfig.ts` | **新**：项目当前引擎的读取 |
-| `frontend/src/workbench/api/engine.ts` | 改：补 `scan()` / `prepare()` / `skill()` 客户端；`prepare` 改用 `rawJson` |
+| `frontend/src/workbench/api/engine.ts` | 改：补 `scan()` / `prepare()` / `skill()` / `inspect()` / `check()` / `diagnostics()` / `installUnrealBridge()` / `installRuntimeProbe()` / `playtest()` 客户端 |
 | `frontend/src/workbench/components/SceneRuntimePanel.vue` | 改：启动读配置，不再写死 `godot` |
-| `frontend/src/workbench/components/TaskEnginePanel.vue` | 改：同上 + 文案跟随引擎名 |
+| `frontend/src/workbench/components/TaskEnginePanel.vue` | 改：同上 + 文案跟随引擎名 + Unreal 资产/角色可点看详情 |
 | `frontend/src/workbench/components/SettingsView.vue` | 改：新增「引擎与项目」分区 |
 | `frontend/src/workbench/App.vue` | 改：`settingsSection` 加 `runtime` + 顶栏入口 |
 | `frontend/src/workbench/eventBus.ts` | 改：删掉死事件 `docmind:open-engine` |

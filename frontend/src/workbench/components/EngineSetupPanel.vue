@@ -15,6 +15,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { engineApi, type EngineCatalogEntry } from '../api'
 import { noProjectHint } from '../projectHint'
+import { askConfirm } from '../composables/workbench'
 
 const catalog = ref<EngineCatalogEntry[]>([])
 const detected = ref<{ engine: string; path: string }[]>([])
@@ -124,6 +125,85 @@ async function toggleSkill() {
 }
 
 onMounted(load)
+
+// ---- 引擎工具：后端早就有的这批能力，此前前端一个调用点都没有 ----
+const toolBusy = ref('')
+const toolMsg = ref('')
+const toolDetail = ref<Record<string, unknown> | null>(null)
+const checkPath = ref('')
+const diagText = ref('')
+const playtestCmd = ref('')
+
+async function runTool(name: string, fn: () => Promise<Record<string, unknown>>) {
+  toolBusy.value = name
+  toolMsg.value = ''
+  toolDetail.value = null
+  try {
+    const r = await fn()
+    toolDetail.value = r
+    toolMsg.value = r?.ok === false ? String(r.error || '失败') : `${name}完成`
+  } catch (e) {
+    toolMsg.value = noProjectHint(`${name}失败：${(e as Error).message}`)
+  } finally {
+    toolBusy.value = ''
+  }
+}
+
+/** 资产索引只支持 Unity / Unreal（后端只对这两家建索引），Godot 走的是场景画布那条路。 */
+async function inspectAssets() {
+  if (engine.value !== 'unity' && engine.value !== 'unreal') {
+    toolBusy.value = ''
+    toolDetail.value = null
+    toolMsg.value = `资产索引只支持 Unity / Unreal（当前是 ${currentName.value}）——Godot 的场景结构走工作台的场景画布。`
+    return
+  }
+  await runTool('索引资产', () => engineApi.inspect(engine.value))
+}
+
+async function installUnrealBridge() {
+  const ok = await askConfirm({
+    title: '安装 Unreal 桥接脚本？',
+    message: '会在项目里写入 Unreal Editor Bridge 的 Python 脚本（需在编辑器启用 Python Script Plugin）。',
+    detail: '只写这一个文件，不改其它内容。',
+    confirmText: '安装',
+  })
+  if (!ok) return
+  await runTool('安装 Unreal 桥', () => engineApi.installUnrealBridge())
+}
+
+const toolRows = computed(() => {
+  const d = toolDetail.value
+  if (!d) return []
+  const out: { label: string; value: string }[] = []
+  const push = (label: string, value: unknown) => {
+    if (value === undefined || value === null) return
+    const text = Array.isArray(value) ? `${value.length} 项` : String(value)
+    out.push({ label, value: text })
+  }
+  push('清单', d.manifests)
+  push('场景', d.scenes)
+  push('预制体', d.prefabs)
+  push('资产', d.assets)
+  push('符号', d.symbols)
+  push('蓝图', d.blueprints)
+  push('关卡', d.levels)
+  const diags = d.diagnostics
+  if (Array.isArray(diags) && diags.length) {
+    for (const item of diags.slice(0, 20)) {
+      const it = item as { path?: string; line?: number; severity?: string; kind?: string; message?: string }
+      out.push({
+        label: it.severity || it.kind || '诊断',
+        value: `${it.path || ''}${it.line ? ':' + it.line : ''} ${it.message || ''}`.trim(),
+      })
+    }
+  }
+  if (d.output) out.push({ label: '输出', value: String(d.output).slice(0, 400) })
+  // path 在「脚本校验」里是**被检查的文件**，在「装探针/装桥」里才是**写入的文件**，
+  // 所以这里只能叫「路径」——叫「写入」会把"检查了哪个文件"说成"写了哪个文件"。
+  if (d.path) out.push({ label: '路径', value: String(d.path) })
+  if (d.note) out.push({ label: '说明', value: String(d.note) })
+  return out
+})
 </script>
 
 <template>
@@ -165,6 +245,43 @@ onMounted(load)
     <p v-if="error" class="esp-msg esp-msg--bad">{{ error }}</p>
     <p v-else-if="okMsg" class="esp-msg esp-msg--ok">{{ okMsg }}</p>
     <pre v-if="skillOpen" class="esp-skill">{{ skill || '读取中…' }}</pre>
+
+    <!-- 引擎工具：后端早就有的这批能力，此前前端一个调用点都没有 -->
+    <div class="esp-tools">
+      <div class="esp-tools-head">
+        <span>引擎工具</span>
+        <span class="esp-dim">索引资产、脚本校验、诊断解析、探针与桥接、玩测</span>
+      </div>
+      <div class="esp-tools-row">
+        <button class="esp-btn" :disabled="toolBusy !== ''" @click="inspectAssets">
+          {{ toolBusy === '索引资产' ? '索引中…' : '索引资产' }}
+        </button>
+        <input v-model="checkPath" class="esp-input esp-grow" placeholder="要校验的 .gd 路径（相对项目根）" spellcheck="false">
+        <button class="esp-btn" :disabled="toolBusy !== '' || !checkPath.trim()" @click="runTool('脚本校验', () => engineApi.check(checkPath.trim(), executable))">
+          {{ toolBusy === '脚本校验' ? '校验中…' : '脚本校验' }}
+        </button>
+      </div>
+      <div class="esp-tools-row">
+        <textarea v-model="diagText" class="esp-input esp-grow esp-textarea" rows="2" placeholder="Unreal/MSVC 编译输出（可粘贴多行），解析成诊断" spellcheck="false" />
+        <button class="esp-btn" :disabled="toolBusy !== '' || !diagText.trim()" @click="runTool('诊断解析', () => engineApi.diagnostics(diagText, 'unreal'))">
+          {{ toolBusy === '诊断解析' ? '解析中…' : '诊断解析' }}
+        </button>
+      </div>
+      <div class="esp-tools-row">
+        <button class="esp-btn" :disabled="toolBusy !== ''" @click="runTool('装运行时探针', () => engineApi.installRuntimeProbe())">
+          {{ toolBusy === '装运行时探针' ? '安装中…' : '装运行时探针' }}
+        </button>
+        <button class="esp-btn" :disabled="toolBusy !== ''" @click="installUnrealBridge">安装 Unreal 桥</button>
+        <input v-model="playtestCmd" class="esp-input esp-grow" placeholder="玩测命令（留空=自动探测测试框架）" spellcheck="false">
+        <button class="esp-btn" :disabled="toolBusy !== ''" @click="runTool('玩测', () => engineApi.playtest(playtestCmd.trim()))">
+          {{ toolBusy === '玩测' ? '运行中…' : '跑玩测' }}
+        </button>
+      </div>
+      <p v-if="toolMsg" class="esp-msg" :class="{ 'esp-msg--bad': toolDetail?.ok === false }">{{ toolMsg }}</p>
+      <dl v-if="toolRows.length" class="esp-toolrows">
+        <div v-for="(row, i) in toolRows" :key="i"><dt>{{ row.label }}</dt><dd>{{ row.value }}</dd></div>
+      </dl>
+    </div>
   </div>
 </template>
 
@@ -196,6 +313,7 @@ onMounted(load)
   font-family: var(--font-mono); font-size: var(--fs-sm); outline: none;
 }
 .esp-input:focus { border-color: var(--accent); }
+.esp-textarea { resize: vertical; font-family: var(--font-mono); line-height: 1.5; padding: 4px 7px; }
 .esp-btn {
   height: 26px; padding: 0 11px; font-size: var(--fs-sm);
   border: 1px solid var(--border); border-radius: var(--r-sm);
@@ -207,6 +325,17 @@ onMounted(load)
 .esp-msg { margin: 0; font-size: var(--fs-sm); }
 .esp-msg--bad { color: var(--danger); }
 .esp-msg--ok { color: var(--green); }
+.esp-dim { font-size: var(--fs-cap); color: var(--text-faint); }
+.esp-tools { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.esp-tools-head { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.esp-tools-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.esp-toolrows { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.esp-toolrows div { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.esp-toolrows dt { flex: 0 0 68px; font-size: var(--fs-cap); color: var(--text-faint); }
+.esp-toolrows dd {
+  margin: 0; font-size: var(--fs-cap); color: var(--text-muted); font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .esp-skill {
   margin: 0; max-height: 220px; overflow: auto;
   padding: 8px 10px; font-size: var(--fs-cap); line-height: 1.55;

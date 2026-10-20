@@ -36,6 +36,18 @@ export const engineApi = {
   unrealWrite(body: {task_id:string;target_path:string;property:string;value:unknown;confirm:boolean}) { return postJson<{ok:boolean;available?:boolean;error?:string}>('/api/engine/unreal-bridge/write', body) },
   catalog() { return request<{ ok:boolean; engines:EngineCatalogEntry[] }>('/api/engine/catalog') },
   config(engine?: string, executable?: string) { return engine ? postJson<EngineConfig>('/api/engine/config',{engine,executable}) : request<EngineConfig>('/api/engine/config') },
+  /** 深度读取 Unity/Unreal 项目的文本资产，建立轻量索引（清单/场景/预制体/资产/符号/蓝图/关卡）。 */
+  inspect(engine = '') { return request<{ ok:boolean; engine?:string; manifests?:Record<string,unknown>[]; scenes?:string[]; prefabs?:string[]; assets?:string[]; symbols?:Record<string,unknown>[]; blueprints?:string[]; levels?:string[]; error?:string }>(`/api/engine/inspect?engine=${encodeURIComponent(engine)}`) },
+  /** 单文件 GDScript 校验（godot --headless --check-only，不开编辑器）。只支持 .gd。 */
+  check(path: string, executable = '', timeout = 120) { return postJson<{ ok:boolean; error?:string; diagnostics?:{severity:string;message:string;line?:number}[]; returncode?:number; output?:string }>('/api/engine/check', { path, executable, timeout }) },
+  /** Unreal/MSVC 编译输出 → 统一诊断结构。 */
+  diagnostics(text: string, engine = 'unreal') { return postJson<{ ok:boolean; engine?:string; diagnostics?:{path:string;line:number;kind:string;message:string}[]; error?:string }>('/api/engine/diagnostics', { engine, text }) },
+  /** 安装 Unreal 桥接脚本（写文件，需用户明确确认）。 */
+  installUnrealBridge(force = false) { return postJson<{ ok:boolean; path?:string; created?:boolean; note?:string; error?:string }>('/api/engine/unreal-bridge/install', { confirm: true, force }) },
+  /** 装运行时探针（addons/docmind_runtime/probe.gd）。 */
+  installRuntimeProbe() { return postJson<{ ok:boolean; path?:string; created?:boolean; error?:string }>('/api/runtime/probe', {}) },
+  /** 跑一次玩测（自动探测测试框架或自定义命令）。 */
+  playtest(command = '', timeout = 30) { return postJson<{ ok:boolean; error?:string; output?:string; exit_code?:number; timed_out?:boolean }>('/api/playtest', { command, timeout }) },
   /** 扫描项目里有没有引擎工程文件（project.godot / ProjectVersion.txt / *.uproject）。 */
   scan() { return request<{ ok: boolean; projects: { engine: string; path: string }[] }>('/api/engine/scan') },
   /** 探测可执行文件并写入项目配置；ready=false 时带下载链接。
