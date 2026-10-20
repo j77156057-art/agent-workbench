@@ -99,6 +99,16 @@ class Turn:
         self.outcome = None      # 回合结局：completed/max_steps/truncated/evidence_fallback/...
         self.verified = False    # 写后自验证是否通过（Phase 1 闭环；仅当回合含写操作且校验通过才置 True）
         self.verification_targets = {}  # In-memory only: latest evidence per written file.
+        # ---- Provenance 供给层（纯内存·fail-closed·不进 to_record，仿 verification_targets）----
+        # 记录本回合哪些数字是 derive 工具（calculate/python_exec）产出的，按池密度分级：
+        #   numbers_strong —— 确定性强归因（calculate 单值 / 低密度且非源码 echo 的 python_exec）；
+        #   numbers_weak   —— 工具确实吐出了这些数，但稠密/源码 echo，**不授予正向背书**（fail-closed）。
+        # superseded_this_turn —— 本轮 memory_save 真作废了某条旧记忆（tools.py 回执含 "superseded"）。
+        # had_derive_tool —— 本轮确有 derive 工具跑过（含 calculate 出「成立/不成立」这种无数字结论），
+        #   供消费方区分「算了但没留数」与「压根没算」。
+        # 消费方（CALC②徽章/W-C信任重排/W-A1）在回合内即时读此结构；本基建只提供信号、不改任何外显。
+        self.tool_evidence = {"numbers_strong": [], "numbers_weak": [],
+                              "superseded_this_turn": False, "had_derive_tool": False}
         # ---- Phase 3 经验记录辅助字段（均由 agent._run 在推理循环中写入）----
         self.failure_count = 0       # 本回合失败总次数（单调累计，成功不清零）
         self.max_tool_streak = 0     # 单工具连续失败的最大次数
@@ -151,6 +161,25 @@ class Turn:
 
     def note_reflection(self):
         self.reflections += 1
+
+    def add_tool_evidence(self, *, numbers=(), strong=True, superseded=False, derive=False):
+        """累加一条 derive 工具证据（纯内存·不进 record）。并行批次会从多线程写同一
+        Turn，故与其余累加操作一样持锁。numbers 归一化为字符串去重后按 STRONG/WEAK 分桶；
+        superseded/derive 单向 OR（一旦本轮有取代/derive 工具即置真）。"""
+        if not numbers and not superseded and not derive:
+            return
+        with self._lk:
+            if superseded:
+                self.tool_evidence["superseded_this_turn"] = True
+            if derive:
+                self.tool_evidence["had_derive_tool"] = True
+            bucket = self.tool_evidence["numbers_strong" if strong else "numbers_weak"]
+            seen = set(self.tool_evidence["numbers_strong"]) | set(self.tool_evidence["numbers_weak"])
+            for n in numbers:
+                s = str(n)
+                if s and s not in seen:
+                    bucket.append(s)
+                    seen.add(s)
 
     # ---- 收尾 ----
     def finish(self, reason=None, final_text="", error=None, aborted=False):

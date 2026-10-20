@@ -85,6 +85,11 @@ def _connect():
         conn.execute("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
     if "supersedes" not in _cols:
         conn.execute("ALTER TABLE memories ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''")
+    # Provenance W-C：episode 落库时是否被工具产出背书（1=final 关键数命中强归因证据）。
+    # 默认 0 = fail-closed：既有行/未背书写入与今天逐字节一致；仅用于 recall 信任档排序，
+    # 绝不进 context() 注入串（recall 里像 status/supersedes 一样 pop 掉），不触 MEMORY_CHARS=309。
+    if "backed" not in _cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN backed INTEGER NOT NULL DEFAULT 0")
     return conn
 
 
@@ -92,19 +97,20 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
-def remember(scope, kind, title, content, evidence="", *, source="agent", key=None, supersedes=None):
+def remember(scope, kind, title, content, evidence="", *, source="agent", key=None, supersedes=None, backed=False):
     if kind not in KINDS or not str(content or "").strip():
         raise ValueError("需要有效的 kind 和非空 content")
     title, content, evidence = scrub(title, 200), scrub(content, 4000), scrub(evidence, 1200)
     mid = hashlib.sha256((kind + "|" + str(key or title or content)).encode()).hexdigest()[:24]
     with _LOCK, closing(_connect()) as conn, conn:
         conn.execute("""INSERT INTO memories
-            (scope, id, kind, title, content, evidence, source, repeats, updated, status, supersedes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'active', ?)
+            (scope, id, kind, title, content, evidence, source, repeats, updated, status, supersedes, backed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'active', ?, ?)
             ON CONFLICT(scope, id) DO UPDATE SET content=excluded.content,
             title=excluded.title, evidence=excluded.evidence, source=excluded.source,
-            repeats=memories.repeats+1, updated=excluded.updated""",
-            (scope, mid, kind, title, content, evidence, source, _now(), str(supersedes or "")))
+            repeats=memories.repeats+1, updated=excluded.updated, backed=excluded.backed""",
+            (scope, mid, kind, title, content, evidence, source, _now(), str(supersedes or ""),
+             1 if backed else 0))
         # 缺口 C · A：显式取代——把被推翻的旧行标 superseded，从此不再被 recall 浮出。
         # 不传 supersedes 时这段完全不执行，行为与今天逐字节一致。ON CONFLICT 分支
         # 故意不改 status，避免重记同一 id 把一条已 retire/supersede 的行悄悄复活。
@@ -135,11 +141,18 @@ def recall(scope, query="", limit=8, *, include_preferences=False, include_all=F
             # repeats 断言都不受影响）。
             row.pop("status", None)
             row.pop("supersedes", None)
+            # Provenance W-C：backed 同样是内部元数据，pop 掉不进注入串（保 309 校准不变）。
+            _backed = bool(row.pop("backed", 0))
             # 信任档：未核实的 model_report episode（每轮自动存的 final_text，
             # "尚需核对验收"）记低档，避免"重复=更新=正确"的回音室靠 recency
             # 把它顶到已核实记忆之上（MEM-ErrorEchoChamber 方向②）。
+            # W-C（证据升序·fail-closed）：若该 episode 落库时被工具产出背书
+            # （backed=1），则**升回正常档 0**——"有证据的新答"按 score+时效压过
+            # "无证据的旧 episode"，正面拆 episode-vs-episode 的 recency 平手（G2）。
+            # 只升不降、绝不 void 任何行：非背书的 model_report episode 维持 -1（逐字节同今天）。
             # 注意：SQL 输入已是 updated DESC，sort 稳定，recency 只在同档内做平手裁决。
-            trust = -1 if (row["kind"] == "episode" and row["source"] == "model_report") else 0
+            _model_ep = row["kind"] == "episode" and row["source"] == "model_report"
+            trust = -1 if (_model_ep and not _backed) else 0
             ranked.append((100 if preference else score, trust, row))
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [row for _, __, row in ranked[:max(1, min(30, int(limit)))]]

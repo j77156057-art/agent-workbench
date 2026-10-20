@@ -2451,6 +2451,94 @@ def _should_verbatim_passthrough(action, obs):
     return True
 
 
+# ---------------------------------------------------------------------------
+# Provenance 供给层（账本第34批定的 W-B/CALC②/W-C/W-A1 共同地基）：
+# 从一条工具观察里抽出"本回合工具真正产出的数字"，按**池密度**分级——强归因只对
+# calculate 恒成立；python_exec 若吐一大坨（尤源码逐行 echo）则降 WEAK、不授予正向背书。
+# 这里**只提供信号**（供回合内消费方即时读），不改任何徽章/外显/排序行为。fail-closed：
+# 判不准就归 WEAK（宁可不认），绝不把稠密输出当铁证喂给闸门（第35批钉死的能力边界）。
+# ---------------------------------------------------------------------------
+# 密度门 K：python_exec 抽出的候选数集 ≤ K 才可能算强归因，否则视稠密输出降 WEAK。
+# 启发式、可经环境变量调；实测把"标量/单值 print"归强、把"源码 echo/计数表/时间戳"归弱。
+_PROVENANCE_POOL_K = max(1, int(os.getenv("DOCMIND_PROV_POOL_K", "6")))
+_PROV_PURE_NUM_RE = re.compile(r"^[-+]?\d+(?:\.\d+)?$")
+# 孤立数字 token：前不接 单词字符/冒号/点/连字符（避版本号 1.2.3、行号 12:34、日期 2024-01），
+# 后不接 单词字符/点（避 3.14.1、下标）。只取独立整数/小数。
+_PROV_NUM_RE = re.compile(r"(?<![\w.:\-])[-+]?\d+(?:\.\d+)?(?![\w.])")
+
+
+def _prov_norm(tok):
+    """归一化数字串：去掉多余的 '+'、把 'N.0…' 收成整数 'N'，其余原样保留（1.25/3.14 不变）。"""
+    t = str(tok).strip().lstrip("+")
+    if not t or t == "-":
+        return ""
+    m = re.fullmatch(r"(-?\d+)\.0+", t)
+    if m:
+        return m.group(1)
+    return t
+
+
+def _tool_evidence_from_obs(name, obs, ok):
+    """把一次工具观察解析成 provenance 证据 dict（无证据返回 None）。纯函数、无副作用。
+
+    返回 dict 的键对应 `Turn.add_tool_evidence` 的关键字：
+      - calculate：obs 为纯数字 → {numbers:[v], strong:True, derive:True}；
+        「成立（True）/不成立（False）」→ {numbers:[], strong:True, derive:True}（留"算过"痕）；
+        错误串/失败 → None。
+      - python_exec：真执行（无 __EXEC_PENDING__/__EXEC_BLOCKED__）→ 抽孤立数集 N；
+        strong = (|N| ≤ K) 且 非源码 echo；稠密/echo → WEAK（fail-closed，不授予正向背书）。
+        跑了但没数字 → {numbers:[], strong:True, derive:True}（仍算 derive 跑过）。
+      - memory_save：回执 JSON ok 且含 "superseded" 键 → {superseded:True}（确定性单值·恒强）。
+      - 其它工具 / 任何解析异常 → None。
+    """
+    if not ok:
+        return None
+    s = obs if isinstance(obs, str) else ("" if obs is None else str(obs))
+    try:
+        if name == "calculate":
+            t = s.strip()
+            if _PROV_PURE_NUM_RE.match(t):
+                return {"numbers": [_prov_norm(t)], "strong": True, "derive": True}
+            if t in ("成立（True）", "不成立（False）"):
+                return {"numbers": [], "strong": True, "derive": True}
+            return None
+        if name == "python_exec":
+            if "__EXEC_PENDING__" in s or "__EXEC_BLOCKED__" in s:
+                return None  # 代码根本没跑（待确认/硬拦）→ 无产出可背书
+            toks = {n for n in (_prov_norm(x) for x in _PROV_NUM_RE.findall(s)) if n}
+            if not toks:
+                return {"numbers": [], "strong": True, "derive": True}
+            strong = len(toks) <= _PROVENANCE_POOL_K and not _is_raw_source_echo(s)
+            return {"numbers": sorted(toks), "strong": strong, "derive": True}
+        if name == "memory_save":
+            d = json.loads(s)
+            if isinstance(d, dict) and d.get("ok") and "superseded" in d:
+                return {"numbers": [], "superseded": True}
+            return None
+    except Exception:  # noqa: BLE001 - 证据解析绝不影响主流程
+        return None
+    return None
+
+
+def _episode_is_backed(final_text, tool_evidence):
+    """本轮 final 答案是否被**强归因**工具产出背书（W-C 证据升序用）。
+
+    判据刻意保守、fail-closed：仅当 `tool_evidence.numbers_strong` 非空，且 final 文本里
+    抽出的某个孤立数字命中该强池，才算 `True`。WEAK 数字（稠密/源码 echo）**永不计入**
+    ——延续第35批"python 吐一大坨不可当正向铁证"的边界。拿不准就 False（维持今天低档）。
+    """
+    try:
+        if not tool_evidence:
+            return False
+        strong = tool_evidence.get("numbers_strong") or []
+        if not strong:
+            return False
+        fnums = {n for n in (_prov_norm(x) for x in _PROV_NUM_RE.findall(final_text or "")) if n}
+        return bool(fnums & set(strong))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _is_no_match_only(obs):
     """这条观察是不是**纯粹**一句「没有匹配」。
 
@@ -4879,9 +4967,11 @@ class Agent:
                     pass
             if self.session_id:
                 try:
+                    _ep_backed = _episode_is_backed(
+                        final_text, getattr(turn, "tool_evidence", None) if turn is not None else None)
                     _memory.remember(self.memory_scope, "episode", _memory.scrub(question, 200),
                         ("未完成：" + (error or "停止/中断") if error or not final_text else "模型报告（尚需核对验收）：" + final_text),
-                        "\n".join(recovery_events), source="model_report", key=question)
+                        "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed)
                 except Exception:
                     pass
             # 断连时关闭内层循环，确保不再执行后续工具调用（已耗尽时 close 是空操作）。
@@ -5782,6 +5872,9 @@ class Agent:
                         (time.monotonic() - _t_tool) * 1000, obs,
                         ok=_tool_ok,
                     )
+                    _ev = _tool_evidence_from_obs(action_name, obs, _tool_ok)
+                    if _ev:
+                        turn.add_tool_evidence(**_ev)
                 if (action_name == "preview_project" and _tool_ok and turn is not None
                         and turn.verification_targets):
                     # production visual adapter is a real post-write verifier:
@@ -6532,6 +6625,9 @@ class Agent:
                     obs = "[并行执行失败] " + obs
                 if turn is not None:
                     turn.tool_step(name, arg2, (time.monotonic() - t0) * 1000, obs, ok=ok)
+                    _ev = _tool_evidence_from_obs(name, obs, ok)
+                    if _ev:
+                        turn.add_tool_evidence(**_ev)
                 out[i] = (name, arg2, obs, ok, (obs_images if ok else None))
             except Exception as e:  # noqa: BLE001 —— 单条失败不能炸整批
                 out[i] = (name, arg, f"[并行执行失败] {type(e).__name__}: {e}", False, None)
