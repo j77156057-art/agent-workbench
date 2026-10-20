@@ -72,6 +72,43 @@ _PTC_BRIDGE_WHITELIST = frozenset({
 #: 联网只读子集：白名单里但要出网/慢/有成本，靠额外限次兜（第45批）。
 _PTC_WEB_TOOLS = frozenset({"web_search", "web_fetch", "web_research"})
 
+# ---- B2 写工具 bridge（第54批：一律延后执行 + enable 卡独立安全评审门）----
+#: 独立 opt-in 开关，**叠加**在主开关 DOCMIND_PTC_BRIDGE 之上——二者皆非 "0" 才生效。
+#: 默认关 → `_ptc_bridge_tool_names()` 只返回只读集，写名仍被服务环白名单闸拒（逐字节等于 B1）。
+_PTC_BRIDGE_WRITE_ENABLED = _PTC_BRIDGE_ENABLED and (
+    os.getenv("DOCMIND_PTC_BRIDGE_WRITE", "0") != "0")
+
+#: B2 写子调用集（步 5 落定：本地三件 + WRITE_EXTERNAL 外部文件写 + 记忆写 + 路径型 dev_* 结构化编辑）。
+#: 即便放行到服务环，也【一律延后】——当场绝不落盘（步 3 `stage_bridge_write` 接线、步 2 tier 补闸、
+#: 人工确认后才落）。非路径型写（memory_*、dev_plan/lanes/propose/pricing/deps）走保守 tier=2 按需确认。
+#: 成员刻意保守可复核；引擎/MCP/git 历史/不可逆命令执行一律进 _PTC_BRIDGE_WRITE_NEVER，绝不 bridge。
+_PTC_BRIDGE_WRITE_WHITELIST = frozenset({
+    # 本地文件写
+    "apply_edit", "create_file", "generate_data_file",
+    # 外部文件写（WRITE_EXTERNAL / high 访问模式）
+    "create_external_file", "edit_external_file", "delete_external_file",
+    # 记忆写
+    "memory_save", "memory_forget",
+    # 路径型 dev_* 结构化编辑（_parse_edit_input 抽 path 走 tier 补闸）
+    "dev_apply_edits", "dev_patch", "dev_move", "dev_refactor",
+    "dev_region_edit", "dev_add_region", "dev_apply_regions", "init_regions",
+    # dev_* 项目状态目录写（无单一文件路径 → 保守 tier=2）
+    "dev_plan", "dev_lanes", "dev_propose", "dev_pricing", "dev_deps",
+})
+
+#: 永不进入任何 bridge 暴露面的写/执行类工具（递归 + 命令执行 + 引擎副作用 + git 历史 + 重系统写）。
+#: python_exec/run_command：NON-PURE → 递归护栏天然成立，防无限 spawn/逃逸；其余为不可逆/外部副作用，
+#: v1 不纳入延后写（各自已有独立审批门），由服务环白名单闸直接拒。纵深防御：即便被误加进白名单也扣掉。
+_PTC_BRIDGE_WRITE_NEVER = frozenset({
+    "python_exec", "run_command", "dev_mcp_call", "game_playtest", "start_workflow",
+    "self_verify", "dev_commit", "dev_commit_all", "dev_rollback_changeset",
+    "dev_install_tool", "dev_rebuild_index", "dev_mcp_add", "dev_mcp_decide", "dev_mcp_remove",
+})
+
+# 导入期不变式：NEVER 集与读白名单 / 写白名单必须互斥（护栏绝不因白名单编辑而失守）。
+assert not (_PTC_BRIDGE_WRITE_NEVER & _PTC_BRIDGE_WHITELIST), "只读白名单混入永不放行工具"
+assert not (_PTC_BRIDGE_WRITE_NEVER & _PTC_BRIDGE_WRITE_WHITELIST), "写白名单混入永不放行工具"
+
 # ---- PTC 模式专属硬护栏（"整段计 1 步"移除每调用 governor 后的硬前置，缺一不上线）----
 #: 单次 PTC 动作子调用总数上限：默认 32，env 可下调，但硬夹在 [1,32] 以坐实"≤32"不变式。
 _PTC_MAX_CALLS = min(32, max(1, int(os.getenv("DOCMIND_PTC_MAX_CALLS", "32") or 32)))
@@ -93,11 +130,27 @@ def _ptc_bridge_tool_names():
 
     步 1 工具注册 seam：**关模式返回空集** → 调用方（步 2 jail 前缀注入 / 步 4
     父服务环白名单校验）据此不暴露、不校验任何 bridge 工具，逐字节维持旧行为。
-    开模式返回 v1 只读白名单。
+    开模式返回 v1 只读白名单；**仅当 B2 写开关也开**（步 1）才并上写集——
+    写名此时不再被服务环白名单闸直接拒，转而走步 2 补闸 + 步 3 延后接线（仍不落盘）。
     """
     if not _ptc_bridge_enabled():
         return frozenset()
+    if _ptc_bridge_write_enabled():
+        # 纵深防御：写并集里再扣掉 NEVER 集，递归/命令/引擎工具永不因白名单编辑而暴露。
+        return _PTC_BRIDGE_WHITELIST | (_PTC_BRIDGE_WRITE_WHITELIST - _PTC_BRIDGE_WRITE_NEVER)
     return _PTC_BRIDGE_WHITELIST
+
+
+def _ptc_bridge_write_enabled():
+    """本轮是否启用 B2 写 bridge（读模块级常量，测试可 monkeypatch）。"""
+    return _PTC_BRIDGE_WRITE_ENABLED
+
+
+def _ptc_bridge_write_tool_names():
+    """B2 写子调用集；未启用 → 空集（服务环据此把写名当非白名单拒，逐字节等于 B1）。"""
+    if not _ptc_bridge_write_enabled():
+        return frozenset()
+    return _PTC_BRIDGE_WRITE_WHITELIST - _PTC_BRIDGE_WRITE_NEVER
 
 
 def _ptc_bridge_stub_src():
@@ -3862,6 +3915,294 @@ def _python_exec_run(code, ceiling=1, allow_escalate=True):
     return _python_exec_direct(code, ceiling=ceiling, allow_escalate=allow_escalate)
 
 
+def _ptc_norm(p):
+    """父侧路径归一（镜像子 _pj_norm）：realpath+abspath+expanduser，反斜杠转 /、小写。"""
+    try:
+        rp = os.path.realpath(os.path.abspath(os.path.expanduser(str(p))))
+    except Exception:  # noqa: BLE001
+        return None
+    return rp.replace("\\", "/").lower()
+
+
+def _ptc_under_any(low, prefixes):
+    for c in prefixes or []:
+        cc = str(c).rstrip("/")
+        if low == cc or low.startswith(cc + "/"):
+            return True
+    return False
+
+
+def _ptc_floor(low, pol):
+    """镜像子 _pj_floor：凭据/NT/特权/令牌子目录命中 → 返回原因（=NEVER 硬底线）。"""
+    if low is None:
+        return "路径无法解析"
+    bs = low.replace("/", "\\")
+    for pre in pol.get("nt", []):
+        n = str(pre).replace("/", "\\").lower()
+        if bs == n or bs.startswith(n):
+            return "NT 设备命名空间路径（凭据泄漏风险）"
+    parts = [x for x in low.split("/") if x] if low else []
+    if any(d in parts for d in pol.get("creddirs", [])):
+        return "凭据存储目录"
+    if parts and parts[-1] in pol.get("credfiles", []):
+        return "凭据文件"
+    if low == "etc/sudoers" or low.endswith("/etc/sudoers"):
+        return "特权配置文件"
+    for c in pol.get("credfull", []):
+        if low == c or low.startswith(str(c).rstrip("/") + "/"):
+            return "凭据/令牌子目录"
+    return None
+
+
+def _ptc_never_dir(low, pol):
+    """镜像子 _pj_never_dir：系统关键目录命中 → 返回该前缀（写/删=永不放行）。"""
+    for pre in pol.get("never", []):
+        pp = str(pre).lower().replace("\\", "/").rstrip("/")
+        if pp and (low == pp or low.startswith(pp + "/")):
+            return pre
+    return None
+
+
+def _ptc_write_tier(path, pol):
+    """父侧镜像 `_pj_tier_path(path, writing=True)`：单路径【写】档位估计。
+
+    返回 (tier, reason)，tier∈{-1,1,2,3}。凭据/NT/系统关键目录 → -1（硬底线）；
+    根内/临时区写 → 1；覆盖 code_root 外既有文件 → 3；在 code_root 外新建 → 2。
+    """
+    low = _ptc_norm(path)
+    f = _ptc_floor(low, pol)
+    if f:
+        return -1, f
+    nd = _ptc_never_dir(low, pol)
+    if nd:
+        return -1, "系统关键目录（%s）" % nd
+    root_low = pol.get("root", "")
+    in_root = bool(root_low) and (low == root_low or low.startswith(root_low + "/"))
+    if in_root or _ptc_under_any(low, pol.get("allow", [])):
+        return 1, "根内/临时区写"
+    try:
+        exists = os.path.exists(path)
+    except Exception:  # noqa: BLE001
+        exists = True  # 拿不准按覆盖处理，往安全侧靠（更高危）
+    if exists:
+        return 3, "覆盖 code_root 外既有文件（不可回滚）"
+    return 2, "在 code_root 外新建文件"
+
+
+#: 有文件系统路径可估档的写工具：`_parse_edit_input` 通用抽 `path:` 字段；
+#: 抽不到 path 的（多路径 dev_move 或状态目录写）自动回 `_ptc_bridge_write_tier` 的保守 tier=2。
+_PTC_PATH_WRITE_TOOLS = frozenset({
+    "apply_edit", "create_file", "generate_data_file",
+    "create_external_file", "edit_external_file", "delete_external_file",
+    "dev_apply_edits", "dev_patch", "dev_move", "dev_refactor",
+    "dev_region_edit", "dev_add_region", "dev_apply_regions", "init_regions",
+})
+
+
+def _ptc_bridge_write_tier(name, arg):
+    """步 2 §4①：父侧对一个 bridged 写子调用估档（补回被绕过的子 jail 钩）。
+
+    返回 (tier, reason, path_or_None)。路径型写（apply_edit/create_file）抽 path 走
+    `_ptc_write_tier`；无路径的写（memory_save / 引擎 / 外发 / 未知）保守回 tier=2
+    （需一次确认），**绝不因拿不到 path 就当免批放行**。策略解析失败也保守回 2。
+    """
+    try:
+        pol = _pj_child_policy()
+    except Exception:  # noqa: BLE001
+        return 2, "牢笼策略解析失败·保守按需确认", None
+    if name in _PTC_PATH_WRITE_TOOLS:
+        try:
+            path, _, _ = _parse_edit_input(arg)
+        except Exception:  # noqa: BLE001
+            path = None
+        if not path:
+            return 2, "写目标路径缺失·保守按需确认", None
+        t, r = _ptc_write_tier(path, pol)
+        return t, r, path
+    return 2, "非路径写（记忆/引擎/外发）·一律按需确认", None
+
+
+# ---------------------------------------------------------------------------
+# B2 步 3：延后写台账（bridged 写当场绝不落盘，只登记待确认）
+#
+# 与 _PENDING_EXEC / _PENDING_EDITS 同形：父侧持有 in-memory 队列，人工出带确认后才
+# 经注入的执行器落盘。服务环内**只登记、绝不执行**——即便 tier=1 免批也延后（压缩动作
+# 里用户只看到 1 步，无法逐写点确认，故连免批写也保守按需确认 ≥1 次）。
+# 执行器经模块全局 `_PTC_BRIDGE_WRITE_EXECUTOR` 注入（步 6 由 Agent 在桥接范围内接
+# 完整 execute_tool+归因）；**未注入时 fail-closed**：确认到阈值也不落盘、保留待确认，
+# 绝不谎报成功。tools↔agent 解耦：tools 不 import execute_tool。
+# ---------------------------------------------------------------------------
+_PENDING_BRIDGE_WRITES = {}   # pid -> {id,name,arg,tier,reason,path,arg_hash,confirms,need}
+_BRIDGE_WRITE_LOCK = threading.Lock()
+_bridge_write_seq = [0]
+_bridge_write_by_hash = {}     # "name|arg_hash" -> pid（同参写去重，指向同一 pid）
+
+#: 延后写执行器接缝：签名 `executor(name: str, arg: str) -> (ok: bool, result_text: str)`，
+#: 内部走完整 execute_tool 治理 + turn 归因。**未注入时确认到阈值也 fail-closed 不落盘。**
+_PTC_BRIDGE_WRITE_EXECUTOR = None
+
+
+def _ptc_write_arg_hash(name, arg):
+    """父侧去重键：与子侧 `__BRIDGE_PLAN__` 的 arg_hash 同算法（sha256[:16]），前缀工具名。"""
+    h = hashlib.sha256((arg if isinstance(arg, str) else str(arg)).encode("utf-8")).hexdigest()[:16]
+    return "%s|%s" % (name, h)
+
+
+def _peek_bridge_write(name, arg):
+    """查同参写是否已登记待确认——返回既有 pid 或 None，**无副作用**。"""
+    key = _ptc_write_arg_hash(name, arg)
+    with _BRIDGE_WRITE_LOCK:
+        pid = _bridge_write_by_hash.get(key)
+        if pid is not None and pid in _PENDING_BRIDGE_WRITES:
+            return pid
+        return None
+
+
+def stage_bridge_write(name, arg, tier, reason, path=None):
+    """登记一次延后的 bridged 写（**当场绝不落盘**）。返回 (pid, replayed)。
+
+    同段/同参（工具名 + arg 哈希相同）已在待确认队列 → 复用同一 pid、`replayed=True`、
+    不重复登记。确认门槛沿用三档语义，但 bridged 写至少需 1 次人工确认（tier=1 免批
+    也保守按需确认 1 次）。
+    """
+    key = _ptc_write_arg_hash(name, arg)
+    with _BRIDGE_WRITE_LOCK:
+        prev = _bridge_write_by_hash.get(key)
+        if prev is not None and prev in _PENDING_BRIDGE_WRITES:
+            return prev, True
+        _bridge_write_seq[0] += 1
+        pid = "W" + str(_bridge_write_seq[0])
+        _PENDING_BRIDGE_WRITES[pid] = {
+            "id": pid,
+            "name": name,
+            "arg": arg,
+            "tier": int(tier),
+            "reason": reason,
+            "path": path,
+            "arg_hash": key,
+            "confirms": 0,
+            "need": max(1, exec_tier_confirm(tier)),
+        }
+        _bridge_write_by_hash[key] = pid
+        return pid, False
+
+
+def list_bridge_writes():
+    with _BRIDGE_WRITE_LOCK:
+        return [
+            {
+                "id": e["id"],
+                "tool": e["name"],
+                "tier": e["tier"],
+                "reason": e["reason"],
+                "path": e["path"],
+                "confirms": e["confirms"],
+                "need": e["need"],
+            }
+            for e in _PENDING_BRIDGE_WRITES.values()
+        ]
+
+
+def confirm_bridge_write(pid):
+    """累计一次确认；达阈值才经注入执行器真正落盘（走完整治理+归因）。
+
+    未达阈值只递增计数（回「还需 N 次·未执行」）。**执行器未注入时 fail-closed**：
+    回退本次无效确认、保留待确认、绝不落盘、绝不谎报成功。达阈值且有执行器时先移除
+    待确认项（已获人工授权），再执行并如实返回执行器结果。
+    """
+    with _BRIDGE_WRITE_LOCK:
+        e = _PENDING_BRIDGE_WRITES.get(pid)
+    if not e:
+        return False, "未找到待确认写 #%s（可能已确认/拒绝或重启后失效）。" % pid
+    tier, need = e["tier"], e["need"]
+    with _BRIDGE_WRITE_LOCK:
+        e["confirms"] += 1
+        got = e["confirms"]
+    if got < need:
+        return False, ("第 %d 档写需连续确认 %d 次，当前已确认 %d 次，还需 %d 次。（尚未执行）"
+                       % (tier, need, got, need - got))
+    executor = _PTC_BRIDGE_WRITE_EXECUTOR
+    if executor is None:
+        with _BRIDGE_WRITE_LOCK:
+            e["confirms"] = got - 1  # 回退本次确认，保留待人工在活跃桥接范围内重试
+        return False, ("bridge 写执行服务未就绪（当前会话不在 python_exec 活跃桥接范围内），"
+                       "未执行、保留待确认。")
+    with _BRIDGE_WRITE_LOCK:
+        _PENDING_BRIDGE_WRITES.pop(pid, None)
+        _bridge_write_by_hash.pop(e["arg_hash"], None)
+    try:
+        ok, result = executor(e["name"], e["arg"])
+    except Exception as ex:  # noqa: BLE001
+        return False, "bridge 写执行异常：%s（未确认成功）。" % type(ex).__name__
+    return bool(ok), result
+
+
+def reject_bridge_write(pid):
+    with _BRIDGE_WRITE_LOCK:
+        e = _PENDING_BRIDGE_WRITES.pop(pid, None)
+        if e:
+            _bridge_write_by_hash.pop(e["arg_hash"], None)
+        return bool(e)
+
+
+def clear_bridge_writes():
+    """清空全部延后写（重置/新会话隔离用），返回清除条数。"""
+    with _BRIDGE_WRITE_LOCK:
+        n = len(_PENDING_BRIDGE_WRITES)
+        _PENDING_BRIDGE_WRITES.clear()
+        _bridge_write_by_hash.clear()
+        return n
+
+
+def _ptc_bridge_write_dispatch(name, arg, state):
+    """B2 写子调用的服务环处理——**一律延后，当场绝不落盘**（第54批核心不变式）。
+
+    步 3 接线（延后执行）——
+      · `tier==-1`（凭据/NT/系统关键目录/格式化）→ **当场硬拒**，计入 `write_rejected`，
+        不登记 pending、不归因、绝不内联执行；
+      · 同参写（工具名 + arg 哈希）已待确认 → `replayed=True`、复用同一 pid，不重复计数、
+        不受上限影响；
+      · 全新写且 `pending` 达 `_PTC_MAX_CALLS` → 计入 `blocked`、拒登记（防一段灌爆 pending）；
+      · 其余（tier≥1）→ `stage_bridge_write` 真登记 pid、计入 `pending`，回 ok=False
+        「已登记待确认#pid·未执行」。
+    **一律延后、绝不经 `_serve`/`execute_tool` 内联执行、当场绝不落盘。**
+    """
+    tier, reason, path = _ptc_bridge_write_tier(name, arg)
+    if tier == -1:
+        state["write_rejected"] = state.get("write_rejected", 0) + 1
+        return {"ok": False,
+                "result": ("写 bridge 拒绝：%r 命中永不放行硬底线（%s），未执行、不登记待确认。"
+                           % (name, reason)),
+                "pending": None, "tier": tier, "replayed": False}
+    # 同参去重：已在待确认队列 → 复用同一 pid、不重复登记、不占新名额、不受上限影响。
+    _existing = _peek_bridge_write(name, arg)
+    if _existing is not None:
+        state["replayed"] = state.get("replayed", 0) + 1
+        return {"ok": False,
+                "result": ("写 bridge 同参已登记待确认 #%s·未重复登记（档位 tier=%d：%s；未执行）。"
+                           % (_existing, tier, reason)),
+                "pending": _existing, "tier": tier, "replayed": True}
+    if state["pending"] >= _PTC_MAX_CALLS:
+        state["blocked"] += 1
+        if state["limit_hit"] is None:
+            state["limit_hit"] = "write_pending"
+        return {"ok": False,
+                "result": "写待登记数达上限 %d（未登记·未执行）。" % _PTC_MAX_CALLS,
+                "pending": None, "tier": tier, "replayed": False}
+    pid, replayed = stage_bridge_write(name, arg, tier, reason, path)
+    if replayed:  # 极窄竞态兜底（单服务环内理论不会命中）：仍复用同一 pid、不重复计数
+        state["replayed"] = state.get("replayed", 0) + 1
+        return {"ok": False,
+                "result": ("写 bridge 同参已登记待确认 #%s·未重复登记（档位 tier=%d：%s；未执行）。"
+                           % (pid, tier, reason)),
+                "pending": pid, "tier": tier, "replayed": True}
+    state["pending"] += 1
+    return {"ok": False,
+            "result": ("写 bridge 已登记待确认 #%s·未执行（档位 tier=%d：%s；"
+                       "人工确认后方落盘）。" % (pid, tier, reason)),
+            "pending": pid, "tier": tier, "replayed": False}
+
+
 def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
     """PTC 路径 B 服务环（步 3：Popen 双读线程 + IPC 回调 execute_tool）。
 
@@ -3911,11 +4252,15 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
     # _bridge_call("apply_edit", ...)，非白名单工具也在 execute_tool【之前】被拒、
     # 绝不经 server 归因。集合在环开始捕获。
     allowed = _ptc_bridge_tool_names()
+    # B2（步 1）：写子调用集（仅写开关开时非空）。写名虽进 allowed，但**一律延后**——
+    # 走 _ptc_bridge_write_dispatch，绝不经 _serve/execute_tool 内联执行、当场不落盘。
+    write_names = _ptc_bridge_write_tool_names()
     deadline = time.monotonic() + _PTC_WALL_CLOCK  # 整段墙钟截止点
     final_out = []
     trace_lines = []
     records = []  # 父侧 handled 台账（每响应一条），用于 planned==ran 交叉校验
-    state = {"error": None, "rejected": 0, "executed": 0,
+    state = {"error": None, "rejected": 0, "executed": 0, "pending": 0,
+             "replayed": 0, "write_rejected": 0,
              "web": 0, "result_bytes": 0, "blocked": 0, "limit_hit": None}
 
     def _serve(name, arg):
@@ -3939,11 +4284,24 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
                     if not isinstance(req, dict):
                         continue
                     name = req.get("tool")
+                    _wmeta = None  # 步 4：仅 bridged 写（写开关开）时填充，供 trace 落 ptc_write_pending
                     # 步 4 fail-closed：非白名单工具在 execute_tool 之前直接拒、不服务、不归因。
                     if name not in allowed:
                         state["rejected"] += 1
                         resp = {"seq": req.get("seq"), "ok": False,
                                 "result": "工具 %r 不在 PTC bridge 白名单，已拒绝（未执行）。" % (name,)}
+                    elif name in write_names:
+                        # B2（步 3）：写子调用一律延后——走 _ptc_bridge_write_dispatch 做父侧
+                        # tier 补闸 + 同参去重 + stage_bridge_write 登记待确认 pid，**绝不经
+                        # _serve/execute_tool 内联执行、当场绝不落盘**（人工确认后才落）。
+                        _wd = _ptc_bridge_write_dispatch(name, req.get("arg"), state)
+                        resp = {"seq": req.get("seq"), "ok": _wd["ok"], "result": _wd["result"]}
+                        if _wd.get("pending") is not None:
+                            resp["pending"] = _wd["pending"]
+                        if _wd.get("replayed"):
+                            resp["replayed"] = True
+                        _wmeta = {"tier": _wd["tier"], "pid": _wd["pending"],
+                                  "replayed": bool(_wd["replayed"])}
                     else:
                         # 步 5 护栏（"整段计1步"移除 governor 后的硬前置）：命中即拦、不执行、
                         # 单列 blocked（区别于白名单安全拒绝 rejected）、executed 只计真实 execute_tool 次数。
@@ -3973,7 +4331,11 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
                             ok, result = _serve(name, req.get("arg"))
                             state["result_bytes"] += len((result or "").encode("utf-8"))
                             resp = {"seq": req.get("seq"), "ok": ok, "result": result}
-                    records.append({"seq": resp.get("seq"), "tool": name, "ok": resp.get("ok")})
+                    if _wmeta is not None:
+                        records.append({"seq": resp.get("seq"), "tool": name,
+                                        "ok": resp.get("ok"), "kind": "write", **_wmeta})
+                    else:
+                        records.append({"seq": resp.get("seq"), "tool": name, "ok": resp.get("ok")})
                     try:
                         proc.stdin.write(json.dumps(resp, ensure_ascii=False) + "\n")
                         proc.stdin.flush()
@@ -4044,13 +4406,26 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
                                       "blocked": state["blocked"], "reconciled": rec["reconciled"],
                                       "returncode": proc.returncode}, ensure_ascii=False) + "\n")
                 for _r in records:
-                    _tf.write(json.dumps({"event": "ptc_call", **_r}, ensure_ascii=False) + "\n")
+                    if _r.get("kind") == "write":
+                        _tf.write(json.dumps(
+                            {"event": "ptc_write_pending", "seq": _r.get("seq"),
+                             "tool": _r.get("tool"), "tier": _r.get("tier"),
+                             "pid": _r.get("pid"), "replayed": _r.get("replayed"),
+                             "ok": _r.get("ok")}, ensure_ascii=False) + "\n")
+                    else:
+                        _tf.write(json.dumps(
+                            {"event": "ptc_call", "seq": _r.get("seq"),
+                             "tool": _r.get("tool"), "ok": _r.get("ok")},
+                            ensure_ascii=False) + "\n")
                 _tf.flush()
         except Exception:  # noqa: BLE001
             pass  # 写侧信道失败不回吞主结果，但也不借此谎报成功
     _PTC_LAST_STATS.clear()
     _PTC_LAST_STATS.update({
         "executed": state["executed"], "rejected": state["rejected"],
+        "pending": state["pending"],
+        "replayed": state.get("replayed", 0),
+        "write_rejected": state.get("write_rejected", 0),
         "blocked": state["blocked"], "web": state["web"],
         "result_bytes": state["result_bytes"], "limit_hit": state["limit_hit"],
         "planned": rec["planned"], "handled": handled, "reconciled": rec["reconciled"],
@@ -4067,6 +4442,16 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
         out += ("\n注：本次有 %d 个子调用因护栏上限被拦、未执行"
                 "（首个触发：%s）；不得把被拦的说成已跑成。\n"
                 % (state["blocked"], state["limit_hit"] or "unknown"))
+    # B2（步 1）：写子调用一律延后 → 诚实标注本段未落任何盘，绝不得声称写已生效。
+    if state.get("pending", 0) > 0:
+        out += ("\n注：本次有 %d 个写子调用**一律延后·未执行**（本段未产生任何写盘副作用，"
+                "待确认后才真跑）；不得把待确认的写说成已完成。\n"
+                % state["pending"])
+    # B2（步 2）：命中父侧永不放行硬底线被当场硬拒的写 → 诚实标注未执行。
+    if state.get("write_rejected", 0) > 0:
+        out += ("\n注：本次有 %d 个写子调用命中**永不放行硬底线**（凭据/系统关键目录/格式化）被当场拒绝、"
+                "未执行、不登记待确认；不得声称此类写被执行过。\n"
+                % state["write_rejected"])
     # planned==handled 交叉校验 fail-closed：不等即不确认完整落账。
     if not rec["reconciled"]:
         out += ("\n⚠ planned≠handled（子侧计划 %d，父侧响应 %d）："
