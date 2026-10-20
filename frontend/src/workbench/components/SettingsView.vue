@@ -5,7 +5,7 @@
 import { reactive, ref, watch, computed, onUnmounted } from 'vue'
 import {
   settingsApi, agentCapacityApi, mcpApi, harnessApi,
-  agentApi,
+  agentApi, modelResidencyApi,
   WEB_SEARCH_PROVIDERS, WEB_FETCH_PROVIDERS,
   type SettingsConfigInfo, type ModelConfigInfo, type ProviderOption, type McpServer,
   type AgentCapacityInfo,
@@ -15,8 +15,13 @@ import {
   type McpAutoConnectCandidate, type McpAutoConnectConfig, type McpProbeRes, type McpDirectoryResult,
   type McpRegisterStatusRes, type McpRegisterTier, type McpRegisterState,
   type UserProfile, type MemoryItem,
+  type ModelStatus,
 } from '../api'
 import Icon from './Icon.vue'
+// 2026-10-19：这两个面板原挂在顶栏「更多」菜单（浮层形态），现以内嵌形态收进
+// 设置页的「运行与引擎」分区。
+import AgentPolicyPanel from './AgentPolicyPanel.vue'
+import EngineConnectPopover from './EngineConnectPopover.vue'
 import { appEvents } from '../eventBus'
 import { costLabel, money, type PricingState } from '../composables/costLabel'
 import { SKINS, loadSkin, setSkin, onSkinChange, type SkinKey } from '../skins'
@@ -26,10 +31,10 @@ import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '
 // 这里不复制状态，直接绑到共享对象上，改完写存储并派发事件让两个入口同时刷新。
 import { prefs as dp, saveAskPrefs } from '../../ask/askPrefs'
 
-const props = defineProps<{ visible: boolean; initialTab?: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'appearance' }>()
+const props = defineProps<{ visible: boolean; initialTab?: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'runtime' | 'appearance' }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-type Tab = 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'appearance'
+type Tab = 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'runtime' | 'appearance'
 const tab = ref<Tab>('usage')
 // 记录用户最近一次主动选择。设置面板的初始化请求是异步的，不能在请求完成后
 // 用入口标签覆盖掉用户已经点选的页面。
@@ -277,6 +282,29 @@ async function saveUsage() {
     await loadUsage()
   } catch (e) {
     usageError.value = (e as { message?: string }).message || '保存失败'
+  } finally {
+    usageSaving.value = false
+  }
+}
+
+/** 累计花费计数清零。2026-10-19 从 AI 运行台的「花费」tab 搬到这里 ——
+ *  那个 tab 已删（费用展示与预算设置本来就都在这个分区），但「清零」这个动作
+ *  在两页里没有第二处落点，删掉就等于功能消失，所以随它一起搬过来。 */
+async function resetUsageSpent() {
+  if (!window.confirm('确定把累计花费计数清零吗？（不影响模型与账本文件，只重置计数）')) return
+  usageSaving.value = true
+  usageError.value = ''
+  usageSaved.value = ''
+  try {
+    const r = await harnessApi.resetBudget()
+    if (!r.ok) {
+      usageError.value = '清零失败'
+      return
+    }
+    usageSaved.value = '累计计数已清零'
+    await loadUsage()
+  } catch (e) {
+    usageError.value = (e as { message?: string }).message || '清零失败'
   } finally {
     usageSaving.value = false
   }
@@ -1156,7 +1184,7 @@ watch(() => props.visible, async (v) => {
   tab.value = props.initialTab || 'usage'
   savedMsg.value = ''
   usageSaved.value = ''
-  await Promise.all([loadConfig(), loadMcp(), loadUsage(), loadMemoryProfile()])
+  await Promise.all([loadConfig(), loadMcp(), loadUsage(), loadMemoryProfile(), loadPower()])
   loadAgents()
 }, { immediate: true })
 watch(() => props.initialTab, (value) => {
@@ -1179,6 +1207,40 @@ function openModelSettings() {
   emit('close')
   appEvents.emit('docmind:open-model-settings')
 }
+
+// ---------------- 本机显存与模型驻留 ----------------
+// 2026-10-19 从问答页侧栏的「运行状态」卡片搬来。
+// 原因：预加载/卸载显存模型是**运维级操作**，不是聊天主流程；问答页侧栏要留给
+// 会话与项目。数据源与问答页原来那条完全一致（/api/model_status），不新增接口。
+const power = ref<ModelStatus | null>(null)
+const powerBusy = ref(false)
+const powerMsg = ref('')
+
+async function loadPower() {
+  try {
+    power.value = await modelResidencyApi.status()
+  } catch {
+    power.value = null
+  }
+}
+
+async function powerAction(action: 'on' | 'off') {
+  powerBusy.value = true
+  powerMsg.value = ''
+  try {
+    const r = await modelResidencyApi.power(action)
+    powerMsg.value = r.ok
+      ? (action === 'off'
+          ? `已卸载 ${(r.unloaded || []).join('、') || '模型'}，下次对话自动重载`
+          : `模型 ${(r.preloaded || []).join('、') || ''} 已预加载`.trim())
+      : ('操作失败：' + (r.error || '未知错误'))
+  } catch (e) {
+    powerMsg.value = '请求失败：' + ((e as Error).message || '')
+  } finally {
+    powerBusy.value = false
+    await loadPower()
+  }
+}
 </script>
 
 <template>
@@ -1196,6 +1258,7 @@ function openModelSettings() {
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'mcp' }" :aria-current="tab === 'mcp' ? 'page' : undefined" @click.stop="selectTab('mcp')">MCP</button>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'agent' }" :aria-current="tab === 'agent' ? 'page' : undefined" @click.stop="selectTab('agent')">智能体</button>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'model' }" :aria-current="tab === 'model' ? 'page' : undefined" @click.stop="selectTab('model')">模型</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'runtime' }" :aria-current="tab === 'runtime' ? 'page' : undefined" @click.stop="selectTab('runtime')">运行与引擎</button>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'appearance' }" :aria-current="tab === 'appearance' ? 'page' : undefined" @click.stop="selectTab('appearance')">外观</button>
         </nav>
 
@@ -1289,6 +1352,7 @@ function openModelSettings() {
               <button class="sv-btn sv-primary" :disabled="usageSaving || usageLoading" @click="saveUsage">
                 {{ usageSaving ? '保存中…' : '保存用量控制' }}
               </button>
+              <button class="sv-btn" :disabled="usageSaving || usageLoading" @click="resetUsageSpent">计数清零</button>
             </div>
           </section>
 
@@ -1802,6 +1866,59 @@ function openModelSettings() {
               <span class="sv-list-sub">已保存预设 {{ cfg.model_presets?.length || 0 }} 个 · {{ cfg.llm_mode === 'auto' ? '自动模式' : '固定模式' }}</span>
             </div>
             <button class="sv-btn sv-primary sv-model-open" :disabled="loading || !cfg" @click="openModelSettings">打开模型参数设置</button>
+
+            <!-- 本机显存与模型驻留：2026-10-19 从问答页侧栏「运行状态」搬来。
+                 预加载/卸载显存模型是运维级操作，放在设置里比挂在聊天侧栏合适。 -->
+            <div class="sv-section-head" style="margin-top: 18px;">
+              <div>
+                <h4 class="sv-h4">本机显存与模型驻留</h4>
+                <p class="sv-hint">本地模型在需要时才载入显存。预加载会让下一次回答更快，卸载立刻释放显存。</p>
+              </div>
+            </div>
+            <div class="sv-note">
+              <div>
+                显存占用
+                <b>{{ power ? power.vram_gb.toFixed(1) + ' GB' : '—' }}</b>
+                <span v-if="power?.loaded?.length"> · {{ power.loaded.length }} 个模型驻留</span>
+                <span v-else> · 无驻留模型</span>
+              </div>
+              <div v-if="power && !power.reachable">推理服务当前不可达，显存状态取不到。</div>
+              <div v-if="power?.error" class="sv-err">{{ power.error }}</div>
+            </div>
+            <div class="sv-actions">
+              <button
+                class="sv-btn"
+                :disabled="powerBusy || !power?.reachable"
+                @click="powerAction(power?.loaded?.length ? 'off' : 'on')"
+              >
+                {{ powerBusy ? '处理中…' : (power?.loaded?.length ? '卸载显存模型' : '预加载显存模型') }}
+              </button>
+            </div>
+            <p v-if="powerMsg" class="sv-ok">{{ powerMsg }}</p>
+          </section>
+
+          <!-- 运行与引擎：2026-10-19 从顶栏「更多」菜单迁入。
+               这两块原本是两个浮层（AI 运行策略 / 游戏引擎连接），现在就地内嵌在
+               设置面板里。用 v-if 挂载 —— 它们各自带轮询（策略面板每 3 秒拉一次
+               待批动作），只在这个分区被打开时才有必要跑。 -->
+          <section v-if="tab === 'runtime'" class="sv-panel">
+            <div class="sv-section-head">
+              <div>
+                <h4 class="sv-h4">AI 运行策略</h4>
+                <p class="sv-hint">AI 在哪运行、难题是否转云端，以及对项目外文件与工具动作的授权。</p>
+              </div>
+            </div>
+            <AgentPolicyPanel v-if="tab === 'runtime'" embedded />
+          </section>
+
+          <section v-if="tab === 'runtime'" class="sv-panel sv-panel-runtime">
+            <div class="sv-section-head">
+              <div>
+                <h4 class="sv-h4">游戏引擎连接</h4>
+                <p class="sv-hint">连接后，AI 才能读取引擎中的场景、脚本和运行日志。</p>
+              </div>
+            </div>
+            <EngineConnectPopover v-if="tab === 'runtime'" embedded />
           </section>
 
           <!-- 外观：皮肤（视觉风格） -->
@@ -1970,9 +2087,9 @@ function openModelSettings() {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 16px; border-bottom: 1px solid var(--border);
 }
-.sv-title { margin: 0; font-size: 15px; font-weight: 600; }
+.sv-title { margin: 0; font-size: var(--fs-h3); font-weight: 600; }
 .sv-x {
-  border: none; background: transparent; font-size: 20px; line-height: 1;
+  border: none; background: transparent; font-size: var(--fs-xl); line-height: 1;
   color: var(--text-muted); cursor: pointer; padding: 0 6px;
 }
 .sv-x:hover { color: var(--text); }
@@ -1986,7 +2103,7 @@ function openModelSettings() {
 .sv-nav-item {
   text-align: left; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px;
   position: relative; z-index: 1; width: 100%;
-  background: transparent; color: var(--text); cursor: pointer; font-size: 13px;
+  background: transparent; color: var(--text); cursor: pointer; font-size: var(--fs-md);
   pointer-events: auto;
 }
 /* --bg-input 从来没在任何皮肤里定义过 —— 两处引用让导航项的 hover 与选中底
@@ -2001,17 +2118,17 @@ function openModelSettings() {
 .sv-skin {
   display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
   padding: 11px 12px; text-align: left; cursor: pointer;
-  background: var(--bg-raised); border: 2px solid var(--border);
+  background: var(--bg-raised); border: var(--edge-w-strong, 2px) solid var(--border);
   border-radius: var(--radius-md); color: var(--text);
   transition: background var(--motion-base) var(--ease-standard);
 }
 .sv-skin:hover { background: var(--bg-hover); }
-.sv-skin.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+.sv-skin.on { border-color: var(--accent); --btn-fill: var(--accent-soft, var(--bg-hover)); background: var(--accent-soft, var(--bg-hover)); }
 .sv-skin:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sv-skin-swatch { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; width: 44px; height: 44px; border: 1px solid var(--border); flex: none; }
 .sv-skin-swatch i { display: block; }
 .sv-skin-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.sv-skin-text b { font-size: 13px; font-weight: 700; color: var(--text); }
+.sv-skin-text b { font-size: var(--fs-md); font-weight: 700; color: var(--text); }
 .sv-skin-text small { font-size: var(--fs-cap, 11px); line-height: 1.45; color: var(--text-muted); }
 .sv-skin-check { display: grid; place-items: center; color: var(--accent); }
 .sv-skin:not(.on) .sv-skin-check { color: transparent; }
@@ -2022,12 +2139,12 @@ function openModelSettings() {
 .sv-layout {
   display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
   padding: 11px 12px; text-align: left; cursor: pointer;
-  background: var(--bg-raised); border: 2px solid var(--border);
+  background: var(--bg-raised); border: var(--edge-w-strong, 2px) solid var(--border);
   border-radius: var(--radius-md); color: var(--text);
   transition: background var(--motion-base) var(--ease-standard);
 }
 .sv-layout:hover { background: var(--bg-hover); }
-.sv-layout.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+.sv-layout.on { border-color: var(--accent); --btn-fill: var(--accent-soft, var(--bg-hover)); background: var(--accent-soft, var(--bg-hover)); }
 .sv-layout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sv-layout:not(.on) .sv-skin-check { color: transparent; }
 .sv-layout-demo {
@@ -2061,12 +2178,12 @@ function openModelSettings() {
 .sv-mat {
   display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
   padding: 11px 12px; text-align: left; cursor: pointer;
-  background: var(--bg-raised); border: 2px solid var(--border);
+  background: var(--bg-raised); border: var(--edge-w-strong, 2px) solid var(--border);
   border-radius: var(--radius-md); color: var(--text);
   transition: background var(--motion-base) var(--ease-standard);
 }
 .sv-mat:hover { background: var(--bg-hover); }
-.sv-mat.on { border-color: var(--accent); background: var(--accent-soft, var(--bg-hover)); }
+.sv-mat.on { border-color: var(--accent); --btn-fill: var(--accent-soft, var(--bg-hover)); background: var(--accent-soft, var(--bg-hover)); }
 .sv-mat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sv-mat:not(.on) .sv-skin-check { color: transparent; }
 /* 材质示意缩略图：实体=不透明方块三层；玻璃=半透+模糊，三层透出彼此 */
@@ -2082,23 +2199,26 @@ function openModelSettings() {
 .sv-mat-demo[data-kind='glass'] i:nth-child(3) { top: 28px; }
 .sv-content { flex: 1; min-width: 0; overflow-y: auto; padding: 16px 20px; }
 .sv-panel { display: flex; flex-direction: column; gap: 4px; }
+/* 「运行与引擎」分区里有两个内嵌面板，用一条分隔线把两块切开，
+   否则「AI 运行策略」的尾巴直接顶着「游戏引擎连接」标题，层次读不出来。 */
+.sv-panel-runtime { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
 .sv-model-current { display: flex; flex-direction: column; gap: 5px; padding: 13px; margin-top: 8px; background: var(--bg); }
-.sv-model-current b { font-size: 14px; color: var(--text); overflow-wrap: anywhere; }
+.sv-model-current b { font-size: var(--fs-body); color: var(--text); overflow-wrap: anywhere; }
 .sv-model-open { align-self: flex-start; margin-top: 10px; }
 .sv-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .sv-section-head .sv-hint { margin-bottom: 0; }
-.sv-h4 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
-.sv-hint { font-size: 12px; color: var(--text-faint); margin: 2px 0 6px; line-height: 1.5; }
+.sv-h4 { margin: 0 0 6px; font-size: var(--fs-body); font-weight: 600; }
+.sv-hint { font-size: var(--fs-sm); color: var(--text-faint); margin: 2px 0 6px; line-height: 1.5; }
 .sv-label {
-  font-size: 12px; color: var(--text-muted); margin-top: 10px;
+  font-size: var(--fs-sm); color: var(--text-muted); margin-top: 10px;
   display: flex; justify-content: space-between; align-items: center;
 }
 .sv-key-toggle { color: var(--accent); cursor: pointer; user-select: none; }
 .sv-key-toggle:hover { text-decoration: underline; }
 .sv-input {
-  width: 100%; box-sizing: border-box; padding: 7px 10px; font-size: 13px;
-  border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-input, #fff); color: var(--text); outline: none;
+  width: 100%; box-sizing: border-box; padding: 7px 10px; font-size: var(--fs-md);
+  border: 1px solid var(--border-graphic); border-radius: 8px;
+  background: var(--bg-raised); color: var(--text); outline: none;
 }
 .sv-input:focus { border-color: var(--accent); }
 .sv-textarea { resize: vertical; font-family: inherit; }
@@ -2109,44 +2229,44 @@ function openModelSettings() {
 .sv-meter { min-width: 0; padding: 12px 10px; border-right: 1px solid var(--border); }
 .sv-meter:nth-child(3n) { border-right: 0; }
 .sv-meter:nth-child(n+4) { border-top: 1px solid var(--border); }
-.sv-meter span { display: block; color: var(--text-faint); font-size: 11px; }
-.sv-meter b { display: block; margin-top: 3px; font-size: 17px; font-weight: 650; overflow-wrap: anywhere; }
-.sv-provider-list { margin-top: 8px; border-top: 1px solid var(--border); }
+.sv-meter span { display: block; color: var(--text-faint); font-size: var(--fs-cap); }
+.sv-meter b { display: block; margin-top: 3px; font-size: var(--fs-lead); font-weight: 650; overflow-wrap: anywhere; }
+.sv-provider-list { margin-top: 8px; border-top: 1px solid var(--border); overflow-x: auto; }
 .sv-provider-head, .sv-provider-row {
-  display: grid; grid-template-columns: minmax(90px, 1fr) 100px 110px 150px 110px;
-  gap: 10px; align-items: center; padding: 7px 4px; font-size: 12px;
+  display: grid; grid-template-columns: minmax(90px, 1fr) 84px 96px 132px 92px;
+  gap: 10px; align-items: center; padding: 7px 4px; font-size: var(--fs-sm);
   border-bottom: 1px solid var(--border);
 }
 .sv-provider-head { color: var(--text-faint); }
 .sv-provider-row span { text-align: right; color: var(--text-muted); }
 .sv-provider-head span:not(:first-child) { text-align: right; }
-.sv-provider-row .sv-kind { text-align: left; font-size: 11px; }
+.sv-provider-row .sv-kind { text-align: left; font-size: var(--fs-cap); }
 /* 缓存命中：有命中才上色——满屏灰色「—」没有信息量，命中那行才该被看见。
    数字用等宽，避免长数字在 grid 里抖动。 */
-.sv-provider-row .sv-cache { font-size: 11px; font-variant-numeric: tabular-nums; opacity: 0.55; }
+.sv-provider-row .sv-cache { font-size: var(--fs-cap); font-variant-numeric: tabular-nums; opacity: 0.55; }
 .sv-provider-row .sv-cache.on { opacity: 1; color: var(--accent-text); }
-.sv-meter-sub { display: block; margin-top: 4px; font-size: 11px; line-height: 1.45; color: var(--text-faint); }
+.sv-meter-sub { display: block; margin-top: 4px; font-size: var(--fs-cap); line-height: 1.45; color: var(--text-faint); }
 .sv-provider-row.simulated { background: color-mix(in srgb, var(--bg-selected) 55%, transparent); }
-.sv-note { margin: 8px 0 0; padding-left: 9px; border-left: 2px solid var(--accent); color: var(--text-muted); font-size: 11px; line-height: 1.55; }
+.sv-note { margin: 8px 0 0; padding-left: 9px; border-left: 2px solid var(--accent); color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.55; }
 .sv-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
-.sv-field { display: flex; flex-direction: column; gap: 5px; margin-top: 7px; font-size: 12px; color: var(--text-muted); }
+.sv-field { display: flex; flex-direction: column; gap: 5px; margin-top: 7px; font-size: var(--fs-sm); color: var(--text-muted); }
 /* 字段内的服务端约束说明（如 Token 下界）：跟标签同色、比标签小一号 */
-.sv-field-sub { font-size: 11px; line-height: 1.45; color: var(--text-muted); }
-.sv-toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 13px; color: var(--text); cursor: pointer; }
+.sv-field-sub { font-size: var(--fs-cap); line-height: 1.45; color: var(--text-muted); }
+.sv-toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: var(--fs-md); color: var(--text); cursor: pointer; }
 .sv-toggle-row input { width: 16px; height: 16px; }
 /* 一行一个参数的偏好行（复选框那种放不下 select，单独一档） */
-.sv-pref-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: 13px; color: var(--text); }
+.sv-pref-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: var(--fs-md); color: var(--text); }
 .sv-pref-select { width: auto; flex: 0 0 auto; }
 .sv-sep { height: 1px; background: var(--border); margin: 16px 0 4px; }
-.sv-err { font-size: 12px; color: var(--danger); margin: 8px 0 0; }
-.sv-ok { font-size: 12px; color: var(--green); margin: 8px 0 0; }
+.sv-err { font-size: var(--fs-sm); color: var(--danger); margin: 8px 0 0; }
+.sv-ok { font-size: var(--fs-sm); color: var(--green); margin: 8px 0 0; }
 .sv-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 .sv-btn {
-  padding: 7px 18px; font-size: 13px; border-radius: 8px;
+  padding: 7px 18px; font-size: var(--fs-md); border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;
 }
 .sv-btn:hover { border-color: var(--accent); }
-.sv-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.sv-primary { --btn-fill: var(--accent); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .sv-primary:disabled { opacity: .5; cursor: default; }
 .sv-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .sv-list-item {
@@ -2154,11 +2274,11 @@ function openModelSettings() {
   padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
 }
 .sv-row-actions { display: flex; align-items: center; gap: 6px; flex: none; }
-.sv-cap-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 9px 12px; border: 1px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--bg)); font-size: 12px; }
+.sv-cap-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; padding: 9px 12px; border: 1px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--bg)); font-size: var(--fs-sm); }
 .sv-cap-card > div:first-child { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .sv-approve { color: var(--accent); }
 .sv-search-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 10px 0; }
-.sv-directory-card { margin: 8px 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 12px; }
+.sv-directory-card { margin: 8px 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: var(--fs-sm); }
 .sv-directory-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .sv-directory-head p { margin: 3px 0 0; color: var(--text-muted); }
 .sv-directory-card ol { margin: 8px 0; padding-left: 20px; color: var(--text-muted); line-height: 1.65; }
@@ -2167,14 +2287,14 @@ function openModelSettings() {
 .sv-source-list { display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
 .sv-source-list a { color: var(--accent); }
 .sv-list-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.sv-list-name { font-size: 13px; font-weight: 600; }
-.sv-list-sub { font-size: 11px; color: var(--text-faint); }
+.sv-list-name { font-size: var(--fs-md); font-weight: 600; }
+.sv-list-sub { font-size: var(--fs-cap); color: var(--text-faint); }
 .sv-memory-list { margin-top: 12px; border-top: 1px solid var(--border); }
-.sv-memory-head { display: flex; justify-content: space-between; padding: 9px 0 5px; color: var(--text-faint); font-size: 11px; }
+.sv-memory-head { display: flex; justify-content: space-between; padding: 9px 0 5px; color: var(--text-faint); font-size: var(--fs-cap); }
 .sv-memory-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
 .sv-memory-row .sv-list-sub { line-height: 1.45; overflow-wrap: anywhere; }
 .sv-mini {
-  flex: none; font-size: 12px; padding: 4px 12px; border-radius: 6px;
+  flex: none; font-size: var(--fs-sm); padding: 4px 12px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;
 }
 .sv-mini:hover { border-color: var(--accent); color: var(--accent); }
@@ -2184,7 +2304,7 @@ function openModelSettings() {
 .sv-step-rail { display: flex; gap: 6px; margin: 10px 0; flex-wrap: wrap; }
 .sv-step {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 11px; font-size: 12px; border-radius: var(--radius-pill);
+  padding: 5px 11px; font-size: var(--fs-sm); border-radius: var(--radius-pill);
   border: 1px solid var(--border); background: var(--bg); color: var(--text-muted); cursor: default;
 }
 .sv-step .dm-icon { display: inline-flex; }
@@ -2193,31 +2313,31 @@ function openModelSettings() {
 .sv-step[data-state="fail"] { border-color: var(--diag-fail); color: var(--diag-fail); }
 .sv-step[data-state="idle"] { opacity: .75; }
 
-.sv-ac-state { display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-hover); font-size: 12px; color: var(--text-muted); }
+.sv-ac-state { display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-hover); font-size: var(--fs-sm); color: var(--text-muted); }
 .sv-ac-state .dm-icon { color: var(--text-faint); flex: none; }
 
 .sv-preview { margin: 10px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-raised); }
 .sv-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.sv-preview-head b { font-size: 13px; }
-.sv-cap-badge { font-size: 11px; padding: 2px 9px; border-radius: var(--radius-pill); }
+.sv-preview-head b { font-size: var(--fs-md); }
+.sv-cap-badge { font-size: var(--fs-cap); padding: 2px 9px; border-radius: var(--radius-pill); }
 .sv-cap-badge[data-trust="official"] { color: var(--trust-verified-fg); background: var(--trust-verified-bg); }
 .sv-cap-badge[data-trust="community"] { color: var(--trust-community-fg); background: var(--trust-community-bg); }
 .sv-cap-badge[data-trust="unknown"] { color: var(--trust-unknown-fg); background: var(--trust-unknown-bg); }
 
 .sv-cmd {
-  margin: 4px 0 2px; padding: 7px 10px; font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  margin: 4px 0 2px; padding: 7px 10px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.5;
   background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--radius-md);
   color: var(--text); white-space: pre-wrap; word-break: break-all; max-height: 160px; overflow: auto;
 }
 
 .sv-src-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
-.sv-src-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; padding: 2px 9px; border-radius: var(--radius-pill); border: 1px solid var(--border); color: var(--text-muted); }
+.sv-src-badge { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-cap); padding: 2px 9px; border-radius: var(--radius-pill); border: 1px solid var(--border); color: var(--text-muted); }
 .sv-src-badge .dm-icon { color: var(--text-faint); }
 .sv-src-badge[data-trust="official"] { color: var(--trust-verified-fg); background: var(--trust-verified-bg); border-color: transparent; }
 .sv-src-badge[data-trust="community"] { color: var(--trust-community-fg); background: var(--trust-community-bg); border-color: transparent; }
 .sv-src-badge[data-trust="unknown"] { color: var(--trust-unknown-fg); background: var(--trust-unknown-bg); }
-.sv-src-tag { font-size: 10px; opacity: .9; }
-.sv-doc-link { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--accent); text-decoration: none; }
+.sv-src-tag { font-size: var(--fs-cap); opacity: .9; }
+.sv-doc-link { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-cap); color: var(--accent); text-decoration: none; }
 .sv-doc-link:hover { text-decoration: underline; }
 
 /* C5：诊断图 */
@@ -2242,17 +2362,17 @@ function openModelSettings() {
 }
 .sv-dialog-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .sv-dialog-head .dm-icon { color: var(--accent); flex: none; margin-top: 1px; }
-.sv-dialog-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.sv-dialog-head h3 { margin: 0; font-size: var(--fs-h3); font-weight: 600; }
 .sv-dialog-body { padding: 14px 16px; overflow-y: auto; }
 .sv-dialog-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 .sv-dialog-actions .sv-btn, .sv-dialog-actions .sv-mini { margin-left: 0; }
-.sv-expand { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; font-size: 12px; color: var(--accent); background: transparent; border: none; cursor: pointer; padding: 0; }
-.sv-detail { margin: 8px 0 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 11px; background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--radius-md); white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto; }
-.sv-note { margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-md); font-size: 11px; line-height: 1.55; }
+.sv-expand { display: inline-flex; align-items: center; gap: 5px; margin-top: 10px; font-size: var(--fs-sm); color: var(--accent); background: transparent; border: none; cursor: pointer; padding: 0; }
+.sv-detail { margin: 8px 0 0; padding: 8px 10px; font-family: var(--font-mono); font-size: var(--fs-cap); background: var(--bg-hover); border: 1px solid var(--border); border-radius: var(--radius-md); white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto; }
+.sv-note { margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-md); font-size: var(--fs-cap); line-height: 1.55; }
 .sv-note[data-tone="neutral"] { background: var(--bg-hover); color: var(--text-muted); border-left: 2px solid var(--border-strong); }
 .sv-note[data-tone="warn"] { background: var(--trust-community-bg); color: var(--trust-community-fg); border-left: 2px solid var(--amber); }
-.sv-guide { margin: 8px 0; padding-left: 20px; color: var(--text-muted); font-size: 12px; line-height: 1.7; }
-.sv-input-wrap { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-raised); padding: 0 10px; }
+.sv-guide { margin: 8px 0; padding-left: 20px; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.7; }
+.sv-input-wrap { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border-graphic); border-radius: var(--radius-md); background: var(--bg-raised); padding: 0 10px; }
 .sv-input-wrap:focus-within { border-color: var(--accent); }
 .sv-input-wrap .dm-icon { color: var(--text-faint); flex: none; }
 .sv-input-wrap .sv-input { border: none; background: transparent; padding-left: 0; padding-right: 0; }
@@ -2265,9 +2385,9 @@ function openModelSettings() {
 .sv-progress span { display: block; height: 100%; width: 38%; border-radius: var(--radius-pill); background: var(--accent); animation: dm-indeterminate 1.2s var(--ease-standard) infinite; }
 .sv-progress[data-determinate="1"] span { animation: none; }
 @keyframes dm-indeterminate { from { transform: translateX(-110%); } to { transform: translateX(320%); } }
-.sv-l1-wait { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-hover); font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.sv-l1-wait { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-hover); font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.5; }
 .sv-l1-wait .dm-icon { color: var(--accent); flex: none; }
-.sv-wait-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.sv-wait-inline { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); color: var(--text-muted); }
 
 .dm-spin { animation: dm-spin 1s linear infinite; transform-origin: center; }
 .dm-rot { transition: transform var(--motion-base) var(--ease-standard); transform: rotate(180deg); }
@@ -2284,6 +2404,6 @@ function openModelSettings() {
   .sv-meter:nth-child(3n) { border-right: 1px solid var(--border); }
   .sv-meter:nth-child(2n) { border-right: 0; }
   .sv-meter:nth-child(n+3) { border-top: 1px solid var(--border); }
-  .sv-provider-head, .sv-provider-row { grid-template-columns: minmax(70px, 1fr) 74px 82px 132px 68px; gap: 6px; }
+  .sv-provider-head, .sv-provider-row { grid-template-columns: minmax(70px, 1fr) 66px 76px 120px 64px; gap: 6px; }
 }
 </style>

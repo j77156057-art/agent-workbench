@@ -16,7 +16,6 @@ import RewriteDiffDialog from './components/RewriteDiffDialog.vue'
 import TaskEnginePanel from './components/TaskEnginePanel.vue'
 import SceneRuntimePanel from './components/SceneRuntimePanel.vue'
 import ChatDock from './components/ChatDock.vue'
-import AgentPolicyPanel from './components/AgentPolicyPanel.vue'
 import ExecApprovalDialog from './components/ExecApprovalDialog.vue'
 import GpuPanel from './components/GpuPanel.vue'
 import EdaVerifyPanel from './components/EdaVerifyPanel.vue'
@@ -131,10 +130,8 @@ const evRef = ref<InstanceType<typeof EdaVerifyPanel> | null>(null)
 // EDA 面板嵌入态：false=弹窗（默认），true=停靠主区常驻（复用 SceneRuntimePanel 的 dock 惯用法）。
 const edaResident = ref(false)
 const hpRef = ref<InstanceType<typeof HarnessPanel> | null>(null)
-const apRef = ref<InstanceType<typeof AgentPolicyPanel> | null>(null)
-function openEngineConnect() {
-  appEvents.emit('docmind:open-engine')
-}
+// 2026-10-19：AI 运行设置与游戏引擎连接两个入口已移进设置页的「运行与引擎」分区，
+// 这里对应的 ref 与事件派发一并删除（面板改由 SettingsView 内嵌渲染）。
 
 // ---------------------------------------------------------------- P4 项目选择器
 const projects = ref<ProjectInfo[]>([])
@@ -385,11 +382,17 @@ onBeforeUnmount(() => {
       <div class="wb-brand">
         <span class="wb-mark" aria-hidden="true">
           <svg width="15" height="15" viewBox="0 0 15 15">
-            <rect x="1.5" y="2.5" width="9" height="10" rx="1.5" fill="none" stroke="#2f6fed" stroke-width="1.3" />
-            <path d="M11 5.5 H12.5 L14 7 V12.5 H11 Z" fill="rgba(47,111,237,.13)" stroke="#2f6fed" stroke-width="1.3" stroke-linejoin="round" />
+            <rect x="1.5" y="2.5" width="9" height="10" rx="1.5" fill="none" stroke="var(--accent)" stroke-width="1.3" />
+            <path d="M11 5.5 H12.5 L14 7 V12.5 H11 Z" fill="color-mix(in srgb, var(--accent) 13%, transparent)" stroke="var(--accent)" stroke-width="1.3" stroke-linejoin="round" />
           </svg>
         </span>
-        <span class="wb-brand-name">DocMind <em>代码工作台</em></span>
+        <!-- 2026-10-19：顶栏右侧原本有一个「问答页」文字链接，现并入品牌 ——
+             品牌即产品入口（点 DocMind 回问答页），顶栏右侧只留「设置 / 更多」。
+             问答页那边也有一个对称的「代码工作台」入口，双向可达。 -->
+        <span class="wb-brand-name">
+          <a class="wb-brand-home" href="/" title="回到 AI 问答页">DocMind</a>
+          <em>代码工作台</em>
+        </span>
       </div>
       <div v-if="!demoMode" class="wb-topbar-meta">
         <div class="wb-proj">
@@ -405,8 +408,13 @@ onBeforeUnmount(() => {
             <span class="wb-proj-name">{{ currentProjectLabel }}</span>
             <svg class="wb-proj-caret" width="9" height="9" viewBox="0 0 9 9"><path d="M1.5 3.2 L4.5 6.2 L7.5 3.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <div v-if="projectMenuOpen" class="wb-proj-backdrop" @click="closeProjectMenu" />
-          <div v-if="projectMenuOpen" class="wb-proj-menu" :style="projMenuStyle" @click.stop>
+          <!-- 项目切换菜单同样 teleport 到 body（2026-10-20，与「更多」菜单同一个根因）：
+               玻璃模式顶栏的 backdrop-filter 会成为 fixed 定位的包含块，
+               菜单被顶栏的 overflow 裁掉、遮罩被裁成只剩顶栏高度 →
+               菜单看不见，遮罩还在吃点击。与「更多」菜单一并修。 -->
+          <Teleport to="body">
+            <div v-if="projectMenuOpen" class="wb-proj-backdrop" @click="closeProjectMenu" />
+            <div v-if="projectMenuOpen" class="wb-proj-menu" :style="projMenuStyle" @click.stop>
             <div v-if="projectError" class="wb-proj-err">{{ projectError }}</div>
             <div v-if="projects.length" class="wb-proj-list">
               <button
@@ -424,7 +432,7 @@ onBeforeUnmount(() => {
             </div>
             <div v-else class="wb-proj-empty">暂无项目，先「打开项目」</div>
             <div class="wb-proj-sep" />
-            <div style="font-size:10px;line-height:1.5;color:var(--text-faint);padding:2px 8px 6px;">快捷键 Alt+P 可随时打开本菜单</div>
+            <div style="font-size: var(--fs-cap);line-height:1.5;color:var(--text-faint);padding:2px 8px 6px;">快捷键 Alt+P 可随时打开本菜单</div>
             <button class="wb-proj-open-toggle" @click="openFormVisible = !openFormVisible">＋ 打开项目…</button>
             <div v-if="openFormVisible" class="wb-proj-form">
               <input
@@ -440,6 +448,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
+          </Teleport>
         </div>
         <!-- 用 Teleport 挂到 body：提示条原本在顶栏内，而顶栏自建层叠上下文（z-index:20），
              子元素 z-index 再高也出不去 → 设置弹窗（z:2100）会把它完全盖住，
@@ -447,88 +456,115 @@ onBeforeUnmount(() => {
         <Teleport to="body">
           <span v-if="projectNotice" class="wb-proj-notice" role="status">{{ projectNotice }}</span>
         </Teleport>
+        <!-- 分区治理入口：2026-10-19 从「带文字的 pill」降级为「图标 + 状态点」。
+             顶栏是最宝贵的一行，状态文字（分区治理 · N 区 / 分区未启用）不必常驻：
+             状态由那颗点表达（绿=已启用、灰=未启用），分区入口在概览页另有可达路径，
+             窄屏（≤1280）本来就整颗隐藏。完整信息在 title 与分区图里。 -->
         <button
           v-if="tree"
-          class="wb-region-pill"
+          class="wb-region-pill wb-region-icon"
           :class="{ off: !tree.regions_enabled }"
-          :title="tree.regions_enabled ? '查看分区依赖图与各区状态' : '查看分区状态'"
+          :title="tree.regions_enabled ? `分区治理 · ${tree.regions.length} 区（点击查看分区依赖图）` : '分区未启用（点击查看分区状态）'"
+          :aria-label="tree.regions_enabled ? `分区治理，${tree.regions.length} 个分区` : '分区未启用'"
           @click="openRegionMap"
         >
           <span class="wb-region-dot" />
-          {{ tree.regions_enabled ? `分区治理 · ${tree.regions.length} 区` : '分区未启用' }}
+          <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+            <rect x="1.4" y="1.4" width="4.4" height="4.4" fill="none" stroke="currentColor" stroke-width="1.1" />
+            <rect x="7.2" y="1.4" width="4.4" height="4.4" fill="none" stroke="currentColor" stroke-width="1.1" />
+            <rect x="1.4" y="7.2" width="4.4" height="4.4" fill="none" stroke="currentColor" stroke-width="1.1" />
+            <rect x="7.2" y="7.2" width="4.4" height="4.4" fill="none" stroke="currentColor" stroke-width="1.1" />
+          </svg>
         </button>
       </div>
       <SemanticLocateBar v-if="tree || demoMode" class="wb-locate-slot" />
       <div class="wb-topbar-right">
-        <a class="wb-question-link" href="/" title="返回 RAG 问答页">问答页</a>
-        <button class="wb-question-link" type="button" title="展开底部 AI 对话并开始提问" @click="appEvents.emit('docmind:focus-chat', {})">AI 对话</button>
+        <!-- 顶栏右侧（2026-10-20 重做）：问答页 / 设置 / 更多 三枚控件，图标为主、文字为辅。
+             「问答页」放回顶栏 —— 它是跨页主入口，藏在 logo 里可发现性太差；
+             上一版并进品牌是为了让右侧只剩两个控件，现在按产品化布局把它请回来。 -->
+        <a class="wb-save-btn wb-ask-link" href="/" title="回到 AI 问答页">
+          <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+            <path d="M1.6 2.4 H11.4 V8.6 H5.4 L2.6 11 V8.6 H1.6 Z" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round" />
+          </svg>
+          问答页
+        </a>
         <button
-          class="wb-save-btn wb-settings-btn"
+          class="wb-save-btn wb-icon-btn wb-settings-btn"
           title="设置：Token 用量与费用、网络搜索、MCP 连接器、智能体预设"
+          aria-label="设置"
           @click="openSettings('usage')"
         >
-          <svg width="13" height="13" viewBox="0 0 13 13">
+          <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
             <circle cx="6.5" cy="6.5" r="2.1" fill="none" stroke="currentColor" stroke-width="1.1" />
             <path d="M6.5 1.2 V2.6 M6.5 10.4 V11.8 M1.2 6.5 H2.6 M10.4 6.5 H11.8 M3 3 L4 4 M9 9 L10 10 M10 3 L9 4 M4 9 L3 10" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" />
           </svg>
-          设置
         </button>
         <!-- 低频分析视图与高级工具统一收进「更多」下拉 -->
         <span class="wb-menu-wrap">
           <button
             type="button"
-            class="wb-save-btn wb-menu-trigger"
+            class="wb-save-btn wb-icon-btn wb-menu-trigger"
             :class="{ 'wb-menu-on': moreMenuOpen }"
             title="更多：代码分析、任务工具、GPU、运行台、引擎连接"
+            aria-label="更多"
             @click="toggleMoreMenu($event)"
           >
             更多
             <svg class="wb-menu-caret" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><path d="M1.5 3.2 L4.5 6.2 L7.5 3.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <div v-show="moreMenuOpen" class="wb-menu-backdrop" @click="moreMenuOpen = false" />
-          <div v-show="moreMenuOpen" class="wb-menu" :style="moreMenuStyle" @click="moreMenuOpen = false">
-            <div class="wb-menu-label">代码分析</div>
-            <button v-if="tree" type="button" class="wb-menu-item" @click="openSymbolMap">
+          <!-- 菜单 teleport 到 body（2026-10-20 修玻璃模式"点更多没反应"）。
+               根因：.wb-menu 是 position:fixed，本意是逃开顶栏的 overflow-y:hidden 裁剪；
+               但 position:fixed 只有在祖先**不**建立包含块时才逃得出裁剪 ——
+               而玻璃模式的顶栏带 backdrop-filter，它恰恰就是那个包含块。
+               于是菜单被顶栏裁掉，只剩顶部一条边：看着像开了个空白条，
+               实际菜单项全被裁没了，而那层透明遮罩还在吃点击（=.wb-menu-backdrop
+               也被同一机制裁成只剩顶栏高度）→ 点「更多」像完全没反应。
+               Teleport 到 body 之后，菜单既不在顶栏的裁剪范围内，也不再受
+               任何祖先的 backdrop-filter 影响，两种材质下行为一致。 -->
+          <Teleport to="body">
+            <div v-show="moreMenuOpen" class="wb-menu-backdrop" @click="moreMenuOpen = false" />
+            <div v-show="moreMenuOpen" class="wb-menu" :style="moreMenuStyle" @click="moreMenuOpen = false">
+            <!-- 2026-10-20 菜单改单行：原来每项是「名称 + 一行说明」两行，
+                 9 个项把菜单撑得很高。产品化做法是单行「字形 + 名称」，
+                 说明文字挪到 title（悬停才出现），菜单高度减半。 -->
+            <div class="wb-menu-label">分析与视图</div>
+            <button v-if="tree" type="button" class="wb-menu-item" title="代码地图：函数/变量在哪定义、被谁调用" @click="openSymbolMap">
+              <span class="wb-menu-glyph" aria-hidden="true">◈</span>
               <span class="wb-menu-item-name">代码地图</span>
-              <small>函数/变量在哪定义、被谁调用</small>
             </button>
-            <button v-if="tree" type="button" class="wb-menu-item" @click="openRelationGraph">
+            <button v-if="tree" type="button" class="wb-menu-item" title="关系图：类的继承关系、场景挂载的脚本" @click="openRelationGraph">
+              <span class="wb-menu-glyph" aria-hidden="true">◐</span>
               <span class="wb-menu-item-name">关系图</span>
-              <small>类的继承关系、场景挂载的脚本</small>
             </button>
-            <button v-if="tree" type="button" class="wb-menu-item" @click="openUnityGraph">
+            <button v-if="tree" type="button" class="wb-menu-item" title="Unity 图：场景/预制体/资源间的引用，断链标红" @click="openUnityGraph">
+              <span class="wb-menu-glyph" aria-hidden="true">◇</span>
               <span class="wb-menu-item-name">Unity 图</span>
-              <small>场景/预制体/资源间的引用，断链标红</small>
             </button>
-            <button type="button" class="wb-menu-item" @click="openFlow">
+            <button type="button" class="wb-menu-item" title="流程图：每轮问答「提问→思考→调工具→回答」" @click="openFlow">
+              <span class="wb-menu-glyph" aria-hidden="true">↻</span>
               <span class="wb-menu-item-name">流程图</span>
-              <small>每轮问答「提问→思考→调工具→回答」</small>
             </button>
-            <button v-if="tree" type="button" class="wb-menu-item" @click="openChanges">
+            <button v-if="tree" type="button" class="wb-menu-item" title="改动总览：所有未提交改动（只读，各仓库分列）" @click="openChanges">
+              <span class="wb-menu-glyph" aria-hidden="true">≡</span>
               <span class="wb-menu-item-name">改动总览</span>
-              <small>所有未提交改动（只读，各仓库分列）</small>
             </button>
             <div class="wb-menu-sep" />
-            <div class="wb-menu-label">工具与运行</div>
-            <button type="button" class="wb-menu-item" @click="teRef?.show()">
+            <div class="wb-menu-label">开发工具与运行</div>
+            <button type="button" class="wb-menu-item" title="任务与生成：任务分支、Godot 控制、ComfyUI 画图、Unreal" @click="teRef?.show()">
+              <span class="wb-menu-glyph" aria-hidden="true">✦</span>
               <span class="wb-menu-item-name">任务与生成</span>
-              <small>任务分支、Godot 控制、ComfyUI 画图、Unreal</small>
             </button>
-            <button type="button" class="wb-menu-item" @click="gpRef?.show()">
+            <button type="button" class="wb-menu-item" title="GPU 监控：显存占用、任务排队、空闲自动释放" @click="gpRef?.show()">
+              <span class="wb-menu-glyph" aria-hidden="true">▤</span>
               <span class="wb-menu-item-name">GPU 监控</span>
-              <small>显存占用、任务排队、空闲自动释放</small>
             </button>
-            <button type="button" class="wb-menu-item" @click="evRef?.show()">
+            <button type="button" class="wb-menu-item" title="EDA 多模态验收：结构化报告 × 视觉回归 → 三态合并门（只判不回滚）" @click="evRef?.show()">
+              <span class="wb-menu-glyph" aria-hidden="true">✓</span>
               <span class="wb-menu-item-name">EDA 多模态验收</span>
-              <small>结构化报告 × 视觉回归 → 三态合并门（只判不回滚）</small>
             </button>
-            <button type="button" class="wb-menu-item" @click="hpRef?.show()">
+            <button type="button" class="wb-menu-item" title="AI 运行台：历史会话、操作记录、技能与断点（花费在设置里看）" @click="hpRef?.show()">
+              <span class="wb-menu-glyph" aria-hidden="true">◷</span>
               <span class="wb-menu-item-name">AI 运行台</span>
-              <small>花费、历史会话、操作记录、技能与断点</small>
-            </button>
-            <button type="button" class="wb-menu-item" @click="apRef?.show()">
-              <span class="wb-menu-item-name">AI 运行设置</span>
-              <small>本地/云端路由、项目外文件改动手动授权</small>
             </button>
             <template v-if="!runtimeResident">
               <div class="wb-menu-sep" />
@@ -538,11 +574,12 @@ onBeforeUnmount(() => {
                 <span id="wb-sr-slot" />
               </div>
             </template>
-            <button type="button" class="wb-menu-item" @click="openEngineConnect">
-              <span class="wb-menu-item-name">游戏引擎连接</span>
-              <small>Godot / Unity / Unreal 连接器与 MCP 服务</small>
-            </button>
-          </div>
+            <!-- 2026-10-19 移出「更多」菜单的两项：
+                 AI 运行设置（本地/云端路由、项目外文件改动手动授权）→ 设置 → 运行与引擎
+                 游戏引擎连接（Godot / Unity / Unreal 连接器与 MCP 服务）→ 设置 → 运行与引擎
+                 两者都是**配置类**能力，混在「分析视图」堆里既杂乱又抢注意力。 -->
+            </div>
+          </Teleport>
         </span>
         <button
           v-if="activeTab && canHistoryActive"
@@ -683,6 +720,16 @@ onBeforeUnmount(() => {
             </footer>
           </template>
         </div>
+
+        <!-- AI 助手：底部抽屉（2026-10-20 改回底部，但**做矮**）。
+             中途试过"右侧常驻栏"（三栏 IDE），实测下来不行：420px 的栏里，
+             回答区只剩 389px 宽、每行约 26 个字（中文舒适区是 45–75 字/行），
+             长回答被挤成电报体；而且 DocMind 的核心动作是"问"，
+             把主功能塞进角上、让代码占主位，主次是反的。
+             现在回到底部，但高度从 62vh 降到 38vh：
+               · 回答区横跨全宽，阅读栏 680px、每行约 48 字；
+               · 主区拿到 1312×706（原来 892×948 的右栏形态下只有 892 宽）；
+               · 视线自上而下：项目 → 代码 → 对话。 -->
         <div id="wb-chat-slot" class="wb-chat-host" v-show="!runtimeResident && !edaResident" />
       </main>
 
@@ -707,7 +754,6 @@ onBeforeUnmount(() => {
       <EdaVerifyPanel ref="evRef" :mode="edaResident ? 'docked' : 'popup'" host="#wb-eda-slot"
         @dock="edaResident = true" @undock="edaResident = false" />
       <HarnessPanel ref="hpRef" />
-      <AgentPolicyPanel ref="apRef" />
     </div>
 
     <ContextMenu />

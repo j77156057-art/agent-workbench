@@ -31,7 +31,6 @@ import { prefs as displayPrefs } from '../../ask/askPrefs'
 // 设置弹窗低频且体积大（117KB）：异步组件 + v-if，打开时才拉取
 const ModelSettingsDialog = defineAsyncComponent(() => import('./ModelSettingsDialog.vue'))
 const ModelSwitcherPopover = defineAsyncComponent(() => import('./ModelSwitcherPopover.vue'))
-import EngineConnectPopover from './EngineConnectPopover.vue'
 import SessionHistoryPopover from './SessionHistoryPopover.vue'
 import WorkflowHistoryPopover from './WorkflowHistoryPopover.vue'
 // 工作流卡片仅在工作流消息中渲染：异步按需加载
@@ -364,6 +363,19 @@ function cdHasFlow(msg: ChatMsg) {
   if (displayPrefs.showTrace) return true
   return items.some((n) => n.kind === 'think' || n.kind === 'thought')
 }
+
+/* 推理轨迹整块的展开状态（按消息 id，2026-10-20）。
+   流式过程中自动展开 —— 用户要看到"AI 正在想什么"；
+   回答结束后收成一行「推理过程 N 步」，需要时点开。
+   与问答页的 flowOpen = streaming || expanded 同一套语义。 */
+const flowExpanded = ref<Record<number, boolean>>({})
+function flowOpen(msg: ChatMsg): boolean {
+  if (msg.status === 'streaming') return true
+  return !!flowExpanded.value[msg.id]
+}
+function toggleFlow(id: number) {
+  flowExpanded.value = { ...flowExpanded.value, [id]: !flowExpanded.value[id] }
+}
 function onCardActivity() {
   // 卡片内部子代理步骤频率高：按帧合批跟随，不做每事件 nextTick
   scheduleFollow()
@@ -371,6 +383,14 @@ function onCardActivity() {
 
 const composerEl = ref<InstanceType<typeof ChatComposer> | null>(null)
 function focusComposer() { composerEl.value?.focus() }
+/** 空态的快捷问题（2026-10-20）：点一下就落到输入框里，不自动发送 ——
+ *  用户可能想先改一改措辞。与概览页「试试问 AI」同一批问题。 */
+const QUICK_PROMPTS = [
+  '这个项目的战斗数值是怎么算的？',
+  '敌人 AI 的巡逻逻辑在哪个文件？',
+  '这个函数被谁调用了？',
+]
+function askQuick(q: string) { input.value = q; focusComposer() }
 const pendingImages = ref<File[]>([])
 const attachmentError = ref('')
 const videoBusy = ref(false)
@@ -1372,11 +1392,32 @@ const webTitle = computed(() => webOn.value
       @interrupt="interruptWfHistory" @delete="deleteWfHistory"
     />
 
-    <EngineConnectPopover />
+    <!-- 2026-10-19：<EngineConnectPopover /> 原挂在这里，靠顶栏「更多 → 游戏引擎连接」
+         派发的 docmind:open-engine 事件唤起。那个入口已移进设置页的「运行与引擎」分区
+         （内嵌渲染），事件也无人再派发，这个实例留在这里就是孤儿 → 删。 -->
 
     <!-- 折叠时不再卸载对话区：靠高度过渡 + 裁剪做顺滑展开/收起，状态与滚动位置保留 -->
-      <div :id="`docmind-chat-body-${props.scope}`" ref="scroller" class="cd-body" @scroll="onScroll" @wheel="onWheel">
+    <!-- 2026-10-20：对话区加 aria-live —— 流式回答此前完全不被屏幕阅读器播报
+         （451 个按钮里 0 个 aria-busy，对话区也没有 live 区域）。
+         polite：等空闲再播，不打断当前朗读；additions text：只播新增内容。 -->
+      <div :id="`docmind-chat-body-${props.scope}`" ref="scroller" class="cd-body"
+           aria-live="polite" aria-relevant="additions text" @scroll="onScroll" @wheel="onWheel">
         <p v-if="historyError" role="alert">{{ historyError }}</p>
+        <!-- 2026-10-20：对话台空态。此前 .cd-empty / .cd-quick 这套样式**写了却从未被渲染**
+             （模板里没有引用），所以右栏一打开就是一片空白 —— 改三栏 IDE 之后这块
+             空白更显眼。这里补上：一句引导 + 三个能直接问的快捷问题。 -->
+        <div v-if="!messages.length" class="cd-empty">
+          <div class="cd-empty-title">用大白话问代码</div>
+          <div class="cd-quicks">
+            <button
+              v-for="q in QUICK_PROMPTS"
+              :key="q"
+              type="button"
+              class="cd-quick"
+              @click="askQuick(q)"
+            >{{ q }}</button>
+          </div>
+        </div>
         <div v-for="m in messages" :key="m.id" class="cd-msg" :class="`cd-msg-${m.role}`">
           <div v-if="m.role === 'activity'" class="cd-act-note">
             <svg v-if="m.activityKind === 'inspect'" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
@@ -1432,6 +1473,22 @@ const webTitle = computed(() => webOn.value
                  实时生长）；历史/演示路径没有 flow，由 flowOf 兜底合成。
                  点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
             <div v-if="cdHasFlow(m)" class="cd-flow">
+              <!-- 折叠头（2026-10-20）：与问答页的「推理过程 N 步」同一套交互。
+                   此前工作台的推理轨迹是**永远铺开**的 —— 思考正文、执行计划、
+                   动作行全占位，正文被推到很下面；问答页那边却能一键收起。
+                   现在：流式过程中自动展开（用户要看到实时思考），
+                   回答结束后收成一行，需要时再点开。 -->
+              <button
+                class="cd-flow-toggle"
+                :aria-expanded="flowOpen(m)"
+                @click="toggleFlow(m.id)"
+              >
+                <span class="cd-flow-toggle-glyph" aria-hidden="true">◈</span>
+                <span class="cd-flow-toggle-label">推理过程</span>
+                <span class="cd-flow-toggle-count">{{ flowOf(m).length }} 步</span>
+                <span class="cd-flow-toggle-chevron" :class="{ open: flowOpen(m) }">⌄</span>
+              </button>
+              <div v-show="flowOpen(m)" class="cd-flow-body">
               <div v-if="m.plan.length" class="cd-plan">
                 <div class="cd-plan-title">执行计划</div>
                 <div v-for="(s, i) in m.plan" :key="'p' + i" class="cd-plan-step">
@@ -1469,6 +1526,7 @@ const webTitle = computed(() => webOn.value
                   </div>
                 </template>
               </template>
+              </div>
             </div>
             <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
                  DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
@@ -1611,8 +1669,13 @@ const webTitle = computed(() => webOn.value
   background: var(--bg-raised);
   display: flex;
   flex-direction: column;
-  height: min(62vh, 820px);
-  min-height: 380px;
+  /* 2026-10-20：默认高度 62vh → 38vh。
+     62vh（620px）把主区压到只剩 262px，整屏 2/3 是一个空对话框；试过"右侧常驻栏"
+     也不行 —— 420px 栏里回答区只剩 389px、每行约 26 个字（中文舒适区 45–75 字/行），
+     长回答被挤成电报体。38vh 让主区拿到 1312×706，回答区横跨全宽（阅读栏 680px、
+     每行约 48 字）。「展开」态仍是 calc(100vh - --wb-main-min)，需要时能手动拉满。 */
+  height: min(38vh, 520px);
+  min-height: 300px;
   max-height: calc(100vh - 86px);
   /* 高度是布局属性，动画期间只改高度一个变量；曲线先快后稳，配合 chevron 同步翻转 */
   transition: height .24s cubic-bezier(.32, .72, 0, 1),
@@ -1675,16 +1738,16 @@ const webTitle = computed(() => webOn.value
   will-change: transform;
 }
 .cd-chevron.rotated { transform: rotate(90deg); }
-.cd-title { font-size: 12px; font-weight: 600; color: var(--text); }
-.cd-hint { font-size: 11px; color: var(--text-faint); }
+.cd-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.cd-hint { font-size: var(--fs-cap); color: var(--text-faint); }
 /* 代码库标签：头部只有 32px 高、宽度随窗口变，目录名太长时要截断而不是把右边的按钮挤没 */
 .cd-root {
   display: inline-flex; align-items: center; gap: 4px;
-  min-width: 0; max-width: 260px; font-size: 11px; color: var(--text-muted);
+  min-width: 0; max-width: 260px; font-size: var(--fs-cap); color: var(--text-muted);
 }
 .cd-root svg { flex: 0 0 auto; }
 .cd-root-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cd-live { font-size: 11px; color: var(--amber); margin-left: 4px; }
+.cd-live { font-size: var(--fs-cap); color: var(--amber); margin-left: 4px; }
 /* 折叠态工作流后台指示：脉冲点 + 文字，位于标题折叠热区内 */
 .cd-live-wf {
   display: inline-flex; align-items: center; gap: 5px;
@@ -1704,14 +1767,14 @@ const webTitle = computed(() => webOn.value
 .cd-btn {
   display: inline-flex; align-items: center; gap: 5px;
   height: 22px; padding: 0 8px;
-  border: 1px solid var(--border); border-radius: 5px;
+  border: 1px solid var(--edge-ink-soft, var(--border)); border-radius: 5px;
   background: transparent; color: var(--text-muted);
-  font-size: 11px; cursor: pointer;
+  font-size: var(--fs-cap); cursor: pointer;
 }
-.cd-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.cd-btn:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-hover); }
 .cd-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cd-btn:active { transform: translateY(1px); }
-.cd-btn-on { color: var(--accent); border-color: var(--accent); }
+.cd-btn-on { color: var(--accent); border-color: var(--accent); background: var(--bg-selected); }
 
 /* 弹层 */
 .cd-pop-mask {
@@ -1733,9 +1796,9 @@ const webTitle = computed(() => webOn.value
   z-index: 60;
   animation: cd-pop-in .18s var(--ease-spring) both;
 }
-.cd-pop-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.cd-pop-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); margin-bottom: 8px; }
 .cd-mini {
-  height: 21px; padding: 0 9px; font-size: 11px;
+  height: 21px; padding: 0 9px; font-size: var(--fs-cap);
   border: 1px solid var(--border-strong); border-radius: 5px;
   background: transparent; color: var(--text-muted); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
@@ -1747,7 +1810,7 @@ const webTitle = computed(() => webOn.value
 .cd-jump-bottom {
   position: absolute; right: 14px; bottom: 58px; z-index: 3;
   border: 1px solid var(--border-2); border-radius: 999px; padding: 4px 9px;
-  background: var(--bg-raised); color: var(--accent); font-size: 10px;
+  background: var(--bg-raised); color: var(--accent); font-size: var(--fs-cap);
   box-shadow: 0 2px 8px rgba(30, 50, 90, .14); cursor: pointer;
 }
 .cd-jump-bottom:hover { background: var(--bg-selected); transform: translateY(-1px); }
@@ -1758,33 +1821,38 @@ const webTitle = computed(() => webOn.value
   border: 1px solid var(--amber); border-radius: 8px;
   background: color-mix(in srgb, var(--amber) 10%, var(--bg-raised));
 }
-.cd-orphan-glyph { color: var(--amber); font-size: 13px; line-height: 1; flex: none; }
+.cd-orphan-glyph { color: var(--amber); font-size: var(--fs-md); line-height: 1; flex: none; }
 .cd-orphan-body { flex: 1 1 auto; min-width: 0; }
-.cd-orphan-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.cd-orphan-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .cd-orphan-desc {
-  font-size: 10px; color: var(--text-muted); margin-top: 2px;
+  font-size: var(--fs-cap); color: var(--text-muted); margin-top: 2px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cd-orphan-err { font-size: 10px; color: var(--danger); margin-top: 2px; }
+.cd-orphan-err { font-size: var(--fs-cap); color: var(--danger); margin-top: 2px; }
 .cd-orphan .cd-mini { flex: none; white-space: nowrap; }
 .cd-body { flex: 1 1 auto; overflow-y: auto; padding: 8px 14px 4px; min-height: 90px; }
-.cd-empty { padding: 14px 6px; color: var(--text-muted); }
-.cd-empty-title { font-size: 12px; margin: 0 0 10px; color: var(--text-muted); }
+/* 2026-10-20：对话台回到**底部抽屉**形态（38vh）后，宽度横跨全屏 ——
+   空态那句引导和 3 个快捷问题如果也满宽，就会孤零零挤在左边、右侧一大片空白。
+   把空态收进与答案区同宽的阅读栏（--measure），空态与正式回答左对齐在同一列。 */
+.cd-empty { padding: 14px 6px; color: var(--text-muted); max-width: var(--measure); }
+.cd-empty-title { font-size: var(--fs-sm); margin: 0 0 10px; color: var(--text-muted); }
 .cd-quicks { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .cd-quick {
-  text-align: left; font-size: 12px; padding: 5px 10px;
-  border: 1px solid var(--border); border-radius: 12px;
+  text-align: left; font-size: var(--fs-sm); padding: 5px 10px;
+  border: 1px solid var(--edge-ink-soft, var(--border)); border-radius: 12px;
   background: transparent; color: var(--text-muted); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
 .cd-quick:hover { color: var(--accent); border-color: var(--accent); background: var(--bg-selected); transform: translateX(2px); }
 
 .cd-msg { margin-bottom: 10px; }
 .cd-user-bubble {
-  display: inline-block; max-width: 82%;
+  /* 与问答页同一口径：气泡不横跨整个通栏（82% × 1312px ≈ 1075px 太宽，
+     一条气泡占满一行反而难读），封顶 560px。 */
+  display: inline-block; max-width: min(560px, 82%);
   margin-left: auto;
   padding: 6px 10px; border-radius: 9px 9px 2px 9px;
   background: var(--bg-selected); color: var(--text);
-  font-size: 12px; white-space: pre-wrap;
+  font-size: var(--fs-sm); white-space: pre-wrap;
 }
 .cd-msg-user { display: flex; justify-content: flex-end; }
 /* 应用自发起活动字条：居中、弱化，不是用户气泡也不是 AI 回复 */
@@ -1793,10 +1861,22 @@ const webTitle = computed(() => webOn.value
   display: inline-flex; align-items: center; gap: 6px;
   padding: 3px 10px; border-radius: 99px;
   background: var(--bg-hover); color: var(--text-faint);
-  font-size: 11px; line-height: 1.5;
+  font-size: var(--fs-cap); line-height: 1.5;
 }
 .cd-act-note small { color: var(--text-faint); opacity: .8; }
-.cd-answer { font-size: 12px; max-width: 96%; }
+/* 答案区：与问答页统一到**同一把阅读栏尺**。
+   实测（1600px 视口）：工作台对话台是 1312px 通栏，而原来答案是 12px + max-width:96%
+   ≈ 1259px 一行 —— 每行 100+ 个汉字，阅读行长严重超标，扫行很累。
+   问答页那边一直有 max-width: var(--measure)（840px，60 字/行），两页观感因此不一致。
+   现在工作台也用 --measure（本页 680px，约 48 字/行，IDE 里更紧凑合适），
+   字号同时提到 --fs-body（14px，与问答页一致）。
+   word-break/overflow-wrap：长 URL、长路径、不带空格的标识符在窄栏里会顶破面板。 */
+.cd-answer {
+  font-size: var(--fs-body);
+  max-width: var(--measure);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
 /* 流式期的节流 markdown 与成稿同一样式；光标在块级内容后自然落到新行 */
 .cd-caret {
   display: inline-block; width: 6px; height: 1.05em; margin-left: 2px;
@@ -1805,25 +1885,25 @@ const webTitle = computed(() => webOn.value
 }
 @keyframes cd-caret { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .cd-caret { animation: none; } }
-.cd-thinking, .cd-error { font-size: 12px; color: var(--text-muted); padding: 6px 9px; border-radius: 7px; background: var(--bg-hover); }
+.cd-thinking, .cd-error { font-size: var(--fs-sm); color: var(--text-muted); padding: 6px 9px; border-radius: 7px; background: var(--bg-hover); }
 .cd-thinking { border-left: 2px solid var(--accent); }
-.cd-slow-notice { margin: 6px 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius: 6px; color: var(--text-muted); background: color-mix(in srgb, var(--amber) 10%, transparent); font-size: 11px; line-height: 1.45; }
-.cd-error { color: var(--danger); border: 1px solid rgba(214,78,78,.22); background: rgba(214,78,78,.05); }
+.cd-slow-notice { margin: 6px 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius: 6px; color: var(--text-muted); background: color-mix(in srgb, var(--amber) 10%, transparent); font-size: var(--fs-cap); line-height: 1.45; }
+.cd-error { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 22%, transparent); background: color-mix(in srgb, var(--danger) 5%, transparent); }
 /* P1 重试层错误染色：按 final.error_kind 三态分流。
  *   cd-error-permanent  — 不可恢复（fallback 也失败 / 非网络错）→ 红条
  *   cd-error-warn       — 重试用尽 + 无 fallback → 黄条（温和但可见）
  *   cd-error-soft       — 旧的「服务异常」/未识别 → 灰条（不显眼）
  */
-.cd-error-permanent { color: var(--danger); border: 1px solid rgba(214,78,78,.22); background: rgba(214,78,78,.05); }
-.cd-error-warn { color: #a66f00; border: 1px solid rgba(200,129,28,.28); background: rgba(200,129,28,.06); }
-.cd-error-soft { color: var(--text-muted); border: 1px solid var(--border-soft); background: var(--bg-hover); }
+.cd-error-permanent { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 22%, transparent); background: color-mix(in srgb, var(--danger) 5%, transparent); }
+.cd-error-warn { color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 28%, transparent); background: color-mix(in srgb, var(--amber) 6%, transparent); }
+.cd-error-soft { color: var(--text-muted); border: 1px solid color-mix(in srgb, var(--text-muted) 22%, transparent); background: var(--bg-hover); }
 /* P0 一致性自检提示：observation 关键词命中率 < 50% 时给用户一个不挡眼但可见的提示。
  * 位置在 .cd-answer 顶部第一行；不挡后续内容、不改 status。 */
 .cd-consistency-warn {
-  font-size: 11.5px;
-  color: #a66f00;
-  background: rgba(200,129,28,.06);
-  border: 1px solid rgba(200,129,28,.22);
+  font-size: var(--fs-sm);
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 22%, transparent);
   border-radius: 6px;
   padding: 4px 8px;
   margin: 0 0 8px;
@@ -1833,25 +1913,25 @@ const webTitle = computed(() => webOn.value
   display: inline-block;
   margin-right: 6px;
   padding: 0 6px;
-  border: 1px solid rgba(200,129,28,.5);
+  border: 1px solid color-mix(in srgb, var(--amber) 50%, transparent);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: .02em;
-  color: #a66f00;
-  background: rgba(200,129,28,.12);
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
   vertical-align: baseline;
 }
 
 .cd-run-head {
   display: flex; align-items: center; gap: 6px;
   min-height: 22px; margin: 1px 0 5px;
-  color: var(--text-muted); font-size: 11px;
+  color: var(--text-muted); font-size: var(--fs-cap);
 }
 .cd-run-avatar {
   width: 17px; height: 17px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--accent-ink); background: var(--accent); font-size: 10px;
+  color: var(--accent-ink); background: var(--accent); font-size: var(--fs-cap);
 }
 .cd-run-role { color: var(--text); font-weight: 600; }
 .cd-run-status { color: var(--text-faint); }
@@ -1867,7 +1947,7 @@ const webTitle = computed(() => webOn.value
   display: flex; align-items: center; gap: 9px;
   margin: 4px 0 8px; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: 10px;
-  background: var(--bg-hover); color: var(--text-muted); font-size: 12px;
+  background: var(--bg-hover); color: var(--text-muted); font-size: var(--fs-sm);
 }
 .cd-wf-spinner {
   width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto;
@@ -1884,7 +1964,35 @@ const webTitle = computed(() => webOn.value
   display: flex; flex-direction: column;
   margin: 4px 0 6px 3px; padding-left: 12px;
   border-left: 1px dashed color-mix(in srgb, var(--accent) 25%, var(--border));
+  /* 与答案区同一把阅读栏尺：轨迹行在 1312px 通栏里太长，扫读困难 */
+  max-width: var(--measure);
 }
+/* 折叠头：与问答页 .flow-toggle 同一套（◈ 推理过程 / N 步 / ⌄） */
+.cd-flow-toggle {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px dashed var(--border);
+  background: var(--bg-hover);
+  border-radius: var(--r-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-cap);
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.cd-flow-toggle:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-raised); }
+.cd-flow-toggle:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
+.cd-flow-toggle-glyph { color: var(--accent-2); font-size: var(--fs-cap); }
+.cd-flow-toggle-label { font-weight: 700; color: var(--text); }
+.cd-flow-toggle-count {
+  color: var(--text-faint);
+  border-left: 1px solid var(--border);
+  padding-left: 7px;
+}
+.cd-flow-toggle-chevron { color: var(--text-faint); font-size: var(--fs-cap); transition: transform .18s var(--ease-standard); }
+.cd-flow-toggle-chevron.open { transform: rotate(180deg); }
+.cd-flow-body { display: flex; flex-direction: column; margin-top: 6px; }
 .cd-flow-think { display: flex; gap: 8px; padding: 2px 0; }
 .cd-flow-dot {
   flex: 0 0 6px; width: 6px; height: 6px; margin-top: 6px;
@@ -1893,7 +2001,7 @@ const webTitle = computed(() => webOn.value
 .cd-flow-dot.on { background: var(--accent); animation: cd-run-pulse 1.1s infinite; }
 .cd-flow-think-body {
   min-width: 0; flex: 1;
-  font-size: 12px; line-height: 1.6; color: var(--text-muted);
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--text-muted);
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 220px; overflow: auto;
 }
@@ -1908,30 +2016,30 @@ const webTitle = computed(() => webOn.value
 .cd-flow-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cd-flow-glyph {
   flex: 0 0 15px; width: 15px; text-align: center;
-  color: var(--text-faint); font-size: 13px; line-height: 1;
+  color: var(--text-faint); font-size: var(--fs-md); line-height: 1;
 }
 .cd-flow-running .cd-flow-glyph { color: var(--accent); }
 .cd-flow-ok .cd-flow-glyph { color: var(--green); }
 .cd-flow-warn .cd-flow-glyph { color: var(--amber); }
 .cd-flow-error .cd-flow-glyph { color: var(--danger); }
 .cd-flow-main { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 7px; }
-.cd-flow-title { flex: 0 0 auto; color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.cd-flow-title { flex: 0 0 auto; color: var(--text); font-size: var(--fs-sm); font-weight: 650; white-space: nowrap; }
 .cd-flow-summary {
   min-width: 0; flex: 1;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--text-muted); font-size: 12px;
+  color: var(--text-muted); font-size: var(--fs-sm);
 }
 /* 返回行缩进挂在对应动作行下，读作「这次调用的结果」 */
 .cd-flow-row.result { padding-left: 20px; }
-.cd-flow-row.result .cd-flow-summary { color: var(--text-faint); font-size: 11.5px; }
-.cd-flow-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: 10px; }
+.cd-flow-row.result .cd-flow-summary { color: var(--text-faint); font-size: var(--fs-sm); }
+.cd-flow-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-cap); }
 .cd-flow-state { padding: 2px 6px; border-radius: 999px; color: var(--text-faint); background: var(--bg-hover); white-space: nowrap; }
-.cd-flow-running .cd-flow-state { color: var(--accent); background: rgba(47,111,237,.1); }
-.cd-flow-ok .cd-flow-state { color: var(--green); background: rgba(28,158,102,.09); }
-.cd-flow-warn .cd-flow-state { color: var(--amber); background: rgba(200,129,28,.11); }
-.cd-flow-error .cd-flow-state { color: var(--danger); background: rgba(224,72,79,.1); }
+.cd-flow-running .cd-flow-state { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.cd-flow-ok .cd-flow-state { color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
+.cd-flow-warn .cd-flow-state { color: var(--amber); background: color-mix(in srgb, var(--amber) 11%, transparent); }
+.cd-flow-error .cd-flow-state { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .cd-flow-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.cd-flow-chevron { color: var(--text-faint); font-size: 10px; }
+.cd-flow-chevron { color: var(--text-faint); font-size: var(--fs-cap); }
 .cd-flow-detail {
   margin: 0 0 4px 20px; padding: 3px 0 3px 8px;
   border-left: 2px solid var(--border);
@@ -1949,18 +2057,18 @@ const webTitle = computed(() => webOn.value
   /* color 不能取 var(--accent)：那是填色令牌，压在 --accent-soft 底上 paper 实测
      约 2.5:1。仓库约定纸底强调字走 --accent-text。 */
   background: var(--accent-soft); color: var(--accent-text);
-  font-family: var(--font-mono); font-size: 11px; cursor: pointer;
+  font-family: var(--font-mono); font-size: var(--fs-cap); cursor: pointer;
 }
 .cd-ref:hover { background: var(--bg-selected); border-color: var(--accent); }
 .cd-ref-more { font-weight: 700; }
 .cd-ref-line { color: var(--amber); }
 .cd-web-sources { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 5px; max-width: 96%; }
-.cd-web-sources summary { cursor: pointer; color: var(--text-muted); font-size: 11px; }
+.cd-web-sources summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-cap); }
 .cd-web-source { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; margin-top: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); text-decoration: none; background: var(--bg); }
 .cd-web-source:hover { border-color: var(--accent); background: var(--bg-selected); }
-.cd-web-source-title { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cd-web-source-url { grid-column: 1 / -1; color: var(--accent); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cd-web-source-score { color: var(--text-faint); font-size: 10px; }
+.cd-web-source-title { font-size: var(--fs-cap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cd-web-source-url { grid-column: 1 / -1; color: var(--accent); font-size: var(--fs-cap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cd-web-source-score { color: var(--text-faint); font-size: var(--fs-cap); }
 
 
 
@@ -1971,18 +2079,18 @@ const webTitle = computed(() => webOn.value
   display: flex; align-items: flex-start; gap: 5px;
   margin: 2px 0 5px; padding: 4px 8px;
   border-radius: 5px; background: var(--bg-hover);
-  font-size: 10px; color: var(--text-dim); line-height: 1.5;
+  font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.5;
 }
 .cd-notice svg { flex: 0 0 auto; margin-top: 2px; color: var(--text-faint); }
 .cd-resume {
   display: inline-flex; align-items: center; gap: 5px;
   margin: 1px 0 7px; padding: 5px 9px;
   border: 1px solid var(--accent); border-radius: 5px;
-  background: rgba(47,111,237,.08); color: var(--accent);
-  font-size: 11px; cursor: pointer;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent);
+  font-size: var(--fs-cap); cursor: pointer;
 }
-.cd-msg-attachment { display: inline-flex; margin-right: 6px; color: var(--accent); font-size: 10px; }
-.cd-resume:hover { background: rgba(47,111,237,.15); }
+.cd-msg-attachment { display: inline-flex; margin-right: 6px; color: var(--accent); font-size: var(--fs-cap); }
+.cd-resume:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
 
 /* 计划步骤 */
 /* 执行计划：2026-10-14 去方框，退化为带序号圆点的纯文字列表 */
@@ -1990,13 +2098,13 @@ const webTitle = computed(() => webOn.value
   margin: 2px 0 6px; padding: 0;
   border: none; border-radius: 0; background: transparent;
 }
-.cd-plan-title { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-bottom: 5px; }
-.cd-plan-step { display: flex; gap: 7px; align-items: flex-start; font-size: 11px; color: var(--text-dim); line-height: 1.55; }
+.cd-plan-title { font-size: var(--fs-cap); font-weight: 600; color: var(--text-muted); margin-bottom: 5px; }
+.cd-plan-step { display: flex; gap: 7px; align-items: flex-start; font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.55; }
 .cd-plan-step + .cd-plan-step { margin-top: 3px; }
 .cd-plan-idx {
   flex: 0 0 15px; width: 15px; height: 15px; margin-top: 1px;
   border-radius: 50%; background: var(--accent); color: var(--accent-ink);
-  font-size: 10px; display: inline-flex; align-items: center; justify-content: center;
+  font-size: var(--fs-cap); display: inline-flex; align-items: center; justify-content: center;
 }
 
 /* 新功能按钮增多后，窄宽度下逐级收起装饰性文字，保证头部不溢出 */
@@ -2030,20 +2138,20 @@ const webTitle = computed(() => webOn.value
 }
 .cd-msg { animation: cd-message-in .22s var(--ease-spring) both; }
 .cd-user-bubble {
-  border: 1px solid rgba(47,111,237,.1);
-  box-shadow: 0 3px 10px rgba(47,111,237,.08);
+  border: 1px solid color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .cd-answer { line-height: 1.7; padding: 0; background: transparent; border: none; box-shadow: none; }
 /* 交错流的行悬停 feedback：极淡的底色 + 2px 右移，不搞卡片感 */
 .cd-flow-row { border-radius: 6px; padding: 4px 6px; margin: 0 -6px; transition: background .16s, color .16s, transform .16s var(--ease-spring); }
-.cd-flow-row:hover { background: rgba(47,111,237,.06); transform: translateX(2px); }
+.cd-flow-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); transform: translateX(2px); }
 .cd-flow-detail { animation: cd-detail-in .18s var(--ease-spring) both; }
-.cd-notice { border: 1px solid rgba(152,163,180,.22); background: rgba(244,247,251,.8); }
+.cd-notice { border: 1px solid var(--border); background: color-mix(in srgb, var(--bg-raised) 80%, transparent); }
 .cd-inputbar { background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 88%, transparent), color-mix(in srgb, var(--bg-raised) 96%, transparent)); border-top: 1px solid var(--border); }
-.cd-input { box-shadow: inset 0 1px 2px rgba(35,52,84,.03); transition: border-color .16s, box-shadow .16s, background .16s; }
-.cd-input:focus { background: #fff; box-shadow: 0 0 0 3px rgba(47,111,237,.11), inset 0 1px 2px rgba(35,52,84,.03); }
-.cd-send { box-shadow: 0 4px 11px rgba(47,111,237,.18); transition: transform .16s var(--ease-spring), box-shadow .16s, filter .16s; }
-.cd-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 15px rgba(47,111,237,.24); filter: brightness(1.03); }
+.cd-input { box-shadow: inset 0 1px 2px color-mix(in srgb, var(--ink) 3%, transparent); transition: border-color .16s, box-shadow .16s, background .16s; }
+.cd-input:focus { background: var(--bg-raised); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent), inset 0 1px 2px color-mix(in srgb, var(--ink) 3%, transparent); }
+.cd-send { box-shadow: 0 4px 11px color-mix(in srgb, var(--accent) 18%, transparent); transition: transform .16s var(--ease-spring), box-shadow .16s, filter .16s; }
+.cd-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 15px color-mix(in srgb, var(--accent) 24%, transparent); filter: brightness(1.03); }
 .cd-chip { transition: transform .16s var(--ease-spring), border-color .16s, background .16s, color .16s; }
 .cd-chip:hover:not(:disabled):not(.cd-chip-off) { transform: translateY(-1px); }
 

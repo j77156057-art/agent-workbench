@@ -108,9 +108,9 @@ function sessionTime(value: string): string {
   inset: 0;
   z-index: 59;
 }
-.cd-pop-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.cd-pop-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); margin-bottom: 8px; }
 .cd-mini {
-  height: 21px; padding: 0 9px; font-size: 11px;
+  height: 21px; padding: 0 9px; font-size: var(--fs-cap);
   border: 1px solid var(--border-strong); border-radius: 5px;
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
@@ -125,18 +125,18 @@ function sessionTime(value: string): string {
   padding: 10px; z-index: 60; animation: cd-history-in .18s cubic-bezier(.2,.8,.2,1) both;
 }
 .cd-session-head { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
-.cd-session-subtitle { color: var(--text-faint); font-size: 10px; line-height: 1.45; margin-top: -4px; }
-.cd-session-error { padding: 6px 8px; color: var(--danger); background: #fff4f4; border: 1px solid #f2caca; border-radius: 5px; font-size: 10px; }
-.cd-session-empty { padding: 12px 5px; color: var(--text-faint); font-size: 11px; text-align: center; }
+.cd-session-subtitle { color: var(--text-faint); font-size: var(--fs-cap); line-height: 1.45; margin-top: -4px; }
+.cd-session-error { padding: 6px 8px; color: var(--danger); background: #fff4f4; border: 1px solid #f2caca; border-radius: 5px; font-size: var(--fs-cap); }
+.cd-session-empty { padding: 12px 5px; color: var(--text-faint); font-size: var(--fs-cap); text-align: center; }
 .cd-session-item { display: flex; align-items: stretch; border-top: 1px solid var(--border); }
 .cd-session-main { flex: 1; min-width: 0; display: flex; gap: 7px; align-items: center; padding: 8px 5px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .cd-session-main { border-radius: 6px; transition: background .15s ease, transform .15s ease; }.cd-session-main:hover { background: var(--bg-hover); transform: translateX(2px); }.cd-session-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cd-session-main:disabled { opacity: .6; cursor: default; }
 .cd-session-copy { min-width: 0; display: block; }
 .cd-session-copy strong, .cd-session-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cd-session-copy strong { font-size: 12px; font-weight: 600; }
-.cd-session-copy small { margin-top: 2px; color: var(--text-faint); font-size: 10px; }
-.cd-session-delete { align-self: center; margin-right: 5px; width: 22px; height: 22px; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 16px; border-radius: 5px; transition: color .15s ease, background .15s ease, transform .15s ease; }
+.cd-session-copy strong { font-size: var(--fs-sm); font-weight: 600; }
+.cd-session-copy small { margin-top: 2px; color: var(--text-faint); font-size: var(--fs-cap); }
+.cd-session-delete { align-self: center; margin-right: 5px; width: 22px; height: 22px; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; font-size: var(--fs-h2); border-radius: 5px; transition: color .15s ease, background .15s ease, transform .15s ease; }
 .cd-session-delete:hover { color: var(--danger); background: rgba(214,78,78,.07); transform: translateY(-1px); }.cd-session-delete:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cd-session-delete:disabled { cursor: default; opacity: .5; }
 /* 工作流历史弹层 */
@@ -156,7 +156,7 @@ function sessionTime(value: string): string {
 .cd-wf-act {
   width: auto; min-width: 34px; height: auto; align-self: center;
   margin-right: 5px; padding: 3px 8px; border: 1px solid var(--border);
-  border-radius: 5px; font-size: 10px; color: var(--text-muted);
+  border-radius: 5px; font-size: var(--fs-cap); color: var(--text-muted);
 }
 .cd-wf-act:hover:not(:disabled) { color: var(--amber); border-color: var(--amber); }
 .cd-wf-act-danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }

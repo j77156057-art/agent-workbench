@@ -614,7 +614,7 @@ try {
   // 不给它上色时 Chromium 用 UA 默认 #757575 —— 修之前实测 paper 3.73 / graphite 3.85 /
   // zinc 4.49，三套皮全不过 4.5。这条因此自带反例：删掉 .cd-input::placeholder 就红。
   for (const skin of ['paper', 'graphite', 'zinc']) {
-    const p9 = await boot(DEFAULTS, '/workbench', FRAMES, TAIL, `localStorage.setItem("docmind.skin","${skin}")`)
+    const p9 = await boot(DEFAULTS, '/workbench', FRAMES, TAIL, `localStorage.setItem("docmind.skin","${skin}");localStorage.setItem("docmind.skinLocked","1")`)
     await p9.click('button.wb-question-link[title*="AI 对话"]')
     await p9.waitForSelector('.cd-dock textarea', { timeout: 60000 })
     const c = await textContrast(p9, '.cd-dock textarea', '::placeholder')
@@ -630,7 +630,7 @@ try {
   // 当文字色（paper 2.71:1）。
   for (const [route, skin] of [['/', 'paper'], ['/', 'graphite'], ['/', 'zinc'],
                                ['/workbench', 'paper'], ['/workbench', 'graphite'], ['/workbench', 'zinc']]) {
-    const p10 = await boot(DEFAULTS, route, FRAMES, TAIL, `localStorage.setItem("docmind.skin","${skin}")`)
+    const p10 = await boot(DEFAULTS, route, FRAMES, TAIL, `localStorage.setItem("docmind.skin","${skin}");localStorage.setItem("docmind.skinLocked","1")`)
     if (route === '/workbench') {
       await p10.click('button.wb-question-link[title*="AI 对话"]')
       await p10.waitForSelector('.cd-dock textarea', { timeout: 60000 })

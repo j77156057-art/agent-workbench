@@ -1,0 +1,18 @@
+{
+  "seed": 344284156,
+  "params": {
+    "hue": 344.921568627451,
+    "hue2": 194.92156862745105,
+    "neutral_hue": 4.43137254901967,
+    "chroma": 0.34,
+    "radius": 14,
+    "radius_scale": 0.75,
+    "border_w": 1,
+    "shadow_level": 1,
+    "body_fs": 15,
+    "density": 1.05,
+    "tint": 0.04,
+    "bg_l": 0.975,
+    "dark": false
+  }
+}

@@ -4,10 +4,10 @@
 // 重操作（建索引、分区开发）统一收口到工作台，本页只保留问答必需能力。
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
-  aiApi, modelResidencyApi, projectApi, kbApi, promptApi, harnessApi, contextApi,
+  aiApi, projectApi, kbApi, promptApi, harnessApi, contextApi,
   getProjectId, setSessionId, startTabProbe, probeSoleDocMindTab,
 } from '../workbench/api'
-import type { ModelStatus, ProjectInfo, SseEvent, SessionInfo, ContextUsage } from '../workbench/api'
+import type { ProjectInfo, SseEvent, SessionInfo, ContextUsage } from '../workbench/api'
 import { demoMode, probeBackend } from '../workbench/composables/demo'
 import { useModelConfig } from '../workbench/composables/useModelConfig'
 import { useWorkflowGate } from '../workbench/composables/useWorkflowGate'
@@ -22,7 +22,6 @@ import type { ChatMsg, ChatTraceItem } from '../workbench/composables/chat-types
 import { prefs } from './askPrefs'
 
 // ---------------- 全局状态 ----------------
-const power = ref<ModelStatus | null>(null)
 const projects = ref<ProjectInfo[]>([])
 const currentPid = ref(getProjectId())
 
@@ -45,7 +44,6 @@ const {
   loadModelConfig: loadConfig, onModelSaved,
 } = useModelConfig({
   onSaved: (info) => {
-    void loadPower()
     usage.value = null
     void loadAskContext()
     // 只有「对话模型真的不可用」才值得打断式提示。仅检索降级时弹「Ollama 状态需要关注」
@@ -343,14 +341,9 @@ function showToast(msg: string) {
 }
 
 // ---------------- 启动加载 ----------------
-async function loadPower() {
-  if (demoMode.value) return
-  try {
-    power.value = await modelResidencyApi.status()
-  } catch {
-    power.value = null
-  }
-}
+// 2026-10-19：问答页不再拉取 /api/model_status（显存与驻留已搬到工作台设置的
+// 「模型」分区）。原先每 20 秒轮询一次、每轮对话后再刷一次，现在整个问答页
+// 少了一个周期性后端请求。
 async function loadProjects() {
   const r = await projectApi.list()
   projects.value = r.projects || []
@@ -359,7 +352,7 @@ async function loadProjects() {
   currentPid.value = getProjectId()
 }
 async function reloadAll() {
-  await Promise.all([loadConfig(), loadProjects(), loadPower()])
+  await Promise.all([loadConfig(), loadProjects()])
 }
 
 function setupDemoSidebar() {
@@ -590,7 +583,6 @@ async function send(preset?: string) {
       abortCtl = null
     }
     partial = null
-    void loadPower()
     // 本轮可能发起了工作流：补发事件若因竞态未挂上卡片，靠 orphan 探测兜底
     void detectOrphanWorkflow()
     await nextTick(followScroll)
@@ -727,22 +719,6 @@ async function onIngest(file: File) {
   }
 }
 
-async function onPower(action: 'on' | 'off') {
-  try {
-    const r = await modelResidencyApi.power(action)
-    if (r.ok) {
-      showToast(action === 'off'
-        ? `已卸载 ${(r.unloaded || []).join('、') || '模型'}，下次对话自动重载`
-        : `模型 ${(r.preloaded || []).join('、') || ''} 已预加载`.trim())
-    } else {
-      showToast('模型开关操作失败：' + (r.error || '未知错误'))
-    }
-  } catch (e) {
-    showToast('模型开关请求失败：' + (e as Error).message)
-  }
-  await loadPower()
-}
-
 async function openSettings() {
   if (demoMode.value) { showToast('示例演示模式下不可修改模型设置'); return }
   try {
@@ -782,10 +758,8 @@ onMounted(async () => {
     try { sessionStorage.setItem(draftKey(), draft.value) } catch { /* ignore */ }
     if (sending.value) { savePartial(); abortCtl?.abort() }
   })
-  window.setInterval(() => { if (!demoMode.value && !document.hidden) void loadPower() }, 20000)
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && !demoMode.value) void loadPower()
-  })
+  // 2026-10-19：原先这里每 20 秒轮询一次 /api/model_status（显存占用），
+  // 问答页不再展示显存，该轮询与可见性恢复钩子一并删掉。
 
   const online = await probeBackend()
   if (demoMode.value || !online) {
@@ -815,7 +789,6 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
       :projects="projects"
       :current-pid="currentPid"
       :config="config"
-      :power="power"
       :demo="demoMode"
       :ingest-busy="ingestBusy"
       :ingest-msg="ingestMsg"
@@ -823,7 +796,6 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
       :current-session-id="sid()"
       :session-busy="sessionBusy"
       @ingest="onIngest"
-      @power="onPower"
       @open-settings="openSettings"
       @new-session="newChat"
       @switch-session="switchAskSession"
@@ -970,7 +942,9 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
       </footer>
 
       <transition name="toast">
-        <div v-if="toast" class="toast">{{ toast }}</div>
+        <!-- role=status + aria-live：toast 此前是纯视觉提示，屏幕阅读器完全读不到
+             （"模型设置已保存"、"操作失败"这类信息对盲用户是不可见的）。 -->
+        <div v-if="toast" class="toast" role="status" aria-live="polite">{{ toast }}</div>
       </transition>
 
       <ModelSettingsDialog
@@ -1010,11 +984,11 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   border-bottom: var(--edge-w-heavy) solid var(--edge-ink);
 }
 .tb-left { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
-.tb-title { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 900; letter-spacing: .01em; color: var(--ink); }
-.tb-sub { font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tb-title { margin: 0; font-family: var(--font-display); font-size: var(--fs-xl); font-weight: 900; letter-spacing: .01em; color: var(--ink); }
+.tb-sub { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb-right { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .tb-usage {
-  font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-muted);
   border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); padding: 4px 10px; background: var(--bg); white-space: nowrap;
 }
@@ -1024,13 +998,13 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   display: inline-flex; align-items: center; gap: 6px;
   border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); background: var(--bg-raised); color: var(--ink);
-  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 700;
   padding: 8px 14px; cursor: pointer; text-decoration: none;
   box-shadow: var(--sh-hard-sm);
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), background 130ms, box-shadow 130ms;
 }
 .tb-btn:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); }
-.tb-btn.primary { background: var(--accent); color: var(--accent-ink); }
+.tb-btn.primary { --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .tb-btn.primary:hover { transform: translate(-2px, -2px); }
 
 /* 横幅：粗边框卡片 */
@@ -1043,11 +1017,11 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   background: var(--bg-raised);
   box-shadow: var(--sh-hard-sm);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
-.banner.info { background: rgba(31, 95, 224, .10); border-color: var(--accent-2); color: var(--accent-2); }
-.banner.warn { background: rgba(200, 129, 28, .10); border-color: var(--amber); color: var(--amber); }
+.banner.info { background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: var(--accent-2); color: var(--accent-2); }
+.banner.warn { background: color-mix(in srgb, var(--amber) 10%, transparent); border-color: var(--amber); color: var(--amber); }
 
 /* 对话区 */
 .chat-scroll { flex: 1; overflow-y: auto; scrollbar-gutter: stable; }
@@ -1070,8 +1044,8 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   border: var(--edge-w-heavy) solid var(--edge-ink);
   border-radius: var(--r-sm); box-shadow: var(--sh-hard-sm);
 }
-.welcome-title { margin: 0 0 10px; font-family: var(--font-display); font-size: 26px; font-weight: 900; color: var(--ink); }
-.welcome-desc { margin: 0 auto 28px; max-width: 48ch; font-family: var(--font-sans); font-size: 14px; line-height: 1.7; color: var(--text-muted); }
+.welcome-title { margin: 0 0 10px; font-family: var(--font-display); font-size: var(--fs-display); font-weight: 900; color: var(--ink); }
+.welcome-desc { margin: 0 auto 28px; max-width: 48ch; font-family: var(--font-sans); font-size: var(--fs-body); line-height: 1.7; color: var(--text-muted); }
 .suggestions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-width: 820px; margin: var(--s5) auto 0; }
 @media (max-width: 560px) { .suggestions { grid-template-columns: 1fr; } }
 .suggestion {
@@ -1080,11 +1054,11 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   border-radius: var(--r-sm);
   background: var(--bg-raised);
   box-shadow: var(--sh-hard-sm);
-  font-family: var(--font-sans); font-size: 14px; color: var(--text);
+  font-family: var(--font-sans); font-size: var(--fs-body); color: var(--text);
   padding: 14px 16px; cursor: pointer;
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
 }
-.suggestion:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); background: var(--accent); color: var(--accent-ink); }
+.suggestion:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); }
 
 /* 输入区：粗边卡片 + 硬阴影 */
 .composer-wrap { flex: 0 0 auto; padding: 16px 28px 24px; }
@@ -1102,7 +1076,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
   width: 100%;
   border: none; outline: none; resize: none;
   background: transparent;
-  font-family: var(--font-sans); font-size: 14px; line-height: 1.6;
+  font-family: var(--font-sans); font-size: var(--fs-body); line-height: 1.6;
   color: var(--text); padding: 6px 8px; max-height: 160px;
 }
 .composer textarea::placeholder { color: var(--text-faint); }
@@ -1110,34 +1084,34 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
 .cap-chip {
   border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); background: var(--bg); color: var(--text);
-  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 700;
   padding: 4px 10px; cursor: pointer; line-height: 1.4;
   transition: background 130ms, color 130ms, border-color 130ms, transform 130ms;
 }
-.cap-chip:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); transform: translate(-1px, -1px); }
+.cap-chip:hover { --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); transform: translate(-1px, -1px); }
 .composer-input { position: relative; }
 .ghost-text {
   position: absolute; left: 0; top: 0; right: 0;
   padding: 6px 8px;
-  font-family: var(--font-sans); font-size: 14px; line-height: 1.6;
+  font-family: var(--font-sans); font-size: var(--fs-body); line-height: 1.6;
   color: var(--text-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   pointer-events: none;
 }
 .followups { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding: 8px 4px 0; border-top: 1px dashed var(--border); }
-.followups-label { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: .04em; }
-.followups-ico { color: var(--accent-2); font-size: 11px; }
+.followups-label { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: var(--fs-cap); font-weight: 700; color: var(--text-muted); letter-spacing: .04em; }
+.followups-ico { color: var(--accent-2); font-size: var(--fs-cap); }
 .followups-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .followup {
   display: inline-flex; align-items: center; gap: 6px;
   border: 1px dashed var(--border-strong);
   border-radius: var(--r-sm); background: var(--bg); color: var(--text);
-  font-family: var(--font-sans); font-size: 13px;
+  font-family: var(--font-sans); font-size: var(--fs-md);
   padding: 7px 13px; cursor: pointer; text-align: left; line-height: 1.4;
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), background 130ms, color 130ms, border-color 130ms;
 }
 .followup-arrow { color: var(--accent-2); font-weight: 700; transition: color 130ms; }
-.followup:hover { transform: translate(-1px, -1px); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
+.followup:hover { transform: translate(-1px, -1px); --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
 .followup:hover .followup-arrow { color: var(--accent-ink); }
 
 .img-preview { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 6px 8px; }
@@ -1149,16 +1123,16 @@ border-radius: var(--r-sm); }
   width: 18px; height: 18px;
   border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); background: var(--ink); color: var(--bg);
-  font-size: 12px; line-height: 1; cursor: pointer;
+  font-size: var(--fs-sm); line-height: 1; cursor: pointer;
   display: grid; place-items: center;
 }
-.attach-err { padding: 0 6px 6px; font-family: var(--font-mono); font-size: 12px; color: var(--danger); }
+.attach-err { padding: 0 6px 6px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--danger); }
 
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 10px; border-top: var(--edge-w-strong) solid var(--edge-ink); }
 .bar-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .bar-right { display: flex; flex: 0 0 auto; }
 .tool-btn {
-  border: 2px solid transparent; background: none; color: var(--text-muted);
+  border: var(--edge-w-strong, 2px) solid transparent; background: none; color: var(--text-muted);
   padding: 6px 8px; cursor: pointer; display: inline-flex;
   transition: color 130ms, background 130ms, border-color 130ms;
 }
@@ -1166,34 +1140,34 @@ border-radius: var(--r-sm); }
 .chip {
   border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); background: var(--bg-raised); color: var(--text);
-  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: 700;
   padding: 6px 12px; cursor: pointer;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .chip:hover { background: var(--ink); color: var(--bg); }
-.chip.on { background: var(--accent); border-color: var(--border-strong); color: var(--accent-ink); }
-.chip.native { background: rgba(31, 95, 224, .12); border-color: var(--accent-2); color: var(--accent-2); cursor: default; }
+.chip.on { --btn-fill: var(--accent); background: var(--accent); border-color: var(--border-strong); color: var(--accent-ink); }
+.chip.native { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: var(--accent-2); color: var(--accent-2); cursor: default; }
 .chip.ghost { border-style: dashed; }
 
 .send-btn {
   display: inline-flex; align-items: center; gap: 6px;
   border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm); background: var(--accent); color: var(--accent-ink);
-  font-family: var(--font-mono); font-weight: 700; font-size: 13px;
+  border-radius: var(--r-sm); --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink);
+  font-family: var(--font-mono); font-weight: 700; font-size: var(--fs-md);
   padding: 9px 20px; cursor: pointer;
   box-shadow: var(--sh-hard-sm);
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms;
 }
 .send-btn:hover:not(:disabled) { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); }
 .send-btn:disabled { opacity: .45; cursor: default; }
-.send-btn.stop { background: var(--bg-raised); color: var(--danger); border-color: var(--danger); }
+.send-btn.stop { --btn-fill: initial; background: var(--bg-raised); color: var(--danger); border-color: var(--danger); }
 .stop-ico { width: 10px; height: 10px; background: currentColor; }
 
 /* toast */
 .toast {
   position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: var(--bg);
-  font-family: var(--font-mono); font-size: 12px;
+  font-family: var(--font-mono); font-size: var(--fs-sm);
   padding: 10px 18px; border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); box-shadow: var(--sh-hard-sm);
   z-index: 200; max-width: 70vw;
@@ -1206,23 +1180,23 @@ border-radius: var(--r-sm); }
   flex: 0 0 auto;
   display: flex; align-items: center; gap: 12px;
   margin: 0 28px 10px; padding: 12px 16px;
-  border: 2px solid var(--amber); background: rgba(200, 129, 28, .10);
-  font-family: var(--font-mono); font-size: 12px; color: var(--text);
+  border: 2px solid var(--amber); background: color-mix(in srgb, var(--amber) 10%, transparent);
+  font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text);
 }
-.wf-orphan-glyph { color: var(--amber); font-size: 15px; }
+.wf-orphan-glyph { color: var(--amber); font-size: var(--fs-h3); }
 .wf-orphan-body { flex: 1; min-width: 0; }
 .wf-orphan-err { color: var(--danger); margin-top: 3px; }
 .wf-orphan-btn {
   flex: 0 0 auto;
   border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm); background: var(--bg-raised); color: var(--text);
-  font-family: var(--font-mono); font-size: 12px; padding: 6px 12px; cursor: pointer;
+  font-family: var(--font-mono); font-size: var(--fs-sm); padding: 6px 12px; cursor: pointer;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .wf-orphan-btn:hover { background: var(--ink); color: var(--bg); }
 .wf-orphan-btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--danger-ink); }
 .wf-orphan-btn:disabled { opacity: .55; cursor: default; }
-.gate-hint { flex: 0 0 auto; margin: 0 28px 8px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--amber); }
+.gate-hint { flex: 0 0 auto; margin: 0 28px 8px; text-align: center; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--amber); }
 .composer.blocked { opacity: .7; }
 .composer.blocked textarea { pointer-events: none; }
 </style>

@@ -83,7 +83,7 @@ onBeforeUnmount(() => { disposed = true })
   justify-content: center;
   gap: 8px;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   background: rgba(238,242,248,.72);
   animation: m3d-fallback-in .18s ease-out both;
 }
@@ -91,7 +91,7 @@ onBeforeUnmount(() => { disposed = true })
 .m3d-spinner {
   width: 18px;
   height: 18px;
-  border: 2px solid rgba(47,111,237,.2);
+  border: 2px solid color-mix(in srgb, var(--accent) 20%, transparent);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: m3d-spin .8s linear infinite;

@@ -37,10 +37,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <header class="gh-top wb-modal-head">
         <div class="gh-title">
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-            <circle cx="3.5" cy="7" r="1.5" fill="none" stroke="#58a6ff" stroke-width="1.1" />
-            <circle cx="10.5" cy="3" r="1.5" fill="none" stroke="#45c98c" stroke-width="1.1" />
-            <circle cx="10.5" cy="11" r="1.5" fill="none" stroke="#bc8cff" stroke-width="1.1" />
-            <path d="M4.7 6.2 L9.3 3.7 M4.7 7.8 L9.3 10.3" stroke="#3a4658" stroke-width="1" />
+            <circle cx="3.5" cy="7" r="1.5" fill="none" stroke="var(--viz-class)" stroke-width="1.1" />
+            <circle cx="10.5" cy="3" r="1.5" fill="none" stroke="var(--viz-const)" stroke-width="1.1" />
+            <circle cx="10.5" cy="11" r="1.5" fill="none" stroke="var(--viz-fn)" stroke-width="1.1" />
+            <path d="M4.7 6.2 L9.3 3.7 M4.7 7.8 L9.3 10.3" stroke="var(--viz-link)" stroke-width="1" />
           </svg>
           <h2>历史版本</h2>
           <span class="gh-path" :title="history.path">{{ history.name }}</span>
@@ -80,8 +80,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <div class="gh-preview-wrap">
           <div v-if="!history.selected" class="gh-state">
             <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
-              <path d="M10 6 H24 L31 13 V34 H10 Z M24 6 V13 H31" stroke="#2b3543" stroke-width="1.4" stroke-linejoin="round" />
-              <path d="M14 20 H26 M14 25 H26 M14 30 H21" stroke="#2b3543" stroke-width="1.3" stroke-linecap="round" />
+              <path d="M10 6 H24 L31 13 V34 H10 Z M24 6 V13 H31" stroke="var(--text-faint)" stroke-width="1.4" stroke-linejoin="round" />
+              <path d="M14 20 H26 M14 25 H26 M14 30 H21" stroke="var(--text-faint)" stroke-width="1.3" stroke-linecap="round" />
             </svg>
             <p class="gh-faint">在左侧选择一次提交，预览该版本的文件内容</p>
           </div>
@@ -151,9 +151,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border-bottom: 1px solid var(--border);
 }
 .gh-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
-.gh-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.gh-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .gh-path {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-faint);
   font-family: 'Cascadia Code', Consolas, monospace;
   overflow: hidden;
@@ -173,7 +173,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .gh-iconbtn:hover { background: var(--bg-hover); color: var(--text); }
 .gh-iconbtn:focus-visible,
 .gh-commit:focus-visible,
-.gh-restore-btn:focus-visible { outline: 2px solid #2f6fed88; outline-offset: 2px; }
+.gh-restore-btn:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
 
 .gh-body { flex: 1 1 auto; display: flex; min-height: 0; }
 
@@ -198,9 +198,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   transition: background .16s ease, border-color .16s ease, transform .16s ease;
 }
 .gh-commit:hover { background: var(--bg-hover); transform: translateX(2px); }
-.gh-commit.active { background: #2f6fed14; border-color: #2f6fed44; }
+.gh-commit.active { background: color-mix(in srgb, var(--accent) 8%, transparent); border-color: color-mix(in srgb, var(--accent) 27%, transparent); }
 .gh-commit-msg {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   line-height: 1.4;
   word-break: break-all;
@@ -213,15 +213,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .gh-commit-meta code {
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 10px;
-  color: #2f6fed;
-  background: #2f6fed12;
+  font-size: var(--fs-cap);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
   border-radius: 3px;
   padding: 0 5px;
 }
 .gh-commit-meta i {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -247,15 +247,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .gh-preview-hash {
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 11px;
-  color: #1c9e66;
-  background: #1c9e6612;
+  font-size: var(--fs-cap);
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 7%, transparent);
   border-radius: 3px;
   padding: 1px 6px;
   flex: 0 0 auto;
 }
 .gh-preview-msg {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -263,7 +263,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .gh-preview-size {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   flex: 0 0 auto;
   margin-left: auto;
@@ -273,15 +273,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid #dfb067;
-  background: #fdf3df;
-  color: #8a5a16;
-  font-size: 12px;
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, var(--bg-raised));
+  color: var(--amber);
+  font-size: var(--fs-sm);
   padding: 4px 12px;
   border-radius: 6px;
   cursor: pointer;
 }
-.gh-restore-btn:hover:not(:disabled) { background: #c8811c26; border-color: #dfb067; }
+.gh-restore-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--amber) 15%, var(--bg-raised)); border-color: color-mix(in srgb, var(--amber) 38%, transparent); }
 .gh-restore-btn:disabled { opacity: 0.5; cursor: default; }
 .gh-restore-btn { transition: background .16s ease, border-color .16s ease, transform .16s ease, opacity .16s ease; }
 .gh-restore-btn:active:not(:disabled) { transform: translateY(1px); }
@@ -292,9 +292,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   overflow: auto;
   padding: 12px 16px;
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
-  color: #243044;
+  color: var(--text);
   white-space: pre;
   tab-size: 4;
 }
@@ -310,9 +310,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   text-align: center;
 }
 .gh-preview-state { min-height: 120px; }
-.gh-state p { margin: 0; font-size: 12px; }
+.gh-state p { margin: 0; font-size: var(--fs-sm); }
 .gh-faint { color: var(--text-faint); }
-.gh-error { color: #c23a40; }
+.gh-error { color: var(--danger); }
 @keyframes gh-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes gh-panel-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (max-width: 760px) {
@@ -329,7 +329,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   .gh-top { padding: 10px 12px; }
   .gh-path { display: none; }
   .gh-commits { flex-basis: 30%; }
-  .gh-preview { font-size: 11px; padding: 10px 12px; }
+  .gh-preview { font-size: var(--fs-cap); padding: 10px 12px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .gh-overlay, .gh-panel, .gh-iconbtn, .gh-commit, .gh-restore-btn { animation: none; transition: none; }

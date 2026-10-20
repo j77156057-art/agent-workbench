@@ -118,20 +118,20 @@ function contractText(c: RegionCard): string {
 
 <style scoped>
 .rh { text-align: left; min-width: 0; }
-.rh-loading { font-size: 12px; color: var(--text-faint); margin: 8px 0; }
+.rh-loading { font-size: var(--fs-sm); color: var(--text-faint); margin: 8px 0; }
 .rh-head {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 12px; margin-bottom: 14px;
 }
-.rh-head h3 { margin: 0; font-size: 16px; color: var(--text); font-weight: 750; letter-spacing: -.01em; }
-.rh-head p { margin: 3px 0 0; font-size: 12px; color: var(--text-faint); }
+.rh-head h3 { margin: 0; font-size: var(--fs-h2); color: var(--text); font-weight: 750; letter-spacing: -.01em; }
+.rh-head p { margin: 3px 0 0; font-size: var(--fs-sm); color: var(--text-faint); }
 .rh-refresh {
   flex: 0 0 auto; border: 1px solid var(--border); background: var(--bg-raised);
-  color: var(--text-muted); font-size: 11px; border-radius: 6px;
+  color: var(--text-muted); font-size: var(--fs-cap); border-radius: 6px;
   padding: 4px 11px; cursor: pointer; font-family: var(--font-ui);
 }
-.rh-refresh:hover:not(:disabled) { border-color: #b9d0f5; color: var(--accent); }
-.rh-refresh:focus-visible, .rh-card:focus-visible, .rh-missing-toggle:focus-visible, .rh-missing-go:focus-visible { outline: 2px solid #2f6fed88; outline-offset: 2px; }
+.rh-refresh:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); color: var(--accent); }
+.rh-refresh:focus-visible, .rh-card:focus-visible, .rh-missing-toggle:focus-visible, .rh-missing-go:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
 .rh-refresh, .rh-card, .rh-missing-toggle, .rh-missing-go { transition: border-color .16s ease, box-shadow .16s ease, background .16s ease, transform .16s ease, color .16s ease; }
 
 .rh-grid {
@@ -162,7 +162,7 @@ function contractText(c: RegionCard): string {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-.rh-card:hover:not(:disabled) { border-color: #a9c5ef; background: #fcfdff; box-shadow: 0 8px 22px rgba(35,52,84,.11); transform: translateY(-2px); }
+.rh-card:hover:not(:disabled) { border-color: #a9c5ef; background: var(--bg-raised); box-shadow: 0 8px 22px rgba(35,52,84,.11); transform: translateY(-2px); }
 .rh-card:disabled { cursor: default; }
 .rh-card:disabled .rh-locator { display: none; }
 .rh-rail { width: 3px; flex: 0 0 3px; }
@@ -172,11 +172,11 @@ function contractText(c: RegionCard): string {
   padding: 14px 15px 12px;
 }
 .rh-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.rh-name { font-size: 14px; font-weight: 750; color: var(--text); }
-.rh-dir { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.rh-name { font-size: var(--fs-body); font-weight: 750; color: var(--text); }
+.rh-dir { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); }
 .rh-branch {
   margin-left: auto; flex: 0 0 auto;
-  font-size: 10px; color: var(--text-muted);
+  font-size: var(--fs-cap); color: var(--text-muted);
   background: var(--bg-hover); border-radius: 4px; padding: 0 6px; line-height: 16px;
 }
 /* 定位图标：默认隐入，hover 卡片才出现，表达"点击=在树里定位" */
@@ -187,24 +187,24 @@ function contractText(c: RegionCard): string {
 }
 .rh-card:hover .rh-locator { opacity: 1; transform: none; color: var(--accent); }
 .rh-desc {
-  font-size: 12px; color: var(--text-muted); line-height: 1.6;
+  font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.6;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
 /* 朴素文本统计行（替代原来的三个灰 pill） */
 .rh-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.rh-line-item { font-size: 11px; color: var(--text-faint); }
+.rh-line-item { font-size: var(--fs-cap); color: var(--text-faint); }
 .rh-line-item b { color: var(--text-muted); font-weight: 700; }
-.rh-line-warn { font-size: 11px; color: var(--amber); }
+.rh-line-warn { font-size: var(--fs-cap); color: var(--amber); }
 .rh-line-warn b { font-weight: 700; }
-.rh-line-faint { font-size: 11px; color: var(--text-faint); }
+.rh-line-faint { font-size: var(--fs-cap); color: var(--text-faint); }
 .rh-line-bad { color: var(--amber); }
 
 /* 最近提交一行：小字 + 省略号 */
 .rh-commit {
   display: flex; align-items: center; gap: 6px;
-  font-size: 10px; color: var(--text-faint);
+  font-size: var(--fs-cap); color: var(--text-faint);
   min-width: 0;
 }
 .rh-hash {
@@ -224,12 +224,12 @@ function contractText(c: RegionCard): string {
   padding: 8px 11px;
   border: 1px dashed var(--border);
   border-radius: 9px;
-  background: rgba(255,255,255,.6);
+  background: color-mix(in srgb, var(--bg-raised) 66%, transparent);
 }
 .rh-missing-toggle {
   display: inline-flex; align-items: center; gap: 6px;
   border: none; background: transparent; cursor: pointer;
-  font-family: var(--font-ui); font-size: 12px; color: var(--text-faint);
+  font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--text-faint);
   padding: 2px 0;
 }
 .rh-missing-toggle:hover { color: var(--text-muted); }
@@ -238,7 +238,7 @@ function contractText(c: RegionCard): string {
 .rh-caret-open { transform: rotate(180deg); }
 .rh-missing-go {
   border: none; background: transparent; cursor: pointer;
-  font-family: var(--font-ui); font-size: 12px; color: var(--accent);
+  font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--accent);
   padding: 2px 0;
 }
 .rh-missing-go:hover { text-decoration: underline; }
@@ -250,11 +250,11 @@ function contractText(c: RegionCard): string {
 }
 .rh-missing-list li {
   display: flex; align-items: center; gap: 8px;
-  font-size: 12px; color: var(--text-muted);
+  font-size: var(--fs-sm); color: var(--text-muted);
 }
 .rh-missing-list b { font-weight: 600; color: var(--text); }
 .rh-missing-list code {
-  font-family: var(--font-mono); font-size: 10px; color: var(--text-faint);
+  font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint);
 }
 .rh-missing-list .rh-line-faint { margin-left: auto; }
 .rh-dot { width: 7px; height: 7px; border-radius: 2px; flex: 0 0 7px; }

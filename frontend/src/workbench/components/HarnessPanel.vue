@@ -1,16 +1,21 @@
 <script setup lang="ts">
-// AI 运行台：把 harness 后端能力（成本预算 / 会话 / 逐轮轨迹 / 技能与钩子）
+// AI 运行台：把 harness 后端能力（会话 / 逐轮轨迹 / 技能与钩子）
 // 做成普通人看得懂的面板。静态预览（无后端）时自动使用演示数据。
+//
+// 2026-10-19：删掉「花费」tab —— 费用展示、预算上限、每分钟限流早已在
+// 设置页「用量与费用」分区（SettingsView.vue），同一个数字在两处显示、
+// 两处可改，是纯粹的对账歧义。唯一被移走时无处可去的动作是「计数清零」，
+// 已补进设置页的用量分区（resetSpent）。这里只留「这张表在讲什么」。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   harnessApi, setSessionId, getSessionId, startNewSession, fmtTraceError,
-  type BudgetStatus, type BudgetCheck, type SessionInfo,
+  type SessionInfo,
   type TraceItem, type TraceSummary, type SkillInfo,
   agentApi, type LangSmithStatus,
 } from '../api'
 import {
   demoMode,
-  demoBudget, demoSessions, demoTraceItems, demoTraceSummary, demoSkills, demoHooks,
+  demoSessions, demoTraceItems, demoTraceSummary, demoSkills, demoHooks,
 } from '../composables/demo'
 import { useWorkbench } from '../composables/workbench'
 import { appEvents } from '../eventBus'
@@ -19,12 +24,10 @@ import { costLabel } from '../composables/costLabel'
 const { openFlow } = useWorkbench()
 
 const open = ref(false)
-const tab = ref<'cost' | 'sessions' | 'trace' | 'skills'>('cost')
+const tab = ref<'sessions' | 'trace' | 'skills'>('sessions')
 const loading = ref(false)
 const error = ref('')
 
-const budget = ref<BudgetStatus | null>(null)
-const budgetCheck = ref<BudgetCheck | null>(null)
 const sessions = ref<SessionInfo[]>([])
 /** 当前标签页的会话 id：用于在列表里高亮「当前会话」。 */
 const currentId = ref(getSessionId())
@@ -42,12 +45,10 @@ const breakpointReason = ref('')
 const breakpointBlock = ref(true)
 const hooksTotal = computed(() => Object.values(hooksCounts.value).reduce((a, b) => a + b, 0))
 
-const limitInput = ref('')
 const actionMsg = ref('')
 const langsmith = ref<LangSmithStatus | null>(null)
 
 const TABS = [
-  { key: 'cost', label: '花费' },
   { key: 'sessions', label: '对话' },
   { key: 'trace', label: '操作记录' },
   { key: 'skills', label: '技能与扩展' },
@@ -128,8 +129,6 @@ async function loadAll() {
   currentId.value = getSessionId()   // 每次刷新列表时同步「当前会话」标记
   try {
     if (demoMode.value) {
-      budget.value = demoBudget.status
-      budgetCheck.value = demoBudget.check
       sessions.value = [...demoSessions]
       traces.value = [...demoTraceItems]
       traceSummary.value = demoTraceSummary as unknown as TraceSummary
@@ -139,16 +138,13 @@ async function loadAll() {
       langsmith.value = { ok: true, installed: true, key_configured: true, enabled: false, realtime: false, project: 'demo' }
       return
     }
-    const [b, s, t, sk, hk, smith] = await Promise.all([
-      harnessApi.budget(),
+    const [s, t, sk, hk, smith] = await Promise.all([
       harnessApi.sessions(),
       harnessApi.trace(30),
       harnessApi.skills(),
       harnessApi.hooks(),
       agentApi.langsmith().catch(() => null),
     ])
-    budget.value = b.status
-    budgetCheck.value = b.check
     sessions.value = s.items || []
     traces.value = t.items || []
     traceSummary.value = t.summary
@@ -180,23 +176,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('docmind:project-changed', onProjectChanged)
   open.value = false
 })
-async function saveLimit() {
-  actionMsg.value = ''
-  const v = Number(limitInput.value)
-  if (!Number.isFinite(v) || v < 0) { actionMsg.value = '请输入不小于 0 的数字（0 = 不限预算）'; return }
-  if (demoMode.value) { actionMsg.value = '演示模式不能修改预算'; return }
-  const r = await harnessApi.setBudgetLimit(v)
-  if (r.ok && r.check) { budgetCheck.value = r.check; actionMsg.value = '预算已保存' }
-  else actionMsg.value = r.error || '保存失败'
-  if (r.ok) void loadAll()
-}
-async function resetSpent() {
-  if (demoMode.value) { actionMsg.value = '演示模式不能清零'; return }
-  if (!window.confirm('确定把累计花费计数清零吗？（不影响模型与账本文件，只重置计数）')) return
-  const r = await harnessApi.resetBudget()
-  if (r.ok) actionMsg.value = '累计计数已清零'
-  void loadAll()
-}
 async function removeSession(id: string) {
   if (demoMode.value) {
     sessions.value = sessions.value.filter((x) => x.session_id !== id)
@@ -294,7 +273,7 @@ defineExpose({ show })
         <div class="hp-head wb-modal-head">
           <div>
             <b>AI 运行台</b>
-            <p>看 AI 每次回答花了多少、操作了什么、装了哪些扩展</p>
+            <p>看 AI 聊过哪些对话、每步做了什么、装了哪些扩展。花费与预算在设置里看。</p>
           </div>
           <button class="hp-x" title="关闭" @click="open = false">×</button>
         </div>
@@ -309,43 +288,8 @@ defineExpose({ show })
           <button v-for="t in TABS" :key="t.key" :class="{ active: tab === t.key }" @click="tab = t.key">{{ t.label }}</button>
         </div>
 
-        <!-- ---------------- 花费 ---------------- -->
-        <div v-if="tab === 'cost'" class="hp-pane">
-          <div class="hp-statgrid">
-            <div class="hp-stat wb-card">
-              <span>今日 AI 花费</span>
-              <b>{{ money(budget?.day_spent) }}</b>
-              <em>{{ budget?.day || '' }}</em>
-            </div>
-            <div class="hp-stat wb-card">
-              <span>累计花费</span>
-              <b>{{ money(budget?.global_spent) }}</b>
-              <em>按模型官方单价折算</em>
-            </div>
-            <div class="hp-stat wb-card">
-              <span>预算上限</span>
-              <b v-if="(budget?.global_limit || 0) > 0">{{ money(budget?.global_limit) }}</b>
-              <b v-else class="hp-none">不限</b>
-              <em>超过预算 AI 会自动停下</em>
-            </div>
-          </div>
-          <p class="hp-plain">
-            本地模型（Ollama / llama.cpp）在你自己的显卡上运行，花费永远为 ¥0；
-            使用云端 API 时，这里按官方单价累计费用，防止 AI 跑超支。
-          </p>
-          <div class="hp-row">
-            <input v-model="limitInput" placeholder="输入累计预算上限（元），0 表示不限" />
-            <button class="hp-btn primary" @click="saveLimit">保存预算</button>
-            <button class="hp-btn" @click="resetSpent">计数清零</button>
-          </div>
-          <div v-if="budget && (budget.per_minute_calls_limit > 0 || budget.per_minute_cost_limit > 0)" class="hp-rateline">
-            每分钟限流：{{ budget.per_minute_calls_limit || '不限' }} 次
-            <template v-if="budget.per_minute_cost_limit > 0"> / {{ money(budget.per_minute_cost_limit) }}</template>
-          </div>
-        </div>
-
         <!-- ---------------- 对话 ---------------- -->
-        <div v-else-if="tab === 'sessions'" class="hp-pane">
+        <div v-if="tab === 'sessions'" class="hp-pane">
           <div class="hp-sesshead">
             <p class="hp-plain">每段对话都会单独保存，互不串台。删除后该段问答历史不可恢复。</p>
             <button class="hp-btn sm" title="开始一段全新对话（当前会话保留在列表里，可随时「继续」）" @click="newSession">+ 新会话</button>
@@ -486,7 +430,7 @@ defineExpose({ show })
   border: 1px solid var(--border-2);
   background: var(--accent-soft);
   color: var(--accent-text);
-  border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+  border-radius: 6px; font-size: var(--fs-sm); font-weight: 600; cursor: pointer;
   white-space: nowrap;
 }
 .hp-trigger:hover { border-color: var(--accent); filter: brightness(1.02); }
@@ -500,100 +444,100 @@ defineExpose({ show })
   padding: 15px 16px 14px;
 }
 .hp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.hp-head b { font-size: 14px; color: var(--text); }
-.hp-head p { margin: 3px 0 0; font-size: 12px; color: var(--text-muted); }
-.hp-x { border: none; background: transparent; font-size: 18px; line-height: 1; color: var(--text-muted); cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.hp-head b { font-size: var(--fs-body); color: var(--text); }
+.hp-head p { margin: 3px 0 0; font-size: var(--fs-sm); color: var(--text-muted); }
+.hp-x { border: none; background: transparent; font-size: var(--fs-lead); line-height: 1; color: var(--text-muted); cursor: pointer; padding: 2px 6px; border-radius: 6px; }
 .hp-x:hover { background: var(--bg-hover); color: var(--text); }
-.hp-demo { margin-top: 10px; font-size: 12px; line-height: 1.6; color: var(--amber); background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); border-radius: 8px; padding: 7px 10px; }
-.hp-err { margin: 8px 0 0; font-size: 12px; color: var(--danger); }
-.hp-actionmsg { margin: 8px 0 0; font-size: 12px; color: var(--green); }
+.hp-demo { margin-top: 10px; font-size: var(--fs-sm); line-height: 1.6; color: var(--amber); background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); border-radius: 8px; padding: 7px 10px; }
+.hp-err { margin: 8px 0 0; font-size: var(--fs-sm); color: var(--danger); }
+.hp-actionmsg { margin: 8px 0 0; font-size: var(--fs-sm); color: var(--green); }
 .hp-tabs { display: flex; gap: 4px; margin: 12px 0 10px; background: var(--bg); padding: 3px; border-radius: 9px; }
 .hp-tabs button {
   flex: 1; border: none; background: transparent; cursor: pointer;
-  font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 6px 0; border-radius: 7px;
+  font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); padding: 6px 0; border-radius: 7px;
 }
 .hp-tabs button.active { background: var(--bg-raised); color: var(--accent-text); box-shadow: 0 1px 4px rgba(35,52,84,.12); }
-.hp-pane { font-size: 12px; }
+.hp-pane { font-size: var(--fs-sm); }
 .hp-statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
 .hp-stat { background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 11px; padding: 10px 11px; display: flex; flex-direction: column; gap: 3px; }
-.hp-stat span { font-size: 10px; color: var(--text-muted); }
-.hp-stat b { font-size: 17px; color: var(--text); font-variant-numeric: tabular-nums; }
-.hp-stat b.hp-none { color: var(--green); font-size: 14px; }
-.hp-stat em { font-style: normal; font-size: 10px; color: var(--text-muted); line-height: 1.4; }
-.hp-plain { margin: 10px 0 0; font-size: 12px; line-height: 1.75; color: var(--text-muted); }
+.hp-stat span { font-size: var(--fs-cap); color: var(--text-muted); }
+.hp-stat b { font-size: var(--fs-lead); color: var(--text); font-variant-numeric: tabular-nums; }
+.hp-stat b.hp-none { color: var(--green); font-size: var(--fs-body); }
+.hp-stat em { font-style: normal; font-size: var(--fs-cap); color: var(--text-muted); line-height: 1.4; }
+.hp-plain { margin: 10px 0 0; font-size: var(--fs-sm); line-height: 1.75; color: var(--text-muted); }
 .hp-row { display: flex; gap: 7px; margin-top: 10px; }
-.hp-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--border-2); border-radius: 7px; font: inherit; color: var(--text); background: var(--bg-raised); outline: none; }
-.hp-row select { min-width: 170px; padding: 7px 9px; border: 1px solid var(--border-2); border-radius: 7px; font: inherit; color: var(--text); background: var(--bg-raised); outline: none; }
-.hp-row input:focus { border-color: var(--accent); background: var(--bg-raised); box-shadow: 0 0 0 3px rgba(47,111,237,.12); }
-.hp-btn { border: 1px solid var(--border-2); background: var(--bg-raised); color: var(--text); border-radius: 7px; padding: 7px 12px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.hp-row input { flex: 1; min-width: 0; padding: 7px 10px; border: 1px solid var(--border-graphic); border-radius: 7px; font: inherit; color: var(--text); background: var(--bg-raised); outline: none; }
+.hp-row select { min-width: 170px; padding: 7px 9px; border: 1px solid var(--border-graphic); border-radius: 7px; font: inherit; color: var(--text); background: var(--bg-raised); outline: none; }
+.hp-row input:focus { border-color: var(--accent); background: var(--bg-raised); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.hp-btn { border: 1px solid var(--border-2); background: var(--bg-raised); color: var(--text); border-radius: 7px; padding: 7px 12px; font-size: var(--fs-sm); font-weight: 600; cursor: pointer; white-space: nowrap; }
 .hp-btn:hover { border-color: var(--border); background: var(--bg-raised); }
-.hp-btn.primary { background: var(--accent); border-color: var(--accent-deep); color: var(--accent-ink); }
+.hp-btn.primary { --btn-fill: var(--accent); background: var(--accent); border-color: var(--accent-deep); color: var(--accent-ink); }
 .hp-btn.primary:hover { filter: brightness(1.06); }
 .hp-btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
 .hp-btn.danger:hover { background: color-mix(in srgb, var(--danger) 8%, transparent); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
-.hp-btn.sm { padding: 4px 10px; font-size: 11px; }
+.hp-btn.sm { padding: 4px 10px; font-size: var(--fs-cap); }
 .hp-link { border: none; background: none; color: var(--accent-text); cursor: pointer; font: inherit; padding: 0; }
-.hp-rateline { margin-top: 9px; font-size: 11px; color: var(--text-muted); }
-.hp-empty { margin-top: 10px; padding: 16px; text-align: center; font-size: 12px; color: var(--text-muted); background: var(--bg-raised); border: 1px dashed var(--border-2); border-radius: 10px; line-height: 1.7; }
+.hp-rateline { margin-top: 9px; font-size: var(--fs-cap); color: var(--text-muted); }
+.hp-empty { margin-top: 10px; padding: 16px; text-align: center; font-size: var(--fs-sm); color: var(--text-muted); background: var(--bg-raised); border: 1px dashed var(--border-2); border-radius: 10px; line-height: 1.7; }
 .hp-list { margin-top: 9px; display: flex; flex-direction: column; gap: 7px; max-height: 380px; overflow: auto; }
 .hp-item { display: flex; align-items: center; gap: 8px; background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 10px; padding: 8px 11px; }
 .hp-item-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.hp-item-main b { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hp-item-main span { font-size: 11px; color: var(--text-muted); }
-.hp-item-main em { font-style: normal; font-size: 10px; color: var(--text-muted); }
-.hp-item.on { border-color: var(--border-2); background: var(--accent-soft); box-shadow: 0 0 0 2px rgba(47,111,237,.10); }
-.hp-cur { margin-left: 6px; font-size: 10px; font-weight: 700; color: var(--accent-text); background: var(--accent-soft); border: 1px solid var(--border-2); border-radius: 999px; padding: 0 6px; }
+.hp-item-main b { font-size: var(--fs-sm); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hp-item-main span { font-size: var(--fs-cap); color: var(--text-muted); }
+.hp-item-main em { font-style: normal; font-size: var(--fs-cap); color: var(--text-muted); }
+.hp-item.on { border-color: var(--border-2); background: var(--accent-soft); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
+.hp-cur { margin-left: 6px; font-size: var(--fs-cap); font-weight: 700; color: var(--accent-text); background: var(--accent-soft); border: 1px solid var(--border-2); border-radius: 999px; padding: 0 6px; }
 .hp-sesshead { display: flex; align-items: center; gap: 10px; }
 .hp-sesshead .hp-plain { flex: 1; margin: 0; }
-.hp-sumline { font-size: 12px; color: var(--text-muted); background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 9px; padding: 8px 10px; line-height: 1.8; }
+.hp-sumline { font-size: var(--fs-sm); color: var(--text-muted); background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 9px; padding: 8px 10px; line-height: 1.8; }
 .hp-sumline b { color: var(--text); }
 .hp-sumline b.bad { color: var(--danger); }
 .hp-trace { background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 10px; padding: 8px 11px; }
-.hp-trace-head { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.hp-trace-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-cap); }
 .hp-time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .hp-model { color: var(--accent-text); font-weight: 600; }
 .hp-spacer { flex: 1; }
 .hp-nums { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .hp-cache { color: var(--green); font-weight: 600; }
-.hp-tag { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.hp-tag { font-size: var(--fs-cap); font-weight: 700; padding: 2px 8px; border-radius: 999px; }
 .hp-tag-ok { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
 .hp-tag-err { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .hp-tag-stop { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
 .hp-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.hp-tools i { font-style: normal; font-family: var(--font-mono); font-size: 10px; color: var(--accent-text); background: var(--accent-soft); border: 1px solid var(--border-2); border-radius: 5px; padding: 1px 7px; }
-.hp-traceerr { margin-top: 5px; font-size: 11px; color: var(--danger); }
+.hp-tools i { font-style: normal; font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--accent-text); background: var(--accent-soft); border: 1px solid var(--border-2); border-radius: 5px; padding: 1px 7px; }
+.hp-traceerr { margin-top: 5px; font-size: var(--fs-cap); color: var(--danger); }
 .hp-footrow { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
-.hp-linkline { font-size: 12px; color: var(--accent-text); text-decoration: none; }
+.hp-linkline { font-size: var(--fs-sm); color: var(--accent-text); text-decoration: none; }
 .hp-linkline:hover { text-decoration: underline; }
 .hp-subhead { display: flex; align-items: center; justify-content: space-between; }
-.hp-subhead b { font-size: 12px; color: var(--text); }
+.hp-subhead b { font-size: var(--fs-sm); color: var(--text); }
 .hp-skill { background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 10px; padding: 9px 11px; display: flex; flex-direction: column; gap: 3px; }
-.hp-skill b { font-size: 12px; color: var(--text); }
-.hp-skill span { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
-.hp-skill em { font-style: normal; font-size: 10px; color: var(--accent-text); }
-.hp-skill small { font-size: 10px; color: var(--text-muted); }
+.hp-skill b { font-size: var(--fs-sm); color: var(--text); }
+.hp-skill span { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.6; }
+.hp-skill em { font-style: normal; font-size: var(--fs-cap); color: var(--accent-text); }
+.hp-skill small { font-size: var(--fs-cap); color: var(--text-muted); }
 .hp-skill-history { color: var(--accent-text) !important; }
 .hp-skill-rollback { align-self: flex-start; margin-top: 4px; }
 .hp-hook-breakpoint { margin-top:10px; padding:8px 9px; border: 1px solid var(--border-2); border-radius:8px; background: var(--bg-raised); }
 .hp-hook-breakpoint .hp-subhead { margin:0 0 6px; }
-.hp-hook-breakpoint .hp-subhead small { color: var(--text-muted); font-size:9px; font-weight:400; margin-left:6px; }
+.hp-hook-breakpoint .hp-subhead small { color: var(--text-muted); font-size: var(--fs-cap); font-weight:400; margin-left:6px; }
 .hp-hook-breakpoint select { min-width:125px; }
-.hp-check { display:inline-flex; align-items:center; gap:4px; color: var(--text-muted); font-size:10px; white-space:nowrap; }
+.hp-check { display:inline-flex; align-items:center; gap:4px; color: var(--text-muted); font-size: var(--fs-cap); white-space:nowrap; }
 .hp-check input { margin:0; }
 .hp-hook-list { display:flex; flex-direction:column; gap:4px; margin-top:7px; }
-.hp-hook-item { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:5px 6px; border-top: 1px solid var(--border-2); color: var(--text-muted); font-size:10px; }
+.hp-hook-item { display:flex; align-items:center; justify-content:space-between; gap:6px; padding:5px 6px; border-top: 1px solid var(--border-2); color: var(--text-muted); font-size: var(--fs-cap); }
 .hp-hook-item b { color: var(--accent-text); }
 /* LangSmith 状态卡：状态徽标 + 开启指引，不在应用内做在线配置 */
 .hp-ls { margin:8px 0 10px; padding:9px 10px; border: 1px solid var(--border-2); border-radius:9px; background: var(--bg-raised); }
 .hp-ls.on { border-color: color-mix(in srgb, var(--green) 35%, transparent); background: color-mix(in srgb, var(--green) 10%, transparent); }
 .hp-ls-head { display:flex; align-items:center; gap:7px; }
-.hp-ls-head b { font-size:12px; }
-.hp-ls-badge { display:inline-flex; align-items:center; height:17px; padding:0 7px; border-radius:9px; font-size:10px; font-style:normal; font-weight:700; }
+.hp-ls-head b { font-size: var(--fs-sm); }
+.hp-ls-badge { display:inline-flex; align-items:center; height:17px; padding:0 7px; border-radius:9px; font-size: var(--fs-cap); font-style:normal; font-weight:700; }
 .hp-ls-badge.ok { color: var(--green); background: color-mix(in srgb, var(--green) 10%, transparent); }
 .hp-ls-badge.off { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
-.hp-ls-text { color: var(--text-muted); font-size:10px; }
-.hp-ls-line { margin:6px 0 0; color: var(--text-muted); font-size:10px; line-height:1.6; }
-.hp-ls-guide { margin:6px 0 0; color: var(--amber); font-size:10px; line-height:1.7; }
-.hp-ls-err { display:inline-block; margin-right:4px; padding:0 5px; border-radius:4px; background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger); font-size:10px; font-style:normal; }
+.hp-ls-text { color: var(--text-muted); font-size: var(--fs-cap); }
+.hp-ls-line { margin:6px 0 0; color: var(--text-muted); font-size: var(--fs-cap); line-height:1.6; }
+.hp-ls-guide { margin:6px 0 0; color: var(--amber); font-size: var(--fs-cap); line-height:1.7; }
+.hp-ls-err { display:inline-block; margin-right:4px; padding:0 5px; border-radius:4px; background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger); font-size: var(--fs-cap); font-style:normal; }
 .hp-ls .hp-linkline { display:inline-block; margin-top:7px; }
 </style>

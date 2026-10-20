@@ -193,7 +193,9 @@ function onVideoPick(ev: Event) {
         @dragover="onDragover"
       />
       <button v-if="sending" class="cd-send cd-stop" title="停止当前请求" aria-label="停止当前请求" @click="emit('stop')">停止</button>
-      <button class="cd-send" :disabled="(!canSendText && !pendingImages.length)" :title="canSendText || pendingImages.length ? '发送消息（Ctrl+Enter）；运行中发送＝打断当前轮并重定向' : '请描述你的问题（至少包含文字或数字）'" @click="emit('submit')">发送</button>
+      <!-- 2026-10-20：aria-busy —— 全站 451 个按钮此前 0 个有 aria-busy，
+           屏幕阅读器无法知道"正在发送"。 -->
+      <button class="cd-send" :aria-busy="sending" :disabled="(!canSendText && !pendingImages.length)" :title="canSendText || pendingImages.length ? '发送消息（Ctrl+Enter）；运行中发送＝打断当前轮并重定向' : '请描述你的问题（至少包含文字或数字）'" @click="emit('submit')">发送</button>
     </div>
   </footer>
 </template>
@@ -205,8 +207,8 @@ function onVideoPick(ev: Event) {
 .cd-input {
   flex: 1; resize: none;
   background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 7px;
-  padding: 7px 10px; font-size: 12px; font-family: inherit;
+  border: 1px solid var(--border-graphic); border-radius: 7px;
+  padding: 7px 10px; font-size: var(--fs-sm); font-family: inherit;
   outline: none; max-height: 110px;
 }
 .cd-input:focus { border-color: var(--accent); }
@@ -215,8 +217,8 @@ function onVideoPick(ev: Event) {
 .cd-input::placeholder { color: var(--text-muted); opacity: 1; }
 .cd-send {
   height: 30px; padding: 0 16px; border-radius: 7px;
-  border: 1px solid #2560d4; background: linear-gradient(180deg,#3b7ef2,#2f6fed);
-  color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+  border: 1px solid var(--accent-deep); background: linear-gradient(180deg, var(--accent-loud), var(--accent));
+  color: #fff; font-size: var(--fs-sm); font-weight: 600; cursor: pointer;
 }
 .cd-send:disabled { opacity: .4; cursor: default; }
 .cd-stop { background: transparent; color: var(--danger); border-color: var(--danger); }
@@ -226,12 +228,12 @@ function onVideoPick(ev: Event) {
 .cd-chip {
   display: inline-flex; align-items: center; gap: 5px;
   height: 23px; padding: 0 8px;
-  border: 1px solid var(--border); border-radius: 12px;
+  border: 1px solid var(--edge-ink-soft, var(--border)); border-radius: 12px;
   background: transparent; color: var(--text-muted);
-  font-size: 11px; line-height: 1; cursor: pointer;
+  font-size: var(--fs-cap); line-height: 1; cursor: pointer;
   max-width: 60%;
 }
-.cd-chip:hover:not(:disabled):not(.cd-chip-off) { border-color: var(--border-strong); color: var(--text); }
+.cd-chip:hover:not(:disabled):not(.cd-chip-off) { border-color: var(--border-strong); color: var(--text); background: var(--bg-hover); }
 /* 禁用态此前没有任何视觉差别（只有 .cd-send:disabled 有），图片/视频按钮在演示模式
    下看着和可点一样。语音不可用那颗更需要看得出来是「不能点」。
    .55 而不是 .4：禁用态虽豁免 AA，但这颗的文案本身就是给人读的。 */
@@ -244,11 +246,11 @@ function onVideoPick(ev: Event) {
 .cd-chip-model { padding: 0 7px 0 8px; }
 .cd-chip-on {
   color: var(--accent); border-color: var(--accent);
-  background: rgba(37, 96, 212, .07);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
 }
-.cd-chip-native { color: var(--tool); border-color: var(--tool); background: rgba(124, 92, 214, .08); }
+.cd-chip-native { color: var(--tool); border-color: var(--tool); background: color-mix(in srgb, var(--tool) 8%, transparent); }
 .cd-chip-off { opacity: .6; cursor: default; }
-.cd-chip-badge { font-size: 10px; color: var(--text-faint); }
+.cd-chip-badge { font-size: var(--fs-cap); color: var(--text-faint); }
 .cd-chip-native .cd-chip-badge { color: var(--tool); }
 
 /* 迷你开关 */
@@ -260,11 +262,11 @@ function onVideoPick(ev: Event) {
 .cd-switch i {
   position: absolute; top: 1.5px; left: 2px;
   width: 9px; height: 9px; border-radius: 50%;
-  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  background: var(--bg-raised); box-shadow: 0 1px 2px rgba(0,0,0,.25);
   transition: left .15s;
 }
-.cd-switch.on { background: var(--accent); }
-.cd-chip-native .cd-switch.on { background: var(--tool); }
+.cd-switch.on { --btn-fill: var(--accent); background: var(--accent); }
+.cd-chip-native .cd-switch.on { --btn-fill: var(--tool); background: var(--tool); }
 .cd-switch.on i { left: 11px; }
 
 /* 上下文窗口用量指示 */
@@ -282,27 +284,27 @@ function onVideoPick(ev: Event) {
 }
 .cd-ctx-ok { color: var(--text-faint); }
 .cd-ctx-high {
-  color: #b47a1e; border-color: rgba(180, 122, 30, .45);
-  background: rgba(180, 122, 30, .08);
+  color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, transparent);
+  background: color-mix(in srgb, var(--amber) 8%, transparent);
 }
 .cd-ctx-warn {
-  color: #cc5347; border-color: rgba(204, 83, 71, .5);
-  background: rgba(204, 83, 71, .09);
+  color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
 }
 
 .cd-file-input { display: none; }
 .cd-attach { cursor: pointer; }
 .cd-attachments { display: inline-flex; gap: 4px; flex-wrap: wrap; max-width: 360px; }
-.cd-attachment { display: inline-flex; align-items: center; gap: 3px; max-width: 150px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted); font-size: 10px; }
+.cd-attachment { display: inline-flex; align-items: center; gap: 3px; max-width: 150px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted); font-size: var(--fs-cap); }
 .cd-attachment button { border: 0; background: transparent; color: var(--text-faint); cursor: pointer; padding: 0 1px; }
-.cd-attachment-error { color: var(--danger); font-size: 10px; }
+.cd-attachment-error { color: var(--danger); font-size: var(--fs-cap); }
 
 /* 输入工具行的层次与微动效 */
 .cd-tools { padding: 1px 2px 0; }
 .cd-inputbar { border-top: 1px solid color-mix(in srgb, var(--border) 84%, white); }
 .cd-attachments { animation: cd-attachment-in .2s var(--ease-spring) both; }
-.cd-attachment { background: rgba(255,255,255,.66); transition: border-color .16s, background .16s, transform .16s var(--ease-spring); }
-.cd-attachment:hover { border-color: var(--accent); background: #fff; transform: translateY(-1px); }
+.cd-attachment { background: color-mix(in srgb, var(--bg-raised) 66%, transparent); transition: border-color .16s, background .16s, transform .16s var(--ease-spring); }
+.cd-attachment:hover { border-color: var(--accent); background: var(--bg-raised); transform: translateY(-1px); }
 .cd-send:active:not(:disabled) { transform: translateY(0); }
 @keyframes cd-attachment-in {
   from { opacity: 0; transform: translateY(3px) scale(.98); }
@@ -314,7 +316,7 @@ function onVideoPick(ev: Event) {
   .cd-chip { max-width: calc(100vw - 24px); }
   .cd-chip-model { max-width: min(62vw, 240px); }
   .cd-input-row { gap: 6px; }
-  .cd-input { min-width: 0; font-size: 12px; }
+  .cd-input { min-width: 0; font-size: var(--fs-sm); }
   .cd-send { padding-inline: 12px; }
 }
 </style>

@@ -72,18 +72,18 @@ watch(() => props.path, load, { immediate: true })
   padding: 14px 18px 10px;
   border-bottom: 1px solid var(--border);
 }
-.fv-titles h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.fv-titles h2 { margin: 0; font-size: var(--fs-h3); font-weight: 600; }
 .fv-path {
   margin-top: 2px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   word-break: break-all;
 }
 .fv-x {
   border: none;
   background: none;
-  font-size: 22px;
+  font-size: var(--fs-h1);
   line-height: 1;
   color: var(--text-faint);
   cursor: pointer;
@@ -96,9 +96,9 @@ watch(() => props.path, load, { immediate: true })
   padding: 8px 0;
   overflow: auto;
   max-height: 70vh;
-  background: #fcfdff;
+  background: var(--bg-raised);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 .fv-ln { display: flex; gap: 12px; padding: 0 14px; }
@@ -108,8 +108,8 @@ watch(() => props.path, load, { immediate: true })
   color: var(--text-faint);
   user-select: none;
 }
-.fv-src { flex: 1; min-width: 0; color: #334055; white-space: pre-wrap; word-break: break-word; }
-.fv-ln.hl { background: rgba(47, 111, 237, .12); box-shadow: inset 3px 0 0 var(--accent); }
-.fv-note { padding: 10px 16px; color: var(--text-faint); font-size: 12px; }
-.fv-err { padding: 16px 18px; color: var(--amber); font-size: 13px; line-height: 1.7; }
+.fv-src { flex: 1; min-width: 0; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.fv-ln.hl { background: color-mix(in srgb, var(--accent) 12%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.fv-note { padding: 10px 16px; color: var(--text-faint); font-size: var(--fs-sm); }
+.fv-err { padding: 16px 18px; color: var(--amber); font-size: var(--fs-md); line-height: 1.7; }
 </style>

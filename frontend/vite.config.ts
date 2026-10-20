@@ -115,7 +115,10 @@ export default defineConfig({
     // （host: true 会绑 0.0.0.0，而 /api 代理指向有写能力的后端）。
     host: '127.0.0.1',
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
+      // 后端端口跟 desktop.py 一样认 DOCMIND_PORT：本机 8000 常被另一个项目占着，
+      // 换端口起 DocMind 时，dev 模式的 /api 也必须跟着指到同一个后端，
+      // 否则前端调的是**另一个应用**的 API。
+      '/api': `http://127.0.0.1:${process.env.DOCMIND_PORT || 8000}`,
     },
   },
 })

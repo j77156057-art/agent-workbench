@@ -216,12 +216,24 @@ html[data-layout] .ov-inner {
 }
 html[data-layout] .ov-columns { gap: var(--style-space-l) !important; }
 
-/* —— ⑤ 排版尺度：字号整体缩放 + 行距/留白跟随布局 —— */
+/* —— ⑤ 排版尺度：字号整体缩放 + 行距/留白跟随布局 ——
+   2026-10-20：字号缩放搬进了字阶令牌本身（--fs-* 全部是 calc(基准 * var(--style-scale))），
+   所以这里**不能再乘一次** —— 否则 focus 的 1.06 会平方成 1.12。
+   组件里 931 处 var(--fs-*) 由此自动跟随布局密度，零组件改动。 */
 html[data-layout] body {
-  font-size: calc(var(--fs-body) * var(--style-scale));
+  font-size: var(--fs-body);
   line-height: var(--style-line);
 }
 html[data-layout] :is(.ov-main, .wb-main) { --style-space-l: inherit; }
+
+/* —— ⑤b 小间距令牌落地（--style-space-s）——
+   这个令牌 5 套布局各定义（8/10/6/6/7px）却**全仓 0 消费点** —— 切布局时
+   "紧凑/宽松"只体现在留白上，同组元素之间的距离纹丝不动。
+   接到两处"小间距"语义最明确的地方：
+     · 对话台里相邻两条消息之间的距离（.cd-msg 的 margin-bottom）
+     · 对话台内容区的上内边距（.cd-body 的 padding-top） */
+html[data-layout] .cd-msg { margin-bottom: var(--style-space-s); }
+html[data-layout] .cd-body { padding-top: var(--style-space-s); }
 
 /* —— ⑥ focus：主区加一条竖向「书脊」辅助线，视觉上强化单列阅读 —— */
 html[data-layout='focus'] .wb-main {

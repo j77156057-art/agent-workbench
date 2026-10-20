@@ -122,8 +122,8 @@ function repoKey(dir: string) {
           <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
             <path d="M4.2 2.4 V12.6" stroke="#5d6b82" stroke-width="1.3" stroke-linecap="round" />
             <path d="M4.2 6.6 C4.2 8.6 10.8 7.2 10.8 9.4" fill="none" stroke="#5d6b82" stroke-width="1.3" stroke-linecap="round" />
-            <circle cx="4.2" cy="2.4" r="1.7" fill="none" stroke="#2f6fed" stroke-width="1.2" />
-            <circle cx="4.2" cy="12.6" r="1.7" fill="none" stroke="#2f6fed" stroke-width="1.2" />
+            <circle cx="4.2" cy="2.4" r="1.7" fill="none" stroke="var(--accent)" stroke-width="1.2" />
+            <circle cx="4.2" cy="12.6" r="1.7" fill="none" stroke="var(--accent)" stroke-width="1.2" />
             <circle cx="10.8" cy="9.4" r="1.7" fill="none" stroke="#d99a2b" stroke-width="1.2" />
           </svg>
           <h2>改动总览</h2>
@@ -235,10 +235,10 @@ function repoKey(dir: string) {
   border-bottom: 1px solid var(--border);
 }
 .gc-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
-.gc-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.gc-stats { font-size: 12px; color: var(--text-faint); }
+.gc-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
+.gc-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .gc-ro {
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -272,18 +272,18 @@ function repoKey(dir: string) {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 2px 9px;
   border-radius: 11px;
   cursor: pointer;
 }
-.gc-chip i { font-style: normal; font-size: 10px; color: var(--text-faint); }
+.gc-chip i { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); }
 .gc-chip:hover { border-color: var(--border-strong); color: var(--text); }
 /* 选中态用强调色软底：写死浅蓝在深色皮肤下会变成亮块（且会盖掉皮肤强调色）。 */
 .gc-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text, var(--accent)); }
 .gc-chip.active i { color: var(--accent); }
 .gc-content { flex: 1; overflow-y: auto; padding: 8px 12px 20px; }
-.gc-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: 12px; }
+.gc-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: var(--fs-sm); }
 .gc-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
 .gc-clean { color: var(--green); }
 .gc-repo { margin: 8px 2px 0; }
@@ -303,10 +303,10 @@ function repoKey(dir: string) {
 .gc-repo-head:hover { background: var(--bg-hover); }
 .gc-caret { color: var(--text-faint); transition: transform .12s; flex: 0 0 auto; }
 .gc-caret.open { transform: rotate(90deg); }
-.gc-repo-name { font-size: 12px; font-weight: 600; letter-spacing: .04em; color: var(--text-muted); flex: 0 0 auto; }
+.gc-repo-name { font-size: var(--fs-sm); font-weight: 600; letter-spacing: .04em; color: var(--text-muted); flex: 0 0 auto; }
 .gc-branch {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -317,8 +317,8 @@ function repoKey(dir: string) {
   white-space: nowrap;
   min-width: 0;
 }
-.gc-repo-count { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: auto; flex: 0 0 auto; }
-.gc-repo-err { margin: 2px 0 4px 26px; font-size: 11px; color: var(--danger); }
+.gc-repo-count { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); margin-left: auto; flex: 0 0 auto; }
+.gc-repo-err { margin: 2px 0 4px 26px; font-size: var(--fs-cap); color: var(--danger); }
 .gc-files { list-style: none; margin: 0; padding: 0 0 4px 22px; }
 .gc-file {
   width: 100%;
@@ -329,7 +329,7 @@ function repoKey(dir: string) {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
   border-radius: 4px;
@@ -337,7 +337,7 @@ function repoKey(dir: string) {
 .gc-file:hover { background: var(--bg-selected); }
 .gc-kind {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   border: 1px solid;
   border-radius: 4px;
   padding: 0 5px;
@@ -346,7 +346,7 @@ function repoKey(dir: string) {
 }
 .gc-path {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -355,7 +355,7 @@ function repoKey(dir: string) {
 }
 .gc-path-to { color: var(--text-muted); }
 .gc-arrow { color: var(--text-faint); flex: 0 0 auto; }
-.gc-note { margin: 10px 6px 0; font-size: 11px; color: var(--amber); }
+.gc-note { margin: 10px 6px 0; font-size: var(--fs-cap); color: var(--amber); }
 .gc-note-muted { color: var(--text-faint); }
 /* 入场动画由基类 .wb-modal-backdrop / .wb-modal-shell 提供（wb-modal-fade/rise），
    这里不再自带 keyframes，避免与基类 animation 抢同一属性。 */

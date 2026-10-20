@@ -378,10 +378,10 @@ border-radius: var(--r-sm); }
 .answer :deep(.md-link) { color: var(--accent); border-bottom: 2px solid transparent; }
 .answer :deep(.md-link:hover) { border-bottom-color: var(--accent); }
 
-.typing { color: var(--text-muted); font-size: 13px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--font-sans); }
+.typing { color: var(--text-muted); font-size: var(--fs-md); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--font-sans); }
 .typing-phase { color: var(--text); font-weight: 600; }
 .typing-time {
-  font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);
+  font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted);
   background: var(--bg-hover); border: 1px solid var(--border); padding: 1px 8px;
 }
 .td {
@@ -405,7 +405,7 @@ border-radius: var(--r-sm); }
 }
 @keyframes ai-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
 
-.flag { margin-top: 8px; font-family: var(--font-mono); font-size: 12px; }
+.flag { margin-top: 8px; font-family: var(--font-mono); font-size: var(--fs-sm); }
 .flag.stopped { color: var(--text-faint); }
 .flag.error { color: var(--danger); }
 /* P1 重试层错误染色（与 ChatDock 同款口径）：
@@ -414,15 +414,15 @@ border-radius: var(--r-sm); }
  *   flag-soft      — 旧的「服务异常」/未识别 → 灰（不显眼）
  */
 .flag.error.flag-permanent { color: var(--danger); font-weight: 600; }
-.flag.error.flag-warn { color: #a66f00; }
+.flag.error.flag-warn { color: var(--amber); }
 .flag.error.flag-soft { color: var(--text-faint); }
 /* P0 一致性自检提示：observation 关键词命中率 < 50% 时给用户一个不挡眼但可见的提示。
  * 位置在 .answer 顶部第一行；不挡后续内容、不改 status。 */
 .flag.warn {
   display: block;
-  color: #a66f00;
-  background: rgba(200,129,28,.06);
-  border: 1px solid rgba(200,129,28,.22);
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 22%, transparent);
   border-radius: 6px;
   padding: 4px 8px;
   margin: 0 0 8px;
@@ -433,13 +433,13 @@ border-radius: var(--r-sm); }
   display: inline-block;
   margin-right: 6px;
   padding: 0 6px;
-  border: 1px solid rgba(200,129,28,.5);
+  border: 1px solid color-mix(in srgb, var(--amber) 50%, transparent);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: .02em;
-  color: #a66f00;
-  background: rgba(200,129,28,.12);
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
   vertical-align: baseline;
 }
 
@@ -457,12 +457,12 @@ border-radius: var(--r-sm); }
   padding: 3px 10px;
   cursor: pointer;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .flow-toggle:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-raised); }
-.flow-toggle-glyph { color: var(--accent-2); font-size: 11px; }
+.flow-toggle-glyph { color: var(--accent-2); font-size: var(--fs-cap); }
 .flow-toggle-label { font-weight: 700; color: var(--text); }
 .flow-toggle-count {
   color: var(--text-faint);
@@ -486,7 +486,7 @@ border-radius: var(--r-sm); }
 .flow-think-body {
   min-width: 0; flex: 1;
   font-family: var(--font-sans);
-  font-size: 12.5px; line-height: 1.6;
+  font-size: var(--fs-sm); line-height: 1.6;
   color: var(--text-muted);
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 220px; overflow: auto;
@@ -503,12 +503,12 @@ border-radius: var(--r-sm); }
   background: none;
   cursor: pointer;
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
   color: var(--text-muted);
 }
 .flow-row:hover { color: var(--text); }
-.flow-glyph { flex: 0 0 13px; color: var(--text-faint); font-size: 12px; }
+.flow-glyph { flex: 0 0 13px; color: var(--text-faint); font-size: var(--fs-sm); }
 .flow-title { flex: 0 0 auto; color: var(--text); font-weight: 650; }
 .flow-summary {
   flex: 1;
@@ -519,15 +519,15 @@ border-radius: var(--r-sm); }
   color: var(--text-muted);
 }
 /* 返回行缩进挂在对应动作行下，读作「这次调用的结果」 */
-.flow-row.result { padding-left: 20px; color: var(--text-faint); font-size: 11.5px; }
+.flow-row.result { padding-left: 20px; color: var(--text-faint); font-size: var(--fs-sm); }
 .flow-row.result .flow-summary { color: var(--text-faint); }
-.flow-time { flex: 0 0 auto; color: var(--text-faint); font-size: 10.5px; font-family: var(--font-mono); }
+.flow-time { flex: 0 0 auto; color: var(--text-faint); font-size: var(--fs-cap); font-family: var(--font-mono); }
 .flow-detail {
   margin: 0 0 4px 20px;
   padding: 3px 0 3px 8px;
   border-left: 2px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   line-height: 1.6;
   color: var(--text-muted);
   white-space: pre-wrap;
@@ -540,7 +540,7 @@ border-radius: var(--r-sm); }
 .refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .refs-label {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: .04em;
   color: var(--text-faint);
@@ -556,14 +556,14 @@ border-radius: var(--r-sm); }
   background: var(--bg-raised);
   padding: 3px 9px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   /* 填色令牌不能当文字色：var(--accent) 压在 --bg-raised 上 paper 皮肤实测 2.71:1。
      仓库约定是纸底强调字走 --accent-text（graphite 下同样已按 4.5:1 解算）。 */
   color: var(--accent-text);
   cursor: pointer;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
-.ref-chip:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
+.ref-chip:hover { --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
 .ref-more { font-weight: 700; letter-spacing: .02em; }
 .ref-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref-line { color: var(--text-muted); font-family: var(--font-mono); }
@@ -583,7 +583,7 @@ border-radius: var(--r-sm); }
 .ask-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ask-badge {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: .03em;
   padding: 1px 7px;
@@ -591,7 +591,7 @@ border-radius: var(--r-sm); }
   border-radius: 4px;
 }
 .ask-box.is-clarify .ask-badge { color: var(--accent-text); background: var(--bg-hover); }
-.ask-box.is-perm .ask-badge { color: #a66f00; background: rgba(200,129,28,.12); border-color: rgba(200,129,28,.5); }
+.ask-box.is-perm .ask-badge { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
 .ask-q { font-family: var(--font-sans); font-weight: 650; color: var(--text); }
 .ask-opts { display: flex; flex-wrap: wrap; gap: 8px; }
 .ask-opt {
@@ -604,26 +604,26 @@ border-radius: var(--r-sm); }
   color: var(--text);
   padding: 6px 12px;
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
   transition: background 130ms, color 130ms, border-color 130ms, transform 90ms;
 }
-.ask-opt:hover:not(:disabled) { background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
+.ask-opt:hover:not(:disabled) { --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
 .ask-opt:active:not(:disabled) { transform: translateY(1px); }
 .ask-opt:disabled { opacity: .45; cursor: default; }
 .ask-opt-arrow { color: var(--accent-2); font-weight: 700; }
 .ask-opt:hover:not(:disabled) .ask-opt-arrow { color: var(--accent-ink); }
-.ask-box.is-perm .ask-opt:hover:not(:disabled) { background: #a66f00; color: #fff; border-color: #a66f00; }
+.ask-box.is-perm .ask-opt:hover:not(:disabled) { --btn-fill: var(--amber); background: var(--amber); color: #fff; border-color: var(--amber); }
 .ask-box.is-perm .ask-opt:hover:not(:disabled) .ask-opt-arrow { color: #fff; }
-.ask-done { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-faint); }
-.ask-freetext { font-family: var(--font-sans); font-size: 12px; color: var(--text-muted); }
+.ask-done { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); }
+.ask-freetext { font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--text-muted); }
 
 .notice {
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
   background: var(--bg-hover);
-  border: 2px solid var(--border);
+  border: var(--edge-w-strong, 2px) solid var(--border);
   padding: 6px 10px;
 }
 

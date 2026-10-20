@@ -235,9 +235,25 @@ html[data-material='glass'][data-skin='graphite'] {
 
 /* ---------- ⑤ 按钮与输入框：薄玻璃 ----------
    按钮不加大模糊（要能读清字），只给半透 + 内高光；
-   输入框反而要更实一点，否则输入的文字和底下的内容会互相干扰。 */
-html[data-material='glass'] :is(button, .wb-btn, .dg-primary, .cd-send, .acp-compose > button):not(:disabled) {
-  background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d2-alpha) * 100%), transparent);
+   输入框反而要更实一点，否则输入的文字和底下的内容会互相干扰。
+
+   .wb-menu-item 被排除：它是「更多」菜单里的**行**，不是按钮。
+   套上玻璃按钮规则后每一行都变成独立的白卡（一摞卡片），
+   而菜单本体已经是一块面板 —— 两种材质下菜单长得不一样。
+   面板保持实心（不在 ③ 的浮层清单里），行就保持"菜单行"的观感。
+
+   ⚠️ --btn-fill 逃生口（本条规则最要紧的一行）：
+   这条规则的选择器特异性是 (0,4,2) —— 比任何组件里的
+   `.xxx[data-v-xxx]`（0,2,0 ~ 0,3,0）都高，所以它会**盖掉**组件自己写的
+   `background`。凡是「填色按钮」（底是强调色/状态色，字是 --accent-ink）
+   都会被换成半透白底 + 白字 = 白字压白底 = 隐形（实测 1.01:1，
+   点下去看不出任何反应）。
+
+   所以约定：**组件自己声明 `--btn-fill` 表示"这个按钮的底是我的，玻璃不许动"**，
+   这里用 var() 的兜底值把"半透白"留给普通按钮。
+   实测修掉 4 个隐形按钮：素材页「3D 模型」「搜索」+ 问答页「新对话」「上传」。 */
+html[data-material='glass'] :is(button, .wb-btn, .dg-primary, .cd-send, .acp-compose > button):not(:disabled):not(.wb-menu-item) {
+  background: var(--btn-fill, color-mix(in srgb, var(--bg-raised) calc(var(--glass-d2-alpha) * 100%), transparent));
   -webkit-backdrop-filter: blur(8px) saturate(var(--glass-saturate));
   backdrop-filter: blur(8px) saturate(var(--glass-saturate));
   border: 1px solid color-mix(in srgb, var(--ink) calc(var(--glass-highlight) * 38%), transparent);
@@ -262,18 +278,20 @@ html[data-material='glass'] :is(input, textarea, select, .dg-input, .cd-input) {
 
    修法：给这组按钮一个**不透明**的底（保留内高光与圆角，只是不再透）。
    玻璃质感由「容器」承担，按钮保持实心 —— 这也是苹果的做法：
-   导航栏是玻璃，按钮是实心的。 */
+   导航栏是玻璃，按钮是实心的。
+
+   同 ⑤：--btn-fill 优先（保存按钮是强调色实心按钮，不能被刷成普通灰底）。 */
 html[data-material='glass'] :is(
   .wb-topbar button, .wb-topbar a, .wb-topbar .wb-question-link,
   .wb-statusbar button, .wb-statusbar a,
   .wb-save-btn, .wb-proj-trigger, .wb-region-pill, .wb-locate-input
 ) {
-  background: var(--bg-raised) !important;
+  background: var(--btn-fill, var(--bg-raised)) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
   border-radius: var(--glass-radius-sm) !important;
   box-shadow: var(--glass-inset) !important;
-  color: var(--text) !important;
+  color: var(--btn-ink, var(--text)) !important;
   position: relative;
   z-index: 1;                    /* 明确压在顶栏玻璃之上 */
 }

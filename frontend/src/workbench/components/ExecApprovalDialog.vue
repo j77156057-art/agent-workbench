@@ -144,7 +144,7 @@ async function reject(item: PendingExec) {
 </template>
 
 <style scoped>
-.ea-root{position:fixed;right:16px;bottom:16px;z-index:420;display:flex;flex-direction:column;gap:10px;width:min(360px,calc(100vw - 32px));max-height:calc(100vh - 120px);overflow:auto;font-size:12px;line-height:1.6}
+.ea-root{position:fixed;right:16px;bottom:16px;z-index:420;display:flex;flex-direction:column;gap:10px;width:min(360px,calc(100vw - 32px));max-height:calc(100vh - 120px);overflow:auto;font-size: var(--fs-sm);line-height:1.6}
 .ea-card{padding:12px 13px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-strong);box-shadow:0 16px 42px rgba(35,52,84,.22)}
 .ea-warn{border-color:var(--amber)}
 .ea-danger{border-color:var(--danger)}
@@ -152,7 +152,7 @@ async function reject(item: PendingExec) {
 .ea-badge{font-weight:600}
 .ea-warn .ea-badge{color:var(--amber)}
 .ea-danger .ea-badge{color:var(--danger)}
-.ea-src{font-size:10px;color:var(--text-faint);border:1px solid var(--border);border-radius:4px;padding:1px 6px;white-space:nowrap}
+.ea-src{font-size: var(--fs-cap);color:var(--text-faint);border:1px solid var(--border);border-radius:4px;padding:1px 6px;white-space:nowrap}
 .ea-reason{margin:0 0 6px;color:var(--text)}
 .ea-code{margin:0 0 6px}
 .ea-code summary{cursor:pointer;color:var(--text-muted);outline:none}
@@ -160,7 +160,7 @@ async function reject(item: PendingExec) {
 .ea-progress{color:var(--text-muted);margin-bottom:8px}
 .ea-danger .ea-progress{color:var(--danger)}
 .ea-actions{display:flex;gap:8px}
-.ea-actions button{border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;border:1px solid transparent;transition:filter .16s ease,transform .16s ease,opacity .16s ease}
+.ea-actions button{border-radius:6px;padding:6px 12px;font-size: var(--fs-sm);cursor:pointer;border:1px solid transparent;transition:filter .16s ease,transform .16s ease,opacity .16s ease}
 .ea-actions button:active:not(:disabled){transform:translateY(1px)}
 .ea-actions button:disabled{opacity:.6;cursor:default}
 .ea-confirm{background:linear-gradient(180deg,#e8a13a,#d98a1f);border-color:#c47a15;color:#fff;font-weight:600}
@@ -172,9 +172,9 @@ async function reject(item: PendingExec) {
 .ea-done{border-color:var(--green)}
 .ea-ok{color:var(--green)}
 .ea-out{max-height:160px;overflow:auto;margin:6px 0 0;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font:10px/1.5 var(--font-mono);white-space:pre-wrap;word-break:break-word}
-.ea-close{background:transparent;border:none;color:var(--text-faint);font-size:16px;line-height:1;cursor:pointer;padding:0 2px}
+.ea-close{background:transparent;border:none;color:var(--text-faint);font-size: var(--fs-h2);line-height:1;cursor:pointer;padding:0 2px}
 .ea-close:hover{color:var(--text-muted)}
-.ea-card:focus-within .ea-actions button:focus-visible{outline:2px solid #2f6fed88;outline-offset:2px}
+.ea-card:focus-within .ea-actions button:focus-visible{outline: 2px solid var(--accent-deep);outline-offset:2px}
 .ea-pop-enter-active,.ea-pop-leave-active{transition:opacity .18s ease,transform .18s ease}
 .ea-pop-enter-from,.ea-pop-leave-to{opacity:0;transform:translateY(8px)}
 @media (prefers-reduced-motion:reduce){.ea-pop-enter-active,.ea-pop-leave-active,.ea-actions button{transition:none}}

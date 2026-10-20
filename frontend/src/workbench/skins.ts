@@ -26,7 +26,7 @@
 // 的规则收编到了 --border / --edge-* / --r-* 上；这些替换在 paper / graphite 下
 // 逐像素等价（--border 与 --ink 在那两套里同值，--r-sm 本就是 0），
 // 由 verify_visual_regression.mjs 的「paper / graphite 用例 0 像素差」证明。
-export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'zinc'
+export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'seed'
 
 export interface SkinDef {
   key: SkinKey
@@ -37,27 +37,48 @@ export interface SkinDef {
 }
 
 const KEY = 'docmind.skin'
+/** 用户**主动**选过皮肤就记这个标记：之后不再做默认皮肤迁移。 */
+const LOCK_KEY = 'docmind.skinLocked'
 export const SKIN_CHANGE_EVENT = 'docmind:skin'
 
 export const SKINS: SkinDef[] = [
-  { key: 'paper', name: '素纸朱红', desc: '暖骨白纸 + 朱红，零圆角 + 硬阴影。印刷感最强', swatch: ['#ece7db', '#14110f', '#ff674d', '#000000'] },
+  { key: 'zinc', name: '锌白细线', desc: '冷白底 + 1px 灰细线 + 6px 圆角 + 零阴影，青绿强调。日常默认', swatch: ['#fcfcfd', '#7d7d86', '#0f766e', '#ffffff'] },
   { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e8e6e0', '#4dd0e1', '#000000'] },
-  { key: 'zinc', name: '锌白细线', desc: '冷白底 + 1px 灰细线 + 6px 圆角 + 零阴影，青绿强调。常规 agent 界面那种', swatch: ['#fcfcfd', '#7d7d86', '#0f766e', '#ffffff'] },
+  { key: 'paper', name: '素纸朱红', desc: '暖骨白纸 + 朱红，零圆角 + 硬阴影。印刷海报风，按需选用', swatch: ['#ece7db', '#14110f', '#ff674d', '#000000'] },
+  // 「种子」是一套**由随机种子推导出来**的皮肤：色相/明度/圆角/描边/阴影/字号/间距
+  // 全部来自 tools/design_seed.py 对该种子的确定性派生（色值按对比度反解，保证过 AA）。
+  // 换观感就跑 `python tools/design_seed.py --new-seed` 重新生成，别手改这个文件。
+  { key: 'seed', name: '种子 569161024', desc: '由种子推导：暖红强调 + 12px 圆角 + 紧凑密度 + 深底', swatch: ['#1d1c1b', '#e7e5e4', '#e0563a', '#ffffff'] },
 ]
 
-export const DEFAULT_SKIN: SkinKey = 'paper'
+// 2026-10-20：默认皮肤从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）
+// 换成 zinc（1px 细线 + 圆角 + 零阴影 + 青绿强调）—— 前者更像工程样机，
+// 后者才是能拿上线给普通用户的默认观感。brutalist 保留为可选皮肤。
+export const DEFAULT_SKIN: SkinKey = 'zinc'
 
 const VALID = new Set<string>(SKINS.map((s) => s.key))
+/** 旧默认皮肤：曾被大量用户默认选中（从没主动选过），迁移到新默认时要换掉。 */
+const LEGACY_DEFAULT: SkinKey = 'paper'
 
 export function isSkinKey(v: unknown): v is SkinKey {
   return typeof v === 'string' && VALID.has(v)
 }
 
-/** 读当前皮肤；读不到/被禁用/值非法一律回默认（不抛） */
+/** 读当前皮肤；读不到/被禁用/值非法一律回默认（不抛）
+ *
+ *  2026-10-20 加一次性迁移：旧默认皮肤是 paper（brutalist），现在是 zinc。
+ *  凡是**从没主动选过**皮肤的机器（localStorage 里是 paper，且没有锁定标记），
+ *  自动换到新默认 —— 否则它们会一直停在"工程样机"观感上。
+ *  主动选过 paper 的用户（选的时候会打锁定标记）不受影响。 */
 export function loadSkin(): SkinKey {
   try {
     const raw = window.localStorage.getItem(KEY)
-    return isSkinKey(raw) ? raw : DEFAULT_SKIN
+    if (!isSkinKey(raw)) return DEFAULT_SKIN
+    if (raw === LEGACY_DEFAULT && !window.localStorage.getItem(LOCK_KEY)) {
+      window.localStorage.setItem(KEY, DEFAULT_SKIN)
+      return DEFAULT_SKIN
+    }
+    return raw
   } catch {
     return DEFAULT_SKIN
   }
@@ -66,17 +87,37 @@ export function loadSkin(): SkinKey {
 export function saveSkin(key: SkinKey): void {
   try {
     window.localStorage.setItem(KEY, key)
+    // 用户主动选了就锁定：之后不再被默认皮肤迁移动
+    window.localStorage.setItem(LOCK_KEY, '1')
+    writeSkinBg(key)
   } catch {
     /* 存不下就只在本次会话生效，不打断切换 */
   }
+}
+
+/** 皮肤底色缓存键：给首帧内联脚本用。
+ *  为什么需要它：html 里的内联脚本要在 CSS 之前就把底色铺上（否则深色皮肤首帧白闪），
+ *  但底色是每套皮肤各自的，html 里写死一套会跟换皮肤脱节。切皮肤时把底色一起存下来，
+ *  首帧直接读 —— 换任何皮肤（包括由种子生成的）都不会闪错。 */
+const BG_KEY = 'docmind.skinBg'
+
+function writeSkinBg(key: SkinKey): void {
+  try {
+    const def = SKINS.find((s) => s.key === key)
+    if (def) window.localStorage.setItem(BG_KEY, def.swatch[0])
+  } catch { /* 存不下就算了，首帧退回默认底色 */ }
 }
 
 /** 把皮肤写到 <html data-skin>；非法 key 一律回落默认，不留"半失效"状态 */
 export function applySkin(key: SkinKey): void {
   const k = isSkinKey(key) ? key : DEFAULT_SKIN
   document.documentElement.setAttribute('data-skin', k)
-  // 同步 color-scheme：深色皮肤让原生滚动条/表单控件也跟着走暗色
-  document.documentElement.style.colorScheme = k === 'graphite' ? 'dark' : 'light'
+  // 同步 color-scheme：深色皮肤让原生滚动条/表单控件也跟着走暗色。
+  // 注意不能只认 'graphite' —— 种子皮肤可能是深色（--skin-dark: 1），
+  // 这里读皮肤块自己声明的 --skin-dark，新增深色皮肤不用改这里。
+  const dark = getComputedStyle(document.documentElement).getPropertyValue('--skin-dark').trim() === '1'
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+  writeSkinBg(k)
 }
 
 /**

@@ -7,7 +7,7 @@ import RegionHomeView from './RegionHomeView.vue'
 import { demoMode, demoRegionCards } from '../composables/demo'
 import { useWorkbench } from '../composables/workbench'
 import { appEvents } from '../eventBus'
-import { getProjectId, projectApi } from '../api'
+import { getProjectId, projectApi, taskApi } from '../api'
 
 const {
   tree, regionCards, recentFiles, openRecent, openSymbolMap,
@@ -28,7 +28,18 @@ onMounted(async () => {
     const r = await projectApi.list()
     projects.value = (r.projects || []).map((p) => ({ project_id: p.project_id, name: p.name, root: p.root }))
   } catch { /* 失败仅导致项目名不显示，不阻断概览 */ }
+  try {
+    const r = await taskApi.list()
+    tasks.value = (r.tasks || []).slice(-5).reverse().map((t) => ({
+      id: String(t.id ?? ''),
+      title: String(t.title ?? '未命名任务'),
+      status: String(t.status ?? ''),
+    }))
+  } catch { /* 失败仅导致不显示任务区，不阻断概览 */ }
 })
+
+/** 进行中的任务（首屏仪表盘）。取不到就当没有 —— 概览不该因它失败。 */
+const tasks = ref<{ id: string; title: string; status: string }[]>([])
 
 const regionsEnabled = computed(() => demoMode.value || !!tree.value?.regions_enabled)
 // 真实态且未打开任何项目：概览首屏应引导「打开项目」，而非误导向「启用分区治理」
@@ -114,40 +125,59 @@ const ASK_CHIPS = [
       <!-- 两栏：分区主区 + 右侧辅助栏 -->
       <div class="ov-columns">
         <div class="ov-main">
+          <!-- 进行中的任务（2026-10-20 首屏仪表盘化）：真实任务列表。
+               原来首屏主视觉是「这个项目还没启用分区治理」的空态大字框 ——
+               一个空状态占了整个主栏，用户打开看不到任何"正在发生的事"。 -->
+          <section v-if="tasks.length" class="ov-group ov-tasks">
+            <header class="ov-group-head">
+              <h4>进行中的任务</h4>
+              <span class="ov-group-count">{{ tasks.length }}</span>
+            </header>
+            <div v-for="t in tasks" :key="t.id" class="ov-task">
+              <span class="ov-task-dot" :class="t.status" aria-hidden="true" />
+              <span class="ov-task-title">{{ t.title }}</span>
+              <span class="ov-task-status">{{ t.status }}</span>
+            </div>
+          </section>
+
           <RegionHomeView v-if="regionsEnabled" />
 
           <!-- 未打开任何项目：首屏引导去顶栏打开/切换项目（而非误导向「启用分区治理」） -->
           <div v-else-if="noProject" class="ov-empty ov-noproj">
             <span class="ov-empty-ic" aria-hidden="true">
-              <svg width="30" height="30" viewBox="0 0 30 30">
+              <svg width="26" height="26" viewBox="0 0 30 30">
                 <rect x="3.5" y="6.5" width="23" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
                 <path d="M3.5 12.5 H26.5 M10.5 6.5 V4.5 M19.5 6.5 V4.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
               </svg>
             </span>
-            <h3>还没有打开项目</h3>
-            <p>
-              代码工作台需要先绑定一个项目目录作为工作区。点击<b>顶栏左侧的项目名</b>，
-              即可打开新项目或切换已有项目；打开后这里会显示分区与文件概览、最近改动与「试试问 AI」。
-            </p>
-            <p class="ov-noproj-hint">
-              AI 问答页也能直接提问；但要在工作台里改代码、看分区、做 git 存档与回滚，需要先在这里打开项目。
-            </p>
+            <div class="ov-empty-body">
+              <h3>还没有打开项目</h3>
+              <p>
+                代码工作台需要先绑定一个项目目录作为工作区。点击<b>顶栏左侧的项目名</b>，
+                即可打开新项目或切换已有项目；打开后这里会显示分区与文件概览、最近改动与「试试问 AI」。
+              </p>
+              <p class="ov-noproj-hint">
+                AI 问答页也能直接提问；但要在工作台里改代码、看分区、做 git 存档与回滚，需要先在这里打开项目。
+              </p>
+            </div>
           </div>
 
           <!-- 已打开项目但未启用分区治理的空状态 -->
           <div v-else class="ov-empty">
             <span class="ov-empty-ic" aria-hidden="true">
-              <svg width="30" height="30" viewBox="0 0 30 30">
+              <svg width="26" height="26" viewBox="0 0 30 30">
                 <rect x="3.5" y="6.5" width="23" height="19" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
                 <path d="M3.5 12.5 H26.5 M10.5 6.5 V4.5 M19.5 6.5 V4.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
               </svg>
             </span>
-            <h3>这个项目还没启用分区治理</h3>
-            <p>
-              启用后，AI 只能在约定的分区文件夹里改代码——数值、行为、UI 各归其位，
-              从源头防止代码堆砌；每个分区还能独立用 git 存档回滚。
-            </p>
-            <button type="button" class="ov-empty-btn" @click="openRegionMap">去启用分区治理</button>
+            <div class="ov-empty-body">
+              <h3>这个项目还没启用分区治理</h3>
+              <p>
+                启用后，AI 只能在约定的分区文件夹里改代码——数值、行为、UI 各归其位，
+                从源头防止代码堆砌；每个分区还能独立用 git 存档回滚。
+              </p>
+              <button type="button" class="ov-empty-btn" @click="openRegionMap">去启用分区治理</button>
+            </div>
           </div>
         </div>
 
@@ -258,27 +288,27 @@ const ASK_CHIPS = [
 .ov-folder { color: var(--accent); display: inline-flex; padding: 7px; border-radius: 9px; background: #eaf2ff; }
 .ov-strip-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ov-project-name {
-  font-family: var(--font-ui); font-size: 14px; font-weight: 700;
+  font-family: var(--font-ui); font-size: var(--fs-body); font-weight: 700;
   color: var(--text); line-height: 1.2;
 }
 .ov-root {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   max-width: 560px;
 }
-.ov-strip-stats { font-size: 12px; color: var(--text-faint); }
+.ov-strip-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .ov-strip-stats b { color: var(--text-muted); font-weight: 700; }
 .ov-strip-stats em { color: var(--amber); font-style: normal; }
 .ov-restore {
   margin-left: auto; flex: 0 0 auto;
   border: none; background: transparent; cursor: pointer;
-  color: var(--text-faint); font-size: 12px; font-family: var(--font-ui);
+  color: var(--text-faint); font-size: var(--fs-sm); font-family: var(--font-ui);
   padding: 4px 8px; border-radius: 6px;
 }
 .ov-restore:hover { color: var(--accent); background: var(--bg-hover); }
-.ov-restore:focus-visible, .ov-x:focus-visible, .ov-step:focus-visible, .ov-recent-item:focus-visible, .ov-chip:focus-visible, .ov-empty-btn:focus-visible { outline: 2px solid #2f6fed88; outline-offset: 2px; }
+.ov-restore:focus-visible, .ov-x:focus-visible, .ov-step:focus-visible, .ov-recent-item:focus-visible, .ov-chip:focus-visible, .ov-empty-btn:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
 .ov-restore, .ov-x, .ov-step, .ov-recent-item, .ov-chip, .ov-empty-btn { transition: color .16s ease, background .16s ease, border-color .16s ease, transform .16s ease; }
 
 /* ---------- 两栏 ---------- */
@@ -289,7 +319,15 @@ const ASK_CHIPS = [
   align-items: start;
 }
 .ov-main { min-width: 0; }
-.ov-rail { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 14px; max-height: calc(100vh - 112px); overflow: auto; padding-right: 2px; }
+/* 右栏：2026-10-19 去掉 position:sticky 与视口基准的 max-height。
+   为什么：dock 默认态就占 62vh（折叠 33 / 中等 620 / 展开 876 三档，是产品决策），
+   主区可视高度只剩 ~262px，而右栏内容 453px。原来 max-height 用 calc(100vh - 112px)
+   = 视口高度算，**与主区真实可用高度无关** —— 于是右栏伸出可视区 297px，
+   底部那部分正好压在 dock 底下；sticky 又让它顶在可视区上沿，于是出现
+   「第 2 条被 dock 切一半、第 3/4 步完全看不见」的观感。
+   改成静态流后：右栏与左栏同步随主区滚动，滚到底时右栏底边正好落在
+   可视区底边（= dock 顶边），后两步能看到，且不再有"半截粘在顶上"的怪相。 */
+.ov-rail { display: flex; flex-direction: column; gap: 12px; overflow: visible; padding-right: 2px; }
 
 /* ---------- 右栏：朴素分组，无卡片边框 ---------- */
 .ov-group-head {
@@ -297,7 +335,7 @@ const ASK_CHIPS = [
   margin-bottom: 10px;
 }
 .ov-group-head h4 {
-  margin: 0; font-size: 11px; font-weight: 700;
+  margin: 0; font-size: var(--fs-cap); font-weight: 700;
   color: var(--text-faint); letter-spacing: .06em;
   text-transform: uppercase;
 }
@@ -323,27 +361,27 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 .ov-step-num {
   flex: 0 0 19px; height: 19px; margin-top: 1px;
   display: grid; place-items: center;
-  border-radius: 6px; font-size: 10px; font-weight: 800; color: var(--accent-ink);
+  border-radius: 6px; font-size: var(--fs-cap); font-weight: 800; color: var(--accent-ink);
   background: var(--accent);
 }
 .ov-step-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.ov-step-text b { font-size: 12px; color: var(--text); font-weight: 600; }
+.ov-step-text b { font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
 .ov-step-text i {
-  font-style: normal; font-size: 10px; line-height: 1.5;
+  font-style: normal; font-size: var(--fs-cap); line-height: 1.5;
   color: var(--text-faint);
 }
 .ov-guide-foot {
   margin-top: 9px; padding-top: 9px;
   border-top: 1px solid var(--border);
   display: flex; gap: 12px; flex-wrap: wrap;
-  font-size: 10px; color: var(--text-faint);
+  font-size: var(--fs-cap); color: var(--text-faint);
 }
 
 .ov-group {
   padding: 13px 14px;
   border: 1px solid #e0e7f1;
   border-radius: 12px;
-  background: rgba(255,255,255,.78);
+  background: color-mix(in srgb, var(--bg-raised) 75%, transparent);
   box-shadow: 0 4px 16px rgba(35,52,84,.045);
 }
 .ov-guide { border-color: var(--border-2); background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 100%, transparent), color-mix(in srgb, var(--bg-raised) 90%, transparent)); }
@@ -357,9 +395,9 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
   font-family: var(--font-ui);
 }
 .ov-recent-item:hover { background: var(--bg-hover); }
-.ov-recent-name { font-size: 12px; color: var(--text); }
+.ov-recent-name { font-size: var(--fs-sm); color: var(--text); }
 .ov-recent-dir {
-  font-family: var(--font-mono); font-size: 10px;
+  font-family: var(--font-mono); font-size: var(--fs-cap);
   color: var(--text-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -369,7 +407,7 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 .ov-chip {
   text-align: left; border: none;
   background: transparent; color: var(--text-muted);
-  font-size: 12px; line-height: 1.5;
+  font-size: var(--fs-sm); line-height: 1.5;
   padding: 6px 8px; border-radius: 7px; cursor: pointer;
   font-family: var(--font-ui);
   transition: color .12s, background .12s;
@@ -383,35 +421,72 @@ button.ov-step:hover, a.ov-step:hover { background: var(--bg-hover); }
 /* ---------- 未启用空状态 ---------- */
 .ov-empty {
   border: 1px dashed var(--border);
-  border-radius: 12px;
-  padding: 42px 30px;
-  text-align: center;
+  border-radius: 10px;
+  /* 2026-10-20：从「居中大字 + 42px 内边距」改成左对齐的紧凑提示条。
+     原来这个空态框占满整个主栏（892px 宽）还居中摆一行大字，
+     成了首屏主视觉 —— 打开工作台先看到一句"你还没启用分区治理"，
+     观感上像工程样机而不是产品。 */
+  padding: 18px 20px;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  text-align: left;
   color: var(--text-muted);
 }
-.ov-empty-ic { color: var(--text-faint); display: inline-flex; margin-bottom: 10px; }
-.ov-empty h3 { margin: 0 0 8px; font-size: 14px; color: var(--text); font-weight: 700; }
+.ov-empty-ic { color: var(--text-faint); display: inline-flex; margin-bottom: 0; flex: 0 0 auto; }
+.ov-empty-body { min-width: 0; flex: 1; }
+.ov-empty h3 { margin: 0 0 6px; font-size: var(--fs-h3); color: var(--text); font-weight: 700; }
 .ov-empty p {
-  margin: 0 auto 18px; max-width: 440px;
-  font-size: 12px; line-height: 1.8; color: var(--text-muted);
+  margin: 0 0 14px; max-width: 560px;
+  font-size: var(--fs-sm); line-height: 1.7; color: var(--text-muted);
 }
 .ov-empty-btn {
   /* 原为 color: var(--accent)：朱红当正文色，实测压在这颗淡蓝底上只有
      2.51:1（paper 皮肤，12px）——不达 AA。按仓库约定「纸底强调字走 --accent-text」修。
-     边同理：#b9d0f5 是 --border-2 的字面值，写死就不会跟皮肤。 */
-  border: var(--edge-w) solid var(--border-2); background: rgba(47,111,237,.06);
-  color: var(--accent-text); font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+     边同理：color-mix(in srgb, var(--accent) 32%, var(--bg-raised)) 是 --border-2 的字面值，写死就不会跟皮肤。 */
+  /* 这颗按钮已经有强调色底纹 + 强调字，框是第三遍表达同一件事。
+     宽度留着（transparent）以免布局宽度跳一下。 */
+  border: var(--edge-w) solid transparent; background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--accent-text); font-family: var(--font-ui); font-size: var(--fs-sm); font-weight: 600;
   padding: 8px 20px; border-radius: 8px; cursor: pointer;
   transition: background .12s;
 }
-.ov-empty-btn:hover { background: rgba(47,111,237,.12); }
+.ov-empty-btn:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .ov-empty-btn:active, .ov-step:active, .ov-recent-item:active, .ov-chip:active { transform: translateY(1px); }
-.ov-noproj { border-style: solid; border-color: var(--border-2); background: linear-gradient(180deg, var(--bg-raised), color-mix(in srgb, var(--bg-raised) 90%, var(--bg))f9fd); }
+/* 修：原值末尾多出一段 "f9fd"（像是 hex 尾巴误粘），整条 background 声明因此
+   被浏览器判为无效而丢弃 —— 这颗卡一直只有 border 没有渐变底。 */
+.ov-noproj { border-style: solid; border-color: var(--border-2); background: linear-gradient(180deg, var(--bg-raised), color-mix(in srgb, var(--bg-raised) 90%, var(--bg))); }
 .ov-noproj .ov-empty-ic { color: var(--accent); }
 .ov-noproj-hint {
-  margin: 14px auto 0; max-width: 460px;
-  font-size: 12px; line-height: 1.7; color: var(--text-faint);
+  margin: 12px 0 0; max-width: 560px;
+  font-size: var(--fs-sm); line-height: 1.7; color: var(--text-faint);
   padding-top: 12px; border-top: 1px dashed var(--border);
 }
+
+/* ---------- 进行中的任务（首屏仪表盘，2026-10-20）---------- */
+.ov-tasks { margin-bottom: 14px; }
+.ov-group-count {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: var(--fs-cap);
+  color: var(--text-faint);
+}
+.ov-task {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-sm);
+}
+.ov-task:last-child { border-bottom: none; }
+.ov-task-dot {
+  flex: 0 0 auto;
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--text-faint);
+}
+.ov-task-dot.open { background: var(--accent); }
+.ov-task-dot.done { background: var(--green); }
+.ov-task-dot.closed { background: var(--text-faint); }
+.ov-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.ov-task-status { flex: none; font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); }
 
 /* ---------- 窄屏：右栏落到底部 ---------- */
 @media (max-width: 1080px) {

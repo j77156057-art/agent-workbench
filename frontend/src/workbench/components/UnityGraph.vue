@@ -615,10 +615,10 @@ const externalIds = computed<Set<string>>(
       <header class="ug-top">
         <div class="ug-title">
           <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
-            <rect x="1.5" y="2" width="5" height="4" rx="1" fill="none" style="stroke: color-mix(in srgb, #f0883e 55%, var(--ink))" stroke-width="1.1" />
-            <rect x="8.8" y="2" width="5" height="4" rx="1" fill="none" style="stroke: color-mix(in srgb, #2ec4b6 55%, var(--ink))" stroke-width="1.1" />
-            <rect x="5" y="9.5" width="5" height="4" rx="1" fill="none" style="stroke: color-mix(in srgb, #58a6ff 55%, var(--ink))" stroke-width="1.1" />
-            <path d="M4.5 4.5 L8.8 3.6 M6 6 L7 9.5 M11 5.8 L9.2 9.5" style="stroke: color-mix(in srgb, #7d90aa 55%, var(--ink))" stroke-width="0.85" />
+            <rect x="1.5" y="2" width="5" height="4" rx="1" fill="none" style="stroke: var(--viz-scene)" stroke-width="1.1" />
+            <rect x="8.8" y="2" width="5" height="4" rx="1" fill="none" style="stroke: var(--viz-script)" stroke-width="1.1" />
+            <rect x="5" y="9.5" width="5" height="4" rx="1" fill="none" style="stroke: var(--viz-class)" stroke-width="1.1" />
+            <path d="M4.5 4.5 L8.8 3.6 M6 6 L7 9.5 M11 5.8 L9.2 9.5" style="stroke: var(--viz-neutral)" stroke-width="0.85" />
           </svg>
           <h2>Unity 引用图</h2>
           <span v-if="stats" class="ug-stats">
@@ -687,11 +687,11 @@ const externalIds = computed<Set<string>>(
             <defs>
               <marker id="ug-arrow" viewBox="0 0 10 10" refX="8.5" refY="5"
                       markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #6e7f96 55%, var(--ink))" />
+                <path d="M0 0 L9 5 L0 10 Z" style="fill: var(--viz-folder)" />
               </marker>
               <marker id="ug-arrow-miss" viewBox="0 0 10 10" refX="8.5" refY="5"
                       markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-                <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #ff7b72 55%, var(--ink))" />
+                <path d="M0 0 L9 5 L0 10 Z" style="fill: var(--viz-orphan)" />
               </marker>
             </defs>
 
@@ -837,8 +837,8 @@ const externalIds = computed<Set<string>>(
   border-bottom: 1px solid var(--border);
 }
 .ug-title { display: flex; align-items: center; gap: 9px; flex: 1; }
-.ug-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.ug-stats { font-size: 12px; color: var(--text-faint); }
+.ug-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
+.ug-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .ug-warn { color: var(--amber); font-style: normal; }
 .ug-bad { color: var(--danger); font-style: normal; font-weight: 600; }
 .ug-iconbtn {
@@ -890,13 +890,13 @@ const externalIds = computed<Set<string>>(
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   min-width: 0;
 }
 .ug-clear {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   cursor: pointer;
   border: 1px solid var(--border);
@@ -908,7 +908,7 @@ const externalIds = computed<Set<string>>(
 .ug-chip {
   border: 1px solid var(--border);
   background: transparent;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   padding: 2px 9px;
   border-radius: 11px;
   cursor: pointer;
@@ -926,7 +926,7 @@ const externalIds = computed<Set<string>>(
   background: transparent;
   color: var(--text-muted);
   border-radius: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   padding: 0 7px;
 }
@@ -949,10 +949,10 @@ const externalIds = computed<Set<string>>(
 
 .ug-line {
   fill: none;
-  stroke: #93a0b2;
+  stroke: var(--viz-edge);
   stroke-width: 1.15;
 }
-.ug-line.miss { stroke: #e0484f; stroke-dasharray: 5 4; }
+.ug-line.miss { stroke: var(--danger); stroke-dasharray: 5 4; }
 .ug-line.dim { opacity: 0.08; }
 
 .ug-node { cursor: pointer; }
@@ -960,11 +960,11 @@ const externalIds = computed<Set<string>>(
 .ug-node:hover rect { stroke-width: 2; filter: brightness(1.25); }
 .ug-node.sel rect { stroke-width: 2.4; }
 .ug-node.dim { opacity: 0.12; }
-.ug-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; fill: var(--text-muted); }
+.ug-mark { font-family: var(--font-mono); font-size: var(--fs-cap); font-weight: 700; text-anchor: middle; fill: var(--text-muted); }
 /* 节点名以前用分类色当字色（纸底 2.0–2.5:1，两个探针都看不见 SVG 文字的 fill）。
    色相交给卡片描边与小圆点，字回归中性。 */
-.ug-label { font-size: 12px; font-weight: 600; fill: var(--text); }
-.ug-sub { font-size: 10px; fill: var(--text-faint); font-family: var(--font-mono); }
+.ug-label { font-size: var(--fs-sm); font-weight: 600; fill: var(--text); }
+.ug-sub { font-size: var(--fs-cap); fill: var(--text-muted); font-family: var(--font-mono); }
 
 .ug-state {
   position: absolute;
@@ -975,12 +975,12 @@ const externalIds = computed<Set<string>>(
   justify-content: center;
   gap: 10px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: center;
   padding: 0 40px;
 }
 .ug-error { color: var(--danger); }
-.ug-hint { font-size: 12px; }
+.ug-hint { font-size: var(--fs-sm); }
 .ug-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
 
 .ug-legend {
@@ -990,11 +990,11 @@ const externalIds = computed<Set<string>>(
   display: flex;
   align-items: center;
   gap: 14px;
-  background: rgba(255, 255, 255, 0.92);
+  background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 12px;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   pointer-events: none;
 }
@@ -1010,15 +1010,15 @@ const externalIds = computed<Set<string>>(
 }
 .ug-d-head { display: flex; justify-content: space-between; align-items: center; }
 .ug-d-badge {
-  font-size: 10px;
+  font-size: var(--fs-cap);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 1px 9px;
 }
-.ug-d-name { margin: 10px 0 4px; font-size: 14px; word-break: break-all; }
+.ug-d-name { margin: 10px 0 4px; font-size: var(--fs-body); word-break: break-all; }
 .ug-d-rel {
   margin: 0 0 10px;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   font-family: var(--font-mono);
   color: var(--text-faint);
   word-break: break-all;
@@ -1036,7 +1036,7 @@ const externalIds = computed<Set<string>>(
 }
 .ug-d-guid code {
   flex: 1;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   word-break: break-all;
 }
@@ -1044,7 +1044,7 @@ const externalIds = computed<Set<string>>(
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-cap);
   border-radius: 4px;
   padding: 1px 8px;
   cursor: pointer;
@@ -1057,7 +1057,7 @@ const externalIds = computed<Set<string>>(
   border: 1px solid var(--border-strong);
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   border-radius: 5px;
   padding: 6px 0;
   cursor: pointer;
@@ -1068,7 +1068,7 @@ const externalIds = computed<Set<string>>(
 .ug-d-open:active { transform: translateY(1px); }
 .ug-d-section h4 {
   margin: 12px 0 6px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   font-weight: 600;
 }
@@ -1077,7 +1077,7 @@ const externalIds = computed<Set<string>>(
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 4px 6px;
   border-radius: 4px;
   cursor: pointer;
@@ -1093,10 +1093,10 @@ const externalIds = computed<Set<string>>(
 }
 .ug-d-section em {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
 }
-.ug-d-empty { color: var(--text-faint) !important; cursor: default !important; font-size: 10px; }
+.ug-d-empty { color: var(--text-faint) !important; cursor: default !important; font-size: var(--fs-cap); }
 .ug-d-empty:hover { background: transparent !important; }
 
 @keyframes ug-overlay-in { from { opacity: 0; } to { opacity: 1; } }

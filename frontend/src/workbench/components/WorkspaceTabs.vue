@@ -9,10 +9,9 @@ const real: { key: WorkspaceView; name: string; icon: string }[] = [
   { key: 'overview', name: '概览', icon: 'home' },
   { key: 'code', name: '代码', icon: 'code' },
   { key: 'assets', name: '素材', icon: 'assets' },
-  { key: 'cockpit', name: '开发舱', icon: 'cockpit' },
 ]
 
-const HOTKEY: Record<string, number> = { overview: 1, code: 2, assets: 3, cockpit: 4 }
+const HOTKEY: Record<string, number> = { overview: 1, code: 2, assets: 3 }
 
 function pick(key: WorkspaceView) {
   if (key === 'code' && !tabs.value.length) return
@@ -43,12 +42,6 @@ function pick(key: WorkspaceView) {
         <rect x="1.6" y="2.4" width="9.8" height="8.2" rx="1" fill="none" stroke="currentColor" stroke-width="1.05"/>
         <circle cx="4.3" cy="4.9" r="0.95" fill="none" stroke="currentColor" stroke-width="1.05"/>
         <path d="M2.6 9.6 L5.2 7 L7.2 8.8 L8.8 7.4 L10.4 9" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linejoin="round"/>
-      </svg>
-      <svg v-else-if="item.icon === 'cockpit'" width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
-        <rect x="2.4" y="3.4" width="8.2" height="6.2" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.05"/>
-        <path d="M6.5 3.4 V1.8 M4.6 1.8 H8.4" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round"/>
-        <circle cx="5" cy="6.4" r="0.8" fill="currentColor"/>
-        <circle cx="8" cy="6.4" r="0.8" fill="currentColor"/>
       </svg>
       <svg v-else width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
         <path d="M4.6 4.4 L2.2 6.5 L4.6 8.6 M8.4 4.4 L10.8 6.5 L8.4 8.6" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/>
@@ -88,14 +81,14 @@ function pick(key: WorkspaceView) {
   background: transparent;
   color: var(--text-muted);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
   position: relative;
   transition: color .16s var(--ease-standard), background .16s var(--ease-standard), transform .16s var(--ease-spring), border-color .16s var(--ease-standard);
 }
-.ws-tab:hover:not(:disabled) { color: var(--text); background: rgba(47,111,237,.08); transform: translateY(-1px); }
-.ws-tab:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, white); outline-offset: 1px; }
+.ws-tab:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--accent) 8%, transparent); transform: translateY(-1px); }
+.ws-tab:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 1px; }
 .ws-tab:active:not(:disabled) { transform: translateY(0); }
 .ws-active {
   color: var(--accent-text);

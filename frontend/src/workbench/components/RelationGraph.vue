@@ -614,10 +614,10 @@ const colorOf = regionColor
       <header class="rg-top">
         <div class="rg-title">
           <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
-            <circle cx="3.6" cy="4" r="1.7" fill="none" style="stroke: color-mix(in srgb, #58a6ff 55%, var(--ink))" stroke-width="1.1" />
-            <circle cx="11.4" cy="4" r="1.7" fill="none" style="stroke: color-mix(in srgb, #2ec4b6 55%, var(--ink))" stroke-width="1.1" />
-            <circle cx="7.5" cy="11.2" r="1.7" fill="none" style="stroke: color-mix(in srgb, #f0883e 55%, var(--ink))" stroke-width="1.1" />
-            <path d="M5 4.8 L9.6 4.8 M4.6 5.4 L6.6 9.7 M10.4 5.4 L8.4 9.7" style="stroke: color-mix(in srgb, #7d90aa 55%, var(--ink))" stroke-width="0.9" />
+            <circle cx="3.6" cy="4" r="1.7" fill="none" style="stroke: var(--viz-class)" stroke-width="1.1" />
+            <circle cx="11.4" cy="4" r="1.7" fill="none" style="stroke: var(--viz-script)" stroke-width="1.1" />
+            <circle cx="7.5" cy="11.2" r="1.7" fill="none" style="stroke: var(--viz-scene)" stroke-width="1.1" />
+            <path d="M5 4.8 L9.6 4.8 M4.6 5.4 L6.6 9.7 M10.4 5.4 L8.4 9.7" style="stroke: var(--viz-neutral)" stroke-width="0.9" />
           </svg>
           <h2>关系图</h2>
           <span v-if="stats" class="rg-stats">
@@ -689,15 +689,15 @@ const colorOf = regionColor
           <defs>
             <marker id="rg-arrow-inh" viewBox="0 0 10 10" refX="8.5" refY="5"
                     markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-              <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #4d7fc0 55%, var(--ink))" />
+              <path d="M0 0 L9 5 L0 10 Z" style="fill: var(--viz-inherit)" />
             </marker>
             <marker id="rg-arrow-mnt" viewBox="0 0 10 10" refX="8.5" refY="5"
                     markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-              <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #c9762f 55%, var(--ink))" />
+              <path d="M0 0 L9 5 L0 10 Z" style="fill: var(--viz-mount)" />
             </marker>
             <marker id="rg-arrow-call" viewBox="0 0 10 10" refX="8.5" refY="5"
                     markerWidth="9" markerHeight="9" orient="auto-start-reverse">
-              <path d="M0 0 L9 5 L0 10 Z" style="fill: color-mix(in srgb, #1c9e66 55%, var(--ink))" />
+              <path d="M0 0 L9 5 L0 10 Z" style="fill: var(--viz-call)" />
             </marker>
           </defs>
 
@@ -866,8 +866,8 @@ const colorOf = regionColor
   border-bottom: 1px solid var(--border);
 }
 .rg-title { display: flex; align-items: center; gap: 9px; flex: 1; }
-.rg-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.rg-stats { font-size: 12px; color: var(--text-faint); }
+.rg-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
+.rg-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .rg-iconbtn {
   border: 1px solid transparent;
   background: transparent;
@@ -886,7 +886,7 @@ const colorOf = regionColor
 .rg-d-open:focus-visible,
 .rg-retry:focus-visible,
 .rg-d-link:focus-visible {
-  outline: 2px solid #2f6fed88;
+  outline: 2px solid var(--accent-deep);
   outline-offset: 2px;
 }
 
@@ -911,20 +911,20 @@ const colorOf = regionColor
   color: var(--text-faint);
   max-width: 460px;
 }
-.rg-search:focus-within { border-color: #2f6fed66; box-shadow: 0 0 0 2px #2f6fed18; }
+.rg-search:focus-within { border-color: color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
 .rg-search input {
   flex: 1;
   border: none;
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
   min-width: 0;
 }
 .rg-clear {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   cursor: pointer;
   border: 1px solid var(--border);
@@ -940,21 +940,21 @@ const colorOf = regionColor
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 3px 10px;
   border-radius: 11px;
   cursor: pointer;
 }
 .rg-toggle:hover { border-color: var(--border-strong); color: var(--text); }
 .rg-toggle { transition: color .16s ease, border-color .16s ease, background .16s ease, opacity .16s ease; }
-.rg-toggle:not(.off) { background: #2f6fed0d; border-color: #2f6fed55; }
+.rg-toggle:not(.off) { background: color-mix(in srgb, var(--accent) 5%, transparent); border-color: color-mix(in srgb, var(--accent) 33%, transparent); }
 .rg-toggle.off { opacity: 0.42; }
-.rg-tg-line { width: 14px; height: 0; border-top: 2px solid color-mix(in srgb, #4d7fc0 55%, var(--ink)); display: inline-block; }
-.rg-tg-line.mnt { border-top: 2px dashed color-mix(in srgb, #c9762f 55%, var(--ink)); }
-.rg-tg-line.call { border-top: 2px solid color-mix(in srgb, #1c9e66 55%, var(--ink)); }
+.rg-tg-line { width: 14px; height: 0; border-top: 2px solid var(--viz-inherit); display: inline-block; }
+.rg-tg-line.mnt { border-top: 2px dashed var(--viz-mount); }
+.rg-tg-line.call { border-top: 2px solid var(--viz-call); }
 .rg-tg-ext {
   width: 11px; height: 9px;
-  border: 1.5px dashed #98a3b4;
+  border: 1.5px dashed var(--viz-external);
   border-radius: 2px;
   display: inline-block;
 }
@@ -965,7 +965,7 @@ const colorOf = regionColor
   background: transparent;
   color: var(--text-muted);
   border-radius: 4px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   padding: 0 7px;
 }
@@ -990,17 +990,17 @@ const colorOf = regionColor
    色相留 55%、其余混向本皮肤 --ink，浅色皮肤压暗、深色皮肤提亮，一个比例两边都好。
    边标签是 8px 小字（要 4.5:1），所以它走 regionTextColor 那档 36%，别混用。 */
 .rg-line { fill: none; stroke-width: 1.3; }
-.rg-line.inherits { stroke: color-mix(in srgb, #4d7fc0 55%, var(--ink)); }
-.rg-line.mounts { stroke: color-mix(in srgb, #c9762f 55%, var(--ink)); stroke-dasharray: 6 4; }
-.rg-line.calls { stroke: color-mix(in srgb, #1c9e66 55%, var(--ink)); }
+.rg-line.inherits { stroke: var(--viz-inherit); }
+.rg-line.mounts { stroke: var(--viz-mount); stroke-dasharray: 6 4; }
+.rg-line.calls { stroke: var(--viz-call); }
 .rg-edge-g.dim { opacity: 0.10; }
-.rg-elabel-bg-inh { fill: var(--bg); stroke: color-mix(in srgb, #4d7fc0 55%, var(--ink)); stroke-width: 0.8; }
-.rg-elabel-bg-mnt { fill: var(--bg); stroke: color-mix(in srgb, #c9762f 55%, var(--ink)); stroke-width: 0.8; }
-.rg-elabel-bg-call { fill: var(--bg); stroke: color-mix(in srgb, #1c9e66 55%, var(--ink)); stroke-width: 0.8; }
-.rg-elabel-tx { font-size: 8px; }
-.rg-elabel-tx.inherits { fill: color-mix(in srgb, #4d7fc0 36%, var(--ink)); }
-.rg-elabel-tx.mounts { fill: color-mix(in srgb, #c9762f 36%, var(--ink)); }
-.rg-elabel-tx.calls { fill: color-mix(in srgb, #1c9e66 36%, var(--ink)); }
+.rg-elabel-bg-inh { fill: var(--bg); stroke: var(--viz-inherit); stroke-width: 0.8; }
+.rg-elabel-bg-mnt { fill: var(--bg); stroke: var(--viz-mount); stroke-width: 0.8; }
+.rg-elabel-bg-call { fill: var(--bg); stroke: var(--viz-call); stroke-width: 0.8; }
+.rg-elabel-tx { font-size: var(--fs-cap); }
+.rg-elabel-tx.inherits { fill: var(--viz-inherit-t); }
+.rg-elabel-tx.mounts { fill: var(--viz-mount-t); }
+.rg-elabel-tx.calls { fill: var(--viz-call-t); }
 
 .rg-node { cursor: pointer; }
 .rg-node rect { stroke-width: 1.3; transition: stroke-width .14s ease, filter .14s ease, opacity .14s ease; }
@@ -1009,10 +1009,13 @@ const colorOf = regionColor
 .rg-node.dim { opacity: 0.13; }
 /* 角标与标签以前用 :fill 画成分类色（#d6e7ff 那批浅色在纸底上等于隐形）。
    现在色相由卡片描边+底色说，字回归中性。 */
-.rg-mark { font-family: var(--font-mono); font-size: 10px; font-weight: 700; text-anchor: middle; fill: var(--text-muted); }
-.rg-label { font-size: 12px; font-weight: 600; fill: var(--text); }
-.rg-sub { font-size: 10px; fill: var(--text-faint); font-family: var(--font-mono); }
-.rg-doc { font-size: 10px; fill: var(--text-muted); }
+.rg-mark { font-family: var(--font-mono); font-size: var(--fs-cap); font-weight: 700; text-anchor: middle; fill: var(--text-muted); }
+.rg-label { font-size: var(--fs-sm); font-weight: 600; fill: var(--text); }
+/* 节点卡带着分区色相的淡底，副标压在上面。用 --text-faint（最弱一档）在种子的
+   浅色卡上只有 4.27:1，棘轮当场报出来。--text-muted 才是"次级信息"该用的那一档
+   （paper/graphite/zinc 的 --text-faint 本来就等于 --text-muted，所以那三套零变化）。 */
+.rg-sub { font-size: var(--fs-cap); fill: var(--text-muted); font-family: var(--font-mono); }
+.rg-doc { font-size: var(--fs-cap); fill: var(--text-muted); }
 
 /* 节点详情卡 */
 .rg-detail {
@@ -1022,51 +1025,51 @@ const colorOf = regionColor
   width: 300px;
   max-height: calc(100% - 24px);
   overflow-y: auto;
-  background: rgba(255, 255, 255, 0.97);
+  background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   box-shadow: 0 10px 30px rgba(35, 52, 84, 0.16);
   padding: 11px 13px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   z-index: 5;
 }
 .rg-d-head { display: flex; align-items: center; gap: 8px; }
-.rg-d-mark { font-family: var(--font-mono); font-weight: 700; font-size: 13px; }
-.rg-d-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; word-break: break-all; }
+.rg-d-mark { font-family: var(--font-mono); font-weight: 700; font-size: var(--fs-md); }
+.rg-d-title { flex: 1 1 auto; font-size: var(--fs-md); font-weight: 600; word-break: break-all; }
 .rg-d-x {
-  border: none; background: none; font-size: 17px; line-height: 1;
+  border: none; background: none; font-size: var(--fs-lead); line-height: 1;
   color: var(--text-faint); cursor: pointer; padding: 0 2px;
 }
 .rg-d-x:hover { color: var(--text); }
 .rg-d-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0; }
 .rg-d-tags span {
-  font-size: 10px; border-radius: 4px; padding: 1px 7px;
+  font-size: var(--fs-cap); border-radius: 4px; padding: 1px 7px;
   border: 1px solid var(--border); color: var(--text-muted); background: var(--bg);
   display: inline-flex; align-items: center; gap: 4px;
 }
-.rg-d-kind { color: #1b3c73 !important; border-color: #4d7fc066 !important; }
+.rg-d-kind { color: var(--viz-inherit-t) !important; border-color: var(--viz-inherit-a) !important; }
 .rg-d-region i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.rg-d-ext { color: #8a4d12 !important; border-color: #c9762f66 !important; }
+.rg-d-ext { color: var(--viz-mount-t) !important; border-color: var(--viz-mount-a) !important; }
 .rg-d-doc { margin: 4px 0 6px; color: var(--text); line-height: 1.5; }
 .rg-d-rel { margin: 0 0 6px; word-break: break-all; }
-.rg-d-path { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
-.rg-d-line { font-family: var(--font-mono); font-size: 10px; color: #2f6fed; }
+.rg-d-path { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-muted); }
+.rg-d-line { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--accent); }
 .rg-d-faint { color: var(--text-faint); }
-.rg-d-sec { font-size: 10px; font-weight: 600; color: var(--text-faint); margin: 8px 0 3px; }
+.rg-d-sec { font-size: var(--fs-cap); font-weight: 600; color: var(--text-faint); margin: 8px 0 3px; }
 .rg-d-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.rg-d-list li { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+.rg-d-list li { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-cap); }
 .rg-d-arrow { font-style: normal; font-family: var(--font-mono); width: 14px; text-align: center; flex: 0 0 auto; }
-.rg-d-arrow.inherits { color: #4d7fc0; }
-.rg-d-arrow.mounts { color: #c9762f; }
-.rg-d-arrow.calls { color: #1c9e66; }
-.rg-d-link { color: #2f6fed; cursor: pointer; word-break: break-all; }
+.rg-d-arrow.inherits { color: var(--viz-inherit); }
+.rg-d-arrow.mounts { color: var(--viz-mount); }
+.rg-d-arrow.calls { color: var(--viz-call); }
+.rg-d-link { color: var(--accent); cursor: pointer; word-break: break-all; }
 .rg-d-link:hover { text-decoration: underline; }
-.rg-d-list em { font-style: normal; color: var(--text-faint); font-size: 10px; }
-.rg-d-empty { margin: 0 0 2px; font-size: 10px; color: var(--text-faint); }
+.rg-d-list em { font-style: normal; color: var(--text-faint); font-size: var(--fs-cap); }
+.rg-d-empty { margin: 0 0 2px; font-size: var(--fs-cap); color: var(--text-faint); }
 .rg-d-open {
   width: 100%; margin-top: 10px;
-  border: 1px solid #2560d4; background: #2f6fed; color: #fff;
-  border-radius: 6px; padding: 7px 10px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--accent-deep); background: var(--accent); color: #fff;
+  border-radius: 6px; padding: 7px 10px; font-size: var(--fs-sm); cursor: pointer;
 }
 .rg-d-open:disabled { opacity: .5; cursor: not-allowed; }
 .rg-d-open:not(:disabled):hover { filter: brightness(1.06); transform: translateY(-1px); }
@@ -1081,9 +1084,9 @@ const colorOf = regionColor
   justify-content: center;
   gap: 10px;
   color: var(--text-faint);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
-.rg-error { color: #c23a40; }
+.rg-error { color: var(--danger); }
 .rg-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
 
 .rg-legend {
@@ -1097,18 +1100,18 @@ const colorOf = regionColor
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 12px;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   pointer-events: none;
 }
 .rg-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .rg-lg { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 /* 图例必须和画布用同一个派生式，否则"钥匙"对不上"锁"：
-   以前命名类的图例是 #2f6fed，节点描边却是 #58a6ff，两套浅色皮肤下还各自不达标。 */
-.rg-lg-class { background: color-mix(in srgb, #58a6ff 55%, var(--ink)); border: 1px solid color-mix(in srgb, #58a6ff 55%, var(--ink)); }
-.rg-lg-script { background: color-mix(in srgb, #2ec4b6 55%, var(--ink)); border: 1px solid color-mix(in srgb, #2ec4b6 55%, var(--ink)); }
-.rg-lg-scene { background: color-mix(in srgb, #f0883e 55%, var(--ink)); border: 1px solid color-mix(in srgb, #f0883e 55%, var(--ink)); }
-.rg-lg-ext { background: color-mix(in srgb, #6b7686 30%, var(--ink)); border: 1px dashed color-mix(in srgb, #6b7686 55%, var(--ink)); }
+   以前命名类的图例是 var(--accent)，节点描边却是 #58a6ff，两套浅色皮肤下还各自不达标。 */
+.rg-lg-class { background: var(--viz-class); border: 1px solid var(--viz-class); }
+.rg-lg-script { background: var(--viz-script); border: 1px solid var(--viz-script); }
+.rg-lg-scene { background: var(--viz-scene); border: 1px solid var(--viz-scene); }
+.rg-lg-ext { background: var(--viz-external-soft); border: 1px dashed var(--viz-external); }
 .rg-legend-tip { color: var(--text-faint); }
 
 @keyframes rg-overlay-in { from { opacity: 0; } to { opacity: 1; } }

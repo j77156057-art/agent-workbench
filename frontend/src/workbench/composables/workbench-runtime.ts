@@ -3,7 +3,13 @@
 import { ref, type Ref } from 'vue'
 import type { EditorTab } from './workbench-types'
 
-export type WorkspaceView = 'overview' | 'code' | 'assets' | 'cockpit'
+// 工作区视图只有三个。
+// 'cockpit'（开发舱）曾是这个联合的第四项，但 AutonomousCockpit 组件在 v2 重构 E 阶段
+// 已删除、主区不再挂载它，标签却留在 WorkspaceTabs 里 —— 点进去主区高度塌成 0，整屏空白。
+// 2026-10-19 把标签与该联合成员一并删掉。
+// ⚠️ 这不等于取消开发舱：docs/cockpit-v2-redesign.md 记着新舱要重建（只保留「实时对话视频流 +
+// 窗口嵌入」），届时按新形态接回，别把这里的删除读成「不做新舱」。
+export type WorkspaceView = 'overview' | 'code' | 'assets'
 export type RuntimePanelTab = 'play' | 'scene' | 'timeline'
 
 interface RuntimeDeps {

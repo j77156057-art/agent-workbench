@@ -205,33 +205,33 @@ function svgThumb(inner: string, bg = '#eef2f8'): string {
 
 const thumbCube = svgThumb(
   '<path d="M168 52 L238 88 L238 158 L168 194 L98 158 L98 88 Z M168 52 L168 122 M98 88 L168 122 L238 88 M168 122 L168 194" '
-  + 'fill="none" stroke="#2f6fed" stroke-width="3" stroke-linejoin="round"/>')
+  + 'fill="none" stroke="var(--accent)" stroke-width="3" stroke-linejoin="round"/>')
 const thumbTree = svgThumb(
-  '<path d="M168 40 L214 118 H122 Z M168 84 L226 168 H110 Z" fill="rgba(47,111,237,.18)" stroke="#2f6fed" stroke-width="3" stroke-linejoin="round"/>'
+  '<path d="M168 40 L214 118 H122 Z M168 84 L226 168 H110 Z" fill="color-mix(in srgb, var(--accent) 18%, transparent)" stroke="var(--accent)" stroke-width="3" stroke-linejoin="round"/>'
   + '<rect x="160" y="166" width="16" height="26" fill="#8a6d4b"/>')
 const thumbWood = svgThumb(
   '<g stroke="#b98a57" stroke-width="3">' + [58, 88, 118, 148, 178].map((y) =>
     `<path d="M40 ${y} Q120 ${y - 12} 200 ${y + 4} T296 ${y - 2}" fill="none"/>`).join('') + '</g>', '#f3ead9')
 const thumbGrid = svgThumb(
-  '<g stroke="rgba(47,111,237,.55)" stroke-width="2">' +
+  '<g stroke="color-mix(in srgb, var(--accent) 55%, transparent)" stroke-width="2">' +
   [108, 168, 228].map((x) => `<line x1="${x}" y1="40" x2="${x}" y2="180"/>`).join('') +
   [70, 110, 150].map((y) => `<line x1="78" y1="${y}" x2="258" y2="${y}"/>`).join('') + '</g>')
 const thumbHdri = svgThumb(
-  '<circle cx="168" cy="110" r="62" fill="none" stroke="#2f6fed" stroke-width="3"/>'
-  + '<circle cx="168" cy="110" r="20" fill="rgba(47,111,237,.25)"/>'
-  + '<g stroke="#2f6fed" stroke-width="2"><line x1="168" y1="30" x2="168" y2="48"/><line x1="168" y1="172" x2="168" y2="190"/>'
+  '<circle cx="168" cy="110" r="62" fill="none" stroke="var(--accent)" stroke-width="3"/>'
+  + '<circle cx="168" cy="110" r="20" fill="color-mix(in srgb, var(--accent) 25%, transparent)"/>'
+  + '<g stroke="var(--accent)" stroke-width="2"><line x1="168" y1="30" x2="168" y2="48"/><line x1="168" y1="172" x2="168" y2="190"/>'
   + '<line x1="88" y1="110" x2="106" y2="110"/><line x1="230" y1="110" x2="248" y2="110"/></g>')
 const thumbSunset = svgThumb(
   '<circle cx="168" cy="128" r="40" fill="rgba(214,137,52,.55)" stroke="#c97a2b" stroke-width="3"/>'
   + '<line x1="40" y1="150" x2="296" y2="150" stroke="#8a6d4b" stroke-width="3"/>',
   '#f6e7d3')
 const thumbUi = svgThumb(
-  '<rect x="78" y="78" width="180" height="64" rx="8" fill="#fff" stroke="#2f6fed" stroke-width="3"/>'
-  + '<rect x="96" y="98" width="80" height="10" rx="5" fill="rgba(47,111,237,.45)"/>'
-  + '<rect x="96" y="118" width="50" height="10" rx="5" fill="rgba(47,111,237,.25)"/>'
-  + '<rect x="196" y="106" width="46" height="22" rx="6" fill="#2f6fed"/>')
+  '<rect x="78" y="78" width="180" height="64" rx="8" fill="#fff" stroke="var(--accent)" stroke-width="3"/>'
+  + '<rect x="96" y="98" width="80" height="10" rx="5" fill="color-mix(in srgb, var(--accent) 45%, transparent)"/>'
+  + '<rect x="96" y="118" width="50" height="10" rx="5" fill="color-mix(in srgb, var(--accent) 25%, transparent)"/>'
+  + '<rect x="196" y="106" width="46" height="22" rx="6" fill="var(--accent)"/>')
 const thumbAudio = svgThumb(
-  '<g stroke="#2f6fed" stroke-width="4" stroke-linecap="round">' +
+  '<g stroke="var(--accent)" stroke-width="4" stroke-linecap="round">' +
   [86, 110, 134, 158, 182, 206, 230].map((x, i) =>
     `<line x1="${x}" y1="${110 - 28 - (i % 3) * 12}" x2="${x}" y2="${110 + 28 + ((i + 1) % 3) * 12}"/>`).join('') + '</g>')
 
@@ -293,7 +293,7 @@ function demoSpriteSheetDataUri(): string {
       `<g transform="translate(${ox},${oy})">`,
       `<rect width="${FW}" height="${FW}" fill="#dfe7f2"/>`,
       `<ellipse cx="${bx}" cy="${FW - 10}" rx="16" ry="3.5" fill="#9fb0c6"/>`,
-      `<circle cx="${bx}" cy="${by.toFixed(1)}" r="11" fill="#2f6fed"/>`,
+      `<circle cx="${bx}" cy="${by.toFixed(1)}" r="11" fill="var(--accent)"/>`,
       `<circle cx="${(bx - 3).toFixed(1)}" cy="${(by - 3).toFixed(1)}" r="3" fill="#fff"/>`,
       `<text x="4" y="12" font-size="9" fill="#6b7280">${String(k).padStart(2, '0')}</text>`,
       '</g>',

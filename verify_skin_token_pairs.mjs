@@ -36,9 +36,40 @@ const PAIRS = [['--accent', '--accent-ink'], ['--green', '--green-ink'], ['--amb
   // paper 原来取 color-mix(accent 62%, ink)，压在 --bg-hover 上只有 4.34，
   // 而这条当时不存在，所以没人发现。加进来之后它必须逐面判。
   ['--accent-text', '--bg'], ['--accent-text', '--bg-raised'], ['--accent-text', '--bg-hover']]
-// 把每个 *-ink 强制改成 #fff 之后，各套皮应当有几对不达标
-const EXPECT_WEAK_MUTATED = { paper: 2, graphite: 5, zinc: 0 }
+// 把每个 *-ink 强制改成 #fff 之后，各套皮应当有几对不达标。
+// paper / graphite / zinc 是固定皮肤，这三个数是**独立真值**（改皮肤配色要同步改这里）。
+// seed 不行 —— 它的明暗与色相都是 tools/design_seed.py 按种子现算的：
+//   深色种子：四个状态色都是浅色，ink 必须深 → 全改白打掉 5 对
+//   浅色种子：accent 够深（生成器保证白字达标）→ 全改白打掉 0 对
+// 所以 seed 的期望值用下面 WHITE_BREAKERS 解析算，其余三套用真值表并交叉校验。
+const EXPECT_WEAK_MUTATED = { paper: 2, graphite: 5, zinc: 0, seed: 5 }
 const FLOOR = 4.5
+
+/** 解析算：哪几对的「填色」承不住白字 —— 把 ink 换成白字时这些对会破。
+ *  这是**用皮肤自己的取值算**的，不是跑完变异再回头数（那样期望值就成了变异结果的
+ *  同义反复，变异验证就白做了）。三套固定皮拿它和真值表对一次，方法本身才算被验证过。 */
+const WHITE_BREAKERS = () => {
+  const probe = document.createElement('span')
+  document.body.appendChild(probe)
+  const parse = v => { const m = /rgba?\(([^)]+)\)/.exec(v); if (!m) return null
+    const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const ratio = (a, b) => { const L1 = lum(a.rgb), L2 = lum(b.rgb)
+    return (Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05) }
+  const resolve = t => { probe.style.color = '#000'; probe.style.color = `var(${t})`
+    return parse(getComputedStyle(probe).color) }
+  const white = { rgb: [255, 255, 255] }
+  let n = 0
+  // 4.5 内联：整个函数会被序列化成字符串塞进页面执行，引用不了外层的 FLOOR 常量
+  for (const t of ['--accent', '--green', '--amber', '--accent-2', '--danger']) {
+    const f = resolve(t)
+    if (f && ratio(f, white) < 4.5) n++
+  }
+  probe.remove()
+  return n
+}
 
 const MEASURE = ps => {
   // 内联 var() 解析：作用域样式让外部探针拿不到类，而 var() 不需要类就能解出
@@ -152,17 +183,42 @@ const SCRIMS = () => {
   return bad
 }
 
-// 已知未修的死引用：4 个从未在任何皮肤里定义的令牌，共 36 处引用。
-// 列在这里不是放过它们，是让门禁只对**新增**的死引用变红 —— 一上来就红的门禁会被无视。
-// 每条都写了"该由谁定"：--amber-deep 要逐皮解算（深色皮下它不能是同一个棕），
-// 其余三个是纯别名，定一次即可。
+// 已知未修的死引用清单。列在这里不是放过它们，是让门禁只对**新增**的死引用变红 ——
+// 一上来就红的门禁会被无视。每条都写了"该由谁定"。
+//
+// 2026-10-20：清单已清空 —— 原来这 4 条都定掉了：
+//   --font-sans  问答页 19 处（landing 页有一套，问答页这套 :root 漏了）→ ask.css 别名到 --font-ui
+//   --text-dim   对话台/连接弹层 5 处 → style.css 别名到 --text-muted
+//   --font-base  场景运行台空态 1 处 → style.css 别名到 --font-ui
+//   --amber-deep 脏状态徽标等 7 处 → style.css 别名到 --amber（惰性替换，随皮肤走）
+// 现在任何新的死引用都会直接让门禁变红。
 const KNOWN_DEAD_TOKENS = {
-  '--font-sans': '21 处引用（问答页为主）。从未定义 → 字体回落继承值。该定成 var(--font-ui)',
-  '--text-dim': '7 处引用（对话台/开发舱/连接弹层）。从未定义 → 字色回落继承值，'
-    + '所以这些行"碰巧"看得清，但没有任何一处跟着皮肤走',
-  '--amber-deep': '7 处引用（脏状态徽标/状态点）。从未定义 → 回落继承色。'
-    + '定值要逐皮肤解算：深色皮下不能沿用浅色皮那个棕',
-  '--font-base': '1 处引用（SceneRuntimePanel .pb-tl-empty）。从未定义',
+}
+
+/** 控件边界档：--border-graphic 对 --bg-raised 必须 ≥ 3:1。
+ *  这是 WCAG 1.4.11 真正管的判据 —— 1.4.11 要求 UI 控件的**视觉边界**
+ *  （输入框、复选框、下拉）与相邻底色有 3:1 对比度；而纯装饰的图形对象
+ *  （容器外框、列表分隔线）明确豁免（原文：purely decorative are exempt）。
+ *  仓库里原来把"描边 3:1"当成了不可退让的审美下限，是把标准用错了地方 ——
+ *  主流产品全都低于 3:1：Primer border.default 1.45:1、Linear 5%~8% 白 1.15~1.26。
+ *  改成三档后，3:1 落到该落的地方：容器/分隔淡到 1.35:1，控件边界守住 3:1。
+ *
+ *  注意：这个函数会被序列化进页面执行，不能引用外层常量 —— 3 只能内联。 */
+const CONTROL_BORDER = () => {
+  const probe = document.createElement('span')
+  document.body.appendChild(probe)
+  const parse = v => { const m = /rgba?\(([^)]+)\)/.exec(v); if (!m) return null
+    const q = m[1].split(/[\s,\/]+/).filter(x => x !== '').map(Number)
+    return { rgb: [q[0], q[1], q[2]], a: q[3] === undefined ? 1 : q[3] } }
+  const lum = c => { const f = x => { x /= 255; return x <= .04045 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4 }
+    return .2126 * f(c[0]) + .7152 * f(c[1]) + .0722 * f(c[2]) }
+  const resolve = t => { probe.style.color = '#000'; probe.style.color = `var(${t})`
+    return parse(getComputedStyle(probe).color) }
+  const f = resolve('--border-graphic'), b = resolve('--bg-raised')
+  probe.remove()
+  if (!f || !b) return null
+  const L1 = lum(f.rgb), L2 = lum(b.rgb)
+  return +(((Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05)).toFixed(2))
 }
 
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
@@ -175,10 +231,15 @@ const ok = (name, cond, detail = '') => {
 
 try {
   for (const skin of Object.keys(EXPECT_WEAK_MUTATED)) {
+    let whiteBreakers = 0
     for (const mutate of [false, true]) {
       let hits = 0
       const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-      await page.addInitScript(`localStorage.setItem("docmind.skin","${skin}")`)
+      // 2026-10-20：补写锁定标记。
+// skins.ts 现在把「默认皮肤」从 paper 迁到 zinc，迁移判据是"存的是旧默认 paper 且
+// 从没主动选过"（localStorage 没有 docmind.skinLocked）。门禁是**显式指定**要测哪套皮肤，
+// 必须同时写锁定标记，否则 paper 用例会被迁移成 zinc，waitForFunction 干等到超时。
+await page.addInitScript(`localStorage.setItem("docmind.skin","${skin}");localStorage.setItem("docmind.skinLocked","1")`)
       if (mutate) {
         // 生产构建里 skins.css 被打进哈希名 chunk —— 按文件名路由会一处都改不到，
         // 于是"变异前后数字完全相同"被当成通过。所以扫所有 CSS 并**数命中次数**。
@@ -203,6 +264,20 @@ try {
       if (!mutate) {
         ok(`${skin} 现状：${PAIRS.length} 对全部 ≥ ${FLOOR}:1`, weak.length === 0,
           weak.length ? `不达标：${weak.map(w => `${w.对}=${w.值}`).join(' ')}` : detail)
+        // 控件边界档：1.4.11 的 3:1 真正落在这里（容器/分隔线是装饰，豁免）。
+        const cb = await page.evaluate(CONTROL_BORDER)
+        ok(`${skin} 控件边界 --border-graphic 对 --bg-raised ≥ 3:1`, cb !== null && cb >= 3,
+          cb === null ? '令牌没解析出颜色' : `${cb}:1`)
+        // 解析期望值：哪几对的填色承不住白字。三套固定皮拿它和真值表对一次 ——
+        // 对得上，说明这个解析方法本身可信；seed 是生成皮肤，只能用它。
+        whiteBreakers = await page.evaluate(WHITE_BREAKERS)
+        if (skin !== 'seed') {
+          ok(`${skin} 解析期望值与固定真值一致（${EXPECT_WEAK_MUTATED[skin]}）`,
+            whiteBreakers === EXPECT_WEAK_MUTATED[skin],
+            `解析算得 ${whiteBreakers} · 真值 ${EXPECT_WEAK_MUTATED[skin]}`)
+        } else {
+          console.log(`      · seed 皮肤的期望值按其自身色值解析算得 ${whiteBreakers}（明暗由种子决定，不写死）`)
+        }
         const sh = await page.evaluate(SHADOWS)
         ok(`${skin} 硬投影都比自己落的底暗`, sh.length === 0, sh.join(' · '))
         // 变异：把模态阴影改回"取 --ink"。只有深色皮肤应当变红 ——
@@ -210,7 +285,13 @@ try {
         await page.evaluate(() => document.documentElement.style
           .setProperty('--modal-shadow', '8px 8px 0 var(--ink)'))
         const shM = await page.evaluate(SHADOWS)
-        const shouldRed = skin === 'graphite'
+        // 是否该红：取决于**这套皮肤是不是深色**（深色皮肤里 --ink 是浅色，
+        // 拿它当投影色会在深底上提亮）。原先写死 `skin === 'graphite'`，
+        // 种子皮肤（也是深色）会被误判成"浅底"→ 期望值反了 → 门禁误报。
+        // 改成读皮肤块自己声明的 --skin-dark：新增深色皮肤不用改这里。
+        const isDark = await page.evaluate(() =>
+          getComputedStyle(document.documentElement).getPropertyValue('--skin-dark').trim() === '1')
+        const shouldRed = isDark
         ok(`${skin} 变异（模态阴影改回取 --ink）：${shouldRed ? '应当红' : '不该红'}`,
           shM.length > 0 === shouldRed, shouldRed ? shM.join(' · ') : '未报（正确）')
         await page.evaluate(() => document.documentElement.style.removeProperty('--modal-shadow'))
@@ -221,7 +302,9 @@ try {
         await page.evaluate(() => document.documentElement.style
           .setProperty('--scrim', 'rgba(27, 39, 61, .34)'))
         const scM = await page.evaluate(SCRIMS)
-        const scRed = skin === 'graphite'
+        // 遮罩变异同理：海军蓝压在深底上会提亮 → 深色皮肤该红，浅色皮不红。
+    const scRed = await page.evaluate(() =>
+      getComputedStyle(document.documentElement).getPropertyValue('--skin-dark').trim() === '1')
         ok(`${skin} 变异（遮罩换回海军蓝）：${scRed ? '应当红' : '不该红'}`,
           scM.length > 0 === scRed, scRed ? scM.join(' · ') : '未报（正确）')
         await page.evaluate(() => document.documentElement.style.removeProperty('--scrim'))
@@ -235,7 +318,8 @@ try {
         const gone = Object.keys(KNOWN_DEAD_TOKENS).filter(t => !names.includes(t))
         if (gone.length) console.log(`      ⚠ 已知清单里的 ${gone.join(' ')} 这次没出现 —— 修好了就把那条删掉`)
       } else {
-        const expect = EXPECT_WEAK_MUTATED[skin]
+        // 期望值：固定皮用真值表（已在非变异轮交叉校验过解析算法），种子用解析算出的值。
+        const expect = whiteBreakers
         ok(`${skin} 变异（ink 全改白）：应掉 ${expect} 对`,
           hits > 0 && weak.length === expect,
           `命中 ${hits} 处改写 · 实掉 ${weak.length} 对 · ${detail}`)

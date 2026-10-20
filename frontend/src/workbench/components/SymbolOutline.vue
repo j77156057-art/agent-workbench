@@ -125,16 +125,16 @@ function go(s: SymbolInfo) {
   gap: 6px;
   padding: 0 8px;
   border-bottom: 1px solid var(--border);
-  background: #ffffff;
+  background: var(--bg-raised);
 }
 .so-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--text-muted);
 }
 .so-count {
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   background: var(--bg-hover);
   border: 1px solid var(--border);
@@ -154,12 +154,12 @@ function go(s: SymbolInfo) {
 }
 .so-expand { margin: 0 auto; }
 .so-collapse:hover, .so-expand:hover { color: var(--text); background: var(--bg-hover); }
-.so-collapse:focus-visible, .so-expand:focus-visible, .so-item:focus-visible { outline: 2px solid #2f6fed88; outline-offset: -2px; }
+.so-collapse:focus-visible, .so-expand:focus-visible, .so-item:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: -2px; }
 .so-collapse, .so-expand, .so-item { transition: color .16s ease, background .16s ease, transform .16s ease; }
 .so-body { flex: 1; overflow-y: auto; padding: 6px 0 12px; }
 .so-hint {
   padding: 12px 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text-faint);
 }
@@ -167,29 +167,29 @@ function go(s: SymbolInfo) {
   margin: 4px 8px 8px;
   padding: 7px 9px;
   border: 1px solid var(--border);
-  border-left: 2px solid #2f6fed77;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 47%, transparent);
   border-radius: 5px;
-  background: rgba(47,111,237,.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .so-class-name {
   display: flex;
   align-items: center;
   gap: 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: #1b3c73;
+  color: var(--viz-inherit-t);
 }
 .so-extends {
   margin-top: 3px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
-.so-extends code { color: #2f6fed; }
+.so-extends code { color: var(--accent); }
 .so-doc {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   line-height: 1.5;
   color: var(--text-muted);
   display: -webkit-box;
@@ -207,7 +207,7 @@ function go(s: SymbolInfo) {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
   line-height: 1.5;
@@ -218,7 +218,7 @@ function go(s: SymbolInfo) {
 .so-mark {
   font-style: normal;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-cap);
   font-weight: 700;
   width: 13px;
   text-align: center;
@@ -232,10 +232,10 @@ function go(s: SymbolInfo) {
   white-space: nowrap;
   font-family: var(--font-mono);
 }
-.so-kind-group .so-name { color: var(--text-faint); font-size: 11px; }
+.so-kind-group .so-name { color: var(--text-faint); font-size: var(--fs-cap); }
 .so-ln {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   flex: 0 0 auto;
 }

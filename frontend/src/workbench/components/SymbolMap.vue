@@ -116,10 +116,10 @@ function kindOf(kind: string) {
       <header class="sm-top">
         <div class="sm-title">
           <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
-            <circle cx="4" cy="4" r="1.6" fill="none" style="stroke: color-mix(in srgb, #bc8cff 55%, var(--ink))" stroke-width="1.1" />
-            <circle cx="11" cy="3.5" r="1.6" fill="none" style="stroke: color-mix(in srgb, #58a6ff 55%, var(--ink))" stroke-width="1.1" />
-            <circle cx="9.5" cy="11.5" r="1.6" fill="none" style="stroke: color-mix(in srgb, #45c98c 55%, var(--ink))" stroke-width="1.1" />
-            <path d="M5.3 4.8 L9.6 3.9 M5 5.2 L8.5 10.4 M10.2 5 L9.9 9.9" style="stroke: color-mix(in srgb, #3a4658 55%, var(--ink))" stroke-width="0.9" />
+            <circle cx="4" cy="4" r="1.6" fill="none" style="stroke: var(--viz-fn)" stroke-width="1.1" />
+            <circle cx="11" cy="3.5" r="1.6" fill="none" style="stroke: var(--viz-class)" stroke-width="1.1" />
+            <circle cx="9.5" cy="11.5" r="1.6" fill="none" style="stroke: var(--viz-const)" stroke-width="1.1" />
+            <path d="M5.3 4.8 L9.6 3.9 M5 5.2 L8.5 10.4 M10.2 5 L9.9 9.9" style="stroke: var(--viz-link)" stroke-width="0.9" />
           </svg>
           <h2>符号语义地图</h2>
           <span v-if="data" class="sm-stats">
@@ -245,8 +245,8 @@ function kindOf(kind: string) {
   border-bottom: 1px solid var(--border);
 }
 .sm-title { display: flex; align-items: center; gap: 9px; flex: 1; }
-.sm-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.sm-stats { font-size: 12px; color: var(--text-faint); }
+.sm-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
+.sm-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .sm-iconbtn {
   border: 1px solid transparent;
   background: transparent;
@@ -257,7 +257,7 @@ function kindOf(kind: string) {
   display: inline-flex; align-items: center; justify-content: center;
 }
 .sm-iconbtn:hover { background: var(--bg-hover); color: var(--text); }
-.sm-iconbtn:focus-visible, .sm-chip:focus-visible, .sm-clear:focus-visible, .sm-retry:focus-visible, .sm-file-head:focus-visible, .sm-sym:focus-visible { outline: 2px solid #2f6fed88; outline-offset: 2px; }
+.sm-iconbtn:focus-visible, .sm-chip:focus-visible, .sm-clear:focus-visible, .sm-retry:focus-visible, .sm-file-head:focus-visible, .sm-sym:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
 .sm-iconbtn, .sm-chip, .sm-file-head, .sm-sym, .sm-retry { transition: color .16s ease, background .16s ease, border-color .16s ease, transform .16s ease; }
 .sm-toolbar {
   flex: 0 0 auto;
@@ -278,19 +278,19 @@ function kindOf(kind: string) {
   height: 32px;
   color: var(--text-faint);
 }
-.sm-search:focus-within { border-color: #2f6fed66; box-shadow: 0 0 0 2px #2f6fed18; }
+.sm-search:focus-within { border-color: color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent); }
 .sm-search input {
   flex: 1;
   border: none;
   outline: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: inherit;
 }
 .sm-clear {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   cursor: pointer;
   border: 1px solid var(--border);
@@ -306,24 +306,29 @@ function kindOf(kind: string) {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 2px 9px;
   border-radius: 11px;
   cursor: pointer;
 }
-.sm-chip i { font-style: normal; font-size: 10px; color: var(--text-faint); }
+.sm-chip i { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); }
 .sm-chip:hover { border-color: var(--border-strong); color: var(--text); }
-.sm-chip.active { background: #e4edfc; border-color: #2560d4; color: #1b3c73; }
-.sm-chip.active i { color: #2560d4; }
+/* 选中态整组令牌化：底/边/字一起换。
+   原来这里是「写死浅蓝底 #e4edfc + 写死深蓝边 + 写死深蓝字」——底色不跟皮肤走，
+   深色皮肤下是一块亮斑；只把边/字换成 var(--accent-deep) 还会让朱红边压浅蓝底
+   （门禁实测报"新引入的皮肤泄漏"）。现在底 = accent 淡染、边 = accent、
+   字 = --accent-text（该令牌本就是"在底色上用强调色"准备的，paper 5.21:1）。 */
+.sm-chip.active { background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised)); border-color: var(--accent); color: var(--accent-text); }
+.sm-chip.active i { color: var(--accent-text); }
 .sm-content { flex: 1; overflow-y: auto; padding: 8px 10px 20px; }
-.sm-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: 12px; }
+.sm-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: var(--fs-sm); }
 .sm-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
 .sm-group { margin: 10px 6px 0; }
 .sm-group-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   letter-spacing: 0.05em;
   color: var(--text-muted);
@@ -334,7 +339,7 @@ function kindOf(kind: string) {
   z-index: 1;
 }
 .sm-group-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.sm-group-head em { font-style: normal; font-size: 10px; color: var(--text-faint); }
+.sm-group-head em { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); }
 .sm-file { margin: 2px 0 2px 14px; border-left: 1px solid var(--border); padding-left: 4px; }
 .sm-file-head {
   width: 100%;
@@ -354,7 +359,7 @@ function kindOf(kind: string) {
 .sm-caret.open { transform: rotate(90deg); }
 .sm-region-tag {
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   border: 1px solid;
   color: var(--text);
   border-radius: 4px;
@@ -362,17 +367,17 @@ function kindOf(kind: string) {
   line-height: 15px;
   flex: 0 0 auto;
 }
-.sm-file-name { font-family: var(--font-mono); font-size: 12px; color: var(--text); flex: 0 0 auto; }
-.sm-file-class { font-family: var(--font-mono); font-size: 11px; color: var(--accent-text); flex: 0 0 auto; }
+.sm-file-name { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); flex: 0 0 auto; }
+.sm-file-class { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--accent-text); flex: 0 0 auto; }
 .sm-file-doc {
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
 }
-.sm-file-count { font-style: normal; font-size: 10px; color: var(--text-faint); margin-left: auto; flex: 0 0 auto; }
+.sm-file-count { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); margin-left: auto; flex: 0 0 auto; }
 .sm-syms { list-style: none; margin: 0; padding: 0 0 4px 26px; }
 .sm-sym {
   width: 100%;
@@ -383,7 +388,7 @@ function kindOf(kind: string) {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-align: left;
   cursor: pointer;
   border-radius: 4px;
@@ -394,7 +399,7 @@ function kindOf(kind: string) {
   font-style: normal;
   font-family: var(--font-mono);
   font-weight: 700;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   /* 类别色相原来直接当 10px 字色（paper 实测 2.04:1）。字形本身就是类别记号
      （R / ▣ / x / f），色相只是第二线索，所以字回归中性，色相留给分区标签的描边。 */
   color: var(--text);
@@ -406,7 +411,7 @@ function kindOf(kind: string) {
 .sm-sym-name { font-family: var(--font-mono); color: var(--text); flex: 0 0 auto; align-self: center; }
 .sm-sym-detail {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -414,7 +419,7 @@ function kindOf(kind: string) {
   min-width: 0;
 }
 .sm-sym-doc {
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -422,9 +427,9 @@ function kindOf(kind: string) {
   min-width: 60px;
   flex: 1 1 auto;
 }
-.sm-sym-ln { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); margin-left: auto; flex: 0 0 auto; align-self: center; }
+.sm-sym-ln { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); margin-left: auto; flex: 0 0 auto; align-self: center; }
 .sm-sym:hover .sm-sym-ln { color: var(--accent); }
-.sm-sym-empty { font-size: 11px; color: var(--text-faint); padding: 2px 8px 4px; list-style: none; }
+.sm-sym-empty { font-size: var(--fs-cap); color: var(--text-faint); padding: 2px 8px 4px; list-style: none; }
 @keyframes sm-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sm-panel-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (max-width: 700px) {

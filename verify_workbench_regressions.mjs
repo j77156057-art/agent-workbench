@@ -35,9 +35,9 @@ try {
     v.dispatch({ changes: { from: v.state.doc.length, insert: '\n# UNSAVED-REGRESSION' } })
   })
   await page.locator('.cd-input').fill('未发送的工作台问题')
-  // 顶栏「问答页」<a> 与「AI 对话」<button> 自 c19aacfa 起共用 .wb-question-link，
-  // 本用例要的是跳去问答页的 <a>，用标签名消歧。
-  await page.locator('a.wb-question-link').click()
+  // 2026-10-19：顶栏右侧的「问答页」<a> 已并入品牌（点 DocMind 回问答页），
+  // 顶栏右侧只剩「设置 / 更多」。原来这里靠 .wb-question-link 消歧，现在用 .wb-brand-home。
+  await page.locator('a.wb-brand-home').click()
   await page.getByText(turn.assistant, { exact: true }).waitFor()
   // 问答页输入框没有 id（历史上也没有过 id="q"），用 composer 容器定位
   const askInput = page.locator('.composer textarea')
@@ -57,9 +57,10 @@ try {
 
   for (const width of [1600, 1280]) {
     await page.setViewportSize({ width, height: 1000 })
-    // ap/te/gp 的触发按钮已收进隐藏宿主（style.css .wb-tool-host），
-    // 面板改由顶栏「更多」菜单唤起（App.vue teRef/gpRef/apRef?.show()）。
-    for (const [menuItem, prefix] of [['AI 运行设置', 'ap'], ['任务与生成', 'te'], ['GPU 监控', 'gp']]) {
+    // 2026-10-19：「AI 运行设置」不再是顶栏「更多」里的浮层面板，已内嵌进
+    // 设置页的「运行与引擎」分区（.ap-inline，static 定位、无遮罩）；
+    // te/gp 仍是「更多」菜单唤起的浮层。两条路径分别验。
+    for (const [menuItem, prefix] of [['任务与生成', 'te'], ['GPU 监控', 'gp']]) {
       await page.locator('.wb-menu-trigger').click()
       await page.locator('.wb-menu-item', { hasText: menuItem }).click()
       const panel = page.locator('.' + prefix + '-pop')
@@ -71,6 +72,21 @@ try {
       await page.locator('.' + prefix + '-backdrop').click({ position: { x: 5, y: 200 } })
       await panel.waitFor({ state: 'hidden' })
     }
+    // 内嵌档：设置 → 运行与引擎 → AI 运行策略。要求它就地在设置面板里、
+    // 完整可见可点，且**没有**残留遮罩（内嵌面板不该再遮住设置页）。
+    await page.getByRole('button', { name: '设置' }).first().click()
+    await page.locator('.sv-nav-item').filter({ hasText: '运行与引擎' }).first().click()
+    const inline = page.locator('.ap-inline')
+    await inline.waitFor()
+    assert.equal(await inline.evaluate(el => {
+      const r = el.getBoundingClientRect()
+      return r.top >= 0 && r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight
+    }), true, 'ap-inline: fully inside the viewport')
+    assert.equal(await page.locator('.ap-backdrop, .cd-pop-mask').count(), 0, 'embedded panels must not leave a backdrop behind')
+    await page.locator('.sv-nav-item').filter({ hasText: '外观' }).first().click()
+    // 关设置：点它自己的 × （.sv-x），别用角色名 —— 弹层里还有别的 title="关闭" 按钮
+    await page.locator('.sv-x').first().click()
+    await page.locator('.sv-mask').waitFor({ state: 'hidden' })
   }
   check('AI settings / task / GPU panels are visible and clickable at 1600 and 1280px')
   await page.setViewportSize({ width: 1600, height: 1000 })

@@ -25,7 +25,7 @@ const { fitView } = useVueFlow()
 // 后端真实工具名 → 中文类别/名称（与 tools.py TOOLS 注册表对齐；未知动作不编造，原样展示）
 type CatKey = 'retrieve' | 'write' | 'region' | 'run' | 'web' | 'mcp' | 'asset' | 'bug' | 'task' | 'agent' | 'other'
 const CAT_META: Record<CatKey, { text: string; glyph: string; color: string }> = {
-  retrieve: { text: '检索', glyph: '检', color: '#2f6fed' },
+  retrieve: { text: '检索', glyph: '检', color: 'var(--accent)' },
   write: { text: '改码', glyph: '写', color: '#b3561f' },
   region: { text: '分区/Git', glyph: '区', color: '#7a4fd1' },
   run: { text: '运行校验', glyph: '运', color: '#128053' },
@@ -491,20 +491,20 @@ function providerLabel(p: string) {
   padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border-2);
 }
 .fl-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.fl-title b { font-size: 14px; color: var(--text); white-space: nowrap; }
-.fl-title span { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fl-title b { font-size: var(--fs-body); color: var(--text); white-space: nowrap; }
+.fl-title span { font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fl-head-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 .fl-iconbtn {
   width: 28px; height: 28px; border: 1px solid var(--border-2); background: var(--bg-raised); border-radius: 7px;
-  color: var(--text-muted); cursor: pointer; font-size: 16px; line-height: 1;
+  color: var(--text-muted); cursor: pointer; font-size: var(--fs-h2); line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
 .fl-iconbtn:hover { border-color: var(--border); background: var(--bg-hover); color: var(--text); transform: translateY(-1px); }.fl-iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fl-demo {
   flex: 0 0 auto; margin: 10px 16px 0; padding: 7px 11px; border-radius: 8px;
-  font-size: 12px; line-height: 1.6; color: var(--amber); background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--amber); background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
 }
-.fl-err { flex: 0 0 auto; margin: 10px 16px 0; font-size: 12px; color: var(--danger); }
+.fl-err { flex: 0 0 auto; margin: 10px 16px 0; font-size: var(--fs-sm); color: var(--danger); }
 .fl-link { border: none; background: none; color: var(--accent-text); cursor: pointer; font: inherit; padding: 0; }
 .fl-body { flex: 1 1 auto; min-height: 0; display: flex; }
 
@@ -516,17 +516,19 @@ function providerLabel(p: string) {
 .fl-filter { padding: 10px; border-bottom: 1px solid var(--border-2); display: flex; flex-direction: column; gap: 8px; }
 .fl-seg { display: flex; background: var(--bg); border-radius: 8px; padding: 3px; gap: 2px; }
 .fl-seg button {
-  flex: 1; border: none; background: transparent; font: inherit; font-size: 12px; font-weight: 600;
+  flex: 1; border: none; background: transparent; font: inherit; font-size: var(--fs-sm); font-weight: 600;
   color: var(--text-muted); padding: 5px 0; border-radius: 6px; cursor: pointer;
 }
 .fl-seg button.on { background: var(--bg-raised); color: var(--accent-text); box-shadow: 0 1px 4px rgba(35,52,84,.12); }
 .fl-filter input {
-  padding: 6px 9px; border: 1px solid var(--border-2); border-radius: 7px; font: inherit; font-size: 12px;
+  /* 控件边界走 --border-graphic 档：1.4.11 的 3:1 落在输入框上。
+     原来用 --border-2（容器档），zinc 下只有 1.36:1、paper 下 1.38:1 —— 画布探针量出来了。 */
+  padding: 6px 9px; border: 1px solid var(--border-graphic); border-radius: 7px; font: inherit; font-size: var(--fs-sm);
   color: var(--text); background: var(--bg-raised); outline: none;
 }
 .fl-filter input:focus { border-color: var(--accent); background: var(--bg-raised); }
 .fl-turn-list { flex: 1 1 auto; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 7px; }
-.fl-hint { padding: 22px 14px; font-size: 12px; line-height: 1.8; color: var(--text-muted); text-align: center; }
+.fl-hint { padding: 22px 14px; font-size: var(--fs-sm); line-height: 1.8; color: var(--text-muted); text-align: center; }
 .fl-turn {
   text-align: left; border: 1px solid var(--border-2); background: var(--bg-raised); border-radius: 10px;
   padding: 8px 10px; cursor: pointer; font: inherit; display: flex; flex-direction: column; gap: 3px; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
@@ -534,15 +536,15 @@ function providerLabel(p: string) {
 .fl-turn:hover { border-color: var(--border); background: var(--bg-selected); transform: translateX(2px); box-shadow: 0 3px 9px rgba(35,52,84,.08); }.fl-turn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fl-turn.on { border-color: var(--accent); background: var(--bg-selected); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
 .fl-turn-row { display: flex; align-items: center; justify-content: space-between; }
-.fl-turn-time { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.fl-turn-time { font-size: var(--fs-cap); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .fl-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .fl-dot.ok { background: var(--green); }
 .fl-dot.err { background: var(--danger); }
 .fl-dot.stop { background: var(--amber); }
 .fl-dot.warn { background: var(--amber); }
-.fl-turn-model { font-size: 12px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fl-turn-meta { display: flex; gap: 8px; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.fl-turn-issue { font-size: 10px; font-weight: 700; color: var(--danger); }
+.fl-turn-model { font-size: var(--fs-sm); font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fl-turn-meta { display: flex; gap: 8px; font-size: var(--fs-cap); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.fl-turn-issue { font-size: var(--fs-cap); font-weight: 700; color: var(--danger); }
 
 /* 中：画布 */
 .fl-canvas-wrap { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
@@ -551,13 +553,13 @@ function providerLabel(p: string) {
   background: var(--bg); border-bottom: 1px solid var(--border-2);
 }
 .fl-chip {
-  font-size: 10px; color: var(--text); background: var(--bg-raised); border: 1px solid var(--border-2);
+  font-size: var(--fs-cap); color: var(--text); background: var(--bg-raised); border: 1px solid var(--border-2);
   border-radius: 999px; padding: 2px 9px; font-variant-numeric: tabular-nums; white-space: nowrap; transition: border-color .15s ease, background .15s ease;
 }
 .fl-chip.model { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 32%, transparent); background: var(--accent-soft); font-weight: 600; }
 .fl-chip.cache { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); background: var(--bg-raised); font-weight: 600; }
 .fl-canvas { flex: 1 1 auto; min-height: 0; position: relative; }
-.fl-empty-canvas { display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 13px; }
+.fl-empty-canvas { display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: var(--fs-md); }
 
 /* Vue Flow 自定义节点 */
 .fl-node {
@@ -566,27 +568,27 @@ function providerLabel(p: string) {
 }
 .fl-node:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(31,45,72,.14); }
 .fl-n-head { display: flex; align-items: center; gap: 8px; }
-.fl-n-head b { font-size: 12px; color: var(--text); }
+.fl-n-head b { font-size: var(--fs-sm); color: var(--text); }
 .fl-n-glyph {
   width: 22px; height: 22px; border-radius: 7px; border: 1px solid; flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700;
+  font-size: var(--fs-cap); font-weight: 700;
 }
 .fl-n-glyph.start { background: var(--accent-soft); color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 32%, transparent); }
 .fl-n-glyph.end.ok { background: var(--bg-raised); color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
 .fl-n-glyph.end.err { background: var(--bg-raised); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
 .fl-n-glyph.end.stop, .fl-n-glyph.end.warn { background: var(--bg-raised); color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
-.fl-n-idx { margin-left: auto; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.fl-n-idx { margin-left: auto; font-size: var(--fs-cap); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .fl-n-fail {
-  font-size: 10px; font-weight: 700; color: var(--danger-ink); background: var(--danger);
+  font-size: var(--fs-cap); font-weight: 700; color: var(--danger-ink); background: var(--danger);
   border-radius: 999px; padding: 1px 8px;
 }
-.fl-n-sub { margin-top: 5px; font-size: 10px; color: var(--text-muted); line-height: 1.5; }
+.fl-n-sub { margin-top: 5px; font-size: var(--fs-cap); color: var(--text-muted); line-height: 1.5; }
 .fl-n-sub.faint { color: var(--text-muted); }
-.fl-n-sub.mono { font-family: var(--font-mono, ui-monospace, Consolas, monospace); font-size: 10px; color: var(--text-muted); }
+.fl-n-sub.mono { font-family: var(--font-mono, ui-monospace, Consolas, monospace); font-size: var(--fs-cap); color: var(--text-muted); }
 .fl-n-stats { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
 .fl-n-stats > span {
-  font-size: 10px; color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-2);
+  font-size: var(--fs-cap); color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-2);
   border-radius: 5px; padding: 1px 7px; font-variant-numeric: tabular-nums;
 }
 .fl-n-ok.good { color: var(--green) !important; background: var(--bg-raised) !important; border-color: color-mix(in srgb, var(--green) 35%, transparent) !important; }
@@ -596,7 +598,7 @@ function providerLabel(p: string) {
   display: flex; align-items: center; gap: 8px; padding: 8px 12px;
   border-style: dashed; border-color: var(--border-2); background: var(--bg-raised);
 }
-.fl-n-think b { font-size: 12px; color: var(--text); }
+.fl-n-think b { font-size: var(--fs-sm); color: var(--text); }
 .fl-n-think .fl-n-sub { margin-top: 0; }
 .fl-think-dot {
   width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: 0 0 auto;
@@ -614,15 +616,15 @@ function providerLabel(p: string) {
   flex: 0 0 268px; background: var(--surface); border-left: 1px solid var(--border-2);
   padding: 14px 14px 18px; overflow: auto;
 }
-.fl-detail h4 { margin: 0 0 12px; font-size: 13px; color: var(--text); }
-.fl-d-line { display: flex; gap: 8px; margin: 0 0 10px; font-size: 12px; line-height: 1.6; }
+.fl-detail h4 { margin: 0 0 12px; font-size: var(--fs-md); color: var(--text); }
+.fl-d-line { display: flex; gap: 8px; margin: 0 0 10px; font-size: var(--fs-sm); line-height: 1.6; }
 .fl-d-line label { flex: 0 0 62px; color: var(--text-muted); }
 .fl-d-line span { flex: 1 1 auto; color: var(--text); word-break: break-all; }
-.fl-d-plain { margin: 0 0 10px; font-size: 11px; line-height: 1.7; color: var(--text-muted); }
-.fl-d-privacy { margin-top: 14px; font-size: 10px; line-height: 1.7; color: var(--text-muted); border-top: 1px dashed var(--border-2); padding-top: 10px; }
+.fl-d-plain { margin: 0 0 10px; font-size: var(--fs-cap); line-height: 1.7; color: var(--text-muted); }
+.fl-d-privacy { margin-top: 14px; font-size: var(--fs-cap); line-height: 1.7; color: var(--text-muted); border-top: 1px dashed var(--border-2); padding-top: 10px; }
 .fl-good { color: var(--green); }
 .fl-bad { color: var(--danger); }
-.fl-detail-empty { color: var(--text-muted); font-size: 12px; line-height: 1.9; text-align: center; margin-top: 80px; }
+.fl-detail-empty { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.9; text-align: center; margin-top: 80px; }
 .mono { font-family: var(--font-mono, ui-monospace, Consolas, monospace); }
 @keyframes fl-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fl-rise { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }

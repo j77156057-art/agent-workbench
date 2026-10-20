@@ -98,9 +98,9 @@ function providerLabel(p: ModelPreset) {
 .msp-pop { position: absolute; right: 14px; bottom: 78px; width: min(360px, calc(100vw - 28px)); padding: 12px; pointer-events: auto; }
 .msp-head { display: flex; justify-content: space-between; gap: 10px; padding-bottom: 9px; border-bottom: 1px solid var(--border); }
 .msp-head b, .msp-head small { display: block; }
-.msp-head b { font-size: 13px; }
-.msp-head small { margin-top: 3px; color: var(--text-faint); font-size: 11px; overflow-wrap: anywhere; }
-.msp-close { border: 0; background: transparent; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 5px; }
+.msp-head b { font-size: var(--fs-md); }
+.msp-head small { margin-top: 3px; color: var(--text-faint); font-size: var(--fs-cap); overflow-wrap: anywhere; }
+.msp-close { border: 0; background: transparent; color: var(--text-muted); font-size: var(--fs-lead); cursor: pointer; border-radius: 5px; }
 .msp-close:hover { background: var(--bg-hover); color: var(--text); }
 .msp-list { display: grid; gap: 6px; max-height: 260px; overflow: auto; padding: 9px 0; }
 .msp-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); text-align: left; cursor: pointer; transition: border-color .14s, background .14s, transform .14s; }
@@ -108,13 +108,13 @@ function providerLabel(p: ModelPreset) {
 .msp-item.current { border-color: var(--accent); background: var(--bg-selected); }
 .msp-item-main { min-width: 0; flex: 1; }
 .msp-item-main strong, .msp-item-main small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.msp-item-main strong { font-size: 12px; }
-.msp-item-main small { margin-top: 2px; color: var(--text-faint); font-size: 10px; }
-.msp-state { flex: none; color: var(--accent); font-size: 10px; }
+.msp-item-main strong { font-size: var(--fs-sm); }
+.msp-item-main small { margin-top: 2px; color: var(--text-faint); font-size: var(--fs-cap); }
+.msp-state { flex: none; color: var(--accent); font-size: var(--fs-cap); }
 .current-state { font-weight: 600; }
-.msp-empty { margin: 14px 0; color: var(--text-faint); font-size: 12px; }
-.msp-error { margin: 0 0 8px; color: var(--danger); font-size: 11px; }
-.msp-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 10px; }
-.msp-manage { flex: none; padding: 5px 9px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: 11px; }
+.msp-empty { margin: 14px 0; color: var(--text-faint); font-size: var(--fs-sm); }
+.msp-error { margin: 0 0 8px; color: var(--danger); font-size: var(--fs-cap); }
+.msp-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: var(--fs-cap); }
+.msp-manage { flex: none; padding: 5px 9px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: var(--fs-cap); }
 @media (max-width: 560px) { .msp-pop { right: 8px; bottom: 70px; width: calc(100vw - 16px); } }
 </style>

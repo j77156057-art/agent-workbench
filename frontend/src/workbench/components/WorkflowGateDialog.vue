@@ -300,22 +300,22 @@ function submitRevise() {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 .wg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.wg-head h3 { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); }
+.wg-head h3 { margin: 0; font-size: var(--fs-h3); font-weight: 700; color: var(--text); }
 .wg-busy {
   display: inline-flex; align-items: center; gap: 6px;
   margin-left: auto;
-  font-size: 12px; font-weight: 500; color: var(--accent);
+  font-size: var(--fs-sm); font-weight: 500; color: var(--accent);
 }
 .wg-busy-dot {
   width: 9px; height: 9px; border-radius: 50%;
-  border: 2px solid var(--accent); border-top-color: transparent;
+  border: var(--edge-w-strong, 2px) solid var(--accent); border-top-color: transparent;
   animation: wg-busy-spin .7s linear infinite;
 }
 @keyframes wg-busy-spin { to { transform: rotate(360deg); } }
 .wg-busy-on { opacity: .85; }
 .wg-x {
   border: 0; background: transparent; color: var(--text-faint);
-  font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; transition: color .15s ease, background .15s ease, transform .15s ease;
+  font-size: var(--fs-lead); line-height: 1; cursor: pointer; padding: 2px 6px; border-radius: 6px; transition: color .15s ease, background .15s ease, transform .15s ease;
 }
 .wg-x:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); transform: rotate(90deg); }
 .wg-x:disabled { cursor: default; }
@@ -323,15 +323,15 @@ function submitRevise() {
   margin: 10px 0 12px; padding: 9px 11px;
   border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg-surface, var(--bg-hover));
-  font-size: 12px; line-height: 1.6; color: var(--text);
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--text);
 }
 .wg-hint {
   margin: -4px 0 10px; display: flex; align-items: center; gap: 7px;
-  font-size: 12px; color: var(--accent);
+  font-size: var(--fs-sm); color: var(--accent);
 }
 .wg-hint-dot {
   width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
-  border: 2px solid var(--accent); border-top-color: transparent;
+  border: var(--edge-w-strong, 2px) solid var(--accent); border-top-color: transparent;
   animation: wg-busy-spin .7s linear infinite;
 }
 .wg-options { display: grid; gap: 8px; }
@@ -344,12 +344,12 @@ function submitRevise() {
 .wg-option:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(35,52,84,.08); }
 .wg-option:active:not(:disabled) { transform: scale(.995); }
 .wg-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.wg-option:has(.wg-tag) { border-color: rgba(47,111,237,.4); background: color-mix(in srgb, var(--accent) 4%, var(--bg-raised)); }
+.wg-option:has(.wg-tag) { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 4%, var(--bg-raised)); }
 .wg-option:disabled { opacity: .6; cursor: default; }
-.wg-option b { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
-.wg-option span { display: block; margin-top: 4px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
+.wg-option b { display: flex; align-items: center; gap: 6px; font-size: var(--fs-md); color: var(--text); }
+.wg-option span { display: block; margin-top: 4px; font-size: var(--fs-sm); line-height: 1.55; color: var(--text-muted); }
 .wg-tag {
-  font-style: normal; font-size: 10px; font-weight: 600;
+  font-style: normal; font-size: var(--fs-cap); font-weight: 600;
   padding: 1px 6px; border-radius: 99px;
   color: var(--accent-ink); background: var(--accent);
 }
@@ -358,19 +358,19 @@ function submitRevise() {
 .wg-custom { margin-top: 10px; display: grid; gap: 8px; }
 .wg-tasks { margin: 10px 0; display: grid; gap: 7px; max-height: 38vh; overflow-y: auto; }
 .wg-task { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface, var(--bg-hover)); transition: border-color .15s ease, background .15s ease, transform .15s ease; }.wg-task:hover { border-color: var(--border-strong); background: var(--bg-selected); transform: translateX(2px); }
-.wg-task b { flex: 0 0 auto; font-size: 11px; color: var(--accent); font-family: ui-monospace, monospace; padding-top: 1px; }
-.wg-task-main { min-width: 0; display: grid; gap: 2px; font-size: 12px; line-height: 1.5; }
-.wg-task-role { font-size: 11px; color: var(--text-faint); font-weight: 600; }
-.wg-task-main small { color: var(--text-faint); font-size: 10px; }
+.wg-task b { flex: 0 0 auto; font-size: var(--fs-cap); color: var(--accent); font-family: ui-monospace, monospace; padding-top: 1px; }
+.wg-task-main { min-width: 0; display: grid; gap: 2px; font-size: var(--fs-sm); line-height: 1.5; }
+.wg-task-role { font-size: var(--fs-cap); color: var(--text-faint); font-weight: 600; }
+.wg-task-main small { color: var(--text-faint); font-size: var(--fs-cap); }
 .wg-pending { display: grid; gap: 7px; margin: 8px 0; padding: 10px; border: 1px dashed var(--amber); border-radius: 9px; background: rgba(214,158,46,.07); }
-.wg-pending-item { font-size: 12px; color: var(--text-muted); }
+.wg-pending-item { font-size: var(--fs-sm); color: var(--text-muted); }
 .wg-revise { display: grid; gap: 7px; margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 9px; }
-.wg-revise small { color: var(--text-faint); font-size: 10px; }
+.wg-revise small { color: var(--text-faint); font-size: var(--fs-cap); }
 textarea, input, select {
   width: 100%; box-sizing: border-box;
   border: 1px solid var(--border); border-radius: 7px;
   background: var(--bg-raised); color: var(--text);
-  font: inherit; font-size: 12px; padding: 7px 9px; resize: vertical;
+  font: inherit; font-size: var(--fs-sm); padding: 7px 9px; resize: vertical;
 }
 textarea:focus, input:focus, select:focus { outline: none; border-color: var(--accent); }
 .wg-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
@@ -379,21 +379,21 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 .wg-btn {
   height: 30px; padding: 0 14px; border-radius: 7px;
   border: 1px solid var(--border-strong); background: var(--bg-raised);
-  color: var(--text); font-size: 12px; cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
+  color: var(--text); font-size: var(--fs-sm); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 .wg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(35,52,84,.08); }
 .wg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wg-btn:disabled { opacity: .55; cursor: default; }
-.wg-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
-.wg-primary:hover:not(:disabled) { background: var(--accent-strong, var(--accent)); color: var(--accent-ink); }
+.wg-primary { --btn-fill: var(--accent); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.wg-primary:hover:not(:disabled) { --btn-fill: var(--accent-strong, var(--accent)); background: var(--accent-strong, var(--accent)); color: var(--accent-ink); }
 .wg-danger { border-color: var(--danger); color: var(--danger); }
 .wg-danger:hover:not(:disabled) { background: var(--danger); color: var(--danger-ink); }
 .wg-ghost { border-style: dashed; }
 .wg-acceptance { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; }
 .wg-acceptance-head { display: flex; align-items: center; justify-content: space-between; }
-.wg-acceptance-head b { font-size: 12px; }
-.wg-acceptance p { margin: 0; color: var(--text-muted); font-size: 11px; }
-.wg-criterion { display: grid; gap: 4px; padding: 7px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.wg-acceptance-head b { font-size: var(--fs-sm); }
+.wg-acceptance p { margin: 0; color: var(--text-muted); font-size: var(--fs-cap); }
+.wg-criterion { display: grid; gap: 4px; padding: 7px 0; border-top: 1px solid var(--border); font-size: var(--fs-sm); }
 .wg-criterion small { color: var(--text-faint); }
 .wg-criterion label { display: grid; gap: 4px; }
 .wg-criterion .wg-check { display: flex; align-items: center; }

@@ -48,8 +48,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <header class="rd-top">
         <div class="rd-title">
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-            <path d="M2 4h6M2 7h8M2 10h5" stroke="#4f9e6a" stroke-width="1.2" stroke-linecap="round" />
-            <path d="M9.5 8.5l2 2-2 2" fill="none" stroke="#7fd49a" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M2 4h6M2 7h8M2 10h5" stroke="var(--green)" stroke-width="1.2" stroke-linecap="round" />
+            <path d="M9.5 8.5l2 2-2 2" fill="none" stroke="color-mix(in srgb, var(--green) 55%, var(--bg-raised))" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
           <h2>改写差异预览</h2>
           <span class="rd-path" :title="rewriteDiff.turn.origin.path">
@@ -132,9 +132,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border-bottom: 1px solid var(--border);
 }
 .rd-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
-.rd-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.rd-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .rd-path {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-faint);
   font-family: 'Cascadia Code', Consolas, monospace;
   overflow: hidden;
@@ -152,18 +152,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   flex: 0 0 auto;
 }
 .rd-iconbtn:hover { background: var(--bg-hover); color: var(--text); }
-.rd-iconbtn:focus-visible, .rd-cancel:focus-visible, .rd-accept:focus-visible { outline: 2px solid #2f6fed88; outline-offset: 2px; }
+.rd-iconbtn:focus-visible, .rd-cancel:focus-visible, .rd-accept:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
 
 .rd-instr {
   flex: 0 0 auto;
   display: flex; gap: 7px; align-items: flex-start;
-  font-size: 12px; color: var(--text-muted); background: var(--bg);
+  font-size: var(--fs-sm); color: var(--text-muted); background: var(--bg);
   border-bottom: 1px solid var(--border);
   padding: 8px 16px;
 }
 .rd-instr-tag {
-  flex: 0 0 auto; font-size: 10px; color: #2f6fed;
-  border: 1px solid #b9d0f5; border-radius: 5px; padding: 0 5px; line-height: 16px; margin-top: 1px;
+  flex: 0 0 auto; font-size: var(--fs-cap); color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); border-radius: 5px; padding: 0 5px; line-height: 16px; margin-top: 1px;
 }
 
 .rd-statbar {
@@ -172,22 +172,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   align-items: center;
   gap: 12px;
   padding: 7px 16px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   border-bottom: 1px solid var(--border);
-  background: #f6f8fb;
+  background: color-mix(in srgb, var(--text) 4%, var(--bg-raised));
 }
 .rd-stat-same { color: var(--text-faint); }
-.rd-stat-add { color: #146c48; font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
-.rd-stat-del { color: #b32d33; font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
-.rd-stat-equal { color: #b5791f; }
-.rd-stat-hint { margin-left: auto; color: var(--text-faint); font-size: 10px; }
+.rd-stat-add { color: var(--green); font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
+.rd-stat-del { color: var(--danger); font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
+.rd-stat-equal { color: var(--amber); }
+.rd-stat-hint { margin-left: auto; color: var(--text-faint); font-size: var(--fs-cap); }
 
 .rd-body {
   flex: 1 1 auto;
   overflow: auto;
   background: #f6f8fb;
   font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.65;
   padding: 6px 0;
 }
@@ -200,9 +200,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   flex: 0 0 46px;
   text-align: right;
   padding: 0 8px 0 0;
-  color: #98a3b4;
+  color: var(--text-muted);
   user-select: none;
-  font-size: 11px;
+  font-size: var(--fs-cap);
 }
 .rd-sign {
   flex: 0 0 20px;
@@ -214,14 +214,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding-right: 16px;
   color: #243044;
 }
-.rd-del { background: #fdecec; }
-.rd-del .rd-sign { color: #b32d33; }
-.rd-del .rd-code { color: #b32d33; }
-.rd-del .rd-gno { background: #fbdfdf; }
-.rd-add { background: #e6f7ee; }
-.rd-add .rd-sign { color: #146c48; }
-.rd-add .rd-code { color: #146c48; }
-.rd-add .rd-gno { background: #d9f2e4; }
+.rd-del { background: color-mix(in srgb, var(--danger) 12%, var(--bg-raised)); }
+.rd-del .rd-sign { color: var(--danger); }
+.rd-del .rd-code { color: var(--danger); }
+.rd-del .rd-gno { background: color-mix(in srgb, var(--danger) 20%, var(--bg-raised)); }
+.rd-add { background: color-mix(in srgb, var(--green) 12%, var(--bg-raised)); }
+.rd-add .rd-sign { color: var(--green); }
+.rd-add .rd-code { color: var(--green); }
+.rd-add .rd-gno { background: color-mix(in srgb, var(--green) 20%, var(--bg-raised)); }
 
 .rd-foot {
   flex: 0 0 auto;
@@ -233,16 +233,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   background: var(--bg);
 }
 .rd-cancel {
-  padding: 6px 18px; font-size: 12px; border-radius: 7px; cursor: pointer;
+  padding: 6px 18px; font-size: var(--fs-sm); border-radius: 7px; cursor: pointer;
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted);
 }
 .rd-cancel:hover { background: var(--bg-hover); color: var(--text); }
 .rd-accept {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 18px; font-size: 12px; border-radius: 7px; cursor: pointer;
-  border: 1px solid #15804f; background: linear-gradient(180deg,#2bb57a,#1c9e66); color: #fff;
+  padding: 6px 18px; font-size: var(--fs-sm); border-radius: 7px; cursor: pointer;
+  border: 1px solid var(--green); background: linear-gradient(180deg, color-mix(in srgb, var(--green) 70%, var(--bg-raised)), var(--green)); color: var(--green-ink);
 }
-.rd-accept:hover:not(:disabled) { background: #1c9e66; }
+.rd-accept:hover:not(:disabled) { background: var(--green); }
 .rd-accept:disabled { opacity: 0.45; cursor: default; }
 .rd-cancel, .rd-accept { transition: background .16s ease, border-color .16s ease, color .16s ease, transform .16s ease, filter .16s ease; }
 .rd-cancel:active, .rd-accept:active:not(:disabled) { transform: translateY(1px); }

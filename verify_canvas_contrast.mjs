@@ -163,9 +163,20 @@ const SWEEP = (rootSel, FLOOR, dark) => {
       if (stroked) push('描边', cs.stroke, `${sw}px`)
       if (cs.fill !== 'none' && r.width * r.height >= 60) push('填充', cs.fill, `${Math.round(r.width)}×${Math.round(r.height)}`)
     } else {
+      // HTML 侧只量**表单控件**的描边。
+      // 以前这里量的是面板/卡片的容器边框 —— 那是 1.4.11 豁免的"纯装饰"图形对象
+      // （原文：purely decorative are exempt），拿它当 3:1 的判据是把标准用错了地方：
+      // 主流产品（Primer border.default 1.45:1、Linear 5%~8% 白）全都低于 3:1。
+      // 1.4.11 真正管的是**交互控件的视觉边界**（输入框/复选框/下拉），
+      // 那一档由 --border-graphic 令牌守着，见 verify_skin_token_pairs.mjs。
+      const tag = el.tagName.toLowerCase()
+      const role = el.getAttribute('role') || ''
+      const isControl = tag === 'input' || tag === 'textarea' || tag === 'select'
+        || role === 'checkbox' || role === 'radio' || role === 'switch' || role === 'textbox'
+      if (!isControl) continue
       for (const side of ['Top', 'Right', 'Bottom', 'Left']) {
         const w = parseFloat(cs['border' + side + 'Width']) || 0
-        if (w >= 1.5) push('边框' + side.toLowerCase(), cs['border' + side + 'Color'], `${w}px`)
+        if (w >= 0.5) push('边框' + side.toLowerCase(), cs['border' + side + 'Color'], `${w}px`)
       }
     }
   }
@@ -188,7 +199,7 @@ try {
     const key = `${name}|${skin}`
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
     try {
-      await page.addInitScript(`localStorage.setItem("docmind.skin","${skin}")`)
+      await page.addInitScript(`localStorage.setItem("docmind.skin","${skin}");localStorage.setItem("docmind.skinLocked","1")`)
       await page.goto(base + '/workbench', { waitUntil: 'domcontentloaded', timeout: 60000 })
       await page.waitForFunction(s => document.documentElement.dataset.skin === s, skin, { timeout: 30000 })
       await page.waitForSelector('.ft-row', { timeout: 60000 })

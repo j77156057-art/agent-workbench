@@ -162,10 +162,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       <header class="rm-top">
         <div class="rm-title">
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-            <rect x="1.2" y="2" width="4.6" height="3.4" rx="0.8" fill="none" stroke="#58a6ff" stroke-width="1" />
-            <rect x="8.4" y="2" width="4.6" height="3.4" rx="0.8" fill="none" stroke="#45c98c" stroke-width="1" />
-            <rect x="4.8" y="9.2" width="4.6" height="3.4" rx="0.8" fill="none" stroke="#bc8cff" stroke-width="1" />
-            <path d="M5.8 3.7 L8.4 3.7 M3.5 5.4 L6 9.2 M10.7 5.4 L8.2 9.2" stroke="#3a4658" stroke-width="0.9" />
+            <rect x="1.2" y="2" width="4.6" height="3.4" rx="0.8" fill="none" style="stroke: var(--viz-class)" stroke-width="1" />
+            <rect x="8.4" y="2" width="4.6" height="3.4" rx="0.8" fill="none" style="stroke: var(--viz-const)" stroke-width="1" />
+            <rect x="4.8" y="9.2" width="4.6" height="3.4" rx="0.8" fill="none" style="stroke: var(--viz-fn)" stroke-width="1" />
+            <path d="M5.8 3.7 L8.4 3.7 M3.5 5.4 L6 9.2 M10.7 5.4 L8.2 9.2" style="stroke: var(--viz-link)" stroke-width="0.9" />
           </svg>
           <h2>分区可视化</h2>
           <span class="rm-root" :title="regionMap.codeRoot">{{ regionMap.codeRoot }}</span>
@@ -201,13 +201,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <div class="rm-contract" :class="regionMap.contracts?.ok ? 'ok' : 'bad'">
           <template v-if="regionMap.contracts">
             <svg v-if="regionMap.contracts.ok" width="13" height="13" viewBox="0 0 13 13">
-              <circle cx="6.5" cy="6.5" r="5.4" fill="none" stroke="#45c98c" stroke-width="1" />
-              <path d="M4 6.6 L5.8 8.3 L9 4.8" fill="none" stroke="#45c98c" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="6.5" cy="6.5" r="5.4" fill="none" style="stroke: var(--green)" stroke-width="1" />
+              <path d="M4 6.6 L5.8 8.3 L9 4.8" fill="none" style="stroke: var(--green)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
             <svg v-else width="13" height="13" viewBox="0 0 13 13">
-              <circle cx="6.5" cy="6.5" r="5.4" fill="none" stroke="#ff8e8e" stroke-width="1" />
-              <path d="M6.5 3.4 V7.2" stroke="#ff8e8e" stroke-width="1.2" stroke-linecap="round" />
-              <circle cx="6.5" cy="9.2" r="0.7" fill="#ff8e8e" />
+              <circle cx="6.5" cy="6.5" r="5.4" fill="none" style="stroke: var(--danger)" stroke-width="1" />
+              <path d="M6.5 3.4 V7.2" style="stroke: var(--danger)" stroke-width="1.2" stroke-linecap="round" />
+              <circle cx="6.5" cy="9.2" r="0.7" style="fill: var(--danger)" />
             </svg>
             <div class="rm-contract-text">
               <strong>{{ regionMap.contracts.ok ? '契约校验通过' : `契约校验发现 ${regionMap.contracts.errors.length} 个问题` }}</strong>
@@ -226,12 +226,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             <svg :width="layout.width" :height="layout.height" class="rm-dag">
               <defs>
                 <marker id="rm-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                  <path d="M0 0 L8 4 L0 8 Z" fill="#46536a" />
+                  <path d="M0 0 L8 4 L0 8 Z" style="fill: var(--viz-dag-edge)" />
                 </marker>
               </defs>
               <path
                 v-for="(e, i) in layout.edges" :key="i"
-                :d="edgePath(e)" fill="none" stroke="#46536a" stroke-width="1.1"
+                :d="edgePath(e)" fill="none" style="stroke: var(--viz-dag-edge)" stroke-width="1.1"
                 marker-end="url(#rm-arrow)"
               />
               <g
@@ -348,9 +348,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 <style scoped>
 .rm-add { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; }
-.rm-add label { display: grid; gap: 6px; font-size: 12px; }
+.rm-add label { display: grid; gap: 6px; font-size: var(--fs-sm); }
 .rm-add input { padding: 8px; border: 1px solid var(--border); border-radius: 5px; }
-.rm-add p { width: 100%; color: #b42318; }
+.rm-add p { width: 100%; color: var(--danger); }
 .rm-overlay {
   position: fixed;
   inset: 0;
@@ -384,9 +384,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border-bottom: 1px solid var(--border);
 }
 .rm-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
-.rm-title h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.rm-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .rm-root {
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   font-family: 'Cascadia Code', Consolas, monospace;
   overflow: hidden;
@@ -396,7 +396,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-top-actions { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
 .rm-refresh {
   display: inline-flex; align-items: center; gap: 5px;
-  font-size: 12px; padding: 4px 10px; border-radius: 6px;
+  font-size: var(--fs-sm); padding: 4px 10px; border-radius: 6px;
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted); cursor: pointer;
 }
 .rm-refresh:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
@@ -418,7 +418,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-add input:focus-visible,
 .rm-create-btn:focus-visible,
 .rm-fill-btn:focus-visible {
-  outline: 2px solid #2f6fed88;
+  outline: 2px solid var(--accent-deep);
   outline-offset: 2px;
 }
 .spinning { animation: rm-spin 1s linear infinite; }
@@ -432,28 +432,30 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   gap: 9px;
   border-radius: 8px;
   padding: 9px 12px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin-bottom: 16px;
 }
-.rm-contract.ok { background: rgba(28,158,102,.1); border: 1px solid #8fd4b3; color: #146c48; box-shadow: inset 3px 0 #1c9e66; }
-.rm-contract.bad { background: rgba(224,72,79,.08); border: 1px solid #eeb7ba; color: #c23a40; box-shadow: inset 3px 0 #e0484f; }
+/* 契约横幅：底 / 边 / 字 / 左侧色条走同一族语义色。
+   语义色每套皮肤各有一份（纸底深、深底浅），所以这一条横幅在四套皮肤上都成立。 */
+.rm-contract.ok { background: color-mix(in srgb, var(--green) 10%, var(--bg-raised)); border: 1px solid color-mix(in srgb, var(--green) 38%, transparent); color: var(--green); box-shadow: inset 3px 0 var(--green); }
+.rm-contract.bad { background: color-mix(in srgb, var(--danger) 8%, var(--bg-raised)); border: 1px solid color-mix(in srgb, var(--danger) 38%, transparent); color: var(--danger); box-shadow: inset 3px 0 var(--danger); }
 .rm-contract svg { flex: 0 0 auto; margin-top: 1px; }
 .rm-contract-text { min-width: 0; }
-.rm-contract-text strong { font-size: 12px; }
+.rm-contract-text strong { font-size: var(--fs-sm); }
 .rm-contract-text ul { margin: 5px 0 0; padding-left: 18px; line-height: 1.7; }
-.rm-contract-off { color: var(--text-faint); font-size: 12px; }
+.rm-contract-off { color: var(--text-faint); font-size: var(--fs-sm); }
 
 .rm-section { margin-bottom: 18px; }
 .rm-section h3 {
   margin: 0 0 9px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text);
 }
 .rm-section h3 em {
   font-style: normal;
   font-weight: 400;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   margin-left: 8px;
 }
@@ -462,7 +464,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fcfdff;
+  background: var(--bg-raised);
   padding: 4px;
 }
 /* 画布按实际列宽收缩并居中；列数多到溢出时 margin:auto 退化为 0，可横向滚动 */
@@ -472,18 +474,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-node:hover rect, .rm-node.selected rect { stroke-width: 2; }
 .rm-node:hover rect { filter: brightness(1.04); }
 .rm-node.missing rect { stroke-dasharray: 4 3; fill-opacity: 0.35; }
+/* DAG 节点文字原先写死深色（#222b38 / #5a6778），那是"只在纸底上成立"的假设：
+   面板底是 --bg-raised，深色皮肤下深字压深底 = 直接隐形。改走文字三档。 */
 .rm-node-name {
-  fill: #222b38;
-  font-size: 12px;
+  fill: var(--text);
+  font-size: var(--fs-sm);
   font-weight: 600;
   font-family: inherit;
 }
 .rm-node-dir {
-  fill: #5a6778;
-  font-size: 10px;
+  fill: var(--text-muted);
+  font-size: var(--fs-cap);
   font-family: 'Cascadia Code', Consolas, monospace;
 }
-.rm-node.missing .rm-node-name { fill: #98a3b4; }
+.rm-node.missing .rm-node-name { fill: var(--text-muted); }
 
 .rm-cards {
   display: grid;
@@ -495,55 +499,55 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: #fff;
+  background: var(--bg-raised);
   overflow: hidden;
   cursor: pointer;
   transition: border-color .16s ease, background .16s ease, box-shadow .16s ease, transform .16s ease;
 }
 .rm-card:hover { border-color: var(--border-strong); background: var(--bg-hover); transform: translateY(-1px); box-shadow: 0 5px 14px rgba(35,52,84,.08); }
-.rm-card.selected { border-color: #2f6fed77; box-shadow: 0 0 0 1px #2f6fed44 inset; }
+.rm-card.selected { border-color: color-mix(in srgb, var(--accent) 47%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 27%, transparent) inset; }
 .rm-card.missing { cursor: default; opacity: 0.72; }
 .rm-card-bar { flex: 0 0 3px; }
 .rm-card-main { flex: 1 1 auto; min-width: 0; padding: 9px 11px 10px; }
 .rm-card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
-.rm-card-name { font-size: 12px; font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
+.rm-card-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .rm-card-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .rm-card-dir {
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
 }
 .rm-card-desc {
   margin: 0 0 7px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--text-muted);
 }
 .rm-card-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 .rm-badge {
-  font-size: 10px;
+  font-size: var(--fs-cap);
   line-height: 17px;
   padding: 0 7px;
   border-radius: 9px;
   border: 1px solid var(--border-strong);
   color: var(--text-muted);
 }
-.rm-badge-files { color: #2f6fed; border-color: #b9d0f5; background: #2f6fed12; }
-.rm-badge-git { color: #146c48; border-color: #8fd4b3; background: #1c9e6612; }
-.rm-badge-nogit { color: #8a5a16; }
-.rm-badge-dirty { color: #8a5a16; border-color: #dfb067; background: #c8811c12; }
-.rm-badge-missing { color: #c23a40; border-color: #eeb7ba; background: rgba(224,72,79,.08); }
+.rm-badge-files { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.rm-badge-git { color: var(--green); border-color: color-mix(in srgb, var(--green) 38%, transparent); background: color-mix(in srgb, var(--green) 7%, transparent); }
+.rm-badge-nogit { color: var(--amber); }
+.rm-badge-dirty { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 38%, transparent); background: color-mix(in srgb, var(--amber) 7%, transparent); }
+.rm-badge-missing { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 38%, transparent); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .rm-card-meta {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 5px 7px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   margin-top: 4px;
 }
 .rm-meta-label {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   width: 30px;
 }
@@ -552,7 +556,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--fs-cap);
   color: var(--text-muted);
   background: var(--bg-hover);
   border: 1px solid var(--border-strong);
@@ -562,8 +566,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-chip i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .rm-export {
   font-family: 'Cascadia Code', Consolas, monospace;
-  font-size: 10px;
-  color: #8a6a1f;
+  font-size: var(--fs-cap);
+  color: var(--amber);
   background: var(--bg-hover);
   border-radius: 4px;
   padding: 0 5px;
@@ -574,16 +578,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   line-height: 1;
   padding: 6px 11px;
   border-radius: 6px;
-  border: 1px solid #b9d0f5;
-  background: #2f6fed12;
-  color: #2f6fed;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--bg-raised));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--accent);
   cursor: pointer;
 }
-.rm-create-btn:hover:not(:disabled) { background: #2f6fed22; border-color: #2560d4; }
+.rm-create-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 13%, transparent); border-color: var(--accent-deep); }
 .rm-create-btn:disabled { opacity: 0.55; cursor: default; }
 .rm-create-btn, .rm-fill-btn { transition: background .16s ease, border-color .16s ease, transform .16s ease; }
 .rm-create-btn:active:not(:disabled), .rm-fill-btn:active:not(:disabled) { transform: translateY(1px); }
@@ -591,31 +595,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   line-height: 1;
   padding: 6px 11px;
   border-radius: 6px;
-  border: 1px solid #dfb067;
-  background: #fdf3df;
-  color: #8a5a16;
+  border: 1px solid color-mix(in srgb, var(--amber) 38%, transparent);
+  background: color-mix(in srgb, var(--amber) 12%, var(--bg-raised));
+  color: var(--amber);
   cursor: pointer;
 }
-.rm-fill-btn:hover:not(:disabled) { background: #c8811c26; border-color: #dfb067; }
+.rm-fill-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--amber) 15%, var(--bg-raised)); border-color: color-mix(in srgb, var(--amber) 38%, transparent); }
 .rm-fill-btn:disabled { opacity: 0.55; cursor: default; }
 .rm-btn-spin {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  border: 1.5px solid #2f6fed55;
-  border-top-color: #2f6fed;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 33%, transparent);
+  border-top-color: var(--accent);
   animation: rm-spin 0.7s linear infinite;
 }
-.rm-btn-spin-amber { border-color: #c8811c55; border-top-color: #c8811c; }
-.rm-badge-missing-export { color: #8a5a16; border-color: #dfb067; background: #c8811c12; }
+.rm-btn-spin-amber { border-color: color-mix(in srgb, var(--amber) 33%, transparent); border-top-color: var(--amber); }
+.rm-badge-missing-export { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 38%, transparent); background: color-mix(in srgb, var(--amber) 7%, transparent); }
 .rm-export.missing {
-  color: #c23a40;
-  background: #fdecec;
-  border: 1px dashed #eeb7ba;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-raised));
+  border: 1px dashed color-mix(in srgb, var(--danger) 38%, transparent);
   padding: 0 5px;
 }
 
@@ -626,10 +630,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   align-items: center;
   justify-content: center;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-faint);
 }
-.rm-error { color: #c23a40; }
+.rm-error { color: var(--danger); }
 
 @keyframes rm-overlay-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes rm-panel-in { from { opacity: 0; transform: translateY(10px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
@@ -651,8 +655,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   .rm-title { min-width: 0; }
   .rm-root { display: none; }
   .rm-top-actions { gap: 4px; }
-  .rm-top-actions .rm-refresh { padding: 4px 7px; font-size: 10px; }
-  .rm-contract { font-size: 12px; }
+  .rm-top-actions .rm-refresh { padding: 4px 7px; font-size: var(--fs-cap); }
+  .rm-contract { font-size: var(--fs-sm); }
   .rm-card-main { padding: 8px 9px 9px; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -379,7 +379,8 @@ defineExpose({ show })
           <button v-for="p in PRESETS" :key="p.name" class="ev-chip" :disabled="busy" :title="p.blurb" @click="loadPreset(p)">{{ p.name }}</button>
         </div>
 
-        <p v-if="error" class="ev-err">{{ error }}</p>
+        <!-- 2026-10-20：错误行补「重试」。此前只有裸错误串，用户只能关面板重开。 -->
+        <p v-if="error" class="ev-err">{{ error }} <button class="ev-retry" :disabled="busy" @click="runReportGate">重试</button></p>
 
         <div class="ev-grid">
           <!-- 左：结构化 -->
@@ -524,8 +525,10 @@ defineExpose({ show })
                 <input v-model="changesetId" class="ev-input" type="text" size="16" placeholder="绑定后 rollback 会登记人工审批；留空=只判" />
               </label>
             </div>
-            <button class="ev-btn ev-btn-gate" :disabled="busy" @click="runGate">跑合并门 →</button>
-            <button class="ev-btn ev-btn-gate" :disabled="busy" title="一次跑完 正文→M3 解析→（live 现算 M5 视觉回归）→M6 门；只读、不执行回滚" @click="runReportGate">在线报告门 · 整链跑一次 →</button>
+            <!-- 2026-10-20：两个主门按钮 busy 时给出文案（此前只变灰，
+                 一次整链跑几十秒，用户不知道在跑什么）。回滚按钮本来就有文案。 -->
+            <button class="ev-btn ev-btn-gate" :aria-busy="busy" :disabled="busy" @click="runGate">{{ busy ? '跑合并门中…' : '跑合并门 →' }}</button>
+            <button class="ev-btn ev-btn-gate" :aria-busy="busy" :disabled="busy" title="一次跑完 正文→M3 解析→（live 现算 M5 视觉回归）→M6 门；只读、不执行回滚" @click="runReportGate">{{ busy ? '整链执行中…' : '在线报告门 · 整链跑一次 →' }}</button>
 
             <div v-if="result && stateInfo" class="ev-gate wb-card" :class="stateInfo.cls">
               <div class="ev-state">
@@ -571,7 +574,7 @@ defineExpose({ show })
   display: inline-flex; align-items: center; gap: 5px;
   background: transparent; color: var(--text-muted);
   border: 1px solid var(--border-strong); border-radius: 5px;
-  padding: 5px 9px; cursor: pointer; font-size: 11px; white-space: nowrap;
+  padding: 5px 9px; cursor: pointer; font-size: var(--fs-cap); white-space: nowrap;
   transition: color .16s ease, border-color .16s ease, background .16s ease;
 }
 .ev-trigger:hover { color: var(--text); background: var(--bg-hover); }
@@ -584,7 +587,7 @@ defineExpose({ show })
   position: fixed; right: 16px; top: 64px; width: 640px; max-width: calc(100vw - 32px);
   max-height: calc(100vh - 80px); overflow-y: auto; padding: 12px 14px;
   background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 8px;
-  z-index: 300; font-size: 12px; line-height: 1.6; box-shadow: 0 12px 32px rgba(35,52,84,.16);
+  z-index: 300; font-size: var(--fs-sm); line-height: 1.6; box-shadow: 0 12px 32px rgba(35,52,84,.16);
 }
 /* 常驻（docked）：被 teleport 进主区 host 槽，去掉固定弹层的定位/尺寸/阴影，内联填充父容器。
    animation: none 必须——弹层入场动画的 to 帧会钉住 transform，静态 transform:none 压不住它。 */
@@ -594,27 +597,29 @@ defineExpose({ show })
   border: 0; border-radius: 0; box-shadow: none; overflow-y: auto; z-index: auto;
 }
 .ev-head { display: flex; align-items: center; gap: 8px; }
-.ev-head b { color: var(--text); font-size: 13px; }
+.ev-head b { color: var(--text); font-size: var(--fs-md); }
 .ev-spacer { flex: 1; }
-.ev-link { background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: 11px; }
-.ev-note { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: rgba(47,111,237,.10); color: var(--accent-text); font-size: 11px; }
+.ev-link { background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: var(--fs-cap); }
+.ev-note { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent-text); font-size: var(--fs-cap); }
 .ev-note code { background: rgba(0,0,0,.06); padding: 0 3px; border-radius: 3px; }
 .ev-presets { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.ev-sub { color: var(--text-muted); font-size: 11px; }
-.ev-chip { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 12px; font-size: 10px; padding: 2px 9px; cursor: pointer; }
+.ev-sub { color: var(--text-muted); font-size: var(--fs-cap); }
+.ev-chip { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 12px; font-size: var(--fs-cap); padding: 2px 9px; cursor: pointer; }
 .ev-chip:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
-.ev-err { margin: 8px 0 0; color: var(--danger); font-size: 11px; }
-.ev-faint { color: var(--text-muted); font-size: 11px; }
+.ev-err { margin: 8px 0 0; color: var(--danger); font-size: var(--fs-cap); }
+.ev-retry { margin-left: 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); padding: 1px 7px; cursor: pointer; }
+.ev-retry:hover:not(:disabled) { color: var(--accent-text); border-color: var(--accent); }
+.ev-faint { color: var(--text-muted); font-size: var(--fs-cap); }
 
 .ev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .ev-col { border: 1px solid var(--border-strong); border-radius: 6px; padding: 8px 9px; }
-.ev-col-h { font-size: 12px; color: var(--text); font-weight: 600; margin-bottom: 6px; }
+.ev-col-h { font-size: var(--fs-sm); color: var(--text); font-weight: 600; margin-bottom: 6px; }
 .ev-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
-.ev-row label { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 11px; }
-.ev-row select { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: 11px; }
+.ev-row label { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: var(--fs-cap); }
+.ev-row select { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: var(--fs-cap); }
 .ev-check { cursor: pointer; }
-.ev-text { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 5px 6px; font-size: 11px; font-family: var(--mono, monospace); resize: vertical; }
-.ev-btn { margin-top: 6px; background: transparent; border: 1px solid var(--accent); color: var(--accent-text); border-radius: 5px; font-size: 11px; padding: 4px 10px; cursor: pointer; }
+.ev-text { width: 100%; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border-graphic); border-radius: 4px; color: var(--text); padding: 5px 6px; font-size: var(--fs-cap); font-family: var(--font-mono); resize: vertical; }
+.ev-btn { margin-top: 6px; background: transparent; border: 1px solid var(--accent); color: var(--accent-text); border-radius: 5px; font-size: var(--fs-cap); padding: 4px 10px; cursor: pointer; }
 .ev-btn:hover:not(:disabled) { background: var(--bg-hover); }
 .ev-btn-gate { border-color: var(--amber); color: var(--amber); }
 .ev-hint { margin: 6px 0 0; }
@@ -622,13 +627,13 @@ button:disabled { opacity: .5; cursor: default; }
 
 .ev-fact { margin-top: 8px; padding: 6px 8px; border: 1px solid var(--border-strong); border-radius: 5px; }
 .ev-fact-h { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.ev-tag-ok { background: rgba(58,150,90,.14); color: var(--green, #3a965a); border-radius: 8px; padding: 0 6px; font-size: 10px; }
-.ev-tag-bad { background: rgba(224,72,79,.14); color: var(--danger); border-radius: 8px; padding: 0 6px; font-size: 10px; }
-.ev-metric { display: flex; justify-content: space-between; font-size: 11px; }
+.ev-tag-ok { background: rgba(58,150,90,.14); color: var(--green, #3a965a); border-radius: 8px; padding: 0 6px; font-size: var(--fs-cap); }
+.ev-tag-bad { background: rgba(224,72,79,.14); color: var(--danger); border-radius: 8px; padding: 0 6px; font-size: var(--fs-cap); }
+.ev-metric { display: flex; justify-content: space-between; font-size: var(--fs-cap); }
 .ev-mk { color: var(--text-muted); }
-.ev-mv { color: var(--text); font-family: var(--mono, monospace); }
-.ev-miss { color: var(--amber); font-size: 11px; margin-top: 3px; }
-.ev-prov { margin-top: 4px; font-size: 10px; color: var(--text-muted); }
+.ev-mv { color: var(--text); font-family: var(--font-mono); }
+.ev-miss { color: var(--amber); font-size: var(--fs-cap); margin-top: 3px; }
+.ev-prov { margin-top: 4px; font-size: var(--fs-cap); color: var(--text-muted); }
 .ev-prov summary { cursor: pointer; }
 .ev-prov-row { margin: 2px 0 0 8px; word-break: break-all; }
 
@@ -637,45 +642,45 @@ button:disabled { opacity: .5; cursor: default; }
 .ev-gate.ev-unmet { border-color: rgba(224,72,79,.5); }
 .ev-gate.ev-unc { border-color: color-mix(in srgb, var(--amber) 50%, transparent); }
 .ev-state { display: flex; align-items: center; gap: 8px; }
-.ev-state-badge { font-weight: 700; font-size: 13px; }
+.ev-state-badge { font-weight: 700; font-size: var(--fs-md); }
 .ev-met .ev-state-badge { color: var(--green, #3a965a); }
 .ev-unmet .ev-state-badge { color: var(--danger); }
 .ev-unc .ev-state-badge { color: var(--amber); }
-.ev-action { color: var(--text-muted); font-size: 11px; }
-.ev-state-hint { margin: 4px 0 6px; font-size: 11px; color: var(--text-muted); }
-.ev-signals { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-muted); }
+.ev-action { color: var(--text-muted); font-size: var(--fs-cap); }
+.ev-state-hint { margin: 4px 0 6px; font-size: var(--fs-cap); color: var(--text-muted); }
+.ev-signals { display: flex; flex-wrap: wrap; gap: 8px; font-size: var(--fs-cap); color: var(--text-muted); }
 .ev-signals b { color: var(--text); }
 .ev-veto { color: var(--danger); }
 .ev-esc { color: var(--amber); }
 .ev-reasons { list-style: none; margin: 6px 0 0; padding: 0; }
 .ev-reasons li { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-.ev-rs-tag { background: rgba(0,0,0,.06); border-radius: 8px; padding: 0 6px; font-size: 10px; color: var(--text-muted); }
-.ev-rs { font-size: 11px; color: var(--text); }
-.ev-exec { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-strong); font-size: 10px; color: var(--text-muted); }
+.ev-rs-tag { background: rgba(0,0,0,.06); border-radius: 8px; padding: 0 6px; font-size: var(--fs-cap); color: var(--text-muted); }
+.ev-rs { font-size: var(--fs-cap); color: var(--text); }
+.ev-exec { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-strong); font-size: var(--fs-cap); color: var(--text-muted); }
 .ev-prov-line { margin-top: 4px; }
 
 .ev-rollback { margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--border-strong); }
 .ev-rollback-h { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.ev-rollback-badge { background: rgba(224,72,79,.14); color: var(--danger); border-radius: 8px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+.ev-rollback-badge { background: rgba(224,72,79,.14); color: var(--danger); border-radius: 8px; padding: 1px 8px; font-size: var(--fs-cap); font-weight: 600; }
 .ev-rollback p code { background: rgba(0,0,0,.06); padding: 0 3px; border-radius: 3px; }
 .ev-btn-rollback { border-color: var(--danger); color: var(--danger); }
 .ev-btn-rollback:hover:not(:disabled) { background: rgba(224,72,79,.10); }
 
 .ev-radio { cursor: pointer; user-select: none; }
-.ev-input { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: 11px; font-family: var(--mono, monospace); }
+.ev-input { background: var(--bg); border: 1px solid var(--border-graphic); border-radius: 4px; color: var(--text); padding: 2px 4px; font-size: var(--fs-cap); font-family: var(--font-mono); }
 .ev-vr { margin-top: 2px; }
 .ev-btn-run { border-color: var(--accent); color: var(--accent-text); }
-.ev-vr-msg { margin: 4px 0 0; color: var(--green, #3a965a); font-size: 11px; }
+.ev-vr-msg { margin: 4px 0 0; color: var(--green, #3a965a); font-size: var(--fs-cap); }
 .ev-vr-res { margin-top: 8px; padding: 7px 8px; border: 1px solid var(--border-strong); border-radius: 6px; }
 .ev-vr-verdict { display: flex; align-items: center; gap: 6px; }
-.ev-vr-verdict b { font-size: 13px; color: var(--text); }
+.ev-vr-verdict b { font-size: var(--fs-md); color: var(--text); }
 .ev-met .ev-vr-verdict b { color: var(--green, #3a965a); }
 .ev-unmet .ev-vr-verdict b { color: var(--danger); }
 .ev-unc .ev-vr-verdict b { color: var(--amber); }
-.ev-vr-verified { margin-left: auto; background: rgba(224,140,50,.14); color: var(--amber); border-radius: 8px; padding: 0 6px; font-size: 10px; }
-.ev-vr-metrics { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px; font-size: 11px; color: var(--text-muted); }
-.ev-vr-metrics b { color: var(--text); font-family: var(--mono, monospace); }
-.ev-vr-key { margin-top: 4px; font-size: 10px; color: var(--text-muted); font-family: var(--mono, monospace); }
+.ev-vr-verified { margin-left: auto; background: rgba(224,140,50,.14); color: var(--amber); border-radius: 8px; padding: 0 6px; font-size: var(--fs-cap); }
+.ev-vr-metrics { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px; font-size: var(--fs-cap); color: var(--text-muted); }
+.ev-vr-metrics b { color: var(--text); font-family: var(--font-mono); }
+.ev-vr-key { margin-top: 4px; font-size: var(--fs-cap); color: var(--text-muted); font-family: var(--font-mono); }
 .ev-thumb { display: block; margin-top: 6px; width: 128px; height: 128px; image-rendering: pixelated; border: 1px solid var(--border-strong); border-radius: 4px; }
 
 .ev-vr-res.ev-met { border-color: rgba(58,150,90,.5); }

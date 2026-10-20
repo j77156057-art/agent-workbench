@@ -175,7 +175,7 @@ try {
   // 因为同一个 token 在三种底色上的比值差得很远（graphite 是深底）。
   for (const skin of ['paper', 'graphite', 'zinc']) {
     const ps = await browser.newPage({ viewport: { width: 1440, height: 900 } })
-    await ps.addInitScript(`localStorage.setItem("docmind.skin","${skin}")`)
+    await ps.addInitScript(`localStorage.setItem("docmind.skin","${skin}");localStorage.setItem("docmind.skinLocked","1")`)
     await ps.goto(base + '/workbench', { waitUntil: 'load', timeout: 45000 })
     await ps.click('.wb-settings-btn')
     await ps.getByRole('button', { name: '智能体', exact: true }).first().click()

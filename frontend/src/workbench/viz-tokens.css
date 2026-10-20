@@ -1,0 +1,70 @@
+/* 画布身份色令牌（2026-10-20）
+ *
+ * 这些色原先散在五个画布组件里，同一个配方抄了 35 遍：
+ *     color-mix(in srgb, #4d7fc0 55%, var(--ink))
+ * 抄一遍不难，难的是改比例 —— 改一处要改三十五处，漏一处就是"某个图的边
+ * 比别的图浅一档"。这里收成一处，配方与 theme.ts 的 cat() 同档：
+ *
+ *   55%  图形档：描边、填色、图例色块   归 1.4.11 管，3:1
+ *   36%  文字档：SVG 里的文字           归 1.4.3  管，4.5:1
+ *   30%  淡底档：底板压色
+ *
+ * 混向 --ink 是双向的：浅色皮肤压暗、深色皮肤提亮，一个比例两边都达标。
+ * 这也是为什么不能把原始 hex 直接留在组件里 —— 写死的蓝在纸底上是 2.2:1，
+ * 在石墨底上又太亮，同一个值没法同时伺候两边。
+ *
+ * 这一层本身是纯重构：色相值和混合比例都保持原样，渲染结果逐像素一致。
+ * 以后要整体调画布配色，改这一处就行。
+ *
+ * 注：只被工作台用到的组件（关系图 / 代码地图 / Unity 图 / 分区图 / 场景画布）
+ * 引用这份令牌，所以只在 workbench/main.ts 里 import 一次。
+ */
+
+:root {
+  /* —— 关系图：边类型（继承 / 场景挂载 / 调用）—— */
+  --viz-inherit:   color-mix(in srgb, #4d7fc0 55%, var(--ink));
+  --viz-mount:     color-mix(in srgb, #c9762f 55%, var(--ink));
+  --viz-call:      color-mix(in srgb, #1c9e66 55%, var(--ink));
+  /* 文字档：SVG 标签文字用这一档，55% 那档做小字会破 4.5:1 */
+  --viz-inherit-t: color-mix(in srgb, #4d7fc0 36%, var(--ink));
+  --viz-mount-t:   color-mix(in srgb, #c9762f 36%, var(--ink));
+  --viz-call-t:    color-mix(in srgb, #1c9e66 36%, var(--ink));
+  /* 半透明边（角标描边这类）：40% 透明度 = 原来的 #4d7fc066 / #c9762f66 */
+  --viz-inherit-a: color-mix(in srgb, var(--viz-inherit) 40%, transparent);
+  --viz-mount-a:   color-mix(in srgb, var(--viz-mount) 40%, transparent);
+
+  /* —— 节点 / 图例：身份类型 —— */
+  --viz-class:         color-mix(in srgb, #58a6ff 55%, var(--ink));
+  --viz-script:        color-mix(in srgb, #2ec4b6 55%, var(--ink));
+  --viz-scene:         color-mix(in srgb, #f0883e 55%, var(--ink));
+  --viz-fn:            color-mix(in srgb, #bc8cff 55%, var(--ink));
+  --viz-const:         color-mix(in srgb, #45c98c 55%, var(--ink));
+  --viz-root:          color-mix(in srgb, #e3a83a 55%, var(--ink));
+  --viz-external:      color-mix(in srgb, #6b7686 55%, var(--ink));
+  --viz-external-soft: color-mix(in srgb, #6b7686 30%, var(--ink));
+
+  /* —— 中性连线 / 箭头 / 网格 —— */
+  --viz-neutral:  color-mix(in srgb, #7d90aa 55%, var(--ink));
+  --viz-link:     color-mix(in srgb, #3a4658 55%, var(--ink));
+  --viz-arrow:    color-mix(in srgb, #5b6675 55%, var(--ink));
+  --viz-dag-edge: color-mix(in srgb, #46536a 55%, var(--ink));
+  --viz-edge:     color-mix(in srgb, #93a0b2 55%, var(--ink));
+
+  /* —— Unity 图 —— */
+  --viz-folder: color-mix(in srgb, #6e7f96 55%, var(--ink));
+  --viz-orphan: color-mix(in srgb, #ff7b72 55%, var(--ink));
+
+  /* —— 画布网格点 ——
+   * 网格要的是"淡"，不是"有对比度"。混向 --ink 的那一族是给图形用的（要 3:1），
+   * 拿来画网格点会变成一格格深色方块。这里反过来：拿弱文字色混向面板底，
+   * 浅色皮上是淡暖灰、深色皮上是淡冷灰，两边都只是隐约可见。 */
+  --viz-grid: color-mix(in srgb, var(--text-faint) 22%, var(--bg-raised));
+
+  /* —— hover 提亮色 ——
+   * 节点 hover 的描边是"把身份色调亮一档"：mix(身份色 55%, 浅中性)。
+   * 这一档不能用上面那些混向 --ink 的令牌 —— --ink 在浅色皮上是墨、在深色皮上是
+   * 亮白，混过去在纸底上会把 hover 描边压得比常态还暗，方向正好反了。
+   * 所以这里保留一个固定的浅中性：它在纸底上是淡蓝灰（弱强调），在深底上是亮蓝灰
+   * （强强调），两套皮肤下都是"比常态更跳"，不会反过来。 */
+  --viz-hover-tint: #c4cedd;
+}

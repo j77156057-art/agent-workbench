@@ -1,14 +1,19 @@
 <script setup lang="ts">
-// AI 问答页左侧栏：品牌、当前项目（只读状态 + 跳转开发台）、资料文档上传、模型与显存。
+// AI 问答页左侧栏：品牌、当前项目（只读状态 + 跳转开发台）、资料文档上传、当前模型。
 // 全部为只读/轻操作；代码建索引等重操作统一收口到代码工作台。
+//
+// 2026-10-19 瘦身（P1）：删掉「运行状态」整块（模型 / 显存占用 / 预加载 / 卸载）——
+// 预加载与卸载显存模型是**运维级操作**，不是聊天主流程，已搬到工作台的
+// 设置 → 模型 →「本机显存与模型驻留」。侧栏只留"当前模型"一行（要知道在拿哪个模型问），
+// 连带问答页每 20 秒一次的 /api/model_status 轮询也一并省掉。
+// 资料文档留在侧栏：上传资料是问答页的主流程动作，不该绕到设置里去。
 import { computed, ref } from 'vue'
-import type { ModelConfigInfo, ModelStatus, ProjectInfo, SessionInfo } from '../../workbench/api'
+import type { ModelConfigInfo, ProjectInfo, SessionInfo } from '../../workbench/api'
 
 const props = defineProps<{
   projects: ProjectInfo[]
   currentPid: string
   config: ModelConfigInfo | null
-  power: ModelStatus | null
   demo: boolean
   ingestBusy: boolean
   ingestMsg: string
@@ -18,7 +23,6 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   (e: 'ingest', file: File): void
-  (e: 'power', action: 'on' | 'off'): void
   (e: 'openSettings'): void
   (e: 'newSession'): void
   (e: 'switchSession', id: string): void
@@ -44,8 +48,6 @@ function onFileChange(e: Event) {
 function shortPath(p: string, n = 34): string {
   return p.length > n ? p.slice(0, n - 2) + '…' : p
 }
-
-const residentNames = computed(() => (props.power?.loaded || []).map((m) => m.name).join('、'))
 
 function sessTitle(s: SessionInfo): string {
   return (s.title || s.preview || '').trim() || '未命名对话'
@@ -99,7 +101,9 @@ function sessTime(v?: string): string {
       </div>
     </section>
 
-    <!-- 当前项目：只读展示。选择 / 切换 / 建索引等重操作统一收口到代码工作台 -->
+    <!-- 当前项目：只读展示。选择 / 切换 / 建索引等重操作统一收口到代码工作台。
+         当前模型也并在这一块 —— 模型名要看得见（知道在拿哪个模型问），
+         但显存与驻留这类运维信息已搬到工作台设置，这里不占地方。 -->
     <section class="card">
       <div class="card-title">当前项目</div>
       <div v-if="demo" class="project-name">示例游戏项目</div>
@@ -110,17 +114,28 @@ function sessTime(v?: string): string {
         问答页无需绑定项目，可直接提问。需要建索引、分区开发或切换项目，请到代码工作台。
       </p>
       <a class="card-link" href="/workbench">打开代码工作台，管理项目与索引 →</a>
+      <div class="model-line">
+        <span class="model-k">模型</span>
+        <b :title="config?.llm_model">{{ config?.llm_model || '未配置' }}</b>
+        <button class="gear" title="模型参数设置" @click="emit('openSettings')">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M19.4 13a7.8 7.8 0 000-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 00-1.7-1l-.4-2.6H10.1l-.4 2.6a7.6 7.6 0 00-1.7 1l-2.4-1-2 3.4L3.6 11a7.8 7.8 0 000 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.7 1.7 1l.4 2.6h3.8l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/></svg>
+        </button>
+      </div>
     </section>
 
-    <!-- 资料文档 -->
+    <!-- 资料文档：上传是问答页的主流程动作，留在侧栏；
+         2026-10-19 把整宽的「上传资料文档」大按钮收成标题行里的小按钮，卡片矮了一截。 -->
     <section class="card">
       <div class="card-title">
         资料文档
         <span class="card-count">{{ demo ? 3 : files.length }}</span>
+        <button
+          class="btn sm add-doc"
+          :disabled="demo || ingestBusy"
+          :title="ingestBusy ? '正在摄取…' : '上传资料文档（PDF / Markdown / 文本）'"
+          @click="pickFile"
+        >{{ ingestBusy ? '摄取中…' : '＋ 上传' }}</button>
       </div>
-      <button class="btn block" :disabled="demo || ingestBusy" @click="pickFile">
-        {{ ingestBusy ? '正在摄取…' : '上传资料文档' }}
-      </button>
       <input ref="fileInput" type="file" accept=".pdf,.md,.txt" hidden @change="onFileChange">
       <div v-if="ingestMsg" class="ingest-msg" :class="{ err: ingestMsg.includes('失败') }">{{ ingestMsg }}</div>
       <div class="file-list">
@@ -140,30 +155,6 @@ function sessTime(v?: string): string {
       </div>
     </section>
     </div>
-
-    <!-- 运行状态：模型与显存沉到底部一行，不占首屏 -->
-    <section class="card status-card">
-      <div class="card-title">运行状态</div>
-      <div class="model-line">
-        <span class="model-k">模型</span>
-        <b :title="config?.llm_model">{{ config?.llm_model || '未配置' }}</b>
-        <button class="gear" title="模型与引擎设置" @click="emit('openSettings')">
-          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M19.4 13a7.8 7.8 0 000-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 00-1.7-1l-.4-2.6H10.1l-.4 2.6a7.6 7.6 0 00-1.7 1l-2.4-1-2 3.4L3.6 11a7.8 7.8 0 000 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.7 1.7 1l.4 2.6h3.8l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/></svg>
-        </button>
-      </div>
-      <div class="power" v-if="!demo">
-        <div class="model-line">
-          <span class="model-k">显存</span>
-          <b v-if="power">{{ power.vram_gb.toFixed(1) }} GB</b>
-          <b v-else>—</b>
-          <span class="resident" v-if="power?.loaded?.length">{{ power.loaded.length }} 个模型驻留</span>
-        </div>
-        <button class="btn sm block" :disabled="!power?.reachable" @click="emit('power', power?.loaded?.length ? 'off' : 'on')">
-          {{ power?.loaded?.length ? '卸载显存模型' : '预加载显存模型' }}
-        </button>
-        <div v-if="power?.error" class="ingest-msg err">{{ power.error }}</div>
-      </div>
-    </section>
   </aside>
 </template>
 
@@ -187,7 +178,6 @@ function sessTime(v?: string): string {
 .ask-middle { display: contents; }
 .brand { flex: 0 0 auto; }
 .new-chat { flex: 0 0 auto; }
-.status-card { flex: 0 0 auto; }
 
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; }
 .brand-mark {
@@ -198,8 +188,8 @@ function sessTime(v?: string): string {
   display: flex; align-items: center; justify-content: center;
   box-shadow: var(--sh-hard-sm);
 }
-.brand-name { font-family: var(--font-display); font-size: 17px; font-weight: 900; letter-spacing: .01em; color: var(--ink); }
-.brand-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); letter-spacing: .04em; }
+.brand-name { font-family: var(--font-display); font-size: var(--fs-lead); font-weight: 900; letter-spacing: .01em; color: var(--ink); }
+.brand-sub { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-muted); letter-spacing: .04em; }
 
 .card {
   flex: 0 0 auto;
@@ -211,7 +201,7 @@ function sessTime(v?: string): string {
 }
 .card-title {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 700;
   letter-spacing: .08em;
   text-transform: uppercase;
@@ -226,7 +216,7 @@ function sessTime(v?: string): string {
   background: var(--ink);
   color: var(--bg);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   padding: 1px 7px;
   line-height: 18px;
 }
@@ -234,36 +224,36 @@ function sessTime(v?: string): string {
   display: block;
   margin-top: 8px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--accent-text);
   text-decoration: none;
   border-bottom: 2px solid transparent;
 }
 .card-link:hover { border-bottom-color: var(--accent); }
 
-.project-name { font-family: var(--font-display); font-size: 15px; font-weight: 900; word-break: break-all; color: var(--ink); }
+.project-name { font-family: var(--font-display); font-size: var(--fs-h3); font-weight: 900; word-break: break-all; color: var(--ink); }
 .project-name.muted { color: var(--text-muted); }
 .project-hint {
   margin: 6px 0 0;
   font-family: var(--font-sans);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--text-muted);
 }
 .project-root {
   margin-top: 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-muted);
 }
-.ingest-msg { margin-top: 6px; font-family: var(--font-sans); font-size: 12px; color: var(--green); word-break: break-all; }
+.ingest-msg { margin-top: 6px; font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--green); word-break: break-all; }
 .ingest-msg.err { color: var(--danger); }
 .file-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 78px; overflow-y: auto; }
-.file-item { display: flex; align-items: center; gap: 8px; font-family: var(--font-sans); font-size: 13px; }
+.file-item { display: flex; align-items: center; gap: 8px; font-family: var(--font-sans); font-size: var(--fs-md); }
 .file-ic {
   flex: 0 0 auto;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--fs-cap);
   font-weight: 700;
   color: #fff;
   background: var(--ink);
@@ -272,7 +262,7 @@ function sessTime(v?: string): string {
   padding: 1px 5px;
 }
 .file-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-empty { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); padding: 2px 0; }
+.file-empty { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); padding: 2px 0; }
 
 .new-chat { width: 100%; margin-bottom: 0; }
 
@@ -304,18 +294,18 @@ function sessTime(v?: string): string {
   min-width: 0;
 }
 .sess-main:disabled { cursor: default; opacity: .6; }
-.ah-dot { flex: 0 0 auto; font-size: 9px; color: var(--text-faint); }
+.ah-dot { flex: 0 0 auto; font-size: var(--fs-cap); color: var(--text-faint); }
 .sess-copy { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
 .sess-copy strong {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 700;
   color: var(--ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sess-copy small { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.sess-copy small { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-muted); }
 .sess-del {
   flex: 0 0 auto;
   width: 30px;
@@ -323,24 +313,31 @@ function sessTime(v?: string): string {
   border-left: var(--edge-w-strong) solid var(--edge-ink);
   background: none;
   color: var(--text-muted);
-  font-size: 16px;
+  font-size: var(--fs-h2);
   line-height: 1;
   cursor: pointer;
   transition: background 130ms, color 130ms;
 }
 .sess-del:hover:not(:disabled) { background: var(--danger); color: var(--danger-ink); }
 .sess-del:disabled { opacity: .4; cursor: default; }
-.sess-empty { font-family: var(--font-mono); font-size: 12px; color: var(--text-faint); padding: 4px 2px; }
+.sess-empty { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); padding: 4px 2px; }
 
-.status-card .resident { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
-.status-card .btn.sm.block { margin-top: 6px; }
+/* 资料文档：标题行右侧的小上传按钮（2026-10-19 取代整宽大按钮） */
+.add-doc {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: var(--fs-cap);
+  box-shadow: none;
+  transform: none;
+}
+.add-doc:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: var(--sh-hard-sm); }
 
-.model-line { display: flex; gap: 10px; font-family: var(--font-sans); font-size: 13px; padding: 1px 0; }
-.model-k { flex: 0 0 34px; color: var(--text-faint); font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; }
+.model-line { display: flex; gap: 10px; font-family: var(--font-sans); font-size: var(--fs-md); padding: 1px 0; }
+.model-k { flex: 0 0 34px; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-cap); text-transform: uppercase; }
 .model-line b { font-weight: 600; word-break: break-all; }
 .gear {
   margin-left: auto;
-  border: 2px solid transparent;
+  border: var(--edge-w-strong, 2px) solid transparent;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
@@ -349,25 +346,25 @@ function sessTime(v?: string): string {
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .gear:hover { background: var(--bg-hover); color: var(--accent); border-color: var(--border-strong); }
-.power { margin: 6px 0 0; padding-top: 6px; border-top: 2px dashed var(--border); display: flex; flex-direction: column; gap: 6px; }
 
 .btn {
   border: var(--edge-w-strong) solid var(--edge-ink);
   border-radius: var(--r-sm);
+  --btn-fill: var(--accent);
   background: var(--accent);
   color: var(--accent-ink);
   font-family: var(--font-mono);
   font-weight: 700;
   padding: 6px 12px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
   box-shadow: var(--sh-hard-sm);
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
 }
 .btn:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); }
 .btn:disabled { opacity: .55; cursor: default; }
-.btn.ghost { background: var(--bg-raised); color: var(--text); }
-.btn.ghost:hover { transform: translate(-2px, -2px); background: var(--ink); color: var(--bg); }
+.btn.ghost { --btn-fill: initial; background: var(--bg-raised); color: var(--text); }
+.btn.ghost:hover { transform: translate(-2px, -2px); --btn-fill: var(--ink); background: var(--ink); color: var(--bg); }
 .btn.block { width: 100%; }
-.btn.sm { padding: 5px 10px; font-size: 12px; }
+.btn.sm { padding: 5px 10px; font-size: var(--fs-sm); }
 </style>

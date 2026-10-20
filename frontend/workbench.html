@@ -6,6 +6,37 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <!-- 字体已全部自托管，见 src/fonts.ts —— 不再依赖任何外部字体 CDN -->
     <title>DocMind 工作台</title>
+    <!-- 首帧皮肤（2026-10-20）：必须**同步**执行，且在样式与模块脚本之前。
+         main.ts 里的 applyStoredSkin() 要等模块下载+执行才生效，那之前浏览器
+         已经用默认白底画了一帧 —— 深色皮肤用户每次启动都会看到一次白闪。
+         这里先读一次 localStorage，把 data-skin / color-scheme / 背景色直接写上，
+         首帧就是对的（与 main.ts 里的逻辑保持一致：非法值回落 zinc（2026-10-20 起默认皮肤是 zinc，brutalist 的 paper 降为可选））。 -->
+    <script>
+      (function () {
+        try {
+          var k = localStorage.getItem('docmind.skin')
+          // 一次性迁移：旧默认是 paper（brutalist），新默认是 zinc。
+          // 主动选过 paper 的用户带锁定标记，不动他们。这里也要迁，
+          // 否则首帧按 paper 画一帧、main.ts 再切到 zinc，会闪一下。
+          if (k === 'paper' && !localStorage.getItem('docmind.skinLocked')) {
+            k = 'zinc'
+            localStorage.setItem('docmind.skin', k)
+          }
+          if (k !== 'zinc' && k !== 'graphite' && k !== 'paper' && k !== 'seed') k = 'zinc'
+          var el = document.documentElement
+          el.setAttribute('data-skin', k)
+          // 深浅判定交给皮肤块自己声明的 --skin-dark（新增深色皮肤不用改这里）
+          var dark = k === 'graphite' || k === 'seed'
+          el.style.colorScheme = dark ? 'dark' : 'light'
+          // 底色读缓存：切皮肤时把该皮肤底色一起存下来（skins.ts 的 writeSkinBg）。
+          // 缓存缺失时**不设** background —— 交给同步 <link> 的 CSS（data-skin 块里有
+          // background-color，首帧绘制前就生效，不会闪白）。这里写死任何一套都会跟
+          // 新增皮肤（尤其是种子生成的）脱节。
+          var bg = localStorage.getItem('docmind.skinBg')
+          if (bg) el.style.background = bg
+        } catch (e) { /* 隐私模式等：存不下就算了，main.ts 会再兜一次 */ }
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

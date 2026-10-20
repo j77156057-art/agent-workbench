@@ -130,7 +130,7 @@ const STABILIZE = () => {
 
 async function shoot(browser, base, c, config) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
-  await page.addInitScript(`localStorage.setItem("docmind.skin","${c.skin}")`)
+  await page.addInitScript(`localStorage.setItem("docmind.skin","${c.skin}");localStorage.setItem("docmind.skinLocked","1")`)
   // 两个桩都要计数：拦到 0 次就等于这个用例还在读真后端（端点改名 / 请求路径变了），
   // 那会让基线重新变成抛硬币，而且是静默的。
   const hit = { config: 0, status: 0 }
@@ -153,6 +153,12 @@ async function shoot(browser, base, c, config) {
   const hits = await page.evaluate(STABILIZE)
   await page.waitForTimeout(400)
   // 桩没生效就等于这个用例还在读真后端 —— 会天天误报，必须吵出来。
+  //
+  // 2026-10-19：问答页不再展示显存（已搬进工作台设置 → 模型 → 本机显存与模型驻留），
+  // 于是它**也不再请求 /api/model_status**。所以这一页的期望反过来：
+  // model_status 命中数必须是 0 —— 若又出现命中，说明有人把那段轮询加回来了，
+  // 问答页会重新开始每 20 秒拉一次后端。原来的「必须命中且显存可见」是旧设计的断言，
+  // 在新设计下恒为红。
   const shown = await page.evaluate(() => document.body.innerText.includes('6.1 GB'))
   const modelShown = await page.evaluate((m) => document.body.innerText.includes(m), PINNED_MODEL)
   const buf = await page.screenshot({ type: 'png' })
@@ -224,7 +230,10 @@ try {
     // 命中次数常驻打印（不只出错时才说）：桩静默失效 = 基线重新开始赌机器状态，
     // 而这种失效只有出现在每一行输出里才看得见。
     const stubs = `数据桩 config×${hit.config}（钉死模型可见=${modelShown}）· model_status×${hit.status}（显存可见=${shown}）`
-    const stubWarn = (!hit.config || !modelShown || (c.route === '/' && (!hit.status || !shown)))
+    // 2026-10-19：问答页不再展示显存 → 也不该再请求 /api/model_status，命中数必须为 0；
+    // 若又出现命中，说明那段 20 秒轮询被加回来了，问答页又开始每 20 秒打一次后端。
+    // 工作台那一侧不适用这条（它本来就不在默认视图里拉这个接口，历史基线一直是 ×0）。
+    const stubWarn = (!hit.config || !modelShown || (c.route === '/' && hit.status > 0))
       ? `  ⚠ 数据桩未生效 —— 这一例又开始读真后端了` : ''
     const info = `  抹平随机路径 ${hits} 处 · ${stubs}${warn}${stubWarn}`
     if (UPDATE || !fs.existsSync(file)) {

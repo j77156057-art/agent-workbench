@@ -10,6 +10,7 @@ import type { EditorView } from '@codemirror/view'
 import type { EditorTab } from '../composables/workbench-types'
 import { useWorkbench } from '../composables/workbench'
 import { regionColor, regionTextColor, cat, catAlpha, formatMtime, gitState } from '../theme'
+import { onSkinChange } from '../skins'
 import OverviewView from './OverviewView.vue'
 
 const props = defineProps<{ tab: EditorTab | null }>()
@@ -23,6 +24,8 @@ let view: EditorView | null = null
 let viewPromise: Promise<EditorView> | null = null
 let destroyed = false
 const states = new Map<number, EditorState>()
+/** 切肤订阅的退订函数（onSkinChange 返回）。 */
+let offSkinChange: (() => void) | null = null
 
 // ---- P2：把当前非空选区上报给选区 AI（含视口坐标，供浮条定位） ----
 function publishSelection(v: EditorView, tab: EditorTab) {
@@ -149,10 +152,24 @@ async function syncView() {
 onMounted(() => {
   // 无标签时只渲染概览，不触发编辑器块加载；首次有真实标签才异步建 view
   void syncView()
+  // 切肤后换掉编辑器的语法高亮表（2026-10-20）。
+  // 主体配色是 CSS 变量，会自动跟随；高亮表是 JS 对象，得逐个 state 重新 configure。
+  // 每个标签各有一个 EditorState，只换当前这个的话，切到别的标签会露出旧皮肤的高亮。
+  offSkinChange = onSkinChange(() => {
+    void (async () => {
+      const m = await import('./codeEditor')
+      for (const [id, st] of states) {
+        const ns = m.rethemeState(st)
+        states.set(id, ns)
+        if (view && view.state === st) view.setState(ns)
+      }
+    })()
+  })
 })
 
 onBeforeUnmount(() => {
   destroyed = true
+  offSkinChange?.()
   if (view) {
     view.scrollDOM.removeEventListener('scroll', onEditorScrollOrResize)
     window.removeEventListener('resize', onEditorScrollOrResize)

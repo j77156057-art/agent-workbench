@@ -172,7 +172,10 @@ defineExpose({ show })
           <button class="gp-link" :disabled="busy" @click="refresh">刷新</button>
         </div>
         <p v-if="!st?.coordinating" class="gp-warn">当前模式不做租约协调（parallel），排队/回收不生效；采样与空闲卸载仍可用。</p>
-        <p v-if="error" class="gp-err">{{ error }}</p>
+        <!-- 2026-10-20：错误行补一个「重试」。此前只有一句裸错误串，
+             用户只能关掉面板重开；面板顶部虽有「刷新」，但那在别的区块，
+             错误旁边没有下一步动作。范式照 GitChangesPanel。 -->
+        <p v-if="error" class="gp-err">{{ error }} <button class="gp-retry" :disabled="busy" @click="refresh">重试</button></p>
 
         <!-- 占用迷你曲线（每卡一条，按显存占用比例） -->
         <div class="gp-chart-wrap">
@@ -293,7 +296,7 @@ defineExpose({ show })
   display: inline-flex; align-items: center; gap: 5px;
   background: transparent; color: var(--text-muted);
   border: 1px solid var(--border-strong); border-radius: 5px;
-  padding: 5px 9px; cursor: pointer; font-size: 11px; white-space: nowrap;
+  padding: 5px 9px; cursor: pointer; font-size: var(--fs-cap); white-space: nowrap;
 }
 .gp-trigger:hover { color: var(--text); }
 .gp-busy { border-color: color-mix(in srgb, var(--amber) 45%, transparent); color: var(--amber); }
@@ -306,59 +309,61 @@ defineExpose({ show })
   position: fixed; right: 16px; top: 64px; width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 80px); overflow-y: auto;
   padding: 12px; background: var(--bg-raised);
   border: 1px solid var(--border-strong); border-radius: 8px;
-  z-index: 300; font-size: 12px; line-height: 1.6;
+  z-index: 300; font-size: var(--fs-sm); line-height: 1.6;
   box-shadow: 0 12px 32px rgba(35, 52, 84, 0.16);
   animation: gp-pop-in .2s cubic-bezier(.2,.8,.2,1) both;
 }
 .gp-head { display: flex; align-items: center; gap: 8px; }
-.gp-head b { color: var(--text); font-size: 13px; }
-.gp-mode { color: var(--text-muted); font-size: 11px; }
+.gp-head b { color: var(--text); font-size: var(--fs-md); }
+.gp-mode { color: var(--text-muted); font-size: var(--fs-cap); }
 .gp-spacer { flex: 1; }
-.gp-link { background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: 11px; padding: 0; }
+.gp-link { background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: var(--fs-cap); padding: 0; }
 .gp-link { transition: color .16s ease, opacity .16s ease; }
 .gp-link:hover:not(:disabled) { color: var(--accent-text); }
-.gp-warn { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: rgba(200, 129, 28, 0.12); color: var(--amber); font-size: 11px; }
-.gp-err { margin: 8px 0 0; color: var(--danger); font-size: 11px; }
-.gp-faint { color: var(--text-muted); font-size: 11px; }
+.gp-warn { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: rgba(200, 129, 28, 0.12); color: var(--amber); font-size: var(--fs-cap); }
+.gp-err { margin: 8px 0 0; color: var(--danger); font-size: var(--fs-cap); }
+.gp-retry { margin-left: 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); padding: 1px 7px; cursor: pointer; }
+.gp-retry:hover:not(:disabled) { color: var(--accent-text); border-color: var(--accent); }
+.gp-faint { color: var(--text-muted); font-size: var(--fs-cap); }
 
 .gp-chart-wrap { margin: 10px 0 4px; }
 .gp-chart { width: 100%; height: 56px; display: block; background: var(--bg-raised); border-radius: 4px; }
 .gp-grid { stroke: var(--border-strong); stroke-width: 0.5; stroke-dasharray: 2 3; }
-.gp-legend { display: flex; gap: 10px; margin-top: 3px; font-size: 10px; color: var(--text-muted); }
+.gp-legend { display: flex; gap: 10px; margin-top: 3px; font-size: var(--fs-cap); color: var(--text-muted); }
 .gp-legend i { display: inline-flex; align-items: center; gap: 4px; font-style: normal; }
 .gp-legend b { width: 8px; height: 3px; border-radius: 1px; display: inline-block; }
 
 .gp-card { margin-top: 10px; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: 6px; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
 .gp-card:hover { border-color: var(--border); box-shadow: 0 4px 12px rgba(35,52,84,.07); transform: translateY(-1px); }
 .gp-card-head { display: flex; align-items: baseline; gap: 8px; }
-.gp-card-head b { font-size: 12px; color: var(--text); font-weight: 600; }
-.gp-card-head em { font-style: normal; font-weight: 400; color: var(--text-muted); font-size: 11px; }
+.gp-card-head b { font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
+.gp-card-head em { font-style: normal; font-weight: 400; color: var(--text-muted); font-size: var(--fs-cap); }
 .gp-bar { height: 6px; border-radius: 3px; background: rgba(35, 52, 84, 0.08); margin-top: 6px; overflow: hidden; }
 .gp-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .35s ease; }
-.gp-bar-row { display: flex; justify-content: space-between; margin-top: 3px; font-size: 11px; color: var(--text-muted); }
+.gp-bar-row { display: flex; justify-content: space-between; margin-top: 3px; font-size: var(--fs-cap); color: var(--text-muted); }
 
-.gp-holder { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; }
+.gp-holder { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: var(--fs-cap); }
 .gp-wait .gp-owner { color: var(--text-muted); }
-.gp-tag { padding: 0 6px; border-radius: 8px; font-size: 10px; line-height: 16px; }
+.gp-tag { padding: 0 6px; border-radius: 8px; font-size: var(--fs-cap); line-height: 16px; }
 .gp-tag-on { background: rgba(224, 72, 79, 0.12); color: var(--danger); }
-.gp-tag-wait { background: rgba(47, 111, 237, 0.12); color: var(--accent-text); }
+.gp-tag-wait { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-text); }
 .gp-owner { color: var(--text); }
-.gp-mini { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 4px; font-size: 10px; padding: 1px 7px; cursor: pointer; }
+.gp-mini { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 4px; font-size: var(--fs-cap); padding: 1px 7px; cursor: pointer; }
 .gp-mini:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
-.gp-mini-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 4px; font-size: 10px; padding: 1px 7px; cursor: pointer; }
+.gp-mini-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 4px; font-size: var(--fs-cap); padding: 1px 7px; cursor: pointer; }
 .gp-mini-danger:hover:not(:disabled) { background: rgba(224, 72, 79, 0.1); }
 .gp-mini, .gp-mini-danger, .gp-danger { transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease, opacity .16s ease; }
 .gp-mini:active:not(:disabled), .gp-mini-danger:active:not(:disabled), .gp-danger:active:not(:disabled) { transform: translateY(1px); }
 button:disabled { opacity: 0.5; cursor: default; }
 
 .gp-idle { margin-top: 12px; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: 6px; }
-.gp-idle-title { font-size: 12px; color: var(--text); }
+.gp-idle-title { font-size: var(--fs-sm); color: var(--text); }
 .gp-idle-row { display: flex; align-items: center; gap: 7px; margin-top: 5px; }
-.gp-input { width: 72px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 3px 6px; font-size: 11px; }
+.gp-input { width: 72px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 3px 6px; font-size: var(--fs-cap); }
 .gp-idle-meta { margin-top: 4px; }
 
 .gp-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-.gp-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 5px; font-size: 11px; padding: 4px 10px; cursor: pointer; }
+.gp-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 5px; font-size: var(--fs-cap); padding: 4px 10px; cursor: pointer; }
 .gp-danger:hover:not(:disabled) { background: rgba(224, 72, 79, 0.1); }
 @keyframes gp-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes gp-pop-in { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }

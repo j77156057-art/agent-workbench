@@ -26,15 +26,35 @@
 :root:root:root {
   /* 圆角梯度（--r-full 例外：圆点 / 滑块永远是圆的，不参与皮肤圆角） */
   --r-full: 999px;
-  /* 描边宽度三档：细线 / 结构边 / 重边（面板分隔、卡片框）。
-     3px 这一档全仓只有 7 处（问答页侧栏卡片 / 用户气泡 / 顶栏，工作台树错误面板），
-     之前全是写死的字面量，所以 zinc 要「所有边都回到 1px」必须给它一档令牌。 */
-  --edge-w: 1px;  --edge-w-strong: 2px;  --edge-w-heavy: 3px;
+  /* 描边宽度：统一 1px。
+     原来分三档（1 / 2 / 3px），但"2px 细线"已经不是线了 —— 它是一道**描边**，
+     在深色皮肤上（graphite 的白边）尤其扎眼。1px 才是发丝线，2px 以上是图形。
+     brutal 档的身份改由别的东西承担：零圆角 + 硬偏移阴影 + 墨白配色。
+     3px 那一档原本全仓只有 7 处（问答页侧栏卡片 / 用户气泡 / 顶栏）。 */
+  --edge-w: 1px;  --edge-w-strong: 1px;  --edge-w-heavy: 1px;
   /* 描边色走 --border 而不是 --ink：paper / graphite 下两者本就同值（#14110f /
      #e8e6e0），所以这条对现有两套皮肤是逐像素等价的改动；但 zinc 要「字是深灰、
      线是浅灰」两档分离，绑死 --ink 的话换肤时描边会跟着变黑。
      37 处 var(--edge-ink) + 27 处 --edge-w-strong 全从这一个默认值取色。 */
   --edge-ink: var(--border);
+  /* 装饰框档：给「元素自带底色/文字、框纯属多余」的那些控件用 ——
+     文件类型 chip、次要按钮、图标按钮、树区域行。
+     边宽照旧（留着占位），只把**颜色**换成这一档，所以关掉框不会让布局宽度跳一下。
+     这一档**所有皮肤都关**：框在这里从来不承载信息，区分靠底色/字色/缩进/图标。
+     brutal 档（paper / graphite）的身份由直角 + 硬偏移阴影 + 墨白配色承担，
+     不靠给每个 chip 都套一个框。 */
+  --edge-ink-soft: transparent;
+  --edge-ink-soft-off: transparent;
+  /* chip 的**类型色**边框（accent/amber/green）。chip 已经有底色 + 同色系文字，
+     再套一圈彩色框只是重复表达同一个信息 —— 文件树里一列 PNG/GD/TSCN/JSON 的
+     小方框是最吵的一处。所有皮肤都关。 */
+  --chip-edge: transparent;
+  /* 无框控件的阴影档：图标按钮、分区状态点这类**没有底色也没有框**的控件。
+     它们要是带硬投影，投影就成了一个"假方框"（transparent 元素投影 = 画出一个
+     看不见的矩形），在纸底上读起来还是一条明确的线。
+     brutal 档照旧用 --sh-hard-sm（空心偏移方框是它们的设计语言）；
+     产品风档取 none —— 无框控件就靠 hover 底色和 focus 环表达状态。 */
+  --shadow-control: var(--sh-hard-sm);
   /* 遮罩两档：模态级 / 浮层级。必须是**黑**，不能是"海军蓝"也不能是 --ink ——
      以前全仓 23 处遮罩各写各的蓝（rgba(38,52,77,.38) 那一族），实测压在
      paper #ece7db 上是 −53% 亮度（正常变暗），压在 graphite #16181d 上却是
@@ -76,6 +96,10 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
    当前默认。暖骨白纸 + 朱红 + 零圆角 + 硬阴影，印刷感最强
    ========================================================== */
 :root:root:root[data-skin='paper'] {
+  /* 明暗标记（2026-10-20）：给"需要按明暗切换实现"的消费方用 —— 目前是
+     CodeMirror 的语法高亮（浅底用默认高亮表、深底用 oneDark 高亮表）。
+     新增深色皮肤时只需要在这里把 --skin-dark 写成 1，不用改 JS。 */
+  --skin-dark: 0;
   /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
      于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
      颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
@@ -96,6 +120,7 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --text-faint: #6b6356;
   --border: #14110f;
   --border-strong: #14110f;
+  --border-graphic: #14110f;   /* brutal 档：控件边界也是墨边（空心偏移方框是它们的设计语言） */
   /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
   --accent: #ff674d;
   --accent-loud: #ff674d;
@@ -137,6 +162,7 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
    深炭底 + 电光青，零圆角 + 近黑硬阴影，夜间低亮环境
    ========================================================== */
 :root:root:root[data-skin='graphite'] {
+  --skin-dark: 1;
   /* <html> 自身也要显式给色。浏览器默认 html{color:#fff}，而 body 背景是透明的，
      于是「白字压透明→合成到白底」= 白压白 1:1。深色皮肤下任何直接继承 html
      颜色的文本会直接隐形。实测踩到：graphite 是唯一一套报出这处 1:1 的皮肤。 */
@@ -155,8 +181,19 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --text-muted: #9ba1ad;
   --faint: #9ba1ad;
   --text-faint: #9ba1ad;
-  --border: #e8e6e0;
-  --border-strong: #e8e6e0;
+  --border: rgba(255, 255, 255, .07);
+  --border-strong: rgba(255, 255, 255, .13);
+  --border-graphic: rgba(255, 255, 255, .38);
+  /* 深底用暗白而不是纯白：纯白 #e8e6e0 压 --bg-raised 是 12.15:1 ——
+     深色皮肤上每一条线都在发亮，整屏像电路图。
+     同一个对比度在浅底和深底上的**观感差很多**：1.4:1 的线在白底上只是隐约一条，
+     在深底上却刺眼（亮-暗对比被眼睛放大）。所以深底的档位要再低一档：
+       Linear 深底  默认分隔线 5% 白 = 1.15 · 卡片外框 8% 白 = 1.26
+       Primer 深底 border.muted（分隔线）1.28 · border.default（组件外框）1.55
+     这里按同一量级取：容器/分隔 7%（1.24:1）· 强调/浮层框 13%（1.51:1）·
+     控件边界与信息图形 38%（3.5:1，1.4.11 管的 ≥3:1 那一档 —— 这一档不能再低：
+     实测 28% 只有 2.52:1，低于底线；输入框的边界必须看得见"哪里能点"）。
+     注意 --ink 仍然是亮白 —— 那是**文字**色，不该跟着线一起变暗。 */
   /* 强调三角色：accent=填色 / accent-ink=填色上的字 / accent-text=纸底强调字 */
   --accent: #4dd0e1;
   --accent-loud: #4dd0e1;
@@ -210,6 +247,7 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
       唯一正确的做法是少画线（用留白/底色差分识别组件），不是把线调淡。
    ========================================================== */
 :root:root:root[data-skin='zinc'] {
+  --skin-dark: 0;
   /* <html> 自身也要显式给色，理由见 paper / graphite 两块的同名注释。 */
   color: #27272a;
   background-color: #fcfcfd;
@@ -230,8 +268,32 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --text-muted: #67676d;
   --faint: #67676d;
   --text-faint: #67676d;
-  --border: #7d7d86;
-  --border-strong: #27272a;
+  /* 边框三档（2026-10-20，对齐 GitHub Primer / Linear 的实际取值，不是拍脑袋）。
+     原来只有 --border / --border-strong 两档，而且两档都压到 4:1 / 15:1 ——
+     整屏每条分隔线都在喊"这里有东西"。实测那些主流产品：
+       Primer border.default #d0d7de @#ffffff = 1.45:1
+       Primer border.muted   #d8dee4 @#ffffff = 1.36:1
+       Linear  默认分隔线 5% 白 / 卡片外框 8% 白 = 1.15 / 1.26（深底）
+       Linear  最外层实心框 #23252a @#08090a ≈ 1.36:1
+     连它们**最强**的边框都只有 1.36:1。而 WCAG 1.4.11 的 3:1 管的是
+     **UI 控件的视觉边界**（输入框、复选框、下拉），原文对纯装饰的图形对象
+     明确写了 "purely decorative are exempt"。所以：
+       --border         容器外框 / 分隔线   1.37:1  装饰性，1.4.11 豁免
+       --border-strong  强调分隔 / 弹层框   1.95:1  装饰性但要能看出是浮层
+       --border-graphic 交互控件边界       4.08:1  1.4.11 真正管的这一档
+     之前那句「描边 ≥3:1 是 AA 下限，不允许为审美让步」把 1.4.11 用错了地方：
+     它管的是控件边界，不是卡片外框。 */
+  --border: #dcdce3;
+  --border-strong: #c9c9d2;
+  --border-graphic: #8f8f95;
+  /* 产品风档：装饰框整个关掉。
+     保留的是**结构线**（顶栏底线、侧栏右边、输入框边界、弹层外框）——
+     那些线在划分区，删了就没有结构了。关掉的是 chip/次要按钮/图标按钮上
+     那些「元素自己已经有底色或文字」的框：文件树里一列 PNG/JSON/MD 小方框
+     是最吵的一处，实测 210 条可见描边里它占 28 条。
+     --chip-edge 管的是 chip 的**类型色**边框（accent/amber/green），
+     不定义就回落到类型色。 */
+  --shadow-control: none;
   /* style.css 里那 14 处 --border-2（淡蓝细线）在 zinc 收成同一档灰，
      否则 hover / 气泡边会留一条不属于这套配色的蓝线。 */
   --border-2: var(--border);

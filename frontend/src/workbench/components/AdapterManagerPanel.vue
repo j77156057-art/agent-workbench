@@ -137,7 +137,7 @@ onMounted(() => { void load() })
 </template>
 
 <style scoped>
-.adapter-panel { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised)); font-size: 11px; }
+.adapter-panel { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: linear-gradient(180deg, var(--bg-hover), var(--bg-raised)); font-size: var(--fs-cap); }
 .adapter-head, .report-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .adapter-head small, .adapter-head span, .report-head small, .adapter-item small { color: var(--text-faint); }
 .adapter-error { margin: 0; color: var(--danger); }
@@ -146,11 +146,11 @@ onMounted(() => { void load() })
 .adapter-item:hover { border-color: var(--border-strong); background: var(--bg-selected); box-shadow: 0 3px 10px rgba(35,52,84,.06); }
 .adapter-item div { display: grid; gap: 2px; min-width: 0; }.adapter-item small { overflow-wrap: anywhere; }
 .adapter-code { grid-column: 1 / -1; width: 100%; color: var(--text-muted); }.adapter-code summary { cursor: pointer; color: var(--accent); }.adapter-code small { display: block; margin-top: 4px; }.adapter-code pre { max-height: 180px; overflow: auto; margin: 5px 0 0; padding: 6px; white-space: pre-wrap; font: 10px/1.45 var(--font-mono); color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; }.adapter-code .adapter-diff { color: var(--text); border-color: var(--accent); }
-.adapter-item > span { flex: 0 0 auto; font-size: 10px; border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }.on, .ok { color: var(--green); background: rgba(52,168,112,.05); }.off, .bad { color: var(--danger); background: rgba(214,78,78,.05); }
+.adapter-item > span { flex: 0 0 auto; font-size: var(--fs-cap); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }.on, .ok { color: var(--green); background: rgba(52,168,112,.05); }.off, .bad { color: var(--danger); background: rgba(214,78,78,.05); }
 .acceptance-report, .rollback-box { display: grid; gap: 5px; border-top: 1px solid var(--border); padding-top: 8px; }
 .acceptance-report > small { color: var(--text-muted); }.acceptance-report details { border-top: 1px solid var(--border); padding-top: 5px; }.acceptance-report p { margin: 4px 0 0; }
-.report-head strong { font-size: 18px; font-variant-numeric: tabular-nums; }.rollback-file { display: flex; align-items: center; gap: 6px; padding: 4px 5px; border-radius: 5px; transition: background .15s ease; }.rollback-file:hover { background: var(--bg-selected); }.rollback-file span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.rollback-file small { color: var(--text-faint); }
-.rollback-box button { justify-self: start; border: 1px solid var(--accent); border-radius: 6px; padding: 5px 8px; color: var(--accent-ink); background: var(--accent); cursor: pointer; font: inherit; transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease; }.rollback-box button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 8px rgba(37,96,212,.18); }.rollback-box button:disabled { opacity: .5; cursor: default; }
+.report-head strong { font-size: var(--fs-lead); font-variant-numeric: tabular-nums; }.rollback-file { display: flex; align-items: center; gap: 6px; padding: 4px 5px; border-radius: 5px; transition: background .15s ease; }.rollback-file:hover { background: var(--bg-selected); }.rollback-file span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.rollback-file small { color: var(--text-faint); }
+.rollback-box button { justify-self: start; border: 1px solid var(--accent); border-radius: 6px; padding: 5px 8px; color: var(--accent-ink); --btn-fill: var(--accent); background: var(--accent); cursor: pointer; font: inherit; transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease; }.rollback-box button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 8px rgba(37,96,212,.18); }.rollback-box button:disabled { opacity: .5; cursor: default; }
 .adapter-save { justify-self: start; border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; color: var(--text); background: var(--bg-raised); cursor: pointer; font: inherit; transition: color .15s ease, border-color .15s ease, transform .15s ease; }.adapter-save:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
 @media (prefers-reduced-motion: reduce) { .adapter-item, .rollback-file, .rollback-box button, .adapter-save { transition: none; } }
 </style>

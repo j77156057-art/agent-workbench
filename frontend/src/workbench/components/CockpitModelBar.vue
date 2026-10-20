@@ -165,12 +165,12 @@ onMounted(() => {
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: var(--bg-hover, rgba(47, 111, 237, .04));
-  font-size: 12px;
-  box-shadow: inset 3px 0 rgba(47,111,237,.42), 0 3px 12px rgba(35,52,84,.05);
+  background: var(--bg-hover, color-mix(in srgb, var(--accent) 4%, transparent));
+  font-size: var(--fs-sm);
+  box-shadow: inset 3px 0 color-mix(in srgb, var(--accent) 42%, transparent), 0 3px 12px rgba(35,52,84,.05);
   transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
 }
-.cmb:focus-within { border-color: rgba(47,111,237,.45); box-shadow: inset 3px 0 rgba(47,111,237,.7), 0 0 0 3px rgba(47,111,237,.08); }
+.cmb:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, transparent); box-shadow: inset 3px 0 color-mix(in srgb, var(--accent) 70%, transparent), 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }
 .cmb-label { font-weight: 600; color: var(--text); white-space: nowrap; }
 .cmb-seg {
   display: inline-flex;
@@ -185,7 +185,7 @@ onMounted(() => {
   color: var(--text-muted);
   padding: 5px 12px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
   border-right: 1px solid var(--border);
   white-space: nowrap;
@@ -203,20 +203,20 @@ onMounted(() => {
   min-width: 220px;
   max-width: 380px;
   flex: 1 1 220px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-graphic);
   border-radius: 7px;
   padding: 5px 8px;
   background: var(--bg-raised);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
 }
-.cmb-select:hover:not(:disabled) { border-color: rgba(47,111,237,.45); }
+.cmb-select:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .cmb-select:disabled { opacity: .55; cursor: default; }
 .cmb-effective {
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -224,15 +224,15 @@ onMounted(() => {
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: rgba(255,255,255,.42);
+  background: color-mix(in srgb, var(--bg-raised) 42%, transparent);
 }
-.cmb-on { color: var(--accent); border-color: rgba(47,111,237,.28); background: rgba(47,111,237,.08); }
-.cmb-auto { color: var(--accent); border-color: rgba(47,111,237,.28); background: rgba(47,111,237,.08); }
+.cmb-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.cmb-auto { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cmb-warn { color: var(--warning, #b8860b); border-color: rgba(184,134,11,.28); background: rgba(184,134,11,.08); }
 .cmb-hint {
   flex-basis: 100%;
   color: var(--warning, #b8860b);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -244,7 +244,7 @@ onMounted(() => {
   border-radius: 7px;
   padding: 4px 10px;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   cursor: pointer;
   white-space: nowrap;
   transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease;
@@ -254,7 +254,7 @@ onMounted(() => {
 .cmb-error {
   flex-basis: 100%;
   color: var(--danger);
-  font-size: 11px;
+  font-size: var(--fs-cap);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

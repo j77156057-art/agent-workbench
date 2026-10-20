@@ -72,11 +72,18 @@
   transform: none;
 }
 
-/* 3) 提示横幅底色：硬编码蓝 → 朱红软底（守 ink + accent 双色） */
+/* 3) 提示横幅底色：硬编码蓝 → 朱红软底（守 ink + accent 双色）
+   2026-10-20 修对比度：底原来用 var(--accent-soft)（accent 的 12% **半透明**淡染），
+   字用 var(--accent) —— 同一个色相。半透明底的实际底色取决于后面铺的是什么，
+   paper 下合成后约 #f8e9e6，朱红字压上去只有 **2.58:1**（AA 要 4.5:1）。
+   门禁在 HEAD 上就会报「ask|paper 新引入泄漏」——它不是新引入的，是基线过期，
+   但缺陷是真的。
+   改法与 P2 批次确立的规则一致：淡染压在**不透明面**上，文字用 --accent-text
+   （paper 5.21:1 / graphite 10.96:1 / zinc 6.96:1）。 */
 #app .ask-main .banner.info {
-  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised));
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* 4) 引导卡：2 列末行孤卡 → 3 等列一行铺满欢迎块宽度（左右对称） */
@@ -108,7 +115,7 @@
   align-items: center;
   min-height: 72px;
   padding: 16px 46px 16px 18px;   /* 右侧留箭头位 */
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 600;
   line-height: 1.55;
   letter-spacing: .01em;
@@ -118,7 +125,7 @@
   content: '\2192';                /* → */
   position: absolute;
   right: 16px; top: 50%; transform: translateY(-50%);
-  font-size: 15px; line-height: 1;
+  font-size: var(--fs-h3); line-height: 1;
   color: var(--text-faint);
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), color 130ms;
 }
@@ -245,4 +252,20 @@
   border-radius: var(--r-sm);
   border-top: 3px solid var(--accent);
   box-shadow: var(--sh-hard-sm);
+}
+
+/* 10) 键盘焦点环（2026-10-19，P2-15）
+   问答页此前**整站没有设计过的焦点环**：:focus-visible 计数为 0，浏览器只能用
+   UA 默认的 1px 描边 —— 那个描边是跟随系统色的，在 paper（浅底）上几乎看不见，
+   在 graphite（深底）上同样几乎看不见（实测 outline: auto 1px rgb(17,17,17)）。
+   纯键盘用户没法判断焦点在哪。
+   这里补一条全局兜底：所有可聚焦元素在 :focus-visible 时画 2px 强调色环。
+   守 R14：只在本覆盖层里加规则，不碰 AskApp.vue / AskSidebar.vue。 */
+#app :is(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent-deep);
+  outline-offset: 2px;
+}
+/* 表单控件自带边框，环压在上面会显得脏 —— 环内收一点 */
+#app :is(input, textarea, select):focus-visible {
+  outline-offset: 1px;
 }

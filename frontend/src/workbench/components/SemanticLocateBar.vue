@@ -37,7 +37,7 @@ function scheduleSearch() {
     open.value = false
     return
   }
-  open.value = true
+  openPop()
   debounce = window.setTimeout(() => {
     if (demoMode.value) return
     void runLocate(text)
@@ -48,7 +48,7 @@ function submitNow() {
   window.clearTimeout(debounce)
   const text = q.value.trim()
   if (!text) return
-  open.value = true
+  openPop()
   if (!demoMode.value) void runLocate(text)
 }
 
@@ -99,19 +99,56 @@ async function onRefreshTags() {
 watch(files, () => { activeIdx.value = 0 })
 
 function onDocClick(ev: MouseEvent) {
-  if (!(el.value && el.value.contains(ev.target as Node))) open.value = false
+  // 面板 teleport 到了 body，不再是 el 的后代 —— 只判 el 会把"点面板里的结果"当成点外面，
+  // 面板当场消失（点了没反应）。两处都要判。
+  const t = ev.target as Node
+  if (!(el.value && el.value.contains(t)) && !(popRef.value && popRef.value.contains(t))) {
+    open.value = false
+  }
 }
 const el = ref<HTMLElement | null>(null)
+const boxEl = ref<HTMLElement | null>(null)
+const popRef = ref<HTMLElement | null>(null)
+
+/* 下拉面板的位置（2026-10-20）。
+   面板原本是 position:absolute 挂在顶栏里，而顶栏有 overflow-y:hidden
+   （窄宽兜底要横向滚动）→ 面板被裁到只剩一条边，**两种材质下都看不见**；
+   宽度也是按顶栏算的（实测 841px，而搜索框只有 380px）。
+   改成 teleport 到 body + fixed 定位，坐标按搜索框的真实位置算。
+   顺带躲开 fixed 定位的包含块问题：玻璃模式顶栏的 backdrop-filter
+   会让祖先成为 fixed 的包含块（同「更多」菜单那个坑）。 */
+const popStyle = ref<Record<string, string>>({})
+function syncPopPosition() {
+  // 按**可见的输入框**（.lb-box）定位，不是根节点 .lb ——
+  // 根节点被 .wb-locate-slot 的 flex:1 1 auto 撑开成整条顶栏那么宽（实测 841px），
+  // 面板跟着它就变成一大条，而不是搜索框那么宽。
+  const box = boxEl.value
+  if (!box) { popStyle.value = {}; return }
+  const r = box.getBoundingClientRect()
+  const w = Math.max(240, Math.round(r.width))
+  const left = Math.max(8, Math.min(Math.round(r.left), window.innerWidth - w - 8))
+  popStyle.value = { top: `${Math.round(r.bottom + 6)}px`, left: `${left}px`, width: `${w}px` }
+}
+function openPop() {
+  syncPopPosition()
+  open.value = true
+}
+watch(open, (v) => { if (v) syncPopPosition() })
+window.addEventListener('resize', syncPopPosition)
+window.addEventListener('scroll', syncPopPosition, true)
+
 document.addEventListener('click', onDocClick)
 onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClick)
   window.clearTimeout(debounce)
+  window.removeEventListener('resize', syncPopPosition)
+  window.removeEventListener('scroll', syncPopPosition, true)
 })
 </script>
 
 <template>
   <div ref="el" class="lb">
-    <div class="lb-box" :class="{ 'lb-open': open }">
+    <div ref="boxEl" class="lb-box" :class="{ 'lb-open': open }">
       <svg class="lb-icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
         <circle cx="6.2" cy="6.2" r="4.4" fill="none" stroke="currentColor" stroke-width="1.4" />
         <path d="M9.6 9.6 L12.5 12.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
@@ -123,14 +160,20 @@ onBeforeUnmount(() => {
         placeholder="用大白话找代码：玩家数值、敌人AI、伤害计算…"
         @input="scheduleSearch"
         @keydown="onKeydown"
-        @focus="open = hasQuery"
+        @focus="hasQuery ? openPop() : (open = false)"
       />
       <span v-if="locateLoading || tagLoading" class="lb-spin" />
       <button v-if="q" class="lb-clear" title="清空" @click="clearAll">×</button>
     </div>
 
-    <!-- 下拉结果 -->
-    <div v-if="open" class="lb-pop">
+    <!-- 下拉结果：teleport 到 body（2026-10-20）。
+         原本它是 position:absolute 挂在顶栏里，而顶栏 overflow-y:hidden
+         （窄宽兜底要横向滚动）→ 面板被裁到只剩一条边，两种材质下都看不见；
+         宽度也按错的包含块算（实测 841px，搜索框只有 300~380px）。
+         teleport + fixed 后坐标与宽度都按搜索框真实位置算，
+         也不再受祖先 backdrop-filter 建立包含块的影响。 -->
+    <Teleport to="body">
+      <div ref="popRef" v-if="open" class="lb-pop" :style="popStyle">
       <div class="lb-pop-head">
         <span v-if="demoMode" class="lb-demo-note">示例结果 · 连接本地项目后可直接点击跳转</span>
         <span v-else class="lb-count">
@@ -209,7 +252,8 @@ onBeforeUnmount(() => {
       <div class="lb-pop-foot">
         <span>↑↓ 选择</span><span>Enter 跳转</span><span>Esc 关闭</span>
       </div>
-    </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -219,23 +263,23 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; gap: 7px;
   height: 32px; padding: 0 10px;
   background: var(--bg-raised);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-graphic);
   border-radius: 8px;
   transition: border-color .15s, box-shadow .15s;
 }
 .lb-box.lb-open, .lb-box:focus-within {
   border-color: #9dbdf4;
-  box-shadow: 0 0 0 3px rgba(47, 111, 237, .12);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .lb-icon { color: var(--text-faint); flex: 0 0 auto; }
 .lb-input {
   flex: 1; min-width: 0; border: 0; outline: none; background: transparent;
-  font-size: 12px; color: var(--text); font-family: var(--font-ui);
+  font-size: var(--fs-sm); color: var(--text); font-family: var(--font-ui);
 }
 .lb-input::placeholder { color: var(--text-faint); }
 .lb-clear {
   border: 0; background: transparent; color: var(--text-faint);
-  font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
+  font-size: var(--fs-h3); line-height: 1; cursor: pointer; padding: 0 2px;
 }
 .lb-clear:hover { color: var(--text); }
 .lb-spin {
@@ -246,7 +290,7 @@ onBeforeUnmount(() => {
 @keyframes lbspin { to { transform: rotate(360deg); } }
 
 .lb-pop {
-  position: absolute; top: 38px; left: 0; right: 0; z-index: 600;
+  position: fixed; z-index: 600;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -256,20 +300,20 @@ onBeforeUnmount(() => {
 .lb-pop-head {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-bottom: 1px solid var(--border);
-  font-size: 12px; color: var(--text-muted);
+  font-size: var(--fs-sm); color: var(--text-muted);
 }
 .lb-spacer { flex: 1; }
 .lb-count { white-space: nowrap; }
 .lb-demo-note { color: var(--amber); }
 .lb-tagbtn {
-  border: 1px solid #b9d0f5; background: #eef4fe; color: var(--accent);
-  font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); --btn-fill: color-mix(in srgb, var(--accent) 12%, var(--bg-raised)); background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised)); color: var(--accent);
+  font-size: var(--fs-cap); font-weight: 600; padding: 3px 9px; border-radius: 6px;
   cursor: pointer; white-space: nowrap; font-family: var(--font-ui);
 }
-.lb-tagbtn:hover:not(:disabled) { background: #e0ecfd; }
+.lb-tagbtn:hover:not(:disabled) { --btn-fill: #e0ecfd; background: #e0ecfd; }
 .lb-tagbtn:disabled { opacity: .6; cursor: wait; }
 .lb-warn {
-  padding: 6px 10px; font-size: 11px; color: var(--amber);
+  padding: 6px 10px; font-size: var(--fs-cap); color: var(--amber);
   background: #fdf6ea; border-bottom: 1px solid #f0e2c4;
 }
 .lb-list { max-height: 380px; overflow-y: auto; padding: 4px; }
@@ -282,32 +326,32 @@ onBeforeUnmount(() => {
 .lb-item.lb-active { background: var(--bg-selected); }
 .lb-region-rail { width: 3px; border-radius: 2px; flex: 0 0 3px; }
 .lb-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.lb-item-title { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); }
-.lb-folder-glyph { font-size: 13px; }
+.lb-item-title { display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--text); }
+.lb-folder-glyph { font-size: var(--fs-md); }
 .lb-file-name { font-weight: 600; }
 .lb-symbol {
-  font-family: var(--font-mono); font-size: 11px; color: var(--accent);
-  background: rgba(47,111,237,.08); border-radius: 4px; padding: 0 5px;
+  font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 4px; padding: 0 5px;
 }
-.lb-region-dir { font-style: normal; color: var(--text-faint); font-size: 12px; }
+.lb-region-dir { font-style: normal; color: var(--text-faint); font-size: var(--fs-sm); }
 .lb-region-chip {
-  font-size: 10px; font-style: normal; font-weight: 600;
+  font-size: var(--fs-cap); font-style: normal; font-weight: 600;
   border: 1px solid; border-radius: 5px; padding: 0 5px; white-space: nowrap;
 }
 .lb-item-sub {
-  display: flex; gap: 5px; font-size: 11px; color: var(--text-faint);
+  display: flex; gap: 5px; font-size: var(--fs-cap); color: var(--text-faint);
   min-width: 0;
 }
 .lb-path { font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lb-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-tags { display: flex; gap: 5px; flex-wrap: wrap; }
 .lb-tags i {
-  font-style: normal; font-size: 10px; color: var(--accent-2);
+  font-style: normal; font-size: var(--fs-cap); color: var(--accent-2);
   background: rgba(122, 90, 248, .09); border-radius: 4px; padding: 0 5px;
 }
 .lb-kind-tag {
   align-self: center; flex: 0 0 auto;
-  font-size: 10px; color: var(--text-muted);
+  font-size: var(--fs-cap); color: var(--text-muted);
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
 }
 .lb-reasons {
@@ -315,14 +359,14 @@ onBeforeUnmount(() => {
   align-self: center; flex: 0 0 auto;
 }
 .lb-reasons i {
-  font-style: normal; font-size: 10px; color: var(--text-faint);
+  font-style: normal; font-size: var(--fs-cap); color: var(--text-faint);
   background: var(--bg-hover); border-radius: 4px; padding: 1px 5px; white-space: nowrap;
 }
-.lb-empty { padding: 22px 14px; text-align: center; font-size: 12px; color: var(--text-faint); line-height: 1.7; }
+.lb-empty { padding: 22px 14px; text-align: center; font-size: var(--fs-sm); color: var(--text-faint); line-height: 1.7; }
 .lb-pop-foot {
   display: flex; gap: 12px; padding: 6px 10px;
   border-top: 1px solid var(--border);
-  font-size: 10px; color: var(--text-faint);
+  font-size: var(--fs-cap); color: var(--text-faint);
   background: var(--bg-hover);
 }
 </style>

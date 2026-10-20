@@ -56,11 +56,9 @@ const STATES = {
     await p.locator('button').filter({ hasText: '素材' }).first().click()
     await p.waitForTimeout(2500)
   },
-  async cockpit (p) {
-    await p.click('.wb-brand')
-    await p.keyboard.press('Alt+4')
-    await p.waitForSelector('#wb-cockpit-chat-slot .cd-inputbar', { timeout: 60000 })
-  },
+  // 2026-10-19 删除 cockpit 状态：AutonomousCockpit 已从主区卸载，
+  // Alt+4 快捷键与 #wb-cockpit-chat-slot 插槽都随之删除（App.vue 有注释为证），
+  // 这个状态等的是一个永远不出现的选择器 —— 只会 60s 超时，不会比出任何东西。
   async harness (p) { await openMore(p, 'AI 运行台', '.hp-backdrop') },
   async gpu (p) { await openMore(p, 'GPU 监控', '.gp-backdrop') },
   // .te-panel 是常驻包裹层且不可见（Playwright 默认等"可见"，等它必超时）；
@@ -73,11 +71,11 @@ const STATES = {
   async symbolmap (p) { await openMore(p, '代码地图', '.sm-panel') },
 }
 const ROUTES = {
-  '/workbench': ['workbench', 'settings', 'assets', 'cockpit',
+  '/workbench': ['workbench', 'settings', 'assets',
     'harness', 'gpu', 'tasks', 'flow', 'changes', 'relation', 'unity', 'symbolmap'],
   '/': ['ask'],
 }
-const SKINS = ['paper', 'graphite', 'zinc']
+const SKINS = ['paper', 'graphite', 'zinc', 'seed']
 
 const SWEEP = () => {
   const parse = v => {
@@ -192,7 +190,7 @@ try {
     const key = `${route}|${name}|${skin}`
     const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } })
     try {
-      await page.addInitScript(`localStorage.setItem("docmind.skin","${skin}")`)
+      await page.addInitScript(`localStorage.setItem("docmind.skin","${skin}");localStorage.setItem("docmind.skinLocked","1")`)
       await page.goto(base + route, { waitUntil: 'domcontentloaded', timeout: 60000 })
       await page.waitForFunction(s => document.documentElement.dataset.skin === s, skin, { timeout: 30000 })
       await page.waitForSelector(route === '/' ? '.composer textarea' : '.ft-row', { timeout: 60000 })

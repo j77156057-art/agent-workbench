@@ -44,7 +44,7 @@ const view = computed(() => describeRealtimeMode(props.payload))
   gap: 6px;
   padding: 2px 10px 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
   border: 1px solid transparent;
   white-space: nowrap;
@@ -55,9 +55,9 @@ const view = computed(() => describeRealtimeMode(props.payload))
   background: currentColor;
   opacity: 0.9;
 }
-.rmb--compact { padding: 0 6px; font-size: 11px; }
-.rmb--native       { color: #1f7f4b; background: #e6f4ec; border-color: #b8dfc7; }
-.rmb--degraded     { color: #905c07; background: #fff4d9; border-color: #f0c86a; }
-.rmb--unavailable  { color: #7a3b3b; background: #fbe8e8; border-color: #e9b1b1; }
-.rmb--unknown      { color: #666;    background: #f0f0f2; border-color: #d5d5db; }
+.rmb--compact { padding: 0 6px; font-size: var(--fs-cap); }
+.rmb--native       { color: var(--green); background: color-mix(in srgb, var(--green) 12%, var(--bg-raised)); border-color: color-mix(in srgb, var(--green) 38%, transparent); }
+.rmb--degraded     { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, var(--bg-raised)); border-color: color-mix(in srgb, var(--amber) 38%, transparent); }
+.rmb--unavailable  { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--bg-raised)); border-color: color-mix(in srgb, var(--danger) 38%, transparent); }
+.rmb--unknown      { color: var(--text-muted); background: color-mix(in srgb, var(--text-muted) 10%, var(--bg-raised)); border-color: color-mix(in srgb, var(--text-muted) 30%, transparent); }
 </style>

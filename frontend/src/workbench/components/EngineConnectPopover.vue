@@ -2,13 +2,19 @@
 // 游戏引擎连接弹层（MCP 服务器：godot-ai stdio / unity / unreal HTTP + godot-ai 插件引导）。
 // 自包含：监听事件总线的 docmind:open-engine 事件开关，Teleport 到 body，
 // 折叠态/外部容器裁剪均不影响显示。父组件只负责派发事件，不持有任何状态。
+//
+// 2026-10-19（P1）：入口原在顶栏「更多」菜单，属配置类能力，已统一收进设置页的
+// 「运行与引擎」分区。`embedded` 模式把弹层就地渲染在设置面板里
+// （Teleport disabled + 去掉 fixed 定位与浮层阴影），不再遮罩、不再抢 z-index。
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { askConfirm, askAlert } from '../composables/workbench'
 import { mcpApi } from '../api'
 import type { McpServer } from '../api'
 import { appEvents } from '../eventBus'
 
-const open = ref(false)
+const props = defineProps<{ embedded?: boolean }>()
+
+const open = ref(!!props.embedded)
 const servers = ref<McpServer[]>([])
 const probing = ref<string | null>(null)
 const probeResults = ref<Record<string, { ok: boolean; tool_count?: number; error?: string }>>({})
@@ -160,11 +166,21 @@ function connectorGuide(s: McpServer) {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="open" class="cd-pop-mask wb-modal-backdrop" @click="open = false" />
-    <div v-if="open" class="cd-pop wb-modal-shell" role="dialog" aria-modal="true" aria-label="连接游戏引擎" @click.stop>
-      <div class="cd-pop-title">连接游戏引擎</div>
-      <div class="cd-pop-subtitle">连接后，AI 才能读取引擎中的场景、脚本和运行日志。</div>
+  <!-- embedded 时 Teleport 失效，内容就地渲染在设置面板里（不遮罩、不抢 z-index） -->
+  <Teleport to="body" :disabled="embedded">
+    <div v-if="open && !embedded" class="cd-pop-mask wb-modal-backdrop" @click="open = false" />
+    <div
+      v-if="open"
+      class="cd-pop"
+      :class="embedded ? 'cd-inline' : 'wb-modal-shell'"
+      :role="embedded ? 'region' : 'dialog'"
+      :aria-modal="embedded ? undefined : 'true'"
+      aria-label="连接游戏引擎"
+      @click.stop
+    >
+      <div class="cd-pop-title" v-if="!embedded">连接游戏引擎</div>
+      <!-- 内嵌时标题与副标题都由设置页的分区头提供，这里不再重复一遍 -->
+      <div class="cd-pop-subtitle" v-if="!embedded">连接后，AI 才能读取引擎中的场景、脚本和运行日志。</div>
       <div v-if="addon && addon.is_godot_project" class="cd-addon">
         <div class="cd-addon-row">
           <span class="cd-dot" :class="addon.installed ? 'cd-dot-ok' : 'cd-dot-off'" />
@@ -266,10 +282,13 @@ function connectorGuide(s: McpServer) {
   z-index: 60;
   animation: cd-pop-in .2s cubic-bezier(.2,.8,.2,1) both;
 }
-.cd-pop-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.cd-pop-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); margin-bottom: 8px; }
+/* 内嵌档（设置页「运行与引擎」分区）：去掉浮层定位、阴影、入场动画与边框。
+   同理，模板里内嵌时不挂 .wb-modal-shell（它用 !important 定背景/边框/阴影）。 */
+.cd-inline { position: static; left: auto; bottom: auto; width: auto; max-width: none; max-height: none; overflow: visible; padding: 0; background: none; border: 0; border-radius: 0; box-shadow: none; z-index: auto; animation: none; }
 .cd-spacer { flex: 1; }
 .cd-mini {
-  height: 21px; padding: 0 9px; font-size: 11px;
+  height: 21px; padding: 0 9px; font-size: var(--fs-cap);
   border: 1px solid var(--border-strong); border-radius: 5px;
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
@@ -285,22 +304,22 @@ function connectorGuide(s: McpServer) {
   outline-offset: 2px;
 }
 
-.cd-pop-subtitle { font-size: 11px; color: var(--text-dim); line-height: 1.5; margin-bottom: 8px; }
+.cd-pop-subtitle { font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.5; margin-bottom: 8px; }
 
 .cd-addon {
   border: 1px solid var(--border); border-radius: 7px;
   padding: 8px 10px; margin-bottom: 10px; background: var(--bg-hover);
 }
 
-.cd-addon-row, .cd-server-row { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); }
+.cd-addon-row, .cd-server-row { display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--text); }
 
-.cd-addon-ver { color: var(--text-muted); font-size: 11px; }
+.cd-addon-ver { color: var(--text-muted); font-size: var(--fs-cap); }
 
-.cd-preflight { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 11px; color: var(--text-faint); flex-wrap: wrap; }
+.cd-preflight { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: var(--fs-cap); color: var(--text-faint); flex-wrap: wrap; }
 
-.cd-preflight-path { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.cd-preflight-path { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); }
 
-.cd-tag { font-size: 10px; padding: 1px 6px; border-radius: 8px; }
+.cd-tag { font-size: var(--fs-cap); padding: 1px 6px; border-radius: 8px; }
 
 .cd-tag-ok { color: var(--green); background: rgba(69,201,140,.12); }
 
@@ -310,7 +329,7 @@ function connectorGuide(s: McpServer) {
 
 .cd-err-text { color: var(--danger); }
 
-.cd-warn-text { font-size: 11px; color: var(--amber); margin-top: 5px; }
+.cd-warn-text { font-size: var(--fs-cap); color: var(--amber); margin-top: 5px; }
 
 .cd-mini-stop { border-color: var(--border-strong); }
 
@@ -328,13 +347,13 @@ function connectorGuide(s: McpServer) {
 .cd-input-sm {
   flex: 1; min-width: 0; height: 24px; padding: 0 7px;
   background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 5px;
-  font-size: 11px; font-family: inherit; outline: none;
+  border: 1px solid var(--border-graphic); border-radius: 5px;
+  font-size: var(--fs-cap); font-family: inherit; outline: none;
 }
 
 .cd-input-sm:focus { border-color: var(--accent); }
 
-.cd-add-chk { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.cd-add-chk { font-size: var(--fs-cap); color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 
 .cd-add-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
@@ -342,15 +361,15 @@ function connectorGuide(s: McpServer) {
 .cd-server { padding: 8px 5px; border-top: 1px dashed var(--border); border-radius: 6px; transition: background .16s ease; }
 .cd-server:hover { background: var(--bg-hover); }
 
-.cd-server-name { font-size: 12px; }
+.cd-server-name { font-size: var(--fs-sm); }
 
-.cd-server-meta { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); }
+.cd-server-meta { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); }
 
-.cd-server-result { margin-top: 4px; font-size: 11px; word-break: break-all; }
+.cd-server-result { margin-top: 4px; font-size: var(--fs-cap); word-break: break-all; }
 
-.cd-server-help { margin-top: 3px; font-size: 10px; color: var(--text-faint); }
+.cd-server-help { margin-top: 3px; font-size: var(--fs-cap); color: var(--text-faint); }
 
-.cd-server-guide { margin: 4px 0 0 20px; font-size: 10px; color: var(--text-dim); line-height: 1.45; }
+.cd-server-guide { margin: 4px 0 0 20px; font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.45; }
 
 .cd-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
 
