@@ -52,6 +52,7 @@ DOMAINS: Mapping[str, tuple[str, str]] = {
     "web": ("外网检索", "搜索、抓取页面、字幕、翻译、天气"),
     "knowledge": ("知识与记忆", "检索已上传资料、保存与检索记忆、召回经验"),
     "game": ("游戏开发", "引擎截图、数值模拟、配置校验、发布前检查"),
+    "eda": ("芯片与 EDA 验证", "真跑 Vivado/KLayout/仿真、解析报告为结构化事实、给三态验收结论"),
     "net": ("网络诊断", "发 HTTP 请求观察真实响应"),
     "catalog": ("工具目录", "按大类查工具清单与用法；不确定某个工具怎么调时先查它"),
 }
@@ -123,8 +124,16 @@ _reg("jobs", "执行", "run_command", "python_exec")
 _reg("jobs", "后台任务", "dev_job_logs", "dev_job_cancel")
 
 _reg("web", "检索与抓取", "web_search", "web_search_batch", "web_fetch",
-     "web_research", "web_subtitles", "eda_report_gate")
+     "web_research", "web_subtitles")
 _reg("web", "其他", "web_transport", "web_weather")
+
+# EDA 自成一类：这两个工具都是"拿 EDA 报告说话"的，只是一个解析已有正文、
+# 一个真跑工具。原先报告门挂在"外网检索"下（因为它会抓 url），模型要在
+# 几十个工具里翻才想得到它 —— 归到自己的域才找得到。
+# ⚠️ 与联网开关无关：开关判的是 ToolSpec.group（eda_report_gate 仍是 "web"），
+# 这里改的是给模型看的分类维度。
+_reg("eda", "报告门", "eda_report_gate")
+_reg("eda", "真跑工具", "eda_run_script")
 
 _reg("knowledge", "资料检索", "search_knowledge")
 _reg("knowledge", "记忆与经验", "memory_save", "memory_search", "memory_forget",

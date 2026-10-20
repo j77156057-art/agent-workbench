@@ -139,7 +139,10 @@ _NETWORK_TOOLS = {
     "dev_mcp_probe", "dev_mcp_discover",
     "dev_mcp_search",
 }
-_EXEC_TOOLS = {"python_exec", "run_command", "game_playtest", "self_verify", "dev_preview_adapter_test"}
+_EXEC_TOOLS = {"python_exec", "run_command", "game_playtest", "self_verify", "dev_preview_adapter_test",
+               # 真跑 EDA 工具（Vivado/KLayout/仿真）：执行面由 eda_tcl 的固定 argv 模板限定，
+               # 不是任意 shell；脚本内容另有 TCL 护栏（见 eda_tcl.guard_tcl_script）。
+               "eda_run_script"}
 _ADMIN_TOOLS = {
     "dev_approve", "dev_commit", "dev_commit_all", "dev_rollback_changeset",
     "dev_apply_regions", "dev_add_region", "init_regions", "dev_install_tool",

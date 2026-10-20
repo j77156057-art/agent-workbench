@@ -114,9 +114,50 @@ z:1100 高于所有 body 级面板，且**同时修好了设置弹窗里确认�
 
 | 缺口 | 性质 |
 | --- | --- |
+| ~~`run_tcl` 只接了 HTTP，**没接 agent 工具**~~ | **已补**（见 §5.1） |
 | `eda_verify_pipeline.py` 的七段编排仍只作 CLI/活文档，未被任何路由或工具调用 | 后端内部编排，无出口 |
-| `run_tcl` 只接了 HTTP，**没接 agent 工具** —— 模型目前不能自己跑 Vivado | 缺 agent 工具（要进 `tools.py` 注册表并过护栏） |
 | Quartus / Innovus 尚无报告解析器 | 缺解析器（skill 里已明说这两家是"指导级"，结构化事实必然 uncertain） |
+
+### 5.1 补：`eda_run_script` —— 模型自己也能跑 Vivado/KLayout
+
+上一轮留下的缺口：「模型还不能自己跑 Vivado」。本轮补上。
+
+**为什么之前不行**：后端 `agent_runtime/eda_tcl.run_and_parse` 早就能跑，但既没有 HTTP 端点
+（上一轮补了）也没有 agent 工具 —— 模型只能解析**已有的**报告文本，拿不到
+「帮我跑一遍时序报告 / 跑个 DRC」这种必须真跑工具才有事实的能力。
+
+**实现**（`tools.py` + `agent_runtime/eda_tcl.py`）：
+
+| 位置 | 做什么 |
+| --- | --- |
+| `agent_runtime/eda_tcl.py` | 新增 `guard_tcl_script()`：**TCL 脚本护栏**，放在**执行器出口**（`run_tcl` 里、真正跑之前）—— HTTP 端点与 agent 工具走同一条执行路径，一处实现两处生效，不会出现"某个入口忘了拦" |
+| `tools.py` | 新增 `eda_run_script()`：JSON 优先、keyed 兜底的入参解析（脚本是多行，JSON 表达最稳；模型随手写的 `tool: vivado` 形态也得能吃）+ 紧凑观察输出（判定 + 依据 + provenance，**不倾倒原始 stdout**） |
+| `agent_runtime/tools.py` | 进 `_EXEC_TOOLS` → 能力自动判为 `EXEC`（只读角色拿不到它；`tool_mutates` 判它"会改东西"） |
+| `agent_runtime/tool_domains.py` | 新增 `eda` 域（"芯片与 EDA 验证"），两个 EDA 工具都归进去 —— 报告门原先挂在"外网检索"下（因为它会抓 url），模型要在几十个工具里翻才想得到它 |
+
+**护栏划的线**（口径对齐 `tools.run_command` 的结构化黑名单，只是换成 TCL 词表；
+**启发式防护，非 OS 级沙箱**）：
+
+| 拦 | 为什么 |
+| --- | --- |
+| `exec` / `system` / `popen` / 行首 `!` | 拉子进程 = 绕过一切护栏 |
+| `file delete` / `file rename` / `file copy -force` | 破坏性文件操作 |
+| `source`（引入外部脚本） | 执行面不可见 |
+| `cd`（切工作目录） | 可能跑到项目外 |
+| 绝对路径越出项目根 | 读写项目外文件 |
+| 凭据类路径（`.env` / `id_rsa` / `.ssh` / `credentials` / `apikey`…） | EDA 流程永远不需要读这些 |
+
+注释里的路径不据此拦（否则一句说明就能把脚本卡死）；引号内外都认绝对路径
+（`open D:/x.txt` 不带引号也很常见，只认引号会漏）。
+
+**fail-closed 仍然是第一原则**：工具没装 → `tool_unavailable`；`(tool,kind)` 无解析器 →
+`unsupported_parser`；脚本被拦 → `script_blocked:<原因>` 且**不执行**；
+判定量不齐 → `null`（未核实），不得当作通过。
+
+**测试**：`tests/test_tools_eda_run_script.py` 14 项（注册完整性 / EXEC 分类 / domain 声明 /
+六类危险操作 / 越界路径 / 凭据路径 / 被拦脚本不执行 / 工具缺失 fail-closed /
+无解析器 fail-closed / 缺脚本 / 缺代码库 / 正常路径解析出结构化事实 / 输出不含原始 stdout）；
+既有 EDA 测试 57 项仍全绿（护栏没打破任何现有行为）。
 
 ## 6. 相关文件
 
@@ -124,7 +165,12 @@ z:1100 高于所有 body 级面板，且**同时修好了设置弹窗里确认�
 | --- | --- |
 | `api_routes/eda.py` | 改：新增 `EdaRunReq` + `POST /api/eda/run`（confirm 门 + 工具白名单 + 上限） |
 | `.trae/skills/eda-adapters/SKILL.md` | **新**：按工具分段的适配说明（后端缺的那块素材） |
+| `agent_runtime/eda_tcl.py` | 改：新增 `guard_tcl_script()` TCL 护栏，放在执行器出口（HTTP 与 agent 工具共用） |
+| `agent_runtime/tools.py` | 改：`eda_run_script` 进 `_EXEC_TOOLS` → 能力自动判 EXEC |
+| `agent_runtime/tool_domains.py` | 改：新增 `eda` 域，两个 EDA 工具归入其中 |
+| `tools.py` | 改：新增 `eda_run_script()`（JSON 优先的入参解析 + 紧凑观察输出）+ TOOLS 注册项 |
 | `frontend/src/workbench/api/eda.ts` | 改：新增 `run()` 客户端；`EdaFact` 补 `reason` |
 | `frontend/src/workbench/components/EdaVerifyPanel.vue` | 改：三个参数 + skill 展示 + 真跑脚本（含确认） |
 | `frontend/src/workbench/components/AppDialog.vue` | 改：teleport 到 body（修"确认框被面板盖住"这类问题） |
 | `tests/test_api_eda_routes.py` | 改：新增 7 项（confirm 门 / 白名单 / fail-closed / skill 分段） |
+| `tests/test_tools_eda_run_script.py` | **新**：agent 工具的注册/护栏/fail-closed 守卫（14 项） |

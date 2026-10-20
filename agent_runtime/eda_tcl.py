@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -385,6 +386,77 @@ _TOOL_COMMAND = {
     "verdi": ["vcs"],  # 仿真由 vcs/verdi 驱动，脚本经 -f 或命令行传入
 }
 
+# ---------------------------------------------------------------------------
+# TCL 脚本护栏
+#
+# EDA 工具（Vivado / KLayout / vcs）以**当前用户权限**执行脚本：脚本能读写文件、
+# 能拉子进程。所以"模型写的脚本能干什么"必须由**我们自己**划线，不能指望模型自觉。
+#
+# 划线口径对齐 `tools.run_command` 的结构化黑名单（破坏性文件操作 / 网络外联 /
+# 子 shell / 系统操控），只是换成 TCL 的词表。**启发式防护，非 OS 级沙箱**。
+#
+# 护栏放在**执行器里**（`run_tcl` 出口）而不是各个调用方：HTTP 端点与 agent 工具
+# 走的是同一条执行路径，一处实现、两处生效，不会出现"某个入口忘了拦"。
+# ---------------------------------------------------------------------------
+
+#: (正则, 人类可读原因)。命中即拒，不给"绕过"选项。
+_TCL_DANGEROUS = (
+    (r"\bexec\s+", "exec（拉起子进程）"),
+    (r"\bsystem\s*\(", "system（拉起子进程）"),
+    (r"\bpopen\s+", "popen（拉起子进程）"),
+    (r"(?m)^\s*!", "TCL 的 !（shell 逃逸）"),
+    (r"\bfile\s+delete\b", "file delete（删除文件）"),
+    (r"\bfile\s+rename\b", "file rename（移动/覆盖文件）"),
+    (r"\bfile\s+copy\b[^;\n]*-force", "file copy -force（覆盖既有文件）"),
+    (r"\bsource\s+", "source（引入外部脚本）"),
+    (r"\bcd\s+", "cd（切换工作目录，可能跑到项目外）"),
+    (r"\bset\s+[^\n]*\$(?:env|HOME)\b", "$env/HOME（读环境变量或家目录）"),
+)
+
+#: 凭据类路径片段：EDA 流程永远不需要读这些，撞上就是越界。
+_TCL_CRED_HINTS = (
+    ".env", "id_rsa", "id_ed25519", ".ssh", ".aws", ".netrc",
+    ".git-credentials", "credentials", "secrets", "apikey", "api_key",
+)
+
+#: 脚本里出现的绝对路径：引号内，或裸 token（`open D:/x.txt` 不带引号也很常见，
+#: 只认引号会漏）。`//` 开头的是注释里的分隔符，不算路径。
+_TCL_ABS_PATH = re.compile(
+    r"[\"']([A-Za-z]:[\\/][^\"']*|/(?!/)[^\"']*)[\"']"
+    r"|(?<![\w/])([A-Za-z]:[\\/][^\s\"';,)]*|/(?!/)[^\s\"';,)]*)"
+)
+
+
+def guard_tcl_script(script: str, root: str = "") -> tuple[bool, str]:
+    """TCL 脚本护栏。返回 (是否放行, 原因)；不放行时原因可直接回给用户/模型。
+
+    `root` 给项目根时，脚本里出现的**绝对路径**必须落在项目内（相对路径天然在
+    cwd=项目根 内）。`root` 为空（离线单测）时只查操作级黑名单，不查路径。
+    """
+    text = script or ""
+    if not text.strip():
+        return False, "脚本为空"
+    low = text.lower()
+    for pattern, reason in _TCL_DANGEROUS:
+        if re.search(pattern, low if pattern.islower() else text, re.I | re.M):
+            return False, reason
+    for hint in _TCL_CRED_HINTS:
+        if hint in low:
+            return False, f"触碰凭据类路径（{hint}）"
+    if root:
+        base = os.path.normcase(os.path.abspath(root))
+        # 注释里的路径不执行，不据此拦（否则一句说明就能把脚本卡死）。
+        code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+        for hit in _TCL_ABS_PATH.findall(code):
+            raw = hit[0] or hit[1]
+            if not raw:
+                continue
+            path = os.path.normcase(os.path.abspath(os.path.expanduser(raw)))
+            if not (path == base or path.startswith(base + os.sep)):
+                return False, f"绝对路径越界（{raw} 不在项目根内）"
+    return True, ""
+
+
 
 @dataclass
 class ExecResult:
@@ -442,7 +514,15 @@ def default_tcl_runner(tool: str, script: str, *, cwd: Optional[str] = None,
 
 def run_tcl(script: str, tool: str = "vivado", *, runner: Optional[Callable[..., ExecResult]] = None,
             cwd: Optional[str] = None, timeout: Optional[float] = 600) -> ExecResult:
-    """执行 EDA 脚本。`runner` 可注入（默认 `default_tcl_runner`），便于离线自检与换后端。"""
+    """执行 EDA 脚本。`runner` 可注入（默认 `default_tcl_runner`），便于离线自检与换后端。
+
+    护栏在这里（**执行器的出口**，不是各调用方）：脚本里的删文件 / 拉子进程 /
+    越界绝对路径 / 凭据路径一律拒掉，返回 `script_blocked:<原因>`。
+    HTTP 端点与 agent 工具共用这一条路径，一处实现两处生效。
+    """
+    allowed, why = guard_tcl_script(script, cwd or "")
+    if not allowed:
+        return ExecResult(ok=False, rc=None, stdout="", stderr="", error=f"script_blocked:{why}")
     runner = runner or default_tcl_runner
     return runner(tool, script, cwd=cwd, timeout=timeout)
 

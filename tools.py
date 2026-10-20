@@ -3365,6 +3365,91 @@ def eda_report_gate(arg):
     return json.dumps(_eda_report_gate_summary(result), ensure_ascii=False)
 
 
+def _eda_run_script_summary(fact) -> dict:
+    """把 EdaFact 压成给模型看的紧凑观察：只留判定与依据，不塞原始 stdout。"""
+    out = {
+        "ok": bool(fact.ok),
+        "tool": fact.tool,
+        "kind": fact.kind,
+        "metrics": dict(fact.metrics or {}),
+        "missing": list(fact.missing or []),
+        "error": fact.error,
+    }
+    prov = list(fact.provenance or [])
+    if prov:
+        out["provenance"] = [{"field": p.get("field"), "excerpt": (p.get("excerpt") or "")[:200]} for p in prov[:8]]
+        if len(prov) > 8:
+            out["provenance_total"] = len(prov)
+    if fact.ok:
+        out["message"] = ("已真跑 %s 并解析出结构化事实；数值均带 provenance，可回溯报告原行。"
+                          "判定量不齐时为 None（未核实），不得当作通过。" % (fact.tool,))
+    else:
+        out["message"] = ("没拿到可用事实（%s）。工具不可用或报告不是本类时如实失败，"
+                          "绝不返回空结果冒充通过；可改用 eda_report_gate 解析已有报告文本。"
+                          % (fact.error or "unknown"))
+    return out
+
+
+def _parse_eda_run_script_request(arg):
+    """入参规整：JSON 优先，失败再走 keyed 解析（与 eda_report_gate 同套路）。
+
+    为什么 JSON 优先：脚本正文是**多行**的（Vivado TCL），JSON 表达最稳；
+    keyed 形态（`tool: vivado` / `kind: timing` / `script: ...`）留给模型随手写。
+    两条路都要能吃，否则模型首拍就哑火。
+    """
+    if isinstance(arg, dict):
+        return arg
+    text = str(arg or "").strip()
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            return value
+    except (TypeError, ValueError):
+        pass
+    return _parse_keyed(text, ["tool", "kind", "script", "timeout"])
+
+
+def eda_run_script(arg):
+    """真跑 EDA 工具脚本（Vivado / KLayout / 仿真）→ 解析成结构化事实。
+
+    这是「连接 EDA 工具」的 agent 出口：后端本来就能跑（agent_runtime.eda_tcl.run_and_parse），
+    但此前既没有 HTTP 端点也没有 agent 工具 —— 模型只能解析**已有的**报告文本，
+    拿不到「帮我跑一遍时序报告 / 跑个 DRC」这种必须真跑工具才有事实的能力。
+
+    边界与 HTTP 端点同一套（都收敛到 eda_tcl.run_tcl 这一条执行路径）：
+    - 只认 vivado / klayout / verdi 三个登记在册的二进制 —— 执行面由固定 argv 模板
+      限定，**不是任意 shell**；
+    - 脚本里的删文件 / 拉子进程 / 越界绝对路径 / 凭据路径由 eda_tcl 的护栏拒掉
+      （script_blocked:<原因>），不执行；
+    - 工具没装 → tool_unavailable，**绝不**返回空 stdout 冒充「报告显示通过」；
+    - 解析不出的 (tool,kind) 组合 → unsupported_parser，fail-closed。
+    """
+    f = _parse_eda_run_script_request(arg)
+    tool = str(f.get("tool") or "vivado").strip().lower()
+    kind = str(f.get("kind") or "timing").strip().lower()
+    script = str(f.get("script") or "")
+    root = _get_code_root()
+    if not root:
+        return "尚未配置代码库根目录，请先用 /api/ingest_code 指定代码目录。"
+    if not script.strip():
+        return json.dumps({"ok": False, "needs": ["script"],
+                           "message": "必须给出 script（要交给 EDA 工具执行的脚本正文）。"},
+                          ensure_ascii=False)
+    if len(script) > 200_000:
+        return json.dumps({"ok": False, "error": "script_too_long",
+                           "message": "脚本超过 200KB 上限，请精简后再试。"}, ensure_ascii=False)
+    try:
+        timeout = int(f.get("timeout") or 300)
+    except (TypeError, ValueError):
+        timeout = 300
+    timeout = max(10, min(timeout, 900))
+    from agent_runtime import eda_tcl
+    fact = eda_tcl.run_and_parse(tool, kind, script, cwd=root, timeout=timeout)
+    return json.dumps(_eda_run_script_summary(fact), ensure_ascii=False)
+
+
 def _detect_source_conflicts(chunks):
     """标记不同来源对带单位数字的明显分歧，不替用户裁决事实。"""
     values = {}
@@ -10841,6 +10926,20 @@ TOOLS = {
                 "critical": {"type": "array", "items": {"type": "string"}, "description": "纳入门禁的判定量键（默认 timing_met/drc_clean/lvs_clean）"},
             },
             "required": ["tool", "kind"],
+        },
+    },
+    "eda_run_script": {
+        "description": "真跑 EDA 工具脚本（Vivado / KLayout / 仿真）并把输出解析成结构化事实。输入 JSON：{tool:vivado|klayout|verdi, kind:timing|utilization|drc|simulation, script:\"<脚本正文>\", timeout?:秒}。用于「帮我跑一下时序报告 / 跑个 DRC / 跑仿真」这类**必须真跑工具才有事实**的任务；已经有报告正文时用 eda_report_gate 解析即可，不必重跑。工作目录锁在当前代码库根。护栏：脚本里的删文件、拉子进程、越界绝对路径、凭据路径一律拒（返回 script_blocked，不执行）；只认 vivado/klayout/verdi 三个登记在册的二进制，不是任意 shell。工具没装返回 tool_unavailable——**绝不**返回空输出冒充「报告显示通过」；(tool,kind) 组合无解析器时返回 unsupported_parser，fail-closed。判定量不齐时为 null（未核实），不得当作通过。",
+        "func": eda_run_script,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "description": "vivado | klayout | verdi"},
+                "kind": {"type": "string", "description": "timing | utilization | drc | simulation"},
+                "script": {"type": "string", "description": "交给 EDA 工具执行的脚本正文（Vivado 为 TCL）"},
+                "timeout": {"type": "integer", "description": "超时秒数（10–900，默认 300）"},
+            },
+            "required": ["tool", "kind", "script"],
         },
     },
     "web_subtitles": {"description": "读取公开 B 站视频字幕。输入包含 BV 号或 av 号的完整视频 URL；没有公开字幕、需要登录或被风控时返回明确原因。", "func": web_subtitles},
