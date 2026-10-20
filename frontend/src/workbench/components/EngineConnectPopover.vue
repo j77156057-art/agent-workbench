@@ -1,16 +1,17 @@
 <script setup lang="ts">
 // 游戏引擎连接弹层（MCP 服务器：godot-ai stdio / unity / unreal HTTP + godot-ai 插件引导）。
-// 自包含：监听事件总线的 docmind:open-engine 事件开关，Teleport 到 body，
-// 折叠态/外部容器裁剪均不影响显示。父组件只负责派发事件，不持有任何状态。
-//
 // 2026-10-19（P1）：入口原在顶栏「更多」菜单，属配置类能力，已统一收进设置页的
 // 「运行与引擎」分区。`embedded` 模式把弹层就地渲染在设置面板里
 // （Teleport disabled + 去掉 fixed 定位与浮层阴影），不再遮罩、不再抢 z-index。
+//
+// 2026-10-20（P1 续）：原来靠事件总线的 `docmind:open-engine` 唤起 ——
+// 那个事件**有声明、有监听者，却无人派发**（顶栏入口撤走后就是死的）。
+// 现在弹层就内嵌在设置页里（常驻可见），事件通路没有必要，连同死事件一起删掉。
+// 引擎本身的选择（探测/可执行文件）改由同分区的 `EngineSetupPanel.vue` 负责。
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { askConfirm, askAlert } from '../composables/workbench'
 import { mcpApi } from '../api'
 import type { McpServer } from '../api'
-import { appEvents } from '../eventBus'
 
 const props = defineProps<{ embedded?: boolean }>()
 
@@ -50,13 +51,10 @@ watch(open, (v) => {
 function onDocKey(ev: KeyboardEvent) {
   if (ev.key === 'Escape' && open.value) open.value = false
 }
-let offOpenEngine = () => {}
 onMounted(() => {
-  offOpenEngine = appEvents.on('docmind:open-engine', () => { open.value = true })
   window.addEventListener('keydown', onDocKey)
 })
 onBeforeUnmount(() => {
-  offOpenEngine()
   window.removeEventListener('keydown', onDocKey)
 })
 

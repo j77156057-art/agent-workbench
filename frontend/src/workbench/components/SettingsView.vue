@@ -22,6 +22,7 @@ import Icon from './Icon.vue'
 // 设置页的「运行与引擎」分区。
 import AgentPolicyPanel from './AgentPolicyPanel.vue'
 import EngineConnectPopover from './EngineConnectPopover.vue'
+import EngineSetupPanel from './EngineSetupPanel.vue'
 import { appEvents } from '../eventBus'
 import { costLabel, money, type PricingState } from '../composables/costLabel'
 import { SKINS, loadSkin, setSkin, onSkinChange, type SkinKey } from '../skins'
@@ -1909,6 +1910,16 @@ async function powerAction(action: 'on' | 'off') {
               </div>
             </div>
             <AgentPolicyPanel v-if="tab === 'runtime'" embedded />
+          </section>
+
+          <section v-if="tab === 'runtime'" class="sv-panel sv-panel-runtime">
+            <div class="sv-section-head">
+              <div>
+                <h4 class="sv-h4">引擎与项目</h4>
+                <p class="sv-hint">探测项目用的引擎、选择引擎与可执行文件。此前引擎被写死成 Godot，Unity / Unreal 无法在此配置。</p>
+              </div>
+            </div>
+            <EngineSetupPanel v-if="tab === 'runtime'" />
           </section>
 
           <section v-if="tab === 'runtime'" class="sv-panel sv-panel-runtime">

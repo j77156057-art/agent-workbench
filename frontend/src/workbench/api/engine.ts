@@ -12,6 +12,21 @@ export const taskApi = {
   branch(payload: Record<string, unknown>) { return postJson<{ ok: boolean; branch?: string; error?: string }>('/api/tasks/branch', payload) },
 }
 
+export interface EngineCatalogEntry {
+  id: string
+  name: string
+  executable: string
+  download: string
+  project_file: string
+}
+
+export interface EngineConfig {
+  ok: boolean
+  engine: string
+  executable: string
+  error?: string
+}
+
 export const engineApi = {
   unrealBridgeStatus() { return request<{ok:boolean;available:boolean;error?:string}>('/api/engine/unreal-bridge/status') },
   unrealAssets() { return request<{ok:boolean;available:boolean;assets?:string[];error?:string}>('/api/engine/unreal-bridge/assets') },
@@ -19,8 +34,17 @@ export const engineApi = {
   unrealBlueprint(path: string) { return request<{ok:boolean;available:boolean;blueprint?:string;nodes?:unknown[];variables?:unknown[];links?:unknown[];error?:string}>(`/api/engine/unreal-bridge/blueprint/${encodeURIComponent(path)}`) },
   unrealActor(name: string) { return request<{ok:boolean;available:boolean;actor?:string;components?:unknown[];properties?:unknown[];error?:string}>(`/api/engine/unreal-bridge/actor/${encodeURIComponent(name)}`) },
   unrealWrite(body: {task_id:string;target_path:string;property:string;value:unknown;confirm:boolean}) { return postJson<{ok:boolean;available?:boolean;error?:string}>('/api/engine/unreal-bridge/write', body) },
-  catalog() { return request<{ ok:boolean; engines:{id:string;name:string;executable:string;download:string}[] }>('/api/engine/catalog') },
-  config(engine?: string, executable?: string) { return engine ? postJson<{ok:boolean;engine:string;executable:string}>('/api/engine/config',{engine,executable}) : request<{ok:boolean;engine:string;executable:string}>('/api/engine/config') },
+  catalog() { return request<{ ok:boolean; engines:EngineCatalogEntry[] }>('/api/engine/catalog') },
+  config(engine?: string, executable?: string) { return engine ? postJson<EngineConfig>('/api/engine/config',{engine,executable}) : request<EngineConfig>('/api/engine/config') },
+  /** 扫描项目里有没有引擎工程文件（project.godot / ProjectVersion.txt / *.uproject）。 */
+  scan() { return request<{ ok: boolean; projects: { engine: string; path: string }[] }>('/api/engine/scan') },
+  /** 探测可执行文件并写入项目配置；ready=false 时带下载链接。
+   *  用 rawJson 而不是 postJson：失败体的 `download`（引擎官方下载地址）就在
+   *  `ok:false` 那一支里，而 postJson 遇到 ok:false 会直接抛异常 —— 链接就丢了，
+   *  用户只看到"未找到引擎可执行文件"却不知道去哪装。 */
+  prepare(engine: string, executable = '') { return rawJson<{ ok: boolean; ready?: boolean; engine?: string; download?: string; error?: string; config?: EngineConfig; projects?: { engine: string; path: string }[] }>('/api/engine/prepare', { engine, executable }) },
+  /** 该引擎的适配 Skill 文本（给 AI 读的项目约定）。 */
+  skill(engine: string) { return request<{ ok: boolean; engine: string; skill: string }>(`/api/engine/skill?engine=${encodeURIComponent(engine)}`) },
   status() { return request<EngineStatus>('/api/engine/status') },
   start(executable = 'godot', embed = true, rect?: EmbedRect | null) {
     return postJson<EngineStatus>('/api/engine/start', rect ? { executable, embed, rect } : { executable, embed })

@@ -71,10 +71,10 @@ const dirtyCount = computed(() => tabs.value.filter((t) => t.dirty).length)
 // 实时对话视频流（保留项 ①）由 ChatDock scope="cockpit" 承担、窗口嵌入（保留项 ②）由 SceneRuntimePanel 承担。
 // 早期遗留的 cockpitReady / cockpitRuntime / cockpitRef 三个 ref 在 2026-10-14 末轮收口清理：
 // 它们的初值与赋值都已无来源（恒假/恒 null），属于舱删除后未清干净的 dead code。
-/** 统一设置页（用量费用 / 网络搜索 / MCP / 智能体）显隐 */
+/** 统一设置页（用量费用 / 网络搜索 / MCP / 智能体 / 运行与引擎）显隐 */
 const settingsVisible = ref(false)
-const settingsSection = ref<'usage' | 'search' | 'mcp' | 'agent' | 'model'>('usage')
-function openSettings(tab: 'usage' | 'search' | 'mcp' | 'agent' | 'model' = 'usage') {
+const settingsSection = ref<'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'runtime'>('usage')
+function openSettings(tab: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'runtime' = 'usage') {
   settingsSection.value = tab
   // 先同步挂载异步设置组件，再切换可见状态，避免首次点击时 watcher
   // 与异步 chunk 加载交错导致弹层没有进入 DOM。
@@ -83,7 +83,7 @@ function openSettings(tab: 'usage' | 'search' | 'mcp' | 'agent' | 'model' = 'usa
 }
 function onOpenSettings(ev: Event) {
   const tab = (ev as CustomEvent<{ tab?: string }>).detail?.tab
-  openSettings(tab === 'mcp' ? 'mcp' : tab === 'model' ? 'model' : 'usage')
+  openSettings(tab === 'mcp' ? 'mcp' : tab === 'model' ? 'model' : tab === 'runtime' ? 'runtime' : 'usage')
 }
 /**
  * 重型弹层首次打开才挂载（异步 chunk 届时才下载）；挂载后常驻、关闭不销毁，
@@ -567,6 +567,10 @@ onBeforeUnmount(() => {
             <button type="button" class="wb-menu-item" title="实时对话：摄像头画面与语音实时送入本地实时模型（WS 通道）" @click="lsRef?.show()">
               <span class="wb-menu-glyph" aria-hidden="true">◉</span>
               <span class="wb-menu-item-name">实时对话</span>
+            </button>
+            <button type="button" class="wb-menu-item" title="运行与引擎：探测项目引擎、选择引擎与可执行文件、连接引擎" @click="openSettings('runtime')">
+              <span class="wb-menu-glyph" aria-hidden="true">⚙</span>
+              <span class="wb-menu-item-name">运行与引擎</span>
             </button>
             <button type="button" class="wb-menu-item" title="AI 运行台：历史会话、操作记录、技能与断点（花费在设置里看）" @click="hpRef?.show()">
               <span class="wb-menu-glyph" aria-hidden="true">◷</span>

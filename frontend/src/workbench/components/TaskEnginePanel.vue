@@ -3,7 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { engineApi, taskApi, comfyApi, getProjectId, getActiveTask, setActiveTask } from '../api'
 import { usePolling } from '../composables/polling'
 import { useWorkbench } from '../composables/workbench'
+import { useEngineConfig } from '../composables/useEngineConfig'
 const { jumpToLine } = useWorkbench()
+// 引擎取自项目配置（设置页「引擎与项目」），不再写死 Godot。
+const engineCfg = useEngineConfig()
 const panelProject = getProjectId()
 let disposed = false
 const activeTask = getActiveTask(panelProject)
@@ -19,9 +22,9 @@ async function analyze() {
 async function saveTask() { busy.value = true; busyAction.value = 'save'; try { const r = await taskApi.create({ title: title.value, region: region.value, files: files.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean), allowed_paths: region.value ? [region.value] : [], status: 'open' }); taskId.value = String(r.task?.id || ''); if (taskId.value) { setActiveTask({ id: taskId.value, region: region.value, allowedPaths: region.value ? [region.value] : [] }, panelProject) } result.value = r.ok ? `任务已保存 ${taskId.value}` : (r.error || '保存失败'); await loadTasks() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
 async function createBranch() { busy.value = true; busyAction.value = 'branch'; try { const r=await taskApi.branch({id:taskId.value,title:title.value}); result.value=r.ok?`已切换分支 ${r.branch}`:(r.error||'创建分支失败') } catch(e){ result.value=(e as Error).message } finally { busy.value = false; busyAction.value = '' } }
 async function verifyTask() { busy.value = true; busyAction.value = 'verify'; try { const r = await taskApi.verify({ id: taskId.value, title: title.value, region: region.value, files: files.value.split(/[,\n]/).map(x => x.trim()).filter(Boolean), allowed_paths: region.value ? [region.value] : [] }); result.value = r.ok ? '任务验证通过' : '任务验证失败：请查看检查结果' } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
-async function toggleEngine() { busy.value = true; busyAction.value = 'engine'; try { const r = running.value ? await engineApi.stop() : await engineApi.start(); running.value = 'running' in r ? !!r.running : false; await refresh() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
-async function reloadEngine() { busy.value = true; busyAction.value = 'reload'; try { const r = await engineApi.reload(); result.value = r.ok ? 'Godot 已热重载' : (r.error || '热重载失败'); running.value = !!r.running; await refresh() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
-async function verifyEngine() { busy.value = true; busyAction.value = 'engine'; try { const r = await engineApi.verify(); result.value = r.ok ? 'Godot 校验通过' : (r.error || 'Godot 校验失败') } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
+async function toggleEngine() { busy.value = true; busyAction.value = 'engine'; try { await engineCfg.load(); const r = running.value ? await engineApi.stop() : await engineApi.start(engineCfg.engine.value); running.value = 'running' in r ? !!r.running : false; await refresh() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
+async function reloadEngine() { busy.value = true; busyAction.value = 'reload'; try { const r = await engineApi.reload(); result.value = r.ok ? `${engineCfg.engineName.value} 已热重载` : (r.error || '热重载失败'); running.value = !!r.running; await refresh() } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
+async function verifyEngine() { busy.value = true; busyAction.value = 'engine'; try { await engineCfg.load(); const r = await engineApi.verify(engineCfg.engine.value); result.value = r.ok ? `${engineCfg.engineName.value} 校验通过` : (r.error || `${engineCfg.engineName.value} 校验失败`) } catch (e) { result.value = (e as Error).message } finally { busy.value = false; busyAction.value = '' } }
 async function loadComfyHistory(page = comfyPage.value) { if (disposed || panelProject !== getProjectId()) return; try { const h=await comfyApi.jobs(page,20); comfyPage.value=page; comfyTotal.value=h.total||0; const ids=(h.items||[]).map(x=>String(x.prompt_id||'' )).filter(Boolean); comfyHistory.value=ids } catch (e) { comfyResult.value='历史加载失败：'+(e as Error).message } }
 onMounted(loadTasks); onMounted(async () => { try { comfyTemplates.value = (await comfyApi.templates()).templates } catch {}; await loadComfyHistory() })
 // 引擎状态/日志轮询：仅弹窗打开且页面可见时进行（旧实现无论弹窗开关恒定 3s 轮询）

@@ -22,8 +22,6 @@ export interface WfFocusMemberDetail {
 }
 
 export interface AppEventMap {
-  /** 顶栏引擎按钮 → EngineConnectPopover 打开引擎连接弹层 */
-  'docmind:open-engine': void
   /** WorkflowPreview 实时预览反馈 → ChatDock 代发一条带图消息 */
   'docmind:send-chat': PreviewFeedbackRequest
   /** 各入口（概览/分区图/预览/工具菜单）请求聚焦底部对话台 */

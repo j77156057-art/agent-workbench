@@ -7,11 +7,14 @@ import { blobDataUrl } from '../previewFeedback'
 import { capturePreviewFrame } from '../workflowPreviewCapture'
 import type { WebTemplates, WebExportResult, DesktopHost, EmbedRect, BugItem, RegionInfo } from '../api'
 import { useWorkbench } from '../composables/workbench'
+import { useEngineConfig } from '../composables/useEngineConfig'
 import { demoMode, demoBugs, demoChangesets, demoRegionCards, demoBugFixAnswer } from '../composables/demo'
 // 画布与时间线都引了重依赖（@vue-flow 约 243KB / gzip 79KB），
 // 用异步组件延迟到真正切到对应 tab 再加载，工作台首屏体积不受影响。
 const SceneCanvas = defineAsyncComponent(() => import('./SceneCanvas.vue'))
 const RuntimeTimeline = defineAsyncComponent(() => import('./RuntimeTimeline.vue'))
+// 启动哪个引擎取自项目配置（设置页「引擎与项目」），不再写死 Godot。
+const engineCfg = useEngineConfig()
 
 // 阶段 4：popup（默认，传统固定遮罩弹窗，行为逐字不变）/ docked（常驻主区，内联填充父容器）。
 // 同一个组件实例通过 prop 切换形态，绝不重建（否则丢 iframe / 引擎嵌入状态）。
@@ -304,7 +307,9 @@ async function nativeStart() {
   embedMsg.value = ''
   const rect = autoEmbed.value && desktopReady.value ? viewportRect() : null
   try {
-    const r = await engineApi.start('godot', !!rect, rect)
+    // 启动哪个引擎由项目配置决定（设置页「引擎与项目」），不再是写死的 Godot。
+    await engineCfg.load()
+    const r = await engineApi.start(engineCfg.engine.value, !!rect, rect)
     nativeRunning.value = !!r.running
     if (!r.running) { exportMsg.value = r.error || '启动失败'; return }
     if (rect && r.embedded) {
