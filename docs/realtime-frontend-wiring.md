@@ -124,7 +124,7 @@ WS 事件    hello.ok 1 · audio.transcript 99 · model.delta 42 · cancel.ok 4 
 | 现象 | 真因 |
 | --- | --- |
 | provider 报 `stream_broken`（"模型已下线"） | 是 **2×2 退化图像**喂给了云端模型 —— headless Chromium 的假摄像头不投递帧（`videoWidth` 停在 2）。用 Y4M 文件喂假摄像头即可拿到 640×480 真帧 |
-| 旁路"画面观察"始终 0 条 | 旁路走**项目的 LLM**，而该项目配的 `deepseek-flash` 调视觉时返回 **HTTP 402 Insufficient Balance**（账户余额）。原生模式下旁路失败按设计被静默丢弃（"旁路探针失败绝不能打扰主链路"），所以是 0 条而不是报错。**注意：deepseek-flash 本身是有原生视觉的**（`config.py:346-348` 在 `_NATIVE_VISION_HINTS` 里），我一度用"DeepSeek 无视觉"的通识误判过这一点 |
+| 旁路"画面观察"始终 0 条 | 旁路走**项目的 LLM**，而该项目配的 `deepseek-flash` 调视觉时返回 **HTTP 402 Insufficient Balance**（账户余额）。原生模式下旁路失败按设计被静默丢弃（"旁路探针失败绝不能打扰主链路"），所以是 0 条而不是报错。**充值后即恢复**（实测观察 6 条，且能跨帧对比"色块由左移到右"）。**注意：deepseek-flash 本身是有原生视觉的**（`config.py:346-348` 在 `_NATIVE_VISION_HINTS` 里），我一度用"DeepSeek 无视觉"的通识误判过这一点 |
 | 供应商报 `Error append image before append audio.` | 该会话要求**一轮里音频在前、图像在后**；静音期只推帧就会踩到。客户端改为：开麦时若最近 1.2s 没有音频上行，先补一块静音再推帧 |
 
 ## 6. 续做（同日晚些时候）：圈选聚焦 + 通道指标 + 一个实测结论
