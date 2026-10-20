@@ -356,12 +356,38 @@ export function isDismissedVisualAlert(
   return pruneDismissedVisualAlerts(dismissed, now, windowMs).some(item => sameVisualFocus(text, item.text))
 }
 
+/**
+ * 用户语音转写的**增量**（final=false）。
+ *
+ * 服务端的增量是**累计文本**（"And" → "And so" → "And so, my" → …），不是片段，
+ * 所以这里必须**整条替换**草稿。若按片段追加，字幕会碎成一屏
+ * 「你And」「你And so」「你And so my」—— 实测踩过。
+ */
+export function appendUserTranscriptDraft(
+  captions: LiveCaptionTurn[],
+  text: string,
+  limit = 8,
+): LiveCaptionTurn[] {
+  const trimmed = String(text || '').trim()
+  if (!trimmed) return captions
+  const last = captions[captions.length - 1]
+  const draft = last && last.role === 'user' && !last.done ? last : null
+  if (draft) return [...captions.slice(0, -1), { ...draft, text: trimmed }].slice(-limit)
+  const spoken: LiveCaptionTurn = { role: 'user', text: trimmed, done: false }
+  return [...captions, spoken].slice(-limit)
+}
+
 export function appendCaptionTurn(
   captions: LiveCaptionTurn[],
   wire: { type: string; text?: unknown; final?: unknown },
   limit = 8,
 ): LiveCaptionTurn[] {
-  const text = typeof wire.text === 'string' ? wire.text.trim() : ''
+  // 助手侧的增量是**片段**（"That" + " sounds" + " like the"），
+  // 片段之间的前导空格是语义的一部分 —— 不能逐条 trim，
+  // 否则拼出来是 "Iamlistening." 这种没有空格的结果。
+  // 用户侧的转写增量是**累计文本**（整条替换），那里才用 trim 后的值。
+  const rawText = typeof wire.text === 'string' ? wire.text : ''
+  const text = rawText.trim()
   if (wire.type === 'audio.transcript') {
     if (!text) return captions
     const spoken: LiveCaptionTurn = { role: 'user', text, done: true }
@@ -373,12 +399,16 @@ export function appendCaptionTurn(
   if (wire.final === true) {
     const finalText = text || (streaming ? streaming.text : '')
     if (!finalText) return captions
-    const closed: LiveCaptionTurn = { role: 'assistant', text: finalText, done: true }
+    // 供应商的 final（response.audio_transcript.done）给的是**这一句**的完整文本，
+    // 而草稿里累积的是本轮增量片段之和。两者长度不一致时取更长的一份：
+    // 短句 final 不得把整轮回复吃掉（实测：一句 "I" 会把前面一整段覆盖掉）。
+    const closedText = streaming && streaming.text.length > finalText.length ? streaming.text : finalText
+    const closed: LiveCaptionTurn = { role: 'assistant', text: closedText, done: true }
     return (streaming ? [...captions.slice(0, -1), closed] : [...captions, closed]).slice(-limit)
   }
   if (!text) return captions
   const open: LiveCaptionTurn = streaming
-    ? { role: 'assistant', text: streaming.text + text, done: false }
+    ? { role: 'assistant', text: streaming.text + rawText, done: false }
     : { role: 'assistant', text, done: false }
   return [...(streaming ? captions.slice(0, -1) : captions), open].slice(-limit)
 }

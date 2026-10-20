@@ -19,6 +19,7 @@ import ChatDock from './components/ChatDock.vue'
 import ExecApprovalDialog from './components/ExecApprovalDialog.vue'
 import GpuPanel from './components/GpuPanel.vue'
 import EdaVerifyPanel from './components/EdaVerifyPanel.vue'
+import LiveStreamPanel from './components/LiveStreamPanel.vue'
 import HarnessPanel from './components/HarnessPanel.vue'
 import SemanticLocateBar from './components/SemanticLocateBar.vue'
 import WorkspaceTabs from './components/WorkspaceTabs.vue'
@@ -127,6 +128,7 @@ function closeTopMenus() {
 const teRef = ref<InstanceType<typeof TaskEnginePanel> | null>(null)
 const gpRef = ref<InstanceType<typeof GpuPanel> | null>(null)
 const evRef = ref<InstanceType<typeof EdaVerifyPanel> | null>(null)
+const lsRef = ref<InstanceType<typeof LiveStreamPanel> | null>(null)
 // EDA 面板嵌入态：false=弹窗（默认），true=停靠主区常驻（复用 SceneRuntimePanel 的 dock 惯用法）。
 const edaResident = ref(false)
 const hpRef = ref<InstanceType<typeof HarnessPanel> | null>(null)
@@ -562,6 +564,10 @@ onBeforeUnmount(() => {
               <span class="wb-menu-glyph" aria-hidden="true">✓</span>
               <span class="wb-menu-item-name">EDA 多模态验收</span>
             </button>
+            <button type="button" class="wb-menu-item" title="实时对话：摄像头画面与语音实时送入本地实时模型（WS 通道）" @click="lsRef?.show()">
+              <span class="wb-menu-glyph" aria-hidden="true">◉</span>
+              <span class="wb-menu-item-name">实时对话</span>
+            </button>
             <button type="button" class="wb-menu-item" title="AI 运行台：历史会话、操作记录、技能与断点（花费在设置里看）" @click="hpRef?.show()">
               <span class="wb-menu-glyph" aria-hidden="true">◷</span>
               <span class="wb-menu-item-name">AI 运行台</span>
@@ -754,6 +760,7 @@ onBeforeUnmount(() => {
       <EdaVerifyPanel ref="evRef" :mode="edaResident ? 'docked' : 'popup'" host="#wb-eda-slot"
         @dock="edaResident = true" @undock="edaResident = false" />
       <HarnessPanel ref="hpRef" />
+      <LiveStreamPanel ref="lsRef" />
     </div>
 
     <ContextMenu />

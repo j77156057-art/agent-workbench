@@ -56,9 +56,13 @@ const voiceActive = ref(false)
 const hasWebSpeech = typeof window !== 'undefined'
   && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
 const voiceSttConfigured = ref(false)
-const voiceSupported = computed(() => props.scope === 'cockpit' && (hasWebSpeech || voiceSttConfigured.value))
+// 2026-10-20：原来这里要求 scope==='cockpit'（自主开发舱），但那个 scope 已在 v2 重构里
+// 随 AutonomousCockpit.vue 一起删掉了 —— 于是这个门控让**任何**挂载的对话台都拿不到
+// 语音按钮，语音整段成了死代码（后端 /api/voice/* 一直好好的）。
+// 语音能力（浏览器 Web Speech / 后端 STT+TTS）与 scope 无关，门控改成按能力本身判断。
+const voiceSupported = computed(() => hasWebSpeech || voiceSttConfigured.value)
 const voiceHint = computed(() => {
-  if (props.scope !== 'cockpit' || voiceSupported.value) return ''
+  if (voiceSupported.value) return ''
   const missing: string[] = []
   if (!hasWebSpeech) missing.push('本机浏览器没有 Web Speech（缺 SpeechRecognition）')
   if (!voiceSttConfigured.value) missing.push('后端也没配置语音转写（STT）')
@@ -113,7 +117,7 @@ async function companionVoice(text: string) {
   } finally { voiceCompanionBusy.value = false }
 }
 function toggleVoice() {
-  if (props.scope !== 'cockpit' || !voiceSupported.value) return
+  if (!voiceSupported.value) return
   if (voiceRecognition) { voiceRecognition.stop(); voiceRecognition = null; voiceActive.value = false; return }
   const Recognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
   if (!Recognition && typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
@@ -156,7 +160,7 @@ function toggleVoice() {
 }
 function speakDelta(turn: ChatMsg) {
   voiceMainResult.value = turn.text.slice(-6000)
-  if (props.scope !== 'cockpit' || !voiceActive.value) return
+  if (!voiceActive.value) return
   const previous = spokenChars.get(turn.id) || 0
   const text = turn.text.slice(previous)
   const boundary = Math.max(text.lastIndexOf('。'), text.lastIndexOf('！'), text.lastIndexOf('？'), text.lastIndexOf('.'), text.lastIndexOf('!'), text.lastIndexOf('?'))
@@ -1206,12 +1210,12 @@ let offContextChanged = () => {}
 let offOpenModelSettings = () => {}
 let offLiveVisionFrame = () => {}
 onMounted(() => {
-  if (props.scope === 'cockpit') {
-    void voiceApi.status().then(status => {
-      voiceTtsConfigured.value = !!status.tts_configured
-      voiceSttConfigured.value = !!status.stt_configured
-    }).catch(() => { voiceTtsConfigured.value = false })
-  }
+  // 语音能力探测不再按 scope 门控：cockpit scope 已不存在，
+  // 只在 cockpit 下探测等于**永远探测不到**，后端配了 STT/TTS 也用不上。
+  void voiceApi.status().then(status => {
+    voiceTtsConfigured.value = !!status.tts_configured
+    voiceSttConfigured.value = !!status.stt_configured
+  }).catch(() => { voiceTtsConfigured.value = false })
   // 全局事件统一走类型化事件总线（eventBus.ts），返回值即取消订阅
   offFocusChat = appEvents.on('docmind:focus-chat', onFocusChat)
   offSendChat = appEvents.on('docmind:send-chat', onSendChat)
