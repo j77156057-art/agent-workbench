@@ -1,339 +1,286 @@
-# DocMind · An Agent Runtime (Harness) for Engineering Codebases
+# DocMind
 
-An **agent runtime that runs fully offline**: it turns "an agent that runs" into an **observable, orchestrable, regressable** system.
-On top of it sits a local engineering workbench (code Q&A / controlled rewrite / scene & runtime visualization) — **but the subject of this project is the Harness; the workbench is only its landing scenario**.
+> **An Agent Runtime (Harness) for engineering codebases** — it turns "an agent that runs" into an **observable, orchestrable, regressable** system.
 
-**Two failure modes it targets**:
+[![CI](https://github.com/j77156057-art/rag-agent/actions/workflows/harness.yml/badge.svg)](https://github.com/j77156057-art/rag-agent/actions/workflows/harness.yml)
+![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?logo=python&logoColor=white)
+![Node](https://img.shields.io/badge/Node-%3E%3D22-339933?logo=node.js&logoColor=white)
+![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
+![Vue](https://img.shields.io/badge/UI-Vue%203.5-42b883?logo=vuedotjs&logoColor=white)
+![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
 
-1. **Hallucination** — the AI claims "damage is calculated in `player.py`" when no such file exists;
-2. **Loss of control** — after an edit you don't know what changed, how many tokens it burned, or whether it will happen again.
+<div align="center">
+  <img src="docs/screenshots/trace-ledger.png" alt="Trace ledger: per-turn tokens, latency, tool sequence and outcome — metadata only" width="49%" />
+  <img src="docs/screenshots/scene-canvas.png" alt="Scene canvas: a visual, editable node graph of a Godot .tscn" width="49%" />
+</div>
 
-The answer is to split the agent into six layers and add engineering guardrails to each (details in the "Harness Capabilities" section):
+<sub>Left: the trace ledger — per-turn tokens / latency / tool sequence / outcome, **metadata only; prompt and answer text are never written to disk**.
+Right: the scene canvas — a visual, editable node graph of a Godot `.tscn`; every edit is undoable and undo restores the file byte-for-byte.</sub>
+
+---
+
+## What it is
+
+DocMind has two identities that only make sense together:
+
+| | |
+|---|---|
+| **Harness (the core)** | An agent runtime that runs fully offline. 125 tools, 256 HTTP endpoints, 5702 backend tests. Per-turn trace ledger, capability leases, a human approval ledger, region governance, DAG multi-agent orchestration, golden-set regression gates — **observable, orchestrable, regressable**. |
+| **Workbench (the landing)** | A local workbench for game / Mod projects: code Q&A, controlled rewriting, scene canvas, runtime timeline, engine embedding, GPU coordination, EDA acceptance. |
+
+The workbench is not a skin over the core — it is the Harness's **real landing environment**: a complex, side-effect-heavy engineering project that can actually break. Without such an environment, guardrails are just paperwork.
+
+**Runs with zero API key**: the default provider is a local `mock`. Install the dependencies and you can ask questions, edit code and run acceptance checks. Switch to a cloud model whenever you like — the change takes effect in the UI, no restart.
+
+## Why it exists
+
+When an agent meets a real codebase, it falls into the same two traps:
+
+**Hallucination.** The AI confidently says "damage is calculated in `player.py`" — and that file does not exist. The engineering answer is not "please be more careful in the prompt" but **making every claim carry checkable evidence**: file line numbers, code-block hashes, retrieval hit counts, raw tool output.
+
+**Loss of control.** After an edit you don't know what changed, how many tokens it burned, or whether it will happen again. The answer is to split the agent into six layers, each with a guardrail that **can be tested** — rather than a prayer written into the system prompt.
+
+<div align="center">
+  <img src="docs/architecture.svg" alt="DocMind — the six layers of the Agent Harness" width="86%" />
+</div>
 
 | Layer | Responsibility | Key implementation |
 |---|---|---|
 | **E Execution loop** | ReAct + reflection retry, native function-calling, plan mode, sub-agent delegation, parallel read-only batches, DAG multi-agent orchestration with failure re-planning | `agent.py` · `orchestrator.py` |
-| **T Tool registry** | 47 tools; argument validation, domain allowlist, **controlled writes** (read-before-write + size cap + syntax check + human approval) | `tools.py` |
+| **T Tool registry** | 125 tools; argument validation, domain allowlist, **controlled writes** (read-before-write + size cap + syntax check + human approval) | `tools.py` · `agent_runtime/tool_domains.py` |
 | **C Context management** | prompt token budget, observation truncation, trail pruning (system prompt and current question never dropped), rolling history summary | `agent.py::_fit_budget` |
 | **S State storage** | per-turn trace ledger (**metadata only, never prompt/answer text**), session isolation & persistence, survives restart | `agent_trace.py` · `sessions.py` |
 | **L Lifecycle hooks** | hot-pluggable hooks / skills, human approval gate, per-provider pricing with cost circuit breaker | `hooks.py` · `skills.py` · `pricing.py` |
 | **V Evaluation** | golden-set rule scoring + optional LLM-judge + **baseline regression gate** (exit code 1 on regression) | `agent_eval.py` · `run_golden.py` · `golden/` |
 
-**Three design commitments**: ① **reuse the guardrails** — native function-calling and parallel batches go through the existing guardrails instead of opening new execution paths; ② **bounded** — trails, observations, history and batches are all truncated or summarized; ③ **no overreach** — the orchestrator only rewrites *not-yet-executed* tasks, writes are never concurrent, hook exceptions are always swallowed.
+Three design commitments run through all of it:
 
-Runs with zero API key (mock / local Ollama / llama.cpp); cloud providers can be switched in at any time.
+1. **Reuse the guardrails** — native function-calling and parallel batches go through the existing guardrails instead of opening new execution paths. One set of semantics, not two.
+2. **Bounded** — trails, observations, history and batches are all truncated or summarized; context and prompts never explode.
+3. **No overreach** — the orchestrator only rewrites *not-yet-executed* tasks, writes are never concurrent, hook exceptions are always swallowed.
 
----
+## The workbench
 
-## Landing scenario: the local workbench
+One Web UI; the desktop app is just that UI in a native window. Sixteen panels, grouped by what you are trying to do:
 
-On top sits a **local, single-user** engineering workbench (game / Mod projects as the validation scenario): task regions, per-region Git, contract-direction validation, changeset rollback, selection AI, symbol / relation graph, engine embedding, scene canvas, runtime timeline, GPU coordination.
+| Group | Panels | What it answers |
+|---|---|---|
+| **Understand the code** | AI assistant · Symbol map · Relation graph · Unity graph · Flow graph · Change overview · Region map | Symbol-level search, inheritance and reference relations, the decision chain of every turn, uncommitted changes, region dependency DAG |
+| **Change & accept** | Selection AI · Scene canvas · Runtime timeline · EDA multimodal acceptance · Live conversation | Explain / rewrite a selection; visualize and edit `.tscn`; the gameplay event timeline; three-state acceptance of Vivado / KLayout reports; camera and voice straight into a local realtime model |
+| **Engineering facilities** | Tasks & generation · GPU monitor · Run & engine · AI console · Asset center | Task branches and ComfyUI generation, VRAM leases and queuing, engine launch and embedding, per-turn trails and breakpoints, asset library and generation |
+| **Foundations** | Overview cockpit · File tree / editor · Unified settings · Model settings | Project overview and onboarding, multi-tab CodeMirror, one place for model / MCP / Agent policy / voice config |
 
-Its purpose is to give the Harness a **real, complex, side-effect-heavy** environment — **not a generic ALM platform: no multi-user collaboration or role permissions** (no auth by default on localhost; a single-token check can be enabled).
+A few worth calling out:
 
----
+- The **relation graph** uses a **left-to-right layered inheritance tree**, not force-directed. On a real project it measured 1485 nodes and 1245 inheritance edges — force-directed turns that scale into a hairball. The layered tree makes inheritance readable at a glance; the cost is that wide fan-outs fold into an "N subclasses" card (click to expand), and search narrows to the relevant subtree.
+- **Artifact cards**: files the model wrote and screenshots it took are rendered **directly under the answer** — images as thumbnails, files as clickable names. No more hunting through paths for "what did it actually produce".
+- The **scene canvas** draws Godot `.tscn` as a node graph, parent edges and instance edges in separate colors, properties and positions editable, **everything undoable and undo restores the file byte-for-byte**.
+- **Live conversation** streams camera / screen-share frames and voice into a local realtime multimodal model over WebSocket.
 
-## ✨ What the Workbench Does Today (2026-09 state)
+## Capabilities
 
-| Capability | One-liner |
+### The tool surface: 16 domains / 125 tools
+
+Classification is **declarative** (`agent_runtime/tool_domains.py`), never inferred from names — a new tool that doesn't declare a domain fails the gate. The full list is available at runtime via the `tool_catalog` tool.
+
+| Domain | Covers |
 |---|---|
-| **Region development** | One button slices a project into regions (assets / values / behaviors / levels / ui / audio / net / bugs); each region gets its **own git repo**; Agent writes are constrained to the owning region (cross-region writes are rejected); dependencies form a one-way DAG and contract validation prevents cyclic coupling |
-| **Controlled writes** | Every AI write goes through `apply_edit` / `create_file` (read-before-write + size cap + `.py` syntax check + human confirmation); cross-region moves validate dependency direction; changes can be committed per-region or **rolled back as a whole changeset across regions** |
-| **Selection AI** | Select a block of code in the editor → explain / review / ask (via Agent, with evidence) or **rewrite** (via a direct fast-path + LCS diff preview, persisted only on accept) |
-| **Symbol & relation graph** | Multi-language symbol extraction (Python `ast` / GDScript / Java…) + relation graph of inheritance / scene-mount / call edges; the scene canvas adds four extra edge types |
-| **Scene canvas** | A **visual + editable** canvas for Godot `.tscn`: hierarchy-tree / spatial-coordinate layouts; node parent-child hierarchy, instances, position / transform, and resource references at a glance; add / delete / rename / reparent / duplicate / set-props / drag-to-write-position, **all undoable, and undo restores the file byte-for-byte** |
-| **Runtime timeline** | Gameplay events (damage / death / spawn / variable change) drawn as a multi-track timeline: type filtering, time zoom, session grouping, numeric curves, JSON export, click-an-event-to-jump-to-code-line |
+| `files` | Read/write inside the project, content / symbol / glob search, reference location, atomic multi-file rewrite, read/write/delete outside the allowlist |
+| `verify` | Run tests, CI conclusions, contract validation, dependency reconciliation, index rebuild, changeset rollback, approval status |
+| `frontend` | Start a dev server, click / type / read in a real browser, capture and drive the desktop, **visual locate + visual click**, Vue component-level and app-level acceptance |
+| `preview_adapter` | Design a declarative preview adapter for a new file type or runtime: draft → approve → controlled refresh → rollback → fixture test |
+| `mcp` | Connector config and probing, calls, official Registry search, **candidate discovery from a natural-language need**, capability approval, isolated install and audit |
+| `plan` | Plans, region proposals and application, region read/write/verify, workflow start, lanes, handoff, pricing, refactoring |
+| `task` | Defect registration and updates, skill creation and approval, asset registration and catalog |
+| `git` | diff, log, per-region commit, commit-all with a recorded changeset |
+| `data` | Data file inspection and generation, DOCX / PDF / PPTX / XLSX artifacts, numeric evaluation, video prompts |
+| `jobs` | Run commands, run Python (sandboxed subprocess), inspect and cancel background jobs |
+| `web` | Search, fetch page text, bulk research, subtitles, translation, weather, **built-in browser** (public web only) |
+| `knowledge` | Search uploaded material, memory read/write, recall experience |
+| `game` | Launch / stop / hot-reload the engine, engine screenshot, numeric simulation, impact analysis, pre-release check, task registration |
+| `eda` | Really run Vivado / KLayout / simulation and parse the output, turn online reports into structured facts, produce a three-state acceptance verdict |
+| `net` | HTTP requests constrained by an allowlist (SSRF defense) |
+| `catalog` | Look up tool inventory and usage by domain |
 
-Supporting pieces: **engine embedding** (Godot / Unity / Unreal launch + Win32 HWND embed into the workbench), **Web playtest** (export WASM and play inside the canvas), **MCP bridge**, **GPU lease queue**, and **desktop packaging** (PyInstaller onedir, double-click to run).
+### Newer capabilities handed to the model
 
-> Product-level usage docs and boundary notes for the **MCP bridge** and **Web playtest export** (config model / API table / call prerequisites / capability boundaries) are in [`docs/integrations.md`](docs/integrations.md).
+Added since 2026-09, all implemented under `agent_runtime/` (85 modules):
 
-## 🧱 Tech Stack
+- **Built-in browser** (`browser_action`) — public web only. Five gates: protocol, hostname suffix, IP range, DNS resolution, re-check after navigation. It shares **no session domain** with `dev_page_action`, which is loopback-only.
+- **Visual locate + visual click** (`vision_locate_click` / `vision_click`) — **deliberately two tools**: merge them and the model concludes "locate succeeded, so clicking is allowed". The click is gated on a **human approval record**; the model saying "confirmed" counts for nothing.
+- **Engine control** (`engine_start` / `engine_stop` / `engine_reload`) — the same underlying path as `POST /api/engine/start|stop|reload`, sharing GPU leases and engine logs.
+- **EDA acceptance** (`eda_run_script` / `eda_report_gate`) — really runs scripts and parses the output (fail-closed; `tool_unavailable` when the tool isn't installed) and turns online reports into structured facts with a **met / unmet / uncertain** verdict. It **judges, it never rolls back** — real rollback still goes through the human approval gate.
+- **Task domain** (validation / snapshot / rollback / performance profiling) · **voice model configuration in the UI** (STT / TTS / Omni without editing `.env` and restarting) · **PTC write bridge** (out-of-band write confirmation + session isolation + hard-floor re-check).
 
-- Backend: Python · FastAPI (HTTP + SSE) · Chroma dual collections (docs / code) · OpenAI-compatible multi-provider (qwen / deepseek / ollama / llamacpp / mock, plus native embedding) · PyInstaller + pywebview
-- Frontend: Vue 3.5 · Vite 5 · TypeScript · CodeMirror 6 · Vue Flow · hand-written dark design system
-- Verification: `unittest` **450/450** · scene-canvas self-check **54/54** · browser smoke **27/27** (Playwright + system Edge) · engine-embed real-machine self-check **68/68** · `npm run build` (Vite 5.4.21)
-- Agent runtime (harness): per-turn trace ledger + token/cost accounting · session isolation & persistence · LLM retry/deadline · eval gate · native function-calling · multi-agent orchestrator · cost fuse · hot-pluggable hooks & skills (see "Harness" below)
+### Workflows: two systems, don't mix them
 
-## 📁 Structure
+| | Development workflow | Tool-flow orchestrator |
+|---|---|---|
+| Entry | `start_workflow` / `POST /api/agent/workflow/**` (37+ endpoints) | `POST /api/flows` |
+| Lifecycle | plan choice → plan approval → execute → staged apply/review/cleanup → acceptance → visual feedback → checkpoint / rollback → interrupt / resume / revise | list / save / delete / run-step |
+| Character | Persists across windows, human gates, SSE event stream (with replay and heartbeat) | Lightweight |
 
-```
-rag-agent/
-├── api.py                 # HTTP / SSE entry point (159 routes: chat / ingest / workbench-fs /
-│                          #   regions / engine / desktop-host / selection-ai / scene / runtime / MCP / GPU /
-│                          #   trace / sessions / budget / hooks / skills / orchestrate)
-├── agent.py               # ReAct loop, reflection-retry, code-first routing, evidence guardrails;
-│                          #   run/_run instrumentation shell; native function-calling, plan mode,
-│                          #   sub-agent delegation, parallel tool batches
-├── tools.py               # 47 tools: 9 base + controlled-write + dev/region tools + delegate/orchestrate/dev_use_skill
-├── regions.py             # Region 2.0: declarative config, contract validation (DAG acyclic / exports exist),
-│                          #   changesets and rollback
-├── scene_runtime.py       # Scene-canvas core: .tscn line-block parse → graph model → controlled edit
-│                          #   (rollback-able + undoable)
-├── workbench_fs.py        # Sandboxed file tree, read/write, git status / history / rollback, symbol map, graph
-├── symbols.py             # Multi-language symbol extraction + code-aware chunking
-├── game_workbench.py      # Engine catalog / launch / embed, task / asset / bug workflows, ComfyUI lease
-├── unity_graph.py         # P1-2 Unity GUID reference graph (pure .meta / .unity text analysis)
-├── gpu_coordinator.py     # GPU lease queue (serial / parallel / multi; FIFO; TTL; CUDA env injection)
-├── mcp_client.py          # MCP (Model Context Protocol) bridge
-├── web_export.py          # Godot Web export + local playtest
-├── engine_adapters.py     # Thin engine adapters
-├── desktop_bridge.py      # Win32: find host window / SetParent embed / resize / focus
-├── desktop.py             # Desktop launcher (single-instance guard + pywebview window)
-├── llm.py / embeddings.py / vectorstore.py / ingest.py / config.py
-├── agent_trace.py         # per-turn trace + token ledger (JSONL, metadata only; /trace viewer)
-├── sessions.py            # session isolation + persistence + rolling summary
-├── pricing.py             # per-provider pricing + global/session budget fuse
-├── hooks.py               # hot-pluggable tool/turn hooks (.docmind/hooks/*.py)
-├── skills.py              # built-in + user skill loading (agent_skills / .docmind/skills)
-├── artifact_tools.py      # structured DOCX / PDF / PPTX / XLSX generation and validation
-├── agent_skills/          # bundled document, PDF, presentation, and spreadsheet skills
-├── agent_eval.py          # golden-question auto-scoring + baseline regression gate
-├── orchestrator.py        # multi-agent orchestration: task DAG + parallel + re-plan + synthesis
-├── frontend/              # Vue workbench (build output → ../web)
-│   └── src/workbench/components/
-│       ├── SceneCanvas.vue / SceneNodeCard.vue / SceneFileCard.vue   # scene canvas
-│       ├── RuntimeTimeline.vue                                       # runtime timeline
-│       ├── UnityGraph.vue                                            # Unity GUID graph (P1-2)
-│       └── GpuPanel.vue                                              # GPU lease panel (P2-1)
-├── tests/                 # unittest 450 items
-├── verify_scene_canvas.py / verify_scene_canvas_ui.mjs   # scene-canvas self-check + browser smoke
-└── verify_engine_embed.py # engine-embed real-machine self-check
-```
+The backend can use LangGraph (falling back to a deterministic manager when it isn't installed); the frontend shows an in-conversation card, a human-gate modal, and a product preview.
 
-## 🚀 Quick Start
+## Guardrails
+
+This is where DocMind separates itself from "call an API and call it an agent". Every mechanism below is **testable**:
+
+| Guardrail | Mechanism |
+|---|---|
+| **Evidence floor** | Claims must land: file line numbers, code-block hashes and retrieval hit counts are hard thresholds. A truncated retrieval result may **not** be presented as the full set — the deterministic count self-check turns that red. |
+| **Capability leases** | Read-project / read-external / write-project / write-external / execute / network / admin are leased **separately**. A model quietly reading outside the project is visible. |
+| **Human approval ledger** | Tool installs, preview-adapter rollbacks, skill rollbacks and **visual clicks** all pass `require_approval`. The ledger is appended to `.docmind/approvals.jsonl` and is queryable. **An agent cannot approve itself** — `dev_approve` only accepts a human's action in the workbench. |
+| **Tiered execution confirmation** | `DOCMIND_EXEC_APPROVAL` / `TIER2_CONFIRM` / `TIER3_CONFIRM`; the third tier takes three deliberate clicks. |
+| **Region governance** | One button slices a project into assets / values / behaviors / levels / ui / audio / net / bugs, each with its **own git repo**. Cross-region writes are rejected; dependencies form a one-way DAG and contract validation prevents cyclic coupling. |
+| **Self-reported artifacts** | A tool reports what it actually wrote **at the moment it wrote it** (path / label / size / evidence chain), shipped with the observation event. A failed write is not an artifact. |
+| **No overreach** | The orchestrator only rewrites *not-yet-executed* tasks and never rolls back side effects that already happened; writes are never concurrent; hook exceptions are always swallowed. |
+
+## Quality
+
+| | |
+|---|---|
+| Backend tests | **5702** (397 files under `tests/`) |
+| Frontend tests | **129** (`node --test` runs the production modules directly) |
+| CI | One GitHub Actions workflow, two matrices (SQLite / Postgres 16): dependency install → frontend build → frontend tests → compile check → eval gate → **mutation-test battery** → retrieval regression → offline workflow acceptance → full pytest → strict Postgres integration → live LLM smoke |
+| Mutation testing | Break the implementation on purpose; the gate must catch it. A test that cannot fail is no better than no test. |
+| Baseline regression gate | 40 golden questions (single-hop / multi-hop / distractor), pass→fail raises **exit code 1**; wired into the frozen release flow |
+| Visual regression | 5 baselines compared pixel-by-pixel; failing when more than 200 pixels differ by more than 4 channels |
+| Real engines | Godot / Unity / Unreal HWND embedding verified on a real Win32 host: reparenting, style stripping, resize tracking, **real synthesized keyboard and mouse** delivered into the engine, restore-on-detach, DPI consistency |
+
+## Getting started
+
+### Download and run
+
+Grab `DocMind-v1.0.0-win64.zip` (about **160 MB**) from [Releases](https://github.com/j77156057-art/rag-agent/releases) and **double-click `DocMind.exe`**.
+
+No Python install, no API key, no network — the bundled local mock model runs the full flow out of the box.
+
+### Run from source
+
+A blank machine needs exactly two things: **Python ≥ 3.11** and **Node ≥ 22** (Node only matters when building the frontend).
 
 ```bash
-# 1. Create venv and install deps (Alibaba mirror recommended in CN)
+# 1. Python env and dependencies (Aliyun mirror recommended in China)
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 
-# 2. Configure (optional; mock mode needs no key by default)
-cp .env.example .env      # set LLM_PROVIDER=qwen and fill DASHSCOPE_API_KEY
+# 2. Configuration (optional — the default mock mode needs no key)
+cp .env.example .env        # set LLM_PROVIDER=qwen and fill DASHSCOPE_API_KEY
 
-# 3. Start the backend
+# 3. Backend
 .venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 
-# 4. Frontend: use vite dev for development, or build once for the backend to serve
-cd frontend && npm install && npm run build      # output -> ../web
+# 4. Frontend bundle (the /workbench page needs it; the Q&A page does not)
+cd frontend && npm ci && npm run build     # output -> ../web
 
 # 5. Open
 #   Workbench : http://127.0.0.1:8000/workbench
-#   RAG page  : http://127.0.0.1:8000
+#   Q&A page  : http://127.0.0.1:8000
 ```
 
-> Use `127.0.0.1` not `localhost` (local IPv6 resolution may fail to connect); when the path contains a single-quote username, always wrap shell args in double quotes.
+> On Windows, `启动DocMind.bat` is the short path: the first launch creates `.venv`, installs the dependencies, installs the frontend lockfile and builds `web/`; after that, double-click and go.
+>
+> Use `127.0.0.1` rather than `localhost` (IPv6 resolution on some machines won't connect).
+> `frontend/.npmrc` sets `min-release-age=2`: npm will not install a package version published less than two days ago — a supply-chain guard against "published and poisoned within hours" releases.
 
-### Use a real model (Qwen example)
+### Clean-machine checklist
 
-Two options:
+Run these seven steps on a fresh machine to know whether it will work at all:
 
-- **In-page switch (recommended, no restart)**: open the RAG page, click "⚙ Model settings" top-right, pick provider, fill key, click "Save & switch" — takes effect immediately (key stays in memory only).
-- **Edit `.env`**: `LLM_PROVIDER=qwen` / `EMBEDDING_PROVIDER=qwen` / `DASHSCOPE_API_KEY=...`, then restart.
-
-```bash
-# Call the API without the frontend
-curl -X POST http://127.0.0.1:8000/api/chat -F "question=What file formats does DocMind support?"
-```
-
-## 🖥️ Desktop (native window, one-click launch)
-
-`desktop.py` assembles the backend + frontend into a native desktop window (Windows uses Edge WebView2), double-click to run:
-
-```bash
-.venv\Scripts\python.exe -m pip install pywebview   # once
-.venv\Scripts\python.exe desktop.py                 # or double-click run_desktop.bat
-```
-
-- **Engine embedding**: Godot / Unity / Unreal windows are embedded into the workbench by Win32 HWND rules (`desktop_bridge.py`).
-  **Verified real-machine on Godot 4.7.2 + a real Win32 host** (`verify_engine_embed.py` 68/68): SetParent + style stripping, layout by client rect (or a front-end-specified "engine viewport" rectangle), host-resize follow, **real synthesized mouse/keyboard (SendInput) delivered to the engine and echoed back**, window restored exactly on detach, no orphan process/window after stop, parent/child DPI consistent (tested at 150% scaling on this machine).
-  Embedding is **reversible**: `detach` restores the original parent, window style, and screen position — without saving these, a bare `SetParent(NULL)` leaves the window invisible (still carrying `WS_CHILD`).
-  The playtester has an "embed into workbench" toggle: with it on, clicking "launch desktop window" drops the game画面 onto the engine viewport in the popup while the workbench UI stays usable; there are also "focus / detach / stop desktop window" controls; closing the popup or switching tabs auto-detaches. In browser mode the toggle is auto-disabled with a "needs desktop" hint.
-  Not yet covered: real-machine data at 100% / 125% scaling (this display is 150%; the script prints DPI and asserts by actual coordinates).
-- **Package as a standalone exe (onedir distribution)**: `docmind.spec` produces `dist\DocMind\DocMind.exe` in one command; ship the whole `dist\DocMind` folder, the target machine needs no Python. Build command: `.venv\Scripts\python.exe -m PyInstaller docmind.spec --noconfirm` (output in `dist\DocMind`).
-- **Packaged build capability boundary**: the bundled `builtin:py` syntax checker and `create_artifact` DOCX / PDF / PPTX / XLSX renderer run in-process (the exe behaves like source); playtest auto-test, cProfile, and `python_exec` still need a real Python environment in the source `.venv`. Region git operations require Git on the target machine.
-
-## 🧭 Harness (the agent runtime)
-
-Turns "an agent that runs" into "an agent runtime you can **observe, orchestrate and regression-test**". All of it lives in the repo root — local-only, no external dependency:
-
-| Capability | What it does | Entry point |
+| # | Check | Command / expectation |
 |---|---|---|
-| **Per-turn trace + token ledger** | One JSONL record per turn: `turn_id / session_id / messages hash / tool-call sequence / tokens in-out / per-step latency / finish_reason / outcome / cost_cny`. **Metadata only** (never stores prompt/answer text); auto-rotates at 8 MB | Page **`/trace`** (screenshot `docs/screenshots/trace-ledger.png`); `GET /api/trace`, `/api/trace/summary`, `POST /api/trace/clear` |
-| **Session isolation + persistence** | `Agent(session_id=)` isolates sessions (empty = in-memory, identical to old behaviour); history is persisted and old turns get **summarised** past a threshold; no more shared singleton leaking history across sessions | `session_id` on `/api/chat`; `GET /api/sessions`, `DELETE /api/sessions/{id}` |
-| **LLM resilience** | Retry + exponential backoff (429 / 5xx / timeout / network are retryable, **4xx explicitly is not**) + unified `timeout`/`deadline`; an SSE client disconnect aborts the turn and is accounted for | `DOCMIND_LLM_*`, `DOCMIND_TURN_DEADLINE_S` |
-| **Eval automation** | Rule-based golden-question scoring (`must_include / any_of / must_not_include / regex / must_call / action bounds / no_error`) + optional LLM judge + a **baseline regression gate** (pass→fail exits non-zero) | `agent_eval.py`, `gate.py` in the `agent-golden-eval` skill (wired into the frozen-release pipeline) |
-| **Native function-calling** | OpenAI-style schemas generated from the tool registry; `tool_calls` are normalised into the text protocol so **every existing guardrail still applies** and event types are unchanged | `DOCMIND_TOOL_MODE=react\|native\|auto` |
-| **Multi-agent orchestrator** | Task-graph DAG (validated, topologically waved, same-wave parallel) + **dispatcher/planner dynamic decomposition and dispatch** (the main Agent validates and inserts tasks) + **downstream tasks receive upstream conclusions** + **automatic re-planning on failure** (proposals `add / drop / replace` — only tasks that have **not run yet** may change) + result synthesis + **sub-agent execution traces fed back** to the re-planner for failure attribution | `orchestrate` tool, `POST /api/orchestrate` |
-| **Cost fuse** | Prices per provider/model (overridable via `.docmind_pricing.json`; local providers are always 0) + global/session budgets; **refuses before the turn, charges after it** | `GET/POST /api/budget` |
-| **Hot-pluggable hooks & skills** | `pre/post_tool`, `pre/post_turn` hooks from `.docmind/hooks/*.py` (a broken hook is isolated); `agent_skills/*/SKILL.md` provides bundled skills and same-name entries in `.docmind/skills` override them; bodies are fetched on demand via `dev_use_skill` | `POST /api/hooks/reload`, `POST /api/skills/reload` |
-| **Office artifacts** | Bundled `documents / pdf / presentations / spreadsheets` skills; `create_artifact` writes real DOCX, PDF, PPTX, and XLSX files to the active project's `artifacts/` directory and reopens each output for validation | `dev_use_skill`, `create_artifact` |
-| **Parallel tool batches** | Multiple **read-only** calls from one turn run concurrently (results re-ordered back into place); a batch containing any write/side-effecting tool falls back to sequential — **writes are never concurrent** | `DOCMIND_PARALLEL_TOOLS`, `DOCMIND_PARALLEL_MAX` |
+| 1 | Python is new enough | `python -V` → ≥ 3.11. An older version is rejected **before** anything is installed, with the required version spelled out |
+| 2 | Python dependencies install | `pip install -r requirements.txt` → no errors (add the Aliyun mirror in China) |
+| 3 | Frontend dependencies install | `cd frontend && npm ci` → reproduced exactly from `package-lock.json` (Node ≥ 22, see `.nvmrc`) |
+| 4 | Frontend builds | `npm run build` → output lands in `../web` (`web/workbench.html` + `web/assets/`) |
+| 5 | Backend starts | `python -m uvicorn api:app --port 8000` → `GET /api/health` returns `{"ok":true}` |
+| 6 | It works with no configuration | Start **without creating `.env`** → the provider defaults to `mock` and `POST /api/chat` returns a complete SSE answer |
+| 7 | The pages load | `/` and `/workbench` both return 200, and every `assets/*.js` referenced by `/workbench` is served |
 
-### Game Harness acceptance loop (current state)
+### Using a real model
 
-The Harness can now run a complete acceptance loop against a real Godot project:
+Switch in the UI (recommended, no restart): top-right of the Q&A page → **⚙ Model settings** → pick a provider, paste the key → it takes effect on save. API keys are never written to the ordinary state file; they are stored per project in the machine's protected secret store and loaded at startup.
 
-`retrieve → clarify → dynamic delegation → approval → parallel sub-agents → controlled file edit → Godot headless playtest → evidence review`
-
-The acceptance runner copies the project to a temporary directory by default, keeping the source project read-only. Its JSON report records phases, task threads, tool calls, sub-agent status, context-compression summaries, failures, latency, and token counters. The entry point is [`agent_runtime/acceptance.py`](agent_runtime/acceptance.py); workflow state lives in [`agent_runtime/game_workflow.py`](agent_runtime/game_workflow.py), and the observability panel is [`frontend/src/workbench/components/HarnessPanel.vue`](frontend/src/workbench/components/HarnessPanel.vue).
-
-```powershell
-.\.venv\Scripts\python.exe -m agent_runtime.acceptance `
-  --project D:\WorkBuddy\godot_sample `
-  --godot D:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe `
-  --collection docmind_code `
-  --require-event player_ready `
-  --json
-```
-
-Context routing and five-layer compression are implemented in [`agent_runtime/context_router.py`](agent_runtime/context_router.py). Production retrieval and offline evaluation are in [`agent_runtime/retrieval.py`](agent_runtime/retrieval.py) and [`agent_runtime/retrieval_eval.py`](agent_runtime/retrieval_eval.py). CI runs workflow success-rate, Recall/MRR, and optional real-project acceptance gates from [`.github/workflows/harness.yml`](.github/workflows/harness.yml).
-
-The loop has been verified locally against a Godot sample project. Multi-project, multi-engine, large-scale concurrency, and long-running soak evaluation remain production-hardening work.
-
-**Three design stances**: ① **guardrail reuse** — native FC and parallel batches do not open a second execution path, so semantics never fork; ② **bounded** — traces, observations, history and batches are all truncated or summarised so context/prompts cannot explode; ③ **no over-reach** — the orchestrator may only edit not-yet-executed tasks (side effects are never rolled back), writes are never parallel, hook exceptions are swallowed.
+Or edit `.env`: `LLM_PROVIDER=qwen` / `EMBEDDING_PROVIDER=qwen` / `DASHSCOPE_API_KEY=...`.
 
 ```bash
-# Inspect the per-turn ledger (what tools ran, tokens, cost, outcome)
-http://127.0.0.1:8000/trace
-
-# Run a task graph (independent tasks run in parallel; dependents wait for upstream conclusions)
-curl --noproxy '*' -X POST http://127.0.0.1:8000/api/orchestrate -H "Content-Type: application/json" \
-  -d '{"tasks":[{"id":"a","role":"researcher","task":"find where X is implemented"},
-                {"id":"b","role":"reviewer","task":"review the above","depends_on":["a"]}],"synth":true}'
+curl -X POST http://127.0.0.1:8000/api/chat -F "question=DocMind 支持哪些文件格式？"
 ```
 
-> **Honest boundaries**: sub-agents do **not** share the parent context (it is passed via upstream conclusions); re-planning only edits the **not-yet-executed** plan and **never rolls back** executed tasks; traces are **bounded summaries** (full text lives in `.docmind_traces.jsonl`); hooks have **no sandbox** (plain `.py` loaded in-process); skills are prompt guidance, while office files are produced by the controlled `create_artifact` tool rather than arbitrary skill scripts.
+## Code map
 
-## 🧪 Tests & Self-Checks
-
-```bash
-# Full regression (pytest currently collects about 1247 items; git cases actually run when MinGit is on PATH)
-.venv\Scripts\python.exe -B -m unittest discover -s tests
-
-# Harness workflow, retrieval, observability, and real-project contract tests
-.venv\Scripts\python.exe -m pytest tests/test_game_workflow.py tests/test_game_workflow_e2e.py tests/test_retrieval_adapter.py tests/test_retrieval_api.py tests/test_workflow_observability.py -q
-
-# Offline regression gates
-.venv\Scripts\python.exe -m agent_runtime.workflow_eval --self-check --baseline .github/workflow-eval-baseline.json --json
-.venv\Scripts\python.exe -m agent_runtime.retrieval_eval --dataset .github/retrieval-eval.json --baseline .github/retrieval-eval-baseline.json --minimum 0.75 --json
-
-# Scene canvas — backend self-check: in-process FastAPI + temp Godot project, real routes, no port
-.venv\Scripts\python.exe verify_scene_canvas.py
-
-# Engine embedding — real-machine self-check (real Godot + real Win32 host; briefly pops a window
-# and moves the mouse back)
-.venv\Scripts\python.exe verify_engine_embed.py
-
-# Scene canvas — browser smoke: start the demo server in another terminal, then run with managed node
-.venv\Scripts\python.exe verify_scene_canvas.py --serve 8011
-node verify_scene_canvas_ui.mjs http://127.0.0.1:8011
+```
+rag-agent/
+├── api.py                 # HTTP / SSE entry point (137 routes)
+├── api_routes/            # Domain routers (119 routes): agent (37+ workflow) · engine (33) · gpu (12) ·
+│                          #   eda (6) · projects (5) · resources (assets & ComfyUI)
+├── agent.py               # ReAct loop, reflection retry, code-first routing, evidence guardrails;
+│                          #   native FC, plan mode, sub-agent delegation, parallel batches
+├── tools.py               # The 121-entry tool registry (16 domains)
+├── agent_runtime/         # Runtime contracts and capability implementations (85 modules + 2 packages)
+├── regions.py             # Regions 2.0: declarative config, contract validation, changesets, rollback
+├── scene_runtime.py       # Scene canvas core: .tscn block parsing → graph model → controlled edits
+├── workbench_fs.py        # Sandboxed file tree, read/write, git history & rollback, symbol map, relation graph
+├── game_workbench.py      # Engine catalog / launch / embed, tasks & assets, approval ledger
+├── desktop_bridge.py      # Win32: find host window / SetParent embed / resize / focus (pure ctypes)
+├── desktop.py             # Desktop launcher (single instance + pywebview window, falls back to browser)
+├── dependency_bootstrap.py # Clean-machine bootstrap: create .venv, install deps, install & build the frontend
+├── agent_trace.py         # Per-turn trace + token ledger (JSONL, metadata only)
+├── sessions.py            # Session isolation + persistence + rolling summary
+├── pricing.py / hooks.py / skills.py
+├── artifact_tools.py      # Structured DOCX / PDF / PPTX / XLSX generation with read-back verification
+├── orchestrator.py        # Multi-agent orchestration: task DAG + parallelism + re-planning + synthesis
+├── agent_eval.py / run_golden.py / golden/   # Golden set and the baseline regression gate
+├── frontend/              # Vue 3 + Vite workbench (149 .vue/.ts files, output to ../web)
+│   └── src/workbench/
+│       ├── components/    # 57 components
+│       ├── composables/   # 29 composables
+│       └── lib/           # Pure modules (directly runnable by node's test runner)
+├── tests/                 # 397 files / 5702 cases
+└── docs/                  # 59 design docs and defect write-ups
 ```
 
-The browser smoke produces `docs/screenshots/scene-canvas.png` and `docs/screenshots/runtime-timeline.png`.
+## Configuration
 
----
+`.env.example` is a **flat list of optional** knobs, not a required checklist. Groups:
 
-## 🗺️ Scene Canvas
+| Group | Representative variables |
+|---|---|
+| LLM provider | `LLM_PROVIDER` (`mock` / qwen / deepseek / ollama / llamacpp), `LLM_MODEL`, `LLM_API_KEY` |
+| Harness vision assist | `DOCMIND_VISION_PROVIDER/MODEL/BASE_URL/API_KEY`, `DOCMIND_VISION_ALLOW_UNVERIFIED` |
+| Embedding | `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL` |
+| Paths & retrieval | `CHROMA_DIR`, `CHUNK_SIZE`, `TOP_K`, `DOCMIND_RETRIEVAL_MODE` (dense / hybrid / hybrid_rerank) |
+| Agent ledger / sessions / resilience | `DOCMIND_TRACE`, `DOCMIND_LANGSMITH_*`, `DOCMIND_CHECKPOINT_POSTGRES_DSN`, `DOCMIND_SESSION_*` |
+| Voice STT / TTS / realtime Omni | `DOCMIND_STT_URL/API_KEY/MODEL`, `DOCMIND_TTS_URL/API_KEY/MODEL/VOICE`, `DOCMIND_OMNI_*` |
+| LLM call / web budget | `DOCMIND_LLM_TIMEOUT/RETRIES`, `DOCMIND_WEB_SEARCH_FAIL_LIMIT` |
+| Tool channel / sub-agents / planning | `DOCMIND_TOOL_MODE`, `DOCMIND_SUBAGENT_MAX_DEPTH`, `DOCMIND_PARALLEL_TOOLS` |
+| Cost circuit breaker | `DOCMIND_BUDGET_CNY`, `DOCMIND_SESSION_BUDGET_CNY` |
+| Hot-plug directories | `DOCMIND_HOOKS_DIR`, `DOCMIND_SKILLS_DIR` |
 
-Renders `.tscn` as an operable node graph. **Why not "draw the node tree as nested containers"**: real scenes go 4–6 levels deep; nested containers express "ownership" fine but the high-frequency operation in scene work is **spatial relation** (position / transform) — containers can't express "where these things should be drawn". So the canvas uses **flat nodes + four edge types**:
+**Some configuration does not live in `.env`:**
 
-| Edge | Meaning | Style |
-|---|---|---|
-| `hierarchy` | parent-child (top → bottom) | gray solid |
-| `script` | node ↔ script file | purple dashed |
-| `instance` | node ↔ instantiated sub-scene | cyan dotted |
-| `reference` | node ↔ texture / material resource | gray (hidden by default, toggleable) |
+- The **web search / URL fetch providers** (`WEB_SEARCH_PROVIDER`, `WEB_FETCH_PROVIDER`, `EXTERNAL_API_ALLOWLIST`) are read only in `config.py` and are not listed in `.env.example`.
+- **Approval and access modes** (`DOCMIND_EXEC_APPROVAL`, `EDIT_CONFIRM`, `DOCMIND_ACCESS_MODE`).
+- **MCP connectors / region governance / engine connectors** go through the in-app settings page and land in files (`/api/config`, `/api/agent/connectors`, `/api/engine/config`, `regions.json`).
 
-Two layouts: **hierarchy layout** (DFS pre-order horizontal tree) and **spatial layout** (drop by scene coordinates directly; drag writes back `position`). Double-click a file card to open that script / scene in the editor; the right inspector lists all properties.
+## Current boundaries
 
-**Safety & reversibility** (this is the real work, not just "looks like a graph"):
+Stating them beats hiding them — that's this project's habit anyway (`docs/known-defect-*.md` records 16 located defects and the reasoning behind each).
 
-- All writes go through a double sandbox (`code_root` containment + region / contract protection); property values containing newlines are rejected (injection guard);
-- Writes use a "line-block model" and **self-check after writing** (parent exists / no sibling name clash / parent block before child block); on any failure it **rolls back to the original**;
-- Every operation returns an `undo` **shaped identically to the API request body** — the frontend returns it as-is to undo — with regression cases guaranteeing **byte-for-byte file restore after undo** (including blank-line position and property order).
+| Boundary | Status |
+|---|---|
+| Single-user, local | No auth on localhost by default; a single-token check can be enabled. **No** multi-user collaboration or role permissions |
+| Platform | Desktop packaging targets 64-bit Windows; the server and frontend are cross-platform |
+| Distributed build | Bundled validation and DOCX / PDF / PPTX / XLSX generation run in-process; playtest, cProfile and `python_exec` need a real Python environment |
+| Engine embedding coverage | Verified on Godot 4.7.2 with a real Win32 host; 100% / 125% display scaling is not covered (this machine runs 150%) |
+| Scale | Single-machine, single-user scenarios are verified; multi-project / multi-engine / long-running evaluation is not |
+| License | **The repository does not yet contain a LICENSE file** — one must be chosen and added before public release (the licenses under `docs/` and `dist/` belong to third parties) |
 
-## ⏱️ Runtime Timeline
+## Documentation
 
-While the game runs, events are written to `.docmind_runtime.jsonl` (the engine prints `DOCMIND_EVENT {json}` by convention and it gets captured). The timeline draws these as multi-track axes: filter by type / source / session / keyword, time zoom, numeric metric curves, JSON export, click-event-to-jump-to-code-line. Clearing uses a **byte cursor** reset, never truncating a log the engine is still writing.
-
----
-
-## 🎮 Asset filtering tool (`search_assets`)
-
-For "making a game / need art assets": a tool that lets the Agent filter assets on demand.
-
-**Why not just crawl an asset-library API?** Kenney / OpenGameArt / itch.io either lack a stable public API or are behind Cloudflare (crawling is fragile and impolite). Industry practice (e.g. Arcane Assets MCP) is likewise a maintained local/remote asset-manifest JSON that the Agent searches over. So here a hand-curated, extensible `assets_catalog.json` (currently 26 entries: Kenney CC0 series + OpenGameArt samples) plus `search_assets`'s keyword expansion and scoring does "filter by question".
-
-- **Capability**: filter by keyword (Chinese synonym expansion, e.g. "角色/精灵 → character/sprite"), type (`2d-sprites` / `tilesets` / `ui` / `audio` / `fonts` / `3d`), license (`CC0` / `CC-BY` / `CC-BY-SA-3.0`).
-- **Extend**: append entries to `assets_catalog.json`, no tool change needed; real integration can swap `search_assets` in `tools.py` for a remote index / store API call.
-- **Demo**:
-  ```bash
-  curl -X POST http://127.0.0.1:8000/api/chat -F "question=Find me a CC0 character sprite asset"
-  ```
-  In mock mode the LLM auto-detects the "asset" intent and prefers `search_assets`.
-
-## 🔧 Code execution (`python_exec`)
-
-Lets the Agent actually "act, not just talk": turn a natural-language intent into executable Python run in a restricted subprocess, getting deterministic computation or a data-transform artifact.
-
-- **Use**: numeric/statistical compute, light data processing, text transform, generate structured data for visualization / downstream tools. vs `calculate` (arithmetic only), `python_exec` runs arbitrary Python.
-- **Robustness**: input comes from the LLM, which often wraps code in ```` ```python ```` fences or adds a "python" hint line — the tool regex-cleans that noise first, keeps only executable code; if empty after cleaning it returns "no valid code provided" instead of executing triple quotes. Runs via `subprocess.run([sys.executable, "-c", code], ...)` under current user rights, 12s timeout (infinite loop returns a timeout message, not a hang), stdout/stderr truncated to 1500 chars.
-- **Demo**:
-  ```bash
-  curl -X POST http://127.0.0.1:8000/api/chat -F "question=Compute the sum of squares from 1 to 100 in code"
-  ```
-  The Agent calls `python_exec` to run `sum(i*i for i in range(1,101))`, returns `338350`.
-
-## 🌐 Web research (`web_search` / `web_fetch` / `web_research`)
-
-When the knowledge base is thin, or the question is time-sensitive / external, the Agent autonomously goes online for evidence instead of just "I don't know".
-
-- **`web_search`**: scrapes DuckDuckGo HTML results (`urllib.request` + regex for title/snippet/redirect link, restoring the real `uddg=` link) — **no API key**. Degrades clearly if offline or DDG changed; the Agent then uses the KB or says so, never fakes success. Swappable to SerpAPI / Bing by editing one `web_search` function in `tools.py`.
-- **`web_fetch`**: reads public HTML body text for a given URL (used by `web_research` and citable in answers).
-- **`web_research`**: search + fetch up to 3 sources, clean titles / final URLs / body, degrade on non-HTML / network failure; source URLs in the answer are clickable.
-- **Demo**:
-  ```bash
-  curl -X POST http://127.0.0.1:8000/api/chat -F "question=Look up the max video duration MiniMax H3 supports"
-  ```
-
-> Not yet polished: B-site dedicated search / subtitle extraction, GitHub API search, result caching, source-credibility scoring, multi-source conflict detection, login / CAPTCHA / paywall handling. Current ability covers ordinary tutorials, GitHub material, and engine-doc lookup — not claimed to reach Perplexity / Claude Research level.
-
-## 🎬 Video prompt generation (`gen_video_prompt`)
-
-Turns a Chinese creative line into a MiniMax H3 three-section video prompt you can paste straight into the ComfyUI `MiniMaxH3ImageToVideo` node — closing "text idea → generatable video".
-
-- **Why deterministic assembly + LLM polish**: early direct-writing let weak models (e.g. 7B) read "three-section structure" as "three-act structure" and emit wrong format. Now the **three-section skeleton (integrated_multimodal_description / overall_soundscape / non_diegetic_music) is assembled deterministically** so it's always compliant; the LLM only polishes the Shot 1 English storyboard, falling back to a deterministic template on failure. Usable regardless of model strength.
-- **Sound design auto-fits the scene**: keywords (rain / night / wind / sea / city / forest / snow…) auto-fill diegetic sound, plus a non-diegetic music template, with constraint notes (no negative words, FPS=24, 4–15s).
-- **Demo**:
-  ```bash
-  curl -X POST http://127.0.0.1:8000/api/chat -F "question=Give me a rainy-night-city video prompt"
-  ```
-  The Agent calls `gen_video_prompt`, output carries the three sections, diegetic sound auto-filled with "steady rain" + "distant night traffic" + "low city hum".
-
-## 💻 Code Q&A mode (`search_code` / `read_file` / `grep`)
-
-Upgrades the Agent from "reads docs only" to "also understands your project code": index a source directory once and it can find functions/classes, open specific files, locate symbols or errors by regex — the key to stopping AI "code pile-up / hallucination" on big projects: make the AI retrieve the existing structure first, then edit precisely, instead of stuffing one file.
-
-- **How**: hand DocMind a code root to index once (all later code Q&A uses this index):
-  ```bash
-  curl -X POST http://127.0.0.1:8000/api/ingest_code -F "root=C:/path/to/your/game-project"
-  ```
-  Or fix `CODE_ROOT` in `.env` for auto-availability on start.
-- **Three tools**:
-  - `search_code(query)`: search indexed source/config for relevant functions, classes, config snippets (by symbol name + path) — "where is X implemented / what does function Y do".
-  - `read_file(path)`: read a file in the code base (path relative to `code_root`), for full implementation.
-  - `grep(pattern)`: regex search text/symbols in the code base, returns `file:line: content`, for locating a variable / an error.
-- **Design points**:
-  - **Code-aware chunking**: prose splits by paragraph; code must split by "file + function/class" — otherwise a function is cut in half, two unrelated functions glued — retrieval quality collapses. Python uses `ast` for exact `def/class` (incl. methods) start/end lines and names; other languages use regex heuristics for definition lines. Oversized slices fall back to line-based split.
-  - **Separate collection**: code goes to its own Chroma collection (`docmind_code`), not polluting the doc collection; `search_knowledge` handles docs, `search_code` handles code.
-  - **Path sandbox**: `read_file` / `grep` only allow access inside `code_root`; out-of-bounds is rejected, never leaking other local files.
-  - **Skip noise**: indexing auto-skips `.git` / `node_modules` / `__pycache__` / `.venv` etc., and oversized files (>500KB), avoiding stuffing build artifacts / zips into the index.
-- **Demo**:
-  ```bash
-  # after indexing, ask the Agent:
-  curl -X POST http://127.0.0.1:8000/api/chat -F "question=Which function implements damage calculation? Show me that code"
-  # Agent first search_code locates DamageCalculator.compute, then read_file opens the file.
-  ```
-- **Note**: code Q&A relies on semantic retrieval; use a real embedding (`.env` `EMBEDDING_PROVIDER=qwen`); offline `local` mode gives random placeholder vectors — only for pipeline smoke, results have no semantic meaning. Switching embedding dimension only rebuilds the doc collection; the code collection can stay.
+- [`docs/integrations.md`](docs/integrations.md) — product-level usage and boundaries for the MCP bridge and Web playtest export
+- [`docs/agent-architecture-review.md`](docs/agent-architecture-review.md) — architecture review
+- [`docs/known-defect-*.md`](docs/) — located defects and the reasoning behind each (so the same trap isn't stepped into twice)
+- [`docs/screenshots/`](docs/screenshots/) — real UI captures
