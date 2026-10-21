@@ -25,7 +25,7 @@ DocMind has two identities that only make sense together:
 
 | | |
 |---|---|
-| **Harness (the core)** | An agent runtime that runs fully offline. 125 tools, 256 HTTP endpoints, 5702 backend tests. Per-turn trace ledger, capability leases, a human approval ledger, region governance, DAG multi-agent orchestration, golden-set regression gates — **observable, orchestrable, regressable**. |
+| **Harness (the core)** | An agent runtime that runs fully offline. 125 tools, 322 HTTP endpoints, 5702 backend tests. Per-turn trace ledger, capability leases, a human approval ledger, region governance, DAG multi-agent orchestration, golden-set regression gates — **observable, orchestrable, regressable**. |
 | **Workbench (the landing)** | A local workbench for game / Mod projects: code Q&A, controlled rewriting, scene canvas, runtime timeline, engine embedding, GPU coordination, EDA acceptance. |
 
 The workbench is not a skin over the core — it is the Harness's **real landing environment**: a complex, side-effect-heavy engineering project that can actually break. Without such an environment, guardrails are just paperwork.
@@ -61,7 +61,7 @@ Three design commitments run through all of it:
 
 ## The workbench
 
-One Web UI; the desktop app is just that UI in a native window. Sixteen panels, grouped by what you are trying to do:
+One Web UI; the desktop app is just that UI in a native window. Twenty-one panels, grouped by what you are trying to do:
 
 | Group | Panels | What it answers |
 |---|---|---|
@@ -76,6 +76,8 @@ A few worth calling out:
 - **Artifact cards**: files the model wrote and screenshots it took are rendered **directly under the answer** — images as thumbnails, files as clickable names. No more hunting through paths for "what did it actually produce".
 - The **scene canvas** draws Godot `.tscn` as a node graph, parent edges and instance edges in separate colors, properties and positions editable, **everything undoable and undo restores the file byte-for-byte**.
 - **Live conversation** streams camera / screen-share frames and voice into a local realtime multimodal model over WebSocket.
+- The **task panel** carries four actions: scope validation, snapshot, snapshot rollback and impact analysis — you first pin down which paths the task is allowed to touch, and a violation is rejected on the spot; rollback restores files to their snapshot content (files created after the snapshot are removed); a task branch opens a git branch named `docmind/<task>` and refuses to switch while the worktree has uncommitted changes.
+- **Voice models**: the endpoint, model and voice of STT / TTS / realtime Omni are edited and persisted from the settings page — **no `.env` edit and no restart**.
 
 ## Capabilities
 
@@ -102,15 +104,15 @@ Classification is **declarative** (`agent_runtime/tool_domains.py`), never infer
 | `net` | HTTP requests constrained by an allowlist (SSRF defense) |
 | `catalog` | Look up tool inventory and usage by domain |
 
-### Newer capabilities handed to the model
+### A few deliberate design choices
 
-Added since 2026-09, all implemented under `agent_runtime/` (85 modules):
+The tool inventory answers "what exists"; it cannot answer "why it is cut this way". The following are choices made on purpose in the implementation:
 
-- **Built-in browser** (`browser_action`) — public web only. Five gates: protocol, hostname suffix, IP range, DNS resolution, re-check after navigation. It shares **no session domain** with `dev_page_action`, which is loopback-only.
-- **Visual locate + visual click** (`vision_locate_click` / `vision_click`) — **deliberately two tools**: merge them and the model concludes "locate succeeded, so clicking is allowed". The click is gated on a **human approval record**; the model saying "confirmed" counts for nothing.
-- **Engine control** (`engine_start` / `engine_stop` / `engine_reload`) — the same underlying path as `POST /api/engine/start|stop|reload`, sharing GPU leases and engine logs.
-- **EDA acceptance** (`eda_run_script` / `eda_report_gate`) — really runs scripts and parses the output (fail-closed; `tool_unavailable` when the tool isn't installed) and turns online reports into structured facts with a **met / unmet / uncertain** verdict. It **judges, it never rolls back** — real rollback still goes through the human approval gate.
-- **Task domain** (validation / snapshot / rollback / performance profiling) · **voice model configuration in the UI** (STT / TTS / Omni without editing `.env` and restarting) · **PTC write bridge** (out-of-band write confirmation + session isolation + hard-floor re-check).
+- **Browsing and page interaction live in two separate session domains.** The built-in browser (`browser_action`) is public-web only, behind **five gates**: protocol, hostname suffix, IP range, DNS resolution and re-check after navigation. Local page interaction (`dev_page_action`) is loopback-only. The two **share no session domain** — the model cannot use the "look at my machine" channel to read the public web.
+- **Visual locate and visual click are two tools** (`vision_locate_click` / `vision_click`). Merge them and the model concludes "locate succeeded, so clicking is allowed". The click is released only when a **human approval record** says so; the model saying "confirmed" counts for nothing.
+- **Engine control and the HTTP endpoints share one implementation** (`engine_start` / `engine_stop` / `engine_reload` ↔ `POST /api/engine/start|stop|reload`), including the GPU lease and the engine logs — there is no state where "the UI stopped the engine but the model can still start it".
+- **EDA acceptance judges, it never rolls back** (`eda_run_script` / `eda_report_gate`). It really runs the script and parses the output (fail-closed: `tool_unavailable` when the tool isn't installed), turns online reports into structured facts and returns a **met / unmet / uncertain** verdict. A real rollback still goes through the human approval gate.
+- **Programmatic tool calling is an independent switch** (`DOCMIND_PTC_BRIDGE` / `DOCMIND_PTC_BRIDGE_WRITE`, off by default). When enabled, the model can call other tools programmatically from inside a single `python_exec`; the write side goes through out-of-band write confirmation + session isolation + a hard-floor re-check.
 
 ### Workflows: two systems, don't mix them
 
@@ -144,7 +146,7 @@ This is where DocMind separates itself from "call an API and call it an agent". 
 | Frontend tests | **129** (`node --test` runs the production modules directly) |
 | CI | One GitHub Actions workflow, two matrices (SQLite / Postgres 16): dependency install → frontend build → frontend tests → compile check → eval gate → **mutation-test battery** → retrieval regression → offline workflow acceptance → full pytest → strict Postgres integration → live LLM smoke |
 | Mutation testing | Break the implementation on purpose; the gate must catch it. A test that cannot fail is no better than no test. |
-| Baseline regression gate | 40 golden questions (single-hop / multi-hop / distractor), pass→fail raises **exit code 1**; wired into the frozen release flow |
+| Baseline regression gate | 42 golden questions (L1 single-hop / L2 multi-hop / L3 distractor), pass→fail raises **exit code 1**; wired into the frozen release flow |
 | Visual regression | 5 baselines compared pixel-by-pixel; failing when more than 200 pixels differ by more than 4 channels |
 | Real engines | Godot / Unity / Unreal HWND embedding verified on a real Win32 host: reparenting, style stripping, resize tracking, **real synthesized keyboard and mouse** delivered into the engine, restore-on-detach, DPI consistency |
 
@@ -213,8 +215,8 @@ curl -X POST http://127.0.0.1:8000/api/chat -F "question=DocMind 支持哪些文
 
 ```
 rag-agent/
-├── api.py                 # HTTP / SSE entry point (137 routes)
-├── api_routes/            # Domain routers (119 routes): agent (37+ workflow) · engine (33) · gpu (12) ·
+├── api.py                 # HTTP / SSE entry point (203 routes)
+├── api_routes/            # Domain routers (119 routes): agent (62, of which 38 are workflow) · engine (36) · gpu (10) ·
 │                          #   eda (6) · projects (5) · resources (assets & ComfyUI)
 ├── agent.py               # ReAct loop, reflection retry, code-first routing, evidence guardrails;
 │                          #   native FC, plan mode, sub-agent delegation, parallel batches
@@ -235,11 +237,11 @@ rag-agent/
 ├── agent_eval.py / run_golden.py / golden/   # Golden set and the baseline regression gate
 ├── frontend/              # Vue 3 + Vite workbench (149 .vue/.ts files, output to ../web)
 │   └── src/workbench/
-│       ├── components/    # 57 components
-│       ├── composables/   # 29 composables
+│       ├── components/    # 55 components
+│       ├── composables/   # 28 composables
 │       └── lib/           # Pure modules (directly runnable by node's test runner)
 ├── tests/                 # 397 files / 5702 cases
-└── docs/                  # 59 design docs and defect write-ups
+└── docs/                  # 58 design docs and defect write-ups
 ```
 
 ## Configuration
@@ -265,11 +267,11 @@ rag-agent/
 - **Approval and access modes** (`DOCMIND_EXEC_APPROVAL`, `EDIT_CONFIRM`, `DOCMIND_ACCESS_MODE`).
 - **MCP connectors / region governance / engine connectors** go through the in-app settings page and land in files (`/api/config`, `/api/agent/connectors`, `/api/engine/config`, `regions.json`).
 
-## Current boundaries
+## Scope & limits
 
-Stating them beats hiding them — that's this project's habit anyway (`docs/known-defect-*.md` records 16 located defects and the reasoning behind each).
+This section states **what the project applies to** and **the trade-offs it accepts**. Located defects and the reasoning behind each are recorded in `docs/known-defect-*.md` (16 of them).
 
-| Boundary | Status |
+| Dimension | Status |
 |---|---|
 | Single-user, local | No auth on localhost by default; a single-token check can be enabled. **No** multi-user collaboration or role permissions |
 | Platform | Desktop packaging targets 64-bit Windows; the server and frontend are cross-platform |
