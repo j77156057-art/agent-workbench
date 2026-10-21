@@ -60,6 +60,7 @@ websocket-client>=1.7,<2
 # 本机恰好装过所以一直正常，干净检出时第一句 import 就 ModuleNotFoundError。
 # 版本约束留空由人定（工具刻意不猜版本），下列映射来自 dev_deps 的扫描结果。
 anyio            # api.py
+charset-normalizer   # tools.py 的编码嗅探（延迟导入，注释里写明「非硬依赖」，但代码确实调用它）
 cryptography     # secrets_store.py
 numpy            # tests/test_asset_gen.py
 psycopg-pool     # agent_runtime/game_workflow.py, tests/test_postgres_workflow_integration.py
@@ -67,7 +68,12 @@ pydantic         # agent_runtime/retrieval.py, api.py, api_routes/agent.py 等 8
 PyYAML           # data_formats.py
 sentence-transformers   # agent_runtime/retrieval.py（弱证据：本机未装发行包，映射靠同名）
 starlette        # api.py, api_routes/agent.py, api_routes/engine.py 等 32 处
-pywin32          # make_shortcut.py 的 pythoncom / win32com / win32con 三个模块（同一发行包）
+# pywin32 是**纯 Windows** 发行包（PyPI 上没有 Linux/macOS 的 wheel）。
+# 不加环境标记的话，CI（ubuntu-latest）的 `pip install -r requirements.txt` 会以
+# "ERROR: Could not find a version that satisfies the requirement pywin32
+#  (from versions: none)" 失败 —— 整条 lane 一步都跑不到，徽章常红。
+# 实测依据：GitHub Actions run#85 起，两个 matrix lane 全断在 "Install dependencies"。
+pywin32; sys_platform == "win32"   # make_shortcut.py 的 pythoncom / win32com / win32con 三个模块（同一发行包）
 
 # ---- 传递依赖里唯一的「无版本约束 + 只有 sdist」那个，显式钉死 ----
 #
