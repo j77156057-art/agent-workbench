@@ -3989,6 +3989,29 @@ def _python_exec_jail_prefix(granted_tier=1):
     return body
 
 
+def _unescape_literal_newlines(code):
+    """把「字面量 \\n / \\t」还原成真换行/制表符。
+
+    弱模型在 Action Input 这类**单行字段**里写多行代码时，换行会是字面的 `\\n`。
+    第一次编译失败、且代码里没有真实换行时，反转义一次（正常代码不受影响）。
+
+    ⚠ **必须在分类之前做**。`_python_exec_classify()` 是「跑不跑 / 要不要先弹窗」的
+    判据，它解析不了就一律回落到 tier 2「按人工确认处理」—— 于是模型最常见的那种
+    写法每次都要人点一次确认。反过来更糟：never 名单（凭据 / 系统关键目录 /
+    格式化命令）正是在 classify 里匹配的，看不懂的代码等于**没查**，
+    tier -1（永不放行）就降成了 tier 2（点一次确认就放行）—— 硬底线被削弱了。
+    先反转义再 classify，才既不多问、也不漏判。
+    """
+    text = str(code or "")
+    if "\\n" not in text or "\n" in text:
+        return text
+    try:
+        compile(text, "<python_exec>", "exec")
+    except SyntaxError:
+        return text.replace("\\n", "\n").replace("\\t", "\t")
+    return text
+
+
 def _python_exec_run(code, ceiling=1, allow_escalate=True):
     """python_exec 执行入口（步 1 三锚点之一：分派开关）。
 
@@ -4362,11 +4385,7 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
         return "未提供有效代码。"
     if getattr(sys, "frozen", False):
         return "分发版（DocMind.exe）未内置 Python 解释器，python_exec 仅在源码/venv 环境可用。"
-    try:
-        compile(code, "<python_exec>", "exec")
-    except SyntaxError:
-        if "\\n" in code and "\n" not in code:
-            code = code.replace("\\n", "\n").replace("\\t", "\t")
+    code = _unescape_literal_newlines(code)
     cwd = _get_code_root() or os.path.dirname(__file__)
     # 容器天然隔离路径不装 jail 前缀 → 无 bridge 桩 → 不支持 PTC；诚实回退直跑。
     try:
@@ -4625,11 +4644,7 @@ def _python_exec_direct(code, ceiling=1, allow_escalate=True):
         return "分发版（DocMind.exe）未内置 Python 解释器，python_exec 仅在源码/venv 环境可用。"
     # 弱模型常把多行代码写成单行、换行用字面量 \n/\t（Action Input 是单行字段）；
     # 首次编译失败且代码里没有真实换行时，反转义一次再执行（正常代码不受影响）。
-    try:
-        compile(code, "<python_exec>", "exec")
-    except SyntaxError:
-        if "\\n" in code and "\n" not in code:
-            code = code.replace("\\n", "\n").replace("\\t", "\t")
+    code = _unescape_literal_newlines(code)
     # 已索引代码库时在代码根目录内执行：脚本里的相对路径（如 open("app/src/...")）
     # 才能按项目语义解析；未配置代码库时维持旧行为（服务端目录）。
     cwd = _get_code_root() or os.path.dirname(__file__)
@@ -4867,6 +4882,7 @@ def python_exec(code):
       · 三连确认（3）：删除/覆盖 code_root 外既有文件、拉起子进程 → 红色高危，连确认 3 次。
       · 永不放行（-1）：凭据/NT、系统关键目录、格式化/磁盘级破坏 → 确认多少次都直接拒。
     """
+    code = _unescape_literal_newlines(code)
     if not exec_approval_enabled():
         # 旧语义回退：一律 ceiling=1 硬拦、不弹窗、不升级（等同改动前）。
         return _python_exec_run(code, ceiling=1, allow_escalate=False)
@@ -9680,9 +9696,9 @@ def game_screenshot(arg=""):
         frame = screen_capture.grab_embedded(project_pid)
     if frame is None:
         frame = screen_capture.grab_foreground()
-        source_kind = "foreground"
     else:
         source_kind = "embedded"
+        source_kind = "foreground"
     if frame is None:
         return ("截图失败：未检测到可抓取的运行窗口（可能未运行、处于无头环境或非 Windows）。"
                 "请先启动并嵌入引擎，或改用运行日志、受控 playtest 事件等证据，不要假设画面内容。")
