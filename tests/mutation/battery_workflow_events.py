@@ -64,6 +64,10 @@ BINDS = (
     # 现场层真跑起来也测的是真代码——4 条用例全绿，一条都抓不到（实测）。
     ('agent', '*'),
     ('SINK_TOOL_HOOKS', 'SINK_TOOL_HOOKS'),
+    # 「工具生命周期 + 模型等待」那份集合同样要换：测试里断言的是
+    # `set(SINK_LIFECYCLE_HOOKS)`，不换的话它读的还是**旧模块**的符号，
+    # 「转发集合里去掉模型等待这一对」那条变异就永远抓不到（实测活下来）。
+    ('SINK_LIFECYCLE_HOOKS', 'SINK_LIFECYCLE_HOOKS'),
     ('_exc_traceback', '_exc_traceback'),
     ('_tool_event_text', '_tool_event_text'),
 )
