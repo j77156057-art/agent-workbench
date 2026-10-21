@@ -33,11 +33,11 @@ opencode `Discovery` 原文：
 
 ```
 撤除前   26 工具 /  2947 tok
-撤除后  109 工具 / 13832 tok   （联网关）
-        116 工具 / 14490 tok   （联网开）
+撤除后  117 工具 / 15571 tok   （联网关，2026-10-21 实测）
+        125 工具 / 16530 tok   （联网开，2026-10-21 实测）
 ```
 
-**4.7 倍。** 这是明确的产品取舍，不是 bug 修复。
+**5.3 倍。** 这是明确的产品取舍，不是 bug 修复。
 
 ## 联网开关现在是唯一闸门
 
@@ -183,26 +183,30 @@ def test_the_web_switch_is_consulted_without_the_keyword_regex():
 # --------------------------------------------------------------------------
 
 def test_the_cost_is_the_documented_one():
-    """**记录代价**：4.7 倍，每次模型调用都付。
+    """**记录代价**：每次模型调用都付。
 
-    这条存在的意义是：将来有人看到 `14663` 这个数字想「优化」回去时，
+    这条存在的意义是：将来有人看到 `15571` 这个数字想「优化」回去时，
     会先撞到它，从而知道自己在撤掉什么。
 
-    数字**随工具集变化**，改工具就要更新它（2026-10-16 合并
-    feature/multimodal-verification 后 13832 → 14663，已归因到两处，
-    都不是「撤除没生效」）：
-      +522  eda_report_gate（分支新增的 EDA 报告门工具，schema 本身大）
-      +309  dev_agent_log（分支给它补了 domain/facet 声明，才进入有效集）
-    判据「撤除仍然生效」是有效集 111 < 注册表 114，且联网关时 web_* 被排除。
+    数字**随工具集变化**，改工具就要更新它。2026-10-21 实测（干净树 8e96bda，
+    Windows 与 ubuntu 一致）：**117 工具 / 15571 tok**（联网关）、125 工具 /
+    16530 tok（联网开）。相对 2026-10-16 记的 14663（111 工具），净 +908，
+    已归因到两处，都不是「撤除没生效」：
+      +1338  10 个新工具（engine_start 148 / engine_stop 76 / engine_reload 100 /
+             orchestrate 196 / delegate 97 / tool_search 90 / dev_use_skill 76 /
+             vision_click 127 / vision_locate_click 170 / eda_run_script 258）
+      -430   联网关时被排除的 web_* 从 3 个增到 7 个（多排除的那 4 个合计 430 tok；
+             7 个 web_* 的 schema 合计 655 tok）
+    判据「撤除仍然生效」是有效集 117 < 注册表 125，且联网关时 web_* 被排除。
     """
     a = _agent(web_enabled=False)
     schemas = tools_mod.tool_schemas(
         sorted(a._effective_tool_names()), registry=a.tools) or []
     cost = len(json.dumps(schemas, ensure_ascii=False)) // 4
-    assert 14000 < cost < 15500, (
-        "撤除后的 schema 成本实测 %d tokens，与记录的 14663 差得远 —— "
+    assert 14000 < cost < 16500, (
+        "撤除后的 schema 成本实测 %d tokens，与记录的 15571 差得远 —— "
         "要么工具数变了（请更新文档里的数字），要么撤除没生效" % cost)
-    assert len(schemas) >= 100, "有效工具数远低于记录的 111：%d" % len(schemas)
+    assert len(schemas) >= 100, "有效工具数远低于记录的 117：%d" % len(schemas)
 
 
 def test_progressive_prompt_compression_still_applies():

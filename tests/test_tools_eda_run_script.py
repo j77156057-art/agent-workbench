@@ -158,9 +158,17 @@ def test_missing_script_returns_needs(monkeypatch, tmp_path):
 
 
 def test_requires_code_root(monkeypatch):
+    """没选项目时要**说清楚怎么选**，而不是只说「没配置」。
+
+    工具现在的文案是「尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」
+    并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。」—— 断言钉住
+    **可行动的那一半**：既说清了缺什么，也说清了怎么补上。旧文案「尚未配置代码库」
+    只说了缺什么，用户拿不到下一步（CI 2026-10-21 实测：ubuntu 上这条红）。
+    """
     monkeypatch.setattr(tools, "_get_code_root", lambda: "")
     out = tools.eda_run_script(json.dumps({"tool": "vivado", "kind": "timing", "script": "x"}))
-    assert "尚未配置代码库" in out
+    assert "尚未选择项目" in out
+    assert "无法定位代码库" in out
 
 
 # ---- 正常路径 ----

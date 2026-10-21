@@ -6,6 +6,10 @@
 `screen_capture.grab_foreground` 返回确定性 BGRA，验的是**路由装配**是否正确，
 比对逻辑本身由 test_eda_visual_regression.py 覆盖。
 
+替身帧是 GDI 的，所以请求里**必须显式写 `capture=gdi`**：路由的 `capture=auto`
+是按平台解析的（nt→gdi，其余→x11），不钉死的话在 ubuntu 上会去走 x11 那条
+分支、替身帧压根没被用上。
+
 关键断言全部对齐开工文档 §0 信条：
 - 同源帧 → identical/pass（passed:true）。
 - 换了内容 → 绝不 pass（fail-closed：regression/localized，passed:false，可升级 VLM）。
@@ -66,8 +70,13 @@ def vr(tmp_path, monkeypatch):
     client = TestClient(app)
 
     def post(mode, **over):
+        # capture 必须**显式钉成 gdi**：路由的 capture=auto 是**按平台**解析的
+        # （nt→gdi，其余→x11），而本 fixture 注入的正是 GDI 抓屏替身。auto 在
+        # ubuntu 上会解析成 x11 → 替身帧压根没被用上 → 整条路由判成 no_frame
+        # （CI 2026-10-21 实测：本文件 4 条用例在 ubuntu 上全红）。
+        # 文件里另外两条路由用例（x11 / vnc）本来就是显式钉 capture 的。
         body = {"mode": mode, "source": "foreground", "view": "layout",
-                "golden_key": "t1"}
+                "golden_key": "t1", "capture": "gdi"}
         body.update(over)
         r = client.post("/api/eda/visual-regression", json=body)
         assert r.status_code == 200, r.text

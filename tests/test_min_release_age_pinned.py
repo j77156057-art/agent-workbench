@@ -91,7 +91,8 @@ def test_the_npm_version_supports_it():
     assert ver >= MIN_NPM, (
         "npm %s < %s —— `min-release-age` 在这个版本上**不被识别**，"
         "frontend/.npmrc 会变成一行静默无效的配置。"
-        "CI 用 node 22（自带 npm 11.x）；若你要降 node，先查这条。"
+        "CI 用 node 24（自带 npm 11.x，>= 11.6.0）；注意 **node 22 自带的是 npm 10.x**，"
+        "认不出这个键 —— 若你要降 node，先查这条。"
         % (".".join(map(str, ver)), ".".join(map(str, MIN_NPM))))
 
 

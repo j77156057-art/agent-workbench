@@ -47,7 +47,11 @@ jobs:
       - uses: actions/setup-node@v4
         if: matrix.backend == 'sqlite'
         with:
-          node-version: "22"
+          # node 24 自带的 npm 11.x 才认得出 frontend/.npmrc 的 `min-release-age`
+          # （需 npm >= 11.6.0）。node 22 自带 npm 10.9.x —— 那个键会被静默忽略，
+          # 于是本仓库唯一的 npm 侧供应链防护在 CI 里一直是**哑的**。
+          # 守卫：tests/test_min_release_age_pinned.py::test_the_npm_version_supports_it
+          node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies

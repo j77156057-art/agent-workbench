@@ -49,9 +49,15 @@ def test_github_routing_offline_injected():
 
     try:
         ma._github_readme_markdown = fake_readme
-        # 模拟启动器已在环境中解析为绝对路径且位于安全目录（沙箱可能未装 uvx/npx，故注入）
+        # 模拟启动器已在环境中解析为**绝对路径**且位于安全目录（沙箱可能未装 uvx/npx，故注入）。
+        # 绝对路径必须用**本平台**的形状：这里原来写死 "C:\\tools"，可那是 Windows 形状 ——
+        # Linux 上 os.path.isabs("C:\\tools/npx") 是 False，于是 build_candidate 判
+        # command_unresolved=True，信任闸门 R3 直接拒收，一条候选都出不来
+        # （CI 2026-10-21 实测：ubuntu 上这条红，Windows 上绿）。
         import os as _os
-        ma.mcp_client.resolve_command = lambda launcher: _os.path.join("C:\\tools", launcher)
+        import tempfile as _tf
+        _bin = _os.path.join(_tf.gettempdir(), "tools")
+        ma.mcp_client.resolve_command = lambda launcher: _os.path.join(_bin, launcher)
         ma._safe_dir = lambda cmd: True
         res = ma.discover_from_need(".", "bar mcp", web_enabled=True, github_search_fn=fake_search)
     finally:
