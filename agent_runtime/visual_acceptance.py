@@ -57,12 +57,29 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 def _edge_binary() -> str:
     configured = str(os.getenv("DOCMIND_EDGE_BIN") or "").strip()
     candidates = [configured] if configured else []
-    candidates.extend([
-        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        shutil.which("msedge") or "",
-        shutil.which("microsoft-edge") or "",
-    ])
+    if os.name == "nt":
+        candidates.extend([
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            shutil.which("msedge") or "",
+            shutil.which("microsoft-edge") or "",
+        ])
+    else:
+        # POSIX 上没有 Edge；CI 的 runner 镜像里装的是 Chrome 与 Chromium。
+        #
+        # ⚠ 这里**必须 Chrome 优先于 Edge**：runner 镜像里那份 Edge 用
+        # `--no-install-recommends` 装的，**没有** Chrome 那份安装脚本里的
+        # `libxtst6` 兜底，于是缺 `libXtst.so.6`、一起身就退 —— 而 stderr 默认
+        # 被丢进 DEVNULL，于是只留下一句「调试端口未就绪」，三种完全不同的
+        # 原因（缺运行库 / 沙箱被拒 / /dev/shm 太小）长得一模一样。
+        candidates.extend([
+            shutil.which("google-chrome") or "",
+            shutil.which("google-chrome-stable") or "",
+            shutil.which("chromium") or "",
+            shutil.which("chromium-browser") or "",
+            shutil.which("microsoft-edge") or "",
+            shutil.which("msedge") or "",
+        ])
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return str(Path(candidate))
@@ -74,8 +91,61 @@ def _edge_binary() -> str:
 _BASE_FLAGS = ("--headless=new", "--disable-gpu", "--no-first-run",
                "--no-default-browser-check", "--remote-debugging-port=0",
                "--remote-allow-origins=*")
+
+#: POSIX 上要额外给浏览器的开关：
+#:
+#: ① `--disable-dev-shm-usage` —— 容器里 /dev/shm 常常只有 64MB，共享内存不够
+#:    会让 Chromium 在启动阶段崩掉。
+#: ② `--no-sandbox` —— 带 AppArmor 的发行版（Ubuntu 24.04）默认拒掉 Chromium 系的
+#:    用户命名空间沙箱，浏览器**一起身就退**。这个开关关掉的是浏览器自己的安全
+#:    边界，所以**只在显式打开时**才加（CI 里开），Linux 桌面端默认不动。
+_POSIX_FLAGS = ("--disable-dev-shm-usage",)
+if os.name != "nt" and str(os.getenv("DOCMIND_BROWSER_NO_SANDBOX") or "").strip().lower() not in (
+        "", "0", "false", "no"):
+    _POSIX_FLAGS = _POSIX_FLAGS + ("--no-sandbox",)
+
+_BASE_FLAGS = _BASE_FLAGS + (() if os.name == "nt" else _POSIX_FLAGS)
+
+#: 浏览器 stderr 落地的文件名（放在 profile 目录里，端口没就绪时贴出来）。
+_STDERR_NAME = "browser-stderr.log"
+
+#: `browser_available()` 的进程内缓存。探测要真起一次浏览器（约 1~3 秒），
+#: 每个用例都付一遍不划算 —— 而一个文件里往往有十几条用例。
+_BROWSER_PROBE: dict | None = None
+
 _MAX_EXTRA_FLAGS = 32
 _PROFILE_PREFIX = "docmind-visual-preview-"
+
+
+def browser_available(timeout: float = 25.0) -> bool:
+    """真起一次浏览器并连上 CDP —— 起不来就是 False。
+
+    仓库里原有的守卫只判「二进制在不在」。CI 上的真实故障恰恰是
+    **二进制在、浏览器起不来**：runner 镜像自带 Edge，但它一起身就退。
+    于是守卫放行，37 条用例以 5 种不同形状暴露同一个根因
+    （端口未就绪 / `KeyError: 'failed'` / `KeyError: 'pattern'` /
+    `FileNotFoundError` / 拿不到 page id）—— 看不出它们是一件事。
+
+    探测走的是 `browser_session` 这条**生产路径**（不是另写一套），
+    所以它测的就是产品真正用的那条链路。结果进程内缓存：探测要起一次浏览器，
+    一个测试文件里往往有十几条用例，不能每条都付一遍。
+    """
+    global _BROWSER_PROBE
+    if _BROWSER_PROBE is not None:
+        return bool(_BROWSER_PROBE.get("ok"))
+    ok, reason = True, ""
+    try:
+        with browser_session(timeout=timeout):
+            pass
+    except Exception as exc:  # 探测本身不该把整个套件带崩
+        ok, reason = False, "%s: %s" % (type(exc).__name__, exc)
+    _BROWSER_PROBE = {"ok": ok, "reason": reason}
+    return ok
+
+
+def browser_probe_reason() -> str:
+    """最近一次 `browser_available()` 探测的失败原因（成功时是空串）。"""
+    return str((_BROWSER_PROBE or {}).get("reason") or "")
 
 
 class _JobBasicLimits(ctypes.Structure):
@@ -256,6 +326,41 @@ def _in_job(handle: Any, job: Any) -> bool:
     return bool(flag.value)
 
 
+def _browser_stderr_target(argv: list[str]):
+    """给浏览器准备 stderr 落点：从 argv 里的 `--user-data-dir=` 推出 profile 目录。
+
+    拿不到目录就退回 DEVNULL（原行为）。返回的文件对象由 `subprocess.Popen` 负责关。
+    """
+    for item in argv or ():
+        text = str(item)
+        if text.startswith("--user-data-dir="):
+            directory = text.split("=", 1)[1]
+            try:
+                return open(os.path.join(directory, _STDERR_NAME), "wb")
+            except OSError:
+                return subprocess.DEVNULL
+    return subprocess.DEVNULL
+
+
+def _browser_startup_diagnosis(profile_dir: Path | str) -> str:
+    """端口没就绪时，把浏览器的 stderr 尾巴贴出来。
+
+    没有这一段，浏览器一起身就退时，报错只有「调试端口未就绪」——
+    缺运行库（libXtst.so.6）、沙箱被 AppArmor 拒、/dev/shm 太小，
+    三种完全不同的原因长得一模一样，只能靠猜。
+    """
+    log = Path(str(profile_dir)) / _STDERR_NAME
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        text = ""
+    if not text:
+        return ("浏览器没有留下 stderr —— 它可能连启动都没开始就被拒了"
+                "（沙箱 / 缺运行库 / /dev/shm 太小）。")
+    tail = text.splitlines()[-12:]
+    return "浏览器 stderr 末尾：\n  " + "\n  ".join(tail)
+
+
 def spawn_browser_in_job(argv: list[str], creationflags: int = 0):
     """让浏览器【一出生】就在 kill-on-close 作业对象里。
 
@@ -265,10 +370,16 @@ def spawn_browser_in_job(argv: list[str], creationflags: int = 0):
     `PROC_THREAD_ATTRIBUTE_JOB_LIST` 让进程出生即在作业对象里，窗口归零。
 
     非 Windows 回退到 `subprocess.Popen`，job 为 None：那边本来就没有作业对象可用。
+
+    POSIX 分支把 stderr **落到 profile 目录**（而不是 DEVNULL）：浏览器一起身就退时，
+    缺运行库 / 沙箱被拒 / /dev/shm 太小三种原因长得一模一样，全被 DEVNULL 吞掉之后
+    只剩一句「调试端口未就绪」，根本无法区分。落盘之后 `_read_active_port` 的报错
+    能把 stderr 尾巴贴出来。
     """
     if os.name != "nt":
         process = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, creationflags=creationflags)
+                                   stderr=_browser_stderr_target(argv),
+                                   creationflags=creationflags)
         return process, None, ""
     kernel32 = _kernel32()
     job = _make_job()
@@ -433,7 +544,10 @@ def _read_active_port(path: Path, *, timeout: float = 15.0,
             last = exc
         if time.monotonic() >= deadline:
             raise VisualAcceptanceError(
-                _ACTIVE_PORT_TIMEOUT_HINT % (path, max(0.0, float(timeout)))) from last
+                "%s\n%s" % (
+                    _ACTIVE_PORT_TIMEOUT_HINT % (path, max(0.0, float(timeout))),
+                    _browser_startup_diagnosis(path.parent),
+                )) from last
         time.sleep(max(0.0, float(interval)))
 
 

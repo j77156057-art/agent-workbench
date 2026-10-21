@@ -249,6 +249,13 @@ class BrowserChainTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        from agent_runtime import visual_acceptance as visual
+        # 判据是「浏览器真能起」，不只是「二进制在」：CI 上 runner 镜像自带 Edge，
+        # 但它一起身就退 —— 没有守卫时，这三条会以「没拿到 page id」这种
+        # **看不出与浏览器有关**的形状报红。
+        if not visual.browser_available():
+            raise unittest.SkipTest("浏览器起不来，跳过浏览器完整链路：%s" % (
+                visual.browser_probe_reason() or "未知原因"))
         cls.port = 8793
         cls.srv = subprocess.Popen(
             [sys.executable, "-m", "http.server", str(cls.port)],

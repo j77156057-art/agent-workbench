@@ -27,6 +27,13 @@ from agent_runtime import visual_acceptance as visual  # noqa: E402
 
 
 def _browser_available():
+    """真起一次浏览器才算「有」——只判二进制在不在会漏掉「在、但起不来」。
+
+    CI 上 runner 镜像自带 Edge，但它一起身就退；守卫放行之后，下面这 3 条
+    用例会以「假设备没注进去」这种**看起来与浏览器无关**的形状报红。
+    """
+    if not visual.browser_available():
+        return ""
     try:
         return visual._edge_binary()
     except Exception:  # noqa: BLE001 - 没有浏览器就是没有
@@ -34,6 +41,8 @@ def _browser_available():
 
 
 BROWSER = _browser_available()
+BROWSER_SKIP = "浏览器起不来，跳过真实媒体回环：%s" % (
+    visual.browser_probe_reason() or "未知原因")
 
 
 def audio_packet(pcm: bytes, sequence: int = 1, *, kind: str = "audio.chunk",
@@ -439,7 +448,7 @@ class VerdictTests(unittest.TestCase):
         self.assertNotIn("Traceback", text)
 
 
-@unittest.skipUnless(BROWSER, "未找到 Edge/Chromium，跳过真实媒体回环")
+@unittest.skipUnless(BROWSER, BROWSER_SKIP)
 class BrowserLoopTests(unittest.TestCase):
     """这条是真回环：合成 WAV → 假设备 → 真 getUserMedia → WS → R0 解析 → 判定。"""
 

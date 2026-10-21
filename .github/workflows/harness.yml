@@ -38,6 +38,11 @@ jobs:
       DOCMIND_LIVE_RETRIEVAL_COLLECTION: ${{ vars.DOCMIND_LIVE_RETRIEVAL_COLLECTION || '' }}
       DOCMIND_REAL_GAME_PROJECT: ${{ vars.DOCMIND_REAL_GAME_PROJECT || '' }}
       DOCMIND_GODOT_EXECUTABLE: ${{ vars.DOCMIND_GODOT_EXECUTABLE || '' }}
+      # Chromium 系的用户命名空间沙箱在带 AppArmor 的 Ubuntu 24.04 上会被拒，
+      # 浏览器于是**一起身就退**，而 stderr 默认被丢进 DEVNULL —— 只剩一句
+      # 「调试端口未就绪」。这个开关关掉的是浏览器自己的安全边界，所以只在 CI
+      # 里开（Linux 桌面端默认不开），且只作用于一次性 runner。
+      DOCMIND_BROWSER_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -141,6 +146,35 @@ jobs:
           )
           test -n "$files"
           python -m pytest $files -q -p no:cacheprovider
+      - name: Browser preflight
+        if: matrix.backend == 'sqlite'
+        # 浏览器是真能力，不是「现场层」：它起不来时，后面 37 条用例会以 5 种
+        # 不同形状报红（端口未就绪 / KeyError:'failed' / KeyError:'pattern' /
+        # FileNotFoundError / 拿不到 page id），看不出是同一件事。
+        # 这里先起一次并把 stderr 打出来 —— 起不来就是**一条**清楚的报错。
+        run: |
+          # Chromium 需要 libXtst.so.6。runner 镜像的 install-google-chrome.sh
+          # 装了它，install-microsoft-edge.sh 用 --no-install-recommends 没装 ——
+          # 缺这个库时浏览器一起身就退，报错形状与「沙箱被拒」一模一样。
+          if ! ldconfig -p 2>/dev/null | grep -q libXtst; then
+            echo "libXtst missing; installing libxtst6"
+            sudo apt-get update -qq && sudo apt-get install -y -qq libxtst6
+          fi
+          echo "--- 候选浏览器 ---"
+          for bin in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge msedge; do
+            if command -v "$bin" >/dev/null 2>&1; then
+              echo "found: $bin -> $(command -v "$bin")"
+              "$bin" --version || true
+            fi
+          done
+          echo "--- 真起一次（走生产路径 browser_session）---"
+          python - <<'PY'
+          from agent_runtime import visual_acceptance as visual
+          ok = visual.browser_available(timeout=30)
+          print("browser_available =", ok)
+          print("reason =", visual.browser_probe_reason())
+          raise SystemExit(0 if ok else 1)
+          PY
       - name: Run full test suite
         if: matrix.backend == 'sqlite'
         env:

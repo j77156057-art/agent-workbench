@@ -47,6 +47,12 @@ def _toolchain():
         return None, "缺 node"
     try:
         from agent_runtime import visual_acceptance as visual
+        # 判据是「浏览器真能起」，不只是「二进制在」：CI 上 runner 镜像自带 Edge，
+        # 但它一起身就退 —— 只判二进制会让守卫放行，然后 12 条用例以
+        # `KeyError: 'failed'` 这种**与浏览器无关**的形状报红。
+        if not visual.browser_available():
+            return None, "浏览器起不来：%s" % (
+                visual.browser_probe_reason() or "未知原因")[:200]
         visual._edge_binary()
     except Exception as exc:  # noqa: BLE001 - 这里就是要"没浏览器就说清楚"
         return None, "缺浏览器：%s" % str(exc)[:80]

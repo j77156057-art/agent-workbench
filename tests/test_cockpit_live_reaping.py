@@ -58,6 +58,11 @@ def _msedge_pids_using(profile: str) -> list[int]:
 class CockpitLiveReapingTests(unittest.TestCase):
     def setUp(self):
         try:
+            # 判据是「浏览器真能起」，不只是「二进制在」：CI 上 runner 镜像自带
+            # Edge，但它一起身就退，于是这两条会以裸 FileNotFoundError 报红。
+            if not visual.browser_available():
+                self.skipTest("浏览器起不来：%s" % (
+                    visual.browser_probe_reason() or "未知原因"))
             visual._edge_binary()
         except visual.VisualAcceptanceError as exc:
             self.skipTest(str(exc))

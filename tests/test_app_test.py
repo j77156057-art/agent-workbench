@@ -816,6 +816,16 @@ class AskTierTests(Base):
 
 
 class LivePageTests(Base):
+    @classmethod
+    def setUpClass(cls):
+        from agent_runtime import visual_acceptance as visual
+        # 判据是「浏览器真能起」，不只是「二进制在」：CI 上 runner 镜像自带 Edge，
+        # 但它一起身就退 —— 没有守卫时，这四条会以「整页守卫异常：…端口未就绪」
+        # 的形状报红，看不出是环境问题还是产品问题。
+        if not visual.browser_available():
+            raise unittest.SkipTest("浏览器起不来，跳过真页面现场：%s" % (
+                visual.browser_probe_reason() or "未知原因"))
+
     def test_the_ask_tier_really_runs_a_turn_through_the_page(self):
         """真开一次问答页：点建议问题 → 真 `/api/chat` → 真 ReAct + 真工具 → 答案进 DOM。
 

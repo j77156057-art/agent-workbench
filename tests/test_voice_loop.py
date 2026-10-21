@@ -34,6 +34,12 @@ def _browser() -> str:
     # 只吞"确实没有浏览器"这一种异常。写错属性名（曾把 vl.visual 写成
     # vl.visual_acceptance）如果也被吞掉，整类现场测试会【静默跳过】——
     # 那比红更糟：看起来一切正常。
+    #
+    # 判据是「浏览器真能起」，不只是「二进制在」：CI 上 runner 镜像自带 Edge，
+    # 但它一起身就退 —— 只判二进制会让守卫放行，然后每条用例各自以不同形状
+    # 报红（`KeyError: 'pattern'` / 端口未就绪），看不出是一件事。
+    if not vl.visual.browser_available():
+        return ""
     try:
         return vl.visual._edge_binary()
     except vl.visual.VisualAcceptanceError:
@@ -434,7 +440,8 @@ class VerdictTableTests(unittest.TestCase):
         self.assertNotIn("要求 10~16", text)
 
 
-@unittest.skipUnless(TOOLCHAIN_OK and _browser(), "缺 node/esbuild 或浏览器，跳过真回路")
+@unittest.skipUnless(TOOLCHAIN_OK and _browser(), "缺 node/esbuild 或浏览器（%s），跳过真回路"
+                    % (vl.visual.browser_probe_reason() or "未知原因"))
 class LiveVoiceLoopTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="docmind_voice_e2e_")

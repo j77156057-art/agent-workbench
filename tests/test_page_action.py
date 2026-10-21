@@ -26,6 +26,15 @@ from agent_runtime import visual_acceptance as visual  # noqa: E402
 
 
 def _browser_available():
+    """真起一次浏览器才算「有」——只判二进制在不在会漏掉「在、但起不来」。
+
+    CI 上的真实故障恰恰是后者：runner 镜像自带 Edge，但它一起身就退，
+    而 stderr 默认被丢进 DEVNULL。守卫放行之后，下面这 9 条用例各自以
+    不同形状报红（端口未就绪 / KeyError / FileNotFoundError / 拿不到 page id），
+    看不出它们是同一件事。
+    """
+    if not visual.browser_available():
+        return ""
     try:
         return visual._edge_binary()
     except Exception:  # noqa: BLE001 - 没有就是没有
@@ -33,6 +42,8 @@ def _browser_available():
 
 
 BROWSER = _browser_available()
+BROWSER_SKIP = "浏览器起不来，跳过真实页面交互：%s" % (
+    visual.browser_probe_reason() or "未知原因")
 
 FIXTURE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>交互夹具</title></head><body>
 <h1 id="head">计数 0</h1>
@@ -915,7 +926,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn("已回收", good)
 
 
-@unittest.skipUnless(BROWSER, "未找到 Edge/Chromium，跳过真实页面交互")
+@unittest.skipUnless(BROWSER, BROWSER_SKIP)
 class BrowserActionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="docmind_page_e2e_")
