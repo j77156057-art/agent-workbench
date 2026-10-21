@@ -28,6 +28,8 @@ if ROOT not in sys.path:
 from agent_runtime import bat_guard as bg  # noqa: E402
 
 BS = chr(92)          # 反斜杠一律用 chr(92) 拼：.py 里的 `"...\\"` 读起来全是歧义
+                      # 只用于**批处理正文**（cmd 的路径分隔符就是 `\`）；拼**文件系统
+                      # 路径**必须用 pathlib——反斜杠在 Linux 上是文件名的一部分。
 Q = '"'
 
 
@@ -271,8 +273,13 @@ class CorpusFileTests(unittest.TestCase):
         self.write("run.bat", 'py x\r\n')
         (self.dir / ".venv").mkdir()
         (self.dir / "node_modules").mkdir()
-        self.write(".venv" + BS + "bad.bat", 'py x --root "%~dp0"\r\n')
-        self.write("node_modules" + BS + "bad2.bat", 'py x --root "%~dp0"\r\n')
+        # 路径必须用 pathlib 拼，不能拿 BS（chr(92)）拼：反斜杠在 Windows 上是分隔符，
+        # 在 Linux 上是**文件名的一部分**。写成 ".venv\bad.bat" 时，Linux 会当成一个
+        # 叫 `.venv\bad.bat` 的普通文件放在目录根下，剪枝根本没生效——这条用例在
+        # ubuntu 上必红，整块电池的对照组随之红掉，35 条变异一条都跑不到
+        # （CI 2026-10-21 实测：bat_guard 记 0/35，失败原因就是这一条）。
+        self.write(Path(".venv") / "bad.bat", 'py x --root "%~dp0"\r\n')
+        self.write(Path("node_modules") / "bad2.bat", 'py x --root "%~dp0"\r\n')
         (self.dir / "notes.txt").write_text("x", encoding="utf-8")
         found = [row.name for row in bg.discover(self.dir)]
         self.assertEqual(found, ["run.bat"])

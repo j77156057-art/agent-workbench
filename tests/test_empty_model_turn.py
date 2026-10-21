@@ -112,6 +112,21 @@ class EmptyModelTurnTests(unittest.TestCase):
             self.assertTrue(out.get("degraded") or not (out.get("conclusion") or "").strip(),
                             "空响应被判成功且既没标降级、结论也不空——下游会拿到假答案")
 
+    def test_an_empty_turn_is_not_reported_as_if_the_model_had_said_none(self):
+        """归一必须落成**空串**，不是把 None 的 repr 当成模型的正文交出去。
+
+        `if acc is None: acc = "None"` 一样不崩——所以「不崩」那条判据抓不住它。
+        但报告里会多出一段「模型最后一次输出：None」：模型明明什么都没说，报告却说
+        它说了「None」。下游拿到的是一句**假话**，比崩溃更难查（崩溃至少是红的）。
+        """
+        out = self._run([
+            "Thought: 先看目录\nAction: list_dir\nAction Input: path: .",
+            None,
+        ])
+        conclusion = out.get("conclusion") or ""
+        self.assertNotRegex(conclusion, r"(?<!\w)None(?!\w)",
+                            "空响应被当成模型的正文交出去了：结论里出现了字面量 None")
+
     def test_a_none_turn_on_the_very_first_turn_also_survives(self):
         """崩法与「第几轮」无关：旧代码第一轮就崩在 acc.strip()。"""
         out = self._run([None])

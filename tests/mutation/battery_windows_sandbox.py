@@ -190,13 +190,21 @@ MUTATIONS = [
     # 原来 `text=True` 且不给 encoding，按**本机区域编码**（本机 cp936）解码：子进程吐一个
     # 非 GBK 字节就让读线程抛 UnicodeDecodeError，`communicate()` 把那一路返回成 `None`
     # ——实测中文 / 非 UTF-8 字节 / 只写 stderr 全都得到 `rc=0` + **空输出**。
+    #
+    # 下面两条标成 LIVE：它们改的是 `run_isolated` 里**只有 Windows 才走得到**的那段
+    # `Popen`（非 Windows 走 `subprocess.run` 那条分支，压根不会执行到）。ubuntu 上
+    # 它们既抓不到也证明不了什么——按本文件开头定的规矩，这种记「本环境未验证」，
+    # 不记「活下来」。（Windows 上纯层就能抓住：`RunIsolatedOutputTests` 那两条在
+    # Windows 上走的就是这条 Popen 分支。）
     ("解码又退回本机区域编码（非 GBK 输出会让整条流变 None）",
      '                                   text=True, encoding=SUBPROCESS_ENCODING,\n'
      '                                   errors=SUBPROCESS_DECODE_ERRORS, env=dict(env),',
-     '                                   text=True, env=dict(env),'),
+     '                                   text=True, env=dict(env),',
+     ("live",)),
     ("解码错误改成 strict 而不是替换：非 UTF-8 输出又会让整条流消失",
      '                                   errors=SUBPROCESS_DECODE_ERRORS, env=dict(env),',
-     '                                   errors="strict", env=dict(env),'),
+     '                                   errors="strict", env=dict(env),',
+     ("live",)),
     ("固定的编码被换成 ascii（非 ASCII 输出全成乱码）",
      'SUBPROCESS_ENCODING = "utf-8"',
      'SUBPROCESS_ENCODING = "ascii"'),
