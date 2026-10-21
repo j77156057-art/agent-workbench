@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_runtime import visual_acceptance as visual
+from agent_runtime import url_policy
 
 MAX_SESSIONS = 3
 IDLE_TTL_SECONDS = 600.0
@@ -171,6 +172,7 @@ TARGET_JS = r"""(spec) => {
   }
   const rect = el.getBoundingClientRect();
   return {ok: true, tag: el.tagName.toLowerCase(), focused: document.activeElement === el,
+          type: (el.getAttribute('type') || '').toLowerCase(),
           value: typeof el.value === 'string' ? el.value.slice(0, 200) : '',
           x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2)};
 }"""
@@ -252,6 +254,23 @@ CONTAINS_JS = r"""(spec) => {
   }
   return out;
 }"""
+
+
+#: 公网专用的「就绪」判据：**readyState 不是 'loading' 就算就绪**。
+#:
+#: 为什么不用回环那条（`readyState === 'complete'`）：本机预览要等 bundle +
+#: `/api/config` 才算真能用，所以必须等 complete。但**公网站点没有这个语义** ——
+#: 长轮询、流式响应、埋点请求都会让 readyState 永远停在 'interactive'。
+#: 实测 python.org 就是这样：等 complete 等到 socket 超时（25s 的 ready 预算和
+#: 25s 的接收超时赛跑，socket 先断），整次 open 直接失败 —— 可页面其实早就能读能点了。
+#:
+#: 这个脚本**不抛异常**：超时就返回当前 readyState，由调用方如实报告"还在加载"，
+#: 而不是把一次成功的打开说成失败。
+PUBLIC_READY_JS = (
+    "(async()=>{const d=%(budget_ms)d,s=50;"
+    "for(let t=0;t<d;t+=s){if(document.readyState!=='loading')return document.readyState;"
+    "await new Promise(r=>setTimeout(r,s))}return document.readyState})()"
+)
 
 
 def _evaluate(devtools: Any, source: str, spec: dict[str, Any]) -> Any:
@@ -338,7 +357,8 @@ def _resolve(devtools: Any, spec: dict[str, Any]) -> dict[str, Any]:
 
 class _Session:
     def __init__(self, page_id: str, stack: contextlib.ExitStack, devtools: Any, root: Path,
-                 url: str, cleanup: dict, server: Any, thread: Any) -> None:
+                 url: str, cleanup: dict, server: Any, thread: Any,
+                 domain: str = "loopback") -> None:
         self.id = page_id
         self.stack = stack
         self.devtools = devtools
@@ -347,6 +367,13 @@ class _Session:
         self.cleanup = cleanup
         self.server = server
         self.thread = thread
+        # 会话的**访问域**。'loopback' = 只许本机回环（dev_page_action 用），
+        # 'public' = 只许公网（内置浏览器用）。两者互不相通：回环会话不能被公网工具
+        # 拿去点，公网会话也不能被回环工具当成本机页面——否则"只允许本机"这条
+        # 护栏就成了一个可以绕过的建议。
+        # 名字叫 domain 而不是 scope：click/read 的 scope 是"限定定位的 CSS 范围"，
+        # 两个含义挤在一个参数名上迟早会被用错。
+        self.domain = domain
         self.last_used = time.monotonic()
         self.opened_at = time.monotonic()
         self.counter = 0
@@ -402,12 +429,25 @@ def close_all() -> int:
 def live_pages() -> list[dict[str, Any]]:
     with _lock:
         return [{"page": pid, "url": row.url, "actions": row.counter,
+                 "domain": row.domain,
                  "idle_seconds": round(time.monotonic() - row.last_used, 1),
                  "age_seconds": round(time.monotonic() - row.opened_at, 1)}
                 for pid, row in _sessions.items()]
 
 
-def _get(page_id: str) -> _Session:
+def _off_domain(domain: str, href: str) -> bool:
+    """当前地址是否**越出了这个会话该待的范围**。
+
+    公网会话不能停在回环/内网上，回环会话不能跑到公网去。判据按 domain 分开，
+    因为"离开范围"的含义在两侧正好相反。
+    """
+    if str(domain) == "public":
+        ok, _why = url_policy.is_public_url(href)
+        return not ok
+    return not _loopback(href)
+
+
+def _get(page_id: str, domain: str = "") -> _Session:
     for stale in _sweep():
         stale.close()
     pid = str(page_id or "").strip()
@@ -419,6 +459,12 @@ def _get(page_id: str) -> _Session:
             row.last_used = time.monotonic()
     if row is None:
         raise PageActionError("找不到会话 %r：可能已超时回收或进程重启，请重新 open。" % pid)
+    # 域不匹配就拒：公网工具不能操作回环会话（那会让"只允许本机"变成可以绕过的
+    # 建议），回环工具也不能操作公网会话（它会把外站当成本机服务去点）。
+    if domain and row.domain != domain:
+        raise PageActionError(
+            "会话 %r 是 %s 会话，当前工具只操作 %s 会话——两者互不相通。"
+            % (pid, row.domain, domain))
     return row
 
 
@@ -537,15 +583,18 @@ def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: fl
     if verdict == "no_change" and value_landed:
         verdict = "typed"
         ok = True
-    left_loopback = not _loopback(page.get("href"))
-    if left_loopback or verdict == "error_seen":
+    # 越界判定按会话域来：公网会话一旦被页面重定向到内网/回环，就是越界；
+    # 回环会话跑到公网也是越界（"只允许本机"不能只是句提醒）。
+    left_scope = _off_domain(row.domain, page.get("href"))
+    left_loopback = (not _loopback(page.get("href"))) if row.domain != "public" else False
+    if left_scope or verdict == "error_seen":
         ok = False
     console_new = [item for item in row.devtools.console if item.get("level") == "error"]
     if delta["console"] <= 0:
         console_new = []
     failed_new = list(row.devtools.failed_requests) if delta["failed"] > 0 else []
     result = {"action": action, "page": row.id, "effect": verdict, "delta": delta, "ok": ok,
-              "element": matched, "left_loopback": left_loopback,
+              "element": matched, "left_loopback": left_loopback, "left_scope": left_scope,
               "url": page.get("href"), "title": page.get("title"),
               "screenshot": shot_path,
               # 给结构化消费方一个可判的依据：比了哪两帧、是否真有两帧。
@@ -616,7 +665,8 @@ def open_page(root: str | Path, *, url: str = "", entry: str = "", timeout: floa
         with _lock:
             _reservations -= 1
         raise
-    row = _Session(page_id, stack, devtools, base, page_url, cleanup, server, thread)
+    row = _Session(page_id, stack, devtools, base, page_url, cleanup, server, thread,
+                   domain="loopback")
     with _lock:
         # 登记与释放在同一个锁里做完：中间留空隙的话，并发 open 会短暂看到"既没会话也没名额"
         # 然后又多起一个浏览器。
@@ -636,11 +686,118 @@ def _session_gen(timeout: float, flags: list[str], cleanup: dict):
         yield devtools
 
 
+def open_external_page(root: str | Path, *, url: str, domain: str = "public",
+                       timeout: float = 25.0, flags: Any = ()) -> dict[str, Any]:
+    """打开一个**公网**地址并持有会话（内置浏览器用）。
+
+    与 `open_page` 的区别有三处，每一处都是有意为之：
+
+    1. **地址校验走 `url_policy.public_url`**（只允许公网），而不是回环校验。
+       内网地址、内网域名后缀、解析到内网的域名、云元数据地址一律拒绝。
+    2. **不起临时静态站**：公网地址不需要本机文件服务，`serve_static` 在这里
+       只会白起一个线程。
+    3. **URL 不追加 `docmind=<ns>` 缓存穿透参数**：那个参数是给本机预览用的，
+       加到别人的网址上会改变对方看到的 URL（有些站点会据此走不同分支）。
+
+    其余（浏览器启动通道、会话名额、TTL 回收、证据判定）与本机预览完全共用，
+    所以"浏览器怎么被起、怎么被收"只有一条实现。
+    """
+    global _reservations
+    base = Path(root).resolve()
+    if not base.is_dir():
+        raise PageActionError("当前项目目录不存在。")
+    target, error = url_policy.public_url(url)
+    if error:
+        raise PageActionError(error)
+    for stale in _sweep():
+        stale.close()
+    with _lock:
+        # 名额必须在启动之前占住：只看已登记会话的话，两个并发 open 各自看到 2/3
+        # 就会一起起浏览器，上限形同虚设。
+        if len(_sessions) + _reservations >= MAX_SESSIONS:
+            raise PageActionError(
+                "同时最多持有 %d 个页面会话（每个都是一整个浏览器进程）。先 action: close 回收，"
+                "当前在会话：%s。" % (MAX_SESSIONS, ", ".join(row["page"] for row in live_pages())))
+        _reservations += 1
+    cleanup: dict[str, Any] = {}
+    stack = contextlib.ExitStack()
+    page_id = uuid.uuid4().hex[:8]
+    try:
+        devtools = stack.enter_context(contextlib.contextmanager(_session_gen)(
+            timeout, visual.sanitize_flags(flags), cleanup))
+        base_timeout = max(10.0, float(timeout))
+        # 导航回包的等待要比就绪预算更宽：站点慢时 Chromium 会迟迟不给
+        # Page.navigate 的回包（实测 python.org 就是），两者赛跑的话先断的一定是
+        # socket，而页面其实已经在加载了。
+        devtools.set_timeout(base_timeout + 20.0)
+        navigate_note = ""
+        try:
+            devtools.call("Page.navigate", {"url": target})
+        except Exception as exc:
+            # 导航回包超时 ≠ 页面没打开。轮询一次当前地址：救得回来就继续用，
+            # 否则整次打开失败 —— 而模型只看到一句"连接超时"，既不知道是哪个站、
+            # 也不知道是该重试还是该放弃。
+            navigate_note = "导航回包超时（%s），已改用当前页面状态继续。" % type(exc).__name__
+            devtools.set_timeout(5.0)
+            landed_probe = ""
+            try:
+                landed_probe = str(devtools.evaluate(
+                    "() => (document.location && document.location.href) || ''") or "")
+            except Exception:
+                landed_probe = ""
+            if not landed_probe or landed_probe.lower() == "about:blank":
+                raise PageActionError(
+                    "打开 %s 超时：站点在 %.0f 秒内没有响应（网络慢、不可达或被拦）。"
+                    "换个站点或稍后重试。" % (target, base_timeout + 20.0))
+        # 公网页面的就绪判据比本机宽松（见 PUBLIC_READY_JS 的说明），并且
+        # **探针超时不致命**：页面可能还在加载，但它已经能读能点了 —— 那就继续用。
+        devtools.set_timeout(base_timeout + 15.0)
+        ready_state = ""
+        try:
+            ready_state = str(devtools.evaluate(PUBLIC_READY_JS % {
+                "budget_ms": int(visual.page_ready_budget(timeout) * 1000)}) or "")
+        except Exception:
+            # 就绪探针失败不是致命伤：地址策略已经在前面验过了，页面也已经导航过去了。
+            # 记下来，后面如实报告"就绪状态未知"，而不是让模型以为页面打不开。
+            ready_state = ""
+        finally:
+            devtools.set_timeout(base_timeout)
+        devtools.drain(0.5)
+        probe = _probe(devtools)
+        page = _evaluate(devtools, INSPECT_JS, {"selector": "html", "mode": "count"}) or {}
+    except Exception:
+        with contextlib.suppress(Exception):
+            stack.close()
+        with _lock:
+            _reservations -= 1
+        raise
+    row = _Session(page_id, stack, devtools, base, target, cleanup, None, None, domain=domain)
+    with _lock:
+        _sessions[page_id] = row
+        _reservations -= 1
+    console_errors = [item for item in devtools.console if item["level"] == "error"]
+    # 打开之后**再核一次**当前地址：目标站可能把我们重定向到内网（比如某个
+    # 单点登录的内部跳转）。这时必须如实报出来，而不是当成功。
+    landed = str(page.get("href") or "")
+    off_scope = _off_domain(domain, landed)
+    return {"action": "open", "page": page_id, "url": target, "href": landed,
+            "title": page.get("title"), "ready": ready_state,
+            "elements": page.get("count"), "mutation_observer": bool(probe["observer"]),
+            "console_errors": console_errors, "runtime_errors": list(devtools.runtime_errors),
+            "failed_requests": list(devtools.failed_requests),
+            "domain": domain, "off_scope": off_scope,
+            "navigate_note": navigate_note,
+            # 重定向后的地址与请求地址不一致，是模型最容易忽略的一件事：它会以为
+            # 自己还在原来那个站点上，于是把跳转后的内容当成原站点的话来引用。
+            "redirected": bool(landed) and landed.rstrip("/") != target.rstrip("/")}
+
+
 def click(root: str | Path, *, page: str = "", selector: str = "", text: str = "",
           nth: Any = None,
-          scope: str = "", settle: float = 600, screenshot: bool = True) -> dict[str, Any]:
+          scope: str = "", settle: float = 600, screenshot: bool = True,
+          domain: str = "loopback") -> dict[str, Any]:
     """真实点击：定位 → 滚进视口 → CDP 鼠标按下/抬起 → 比对是否真的发生了变化。"""
-    row = _get(page)
+    row = _get(page, domain)
     spec = _target_spec(selector, text, nth, scope)
     row.counter += 1
     found = _resolve(row.devtools, spec)
@@ -659,9 +816,10 @@ def click(root: str | Path, *, page: str = "", selector: str = "", text: str = "
 
 def type_text(root: str | Path, *, page: str = "", value: str = "", selector: str = "",
               text: str = "", nth: Any = None, scope: str = "", replace: bool = True,
-              settle: float = 600, screenshot: bool = False) -> dict[str, Any]:
+              settle: float = 600, screenshot: bool = False, allow_password: bool = False,
+              domain: str = "loopback") -> dict[str, Any]:
     """往【刚才定位到的那个】元素里插文本：走 `Input.insertText`，Vue/React 的 input 监听会收到。"""
-    row = _get(page)
+    row = _get(page, domain)
     payload = str(value if value is not None else "")
     if len(payload) > MAX_VALUE_CHARS:
         raise PageActionError("输入内容超过 %s 字符上限。" % MAX_VALUE_CHARS)
@@ -673,6 +831,15 @@ def type_text(root: str | Path, *, page: str = "", value: str = "", selector: st
     held = _evaluate(row.devtools, TARGET_JS, {"replace": bool(replace), "select": bool(replace)}) or {}
     if not held.get("ok"):
         raise PageActionError("元素在定位之后消失了（%s），没有输入任何内容。" % held.get("reason"))
+    # 密码框护栏：往 `type=password` 的输入框里打字，等于把凭据交给这个网站。
+    # 本机开发服务里不存在这种框，所以这条只对**外部站点**有意义 —— 但也正因为
+    # 外部站点是不可控的一方（页面内容可能是敌意输入，会诱导模型"把密码填上去"），
+    # 这里要求调用方**显式**声明，而不是让它默认发生。要登录请让用户自己操作。
+    if str(held.get("type") or "").lower() == "password" and not allow_password:
+        raise PageActionError(
+            "目标是密码框（type=password），已拒绝输入。往外部站点的密码框里写凭据"
+            "必须是用户明确的动作——如果确实要登录，请让用户自己在浏览器里输入；"
+            "确实要由本工具写入时，显式声明 allow_password: true。")
     if payload:
         row.devtools.call("Input.insertText", {"text": payload})
     # 回读要按元素实际承载内容的方式取：`<input>` 的 innerText 恒为空，只看 text 就等于
@@ -690,9 +857,10 @@ def type_text(root: str | Path, *, page: str = "", value: str = "", selector: st
 
 
 def press_key(root: str | Path, *, page: str = "", key: str = "", selector: str = "",
-              settle: float = 600, screenshot: bool = False) -> dict[str, Any]:
+              settle: float = 600, screenshot: bool = False,
+              domain: str = "loopback") -> dict[str, Any]:
     """按一个键（只认固定键表）。给了 selector 就先把焦点放到那个元素上。"""
-    row = _get(page)
+    row = _get(page, domain)
     name = str(key or "").strip().lower()
     if name not in KEYS:
         raise PageActionError("按键 %r 不在支持列表里。支持：%s；组合键请改用 click 或 type。"
@@ -715,9 +883,10 @@ def press_key(root: str | Path, *, page: str = "", key: str = "", selector: str 
 
 
 def wait_for(root: str | Path, *, page: str = "", selector: str = "", state: str = "present",
-             value: str = "", timeout: float = 4.0) -> dict[str, Any]:
+             value: str = "", timeout: float = 4.0,
+             domain: str = "loopback") -> dict[str, Any]:
     """等一个条件成立。超时就是未通过，并附上当时看到的状态与新出现的报错。"""
-    row = _get(page)
+    row = _get(page, domain)
     kind = str(state or "present").strip().lower()
     if kind not in WAIT_STATES:
         raise PageActionError("state 只支持 %s，收到 %r。" % ("|".join(WAIT_STATES), state))
@@ -761,8 +930,8 @@ def wait_for(root: str | Path, *, page: str = "", selector: str = "", state: str
 
 def read_page(root: str | Path, *, page: str = "", selector: str = "", mode: str = "text",
               attr: str = "", nth: Any = None, held: bool = False,
-              needle: str = "") -> dict[str, Any]:
-    row = _get(page)
+              needle: str = "", domain: str = "loopback") -> dict[str, Any]:
+    row = _get(page, domain)
     kind = str(mode or "text").strip().lower()
     if kind not in READ_MODES:
         raise PageActionError("mode 只支持 %s，收到 %r。" % ("|".join(READ_MODES), mode))
@@ -820,17 +989,22 @@ def _read_contains(row: _Session, css: str, needle: str) -> dict[str, Any]:
 
 
 def locate(root: str | Path, *, page: str = "", selector: str = "", text: str = "",
-           nth: Any = None, scope: str = "") -> dict[str, Any]:
+           nth: Any = None, scope: str = "", domain: str = "loopback") -> dict[str, Any]:
     """只看不动：这个定位会命中什么、可不可见、中心在哪个坐标。歧义也照样列出来。"""
-    row = _get(page)
+    row = _get(page, domain)
     spec = _target_spec(selector, text, nth, scope)
     found = dict(_evaluate(row.devtools, RESOLVE_JS, spec) or {})
     found["ambiguous"] = int(found.get("count") or 0) > 1 and not spec["nth_given"]
     return {"action": "locate", "page": row.id, "ok": True, **found}
 
 
-def close_page(page: str = "") -> dict[str, Any]:
+def close_page(page: str = "", domain: str = "") -> dict[str, Any]:
     pid = str(page or "").strip()
+    with _lock:
+        row = _sessions.get(pid)
+        if row is not None and domain and row.domain != domain:
+            raise PageActionError("会话 %r 是 %s 会话，当前工具只回收 %s 会话。"
+                                  % (pid, row.domain, domain))
     with _lock:
         row = _sessions.pop(pid, None)
     if row is None:
@@ -941,8 +1115,18 @@ def render(result: dict[str, Any]) -> str:
     for item in (result.get("failed_requests") or [])[:3]:
         lines.append("新失败请求：%s（%s）" % (str(item.get("url"))[:120], item.get("kind")))
     if result.get("left_loopback"):
+        # 回环会话跑到了公网：沿用既有措辞「已离开本机」——
+        # 它是这条护栏一直以来的说法，别在没有理由的时候改掉（既有测试守着它，
+        # 而且模型/文档已经按这句话理解）。
         lines.append("【已离开本机】当前地址不是回环地址：%s——这个会话不再受"
                      "「只访问本机」约束，请 close 后重新 open 本机地址。" % str(result.get("url"))[:120])
+    elif result.get("left_scope"):
+        # 公网会话越界（被页面重定向到内网/回环）：这不是"结果不好看"，是**这个会话
+        # 已经不在它该待的地方**，继续操作它就等于让模型在内网里点东西 ——
+        # 所以明说，并要求关掉重来。
+        lines.append("【已离开允许的访问域】当前地址 %s 越出了这个会话的范围"
+                     "（公网会话只许公网）——请 action: close 回收后重新 open 合法地址。"
+                     % str(result.get("url"))[:120])
     if result.get("effect") == "no_change":
         lines.append("没有观察到任何变化：可能点到的不是你要的控件，或这个控件本来就不改 DOM（"
                      "这时用 read/locate 取具体状态再判断，不要当成成功）。")
@@ -965,5 +1149,5 @@ def render(result: dict[str, Any]) -> str:
 
 
 __all__ = ["IDLE_TTL_SECONDS", "KEYS", "MAX_SESSIONS", "PageActionError", "click", "close_all",
-           "close_page", "live_pages", "locate", "open_page", "press_key", "read_page", "render",
-           "type_text", "wait_for"]
+           "close_page", "live_pages", "locate", "open_external_page", "open_page", "press_key",
+           "read_page", "render", "type_text", "wait_for"]

@@ -9375,6 +9375,128 @@ def game_playtest(arg):
 
 
 # ---------------------------------------------------------------------------
+# 引擎控制：让模型能自己起引擎 → 截图 → 判断画面 → 迭代
+#
+# 此前模型只能等用户手动点 UI 把引擎跑起来，再用 game_screenshot 看一眼**已经**
+# 在跑的引擎 —— 于是「改完代码 → 画面到底变了没有」这条闭环对模型是断的：
+# 模型自己不能起，也就没法自己判断。
+#
+# 下面三个工具走的是 game_workbench 里**同一份**实现（GPU 租约、引擎日志、
+# 进程表、嵌入状态全共用），不是另起一套 —— 否则用户点的引擎和模型起的引擎
+# 互相看不见，租约也会泄漏。
+# ---------------------------------------------------------------------------
+
+def _engine_host_hwnd():
+    """桌面宿主窗口句柄；没有桌面宿主（如纯 Web 端）就是 0。
+
+    0 的含义是「不做嵌入」：底层的嵌入分支会满世界找宿主窗口，没有宿主时
+    既白等一轮轮询，又容易把「没嵌上」说成「启动失败」。
+    """
+    try:
+        from projects import current_project_id
+        from desktop_bridge import host_hwnd
+        return int(host_hwnd(current_project_id() or None) or 0)
+    except Exception:
+        return 0
+
+
+def engine_start(arg=""):
+    """启动项目当前的引擎进程（Godot / Unity / Unreal，按项目配置）。
+
+    输入（多行 keyed）：
+      scene: res://scene.tscn     # 可选；Godot 下带场景会以编辑器模式打开
+      embed: true|false           # 可选；是否把引擎窗口嵌进桌面宿主
+    返回 JSON：ok / running / pid / gpu / embedded / embed_error / notice。
+    `embedded=false` **不等于**启动失败——它说的是「引擎起来了，但没嵌进窗口」。
+    """
+    root = _get_code_root()
+    if not root:
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
+    f = _parse_keyed(arg or "", ["scene", "embed"])
+    embed = str(f.get("embed") or "").strip().lower() in ("1", "true", "yes", "on")
+    from agent_runtime import engine_tools
+    result = engine_tools.engine_start(root, scene=str(f.get("scene") or "").strip(),
+                                       embed=embed, host_hwnd=_engine_host_hwnd())
+    return json.dumps(result, ensure_ascii=False)
+
+
+def engine_stop(arg=""):
+    """停止项目当前的引擎进程（会杀掉整棵进程树，并先解除嵌入）。
+
+    输入：无。返回 JSON：ok / stopped / killed。
+    """
+    root = _get_code_root()
+    if not root:
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
+    from agent_runtime import engine_tools
+    return json.dumps(engine_tools.engine_stop(root), ensure_ascii=False)
+
+
+def engine_reload(arg=""):
+    """热重载运行中的引擎（可审计的快速重启：保存启动参数 → 停旧进程 → 同参重启）。
+
+    输入：无。返回 JSON：ok / reloaded / reload_mode / previous_pid。
+    引擎没在跑或不是 Godot 时会返回 ok=false 与中文原因。
+    """
+    root = _get_code_root()
+    if not root:
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
+    from agent_runtime import engine_tools
+    return json.dumps(engine_tools.engine_reload(root), ensure_ascii=False)
+
+
+def browser_action(arg=""):
+    """内置浏览器：在**公网网页**里真的做动作并回报是否真的生效。
+
+    与 `dev_page_action` 的分工：那个工具只许本机回环地址（点自己的开发服务），
+    本工具只许**公网**（看文档、查资料、读公开 API）。两者的会话互不相通。
+
+    输入（多行 keyed）：
+      action: open|click|type|press|wait|read|locate|list|close
+      page: <会话 id>                # open 之外必填；open 的返回里就有
+      url: https://example.com/docs   # open 用；必须是公网地址
+      selector: button.submit        # 定位一：CSS
+      text: 文档                     # 定位二：可见文字（整串相等优先，落空才退到包含）
+      nth: 0                         # 命中多个时【必须】显式指定要点第几个
+      scope: .panel                  # 可选，限定 text 定位的搜索范围
+      value: 要输入的文本            # type
+      key: Enter                     # press；只支持固定键表，组合键请改用 click/type
+      state: present|absent|visible|hidden|text   # wait
+      mode: text|value|attr|html|count|contains   # read
+      attr: href                     # read 的 mode: attr
+      needle: 版本说明               # read 的 mode: contains（selector 当容器）
+      timeout: 4                     # wait 的等待秒数
+      settle: 600                    # 动作后观察多久（毫秒，上限 5000）
+      screenshot: true|false         # click 是否需要截图
+      allow_password: true|false     # 往密码框写字必须显式给这个
+    动作后给 effect：changed / navigated / reloaded / typed / error_seen / no_change。
+    `no_change` 就是没观察到变化，不要当成功。
+    护栏：只许公网（内网地址、解析到内网的域名、云元数据地址一律拒绝）；
+    不接受任意 JS 执行；往 `type=password` 的输入框写字必须显式 allow_password。
+    用完必须 action: close 回收（同时最多 3 个会话）。
+    """
+    root = _get_code_root()
+    if not root:
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
+    from agent_runtime import browser_tool
+    fields = _parse_keyed(arg or "", list(browser_tool.SPEC_KEYS))
+    unknown = fields.pop("__unknown__", None)
+    if unknown:
+        return ("browser_action 有不认识的参数名：%s。可用：%s。"
+                "（写错的键名不会报错、会把上一个字段的值一起毁掉，所以这里直接拦下。）"
+                % (", ".join(unknown), "/".join(browser_tool.SPEC_KEYS)))
+    result = browser_tool.run_browser_action(root, fields)
+    text = str(result.get("text") or "")
+    shot = str(result.get("screenshot") or "")
+    if not shot or not result.get("ok"):
+        return ToolResult(bool(result.get("ok")), text)
+    image = _screenshot_data_url(shot, root)
+    if not image:
+        return ToolResult(bool(result.get("ok")), text)
+    return ToolResult(True, text, data={"images": [image], "image_sources": [shot]})
+
+
+# ---------------------------------------------------------------------------
 # game_screenshot：运行画面截图观察
 #
 # 优先级：已启用连接器的截图类 MCP 工具 → 当前项目嵌入引擎窗口 → 系统前台窗口。
@@ -11216,6 +11338,81 @@ TOOLS = {
     "game_impact": {"description": "按符号或关键词分析代码影响文件，输入 query。", "func": game_impact},
     "game_playtest": {"description": "在项目根目录运行 Playtest 命令，输入 command/timeout。", "func": game_playtest},
     "game_screenshot": {"description": "截取当前引擎运行画面作为视觉观察：可选输入 target: embedded|foreground（默认 embedded，嵌入窗口不可用时自动改抓前台窗口）。优先使用已启用引擎连接器的截图能力，其次抓取工作台内嵌窗口；JPEG 保存到项目 .docmind/screenshots/ 并回传图片。截图只是某一瞬间的观察，不是代码事实；无窗口/无头环境会明确失败，那时改用运行日志或受控 playtest 证据，不要臆测画面。", "func": game_screenshot},
+    "engine_start": {
+        "description": (
+            "启动项目当前的引擎进程（Godot / Unity / Unreal，按项目配置走），"
+            "让模型能自己跑起来看画面，而不必等用户手动点。\n"
+            "输入 keyed 多行：`scene: res://scene.tscn`（可选，Godot 下带场景会以编辑器模式打开）、"
+            "`embed: true`（可选，是否把引擎窗口嵌进桌面宿主）。\n"
+            "返回 JSON：`ok`/`running`/`pid`/`gpu`/`embedded`/`embed_error`/`notice`。\n"
+            "⚠ `embedded:false` **不等于启动失败**——它说的是「引擎起来了，但没嵌进窗口」"
+            "（没有桌面宿主时就是这样）。别为此重试启动；要看画面用 game_screenshot。\n"
+            "引擎已经在跑时直接返回当前状态，不会起第二个。"
+        ),
+        "func": engine_start,
+        # 起/停/重启引擎会占 GPU 租约、拉起进程树，必须按"会改东西"算：
+        # 显式声明之前它落在默认档（read_local / pure / parallel_safe=True），
+        # 于是只读角色也能拿到它，还被允许和别的工具并发。
+        "capability": "exec",
+        "side_effect": "mutating",
+        "parallel_safe": False,
+    },
+    "engine_stop": {
+        "description": (
+            "停止项目当前的引擎进程（先解除嵌入、再杀掉整棵进程树）。\n"
+            "输入：无。返回 JSON：`ok`/`stopped`/`killed`。"
+        ),
+        "func": engine_stop,
+        "capability": "exec",
+        "side_effect": "mutating",
+        "parallel_safe": False,
+    },
+    "engine_reload": {
+        "description": (
+            "热重载运行中的引擎（可审计的快速重启：保存启动参数与嵌入矩形 → 停旧进程 → 同参重启）。\n"
+            "输入：无。返回 JSON：`ok`/`reloaded`/`reload_mode`/`previous_pid`。\n"
+            "引擎没在跑、或不是 Godot 时会返回 ok=false 与中文原因——那是事实，不要当成失败重试。"
+        ),
+        "func": engine_reload,
+        "capability": "exec",
+        "side_effect": "mutating",
+        "parallel_safe": False,
+    },
+    "browser_action": {
+        "description": (
+            "内置浏览器：在**公网网页**里真的做动作并回报是否真的生效——点、填、按键、等条件、读状态。\n"
+            "和 dev_page_action 的分工：那个只许**本机回环**（点自己的开发服务），"
+            "本工具只许**公网**（看官方文档、查资料、读公开 API）。两者的会话互不相通。\n"
+            "为什么需要它：web_fetch 只给纯文本，页面上那些要交互才拿得到的内容"
+            "（展开折叠区、翻页、填搜索框、展开图表）就拿不到，模型只能靠猜。\n"
+            "输入 keyed 多行：`action: open|click|type|press|wait|read|locate|list|close`、"
+            "`page: <会话 id>`（open 之外必填）、`url: https://...`（open 用）、"
+            "`selector:`/`text:`/`nth:` 定位、`value:` 文本、`key: Enter`、"
+            "`state: present|absent|visible|hidden|text`、`mode: text|value|attr|html|count|contains`、"
+            "`attr: href`、`needle: 要找的词`、`timeout: 4`、`settle: 600`、`screenshot: true|false`、"
+            "`allow_password: true|false`。\n"
+            "**每个动作都回报是否真的生效**：effect 取 `changed`/`navigated`/`reloaded`/`typed`/"
+            "`error_seen`/`no_change`，并附 DOM 变更、新 console 错误、新失败请求的计数。"
+            "`no_change` 就是没观察到变化，不要当成功。隐藏、禁用、或命中多个却没给 `nth` 的"
+            "元素一律拒绝执行，并把候选清单回给你。\n"
+            "护栏：只许公网（内网地址、解析到内网的域名、云元数据地址一律拒绝）；"
+            "不接受任意 JS 执行；往 `type=password` 的输入框写字必须显式 `allow_password: true`。\n"
+            "⚠ 点到的按钮可能**真的产生外部副作用**（登录、提交表单、下单）——"
+            "只在确定该做时点。用完必须 action: close 回收（同时最多 3 个会话）。"
+        ),
+        "func": browser_action,
+        # 显式声明三件事，缺一件都会出事：
+        # ① capability=network —— 超时钩子靠它给外网工具放宽超时；
+        #    不声明会落成 read_local，于是「这是个联网工具」这件事在运行期看不见。
+        # ② group="web" —— **联网开关判的是 group，不是 capability**（见 agent.py
+        #    的 _web_blocked）。不声明就等于这个工具无视用户的联网开关。
+        # ③ side_effect=mutating + parallel_safe=False —— 点外站按钮可能真的提交
+        #    表单；而且会话是有状态的，多个动作并发会把页面状态搅乱。
+        "capability": "network",
+        "side_effect": "mutating",
+        "parallel_safe": False,
+        "group": "web",
+    },
     "dev_desktop_capture": {"description": "桌面自动化视觉技能的安全观察入口：截取当前项目嵌入窗口或前台窗口，输入 target: embedded|foreground。只返回真实画面和 native 预览 artifact，不直接点击、输入或修改软件状态；状态修改必须调用已批准的应用 MCP、插件或其他明确工具。", "func": dev_desktop_capture},
     "dev_desktop_action": {"description": "执行一个经过项目审批的桌面动作：action=click|type|drag|key|save，target=embedded|foreground。click/drag 使用窗口客户区 x/y（drag 另给 to_x/to_y），type 使用 text，key 使用安全键名或 Control_L+s。首次调用会返回 desktop_action 审批请求；用户确认后必须用完全相同参数重试。禁止终端、Win 键、任意 HWND 和窗口枚举。", "func": dev_desktop_action},
     "dev_serve": {

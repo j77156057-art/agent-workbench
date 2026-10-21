@@ -49,9 +49,9 @@ DOMAINS: Mapping[str, tuple[str, str]] = {
     "git": ("版本与提交", "看 diff 与 log、做提交"),
     "data": ("数据与产物", "识别/生成数据文件、制作 DOCX/PDF/PPTX/XLSX、算数值"),
     "jobs": ("进程与后台任务", "跑命令与 Python、查看与取消后台任务"),
-    "web": ("外网检索", "搜索、抓取页面、字幕、翻译、天气"),
+    "web": ("外网检索与浏览", "搜索、抓取页面、在真实浏览器里打开并交互网页、字幕、翻译、天气"),
     "knowledge": ("知识与记忆", "检索已上传资料、保存与检索记忆、召回经验"),
-    "game": ("游戏开发", "引擎截图、数值模拟、配置校验、发布前检查"),
+    "game": ("游戏开发", "启停与热重载引擎、引擎截图、数值模拟、配置校验、发布前检查"),
     "eda": ("芯片与 EDA 验证", "真跑 Vivado/KLayout/仿真、解析报告为结构化事实、给三态验收结论"),
     "net": ("网络诊断", "发 HTTP 请求观察真实响应"),
     "catalog": ("工具目录", "按大类查工具清单与用法；不确定某个工具怎么调时先查它"),
@@ -126,6 +126,11 @@ _reg("jobs", "后台任务", "dev_job_logs", "dev_job_cancel")
 _reg("web", "检索与抓取", "web_search", "web_search_batch", "web_fetch",
      "web_research", "web_subtitles")
 _reg("web", "其他", "web_transport", "web_weather")
+# 内置浏览器：web_fetch 只给纯文本，页面上"要交互才拿得到"的内容拿不到，
+# 模型于是开始猜页面写了什么 —— 那是这类任务里最贵的一种错。这个工具让模型
+# 能在**公网**网页上真的点/填/等/读。⚠️ 与 dev_page_action 分工明确：那个只许
+# 本机回环（点自己的开发服务），这个只许公网，两个会话域互不相通。
+_reg("web", "网页交互", "browser_action")
 
 # EDA 自成一类：这两个工具都是"拿 EDA 报告说话"的，只是一个解析已有正文、
 # 一个真跑工具。原先报告门挂在"外网检索"下（因为它会抓 url），模型要在
@@ -142,6 +147,10 @@ _reg("knowledge", "记忆与经验", "memory_save", "memory_search", "memory_for
 _reg("game", "验证", "game_release_check", "game_validate_data", "game_playtest")
 _reg("game", "观察与模拟", "game_screenshot", "game_simulate", "game_impact")
 _reg("game", "任务", "game_upsert_task")
+# 引擎控制：此前只有 HTTP 端点（人点 UI 用的），模型只能等用户手动点完，
+# 再用 game_screenshot 看一眼**已经**在跑的引擎 —— 于是"改完代码 → 画面变了
+# 没有"这条闭环对模型是断的。engine_* 与 HTTP 端点走同一份底层实现。
+_reg("game", "引擎控制", "engine_start", "engine_stop", "engine_reload")
 
 _reg("net", "探测", "dev_http_request")
 

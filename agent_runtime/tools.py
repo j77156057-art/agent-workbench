@@ -138,11 +138,18 @@ _NETWORK_TOOLS = {
     "dev_http_request", "dev_mcp_call", "dev_list_connector_tools",
     "dev_mcp_probe", "dev_mcp_discover",
     "dev_mcp_search",
+    # 内置浏览器：真开公网网页并与之交互（点/填/读）。它与 web_fetch 的差别是
+    # **能交互**——页面上要点击/展开才拿得到的内容，纯文本抓取拿不到。
+    # 必须在表里：按名字求并集的消费者（只读角色护栏等）靠它识别"会跨外网"。
+    "browser_action",
 }
 _EXEC_TOOLS = {"python_exec", "run_command", "game_playtest", "self_verify", "dev_preview_adapter_test",
                # 真跑 EDA 工具（Vivado/KLayout/仿真）：执行面由 eda_tcl 的固定 argv 模板限定，
                # 不是任意 shell；脚本内容另有 TCL 护栏（见 eda_tcl.guard_tcl_script）。
-               "eda_run_script"}
+               "eda_run_script",
+               # 引擎启停/热重载：会拉起/杀掉进程树并占 GPU 租约，与 game_playtest 同级
+               # （都是"执行某个进程"），但**不碰工作区文件**。
+               "engine_start", "engine_stop", "engine_reload"}
 _ADMIN_TOOLS = {
     "dev_approve", "dev_commit", "dev_commit_all", "dev_rollback_changeset",
     "dev_apply_regions", "dev_add_region", "init_regions", "dev_install_tool",
