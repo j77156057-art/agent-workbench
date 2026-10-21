@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// DocMind 开发工作台 · P0 任务 4：多标签编辑 + 保存 + 新建/改名/删除。
+// Agent Workbench 开发工作台 · P0 任务 4：多标签编辑 + 保存 + 新建/改名/删除。
 import { onMounted, onBeforeUnmount, computed, defineAsyncComponent, nextTick, reactive, ref, watch, Teleport } from 'vue'
 import FileTree from './components/FileTree.vue'
 import CodeView from './components/CodeView.vue'
@@ -389,10 +389,10 @@ onBeforeUnmount(() => {
           </svg>
         </span>
         <!-- 2026-10-19：顶栏右侧原本有一个「问答页」文字链接，现并入品牌 ——
-             品牌即产品入口（点 DocMind 回问答页），顶栏右侧只留「设置 / 更多」。
+             品牌即产品入口（点 Agent 工作台 回问答页），顶栏右侧只留「设置 / 更多」。
              问答页那边也有一个对称的「代码工作台」入口，双向可达。 -->
         <span class="wb-brand-name">
-          <a class="wb-brand-home" href="/" title="回到 AI 问答页">DocMind</a>
+          <a class="wb-brand-home" href="/" title="回到 AI 问答页">Agent 工作台</a>
           <em>代码工作台</em>
         </span>
       </div>
@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
 
     <div v-if="demoMode" class="wb-demo-banner">
       <b>示例演示</b>
-      <span>你正在浏览的是离线演示版，所有数据均为示例。在本地启动 DocMind 并连接你的项目后，这里会显示真实文件和真实问答。</span>
+      <span>你正在浏览的是离线演示版，所有数据均为示例。在本地启动 Agent 工作台 并连接你的项目后，这里会显示真实文件和真实问答。</span>
     </div>
 
     <div class="wb-body">
@@ -734,7 +734,7 @@ onBeforeUnmount(() => {
         <!-- AI 助手：底部抽屉（2026-10-20 改回底部，但**做矮**）。
              中途试过"右侧常驻栏"（三栏 IDE），实测下来不行：420px 的栏里，
              回答区只剩 389px 宽、每行约 26 个字（中文舒适区是 45–75 字/行），
-             长回答被挤成电报体；而且 DocMind 的核心动作是"问"，
+             长回答被挤成电报体；而且 Agent 工作台 的核心动作是"问"，
              把主功能塞进角上、让代码占主位，主次是反的。
              现在回到底部，但高度从 62vh 降到 38vh：
                · 回答区横跨全宽，阅读栏 680px、每行约 48 字；
@@ -745,7 +745,7 @@ onBeforeUnmount(() => {
 
       <div v-if="!treeError && !tree && !demoMode" class="wb-booting">
         <div class="cv-spinner" />
-        <p>正在连接本地 DocMind 服务…</p>
+        <p>正在连接本地 Agent 工作台 服务…</p>
       </div>
     </div>
 

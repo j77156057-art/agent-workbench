@@ -330,7 +330,7 @@ async def _app_lifespan(app):
         gpu.stop_background()
 
 
-app = FastAPI(title="DocMind RAG Agent", lifespan=_app_lifespan)
+app = FastAPI(title="Agent Workbench", lifespan=_app_lifespan)
 
 # 会话隔离：按「项目 + 会话」维护各自的 Agent（各持独立历史，跨重启从会话文件恢复）。
 # 无项目上下文时键退化为纯 session_id（等价改动前）；有项目时为 "pid::session_id"（内存隔离）。
@@ -936,7 +936,7 @@ async def optional_api_auth(request: Request, call_next):
         supplied = request.headers.get("x-docmind-token", "")
         auth = request.headers.get("authorization", "")
         if supplied != API_TOKEN and auth != f"Bearer {API_TOKEN}":
-            return JSONResponse({"ok": False, "error": "需要有效的 DocMind API Token。"}, status_code=401)
+            return JSONResponse({"ok": False, "error": "需要有效的 Agent 工作台 API Token。"}, status_code=401)
     return await call_next(request)
 
 
@@ -2567,7 +2567,7 @@ async def chat(
         hints.append(
             f"当前项目根目录：{code_root}。用户说‘这个项目’时只指该目录中的项目。"
             "介绍当前项目或为它生成文档时，先用 list_dir/read_file 读取该项目真实文件；"
-            "知识库资料不能代替项目文件。若项目文件无法读取，说明问题，不要改写成介绍 DocMind。"
+            "知识库资料不能代替项目文件。若项目文件无法读取，说明问题，不要改写成介绍 Agent 工作台。"
             "关于代码/实现/函数/类/配置/报错的问题，请用 search_code / read_file / grep 工具。"
         )
     # “当前游戏有什么 bug” is a project-audit request, not a request for the
@@ -2944,7 +2944,7 @@ async def chat(
             from llm import is_retryable as _llm_is_retryable2
             if type(e).__name__ == "SystemExit":
                 err_kind = "permanent"
-                err_text = "本轮请求失败（服务异常），未完成。已保留问题与工具现场，可继续重试；如频繁出现请重启 DocMind 服务。"
+                err_text = "本轮请求失败（服务异常），未完成。已保留问题与工具现场，可继续重试；如频繁出现请重启 Agent 工作台 服务。"
             elif isinstance(e, MissingAPIKey):
                 err_kind = "permanent"
                 err_text = str(e)
@@ -5365,7 +5365,7 @@ def _format_ps_model(m: dict) -> dict:
 
 
 def _ollama_needed_models():
-    """当前 DocMind 配置实际会用到的 Ollama 模型（LLM + 检索向量），用于预加载。"""
+    """当前 Agent 工作台 配置实际会用到的 Ollama 模型（LLM + 检索向量），用于预加载。"""
     prov = get_runtime("llm_provider") or LLM_PROVIDER
     emb = get_runtime("embedding_provider") or EMBEDDING_PROVIDER
     out = []
@@ -5432,7 +5432,7 @@ async def model_power_ep(req: ModelPowerReq):
         return JSONResponse({"ok": False, "error": f"未知 action: {req.action}"}, status_code=400)
     try:
         if req.action == "off":
-            # 卸载当前所有驻留模型（一台单机一个 Ollama，DocMind 是主要使用方；
+            # 卸载当前所有驻留模型（一台单机一个 Ollama，Agent 工作台 是主要使用方；
             # 只动 /api/ps 里实际驻留的，不会影响未加载的模型）
             resident = await run_in_threadpool(_ollama_ps)
             names = [m.get("name") or m.get("model") for m in resident]

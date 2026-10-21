@@ -106,7 +106,7 @@ export async function postSse(url: string, init: RequestInit, h: SseStreamHandle
     res = await fetch(url, withProject({ ...init, signal: h.signal }))
   } catch (e) {
     if ((e as Error).name === 'AbortError') throw e
-    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 DocMind 已启动。')
+    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 Agent 工作台 已启动。')
   }
   const ctype = res.headers.get('content-type') || ''
   if (!res.ok || !ctype.includes('text/event-stream')) {
@@ -176,7 +176,7 @@ export async function openSse(
     }))
   } catch (e) {
     if ((e as Error).name === 'AbortError') throw e
-    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 DocMind 已启动。')
+    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 Agent 工作台 已启动。')
   }
   const ctype = res.headers.get('content-type') || ''
   if (!res.ok || !ctype.includes('text/event-stream')) {

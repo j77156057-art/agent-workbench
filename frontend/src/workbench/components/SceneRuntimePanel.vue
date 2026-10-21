@@ -945,7 +945,7 @@ onUnmounted(() => {
                 :class="{ off: !desktopReady }"
                 :title="desktopReady
                   ? '嵌入后游戏画面直接跑在这块区域里，工作台界面照常可用'
-                  : '浏览器模式下无法嵌入原生窗口，请用桌面端启动 DocMind（desktop.py / 桌面快捷方式）'"
+                  : '浏览器模式下无法嵌入原生窗口，请用桌面端启动 Agent 工作台（desktop.py / 桌面快捷方式）'"
               >
                 <input v-model="autoEmbed" type="checkbox" :disabled="!desktopReady" />
                 嵌入工作台
@@ -966,7 +966,7 @@ onUnmounted(() => {
               检测到外部修改：{{ changedEngineFiles.slice(0, 4).join('、') }}<template v-if="changedEngineFiles.length > 4"> 等 {{ changedEngineFiles.length }} 个文件</template>。确认保存后再点击「热重载」。
             </div>
             <div v-if="!desktopReady" class="pb-hintline">
-              当前是浏览器模式：原生引擎只能开独立窗口。用桌面端启动 DocMind 后，勾上「嵌入工作台」即可让游戏跑在这块区域里。
+              当前是浏览器模式：原生引擎只能开独立窗口。用桌面端启动 Agent 工作台 后，勾上「嵌入工作台」即可让游戏跑在这块区域里。
             </div>
 
             <div v-if="tpl && !tpl.installed && !iframeUrl" class="pb-notpl">

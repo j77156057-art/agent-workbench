@@ -580,11 +580,11 @@ def _mcp_failure_hint(exc_text: str) -> str:
     做——每翻错一次就是又一次同样的失败。
 
     实测现场（2026-10-16）：Godot 连接器的 `uvx godot-ai attach` 起不来，真因是
-    它的 bridge 想用 **8000** 端口，而那是 DocMind 后端自己的端口。
+    它的 bridge 想用 **8000** 端口，而那是 Agent 工作台 后端自己的端口。
     """
     low = str(exc_text or "")
     if "port_occupied" in low.lower() or "address already in use" in low.lower():
-        return ("连接器要用的端口被占用了（很可能是 DocMind 后端自己占着）——"
+        return ("连接器要用的端口被占用了（很可能是 Agent 工作台 后端自己占着）——"
                 "改端口或停掉占用进程后再试；这类失败重试不会变好。")
     if "引擎未运行" in low or "编辑器处于打开状态" in low:
         return "目标引擎/编辑器没有打开——先打开它再重试。"
@@ -1695,7 +1695,7 @@ def _search_auxiliary_sources(query, base_result):
 
 
 def _json_request(url, *, headers=None, timeout=15):
-    req = urllib.request.Request(url, headers=headers or {"User-Agent": "DocMind/1.0"})
+    req = urllib.request.Request(url, headers=headers or {"User-Agent": "Agent Workbench/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8", "replace"))
 
@@ -1836,7 +1836,7 @@ def _github_search(q):
             return cached + "\n（缓存结果）"
     url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode({"q": q, "per_page": 10})
     try:
-        data = _json_request(url, headers={"User-Agent": "DocMind/1.0", "Accept": "application/vnd.github+json"})
+        data = _json_request(url, headers={"User-Agent": "Agent Workbench/1.0", "Accept": "application/vnd.github+json"})
         rows = data.get("items") or []
         if not rows:
             return "搜索未返回结果，可能是网络受限或该关键词无结果。"
@@ -1863,7 +1863,7 @@ def _bilibili_search(q):
     params = urllib.parse.urlencode({"search_type": "video", "keyword": q, "page": 1, "page_size": 10})
     url = "https://api.bilibili.com/x/web-interface/search/type?" + params
     try:
-        data = _json_request(url, headers={"User-Agent": "Mozilla/5.0 (DocMind/1.0)", "Referer": "https://www.bilibili.com/"})
+        data = _json_request(url, headers={"User-Agent": "Mozilla/5.0 (Agent Workbench/1.0)", "Referer": "https://www.bilibili.com/"})
         rows = ((data.get("data") or {}).get("result") or [])
         if not rows:
             return "B 站搜索未返回结果（可能需要验证码或该关键词无结果）。"
@@ -1899,7 +1899,7 @@ def web_subtitles(arg):
     try:
         params = {kind: value}
         view = _json_request("https://api.bilibili.com/x/web-interface/view?" + urllib.parse.urlencode(params),
-                             headers={"User-Agent": "Mozilla/5.0 (DocMind/1.0)"})
+                             headers={"User-Agent": "Mozilla/5.0 (Agent Workbench/1.0)"})
         data = view.get("data") or {}
         if not data:
             return "字幕提取失败：视频不存在、不可见或接口被风控。"
@@ -2414,7 +2414,7 @@ def _searxng_search(q, url):
     if not url:
         return "SearXNG 需要填写自建实例地址（API 地址），请在「网络搜索」设置中填写后保存。"
     api_url = f"{url.rstrip('/')}/search?q={urllib.parse.quote(q)}&format=json"
-    req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0 (DocMind/1.0)"})
+    req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0 (Agent Workbench/1.0)"})
     with urllib.request.urlopen(req, timeout=15) as r:
         data = json.loads(r.read().decode("utf-8", "replace"))
     results = data.get("results") or []
@@ -2464,7 +2464,7 @@ def _firecrawl_search(q, key):
 def _generic_api_search(provider, q, key, url):
     """zhipu/querit/parallel/mcp_exa 等未内置端点的服务商：通用 keyed POST。"""
     payload = {"query": q, "q": q, "numResults": 20, "max_results": 20, "count": 20}
-    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (DocMind/1.0)"}
+    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Agent Workbench/1.0)"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
@@ -2489,7 +2489,7 @@ def _generic_api_search(provider, q, key, url):
 def _ddg_search(q):
     url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(q)
     req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (compatible; DocMind/1.0)"}
+        url, headers={"User-Agent": "Mozilla/5.0 (compatible; Agent Workbench/1.0)"}
     )
     with urllib.request.urlopen(req, timeout=10) as r:
         page = r.read().decode("utf-8", "replace")
@@ -2548,7 +2548,7 @@ def _bing_search(q):
     """Bing HTML 搜索（无需 Key）。用于 DuckDuckGo 被屏蔽的网络环境。"""
     url = "https://www.bing.com/search?q=" + urllib.parse.quote(q)
     req = urllib.request.Request(
-        url, headers={"User-Agent": "Mozilla/5.0 (compatible; DocMind/1.0)"}
+        url, headers={"User-Agent": "Mozilla/5.0 (compatible; Agent Workbench/1.0)"}
     )
     with urllib.request.urlopen(req, timeout=12) as r:
         page = r.read().decode("utf-8", "replace")
@@ -2638,7 +2638,7 @@ _WEB_RESEARCH_IMAGE_LIMIT = 4
 _WEB_IMAGE_MAX_BYTES = 800 * 1024
 _WEB_IMAGE_TIMEOUT = 8.0
 _WEB_IMAGE_CONTENT_TYPES = ("image/png", "image/jpeg", "image/jpg", "image/webp")
-_WEB_IMAGE_UA = "Mozilla/5.0 (DocMind research; image-observation)"
+_WEB_IMAGE_UA = "Mozilla/5.0 (Agent Workbench research; image-observation)"
 _IMG_ICON_WORDS = ("icon", "logo", "sprite", "avatar", "badge", "button", "1x1",
                    "spacer", "pixel", "favicon", "thumb", "placeholder", "loading",
                    "banner-ad", "advert", "ads/", "/ads", "tracker", "emoji")
@@ -2924,7 +2924,7 @@ def web_fetch(url):
 def _jina_fetch(url, key, api_url):
     base = (api_url.rstrip("/") + "/") if api_url else "https://r.jina.ai/"
     target = base + url
-    headers = {"User-Agent": "Mozilla/5.0 (DocMind research)"}
+    headers = {"User-Agent": "Mozilla/5.0 (Agent Workbench research)"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     try:
@@ -2961,7 +2961,7 @@ def _custom_fetch(url, key, api_url):
     if not api_url:
         return "自定义 URL 获取需要填写 API 地址，请在「URL 获取」设置中填写后保存。"
     payload = {"url": url}
-    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (DocMind research)"}
+    headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (Agent Workbench research)"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     try:
@@ -3073,7 +3073,7 @@ def _fetch_page(url, *, image_budget=0, query_hint=""):
     保持与旧调用方的兼容。
     """
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (DocMind research)"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Agent Workbench research)"})
         with urllib.request.urlopen(req, timeout=12) as r:
             raw = r.read(1_000_000).decode('utf-8','replace')
             final_url = r.geturl() or url
@@ -5199,7 +5199,7 @@ def _project_code_scope():
 
     实测（真跑 `wf-0c6374c4d612`）：在一个只有 `calc.py` / `test_calc.py` /
     `README.md` 的项目上，`search_code` 返回 `project.godot:L1-L39` /
-    `.docmind/web/index.js` / `MiniMax_H3_提示词速查.md`——全是 DocMind 自己
+    `.docmind/web/index.js` / `MiniMax_H3_提示词速查.md`——全是 Agent 工作台 自己
     仓库的内容。子代理据此把调研结论写成了另一个项目，三连任务全 failed。
 
     ## 返回值
@@ -6366,7 +6366,7 @@ def grep(pattern):
             return err
 
     # 复用 glob 的**同一套**剪枝口径：`_SKIP_DIRS` 全局不扫，且只在 `.docmind/` 直接
-    # 下一层跳过 DocMind 状态目录（project_stages / projects 等整仓影子副本），产物
+    # 下一层跳过 Agent 工作台 状态目录（project_stages / projects 等整仓影子副本），产物
     # 目录（Godot Web 导出的 `web/` 等）照旧可见。此前 grep 只按 `_SKIP_DIRS` 过滤，
     # 会一头扎进 `.docmind/projects/<id>/headcheck/…` 这类影子副本——和 glob 口径不一致，
     # 还命中过期副本。（`code_intel` 不引 tools、tools 这里惰性引它，无循环。）
@@ -6386,7 +6386,7 @@ def grep(pattern):
                 rel_dir = ""
             for d in _ci._prune(dns, rel_dir):
                 # 只披露 `.docmind/` 下的状态目录（与 glob 一致）：`_SKIP_DIRS` 的通用项
-                # （.git / .venv / node_modules…）是"任何项目都不扫"，不该被说成"DocMind 状态"。
+                # （.git / .venv / node_modules…）是"任何项目都不扫"，不该被说成"Agent 工作台 状态"。
                 if (d in _ci._DOCMIND_STATE_DIRS
                         or d.startswith(_ci._DOCMIND_STATE_PREFIXES)):
                     pruned_state.add(d)
@@ -6438,7 +6438,7 @@ def grep(pattern):
     if skipped_big:
         notes.append("另有 %d 个 >2MB 的文件未搜索。" % skipped_big)
     if pruned_state:
-        notes.append("已跳过 DocMind 状态目录（产物目录仍会搜索）：.docmind/%s。"
+        notes.append("已跳过 Agent 工作台 状态目录（产物目录仍会搜索）：.docmind/%s。"
                      % "、.docmind/".join(sorted(pruned_state)))
     if floor_skipped:
         _fs = sorted(floor_skipped)

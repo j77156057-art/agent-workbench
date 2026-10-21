@@ -108,7 +108,7 @@ _NATIVE_CAPABLE = {"qwen", "deepseek", "ollama", "llamacpp", "openai", "azure", 
 #: 是否允许模型在工具调用之间说话（默认开）。
 #:
 #: **先说清这个开关为什么存在**，因为它的名字容易让人误解：
-#: 它**不是**「要不要显示模型的话」—— 只要模型说话，DocMind 早就把内容原样
+#: 它**不是**「要不要显示模型的话」—— 只要模型说话，Agent 工作台 早就把内容原样
 #: 收进 `turn.reasoning` 了（实测一次提问 129270 字符）。它管的是更靠上游的一件事：
 #: **要不要在提示词里允许模型写「工具调用之间的话」**。
 #:
@@ -119,7 +119,7 @@ _NATIVE_CAPABLE = {"qwen", "deepseek", "ollama", "llamacpp", "openai", "azure", 
 #:     「MUST answer concisely with fewer than 4 lines」。
 #:   · **Hermes 有**（`interim_assistant_messages` / `show_commentary`，均默认 true）。
 #:
-#: 也就是说：DocMind 这个开关**不是 opencode 那种东西**。DocMind 的
+#: 也就是说：Agent 工作台 这个开关**不是 opencode 那种东西**。Agent 工作台 的
 #: `_NATIVE_FORMAT_CONTRACT` 第 3 条明文禁止轮中说话（「不要用正文描述我接下来要调用
 #: 什么来代替真正的调用」），而 opencode 的提示词在某些模型下反而**要求**写。
 #:
@@ -811,7 +811,7 @@ _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
 
 工具选择指引：
 - 数学计算优先用 calculate，复杂计算/数据处理/画图数据用 python_exec。【凡答案依赖一个可推导的精确数值——不论它是频率/速率/时长/占比/倍数/命中率/伤害/成长曲线还是"一共几个/差多少/第 N 次发生在何时"——都必须先用 calculate 或 python_exec 把这个数算出来再落笔，不允许凭散文口算直接写出】。关键：工具路由**不看题面像不像算术**，而看**结论里有没有推导数**——领域叙述包装（战斗冷却、物理帧率、业务口径、留存/转化）里的推导同样必须先算，否则极易算错且与自身其它数字自相矛盾（实测：0.8 秒冷却被口算成"1 秒内最多命中 1 次"，正解是 t=0、t=0.8 两下≈1.25 次/秒，且同句后半"第 10 下在 7.2 秒"与之打架）。给出这类数时答案要能对上工具算出的结果；没跑过 calculate/python_exec 就**不得**用"最多/恰好/约为 N"这种确定性口吻报一个没算过的数，宁可先算再答。
-- 用户要求生成 Word、PDF、PowerPoint 或 Excel 文件时，先 dev_use_skill 读取对应内置技能，再调用 create_artifact；只有工具返回 ok=true 才能声称文件已生成，并在最终回答给出 path 与 validation。若要介绍“当前/这个项目”，先 list_dir 并 read_file 核实当前 code_root 的真实项目文件，不得用知识库中的 DocMind 文档替代；create_artifact 必须传 purpose=project_intro、至少两条真实的 source_files，并写足项目玩法/功能、操作方式、代码或资源结构、运行方式、现状与待验证点。无法核实的事实要明确标为未知，不要编造收费、配额或效果。用户要求生成项目数据时使用 generate_data_file，不能用 create_file 伪造 CSV/JSON/YAML 的校验结果。
+- 用户要求生成 Word、PDF、PowerPoint 或 Excel 文件时，先 dev_use_skill 读取对应内置技能，再调用 create_artifact；只有工具返回 ok=true 才能声称文件已生成，并在最终回答给出 path 与 validation。若要介绍“当前/这个项目”，先 list_dir 并 read_file 核实当前 code_root 的真实项目文件，不得用知识库中的 Agent 工作台 文档替代；create_artifact 必须传 purpose=project_intro、至少两条真实的 source_files，并写足项目玩法/功能、操作方式、代码或资源结构、运行方式、现状与待验证点。无法核实的事实要明确标为未知，不要编造收费、配额或效果。用户要求生成项目数据时使用 generate_data_file，不能用 create_file 伪造 CSV/JSON/YAML 的校验结果。
 - 知识库能答的优先 search_knowledge；知识库没有、或需要最新/外部信息时用 web_search。
 - 需要教程、GitHub/B站方案或最新外部资料时，优先使用 web_research；回答必须根据其返回的来源证据，并列出可点击 URL，不得把搜索摘要当作已验证正文。
 - 关于"文档 / 提示词 / 教程 / 规范 / 某份资料里讲了什么 / 某概念怎么定义 / 知识库里的文件"类问题，【第一个 Action 必须是 search_knowledge】；但“根据这个项目生成文档”指当前项目文件，必须先 list_dir/read_file，不能用知识库替代项目。知识库文档并不在代码库索引中，只有 search_knowledge 确实定位不到、且问题明确转向代码实现时才允许改用 search_code / grep。
@@ -2743,7 +2743,7 @@ def _probe_audit_root(code_root, refs):
 
     剩下的唯一解释：`code_root` 是**空串**。`output_audit` 里
     `root = Path(code_root).resolve() if code_root else None` -> `root=None`
-    -> 相对路径在**进程当前目录**下解析，而那是 DocMind 仓库 ->
+    -> 相对路径在**进程当前目录**下解析，而那是 Agent 工作台 仓库 ->
     `is_file()` False；而 `in_root` 因为 `root is None` 保持初值 `True`。
     **这恰好就是实测到的那一对组合。**
 
@@ -3219,7 +3219,7 @@ class _PromptNarrationFilter:
        明文禁止这个形态。**提示词说了不算，模型照样写。**
     3. **同一条被发了两遍** —— 一次工具轮产两个逐字相同的 `thought`。
        对应 Hermes 记录的问题（`cli_stream_mixin.py:658-661`，注释引 issue
-       **#10478**）：一批同工具调用会重复播报同一行。**DocMind 现在就有这个症状。**
+       **#10478**）：一批同工具调用会重复播报同一行。**Agent 工作台 现在就有这个症状。**
 
     所以这个过滤器做两件事：**剥协议标记** + **同轮去重**。
     不做去重的话，开启叙述后活动时间线会出现逐字重复的行 —— 那比不叙述更糟。
