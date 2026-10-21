@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -377,9 +378,14 @@ def spawn_browser_in_job(argv: list[str], creationflags: int = 0):
     能把 stderr 尾巴贴出来。
     """
     if os.name != "nt":
+        # `start_new_session=True` 让浏览器自成一个进程组（pgid == pid）——
+        # POSIX 上没有 Windows 作业对象那样的等价物，只 terminate() 那个 launcher
+        # 的话，renderer / gpu / utility 会留下来继续占着 profile 目录，
+        # 于是「收尾干净」在 Linux 上根本做不到（详见 _terminate_browser_group）。
         process = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
                                    stderr=_browser_stderr_target(argv),
-                                   creationflags=creationflags)
+                                   creationflags=creationflags,
+                                   start_new_session=True)
         return process, None, ""
     kernel32 = _kernel32()
     job = _make_job()
@@ -420,6 +426,43 @@ def spawn_browser_in_job(argv: list[str], creationflags: int = 0):
         kernel32.CloseHandle(job)
         return None, None, "browser was not born inside the job object"
     return process, job, ""
+
+
+def _terminate_browser_group(process) -> bool:
+    """POSIX 上按**进程组**收浏览器整棵树；返回是否真的收干净了。
+
+    Windows 那边的等价物是 kill-on-close 作业对象（关句柄 = 操作系统收走整棵树）。
+    POSIX 上原本只 `terminate()` 那个 launcher —— 它是浏览器主进程，renderer /
+    gpu / utility 是它的子进程，留在原地继续占着 profile 目录。于是「收尾干净」
+    在 Linux 上做不到，`job_closed` 也只能恒报 False：调用方把一次**没有发生**
+    的偏离当真偏离报给操作者，而 `test_vue_component` 那条还会因此拒绝清理
+    产物目录（真实泄漏）。
+
+    `start_new_session=True` 让浏览器自成一个进程组，杀组即杀整棵树。
+    """
+    if process is None:
+        return False
+    try:
+        pgid = os.getpgid(process.pid)
+    except OSError:
+        pgid = None
+    try:
+        if pgid is not None:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=3)
+        return True
+    except Exception:
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGKILL)
+            else:
+                process.kill()
+            process.wait(timeout=3)
+            return True
+        except Exception:
+            return False
 
 
 def _close_reaper(job: Any) -> bool:
@@ -719,21 +762,25 @@ def browser_session(timeout: float = 25.0, extra_flags: Any = (),
         # 自己走了，真正在跑的是继承作业对象的浏览器进程。所以 taskkill 打在一个不存在的
         # pid 上（rc=128「没有找到进程」），从来杀不掉任何东西；作业对象是唯一在干活的
         # 机制，因此先解绑它。taskkill 只留作非 nt 回退路径上的尽力一试。
-        job_closed = _close_reaper(job)
-        if process is not None:
-            try:
-                if os.name == "nt":
+        # 收尾：**Windows** 靠作业对象（kill-on-close）让操作系统收走整棵树；
+        # **POSIX** 靠进程组（见 _terminate_browser_group）。两边都必须给出
+        # 「这一档有没有偏离」的诚实答案 —— 报假的偏离会让调用方拒绝清理产物
+        # 目录（真实泄漏），而漏报偏离会让浏览器进程留在原地。
+        if os.name == "nt":
+            job_closed = _close_reaper(job)
+            if process is not None:
+                try:
                     subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    timeout=5)
-                else:
-                    process.terminate()
-                process.wait(timeout=3)
-            except Exception:
-                try:
-                    process.kill()
+                    process.wait(timeout=3)
                 except Exception:
-                    pass
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+        else:
+            job_closed = _terminate_browser_group(process)
         released = _release_profile(profile)
         if cleanup is not None:
             cleanup.update({"spawned": process is not None,
