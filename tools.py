@@ -9737,6 +9737,89 @@ def dev_desktop_action(arg=""):
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
 
+def vision_locate_click(arg=""):
+    """**看着画面**找目标：让视觉模型在嵌入窗口里指出某个可点击目标的位置。
+
+    这是 `dev_page_action`（按 DOM 锚点定位）补不上的一半 —— 游戏画面、图表、
+    位图按钮在 DOM 里是空的，只有"看"才能定位。**这一步只定位、不点击。**
+
+    输入（多行 keyed）：
+      description: 右上角那个蓝色的保存按钮    # 必填，要具体到画面上看得见的特征
+      goal: 保存后弹窗消失                        # 可选；写了就会在点击后复验是否达成
+
+    返回 JSON：proposal_id / label / bbox / point / evidence / confidence /
+    vision_source（视觉模型来自 cockpit|main|harness）/ window。
+    拿到 proposal_id 后用 `vision_click` 执行（执行需要用户在审核队列点头）。
+    """
+    fields = _parse_keyed(arg or "", ["description", "goal"])
+    description = str(fields.get("description") or "").strip()
+    if not description:
+        return json.dumps({"ok": False, "error": "description 不能为空：说清楚要找的是画面上的哪个目标。"},
+                          ensure_ascii=False)
+    from agent_runtime import visual_click
+    from projects import current_project_id
+    pid = current_project_id() or ""
+    if not pid:
+        return json.dumps({"ok": False, "error": "当前没有项目上下文，无法确定要定位哪个窗口。"},
+                          ensure_ascii=False)
+    try:
+        result = visual_click.locate(pid, description=description,
+                                     goal=str(fields.get("goal") or "").strip())
+    except Exception as exc:  # noqa: BLE001 - 视觉失败要说清原因，不能只抛栈
+        return json.dumps({"ok": False, "error": "视觉定位失败：%s: %s" % (type(exc).__name__, str(exc)[:200])},
+                          ensure_ascii=False)
+    if not result.get("ok"):
+        return json.dumps(result, ensure_ascii=False)
+    image = str(result.pop("image", "") or "")
+    text = json.dumps(result, ensure_ascii=False)
+    if not image:
+        return text
+    # 把画面一并回传给模型：定位是"看着找"的，光给坐标不给出处，模型无法复核。
+    return ToolResult(True, text, data={"images": [image], "image_sources": ["vision_locate_click"]})
+
+
+def vision_click(arg=""):
+    """执行一个已定位的视觉提案（`vision_locate_click` 产出的 proposal_id）。
+
+    ⚠ 这是**会真的点下去**的操作，所以确认来自**用户**：第一次调用会被审批门拦下，
+    并把请求送进工作台的审核队列；用户在队列里批准后，用**完全相同的参数**重试本工具
+    才会真的点。模型自己说"我确认了"不算 —— 那等于自我授权。
+
+    输入（多行 keyed）：
+      proposal_id: <定位返回的 id>
+
+    三道闸，缺一不可：①用户批准；②重新抓帧确认还是同一个窗口、目标位置像素没变；
+    ③提案单次使用（点过就没了，防止重复请求连点两次）。
+    """
+    fields = _parse_keyed(arg or "", ["proposal_id"])
+    proposal_id = str(fields.get("proposal_id") or "").strip()
+    if not proposal_id:
+        return json.dumps({"ok": False, "error": "缺少 proposal_id：先调用 vision_locate_click 定位。"},
+                          ensure_ascii=False)
+    root = _get_code_root()
+    if not root:
+        return json.dumps({"ok": False, "error": "未配置当前项目。"}, ensure_ascii=False)
+    from agent_runtime import visual_click
+    from projects import current_project_id
+    pid = current_project_id() or ""
+    if not pid:
+        return json.dumps({"ok": False, "error": "当前没有项目上下文，无法确定要点哪个窗口。"},
+                          ensure_ascii=False)
+    try:
+        result = visual_click.execute(pid, root, proposal_id=proposal_id, gate=True)
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"ok": False, "error": "视觉点击失败：%s: %s" % (type(exc).__name__, str(exc)[:200])},
+                          ensure_ascii=False)
+    images = [str(result.get(key) or "") for key in ("before", "after")]
+    images = [item for item in images if item]
+    text = json.dumps({key: value for key, value in result.items() if key not in ("before", "after")},
+                      ensure_ascii=False)
+    if not images:
+        return ToolResult(bool(result.get("ok")), text)
+    return ToolResult(bool(result.get("ok")), text,
+                      data={"images": images, "image_sources": ["vision_click"]})
+
+
 def dev_serve(arg):
     """启动/停止本机开发服务器（vite、next、python -m http.server 等），并等到它真的能应答。
 
@@ -11415,6 +11498,33 @@ TOOLS = {
     },
     "dev_desktop_capture": {"description": "桌面自动化视觉技能的安全观察入口：截取当前项目嵌入窗口或前台窗口，输入 target: embedded|foreground。只返回真实画面和 native 预览 artifact，不直接点击、输入或修改软件状态；状态修改必须调用已批准的应用 MCP、插件或其他明确工具。", "func": dev_desktop_capture},
     "dev_desktop_action": {"description": "执行一个经过项目审批的桌面动作：action=click|type|drag|key|save，target=embedded|foreground。click/drag 使用窗口客户区 x/y（drag 另给 to_x/to_y），type 使用 text，key 使用安全键名或 Control_L+s。首次调用会返回 desktop_action 审批请求；用户确认后必须用完全相同参数重试。禁止终端、Win 键、任意 HWND 和窗口枚举。", "func": dev_desktop_action},
+    "vision_locate_click": {
+        "description": (
+            "**看着画面**找目标：让视觉模型在嵌入窗口里指出某个可点击目标的位置。\n"
+            "这是 dev_page_action（按 DOM 锚点定位）补不上的一半——游戏画面、图表、位图按钮"
+            "在 DOM 里是空的，只有看才能定位。**这一步只定位、不点击。**\n"
+            "输入 keyed 多行：`description: 右上角那个蓝色的保存按钮`（必填，要具体到画面上"
+            "看得见的特征）、`goal: 保存后弹窗消失`（可选；写了会在点击后复验是否达成）。\n"
+            "返回 JSON：proposal_id/label/bbox/point/evidence/confidence/vision_source，"
+            "并回传当前画面供你复核。\n"
+            "⚠ 需要可用的**视觉模型**（开发舱固定模型、原生视觉的主模型，或 DOCMIND_VISION_MODEL）；"
+            "没有就会明确报错，不会拿只读文本的模型去猜坐标。\n"
+            "拿到 proposal_id 后用 vision_click 执行——执行需要用户在审核队列点头。"
+        ),
+        "func": vision_locate_click,
+    },
+    "vision_click": {
+        "description": (
+            "执行一个已定位的视觉提案（vision_locate_click 产出的 proposal_id）。\n"
+            "⚠ 这是**会真的点下去**的操作，确认来自**用户**：首次调用会被审批门拦下，"
+            "并把请求送进工作台的审核队列；用户在队列里批准后，用**完全相同的参数**重试"
+            "本工具才会真的点。模型自己说「我确认了」不算——那等于自我授权。\n"
+            "输入 keyed 多行：`proposal_id: <定位返回的 id>`。\n"
+            "三道闸缺一不可：①用户批准；②重新抓帧确认还是同一个窗口、目标位置像素没变；"
+            "③提案单次使用（点过就没了，防止重复请求连点两次）。"
+        ),
+        "func": vision_click,
+    },
     "dev_serve": {
         "description": (
             "启动/停止【本机开发服务器】并等它真的能应答：vite、next、`python -m http.server` 之类。"

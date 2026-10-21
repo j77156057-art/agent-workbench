@@ -104,13 +104,9 @@ from agent_runtime.vision import analyze_images
 from agent_runtime.live_vision_alerts import parse_live_vision_result
 from agent_runtime import capacity as agent_capacity
 from agent_runtime import local_runtime
-# 视觉点击：目标解析 / 复验判定 / 像素指纹都住在该模块，端点只做编排与权限。
-from agent_runtime.visual_targeting import (
-    parse_visual_target,
-    parse_visual_verification,
-    target_fingerprint,
-    target_still_matches,
-)
+# 视觉点击：端点只做编排与权限，实现本体在 agent_runtime/visual_click.py
+# （HTTP 端点与 agent 工具共用同一份提案存储与复核逻辑）。
+from agent_runtime import visual_click
 from agent_runtime.realtime_protocol import (
     PROTOCOL_VERSION,
     compact_error,
@@ -3639,14 +3635,14 @@ async def capture_live_desktop_frame(payload: dict | None = None):
 
 # ---------------------------------------------------------------------------
 # 视觉点击：先定位出「一次性提案」，再由用户确认执行
-# ---------------------------------------------------------------------------
-# 提案只在内存里活一小会儿。模型定位到的窗口和像素会随画面随时失效，把提案长期
-# 存下来等于给「点错地方」留后门；跨进程持久化更是没必要——用户点确认就在眼前。
-_VISUAL_CLICK_PROPOSALS: dict[str, dict[str, Any]] = {}
-VISUAL_CLICK_TTL_SECONDS = 120.0
-VISUAL_CLICK_MAX_PROPOSALS = 32
-# 点击后等界面反应再复验，否则截到的还是点击前的画面。
-VISUAL_CLICK_SETTLE_SECONDS = 0.35
+#
+# 实现本体已搬到 `agent_runtime/visual_click.py` —— HTTP 端点与 agent 工具
+# （vision_locate_click / vision_click）共用同一份提案存储、同一套画面指纹复核、
+# 同一套复验判据。**两份提案存储是最坑的一种分叉**：UI 定位的提案会被模型说成
+# "不存在"，模型定位的提案又没法在 UI 上确认，而两边都"看起来正常"。
+#
+# 这里保留一个**别名**（同一个 dict 对象，不是副本）给既有代码/测试用。
+_VISUAL_CLICK_PROPOSALS = visual_click.PROPOSALS
 
 
 def _vision_action_project(request: Request) -> tuple[str, str]:
@@ -3664,41 +3660,6 @@ def _vision_action_project(request: Request) -> tuple[str, str]:
     return pid, ""
 
 
-def _prune_visual_click_proposals(now: float) -> None:
-    """清掉过期提案，并给内存里存的提案数封顶。"""
-    for key, entry in list(_VISUAL_CLICK_PROPOSALS.items()):
-        if now - float(entry.get("created_at") or 0) > VISUAL_CLICK_TTL_SECONDS:
-            _VISUAL_CLICK_PROPOSALS.pop(key, None)
-    while len(_VISUAL_CLICK_PROPOSALS) > VISUAL_CLICK_MAX_PROPOSALS:
-        oldest = min(_VISUAL_CLICK_PROPOSALS,
-                     key=lambda item: _VISUAL_CLICK_PROPOSALS[item]["created_at"])
-        _VISUAL_CLICK_PROPOSALS.pop(oldest, None)
-
-
-def _visual_target_prompt(description: str) -> str:
-    return (
-        "你在看一张软件窗口截图。请找到用户描述的目标，并只返回一个 JSON 对象：\n"
-        '{"found": true/false, "label": "目标名称", "evidence": "图上哪些可见文字或形状'
-        '让你确认位置", "bbox": [x1, y1, x2, y2], "confidence": 0.0-1.0}\n'
-        "bbox 用 0 到 1 的相对坐标，且必须框住目标本身，不要框整块区域。"
-        "看不清、不确定、或图上没有这个目标时，found 填 false。"
-        "evidence 必须引用画面上真实可见的内容，不要写推测。\n"
-        f"用户要找的目标：{description}"
-    )
-
-
-def _visual_verification_prompt(goal: str, label: str) -> str:
-    return (
-        "给你两张同一窗口的截图：第一张是点击前，第二张是点击后。\n"
-        "请判断下面这个目标是否已经达成，只返回一个 JSON 对象：\n"
-        '{"status": "met"/"unmet"/"uncertain", "evidence": "两张图里能证明结论的具体'
-        '差异", "confidence": 0.0-1.0, "next_target": "若未达成，建议下一个可点击目标"}\n'
-        "只在第二张图确实出现了达成证据时才填 met；没有变化或看不出就填 unmet/uncertain。"
-        "证据必须是画面上真实可见的内容，不要根据期望推断。\n"
-        f"刚点击的目标：{label}\n验收条件：{goal}"
-    )
-
-
 @app.post("/api/vision/locate-click")
 async def locate_click_ep(request: Request, payload: dict | None = None):
     """让视觉模型在嵌入窗口里定位一个可点击目标，产出**一次性**提案。
@@ -3706,6 +3667,10 @@ async def locate_click_ep(request: Request, payload: dict | None = None):
     本端点只定位、不点击。执行走 `/api/vision/execute-click` 并须带 `confirmed`。
     捕获用 `strict_project`：点错窗口的代价远高于「找不到窗口」，所以这里绝不
     回退到遗留默认宿主。
+
+    实现本体在 `agent_runtime/visual_click.py` —— agent 工具（`vision_locate_click`）
+    与本端点共用同一份实现，所以「UI 定位的提案」与「模型定位的提案」是同一种东西，
+    谁都能执行；改一处逻辑不会让另一处悄悄过期。
     """
     if not _http_origin_allowed(request):
         return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
@@ -3717,52 +3682,16 @@ async def locate_click_ep(request: Request, payload: dict | None = None):
     if not description:
         return JSONResponse({"ok": False, "error": "description 不能为空。"}, status_code=400)
     goal = str(body.get("goal") or "").strip()[:200]
-    _, llm = _get_cockpit_llm(pid)
-    if llm is None:
-        return JSONResponse(
-            {"ok": False, "error": "当前开发舱没有可用的视觉模型，请先在模型设置里指定带视觉能力的固定模型。"},
-            status_code=400)
     try:
-        import screen_capture
-        frame = await run_in_threadpool(screen_capture.grab_embedded, pid, strict_project=True)
-        if not frame:
-            return JSONResponse(
-                {"ok": False, "error": "当前项目没有已登记的嵌入窗口，无法定位目标。"}, status_code=400)
-        raw, width, height, hwnd = frame
-        image = await run_in_threadpool(screen_capture.encode_frame, raw, width, height)
-        if not image:
-            return JSONResponse({"ok": False, "error": "桌面帧编码失败。"}, status_code=502)
-        answer = await run_in_threadpool(
-            llm.chat, [{"role": "user", "content": _visual_target_prompt(description),
-                        "images": [image]}],
-            stream=False, enable_thinking=False)
-        target = parse_visual_target(answer)
-        if target is None:
-            return JSONResponse(
-                {"ok": False, "error": "模型没有给出可信的目标位置（需要明确的 bbox、画面依据和 ≥0.8 的把握）。"},
-                status_code=422)
-        fingerprint = target_fingerprint(raw, width, height, target["bbox"])
+        result = await run_in_threadpool(
+            visual_click.locate, pid, description=description, goal=goal)
     except Exception as exc:  # noqa: BLE001 - 视觉/编码失败都要变成可读错误
         return JSONResponse(
             {"ok": False, "error": f"定位失败：{type(exc).__name__}: {str(exc)[:200]}"}, status_code=502)
-
-    bbox = target["bbox"]
-    point = {"x": int(((bbox[0] + bbox[2]) / 2) * width),
-             "y": int(((bbox[1] + bbox[3]) / 2) * height)}
-    now = time.time()
-    _prune_visual_click_proposals(now)
-    proposal_id = uuid.uuid4().hex
-    _VISUAL_CLICK_PROPOSALS[proposal_id] = {
-        "project_id": pid, "hwnd": int(hwnd), "width": int(width), "height": int(height),
-        "bbox": bbox, "point": point, "fingerprint": fingerprint,
-        "label": target["label"], "evidence": target["evidence"], "goal": goal,
-        "image": image, "created_at": now, "used": False,
-    }
-    return {"ok": True, "proposal_id": proposal_id, "image": image, "bbox": bbox,
-            "point": point, "label": target["label"], "evidence": target["evidence"],
-            "confidence": target["confidence"],
-            "window": {"width": int(width), "height": int(height)},
-            "expires_in": int(VISUAL_CLICK_TTL_SECONDS)}
+    if not result.get("ok"):
+        return JSONResponse({"ok": False, "error": result.get("error") or "定位失败。"},
+                            status_code=int(result.get("status") or 400))
+    return result
 
 
 @app.post("/api/vision/execute-click")
@@ -3779,96 +3708,18 @@ async def execute_click_ep(request: Request, payload: dict | None = None):
         return JSONResponse({"ok": False, "error": error}, status_code=400)
     body = payload if isinstance(payload, dict) else {}
     proposal_id = str(body.get("proposal_id") or "").strip()
-    now = time.time()
-    _prune_visual_click_proposals(now)
-    entry = _VISUAL_CLICK_PROPOSALS.get(proposal_id)
-    # 别的项目的提案在这里「不存在」，不回 403：不向调用方泄露它是否存在。
-    if entry is None or entry["project_id"] != pid:
-        return JSONResponse({"ok": False, "error": "提案不存在或已过期，请重新定位。"}, status_code=404)
-    if entry["used"]:
-        return JSONResponse({"ok": False, "error": "该提案已经执行过一次，请重新定位。"}, status_code=409)
-    if not body.get("confirmed"):
-        # 未确认不消耗提案：用户只是还没点确认，不该被迫重新定位。
-        return JSONResponse({"ok": False, "error": "点击需要用户确认（confirmed=true）。"}, status_code=400)
-
+    root = _project_root_or_error()
     try:
-        import screen_capture
-        frame = await run_in_threadpool(screen_capture.grab_embedded, pid, strict_project=True)
-        if not frame:
-            return JSONResponse({"ok": False, "error": "目标窗口已不可见，请重新定位。"}, status_code=409)
-        raw, width, height, hwnd = frame
-        if int(hwnd) != int(entry["hwnd"]):
-            return JSONResponse(
-                {"ok": False, "error": "画面已变化（目标窗口已切换），请重新定位。"}, status_code=409)
-        if not target_still_matches(entry["fingerprint"],
-                                    target_fingerprint(raw, width, height, entry["bbox"])):
-            return JSONResponse(
-                {"ok": False, "error": "画面已变化（目标位置的内容已不同），请重新定位。"}, status_code=409)
-        before = await run_in_threadpool(screen_capture.encode_frame, raw, width, height)
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse(
-            {"ok": False, "error": f"点击前复核失败：{type(exc).__name__}: {str(exc)[:200]}"}, status_code=502)
-
-    try:
-        import desktop_actions
-        import game_workbench
-        root = _project_root_or_error()
-        row = await run_in_threadpool(game_workbench.approval, root, "visual_click",
-                                      _request_user_id(request), approved=True, target=entry["label"])
-        if not (row or {}).get("approved"):
-            return JSONResponse({"ok": False, "error": "这次点击没有获得批准。"}, status_code=403)
-        # 标记必须在真正发点击之前：否则重复请求能连点两次。
-        entry["used"] = True
         result = await run_in_threadpool(
-            desktop_actions.perform, "click", target="embedded", project_id=pid,
-            x=entry["point"]["x"], y=entry["point"]["y"], expected_hwnd=entry["hwnd"])
+            visual_click.execute, pid, root, proposal_id=proposal_id,
+            confirmed=bool(body.get("confirmed")))
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             {"ok": False, "error": f"点击失败：{type(exc).__name__}: {str(exc)[:200]}"}, status_code=502)
-    if not (result or {}).get("ok"):
-        return {"ok": False, "executed": False, "before": before, "used": True,
-                "error": str((result or {}).get("error") or "点击未能送达目标窗口。")}
-
-    await run_in_threadpool(time.sleep, VISUAL_CLICK_SETTLE_SECONDS)
-    after = None
-    try:
-        after_frame = await run_in_threadpool(screen_capture.grab_embedded, pid, strict_project=True)
-        # 窗口换了就不拿别的窗口的画面当「点击结果」——那会验证出一件没发生的事。
-        if after_frame and int(after_frame[3]) == int(entry["hwnd"]):
-            after = await run_in_threadpool(screen_capture.encode_frame,
-                                            after_frame[0], after_frame[1], after_frame[2])
-    except Exception:  # noqa: BLE001 - 复验画面拿不到不影响「点击已执行」这个事实
-        after = None
-
-    _, llm = _get_cockpit_llm(pid)
-    # 「复验不了」和「没要求复验」是两件事：前者要明说，后者不必报。窗口已经换了的
-    # 时候，即使用户没写验收条件，也要让他知道这次点击没有可比对的画面。
-    unavailable = ""
-    if after is None:
-        unavailable = "点击后没有拿到同一窗口的画面，本轮无法复验。"
-    elif entry["goal"] and not (before and llm is not None):
-        unavailable = "缺少可用的视觉模型或点击前画面，本轮无法复验。"
-    verification = None
-    if unavailable:
-        verification = {"status": "unavailable", "evidence": unavailable,
-                        "confidence": 0.0, "next_target": ""}
-    elif entry["goal"]:
-        verdict = None
-        try:
-            answer = await run_in_threadpool(
-                llm.chat, [{"role": "user",
-                            "content": _visual_verification_prompt(entry["goal"], entry["label"]),
-                            "images": [before, after]}],
-                stream=False, enable_thinking=False)
-            verdict = parse_visual_verification(answer)
-        except Exception:  # noqa: BLE001 - 复验失败不能反过来说点击失败
-            verdict = None
-        verification = verdict or {
-            "status": "uncertain", "evidence": "模型没有给出可信的复验结论。",
-            "confidence": 0.0, "next_target": ""}
-    return {"ok": True, "executed": True, "before": before, "after": after,
-            "label": entry["label"], "point": entry["point"], "used": True,
-            "verification": verification}
+    if not result.get("ok"):
+        # 失败体原样回传（含 used/before 等已发生的事实），状态码按语义给。
+        return JSONResponse(result, status_code=int(result.get("status") or 400))
+    return result
 
 
 @app.get("/api/trace")

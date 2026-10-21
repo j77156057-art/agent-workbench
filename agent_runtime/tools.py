@@ -158,6 +158,9 @@ _ADMIN_TOOLS = {
                       "dev_desktop_action", "dev_preview_adapter_test",
     "dev_preview_adapter_rollback",
     "start_workflow",
+    # 视觉定位点击：会真的点下去（改的是别人的界面状态），与 dev_desktop_action 同级。
+    # 归 ADMIN 而非 WRITE_LOCAL：它不改工作区文件，但确实改外部状态，且必须经用户批准。
+    "vision_click",
     # 只改共享状态、不改工作区文件的工具（与 dev_commit 同性质）：
     # 认领/心跳/释放、提案、计划落盘。归 ADMIN 而非 WRITE_LOCAL 是刻意的——
     # 它们不需要用户授权，只需要并发与幂等保护（见 test_tool_taxonomy.py 的

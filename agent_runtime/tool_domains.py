@@ -87,7 +87,11 @@ _reg("verify", "回滚", "dev_rollback_changeset")
 _reg("frontend", "真实浏览器", "preview_project", "dev_page_action", "dev_vue",
      "dev_apptest", "dev_media")
 _reg("frontend", "开发服务器", "dev_serve")
-_reg("frontend", "桌面", "dev_desktop_capture", "dev_desktop_action")
+# 视觉定位点击：DOM 锚点定位够不到的那一半（canvas/图表/位图按钮）。
+# 定位与执行分成两个工具，是因为执行需要用户在审核队列点头 —— 合成一个工具，
+# 模型就会以为"定位成功=可以点"。
+_reg("frontend", "桌面", "dev_desktop_capture", "dev_desktop_action",
+     "vision_locate_click", "vision_click")
 
 _reg("preview_adapter", "全流程",
      "dev_preview_adapter_create", "dev_preview_adapter_approve",
