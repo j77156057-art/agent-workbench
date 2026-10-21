@@ -183,6 +183,10 @@ class NonStreamCancellationTests(unittest.TestCase):
         client.last_raw_head = ""
         client.last_call_probe = False
         client.last_messages = []
+        # chat() 的缺 Key 守卫同样读 __init__ 字段；本 fixture 是 custom（免 Key）。
+        client.requires_api_key = False
+        client.provider_label = "custom"
+        client.api_key = ""
 
         class _Completions:
             def create(self, **kwargs):

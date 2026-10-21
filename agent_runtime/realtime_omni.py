@@ -154,6 +154,21 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _runtime_or_env(runtime_key: str, env_name: str, default: str) -> str:
+    """UI 保存的模型选择优先于 .env；读不到时回落到代码默认值。
+
+    适配器在每次会话开始时构造，所以保存后下一次「实时对话」即生效，无需重启。
+    """
+    try:
+        from config import get_runtime
+        value = get_runtime(runtime_key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:
+        pass
+    return _env(env_name, default) or default
+
+
 class OmniRealtimeProvider(RealtimeProvider):
     """Realtime session against DashScope Qwen-Omni."""
 
@@ -165,8 +180,12 @@ class OmniRealtimeProvider(RealtimeProvider):
         self._ws_factory = ws_factory
         self._ws: Any = None
         self._thread: threading.Thread | None = None
-        self._model = _env("DOCMIND_OMNI_MODEL", DEFAULT_MODEL)
-        self._voice = _env("DOCMIND_OMNI_VOICE", DEFAULT_VOICE)
+        self._model = _runtime_or_env("omni_model", "DOCMIND_OMNI_MODEL", DEFAULT_MODEL)
+        self._voice = _runtime_or_env("omni_voice", "DOCMIND_OMNI_VOICE", DEFAULT_VOICE)
+        # STT 转写模型也可以被厂商下线/改名；此前写死 gummy-realtime-v1，
+        # 模型不可用时用户只能改代码。现在与实时模型一样可由设置页覆盖。
+        self._transcription_model = _runtime_or_env(
+            "omni_transcription_model", "DOCMIND_OMNI_TRANSCRIPTION_MODEL", TRANSCRIPTION_MODEL)
         self._url = _env("DOCMIND_OMNI_URL", DEFAULT_URL)
         self._vad = _env("DOCMIND_OMNI_VAD", "server_vad").lower()
         try:
@@ -211,7 +230,9 @@ class OmniRealtimeProvider(RealtimeProvider):
                 return {"ok": False, "provider": self.name,
                         "reason": "缺少 websocket-client 依赖", "degraded_to": DEGRADED_SAMPLED_FRAMES}
         return {"ok": True, "provider": self.name, "model": self._model,
-                "voice": self._voice, "vad": self._vad, "verified": "end-to-end",
+                "voice": self._voice, "vad": self._vad,
+                "transcription_model": self._transcription_model,
+                "verified": "end-to-end",
                 "note": "已真机端到端验证：转写 / 文本增量 / 音频增量全通。"
                         "注意 qwen-omni-turbo-realtime 将于 2026-10-10 下线且已半停用，勿切回"}
 
@@ -427,7 +448,7 @@ class OmniRealtimeProvider(RealtimeProvider):
             "voice": self._voice,
             "input_audio_format": INPUT_AUDIO_FORMAT,
             "output_audio_format": OUTPUT_AUDIO_FORMAT,
-            "input_audio_transcription": {"model": TRANSCRIPTION_MODEL},
+            "input_audio_transcription": {"model": self._transcription_model},
         }
         if self._vad in ("server_vad", "semantic_vad"):
             # threshold / prefix_padding_ms are spelled out because the live

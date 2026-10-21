@@ -20,15 +20,40 @@ def _cfg(prefix: str):
     )
 
 
-def configured(kind: str) -> bool:
-    url, _key, _model = _cfg(kind.upper())
+def _endpoint(url: str, suffix: str) -> str:
+    """允许用户填 base URL（到 /v1 一级），自动补成音频接口。
+
+    这是「换模型/换服务商」最常见的填错点：OpenAI 文档给的是完整
+    ``/audio/transcriptions``，而很多兼容服务只暴露 ``/v1``。两种都接受，
+    完整端点原样使用。
+    """
+    value = (url or "").strip()
+    if not value:
+        return ""
+    base = value.rstrip("/")
+    if base.endswith("/audio/transcriptions") or base.endswith("/audio/speech"):
+        return base
+    if base.endswith("/v1") or base.endswith("/compatible-mode/v1"):
+        return base + suffix
+    return base
+
+
+def configured(kind: str, url: str = "") -> bool:
+    """是否配置了可用的语音端点；显式 url 优先于环境变量。"""
+    if (url or "").strip():
+        return True
+    env_url, _key, _model = _cfg(kind.upper())
     # 本地 Ollama/Whisper/TTS 兼容服务通常不需要 API Key；云端服务再由
     # 调用方通过 DOCMIND_*_API_KEY 提供 Bearer 凭证。
-    return bool(url)
+    return bool(env_url)
 
 
-def transcribe(audio: bytes, filename: str = "audio.webm", language: str = "") -> dict:
-    url, key, model = _cfg("STT")
+def transcribe(audio: bytes, filename: str = "audio.webm", language: str = "",
+               *, url: str = "", key: str = "", model: str = "") -> dict:
+    env_url, env_key, env_model = _cfg("STT")
+    url = _endpoint(url or env_url, "/audio/transcriptions")
+    key = (key or env_key).strip()
+    model = (model or env_model or "whisper-1").strip()
     if not url:
         return {"ok": False, "fallback": "browser", "error": "未配置服务端语音识别模型，可使用浏览器语音输入。"}
     boundary = "----DocMindVoice" + uuid.uuid4().hex
@@ -49,12 +74,17 @@ def transcribe(audio: bytes, filename: str = "audio.webm", language: str = "") -
     return {"ok": True, "text": str(payload.get("text") or payload.get("transcript") or "")}
 
 
-def speech_request(text: str, voice: str = "") -> tuple[bytes, str]:
-    url, key, model = _cfg("TTS")
+def speech_request(text: str, voice: str = "", *,
+                   url: str = "", key: str = "", model: str = "") -> tuple[bytes, str]:
+    env_url, env_key, env_model = _cfg("TTS")
+    url = _endpoint(url or env_url, "/audio/speech")
+    key = (key or env_key).strip()
+    model = (model or env_model or "tts-1").strip()
+    voice = (voice or os.getenv("DOCMIND_TTS_VOICE", "") or "alloy").strip()
     if not url:
         raise RuntimeError("未配置服务端语音合成模型")
     payload = json.dumps({"model": model or "tts-1", "input": text,
-                          "voice": voice or os.getenv("DOCMIND_TTS_VOICE", "alloy"),
+                          "voice": voice,
                           "response_format": "mp3"}).encode()
     headers = {"Content-Type": "application/json"}
     if key:

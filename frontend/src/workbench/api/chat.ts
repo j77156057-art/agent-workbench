@@ -92,8 +92,76 @@ export const aiApi = {
   },
 }
 
+/** 语音服务（STT / TTS）配置。url/model/voice 是用户保存值；effective_* 是实际生效值。 */
+export interface VoiceServiceInfo {
+  provider: string
+  url: string
+  model: string
+  voice: string
+  effective_url: string
+  effective_model: string
+  effective_voice: string
+  /** 是否配置了可用端点（否则回退浏览器语音） */
+  configured: boolean
+  /** 当前项目/环境是否有可用 Key（密钥本体永不回显） */
+  has_key: boolean
+  key_source: string
+  /** env=跟随环境变量；custom=本机设置 */
+  source: 'env' | 'custom'
+}
+
+/** 实时 Omni 的模型 / 音色 / 转写模型。空字段表示使用 defaults。 */
+export interface VoiceRealtimeInfo {
+  model: string
+  voice: string
+  transcription_model: string
+  defaults: { model: string; voice: string; transcription_model: string }
+  effective_model: string
+  effective_voice: string
+  effective_transcription_model: string
+  provider: string
+  configured: boolean
+  has_key: boolean
+}
+
+export interface VoiceConfigInfo {
+  ok?: boolean
+  stt: VoiceServiceInfo
+  tts: VoiceServiceInfo
+  realtime: VoiceRealtimeInfo
+  error?: string
+}
+
+export interface SaveVoiceServiceReq {
+  provider: string
+  url?: string
+  model?: string
+  voice?: string
+  /** 留空/不传 = 不修改已保存的 Key */
+  api_key?: string
+}
+
+export interface SaveVoiceConfigReq {
+  stt?: SaveVoiceServiceReq
+  tts?: SaveVoiceServiceReq
+  realtime?: { model?: string; voice?: string; transcription_model?: string }
+}
+
 export const voiceApi = {
-  status() { return fetch('/api/voice/status').then(r => r.json() as Promise<{ browser_fallback: boolean; stt_configured: boolean; tts_configured: boolean }>) },
+  status() { return fetch('/api/voice/status').then(r => r.json() as Promise<{ browser_fallback: boolean; stt_configured: boolean; tts_configured: boolean; stt_model?: string; tts_model?: string; tts_voice?: string }>) },
+  /** 读取语音模型设置（不含密钥） */
+  config(): Promise<VoiceConfigInfo> {
+    return fetch('/api/voice/config').then(r => r.json() as Promise<VoiceConfigInfo>)
+  },
+  /** 保存语音模型设置；失败时返回 {ok:false,error}，由弹窗展示 */
+  async saveConfig(req: SaveVoiceConfigReq): Promise<VoiceConfigInfo> {
+    const res = await fetch('/api/voice/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req),
+    })
+    const body = await res.json() as VoiceConfigInfo
+    if (!res.ok && !body.error) return { ...body, ok: false, error: `保存失败（HTTP ${res.status}）` }
+    return body
+  },
   async transcribe(blob: Blob, language = ''): Promise<string> {
     const fd = new FormData(); fd.append('file', blob, 'voice.webm'); fd.append('language', language)
     const res = await fetch('/api/voice/transcribe', { method: 'POST', body: fd })

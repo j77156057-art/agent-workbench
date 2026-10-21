@@ -62,8 +62,19 @@ def _status_of(exc):
     return None
 
 
+class MissingAPIKey(RuntimeError):
+    """云厂商需要 API Key，但当前客户端没有解析到任何可用 Key。
+
+    该异常在 chat() 入口、任何出站请求之前抛出：此时发出去的请求必然 401，
+    只会把「没配 Key」伪装成「网络/模型故障」。让上层拿到明确的缺 Key 语义，
+    才能给出可操作的提示，而不是通用的 permanent 红条。
+    """
+
+
 def is_retryable(exc) -> bool:
     """判断异常是否值得重试（限流、5xx、网络/超时）。"""
+    if isinstance(exc, MissingAPIKey):
+        return False
     # 上游空响应按定义就是「这次没给、下次可能给」，所以必须重试。
     # 它尤其需要这一条：HTTP 层看到的是 200，`_status_of` 取不到任何状态码，
     # 不显式认它的话就会一路落到下面的字符串启发式——而那句消息里并没有
@@ -583,6 +594,10 @@ class LLMClient:
             # 未知 provider 不静默回退：明确报错，避免把请求发到意料之外的服务
             raise ValueError(f"未知模型服务：{self.provider}")
         cfg = PROVIDERS[self.provider]
+        self.provider_label = cfg.get("label") or self.provider
+        # 有 api_key_env 的厂商视为「必须 Key」：qwen/deepseek/kimi/... 云端。
+        # ollama/llamacpp/mock/custom 的 api_key_env 为空，保留免 Key / 自建端点。
+        self.requires_api_key = bool(cfg.get("api_key_env"))
         self.model = model or get_runtime("llm_model") or LLM_MODEL or cfg["default_model"]
         # 最近一次调用的 token 用量（由 chat()/流式包装器原地更新），供 trace 账本读取
         self.last_usage = {}
@@ -688,6 +703,9 @@ class LLMClient:
         if cfg["api_key_env"]:
             key = key or os.getenv(cfg["api_key_env"], "")
         self.api_key = key or ""
+        # OpenAI SDK 构造需要非空字符串；requires_api_key 的厂商已在 chat()
+        # 入口拦截，不会真的把 "EMPTY" 发出去。本地兼容端点（llamacpp/custom）
+        # 仍依赖这个占位值。
         self.client = OpenAI(base_url=self.base_url, api_key=key or "EMPTY", timeout=self.timeout)
 
     def clone(self):
@@ -747,6 +765,12 @@ class LLMClient:
 
         if self.provider == "mock":
             return self._mock_chat(messages, stream=stream)
+
+        if self.requires_api_key and not self.api_key:
+            raise MissingAPIKey(
+                f"当前模型（{self.provider_label}）还没有配置 API Key，"
+                "本轮未向厂商发送请求。请在模型设置中填写 Key 后重试。"
+            )
 
         if self.provider == "ollama":
             # ollama 的 /v1 OpenAI 兼容层会静默丢弃 options.num_ctx（实测 14584

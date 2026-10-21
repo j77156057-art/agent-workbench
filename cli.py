@@ -387,6 +387,23 @@ def _render_event(ev, streamed, args, verbose) -> None:
         print("[%s] %s" % (etype, json.dumps(ev, ensure_ascii=False)[:300]))
 
 
+def _final_tail(text, joined):
+    """final 相对已流式内容的尾巴；对不上返回 None（调用方补打全文）。
+
+    首 token 常带前导空格、final 却已 trim —— 只按逐字节前缀比会把这种情况
+    误判成「完全对不上」，于是整段答案被重复打印并带上 `[final]`。故再退一步：
+    两侧去掉首尾空白后若仍构成前缀，就按 trim 后的内容取尾巴。宁可边界空白
+    略有出入，也不能把正常输出变成双份。
+    """
+    prefix = joined.rstrip()
+    if text.startswith(prefix):
+        return text[len(prefix):]
+    core, trimmed = text.strip(), prefix.strip()
+    if core.startswith(trimmed):
+        return core[len(trimmed):]
+    return None
+
+
 def _flush_final(ev, streamed) -> None:
     """token 已流式打印过就不再整段重放 final，避免答案出现两遍。"""
     text = str(ev.get("text") or "")
@@ -399,9 +416,14 @@ def _flush_final(ev, streamed) -> None:
             sys.stdout.write(("\n" if joined else "") + text)
         elif not joined:
             sys.stdout.write(text)
-        elif not text.startswith(joined.rstrip()):
-            # token 与 final 有出入：补打 final 全文，宁可重复也不吞信息
-            sys.stdout.write("\n[final] " + text)
+        else:
+            tail = _final_tail(text, joined)
+            if tail is None:
+                # token 与 final 完全对不上：补打 final 全文，宁可重复也不吞信息
+                sys.stdout.write("\n[final] " + text)
+            elif tail.strip():
+                # final 比已流式内容多出尾巴（如补充结论）：只补尾巴，绝不吞
+                sys.stdout.write(tail if tail.startswith("\n") else "\n" + tail)
 
     if not text or not text.endswith("\n"):
         sys.stdout.write("\n")

@@ -564,7 +564,7 @@ onBeforeUnmount(() => {
               <span class="wb-menu-glyph" aria-hidden="true">✓</span>
               <span class="wb-menu-item-name">EDA 多模态验收</span>
             </button>
-            <button type="button" class="wb-menu-item" title="实时对话：摄像头画面与语音实时送入本地实时模型（WS 通道）" @click="lsRef?.show()">
+            <button type="button" class="wb-menu-item" title="实时对话：摄像头或屏幕共享画面与语音实时送入本地实时模型（WS 通道）" @click="lsRef?.show()">
               <span class="wb-menu-glyph" aria-hidden="true">◉</span>
               <span class="wb-menu-item-name">实时对话</span>
             </button>

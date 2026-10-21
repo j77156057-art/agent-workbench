@@ -74,6 +74,11 @@ from config import (
     set_web_fetch_api_key,
     get_web_fetch_api_url,
     set_web_fetch_api_url,
+    get_voice_config,
+    effective_voice_config,
+    set_voice_config,
+    get_voice_realtime_config,
+    set_voice_realtime_config,
     API_TOKEN,
     _RUNTIME,
     DOCMIND_CORS_ORIGINS,
@@ -99,7 +104,7 @@ from config import (
 from ingest import ingest_file, ingest_code_directory, load_project_rules
 from data_formats import detect_file
 from vectorstore import reset_collection, list_sources, count
-from llm import LLMClient, probe_ollama_context
+from llm import LLMClient, MissingAPIKey, probe_ollama_context
 from agent_runtime.vision import analyze_images
 from agent_runtime.live_vision_alerts import parse_live_vision_result
 from agent_runtime import capacity as agent_capacity
@@ -1050,6 +1055,21 @@ async def _restore_persisted_llm():
                     "llm_startup_warning",
                     "已找到该项目保存的 API Key，但当前启动环境无法解密；请在模型设置中重新保存一次 Key。",
                 )
+
+    # 云端厂商需要 Key 但项目/环境都没有：给出可操作的启动提示。
+    # 不覆盖上面更具体的「无法解密」警告；真正的拦截在 LLMClient.chat()，
+    # 不会把占位符 EMPTY 发给上游。
+    _env_name = PROVIDERS.get(provider, {}).get("api_key_env", "")
+    if (_env_name
+            and not get_runtime("llm_api_key")
+            and not LLM_API_KEY
+            and not os.getenv(_env_name, "")
+            and not get_runtime("llm_startup_warning")):
+        set_runtime(
+            "llm_startup_warning",
+            f"当前模型（{PROVIDERS.get(provider, {}).get('label', provider)}）还没有配置 API Key，"
+            "请在模型设置中填写后重试。",
+        )
 
     try:
         restored = await run_in_threadpool(lambda: LLMClient(
@@ -2925,6 +2945,9 @@ async def chat(
             if type(e).__name__ == "SystemExit":
                 err_kind = "permanent"
                 err_text = "本轮请求失败（服务异常），未完成。已保留问题与工具现场，可继续重试；如频繁出现请重启 DocMind 服务。"
+            elif isinstance(e, MissingAPIKey):
+                err_kind = "permanent"
+                err_text = str(e)
             elif not _llm_is_retryable2(e):
                 err_kind = "permanent"
                 err_text = "本轮请求失败，未完成。请稍后重试，或检查模型设置/网络。"
@@ -3824,11 +3847,208 @@ async def agent_profile_get_ep(request: Request):
     return {"ok": True, "profile": agent_memory.get_profile(_request_user_id(request))}
 
 
+# 语音密钥按「类型 + 服务商」分槽，切回某家服务商时还能用回原来那把 Key；
+# 不与 LLM 的 provider 槽混用，避免换语音模型时把对话模型的 Key 带过去。
+_VOICE_PROVIDER_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+    "dashscope": "DASHSCOPE_API_KEY",
+    "qwen": "DASHSCOPE_API_KEY",
+}
+
+
+def _voice_secret_slot(kind: str, provider: str) -> str:
+    return f"voice:{kind}:{(provider or 'custom').strip().lower() or 'custom'}"
+
+
+def _voice_key(kind: str, provider: str) -> tuple[str, str]:
+    """解析语音密钥来源，返回 (key, source)；绝不回显给前端。
+
+    优先级：项目密钥库（同服务商）> 本次运行保存的 Key（同服务商）>
+    DOCMIND_*_API_KEY > 服务商环境变量 > 同服务商的 LLM 项目密钥。
+    provider=env 时只看环境变量，保证「跟随环境变量」名副其实。
+    """
+    kind = "tts" if kind == "tts" else "stt"
+    provider = (provider or "env").strip().lower()
+    env_key = os.getenv(f"DOCMIND_{kind.upper()}_API_KEY", "").strip()
+    if provider == "env":
+        return (env_key, "env") if env_key else ("", "none")
+
+    root = _project_root_or_error()
+    if root:
+        stored = secrets_store.load(root, _voice_secret_slot(kind, provider))
+        if stored:
+            return stored, "project"
+
+    runtime_key = (get_runtime(f"voice_{kind}_api_key") or "").strip()
+    runtime_provider = (get_runtime(f"voice_{kind}_api_key_provider") or "").strip().lower()
+    if runtime_key and runtime_provider == provider:
+        return runtime_key, "runtime"
+
+    if env_key:
+        return env_key, "env"
+    provider_env = _VOICE_PROVIDER_ENV.get(provider)
+    if provider_env:
+        provider_key = os.getenv(provider_env, "").strip()
+        if provider_key:
+            return provider_key, "provider_env"
+    # 复用同一服务商已保存的对话模型 Key（OpenAI / 硅基流动 / 通义都在此列）。
+    # custom 不复用：那个槽位属于另一个端点，Key 未必通用。
+    if root and provider in PROVIDERS and provider != "custom":
+        llm_key = secrets_store.load(root, provider)
+        if llm_key:
+            return llm_key, "project_llm"
+    return "", "none"
+
+
+def _voice_public(kind: str) -> dict:
+    """前端表单需要的语音配置：保存值 + 当前生效值 + Key 状态（不含 Key）。"""
+    saved = get_voice_config(kind)
+    effective = effective_voice_config(kind)
+    key, key_source = _voice_key(kind, saved.get("provider", "env"))
+    # 云端预设没有 Key 时等同于「不可用」：此时应回退浏览器，而不是带着空
+    # Authorization 去请求厂商换一个 401。env / custom 允许无 Key 的本地服务。
+    needs_key = saved.get("provider") in ("openai", "siliconflow")
+    return {
+        # 表单回填的是用户保存值；provider=env 时为空，表示跟随环境变量
+        **saved,
+        # 实际会发给厂商的端点/模型/音色，用于状态文案
+        "effective_url": effective.get("url", ""),
+        "effective_model": effective.get("model", ""),
+        "effective_voice": effective.get("voice", ""),
+        "configured": bool(effective.get("url")) and (bool(key) or not needs_key),
+        "has_key": bool(key),
+        "key_source": key_source,
+        "source": "env" if saved.get("provider") == "env" else "custom",
+    }
+
+
+def _voice_realtime_public() -> dict:
+    """实时 Omni 的模型 / 音色 / 转写模型（Keys 仍由环境变量提供）。"""
+    from agent_runtime.realtime_omni import DEFAULT_MODEL, DEFAULT_VOICE, TRANSCRIPTION_MODEL
+    saved = get_voice_realtime_config()
+    provider = os.getenv("DOCMIND_REALTIME_PROVIDER", "").strip()
+    has_key = bool(os.getenv("DOCMIND_OMNI_API_KEY", "").strip()
+                   or os.getenv("DASHSCOPE_API_KEY", "").strip())
+    # 表单字段用 model/voice/transcription_model；config 内部键是 omni_*。
+    # 两者必须显式映射——直接展开 saved 会让前端拿到 omni_* 而读不到表单值，
+    # effective_* 也会永远取默认值（2026-10-21 回归）。
+    return {
+        # 空 = 未覆盖，使用下方 defaults
+        "model": saved.get("omni_model", ""),
+        "voice": saved.get("omni_voice", ""),
+        "transcription_model": saved.get("omni_transcription_model", ""),
+        "defaults": {
+            "model": DEFAULT_MODEL,
+            "voice": DEFAULT_VOICE,
+            "transcription_model": TRANSCRIPTION_MODEL,
+        },
+        "effective_model": saved.get("omni_model") or DEFAULT_MODEL,
+        "effective_voice": saved.get("omni_voice") or DEFAULT_VOICE,
+        "effective_transcription_model": (
+            saved.get("omni_transcription_model") or TRANSCRIPTION_MODEL),
+        "provider": provider,
+        "configured": bool(provider),
+        "has_key": has_key,
+    }
+
+
+def _voice_payload() -> dict:
+    return {"stt": _voice_public("stt"), "tts": _voice_public("tts"),
+            "realtime": _voice_realtime_public()}
+
+
+class VoiceServiceReq(BaseModel):
+    provider: str = "env"
+    url: str = ""
+    model: str = ""
+    voice: str = ""
+    # None/空 = 不修改已保存的 Key；与 LLM 设置的行为一致。
+    api_key: Optional[str] = None
+
+
+class VoiceRealtimeReq(BaseModel):
+    # None = 不改动；空串 = 清除覆盖，回到环境变量/代码默认值。
+    model: Optional[str] = None
+    voice: Optional[str] = None
+    transcription_model: Optional[str] = None
+
+
+class VoiceConfigReq(BaseModel):
+    stt: Optional[VoiceServiceReq] = None
+    tts: Optional[VoiceServiceReq] = None
+    realtime: Optional[VoiceRealtimeReq] = None
+
+
+@app.get("/api/voice/config")
+async def voice_config_ep():
+    """读取语音模型设置；只回 has_key / key_source，绝不回显密钥本体。"""
+    return {"ok": True, **_voice_payload()}
+
+
+@app.post("/api/voice/config")
+async def save_voice_config_ep(req: VoiceConfigReq):
+    """保存 STT / TTS / 实时 Omni 的模型选择。
+
+    先校验全部端点再落盘，避免「STT 保存成功、TTS 校验失败」留下半套配置。
+    """
+    items = [(kind, item) for kind, item in (("stt", req.stt), ("tts", req.tts))
+             if item is not None]
+    for kind, item in items:
+        url = (item.url or "").strip()
+        if url and not url.lower().startswith(("http://", "https://")):
+            return JSONResponse(
+                {"ok": False, "error": f"{kind.upper()} 接口地址必须以 http:// 或 https:// 开头。"},
+                status_code=400)
+        if (item.provider or "").strip() == "env" and url:
+            return JSONResponse(
+                {"ok": False, "error": f"{kind.upper()} 选择「跟随环境变量」时不要填写接口地址；"
+                                       "需要自定义请选择具体服务商或「自定义」。"},
+                status_code=400)
+
+    wants_key = any((item.api_key or "").strip() for _kind, item in items)
+    root = _project_root_or_error() if wants_key else ""
+    if wants_key and not root:
+        return JSONResponse({"ok": False, "error": "当前没有可用项目，无法保存语音 API Key。"},
+                            status_code=400)
+
+    try:
+        for kind, item in items:
+            set_voice_config(kind, provider=item.provider, url=item.url,
+                             model=item.model, voice=item.voice)
+            key = (item.api_key or "").strip()
+            if key and root:
+                secrets_store.save(root, _voice_secret_slot(kind, item.provider), key)
+                set_runtime(f"voice_{kind}_api_key", key)
+                set_runtime(f"voice_{kind}_api_key_provider",
+                            (item.provider or "").strip().lower())
+            elif (item.provider or "").strip() == "env":
+                # 切回环境变量：清掉运行时的旧 Key，避免它继续覆盖 env
+                _RUNTIME.pop(f"voice_{kind}_api_key", None)
+                _RUNTIME.pop(f"voice_{kind}_api_key_provider", None)
+        if req.realtime is not None:
+            set_voice_realtime_config(
+                model=req.realtime.model,
+                voice=req.realtime.voice,
+                transcription_model=req.realtime.transcription_model,
+            )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    return {"ok": True, **_voice_payload()}
+
+
 @app.get("/api/voice/status")
 async def voice_status_ep():
-    import voice
+    stt = _voice_public("stt")
+    tts = _voice_public("tts")
     return {"ok": True, "browser_fallback": True,
-            "stt_configured": voice.configured("STT"), "tts_configured": voice.configured("TTS"),
+            "stt_configured": bool(stt["configured"]),
+            "tts_configured": bool(tts["configured"]),
+            # 给前端状态/排查用：实际生效的模型与来源（不含密钥）
+            "stt_model": stt["effective_model"], "tts_model": tts["effective_model"],
+            "tts_voice": tts["effective_voice"],
+            "stt_source": stt["source"], "tts_source": tts["source"],
             "streaming": True}
 
 
@@ -3838,7 +4058,12 @@ async def voice_transcribe_ep(file: UploadFile = File(...), language: str = Form
         raw = await file.read()
         if not raw or len(raw) > 25 * 1024 * 1024:
             return JSONResponse({"ok": False, "error": "音频为空或超过 25MB。"}, status_code=400)
-        return voice_transcribe(raw, file.filename or "audio.webm", language)
+        effective = effective_voice_config("stt")
+        key, _source = _voice_key("stt", effective.get("provider", "env"))
+        return await run_in_threadpool(
+            lambda: voice_transcribe(raw, file.filename or "audio.webm", language,
+                                     url=effective.get("url", ""), key=key,
+                                     model=effective.get("model", "")))
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"语音识别失败：{type(exc).__name__}: {exc}"}, status_code=502)
 
@@ -3849,7 +4074,13 @@ async def voice_speech_ep(payload: dict):
     if not text or len(text) > 6000:
         return JSONResponse({"ok": False, "error": "语音文本为空或过长。"}, status_code=400)
     try:
-        audio, mime = await run_in_threadpool(voice_speech_request, text, str((payload or {}).get("voice") or ""))
+        effective = effective_voice_config("tts")
+        key, _source = _voice_key("tts", effective.get("provider", "env"))
+        requested_voice = str((payload or {}).get("voice") or "")
+        audio, mime = await run_in_threadpool(
+            lambda: voice_speech_request(text, requested_voice or effective.get("voice", ""),
+                                         url=effective.get("url", ""), key=key,
+                                         model=effective.get("model", "")))
         return Response(content=audio, media_type=mime, headers={"Cache-Control": "no-store"})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"语音合成失败：{type(exc).__name__}: {exc}"}, status_code=502)
@@ -4510,13 +4741,13 @@ async def get_config():
     eff_model = get_runtime("llm_model") or LLM_MODEL or PROVIDERS.get(prov, {}).get("default_model", "")
     _ctx_override = get_context_window_override(prov, eff_model)
     _cap_override = get_model_capability_override(prov, eff_model) or {}
-    # 当前厂商专用 env（MOONSHOT/ZHIPU/SILICONFLOW/OPENAI…），并保留对两家旧厂商的兼容检查
+    # 只认「当前厂商」的密钥来源：运行时 Key / 全局 LLM_API_KEY / 本厂商专用 env。
+    # 不能把 DASHSCOPE_API_KEY、DEEPSEEK_API_KEY 无条件 OR 进来——那会让只配了
+    # Qwen Key 的环境在切到 DeepSeek 后仍显示 has_key=true，把真正的缺 Key 盖住。
     _envk = PROVIDERS.get(prov, {}).get("api_key_env", "")
     has_key = bool(
         get_runtime("llm_api_key")
         or LLM_API_KEY
-        or os.getenv("DASHSCOPE_API_KEY", "")
-        or os.getenv("DEEPSEEK_API_KEY", "")
         or (_envk and os.getenv(_envk, ""))
     )
     return {
@@ -5292,6 +5523,30 @@ async def _apply_config(req: ConfigReq):
 
     # 自定义 OpenAI 兼容端点：base_url / model 必填，且只允许 http(s)
     previous_provider = get_runtime("llm_provider") or LLM_PROVIDER
+
+    # 云端厂商缺 Key 预检：必须在任何运行时/持久化变更之前完成。
+    # 否则会先把 provider/model 改掉，再让 LLMClient 带着占位 "EMPTY" 发请求：
+    # 厂商返回 401，界面却显示成「网络/模型故障」，用户也不知道该去补 Key。
+    root_for_secret = _project_root_or_error()
+    provided_key = (req.api_key or "").strip()
+    stored_key = (
+        secrets_store.load(root_for_secret, req.provider)
+        if root_for_secret else ""
+    )
+    # 只有同一厂商的运行时 Key 才算数：切厂商时不能把手头另一家的 Key 带过去。
+    runtime_key = get_runtime("llm_api_key") if previous_provider == req.provider else ""
+    api_key_env = PROVIDERS[req.provider].get("api_key_env", "")
+    env_key = os.getenv(api_key_env, "") if api_key_env else ""
+    # 与 LLMClient 的兜底来源对齐（显式填写 > 同厂商运行时 > 项目密钥库 >
+    # 厂商环境变量 > 全局 LLM_API_KEY）。
+    effective_key = provided_key or runtime_key or stored_key or env_key or LLM_API_KEY
+    if api_key_env and not effective_key:
+        provider_label = PROVIDERS[req.provider].get("label", req.provider)
+        return JSONResponse(
+            {"ok": False,
+             "error": f"当前项目还没有保存 {provider_label} 的 API Key，请填写 Key 后再切换模型。"},
+            status_code=400)
+
     custom_base_url = ""
     if req.provider == "custom":
         custom_base_url = (req.base_url or get_runtime("llm_base_url") or "").strip().rstrip("/")
@@ -5351,15 +5606,13 @@ async def _apply_config(req: ConfigReq):
     set_runtime("llm_provider", req.provider)
     # 空模型表示选择该 provider 的默认模型，不能继续沿用上一个 provider 的模型。
     set_runtime("llm_model", target_model)
-    if req.api_key:
-        set_runtime("llm_api_key", req.api_key)
-        root_for_secret = _project_root_or_error()
+    if provided_key:
+        set_runtime("llm_api_key", provided_key)
         if root_for_secret:
-            secrets_store.save(root_for_secret, req.provider, req.api_key)
+            secrets_store.save(root_for_secret, req.provider, provided_key)
     elif previous_provider != req.provider:
         # 切换厂商时优先恢复该厂商已保存的项目密钥，避免误用上一个厂商的 key。
-        root_for_secret = _project_root_or_error()
-        stored_key = secrets_store.load(root_for_secret, req.provider) if root_for_secret else ""
+        # 需要 Key 却完全没有来源的云端切换已在函数入口拦下，这里只剩本地/免 Key 厂商。
         if stored_key:
             set_runtime("llm_api_key", stored_key)
         else:
@@ -5371,7 +5624,7 @@ async def _apply_config(req: ConfigReq):
         new_llm = await run_in_threadpool(lambda: LLMClient(
             provider=req.provider,
             model=target_model or None,
-            api_key=req.api_key or None,
+            api_key=effective_key or None,
             base_url=custom_base_url or None,
         ))
     except ValueError as e:
@@ -5477,11 +5730,6 @@ async def _apply_config(req: ConfigReq):
         set_web_fetch_api_key(req.web_fetch_api_key)
     if req.web_fetch_api_url is not None:
         set_web_fetch_api_url(req.web_fetch_api_url)
-
-    # 云端厂商需要 key 但未提供（custom 可能是免 key 的内网代理，不警告）
-    envk = PROVIDERS[req.provider].get("api_key_env", "")
-    if envk and not (get_runtime("llm_api_key") or LLM_API_KEY or os.getenv(envk, "")):
-        warnings.append(f"{PROVIDERS[req.provider].get('label', req.provider)} 需要 API Key，请在设置中填写后保存。")
 
     prov = get_runtime("llm_provider") or LLM_PROVIDER
     emb = get_runtime("embedding_provider") or EMBEDDING_PROVIDER

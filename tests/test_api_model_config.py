@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api  # noqa: E402
 import config  # noqa: E402
+import llm  # noqa: E402
 import projects  # noqa: E402
 import secrets_store  # noqa: E402
 
@@ -375,6 +376,112 @@ class ProjectKeyPersistenceTests(unittest.TestCase):
             secrets_store.load(self._game_root, "deepseek"),
             "sk-keep-existing",
         )
+
+
+class MissingKeyPreflightTests(unittest.TestCase):
+    """切云端模型前必须确认有 Key：阻断要发生在任何状态变更之前。"""
+
+    def setUp(self):
+        self._old_state_root = config.STATE_ROOT
+        self._old_state_file = config.STATE_FILE
+        self._old_runtime = dict(config._RUNTIME)
+        self._old_llm = api.agent.llm
+        self._old_sessions = [
+            (key, ag, ag.llm, getattr(ag, "last_context", None))
+            for key, ag in list(api._SESSION_AGENTS.items())
+        ]
+        self._tmp = tempfile.TemporaryDirectory(prefix="docmind_missing_key_")
+        self._state_root = os.path.join(self._tmp.name, "state")
+        self._project_root = os.path.join(self._tmp.name, "project")
+        os.makedirs(self._state_root)
+        os.makedirs(self._project_root)
+        config.STATE_ROOT = self._state_root
+        config.STATE_FILE = os.path.join(self._state_root, ".docmind_state.json")
+        config._RUNTIME.clear()
+        pid = projects.ensure_project(self._project_root)
+        self.assertTrue(projects.set_current(pid))
+        config.set_runtime("llm_provider", "mock")
+        config.set_runtime("llm_model", "mock")
+
+    def tearDown(self):
+        for _key, ag, saved_llm, saved_context in self._old_sessions:
+            ag.llm = saved_llm
+            ag.last_context = saved_context
+        api.agent.llm = self._old_llm
+        config.STATE_ROOT = self._old_state_root
+        config.STATE_FILE = self._old_state_file
+        config._RUNTIME.clear()
+        config._RUNTIME.update(self._old_runtime)
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _blank_keys():
+        return patch.dict(os.environ, {
+            "DASHSCOPE_API_KEY": "",
+            "DEEPSEEK_API_KEY": "",
+            "LLM_API_KEY": "",
+        })
+
+    def test_cloud_switch_without_any_key_is_blocked_before_mutation(self):
+        with self._blank_keys(), patch.object(api, "LLM_API_KEY", ""):
+            resp = _call(provider="deepseek", model="deepseek-chat")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("API Key", resp.body.decode("utf-8"))
+        # 阻断发生在入口：provider/model/客户端/密钥/预设全部保持原样
+        self.assertEqual(config.get_runtime("llm_provider"), "mock")
+        self.assertEqual(config.get_runtime("llm_model"), "mock")
+        self.assertIsNone(config.get_runtime("llm_api_key"))
+        self.assertIs(api.agent.llm, self._old_llm)
+        self.assertEqual(secrets_store.load(self._project_root, "deepseek"), "")
+        self.assertEqual(config.load_model_presets(), [])
+
+    def test_other_vendors_env_key_does_not_unlock_switch(self):
+        env = {"DASHSCOPE_API_KEY": "sk-qwen-only",
+               "DEEPSEEK_API_KEY": "", "LLM_API_KEY": ""}
+        with patch.dict(os.environ, env), patch.object(api, "LLM_API_KEY", ""):
+            resp = _call(provider="deepseek", model="deepseek-chat")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("API Key", resp.body.decode("utf-8"))
+
+    def test_config_has_key_only_counts_selected_provider(self):
+        async def snapshot(provider):
+            config.set_runtime("llm_provider", provider)
+            config.set_runtime("llm_model", "any-model")
+            with patch("api.check_ollama", return_value={"reachable": False}):
+                return await api.get_config()
+
+        env = {"DASHSCOPE_API_KEY": "sk-qwen-only",
+               "DEEPSEEK_API_KEY": "", "LLM_API_KEY": ""}
+        with patch.dict(os.environ, env), patch.object(api, "LLM_API_KEY", ""):
+            deep = asyncio.run(snapshot("deepseek"))
+            qwen = asyncio.run(snapshot("qwen"))
+        self.assertFalse(deep["has_key"])
+        self.assertTrue(qwen["has_key"])
+
+    def test_stored_project_key_unlocks_switch_without_retyping(self):
+        self.assertTrue(secrets_store.save(
+            self._project_root, "deepseek", "sk-project-stored")["ok"])
+        with self._blank_keys(), patch.object(api, "LLM_API_KEY", ""):
+            resp = _call(provider="deepseek", model="deepseek-chat")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(config.get_runtime("llm_api_key"), "sk-project-stored")
+        self.assertEqual(api.agent.llm.provider, "deepseek")
+        self.assertEqual(api.agent.llm.api_key, "sk-project-stored")
+
+    def test_vendor_env_key_unlocks_switch(self):
+        env = {"DASHSCOPE_API_KEY": "", "DEEPSEEK_API_KEY": "sk-vendor-env",
+               "LLM_API_KEY": ""}
+        with patch.dict(os.environ, env), patch.object(api, "LLM_API_KEY", ""):
+            resp = _call(provider="deepseek", model="deepseek-chat")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(api.agent.llm.api_key, "sk-vendor-env")
+
+    def test_chat_raises_missing_key_before_network(self):
+        with self._blank_keys(), patch.object(llm, "LLM_API_KEY", ""):
+            client = llm.LLMClient(provider="deepseek", model="deepseek-chat")
+            with self.assertRaises(llm.MissingAPIKey) as caught:
+                client.chat([{"role": "user", "content": "hi"}])
+        self.assertFalse(llm.is_retryable(caught.exception))
 
 
 if __name__ == "__main__":

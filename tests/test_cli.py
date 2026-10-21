@@ -244,6 +244,22 @@ class ChatTests(unittest.TestCase):
         self.assertIn("半截回答", out)
         self.assertIn("本轮请求失败", out)
 
+    def test_final_with_extra_tail_is_not_swallowed(self):
+        lines = [_sse({"type": "token", "text": "第一段"}),
+                 _sse({"type": "final", "text": "第一段\n\n补充结论：不被吞掉\n", "status": "ok"})]
+        code, out, _err = self._run_chat(lines)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("第一段"), 1)
+        self.assertIn("补充结论：不被吞掉", out)
+
+    def test_leading_space_in_stream_does_not_duplicate_final(self):
+        lines = [_sse({"type": "token", "text": " 收到。项目路由探针已记录。"}),
+                 _sse({"type": "final", "text": "收到。项目路由探针已记录。", "status": "ok"})]
+        code, out, _err = self._run_chat(lines)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("收到。项目路由探针已记录。"), 1)
+        self.assertNotIn("[final]", out)
+
     def test_missing_final_exit_one(self):
         lines = [_sse({"type": "token", "text": "半截"})]
         code, _out, err = self._run_chat(lines)

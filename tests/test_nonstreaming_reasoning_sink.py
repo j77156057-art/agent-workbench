@@ -94,7 +94,8 @@ class _FakeStream:
 
 
 def _cloud_client(monkeypatch, msg):
-    c = llm_mod.LLMClient(provider="deepseek", model="deepseek-flash")
+    c = llm_mod.LLMClient(provider="deepseek", model="deepseek-flash",
+                          api_key="test-key")
     caps = _Completions(msg)
     c.client = type("C", (), {
         "chat": type("Chat", (), {"completions": caps})()})()

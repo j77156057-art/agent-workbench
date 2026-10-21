@@ -111,7 +111,7 @@ class _CapturingCompletions:
 def _real_kwargs(provider, model, thinking_on):
     """真的构造 LLMClient 并调 chat()，返回 create() 收到的 kwargs。"""
     caps = _CapturingCompletions()
-    c = llm_mod.LLMClient(provider=provider, model=model)
+    c = llm_mod.LLMClient(provider=provider, model=model, api_key="test-key")
     c.client = type("C", (), {"chat": type("Chat", (), {
         "completions": caps})()})()
     c.chat([{"role": "user", "content": "hi"}], stream=False,

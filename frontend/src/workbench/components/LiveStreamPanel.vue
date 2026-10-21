@@ -17,7 +17,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import RealtimeModeBadge from './RealtimeModeBadge.vue'
-import { useLiveSession } from '../composables/useLiveSession'
+import { useLiveSession, type LiveVideoSource } from '../composables/useLiveSession'
 import { LIVE_PHASE_LABELS } from '../liveStreamControl'
 
 const open = ref(false)
@@ -25,6 +25,8 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 const session = useLiveSession()
 /** 面板自己的提示（与后端/会话状态分开：这里说的是"下一步怎么做"）。 */
 const notice = ref('')
+/** 下一次「开始」用哪种画面：摄像头，或系统屏幕/窗口共享。 */
+const source = ref<LiveVideoSource>('camera')
 
 const phaseLabel = computed(() => LIVE_PHASE_LABELS[session.phase.value] || '未开始')
 const phaseTone = computed(() => {
@@ -43,6 +45,28 @@ const nativeMode = computed(() => session.modeView.value?.tone === 'native')
 const lastE2e = computed(() => {
   const value = stats.value.lastE2eMs
   return value === null ? '—' : `${Math.round(value)}ms`
+})
+
+/** 主按钮文案：开始 / 等待采集授权 / 暂停 / 继续。 */
+const startLabel = computed(() => {
+  if (session.active.value) return session.paused.value ? '继续' : '暂停'
+  if (session.starting.value) return source.value === 'screen' ? '选择中…' : '启动中…'
+  return '开始'
+})
+const videoHint = computed(() => {
+  if (session.starting.value) {
+    return source.value === 'screen'
+      ? '等待你在系统窗口中选择要共享的屏幕或窗口…'
+      : '正在启动摄像头…'
+  }
+  if (session.active.value) {
+    return session.activeSource.value === 'screen'
+      ? '正在共享屏幕：预览里的画面就是送给模型的内容。'
+      : '摄像头画面正在实时送给模型。'
+  }
+  return source.value === 'screen'
+    ? '点击「开始」后，选择要共享的屏幕或窗口，画面会实时送往本地实时模型。'
+    : '点击「开始」后，摄像头画面会实时送往本地实时模型。'
 })
 
 // ---- 圈选聚焦：在预览上拖拽画框，上行的帧就是这块区域 ----
@@ -156,16 +180,21 @@ function hide() {
   open.value = false
 }
 async function start() {
+  // 上一轮的提示（例如麦克风没开成）不能盖住这一轮的新结果（例如“已取消屏幕共享”）。
+  notice.value = ''
   session.bindVideo(videoRef.value)
   // 麦克风**是这条链路的必需输入**，不是可选项：实测（两轮对照）只发视频时
   // DashScope Omni 会稳定断流（stream_broken，零转写），带上音频就稳。
   // 所以「开始」= 画面 + 麦克风一起开，关麦用旁边的开关。
-  await session.start({ video: true, audio: true })
+  await session.start({ video: true, audio: true, source: source.value })
+  // 用户取消了屏幕/摄像头选择：start 没有建立会话，不要把取消提示覆盖成麦克风警告。
+  if (!session.active.value) return
   if (!session.audioEnabled.value) {
     notice.value = '麦克风没开成：实时会话只发画面会被服务端断开（实测必断）。请允许麦克风权限后重试。'
   }
 }
 function toggle() {
+  if (session.starting.value) return
   if (!session.active.value) { void start(); return }
   if (session.paused.value) session.resume()
   else session.pause()
@@ -209,9 +238,7 @@ defineExpose({ show, hide })
               <video ref="videoRef" class="lsp-video-el" autoplay playsinline muted />
               <span v-if="focusBox" class="lsp-focus" :style="focusBox" />
               <span v-if="dragBox" class="lsp-focus lsp-focus--live" :style="dragBox" />
-              <p v-if="!session.active.value" class="lsp-video-hint">
-                点击「开始」后，摄像头画面会实时送往本地实时模型。
-              </p>
+              <p v-if="!session.active.value" class="lsp-video-hint">{{ videoHint }}</p>
             </div>
             <div class="lsp-focus-row">
               <span class="lsp-dim">
@@ -270,15 +297,31 @@ defineExpose({ show, hide })
         </p>
 
         <footer class="lsp-foot">
-          <button type="button" class="lsp-btn lsp-btn--primary" @click="toggle">
-            {{ session.active.value ? (session.paused.value ? '继续' : '暂停') : '开始' }}
-          </button>
+          <div class="lsp-source" role="group" aria-label="画面来源">
+            <button
+              type="button" class="lsp-source-btn" :class="{ 'lsp-source-btn--on': source === 'camera' }"
+              :aria-pressed="source === 'camera'" :disabled="session.active.value || session.starting.value"
+              @click="source = 'camera'"
+            >摄像头</button>
+            <button
+              type="button" class="lsp-source-btn" :class="{ 'lsp-source-btn--on': source === 'screen' }"
+              :aria-pressed="source === 'screen'" :disabled="session.active.value || session.starting.value"
+              @click="source = 'screen'"
+            >屏幕</button>
+          </div>
+          <button
+            type="button" class="lsp-btn lsp-btn--primary" :disabled="session.starting.value"
+            @click="toggle"
+          >{{ startLabel }}</button>
           <button
             type="button" class="lsp-btn" :class="{ 'lsp-btn--on': session.audioEnabled.value }"
             :disabled="!session.active.value" @click="toggleMic"
           >{{ session.audioEnabled.value ? '关麦' : '开麦' }}</button>
           <button type="button" class="lsp-btn" :disabled="!session.active.value" @click="session.cancel()">打断</button>
-          <button type="button" class="lsp-btn" :disabled="!session.active.value" @click="session.stop()">停止</button>
+          <button
+            type="button" class="lsp-btn" :disabled="!session.active.value && !session.starting.value"
+            @click="session.stop()"
+          >{{ session.starting.value ? '取消' : '停止' }}</button>
           <span class="lsp-foot-note">
             实时会话按项目隔离；未配置原生实时模型时后端会自动降级为抽帧模式。
           </span>
@@ -402,5 +445,21 @@ defineExpose({ show, hide })
 .lsp-btn--primary { --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 .lsp-btn--primary:hover:not(:disabled) { color: var(--accent-ink); filter: brightness(1.04); }
 .lsp-btn--on { border-color: color-mix(in srgb, var(--green) 45%, transparent); color: var(--green); }
+/* 画面来源分段选择：只在会话开始前可点。 */
+.lsp-source {
+  display: inline-flex; flex: 0 0 auto;
+  border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden;
+}
+.lsp-source-btn {
+  height: 26px; padding: 0 9px; border: none; background: transparent;
+  color: var(--text-muted); font-size: var(--fs-sm); cursor: pointer;
+}
+.lsp-source-btn + .lsp-source-btn { border-left: 1px solid var(--border); }
+.lsp-source-btn:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.lsp-source-btn--on {
+  color: var(--accent-text); font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.lsp-source-btn:disabled { opacity: .55; cursor: default; }
 .lsp-foot-note { margin-left: auto; font-size: var(--fs-cap); color: var(--text-faint); }
 </style>

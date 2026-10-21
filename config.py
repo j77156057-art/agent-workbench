@@ -1087,6 +1087,8 @@ def _apply_persisted_state():
 
     # 网络搜索 / URL 获取配置恢复
     _apply_web_search_state(data)
+    # 语音模型（STT / TTS / 实时 Omni）恢复
+    _apply_voice_state(data)
 
 
 # 注：过去此处 import 期直接调用 _apply_persisted_state()（导入即磁盘读）。
@@ -1148,6 +1150,123 @@ def set_external_access_mode(mode):
     set_runtime("external_access_mode", mode)
     save_state("external_access_mode", mode)
     return mode
+
+
+# ---- 语音模型配置（STT / TTS / 实时 Omni）----
+# 背景：语音服务原先只认 DOCMIND_STT_* / DOCMIND_TTS_* / DOCMIND_OMNI_* 环境变量。
+# 厂商下线某个模型或音色后，用户只能改 .env 再重启，界面上无处可改。这里把
+# 「用户选择」放进运行时可覆盖层并持久化到 STATE_FILE；密钥仍只进项目密钥库。
+VOICE_KINDS = ("stt", "tts")
+#: 每个 kind 的已保存覆盖（不含密钥）。键缺失 = 跟随环境变量。
+_VOICE_CONFIG = {}
+_VOICE_REALTIME_KEYS = ("omni_model", "omni_voice", "omni_transcription_model")
+_VOICE_REALTIME_ENV = {
+    "omni_model": "DOCMIND_OMNI_MODEL",
+    "omni_voice": "DOCMIND_OMNI_VOICE",
+    "omni_transcription_model": "DOCMIND_OMNI_TRANSCRIPTION_MODEL",
+}
+
+
+def _voice_kind(kind):
+    key = (kind or "").strip().lower()
+    if key not in VOICE_KINDS:
+        raise ValueError("语音类型仅支持 stt / tts。")
+    return key
+
+
+def _normalize_voice_item(kind, item):
+    """把状态文件/请求里的语音配置收敛成固定字段，非法值抛 ValueError。"""
+    key = _voice_kind(kind)
+    item = item if isinstance(item, dict) else {}
+    provider = str(item.get("provider") or "env").strip()[:40] or "env"
+    url = str(item.get("url") or "").strip()[:500]
+    if url and not url.lower().startswith(("http://", "https://")):
+        raise ValueError("语音接口地址必须以 http:// 或 https:// 开头。")
+    model = str(item.get("model") or "").strip()[:160]
+    voice = str(item.get("voice") or "").strip()[:80] if key == "tts" else ""
+    return {"provider": provider, "url": url, "model": model, "voice": voice}
+
+
+def get_voice_config(kind):
+    """返回**用户保存的**语音覆盖（provider 默认 env；空字段表示跟随环境变量）。"""
+    key = _voice_kind(kind)
+    item = {"provider": "env", "url": "", "model": "", "voice": ""}
+    item.update(_VOICE_CONFIG.get(key) or {})
+    return dict(item)
+
+
+def effective_voice_config(kind):
+    """返回当前生效配置：provider=env 时用 DOCMIND_* 环境变量兜底。
+
+    非 env 的 provider **不**回落到环境变量：环境里往往配的是另一家厂商的
+    端点/模型（例如 DOCMIND_TTS_MODEL=cosyvoice），串用会把「换个服务商」变成
+    一个更难排查的 404/音色不匹配。
+    """
+    key = _voice_kind(kind)
+    item = get_voice_config(key)
+    if item.get("provider") == "env":
+        prefix = key.upper()
+        item["url"] = os.getenv(f"DOCMIND_{prefix}_URL", "").strip()
+        item["model"] = os.getenv(f"DOCMIND_{prefix}_MODEL", "").strip()
+        if key == "tts":
+            item["voice"] = os.getenv("DOCMIND_TTS_VOICE", "").strip()
+    return item
+
+
+def set_voice_config(kind, *, provider="env", url="", model="", voice=""):
+    """保存语音覆盖并跨重启持久化；返回**用户保存值**（不含密钥）。"""
+    key = _voice_kind(kind)
+    item = _normalize_voice_item(key, {
+        "provider": provider, "url": url, "model": model, "voice": voice,
+    })
+    _VOICE_CONFIG[key] = item
+    save_state(f"voice_{key}", item)
+    return dict(item)
+
+
+def get_voice_realtime_config():
+    """实时 Omni 的模型/音色/转写模型：运行时覆盖 > 环境变量 > 空（用代码默认值）。"""
+    out = {}
+    for key in _VOICE_REALTIME_KEYS:
+        value = get_runtime(key)
+        if not (isinstance(value, str) and value.strip()):
+            value = os.getenv(_VOICE_REALTIME_ENV[key], "")
+        out[key] = value.strip() if isinstance(value, str) else ""
+    return out
+
+
+def set_voice_realtime_config(*, model=None, voice=None, transcription_model=None):
+    """保存实时语音覆盖；空串 = 清除覆盖、回到环境变量/代码默认值。"""
+    patch = {
+        "omni_model": model,
+        "omni_voice": voice,
+        "omni_transcription_model": transcription_model,
+    }
+    for key, value in patch.items():
+        if value is None:
+            continue
+        value = str(value).strip()[:160]
+        if value:
+            set_runtime(key, value)
+        else:
+            _RUNTIME.pop(key, None)
+        save_state(key, value)
+    return get_voice_realtime_config()
+
+
+def _apply_voice_state(data):
+    """从 STATE_FILE 恢复语音覆盖（启动期调用，坏条目静默跳过）。"""
+    for key in VOICE_KINDS:
+        item = data.get(f"voice_{key}")
+        if isinstance(item, dict):
+            try:
+                _VOICE_CONFIG[key] = _normalize_voice_item(key, item)
+            except ValueError:
+                pass
+    for key in _VOICE_REALTIME_KEYS:
+        value = data.get(key)
+        if isinstance(value, str) and value.strip() and key not in _RUNTIME:
+            _RUNTIME[key] = value.strip()
 
 
 # ---- 网络搜索 / URL 获取配置运行时覆盖 ----

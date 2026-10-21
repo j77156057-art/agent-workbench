@@ -3,8 +3,8 @@
 // 保存后后端即时重建 Agent LLM 客户端；能力画像（思考/上下文窗口）回传父组件，
 // 用于刷新输入栏的模型标签与「深度思考」开关状态。
 import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
-import { modelApi } from '../api'
-import type { ModelConfigInfo, ContextLookupResult, ModelPreset } from '../api'
+import { modelApi, voiceApi } from '../api'
+import type { ModelConfigInfo, ContextLookupResult, ModelPreset, VoiceConfigInfo } from '../api'
 import { prefs as sharedPrefs, saveAskPrefs, type AskPrefs } from '../../ask/askPrefs'
 
 const props = defineProps<{ visible: boolean; config: ModelConfigInfo | null }>()
@@ -74,6 +74,169 @@ const embeddingNeedsOllama = computed(() => embeddingProvider.value === 'ollama'
 const embeddingCloudKeyMismatch = computed(
   () => embeddingProvider.value === 'qwen' && provider.value !== 'qwen',
 )
+
+// ---------------------------------------------------------------------------
+// 语音模型（实时对话 Omni / 语音输入 STT / 朗读 TTS）
+//
+// 背景：这些模型此前只能改 .env —— 厂商下线某个模型/音色（例如
+// qwen-omni-turbo-realtime、Chelsie）后，用户在设置里找不到任何可改的地方，
+// 语音功能就整块失效。这里把它们接入可持久化的运行时配置：
+//   · 实时对话：模型 / 音色 / 转写模型（Key 仍走 .env）
+//   · STT / TTS：OpenAI 兼容服务商 / 地址 / 模型 / 音色 / Key
+// Key 只写入当前项目的加密密钥库，接口只回 has_key，永不回显明文。
+// ---------------------------------------------------------------------------
+const voiceInfo = ref<VoiceConfigInfo | null>(null)
+const voiceBusy = ref(false)
+const voiceError = ref('')
+const voiceOpen = ref(true)
+const sttProvider = ref('env')
+const sttUrl = ref('')
+const sttModel = ref('')
+const sttKey = ref('')
+const ttsProvider = ref('env')
+const ttsUrl = ref('')
+const ttsModel = ref('')
+const ttsVoice = ref('')
+const ttsKey = ref('')
+const omniModel = ref('')
+const omniVoice = ref('')
+const omniTranscription = ref('')
+
+const VOICE_PROVIDERS = [
+  { value: 'env', label: '跟随 .env / 环境变量' },
+  { value: 'openai', label: 'OpenAI 官方' },
+  { value: 'siliconflow', label: '硅基流动 SiliconFlow' },
+  { value: 'custom', label: '自定义（OpenAI 兼容）' },
+] as const
+
+type VoiceProviderKey = 'openai' | 'siliconflow' | 'custom'
+const STT_PRESETS: Record<VoiceProviderKey, { url: string; model: string }> = {
+  openai: { url: 'https://api.openai.com/v1', model: 'whisper-1' },
+  siliconflow: { url: 'https://api.siliconflow.cn/v1', model: 'FunAudioLLM/SenseVoiceSmall' },
+  custom: { url: '', model: '' },
+}
+const TTS_PRESETS: Record<VoiceProviderKey, { url: string; model: string; voice: string }> = {
+  openai: { url: 'https://api.openai.com/v1', model: 'gpt-4o-mini-tts', voice: 'alloy' },
+  siliconflow: {
+    url: 'https://api.siliconflow.cn/v1',
+    model: 'FunAudioLLM/CosyVoice2-0.5B',
+    voice: 'alex',
+  },
+  custom: { url: '', model: '', voice: '' },
+}
+
+function serviceSummary(kind: 'stt' | 'tts'): string {
+  const info = voiceInfo.value?.[kind]
+  if (!info) return voiceBusy.value ? '读取中…' : '未读取'
+  if (!info.configured) return '未配置 · 回退浏览器'
+  const model = info.effective_model || '默认模型'
+  const source = info.source === 'env' ? '环境变量' : '本机设置'
+  return `${source} · ${model} · ${info.has_key ? 'Key 已配置' : '无 Key'}`
+}
+const sttSummary = computed(() => serviceSummary('stt'))
+const ttsSummary = computed(() => serviceSummary('tts'))
+const realtimeSummary = computed(() => {
+  const info = voiceInfo.value?.realtime
+  if (!info) return voiceBusy.value ? '读取中…' : '未读取'
+  if (!info.configured) return '未启用（需 DOCMIND_REALTIME_PROVIDER）'
+  return `${info.provider || '已启用'} · Key ${info.has_key ? '已配置' : '未配置'}`
+})
+
+// 把服务端返回值回填到表单。Key 输入框永远清空：后端只回 has_key，不回明文。
+function applyVoiceInfo(info: VoiceConfigInfo) {
+  voiceInfo.value = info
+  sttProvider.value = info.stt?.provider || 'env'
+  sttUrl.value = info.stt?.url || ''
+  sttModel.value = info.stt?.model || ''
+  sttKey.value = ''
+  ttsProvider.value = info.tts?.provider || 'env'
+  ttsUrl.value = info.tts?.url || ''
+  ttsModel.value = info.tts?.model || ''
+  ttsVoice.value = info.tts?.voice || ''
+  ttsKey.value = ''
+  omniModel.value = info.realtime?.model || ''
+  omniVoice.value = info.realtime?.voice || ''
+  omniTranscription.value = info.realtime?.transcription_model || ''
+}
+
+let voiceLoadSeq = 0
+async function loadVoiceConfig() {
+  const seq = ++voiceLoadSeq
+  voiceBusy.value = true
+  voiceError.value = ''
+  try {
+    const info = await voiceApi.config()
+    if (seq !== voiceLoadSeq) return
+    if (info.ok === false || info.error) {
+      voiceError.value = info.error || '语音配置读取失败'
+      return
+    }
+    applyVoiceInfo(info)
+  } catch (e) {
+    if (seq !== voiceLoadSeq) return
+    voiceError.value = (e as { message?: string }).message || '语音配置读取失败'
+  } finally {
+    if (seq === voiceLoadSeq) voiceBusy.value = false
+  }
+}
+
+// 切换服务商：填入该服务商的兼容地址与常用模型；Key 输入清空，避免把
+// 上一家的 Key 误存到另一个服务商的槽位（留空=不修改已保存的 Key）。
+function applySttProvider() {
+  sttKey.value = ''
+  sttUrl.value = ''
+  sttModel.value = ''
+  if (sttProvider.value === 'env') return
+  const preset = STT_PRESETS[sttProvider.value as VoiceProviderKey]
+  if (preset) {
+    sttUrl.value = preset.url
+    sttModel.value = preset.model
+  }
+}
+
+function applyTtsProvider() {
+  ttsKey.value = ''
+  ttsUrl.value = ''
+  ttsModel.value = ''
+  ttsVoice.value = ''
+  if (ttsProvider.value === 'env') return
+  const preset = TTS_PRESETS[ttsProvider.value as VoiceProviderKey]
+  if (preset) {
+    ttsUrl.value = preset.url
+    ttsModel.value = preset.model
+    ttsVoice.value = preset.voice
+  }
+}
+
+// 非 env 模式必须先有地址和模型，避免保存成「看起来配置了、实际不可用」。
+function voiceValidationError(): string {
+  if (!voiceInfo.value) return ''
+  const services = [
+    ['语音输入（STT）', sttProvider.value, sttUrl.value, sttModel.value],
+    ['朗读（TTS）', ttsProvider.value, ttsUrl.value, ttsModel.value],
+  ] as const
+  for (const [label, p, url, model] of services) {
+    if (p === 'env') continue
+    if (!url.trim()) return `${label}：请填写接口地址（OpenAI 兼容，到 /v1 一级）。`
+    if (!/^https?:\/\//i.test(url.trim())) {
+      return `${label}：接口地址必须以 http:// 或 https:// 开头。`
+    }
+    if (!model.trim()) return `${label}：请填写模型名称。`
+  }
+  return ''
+}
+
+function voiceServicePayload(kind: 'stt' | 'tts') {
+  const p = kind === 'stt' ? sttProvider.value : ttsProvider.value
+  if (p === 'env') return { provider: 'env' }
+  return {
+    provider: p,
+    url: (kind === 'stt' ? sttUrl.value : ttsUrl.value).trim(),
+    model: (kind === 'stt' ? sttModel.value : ttsModel.value).trim(),
+    voice: kind === 'tts' ? ttsVoice.value.trim() : '',
+    api_key: (kind === 'stt' ? sttKey.value : ttsKey.value).trim() || undefined,
+  }
+}
 
 // AI 越界访问模式：safe=仅限项目内；high=允许受控越界读写（须配置白名单目录）
 const accessMode = ref<'safe' | 'high'>('safe')
@@ -180,7 +343,10 @@ function hydrateConfig(config: ModelConfigInfo) {
 watch(
   () => [props.visible, props.config] as const,
   ([visible, config]) => {
-    if (visible && config) hydrateConfig(config)
+    if (visible && config) {
+      hydrateConfig(config)
+      void loadVoiceConfig()
+    }
   },
   { immediate: true },
 )
@@ -367,6 +533,11 @@ async function save() {
       return
     }
   }
+  const voiceIssue = voiceValidationError()
+  if (voiceIssue) {
+    errorMsg.value = voiceIssue
+    return
+  }
   saving.value = true
   try {
     const res = await modelApi.save({
@@ -407,8 +578,38 @@ async function save() {
     llmMode.value = res.llm_mode === 'auto' ? 'auto' : 'fixed'
     autoCloudPresetId.value = res.auto_cloud_preset_id || ''
     presets.value = res.model_presets || presets.value
+
+    // 语音配置独立保存：只在成功读到当前配置时提交，避免读取失败时把
+    // 用户已有的 STT/TTS 自定义设置误重置成 env（那时表单只是空默认值）。
+    let voiceSaveFailed = false
+    if (voiceInfo.value) {
+      try {
+        const voiceRes = await voiceApi.saveConfig({
+          stt: voiceServicePayload('stt'),
+          tts: voiceServicePayload('tts'),
+          realtime: {
+            model: omniModel.value.trim(),
+            voice: omniVoice.value.trim(),
+            transcription_model: omniTranscription.value.trim(),
+          },
+        })
+        if (voiceRes.ok === false || voiceRes.error) {
+          voiceSaveFailed = true
+          voiceError.value = voiceRes.error || '语音设置保存失败'
+        } else {
+          applyVoiceInfo(voiceRes)
+          voiceError.value = ''
+        }
+      } catch (e) {
+        voiceSaveFailed = true
+        voiceError.value = (e as { message?: string }).message || '语音设置保存失败'
+      }
+      if (voiceSaveFailed) {
+        errorMsg.value = `模型已切换，但语音设置保存失败：${voiceError.value}`
+      }
+    }
     emit('saved', res)
-    if (!warnings.value.length) emit('close')
+    if (!warnings.value.length && !voiceSaveFailed) emit('close')
   } catch (e) {
     errorMsg.value = (e as { message?: string }).message || '保存失败'
   } finally {
@@ -600,6 +801,160 @@ async function save() {
       <p class="ms-hint">
         切换此项会清空已上传文档的向量并需要重新上传——因为不同后端的向量维度不通用。
       </p>
+
+      <div class="ms-sep"></div>
+      <label class="ms-label">
+        语音模型
+        <span class="ms-key-toggle" @click="voiceOpen = !voiceOpen">{{ voiceOpen ? '收起' : '展开' }}</span>
+      </label>
+      <template v-if="voiceOpen">
+        <p v-if="voiceBusy" class="ms-hint">正在读取语音配置…</p>
+        <p v-if="voiceError" class="ms-hint ms-hint-err">{{ voiceError }}</p>
+
+        <div class="ms-voice-block">
+          <div class="ms-voice-head">
+            <span class="ms-voice-title">实时对话（Omni）</span>
+            <span class="ms-voice-state">{{ realtimeSummary }}</span>
+          </div>
+          <div class="ms-voice-grid">
+            <label class="ms-voice-field">
+              <span>实时模型</span>
+              <input v-model="omniModel" class="ms-input" list="ms-omni-models"
+                     :placeholder="voiceInfo?.realtime?.defaults?.model || '默认模型'"
+                     spellcheck="false" :disabled="saving" />
+            </label>
+            <label class="ms-voice-field">
+              <span>音色</span>
+              <input v-model="omniVoice" class="ms-input" list="ms-omni-voices"
+                     :placeholder="voiceInfo?.realtime?.defaults?.voice || '默认音色'"
+                     spellcheck="false" :disabled="saving" />
+            </label>
+          </div>
+          <label class="ms-voice-field">
+            <span>语音转写模型</span>
+            <input v-model="omniTranscription" class="ms-input" list="ms-omni-transcription"
+                   :placeholder="voiceInfo?.realtime?.defaults?.transcription_model || '默认转写模型'"
+                   spellcheck="false" :disabled="saving" />
+          </label>
+          <p class="ms-voice-note">
+            留空 = 使用 .env / 默认值。模型或音色被厂商下线时在这里直接替换；
+            实时对话的 Key 仍读取 DOCMIND_OMNI_API_KEY / DASHSCOPE_API_KEY。
+          </p>
+          <datalist id="ms-omni-models">
+            <option value="qwen3.8-omni-flash-realtime" />
+            <option value="qwen3.5-omni-plus-realtime" />
+          </datalist>
+          <datalist id="ms-omni-voices">
+            <option value="Jennifer" />
+            <option value="Ryan" />
+            <option value="Katerina" />
+          </datalist>
+          <datalist id="ms-omni-transcription">
+            <option value="gummy-realtime-v1" />
+          </datalist>
+        </div>
+
+        <div class="ms-voice-block">
+          <div class="ms-voice-head">
+            <span class="ms-voice-title">语音输入（STT）</span>
+            <span class="ms-voice-state">{{ sttSummary }}</span>
+          </div>
+          <div class="ms-voice-grid" :class="{ 'ms-voice-grid-single': sttProvider === 'env' }">
+            <label class="ms-voice-field">
+              <span>服务商</span>
+              <select v-model="sttProvider" class="ms-input" :disabled="saving" @change="applySttProvider">
+                <option v-for="p in VOICE_PROVIDERS" :key="p.value" :value="p.value">{{ p.label }}</option>
+              </select>
+            </label>
+            <label v-if="sttProvider !== 'env'" class="ms-voice-field">
+              <span>模型</span>
+              <input v-model="sttModel" class="ms-input" list="ms-stt-models" placeholder="whisper-1"
+                     spellcheck="false" :disabled="saving" />
+            </label>
+          </div>
+          <p v-if="sttProvider === 'env'" class="ms-voice-note">
+            当前环境：{{ voiceInfo?.stt?.effective_url || '未配置 DOCMIND_STT_URL' }}
+            <template v-if="voiceInfo?.stt?.effective_model"> · 模型 {{ voiceInfo.stt.effective_model }}</template>
+          </p>
+          <template v-else>
+            <label class="ms-voice-field">
+              <span>接口地址（OpenAI 兼容，到 /v1 一级）</span>
+              <input v-model="sttUrl" class="ms-input" placeholder="https://api.openai.com/v1"
+                     spellcheck="false" :disabled="saving" />
+            </label>
+            <label class="ms-voice-field">
+              <span>API Key<span class="ms-label-note">留空 = 不修改已保存的 Key</span></span>
+              <input v-model="sttKey" class="ms-input" type="password"
+                     :placeholder="voiceInfo?.stt?.has_key ? '已保存，留空表示不修改' : 'sk-...（无 Key 的本地服务可留空）'"
+                     autocomplete="off" spellcheck="false" :disabled="saving" />
+            </label>
+          </template>
+          <p class="ms-voice-note">对话台麦克风使用此服务；未配置时自动回退浏览器语音识别。</p>
+          <datalist id="ms-stt-models">
+            <option value="whisper-1" />
+            <option value="gpt-4o-transcribe" />
+            <option value="FunAudioLLM/SenseVoiceSmall" />
+          </datalist>
+        </div>
+
+        <div class="ms-voice-block">
+          <div class="ms-voice-head">
+            <span class="ms-voice-title">朗读（TTS）</span>
+            <span class="ms-voice-state">{{ ttsSummary }}</span>
+          </div>
+          <div class="ms-voice-grid" :class="{ 'ms-voice-grid-single': ttsProvider === 'env' }">
+            <label class="ms-voice-field">
+              <span>服务商</span>
+              <select v-model="ttsProvider" class="ms-input" :disabled="saving" @change="applyTtsProvider">
+                <option v-for="p in VOICE_PROVIDERS" :key="p.value" :value="p.value">{{ p.label }}</option>
+              </select>
+            </label>
+            <label v-if="ttsProvider !== 'env'" class="ms-voice-field">
+              <span>模型</span>
+              <input v-model="ttsModel" class="ms-input" list="ms-tts-models" placeholder="gpt-4o-mini-tts"
+                     spellcheck="false" :disabled="saving" />
+            </label>
+          </div>
+          <p v-if="ttsProvider === 'env'" class="ms-voice-note">
+            当前环境：{{ voiceInfo?.tts?.effective_url || '未配置 DOCMIND_TTS_URL' }}
+            <template v-if="voiceInfo?.tts?.effective_model"> · 模型 {{ voiceInfo.tts.effective_model }}</template>
+            <template v-if="voiceInfo?.tts?.effective_voice"> · 音色 {{ voiceInfo.tts.effective_voice }}</template>
+          </p>
+          <template v-else>
+            <label class="ms-voice-field">
+              <span>接口地址（OpenAI 兼容，到 /v1 一级）</span>
+              <input v-model="ttsUrl" class="ms-input" placeholder="https://api.openai.com/v1"
+                     spellcheck="false" :disabled="saving" />
+            </label>
+            <div class="ms-voice-grid">
+              <label class="ms-voice-field">
+                <span>音色</span>
+                <input v-model="ttsVoice" class="ms-input" list="ms-tts-voices" placeholder="alloy"
+                       spellcheck="false" :disabled="saving" />
+              </label>
+              <label class="ms-voice-field">
+                <span>API Key<span class="ms-label-note">留空 = 不修改</span></span>
+                <input v-model="ttsKey" class="ms-input" type="password"
+                       :placeholder="voiceInfo?.tts?.has_key ? '已保存，留空表示不修改' : 'sk-...（无 Key 的本地服务可留空）'"
+                       autocomplete="off" spellcheck="false" :disabled="saving" />
+              </label>
+            </div>
+          </template>
+          <p class="ms-voice-note">回答的朗读按钮使用此服务；未配置时回退浏览器语音合成。</p>
+          <datalist id="ms-tts-models">
+            <option value="gpt-4o-mini-tts" />
+            <option value="tts-1" />
+            <option value="FunAudioLLM/CosyVoice2-0.5B" />
+          </datalist>
+          <datalist id="ms-tts-voices">
+            <option value="alloy" />
+            <option value="nova" />
+            <option value="shimmer" />
+            <option value="alex" />
+            <option value="anna" />
+          </datalist>
+        </div>
+      </template>
 
       <div class="ms-sep"></div>
       <label class="ms-label">能力确认</label>
@@ -849,6 +1204,24 @@ async function save() {
 .ms-cap-tag:hover { border-color: var(--accent); transform: translateY(-1px); }
 .ms-cap-off { opacity: .65; }
 .ms-tip { font-size: var(--fs-cap); color: var(--text-faint); margin: 8px 0 0; line-height: 1.5; }
+/* 语音模型（实时 Omni / STT / TTS） */
+.ms-voice-block {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 9px 10px; margin-top: 7px;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--bg-raised);
+}
+.ms-voice-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.ms-voice-title { font-size: var(--fs-md); font-weight: 600; }
+.ms-voice-state { font-size: var(--fs-cap); color: var(--text-faint); text-align: right; }
+.ms-voice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ms-voice-grid-single { grid-template-columns: 1fr; }
+.ms-voice-field {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  font-size: var(--fs-cap); color: var(--text-muted);
+}
+.ms-voice-field .ms-input { font-size: var(--fs-md); }
+.ms-voice-note { margin: 0; font-size: var(--fs-cap); color: var(--text-faint); line-height: 1.45; }
 /* 越界访问模式分段选择 */
 .ms-sep { height: 1px; background: var(--border); margin: 12px 0 2px; }
 .ms-seg { display: flex; gap: 8px; }
@@ -905,6 +1278,6 @@ async function save() {
 .ms-primary:disabled { opacity: .5; cursor: default; }
 @keyframes ms-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ms-rise { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
-@media (max-width: 560px) { .ms-mask { align-items: flex-end; }.ms-box { width: 100%; max-width: none; max-height: calc(100vh - 12px); border-radius: 12px 12px 0 0; padding: 15px 14px 13px; }.ms-seg { flex-direction: column; }.ms-cap-edit label { align-items: stretch; flex-direction: column; gap: 4px; }.ms-select { min-width: 0; width: 100%; }.ms-actions { position: sticky; bottom: -13px; padding-top: 10px; padding-bottom: 2px; background: linear-gradient(180deg, transparent, var(--bg) 26%); } }
+@media (max-width: 560px) { .ms-mask { align-items: flex-end; }.ms-box { width: 100%; max-width: none; max-height: calc(100vh - 12px); border-radius: 12px 12px 0 0; padding: 15px 14px 13px; }.ms-seg { flex-direction: column; }.ms-cap-edit label { align-items: stretch; flex-direction: column; gap: 4px; }.ms-select { min-width: 0; width: 100%; }.ms-voice-grid { grid-template-columns: 1fr; }.ms-actions { position: sticky; bottom: -13px; padding-top: 10px; padding-bottom: 2px; background: linear-gradient(180deg, transparent, var(--bg) 26%); } }
 @media (prefers-reduced-motion: reduce) { .ms-mask, .ms-box, .ms-mini, .ms-cap-tag, .ms-seg-opt, .ms-preset-item, .ms-btn { animation: none; transition: none; } }
 </style>

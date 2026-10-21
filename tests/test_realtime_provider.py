@@ -14,12 +14,15 @@ import time
 import unittest
 from unittest.mock import patch
 
+import config
 from agent_runtime import realtime_provider as rp
 from agent_runtime import realtime_timeline as rt
 from agent_runtime.realtime_omni import (
     DEFAULT_MODEL, INPUT_AUDIO_FORMAT, OUTPUT_AUDIO_FORMAT, SILENCE_CHUNK_MS,
     OmniRealtimeProvider,
 )
+
+_RUNTIME_KEYS = ("omni_model", "omni_voice", "omni_transcription_model")
 
 _ENV_KEYS = ("DOCMIND_REALTIME_PROVIDER", "DOCMIND_OMNI_API_KEY", "DASHSCOPE_API_KEY",
              "DOCMIND_OMNI_MODEL", "DOCMIND_OMNI_VOICE", "DOCMIND_OMNI_VAD",
@@ -135,6 +138,11 @@ class OmniAdapterTests(unittest.TestCase):
         for key in _ENV_KEYS:
             os.environ.pop(key, None)
         os.environ["DOCMIND_OMNI_API_KEY"] = "test-key"
+        # Runtime overrides are process-global and may have been written by the
+        # settings API (or a prior test); keep these contract tests deterministic.
+        self._saved_runtime = {key: config.get_runtime(key) for key in _RUNTIME_KEYS}
+        for key in _RUNTIME_KEYS:
+            config._RUNTIME.pop(key, None)
         self._providers: list[OmniRealtimeProvider] = []
 
     def tearDown(self):
@@ -145,6 +153,11 @@ class OmniAdapterTests(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+        for key, value in self._saved_runtime.items():
+            if value is None:
+                config._RUNTIME.pop(key, None)
+            else:
+                config.set_runtime(key, value)
 
     def _start(self, events=None):
         ws = _FakeWS(events)
@@ -180,6 +193,22 @@ class OmniAdapterTests(unittest.TestCase):
         self.assertEqual(session["output_audio_format"], OUTPUT_AUDIO_FORMAT)
         self.assertEqual(session["input_audio_transcription"]["model"], "gummy-realtime-v1")
         self.assertTrue(provider.running)
+
+    def test_runtime_overrides_reach_the_wire(self):
+        """设置页保存的模型/音色/转写模型必须真正下发，而不是仍用写死常量。"""
+        config.set_runtime("omni_model", "qwen3.5-omni-plus-realtime")
+        config.set_runtime("omni_voice", "Ryan")
+        config.set_runtime("omni_transcription_model", "gummy-realtime-v2")
+        provider = OmniRealtimeProvider(project_id="prj-test")
+        self._providers.append(provider)
+        session = provider._session_payload()["session"]
+        self.assertEqual(session["voice"], "Ryan")
+        self.assertEqual(session["input_audio_transcription"]["model"],
+                         "gummy-realtime-v2")
+        self.assertIn("model=qwen3.5-omni-plus-realtime", provider.endpoint())
+        state = provider.availability()
+        self.assertEqual(state["voice"], "Ryan")
+        self.assertEqual(state["transcription_model"], "gummy-realtime-v2")
 
     def test_vad_wait_can_be_tuned_without_exceeding_the_audio_tail(self):
         for value, expected in (("800", 800), ("0", 300), ("5000", 1000),

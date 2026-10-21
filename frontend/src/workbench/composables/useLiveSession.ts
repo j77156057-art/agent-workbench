@@ -65,9 +65,14 @@ export interface LiveSessionStats {
 const MAX_OBSERVATIONS = 40
 const MAX_CAPTIONS = 12
 
+/** 实时画面的来源：摄像头，或浏览器共享的屏幕/窗口。 */
+export type LiveVideoSource = 'camera' | 'screen'
+
 export interface UseLiveSession {
   phase: Ref<LivePhase>
   active: Ref<boolean>
+  /** 正在申请摄像头/屏幕与建立连接（屏幕选择器打开期间也为 true）。 */
+  starting: Ref<boolean>
   paused: Ref<boolean>
   modeView: Ref<RealtimeModeView | null>
   modePayload: Ref<Record<string, unknown> | null>
@@ -79,6 +84,8 @@ export interface UseLiveSession {
   capabilities: Ref<string[]>
   videoEnabled: Ref<boolean>
   audioEnabled: Ref<boolean>
+  /** 当前实际在用的画面来源；null=还没开始过。 */
+  activeSource: Ref<LiveVideoSource | null>
   cameraState: Ref<'idle' | 'on' | 'denied' | 'unavailable'>
   /** 圈选聚焦的归一矩形（0..1）；null=不聚焦，上行整帧。 */
   focusRegion: Ref<{ x: number; y: number; w: number; h: number } | null>
@@ -91,7 +98,7 @@ export interface UseLiveSession {
   /** 单独开关麦克风（音频走 WS 上行到实时模型，不经过对话台）。 */
   enableAudio: () => Promise<void>
   disableAudio: () => void
-  start: (options?: { video?: boolean; audio?: boolean }) => Promise<void>
+  start: (options?: { video?: boolean; audio?: boolean; source?: LiveVideoSource }) => Promise<void>
   pause: () => void
   resume: () => void
   stop: () => void
@@ -101,6 +108,7 @@ export interface UseLiveSession {
 
 export function useLiveSession(): UseLiveSession {
   const active = ref(false)
+  const starting = ref(false)
   const paused = ref(false)
   const socketState = ref<LiveSocketState>('closed')
   const reconnectScheduled = ref(false)
@@ -114,6 +122,7 @@ export function useLiveSession(): UseLiveSession {
   const capabilities = ref<string[]>([])
   const videoEnabled = ref(true)
   const audioEnabled = ref(false)
+  const activeSource = ref<LiveVideoSource | null>(null)
   const cameraState = ref<'idle' | 'on' | 'denied' | 'unavailable'>('idle')
   const stats = ref<LiveSessionStats>({
     framesSent: 0, observations: 0, chunksSent: 0, lastE2eMs: null, lastObservationAt: null,
@@ -128,6 +137,8 @@ export function useLiveSession(): UseLiveSession {
   let videoElement: HTMLVideoElement | null = null
   let canvas: HTMLCanvasElement | null = null
   let captureTimer: ReturnType<typeof setTimeout> | null = null
+  /** 每次 start/stop 自增：选择器还开着时面板被关掉，回来的流要立刻停掉。 */
+  let startEpoch = 0
   let sequence = 0
   let audioContext: AudioContext | null = null
   let audioProcessor: ScriptProcessorNode | null = null
@@ -464,36 +475,125 @@ export function useLiveSession(): UseLiveSession {
     }
   }
 
-  async function startVideo() {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      error.value = '当前浏览器不支持摄像头采集（getUserMedia 不可用）。'
-      videoEnabled.value = false
-      return
+  /** 把采集异常翻译成用户能看懂的一句话（区分“用户取消”和“真坏了”）。 */
+  function describeCaptureError(e: unknown, source: LiveVideoSource): string {
+    const err = e as { name?: string; message?: string } | null
+    const name = err?.name || ''
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return source === 'screen' ? '没有可共享的屏幕或窗口。' : '没有找到摄像头设备。'
     }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return source === 'screen'
+        ? '屏幕采集启动失败：可能被系统或其他程序占用。'
+        : '摄像头被其他程序占用，无法启动。'
+    }
+    if (name === 'OverconstrainedError') {
+      return source === 'screen' ? '当前屏幕分辨率不满足采集要求。' : '摄像头不支持所需的采集参数。'
+    }
+    return `${source === 'screen' ? '屏幕共享' : '摄像头'}启动失败：${err?.message || '未知原因'}`
+  }
+
+  /**
+   * 获取画面流并接到预览 <video> 上。
+   *
+   * `epoch` 是调用方（start）拿到的启动代数：屏幕/摄像头选择器可能开着很久，
+   * 期间用户完全可能关掉面板 —— 回来时必须把这条“没人要的流”立刻停掉，
+   * 不能让摄像头指示灯或屏幕共享一直亮着。
+   *
+   * 注意：`getDisplayMedia` 必须在用户手势的同一个任务里调用。本函数在第一个
+   * `await` 之前就发起了采集请求，`start()` 也只做同步调用后才去 await 别的。
+   */
+  async function startVideo(source: LiveVideoSource = 'camera', epoch = startEpoch): Promise<boolean> {
     const element = videoElement
     if (!element) {
-      error.value = '没有可用的视频预览元素，摄像头未启动。'
+      error.value = '没有可用的视频预览元素，画面未启动。'
       videoEnabled.value = false
-      return
+      return false
     }
+    if (source === 'screen') {
+      if (!navigator.mediaDevices?.getDisplayMedia) {
+        error.value = '当前浏览器不支持屏幕共享（getDisplayMedia 不可用），请改用摄像头或升级浏览器。'
+        videoEnabled.value = false
+        cameraState.value = 'unavailable'
+        return false
+      }
+    } else if (!navigator.mediaDevices?.getUserMedia) {
+      error.value = '当前浏览器不支持摄像头采集（getUserMedia 不可用）。'
+      videoEnabled.value = false
+      cameraState.value = 'unavailable'
+      return false
+    }
+
+    let stream: MediaStream
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      })
-      mediaStream = stream
-      element.srcObject = stream
-      element.muted = true
-      element.playsInline = true
-      await element.play()
-      canvas = document.createElement('canvas')
-      cameraState.value = 'on'
-      videoEnabled.value = true
+      stream = source === 'screen'
+        ? await navigator.mediaDevices.getDisplayMedia({
+            // 屏幕内容变化慢，10fps 足够；上限 15 防止高刷屏把编码打满。
+            video: { frameRate: { ideal: 10, max: 15 } },
+            audio: false,
+          })
+        : await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: false,
+          })
     } catch (e) {
-      error.value = `摄像头不可用：${(e as Error).message || '未知原因'}`
-      cameraState.value = 'denied'
+      if (epoch !== startEpoch) return false
+      const err = e as { name?: string; message?: string } | null
+      const cancelled = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError'
+        || err?.name === 'AbortError'
+      if (cancelled) {
+        // 用户点了选择器的「取消」：这不是故障，不该留一条红条。
+        notice.value = source === 'screen'
+          ? '已取消屏幕共享，实时会话没有开始。'
+          : '已取消摄像头授权，实时会话没有开始。'
+        cameraState.value = 'idle'
+      } else {
+        error.value = describeCaptureError(e, source)
+        cameraState.value = err?.name === 'NotFoundError' ? 'unavailable' : 'denied'
+      }
       videoEnabled.value = false
+      return false
     }
+
+    // 选择/授权期间面板被关掉或重新开始了：这条流已经没有主人。
+    if (epoch !== startEpoch || !starting.value) {
+      stream.getTracks().forEach(track => track.stop())
+      return false
+    }
+
+    // 换源时先收掉上一条流，避免摄像头与屏幕同时被占用。
+    if (mediaStream && mediaStream !== stream) {
+      mediaStream.getTracks().forEach(track => track.stop())
+    }
+    mediaStream = stream
+    activeSource.value = source
+    element.srcObject = stream
+    element.muted = true
+    element.playsInline = true
+    try {
+      await element.play()
+    } catch { /* 自动播放被拦只是预览不动，采集本身仍然有效 */ }
+
+    if (epoch !== startEpoch || !starting.value) {
+      stream.getTracks().forEach(track => track.stop())
+      if (mediaStream === stream) mediaStream = null
+      return false
+    }
+
+    // 浏览器自带的「停止共享」按钮会结束视频轨：画面没了，会话也没有继续的意义。
+    const [track] = stream.getVideoTracks()
+    if (track) {
+      track.addEventListener('ended', () => {
+        if (mediaStream !== stream) return
+        notice.value = source === 'screen' ? '屏幕共享已停止。' : '摄像头画面已停止。'
+        stop()
+      })
+    }
+
+    canvas = document.createElement('canvas')
+    cameraState.value = 'on'
+    videoEnabled.value = true
+    return true
   }
 
   // ---- 生命周期 ---------------------------------------------------------
@@ -506,8 +606,8 @@ export function useLiveSession(): UseLiveSession {
     } catch { /* 拿不到就保持"未确认"，不假装 */ }
   }
 
-  async function start(options: { video?: boolean; audio?: boolean } = {}) {
-    if (active.value) return
+  async function start(options: { video?: boolean; audio?: boolean; source?: LiveVideoSource } = {}) {
+    if (active.value || starting.value) return
     error.value = ''
     notice.value = ''
     const projectId = getProjectId()
@@ -515,27 +615,47 @@ export function useLiveSession(): UseLiveSession {
       error.value = '没有选择项目，实时对话不可用（后端按项目隔离实时会话）。'
       return
     }
-    await refreshMode()
-    transport = createLiveTransport({
-      projectId,
-      onEvent,
-      onState: (state) => {
-        socketState.value = state
-        reconnectScheduled.value = state === 'connecting' && !transport?.socketState().match(/open/)
-      },
-      onNotice: (message) => { notice.value = message },
-    })
-    active.value = true
-    paused.value = false
-    sequence = 0
-    audioSequence = 0
-    sender.reset()
-    ledger.clear()
-    transport.connect()
-    startMetricsPolling()
-    if (options.video !== false) await startVideo()
-    if (options.audio) await startAudio()
-    if (videoEnabled.value) scheduleNextFrame()
+
+    const source: LiveVideoSource = options.source === 'screen' ? 'screen' : 'camera'
+    const wantVideo = options.video !== false
+    const epoch = ++startEpoch
+    starting.value = true
+    try {
+      // ⚠️ 采集必须在这里**同步发起**：屏幕共享的 getDisplayMedia 依赖用户点击
+      // 产生的瞬时激活，中间只要 await 一次（比如先刷新实时模式），浏览器就会
+      // 以 NotAllowedError 拒绝。所以先拿到 stream，再做其它异步准备。
+      const videoPromise = wantVideo ? startVideo(source, epoch) : Promise.resolve(true)
+      await refreshMode()
+      if (epoch !== startEpoch) return
+      const videoOk = await videoPromise
+      if (epoch !== startEpoch) return
+      // 用户取消了选择器 / 采集失败：不要建立一个没有画面的实时会话。
+      if (wantVideo && !videoOk) return
+
+      transport = createLiveTransport({
+        projectId,
+        onEvent,
+        onState: (state) => {
+          socketState.value = state
+          reconnectScheduled.value = state === 'connecting' && !transport?.socketState().match(/open/)
+        },
+        onNotice: (message) => { notice.value = message },
+      })
+      active.value = true
+      paused.value = false
+      sequence = 0
+      audioSequence = 0
+      sender.reset()
+      ledger.clear()
+      transport.connect()
+      startMetricsPolling()
+      // 画面流已经在上面拿过了，这里不能再请求一次（屏幕选择器不会弹第二次）。
+      if (options.audio) await startAudio()
+      if (epoch !== startEpoch) return
+      if (videoEnabled.value) scheduleNextFrame()
+    } finally {
+      if (epoch === startEpoch) starting.value = false
+    }
   }
 
   function pause() {
@@ -549,6 +669,10 @@ export function useLiveSession(): UseLiveSession {
   }
 
   function stop() {
+    // 让还挂着的 getDisplayMedia/getUserMedia 请求作废：它们回来时会看到
+    // 代数已变，立即停掉自己的流，而不是把画面接到已经关闭的面板上。
+    startEpoch += 1
+    starting.value = false
     active.value = false
     paused.value = false
     stopMetricsPolling()
@@ -556,11 +680,15 @@ export function useLiveSession(): UseLiveSession {
     transport?.close('client')
     transport = null
     socketState.value = 'closed'
-    if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null }
+    // 先摘引用再停轨：ended 处理器靠 mediaStream 身份判断自己是否还该生效。
+    const stream = mediaStream
+    mediaStream = null
+    if (stream) { stream.getTracks().forEach(track => track.stop()) }
     if (videoElement) { videoElement.srcObject = null }
     disableAudio()
     videoElement = null
     canvas = null
+    activeSource.value = null
     cameraState.value = 'idle'
     audioEnabled.value = false
     sender.reset()
@@ -586,8 +714,8 @@ export function useLiveSession(): UseLiveSession {
   onUnmounted(stop)
 
   return {
-    phase, active, paused, modeView, modePayload, captions, observations, error, notice, stats,
-    capabilities, videoEnabled, audioEnabled, cameraState, bindVideo, enableAudio: startAudio, disableAudio,
+    phase, active, starting, paused, modeView, modePayload, captions, observations, error, notice, stats,
+    capabilities, videoEnabled, audioEnabled, activeSource, cameraState, bindVideo, enableAudio: startAudio, disableAudio,
     focusRegion, channelStatus, refreshChannelStatus,
     start, pause, resume, stop, cancel, refreshMode,
   }
