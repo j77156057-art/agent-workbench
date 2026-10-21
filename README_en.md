@@ -12,6 +12,15 @@
 
 **▶ Run it without installing anything: [Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** — unzip, double-click `DocMind.exe`. No Python, no API key, no network; the default local mock model runs the whole flow.
 
+**▶ 60-second demo** — five steps on a real Godot project: ask → the model writes a values file and hands you a clickable artifact card → the relation graph unfolds class inheritance and scene mounts → edit a node property in the scene canvas and write it back to the `.tscn` → undo it in one click.
+
+<div align="center">
+  <img src="docs/screenshots/demo-poster.png" alt="60-second demo: ask, artifact card, relation graph, scene canvas and undo" width="760" />
+</div>
+
+<sub>Every step in the demo is a real operation: the written file lands in the project, the relation graph comes from real inheritance and mount parsing, the property is really written back to the `.tscn`, and undo really restores it.
+[Watch the MP4 (1440×900, 62s)](https://raw.githubusercontent.com/j77156057-art/agent-workbench/main/docs/screenshots/demo.mp4) · [file in the repo](docs/screenshots/demo.mp4)</sub>
+
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace ledger: per-turn tokens, latency, tool sequence and outcome — metadata only" width="49%" />
   <img src="docs/screenshots/scene-canvas.png" alt="Scene canvas: a visual, editable node graph of a Godot .tscn" width="49%" />

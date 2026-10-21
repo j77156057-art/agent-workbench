@@ -12,6 +12,15 @@
 
 **▶ 免安装直接跑：[Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** —— 解压双击 `DocMind.exe`。不需要 Python、不需要 API Key、不需要联网，默认本地 mock 模型就能跑通完整流程。
 
+**▶ 60 秒演示** —— 在一个真实 Godot 工程上走完五步：提问 → 模型写出数值配置文件并给出可点开的产物卡 → 关系图展开类的继承与场景挂载 → 场景画布里改节点属性、写回 `.tscn` → 一键撤销还原。
+
+<div align="center">
+  <img src="docs/screenshots/demo-poster.png" alt="60 秒演示：提问、产物卡、关系图、场景画布与撤销还原" width="760" />
+</div>
+
+<sub>演示里的每一步都是真操作：写入的文件落在工程里，关系图来自真实的继承与挂载解析，场景属性真的写回 `.tscn`，撤销真的把它还原。
+[看 MP4（1440×900，62 秒）](https://raw.githubusercontent.com/j77156057-art/agent-workbench/main/docs/screenshots/demo.mp4) · [仓库内文件](docs/screenshots/demo.mp4)</sub>
+
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace 账本：逐回合的 token / 延迟 / 工具序列 / 结局，只记元数据" width="49%" />
   <img src="docs/screenshots/scene-canvas.png" alt="场景画布：Godot .tscn 的可视化与可编辑节点图" width="49%" />
