@@ -35,6 +35,25 @@ SNAPSHOT_LOCK = "package-lock.json"
 #: 测试版标记。出现在版本号里就在界面上照实标「测试版」，不假装是正式版。
 PRERELEASE_RE = re.compile(r"(alpha|beta|rc|dev|pre)", re.I)
 
+#: 最低 Python 版本。
+#:
+#: 代码里用了 3.10+ 的写法（`X | Y` 注解、`match` 等），老解释器会在
+#: **装完依赖之后**才炸，报错还很难懂（多半是某个包 import 时的语法错误）。
+#: 这里提前拦住并说清楚要哪个版本 —— 空白电脑上第一次装依赖的人，
+#: 看到的是"请装 Python 3.11+"而不是一屏看不懂的 traceback。
+MIN_PYTHON = (3, 11)
+
+
+def check_python_version() -> str:
+    """返回当前 Python 版本；低于 MIN_PYTHON 直接抛错（信息要能照做）。"""
+    version = "%d.%d.%d" % sys.version_info[:3]
+    if sys.version_info < MIN_PYTHON:
+        raise RuntimeError(
+            "需要 Python %d.%d 或更高版本（当前 %s）。"
+            "请到 https://www.python.org/downloads/ 安装后重试。"
+            % (MIN_PYTHON[0], MIN_PYTHON[1], version))
+    return version
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -300,6 +319,7 @@ def ensure_dependencies(root: str | os.PathLike[str], *, force: bool = False,
     requirements = project / PYTHON_REQUIREMENTS
     if not requirements.is_file():
         raise FileNotFoundError(f"missing {requirements}")
+    check_python_version()
     venv = project / ".venv"
     python = _python_for_venv(venv)
     pip = _pip_for_venv(venv)

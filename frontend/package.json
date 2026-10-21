@@ -8,9 +8,12 @@
     "dev": "vite",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "test:node": "node --test \"tests/*.test.mjs\"",
+    "test:node": "node --test --experimental-strip-types \"tests/*.test.mjs\" \"src/**/*.test.ts\"",
     "typecheck": "vue-tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint src --ext .ts,.vue"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.0",

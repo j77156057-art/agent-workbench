@@ -3,8 +3,6 @@
 一个**可离线运行的 Agent 运行时**：把「能跑的 agent」补齐成**可观测、可编排、可回归**的工程系统。
 上层落地为一个本地工程工作台（代码问答 / 受控改写 / 场景与运行时可视化）——**但项目主体是 Harness，工作台只是它的落地场景**。
 
-IT 查询助手已经拆分为独立项目 `docmind-it-assistant`；本仓库只保留开发问答、开发工具与游戏工作台，不再提供 IT 页面或 IT API。
-
 **要解决的两个失败模式**：
 
 1. **幻觉**——AI 凭印象说"伤害计算在 player.py"，其实没有这个文件；
@@ -15,7 +13,7 @@ IT 查询助手已经拆分为独立项目 `docmind-it-assistant`；本仓库只
 | 层 | 职责 | 关键实现 |
 |---|---|---|
 | **E 执行循环** | ReAct + 反思重试、原生 function-calling、plan 模式、子代理委派、并行只读批次、DAG 多代理编排与失败重规划 | `agent.py` · `orchestrator.py` |
-| **T 工具注册** | 47 个工具；参数校验、域名白名单、**受控写**（先读后写 + 体积上限 + 语法校验 + 人工确认） | `tools.py` |
+| **T 工具注册** | **125 个工具**；参数校验、域名白名单、**受控写**（先读后写 + 体积上限 + 语法校验 + 人工确认） | `tools.py` · `agent_runtime/tool_domains.py` |
 | **C 上下文管理** | prompt token 预算、观察截断、轨迹裁剪（保 system 与当前问题）、历史滚动摘要 | `agent.py::_fit_budget` |
 | **S 状态存储** | 逐轮 trace 账本（**只记元数据不记正文**）、会话隔离与持久化、跨重启恢复 | `agent_trace.py` · `sessions.py` |
 | **L 生命周期钩子** | 钩子 / 技能热插拔、人工审批门、按 provider 计价的成本熔断 | `hooks.py` · `skills.py` · `pricing.py` |
@@ -23,22 +21,31 @@ IT 查询助手已经拆分为独立项目 `docmind-it-assistant`；本仓库只
 
 **三条设计取向**：① **护栏复用**——原生 FC 与并行批次都不新开执行路径，直接走既有护栏，避免"两套语义"；② **有界**——轨迹、观察、历史、批次全部截断或摘要，不让上下文与提示词爆炸；③ **不越权**——编排器只改未执行任务、写工具绝不并发、钩子异常一律吞掉。
 
-零 API Key 可跑（mock / 本地 Ollama / llama.cpp），云端 Provider 可随时切换。
+**零 API Key 可跑**：默认 provider 就是 `mock`（离线），也可换本地 Ollama / llama.cpp 或任意 OpenAI 兼容云端。
 
 ![DocMind · Agent Harness 六层架构](docs/architecture.svg)
 
 ---
 
-## 最近更新（2026-09）
+## 现在的形态（2026-10）
 
-> 近期围绕「云端大模型用足上下文、本地计费更准、运行台更可读」做了一轮打磨：
+| 规模 | 数字 | 出处 |
+|---|---|---|
+| Agent 工具 | **125** 个，分 **16** 个 domain | `tools.py` 的 `TOOLS`（121）+ `agent.py` 导入期注入的 4 个（`orchestrate` / `delegate` / `dev_use_skill` / `tool_search`） |
+| HTTP 端点 | **256** 条 | `api.py` 137 + `api_routes/` 119（agent / engine / gpu / eda / projects / resources） |
+| 后端测试 | **5702** 项 | `tests/` 397 个文件 |
+| 前端测试 | **129** 项 | `frontend/tests/*.test.mjs` + `frontend/src/**/*.test.ts` |
+| 前端界面 | **57** 个组件 / **29** 个 composable | `frontend/src/workbench/` |
 
-- **输出预算按真实上下文窗口派生（不再写死 3072）**：`config.py` 新增 `output_token_budget()`，默认取「窗口 × 0.33」，夹在 `[3072, 65536]` 且不超过窗口本身。云端模型（DeepSeek 等）若静态画像只命中厂商默认窗口，会自动**联网检索官方文档**判定真实窗口（如 DeepSeek 默认 131k → 检索校正到 1M），结果缓存到 `.docmind_model_context.json`，避免重复联网；1M 窗口给到 ≈65k 输出上限，彻底告别"畏手畏脚"。环境变量可微调：`DOCMIND_OUTPUT_FRACTION`（默认 0.33）、`DOCMIND_OUTPUT_MIN_TOKENS`、`DOCMIND_OUTPUT_MAX_TOKENS`。同时修复了 Ollama `num_predict` 兜底公式（按 `窗口 − prompt 预算 − 512` 给输出留量），大窗口模型输出不再被错误掐到 512 地板。
-- **计费纳入 prompt-cache 折扣**：`pricing.py` 为 DeepSeek / Qwen 引入缓存命中（按输入价 1/10）与缓存写入（按输入价 1.25×）单价；运行台费用不再把缓存命中的 token 按全价重复计，花费估算更贴近真实。
-- **运行台展示缓存命中明细**：前端 `HarnessPanel` / `FlowCanvas` 每轮 trace 在费用后追加「缓存命中 N token（按折扣价计费）」，直观看到 prompt caching 省了多少。
-- **续写纠偏重试关思考**：思考型模型（qwen3 开思考 / reasoner 原生思考）偶发把整段输出预算烧在 reasoning 上导致被长度截断、继而反复触发续写纠偏。现在截断续写分支会在重试那一轮**临时关闭思考**，把预算全留给答案；不影响后续正常轮次。
-
----
+> 2026-09 之后新增的能力（此前 README 完全没有）：
+>
+> - **内置浏览器**（`browser_action`）——只许公网，与只许回环的 `dev_page_action` **会话域互不相通**；护栏是协议 / 主机名后缀 / IP 段 / DNS 解析 / 导航后复核五道闸。
+> - **视觉定位 + 视觉点击**（`vision_locate_click` / `vision_click`）——**故意拆成两个工具**：合成一个，模型就会以为"定位成功 = 可以点"。执行侧走审批台账，模型自称确认不算数。
+> - **引擎控制**（`engine_start` / `engine_stop` / `engine_reload`）——与 HTTP 端点同一条底层路径，共用 GPU 租约与引擎日志。
+> - **EDA 验收**（`eda_run_script` / `eda_report_gate`）——真跑 Vivado / KLayout / 仿真并解析成结构化事实；**只判不回滚**，真实回滚仍走人工审批门。
+> - **产物通道**——模型写的文件、截的图**直接摆在对话栏**（图片给缩略图，文件给可点的名字），不用再自己去路径里搜。
+> - **任务域**（校验 / 快照 / 回滚 / 性能剖析）、**实时对话**（画面+语音经 WebSocket 送入本地实时模型）、**语音模型界面化配置**（STT / TTS / Omni 不必再改 .env 重启）、**GPU 监控**、**AI 运行台**、**PTC 写侧 bridge**。
+> - **关系图改成分层继承树**（原先是力导向，1245 条继承边画成毛球）。
 
 ## 落地场景：本地工程工作台
 
@@ -46,52 +53,64 @@ IT 查询助手已经拆分为独立项目 `docmind-it-assistant`；本仓库只
 
 它存在的意义是给 Harness 提供一个**真实、复杂、有副作用**的落地环境——**不是通用 ALM 平台：不做多用户协作与角色权限**（本机默认免鉴权，可按需开启单 token 校验）。
 
-### 工作台六件事（2026-09 当前形态）
+### 工作台现在有哪些面板
 
-| 能力 | 一句话 |
+| 入口 | 干什么 |
 |---|---|
-| **分区开发** | 一个按钮把工程切成 assets / values / behaviors / levels / ui / audio / net / bugs 等分区，每区**独立 git**；Agent 的写操作被约束在对应分区内，越区写直接拒；依赖是单向 DAG，契约校验防循环耦合 |
-| **受控改写** | 所有 AI 写操作走 `apply_edit` / `create_file`（先读后写 + 体积上限 + `.py` 语法校验 + 人工确认）；跨区搬移校验依赖方向；改动可单区提交或**跨区变更集整体回滚** |
-| **选区 AI** | 编辑器里选中一段代码 → 解释 / Review / 提问（走 Agent，带证据）或**改写**（走直连快通道 + LCS diff 预览，接受才落盘） |
-| **符号与关系图** | 多语言符号抽取（Python `ast` / GDScript / Java…）+ 继承 / 场景挂载 / 调用边的关系图；场景画布另有四类边 |
-| **场景画布** | Godot `.tscn` 的**可视化 + 可编辑**画布：层级树 / 空间坐标两种布局，节点父子层级、实例（instance）、position / transform、资源引用一目了然；异步加载、实际项目修改和面板尺寸变化后会自动重新适配视口，解析为空时给出明确诊断；新增 / 删除 / 改名 / 换父 / 复制 / 改属性 / 拖拽写回位置，**全部可撤销，且撤销能逐字节还原文件** |
-| **运行时时间线** | 把游戏跑起来产生的事件（掉血 / 死亡 / 生成 / 变量变化）画成多轨道时间轴：类型筛选、时间缩放、会话分组、数值曲线、导出 JSON、点事件跳代码行 |
+| **AI 助手**（常驻对话台） | ReAct agent + SSE；答案里的文件引用、**产物卡**（模型写下的文件、截到的图）直接可点；含模型切换、审批门、孤儿工作流恢复 |
+| **代码地图** | 跨文件按分区浏览全部符号，名称 / 签名 / 文档实时搜索，点符号跳到行 |
+| **关系图** | 全项目类 / 脚本 / 场景 + 三类有向边。**左→右分层继承树**（不是力导向）；大扇出折叠成「N 个子类」卡，点开才展开；搜索只看相关子树 |
+| **Unity 图** | Unity GUID 引用图，解析不到的 guid 聚为「缺失 / 外部」节点并标红（仍是力导向布局） |
+| **流程图** | 把每轮问答画成纵向流水线：提问 → AI 决策 → 调工具 → 组织回答，节点带耗时 / token / 花费，失败标红 |
+| **改动总览** | 仓库级未提交改动清单（只读，按仓库分列） |
+| **任务与生成** | 任务分支、Godot 控制、ComfyUI 画图、Unreal 资产 |
+| **GPU 监控** | 每卡显存 / 利用率 / 温度、近 20 分钟占用曲线、持有者强制回收、FIFO 排队取消、Ollama 空闲卸载 |
+| **EDA 多模态验收** | 结构化报告解析 × 视觉回归 → 三态合并门（met / unmet / uncertain） |
+| **实时对话** | 摄像头 / 屏幕共享画面与语音经 WebSocket 送入本地实时模型 |
+| **运行与引擎** | 探测项目引擎 → 选引擎 → 探可执行文件 → 写项目配置 |
+| **AI 运行台** | 历史会话、逐轮轨迹、技能与断点 |
+| **分区图** | 依赖方向 DAG（按依赖深度分层）+ 每区状态卡 + 契约校验横幅 |
+| **场景画布 / 运行时时间线** | Godot `.tscn` 可视化 + 可编辑画布；游戏运行事件的多轨道时间轴 |
+| **素材中心** | Poly Haven 单件素材、Kenney 素材包、我的素材库、ComfyUI 生成 |
+| **统一设置页** | 用量与费用、联网搜索、MCP 连接器、Agent 策略、模型、运行时、外观；**语音模型（STT / TTS / Omni）也在页内配** |
 
-配套：**引擎嵌入**（Godot / Unity / Unreal 启停 + Win32 HWND 嵌进工作台）、**Web 试玩**（导出 WASM 在画布里边玩边改）、**MCP 桥接**、**GPU 租约队列**、**桌面打包**（PyInstaller onedir，双击即用）。
-
-> **MCP 引擎桥接** 与 **Web 试玩导出** 的产品级使用文档与边界说明见 [`docs/integrations.md`](docs/integrations.md)。设置页搜索 `EDA` / `PCB` / `KiCad` 时可联网发现真实 MCP Registry 候选；用户选择并测试连接后，系统从真实 `tools/list` 生成能力与表单候选，必须人工批准才加入 Agent 路由。搜索摘要不会变成可执行命令；测试本地候选时可能首次下载对应 MCP 包。
+> **MCP 引擎桥接** 与 **Web 试玩导出** 的产品级使用文档与边界说明见 [`docs/integrations.md`](docs/integrations.md)。设置页搜索 `EDA` / `PCB` / `KiCad` 时可联网发现真实 MCP Registry 候选；用户选择并测试连接后，系统从真实 `tools/list` 生成能力与表单候选，**必须人工批准**才加入 Agent 路由。搜索摘要不会变成可执行命令；测试本地候选时可能首次下载对应 MCP 包。
 
 ## 🧱 技术栈
 
 - 后端：Python · FastAPI（HTTP + SSE）· Chroma 多集合（文档 / 代码 / 经验）· OpenAI 兼容多 Provider（qwen / deepseek / ollama / llamacpp / mock）· PyInstaller + pywebview
 - 前端：Vue 3.5 · Vite 5 · TypeScript · CodeMirror 6 · Vue Flow · 手写深色设计系统
-- 验证：`unittest` **450 项** · 场景画布自检 54 项 · 浏览器冒烟 27 项（Playwright + 系统 Edge）· 引擎嵌入实机自检 79 项
+- 验证：后端 `pytest` **5702 项** · 前端 node 测试 **129 项** · 场景画布自检 · 浏览器冒烟（Playwright + 系统 Edge）· 引擎嵌入实机自检
 - 评测：黄金题库 40 题（单跳 / 多跳 / 抗干扰三档）+ baseline 回归门，跑题用 `run_golden.py`、打分用 `agent_eval.py`
+- CI：GitHub Actions（`.github/workflows/harness.yml`）——依赖安装 → 前端构建 → 前端测试 → 编译检查 → 评测门 → 变异测试 → 检索回归 → 离线工作流验收 → 全量 pytest → Postgres 严格集成 → 真实 LLM 冒烟
 
 ## 📁 目录结构
 
 ```
 rag-agent/
-├── api.py                 # HTTP / SSE 总入口（159 条路由：chat / ingest / 工作台 fs / regions /
-│                          #   engine / desktop-host / selection-ai / scene / runtime / MCP / GPU /
-│                          #   trace / sessions / budget / hooks / skills / orchestrate）
+├── api.py                 # HTTP / SSE 总入口（137 条路由：chat / turn / 工作台 fs / mcp / regions /
+│                          #   engine / desktop-host / selection-ai / scene / runtime / GPU /
+│                          #   trace / sessions / budget / hooks / skills / voice / vision …）
+├── api_routes/            # 领域路由（119 条）：agent（工作流 37+）· engine（33）· gpu（12）·
+│                          #   eda（6）· projects（5）· resources（素材与 ComfyUI）
 ├── agent.py               # ReAct 循环、反思重试、代码优先路由、证据护栏；run/_run 埋点外壳；
 │                          #   原生 function-calling、plan 模式、子代理委派、并行批次
-├── tools.py               # 47 个工具：9 基础 + 受控写 + 分区/研发工具 + delegate/orchestrate/dev_use_skill
-├── agent_runtime/         # 跨应用工具结果、验证与应用权限/状态命名空间契约
-├── applications/
-│   └── developer/         # 开发问答/游戏工作台的应用边界
+├── tools.py               # 121 个工具注册表（16 个 domain，见 agent_runtime/tool_domains.py）
+├── agent_runtime/         # 运行时契约与能力实现：工具分类、浏览器、视觉点击、引擎控制、
+│                          #   预览适配器、上下文路由、工作流、验收、区域…（60+ 模块）
+├── api_routes/../applications/
+│   └── developer/         # 开发问答 / 游戏工作台的应用边界
 ├── regions.py             # 分区 2.0：声明式配置、契约校验（DAG 无环 / 导出存在）、变更集与回滚
 ├── scene_runtime.py       # 场景画布内核：.tscn 行块解析 → 图模型 → 受控编辑（可回滚 + 可撤销）
 ├── workbench_fs.py        # 沙箱文件树、读写、git 状态 / 历史 / 回滚、符号地图、关系图
 ├── symbols.py             # 多语言符号抽取 + 代码感知分块
-├── game_workbench.py      # 引擎 catalog / 启停 / 嵌入、任务 / 资产 / bug 工作流
+├── game_workbench.py      # 引擎 catalog / 启停 / 嵌入、任务 / 资产 / bug 工作流、审批台账
 ├── engine_adapters.py     # 引擎适配薄封装
-├── desktop_bridge.py      # Win32：查找宿主窗口 / SetParent 嵌入 / resize / focus
-├── desktop.py             # 桌面启动器（单实例保护 + pywebview 窗口）
+├── desktop_bridge.py      # Win32：查找宿主窗口 / SetParent 嵌入 / resize / focus（纯 ctypes）
+├── desktop.py             # 桌面启动器（单实例保护 + pywebview 窗口，失败即回退浏览器）
 ├── gpu_coordinator.py     # GPU 租约队列（TTL 过期 / 移交 + 显存阈值）
-├── mcp_client.py          # MCP（Model Context Protocol）桥接（用法与边界见 docs/integrations.md）
-├── web_export.py          # Godot Web 导出与本地试玩（用法与边界见 docs/integrations.md）
+├── mcp_client.py          # MCP 桥接（用法与边界见 docs/integrations.md）
+├── web_export.py          # Godot Web 导出与本地试玩
 ├── llm.py / embeddings.py / vectorstore.py / ingest.py / config.py
 ├── agent_trace.py         # 逐轮 trace + token 账本（JSONL，只记元数据；/trace 查看页）
 ├── sessions.py            # 会话隔离 + 持久化 + 滚动摘要
@@ -103,12 +122,14 @@ rag-agent/
 ├── agent_eval.py          # 黄金题自动打分 + baseline 回归门（回归即退出码 1）
 ├── run_golden.py          # 黄金题库运行器：跑题产出 results.jsonl 供 agent_eval.py 打分
 ├── orchestrator.py        # 多代理编排：任务图 DAG + 并行 + 重规划 + 结果合成
+├── dependency_bootstrap.py # 空白电脑的依赖自举：建 .venv、装 requirements、装前端并构建 web/
 ├── golden/                # 黄金题库与基线结果：questions_v2.json（40 题）/ results_baseline.jsonl
 ├── frontend/              # Vue 工作台（构建产物输出到 ../web）
-│   └── src/workbench/components/
-│       ├── SceneCanvas.vue / SceneNodeCard.vue / SceneFileCard.vue   # 场景画布
-│       └── RuntimeTimeline.vue                                       # 运行时时间线
-├── tests/                 # unittest 450 项
+│   └── src/workbench/
+│       ├── components/    # 57 个组件：ChatDock / RelationGraph / SceneCanvas / HarnessPanel …
+│       ├── composables/   # 29 个：useChatStream / useMessageRender / useWorkflowCard …
+│       └── lib/           # 纯函数模块（可被 node 单测直接跑）：关系图分层树、产物展示口径
+├── tests/                 # 后端 pytest 5700 项
 └── verify_scene_canvas.py / verify_scene_canvas_ui.mjs   # 场景画布自检 + 浏览器冒烟
 ```
 
@@ -124,6 +145,8 @@ rag-agent/
 - 压缩包内附 `使用说明.txt`
 
 ### 方式二：从源码运行（开发 / 二次开发）
+
+**空白电脑只需要两样东西：Python ≥ 3.11 和 Node ≥ 22**（Node 只在需要构建前端时用得上）。
 
 ```bash
 # 1. 建虚拟环境并装依赖（国内建议阿里云镜像）
@@ -141,7 +164,7 @@ cp .env.example .env      # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 #    ⚠️ 必需：工作台页 /workbench 依赖这里的构建产物（web/workbench.html 与 web/assets/）。
 #    web/assets/ 与 web/workbench.html 被 .gitignore 排除，所以 clone / 下载 ZIP 后并不存在；
 #    不执行这一步，打开 /workbench 会提示「工作台前端未构建」（问答页 / 不受影响）。
-cd frontend && npm install && npm run build      # 产物 -> ../web
+cd frontend && npm ci && npm run build      # 产物 -> ../web
 
 # 5. 打开
 #   工作台 : http://127.0.0.1:8000/workbench
@@ -149,12 +172,34 @@ cd frontend && npm install && npm run build      # 产物 -> ../web
 ```
 
 > 服务地址请用 `127.0.0.1` 而不是 `localhost`（本机 IPv6 解析会连不上）；路径含单引号用户名时 shell 一律用双引号包裹。
+>
+> `frontend/.npmrc` 里有 `min-release-age=2`：npm 不会安装**发布不足 2 天**的包版本。
+> 这是供应链护栏（挡"刚发就被投毒"的版本），代价是极端情况下依赖解析结果与别处不同。
+
+**不想手动敲这四步？** 直接跑 `启动DocMind.bat`（Windows）——首次启动会自动建 `.venv`、装 `requirements.txt`、装前端锁定依赖并构建 `web/`，之后每次启动直接可用。
+
+### 空白电脑自检清单
+
+按下面顺序走一遍，就知道"换台新机器能不能跑起来"：
+
+| # | 检查 | 命令 / 预期 |
+|---|---|---|
+| 1 | Python 版本够 | `python -V` → ≥ 3.11（`dependency_bootstrap.py` 会在**装依赖之前**就拦下老版本并说清楚要装哪个） |
+| 2 | Python 依赖装得上 | `pip install -r requirements.txt` → 无报错（国内加 `-i https://mirrors.aliyun.com/pypi/simple/`） |
+| 3 | 前端依赖装得上 | `cd frontend && npm ci` → 依据 `package-lock.json` 精确还原（Node ≥ 22，见 `frontend/.nvmrc` 与 `package.json` 的 `engines`） |
+| 4 | 前端能构建 | `npm run build` → 产物落到 `../web`（`web/workbench.html` + `web/assets/`） |
+| 5 | 后端能起 | `python -m uvicorn api:app --port 8000` → `GET /api/health` 返回 `{"ok":true}` |
+| 6 | 不用配置也能用 | 不建 `.env` 直接起 → provider 默认 `mock`，`POST /api/chat` 能拿到完整 SSE 回答 |
+| 7 | 页面能打开 | `/`（问答页）与 `/workbench`（工作台）都 200，且 `/workbench` 引用的 `assets/*.js` 都能取到 |
+
+> 第 6 步是「开箱即用」的底线：**没有 `.env`、没有 API Key 也能问答**（走本地 mock 模型）。`.env.example` 只是把可选项摊开给你看，不是必填清单。
+> 想接真实模型再改 `LLM_PROVIDER` / `LLM_API_KEY`，或直接用页面里的「⚙ 模型设置」——保存后立即生效，不用重启。
 
 ### 用真实模型（以通义千问为例）
 
 两种方式任选其一：
 
-- **页面内切换（推荐，免重启）**：打开问答页点右上角「⚙ 模型设置」，选 provider、填 Key、点「保存并切换」即时生效；provider、模型、自定义接口地址和 embedding 选择会跨重启恢复。API Key 不写入普通状态文件，而是按项目存入本机受保护密钥库，启动时自动加载（切换项目后使用对应项目的密钥）。Key 输入框留空表示“不修改已有 Key”；如果升级/切换启动方式后提示“无法解密”，在当前用户下重新保存一次即可完成迁移。
+- **页面内切换（推荐，免重启）**：打开问答页点右上角「⚙ 模型设置」，选 provider、填 Key、点「保存并切换」即时生效；provider、模型、自定义接口地址和 embedding 选择会跨重启恢复。API Key 不写入普通状态文件，而是按项目存入本机受保护密钥库，启动时自动加载（切换项目后使用对应项目的密钥）。Key 输入框留空表示"不修改已有 Key"；如果升级/切换启动方式后提示"无法解密"，在当前用户下重新保存一次即可完成迁移。
 - **改 `.env`**：`LLM_PROVIDER=qwen` / `EMBEDDING_PROVIDER=qwen` / `DASHSCOPE_API_KEY=...`，改完重启服务。
 
 ```bash
@@ -164,15 +209,9 @@ curl -X POST http://127.0.0.1:8000/api/chat -F "question=DocMind 支持哪些文
 
 ### 图片 / 视频视觉链路
 
-工作台的 ChatDock 支持选择、粘贴或拖拽图片。模型能力画像会区分“模型原生识图”和
-“Harness 视觉辅助”：原生视觉模型直接收到图片；文本模型不会被误传图片，而是由已配置
-的视觉模型生成有界观察，再交给当前 Agent 结合代码和日志复核。视频入口会用 imageio/ffmpeg
-抽取关键帧，生成时间轴观察后填回对话输入，适合检查游戏启动画面、HUD 重叠、摄像机越界和
-长时间游玩中的可见异常。
+工作台的 ChatDock 支持选择、粘贴或拖拽图片。模型能力画像会区分"模型原生识图"和"Harness 视觉辅助"：原生视觉模型直接收到图片；文本模型不会被误传图片，而是由已配置的视觉模型生成有界观察，再交给当前 Agent 结合代码和日志复核。视频入口会用 imageio/ffmpeg 抽取关键帧，生成时间轴观察后填回对话输入，适合检查游戏启动画面、HUD 重叠、摄像机越界和长时间游玩中的可见异常。
 
-ChatDock 顶部的“会话”菜单提供当前项目的会话历史和一键切换；“新对话”会创建新的隔离
-`session_id`，旧对话仍保留。列表用首条用户问题作为标题，切换后会回灌完整问答；会话内容
-按项目持久化在 `.docmind_sessions/`，服务重启后仍可继续。
+会话历史与一键切换在 ChatDock 顶部「会话」菜单：「新对话」会创建新的隔离 `session_id`，旧对话仍保留。列表用首条用户问题作为标题，切换后会回灌完整问答；会话内容按项目持久化在 `.docmind_sessions/`，服务重启后仍可继续。
 
 ```dotenv
 # 可选：为不支持视觉的主模型配置本地视觉兜底（默认不出网）
@@ -184,9 +223,7 @@ CHAT_VIDEO_MAX_BYTES=209715200
 CHAT_VIDEO_MAX_FRAMES=8
 ```
 
-打开“模型设置”可分别确认深度思考、图片识别和视频识别能力；确认结果按
-`provider/model` 持久化。`unknown` 不等同于“不支持”，而是要求 Harness 使用已配置的
-视觉模型，或等待用户确认后再把原图交给当前模型。
+打开"模型设置"可分别确认深度思考、图片识别和视频识别能力；确认结果按 `provider/model` 持久化。`unknown` 不等同于"不支持"，而是要求 Harness 使用已配置的视觉模型，或等待用户确认后再把原图交给当前模型。
 
 ## 🖥️ 桌面端（原生窗口一键启动）
 
@@ -218,7 +255,7 @@ dist\DocMind\DocMind.exe
 pwsh -File packaging/build_release.ps1
 ```
 
-脚本会同步构建依赖、构建 PyInstaller onedir 包、写入 `install-manifest.json`，并把 `uninstall.bat`、`upgrade_portable.ps1` 和卸载脚本放进发布目录。检测到 Inno Setup 的 `ISCC.exe` 时还会额外生成安装器；安装器的开始菜单包含独立的“卸载 DocMind”入口。
+脚本会同步构建依赖、构建 PyInstaller onedir 包、写入 `install-manifest.json`，并把 `uninstall.bat`、`upgrade_portable.ps1` 和卸载脚本放进发布目录。检测到 Inno Setup 的 `ISCC.exe` 时还会额外生成安装器；安装器的开始菜单包含独立的"卸载 DocMind"入口。
 
 便携版升级：
 
@@ -230,13 +267,12 @@ powershell -ExecutionPolicy Bypass -File installer\upgrade_portable.ps1 `
 便携版卸载：双击安装目录中的 `uninstall.bat`，或运行 `uninstall_portable.ps1`。卸载器会先停止 DocMind，确认目标确实是 DocMind 安装目录后延迟删除整个便携目录；源码项目不受影响，但该目录内的索引、会话和配置也会随目录删除。需要保留数据时，请先设置独立的 `DOCMIND_STATE_ROOT` 并备份该目录。
 
 - **引擎嵌入**：Godot / Unity / Unreal 的窗口按 Win32 HWND 规则嵌进工作台（`desktop_bridge.py`）。
-  **已在 Godot 4.7.2 + 真 Win32 宿主下实机验证**（`verify_engine_embed.py` 68 项全绿）：置父与样式摘除、按客户区（或前端指定的"引擎视窗"矩形）铺排、
+  **已在 Godot 4.7.2 + 真 Win32 宿主下实机验证**（`verify_engine_embed.py` 全绿）：置父与样式摘除、按客户区（或前端指定的"引擎视窗"矩形）铺排、
   宿主 resize 跟随、**真实合成键鼠（SendInput）送达引擎并回显事件**、解除嵌入后窗口原样还原、停止后无孤儿进程/窗口、父子 DPI 一致（本机 150% 缩放实测）。
   嵌入是**可逆**的：`detach` 会恢复原始父窗口、窗口样式与屏幕位置——不保存这些状态直接 `SetParent(NULL)`，窗口会带着 `WS_CHILD` 变成看不见的顶层窗口。
   试玩器里有「嵌入工作台」开关：勾上后点「桌面窗口启动」，游戏画面直接落在弹窗的引擎视窗上，工作台界面照常可用；
   另有「聚焦 / 解除嵌入 / 停止桌面窗口」；关弹窗或切走 tab 会自动解除嵌入。浏览器模式下开关自动禁用并提示需要桌面端。
-  未覆盖：100%/125% 缩放的实机数据（本机显示器当前是 150%，脚本会打印 DPI 并按实际坐标断言）。
-- **打包成独立 exe（onedir 目录分发）**：`docmind.spec` 一条命令产出 `dist\DocMind\DocMind.exe`，把整个 `dist\DocMind` 目录一起分发即可，目标机器无需安装 Python。构建命令：`.venv\Scripts\python.exe -m PyInstaller docmind.spec --noconfirm`（产物在 `dist\DocMind`）。
+- **打包成独立 exe（onedir 目录分发）**：`docmind.spec` 一条命令产出 `dist\DocMind\DocMind.exe`，把整个 `dist\DocMind` 目录一起分发即可，目标机器无需安装 Python。
 - **分发版能力边界**：分包 `builtin:py` 校验以及 `create_artifact` 的 DOCX / PDF / PPTX / XLSX 生成均在进程内完成（exe 与源码行为一致）；但 playtest 自动测试、cProfile 剖析、`python_exec` 需要真实 Python 环境，请在源码 `.venv` 里用；分区的 git 操作要求目标机器装有 Git。
 
 ## 🧭 Harness 能力（Agent 运行时）
@@ -245,7 +281,7 @@ powershell -ExecutionPolicy Bypass -File installer\upgrade_portable.ps1 `
 
 | 能力 | 说明 | 入口 |
 |---|---|---|
-| **逐轮 trace + token 账本** | 每个回合一条 JSONL：`turn_id / session_id / messages 哈希 / 工具调用序列 / tokens in-out / 各步延迟 / finish_reason / 结局 / cost_cny`。**只记元数据不记正文**（不落 prompt/回答原文），超 8 MB 自动轮转 | 页面 **`/trace`**（截图 `docs/screenshots/trace-ledger.png`）；`GET /api/trace`、`/api/trace/summary`、`POST /api/trace/clear` |
+| **逐轮 trace + token 账本** | 每个回合一条 JSONL：`turn_id / session_id / messages 哈希 / 工具调用序列 / tokens in-out / 各步延迟 / finish_reason / 结局 / cost_cny`。**只记元数据不记正文**（不落 prompt/回答原文），超 8 MB 自动轮转 | 页面 **`/trace`**；`GET /api/trace`、`/api/trace/summary`、`POST /api/trace/clear` |
 | **会话隔离 + 持久化** | `Agent(session_id=)` 按会话隔离（传空=纯内存，行为与旧版一致）；历史落盘、超阈值把早期轮次**压成摘要**；不再共用单例导致历史串台 | `/api/chat` 的 `session_id`；`GET /api/sessions`、`DELETE /api/sessions/{id}` |
 | **LLM 弹性** | 重试 + 指数退避（429 / 5xx / 超时 / 网络可重试，**4xx 明确不重试**）+ 统一 `timeout`/`deadline`；SSE 客户端断连即关闭内层生成器中止回合并记账 | `DOCMIND_LLM_*`、`DOCMIND_TURN_DEADLINE_S` |
 | **评测自动化** | 黄金题 40 条（单跳 / 多跳 / 抗干扰三档）规则打分（`must_include / any_of / must_not_include / regex / must_call / 动作边界 / no_error`）+ 可选 LLM-judge + **baseline 回归门**（pass→fail 即退出码 1） | `run_golden.py` 跑题、`agent_eval.py` 打分、`agent-golden-eval` skill 的 `gate.py`（已接入冻结发布流程） |
@@ -256,9 +292,49 @@ powershell -ExecutionPolicy Bypass -File installer\upgrade_portable.ps1 `
 | **hooks / 技能热插拔** | `.docmind/hooks/*.py` 的 `pre/post_tool`、`pre/post_turn`（单个钩子异常被隔离）；`agent_skills/*/SKILL.md` 提供内置技能，`.docmind/skills` 可同名覆盖，正文由 `dev_use_skill` 按需取 | `POST /api/hooks/reload`、`POST /api/skills/reload` |
 | **办公文档产物** | 内置 `documents / pdf / presentations / spreadsheets` 四个技能；`create_artifact` 生成真实 DOCX、PDF、PPTX、XLSX，回读验证后写入当前项目 `artifacts/`，同名文件自动分配新名称 | `dev_use_skill`、`create_artifact` |
 | **并行工具批次** | 一轮多条**只读**调用并发执行（结果**保序**回填）；批内只要含写/副作用工具就整批退回顺序，**绝不并发写** | `DOCMIND_PARALLEL_TOOLS`、`DOCMIND_PARALLEL_MAX` |
-| **渐进式工具暴露** | 47 个工具的完整描述写进系统提示会撑爆 `PROMPT_TOKEN_BUDGET`（实测触发 `system prompt has been truncated` 并让模型输出格式崩溃）。改为默认只注入 13 个核心工具的完整用法，其余只给一行索引，按需用 `tool_search(工具名)` 取回（连同该工具的细则一起返回） | `DOCMIND_TOOL_EXPANSION=progressive`（默认 `full`，行为不变） |
+| **渐进式工具暴露** | 125 个工具的完整描述写进系统提示会撑爆 `PROMPT_TOKEN_BUDGET`（实测触发 `system prompt has been truncated` 并让模型输出格式崩溃）。改为默认只注入核心工具的完整用法，其余只给一行索引，按需用 `tool_search(工具名)` 取回（连同该工具的细则一起返回） | `DOCMIND_TOOL_EXPANSION=progressive`（默认 `full`，行为不变） |
+| **能力租约** | 读项目 / 读外部 / 写项目 / 写外部 / 执行 / 联网 / 管理七类能力**分别租用**；`read_external` 单独记账，模型"顺手读了外部文件"能被查出来 | `agent.py` 的 `Capability` 租约 |
+| **产物通道** | 工具在**真正落盘那一刻**自报产物（路径 / 标签 / 大小 / 证据链），随 observation 事件下发；对话栏直接渲染成产物卡——**图片给缩略图，文件给可点的名字**，不用再去路径里搜。写失败的不算产物 | `agent.py` 的 observation 事件、`ArtifactCards.vue` |
 
-### 游戏 Harness 验收闭环（当前状态）
+### 工具全景：16 个 domain / 125 个工具
+
+分类是**声明式**的（`agent_runtime/tool_domains.py`），不是按名字猜的——新增工具不声明会红。完整清单用 `tool_catalog` 工具现查。
+
+| domain | 覆盖 |
+|---|---|
+| `files` | 项目内文件读写、按内容/符号/glob 检索、引用点定位、原子批量改写、白名单目录外的读写删 |
+| `verify` | 跑测试、CI 结论、契约校验、依赖对账、索引重建、变更集回滚、审批状态查询 |
+| `frontend` | 起 dev server、真实浏览器里点/填/读、桌面截屏与操作、**视觉定位 + 视觉点击**、Vue 组件级与应用级验收 |
+| `preview_adapter` | 为新文件类型设计声明式预览适配器：草稿 → 审批激活 → 受控刷新 → 回滚 → fixture 测试 |
+| `mcp` | 连接器配置与探活、调用、官方 Registry 检索、**从自然语言需求发现候选**、能力审批、隔离安装与审计 |
+| `plan` | 计划、区域提议与落地、分区读写校验、**工作流启动**、通道、交接、定价、重构 |
+| `task` | 缺陷登记与更新、技能创建与审批、资产登记与素材目录 |
+| `git` | diff、log、单区提交、全部提交并记变更集 |
+| `data` | 数据文件识别与生成、**DOCX/PDF/PPTX/XLSX 产物**、数值计算、视频提示词 |
+| `jobs` | 跑命令、跑 Python（受限子进程）、看与取消后台任务 |
+| `web` | 搜索、抓正文、批量研究、字幕、翻译、天气、**内置浏览器**（只许公网） |
+| `knowledge` | 检索已上传资料、记忆存取、召回经验 |
+| `game` | 引擎启停与热重载、引擎截图、数值模拟、影响面、发布前检查、任务登记 |
+| `eda` | **真跑** Vivado/KLayout/仿真并解析输出、在线报告 → 结构化事实 → 三态验收门 |
+| `net` | 受白名单约束的 HTTP 请求（防 SSRF） |
+| `catalog` | 按大类查工具清单与用法 |
+
+### 新接给模型的能力
+
+这批是 2026-09 之后才有的，实现都在 `agent_runtime/`：
+
+- **内置浏览器**（`browser_action`）——只许公网。协议 / 主机名后缀 / IP 段 / DNS 解析 / 导航后复核**五道闸**。
+  与只许本机回环的 `dev_page_action` **会话域互不相通**（一个域一个会话）。
+- **视觉定位 + 视觉点击**（`vision_locate_click` / `vision_click`）——**故意拆成两个工具**：
+  合成一个，模型就会以为"定位成功 = 可以点"。执行侧的放行条件是**审批台账里有人批过**，
+  模型自称确认不算数；HTTP 出口则要求前端回传 `confirmed=true`。
+- **引擎控制**（`engine_start` / `engine_stop` / `engine_reload`）——与 `POST /api/engine/start|stop|reload`
+  同一条底层路径（`game_workbench`），共用 GPU 租约与引擎日志。
+- **EDA 验收**（`eda_run_script` / `eda_report_gate`）——`eda_run_script` 真跑脚本并解析输出（fail-closed，
+  工具没装就返回 `tool_unavailable`）；`eda_report_gate` 把在线报告解析成结构化事实，
+  给 **met / unmet / uncertain 三态结论**。**只判不回滚** —— 真实回滚仍走人工审批门。
+
+### 游戏 Harness 验收闭环
 
 Harness 现在可以对真实 Godot 项目执行完整验收链路：
 
@@ -279,158 +355,87 @@ Harness 现在可以对真实 Godot 项目执行完整验收链路：
 
 当前已在本地 Godot 样例项目验证通过；多项目、多引擎、大规模并发和长期运行评估仍属于后续生产化工作。
 
-**三条设计取向**：① **护栏复用**——原生 FC 与并行批次都不新开执行路径，直接走既有护栏，避免"两套语义"；② **有界**——轨迹、观察、历史、批次全部截断或摘要，不让上下文与提示词爆炸；③ **不越权**——编排器只能改未执行任务（不回滚已产生的副作用）、写工具绝不并发、钩子异常一律吞掉。
+### 工作流：两套并存，别混
 
-快速上手（起服务后）：
+1. **开发工作流**（跨窗口持久 + 人工门）：入口工具 `start_workflow`，HTTP 面 `/api/agent/workflow/**` 共 37+ 端点，
+   事件流 `GET /api/agent/workflow/{id}/events`（SSE，含重放 + 心跳）。
+   状态机：**方案选择 → 计划审批 → 执行 → 分阶段 apply/review/cleanup → 验收 → 视觉反馈 →
+   checkpoint / project-checkpoint / rollback → interrupt / resume / revise**。`kind` 支持 `generic|game|eda`。
+2. **工具流编排器** `/api/flows`：列表 / 保存 / 删除 / run-step（`flows.py`）。
 
-```bash
-# 看一眼逐轮账本（谁调了什么工具、烧了多少 token、花了多少钱、什么结局）
-http://127.0.0.1:8000/trace
+前端：对话流内的 `WorkflowCard.vue`、人工断点模态 `WorkflowGateDialog.vue`、产物与视觉反馈 `WorkflowPreview.vue`、
+成员抽屉 `WorkflowMembersDock.vue`、历史 `WorkflowHistoryPopover.vue`。后端可选 LangGraph（未装时回退确定性 manager）。
 
-# 跑一张任务图（无依赖的并行、有依赖的等上游结论；失败会自动补图）
-curl --noproxy '*' -X POST http://127.0.0.1:8000/api/orchestrate -H "Content-Type: application/json" \
-  -d '{"tasks":[{"id":"a","role":"researcher","task":"查 X 的实现"},
-                {"id":"b","role":"reviewer","task":"评审上一结论","depends_on":["a"]}],"synth":true}'
+### 审批与权限
 
-# 设一个 5 元成本上限（本地模型恒 0 花费，不会误伤离线演示）
-curl --noproxy '*' -X POST http://127.0.0.1:8000/api/budget -H "Content-Type: application/json" \
-  -d '{"limit_cny":5}'
-```
-
-新增环境变量全部列在 `.env.example`（`DOCMIND_TRACE*` / `DOCMIND_SESSION_*` / `DOCMIND_LLM_*` / `DOCMIND_TOOL_MODE` / `DOCMIND_ORCH_*` / `DOCMIND_BUDGET_CNY` / `DOCMIND_HOOKS_DIR` / `DOCMIND_SKILLS_DIR` / `DOCMIND_PARALLEL_*`）。
-
-联网研究不会把“返回了非空页面”直接视为有效证据：搜索结果与主题明显不相关时会被标记为低相关，Agent 可继续改写关键词并切换年份、平台、地区或项目案例。研究型问题的搜索次数由 Agent 根据证据覆盖度决定，同时受 `DOCMIND_WEB_SEARCH_FAIL_LIMIT`、`DOCMIND_WEB_SEARCH_TOTAL_LIMIT` 和总步数上限约束；`web_research` 默认读取最多 5 个来源正文，可用 `DOCMIND_WEB_RESEARCH_MAX_SOURCES` 调整。
-
-> **能力边界（不夸大）**：子代理**不共享**父上下文（靠上游结论注入传递）；重规划只改**未执行**的计划、**不回滚**已执行任务；轨迹是**有界摘要**（全文在 `.docmind_traces.jsonl`）；hooks 无沙箱（`.py` 直载，权限等同本服务）；技能本身是提示词指引，办公文件由受控的 `create_artifact` 工具执行，不运行技能内任意脚本。
+- **人工审批门** `require_approval(root, action, target)`：写工具安装、preview adapter 回滚、技能回滚、**视觉点击**等都要过。
+- **审批台账**：追加写 `.docmind/approvals.jsonl`，可查可查。HTTP 面 `/api/agent/approvals`、`/approvals/decide`、
+  `/approval-requests`、`/approval-requests/decide`；旧的写 / 执行待确认轨 `/api/pending_edits`、`/api/pending_execs`。
+- **分级执行确认**：`DOCMIND_EXEC_APPROVAL` / `TIER2_CONFIRM` / `TIER3_CONFIRM`（第三档要连点 3 次）。
+- **区域治理**：`regions.py` —— 分区独立 git + 依赖单向 DAG + 导出桩 + 契约校验器；
+  Agent 越区写直接拒。`dev_approve` **Agent 不能自批**。
+- **EDA 侧只判不执行**：HTTP 层开一个"自动 revert"入口 = 静默放行风险，所以没有这个口子。
 
 ## 🧪 测试与自检
 
 ```bash
-# 全量回归（pytest 当前约 1247 项；MinGit 在 PATH 时 git 用例会实际执行）
-.venv\Scripts\python.exe -B -m unittest discover -s tests
+# 后端全量回归
+.venv\Scripts\python.exe -m pytest tests -q
 
-# Harness 工作流、检索、观测和真实项目契约测试
-.venv\Scripts\python.exe -m pytest tests/test_game_workflow.py tests/test_game_workflow_e2e.py tests/test_retrieval_adapter.py tests/test_retrieval_api.py tests/test_workflow_observability.py -q
+# 前端行为测试（node 直跑生产模块，129 项）
+cd frontend && npm run test:node
 
-# 离线评估门禁
-.venv\Scripts\python.exe -m agent_runtime.workflow_eval --self-check --baseline .github/workflow-eval-baseline.json --json
-.venv\Scripts\python.exe -m agent_runtime.retrieval_eval --dataset .github/retrieval-eval.json --baseline .github/retrieval-eval-baseline.json --minimum 0.75 --json
-
-# 场景画布 —— 后端自检：进程内起 FastAPI + 临时 Godot 工程，走真实路由，不占端口
+# 场景画布：后端自检 + 浏览器冒烟
 .venv\Scripts\python.exe verify_scene_canvas.py
-
-# 引擎嵌入 —— 实机自检（真 Godot + 真 Win32 宿主；会短暂弹窗并自动把鼠标移回原处）
-.venv\Scripts\python.exe verify_engine_embed.py
-
-# 场景画布 —— 浏览器冒烟：先在另一个终端起演示服务，再用托管 node 执行
-.venv\Scripts\python.exe verify_scene_canvas.py --serve 8011
-node verify_scene_canvas_ui.mjs http://127.0.0.1:8011
+node verify_scene_canvas_ui.mjs
 ```
 
-浏览器冒烟会产出 `docs/screenshots/scene-canvas.png` 与 `docs/screenshots/runtime-timeline.png`。
+**离线评估门禁**：场景画布、EDA 视觉回归、真实路由（进程内起 FastAPI + 临时 Godot 工程，真实路由，不占端口）。
+**引擎嵌入**：实机自检（真 Godot + 真 Win32 宿主：短暂窗并自动把鼠标移回原处）。
+**场景画布**：浏览器冒烟（先在另一个终端起服务，再执行 node 执行）。
+**变异测试电池**：改坏实现，门禁必须抓到。
 
----
+## 🎮 场景画布
 
-## 🗺️ 场景画布
+Godot `.tscn` 的**可视化 + 可编辑**画布：层级树 / 空间坐标两种布局，节点父子层级、实例（instance）、
+position / transform、资源引用一目了然；异步加载、实际项目修改和面板尺寸变化后会自动重新适配视口，
+解析为空时给出明确诊断；新增 / 删除 / 改名 / 换父 / 复制 / 改属性 / 拖拽写回位置，
+**全部可撤销，且撤销能逐字节还原文件**。
 
-把 `.tscn` 画成可操作的节点图。**为什么不是"把节点树画成容器套容器"**：真实场景动辄 4–6 层，容器嵌套表达"归属"还行，但场景开发真正高频的是**空间关系**（position / transform），容器根本表达不了"这几个东西该画在哪"。所以画布用**扁平节点 + 四类边**：
+## ⚠️ 运行时红线
 
-| 边 | 含义 | 样式 |
-|---|---|---|
-| `hierarchy` | 父子层级（上 → 下） | 灰色实线 |
-| `script` | 节点 ↔ 脚本文件 | 紫色虚线 |
-| `instance` | 节点 ↔ 被实例化的子场景 | 青色点线 |
-| `reference` | 节点 ↔ 贴图 / 材质等资源 | 灰色（默认隐藏，可开） |
+- Agent **不许**给自己批权限（`dev_approve` 只认工作台里人的操作）。
+- 写工具**绝不并发**；并行批次里只要有写 / 副作用工具，整批退回顺序执行。
+- 编辑器**默认整文件读**，区间读是例外而不是默认。
+- 钩子异常一律吞掉，不许把用户的项目搞挂。
+- 编排器只能改**尚未执行**的任务，不回滚已产生的副作用。
 
-两种布局：**层级布局**（DFS 前序的水平树）与**空间布局**（直接按场景坐标落点，拖拽即回写 `position`）。双击文件卡在编辑器打开该脚本 / 场景；右侧检查器列出全部属性。
+## 📚 配置项
 
-**安全与可逆性**（这部分才是真功夫，不是画得像就行）：
+`.env.example` 是可选项的摊开清单（**不是必填**）。分组：
 
-- 所有写入经双层沙箱（`code_root` 包含性 + 分区 / 契约保护）；属性值含换行会被拒（防注入）；
-- 改写走"行块模型"，**写完即自检**（父节点存在 / 同级不重名 / 父块先于子块），任一项不通过就**原样回滚**；
-- 每个操作都回传一条与接口请求体**同形**的 `undo`，前端原样回传即可撤销——并有回归用例保证**撤销后文件逐字节还原**（含空行位置与属性顺序）。
+| 组 | 代表变量 |
+|---|---|
+| LLM Provider | `LLM_PROVIDER`（`mock` / qwen / deepseek / ollama / llamacpp）、`LLM_MODEL`、`LLM_API_KEY` |
+| Harness 视觉辅助 | `DOCMIND_VISION_PROVIDER/MODEL/BASE_URL/API_KEY`、`DOCMIND_VISION_ALLOW_UNVERIFIED` |
+| Embedding | `EMBEDDING_PROVIDER`、`EMBEDDING_MODEL` |
+| 路径与检索 | `CHROMA_DIR`、`CHUNK_SIZE`、`TOP_K`、`DOCMIND_RETRIEVAL_MODE`（dense/hybrid/hybrid_rerank） |
+| Agent 账本 / 会话 / 弹性 | `DOCMIND_TRACE`、`DOCMIND_LANGSMITH_*`、`DOCMIND_CHECKPOINT_POSTGRES_DSN`、`DOCMIND_SESSION_*` |
+| 语音 STT / TTS | `DOCMIND_STT_URL/API_KEY/MODEL`、`DOCMIND_TTS_URL/API_KEY/MODEL/VOICE` |
+| 实时多模态 Omni | `DOCMIND_REALTIME_PROVIDER`、`DOCMIND_OMNI_API_KEY/MODEL/VOICE` |
+| LLM 调用 / 联网预算 | `DOCMIND_LLM_TIMEOUT/RETRIES`、`DOCMIND_WEB_SEARCH_FAIL_LIMIT` |
+| 工具通道 / 子代理 / 计划 | `DOCMIND_TOOL_MODE`、`DOCMIND_SUBAGENT_MAX_DEPTH`、`DOCMIND_PARALLEL_TOOLS` |
+| 成本熔断 | `DOCMIND_BUDGET_CNY`、`DOCMIND_SESSION_BUDGET_CNY` |
+| 热插拔目录 | `DOCMIND_HOOKS_DIR`、`DOCMIND_SKILLS_DIR` |
 
-## ⏱️ 运行时时间线
+**几类配置不在 `.env` 里**：
 
-游戏跑起来后事件写进 `.docmind_runtime.jsonl`（引擎侧按约定打印 `DOCMIND_EVENT {json}` 即被抓取）。时间线把这些事件画成多轨道时间轴：按类型分轨、按来源 / 会话 / 关键字筛选、时间缩放、数值指标曲线、导出 JSON、点事件跳代码行。清空时用**字节游标**归零，不截断正在被引擎写入的日志。
+- **联网搜索 / URL 抓取的 provider**（`WEB_SEARCH_PROVIDER`、`WEB_FETCH_PROVIDER`、`EXTERNAL_API_ALLOWLIST` 等）
+  只在 `config.py` 里读 —— 改它们要改环境变量，`.env.example` 里**没有列**。
+- **审批 / 权限模式**（`DOCMIND_EXEC_APPROVAL`、`EDIT_CONFIRM`、`DOCMIND_ACCESS_MODE`）。
+- **MCP 连接器 / 区域治理 / 引擎连接器**：走**应用内设置页 + 落盘文件**（`/api/config`、`/api/agent/connectors`、`/api/engine/config`、`regions.json`），不走 `.env`。
 
----
+## 🔌 集成文档
 
-## 🎮 素材筛选工具（`search_assets`）
-
-针对"做游戏/需要美术资源"的场景，新增一个可让 Agent 按需筛选素材的工具。
-
-**为什么不直接爬素材库 API？** Kenney / OpenGameArt / itch.io 要么没有稳定的公开 API，要么被 Cloudflare 保护（爬取易失败且不礼貌）。业界做法（如 Arcane Assets MCP）同样是维护一份本地/远程的素材清单 JSON，由 Agent 在其上做检索。因此这里用一份人工精选、可持续扩充的 `assets_catalog.json`（目前含 Kenney CC0 系列 + OpenGameArt 示例共 26 条），配合 `search_assets` 的关键词展开与打分排序实现"按提问筛素材"。
-
-- **能力**：按关键词（支持中文同义词展开，如"角色/精灵→character/sprite"）、类型（`2d-sprites`/`tilesets`/`ui`/`audio`/`fonts`/`3d`）、许可（`CC0`/`CC-BY`/`CC-BY-SA-3.0`）筛选。
-- **扩展**：往 `assets_catalog.json` 追加条目即可，工具无需改动；真实接入可在 `tools.py` 中把 `search_assets` 换成对远程素材索引/商店 API 的调用。
-- **演示**：
-  ```bash
-  curl -X POST http://localhost:8000/api/chat -F "question=帮我找一个 CC0 的角色精灵素材"
-  ```
-  在 mock 模式下，LLM 会自动识别"素材"意图并优先调用 `search_assets`。
-
-## 🔧 代码执行（`python_exec`）
-
-让 Agent 真正"动手"而非只动嘴：把自然语言意图转成可执行 Python 在受限子进程中运行，得到确定性的计算结果或数据变换产物。
-
-- **用途**：数值/统计计算、轻量数据处理、文本变换、为可视化/下游工具生成结构化数据等。相比 `calculate`（只能做算术），`python_exec` 能跑任意 Python。
-- **健壮性设计**：
-  - 输入来自 LLM，模型常把代码裹在 ```` ```python ```` 围栏或加一句 "python" 提示行——工具会先用正则把这些噪音清理掉，只留可执行代码；清理后为空则直接返回「未提供有效代码」，避免把三引号当代码误执行。
-  - 通过 `subprocess.run([sys.executable, "-c", code], ...)` 在当前用户权限下运行，超时 **12s**（死循环会返回超时提示而非卡死），stdout/stderr 截断到 1500 字。
-  - 这是本地开发工具，**仅用于可信代码**；若要放开到不可信场景，需加沙箱/资源限额。
-- **演示**：
-  ```bash
-  curl -X POST http://localhost:8000/api/chat -F "question=用代码算一下 1 到 100 所有平方数的和"
-  ```
-  Agent 会调用 `python_exec` 执行 `sum(i*i for i in range(1,101))`，返回 `338350`。
-
-## 🌐 联网搜索（`web_search`）
-
-当知识库不足，或问题有时效性/外部信息时，Agent 可自主联网补充证据，而不是只会"答不知"。
-
-- **实现**：直接抓取 DuckDuckGo HTML 结果页（`urllib.request` + 正则提取标题/摘要/跳转链接，并还原 `uddg=` 编码后的真实链接），**无需 API Key**。
-- **降级**：若运行环境访问不了外网，或 DDG 改版导致未解析到结果，工具会返回明确原因（如"搜索失败: …（请确认运行环境能访问外网，或换用带 Key 的搜索引擎）"），Agent 据此改用知识库或坦诚告知，不会假装搜索成功。
-- **可替换**：只需改 `tools.py` 里的 `web_search` 一个函数，即可换成 SerpAPI / Bing 等带 Key 的方案，Agent 侧零改动。
-- **演示**：
-  ```bash
-  curl -X POST http://localhost:8000/api/chat -F "question=查一下 MiniMax H3 模型支持的最大视频时长"
-  ```
-
-## 🎬 视频提示词生成（`gen_video_prompt`）
-
-把一句中文创意，转成符合 **MiniMax H3** 三段结构、可直接粘贴进 ComfyUI `MiniMaxH3ImageToVideo` 节点的视频提示词——打通"文字创意 → 可生成视频"的链路。
-
-- **为什么是确定性拼装 + LLM 润色**：早期让模型直接写，弱模型（如 7B）会把"三段结构"理解成"三幕结构"而输出错误格式。改为**三段骨架（integrated_multimodal_description / overall_soundscape / non_diegetic_music）由工具确定性拼装**，保证永远合规；LLM 只负责润色 Shot 1 的英文分镜描述，失败时回退到确定性模板句。无论模型强弱都产出可用提示词。
-- **声音设计自动贴合场景**：根据关键词（雨/夜/风/海/城/森/雪…）自动填充画内音（diegetic），并附非画内配乐模板，输出带约束说明（无负面词、FPS=24、时长 4–15s 等）。
-- **演示**：
-  ```bash
-  curl -X POST http://localhost:8000/api/chat -F "question=给我生成一个雨夜城市的视频提示词"
-  ```
-  Agent 调用 `gen_video_prompt`，输出含 `integrated_multimodal_description` / `overall_soundscape` / `non_diegetic_music` 三段结构，画内音自动带 "steady rain" + "distant night traffic" + "low city hum"。
-
-## 💻 代码问答模式（`search_code` / `read_file` / `grep`）
-
-把 Agent 从"只能读文档"升级为"也懂你的工程代码"：索引一份源代码目录后，它能检索函数/类、打开具体文件、按正则定位符号或报错——这正是做游戏/大项目时防止 AI「代码堆叠、凭空幻觉」的关键：让 AI 先检索到已有结构，再精准改某一处，而不是往一个文件里硬塞。
-
-- **怎么用**：把代码根目录交给 DocMind 索引一次即可（之后所有代码问答都基于这份索引）：
-  ```bash
-  curl -X POST http://localhost:8000/api/ingest_code -F "root=C:/path/to/your/game-project"
-  ```
-  也可在 `.env` 里固定 `CODE_ROOT`，启动后自动可用。
-- **三个工具**：
-  - `search_code(query)`：在已索引源码/配置中检索相关函数、类、配置片段（按符号名+路径呈现），回答"某功能在哪实现/某函数做什么"。
-  - `read_file(path)`：读取代码库某个文件（path 相对 `code_root`），需要看完整实现时用。
-  - `grep(pattern)`：按正则在代码库里搜文本/符号，返回 `文件:行号: 内容`，定位某变量/某报错位置时用。
-- **设计要点**：
-  - **代码感知分块**：散文按段落切即可，代码必须按「文件 + 函数/类」切——否则一个函数被腰斩、两个不相关的函数被粘成一段，检索质量会崩。Python 用 `ast` 精确拿到每个 `def/class`（含方法）的起止行与名字；其它语言用正则启发式识别定义行。切片过大时再按行兜底切。
-  - **独立集合**：代码存进单独的 Chroma 集合（`docmind_code`），与文档集合互不污染；`search_knowledge` 管文档，`search_code` 管代码。
-  - **路径沙箱**：`read_file` / `grep` 只允许访问 `code_root` 之内，越界访问会被拒绝，不会误读本机其它文件。
-  - **跳过噪音**：索引时自动跳过 `.git` / `node_modules` / `__pycache__` / `.venv` 等目录，并跳过超大文件（>500KB），避免把构建产物/压缩包塞进索引。
-- **演示**：
-  ```bash
-  # 索引后，问 Agent：
-  curl -X POST http://localhost:8000/api/chat -F "question=伤害计算是在哪个函数里实现的？把那段代码给我看看"
-  # Agent 会先 search_code 定位 DamageCalculator.compute，再用 read_file 打开具体文件。
-  ```
-- **注意**：代码问答依赖语义检索，建议使用真实 embedding（`.env` 设 `EMBEDDING_PROVIDER=qwen`）；离线 `local` 模式向量为随机占位，仅用于跑通链路、检索结果不具语义意义。切换 embedding 维度时只需重建文档集合，代码集合可独立保留。
+- [`docs/integrations.md`](docs/integrations.md) —— MCP 引擎桥接、Web 试玩导出的产品级用法与边界。
+- [`docs/known-defect-*.md`](docs/) —— 已定位缺陷与口径说明（避免同一个坑被重新踩一遍）。
