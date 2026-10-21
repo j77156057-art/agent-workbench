@@ -8,6 +8,7 @@
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Vue](https://img.shields.io/badge/UI-Vue%203.5-42b883?logo=vuedotjs&logoColor=white)
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **▶ Run it without installing anything: [Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/rag-agent/releases)** — unzip, double-click `DocMind.exe`. No Python, no API key, no network; the default local mock model runs the whole flow.
 
@@ -280,7 +281,7 @@ This section states **what the project applies to** and **the trade-offs it acce
 | Distributed build | Bundled validation and DOCX / PDF / PPTX / XLSX generation run in-process; playtest, cProfile and `python_exec` need a real Python environment |
 | Engine embedding coverage | Verified on Godot 4.7.2 with a real Win32 host; 100% / 125% display scaling is not covered (this machine runs 150%) |
 | Scale | Single-machine, single-user scenarios are verified; multi-project / multi-engine / long-running evaluation is not |
-| License | **The repository does not yet contain a LICENSE file** — one must be chosen and added before public release (the licenses under `docs/` and `dist/` belong to third parties) |
+| License | **MIT** (full text in [`LICENSE`](LICENSE)). The licenses under `docs/` and `dist/` belong to their respective upstream projects and are not covered by it |
 
 ## Documentation
 

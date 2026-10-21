@@ -8,6 +8,7 @@
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
 ![Vue](https://img.shields.io/badge/UI-Vue%203.5-42b883?logo=vuedotjs&logoColor=white)
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **▶ 免安装直接跑：[Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/rag-agent/releases)** —— 解压双击 `DocMind.exe`。不需要 Python、不需要 API Key、不需要联网，默认本地 mock 模型就能跑通完整流程。
 
@@ -279,7 +280,7 @@ rag-agent/
 | 分发版能力 | 分包校验与 DOCX / PDF / PPTX / XLSX 生成在进程内完成；playtest、cProfile、`python_exec` 需要真实 Python 环境 |
 | 引擎嵌入覆盖 | Godot 4.7.2 + 真 Win32 宿主实机验证；100% / 125% 缩放未覆盖（本机 150%） |
 | 大规模并发 | 单机单用户场景已验证；多项目 / 多引擎 / 长期运行评估未覆盖 |
-| 许可 | **仓库尚未包含 LICENSE 文件** —— 公开发布前需选定并补上（`docs/` 与 `dist/` 里的第三方许可不属于本项目） |
+| 许可 | **MIT**（全文见 [`LICENSE`](LICENSE)）。`docs/` 与 `dist/` 里的第三方许可属于各自上游项目，不随本仓库授权 |
 
 ## 文档
 
