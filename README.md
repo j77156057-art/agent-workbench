@@ -9,6 +9,8 @@
 ![Vue](https://img.shields.io/badge/UI-Vue%203.5-42b883?logo=vuedotjs&logoColor=white)
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
 
+**▶ 免安装直接跑：[Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/rag-agent/releases)** —— 解压双击 `DocMind.exe`。不需要 Python、不需要 API Key、不需要联网，默认本地 mock 模型就能跑通完整流程。
+
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace 账本：逐回合的 token / 延迟 / 工具序列 / 结局，只记元数据" width="49%" />
   <img src="docs/screenshots/scene-canvas.png" alt="场景画布：Godot .tscn 的可视化与可编辑节点图" width="49%" />

@@ -111,3 +111,7 @@ docs/agent-applications-roadmap.md
 artifacts/
 docs/screenshots/visual/now-*.png
 docs/screenshots/visual/diff-*.png
+
+# 区域治理的 bug 区（init_regions() 建，dev_capture_bug 往里归档异常 JSON）。
+# 是运行时产物不是源码 —— 不忽略的话任何一次 `git add -A` 都会把当天的缺陷单带进版本库。
+bugs/

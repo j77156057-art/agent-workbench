@@ -9,6 +9,8 @@
 ![Vue](https://img.shields.io/badge/UI-Vue%203.5-42b883?logo=vuedotjs&logoColor=white)
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
 
+**▶ Run it without installing anything: [Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/rag-agent/releases)** — unzip, double-click `DocMind.exe`. No Python, no API key, no network; the default local mock model runs the whole flow.
+
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace ledger: per-turn tokens, latency, tool sequence and outcome — metadata only" width="49%" />
   <img src="docs/screenshots/scene-canvas.png" alt="Scene canvas: a visual, editable node graph of a Godot .tscn" width="49%" />
