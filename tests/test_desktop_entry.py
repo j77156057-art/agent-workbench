@@ -96,7 +96,9 @@ class DesktopEntryTests(unittest.TestCase):
         path = os.path.join(ROOT, 'frontend', 'src', 'workbench', 'App.vue')
         with open(path, encoding='utf-8') as f:
             vue = f.read()
-        self.assertIn('wb-question-link', vue, '工作台顶栏缺少回 RAG 问答页的入口')
+        # 顶栏那个回链的 class 现在叫 `wb-ask-link`（早先叫 `wb-question-link`，
+        # 改名时前端改了、断言没跟上 —— 这条因此在 ubuntu 上一直红）。
+        self.assertIn('wb-ask-link', vue, '工作台顶栏缺少回 RAG 问答页的入口')
         self.assertIn('href="/"', vue, '回链地址不对，应指向问答页 `/`')
 
 

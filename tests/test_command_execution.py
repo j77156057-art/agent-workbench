@@ -186,7 +186,8 @@ class GuardrailTests(unittest.TestCase):
 
     def test_missing_code_root_is_reported(self):
         with patch.object(tools, "_get_code_root", return_value=None):
-            self.assertIn("尚未配置代码库根目录", tools.run_command("echo hi"))
+            # 工具现在说**可行动的那一半**（缺什么 + 怎么补），不再只说「没配置」。
+            self.assertIn("尚未选择项目，无法定位代码库", tools.run_command("echo hi"))
 
     def test_credentials_are_stripped_from_child_env(self):
         env = pr.clean_environment({"PATH": "x", "MY_API_KEY": "secret", "OK": "1"})

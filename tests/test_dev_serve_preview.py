@@ -219,7 +219,8 @@ class ToolLayerCases(_Case):
 
     def test_missing_code_root(self):
         config.set_runtime("code_root", "")
-        self.assertIn("尚未配置代码库根目录", tools.dev_serve("cmd: npm run dev"))
+        # 工具现在说**可行动的那一半**（缺什么 + 怎么补），不再只说「没配置」。
+        self.assertIn("尚未选择项目，无法定位代码库", tools.dev_serve("cmd: npm run dev"))
 
     def test_blocked_command_is_refused(self):
         out = tools.dev_serve("cmd: rm -rf /")

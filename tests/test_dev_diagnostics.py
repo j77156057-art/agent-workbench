@@ -35,11 +35,19 @@ def ruff_available():
 
 RUFF_OK = ruff_available()
 
+#: 语料里的绝对路径必须用**本平台**的形状。早先这里写死 "D:\repo\pkg\a.py"：
+#: 那在 Linux 上根本不是绝对路径（`os.path.isabs` 为 False），`_rel` 于是原样
+#: 返回 "D:/repo/pkg/a.py" —— 这条用例在 ubuntu 上必红（CI 2026-10-21 实测）。
+#: 根目录取**真正绝对**的那个：注意 `os.sep + "repo"` 在 Windows 上是
+#: "\repo"（**没有盘符**），而 Python 3.13 起 `ntpath.isabs` 不认它 —— 得用
+#: `tempfile.gettempdir()` 这种带根/带盘符的，否则两边又对不上。
+RUFF_ROOT = os.path.join(tempfile.gettempdir(), "docmind-fixture-repo")
+
 RUFF_JSON = json.dumps([
-    {"filename": "D:\\repo\\pkg\\a.py", "code": "F821",
+    {"filename": os.path.join(RUFF_ROOT, "pkg", "a.py"), "code": "F821",
      "message": "Undefined name `foo`", "location": {"row": 12, "column": 5},
      "end_location": {"row": 12, "column": 8}},
-    {"filename": "/repo/pkg/b.py", "code": "E722",
+    {"filename": os.path.join(RUFF_ROOT, "pkg", "b.py"), "code": "E722",
      "message": "Do not use bare `except`", "location": {"row": 3, "column": 1},
      "end_location": {"row": 3, "column": 7}},
 ])
@@ -55,7 +63,7 @@ npm ERR! process exited
 
 class ParseCases(unittest.TestCase):
     def test_ruff_json_normalises_paths_and_severity(self):
-        issues, fmt = dg.parse_ruff(RUFF_JSON, "/repo")
+        issues, fmt = dg.parse_ruff(RUFF_JSON, RUFF_ROOT)
         self.assertEqual(fmt, "json")
         self.assertEqual(len(issues), 2)
         self.assertEqual(issues[0]["file"], "pkg/a.py")
@@ -266,7 +274,8 @@ class ToolLayerCases(_TmpRoot):
 
     def test_missing_code_root(self):
         config.set_runtime("code_root", "")
-        self.assertIn("尚未配置代码库根目录", tools.dev_diagnostics("target: a.py"))
+        # 工具现在说**可行动的那一半**（缺什么 + 怎么补），不再只说「没配置」。
+        self.assertIn("尚未选择项目，无法定位代码库", tools.dev_diagnostics("target: a.py"))
 
     def test_bare_target_input_works(self):
         self.write("pkg/a.py", "def run():\n    return foo(1)\n")

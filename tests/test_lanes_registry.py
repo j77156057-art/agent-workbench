@@ -333,7 +333,8 @@ class WorktreeCases(_StateRoot):
 class ToolLayerCases(_StateRoot):
     def test_missing_code_root(self):
         config.set_runtime("code_root", "")
-        self.assertIn("尚未配置代码库根目录", tools.dev_lanes("action: status"))
+        # 工具现在说**可行动的那一半**（缺什么 + 怎么补），不再只说「没配置」。
+        self.assertIn("尚未选择项目，无法定位代码库", tools.dev_lanes("action: status"))
 
     def test_registration_and_prompt(self):
         names = {row["function"]["name"] for row in tools.tool_schemas()}

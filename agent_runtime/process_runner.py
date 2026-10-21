@@ -58,12 +58,25 @@ def _windows_legacy_encoding() -> str:
 
 
 def _preferred_encoding() -> str:
+    """非 UTF-8 流的回落编码（**绝不能是 utf-8**）。
+
+    判定器只在「这段流**不是** UTF-8」时才会走到这里 —— 若回落编码还是 utf-8，
+    那个分支就是**死的**（判了不是 UTF-8、又按 UTF-8 解），GBK 字节照样全变
+    替换符。Windows 分支早就为此绕开过 `locale.getpreferredencoding()`
+    （UTF-8 模式下它恒报 utf-8）；Linux 这边原来直接 `return "utf-8"`，
+    是同一个坑的另一个形状：CI（ubuntu）上 GBK 子进程输出一律变乱码。
+
+    没有 Win32 ACP 可问时就用 **cp936**：本产品面向中文 Windows 生态，老工具
+    （`dir`/`ping`/无编码提示的子进程）在那边吐的就是 cp936 那一页。回落编码
+    钉成 cp936 之后，**同一段字节在任何平台上解出同一个结果**。
+    `DOCMIND_COMMAND_ENCODING` 仍可显式指定别的编码。
+    """
     configured = str(os.getenv("DOCMIND_COMMAND_ENCODING") or "").strip()
     if configured:
         return configured
     if os.name == "nt":
         return _windows_legacy_encoding()
-    return "utf-8"
+    return "cp936"
 
 
 class _StreamDecoder:
@@ -80,8 +93,10 @@ class _StreamDecoder:
 
     规则：纯 ASCII 前缀在任何编码下都一样，先按 ASCII 吐出去、**不下判断**；
     第一个非 ASCII 字节出现时才定编码 —— 这些字节能按 UTF-8 解出来就用 UTF-8，
-    否则退回本地编码（`dir`/`ping` 这类老工具走这条路，与旧行为一致）。
-    纯 ASCII 输出永远不会被判错；`DOCMIND_COMMAND_ENCODING` 仍可强制指定。
+    否则退回 legacy 编码（cp936，`dir`/`ping` 这类老工具走这条路；见
+    `_preferred_encoding` —— **不能回落 utf-8**，那会让「不是 UTF-8」那个分支
+    变成死代码，GBK 字节照样全变替换符）。纯 ASCII 输出永远不会被判错；
+    `DOCMIND_COMMAND_ENCODING` 仍可强制指定。
 
     判定必须用**增量**解码器：分块读取会把一个多字节字符切成两半，此时尾部是
     不完整的 UTF-8 序列。整段 `bytes.decode("utf-8")` 会因此抛错，把 UTF-8 流

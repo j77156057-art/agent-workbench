@@ -185,9 +185,9 @@ class ProposalCases(_RepoCase):
 class RemoteParsingCases(unittest.TestCase):
     def test_common_url_shapes(self):
         cases = {
-            "https://github.com/acme/agent-workbench.git": ("acme", "rag-agent"),
-            "git@github.com:acme/rag-agent.git": ("acme", "rag-agent"),
-            "https://user@token@github.com/acme/rag-agent": ("acme", "rag-agent"),
+            "https://github.com/acme/agent-workbench.git": ("acme", "agent-workbench"),
+            "git@github.com:acme/agent-workbench.git": ("acme", "agent-workbench"),
+            "https://user@token@github.com/acme/agent-workbench": ("acme", "agent-workbench"),
             "ssh://git@gitlab.example.com/group/sub/proj.git": ("sub", "proj"),
         }
         for url, want in cases.items():
@@ -211,8 +211,8 @@ class RemoteParsingCases(unittest.TestCase):
 @unittest.skipUnless(GIT_OK, "git 不可用")
 class RepoSlugCases(_RepoCase):
     def test_reads_origin_from_config(self):
-        self.init_repo(origin="git@github.com:acme/rag-agent.git")
-        self.assertEqual(ci_status.repo_slug(self.tmp), ("acme", "rag-agent", ""))
+        self.init_repo(origin="git@github.com:acme/agent-workbench.git")
+        self.assertEqual(ci_status.repo_slug(self.tmp), ("acme", "agent-workbench", ""))
 
     def test_refuses_to_guess_between_two_remotes(self):
         self.init_repo(origin="")
@@ -237,7 +237,7 @@ class RepoSlugCases(_RepoCase):
             fh.write("m = 1\n")
         self.assertTrue(os.path.isfile(os.path.join(wt, ".git")), "worktree 的 .git 是文件")
         owner, repo, err = ci_status.repo_slug(wt)
-        self.assertEqual((owner, repo), ("acme", "rag-agent"), err)
+        self.assertEqual((owner, repo), ("acme", "agent-workbench"), err)
         self.assertTrue(ci_status.current_head(wt))
 
 
@@ -298,7 +298,7 @@ class FetchCases(_RepoCase):
                                 "conclusion": "failure"}]}).encode())})
         res = ci_status.fetch(self.tmp, transport=call, tok="t", fetch_jobs=True)
         text = ci_status.summarize(res)
-        self.assertIn("acme/rag-agent", text)
+        self.assertIn("acme/agent-workbench", text)
         self.assertIn("结果=failure", text)
         self.assertIn("失败 job：sqlite tests", text)
 
@@ -347,8 +347,9 @@ class ToolLayerCases(_RepoCase):
 
     def test_missing_code_root(self):
         config.set_runtime("code_root", "")
-        self.assertIn("尚未配置代码库根目录", tools.dev_propose("title: x"))
-        self.assertIn("尚未配置代码库根目录", tools.dev_ci_status(""))
+        # 工具现在说**可行动的那一半**（缺什么 + 怎么补），不再只说「没配置」。
+        self.assertIn("尚未选择项目，无法定位代码库", tools.dev_propose("title: x"))
+        self.assertIn("尚未选择项目，无法定位代码库", tools.dev_ci_status(""))
 
     @unittest.skipUnless(GIT_OK, "git 不可用")
     def test_dev_ci_status_without_token_reports_honestly(self):

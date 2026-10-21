@@ -298,7 +298,8 @@ class ToolWiringTests(unittest.TestCase):
             out = self.tools.TOOLS["dev_handoff"]["func"]("")
         finally:
             self.tools.CODE_ROOT = original
-        self.assertIn("尚未配置代码库根目录", out)
+        # 工具现在说**可行动的那一半**（缺什么 + 怎么补），不再只说「没配置」。
+        self.assertIn("尚未选择项目，无法定位代码库", out)
 
 
 if __name__ == "__main__":
