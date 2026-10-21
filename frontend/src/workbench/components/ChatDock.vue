@@ -19,6 +19,8 @@ import { useOrphanWorkflow } from '../composables/useOrphanWorkflow'
 import { useChatStream } from '../composables/useChatStream'
 import type { ChatActivityKind, ChatMsg } from '../composables/chat-types'
 import { flowOf } from '../composables/chat-types'
+import type { ChatArtifact } from '../composables/chat-types'
+import ArtifactCards from './ArtifactCards.vue'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { useMessageRender } from '../composables/useMessageRender'
 // 当前代码库：与资源管理器同源（tree 在切项目时会用新项目头重拉）。
@@ -43,7 +45,7 @@ import type { PreviewFeedbackRequest } from '../previewFeedback'
 const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
 // 开发舱里侧栏文件树是隐藏的，「在问哪个库」只剩顶栏那颗项目名，而对话就在这块下方。
 // 所以把代码库根目录搬到输入框同一行；普通对话台不显示（旁边就是资源管理器，重复了）。
-const { tree } = useWorkbench()
+const { tree, jumpToLine, revealPath } = useWorkbench()
 const codeRoot = computed(() => tree.value?.code_root || '')
 const codeRootLabel = computed(() => {
   const parts = codeRoot.value.replace(/[\\/]+$/, '').split(/[\\/]/)
@@ -1115,6 +1117,16 @@ function demoAnswer(turnId: number, q: string): Promise<void> {
         { type: 'action', text: 'search_code：玩家受伤 / take_damage / health' },
         { type: 'observation', text: '命中 4 个文件，逐个阅读最相关的 2 个。' },
       ]
+      // 演示也把产物摆出来：下面这段回答自己就写着"会出现可点击的文件卡片"，
+      // 演示里却只有正文里的路径引用 —— 对不上。真实链路里产物走
+      // observation 事件的 artifacts，这里照同构的形状补一份。
+      t.artifacts = [{
+        path: 'scripts/player/player_stats.gd',
+        label: 'player_stats.gd',
+        summary: '修改 scripts/player/player_stats.gd（1.2 KB）',
+        bytes: 1229,
+        evidence: ['demo'],
+      }]
       t.text = demoReply(q)
       t.status = 'done'
       resolve()
@@ -1260,6 +1272,20 @@ const {
   sending.value
   || messages.value.some(m => m.status === 'streaming' || (m.workflow?.workflowId && !m.finishedAt))
   || activeWorkflowIds.value.length > 0)
+
+/**
+ * 点开一个文件产物：在工作台里定位到它（文件树展开 + 打开预览）。
+ * 图片走 ArtifactCards 自己的新标签打开，不走这里。
+ */
+async function openArtifact(a: ChatArtifact) {
+  if (!a?.path) return
+  try {
+    await jumpToLine(a.path, 1)
+    revealPath(a.path)
+  } catch {
+    // 产物可能已被删/移走：让文件树去报，不在这里吞掉用户的操作意图
+  }
+}
 
 // 流式接收管线（帧合批/trace 计时/事件分类）抽到 useChatStream，问答页共用同一实现。
 const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
@@ -1557,6 +1583,9 @@ const webTitle = computed(() => webOn.value
               <template v-if="m.status === 'streaming'"><span v-html="streamHtmlOf(m)" /><span class="cd-caret" aria-hidden="true" /></template>
               <span v-else v-html="answerHtml(m)" />
             </div>
+            <!-- 产物：本轮模型写下的文件、截到的图。直接摆在回答下面，
+                 不用再去路径里自己搜。图片给缩略图，文件给可点的名字。 -->
+            <ArtifactCards :artifacts="m.artifacts" :open="openArtifact" />
             <details v-if="m.status === 'done' && webRefsOf(m).length" class="cd-web-sources">
               <summary>联网来源（{{ webRefsOf(m).length }}）</summary>
               <a v-for="(s, i) in webRefsOf(m)" :key="s.url + i" class="cd-web-source" :href="s.url" target="_blank" rel="noopener noreferrer">

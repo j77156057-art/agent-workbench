@@ -1,6 +1,6 @@
 // SSE 事件类型与 POST/GET 流式通道（由原 workbench/api.ts 按域切分；调用方继续从 barrel ../api 引入）。
 import { FsApiError, withProject } from './_base'
-import type { ChatAsk } from '../composables/chat-types.ts'
+import type { ChatAsk, ChatArtifact } from '../composables/chat-types.ts'
 
 // ---------------------------------------------------------------- P2：选区 AI（SSE 流式）
 export interface SseEvent {
@@ -50,6 +50,14 @@ export interface SseEvent {
   /** 结构化「向用户提问 / 请求授权」载荷：终态澄清 final 与 needs_confirmation
    *  事件都可携带；前端渲染成可点选项框，点某项即把其 value 作为下一轮消息发回。 */
   ask?: ChatAsk
+  /**
+   * 本轮产物（模型写的文件、截的图）。
+   *
+   * 挂在 **observation** 事件上：产物是工具落盘/截图那一刻自报的，
+   * 跟着那一次观察走最准（action 文本里也可能带 path，但被安全拦截的调用
+   * 同样会带 path —— 照文本反推会把没做的记成做了）。
+   */
+  artifacts?: ChatArtifact[]
 }
 
 /** 上下文窗口占用（GET /api/context 与 SSE context 事件同构） */

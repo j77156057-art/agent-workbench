@@ -5,7 +5,7 @@
 //  3) notice / plan / workflow / context / final 事件分类分发，业务差异通过钩子注入。
 // 不持有 messages 数组、不绑定请求生命周期（abort/epoch 仍由调用方管理）。
 import type { SseEvent } from '../api'
-import type { ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef, ChatAsk } from './chat-types'
+import type { ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef, ChatAsk, ChatArtifact } from './chat-types'
 // ⚠ 相对导入必须带 `.ts` 扩展名：`frontend/tests/*.test.mjs` 用
 // `node --experimental-strip-types` 直接跑生产模块（见 tests/test_frontend_node_tests.py），
 // node 的 ESM 解析器不认无扩展名路径（Vite 认，所以只有 node 这条链会炸）。
@@ -25,6 +25,8 @@ export interface ChatStreamTurn {
   flow?: ChatFlowItem[]
   plan?: string[]
   workflow?: ChatWorkflowRef
+  /** 本轮产物（模型写的文件、截的图）：由 observation 事件里的 artifacts 收集 */
+  artifacts?: ChatArtifact[]
   status?: string
   error?: string
   /** P1：final.error_kind 三态（permanent / retried_failed / 其他）。
@@ -137,6 +139,23 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     flow.push({ kind: flowKindOf(type), trace: turn.trace.length - 1 })
   }
 
+  /**
+   * 登记本轮产物。
+   *
+   * 去重按 path：同一个文件可能被反复报（改一次报一次、截一张报一张），
+   * 卡片区要的是"一共产出了什么"，不是"报了几次"。
+   */
+  function collectArtifacts(turn: T, list: ChatArtifact[]) {
+    const seen = new Set((turn.artifacts ?? []).map((a) => a.path || a.id || ''))
+    for (const a of list) {
+      if (!a || typeof a !== 'object') continue
+      const key = a.path || a.id || ''
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      ;(turn.artifacts ??= []).push(a)
+    }
+  }
+
   function bufferFor(turn: T): StreamBuffer {
     let buf = buffers.get(turn.id)
     if (!buf) { buf = { turn, text: '', reasoning: '', think: '' }; buffers.set(turn.id, buf) }
@@ -232,6 +251,11 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
                || ev.type === 'observation' || ev.type === 'reflection') {
       // 轮次边界：先结算未提交的思考文本（保住实时节奏），再切断分段、接动作节点
       if (ev.text) { settleThink(turn); appendTrace(turn, ev.type, ev.text) }
+      // 产物：工具落盘/截图那一刻自报，跟着那一次观察走。
+      // 不从 action 文本反推 —— 被安全拦截的调用同样带 path，反推会把没做的记成做了。
+      if (ev.type === 'observation' && ev.artifacts?.length) {
+        collectArtifacts(turn, ev.artifacts)
+      }
     } else if (ev.type === 'workflow') {
       // start_workflow 已执行：卡片直接挂在当前助手回合内，后续由卡片自己连 SSE。
       const w = ev as unknown as { workflow_id?: string; status?: string; phase?: string; kind?: string; request?: string }

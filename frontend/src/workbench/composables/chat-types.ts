@@ -59,6 +59,41 @@ export interface ChatAsk {
   allow_free_text?: boolean
 }
 
+/**
+ * 本轮产物：模型写的文件、截的图。
+ *
+ * 后端 observation 事件早就带 `artifacts`（工具落盘/截图那一刻自报，
+ * 路径与标签都有），但前端此前完全没用 —— 于是产物只躺在磁盘上，
+ * 用户得自己去路径里搜才能看到"模型到底生成了什么"。
+ */
+export interface ChatArtifact {
+  id?: string
+  /** 'image' | 'code' | 'text' | …（后端按来源/扩展名判定） */
+  kind?: string
+  /**
+   * 项目**相对**路径 —— 图片据此拼预览 URL（`/api/assets/raw?path=`）。
+   * 绝对路径在浏览器里没法用（用户只看到一串盘符），也不该外泄。
+   */
+  path?: string
+  /** 展示名（文件名 / "游戏运行画面"这类说明） */
+  label?: string
+  /** 一句话说明（新建了多大、这张图是什么） */
+  summary?: string
+  bytes?: number
+  /** 产出证据链（工具名、来源） */
+  evidence?: string[]
+  /** 产出适配器（game / browser / …） */
+  adapter?: string
+  /** 直接可用的资源地址（http/https；其余协议后端已滤掉） */
+  uri?: string
+  /** MIME */
+  mime?: string
+  /** 渲染方式：media / interactive / diff / table / code / text / generic */
+  renderer?: string
+  /** 改动了多少行（diff 类产物） */
+  change_summary?: { added_lines?: number; removed_lines?: number }
+}
+
 export interface ChatMsg {
   id: number
   role: 'user' | 'assistant' | 'activity'
@@ -77,6 +112,8 @@ export interface ChatMsg {
   progress?: string
   /** 计划模式步骤（plan 事件） */
   plan: string[]
+  /** 本轮产物（模型写的文件、截的图）：由 observation 事件里的 artifacts 收集 */
+  artifacts?: ChatArtifact[]
   /** 本回合发起的开发工作流：消息内直接挂卡片 */
   workflow?: ChatWorkflowRef
   startedAt?: number

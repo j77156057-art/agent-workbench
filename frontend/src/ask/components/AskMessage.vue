@@ -7,7 +7,8 @@ import { mdToHtml, extractFileRefs } from '../../workbench/markdown'
 import { prefs } from '../askPrefs'
 // 工作流卡片 104KB，只有触发工作流的消息才渲染：按需加载，问答首屏不背
 const WorkflowCard = defineAsyncComponent(() => import('../../workbench/components/WorkflowCard.vue'))
-import type { ChatMsg, ChatTraceItem } from '../../workbench/composables/chat-types'
+import ArtifactCards from '../../workbench/components/ArtifactCards.vue'
+import type { ChatMsg, ChatTraceItem, ChatArtifact } from '../../workbench/composables/chat-types'
 
 const props = defineProps<{ msg: ChatMsg }>()
 const emit = defineEmits<{
@@ -16,7 +17,6 @@ const emit = defineEmits<{
   (e: 'wfActivity'): void
   (e: 'ask', value: string): void
 }>()
-
 // 选项框一经点选即锁定：后端把选择当"下一轮用户消息"处理，同一条 ask 重复点会
 // 触发多次发送，所以本地记一次 answered、点后续按钮不再响应（自由文本另说）。
 const askAnswered = ref(false)
@@ -43,6 +43,12 @@ const shownRefs = computed(() => {
 })
 const hiddenRefs = computed(() => refs.value.length - shownRefs.value.length)
 const canCollapseRefs = computed(() => refsAll.value && prefs.maxRefs > 0 && refs.value.length > prefs.maxRefs)
+
+/** 点开一个文件产物：走问答页既有的「打开文件」通道。 */
+function openArtifact(a: ChatArtifact) {
+  if (!a?.path) return
+  emit('openFile', a.path, 1)
+}
 
 // ---------------- 交错流（思考 ↔ 工具调用按发生顺序） ----------------
 // 2026-10-14 重构：不再是「思考整块在上 + 过程流整块在下」的两段式，而是
@@ -271,6 +277,9 @@ const phaseLabel = computed(() => {
             </div>
             <span v-html="html"></span>
           </div>
+          <!-- 产物：本轮模型写下的文件、截到的图。直接摆在回答下面，
+               不用再去路径里自己搜。图片给缩略图，文件给可点的名字。 -->
+          <ArtifactCards :artifacts="msg.artifacts" :open="openArtifact" />
           <div v-if="msg.status === 'stopped' && msg.text" class="flag stopped">已停止</div>
           <!-- P1：错误条按 error_kind 分流（permanent=红 / retried_failed=黄 / 其他=灰）。
                老的「服务异常」/异常类名字符串走默认灰条，与 ChatDock 同款口径。 -->

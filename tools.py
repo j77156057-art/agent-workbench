@@ -6897,7 +6897,19 @@ def apply_edit(arg):
     except Exception as e:  # noqa: BLE001
         return f"写入失败: {e}"
 
-    return f"已写入 {rel}（{nbytes} 字节，路径沙箱校验通过）。\n{summary}"
+    return ToolResult(
+        ok=True,
+        text=f"已写入 {rel}（{nbytes} 字节，路径沙箱校验通过）。\n{summary}",
+        artifacts=[{
+            # 正斜杠：产物路径要直接拼进预览 URL（/api/assets/raw?path=…），
+            # 反斜杠会被编码成 %5C。
+            "path": rel.replace("\\", "/"),
+            "label": os.path.basename(rel),
+            "summary": "修改 %s（%d 字节）" % (rel, nbytes),
+            "bytes": nbytes,
+            "evidence": ["tool:apply_edit"],
+        }],
+    )
 
 
 def _split_edit_blocks(text):
@@ -7079,10 +7091,25 @@ def dev_apply_edits(arg):
         return msg
 
     out = [f"已原子写入 {len(written)} 个文件："]
+    artifacts = []
     for p in written:
         rel = os.path.relpath(p["target"], p["root_abs"])
-        out.append(f"- {rel}（{len(p['new_content'].encode('utf-8', 'ignore'))} 字节）")
-    return "\n".join(out)
+        nbytes = len(p["new_content"].encode("utf-8", "ignore"))
+        out.append(f"- {rel}（{nbytes} 字节）")
+        # 产物：改过的文件也要能一眼看到、能点开。
+        # 只在**真正写盘成功**之后登记 —— 写失败的文件不算产物。
+        artifacts.append({
+            "path": rel.replace("\\", "/"),
+            "label": os.path.basename(rel),
+            "summary": "修改 %s（%d 字节）" % (rel, nbytes),
+            "bytes": nbytes,
+            "evidence": ["tool:apply_edit"],
+        })
+    return ToolResult(
+        ok=True,
+        text="\n".join(out),
+        artifacts=artifacts,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -7195,7 +7222,9 @@ def create_file(arg):
         ok=True,
         text=f"已创建 {rel}（{nbytes} 字节，路径沙箱校验通过）。",
         artifacts=[{
-            "path": rel,
+            # 正斜杠：产物路径要直接拼进预览 URL（/api/assets/raw?path=…），
+            # 反斜杠会被编码成 %5C，和 apply_edit 那批也不一致。
+            "path": rel.replace("\\", "/"),
             # 不写死 kind：预览侧有一份扩展名→类型映射（`infer_artifact_kind`），
             # 那才是唯一的口径。这里写死后 `.md` 会被当成代码。
             "label": os.path.basename(rel),
@@ -9588,11 +9617,21 @@ def game_screenshot(arg=""):
     root = _get_code_root()
 
     def preview_artifact(path, source):
+        # 路径要给前端能直接拼预览 URL 的**项目相对路径**：
+        # 绝对路径在浏览器里没法用（用户只看到一串盘符），也不该外泄。
+        # 项目根之外的截图（无 code_root 时落在 STATE_ROOT）保持原样 ——
+        # 前端拼不出可用 URL 时只显示文件名，不假装能预览。
+        rel_path = path
+        if root and path:
+            try:
+                rel_path = os.path.relpath(path, root).replace("\\", "/")
+            except ValueError:
+                rel_path = path
         return [{
             "id": "game-screenshot",
             "kind": "image",
             "adapter": "game",
-            "path": path,
+            "path": rel_path,
             "label": "游戏运行画面",
             "summary": "由游戏截图工具捕获的当前运行画面",
             "evidence": ["game_screenshot", "source:" + str(source)],
