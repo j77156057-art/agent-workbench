@@ -121,6 +121,13 @@ const GRAPH_NODE_STYLES: Record<string, GraphNodeStyle> = {
   scene: { fill: 'rgba(240,136,62,0.13)', stroke: '#f0883e', text: '#ffe0c4', mark: '▣', dashed: false, label: '场景' },
   engine: { fill: 'rgba(139,151,167,0.06)', stroke: '#6b7686', text: '#a6b1bf', mark: '⌂', dashed: true, label: '引擎基类' },
   external: { fill: 'rgba(139,151,167,0.06)', stroke: '#6b7686', text: '#a6b1bf', mark: '{}', dashed: true, label: '第三方基类' },
+  // 分组卡：大扇出折叠后的替代物（"这一坨 791 个子类"）。
+  // 描边走中性灰 —— 和 external 同一套 cat() 派生，理由是它必须扛得住
+  // 画布对比度门禁：SVG 的 fill 是绘制属性、门禁不算它，描边是跟**画布点阵底**
+  // 比的（zinc 下 = rgba(125,133,144,.10) 叠画布色）。实测边框令牌
+  // --border-graphic(#8f8f95) 对那个底只有 2.82:1（差 0.18 不达标），
+  // 而 cat() 派生出来的这档在三套皮肤下都过。
+  group: { fill: 'rgba(139,151,167,0.06)', stroke: '#6b7686', text: '#a6b1bf', mark: '⋯', dashed: true, label: '分组（折叠的子类）' },
 }
 
 export function graphNodeStyle(kind: string): GraphNodeStyle {

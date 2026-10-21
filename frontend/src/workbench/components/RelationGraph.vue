@@ -1,12 +1,25 @@
 <script setup lang="ts">
 // P1：关系图。全项目类/脚本/场景节点 + 三类有向边：
 //   inherits（子 → 父）、mounts（场景 → 挂载脚本）、calls（项目内调用）。
-// 零第三方依赖：手写力导向布局（预迭代收敛 + rAF 余温），SVG 渲染，滚轮缩放/拖拽平移/节点拖动。
+//
+// 布局：**左→右分层继承树**（不是力导向）。
+// 实测 DocMind 自己的项目：1485 节点 / 1245 继承边 —— 继承边占 99.4%，
+// 而且它们本来是树不是网。力导向画一棵树 = 1245 条弹簧把节点扯成一团毛球。
+// 分层树让"谁继承谁"一眼可读，代价是大扇出要折叠（见 relationTreeLayout.ts）。
+//
+// 零第三方依赖：SVG 渲染，滚轮缩放/拖拽平移/节点拖动。
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { fsApi } from '../api'
 import type { RelationGraphResp, RelationNode, RelationEdge } from '../api'
 import { useWorkbench } from '../composables/workbench'
 import { graphNodeStyle, regionColor } from '../theme'
+import {
+  buildForest,
+  layoutTree,
+  ORPHAN_GROUP_ID,
+  type TreePlacement,
+  type TreeEdgeDraw,
+} from '../lib/relationTreeLayout'
 
 const { relationGraphOpen, closeRelationGraph, jumpToLine } = useWorkbench()
 
@@ -19,21 +32,12 @@ const showExternal = ref(true)
 const showInherits = ref(true)
 const showMounts = ref(true)
 const showCalls = ref(true)
+/** 展开了哪些分组卡（分组卡 id） */
+const expandedGroups = ref<string[]>([])
 const svgEl = ref<SVGSVGElement | null>(null)
 
-interface Sim {
-  id: string
-  node: RelationNode
-  x: number; y: number; vx: number; vy: number
-  w: number; h: number
-}
-interface SimEdge { a: Sim; b: Sim; e: RelationEdge }
 interface Geo { w: number; h: number; label: string; sub: string; doc: string }
 
-let sim: Sim[] = []
-const byId = new Map<string, Sim>()
-let simEdges: SimEdge[] = []
-const edgeEls = new Map<string, { line: SVGLineElement; label: SVGGElement }>()
 const geometry = ref<Record<string, Geo>>({})
 
 // 视口变换（唯一一个每帧响应式更新的绑定，节点/边坐标全部命令式写 DOM）
@@ -41,14 +45,29 @@ const zoom = ref(1)
 const panX = ref(0)
 const panY = ref(0)
 
-let raf = 0
-let alpha = 0
-let dragSim: Sim | null = null
+let dragSim: Placement | null = null
+let dragStart = { x: 0, y: 0 }
 let panning = false
 let panStart = { x: 0, y: 0, px: 0, py: 0 }
 let down: { id: string; x: number; y: number; moved: boolean } | null = null
 let bgDown: { x: number; y: number; moved: boolean } | null = null
 const selectedId = ref<string | null>(null)
+
+/** 画布上的一个可绘制实体：普通节点卡 或 分组卡。 */
+interface Placement extends TreePlacement {
+  /** 普通节点对应的原始节点（分组卡为 null） */
+  node: RelationNode | null
+  /** 拖拽偏移（用户手动挪过） */
+  ox: number
+  oy: number
+}
+
+const placements = ref<Placement[]>([])
+/** placement id → 实体 */
+const byId = new Map<string, Placement>()
+/** 要画的边 */
+const treeEdges = ref<TreeEdgeDraw[]>([])
+const edgeEls = new Map<string, { path: SVGPathElement; label: SVGGElement | null }>()
 
 // ------------------------------------------------------------ 数据加载
 
@@ -56,10 +75,9 @@ async function reload() {
   loading.value = true
   error.value = ''
   ready.value = false
-  cancelRaf()
   try {
     data.value = await fsApi.relationGraph()
-    // 让 loading 态先绘制一帧，避免预迭代布局卡住 spinner
+    // 让 loading 态先绘制一帧，避免布局计算卡住 spinner
     await nextTick()
     await new Promise((r) => setTimeout(r, 30))
     buildLayout()
@@ -84,7 +102,6 @@ watch(relationGraphOpen, (open) => {
     window.removeEventListener('keydown', onKey)
     window.removeEventListener('pointermove', onPointerMove)
     window.removeEventListener('pointerup', onPointerUp)
-    cancelRaf()
   }
   // immediate：组件在首次打开时才由 App 异步挂载，挂载即 open=true，需立即加载与绑键
 }, { immediate: true })
@@ -93,15 +110,35 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey)
   window.removeEventListener('pointermove', onPointerMove)
   window.removeEventListener('pointerup', onPointerUp)
-  cancelRaf()
 })
 
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Escape') closeRelationGraph()
 }
 
-// 切换过滤项：保留旧坐标重建
+// 切换过滤项：重建分层树
 watch([showExternal, showInherits, showMounts, showCalls], () => {
+  if (!data.value || !ready.value) return
+  buildLayout()
+  nextTick(() => syncDom())
+})
+
+// 展开/收起分组卡：重新布局（树形变了，坐标全变）
+watch(expandedGroups, () => {
+  if (!data.value || !ready.value) return
+  buildLayout()
+  nextTick(() => syncDom())
+})
+
+/**
+ * 搜索词变化：重建布局。
+ *
+ * 这条 watch 以前是缺的（旧实现里搜索只改 opacity，不改布局，所以没暴露）。
+ * 现在搜索会**只看相关子树**（命中的节点 + 它们的祖先链），
+ * 树的形状变了 —— 不重建的话，屏幕上还是那棵大树，只是被压暗了，
+ * 等于搜索没生效。
+ */
+watch(query, () => {
   if (!data.value || !ready.value) return
   buildLayout()
   nextTick(() => syncDom())
@@ -129,6 +166,13 @@ const viewEdges = computed<RelationEdge[]>(() => {
   )
 })
 
+/**
+ * 搜索命中的节点。
+ *
+ * 旧实现（力导向时代）命中后还会把**直接邻居**也点亮，为的是在毛球里
+ * 还能看出点关系。但在分层树里邻居是"父子"或"无关"，混着点亮反而误导 ——
+ * 树的形状本身已经表达了关系。所以这里只留真正命中的节点。
+ */
 const matched = computed<Set<string>>(() => {
   const out = new Set<string>()
   const q = query.value.trim().toLowerCase()
@@ -138,246 +182,229 @@ const matched = computed<Set<string>>(() => {
     const hay = `${n.label} ${n.sub} ${n.rel} ${n.doc} ${n.region_name}`.toLowerCase()
     if (words.every((w) => hay.includes(w))) out.add(n.id)
   }
-  // 直接邻居也点亮
-  for (const e of data.value.edges) {
-    if (out.has(e.source)) out.add(e.target)
-    if (out.has(e.target)) out.add(e.source)
-  }
   return out
 })
 
-function nodeDim(n: RelationNode): boolean {
-  return query.value.trim() !== '' && !matched.value.has(n.id)
+/** 完整关系森林（未按搜索裁剪）：祖先链要按**树的父关系**回溯。 */
+const fullForest = computed(() => buildForest(viewNodes.value, viewEdges.value))
+
+/**
+ * 搜索时**只看相关子树**：命中的节点 + 它们的祖先链。
+ *
+ * 这是分层树相对力导向最大的好处：树有明确的父子关系，
+ * "从命中节点往根上回溯"能得到一条有意义的路径，
+ * 而力导向的图里根本没有"祖先"这回事，只能把邻居点亮。
+ *
+ * 祖先链必须按**森林的父关系**走（继承 > 挂载 > 调用，和树主干同一套），
+ * 否则调用边上的节点会被漏掉 —— 树上它是子节点，搜索却找不到它的来路。
+ *
+ * 没有搜索词时返回 null = 不启用聚焦（画整棵树）。
+ */
+const focusIds = computed<Set<string> | null>(() => {
+  const q = query.value.trim()
+  if (!q || !data.value) return null
+  const hits = matched.value
+  if (!hits.size) return new Set<string>()
+  const keep = new Set<string>()
+  const parentOf = fullForest.value.parentOf
+  for (const id of hits) {
+    let cur: string | undefined = id
+    let guard = 0
+    while (cur !== undefined && guard++ < 64) {
+      if (keep.has(cur)) break
+      keep.add(cur)
+      cur = parentOf.get(cur)
+    }
+  }
+  return keep
+})
+
+function nodeDim(id: string): boolean {
+  const q = query.value.trim()
+  if (!q) return false
+  if (focusIds.value) return !focusIds.value.has(id)
+  return !matched.value.has(id)
 }
-function edgeDim(e: RelationEdge): boolean {
-  if (query.value.trim() === '') return false
-  return !matched.value.has(e.source) || !matched.value.has(e.target)
+function edgeDim(e: TreeEdgeDraw): boolean {
+  const q = query.value.trim()
+  if (!q) return false
+  if (focusIds.value) return !focusIds.value.has(e.from) || !focusIds.value.has(e.to)
+  return !matched.value.has(e.from) || !matched.value.has(e.to)
 }
 
 // ------------------------------------------------------------ 布局
 
 let measureCtx: CanvasRenderingContext2D | null = null
 
-function measure(text: string, size: number, bold: boolean): number {
+/**
+ * 量文字宽度。
+ *
+ * **字体栈必须和渲染时一模一样**，否则算出来的卡片宽度会偏小，
+ * 文字就溢出卡片边框（实测：`.rg-sub` 用等宽的 Space Mono 11.8px，
+ * 早先这里按 Segoe UI 9.5px 算 —— 等宽字宽得多，
+ * 于是 tests/test_realtime_gateway_bridge.py 这种长路径直接冲出卡片）。
+ *
+ * 字号也必须是真实令牌值：`--fs-sm` 12.9px / `--fs-cap` 11.8px，
+ * 不是当初估的 12 / 9.5。
+ */
+const FONT_UI = '"Space Grotesk", "Noto Sans SC", system-ui, sans-serif'
+const FONT_MONO = '"Space Mono", ui-monospace, "JetBrains Mono", Consolas, monospace'
+
+const FS_LABEL = 12.9
+const FS_CAP = 11.8
+
+function measure(text: string, size: number, bold: boolean, mono = false): number {
   if (!measureCtx) {
     measureCtx = document.createElement('canvas').getContext('2d')
   }
   if (!measureCtx) return text.length * size * 0.62
-  measureCtx.font = `${bold ? '600 ' : ''}${size}px "Segoe UI", "Microsoft YaHei", sans-serif`
+  measureCtx.font = `${bold ? '600 ' : ''}${size}px ${mono ? FONT_MONO : FONT_UI}`
   return measureCtx.measureText(text).width
 }
 
-function fitText(text: string, maxW: number, size: number, bold: boolean): string {
-  if (measure(text, size, bold) <= maxW) return text
+function fitText(
+  text: string,
+  maxW: number,
+  size: number,
+  bold: boolean,
+  mono = false,
+): string {
+  if (measure(text, size, bold, mono) <= maxW) return text
   let t = text
-  while (t.length > 1 && measure(t + '…', size, bold) > maxW) t = t.slice(0, -1)
+  while (t.length > 1 && measure(t + '…', size, bold, mono) > maxW) t = t.slice(0, -1)
   return t + '…'
 }
 
-function edgeKey(e: RelationEdge): string {
-  return `${e.kind}|${e.source}>${e.target}`
+function edgeKey(e: TreeEdgeDraw): string {
+  return e.key
 }
 
+/**
+ * 重建整张图：算布局 → 填 placements / treeEdges。
+ *
+ * 节点卡片的尺寸要先量好（fitText 依赖 canvas 测量），再交给布局引擎排布 ——
+ * 引擎按"每列最宽的卡"算列距，所以卡片宽高必须先进去。
+ */
 function buildLayout() {
   const nodes = viewNodes.value
   const edges = viewEdges.value
-
-  const prev = new Map(sim.map((s) => [s.id, s]))
-  sim = []
-  byId.clear()
-  simEdges = []
   const geo: Record<string, Geo> = {}
 
-  nodes.forEach((n, i) => {
-    const st = graphNodeStyle(n.kind)
-    const label = fitText(n.label, 220, 12, true)
+  // 展开中的基类要留出"收起"角标的位置，否则角标会压住卡片标题
+  const expandedBases = new Set(
+    expandedGroups.value
+      .filter((g) => g.startsWith('group:') && g !== ORPHAN_GROUP_ID)
+      .map((g) => g.slice('group:'.length)),
+  )
+
+  for (const n of nodes) {
+    const badgeW = expandedBases.has(n.id) ? 66 : 0
+    const label = fitText(n.label, 220 - badgeW, FS_LABEL, true)
     const subRaw = n.external ? (n.sub ? `(${n.sub})` : '') : n.sub
-    const sub = subRaw ? fitText(subRaw, 220, 9.5, false) : ''
+    // .rg-sub 渲染成等宽字体（--font-mono），量宽也要用等宽，否则算窄了会溢出卡片
+    const sub = subRaw ? fitText(subRaw, 220, FS_CAP, false, true) : ''
     // 卡片第三行：文档/注释首行，帮用户不打开文件也能认出这个类/场景是干什么的
     const docRaw = (n.doc || '').split(/\r?\n/)[0].trim()
-    const doc = !n.external && docRaw && docRaw !== n.label ? fitText(docRaw, 220, 9.5, false) : ''
-    const labelW = measure(label, 12, true)
-    const subW = sub ? measure(sub, 9.5, false) : 0
-    const docW = doc ? measure(doc, 9.5, false) : 0
+    const doc = !n.external && docRaw && docRaw !== n.label ? fitText(docRaw, 220, FS_CAP, false) : ''
+    const labelW = measure(label, FS_LABEL, true)
+    const subW = sub ? measure(sub, FS_CAP, false, true) : 0
+    const docW = doc ? measure(doc, FS_CAP, false) : 0
     const w = Math.max(112, Math.min(264, Math.max(labelW, subW, docW) + 42))
     const h = doc ? 58 : sub ? 46 : 32
     geo[n.id] = { w, h, label, sub, doc }
-
-    const old = prev.get(n.id)
-    let x: number, y: number
-    if (old) {
-      x = old.x
-      y = old.y
-    } else {
-      const ring = n.external ? 2.1 : 1
-      const ang = (i / Math.max(1, nodes.length)) * Math.PI * 2
-      const r = (120 + nodes.length * 12) * ring
-      x = Math.cos(ang) * r
-      y = Math.sin(ang) * r * 0.62
-    }
-    const s: Sim = { id: n.id, node: n, x, y, vx: 0, vy: 0, w, h }
-    sim.push(s)
-    byId.set(n.id, s)
-  })
-
-  for (const e of edges) {
-    const a = byId.get(e.source)
-    const b = byId.get(e.target)
-    if (a && b) simEdges.push({ a, b, e })
   }
 
-  // 同步预迭代（小图毫秒级；大图最多 1000 文件上限内可接受）
-  const iters = sim.length > 400 ? 120 : 260
-  for (let i = 0; i < iters; i++) step(1)
+  // 搜索聚焦时只画相关子树（命中的节点 + 它们的祖先链）
+  const focus = focusIds.value
+  let useNodes = nodes
+  let useEdges = edges
+  if (focus) {
+    useNodes = nodes.filter((n) => focus.has(n.id))
+    const ids = new Set(useNodes.map((n) => n.id))
+    useEdges = edges.filter((e) => ids.has(e.source) && ids.has(e.target))
+  }
+
+  const forest = buildForest(useNodes, useEdges)
+
+  // 搜索时自动展开"装着命中节点"的分组卡：
+  // 否则命中节点藏在折叠卡里，用户搜索到了却看不见，等于没搜到。
+  // 要先算一遍才知道哪些组藏着命中节点，所以这里可能排两次。
+  const expanded = new Set(expandedGroups.value)
+  const sizeOf = {
+    widthOf: (id: string) => geo[id]?.w ?? 150,
+    heightOf: (id: string) => geo[id]?.h ?? 34,
+  }
+  let res = layoutTree(useNodes, forest, { expandedGroups: [...expanded] }, sizeOf)
+  if (focus) {
+    let changed = false
+    for (const p of res.placements) {
+      if (p.kind !== 'group') continue
+      if (expanded.has(p.id)) continue
+      if (p.members.some((m) => focus.has(m))) {
+        expanded.add(p.id)
+        changed = true
+      }
+    }
+    if (changed) res = layoutTree(useNodes, forest, { expandedGroups: [...expanded] }, sizeOf)
+  }
+
+  const nodeById = new Map(useNodes.map((n) => [n.id, n]))
+  const list: Placement[] = []
+  byId.clear()
+  for (const p of res.placements) {
+    const item: Placement = { ...p, node: p.kind === 'node' ? nodeById.get(p.id) ?? null : null, ox: 0, oy: 0 }
+    list.push(item)
+    byId.set(p.id, item)
+  }
+  placements.value = list
+  treeEdges.value = res.edges
   geometry.value = geo
   fitView()
 }
 
-function step(a: number) {
-  const REP = 52000
-  const SPRING = 0.05
-  const IDEAL_INH = 170
-  const IDEAL_MNT = 210
-  const IDEAL_CALL = 190
-  // 碰撞分离不能随 alpha 一起消失：否则拖动余温结束后节点会失去防重叠保护
-  const settle = Math.max(a, 0.35)
-  const n = sim.length
-
-  for (let i = 0; i < n; i++) {
-    const s = sim[i]
-    for (let j = i + 1; j < n; j++) {
-      const t = sim[j]
-      let dx = s.x - t.x
-      let dy = s.y - t.y
-      let d2 = dx * dx + dy * dy
-      if (d2 < 0.01) {
-        dx = (Math.random() - 0.5) * 2
-        dy = (Math.random() - 0.5) * 2
-        d2 = dx * dx + dy * dy
-      }
-      const d = Math.sqrt(d2)
-      const f = (REP / d2) * a
-      const ux = dx / d
-      const uy = dy / d
-      s.vx += ux * f
-      s.vy += uy * f
-      t.vx -= ux * f
-      t.vy -= uy * f
-      // 矩形碰撞：沿 AABB 最小穿透轴做位置级硬分离（保证卡片绝不叠在一起），
-      // 另补一点速度让自然布局也保持间隙；正在拖的卡不吃位移，份额全给另一张
-      const ox = (s.w + t.w) / 2 + 8 - Math.abs(dx)
-      const oy = (s.h + t.h) / 2 + 8 - Math.abs(dy)
-      if (ox > 0 && oy > 0) {
-        const pen = Math.min(ox, oy)
-        let sx = 0, sy = 0
-        if (ox < oy) sx = dx >= 0 ? 1 : -1
-        else sy = dy >= 0 ? 1 : -1
-        const shareA = s === dragSim ? 0 : t === dragSim ? 1 : 0.5
-        const shareB = t === dragSim ? 0 : s === dragSim ? 1 : 0.5
-        s.x += sx * pen * shareA
-        s.y += sy * pen * shareA
-        t.x -= sx * pen * shareB
-        t.y -= sy * pen * shareB
-        const vk = 0.15 * settle
-        s.vx += sx * pen * vk
-        s.vy += sy * pen * vk
-        t.vx -= sx * pen * vk
-        t.vy -= sy * pen * vk
-      }
-    }
-    // 中心引力必须随 alpha 衰减，否则停止加热后所有节点会被恒力拽回 (0,0) 叠成一堆
-    s.vx -= s.x * 0.02 * a
-    s.vy -= s.y * 0.02 * a
+/**
+ * 分组卡的连线：从基类卡右边缘 → 折线 → 子卡左边缘。
+ *
+ * 画折线而不是直线：树有 4 列、几十行，直线会横穿整张图，
+ * 折线只在相邻两列之间画一小段竖直段，一眼能看出"这一挂属于哪个基类"。
+ */
+function edgePath(e: TreeEdgeDraw): { d: string; mx: number; my: number } {
+  const a = byId.get(e.from)
+  const b = byId.get(e.to)
+  if (!a || !b) return { d: '', mx: 0, my: 0 }
+  const ax = a.x + a.ox
+  const ay = a.y + a.oy + a.height / 2
+  const bx = b.x + b.ox
+  const by = b.y + b.oy + b.height / 2
+  if (e.cross) {
+    // 交叉连线（多继承 / 又被调用）：直线 + 虚线，标出"这条不是主干"
+    return { d: `M ${ax} ${ay} L ${bx} ${by}`, mx: (ax + bx) / 2, my: (ay + by) / 2 }
   }
-
-  for (const { a: sa, b: sb, e } of simEdges) {
-    const dx = sb.x - sa.x
-    const dy = sb.y - sa.y
-    const d = Math.sqrt(dx * dx + dy * dy) || 0.01
-    const ideal = e.kind === 'mounts' ? IDEAL_MNT : e.kind === 'calls' ? IDEAL_CALL : IDEAL_INH
-    const f = (d - ideal) * SPRING * (0.25 + 0.75 * a)
-    const ux = dx / d
-    const uy = dy / d
-    sa.vx += ux * f
-    sa.vy += uy * f
-    sb.vx -= ux * f
-    sb.vy -= uy * f
-  }
-
-  for (const s of sim) {
-    if (s === dragSim) {
-      s.vx = 0
-      s.vy = 0
-      continue
-    }
-    s.vx *= 0.82
-    s.vy *= 0.82
-    const cap = 26
-    const v = Math.hypot(s.vx, s.vy)
-    if (v > cap) {
-      s.vx = (s.vx / v) * cap
-      s.vy = (s.vy / v) * cap
-    }
-    s.x += s.vx
-    s.y += s.vy
-  }
-}
-
-function reheat(v = 0.6) {
-  alpha = Math.max(alpha, v)
-  if (!raf && ready.value) raf = requestAnimationFrame(loop)
-}
-
-function loop() {
-  if (alpha <= 0.02 && !dragSim) {
-    raf = 0
-    syncDom()
-    return
-  }
-  step(alpha)
-  alpha *= 0.96
-  syncDom()
-  raf = requestAnimationFrame(loop)
-}
-
-function cancelRaf() {
-  if (raf) cancelAnimationFrame(raf)
-  raf = 0
-  alpha = 0
-}
-
-// 边端点收进矩形边界，箭头不扎进节点
-function endpoints(sa: Sim, sb: Sim) {
-  const dx = sb.x - sa.x
-  const dy = sb.y - sa.y
-  const d = Math.hypot(dx, dy) || 0.01
-  const ux = dx / d
-  const uy = dy / d
-  const ta = Math.min(sa.w / 2 / Math.abs(ux || 1e-6), sa.h / 2 / Math.abs(uy || 1e-6))
-  const tb = Math.min(sb.w / 2 / Math.abs(ux || 1e-6), sb.h / 2 / Math.abs(uy || 1e-6))
+  // 主干：基类右边缘 → 中点竖直 → 子类左边缘
+  const x1 = ax + a.width / 2
+  const x2 = bx - b.width / 2
+  const mid = (x1 + x2) / 2
   return {
-    x1: sa.x + ux * ta,
-    y1: sa.y + uy * ta,
-    x2: sb.x - ux * tb,
-    y2: sb.y - uy * tb,
+    d: `M ${x1} ${ay} H ${mid} V ${by} H ${x2}`,
+    mx: mid,
+    my: (ay + by) / 2,
   }
 }
 
 function syncDom() {
-  for (const se of simEdges) {
-    const els = edgeEls.get(edgeKey(se.e))
+  for (const e of treeEdges.value) {
+    const els = edgeEls.get(edgeKey(e))
     if (!els) continue
-    const p = endpoints(se.a, se.b)
-    els.line.setAttribute('x1', String(p.x1))
-    els.line.setAttribute('y1', String(p.y1))
-    els.line.setAttribute('x2', String(p.x2))
-    els.line.setAttribute('y2', String(p.y2))
-    els.label.setAttribute('transform', `translate(${(p.x1 + p.x2) / 2}, ${(p.y1 + p.y2) / 2})`)
-    els.label.style.display = zoom.value < 0.55 ? 'none' : ''
+    const p = edgePath(e)
+    els.path.setAttribute('d', p.d)
+    if (els.label) {
+      els.label.setAttribute('transform', `translate(${p.mx}, ${p.my})`)
+      els.label.style.display = zoom.value < 0.55 ? 'none' : ''
+    }
   }
-  for (const s of sim) {
+  for (const s of placements.value) {
     const el = nodeEl(s.id)
-    if (el) el.setAttribute('transform', `translate(${s.x - s.w / 2}, ${s.y - s.h / 2})`)
+    if (el) el.setAttribute('transform', `translate(${s.x + s.ox - s.width / 2}, ${s.y + s.oy - s.height / 2})`)
   }
 }
 
@@ -391,41 +418,41 @@ function geoY(id: string, line: 'label' | 'sub' | 'doc'): number {
 }
 
 // 初始模板绑定读取（首帧 Vue 渲染时用，之后命令式覆盖）
-function initialPos(id: string, axis: 'x' | 'y', wh: 'w' | 'h', half: boolean): number {
+function initialPos(id: string, axis: 'x' | 'y'): number {
   const s = byId.get(id)
   if (!s) return 0
-  return axis === 'x' ? s.x - (half ? s[wh] / 2 : 0) : s.y - (half ? s[wh] / 2 : 0)
+  return axis === 'x' ? s.x + s.ox - s.width / 2 : s.y + s.oy - s.height / 2
 }
-function edgePos(e: RelationEdge, end: 'x1' | 'y1' | 'x2' | 'y2'): number {
-  const a = byId.get(e.source)
-  const b = byId.get(e.target)
-  if (!a || !b) return 0
-  const p = endpoints(a, b)
-  return p[end]
+function edgePathOf(e: TreeEdgeDraw): string {
+  return edgePath(e).d
+}
+function edgeLabelPos(e: TreeEdgeDraw): { x: number; y: number } {
+  const p = edgePath(e)
+  return { x: p.mx, y: p.my }
 }
 
 // ------------------------------------------------------------ 视口
 
 function fitView() {
   const svg = svgEl.value
-  if (!svg || sim.length === 0) {
+  if (!svg || placements.value.length === 0) {
     zoom.value = 1
     panX.value = 0
     panY.value = 0
     return
   }
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const s of sim) {
-    minX = Math.min(minX, s.x - s.w / 2)
-    maxX = Math.max(maxX, s.x + s.w / 2)
-    minY = Math.min(minY, s.y - s.h / 2)
-    maxY = Math.max(maxY, s.y + s.h / 2)
+  for (const s of placements.value) {
+    minX = Math.min(minX, s.x + s.ox - s.width / 2)
+    maxX = Math.max(maxX, s.x + s.ox + s.width / 2)
+    minY = Math.min(minY, s.y + s.oy - s.height / 2)
+    maxY = Math.max(maxY, s.y + s.oy + s.height / 2)
   }
   const cw = svg.clientWidth || 900
   const ch = svg.clientHeight || 600
   const bw = Math.max(1, maxX - minX + 80)
   const bh = Math.max(1, maxY - minY + 80)
-  const z = Math.min(1.25, Math.max(0.18, Math.min(cw / bw, ch / bh)))
+  const z = Math.min(1.25, Math.max(0.05, Math.min(cw / bw, ch / bh)))
   zoom.value = z
   panX.value = cw / 2 - ((minX + maxX) / 2) * z
   panY.value = ch / 2 - ((minY + maxY) / 2) * z
@@ -440,7 +467,8 @@ function zoomBy(f: number) {
 }
 
 function applyZoom(f: number, cx: number, cy: number) {
-  const nz = Math.min(2.5, Math.max(0.18, zoom.value * f))
+  // 下限放到 0.05：分层树高瘦（实测真实项目 1168×3986），0.18 缩不下去就看不到全貌
+  const nz = Math.min(2.5, Math.max(0.05, zoom.value * f))
   const k = nz / zoom.value
   panX.value = cx - (cx - panX.value) * k
   panY.value = cy - (cy - panY.value) * k
@@ -477,21 +505,22 @@ function setNodeRef(el: Element | unknown, id: string) {
 function setEdgeRef(el: Element | unknown, key: string) {
   if (el instanceof SVGGElement) {
     edgeEls.set(key, {
-      line: el.querySelector('.rg-line') as SVGLineElement,
-      label: el.querySelector('.rg-elabel') as SVGGElement,
+      path: el.querySelector('.rg-line') as SVGPathElement,
+      // 继承边不渲染文字标签（见模板注释），所以这里可能是 null —— syncDom 要能扛住
+      label: el.querySelector('.rg-elabel') as SVGGElement | null,
     })
   } else {
     edgeEls.delete(key)
   }
 }
 
-function onNodeDown(ev: PointerEvent, n: RelationNode) {
-  const s = byId.get(n.id)
-  if (!s) return
+function onNodeDown(ev: PointerEvent, p: Placement) {
   ev.stopPropagation()
-  down = { id: n.id, x: ev.clientX, y: ev.clientY, moved: false }
-  dragSim = s
-  reheat(0.7)
+  down = { id: p.id, x: ev.clientX, y: ev.clientY, moved: false }
+  dragSim = p
+  // 记住拖拽起点对应的布局坐标，拖动量作为偏移量叠加（分层树的位置是算出来的，
+  // 直接改 x/y 会在下次 buildLayout 时被冲掉）
+  dragStart = { x: p.x + p.ox, y: p.y + p.oy }
 }
 
 function onBgDown(ev: PointerEvent) {
@@ -506,11 +535,9 @@ function onPointerMove(ev: PointerEvent) {
   if (dragSim && down) {
     if (Math.hypot(ev.clientX - down.x, ev.clientY - down.y) > 4) down.moved = true
     const w = toWorld(ev.clientX, ev.clientY)
-    dragSim.x = w.x
-    dragSim.y = w.y
-    dragSim.vx = 0
-    dragSim.vy = 0
-    reheat(0.5)
+    dragSim.ox = w.x - dragStart.x
+    dragSim.oy = w.y - dragStart.y
+    syncDom()
   } else if (panning) {
     if (bgDown && Math.hypot(ev.clientX - bgDown.x, ev.clientY - bgDown.y) > 4) bgDown.moved = true
     panX.value = panStart.px + (ev.clientX - panStart.x)
@@ -518,23 +545,29 @@ function onPointerMove(ev: PointerEvent) {
   }
 }
 
-function settleBurst(steps = 120) {
-  // 松手/加热结束后的收尾：只做碰撞分离与弹簧归位，不引入新的中心引力
-  for (let i = 0; i < steps; i++) step(0.05)
-  alpha = 0
-  syncDom()
-}
-
 let suppressBgClick = false
 
-function onNodeClick(ev: MouseEvent, n: RelationNode) {
-  // 选中走 click：浏览器对“按下后轻微抖动”有自带容差，比手写 pointerup 判定更稳
+function onNodeClick(ev: MouseEvent, p: Placement) {
+  // 选中走 click：浏览器对"按下后轻微抖动"有自带容差，比手写 pointerup 判定更稳
   ev.stopPropagation()
-  selectedId.value = n.id
+  // 点分组卡 = 展开/收起这一组（大扇出折叠的入口）
+  if (p.kind === 'group') {
+    toggleGroup(p.id)
+    return
+  }
+  selectedId.value = p.id
+}
+
+/** 展开/收起一个分组卡。展开后整棵树重排（watch expandedGroups 会触发 buildLayout）。 */
+function toggleGroup(groupId: string) {
+  const set = new Set(expandedGroups.value)
+  if (set.has(groupId)) set.delete(groupId)
+  else set.add(groupId)
+  expandedGroups.value = [...set]
 }
 
 function onBgClick() {
-  // 平移画布松手也会触发 click，平移过就不当作“取消选中”
+  // 平移画布松手也会触发 click，平移过就不当作"取消选中"
   if (suppressBgClick) {
     suppressBgClick = false
     return
@@ -544,20 +577,17 @@ function onBgClick() {
 
 function onPointerUp() {
   const clicked = down
-  const draggedNode = !!dragSim
   dragSim = null
   down = null
-  if (clicked && clicked.moved && draggedNode) {
-    // 拖完节点后立即补一轮短迭代，把被挤开/重叠的卡片排开
-    settleBurst()
-  }
+  if (clicked && clicked.moved) syncDom()
   suppressBgClick = !!(bgDown && bgDown.moved)
   bgDown = null
   panning = false
 }
 
-async function onNodeDbl(n: RelationNode) {
-  if (n.rel) {
+async function onNodeDbl(p: Placement) {
+  const n = p.node
+  if (n?.rel) {
     closeRelationGraph()
     await jumpToLine(n.rel, n.line || 1)
   }
@@ -593,6 +623,36 @@ const selectedIncident = computed<{ out: Incident[]; incoming: Incident[] }>(() 
 function kindText(k: string): string {
   return graphNodeStyle(k).label
 }
+
+/**
+ * 分组卡的描边色。
+ *
+ * 走 theme.ts 的 'group' 节点样式（cat() 派生），不用边框令牌 ——
+ * SVG 的 fill 是绘制属性、对比度门禁不算它，描边是跟**画布点阵底**比对的，
+ * zinc 下边框令牌只有 2.82:1（差 0.18），cat() 派生那档三套皮肤都过。
+ * 选中态换成强调色（行内样式盖得住 class 里的描边）。
+ */
+/** 当前处于展开状态的分组卡对应的基类 id（"group:<base>" 去掉前缀）。 */
+const expandedBaseIds = computed<Set<string>>(() => {
+  const s = new Set<string>()
+  for (const g of expandedGroups.value) {
+    if (!g.startsWith('group:') || g === ORPHAN_GROUP_ID) continue
+    s.add(g.slice('group:'.length))
+  }
+  return s
+})
+
+/** 展开状态的基类：它当年折掉的那批子类数（收起按钮上要写"收起 N 个"）。 */
+function foldedCountOf(baseId: string): number {
+  return fullForest.value.childrenOf.get(baseId)?.length ?? 0
+}
+
+function groupStroke(p: Placement): string {
+  if (selectedId.value === p.id) {
+    return 'color-mix(in srgb, var(--accent) 55%, var(--ink))'
+  }
+  return graphNodeStyle('group').stroke
+}
 function edgeKindText(k: string): string {
   return k === 'inherits' ? '继承' : k === 'mounts' ? '场景挂载' : k === 'calls' ? '调用' : k
 }
@@ -601,6 +661,20 @@ function incidentMethods(it: Incident): string {
   const head = ms.slice(0, 4).join('、')
   return ms.length > 4 ? `${head} 等 ${ms.length} 个方法` : head
 }
+
+/** 选中的分组卡（点分组卡是展开/收起，不会选中，所以这里只在详情面板用）。 */
+const selectedGroup = computed<Placement | null>(
+  () => placements.value.find((p) => p.id === selectedId.value && p.kind === 'group') || null)
+
+/** 分组卡里的成员节点（详情面板列出来，让人能点进去）。 */
+const selectedGroupMembers = computed<RelationNode[]>(() => {
+  const g = selectedGroup.value
+  if (!g) return []
+  const d = data.value
+  if (!d) return []
+  const byId2 = new Map(d.nodes.map((n) => [n.id, n]))
+  return g.members.map((id) => byId2.get(id)).filter((n): n is RelationNode => !!n)
+})
 
 const viewport = computed(() => `translate(${panX.value}, ${panY.value}) scale(${zoom.value})`)
 const stats = computed(() => data.value?.stats)
@@ -703,19 +777,22 @@ const colorOf = regionColor
 
           <g :transform="viewport">
             <g class="rg-edges">
-              <g v-for="e in viewEdges" :key="edgeKey(e)"
+              <g v-for="e in treeEdges" :key="edgeKey(e)"
                  :ref="(el) => setEdgeRef(el, edgeKey(e))"
-                 :class="['rg-edge-g', { dim: edgeDim(e) }]">
+                 :class="['rg-edge-g', { dim: edgeDim(e), cross: e.cross }]">
                 <title v-if="e.kind === 'calls'">调用：{{ (e.methods || []).map((m) => m + '()').join('、') }}（首个调用点第 {{ e.line }} 行）</title>
                 <title v-else>{{ e.label }}{{ e.line ? `（第 ${e.line} 行）` : '' }}</title>
-                <line
+                <path
                   class="rg-line"
                   :class="e.kind"
-                  :x1="edgePos(e, 'x1')" :y1="edgePos(e, 'y1')"
-                  :x2="edgePos(e, 'x2')" :y2="edgePos(e, 'y2')"
+                  :d="edgePathOf(e)"
                   :marker-end="e.kind === 'mounts' ? 'url(#rg-arrow-mnt)' : e.kind === 'calls' ? 'url(#rg-arrow-call)' : 'url(#rg-arrow-inh)'"
                 />
-                <g class="rg-elabel" :transform="`translate(${edgePos(e, 'x1')}, ${edgePos(e, 'y1')})`">
+                <!-- 边文字标签：只给挂载/调用边留。
+                     继承边在树里有上百条，每条都写 extends/bases 纯属噪声，
+                     而且边图层在节点图层之下（标签被卡片盖住），
+                     几十个标签叠在一起反而更看不清 —— 继承关系由颜色+图例+tooltip 表达就够。 -->
+                <g v-if="e.kind !== 'inherits'" class="rg-elabel" :transform="`translate(${edgeLabelPos(e).x}, ${edgeLabelPos(e).y})`">
                   <rect x="-26" y="-8" width="52" height="13" rx="3" class="rg-elabel-bg-inh" v-if="e.kind === 'inherits'" />
                   <rect x="-20" y="-8" width="40" height="13" rx="3" class="rg-elabel-bg-mnt" v-else-if="e.kind === 'mounts'" />
                   <rect x="-20" y="-8" width="40" height="13" rx="3" class="rg-elabel-bg-call" v-else />
@@ -726,51 +803,101 @@ const colorOf = regionColor
 
             <g class="rg-nodes">
               <g
-                v-for="n in viewNodes"
-                :key="n.id"
-                :ref="(el) => setNodeRef(el, n.id)"
+                v-for="p in placements"
+                :key="p.id"
+                :ref="(el) => setNodeRef(el, p.id)"
                 class="rg-node"
-                :class="{ ext: n.external, dim: nodeDim(n), selected: selectedId === n.id }"
-                :transform="`translate(${initialPos(n.id, 'x', 'w', true)}, ${initialPos(n.id, 'y', 'h', true)})`"
-                @pointerdown="onNodeDown($event, n)"
-                @click="onNodeClick($event, n)"
-                @dblclick="onNodeDbl(n)"
+                :class="{
+                  ext: p.node?.external,
+                  dim: nodeDim(p.id),
+                  selected: selectedId === p.id,
+                  group: p.kind === 'group',
+                }"
+                :transform="`translate(${initialPos(p.id, 'x')}, ${initialPos(p.id, 'y')})`"
+                @pointerdown="onNodeDown($event, p)"
+                @click="onNodeClick($event, p)"
+                @dblclick="onNodeDbl(p)"
               >
-                <rect
-                  :width="geometry[n.id]?.w || 100"
-                  :height="geometry[n.id]?.h || 32"
-                  rx="7"
-                  :style="{ fill: styleOf(n.kind).fill, stroke: styleOf(n.kind).stroke }"
-                  :stroke-dasharray="styleOf(n.kind).dashed ? '4 3' : undefined"
-                />
-                <circle
-                  v-if="n.region"
-                  class="rg-region-dot"
-                  :cx="9" :cy="(geometry[n.id]?.h || 32) / 2" r="3"
-                  :style="{ fill: colorOf(n.region) }"
-                />
-                <text class="rg-mark"
-                      :x="n.region ? 17 : 12"
-                      :y="(geometry[n.id]?.h || 32) / 2 + 3.6">
-                  {{ styleOf(n.kind).mark }}
-                </text>
-                <text class="rg-label" x="30"
-                      :y="geoY(n.id, 'label')">
-                  {{ geometry[n.id]?.label }}
-                </text>
-                <text v-if="geometry[n.id]?.sub" class="rg-sub" x="30"
-                      :y="geoY(n.id, 'sub')">
-                  {{ geometry[n.id]?.sub }}
-                </text>
-                <text v-if="geometry[n.id]?.doc" class="rg-doc" x="30"
-                      :y="geoY(n.id, 'doc')">
-                  {{ geometry[n.id]?.doc }}
-                </text>
-                <title>{{ n.rel ? `${n.rel}${n.doc ? '\n' + n.doc : ''}` : `${n.label}（${styleOf(n.kind).label}）` }}</title>
+                <!-- 分组卡：大扇出折叠后的替代物（点它展开/收起） -->
+                <template v-if="p.kind === 'group'">
+                  <rect
+                    :width="p.width"
+                    :height="p.height"
+                    rx="7"
+                    class="rg-group-rect"
+                    :style="{ stroke: groupStroke(p) }"
+                  />
+                  <text class="rg-group-mark" x="11" :y="p.height / 2 + 3.6">⋯</text>
+                  <text class="rg-group-label" x="26" :y="p.height / 2 + 4">
+                    {{ p.groupBase ? p.label : p.label }} · {{ p.groupSize }}
+                  </text>
+                  <title>{{ p.groupBase ? `${p.label} 的 ${p.groupSize} 个子类（点击展开）` : `${p.groupSize} 个没有任何关系的节点（点击展开）` }}</title>
+                </template>
+                <template v-else-if="p.node">
+                  <rect
+                    :width="p.width"
+                    :height="p.height"
+                    rx="7"
+                    :style="{ fill: styleOf(p.node.kind).fill, stroke: styleOf(p.node.kind).stroke }"
+                    :stroke-dasharray="styleOf(p.node.kind).dashed ? '4 3' : undefined"
+                  />
+                  <circle
+                    v-if="p.node.region"
+                    class="rg-region-dot"
+                    :cx="9" :cy="p.height / 2" r="3"
+                    :style="{ fill: colorOf(p.node.region) }"
+                  />
+                  <text class="rg-mark"
+                        :x="p.node.region ? 17 : 12"
+                        :y="p.height / 2 + 3.6">
+                    {{ styleOf(p.node.kind).mark }}
+                  </text>
+                  <text class="rg-label" x="30"
+                        :y="geoY(p.id, 'label')">
+                    {{ geometry[p.id]?.label }}
+                  </text>
+                  <text v-if="geometry[p.id]?.sub" class="rg-sub" x="30"
+                        :y="geoY(p.id, 'sub')">
+                    {{ geometry[p.id]?.sub }}
+                  </text>
+                  <text v-if="geometry[p.id]?.doc" class="rg-doc" x="30"
+                        :y="geoY(p.id, 'doc')">
+                    {{ geometry[p.id]?.doc }}
+                  </text>
+                  <!-- 展开中的基类：角标是"收起"入口。
+                       分组卡展开后自己就没了，不给这个角标的话用户收起不回去。 -->
+                  <g v-if="expandedBaseIds.has(p.id)" class="rg-fold" @click.stop="toggleGroup('group:' + p.id)">
+                    <rect :x="p.width - 62" y="3" width="59" height="14" rx="4" />
+                    <text x="p.width - 52" y="13">⊟ 收起 {{ foldedCountOf(p.id) }}</text>
+                  </g>
+                  <title>{{ p.node.rel ? `${p.node.rel}${p.node.doc ? '\n' + p.node.doc : ''}` : `${p.node.label}（${styleOf(p.node.kind).label}）` }}</title>
+                </template>
               </g>
             </g>
           </g>
         </svg>
+
+        <!-- 分组卡详情：点分组卡是展开/收起，这里是选中后的成员清单 -->
+        <aside v-if="selectedGroup" class="rg-detail" @pointerdown.stop>
+          <header class="rg-d-head">
+            <span class="rg-d-mark rg-d-mark-group">⋯</span>
+            <b class="rg-d-title">{{ selectedGroup.label }} 的 {{ selectedGroup.groupSize }} 个子类</b>
+            <button class="rg-d-x" title="关闭详情" @click="selectedId = null">×</button>
+          </header>
+          <div class="rg-d-tags">
+            <span class="rg-d-kind">分组（已折叠）</span>
+          </div>
+          <div class="rg-d-sec">成员 · {{ selectedGroupMembers.length }}</div>
+          <ul class="rg-d-list">
+            <li v-for="m in selectedGroupMembers.slice(0, 200)" :key="m.id">
+              <a class="rg-d-link" @click="selectedId = m.id">{{ m.label }}</a>
+              <em>{{ m.rel }}</em>
+            </li>
+          </ul>
+          <p v-if="selectedGroupMembers.length > 200" class="rg-d-empty">
+            仅列出前 200 个，其余 {{ selectedGroupMembers.length - 200 }} 个请用搜索定位。
+          </p>
+        </aside>
 
         <!-- 节点详情卡：单击节点出现 -->
         <aside v-if="selectedNode" class="rg-detail" @pointerdown.stop>
@@ -817,6 +944,13 @@ const colorOf = regionColor
 
           <button class="rg-d-open" :disabled="!selectedNode.rel" @click="openSelected">
             {{ selectedNode.rel ? '打开文件（或双击节点）' : '该节点无项目文件' }}
+          </button>
+          <button
+            v-if="selectedNode && expandedBaseIds.has(selectedNode.id)"
+            class="rg-d-fold"
+            @click="toggleGroup('group:' + selectedNode.id)"
+          >
+            收起这 {{ foldedCountOf(selectedNode.id) }} 个子类
           </button>
         </aside>
 
@@ -993,6 +1127,8 @@ const colorOf = regionColor
 .rg-line.inherits { stroke: var(--viz-inherit); }
 .rg-line.mounts { stroke: var(--viz-mount); stroke-dasharray: 6 4; }
 .rg-line.calls { stroke: var(--viz-call); }
+/* 交叉连线（多继承/又被调用）：虚线 + 弱一点，一眼看出"这条不是主干" */
+.rg-edge-g.cross .rg-line { stroke-dasharray: 3 3; opacity: .6; }
 .rg-edge-g.dim { opacity: 0.10; }
 .rg-elabel-bg-inh { fill: var(--bg); stroke: var(--viz-inherit); stroke-width: 0.8; }
 .rg-elabel-bg-mnt { fill: var(--bg); stroke: var(--viz-mount); stroke-width: 0.8; }
@@ -1007,6 +1143,54 @@ const colorOf = regionColor
 .rg-node:hover rect { stroke-width: 2; filter: brightness(1.08); }
 .rg-node.selected rect { stroke-width: 2.4; filter: drop-shadow(0 2px 6px color-mix(in srgb, var(--accent) 35%, transparent)); }
 .rg-node.dim { opacity: 0.13; }
+
+/* 分组卡：大扇出折叠后的替代物。
+   描边用中性色 + 虚线 = "这不是一个类，是一堆被折叠起来的类"。
+   字色走 --text-muted（次级信息），不能跟普通节点卡一样用主文字色 —— 它不是主信息。
+
+   填充用 --bg-raised（不是 color-mix 调深）：SVG 的 fill 是**绘制属性**，
+   画布对比度门禁不算它 —— 描边是跟**画布点阵底**比对的，
+   门禁会把纯底板色（等于表面令牌）排除，把调深过的中间色当"看不见的图形"报出来。
+   描边本身走 theme.ts 的 'group' 节点样式（cat() 派生），三套皮肤都过 3:1。 */
+.rg-group-rect {
+  fill: var(--bg-raised);
+  stroke-width: 1.3;
+  stroke-dasharray: 5 3;
+}
+.rg-node.group:hover .rg-group-rect { stroke-width: 2; }
+.rg-node.group.selected .rg-group-rect {
+  stroke-width: 2.4;
+  stroke: color-mix(in srgb, var(--accent) 55%, var(--border-graphic));
+}
+.rg-group-mark {
+  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  text-anchor: middle;
+  fill: var(--text-muted);
+}
+.rg-group-label {
+  font-size: var(--fs-cap);
+  font-family: var(--font-mono);
+  fill: var(--text-muted);
+}
+.rg-d-mark-group { color: var(--text-muted); }
+
+/* 展开中的基类上的"收起"角标。
+   角标是控件边界：底用 --bg-raised（纯底板，不参与 1.4.11），
+   字用 --text-muted（在纸底上 ≥4.5:1），描边用主题层的 group 描边档。 */
+.rg-fold { cursor: pointer; }
+.rg-fold rect {
+  fill: var(--bg-raised);
+  stroke: var(--border-strong);
+  stroke-width: 0.8;
+}
+.rg-fold text {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  fill: var(--text-muted);
+}
+.rg-fold:hover rect { stroke: var(--border-strong); filter: brightness(1.04); }
 /* 角标与标签以前用 :fill 画成分类色（#d6e7ff 那批浅色在纸底上等于隐形）。
    现在色相由卡片描边+底色说，字回归中性。 */
 .rg-mark { font-family: var(--font-mono); font-size: var(--fs-cap); font-weight: 700; text-anchor: middle; fill: var(--text-muted); }
@@ -1074,6 +1258,13 @@ const colorOf = regionColor
 .rg-d-open:disabled { opacity: .5; cursor: not-allowed; }
 .rg-d-open:not(:disabled):hover { filter: brightness(1.06); transform: translateY(-1px); }
 .rg-d-open { transition: filter .16s ease, transform .16s ease; }
+/* 详情面板里的"收起这批子类"：次级动作，不能跟"打开文件"抢主按钮 */
+.rg-d-fold {
+  width: 100%; margin-top: 6px;
+  border: 1px solid var(--border); background: transparent; color: var(--text-muted);
+  border-radius: 6px; padding: 6px 10px; font-size: var(--fs-sm); cursor: pointer;
+}
+.rg-d-fold:hover { color: var(--text); border-color: var(--border-strong); }
 
 .rg-state {
   position: absolute;
