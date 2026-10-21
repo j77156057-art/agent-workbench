@@ -28,6 +28,13 @@ import agent as agent_mod  # noqa: E402
 from config import set_runtime  # noqa: E402
 
 
+#: 系统关键目录随平台变：Windows 是 `C:/Windows/System32`，POSIX 是 `/etc`。
+#: 生产侧的硬底线名单（tools.py 的 `never`）**同时列了两套**，所以夹具按当前平台挑一个。
+#: 写死 Windows 形状的话，在 Linux 上那只是个相对路径，守卫不拦是**对的** ——
+#: 于是这条断言测的就不是「系统目录写永不放行」，而是一个不相干的路径。
+_SYSTEM_DIR = r"C:/Windows/System32" if os.name == "nt" else "/etc"
+
+
 _READ_ONLY = frozenset({
     "calculate", "memory_search", "search_knowledge", "search_code",
     "grep", "read_file", "list_dir", "web_search", "web_fetch", "web_research",
@@ -236,7 +243,7 @@ class TierGatePureTests(unittest.TestCase):
 
     def test_system_dir_path_is_hard_reject(self):
         tier, reason, _ = tools_mod._ptc_bridge_write_tier(
-            "create_file", self._arg("C:/Windows/System32/drivers/foo.sys"))
+            "create_file", self._arg("%s/drivers/foo.sys" % _SYSTEM_DIR))
         self.assertEqual(tier, -1)
 
     def test_memory_save_no_path_conservative_tier2(self):

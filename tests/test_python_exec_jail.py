@@ -35,6 +35,13 @@ import tools as tools_mod  # noqa: E402
 from config import set_runtime  # noqa: E402
 
 
+#: 系统关键目录随平台变：Windows 是 `C:/Windows/System32`，POSIX 是 `/etc`。
+#: 生产侧的硬底线名单（tools.py 的 `never`）**同时列了两套**，所以夹具按当前平台挑一个。
+#: 写死 Windows 形状的话，在 Linux 上那只是个相对路径，牢笼不拦是**对的** ——
+#: 于是这条断言测的就不是「系统目录写永不放行」，而是一个不相干的路径。
+_SYSTEM_DIR = r"C:/Windows/System32" if os.name == "nt" else "/etc"
+
+
 class PythonExecJailTests(unittest.TestCase):
     def _run(self, root, code):
         # 本文件锁的是**运行期审计钩硬拦**语义（改动前的 fail-closed 行为，对应
@@ -158,7 +165,7 @@ class PythonExecCeilingTests(unittest.TestCase):
     def test_system_dir_never_floor_even_at_ceiling3(self):
         """系统关键目录（C:\\Windows）同为永不放行硬底线，天花板 3 也拦。"""
         with tempfile.TemporaryDirectory() as d:
-            out = self._run(d, "open(r'C:/Windows/System32/docmind_evil.dll','w').write('x')", 3)
+            out = self._run(d, "open(r'%s/docmind_evil.dll','w').write('x')" % _SYSTEM_DIR, 3)
             self.assertIn("安全拦截", out, "系统目录写应被拒：%r" % out)
             self.assertIn("PermissionError", out, "应 PermissionError 中止：%r" % out)
 

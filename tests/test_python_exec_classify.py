@@ -25,6 +25,13 @@ import tools as tools_mod  # noqa: E402
 from config import set_runtime  # noqa: E402
 
 
+#: 系统关键目录随平台变：Windows 是 `C:/Windows/System32`，POSIX 是 `/etc`。
+#: 生产侧的硬底线名单（tools.py 的 `never`）**同时列了两套**，所以夹具按当前平台挑一个。
+#: 写死 Windows 形状的话，在 Linux 上那只是个相对路径，守卫不拦是**对的** ——
+#: 于是这条断言测的就不是「系统目录写永不放行」，而是一个不相干的路径。
+_SYSTEM_DIR = r"C:/Windows/System32" if os.name == "nt" else "/etc"
+
+
 class ExecClassifyTests(unittest.TestCase):
     def _tier(self, code):
         """在一次性 code_root 下跑分类器，返回最坏档位。"""
@@ -125,7 +132,7 @@ class ExecClassifyTests(unittest.TestCase):
         self.assertEqual(self._tier("open(%r, 'w').write('x')" % probe), -1)
 
     def test_system_dir_write_is_never(self):
-        self.assertEqual(self._tier("open(r'C:/Windows/System32/evil.dll', 'w').write('x')"), -1)
+        self.assertEqual(self._tier("open(r'%s/evil.dll', 'w').write('x')" % _SYSTEM_DIR), -1)
 
     def test_format_command_is_never(self):
         self.assertEqual(self._tier("import os; os.system('format C: /Y')"), -1)

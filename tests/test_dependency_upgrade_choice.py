@@ -48,15 +48,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import dependency_bootstrap as bootstrap  # noqa: E402
 
 
+def _make_venv(venv: Path) -> None:
+    """造一个「看起来完整」的 venv 目录（按当前平台的布局）。
+
+    venv 的目录布局随平台变：Windows 是 `Scripts\\python.exe`，POSIX 是 `bin/python`。
+    生产侧的 `_python_for_venv()` 按平台算路径；夹具写死 Windows 形状的话，
+    在 Linux 上会被判成 `virtual environment is incomplete` —— 那是**夹具**错了。
+    这里独立地按平台拼一遍（不直接调用生产那个函数），夹具才有资格校验生产规则。
+    """
+    folder = venv / ("Scripts" if os.name == "nt" else "bin")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ("python.exe" if os.name == "nt" else "python")).touch()
+    (folder / ("pip.exe" if os.name == "nt" else "pip")).touch()
+
+
 def _make(root: Path, version: str, reqs: str, lock: str = '{"packages":{}}'):
     (root / "VERSION").write_text(version, encoding="utf-8")
     (root / "requirements.txt").write_text(reqs, encoding="utf-8")
     (root / "frontend").mkdir(exist_ok=True)
     (root / "frontend" / "package-lock.json").write_text(lock, encoding="utf-8")
-    venv = root / ".venv" / "Scripts"
-    venv.mkdir(parents=True)
-    (venv / "python.exe").touch()
-    (venv / "pip.exe").touch()
+    _make_venv(root / ".venv")
 
 
 class _Recorder:

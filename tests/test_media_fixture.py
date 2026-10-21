@@ -527,8 +527,15 @@ class FlagSanitizerTests(unittest.TestCase):
         self.assertEqual(visual.sanitize_flags(flags), flags)
 
     def test_windows_paths_are_not_rejected_because_they_contain_backslashes(self):
-        self.assertIn("\\", str(self.wav))
-        self.assertEqual(len(visual.sanitize_flags(mf.fake_media_flags(self.wav))), 4)
+        # 反斜杠在 Windows 路径里是**正常字符**，不能因此被判成非法开关。
+        # 原来那条靠「当前平台的临时目录碰巧带反斜杠」—— 于是 Linux 上
+        # `assertIn("\\", str(self.wav))` 必红，而它测的其实不是这件事。
+        # 这里把路径**换成** Windows 形状再喂给 sanitize_flags：哪个平台上测的
+        # 都是同一条判据。
+        windows_path = r"C:\Users\tester\Media\f.wav"
+        flags = [flag.replace(str(self.wav), windows_path)
+                 for flag in mf.fake_media_flags(self.wav)]
+        self.assertEqual(len(visual.sanitize_flags(flags)), 4)
 
     def test_flags_that_reshape_the_browser_are_refused(self):
         for bad in ("--user-data-dir=C:\\evil", "--load-extension=/tmp/x",

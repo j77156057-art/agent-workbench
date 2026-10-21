@@ -333,6 +333,7 @@ class BrowserChainTests(unittest.TestCase):
 class DesktopAndGameTests(unittest.TestCase):
     """小窗/桌面 与 游戏 —— 按设计有特殊档，判据如实记录。"""
 
+    @unittest.skipUnless(os.name == "nt", "前台窗口抓屏是 Windows GDI 能力")
     def test_desktop_capture_returns_real_dimensions(self):
         """正面证据：回报里含**像素尺寸** `数字x数字`。"""
         out = call("dev_desktop_capture", "target: foreground")
@@ -351,6 +352,7 @@ class DesktopAndGameTests(unittest.TestCase):
             "approval_required" in out or "审批" in out,
             "ADMIN 工具既没动作也没说要审批：%s" % out[:140])
 
+    @unittest.skipUnless(os.name == "nt", "前台窗口抓屏是 Windows GDI 能力")
     def test_game_screenshot_reports_source_and_size(self):
         """无引擎时会**降级**抓前台窗口 —— 接受降级，但要说清来源与尺寸。"""
         out = call("game_screenshot", "target: foreground")

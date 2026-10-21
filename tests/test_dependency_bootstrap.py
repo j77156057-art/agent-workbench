@@ -1,10 +1,29 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import dependency_bootstrap as bootstrap
+
+
+#: venv 的目录布局随平台变：Windows 是 `Scripts\python.exe`，POSIX 是 `bin/python`。
+#: 生产侧的 `_python_for_venv()` 按平台算路径，夹具若写死 Windows 形状，
+#: 在 Linux 上就会被判成 `virtual environment is incomplete` —— 那是**夹具**错了，
+#: 不是产品错了。
+#: 这里**独立地**按平台拼一遍（不直接调用生产那个函数），夹具才有资格校验生产规则。
+_VENV_DIR = "Scripts" if os.name == "nt" else "bin"
+_VENV_PYTHON = "python.exe" if os.name == "nt" else "python"
+_VENV_PIP = "pip.exe" if os.name == "nt" else "pip"
+
+
+def _make_venv(venv: Path) -> None:
+    """造一个「看起来完整」的 venv 目录（按当前平台的布局）。"""
+    folder = venv / _VENV_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / _VENV_PYTHON).touch()
+    (folder / _VENV_PIP).touch()
 
 
 class DependencyBootstrapTests(unittest.TestCase):
@@ -17,10 +36,7 @@ class DependencyBootstrapTests(unittest.TestCase):
             def fake_run(command, cwd, *, label):
                 calls.append((command, label))
                 if "-m" in command and "venv" in command:
-                    venv = Path(command[-1])
-                    (venv / "Scripts").mkdir(parents=True)
-                    (venv / "Scripts" / "python.exe").touch()
-                    (venv / "Scripts" / "pip.exe").touch()
+                    _make_venv(Path(command[-1]))
 
             with patch.object(bootstrap, "_run", side_effect=fake_run):
                 first = bootstrap.ensure_dependencies(root, frontend=False)
@@ -38,10 +54,7 @@ class DependencyBootstrapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "requirements.txt").write_text("example-package==1.0\n", encoding="utf-8")
-            venv = root / ".venv" / "Scripts"
-            venv.mkdir(parents=True)
-            (venv / "python.exe").touch()
-            (venv / "pip.exe").touch()
+            _make_venv(root / ".venv")
             calls = []
             with patch.object(bootstrap, "_run", side_effect=lambda command, cwd, *, label: calls.append(label)):
                 bootstrap.ensure_dependencies(root, frontend=False)
