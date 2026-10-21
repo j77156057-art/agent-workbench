@@ -652,9 +652,9 @@ class AuthMiddlewareTests(QABase):
         self.assertEqual(r.status_code, 401, "项目头不得绕过鉴权")
 
     def test_authenticated_requests_pass_header_and_no_header(self):
-        r1 = self.client.get("/api/config", headers={"X-Agent Workbench-Token": "s3cr3t-token"})
+        r1 = self.client.get("/api/config", headers={"X-DocMind-Token": "s3cr3t-token"})
         self.assertEqual(r1.status_code, 200)
-        r2 = self.client.get("/api/config", headers={"X-Agent Workbench-Token": "s3cr3t-token",
+        r2 = self.client.get("/api/config", headers={"X-DocMind-Token": "s3cr3t-token",
                                                      "X-DocMind-Project": self.pid_b})
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(r2.json()["code_root"], self._root_of(self.pid_b))

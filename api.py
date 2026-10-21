@@ -2433,6 +2433,27 @@ def _resolve_cloud_client(routing):
     return cloud_provider, cloud_model, cloud_base_url, key
 
 
+def _plain_field(value: Any, fallback: str = "") -> str:
+    """把 FastAPI 的 Form/File 默认值摊平成真实字符串。
+
+    `question: str = Form("")` 这种老写法，**Python 侧的默认值是 `Form` 实例**而不是 `""`。
+    走 HTTP 时 FastAPI 会注入真值，所以看不出来；但直接调处理器
+    （`await api.chat(question=...)` —— 本仓的测试就是这么调的，见上面那句注释）
+    时，没传的参数保持的是 `Form` 实例，于是 `(turn_id or "").strip()` 直接炸成
+    `AttributeError: 'Form' object has no attribute 'strip'`。
+
+    防御写在**唯一的入口**（处理器开头）而不是每个用到的地方各写一遍 ——
+    那 12 个参数散在十几个下游调用点，漏一个就又是一条只在直接调用时出现的错。
+
+    `Form` 实例本身带着声明时的真默认值（`Form("default").default == "default"`），
+    所以 `session_id` 这种有非空默认值的参数也能拿回它自己的默认值，而不是一个兜底的空串。
+    """
+    if isinstance(value, str):
+        return value
+    declared = getattr(value, "default", None)
+    return declared if isinstance(declared, str) else fallback
+
+
 @app.post("/api/chat")
 async def chat(
     # 默认 None 只为让既有代码能直接 `await api.chat(question=...)` 调处理器（测试就是这么调的）；
@@ -2452,6 +2473,22 @@ async def chat(
     images: list[UploadFile] = File(default=None),
     turn_id: str = Form(""),
 ):
+    # 直接调处理器时，没传的 Form 参数保持的是 `Form` 实例而不是字符串（见 _plain_field）。
+    # 真实 HTTP 请求里它们都是真字符串，这一层原样通过 —— 不改变任何线上行为。
+    question = _plain_field(question)
+    ui_context = _plain_field(ui_context)
+    visual_timeline = _plain_field(visual_timeline)
+    workflow_id = _plain_field(workflow_id)
+    feedback_id = _plain_field(feedback_id)
+    session_id = _plain_field(session_id, "default")
+    tool_mode = _plain_field(tool_mode)
+    plan_mode = _plain_field(plan_mode)
+    web_mode = _plain_field(web_mode)
+    thinking_mode = _plain_field(thinking_mode)
+    narration_mode = _plain_field(narration_mode)
+    turn_id = _plain_field(turn_id)
+    if images is not None and not isinstance(images, list):
+        images = None
     # P2：分配 / 复用本轮的 turn_id。前端进页面后调 GET /api/turn/active 拿到
     # 已存在的 turn_id，可用同一个 id 继续走 SSE 之外的 partial 拉起逻辑。
     # 没传时由本端 uuid4 分配；同一 session 短时间内反复提交会用新 id（避免

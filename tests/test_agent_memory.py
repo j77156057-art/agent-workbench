@@ -188,9 +188,9 @@ class MemoryTests(_IsoBase):
         import api
         from starlette.testclient import TestClient
         with TestClient(api.app) as client:
-            response = client.patch("/api/agent/profile", headers={"X-Agent 工作台-User": "api-user"}, json={"language": "中文"})
+            response = client.patch("/api/agent/profile", headers={"X-DocMind-User": "api-user"}, json={"language": "中文"})
             self.assertTrue(response.json()["ok"])
-            fetched = client.get("/api/agent/profile", headers={"X-Agent Workbench-User": "api-user"}).json()["profile"]
+            fetched = client.get("/api/agent/profile", headers={"X-DocMind-User": "api-user"}).json()["profile"]
             self.assertEqual(fetched["language"], "中文")
 
     def test_memory_save_rejects_supersedes_typos(self):
