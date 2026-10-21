@@ -1,9 +1,9 @@
-/* DocMind 开发工作台设计系统（浅色亲和版）
+/* Agent 工作台 开发工作台设计系统（浅色亲和版）
    明亮暖灰底、白色卡片、柔和描边与阴影；分区色作为高饱和强调来源。 */
 
 :root {
   color-scheme: light;
-  /* ===== DocMind 统一设计系统：高级粗野风（neo-brutalism, restrained）=====
+  /* ===== Agent 工作台 统一设计系统：高级粗野风（neo-brutalism, restrained）=====
      暖骨白底 / 墨黑字 / 单一响亮强调（朱红）/ 硬偏移阴影 / 零圆角。
      仅重定义 token，不改动任何组件结构——全树即时换肤。 */
 
@@ -232,7 +232,7 @@ button:disabled:hover { transform: none; }
 
 .wb-brand { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .wb-mark { display: inline-flex; color: var(--accent); }
-/* 品牌即入口（2026-10-19）：点 DocMind 回 AI 问答页，替代原先顶栏右侧的
+/* 品牌即入口（2026-10-19）：点 Agent 工作台 回 AI 问答页，替代原先顶栏右侧的
    「问答页」文字链接 —— 顶栏右侧只留「设置 / 更多」两枚控件。 */
 .wb-brand-home { color: inherit; text-decoration: none; }
 .wb-brand-home:hover { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
@@ -1500,7 +1500,7 @@ a:focus-visible,
   /* --accent-deep：paper 4.0:1 / graphite 12:1 / zinc 6.8:1 —— 三套皮肤都过 3:1。
      原来的 color-mix(accent 72%, white) 在 paper 下只剩约 2:1（浅朱红压纸底），
      环几乎看不见。焦点环用深一档的强调色最稳。
-     2026-10-19 补 a:focus-visible：品牌「DocMind」是 <a>，原来不在覆盖范围内，
+     2026-10-19 补 a:focus-visible：品牌「Agent 工作台」是 <a>，原来不在覆盖范围内，
      聚焦时走的是浏览器默认 1px 黑环（深浅皮都看不清）。 */
   outline: 2px solid var(--accent-deep);
   outline-offset: 2px;
@@ -1516,7 +1516,7 @@ a:focus-visible,
 
 /* ---------- AI 助手底部抽屉（2026-10-20）----------
    形态说明：中途试过"右侧常驻栏"（三栏 IDE），实测不成立 —— 420px 的栏里
-   回答区只剩 389px、每行约 26 字，长回答被挤成电报体；而且 DocMind 的核心
+   回答区只剩 389px、每行约 26 字，长回答被挤成电报体；而且 Agent 工作台 的核心
    动作是"问"，把主功能塞在角上、代码占主位，主次是反的。
    现在回到底部抽屉，高度交给 dock 自己声明（见 ChatDock 的 .cd-dock：38vh）。
    之前为右栏写的 .wb-ai-rail 规则整块删除（连同那句"窄栏藏起 hint"的规则 ——

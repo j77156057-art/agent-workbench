@@ -1,4 +1,4 @@
-"""Install and update source-runtime dependencies before DocMind starts.
+"""Install and update source-runtime dependencies before Agent Workbench starts.
 
 The frozen distribution already carries Python dependencies, so this helper is
 for source checkouts and build machines. It is intentionally stdlib-only so it
@@ -68,7 +68,7 @@ def _hash_if_exists(path: Path) -> str:
 
 
 def _run(command: list[str], root: Path, *, label: str) -> None:
-    print(f"[DocMind] {label}: {' '.join(command)}", flush=True)
+    print(f"[Agent Workbench] {label}: {' '.join(command)}", flush=True)
     completed = subprocess.run(command, cwd=str(root), check=False)
     if completed.returncode:
         raise RuntimeError(f"{label} failed with exit code {completed.returncode}")
@@ -116,11 +116,11 @@ def _console_prompt(project: Path, summary: str) -> bool:
     拦下来的话 CI 会在等待输入上永久挂住，或者直接失败。
     """
     if not (sys.stdin and sys.stdin.isatty()):
-        print("[DocMind] 非交互环境（无控制台输入），自动升级。")
+        print("[Agent 工作台] 非交互环境（无控制台输入），自动升级。")
         return True
 
     print("=" * 60)
-    print("  DocMind 检查依赖")
+    print("  Agent 工作台 检查依赖")
     print("=" * 60)
     print(summary)
     while True:
@@ -378,7 +378,7 @@ def ensure_dependencies(root: str | os.PathLike[str], *, force: bool = False,
     # `force` 是用户显式要求同步（CI、构建机），所以它**越过**否决；
     # 否则「已拒绝」就成了一个连 `--force` 都出不来的死角。
     if already_declined and (python_changed or frontend_outdated) and not force:
-        print("[DocMind] 版本 %s 的更新已被你跳过（决定仍有效）。想升级请重新运行并选择 Y。"
+        print("[Agent 工作台] 版本 %s 的更新已被你跳过（决定仍有效）。想升级请重新运行并选择 Y。"
               % version_label(current_version))
         report["python_changed"] = False
         report["frontend_changed"] = False
@@ -403,7 +403,7 @@ def ensure_dependencies(root: str | os.PathLike[str], *, force: bool = False,
                 "declined_version": current_version,
                 "updated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
             })
-            print("[DocMind] 已跳过版本 %s 的更新。仍想用当前版本，继续正常工作。"
+            print("[Agent 工作台] 已跳过版本 %s 的更新。仍想用当前版本，继续正常工作。"
                   % version_label(current_version))
             report["python_changed"] = False
             report["frontend_changed"] = False
@@ -461,7 +461,7 @@ def ensure_dependencies(root: str | os.PathLike[str], *, force: bool = False,
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Prepare DocMind source dependencies")
+    parser = argparse.ArgumentParser(description="Prepare Agent Workbench source dependencies")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--force", action="store_true", help="同步全部依赖，即使哈希未变化")
     parser.add_argument("--no-frontend", action="store_true")
@@ -485,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
                                      frontend=not args.no_frontend,
                                      interactive=not args.yes)
     except (OSError, RuntimeError, FileNotFoundError) as exc:
-        print(f"[DocMind] 依赖准备失败：{exc}", file=sys.stderr)
+        print(f"[Agent 工作台] 依赖准备失败：{exc}", file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(result, ensure_ascii=False))
@@ -497,7 +497,7 @@ def main(argv: list[str] | None = None) -> int:
             changed.append("Python 依赖")
         if result["frontend_changed"]:
             changed.append("前端依赖和资源")
-        print("[DocMind] 依赖已就绪" + ("：" + "、".join(changed) if changed else "（无需更新）"))
+        print("[Agent 工作台] 依赖已就绪" + ("：" + "、".join(changed) if changed else "（无需更新）"))
     return 0
 
 

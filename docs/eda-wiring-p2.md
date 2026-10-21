@@ -18,7 +18,7 @@
 | **skill 说明书恒为空** | `eda_adapters.skill_for_tool()` 从 `.trae/skills/eda-adapters/SKILL.md` 读 | **该文件压根不存在** → `/api/eda/skills` 永远返回空串；前端 `edaApi.skills()` 也**零 UI 消费者** |
 | **三个已支持的参数没暴露** | `verify` / `report-gate` 都支持 `critical`（自定义判定量键）、`bbox_norm`（显式 ROI）、`url` + `fetch='web_fetch'`（由后端抓报告页） | 面板固定 `fetch:'inline'` + 手贴正文，`critical` 不传，`bbox_norm` 不传 |
 
-第三条尤其可惜：后端早就支持"把报告页地址交给 DocMind 自己抓"，这是最自然的产品用法，
+第三条尤其可惜：后端早就支持"把报告页地址交给 Agent 工作台 自己抓"，这是最自然的产品用法，
 而前端**根本没有这个输入框**。
 
 ## 2. 这次补上的

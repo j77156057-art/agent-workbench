@@ -253,7 +253,7 @@ def _self_check_report() -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="DocMind game workflow regression gate")
+    parser = argparse.ArgumentParser(description="Agent Workbench game workflow regression gate")
     parser.add_argument("--current", help="current aggregate JSON report")
     parser.add_argument("--baseline", default=".github/workflow-eval-baseline.json")
     parser.add_argument("--write-baseline", action="store_true")

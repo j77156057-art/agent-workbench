@@ -189,8 +189,8 @@ class ArgumentResolutionTests(unittest.TestCase):
         self.assertEqual(bg.arguments_of('py "a b" c'), ['"a b"', "c"])
 
     def test_start_is_an_external_launch(self):
-        self.assertEqual(bg.arguments_of('start "DocMind" "%DOCMIND_PACKAGED%"'),
-                         ['"DocMind"', '"%DOCMIND_PACKAGED%"'])
+        self.assertEqual(bg.arguments_of('start "Agent Workbench" "%DOCMIND_PACKAGED%"'),
+                         ['"Agent Workbench"', '"%DOCMIND_PACKAGED%"'])
 
 
 class DirectoryVariableTests(unittest.TestCase):

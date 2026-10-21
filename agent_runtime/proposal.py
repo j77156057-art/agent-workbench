@@ -130,7 +130,7 @@ def build(root: str, *, title: str = "", body: str = "", files: list[str] | None
     draft_name = "proposals/%s-%s.md" % (name, stamp)
     patch_path = Path(os.path.abspath(str(code_intel_path_root(root, patch_name))))
     draft_path = patch_path.with_suffix(".md")
-    header = ("# 由 DocMind dev_propose 生成（未提交、未推送）\n"
+    header = ("# 由 Agent 工作台 dev_propose 生成（未提交、未推送）\n"
               "# base HEAD=%s；产物只写进项目状态目录，仓库工作树未被改动。\n\n" % (_head(top) or "未知"))
     lines = ["# %s" % (title or "本轮改动提案"), ""]
     if lane:

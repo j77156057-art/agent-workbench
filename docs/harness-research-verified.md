@@ -22,7 +22,7 @@
 | **Pi** | **弃权** | 不做权限系统。transcript 审查**不是**安全边界，推给容器 |
 | **Hermes** | **双轨** | 做审批（LLM 辅助风险判定 + fail-closed 超时 + 非交互默认拒）**且**做容器隔离；并明说写守卫只是纵深防御、不是边界 |
 | **opencode codemode** | **语法化** | 让越权**在语法上不可表达**；授权明确列为 `Non-Goals`，归宿主 |
-| **DocMind（现状）** | **文本推断** | 从用户那句话猜授权 —— **正是 Pi 明说「不构成安全边界」的那一类** |
+| **Agent 工作台（现状）** | **文本推断** | 从用户那句话猜授权 —— **正是 Pi 明说「不构成安全边界」的那一类** |
 
 ---
 
@@ -947,7 +947,7 @@ Hermes 对它是「**写可、读不回**」。
 | **录放批准状态** | 根因是词表逐条消息判定；且结构化授权（租约）已存在。见 `write-intent-corpus.md` J1 |
 | **零上下文成本那半边**（Python 脚本调工具） | 需 `exec` + 受限 builtins，比 acorn 静态解析更不安全；且 codemode `Non-Goals` 把授权划给宿主 |
 | **`strictPort: true`** | 会让 `parse_port_hint` 的**存在意义消失**（它存在的唯一理由是「从含死地址的日志里认活的」）。见 `known-defect-dev-server-port-ownership.md` §8.5 |
-| **`owns_port` 接生产（在注入身份之前）** | 页面里没有能区分项目的指纹 —— 三个入口 title 全以 `DocMind` 开头，而 worktree 跑的是同一份代码。见 `known-defect-port-ownership-has-no-fingerprint.md` |
+| **`owns_port` 接生产（在注入身份之前）** | 页面里没有能区分项目的指纹 —— 三个入口 title 全以 `Agent 工作台` 开头，而 worktree 跑的是同一份代码。见 `known-defect-port-ownership-has-no-fingerprint.md` |
 | **Claude Code 泄露源码** | 纪律 |
 
 ### 4.4 还没转化为改动的观察

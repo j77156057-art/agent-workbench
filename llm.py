@@ -1104,7 +1104,7 @@ class LLMClient:
         }
         # Ollama 会默认尝试把尽可能多的层放进 GPU。对 35B 级 MoE 模型，
         # 这在显存接近临界值时可能直接触发 runner 启动失败；允许用户通过
-        # DocMind 的环境配置指定一个较小的 GPU 层数，剩余层由 CPU 承担。
+        # Agent 工作台 的环境配置指定一个较小的 GPU 层数，剩余层由 CPU 承担。
         # 这是请求级选项，不会改动 Ollama 守护进程的全局设置。
         raw_num_gpu = os.getenv("DOCMIND_OLLAMA_NUM_GPU", "").strip()
         if raw_num_gpu:

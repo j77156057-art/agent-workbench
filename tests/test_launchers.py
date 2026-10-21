@@ -91,7 +91,7 @@ class LauncherFailureVisibilityTests(unittest.TestCase):
         self.assertIn('ModuleNotFoundError', screen, '内层的报错必须还在屏幕上')
         self.assertIn('Press any key', screen,
                       '窗口没有停住——一闪而过就等于没有报错')
-        self.assertIn('DocMind exited with code 1', screen, '失败时必须说出退出码')
+        self.assertIn('Agent Workbench exited with code 1', screen, '失败时必须说出退出码')
 
     @unittest.skipUnless(os.name == 'nt', '批处理行为要在 cmd.exe 上验')
     def test_a_successful_run_is_not_held_open(self):

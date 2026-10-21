@@ -1,4 +1,4 @@
-# DocMind · MCP 自动连接模块 接手 handoff
+# Agent 工作台 · MCP 自动连接模块 接手 handoff
 
 ## 2026-10-04 收尾：Wave22–34 的净影响基线（分片实跑，**净影响 0 红**）
 
@@ -466,7 +466,7 @@
 
 ## 2026-10-02 Vibecoding 能力补全 Wave20：`bat_guard` 启动器引号静态门（本会话，不占 R 槽位）
 
-- **为什么会做这个**：用户贴来一次运行失败——`[DocMind] 依赖准备失败：missing D:\WorkBuddy\rag-agent"\requirements.txt`。
+- **为什么会做这个**：用户贴来一次运行失败——`[Agent 工作台] 依赖准备失败：missing D:\WorkBuddy\rag-agent"\requirements.txt`。
   根因是 `run_desktop.bat` 里的 `--root "%~dp0"`：`%~dp0` **展开后以反斜杠结尾**，而外部程序按
   MSVCRT 规则解析 argv，`\"` 是「转义过的引号」→ 闭合引号消失 → 参数值尾部多一个字面 `"`。
   静态检查看不出来、语法检查看不出来，只有双击运行才炸。用户给的口径是「不动别人的文件，加一条静态门」。
@@ -781,7 +781,7 @@
 
 ## 2026-09-30 Vibecoding 能力补全 Wave9：harness 自己成为 MCP server（本会话，不占 R 槽位）
 
-- **补什么**：harness 原本只有 MCP **client**（`mcp_client.py`）——DocMind 有 90 多个工具，但同一仓库里并肩干活的其他 AI 一个都调不到，只能靠公告表和 markdown 互相转述。现在它们能直接调。
+- **补什么**：harness 原本只有 MCP **client**（`mcp_client.py`）——Agent 工作台 有 90 多个工具，但同一仓库里并肩干活的其他 AI 一个都调不到，只能靠公告表和 markdown 互相转述。现在它们能直接调。
 - **产物**：`agent_runtime/mcp_server.py`（`python -m agent_runtime.mcp_server --project <目录> [--allow-writes] [--tools a,b] [--list]`）；`tests/test_mcp_server_expose.py` **15 项**；`requirements.txt` 加 `mcp>=2,<3`（此前只有 .venv 里有，没声明）。
 - **默认只读**：`READ_ONLY_TOOLS` 12 个 = search_code / grep / read_file / list_dir / dev_glob / dev_git_diff / dev_git_log / dev_find_references / dev_diagnostics / self_verify / search_knowledge / dev_lanes。改代码的 5 个（apply_edit / create_file / dev_apply_edits / dev_patch / dev_move）必须 `--allow-writes` 才注册。
 - **`NEVER_EXPOSED` 是硬名单，开了写权限也不给**：`run_command`、`python_exec`、`dev_mcp_call`/`dev_route_connector`（会二次放大权限的连接器跳转）、四个 `*_external_file`（越界文件操作）、`install_tool`、`dev_commit*`/`dev_rollback_changeset`、`start_workflow`。用例同时钉住这些名字**在清单里**，防止后来者顺手删掉守卫。
@@ -850,7 +850,7 @@
 - **worktree 是可选动作而不是前提**：`open` 在**项目状态目录**下开通独立 checkout（不落在 git 工作树内，`_worktree_base`），有同名 `lane-<name>` 分支就 attach，否则 `--detach`（绝不凭空占用分支、绝不 `--force`）；`close` 默认**拒绝删除有未提交改动的 worktree**，确认丢弃才 `discard: true`，且收回 worktree 不会顺手释放认领。认领表本身只写 `lanes.json`，不碰 git 历史。
 - **护栏**：跨进程互斥用 `mkdir` 原子锁（Windows/POSIX 都原子），>3s 竞争直接抛错让调用方重试，>60s 的陈锁自动破；写盘走临时文件 + `os.replace`；`lanes.json` 损坏时另存 `lanes.corrupt-*.ts` 并重建空表而不是崩；lane 名白名单正则、禁 `..`；`owner/note/base_ref/paths` 一律拒绝以 `-`/`=` 开头或含控制字符；`_GIT_ALLOWED` 只留 `rev-parse|status|worktree`（`commit` 实测被拒，有回归用例钉住）。
 - **验证**：`tests/test_lanes_registry.py` **34 passed**；**全量 pytest 2202 passed / 6 skipped / 0 failed（255s）**。中途一次全量出现 4 项失败全部落在 `tests/test_review_app.py`——该文件**从未入库**（`git ls-files` 无记录）且跑完即消失，属他人 WIP/服务重启，与本波无关，如实记录以免后人误判。
-- **未做（如实说明）**：① `run_command` 的 cwd **没有**自动切到 lane worktree——那要改命令执行主路径，风险面太大，当前由工具把 worktree 路径回给 Agent 自己用；② 认领表只在 DocMind 侧，其他 AI（Cursor/Qoder 会话）要享受它得靠 Wave9 的 MCP server 出口或直接用这个工具；③ 未接 `git worktree prune` 的自愈，目录被手工删掉时 `close` 会清登记但不会跑 prune。
+- **未做（如实说明）**：① `run_command` 的 cwd **没有**自动切到 lane worktree——那要改命令执行主路径，风险面太大，当前由工具把 worktree 路径回给 Agent 自己用；② 认领表只在 Agent 工作台 侧，其他 AI（Cursor/Qoder 会话）要享受它得靠 Wave9 的 MCP server 出口或直接用这个工具；③ 未接 `git worktree prune` 的自愈，目录被手工删掉时 `close` 会清登记但不会跑 prune。
 - **下一波（勿重复领）**：Wave3 TS/Vue tree-sitter 精确引用、Wave4 `dev_diagnostics`、Wave5 `dev_patch`/`dev_move`、Wave6 `dev_serve`/浏览器观测、Wave7 媒体夹具、Wave8 vitest、Wave9 MCP server、Wave10 MCP 工具一等公民、Wave11 dev lane 评测、Wave12 `dev_propose`/`dev_ci_status`。
 
 ## 2026-09-29 23:08 R12 provider 侧复跑验收（AI-B/AI-A 兼任）【本次两份报告已提交】
@@ -2203,7 +2203,7 @@ voice input is…`）直接展示在语音回合里，语音场景不该展开�
 > 生成时间：2026-09-25 16:55 GMT+8（接手状态与验证结果于 2026-09-25 更新）
 > 冻结基线 commit：**`80b8a90`**（= origin/main，验证基线）
 > 当前 HEAD：**`ecea19a`**（N3 已合入，未推送）
-> 适用范围：DocMind 后端 `mcp_*.py` + 前端 `SettingsView.vue` / `api.ts` 的 MCP 自动连接（auto-connect）链路
+> 适用范围：Agent 工作台 后端 `mcp_*.py` + 前端 `SettingsView.vue` / `api.ts` 的 MCP 自动连接（auto-connect）链路
 > 形态：单人桌面 GUI（Python FastAPI + Vue3 + PyInstaller/pywebview），非 SaaS
 
 ---
@@ -2472,7 +2472,7 @@ git status --short
 - 切换器的“打开设置”已实测进入统一设置的“模型”分组；当前预设显示 1 个，参数弹窗再由该分组打开。最终前端 build、`git diff --check`、后端 `py_compile` 通过。
 # 2026-09-29 项目 PDF 生成与等待状态修复
 
-- 修复项目化聊天的后台执行线程不继承 `ContextVar` 的问题：Agent 现在始终使用本次请求选中的项目根目录，避免把 Godot 项目请求串到 DocMind 自身目录。
+- 修复项目化聊天的后台执行线程不继承 `ContextVar` 的问题：Agent 现在始终使用本次请求选中的项目根目录，避免把 Godot 项目请求串到 Agent 工作台 自身目录。
 - 对“根据当前项目生成介绍”增加项目取证约束：必须使用当前项目内至少两个真实来源文件，正文至少四章、700 字；越界来源、缺失来源或过短内容会被工具拒绝。
 - 改进 PDF 排版：中文字体、标题层级、分隔线、页脚页码、段落间距与分页保持一致；生成结果会附带来源文件和验证信息。
 - SSE 心跳改为注释型 keep-alive，不再反复向对话写入“已进入模型处理 / 模型仍在处理”等等待提示；前端只保留一个旋转状态指示器。
@@ -2483,7 +2483,7 @@ git status --short
 
 - 继续检查后发现并行工具批次和通用 DAG 编排器也会创建线程；已为每个线程复制当前 `ContextVar`，避免多个项目并行时 `read_file`、`search_code`、MCP 或其他项目工具回落到全局根目录。
 - 开发舱的规划器、任务执行器、合成器和重规划器现在按持久化工作流的 `project_root/project_id` 绑定上下文；项目工作流恢复或用户切换项目后仍使用原项目。
-- 项目工作流证据在已有项目根时不再把全局 DocMind 知识库作为默认证据源，避免规划阶段再次混入无关产品文档。
+- 项目工作流证据在已有项目根时不再把全局 Agent 工作台 知识库作为默认证据源，避免规划阶段再次混入无关产品文档。
 - 新增编排器上下文回归测试；后端定向测试 135 项通过，Python 语法检查通过，前端 typecheck 通过。
 
 # 2026-09-29 R0/R3 主代理收尾

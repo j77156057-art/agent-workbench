@@ -51,7 +51,7 @@ class ObsUndercountMarkerTests(unittest.TestCase):
     def test_docmind_state_skip_is_NOT_undercount(self):
         # grep 跳过 .docmind 影子副本 ≠ 少计（产物仍搜）——绝不能被当截断误伤
         self.assertFalse(obs_reports_code_undercount(
-            "grep(pattern: func)", "命中 2 行\n已跳过 DocMind 状态目录（产物目录仍会搜索）：.docmind/projects。"))
+            "grep(pattern: func)", "命中 2 行\n已跳过 Agent 工作台 状态目录（产物目录仍会搜索）：.docmind/projects。"))
 
     def test_read_file_truncation_is_excluded(self):
         # read_file 单文件正文截断与"跨全仓计数"不同口径，不算

@@ -1,8 +1,8 @@
-# DocMind
+# Agent 工作台
 
 > **面向工程代码的 Agent 运行时（Harness）** —— 把「能跑的 agent」补齐成**可观测、可编排、可回归**的工程系统。
 
-[![CI](https://github.com/j77156057-art/rag-agent/actions/workflows/harness.yml/badge.svg)](https://github.com/j77156057-art/rag-agent/actions/workflows/harness.yml)
+[![CI](https://github.com/j77156057-art/agent-workbench/actions/workflows/harness.yml/badge.svg)](https://github.com/j77156057-art/agent-workbench/actions/workflows/harness.yml)
 ![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?logo=python&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-%3E%3D22-339933?logo=node.js&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
@@ -10,7 +10,7 @@
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**▶ 免安装直接跑：[Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/rag-agent/releases)** —— 解压双击 `DocMind.exe`。不需要 Python、不需要 API Key、不需要联网，默认本地 mock 模型就能跑通完整流程。
+**▶ 免安装直接跑：[Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** —— 解压双击 `DocMind.exe`。不需要 Python、不需要 API Key、不需要联网，默认本地 mock 模型就能跑通完整流程。
 
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace 账本：逐回合的 token / 延迟 / 工具序列 / 结局，只记元数据" width="49%" />
@@ -24,14 +24,14 @@
 
 ## 它是什么
 
-DocMind 有两个身份，合起来才完整：
+「Agent 工作台」有两个身份，合起来才完整：
 
 | | |
 |---|---|
 | **Harness（主体）** | 一个离线可跑的 Agent 运行时。125 个工具、322 条 HTTP 端点、5702 项后端测试。逐轮 trace 账本、能力租约、人工审批台账、区域治理、DAG 多代理编排、黄金题回归门 —— **可观测、可编排、可回归**。 |
 | **工作台（落地）** | 面向游戏 / Mod 工程的本地工作台：代码问答、受控改写、场景画布、运行时时间线、引擎嵌入、GPU 协调、EDA 验收。 |
 
-工作台不是主产品的皮肤，而是 Harness 的**真实落地环境** —— 一个复杂、有副作用、会被改坏的真实工程。没有这样的环境，护栏都是纸面上的。
+它不是运行时外面套的一层皮，而是 Harness 的**真实落地环境** —— 一个复杂、有副作用、会被改坏的真实工程。没有这样的环境，护栏都是纸面上的。
 
 **零 API Key 即可运行**：默认 provider 就是本地 `mock`，装完依赖就能问答、能改代码、能跑验收。云端模型随时切换，界面里改完即生效，不用重启。
 
@@ -44,7 +44,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 **二、失控。** 改完不知道改了什么、烧了多少 token、下次会不会再犯。解法是把 Agent 拆成六层，每层都有**能被测出来的**护栏，而不是写在提示词里的祈祷。
 
 <div align="center">
-  <img src="docs/architecture.svg" alt="DocMind · Agent Harness 六层架构" width="86%" />
+  <img src="docs/architecture.svg" alt="Agent 工作台 · 六层架构" width="86%" />
 </div>
 
 | 层 | 职责 | 关键实现 |
@@ -129,7 +129,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 ## 护栏
 
-这是 DocMind 与"接个 API 就叫 Agent"的项目之间真正的差距。每一道都有**能被测出来的**实现：
+这是 Agent 工作台 与"接个 API 就叫 Agent"的项目之间真正的差距。每一道都有**能被测出来的**实现：
 
 | 护栏 | 机制 |
 |---|---|
@@ -157,7 +157,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 ### 下载即用
 
-到 **[Releases](https://github.com/j77156057-art/rag-agent/releases)** 下载 `DocMind-v1.0.0-win64.zip`（约 **160 MB**），解压后**双击 `DocMind.exe`**。
+到 **[Releases](https://github.com/j77156057-art/agent-workbench/releases)** 下载 `DocMind-v1.0.0-win64.zip`（约 **160 MB**），解压后**双击 `DocMind.exe`**。
 
 无需安装 Python、无需 API Key、无需联网 —— 默认本地 mock 模型，开箱即可跑通完整流程。
 
@@ -211,13 +211,13 @@ cd frontend && npm ci && npm run build     # 产物 -> ../web
 或直接改 `.env`：`LLM_PROVIDER=qwen` / `EMBEDDING_PROVIDER=qwen` / `DASHSCOPE_API_KEY=...`。
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/chat -F "question=DocMind 支持哪些文件格式？"
+curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持哪些文件格式？"
 ```
 
 ## 代码地图
 
 ```
-rag-agent/
+agent-workbench/
 ├── api.py                 # HTTP / SSE 总入口（203 条路由）
 ├── api_routes/            # 领域路由（119 条）：agent（62，其中工作流 38）· engine（36）· gpu（10）·
 │                          #   eda（6）· projects（5）· resources（素材与 ComfyUI）

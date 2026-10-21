@@ -1,8 +1,8 @@
-# DocMind
+# Agent Workbench
 
 > **An Agent Runtime (Harness) for engineering codebases** — it turns "an agent that runs" into an **observable, orchestrable, regressable** system.
 
-[![CI](https://github.com/j77156057-art/rag-agent/actions/workflows/harness.yml/badge.svg)](https://github.com/j77156057-art/rag-agent/actions/workflows/harness.yml)
+[![CI](https://github.com/j77156057-art/agent-workbench/actions/workflows/harness.yml/badge.svg)](https://github.com/j77156057-art/agent-workbench/actions/workflows/harness.yml)
 ![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?logo=python&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-%3E%3D22-339933?logo=node.js&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white)
@@ -10,7 +10,7 @@
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**▶ Run it without installing anything: [Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/rag-agent/releases)** — unzip, double-click `DocMind.exe`. No Python, no API key, no network; the default local mock model runs the whole flow.
+**▶ Run it without installing anything: [Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** — unzip, double-click `DocMind.exe`. No Python, no API key, no network; the default local mock model runs the whole flow.
 
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace ledger: per-turn tokens, latency, tool sequence and outcome — metadata only" width="49%" />
@@ -24,7 +24,7 @@ Right: the scene canvas — a visual, editable node graph of a Godot `.tscn`; ev
 
 ## What it is
 
-DocMind has two identities that only make sense together:
+Agent Workbench has two identities that only make sense together:
 
 | | |
 |---|---|
@@ -44,7 +44,7 @@ When an agent meets a real codebase, it falls into the same two traps:
 **Loss of control.** After an edit you don't know what changed, how many tokens it burned, or whether it will happen again. The answer is to split the agent into six layers, each with a guardrail that **can be tested** — rather than a prayer written into the system prompt.
 
 <div align="center">
-  <img src="docs/architecture.svg" alt="DocMind — the six layers of the Agent Harness" width="86%" />
+  <img src="docs/architecture.svg" alt="Agent Workbench — the six layers of the Agent Harness" width="86%" />
 </div>
 
 | Layer | Responsibility | Key implementation |
@@ -129,7 +129,7 @@ The backend can use LangGraph (falling back to a deterministic manager when it i
 
 ## Guardrails
 
-This is where DocMind separates itself from "call an API and call it an agent". Every mechanism below is **testable**:
+This is where Agent Workbench separates itself from "call an API and call it an agent". Every mechanism below is **testable**:
 
 | Guardrail | Mechanism |
 |---|---|
@@ -157,7 +157,7 @@ This is where DocMind separates itself from "call an API and call it an agent". 
 
 ### Download and run
 
-Grab `DocMind-v1.0.0-win64.zip` (about **160 MB**) from [Releases](https://github.com/j77156057-art/rag-agent/releases) and **double-click `DocMind.exe`**.
+Grab `DocMind-v1.0.0-win64.zip` (about **160 MB**) from [Releases](https://github.com/j77156057-art/agent-workbench/releases) and **double-click `DocMind.exe`**.
 
 No Python install, no API key, no network — the bundled local mock model runs the full flow out of the box.
 
@@ -211,13 +211,13 @@ Switch in the UI (recommended, no restart): top-right of the Q&A page → **⚙ 
 Or edit `.env`: `LLM_PROVIDER=qwen` / `EMBEDDING_PROVIDER=qwen` / `DASHSCOPE_API_KEY=...`.
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/chat -F "question=DocMind 支持哪些文件格式？"
+curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持哪些文件格式？"
 ```
 
 ## Code map
 
 ```
-rag-agent/
+agent-workbench/
 ├── api.py                 # HTTP / SSE entry point (203 routes)
 ├── api_routes/            # Domain routers (119 routes): agent (62, of which 38 are workflow) · engine (36) · gpu (10) ·
 │                          #   eda (6) · projects (5) · resources (assets & ComfyUI)

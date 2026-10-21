@@ -39,7 +39,7 @@ const fact = ref<EdaFact | null>(null)
 // ---- 在线报告页：地址 + 取正文方式（2026-10-20 补参数）----
 // 后端 report-gate 一直支持 `url` + `fetch='web_fetch'`（由后端 urllib 直抓），
 // 但面板此前**只固定用** `fetch:'inline'` + 手贴正文 —— 于是"把报告页地址交给
-// DocMind 自己抓"这条最自然的用法在前端根本不存在。
+// Agent 工作台 自己抓"这条最自然的用法在前端根本不存在。
 const reportUrl = ref('')
 const fetchMode = ref<'inline' | 'web_fetch'>('inline')
 

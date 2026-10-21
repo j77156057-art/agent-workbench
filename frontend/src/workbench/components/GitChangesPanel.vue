@@ -5,7 +5,7 @@
 // 刻意不做任何写操作（不提交、不暂存、不还原）——要还原请走 P3 的
 // GitHistoryDialog（单文件历史/回滚）。这里点一条只做两件事：打开文件、关面板。
 //
-// 注意：各分区目录可能是独立 git 仓库（DocMind 区治），所以按仓库分组，
+// 注意：各分区目录可能是独立 git 仓库（Agent 工作台 区治），所以按仓库分组，
 // 而不是假设全树只有一个 .git。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { fsApi } from '../api'

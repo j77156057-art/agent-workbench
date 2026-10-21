@@ -1,7 +1,7 @@
 # 5173 上「别人的服务」没有归属校验：注释声称有，实际不存在
 
 > 状态：**归属判据与静默替换已修**（`dev_server.owns_port()` + `resolve_live_url()`），
-> 文案里的写死端口已去掉。发现于 2026-10-08 排查 DocMind 前端 dev server 的过程中。
+> 文案里的写死端口已去掉。发现于 2026-10-08 排查 Agent 工作台 前端 dev server 的过程中。
 > 归属：跨层（`agent_runtime/dev_server.py` + `visual_acceptance.py` + 前端 vite 配置），
 > 需后端侧定夺，前端单方面改端口只会把契约撕开（见第 5 节）。
 > **已做**见第 8 节；**仍未做**见第 9 节。
@@ -25,7 +25,7 @@
 TCP  [::1]:5173      LISTENING  24352   node  ← D:\study\tools\agent\new agent
                                                  \.worktrees\qoder\frontend 的 vite
                                                  （启动于 2026-10-08 00:08:36）
-TCP  127.0.0.1:5173  LISTENING  (DocMind 自己的 vite)
+TCP  127.0.0.1:5173  LISTENING  (Agent 工作台 自己的 vite)
 ```
 
 两个 vite **同号、不同地址族**，因此互不冲突、同时存活。而
@@ -41,7 +41,7 @@ TCP  127.0.0.1:5173  LISTENING  (DocMind 自己的 vite)
 2. `visual_acceptance.py:788` 用 `loopback_url(url)` 校验 —— 但它只判「是不是回环」，
    不判「是不是本会话起的那个服务」。
 3. `visual_acceptance.py:801`：给了 `url` 就**不再起自己的静态服务**，直接截那个地址。
-4. DocMind 的 vite 一旦因撞端口漂到 5174（`dev_server.py:34` 自己描述的行为），
+4. Agent 工作台 的 vite 一旦因撞端口漂到 5174（`dev_server.py:34` 自己描述的行为），
    而 5173 上站着别的项目的服务 —— **验收截图拍到的是别人的画面，并且报告成功。**
 
 这是「把不知道的说成知道了」那一族里最糟的形状：证据看起来完全有效，
@@ -161,7 +161,7 @@ vite 不漂移了，日志只有一行，「认端口 + `owns_port` 验归属」
 > 而是**页面里没有能区分项目的指纹**。完整核实与修法见
 > **`docs/known-defect-port-ownership-has-no-fingerprint.md`**。
 > 简版：三个候选指纹（`<title>` / 项目名注入 / dev URL）实测**全部不可用** ——
-> 三个入口的 title 都以 `DocMind` 开头，而 worktree 跑的是**同一份代码**。
+> 三个入口的 title 都以 `Agent 工作台` 开头，而 worktree 跑的是**同一份代码**。
 > 真正的修法是**前端在 dev 时注入项目身份**
 > （约定见 `docs/frontend-task-project-identity.md`，属前端域）。
 

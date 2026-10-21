@@ -1,4 +1,4 @@
-# DocMind · 实时视频对话引擎 · 工业控制台版本（Industrial）
+# Agent 工作台 · 实时视频对话引擎 · 工业控制台版本（Industrial）
 
 四版对照中的第三版。与 `showcase/docmind-realtime/`（暗色霓虹复古未来）同为暗色，但气质相反：
 - v1 霓虹版：辉光、渐变网格、CRT 扫描线、颗粒——**氛围浓烈**。

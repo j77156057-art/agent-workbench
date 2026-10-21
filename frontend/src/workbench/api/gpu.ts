@@ -162,7 +162,7 @@ export const regionsApi = {
     try {
       res = await fetch('/api/verify_contracts', withProject())
     } catch {
-      throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 DocMind 已启动。')
+      throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 Agent 工作台 已启动。')
     }
     let body: ContractsResp | null = null
     try {

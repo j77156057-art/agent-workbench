@@ -2,7 +2,7 @@
 //
 // 拉丁与中文的理由不同，分开记，别混成一条。
 //
-// 【拉丁：修本机真实故障】DocMind 是桌面应用（.bat 启动、pywebview 内嵌），原先
+// 【拉丁：修本机真实故障】Agent 工作台 是桌面应用（.bat 启动、pywebview 内嵌），原先
 // Archivo Black / Space Grotesk / Space Mono 靠 fonts.googleapis.com，而本机访问它会
 // 间歇性 ERR_CONNECTION_RESET（同一份构建一次拿到 16 个 woff2、一次一个都没有）。
 // CDN 不可达时 @font-face 数为 0、三个字族的宽度度量全部退化成 monospace —— 界面真的

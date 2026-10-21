@@ -1,4 +1,4 @@
-/* DocMind「J 双色 Risograph」印刷语言层 + 双色纠偏覆盖层（工作台 / 开发舱）。
+/* Agent 工作台「J 双色 Risograph」印刷语言层 + 双色纠偏覆盖层（工作台 / 开发舱）。
    本文件由 frontend/src/workbench/App.vue 在 style.css / skins.css 等主样式
    之后导入（main.ts 先 import 主样式，再 import App.vue → 触发本文件），
    因此可对 workbench/style.css 的令牌级缺陷做"覆盖式"修复。

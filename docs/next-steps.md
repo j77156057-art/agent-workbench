@@ -13,7 +13,7 @@
 - **最新一笔（未记 hash，随下笔入库）：MCP 连接器失败被判成功** —— 真机 UI
   「交付代理 dev_list_connector_tools(key: godot) 正在执行 127s」反推出来的。
   两层 bug 叠在一起：表层是 `uvx godot-ai attach` 起不来（要占 8000 端口，撞上
-  DocMind 后端），一次失败实测 67.9s；真 bug 是 MCP 族五条失败文案**全都不在**
+  Agent 工作台 后端），一次失败实测 67.9s；真 bug 是 MCP 族五条失败文案**全都不在**
   `agent._FAILURE_MARKERS` 里 → `_is_failure` 判 False → `_tool_ok=True` →
   **agent 把失败当成功**，模型自然地再调一次 → 又一次 67.9s → 127s。
   修法三层：① 补五条 marker（含正常 MCP 回包不得误伤的反向守卫）；
@@ -67,8 +67,8 @@
     兜底）；② 联网门判据用 `group=="web"` 而非 capability（stdio 本地连接器不该被
     联网开关管），并把 http 连接器「联网关时隐藏」单独钉成用例。
 - **未解决**
-  - **godot-ai 与 DocMind 端口撞车（环境侧，非代码 bug）**：godot 连接器的默认配置
-    是 `uvx godot-ai attach`，它的 bridge 要 attach 到 **8000** 端口，而那是 DocMind
+  - **godot-ai 与 Agent 工作台 端口撞车（环境侧，非代码 bug）**：godot 连接器的默认配置
+    是 `uvx godot-ai attach`，它的 bridge 要 attach 到 **8000** 端口，而那是 Agent 工作台
     后端自己的端口 → `PORT_OCCUPIED` → 进程退出 code=98。代码侧现在能快速且可行动地
     报错了（见下一条），但要真正跑通 Godot 连接器，仍需改 godot-ai 的端口配置或停掉
     占用进程。
@@ -640,7 +640,7 @@ agent：大概三步
 | `invalid` | 命中**已确认**的 SDK/API 错误文案，或 `final` 为空 | **自动排除** |
 | `suspicious` | `final` 是方括号短文本 **且** 事件数 < 5 | **只标记，不排除** |
 
-⚠ **不能凭「都是方括号」判无效** —— DocMind 的护栏拦截文本本来就是方括号：
+⚠ **不能凭「都是方括号」判无效** —— Agent 工作台 的护栏拦截文本本来就是方括号：
 
 ```
 agent.py:4657  f"{action}({input}) [已拦截：未授权写入]"
@@ -764,7 +764,7 @@ agent.py:4661  f"[安全拦截] {action} 未执行：{why}。"
    * 一次只读提问产出 **reasoning 336 个事件 / 69035 字符**，而可见的工具事件只有 6 个
    * 那 6.9 万字全在 **▸ 深度思考（点击展开）** 里——内容已经在那里，只是被折叠
    * 三家里 Hermes show_reasoning 默认开、opencode session-ui 默认显示，
-     **DocMind 是唯一默认折叠的**
+     **Agent 工作台 是唯一默认折叠的**
    * 我做的「让模型在工具调用之间说话」开关（`18cf7bd`，默认开）**真跑后无效**：
      模型在工具轮里 `acc` 是 **0 字**，内容全在 reasoning。
      见 `docs/known-defect-narration-supply-empty.md`

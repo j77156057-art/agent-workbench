@@ -1,4 +1,4 @@
-# DocMind EDA Adapter Skills
+# Agent Workbench EDA Adapter Skills
 
 Use the adapter matching the tool that actually produced the report. Never guess a
 verdict: the acceptance gate is three-state (met / unmet / uncertain) and a missing

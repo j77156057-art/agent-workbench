@@ -1,4 +1,4 @@
-# DocMind · 实时视频对话引擎 · 极简版本（Alternative）
+# Agent 工作台 · 实时视频对话引擎 · 极简版本（Alternative）
 
 与 `showcase/docmind-realtime/`（复古未来 · 暗色霓虹仪表台）**同一份内容、另一套调性**，便于对比选型。
 

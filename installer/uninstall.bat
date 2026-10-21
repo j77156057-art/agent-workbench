@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 if not exist "%~dp0uninstall_portable.ps1" (
-  echo DocMind uninstaller is missing.
+  echo Agent Workbench uninstaller is missing.
   pause
   exit /b 1
 )

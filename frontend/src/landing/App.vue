@@ -66,7 +66,7 @@ const caps = [
     <header class="nav">
       <div class="brand">
         <span class="mark" aria-hidden="true"></span>
-        <span><b>DocMind</b> <span class="tag">LOCAL SCAFFOLD</span></span>
+        <span><b>Agent Workbench</b> <span class="tag">LOCAL SCAFFOLD</span></span>
       </div>
       <nav class="nav-links" aria-label="主导航">
         <a href="#product">产品</a>
@@ -95,7 +95,7 @@ const caps = [
               </div>
             </div>
 
-            <div class="product-mock reveal d2" role="img" aria-label="DocMind 工作台预览：左侧分区列表，右侧 Agent 对话与改动回写">
+            <div class="product-mock reveal d2" role="img" aria-label="Agent 工作台预览：左侧分区列表，右侧 Agent 对话与改动回写">
               <div class="pm-bar"><span class="dots"><i></i><i></i><i></i></span><span>docmind · prj-3da07fde89a5</span></div>
               <div class="pm-body">
                 <div class="pm-side">
@@ -107,7 +107,7 @@ const caps = [
                 </div>
                 <div class="pm-main">
                   <div class="pm-row"><span class="who">你 ›</span><br />把 boss 血量调低 20%，加一个狂暴阶段。</div>
-                  <div class="pm-row model"><span class="who">DocMind ›</span><br />已改 values/boss.tres，血量 100→80；新增 phase_rage 节点。要我同步对话触发配置吗？</div>
+                  <div class="pm-row model"><span class="who">Agent 工作台 ›</span><br />已改 values/boss.tres，血量 100→80；新增 phase_rage 节点。要我同步对话触发配置吗？</div>
                   <div class="pm-row"><span class="who">你 ›</span><br />同步，并提交到本仓库 git。</div>
                 </div>
               </div>
@@ -200,7 +200,7 @@ const caps = [
             <h2>把实时 AI 搭档，装进你的开发舱</h2>
             <p>本地运行，数据不出机。先从一个分区的知识库开始，再逐步打开工作台与实时引擎。</p>
             <div class="hero-cta">
-              <a class="btn btn-primary" href="#product">本地运行 DocMind</a>
+              <a class="btn btn-primary" href="#product">本地运行 Agent 工作台</a>
               <a class="btn btn-ghost" href="#engine">阅读接入文档</a>
             </div>
           </div>
@@ -210,7 +210,7 @@ const caps = [
 
     <footer class="footer">
       <div class="container">
-        <span>DOCUMENT · DocMind 本地 AI 研发脚手架 · 粗野原始落地草案</span>
+        <span>DOCUMENT · Agent 工作台 本地 AI 研发脚手架 · 粗野原始落地草案</span>
         <span>数据来源 · R12 真实设备联验报告 · 2026-09-29</span>
       </div>
     </footer>

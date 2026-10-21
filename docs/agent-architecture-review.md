@@ -1,6 +1,6 @@
-# DocMind Agent Harness 架构评估与重构设计
+# Agent 工作台架构评估与重构设计
 
-> 评估对象：`D:\WorkBuddy\rag-agent`（DocMind）现有 Agent 运行时
+> 评估对象：`D:\WorkBuddy\rag-agent`（Agent 工作台）现有 Agent 运行时
 > 评估框架：H = (E, T, C, S, L, V) + P（六层功能 + 架构范式）
 > 评估日期：2026-09-19
 > 评级图例：🟢 健康 / 🟡 有债但可控 / 🔴 结构性缺陷（随规模恶化）
@@ -253,7 +253,7 @@ class Event:
 ## 5. 目标模块结构（增量式，非推翻重来）
 
 ```
-rag-agent/
+agent-workbench/
 ├── agent.py                 # 保留：Agent 门面（对外 API 不变）
 ├── agent/
 │   ├── spec.py              # P0: ToolSpec / ParamSpec / ToolResult / 枚举

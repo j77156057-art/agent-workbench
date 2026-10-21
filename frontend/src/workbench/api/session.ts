@@ -22,7 +22,7 @@ function newSessionId(): string {
 }
 
 // ---------------------------------------------------------------- 标签页存活探测
-// 目的：判断「本标签页是否为当前唯一打开的 DocMind 标签」。该判断仅供「关掉重开自动续上
+// 目的：判断「本标签页是否为当前唯一打开的 Agent 工作台 标签」。该判断仅供「关掉重开自动续上
 // 最近对话」这个仅在单窗口下才安全的兜底使用——多标签时各自独立、互不串（见 ChatDock.restoreHistory）。
 // 首选 Web Locks（最可靠，见下）；不可用时退回 BroadcastChannel 心跳 → localStorage 时间戳租约；
 // 三者都不可用 → 「不确定」，一律按「非唯一」处理（隔离优先）。
@@ -212,7 +212,7 @@ export function startTabProbe(): void {
   docmindTabs.start()
 }
 
-/** 本标签页是否为当前唯一打开的 DocMind 标签（**同步**）。
+/** 本标签页是否为当前唯一打开的 Agent 工作台 标签（**同步**）。
  *  locks 模式：返回最近一次 probeSoleDocMindTab() 的缓存结果（尚未探测过时为 false）；
  *  channel/lease 模式：即时判定；none/不确定：false（隔离优先）。 */
 export function isSoleDocMindTab(): boolean {

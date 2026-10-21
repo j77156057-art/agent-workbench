@@ -11,7 +11,7 @@ n = ingest_file("sample_docs/docmind_product.md")
 print(f"[verify] 摄取切片数 = {n}")
 
 ag = Agent()
-q = "DocMind 支持哪些文件格式？答案准确率怎么保证？"
+q = "Agent 工作台 支持哪些文件格式？答案准确率怎么保证？"
 print(f"[verify] 提问: {q}\n--- Agent 推理过程 ---")
 final = None
 for ev in ag.run(q, stream=False):

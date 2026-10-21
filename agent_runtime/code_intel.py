@@ -43,7 +43,7 @@ _SKIP_DIRS = frozenset({
     ".ruff_cache", ".tox", "site-packages", "_archived_builds", ".tmp",
 })
 
-# `.docmind/` 是 DocMind 自己的状态根，但**产物也会写在这里** —— Godot 的 Web
+# `.docmind/` 是 Agent 工作台 自己的状态根，但**产物也会写在这里** —— Godot 的 Web
 # 导出默认就在 `.docmind/web/index.html`（见 export_presets.cfg 的 export_path）。
 #
 # ⚠ 这里曾经把整个 `.docmind` 塞进 `_SKIP_DIRS`。实测后果：Agent 在
@@ -52,7 +52,7 @@ _SKIP_DIRS = frozenset({
 # 一个**没有任何保留的假否定**，比"扫到一半被截断"危险得多，因为它读起来
 # 就是"这个项目没有 html"。
 #
-# 现在改成**按名修剪状态子目录**：DocMind 自己写的临时/状态目录不扫（实测
+# 现在改成**按名修剪状态子目录**：Agent 工作台 自己写的临时/状态目录不扫（实测
 # project_stages 一个就 752MB/6978 文件，projects 下还有 headcheck 的整仓
 # 影子副本 —— 见 docs/known-defect-docmind-shadow-repo-copies.md），
 # 但产物目录（web/ 等）保持可见。
@@ -472,12 +472,12 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
     cap = max(1, min(cap, _GLOB_MAX_LIMIT))
     rel_scope = os.path.relpath(base, root_abs).replace("\\", "/")
     result["scope"] = "" if rel_scope == "." else rel_scope
-    # `.docmind/` 是 DocMind 自己的状态根：状态子目录不扫，但产物目录要可见
+    # `.docmind/` 是 Agent 工作台 自己的状态根：状态子目录不扫，但产物目录要可见
     # （Godot Web 导出默认就在 `.docmind/web/`）。这里把被剪掉的名字如实带回，
     # 否则"没有命中文件"会被读成"这个项目没有这种文件"。
     # ⚠ 只披露 `.docmind/` 下的状态目录，不要把 `_SKIP_DIRS` 里的通用项
     # （.git/.venv/node_modules…）也列出来 —— 那些本来就不该被当成
-    # "DocMind 的状态"，混在一处会让人以为 `.git` 也能用 scope: 指进去。
+    # "Agent 工作台 的状态"，混在一处会让人以为 `.git` 也能用 scope: 指进去。
     _dm = os.path.join(root_abs, ".docmind")
     if os.path.normpath(base) == os.path.normpath(root_abs) and os.path.isdir(_dm):
         _probe_dirs = sorted(
@@ -497,7 +497,7 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
             rel_dir = ""
         pruned.update(_prune(dirnames, rel_dir))
     # 只披露 `.docmind/` 的状态目录：`_SKIP_DIRS` 的通用项（.git/.venv/…）
-    # 是"任何项目都不扫"，不是"DocMind 的状态"，混在一处会造成误导。
+    # 是"任何项目都不扫"，不是"Agent 工作台 的状态"，混在一处会造成误导。
         for name in sorted(filenames):
             scanned += 1
             if scanned > _GLOB_MAX_SCANNED:
@@ -517,8 +517,8 @@ def glob_files(root: str, pattern: str, *, scope: str = "",
         if scan_capped:
             break
     # 只披露 `.docmind/` 的状态目录。`_SKIP_DIRS` 的通用项（.git/.venv/…）
-    # 是"任何项目都不扫"，不是"DocMind 的状态"，混在一处会造成误导 ——
-    # 实测第一版就把 `.git` 列成了"没扫的 DocMind 状态目录"。
+    # 是"任何项目都不扫"，不是"Agent 工作台 的状态"，混在一处会造成误导 ——
+    # 实测第一版就把 `.git` 列成了"没扫的 Agent 工作台 状态目录"。
     pruned = {d for d in pruned
               if d in _DOCMIND_STATE_DIRS or d.startswith(_DOCMIND_STATE_PREFIXES)}
     result["ok"] = True
@@ -568,7 +568,7 @@ def render_glob(result: dict[str, Any]) -> str:
     pruned = result.get("pruned_dirs") or []
     if pruned:
         shown = ", ".join(pruned[:12]) + ("…" if len(pruned) > 12 else "")
-        lines.append("提示: 这几个目录没扫（DocMind 自己的状态/临时目录，不是项目内容）：%s。" % shown)
+        lines.append("提示: 这几个目录没扫（Agent 工作台 自己的状态/临时目录，不是项目内容）：%s。" % shown)
         lines.append("      要找的文件若可能在这些目录里，请用 scope: 直接指进去。")
     if result.get("truncated"):
         lines.append("提示: 用更具体的 pattern（如 **/workbench/live*.ts）或加 scope: 收窄。")

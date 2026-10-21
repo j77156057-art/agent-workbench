@@ -1,7 +1,7 @@
 # 缺陷立档：叙述开关开着，但这个模型不写正文散文
 
 > 结论一句话：**提示词这条路对这个模型无效。真正的内容在 reasoning 里，
-> 而 DocMind 把 reasoning 默认折叠。**
+> 而 Agent 工作台 把 reasoning 默认折叠。**
 
 ## 状态
 
@@ -117,9 +117,9 @@ list_dir 或者 search_code 应该都能找到。
 对照三家（`docs/harness-research-verified.md`）：
 * **Hermes**：`show_reasoning: true` 默认，**实时流式**
 * **opencode**：`session-ui` 默认显示（`showReasoningSummaries` 默认 true）
-* **DocMind**：**默认折叠**
+* **Agent 工作台**：**默认折叠**
 
-**所以 DocMind 是三家里唯一把 reasoning 藏起来的。**
+**所以 Agent 工作台 是三家里唯一把 reasoning 藏起来的。**
 
 ## ⚠ 这条立档不能被当成「叙述功能无用」
 

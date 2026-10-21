@@ -1,6 +1,6 @@
 """把已批准连接器的 MCP 工具投影成一等 TOOLS 条目。
 
-原本 DocMind 调外部 MCP 工具只有一条间接路：`dev_mcp_call(server, tool, json)`。模型看不
+原本 Agent 工作台 调外部 MCP 工具只有一条间接路：`dev_mcp_call(server, tool, json)`。模型看不
 见那些工具的真实名字与 schema，只能靠 `dev_list_connector_tools` 先查再猜参数，连接器一多
 选择质量就掉。这里在 Agent 实例构造时，把操作者在连接器配置里显式打了
 `inline_tools: true` 的服务的工具挂进 `self.tools`，名字形如 `mcp__<server>__<tool>`。

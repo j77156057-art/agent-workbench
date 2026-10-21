@@ -1,9 +1,9 @@
-/* DocMind AI 问答页设计系统：与开发台（workbench/style.css）同源的浅色亲和风格。
+/* Agent 工作台 AI 问答页设计系统：与开发台（workbench/style.css）同源的浅色亲和风格。
    全局只放基础重置、设计变量、Markdown 正文与浮层样式；组件样式各自 scoped。 */
 
 :root {
   color-scheme: light;
-  /* ===== DocMind 统一设计系统：高级粗野风（与 workbench/style.css 同源）===== */
+  /* ===== Agent 工作台 统一设计系统：高级粗野风（与 workbench/style.css 同源）===== */
   --bg: #ece7db;
   --bg-raised: #faf8f2;
   --bg-hover: #e3dccd;

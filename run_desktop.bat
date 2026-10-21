@@ -22,7 +22,7 @@ goto no_python
 
 :bootstrap
 echo ============================================
-echo   DocMind - preparing dependencies
+echo   Agent Workbench - preparing dependencies
 echo ============================================
 REM "%~dp0." instead of "%~dp0": %~dp0 expands WITH a trailing backslash, and
 REM external programs parse argv by MSVCRT rules -- there \" is an ESCAPED quote,
@@ -38,16 +38,16 @@ if not exist ".venv\Scripts\python.exe" goto bootstrap_failed
 echo Starting the current source version...
 ".venv\Scripts\python.exe" "%DOCMIND_ENTRY%"
 set "DOCMIND_EXIT=%ERRORLEVEL%"
-echo DocMind exited with code %DOCMIND_EXIT%.
+echo Agent Workbench exited with code %DOCMIND_EXIT%.
 exit /b %DOCMIND_EXIT%
 
 :packaged
-echo Starting the packaged DocMind version...
-start "DocMind" "%DOCMIND_PACKAGED%"
+echo Starting the packaged Agent Workbench version...
+start "Agent Workbench" "%DOCMIND_PACKAGED%"
 exit /b 0
 
 :missing
-echo No DocMind source or packaged installation was found.
+echo No Agent Workbench source or packaged installation was found.
 pause
 exit /b 1
 

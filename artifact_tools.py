@@ -1,4 +1,4 @@
-"""Deterministic document artifact generation for the DocMind agent.
+"""Deterministic document artifact generation for the Agent Workbench agent.
 
 The public entry point accepts a compact JSON payload and creates one DOCX,
 PDF, PPTX, or XLSX file below the active project's ``artifacts`` directory.

@@ -1,6 +1,6 @@
-"""把 DocMind 自己的工具经 MCP 暴露出去，让同一仓库里的其他 agent 也能用。
+"""把 Agent 工作台 自己的工具经 MCP 暴露出去，让同一仓库里的其他 agent 也能用。
 
-harness 原本只有 MCP client：DocMind 有 90 多个工具，但并肩干活的其他 AI 一个都调不到，
+harness 原本只有 MCP client：Agent 工作台 有 90 多个工具，但并肩干活的其他 AI 一个都调不到，
 只能靠 markdown 公告表互相转述。这个 server 把它们直接递到对面。
 
 默认【只观察、不改代码】：检索、引用查找、历史、诊断、以及 lane 认领表。改代码的工具
@@ -77,7 +77,7 @@ NEVER_EXPOSED = (
 DESTRUCTIVE = {"dev_patch", "dev_move", "apply_edit", "create_file", "dev_apply_edits"}
 
 INSTRUCTIONS = (
-    "DocMind harness 工具面。约定：每个工具只有一个字符串入参 input，格式与 DocMind 工作台"
+    "Agent 工作台 harness 工具面。约定：每个工具只有一个字符串入参 input，格式与 Agent 工作台"
     "的 Action Input 完全相同（`键: 值` 多行，或直接给路径/符号名）。开工前先用 dev_lanes "
     "action: status 看别的 lane 在动哪些文件，动某个文件前 action: check 问归属；改完用 "
     "dev_diagnostics + dev_git_diff 自查。默认只暴露观察类工具，写代码的工具需要服务端 "
@@ -96,7 +96,7 @@ def _wrap(name: str, func: Callable[[str], Any], description: str) -> Callable[.
         return out if isinstance(out, str) else str(out)
 
     tool.__name__ = name
-    tool.__doc__ = description or f"DocMind builtin tool {name}."
+    tool.__doc__ = description or f"Agent Workbench builtin tool {name}."
     return tool
 
 
@@ -122,7 +122,7 @@ def build_server(project: str = "", *, allow_writes: bool = False, only: str = "
     if root:
         config.set_runtime("code_root", root)
     server = MCPServer(name=name, instructions=INSTRUCTIONS,
-                       description="DocMind harness 工具面（检索/引用/历史/诊断/lane 协作）")
+                       description="Agent 工作台 harness 工具面（检索/引用/历史/诊断/lane 协作）")
     for tool_name in selected_tools(allow_writes, only):
         meta = tools.TOOLS.get(tool_name) or {}
         func = meta.get("func")

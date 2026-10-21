@@ -113,7 +113,7 @@ def test_it_still_has_no_production_caller():
     这不是「忘了接线」，是**接不了** —— `owns_port` 的判据是「页面上有没有
     markers 里的字串」，而实测三个候选指纹全部不可用：
 
-    * `<title>` —— 三个入口都以 `DocMind` 开头，而另一个 worktree 跑的是
+    * `<title>` —— 三个入口都以 `Agent 工作台` 开头，而另一个 worktree 跑的是
       **同一份代码**，标题完全相同
     * 项目名注入页面 —— `git grep "APP_ID|PROJECT_NAME|VITE_APP" -- frontend`
       **零命中**

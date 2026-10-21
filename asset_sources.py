@@ -24,7 +24,7 @@ import urllib.request
 import zipfile
 from datetime import datetime
 
-UA = 'DocMindAssetCenter/1.0 (+https://github.com/j77156057-art/rag-agent)'
+UA = 'DocMindAssetCenter/1.0 (+https://github.com/j77156057-art/agent-workbench)'
 
 POLY_API = 'https://api.polyhaven.com'
 KENNEY_BASE = 'https://kenney.nl'

@@ -35,7 +35,7 @@ try {
     v.dispatch({ changes: { from: v.state.doc.length, insert: '\n# UNSAVED-REGRESSION' } })
   })
   await page.locator('.cd-input').fill('未发送的工作台问题')
-  // 2026-10-19：顶栏右侧的「问答页」<a> 已并入品牌（点 DocMind 回问答页），
+  // 2026-10-19：顶栏右侧的「问答页」<a> 已并入品牌（点 Agent 工作台 回问答页），
   // 顶栏右侧只剩「设置 / 更多」。原来这里靠 .wb-question-link 消歧，现在用 .wb-brand-home。
   await page.locator('a.wb-brand-home').click()
   await page.getByText(turn.assistant, { exact: true }).waitFor()

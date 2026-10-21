@@ -29,7 +29,7 @@ _MISSING_RX = re.compile(r"export templates? .*(missing|not found|没有|未安�
 # DocmindBridge 自动加载脚本
 # ---------------------------------------------------------------------------
 BRIDGE_GD = '''extends Node
-## DocMind 运行时桥（工作台自动注入，请勿手改）
+## Agent 工作台 运行时桥（工作台自动注入，请勿手改）
 ## Web：与父页面 window.postMessage 双向通信；桌面：打印 DOCMIND_EVENT + JSON 供时间线抓取。
 
 const MARKER := "DOCMIND_EVENT "
@@ -349,7 +349,7 @@ def _install_worker(executable):
             mirror = "github" if "github.com" in url and "/" + "github.com/" not in url else url.split("/https://")[0]
             try:
                 _set_install(state="starting", mirror=mirror, error="")
-                req = urllib.request.Request(url, headers={"User-Agent": "DocMind/1.0"})
+                req = urllib.request.Request(url, headers={"User-Agent": "Agent Workbench/1.0"})
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     if resp.status != 200:
                         raise RuntimeError(f"HTTP {resp.status}")

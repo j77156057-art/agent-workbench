@@ -69,7 +69,7 @@ class _RepoCase(unittest.TestCase):
         with open(full, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(content)
 
-    def init_repo(self, origin="https://github.com/acme/rag-agent.git"):
+    def init_repo(self, origin="https://github.com/acme/agent-workbench.git"):
         self.git("init", "-q")
         self.git("config", "user.email", "e@example.com")
         self.git("config", "user.name", "E")
@@ -185,7 +185,7 @@ class ProposalCases(_RepoCase):
 class RemoteParsingCases(unittest.TestCase):
     def test_common_url_shapes(self):
         cases = {
-            "https://github.com/acme/rag-agent.git": ("acme", "rag-agent"),
+            "https://github.com/acme/agent-workbench.git": ("acme", "rag-agent"),
             "git@github.com:acme/rag-agent.git": ("acme", "rag-agent"),
             "https://user@token@github.com/acme/rag-agent": ("acme", "rag-agent"),
             "ssh://git@gitlab.example.com/group/sub/proj.git": ("sub", "proj"),

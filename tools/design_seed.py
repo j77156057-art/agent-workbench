@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""种子驱动的设计令牌生成器（DocMind 前端）。
+"""种子驱动的设计令牌生成器（Agent 工作台 前端）。
 
 为什么有这个东西
 ----------------
@@ -301,7 +301,7 @@ def render_css(seed, p, t):
     name = "种子 %s" % seed
     L = []
     L.append("/* =============================================================")
-    L.append("   DocMind · 种子皮肤（由 tools/design_seed.py 生成，**不要手改**）")
+    L.append("   Agent 工作台 · 种子皮肤（由 tools/design_seed.py 生成，**不要手改**）")
     L.append("")
     L.append("   种子：%s" % seed)
     L.append("   派生参数：%s" % json.dumps(p, ensure_ascii=False, sort_keys=True))

@@ -266,4 +266,4 @@
 - **EDA 多模态验收面板（真机点击路径）**：在完整 boot 的工作台里经真实点击（更多 → EDA 多模态验收）可达、渲染正常，消费 live `/api/eda/*`（parseReport + verify → 正确三态）。面板已复用 `SceneRuntimePanel` 的 dock 惯用法实现**弹窗 + 停靠常驻双形态**（`mode`/`host` prop + `Teleport defer`，同实例切换、绝不重建）。
 - **原生桌面壳（pywebview / WebView2）在本会话无法复现**：`desktop.py` 创建的 WebView2 原生窗口初始化失败（`无效的 URI/端口`，换干净 user-data 目录同样失败），`loaded` 事件不触发 → 宿主 HWND 注册不上。**环境限制，非代码问题**。
   - 改走 **Web 导出预览**路（同源 `/play/<token>/index.html`，服务端带 COOP/COEP 启用 SharedArrayBuffer）：真实点击「更多 → 运行游戏 → 导出并试玩」，Godot 导出 WASM（~7s）后在工作台「Web 试玩」面板里**实时渲染**（同源 canvas 采样非空、右侧时间线记到 `__bridge_ready__ [web]`）。证据：`outputs/workbench-godot-embed-preview.png`。
-  - 诚实边界：这是 **Web 导出预览**，不等于原生 `SetParent` 嵌入；面板自身也如实标注「浏览器模式下无法嵌入原生窗口，请用桌面端启动 DocMind」。Godot WASM 默认字体缺中文字形，标签中文显示为方框，与产品无关。
+  - 诚实边界：这是 **Web 导出预览**，不等于原生 `SetParent` 嵌入；面板自身也如实标注「浏览器模式下无法嵌入原生窗口，请用桌面端启动 Agent 工作台」。Godot WASM 默认字体缺中文字形，标签中文显示为方框，与产品无关。

@@ -43,7 +43,7 @@ LAUNCHER_BY_REGISTRY_TYPE: dict[str, str] = {
     "npm": "npx", "pypi": "uvx", "oci": "docker", "nuget": "dnx",
 }
 
-_UA = "DocMind-MCP-Registry/1.0 (+https://registry.modelcontextprotocol.io)"
+_UA = "Agent Workbench-MCP-Registry/1.0 (+https://registry.modelcontextprotocol.io)"
 _URL_RE = re.compile(r"^https?://([^/]+)/?", re.I)
 
 

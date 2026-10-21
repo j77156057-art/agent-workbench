@@ -14,7 +14,7 @@ with open("sample_docs/docmind_product.md", "rb") as f:
     r = client.post("/api/ingest", files={"file": ("docmind_product.md", f, "text/plain")})
 print("ingest ->", r.json())
 
-r = client.post("/api/chat", data={"question": "DocMind 的计费方式是怎样的？"})
+r = client.post("/api/chat", data={"question": "Agent 工作台 的计费方式是怎样的？"})
 print("chat status ->", r.status_code)
 import json
 
@@ -34,5 +34,5 @@ print("SSE 事件类型序列 ->", types)
 r = client.get("/")
 print("index ->", r.status_code, r.headers.get("content-type"))
 assert r.status_code == 200
-assert "DocMind" in r.text
+assert "Agent 工作台" in r.text
 print("OK: 接口层验证通过。")

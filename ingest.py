@@ -598,7 +598,7 @@ def ingest_code_directory(root, emb=None, collection=CODE_COLLECTION_NAME):
             add_documents(texts_buf, embs_buf, metas_buf, ids_buf, collection=collection)
         texts_buf, embs_buf, metas_buf, ids_buf = [], [], [], []
 
-    # `.docmind/` 是 DocMind 自己的状态根：里面既有临时/状态目录（project_stages /
+    # `.docmind/` 是 Agent 工作台 自己的状态根：里面既有临时/状态目录（project_stages /
     # projects 等工作流副本、检查点、headcheck 影子整仓 —— 实测单个 project_stages
     # 就 752MB/6978 文件），也有**合法产物**（Godot Web 导出 .docmind/web/）。建库时
     # 若照单全收，会把项目原文件与 .docmind 里的副本双双 embed 进同一集合，让
@@ -634,7 +634,7 @@ def ingest_code_directory(root, emb=None, collection=CODE_COLLECTION_NAME):
                       "%s" % "、.docmind/".join(sorted(set(pruned))))
         for fn in sorted(fns):
             # 跳过以点开头的文件：`.docmind_mcp.json` / `.docmind_runtime.jsonl` /
-            # `.docmind_tasks.jsonl` 这类 DocMind 运行时/遥测台账不是项目源码，
+            # `.docmind_tasks.jsonl` 这类 Agent 工作台 运行时/遥测台账不是项目源码，
             # 不该进语义库被 search_code 当权威来源返回（RETR-Pollution 点文件侧）。
             if fn.startswith("."):
                 continue

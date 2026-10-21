@@ -19,7 +19,7 @@
     PARTIAL is for environmental limitations only ... not for "I'm unsure whether this is
     a bug." If you can run the check, you must decide PASS or FAIL.
 
-## DocMind 这边的事实
+## Agent 工作台 这边的事实
 
 Q2（"这一轮有没有调 read_file"）作为闸门已连续**四次**误报：并行读取看不见、
 完整读取看不见、连上了还被路径切分错误连累。而 Q1（路径能否打开、行号是否越界）

@@ -1,4 +1,4 @@
-"""DocMind 配置中心：从 .env 读取，集中管理模型 / 路径 / 参数。"""
+"""Agent 工作台 配置中心：从 .env 读取，集中管理模型 / 路径 / 参数。"""
 import atexit
 import json
 import contextvars
@@ -581,7 +581,7 @@ EXEC_TIER2_CONFIRM = int(os.getenv("DOCMIND_EXEC_TIER2_CONFIRM", "1"))
 EXEC_TIER3_CONFIRM = int(os.getenv("DOCMIND_EXEC_TIER3_CONFIRM", "3"))
 API_TOKEN = os.getenv("DOCMIND_API_TOKEN", "").strip()  # 为空保持本机免鉴权
 
-# ---- 外部接入 DocMind API 的 CORS ----
+# ---- 外部接入 Agent 工作台 API 的 CORS ----
 # 逗号分隔的允许来源（如 https://app.example.com,http://localhost:3000）；
 # 设为 * 表示允许任意来源（默认）。仅在「外部网页/前端要调用本服务」时需要。
 DOCMIND_CORS_ORIGINS = [
@@ -612,7 +612,7 @@ WEB_SEARCH_API_URL = os.getenv("WEB_SEARCH_API_URL", "")
 WEB_FETCH_PROVIDER = os.getenv("WEB_FETCH_PROVIDER", "builtin").strip().lower()
 WEB_FETCH_API_KEY = os.getenv("WEB_FETCH_API_KEY", "")
 WEB_FETCH_API_URL = os.getenv("WEB_FETCH_API_URL", "")
-# True=优先使用模型内置 Web 工具（如模型本身支持联网），False=使用 DocMind 自带的 web_search/web_fetch
+# True=优先使用模型内置 Web 工具（如模型本身支持联网），False=使用 Agent 工作台 自带的 web_search/web_fetch
 WEB_SEARCH_PREFER_BUILTIN = os.getenv("WEB_SEARCH_PREFER_BUILTIN", "0").strip().lower() in ("1", "true", "yes")
 
 _WEB_SEARCH_PROVIDERS = {

@@ -26,7 +26,7 @@
 ## 失败机制
 
 `audit_evidence` 里 `root = Path(code_root).resolve() if code_root else None`。
-`root=None` 时相对路径**留在原地**，落到进程当前目录（DocMind 自己仓库）去
+`root=None` 时相对路径**留在原地**，落到进程当前目录（Agent 工作台 自己仓库）去
 `is_file()`——那里当然没有 `behaviors/`。
 
 而 `in_root` 的初值是 `True`、只在 `root is not None` 时才被覆盖，于是

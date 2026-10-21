@@ -7,7 +7,7 @@
 
 ## 为什么需要真跑
 
-两条都来自 DeepSeek 官方 API 文档。DocMind 当前：
+两条都来自 DeepSeek 官方 API 文档。Agent 工作台 当前：
 - ① 没踩到，只因为**全仓从不发 `tool_choice`**（llm.py:836 只发 `tools`）——
   这是运气不是设计。谁加上它，所有开思考的用户会全线 400 且报错不指向思考。
 - ② 是**无声偏差**：llm.py:844/885 **无条件**发 `temperature`，开思考后
@@ -117,13 +117,13 @@ def main() -> int:
 
     if ok_temp:
         print("  ✅ 约束②确认：temperature=2.0 在思考模式无报错返回。")
-        print("     上游静默忽略该参数；DocMind 无条件下发 temperature（llm.py:844/885），")
+        print("     上游静默忽略该参数；Agent 工作台 无条件下发 temperature（llm.py:844/885），")
         print("     故用户设的温度在思考模式无效且无任何信号 —— 无声偏差坐实。")
     else:
         print("  ⚠ 约束②子测试失败（非预期）：%s" % err_temp)
 
     print()
-    print("  => 结论：DocMind 当前靠「从不发 tool_choice」规避 ①；")
+    print("  => 结论：Agent 工作台 当前靠「从不发 tool_choice」规避 ①；")
     print("     ② 是无声偏差，已立 TODO 待决定（抑制参数+UI 说明 / 接受）。")
     return 0
 

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DocMind 工作台前端（Vite 多页构建，产物输出到 ../web）",
+  "description": "Agent 工作台前端（Vite 多页构建，产物输出到 ../web）",
   "scripts": {
     "dev": "vite",
     "build": "npm run typecheck && vite build",

@@ -107,7 +107,7 @@ def build_bundle(frontend: Path, target: Path, *, runner: Callable = subprocess.
 
 VOICE_PAGE_TEMPLATE = """<!doctype html><html><head><meta charset="utf-8"><title>语音回路行为页</title></head>
 <body>
-<h1>DocMind 语音回路行为页</h1>
+<h1>Agent 工作台 语音回路行为页</h1>
 <button id="connect">连接</button><button id="mic">开麦</button><button id="stopmic">关麦</button>
 <button id="aitalk">AI 开始说话</button><button id="aiidle">AI 停止说话</button>
 <pre id="state">{}</pre>

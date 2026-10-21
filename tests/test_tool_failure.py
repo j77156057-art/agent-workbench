@@ -93,7 +93,7 @@ class McpConnectorFailureTests(unittest.TestCase):
     可以用完全相同的参数直接重试一次」。
 
     而 Godot 连接器的 `uvx godot-ai attach` 起不来（编辑器没开 / 8000 端口被
-    DocMind 后端自己占着）时，一次失败要 **60~70 秒**。agent 按提示再调一次，
+    Agent 工作台 后端自己占着）时，一次失败要 **60~70 秒**。agent 按提示再调一次，
     两次叠起来就是 UI 上那个 127s，且第二次必然同样失败。
 
     **失败本身没错，错的是让它失败两遍。**
@@ -138,7 +138,7 @@ class McpConnectorFailureTests(unittest.TestCase):
             "MCP 进程意外退出（code=98）。Installed 73 packages in 4.94s\n"
             "godot-ai attach [PORT_OCCUPIED]: Port 8000 is occupied")
         self.assertIn("端口", hint)
-        self.assertIn("DocMind", hint)
+        self.assertIn("Agent 工作台", hint)
 
     def test_an_unrelated_failure_gets_no_hint(self):
         from tools import _mcp_failure_hint

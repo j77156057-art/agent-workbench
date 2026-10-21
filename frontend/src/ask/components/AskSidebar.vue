@@ -71,7 +71,7 @@ function sessTime(v?: string): string {
         <svg viewBox="0 0 24 24" width="17" height="17"><path fill="#fff" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
       </div>
       <div class="brand-text">
-        <div class="brand-name">DocMind</div>
+        <div class="brand-name">Agent Workbench</div>
         <div class="brand-sub">AI 问答 · 读代码答问题</div>
       </div>
     </div>
@@ -159,7 +159,7 @@ function sessTime(v?: string): string {
 </template>
 
 <style scoped>
-/* ===== DocMind 问答页侧栏 · 高级粗野风 ===== */
+/* ===== Agent 工作台 问答页侧栏 · 高级粗野风 ===== */
 .ask-side {
   flex: 0 0 296px;
   width: 296px;

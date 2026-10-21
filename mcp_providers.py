@@ -36,8 +36,8 @@ PROVIDER_ADAPTERS: dict[str, dict[str, Any]] = {
         "domains": ("github.com",),
         "register_url": "https://github.com/settings/tokens/new",
         "deep_link": ("https://github.com/settings/tokens/new"
-                      "?description=DocMind&scopes=repo%2Cread%3Auser"),
-        "fields": [{"selector": "#oauth_access_description", "action": "fill", "value": "DocMind"}],
+                      "?description=Agent Workbench&scopes=repo%2Cread%3Auser"),
+        "fields": [{"selector": "#oauth_access_description", "action": "fill", "value": "Agent Workbench"}],
         "submit": "button:has-text('Generate token')",
         "auto_submit": False,  # 创建长期令牌属 §5 denylist：绝不自动提交，留给用户点
         "token_selectors": ["#new-oauth-token", "code.js-token-value",

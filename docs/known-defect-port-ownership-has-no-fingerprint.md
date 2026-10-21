@@ -7,7 +7,7 @@
 ## 1. 一句话
 
 `dev_server.owns_port(port, markers=...)` 的判据是**页面上有没有那些字串**，
-而 DocMind 的页面里**没有任何只属于本项目的字串** —— 所以归属判据在生产里用不了。
+而 Agent 工作台 的页面里**没有任何只属于本项目的字串** —— 所以归属判据在生产里用不了。
 
 那个假绿灯事故（拍到另一个 worktree 的画面并报成功）**仍未堵**。
 
@@ -20,7 +20,7 @@
 
 | 候选 | 实测 | 可用 |
 |---|---|---|
-| 页面 `<title>` | `index.html` = `DocMind AI 问答`；`landing.html` = `DocMind · 本地 AI 研发脚手架`；`workbench.html` = `DocMind 工作台` | ❌ **三个都以 `DocMind` 开头**，而另一个 worktree 跑的是**同一份代码**，标题完全相同 |
+| 页面 `<title>` | `index.html` = `Agent 工作台 AI 问答`；`landing.html` = `Agent 工作台 · 本地 AI 研发脚手架`；`workbench.html` = `Agent 工作台` | ❌ **三个都以 `Agent 工作台` 开头**，而另一个 worktree 跑的是**同一份代码**，标题完全相同 |
 | 项目名注入页面 | `git grep "APP_ID\|PROJECT_NAME\|VITE_APP" -- frontend` → **零命中** | ❌ 根本没注入 |
 | vite dev 的 URL / 路径 | dev URL 就是 `http://127.0.0.1:5173/`，不含项目路径 | ❌ |
 
@@ -93,7 +93,7 @@
 ```bash
 # 1) title 不可区分
 Get-Content frontend\index.html -Encoding UTF8 | Select-String '<title>'
-#   -> DocMind AI 问答（三个入口都以 DocMind 开头）
+#   -> Agent 工作台 AI 问答（三个入口都以 Agent 工作台 开头）
 
 # 2) 项目名没注入
 git grep -n "APP_ID\|PROJECT_NAME\|VITE_APP" -- frontend    # 零命中

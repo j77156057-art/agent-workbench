@@ -39,7 +39,7 @@ function serveSessionScript(): Plugin {
   }
 }
 
-// DocMind 前端工程配置
+// Agent 工作台 前端工程配置
 // - 多页应用（MPA）：ask=AI 问答首页（/，产物 index.html）；workbench=代码工作台（/workbench）
 // - 产物直接写入后端静态目录 ../web（PyInstaller 的 ("web","web") 会原样带走）
 // - emptyOutDir 必须为 false：../web 里还有 trace.html 等非本工程托管的静态文件，构建时绝不能清空
@@ -116,7 +116,7 @@ export default defineConfig({
     host: '127.0.0.1',
     proxy: {
       // 后端端口跟 desktop.py 一样认 DOCMIND_PORT：本机 8000 常被另一个项目占着，
-      // 换端口起 DocMind 时，dev 模式的 /api 也必须跟着指到同一个后端，
+      // 换端口起 Agent 工作台 时，dev 模式的 /api 也必须跟着指到同一个后端，
       // 否则前端调的是**另一个应用**的 API。
       //
       // ws: true —— 实时对话走 WebSocket（/api/vision/live-stream），

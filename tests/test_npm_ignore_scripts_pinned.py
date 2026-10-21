@@ -93,7 +93,7 @@ def test_bootstrap_passes_the_flag():
 
     def spy(command, root, *, label=""):
         seen.append([str(x) for x in command])
-        print("[DocMind] %s: %s" % (label, " ".join(str(x) for x in command)))
+        print("[Agent Workbench] %s: %s" % (label, " ".join(str(x) for x in command)))
         # ⚠ **桩必须忠实模拟被桩对象留下的副作用**，否则流程会在别处停住。
         # 第 2 版我只记 argv、不造文件，于是第 328 行 `python.is_file()` 为假
         # -> RuntimeError -> 测试红，而红因与要验的东西**毫无关系**

@@ -6,7 +6,7 @@ import project_state as _project_state
 from gpu_coordinator import process_environment as _gpu_process_environment
 from datetime import datetime
 
-# ComfyUI 作业租约 TTL：提交后到生成完成之间即使 DocMind 崩了/不再轮询，
+# ComfyUI 作业租约 TTL：提交后到生成完成之间即使 Agent 工作台 崩了/不再轮询，
 # 租约也会在该秒数后自动回收，不会把 GPU 锁死（DOCMIND_COMFY_JOB_TTL 可调）。
 COMFY_JOB_TTL = float(os.getenv("DOCMIND_COMFY_JOB_TTL", "600") or 600)
 # 提交 ComfyUI 作业要求的显存余量（MB）：余量不足时先触发 Ollama 卸载钩子，
@@ -166,7 +166,7 @@ def install_unreal_bridge(root, force=False):
     rel = 'Content/Python/docmind_bridge.py'; path = _file(base, rel)
     if os.path.exists(path) and not force: return {'ok': False, 'error': '桥接脚本已存在，请使用 force 覆盖。', 'path': rel}
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    source = '''"""DocMind Unreal Editor Python HTTP bridge."""
+    source = '''"""Agent Workbench Unreal Editor Python HTTP bridge."""
 import json, unreal
 from http.server import BaseHTTPRequestHandler, HTTPServer
 def list_assets(asset_class="Blueprint"):
@@ -1590,8 +1590,8 @@ def comfy_queue(workflow, url="http://127.0.0.1:8188", min_free_mb=None, root=No
     # 不能像旧版只在 POST /prompt 期间持有（请求返回时代码还在 GPU 上跑）。
     #
     # 【CUDA 隔离接线点（待实现，勿提前宣称）】lease 里的 gpu 只是协调层卡号，
-    # 对外部常驻 ComfyUI 服务不产生隔离——它不会继承 DocMind 进程的环境。
-    # 未来若改为由 DocMind 直接 Popen ComfyUI/worker，必须在启动前往子进程
+    # 对外部常驻 ComfyUI 服务不产生隔离——它不会继承 Agent 工作台 进程的环境。
+    # 未来若改为由 Agent 工作台 直接 Popen ComfyUI/worker，必须在启动前往子进程
     # 环境写入 CUDA_VISIBLE_DEVICES=<lease["gpu"]>（进程初始化后改无效）。
     # 验收口径见 HANDOFF.md 第 5 节 P2-1 待验收项 B。
     submit_owner = f"comfyui:submit:{uuid.uuid4().hex[:12]}"
@@ -2399,7 +2399,7 @@ def generate_test_scene(root, name, region="behaviors"):
                 f"        ({r!r}, {syms!r})" for r, syms in files_syms.items()
             ) or "        # 未检出可测符号"
             py_src = (
-                "# 由 DocMind generate_test_scene 自动生成（基于真实代码符号）\n"
+                "# 由 Agent 工作台 generate_test_scene 自动生成（基于真实代码符号）\n"
                 "import importlib.util\nimport os\nimport sys\nimport unittest\n\n"
                 "ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))\n"
                 "# (相对 code_root 的文件路径, 该文件内期望存在的符号列表)\n"

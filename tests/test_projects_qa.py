@@ -36,8 +36,8 @@ _REPO_STATE = os.path.join(_REPO_ROOT, ".docmind_state.json")
 _REPO_SESSIONS = os.path.join(_REPO_ROOT, ".docmind_sessions")
 
 # 桌面安装的真实状态与历史会话（P2 迁移的真实背景）
-_REAL_STATE = r"D:\WorkBuddy\DocMind\_internal\.docmind_state.json"
-_REAL_LEGACY = r"D:\WorkBuddy\DocMind\_internal\.docmind_sessions\web-118ac75087ff.json"
+_REAL_STATE = r"D:\WorkBuddy\rag-agent\_internal\.docmind_state.json"
+_REAL_LEGACY = r"D:\WorkBuddy\rag-agent\_internal\.docmind_sessions\web-118ac75087ff.json"
 
 
 def _snapshot_repo():

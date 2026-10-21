@@ -109,7 +109,7 @@ class GlobSeesDocmindArtifactsTests(unittest.TestCase):
 
         为什么必须有这条：第一版 `_prune` 写成 `if True`（不判断当前位置），
         于是用户项目自己建的 `screenshots/`、`workflows/`、`projects/` 也被剪掉 ——
-        把"DocMind 的状态目录"误当成"任何项目都该跳过的名字"。
+        把"Agent 工作台 的状态目录"误当成"任何项目都该跳过的名字"。
         实测那次 7 个变异里只有这条没被抓住，说明先前的判据全靠 `.docmind/`
         下的形态，**从没测过同名的项目自有目录**。
         """
@@ -127,7 +127,7 @@ class GlobSeesDocmindArtifactsTests(unittest.TestCase):
         # 且 pruned_dirs 不该出现这些（它们不是 .docmind 下的）
         for d in r["pruned_dirs"]:
             self.assertNotIn(d, ("project_stages", "projects", "screenshots"),
-                             "%s 被当成了 DocMind 状态目录" % d)
+                             "%s 被当成了 Agent 工作台 状态目录" % d)
 
     def test_docmind_state_pruning_is_one_level_deep(self):
         """`.docmind/a/b/` 这种更深层不该被状态名单剪。
@@ -146,7 +146,7 @@ class GlobSeesDocmindArtifactsTests(unittest.TestCase):
                       "没交代哪里没扫 ->'没有命中'会被读成'这里没有'")
 
     def test_pruned_list_excludes_generic_skip_dirs(self):
-        """`.git`/`.venv` 是"任何项目都不扫"，不是"DocMind 的状态"。
+        """`.git`/`.venv` 是"任何项目都不扫"，不是"Agent 工作台 的状态"。
 
         实测第一版把 `.git` 也列进了 pruned_dirs，读起来像在建议
         "用 scope: 指进 .git" —— 误导。

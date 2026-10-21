@@ -17,7 +17,7 @@
 
 | 候选 | 实测 | 结论 |
 |---|---|---|
-| `<title>` | `index.html` = `DocMind AI 问答`；另两个入口 = `DocMind · …` / `DocMind 工作台` | ❌ 三个都以 `DocMind` 开头，而 worktree 跑的是**同一份代码**，标题完全相同 |
+| `<title>` | `index.html` = `Agent 工作台 AI 问答`；另两个入口 = `Agent 工作台 · …` / `Agent 工作台` | ❌ 三个都以 `Agent 工作台` 开头，而 worktree 跑的是**同一份代码**，标题完全相同 |
 | 项目名注入页面 | `git grep "APP_ID\|PROJECT_NAME\|VITE_APP" -- frontend` → **零命中** | ❌ 没注入 |
 | dev URL / 路径 | `http://127.0.0.1:5173/`，不含项目路径 | ❌ 无区分 |
 

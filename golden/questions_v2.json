@@ -46,7 +46,7 @@
   {
     "id": "G05",
     "level": "L1",
-    "question": "DocMind 在不配置任何 API Key 时，LLM_PROVIDER 的默认取值是什么？",
+    "question": "Agent 工作台 在不配置任何 API Key 时，LLM_PROVIDER 的默认取值是什么？",
     "expect": {
       "must_include": ["mock"],
       "no_error": true
@@ -172,7 +172,7 @@
   {
     "id": "G17",
     "level": "L2",
-    "question": "DocMind 前端基于什么框架和构建工具？场景画布的节点图编辑用的是哪个库？给出依据文件。",
+    "question": "Agent 工作台 前端基于什么框架和构建工具？场景画布的节点图编辑用的是哪个库？给出依据文件。",
     "expect": {
       "must_include": ["Vue"],
       "any_of": ["Vue Flow", "vue-flow", "@vue-flow/core"],
@@ -331,7 +331,7 @@
   {
     "id": "G31",
     "level": "L3",
-    "question": "DocMind 现在支持多用户协作、团队共享会话和 RBAC 角色权限吗？如果支持，说明怎么配置。",
+    "question": "Agent 工作台 现在支持多用户协作、团队共享会话和 RBAC 角色权限吗？如果支持，说明怎么配置。",
     "expect": {
       "must_include": ["不支持"],
       "must_not_include": ["支持多用户协作"],
@@ -343,7 +343,7 @@
   {
     "id": "G32",
     "level": "L3",
-    "question": "DocMind 用的向量数据库是 Milvus 对吗？请确认并说明它的持久化目录配置项。",
+    "question": "Agent 工作台 用的向量数据库是 Milvus 对吗？请确认并说明它的持久化目录配置项。",
     "expect": {
       "must_include": ["Chroma"],
       "must_not_include": ["是 Milvus", "Milvus 是"],
@@ -416,7 +416,7 @@
   {
     "id": "G38",
     "level": "L3",
-    "question": "DocMind 有内置的 Kubernetes 多副本部署和服务发现方案吗？请给出配置文件路径。",
+    "question": "Agent 工作台 有内置的 Kubernetes 多副本部署和服务发现方案吗？请给出配置文件路径。",
     "expect": {
       "any_of": ["没有", "未实现", "不支持", "不存在"],
       "must_not_include": ["k8s/deployment.yaml"],

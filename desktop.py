@@ -1,4 +1,4 @@
-"""DocMind 桌面端启动器（控制台模式，最稳）。
+"""Agent 工作台 桌面端启动器（控制台模式，最稳）。
 
 为什么是控制台而不是原生窗口：
   早期版本用 pywebview/WebView2 弹原生窗口，在缺少 WebView2 运行时的机器上会
@@ -8,7 +8,7 @@
   按 Enter 退出。界面本身就是 Web 应用，浏览器即桌面端，跨机器稳定。
 
 特性：
-  - 单实例保护：若本实例的端口上已在提供 DocMind 服务，直接打开浏览器并退出，避免堆积进程。
+  - 单实例保护：若本实例的端口上已在提供 Agent 工作台 服务，直接打开浏览器并退出，避免堆积进程。
   - 启动全程写入 docmind_desktop.log（与 exe 同目录）便于排查。
 
 环境变量：
@@ -138,7 +138,7 @@ def probe_multi_window_support():
         return False, "pywebview 不可用：" + str(e)
 
 
-def build_host_window(api_base: str = "", title: str = "DocMind 开发工作台",
+def build_host_window(api_base: str = "", title: str = "Agent Workbench 开发工作台",
                       width: int = 1440, height: int = 920, project_id: str = ""):
     """创建 pywebview 原生宿主窗口并绑定事件，返回 window 对象（**不启动事件循环**）。
 
@@ -169,7 +169,7 @@ def build_host_window(api_base: str = "", title: str = "DocMind 开发工作台"
                 return hwnd
         except (AttributeError, TypeError, ValueError):
             pass  # Non-WinForms backends / older pywebview use title fallback.
-        host = find_host(win_title) or find_host("DocMind")
+        host = find_host(win_title) or find_host("Agent Workbench")
         return host[0] if host else None
 
     def _register_host():
@@ -177,7 +177,7 @@ def build_host_window(api_base: str = "", title: str = "DocMind 开发工作台"
         if not hwnd:
             _log("未找到 pywebview 宿主 HWND，Godot 保持独立窗口")
             return None
-        _log("已找到 DocMind 宿主 HWND: %s" % hwnd)
+        _log("已找到 Agent 工作台 宿主 HWND: %s" % hwnd)
         import desktop_bridge
         desktop_bridge.set_host(hwnd, project_id)
         try:
@@ -285,7 +285,7 @@ def _open_native_window() -> bool:
 def _keep_alive():
     """常驻直到用户按 Enter；无法读取输入时退化为保活睡眠。"""
     try:
-        input("\n服务运行中。按 Enter 退出 DocMind（关闭浏览器标签不会停止服务）。\n")
+        input("\n服务运行中。按 Enter 退出 Agent 工作台（关闭浏览器标签不会停止服务）。\n")
     except EOFError:
         try:
             while True:
@@ -329,15 +329,15 @@ def main():
 
     _log("桌面模式启动")
     print("=" * 48)
-    print("  DocMind · 本地 RAG 代码问答")
+    print("  Agent 工作台 · 本地 RAG 代码问答")
     print("=" * 48)
 
     if _already_running():
         _log("检测到已有实例在运行，直接打开浏览器")
-        print(f"[DocMind] 已在运行，正在打开浏览器：{URL}")
+        print(f"[Agent 工作台] 已在运行，正在打开浏览器：{URL}")
         ok = _open_browser()
         if not ok:
-            print(f"[DocMind] 请手动在浏览器打开：{URL}")
+            print(f"[Agent 工作台] 请手动在浏览器打开：{URL}")
         input("按 Enter 退出本启动器。\n")
         return
 
@@ -346,13 +346,13 @@ def main():
 
     if not _wait_for_server():
         _log("服务启动失败")
-        print("[DocMind] 服务在 20 秒内未就绪：可能是 8000 端口被占用，或启动过程被卡住。")
+        print("[Agent 工作台] 服务在 20 秒内未就绪：可能是 8000 端口被占用，或启动过程被卡住。")
         print(f"          详情见日志：{LOG}")
         input("按 Enter 退出。\n")
         return
 
     _log("服务就绪")
-    print(f"[DocMind] 服务已就绪：{URL}")
+    print(f"[Agent 工作台] 服务已就绪：{URL}")
     _emit_ollama_guidance()
     ok = _open_native_window()
     _log("原生窗口启动结果 -> %s" % ok)
@@ -360,9 +360,9 @@ def main():
         ok = _open_browser()
     _log("浏览器打开尝试 -> %s" % ok)
     if ok:
-        print(f"[DocMind] 已尝试用默认浏览器打开页面。")
+        print(f"[Agent 工作台] 已尝试用默认浏览器打开页面。")
     else:
-        print(f"[DocMind] 未能自动打开浏览器，请手动访问：{URL}")
+        print(f"[Agent 工作台] 未能自动打开浏览器，请手动访问：{URL}")
 
     _keep_alive()
     _log("退出")
@@ -376,7 +376,7 @@ if __name__ == "__main__":
         _log("未预期异常：\n" + tb)
         try:
             # 若已配置代码库，异常会同时归档到 bugs 分区，便于按提交追踪。
-            dev_capture_bug(f"title: DocMind 启动异常\nerror: {tb.splitlines()[-1] if tb else 'unknown'}\ntraceback: {tb}")
+            dev_capture_bug(f"title: Agent 工作台 启动异常\nerror: {tb.splitlines()[-1] if tb else 'unknown'}\ntraceback: {tb}")
         except Exception as capture_error:
             _log("Bug 归档失败：" + str(capture_error))
         print("启动过程出现未预期错误：\n" + tb)

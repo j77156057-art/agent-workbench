@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""DocMind 运维/联调命令行（最小集：doctor / chat / bridge）。
+"""Agent 工作台 运维/联调命令行（最小集：doctor / chat / bridge）。
 
 定位：**只做 API 客户端 + 预检**，不复制任何业务逻辑。
 - doctor : 服务存活、模型配置、开关状态、code_root 一致性、待确认队列
@@ -59,7 +59,7 @@ def _tune_stdio() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="docmind",
-        description="DocMind 运维/联调命令行（doctor / chat / bridge）。",
+        description="Agent 工作台 运维/联调命令行（doctor / chat / bridge）。",
     )
     parser.add_argument(
         "--base",
@@ -290,7 +290,7 @@ def _finish_doctor(base, args, report, checks, hard_fail) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 1 if hard_fail else 0
 
-    print("DocMind doctor @ %s" % base)
+    print("Agent Workbench doctor @ %s" % base)
     for level, text in checks:
         print(("[%s]" % level).ljust(8) + text)
     warnings = sum(1 for level, _ in checks if level == "WARN")

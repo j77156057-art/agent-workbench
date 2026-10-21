@@ -1410,7 +1410,7 @@ async function powerAction(action: 'on' | 'off') {
           <!-- MCP -->
           <section v-show="tab === 'mcp'" class="sv-panel" data-wizard="mcp-autoconnect">
             <h4 class="sv-h4">MCP 自动连接</h4>
-            <p class="sv-hint">描述你想要的能力，DocMind 会读取官方文档、提取连接命令、试连并请你确认后写入本机。</p>
+            <p class="sv-hint">描述你想要的能力，Agent 工作台 会读取官方文档、提取连接命令、试连并请你确认后写入本机。</p>
             <p v-if="mcpError" class="sv-err">{{ mcpError }}</p>
             <p v-if="mcpNotice" class="sv-ok" data-role="mcp-notice">{{ mcpNotice }}</p>
 
@@ -1549,7 +1549,7 @@ async function powerAction(action: 'on' | 'off') {
                 <div class="sv-dialog-head wb-modal-head">
                   <Icon name="shield-check" :size="24" />
                   <div><h3 class="sv-title">确认添加这个连接器？</h3>
-                  <p class="sv-hint">DocMind 会把下面这条配置写入本机并立即启用，之后你可以在对话里调用它的工具。</p></div>
+                  <p class="sv-hint">Agent 工作台 会把下面这条配置写入本机并立即启用，之后你可以在对话里调用它的工具。</p></div>
                 </div>
                 <div class="sv-dialog-body" v-if="acSelected">
                   <template v-if="!isHttpTransport(acSelected)">
@@ -1598,7 +1598,7 @@ async function powerAction(action: 'on' | 'off') {
                 <div class="sv-dialog-body">
                   <!-- 自动进行中（L0 填表 / L1 续跑）：进度态 -->
                   <template v-if="regView === 'running'">
-                    <p class="sv-hint">DocMind 正在官方页面按文档结构填入并提交，全程限定在可信域内完成；凭证不会进入对话上下文。</p>
+                    <p class="sv-hint">Agent 工作台 正在官方页面按文档结构填入并提交，全程限定在可信域内完成；凭证不会进入对话上下文。</p>
                     <div class="sv-ac-state" data-role="l0-progress">
                       <Icon name="loader" :size="20" class="dm-spin" />
                       <span>自动填充中{{ regStep ? '：' + regStepText : '…' }}</span>
@@ -1615,7 +1615,7 @@ async function powerAction(action: 'on' | 'off') {
                     <p v-if="regL1Extra" class="sv-note" data-tone="neutral" data-role="l1-prompt-extra">{{ regL1Extra }}</p>
                     <div class="sv-l1-wait" data-role="l1-wait">
                       <Icon name="user-check" :size="20" />
-                      <span>浏览器窗口保持打开，DocMind 会在你完成后继续。</span>
+                      <span>浏览器窗口保持打开，Agent 工作台 会在你完成后继续。</span>
                     </div>
                     <a v-if="regUrl" class="sv-btn sv-primary sv-ext" :href="regUrl" target="_blank" rel="noreferrer">
                       <Icon name="external-link" :size="16" />在浏览器打开注册页
@@ -1841,7 +1841,7 @@ async function powerAction(action: 'on' | 'off') {
               <label class="sv-field"><span>所在地</span><input v-model="profile.location" class="sv-input" placeholder="例如：南宁" /></label>
             </div>
             <label class="sv-label">长期目标（每行一项）</label>
-            <textarea :value="profile.goals.join('\n')" class="sv-input sv-textarea" rows="3" placeholder="例如：完成 DocMind 游戏项目\n建立可复用的工作流" @input="updateGoals" />
+            <textarea :value="profile.goals.join('\n')" class="sv-input sv-textarea" rows="3" placeholder="例如：完成 Agent 工作台 游戏项目\n建立可复用的工作流" @input="updateGoals" />
             <label class="sv-label">补充偏好与备注</label>
             <textarea v-model="profile.notes" class="sv-input sv-textarea" rows="3" placeholder="只填写你希望 Agent 长期记住的内容" />
             <p v-if="profileError" class="sv-err">{{ profileError }}</p>

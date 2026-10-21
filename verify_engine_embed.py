@@ -75,7 +75,7 @@ class _WNDCLASSW(ctypes.Structure):
 class HostWindow:
     """一个真·顶层窗口，用作 HWND 嵌入的宿主。"""
 
-    def __init__(self, title='DocMind 嵌入验证宿主', width=1100, height=760, x=60, y=60):
+    def __init__(self, title='Agent 工作台 嵌入验证宿主', width=1100, height=760, x=60, y=60):
         self.user32 = ctypes.windll.user32
         self.hwnd = None
         self.messages = []                    # 宿主收到的消息（输入链路诊断用）
@@ -533,7 +533,7 @@ def main():
     engine_pid = None
     try:
         print('[0] 环境自检：本进程的合成输入能否送达窗口')
-        host0 = HostWindow(title='DocMind 合成输入自检', width=520, height=320, x=40, y=40)
+        host0 = HostWindow(title='Agent 工作台 合成输入自检', width=520, height=320, x=40, y=40)
         host0.clear_messages()
         ctypes.windll.user32.SetForegroundWindow(host0.hwnd)
         ctypes.windll.user32.SetFocus(host0.hwnd)

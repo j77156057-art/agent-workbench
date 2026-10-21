@@ -1,5 +1,5 @@
 /* =============================================================
-   DocMind · 粗野版本 · 基础层
+   Agent 工作台 · 粗野版本 · 基础层
    ============================================================= */
 *, *::before, *::after { box-sizing: border-box; }
 html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }

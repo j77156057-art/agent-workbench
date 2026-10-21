@@ -414,7 +414,7 @@ const log = (line) => { out.textContent += '\\n' + line; };
 """
 
 PROBE_PAGE_HTML = ("<!doctype html><html><head><meta charset=\"utf-8\">"
-                   "<title>DocMind 媒体夹具探针</title></head><body>"
+                   "<title>Agent 工作台 媒体夹具探针</title></head><body>"
                    "<pre id=\"out\">boot</pre><script>\n%s</script></body></html>\n")
 
 

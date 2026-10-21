@@ -222,7 +222,7 @@ def default_cases() -> list[dict[str, Any]]:
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
     import json
-    parser = argparse.ArgumentParser(description="DocMind retrieval regression gate")
+    parser = argparse.ArgumentParser(description="Agent Workbench retrieval regression gate")
     parser.add_argument("--dataset", default="")
     parser.add_argument("--live-cases", default="",
                         help="evaluate labelled cases against a live Chroma collection")

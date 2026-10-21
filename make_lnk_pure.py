@@ -157,6 +157,6 @@ if __name__ == "__main__":
     target = os.path.join(base, "dist", "DocMind", "DocMind.exe")
     workdir = os.path.join(base, "dist", "DocMind")
     icon = target  # 用 exe 内嵌图标（spec 已 icon=docmind.ico 打进 exe）
-    lnk = r"C:\Users\<you>\Desktop\DocMind.lnk"
+    lnk = r"C:\Users\<you>\Desktop\Agent Workbench.lnk"
     build_lnk(target, lnk, workdir, icon)
     verify_lnk(lnk, target)

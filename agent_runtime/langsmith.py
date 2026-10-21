@@ -433,7 +433,7 @@ def sync_workflow_dataset(dataset_name: str | None = None,
         except Exception:
             dataset = client.create_dataset(
                 dataset_name=name,
-                description="Synthetic game workflow regression cases for DocMind Harness",
+                description="Synthetic game workflow regression cases for Agent Workbench Harness",
                 metadata={"docmind": "game-workflow", "version": "1"},
             )
         dataset_id = getattr(dataset, "id", None) or (dataset.get("id") if isinstance(dataset, Mapping) else None)

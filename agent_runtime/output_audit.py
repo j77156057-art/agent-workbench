@@ -233,7 +233,7 @@ _ACCURACY_TOTAL_CLAIM = re.compile(
 
 #: 乙方案·触发二：本轮**代码检索工具**的原始返回里自报了"会少计"的截断。
 #: 只认这几处措辞（都是 grep/search_code/dev_glob 触顶时**如实追加**、且已被各自
-#: 测试锁定的字样）。**不含** grep 的"已跳过 DocMind 状态目录"——那是影子副本去重、
+#: 测试锁定的字样）。**不含** grep 的"已跳过 Agent 工作台 状态目录"——那是影子副本去重、
 #: 不是少计，把它当截断会误伤。
 _CODE_UNDERCOUNT_NOTE = re.compile(
     r"条上限并"            # grep：已达 40 条上限并**截断**

@@ -77,7 +77,7 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
   try {
     res = await fetch(url, withProject(init))
   } catch {
-    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 DocMind 已启动。')
+    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 Agent 工作台 已启动。')
   }
   let body: any = null
   try {
@@ -118,7 +118,7 @@ export async function rawJson<T>(url: string, payload?: unknown, signal?: AbortS
       ? { method: 'GET', signal }
       : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal }, projectId))
   } catch {
-    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 DocMind 已启动。')
+    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 Agent 工作台 已启动。')
   }
   try {
     return (await res.json()) as T
@@ -137,7 +137,7 @@ export async function projectRequest<T>(url: string, init?: RequestInit): Promis
   try {
     res = await fetch(url, withProject(init))
   } catch {
-    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 DocMind 已启动。')
+    throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 Agent 工作台 已启动。')
   }
   try {
     return (await res.json()) as T

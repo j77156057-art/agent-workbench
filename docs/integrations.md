@@ -1,4 +1,4 @@
-# DocMind 集成文档：MCP 引擎桥 与 Web 试玩导出
+# Agent 工作台 集成文档：MCP 引擎桥 与 Web 试玩导出
 
 > 适用对象：`mcp_client.py`（MCP 引擎桥）与 `web_export.py`（Godot Web 试玩导出）。
 > 本文档是这两块已落地功能的**产品级使用说明 + 能力边界**，不是规划。
@@ -8,7 +8,7 @@
 ## 1. MCP 引擎桥（`mcp_client.py`）
 
 ### 它是什么
-DocMind 不内置任何引擎专用协议，而是通过标准 **MCP（Model Context Protocol）** 对接外部游戏引擎桥，让 Agent 能调用引擎侧工具（读场景、跑编辑器命令等）。
+Agent 工作台 不内置任何引擎专用协议，而是通过标准 **MCP（Model Context Protocol）** 对接外部游戏引擎桥，让 Agent 能调用引擎侧工具（读场景、跑编辑器命令等）。
 
 - **传输方式**：
   - `stdio`：长驻子进程，newline-delimited JSON-RPC 2.0。
@@ -63,7 +63,7 @@ Agent 的 `dev_mcp_search` 工具沿用同一领域目录和 Registry 查询；�
 ### 已知边界 / 注意事项
 - **工具结果只抽取文本**：图片 / 二进制等 content 块仅标注其类型（`other_blocks` 字段），不做二进制处理。
 - **stdio 会话长驻**：按 `root + key` 缓存；若子进程异常退出，下一次调用会报 `MCPError`（含 stderr 尾部用于排错）。
-- **无沙箱**：MCP 服务器作为子进程启动，继承 DocMind 进程环境（含配置注入的 `env`），权限等同本服务本身——**只适合可信的本地代码**，不要接不可信远端。
+- **无沙箱**：MCP 服务器作为子进程启动，继承 Agent 工作台 进程环境（含配置注入的 `env`），权限等同本服务本身——**只适合可信的本地代码**，不要接不可信远端。
 - **不提供跨服务器聚合**：没有"一次列出所有服务器全部工具"的接口，需按 `key` 逐个 `list_tools` / `call_tool`。
 - `pin_godot_server(version)` 可在安装 godot-ai 插件后把 stdio 参数 pin 到与插件相同的发布版本。
 

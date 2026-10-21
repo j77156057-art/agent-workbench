@@ -684,7 +684,7 @@ function onDrop(e: DragEvent) {
 async function enhance() {
   const d = draft.value.trim()
   if (!d) { showToast('请先写下要增强的提问草稿'); return }
-  if (demoMode.value) { showToast('示例演示模式下无法增强，请在本机启动 DocMind 后使用'); return }
+  if (demoMode.value) { showToast('示例演示模式下无法增强，请在本机启动 Agent 工作台 后使用'); return }
   try {
     const r = await promptApi.enhance(d)
     if (r.ok && r.enhanced) {
@@ -820,7 +820,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
       </header>
 
       <div v-if="demoMode" class="banner info">
-        示例演示模式：当前未连接本地 DocMind 服务，以下回答为演示数据。启动本机服务后刷新即可使用真实问答。
+        示例演示模式：当前未连接本地 Agent 工作台 服务，以下回答为演示数据。启动本机服务后刷新即可使用真实问答。
       </div>
       <!-- 只有「对话模型」不可用才用告警语气。仅检索不可用时用 info：
            embedding_provider 默认就是 ollama，若一律弹黄色横幅，云端对话用户
@@ -960,7 +960,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
 </template>
 
 <style scoped>
-/* ===== DocMind 问答页 · 高级粗野风 ===== */
+/* ===== Agent 工作台 问答页 · 高级粗野风 ===== */
 .ask-shell { display: flex; height: 100vh; overflow: hidden; background: var(--bg); }
 
 .ask-main {

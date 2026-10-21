@@ -11,6 +11,6 @@ rem so a crash on startup (a missing module, a failed dependency step)
 rem flashes and is gone before anyone can read it. Measured on this box:
 rem exit code 1 with the error text on screen, then window gone.
 set "DOCMIND_EXIT=%ERRORLEVEL%"
-if not "%DOCMIND_EXIT%"=="0" echo DocMind exited with code %DOCMIND_EXIT%.
+if not "%DOCMIND_EXIT%"=="0" echo Agent Workbench exited with code %DOCMIND_EXIT%.
 if not "%DOCMIND_EXIT%"=="0" pause
 exit /b %DOCMIND_EXIT%

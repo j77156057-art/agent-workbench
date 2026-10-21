@@ -30,7 +30,7 @@ class HostHandleTests(unittest.TestCase):
     def test_legacy_backend_retains_title_fallback(self):
         win = self.window(None)
         with patch('webview.create_window', return_value=win), \
-             patch('desktop_bridge.find_host', return_value=(5678, 'DocMind')) as search, \
+             patch('desktop_bridge.find_host', return_value=(5678, 'Agent Workbench')) as search, \
              patch('desktop_bridge.set_host') as register, \
              patch('desktop.urllib.request.urlopen', return_value=Mock()):
             desktop.build_host_window('http://127.0.0.1:8024')

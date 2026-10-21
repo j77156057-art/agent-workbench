@@ -1,2 +1,2 @@
-"""Domain routers for the DocMind HTTP API."""
+"""Domain routers for the Agent Workbench HTTP API."""
 

@@ -131,7 +131,7 @@ class IngestDocmindScopeTests(unittest.TestCase):
         self.assertNotIn(".hidden/config.json", seen,
                          "通用点目录应与 grep 一致被剪")
 
-    # ---- RETR-Pollution：DocMind 运行/遥测点文件不得入库 --------------------
+    # ---- RETR-Pollution：Agent 工作台 运行/遥测点文件不得入库 --------------------
     def test_dot_files_pruned(self):
         seen = self._run([
             ".docmind_mcp.json",
@@ -140,7 +140,7 @@ class IngestDocmindScopeTests(unittest.TestCase):
         ])
         for rel in (".docmind_mcp.json", ".docmind_runtime.jsonl", ".docmind_tasks.jsonl"):
             self.assertNotIn(rel, seen,
-                             "%s 属 DocMind 运行时/遥测台账，不得进语义库" % rel)
+                             "%s 属 Agent 工作台 运行时/遥测台账，不得进语义库" % rel)
 
     # ---- 剪点目录/点文件只针对点开头，真实同名非点目录必须照常入库 --------
     def test_non_dot_same_name_dirs_not_over_pruned(self):

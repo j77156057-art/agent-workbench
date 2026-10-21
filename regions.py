@@ -233,12 +233,12 @@ _GIT_MISSING_HINT = (
     "未找到 git 可执行文件（不在 PATH 中）。分区初始化/提交/回滚依赖 Git，"
     "请先安装 Git for Windows（https://git-scm.com/download/win，安装时勾选 "
     "“Git from the command line and also from 3rd-party software”），"
-    "安装后重新打开 DocMind 再试。"
+    "安装后重新打开 Agent 工作台 再试。"
 )
 _GIT_MISSING_HINT_FROZEN = (
     "未能启动随包附带的 Git（MinGit）。分发版应在程序目录的 MinGit\\cmd 下自带 git，"
-    "请检查该目录是否被杀毒软件删除或隔离；恢复后重新打开 DocMind，"
-    "或重新获取完整的 DocMind 分发包。"
+    "请检查该目录是否被杀毒软件删除或隔离；恢复后重新打开 Agent 工作台，"
+    "或重新获取完整的 Agent 工作台 分发包。"
 )
 
 
@@ -309,7 +309,7 @@ def _ignore_in_parent(root):
         new_lines.append(".docmind_backups/")
     if new_lines:
         with open(gi, "a", encoding="utf-8") as f:
-            f.write("\n# DocMind 分区开发：各分区为独立 git 仓库，父仓库不跟踪其内容\n")
+            f.write("\n# Agent 工作台 分区开发：各分区为独立 git 仓库，父仓库不跟踪其内容\n")
             f.write("\n".join(new_lines) + "\n")
 
 
@@ -366,7 +366,7 @@ def init_regions(root=None, regions_list=None):
                 return False, f"git init 失败（{meta['name']}）：{err}"
             # 为工具托管的独立仓库设置本地提交身份，避免机器无全局 git 身份时提交失败
             _git(["config", "user.email", "docmind@local"], cwd=d)
-            _git(["config", "user.name", "DocMind"], cwd=d)
+            _git(["config", "user.name", "Agent Workbench"], cwd=d)
         # 导出接口桩文件（让契约校验有东西可验）
         for ex in meta.get("exports") or []:
             ex_path = os.path.join(d, ex)
@@ -453,7 +453,7 @@ def scaffold_region(root, key):
         footer = (
             "\n> 本目录是独立 git 仓库，可单独 commit / 回滚，不影响其它分区。\n"
             if _siblings_use_git(root, regions, key)
-            else "\n> 由 DocMind 分区可视化一键创建，纳入项目主仓库统一版本管理。\n"
+            else "\n> 由 Agent 工作台 分区可视化一键创建，纳入项目主仓库统一版本管理。\n"
         )
         with open(readme, "w", encoding="utf-8") as f:
             f.write(
@@ -471,7 +471,7 @@ def scaffold_region(root, key):
         ok, err = _git(["init", "-q"], cwd=d)
         if ok:
             _git(["config", "user.email", "docmind@local"], cwd=d)
-            _git(["config", "user.name", "DocMind"], cwd=d)
+            _git(["config", "user.name", "Agent Workbench"], cwd=d)
             ok_status, status = _git(["status", "--porcelain"], cwd=d)
             if ok_status and status.strip():
                 _git(["add", "-A"], cwd=d)
@@ -779,7 +779,7 @@ def _write_dev_index(root, regions):
     lines = [
         "# 分区开发索引（DEV_INDEX）",
         "",
-        "> 由 DocMind 开发模式自动生成（改完分区后可用 dev_rebuild_index 重算）。",
+        "> 由 Agent 工作台 开发模式自动生成（改完分区后可用 dev_rebuild_index 重算）。",
         "> 每个分区是 code_root 下的独立子目录 + 独立 git 仓库；依赖方向见 `依赖`。",
         "",
     ]
@@ -815,7 +815,7 @@ def rebuild_dev_index(root=None):
 
 def _write_rules(root, regions):
     rlines = [
-        "# DocMind 分区开发规则（本文件由 /api/ingest_code 注入 Agent 系统提示）",
+        "# Agent 工作台 分区开发规则（本文件由 /api/ingest_code 注入 Agent 系统提示）",
         "",
         "本项目采用「分区开发」：代码按分工落在以下独立子目录，每个目录是独立 git 仓库。",
         "",

@@ -1,7 +1,7 @@
-# 星舰勇者 StarVoyager（DocMind 测试用游戏 Demo）
+# 星舰勇者 StarVoyager（Agent 工作台 测试用游戏 Demo）
 
 一个零第三方依赖的竖版射击小游戏（Python 标准库 tkinter 渲染），用于验证
-DocMind 的代码索引与中文问答能力。
+Agent 工作台 的代码索引与中文问答能力。
 
 ## 运行
 

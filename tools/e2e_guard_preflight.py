@@ -73,7 +73,7 @@ def main() -> int:
     print("=" * 74)
     print("  模型: %s" % MODEL)
     print("  provider: %s" % PROVIDER)
-    print("  DocMind: %s" % ROOT)
+    print("  Agent Workbench: %s" % ROOT)
 
     # ---------- 1. LLMClient ----------
     step("1", "LLMClient(provider=%s) 建起来并回一句话" % PROVIDER)
@@ -115,7 +115,7 @@ def main() -> int:
     # ⚠ **第二版撤掉了第一版的 `_NoWrite` 只读桩。**
     # 第一版报 `KeyError: 0` —— 而那个桩只是个普通类，没实现 `Mapping` 的
     # `keys()`/`__iter__`。所以那个 KeyError **极可能是我自己的桩**造成的，
-    # 不是 DocMind 的问题。（今晚那条纪律：先怀疑探针，再怀疑被测物。）
+    # 不是 Agent 工作台 的问题。（今晚那条纪律：先怀疑探针，再怀疑被测物。）
     #
     # 而且第 6 节本来就要在**临时 fixture 目录**里跑（`dev_eval.py` 就是这么做的），
     # 让 agent 有写权限但只碰那个目录 —— 那是**更真实**的场景，

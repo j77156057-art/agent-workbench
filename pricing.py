@@ -78,7 +78,7 @@ def _budget_lock():
     疑似僵死（>3s 未释放，远超正常持有时间），视为孤儿锁直接清理后重试；整体等待
     硬上限 5s，避免任何调用方被卡死。
 
-    注意（golden 评测专用旁路）：DocMind 的运行时审批门会对「删除 .docmind_budget.json.lock」
+    注意（golden 评测专用旁路）：Agent 工作台 的运行时审批门会对「删除 .docmind_budget.json.lock」
     这类 os.unlink 触发 safe_delete 守卫，在非交互的评测子进程里会阻塞/硬杀进程，导致整轮
     0 题写出。golden runner 通过 DOCMIND_GOLDEN_NO_LOCK=1 让本锁降级为 no-op（预算写入仍走
     os.replace 落盘，只是不做文件锁互斥——评测为单进程顺序跑，无并发竞争，安全）。

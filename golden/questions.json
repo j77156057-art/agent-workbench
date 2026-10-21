@@ -1,7 +1,7 @@
 [
   {
     "id": "G1",
-    "question": "DocMind 的 /api/chat 接口是怎么把问题发给 Agent、又怎么把回答返回给前端的？",
+    "question": "Agent 工作台 的 /api/chat 接口是怎么把问题发给 Agent、又怎么把回答返回给前端的？",
     "expect": {
       "any_of": ["SSE", "流式", "session_id", "stream", "event-stream", "逐段"],
       "must_not_include": ["没有相关代码", "无法回答", "I cannot", "未配置代码库"],
@@ -46,7 +46,7 @@
   },
   {
     "id": "G6",
-    "question": "DocMind 前端工作台基于什么框架？场景画布用的节点图编辑库是哪个？",
+    "question": "Agent 工作台 前端工作台基于什么框架？场景画布用的节点图编辑库是哪个？",
     "expect": {
       "any_of": ["Vue", "vue-flow", "@vue-flow", "Vue Flow"],
       "must_not_include": ["没有相关代码", "无法回答", "I cannot", "未配置代码库"],
@@ -55,7 +55,7 @@
   },
   {
     "id": "G7",
-    "question": "DocMind 的 harness 里，负责记录每一轮 token 用量、工具延迟和结局的模块文件叫什么？",
+    "question": "Agent 工作台 的 harness 里，负责记录每一轮 token 用量、工具延迟和结局的模块文件叫什么？",
     "expect": {
       "any_of": ["agent_trace", "轨迹模块", "trace 模块", "token 用量"],
       "must_not_include": ["没有相关代码", "无法回答", "I cannot", "未配置代码库"],

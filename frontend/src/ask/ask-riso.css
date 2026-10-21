@@ -1,4 +1,4 @@
-/* DocMind「J 双色 Risograph」印刷语言层 + 双色纠偏覆盖层。
+/* Agent 工作台「J 双色 Risograph」印刷语言层 + 双色纠偏覆盖层。
    本文件在 ask.css 之后加载（见 ask/main.ts），因此可对 ask.css 的
    缺陷做"覆盖式"修复，而不会触碰并发写者正在改动的 ask.css / AskApp.vue。
 

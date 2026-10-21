@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>DocMind · AI 操作记录</title>
+<title>Agent 工作台 · AI 操作记录</title>
 <style>
   :root{
     --bg:#eef1f7; --bg-raised:#ffffff; --border:#dde3ee; --border-strong:#c4cedd;
@@ -128,7 +128,7 @@ function renderTrace(data, isDemo){
   const note = document.getElementById('demoNote');
   note.classList.toggle('show', !!isDemo);
   note.innerHTML = isDemo
-    ? '🧪 <b>示例演示数据</b>：当前页面没有连接到本机 DocMind 服务（比如正在看静态预览）。在本机启动服务后，这里会显示真实的 AI 操作记录。'
+    ? '🧪 <b>示例演示数据</b>：当前页面没有连接到本机 Agent 工作台 服务（比如正在看静态预览）。在本机启动服务后，这里会显示真实的 AI 操作记录。'
     : '';
   const s = data.summary || {};
   document.getElementById('cards').innerHTML = Object.keys(S).map(key=>{

@@ -1,6 +1,6 @@
 """通用 MCP（Model Context Protocol）客户端。
 
-DocMind 不内置任何引擎专用协议，而是通过 MCP 对接外部游戏引擎桥：
+Agent 工作台 不内置任何引擎专用协议，而是通过 MCP 对接外部游戏引擎桥：
 - godot-ai v4：stdio 传输（`uvx godot-ai attach`），靠同用户 capability 目录认证；
 - unity-mcp / UnrealMCP：Streamable HTTP JSON-RPC（无状态）。
 

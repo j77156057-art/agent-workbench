@@ -74,7 +74,7 @@ class DocmindScopeParityTests(_Tmp):
         self.assertNotIn(".docmind/projects", out.split("（提示")[0],
                          "命中了 `.docmind/projects` 影子副本——grep 仍按旧口径扫状态目录")
         # 如实披露被剪的状态目录
-        self.assertIn("已跳过 DocMind 状态目录", out)
+        self.assertIn("已跳过 Agent 工作台 状态目录", out)
         self.assertIn(".docmind/projects", out)
 
     def test_normal_project_still_searched(self):
@@ -82,7 +82,7 @@ class DocmindScopeParityTests(_Tmp):
         self.w("src/main.gd", "func HELLO_PROJ() -> int:\n")
         out = tools.grep("HELLO_PROJ").replace("\\", "/")
         self.assertIn("src/main.gd", out)
-        self.assertNotIn("已跳过 DocMind 状态目录", out)
+        self.assertNotIn("已跳过 Agent 工作台 状态目录", out)
 
 
 class SkippedBigFileTests(_Tmp):

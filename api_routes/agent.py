@@ -383,7 +383,7 @@ def build_router(ctx) -> APIRouter:
     def workflow_evidence(prompt: str, project_id: str = "", project_root: str = "") -> str:
         """Build bounded local evidence for planning prompts only."""
         # Planning a concrete project must not substitute the global knowledge
-        # base (which may describe DocMind) for that project's own files.
+        # base (which may describe Agent Workbench) for that project's own files.
         collections = {} if project_root else {"knowledge": COLLECTION_NAME}
         if project_root:
             pid = project_id or projects.project_id(project_root)
@@ -448,7 +448,7 @@ def build_router(ctx) -> APIRouter:
                 step_sink=sink,
                 llm=routed_llm)
             # `code_root` 必须显式传。缺省时`audit_evidence` 里`root = None`，相对路径
-            # 就落到**进程当前目录**（DocMind 自己仓库）去解析，于是每一个引用都
+            # 就落到**进程当前目录**（Agent 工作台 自己仓库）去解析，于是每一个引用都
             # `exists=False` —— 而 `in_root` 因`root is None` 保持初值 `True`，
             # 两者组合起来看起来像「路径存在但判定矛盾」，实际是「压根没查」。
             #

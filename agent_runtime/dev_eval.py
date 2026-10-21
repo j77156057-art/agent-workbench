@@ -162,7 +162,7 @@ def _build_fixture(kind: str, root: str) -> str:
         _git(root, "init", "-q")
         _git(root, "config", "user.email", "eval@example.com")
         _git(root, "config", "remote.origin.url",
-             "https://github.com/acme/rag-agent.git")
+             "https://github.com/acme/agent-workbench.git")
         _git(root, "config", "user.name", "First Author")
         _git(root, "add", "-A")
         _git(root, "commit", "-q", "-m", "first: add a.py",

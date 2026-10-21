@@ -17,7 +17,7 @@
   FAIL G14  → must_include:HISTORY_ANSWER_CHARS (未在最终答案中出现)；must_include:700 (未在最终答案中出现)
   ok G15
   FAIL G16  → must_include:api.py (未在最终答案中出现)；any_of (均未出现：['SSE', '流式', 'event-stream'])；must_call:grep (actions=['search_code(chat api route)'])；min_actions (实际 1)
-  FAIL G17  → any_of (均未出现：['Vue Flow', 'vue-flow', '@vue-flow/core'])；must_call:read_file (actions=['search_code(package.json)', 'search_knowledge(DocMind 前端框架 构建工具 节点图库)'])
+  FAIL G17  → any_of (均未出现：['Vue Flow', 'vue-flow', '@vue-flow/core'])；must_call:read_file (actions=['search_code(package.json)', 'search_knowledge(Agent 工作台 前端框架 构建工具 节点图库)'])
   FAIL G18  → must_include:system (未在最终答案中出现)；any_of (均未出现：['trail', '工具往返', '最早的'])；min_actions (实际 1)
   FAIL G19  → any_of (均未出现：['密钥', '用户代码', '正文永不落盘'])
   FAIL G20  → min_actions (实际 1)

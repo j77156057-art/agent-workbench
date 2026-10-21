@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Create a working Windows .lnk shortcut on the desktop that points to the
-onedir DocMind build, sets the working directory, and assigns the branded icon.
+onedir Agent Workbench build, sets the working directory, and assigns the branded icon.
 
 Strategy:
   1. Try win32com (pythoncom) -- the canonical, fully-valid approach.
@@ -19,7 +19,7 @@ EXE = os.path.join(BASE, "dist", "DocMind", "DocMind.exe")
 WORKDIR = os.path.join(BASE, "dist", "DocMind")
 ICON = os.path.join(BASE, "docmind.ico")
 DESKTOP = os.path.expanduser("~\\Desktop")
-LNK = os.path.join(DESKTOP, "DocMind.lnk")
+LNK = os.path.join(DESKTOP, "Agent Workbench.lnk")
 
 print("EXE     :", EXE, os.path.exists(EXE))
 print("WORKDIR :", WORKDIR, os.path.isdir(WORKDIR))

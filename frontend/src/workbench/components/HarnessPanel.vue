@@ -279,7 +279,7 @@ defineExpose({ show })
         </div>
 
         <div v-if="demoMode" class="hp-demo">
-          示例演示模式：以下是演示数据。在本地启动 DocMind 桌面端后，这里会显示你的真实记录。
+          示例演示模式：以下是演示数据。在本地启动 Agent 工作台 桌面端后，这里会显示你的真实记录。
         </div>
         <p v-if="error" class="hp-err">{{ error }} <button class="hp-link" @click="loadAll">重试</button></p>
         <p v-if="actionMsg" class="hp-actionmsg">{{ actionMsg }}</p>

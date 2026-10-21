@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 700" width="100%" role="img" font-family="Microsoft YaHei, PingFang SC, Segoe UI, Helvetica, Arial, sans-serif">
-<title>DocMind Agent Harness 六层架构</title>
-<desc>DocMind 的 Agent 运行时按六层组织：E 执行循环、T 工具注册、C 上下文管理、S 状态存储、L 生命周期钩子、V 评估接口，配合架构范式 P。</desc>
+<title>Agent 工作台 · 六层架构</title>
+<desc>Agent 工作台 的 Agent 运行时按六层组织：E 执行循环、T 工具注册、C 上下文管理、S 状态存储、L 生命周期钩子、V 评估接口，配合架构范式 P。</desc>
 
 <rect x="20" y="20" width="640" height="660" rx="14" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
 
-<text x="40" y="52" font-size="15" font-weight="500" fill="#2C2C2A">DocMind · Agent Harness 六层架构</text>
+<text x="40" y="52" font-size="15" font-weight="500" fill="#2C2C2A">Agent 工作台 · Agent Harness 六层架构</text>
 <text x="40" y="74" font-size="11" fill="#5F5E5A">H = (E, T, C, S, L, V) + P　｜　47 个工具 · 1131 项自动化测试全绿 · 零 API Key 可离线运行</text>
 <line x1="40" y1="88" x2="640" y2="88" stroke="#D3D1C7" stroke-width="0.5"/>
 

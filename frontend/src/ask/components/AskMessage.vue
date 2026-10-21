@@ -334,7 +334,7 @@ const phaseLabel = computed(() => {
 </template>
 
 <style scoped>
-/* ===== DocMind 问答气泡 · 高级粗野风 ===== */
+/* ===== Agent 工作台 问答气泡 · 高级粗野风 ===== */
 .msg-row { display: flex; gap: 12px; animation: msg-in .22s ease both; }
 .user-row { justify-content: flex-end; }
 @keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }

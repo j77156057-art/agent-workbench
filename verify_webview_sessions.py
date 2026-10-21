@@ -14,8 +14,8 @@ import webview
 def main():
     base = os.getenv('DOCMIND_UI_TEST_URL', 'http://127.0.0.1:8011')
     result = {'ok': False, 'runtime': 'edgechromium', 'checks': []}
-    first = webview.create_window('DocMind session acceptance A', base + '/workbench', hidden=True)
-    second = webview.create_window('DocMind session acceptance B', base + '/', hidden=True)
+    first = webview.create_window('Agent Workbench session acceptance A', base + '/workbench', hidden=True)
+    second = webview.create_window('Agent Workbench session acceptance B', base + '/', hidden=True)
 
     def session(win, different=None):
         end = time.monotonic() + 25

@@ -10,7 +10,7 @@
     .docmind/web/index.js
     MiniMax_H3_提示词速查.md
 
-——全是 **DocMind 自己仓库**的内容。它据此把调研结论写成了另一个项目，
+——全是 **Agent 工作台 自己仓库**的内容。它据此把调研结论写成了另一个项目，
 三连任务失败（`research` / `research_retry` / `research_fix` 全部 failed）。
 
 ## 根因
@@ -29,7 +29,7 @@
 
 实测（`.tmp/probe_collection.py`）：
 
-    docmind_code                  -> project.godot / .docmind/web/index.js   （DocMind 仓库）
+    docmind_code                  -> project.godot / .docmind/web/index.js   （Agent 工作台 仓库）
     docmind_code__prj-7bf576c...  -> 0 条                                    （探测项目）
     get_runtime('code_collection') = None -> 实际查 'docmind_code'
 

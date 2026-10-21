@@ -164,7 +164,7 @@ def run_real_project_acceptance(project_root: str, godot: str, *, state_root: st
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="DocMind real game Harness acceptance")
+    parser = argparse.ArgumentParser(description="Agent Workbench real game Harness acceptance")
     parser.add_argument("--project", required=True)
     parser.add_argument("--godot", required=True)
     parser.add_argument("--state-root", default="")
