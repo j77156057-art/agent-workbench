@@ -38,9 +38,18 @@ class DegradedClientIsVisibleTests(unittest.TestCase):
     """降级这件事本身必须能被调用方看见，否则它就是个静默副作用。"""
 
     def _degraded(self):
-        """构造一个「本该用 ollama、但探测失败」的客户端。"""
+        """构造一个「本该用 ollama、但探测失败」的客户端。
+
+        ⚠ 必须**显式**把 embedding_provider 钉成 ollama：`EmbeddingClient.__init__`
+        只在 provider 是 ollama 时才探测维度、才可能降级。默认值随机器而变
+        （CI 上是 local，本机是 ollama），不钉住的话这条测试在 CI 上测的是
+        「主动选了 local」那条路 —— 那条路本来就不该标记降级。
+        """
         with patch.object(EmbeddingClient, "_probe_dim",
-                          side_effect=RuntimeError("连接被拒绝")):
+                          side_effect=RuntimeError("连接被拒绝")), \
+             patch("embeddings.get_runtime",
+                   side_effect=lambda key, default="":
+                   "ollama" if key == "embedding_provider" else default):
             return EmbeddingClient()
 
     def test_it_reports_that_it_degraded(self):

@@ -50,14 +50,25 @@ def _select_rules(rules: str) -> tuple[str, str]:
 
 
 def _rel(root: str, path: str) -> str:
-    """Repo-relative, forward slashes; absolute paths outside root stay as-is."""
+    """Repo-relative, forward slashes; absolute paths outside root stay as-is.
+
+    「在 root 之外就原样保留」这句话是**契约**，不是描述：早先的实现无条件 relativize，
+    于是 root 之外的绝对路径被算成 `../../../../../../w/frontend/src/a.ts` ——
+    一个比原路径更难读的相对串，而它的含义（这个文件不在项目里）恰恰丢了。
+    现在先判「在不在 root 下」，不在就原样返回（去掉前导斜杠）。
+    """
     text = str(path or "").replace("\\", "/")
     if not root or not os.path.isabs(path):
         return text.lstrip("./")
     try:
-        return os.path.relpath(os.path.normpath(path), os.path.normpath(root)).replace("\\", "/")
+        base = os.path.normpath(os.path.abspath(root))
+        target = os.path.normpath(os.path.abspath(path))
+        if os.path.commonpath([base, target]) != base:
+            return text.lstrip("./")
+        return os.path.relpath(target, base).replace("\\", "/")
     except ValueError:
-        return text
+        # 跨盘符（Windows）/ 跨根（POSIX）：commonpath 抛错 = 不在同一个树下
+        return text.lstrip("./")
 
 
 def _severity(rule: str) -> str:

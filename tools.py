@@ -5900,6 +5900,20 @@ def read_file(path):
             target = alt
         else:
             return f"拒绝访问：{path} 不在代码根目录内。"
+    if not os.path.isfile(target) and "\\" in path:
+        # 模型常写 Windows 形状的路径（`behaviors\player.gd`）。在 POSIX 上那是一个
+        # **含反斜杠的文件名**而不是分隔符 —— 于是明明存在的文件打不开，而报错把
+        # 原串原样回显，模型只会去换分隔符、白试四次（正是本文件开头记的那个实测故障）。
+        # 这里把反斜杠当分隔符**再试一次**；是兜底不是改写：真含反斜杠的文件名
+        # 仍按原样优先（上面那次 isfile 已经判过了）。
+        alt = os.path.normpath(os.path.join(root_abs, path.replace("\\", "/")))
+        if os.path.isfile(alt) and (alt == root_abs or alt.startswith(root_abs + os.sep)):
+            alt_floor = _hard_floor_reason(alt)
+            if alt_floor:
+                return alt_floor
+            if _env_read_denied(alt):
+                return "安全策略拒绝：.env 类凭据文件禁止读取（写可读禁，与 Hermes 一致）。"
+            target = alt
     if not os.path.isfile(target):
         if leftover:
             # 错误文本要**短但不含糊**。Claude Code 在 limits.ts 里记着他们的实测：

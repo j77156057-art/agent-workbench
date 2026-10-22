@@ -149,6 +149,10 @@ class GuidanceSeverityTests(unittest.TestCase):
     """
 
     def _status(self, prov, emb, reachable, present=()):
+        # ⚠ `EMBEDDING_MODEL` 也要钉住：它是**环境变量**（`config.py`），
+        # 生产拿它去 `/api/tags` 的模型清单里对号。本机配的是 bge-m3、CI 的默认值
+        # 是 text-embedding-v3 —— 不钉住的话，夹具给的模型名在 CI 上根本对不上，
+        # 于是「Ollama 正常且模型已就位」被判成「模型没拉」→ 多出一条引导文案。
         class _Resp:
             def __enter__(self):
                 return self
@@ -171,6 +175,7 @@ class GuidanceSeverityTests(unittest.TestCase):
                 "llm_provider": prov, "embedding_provider": emb,
                 "llm_model": "bge-m3" if prov == "ollama" else "deepseek-flash",
             }.get(k, d)), \
+             patch.object(api, "EMBEDDING_MODEL", "bge-m3"), \
              patch.object(api._ollama_no_proxy, "open", side_effect=fake_open):
             return api.check_ollama(force=True)
 

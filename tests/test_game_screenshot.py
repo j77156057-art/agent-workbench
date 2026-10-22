@@ -162,7 +162,9 @@ class GameScreenshotToolTests(unittest.TestCase):
         self.assertIn(saved_path, result.text)
         self.assertEqual(called["embedded"], 0)
         self.assertEqual(result.artifacts[0]["adapter"], "game")
-        self.assertEqual(result.artifacts[0]["path"], saved_path)
+        # 产物路径是项目相对路径（前端拼预览 URL）；绝对路径只在 image_sources 里。
+        self.assertEqual(result.artifacts[0]["path"],
+                         os.path.relpath(saved_path, self.tmp).replace("\\", "/"))
 
     def test_embedded_frame_saved_without_touching_foreground(self):
         frame = (_bgra(320, 240), 320, 240, 4321)

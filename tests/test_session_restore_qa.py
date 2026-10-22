@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -107,18 +108,26 @@ class SessionRestoreQATests(unittest.TestCase):
 
     # ---- A5: 列表端点仍可用，删除后消失 ----
     def test_list_endpoint_still_works_and_reflects_delete(self):
-        sessions.save(self.sid, [{"user": "u1", "assistant": "a1"},
-                                 {"user": "u2", "assistant": "a2"}])
-        items = self.client.get("/api/sessions").json()["items"]
-        found = [x for x in items if x["session_id"] == self.sid]
-        self.assertEqual(len(found), 1)
-        self.assertEqual(found[0]["turns"], 2)
-        self.assertEqual(found[0]["title"], "u1")
-        self.assertEqual(found[0]["preview"], "u1")
+        # ⚠ 列表端点按**当前项目**过滤（`api.py`：`project_id=_request_project_id() or None`），
+        # 而这条夹具存的会话是**无归属**的（`sessions.save` 不写归属，归属由
+        # `bind_code_root()` 绑）。于是「当前项目」一旦非空（CI 上 checkout 本身
+        # 就成了一个项目），它就被过滤掉 —— 这条测试的成败取决于**跑它之前别人
+        # 在状态文件里留了什么**。
+        # 钉住「当前项目」为空 = 这条测的确实是它要测的两件事：
+        # 列表端点可用、删完即消失。
+        with patch.object(api, "_request_project_id", return_value=""):
+            sessions.save(self.sid, [{"user": "u1", "assistant": "a1"},
+                                     {"user": "u2", "assistant": "a2"}])
+            items = self.client.get("/api/sessions").json()["items"]
+            found = [x for x in items if x["session_id"] == self.sid]
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["turns"], 2)
+            self.assertEqual(found[0]["title"], "u1")
+            self.assertEqual(found[0]["preview"], "u1")
 
-        self.client.delete("/api/sessions/%s" % self.sid)
-        items2 = self.client.get("/api/sessions").json()["items"]
-        self.assertEqual([x for x in items2 if x["session_id"] == self.sid], [])
+            self.client.delete("/api/sessions/%s" % self.sid)
+            items2 = self.client.get("/api/sessions").json()["items"]
+            self.assertEqual([x for x in items2 if x["session_id"] == self.sid], [])
 
     # ---- A6: 真实形态（web-<hex>）的 id 往返一致；含点的 id 也可 ----
     def test_safe_id_roundtrip(self):
