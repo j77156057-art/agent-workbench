@@ -7543,8 +7543,16 @@ def dev_job_logs(arg=""):
     """
     from agent_runtime import log_view, process_runner
 
-    fields = _parse_keyed(arg or "", ["job_id", "id", "offset", "fold", "level"])
-    job_id = str(fields.get("job_id") or fields.get("id") or "").strip()
+    # `limit` 也在名单里：模型很自然会写「dev_job_logs(job_id: x, limit: 40)」。
+    # 它不在名单时，`_parse_keyed` 的值会一路吃到**下一个已知键**，于是这个不认识的
+    # 键把 job_id 污染成 "abc123\nlimit: 40" → 查不到 → 工具回一句
+    # 「后台任务不存在或已清理」—— **而任务明明在跑**。那个报错会把模型引去
+    # 「任务没起来」，于是它改用 python_exec 手搓驱动去「模拟」游戏逻辑
+    # （实测 2026-10-22：游戏其实已经在跑，模型却以为没跑起来）。
+    fields = _parse_keyed(arg or "", ["job_id", "id", "offset", "fold", "level", "limit"])
+    # job_id 里不该有换行：取首行，任何「多出来的键行」都不再混进来。
+    _raw_job_id = str(fields.get("job_id") or fields.get("id") or "").strip()
+    job_id = _raw_job_id.splitlines()[0].strip() if _raw_job_id else ""
     # 模型经常直接把 id 当整串输入（"dev_job_logs(abc123)"），此时首行就是 id。
     if not job_id and str(arg or "").strip():
         job_id = str(arg).strip().splitlines()[0].strip().strip("'\"")
@@ -7561,7 +7569,28 @@ def dev_job_logs(arg=""):
         return json.dumps({"ok": True, "jobs": jobs}, ensure_ascii=False)
     report = process_runner.job_logs(job_id, offset=offset)
     if not report.get("ok"):
-        return f"后台任务读取失败：{report.get('error')}"
+        # 找不到时**附上当前的任务清单**与不认识的键：只说「不存在」的话，
+        # 模型无从判断是自己 id 写错了、还是任务真没起来 —— 它会因此放弃读日志，
+        # 转而去手搓验证（那更贵、也拿不到真实画面）。
+        jobs = (process_runner.job_logs("").get("jobs") or [])
+        hints = []
+        if jobs:
+            hints.append("当前的后台任务：%s" % "、".join(
+                "%s(%s)" % (j.get("job_id"), j.get("state")) for j in jobs[:5]))
+        unknown = [str(x) for x in (fields.get("__unknown__") or [])]
+        if unknown:
+            hints.append("你写了不认识的键：%s（已忽略）" % "、".join(unknown))
+        tail = ("。" + "；".join(hints)) if hints else ""
+        return f"后台任务读取失败：{report.get('error')}{tail}"
+    raw_limit = str(fields.get("limit") or "").strip()
+    if raw_limit:
+        try:
+            keep = max(200, int(float(raw_limit)))
+            if len(str(report.get("logs") or "")) > keep:
+                report["logs"] = str(report.get("logs") or "")[-keep:]
+                report["logs_truncated_to"] = keep
+        except (TypeError, ValueError):
+            pass
     want_fold = str(fields.get("fold") or "").strip().lower()
     level = str(fields.get("level") or "").strip().lower()
     folding = want_fold in ("1", "true", "yes", "on") or bool(level)

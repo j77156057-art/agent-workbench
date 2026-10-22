@@ -251,6 +251,36 @@ class ToolSurfaceTests(unittest.TestCase):
     def test_job_logs_without_id_lists(self):
         self.assertIn("jobs", tools.dev_job_logs(""))
 
+    def test_a_limit_key_does_not_swallow_the_job_id(self):
+        """`limit:` 曾经把 job_id 污染成 "abc\\nlimit: 40" → 工具报「任务不存在」。
+
+        而任务明明在跑 —— 那句报错把模型引去「任务没起来」，于是它改用 python_exec
+        手搓驱动去「模拟」（实测 2026-10-22：游戏其实已经在跑，模型却以为没跑起来）。
+        """
+        with tempfile.TemporaryDirectory() as root:
+            started = pr.start_job([sys.executable, "-c", "print('bare')"], cwd=root, timeout=30)
+            job_id = started["job_id"]
+            try:
+                time.sleep(0.5)
+                out = tools.dev_job_logs("job_id: %s\nlimit: 40" % job_id)
+                self.assertIn(job_id, out)
+                self.assertNotIn("不存在", out)
+            finally:
+                pr.job_cancel(job_id)
+
+    def test_a_wrong_job_id_names_the_tasks_that_are_running(self):
+        """找不到时必须附上当前在跑的任务 —— 只说「不存在」的话，模型无从自纠。"""
+        with tempfile.TemporaryDirectory() as root:
+            started = pr.start_job([sys.executable, "-c", "print('bare')"], cwd=root, timeout=30)
+            job_id = started["job_id"]
+            try:
+                time.sleep(0.5)
+                out = tools.dev_job_logs("job_id: deadbeef00")
+                self.assertIn("不存在", out)
+                self.assertIn(job_id, out, "找不到任务时必须报出当前在跑的是哪个")
+            finally:
+                pr.job_cancel(job_id)
+
 
 if __name__ == "__main__":
     unittest.main()
