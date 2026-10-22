@@ -9,8 +9,13 @@ def circle_hit(a, b):
     dx = a.x - b.x
     dy = a.y - b.y
     radius_sum = (a.size + b.size) / 2
-    # 距离平方 < 半径和平方，避免开平方
-    return dx * dx + dy * dy < radius_sum
+    # 距离平方 < 半径和**平方**，避免开平方。
+    #
+    # ⚠ 半径和必须先平方：漏掉它时判的是「距离平方 < 半径和」，
+    # 于是半径和 20 只在距离小于 4.4 时才算命中 —— 绝大多数该撞上的都穿过去了
+    # （子弹穿过敌人、敌人撞不到玩家）。自检 `tests/test_collision.py::test_circle_hit`
+    # 就是盯着这一条。
+    return dx * dx + dy * dy < radius_sum * radius_sum
 
 
 def aabb_hit(a, b):

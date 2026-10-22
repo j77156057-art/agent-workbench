@@ -6659,6 +6659,9 @@ def clear_read_files():
     """清空「已读文件」记录（重置代码库时调用，避免旧项目的读记录跨项目残留）。"""
     _read_store()[0].clear()
     _read_store()[1].clear()
+    # 存根发放次数也属于读记录：不清的话，同一文件同一区间在**下一次**会话里
+    # 会直接从「真读」开始（省 token 的初衷丢一半）。
+    _READ_STUB_HITS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -6688,6 +6691,25 @@ _FULL_FILE_END = 1 << 30
 #: 实测：对 10 行的小文件，存根 152 字节而内容只有 83 字节——发存根反而更费。
 #: 小文件的内容本来就便宜，重读的代价远低于解释"为什么这里没给你内容"。
 _STUB_MIN_SAVING = 400
+
+#: 同一个区间最多发几次存根。
+#:
+#: 存根的前提是「模型此刻还看得见那次送达的正文」。而正文**会被上下文预算裁走** ——
+#: 那一刻起，同一个区间再要多少次，拿到的都只是同一句劝阻：
+#:
+#:     === collision.py（未变化）===
+#:     整份文件已在本次对话中读过、且此后未改动；……
+#:
+#: 实测（2026-10-22）：模型连续读同一个文件 4 次，每次都只拿到这句劝阻，
+#: 于是它改用 python_exec 手搓无头驱动去"模拟"游戏逻辑 —— 既更贵，
+#: 又绕开了受控执行环境，还把自己的调用签名写错当成产品问题。
+#:
+#: 所以：**第 N+1 次同一区间就真读**。省 token 的初衷一点没丢（第一次照旧省），
+#: 而「拿不到正文」这件事不再可能无限持续。
+_STUB_MAX_HITS = 2
+
+#: 同一区间的存根发放次数。键带文件指纹 —— 文件一改，指纹变，计数自然从头开始。
+_READ_STUB_HITS: dict[tuple, int] = {}
 
 
 def _read_stamp(target):
@@ -6737,6 +6759,13 @@ def _unchanged_read_stub(target, rel, start_line, end_line):
     hi = end_line if end_line else _FULL_FILE_END
     if not _range_covered(ranges, lo, hi):
         return None
+    # 同一个区间被反复要了几次？再发存根就是让它原地打转（见 `_STUB_MAX_HITS`）：
+    # 第 N+1 次直接真读。
+    hit_key = (os.path.normcase(target), stamp, lo, hi)
+    hits = _READ_STUB_HITS.get(hit_key, 0) + 1
+    _READ_STUB_HITS[hit_key] = hits
+    if hits > _STUB_MAX_HITS:
+        return None
     if start_line and end_line:
         where = "第 %d-%d 行" % (start_line, end_line)
     elif start_line:
@@ -6757,7 +6786,8 @@ def _unchanged_read_stub(target, rel, start_line, end_line):
     # 又不再把一个它已看不到的东西谎称"直接引用即可"。
     return ("%s已在本次对话中读过、且此后未改动；**前提是你此刻仍能在上下文里看到"
             "那段正文**——看得到就直接引用、**不要重复读取**；若它已被上下文预算裁走"
-            "（你其实看不到它了），按行号重读即可，以你真正见到的内容为准。" % where)
+            "（你其实看不到它了），按行号重读即可（同一区间再要一次就直接给正文），"
+            "以你真正见到的内容为准。" % where)
 
 
 def _note_read_range(target, start_line, end_line, served_bytes=0):
@@ -6780,6 +6810,9 @@ def _note_read_range(target, start_line, end_line, served_bytes=0):
     prev = _read_store()[1].get(key)
     best = max(served_bytes, prev[2] if prev and len(prev) > 2 else 0)
     _read_store()[1][key] = (stamp, ranges, best)
+    # 这次**真读了正文** —— 模型此刻又有内容了，存根的发放次数归零。
+    # 不归零的话，同一区间从此永远真读：省 token 的初衷丢了一半。
+    _READ_STUB_HITS.pop((key, stamp, lo, hi), None)
 
 
 def read_served_ranges():

@@ -152,6 +152,53 @@ class ReadStubTests(unittest.TestCase):
 
     # ---- 护栏不能被破坏 ----
 
+    def test_the_same_range_is_read_for_real_after_repeated_stubs(self):
+        """**存根不能无限发** —— 这是实测踩到的一个死循环。
+
+        存根的前提是「模型此刻还看得见那次送达的正文」。而正文**会被上下文预算
+        裁走**；那一刻起，同一个区间再要多少次，拿到的都只是同一句劝阻：
+
+            === collision.py（未变化）===
+            整份文件已在本次对话中读过、且此后未改动；……
+
+        实测（2026-10-22）：模型连读同一个文件 4 次，每次都只拿到这句劝阻，
+        于是它改用 python_exec 手搓无头驱动去「模拟」游戏逻辑 —— 既更贵、
+        又绕开了受控执行环境，还把自己的调用签名写错当成产品问题。
+
+        所以：**同一区间被反复要到第 N+1 次，就真读**。省 token 的初衷一点没丢
+        （前几次照旧省），而「拿不到正文」这件事不再可能无限持续。
+        """
+        T.read_file("path: behaviors/enemy.gd")
+        for _ in range(T._STUB_MAX_HITS):
+            out = self._read("path: behaviors/enemy.gd")
+            self.assertTrue(self._is_stub(out),
+                            "前几次重读应当仍走存根（省 token 的初衷不能丢）")
+        out = self._read("path: behaviors/enemy.gd")
+        self.assertFalse(self._is_stub(out),
+                         "同一区间被反复要了 %d 次还在发存根——模型会原地打转，"
+                         "永远拿不到正文" % (T._STUB_MAX_HITS + 1))
+        self.assertIn("line1", out,
+                      "第 %d 次应当真的读到正文" % (T._STUB_MAX_HITS + 1))
+
+    def test_serving_the_content_again_resets_the_stub_counter(self):
+        """真读过之后，存根要重新开始发 —— 否则从此永远真读，省 token 的初衷丢一半。
+
+        序列：第 1 次真读 → 第 2/3 次存根 → 第 4 次真读（**计数归零**）→
+        第 5 次又该是存根。
+        """
+        T.read_file("path: behaviors/enemy.gd")
+        for _ in range(T._STUB_MAX_HITS):
+            out = self._read("path: behaviors/enemy.gd")
+            self.assertTrue(self._is_stub(out),
+                            "前 %d 次重读应当仍走存根" % T._STUB_MAX_HITS)
+        real = self._read("path: behaviors/enemy.gd")
+        self.assertFalse(self._is_stub(real),
+                         "第 %d 次应当真读" % (T._STUB_MAX_HITS + 1))
+        again = self._read("path: behaviors/enemy.gd")
+        self.assertTrue(self._is_stub(again),
+                        "真读过之后存根应当重新可用（计数已归零）——"
+                        "否则从此永远真读，省 token 的初衷丢一半")
+
     def test_the_stub_still_registers_the_file_as_read(self):
         """否则 apply_edit 的「先读后写」护栏会误判成没读过。"""
         T.read_file("path: behaviors/enemy.gd")
