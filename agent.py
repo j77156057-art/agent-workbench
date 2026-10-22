@@ -1815,6 +1815,30 @@ def _clip_tool_observation(text, base_limit, tool_name=""):
         head = max(400, int(limit * 0.62))
         tail = max(240, limit - head - 80)
         return value[:head] + "\n…（中间来源正文已折叠，展开原始结果可继续核对）…\n" + value[-tail:]
+    if tool == "read_file":
+        # 读文件工具自己把大文件裁到 12000 字，并在**尾部**留一句补读提示
+        # （「…需要后续段落请用 start:/end: 指定行号」）。通用裁剪只留头部 →
+        # 提示连同正文尾一起没了：模型既拿不到内容、**也不知道能按行号补读**，
+        # 只能凭半截文件下结论。
+        #
+        # 实测（读 agent.py 7796 行）：工具给 12094 字，观察预算 8000 一刀下去
+        # 只剩 8011 字，末尾那句补读提示**没了** —— 工具自己的契约在模型面前破了。
+        #
+        # 所以：预算至少覆盖工具自己的上限（外加提示的余量）；
+        # 真要再裁时**保留尾部**（提示在那儿），只丢中间。
+        try:
+            tool_cap = int(os.getenv("DOCMIND_READ_OBS_CHARS", "12800"))
+        except (TypeError, ValueError):
+            tool_cap = 12800
+        limit = max(limit, tool_cap)
+        value = str(text or "")
+        if len(value) <= limit:
+            return value
+        head = max(400, int(limit * 0.85))
+        tail = max(200, limit - head - 120)
+        return (value[:head]
+                + "\n…（中间省略；末尾的补读提示保留，可据此按行号续读）…\n"
+                + value[-tail:])
     return _clip(text, limit)
 
 

@@ -195,5 +195,50 @@ class StubMustBeCheaperThanContentTests(unittest.TestCase):
             self.addCleanup(T.clear_read_files)
 
 
+class ReadFileObservationBudgetTests(unittest.TestCase):
+    """read_file 的观察预算不能比工具自己的上限还小。
+
+    工具把大文件裁到 12000 字，并在**尾部**留一句补读提示
+    （「…需要后续段落请用 start:/end: 指定行号」）。通用裁剪只留头部 →
+    提示连同正文尾一起没了：模型既拿不到内容、**也不知道能按行号补读**，
+    只能凭半截文件下结论。
+
+    实测（读 agent.py 7796 行）：工具给 12094 字，观察预算 8000 一刀下去
+    只剩 8011 字，末尾那句补读提示**没了** —— 工具自己的契约在模型面前破了。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.tmp.cleanup)
+        os.makedirs(os.path.join(self.tmp.name, "behaviors"))
+        # 一个远超 12000 字的源码文件
+        with open(os.path.join(self.tmp.name, "behaviors", "big.gd"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("\n".join("line%d %s" % (i, "x" * 60) for i in range(1, 601)))
+        self._prev_code_root = C.get_runtime("code_root")
+        self.addCleanup(C.set_runtime, "code_root", self._prev_code_root)
+        C.set_runtime("code_root", self.tmp.name)
+        self.addCleanup(T.clear_read_files)
+        T.clear_read_files()
+
+    def test_the_model_still_sees_the_hint_for_reading_the_next_chunk(self):
+        from agent import _clip_tool_observation, _observation_budget
+        raw = str(T.read_file("path: behaviors/big.gd"))
+        self.assertIn("start:/end:", raw, "工具自己没有给出补读提示")
+        seen = _clip_tool_observation(raw, _observation_budget("看看这个文件"), "read_file")
+        self.assertIn("start:/end:", seen,
+                      "补读提示被观察预算砍掉了——模型既没有正文尾，也不知道能按行号续读")
+        self.assertIn("已截断", seen, "还必须说清这是截断，不是全文")
+
+    def test_the_whole_read_of_a_big_file_reaches_the_model(self):
+        """工具给的 12000 字不该被观察预算再砍一刀 —— 那会让「前 12000 字」这个承诺落空。"""
+        from agent import _clip_tool_observation, _observation_budget
+        raw = str(T.read_file("path: behaviors/big.gd"))
+        seen = _clip_tool_observation(raw, _observation_budget("看看这个文件"), "read_file")
+        self.assertGreaterEqual(len(seen), len(raw) - 200,
+                                "观察预算把工具自己的输出砍掉了 %d 字"
+                                % (len(raw) - len(seen)))
+
+
 if __name__ == "__main__":
     unittest.main()
