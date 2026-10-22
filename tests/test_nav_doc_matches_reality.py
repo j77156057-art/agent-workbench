@@ -114,14 +114,33 @@ class NavigationDocIsSelfDeclared(unittest.TestCase):
 
 
 class HeadClaimMatchesReality(unittest.TestCase):
-    """文档声明的「当前 HEAD」必须等于真实 HEAD。"""
+    """文档声明的「当前 HEAD」必须等于真实 HEAD。
+
+    ## 为什么这条判据只在本机工作树里成立
+
+    `docs/next-steps.md` 的 §0 按设计**故意不单独提交**（文档自己写明）：
+    「提交本身会改变 HEAD，一提交这条声明就立刻变陈」—— 于是它声明的永远是
+    **写入那一刻**的 HEAD，提交之后立刻差一笔。
+
+    推论：在**干净检出**（CI 就是干净检出）里，那条声明与真实 HEAD 必然不等，
+    这条判据**结构上不可能成立** —— 它在 CI 上恒红，而红的原因与「文档没维护」
+    毫无关系。那是**假信号**：真信号是零。
+
+    这条判据真正要守的是**本地工作树**：你手改了 §0，就得让它说对当前 HEAD。
+    所以判据只在「§0 在工作树里有未提交改动」时才响；文档原样提交（干净）时
+    明确 skip —— 不静默 return（静默通过和恒真判据在输出里长得一模一样）。
+    """
 
     def test_declared_head_equals_real_head(self):
         doc = _doc()
         claimed = HEAD_CLAIM.findall(doc)
         if not claimed:
             self.skipTest("文档里没有 `HEAD <hash>` 式的现状声明")
-
+        if not _doc_dirty():
+            self.skipTest(
+                "文档 §0 按设计「故意不单独提交」，声明的是写入那一刻的 HEAD —— "
+                "提交本身就会让它陈旧一笔。干净检出（CI）里这条判据结构上不成立，"
+                "只有本地工作树里改过 §0 时它才该响。")
         real = _head()
         real7 = real[:7]
         for c in claimed:
@@ -143,6 +162,16 @@ def _count_since(short):
         return int(out.strip())
     except ValueError:
         return 0
+
+
+def _doc_dirty() -> bool:
+    """文档在**工作树**里有没有未提交的内容改动。
+
+    用 `git diff HEAD` 而不是 `git status --porcelain` —— 后者会把内容与 HEAD
+    完全相同的文件也报成 M（stat 缓存陈旧时）。本文件下面那条判据自己就写了
+    这件事，这里不能重蹈。
+    """
+    return bool(_git("diff", "HEAD", "--", "docs/next-steps.md").strip())
 
 
 class UncommittedClaimMatchesReality(unittest.TestCase):

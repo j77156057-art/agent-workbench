@@ -24,6 +24,15 @@ class _TmpProject:
         self.dir = tempfile.mkdtemp(prefix="sv_test_")
         self._patch = mock.patch.object(tools, "_get_code_root", lambda: self.dir)
         self._patch.start()
+        # 这些用例要**真跑项目命令**（跑目标单测 / 跑 engine 脚本 / node --check）。
+        # 走的是 `enterprise_sandbox.run_project_command` —— 它需要一个可用的进程
+        # 边界后端：Windows 天然有（host_compat），而 Linux CI 上默认是
+        # `unavailable`（没有 Docker，也没开 DOCMIND_STAGE_HOST_COMMANDS），
+        # 于是命令跑不了、判据一律 fail-closed —— 现象与「校验器坏了」一模一样。
+        # 这里显式要求 host_compat：**命令在项目的一次性副本里跑**（试做区），
+        # 与 Windows 本机口径一致，不涉及宿主机写入或凭据。
+        self._env = mock.patch.dict(os.environ, {"DOCMIND_STAGE_HOST_COMMANDS": "1"})
+        self._env.start()
 
     def write(self, rel, content):
         p = os.path.join(self.dir, rel)
@@ -33,6 +42,7 @@ class _TmpProject:
         return p
 
     def close(self):
+        self._env.stop()
         self._patch.stop()
 
 

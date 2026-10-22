@@ -891,6 +891,12 @@ html[data-material='glass'] .wb-proj-notice {
   position: fixed;
   z-index: 61;
   min-width: 244px;
+  /* 菜单有 12 项，展开高度约 550px。视口比这矮时（矮窗口 / 横屏 / 浏览器
+     默认窗口被裁）菜单会整块伸到视口外，下半截的项**看得见却点不到**——
+     那个视口下「更多」里的「实时对话」正好落在这一段。
+     限高 + 可滚：矮视口时菜单自己滚，scrollIntoView 也能把目标项滚进来。 */
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
   padding: 6px;
   background: var(--bg-raised);
   border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));

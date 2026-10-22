@@ -121,7 +121,11 @@ def detail_text(got: dict[str, Any], **extra: Any) -> str:
 
 MAX_TEXTS = 8
 DEFAULT_TAB = "素材"
-EXPECTED_TABS = 4
+#: 工作区标签条现在只有 概览 / 代码 / 素材 三个（`WorkspaceTabs.vue` 的 `real` 列表）。
+#: 原值 4 是「开发舱」还在时留下的 —— 那个 workspace 在 v2 重构 E 阶段已被删除
+#: （`App.vue`：cockpit workspace 已删；`ChatDock.vue`：那个 scope 已不存在）。
+#: 判据数的是 `.ws-tab` 元素个数，所以这里必须跟着 UI 的真实标签数走。
+EXPECTED_TABS = 3
 BUILD_DIR = "web"
 SOURCE_DIR = os.path.join("frontend", "src")
 #: 整页要等 uvicorn 导入完（实测冷启动 4.7s），再等 vite 产物把视图挂载
@@ -129,9 +133,26 @@ READY_WAIT = 60.0
 #: 只在回环上跑：这条工具不是网页浏览器，不能拿去访问别的机器
 LOOPBACK = "127.0.0.1"
 _API_PATHS = ("/api/projects",)
-#: 流式档要点的三步：进开发舱 → 起摄像头会话（这条才会开 ws）→ 开麦。
-#: 「开发舱」必须限定在工作区标签条里点——顶栏「素材区」徽标上也有同名字。
-STREAM_STEPS = (("开发舱", ".ws-bar"), ("打开摄像头", ""), ("开麦对话", ""))
+#: 流式档要点的几步：更多 → 实时对话 → 开始。
+#:
+#: ⚠ 这条链路在 v2 重构 E 阶段换过一次实现：原来的「开发舱」标签页与
+#: `AutonomousCockpit.vue` 已被删除（`App.vue`：cockpit workspace 已删；
+#: `ChatDock.vue`：那个 scope 已不存在），现在实时对话是顶栏「更多」里的
+#: **实时对话** 弹层（`LiveStreamPanel.vue`）。照旧标签去点只会「命中 0 个」。
+#:
+#: ⚠⚠ **每一步都必须限定作用域** —— 页面里有**同名**的按钮：
+#: 素材区工具条上就有一个「更多 ▼」筛选 chip（`AssetCenterView.vue`）。
+#: 不限定时文字定位命中的是它（实测：命中在 x=442,y=100 的那个 63×31 的 chip，
+#: 而真正的顶栏触发器在 x=702,y=12）—— 点了没反应，还报「ok=True / changed」，
+#: 因为点开的是素材区的筛选下拉，DOM 确实变了。
+#: 这正是老 harness 给「开发舱」加 `.ws-bar` 限定的同一个坑，换了个标签名。
+#:
+#: 为什么只有三步（实测）：
+#: · 「实时对话」弹层要先打开（菜单是 teleport 到 body 的，默认收起）；
+#: · 画面来源默认就是「摄像头」，点它什么都不会变（所以不列为一步）；
+#: · 「开始」= **画面 + 麦克风一起开**（`LiveStreamPanel`：麦克风是必需输入，
+#:   只发视频时服务端会稳定断流）—— 麦克风不需要单独一次手势。
+STREAM_STEPS = (("更多", ".wb-topbar"), ("实时对话", ".wb-menu"), ("开始", ".lsp"))
 #: 回合文本由 `realtime_scripted` 生成：`"N 片 · M 字节 · 峰值 P"`。
 CAPTION_RE = re.compile(r"(\d+)\s*片\s*·\s*(\d+)\s*字节\s*·\s*峰值\s*([0-9]*\.?[0-9]+)")
 #: `.*` 加 DOTALL 会贪过整段字幕，把"第一条转写 + 最后一条轮次"配成一对——
@@ -792,7 +813,8 @@ def _drive(base: Path, state: dict[str, Any], *, port: int, path: str, tab: str,
         if mode == "count":
             return page_action.locate(base, page=state["page"], selector=target).get("count")
         if mode == "count-text":
-            # 按**可见文字**数元素：`闭麦`/`开麦对话` 这种状态标签没有稳定 class
+            # 按**可见文字**数元素：`关麦`/`开麦` 这种状态标签没有稳定 class。
+            # 限定 `.lsp`（实时对话弹层）—— 页面别处也可能出现同名字样。
             return page_action.locate(base, page=state["page"], text=target,
                                       scope=scope).get("count")
         return page_action.read_page(base, page=state["page"], selector=target,
@@ -995,21 +1017,18 @@ def _drive_deep_link(base: Path, state: dict[str, Any], url: str, *,
 def _drive_stream(base: Path, state: dict[str, Any]) -> None:
     """整页的流式那一档：假麦克风喂进真 Edge → 真 ws → scripted 适配器 → 回落到 DOM。
 
-    三步缺一不可（实测）：ws 只在**开摄像头/共享屏幕**那一步才建立，而麦克风是独立的第二个
-    手势；少了第三步就只有画面没有声音，那时候"没转写"会被误读成"上行不通"。
-    每一步都要重试：`开麦对话` 那个按钮在 `liveVisionActive` 之前**根本不存在**
-    （AutonomousCockpit.vue:2636），而握手要一两秒——实测一次 1 秒的固定 sleep 就会
-    报"命中 0 个"。开麦成功后按钮文案会翻成「闭麦」，所以"已经开着"也算这一步达成。
+    每一环都不可省（实测）：ws 只在**画面通道**建立后才存在。
+    「开始」是**画面 + 麦克风一起开**（`LiveStreamPanel`：麦克风是这条链路的必需输入，
+    只发视频时服务端会稳定断流），所以麦克风不需要单独一步手势。
+
+    每一步都要重试：「开始」按钮在弹层刚打开时还没渲染出来，而握手要一两秒 ——
+    实测一次 1 秒的固定 sleep 就会报"命中 0 个"。
     """
     read = state["probe"]
     for index, (label, scope) in enumerate(STREAM_STEPS):
         deadline = time.monotonic() + (STREAM_STEP_WAIT if index else 6.0)
         recorded = None
         while recorded is None:
-            if (index == len(STREAM_STEPS) - 1
-                    and int(read("count-text", "闭麦", "") or 0) >= 1):
-                recorded = {"label": label, "ok": True, "effect": "mic-already-on"}
-                break
             try:
                 back = page_action.click(base, page=state["page"], text=label, scope=scope,
                                          screenshot=False)
@@ -1023,12 +1042,22 @@ def _drive_stream(base: Path, state: dict[str, Any]) -> None:
                 time.sleep(0.7)
         state.setdefault("stream_steps", []).append(recorded)
         time.sleep(0.5)
-    state["mic_on"] = int(read("count-text", "闭麦", "") or 0) >= 1
+    # 麦克风状态要在**会话刚起来**时读：脚本回合跑完后会话自己结束，
+    # 按钮随之从「关麦」翻回「开麦」—— 放到读字幕之后读就晚了一步，
+    # 判据会误报成「麦克风没开」。
+    deadline = time.monotonic() + 12.0
+    mic_on = False
+    while time.monotonic() < deadline:
+        if int(read("count-text", "关麦", ".lsp") or 0) >= 1:
+            mic_on = True
+            break
+        time.sleep(0.4)
+    state["mic_on"] = mic_on
     deadline = time.monotonic() + STREAM_WAIT
     captions = mode = ""
     while True:
-        captions = str(read("text", ".acp-live-captions", "") or "")
-        mode = str(read("text", ".acp-live-vision-mode", "") or "")
+        captions = str(read("text", ".lsp-captions", "") or "")
+        mode = str(read("text", ".rmb-label", "") or "")
         facts = read_turns(captions, mode)
         if len(facts["rounds"]) >= 2 or time.monotonic() >= deadline:
             state.update(facts)

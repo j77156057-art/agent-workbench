@@ -879,7 +879,10 @@ class LivePageTests(Base):
             self.assertEqual(got["failed"], ["bundle_built_after_latest_source"], detail)
         else:
             self.assertTrue(got["ok"], detail)
-        self.assertEqual(got["observed"]["tabs"], 4)
+        # 工作区标签条现在只有 概览 / 代码 / 素材 三个（`WorkspaceTabs.vue` 的 `real`
+        # 列表）—— 原值 4 是「开发舱」还在时留下的，那个 workspace 在 v2 重构
+        # E 阶段已被删除（`App.vue`：cockpit workspace 已删）。
+        self.assertEqual(got["observed"]["tabs"], at.EXPECTED_TABS)
         self.assertEqual([got["observed"]["active_before"], got["observed"]["active_after"]],
                          ["概览", "素材"], "活动标签必须真的换过了")
         self.assertTrue(got["observed"]["fixture_in_tree"])
