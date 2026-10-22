@@ -520,9 +520,28 @@ def job_count() -> int:
         return len(_JOBS)
 
 
+def job_pid(job_id: str) -> int:
+    """返回后台任务主进程的 pid；任务不在登记表里（或已被清理）返回 0。
+
+    为什么需要：agent 用 `run_command(..., background: true)` 起了自己的 GUI 程序后，
+    要"看见"那个窗口就得先知道它属于哪个进程 —— 前台窗口不是它（前台是聊天应用
+    自己）。这里只暴露**本进程自己启动的任务**的 pid，不是任意进程查询。
+
+    任务已结束时仍然返回它最后的 pid：程序退出后窗口多半已经没了，但调用方
+    拿到非 0 的 pid 至少能区分"任务不存在"和"任务已结束"。
+    """
+    with _LOCK:
+        _reap_locked()
+        job = _JOBS.get(str(job_id or "").strip())
+        if job is None:
+            return 0
+        popen = job.popen
+        return int(getattr(popen, "pid", 0) or 0)
+
+
 __all__ = [
     "DEFAULT_TIMEOUT", "MAX_TIMEOUT", "MAX_BACKGROUND_TIMEOUT", "HEAD_CHARS", "TAIL_CHARS",
     "MAX_JOBS", "clamp_timeout", "clean_environment", "window_text", "run_bounded",
     "run_bounded_report",
-    "start_job", "job_logs", "job_cancel", "job_count",
+    "start_job", "job_logs", "job_cancel", "job_count", "job_pid",
 ]

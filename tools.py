@@ -45,6 +45,7 @@ from agent_runtime.tool_catalog import catalog_tool
 from agent_runtime.enterprise_sandbox import SandboxUnavailable as EnterpriseSandboxUnavailable
 from agent_runtime.enterprise_sandbox import (execution_mode, host_fallback_active, run_agent_command,
                                                stage_execution_active, stage_backend)
+from agent_runtime import job_window
 
 
 _PYTHON_EXEC_TIMEOUT = int(os.getenv("DOCMIND_PYTHON_EXEC_TIMEOUT", "60") or 60)
@@ -9695,10 +9696,14 @@ def _try_mcp_screenshot(root):
 
 
 def game_screenshot(arg=""):
-    """截取当前运行画面作为视觉观察。输入可选 `target: embedded|foreground`（默认 embedded）。
+    """截取当前运行画面作为视觉观察。输入可选 `target: embedded|foreground`（默认 embedded），
+    也可给 `job_id: <后台任务id>` 直接抓**那个任务自己启动的窗口**。
 
     优先用已启用引擎连接器提供的截图能力；否则抓取工作台内嵌的引擎窗口，
-    再不行抓系统前台窗口。返回图片保存路径（.docmind/screenshots/ 下的 JPEG）
+    再不行抓系统前台窗口。给 `job_id:` 则走「任务 → 它的进程 → 它的窗口」：
+    普通 GUI 程序（tkinter / Pygame 等）不在引擎登记表里，而前台窗口又不是它，
+    只有这条路能抓到它自己的画面；抓不到会**明确失败**，不会退回前台窗口。
+    返回图片保存路径（.docmind/screenshots/ 下的 JPEG）
     与图片观察内容。截图只反映某一瞬间的画面，不是代码事实；无窗口/无头环境会明确失败，
     此时请改用运行日志、受控 playtest 输出等证据。
     """
@@ -9734,6 +9739,39 @@ def game_screenshot(arg=""):
         out_dir = os.path.join(root, ".docmind", "screenshots")
     else:
         out_dir = os.path.join(STATE_ROOT, "screenshots")
+    # 【按后台任务抓它自己的窗口】agent 用 `run_command(..., background: true)` 起的
+    # 程序（tkinter / Pygame 这类普通 GUI 程序**不在**引擎登记表里）要用画面证明
+    # "它真的跑起来了"，而 `target: foreground` 抓的是**当前有焦点的窗口**——那个
+    # 焦点几乎总是聊天应用自己（实测抓到 1706x1018 的 WorkBuddy 窗口，而不是
+    # 804x604 的游戏窗口）。只有"任务 id → 它的进程 → 它的窗口"这条路能抓到真画面。
+    #
+    # 抓不到就**明确失败**：静默退回前台窗口正是"模型截到聊天应用却以为看到了游戏"
+    # 的坑本身，不许再犯。
+    job_id = job_window.parse_job_id(arg)
+    if job_id:
+        try:
+            import screen_capture
+        except Exception as exc:  # noqa: BLE001
+            return ("截图失败：%s: %s（当前环境不支持画面捕获，请改用运行日志判断）"
+                    % (type(exc).__name__, exc))
+        hit = job_window.capture_job_window(job_id)
+        if hit is None:
+            return ("截图失败：%s\n请改用 dev_job_logs 看它的输出，不要拿别的窗口"
+                    "的画面当运行证据。" % job_window.describe_missing_window(job_id))
+        frame, job_title = hit
+        raw, width, height, _hwnd = frame
+        saved = screen_capture.encode_and_save(raw, width, height, out_dir)
+        if saved is None:
+            return "截图失败：画面编码或保存失败。请改用运行日志或受控 playtest 输出判断。"
+        encoded, path, size = saved
+        root_txt = f"；项目根：{root}" if root else ""
+        return ToolResult(
+            ok=True,
+            text=(f"截图完成（来源：后台任务 {job_id} 的窗口「{job_title}」，"
+                  f"原始 {width}x{height}，输出 {size[0]}x{size[1]}）：{path}{root_txt}\n"
+                  "截图是观察素材，不是代码事实；请结合代码与运行日志复核。"),
+            data={"images": [encoded], "image_sources": [path], "project_root": root},
+            artifacts=preview_artifact(path, "job:" + job_id))
 
     if target == "embedded":
         hit = _try_mcp_screenshot(root) if root else None
@@ -11551,7 +11589,7 @@ TOOLS = {
     "game_simulate": {"description": "模拟数值成长曲线（等级经验/经济平衡推演），输入 levels/base/growth，可选 model=geometric|linear|logistic|diminishing、k=承载上限。", "func": game_simulate},
     "game_impact": {"description": "按符号或关键词分析代码影响文件，输入 query。", "func": game_impact},
     "game_playtest": {"description": "在项目根目录运行 Playtest 命令，输入 command/timeout。", "func": game_playtest},
-    "game_screenshot": {"description": "截取当前引擎运行画面作为视觉观察：可选输入 target: embedded|foreground（默认 embedded，嵌入窗口不可用时自动改抓前台窗口）。优先使用已启用引擎连接器的截图能力，其次抓取工作台内嵌窗口；JPEG 保存到项目 .docmind/screenshots/ 并回传图片。截图只是某一瞬间的观察，不是代码事实；无窗口/无头环境会明确失败，那时改用运行日志或受控 playtest 证据，不要臆测画面。", "func": game_screenshot},
+    "game_screenshot": {"description": "截取当前引擎运行画面作为视觉观察：可选输入 target: embedded|foreground（默认 embedded，嵌入窗口不可用时自动改抓前台窗口）。优先使用已启用引擎连接器的截图能力，其次抓取工作台内嵌窗口；也可直接给 job_id: <后台任务id> 抓**那个任务自己启动的窗口**——普通 GUI 程序（tkinter/Pygame 等）不在引擎登记表里，而前台窗口是聊天应用自己，只有这条路能抓到它；抓不到会明确失败，不退回前台窗口。JPEG 保存到项目 .docmind/screenshots/ 并回传图片。截图只是某一瞬间的观察，不是代码事实；无窗口/无头环境会明确失败，那时改用运行日志或受控 playtest 证据，不要臆测画面。", "func": game_screenshot},
     "engine_start": {
         "description": (
             "启动项目当前的引擎进程（Godot / Unity / Unreal，按项目配置走），"
