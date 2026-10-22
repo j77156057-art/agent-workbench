@@ -9696,9 +9696,9 @@ def game_screenshot(arg=""):
         frame = screen_capture.grab_embedded(project_pid)
     if frame is None:
         frame = screen_capture.grab_foreground()
+        source_kind = "foreground"
     else:
         source_kind = "embedded"
-        source_kind = "foreground"
     if frame is None:
         return ("截图失败：未检测到可抓取的运行窗口（可能未运行、处于无头环境或非 Windows）。"
                 "请先启动并嵌入引擎，或改用运行日志、受控 playtest 事件等证据，不要假设画面内容。")
