@@ -470,11 +470,30 @@ class StreamPlumbingTests(unittest.TestCase):
                 self.assertTrue(Path(row.split("=", 1)[1]).is_file(), row)
 
     def test_the_stream_steps_click_the_nav_scoped_and_the_mic_last(self):
+        """每一步都必须**限定作用域**；起会话的那一步必须在最后。
+
+        ## 同名按钮：作用域不是锦上添花
+
+        素材区工具条上就有一个「更多 ▼」筛选 chip（`AssetCenterView.vue`）。不限定
+        作用域时，文字定位命中的是它（实测 x=442,y=100 的那个 63×31 的 chip）而不是
+        顶栏触发器（x=702,y=12）—— 点了没反应，还报「ok=True / changed」，
+        因为点开的是素材区的筛选下拉，DOM 确实变了。
+
+        ## 「最后是开麦」现在由「开始」承担
+
+        `LiveStreamPanel` 的「开始」= **画面 + 麦克风一起开**（麦克风是这条链路的
+        必需输入：只发视频时服务端会稳定断流）。所以最后一步必须是「开始」，
+        不能再单列一个「开麦」—— 那会先发一截没有声音的画面，
+        「没转写」会被误读成「上行不通」。
+        """
         labels = [row[0] for row in at.STREAM_STEPS]
-        self.assertEqual(labels[:2], ["开发舱", "打开摄像头"])
-        self.assertEqual(at.STREAM_STEPS[0][1], ".ws-bar",
-                         "「开发舱」在别处也有同名文字，必须限定在工作区标签条里点")
-        self.assertIn("麦", labels[-1], "不开麦就没有上行音频，顺序错了会把没声音误判成不通")
+        scopes = [row[1] for row in at.STREAM_STEPS]
+        self.assertTrue(all(scopes),
+                        "每一步都必须限定作用域：页面里有同名按钮（顶栏「更多」/ 素材区「更多 ▼」）")
+        self.assertEqual(labels, ["更多", "实时对话", "开始"],
+                         "先开实时对话弹层，再起会话（画面 + 麦克风一起开）")
+        self.assertNotIn("开麦", labels,
+                         "「开始」已经带上麦克风，再单列一步开麦会先发一截没有声音的画面")
 
 
 def _fake_root(tmp: Path, *, body: str, built=True) -> Path:
