@@ -18,7 +18,10 @@ from tools import (
     dev_mcp_decide, dev_mcp_remove, dev_approve,
     set_session_web_enabled, _session_web_enabled,
 )
-from game_workbench import approval
+from game_workbench import (
+    approval, list_mcp_proposals, remove_mcp_proposal,
+)
+from tools import _mcp_server_approval_target
 
 
 def _parse(text):
@@ -171,6 +174,72 @@ class McpSelfAssemblyTests(unittest.TestCase):
         cfg = mcp_client.get_server_config(self.root, "kicad")
         self.assertEqual(cfg["command"], "uvx")
         self.assertEqual(cfg["args"], ["kicad-mcp-pro", "--transport", "stdio"])
+
+    def test_add_blocked_records_proposal_for_one_click_confirm(self):
+        # 回归：审批门 blocked 时把逐字连接配置暂存为「待装配提案」，
+        # 让用户在连接器设置页一键确认（走 mcp_server_save_ep 同一条审批）
+        # 即可放行——修掉「队列批准被拒、设置页无从复现参数」的死循环。
+        arg = ("key: easyeda-pro\nlabel: EasyEDA Pro MCP\ntransport: stdio\n"
+               "command: npx\nargs: -y @vlabsoft/easyeda-pro-mcp\n")
+        blocked = _parse(dev_mcp_add(arg))
+        self.assertTrue(blocked["blocked"])
+        target = blocked["target"]
+        self.assertTrue(target.startswith("easyeda-pro:"))
+        # 提案负载随阻断返回，供用户看到「要批准的是什么」
+        self.assertEqual(blocked["proposal"]["command"], "npx")
+        self.assertEqual(blocked["proposal"]["args"],
+                         ["-y", "@vlabsoft/easyeda-pro-mcp"])
+        self.assertIn("设置", blocked["hint"])
+
+        # 设置页轮询待装配提案：应拿到逐字相同的 config
+        props = list_mcp_proposals(self.root)
+        self.assertEqual([p["target"] for p in props], [target])
+        pkey = props[0]["key"]
+        pcfg = props[0]["config"]
+        self.assertEqual(pkey, "easyeda-pro")
+        self.assertEqual(_mcp_server_approval_target(pkey, pcfg), target)
+
+        # 用户点「确认」= mcp_server_save_ep 的两步：写 hash 匹配审批 + 清提案
+        approval(self.root, "mcp_server", "workbench-user",
+                 approved=True, target=_mcp_server_approval_target(pkey, pcfg))
+        remove_mcp_proposal(self.root, target)
+
+        # 提案已清理，不再展示
+        self.assertEqual(list_mcp_proposals(self.root), [])
+        # agent 用相同参数重试 dev_mcp_add -> 放行落盘
+        ok = _parse(dev_mcp_add(arg))
+        self.assertTrue(ok["ok"], ok)
+        cfg = mcp_client.get_server_config(self.root, "easyeda-pro")
+        self.assertEqual(cfg["args"], ["-y", "@vlabsoft/easyeda-pro-mcp"])
+
+    def test_add_short_circuits_when_already_installed_by_wizard(self):
+        # 回归：自动连接向导落盘（mcp_autoconnect_confirm_ep 只 save_server、
+        # 不写 mcp_server 审批行）后，agent 用完全相同参数重试 dev_mcp_add
+        # 不该永远 blocked —— 相同 target 已在盘上=用户已装配，直接 ok。
+        arg = ("key: easyeda-pro\nlabel: EasyEDA Pro MCP\ntransport: stdio\n"
+               "command: npx\nargs: -y @vlabsoft/easyeda-pro-mcp\n")
+        # 模拟向导：直接落盘，全程不碰审批台账
+        mcp_client.save_server(self.root, "easyeda-pro", {
+            "transport": "stdio", "command": "npx",
+            "args": ["-y", "@vlabsoft/easyeda-pro-mcp"], "env": {}, "enabled": True,
+        })
+        self.assertFalse(os.path.exists(
+            os.path.join(self.root, ".docmind_approvals.jsonl")))
+
+        r = _parse(dev_mcp_add(arg))
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["action"], "already_installed")
+        self.assertEqual(r["server"], "easyeda-pro")
+        self.assertNotIn("blocked", r)
+        # 短路不写审批，也不落新配置（盘上仍是向导那份）
+        self.assertFalse(os.path.exists(
+            os.path.join(self.root, ".docmind_approvals.jsonl")))
+
+        # 同 key 换 URL（不同 target）仍须走审批门，短路不误放行
+        a2 = ("key: easyeda-pro\ntransport: stdio\n"
+              "command: npx\nargs: -y @other/pkg\n")
+        blocked2 = _parse(dev_mcp_add(a2))
+        self.assertTrue(blocked2["blocked"], blocked2)
 
     def test_add_target_rebound_when_command_changes(self):
         a1 = "key: svc\ntransport: http\nurl: http://127.0.0.1:9000/mcp\n"

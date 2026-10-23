@@ -275,7 +275,7 @@ import skills as agent_skills
 import pricing as pricing_mod
 from config import PROJECT_WEB_DIR
 from scene_runtime import scene_graph, scene_op, runtime_sessions, runtime_clear, main_scene
-from game_workbench import list_tasks, upsert_task, validate_task_scope, task_impact, task_snapshot, verify_task, engine_catalog, engine_scan, engine_inspect, engine_prepare, install_unreal_bridge, engine_config, engine_status, engine_start, engine_stop, engine_reload, engine_changes, engine_logs, engine_verify, engine_embed, engine_detach, engine_focus, engine_resize, engine_place, engine_running_roots, EMBED_TOP_STRIP, install_runtime_probe, comfy_status, comfy_start, comfy_stop, comfy_templates, comfy_template_workflow, comfy_model_check, comfy_apply_parameters, comfy_queue, comfy_free_models, comfy_history, comfy_history_list, comfy_retry, comfy_wait, comfy_watch, comfy_watch_status, comfy_cancel, comfy_import, comfy_import_all, comfy_validate_provenance, comfy_resource_duplicates, comfy_unused_resources, parse_unreal_diagnostics, scene_tree, set_scene_property, runtime_events, task_revert, task_branch, validate_data, localization_check, release_check, project_memory, simulate_growth, asset_dependencies, preview_resource, create_placeholder, impact_analysis, generate_test_scene, playtest, performance_sample, approval, approval_status, require_approval, godot_check_script, godot_addon_status, install_godot_addon, _resolve_engine_executable, start_engine_watchdog
+from game_workbench import list_tasks, upsert_task, validate_task_scope, task_impact, task_snapshot, verify_task, engine_catalog, engine_scan, engine_inspect, engine_prepare, install_unreal_bridge, engine_config, engine_status, engine_start, engine_stop, engine_reload, engine_changes, engine_logs, engine_verify, engine_embed, engine_detach, engine_focus, engine_resize, engine_place, engine_running_roots, EMBED_TOP_STRIP, install_runtime_probe, comfy_status, comfy_start, comfy_stop, comfy_templates, comfy_template_workflow, comfy_model_check, comfy_apply_parameters, comfy_queue, comfy_free_models, comfy_history, comfy_history_list, comfy_retry, comfy_wait, comfy_watch, comfy_watch_status, comfy_cancel, comfy_import, comfy_import_all, comfy_validate_provenance, comfy_resource_duplicates, comfy_unused_resources, parse_unreal_diagnostics, scene_tree, set_scene_property, runtime_events, task_revert, task_branch, validate_data, localization_check, release_check, project_memory, simulate_growth, asset_dependencies, preview_resource, create_placeholder, impact_analysis, generate_test_scene, playtest, performance_sample, approval, approval_status, require_approval, list_mcp_proposals, remove_mcp_proposal, godot_check_script, godot_addon_status, install_godot_addon, _resolve_engine_executable, start_engine_watchdog
 
 
 @asynccontextmanager
@@ -1476,6 +1476,18 @@ async def mcp_servers_ep():
     if not root: return {"ok": False, "error": "未配置代码库"}
     return {"ok": True, "servers": mcp_client.server_configs(root)}
 
+@app.get("/api/mcp/pending-proposals")
+async def mcp_pending_proposals_ep():
+    """Agent 经 dev_mcp_add 触发审批门、等待用户在设置页一键确认的待装配连接器提案。
+
+    每条含 target（审批绑定哈希）+ key + config（逐字连接参数），前端据此渲染
+    『待装配连接器』确认卡片：点确认即调 POST /api/mcp/servers 用相同 config 落盘，
+    从而写入 hash 匹配的审批，dev_mcp_add 重试即放行。已放行/过期的不再返回。
+    """
+    root = _project_root_or_error()
+    if not root: return {"ok": False, "error": "未配置代码库", "items": []}
+    return {"ok": True, "items": list_mcp_proposals(root)}
+
 @app.post("/api/mcp/servers")
 async def mcp_server_save_ep(req: McpServerReq):
     root = _project_root_or_error()
@@ -1484,8 +1496,11 @@ async def mcp_server_save_ep(req: McpServerReq):
         result = mcp_client.save_server(root, req.key, req.config)
         # 该端点只由设置页的用户确认操作调用；记录与具体连接参数绑定的
         # 用户审批，使 Agent 后续重试 dev_mcp_add 时不能绕过确认。
+        target = _mcp_server_approval_target(req.key, req.config)
         approval(root, "mcp_server", "workbench-user",
-                 approved=True, target=_mcp_server_approval_target(req.key, req.config))
+                 approved=True, target=target)
+        # 该 target 的待装配提案已被这份逐字相同的配置满足，清理掉避免重复展示。
+        remove_mcp_proposal(root, target)
         return result
     except mcp_client.MCPError as e: return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -3681,16 +3696,39 @@ async def capture_live_desktop_frame(payload: dict | None = None):
         frame = await run_in_threadpool(
             screen_capture.grab_embedded, pid, strict_project=strict_project) if target == "embedded" else await run_in_threadpool(
                 screen_capture.grab_foreground)
+        source = "embedded" if target == "embedded" else "foreground"
+        # 浏览器模式没有桌面宿主：引擎以独立窗口跑，grab_embedded 抓不到。
+        # 直接报错会让"让 AI 观察当前画面 / 桌面视觉复验"看不见刚起的引擎，
+        # 而退回前台又会截到聊天应用。所以回退到**本项目自己启动的引擎独立窗口**
+        # （与 game_screenshot 共用 game_workbench.engine_window_frame 这条生命线）。
+        # strict_project 时不回退：调用方明确只要登记过的嵌入宿主，宁可无画面也不串窗。
+        if frame is None and target == "embedded" and not strict_project:
+            root = _project_root_for(pid) if pid else ""
+            hit = await run_in_threadpool(_engine_window_frame_safe, root)
+            if hit:
+                frame, _title = hit
+                source = "engine"
         if not frame:
             return {"ok": False, "error": "当前没有可捕获的目标窗口，请启动并嵌入项目窗口，或使用屏幕共享。"}
         raw, width, height, _ = frame
         image = await run_in_threadpool(screen_capture.encode_frame, raw, width, height)
         if not image:
             return {"ok": False, "error": "桌面帧编码失败。"}
-        return {"ok": True, "image": image, "target": target,
+        return {"ok": True, "image": image, "target": target, "source": source,
                 "captured_at": datetime.now().isoformat(timespec="seconds")}
     except Exception as exc:
         return JSONResponse({"ok": False, "error": f"桌面画面捕获失败：{type(exc).__name__}: {str(exc)[:240]}"}, status_code=502)
+
+
+def _engine_window_frame_safe(root):
+    """转发到 game_workbench.engine_window_frame；异常一律吞成 None（视觉端点不许因抓窗崩）。"""
+    if not root:
+        return None
+    try:
+        import game_workbench
+        return game_workbench.engine_window_frame(root)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -4677,6 +4715,68 @@ async def favicon():
 @app.get("/")
 async def index():
     return FileResponse(os.path.join(PROJECT_WEB_DIR, "index.html"))
+
+
+@app.get("/api/dev/browser/pages")
+async def browser_pages():
+    """当前开着的浏览器会话摘要（公网 + 回环）。
+
+    实况面板先问这个拿到 page id，再按 id 拉帧；没有它就只能等模型在
+    对话里报出 id，面板在第一步之前永远是黑的。
+    """
+    from agent_runtime import page_action
+    return JSONResponse({"ok": True, "pages": page_action.live_pages()},
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/dev/browser/live")
+async def browser_live(page: str = ""):
+    """内置浏览器的实况采样：最新画面帧 + 当前地址/标题 + 最近动作。
+
+    前端面板轮询这个接口（帧以 base64 放在 JSON 里，按 `frame_version`
+    判断要不要换图）。只读，不触发任何页面动作。
+    """
+    page_id = (page or "").strip()
+    if not page_id:
+        return JSONResponse({"ok": False, "error": "缺少 page"}, status_code=400,
+                            headers={"Cache-Control": "no-store"})
+    from agent_runtime import page_action
+    try:
+        snap = page_action.live_snapshot(page_id)
+    except page_action.PageActionError as exc:
+        # 会话已关闭不是错误：面板据此收起实况窗，不必让前端弹红条。
+        return JSONResponse({"ok": False, "state": "closed", "page": page_id,
+                             "error": str(exc)}, headers={"Cache-Control": "no-store"})
+    return JSONResponse(snap, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/dev/browser/shot")
+async def browser_shot(path: str = ""):
+    """回放用的截图文件：只允许 `.docmind/page-action/` 下的图片。
+
+    走文件而不是"从活动会话里现取"，这样会话关闭之后流程行里的
+    前后缩略图依然能打开 —— 留痕本来就该比会话活得久。
+    """
+    root = _project_root_or_error()
+    if not root:
+        return JSONResponse({"ok": False, "error": "未配置代码库"}, status_code=400)
+    relative = (path or "").strip().replace("\\", "/")
+    if not relative or relative.startswith("/") or ".." in relative.split("/"):
+        return JSONResponse({"ok": False, "error": "非法路径"}, status_code=400)
+    if not relative.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+        return JSONResponse({"ok": False, "error": "只允许图片"}, status_code=400)
+    base = os.path.realpath(os.path.join(root, ".docmind", "page-action"))
+    target = os.path.realpath(os.path.join(root, relative))
+    try:
+        inside = os.path.commonpath([base, target]) == base
+    except ValueError:      # 跨盘符
+        inside = False
+    if not inside or not os.path.isfile(target):
+        return JSONResponse({"ok": False, "error": "截图不存在"}, status_code=404)
+    media = "image/jpeg" if target.lower().endswith((".jpg", ".jpeg")) else (
+        "image/webp" if target.lower().endswith(".webp") else "image/png")
+    return FileResponse(target, media_type=media,
+                        headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.get("/workbench")

@@ -755,10 +755,45 @@ def dev_mcp_add(arg):
     cfg["transport"] = transport
 
     target = _mcp_server_approval_target(key, cfg)
+
+    # 已装配短路：如果同 key、同审批 target（transport/command/args/url 逐字一致）
+    # 的连接器已经在盘上，说明用户其实已经装过它 —— 无论入口是自动连接向导
+    # （api.mcp_autoconnect_confirm_ep 只落盘、不写 mcp_server 审批行）还是设置页保存。
+    # 所有能写盘的入口都要求过用户动作，所以"盘上已有完全相同配置"= 用户已装配，
+    # 不该再逼一次审批（否则向导装好的连接器，agent 重试 dev_mcp_add 永远 blocked）。
+    # 只在逐字相同的 target 上短路；改任一参数仍走审批门。
+    try:
+        existing = mcp_client.get_server_config(root, key)
+    except mcp_client.MCPError:
+        existing = None
+    except Exception:  # noqa: BLE001
+        existing = None
+    if existing and _mcp_server_approval_target(key, existing) == target:
+        return json.dumps({"ok": True, "action": "already_installed", "server": key,
+                           "next": "连接器已装配（相同配置），直接调用 dev_mcp_probe 探活即可",
+                           "info": "该连接器已由用户装配，未重复申请审批"},
+                          ensure_ascii=False)
+
     gate = _mcp_gate_blocked(root, "mcp_server", target)
     if gate:
-        gate["hint"] = ("请用户在 MCP 设置中确认该连接器（target: " + target
-                        + "）；确认后用完全相同的参数重试 dev_mcp_add。")
+        # 把「用户要批准的这份连接配置」按 target 暂存，连接器设置页据此渲染
+        # 一张一键确认卡片（用逐字相同参数落盘、写 hash 匹配审批）；否则用户
+        # 只能对着一个 target 哈希无从复现 command/args，dev_mcp_add 永远 blocked。
+        try:
+            from game_workbench import record_mcp_proposal
+            record_mcp_proposal(root, target, key, cfg)
+        except Exception:  # noqa: BLE001
+            pass
+        gate["proposal"] = {
+            "key": key,
+            "transport": cfg.get("transport"),
+            "command": cfg.get("command"),
+            "args": cfg.get("args"),
+            "url": cfg.get("url"),
+        }
+        gate["hint"] = ("请到「设置 · 连接器（MCP）」里的『待装配连接器』卡片点确认"
+                        "（target: " + target + "），或让用户用完全相同的参数在设置页"
+                        "保存该连接器；确认后用完全相同的参数重试 dev_mcp_add。")
         return json.dumps(gate, ensure_ascii=False)
     try:
         mcp_client.save_server(root, key, cfg)
@@ -9567,6 +9602,77 @@ def engine_reload(arg=""):
     return json.dumps(engine_tools.engine_reload(root), ensure_ascii=False)
 
 
+def engine_logs(arg=""):
+    """读取本项目引擎日志的尾部与其中的错误行（只读，不启停引擎）。
+
+    输入（可空）：`limit: 120` 可选，默认 120，最多 400 行；
+    `contains: CLICK_PROBE` 可选，在整个日志里查找该标记（大小写不敏感）。
+    返回 JSON：ok / running / errors[{path,line,message}] / error_count / lines[] /
+    total_lines / tail_truncated / marker_samples[{line,text}] / note；
+    带 contains 时另有 matches[] / match_count / search_truncated。
+    日志来自本项目 .docmind/engine.log；引擎从未启动时 lines 为空——
+    那只说明还没产生运行记录，**不能**据此判断"没有 bug"。
+    `lines` 只是尾部，`tail_truncated=true` 时它**不是全日志**；
+    marker_samples 是从全日志采回的大写标记行，不要因为 tail 里没有某个标记
+    就断言"没出现"——要找特定文本请用 contains 搜索整份日志。
+    """
+    root = _get_code_root()
+    if not root:
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。"
+    f = _parse_keyed(arg or "", ["limit", "contains"])
+    try:
+        limit = int(f.get("limit") or 120)
+    except (TypeError, ValueError):
+        limit = 120
+    limit = max(1, min(limit, 400))
+    contains = str(f.get("contains") or "").strip()[:200]
+    from game_workbench import engine_logs as _engine_logs
+    data = _engine_logs(root, limit=limit, contains=contains)
+    # 单行日志可能极长（引擎把整段堆栈打一行）；截断只影响阅读，不影响 errors 的解析结果。
+    data["lines"] = [str(x)[:500] for x in (data.get("lines") or [])]
+    if data.get("matches") is not None:
+        data["matches"] = [str(x)[:500] for x in data["matches"]]
+    if data.get("marker_samples") is not None:
+        data["marker_samples"] = [
+            {"line": int(item.get("line") or 0), "text": str(item.get("text") or "")[:300]}
+            for item in data["marker_samples"] if isinstance(item, dict)
+        ]
+    if not data.get("lines"):
+        data["note"] = ("引擎日志为空或尚未生成（引擎可能未启动过）。"
+                        "这不等于没有错误：先用 engine_start / game_playtest 产生运行记录再诊断。")
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _page_evidence(result, action, ok):
+    """把一次页面动作的 result 收成前端留痕证据；没有单页步骤时返回 None。
+
+    与 `browser_tool.run_browser_action` 里那份同名结构保持一致：两边都要给
+    「公网内置浏览器」和「回环 dev_page_action」提供同一种流程行数据，
+    前端才能用一套组件渲染。
+    """
+    if not isinstance(result, dict):
+        return None
+    page = str(result.get("page") or "")
+    try:
+        step = int(result.get("step") or 0)
+    except (TypeError, ValueError):
+        step = 0
+    if not page or not step:
+        return None
+    return {
+        "page": page,
+        "step": step,
+        "action": str(result.get("action") or action or ""),
+        "effect": str(result.get("effect") or ""),
+        "ok": bool(ok),
+        "url": str(result.get("url") or ""),
+        "title": str(result.get("title") or ""),
+        "shot_before": str(result.get("screenshot_before") or ""),
+        "shot_after": str(result.get("screenshot") or ""),
+        "live": bool(result.get("live")),
+    }
+
+
 def browser_action(arg=""):
     """内置浏览器：在**公网网页**里真的做动作并回报是否真的生效。
 
@@ -9610,12 +9716,19 @@ def browser_action(arg=""):
     result = browser_tool.run_browser_action(root, fields)
     text = str(result.get("text") or "")
     shot = str(result.get("screenshot") or "")
-    if not shot or not result.get("ok"):
-        return ToolResult(bool(result.get("ok")), text)
+    ok = bool(result.get("ok"))
+    evidence = result.get("browser_evidence") or _page_evidence(
+        result.get("result"), fields.get("action") or "", ok)
+    data = {"browser_evidence": evidence} if evidence else None
+    if not shot or not ok:
+        return ToolResult(ok, text, data=data)
     image = _screenshot_data_url(shot, root)
     if not image:
-        return ToolResult(bool(result.get("ok")), text)
-    return ToolResult(True, text, data={"images": [image], "image_sources": [shot]})
+        return ToolResult(ok, text, data=data)
+    data = dict(data or {})
+    data["images"] = [image]
+    data["image_sources"] = [shot]
+    return ToolResult(True, text, data=data)
 
 
 # ---------------------------------------------------------------------------
@@ -9699,12 +9812,15 @@ def game_screenshot(arg=""):
     """截取当前运行画面作为视觉观察。输入可选 `target: embedded|foreground`（默认 embedded），
     也可给 `job_id: <后台任务id>` 直接抓**那个任务自己启动的窗口**。
 
-    优先用已启用引擎连接器提供的截图能力；否则抓取工作台内嵌的引擎窗口，
-    再不行抓系统前台窗口。给 `job_id:` 则走「任务 → 它的进程 → 它的窗口」：
-    普通 GUI 程序（tkinter / Pygame 等）不在引擎登记表里，而前台窗口又不是它，
-    只有这条路能抓到它自己的画面；抓不到会**明确失败**，不会退回前台窗口。
-    返回图片保存路径（.docmind/screenshots/ 下的 JPEG）
-    与图片观察内容。截图只反映某一瞬间的画面，不是代码事实；无窗口/无头环境会明确失败，
+    优先用已启用引擎连接器提供的截图能力；否则抓取工作台内嵌的引擎窗口；
+    再抓**本项目自己启动的引擎独立窗口**；最后才抓系统前台窗口。
+    第三条是 agent 自己 `engine_start` 的可见性生命线：浏览器模式下引擎无法嵌入，
+    系统前台往往是聊天应用，只抓前台会让模型截图看到别的程序，误判游戏画面没变。
+    给 `job_id:` 则走「任务 → 它的进程 → 它的窗口」：普通 GUI 程序（tkinter /
+    Pygame 等）不在引擎登记表里，而前台窗口又不是它，只有这条路能抓到它自己的
+    画面；抓不到会**明确失败**，不会退回前台窗口。
+    返回图片保存路径（.docmind/screenshots/ 下的 JPEG）与图片观察内容。
+    截图只反映某一瞬间的画面，不是代码事实；无窗口/无头环境会明确失败，
     此时请改用运行日志、受控 playtest 输出等证据。
     """
     fields = _parse_keyed(arg or "", ["target"])
@@ -9739,6 +9855,7 @@ def game_screenshot(arg=""):
         out_dir = os.path.join(root, ".docmind", "screenshots")
     else:
         out_dir = os.path.join(STATE_ROOT, "screenshots")
+
     # 【按后台任务抓它自己的窗口】agent 用 `run_command(..., background: true)` 起的
     # 程序（tkinter / Pygame 这类普通 GUI 程序**不在**引擎登记表里）要用画面证明
     # "它真的跑起来了"，而 `target: foreground` 抓的是**当前有焦点的窗口**——那个
@@ -9785,17 +9902,34 @@ def game_screenshot(arg=""):
                 saved_path = None
             if not saved_path:
                 return "截图失败：连接器画面已返回但截图文件保存失败。请改用运行日志或受控 playtest 输出判断。"
+            root_txt = f"；项目根：{root}" if root else ""
             return ToolResult(
                 ok=True,
-                text=(f"截图完成（来源：连接器 {source}），已保存：{saved_path}\n"
+                text=(f"截图完成（来源：连接器 {source}），已保存：{saved_path}{root_txt}\n"
                       "截图是观察素材，不是代码事实；请结合代码与日志复核。"),
-                data={"images": [encoded], "image_sources": [saved_path]},
+                data={"images": [encoded], "image_sources": [saved_path],
+                      "project_root": root},
                 artifacts=preview_artifact(saved_path, source))
 
     try:
         import screen_capture
     except Exception as exc:  # noqa: BLE001
         return f"截图失败：{type(exc).__name__}: {exc}（当前环境不支持画面捕获，请改用运行日志或受控 playtest 输出判断）"
+
+    def engine_window_frame():
+        """抓本项目自己启动的引擎独立窗口，返回 ((raw,w,h,hwnd), title) 或 None。
+
+        实现下沉到 game_workbench.engine_window_frame（与桌面视觉端点 /api/vision/
+        desktop-frame 共用同一份"找窗→还原→抓取"生命线，不再两处各写一套）。
+        这里只做"有没有项目根"的把关后转发；HWND 只来自引擎进程表，不是任意窗口后门。
+        """
+        if not root:
+            return None
+        try:
+            import game_workbench
+            return game_workbench.engine_window_frame(root)
+        except Exception:  # noqa: BLE001
+            return None
 
     # 嵌入窗登记表按 project_id（prj-<sha1>）分桶，不是文件路径：
     # 传 root 会永不命中，多宿主时可能错截到别的项目窗口。
@@ -9806,13 +9940,20 @@ def game_screenshot(arg=""):
     except Exception:  # noqa: BLE001
         project_pid = None
     frame = None
+    engine_title = ""
+    source_kind = "foreground"
     if target == "embedded":
         frame = screen_capture.grab_embedded(project_pid)
+        if frame is not None:
+            source_kind = "embedded"
+        else:
+            engine_hit = engine_window_frame()
+            if engine_hit:
+                frame, engine_title = engine_hit
+                source_kind = "engine"
     if frame is None:
         frame = screen_capture.grab_foreground()
         source_kind = "foreground"
-    else:
-        source_kind = "embedded"
     if frame is None:
         return ("截图失败：未检测到可抓取的运行窗口（可能未运行、处于无头环境或非 Windows）。"
                 "请先启动并嵌入引擎，或改用运行日志、受控 playtest 事件等证据，不要假设画面内容。")
@@ -9821,12 +9962,15 @@ def game_screenshot(arg=""):
     if saved is None:
         return "截图失败：画面编码或保存失败。请改用运行日志或受控 playtest 输出判断。"
     encoded, path, size = saved
+    source_desc = (f'engine 窗口「{engine_title}」' if engine_title
+                   else f"{source_kind} 窗口")
+    root_txt = f"；项目根：{root}" if root else ""
     return ToolResult(
         ok=True,
-        text=(f"截图完成（来源：{source_kind} 窗口，原始 {width}x{height}，"
-              f"输出 {size[0]}x{size[1]}）：{path}\n"
+        text=(f"截图完成（来源：{source_desc}，原始 {width}x{height}，"
+              f"输出 {size[0]}x{size[1]}）：{path}{root_txt}\n"
               "截图是观察素材，不是代码事实；请结合代码与运行日志复核。"),
-        data={"images": [encoded], "image_sources": [path]},
+        data={"images": [encoded], "image_sources": [path], "project_root": root},
         artifacts=preview_artifact(path, source_kind))
 
 
@@ -9869,11 +10013,19 @@ def dev_desktop_action(arg=""):
     target = (fields.get("target") or "embedded").strip().lower()
     if action not in {"click", "type", "drag", "key", "save"}:
         return json.dumps({"ok": False, "error": "action 只能是 click、type、drag、key 或 save。"}, ensure_ascii=False)
-    if target not in {"embedded", "foreground"}:
-        return json.dumps({"ok": False, "error": "target 只能是 embedded 或 foreground。"}, ensure_ascii=False)
+    if target not in {"embedded", "engine", "foreground"}:
+        return json.dumps({"ok": False, "error": "target 只能是 embedded、engine 或 foreground。"}, ensure_ascii=False)
     root = _get_code_root()
     if not root:
         return json.dumps({"ok": False, "error": "未配置当前项目"}, ensure_ascii=False)
+    # 试做区里 `root` 是副本：引擎/窗口按它解析，但审批台账与自检沙箱租约
+    # 记在真实项目名下。用同一个根去查租约，stage 里永远查不到（默认配置下
+    # 自检动作会被整体拦死）。
+    try:
+        from agent_runtime.tools import stage_origin_root
+        ledger_root = stage_origin_root() or root
+    except Exception:
+        ledger_root = root
     def integer(name):
         value = fields.get(name)
         if value in (None, ""):
@@ -9892,15 +10044,47 @@ def dev_desktop_action(arg=""):
         }
         approval_target = "desktop:%s:%s:%s" % (
             action, target, hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12])
-        gate = _mcp_gate_blocked(root, "desktop_action", approval_target)
+        gate = _mcp_gate_blocked(ledger_root, "desktop_action", approval_target)
+        # 本轮用户已口头授权桌面动作（「在 (400,300) 点一下」「click target=engine」
+        # 这类当场指令）时，对 target=engine/embedded 跳过逐次审批门与自检沙箱，
+        # 直接执行——游戏控制由此降级为普通对话能力，不再非走工作流 lease 不可。
+        # foreground 永不走此路：它可能操作任意前台窗口，必须显式审批。危险组合键
+        # （win/meta/super）不在此路豁免——`desktop_actions._VK` 白名单本就不认它们。
+        if gate and target in ("engine", "embedded"):
+            try:
+                from agent_runtime.tools import desktop_pre_authorized
+                _preauth = desktop_pre_authorized()
+            except Exception:  # noqa: BLE001 - 读不到授权信号一律按未授权
+                _preauth = False
+            if _preauth:
+                gate = None
+        sandbox = {}
         if gate:
-            gate["hint"] = "请用户确认当前桌面动作；确认后必须用完全相同的参数重试。"
-            return json.dumps(gate, ensure_ascii=False)
+            # 逐次审批没过时，再看一次自检沙箱租约：它只在计划获批后的
+            # 时间窗内、且只覆盖本项目自己的窗口。前台任意窗口永远不在
+            # 边界内，终端/Win 键也不在 —— 沙箱是"一次批边界"，不是"免审"。
+            try:
+                from game_workbench import playtest_sandbox_desktop_allowed
+                allowed, sandbox_reason, lease = playtest_sandbox_desktop_allowed(
+                    ledger_root, action=action, target=target,
+                    key=str(fields.get("key") or ""))
+            except Exception as exc:  # noqa: BLE001 - 检查失败必须按拦截处理
+                allowed, sandbox_reason, lease = False, "沙箱检查失败：%s" % type(exc).__name__, {}
+            if not allowed:
+                gate["hint"] = ("请用户确认当前桌面动作；确认后必须用完全相同的参数重试。"
+                                "自检沙箱未覆盖该动作：%s" % (sandbox_reason or "未开启"))
+                gate["sandbox"] = {"active": False, "reason": sandbox_reason}
+                return json.dumps(gate, ensure_ascii=False)
+            sandbox = {"lease_id": lease.get("id", ""),
+                       "expires_at": lease.get("expires_at", ""),
+                       "scope": "project-window"}
         import desktop_actions
         result = desktop_actions.perform(
-            action, target=target, project_id=None,
+            action, target=target, project_id=None, root=root,
             x=payload["x"], y=payload["y"], to_x=payload["to_x"], to_y=payload["to_y"],
             text=fields.get("text") or "", key=fields.get("key") or "")
+        if sandbox and isinstance(result, dict):
+            result.setdefault("sandbox", sandbox)
         return json.dumps(result, ensure_ascii=False)
     except (OSError, TypeError, ValueError) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
@@ -10207,11 +10391,11 @@ def dev_page_action(arg=""):
                                            nth=_one("nth"), scope=_one("scope"),
                                            replace=_flag("replace", True),
                                            settle=_one("settle", 600),
-                                           screenshot=_flag("screenshot", False))
+                                           screenshot=_flag("screenshot", True))
         elif action == "press":
             result = page_action.press_key(root, page=_one("page"), key=_one("key"),
                                            selector=_one("selector"), settle=_one("settle", 600),
-                                           screenshot=_flag("screenshot", False))
+                                           screenshot=_flag("screenshot", True))
         elif action == "wait":
             result = page_action.wait_for(root, page=_one("page"), selector=_one("selector"),
                                           state=_one("state", "present"), value=_one("value"),
@@ -10239,12 +10423,18 @@ def dev_page_action(arg=""):
         return "dev_page_action 失败：%s: %s" % (name, str(exc)[:240])
     text = page_action.render(result)
     shot = str(result.get("screenshot") or "")
-    if not shot or not result.get("ok"):
-        return text
+    ok = bool(result.get("ok"))
+    evidence = _page_evidence(result, action, ok)
+    data = {"browser_evidence": evidence} if evidence else None
+    if not shot or not ok:
+        return ToolResult(ok, text, data=data) if data else text
     image = _screenshot_data_url(shot, root)
     if not image:
-        return text
-    return ToolResult(True, text, data={"images": [image], "image_sources": [shot]})
+        return ToolResult(ok, text, data=data) if data else text
+    data = dict(data or {})
+    data["images"] = [image]
+    data["image_sources"] = [shot]
+    return ToolResult(True, text, data=data)
 
 
 def dev_vue(arg=""):
@@ -10593,6 +10783,25 @@ def start_workflow(arg=""):
     确认任务 DAG 并审批后，多个子代理才会开始执行；本工具不会替用户
     执行任何有副作用任务，也不能跳过人工审批。无代码库根目录时明确失败且不落任何记录。
     """
+    # 工作流降级为「显式 opt-in」：聊天回合内、用户没点名要工作流时软拦截。
+    # 判据来自 agent.py 回合开始按 `_workflow_explicitly_requested` 置位的 ContextVar。
+    # 读不到信号（回合之外——直接调工具 / 单测 / 前端显式 POST /api/agent/workflow/start）
+    # 一律照常放行，不改变既有行为。
+    try:
+        from agent_runtime.tools import chat_workflow_allowed
+        _wf_allowed = chat_workflow_allowed()
+    except Exception:  # noqa: BLE001 - 读不到开关时按「允许」兜底，绝不误伤显式路径
+        _wf_allowed = True
+    if not _wf_allowed:
+        return ("start_workflow 未执行：用户本轮**没有**明确要求开启工作流。"
+                "游戏/开发的单个或两三个具体操作（启动引擎、在某坐标点击、截图、"
+                "读日志、改代码、跑命令）请**直接调用对应工具**在对话里完成——"
+                "engine_start / engine_stop / engine_logs / game_screenshot / "
+                "dev_desktop_action / vision_locate_click / read_file / run_command 等，"
+                "把结果贴在回复里即可，不需要工作流的方案门与审批仪式。"
+                "仅当用户显式说出「开启工作流 / 用工作流跑 / 自动化回归 / 跑完整自检」"
+                "之类的要求时，才再次调用本工具。")
+
     fields = _parse_keyed(arg or "", ["goal", "request", "kind", "web", "web_enabled"])
     goal = (fields.get("goal") or fields.get("request") or "").strip()
     if not goal:
@@ -11589,7 +11798,29 @@ TOOLS = {
     "game_simulate": {"description": "模拟数值成长曲线（等级经验/经济平衡推演），输入 levels/base/growth，可选 model=geometric|linear|logistic|diminishing、k=承载上限。", "func": game_simulate},
     "game_impact": {"description": "按符号或关键词分析代码影响文件，输入 query。", "func": game_impact},
     "game_playtest": {"description": "在项目根目录运行 Playtest 命令，输入 command/timeout。", "func": game_playtest},
-    "game_screenshot": {"description": "截取当前引擎运行画面作为视觉观察：可选输入 target: embedded|foreground（默认 embedded，嵌入窗口不可用时自动改抓前台窗口）。优先使用已启用引擎连接器的截图能力，其次抓取工作台内嵌窗口；也可直接给 job_id: <后台任务id> 抓**那个任务自己启动的窗口**——普通 GUI 程序（tkinter/Pygame 等）不在引擎登记表里，而前台窗口是聊天应用自己，只有这条路能抓到它；抓不到会明确失败，不退回前台窗口。JPEG 保存到项目 .docmind/screenshots/ 并回传图片。截图只是某一瞬间的观察，不是代码事实；无窗口/无头环境会明确失败，那时改用运行日志或受控 playtest 证据，不要臆测画面。", "func": game_screenshot},
+    "engine_logs": {
+        "description": (
+            "读取本项目引擎日志的尾部与其中的错误行（只读，不启停引擎）。\n"
+            "可选输入 `limit`（默认 120，最多 400 行）、`contains`（在整个日志里找标记）。"
+            "返回 JSON：`ok`/`running`/`errors`（[{path,line,message}]）/`error_count`/"
+            "`lines`/`total_lines`/`tail_truncated`/`marker_samples`（[{line,text}]）/`note`；"
+            "带 contains 时另有 `matches`/`match_count`/`search_truncated`。\n"
+            "`lines` 只是尾部；`tail_truncated=true` 时它不代表全日志，"
+            "`marker_samples` 是从全日志采回的大写标记行（含行号）。\n"
+            "用于运行后诊断：与 game_screenshot 的视觉观察配合——日志看报错与崩溃，"
+            "画面看实际行为，两者互相印证，不要只看其一。\n"
+            "日志被重复错误刷屏、tail 里看不到要找的标记时，用 `contains` 搜索整份日志，"
+            "不要因为 tail 200 行里没有就断言「没出现」。\n"
+            "`lines` 为空只说明还没产生日志，**不能**据此判断「没有 bug」。"
+        ),
+        "func": engine_logs,
+        # 只读诊断：不进 _EXEC_TOOLS/_WRITE_TOOLS，允许与别的只读工具并发。
+        "group": "game",
+        "capability": "read_local",
+        "side_effect": "pure",
+        "parallel_safe": True,
+    },
+    "game_screenshot": {"description": "截取当前引擎运行画面作为视觉观察：可选输入 target: embedded|foreground（默认 embedded，嵌入窗口不可用时自动改抓本项目自己启动的引擎独立窗口，最后才抓前台窗口）。抓取顺序：已启用引擎连接器 → 工作台内嵌窗口 → 本项目引擎独立窗口 → 系统前台窗口；也可直接给 job_id: <后台任务id> 抓**那个任务自己启动的窗口**——普通 GUI 程序（tkinter/Pygame 等）不在引擎登记表里，而前台窗口是聊天应用自己，只有这条路能抓到它；抓不到会明确失败，不退回前台窗口。JPEG 保存到项目 .docmind/screenshots/ 并回传图片。截图只是某一瞬间的观察，不是代码事实；无窗口/无头环境会明确失败，那时改用运行日志或受控 playtest 证据，不要臆测画面。", "func": game_screenshot},
     "engine_start": {
         "description": (
             "启动项目当前的引擎进程（Godot / Unity / Unreal，按项目配置走），"
@@ -11608,6 +11839,7 @@ TOOLS = {
         "capability": "exec",
         "side_effect": "mutating",
         "parallel_safe": False,
+        "group": "game",
     },
     "engine_stop": {
         "description": (
@@ -11618,6 +11850,7 @@ TOOLS = {
         "capability": "exec",
         "side_effect": "mutating",
         "parallel_safe": False,
+        "group": "game",
     },
     "engine_reload": {
         "description": (
@@ -11629,6 +11862,7 @@ TOOLS = {
         "capability": "exec",
         "side_effect": "mutating",
         "parallel_safe": False,
+        "group": "game",
     },
     "browser_action": {
         "description": (
@@ -11666,7 +11900,7 @@ TOOLS = {
         "group": "web",
     },
     "dev_desktop_capture": {"description": "桌面自动化视觉技能的安全观察入口：截取当前项目嵌入窗口或前台窗口，输入 target: embedded|foreground。只返回真实画面和 native 预览 artifact，不直接点击、输入或修改软件状态；状态修改必须调用已批准的应用 MCP、插件或其他明确工具。", "func": dev_desktop_capture},
-    "dev_desktop_action": {"description": "执行一个经过项目审批的桌面动作：action=click|type|drag|key|save，target=embedded|foreground。click/drag 使用窗口客户区 x/y（drag 另给 to_x/to_y），type 使用 text，key 使用安全键名或 Control_L+s。首次调用会返回 desktop_action 审批请求；用户确认后必须用完全相同参数重试。禁止终端、Win 键、任意 HWND 和窗口枚举。", "func": dev_desktop_action},
+    "dev_desktop_action": {"description": "执行一个经过项目审批的桌面动作：action=click|type|drag|key|save，target=embedded|engine|foreground（engine=本项目自己启动的引擎独立窗口）。click/drag 使用窗口客户区 x/y（drag 另给 to_x/to_y），type 使用 text，key 使用安全键名或 Control_L+s。首次调用会返回 desktop_action 审批请求；用户确认后必须用完全相同参数重试。若当前项目已开启【自检沙箱租约】（工作流计划获批时一次性批准边界），embedded/engine 上的点击/输入可直接放行，并在结果里返回 sandbox.lease_id；foreground、终端命令与 Win 键永远不在沙箱内。禁止任意 HWND 和窗口枚举。", "func": dev_desktop_action},
     "vision_locate_click": {
         "description": (
             "**看着画面**找目标：让视觉模型在嵌入窗口里指出某个可点击目标的位置。\n"
@@ -11888,6 +12122,9 @@ TOOLS = {
         "确认任务 DAG 并审批后，多个子代理才开始执行；本工具不直接执行任何有副作用任务，人工门不可跳过。"
         "边界：单个独立子任务用 delegate；一轮内当场并行出结果、无需持久化与人工门用 orchestrate；"
         "需要持久化状态、人工方案/审批门、失败重规划与跨窗口恢复才用 start_workflow。子代理不得调用本工具。"
+        "【不得滥用】不得因为任务含'游戏'二字就自动升级为工作流。用户说「启动引擎」「帮我点一下」「截个图」"
+        "等具体游戏操作，直接调用 engine_start / dev_desktop_action / game_screenshot 等普通对话工具即可；"
+        "仅当用户显式要求工作流、自动化回归、多步编排或完整自检时才调用本工具。"
     ), "func": start_workflow},
     "init_regions": {
         "description": "初始化「分区开发」结构：在代码库根目录建 assets/（素材区）、values/（数值区）、bugs/（bug 区）、behaviors/（角色行为区）等独立子目录（具体分区以 regions.json 为准），每个目录 git init 独立仓库，并生成 DEV_INDEX.md、DOCMIND_RULES.md（分区契约，会被注入 Agent 系统提示，强制越区写被拦截）。用于游戏等分工开发，防止代码堆叠与混乱。输入留空即可；需先在顶栏的项目菜单里「打开项目」并选择代码目录（代码库按项目隔离，本工具无法替你切换项目）。",

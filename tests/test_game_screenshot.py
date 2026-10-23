@@ -193,12 +193,65 @@ class GameScreenshotToolTests(unittest.TestCase):
         self.assertTrue(result.data["image_sources"][0].endswith(".jpg"))
         self.assertIn("foreground", result.text)
 
+    def test_prefers_project_engine_window_before_foreground(self):
+        """嵌入不可用时先抓本项目引擎独立窗口——否则模型截到的是聊天应用。"""
+        frame = (_bgra(640, 360), 640, 360)
+        with patch.object(tools_mod, "_try_mcp_screenshot", lambda root: None), \
+                patch.object(screen_capture, "grab_embedded", lambda *a, **k: None), \
+                patch("game_workbench.engine_status",
+                      return_value={"ok": True, "running": True, "pid": 4321}), \
+                patch("desktop_bridge.find_window",
+                      return_value=(9876, "StarVoyager")), \
+                patch("desktop_bridge.restore_window",
+                      return_value={"ok": True, "restored": True, "foreground": True}), \
+                patch.object(screen_capture, "capture_window",
+                             lambda hwnd: frame if int(hwnd) == 9876 else None), \
+                patch.object(screen_capture, "grab_foreground",
+                             lambda *a, **k: self.fail(
+                                 "命中本项目引擎窗口时不应再抓前台窗口")):
+            result = tools_mod.game_screenshot("")
+        self.assertIsInstance(result, ToolResult)
+        self.assertIn("engine 窗口「StarVoyager」", result.text)
+        self.assertIn("640x360", result.text)
+        self.assertEqual(
+            result.artifacts[0]["metadata"]["capture_source"], "engine")
+
+    def test_restores_minimized_engine_window_before_capturing(self):
+        """Godot 游戏窗口会自最小化（客户区 0x0）→ 抓图前必须先还原，否则退回前台截到聊天应用。"""
+        frame = (_bgra(853, 480), 853, 480)
+        order = []
+
+        def _restore(hwnd):
+            order.append(("restore", int(hwnd)))
+            return {"ok": True, "restored": True, "foreground": True}
+
+        def _capture(hwnd):
+            order.append(("capture", int(hwnd)))
+            return frame if int(hwnd) == 9876 else None
+
+        with patch.object(tools_mod, "_try_mcp_screenshot", lambda root: None), \
+                patch.object(screen_capture, "grab_embedded", lambda *a, **k: None), \
+                patch("game_workbench.engine_status",
+                      return_value={"ok": True, "running": True, "pid": 4321}), \
+                patch("desktop_bridge.find_window",
+                      return_value=(9876, "StarVoyager (DEBUG)")), \
+                patch("desktop_bridge.restore_window", side_effect=_restore), \
+                patch.object(screen_capture, "capture_window", side_effect=_capture), \
+                patch.object(screen_capture, "grab_foreground",
+                             lambda *a, **k: self.fail("还原后应能抓到引擎窗口，不该退回前台")):
+            result = tools_mod.game_screenshot("")
+        self.assertIsInstance(result, ToolResult)
+        self.assertEqual(order, [("restore", 9876), ("capture", 9876)],
+                         "必须先把引擎窗口还原再抓，顺序反了就会抓到前台聊天应用")
+
     def test_foreground_target_skips_mcp_and_embedded(self):
         frame = (_bgra(32, 32), 32, 32, 7)
         with patch.object(tools_mod, "_try_mcp_screenshot",
                           lambda root: self.fail("foreground 目标不应探测 MCP")), \
                 patch.object(screen_capture, "grab_embedded",
                              lambda *a, **k: self.fail("foreground 目标不应抓嵌入窗")), \
+                patch("game_workbench.engine_status",
+                      side_effect=AssertionError("foreground 目标不应探测引擎窗口")), \
                 patch.object(screen_capture, "grab_foreground", lambda *a, **k: frame):
             result = tools_mod.game_screenshot("target: foreground")
         self.assertIsInstance(result, ToolResult)

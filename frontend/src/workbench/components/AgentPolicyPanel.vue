@@ -70,6 +70,42 @@ function gateLabel(row: any) {
   return `${row.action === 'desktop_action' ? '桌面操作' : '工具动作'} · ${labels[action] || action}（参数已绑定）`
 }
 
+/**
+ * MCP 连接/能力审批是 SETTINGS_ONLY：它们在本审核队列里点「批准」会被后端
+ * approval-requests/decide 硬拒（"只能在设置页确认"）。这里不再给这种注定失败
+ * 的按钮，改为引导用户去「设置 · 连接器（MCP）」的待装配卡片一键确认。
+ */
+function isSettingsOnlyGate(row: any): boolean {
+  return row?.action === 'mcp_server' || row?.action === 'mcp_capability'
+}
+
+/**
+ * 待审核队列里的 MCP 动作都是 SETTINGS_ONLY（本队列点批准会被后端硬拒），
+ * 但装配 / 移除 / 能力路由三类的放行入口不同，文案必须区分，否则移除/能力
+ * 请求被错误地引导去『待装配连接器』卡片（那里根本没有对应的可确认项）。
+ * key 只允许字母数字/_/-（后端校验），不会含冒号；所以 mcp_server 的 target
+ * 含冒号（key:摘要）= 装配新增，纯 key（无冒号）= 移除。
+ */
+function settingsOnlyGuide(row: any): { title: string; hint: string } {
+  const target = String(row?.target || '')
+  if (row?.action === 'mcp_capability') {
+    return {
+      title: `MCP 能力路由 · ${target}`,
+      hint: '请到「设置 · 连接器（MCP）」里，在对应连接器下确认可用能力并批准路由（本队列无法批准）。',
+    }
+  }
+  if (target.includes(':')) {
+    return {
+      title: `MCP 连接器装配 · ${target}`,
+      hint: '请到「设置 · 连接器（MCP）」的『待装配连接器』卡片点确认装配（本队列无法批准）。',
+    }
+  }
+  return {
+    title: `MCP 连接器移除 · ${target}`,
+    hint: '请到「设置 · 连接器（MCP）」里，在该连接器上点「移除」完成确认（本队列无法批准）。',
+  }
+}
+
 function onRoute(event: Event) {
   const detail = (event as CustomEvent).detail
   route.value = detail?.route || 'local'
@@ -112,8 +148,14 @@ defineExpose({ show })
         <div>难题自动转云端：{{ auto ? '已启用' : '已关闭' }}</div>
         <b v-if="gateRequests.length" class="ap-heading">待处理的工具动作</b>
         <div v-for="gate in gateRequests" :key="gate.id" class="ap-approval">
-          <div>{{ gateLabel(gate) }}</div><small>请求 {{ gate.id }} · 风险 {{ gate.risk || 'L2' }}</small>
-          <button @click="decideGate(gate.id, true)">批准</button><button @click="decideGate(gate.id, false)">拒绝</button>
+          <template v-if="isSettingsOnlyGate(gate)">
+            <div>{{ settingsOnlyGuide(gate).title }}</div>
+            <small>{{ settingsOnlyGuide(gate).hint }}</small>
+          </template>
+          <template v-else>
+            <div>{{ gateLabel(gate) }}</div><small>请求 {{ gate.id }} · 风险 {{ gate.risk || 'L2' }}</small>
+            <button @click="decideGate(gate.id, true)">批准</button><button @click="decideGate(gate.id, false)">拒绝</button>
+          </template>
         </div>
         <b class="ap-heading">外接工具</b>
         <div v-if="!connectors.length" class="ap-empty">暂无外接工具（游戏引擎等在下面的「游戏引擎连接」里连）</div>

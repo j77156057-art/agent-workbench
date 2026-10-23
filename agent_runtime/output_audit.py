@@ -61,8 +61,11 @@ _LOCATION_QUERY = re.compile(
 #: 这已经是同一族里的第三次了（上一轮：`behaviors/enemy.gd` 被切成 `enemy.gd`）。
 #: **教训**：凡是「正则从正文里切路径」的地方，扩展名表就是**判据的一部分**，
 #: 补一条扩展名不是加个词，是让一类引用从「误判不存在」变成「真的去核验」。
+#: 绝对路径的盘符必须算进匹配：少了 `D:\` 这一段，`D:\proj\shot.png`
+#: 会被切成相对路径 `proj\shot.png`，再拼到 code_root 下自然打不开——
+#: 实测启动任务引用了真实存在的阶段截图，却被证据门禁判失败。
 _FILE_REF = re.compile(
-    r"(?<![A-Za-z0-9_./\\-])([A-Za-z0-9_./\\-]+\.(?:tscn|tsx|import|gdshader|gdignore"
+    r"(?<![A-Za-z0-9_./\\-])((?:[A-Za-z]:[\\/])?[A-Za-z0-9_./\\-]+\.(?:tscn|tsx|import|gdshader|gdignore"
     r"|tres|godot|json|jsonc|yaml|yml|toml|html|css|scss|vue|jsx|js|ts|py|pyi|md"
     r"|txt|cfg|xml|sh|bat|ps1|sql|csv|cpp|cc|cxx|hpp|h|java|kt|go|rs|swift|cs|gd"
     r"|svg|png|jpe?g|gif|webp|ico|mp3|wav|ogg|ttf|woff2?))"
@@ -104,6 +107,71 @@ _NEGATED = re.compile(
 #:
 #: 按「；」切成两个子句后，前者在子句 0（否定的），后者在子句 1（干净的）。
 _CLAUSE_SPLIT = re.compile(r"[。；！？\n]")
+
+#: **显式的项目根断言**：`代码根目录 D:\Temp\p1_demo_game` 这类句子。
+#:
+#: 实测的幻觉：子代理把临时项目的根写成 `D:\Temp\p1_demo_game`（实际是
+#: `D:\Temp\docmind-selfcheck2`），还以它为准给出相对路径。引用文件本身都能
+#: 核验通过（它们确实存在），所以原有的「路径存在」门禁一声不响——**错的是根**。
+#:
+#: 触发面刻意收窄：必须出现「根/根目录/code root」这类词，紧跟一个 Windows
+#: 盘符绝对路径，且该路径不是否定/占位语境。普通正文里随手提到的绝对路径
+#: 不在此列（那可能是日志里的产物路径，不该要求它存在）。
+_PROJECT_ROOT_CLAIM = re.compile(
+    r"(?:代码根目录|项目根目录|代码库根目录|项目根|代码根|工作目录"
+    r"|project\s+root|code\s+root)"
+    r"[^\n。；;！？]{0,16}?"
+    r"(?:[`\"'“](?P<quoted>[A-Za-z]:[\\/][^`\"'”\n]{1,200})[`\"'”]"
+    r"|(?P<bare>[A-Za-z]:[\\/][A-Za-z0-9_.\-\\/]{1,200}))"
+)
+
+#: 项目根断言的**否定/历史/占位**语境：这些不是「当前根就在这里」的主张。
+_ROOT_CLAIM_SKIP = re.compile(
+    r"(?:不存在|没有|不是|并非|已删除|已清理|已回收|已移除|曾经|原先|原来"
+    r"|历史|示例|例如|比如|placeholder)")
+
+
+def _project_root_claims(text: str) -> list[dict[str, Any]]:
+    """抽取结论里的**项目根断言**，并核验目录是否存在。
+
+    返回 ``[{"path": ..., "exists": bool}]``（按 normcase 去重）。只在 Windows
+    上判定——其它平台无法解析盘符路径，硬判就是制造误报。抽取失败一律返回空，
+    绝不能反过来拖垮门禁。
+    """
+    claims: list[dict[str, Any]] = []
+    seen = set()
+    try:
+        for match in _PROJECT_ROOT_CLAIM.finditer(text or ""):
+            path = (match.group("quoted") or match.group("bare") or "").strip()
+            path = path.rstrip("，,、")
+            lowered = path.lower()
+            if (not path or any(ch in path for ch in "<>*?…")
+                    or "..." in path
+                    or "\\path\\to\\" in lowered or "/path/to/" in lowered):
+                continue  # 占位路径（D:\path\to\...）不是事实主张
+            start = match.start("quoted") if match.group("quoted") else match.start("bare")
+            end = match.end("quoted") if match.group("quoted") else match.end("bare")
+            if _ref_is_negated(text, start, end):
+                continue
+            prev = 0
+            for sep in _CLAUSE_SPLIT.finditer(text, 0, start):
+                prev = sep.end()
+            nxt = len(text)
+            sep = _CLAUSE_SPLIT.search(text, end)
+            if sep:
+                nxt = sep.start()
+            clause = text[prev:nxt]
+            if _ROOT_CLAIM_SKIP.search(clause):
+                continue
+            key = os.path.normcase(os.path.normpath(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            exists = os.path.isdir(path) if os.name == "nt" else True
+            claims.append({"path": path, "exists": bool(exists)})
+    except Exception:  # noqa: BLE001 - 审计辅助项不得拖垮门禁
+        return []
+    return claims
 
 #: 可证伪的**证据来源断言**：模型白纸黑字说这段正文是它一手读来的、不是猜的。
 #:
@@ -466,6 +534,9 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
                      "start_line": int(match.group(2)) if match.group(2) else None,
                      "end_line": int(match.group(3) or match.group(2)) if match.group(2) else None})
     file_checks = []
+    # 项目根断言：引用的文件都存在，不代表它们**相对的那个根**是对的。
+    # 上一轮就是「文件引用全部可核验、根却是编的」，原有门禁完全看不见。
+    root_claims = _project_root_claims(text)
     root = Path(code_root).resolve() if code_root else None
     # 本轮真实读过的路径（从 action 文本里取），供裸文件名回退判定用。
     read_basenames = _basename_index(_read_paths_from_actions(actions))
@@ -607,6 +678,10 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # 不做确定性声称的普通答案完全不碰这一项（零回归面，守住"越诚实越 FAIL 是事故"）。
     if count_evidence_judged:
         checks["count_evidence_complete"] = not evidence_truncated
+    # 项目根断言只在**真的写了根路径**时才加进 checks（窄触发）。目录不存在
+    # 意味着后面的相对引用虽能打开，却是相对一个不存在的根——叙述仍然错了。
+    if root_claims:
+        checks["project_root_exists"] = all(item["exists"] for item in root_claims)
     # ---- 门禁项 vs 参考项 -------------------------------------------------
     #
     # ``read_file_present``（「这一轮有没有调 read_file」）是**过程**指标，不是**事实**
@@ -663,13 +738,19 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     if count_evidence_judged and evidence_truncated:
         verdict = "FAIL"
         verdict_reason = ""
+    # 项目根断言是**内容错误**（不是环境限制）：即便没有 code_root 可用，
+    # 也不能被上面的 `no_root` 降级成 PARTIAL 原样放出去。
+    if root_claims and not checks.get("project_root_exists", True):
+        verdict = "FAIL"
+        verdict_reason = ""
     # ---- 外显判定：答案**自招**的过度声称，与问题是否定位无关，必须外显 ----------
     # 这三项只会在结论**自己**写下"准确总数 / 来自真实读取 / 分项加总"时才被激活
     # （窄触发），因此它们的 FAIL 是**内容/口吻**问题——纯计数题谎报"准确总数"
     # 与定位题引用打不开一样是真错误。它们不该被 `required`（定位类）这道**消费者门**
     # 吞掉：此前消费者 `if required and not gate_ok` 让非定位题即便 verdict=FAIL 也
     # 一个 reflection 都不发。调用方据此（`content_fail`）把外显通道对这类过度声称打开。
-    _OVERCLAIM_KEYS = ("count_consistent", "count_evidence_complete", "provenance_traceable")
+    _OVERCLAIM_KEYS = ("count_consistent", "count_evidence_complete",
+                       "provenance_traceable", "project_root_exists")
     content_fail = any(checks.get(k) is False for k in _OVERCLAIM_KEYS)
     return {"ok": bool(all(value for key, value in checks.items()
                              if key != "location_question")),
@@ -692,6 +773,8 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
             # **有送达记录却没覆盖**（"声称读过、实际从未送达"）。调用方据此点名。
             "provenance_claim": provenance_claim,
             "unverified_provenance": unverified_provenance,
+            # 结论里显式写出的项目根，以及该目录是否真的存在（不存在=根是编的）。
+            "project_root_claims": root_claims,
             # ④之② 确定性计数自检：`名称: 数字` 分项表与声称总数的加总矛盾详情
             # （判不了则为 None）。调用方据此点名 total/sum，给模型可执行的纠偏。
             "count_conflict": count_conflict,

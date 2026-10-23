@@ -21,7 +21,8 @@ class SandboxUnavailable(RuntimeError):
     pass
 
 
-_EXCLUDED = {".git", ".docmind", ".venv", "node_modules", "__pycache__", "dist", "build"}
+_EXCLUDED = {".git", ".docmind", ".venv", "node_modules", "__pycache__", "dist", "build",
+             ".chroma", "_archived_builds"}
 _SECRET_NAMES = {".env", ".env.local", ".env.production", ".env.development",
                  ".docmind_secrets.json", ".docmind_secret.key", "credentials.json"}
 _MAX_COPY_BYTES = 2 * 1024 * 1024 * 1024

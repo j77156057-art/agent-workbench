@@ -20,6 +20,7 @@ import ExecApprovalDialog from './components/ExecApprovalDialog.vue'
 import GpuPanel from './components/GpuPanel.vue'
 import EdaVerifyPanel from './components/EdaVerifyPanel.vue'
 import LiveStreamPanel from './components/LiveStreamPanel.vue'
+import BrowserLivePanel from './components/BrowserLivePanel.vue'
 import HarnessPanel from './components/HarnessPanel.vue'
 import SemanticLocateBar from './components/SemanticLocateBar.vue'
 import WorkspaceTabs from './components/WorkspaceTabs.vue'
@@ -765,6 +766,7 @@ onBeforeUnmount(() => {
         @dock="edaResident = true" @undock="edaResident = false" />
       <HarnessPanel ref="hpRef" />
       <LiveStreamPanel ref="lsRef" />
+      <BrowserLivePanel />
     </div>
 
     <ContextMenu />

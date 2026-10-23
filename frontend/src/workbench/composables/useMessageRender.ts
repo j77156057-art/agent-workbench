@@ -106,12 +106,12 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
   }
   const nowTick = ref(Date.now())
   let elapsedTimer: number | null = null
-  // 计时钟只在「有活动回合」时走：空闲/全部结束后不再每 500ms 触发响应式刷新。
+  // 计时钟只在「有活动回合」时走：空闲/全部结束后不再每 100ms 触发响应式刷新。
   const elapsedTicking = computed(isActive)
   watch(elapsedTicking, (on) => {
     if (on && elapsedTimer === null) {
       nowTick.value = Date.now()
-      elapsedTimer = window.setInterval(() => { nowTick.value = Date.now() }, 500)
+      elapsedTimer = window.setInterval(() => { nowTick.value = Date.now() }, 100)
     } else if (!on && elapsedTimer !== null) {
       window.clearInterval(elapsedTimer)
       elapsedTimer = null
@@ -183,7 +183,15 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
   function traceState(msg: T, item: { type: string; text: string }, index: number): 'running' | 'ok' | 'warn' | 'error' {
     const raw = item.text
     if (/重复调用|重复空转/.test(raw)) return 'warn'
-    if (/失败|错误|超时|拦截|阻断|未执行|不可用|exception/i.test(raw)) return 'error'
+    // result 行常把工具用法/回包原文整段带回：里面出现「console 错误」「失败请求 +0」
+    // 这类词不等于这一步失败（实测 tool_search 成功返回 browser_action 用法、
+    // click 成功回包都曾被标红）。先剔掉计数短语，再对 result 只扫前 200 字
+    // （真正的失败原因总在回包开头）；action 行仍扫全文。
+    const counterless = raw
+      .replace(/失败请求\s*[+:：]?\s*\+?\d+/g, '')
+      .replace(/console\s*错误\s*[+:：]?\s*\+?\d+/g, '')
+    const scan = item.type === 'result' ? counterless.slice(0, 200) : counterless
+    if (/失败|错误|超时|拦截|阻断|未执行|不可用|exception/i.test(scan)) return 'error'
     if (item.type === 'reflection' && /重试|换思路|重新规划|注意/i.test(raw)) return 'warn'
     if (msg.status === 'streaming' && index === msg.trace.length - 1) return 'running'
     return 'ok'
@@ -201,7 +209,7 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     if (!msg.startedAt) return ''
     const end = msg.finishedAt || nowTick.value
     const seconds = Math.max(0, (end - msg.startedAt) / 1000)
-    return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`
+    return `${seconds.toFixed(1)}s`
   }
   function slowResponseLabel(msg: T) {
     if (msg.status !== 'streaming' || !msg.lastActivityAt) return ''

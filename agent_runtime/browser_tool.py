@@ -108,13 +108,13 @@ def run_browser_action(root: str, spec: dict[str, Any]) -> dict[str, Any]:
                                            selector=selector, text=text, nth=nth, scope=scope,
                                            replace=_flag(fields, "replace", True),
                                            settle=settle,
-                                           screenshot=_flag(fields, "screenshot", False),
+                                           screenshot=_flag(fields, "screenshot", True),
                                            allow_password=_flag(fields, "allow_password", False),
                                            domain=DOMAIN)
         elif action == "press":
             result = page_action.press_key(root, page=page, key=_one(fields, "key"),
                                            selector=selector, settle=settle,
-                                           screenshot=_flag(fields, "screenshot", False),
+                                           screenshot=_flag(fields, "screenshot", True),
                                            domain=DOMAIN)
         elif action == "wait":
             result = page_action.wait_for(root, page=page, selector=selector,
@@ -152,10 +152,28 @@ def run_browser_action(root: str, spec: dict[str, Any]) -> dict[str, Any]:
     rendered = page_action.render(result)
     # 越界（被重定向到内网）时必须让"ok"为假：这次动作的结论不能算数。
     ok = bool(result.get("ok", True)) and not result.get("off_scope") and not result.get("left_scope")
-    return {"ok": ok, "text": rendered, "action": result.get("action") or action,
-            "page": result.get("page") or page,
-            "screenshot": str(result.get("screenshot") or ""),
-            "result": result}
+    page_id = str(result.get("page") or page or "")
+    step = int(result.get("step") or 0)
+    response = {"ok": ok, "text": rendered, "action": result.get("action") or action,
+                "page": page_id,
+                "screenshot": str(result.get("screenshot") or ""),
+                "result": result}
+    # 每步留痕：前端要能把这个动作和它的前后画面、地址对上号。
+    # page 为空（list/close/参数错误）时没有"某一步"可言，不产出证据。
+    if page_id and step:
+        response["browser_evidence"] = {
+            "page": page_id,
+            "step": step,
+            "action": result.get("action") or action,
+            "effect": str(result.get("effect") or ""),
+            "ok": ok,
+            "url": str(result.get("url") or ""),
+            "title": str(result.get("title") or ""),
+            "shot_before": str(result.get("screenshot_before") or ""),
+            "shot_after": str(result.get("screenshot") or ""),
+            "live": bool(result.get("live")),
+        }
+    return response
 
 
 def check_url(url: str) -> tuple[bool, str]:

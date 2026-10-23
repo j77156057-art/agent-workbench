@@ -9,6 +9,7 @@ import type { WorkflowState } from '../api'
 import WorkflowGateDialog from './WorkflowGateDialog.vue'
 import WorkflowPreview from './WorkflowPreview.vue'
 import AdapterManagerPanel from './AdapterManagerPanel.vue'
+import WorkflowMemberWindow from './WorkflowMemberWindow.vue'
 import { agentApi } from '../api/agent'
 
 const props = defineProps<{
@@ -49,6 +50,17 @@ const reviewHeadlineClass = computed(() => {
   return tone === 'ok' ? 'wf-ok' : tone === 'unverified' ? 'wf-unverified' : 'wf-bad'
 })
 
+/** 已弹出成员窗的级联序号：多个窗同时开时按弹出顺序错开左上角，避免完全重叠。 */
+function popIndex(id: string): number {
+  let n = 0
+  for (const m of members.value) {
+    if (!memberOpen(m.id)) continue
+    if (m.id === id) return n
+    n += 1
+  }
+  return 0
+}
+
 /**
  * 「算成功」的结局。后端从今天起给**三值** status
  * （`completed` / `completed_unverified` / `failed`），见
@@ -62,6 +74,31 @@ const reviewHeadlineClass = computed(() => {
  */
 const isSuccessful = computed(() =>
   status.value === 'completed' || status.value === 'completed_unverified')
+
+/**
+ * 面向用户的「最终答复」正文。
+ *
+ * 为什么要有这一块：工作流真正的收尾答复一直**存在**，只是**没被渲染**——
+ * ① DAG 末尾的 reporter 收尾节点产出的结论（`members` 里 role=reporter /
+ *    id=report 那条的 `conclusion`），② 引擎对所有子任务结论做的整体合成
+ *    （`state.results.merged`）。二者过去都只能靠点开某个成员小窗、或干脆
+ *    （merged）无处可见——用户自然问「回答在哪」。
+ *
+ * 取值优先级：**reporter 节点的结论优先**（它就是我们专为「把四个子任务
+ * 汇成一段人话」而加的收尾节点，最贴合用户要的答复）；缺失时回退到
+ * `merged`（引擎级合成，语义等价但不带收尾节点的结构化排版）。都为空则
+ * 返回空串，模板据此不渲染本块。
+ */
+const finalAnswer = computed(() => {
+  const reporter = members.value.find(
+    (m) => String(m.role || '').toLowerCase() === 'reporter' || m.id === 'report')
+  const fromReporter = String(reporter?.conclusion || '').trim()
+  if (fromReporter) return fromReporter
+  const merged = (state.value?.results as Record<string, unknown> | undefined)?.merged
+  return String(merged || '').trim()
+})
+const hasFinalAnswer = computed(() =>
+  Boolean(finalAnswer.value) && isSuccessful.value)
 
 async function applyReviewedStage() {
   if (!state.value?.workflow_id || busy.value) return
@@ -192,7 +229,7 @@ async function discardStage() {
       <div v-if="members.length" class="wf-members">
         <div class="wf-members-head">
           <b>团队成员（{{ members.length }}）</b>
-          <small>每个成员的思考、工具调用与观察都实时显示在这里</small>
+          <small>点任意成员，把它单独的实时轨迹弹成一个小窗（可同时开多个、各自拖动）</small>
         </div>
         <div v-for="m in members" :key="m.id" class="wf-member" :class="`wf-member-${m.status}`" :data-task-id="m.id">
           <button class="wf-member-row" @click="toggleMember(m.id)">
@@ -205,41 +242,25 @@ async function discardStage() {
               <em class="wf-member-status">{{ ({ pending: '待执行', running: '执行中', ok: '已完成', failed: '失败', blocked: '阻塞' } as Record<string, string>)[m.status] || m.status }}</em>
               <small v-if="m.elapsedMs">{{ fmtMs(m.elapsedMs) }}</small>
             </span>
-            <span class="wf-member-chevron">{{ memberOpen(m.id) ? '▾' : '▸' }}</span>
+            <span class="wf-member-chevron" :title="memberOpen(m.id) ? '已弹出独立窗口（点此收起）' : '在独立小窗中查看该成员'">⧉</span>
           </button>
-          <div v-if="memberOpen(m.id)" class="wf-member-detail">
-            <div v-if="!m.steps.length && !m.trace?.steps?.length && m.status === 'running'" class="wf-member-wait">
-              等待该成员的第一条输出<span class="wf-dots">…</span>
-            </div>
-            <div v-for="(step, i) in m.steps" :key="'l' + i" class="wf-step" :class="`wf-step-${step.type}`">
-              <span class="wf-step-glyph">{{ STEP_GLYPH[step.type] || '·' }}</span>
-              <div class="wf-step-body">
-                <span class="wf-step-title">{{ stepTitle(step) }}</span>
-                <span class="wf-step-summary">{{ stepSummary(step) }}</span>
-                <pre class="wf-step-full">{{ step.text }}</pre>
-              </div>
-            </div>
-            <div v-if="!m.steps.length && m.trace?.steps?.length" class="wf-step-hint">该成员的实时轨迹已折叠，保留收尾工具轨迹：</div>
-            <div v-for="(row, i) in (m.trace?.steps || [])" :key="'t' + i" class="wf-step wf-step-action">
-              <span class="wf-step-glyph">↗</span>
-              <div class="wf-step-body">
-                <span class="wf-step-title">{{ String(row.action || row.tool || '工具') }}</span>
-                <span v-if="row.obs" class="wf-step-summary">{{ String(row.obs) }}</span>
-              </div>
-            </div>
-            <div v-if="m.conclusion" class="wf-member-conclusion"><b>结论</b>{{ m.conclusion }}</div>
-            <div v-if="m.error" class="wf-member-error"><b>错误</b>{{ m.error }}
-              <button class="wf-mini-btn" :disabled="busy" @click="retryMember(m.id)">重试该成员</button>
-            </div>
-            <button
-              v-else-if="m.status === 'failed' || m.status === 'blocked'"
-              class="wf-mini-btn"
-              :disabled="busy"
-              @click="retryMember(m.id)"
-            >重试该成员</button>
-          </div>
+          <WorkflowMemberWindow
+            v-if="memberOpen(m.id)"
+            :member="m"
+            :busy="busy"
+            :index="popIndex(m.id)"
+            @close="toggleMember(m.id)"
+            @retry="retryMember"
+          />
         </div>
       </div>
+
+      <!-- 最终答复：把 DAG 末尾 reporter 节点的收尾结论（或引擎整体合成）
+           直接摊在对话卡片里，不用点开成员小窗、也不用翻 merged 字段。 -->
+      <section v-if="hasFinalAnswer" class="wf-final">
+        <b class="wf-final-head">最终答复</b>
+        <div class="wf-final-body">{{ finalAnswer }}</div>
+      </section>
 
       <!-- 复核结果 -->
       <section v-if="state?.acceptance_contract?.items?.length" class="wf-acceptance">
@@ -606,6 +627,17 @@ async function discardStage() {
 .wf-member-conclusion b { color: var(--green); }
 .wf-member-error { background: rgba(214,78,78,.07); color: var(--danger); }
 .wf-member-error .wf-mini-btn { justify-self: start; margin-top: 3px; }
+.wf-final {
+  display: grid; gap: 7px; padding: 11px 12px;
+  border: 1px solid rgba(52,168,112,.3); border-left: 3px solid var(--green);
+  border-radius: 9px; background: rgba(52,168,112,.05);
+}
+.wf-final-head { color: var(--green); font-size: var(--fs-sm); letter-spacing: .02em; }
+.wf-final-body {
+  font-size: var(--fs-sm); line-height: 1.6; color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 460px; overflow: auto;
+}
 .wf-review {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   font-size: var(--fs-sm); padding: 9px 10px; border-radius: 8px; background: var(--bg-hover); border: 1px solid var(--border);

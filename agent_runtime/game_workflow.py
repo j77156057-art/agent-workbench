@@ -36,7 +36,7 @@ from .workflow_reflection import build_self_review
 from .project_checkpoint import create_checkpoint, restore_checkpoint
 from .independent_review import review_project
 from .project_stage import ProjectStageError, apply_stage, cleanup_stage, create_stage
-from .enterprise_sandbox import stage_execution_scope
+from .enterprise_sandbox import SandboxUnavailable, stage_execution_scope
 from .tools import Capability, tool_mutates
 from .context_router import (CONTEXT_LAYERS, ContextPlan, ContextRouter,
                              allocate_layer_budgets, compress_context,
@@ -645,6 +645,7 @@ def unmet_acceptance_items(contract: Any, results: Any) -> list[dict[str, Any]]:
         results.get("results"), Mapping) else results
     if not isinstance(rows, Mapping):
         rows = {}
+    runtime = results.get("__runtime__") if isinstance(results, Mapping) else None
     unmet: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, Mapping) or not item.get("required"):
@@ -652,6 +653,13 @@ def unmet_acceptance_items(contract: Any, results: Any) -> list[dict[str, Any]]:
         missing: list[str] = []
         for token in item.get("evidence") or []:
             text = str(token or "").strip()
+            if text == "runtime:engine":
+                # 游戏工作流的"真跑过"验收：必须有运行期证据且 ok=true。
+                # **缺证据按未满足算**（fail-closed）——否则"没跑过"会被
+                # 当成"没问题"，正是要防的假绿。
+                if not (isinstance(runtime, Mapping) and runtime.get("ok") is True):
+                    missing.append("runtime:engine")
+                continue
             if not text.startswith("task:"):
                 continue  # 人工检查等由用户自己判断，机器不代判
             task_id = text[len("task:"):].strip()
@@ -679,18 +687,26 @@ def unmet_acceptance_items(contract: Any, results: Any) -> list[dict[str, Any]]:
                 # `all_ok` / `report["ok"]` 那一层就为 False，不需要这道门管。
                 missing.append(task_id)
         if missing:
-            unmet.append({
+            row = {
                 "id": str(item.get("id") or ""),
                 "statement": _clean_text(item.get("statement"), 160),
                 "tasks": missing,
-            })
+            }
+            if "runtime:engine" in missing and isinstance(runtime, Mapping) and runtime.get("reason"):
+                row["reason"] = _clean_text(runtime.get("reason"), 300)
+            unmet.append(row)
     return unmet
 
 
 def acceptance_gate(state: Any) -> tuple[bool, list[dict[str, Any]]]:
     """必需验收条件是否都能被已完成的任务支撑。-> ``(是否放行, 未满足明细)``"""
     try:
-        unmet = unmet_acceptance_items(state.acceptance_contract, state.results)
+        raw = state.results if isinstance(state.results, Mapping) else {}
+        # 浅拷贝后在**同一层**附加运行期证据：`unmet_acceptance_items` 仍按
+        # 原逻辑解包 results["results"] 取任务映射，不会被多包一层打乱。
+        payload = dict(raw)
+        payload["__runtime__"] = getattr(state, "runtime_evidence", {}) or {}
+        unmet = unmet_acceptance_items(state.acceptance_contract, payload)
     except AttributeError:
         return True, []
     return (not unmet), unmet
@@ -1066,6 +1082,9 @@ class WorkflowState:
     # Deterministic recovery choices derived from the failed execution evidence.
     recovery: dict[str, Any] = field(default_factory=dict)
     acceptance_contract: dict[str, Any] = field(default_factory=dict)
+    # Review 阶段收集的运行期证据：引擎日志是否有输出、是否无错误、是否晚于
+    # 最后一次代码改动。游戏工作流的 runtime:engine 验收项只认它。
+    runtime_evidence: dict[str, Any] = field(default_factory=dict)
     # 项目级可复用能力摘要；详细凭据和连接参数永不写入这里。
     project_profile: dict[str, Any] = field(default_factory=dict)
     # 终态工作流的脱敏自我复盘，供续跑和用户验收使用。
@@ -1078,6 +1097,9 @@ class WorkflowState:
     project_stage: dict[str, Any] = field(default_factory=dict)
     # Temporary capability boundary for the current execution wave.
     capability_lease: dict[str, Any] = field(default_factory=dict)
+    # 自检沙箱租约：计划获批时一次性批准的边界（仅本项目窗口的鼠标键盘输入，
+    # 有 TTL、可收回）。它不授予任何工具能力，终端/前台任意窗口/Win 键仍禁。
+    sandbox_lease: dict[str, Any] = field(default_factory=dict)
     visual_feedback: list[dict[str, Any]] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     # Longer durable history for the workbench timeline.  ``events`` remains
@@ -1122,6 +1144,27 @@ def _now() -> str:
 def _clean_text(value: Any, limit: int = 4000) -> str:
     text = str(value or "").replace("\x00", "").strip()
     return _SENSITIVE.sub(lambda m: m.group(0).split("=", 1)[0] + "=[REDACTED]", text)[:limit]
+
+
+def _review_code_root(state: WorkflowState) -> str:
+    """复核/取证该看哪份代码：试做区存在时是副本，否则是真实项目根。
+
+    试做区启用后，子代理的代码改动、`game_screenshot` 产出的
+    `.docmind/screenshots/*.png`、`engine_start` 写入的 `.docmind/engine.log`
+    **全在副本里**。此前这里写死 `state.project_root`，于是：
+
+    * `output_audit` 拿相对路径去真实项目找截图 -> 打不开 -> 证据审计失败；
+    * `runtime_evidence` 读真实项目的日志 -> 空 -> 运行期证据判「没跑过」。
+
+    这与 `_review_project` 的 `review_root` 是同一个判据。注意只影响**读**
+    的根：审批台账与自检沙箱租约仍按 origin（真实项目）记账，见
+    `project_stage_scope(origin_root=...)`。
+    """
+    stage = state.project_stage or {}
+    workspace = str(stage.get("workspace_root") or "")
+    if workspace and os.path.isdir(workspace):
+        return workspace
+    return state.project_root
 
 
 def review_output(result: Mapping[str, Any] | None, *, max_tool_failures: int = 3,
@@ -1721,6 +1764,8 @@ class GameWorkflowManager:
         state.updated_at = _now()
         if state.status in self._TERMINAL_STATUSES:
             self._release_capability_lease(state)
+        if state.status in self._TERMINAL_STATUSES or state.status == "interrupted":
+            self._release_playtest_sandbox(state)
         if state.results or state.review:
             state.preview = build_preview_bundle(state.public())
         if state.status in self._TERMINAL_STATUSES or state.status == "interrupted":
@@ -1970,6 +2015,29 @@ class GameWorkflowManager:
 
     _TERMINAL_STATUSES = TERMINAL_STATUSES  # 别名：老引用点保留，值只有一个来源
 
+    @staticmethod
+    def _task_done_count(raw: Mapping[str, Any], tasks: list[Any]) -> int:
+        """历史列表的“已完成”数：从执行结果统计，不读计划节点。
+
+        `state.tasks` 是规划出来的 DAG，条目本身**没有** status；真正的结局
+        在 `state.results["results"][task_id].status`。旧写法数
+        `tasks[*].status == "done"` 恒为 0——实测 wf-57af9cdb2f18 卡片显示
+        3/3，历史弹层却写「已完成 · 0/3 个任务」。这里与卡片
+        `completedCount`（status === 'ok'）保持同一口径。
+        """
+        results = raw.get("results")
+        result_map = results.get("results") if isinstance(results, Mapping) else {}
+        if not isinstance(result_map, Mapping):
+            result_map = {}
+        done = {str(task_id) for task_id, item in result_map.items()
+                if isinstance(item, Mapping)
+                and str(item.get("status") or "") == "ok"}
+        task_ids = [str(item.get("id") or "")
+                    for item in tasks if isinstance(item, Mapping)]
+        if task_ids and all(task_ids):
+            return sum(1 for task_id in task_ids if task_id in done)
+        return len(done)
+
     def list_workflows(self, project_id: str = "", project_root: str = "",
                        limit: int = 50) -> list[dict[str, Any]]:
         """列出项目相关的最近工作流摘要（只读扫盘）。
@@ -2021,8 +2089,7 @@ class GameWorkflowManager:
                     continue
             tasks = raw.get("tasks")
             tasks = tasks if isinstance(tasks, list) else []
-            done = sum(1 for t in tasks
-                       if isinstance(t, Mapping) and str(t.get("status") or "") == "done")
+            done = self._task_done_count(raw, tasks)
             items.append({
                 "workflow_id": str(raw.get("workflow_id") or wid),
                 "project_id": raw_pid,
@@ -2512,6 +2579,49 @@ class GameWorkflowManager:
             lease["released_at"] = _now()
             state.capability_lease = lease
 
+    @staticmethod
+    def _sandbox_approval_notice(state: WorkflowState) -> str:
+        """游戏工作流在审批卡上展示的沙箱边界（为空=不授予）。"""
+        if normalize_kind(state.kind) != "game" or not state.project_root:
+            return ""
+        return ("批准后同时开启自检沙箱：仅本项目引擎/嵌入窗口的点击与输入，"
+                "30 分钟自动过期，工作流结束或中断即收回；"
+                "终端、任意前台窗口与 Win 键仍禁用")
+
+    def _grant_playtest_sandbox(self, state: WorkflowState, *, source: str) -> dict[str, Any]:
+        """计划获批时开启一次自检沙箱；失败只记事件，绝不阻断审批本身。"""
+        if normalize_kind(state.kind) != "game" or not state.project_root:
+            return {}
+        try:
+            import game_workbench
+            lease = game_workbench.grant_playtest_sandbox(
+                state.project_root, "workflow:%s" % source,
+                workflow_id=state.workflow_id)
+        except Exception as exc:  # noqa: BLE001 - 沙箱失败=退回逐次审批
+            self._event(state, "playtest_sandbox_error", error=type(exc).__name__)
+            return {}
+        state.sandbox_lease = dict(lease)
+        self._event(state, "playtest_sandbox_granted",
+                    lease_id=lease.get("id"),
+                    expires_at=lease.get("expires_at"),
+                    targets=list((lease.get("scope") or {}).get("targets") or []))
+        return lease
+
+    @staticmethod
+    def _release_playtest_sandbox(state: WorkflowState) -> None:
+        """工作流结束/中断时收回租约（幂等；进程重启后也能按磁盘状态收回）。"""
+        if normalize_kind(state.kind) != "game" or not state.project_root:
+            return
+        try:
+            import game_workbench
+            lease = game_workbench.revoke_playtest_sandbox(
+                state.project_root,
+                reason="workflow_%s" % (state.status or "finished"))
+        except Exception:  # noqa: BLE001 - 收回失败也不影响工作流收尾
+            return
+        if lease:
+            state.sandbox_lease = dict(lease)
+
     def _graph_config(self, state: WorkflowState) -> dict[str, Any]:
         return {
             "configurable": {"thread_id": state.workflow_id},
@@ -2957,7 +3067,8 @@ class GameWorkflowManager:
             # approval/execute without a second planning request.
             if graph_view.get("tasks") and graph_view.get("status") in {"planned", "awaiting_approval"}:
                 state.tasks = [dict(item) for item in graph_view.get("tasks") or []]
-                state.acceptance_contract = acceptance_from_tasks(state.tasks)
+                state.acceptance_contract = acceptance_from_tasks(
+                    state.tasks, runtime_required=(state.kind == "game"))
                 state.status = "planned"
                 state.phase = "execute"
                 state.interrupt_reason = ""
@@ -2999,7 +3110,8 @@ class GameWorkflowManager:
                 self._save(state)
                 return
             state.tasks = [dict(item) for item in graph_view.get("tasks") or []]
-            state.acceptance_contract = acceptance_from_tasks(state.tasks)
+            state.acceptance_contract = acceptance_from_tasks(
+                state.tasks, runtime_required=(state.kind == "game"))
             state.status = "planned"
             state.phase = "execute"
             state.interrupt_reason = ""
@@ -3403,7 +3515,8 @@ class GameWorkflowManager:
         next_plan = [(item.get("id"), item.get("task")) for item in state.tasks]
         if previous_plan != next_plan or not state.acceptance_contract.get("items"):
             state.acceptance_contract = acceptance_on_plan_changed(
-                state.acceptance_contract, state.tasks)
+                state.acceptance_contract, state.tasks,
+                runtime_required=(state.kind == "game"))
             if state.acceptance_contract["revision"] > 1:
                 state.policy["approval_mode"] = "safe"
         # 步数预算随任务规模放大（几个 Agent 并行调工具，总调用次数成倍增加）：
@@ -3426,6 +3539,9 @@ class GameWorkflowManager:
             "effective_max_steps": effective_steps, "source": budget_source,
             "task_count": len(state.tasks)}
         state.status, state.phase = "planned", "execute"
+        _sandbox_notice = self._sandbox_approval_notice(state)
+        if _sandbox_notice:
+            state.interrupt_reason = "计划等待审核；" + _sandbox_notice
         # The plan gate is a real LangGraph interrupt.  Resume it after the
         # manager has validated the task DAG so the durable graph owns the
         # transition into approval instead of merely mirroring a native flag.
@@ -3883,7 +3999,9 @@ class GameWorkflowManager:
                         return runner(retry_task, context)
                     token = set_context_code_root(state.project_stage["workspace_root"])
                     try:
-                        with project_stage_scope():
+                        # 文件/进程操作走试做区副本；审批台账与自检沙箱租约
+                        # 按真实项目记账，所以把 origin 一起带进作用域。
+                        with project_stage_scope(origin_root=state.project_root):
                             return runner(retry_task, context)
                     finally:
                         reset_context_code_root(token)
@@ -3971,7 +4089,7 @@ class GameWorkflowManager:
                      or str(task_id) in remediated
                      for task_id, item in result_map.items()) else "failed"},
                 max_tool_failures=policy.max_tool_failures,
-                question=state.request, code_root=state.project_root)
+                question=state.request, code_root=_review_code_root(state))
             if state.project_root:
                 state.review["agent_ok"] = bool(state.review.get("ok"))
                 state.review["project"] = self._review_project(state)
@@ -3980,6 +4098,7 @@ class GameWorkflowManager:
                          or bool((item or {}).get("optional"))
                          or str(task_id) in remediated
                          for task_id, item in result_map.items())
+            self._collect_runtime_evidence(state)
             gate_ok, unmet = acceptance_gate(state)
             _note_unmet_acceptance(state, unmet)
             state.status = review_status(state.review, extra_ok=all_ok and gate_ok)
@@ -4006,7 +4125,7 @@ class GameWorkflowManager:
             try:
                 state.project_stage = create_stage(
                     state.project_root, str(self.state_root.parent), workflow_id)
-            except (OSError, ValueError, ProjectStageError) as exc:
+            except (OSError, ValueError, ProjectStageError, SandboxUnavailable) as exc:
                 raise WorkflowError("创建隔离试做区失败：%s" % str(exc)[:180]) from exc
             self._event(state, "project_stage_created",
                         file_count=state.project_stage.get("file_count", 0))
@@ -4029,6 +4148,9 @@ class GameWorkflowManager:
         if policy.approval_mode == "safe":
             state.status, state.phase = "awaiting_approval", "execute"
             state.interrupt_reason = "执行计划包含可能产生副作用的操作，等待用户审核"
+            _sandbox_notice = self._sandbox_approval_notice(state)
+            if _sandbox_notice:
+                state.interrupt_reason += "；" + _sandbox_notice
             if StateGraph is not None and graph_interrupt is not None:
                 self._invoke_graph(state, self._graph_payload(state, approved=False))
             self._event(state, "approval_required", reason=state.interrupt_reason)
@@ -4140,7 +4262,9 @@ class GameWorkflowManager:
                     return runner(task, bounded_context)
                 token = set_context_code_root(state.project_stage["workspace_root"])
                 try:
-                    with project_stage_scope():
+                    # 文件/进程操作走试做区副本；审批台账与自检沙箱租约
+                    # 按真实项目记账，所以把 origin 一起带进作用域。
+                    with project_stage_scope(origin_root=state.project_root):
                         # 诊断：设置之后、派发之前，各读一次真实生效的根。
                         # 此前这条路径被静态排查过三次都判「机制正常」，而实测
                         # `wf-7cc2e86620ce` 里 python_exec 报的执行目录是**真实
@@ -4289,7 +4413,7 @@ class GameWorkflowManager:
                                       "status": "ok" if report.get("ok") else "failed",
                                       "trace": {"steps": sum((r.get("trace", {}).get("steps", []) for r in report.get("results", {}).values()), [])}},
                                      max_tool_failures=policy.max_tool_failures,
-                                     question=state.request, code_root=state.project_root)
+                                     question=state.request, code_root=_review_code_root(state))
         if state.project_root:
             state.review["agent_ok"] = bool(state.review.get("ok"))
             state.review["project"] = self._review_project(state)
@@ -4307,6 +4431,7 @@ class GameWorkflowManager:
             "chars": len(merged), "review_ok": bool(state.review.get("ok")),
             "steps": report.get("steps_used", 0),
         }
+        self._collect_runtime_evidence(state)
         gate_ok, unmet = acceptance_gate(state)
         _note_unmet_acceptance(state, unmet)
         # `remediated` 在建 subagent 行时已经算好了（那里必须先算，见上面的注释）。
@@ -4404,12 +4529,15 @@ class GameWorkflowManager:
             if state.project_root and not state.project_checkpoint:
                 self.create_project_checkpoint(workflow_id)
                 state = self._load(workflow_id)
-        except (OSError, ValueError, ProjectStageError) as exc:
+        except (OSError, ValueError, ProjectStageError, SandboxUnavailable) as exc:
             raise WorkflowError("准备审批门失败：%s" % str(exc)[:180]) from exc
         # 执行回调若一个都没有，登记一个空壳占位；auto_execute 分支会自己去 resolver 取。
         self._execution_callbacks.setdefault(workflow_id, {})
         state.status, state.phase = "awaiting_approval", "execute"
         state.interrupt_reason = "执行计划包含可能产生副作用的操作，等待用户审核"
+        _sandbox_notice = self._sandbox_approval_notice(state)
+        if _sandbox_notice:
+            state.interrupt_reason += "；" + _sandbox_notice
         if StateGraph is not None and graph_interrupt is not None:
             self._invoke_graph(state, self._graph_payload(state, approved=False))
         self._event(state, "approval_required", reason=state.interrupt_reason)
@@ -4450,8 +4578,17 @@ class GameWorkflowManager:
             if StateGraph is not None and graph_interrupt is not None:
                 self._resume_gate(state, "approval", {"approved": True})
             self._event(state, "approval_granted")
+            # 计划与验收条件一起获批；游戏工作流同时获批一次自检沙箱边界。
+            # 沙箱写不进去只退回逐次审批，不能因此让审批失败。
+            self._grant_playtest_sandbox(state, source="plan_approval")
             if auto_execute:
                 callbacks = self._execution_callbacks.get(workflow_id)
+                # _promote_to_approval_gate 会登记一个空壳 {} 占位；它是「没有
+                # 回调」而不是「有回调」。不把空壳当缺省会让下面的 resolver 永不
+                # 触发，最后由后台线程调用 execute() 时缺 runner 直接 TypeError。
+                if not (isinstance(callbacks, Mapping)
+                        and callable((callbacks or {}).get("runner"))):
+                    callbacks = None
                 if callbacks is None and self._execution_resolver is not None:
                     try:
                         resolved = self._execution_resolver(state.public())
@@ -4684,7 +4821,8 @@ class GameWorkflowManager:
         else:
             state.tasks = [dict(item) for item in state.pending_tasks]
             state.acceptance_contract = acceptance_on_plan_changed(
-                state.acceptance_contract, state.tasks)
+                state.acceptance_contract, state.tasks,
+                runtime_required=(state.kind == "game"))
             state.policy["approval_mode"] = "safe"
             state.pending_tasks = []
             state.results = {}
@@ -4696,6 +4834,8 @@ class GameWorkflowManager:
                                              "ids": [item.get("id") for item in state.tasks],
                                              "revision": True}
             self._event(state, "dag_revision_approved", task_count=len(state.tasks))
+            # 修订计划也是用户对边界的一次确认：刷新沙箱租约的有效期。
+            self._grant_playtest_sandbox(state, source="dag_revision_approval")
         self._workflow_hook(state, "after_approval", approved=bool(approved),
                             task_count=len(state.tasks), node="dag_revision")
         return self._save(state).public()
@@ -4768,6 +4908,44 @@ class GameWorkflowManager:
         state.graph_state = snapshot
         self._save(state)
         return {"backend": "langgraph", "state": snapshot}
+
+    def _collect_runtime_evidence(self, state: WorkflowState) -> None:
+        """Review 前收集"真跑过"证据；只在契约需要时执行。
+
+        契约里没有 `runtime:engine`（非游戏/用户自写条件）时直接跳过，
+        不读日志、不改变任何现有工作流的行为。
+
+        fail-closed：读不到日志/没有输出/解析出错都记 `ok=False` + 中文 reason，
+        绝不让"没跑过"被当成"没问题"。异常也不上抛——review 本身要能继续，
+        未满足明细会如实展示原因，下一步的 replan 会看到它。
+        """
+        items = (state.acceptance_contract or {}).get("items") or []
+        needed = any(
+            str(token or "").strip() == "runtime:engine"
+            for item in items if isinstance(item, Mapping)
+            for token in (item.get("evidence") or [])
+        )
+        if not needed:
+            state.runtime_evidence = {}
+            return
+        if not state.project_root:
+            state.runtime_evidence = {"ok": False, "fresh": False,
+                                      "reason": "工作流没有绑定项目目录，无法取得运行期证据。"}
+            return
+        try:
+            from game_workbench import runtime_evidence as _runtime_evidence
+            evidence = _runtime_evidence(_review_code_root(state), limit=300)
+        except Exception as exc:  # noqa: BLE001 - review 不应因取证失败而崩
+            evidence = {"ok": False, "fresh": False,
+                        "reason": "运行期证据收集失败：%s: %s" % (type(exc).__name__, str(exc)[:160])}
+        evidence = dict(evidence or {})
+        evidence["checked_at"] = _now()
+        state.runtime_evidence = evidence
+        self._event(state, "runtime_evidence", ok=bool(evidence.get("ok")),
+                    fresh=bool(evidence.get("fresh")),
+                    log_lines=int(evidence.get("log_lines") or 0),
+                    errors=len(evidence.get("errors") or []),
+                    reason=str(evidence.get("reason") or "")[:300])
 
     def _review_project(self, state: WorkflowState) -> dict[str, Any]:
         profile = dict(state.project_profile or load_profile(state.project_root))
@@ -4854,7 +5032,7 @@ class GameWorkflowManager:
             raise WorkflowError("独立终审未通过，不能把试做区改动应用到项目")
         try:
             result = apply_stage(state.project_stage, list(review.get("changes") or []))
-        except (OSError, ValueError, ProjectStageError) as exc:
+        except (OSError, ValueError, ProjectStageError, SandboxUnavailable) as exc:
             raise WorkflowError("应用试做区改动失败：%s" % str(exc)[:180]) from exc
         state.project_stage["status"] = "applied"
         self._event(state, "project_stage_applied", changed=len(result.get("paths") or []))
@@ -4875,6 +5053,7 @@ class GameWorkflowManager:
         if agent_ok is None:
             agent_ok = bool(state.results.get("ok")) and not state.review.get("failures")
         state.review["ok"] = bool(agent_ok) and bool(project_review.get("ok"))
+        self._collect_runtime_evidence(state)
         gate_ok, unmet = acceptance_gate(state)
         _note_unmet_acceptance(state, unmet)
         state.status = settle_status(
@@ -4901,7 +5080,7 @@ class GameWorkflowManager:
             return {"ok": True, "status": "discarded", "workflow_id": workflow_id}
         try:
             result = cleanup_stage(state.project_stage, str(self.state_root.parent))
-        except (OSError, ValueError, ProjectStageError) as exc:
+        except (OSError, ValueError, ProjectStageError, SandboxUnavailable) as exc:
             raise WorkflowError("清理试做区失败：%s" % str(exc)[:180]) from exc
         state.project_stage["status"] = "discarded"
         self._event(state, "project_stage_discarded")

@@ -1,6 +1,6 @@
 // SSE 事件类型与 POST/GET 流式通道（由原 workbench/api.ts 按域切分；调用方继续从 barrel ../api 引入）。
 import { FsApiError, withProject } from './_base'
-import type { ChatAsk, ChatArtifact } from '../composables/chat-types.ts'
+import type { BrowserEvidence, ChatAsk, ChatArtifact } from '../composables/chat-types.ts'
 
 // ---------------------------------------------------------------- P2：选区 AI（SSE 流式）
 export interface SseEvent {
@@ -58,6 +58,11 @@ export interface SseEvent {
    * 同样会带 path —— 照文本反推会把没做的记成做了）。
    */
   artifacts?: ChatArtifact[]
+  /**
+   * 浏览器动作留痕（observation 事件专用）：哪一页、第几步、动作前后
+   * 各截了什么图。图片只给相对路径，避免把 base64 塞进事件流。
+   */
+  browser_evidence?: BrowserEvidence
 }
 
 /** 上下文窗口占用（GET /api/context 与 SSE context 事件同构） */

@@ -6,7 +6,7 @@
 import { nextTick, ref, watch, onMounted, onBeforeUnmount, computed, defineAsyncComponent } from 'vue'
 // 直接依赖对话框域，避免经 workbench 聚合桶拖入编辑器链
 import { askConfirm, askAlert } from '../composables/dialogs'
-import { aiApi, voiceApi, agentApi, visionApi, contextApi, harnessApi, modelApi, getSessionId, getProjectId, setSessionId, startNewSession, startTabProbe } from '../api'
+import { aiApi, voiceApi, agentApi, visionApi, contextApi, harnessApi, modelApi, browserLiveApi, getSessionId, getProjectId, setSessionId, startNewSession, startTabProbe } from '../api'
 import type { ContextUsage, SessionInfo } from '../api'
 import type { SseEvent } from '../api'
 import { appEvents } from '../eventBus'
@@ -17,7 +17,8 @@ import { useModelConfig } from '../composables/useModelConfig'
 import { useWorkflowGate } from '../composables/useWorkflowGate'
 import { useOrphanWorkflow } from '../composables/useOrphanWorkflow'
 import { useChatStream } from '../composables/useChatStream'
-import type { ChatActivityKind, ChatMsg } from '../composables/chat-types'
+import { noteBrowserEvidence } from '../composables/browserLive'
+import type { ChatActivityKind, ChatMsg, ChatTraceItem, BrowserEvidence } from '../composables/chat-types'
 import { flowOf } from '../composables/chat-types'
 import type { ChatArtifact } from '../composables/chat-types'
 import ArtifactCards from './ArtifactCards.vue'
@@ -35,11 +36,12 @@ const ModelSettingsDialog = defineAsyncComponent(() => import('./ModelSettingsDi
 const ModelSwitcherPopover = defineAsyncComponent(() => import('./ModelSwitcherPopover.vue'))
 import SessionHistoryPopover from './SessionHistoryPopover.vue'
 import WorkflowHistoryPopover from './WorkflowHistoryPopover.vue'
-// 工作流卡片仅在工作流消息中渲染：异步按需加载
+// 工作流总览卡片内联在对话流里（2026-10-22 回退：独立总览窗改回对话内展开）。
+// 卡片仅在消息带工作流时按需异步加载；卡片内「点成员弹独立小窗」的逻辑不受影响。
 const WorkflowCard = defineAsyncComponent(() => import('./WorkflowCard.vue'))
 import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
-import type { WorkflowSummary } from '../api'
+import type { WorkflowSummary, WorkflowState } from '../api'
 import type { PreviewFeedbackRequest } from '../previewFeedback'
 
 const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
@@ -261,15 +263,10 @@ const {
   },
   onReattached: () => { stickToBottom.value = true; void scrollToBottom() },
 })
+
 async function focusWfMember(taskId: string) {
   const team = wfActiveTeam.value
   if (!team) return
-  // 面板折叠时先展开（卡片常驻未卸载），下一帧再定位，否则 scrollIntoView
-  // 落在被 overflow:hidden 裁掉的容器里用户看不到
-  if (collapsed.value) {
-    collapsed.value = false
-    await nextTick()
-  }
   appEvents.emit('docmind:wf-focus-member', { workflowId: team.workflowId, taskId })
 }
 
@@ -595,6 +592,8 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
   const onEvent = (ev: SseEvent) => {
     if (epoch !== chatEpoch) return
     if (ev.type === 'final' && typeof ev.text === 'string' && ev.text) receivedFinal = true
+    // 浏览器动作：实况窗立刻钉到这一页并展开；流程行也会拿到同一份证据。
+    if (ev.browser_evidence) noteBrowserEvidence(ev.browser_evidence)
     dispatch(ev, live())
   }
 
@@ -1287,6 +1286,23 @@ async function openArtifact(a: ChatArtifact) {
   }
 }
 
+// ---- 浏览器动作留痕（流程行展开后的"动作前 / 动作后"画面） ----
+const EVIDENCE_EFFECT_LABEL: Record<string, string> = {
+  changed: '页面有变化', navigated: '跳转', reloaded: '刷新', typed: '已输入',
+  pixels: '画面变化', error_seen: '页面报错', no_change: '没有变化',
+}
+function evidenceOf(item: ChatTraceItem): BrowserEvidence | undefined {
+  return item?.evidence
+}
+function evidenceEffect(ev?: BrowserEvidence): string {
+  if (!ev) return ''
+  const key = ev.effect || ''
+  return EVIDENCE_EFFECT_LABEL[key] || key
+}
+function evidenceShot(path?: string): string {
+  return path ? browserLiveApi.shotUrl(path) : ''
+}
+
 // 流式接收管线（帧合批/trace 计时/事件分类）抽到 useChatStream，问答页共用同一实现。
 const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
   onActivity: (t) => { t.lastActivityAt = Date.now() },
@@ -1544,6 +1560,13 @@ const webTitle = computed(() => webOn.value
                       <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
                       <span v-if="!activityIsOpen(m.id, node.trace, m)" class="cd-flow-summary">{{ traceSummary(m.trace[node.trace]) }}</span>
                     </span>
+                    <img
+                      v-if="node.kind === 'result' && evidenceOf(m.trace[node.trace])?.shot_after"
+                      class="cd-flow-thumb"
+                      :src="evidenceShot(evidenceOf(m.trace[node.trace])?.shot_after)"
+                      alt="动作后画面"
+                      loading="lazy"
+                    />
                     <span class="cd-flow-meta">
                       <span class="cd-flow-state">{{ traceStateLabel(traceState(m, m.trace[node.trace], node.trace), m.trace[node.trace]) }}</span>
                       <span v-if="traceElapsed(m.trace[node.trace])" class="cd-flow-time">{{ traceElapsed(m.trace[node.trace]) }}</span>
@@ -1552,6 +1575,31 @@ const webTitle = computed(() => webOn.value
                   </button>
                   <div v-if="activityIsOpen(m.id, node.trace, m)" class="cd-flow-detail">
                     <span class="cd-flow-detail-label">事件详情</span>
+                    <div v-if="evidenceOf(m.trace[node.trace])" class="cd-flow-evidence" data-testid="trace-evidence">
+                      <div class="cd-flow-evidence-meta">
+                        <span
+                          class="cd-flow-evidence-effect"
+                          :data-ok="evidenceOf(m.trace[node.trace])?.ok ? '1' : '0'"
+                        >{{ evidenceEffect(evidenceOf(m.trace[node.trace])) }}</span>
+                        <a
+                          v-if="evidenceOf(m.trace[node.trace])?.url"
+                          class="cd-flow-evidence-url"
+                          :href="evidenceOf(m.trace[node.trace])?.url || undefined"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >{{ evidenceOf(m.trace[node.trace])?.url }}</a>
+                      </div>
+                      <div class="cd-flow-shots">
+                        <figure v-if="evidenceOf(m.trace[node.trace])?.shot_before">
+                          <img :src="evidenceShot(evidenceOf(m.trace[node.trace])?.shot_before)" alt="动作前画面" loading="lazy" />
+                          <figcaption>动作前</figcaption>
+                        </figure>
+                        <figure v-if="evidenceOf(m.trace[node.trace])?.shot_after">
+                          <img :src="evidenceShot(evidenceOf(m.trace[node.trace])?.shot_after)" alt="动作后画面" loading="lazy" />
+                          <figcaption>动作后</figcaption>
+                        </figure>
+                      </div>
+                    </div>
                     <code>{{ m.trace[node.trace].text }}</code>
                   </div>
                 </template>
@@ -1580,7 +1628,7 @@ const webTitle = computed(() => webOn.value
                 本回合的回答以原始源码逐行罗列为主，缺少针对你问题的归纳结论——它读起来像证据、
                 但不是答案。展开上方推理过程可查看模型实际读到了什么。
               </div>
-              <template v-if="m.status === 'streaming'"><span v-html="streamHtmlOf(m)" /><span class="cd-caret" aria-hidden="true" /></template>
+              <template v-if="m.status === 'streaming'"><div class="cd-answer-pending"><span class="cd-caret" aria-hidden="true" /> 正在生成回答…</div></template>
               <span v-else v-html="answerHtml(m)" />
             </div>
             <!-- 产物：本轮模型写下的文件、截到的图。直接摆在回答下面，
@@ -1918,6 +1966,11 @@ const webTitle = computed(() => webOn.value
 }
 @keyframes cd-caret { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .cd-caret { animation: none; } }
+/* 答案未出结果前的占位：不再逐字吐正文（看着像卡在最后一行被截断），完成才整块显示 */
+.cd-answer-pending {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: var(--fs-sm); color: var(--text-faint);
+}
 .cd-thinking, .cd-error { font-size: var(--fs-sm); color: var(--text-muted); padding: 6px 9px; border-radius: 7px; background: var(--bg-hover); }
 .cd-thinking { border-left: 2px solid var(--accent); }
 .cd-slow-notice { margin: 6px 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius: 6px; color: var(--text-muted); background: color-mix(in srgb, var(--amber) 10%, transparent); font-size: var(--fs-cap); line-height: 1.45; }
@@ -2034,7 +2087,9 @@ const webTitle = computed(() => webOn.value
 .cd-flow-dot.on { background: var(--accent); animation: cd-run-pulse 1.1s infinite; }
 .cd-flow-think-body {
   min-width: 0; flex: 1;
-  font-size: var(--fs-sm); line-height: 1.6; color: var(--text-muted);
+  font-size: var(--fs-sm); line-height: 1.6;
+  color: color-mix(in srgb, var(--accent) 42%, var(--ink));
+  padding-left: 9px; border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
   white-space: pre-wrap; overflow-wrap: anywhere;
   max-height: 220px; overflow: auto;
 }
@@ -2081,6 +2136,40 @@ const webTitle = computed(() => webOn.value
 }
 .cd-flow-detail-label { display: block; margin-bottom: 3px; color: var(--text-faint); font: 9.5px/1.2 var(--font-ui); letter-spacing: .04em; }
 .cd-flow-detail code { display: block; color: inherit; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 浏览器动作：折叠行上给一张"动作后"小图，一眼就知道它当时看到了什么 */
+.cd-flow-thumb {
+  flex: 0 0 auto;
+  width: 46px; height: 30px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg-hover);
+}
+/* 有前后截图的详情比纯文本高得多，单独放宽（:has 不影响其他事件） */
+.cd-flow-detail:has(.cd-flow-evidence) { max-height: 420px; }
+.cd-flow-evidence { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 7px; font-family: var(--font-ui); }
+.cd-flow-evidence-meta { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cd-flow-evidence-effect {
+  padding: 1px 6px; border-radius: 999px;
+  color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent);
+  font-size: var(--fs-cap);
+}
+.cd-flow-evidence-effect[data-ok="0"] { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.cd-flow-evidence-url {
+  min-width: 0; max-width: 100%;
+  color: var(--accent); font: var(--fs-cap)/1.4 var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cd-flow-shots { display: flex; gap: 8px; flex-wrap: wrap; }
+.cd-flow-shots figure { margin: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cd-flow-shots img {
+  display: block;
+  width: 200px; max-width: 100%;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-hover);
+}
+.cd-flow-shots figcaption { color: var(--text-faint); font-size: 9.5px; }
 
 .cd-refs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .cd-ref {

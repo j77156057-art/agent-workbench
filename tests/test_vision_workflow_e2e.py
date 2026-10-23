@@ -225,19 +225,34 @@ class WorkflowGateE2ETests(unittest.TestCase):
         self.manager.choose(wid, "recommended")
         planned = self.manager.plan(wid)
         tasks = planned["tasks"]
+        # 连接器读取（schematic）为根任务，research 并行可选——
+        # 见 wf-b087d3f6b77f：schematic 挂在 research 之后会被 research 的空
+        # 结论污染、导致子代理 steps=0。修好后 schematic 排最前、depends_on 为空。
         self.assertEqual([t["id"] for t in tasks],
-                         ["research", "schematic", "layout", "verify"])
+                         ["schematic", "research", "layout", "verify", "report"])
         trio = {"dev_route_connector", "dev_list_connector_tools", "dev_mcp_call"}
         for task in tasks:
             self.assertTrue({"id", "role", "task", "tools", "mcp", "depends_on"}
                             <= set(task), task)
         self.assertEqual([t["role"] for t in tasks],
-                         ["researcher", "schematic", "layout", "tester"])
-        self.assertEqual(tasks[0]["mcp"], "deny")
-        for task in tasks[1:]:
-            self.assertEqual(task["mcp"], "allow")
-            self.assertTrue(trio.issubset(set(task["tools"])), task["id"])
-        self.assertEqual(tasks[3]["depends_on"], ["layout"])
+                         ["schematic", "researcher", "layout", "tester", "reporter"])
+        by_id = {t["id"]: t for t in tasks}
+        self.assertEqual(by_id["research"]["mcp"], "deny")
+        self.assertTrue(by_id["research"].get("optional"),
+                        "research 必须是并行可选，失败不得阻断连接器任务")
+        self.assertEqual(by_id["schematic"]["depends_on"], [],
+                         "schematic 连接器读取必须是根任务")
+        for tid in ("schematic", "layout", "verify"):
+            self.assertEqual(by_id[tid]["mcp"], "allow", tid)
+            self.assertTrue(trio.issubset(set(by_id[tid]["tools"])), tid)
+        self.assertEqual(by_id["verify"]["depends_on"], ["layout"])
+        # layout/verify 可选：其失败不得阻断末尾 report 收尾节点
+        self.assertTrue(by_id["layout"].get("optional"))
+        self.assertTrue(by_id["verify"].get("optional"))
+        self.assertEqual(by_id["report"]["role"], "reporter")
+        self.assertEqual(by_id["report"]["depends_on"],
+                         ["schematic", "research", "layout", "verify"])
+        self.assertEqual(by_id["report"]["mcp"], "deny")
         # 规划完成仍未开始执行
         state = self.manager.get(wid)
         self.assertFalse(state.get("results"))

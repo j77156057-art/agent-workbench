@@ -84,28 +84,60 @@ def _eda_options(request: str, sources) -> list[dict]:
 
 
 def _eda_fallback_tasks() -> list[dict]:
+    # 根任务：先读当前 EDA 文档，再谈任何设计动作。此前把 schematic 挂在
+    # research 之后，`wf-b087d3f6b77f` 里 research 只拿到 0 条外部资料并把
+    # "无法核实"的上下文喂给 schematic，子代理 ReAct 一步都没走、
+    # steps=0 直接判死——连接器路径根本没被触发过。修好的形状：schematic
+    # 自己就是根，读原理图这一步不依赖任何上游结论；research 并行、可选，
+    # 失败不污染 schematic；layout/verify 依序挂在 schematic 之后。
     return [
-        {"id": "research", "role": "researcher",
-         "task": "调研元件选型、封装、原理图库/PCB 封装库与设计约束（间距、载流、安规），"
-                 "输出带来源的关键参数与风险清单",
-         "tools": ["web_search", "web_fetch", "web_research"],
-         "mcp": "deny", "depends_on": []},
         {"id": "schematic", "role": "schematic",
-         "task": "依据调研绘制或修正原理图并导出网表：涉及 EDA 连接器的操作必须先 "
-                 "dev_list_connector_tools 核实工具名再 dev_mcp_call；"
-                 "产出原理图/网表与 ERC 结果（零错误或列明豁免依据）",
+         "task": "第一步必须使用 EDA 连接器读取当前打开的文档："
+                 "先 dev_route_connector 选中连接器，再 dev_list_connector_tools 核实真实工具名，"
+                 "然后 dev_mcp_call 依次拿到当前文档上下文（文档名、页数）、"
+                 "元器件清单（位号/封装/厂商）与悬空/未连接引脚检查；"
+                 "在没有连接器返回的真实数据之前，禁止臆造或引用外部选型；"
+                 "如需修改或补齐，同样以 dev_mcp_call 为准并输出 ERC 结果（零错误或列明豁免）。",
          "tools": EDA_CONNECTOR_TOOLS + ["read_file", "grep"],
-         "mcp": "allow", "depends_on": ["research"]},
+         "mcp": "allow", "depends_on": []},
+        {"id": "research", "role": "researcher",
+         "task": "并行调研元件选型、封装、原理图库/PCB 封装库与设计约束（间距、载流、安规），"
+                 "输出带来源的关键参数与风险清单；找不到外部资料也照常返回，"
+                 "不要因此判定 schematic 无法继续",
+         "tools": ["web_search", "web_fetch", "web_research"],
+         "mcp": "deny", "depends_on": [], "optional": True},
         {"id": "layout", "role": "layout",
          "task": "基于审核后的网表完成 PCB 布局与布线，遵守布局/间距/载流约束；"
                  "连接器操作同样先 dev_list_connector_tools 核实工具名；未跑 DRC 不视为完成",
          "tools": EDA_CONNECTOR_TOOLS + ["read_file", "grep"],
-         "mcp": "allow", "depends_on": ["schematic"]},
+         "mcp": "allow", "depends_on": ["schematic"], "optional": True},
         {"id": "verify", "role": "tester",
          "task": "执行 ERC/DRC 与导出物校验（网表、Gerber/钻孔、BOM 一致性）："
                  "DRC 必须零错误，否则逐项列明违规与豁免依据；必要时用 python_exec 解析导出文件",
          "tools": EDA_CONNECTOR_TOOLS + ["read_file", "python_exec"],
-         "mcp": "allow", "depends_on": ["layout"]},
+         "mcp": "allow", "depends_on": ["layout"], "optional": True},
+        # 收尾节点：把前面所有子任务的结论汇总成**一段面向用户的最终答复**。
+        # 依赖四个子任务，引擎会把它们各自的结论作为上下文注入（见
+        # game_workflow 的 depends_on→context 装配）。research/layout/verify 均为
+        # optional——EasyEDA Pro v0.1.0 只开放原理图侧只读工具，没有 ERC/DRC/网表导出
+        # 能力，纯读取场景里这几步往往无法确定完成；把它们标可选，是为了让**失败的检查
+        # 不阻断末尾的 report 节点**、也不逼重规划器原地打转（见 wf-99ecf32f9c86：
+        # verify 失败 → report 被"上游 verify failed"阻断 → replan 反复补 report），
+        # 而每个子代理仍如实回报自身状态、终审 review_output 仍复核合并结论。
+        # 本节点只读、不再调连接器、不写文件，职责是把各子任务的真实数据、
+        # 截图/导出物路径与未决项收敛成一份可直接交付给人的收尾答复。
+        {"id": "report", "role": "reporter",
+         "task": "汇总结尾：把上面所有子任务（schematic/research/layout/verify）的结论，"
+                 "合成一段**面向用户的最终答复**，不要再调用连接器、不要重新检查、不要写文件。"
+                 "结构：①先给一句话总体结论（读到了什么文档/元件、ERC 与 DRC 的真实状态）；"
+                 "②逐项列关键证据，保留连接器返回的真实数据、`文件:行号`、"
+                 "截图/导出物路径（若有则用 Markdown 图片/链接一并附上）；"
+                 "③明确区分『已验证』与『因能力缺失未能完成』，"
+                 "把需要用户确认或后续人工核对的点单列出来；"
+                 "④不得把子任务的臆测或工具缺陷（如悬空脚 beta 误报）当作已确认事实，"
+                 "各子任务结论冲突时如实指出冲突。用中文、结构清晰、可直接交付给用户。",
+         "tools": ["read_file"], "mcp": "deny",
+         "depends_on": ["schematic", "research", "layout", "verify"]},
     ]
 
 
@@ -229,8 +261,28 @@ EDA = Profile(
         "任务 JSON 必须给出【显式 tools 白名单】且 mcp=\"allow\"，"
         "并在任务描述中要求子代理先 dev_list_connector_tools 核实真实工具名后再 dev_mcp_call，禁止臆造工具名；"
         "每个任务的验收必须可检验（例如 ERC/DRC 零错误，或逐项列明违规与豁免依据）。"
+        "**硬性编排规则**（`wf-b087d3f6b77f` 反例教训）："
+        "(1) EDA 连接器读取任务**必须是根任务**（`depends_on:[]`），"
+        "禁止把 schematic/layout/verify 之类需要连接器数据的任务 `depends_on:[\"research\"]`——"
+        "research 走 web_search/web_fetch，找不到外部资料就把\"无法核实\"塞进上下文，"
+        "会让下游子代理在真正调连接器之前就 Refusal 掉、steps=0；"
+        "(2) `research` 只能作为**并行、可选**（`optional:true, depends_on:[]`）的补充调研，"
+        "它的成败不得影响连接器读取任务；"
+        "(3) 当用户明确说\"读取/检查当前打开的原理图/文档\"时，"
+        "**规划器必须把\"用连接器读当前文档\"排在最前**，"
+        "任务描述里给出显式的 `dev_route_connector → dev_list_connector_tools → dev_mcp_call` "
+        "三步序列，并注明\"未拿到连接器返回的真实数据前禁止臆造或引用外部选型\"；"
+        "(4) **DAG 末尾必须有一个 `role:\"reporter\"` 的收尾节点**（如 `id:\"report\"`），"
+        "其 `depends_on` 覆盖前面所有实质子任务、`mcp=\"deny\"`、只做只读汇总，"
+        "任务描述要求它把这些子任务的结论合成**一段面向用户的最终答复**"
+        "（总体结论 → 逐项证据并保留文件:行号/截图/导出物路径 → 区分已验证与未能完成 → 列未决项），"
+        "不得重新调用连接器或编造子任务里没有的信息。"
+        "**收尾节点绝不能被某个检查失败而阻断**：把容易失败的检查节点"
+        "（`research`/`layout`/`verify`——纯读取场景里 ERC/DRC/网表导出常无法完成）"
+        "一律标 `optional:true`，让 report 在它们失败时照常运行并如实汇总，"
+        "避免 `上游 X failed → report 被阻断 → 重规划反复补 report` 的打转。"
     ),
-    task_roles="dispatcher|planner|researcher|schematic|layout|coder|reviewer|tester",
+    task_roles="dispatcher|planner|researcher|schematic|layout|coder|reviewer|tester|reporter",
     experience_title="EDA 工作流：",
     skill_name_prefix="eda-workflow-",
     skill_description_prefix="经用户审批后可复用的 EDA 开发工作流：",

@@ -248,3 +248,36 @@ def test_desktop_frame_strict_project_never_uses_default_window():
     assert response.status_code == 200
     assert response.json()["ok"] is False
     capture.assert_called_once_with("project-test", strict_project=True)
+
+
+def test_desktop_frame_falls_back_to_project_engine_window():
+    """浏览器模式无嵌入宿主：embedded 抓不到时应回退抓本项目引擎独立窗口，而不是报错/截前台。"""
+    image = "data:image/jpeg;base64," + base64.b64encode(b"jpeg").decode("ascii")
+    with patch.object(api, "_ctx_project_id", return_value="project-test"), \
+            patch.object(api, "_request_project_id", return_value="project-test"), \
+            patch.object(api, "_project_root_for", return_value="D:/proj"), \
+            patch("screen_capture.grab_embedded", return_value=None), \
+            patch.object(api, "_engine_window_frame_safe",
+                         return_value=((b"px", 2, 2, 99), "StarVoyager (DEBUG)")) as eng, \
+            patch("screen_capture.encode_frame", return_value=image):
+        response = TestClient(api.app, headers={"X-DocMind-Project": "project-test"}).post(
+            "/api/vision/desktop-frame", json={"target": "embedded"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["source"] == "engine"
+    assert body["image"] == image
+    eng.assert_called_once_with("D:/proj")
+
+
+def test_desktop_frame_strict_project_does_not_fall_back_to_engine_window():
+    """strict_project 明确只要登记过的嵌入宿主：宁可无画面，也不回退抓独立引擎窗口（防串窗）。"""
+    with patch.object(api, "_ctx_project_id", return_value="project-test"), \
+            patch.object(api, "_request_project_id", return_value="project-test"), \
+            patch("screen_capture.grab_embedded", return_value=None), \
+            patch.object(api, "_engine_window_frame_safe") as eng:
+        response = TestClient(api.app, headers={"X-DocMind-Project": "project-test"}).post(
+            "/api/vision/desktop-frame", json={"target": "embedded", "strict_project": True})
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    eng.assert_not_called()

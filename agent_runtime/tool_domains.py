@@ -149,7 +149,8 @@ _reg("knowledge", "记忆与经验", "memory_save", "memory_search", "memory_for
      "recall_experience")
 
 _reg("game", "验证", "game_release_check", "game_validate_data", "game_playtest")
-_reg("game", "观察与模拟", "game_screenshot", "game_simulate", "game_impact")
+_reg("game", "观察与模拟", "game_screenshot", "game_simulate", "game_impact",
+     "engine_logs")
 _reg("game", "任务", "game_upsert_task")
 # 引擎控制：此前只有 HTTP 端点（人点 UI 用的），模型只能等用户手动点完，
 # 再用 game_screenshot 看一眼**已经**在跑的引擎 —— 于是"改完代码 → 画面变了

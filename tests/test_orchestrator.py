@@ -396,6 +396,47 @@ class BacktrackingTests(unittest.TestCase):
         self.assertFalse(orch.apply_proposal("nope", by_id, tasks, results, 10)["changed"])
         self.assertFalse(orch.apply_proposal(None, by_id, tasks, results, 10)["changed"])
 
+    def test_added_retry_inherits_failed_task_tools(self):
+        tools = ["engine_start", "engine_logs", "game_screenshot"]
+        tasks = orch.parse_plan([{"id": "selfcheck", "task": "自检", "tools": tools}])
+        by_id = {t["id"]: t for t in tasks}
+        results = {"selfcheck": {"status": "failed", "error": "click failed"}}
+        proposal = {"add": [{"id": "selfcheck-retry", "role": "tester",
+                             "task": "再试一次", "depends_on": ["selfcheck"],
+                             "tools": []}]}
+        delta = orch.apply_proposal(proposal, by_id, tasks, results, 10)
+        self.assertEqual(delta["added"], ["selfcheck-retry"])
+        self.assertEqual(by_id["selfcheck-retry"]["tools"], tools,
+                         "空 tools 的补救任务必须继承失败任务的工具白名单")
+
+    def test_added_retry_inherits_tools_from_context_ref(self):
+        tools = ["engine_start", "engine_logs"]
+        tasks = orch.parse_plan([{"id": "selfcheck", "task": "自检", "tools": tools}])
+        by_id = {t["id"]: t for t in tasks}
+        results = {"selfcheck": {"status": "failed"}}
+        proposal = {"add": [{"id": "selfcheck-retry", "task": "再试一次",
+                             "context_from": ["selfcheck"]}]}
+        orch.apply_proposal(proposal, by_id, tasks, results, 10)
+        self.assertEqual(by_id["selfcheck-retry"]["tools"], tools)
+
+    def test_added_task_with_explicit_tools_keeps_them(self):
+        tasks = orch.parse_plan([{"id": "a", "task": "甲", "tools": ["read_file"]}])
+        by_id = {t["id"]: t for t in tasks}
+        results = {"a": {"status": "failed"}}
+        proposal = {"add": [{"id": "r1", "task": "补救", "depends_on": ["a"],
+                             "tools": ["apply_edit"]}]}
+        orch.apply_proposal(proposal, by_id, tasks, results, 10)
+        self.assertEqual(by_id["r1"]["tools"], ["apply_edit"],
+                         "显式给出的工具白名单不能被继承逻辑覆盖")
+
+    def test_replace_without_tools_keeps_original_allowlist(self):
+        tasks = orch.parse_plan([{"id": "b", "task": "乙",
+                                  "tools": ["read_file", "apply_edit"]}])
+        by_id = {t["id"]: t for t in tasks}
+        proposal = {"replace": [{"id": "b", "task": "换个做法", "depends_on": []}]}
+        orch.apply_proposal(proposal, by_id, tasks, {}, 10)
+        self.assertEqual(by_id["b"]["tools"], ["read_file", "apply_edit"])
+
     def test_drop_unknown_id_is_ignored(self):
         rep = orch.run_plan([{"id": "a", "task": "甲"}],
                             lambda t, c: {"status": "failed", "error": "boom"},

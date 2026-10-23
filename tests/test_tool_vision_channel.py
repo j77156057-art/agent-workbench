@@ -104,11 +104,13 @@ class _NativeBatchLLM:
 
 class _FakeVisionClient:
     capability = {"vision": "native"}
+    last_kw = {}
 
     def __init__(self, *args, **kwargs):
         pass
 
     def chat(self, messages, stream=False, **kw):
+        type(self).last_kw = dict(kw)
         return "截图里是一个红色报错弹窗，标题为 Fatal Error。"
 
 
@@ -142,6 +144,7 @@ class AttachToolObservationTests(unittest.TestCase):
         self.assertIsNone(images, "harness 模式绝不能给主模型留 image content")
         self.assertIn("Fatal Error", text)
         self.assertIn("Harness 图片观察", text)
+        self.assertEqual(_FakeVisionClient.last_kw.get("max_output_tokens"), 2000)
 
     def test_unavailable_mode_drops_images_with_clear_note(self):
         with patch.dict(os.environ, {}, clear=False):

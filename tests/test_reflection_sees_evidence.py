@@ -450,6 +450,63 @@ class ReflectionSeesEvidenceTests(unittest.TestCase):
         self.assertIn("不必逐字复述", prompt)
 
 
+class UpstreamContextIsEvidenceTests(unittest.TestCase):
+    """上游注入的具体值也是合法证据——判据必须看得见那份值。
+
+    反向误伤（本类锁的是它的反面）：verify 如实复述 click 任务回显的
+    `CLICKED 600,450` / 客户区坐标，该值来自上游上下文而非 verify 自己的
+    工具观察；旧 prompt 只递「上游上下文键」的键名、又把证据限死为「工具
+    观察」，于是把如实转述判成「无证据声称」。修法是：把上游上下文的**值**
+    原样递进 prompt，并在证据规则里点明「观察与上游上下文两处都没有」才算
+    无证据声称。
+    """
+
+    def _prompt(self, traj, context, conclusion="点击回显 CLICKED 600,450。"):
+        captured = {}
+
+        class _LLM:
+            provider = "fake"
+            model = "reflector"
+            last_usage = {}
+
+            def chat(self, messages, stream=True, **kw):
+                captured["prompt"] = messages[-1]["content"]
+                return '{"ok": true, "issues": [], "next_step": ""}'
+
+            def count_tokens(self, text):
+                return 1
+
+        agent._reflection_result(_LLM(), role="tester", task="验证点击",
+                                 conclusion=conclusion, traj=traj, context=context)
+        return captured["prompt"]
+
+    def test_upstream_context_values_reach_the_prompt(self):
+        """判据手里必须真的有那份上游值，否则它凭什么不判无证据。"""
+        prompt = self._prompt(
+            [], {"click": "click ok=true，CLICKED 600,450，客户区坐标 (400,300)"})
+        self.assertIn("CLICKED 600,450", prompt,
+                      "上游上下文只递了键名、没递值——如实转述仍会被误判无证据")
+        self.assertIn("400,300", prompt)
+
+    def test_evidence_rule_names_upstream_context_as_a_source(self):
+        prompt = self._prompt([], {"click": "CLICKED 600,450"})
+        self.assertIn("【上游上下文】", prompt)
+        self.assertIn("如实转述", prompt)
+
+    def test_anti_hallucination_clause_survives(self):
+        """两处都没有仍是缺陷——这条不能因为放宽上游上下文就被抹掉。"""
+        prompt = self._prompt([], {"click": "CLICKED 600,450"})
+        self.assertIn("两处都没有", prompt)
+        self.assertIn("不得声称观察里没有的东西", prompt)
+        self.assertIn("证据以「工具观察」为准", prompt)
+
+    def test_no_upstream_context_is_stated_explicitly(self):
+        """没有上游时讲明白「仅此工具观察算证据」，别留个空标题让判据猜。"""
+        prompt = self._prompt([], {}, conclusion="验证完成。")
+        self.assertIn("无上游上下文", prompt)
+        self.assertNotIn("CLICKED 600,450", prompt)
+
+
 class DeterministicFallbackTests(unittest.TestCase):
     """LLM 判据不可用时的确定性兜底也不能变松。"""
 

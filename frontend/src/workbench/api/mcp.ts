@@ -166,9 +166,21 @@ export interface GodotAddonStatus {
   min_version: string
 }
 
+export interface McpPendingProposal {
+  /** 审批绑定哈希 target（key:digest），确认卡片据此唯一标识一份提案 */
+  target: string
+  key: string
+  /** 逐字连接配置，用户确认时原样 POST 回 /api/mcp/servers 以命中同一审批哈希 */
+  config: Record<string, unknown>
+  created_at?: string
+}
+
 export const mcpApi = {
   servers(): Promise<{ ok: boolean; servers: McpServer[] }> {
     return request('/api/mcp/servers')
+  },
+  pendingProposals(): Promise<{ ok: boolean; items: McpPendingProposal[]; error?: string }> {
+    return request('/api/mcp/pending-proposals')
   },
   probe(key: string): Promise<{ ok: boolean; tool_count?: number; tools?: string[]; error?: string }> {
     return postJson('/api/mcp/probe', { key })

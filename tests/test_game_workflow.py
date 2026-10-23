@@ -320,6 +320,25 @@ class GameWorkflowTests(unittest.TestCase):
         self.assertTrue(any(event["kind"] == "auto_execute_reconstructed"
                             for event in done["events"]))
 
+    def test_auto_execute_resolves_callbacks_when_gate_left_empty_placeholder(self):
+        state_root = tempfile.mkdtemp()
+        manager = GameWorkflowManager(state_root)
+        state = manager.start("修订后再审批", policy=WorkflowPolicy(max_subagents=1))
+        wid = state["workflow_id"]
+        manager.choose(wid, "recommended")
+        manager.plan(wid, [{"id": "seed", "role": "tester", "task": "初始验证"}])
+        manager.request_dag_revision(wid, [
+            {"id": "a", "role": "tester", "task": "验证", "tools": ["engine_logs"]}])
+        manager.approve_dag_revision(wid, True)
+        manager.set_execution_resolver(lambda _state: {
+            "runner": lambda *_: {"status": "ok", "conclusion": "占位后仍能执行", "steps": 1}})
+        approved = manager.approve(wid, True, auto_execute=True)
+        self.assertEqual(approved["status"], "planned")
+        done = _wait_terminal(manager, wid)
+        self.assertEqual(done["status"], "completed")
+        self.assertTrue(any(event["kind"] == "auto_execute_reconstructed"
+                            for event in done["events"]))
+
     def test_startup_recovery_scheduler_resumes_approved_workflow(self):
         state_root = tempfile.mkdtemp()
         first = GameWorkflowManager(state_root)
@@ -906,6 +925,34 @@ class GameWorkflowTests(unittest.TestCase):
         # updated_at 非增序（时间戳为秒级，相等时允许任意相对次序）
         stamps = [i["updated_at"] or i["created_at"] or "" for i in all_items]
         self.assertEqual(stamps, sorted(stamps, reverse=True))
+
+    def test_list_workflows_counts_done_tasks_from_execution_results(self):
+        """历史弹层的完成数来自 results，不是 tasks[].status（后者不存在）。
+
+        实测 wf-57af9cdb2f18：卡片 3/3，历史却写「已完成 · 0/3 个任务」。
+        """
+        state = self.manager.start("历史计数", project_root="D:/count",
+                                   policy=WorkflowPolicy(approval_mode="high"))
+        wid = state["workflow_id"]
+        self.manager.choose(wid, "recommended")
+        self.manager.plan(wid, [{"id": "a", "task": "一"},
+                                {"id": "b", "task": "二"},
+                                {"id": "c", "task": "三"}])
+        outcomes = {"a": "ok", "b": "ok", "c": "failed"}
+        done = self.manager.execute(
+            wid, lambda task, _ctx: {"status": outcomes[task["id"]],
+                                     "conclusion": "x", "steps": 1})
+        self.assertEqual(done["status"], "failed")
+
+        summary = self.manager.list_workflows(project_root="D:/count")[0]
+        self.assertEqual(summary["task_count"], 3)
+        self.assertEqual(summary["task_done"], 2)
+
+        # 重启后读磁盘 JSON，计数口径必须一致（不是只在内存态碰巧对）。
+        base = self.manager.state_root.parent.parent
+        fresh = GameWorkflowManager(str(base))
+        reloaded = fresh.list_workflows(project_root="D:/count")[0]
+        self.assertEqual(reloaded["task_done"], 2)
 
     def test_list_workflows_is_readonly_and_does_not_arm_mutex(self):
         # 重启后扫描磁盘：list 绝不能把门控态注册进 _states（否则会武装项目互斥）

@@ -377,6 +377,22 @@ class _Session:
         self.last_used = time.monotonic()
         self.opened_at = time.monotonic()
         self.counter = 0
+        # 实况面板按 seq 对账：每个公开动作都递增一次，哪怕它没有截图。
+        # 与 counter 分开是因为 counter 参与截图文件名，wait/read 不该改它。
+        self.seq = 0
+        self.last_action = ""
+        self.last_effect = ""
+        self.last_ok = None
+        self.last_step = 0
+        self.last_url = url
+        self.last_title = ""
+        self.last_at = 0.0
+        self._state_lock = threading.RLock()
+        # seq -> {action, effect, ok, url, title, shot_before, shot_after, at}
+        # 只留最近 40 步：实况面板和流程回放要看的是"刚才做了什么"，
+        # 不是整场几百步的归档；截图文件仍在磁盘上。
+        self.steps: dict[int, dict[str, Any]] = {}
+        self.live = None
         # 上一张截图的摘要。`_verdict` 只看 DOM 变更数 / console / 失败请求 /
         # 地址 / 标题，对 **canvas 类页面**（Godot/WebGL 游戏、地图、可视化）
         # 永远是 no_change —— 实测那次按了方向键，三张截图大小各不相同
@@ -385,7 +401,72 @@ class _Session:
         # 现在同一会话内记住上一张摘要，动作后比一次：字节不同即画面变了。
         self.last_shot_digest = ""
 
+    # ---- 实况与逐步证据 ---------------------------------------------------
+
+    def attach_live(self) -> None:
+        """给会话挂一条只读 CDP 推流。失败只降级实况，绝不影响动作。"""
+        ws_url = str(getattr(self.devtools, "ws_url", "") or "")
+        if not ws_url:
+            return
+        try:
+            from agent_runtime import browser_live
+            self.live = browser_live.LiveScreencast(ws_url, self.id)
+            self.live.start()
+        except Exception:
+            self.live = None
+
+    def begin(self, action: str) -> int:
+        """登记一次动作开始，返回该动作的 seq。"""
+        with self._state_lock:
+            self.seq += 1
+            self.last_action = action
+            self.last_step = self.seq
+            self.last_at = time.time()
+            return self.seq
+
+    def record(self, action: str, ok: bool, *, effect: str = "", url: str = "",
+               title: str = "", step: int | None = None) -> None:
+        """登记动作结果；同一 seq 的截图由 _finish 稍后补齐。"""
+        with self._state_lock:
+            index = int(step if step is not None else self.seq)
+            self.last_action = action
+            self.last_ok = bool(ok)
+            self.last_effect = str(effect or "")
+            self.last_step = index
+            if url:
+                self.last_url = url
+            if title:
+                self.last_title = title
+            self.last_at = time.time()
+            entry = self.steps.setdefault(index, {})
+            entry.update({"action": action, "ok": bool(ok), "effect": str(effect or ""),
+                          "url": str(url or self.last_url), "title": str(title or self.last_title),
+                          "at": self.last_at})
+            while len(self.steps) > 40:
+                self.steps.pop(min(self.steps), None)
+
+    def annotate(self, step: int, **fields: Any) -> None:
+        with self._state_lock:
+            entry = self.steps.setdefault(int(step), {})
+            entry.update(fields)
+            while len(self.steps) > 40:
+                self.steps.pop(min(self.steps), None)
+
+    def live_info(self) -> dict[str, Any]:
+        with self._state_lock:
+            steps = [dict(self.steps[key]) for key in sorted(self.steps)[-6:]]
+            return {"last_action": self.last_action, "last_effect": self.last_effect,
+                    "last_ok": self.last_ok, "last_step": self.last_step,
+                    "url": self.last_url, "title": self.last_title,
+                    "last_at": self.last_at, "steps": steps}
+
     def close(self) -> dict[str, Any]:
+        # 实况是第二条 CDP 连接，必须比主连接先停：反过来的话，主连接释放页面后
+        # 推流线程会在已关闭的 target 上重连到超时，日志里多一串无意义的错误。
+        if self.live is not None:
+            with contextlib.suppress(Exception):
+                self.live.stop()
+            self.live = None
         # cleanup 是 browser_session 在 finally 里填的：必须等 stack.close() 之后再取快照，
         # 先拷就永远是个空字典，「作业对象已解绑」这条凭据会退化成一句空话。
         with contextlib.suppress(Exception):
@@ -428,11 +509,49 @@ def close_all() -> int:
 
 def live_pages() -> list[dict[str, Any]]:
     with _lock:
-        return [{"page": pid, "url": row.url, "actions": row.counter,
-                 "domain": row.domain,
-                 "idle_seconds": round(time.monotonic() - row.last_used, 1),
-                 "age_seconds": round(time.monotonic() - row.opened_at, 1)}
-                for pid, row in _sessions.items()]
+        rows = list(_sessions.items())
+    out = []
+    for pid, row in rows:
+        info = row.live_info()
+        live = row.live.snapshot() if row.live is not None else {}
+        out.append({"page": pid, "url": info.get("url") or row.url,
+                    "actions": row.counter, "domain": row.domain,
+                    "last_action": info.get("last_action") or "",
+                    "last_effect": info.get("last_effect") or "",
+                    "last_ok": info.get("last_ok"),
+                    "last_step": info.get("last_step") or 0,
+                    "live_state": live.get("state") or "unavailable",
+                    "live_version": live.get("frame_version") or 0,
+                    "idle_seconds": round(time.monotonic() - row.last_used, 1),
+                    "age_seconds": round(time.monotonic() - row.opened_at, 1)})
+    return out
+
+
+def live_snapshot(page_id: str) -> dict[str, Any]:
+    """实况面板的一次采样：最新 JPEG 帧 + 当前地址/标题 + 最近动作。
+
+    只读；不会触发任何页面动作。帧以 base64 放在 JSON 里，面板按
+    `frame_version` 判断要不要换图，避免每 500ms 重绘同一帧。
+    """
+    row = _get(page_id)
+    live = row.live.snapshot() if row.live is not None else {
+        "available": False, "state": "unavailable", "error": "该会话没有实况流",
+        "frame": "", "frame_version": 0, "captured_at": 0,
+        "width": 0, "height": 0, "url": "", "title": ""}
+    info = row.live_info()
+    snap = dict(live)
+    snap.update({
+        "ok": True, "page": row.id, "domain": row.domain,
+        "url": live.get("url") or info.get("url") or row.url,
+        "title": live.get("title") or info.get("title") or "",
+        "last_action": info.get("last_action") or "",
+        "last_effect": info.get("last_effect") or "",
+        "last_ok": info.get("last_ok"),
+        "last_step": info.get("last_step") or 0,
+        "last_at": info.get("last_at") or 0,
+        "steps": info.get("steps") or [],
+    })
+    return snap
 
 
 def _off_domain(domain: str, href: str) -> bool:
@@ -522,13 +641,16 @@ def _verdict(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     return {"verdict": verdict, "delta": delta, "navigated": navigated}
 
 
-def _capture(row: _Session, action: str) -> tuple[str, str]:
+def _capture(row: _Session, action: str, phase: str = "") -> tuple[str, str]:
     """截图并返回 `(相对路径, 摘要)`。
 
     ⚠ 摘要是 sha256 前 16 位，只用于**同一会话内前后两帧比对**，不是安全用途。
     PNG 是无损且 Chromium 的 `Page.captureScreenshot` 不写时间戳，所以同一画面
     两次截图字节一致、不同画面字节不同 —— 这是一个可靠的"画面变了"信号，
     而且不需要 PIL（实测环境里就没有 PIL，那条路走不通）。
+
+    `phase` 只进文件名（before/after），不改变摘要语义：前后两帧的摘要比较仍由
+    `_finish` 自己决定比哪两帧，文件名不该把判定逻辑带偏。
     """
     directory = row.root / ".docmind" / "page-action" / time.strftime("%Y%m%d-%H%M%S")
     directory.mkdir(parents=True, exist_ok=True)
@@ -537,13 +659,34 @@ def _capture(row: _Session, action: str) -> tuple[str, str]:
         return "", ""
     raw = base64.b64decode(encoded)
     digest = hashlib.sha256(raw).hexdigest()[:16]
-    path = directory / ("%s-%d.png" % (action, row.counter))
+    suffix = ("-" + phase) if phase else ""
+    path = directory / ("%s-%d%s.png" % (action, row.counter, suffix))
     path.write_bytes(raw)
     return path.relative_to(row.root).as_posix(), digest
 
 
+def _before_shot(row: _Session, action: str) -> str:
+    """动作前的一帧。优先复用实况流，避免每次动作多一次 CDP 截图。
+
+    实况帧是 JPEG、`_capture` 是 PNG：两者都只作为**给人看的证据**，
+    不参与像素变更判定，所以格式不同不会污染 `last_shot_digest`。
+    """
+    directory = row.root / ".docmind" / "page-action" / time.strftime("%Y%m%d-%H%M%S")
+    directory.mkdir(parents=True, exist_ok=True)
+    if row.live is not None:
+        path = directory / ("%s-%d-before.jpg" % (action, row.counter))
+        try:
+            if row.live.save_latest(path, max_age=5.0):
+                return path.relative_to(row.root).as_posix()
+        except Exception:
+            pass
+    shot, _digest = _capture(row, action, phase="before")
+    return shot
+
+
 def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: float,
-            screenshot: bool, matched: dict[str, Any], **extra) -> dict[str, Any]:
+            screenshot: bool, matched: dict[str, Any], before_shot: str = "",
+            **extra) -> dict[str, Any]:
     settle = max(0.1, min(MAX_SETTLE, float(settle_ms or 600) / 1000.0))
     row.devtools.drain(settle)
     page = _current(row.devtools)
@@ -593,10 +736,12 @@ def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: fl
     if delta["console"] <= 0:
         console_new = []
     failed_new = list(row.devtools.failed_requests) if delta["failed"] > 0 else []
-    result = {"action": action, "page": row.id, "effect": verdict, "delta": delta, "ok": ok,
+    step = int(row.seq)
+    result = {"action": action, "page": row.id, "step": step,
+              "effect": verdict, "delta": delta, "ok": ok,
               "element": matched, "left_loopback": left_loopback, "left_scope": left_scope,
               "url": page.get("href"), "title": page.get("title"),
-              "screenshot": shot_path,
+              "screenshot": shot_path, "screenshot_before": before_shot,
               # 给结构化消费方一个可判的依据：比了哪两帧、是否真有两帧。
               # 没有上一帧（本会话第一次截图）时 `prev_shot` 为空 ——
               # 这时**不能**说"画面没变"，只能说不构成证据。
@@ -604,6 +749,9 @@ def _finish(row: _Session, action: str, before: dict[str, Any], *, settle_ms: fl
               "pixels_changed": pixels_changed,
               "console_errors": console_new[-3:], "failed_requests": failed_new[-3:]}
     result.update(extra)
+    row.record(action, ok, effect=verdict, url=page.get("href") or "",
+               title=page.get("title") or "", step=step)
+    row.annotate(step, shot_before=before_shot, shot_after=shot_path)
     return result
 
 
@@ -672,9 +820,14 @@ def open_page(root: str | Path, *, url: str = "", entry: str = "", timeout: floa
         # 然后又多起一个浏览器。
         _sessions[page_id] = row
         _reservations -= 1
+    row.begin("open")
+    row.attach_live()
+    row.record("open", True, url=str(page.get("href") or page_url),
+               title=str(page.get("title") or ""), step=row.seq)
     console_errors = [item for item in devtools.console if item["level"] == "error"]
     return {"action": "open", "page": page_id, "url": page_url, "href": page.get("href"),
             "title": page.get("title"), "ready": page.get("ready"),
+            "step": row.seq, "live": bool(row.live),
             "elements": page.get("count"), "mutation_observer": bool(probe["observer"]),
             "console_errors": console_errors, "runtime_errors": list(devtools.runtime_errors),
             "failed_requests": list(devtools.failed_requests)}
@@ -775,13 +928,18 @@ def open_external_page(root: str | Path, *, url: str, domain: str = "public",
     with _lock:
         _sessions[page_id] = row
         _reservations -= 1
-    console_errors = [item for item in devtools.console if item["level"] == "error"]
     # 打开之后**再核一次**当前地址：目标站可能把我们重定向到内网（比如某个
     # 单点登录的内部跳转）。这时必须如实报出来，而不是当成功。
     landed = str(page.get("href") or "")
     off_scope = _off_domain(domain, landed)
+    row.begin("open")
+    row.attach_live()
+    row.record("open", True, url=landed or target,
+               title=str(page.get("title") or ""), step=row.seq)
+    console_errors = [item for item in devtools.console if item["level"] == "error"]
     return {"action": "open", "page": page_id, "url": target, "href": landed,
             "title": page.get("title"), "ready": ready_state,
+            "step": row.seq, "live": bool(row.live),
             "elements": page.get("count"), "mutation_observer": bool(probe["observer"]),
             "console_errors": console_errors, "runtime_errors": list(devtools.runtime_errors),
             "failed_requests": list(devtools.failed_requests),
@@ -799,11 +957,13 @@ def click(root: str | Path, *, page: str = "", selector: str = "", text: str = "
     """真实点击：定位 → 滚进视口 → CDP 鼠标按下/抬起 → 比对是否真的发生了变化。"""
     row = _get(page, domain)
     spec = _target_spec(selector, text, nth, scope)
+    row.begin("click")
     row.counter += 1
     found = _resolve(row.devtools, spec)
     matched = found["matched"]
     center_x, center_y = found["center"]
     before = _signals(row.devtools, found)
+    before_shot = _before_shot(row, "click") if screenshot else ""
     for params in ({"type": "mouseMoved", "x": center_x, "y": center_y, "buttons": 0},
                    {"type": "mousePressed", "x": center_x, "y": center_y, "button": "left",
                     "clickCount": 1, "buttons": 1},
@@ -811,7 +971,7 @@ def click(root: str | Path, *, page: str = "", selector: str = "", text: str = "
                     "clickCount": 1, "buttons": 0}):
         row.devtools.call("Input.dispatchMouseEvent", params)
     return _finish(row, "click", before, settle_ms=settle, screenshot=screenshot,
-                   matched=matched, at=[center_x, center_y])
+                   matched=matched, before_shot=before_shot, at=[center_x, center_y])
 
 
 def type_text(root: str | Path, *, page: str = "", value: str = "", selector: str = "",
@@ -824,6 +984,7 @@ def type_text(root: str | Path, *, page: str = "", value: str = "", selector: st
     if len(payload) > MAX_VALUE_CHARS:
         raise PageActionError("输入内容超过 %s 字符上限。" % MAX_VALUE_CHARS)
     spec = _target_spec(selector, text, nth, scope)
+    row.begin("type")
     row.counter += 1
     found = _resolve(row.devtools, spec)
     matched = found["matched"]
@@ -840,6 +1001,7 @@ def type_text(root: str | Path, *, page: str = "", value: str = "", selector: st
             "目标是密码框（type=password），已拒绝输入。往外部站点的密码框里写凭据"
             "必须是用户明确的动作——如果确实要登录，请让用户自己在浏览器里输入；"
             "确实要由本工具写入时，显式声明 allow_password: true。")
+    before_shot = _before_shot(row, "type") if screenshot else ""
     if payload:
         row.devtools.call("Input.insertText", {"text": payload})
     # 回读要按元素实际承载内容的方式取：`<input>` 的 innerText 恒为空，只看 text 就等于
@@ -850,8 +1012,8 @@ def type_text(root: str | Path, *, page: str = "", value: str = "", selector: st
         read = _evaluate(row.devtools, INSPECT_JS, {"target": "held", "mode": "text"}) or {}
         seen = str(read.get("text") or "")
     return _finish(row, "type", before, settle_ms=settle, screenshot=screenshot,
-                   matched=matched, focused=bool(held.get("focused")),
-                   value_seen=seen[:200],
+                   matched=matched, before_shot=before_shot,
+                   focused=bool(held.get("focused")), value_seen=seen[:200],
                    # 空 payload 时 `"" in seen` 恒真——那等于「什么都没做也算成功」。
                    value_landed=bool(payload) and payload in seen)
 
@@ -866,6 +1028,7 @@ def press_key(root: str | Path, *, page: str = "", key: str = "", selector: str 
         raise PageActionError("按键 %r 不在支持列表里。支持：%s；组合键请改用 click 或 type。"
                               % (key, "/".join(sorted(set(KEYS)))))
     logical, code, vk, typed = KEYS[name]
+    row.begin("press")
     matched: dict[str, Any] = {"tag": "document", "text": logical}
     if str(selector or "").strip():
         found = _resolve(row.devtools, _target_spec(selector, "", 0, ""))
@@ -875,11 +1038,12 @@ def press_key(root: str | Path, *, page: str = "", key: str = "", selector: str 
             raise PageActionError("元素在定位之后消失了（%s），没有按键。" % held.get("reason"))
     row.counter += 1
     before = _signals(row.devtools, _current(row.devtools))
+    before_shot = _before_shot(row, "press") if screenshot else ""
     base = {"key": logical, "code": code, "windowsVirtualKeyCode": vk, "nativeVirtualKeyCode": vk}
     row.devtools.call("Input.dispatchKeyEvent", {**base, "type": "keyDown", "text": typed})
     row.devtools.call("Input.dispatchKeyEvent", {**base, "type": "keyUp"})
     return _finish(row, "press", before, settle_ms=settle, screenshot=screenshot,
-                   matched=matched, key=logical)
+                   matched=matched, before_shot=before_shot, key=logical)
 
 
 def wait_for(root: str | Path, *, page: str = "", selector: str = "", state: str = "present",
@@ -899,6 +1063,7 @@ def wait_for(root: str | Path, *, page: str = "", selector: str = "", state: str
         budget = max(0.1, min(MAX_WAIT, float(timeout if timeout not in ("", None) else 4.0)))
     except (TypeError, ValueError):
         raise PageActionError("timeout 必须是秒数。") from None
+    step = row.begin("wait")
     started = time.monotonic()
     deadline = started + budget
     seen: dict[str, Any] = {}
@@ -912,19 +1077,25 @@ def wait_for(root: str | Path, *, page: str = "", selector: str = "", state: str
                or (kind == "hidden" and (count == 0 or not seen.get("visible")))
                or (kind == "text" and str(value or "") in str(seen.get("text") or "")))
         if hit:
-            return {"action": "wait", "page": row.id, "ok": True, "state": kind,
-                    "waited_ms": round((time.monotonic() - started) * 1000),
-                    "seen": {key: seen.get(key) for key in ("count", "found", "visible", "text")},
-                    "url": seen.get("href")}
+            result = {"action": "wait", "page": row.id, "ok": True, "state": kind,
+                      "step": step,
+                      "waited_ms": round((time.monotonic() - started) * 1000),
+                      "seen": {key: seen.get(key) for key in ("count", "found", "visible", "text")},
+                      "url": seen.get("href")}
+            row.record("wait", True, url=str(seen.get("href") or ""), step=step)
+            return result
         if time.monotonic() >= deadline:
             row.devtools.drain(0.3)
-            return {"action": "wait", "page": row.id, "ok": False, "state": kind,
-                    "timed_out": True, "waited_ms": round((time.monotonic() - started) * 1000),
-                    "wanted": str(value or css)[:200],
-                    "seen": {key: seen.get(key) for key in ("count", "found", "visible", "text")},
-                    "console_errors": [item for item in row.devtools.console
-                                       if item["level"] == "error"],
-                    "failed_requests": list(row.devtools.failed_requests)}
+            result = {"action": "wait", "page": row.id, "ok": False, "state": kind,
+                      "step": step, "timed_out": True,
+                      "waited_ms": round((time.monotonic() - started) * 1000),
+                      "wanted": str(value or css)[:200],
+                      "seen": {key: seen.get(key) for key in ("count", "found", "visible", "text")},
+                      "console_errors": [item for item in row.devtools.console
+                                         if item["level"] == "error"],
+                      "failed_requests": list(row.devtools.failed_requests)}
+            row.record("wait", False, url=str(seen.get("href") or ""), step=step)
+            return result
         time.sleep(0.1)
 
 
@@ -940,8 +1111,9 @@ def read_page(root: str | Path, *, page: str = "", selector: str = "", mode: str
     if len(str(attr or "")) > 60:
         raise PageActionError("属性名太长。")
     css = str(selector or "").strip() or ("body" if kind == "contains" else "html")
+    step = row.begin("read")
     if kind == "contains":
-        return _read_contains(row, css, str(needle or ""))
+        return _read_contains(row, css, str(needle or ""), step)
     index = 0 if held else _target_spec(css, "", nth, "")["nth"]
     out = _evaluate(row.devtools, INSPECT_JS,
                     {"selector": "" if held else css,
@@ -952,14 +1124,18 @@ def read_page(root: str | Path, *, page: str = "", selector: str = "", mode: str
     # 双端核对：页面报了全文长度就用它判，没报（老页面/别的实现）才退回字符串长度。
     truncated = (int(full) > len(text)) if isinstance(full, (int, float)) \
         else len(text) > MAX_READ_CHARS
-    return {"action": "read", "page": row.id, "ok": True, "mode": kind, "count": out.get("count"),
-            "found": out.get("found"), "visible": out.get("visible"), "tag": out.get("tag"),
-            "title": out.get("title"), "url": out.get("href"), "text": text[:MAX_READ_CHARS],
-            "full_length": int(full) if isinstance(full, (int, float)) else len(text),
-            "truncated": truncated}
+    result = {"action": "read", "page": row.id, "ok": True, "mode": kind, "step": step,
+              "count": out.get("count"),
+              "found": out.get("found"), "visible": out.get("visible"), "tag": out.get("tag"),
+              "title": out.get("title"), "url": out.get("href"), "text": text[:MAX_READ_CHARS],
+              "full_length": int(full) if isinstance(full, (int, float)) else len(text),
+              "truncated": truncated}
+    row.record("read", True, url=str(out.get("href") or ""),
+               title=str(out.get("title") or ""), step=step)
+    return result
 
 
-def _read_contains(row: _Session, css: str, needle: str) -> dict[str, Any]:
+def _read_contains(row: _Session, css: str, needle: str, step: int = 0) -> dict[str, Any]:
     """在 `selector` 容器的可见文字里搜 `needle`：只回命中数与周围几段，不回整页文本。"""
     if not needle.strip():
         raise PageActionError("mode: contains 需要 needle: <要找的词>。")
@@ -972,20 +1148,24 @@ def _read_contains(row: _Session, css: str, needle: str) -> dict[str, Any]:
     elements = int(out.get("elements") or 0)
     hits = int(out.get("hits") or 0)
     scanned_all = bool(out.get("scanned_all"))
-    return {"action": "read", "page": row.id, "ok": True, "mode": "contains",
-            "needle": needle, "selector": css,
-            "found": hits > 0, "hits": hits, "elements": elements,
-            "elements_with_hit": int(out.get("elements_with_hit") or 0),
-            # 不可见容器里的命中单独报：混进 `hits` 会让「页面上没有」变成「DOM 里没有」，
-            # 完全丢掉则会让"用户看得见的那句"被误判成不存在
-            "hidden_hits": int(out.get("hidden_hits") or 0),
-            "hidden_elements": int(out.get("hidden_elements") or 0),
-            "searched_chars": int(out.get("searched_chars") or 0), "scanned_all": scanned_all,
-            # 样本限量已经由 `spec.samples` 在页面里生效，这里不再二次裁剪：两处各一套上限时，
-            # 调一处另一处仍按老数字静默截断（变异电池实测：删掉这里的 [:MAX_SAMPLES] 谁都发现不了）
-            "samples": list(out.get("samples") or []),
-            "title": out.get("title"), "url": out.get("href"), "count": elements,
-            "text": "", "truncated": not scanned_all, "error": str(out.get("error") or "")}
+    index = int(step or row.seq)
+    result = {"action": "read", "page": row.id, "ok": True, "mode": "contains",
+              "step": index, "needle": needle, "selector": css,
+              "found": hits > 0, "hits": hits, "elements": elements,
+              "elements_with_hit": int(out.get("elements_with_hit") or 0),
+              # 不可见容器里的命中单独报：混进 `hits` 会让「页面上没有」变成「DOM 里没有」，
+              # 完全丢掉则会让"用户看得见的那句"被误判成不存在
+              "hidden_hits": int(out.get("hidden_hits") or 0),
+              "hidden_elements": int(out.get("hidden_elements") or 0),
+              "searched_chars": int(out.get("searched_chars") or 0), "scanned_all": scanned_all,
+              # 样本限量已经由 `spec.samples` 在页面里生效，这里不再二次裁剪：两处各一套上限时，
+              # 调一处另一处仍按老数字静默截断（变异电池实测：删掉这里的 [:MAX_SAMPLES] 谁都发现不了）
+              "samples": list(out.get("samples") or []),
+              "title": out.get("title"), "url": out.get("href"), "count": elements,
+              "text": "", "truncated": not scanned_all, "error": str(out.get("error") or "")}
+    row.record("read", True, url=str(out.get("href") or ""),
+               title=str(out.get("title") or ""), step=index)
+    return result
 
 
 def locate(root: str | Path, *, page: str = "", selector: str = "", text: str = "",
@@ -993,9 +1173,12 @@ def locate(root: str | Path, *, page: str = "", selector: str = "", text: str = 
     """只看不动：这个定位会命中什么、可不可见、中心在哪个坐标。歧义也照样列出来。"""
     row = _get(page, domain)
     spec = _target_spec(selector, text, nth, scope)
+    step = row.begin("locate")
     found = dict(_evaluate(row.devtools, RESOLVE_JS, spec) or {})
     found["ambiguous"] = int(found.get("count") or 0) > 1 and not spec["nth_given"]
-    return {"action": "locate", "page": row.id, "ok": True, **found}
+    row.record("locate", True, url=str(found.get("href") or ""),
+               title=str(found.get("title") or ""), step=step)
+    return {"action": "locate", "page": row.id, "ok": True, "step": step, **found}
 
 
 def close_page(page: str = "", domain: str = "") -> dict[str, Any]:

@@ -297,6 +297,37 @@ def parent_of(hwnd):
     return int(user32.GetParent(int(hwnd)) or 0) or None
 
 
+def restore_window(hwnd):
+    """把最小化的独立顶层窗口还原并带到前台，返回 {ok, restored, foreground}。
+
+    为什么需要：Godot 游戏窗口在启动几秒后会**自己最小化**（客户区塌成 0x0），
+    此后 PrintWindow / BitBlt 都抓不到像素（capture_window 返回 None），截图工具
+    只能退回前台窗口——于是模型截到的是聊天应用而不是游戏。agent 要"看见"它自己
+    刚起的引擎，就得先把那个最小化窗口还原。
+
+    只接受调用方**已经通过引擎进程表拿到**的 hwnd（不是外部任意句柄），且只做
+    还原+置前，不改动窗口内容——这不是"操作任意窗口"的后门。任何异常都吞掉并
+    返回 ok=False，让调用方继续走原有兜底路径。
+    """
+    user32 = _user32()
+    if user32 is None or not hwnd:
+        return {'ok': False, 'error': '仅 Windows 支持'}
+    try:
+        h = int(hwnd)
+        if not is_window(h):
+            return {'ok': False, 'restored': False, 'foreground': False,
+                    'error': '窗口句柄已失效'}
+        restored = False
+        if user32.IsIconic(h):
+            user32.ShowWindow(h, 9)  # SW_RESTORE
+            restored = True
+        user32.BringWindowToTop(h)
+        fg = bool(user32.SetForegroundWindow(h))
+        return {'ok': True, 'restored': restored, 'foreground': fg}
+    except Exception as exc:  # noqa: BLE001
+        return {'ok': False, 'restored': False, 'foreground': False, 'error': str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # 枚举
 # ---------------------------------------------------------------------------
@@ -456,7 +487,7 @@ def windows_of_pids(pids):
     return out
 
 
-def find_host(title_hint='DocMind'):
+def find_host(title_hint='Agent Workbench'):
     """查找桌面宿主窗口；浏览器模式/无桌面壳时返回 None。"""
     user32 = _user32()
     if user32 is None:

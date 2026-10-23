@@ -280,6 +280,44 @@ def _deps_state(tid, by_id, results):
     return True, None
 
 
+def _task_tools(task):
+    """任务上的工具白名单，统一成 list[str]。"""
+    tools = (task or {}).get("tools") if isinstance(task, dict) else None
+    if isinstance(tools, str):
+        tools = [item.strip() for item in tools.split(",") if item.strip()]
+    if isinstance(tools, (list, tuple, set)):
+        return [str(item)[:80] for item in list(tools)[:16] if str(item).strip()]
+    return []
+
+
+def _inherit_replan_tools(task, by_id, results, extra_refs=()):
+    """给 replanner 新增/改写的任务补上被重试任务的工具白名单。
+
+    `parse_plan` 把缺省或空的 `tools` 一律归一成 `[]`，而子代理执行侧把 `[]`
+    解释成「拒绝一切工具」。replanner 的提示词示例本身就写着 `"tools":[]`，
+    所以模型产出的补救任务经常是空名单，0 步就失败（实测 selfcheck-retry）。
+
+    这里只从任务**自己声明依赖/上下文**的原任务复制工具，不扩大权限：
+    重试任务本来就该在原任务允许的范围内再试一次。没有可复制的来源时保持空。
+    """
+    if _task_tools(task):
+        return
+    refs = [str(d) for d in (task.get("depends_on") or [])]
+    refs += [str(d) for d in (extra_refs or ())]
+    best = None
+    for ref in dict.fromkeys(refs):
+        source = by_id.get(ref) or {}
+        tools = _task_tools(source)
+        if not tools:
+            continue
+        status = str((results.get(ref) or {}).get("status") or "")
+        rank = 0 if status and status != "ok" else 1
+        if best is None or rank < best[0]:
+            best = (rank, tools)
+    if best is not None:
+        task["tools"] = list(best[1])
+
+
 def apply_proposal(proposal, by_id, tasks, results, max_tasks):
     """应用 replanner 的提案——支持**回溯式**修改尚未执行的计划。
 
@@ -310,11 +348,14 @@ def apply_proposal(proposal, by_id, tasks, results, max_tasks):
             norm = parse_plan(raw, known_ids=set(by_id), max_tasks=max_tasks)
         except PlanError:
             norm = []
-        for t in norm:
+        for index, t in enumerate(norm):
             tid = t["id"]
             if not _unexecuted(tid):
                 delta["ignored"].append(f"replace:{tid}(已执行或不存在)")
                 continue
+            raw_item = raw[index] if index < len(raw) and isinstance(raw[index], dict) else {}
+            refs = [tid, *(raw_item.get("context_from") or ())]
+            _inherit_replan_tools(t, by_id, results, extra_refs=refs)
             by_id[tid].update({
                 "role": t["role"], "task": t["task"],
                 "depends_on": t["depends_on"], "optional": t["optional"],
@@ -352,7 +393,7 @@ def apply_proposal(proposal, by_id, tasks, results, max_tasks):
             norm = parse_plan(raw, known_ids=set(by_id), max_tasks=max_tasks)
         except PlanError:
             norm = []
-        for t in norm:
+        for index, t in enumerate(norm):
             tid = t["id"]
             if tid in by_id or tid in results:
                 delta["ignored"].append(f"add:{tid}(id 冲突)")
@@ -360,6 +401,9 @@ def apply_proposal(proposal, by_id, tasks, results, max_tasks):
             if any(d not in by_id and d not in results for d in t["depends_on"]):
                 delta["ignored"].append(f"add:{tid}(依赖未知)")
                 continue
+            raw_item = raw[index] if index < len(raw) and isinstance(raw[index], dict) else {}
+            _inherit_replan_tools(t, by_id, results,
+                                  extra_refs=raw_item.get("context_from") or ())
             by_id[tid] = t
             tasks.append(t)
             delta["added"].append(tid)

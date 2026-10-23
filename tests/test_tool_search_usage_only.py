@@ -104,6 +104,21 @@ def test_tool_search_still_returns_the_real_usage():
         "返回内容太短（%d 字符）—— 取回的是概要而不是完整用法" % len(out))
 
 
+def test_tool_search_accepts_keyed_and_json_arguments():
+    """**实测事故的回归守卫**：keyed / JSON 入参必须能命中。
+
+    工作台里模型按其他工具的约定写成 `tool_search(query: browser_action)`，
+    旧实现把「query: browser_action」整串当关键词，回「没有匹配」——
+    模型据此断言 `browser_action` 不存在并放弃整轮任务。参数归一化不是宽容，
+    是可用性：检索失败会被模型当作「能力不存在」的证据。
+    """
+    for arg in ("query: browser_action", "tool: browser_action",
+                "name: browser_action", '{"query": "browser_action"}',
+                "  browser_action  "):
+        out = str(agent_mod._tool_search(arg))
+        assert out.startswith("- browser_action("), (arg, out[:160])
+
+
 def test_searching_changes_nothing_about_exposure():
     """**记录一个实测事实**：检索对工具暴露**零影响**。
 

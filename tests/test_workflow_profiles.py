@@ -195,15 +195,31 @@ class EdaProfileTests(unittest.TestCase):
 
     def test_eda_fallback_dag_contract(self):
         tasks = PROFILES["eda"].fallback_tasks()
+        # 连接器读取（schematic）必须是根任务，research 并行可选——
+        # 否则 research 的"外部资料=0"会污染 schematic 上下文、令其 steps=0。
         self.assertEqual([t["id"] for t in tasks],
-                         ["research", "schematic", "layout", "verify"])
+                         ["schematic", "research", "layout", "verify", "report"])
         self.assertEqual([t["role"] for t in tasks],
-                         ["researcher", "schematic", "layout", "tester"])
+                         ["schematic", "researcher", "layout", "tester", "reporter"])
         self.assertEqual([t["depends_on"] for t in tasks],
-                         [[], ["research"], ["schematic"], ["layout"]])
+                         [[], [], ["schematic"], ["layout"],
+                          ["schematic", "research", "layout", "verify"]])
         by_id = {t["id"]: t for t in tasks}
-        # 连接器操作阶段全部 mcp=allow，调研阶段 deny
+        # 连接器操作阶段全部 mcp=allow，调研阶段 deny；research 可选、不挡下游
         self.assertEqual(by_id["research"]["mcp"], "deny")
+        self.assertTrue(by_id["research"].get("optional"), "research 必须是可选并行任务")
+        # layout/verify 也必须可选：EasyEDA Pro v0.1.0 无 ERC/DRC/导出工具，
+        # 纯读取场景里这几步常无法确定完成；标可选后其失败不阻断末尾 report，
+        # 也不逼重规划器原地补 report（wf-99ecf32f9c86 反例）。
+        self.assertTrue(by_id["layout"].get("optional"), "layout 失败不得阻断 report")
+        self.assertTrue(by_id["verify"].get("optional"), "verify 失败不得阻断 report")
+        # report 收尾节点依赖全部四个子任务，且自身只读、不调连接器
+        self.assertEqual(by_id["report"]["depends_on"],
+                         ["schematic", "research", "layout", "verify"])
+        self.assertEqual(by_id["report"]["role"], "reporter")
+        self.assertEqual(by_id["report"]["mcp"], "deny")
+        self.assertEqual(by_id["schematic"]["depends_on"], [],
+                         "schematic（连接器读取）必须是根任务")
         for tid in ("schematic", "layout", "verify"):
             self.assertEqual(by_id[tid]["mcp"], "allow", tid)
         connector_trio = {"dev_route_connector", "dev_list_connector_tools", "dev_mcp_call"}
@@ -242,7 +258,7 @@ class EdaProfileTests(unittest.TestCase):
         manager.choose(wid, "recommended")
         planned = manager.plan(wid)
         self.assertEqual([t["id"] for t in planned["tasks"]],
-                         ["research", "schematic", "layout", "verify"])
+                         ["schematic", "research", "layout", "verify", "report"])
 
 
 class WorkflowStartApiKindTests(unittest.TestCase):

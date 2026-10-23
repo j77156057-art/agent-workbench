@@ -8,6 +8,7 @@ import {
   agentApi, modelResidencyApi,
   WEB_SEARCH_PROVIDERS, WEB_FETCH_PROVIDERS,
   type SettingsConfigInfo, type ModelConfigInfo, type ProviderOption, type McpServer,
+  type McpPendingProposal,
   type AgentCapacityInfo,
   type AgentCapacityRanges,
   type McpCapabilityCandidate,
@@ -458,6 +459,7 @@ const wfNeedsUrl = computed(() => WEB_FETCH_PROVIDERS.find(p => p.value === wfPr
 
 // ---------------- MCP ----------------
 const mcpServers = ref<McpServer[]>([])
+const mcpProposals = ref<McpPendingProposal[]>([])
 const mcpLoading = ref(false)
 const mcpError = ref('')
 // 凭证落盘成功后的短暂提示（MCP 面板内，几秒后自动消失）
@@ -608,9 +610,10 @@ async function loadMcp() {
   mcpLoading.value = true
   mcpError.value = ''
   try {
-    const [r, caps] = await Promise.all([mcpApi.servers(), mcpApi.capabilities()])
+    const [r, caps, props] = await Promise.all([mcpApi.servers(), mcpApi.capabilities(), mcpApi.pendingProposals()])
     mcpServers.value = r.servers || []
     mcpCapabilities.value = { active: caps.active || {}, pending: caps.pending || {} }
+    mcpProposals.value = props.items || []
   } catch (e) {
     mcpError.value = (e as { message?: string }).message || '读取 MCP 失败'
   } finally {
@@ -1165,6 +1168,42 @@ async function addMcp() {
   }
 }
 
+/** 把提案的连接参数拼成一行可读命令，供确认卡片展示「要批准什么」。 */
+function proposalCmd(p: McpPendingProposal): string {
+  const c = p.config as Record<string, unknown>
+  if (c.transport === 'http') return String(c.url || '')
+  const args = Array.isArray(c.args) ? (c.args as unknown[]).map(String) : []
+  return [String(c.command || ''), ...args].filter(Boolean).join(' ')
+}
+
+/**
+ * 一键确认 Agent 经 dev_mcp_add 申请、卡在审批门的连接器。
+ *
+ * 用提案里**逐字相同**的 config 调 mcpApi.save → 后端 POST /api/mcp/servers 会
+ * 现算 hash 匹配的审批并清理提案；此后 agent 用相同参数重试 dev_mcp_add 即放行。
+ * 这正是修掉的死循环：此前队列里的 mcp_server「批准」被后端硬拒、设置页又无从
+ * 复现 command/args，用户怎么点都不放行。
+ */
+const mcpConfirming = ref('')
+async function confirmPendingProposal(p: McpPendingProposal) {
+  if (mcpConfirming.value) return
+  mcpConfirming.value = p.target
+  mcpError.value = ''
+  try {
+    const r = await mcpApi.save(p.key, p.config)
+    if (!r.ok) {
+      mcpError.value = r.error || '确认失败'
+      return
+    }
+    mcpNotice.value = `已确认连接器「${p.key}」，可让助手重试装配`
+    await loadMcp()
+  } catch (e) {
+    mcpError.value = (e as { message?: string }).message || '确认失败'
+  } finally {
+    mcpConfirming.value = ''
+  }
+}
+
 async function removeMcp(key: string) {
   mcpError.value = ''
   try {
@@ -1668,6 +1707,22 @@ async function powerAction(action: 'on' | 'off') {
                   <span v-else class="sv-wait-inline"><Icon name="loader" :size="16" class="dm-spin" />自动进行中…</span>
                 </div>
               </div>
+            </div>
+
+            <div v-if="mcpProposals.length" class="sv-pending-proposals" data-section="mcp-pending-proposals">
+              <h4 class="sv-h4">待装配连接器（助手申请，需你确认）</h4>
+              <p class="sv-hint">助手请求装配下列连接器。确认后会以**完全相同**的参数落盘并记录审批，助手随后重试即可放行——确认前它无法使用该连接器。</p>
+              <ul class="sv-list">
+                <li v-for="p in mcpProposals" :key="p.target" class="sv-list-item wb-card">
+                  <div class="sv-list-main">
+                    <span class="sv-list-name">{{ (p.config.label as string) || p.key }}</span>
+                    <span class="sv-list-sub">{{ p.config.transport }} · <code>{{ proposalCmd(p) }}</code></span>
+                  </div>
+                  <div class="sv-row-actions">
+                    <button class="sv-mini sv-approve" :disabled="mcpConfirming === p.target" @click="confirmPendingProposal(p)">{{ mcpConfirming === p.target ? '确认中…' : '确认装配' }}</button>
+                  </div>
+                </li>
+              </ul>
             </div>
 
             <ul class="sv-list" v-if="mcpServers.length">

@@ -36,11 +36,14 @@
 **这一对组合是「压根没查」的唯一指纹**，不是「路径存在但判定矛盾」。
 本文件把它钉死，就是为了让下一次同类故障在测试里就现形。
 """
+import contextvars
 import io
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -124,6 +127,100 @@ class TheNoRootFingerprintTests(unittest.TestCase):
                             "给了真 root 还是判打不开：%s" % json.dumps(
                                 row.get("references"), ensure_ascii=False)[:300])
             self.assertTrue(row["gate_checks"]["reference_lines_valid"])
+
+
+class ThePerTaskReviewFollowsTheExecutionRootTests(unittest.TestCase):
+    """行为断言：子代理在试做区里跑，复核就必须拿试做区根。
+
+    上面的源码断言只防得住「参数丢了」，防不住「参数传错根」——而实测
+    `wf-fe7288d4d77e` 恰好是后者：`code_root` 传了，只是传成了 origin。
+    这里用假 ctx + 假 WORKFLOWS 把 `workflow_callbacks` 的 runner 真正跑
+    一遍，看它交给 `review_output` 的到底是哪一份代码。
+    """
+
+    class _FakeAgent(object):
+        capability_lease = {}
+
+        def _run_child(self, role, prompt, **kwargs):
+            return {"text": CONCL, "trace": {"steps": STEPS}, "status": "ok"}
+
+    class _FakeCtx(object):
+        def __init__(self):
+            self.agent = ThePerTaskReviewFollowsTheExecutionRootTests._FakeAgent()
+            self._CTX_PROJECT_ID = contextvars.ContextVar(
+                "fake_project_id", default=None)
+
+        def _agent_for(self, sid, pid=None):
+            return self.agent
+
+        def cockpit_route_llm(self, prompt, pid):
+            return (None, None, None)
+
+        def cockpit_strong_llm(self, pid):
+            return (None, None)
+
+    def _review_kwargs(self, *, stage_enabled, live_state):
+        import api_routes.agent as route_mod
+
+        captured = {}
+        with patch.object(route_mod.WORKFLOWS, "set_execution_resolver",
+                          lambda fn: captured.update(resolver=fn)):
+            route_mod.build_router(self._FakeCtx())
+        self.assertIn("resolver", captured, "build_router 没注册执行解析器")
+
+        state = {
+            "workflow_id": "wf-review-root",
+            "project_id": "prj-review-root",
+            "project_root": self.origin,
+            "stage_enabled": stage_enabled,
+            "request": "敌人追击逻辑在哪一行？",
+            "policy": {},
+        }
+        seen = {}
+
+        def fake_review(out, **kwargs):
+            seen.update(kwargs)
+            return {"ok": True}
+
+        with patch.object(route_mod.WORKFLOWS, "get", lambda wid: live_state):
+            callbacks = captured["resolver"](state)
+            with patch.object(route_mod, "review_output", fake_review):
+                callbacks["runner"](
+                    {"id": "boot", "role": "coder", "task": "启动游戏"},
+                    [])
+        return seen
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.origin = os.path.join(self._tmp.name, "origin_project")
+        self.stage = os.path.join(self._tmp.name, "stage_copy")
+        os.makedirs(self.origin)
+        os.makedirs(self.stage)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_stage_enabled_reviews_against_the_stage_workspace(self):
+        seen = self._review_kwargs(
+            stage_enabled=True,
+            live_state={"project_stage": {"workspace_root": self.stage}})
+        self.assertEqual(
+            os.path.normcase(os.path.normpath(str(seen.get("code_root")))),
+            os.path.normcase(os.path.normpath(self.stage)),
+            "复核拿的还是 origin（%s）——试做区里的截图/日志是根外路径，"
+            "references_exist 必判 False" % seen.get("code_root"))
+
+    def test_without_a_stage_it_reviews_the_real_project(self):
+        seen = self._review_kwargs(stage_enabled=False, live_state={})
+        self.assertEqual(
+            os.path.normcase(os.path.normpath(str(seen.get("code_root")))),
+            os.path.normcase(os.path.normpath(self.origin)),
+            "未启用试做区时复核根应为真实项目根，实际是 %s" % seen.get("code_root"))
+
+    def test_the_question_still_reaches_the_review(self):
+        seen = self._review_kwargs(stage_enabled=False, live_state={})
+        self.assertIn("question", seen,
+                      "复核没收到 question——定位类门禁会被整体跳过")
 
 
 if __name__ == "__main__":

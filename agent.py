@@ -69,7 +69,7 @@ from agent_runtime.run_budget import RunBudget
 from agent_runtime.local_runtime import effective_parallelism, local_llm_slot
 from agent_runtime.tools import (
     Capability, SideEffect, coerce_tool_spec, execute_tool, tool_mutates,
-    upgrade_registry,
+    upgrade_registry, _DESKTOP_PRE_AUTHORIZED, _CHAT_WORKFLOW_ALLOWED,
 )
 from agent_runtime import tool_failure as _tool_failure
 from agent_runtime import mcp_bridge as _mcp_bridge
@@ -712,7 +712,7 @@ _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
 - dev_mcp_search(query): 按领域或能力词寻找 MCP 连接方式。联网开启时查询 MCP Registry，关闭时只给离线指引；返回候选不代表连接成功，也不会写入配置。先展示具体候选和来源供用户选择。
 - 当需要的能力没有现成连接器时，可【自助装配 MCP】，严格按顺序；其中连接器安装和能力路由是用户确认门，Agent 不能替用户批准：
   1) dev_mcp_search(能力关键词) 查领域目录和允许联网时的真实 Registry 候选；无候选时再用 web_search/web_fetch 核对该软件的 MCP 文档，禁止使用搜索摘要里未经验证的命令；
-  2) dev_mcp_add 写入配置——该操作会返回 blocked；向用户展示候选及完整 command/args 或 URL，等待用户在 MCP 设置中确认后再用相同参数重试；不要调用 dev_approve 代替用户确认；
+  2) dev_mcp_add 写入配置——该操作会返回 blocked（含 proposal 里逐字的 command/args 或 URL）；向用户展示这份完整参数，引导用户到「设置 · 连接器（MCP）」的『待装配连接器』卡片点确认（在那里确认会以完全相同参数落盘并放行），随后你用相同参数重试 dev_mcp_add；不要调用 dev_approve 代替用户确认；
   3) dev_mcp_probe 探活（stdio 首次冷启动可能较慢）；
   4) dev_mcp_discover 生成能力候选，先把候选能力与来源向用户说明；
   5) 用户在工作台确认能力后再 dev_mcp_decide(decision: approve)，此后该连接器才可被自动路由；拒绝或撤销也必须等待用户确认。Agent 调用 dev_approve 对 MCP 会被拒绝。
@@ -795,7 +795,7 @@ _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
 - dev_tool_install_audit(limit?): 查询工具安装尝试、版本、沙箱路径和失败类别，不执行安装。
 - delegate(role, task): 把一个**相对独立**的子任务委派给受限子代理执行并取回结论。role 可取 dispatcher/planner（拆文件和分工）、researcher（检索查证）、coder（在授权范围改码）、reviewer（只读评审）或 tester（跑受控命令验证）；task 写清这一件子任务的目标与验收点。适合把大任务拆成互不干扰的检索/实现/评审/验证子任务；**不要**用它转交模糊的整轮问题，也不要在子任务需要与你共享上下文时使用。
 - orchestrate(plan_json): 按【任务图】并行调度多个受限子代理并合成结论，适合需要多角色协作、有先后依赖、或需要交叉验证的复杂任务。输入为 JSON：`{"tasks":[{"id":"a","role":"dispatcher|planner|researcher|coder|reviewer|tester","task":"...","depends_on":["b"],"optional":false}],"synth":true,"max_parallel":4,"replan":true}`。不要固定生成两个 Subagent：由主 Agent 根据任务复杂度决定是直接执行、先派一个 dispatcher/planner 拆解，还是派发多个执行代理。dispatcher/planner 只负责分析文件和设计任务图；返回 tasks JSON 时，主 Agent 会校验后动态加入任务图，再负责汇总规划、审核结果以及最终写入决策。无依赖的任务并行执行；下游任务会拿到上游结论当上下文；`replan`（默认开）会在某任务失败时自动追加**补救任务**并继续跑（受 `max_replans` 限制），失败且不再补救时才阻断其下游（optional 上游除外）；`synth=true` 时额外合成一次并标注冲突。**任务要拆到"一个子代理一轮能做完"的粒度**，别把整轮问题原样塞进一个 task。
-- start_workflow(goal, kind?, web?): 当目标是一条【长链路开发流程】时，把它升级为跨窗口持久、带人工门的开发工作流（任意领域，不局限于游戏：通用开发、EDA、硬件、数据工程等都可以）。判据（满足其一）：多个有依赖或可并行的阶段、需要多种角色协作、包含写码/命令/连接器等副作用阶段、需要中途暂停等审批或下次继续。入参 keyed 多行：`goal: <完整可验收目标>`（也可整段直接写目标）、`kind: generic|game|eda`（缺省 generic；game=游戏开发，eda=原理图/PCB 电子设计）、`web: true|false`（缺省继承本轮联网开关）。它【只创建工作流并停在方案选择门】：随后必须由用户到 AI 运行台「开发工作流」面板选择方案、确认任务 DAG 并审批，多个子代理才会执行；你不能替用户审批，也不能把它当成"立即执行"。边界：一件独立子任务用 delegate；一轮内当场并行出结果、无需持久化和人工门用 orchestrate；需要持久化状态、人工方案门+审批门、失败重规划与跨窗口恢复才用 start_workflow。
+- start_workflow(goal, kind?, web?): 当目标是一条【长链路开发流程】时，把它升级为跨窗口持久、带人工门的开发工作流（任意领域，不局限于游戏：通用开发、EDA、硬件、数据工程等都可以）。判据（满足其一）：多个有依赖或可并行的阶段、需要多种角色协作、包含写码/命令/连接器等副作用阶段、需要中途暂停等审批或下次继续。入参 keyed 多行：`goal: <完整可验收目标>`（也可整段直接写目标）、`kind: generic|game|eda`（缺省 generic；game=游戏开发，eda=原理图/PCB 电子设计）、`web: true|false`（缺省继承本轮联网开关）。它【只创建工作流并停在方案选择门】：随后必须由用户到 AI 运行台「开发工作流」面板选择方案、确认任务 DAG 并审批，多个子代理才会执行；你不能替用户审批，也不能把它当成"立即执行"。边界：一件独立子任务用 delegate；一轮内当场并行出结果、无需持久化和人工门用 orchestrate；需要持久化状态、人工方案门+审批门、失败重规划与跨窗口恢复才用 start_workflow。【硬边界·不得滥用】用户一句话里明确指定的单个或两三个游戏操作（启动引擎、在某坐标点击、截图、读日志），**直接调用对应工具在对话里完成**，不要为此创建工作流。工作流只在用户**明确说出**"开启工作流 / 用工作流跑 / 跑完整自检 / 自动化回归 / 编排多步任务"之类的请求时才触发——"帮我点一下游戏"不是工作流请求，直接 click 就行。
 - dev_use_skill(name): 取回某项目技能的完整正文。系统提示会列出【可用技能】目录（只给名称与适用范围）；当问题落在某技能适用范围内时，先 dev_use_skill 取回正文再作答，不要凭目录名臆测内容。
 - dev_asset_get(asset_id/path, consumer_region?): 通过素材区接口取得素材引用，只返回 assets 区内的安全路径和元数据。
 - dev_asset_register(asset_id, path, type?, license?, tags?): 将素材区已有文件注册到 manifest.json。
@@ -817,6 +817,7 @@ _SYSTEM_PROMPT_FULL = _FORMAT_CONTRACT + """
 - 关于"文档 / 提示词 / 教程 / 规范 / 某份资料里讲了什么 / 某概念怎么定义 / 知识库里的文件"类问题，【第一个 Action 必须是 search_knowledge】；但“根据这个项目生成文档”指当前项目文件，必须先 list_dir/read_file，不能用知识库替代项目。知识库文档并不在代码库索引中，只有 search_knowledge 确实定位不到、且问题明确转向代码实现时才允许改用 search_code / grep。
 - 检索类查询（search_knowledge / search_code / grep / web_search）允许基于结果不满意而改写查询：可以更换关键词、补充 site/时间/类型限定、缩小范围或切换工具；这类**不同参数**的重试不会被“重复调用”护栏拦截。只有同一工具的完全相同参数再次调用才会被拦截。对需要“目前/趋势/适合/比较/推荐”的研究型问题，单次结果为空、明显跑题或来源样本过少都不能算证据充分；应由模型自行决定继续搜索，主动覆盖不同年份、平台、地区、开发规模或项目案例，并在达到足够覆盖后再收敛。联网检索默认允许更大的有界预算（由 `DOCMIND_WEB_SEARCH_FAIL_LIMIT` / Agent 步数共同限制），不要因为一次搜索返回非空就停止，也不要把低相关结果写成结论。
 - 用户要“实际跑一下 / 跑起来 / 试玩 / 验证运行时行为”时（尤其游戏项目）：**按这三件套来，不要自己搓** —— ① `run_command(<启动命令>\nbackground: true)` 把程序跑起来（后台，不阻塞）；② `dev_job_logs(job_id: <id>)` 读它的输出（它报「任务不存在」时会附上当前在跑的任务 id，照着改就行）；③ `game_screenshot(job_id: <id>)` 抓**那个任务自己启动的窗口**（不给 job_id 的 `game_screenshot(target: foreground)` 抓的是当前有焦点的窗口——那几乎总是聊天应用自己，不是游戏；给 job_id 抓不到时会明确失败并说清原因，这时改看日志，**不要**拿别的窗口的画面当运行证据）。逻辑层的结论用 `game_playtest`（自动认出 pytest/unittest、解析成结构化摘要、还认引擎报错）。**不要用 python_exec 手搓无头驱动去“模拟”游戏逻辑**：那绕开了受控执行环境，既拿不到真实画面与日志，还会把自己写错的调用签名当成产品问题（实测 2026-10-22：手搓驱动报 Player.update() 缺参数，而真正的根因在别处；游戏其实已经在跑，模型却因为一条“后台任务不存在”的误导报错以为没跑起来）。
+- 【游戏控制是普通对话工具】engine_start / engine_stop / engine_logs / game_screenshot / dev_desktop_action / vision_locate_click 与 read_file / run_command 同级——用户说「启动引擎」「帮我点一下 (400,300)」「截个图看看」「读一下日志」就**直接调对应工具**，结果贴在回复里。不需要工作流、不需要 delegate、不需要 orchestrate。只有用户**显式要求**工作流/自动化回归/多步编排时才走 start_workflow。
 - 当用户问“当前游戏有什么 bug / 项目有哪些问题 / 试玩是否正常 / 哪里可能出错”时，进入【当前项目缺陷审查】流程：第一优先是当前项目证据（search_code 或 grep 定位，read_file 核对实现；项目已运行且连接器可用时再读取运行日志、场景树、调用 game_screenshot 截取运行画面，或执行受控 playtest）。截图只是某一瞬间的视觉观察，不是代码事实：画面必须与代码/日志复核后才能下结论；game_screenshot 明确返回无窗口/无头失败时，改用运行日志与受控 playtest 事件判断，严禁臆测画面。`dev_list_bugs` 只能在拿到当前项目证据之后补充历史记录，必须明确标为“历史归档”，不能把 bugs/ 目录内容直接当成当前项目 bug，也不能只凭目录里有记录就下结论。没有运行证据时要明确写“未运行验证”，没有代码证据时要明确写“仅为线索”。
 - 用户要"调外部接口 / 查订单 / 拉取内部服务数据 / 打通某个业务 API"时，用 dev_http_request（需先确认 EXTERNAL_API_ALLOWLIST 已包含目标域名，否则会被安全拦截）。
 - 用户想要"视频提示词/分镜/短视频脚本"类产出时用 gen_video_prompt。
@@ -1071,7 +1072,21 @@ def _tool_search(arg):
     那条例外彻底不生效（实测 8 种场景全部零变化），且在 `tool_allowlist`
     场景下是**越权**。详见 `_effective_tool_names()` 的 docstring。
     """
-    query = (arg or "").strip().lower()
+    raw = (arg or "").strip()
+    # 模型经常按其他工具的 keyed 约定写成 `query: browser_action`（甚至整段 JSON），
+    # 直接拿整串检索会把前缀当关键词 → 明明存在的工具回「没有匹配」。
+    if raw.startswith("{"):
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            raw = str(payload.get("query") or payload.get("tool") or payload.get("name") or "")
+    for prefix in ("query:", "tool:", "name:", "工具名:", "工具:"):
+        if raw.lower().startswith(prefix):
+            raw = raw[len(prefix):].strip()
+            break
+    query = raw.strip().strip("\"'`").strip().lower()
     blocks = _tool_blocks()
     if not query:
         return "请给出工具名或关键词。可查询的工具：\n" + "、".join(sorted(blocks))
@@ -1560,6 +1575,34 @@ def _clip(text, limit, suffix="…（内容过长，已截断）"):
     """把单段文本截断到 limit 字符，防止大观察 / 长历史撑爆模型上下文。"""
     text = text or ""
     return text if len(text) <= limit else text[:limit] + suffix
+
+
+def _render_upstream_context(context, *, bullet: bool,
+                             max_total: int | None = None,
+                             max_items: int | None = None) -> str:
+    """把「上游子任务结论」映射渲染成一段文本。
+
+    下游子任务提示（`_run_child` 里那段「【上游子任务结论（供参考…）】」）与
+    子代理反思判据用的是**同一份**渲染——过去两处各写一遍、还各自 `_clip(str(v),
+    600)`，注释里就抱怨过要「对齐」。这里收成一个纯函数，两处共用。
+
+    **每值不截断**：这些值进来之前已经过 `summarize_subagent_result` 压缩（去掉
+    工具参数/完整观察，只留状态+结论+步骤，每值限在 ~1200）。再砍到 600 会把
+    真正结论的尾巴切掉，下游/判据看不到完整前情，只会更糊涂——所以默认原样传。
+    `max_total` 只在**总量**层面兜异常大的情况；`max_items` 限制条数（判据侧收 8 条）。
+
+    bullet=True  → 每行前缀「- 」（对话提示里的清单样式）
+    bullet=False → 纯「键：值」（反思判据用）
+    """
+    items = list((context or {}).items())
+    if max_items is not None:
+        items = items[:max_items]
+    tmpl = "- %s：%s" if bullet else "%s：%s"
+    lines = [tmpl % (str(k), str(v)) for k, v in items]
+    joined = "\n".join(lines)
+    if max_total is not None:
+        joined = _clip(joined, max_total)
+    return joined
 
 
 #: 需要转发到工作流事件流的钩子 kind。
@@ -2454,6 +2497,77 @@ def _ambiguous_write_request(question):
     )
 
 
+# 桌面动作的「本轮口头授权」判据。游戏控制（点击/输入/拖拽）本是普通对话工具，
+# 但 dev_desktop_action / vision_click 带一道 per-action 审批门——它原本只在
+# 工作流里靠 sandbox lease 批量放行，聊天路径永远拿不到 lease，于是「帮我点一下
+# (400,300)」这种当场说清的动作也要多按一次确认。这里补一条轻量授权：用户消息
+# **同时**含动作词与具体参数时，等同口头授权，直接执行、跳过审批门。
+_RE_DESKTOP_ACTION_WORD = re.compile(
+    r"(?i)(?:点击|点一下|点下|点开|单击|双击|click|"
+    r"输入|打字|键入|type|填[入写]|"
+    r"拖拽|拖动|拖到|drag|"
+    r"按下|按键|press)"
+)
+# 具体参数之一：成对的坐标数字（(400,300) / x=400 y=300 / 400,300）。
+_RE_DESKTOP_COORD = re.compile(
+    r"(?:(?:\(\s*\d{1,5}\s*[,，]\s*\d{1,5}\s*\))"
+    r"|(?:x\s*[:=]\s*\d{1,5}[\s,，]*y\s*[:=]\s*\d{1,5})"
+    r"|(?:\d{1,5}\s*[,，]\s*\d{1,5}))"
+)
+# 具体参数之二：明确的作用目标（target=engine/embedded，或「游戏/引擎窗口」限定短语）。
+_RE_DESKTOP_TARGET = re.compile(
+    r"(?i)(?:target\s*[:=]\s*(?:engine|embedded)"
+    r"|(?:游戏|引擎|嵌入)\s*窗口"
+    r"|\b(?:engine|embedded)\b)"
+)
+
+
+def _desktop_intent_for_turn(question) -> bool:
+    """用户本轮是否**明确指定了一个桌面动作**（动作词 + 具体参数同时出现）。
+
+    返回 True 时，本轮的 ``dev_desktop_action`` / ``vision_click`` 可跳过
+    per-action 审批门直接执行 —— 用户已当场说清动作与坐标/目标，等同口头授权。
+
+    **双条件**缺一不可：
+    - 「在 (400,300) 点一下」「click target=engine x=400 y=300」→ True。
+    - 「帮我测试游戏」「启动引擎看看」→ False（没有指定的桌面动作）。
+      「启动」不在动作词表里，引擎的启停本就无需审批门。
+
+    安全边界在调用侧把守：只有 ``target=engine/embedded`` 走这条路，
+    ``foreground`` 永远仍需审批；Win/meta/super 组合键独立硬拒。
+    """
+    raw = _user_question(question)
+    if not _RE_DESKTOP_ACTION_WORD.search(raw):
+        return False
+    return bool(_RE_DESKTOP_COORD.search(raw) or _RE_DESKTOP_TARGET.search(raw))
+
+
+# 用户**显式**要求跨窗口工作流的信号词。默认为「正常对话」：只有用户点名要
+# 工作流 / 自动化回归 / 完整自检 / 多步编排时，才允许 agent 调 start_workflow。
+# 「帮我点一下游戏」「启动引擎看看」这类具体操作**不**命中，走内联工具即可。
+_RE_WORKFLOW_REQUEST = re.compile(
+    r"(?i)(?:开启|启动|开始|用|走|建|发起|创建|进入)\s*工作流"
+    r"|工作流"
+    r"|\bworkflow\b"
+    r"|自动化(?:回归|测试|流程|自检)"
+    r"|(?:跑|做|执行|完成)\s*(?:一遍|一整轮|全套|一次)?\s*(?:完整)?自检"
+    r"|完整自检|全流程|跑一遍(?:完整)?(?:流程|回归|测试)"
+    r"|回归测试|自动化回归"
+    r"|编排.{0,6}(?:多步|任务|流程|步骤)"
+    r"|(?:开发|构建|实现).{0,8}流水线"
+)
+
+
+def _workflow_explicitly_requested(question) -> bool:
+    """用户本轮是否**显式**要求开启跨窗口工作流（自动化回归 / 完整自检 / 多步编排）。
+
+    默认「正常对话」：只有点名要工作流才返回 True。返回 False 时，本回合的
+    ``start_workflow`` 工具会被软拦截——游戏/开发的具体操作应直接用内联工具完成，
+    而不是由 agent 自作主张升级成带人工门的工作流窗口。
+    """
+    return bool(_RE_WORKFLOW_REQUEST.search(_user_question(question)))
+
+
 # BUG-8：一个"？"/纯符号输入没有可检索的意图，却照样跑满一整条 ReAct 链、
 # 生成一段"看起来很有道理"的自信答案（实测轮次6：1 字符问题 → 1491 字完成态），
 # 既是幻觉温床也白烧 token。入口先用"有没有实质字符"挡一道——判据保守：
@@ -2854,6 +2968,9 @@ _EVIDENCE_CHECK_HINTS = {
     "read_file_present": "还没有成功读取过候选文件的原文（search_code 摘要不算证据）。",
     "references_exist": "回答里引用的路径在当前代码库里打不开。",
     "reference_lines_valid": "回答里引用的行号超出了文件实际行数。",
+    "project_root_exists": "回答里明确写出的「代码根目录/项目根目录」不存在。"
+                           "后面的相对引用即便能打开，也是相对一个不存在的根；"
+                           "请以本轮工具实际使用的项目根为准，不要凭印象写盘符路径。",
     "provenance_traceable": "回答声称这些内容「来自真实读取、不是推断」，但被引区间的正文"
                             "本轮从未送达——这是一条会被证伪的来源断言。请先按行号重新读取"
                             "该区间、确有所见再作此声明；否则撤回来源断言，如实说明依据。",
@@ -2907,6 +3024,14 @@ def _evidence_failure_detail(audit):
     if bad_lines:
         lines.append("行号越界的引用：%s。请先 read_file 确认该文件的实际行数，"
                      "再据此修正行号。" % "、".join(bad_lines[:6]))
+
+    # 项目根断言：引用的文件都在，但**根**是编的——点名到那个不存在的目录。
+    bad_roots = [str(r.get("path")) for r in ((audit or {}).get("project_root_claims") or [])
+                 if isinstance(r, dict) and not r.get("exists")]
+    if bad_roots:
+        lines.append("不存在的项目根：%s。本轮工具实际使用的项目根不是它——"
+                     "请删掉这个盘符路径，或改成工具观察里真实出现的根。"
+                     % "、".join(bad_roots[:4]))
 
     # ③ 来源可溯：模型声称「读过」却从未送达的具体区间——点名到 path:start-end。
     unverified = [r for r in (audit.get("unverified_provenance") or []) if isinstance(r, dict)]
@@ -3014,6 +3139,9 @@ def _evidence_remedy(audit, native_mode):
                      "不要给出超出文件实际行数的行号。")
     if "reference_present" in failed:
         fixes.append("给出 `文件:行号` 形式的定位，让用户能直接点开核对。")
+    if "project_root_exists" in failed:
+        fixes.append("你写的项目根在磁盘上不存在：请改用本轮工具观察里真实出现的项目根，"
+                     "不要凭记忆写 `D:\\...` 这类盘符路径。")
     # 只有「本轮确实没读过」才建议去读——已读过就别让它白跑一趟。
     if not (audit.get("checks") or {}).get("read_file_present", True):
         fixes.append("本轮还没有成功的 read_file 记录：现在直接调用 read_file "
@@ -3096,8 +3224,13 @@ def _evidence_verdict_note(audit):
             _n = len((audit or {}).get("unverified_provenance") or [])
             if _n:
                 _why.append("有 %d 处引用声称「来自真实读取」但正文本轮未送达" % _n)
+        if _chk.get("project_root_exists") is False:
+            _roots = [str(r.get("path")) for r in ((audit or {}).get("project_root_claims") or [])
+                      if isinstance(r, dict) and not r.get("exists")]
+            _why.append("写出的项目根不存在（%s）" % "、".join(_roots[:3]))
         if _why:
-            note += "\n核验未通过原因：%s。请撤回确定性口径、改走稳妥计数，或补齐证据后再据此采信。" % "；".join(_why)
+            note += ("\n核验未通过原因：%s。请按上述问题改正（项目根以工具实际使用的为准），"
+                     "再据此采信。" % "；".join(_why))
     return note
 
 
@@ -3464,7 +3597,7 @@ _SUBAGENT_ROLES = {
             "你是【文件拆解与任务派发专员】：先检查项目目录、相关文件和依赖边界，"
             "决定需要几个执行代理、各自角色/工具/依赖。只做只读分析和分工，不修改文件。"
             "最终优先输出 JSON：{\"tasks\":[{\"id\":\"...\",\"role\":\"designer|coder|researcher|reviewer|tester\","
-            "\"task\":\"...\",\"depends_on\":[],\"persona\":\"...\",\"tools\":[],"
+            "\"task\":\"...\",\"depends_on\":[],\"persona\":\"...\","
             "\"mcp\":\"deny\",\"reflection\":true}]}，供主 Agent 校验后动态派发。"
         ),
     },
@@ -3521,6 +3654,14 @@ _SUBAGENT_ROLES = {
                   "dev_route_connector", "dev_list_connector_tools", "dev_mcp_call"],
         "hint": "你是【EDA PCB 布局布线专员】：基于已审核网表做布局布线并遵守设计约束；"
                 "调用连接器前先 dev_list_connector_tools 核实工具名；未跑 DRC 不得宣布完成。",
+    },
+    "reporter": {
+        "tools": ["read_file", "grep", "search_code"],
+        "hint": "你是【收尾汇总专员】：只把上游各子任务的结论收敛成一段面向用户的最终答复——"
+                "先给总体结论，再逐项列证据（保留 文件:行号 / 连接器真实数据 / 截图或导出物路径），"
+                "明确区分『已验证』与『因能力缺失未能完成』，单列待用户确认或人工复核的点；"
+                "不重新调用连接器、不重新检查、不写文件、不编造子任务里没有的信息，"
+                "各结论冲突时如实指出。",
     },
 }
 
@@ -3831,6 +3972,15 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
                   (["存在失败工具步骤"] if failed_steps else []),
         "next_step": "重规划或补充失败证据" if failed_steps or not (conclusion or "").strip() else "交给主 Agent 复核",
     }
+    # 【上游上下文】必须把**值**原样递给判据，而不是只给键名。
+    # 此前只写「上游上下文键：...」，于是当子代理如实转述上游注入的
+    # 具体值（坐标、路径、日志片段、数字——如 verify 复述 click 任务
+    # 回显的 `CLICKED 600,450` / 客户区坐标 (400,300)），判据手里**没有
+    # 那份材料**、又被叮嘱「证据以工具观察为准」，就把如实转述误判成
+    # 「无证据声称」。与 `_run_child` 注入那份共用同一渲染器（每值不截断，
+    # 值已由 summarize 限在 ~1200）；判据侧只再收「条数 8 / 总量 6000」一道预算。
+    context_body = _render_upstream_context(
+        context, bullet=False, max_items=8, max_total=6000).strip()
     prompt = (
         "你是子代理任务反思器。只输出 JSON，不要 Markdown："
         '{"ok":true,"issues":[],"next_step":"..."}。\n'
@@ -3845,6 +3995,17 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
         # 字节级写入被连续判失败**，逼出两轮 replan 重做同一件事。
         "**证据以「工具观察」为准**：观察里有的结论不必逐字复述，"
         "不算缺陷；但结论**不得声称观察里没有的东西**。\n"
+        # 「观察里没有」要**上下两处一起算**：本子代理自己的工具观察，
+        # 以及下面【上游上下文】里原样注入的上游结论。这是判据**必须收到**
+        # 的一句话——只写在注释里，模型永远看不见，如实转述照样被误判。
+        # （实测反向误伤：verify 如实复述 click 任务回显的 `CLICKED 600,450`，
+        #  该值来自上游注入、并非 verify 自己那一次工具调用产出，旧判据只认
+        #  「工具观察」且手里没有上游值，把如实转述判成无证据。）
+        "**判「无证据」要同时看两处材料**：工具观察 + 下面【上游上下文】里"
+        "注入的上游结论。结论引用了上游上下文里确实给出的值（坐标、路径、"
+        "数字、日志片段等）属于**如实转述**、不是幻觉，不得据此判「无证据"
+        "声称」；只有观察与上游上下文**两处都没有**的内容，才是真正的无证据"
+        "声称。\n"
         # 行号这一条必须写清楚，否则判据会去核验**材料里根本没有的东西**。
         # 实测（wf-2c5612c6ee53，连续三轮全部这样判）：
         #   「所有 read_file 观察均被截断，未获得完整行号证据」
@@ -3869,7 +4030,10 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
         f"结论：{_clip(str(conclusion), 900)}\n"
         f"步骤数：{len(traj or [])}；失败步骤：{failed_steps}\n"
         f"{_traj_evidence_block(traj)}\n"
-        f"上游上下文键：{', '.join(str(key) for key in (context or {})) or '无'}"
+        "【上游上下文】（下面是上游任务真实产出、原样注入本子代理的结论；"
+        "结论引用其中确有的值＝如实转述，不是幻觉）：\n"
+        + (context_body if context_body
+           else "（无上游上下文——此时仅工具观察算证据）")
     )
     try:
         if budget is not None and not budget.preflight(len(prompt), 512):
@@ -3881,9 +4045,26 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
                           prompt_chars=len(prompt), output_chars=len(raw or ""))
         obj, err = _load_json_arg(raw or "")
         if not err and isinstance(obj, dict) and isinstance(obj.get("ok"), bool):
+            issues = [str(item)[:240] for item in (obj.get("issues") or [])][:4]
+            # 适当放宽：反思器（LLM，temperature=0）常对「结论还可以更详尽」这类
+            # 主观质量意见判 ok:false，于是一个确实做了活、零失败步骤的只读分析
+            # 成员被硬判失败，还会级联阻断下游、逼出无谓的重规划。这里只在**确定
+            # 它真的干成了事**时把这条 ok:false 降级为提示性通过：确定性兜底本身
+            # 判 ok（有非空结论 + 零失败步骤）、且轨迹里至少有一次成功工具步骤。
+            # 幻觉文件引用不在此放行——终审的 `audit_evidence` 那道事实门照旧拦。
+            if not bool(obj.get("ok")) and fallback.get("ok"):
+                ok_steps = sum(1 for step in (traj or [])
+                               if isinstance(step, dict) and step.get("ok") is True)
+                if ok_steps >= 1:
+                    return {
+                        "ok": True, "source": "llm_soft_pass",
+                        "issues": issues,
+                        "next_step": "反思器有保留意见（已降级为提示），交主 Agent 复核："
+                                     + (_clip("; ".join(issues), 240) or "无"),
+                    }
             return {
                 "ok": bool(obj.get("ok")), "source": "llm",
-                "issues": [str(item)[:240] for item in (obj.get("issues") or [])][:4],
+                "issues": issues,
                 "next_step": _clip(str(obj.get("next_step") or ""), 300),
             }
     except Exception:
@@ -4879,6 +5060,19 @@ class Agent:
             re.search(r"(?:项目|游戏).{0,24}(?:介绍|简介|概览|说明书)", question)
             and re.search(r"(?:生成|制作|导出|写|做).{0,30}(?:PDF|pdf|文档|docx|word)", question)
         ))
+        # 桌面动作的「本轮口头授权」：用户当场说清了动作与坐标/目标（「在 (400,300)
+        # 点一下」「click target=engine」），等同一次明确指令。置位本回合的 ContextVar，
+        # 让 dev_desktop_action / vision_click 对 target=engine/embedded 跳过逐次审批门
+        # 直接执行——游戏控制由此降级为普通对话能力，不再非走工作流 lease 不可。
+        # 安全边界不变：foreground 与 Win/meta/super 组合键各在工具侧独立硬拒。
+        _desktop_preauth_token = _DESKTOP_PRE_AUTHORIZED.set(
+            _desktop_intent_for_turn(question))
+        # 工作流降级为显式 opt-in：用户没点名要工作流时，本回合的 start_workflow
+        # 工具被软拦截，引导 agent 直接用内联游戏/开发工具，而不是自作主张开出
+        # 带人工门的跨窗口工作流窗口。显式要求（「开启工作流」「自动化回归」
+        # 「跑完整自检」等）时照常放行。
+        _chat_workflow_token = _CHAT_WORKFLOW_ALLOWED.set(
+            _workflow_explicitly_requested(question))
         # 「未变化存根」按会话隔离：把本实例那份长活 store 绑进上下文，退出还原。
         # 从前主对话不绑 → 走进程级模块全局 → 会话 B 首读会话 A 读过的文件被挡成
         # 「本次对话已读过」的假存根。store 在实例上、跨轮复用（省 token 收益保留），
@@ -4902,7 +5096,9 @@ class Agent:
             except (LookupError, ValueError):
                 pass
             for _token, _var in ((web_ctx_token, _session_web_enabled),
-                                 (vision_ctx_token, _session_vision_mode)):
+                                 (vision_ctx_token, _session_vision_mode),
+                                 (_desktop_preauth_token, _DESKTOP_PRE_AUTHORIZED),
+                                 (_chat_workflow_token, _CHAT_WORKFLOW_ALLOWED)):
                 try:
                     _var.reset(_token)
                 except (LookupError, ValueError):
@@ -6168,6 +6364,11 @@ class Agent:
                     # 工作流预览协议消费的持久证据；图片正文仍只通过 data.images
                     # 进入视觉通道，避免把 base64 写进事件和 checkpoint。
                     observation_event["artifacts"] = list(_result.artifacts)[:16]
+                _evidence = (_result.data or {}).get("browser_evidence") if isinstance(_result.data, dict) else None
+                if _evidence:
+                    # 内置浏览器的每一步留痕：前端流程行据此显示"点之前/点之后"的缩略图
+                    # 与地址。只有相对路径，没有图片正文。
+                    observation_event["browser_evidence"] = _evidence
                 yield observation_event
                 # 实时刷新上下文用量指示：把本轮已产生的工具往返一并计入。旧实现只在
                 # 开工/压缩后各上报一次，长回合里进度条会一直停在初始值（用户反馈的
@@ -7191,7 +7392,12 @@ class Agent:
                      "；允许工具=" + ", ".join(allowed))
         question += "\n\n子任务：" + task
         if context:
-            ctx = "\n".join(f"- {k}：{_clip(str(v), 600)}" for k, v in context.items())
+            # 上游结论交给 `_render_upstream_context`（清单样式，**每值不截断**）。
+            # 这些值进来之前已经过 `summarize_subagent_result` 压缩（去掉工具参数/
+            # 完整观察，只留状态+结论+步骤，每值限在 ~1200）。此前这里再砍一刀
+            # `_clip(str(v), 600)` 会把真正结论的尾巴切掉——下游子代理看不到完整前情，
+            # 只会更糊涂。summarize 的每值预算已经是足够的防灾闸。
+            ctx = _render_upstream_context(context, bullet=True)
             question += "\n\n【上游子任务结论（供参考，勿重复劳动）】\n" + ctx
         # 工作流设置是子代理真实上限，不能被动态问题预算覆盖。
         # cap == 0 时落兜底上限而不是「不设」——见 SUBAGENT_STEP_FLOOR 的说明：
@@ -7438,9 +7644,16 @@ class Agent:
     # ------------------------------------------------------------------
     def _task_runner(self, task, context, turn=None):
         """orchestrator 的 runner 回调：把一个任务交给对应角色的子代理执行。"""
+        # 空 tools 列表要归一成 None：LLM 规划器经常照抄提示词 schema 里的
+        # `"tools":[]` 占位，给每个节点填成空数组。而 `_run_child` 把「显式空
+        # 名单」解释成「一个工具都不给」，于是子代理零工具、必然失败，还会级联
+        # 阻断下游。计划期的 `role_mismatch_tasks` 早已把「不传 / 传空 = 用角色
+        # 默认集」定为契约（见 test_task_role_capability），这里让执行期与之一致：
+        # 空/缺省 → None → 角色默认工具集。显式非空名单原样透传，_run_child 的
+        # 「显式空名单」语义不在此改动（有测试钉住）。
         return self._run_child(
             task.get("role"), task.get("task"), context=context, turn=turn,
-            persona=task.get("persona", ""), tool_allowlist=task.get("tools"),
+            persona=task.get("persona", ""), tool_allowlist=(task.get("tools") or None),
             mcp_policy=task.get("mcp", "auto"),
             reflect=bool(task.get("reflection", True)),
             max_steps=task.get("max_steps"))

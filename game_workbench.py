@@ -1,5 +1,6 @@
 """Game-development helpers built on top of the region workspace."""
 import json, os, re, subprocess, math, time, mimetypes, sys, ast as _ast, urllib.request, urllib.parse, urllib.error, shutil, zipfile, tempfile, uuid, hashlib, threading
+from collections import deque
 import mcp_client
 import gpu_coordinator as _gpu
 import project_state as _project_state
@@ -588,13 +589,20 @@ def _engine_snapshot(root):
     root_abs = _root(root)
     extensions = {'.gd', '.tscn', '.tres', '.shader', '.gdshader', '.gdextension',
                   '.godot', '.cfg', '.json'}
-    ignored = {'.git', '.godot', '.venv', 'node_modules', 'build', 'dist', '__pycache__'}
+    # `.docmind` / `.docmind_*` 是 DocMind 自己的运行期状态（工作流快照、
+    # 项目画像、引擎配置），不是用户源码。它们会在 engine_start 之后继续
+    # 写入；若算进快照，engine.log 就永远"早于最后一次改动"，runtime_evidence
+    # 会把一轮干净的真跑误判成没跑过（实测 project-profile.json 比日志晚 93s）。
+    ignored = {'.git', '.godot', '.venv', 'node_modules', 'build', 'dist',
+               '__pycache__', '.docmind'}
     rows = {}
     if not os.path.isdir(root_abs):
         return rows
     for base, dirs, files in os.walk(root_abs):
         dirs[:] = [d for d in dirs if d not in ignored]
         for name in files:
+            if name.startswith('.docmind_'):
+                continue
             if name == 'project.godot' or os.path.splitext(name)[1].lower() in extensions:
                 path = os.path.join(base, name)
                 try:
@@ -717,6 +725,65 @@ def engine_focus(root, keep_attached=False):
         return focus(state['child_hwnd'], state.get('host_hwnd'), keep_attached=keep_attached)
     except Exception as e:  # noqa: BLE001
         return {'ok': False, 'error': str(e)}
+
+
+def engine_window_target(root, title_hint=''):
+    """定位本项目**自己启动**的引擎独立顶层窗口，返回 (hwnd, title) 或 None（**不抓像素**）。
+
+    这是"引擎操控"的**共用找窗生命线**：
+      engine_status → pid → desktop_bridge.find_window(pid) → restore_window → 短暂 settle。
+    只认引擎进程表里**本项目**正在跑的那个引擎，**不接受任何外部句柄**——既不是"截任意
+    窗口"的后门，也不是"点任意窗口"的后门。
+
+    刻意不抓像素：点击投递（desktop_actions）只要句柄 + 客户区，不需要图。让"看"
+    （engine_window_frame 复用它再 capture_window）和"点"（desktop_actions 复用它拿句柄）
+    共用**这一个**找窗入口，避免两处各写一套脆弱的"找窗→还原"序列而漂移。
+
+    找窗前先还原：Godot 游戏窗口会在启动几秒后**自己最小化**（客户区塌成 0x0），此时既
+    抓不到像素、也读不到有效客户区尺寸，restore_window 把它还原+置前后一切才落到同一个真实句柄。
+    """
+    root_abs = _root(root)
+    try:
+        # 用模块全局名调用（不是 from-import 绑死），好让测试能 patch game_workbench.engine_status
+        st = engine_status(root_abs) or {}
+        if not st.get('running'):
+            return None
+        pid = int(st.get('pid') or 0)
+        if not pid:
+            return None
+        import desktop_bridge
+        found = desktop_bridge.find_window(pid, title_hint)
+        if not found:
+            return None
+        hwnd, title = int(found[0]), str(found[1] or '')
+        # 引擎窗口可能已自最小化：还原+置前（窗口重建客户区/像素需要一点时间）。
+        desktop_bridge.restore_window(hwnd)
+        time.sleep(0.35)
+        return hwnd, title
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def engine_window_frame(root, title_hint=''):
+    """抓本项目自己启动的引擎独立窗口画面，返回 ((raw, w, h, hwnd), title) 或 None。
+
+    是 agent 的 game_screenshot、桌面视觉端点 (/api/vision/desktop-frame) 与视觉点击
+    (visual_click) 的**共用生命线**——找窗/还原逻辑全在 engine_window_target，这里只负责
+    在拿到句柄后 capture_window。多处共用一处找窗，杜绝"某出口能看见、另一处看不见"的漂移。
+    """
+    target = engine_window_target(root, title_hint)
+    if not target:
+        return None
+    hwnd, title = target
+    try:
+        import screen_capture
+        grabbed = screen_capture.capture_window(hwnd)
+        if not grabbed:
+            return None
+        raw, width, height = grabbed
+        return (raw, width, height, hwnd), title
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def engine_resize(root, offset_y=None):
@@ -961,19 +1028,287 @@ def engine_reload(root):
         result.setdefault('error', '热重载启动新引擎失败。')
     return result
 
-def engine_logs(root, limit=200):
+_ENGINE_INLINE_ERROR_RX = re.compile(
+    r"(?P<path>(?:res://)?[A-Za-z0-9_./\\-]+\.(?:gd|tscn|cs|py))(?::(?P<line>\d+))?.{0,80}(?:error|Error|ERROR)")
+
+
+def _engine_log_errors(lines):
+    """解析引擎日志错误，返回 ``(去重后的错误, 原始错误行数)``。
+
+    Godot 4.x 运行时把一条脚本错误拆成两行：
+
+        SCRIPT ERROR: Invalid call. Nonexistent function 'take_damage' ...
+           at: player.take_damage (res://behaviors/enemy.gd:44)
+
+    旧实现只对**单行**跑正则，于是这类错误全部漏掉，``errors=[]`` 让
+    runtime_evidence 把明显报错的运行判成通过（假绿）。这里优先复用
+    ``parse_godot_diagnostics``（它本来就处理两行式），再保留旧的单行匹配
+    作为兼容兜底。
+
+    去重按 ``(path, line, message)``：同一个错误每个物理帧刷几千行时，
+    展示列表只留一条，但 ``error_count`` 仍保留原始行数，供运行时证据写出
+    「多少条错误行」而不是被去重后的 1 条掩盖。
+    """
+    text = "\n".join(lines)
+    try:
+        structured = parse_godot_diagnostics(text)
+    except Exception:  # noqa: BLE001 - 诊断解析失败不能反过来拖垮只读日志
+        structured = []
+    errors, seen = [], set()
+    for item in structured:
+        if not isinstance(item, dict) or item.get("severity") != "error":
+            continue
+        path = str(item.get("path") or "").replace("\\", "/").removeprefix("res://")
+        line_no = int(item.get("line") or 0)
+        message = " ".join(str(item.get("message") or "").split())
+        key = (path, line_no, message)
+        if not message or key in seen:
+            continue
+        seen.add(key)
+        errors.append({"path": path, "line": line_no, "message": message})
+    # 兼容旧格式/其它引擎：res://x.gd:12 - Parse Error: ... 这类同一行的引用。
+    # 已经由结构化解析命中的 path+line 不再重复记账。
+    structured_spots = {(item["path"], item["line"]) for item in errors}
+    raw_error_lines = set()
+    for index, raw in enumerate(lines):
+        if _GODOT_SCRIPT_ERR_RX.match(raw):
+            raw_error_lines.add(index)
+        m = _ENGINE_INLINE_ERROR_RX.search(raw)
+        if not m:
+            continue
+        raw_error_lines.add(index)
+        path = m.group("path").replace("\\", "/").removeprefix("res://")
+        line_no = int(m.group("line") or 0)
+        if (path, line_no) in structured_spots:
+            continue
+        message = raw.strip()
+        key = (path, line_no, message)
+        if key in seen:
+            continue
+        seen.add(key)
+        structured_spots.add((path, line_no))
+        errors.append({"path": path, "line": line_no, "message": message})
+    return errors, len(raw_error_lines)
+
+
+def _engine_log_matches(path, needle, *, keep=50, max_bytes=16 * 1024 * 1024):
+    """在整份日志里找包含 ``needle`` 的行（大小写不敏感）。
+
+    日志被重复错误刷屏时，固定回看 tail 200 行可能完全看不到用户真正要
+    找的标记（实测 CLICK_PROBE 就这样被 14k 条 SCRIPT ERROR 淹没）。
+    这里按字节回看最多 ``max_bytes``，用 deque 只保留最近 ``keep`` 条命中。
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return 0, [], False
+    offset = max(0, size - max(1, int(max_bytes)))
+    needle_lower = str(needle or "").lower()
+    count, recent = 0, deque(maxlen=max(1, int(keep)))
+    try:
+        with open(path, "rb") as handle:
+            if offset:
+                handle.seek(offset)
+                handle.readline()  # 丢掉从中间截断的半行
+            for raw_bytes in handle:
+                raw = raw_bytes.decode("utf-8", errors="replace")
+                if needle_lower in raw.lower():
+                    count += 1
+                    recent.append(raw.rstrip("\n"))
+    except OSError:
+        return 0, [], bool(offset)
+    return count, list(recent), bool(offset)
+
+
+#: 日志里的「大写标记」：CLICK_PROBE / CLICKED / HP_CHANGED 这类探针输出。
+#: 只用于在 tail 被报错刷屏时给模型一点「日志别处还有东西」的线索，
+#: 不是错误判据（错误仍由 _engine_log_errors 负责）。
+_ENGINE_MARKER_RX = re.compile(r"\b[A-Z][A-Z0-9_]{3,}\b")
+
+
+def _engine_diag_line(raw):
+    """这一行是不是诊断/堆栈的一部分（标记采样要把它们排除掉）。"""
+    return bool(_GODOT_SCRIPT_ERR_RX.match(raw)
+                or _ENGINE_INLINE_ERROR_RX.search(raw)
+                or re.search(r"(?i)(?:GDScript backtrace|\bat:\s+\S|^\s*\[[0-9]+\]\s)", raw))
+
+
+def _engine_log_markers(path, *, keep=12, max_bytes=16 * 1024 * 1024, text_limit=300):
+    """统计日志总行数，并采回少量「非诊断的大写标记行」。
+
+    为什么要有这个：实测日志被同一条 SCRIPT ERROR 刷了 1.4 万行，
+    ``engine_logs`` 默认只看 tail 200，模型于是断言「日志里没有 CLICK_PROBE」，
+    而探针行其实就在更早的位置。**tail 里没有 != 全日志没有**，这里主动把
+    别处的标记行采回来，让模型自己看见它出现过。
+
+    返回 ``(total_lines, marker_samples, scan_truncated, marker_count)``：
+    ``marker_samples`` 是 ``[{"line": N, "text": "..."}]``（最近的若干条，
+    按行内标记词集合去重，避免唯一心跳行把一次性标记挤掉）；
+    ``scan_truncated`` 表示日志超过 ``max_bytes``、只扫了尾段。
+    只读且不抛异常——日志扫描失败不能反过来拖垮只读诊断。
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return 0, [], False, 0
+    max_bytes = max(1, int(max_bytes))
+    offset = max(0, size - max_bytes)
+
+    # 第一遍只数行（二进制分块，不解码），顺便记住 offset 之前有多少个换行。
+    newlines_before = 0
+    total_newlines = 0
+    last_byte = b""
+    try:
+        with open(path, "rb") as handle:
+            read = 0
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                if offset and read < offset < read + len(chunk):
+                    newlines_before = total_newlines + chunk[:offset - read].count(b"\n")
+                total_newlines += chunk.count(b"\n")
+                read += len(chunk)
+                last_byte = chunk[-1:]
+    except OSError:
+        return 0, [], False, 0
+    total_lines = total_newlines + (1 if size and last_byte != b"\n" else 0)
+
+    # 第二遍只扫尾段（最多 max_bytes），给标记行配上**真实行号**。
+    line_no = newlines_before
+    if offset:
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(offset - 1)
+                if handle.read(1) != b"\n":
+                    line_no = newlines_before + 1  # 被丢掉的半行
+        except OSError:
+            pass
+    count = 0
+    samples = deque()
+    seen = set()
+    try:
+        with open(path, "rb") as handle:
+            if offset:
+                handle.seek(offset)
+                handle.readline()  # 丢掉从中间截断的半行
+            for raw_bytes in handle:
+                line_no += 1
+                raw = raw_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not _ENGINE_MARKER_RX.search(raw) or _engine_diag_line(raw):
+                    continue
+                count += 1
+                text = raw.strip()[:text_limit]
+                # 按**标记词集合**去重，而不是整行文本：心跳行可能每行数字都不同，
+                # 按整行去重会把 1500 条心跳全留下、把早先的 CLICK_PROBE 挤掉。
+                key = tuple(sorted(set(_ENGINE_MARKER_RX.findall(raw))))
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                samples.append((key, {"line": line_no, "text": text}))
+                while len(samples) > max(1, int(keep)):
+                    old_key, _old = samples.popleft()
+                    seen.discard(old_key)
+    except OSError:
+        return total_lines, [], bool(offset), count
+    return total_lines, [item for _key, item in samples], bool(offset), count
+
+
+def engine_logs(root, limit=200, contains=""):
     path = _project_state.path(root, "engine.log", legacy=".docmind_engine.log")
     try:
-        with open(path, encoding="utf-8", errors="replace") as f: lines = f.readlines()[-max(1, min(int(limit), 2000)):]
-    except OSError: lines = []
-    errors = []
-    rx = re.compile(r"(?P<path>(?:res://)?[A-Za-z0-9_./\\-]+\.(?:gd|tscn|cs|py))(?::(?P<line>\d+))?.{0,80}(?:error|Error|ERROR)")
-    for line in lines:
-        m = rx.search(line)
-        if m:
-            path = m.group("path").replace("\\", "/").removeprefix("res://")
-            errors.append({"path": path, "line": int(m.group("line") or 0), "message": line.strip()})
-    return {"ok": True, "lines": [x.rstrip("\n") for x in lines], "errors": errors, "running": engine_status(root)["running"]}
+        total_lines, markers, scan_truncated, marker_count = _engine_log_markers(path)
+    except Exception:  # noqa: BLE001 - 附加线索失败不能拖垮基础日志读取
+        total_lines, markers, scan_truncated, marker_count = 0, [], False, 0
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = list(deque(f, maxlen=max(1, min(int(limit), 2000))))
+    except OSError:
+        lines = []
+    errors, error_count = _engine_log_errors(lines)
+    # 只有「日志比 tail 长」才需要提醒。此时模型看到的 lines 不是全貌，
+    # 「没看到 X」不能推出「X 没出现」——这正是上一轮幻觉的起点。
+    tail_truncated = total_lines > len(lines)
+    # 顺序即协议：**摘要字段必须排在 `lines` 前面**。
+    # 反思/观察截断只保留工具结果的前 1600 字；`lines` 若排在最前，一次
+    # 300 行的心跳洪泛就会把 total_lines / marker_samples / matches 全挤出窗口，
+    # 判据于是把「材料被切掉」误判成「结论无证据」。实测 `wf-4dd2abca90c9` 的
+    # verify 首轮：结论里的 CLICK_PROBE / match_count 全对，却被反思否掉，
+    # 只因观察里只剩 HEARTBEAT_FRAME。字段值与行为不变，只改排列。
+    data = {"ok": True,
+            "total_lines": total_lines,
+            "tail_start_line": max(1, total_lines - len(lines) + 1) if lines else 0,
+            "tail_truncated": tail_truncated,
+            "marker_samples": markers,
+            "marker_count": marker_count,
+            "marker_scan_truncated": scan_truncated,
+            "errors": errors[:50], "error_count": error_count,
+            "running": engine_status(root)["running"]}
+    if tail_truncated:
+        data["note"] = (
+            "lines 只是日志尾部 %d 行（全文共 %d 行），不能据 tail 里没有某个标记"
+            "就断言它没出现。marker_samples 是从全日志采回的大写标记行（含行号）；"
+            "要找特定文本请用 contains 参数搜索整份日志。" % (len(lines), total_lines)
+        )
+    needle = str(contains or "").strip()[:200]
+    if needle:
+        match_count, matches, truncated = _engine_log_matches(path, needle)
+        data.update({"contains": needle, "matches": matches,
+                     "match_count": match_count, "search_truncated": truncated})
+    data["lines"] = [x.rstrip("\n") for x in lines]
+    return data
+
+
+def runtime_evidence(root, limit=300):
+    """Review 阶段可机器判定的"真跑过"证据（只读，不启停引擎）。
+
+    三条同时满足才算 ok：
+      1. engine.log 里确实有运行输出（不是空文件）；
+      2. 解析出的 error 行为 0（有错误行就不算通过）；
+      3. 日志时间 **不早于** 最后一次源码/配置改动（否则上一轮的干净日志
+         会把这一轮的新 bug 洗白 —— 那正是"假绿"）。
+
+    失败时给出中文 reason，供 review 的 unmet 明细直接展示；不抛异常。
+    """
+    root_abs = _root(root)
+    log_path = _project_state.path(root_abs, "engine.log", legacy=".docmind_engine.log")
+    try:
+        log_mtime_ns = os.stat(log_path).st_mtime_ns
+    except OSError:
+        log_mtime_ns = 0
+    latest_source_ns = max(
+        (int((meta or {}).get("mtime_ns") or 0)
+         for meta in _engine_snapshot(root_abs).values()),
+        default=0,
+    )
+    data = engine_logs(root_abs, limit=limit)
+    lines = data.get("lines") or []
+    errors = data.get("errors") or []
+    try:
+        error_count = int(data.get("error_count") or 0)
+    except (TypeError, ValueError):
+        error_count = 0
+    error_count = max(error_count, len(errors))
+    fresh = bool(log_mtime_ns) and log_mtime_ns >= latest_source_ns
+    reason = ""
+    if not lines:
+        reason = "引擎日志为空：本轮没有真实运行记录。"
+    elif error_count:
+        reason = ("引擎日志有 %d 条错误行（%d 类）。" % (error_count, len(errors))
+                  if len(errors) < error_count else
+                  "引擎日志有 %d 条错误行。" % error_count)
+    elif not fresh:
+        reason = "引擎日志早于最后一次代码/配置改动：改动后没有重新运行。"
+    return {"ok": bool(lines) and not errors and fresh,
+            "fresh": fresh,
+            "running": bool(data.get("running")),
+            "log_lines": len(lines),
+            "log_mtime_ns": log_mtime_ns,
+            "latest_source_mtime_ns": latest_source_ns,
+            "error_count": error_count,
+            "error_classes": len(errors),
+            "errors": errors[:20],
+            "reason": reason}
 
 def engine_verify(root, executable="godot", timeout=30):
     """Run a bounded headless editor import/parse check when the executable is available."""
@@ -2671,3 +3006,289 @@ def require_approval(root, action, target):
             f"审批通过后 {APPROVAL_TTL_SECONDS // 60} 分钟内该操作放行。"
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# MCP 待装配提案暂存（pending connector proposal store）
+#
+# 死循环的根因：Agent 走 dev_mcp_add 触发 mcp_server 审批门时，队列里的 mcp_server
+# 项被 cockpit_policy 归为 SETTINGS_ONLY——它的「批准」按钮打到 approval-requests/
+# decide 会被硬拒（"只能在设置页确认"），而唯一能写 hash 匹配审批的 POST /api/mcp/
+# servers 又需要用户手动复现逐字相同的 command/args。提案内容此前没被任何地方留住
+# （record_gate_request 刻意不落参数），于是用户没有一键确认的入口，dev_mcp_add
+# 只能永远 blocked。
+#
+# 这里把「用户要批准的那份连接配置」按 target 暂存一份，供连接器设置页渲染成一张
+# 「待装配连接器」确认卡片、用完全相同的参数调 POST /api/mcp/servers 落盘。
+#
+# 安全边界：这不是审批本身（放行仍**只**认 approvals.jsonl 里 is_approved 的 approved
+# 记录，本 store 不授予任何权限）。它与 mcp_client 落盘 servers 配置同处项目状态目录、
+# 同一台机器同一用户的信任边界（servers 配置本就持久化了 command/args/url），因此不
+# 新增泄密面。随审批 TTL 过期，落盘成功后由消费方移除。
+# ---------------------------------------------------------------------------
+def mcp_proposal_path(root):
+    return _project_state.path(root, 'mcp_proposals.json',
+                               legacy='.docmind_mcp_proposals.json')
+
+
+def record_mcp_proposal(root, target, key, cfg):
+    """按审批 target 暂存一份待装配连接配置（{key, config}）。幂等覆盖。"""
+    target = str(target or "").strip()
+    if not target:
+        return
+    path = mcp_proposal_path(root)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            store = json.load(handle)
+        if not isinstance(store, dict):
+            store = {}
+    except (OSError, ValueError):
+        store = {}
+    store[target] = {
+        "key": str(key or "").strip(),
+        "config": dict(cfg or {}),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at_epoch": time.time(),
+    }
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(store, handle, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def list_mcp_proposals(root, ttl=APPROVAL_TTL_SECONDS):
+    """返回未过期、且尚未被审批放行的待装配提案（供设置页展示确认卡片）。"""
+    path = mcp_proposal_path(root)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            store = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(store, dict):
+        return []
+    now = time.time()
+    out = []
+    for target, row in list(store.items()):
+        if not isinstance(row, dict):
+            continue
+        try:
+            age = now - float(row.get("created_at_epoch") or 0)
+        except (TypeError, ValueError):
+            age = ttl + 1
+        if age > ttl:
+            continue
+        # 已有匹配 approved 记录 -> 不必再展示（放行了）
+        if is_approved(root, "mcp_server", target, ttl=ttl):
+            continue
+        out.append({
+            "target": target,
+            "key": row.get("key"),
+            "config": row.get("config") or {},
+            "created_at": row.get("created_at"),
+        })
+    return out
+
+
+def remove_mcp_proposal(root, target):
+    """落盘/放行后移除提案；任何异常都不抛（清理失败不影响主流程）。"""
+    target = str(target or "").strip()
+    path = mcp_proposal_path(root)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            store = json.load(handle)
+    except (OSError, ValueError):
+        return
+    if not isinstance(store, dict) or target not in store:
+        return
+    store.pop(target, None)
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(store, handle, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# 自检沙箱租约（playtest sandbox lease）
+#
+# 问题：自检循环里每点一下游戏画面都要人去审核队列批一次，人成了瓶颈，
+# 而"批准"本身也被稀释成机械点击。这里把授权从"每个动作批一次"改成
+# "进沙箱前批一次边界"：
+#
+#   * 只覆盖**服务端自己解析出来的本项目窗口**（embedded / engine）——
+#     target=foreground（任意前台窗口）永远不在边界内；
+#   * 只覆盖鼠标/键盘输入，不授予任何工具能力，尤其不授予终端/EXEC；
+#   * Win/Meta 等系统键照旧禁止（即便将来 _VK 表扩容也要在这里拦）；
+#   * 有 TTL，过期即失效；工作流结束/中断时主动收回；
+#   * 租约绑定项目根目录与边界摘要：换项目、改边界、文件被篡改一律 fail-closed。
+#
+# 它**不替代**审批台账：单次动作审批仍然有效，沙箱只是其中一类动作的
+# 前置批量授权。两层都查，任一通过即可（沙箱被收回后立刻退回逐次审批）。
+# ---------------------------------------------------------------------------
+PLAYTEST_SANDBOX_TTL_SECONDS = 1800  # 30 分钟，与审批台账同量级
+PLAYTEST_SANDBOX_SCOPE_VERSION = 1
+_PLAYTEST_SANDBOX_ACTIONS = ("click", "type", "drag", "key", "save")
+_PLAYTEST_SANDBOX_TARGETS = ("embedded", "engine")
+#: 这些键名一旦出现在组合键里就整条拒绝。宁可让模型换一种输入方式，
+#: 也不让沙箱变成"能按 Win+R"的后门。
+_PLAYTEST_SANDBOX_DENIED_KEY_PARTS = frozenset({
+    "win", "windows", "lwin", "rwin", "meta", "super", "cmd", "command", "os",
+})
+
+
+def _sandbox_root_key(root) -> str:
+    return os.path.normcase(os.path.abspath(str(root or "")))
+
+
+def playtest_sandbox_scope(root) -> dict:
+    """当前项目允许自检沙箱覆盖的边界（可安全展示给用户/前端）。"""
+    return {
+        "version": PLAYTEST_SANDBOX_SCOPE_VERSION,
+        "root": _sandbox_root_key(root),
+        "actions": list(_PLAYTEST_SANDBOX_ACTIONS),
+        "targets": list(_PLAYTEST_SANDBOX_TARGETS),
+        "denied_targets": ["foreground"],
+        "denied_keys": sorted(_PLAYTEST_SANDBOX_DENIED_KEY_PARTS),
+        "capabilities": ["read_local", "write_local"],
+        "denied_capabilities": ["exec", "admin", "network"],
+        "note": "仅本项目引擎/嵌入窗口的鼠标键盘输入；终端、任意前台窗口与 Win 键仍禁用。",
+    }
+
+
+def _playtest_sandbox_digest(scope: dict) -> str:
+    raw = json.dumps(scope, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def playtest_sandbox_path(root) -> str:
+    return _project_state.path(root, "playtest_sandbox.json",
+                               legacy=".docmind_playtest_sandbox.json")
+
+
+def _read_playtest_sandbox(root) -> dict:
+    """读取租约；任何异常都当成"没有租约"（fail-closed）。"""
+    try:
+        with open(playtest_sandbox_path(root), encoding="utf-8") as handle:
+            row = json.load(handle)
+        return row if isinstance(row, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_playtest_sandbox(root, lease: dict) -> None:
+    path = playtest_sandbox_path(root)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(lease, handle, ensure_ascii=False, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def playtest_sandbox_status(root, now: float | None = None) -> dict:
+    """租约是否有效。返回 active/reason/lease/scope，供动作门与前端查询。"""
+    scope = playtest_sandbox_scope(root)
+    lease = _read_playtest_sandbox(root)
+    moment = float(now if now is not None else time.time())
+    result = {"active": False, "reason": "", "lease": lease, "scope": scope,
+              "ttl_seconds": PLAYTEST_SANDBOX_TTL_SECONDS}
+    if not lease:
+        result["reason"] = "尚未开启自检沙箱。"
+        return result
+    if str(lease.get("status") or "") != "active":
+        result["reason"] = "自检沙箱租约已收回。"
+        return result
+    if _sandbox_root_key(lease.get("root")) != scope["root"]:
+        result["reason"] = "自检沙箱租约属于另一个项目，已忽略。"
+        return result
+    if str(lease.get("scope_digest") or "") != _playtest_sandbox_digest(scope):
+        result["reason"] = "自检沙箱边界已变化，旧租约失效。"
+        return result
+    try:
+        expires = float(lease.get("expires_at_epoch") or 0)
+    except (TypeError, ValueError):
+        expires = 0.0
+    if expires <= moment:
+        result["reason"] = "自检沙箱租约已过期（%s），需重新审批。" % (
+            lease.get("expires_at") or "未知时间")
+        return result
+    result["active"] = True
+    result["remaining_seconds"] = int(max(0, expires - moment))
+    return result
+
+
+def grant_playtest_sandbox(root, user: str, *, ttl_seconds=None,
+                           workflow_id: str = "") -> dict:
+    """在工作流计划获批时开启一次自检沙箱（同一边界、同一项目）。"""
+    if not root:
+        raise ValueError("缺少项目根目录，无法开启自检沙箱。")
+    scope = playtest_sandbox_scope(root)
+    try:
+        ttl = float(ttl_seconds if ttl_seconds is not None
+                    else PLAYTEST_SANDBOX_TTL_SECONDS)
+    except (TypeError, ValueError):
+        ttl = float(PLAYTEST_SANDBOX_TTL_SECONDS)
+    ttl = max(60.0, min(float(PLAYTEST_SANDBOX_TTL_SECONDS), ttl))
+    now = time.time()
+    lease = {
+        "id": "sandbox-" + uuid.uuid4().hex[:12],
+        "status": "active",
+        "root": scope["root"],
+        "scope": scope,
+        "scope_digest": _playtest_sandbox_digest(scope),
+        "granted_by": str(user or "")[:120],
+        "workflow_id": str(workflow_id or "")[:120],
+        "granted_at": datetime.now().isoformat(timespec="seconds"),
+        "granted_at_epoch": now,
+        "expires_at": datetime.fromtimestamp(now + ttl).isoformat(timespec="seconds"),
+        "expires_at_epoch": now + ttl,
+        "ttl_seconds": ttl,
+        "released_at": "",
+        "release_reason": "",
+    }
+    _write_playtest_sandbox(root, lease)
+    return lease
+
+
+def revoke_playtest_sandbox(root, reason: str = "") -> dict:
+    """主动收回租约（幂等：已收回/不存在时原样返回）。"""
+    lease = _read_playtest_sandbox(root)
+    if not lease or str(lease.get("status") or "") != "active":
+        return lease
+    lease["status"] = "released"
+    lease["released_at"] = datetime.now().isoformat(timespec="seconds")
+    lease["release_reason"] = str(reason or "")[:200]
+    _write_playtest_sandbox(root, lease)
+    return lease
+
+
+def playtest_sandbox_desktop_allowed(root, *, action: str, target: str,
+                                     key: str = "") -> tuple[bool, str, dict]:
+    """沙箱是否覆盖这次桌面动作 -> (allowed, reason, lease)。
+
+    只判"沙箱边界"，不判断窗口是否存在；窗口仍由 desktop_actions 按
+    root/pid 在服务端解析，调用方没有任何机会指定 HWND。
+    """
+    status = playtest_sandbox_status(root)
+    if not status.get("active"):
+        return False, str(status.get("reason") or "自检沙箱未开启。"), {}
+    lease = dict(status.get("lease") or {})
+    action = str(action or "").strip().lower()
+    target = str(target or "").strip().lower()
+    if action not in _PLAYTEST_SANDBOX_ACTIONS:
+        return False, "自检沙箱不覆盖动作 %s。" % (action or "空"), lease
+    if target not in _PLAYTEST_SANDBOX_TARGETS:
+        return (False,
+                "自检沙箱只覆盖本项目自己的窗口（embedded/engine），"
+                "不覆盖 %s。" % (target or "空"), lease)
+    parts = [part.strip().lower() for part in str(key or "").split("+") if part.strip()]
+    denied = [part for part in parts if part in _PLAYTEST_SANDBOX_DENIED_KEY_PARTS]
+    if denied:
+        return (False, "自检沙箱不允许系统键：%s。" % "、".join(sorted(denied)),
+                lease)
+    return True, "", lease
+

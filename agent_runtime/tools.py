@@ -254,6 +254,17 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "properties": {"query": {"type": "string"}},
         "required": ["query"],
     },
+    "engine_logs": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 400,
+                      "description": "读取日志尾部的行数，默认 120。"},
+            "contains": {"type": "string",
+                         "description": "在整个日志里查找该文本（大小写不敏感），"
+                                        "如 CLICK_PROBE。tail 里没有某标记时用它搜全日志。"},
+        },
+        "required": [],
+    },
 }
 
 
@@ -266,7 +277,7 @@ def _infer_group(name: str) -> str:
         return "code"
     if "asset" in name or name.startswith("gen_"):
         return "assets"
-    if name.startswith("game_"):
+    if name.startswith("game_") or name.startswith("engine_"):
         return "game"
     if name.startswith("dev_") or name in {
         "apply_edit", "create_file", "create_artifact", "run_command", "self_verify",
@@ -394,6 +405,22 @@ class ToolResult:
 _IDEMPOTENCY_SCOPE: ContextVar[tuple[str, str] | None] = ContextVar(
     "tool_idempotency_scope", default=None)
 _PROJECT_STAGE_SCOPE: ContextVar[bool] = ContextVar("project_stage_scope", default=False)
+#: 试做区对应的真实项目根。试做区里文件/进程操作走 ``_get_code_root()``（副本），
+#: 但审批台账与自检沙箱租约是**按真实项目根**记账的；没有这一条，stage 里的
+#: ``dev_desktop_action`` / ``vision_click`` 会去 stage 目录下找租约，永远查不到，
+#: 于是「默认开启试做区」反而让自检动作全被拦截（实测 wf-57af9cdb2f18 的成因之一）。
+_PROJECT_STAGE_ORIGIN: ContextVar[str] = ContextVar("project_stage_origin", default="")
+#: 用户本轮消息明确指定了桌面动作（「在(400,300)点一下」「输入 hello」等），
+#: 等同于口头授权——`dev_desktop_action` / `vision_click` 可跳过 per-action
+#: 审批门直接执行。由 `agent.py` 回合开始时置位，回合结束 reset。
+#: 安全边界：仅 target=engine/embedded 受益；foreground 永远走审批。
+_DESKTOP_PRE_AUTHORIZED: ContextVar[bool] = ContextVar("desktop_pre_authorized", default=False)
+#: 本轮聊天是否允许发起工作流。默认 True —— 聊天回合之外的一切调用（直接调工具、
+#: 单测、前端显式 POST /api/agent/workflow/start）都不受影响，照常放行。
+#: 由 `agent.py` 在回合开始时按「用户是否显式要求工作流」置位：用户没点名要
+#: 工作流时设为 False，于是 `start_workflow` 工具软拦截、引导 agent 直接用
+#: 内联的游戏/开发工具，而不是自作主张升级为跨窗口工作流。回合结束复位。
+_CHAT_WORKFLOW_ALLOWED: ContextVar[bool] = ContextVar("chat_workflow_allowed", default=True)
 _IDEMPOTENCY_LOCK = threading.RLock()
 
 
@@ -405,6 +432,50 @@ def stage_scope_active() -> bool:
     的真条件（``python_exec`` 用 ``_get_code_root()`` 当cwd）。
     """
     return bool(_PROJECT_STAGE_SCOPE.get())
+
+
+def stage_origin_root() -> str:
+    """当前试做区对应的真实项目根；不在试做区作用域时返回空串。
+
+    只给「按真实项目记账」的东西用（审批台账、自检沙箱租约）。文件读写和
+    引擎进程仍应使用 ``_get_code_root()``，那才是试做区副本。
+    """
+    return str(_PROJECT_STAGE_ORIGIN.get() or "")
+
+
+def desktop_pre_authorized() -> bool:
+    """本回合用户是否已口头授权桌面动作（详见 ``_DESKTOP_PRE_AUTHORIZED``）。
+
+    ``dev_desktop_action`` / ``vision_click`` 的审批门读这一条：True 时
+    ``target=engine/embedded`` 的当场指定动作可跳过审批直接执行。
+    """
+    return bool(_DESKTOP_PRE_AUTHORIZED.get())
+
+
+def chat_workflow_allowed() -> bool:
+    """本轮聊天是否允许发起工作流（详见 ``_CHAT_WORKFLOW_ALLOWED``）。
+
+    ``start_workflow`` 工具读这一条：False 时软拦截并引导 agent 改用内联工具。
+    聊天回合之外（直接调工具 / 单测 / 前端显式 POST）默认 True，不受影响。
+    """
+    return bool(_CHAT_WORKFLOW_ALLOWED.get())
+
+
+@contextmanager
+def desktop_pre_authorization(active: bool):
+    """回合级置位/复位桌面动作口头授权标志。
+
+    由 ``agent.py`` 在回合开始时按 :func:`_desktop_intent_for_turn` 的判定调用；
+    ``active=False`` 时不改作用域（不余一个多余的 token），退出保证复位。
+    """
+    if not active:
+        yield
+        return
+    token = _DESKTOP_PRE_AUTHORIZED.set(True)
+    try:
+        yield
+    finally:
+        _DESKTOP_PRE_AUTHORIZED.reset(token)
 
 
 def stage_cwd_report(cwd: str) -> str:
@@ -442,12 +513,25 @@ _STAGE_ALLOWED_TOOLS = frozenset({
     "web_research", "tool_search", "inspect_data_file", "generate_data_file",
     "eda_report_gate",
     "preview_project", "game_screenshot", "dev_desktop_capture",
+    # 自检必须能在**试做区副本**里真跑起来并观察。这些工具都是项目作用域的：
+    # 引擎进程按当前代码根登记（stage 里就是副本），项目窗口只按本项目解析；
+    # 输入动作仍要过审批台账/自检沙箱租约，不会因为放开白名单就获得任意桌面控制。
+    # 之前默认开启试做区时，子代理连 engine_start/engine_logs 都调不了，
+    # 自检只能在 stage_enabled=false 下跑——等于默认配置无法完成它要求的验证。
+    "engine_start", "engine_stop", "engine_reload", "engine_logs",
+    "dev_desktop_action", "vision_locate_click", "vision_click",
 })
 
 
 @contextmanager
-def project_stage_scope():
-    """Allow only project-scoped and read-only tools during a staged workflow."""
+def project_stage_scope(origin_root: str = ""):
+    """Allow only project-scoped and read-only tools during a staged workflow.
+
+    ``origin_root`` 是试做区所对应的**真实项目根**：审批台账与自检沙箱租约都
+    记在它名下，工具需要查这两样时用 :func:`stage_origin_root`；文件读写和引擎
+    进程仍走当前代码根（试做区副本）。
+    """
+    origin_token = _PROJECT_STAGE_ORIGIN.set(str(origin_root or ""))
     token = _PROJECT_STAGE_SCOPE.set(True)
     try:
         from .enterprise_sandbox import stage_execution_scope
@@ -455,6 +539,7 @@ def project_stage_scope():
             yield
     finally:
         _PROJECT_STAGE_SCOPE.reset(token)
+        _PROJECT_STAGE_ORIGIN.reset(origin_token)
 
 
 @contextmanager

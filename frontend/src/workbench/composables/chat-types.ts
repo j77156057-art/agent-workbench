@@ -2,6 +2,22 @@
 // 字段与 /api/chat 的 SSE 事件对齐。入口差异字段保持可选。
 import type { WorkflowState } from '../api'
 
+/** 一次浏览器动作的留痕：公网内置浏览器与回环 dev_page_action 共用。
+ *  图片只带相对路径，由 `/api/dev/browser/shot` 按文件回传（会话关了也能看）。 */
+export interface BrowserEvidence {
+  page: string
+  step: number
+  action: string
+  effect?: string
+  ok: boolean
+  url?: string
+  title?: string
+  shot_before?: string
+  shot_after?: string
+  /** 该会话是否挂了实况推流（挂了才值得点亮实况窗）。 */
+  live?: boolean
+}
+
 /** ReAct 执行轨迹：思考 → 工具动作 → 观察 → 复核 */
 export type ChatTraceKind = 'thought' | 'action' | 'observation' | 'reflection'
 
@@ -12,6 +28,8 @@ export interface ChatTraceItem {
   at?: number
   /** observation/reflection 回填前一个 action 的耗时（ms） */
   elapsedMs?: number
+  /** 浏览器动作留痕（只有 observation 条目会带）：前后缩略图与地址。 */
+  evidence?: BrowserEvidence
 }
 
 /**

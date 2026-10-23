@@ -2,13 +2,31 @@
 
 > **本文档是累积追加式的**：下面的历史章节（1~7）是当晚的侦查记录，仍然有效，
 > **不要删**。每次续做只更新第 0 节「当前状态」—— 那是唯一指路的入口。
-> 上次更新：2026-10-16（HEAD `3c6c543` = planner 零工具 + MCP 失败分级；本节随下笔入库）。
+> 上次更新：2026-10-22（HEAD `a0602c4` = CI 从「死在 Install dependencies」推到只剩最后一道门；本节随下笔入库）。
 >
 > ⚠ **本节故意不单独提交**：提交本身会改变 HEAD，一提交这条声明就立刻变陈。
 > 做法是把 §0 留在工作树里，随下一笔**真实改动**一起入库 —— 这样判据在
 > 交接的那一刻是绿的。判据见 `tests/test_nav_doc_matches_reality.py`。
 
 ## 0. 当前状态
+
+- **最新一笔（未记 hash，随下笔入库）：CI 从「死在 Install dependencies」推到只剩最后一道门** ——
+  全量套件 107 → 23 条。六笔提交，每笔都查到根因而不是绕过：
+  ① 改名 sweep 落在并发写者的 7 个脏文件里，品牌那半一直漏在 HEAD 外 ——
+     **产品顶栏还写着「DocMind」**（40 个 hunk 单独入暂存区补齐）；
+  ② `question: str = Form("")` 的 **Python 侧默认值是 `Form` 实例**，直接调处理器时
+     `.strip()` 崩（17 条）；同一笔还修了改名误伤的 4 个 HTTP 头名 ——
+     中文进头名 → httpx 按 latin-1 编头 → UnicodeEncodeError；
+  ③ CI runner 镜像自带 Edge 155，但它**一起身就退**，37 条以 5 种不同形状暴露同一个
+     根因（端口未就绪 / `KeyError:'failed'` / `KeyError:'pattern'` / FileNotFoundError /
+     拿不到 page id）→ 改 Chrome 优先 + POSIX 开关 + stderr 落地。
+     顺带修了一个**真产品缺陷**：顶栏「更多」菜单在矮视口下整块伸到视口外，
+     下半截的项看得见却点不到；
+  ④ POSIX 上没有 Windows 作业对象那样的收尾机制，`job_closed` 恒 False → 一次
+     **没发生的偏离**让调用方拒绝清理产物目录（真实泄漏）→ 改用进程组收整棵树；
+  ⑤ 三族夹具写死 Windows 形状（venv 布局 / 系统目录 / 前台抓屏）；
+  ⑥ `python_exec` 的反转义**晚于**分类：字面 `\n` 写法在定档时解析不了 →
+     never 名单（凭据 / 系统目录）**等于没查**，tier -1（永不放行）降成 tier 2。
 
 - **最新一笔（未记 hash，随下笔入库）：MCP 连接器失败被判成功** —— 真机 UI
   「交付代理 dev_list_connector_tools(key: godot) 正在执行 127s」反推出来的。
@@ -51,7 +69,7 @@
   - 验证：test_task_role_capability 35 / 子代理全族+test_agent 147 / 工作流族 166 /
     误伤检查 14/14 / 直接读数（子代理自己的计数器）：零工具那次调模型 **0 次**，
     其余四种 2 次。
-- **HEAD `3c6c543`** —— 2026-10-16 **合并 feature/multimodal-verification**（28 提交，
+- **基点 `3c6c543`** —— 2026-10-16 **合并 feature/multimodal-verification**（28 提交，
   EDA 多模态验收 + 引擎视觉回归 + realtime 模式接线 + 前端面板）。两条分支各自
   独立实现了「写 .html 后自动自审」（main `bfdfb23` 的 `web` scope / 分支 `f4c9df1`
   的 auto→visual），**按失效面并成两级门**而不是取一边：

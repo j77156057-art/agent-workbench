@@ -406,6 +406,21 @@ def build_router(ctx) -> APIRouter:
             """见 `_stage_workspace_root` 的完整说明（隔离与 git 可见性的取舍写在那里）。"""
             return _stage_workspace_root(state, workflow_root)
 
+        def _audit_root() -> str:
+            """逐任务复核该看哪份代码：**与执行根一致**，试做区启用时是副本。
+
+            `runner` 的复核发生在 `project_bound` 的 `scoped()` 里，子代理的
+            文件早已全部落在执行根下。复核若用 `state["project_root"]`（origin），
+            试做区里的截图/日志就是根外路径，`references_exist` 必判 False。
+
+            解析失败（例如试做区在任务执行中途被删）时退回请求上下文里的根，
+            再退回 origin —— 后者至少能给出「路径确实不存在」的真实结论。
+            """
+            try:
+                return _execution_root()
+            except Exception:  # noqa: BLE001
+                return get_runtime("code_root", "") or workflow_root
+
         def _step_sink(task_id, role):
             if not wid:
                 return None
@@ -441,7 +456,11 @@ def build_router(ctx) -> APIRouter:
             out = agent._run_child(
                 task.get("role", "coder"), prompt, context=context,
                 persona=task.get("persona", ""),
-                tool_allowlist=task.get("tools"),
+                # 空 tools 名单归一成 None：LLM 规划器常照抄 schema 占位把节点填成
+                # "tools":[]，而 `_run_child` 把显式空名单解释成「零工具」，子代理
+                # 一个工具都调不了、必然失败并级联阻断下游。这里与 `_task_runner`
+                # 一致：空/缺省 → None → 角色默认工具集；非空名单原样透传。
+                tool_allowlist=(task.get("tools") or None),
                 mcp_policy=task.get("mcp", "auto"),
                 reflect=bool(task.get("reflection", True)),
                 max_steps=task.get("max_steps"),
@@ -460,16 +479,42 @@ def build_router(ctx) -> APIRouter:
             #
             # `workflow_callbacks`（line 249-269）已经在同一函数里用
             # `set_context_code_root` 设好了根，这里只读不设，与那条保持一致。
+            #
+            # 但**读哪个根**必须跟着执行根走：`stage_enabled=True` 时子代理的
+            # 截图 `.docmind/screenshots/*.jpg` 和 `engine.log` 只存在于试做区
+            # 副本，拿 origin 项目根去核验，这些**根外绝对路径**必然
+            # `references_exist=False`——实测 `wf-fe7288d4d77e` 的 boot 任务
+            # 三连失败、报「子代理输出未通过 Harness 复核」，而同一结论用
+            # 试做区根复核是通过的。`_audit_root()` 与 `scoped()` 用同一个
+            # 解析器，保证「在哪跑就在哪验」。
             check = review_output(out, max_tool_failures=int(
                 (state.get("policy") or {}).get("max_tool_failures", 3)),
                 question=state.get("request") or "",
-                code_root=str(state.get("project_root") or "")
-                or get_runtime("code_root", ""))
+                code_root=_audit_root())
             out = dict(out or {})
             out["review"] = check
             if not check.get("ok"):
-                out["status"] = "failed"
-                out["error"] = out.get("error") or "子代理输出未通过 Harness 复核"
+                # 适当放宽：单个中间成员只在「证据子门」这一项被卡时降级为提示性通过。
+                # 开放式的只读分析常因结论里的引用格式（相对根/行号）触发
+                # `evidence_verified=False`，硬判失败会级联阻断下游、逼出无谓重规划。
+                # 只有**硬失败**才当场否掉这个成员：反思判不行（status_ok=False）、
+                # 失败工具步超阈、测试失败、含凭据、乱码、结论为空。
+                # 幻觉引用不会因此漏网——终审 `review_output` 会对合并后的结论再跑
+                # 一遍完整证据门，坏引用在那里仍会被拦下，工作流不会假报 completed。
+                checks = check.get("checks") or {}
+                hard_fail = (
+                    not checks.get("has_result", True)
+                    or not checks.get("status_ok", True)
+                    or not checks.get("tool_failures_below_limit", True)
+                    or not checks.get("tests_ok", True)
+                    or not checks.get("credentials_absent", True)
+                    or not checks.get("no_replacement_chars", True)
+                )
+                if hard_fail:
+                    out["status"] = "failed"
+                    out["error"] = out.get("error") or "子代理输出未通过 Harness 复核"
+                else:
+                    out["review_note"] = "成员级证据复核有保留，已降级为提示，交由终审把关"
             return out
 
         def _replanner_llm():
@@ -993,12 +1038,12 @@ def build_router(ctx) -> APIRouter:
     @router.post("/workflow/{workflow_id}/plan")
     async def workflow_plan(workflow_id: str, req: WorkflowPlanReq):
         try:
-            task_generator = None
-            if req.tasks is None:
-                state = WORKFLOWS.get(workflow_id)
+            state = WORKFLOWS.get(workflow_id)
             denied = require_workflow_project(workflow_id, state or {})
             if denied:
                 return _ownership_blocked(denied)
+            task_generator = None
+            if req.tasks is None:
                 project_id = state.get("project_id") or ctx._request_project_id()
                 if not state.get("llm_enabled", True):
                     task_generator = None
@@ -1015,6 +1060,8 @@ def build_router(ctx) -> APIRouter:
                             '"task":"具体且可验收的工作","depends_on":[],"optional":false,'
                             '"parallel_safe":true,"persona":"本任务的专项人设",'
                             '"tools":["工具名"],"mcp":"auto|allow|deny","reflection":true}]}。'
+                            "tools 字段可选：拿不准确切工具名时【整个省略 tools 键】，让该子代理继承其角色的默认工具集；"
+                            "绝不要写成 \"tools\":[]（空数组会让子代理一个工具都用不了）。"
                             "任务必须拆成单个子代理一轮可完成的粒度；id 唯一；依赖只能引用已有 id；dispatcher/planner 只读分析文件并提出分工，"
                             "主 Agent 会汇总拆解结果和执行代理的结果并做最后检查；"
                             "至少包含实现和验证任务；不要执行工具。\n"

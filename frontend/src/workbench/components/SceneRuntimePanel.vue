@@ -432,6 +432,9 @@ function onWindowMessage(ev: MessageEvent) {
 // 可见性感知 + 单飞的轮询器：标签页切后台时暂停，回前台立即补一次
 const evPoller = createPoller(pollEvents, 3000)
 const engineChangePoller = createPoller(pollEngineChanges, 2500)
+// 引擎也可能由 agent 的 engine_start/stop 控制：面板开着时轮询真实状态，
+// 否则用户会看到“引擎已经在跑，面板却还只有启动按钮”。
+const engineStatusPoller = createPoller(refreshNativeStatus, 2500)
 async function pollEvents() {
   const project = getProjectId()
   try {
@@ -473,10 +476,12 @@ function startTimers() {
   captureSince.value = Date.now()
   evPoller.start()
   engineChangePoller.start()
+  engineStatusPoller.start()
 }
 function stopTimers() {
   evPoller.stop()
   engineChangePoller.stop()
+  engineStatusPoller.stop()
 }
 
 function evClass(t: string) {

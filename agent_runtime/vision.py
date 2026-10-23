@@ -96,6 +96,10 @@ def analyze_images(images, *, current_capability=None, observation_prompt=None, 
             [{"role": "user", "content": observation_prompt or prompt, "images": images}],
             stream=False,
             enable_thinking=False,
+            # 不同视觉模型的单次输出上限并不相同（qwen3-vl-plus 实测只收 ≤32768，
+            # 而 131k 上下文会派生出 ~43k 的 max_tokens → 400）。观察文本最终只留
+            # 6000 字，显式封顶既够用，也不会让整条视觉通道因模型差异失效。
+            max_output_tokens=2000,
         )
         text = str(result or "").strip()[:6000]
         if not text:

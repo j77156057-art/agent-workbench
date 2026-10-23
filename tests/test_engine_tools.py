@@ -254,3 +254,85 @@ def test_backend_failure_result_is_passed_through_untouched(monkeypatch, tmp_pat
     assert out["ok"] is False
     assert out["error"] == "GPU 资源正忙，无法启动引擎。"
     assert out["reason"] == "exclusive"
+
+
+def test_engine_window_frame_restores_before_capturing(monkeypatch, tmp_path):
+    """引擎窗口自最小化 → 必须先还原再抓，否则抓到 0x0 退回前台截到聊天应用。"""
+    import desktop_bridge
+    import screen_capture
+
+    order = []
+    monkeypatch.setattr(game_workbench, "engine_status",
+                        lambda root: {"ok": True, "running": True, "pid": 4321})
+    monkeypatch.setattr(desktop_bridge, "find_window",
+                        lambda pid, hint="": (9876, "StarVoyager (DEBUG)"))
+
+    def _restore(hwnd):
+        order.append(("restore", int(hwnd)))
+        return {"ok": True, "restored": True, "foreground": True}
+
+    def _capture(hwnd):
+        order.append(("capture", int(hwnd)))
+        return (b"px", 2, 2) if int(hwnd) == 9876 else None
+
+    monkeypatch.setattr(desktop_bridge, "restore_window", _restore)
+    monkeypatch.setattr(screen_capture, "capture_window", _capture)
+    monkeypatch.setattr(game_workbench.time, "sleep", lambda *_: None)
+
+    out = game_workbench.engine_window_frame(str(tmp_path))
+
+    assert out is not None
+    (raw, w, h, hwnd), title = out
+    assert (w, h, hwnd) == (2, 2, 9876)
+    assert title == "StarVoyager (DEBUG)"
+    assert order == [("restore", 9876), ("capture", 9876)], \
+        "还原必须发生在抓取之前，顺序反了就抓不到自最小化的引擎窗口"
+
+
+def test_engine_window_frame_none_when_not_running(monkeypatch, tmp_path):
+    """引擎没在跑：直接返回 None，绝不触碰窗口枚举（否则会误抓别的应用）。"""
+    import desktop_bridge
+    monkeypatch.setattr(game_workbench, "engine_status",
+                        lambda root: {"ok": True, "running": False, "pid": None})
+    monkeypatch.setattr(desktop_bridge, "find_window",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("引擎没跑时不应枚举窗口")))
+    assert game_workbench.engine_window_frame(str(tmp_path)) is None
+
+
+def test_engine_window_target_returns_handle_without_capturing(monkeypatch, tmp_path):
+    """找窗生命线：还原后只回句柄+标题，**绝不抓像素**（点击投递只要句柄+客户区）。"""
+    import desktop_bridge
+    import screen_capture
+
+    order = []
+    monkeypatch.setattr(game_workbench, "engine_status",
+                        lambda root: {"ok": True, "running": True, "pid": 4321})
+    monkeypatch.setattr(desktop_bridge, "find_window",
+                        lambda pid, hint="": (9876, "StarVoyager (DEBUG)"))
+
+    def _restore(hwnd):
+        order.append(("restore", int(hwnd)))
+        return {"ok": True, "restored": True, "foreground": True}
+
+    monkeypatch.setattr(desktop_bridge, "restore_window", _restore)
+    monkeypatch.setattr(screen_capture, "capture_window",
+                        lambda hwnd: (_ for _ in ()).throw(
+                            AssertionError("engine_window_target 不该抓像素")))
+    monkeypatch.setattr(game_workbench.time, "sleep", lambda *_: None)
+
+    out = game_workbench.engine_window_target(str(tmp_path))
+
+    assert out == (9876, "StarVoyager (DEBUG)")
+    assert order == [("restore", 9876)], "还原必须发生在返回句柄之前，否则自最小化的窗口读不到客户区"
+
+
+def test_engine_window_target_none_when_not_running(monkeypatch, tmp_path):
+    """引擎没在跑：直接 None，绝不枚举窗口（否则会误点别的应用窗口）。"""
+    import desktop_bridge
+    monkeypatch.setattr(game_workbench, "engine_status",
+                        lambda root: {"ok": True, "running": False, "pid": None})
+    monkeypatch.setattr(desktop_bridge, "find_window",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("引擎没跑时不应枚举窗口")))
+    assert game_workbench.engine_window_target(str(tmp_path)) is None

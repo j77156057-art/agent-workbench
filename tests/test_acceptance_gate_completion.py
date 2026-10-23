@@ -36,7 +36,9 @@
 """
 import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -207,6 +209,155 @@ class ComposedVerdictTests(unittest.TestCase):
         unmet = unmet_acceptance_items(BAD_CONTRACT, BAD_RESULTS)
         self.assertEqual(review_status(review, extra_ok=not unmet), STATUS_FAILED,
                          "复核全过也不能覆盖「已批准的验收条件无法满足」")
+
+
+class RuntimeEvidenceTests(unittest.TestCase):
+    """游戏工作流的"真跑过"验收：起草、机器判定、fail-closed。"""
+
+    def test_game_plan_drafts_a_required_runtime_item(self):
+        from agent_runtime.acceptance_contract import from_tasks
+        contract = from_tasks([{"id": "a", "task": "实现打砖块"}],
+                              runtime_required=True)
+        runtime = [item for item in contract["items"]
+                   if "runtime:engine" in item.get("evidence", [])]
+        self.assertEqual(len(runtime), 1, "游戏计划必须起草一条运行验收项")
+        self.assertTrue(runtime[0]["required"], "运行验收必须是必需项，否则拦不住假绿")
+        self.assertFalse(runtime[0]["user_approved"], "模型起草的条件不能自我批准")
+
+    def test_generic_plan_is_unchanged(self):
+        from agent_runtime.acceptance_contract import from_tasks
+        contract = from_tasks([{"id": "a", "task": "实现接口"}])
+        self.assertEqual([item["id"] for item in contract["items"]], ["accept-a"],
+                         "非游戏工作流不该被塞进引擎验收项")
+
+    def test_missing_runtime_evidence_is_unmet_not_skipped(self):
+        """**本组的核心**：没跑过不能被当成没问题。"""
+        from agent_runtime.acceptance_contract import from_tasks
+        contract = from_tasks([{"id": "a", "task": "实现"}], runtime_required=True)
+        unmet = unmet_acceptance_items(contract, {"results": {"a": {"status": "ok"}}})
+        self.assertEqual([item["id"] for item in unmet], ["accept-runtime-playtest"])
+        self.assertEqual(unmet[0]["tasks"], ["runtime:engine"])
+
+    def test_ok_runtime_evidence_satisfies_the_item(self):
+        from agent_runtime.acceptance_contract import from_tasks
+        contract = from_tasks([{"id": "a", "task": "实现"}], runtime_required=True)
+        unmet = unmet_acceptance_items(
+            contract, {"results": {"a": {"status": "ok"}}, "__runtime__": {"ok": True}})
+        self.assertEqual(unmet, [])
+
+    def test_failed_runtime_evidence_carries_the_reason(self):
+        from agent_runtime.acceptance_contract import from_tasks
+        contract = from_tasks([{"id": "a", "task": "实现"}], runtime_required=True)
+        unmet = unmet_acceptance_items(
+            contract,
+            {"results": {"a": {"status": "ok"}},
+             "__runtime__": {"ok": False, "reason": "引擎日志为空：本轮没有真实运行记录。"}})
+        self.assertEqual(unmet[0]["reason"], "引擎日志为空：本轮没有真实运行记录。",
+                         "未满足明细必须说清原因，否则用户只看到「失败」")
+
+    def test_probe_requires_fresh_clean_log(self):
+        import game_workbench
+        with tempfile.TemporaryDirectory() as root, \
+                tempfile.TemporaryDirectory() as state:
+            gd = os.path.join(root, "player.gd")
+            log = os.path.join(state, "engine.log")
+            with open(gd, "w", encoding="utf-8") as handle:
+                handle.write("extends Node\n")
+            with open(log, "w", encoding="utf-8") as handle:
+                handle.write("Godot Engine v4.3.stable\n")
+            os.utime(gd, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(log, ns=(2_000_000_000, 2_000_000_000))
+            with patch.object(game_workbench._project_state, "path",
+                              return_value=log):
+                evidence = game_workbench.runtime_evidence(root)
+                self.assertTrue(evidence["ok"], evidence)
+                # 代码改动晚于日志 -> 旧日志不算数
+                os.utime(gd, ns=(3_000_000_000, 3_000_000_000))
+                stale = game_workbench.runtime_evidence(root)
+                self.assertFalse(stale["ok"])
+                self.assertIn("早于最后一次代码", stale["reason"])
+                # 日志里有错误行 -> 不算数
+                with open(log, "w", encoding="utf-8") as handle:
+                    handle.write("res://player.gd:12: Parse Error: Unexpected token\n")
+                os.utime(log, ns=(4_000_000_000, 4_000_000_000))
+                broken = game_workbench.runtime_evidence(root)
+                self.assertFalse(broken["ok"])
+                self.assertEqual(len(broken["errors"]), 1)
+                self.assertIn("错误行", broken["reason"])
+                # Godot 4.x 运行时两行式 SCRIPT ERROR 同样必须判红，不能 errors=[] 假绿
+                with open(log, "w", encoding="utf-8") as handle:
+                    handle.write("Godot Engine v4.7.2.stable\n")
+                    handle.write("SCRIPT ERROR: Invalid call. Nonexistent function "
+                                 "'take_damage' in base 'Nil'.\n")
+                    handle.write("   at: player.take_damage (res://player.gd:44)\n")
+                os.utime(log, ns=(5_000_000_000, 5_000_000_000))
+                two_line = game_workbench.runtime_evidence(root)
+                self.assertFalse(two_line["ok"])
+                self.assertEqual(two_line["error_count"], 1)
+                self.assertEqual(two_line["errors"][0]["line"], 44)
+                self.assertIn("错误行", two_line["reason"])
+
+    def test_engine_log_tail_truncation_exposes_markers(self):
+        """tail 被报错刷屏时，必须给出「全日志还有标记」的线索。
+
+        上一轮实测：14k 条 SCRIPT ERROR 把 CLICK_PROBE 挤出 tail，
+        子代理据此断言「日志里没有 CLICK_PROBE」——假阴性叙述。
+        """
+        import game_workbench
+        with tempfile.TemporaryDirectory() as root, \
+                tempfile.TemporaryDirectory() as state:
+            log = os.path.join(state, "engine.log")
+            with open(log, "w", encoding="utf-8") as handle:
+                handle.write("Godot Engine v4.7.2.stable\n")
+                handle.write("CLICK_PROBE CLICKED 961,540\n")
+                for _ in range(300):
+                    handle.write("SCRIPT ERROR: Invalid call. Nonexistent function "
+                                 "'take_damage'.\n")
+                    handle.write("   at: player.take_damage (res://behaviors/enemy.gd:44)\n")
+                for frame in range(400):
+                    handle.write("HEARTBEAT_FRAME %d\n" % frame)
+            with patch.object(game_workbench._project_state, "path",
+                              return_value=log):
+                data = game_workbench.engine_logs(root, limit=10)
+                hit = game_workbench.engine_logs(root, limit=10, contains="CLICK_PROBE")
+            self.assertTrue(data["tail_truncated"])
+            self.assertGreater(data["total_lines"], 10)
+            self.assertNotIn("CLICK_PROBE", "\n".join(data["lines"]))
+            self.assertGreaterEqual(data["marker_count"], 1)
+            self.assertIn("CLICK_PROBE",
+                          " ".join(item["text"] for item in data["marker_samples"]))
+            self.assertIn("不能据 tail", data["note"])
+            self.assertEqual(hit["match_count"], 1)
+            self.assertIn("CLICK_PROBE", hit["matches"][0])
+
+    def test_internal_docmind_state_does_not_stale_runtime_evidence(self):
+        """工作流自己写的状态文件不能把刚跑完的日志判成过期。"""
+        import game_workbench
+        with tempfile.TemporaryDirectory() as root, \
+                tempfile.TemporaryDirectory() as state:
+            gd = os.path.join(root, "player.gd")
+            log = os.path.join(state, "engine.log")
+            with open(gd, "w", encoding="utf-8") as handle:
+                handle.write("extends Node\n")
+            with open(log, "w", encoding="utf-8") as handle:
+                handle.write("Godot Engine v4.3.stable\n")
+            os.utime(gd, ns=(1_000_000_000, 1_000_000_000))
+            os.utime(log, ns=(2_000_000_000, 2_000_000_000))
+            # engine_start 之后工作流还会写项目画像 / 引擎配置，且晚于日志。
+            profile_dir = os.path.join(root, ".docmind", "projects", "p1")
+            os.makedirs(profile_dir)
+            for path, at in (
+                    (os.path.join(profile_dir, "project-profile.json"), 3_000_000_000),
+                    (os.path.join(root, ".docmind_engine.json"), 3_500_000_000)):
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write("{}\n")
+                os.utime(path, ns=(at, at))
+            with patch.object(game_workbench._project_state, "path",
+                              return_value=log):
+                evidence = game_workbench.runtime_evidence(root)
+            self.assertTrue(evidence["ok"], evidence)
+            self.assertTrue(evidence["fresh"], evidence)
+            self.assertLess(evidence["latest_source_mtime_ns"], evidence["log_mtime_ns"])
 
 
 if __name__ == "__main__":

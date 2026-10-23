@@ -747,6 +747,11 @@ def browser_session(timeout: float = 25.0, extra_flags: Any = (),
                                                  timeout=max(5.0, float(timeout)),
                                                  suppress_origin=True)
         devtools = _DevTools(connection, recv_timeout=max(5.0, float(timeout)))
+        # 实况推流要一条独立的 CDP 连接：主连接是同步 request/response 模型，
+        # 没有常驻读线程，撑不住持续到来的 screencast 帧。把地址挂出去，让
+        # browser_live 自己连，主连接的调用模型一个字都不用改。
+        devtools.ws_url = page["webSocketDebuggerUrl"]
+        devtools.target_id = page.get("id") or ""
         devtools.call("Page.enable")
         devtools.call("Runtime.enable")
         devtools.call("Log.enable")

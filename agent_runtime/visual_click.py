@@ -193,25 +193,78 @@ def resolve_vision_llm(pid: str) -> tuple[Any, str, str]:
 
 # --------------------------------------------------------------------------- 定位
 
-def locate(pid: str, *, description: str, goal: str = "") -> dict[str, Any]:
-    """在嵌入窗口里视觉定位一个目标，登记一次性提案。**这一步不点击。**"""
+def _root_for_pid(pid: str) -> str:
+    """由 project_id 反查项目根目录。locate 只有 pid（execute 已显式带 root）。
+
+    查不到就返回空串——调用方据此跳过"独立引擎窗口"兜底，退化成"只看登记的嵌入宿主"，
+    与桌面宿主场景的旧行为一致，绝不因此误抓别的窗口。
+    """
+    if not pid:
+        return ""
+    try:
+        from projects import get_project
+        return str((get_project(pid) or {}).get("root") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _grab_frame(pid: str, root: str, *, capture_target: str):
+    """按 capture_target 抓一帧，统一成 (raw, w, h, hwnd) 或 None。
+
+    - embedded：strict_project=True，只认本项目**登记过的嵌入宿主**（点错窗口代价远高于
+      "找不到窗口"，绝不回退遗留默认宿主）。
+    - engine：本项目**自己启动**的引擎独立窗口（浏览器模式无桌面宿主时用）。找窗+还原复用
+      game_workbench.engine_window_frame 这条生命线——句柄只来自引擎进程表里本项目的 pid，
+      绝不串到别的应用窗口。
+    """
+    import screen_capture
+    if capture_target == "engine":
+        if not root:
+            return None
+        try:
+            import game_workbench
+            hit = game_workbench.engine_window_frame(root)
+        except Exception:  # noqa: BLE001 - 抓窗失败就是"没画面"，绝不猜别的窗
+            return None
+        if not hit:
+            return None
+        (raw, width, height, hwnd), _title = hit
+        return raw, width, height, hwnd
+    return screen_capture.grab_embedded(pid, strict_project=True)
+
+
+def locate(pid: str, *, description: str, goal: str = "",
+           root: str | None = None) -> dict[str, Any]:
+    """在嵌入窗口或本项目独立引擎窗口里视觉定位一个目标，登记一次性提案。**这一步不点击。**"""
     description = str(description or "").strip()[:200]
     if not description:
         return {"ok": False, "status": 400, "error": "description 不能为空。"}
     try:
-        import screen_capture
+        import screen_capture  # noqa: F401 - 先探测捕获依赖可用（无 PIL/ctypes 时早报错）
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "status": 502,
                 "error": "画面捕获不可用：%s: %s" % (type(exc).__name__, str(exc)[:160])}
+    if root is None:
+        root = _root_for_pid(pid)
+    # ① 先按登记的嵌入宿主抓（strict_project：宁可无画面也不串窗）。
     try:
-        frame = screen_capture.grab_embedded(pid, strict_project=True)
+        frame = _grab_frame(pid, root, capture_target="embedded")
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "status": 502,
                 "error": "抓取嵌入窗口失败：%s: %s" % (type(exc).__name__, str(exc)[:160])}
+    capture_target = "embedded"
+    # ② 浏览器模式没有桌面宿主：引擎以独立窗口跑，grab_embedded 抓不到。回退到本项目**自己
+    #    启动**的引擎独立窗口（与截图工具/桌面观察端点共用 engine_window_frame 这条生命线），
+    #    否则"看着画面找目标"这条链在浏览器里永远看不见刚起的引擎。
+    if not frame and root:
+        hit = _grab_frame(pid, root, capture_target="engine")
+        if hit:
+            frame = hit
+            capture_target = "engine"
     if not frame:
         return {"ok": False, "status": 400,
-                "error": "当前项目没有已登记的嵌入窗口，无法定位目标。"
-                          "请先启动并嵌入项目窗口，或用 game_screenshot 之类的观察工具。"}
+                "error": "当前项目没有已登记的嵌入窗口，也没有可定位的独立引擎窗口，"
+                          "无法定位目标。请先启动并嵌入项目窗口/引擎，或用 game_screenshot 之类的观察工具。"}
     raw, width, height, hwnd = frame
     try:
         image = screen_capture.encode_frame(raw, width, height)
@@ -244,6 +297,7 @@ def locate(pid: str, *, description: str, goal: str = "") -> dict[str, Any]:
     proposal_id = uuid.uuid4().hex
     PROPOSALS[proposal_id] = {
         "project_id": pid, "hwnd": int(hwnd), "width": int(width), "height": int(height),
+        "capture_target": capture_target,
         "bbox": bbox, "point": point, "fingerprint": fingerprint,
         "label": target["label"], "evidence": target["evidence"], "goal": str(goal or ""),
         "image": image, "created_at": now, "used": False,
@@ -294,14 +348,50 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
     if not confirmed and not gate:
         return {"ok": False, "status": 400,
                 "error": "点击需要用户确认（confirmed=true，或先在审核队列里批准）。"}
-    # 闸①：agent 出口的确认来自审批台账。
+    # 闸①：agent 出口的确认来自审批台账；若逐次审批未过，再看自检沙箱租约。
+    # 沙箱只覆盖本项目自己解析出来的窗口（embedded/engine），提案里的
+    # capture_target 就是定位时实际抓到的那个 —— 不接受调用方另指窗口。
+    #
+    # `root` 在试做区里是副本（抓帧/窗口解析要用它），但审批台账和沙箱租约
+    # 记在真实项目名下；混用会导致 stage 内的视觉点击永远"没有批准"。
+    try:
+        from agent_runtime.tools import stage_origin_root
+        ledger_root = stage_origin_root() or root
+    except Exception:
+        ledger_root = root
+    sandbox_lease: dict[str, Any] = {}
     if gate:
         try:
             from game_workbench import require_approval
-            blocked = require_approval(root, GATE_ACTION, approval_target(entry["point"]))
+            blocked = require_approval(ledger_root, GATE_ACTION, approval_target(entry["point"]))
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "status": 502,
                     "error": "审批门检查失败：%s: %s" % (type(exc).__name__, str(exc)[:160])}
+        # 本轮用户已口头授权（当场指定了动作 + 坐标/目标）时，视觉点击与
+        # dev_desktop_action 用**同一豁免口径**跳过逐次审批与沙箱：本路径的
+        # capture_target 只会是 embedded/engine（视觉定位不针对前台任意窗口），
+        # 所以无需再区分 foreground。读不到授权信号一律按未授权。
+        if blocked:
+            try:
+                from agent_runtime.tools import desktop_pre_authorized
+                _preauth = desktop_pre_authorized()
+            except Exception:  # noqa: BLE001
+                _preauth = False
+            if _preauth and (entry.get("capture_target") or "embedded") in ("engine", "embedded"):
+                blocked = None
+        if blocked:
+            try:
+                from game_workbench import playtest_sandbox_desktop_allowed
+                allowed, sandbox_reason, lease = playtest_sandbox_desktop_allowed(
+                    ledger_root, action="click",
+                    target=entry.get("capture_target") or "embedded")
+            except Exception as exc:  # noqa: BLE001 - 检查失败必须按拦截处理
+                allowed, sandbox_reason, lease = False, "沙箱检查失败：%s" % type(exc).__name__, {}
+            if allowed:
+                blocked = None
+                sandbox_lease = {"lease_id": lease.get("id", ""),
+                                 "expires_at": lease.get("expires_at", ""),
+                                 "scope": "project-window"}
         if blocked:
             blocked = dict(blocked)
             # 补 `ok: False`：`require_approval` 的阻断结构里没有这个键，
@@ -310,11 +400,14 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
             blocked["ok"] = False
             blocked["status"] = 403
             blocked["hint"] = ("请用户在工作台的审核队列里批准这次点击；"
-                               "批准后必须用完全相同的参数重试。")
+                               "批准后必须用完全相同的参数重试。"
+                               "自检沙箱未覆盖该点击：%s" % (sandbox_reason or "未开启"))
+            blocked["sandbox"] = {"active": False, "reason": sandbox_reason}
             return blocked
     try:
         import screen_capture
-        frame = screen_capture.grab_embedded(pid, strict_project=True)
+        capture_target = entry.get("capture_target") or "embedded"
+        frame = _grab_frame(pid, root, capture_target=capture_target)
         if not frame:
             return {"ok": False, "status": 409, "error": "目标窗口已不可见，请重新定位。"}
         raw, width, height, hwnd = frame
@@ -334,7 +427,7 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
         row = None
         try:
             import game_workbench
-            row = game_workbench.approval(root, GATE_ACTION, "agent", approved=True,
+            row = game_workbench.approval(ledger_root, GATE_ACTION, "agent", approved=True,
                                           target=entry["label"])
         except Exception:
             row = None
@@ -342,20 +435,21 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
             return {"ok": False, "status": 403, "error": "这次点击没有获得批准。"}
         # 标记必须在真正发点击之前：否则重复请求能连点两次。
         entry["used"] = True
-        result = desktop_actions.perform("click", target="embedded", project_id=pid,
-                                         x=entry["point"]["x"], y=entry["point"]["y"],
-                                         expected_hwnd=entry["hwnd"])
+        click_result = desktop_actions.perform("click", target=capture_target, project_id=pid,
+                                               root=root,
+                                               x=entry["point"]["x"], y=entry["point"]["y"],
+                                               expected_hwnd=entry["hwnd"])
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "status": 502,
                 "error": "点击失败：%s: %s" % (type(exc).__name__, str(exc)[:200])}
-    if not (result or {}).get("ok"):
+    if not (click_result or {}).get("ok"):
         return {"ok": False, "executed": False, "before": before, "used": True,
                 "status": 502,
-                "error": str((result or {}).get("error") or "点击未能送达目标窗口。")}
+                "error": str((click_result or {}).get("error") or "点击未能送达目标窗口。")}
     time.sleep(SETTLE_SECONDS)
     after = None
     try:
-        after_frame = screen_capture.grab_embedded(pid, strict_project=True)
+        after_frame = _grab_frame(pid, root, capture_target=capture_target)
         # 窗口换了就不拿别的窗口的画面当「点击结果」——那会验证出一件没发生的事。
         if after_frame and int(after_frame[3]) == int(entry["hwnd"]):
             after = screen_capture.encode_frame(after_frame[0], after_frame[1], after_frame[2])
@@ -385,9 +479,14 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
         verification = verdict or {"status": "uncertain",
                                    "evidence": "模型没有给出可信的复验结论。",
                                    "confidence": 0.0, "next_target": ""}
-    return {"ok": True, "executed": True, "before": before, "after": after,
-            "label": entry["label"], "point": entry["point"], "used": True,
-            "verification": verification}
+    result = {"ok": True, "executed": True, "before": before, "after": after,
+              "label": entry["label"], "point": entry["point"], "used": True,
+              "placement": (click_result or {}).get("point"),
+              "window": (click_result or {}).get("window"),
+              "verification": verification}
+    if sandbox_lease:
+        result["sandbox"] = sandbox_lease
+    return result
 
 
 __all__ = ["GATE_ACTION", "MAX_PROPOSALS", "PROPOSALS", "PROPOSAL_TTL_SECONDS", "SETTLE_SECONDS",

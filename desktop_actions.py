@@ -1,9 +1,12 @@
 """Small, project-scoped Windows input bridge for approved desktop actions.
 
-The module intentionally accepts only a resolved embedded or foreground target.
-It does not enumerate arbitrary windows, run a shell, or expose HWND values to
-the Agent. Every action is one shot; callers must capture a fresh observation
-before issuing the next action.
+The module intentionally accepts only a resolved embedded, engine, or foreground
+target. It does not enumerate arbitrary windows, run a shell, or expose HWND values
+to the Agent. The "engine" target is resolved by the module itself from the project
+root via game_workbench (this project's own standalone engine window) — it never
+takes a caller-supplied handle, so it is not a backdoor to click any window.
+Every action is one shot; callers must capture a fresh observation before issuing
+the next action.
 """
 from __future__ import annotations
 
@@ -67,7 +70,24 @@ def _user32():
     return user32
 
 
-def _resolve_target(target: str, project_id: str | None = None):
+def _engine_target(root):
+    """把"本项目自己启动的引擎独立窗口"解析成句柄（0 表示没有）。
+
+    找窗/还原逻辑全在 game_workbench.engine_window_target（按 root → 引擎进程表里的
+    **本项目** pid → 该 pid 的顶层窗口），desktop_actions 只是转交 root 拿回句柄——
+    **不接受外部传入的 hwnd**，保持"我们负责选窗、Agent 不点名"的安全不变式。
+    """
+    if not root:
+        return 0
+    try:
+        import game_workbench
+        found = game_workbench.engine_window_target(root)
+        return int(found[0]) if found else 0
+    except Exception:  # noqa: BLE001 - 解析不了就是"没有目标窗口"，绝不猜别的窗
+        return 0
+
+
+def _resolve_target(target: str, project_id: str | None = None, root: str | None = None):
     if os.name != "nt":
         return None, None, "桌面操作仅支持 Windows。"
     try:
@@ -75,6 +95,8 @@ def _resolve_target(target: str, project_id: str | None = None):
         import screen_capture
         if target == "embedded":
             hwnd = screen_capture._embedded_target(project_id)
+        elif target == "engine":
+            hwnd = _engine_target(root)
         else:
             hwnd = int(_user32().GetForegroundWindow() or 0)
         if not hwnd or not desktop_bridge.is_window(hwnd):
@@ -91,8 +113,8 @@ def _resolve_target(target: str, project_id: str | None = None):
 def _focus(hwnd: int, target: str, project_id: str | None = None) -> tuple[bool, str]:
     try:
         import desktop_bridge
-        if target == "embedded":
-            host = desktop_bridge.host_hwnd(project_id)
+        if target in {"embedded", "engine"}:
+            host = desktop_bridge.host_hwnd(project_id) if target == "embedded" else hwnd
             result = desktop_bridge.focus(hwnd, hwnd_host=host, keep_attached=False)
             return bool(result.get("ok")), str(result.get("error") or "")
         ok = bool(_user32().SetForegroundWindow(ctypes.c_void_p(hwnd)))
@@ -169,7 +191,26 @@ def _inside(point: tuple[int, int], rect: dict[str, Any]) -> bool:
     return 0 <= x < int(rect.get("width", 0)) and 0 <= y < int(rect.get("height", 0))
 
 
+def _describe_point(x: int, y: int, rect: dict[str, Any]) -> dict[str, Any]:
+    """把客户区坐标换成一个**可核对的位置描述**。
+
+    实测的幻觉：853×480 的画面里点 (640, 360)，模型说成「画面中央」——
+    实际是 75%/75% 处（右下）。只给裸坐标，模型很容易凭感觉形容位置；
+    这里把比例和九宫格区域一起返回，叙述就必须对得上数字。
+    """
+    x, y = int(x), int(y)
+    width = max(1, int(rect.get("width") or 1))
+    height = max(1, int(rect.get("height") or 1))
+    col = min(2, max(0, (3 * x) // width))
+    row = min(2, max(0, (3 * y) // height))
+    names = (("左上", "上", "右上"), ("左", "中", "右"), ("左下", "下", "右下"))
+    return {"x": x, "y": y, "width": width, "height": height,
+            "x_ratio": round(x / width, 3), "y_ratio": round(y / height, 3),
+            "region": names[row][col]}
+
+
 def perform(action: str, *, target: str = "embedded", project_id: str | None = None,
+            root: str | None = None,
             x: int | None = None, y: int | None = None,
             to_x: int | None = None, to_y: int | None = None,
             text: str = "", key: str = "", expected_hwnd: int | None = None) -> dict[str, Any]:
@@ -179,7 +220,7 @@ def perform(action: str, *, target: str = "embedded", project_id: str | None = N
         action = "key"
     if action not in {"click", "type", "drag", "key"}:
         return {"ok": False, "error": "action 只能是 click、type、drag、key 或 save。"}
-    hwnd, info, error = _resolve_target(target, project_id)
+    hwnd, info, error = _resolve_target(target, project_id, root)
     if error:
         return {"ok": False, "error": error}
     if expected_hwnd is not None and hwnd != expected_hwnd:
@@ -188,19 +229,23 @@ def perform(action: str, *, target: str = "embedded", project_id: str | None = N
     if not focused:
         return {"ok": False, "error": focus_error or "目标窗口未能获得焦点。"}
     if expected_hwnd is not None:
-        current_hwnd, current_info, current_error = _resolve_target(target, project_id)
+        current_hwnd, current_info, current_error = _resolve_target(target, project_id, root)
         if current_error or current_hwnd != expected_hwnd or current_info["rect"] != info["rect"]:
             return {"ok": False, "error": "目标窗口或尺寸在激活后已变化。"}
         info = current_info
     origin, rect = info["origin"], info["rect"]
     ox, oy = int(origin.get("x", 0)), int(origin.get("y", 0))
+    extra: dict[str, Any] = {}
     if action == "click":
         if x is None or y is None or not _inside((int(x), int(y)), rect):
             return {"ok": False, "error": "click 坐标必须位于目标窗口客户区内。"}
+        extra["point"] = _describe_point(int(x), int(y), rect)
         ok, count = _mouse_click(ox + int(x), oy + int(y))
     elif action == "drag":
         if any(value is None for value in (x, y, to_x, to_y)) or not _inside((int(x), int(y)), rect) or not _inside((int(to_x), int(to_y)), rect):
             return {"ok": False, "error": "drag 起点和终点必须位于目标窗口客户区内。"}
+        extra["from"] = _describe_point(int(x), int(y), rect)
+        extra["to"] = _describe_point(int(to_x), int(to_y), rect)
         ok, count = _mouse_drag(ox + int(x), oy + int(y), ox + int(to_x), oy + int(to_y))
     elif action == "type":
         ok, count = _unicode_type(text)
@@ -208,7 +253,8 @@ def perform(action: str, *, target: str = "embedded", project_id: str | None = N
         ok, count = _press_key(key)
     return {"ok": bool(ok), "action": action, "target": target,
             "events": count, "window": {"width": rect["width"], "height": rect["height"]},
-            "error": "" if ok else "Windows 未确认全部输入事件已送达，请重新观察后再决定是否重试。"}
+            "error": "" if ok else "Windows 未确认全部输入事件已送达，请重新观察后再决定是否重试。",
+            **extra}
 
 
 __all__ = ["perform"]

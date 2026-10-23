@@ -260,3 +260,70 @@ def test_approval_target_matches_the_desktop_action_format():
                "text_sha256": hashlib.sha256("".encode("utf-8")).hexdigest()[:16]}
     digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
     assert visual_click.approval_target({"x": 7, "y": 9}) == "desktop:click:embedded:%s" % digest
+
+
+# ------------------------------------------------------------------- 引擎独立窗口（浏览器模式）
+
+def test_locate_falls_back_to_project_engine_window(monkeypatch):
+    """浏览器模式无桌面宿主：嵌入抓不到 → 回退本项目自己启动的引擎独立窗口，并记住来源。"""
+    import screen_capture
+    import game_workbench
+    monkeypatch.setattr(screen_capture, "grab_embedded",
+                        lambda pid, strict_project=True: None)
+    monkeypatch.setattr(game_workbench, "engine_window_frame",
+                        lambda root, hint="": ((RAW, WIDTH, HEIGHT, 7777), "StarVoyager (DEBUG)"))
+    monkeypatch.setattr(screen_capture, "encode_frame",
+                        lambda raw, width, height: "ZmFrZS1pbWFnZQ==")
+    llm = _FakeLLM(_target_json())
+    monkeypatch.setattr(visual_click, "resolve_vision_llm", lambda pid: (llm, "harness", ""))
+
+    result = visual_click.locate("prj-x", description="开始按钮", root="D:/proj")
+
+    assert result["ok"] is True
+    entry = visual_click.PROPOSALS[result["proposal_id"]]
+    assert entry["capture_target"] == "engine"
+    assert entry["hwnd"] == 7777
+
+
+def test_locate_without_root_does_not_fabricate_engine_window(monkeypatch):
+    """没有项目根目录时不凭空兜底：嵌入抓不到就明确报错，绝不枚举/抓取任意窗口。"""
+    import screen_capture
+    monkeypatch.setattr(screen_capture, "grab_embedded",
+                        lambda pid, strict_project=True: None)
+    monkeypatch.setattr(visual_click, "_root_for_pid", lambda pid: "")
+    result = visual_click.locate("prj-x", description="开始按钮")
+    assert result["ok"] is False
+    assert "嵌入窗口" in result["error"]
+
+
+def test_execute_engine_proposal_rechecks_and_clicks_via_engine_target(monkeypatch, tmp_path):
+    """引擎来源的提案：点击前复核与点击投递都走 engine 目标，句柄与 root 一并交给 desktop_actions。"""
+    import screen_capture
+    import game_workbench
+    import desktop_actions
+    monkeypatch.setattr(screen_capture, "grab_embedded",
+                        lambda pid, strict_project=True: None)
+    monkeypatch.setattr(game_workbench, "engine_window_frame",
+                        lambda root, hint="": ((RAW, WIDTH, HEIGHT, 7777), "StarVoyager (DEBUG)"))
+    monkeypatch.setattr(screen_capture, "encode_frame",
+                        lambda raw, width, height: "ZmFrZS1pbWFnZQ==")
+    llm = _FakeLLM(_target_json())
+    monkeypatch.setattr(visual_click, "resolve_vision_llm", lambda pid: (llm, "harness", ""))
+    located = visual_click.locate("prj-x", description="开始按钮", root=str(tmp_path))
+    assert located["ok"]
+
+    clicked = []
+    monkeypatch.setattr(desktop_actions, "perform",
+                        lambda *a, **k: clicked.append(k) or {"ok": True})
+    monkeypatch.setattr(game_workbench, "require_approval", lambda root, a, t: None)
+    monkeypatch.setattr(game_workbench, "approval",
+                        lambda root, action, user, approved=False, target="":
+                        {"approved": bool(approved), "action": action, "target": target})
+
+    result = visual_click.execute("prj-x", str(tmp_path),
+                                  proposal_id=located["proposal_id"], gate=True)
+
+    assert result["ok"] is True
+    assert clicked and clicked[0]["target"] == "engine"
+    assert clicked[0]["root"] == str(tmp_path)
+    assert clicked[0]["expected_hwnd"] == 7777

@@ -50,6 +50,7 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
   const liveSteps = reactive(new Map<string, WorkflowStepItem[]>())
   /** subagent_start/complete 事件带来的临时成员信息（hydrate 间隙也能先展示）。 */
   const liveMeta = new Map<string, { role?: string; task?: string; status?: string; elapsedMs?: number; error?: string; conclusion?: string; trace?: WorkflowChildTrace }>()
+  /** 已弹出独立小窗的成员 id 集合（点成员行才弹，非自动展开；见 WorkflowMemberWindow）。 */
   const openMembers = ref<Set<string>>(new Set())
   let lastSeq = 0
   let unsubscribe: (() => void) | null = null
@@ -67,13 +68,11 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
     stepRaf = 0
     if (!stepQueue.length || destroyed) { stepQueue.length = 0; return }
     const queued = stepQueue.splice(0)
-    const openNow = new Set(openMembers.value)
     for (const st of queued) {
       const list = liveSteps.get(st.id) || []
       list.push({ type: st.type, text: st.text })
       if (list.length > 240) list.splice(0, list.length - 240)
       liveSteps.set(st.id, list)
-      openNow.add(st.id)
     }
     // 卡片头部始终展示最新一条动作（调用了什么工具、读写了什么文件）
     const newest = queued[queued.length - 1]
@@ -81,7 +80,6 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
       const step = { type: newest.type, text: newest.text }
       lastLive.value = { title: stepTitle(step), summary: stepSummary(step) }
     }
-    openMembers.value = openNow
     // 一帧最多通知父级跟随一次
     emit('activity')
   }
@@ -535,6 +533,7 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
     inspectRecovery(option)
   }
 
+  /** 点击成员行：开/关该成员的独立小窗（openMembers = 已弹出窗集合）。 */
   function toggleMember(id: string) {
     const next = new Set(openMembers.value)
     if (next.has(id)) next.delete(id); else next.add(id)
