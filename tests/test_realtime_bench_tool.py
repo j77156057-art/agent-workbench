@@ -182,7 +182,7 @@ def test_frames_beyond_the_window_are_rejected_rather_than_silently_truncated():
 
 def test_main_writes_json_evidence():
     """不用 pytest 的 `tmp_path`：本机用户名含撇号，pytest 扫描
-    `D:\\Temp\\pytest-of-h'h'h` 会抛 PermissionError，与本工具无关。"""
+    `D:\\Temp\\pytest-of-<local-user>` 会抛 PermissionError，与本工具无关。"""
     directory = tempfile.mkdtemp(prefix="realtime-bench-")
     try:
         out = os.path.join(directory, "bench.json")
