@@ -15,6 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (  # noqa: E402
     model_context_window,
     model_thinking_mode,
+    model_thinking_effort,
+    model_thinking_levels,
+    normalize_thinking_level,
+    get_thinking_level,
+    set_thinking_level,
     model_capability,
     model_vision_mode,
     model_video_mode,
@@ -114,6 +119,67 @@ class ThinkingModeTests(unittest.TestCase):
             self.assertEqual(cap["video"], "frames")
         finally:
             clear_model_capability_override(provider, model)
+
+
+class ThinkingEffortTests(unittest.TestCase):
+    """思考等级画像：effort 词汇、可选档位、能力包与全局默认。"""
+
+    def test_effort_vocabulary(self):
+        self.assertEqual(model_thinking_effort("deepseek", "deepseek-flash"), "reasoning_effort")
+        self.assertEqual(model_thinking_effort("qwen", "qwen3-235b-a22b"), "thinking_budget")
+        # 可开关但不在 effort 白名单（ollama qwen3）→ 只能二元开关
+        self.assertEqual(model_thinking_effort("ollama", "qwen3:8b"), "binary")
+        # 原生思考但不在白名单（reasoner）→ 恒开、binary，不发强度参数
+        self.assertEqual(model_thinking_effort("deepseek", "deepseek-reasoner"), "binary")
+        # 不支持思考 → 空
+        self.assertEqual(model_thinking_effort("kimi", "kimi-k2-0905-preview"), "")
+
+    def test_selectable_levels(self):
+        self.assertEqual(model_thinking_levels("deepseek", "deepseek-flash"),
+                         ["off", "low", "medium", "high"])
+        self.assertEqual(model_thinking_levels("qwen", "qwen3-235b-a22b"),
+                         ["off", "low", "medium", "high"])
+        # 二元开关家族只给关/开（用 medium 作"开"的代表档）
+        self.assertEqual(model_thinking_levels("ollama", "qwen3:8b"), ["off", "medium"])
+        self.assertEqual(model_thinking_levels("deepseek", "deepseek-reasoner"), ["native"])
+        self.assertEqual(model_thinking_levels("kimi", "kimi-k2-0905-preview"), [])
+
+    def test_capability_carries_thinking_level_keys(self):
+        cap = model_capability("deepseek", "deepseek-flash")
+        self.assertEqual(cap["thinking"], "toggle")
+        self.assertEqual(cap["thinking_effort"], "reasoning_effort")
+        self.assertEqual(cap["thinking_levels"], ["off", "low", "medium", "high"])
+        cap_none = model_capability("kimi", "kimi-k2-0905-preview")
+        self.assertEqual(cap_none["thinking_levels"], [])
+
+    def test_override_none_clears_levels(self):
+        provider, model = "custom", "zz-effort-override"
+        try:
+            set_model_capability_override(provider, model, thinking="none")
+            self.assertEqual(model_capability(provider, model)["thinking_levels"], [])
+            set_model_capability_override(provider, model, thinking="toggle")
+            self.assertTrue(model_capability(provider, model)["thinking_levels"])
+        finally:
+            clear_model_capability_override(provider, model)
+
+    def test_normalize_level(self):
+        self.assertEqual(normalize_thinking_level(" HIGH "), "high")
+        self.assertEqual(normalize_thinking_level("Off"), "off")
+        self.assertIsNone(normalize_thinking_level("turbo"))
+        self.assertIsNone(normalize_thinking_level(""))
+        self.assertIsNone(normalize_thinking_level(None))
+
+    def test_global_default_roundtrip(self):
+        prev = get_thinking_level()
+        try:
+            self.assertEqual(set_thinking_level("medium"), "medium")
+            self.assertEqual(get_thinking_level(), "medium")
+            # 非法值 → 清空（回落 ''），不抛
+            self.assertEqual(set_thinking_level("nope"), "")
+            self.assertEqual(get_thinking_level(), "")
+            self.assertEqual(set_thinking_level(""), "")
+        finally:
+            set_thinking_level(prev or "")
 
 
 class PromptBudgetScalingTests(unittest.TestCase):

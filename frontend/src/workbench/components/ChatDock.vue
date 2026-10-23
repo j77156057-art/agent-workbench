@@ -420,6 +420,7 @@ function toggleDock() {
 const {
   modelConfig, settingsOpen, webOn, thinkingOn,
   modelLabel, thinkingMode, thinkingSupported, thinkingNative, thinkingEffective,
+  thinkingLevel, thinkingAdjustable, cycleThinking, toggleThinking,
   visionLabel,
   loadModelConfig, openSettings, onModelSaved,
 } = useModelConfig({
@@ -602,9 +603,14 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
     const thinkingOpt = thinkingSupported.value
       ? (thinkingNative.value ? null : thinkingOn.value)
       : null
+    // 等级只在可调档的 toggle 家族下发；native/none 传 null，后端回落布尔
+    const thinkingLevelOpt = (thinkingSupported.value && !thinkingNative.value && thinkingAdjustable.value)
+      ? thinkingLevel.value
+      : null
     await aiApi.askGrounded(request, { onEvent, signal: ac.signal }, {
       web: webOn.value,
       thinking: thinkingOpt,
+      thinkingLevel: thinkingLevelOpt,
       images: imgs,
       sessionId: currentSessionId(),
       uiContext: props.scope === 'cockpit' && liveVisionTimeline.length && !uiContext ? 'cockpit_live_vision' : uiContext,
@@ -1322,14 +1328,18 @@ const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
 })
 
 // 思考芯片：仅 toggle 家族可点；native 恒开；none 不渲染可点按钮
-function toggleThinking() {
-  if (!thinkingSupported.value || thinkingNative.value) return
-  thinkingOn.value = !thinkingOn.value
+// （toggleThinking / cycleThinking 均来自 useModelConfig）。
+const THINKING_TIER_TEXT: Record<string, string> = {
+  off: '已关闭', low: '低档', medium: '中档', high: '高档',
 }
 const thinkingTitle = computed(() => {
   if (thinkingMode.value === 'unknown') return '深度思考能力待确认，请在模型设置中选择能力'
   if (!thinkingSupported.value) return '当前模型不支持深度思考，可点左侧模型芯片切换支持思考的模型'
   if (thinkingNative.value) return '该模型内置深度思考，始终开启'
+  if (thinkingAdjustable.value) {
+    const cur = THINKING_TIER_TEXT[thinkingLevel.value] || thinkingLevel.value
+    return `深度思考：${cur}（点击切换到下一档）`
+  }
   return thinkingOn.value ? '深度思考已开启：回答前先推理，耗时更长' : '点击开启深度思考'
 })
 const webTitle = computed(() => webOn.value
@@ -1701,6 +1711,8 @@ const webTitle = computed(() => webOn.value
         :thinking-effective="thinkingEffective"
         :thinking-native="thinkingNative"
         :thinking-mode="thinkingMode"
+        :thinking-level="thinkingLevel"
+        :thinking-adjustable="thinkingAdjustable"
         :thinking-title="thinkingTitle"
         :web-title="webTitle"
         :usage="usage"
@@ -1715,6 +1727,7 @@ const webTitle = computed(() => webOn.value
         @remove-image="removeImage"
         @update:web-on="webOn = $event"
         @toggle-thinking="toggleThinking"
+        @cycle-thinking="cycleThinking"
         @open-model-switcher="openModelSwitcher"
         @toggle-voice="toggleVoice"
       />

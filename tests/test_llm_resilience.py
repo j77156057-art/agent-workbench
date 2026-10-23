@@ -299,6 +299,59 @@ class ThinkingResolutionTests(unittest.TestCase):
             set_runtime("llm_enable_thinking", "")
 
 
+class ThinkingLevelTests(unittest.TestCase):
+    """_resolve_thinking_level：等级折算 (是否思考, effort)，保守按画像白名单发。"""
+
+    def setUp(self):
+        from config import set_thinking_level
+        set_thinking_level("")  # 清空全局默认，只让显式 thinking_level 生效
+
+    def tearDown(self):
+        from config import set_thinking_level
+        set_thinking_level("")
+
+    def _client(self, provider, model):
+        from llm import LLMClient
+        return LLMClient(provider=provider, model=model)
+
+    def test_deepseek_reasoning_effort_mapping(self):
+        c = self._client("deepseek", "deepseek-flash")
+        self.assertEqual(c._resolve_thinking_level(None, "off"), (False, None))
+        self.assertEqual(c._resolve_thinking_level(None, "low"), (True, "low"))
+        self.assertEqual(c._resolve_thinking_level(None, "medium"), (True, "high"))
+        self.assertEqual(c._resolve_thinking_level(None, "high"), (True, "max"))
+
+    def test_qwen3_thinking_budget_mapping(self):
+        c = self._client("qwen", "qwen3-235b-a22b")
+        self.assertEqual(c._resolve_thinking_level(None, "off"), (False, None))
+        self.assertEqual(c._resolve_thinking_level(None, "medium"), (True, 4096))
+        self.assertEqual(c._resolve_thinking_level(None, "high"), (True, 8192))
+
+    def test_binary_toggle_gets_no_effort(self):
+        # ollama qwen3 是可开关，但不在 effort 白名单 → 只开关、不发强度参数
+        c = self._client("ollama", "qwen3:8b")
+        self.assertEqual(c._resolve_thinking_level(None, "medium"), (True, None))
+        self.assertEqual(c._resolve_thinking_level(None, "high"), (True, None))
+        self.assertEqual(c._resolve_thinking_level(None, "off"), (False, None))
+
+    def test_non_thinking_model_never_thinks_at_any_level(self):
+        c = self._client("ollama", "qwen2.5:7b")
+        for lvl in ("low", "medium", "high"):
+            self.assertEqual(c._resolve_thinking_level(None, lvl), (False, None))
+
+    def test_level_off_overrides_enable_true(self):
+        # 等级优先于布尔：enable_thinking=True 但等级 off → 关
+        c = self._client("deepseek", "deepseek-flash")
+        self.assertEqual(c._resolve_thinking_level(True, "off"), (False, None))
+
+    def test_native_model_stays_on_without_effort(self):
+        # native（reasoner）恒开；不在白名单则不发 effort（native 走不了 toggle wire）
+        c = self._client("deepseek", "deepseek-reasoner")
+        enabled, effort = c._resolve_thinking_level(None, "high")
+        self.assertTrue(enabled)
+        self.assertIsNone(effort)
+
+
 class OllamaPayloadTests(unittest.TestCase):
     """ollama 原生 /api/chat：think 字段恒携带、num_ctx 按画像封顶、输出预算给满。"""
 

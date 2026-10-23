@@ -20,6 +20,8 @@ from config import (
     LLM_MAX_TOKENS, LLM_ENABLE_THINKING, PROMPT_TOKEN_BUDGET, get_runtime,
     model_capability, prompt_token_budget, get_context_window_override,
     output_token_budget, resolve_context_from_docs, _PROVIDER_CONTEXT_DEFAULT,
+    get_thinking_level, model_thinking_effort,
+    _REASONING_EFFORT_MAP, _THINKING_BUDGET_MAP,
 )
 from agent_runtime.local_runtime import local_llm_slot
 from textutil import as_text
@@ -732,8 +734,34 @@ class LLMClient:
             return bool(enable_thinking)
         return False
 
+    def _resolve_thinking_level(self, enable_thinking, thinking_level=None):
+        """把"思考等级"折算成 (是否思考, effort 值)。
+
+        - 基线布尔沿用 _resolve_thinking（现有开关/测试语义零改动）；
+        - 生效等级 = 显式 thinking_level > 全局默认 get_thinking_level()（'' = 不覆盖）；
+        - toggle：等级 != 'off' 即开、== 'off' 即关（等级优先于布尔）；
+        - native：思考恒开，等级只用于调 effort，不能关；
+        - effort 仅在「开思考 + 等级 ∈ low/medium/high + 画像词汇为
+          reasoning_effort/thinking_budget」时才给；binary/none/unknown 恒 None，
+          绝不给上游发陌生参数。
+        """
+        enabled = self._resolve_thinking(enable_thinking)
+        mode = self.capability.get("thinking", "none")
+        lvl = thinking_level or (get_thinking_level() or None)
+        if lvl and mode == "toggle":
+            enabled = (lvl != "off")
+        effort = None
+        if enabled and lvl and lvl != "off":
+            kind = model_thinking_effort(self.provider, self.model, mode=mode)
+            if kind == "reasoning_effort":
+                effort = _REASONING_EFFORT_MAP.get(lvl)
+            elif kind == "thinking_budget":
+                effort = _THINKING_BUDGET_MAP.get(lvl)
+        return enabled, effort
+
     def chat(self, messages, stream=False, temperature=LLM_TEMPERATURE, timeout=None, deadline=None, tools=None,
-             enable_thinking=None, reasoning_sink=None, cancel_event=None, max_output_tokens=None):
+             enable_thinking=None, reasoning_sink=None, cancel_event=None, max_output_tokens=None,
+             thinking_level=None):
         """统一的对话入口。stream=True 时返回一个 token 生成器。
 
         timeout：单次调用超时（秒），默认 self.timeout。
@@ -759,7 +787,7 @@ class LLMClient:
             reasoning_sink.clear()
         if cancel_event is not None and cancel_event.is_set():
             raise GeneratorExit
-        thinking_on = self._resolve_thinking(enable_thinking)
+        thinking_on, thinking_effort = self._resolve_thinking_level(enable_thinking, thinking_level)
         if deadline is not None and time.monotonic() >= deadline:
             raise TimeoutError("本轮已超出截止时间")
 
@@ -832,6 +860,15 @@ class LLMClient:
                 kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking_on else "disabled"}}
             else:
                 kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": bool(thinking_on)}}
+            # 思考强度：仅当画像白名单给出 effort 且本轮开思考时才附带（走 extra_body，
+            # 绕开 OpenAI SDK 对 reasoning_effort 的 Literal 校验，允许 DeepSeek 的 "max"）。
+            # binary/unknown 模型 thinking_effort 恒 None，不发任何陌生参数。
+            if thinking_on and thinking_effort is not None:
+                kind = model_thinking_effort(self.provider, self.model, mode="toggle")
+                if kind == "reasoning_effort":
+                    kwargs["extra_body"]["reasoning_effort"] = thinking_effort
+                elif kind == "thinking_budget":
+                    kwargs["extra_body"]["thinking_budget"] = thinking_effort
 
             # ⚠⚠⚠ **开思考时的两条硬约束，都来自 DeepSeek 官方 API 文档**
             # （api-docs.deepseek.com/api/create-chat-completion）。改这段之前先读：

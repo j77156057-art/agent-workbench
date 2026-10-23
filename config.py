@@ -261,6 +261,19 @@ OUTPUT_TOKEN_RESERVE = int(os.getenv("DOCMIND_OUTPUT_RESERVE", "512"))
 # 仅对本地 OpenAI 兼容服务（llamacpp/ollama）透传 chat_template_kwargs。
 LLM_ENABLE_THINKING = os.getenv("LLM_ENABLE_THINKING", "0") == "1"
 
+# ---- 模型思考等级（off/low/medium/high） ---------------------------------
+# 二元开关之上再加一层"思考强度"：off=关；low/medium/high=开且投入不同 effort。
+# 规范档位对前端与 API 统一；具体厂商词汇在此归一（不是每个模型都吃满三档，
+# 由 model_thinking_effort 画像决定发不发、发哪一种）。
+THINKING_LEVELS = ("off", "low", "medium", "high")
+# reasoning_effort 家族（DeepSeek low/high/max、OpenAI o 系列）的归一映射：
+# medium→high、high→max（DeepSeek 无 medium；OpenAI 的 high 亦映射到 max 以取最强）。
+_REASONING_EFFORT_MAP = {"low": "low", "medium": "high", "high": "max"}
+# thinking_budget 家族（Qwen3）的归一映射（token 预算，开思考时投入）：
+_THINKING_BUDGET_MAP = {"low": 1024, "medium": 4096, "high": 8192}
+# 全局默认等级："" = 不覆盖（回落到二元 LLM_ENABLE_THINKING 的旧行为）。
+LLM_THINKING_LEVEL = (os.getenv("LLM_THINKING_LEVEL", "") or "").strip().lower()
+
 # ---- 模型能力画像 ---------------------------------------------------------
 # 不同模型家族差异很大，不能一套参数打天下：
 # · 本地模型需要按自身上下文窗口扩 num_ctx（窗口小的模型不能盲目给 14k prompt）；
@@ -335,6 +348,23 @@ _TOGGLE_THINK_RULES = (
     # 同一模型，所以一并覆盖。
     ("deepseek", "deepseek-flash"),
     ("deepseek", "deepseek-v4-flash"),
+)
+
+# 每个"可开关"模型实际接受的思考强度参数词汇 —— **保守白名单**：
+# 只有列在这里的 (provider, 模型名子串) 才会附带 reasoning_effort / thinking_budget，
+# 其余 toggle 模型一律降级为二元开关（绝不发陌生参数，避免上游 400）。
+# · "reasoning_effort"：DeepSeek（low/high/max）、OpenAI o 系列（low/medium/high）
+# · "thinking_budget"：Qwen3 家族（token 预算）
+# 匹配顺序：字典插入顺序无关，按 (provider 相等 且 子串命中) 取首个。
+_THINKING_EFFORT_RULES = (
+    ("deepseek", "deepseek-flash", "reasoning_effort"),
+    ("deepseek", "deepseek-v4-flash", "reasoning_effort"),
+    ("openai", "o1", "reasoning_effort"),
+    ("openai", "o3", "reasoning_effort"),
+    ("qwen", "qwen3", "thinking_budget"),
+    ("siliconflow", "qwen3", "thinking_budget"),
+    ("custom", "qwen3", "thinking_budget"),
+    ("llamacpp", "qwen3", "thinking_budget"),
 )
 
 # 视觉能力画像。未知模型不自动把图片交给原模型，除非用户在设置里确认；
@@ -452,6 +482,53 @@ def model_thinking_mode(provider: str, model: str) -> str:
     return "none"
 
 
+def model_thinking_effort(provider: str, model: str, mode: str = None) -> str:
+    """该模型接受哪种思考强度参数词汇：
+    'reasoning_effort' / 'thinking_budget' / 'binary'（只能开关）/ ''（不支持思考）。
+    仅回答"能不能发、发哪一种"，具体形状与取值在 llm.py 落地。
+    mode 可传入"生效后的"思考画像（如经用户覆盖后的值）；None=按内置画像推断。"""
+    p = (provider or "").strip().lower()
+    m = (model or "").strip().lower()
+    if mode is None:
+        mode = model_thinking_mode(provider, model)
+    if mode == "none":
+        return ""
+    if mode == "native":
+        # 原生推理模型（reasoner/qwq/o1…）恒开；只有画像进白名单的（o 系列）才谈 effort。
+        for pp, hint, kind in _THINKING_EFFORT_RULES:
+            if p == pp and hint in m:
+                return kind
+        return "binary"
+    # toggle：命中白名单才发对应词汇，否则二元开关。
+    for pp, hint, kind in _THINKING_EFFORT_RULES:
+        if p == pp and hint in m:
+            return kind
+    return "binary"
+
+
+def model_thinking_levels(provider: str, model: str, mode: str = None) -> list:
+    """前端应渲染的可选档位。
+    [] = 不支持（不显示控件）；['native'] = 恒开单态（不可关，显示"内置"）；
+    ['off','medium'] = 二元开/关；['off','low','medium','high'] = 可细调强度。
+    mode 可传入"生效后的"思考画像；None=按内置画像推断。"""
+    if mode is None:
+        mode = model_thinking_mode(provider, model)
+    effort = model_thinking_effort(provider, model, mode=mode)
+    if effort == "":
+        return []
+    if mode == "native":
+        return ["native"]
+    if effort in ("reasoning_effort", "thinking_budget"):
+        return list(THINKING_LEVELS)
+    return ["off", "medium"]
+
+
+def normalize_thinking_level(value):
+    """把任意输入规范化成 THINKING_LEVELS 之一或 None（None=不覆盖，回落旧行为）。"""
+    v = (value or "").strip().lower()
+    return v if v in THINKING_LEVELS else None
+
+
 def model_vision_mode(provider: str, model: str) -> str:
     """图片能力：native=原生支持，unknown=未确认，none=明确不支持。"""
     p = (provider or "").strip().lower()
@@ -487,6 +564,9 @@ def model_capability(provider: str, model: str, context_window: int = None) -> d
     override = get_model_capability_override(provider, model)
     if override:
         cap.update({k: v for k, v in override.items() if k in ("thinking", "vision", "video")})
+    # 思考强度：按"生效后的"思考画像派生，供前端渲染可选档位、供 llm 决定发不发 effort。
+    cap["thinking_effort"] = model_thinking_effort(provider, model, mode=cap["thinking"])
+    cap["thinking_levels"] = model_thinking_levels(provider, model, mode=cap["thinking"])
     return cap
 
 
@@ -879,6 +959,35 @@ def set_model_capability_override(provider: str, model: str, *, thinking=None, v
 def clear_model_capability_override(provider: str, model: str):
     _MODEL_CAPABILITY_OVERRIDES.pop(_ctx_override_key(provider, model), None)
     save_state("model_capability_overrides", dict(_MODEL_CAPABILITY_OVERRIDES))
+
+
+# ---- 全局默认思考等级（跨请求；前端逐请求覆盖优先于此）----
+# 生效值 ''=未设，回落到二元 LLM_ENABLE_THINKING 旧行为；否则 ∈ THINKING_LEVELS。
+_THINKING_LEVEL_DEFAULT = None  # None=尚未从磁盘加载
+
+
+def get_thinking_level() -> str:
+    """全局默认思考等级；未设置返回 ''（=不覆盖）。"""
+    global _THINKING_LEVEL_DEFAULT
+    if _THINKING_LEVEL_DEFAULT is None:
+        persisted = load_state("llm_thinking_level", None)
+        _THINKING_LEVEL_DEFAULT = normalize_thinking_level(persisted) or ""
+    if _THINKING_LEVEL_DEFAULT:
+        return _THINKING_LEVEL_DEFAULT
+    return LLM_THINKING_LEVEL if LLM_THINKING_LEVEL in THINKING_LEVELS else ""
+
+
+def set_thinking_level(value):
+    """设置全局默认思考等级。value ∈ THINKING_LEVELS；None/''/非法 = 清空（回落 env）。
+    返回规范化后的生效值（''=已清空）。"""
+    global _THINKING_LEVEL_DEFAULT
+    norm = normalize_thinking_level(value)
+    _THINKING_LEVEL_DEFAULT = norm or ""
+    if norm:
+        save_state("llm_thinking_level", norm)
+    else:
+        save_state("llm_thinking_level", "")
+    return _THINKING_LEVEL_DEFAULT
 
 
 # ---- 已保存的模型预设（命名配置，供一键切换；密钥不在这里，走项目 secrets_store）----

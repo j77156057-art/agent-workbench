@@ -35,8 +35,8 @@
 .md-ic {
   font-family: var(--font-mono);
   font-size: .88em;
-  background: color-mix(in srgb, var(--accent) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 9%, transparent);
   border-radius: 5px;
   padding: 1px 5px;
 }

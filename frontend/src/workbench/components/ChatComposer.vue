@@ -19,6 +19,8 @@ const props = defineProps<{
   thinkingEffective: boolean
   thinkingNative: boolean
   thinkingMode: string
+  thinkingLevel: string
+  thinkingAdjustable: boolean
   thinkingTitle: string
   webTitle: string
   usage: ContextUsage | null
@@ -38,6 +40,7 @@ const emit = defineEmits<{
   (e: 'remove-image', index: number): void
   (e: 'update:webOn', v: boolean): void
   (e: 'toggle-thinking'): void
+  (e: 'cycle-thinking'): void
   (e: 'open-model-switcher'): void
   (e: 'toggle-voice'): void
 }>()
@@ -46,6 +49,21 @@ const emit = defineEmits<{
 // （无任何字母或数字，如"？""。。。"）的输入没有可检索意图。这里只做发送按钮的
 // 视觉置灰（真正的 fail-closed 拦截在后端入口）；带附件时照常放行。
 const canSendText = computed(() => /[\p{L}\p{N}]/u.test(props.modelValue || ''))
+
+// 思考档位文案：等级循环 chip 用；缺档时原样回显，不至于空白。
+const THINKING_LEVEL_LABEL: Record<string, string> = {
+  off: '关', low: '低', medium: '中', high: '高', native: '内置',
+}
+const thinkingLevelLabel = computed(
+  () => THINKING_LEVEL_LABEL[props.thinkingLevel] || props.thinkingLevel)
+
+// 思考芯片点击：可调档（多档/二档 toggle）循环等级，否则退回旧的开/关切换。
+// 拆成两个显式 emit —— 直接把三元结果塞进 emit() 会让 vue-tsc 的
+// 重载签名收到 'cycle-thinking' | 'toggle-thinking' 联合类型而报 TS2769。
+function onThinkingChipClick() {
+  if (props.thinkingAdjustable) emit('cycle-thinking')
+  else emit('toggle-thinking')
+}
 
 const inputEl = ref<HTMLTextAreaElement | null>(null)
 const imageInput = ref<HTMLInputElement | null>(null)
@@ -146,13 +164,14 @@ function onVideoPick(ev: Event) {
         :aria-pressed="thinkingEffective"
         :disabled="thinkingNative"
         :title="thinkingTitle"
-        @click="emit('toggle-thinking')"
+        @click="onThinkingChipClick"
       >
         <svg width="12" height="12" viewBox="0 0 12 12">
           <path d="M6 1 L7.1 4.9 L11 6 L7.1 7.1 L6 11 L4.9 7.1 L1 6 L4.9 4.9 Z" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/>
         </svg>
         <span>深度思考</span>
         <span v-if="thinkingNative" class="cd-chip-badge">内置</span>
+        <span v-else-if="thinkingAdjustable" class="cd-chip-badge">{{ thinkingLevelLabel }}</span>
         <span v-else class="cd-switch" :class="{ on: thinkingEffective }"><i /></span>
       </button>
       <span v-else class="cd-chip cd-chip-off" :title="thinkingTitle">

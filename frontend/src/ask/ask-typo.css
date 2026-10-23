@@ -88,8 +88,8 @@ body {
 .answer .md-ic {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 9%, transparent);
   border-radius: 2px;
   padding: 0 4px;
 }

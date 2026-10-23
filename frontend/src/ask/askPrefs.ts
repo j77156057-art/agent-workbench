@@ -24,7 +24,8 @@ export type AskPrefs = {
 const KEY = 'docmind.askPrefs'
 // 这两个开关本来就有存储（useModelConfig 写的 docmind.chatThinking / chatWeb，问答页与工作台对话台共享），
 // 设置只是补一个入口 —— 不另造 key，避免同一个状态两个数据源打架。
-const THINKING_KEY = 'docmind.chatThinking'
+const THINKING_KEY = 'docmind.chatThinking'          // 旧布尔镜像（开/关）
+const THINKING_LEVEL_KEY = 'docmind.chatThinkingLevel' // 新唯一真源（off/low/medium/high）
 const WEB_KEY = 'docmind.chatWeb'
 
 // 2026-10-08 删掉了原来的 ASK_PREFS_EVENT（'docmind:askprefs'）：偏好改成一份共享
@@ -50,7 +51,8 @@ export function loadAskPrefs(): AskPrefs {
       maxRefs: typeof p.maxRefs === 'number' && p.maxRefs >= 0 ? p.maxRefs : ASK_PREFS_DEFAULT.maxRefs,
       // 老用户的这两个开关可能早就在 localStorage 里（点过一次 chip 就写进去了），
       // 以存储里的真实值为准，别把人家已经开着的默认状态显示成关。
-      defaultThinking: readStored(THINKING_KEY),
+      // 思考：新等级键真源优先（非 off 即开），无等级键时回落旧布尔镜像。
+      defaultThinking: readThinkingStored(),
       defaultWeb: readStored(WEB_KEY),
     }
   } catch {
@@ -66,6 +68,18 @@ function readStored(key: string): boolean {
   }
 }
 
+// 思考默认（布尔视图）：新等级键真源优先 —— 非 'off' 即视为「开」（含 'native'）；
+// 还没写过等级键的老用户回落到旧的 '1'/'0' 镜像。
+function readThinkingStored(): boolean {
+  try {
+    const lv = window.localStorage.getItem(THINKING_LEVEL_KEY)
+    if (lv != null) return lv !== 'off'
+  } catch {
+    /* 读不了就回落旧 key */
+  }
+  return readStored(THINKING_KEY)
+}
+
 export function saveAskPrefs(p: AskPrefs): void {
   // 先同步内存视图再写存储：存储可能因隐私模式/策略被拒，但本次会话内的生效
   // 不能依赖它成功（所以下面 catch 里不 return —— 界面已经跟着变了）。
@@ -75,6 +89,14 @@ export function saveAskPrefs(p: AskPrefs): void {
     // 必须镜像回 useModelConfig 那两个共享 key：读的时候走的是这两个 key（老用户点过 chip 就有值），
     // 只写 askPrefs 的话设置里勾了、芯片不翻、刷新后又变回关 —— 同一个状态两个数据源会打架。
     window.localStorage.setItem(THINKING_KEY, p.defaultThinking ? '1' : '0')
+    // 等级键只在「开/关意图真的翻转」时才动，避免保存无关偏好把工作台选定的 low/high 顺带降级。
+    const cur = window.localStorage.getItem(THINKING_LEVEL_KEY)
+    const wantOn = p.defaultThinking
+    if (cur == null) {
+      window.localStorage.setItem(THINKING_LEVEL_KEY, wantOn ? 'medium' : 'off')
+    } else if ((cur !== 'off') !== wantOn) {
+      window.localStorage.setItem(THINKING_LEVEL_KEY, wantOn ? 'medium' : 'off')
+    }
     window.localStorage.setItem(WEB_KEY, p.defaultWeb ? '1' : '0')
   } catch {
     /* 存不下不影响当前会话内的使用 */

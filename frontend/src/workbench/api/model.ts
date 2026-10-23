@@ -19,6 +19,10 @@ export interface ModelCapability {
   vision: 'native' | 'harness' | 'none' | 'unknown' | string
   /** native=原生视频 / frames=Harness 抽帧 / none=不支持 / unknown=待确认 */
   video: 'native' | 'frames' | 'none' | 'unknown' | string
+  /** 接受的思考强度参数词汇：reasoning_effort / thinking_budget / binary / ''(不支持) */
+  thinking_effort?: 'reasoning_effort' | 'thinking_budget' | 'binary' | '' | string
+  /** 前端应渲染的可选思考档位：[] = 不支持；['native'] = 恒开；off/low/medium/high = 可调 */
+  thinking_levels?: string[]
   cloud: boolean
 }
 
@@ -138,6 +142,8 @@ export interface ModelConfigInfo {
   /** 用户手填的窗口覆盖；0/缺省 = 自动（实时探测或内置画像） */
   context_window_override?: number
   capability_override?: { thinking?: string; vision?: string; video?: string }
+  /** 全局默认思考等级（''=未覆盖）；逐请求等级优先于此 */
+  thinking_level_default?: string
   /** 当前生效窗口来源：custom 手填 / probe Ollama 实时探测 / profile 内置画像 */
   context_source?: 'custom' | 'probe' | 'profile'
   /** AI 越界访问模式：safe=仅限项目内；high=允许受控越界读写（须配置白名单） */
@@ -184,6 +190,8 @@ export interface SaveModelReq {
   thinking_capability?: string
   vision_capability?: string
   video_capability?: string
+  /** 全局默认思考等级：off/low/medium/high 设置；''=清空；undefined=不改动 */
+  thinking_level?: string
   /** AI 越界访问模式：'safe' | 'high'；undefined=不改动 */
   external_access_mode?: 'safe' | 'high'
   /** 模型选择模式：'fixed' | 'auto'；undefined=不改动 */

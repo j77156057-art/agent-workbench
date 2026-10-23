@@ -31,7 +31,7 @@ export const aiApi = {
   askGrounded(
     question: string,
     h: SseStreamHandlers,
-    opts: { web?: boolean; thinking?: boolean | null; images?: Blob[]; sessionId?: string; uiContext?: ChatUiContext; visualTimeline?: { at: string; observation: string }[]; workflowId?: string; feedbackId?: string; turnId?: string } = {},
+    opts: { web?: boolean; thinking?: boolean | null; thinkingLevel?: string | null; images?: Blob[]; sessionId?: string; uiContext?: ChatUiContext; visualTimeline?: { at: string; observation: string }[]; workflowId?: string; feedbackId?: string; turnId?: string } = {},
   ): Promise<void> {
     const fd = new FormData()
     fd.append('question', question)
@@ -50,6 +50,8 @@ export const aiApi = {
     fd.append('web_mode', opts.web ? '1' : '0')
     if (opts.thinking === true) fd.append('thinking_mode', '1')
     else if (opts.thinking === false) fd.append('thinking_mode', '0')
+    // 思考等级（off/low/medium/high）：显式给出才发；与 thinking_mode 并存，后端等级优先。
+    if (opts.thinkingLevel) fd.append('thinking_level', opts.thinkingLevel)
     // P2：复用既有 turn_id，让 GET partial 拉到这条 turn 的所有事件
     if (opts.turnId) fd.append('turn_id', opts.turnId)
     // 多模态：附带图片（后端按 filename 扩展名 + 文件头魔数双重校验）

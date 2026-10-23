@@ -93,6 +93,9 @@ from config import (
     get_context_window_override,
     get_model_capability_override,
     set_model_capability_override,
+    get_thinking_level,
+    set_thinking_level,
+    normalize_thinking_level,
     load_model_presets,
     upsert_model_preset,
     remove_model_preset,
@@ -2484,6 +2487,7 @@ async def chat(
     plan_mode: str = Form(""),
     web_mode: str = Form(""),
     thinking_mode: str = Form(""),
+    thinking_level: str = Form(""),
     narration_mode: str = Form(""),
     images: list[UploadFile] = File(default=None),
     turn_id: str = Form(""),
@@ -2500,6 +2504,7 @@ async def chat(
     plan_mode = _plain_field(plan_mode)
     web_mode = _plain_field(web_mode)
     thinking_mode = _plain_field(thinking_mode)
+    thinking_level = _plain_field(thinking_level)
     narration_mode = _plain_field(narration_mode)
     turn_id = _plain_field(turn_id)
     if images is not None and not isinstance(images, list):
@@ -2732,6 +2737,8 @@ async def chat(
     web_enabled_override = web_mode.strip().lower() in ("1", "true", "yes", "on")
     thinking_enabled_override = (thinking_mode.strip().lower() in ("1", "true", "yes", "on")
                                  if thinking_mode.strip() else None)
+    # 思考等级：空串=不覆盖（沿用全局默认）；off/low/medium/high 显式覆盖，非法值按 None。
+    thinking_level_override = normalize_thinking_level(thinking_level) if thinking_level.strip() else None
     # 过程解说：**空字符串 = 不覆盖**，于是 agent.NARRATION 的默认（开）生效。
     # ⚠ 不能写成 `in (...)` 无条件 —— 那样前端不传这个字段时会把解说关掉，
     # 变成「只有显式开启才开」，与默认开的契约相反。
@@ -2874,6 +2881,7 @@ async def chat(
                                 ingested_sources=tuple(sorted(_INGESTED)),
                                 web_enabled=web_enabled_override,
                                 thinking_enabled=thinking_enabled_override,
+                                thinking_level=thinking_level_override,
                                 tool_mode=tool_mode_override,
                                 narration=narration_override,
                                 plan_mode=plan_mode_override,
@@ -4819,6 +4827,8 @@ class ConfigReq(BaseModel):
     thinking_capability: Optional[str] = None
     vision_capability: Optional[str] = None
     video_capability: Optional[str] = None
+    # 全局默认思考等级：off/low/medium/high 设置；''=清空回落默认；None=不变
+    thinking_level: Optional[str] = None
     # AI 越界访问模式：'safe'=仅项目内；'high'=允许受控越界读写。None=不变
     external_access_mode: Optional[str] = None
     # 模型选择模式：'fixed'=固定用当前模型；'auto'=每轮按任务复杂度在本地/云端间自动路由
@@ -4911,6 +4921,8 @@ async def get_config():
         # 当前模型能力：当前运行客户端一致时直接取其实例画像（含 Ollama 实时探测结果），
         # 否则按静态画像渲染（自定义覆盖优先级已在 model_capability 内处理）
         "capability": _live_capability(prov, eff_model) or model_capability(prov, eff_model),
+        # 全局默认思考等级（''=未覆盖，沿用二元开关旧行为）；逐请求覆盖优先于此。
+        "thinking_level_default": get_thinking_level(),
         "capability_override": _cap_override,
         # 当前生效窗口的来源：custom 手填 / probe Ollama 实时探测 / profile 内置画像
         "context_source": _context_source(prov, eff_model),
@@ -5735,6 +5747,17 @@ async def _apply_config(req: ConfigReq):
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+    # 全局默认思考等级：None=不变；''=清空回落；off/low/medium/high=设置；非法值 400。
+    if req.thinking_level is not None:
+        raw = str(req.thinking_level).strip()
+        if raw == "":
+            set_thinking_level("")
+        else:
+            norm = normalize_thinking_level(raw)
+            if norm is None:
+                return JSONResponse({"ok": False, "error": f"无效的思考等级: {raw}"}, status_code=400)
+            set_thinking_level(norm)
+
     # 探活/校验全部通过后才落窗口覆盖，紧接着重建客户端即按新窗口算预算
     if req.context_window is not None:
         set_context_window_override(req.provider, target_model, req.context_window)
@@ -5880,6 +5903,7 @@ async def _apply_config(req: ConfigReq):
         # 用新建客户端上的画像：含 Ollama 实时探测结果（model_capability 静态调用拿不到）
         "capability": new_llm.capability,
         "capability_override": get_model_capability_override(prov, eff_model) or {},
+        "thinking_level_default": get_thinking_level(),
         "context_source": getattr(new_llm, "context_source", "profile"),
         "context_window_override": get_context_window_override(prov, eff_model) or 0,
         "ingested_files": sorted(_INGESTED),

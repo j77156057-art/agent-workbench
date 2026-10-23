@@ -4260,6 +4260,9 @@ class Agent:
         self.web_enabled = False
         # 深度思考开关：None=沿用模型默认/全局配置；True/False 按模型画像生效。
         self.thinking_enabled = None
+        # 深度思考等级：None=沿用全局默认/二元；'off'/'low'/'medium'/'high' 逐请求覆盖，
+        # 与 thinking_enabled 并存（等级优先于布尔），仅在模型画像支持时折算成 effort。
+        self.thinking_level = None
         # 单次截断续写纠偏时临时关思考：思考型模型（qwen3 / reasoner）会把整段
         # 输出预算烧在 reasoning 上（config.py:242 已载明），导致 Final Answer 永远写不完、
         # 续写也再被截断，运行台一片"续写纠偏"。重试时关思考，把 3072 token 全留给答案。
@@ -4991,7 +4994,7 @@ class Agent:
         return head + trail
 
     def run(self, question, stream=True, images=None, deadline=None, *,
-            web_enabled=None, thinking_enabled=None, tool_mode=None, plan_mode=None,
+            web_enabled=None, thinking_enabled=None, thinking_level=None, tool_mode=None, plan_mode=None,
             narration=None,
             llm=None, system_context=None, ingested_sources=None, cancel_event=None):
         """执行一次问答（逐请求开关注入 + trace 埋点与会话落盘的外壳）。
@@ -5011,13 +5014,17 @@ class Agent:
         + 摘要压缩），此处只负责覆盖注入与还原。
         """
         # 生成器体开头：快照原值，None 表示不改动该项。
-        prev = (self.web_enabled, self.thinking_enabled, self.tool_mode, self.plan_mode,
+        prev = (self.web_enabled, self.thinking_enabled, self.thinking_level,
+                self.tool_mode, self.plan_mode,
                 self.narration, self._request_system_context, self.ingested_sources)
         prev_llm = self.llm
         if web_enabled is not None:
             self.web_enabled = bool(web_enabled)
         if thinking_enabled is not None:
             self.thinking_enabled = bool(thinking_enabled)
+        if thinking_level is not None:
+            from config import normalize_thinking_level
+            self.thinking_level = normalize_thinking_level(thinking_level)
         if tool_mode is not None:
             self.tool_mode = tool_mode
         if narration is not None:
@@ -5086,7 +5093,7 @@ class Agent:
             end_read_conversation(_read_conv_token)
             _memory.reset(memory_token)
             reset_project_intro_request(project_intro_token)
-            (self.web_enabled, self.thinking_enabled,
+            (self.web_enabled, self.thinking_enabled, self.thinking_level,
              self.tool_mode, self.plan_mode, self.narration,
              self._request_system_context, self.ingested_sources) = prev
             self.llm = prev_llm
@@ -5748,6 +5755,8 @@ class Agent:
             finish_reason = None
             # 续写纠偏重试：本次调用暂时关思考，把输出预算留给答案本身
             eff_thinking = False if (self._suppress_thinking_once or pending_final is not None) else self.thinking_enabled
+            # 等级同样被抑制态盖过：续写/收尾轮强制 'off'，否则透传本轮/全局等级。
+            eff_level = "off" if (self._suppress_thinking_once or pending_final is not None) else self.thinking_level
             native_override = None
             use_tools = self._native_enabled() and pending_final is None
             tools_arg = tool_schemas(self._effective_tool_names(), registry=self.tools) if use_tools else None
@@ -5799,6 +5808,10 @@ class Agent:
                             "enable_thinking": eff_thinking,
                             "reasoning_sink": reasoning_q,
                         }
+                        # 逐请求思考等级：仅在有意义时传入（None 交回模型/全局默认），
+                        # 与 cancel_event 一样避免给未声明该参的旧 LLM 桩添乱。
+                        if eff_level is not None:
+                            chat_kwargs["thinking_level"] = eff_level
                         # 兼容旧的测试/插件 LLM：只有真正提供取消事件时才传入新参数。
                         if cancel_event is not None:
                             chat_kwargs["cancel_event"] = cancel_event
@@ -5859,6 +5872,8 @@ class Agent:
                             "tools": tools_arg,
                             "enable_thinking": eff_thinking,
                         }
+                        if eff_level is not None:
+                            chat_kwargs["thinking_level"] = eff_level
                         if cancel_event is not None:
                             chat_kwargs["cancel_event"] = cancel_event
                         if lookup_output_limit and isinstance(self.llm, LLMClient):
@@ -7380,6 +7395,7 @@ class Agent:
         # 子代理 web_enabled 仍为 False，researcher 等子任务的 web_* 会被 _web_blocked 全拦截。
         child.web_enabled = self.web_enabled
         child.thinking_enabled = self.thinking_enabled
+        child.thinking_level = self.thinking_level
         question = spec["hint"]
         if ad_hoc_role:
             # 自造角色：`spec["hint"]` 是空的。如果不补，子代理收到的第一句话

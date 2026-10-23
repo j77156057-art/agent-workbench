@@ -41,6 +41,7 @@ const {
   settingsOpen: settingsVisible,
   webOn, thinkingOn,
   thinkingSupported, thinkingNative, thinkingEffective, visionSupported,
+  toggleThinking, setThinkingLevel,
   loadModelConfig: loadConfig, onModelSaved,
 } = useModelConfig({
   onSaved: (info) => {
@@ -64,7 +65,7 @@ const {
 // 改「引用条数上限」之类无关偏好不再顺带搅动输入区。
 watch(() => [prefs.defaultThinking, prefs.defaultWeb] as const, ([t, w]) => {
   if (sending.value) return
-  thinkingOn.value = t
+  setThinkingLevel(t ? 'medium' : 'off')
   webOn.value = w
 })
 
@@ -918,7 +919,7 @@ onUnmounted(() => { window.clearInterval(ghostTimer) })
                 :class="{ on: thinkingEffective, native: thinkingNative }"
                 :disabled="thinkingNative"
                 :title="thinkingNative ? '该模型内置深度思考，始终开启' : '回答前先推理，耗时更长但更稳'"
-                @click="thinkingOn = !thinkingOn"
+                @click="toggleThinking()"
               >深度思考</button>
               <button
                 class="chip"

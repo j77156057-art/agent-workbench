@@ -122,6 +122,27 @@ class GetConfigShapeTests(unittest.TestCase):
         self.assertNotIn("api_key", resp)
 
 
+class ThinkingLevelConfigTests(unittest.TestCase):
+    """/api/config 全局默认思考等级：设置回显 + GET 一致性（mock，不触网）。"""
+
+    def test_set_and_echo_thinking_level(self):
+        prev = config.get_thinking_level()
+        try:
+            resp = _call(provider="mock", model="mock", thinking_level="high")
+            self.assertTrue(resp["ok"])
+            self.assertEqual(resp["thinking_level_default"], "high")
+            self.assertIn("thinking_levels", resp["capability"])
+            self.assertIn("thinking_effort", resp["capability"])
+            # GET 与刚设置的默认一致
+            async def go():
+                with patch("api.check_ollama", return_value={"reachable": False}):
+                    return await api.get_config()
+            got = asyncio.run(go())
+            self.assertEqual(got["thinking_level_default"], "high")
+        finally:
+            config.set_thinking_level(prev or "")
+
+
 class ContextCandidateParseTests(unittest.TestCase):
     """搜索结果文本中的窗口数值提取（千分位/k/m/万；无关数字不采信）。"""
 
