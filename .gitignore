@@ -115,3 +115,25 @@ docs/screenshots/visual/diff-*.png
 # 区域治理的 bug 区（init_regions() 建，dev_capture_bug 往里归档异常 JSON）。
 # 是运行时产物不是源码 —— 不忽略的话任何一次 `git add -A` 都会把当天的缺陷单带进版本库。
 bugs/
+
+# ===== 内部过程文档：交接 / 任务清单 / 缺陷清单 / 验收报告 / 接线阶段档 / 方法论 =====
+# 都是开发过程工件，对使用者无价值且含大量本机/内部细节。git rm --cached 下架，本地保留。
+# 如需重新公开：git add -f <file>
+docs/HANDOFF-vibecoding.md
+docs/PARALLEL-LANES.md
+docs/next-steps.md
+docs/known-defect-*.md
+docs/task-*.md
+docs/*wiring*.md
+docs/*-kickoff.md
+docs/frontend-task-project-identity.md
+docs/realtime-r12-*.md
+docs/harness-research-verified.md
+docs/visual-baseline-diff-report.md
+docs/mcp-autoconnect/verification-*.md
+docs/analysis/
+docs/wip-*.md
+docs/cockpit-v2-*.md
+docs/ui-slimdown-plan.md
+docs/autonomous-development-cockpit-design.md
+docs/*-discipline.md
