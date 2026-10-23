@@ -1196,6 +1196,8 @@ def _apply_persisted_state():
 
     # 网络搜索 / URL 获取配置恢复
     _apply_web_search_state(data)
+    # 长期记忆优化总开关恢复
+    _apply_memory_state(data)
     # 语音模型（STT / TTS / 实时 Omni）恢复
     _apply_voice_state(data)
 
@@ -1493,3 +1495,45 @@ def _apply_web_search_state(data):
     pb = data.get("web_search_prefer_builtin")
     if pb is not None and "web_search_prefer_builtin" not in _RUNTIME:
         _RUNTIME["web_search_prefer_builtin"] = bool(pb)
+
+
+# ---- 长期记忆优化：一个用户可点的总开关（默认关）----
+# 单一 UI 开关背后同时驱动 agent_memory 读取的三个 runtime 子键，避免让用户
+# 面对三个互相依存的复选框。子键名与 agent_memory._bool_setting 约定一致。
+_MEMORY_SUBKEYS = ("memory_distill", "memory_embed", "memory_enhanced")
+
+
+def _env_truthy(name):
+    return str(os.getenv(name, "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_memory_optimized():
+    """总开关当前值：显式 runtime 优先；否则回落环境（以 DISTILL 为主信号，
+    与 agent_memory 的"逐字 episode 就地蒸馏"这一核心收益保持一致）。"""
+    v = get_runtime("memory_optimized")
+    if v is not None:
+        return bool(v)
+    return _env_truthy("DOCMIND_MEMORY_DISTILL")
+
+
+def set_memory_optimized(enabled):
+    """把总开关落库并 fan-out 到三个子键（set_runtime + save_state，重启后仍生效）。"""
+    enabled = bool(enabled)
+    set_runtime("memory_optimized", enabled)
+    for key in _MEMORY_SUBKEYS:
+        set_runtime(key, enabled)
+    save_state("memory_optimized", enabled)
+    return enabled
+
+
+def _apply_memory_state(data):
+    """开机恢复：master 键优先，向后同步三个子键；显式 set_runtime 覆盖磁盘值。"""
+    m = data.get("memory_optimized")
+    if m is None:
+        return
+    m = bool(m)
+    if "memory_optimized" not in _RUNTIME:
+        _RUNTIME["memory_optimized"] = m
+    for key in _MEMORY_SUBKEYS:
+        if key not in _RUNTIME:
+            _RUNTIME[key] = m

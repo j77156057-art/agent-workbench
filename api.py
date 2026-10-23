@@ -74,6 +74,8 @@ from config import (
     set_web_fetch_api_key,
     get_web_fetch_api_url,
     set_web_fetch_api_url,
+    get_memory_optimized,
+    set_memory_optimized,
     get_voice_config,
     effective_voice_config,
     set_voice_config,
@@ -4843,6 +4845,8 @@ class ConfigReq(BaseModel):
     web_fetch_provider: Optional[str] = None
     web_fetch_api_key: Optional[str] = None
     web_fetch_api_url: Optional[str] = None
+    # 长期记忆优化总开关（异步蒸馏 + 重要度/语义混合召回）：None=不变；True/False=显式设。默认关
+    memory_optimized: Optional[bool] = None
 
 
 def _build_time() -> str:
@@ -4945,6 +4949,8 @@ async def get_config():
         "web_fetch_provider": get_web_fetch_provider(),
         "web_fetch_api_url": get_web_fetch_api_url(),
         "web_fetch_has_key": bool(get_web_fetch_api_key()),
+        # 长期记忆优化总开关（异步蒸馏 + 混合召回）当前状态，供面板回显勾选
+        "memory_optimized": get_memory_optimized(),
         # 模型选择模式 + 自动模式所用云端预设 + 已保存预设（含每预设 has_key）
         "llm_mode": get_runtime("llm_mode") or "fixed",
         "auto_cloud_preset_id": get_runtime("auto_cloud_preset_id") or "",
@@ -5056,6 +5062,26 @@ async def set_agent_capacity(req: AgentCapacityReq):
     set_runtime(agent_capacity.SETTING_KEY, settings)
     save_state(agent_capacity.SETTING_KEY, settings)
     return {"ok": True, "settings": settings}
+
+
+# ---- 长期记忆优化总开关（专用端点）----
+# 单独开一条端点，而不是走 /api/config：后者会**无条件** save_state("llm_provider",
+# req.provider)，用一个只带 memory_optimized 的局部请求去打 /api/config 会把用户
+# 真实的 LLM provider 覆盖成默认的 mock。这里只碰记忆开关这一个 runtime 键，安全。
+class MemorySettingsReq(BaseModel):
+    memory_optimized: Optional[bool] = None
+
+
+@app.get("/api/memory-settings")
+async def get_memory_settings():
+    return {"ok": True, "memory_optimized": get_memory_optimized()}
+
+
+@app.post("/api/memory-settings")
+async def set_memory_settings(req: MemorySettingsReq):
+    if req.memory_optimized is not None:
+        set_memory_optimized(req.memory_optimized)
+    return {"ok": True, "memory_optimized": get_memory_optimized()}
 
 
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://127.0.0.1:11434")
@@ -5890,6 +5916,8 @@ async def _apply_config(req: ConfigReq):
         set_web_fetch_api_key(req.web_fetch_api_key)
     if req.web_fetch_api_url is not None:
         set_web_fetch_api_url(req.web_fetch_api_url)
+    if req.memory_optimized is not None:
+        set_memory_optimized(req.memory_optimized)
 
     prov = get_runtime("llm_provider") or LLM_PROVIDER
     emb = get_runtime("embedding_provider") or EMBEDDING_PROVIDER
@@ -5916,6 +5944,7 @@ async def _apply_config(req: ConfigReq):
         "web_fetch_provider": get_web_fetch_provider(),
         "web_fetch_api_url": get_web_fetch_api_url(),
         "web_fetch_has_key": bool(get_web_fetch_api_key()),
+        "memory_optimized": get_memory_optimized(),
         "llm_mode": get_runtime("llm_mode") or "fixed",
         "auto_cloud_preset_id": get_runtime("auto_cloud_preset_id") or "",
         "model_presets": _presets_payload(),

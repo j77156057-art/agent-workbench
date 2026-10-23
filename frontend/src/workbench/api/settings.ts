@@ -29,6 +29,8 @@ export interface SettingsConfigInfo {
   web_fetch_provider: WebFetchProvider
   web_fetch_api_url: string
   web_fetch_has_key: boolean
+  /** 长期记忆优化总开关（异步蒸馏 + 重要度/语义混合召回）当前状态，默认关。 */
+  memory_optimized: boolean
 }
 
 export interface SaveSettingsReq {
@@ -39,6 +41,8 @@ export interface SaveSettingsReq {
   web_fetch_provider?: WebFetchProvider
   web_fetch_api_key?: string
   web_fetch_api_url?: string
+  /** 长期记忆优化总开关；不传=不变。 */
+  memory_optimized?: boolean
 }
 
 export interface AgentCapacitySettings {
@@ -126,6 +130,22 @@ export const agentCapacityApi = {
   },
   save(settings: AgentCapacitySettings): Promise<{ ok?: boolean; settings?: AgentCapacitySettings; error?: string }> {
     return rawJson('/api/agent-capacity', settings)
+  },
+}
+
+/** 长期记忆优化总开关：走专用 /api/memory-settings，刻意不复用 /api/config
+ *  （后者局部保存会把 LLM provider 覆盖成 mock）。切换即生效 + 落盘，重启仍保持。 */
+export interface MemorySettingsInfo {
+  ok?: boolean
+  memory_optimized?: boolean
+  error?: string
+}
+export const memorySettingsApi = {
+  get(): Promise<MemorySettingsInfo> {
+    return request('/api/memory-settings')
+  },
+  save(memory_optimized: boolean): Promise<MemorySettingsInfo> {
+    return rawJson('/api/memory-settings', { memory_optimized })
   },
 }
 

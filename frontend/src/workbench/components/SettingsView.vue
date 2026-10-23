@@ -4,7 +4,7 @@
 // MCP 走 mcpApi；智能体为本地预设（localStorage），后续可升级为后端持久化。
 import { reactive, ref, watch, computed, onUnmounted } from 'vue'
 import {
-  settingsApi, agentCapacityApi, mcpApi, harnessApi,
+  settingsApi, agentCapacityApi, memorySettingsApi, mcpApi, harnessApi,
   agentApi, modelResidencyApi,
   WEB_SEARCH_PROVIDERS, WEB_FETCH_PROVIDERS,
   type SettingsConfigInfo, type ModelConfigInfo, type ProviderOption, type McpServer,
@@ -367,6 +367,11 @@ const capacitySaving = ref(false)
 const capacityError = ref('')
 const capacitySaved = ref('')
 
+// 长期记忆优化总开关：一个可点的 switch，切换即 POST /api/memory-settings 生效并落盘。
+const memoryOptimized = ref(false)
+const memorySaving = ref(false)
+const memorySaved = ref('')
+
 /** 上界只从载荷取。载荷没到（还在加载 / 老后端没有 ranges）时返回 0，
  *  调用方据此**不设 max** —— 回落到一个硬编码数字就等于把刚删掉的第二份拷贝请回来。 */
 function capacityMax(field: CapacityField): number {
@@ -573,10 +578,34 @@ async function loadConfig() {
     wfProvider.value = c.web_fetch_provider
     wfApiKey.value = ''
     wfApiUrl.value = c.web_fetch_api_url || ''
+    memoryOptimized.value = !!c.memory_optimized
   } catch (e) {
     errorMsg.value = (e as { message?: string }).message || '读取配置失败'
   } finally {
     loading.value = false
+  }
+}
+
+// 切换「长期记忆优化」总开关：翻当前值 → POST 专用端点 → 以服务端回读值为准。
+async function toggleMemory() {
+  if (memorySaving.value) return
+  const want = !memoryOptimized.value
+  memorySaving.value = true
+  memorySaved.value = ''
+  errorMsg.value = ''
+  try {
+    const res = await memorySettingsApi.save(want)
+    if (res.ok === false) {
+      errorMsg.value = res.error || '切换失败'
+      return
+    }
+    // 以服务端为准回写，避免 UI 与实际 runtime 漂移
+    memoryOptimized.value = !!res.memory_optimized
+    memorySaved.value = memoryOptimized.value ? '已开启：每轮记忆将后台蒸馏精简、低价值轮次自动作废' : '已关闭：恢复逐字记忆（与改动前一致）'
+  } catch (e) {
+    errorMsg.value = (e as { message?: string }).message || '切换失败'
+  } finally {
+    memorySaving.value = false
   }
 }
 
@@ -1258,7 +1287,12 @@ const powerMsg = ref('')
 
 async function loadPower() {
   try {
-    power.value = await modelResidencyApi.status()
+    // 先 await 拿结果再赋值：immediate 监视器会在 setup 期间同步调用本函数，
+    // 而 `power` 常量声明在监视器之后。若写成 `power.value = await ...`，JS 会
+    // 在 await 之前就去解析左边的 `power` 引用，触发 TDZ「Cannot access before
+    // initialization」。把赋值挪到 await 之后（此时 setup 已完成、常量已就绪）即可根治。
+    const status = await modelResidencyApi.status()
+    power.value = status
   } catch {
     power.value = null
   }
@@ -1854,6 +1888,15 @@ async function powerAction(action: 'on' | 'off') {
                 {{ capacitySaving ? '保存中…' : '保存工作负载设置' }}
               </button>
             </div>
+            <div class="sv-sep"></div>
+            <h4 class="sv-h4">长期记忆优化</h4>
+            <p class="sv-hint">开启后，每轮对话不再整段逐字写入长期记忆：系统会在后台用模型把它蒸馏成精简的可复用记忆，寒暄/纯命令这类低价值轮次自动作废，召回时再叠加重要度与语义相关度排序。关闭则完全恢复逐字记忆（与改动前一致）。切换即时生效并落盘，重启后仍保持。</p>
+            <label class="sv-toggle-row">
+              <input type="checkbox" :checked="memoryOptimized" :disabled="memorySaving" @change="toggleMemory" />
+              <span>启用长期记忆优化（异步蒸馏 + 混合召回）</span>
+            </label>
+            <p v-if="memorySaving" class="sv-field-sub">正在切换…</p>
+            <p v-else-if="memorySaved" class="sv-ok">{{ memorySaved }}</p>
             <div class="sv-sep"></div>
             <h4 class="sv-h4">智能体（本地预设）</h4>
             <p class="sv-hint">保存常用 Agent 预设（名称 / 模型 / 提示词），便于在对话前快速切换。当前存于本机浏览器。</p>

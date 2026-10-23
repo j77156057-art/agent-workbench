@@ -2786,6 +2786,79 @@ def _episode_is_backed(final_text, tool_evidence):
         return False
 
 
+# ---- 长期记忆优化 W-B：异步 LLM 蒸馏（把逐字 episode 精简 / 作废低价值轮次）----
+# 单线程 daemon 池：蒸馏是纯后台精炼，绝不影响本轮答复；一次一条串行即可，
+# 既限住并发 LLM 调用、又保证任何异常都吞在这条线程里、不冒泡回请求路径。
+_DISTILL_POOL = None
+_DISTILL_POOL_LOCK = None
+
+
+def _distill_pool():
+    global _DISTILL_POOL, _DISTILL_POOL_LOCK
+    if _DISTILL_POOL is None:
+        if _DISTILL_POOL_LOCK is None:
+            import threading as _threading
+            _DISTILL_POOL_LOCK = _threading.Lock()
+        with _DISTILL_POOL_LOCK:
+            if _DISTILL_POOL is None:
+                from concurrent.futures import ThreadPoolExecutor as _TPE
+                pool = _TPE(max_workers=1, thread_name_prefix="memdistill")
+                # 让池内线程是 daemon，进程退出不被后台蒸馏卡住。
+                try:
+                    import threading as _threading
+                    _orig = pool._adjust_thread_count
+
+                    def _daemon_adjust(_pool=pool, _orig=_orig, _th=_threading):
+                        before = set(_pool._threads)
+                        _orig()
+                        for t in _pool._threads - before:
+                            try:
+                                t.daemon = True
+                            except RuntimeError:
+                                pass
+                    pool._adjust_thread_count = _daemon_adjust
+                except Exception:  # noqa: BLE001 —— 拿不到内部结构就用默认线程，功能不受影响
+                    pass
+                _DISTILL_POOL = pool
+    return _DISTILL_POOL
+
+
+def _extract_json_obj(text):
+    """从模型答复里抠出第一个**顶层平衡**的 {...} JSON 对象并解析；失败返回 None。
+    容忍 JSON 前后有解释文字 / 代码围栏（模型常这么做）。"""
+    if not text:
+        return None
+    s = str(text)
+    start = s.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(s)):
+            ch = s[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(s[start:i + 1])
+                        except Exception:  # noqa: BLE001
+                            break
+        start = s.find("{", start + 1)
+    return None
+
+
 def _episode_number_audit(final_text, tool_evidence):
     """对 final 里的数字做 per-number 来源审计（B3：W-C 背书粒度细化，§5 高估问题的可观测化）。
 
@@ -5441,7 +5514,7 @@ class Agent:
                 try:
                     _ep_backed = _episode_is_backed(
                         final_text, getattr(turn, "tool_evidence", None) if turn is not None else None)
-                    _memory.remember(self.memory_scope, "episode", _memory.scrub(question, 200),
+                    _ep_mid = _memory.remember(self.memory_scope, "episode", _memory.scrub(question, 200),
                         ("未完成：" + (error or "停止/中断") if error or not final_text else "模型报告（尚需核对验收）：" + final_text),
                         "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed)
                     # B3：per-number 背书审计旁路（§5 高估观测化）。**只观测、不改 backed/trust/
@@ -5453,6 +5526,14 @@ class Agent:
                                 final_text,
                                 getattr(turn, "tool_evidence", None) if turn is not None else None),
                             key=question)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    # 长期记忆优化 W-B：把逐字 episode 交后台就地蒸馏/作废。默认关
+                    # （DOCMIND_MEMORY_DISTILL 未设）→ 直接 return，行为与今天逐字节一致。
+                    # 上面同步逐字写入**已先落库**保持久性，这里只是可选非阻塞精炼；
+                    # 单独包 try——蒸馏触发异常绝不影响上面已完成的落库。
+                    try:
+                        self._schedule_memory_distill(_ep_mid, question, final_text, error, _ep_backed)
                     except Exception:  # noqa: BLE001
                         pass
                 except Exception:
@@ -7150,6 +7231,69 @@ class Agent:
             except Exception:  # noqa: BLE001
                 pass
         return self.llm
+
+    def _schedule_memory_distill(self, mid, question, final_text, error, backed):
+        """长期记忆优化 W-B：把"整段会话逐字塞进长期记忆"改成后台就地蒸馏。
+
+        默认关（`DOCMIND_MEMORY_DISTILL` 未设）——直接 return，行为与今天**逐字节一致**：
+        调用方已同步把逐字 episode 落库（保持久性 + checkpoint 测试依赖），这里只是
+        可选的后台精炼。开启时提交一条**非阻塞**后台任务：让模型把本轮答复压缩成
+        一条"可复用记忆 + 价值分"，或对寒暄/纯命令回显这类**低价值轮次**判 keep=false。
+          · keep=false → retire(该 episode) —— 从此不再浮进注入上下文（治本）；
+          · keep=true  → 用同一 key=question 重新 remember —— ON CONFLICT **就地**把逐字
+            正文换成精简摘要并写入 importance（id 不变，不新增碎片、不复活 retired）。
+        任何异常一律吞在这条后台线程里，绝不影响本轮答复。"""
+        if not _memory._distill_enabled():
+            return
+        if error or not (final_text or "").strip():
+            return  # 未完成/空答复的逐字记录本身有诊断价值，不蒸馏也不作废
+        if not mid:
+            return
+        scope = self.memory_scope
+        llm = self._child_llm()
+        q = _memory.scrub(question, 800)
+        a = _memory.scrub(final_text, 4000)
+        prompt = (
+            "你在维护一个项目的**长期记忆**。下面是刚结束的一轮问答的原始答复全文。\n"
+            "请判断：这轮里有没有值得长期记住、以后还能复用的信息"
+            "（确定的事实/结论、踩过的坑与解法、用户偏好、可复用的操作流程）。\n"
+            "寒暄、简单确认、纯命令回显、一次性且以后用不上的内容 → 不值得记。\n"
+            "只输出一个 JSON 对象，不要任何解释、不要代码围栏：\n"
+            '{"keep": true 或 false, "summary": "一句话到两三句话的可复用记忆（没有就留空）", '
+            '"importance": 0.0 到 1.0 之间的数}\n'
+            "规则：keep=false 时 summary 留空、importance 可给 0；"
+            "keep=true 时 summary 必须是脱离本轮上下文也读得懂的独立结论，"
+            "importance 按可复用价值打分（关键结论/长期偏好偏高，琐碎事实偏低）。\n\n"
+            f"【用户问题】{q}\n【模型答复全文】{a}"
+        )
+
+        def _work():
+            try:
+                out = llm.chat([{"role": "user", "content": prompt}],
+                               stream=False, temperature=0.2)
+                data = _extract_json_obj(out)
+                if not isinstance(data, dict):
+                    return  # 解析失败 → 保留同步逐字记录，不做破坏性改动
+                if not data.get("keep", True):
+                    _memory.retire(scope, mid)
+                    return
+                summary = str(data.get("summary") or "").strip()
+                if not summary:
+                    return
+                try:
+                    imp = float(data.get("importance"))
+                except (TypeError, ValueError):
+                    imp = None
+                _memory.remember(scope, "episode", _memory.scrub(question, 200),
+                    "模型报告（已蒸馏）：" + summary, "",
+                    source="model_report", key=question, backed=backed, importance=imp)
+            except Exception:  # noqa: BLE001 —— 蒸馏异常绝不影响主流程
+                pass
+
+        try:
+            _distill_pool().submit(_work)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _run_child(self, role, task, context=None, turn=None, *, persona="",
                    tool_allowlist=None, mcp_policy="auto", reflect=True,
