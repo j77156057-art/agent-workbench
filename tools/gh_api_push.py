@@ -72,7 +72,8 @@ REPO = str(ensure_on_path())  # 仓库根；所有 git 调用都 -C 到它，与
 
 def run(*args: str) -> str:
     """跑 git，失败即退出并打印 stderr。"""
-    r = subprocess.run(["git", "-C", REPO, *args], capture_output=True, text=False)
+    r = subprocess.run(["git", "-C", REPO, "-c", "core.quotePath=false", *args],
+                       capture_output=True, text=False)
     if r.returncode != 0:
         raise SystemExit("git %s 失败:\n%s" % (" ".join(args),
                           r.stderr.decode("utf-8", "replace")))
