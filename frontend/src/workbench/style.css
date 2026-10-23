@@ -748,6 +748,31 @@ html[data-material='glass'] .wb-proj-notice {
 .cv-host .cm-editor { height: 100%; background: var(--accent-soft); }
 .cv-host .cm-editor.cm-focused { outline: none; }
 
+/* 图片预览：居中、可滚动，原图不超过视口 */
+.cv-imgwrap {
+  flex: 1; min-height: 0; overflow: auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 20px; background: var(--bg-raised);
+}
+.cv-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+.cv-imgfail { margin: 0; color: var(--text-faint); font-size: var(--fs-sm); }
+.cv-imgfail a { color: var(--accent); }
+
+/* 二进制信息卡：只读，展示类型/大小/SHA，不再糊假 hex */
+.cv-binary {
+  flex: 1; min-height: 0; overflow: auto;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 24px; color: var(--text-muted); background: var(--bg-raised);
+}
+.cv-binary-icon { color: var(--text-faint); }
+.cv-binary-body {
+  margin: 0; padding: 12px 16px; max-width: 560px; width: 100%;
+  font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.7;
+  white-space: pre-wrap; overflow-wrap: anywhere; text-align: left;
+  color: var(--text); background: var(--accent-soft);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+
 /* 状态/空态/错误 */
 .cv-state {
   flex: 1;

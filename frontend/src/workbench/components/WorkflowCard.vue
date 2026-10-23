@@ -3,7 +3,7 @@
 // 执行中每个子代理的 thought/action/observation 通过 SSE 实时追加、可折叠查看。
 // 全部状态逻辑在 useWorkflowCard；展示常量在 workflow-format；本文件只做渲染。
 import { useWorkflowCard } from '../composables/useWorkflowCard'
-import { computed } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { reviewHeadlineOf } from '../composables/workflow-format'
 import type { WorkflowState } from '../api'
 import WorkflowGateDialog from './WorkflowGateDialog.vue'
@@ -99,6 +99,27 @@ const finalAnswer = computed(() => {
 })
 const hasFinalAnswer = computed(() =>
   Boolean(finalAnswer.value) && isSuccessful.value)
+
+/** 最终答复块的模板引用，用于完成时把它滚进视野。 */
+const finalEl = ref<HTMLElement | null>(null)
+
+/**
+ * 工作流「实时」跑完时，把最终答复滚进视野——过去答案藏在卡片中段、
+ * 上面还压着一堆时间线/复核块，用户很容易错过。
+ *
+ * 这里用的是**非 immediate** 的 watch：只有 `hasFinalAnswer` 在卡片存活期间
+ * 从 false 翻到 true（即执行中 → 完成）才会触发一次滚动。
+ * 打开历史会话时卡片一挂上来 `hasFinalAnswer` 就已是 true，不存在 false→true
+ * 的变化，因此**不会**把页面猛地拉到旧答案——避免翻聊天记录时被乱滚。
+ */
+watch(hasFinalAnswer, (now, prev) => {
+  if (!now || prev) return
+  nextTick(() => {
+    window.requestAnimationFrame(() => {
+      finalEl.value?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+    })
+  })
+})
 
 async function applyReviewedStage() {
   if (!state.value?.workflow_id || busy.value) return
@@ -254,13 +275,6 @@ async function discardStage() {
           />
         </div>
       </div>
-
-      <!-- 最终答复：把 DAG 末尾 reporter 节点的收尾结论（或引擎整体合成）
-           直接摊在对话卡片里，不用点开成员小窗、也不用翻 merged 字段。 -->
-      <section v-if="hasFinalAnswer" class="wf-final">
-        <b class="wf-final-head">最终答复</b>
-        <div class="wf-final-body">{{ finalAnswer }}</div>
-      </section>
 
       <!-- 复核结果 -->
       <section v-if="state?.acceptance_contract?.items?.length" class="wf-acceptance">
@@ -420,6 +434,14 @@ async function discardStage() {
           {{ showAllTimeline ? '只看最近 30 条' : '查看全部 ' + timelineEvents.length + ' 条' }}
         </button>
       </details>
+
+      <!-- 最终答复：把 DAG 末尾 reporter 节点的收尾结论（或引擎整体合成）
+           直接摊在卡片最底部——完成即最新、最该被看到的东西放在最后，
+           不用点开成员小窗、也不用翻 merged 字段。 -->
+      <section v-if="hasFinalAnswer" ref="finalEl" class="wf-final">
+        <b class="wf-final-head">最终答复</b>
+        <div class="wf-final-body">{{ finalAnswer }}</div>
+      </section>
     </div>
 
     <WorkflowGateDialog

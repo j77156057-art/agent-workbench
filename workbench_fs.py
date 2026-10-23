@@ -20,10 +20,12 @@ import shutil
 import subprocess
 import time
 import ast
+import mimetypes
 from datetime import datetime
+from urllib.parse import quote
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 
 from config import get_runtime, CODE_ROOT
@@ -60,9 +62,28 @@ WB_LANG = {
     ".sh": "shell", ".java": "java", ".go": "go", ".rs": "rust", ".c": "c",
     ".h": "c", ".cpp": "cpp", ".hpp": "cpp", ".rb": "ruby", ".php": "php",
     ".kt": "kotlin", ".swift": "swift", ".scala": "scala",
+    # 2026-10-23 补齐常见文本/代码后缀：过去这些不在白名单，只能以「只读文本预览」
+    # 呈现（不高亮、不可编辑），用户误以为「格式不符合、显示是假的」。CodeMirror 对
+    # 无对应语言包的后缀会优雅降级为纯文本，但仍可正常编辑。
+    ".vue": "vue", ".svelte": "html", ".astro": "html",
+    ".mjs": "javascript", ".cjs": "javascript",
+    ".sql": "sql", ".pyi": "python", ".log": "text",
+    ".ps1": "shell", ".bat": "text", ".cmd": "text",
+    ".rst": "markdown", ".properties": "ini", ".gradle": "text",
+    ".json5": "json", ".graphql": "text", ".gql": "text",
+    ".proto": "text", ".tf": "text", ".pl": "text", ".r": "text", ".dart": "text",
 }
 WB_EDIT_EXTS = set(WB_LANG) | set(_CODE_EXT)
 WB_TEXT_NAMES = {".gitignore", ".gitattributes", ".editorconfig", ".npmrc", ".prettierrc"}
+# 图片类：不按文本读，改走 /api/fs/raw 用 <img> 预览（矢量 svg 也当图看更直观）。
+WB_IMAGE_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
+    ".tif", ".tiff", ".svg", ".avif",
+}
+
+
+def _is_image_name(name: str) -> bool:
+    return os.path.splitext(name)[1].lower() in WB_IMAGE_EXTS
 
 
 def _editable_text_name(target: str) -> bool:
@@ -344,14 +365,22 @@ def read_full(root, rel) -> dict:
         raw = fh.read() if editable else fh.read(min(size, 64 * 1024))
     preview_kind = None
     preview_note = None
-    if editable and b"\x00" not in raw[:8192]:
+    preview_url = None
+    if _is_image_name(target):
+        # 图片：不读文本、不塞假 hex。交给 /api/fs/raw 用 <img> 直接渲染原图。
+        preview_kind = "image"
+        preview_note = "图片预览；只读，不载入文本内容。"
+        content = ""
+        editable = False
+        preview_url = f"/api/fs/raw?path={quote(rel_n)}"
+    elif editable and b"\x00" not in raw[:8192]:
         try:
             content = raw.decode("utf-8-sig")
         except UnicodeDecodeError:
             editable = False
     else:
         editable = False
-    if not editable:
+    if not editable and preview_kind != "image":
         text_preview = None
         if (os.path.splitext(target)[1].lower() not in {".bin", ".scn"}
                 and b"\x00" not in raw[:8192]):
@@ -379,15 +408,13 @@ def read_full(root, rel) -> dict:
                 content = raw.decode(str(inspected["encoding"]), errors="replace")
             else:
                 preview_kind = "binary"
-                preview_note = str(inspected.get("warning") or "二进制文件只读预览；不会修改原文件。")
+                preview_note = str(inspected.get("warning") or "二进制文件，无法预览文本内容。")
                 content = "\n".join([
-                    f"文件：{rel_n}", f"类型：{inspected.get('format', 'binary')}",
-                    f"大小：{size} 字节", f"SHA-256：{inspected.get('sha256', '未计算')}",
-                    f"文件头：{inspected.get('header_hex', raw[:16].hex())}",
-                    f"说明：{preview_note}", "", "前 256 字节（十六进制 / ASCII）：",
-                    str(inspected.get("hex_preview") or raw[:256].hex(" ")),
-                    "", "可见字符串（前 64KB 中提取）：",
-                    *[str(item) for item in inspected.get("strings_preview", [])],
+                    "（二进制文件 · 只读信息，非文本内容）",
+                    f"类型：{inspected.get('format', 'binary')}",
+                    f"大小：{size} 字节",
+                    f"SHA-256：{inspected.get('sha256', '未计算')}",
+                    f"说明：{preview_note}",
                 ])
         else:
             preview_kind = "binary"
@@ -408,7 +435,7 @@ def read_full(root, rel) -> dict:
         "ok": True,
         "path": rel_n,
         "content": content,
-        "lang": _lang_of(rel_n) if editable else "text",
+        "lang": _lang_of(rel_n) if editable else ("image" if preview_kind == "image" else "text"),
         "size": size,
         "mtime": os.path.getmtime(target),
         "region": rmeta["key"] if rmeta else None,
@@ -416,6 +443,7 @@ def read_full(root, rel) -> dict:
         "writable": editable,
         "preview_kind": preview_kind,
         "preview_note": preview_note,
+        "preview_url": preview_url,
         "tracked": tracked,
         "dirty": dirty,
     }
@@ -1608,6 +1636,24 @@ def tree_ep(depth: int = 4):
 def file_ep(path: str):
     try:
         return read_full(_runtime_root(), path)
+    except FsError as e:
+        return _err(e)
+
+
+@router.get("/raw")
+def raw_ep(path: str):
+    """按原样吐图片字节，供前端 <img> 预览。仅限 WB_IMAGE_EXTS，
+    路径经 _resolve 沙箱校验（拒绝 .. / 绝对路径 / URL），不可用来读源码/密钥等任意文件。"""
+    try:
+        root = _runtime_root()
+        target, rel_n = _resolve(root, path, must_exist=True)
+        if os.path.isdir(target):
+            raise FsError(400, f"{rel_n} 是目录，不是文件。")
+        if os.path.splitext(target)[1].lower() not in WB_IMAGE_EXTS:
+            raise FsError(403, "仅允许预览图片文件。")
+        ctype = mimetypes.guess_type(target)[0] or "application/octet-stream"
+        return FileResponse(target, media_type=ctype,
+                            headers={"Cache-Control": "no-store"})
     except FsError as e:
         return _err(e)
 

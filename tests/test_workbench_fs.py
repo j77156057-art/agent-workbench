@@ -189,9 +189,10 @@ class TestReadSave(WbTestBase):
     def test_read_binary_and_unsupported(self):
         self.write("pic.png", "\x00\x01PNG")
         image = wb.read_full(self.root, "pic.png")
-        self.assertEqual(image["preview_kind"], "binary")
+        self.assertEqual(image["preview_kind"], "image")
         self.assertFalse(image["writable"])
-        self.assertIn("十六进制", image["content"])
+        self.assertEqual(image["content"], "")
+        self.assertTrue(image.get("preview_url", "").startswith("/api/fs/raw?path="))
         binary_path = os.path.join(self.root, "blob.bin")
         with open(binary_path, "wb") as fh:
             fh.write(b"\x00\x01\xffBINARY")

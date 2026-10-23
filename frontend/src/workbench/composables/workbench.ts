@@ -265,6 +265,7 @@ async function openPath(path: string, preferWritable?: boolean) {
     live.gitDirty = f.dirty
     live.previewKind = f.preview_kind ?? null
     live.previewNote = f.preview_note ?? null
+    live.previewUrl = f.preview_url ?? null
     live.writable = (node?.writable ?? true) && f.writable && !contractLocked
     live.savedContent = f.content
     live.loading = false

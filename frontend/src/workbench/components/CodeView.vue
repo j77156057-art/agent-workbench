@@ -4,7 +4,7 @@
 // 非活动标签的文本取 state.doc，保存时不依赖当前 DOM view。
 // CodeMirror 全家桶（650KB）在首次打开文件时才动态加载（./codeEditor.ts），
 // 工作台启动默认在概览页，CodeView 此阶段只渲染 OverviewView，不碰编辑器运行时。
-import { onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { onMounted, onBeforeUnmount, ref, watch, computed } from 'vue'
 import type { EditorState } from '@codemirror/state'
 import type { EditorView } from '@codemirror/view'
 import type { EditorTab } from '../composables/workbench-types'
@@ -18,6 +18,16 @@ const props = defineProps<{ tab: EditorTab | null }>()
 const {
   saveActive, closeTab, tabs, registerContentGetter, registerDocReplacer, setSelection,
 } = useWorkbench()
+
+/** 当前标签是图片预览：用 <img> 渲染，不挂载 CodeMirror。 */
+const isImage = computed(() => props.tab?.previewKind === 'image')
+/** 当前标签是二进制文件：显示只读信息卡，不挂载 CodeMirror（避免把假 hex 当正文）。 */
+const isBinary = computed(() => props.tab?.previewKind === 'binary')
+
+/** 图片加载失败标记：失败时给出「在新窗口打开」兜底，而不是一个空框。 */
+const imgFailed = ref(false)
+function onImgError() { imgFailed.value = true }
+watch(() => props.tab?.previewUrl, () => { imgFailed.value = false })
 
 const host = ref<HTMLElement | null>(null)
 let view: EditorView | null = null
@@ -136,6 +146,8 @@ async function syncView() {
   // 切换标签 / 进入加载或错误态：旧选区不再有效，隐藏选区浮条
   setSelection(null)
   if (!props.tab || props.tab.loading || props.tab.error) return
+  // 图片/二进制：没有可编辑的文本，别去懒加载 CodeMirror，也不 setState
+  if (isImage.value || isBinary.value) return
   const token = ++syncToken
   const v = await ensureView()
   const st = await ensureState(props.tab)
@@ -256,7 +268,7 @@ function savedLabel(tab: EditorTab): string {
     </header>
 
     <div v-if="tab && !tab.loading && !tab.error && tab.previewKind" class="cv-previewbar">
-      <strong>{{ tab.previewKind === 'binary' ? '二进制文件预览' : '文本文件预览' }}</strong>
+      <strong>{{ tab.previewKind === 'image' ? '图片预览' : tab.previewKind === 'binary' ? '二进制文件（只读信息）' : '文本文件预览' }}</strong>
       <span>{{ tab.previewNote }}</span>
     </div>
 
@@ -281,7 +293,26 @@ function savedLabel(tab: EditorTab): string {
     <!-- 概览驾驶舱（未进入代码工作区时） -->
     <OverviewView v-else-if="!tab" />
 
-    <div v-show="tab && !tab.loading && !tab.error" ref="host" class="cv-host" />
+    <!-- 图片：直接渲染原图（/api/fs/raw），不再显示假 hex -->
+    <div v-if="tab && !tab.loading && !tab.error && isImage" class="cv-imgwrap">
+      <img class="cv-img" :src="tab.previewUrl || ''" :alt="tab.name" @error="onImgError" />
+      <p v-if="imgFailed" class="cv-imgfail">
+        图片加载失败，可尝试<a :href="tab.previewUrl || ''" target="_blank" rel="noopener">在新窗口打开</a>。
+      </p>
+    </div>
+
+    <!-- 二进制：只读信息卡（类型/大小/SHA），不挂编辑器 -->
+    <div v-else-if="tab && !tab.loading && !tab.error && isBinary" class="cv-binary">
+      <div class="cv-binary-icon" aria-hidden="true">
+        <svg width="46" height="46" viewBox="0 0 46 46" fill="none">
+          <path d="M9 6h20l8 8v26H9z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+          <path d="M29 6v8h8" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+        </svg>
+      </div>
+      <pre class="cv-binary-body">{{ tab.savedContent }}</pre>
+    </div>
+
+    <div v-show="tab && !tab.loading && !tab.error && !isImage && !isBinary" ref="host" class="cv-host" />
 
     <!-- reindex 警告（不阻断） -->
     <div v-if="tab && !tab.loading && !tab.error && tab.reindexWarn" class="cv-warnbar" :title="tab.reindexWarn">
