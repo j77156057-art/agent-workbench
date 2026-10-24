@@ -81,8 +81,9 @@ class ShouldVerbatimPassthroughTests(unittest.TestCase):
         self.assertFalse(_should_verbatim_passthrough("python_exec", FILE_ECHO),
                          "python_exec 回吐源码不该 verbatim 透传")
 
-    def test_python_exec_numeric_passes(self):
-        self.assertTrue(_should_verbatim_passthrough("python_exec", NUMERIC_RESULT))
+    def test_python_exec_never_passes_through(self):
+        # 「留地板、拆其余」：python_exec 一律不再原样透传成最终答案，交回模型综合。
+        self.assertFalse(_should_verbatim_passthrough("python_exec", NUMERIC_RESULT))
 
     def test_calculate_always_passes(self):
         self.assertTrue(_should_verbatim_passthrough("calculate", FILE_ECHO))

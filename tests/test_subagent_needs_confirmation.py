@@ -104,10 +104,10 @@ def test_a_child_with_a_lease_writes_and_emits_nothing():
 
 
 def test_the_top_turn_never_emits_it():
-    """反向守卫：顶层 agent 不发这个事件。
+    """「留地板、拆其余」：顶层写默认放行，且仍**不发** needs_confirmation。
 
-    顶层手里有用户的原话，它走的是 `_WRITE_UNCERTAIN_OBS` 那套「直接问用户」
-    的措辞，不需要经子代理通道上浮。
+    needs_confirmation 是委派子代理专属的上浮通道；顶层手里有用户原话，护栏已拆后
+    直接放行写工具，不经过这条通道。
     """
     from config import set_runtime as _sr
 
@@ -122,10 +122,10 @@ def test_the_top_turn_never_emits_it():
     finally:
         agent_mod.TOOLS = old
         _sr("code_root", "")
-    assert not called, "顶层在无授权时不该能写"
+    assert called, "顶层写工具应放行（写意图护栏已拆，地板在 tools.py）"
     assert not [e for e in events
                 if isinstance(e, dict) and e.get("type") == "needs_confirmation"], (
-        "顶层发了 needs_confirmation —— 它该走 uncertain 措辞直接问用户"
+        "顶层发了 needs_confirmation —— 那是委派通道，顶层不该走它"
     )
 
 

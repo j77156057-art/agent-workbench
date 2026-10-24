@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""python_exec 三档分级同意·**待确认往返**回归（tools.py:python_exec / stage_exec /
-list_pending_execs / confirm_exec / reject_exec）。
+"""python_exec 执行策略回归（tools.py:python_exec / stage_exec / list_pending_execs /
+confirm_exec / reject_exec）。
 
-镜像 dev 写工具那套 pending→人工点击→落盘的往返，只是这里一次批准的是「整段代码待执行」：
-  · 第二档（一次确认）：确认 1 次即真跑；未确认前绝不落盘。
-  · 第三档（三连确认）：点不满 3 次只递增计数、返回「还需 N 次」且**不执行**；
-    满 3 次才以该档为天花板真跑。
-  · 拒绝：直接丢弃，代码永不运行。
-  · 免批档：执行前不进 pending、直接跑。
-  · 硬底线：执行前就 __EXEC_BLOCKED__ 拒，根本不进 pending；即便强行登记，确认后
-    运行期钩仍二次复核把凭据写拦死。
+「留地板、拆其余」重构后的策略：
+  · 免批档（1）、第二档（2）、第三档（3）：全部**直接执行**，不再登记 pending、
+    不再要求人工连点确认。工作台定位是「能干活」，二/三档确认弹窗属于被拆掉的设卡。
+  · 硬底线（-1）：凭据 / NT 设备 / 系统关键目录 / 格式化·磁盘级破坏 → 执行前就
+    __EXEC_BLOCKED__ 拒，根本不进 pending；即便强行登记，确认后运行期钩仍二次复核把
+    凭据写拦死。这条地板**永久保留**。
+本文件因此改为断言：tier2/3 直接跑（无 pending、真落盘/真删），而 -1 仍被硬拦。
 """
 
 import os
@@ -64,78 +63,53 @@ class ExecApprovalFlowTests(unittest.TestCase):
             self.assertIn("__EXEC_BLOCKED__", out, "凭据写应执行前硬拒：%r" % out)
             self.assertEqual(tools_mod.list_pending_execs(), [], "永不放行档不该进 pending")
 
-    # ---------------------------------------------------------------- 第二档：一次确认即跑
-    def test_tier2_one_click_executes(self):
+    # ---------------------------------------------------------------- 第二档：直接执行、无 pending
+    def test_tier2_runs_directly_no_pending(self):
         home = os.path.expanduser("~")
         target = os.path.join(home, "__docmind_flow_new2__.txt")
         try:
             with tempfile.TemporaryDirectory() as d:
                 out = self._python_exec("open(%r, 'w').write('x')" % target, d)
-                self.assertIn("__EXEC_PENDING__", out)
-                self.assertIn("tier=2", out)
-                self.assertIn("need=1", out)
-                pid = _pid_of(out)
-                self.assertIsNotNone(pid)
-                self.assertFalse(os.path.exists(target), "未确认前绝不能落盘")
-                pend = tools_mod.list_pending_execs()
-                self.assertEqual(len(pend), 1)
-                self.assertEqual(pend[0]["need"], 1)
-                self.assertEqual(pend[0]["tier"], 2)
-                ok, res = tools_mod.confirm_exec(pid)
-                self.assertTrue(ok, "第二档确认 1 次即应执行：%r" % res)
-                self.assertTrue(os.path.exists(target), "确认后文件应真落盘")
-                self.assertEqual(tools_mod.list_pending_execs(), [], "执行后 pending 应清空")
+                self.assertNotIn("__EXEC_PENDING__", out,
+                                 "第二档应直接执行、不再登记待确认：%r" % out)
+                self.assertNotIn("__EXEC_BLOCKED__", out)
+                self.assertTrue(os.path.exists(target), "第二档应直接落盘")
+                self.assertEqual(tools_mod.list_pending_execs(), [],
+                                 "拆掉审批后不该有任何 pending")
         finally:
             if os.path.exists(target):
                 os.remove(target)
 
-    # ---------------------------------------------------------------- 第三档：三连确认计数门
-    def test_tier3_requires_three_clicks(self):
+    # ---------------------------------------------------------------- 第三档：直接执行、无 pending
+    def test_tier3_runs_directly_no_pending(self):
         home = os.path.expanduser("~")
         victim = os.path.join(home, "__docmind_flow_del3__.txt")
         try:
             open(victim, "w").write("x")  # 既有文件 → 根外删除 = 第三档
             with tempfile.TemporaryDirectory() as d:
                 out = self._python_exec("import os; os.remove(%r)" % victim, d)
-                self.assertIn("__EXEC_PENDING__", out)
-                self.assertIn("tier=3", out)
-                self.assertIn("need=3", out)
-                pid = _pid_of(out)
-                # 第 1 次：不达标，只递增计数、绝不执行。
-                ok1, msg1 = tools_mod.confirm_exec(pid)
-                self.assertFalse(ok1, "三连确认第 1 次不该执行：%r" % msg1)
-                self.assertIn("还需", msg1)
-                self.assertTrue(os.path.exists(victim), "未达阈值绝不能真删")
-                # 第 2 次：仍差 1。
-                ok2, msg2 = tools_mod.confirm_exec(pid)
-                self.assertFalse(ok2, "第 2 次仍不该执行：%r" % msg2)
-                self.assertTrue(os.path.exists(victim))
-                pend = tools_mod.list_pending_execs()
-                self.assertEqual(len(pend), 1)
-                self.assertEqual(pend[0]["confirms"], 2)
-                # 第 3 次：达标，真跑，文件删除，pending 清空。
-                ok3, res3 = tools_mod.confirm_exec(pid)
-                self.assertTrue(ok3, "第 3 次应执行：%r" % res3)
-                self.assertFalse(os.path.exists(victim), "确认后应真的删除")
+                self.assertNotIn("__EXEC_PENDING__", out,
+                                 "第三档应直接执行、不再连点确认：%r" % out)
+                self.assertNotIn("__EXEC_BLOCKED__", out)
+                self.assertFalse(os.path.exists(victim), "第三档应直接删除")
                 self.assertEqual(tools_mod.list_pending_execs(), [])
         finally:
             if os.path.exists(victim):
                 os.remove(victim)
 
-    # ---------------------------------------------------------------- 拒绝：丢弃不执行
-    def test_reject_discards_without_running(self):
+    # ---------------------------------------------------------------- 拆审批后无 pending 可拒
+    def test_no_pending_created_for_tier2(self):
         home = os.path.expanduser("~")
         target = os.path.join(home, "__docmind_flow_reject__.txt")
         try:
             with tempfile.TemporaryDirectory() as d:
                 out = self._python_exec("open(%r, 'w').write('x')" % target, d)
-                pid = _pid_of(out)
-                self.assertIsNotNone(pid)
-                self.assertTrue(tools_mod.reject_exec(pid))
-                self.assertEqual(tools_mod.list_pending_execs(), [])
-                self.assertFalse(os.path.exists(target), "拒绝后代码绝不能运行")
-                # 重复拒绝不存在 id → False（幂等安全）。
-                self.assertFalse(tools_mod.reject_exec(pid))
+                # 不再产生 pending，因此没有 id 可拒；操作已直接执行。
+                self.assertEqual(tools_mod.list_pending_execs(), [],
+                                 "拆掉审批后不该登记任何 pending：%r" % out)
+                self.assertTrue(os.path.exists(target), "应已直接执行")
+                # 拒绝不存在的 id → False（幂等安全）。
+                self.assertFalse(tools_mod.reject_exec("nonexistent-id"))
         finally:
             if os.path.exists(target):
                 os.remove(target)

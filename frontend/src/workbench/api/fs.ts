@@ -338,7 +338,7 @@ export interface UnityGraphResp {
 
 
 export const fsApi = {
-  tree(depth = 4): Promise<TreeResp> {
+  tree(depth = 6): Promise<TreeResp> {
     return request<TreeResp>(`/api/fs/tree?depth=${depth}`)
   },
   read(path: string): Promise<FileResp> {

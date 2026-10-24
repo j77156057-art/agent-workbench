@@ -54,7 +54,9 @@ class DesktopIntentTurnTests(unittest.TestCase):
 
 
 class DevDesktopActionPreAuthTests(unittest.TestCase):
-    """审批门豁免：pre-auth 只对 engine/embedded 生效，foreground 永远走审批。"""
+    """「留地板、拆其余」：dev_desktop_action 的逐次审批门已拆 —— 无论 pre-auth
+    与 target（含 foreground），点击/输入都直接执行。危险组合键仍由
+    desktop_actions._VK 白名单挡在门外（那是灾难地板，保留）。"""
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
@@ -98,27 +100,26 @@ class DevDesktopActionPreAuthTests(unittest.TestCase):
             _DESKTOP_PRE_AUTHORIZED.reset(token)
         self.assertEqual(result.get("marker"), "PERFORMED")
 
-    def test_foreground_never_preauthorized(self):
-        # 即便 pre-auth 为真，foreground 也必须落回审批门（不执行 perform）。
+    def test_foreground_now_executes(self):
+        # 「留地板、拆其余」：逐次审批门已拆 —— foreground 也直接执行，不再落回审批。
+        # （危险组合键仍由 desktop_actions._VK 白名单挡在门外，那是另一层地板。）
         token = _DESKTOP_PRE_AUTHORIZED.set(True)
         try:
             result = self._call("action: click\ntarget: foreground\nx: 10\ny: 10")
         finally:
             _DESKTOP_PRE_AUTHORIZED.reset(token)
-        self.assertNotEqual(result.get("marker"), "PERFORMED")
-        self.assertEqual(len(self._performed), 0)
-        self.assertEqual(result.get("reason"), "approval_required")
+        self.assertEqual(result.get("marker"), "PERFORMED")
+        self.assertEqual(len(self._performed), 1)
 
-    def test_no_preauth_still_gated_for_engine(self):
-        # 回归保护：没有口头授权时，engine 仍需审批（沙箱也不放行则返回 blocked）。
+    def test_no_preauth_still_executes_for_engine(self):
+        # 「留地板、拆其余」：审批门已拆，没有口头授权时 engine 点击也直接执行。
         token = _DESKTOP_PRE_AUTHORIZED.set(False)
         try:
             result = self._call("action: click\ntarget: engine\nx: 100\ny: 100")
         finally:
             _DESKTOP_PRE_AUTHORIZED.reset(token)
-        self.assertNotEqual(result.get("marker"), "PERFORMED")
-        self.assertEqual(len(self._performed), 0)
-        self.assertEqual(result.get("reason"), "approval_required")
+        self.assertEqual(result.get("marker"), "PERFORMED")
+        self.assertEqual(len(self._performed), 1)
 
 
 class WorkflowExplicitRequestTests(unittest.TestCase):

@@ -142,14 +142,22 @@ class HarnessTextIsMarkedDegradedTests(unittest.TestCase):
         return [ev for ev in a.run(question, stream=False)
                 if ev.get("type") == "final"]
 
-    def test_the_travel_clarification_is_degraded(self):
-        """它不是模型的答案，是 harness 的纠偏文案。"""
+    def test_the_travel_clarification_gate_is_removed(self):
+        """「留地板、拆其余」：出行票价澄清门已从 run() 聊天路径拆掉。
+
+        旧行为：`run()` 开头用 `_transport_request_clarification` 正则发现"没给日期/
+        出发到达"，在调模型之前就弹一句 harness 写的澄清、标 degraded。
+
+        新行为：那是靠正则猜"信息够不够"、把一句正常的话挡在模型之前，属于用户抱怨的
+        "处处受限"。拆掉后，这句照常进模型（缺信息时模型自己会追问或直接检索）。
+        所以这里断言：不再出现由该门产生的 clarification_required / degraded final。
+        （函数 `_transport_request_clarification` 保留，直测仍在钉判据。）
+        """
         out = self._finals("北京到上海的机票多少钱")
-        self.assertTrue(out, "这一轮应当以澄清收尾")
-        self.assertTrue(out[0].get("clarification_required"))
-        self.assertTrue(out[0].get("degraded"),
-                        "没标 degraded——下游会把这句话当成模型的正式结论。"
-                        "这正是「把没能答记成答了」")
+        gate_finals = [f for f in out
+                       if f.get("clarification_required") and f.get("degraded")]
+        self.assertEqual(gate_finals, [],
+                         "出行澄清门已拆，却仍有一条 harness 写的 degraded 澄清 final")
 
     def test_the_ambiguous_write_clarification_is_degraded(self):
         out = self._finals("帮我改一下")
@@ -200,12 +208,13 @@ class HarnessTextIsMarkedDegradedTests(unittest.TestCase):
             agent.Agent.run = original
 
         # `reflect=False` 时 `status` 按设计恒为 ok（反思被关掉了），
-        # 所以这里只能判 `degraded` —— 它才是「这句话不是模型的答案」这个信号。
+        # 所以这里只能判 `degraded` —— 它才是「这句话不是模型的正式结论」这个信号。
+        # 「留地板、拆其余」后出行澄清门已拆：这句 degraded 现在来自**保留的**
+        # format_stall 诚实失败路径（模型给不出可判定的动作/结论），不再是出行文案。
         self.assertTrue(out.get("degraded"),
-                        "子代理结论没标降级——下游会以为模型真的答了，"
-                        "而这句话其实是 harness 的纠偏文案")
-        self.assertIn("交通票价需要先确认", str(out.get("conclusion") or ""),
-                      "这一轮应当以那句写死的澄清文案收尾")
+                        "子代理结论没标降级——下游会以为模型真的答了")
+        self.assertNotIn("交通票价需要先确认", str(out.get("conclusion") or ""),
+                         "出行澄清门已拆，不该再产出那句 harness 写的澄清")
 
 
 if __name__ == "__main__":

@@ -9,23 +9,40 @@ from tests.test_agent_trace import _FakeLLM, _IsoBase
 
 
 class WeatherTests(_IsoBase):
-    def test_transport_fare_requires_concrete_date(self):
-        llm = _FakeLLM(["Final Answer: 不应调用"])
+    def test_transport_fare_now_reaches_the_model(self):
+        """「留地板、拆其余」：出行票价澄清门已从 run() 聊天路径拆掉。
+
+        旧行为：`run()` 开头用正则发现「没给日期/出发到达」，在调模型之前就弹
+        一句 harness 写的澄清、标 degraded（`llm.i == 0`，模型根本没被叫）。
+
+        新行为：那是靠正则猜「信息够不够」、把一句正常的话挡在模型之前，属于
+        用户抱怨的「处处受限」。拆掉后照常进模型（缺信息时模型自己会追问或直接检索）。
+        （判据函数 `_transport_request_clarification` 保留，直测仍在钉它。）
+        """
+        llm = _FakeLLM(["Final Answer: 好的，我先按国庆假期帮你查一下高铁和飞机价格"])
         a = agent.Agent(llm=llm, session_id="transport-date")
         events = list(a.run("北京到南宁高铁还是飞机，多少钱", web_enabled=True))
-        self.assertTrue(events[0]["clarification_required"])
-        self.assertIn("具体出发日期", events[0]["text"])
-        self.assertEqual(llm.i, 0)
+        self.assertGreaterEqual(llm.i, 1,
+                                "票价澄清门已拆，这句话应照常进模型")
+        gate_finals = [e for e in events
+                       if e.get("type") == "final"
+                       and e.get("clarification_required") and e.get("degraded")]
+        self.assertEqual(gate_finals, [],
+                         "不该再出现由票价澄清门产生的 degraded 澄清 final")
 
-    def test_followup_ticket_request_does_not_invent_tomorrow(self):
-        llm = _FakeLLM(["Final Answer: 不应调用"])
+    def test_followup_ticket_request_now_reaches_the_model(self):
+        """上文有出行词的追问同样不再被澄清门挡住——照常进模型。"""
+        llm = _FakeLLM(["Final Answer: 我给你查一下当前余票和价格"])
         a = agent.Agent(llm=llm, session_id="transport-followup")
         a.history = [{"user": "我想去南宁玩", "assistant": "可以规划行程。"}]
         events = list(a.run("我要确切的计划，具体多少钱，目前有什么票", web_enabled=True))
-        self.assertTrue(events[0]["clarification_required"])
-        self.assertIn("具体出发日期", events[0]["text"])
-        self.assertNotIn("明天", events[0]["text"])
-        self.assertEqual(llm.i, 0)
+        self.assertGreaterEqual(llm.i, 1,
+                                "出行追问澄清门已拆，这轮应进模型而非被挡下")
+        gate_finals = [e for e in events
+                       if e.get("type") == "final"
+                       and e.get("clarification_required") and e.get("degraded")]
+        self.assertEqual(gate_finals, [],
+                         "不该再出现由出行澄清门产生的 degraded 澄清 final")
 
     def test_transport_tool_never_marks_search_snippet_as_fare(self):
         with patch.object(tools, "web_search_batch", return_value="· 票价摘要\n  800 元\n  https://example.test"):
@@ -52,14 +69,24 @@ class WeatherTests(_IsoBase):
         self.assertNotIn("800", out)
         self.assertIn("无法确认票价", out)
 
-    def test_missing_city_clarifies_without_model_or_search(self):
-        llm = _FakeLLM(["Final Answer: 不应调用"])
+    def test_missing_city_now_reaches_the_model(self):
+        """「留地板、拆其余」：缺城市天气澄清门已从 run() 聊天路径拆掉。
+
+        旧行为：`run()` 开头用正则判定「没给城市」，在调模型之前就弹一句
+        harness 写的澄清（`llm.i == 0`）。这属于靠正则猜意图、把正常的话挡在
+        模型之前。拆掉后照常进模型：模型会自己用定位/追问/检索补齐。
+        （判据函数 `_missing_weather_location` 保留，直测仍钉它——见下条。）
+        """
+        llm = _FakeLLM(["Final Answer: 我先根据定位查一下你所在城市的天气"])
         a = agent.Agent(llm=llm, session_id="weather")
         events = list(a.run("查一下今天的天气怎么样", web_enabled=True))
-        self.assertEqual(llm.i, 0)
-        self.assertTrue(events[0]["clarification_required"])
-        restored = agent.Agent(llm=llm, session_id="weather")
-        self.assertEqual(restored.history[0]["user"], "查一下今天的天气怎么样")
+        self.assertGreaterEqual(llm.i, 1,
+                                "城市澄清门已拆，这句应照常进模型")
+        gate_finals = [e for e in events
+                       if e.get("type") == "final"
+                       and e.get("clarification_required") and e.get("degraded")]
+        self.assertEqual(gate_finals, [],
+                         "不该再出现由天气澄清门产生的 degraded 澄清 final")
 
     def test_explicit_city_is_not_blocked(self):
         self.assertFalse(agent._missing_weather_location("查一下北海今天的天气", []))

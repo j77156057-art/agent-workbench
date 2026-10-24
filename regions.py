@@ -894,7 +894,9 @@ def verify_contracts(root=None):
 
 def commit_region(root, key, message):
     """在某分区独立仓库内提交。返回 (ok, out)。"""
-    gate = require_approval(root, "commit_region", key)
+    # 「留地板、拆其余」重构：git 提交可逆（git log / reset），提交前的审批卡属于
+    # "处处受限"而非灾难地板，拆掉 —— 直接提交。
+    gate = None
     if gate:
         return False, gate
     rmap = get_region_map(root)
@@ -913,7 +915,9 @@ def commit_region(root, key, message):
 def commit_all(root, message):
     """把所有分区仓库各提交一次，并把本次改动记进 dev_changesets.jsonl（绑定回滚）。
     返回 (ok, {id, commits})。"""
-    gate = require_approval(root, "commit_all", "*")
+    # 「留地板、拆其余」重构：同 commit_region —— 提交可逆，提交前的审批卡是
+    # "处处受限"而非灾难地板，拆掉。
+    gate = None
     if gate:
         return False, gate
     contract = verify_contracts(root)

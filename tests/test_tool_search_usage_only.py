@@ -171,22 +171,23 @@ def test_the_sample_for_this_file_is_actually_denied():
             "判据变了会让相关断言恒真" % (sample, agent_mod._write_intent(sample)))
 
 
-def test_a_searched_write_tool_still_goes_through_write_intent():
-    """检索**不是授权**：搜出写工具后，未授权的一轮仍 `denied`。
+def test_the_top_turn_gate_is_removed_and_always_granted():
+    """「留地板、拆其余」：顶层聊天回合的写意图护栏已拆，恒放行。
 
-    这是「检索 ≠ 授权」的**机制级**证据 —— 不是读注释，是真跑一遍护栏。
+    纯函数 `_write_intent` 仍把「这条能提交吗」判 denied（分类器没动），但
+    `_intent_for_top_turn` 不再据此拦写——灾难地板改由 tools.py 的路径/凭据/
+    系统目录硬拦兜底，不在这条链上。
     """
     a = agent_mod.Agent(llm=_Stub(), tool_registry=dict(tools_mod.TOOLS))
     from agent import _WRITE_INTENT_DENIED, _WRITE_INTENT_GRANTED
 
     sample = "这条能提交吗"
     assert agent_mod._write_intent(sample) == _WRITE_INTENT_DENIED, (
-        "样本变了：%r 现在判 %s" % (sample, agent_mod._write_intent(sample)))
+        "纯函数分类器仍应判 denied（它没被改动）")
     agent_mod._tool_search("dev_commit")
-    intent = a._intent_for_top_turn(sample, "dev_commit")
-    assert intent != _WRITE_INTENT_GRANTED, (
-        "检索了 dev_commit 之后，未授权的一轮竟判成 granted —— "
-        "那说明检索动作被当成了授权")
+    assert a._intent_for_top_turn(sample, "dev_commit") == _WRITE_INTENT_GRANTED, (
+        "护栏已拆：顶层回合恒放行")
+    assert a._intent_for_top_turn("请修改 a.txt", "dev_commit") == _WRITE_INTENT_GRANTED
 
 
 def test_a_granted_turn_after_searching_still_works():

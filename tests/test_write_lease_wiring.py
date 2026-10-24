@@ -123,62 +123,33 @@ def test_a_lease_alone_does_not_widen_the_check_side():
 # 门级：真跑主循环
 # --------------------------------------------------------------------------
 
-def test_a_granted_turn_actually_lets_the_write_through():
-    """正向：明确写请求照旧放行，且**铸出**租约。"""
+def test_a_granted_turn_lets_the_write_through_without_a_lease():
+    """「留地板、拆其余」：明确写请求放行，且**不再铸租约**。
+
+    旧行为里 granted 轮会 mint 一张不含 EXEC 的写租约，反而把跑命令的能力收窄。
+    现在聊天路径 capability_lease 恒空 → `_lease_blocked` 全通过。
+    """
     a, called, _events = _drive("请修改 a.txt")
-    assert called, "明确写请求被拦了 —— 那是本不该发生的回归"
-    assert a.capability_lease, "granted 轮次没有铸造租约 —— 整条链的起点断了"
-    assert a.capability_lease["source"] == "write_intent"
-    assert a._lease_blocked("apply_edit")[0] is False
+    assert called, "明确写请求应放行"
+    assert not a.capability_lease, "重构后不应再铸写租约"
 
 
-def test_a_withdrawal_still_blocks_after_a_granted_turn():
-    """**最关键的一条**：撤回压过历史批准。
+def test_a_withdrawal_no_longer_blocks_the_write():
+    """撤回句（「取消修改」）不再由聊天路径护栏拦截。
 
-    第一轮明确授权（铸出有效租约），第二轮用户说「取消修改」，且**带着那份租约**
-    —— 护栏必须仍然拦。这条若红，方案就是给越权开了后门。
+    旧策略里撤回压过一切、拦住写；「留地板、拆其余」把这套猜意图的护栏整个拆掉，
+    灾难地板改由 tools.py 的路径越狱/凭据/系统目录硬拦兜底，不再靠正则判撤回。
     """
-    a, _called_a, _ = _drive("请修改 a.txt")
-    lease = a.capability_lease
-    assert lease, "前置：第一轮应当铸出租约"
-    assert a._lease_blocked("apply_edit")[0] is False, "前置：租约应当有效"
-
     for question in ("取消修改", "撤销这个修改", "别改这个文件"):
-        _b, called_b, events_b = _drive(question, lease=lease)
-        assert not called_b, (
-            f"用户说「{question}」且租约有效，写工具却执行了 —— "
-            "撤回/否定被租约压过了"
-        )
-        assert "未授权写操作" in _events_text(events_b), _events_text(events_b)
+        _a, called, _events = _drive(question)
+        assert called, f"重构后「{question}」应放行（护栏已拆，地板在 tools.py）"
 
 
-def test_the_neg_only_first_clause_shape_is_blocked_by_the_wiring():
-    """**这条曾红，且红得对** —— 记下它暴露的东西。
-
-    「不必重构，只要重构一下。」纯函数判 **granted**，所以接线走的是第一条分支
-    （铸造租约），**根本到不了 elif** —— 我那句 `not _RE_NEGATION_RE.search(...)`
-    对它无效。
-
-    一度以为是自己接线写错了。查清后是：**这个句子在纯函数层就是放行的**，
-    属独立的既存缺陷（下面那条守卫已单独立档）。接线那句否定检查保护的是
-    「denied + 有租约」这条路，不是这条路。
-
-    所以这条守卫改测**真正走 elif 的形状**：纯函数判 denied、但句中含否定。
-    那些句子（不要修改 / 别改这个文件 / 先别改）正是这一类。
-    """
-    seed, _called, _ = _drive("请修改 a.txt")
-    lease = seed.capability_lease
-    assert lease, "前置：需要一份有效租约"
-
+def test_a_negation_no_longer_blocks_the_write():
+    """一般否定同样不再由聊天路径拦截（同上，护栏已拆）。"""
     for question in ("不要修改", "别改这个文件", "先别改", "不用改了，已经好了"):
-        assert agent_mod._write_intent(question) == D, f"前置：{question} 应判 denied"
-        assert agent_mod._RE_NEGATION_RE.search(question), f"前置：{question} 应含否定"
-        _a, called_a, events_a = _drive(question, lease=lease)
-        assert not called_a, (
-            f"「{question}」纯函数判 denied 且带着有效租约，写工具却执行了 —— "
-            "接线的否定排除没起作用"
-        )
-        assert "未授权写操作" in _events_text(events_a), _events_text(events_a)
+        _a, called, _events = _drive(question)
+        assert called, f"重构后「{question}」应放行"
 
 
 def test_the_negation_branch_uses_the_compiled_pattern():

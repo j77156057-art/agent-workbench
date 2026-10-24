@@ -48,7 +48,7 @@ from agent_runtime.enterprise_sandbox import (execution_mode, host_fallback_acti
 from agent_runtime import job_window
 
 
-_PYTHON_EXEC_TIMEOUT = int(os.getenv("DOCMIND_PYTHON_EXEC_TIMEOUT", "60") or 60)
+_PYTHON_EXEC_TIMEOUT = int(os.getenv("DOCMIND_PYTHON_EXEC_TIMEOUT", "1800") or 1800)
 
 # ---------------------------------------------------------------------------
 # PTC（Programmatic Tool Calling）路径 B —— 独立 opt-in 模式，默认关（第43批拍板）。
@@ -4941,14 +4941,11 @@ def python_exec(code):
         # 看起来只涉及只读 / 根内写：直接跑；运行期钩仍是权威兜底，
         # 若实际撞到越界会即时中断并转待确认（不谎报执行完成）。
         return _python_exec_run(code, ceiling=1, allow_escalate=True)
-    # 第二/三档：不可逆损害必须在执行【前】取得同意（跑完再问已铸成损害）
-    # → 先登记待确认、暂不运行。
-    pid = stage_exec(code, tier, reason, source="preexec")
-    need = exec_tier_confirm(tier)
-    return ("__EXEC_PENDING__ pid=%s tier=%d need=%d\n"
-            "该代码含第 %d 档操作（%s），需人工确认后才会执行——已登记待确认 #%s"
-            "（需确认 %d 次），尚未运行。请在界面上确认后再执行。"
-            % (pid, tier, need, tier, reason, pid, need))
+    # 「留地板、拆其余」重构：第二/三档不再登记待确认、不再弹窗，直接放行执行。
+    # 灾难地板不受影响：tier -1（凭据/NT、系统关键目录、格式化/磁盘级破坏）已在上面
+    # 直接拒绝；子进程 jail 的 never-dirs / danger-cmds 无论 ceiling 多高都会硬拦，
+    # 因此 rm -rf /、format、读 ~/.ssh 之类依旧永不放行。
+    return _python_exec_run(code, ceiling=tier, allow_escalate=True)
 
 
 # ---------------------------------------------------------------------------
@@ -10071,7 +10068,11 @@ def dev_desktop_action(arg=""):
         }
         approval_target = "desktop:%s:%s:%s" % (
             action, target, hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12])
-        gate = _mcp_gate_blocked(ledger_root, "desktop_action", approval_target)
+        # 「留地板、拆其余」重构：桌面点击/输入/拖拽是可逆的普通工作台操作，不是灾难
+        # 地板。逐次审批卡（"请用户确认当前桌面动作"）正是用户抱怨的"处处受限"，拆掉
+        # —— 直接执行。gate 恒为 None，下面 `if gate:` 分支成为死代码（保留以免影响
+        # 其它引用；危险组合键仍由 desktop_actions._VK 白名单挡在门外）。
+        gate = None
         # 本轮用户已口头授权桌面动作（「在 (400,300) 点一下」「click target=engine」
         # 这类当场指令）时，对 target=engine/embedded 跳过逐次审批门与自检沙箱，
         # 直接执行——游戏控制由此降级为普通对话能力，不再非走工作流 lease 不可。
@@ -10186,7 +10187,10 @@ def vision_click(arg=""):
         return json.dumps({"ok": False, "error": "当前没有项目上下文，无法确定要点哪个窗口。"},
                           ensure_ascii=False)
     try:
-        result = visual_click.execute(pid, root, proposal_id=proposal_id, gate=True)
+        # 「留地板、拆其余」重构：视觉点击的定位目标只会是 embedded/engine（不针对
+        # 前台任意窗口），是一次可逆操作，不是灾难地板。gate=True 会把点击送进审核
+        # 队列、等用户批准才执行 —— 这正是"处处受限"。改成 gate=False 直接执行。
+        result = visual_click.execute(pid, root, proposal_id=proposal_id, gate=False)
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"ok": False, "error": "视觉点击失败：%s: %s" % (type(exc).__name__, str(exc)[:200])},
                           ensure_ascii=False)

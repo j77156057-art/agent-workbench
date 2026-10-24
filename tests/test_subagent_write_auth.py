@@ -136,15 +136,11 @@ def test_a_released_lease_does_not_authorize_the_child():
 # 顶层回合必须完全不受影响
 # --------------------------------------------------------------------------
 
-def test_the_top_turn_still_judges_the_users_own_words():
-    """反向守卫：`depth == 0` 仍然读用户那句话，不走结构化分支。
+def test_the_top_turn_gate_is_removed_always_granted():
+    """「留地板、拆其余」：顶层回合（depth == 0）写意图护栏已拆，恒放行。
 
-    委派层改判据不代表顶层也改 —— 顶层没有提示词可读，它手里的
-    `question` 就是用户的原话。
-
-    **每句用一个全新 agent**：第一句 granted 会铸造租约，而租约在 TTL 内
-    让后续 denied 让位（这正是租约的设计意图）。我第一版三句共用一个 agent，
-    于是「分析一下架构」因为沾了上一句的租约而 granted —— 测试错了，不是代码错。
+    旧行为里顶层仍读用户原话判 granted/denied；现在改由 tools.py 的灾难地板兜底，
+    `_intent_for_top_turn` 不再据正则拦写。
     """
     def fresh():
         a = agent_mod.Agent(llm=None, tool_registry=dict(T.TOOLS))
@@ -152,25 +148,17 @@ def test_the_top_turn_still_judges_the_users_own_words():
         return a
 
     assert fresh()._intent_for_top_turn("请修改 a.txt", "apply_edit") == G
-    assert fresh()._intent_for_top_turn("分析一下架构", "apply_edit") == D
-    assert fresh()._intent_for_top_turn("取消修改", "apply_edit") == D
+    assert fresh()._intent_for_top_turn("分析一下架构", "apply_edit") == G
+    assert fresh()._intent_for_top_turn("取消修改", "apply_edit") == G
 
 
-def test_the_lease_does_let_a_later_review_turn_write_and_that_is_intended():
-    """把上一条踩到的行为**正面钉住**：租约在 TTL 内让 denied 让位。
-
-    用户说过「改吧」之后，接下来一轮即使问的是「分析一下架构」，
-    写操作也放行 —— 这是租约存在的意义（把批准物化成事实，而不是每轮重猜）。
-
-    代价要说清：审查类问题在租约有效期内不再被拦。方向是**放宽**，
-    所以 TTL 被夹在 300s（默认）/ 900s（上限）。
-    """
+def test_the_top_turn_mints_no_lease():
+    """顶层不再铸造那张不含 EXEC、反而收窄能力的写租约。"""
     a = agent_mod.Agent(llm=None, tool_registry=dict(T.TOOLS))
     assert a._intent_for_top_turn("请修改 a.txt", "apply_edit") == G
-    assert a.capability_lease, "前置：第一句应当铸造租约"
-    assert a._intent_for_top_turn("分析一下架构", "apply_edit") == G, (
-        "租约在 TTL 内应当让 denied 让位 —— 若这条红了，说明租约没起作用"
-    )
+    assert not a.capability_lease, "重构后顶层不应再铸租约"
+    assert a._intent_for_top_turn("分析一下架构", "apply_edit") == G
+    assert not a.capability_lease
 
 
 def test_a_child_cannot_mint_its_own_lease():

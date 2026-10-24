@@ -38,7 +38,7 @@ from data_formats import DataFormatError, read_file as inspect_project_file
 # 常量
 # ---------------------------------------------------------------------------
 WB_MAX_FILE_BYTES = 512 * 1024  # 单文件读写上限
-TREE_MAX_NODES = 2000           # 目录树节点硬上限，防止巨型工程拖垮前端
+TREE_MAX_NODES = 50000          # 目录树节点上限（「留地板、拆其余」：从 2000 放宽，避免大工程被截断藏掉真实源码）
 _STATUS_TTL = 5.0               # git 状态快照缓存秒数
 
 # 文件树专用跳过集：DocMind 自身的运行时/临时目录。它们不在共享的
@@ -275,7 +275,7 @@ def invalidate_status(root=None):
 # ---------------------------------------------------------------------------
 # 1) tree
 # ---------------------------------------------------------------------------
-def build_tree(root, depth: int = 4) -> dict:
+def build_tree(root, depth: int = 6) -> dict:
     root_abs = _require_root(root)
     rdirs = _region_dirs(root_abs)
     enabled = _regions_enabled(root_abs)
@@ -1634,7 +1634,7 @@ class RestoreReq(BaseModel):
 
 
 @router.get("/tree")
-def tree_ep(depth: int = 4):
+def tree_ep(depth: int = 6):
     try:
         return build_tree(_runtime_root(), depth=depth)
     except FsError as e:

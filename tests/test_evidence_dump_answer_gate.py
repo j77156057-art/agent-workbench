@@ -225,13 +225,14 @@ class ShouldVerbatimPassthroughTests(unittest.TestCase):
         self.assertFalse(_should_verbatim_passthrough("python_exec", ECHO_OBS),
                          "超过 240 字符的输出一律回模型综合，不能自动下发")
 
-    def test_python_exec_scalar_still_passes(self):
-        self.assertTrue(_should_verbatim_passthrough("python_exec", SCALAR),
-                        "真正的标量结果仍应走 verbatim 捷径")
+    def test_python_exec_scalar_no_longer_passes(self):
+        # 「留地板、拆其余」：标量结果也不再原样透传，一律交回模型综合。
+        self.assertFalse(_should_verbatim_passthrough("python_exec", SCALAR),
+                         "python_exec 已不再走 verbatim 捷径")
 
-    def test_python_exec_short_computation_still_passes(self):
-        self.assertTrue(_should_verbatim_passthrough("python_exec", CALC_PROSE),
-                        "短的三行计算摘要仍应走 verbatim 捷径")
+    def test_python_exec_short_computation_no_longer_passes(self):
+        self.assertFalse(_should_verbatim_passthrough("python_exec", CALC_PROSE),
+                         "python_exec 已不再走 verbatim 捷径")
 
     def test_calculate_is_unaffected(self):
         self.assertTrue(_should_verbatim_passthrough("calculate", BARE_LIST))
@@ -354,9 +355,9 @@ class EvidenceDumpAnswerGateTests(unittest.TestCase):
                          "混合源码摘要被 verbatim 直接下发了")
         self.assertEqual(llm.calls, 2, "拦住捷径后应让模型再综合一轮")
 
-    def test_model_reposting_long_observation_is_degraded(self):
-        # 观察超过自动交付上限（240 字符）→ 回模型；模型若原样重贴，
-        # 终态门 C 先逼综合一次，仍重贴则如实标 degraded。
+    def test_model_reposting_long_observation_nudges_once_then_delivers(self):
+        # 「留地板、拆其余」：终态门 C 仍逼综合一次；仍重贴则**原样交付**，
+        # 不再标 degraded、不再挂"未综合"横幅（那是用户抱怨的事后盖章）。
         scripts = [
             "Thought: 先读一下结构\nAction: python_exec\nAction Input: print(1)",
             "Final Answer:\n" + ECHO_OBS,
@@ -368,12 +369,13 @@ class EvidenceDumpAnswerGateTests(unittest.TestCase):
         self.assertEqual(len(echo_refl), 1, "原样重贴应恰好纠偏一次")
         finals = [e for e in events if e.get("type") == "final"]
         self.assertEqual(len(finals), 1)
-        self.assertTrue(finals[0].get("degraded"),
-                        "仍原样重贴时必须标 degraded，不能假完成")
-        self.assertIn(_ECHO_NOTE, finals[0]["text"])
+        self.assertFalse(finals[0].get("degraded"),
+                         "事后盖章已拆：仍重贴也只原样交付，不再标 degraded")
+        self.assertNotIn(_ECHO_NOTE, finals[0]["text"])
 
-    def test_still_bare_after_nudge_is_degraded_with_note(self):
-        # 纠偏后仍只给清单 → 如实标 degraded 并注明未综合（fail-closed）。
+    def test_still_bare_after_nudge_delivers_plainly(self):
+        # 「留地板、拆其余」：纠偏后仍只给清单 → 原样交付，不再标 degraded、不再挂
+        # "未综合"横幅。事后盖章已拆。
         scripts = [
             "Thought: 先统计一下\nAction: python_exec\nAction Input: print(1)",
             "Final Answer:\n" + BARE_LIST,
@@ -381,22 +383,24 @@ class EvidenceDumpAnswerGateTests(unittest.TestCase):
         _llm, events = self._run(scripts, BARE_LIST)
         finals = [e for e in events if e.get("type") == "final"]
         self.assertEqual(len(finals), 1)
-        self.assertTrue(finals[0].get("degraded"),
-                        "仍只有行号清单时必须标 degraded，不能假完成")
-        self.assertIn(_NOTE, finals[0]["text"])
+        self.assertFalse(finals[0].get("degraded"),
+                         "事后盖章已拆：仍只有清单也只原样交付")
+        self.assertNotIn(_NOTE, finals[0]["text"])
         self.assertLessEqual(len(self._guard_reflections(events)), 1,
                              "纠偏必须有界，不能死循环")
 
-    def test_scalar_result_still_passes_through_immediately(self):
-        # 反向锁：真正的标量结果仍走 verbatim 捷径，一步交付、不标 degraded。
+    def test_scalar_result_now_goes_through_synthesis(self):
+        # 「留地板、拆其余」：标量结果不再一步透传，回模型综合一轮再交付。
         llm, events = self._run(
-            ["Thought: 算一下\nAction: python_exec\nAction Input: print(42)"],
+            ["Thought: 算一下\nAction: python_exec\nAction Input: print(42)",
+             "Final Answer:\n" + SYNTHESIZED],
             SCALAR)
         finals = [e for e in events if e.get("type") == "final"]
         self.assertEqual(len(finals), 1)
-        self.assertIn("代码执行结果：\n42", finals[0]["text"])
+        self.assertNotIn("代码执行结果", finals[0]["text"],
+                         "python_exec 结果不应再被原样透传成最终答案")
         self.assertFalse(finals[0].get("degraded"))
-        self.assertEqual(llm.calls, 1, "标量结果不该再多跑一轮模型")
+        self.assertEqual(llm.calls, 2, "透传拆掉后应让模型再综合一轮")
 
     # ---------------------------------------------------------------- 截头 final
     def test_front_truncated_answer_is_rewritten(self):
@@ -415,15 +419,16 @@ class EvidenceDumpAnswerGateTests(unittest.TestCase):
         self.assertIn("27 处 continue", finals[0]["text"])
         self.assertEqual(llm.calls, 2, "截头后应再让模型重写一轮")
 
-    def test_still_truncated_after_nudge_is_degraded_with_note(self):
-        # 纠偏后仍从中间开始 → 如实标 degraded 并注明前半部分缺失（fail-closed）。
+    def test_still_truncated_after_nudge_delivers_plainly(self):
+        # 「留地板、拆其余」：纠偏后仍从中间开始 → 原样交付，不再标 degraded、
+        # 不再挂"未能完整交付/请重新提问"横幅。
         _llm, events = self._run(["Final Answer:\n" + RUN1_FRAGMENT], "x")
         self.assertEqual(len(self._guard_continuation(events)), 1)
         finals = [e for e in events if e.get("type") == "final"]
         self.assertEqual(len(finals), 1)
-        self.assertTrue(finals[0].get("degraded"),
-                        "仍截头时不能假装完整交付")
-        self.assertIn(_CONT_NOTE, finals[0]["text"])
+        self.assertFalse(finals[0].get("degraded"),
+                         "事后盖章已拆：仍截头也只原样交付")
+        self.assertNotIn(_CONT_NOTE, finals[0]["text"])
 
     def test_explicit_continue_question_allows_midway_answer(self):
         # 用户明确说「从第 28 条继续」时，从中间开始正是预期行为，守卫必须让路。

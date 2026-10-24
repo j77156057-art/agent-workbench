@@ -2963,24 +2963,12 @@ async def chat(
                 if kind == "error":
                     last_terminal_kind = "error"
                     raise payload
-                # 终态识别前的 final：再算一次 consistency，写进 in-flight 缓冲。
-                # 注意：_compute_consistency 是无副作用的纯函数，前后端契约不破。
+                # 终态识别前的 final：「留地板、拆其余」重构 —— 不再给 final 附
+                # "覆盖存疑/未综合"这类事后标注（consistency='warn'、
+                # consistency_reason='verbatim_dump'）。那是用户抱怨的"事后盖章"，
+                # 且前端徽章已移除。纯函数 _compute_consistency / _consistency_reason
+                # 保留（直测仍在钉），这里只是不再把它们的结论下发到 final payload。
                 if isinstance(payload, dict) and payload.get("type") == "final":
-                    try:
-                        obs_list = list(inflight.get("observations") or [])
-                        # final.text 若为空（错误收尾）就不算 consistency，
-                        # 错误 final 不该被自检逻辑污染。
-                        final_text = str(payload.get("text") or "")
-                        if final_text and payload.get("status") != "error":
-                            consistency, ratio = _compute_consistency(obs_list, final_text)
-                            payload = {**payload, "consistency": consistency,
-                                       "consistency_ratio": round(ratio, 3)}
-                            # 正交原因标签（如逐行裸铺源码）：仅在非空时下发，缺省不破旧契约。
-                            _reason = _consistency_reason(obs_list, final_text)
-                            if _reason:
-                                payload = {**payload, "consistency_reason": _reason}
-                    except Exception:  # noqa: BLE001
-                        pass
                     _append_in_flight_event(inflight, payload)
                     inflight["final"] = dict(payload)
                     inflight["status"] = str(payload.get("status") or "done")

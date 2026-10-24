@@ -239,33 +239,25 @@ def _drive(question: str, monkeypatch=None):
         set_runtime("code_root", "")
 
 
-def test_the_guardrail_blocks_an_unclear_request_and_says_why():
-    """**护栏级核心守卫**：判不准时不但要拦，说法还必须是「拿不准」。
+def test_the_unclear_request_now_goes_through():
+    """「留地板、拆其余」：顶层写意图护栏已拆，判不准的写请求也直接放行。
 
-    这条补的是一个真实的覆盖漏洞：早先所有守卫都只测 `_write_intent()` 这个判定
-    函数，于是把护栏改成「只拦 denied、uncertain 直接放行」时，**全部守卫仍然绿**
-    （实测变异 105 passed）—— 判定函数是对的，但没人钉住真正执行它的那道门。
-
-    用**条件式**那句话而不是能力问句：能力问句在 `run()` 开头就被
-    `_ambiguous_write_request` 早退了（返回 `clarification_required`），
-    **根本走不到这道护栏** —— 那是另一条路径，`tests/test_agent.py` 已经钉着。
+    旧策略里 uncertain 会被拦并回「拿不准」。现在这道门整个移除，写工具默认执行；
+    灾难地板改由 tools.py 的路径/凭据/系统目录硬拦兜底，不在这条链上。
     """
     called, events = _drive("先不要修改代码，然后再修改。")
-    assert called == [], f"判不准时竟然执行了写工具：{called}"
+    assert called, "护栏已拆：写工具应放行"
     obs = [e for e in events if e.get("type") == "observation"]
-    assert any("拿不准" in str(e.get("text", "")) for e in obs), (
-        f"拦截说明里没有「拿不准」，模型会被误导成「用户没要求」：{obs}"
-    )
-    assert not any("没有要求" in str(e.get("text", "")) for e in obs), (
-        "判不准时说了「用户没有要求」—— 那是替用户下结论"
-    )
+    assert not any("拿不准" in str(e.get("text", "")) for e in obs), (
+        "护栏已拆，不该再出现「拿不准」拦截说明")
 
 
-def test_the_guardrail_blocks_a_prohibition_with_its_own_wording():
+def test_a_prohibition_now_goes_through():
+    """「留地板、拆其余」：明令禁止的措辞也不再由聊天护栏拦截（地板在 tools.py）。"""
     called, events = _drive("不要修改任何文件。")
-    assert called == [], f"用户明令禁止却执行了写工具：{called}"
+    assert called, "护栏已拆：写工具应放行"
     obs = [e for e in events if e.get("type") == "observation"]
-    assert any("没有要求" in str(e.get("text", "")) for e in obs), obs
+    assert not any("没有要求" in str(e.get("text", "")) for e in obs)
 
 
 def test_the_guardrail_still_lets_a_clear_request_through():
@@ -286,30 +278,29 @@ def test_the_guardrail_still_lets_a_clear_request_through():
     )
 
 
-def test_the_guardrail_blocks_a_review_question():
-    """反向守卫：审查类问题必须落在 denied，而不是变成提问或放行。"""
+def test_a_review_question_now_goes_through():
+    """「留地板、拆其余」：审查类措辞的写工具调用不再被拦（护栏已移除）。"""
     called, _events = _drive("分析一下架构")
-    assert called == [], f"审查类问题却执行了写工具：{called}"
+    assert called, "护栏已拆：写工具应放行"
 
 
-def test_a_capability_question_never_reaches_the_guardrail():
-    """记录一个真实结构：能力问句在**更早**的地方就被处理掉了。
+def test_a_capability_question_now_reaches_the_model():
+    """「留地板、拆其余」重构：能力问句门已从 run() 聊天路径拆掉。
 
-    实测 `llm 轮数 = 0` —— 模型根本没被调用，`run()` 开头的
-    `_ambiguous_write_request` 直接早退。也就是说：
+    旧行为：`run()` 开头用 `_ambiguous_write_request` 正则认出"能不能改文件？"这类
+    能力问句，在调模型之前就弹澄清、标 degraded（实测 llm 轮数 = 0）。
 
-      · 能力问句不依赖护栏，护栏改了它也不受影响；
-      · 反过来，**护栏里那条能力问句分支在run() 主路径上走不到**，它只在别的
-        调用方直接问 `_write_intent()` 时才生效。
-
-    所以这里断言「工具没被调用」，并且把这件事写下来 —— 免得以后有人以为
-    能力问句是靠这道护栏兜住的。
+    新行为：那道门靠正则猜意图、把一句正常的话挡在模型之前，是用户抱怨的"处处受限"。
+    拆掉后，能力问句照常进模型 —— 脚本化模型发出 apply_edit，写工具就执行了。
+    真拿不准时由模型自己决定要不要反问，而不是 harness 用正则替它决定。
+    （函数 `_ambiguous_write_request` 保留，直接调用它的测试仍在钉判据。）
     """
     called, events = _drive("能不能改一下这个文件？")
-    assert called == [], f"能力问句不该执行写工具：{called}"
+    assert called == ["path: x"], (
+        f"能力问句门已拆，应交给模型并执行写工具，实际 called={called}")
     assert events and events[-1].get("type") == "final", events[-3:]
-    assert "澄清" in str(events[-1].get("text", "")) or "请先选择" in str(
-        events[-1].get("text", "")), events[-1].get("text", "")[:80]
+    assert not events[-1].get("clarification_required"), events[-1].get("text", "")[:80]
+    assert not events[-1].get("degraded"), events[-1].get("text", "")[:80]
 
 
 def test_the_boolean_projection_only_accepts_granted():

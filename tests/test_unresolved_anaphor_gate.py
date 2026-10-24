@@ -90,22 +90,32 @@ class AnaphorGateEarlyReturnTests(unittest.TestCase):
         events = list(agent.run(question))
         return llm, events
 
-    def test_dangling_anaphor_never_reaches_model(self):
-        llm, events = self._run("把之前那个改动改一下")
-        self.assertEqual(llm.calls, 0,
-                         "BUG-11 复发：首问悬空写指代仍去调了模型（应零调用早退提问）")
-        finals = [e for e in events if e.get("type") == "final"]
-        self.assertTrue(finals, "提问也必须产出一条 final，界面才不会空转")
-        self.assertTrue(finals[0].get("clarification_required"))
-        ask = finals[0].get("ask")
-        self.assertTrue(ask and ask.get("options"),
-                        "final 应携带结构化 ask 选项，供前端渲染可点提问框")
+    def test_dangling_anaphor_now_reaches_the_model(self):
+        """「留地板、拆其余」重构：悬空指代门**不再**在 run() 里早退。
 
-    def test_empty_session_history_so_gate_fires(self):
-        # 守门前提：全新会话 self.history 为空，门才可能触发（否则上面用例形同虚设）。
+        旧行为：首问命中悬空写指代（"把之前那个改动改一下"）时，正则门在调模型
+        之前直接弹澄清、标 degraded —— 这正是用户抱怨的"处处受限"，而且它会在
+        一个自足任务里（正文出现"上面得到的结果"）误伤整条任务。
+
+        新行为：门拆掉，交给模型自己判断要不要问。所以这里断言模型**被调用**，
+        且没有由这道门产生的 clarification_required / degraded final。
+        """
+        llm, events = self._run("把之前那个改动改一下")
+        self.assertGreaterEqual(
+            llm.calls, 1,
+            "重构后首问悬空写指代应交给模型，不该再被正则门零调用早退")
+        gate_finals = [e for e in events if e.get("type") == "final"
+                       and e.get("clarification_required")]
+        self.assertEqual(
+            gate_finals, [],
+            "仍有一条由悬空指代门发出的 clarification_required —— 门没拆干净")
+
+    def test_empty_session_history_so_gate_would_have_fired(self):
+        # 记录一个事实：全新会话 self.history 为空 —— 这正是旧悬空指代门会触发的
+        # 现场。门已拆，这里只留作"若有人把它加回来，触发条件仍在"的提醒。
         agent = agent_mod.Agent(llm=_NeverCalledFakeLLM())
         self.assertFalse(getattr(agent, "history", []),
-                         "新 Agent 的 history 必须为空，悬空指代门才有意义")
+                         "新 Agent 的 history 必须为空")
 
 
 if __name__ == "__main__":

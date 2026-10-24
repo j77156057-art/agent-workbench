@@ -2839,16 +2839,11 @@ def _should_verbatim_passthrough(action, obs):
     calculate / gen_video_prompt 的结果本身就是交付物，照常透传。
     """
     if action == "python_exec":
-        if "__EXEC_PENDING__" in obs or "__EXEC_BLOCKED__" in obs:
-            return False
-        if _is_raw_source_echo(obs):
-            return False
-        if _is_bare_evidence_dump(obs):
-            return False
-        if _is_source_like_dump(obs):
-            return False
-        if len(str(obs).strip()) > _PASSTHROUGH_MAX_CHARS:
-            return False
+        # 「留地板、拆其余」重构：python_exec 一律不再原样透传成「代码执行结果：」
+        # 甩给用户（那正是「覆盖存疑」灰条的来源，也让工作台像日志查看器而非助手）。
+        # 结果一律交回模型综合成结论。calculate / gen_video_prompt 的结果本身即交付物，
+        # 走下面的默认透传，不受影响。
+        return False
     return True
 
 
@@ -4737,16 +4732,13 @@ class Agent:
 
         只在 granted 时**铸造**租约：uncertain 时铸会让用户问完还是不能写。
         """
-        _intent = _write_intent(question)
-        if _intent == _WRITE_INTENT_GRANTED:
-            self.capability_lease = self._mint_write_lease()
-        elif (self.capability_lease
-              and not _RE_WRITE_WITHDRAW.search(
-                  _write_intent_text(_user_question(question)))
-              and not _RE_NEGATION_RE.search(_user_question(question))
-              and not self._lease_blocked(action_name)[0]):
-            _intent = _WRITE_INTENT_GRANTED
-        return _intent
+        # 「留地板、拆其余」重构：顶层聊天回合不再用 `_write_intent` 正则猜
+        # 「用户这句算不算授权写文件」，也不再铸那张**故意不含 EXEC** 的写租约
+        # （旧行为里，一旦授权写反而把跑命令的能力收窄掉，与工作台定位相悖）。
+        # 现在写工具默认放行；`capability_lease` 保持为空 → `_lease_blocked` 全通过。
+        # 灾难地板仍在 tools.py：路径越狱 jail、受保护契约文件、凭据/系统目录硬拦
+        # 都照常生效，这里拆掉的只是「猜意图 + 事后拦截」这一层。
+        return _WRITE_INTENT_GRANTED
 
     def _mint_write_lease(self, *, ttl_seconds=None, capabilities=None):
         """铸一张写租约：本轮用户已授权写入的**物化凭证**。
@@ -5661,42 +5653,18 @@ class Agent:
                    "clarification_required": True, "degraded": True}
             return
 
-        # "能不能修改文件？" is a capability question.  It must not reach
-        # the model as an implicit write authorization: ask for the target and
-        # desired change first, without invoking any tool or provider.
-        clarification = _ambiguous_write_request(question)
-        if clarification:
-            turn.outcome = "clarification_required"
-            final_text = clarification
-            yield {"type": "final", "text": clarification,
-                   "clarification_required": True, "degraded": True,
-                   "ask": {
-                       "kind": "clarify",
-                       "question": "你希望我做哪一种？",
-                       "allow_free_text": True,
-                       "options": [
-                           {"label": "修改现有逻辑",
-                            "value": "修改现有逻辑，我会请你给出文件路径、要改的行为和期望结果。"},
-                           {"label": "新增功能或文件",
-                            "value": "新增功能或文件，我会请你描述功能、放置位置和验收标准。"},
-                           {"label": "修复报错",
-                            "value": "修复报错，我会请你提供报错信息和相关文件。"},
-                           {"label": "只看修改方案",
-                            "value": "只查看修改方案：先检索并给出方案，等你确认后再改。"},
-                       ],
-                   }}
-            return
+        # "能不能修改文件？" capability-question gate.
+        # 「留地板、拆其余」重构：这道门用正则猜"这是不是能力问句"，命中就在模型
+        # 之前弹澄清、标 degraded。它不是灾难地板，是"处处受限"的一种 —— 拆掉，
+        # 交给模型自己判断（真拿不准时模型会正常发问）。函数 _ambiguous_write_request
+        # 保留（直接调用它的测试仍在钉判据）。
 
         # P0（BUG-11）：首问用悬空写指代（"刚才的改动/优化下"）又没给具体路径时，
         # 本会话无先行词可落地，禁借跨会话记忆脑补目标 —— 弹提问框请用户指明。
-        anaphor = _unresolved_anaphor_clarification(question, self.history)
-        if anaphor:
-            turn.outcome = "clarification_required"
-            final_text = anaphor["text"]
-            yield {"type": "final", "text": final_text,
-                   "clarification_required": True, "degraded": True,
-                   "ask": anaphor["ask"]}
-            return
+        # 「留地板、拆其余」重构：这道门靠正则猜意图，会在一个自足的任务里
+        # （比如正文出现"上面得到的结果"这类词）把任务整个挡在模型之前，正是用户
+        # 抱怨的"处处受限"。它不是灾难地板，拆掉 —— 真拿不准时让模型自己去问。
+        # 函数 _unresolved_anaphor_clarification 保留（直接调用它的测试仍在钉判据）。
 
         aborted = False
         error = None
@@ -5734,25 +5702,11 @@ class Agent:
                     _memory.capture_preferences(self.memory_scope, question)
                 except Exception:
                     pass
-            if _missing_weather_location(question, self.history):
-                final_text = "你想查哪个城市或地区的天气？请告诉我地点，我会按当前日期查询。"
-                self.history.append({"user": question, "assistant": final_text})
-                if self.session_id:
-                    _sessions.save(self.session_id, self.history, self.summary, self.project_id)
-                persist_checkpoint("completed")
-                yield {"type": "final", "text": final_text,
-                       "clarification_required": True, "degraded": True}
-                return
-            transport_clarification = _transport_request_clarification(question, self.history)
-            if transport_clarification:
-                final_text = transport_clarification
-                self.history.append({"user": question, "assistant": final_text})
-                if self.session_id:
-                    _sessions.save(self.session_id, self.history, self.summary, self.project_id)
-                persist_checkpoint("completed")
-                yield {"type": "final", "text": final_text,
-                       "clarification_required": True, "degraded": True}
-                return
+            # 「留地板、拆其余」重构：天气缺地点、出行缺出发/到达/日期 —— 这两道门
+            # 都是正则猜"信息够不够"，命中就在模型之前弹澄清、标 degraded。它们不是
+            # 灾难地板，是"处处受限"。拆掉，交给模型自己处理（缺信息时模型会正常追问
+            # 或直接检索）。函数 _missing_weather_location / _transport_request_clarification
+            # 保留（直接调用它们的测试仍在钉判据）。
             inner = self._run(question, turn=turn, stream=stream, images=images, deadline=deadline,
                               cancel_event=cancel_event,
                               journal=journal_state,
@@ -7398,7 +7352,11 @@ class Agent:
                     yield {"type": "notice", "text": "模型单次输出已满，正在接续完整回答。", "transient": True}
                     continue
 
-                final_text = _guard_transport_final(final_body, question, trail, self.history)
+                # 「留地板、拆其余」：`_guard_transport_final` 会按正则猜"没 verified_fare
+                # 却有票价数字"，然后把模型自己写好的 final 整段替换成 harness 写的免责话。
+                # 那是事后改写答案，属于"处处受限"。拆掉这一调用点：照常交付模型的答案。
+                # （判据函数保留，直测仍钉它。）
+                final_text = final_body
                 # 若上一步是"产出即答案"的工具且返回有效，用工具结果兜底数字/格式，
                 # 避免小模型在 Final Answer 里改写数字导致错误。
                 #
@@ -7446,13 +7404,10 @@ class Agent:
                         yield {"type": "reflection",
                                "text": "最终回答疑似源码裸铺，正在要求综合成结论。"}
                         continue
-                    final_text = final_text.rstrip() + (
-                        "\n\n──── 以上为原始源码清单，未能综合成结论（已如实标注，"
-                        "请视为未直接回答该问题）────")
-                    if turn is not None:
-                        turn.outcome = "verbatim_dump_unsynthesized"
+                    # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
+                    # "未能综合成结论"横幅、不再标 degraded。那是用户抱怨的"事后盖章"。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text, "degraded": True}
+                    yield {"type": "final", "text": final_text}
                     return
                 # 终态硬门 B：**中间证据冒充答案**。上一步是 verbatim 工具（典型是
                 # python_exec），模型/兜底却只交出一串数字或行号清单——这不是对问题的
@@ -7479,13 +7434,10 @@ class Agent:
                         yield {"type": "reflection",
                                "text": "最终回答只是数字/行号清单，正在要求综合成结论。"}
                         continue
-                    final_text = final_text.rstrip() + (
-                        "\n\n──── 以上只是工具返回的数字/行号清单，未能综合成对问题的回答"
-                        "（已如实标注，请视为未直接回答该问题）────")
-                    if turn is not None:
-                        turn.outcome = "evidence_dump_unsynthesized"
+                    # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
+                    # "未能综合"横幅、不再标 degraded。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text, "degraded": True}
+                    yield {"type": "final", "text": final_text}
                     return
                 # 终态硬门 C：**原样重贴工具观察**。这条兜的是形状判据抓不住的
                 # 混合输出（实测真实 DeepSeek：`总行数 8298` + 五行 `while/def`），
@@ -7510,13 +7462,10 @@ class Agent:
                         yield {"type": "reflection",
                                "text": "最终回答只是原样重贴工具输出，正在要求综合成结论。"}
                         continue
-                    final_text = final_text.rstrip() + (
-                        "\n\n──── 以上只是工具原始输出，未能综合成对问题的回答"
-                        "（已如实标注，请视为未直接回答该问题）────")
-                    if turn is not None:
-                        turn.outcome = "observation_echo_unsynthesized"
+                    # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
+                    # "未能综合"横幅、不再标 degraded。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text, "degraded": True}
+                    yield {"type": "final", "text": final_text}
                     return
                 # 终态硬门 D：**截头回答**。实测工作台长任务：前端原生通道缓冲被
                 # final 整体替换，只剩从「` 或补 Action: 的 Nudge。\n28. ...」开始的
@@ -7540,13 +7489,10 @@ class Agent:
                         yield {"type": "reflection",
                                "text": "最终回答从中间开始，正在要求重写完整答案。"}
                         continue
-                    final_text = final_text.rstrip() + (
-                        "\n\n──── 以上回答从中间开始，前半部分缺失，未能完整交付"
-                        "（已如实标注，请重新提问或换一个模型）────")
-                    if turn is not None:
-                        turn.outcome = "continuation_fragment"
+                    # 「留地板、拆其余」：逼重写一次后仍如此，就原样交付 —— 不再挂
+                    # "未能完整交付/请重新提问"横幅、不再标 degraded。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text, "degraded": True}
+                    yield {"type": "final", "text": final_text}
                     return
                 evidence_audit = _audit_live_answer(final_text, question, trail, audit_steps)
                 # 闸门只看**事实项**（引用能不能打开、行号是否越界）。
@@ -7580,26 +7526,20 @@ class Agent:
                         })
                         yield {"type": "reflection", "text": _reflection}
                         continue
-                    # 事实项仍未通过：如实报 FAIL，并**点名具体引用**。
-                    # 旧文案是写死的「尚未完成 read_file 原文核验，请勿据此修改代码」——
-                    # 那句话即使在事实项失败时也不准确（真正的问题是路径/行号，不是读没读），
-                    # 而且它已被证明会误导。现在给出的是可核验的事实与三值判定。
-                    final_text = final_text.rstrip() + "\n\n" + _evidence_verdict_note(evidence_audit)
+                    # 「留地板、拆其余」：纠偏一次后事实项仍未过，就原样交付模型的
+                    # 答案 —— 不再往 final 追加 harness 写的「（核验：FAIL…）」横幅。
+                    # 那是用户看到的"事后盖章"，正是被抱怨的"处处受限"。
+                    # 保留上面的一次性纠偏（内部 re-ask），但不替用户下结论。
+                    pass
                 if continuation_incomplete:
                     if turn is not None:
                         turn.outcome = "truncated"
                     final_text += "\n\n（模型连续达到单次输出上限，以上为已生成正文，回答尚未结束；可继续本轮任务。）"
                     yield {"type": "final", "status": "error", "text": final_text}
                     return
-                # 定位类问题即使全通过也报一句结论。
-                #
-                # 此前只在**失败**时说话，于是这个设计**从不给正向信号**——用户看到
-                # 一串精确到行号的引用，却无从知道它们是否被检查过。这正是它长期
-                # 不可信的原因：只在出错时说话的系统，人们没法学会信任它。
-                #（另：上一版我在提交信息里声称"PASS 时会报N 处引用可核验"，
-                #  实际上并没有实现——那句是自己写的，这次补上并有测试钉住。）
-                if evidence_audit.get("required") and evidence_audit.get("references"):
-                    final_text = final_text.rstrip() + "\n\n" + _evidence_verdict_note(evidence_audit)
+                # 「留地板、拆其余」：即使核验 PASS，也不再往 final 追加 harness 写的
+                # 「（核验：PASS·N 处引用可核验）」横幅。那是往用户答案上贴的"事后盖章"，
+                # 与 FAIL 侧同一种"处处受限"。判据函数保留，直测仍钉它。
                 self.history.append({"user": question, "assistant": final_text})
                 yield {"type": "final", "text": final_text}
                 return
