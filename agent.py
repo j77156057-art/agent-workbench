@@ -41,6 +41,7 @@ from tools import (TOOLS, tool_schemas, self_verify,
                    evidence_authority_tool_names, read_served_ranges,
                    set_session_web_enabled, _session_web_enabled,
                    set_session_vision_mode, _session_vision_mode,
+                   set_exec_owner, _exec_owner, drop_pending_execs,
                    _query_relevant,
                    begin_read_conversation, end_read_conversation,
                    bind_read_conversation,
@@ -1283,6 +1284,25 @@ def _clean_fallback_answer(raw):
     return "模型未能按格式完成检索，只返回了中间思考过程。请重试或换一个更具体的问题。"
 
 
+#: 旧版本的原生 FC 并行批次会往 assistant trail 写入内部串「（并行调用）name1、name2」。
+#  该写入点已移除（工具名改为并进 Observation 前缀），但**存量会话历史里仍有**，
+#  所以下面的识别与闸门保留作兜底；另有 `_fit_budget` 在发送前清洗这类历史。
+#  模型偶尔会把这条**自己的**历史正文原样复读一遍当"最终回答"，于是 harness 把它
+#  当成 `native_prose_final` 直接下发——用户拿到的就是这行内部标记（再被核验环节
+#  追加"（核验：FAIL）"），真正的综合结论根本没生成。长任务里可稳定复现。
+#  判据必须保守：只有整段就是"（并行调用）+ 一串工具名（标识符/、/空格/点/连字符）"、
+#  没有任何真实句子内容时才算"纯内部标记"。以「（并行调用）……」开头但后面接了正文
+#  的正常回答**不**命中，绝不误伤。
+_RE_INTERNAL_MARKER_ONLY = re.compile(
+    r"^（并行调用）[A-Za-z0-9_、\s.\-]*$"
+)
+
+
+def _is_internal_marker_only(text):
+    """模型是否把 harness 的「（并行调用）…」内部标记原样复读成了'答案'。"""
+    return bool(_RE_INTERNAL_MARKER_ONLY.match(str(text or "").strip()))
+
+
 def _repeated_sentence(text, *, minimum=24, repeats=3):
     """返回被模型连续重复的句子；短句和代码行不参与判断。
 
@@ -1388,10 +1408,10 @@ def _task_token_budget():
 # 走本地配置读取，不进入 LLM。匹配保持收窄，避免把普通开发任务误判成帮助页。
 _CAPACITY_HELP_RE = re.compile(
     r"(?is)(?:"
-    r"(?:token|令牌|额度|预算|上限|步数|agent\s*(?:数|数量)?|代理\s*(?:数|数量)?|并发|显存)"
+    r"(?:token|令牌|额度|预算|上限|步数|agent\s*(?:数|数量)|代理\s*(?:数|数量)|并发|显存)"
     r".{0,80}(?:怎么|如何|提高|增加|调高|调大|设置|调整|不限|解除|剩余|耗尽|用完|多少|区别|查看|上限)"
     r"|(?:怎么|如何|提高|增加|调高|调大|设置|调整|不限|解除|查看)"
-    r".{0,80}(?:token|令牌|额度|预算|上限|步数|agent|代理|并发|显存)"
+    r".{0,80}(?:token|令牌|额度|预算|上限|步数|agent\s*(?:数|数量)|代理\s*(?:数|数量)|并发|显存)"
     r"|(?:token|令牌|任务预算|费用预算|全局预算|会话预算).{0,30}(?:已达|耗尽|用完|超限|不足|上限)"
     r")"
 )
@@ -1996,7 +2016,8 @@ _PRUNABLE_PREFIXES = ("Observation:", "Reflection:", "Nudge:")
 def _find_prunable_trail(trail):
     """在 trail 里找最早可丢弃的内容，返回 (起始下标, 删除跨度)：
     成对的「assistant 决策 + Observation/Reflection/Nudge 回填」多于 1 对时
-    优先丢最早的一对；否则丢上一轮正文为空时留下的孤儿 Nudge user 消息。
+    优先丢最早的一对；否则丢孤儿消息（上一轮正文为空留下的 Nudge，以及并行批次
+    回填后前面没有 assistant 的 Observation，见批次回填处）。
     找不到（只剩最近 1 轮且无孤儿）返回 None。
     """
     if _trail_pair_count(trail) > 1:
@@ -2008,6 +2029,16 @@ def _find_prunable_trail(trail):
     for i, msg in enumerate(trail):
         if msg.get("role") == "user" and (msg.get("content", "") or "").startswith("Nudge:"):
             return i, 1
+    # 并行批次的 Observation 现在直接跟在（可能是上一条）user 消息后面，没有自己的
+    # assistant 决策行，成对分支永远看不到它们。不在这里兜住的话，预算超限时
+    # `_fit_budget` 只能一路去删 head 里的历史问答，trail 里的观察却原样堆着。
+    # 仍以「至少保留最近一条观察」为下限，避免把当前轮刚拿到的证据也剪掉。
+    orphans = [i for i, msg in enumerate(trail)
+               if msg.get("role") == "user"
+               and (msg.get("content", "") or "").startswith("Observation:")
+               and not (i > 0 and trail[i - 1].get("role") == "assistant")]
+    if len(orphans) > 1:
+        return orphans[0], 1
     return None
 
 
@@ -2205,6 +2236,16 @@ _MAX_FORCED_FINALS = 1
 #: 第一次 nudge 它可能照做一次、第二次又忘了，第三、四次只是把同一条提示重复给用户看。
 #: 给 2 次机会足以区分「偶发没写」与「稳定不守格式」，再往下只是消耗 token 与耐心。
 _MAX_FORMAT_STALLS = 2
+
+#: 连续几轮把 harness 的内部调度标记（「（并行调用）」+工具名）当作回答复读就停止重试。
+#:
+#: 与 `_MAX_FORMAT_STALLS` **分开计数**：复读内部标记是「上下文被污染」的特征
+#: （存量历史里有一行助手发言其实是 harness 写的调度摘要），不是「这个模型稳定
+#: 不守格式」。早前把它混进 format_stall，于是模型只是复读了一行标记、两轮就被
+#: 判死，用户 18 秒后只看到「执行失败」——真正的结论一个字都没生成。现在先给
+#: 一次**明确纠偏**（不回显那行标记，避免二次污染），仍复读才降级收尾。
+_MAX_MARKER_ECHOES = 2
+
 # 写动词表的**单一声明处**。`_RE_WRITE_INTENT` 与「否定作用域」那条正则都从这里取，
 # 不要手抄第二份：加词时忘了同步否定表，「不要只改 b.py」就会被判成**授权**
 # （实测踩过 —— `只改` 加进意图表却没进否定表，护栏朝危险方向失效）。
@@ -2681,11 +2722,118 @@ def _is_raw_source_echo(text):
     return numbered >= _DUMP_NUMBERED_RATIO * len(lines)
 
 
+# 「没带行号的源码/代码位置清单」：`1274 while True:`、`5202 def run(...)`。
+# 实测（真实 DeepSeek 工作台）：模型用 python_exec 打印“总行数 + 五六行 while/def”，
+# 行号可有可无、总行数不到 10，旧判据 `_is_raw_source_echo`（≥10 行且 ≥70% 带行号）
+# 完全漏判，于是这段中间证据被 verbatim 捷径当成最终答案直接下发。这里按**源码行占比**
+# 判，不要求行号、也不要求行数很多；普通计算结果（`caseA dps=25.0 / 结论: 会掉到0`）
+# 不含 def/while/var 等代码行，不会命中。
+_SRC_KEYWORD_LINE_RE = re.compile(
+    r"^\s*(?:\d+\s+)?(?:async\s+)?"
+    r"(?:def|class|function|func|fn|while|for|if|elif|elseif|else|try|except|"
+    r"finally|with|switch|case|return|yield|import|from|package|public|private|"
+    r"protected|static|var|let|const|#include|using|namespace|pass|break|"
+    r"continue|raise)\b"
+)
+# 缩进 + “名字(...)” 或 “名字 op= 值” 的调用/赋值行（`    move_and_slide()`、
+# `    hp -= n`）。刻意不认单纯的“缩进 + 冒号”，否则缩进的散文（`  结论: ...`）
+# 会被误算成代码行。
+_SRC_CALL_OR_ASSIGN_LINE_RE = re.compile(
+    r"^\s{2,}[\w.$\[\]'\"]+\s*(?:\(|(?:[+\-*/%<>!&|]?=))"
+)
+_SOURCE_LIKE_MIN_LINES = 4
+_SOURCE_LIKE_RATIO = 0.5
+
+
+def _is_source_like_dump(text):
+    """这段输出是否主要是**源码行**（哪怕没带行号、行数也不多）。
+
+    与 `_is_raw_source_echo` 互补：那条管长且带行号的整份文件 dump；这条管
+    “打印几行关键代码当证据”的短 dump。两者都不该被 verbatim 捷径当答案。
+    """
+    if not text or not str(text).strip():
+        return False
+    lines = [ln for ln in str(text).splitlines() if ln.strip()]
+    if len(lines) < _SOURCE_LIKE_MIN_LINES:
+        return False
+    hits = sum(
+        1 for ln in lines
+        if _SRC_KEYWORD_LINE_RE.match(ln) or _SRC_CALL_OR_ASSIGN_LINE_RE.match(ln)
+    )
+    return hits >= _SOURCE_LIKE_RATIO * len(lines)
+
+
+# 「计数 + 行号/索引清单」这类**中间证据**：`27 [5860, 5902, 5930, ...]`、
+# `[5860, 5902, 5930, 6011]`。与 `_is_raw_source_echo` 互补——那条管「行号+源码」
+# 的多行 dump，这条管**只有数字**的结果清单。实测（longrun 工作台）：模型读了 35 步
+# 文件，最后把 python_exec 打印的行号清单当最终答案，用户等了 16 秒只拿到一串数字。
+# 判据刻意保守：≥4 个数字的方括号清单；或 ≥3 行里 60% 以上只有数字/标点；或单行
+# 但整行只有数字与标点且足够长。短标量（`42`、`3.2`）与带中文/字母的散文都不命中。
+_BARE_NUM_LIST_RE = re.compile(r"\[\s*\d+(?:\s*,\s*\d+){3,}\s*\]")
+_BARE_NUMERIC_LINE_RE = re.compile(r"^[\s\d,\.\[\]\(\)\{\}\-+*/=:%|]+$")
+_BARE_EVIDENCE_MIN_LINES = 3
+_BARE_EVIDENCE_NUMERIC_RATIO = 0.6
+
+
+def _is_bare_evidence_dump(text):
+    """这段工具输出是否只是**数字/行号清单**（读起来像证据，不是对问题的回答）。"""
+    if not text:
+        return False
+    t = str(text).strip()
+    if not t:
+        return False
+    # harness 自己的前缀不算「答案内容」。
+    for _pfx in ("代码执行结果：", "计算结果为："):
+        if t.startswith(_pfx):
+            t = t[len(_pfx):].strip()
+            break
+    if not t:
+        return False
+    if _BARE_NUM_LIST_RE.search(t):
+        return True
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    if len(lines) >= _BARE_EVIDENCE_MIN_LINES:
+        numeric = sum(1 for ln in lines if _BARE_NUMERIC_LINE_RE.match(ln))
+        if numeric >= _BARE_EVIDENCE_NUMERIC_RATIO * len(lines):
+            return True
+    if len(t) >= 24 and _BARE_NUMERIC_LINE_RE.match(t):
+        return True
+    return False
+
+
+def _is_bare_evidence_answer(text):
+    """终态兜底专用：整段回答只是数字/行号清单，没有可读的综合叙述。
+
+    与 ``_is_bare_evidence_dump`` 的区别：后者用于工具观察，只要形状像清单就拦；
+    这里是**最终回答**，必须允许「在成段解释里引用一串行号」——例如
+    “这 27 处分别在 [5860, 5902, 5964, 6165]...”。因此先确认形状像清单，再要求
+    除数字/标点外的字母数少到写不出一个结论，二者同时成立才算「清单冒充答案」。
+    """
+    if not _is_bare_evidence_dump(text):
+        return False
+    t = str(text or "").strip()
+    for _pfx in ("代码执行结果：", "计算结果为："):
+        if t.startswith(_pfx):
+            t = t[len(_pfx):].strip()
+            break
+    letters = len(re.findall(r"[^\W\d_]", t, re.UNICODE))
+    return letters < _THIN_FINAL_MIN_LETTERS
+
+
+# 自动交付的长度上限：短标量/短结论（`42`、36 字符的三行计算摘要）照常透传；
+# 超过这个长度的 python_exec 输出一律回模型综合（实测漏网 dump 为 257 字符）。
+_PASSTHROUGH_MAX_CHARS = 240
+
+
 def _should_verbatim_passthrough(action, obs):
     """产出即答案的工具是否真的"产出即答案"。
 
-    python_exec 例外：它可能只是回吐源码，此时不该 verbatim 透传（BUG-7）。
-    另外若返回里带三档同意标记（__EXEC_PENDING__ / __EXEC_BLOCKED__），代码根本
+    python_exec 例外：它可能只是回吐源码，此时不该 verbatim 透传（BUG-7）；
+    也可能只是打印了一串数字/行号（中间证据），同样不是答案——交回模型综合；
+    还可能 print 几行关键源码（`1274 while True:`），旧判据漏判（真实 DeepSeek
+    实测）。另外**长输出**（>240 字符）一律回模型综合：自动交付只保留短结果，
+    否则一次 `print(open(...).read())` 或格式化报表都可能绕过形状判据直接下发。
+    若返回里带三档同意标记（__EXEC_PENDING__ / __EXEC_BLOCKED__），代码根本
     没执行，绝不能被包装成「代码执行结果」甩给用户当最终答案——必须回到正常观察
     轮，由模型如实说明「待确认 / 被硬拦、尚未运行」。
     calculate / gen_video_prompt 的结果本身就是交付物，照常透传。
@@ -2695,7 +2843,94 @@ def _should_verbatim_passthrough(action, obs):
             return False
         if _is_raw_source_echo(obs):
             return False
+        if _is_bare_evidence_dump(obs):
+            return False
+        if _is_source_like_dump(obs):
+            return False
+        if len(str(obs).strip()) > _PASSTHROUGH_MAX_CHARS:
+            return False
     return True
+
+
+# 「薄 final」：模型自己写出的最终回答里几乎没有可保留的叙述（只有数字/复述工具结果）。
+# 只有这种 final 才允许被 verbatim 工具结果覆盖；模型写了实质解释就绝不覆盖。
+_THIN_FINAL_MIN_LETTERS = 20
+
+
+def _is_thin_final(text):
+    """模型 final 是否薄到没有可保留的综合内容（去掉数字/标点后字母数 < 20）。"""
+    t = (text or "").strip()
+    if not t:
+        return True
+    letters = len(re.findall(r"[^\W\d_]", t, re.UNICODE))
+    return letters < _THIN_FINAL_MIN_LETTERS
+
+
+# 终态兜底：模型 final 是否只是把最后一条 python_exec 观察**原样搬过来**。
+# 真实 DeepSeek 实测的隐患：即使堵死 harness 的 verbatim 捷径，模型仍可能自己
+# 把观察重贴成最终回答（没有综合）。判据看「行级重合度 ≥80% 且模型自己补充的
+# 字母 < 20」——加了成段解释的 final 不会命中；只加一句“结果如下：”仍会命中。
+_OBS_ECHO_MIN_LINES = 3
+_OBS_ECHO_LINE_RATIO = 0.8
+
+
+def _is_observation_echo(final_text, obs):
+    """最终回答是否只是把工具观察原样搬过来（而不是基于它写出的结论）。"""
+    if not final_text or not obs:
+        return False
+    f = str(final_text).strip()
+    o = str(obs).strip()
+    for _pfx in ("代码执行结果：", "计算结果为："):
+        if f.startswith(_pfx):
+            f = f[len(_pfx):].strip()
+            break
+    flines = [ln.strip() for ln in f.splitlines() if ln.strip()]
+    olines = [ln.strip() for ln in o.splitlines() if ln.strip()]
+    if len(flines) < _OBS_ECHO_MIN_LINES or len(olines) < _OBS_ECHO_MIN_LINES:
+        return False
+    oset = set(olines)
+    copied = [ln for ln in flines if ln in oset]
+    if len(copied) < _OBS_ECHO_LINE_RATIO * len(flines):
+        return False
+    own_letters = sum(
+        len(re.findall(r"[^\W\d_]", ln, re.UNICODE))
+        for ln in flines if ln not in oset
+    )
+    return own_letters < _THIN_FINAL_MIN_LETTERS
+
+
+# 截头 final：回答从一段话的**中间**开始。真实工作台实测：原生 function-calling
+# 流里的 final 只带回了后半段，435 字符开头是 `'` 或补 `Action:`"的 Nudge。`,
+# 第二行直接是 28. —— 用户等到的是半截清单，却没有任何提示。判据只认**开头**：
+# 正常答案里的行号引用、行内代码、从 1 开始的列表都不能命中。
+_CONT_FRAGMENT_HEAD_RE = re.compile(r"^(?:[`'\"”’]\s|[，。、；：）)\]】」』]|…\s*)")
+_CONT_ITEM_NUM_RE = re.compile(r"^(?:#{1,6}\s*)?(\d{1,2})[.、)）]\s+")
+_CONT_ITEM_CN_RE = re.compile(r"^(?:#{1,6}\s*)?([一二三四五六七八九十]+)、")
+_CONT_QUESTION_RE = re.compile(
+    r"(?:继续|接着|续写|往下写|从中间|中断处|从第\s*\d+\s*[条点处]|第\s*\d+\s*[条点])")
+
+
+def _asks_to_continue(question):
+    """用户本轮是否明确要求「续写/从第 N 条继续」——那种情况允许从中间开始。"""
+    return bool(_CONT_QUESTION_RE.search(str(question or "")))
+
+
+def _is_answer_continuation_fragment(text):
+    """最终回答是否明显从中间开始（前面丢了半句/前半张清单）。"""
+    lines = [ln.strip() for ln in str(text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    if _CONT_FRAGMENT_HEAD_RE.match(lines[0]):
+        return True
+    # 第一处编号就是 2 / 28 / 三 → 前面的条目已经丢了；从 1 开始的列表是正常答案。
+    for ln in lines[:6]:
+        m = _CONT_ITEM_NUM_RE.match(ln)
+        if m:
+            return int(m.group(1)) >= 2
+        m = _CONT_ITEM_CN_RE.match(ln)
+        if m:
+            return m.group(1) != "一"
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -4264,6 +4499,9 @@ class Agent:
         if session_id:
             self.history = _sessions.history(session_id, self.project_id)
             self.summary = _sessions.summary_text(session_id, self.project_id)
+            # 归档：长会话压缩弹出的更早轮次，完整逐字保留（供 UI 回灌）。
+            # 载入进内存，后续每次压缩把新弹出的前缀累进来再落盘，跨轮/跨进程不丢。
+            self.archived = _sessions.archived_turns(session_id, self.project_id)
             # ⚠⚠ **会话级代码库绑定**（2026-10-10，治「换了任务、检索器还在旧代码
             # 里翻」那个缺陷）。
             #
@@ -4300,6 +4538,7 @@ class Agent:
         else:
             self.history = []
             self.summary = ""
+            self.archived = []
         # 工具通道 / 计划模式 / 子代理层级 / 工具白名单
         if session_id:
             try:
@@ -5032,9 +5271,24 @@ class Agent:
     def _fit_budget(self, head, trail):
         """把整段 prompt 压到本模型的 prompt 预算以内，返回最终消息列表。
         裁剪顺序（保住最相关上下文）：
-        1) trail 最早的工具/反思/续写往返（至少保留最近 1 轮）；
-        2) head 中最早的历史问答对（system 规则与当前问题永不动）。
+        1) 存量历史里的内部调度标记（见下，纯污染，无条件删）；
+        2) trail 最早的工具/反思/续写往返（至少保留最近 1 轮）；
+        3) head 中最早的历史问答对（system 规则与当前问题永不动）。
         """
+        # 存量会话兜底清洗：旧版本并行批次会写一条「（并行调用）read_file、…」的
+        # assistant 消息（现已在回填处移除，但磁盘上的老会话还在）。它是 harness
+        # 写给自己的调度摘要，不携带用户可见信息，却会被模型当"我上轮说过的话"
+        # 复读。发送前整条删掉；只删**整段就是**该标记的消息，带正文的正常发言
+        # 不命中（_is_internal_marker_only 的判据见定义处）。
+        # 这里与下面的预算裁剪一样就地改 trail——本函数的入参本来就是本轮临时
+        # 构造的消息列表，调用方不回读被删掉的条目。
+        if any(isinstance(m, dict) and m.get("role") == "assistant"
+               and _is_internal_marker_only(m.get("content")) for m in trail):
+            trail[:] = [
+                m for m in trail
+                if not (isinstance(m, dict) and m.get("role") == "assistant"
+                        and _is_internal_marker_only(m.get("content")))
+            ]
         budget = self._prompt_budget()
         guard = 0
         while self._prompt_tokens(head, trail) > budget and guard < 40:
@@ -5069,7 +5323,8 @@ class Agent:
     def run(self, question, stream=True, images=None, deadline=None, *,
             web_enabled=None, thinking_enabled=None, thinking_level=None, tool_mode=None, plan_mode=None,
             narration=None,
-            llm=None, system_context=None, ingested_sources=None, cancel_event=None):
+            llm=None, system_context=None, ingested_sources=None, cancel_event=None,
+            resume=None):
         """执行一次问答（逐请求开关注入 + trace 埋点与会话落盘的外壳）。
 
         逐请求覆盖（**仅关键字**，None=不改）：
@@ -5129,6 +5384,11 @@ class Agent:
         # 全局 runtime 画像不代表当前模型，必须以 self.llm.capability 为准。
         vision_ctx_token = set_session_vision_mode(
             (getattr(self.llm, "capability", None) or {}).get("vision"))
+        # 本回合 python_exec 待确认条的归属。同一会话开始新回合时，上一回合没被
+        # 批准就换话题的旧卡先作废；回合异常结束（raise/断连/取消）再清一次。
+        _exec_owner_value = self.session_id or ("agent-%x" % id(self))
+        drop_pending_execs(_exec_owner_value)
+        exec_owner_token = set_exec_owner(_exec_owner_value)
         memory_token = _memory.bind(self.memory_scope, "\n".join(
             [str(item.get("user") or "") for item in self.history[-20:]] + [question]))
         try:
@@ -5158,10 +5418,15 @@ class Agent:
         # 「本次对话已读过」的假存根。store 在实例上、跨轮复用（省 token 收益保留），
         # 不同会话各用各的（互不污染）。子代理另有 begin_read_conversation 开独立份。
         _read_conv_token = bind_read_conversation(self._read_store)
+        _turn_completed = False
         try:
             yield from self._run_shell(question, stream=stream, images=images, deadline=deadline,
-                                       cancel_event=cancel_event)
+                                       cancel_event=cancel_event, resume=resume)
+            _turn_completed = True
         finally:
+            # 回合没有正常收尾（异常/断连）＝没人再会来消费本轮登记的待确认执行。
+            if not _turn_completed:
+                drop_pending_execs(_exec_owner_value)
             # 任何出口（含 close()/断连）都还原为原值，杜绝逐请求覆盖污染共享单例。
             end_read_conversation(_read_conv_token)
             _memory.reset(memory_token)
@@ -5177,6 +5442,7 @@ class Agent:
                 pass
             for _token, _var in ((web_ctx_token, _session_web_enabled),
                                  (vision_ctx_token, _session_vision_mode),
+                                 (exec_owner_token, _exec_owner),
                                  (_desktop_preauth_token, _DESKTOP_PRE_AUTHORIZED),
                                  (_chat_workflow_token, _CHAT_WORKFLOW_ALLOWED)):
                 try:
@@ -5224,7 +5490,33 @@ class Agent:
         except Exception:  # noqa: BLE001
             turn.experience = {"recorded": False, "error": "record_failed"}
 
-    def _run_shell(self, question, stream=True, images=None, deadline=None, cancel_event=None):
+    def _resolve_resume_record(self, resume):
+        """把 resume（checkpoint id / "latest" / 记录 dict）解析成本会话的一条 checkpoint。
+
+        只认**本会话**落库的记录：别的会话的 id 即使传进来，也不能把现场栽进当前对话。
+        已完成的 checkpoint 不参与续跑（那轮已有干净终态，重放只会重复劳动）。
+        """
+        if not self.session_id or not resume:
+            return None
+        try:
+            if isinstance(resume, dict):
+                cid = str(resume.get("id") or "").strip()
+                record = (_memory.checkpoint_get(self.memory_scope, self.session_id, cid)
+                          if cid else None)
+            else:
+                token = str(resume).strip()
+                if token == "latest":
+                    record = _memory.latest_checkpoint(self.memory_scope, self.session_id)
+                else:
+                    record = _memory.checkpoint_get(self.memory_scope, self.session_id, token)
+        except Exception:  # noqa: BLE001 —— 查询失败只能退回旧续跑，不能挡住本轮
+            return None
+        if not record or record.get("status") == "completed":
+            return None
+        return record
+
+    def _run_shell(self, question, stream=True, images=None, deadline=None, cancel_event=None,
+                   resume=None):
         """执行一次问答（带 trace 埋点与会话落盘的外壳）。
 
         真正的推理循环在 _run；本壳负责：
@@ -5250,17 +5542,54 @@ class Agent:
                 project_id=self.project_id,
             )
             if new_history != self.history or new_summary != self.summary:
+                # 压缩只收缩喂 LLM 的工作窗口（self.history），被弹出的更早轮次
+                # 必须归档到 self.archived 完整留存（供 UI 回灌完整历史），
+                # 否则就重现「长会话把前面的对话删了」。new_history 是旧历史的后缀。
+                _old = list(self.history or [])
+                if len(new_history) < len(_old):
+                    self.archived = (self.archived or []) + _old[:len(_old) - len(new_history)]
                 self.history = list(new_history)
                 self.summary = str(new_summary or "")
                 try:
                     _sessions.save(self.session_id or "", self.history,
-                                   self.summary, project_id=self.project_id)
+                                   self.summary, project_id=self.project_id,
+                                   archived=self.archived)
                 except Exception:  # noqa: BLE001
                     # 落盘失败不能阻塞本轮（缩了；下次起进程会话文件兜底）
                     pass
         except Exception:  # noqa: BLE001
             # 压缩失败绝不能阻塞本轮对话
             pass
+        # ── 精确断点续跑：从 checkpoints.journal 取回上一次中断的逐步现场 ──
+        # 旧做法只把最近 6 条 action/observation 塞进提示词，模型得靠猜判断
+        # 哪一步做完了；journal 则把 trail、幂等账本、计数器和待执行队列
+        # 一并落盘，恢复后直接从**下一步**继续，已完成的工具调用不会重放。
+        # 只有「此后没有更新的会话轮次」时才认这份现场：旧快照若盖掉用户后来
+        # 聊过的内容，比不精确更糟。
+        _resume_rec = self._resolve_resume_record(resume)
+        _resume_journal = None
+        if _resume_rec:
+            _orig_q = str(_resume_rec.get("question") or "").strip()
+            _j = _resume_rec.get("journal")
+            if (isinstance(_j, dict) and _j.get("phase")
+                    and isinstance(_j.get("trail"), list) and _orig_q):
+                # 构造 Agent / 刷新会话时为这条 checkpoint 追加的占位回合要先摘掉：
+                # 本轮会重新作答同一问题，留着会让历史里出现两条一样的提问。
+                if self.history and self.history[-1].get("checkpoint_id") == _resume_rec.get("id"):
+                    self.history.pop()
+                try:
+                    _hist_len = int(_j.get("history_len") or 0)
+                except (TypeError, ValueError):
+                    _hist_len = 0
+                if len(self.history) <= _hist_len:
+                    _resume_journal = _j
+                    question = _orig_q
+                else:
+                    # 期间已经聊过新的轮次：旧现场不再代表「下一步」。
+                    _resume_rec = None
+            else:
+                _resume_rec = None
+
         # Every top-level request gets a fresh task budget.  Child Agents keep
         # the inherited object instead of creating a separate allowance.
         if self.depth == 0 or self.run_budget is None:
@@ -5375,7 +5704,12 @@ class Agent:
         inner = None
         history_start = len(self.history)
         recovery_events = []
-        checkpoint_id = None
+        checkpoint_id = _resume_rec.get("id") if _resume_rec else None
+        journal_state = dict(_resume_journal) if _resume_journal else None
+        # 最近一次落库的 checkpoint id：API 的重试/fallback 层据此在同一现场上
+        # 续跑，而不是把已经执行过的工具再跑一遍。
+        self.last_checkpoint_id = checkpoint_id
+
         def persist_checkpoint(status="running", reason=""):
             nonlocal checkpoint_id
             if not self.session_id:
@@ -5383,9 +5717,16 @@ class Agent:
             try:
                 checkpoint_id = _memory.checkpoint(self.memory_scope, self.session_id, question,
                     cid=checkpoint_id, status=status, reason=reason,
-                    events=recovery_events, answer=final_text)
+                    events=recovery_events, answer=final_text,
+                    journal=journal_state)
+                self.last_checkpoint_id = checkpoint_id
             except Exception:
                 pass
+
+        def update_journal(state):
+            nonlocal journal_state
+            journal_state = state
+            persist_checkpoint()
         try:
             persist_checkpoint()
             if self.session_id:
@@ -5413,7 +5754,10 @@ class Agent:
                        "clarification_required": True, "degraded": True}
                 return
             inner = self._run(question, turn=turn, stream=stream, images=images, deadline=deadline,
-                              cancel_event=cancel_event)
+                              cancel_event=cancel_event,
+                              journal=journal_state,
+                              on_journal=(update_journal
+                                          if (self.depth == 0 and self.session_id) else None))
             for ev in inner:
                 et = ev.get("type")
                 if et in {"action", "observation"}:
@@ -5434,7 +5778,17 @@ class Agent:
                     final_text = ev.get("text") or ""
                     incomplete = {"verification_incomplete", "failed", "deadline_exceeded", "max_steps", "truncated", "empty"}
                     status = turn.outcome if turn.outcome in incomplete else "completed"
+                    # 终态也写进 journal：进程在这之后崩掉时，恢复端能看出这轮已经
+                    # 有结论（而不是停在某个动作前面），不会把最后一步再跑一遍。
+                    if journal_state is not None:
+                        journal_state = dict(journal_state)
+                        journal_state["phase"] = "final"
+                        journal_state["final_outcome"] = status
                     persist_checkpoint(status, final_text if status != "completed" else "")
+                    # 失败/降级回合的 final 带 checkpoint id：前端「继续」据此取回
+                    # 精确现场（刷新/断连时前端还可用 resume_checkpoint=latest）。
+                    if checkpoint_id:
+                        ev["checkpoint_id"] = checkpoint_id
                     if len(self.history) == history_start:
                         self.history.append({"user": question, "assistant": final_text})
                     if status != "completed":
@@ -5458,9 +5812,13 @@ class Agent:
                         keep_tokens=int(_budget * COMPACT_KEEP_RATIO),
                         project_id=self.project_id)
                     if len(kept) < before_n:
+                        # 压缩弹出的更早轮次完整归档（kept 是压缩前 self.history 的后缀），
+                        # 供 UI 回灌完整历史；LLM 工作窗口 self.history 仍按压缩结果走。
+                        self.archived = (self.archived or []) + self.history[:before_n - len(kept)]
                         self.history = kept
                         self.summary = summary
-                        _sessions.save(self.session_id, kept, summary, self.project_id)
+                        _sessions.save(self.session_id, kept, summary, self.project_id,
+                                       archived=self.archived)
                         yield {"type": "notice",
                                "text": f"早期 {before_n - len(kept)} 轮对话已自动压缩为摘要，新问答不受影响。"}
                         # 压缩后刷新一次用量指示，让进度条立即回落
@@ -5600,7 +5958,8 @@ class Agent:
             # 历史摘要压缩在正常完成路径执行（需要 yield notice 事件）；
             # 断连现场在上方持久化，不在 finally 中调用模型压缩。
 
-    def _run(self, question, turn=None, stream=True, images=None, deadline=None, cancel_event=None):
+    def _run(self, question, turn=None, stream=True, images=None, deadline=None, cancel_event=None,
+             journal=None, on_journal=None):
         """执行一次问答，yield 出流式事件：
         token / thought / action / observation / reflection / final / done。
 
@@ -5644,6 +6003,7 @@ class Agent:
         executed = set()  # 本轮已执行过的 (工具, 参数)，用于防空转循环
         last_action = None
         last_obs = None
+        last_exec_obs = None  # 最近一次成功的 python_exec 观察（终态"原样重贴"兜底用）
         forced_finals = 0  # 已发出的强制收尾提示次数（步数耗尽 / 重复空转共用一次机会）
         # 过程解说的剥协议 + 同轮去重器。**每轮 run() 一个**，因为去重集合必须
         # 只在「同一轮的工具调用之间」生效 —— 跨轮去重会把用户第二次问同一件事时
@@ -5666,14 +6026,208 @@ class Agent:
         # enemy/hud/player 三份源码裸铺、几乎无综合），最多**逼它综合一次**；仍裸铺就
         # 如实标 degraded 交付，绝不把「原始 dump」冒充成综合结论（fail-closed，不假完成）。
         verbatim_dump_nudges = 0
+        # 「数字/行号清单冒充答案」的纠正次数。与源码裸铺分开计数：两类 dump 的
+        # 纠正话术不同（一个要它讲清结构、一个要它讲清每一项是什么），但都只给一次机会。
+        evidence_dump_nudges = 0
+        # 「最终回答只是原样重贴工具观察」的纠正次数。与上面两类 dump 分开：它拦的是
+        # 混合内容（如“总行数 + 几行源码”），形状判据抓不住，但行级重合度能抓住。
+        observation_echo_nudges = 0
+        # 「final 从中间开始」的纠正次数。实测前端原生通道只拿到后半段：先要求它
+        # 从头重写一次；仍截头就如实标 degraded，不把半截答案当完整交付。
+        continuation_nudges = 0
+        # 本回合是否成功跑过 python_exec。终态硬门不能只看 last_action：模型完全
+        # 可能在 python_exec 之后又读了两个文件（last_action 变成 read_file），
+        # 最后仍然只把之前那串行号当答案。
+        ran_python_exec = False
         # 连续「输出无标记」的次数。与 nudges 分开计数，因为它的处置完全不同：
         # nudges 是「再给它一次机会」，而格式连续失守说明**这个模型在当前提示词下
         # 稳定地不遵守契约**——继续喂 nudge 只会让界面上重复同一条提示（实测最多 8 遍），
         # 而真正该做的是停下来告诉用户「模型没按格式应答」，让他换模型或调提示词。
         format_stalls = 0
+        # 连续复读内部调度标记的轮数（「（并行调用）」+工具名）。独立于 format_stalls：
+        # 它衡量的是上下文污染，不是格式能力；任何一轮没复读就清零（见闸门处）。
+        marker_echoes = 0
         plan_emitted = False  # 计划模式：计划只上抛一次
-        self._native_queue = []   # 原生通道：顺序回退时逐个消化的 tool_calls
+        self._native_queue = []   # 原生通道：顺序回退时逐个消化 tool_calls
         self._pending_batch = []  # 原生通道：待并发执行的只读 tool_calls
+
+        # ── 精确续跑：把上一次中断时的现场栽回来 ──────────────────────────
+        # 恢复的是「结构和账本」，不是一段给人看的摘要：trail 原样接上，
+        # executed 账本恢复后，同一个 (工具, 参数) 会被既有的防重复闸门拦住，
+        # 因此已完成的调用不会被重放；计数器沿用，步数预算不因重启而重置。
+        _resume_tip = ""
+        _journal_hist_len = len(self.history)
+        if isinstance(journal, dict):
+            _restored_trail = [
+                {"role": str(m.get("role")), "content": str(m.get("content") or "")}
+                for m in (journal.get("trail") or [])
+                if isinstance(m, dict) and m.get("role") in ("user", "assistant", "system")
+            ]
+            if _restored_trail:
+                trail = _restored_trail
+            try:
+                _journal_hist_len = int(journal.get("history_len", _journal_hist_len))
+            except (TypeError, ValueError):
+                pass
+            # 上一轮已经产出终态（max_steps / 验证未过 / 异常收尾）时，用户点
+            # 「继续」是发起新一轮努力：给回步数与纠偏额度；但 trail、幂等账本、
+            # 文件变更集必须保留，否则就退化成「重跑一遍」。
+            _fresh_budget = str(journal.get("phase") or "") == "final"
+            if not _fresh_budget:
+                _c = journal.get("counters") or {}
+
+                def _ci(key, default=0):
+                    try:
+                        return int(_c.get(key, default) or default)
+                    except (TypeError, ValueError):
+                        return default
+
+                failures = _ci("failures", failures)
+                nudges = _ci("nudges", nudges)
+                tool_steps = _ci("tool_steps", tool_steps)
+                nav_free_used = _ci("nav_free_used", nav_free_used)
+                iterations = _ci("iterations", iterations)
+                repeats = _ci("repeats", repeats)
+                forced_finals = _ci("forced_finals", forced_finals)
+                fail_total = _ci("fail_total", fail_total)
+                evidence_nudges = _ci("evidence_nudges", evidence_nudges)
+                verbatim_dump_nudges = _ci("verbatim_dump_nudges", verbatim_dump_nudges)
+                evidence_dump_nudges = _ci("evidence_dump_nudges", evidence_dump_nudges)
+                observation_echo_nudges = _ci("observation_echo_nudges", observation_echo_nudges)
+                continuation_nudges = _ci("continuation_nudges", continuation_nudges)
+                format_stalls = _ci("format_stalls", format_stalls)
+                marker_echoes = _ci("marker_echoes", marker_echoes)
+                for _key, _dst in (("tool_fail_streak", "tool_fail_streak"),
+                                   ("web_family_failures", "web_family_failures"),
+                                   ("_permanent_failures", "_permanent_failures")):
+                    _val = journal.get(_key)
+                    if isinstance(_val, dict):
+                        if _dst == "tool_fail_streak":
+                            tool_fail_streak = _val
+                        elif _dst == "web_family_failures":
+                            web_family_failures = _val
+                        else:
+                            _permanent_failures = _val
+            ran_python_exec = bool(journal.get("ran_python_exec", ran_python_exec))
+            plan_emitted = bool(journal.get("plan_emitted", plan_emitted))
+            forced_final_reason = str(journal.get("forced_final_reason") or forced_final_reason)
+            last_action = journal.get("last_action", last_action)
+            last_obs = journal.get("last_obs", last_obs)
+            last_exec_obs = journal.get("last_exec_obs", last_exec_obs)
+            for _sig in (journal.get("executed") or []):
+                if isinstance(_sig, (list, tuple)) and len(_sig) == 2:
+                    executed.add((str(_sig[0]), str(_sig[1])))
+            if isinstance(journal.get("evidence"), list):
+                evidence = [str(x) for x in journal["evidence"]]
+            if isinstance(journal.get("audit_steps"), list):
+                audit_steps = [x for x in journal["audit_steps"] if isinstance(x, dict)]
+            for _fc in (journal.get("file_changes") or []):
+                if isinstance(_fc, dict):
+                    _file_changes.append(_fc)
+                    _path = str(_fc.get("path") or "")
+                    if _path:
+                        _seen_file_changes.add(_path)
+            if turn is not None and isinstance(journal.get("verification"), dict):
+                turn.verification_targets = {
+                    str(k): bool(v) for k, v in journal["verification"].items()}
+                turn.verified = bool(journal.get("verified"))
+
+            def _pairs(value):
+                out = []
+                for item in value or []:
+                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                        out.append([str(item[0]), str(item[1])])
+                return out
+
+            self._pending_batch = _pairs(journal.get("pending_batch"))
+            self._native_queue = _pairs(journal.get("native_queue"))
+            _started = journal.get("started")
+            if isinstance(_started, dict) and _started.get("name"):
+                _sn = str(_started.get("name"))
+                _sa = str(_started.get("arg") or "")
+                if _started.get("side_effect"):
+                    # 有副作用的调用「可能已经执行」：不能自动重放（重复写文件/
+                    # 重复下单的代价远大于少走一步），也不能假装它没发生。把不
+                    # 确定性写进 trail，让模型先核对目标再决定是否重试。
+                    trail.append({"role": "assistant",
+                                  "content": "Action: %s\nAction Input: %s" % (_sn, _sa)})
+                    trail.append({"role": "user", "content": (
+                        "Observation: 上一步 " + _sn + " 在中断时已经开始执行，可能已生效"
+                        "（也可能只执行了一部分）。本轮不会自动重放这一步。请先核对目标"
+                        "当前状态，再决定是否用相同或不同的参数重试；确认未生效才可重试。")})
+                    executed.add((_sn, _sa))
+                    _resume_tip = ("已从断点继续；" + _sn + " 在中断时可能已执行，"
+                                   "为避免重复副作用未自动重放，请先核对结果。")
+                else:
+                    # 只读工具重放无副作用：放回队列由既有执行路径跑，保留原顺序，
+                    # 也不需要再问模型一次。
+                    self._native_queue = [[_sn, _sa]] + self._native_queue
+                    _resume_tip = "已从断点继续；正在重放未完成的一步 " + _sn + "。"
+            elif isinstance(_started, list):
+                _batch_started = [[str(x.get("name")), str(x.get("arg") or "")]
+                                  for x in _started
+                                  if isinstance(x, dict) and x.get("name")]
+                if _batch_started:
+                    self._pending_batch = _batch_started + self._pending_batch
+                    _resume_tip = ("已从断点继续；正在重放未完成的 %d 个只读调用。"
+                                   % len(_batch_started))
+            if not _resume_tip:
+                _resume_tip = ("已从断点继续：恢复 %d 条现场消息、%d 条已执行记录，"
+                               "下一步直接继续。" % (len(trail), len(executed)))
+            if journal.get("trail_truncated"):
+                _resume_tip += "（现场过长，最早的部分观察已裁剪）"
+
+        def _snapshot(phase, started=None):
+            """把「下一位应该从哪继续」落盘。只存结构，不存图片。"""
+            if on_journal is None:
+                return
+            state = {
+                "version": 1,
+                "phase": phase,
+                "question": question,
+                "history_len": _journal_hist_len,
+                "iterations": iterations,
+                "trail": [{"role": str(m.get("role")),
+                           "content": str(m.get("content") or "")}
+                          for m in trail if isinstance(m, dict) and m.get("role")],
+                "counters": {
+                    "failures": failures, "nudges": nudges, "tool_steps": tool_steps,
+                    "nav_free_used": nav_free_used, "repeats": repeats,
+                    "forced_finals": forced_finals, "fail_total": fail_total,
+                    "evidence_nudges": evidence_nudges,
+                    "verbatim_dump_nudges": verbatim_dump_nudges,
+                    "evidence_dump_nudges": evidence_dump_nudges,
+                    "observation_echo_nudges": observation_echo_nudges,
+                    "continuation_nudges": continuation_nudges,
+                    "format_stalls": format_stalls, "marker_echoes": marker_echoes,
+                },
+                "tool_fail_streak": dict(tool_fail_streak),
+                "web_family_failures": dict(web_family_failures),
+                "_permanent_failures": dict(_permanent_failures),
+                "executed": [list(sig) for sig in executed if isinstance(sig, tuple)],
+                "pending_batch": [[str(a), str(b)] for a, b in self._pending_batch],
+                "native_queue": [[str(a), str(b)] for a, b in self._native_queue],
+                "started": started,
+                "verification": (dict(getattr(turn, "verification_targets", {}) or {})
+                                 if turn is not None else {}),
+                "verified": bool(getattr(turn, "verified", False)) if turn is not None else False,
+                "file_changes": list(_file_changes),
+                "evidence": list(evidence),
+                "audit_steps": list(audit_steps),
+                "ran_python_exec": bool(ran_python_exec),
+                "plan_emitted": bool(plan_emitted),
+                "forced_final_reason": forced_final_reason,
+                "last_action": last_action,
+                "last_obs": _clip(str(last_obs or ""), 20000),
+                "last_exec_obs": _clip(str(last_exec_obs or ""), 20000),
+            }
+            try:
+                on_journal(state)
+            except Exception:  # noqa: BLE001 —— 落盘失败只能降级，不能打断推理
+                pass
+
+        if _resume_tip:
+            yield {"type": "notice", "text": _resume_tip}
 
         def _evidence_final(reason):
             """模型在强制收尾后仍不给出 Final Answer：用本轮真实观察做确定性兜底。"""
@@ -5722,6 +6276,9 @@ class Agent:
         while True:
             _raise_if_cancelled()
             iterations += 1
+            # 每次问模型之前先落一版「等模型」现场：若在 LLM 调用中崩溃/断连，
+            # 恢复时从同一位置重新问，trail 与计数完全一致。
+            _snapshot("awaiting_llm")
             # 统一 deadline：到点即中止本轮，避免一次问答无限拖长（0/负数 = 不限时）。
             if deadline is not None and time.monotonic() > deadline:
                 if turn is not None:
@@ -5786,6 +6343,10 @@ class Agent:
                         self._pending_batch = []
                         continue
                     self._pending_batch = self._pending_batch[len(batch):]
+                    # 先落「批次即将执行」：这批都是只读安全工具，恢复时重放无副作用；
+                    # 记账放在快照之后，避免恢复时把没拿到观察的调用当成已完成而漏跑。
+                    _snapshot("batch_started", started=[
+                        {"name": nm, "arg": ar, "side_effect": False} for nm, ar in batch])
                     for nm, ar in batch:
                         executed.add((nm, ar))
                     results = self._run_batch(batch, turn)
@@ -5794,14 +6355,17 @@ class Agent:
                         yield {"type": "action", "text": f"{nm}({ar})",
                                "step_cost": 0 if _free else 1}
                     for nm, ar, obs, _ok, _imgs in results:
-                        yield {"type": "observation", "text": obs}
-                    trail.append({
-                        "role": "assistant",
-                        "content": "（并行调用）" + "、".join(nm for nm, _a, _o, _k, _i in results),
-                    })
+                        yield {"type": "observation", "text": obs, "ok": bool(_ok)}
+                    # 这里**不写**一条「（并行调用）read_file、…」的 assistant 消息。
+                    # 那是给人看的调度摘要，却以自然语言塞进了模型自己的历史；模型会
+                    # 把它当成「我上轮说过的话」原样复读（longrun-a1 实测），而复读出的
+                    # 正文既不是结论、也过不了格式判据，只会白烧纠偏次数。
+                    # 工具名信息没有丢：并进每条 Observation 的前缀（仍以 "Observation:"
+                    # 开头，_PRUNABLE_PREFIXES 与成对裁剪照常识别），模型同样知道每条
+                    # 观察来自哪个工具，且历史里不再有可被复读的孤立助手发言。
                     for nm, ar, obs, _ok, imgs in results:
                         _obs_msg = {"role": "user",
-                                    "content": f"Observation: {_clip_tool_observation(obs, observation_limit, nm)}"}
+                                    "content": f"Observation: [{nm}] {_clip_tool_observation(obs, observation_limit, nm)}"}
                         if imgs:
                             _obs_msg["images"] = list(imgs)
                         trail.append(_obs_msg)
@@ -5823,6 +6387,7 @@ class Agent:
                     last_obs = results[-1][2]
                     if any(self._is_write_tool(nm) for nm, _a, _o, _k, _i in results):
                         executed.clear()
+                    _snapshot("step_done")
                     continue
                 # 含非只读安全工具：退回顺序执行
                 self._native_queue = self._pending_batch
@@ -6371,6 +6936,15 @@ class Agent:
                     yield {"type": "observation", "text": _obs}
                     continue
 
+                # 落「动作即将执行」现场（必须在 executed/计步之前）：恢复端据此
+                # 知道最后一步是没跑还是跑了一半。只读工具放回队列重放；有副作用
+                # 的工具则 fail-closed，不自动重放（见 _run 顶部的恢复逻辑）。
+                _spec = self._tool_spec(action_name)
+                _side_effect = (_spec.side_effect if _spec is not None else SideEffect.PURE)
+                _snapshot("action_started", started={
+                    "name": action_name, "arg": action_arg,
+                    "side_effect": _side_effect is not SideEffect.PURE,
+                })
                 executed.add(sig)
                 # 免费目录导航只占导航额度（与并行批次同一口径），其余工具占 1 个工具步数。
                 if _nav_is_free:
@@ -6392,7 +6966,6 @@ class Agent:
                     _fn = lambda arg: self._orchestrate_tool(arg, turn=turn)
                 else:
                     _fn = self.tools[action_name]["func"]
-                _spec = self._tool_spec(action_name)
                 try:
                     _tool_trace = _langsmith.tool_call(
                         name="tool.%s" % action_name, session_id=self.session_id or "",
@@ -6402,7 +6975,7 @@ class Agent:
                 with self._ptc_server_scope(action_name, turn), _tool_trace:
                     _result = execute_tool(
                         _fn, action_arg, _is_failure, tool_name=action_name,
-                        side_effect=_spec.side_effect if _spec is not None else SideEffect.PURE,
+                        side_effect=_side_effect,
                     )
                 obs = _hooks.run_post_tool(action_name, action_arg, _result.text)
                 obs, obs_images = self._gate_tool_images(obs, _result.data)
@@ -6455,7 +7028,12 @@ class Agent:
                     for _target in turn.verification_targets:
                         turn.verification_targets[_target] = True
                     turn.verified = all(turn.verification_targets.values())
-                observation_event = {"type": "observation", "text": obs}
+                # `ok` 是这一步的真实成败（_tool_ok 已综合 execute_tool 结果 +
+                # post-tool 钩子 + 相关性判定）。前端据此染色，**不再从返回正文里
+                # grep「错误/失败/超时」**——read_file 读到的源码/日志天然含这些字，
+                # 历史上把成功的一次读取整排标红（实测 agent.py 前 80 行那次）。
+                observation_event = {"type": "observation", "text": obs,
+                                     "ok": bool(_tool_ok)}
                 if _result.artifacts:
                     # 工作流预览协议消费的持久证据；图片正文仍只通过 data.images
                     # 进入视觉通道，避免把 base64 写进事件和 checkpoint。
@@ -6481,6 +7059,9 @@ class Agent:
                             pass
                 last_action = parsed["action"]
                 last_obs = obs
+                if parsed["action"] == "python_exec" and _tool_ok:
+                    ran_python_exec = True
+                    last_exec_obs = obs
 
                 # 自我反思：工具未返回有效结果时，标记反思并提示换思路重试。
                 if not _tool_ok:
@@ -6651,7 +7232,7 @@ class Agent:
                         trail.append(
                             {"role": "user", "content": "Observation: " + _clip_tool_observation(_sv_obs, observation_limit, "self_verify")}
                         )
-                        yield {"type": "observation", "text": _sv_obs}
+                        yield {"type": "observation", "text": _sv_obs, "ok": bool(_sv_passed)}
                         turn.verification_targets[_target] = _sv_passed
                         turn.verified = all(turn.verification_targets.values())
                         # agent 自身结构化日志：self_verify 失败事件（与现有 verdict
@@ -6693,6 +7274,9 @@ class Agent:
                     # 仅最近一条工具观察允许带图；_fit_budget 会剥离更早观察上的图片。
                     _obs_entry["images"] = list(obs_images)
                 trail.append(_obs_entry)
+                # 观察已经写进 trail：这一步算真正完成。落盘后恢复端从「下一步」
+                # 开始，不会把刚执行过的工具再跑一遍。
+                _snapshot("step_done")
                 continue
 
             truncated = finish_reason == "length"
@@ -6756,6 +7340,49 @@ class Agent:
                 continue
             final_body = parsed["final"] or (acc if native_prose_final else "")
 
+            # 内部标记复读闸门：模型把 harness 写进自己历史的「（并行调用）read_file、…」
+            # 原样吐回来当"最终回答"时，绝不把这行内部串下发给用户。
+            #
+            # 但**只拦不纠**会走进另一条死路：清空 final_body 后掉进下面的 format_stall
+            # 计数，两轮就把这一轮判死（实测前端 18 秒后只显示「执行失败」，已经拿到的
+            # 观察全部蒸发）。复读内部标记不是「模型不会答题」，而是上下文里混进了它的
+            # "上一句话"；正确处置是**明确告诉它那行不是回答**，再给它一次基于已有观察
+            # 写结论的机会。所以这里用独立额度 marker_echoes、不占 format_stalls，纠偏
+            # 提示本身也**不回显**那行标记（否则等于第二次污染）。
+            #
+            # 额度耗尽时必须在这里显式收尾：若只是清空后往下走，会落到末尾
+            # `_clean_fallback_answer(acc)` 的 else 分支——那会把复读的标记当"残句"
+            # 清洗后下发，等于把闸门刚拦下的东西又放出去。
+            if final_body and _is_internal_marker_only(final_body):
+                final_body = ""
+                marker_echoes += 1
+                if marker_echoes >= _MAX_MARKER_ECHOES or not self._limit_ok(nudges, max_nudges):
+                    if turn is not None:
+                        turn.outcome = "marker_echo"
+                    _dump_stall_probe(self.llm, messages, acc, turn,
+                                      session_id=self.session_id or "")
+                    yield {"type": "final", "status": "error", "degraded": True,
+                           "text": (
+                               "模型连续 %d 轮只复读了一行内部调度摘要（内容只有工具名），"
+                               "没有给出对问题的回答，本轮已停止重试。\n\n"
+                               "这通常说明它把系统记录的一行内部提示误认成了自己的发言。"
+                               "可下手的办法：重试一次；或换一个模型；"
+                               "或把 `DOCMIND_TOOL_MODE` 设回 `react` 改用文本协议。\n"
+                               "──── 那行内部摘要不属于答案，已丢弃 ────"
+                               % marker_echoes
+                           )}
+                    return
+                nudges += 1
+                trail.append({"role": "user", "content": (
+                    "Nudge: 你上一轮输出的只是一行内部调度摘要（系统记录的工具名列表），"
+                    "那不是你写的回答，也不是结论。请忽略它，基于上面已经拿到的工具观察，"
+                    "用自然语言写出对问题的综合结论；如果证据还不够，就直接调用工具继续查。"
+                )})
+                yield {"type": "notice", "text": "模型复读了内部标记，正在纠正。", "transient": True}
+                continue
+            # 没复读就是中断了连续计数（中间夹着正常调用/结论轮次时不该累计）。
+            marker_echoes = 0
+
             if final_body:
                 if truncated and not continuation_incomplete:
                     # parse_response 会 strip 掉结尾空格；在词边界截断时这会把
@@ -6772,19 +7399,35 @@ class Agent:
                     continue
 
                 final_text = _guard_transport_final(final_body, question, trail, self.history)
-                # 若上一步是"产出即答案"的工具且返回有效，强制透传工具结果，
-                # 避免小模型在 Final Answer 里改写数字/格式导致错误。
+                # 若上一步是"产出即答案"的工具且返回有效，用工具结果兜底数字/格式，
+                # 避免小模型在 Final Answer 里改写数字导致错误。
+                #
+                # 但**不能无条件覆盖**：模型已经写出逐条解释时，把它的 final 整个
+                # 换成上一步的原始工具输出，等于把中间证据当答案交付。实测（longrun
+                # 工作台，35 步）：模型跑完 python_exec 后写了综合结论，却被这条覆盖
+                # 决策抹掉，用户最终只看到 `27 [5860, 5902, ...]`。所以：
+                #   · calculate：模型 final 已含正确结果 → 保留解释；否则用精确结果纠正；
+                #   · python_exec / gen_video_prompt：模型 final 有实质叙述 → 保留；
+                #     只有「薄 final」（纯数字/复述）才用工具结果兜底。
                 if (self._is_verbatim_tool(last_action) and last_obs
                         and not _is_failure(last_obs)
                         and _should_verbatim_passthrough(last_action, last_obs)):
-                    final_text = _format_verbatim(last_action, last_obs)
-                # BUG-7 终态守卫：模型**自己**把带行号的源码整段裸铺当 Final Answer
+                    _keep_model_final = False
+                    if last_action == "calculate":
+                        _needle = str(last_obs).strip()
+                        _keep_model_final = bool(_needle) and _needle in final_text
+                    elif not _is_thin_final(final_text):
+                        _keep_model_final = True
+                    if not _keep_model_final:
+                        final_text = _format_verbatim(last_action, last_obs)
+                # BUG-7 终态守卫：模型**自己**把源码整段裸铺当 Final Answer
                 # （python_exec 捷径那条已由 `_should_verbatim_passthrough` 在更早处挡下；
-                # 这里管的是模型在自己的最终回答里重贴 `12: 代码` 清单，实测 X 三份源码裸铺）。
-                # 判据复用保守的 `_is_raw_source_echo`（≥10 行且 ≥70% 是"行号+代码"形态），
-                # 数字/结论型答案永不命中。最多逼它综合一次；仍裸铺→如实标 degraded 交付，
-                # 绝不把原始 dump 冒充成综合结论（fail-closed）。
-                if _is_raw_source_echo(final_text):
+                # 这里管的是模型在自己的最终回答里重贴 `12: 代码` 清单或几行关键源码）。
+                # 判据用 `_is_raw_source_echo`（长且带行号）或 `_is_source_like_dump`
+                # （短、可无行号，但源码行占比过半），数字/结论型答案永不命中。
+                # 最多逼它综合一次；仍裸铺→如实标 degraded 交付，绝不把原始 dump
+                # 冒充成综合结论（fail-closed）。
+                if _is_raw_source_echo(final_text) or _is_source_like_dump(final_text):
                     if verbatim_dump_nudges < 1:
                         verbatim_dump_nudges += 1
                         trail.append(
@@ -6793,10 +7436,11 @@ class Agent:
                         trail.append({
                             "role": "user",
                             "content": (
-                                "你给出的是**带行号的源码整段铺出**（一屏 `12: 代码` 这样的清单），"
-                                "这不是对问题的回答。请把这些原文**消化成综合结论**：讲清各文件/"
-                                "函数各自负责什么、彼此如何衔接、关键行号点到为止，不要把源码逐行"
-                                "重贴。直接用自然语言重写这段最终回答，不要再调用工具。"
+                                "你给出的是**源码整段铺出**（一屏 `12: 代码` 或几行关键代码，"
+                                "带不带行号都算），这不是对问题的回答。请把这些原文**消化成"
+                                "综合结论**：讲清各文件/函数各自负责什么、彼此如何衔接，"
+                                "关键行号点到为止，不要把源码逐行重贴。直接用自然语言重写"
+                                "这段最终回答，不要再调用工具。"
                             ),
                         })
                         yield {"type": "reflection",
@@ -6807,6 +7451,100 @@ class Agent:
                         "请视为未直接回答该问题）────")
                     if turn is not None:
                         turn.outcome = "verbatim_dump_unsynthesized"
+                    self.history.append({"user": question, "assistant": final_text})
+                    yield {"type": "final", "text": final_text, "degraded": True}
+                    return
+                # 终态硬门 B：**中间证据冒充答案**。上一步是 verbatim 工具（典型是
+                # python_exec），模型/兜底却只交出一串数字或行号清单——这不是对问题的
+                # 回答。先要求它综合一次；仍只有清单就如实标 degraded 并注明未综合，
+                # 绝不静默当成正常答案下发（fail-closed）。
+                # 只在本轮跑过 python_exec / 上一步是 verbatim 工具时启用，避免误伤
+                # 「答案本来就是一组数字」的正常提问（如「输出 1..10 的平方」）。
+                # 用 `ran_python_exec` 而不是只看 last_action：模型可能在 python_exec
+                # 之后又读了两个文件，最后仍只把之前那串行号当答案。
+                if ((ran_python_exec or self._is_verbatim_tool(last_action or ""))
+                        and _is_bare_evidence_answer(final_text)):
+                    if evidence_dump_nudges < 1:
+                        evidence_dump_nudges += 1
+                        trail.append(
+                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                        )
+                        trail.append({"role": "user", "content": (
+                            "你给出的最终回答只是**工具返回的数字/行号清单**（原始输出），"
+                            "这不是对问题的回答。请基于已经拿到的工具观察写出综合结论："
+                            "逐项说明这些数字分别对应哪个分支/位置、满足什么条件，"
+                            "并把它们组织成完整句子；不要把工具输出原样贴回来，"
+                            "也不要再调用工具。"
+                        )})
+                        yield {"type": "reflection",
+                               "text": "最终回答只是数字/行号清单，正在要求综合成结论。"}
+                        continue
+                    final_text = final_text.rstrip() + (
+                        "\n\n──── 以上只是工具返回的数字/行号清单，未能综合成对问题的回答"
+                        "（已如实标注，请视为未直接回答该问题）────")
+                    if turn is not None:
+                        turn.outcome = "evidence_dump_unsynthesized"
+                    self.history.append({"user": question, "assistant": final_text})
+                    yield {"type": "final", "text": final_text, "degraded": True}
+                    return
+                # 终态硬门 C：**原样重贴工具观察**。这条兜的是形状判据抓不住的
+                # 混合输出（实测真实 DeepSeek：`总行数 8298` + 五行 `while/def`），
+                # 模型若把最后一条 python_exec 观察原样当 final（顶多加一句“结果如下”），
+                # 同样属于“中间证据冒充答案”。先要求综合一次；仍重贴就如实标 degraded。
+                # 跳过条件：该观察本身已被判为可交付的短结果（verbatim 兜底/透传），
+                # 此时「final == 观察」正是预期行为，不能反过来纠偏。
+                if (last_exec_obs
+                        and not _should_verbatim_passthrough("python_exec", last_exec_obs)
+                        and _is_observation_echo(final_text, last_exec_obs)):
+                    if observation_echo_nudges < 1:
+                        observation_echo_nudges += 1
+                        trail.append(
+                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                        )
+                        trail.append({"role": "user", "content": (
+                            "你的最终回答只是把上一次工具的**原始输出原样贴回**，"
+                            "没有基于它写出结论。请逐项解释这些内容分别是什么、"
+                            "对应哪个位置/分支、满足什么条件，把它们组织成完整回答；"
+                            "不要重贴原始输出，也不要再调用工具。"
+                        )})
+                        yield {"type": "reflection",
+                               "text": "最终回答只是原样重贴工具输出，正在要求综合成结论。"}
+                        continue
+                    final_text = final_text.rstrip() + (
+                        "\n\n──── 以上只是工具原始输出，未能综合成对问题的回答"
+                        "（已如实标注，请视为未直接回答该问题）────")
+                    if turn is not None:
+                        turn.outcome = "observation_echo_unsynthesized"
+                    self.history.append({"user": question, "assistant": final_text})
+                    yield {"type": "final", "text": final_text, "degraded": True}
+                    return
+                # 终态硬门 D：**截头回答**。实测工作台长任务：前端原生通道缓冲被
+                # final 整体替换，只剩从「` 或补 Action: 的 Nudge。\n28. ...」开始的
+                # 后半段（435 字符）。用户等了半天，拿到的是一份从第 28 条开始、
+                # 没有任何提示的清单。先要求它从头重写；仍截头就如实标注并交付。
+                # 显式续写请求（“从第 28 条继续”“接着写”）例外：那种回答本就该接着中间写。
+                if (not _asks_to_continue(question)
+                        and _is_answer_continuation_fragment(final_text)):
+                    if continuation_nudges < 1:
+                        continuation_nudges += 1
+                        trail.append(
+                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                        )
+                        trail.append({"role": "user", "content": (
+                            "你给出的最终回答是从一段话的**中间**开始的（开头就是半句、"
+                            "引号残片，或者直接跳到第 2 条之后的编号），前半部分已经丢失。"
+                            "请**从头重写**一份自包含的完整回答：先交代问题与结论，再按"
+                            "1、2、3 的顺序完整展开，不要从 2、28、三 这类中间编号开始，"
+                            "也不要假设用户已经看过前文。不要再调用工具。"
+                        )})
+                        yield {"type": "reflection",
+                               "text": "最终回答从中间开始，正在要求重写完整答案。"}
+                        continue
+                    final_text = final_text.rstrip() + (
+                        "\n\n──── 以上回答从中间开始，前半部分缺失，未能完整交付"
+                        "（已如实标注，请重新提问或换一个模型）────")
+                    if turn is not None:
+                        turn.outcome = "continuation_fragment"
                     self.history.append({"user": question, "assistant": final_text})
                     yield {"type": "final", "text": final_text, "degraded": True}
                     return
@@ -6962,6 +7700,15 @@ class Agent:
             if self._limit_ok(nudges, max_nudges) and (
                     truncated or not acc.strip() or not has_real_final):
                 nudges += 1
+                # 原生并行批次轮：本轮已按协议发出 >1 个 tool_call，正待循环顶部派发。
+                # 这不是「模型输出尚未结束」——不发误导 notice，也不往 trail 注入
+                # 「你既没调用工具也没给结论」这种与事实相反的假提示。但上面已 `nudges += 1`，
+                # 仍受 `_limit_ok(nudges, max_nudges)` 兜底：万一模型反复原地打转、每轮都发
+                # 同样的并行调用，nudge 次数耗尽后这条分支不再命中，会落到后续收尾/兜底逻辑
+                # 终止——绝不能在这里放一条不计数、不受上限约束的裸 continue，否则会退化成
+                # 「每轮重建 _run_batch 线程池」的死循环。
+                if native_calls_this_turn and self._pending_batch:
+                    continue
                 if truncated:
                     self._suppress_thinking_once = True   # 重试关思考，避免再烧预算
                 if acc.strip():

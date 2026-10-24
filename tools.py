@@ -364,6 +364,16 @@ def set_session_vision_mode(mode):
     return _session_vision_mode.set(mode or None)
 
 
+# 本轮 python_exec 待确认条的归属（会话 id）。回合收尾按此清理，避免「回合已经
+# 死了、审批卡还挂在界面上」——用户误点「同意执行」会跑去一段没人等待的旧代码。
+_exec_owner = contextvars.ContextVar("docmind_exec_owner", default="")
+
+
+def set_exec_owner(owner):
+    """在当前 context 内标记本回合待确认执行的归属，返回 reset token。"""
+    return _exec_owner.set(str(owner or ""))
+
+
 def _web_cache_key(prefix, query):
     return f"{prefix}:{hashlib.sha256((query or '').encode('utf-8')).hexdigest()}"
 
@@ -4962,6 +4972,7 @@ def stage_exec(code, tier, reason, source="preexec"):
             "source": source,          # "preexec" 执行前分类命中 | "runtime" 运行期钩升级
             "confirms": 0,
             "need": exec_tier_confirm(tier),
+            "owner": _exec_owner.get(""),
         }
         return pid
 
@@ -5010,6 +5021,22 @@ def confirm_exec(pid):
 def reject_exec(pid):
     with _EXEC_PENDING_LOCK:
         return bool(_PENDING_EXEC.pop(pid, None))
+
+
+def drop_pending_execs(owner):
+    """作废某个归属（会话）名下所有待确认执行，返回清理条数。
+
+    回合异常结束、或同一会话开始新回合时调用：这些卡片已经没人会去点，
+    留着只会让用户批准一段上一轮的旧代码。owner 为空不做任何事（不误伤旧数据）。
+    """
+    owner = str(owner or "")
+    if not owner:
+        return 0
+    with _EXEC_PENDING_LOCK:
+        ids = [pid for pid, e in _PENDING_EXEC.items() if e.get("owner") == owner]
+        for pid in ids:
+            _PENDING_EXEC.pop(pid, None)
+        return len(ids)
 
 
 # ---------------------------------------------------------------------------

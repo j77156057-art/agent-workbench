@@ -138,6 +138,17 @@ def _apply_raw(data: dict, raw) -> dict:
             }
             for t in turns if isinstance(t, dict)
         ] if isinstance(turns, list) else []
+        # archived：长会话压缩时被弹出工作窗口（turns）的更早轮次，完整逐字保留，
+        # 供 UI 回灌完整历史。老会话没这个字段 -> 空列表（行为与改动前一致）。
+        archived = raw.get("archived")
+        data["archived"] = [
+            {
+                **t,
+                "user": _clean_legacy_prompt(t.get("user", "")),
+                "assistant": _clean_legacy_prompt(t.get("assistant", "")),
+            }
+            for t in archived if isinstance(t, dict)
+        ] if isinstance(archived, list) else []
         data["updated_at"] = raw.get("updated_at") or ""
         # ⚠⚠ **会话要记住自己用的是哪个代码库**（2026-10-10 加）。
         #
@@ -182,7 +193,7 @@ def _default() -> dict:
     # 老会话为空串（行为与改动前完全一致，不做静默改写）。
     # owner_project_id 见 _apply_raw 的说明：会话的**归属项目**（丙方案）。
     return {"session_id": "", "updated_at": "", "summary": "",
-            "turns": [], "code_root": "", "code_root_at": "",
+            "turns": [], "archived": [], "code_root": "", "code_root_at": "",
             "owner_project_id": ""}
 
 
@@ -298,6 +309,24 @@ def history(session_id, project_id=None):
             for t in load(session_id, project_id).get("turns", []) if isinstance(t, dict)]
 
 
+def archived_turns(session_id, project_id=None) -> list:
+    """长会话压缩时被弹出工作窗口的更早轮次（完整逐字，list[dict]）。
+
+    Agent 在初始化时读它进 self.archived，之后每次压缩把新弹出的前缀累进来再落盘——
+    这样跨轮、跨进程都不会丢已归档的历史。老会话没这个字段时返回空列表。
+    """
+    return [t for t in load(session_id, project_id).get("archived", []) if isinstance(t, dict)]
+
+
+def full_history(session_id, project_id=None) -> list:
+    """给 UI 回灌用的**完整**逐轮记录 = 归档（更早轮次）+ 当前工作窗口。
+
+    顺序即时间序：先 archived，再 turns。压缩只收缩喂给 LLM 的工作窗口（turns），
+    完整对话始终在此可见——这正是修掉的「长会话会删掉前面的对话」问题。
+    """
+    return archived_turns(session_id, project_id) + history(session_id, project_id)
+
+
 def summary_text(session_id, project_id=None) -> str:
     return load(session_id, project_id).get("summary", "") or ""
 
@@ -364,8 +393,13 @@ def current_code_root(session_id, project_id=None) -> str:
         return ""
 
 
-def save(session_id, turns, summary=None, project_id=None) -> bool:
-    """整体落盘一个会话（turns = [{user, assistant}]）。"""
+def save(session_id, turns, summary=None, project_id=None, archived=None) -> bool:
+    """整体落盘一个会话（turns = [{user, assistant}]）。
+
+    archived：长会话压缩弹出的更早轮次（完整逐字），仅在压缩点由调用方传入并累进；
+    传 None 表示**保持磁盘上已有的 archived 不变**——绝大多数常规 save 不关心归档，
+    绝不能因为它们没带 archived 就把已归档的完整历史抹掉。
+    """
     with _lock:
         data = load(session_id, project_id)
         data["session_id"] = str(session_id or "default")
@@ -382,6 +416,14 @@ def save(session_id, turns, summary=None, project_id=None) -> bool:
              **{key: str(t[key])[:1200] for key in ("checkpoint_id", "failure_reason") if t.get(key)}}
             for t in (turns or []) if isinstance(t, dict)
         ]
+        if archived is not None:
+            data["archived"] = [
+                {"user": t.get("user", ""), "assistant": t.get("assistant", ""),
+                 "ts": t.get("ts") or "",
+                 **({"resume_context": str(t["resume_context"])[-6000:]} if "resume_context" in t else {}),
+                 **{key: str(t[key])[:1200] for key in ("checkpoint_id", "failure_reason") if t.get(key)}}
+                for t in (archived or []) if isinstance(t, dict)
+            ]
         return _write(session_id, data, project_id)
 
 
@@ -543,6 +585,7 @@ def snapshot(session_id, turns, *, label="", summary="", project_id=None) -> boo
         "label": str(label or "")[:200],
         "turn_count": len(turns),
         "turns": turns,
+        "archived": [dict(t) for t in (data.get("archived") or []) if isinstance(t, dict)],
         "summary": str(summary or data.get("summary") or ""),
     })
     data["snapshots"] = snaps[-SNAPSHOT_LIMIT:]
@@ -596,13 +639,15 @@ def restore_snapshot(session_id, seq, *, project_id=None) -> dict:
                 "reason": "找不到 seq=%s 的快照（当前保留 %d 条）。" % (seq, len(snaps))}
     turns = [dict(t) for t in (target.get("turns") or []) if isinstance(t, dict)]
     summary = str(target.get("summary") or "")
+    archived = [dict(t) for t in (target.get("archived") or []) if isinstance(t, dict)]
     data["turns"] = turns
     data["summary"] = summary
+    data["archived"] = archived
     # 被回退掉的快照一并丢弃：它们的 seq 已经对应不上了，留着会误导。
     data["snapshots"] = [i for i in snaps
                          if isinstance(i, dict) and int(i.get("seq") or 0) <= int(seq)]
     _write(session_id, data, project_id)
-    return {"ok": True, "turns": turns, "summary": summary,
+    return {"ok": True, "turns": turns, "summary": summary, "archived": archived,
             "reason": "已回到第 %s 个快照（%s 轮）。" % (seq, len(turns))}
 
 
@@ -625,6 +670,9 @@ def fork_session(session_id, new_id, *, at_seq=None, project_id=None) -> dict:
         if not got.get("ok"):
             return got
         turns, summary = got["turns"], got["summary"]
+        # 按快照分叉：归档也要退回该快照那一刻，否则 fork 出的会话会带上
+        # 原会话的完整归档，与快照 turns 拼出重复/错位的完整历史。
+        data["archived"] = got.get("archived") or []
     data["session_id"] = new_id
     data["turns"] = turns
     data["summary"] = summary
@@ -642,14 +690,17 @@ def restore_snapshot_snapshot_only(session_id, seq, *, project_id=None) -> dict:
     data = load(session_id, project_id=project_id)
     snaps = data.get("snapshots")
     if not isinstance(snaps, list) or not snaps:
-        return {"ok": False, "turns": [], "summary": "", "reason": "没有可用快照。"}
+        return {"ok": False, "turns": [], "summary": "", "archived": [], "reason": "没有可用快照。"}
     for item in snaps:
         if isinstance(item, dict) and int(item.get("seq") or 0) == int(seq or 0):
             return {"ok": True,
                     "turns": [dict(t) for t in (item.get("turns") or [])
                               if isinstance(t, dict)],
-                    "summary": str(item.get("summary") or ""), "reason": ""}
-    return {"ok": False, "turns": [], "summary": "",
+                    "summary": str(item.get("summary") or ""),
+                    "archived": [dict(t) for t in (item.get("archived") or [])
+                                 if isinstance(t, dict)],
+                    "reason": ""}
+    return {"ok": False, "turns": [], "summary": "", "archived": [],
             "reason": "找不到 seq=%s 的快照。" % seq}
 
 
@@ -726,15 +777,21 @@ def list_sessions(limit=50, project_id=None):
             if want_pid and owner != want_pid:
                 continue
             turns = raw.get("turns") or []
+            archived = raw.get("archived") or []
+            # 完整逐轮 = 归档 + 工作窗口：压缩只收缩喂 LLM 的 turns，列表里的轮数
+            # 与标题（首条用户问题）都必须按完整历史算，否则长会话会「轮数变少、
+            # 标题跳到中途那一问」。
+            all_turns = [t for t in archived if isinstance(t, dict)] + \
+                        [t for t in turns if isinstance(t, dict)]
             first_user = ""
-            for turn in turns:
+            for turn in all_turns:
                 if isinstance(turn, dict) and str(turn.get("user") or "").strip():
                     first_user = _clean_legacy_prompt(turn.get("user", "")).strip()
                     break
             preview = " ".join(first_user.split())
             seen[sid] = {
                 "session_id": sid,
-                "turns": len(turns),
+                "turns": len(all_turns),
                 "has_summary": bool(raw.get("summary")),
                 "updated_at": raw.get("updated_at") or "",
                 # 归属项目（丙）。**回退到桶目录名** —— 见上面 dir_owner。

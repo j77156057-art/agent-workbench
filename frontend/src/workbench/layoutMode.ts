@@ -29,8 +29,8 @@ export interface LayoutDef {
 
 export const LAYOUTS: LayoutDef[] = [
   {
-    key: 'fixed', name: '固定三栏', desc: '当前默认。侧栏 288px 常驻左，主区铺满右侧。常规 IDE 骨架',
-    sig: { rail: '左 288px', main: '铺满', cols: '2 栏' },
+    key: 'fixed', name: '固定三栏', desc: '当前默认。侧栏 288px 常驻左（可拖动分隔线调宽），主区铺满右侧。常规 IDE 骨架',
+    sig: { rail: '左 288 可拖', main: '铺满', cols: '2 栏' },
   },
   {
     key: 'focus', name: '单列专注', desc: '侧栏移出视口，主区居中限宽 860px，行距放大。长时间读文档 / 写提示词',

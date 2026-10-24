@@ -82,16 +82,20 @@ class ChildTaskTextTests(unittest.TestCase):
 class RolePreamblesNoLongerTripTheGateTests(unittest.TestCase):
     """角色说明里的固定措辞不该触发额度咨询短路。"""
 
-    def test_the_planner_preamble_alone_does_not_match(self):
-        """实测根因：`如何 … 代理` 命中了第二个分支。"""
+    def test_the_planner_preamble_no_longer_matches_the_regex(self):
+        """正则已**收窄**：`如何 … 执行代理` 不再命中。
+
+        旧前提（本文件当初所钉）是「角色说明**确实**会命中、只靠 `_child_task_text`
+        剥离才幸免」。2026-10 把 `agent/代理` 从裸词收紧为「…数/数量」形态后，
+        这条角色说明里的 `如何 … 执行代理`（裸代理）**本身**已不再匹配——等于在
+        剥离之外又加了一道保险。这里如实钉住收窄后的更强不变量。
+        """
         preamble = PLANNER_PROMPT.split("子任务：")[0]
-        self.assertTrue(
+        self.assertIsNone(
             agent._CAPACITY_HELP_RE.search(preamble),
-            "这条前置断言是本文件的全部前提：角色说明**确实**会命中。"
-            "若将来正则收窄到不再命中，本文件就失去了意义——那时应删掉它，"
-            "而不是让它静默变成空跑")
+            "正则已收窄：裸 `代理` 不再当容量名词，角色说明不应命中")
         self.assertIsNone(agent._capacity_help_response(PLANNER_PROMPT),
-                          "planner 子代理被短路成帮助页——工具调用 0 次、status=ok")
+                          "planner 子代理不应被短路成帮助页——工具调用 0 次、status=ok")
 
     def test_the_researcher_preamble_also_does_not_trip_it(self):
         self.assertIsNone(agent._capacity_help_response(RESEARCHER_PROMPT))
@@ -140,6 +144,23 @@ class OrdinaryWorkNeverLooksLikeACapacityQuestionTests(unittest.TestCase):
             with self.subTest(question=question):
                 self.assertIsNone(agent._capacity_help_response(question),
                                   "%r 被误判成额度咨询——会白跑一轮模型" % question)
+
+    def test_code_review_task_naming_agent_py_is_not_capacity_help(self):
+        """A1 长跑实测假阳性：代码体检任务里 `如何 … agent.py` 曾被短路成帮助页。
+
+        模块名 agent.py / 产品名 rag-agent 在本仓无处不在，一旦同一句里出现
+        如何/怎么这类普通动词，旧正则会把它当容量问句，主 Agent 直接白跑、
+        status=ok 但什么都没做。收窄后 `agent` 需以「…数/数量」形态才算名词。
+        """
+        for question in (
+            "讲清 agent.py 如何保存多轮对话、超过阈值时如何做压缩，"
+            "再阅读 pricing.py 的花费统计逻辑",
+            "用 orchestrate 编排多个子代理协作，阅读 agent.py 判断它如何收尾",
+            "说明 sessions.py 如何工作，并对照 agent.py 的调用方式",
+        ):
+            with self.subTest(question=question):
+                self.assertIsNone(agent._capacity_help_response(question),
+                                  "%r 被误判成额度咨询——长任务会被静默短路" % question)
 
 
 class KnownOverBreadthIsPinnedRatherThanHiddenTests(unittest.TestCase):

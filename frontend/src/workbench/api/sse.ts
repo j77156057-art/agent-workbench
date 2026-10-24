@@ -33,6 +33,8 @@ export interface SseEvent {
   compact_percent?: number
   /** P2：type=turn 时携带本轮的 turn_id，便于刷新后 GET partial 拉起 */
   turn_id?: string
+  /** 精确断点续跑：失败/降级回合的 checkpoint id；续跑时回传 resume_checkpoint。 */
+  checkpoint_id?: string
   session_id?: string
   /** P0：final 事件自带的「observation 摘要命中率」自检结果。
    *  "warn" 时前端在 .cd-answer 顶部加一行不显眼但可见的提示。 */
@@ -58,6 +60,15 @@ export interface SseEvent {
    * 同样会带 path —— 照文本反推会把没做的记成做了）。
    */
   artifacts?: ChatArtifact[]
+  /**
+   * 工具这一步的**真实成败**（observation 事件专用）。
+   *
+   * 后端 execute_tool 已经算出这个布尔值，随观察一起下发。前端据此给时间线
+   * 那一行染色，**不再从返回正文里 grep「错误/失败/超时」**——read_file 读到的
+   * 源码/日志天然含这些字，历史上把一次成功的读取整排标红。缺省（旧后端 /
+   * 非工具观察）时前端回落到只认回包开头的失败签名。
+   */
+  ok?: boolean
   /**
    * 浏览器动作留痕（observation 事件专用）：哪一页、第几步、动作前后
    * 各截了什么图。图片只给相对路径，避免把 base64 塞进事件流。

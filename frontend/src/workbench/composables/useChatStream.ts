@@ -34,6 +34,8 @@ export interface ChatStreamTurn {
   errorKind?: string
   /** P2：后端 turn 事件分发的 turn_id，用于刷新后 GET partial 拉起 */
   turnId?: string
+  /** 精确断点续跑：后端 checkpoint id（final 事件写入）。 */
+  checkpointId?: string
   /** P0：摘要一致性自检结果（final.consistency 转发到此处） */
   consistency?: 'ok' | 'warn' | string
   consistencyRatio?: number
@@ -125,14 +127,18 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     thinkOpen.clear()
   }
 
-  function appendTrace(turn: T, type: ChatTraceKind, text: string, evidence?: BrowserEvidence) {
+  function appendTrace(turn: T, type: ChatTraceKind, text: string, evidence?: BrowserEvidence, ok?: boolean) {
     const at = Date.now()
     // 观察/反思通常是前一个工具动作的返回，将两者之间的时间显示为动作耗时。
     if (type === 'observation' || type === 'reflection') {
       const pending = [...turn.trace].reverse().find((item) => item.type === 'action' && !item.elapsedMs)
       if (pending?.at) pending.elapsedMs = Math.max(0, at - pending.at)
     }
-    turn.trace.push({ type, text, at, ...(evidence ? { evidence } : {}) })
+    turn.trace.push({
+      type, text, at,
+      ...(evidence ? { evidence } : {}),
+      ...(typeof ok === 'boolean' ? { ok } : {}),
+    })
     // 轨迹事件即轮次边界：先切断思考分段，再把动作节点接进交错流
     closeThink(turn)
     const flow = (turn.flow ??= [])
@@ -214,6 +220,8 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       // 「猜你想问」等把澄清当正常答案的渲染（BUG-3）。
       if (ev.clarification_required === true) turn.clarificationRequired = true
       if (ev.degraded === true) turn.degraded = true
+      // 精确断点续跑：后端给出 checkpoint id，失败回合的「继续」据此取回逐步现场。
+      if (typeof ev.checkpoint_id === 'string' && ev.checkpoint_id) turn.checkpointId = ev.checkpoint_id
       hooks.onFinal?.(turn, ev.text)
       if (ev.status === 'error') {
         turn.status = 'error'
@@ -230,6 +238,7 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       turn.status = 'error'
       turn.error = ev.error_kind || '请求失败'
       turn.errorKind = ev.error_kind
+      if (typeof ev.checkpoint_id === 'string' && ev.checkpoint_id) turn.checkpointId = ev.checkpoint_id
     } else if (ev.type === 'reasoning' && typeof ev.text === 'string') {
       const buf = bufferFor(turn)
       buf.reasoning += ev.text
@@ -250,7 +259,7 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     } else if (ev.type === 'thought' || ev.type === 'action'
                || ev.type === 'observation' || ev.type === 'reflection') {
       // 轮次边界：先结算未提交的思考文本（保住实时节奏），再切断分段、接动作节点
-      if (ev.text) { settleThink(turn); appendTrace(turn, ev.type, ev.text, ev.browser_evidence) }
+      if (ev.text) { settleThink(turn); appendTrace(turn, ev.type, ev.text, ev.browser_evidence, ev.ok) }
       // 产物：工具落盘/截图那一刻自报，跟着那一次观察走。
       // 不从 action 文本反推 —— 被安全拦截的调用同样带 path，反推会把没做的记成做了。
       if (ev.type === 'observation' && ev.artifacts?.length) {

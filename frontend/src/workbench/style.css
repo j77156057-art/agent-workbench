@@ -930,9 +930,8 @@ html[data-material='glass'] .wb-proj-notice {
 }
 .wb-menu-item {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 7px 10px;
   border: var(--edge-w-strong, 2px) solid transparent;
@@ -1106,6 +1105,8 @@ html[data-material='glass'] .wb-proj-notice {
 .ft-iconbtn:disabled { opacity: .5; cursor: default; }
 .ft-iconbtn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 20%, transparent); outline-offset: 2px; }
 .ft-iconbtn .spinning { animation: ft-spin 0.9s linear infinite; }
+/* 收起按钮与刷新之间留一点距离：四颗按钮在 220px 窄栏里也不至于粘成一排 */
+.ft-collapse-btn { margin-left: 3px; }
 
 /* ---------- 标签栏 ---------- */
 .et-bar {

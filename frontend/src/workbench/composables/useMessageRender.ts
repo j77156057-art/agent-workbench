@@ -180,9 +180,22 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     }
     return raw
   }
-  function traceState(msg: T, item: { type: string; text: string }, index: number): 'running' | 'ok' | 'warn' | 'error' {
+  function traceState(msg: T, item: { type: string; text: string; ok?: boolean }, index: number): 'running' | 'ok' | 'warn' | 'error' {
     const raw = item.text
     if (/重复调用|重复空转/.test(raw)) return 'warn'
+    // observation 行：以工具**真实成败**为准，绝不从返回正文里 grep 失败词——
+    // read_file 读到的源码/日志天然含「错误/失败/超时」等字，历史上把一次
+    // 成功的读取整排标红（实测 agent.py 前 80 行那次）。后端已随观察下发结构化
+    // `ok`（execute_tool 的真实结果），有则直接采信。
+    if (item.type === 'observation') {
+      if (item.ok === true) return 'ok'
+      if (item.ok === false) return 'error'
+      // 没有 `ok`（旧后端 / 未执行的安全护栏观察）时，只认回包**开头**的失败签名：
+      // 后端所有非成功观察都以 `[...]` 括号或下列前缀起手，且真正的失败原因总在
+      // 第一句。锚定行首，正文中段出现这些词不算失败。
+      return /^\s*(\[[^\]]*\]|参数缺失|工具执行失败|工具调用已|试做区|幂等保护|搜索结果相关性不足)/.test(raw)
+        ? 'error' : 'ok'
+    }
     // result 行常把工具用法/回包原文整段带回：里面出现「console 错误」「失败请求 +0」
     // 这类词不等于这一步失败（实测 tool_search 成功返回 browser_action 用法、
     // click 成功回包都曾被标红）。先剔掉计数短语，再对 result 只扫前 200 字

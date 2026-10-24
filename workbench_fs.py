@@ -41,6 +41,13 @@ WB_MAX_FILE_BYTES = 512 * 1024  # 单文件读写上限
 TREE_MAX_NODES = 2000           # 目录树节点硬上限，防止巨型工程拖垮前端
 _STATUS_TTL = 5.0               # git 状态快照缓存秒数
 
+# 文件树专用跳过集：DocMind 自身的运行时/临时目录。它们不在共享的
+# ingest._SKIP_DIRS 里（那是索引层用的），但会污染「代码工作台」的目录树——
+# 本工程实测 .docmind(6137)+.tmp(1714)+.docmind_sessions(876) 就 8727 个节点，
+# 直接把 build_tree 顶到 2000 上限、触发「文件过多」截断，用户真实源码反而被裁掉。
+# 只在本模块的文件树遍历里剔除，不动索引逻辑，零副作用。
+TREE_SKIP_DIRS = {".docmind", ".tmp", ".docmind_sessions"}
+
 # 根目录下受保护的契约/配置文件（改分区结构必须走既有审批流）
 PROTECTED_ROOT_FILES = {
     "regions.json",
@@ -322,6 +329,8 @@ def build_tree(root, depth: int = 4) -> dict:
         nodes = []
         for name in names:
             if name in _SKIP_DIRS and os.path.isdir(os.path.join(dir_abs, name)):
+                continue
+            if name in TREE_SKIP_DIRS and os.path.isdir(os.path.join(dir_abs, name)):
                 continue
             rel_n = f"{rel_prefix}/{name}" if rel_prefix else name
             child_abs = os.path.join(dir_abs, name)

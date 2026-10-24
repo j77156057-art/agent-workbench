@@ -31,7 +31,7 @@ export const aiApi = {
   askGrounded(
     question: string,
     h: SseStreamHandlers,
-    opts: { web?: boolean; thinking?: boolean | null; thinkingLevel?: string | null; images?: Blob[]; sessionId?: string; uiContext?: ChatUiContext; visualTimeline?: { at: string; observation: string }[]; workflowId?: string; feedbackId?: string; turnId?: string } = {},
+    opts: { web?: boolean; thinking?: boolean | null; thinkingLevel?: string | null; images?: Blob[]; sessionId?: string; uiContext?: ChatUiContext; visualTimeline?: { at: string; observation: string }[]; workflowId?: string; feedbackId?: string; turnId?: string; resumeCheckpoint?: string } = {},
   ): Promise<void> {
     const fd = new FormData()
     fd.append('question', question)
@@ -54,6 +54,8 @@ export const aiApi = {
     if (opts.thinkingLevel) fd.append('thinking_level', opts.thinkingLevel)
     // P2：复用既有 turn_id，让 GET partial 拉到这条 turn 的所有事件
     if (opts.turnId) fd.append('turn_id', opts.turnId)
+    // 精确断点续跑：checkpoint id 或 latest，后端据此取回逐步 journal。
+    if (opts.resumeCheckpoint) fd.append('resume_checkpoint', opts.resumeCheckpoint)
     // 多模态：附带图片（后端按 filename 扩展名 + 文件头魔数双重校验）
     for (const img of opts.images || []) {
       fd.append('images', img, (img as File).name || 'image.png')

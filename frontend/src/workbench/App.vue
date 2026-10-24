@@ -29,6 +29,7 @@ import { probeBackend, demoMode, demoTagMap, demoRegionCards } from './composabl
 import { regionColor } from './theme'
 import { projectApi, getProjectId, setProjectId, type ProjectInfo } from './api'
 import { appEvents } from './eventBus'
+import { loadLayout, onLayoutChange, type LayoutKey } from './layoutMode'
 
 // 重型弹层/视图按需加载：仅在首次打开时拉取独立 chunk（首屏不下载、不解析）
 const RelationGraph = defineAsyncComponent(() => import('./components/RelationGraph.vue'))
@@ -68,6 +69,133 @@ const {
 } = useWorkbench()
 
 const dirtyCount = computed(() => tabs.value.filter((t) => t.dirty).length)
+
+// ---------------------------------------------------------------- 资源管理器宽度（可拖拽）
+// 固定布局默认左栏 288px，长路径 / 深层目录经常不够看。这里在左栏与主区之间加一条
+// 拖拽分隔条：只作用于 fixed 布局（focus/dock/split/grid 各有自己的空间语义），
+// 宽度记在 localStorage，双击恢复默认，聚焦后左右方向键可微调。
+const RAIL_WIDTH_KEY = 'docmind.railWidth'
+const RAIL_DEFAULT_W = 288
+const RAIL_MIN_W = 220
+const RAIL_MAX_W = 640
+const RAIL_MAIN_MIN_W = 480
+const layoutKey = ref<LayoutKey>(loadLayout())
+let offLayoutChange: (() => void) | null = null
+
+/** 宽度上限同时受视口约束：主区至少留 480px，避免把右侧挤到不可用。 */
+function clampRailWidth(w: number) {
+  const ceiling = Math.max(RAIL_MIN_W, Math.min(RAIL_MAX_W, window.innerWidth - RAIL_MAIN_MIN_W))
+  return Math.round(Math.max(RAIL_MIN_W, Math.min(ceiling, w)))
+}
+
+const railWidth = ref(RAIL_DEFAULT_W)
+try {
+  const saved = Number(window.localStorage.getItem(RAIL_WIDTH_KEY))
+  if (Number.isFinite(saved) && saved > 0) railWidth.value = clampRailWidth(saved)
+} catch { /* 隐私模式等存储不可用时保持默认 */ }
+
+// 收起态同样记在本地：收起不是「临时隐藏」，重开工作台仍按用户上次的选择。
+const RAIL_COLLAPSED_KEY = 'docmind.railCollapsed'
+const railCollapsed = ref(false)
+try {
+  railCollapsed.value = window.localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'
+} catch { /* 存储不可用时默认展开 */ }
+
+/** 只在固定布局生效：其他布局的侧栏形态由那套空间语义决定。 */
+const railCollapsedActive = computed(
+  () => layoutKey.value === 'fixed' && railCollapsed.value && !runtimeResident.value,
+)
+const railResizable = computed(
+  () => layoutKey.value === 'fixed' && !runtimeResident.value && !railCollapsedActive.value,
+)
+const railStyle = computed<Record<string, string> | undefined>(() =>
+  railResizable.value ? { '--lay-rail': `${railWidth.value}px` } : undefined,
+)
+const railDragging = ref(false)
+let railDragStartX = 0
+let railDragStartW = 0
+let railDragPointer = -1
+
+function persistRailWidth() {
+  try { window.localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth.value)) } catch { /* 仅本次会话 */ }
+}
+function detachRailDrag() {
+  railDragging.value = false
+  railDragPointer = -1
+  document.body.classList.remove('ft-col-resizing')
+  window.removeEventListener('pointermove', onRailPointerMove)
+  window.removeEventListener('pointerup', onRailPointerUp)
+  window.removeEventListener('pointercancel', onRailPointerUp)
+}
+function onRailPointerMove(e: PointerEvent) {
+  if (!railDragging.value || e.pointerId !== railDragPointer) return
+  railWidth.value = clampRailWidth(railDragStartW + (e.clientX - railDragStartX))
+}
+function onRailPointerUp(e: PointerEvent) {
+  if (!railDragging.value || e.pointerId !== railDragPointer) return
+  detachRailDrag()
+  persistRailWidth()
+}
+function onRailPointerDown(e: PointerEvent) {
+  if (e.button !== 0) return
+  // 不调用 preventDefault：取消 pointerdown 会按规范吞掉随后的 click/dblclick，
+  // 双击复位就失效了。防选中交给 body.ft-col-resizing 的 user-select:none。
+  railDragging.value = true
+  // 捕获指针：拖出窗口后松手也能收到 pointerup，避免"拖动态"卡在页面上。
+  ;(e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId)
+  railDragStartX = e.clientX
+  railDragStartW = railWidth.value
+  railDragPointer = e.pointerId
+  document.body.classList.add('ft-col-resizing')
+  window.addEventListener('pointermove', onRailPointerMove)
+  window.addEventListener('pointerup', onRailPointerUp)
+  window.addEventListener('pointercancel', onRailPointerUp)
+}
+function resetRailWidth() {
+  railWidth.value = RAIL_DEFAULT_W
+  persistRailWidth()
+}
+function nudgeRail(dx: number) {
+  railWidth.value = clampRailWidth(railWidth.value + dx)
+  persistRailWidth()
+}
+
+// 收起后焦点会随按钮一起消失，转到窄条上，键盘用户不会「丢焦点」。
+const railRestoreBtn = ref<HTMLButtonElement | null>(null)
+function toggleRailCollapsed() {
+  railCollapsed.value = !railCollapsed.value
+  try {
+    window.localStorage.setItem(RAIL_COLLAPSED_KEY, railCollapsed.value ? '1' : '0')
+  } catch { /* 仅本次会话 */ }
+  if (railCollapsed.value) nextTick(() => railRestoreBtn.value?.focus())
+}
+
+// ---------------------------------------------------------------- 工作区标签栏（整条可收起）
+// 标签栏固定占 38px 垂直空间；只用「概览」或只用「代码」的人，这一行常年是纯装饰。
+// 收起后整行不占位（不是缩成窄条）——「零痕迹」；恢复走顶栏「更多 → 显示工作区标签栏」，
+// 切换视图仍可用 Alt+1/2/3，不必先把标签栏叫回来。
+const WS_BAR_COLLAPSED_KEY = 'docmind.wsBarCollapsed'
+const wsBarCollapsed = ref(false)
+try {
+  wsBarCollapsed.value = window.localStorage.getItem(WS_BAR_COLLAPSED_KEY) === '1'
+} catch { /* 存储不可用时默认展开 */ }
+
+const moreBtn = ref<HTMLButtonElement | null>(null)
+
+function setWsBarCollapsed(next: boolean, focus = true) {
+  if (wsBarCollapsed.value === next) return
+  wsBarCollapsed.value = next
+  try {
+    window.localStorage.setItem(WS_BAR_COLLAPSED_KEY, next ? '1' : '0')
+  } catch { /* 仅本次会话 */ }
+  if (!focus) return
+  // 收起后按钮随整行消失，焦点转到「更多」——恢复入口就在那里面，键盘用户不会迷路。
+  nextTick(() => {
+    if (next) moreBtn.value?.focus()
+    else (document.querySelector('.ws-bar .ws-active') as HTMLElement | null)?.focus()
+  })
+}
+
 // 自主开发舱（AutonomousCockpit.vue）于 v2 重构 E 阶段移除；
 // 实时对话视频流（保留项 ①）由 ChatDock scope="cockpit" 承担、窗口嵌入（保留项 ②）由 SceneRuntimePanel 承担。
 // 早期遗留的 cockpitReady / cockpitRuntime / cockpitRef 三个 ref 在 2026-10-14 末轮收口清理：
@@ -367,6 +495,7 @@ onMounted(() => {
   // fixed 菜单坐标基于打开瞬间的布局：视口尺寸变化后直接收起，避免错位
   window.addEventListener('resize', closeTopMenus)
   window.addEventListener('docmind:appearance-changed', onAppearanceChanged)
+  offLayoutChange = onLayoutChange((k) => { layoutKey.value = k })
 })
 
 onBeforeUnmount(() => {
@@ -375,6 +504,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('docmind:open-settings', onOpenSettings)
   window.removeEventListener('resize', closeTopMenus)
   window.removeEventListener('docmind:appearance-changed', onAppearanceChanged)
+  offLayoutChange?.()
+  offLayoutChange = null
+  detachRailDrag()
   if (noticeTimer !== null) { window.clearTimeout(noticeTimer); noticeTimer = null }
 })
 </script>
@@ -505,6 +637,7 @@ onBeforeUnmount(() => {
         <!-- 低频分析视图与高级工具统一收进「更多」下拉 -->
         <span class="wb-menu-wrap">
           <button
+            ref="moreBtn"
             type="button"
             class="wb-save-btn wb-icon-btn wb-menu-trigger"
             :class="{ 'wb-menu-on': moreMenuOpen }"
@@ -531,6 +664,10 @@ onBeforeUnmount(() => {
                  9 个项把菜单撑得很高。产品化做法是单行「字形 + 名称」，
                  说明文字挪到 title（悬停才出现），菜单高度减半。 -->
             <div class="wb-menu-label">分析与视图</div>
+            <button type="button" class="wb-menu-item" :title="wsBarCollapsed ? '恢复顶部标签栏（Alt+1/2/3 可直接切视图，无需恢复）' : '收起顶部 38px 标签栏，主区多出一行空间'" @click="setWsBarCollapsed(!wsBarCollapsed)">
+              <span class="wb-menu-glyph" aria-hidden="true">{{ wsBarCollapsed ? '⌄' : '⌃' }}</span>
+              <span class="wb-menu-item-name">{{ wsBarCollapsed ? '显示工作区标签栏' : '收起工作区标签栏' }}</span>
+            </button>
             <button v-if="tree" type="button" class="wb-menu-item" title="代码地图：函数/变量在哪定义、被谁调用" @click="openSymbolMap">
               <span class="wb-menu-glyph" aria-hidden="true">◈</span>
               <span class="wb-menu-item-name">代码地图</span>
@@ -637,7 +774,14 @@ onBeforeUnmount(() => {
       <span>你正在浏览的是离线演示版，所有数据均为示例。在本地启动 Agent 工作台 并连接你的项目后，这里会显示真实文件和真实问答。</span>
     </div>
 
-    <div class="wb-body">
+    <div
+      class="wb-body"
+      :class="{
+        'wb-body--rail-resize': tree && railResizable,
+        'wb-body--rail-collapsed': tree && railCollapsedActive,
+      }"
+      :style="railStyle"
+    >
       <aside v-if="treeError" class="wb-tree-error">
         <p class="wb-tree-error-title">文件树不可用</p>
         <p class="wb-tree-error-msg">{{ treeError.message }}</p>
@@ -646,11 +790,53 @@ onBeforeUnmount(() => {
 
       <FileTree
         v-else-if="tree"
-        v-show="!runtimeResident"
+        v-show="!runtimeResident && !railCollapsedActive"
         :tree="tree"
         :selected-path="selectedPath"
         :loading="treeLoading"
+        :collapsible="layoutKey === 'fixed'"
         @select="openNode"
+        @collapse="toggleRailCollapsed"
+      />
+
+      <!-- 收起态窄条（仅固定布局）：整条都是按钮，点一下展开。
+           FileTree 用 v-show 保持挂载，目录展开状态不会因收起而丢。 -->
+      <button
+        v-if="tree && railCollapsedActive"
+        ref="railRestoreBtn"
+        class="wb-rail-restore"
+        type="button"
+        title="展开资源管理器"
+        aria-label="展开资源管理器"
+        aria-expanded="false"
+        @click="toggleRailCollapsed"
+      >
+        <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+          <rect x="1.4" y="1.8" width="10.2" height="9.4" rx="1" fill="none" stroke="currentColor" stroke-width="1" />
+          <path d="M5.2 1.8 V11.2" stroke="currentColor" stroke-width="1" />
+          <path d="M3 5 L5.2 6.5 L3 8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="wb-rail-restore-label">资源管理器</span>
+      </button>
+
+      <!-- 资源管理器宽度拖拽条（仅固定布局）：3px 视觉分隔线 + 两侧各 4px 命中区。
+           双击恢复 288px；聚焦后 ←/→ 每次 16px。其他布局的空间语义不同，不出现。 -->
+      <div
+        v-if="tree && railResizable"
+        class="ft-resizer"
+        :class="{ dragging: railDragging }"
+        role="separator"
+        aria-orientation="vertical"
+        :aria-label="`资源管理器宽度：${railWidth} 像素，拖动或按左右方向键调整`"
+        :aria-valuenow="railWidth"
+        aria-valuemin="220"
+        aria-valuemax="640"
+        tabindex="0"
+        title="拖动调整资源管理器宽度（双击恢复默认）"
+        @pointerdown="onRailPointerDown"
+        @dblclick="resetRailWidth"
+        @keydown.left.prevent="nudgeRail(-16)"
+        @keydown.right.prevent="nudgeRail(16)"
       />
 
       <aside v-else-if="demoMode" class="wb-sidebar wb-demo-side">
@@ -687,7 +873,7 @@ onBeforeUnmount(() => {
       <!-- 主区用 v-show 常驻（而非 v-if）：保证 #wb-playpane-slot 在组件挂载期就已存在于文档中。
            否则树/演示分支异步渲染，Teleport 目标在挂载时解析为 null → dock 迁移抛错、常驻面板落空。 -->
       <main class="wb-main" v-show="tree || demoMode">
-        <WorkspaceTabs />
+        <WorkspaceTabs v-show="!wsBarCollapsed" @collapse="setWsBarCollapsed(true)" />
         <!-- 阶段 4：运行面板常驻（docked）承载槽（主区，左侧文件树/示例保留，便于边玩边改） -->
         <div id="wb-playpane-slot" class="wb-playpane-slot" v-show="runtimeResident" />
         <!-- EDA 多模态验收面板常驻（docked）承载槽：EdaVerifyPanel 的 docked 主体 teleport 到此，

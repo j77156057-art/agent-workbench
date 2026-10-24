@@ -28,6 +28,10 @@ export interface ChatTraceItem {
   at?: number
   /** observation/reflection 回填前一个 action 的耗时（ms） */
   elapsedMs?: number
+  /** 工具这一步的真实成败（仅 observation 条目带，来自后端 observation.ok）。
+   *  渲染层据此染色，不再从返回正文里 grep 失败词——read_file 读到的源码天然含
+   *  「错误/失败」等字，会被误标红。缺省时回落到只认回包开头的失败签名。 */
+  ok?: boolean
   /** 浏览器动作留痕（只有 observation 条目会带）：前后缩略图与地址。 */
   evidence?: BrowserEvidence
 }
@@ -151,6 +155,9 @@ export interface ChatMsg {
   activityKind?: ChatActivityKind
   /** P2：后端 SSE turn 事件分发的 turn_id，用于刷新后 GET partial 拉起。 */
   turnId?: string
+  /** 精确断点续跑：后端 checkpoint id（final 事件/历史回灌写入），
+   *  续跑时作为 resume_checkpoint 回传。 */
+  checkpointId?: string
   /** P0：摘要一致性自检结果（final.consistency 转发到此处，模板按此染色） */
   consistency?: ChatConsistency
   /** 一致性自检命中率（前端调试用，模板不必显示） */

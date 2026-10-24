@@ -2493,6 +2493,8 @@ async def chat(
     narration_mode: str = Form(""),
     images: list[UploadFile] = File(default=None),
     turn_id: str = Form(""),
+    # 精确断点续跑：checkpoint id 或 "latest"。为空=普通新回合。
+    resume_checkpoint: str = Form(""),
 ):
     # 直接调处理器时，没传的 Form 参数保持的是 `Form` 实例而不是字符串（见 _plain_field）。
     # 真实 HTTP 请求里它们都是真字符串，这一层原样通过 —— 不改变任何线上行为。
@@ -2509,6 +2511,7 @@ async def chat(
     thinking_level = _plain_field(thinking_level)
     narration_mode = _plain_field(narration_mode)
     turn_id = _plain_field(turn_id)
+    resume_checkpoint = _plain_field(resume_checkpoint)
     if images is not None and not isinstance(images, list):
         images = None
     # P2：分配 / 复用本轮的 turn_id。前端进页面后调 GET /api/turn/active 拿到
@@ -2871,6 +2874,9 @@ async def chat(
                 fallback_done = False
                 fallback_notice_emitted = False
                 current_llm = cloud_llm
+                # 本轮续跑目标：首轮用前端给的 checkpoint，之后的重试/fallback
+                # 自动接上上一次尝试刚落库的现场（见 except 分支）。
+                resume_target = (resume_checkpoint or "").strip() or None
                 while True:
                     try:
                         with _session_run_scope(key, worker_stop, worker):
@@ -2888,6 +2894,7 @@ async def chat(
                                 narration=narration_override,
                                 plan_mode=plan_mode_override,
                                 cancel_event=worker_stop,
+                                resume=resume_target,
                             )
                             for ev in gen:
                                 if worker_stop.is_set():
@@ -2906,6 +2913,11 @@ async def chat(
                         if fallback_done or not _llm_is_retryable(exc):
                             events.put(("error", exc))
                             return
+                        # 同一现场续跑：_run_shell 已在 finally 里落盘 journal，
+                        # 重试/fallback 接上它，已执行过的工具调用不会重跑。
+                        _last_cp = getattr(selected_agent, "last_checkpoint_id", None)
+                        if _last_cp:
+                            resume_target = _last_cp
                         attempts_left -= 1
                         if attempts_left >= 0:
                             # 瞬断退避：0.5s / 1.5s 抖动
@@ -3018,6 +3030,10 @@ async def chat(
                 err_text = "已自动重试 2 次仍失败（疑似网络或上游服务不稳定），未完成。可稍后再试，或检查网络与模型设置。"
             final_ev = {"type": "final", "status": "error",
                         "text": err_text, "error_kind": err_kind}
+            # 异常收尾也带 checkpoint id：前端「继续」能取回逐步现场。
+            _cp_id = getattr(selected_agent, "last_checkpoint_id", None)
+            if _cp_id:
+                final_ev["checkpoint_id"] = _cp_id
             try:
                 consistency, ratio = _compute_consistency(list(inflight.get("observations") or []), "")
                 # 错误 final 仍记 ratio（前端可选用），但 consistency 强制 ok
@@ -4249,9 +4265,11 @@ async def session_detail_ep(session_id: str):
                     "summary": "", "updated_at": ""}
     import agent_memory
     try:
+        _archived = data.get("archived") or []
+        _working = data.get("turns") or []
         saved = agent_memory.latest_checkpoint(agent_memory.scope_key(_request_project_id() or None), session_id)
         if saved and saved["status"] != "completed" and not any(
-                item.get("checkpoint_id") == saved["id"] for item in data.get("turns", [])):
+                item.get("checkpoint_id") == saved["id"] for item in _archived + _working):
             data.setdefault("turns", []).append(agent_memory.recovery_turn(saved))
             session_store.save(session_id, data["turns"], data.get("summary", ""), _request_project_id() or None)
     except Exception:
@@ -4259,7 +4277,9 @@ async def session_detail_ep(session_id: str):
     return {
         "ok": True,
         "session_id": data.get("session_id") or str(session_id or ""),
-        "turns": data.get("turns") or [],
+        # 完整逐轮 = 归档（更早轮次，压缩时被弹出但仍完整留存）+ 当前工作窗口。
+        # 这样长会话压缩只收缩喂给 LLM 的上下文，UI 里前面的对话不再消失。
+        "turns": (data.get("archived") or []) + (data.get("turns") or []),
         "summary": data.get("summary") or "",
         "updated_at": data.get("updated_at") or "",
     }
@@ -4294,6 +4314,7 @@ async def session_rewind_ep(session_id: str, seq: int = 0):
         try:
             agent.history = [dict(t) for t in result["turns"]]
             agent.summary = result.get("summary") or ""
+            agent.archived = [dict(t) for t in (result.get("archived") or [])]
         except Exception:
             pass
     return {"ok": True, "session_id": str(session_id or ""),

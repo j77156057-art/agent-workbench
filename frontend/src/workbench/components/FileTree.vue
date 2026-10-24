@@ -14,10 +14,13 @@ const props = defineProps<{
   tree: TreeResp
   selectedPath: string | null
   loading: boolean
+  /** 固定布局下可收起：头部多一颗「收起资源管理器」按钮 */
+  collapsible?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'select', node: TreeNode): void
+  (e: 'collapse'): void
 }>()
 
 const {
@@ -139,6 +142,19 @@ function rootLabel(p: string): string {
           <svg width="13" height="13" viewBox="0 0 13 13" :class="{ spinning: loading }">
             <path d="M11.2 6.6 A4.7 4.7 0 1 1 6.5 1.8 A4.7 4.7 0 0 1 10.6 3.6 M10.8 1.6 V3.9 H8.5"
                   fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <button
+          v-if="collapsible"
+          class="ft-iconbtn ft-collapse-btn"
+          title="收起资源管理器"
+          aria-label="收起资源管理器"
+          @click="emit('collapse')"
+        >
+          <svg width="13" height="13" viewBox="0 0 13 13">
+            <rect x="1.4" y="1.8" width="10.2" height="9.4" rx="1" fill="none" stroke="currentColor" stroke-width="1" />
+            <path d="M5.2 1.8 V11.2" stroke="currentColor" stroke-width="1" />
+            <path d="M10 5 L7.8 6.5 L10 8" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </button>
       </div>

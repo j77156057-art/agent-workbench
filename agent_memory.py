@@ -85,6 +85,7 @@ def _connect():
             scope TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL,
             question TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
             events TEXT NOT NULL, answer TEXT NOT NULL, updated TEXT NOT NULL,
+            journal TEXT NOT NULL DEFAULT '',
             PRIMARY KEY(scope, id));
         CREATE TABLE IF NOT EXISTS user_profiles (
             user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '',
@@ -125,6 +126,11 @@ def _connect():
         conn.execute("ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0")
     if "last_accessed" not in _cols:
         conn.execute("ALTER TABLE memories ADD COLUMN last_accessed TEXT NOT NULL DEFAULT ''")
+    # 断点精确续跑：每个回合的步骤日志（trail / 计数 / 待办 / 读写验证目标）。
+    # 老库没有这一列时补空串；空串 = 没有日志，恢复走旧的「现场摘要」路径。
+    _ck_cols = {row[1] for row in conn.execute("PRAGMA table_info(checkpoints)")}
+    if "journal" not in _ck_cols:
+        conn.execute("ALTER TABLE checkpoints ADD COLUMN journal TEXT NOT NULL DEFAULT ''")
     return conn
 
 
@@ -372,24 +378,91 @@ def is_active(scope, mid):
             (scope, str(mid))).fetchone() is not None
 
 
-def checkpoint(scope, session, question, *, cid=None, status="running", reason="", events=(), answer=""):
+JOURNAL_LIMIT_CHARS = 600000
+
+
+def _journal_blob(journal):
+    """Serialize the per-step resume journal, shedding the oldest trail entries
+    when it grows past the cap. Truncating the JSON text would make it
+    unparsable, so only whole fields/entries are dropped; if even that cannot
+    fit, return None (caller keeps the previous journal or falls back)."""
+    if not journal:
+        return None
+    try:
+        data = dict(journal)
+    except (TypeError, ValueError):
+        return None
+    trail = data.get("trail")
+    while True:
+        try:
+            blob = json.dumps(data, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return None
+        if len(blob) <= JOURNAL_LIMIT_CHARS:
+            return blob
+        if isinstance(trail, list) and len(trail) > 2:
+            del trail[0]
+            data["trail_truncated"] = True
+            continue
+        for key in ("last_obs", "last_exec_obs", "audit_steps", "evidence", "file_changes"):
+            if data.pop(key, None) is not None:
+                break
+        else:
+            return None
+
+
+def checkpoint(scope, session, question, *, cid=None, status="running", reason="", events=(), answer="", journal=None):
     cid = cid or uuid.uuid4().hex
+    blob = _journal_blob(journal)
     with _LOCK, closing(_connect()) as conn, conn:
-        conn.execute("INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        # UPSERT instead of INSERT OR REPLACE: an event-only update (journal=None)
+        # must not wipe the last exact-resume snapshot.
+        conn.execute("""INSERT INTO checkpoints
+            (scope, id, session, question, status, reason, events, answer, updated, journal)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(scope, id) DO UPDATE SET
+            question=excluded.question, status=excluded.status, reason=excluded.reason,
+            events=excluded.events, answer=excluded.answer, updated=excluded.updated,
+            journal=CASE WHEN excluded.journal<>'' THEN excluded.journal ELSE checkpoints.journal END""",
             (scope, cid, str(session), scrub(question, 2000), status, scrub(reason, 1200),
-             json.dumps([scrub(event, 1600) for event in list(events)[-6:]], ensure_ascii=False), scrub(answer, 4000), _now()))
+             json.dumps([scrub(event, 1600) for event in list(events)[-6:]], ensure_ascii=False),
+             scrub(answer, 4000), _now(), blob or ""))
         conn.execute("DELETE FROM checkpoints WHERE scope=? AND id NOT IN (SELECT id FROM checkpoints WHERE scope=? ORDER BY updated DESC LIMIT 100)", (scope, scope))
     return cid
+
+
+def _checkpoint_dict(row):
+    if not row:
+        return None
+    value = dict(row)
+    try:
+        value["events"] = json.loads(value.get("events") or "[]")
+    except (TypeError, ValueError):
+        value["events"] = []
+    raw = value.get("journal") or ""
+    try:
+        value["journal"] = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        value["journal"] = None
+    return value
 
 
 def latest_checkpoint(scope, session):
     with _LOCK, closing(_connect()) as conn:
         row = conn.execute("SELECT * FROM checkpoints WHERE scope=? AND session=? ORDER BY updated DESC LIMIT 1", (scope, str(session))).fetchone()
-    if not row:
+    return _checkpoint_dict(row)
+
+
+def checkpoint_get(scope, session, cid):
+    """Exact checkpoint lookup, scoped by session: never resume another chat."""
+    cid = str(cid or "").strip()
+    if not cid:
         return None
-    value = dict(row)
-    value["events"] = json.loads(value["events"])
-    return value
+    with _LOCK, closing(_connect()) as conn:
+        row = conn.execute(
+            "SELECT * FROM checkpoints WHERE scope=? AND session=? AND id=?",
+            (scope, str(session), cid)).fetchone()
+    return _checkpoint_dict(row)
 
 
 def delete_checkpoints(scope, session):

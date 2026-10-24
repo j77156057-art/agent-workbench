@@ -277,6 +277,8 @@ interface InterruptedRecovery {
   reasoning: string
   plan: string[]
   startedAt?: number
+  /** 精确断点续跑：失败消息上的后端 checkpoint id。 */
+  checkpointId?: string
 }
 
 let msgSeq = 1
@@ -301,6 +303,7 @@ function readInterruptedRecovery(): InterruptedRecovery | null {
       reasoning: typeof row.reasoning === 'string' ? row.reasoning : '',
       plan: Array.isArray(row.plan) ? row.plan.filter(item => typeof item === 'string').slice(-12) : [],
       startedAt: typeof row.startedAt === 'number' ? row.startedAt : undefined,
+      checkpointId: typeof row.checkpointId === 'string' ? row.checkpointId : undefined,
     }
   } catch { return null }
 }
@@ -321,11 +324,46 @@ function continuationQuestion(request: string, recovery: InterruptedRecovery): s
     `用户续接指令：${request}`,
   ].filter(Boolean).join('\n\n')
 }
+/** 后端在回合异常/中断时落盘的人话占位：「（本轮未完成：原因）」。
+ *  刷新后它曾被当成一条普通已完成回答，用户就再也看不到「继续」入口。 */
+const INTERRUPTED_ANSWER_RE = /^（本轮未完成(?:[：:，]\s*([\s\S]*?))?）\s*$/
+function interruptedReason(text: string): string {
+  const hit = String(text || '').trim().match(INTERRUPTED_ANSWER_RE)
+  if (!hit) return ''
+  return (hit[1] || '').replace(/[。.\s]+$/, '') || '上一轮没有完成'
+}
+/** 点击「继续上次任务」：优先用页面里这条失败消息重建续接现场。
+ *  刷新后 sessionStorage 已被 restoreInterrupted 消费掉，只发一句「继续」会让前端
+ *  丢掉能看到的上下文；这里把用户问题与残留痕迹再塞回去，send() 才会走完整续接。 */
+function resumeTurn(turn: ChatMsg) {
+  if (sending.value) return
+  if (!readInterruptedRecovery()) {
+    const idx = messages.value.findIndex(m => m.id === turn.id)
+    const user = idx > 0 ? messages.value[idx - 1] : undefined
+    if (user?.role === 'user' && user.text) {
+      try {
+        sessionStorage.setItem(recoveryKey(), JSON.stringify({
+          user: user.text,
+          assistant: turn.text || '',
+          trace: turn.trace?.slice(-24) || [],
+          reasoning: turn.reasoning || '',
+          plan: turn.plan?.slice(-12) || [],
+          startedAt: turn.startedAt,
+          checkpointId: turn.checkpointId,
+        } satisfies InterruptedRecovery))
+      } catch {}
+    }
+  }
+  void send('继续完成任务')
+}
 // 兼容旧版会话：早期 API 曾把内部路由上下文拼在用户问题前并落盘。
 // 仅清理从字符串开头出现的完整旧前缀，正文中提到“系统提示”不受影响。
 const legacyPromptPrefix = /^\s*【系统提示】[\s\S]*?用户问题：\s*/
+// 续接请求的完整包体（原始请求/上次进度/指令）只该给模型看；历史里只显示用户
+// 真正敲下的那句「继续完成任务」，否则刷新后对话流里会冒出一大段内部提示。
+const legacyContinuationPrefix = /^\s*这是上一个被页面切换或连接中断的回合的继续请求。[\s\S]*?用户续接指令：\s*/
 function cleanLegacyPrompt(value: string): string {
-  return String(value || '').replace(legacyPromptPrefix, '').trimStart()
+  return String(value || '').replace(legacyPromptPrefix, '').replace(legacyContinuationPrefix, '').trimStart()
 }
 /** 应用自发起活动（非用户消息）在会话历史里的标记 → 字条类型/文案。
  *  标记由后端写入历史 user 字段（见 api.py app_guided_inspect）。 */
@@ -547,6 +585,13 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
   const recovery = readInterruptedRecovery()
   const isResume = !!recovery && isContinuationRequest(q)
   const request = isResume ? continuationQuestion(q, recovery!) : q
+  // 精确断点续跑：优先用这条失败消息上的 checkpoint id；刷新/断连导致前端
+  // 没拿到 final 时退回 latest（后端只认本会话，并会校验之后没有更新的轮次）。
+  const resumeCheckpoint = isContinuationRequest(q)
+    ? (recovery?.checkpointId
+       || [...messages.value].reverse().find(m => m.role === 'assistant' && m.checkpointId)?.checkpointId
+       || 'latest')
+    : undefined
   const epoch = ++chatEpoch
   historyError.value = ''
   try { sessionStorage.removeItem(recoveryKey()) } catch {}
@@ -617,6 +662,7 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
       visualTimeline: props.scope === 'cockpit' ? liveVisionTimeline : [],
       workflowId: reviewRef?.workflowId,
       feedbackId: reviewRef?.feedbackId,
+      resumeCheckpoint,
     })
     drain()
     const t = live()
@@ -625,7 +671,12 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
       t.finishedAt = Date.now()
       finishLiveMd(t.id, () => answerHtml(t))
       finished = !!t.text && t.status !== 'error'
-      if (t.status === 'error') t.recoverable = true
+      if (t.status === 'error') {
+        t.recoverable = true
+        if (!t.text) t.text = '本轮未完成，可核对现场后继续。'
+        // 失败也存现场：刷新后靠这份快照把 trace/plan 栽回历史里的失败回合。
+        preserveInterrupted()
+      }
       if (finished && receivedFinal) onResult?.(t.text)
       if (onResult && !receivedFinal) finished = false
     }
@@ -642,6 +693,9 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
       t.status = 'error'
       t.finishedAt = Date.now()
       t.error = (e as { message?: string }).message || '请求失败'
+      t.recoverable = true
+      if (!t.text) t.text = '本轮未完成，可核对现场后继续。'
+      preserveInterrupted()
     }
   } finally {
     if (epoch === chatEpoch) {
@@ -699,6 +753,7 @@ function preserveInterrupted() {
       user: user?.text || '', assistant: assistant?.text || '',
       trace: assistant?.trace?.slice(-24) || [], reasoning: assistant?.reasoning || '',
       plan: assistant?.plan?.slice(-12) || [], startedAt: assistant?.startedAt,
+      checkpointId: assistant?.checkpointId,
     } satisfies InterruptedRecovery))
   } catch {}
 }
@@ -734,13 +789,40 @@ function restoreInterrupted(turns: { user: string; assistant: string }[]) {
   try {
     const row = JSON.parse(sessionStorage.getItem(recoveryKey()) || 'null')
     if (!row || typeof row.user !== 'string' || typeof row.assistant !== 'string') return
-    if (turns.some(t => t.user === row.user && t.assistant)) { sessionStorage.removeItem(recoveryKey()); return }
+    // 服务端历史里已有这条问题：若最后一条回答还是「本轮未完成」占位，说明失败
+    // 的那一轮仍在等续接 —— 把快照里的 trace/plan/耗时栽回重建出来的那条消息，
+    // 而不是再 append 一份重复的问答。
+    const wanted = cleanLegacyPrompt(row.user)
+    const matched = turns.filter(t => t && cleanLegacyPrompt(t.user || '') === wanted)
+    const last = matched[matched.length - 1]
+    if (last) {
+      const failed = !!last.assistant && !!interruptedReason(last.assistant)
+      const isLastTurn = turns[turns.length - 1] === last
+      if (failed && isLastTurn) {
+        for (let i = messages.value.length - 1; i > 0; i--) {
+          const m = messages.value[i]
+          if (m.role === 'assistant' && m.status === 'error'
+              && messages.value[i - 1]?.role === 'user' && messages.value[i - 1].text === wanted) {
+            if (Array.isArray(row.trace) && row.trace.length) m.trace = row.trace
+            if (typeof row.reasoning === 'string' && row.reasoning) m.reasoning = row.reasoning
+            if (Array.isArray(row.plan) && row.plan.length) m.plan = row.plan
+            if (typeof row.startedAt === 'number') m.startedAt = row.startedAt
+            if (typeof row.checkpointId === 'string' && row.checkpointId) m.checkpointId = row.checkpointId
+            m.recoverable = true
+            break
+          }
+        }
+      }
+      sessionStorage.removeItem(recoveryKey())
+      return
+    }
     const interruptedAct = activityFromHistory(row.user)
     messages.value.push(interruptedAct
       ? { id: msgSeq++, role: 'activity', text: interruptedAct.label, status: 'done', trace: [], reasoning: '', notices: [], plan: [], activityKind: interruptedAct.kind }
       : { id: msgSeq++, role: 'user', text: cleanLegacyPrompt(row.user), status: 'done', trace: [], reasoning: '', notices: [], plan: [] })
     messages.value.push({ id: msgSeq++, role: 'assistant', text: cleanLegacyPrompt(row.assistant), status: 'stopped',
       trace: row.trace || [], reasoning: row.reasoning || '', plan: row.plan || [], recoverable: true,
+      checkpointId: row.checkpointId,
       notices: ['上次回答因离开页面或切换项目中断，已保留原始问题和执行上下文；可以点击“继续上次任务”或输入“继续”。'] })
   } catch {}
 }
@@ -751,10 +833,18 @@ async function recoverActiveTurns() {
   try {
     const list = await aiApi.listActiveTurns(sid)
     if (!list.ok || !Array.isArray(list.turns) || list.turns.length === 0) return
-    // 只取第一条；同一会话并发 in-flight 罕见，多条都拉只会乱序
-    const target = list.turns[list.turns.length - 1]
+    // 只恢复**还在跑**的回合。服务端终态记录会在注册表里保留 60s 供回放，
+    // 若把它们也当 in-flight 拉起，刷新后会凭空多出一条「正在执行」+ 续接按钮
+    // （实测：回合刚结束后 60s 内刷新必现，60s 后记录下线才消失）。
+    // 已完成的历史本来就会由 restoreHistory 从会话里回灌，不需要在这里补。
+    const live = list.turns.filter(t => t?.status === 'streaming')
+    if (!live.length) return
+    // 同一会话并发 in-flight 罕见，多条都拉只会乱序，只取最后一条。
+    const target = live[live.length - 1]
     const partial = await aiApi.getTurnPartial(target.turn_id)
     if (!partial.ok) return
+    // 列出来到取回之间它可能刚好结束：终态同样交给会话历史，别再补一条幻影。
+    if (partial.status && partial.status !== 'streaming') return
     const events = Array.isArray(partial.events) ? partial.events : []
     const finalEv = partial.final
     // 用户消息：turn event 之前的用户输入已在 sessionStorage / 历史里；这里只挂助手回合
@@ -1059,9 +1149,10 @@ async function deleteWfHistory(item: WorkflowSummary) {
 
 // ---------------------------------------------------------------- 历史回灌
 /** 把服务端 turns 按「用户→助手」交替重建成消息列表（历史消息均为已完成态）。 */
-function rebuildFromTurns(turns: { user: string; assistant: string }[]) {
+function rebuildFromTurns(turns: { user: string; assistant: string; checkpoint_id?: string }[]) {
   const rebuilt: ChatMsg[] = []
-  for (const t of turns) {
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i]
     if (!t) continue
     if (t.user) {
       const act = activityFromHistory(t.user)
@@ -1070,7 +1161,26 @@ function rebuildFromTurns(turns: { user: string; assistant: string }[]) {
         : { id: msgSeq++, role: 'user', text: cleanLegacyPrompt(t.user), status: 'done', trace: [], reasoning: '', notices: [], plan: [] })
     }
     if (t.assistant) {
-      rebuilt.push({ id: msgSeq++, role: 'assistant', text: cleanLegacyPrompt(t.assistant), status: 'done', trace: [], reasoning: '', notices: [], plan: [] })
+      // 失败占位不是回答：如实显示「执行失败」，并且只有它确实是最后一轮时
+      // 才给续接入口（用户后来已经继续过，就不该在历史中间再冒一个按钮）。
+      const reason = interruptedReason(t.assistant)
+      const isLastTurn = i === turns.length - 1
+      // 后端在失败回合上落了 checkpoint_id：这也是一条可续跑信号，
+      // 即便占位文案将来改了措辞，入口也不会丢。
+      const recoverable = (!!reason || !!t.checkpoint_id) && isLastTurn
+      rebuilt.push({
+        id: msgSeq++, role: 'assistant',
+        text: reason ? '' : cleanLegacyPrompt(t.assistant),
+        status: reason ? 'error' : 'done',
+        trace: [], reasoning: '',
+        notices: recoverable
+          ? ['上一轮没有完成；可以点击“继续上次任务”，或输入“继续”从中断处接着做。']
+          : [],
+        plan: [],
+        recoverable,
+        error: reason || undefined,
+        checkpointId: t.checkpoint_id,
+      })
     }
   }
   // msgSeq 已随分配递增，天然大于历史消息最大 id，后续新消息 id 不会冲突。
@@ -1491,8 +1601,10 @@ const webTitle = computed(() => webOn.value
             <div v-if="m.trace.length || m.reasoning || m.status === 'streaming'" class="cd-run-head">
               <span class="cd-run-avatar">✦</span>
               <span class="cd-run-role">交付代理</span>
-              <span class="cd-run-status wb-status-chip" :class="`cd-run-${m.status}`">
-                {{ m.status === 'streaming' ? '正在执行' : m.status === 'done' ? '已完成' : m.status === 'error' ? '执行失败' : '已停止' }}
+              <!-- degraded 是后端明确说的「这轮不是干净交付」。挂在绿色「已完成」下面
+                   就是在宣称一件没做到的事，所以降级回合改显「未完成」。 -->
+              <span class="cd-run-status wb-status-chip" :class="[`cd-run-${m.status}`, { 'cd-run-degraded': m.status === 'done' && m.degraded }]">
+                {{ m.status === 'streaming' ? '正在执行' : m.status === 'done' ? (m.degraded ? '未完成' : '已完成') : m.status === 'error' ? '执行失败' : '已停止' }}
               </span>
               <span class="cd-run-time" v-if="elapsedLabel(m)">· {{ elapsedLabel(m) }}</span>
             </div>
@@ -1506,7 +1618,7 @@ const webTitle = computed(() => webOn.value
               <svg width="11" height="11" viewBox="0 0 11 11"><circle cx="5.5" cy="5.5" r="4.6" fill="none" stroke="currentColor" stroke-width="1"/><path d="M5.5 4.6 V7.6" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/><circle cx="5.5" cy="3" r=".75" fill="currentColor"/></svg>
               <span>{{ n }}</span>
             </div>
-            <button v-if="m.recoverable" class="cd-resume" @click="send('继续完成任务')">
+            <button v-if="m.recoverable" class="cd-resume" :disabled="sending" @click="resumeTurn(m)">
               ↻ 继续上次任务
             </button>
             <WorkflowCard
@@ -1622,7 +1734,7 @@ const webTitle = computed(() => webOn.value
               <!-- P0：摘要一致性自检 —— 命中率 < 阈值时本回合「摘要对过程证据的覆盖度」
                    偏低，明确标注为「覆盖存疑」终态，而非静默记完成（BUG-4）。措辞避开
                    「核验」二字，不与后端「（核验：PASS · N 处引用可核验）」同屏打架。 -->
-              <div v-if="m.status === 'done' && m.consistency === 'warn'" class="cd-consistency-warn" role="status">
+              <div v-if="m.status === 'done' && m.consistency === 'warn' && !m.degraded" class="cd-consistency-warn" role="status">
                 <span class="cd-warn-badge">覆盖存疑</span>
                 本回合摘要对过程证据的关键词覆盖率仅
                 {{ Math.round((m.consistencyRatio || 0) * 100) }}%——结论未必有错，但可能有细节没纳入摘要。
@@ -1637,6 +1749,14 @@ const webTitle = computed(() => webOn.value
                 <span class="cd-warn-badge">未综合结论</span>
                 本回合的回答以原始源码逐行罗列为主，缺少针对你问题的归纳结论——它读起来像证据、
                 但不是答案。展开上方推理过程可查看模型实际读到了什么。
+              </div>
+              <!-- 通用的「没答完」终态：后端 degraded=true 说明这一轮不是模型写出的
+                   完整结论（兜底诊断 / 中间证据 / 达到步数上限）。此前前端只接了标志、
+                   从不显示，于是任何兜底都挂在绿色「已完成」下面。 -->
+              <div v-if="m.status === 'done' && m.degraded && m.consistencyReason !== 'verbatim_dump'" class="cd-consistency-warn" role="status">
+                <span class="cd-warn-badge">未完成</span>
+                本轮没有拿到可综合的完整答案——上面是兜底内容或中间证据，不是针对你问题的结论。
+                展开上方「推理过程」可核对模型实际拿到的内容；建议重试、换个问法，或换一个模型。
               </div>
               <template v-if="m.status === 'streaming'"><div class="cd-answer-pending"><span class="cd-caret" aria-hidden="true" /> 正在生成回答…</div></template>
               <span v-else v-html="answerHtml(m)" />
@@ -2036,6 +2156,8 @@ const webTitle = computed(() => webOn.value
 .cd-run-status { color: var(--text-faint); }
 .cd-run-streaming { color: var(--accent); }
 .cd-run-done { color: var(--green); }
+/* 降级回合：状态虽已结束，但不是干净交付，用琥珀色与「已完成」的绿色区分开。 */
+.cd-run-degraded { color: var(--amber); }
 .cd-run-error { color: var(--danger); }
 .cd-run-stopped { color: var(--amber); }
 .cd-run-streaming::before { content: ''; display: inline-block; width: 9px; height: 9px; margin: 0 6px 0 0; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cd-run-spin .8s linear infinite; }
@@ -2226,6 +2348,8 @@ const webTitle = computed(() => webOn.value
 }
 .cd-msg-attachment { display: inline-flex; margin-right: 6px; color: var(--accent); font-size: var(--fs-cap); }
 .cd-resume:hover { background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.cd-resume:disabled { opacity: .45; cursor: default; }
+.cd-resume:disabled:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
 /* 计划步骤 */
 /* 执行计划：2026-10-14 去方框，退化为带序号圆点的纯文字列表 */

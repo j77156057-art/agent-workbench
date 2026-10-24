@@ -250,6 +250,98 @@ html[data-layout='focus'] .wb-main {
     width: 220px !important;
     flex: 0 0 220px !important;
   }
+  /* 窄屏宽度由上面的 !important 锁死，拖拽条再留只会让人以为能拖 —— 直接隐藏 */
+  html[data-layout] .ft-resizer { display: none !important; }
   html[data-layout] .wb-main { max-width: none !important; }
   html[data-layout] .ov-columns { grid-template-columns: 1fr !important; }
+}
+
+
+/* ==========================================================
+   ⑥ 资源管理器宽度拖拽（fixed 专用）
+   ----------------------------------------------------------
+   288px 只是默认值：长路径 + 多级目录经常把文件名截成省略号。
+   这里给左栏与主区之间一条 3px 拖拽线（App.vue 里的 .ft-resizer）：
+     · 视觉宽度 3px，伪元素向两侧各扩 4px，实际命中区 11px；
+     · 拖动时把宽度写进 .wb-body 的 --lay-rail，.ft-panel 的
+       flex-basis 自动跟随（布局令牌本来的消费点，零额外规则）；
+     · 悬停/拖动/键盘聚焦时变强调色，让"这里能拖"可被发现。
+   只在 fixed 布局出现：dock/focus/split/grid 的侧栏是抽屉、细条或分屏，
+   宽度由那套空间语义决定，不属于「拖宽一点」的范畴。
+   ========================================================== */
+html[data-layout='fixed'] .ft-resizer {
+  flex: 0 0 3px;
+  width: 3px;
+  align-self: stretch;
+  position: relative;
+  z-index: 3;
+  cursor: col-resize;
+  background: var(--edge-ink);
+  touch-action: none;
+  transition: background .15s var(--ease-standard, ease), box-shadow .15s var(--ease-standard, ease);
+}
+html[data-layout='fixed'] .ft-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+html[data-layout='fixed'] .ft-resizer:hover,
+html[data-layout='fixed'] .ft-resizer.dragging,
+html[data-layout='fixed'] .ft-resizer:focus-visible {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  outline: none;
+}
+/* 拖拽线已经承担分隔职责，左栏自身不再画右边框，避免双线 */
+html[data-layout='fixed'] .wb-body--rail-resize .ft-panel { border-right: 0; }
+/* 拖动期间整页保持列宽光标，避免掠过主区时光标跳回箭头、拖动手感断裂 */
+body.ft-col-resizing { cursor: col-resize; user-select: none; }
+body.ft-col-resizing * { cursor: col-resize !important; }
+
+
+/* ==========================================================
+   ⑦ 资源管理器收起 / 展开（fixed 专用）
+   ----------------------------------------------------------
+   收起后不保留 288px 的空壳，只留一条 36px 窄条：面板头部的
+   「收起」按钮把文件树 v-show 掉，窄条整条是一个按钮，点一下恢复。
+   文件树组件不销毁，目录展开集合原样保留；宽度也仍记着，展开即回到
+   用户上次拖到的位置。其他布局不参与：dock/focus/split/grid 的侧栏
+   本身就是另一种空间语义，收起会破坏那套布局的表达。
+   ========================================================== */
+html[data-layout='fixed'] .wb-rail-restore {
+  flex: 0 0 36px;
+  width: 36px;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 12px 0;
+  border: 0;
+  border-right: var(--edge-w, 1px) solid var(--edge-ink, var(--ink));
+  border-radius: 0;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  cursor: pointer;
+  overflow: hidden;
+  z-index: 2;
+  transition: background .15s var(--ease-standard, ease), color .15s var(--ease-standard, ease);
+}
+html[data-layout='fixed'] .wb-rail-restore:hover,
+html[data-layout='fixed'] .wb-rail-restore:focus-visible {
+  background: var(--bg-hover);
+  color: var(--accent);
+  outline: none;
+}
+html[data-layout='fixed'] .wb-rail-restore:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+html[data-layout='fixed'] .wb-rail-restore-label {
+  writing-mode: vertical-rl;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: .18em;
+  user-select: none;
 }
