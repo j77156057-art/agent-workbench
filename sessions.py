@@ -36,16 +36,25 @@ P2 起会话按 `<project_id>/<slug>.json` 分桶。实测（带新代码的隔�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import threading
+import uuid
 from datetime import datetime
 
 from config import STATE_ROOT, state_path
 import projects
 
 SESSIONS_DIR = state_path("DOCMIND_SESSIONS_DIR", os.path.join(STATE_ROOT, ".docmind_sessions"))
+# 逐轮「推理轨迹」旁路存储：每会话一个 JSON 文件，键为 turn_id，值为该轮完整步骤
+# （thought/action/observation/reflection 的正文，不截断）。刷新页面 / 重开工作台时，
+# /api/sessions 按 turn_id 把 trace 合回对应轮，前端据此重建「推理过程」步骤流。
+# 刻意与会话 JSON 分离：正文可能很大且含工具读到的文件内容，绝不能进 LLM 上下文，
+# 也不该被每轮都 load 的会话文件反复读写。
+TURN_TRACE_DIR = state_path("DOCMIND_TURN_TRACE_DIR", os.path.join(STATE_ROOT, ".docmind_turn_traces"))
+TURN_TRACE_MAX_TURNS = int(os.getenv("DOCMIND_TURN_TRACE_MAX_TURNS", "200"))  # 每会话最多留存多少轮的轨迹
 # 压缩以 token 占用为准（阈值由 Agent 按模型真实窗口换算后传入），轮数只留两道
 # 硬保险：轮数上限防失控；保留轮数下限保证最近的上下文不被摘要掉。
 MAX_TURNS = int(os.getenv("DOCMIND_SESSION_MAX_TURNS", "200"))       # 轮数硬上限（超过必压缩）
@@ -393,12 +402,39 @@ def current_code_root(session_id, project_id=None) -> str:
         return ""
 
 
+def _turn_sig(user, assistant) -> str:
+    """轮内容签名：user+assistant 拼起来取 sha1，用于跨 save 继承 turn_id。"""
+    h = hashlib.sha1()
+    h.update(str(user or "").encode("utf-8", "ignore"))
+    h.update(b"\x00")
+    h.update(str(assistant or "").encode("utf-8", "ignore"))
+    return h.hexdigest()
+
+
+def _inherit_turn_id(t, sig, carry_map) -> str:
+    """给一轮定 turn_id：自带就留；否则按内容签名复用盘上已有的；都没有才 mint 新的。
+
+    carry_map 是 {sig: [turn_id, ...]}（同签名多轮时按顺序消费，pop(0)）。
+    """
+    tid = t.get("turn_id")
+    if isinstance(tid, str) and tid.strip():
+        return tid.strip()
+    queue = carry_map.get(sig)
+    if queue:
+        return queue.pop(0)
+    return uuid.uuid4().hex
+
+
 def save(session_id, turns, summary=None, project_id=None, archived=None) -> bool:
     """整体落盘一个会话（turns = [{user, assistant}]）。
 
     archived：长会话压缩弹出的更早轮次（完整逐字），仅在压缩点由调用方传入并累进；
     传 None 表示**保持磁盘上已有的 archived 不变**——绝大多数常规 save 不关心归档，
     绝不能因为它们没带 archived 就把已归档的完整历史抹掉。
+
+    turn_id：每轮带一个稳定 id（旁路推理轨迹的关联键）。Agent 每轮会用**不含 turn_id
+    的内存 history 整体重写**，所以这里按内容签名从盘上既有轮继承 turn_id，只给真正
+    的新轮 mint —— 保证同一轮跨多次 save、跨重启都拿同一个 id，轨迹不会错挂或被抹掉。
     """
     with _lock:
         data = load(session_id, project_id)
@@ -409,22 +445,132 @@ def save(session_id, turns, summary=None, project_id=None, archived=None) -> boo
         # 真正的绑定由 api 入口调用 bind_code_root() 完成。
         if summary is not None:
             data["summary"] = summary
+        # 先扫盘上既有轮（工作窗口 + 归档），建 {签名: [turn_id,...]} 继承表。
+        carry_map: dict = {}
+        for _existing in (data.get("turns") or []) + (data.get("archived") or []):
+            if not isinstance(_existing, dict):
+                continue
+            _tid = _existing.get("turn_id")
+            if isinstance(_tid, str) and _tid.strip():
+                carry_map.setdefault(
+                    _turn_sig(_existing.get("user", ""), _existing.get("assistant", "")),
+                    []).append(_tid.strip())
+
+        def _ser(t, ts_default):
+            sig = _turn_sig(t.get("user", ""), t.get("assistant", ""))
+            out = {"user": t.get("user", ""), "assistant": t.get("assistant", ""),
+                   "ts": t.get("ts") or ts_default,
+                   "turn_id": _inherit_turn_id(t, sig, carry_map)}
+            if "resume_context" in t:
+                out["resume_context"] = str(t["resume_context"])[-6000:]
+            for key in ("checkpoint_id", "failure_reason"):
+                if t.get(key):
+                    out[key] = str(t[key])[:1200]
+            return out
+
         data["turns"] = [
-            {"user": t.get("user", ""), "assistant": t.get("assistant", ""),
-             "ts": t.get("ts") or datetime.now().isoformat(timespec="seconds"),
-             **({"resume_context": str(t["resume_context"])[-6000:]} if "resume_context" in t else {}),
-             **{key: str(t[key])[:1200] for key in ("checkpoint_id", "failure_reason") if t.get(key)}}
+            _ser(t, datetime.now().isoformat(timespec="seconds"))
             for t in (turns or []) if isinstance(t, dict)
         ]
         if archived is not None:
-            data["archived"] = [
-                {"user": t.get("user", ""), "assistant": t.get("assistant", ""),
-                 "ts": t.get("ts") or "",
-                 **({"resume_context": str(t["resume_context"])[-6000:]} if "resume_context" in t else {}),
-                 **{key: str(t[key])[:1200] for key in ("checkpoint_id", "failure_reason") if t.get(key)}}
-                for t in (archived or []) if isinstance(t, dict)
-            ]
+            data["archived"] = [_ser(t, "") for t in (archived or []) if isinstance(t, dict)]
         return _write(session_id, data, project_id)
+
+
+def _turn_trace_path(session_id) -> str:
+    return os.path.join(TURN_TRACE_DIR, _slug(session_id) + ".json")
+
+
+def load_turn_traces(session_id) -> dict:
+    """读某会话的逐轮轨迹旁路表 {turn_id: [steps...]}；缺失/损坏一律返回 {}，绝不抛。"""
+    try:
+        with open(_turn_trace_path(session_id), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_turn_traces(session_id, store: dict) -> bool:
+    try:
+        os.makedirs(TURN_TRACE_DIR, exist_ok=True)
+        p = _turn_trace_path(session_id)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(store, f, ensure_ascii=False)
+        os.replace(tmp, p)
+        return True
+    except OSError:
+        return False
+
+
+def _apply_turn_trace(session_id, turn_id, steps) -> bool:
+    """写入并回收一轮轨迹。**调用方须已持有 _lock**（save_turn_trace / attach 都持锁）。"""
+    store = load_turn_traces(session_id)
+    store[turn_id] = steps
+    data = load(session_id)
+    alive = {t.get("turn_id") for t in
+             (data.get("turns") or []) + (data.get("archived") or [])
+             if isinstance(t, dict) and t.get("turn_id")}
+    if alive:
+        store = {k: v for k, v in store.items() if k in alive or k == turn_id}
+    if len(store) > TURN_TRACE_MAX_TURNS:
+        keep = list(store.keys())[-TURN_TRACE_MAX_TURNS:]
+        if turn_id not in keep:
+            keep = keep[1:] + [turn_id]
+        store = {k: store[k] for k in keep if k in store}
+    return _write_turn_traces(session_id, store)
+
+
+def save_turn_trace(session_id, turn_id, steps) -> bool:
+    """写/更新一轮的完整轨迹，并顺带清理孤儿、限总量。
+
+    - 只保留当前会话仍存活的 turn_id（轮被删/回退后，其轨迹随之回收）；
+    - 超过 TURN_TRACE_MAX_TURNS 时按插入顺序丢最旧的（刚写入的这条永不丢）。
+    全程静默降级，写轨迹失败绝不影响对话主流程。
+    """
+    if not (isinstance(turn_id, str) and turn_id.strip()):
+        return False
+    if not isinstance(steps, list):
+        return False
+    try:
+        with _lock:
+            return _apply_turn_trace(session_id, turn_id.strip(), steps)
+    except Exception:               # noqa: BLE001 - 轨迹是锦上添花，绝不冒泡
+        return False
+
+
+def attach_turn_trace(session_id, user, assistant, steps) -> bool:
+    """把一轮的完整轨迹挂到该会话里 user 命中的**最后一条**轮上。
+
+    供 api.py 在 SSE 收尾时调用：agent 已在流内 save 过这轮（带 turn_id），这里按问题
+    文本找回同一轮（最后一条命中即本轮）的 turn_id 再写旁路。老会话轮没有 turn_id 时，
+    就地补 mint 一个并回写盘，以便下次刷新能按它关联。找不到匹配轮返回 False。
+    （assistant 参数保留仅为调用方签名兼容，匹配以 user 为准。）
+    """
+    if not isinstance(steps, list) or not steps:
+        return False
+    try:
+        with _lock:
+            data = load(session_id)
+            all_turns = (data.get("turns") or []) + (data.get("archived") or [])
+            target = None
+            for t in reversed(all_turns):
+                if not isinstance(t, dict):
+                    continue
+                if str(t.get("user", "")) == str(user or ""):
+                    target = t
+                    break
+            if target is None:
+                return False
+            tid = target.get("turn_id")
+            if not (isinstance(tid, str) and tid.strip()):
+                tid = uuid.uuid4().hex
+                target["turn_id"] = tid
+                _write(session_id, data)
+            return _apply_turn_trace(session_id, tid, steps)
+    except Exception:               # noqa: BLE001
+        return False
 
 
 def _est_tokens(text: str) -> int:

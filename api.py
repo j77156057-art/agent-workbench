@@ -457,6 +457,35 @@ def _mark_in_flight_terminal(rec: dict, status: str = "done") -> None:
     threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict).start()
 
 
+_TRACE_STEP_TYPES = ("thought", "action", "observation", "reflection")
+
+
+def _build_turn_trace(events) -> list:
+    """把 in-flight 的原始 SSE 事件序列，蒸馏成可持久化的「推理轨迹」步骤列表。
+
+    只保留 thought/action/observation/reflection 四类带正文的事件；observation 透传
+    ok（真实成败）。正文原样存（不截断），供刷新后回灌完整步骤流。异常一律返回 []。
+    """
+    try:
+        steps = []
+        for ev in events or []:
+            if not isinstance(ev, dict):
+                continue
+            typ = ev.get("type")
+            if typ not in _TRACE_STEP_TYPES:
+                continue
+            text = ev.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            step = {"type": typ, "text": text}
+            if isinstance(ev.get("ok"), bool):
+                step["ok"] = ev["ok"]
+            steps.append(step)
+        return steps
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _get_in_flight_turn(turn_id: str) -> Optional[dict]:
     with _IN_FLIGHT_TURNS_LOCK:
         rec = _IN_FLIGHT_TURNS.get(turn_id)
@@ -2837,6 +2866,8 @@ async def chat(
         # 首条 SSE 事件同步告知前端本轮 turn_id，便于刷新后回查 partial
         _append_in_flight_event(inflight, {"type": "turn", "turn_id": turn_id,
                                             "session_id": session_id})
+        # 预置：finally 里落轨迹要用它匹配 agent 存盘的 user（下面会按是否云端重算）。
+        cloud_question = question
         try:
             yield f"data: {json.dumps({'type':'turn','turn_id':turn_id,'session_id':session_id}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type':'route','route':routing['route'],'complexity':routing['complexity'],'reason':routing['reason']}, ensure_ascii=False)}\n\n"
@@ -3046,6 +3077,17 @@ async def chat(
             # P2：终态后 60s 才下线 in-flight turn，覆盖用户刷新窗口期
             terminal_status = str(inflight.get("status") or "done")
             _mark_in_flight_terminal(inflight, status=terminal_status)
+            # 落本轮「推理轨迹」到旁路文件：这是刷新 / 重开工作台后仍能看见
+            # 「推理过程 N 步」的唯一持久来源（in-flight buffer 60s 即清、重启即没）。
+            try:
+                _steps = _build_turn_trace(inflight.get("events"))
+                if _steps:
+                    _fin = inflight.get("final") or {}
+                    session_store.attach_turn_trace(
+                        session_id, cloud_question,
+                        str(_fin.get("text") or ""), _steps)
+            except Exception:  # noqa: BLE001 - 轨迹持久化失败绝不影响对话
+                pass
         yield "data: {\"type\":\"done\"}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
@@ -4262,12 +4304,22 @@ async def session_detail_ep(session_id: str):
             session_store.save(session_id, data["turns"], data.get("summary", ""), _request_project_id() or None)
     except Exception:
         pass  # A broken memory database must not hide existing chat history.
+    _turns = (data.get("archived") or []) + (data.get("turns") or [])
+    # 把旁路存的「推理轨迹」按 turn_id 合回对应轮，供前端刷新后重建「推理过程」步骤流。
+    try:
+        _traces = session_store.load_turn_traces(session_id)
+        if _traces:
+            for _t in _turns:
+                if isinstance(_t, dict) and _t.get("turn_id"):
+                    _t["trace"] = _traces.get(_t["turn_id"], [])
+    except Exception:
+        pass  # 轨迹读失败绝不能连带把整段对话历史也藏起来
     return {
         "ok": True,
         "session_id": data.get("session_id") or str(session_id or ""),
         # 完整逐轮 = 归档（更早轮次，压缩时被弹出但仍完整留存）+ 当前工作窗口。
         # 这样长会话压缩只收缩喂给 LLM 的上下文，UI 里前面的对话不再消失。
-        "turns": (data.get("archived") or []) + (data.get("turns") or []),
+        "turns": _turns,
         "summary": data.get("summary") or "",
         "updated_at": data.get("updated_at") or "",
     }

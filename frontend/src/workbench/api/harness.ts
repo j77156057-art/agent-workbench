@@ -170,7 +170,20 @@ export const harnessApi = {
   sessionDetail(id: string): Promise<{
     ok: boolean
     session_id: string
-    turns: { user: string; assistant: string; ts?: string }[]
+    turns: {
+      user: string
+      assistant: string
+      ts?: string
+      turn_id?: string
+      checkpoint_id?: string
+      trace?: {
+        type: 'thought' | 'action' | 'observation' | 'reflection'
+        text: string
+        at?: number
+        elapsedMs?: number
+        ok?: boolean
+      }[]
+    }[]
     summary?: string
     updated_at?: string
   }> {

@@ -12,6 +12,8 @@ __pycache__/
 .docmind_traces.jsonl
 .docmind_traces.jsonl.1
 .docmind_sessions/
+# 逐轮推理轨迹旁路文件（正文可能很大，纯运行时数据，不入库）
+.docmind_turn_traces/
 .docmind_memory.sqlite3*
 .docmind_pricing.json
 .docmind_budget.json

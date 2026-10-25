@@ -379,7 +379,7 @@ async function restoreHistory() {
         messages.value.push({ id: msgSeq++, role: 'user', text: turn.user, status: 'done', trace: [], reasoning: '', notices: [], plan: [] })
       }
       if (turn.assistant) {
-        messages.value.push({ id: msgSeq++, role: 'assistant', text: turn.assistant, status: 'done', trace: [], reasoning: '', notices: [], plan: [] })
+        messages.value.push({ id: msgSeq++, role: 'assistant', text: turn.assistant, status: 'done', trace: Array.isArray(turn.trace) ? turn.trace : [], reasoning: '', notices: [], plan: [] })
       }
     }
     // 中断未恢复的半条回答：只回放内容，不自动重试
