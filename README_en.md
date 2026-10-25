@@ -144,7 +144,7 @@ This is where Agent Workbench separates itself from "call an API and call it an 
 |---|---|
 | **Evidence floor** | Claims must land: file line numbers, code-block hashes and retrieval hit counts are hard thresholds. A truncated retrieval result may **not** be presented as the full set — the deterministic count self-check turns that red. |
 | **Capability leases** | Read-project / read-external / write-project / write-external / execute / network / admin are leased **separately**. A model quietly reading outside the project is visible. |
-| **Human approval ledger** | Tool installs, preview-adapter rollbacks, skill rollbacks and **visual clicks** all pass `require_approval`. The ledger is appended to `.docmind/approvals.jsonl` and is queryable. **An agent cannot approve itself** — `dev_approve` only accepts a human's action in the workbench. |
+| **Human approval ledger** | MCP connector & capability assembly, tool installs, preview-adapter rollbacks, skill rollback/update and **visual clicks** all pass `require_approval`. The ledger is appended to `.docmind/approvals.jsonl` and is queryable. **An agent cannot approve itself** — `dev_approve` only accepts a human's action in the workbench. Reversible desktop clicks / typing / drags **run without per-action approval** (see "Scope & limits"); dangerous key combos are stopped by the `desktop_actions._VK` whitelist instead. |
 | **Tiered execution confirmation** | `DOCMIND_EXEC_APPROVAL` / `TIER2_CONFIRM` / `TIER3_CONFIRM`; the third tier takes three deliberate clicks. |
 | **Region governance** | One button slices a project into assets / values / behaviors / levels / ui / audio / net / bugs, each with its **own git repo**. Cross-region writes are rejected; dependencies form a one-way DAG and contract validation prevents cyclic coupling. |
 | **Self-reported artifacts** | A tool reports what it actually wrote **at the moment it wrote it** (path / label / size / evidence chain), shipped with the observation event. A failed write is not an artifact. |
@@ -281,11 +281,12 @@ agent-workbench/
 
 ## Scope & limits
 
-This section states **what the project applies to** and **the trade-offs it accepts**. Located defects and the reasoning behind each are recorded in `docs/known-defect-*.md` (16 of them).
+This section states **what the project applies to** and **the trade-offs it accepts**. (Per-project defect notes exist locally but are deliberately kept out of this repo as working documents — see `docs/` for what *is* published.)
 
 | Dimension | Status |
 |---|---|
 | Single-user, local | No auth on localhost by default; a single-token check can be enabled. **No** multi-user collaboration or role permissions |
+| Desktop-action approval | Reversible clicks / typing / drags **execute directly**, with no per-action approval — the cost of a confirmation card for every click outweighs the benefit. The disaster floor that remains: a key-name whitelist (`Win+r` dispatches zero events), coordinates must fall inside the target window's client area, and engine windows resolve only against the current project root. **Visual clicks** still go through the approval ledger — the model asserting "confirmed" counts for nothing |
 | Platform | Desktop packaging targets 64-bit Windows; the server and frontend are cross-platform |
 | Distributed build | Bundled validation and DOCX / PDF / PPTX / XLSX generation run in-process; playtest, cProfile and `python_exec` need a real Python environment |
 | Engine embedding coverage | Verified on Godot 4.7.2 with a real Win32 host; 100% / 125% display scaling is not covered (this machine runs 150%) |
@@ -296,5 +297,5 @@ This section states **what the project applies to** and **the trade-offs it acce
 
 - [`docs/integrations.md`](docs/integrations.md) — product-level usage and boundaries for the MCP bridge and Web playtest export
 - [`docs/agent-architecture-review.md`](docs/agent-architecture-review.md) — architecture review
-- [`docs/known-defect-*.md`](docs/) — located defects and the reasoning behind each (so the same trap isn't stepped into twice)
+- [`docs/capability-boundary.md`](docs/capability-boundary.md) — what is actually verified end-to-end, and what is not
 - [`docs/screenshots/`](docs/screenshots/) — real UI captures

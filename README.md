@@ -145,7 +145,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 |---|---|
 | **证据地板** | 引用必须能落地：文件行号、代码块哈希、检索命中数都是硬门槛。截断过的检索结果**不许**被当成全量（"确定性计数自检"直接判红）。 |
 | **能力租约** | 读项目 / 读外部 / 写项目 / 写外部 / 执行 / 联网 / 管理，七类能力**分别租用**。模型"顺手读了外部文件"能被查出来。 |
-| **人工审批台账** | 写工具安装、预览适配器回滚、技能回滚、**视觉点击**都要过 `require_approval`。台账追加写 `.docmind/approvals.jsonl`，可查可查。**Agent 不能给自己批**（`dev_approve` 只认工作台里人的操作）。 |
+| **人工审批台账** | MCP 连接器与能力装配、工具安装、预览适配器回滚、技能回滚/更新、**视觉点击**都要过 `require_approval`。台账追加写 `.docmind/approvals.jsonl`，可查。**Agent 不能给自己批**（`dev_approve` 只认工作台里人的操作）。可逆的桌面点击/输入/拖拽**不走逐次审批**（见「范围与取舍」），危险组合键由 `desktop_actions._VK` 白名单挡在门外。 |
 | **分级执行确认** | `DOCMIND_EXEC_APPROVAL` / `TIER2_CONFIRM` / `TIER3_CONFIRM`，第三档要连点 3 次。 |
 | **区域治理** | 一键把工程切成 assets / values / behaviors / levels / ui / audio / net / bugs 等分区，每区**独立 git**；Agent 越区写直接拒；依赖单向 DAG，契约校验防循环耦合。 |
 | **产物自报** | 工具在**真正落盘那一刻**自报产物（路径 / 标签 / 大小 / 证据链），随 observation 事件下发。写失败的不算产物。 |
@@ -281,11 +281,12 @@ agent-workbench/
 
 ## 范围与取舍
 
-本节写明**适用的范围**与**已知的取舍**。定位过的缺陷与口径记在 `docs/known-defect-*.md`。
+本节写明**适用的范围**与**已知的取舍**。过程性的缺陷定位记录（`docs/known-defect-*.md`）属开发工作文档，**不随本仓库公开**；公开的口径与设计见下方「文档」一节。
 
 | 维度 | 现状 |
 |---|---|
 | 单用户本地 | 本机默认免鉴权，可按需开单 token 校验。**不做**多用户协作与角色权限 |
+| 桌面动作审批 | 可逆的点击/输入/拖拽**直接执行**，不做逐次审批 —— 逐次确认卡的骚扰成本高于收益。保留的灾难地板：键名白名单（`Win+r` 这类系统组合键一个事件都不投递）、坐标必须在目标窗口客户区内、引擎窗口只按当前项目根解析。**视觉点击**仍走审批台账（模型自称确认不算数） |
 | 平台 | 桌面端打包为 Windows 64 位；服务端与前端跨平台 |
 | 分发版能力 | 分包校验与 DOCX / PDF / PPTX / XLSX 生成在进程内完成；playtest、cProfile、`python_exec` 需要真实 Python 环境 |
 | 引擎嵌入覆盖 | Godot 4.7.2 + 真 Win32 宿主实机验证；100% / 125% 缩放未覆盖（本机 150%） |
@@ -296,5 +297,5 @@ agent-workbench/
 
 - [`docs/integrations.md`](docs/integrations.md) —— MCP 引擎桥接、Web 试玩导出的产品级用法与边界
 - [`docs/agent-architecture-review.md`](docs/agent-architecture-review.md) —— 架构评审
-- [`docs/known-defect-*.md`](docs/) —— 已定位缺陷与口径说明（避免同一个坑被重新踩一遍）
+- [`docs/capability-boundary.md`](docs/capability-boundary.md) —— 能力边界：哪些是真验证过的，哪些不是
 - [`docs/screenshots/`](docs/screenshots/) —— 界面实拍
