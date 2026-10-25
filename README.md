@@ -167,7 +167,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 ### 下载即用
 
-到 **[Releases](https://github.com/j77156057-art/agent-workbench/releases)** 下载 `DocMind-v1.0.0-win64.zip`（约 **160 MB**），解压后**双击 `DocMind.exe`**。
+到 **[Releases](https://github.com/j77156057-art/agent-workbench/releases)** 下载 `DocMind-v1.0.0-win64.zip`（约 **230 MB**），解压后**双击 `DocMind.exe`**。
 
 无需安装 Python、无需 API Key、无需联网 —— 默认本地 mock 模型，开箱即可跑通完整流程。
 

@@ -166,7 +166,7 @@ This is where Agent Workbench separates itself from "call an API and call it an 
 
 ### Download and run
 
-Grab `DocMind-v1.0.0-win64.zip` (about **160 MB**) from [Releases](https://github.com/j77156057-art/agent-workbench/releases) and **double-click `DocMind.exe`**.
+Grab `DocMind-v1.0.0-win64.zip` (about **230 MB**) from [Releases](https://github.com/j77156057-art/agent-workbench/releases) and **double-click `DocMind.exe`**.
 
 No Python install, no API key, no network — the bundled local mock model runs the full flow out of the box.
 
