@@ -26,7 +26,7 @@ SSH（github.com:22）虽然常常能连，但要账号里有一台机器认识�
     # 指定分支 / 远端名
     python tools/gh_api_push.py --branch main --remote origin
 
-依赖：`gh` 已 `gh auth login`（token 需含 `repo`）、仓库里有 `requests`。
+依赖：`gh` 已 `gh auth login`（token 需含 `repo`）；HTTP 走标准库 urllib，无需额外第三方包。
 
 ## ⚠ 三个必须知道的边界
 
@@ -55,15 +55,16 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import pathlib
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from _repo_root import ensure_on_path  # noqa: E402
-
-import requests  # noqa: E402
 
 API = "https://api.github.com"
 NULL_SHA = "0" * 40
@@ -96,11 +97,50 @@ def gh_token() -> str:
     return r.stdout.strip()
 
 
+class _Resp:
+    """requests.Response 的最小替身：只暴露本工具用到的三个成员。"""
+
+    def __init__(self, status_code: int, body: bytes):
+        self.status_code = status_code
+        self.text = body.decode("utf-8", "replace")
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class _Http:
+    """标准库 urllib 版 Session：GET/POST/PATCH + 固定头，非 2xx 也如实返回状态码+正文。
+
+    刻意不用 requests —— 这个仓库维护工具不该往 shipped 依赖清单里塞一个第三方包。
+    """
+
+    def __init__(self, headers: dict):
+        self.headers = dict(headers)
+
+    def _send(self, method: str, url: str, body: dict | None = None) -> _Resp:
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=dict(self.headers),
+                                     method=method)
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return _Resp(resp.status, resp.read())
+        except urllib.error.HTTPError as exc:
+            return _Resp(exc.code, exc.read())
+
+    def get(self, url: str, **_kw) -> _Resp:
+        return self._send("GET", url)
+
+    def post(self, url: str, json: dict | None = None, **_kw) -> _Resp:
+        return self._send("POST", url, json)
+
+    def patch(self, url: str, json: dict | None = None, **_kw) -> _Resp:
+        return self._send("PATCH", url, json)
+
+
 class Github:
     def __init__(self, token: str, owner: str, name: str):
         self.owner, self.name = owner, name
-        self.s = requests.Session()
-        self.s.headers.update({
+        self.s = _Http({
             "Authorization": "token " + token,
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
