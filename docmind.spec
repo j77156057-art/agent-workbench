@@ -45,7 +45,10 @@ a = Analysis(
         "openai",
         "pypdf",
         "markdown",
-        "python-multipart",
+        # 发行名是 python-multipart，可导入模块名是 multipart / python_multipart；
+        # 写发行名只会得到一条 "Hidden import not found" 警告，表单上传实际没被钉住。
+        "multipart",
+        "python_multipart",
         "httpx",
         "dotenv",
         "starlette",
@@ -63,7 +66,15 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["unittest", "pydoc", "doctest"],
+    excludes=[
+        "unittest", "pydoc", "doctest",
+        # Cross-Encoder 重排是显式开启的可选功能（DOCMIND_RERANKER=cross_encoder），
+        # retrieval.py 在缺包时自动回退启发式重排。但只要 venv 里装了
+        # sentence-transformers，chromadb 的可选嵌入子模块就会把它拖进依赖图，
+        # 连带 torch（约 370MB）、transformers、scipy、sklearn 全部进包。
+        # 分发版保持「缺包即降级」的旧行为，不把这些训练栈烤进去。
+        "torch", "sentence_transformers", "transformers", "sklearn", "scipy",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
