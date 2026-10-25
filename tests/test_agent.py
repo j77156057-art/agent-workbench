@@ -77,8 +77,11 @@ class AgentGuardTests(unittest.TestCase):
         self.assertEqual(len(finals), 1)
         self.assertIn("已确认结论", finals[0])
 
-    def test_capability_question_does_not_authorize_file_write(self):
-        """询问能力时先澄清目标，不调用任何写工具或模型脚本。"""
+    def test_capability_question_reaches_model_without_writing(self):
+        """「留地板、拆其余」重构：能力问句门（_ambiguous_write_request）已拆，
+        "你可以帮我修改文件吗？" 直达模型，由模型自己判断——它应正常作答并追问要改什么，
+        而不是擅自调用任何写工具。旧测试靠被拆的门在模型之前短路，脚本只喂一条
+        永远返回 Action 的 LLM，如今会无限累积 trail 卡死，故改为以 Final Answer 收尾。"""
         called = []
 
         def fake_write(arg):
@@ -86,11 +89,15 @@ class AgentGuardTests(unittest.TestCase):
             return "不应执行"
 
         agent_mod.TOOLS = {"apply_edit": {"func": fake_write}}
-        a = agent_mod.Agent(llm=_ScriptedLLM([_act("apply_edit", "path: x")]))
+        llm = _ScriptedLLM([
+            "Thought: t\nFinal Answer: 可以，我能帮你改文件。你想改哪个文件的什么内容？"
+        ])
+        a = agent_mod.Agent(llm=llm)
         events = list(a.run("你可以帮我修改文件吗？", stream=True))
-        self.assertEqual(called, [])
-        self.assertEqual(len([e for e in events if e["type"] == "final"]), 1)
-        self.assertIn("当前还没有执行任何写操作", events[-1]["text"])
+        self.assertGreaterEqual(llm.calls, 1, "顶回门已拆：问句应直达模型")
+        self.assertEqual(called, [], "模型只被问能力，不该擅自执行写操作")
+        finals = [e for e in events if e["type"] == "final"]
+        self.assertEqual(len(finals), 1)
 
     def test_capacity_help_is_available_when_cost_budget_is_blocked(self):
         """额度咨询走本地设置，不因费用熔断而丢失，也不调用模型。"""
@@ -126,8 +133,12 @@ class AgentGuardTests(unittest.TestCase):
         self.assertTrue(events[-1].get("offline"))
         self.assertIn("任务 Token 上限", events[-1]["text"])
 
-    def test_project_bug_audit_does_not_start_from_historical_bug_records(self):
-        """当前项目缺陷审查必须先取得代码/运行证据，再允许读取历史 bugs。"""
+    def test_project_bug_audit_no_longer_preblocks_dev_list_bugs(self):
+        """「留地板、拆其余」重构：项目缺陷审查证据门已拆。
+        此前模型调 dev_list_bugs 而 harness 判定「当前项目体检问题且还没读代码」时，
+        会拦下不执行、回填「只返回历史归档」逼它先读代码。这不是灾难地板，是替模型
+        排执行顺序的「处处受限」—— 拆掉后 dev_list_bugs 正常执行，先翻归档还是先读
+        代码交回模型自己决定。"""
         calls = []
 
         def list_bugs(_arg):
@@ -148,9 +159,11 @@ class AgentGuardTests(unittest.TestCase):
             "Final Answer: 已检查当前项目代码。",
         ]))
         events = list(a.run("你看看目前的游戏有什么bug吗", stream=True))
-        self.assertEqual(calls, ["search_code"])
-        self.assertTrue(any("只返回历史归档" in e.get("text", "") for e in events
-                            if e["type"] == "observation"))
+        self.assertEqual(calls, ["dev_list_bugs", "search_code"],
+                         "证据门已拆：dev_list_bugs 应正常执行，不再被拦")
+        self.assertFalse(any("只返回历史归档" in e.get("text", "") for e in events
+                             if e["type"] == "observation"),
+                         "不应再回填拦截观察")
         self.assertIn("已检查当前项目代码", events[-1]["text"])
 
     def test_location_answer_with_a_checkable_citation_is_not_forced_to_read(self):

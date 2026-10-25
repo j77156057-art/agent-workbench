@@ -5642,16 +5642,11 @@ class Agent:
             return
         question = _q
 
-        # BUG-8：空 / 纯符号（如"？""。。。"）没有可检索意图，绝不该跑满一条
-        # ReAct 链去硬生成一段自信答案（实测轮次6：1 字符→1491 字完成态）。
-        # 在调任何工具/provider 之前先挡下，回一句澄清，走 clarification_required 早退。
-        meaningless = _meaningless_input_clarification(question)
-        if meaningless:
-            turn.outcome = "clarification_required"
-            final_text = meaningless
-            yield {"type": "final", "text": meaningless,
-                   "clarification_required": True, "degraded": True}
-            return
+        # 「留地板、拆其余」重构：无意义输入顶回门已拆。
+        # 此前空 / 纯标点（"？""。。。"）会在调任何工具/provider 之前被挡下、回一句
+        # 客服话并标 degraded=True + clarification_required 早退。这不是灾难地板，是
+        # 「处处受限」+ 事后降级章 —— 拆掉，交给模型自己处理（真没内容时模型会自然追问）。
+        # 函数 _meaningless_input_clarification 保留（直接调用它的测试仍在钉判据）。
 
         # "能不能修改文件？" capability-question gate.
         # 「留地板、拆其余」重构：这道门用正则猜"这是不是能力问句"，命中就在模型
@@ -6801,19 +6796,12 @@ class Agent:
                     # 防御性兜底：正常路径已被循环顶部的前置拦截覆盖
                     yield _evidence_final(forced_final_reason)
                     return
-                # 交通票价/余票不能退回泛网页搜索：搜索摘要会把北京旅游攻略等跑题页面
-                # 当成候选，且无法证明实时余票。强制模型改用 web_transport。
-                if (action_name in {"web_search", "web_search_batch", "web_research"}
-                        and _transport_search_required(question, self.history)
-                        and "web_transport" in self.tools):
-                    _obs = ("[交通查询路由] 本问题涉及票价/余票，泛网页搜索不能证明实时车次或价格，"
-                            "本次未执行。请调用 web_transport，并提供出发地、目的地和具体出发日期。")
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": f"Observation: {_obs}"})
-                    executed.add(sig)
-                    yield {"type": "action", "text": f"{action_name}({action_arg}) [已改道交通工具]"}
-                    yield {"type": "observation", "text": _obs}
-                    continue
+                # 「留地板、拆其余」重构：交通票价/余票强制改道门已拆。
+                # 此前只要问句命中「票价/余票/机票…」，模型想用普通网页搜索就会被
+                # 当场拦下、回填一句「请改用 web_transport」，替模型决定了工具选择。
+                # 这不是灾难地板，是「处处受限」的一种 —— 拆掉，交给模型自己判断该用
+                # 泛搜索还是结构化交通工具查询。函数 _transport_search_required 保留
+                # （直接调用它的测试仍在钉判据）。
                 # 子代理白名单：不在名单内的工具直接拒绝（防止受限子代理越权）
                 if self.tool_allowlist is not None and action_name not in self.tool_allowlist:
                     _obs = (f"[受限] 本子代理只允许使用：{'、'.join(self.tool_allowlist)}。"
@@ -6849,24 +6837,13 @@ class Agent:
                     executed.add(sig)
                     continue
 
-                # A project-bug question must be grounded in the current code or
-                # runtime before historical bug records can be consulted. This
-                # prevents a populated bugs/ directory from masquerading as a
-                # diagnosis of the current game.
-                if (action_name == "dev_list_bugs" and
-                        _is_project_audit_question(question) and
-                        not _has_project_evidence(evidence)):
-                    _obs = (
-                        "[当前项目缺陷审查] dev_list_bugs 只返回历史归档，当前尚无项目证据；"
-                        "本次未执行。请先调用 search_code/grep/read_file，或在引擎连接器可用时"
-                        "获取运行日志/场景/截图/受控 playtest，再按需补充历史记录。"
-                    )
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": f"Observation: {_obs}"})
-                    executed.add(sig)
-                    yield {"type": "action", "text": f"{action_name}() [已拦截：需要当前项目证据]"}
-                    yield {"type": "observation", "text": _obs}
-                    continue
+                # 「留地板、拆其余」重构：项目缺陷审查证据门已拆。
+                # 此前当模型调 dev_list_bugs、而 harness 用正则判定「这是当前项目体检
+                # 问题且还没读过当前代码」时，会直接拦下不执行、回填一句「先去看当前
+                # 代码/日志」。这不是灾难地板，是替模型排执行顺序的「处处受限」——拆掉，
+                # 让模型自己决定先翻历史归档还是先读代码。判据函数
+                # _is_project_audit_question / _has_project_evidence 保留（直接调用它们
+                # 的测试仍在钉判据）。
 
                 # pre_tool 钩子：可改写参数，或拦截本次执行（热插拔）
                 _blk, _hreason, _harg = _hooks.run_pre_tool(action_name, action_arg)

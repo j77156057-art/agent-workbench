@@ -84,14 +84,17 @@ class VerbatimDumpFinalGateTests(unittest.TestCase):
         self.assertFalse(finals[0].get("degraded"), "综合成功后不该标 degraded")
         self.assertNotIn(_NOTE, finals[0]["text"])
 
-    def test_still_dump_after_nudge_is_delivered_degraded_not_faked(self):
-        # 逼过一次仍裸铺 → 如实标 degraded 交付，绝不冒充综合结论（fail-closed）。
+    def test_still_dump_after_nudge_delivered_as_is_no_stamp(self):
+        # 「留地板、拆其余」：逼综合一次后仍裸铺 → 原样交付，不再挂事后横幅。
+        # 一次性的综合纠偏 reflection（"裸铺"）保留（不可见、不冒充结论），
+        # 但用户可见的 degraded 章 + "原始源码清单"注记已拆（那是"事后盖章"）。
         _llm, events = self._run([_RAW_DUMP])  # 每次都返回裸铺
         finals = [e for e in events if e.get("type") == "final"]
         self.assertEqual(len(finals), 1, "终态守卫只应产出一条 final")
-        self.assertTrue(finals[0].get("degraded"),
-                        "仍裸铺必须标 degraded，不能假完成")
-        self.assertIn(_NOTE, finals[0]["text"])
+        self.assertFalse(finals[0].get("degraded"),
+                         "事后 degraded 章已拆，不再打降级标记")
+        self.assertNotIn(_NOTE, finals[0]["text"],
+                         "事后『原始源码清单』注记已拆，不再追加")
         # 有界 nudge：本守卫的 reflection 至多一次，不能反复逼问形成死循环。
         self.assertLessEqual(len(self._guard_reflections(events)), 1)
 

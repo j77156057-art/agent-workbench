@@ -58,30 +58,37 @@ class MeaninglessDetectorTests(unittest.TestCase):
 
 
 class MeaninglessEarlyReturnTests(unittest.TestCase):
+    """「留地板、拆其余」重构后：无意义输入顶回门已拆，纯符号/空输入直达模型，
+    不再在模型之前弹 clarification_required + degraded 早退。真没内容时由模型自己
+    自然追问。判据函数 _meaningless_input_clarification 仍在（上面的
+    MeaninglessDetectorTests 直接钉它），只是不再劫持聊天主路径。"""
+
     def _run(self, question):
         llm = _CountingFakeLLM()
         agent = agent_mod.Agent(llm=llm)
         events = list(agent.run(question))
         return llm, events
 
-    def test_question_mark_never_reaches_model(self):
+    def test_question_mark_now_reaches_model(self):
         llm, events = self._run("？")
-        self.assertEqual(llm.calls, 0,
-                         "BUG-8 复发：纯符号输入仍去调了模型（应零调用早退）")
+        self.assertGreaterEqual(llm.calls, 1,
+                                "顶回门已拆：纯符号输入应交给模型，而非零调用早退")
         finals = [e for e in events if e.get("type") == "final"]
-        self.assertTrue(finals, "澄清也必须产出一条 final，界面才不会空转")
-        self.assertTrue(finals[0].get("clarification_required"),
-                        "应以 clarification_required 收尾")
-        self.assertTrue(finals[0].get("degraded"), "澄清属降级交付，须标 degraded")
+        self.assertTrue(finals, "模型应答产出一条 final")
+        self.assertFalse(finals[0].get("clarification_required"),
+                         "不应再被顶回门标记为 clarification_required")
+        self.assertFalse(finals[0].get("degraded"),
+                         "不应再被顶回门打上 degraded 降级章")
 
-    def test_empty_input_also_blocked(self):
-        llm, events = self._run("   ")
-        self.assertEqual(llm.calls, 0)
+    def test_empty_input_now_reaches_model(self):
+        llm, _ = self._run("   ")
+        self.assertGreaterEqual(llm.calls, 1,
+                                "顶回门已拆：空白输入也应交给模型处理")
 
     def test_normal_question_is_not_blocked(self):
         llm, _ = self._run("behaviors/player.gd 里玩家移动怎么实现的？")
         self.assertGreaterEqual(llm.calls, 1,
-                                "正常问题绝不能被这道门误拦")
+                                "正常问题绝不该被误拦")
 
 
 if __name__ == "__main__":

@@ -7366,16 +7366,19 @@ def create_file(arg):
 # 命令护栏：结构化黑名单（按可执行词）+ 可选白名单（RUN_COMMAND_ALLOW）。
 # 仅为启发式防护，非 OS 级沙箱；真正的隔离需外部容器/沙箱。
 _BLOCKED_CMDS = {
-    # 破坏性文件/系统命令
+    # 破坏性文件/系统命令（灾难地板，保留）
     "rm", "del", "erase", "rd", "rmdir", "format", "shutdown", "restart", "reboot",
     "mkfs", "fdisk", "diskpart", "dd", "chkdsk", "chown", "chmod", "cacls", "icacls",
     "shred", "wipe", "cipher",
-    # 网络外联 / 下载（防数据外带）
+    # 网络外联 / 下载（防数据外带，灾难地板，保留）
     "curl", "wget", "invoke-webrequest", "iwr", "invoke-restmethod", "irm",
     "nc", "netcat", "ncat", "telnet", "ssh", "scp", "sftp", "ftp", "certutil",
-    # 脚本解释器 / 子 shell / 系统操控（可执行任意命令，绕过黑名单）
-    "powershell", "pwsh", "bash", "sh", "zsh", "cmd", "reg", "wmic", "mshta",
-    "rundll32", "schtasks", "wsl", "taskkill", "net",
+    # 系统操控 / 持久化（保留）：注册表、计划任务、DLL 宿主、远程会话
+    "reg", "wmic", "mshta", "rundll32", "schtasks", "wsl", "taskkill", "net",
+    # 「留地板、拆其余」重构：脚本解释器 / 子 shell（powershell/pwsh/bash/sh/zsh/cmd）
+    # 已从首词黑名单放开 —— 开发工作台日常要跑 ./build.sh、deploy.ps1、python build.py，
+    # 整类封死是「处处受限」。放开后，被 shell 包裹的破坏性 / RCE 子串改由
+    # _DANGEROUS_PATTERNS 兜住（见下），灾难地板不降。
 }
 # 危险子串/参数模式（命令+参数级，比单一可执行词更细）
 _DANGEROUS_PATTERNS = (
@@ -7383,8 +7386,12 @@ _DANGEROUS_PATTERNS = (
     "format ", "shutdown", "mkfs", "dd if=", "> /dev/sd", "> /dev/null",
     "git clean", "git reset --hard", "git push -f", "git push --force",
     "chmod -r", "chmod 777", "chmod 666", ":(){", "fork bomb",
-    "python -c", "py -c", "python3 -c", "node -e", "node --eval",
-    "npm install -g", "npm i -g", "pip install", "rmdir /q",
+    "rmdir /q",
+    # 「留地板、拆其余」重构：pip install / python -c / node -e / npm i -g 等已放开
+    # （装依赖、跑内联脚本是日常开发，不是灾难；模型另有 python_exec 工具）。
+    # 解释器首词放开后，补兜「被 shell 包裹的破坏性 / RCE」子串，守住灾难地板：
+    "remove-item", "ri -recurse", "del -recurse", "format-volume", "clear-disk",
+    "invoke-expression", "iex ", "iex(", "downloadstring", "downloadfile",
 )
 
 
