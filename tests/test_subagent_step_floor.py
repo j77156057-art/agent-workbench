@@ -148,10 +148,18 @@ class SubagentStepFloorTests(unittest.TestCase):
                                 "实际上任何真实子代理都跑不完" % agent.SUBAGENT_STEP_FLOOR)
 
     def test_the_child_gets_an_override_even_when_cap_resolves_to_zero(self):
-        """cap=0 时也必须设 tool_step_override —— 否则 `_run` 结构上无界。"""
-        self.assertEqual(agent._resolve_child_max_steps(None), 0,
-                         "前提变了：_resolve_child_max_steps(None) 已不再是 0，"
-                         "这条用例要改成验'用户显式传 0'那条路径")
+        """cap=0 时也必须设 tool_step_override —— 否则 `_run` 结构上无界。
+
+        这里**显式传 `max_steps=0`**，不靠 `_resolve_child_max_steps(None)` 的默认解析：
+        默认值会读持久化的 `child_max_steps`。`python -m unittest` 会把状态根隔离到临时
+        目录，但 `tests/mutation/run_all.py` 是普通过程、不走隔离，读的是仓库真实
+        `.docmind_state.json`——本机那份 `child_max_steps=1000`，于是旧断言在变异电池里
+        的对照组就红，整块电池被判「环境红，不作数」。显式 0 不受用户配置影响，
+        cap==0 这条分支在任何机器上都确定可达。
+        """
+        self.assertEqual(agent._resolve_child_max_steps(0), 0,
+                         "前提变了：显式 0 不再解析成 0（0 = 不设上限），"
+                         "这条用例要重写")
 
         a = agent.Agent(llm=NeverFinalLLM())
         seen = {}
@@ -165,7 +173,7 @@ class SubagentStepFloorTests(unittest.TestCase):
 
         agent.Agent.run = spy_run
         try:
-            a._run_child("researcher", "查一些东西")
+            a._run_child("researcher", "查一些东西", max_steps=0)
         finally:
             agent.Agent.run = orig_run
 

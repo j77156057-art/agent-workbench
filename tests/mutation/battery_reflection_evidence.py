@@ -64,6 +64,7 @@ UNIT_CLASSES = (
     #: 那两条只能记「活下来」——但根因是守卫没牙，不是变异写歪。
     'TruncatedEvidenceKeepsTheTailTests',
     'ReflectionSeesEvidenceTests',
+    'UpstreamContextIsEvidenceTests',
     'DeterministicFallbackTests',
 )
 LIVE = ()

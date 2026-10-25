@@ -68,8 +68,8 @@ MUTATIONS = [
      '            "text": "", "truncated": not scanned_all, "error": str(out.get("error") or "")}',
      '            "text": "", "truncated": False, "error": str(out.get("error") or "")}'),
     ("不可见命中不进结果（静默丢掉，「页面上没有」变成假话）",
-     '            "hidden_hits": int(out.get("hidden_hits") or 0),\n'
-     '            "hidden_elements": int(out.get("hidden_elements") or 0),\n',
+     '              "hidden_hits": int(out.get("hidden_hits") or 0),\n'
+     '              "hidden_elements": int(out.get("hidden_elements") or 0),\n',
      ''),
     # ---- 如实回报的那三行提醒 ----
     ("容器没匹配到时不再提醒（最坏的一种没找到被藏起来）",
