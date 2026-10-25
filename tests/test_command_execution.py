@@ -209,6 +209,22 @@ class GuardrailTests(unittest.TestCase):
         self.assertEqual(env["OK"], "1")
 
 
+class BackgroundMemoryLimitTests(unittest.TestCase):
+    """后台任务的内存上限：1 GiB 会掐死真实的全量回归（实测 MemoryError）。"""
+
+    def test_default_is_four_gib(self):
+        with patch.dict(os.environ, {"DOCMIND_JOB_MEMORY_MB": ""}):
+            self.assertEqual(pr._job_memory_bytes(), 4096 * 1024 * 1024)
+
+    def test_env_override_is_honored(self):
+        with patch.dict(os.environ, {"DOCMIND_JOB_MEMORY_MB": "6144"}):
+            self.assertEqual(pr._job_memory_bytes(), 6144 * 1024 * 1024)
+
+    def test_invalid_override_falls_back_to_default(self):
+        with patch.dict(os.environ, {"DOCMIND_JOB_MEMORY_MB": "not-a-number"}):
+            self.assertEqual(pr._job_memory_bytes(), 4096 * 1024 * 1024)
+
+
 class SandboxFallbackTests(unittest.TestCase):
     def test_staged_commands_never_fall_back(self):
         from agent_runtime.enterprise_sandbox import SandboxUnavailable, stage_execution_scope

@@ -33,6 +33,26 @@ MAX_JOBS = 8
 FINISHED_TTL = 900.0
 READ_CHUNK = 8192
 
+#: Commit limit for background jobs (they run inside a Windows Job Object).
+#:
+#: Deliberately larger than ``spawn_isolated``'s 1 GiB default: a real full
+#: mutation battery was killed by that cap ~2.7 min in with a bare
+#: ``MemoryError`` while compiling a pristine module, because the job had
+#: already imported the test suite. Builds and regression suites routinely sit
+#: in that range. This stays a bound (runaway jobs still cannot exhaust the
+#: host); override with ``DOCMIND_JOB_MEMORY_MB`` for constrained machines.
+DEFAULT_JOB_MEMORY_MB = 4096
+
+
+def _job_memory_bytes() -> int:
+    """Commit limit for one background job, in bytes."""
+    raw = os.getenv("DOCMIND_JOB_MEMORY_MB", "").strip()
+    try:
+        mb = int(raw)
+    except ValueError:
+        mb = 0
+    return (mb if mb > 0 else DEFAULT_JOB_MEMORY_MB) * 1024 * 1024
+
 _ENV_SECRET_TOKENS = ("TOKEN", "SECRET", "PASSWORD", "API_KEY", "PRIVATE_KEY")
 
 
@@ -250,7 +270,8 @@ def _spawn(command: list[str], *, cwd: str, env: dict[str, str]) -> tuple[subpro
     if os.name == "nt":
         try:
             from .windows_sandbox import spawn_isolated
-            return spawn_isolated(command, cwd=cwd, env=env)
+            return spawn_isolated(command, cwd=cwd, env=env,
+                                  memory_bytes=_job_memory_bytes())
         except Exception:
             popen = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -430,8 +451,13 @@ def _reap_locked() -> None:
 def _monitor(job: _Job) -> None:
     try:
         job.popen.wait(timeout=job.timeout)
-        job.state = "done"
-        job.exit_code = job.popen.returncode
+        # 取消会把进程杀掉，wait() 随即正常返回——不能把用户明确终止的任务
+        # 改写成 done（否则面板/工具都会显示"已完成"）。检查与写入必须在同一把
+        # 锁里，否则 job_cancel 正好在两者之间落锁时仍会被覆盖。
+        with _LOCK:
+            if job.state != "cancelled":
+                job.state = "done"
+                job.exit_code = job.popen.returncode
     except subprocess.TimeoutExpired:
         job.state = "timeout"
         job.error = f"后台任务超过 {job.timeout}s 被终止"
