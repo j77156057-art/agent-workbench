@@ -5474,18 +5474,37 @@ def _resolve_in_root(path):
     return target, root_abs, None
 
 
-def _clean_symbol(p):
+#: 正则里的内联标志组 `(?i)` / `(?im)` / `(?is)` 等。
+_RE_INLINE_FLAG_GROUP = re.compile(r"\(\?[aiLmsux]+\)")
+#: 一眼能看出「这是刻意写的正则」的语法符。刻意不收 `.`：句号在自然语言里
+#: 太常见（"foo.py 这个文件"），收进来会让「符号 + 中文说明」不再被提取。
+_RE_REGEX_SYNTAX = re.compile(r"[|()\[\]{}\\*+?^$]")
+
+
+def _clean_symbol(p, *, regex_literal=False):
     """从混入自然语言的输入里提取首个「代码标识符」token。
 
     弱模型常把工具输入写成「seekTo 进行进度跳转」这种「符号 + 中文描述」的形式，
     直接当正则/检索词会匹配失败。这里在检测到中文时只取第一个 ASCII 标识符
     （如 seekTo）；纯 ASCII 输入（可能是合法正则）原样保留。
+
+    ``regex_literal=True``（grep 用）：输入含中文、但显式写了正则语法
+    （内联标志 `(?i)`、`|`、括号、量词等）时，说明它是一整条**中英混合正则**，
+    必须原样交给 ``re.compile``。否则会走「提取首个标识符」的降级：
+    ``(?i)tutorial|onboard|新手`` 的首个 ASCII 标识符是内联标志里的 ``i``，
+    整条搜索被降成 ``grep("i")``——命中几乎所有行，模型误以为检索有效，
+    换关键词后又被降成 ``i``，于是反复重试到死循环（2026-10-25 实测 223 次）。
     """
     p = (p or "").strip()
     if not p:
         return p
     if re.search(r"[\u4e00-\u9fff]", p):
-        m = re.search(r"[A-Za-z_]\w*", p)
+        if regex_literal and (_RE_INLINE_FLAG_GROUP.search(p)
+                              or _RE_REGEX_SYNTAX.search(p)):
+            return p
+        # 非 grep 的调用方（如 find_references）仍只取符号，但必须先剥掉
+        # 内联标志组：否则 `(?i)foo 的引用点` 会提取出标志里的 `i`。
+        m = re.search(r"[A-Za-z_]\w*", _RE_INLINE_FLAG_GROUP.sub("", p))
         if m:
             return m.group(0)
     return p
@@ -6425,7 +6444,7 @@ def grep(pattern):
     mp = _RE_GREP_PATTERN_KEY.match(pattern)
     if mp and "\n" not in pattern:
         pattern = _strip_arg_quotes(mp.group(1))
-    pattern = _clean_symbol(pattern)
+    pattern = _clean_symbol(pattern, regex_literal=True)
     try:
         rx = re.compile(pattern)
     except re.error as e:
