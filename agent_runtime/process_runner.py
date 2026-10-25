@@ -396,6 +396,27 @@ _JOBS: dict[str, _Job] = {}
 _LOCK = threading.RLock()
 
 
+def _norm_path(path: str) -> str:
+    """Absolute + case-normalized path for containment checks (Windows is case-insensitive)."""
+    return os.path.normcase(os.path.abspath(str(path or "")))
+
+
+def _is_within(path: str, root: str) -> bool:
+    """True when *path* is *root* or lives under it. Different drives → False."""
+    if not path or not root:
+        return False
+    try:
+        child, parent = _norm_path(path), _norm_path(root)
+        return os.path.commonpath([child, parent]) == parent
+    except (ValueError, OSError):
+        return False
+
+
+def _matches_root(job: _Job, root: str) -> bool:
+    """Empty root = no scoping (legacy/tool callers); non-empty = project isolation."""
+    return not root or _is_within(job.cwd, root)
+
+
 def _reap_locked() -> None:
     now = time.monotonic()
     for ident in [k for k, v in _JOBS.items()
@@ -477,6 +498,7 @@ def _job_view(job: _Job, *, offset: int = 0, include_logs: bool = True) -> dict[
         "total_chars": job.buffer.total,
         "truncated": job.buffer.truncated,
         "command": job.command,
+        "cwd": job.cwd,
         "error": job.error,
     }
     if include_logs:
@@ -486,32 +508,40 @@ def _job_view(job: _Job, *, offset: int = 0, include_logs: bool = True) -> dict[
     return view
 
 
-def job_logs(job_id: str = "", *, offset: int = 0) -> dict[str, Any]:
-    """Return one job's state plus its incremental output, or list recent jobs."""
+def job_logs(job_id: str = "", *, offset: int = 0, root: str = "") -> dict[str, Any]:
+    """Return one job's state plus its incremental output, or list recent jobs.
+
+    ``root`` scopes both the list and single-job lookup to jobs started inside
+    that project root. It is opt-in: the agent's ``dev_job_logs`` tool passes no
+    root and therefore keeps seeing every job exactly as before.
+    """
     with _LOCK:
         _reap_locked()
         ident = str(job_id or "").strip()
         if not ident:
             jobs = sorted(_JOBS.values(), key=lambda item: item.created, reverse=True)
+            if root:
+                jobs = [item for item in jobs if _matches_root(item, root)]
             return {"ok": True, "jobs": [_job_view(item, include_logs=False) for item in jobs[:10]]}
         job = _JOBS.get(ident)
-        if job is None:
+        if job is None or not _matches_root(job, root):
             return {"ok": False, "error": f"后台任务不存在或已清理：{ident}"}
         return {"ok": True, **_job_view(job, offset=offset)}
 
 
-def job_cancel(job_id: str) -> dict[str, Any]:
+def job_cancel(job_id: str, *, root: str = "") -> dict[str, Any]:
     """Stop a background job and keep its output available for inspection."""
     with _LOCK:
         job = _JOBS.get(str(job_id or "").strip())
-        if job is None:
+        if job is None or not _matches_root(job, root):
             return {"ok": False, "error": f"后台任务不存在或已清理：{job_id}"}
     if job.finished_at is None:
         _terminate(job.popen, job.kernel, job.job_handle)
         if job.thread is not None:
             job.thread.join(timeout=2)
-        job.state = "cancelled"
-        job.finished_at = time.monotonic()
+        with _LOCK:
+            job.state = "cancelled"
+            job.finished_at = time.monotonic()
     return {"ok": True, **_job_view(job)}
 
 

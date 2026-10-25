@@ -80,6 +80,7 @@ const {
   unityGraphOpen, openUnityGraph, closeUnityGraph,
   flowOpen, openFlow, closeFlow,
   changesOpen, openChanges, closeChanges,
+  jobsOpen, openJobs, closeJobs,
 } = useRuntime()
 
 // 最近打开的文件抽到 workbench-recent.ts（tree/openPath 在文件末尾注入）
@@ -666,6 +667,8 @@ export function useWorkbench() {
     revertPath, history, openHistory, closeHistory, selectHistoryVersion, restoreSelectedVersion,
     // P4 改动总览（只读）
     changesOpen, openChanges, closeChanges,
+    // 后台任务进度/日志抽屉
+    jobsOpen, openJobs, closeJobs,
     // fs ops
     createAt, renameNode, deleteNode,
     // menus / dialogs

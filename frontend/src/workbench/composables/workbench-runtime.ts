@@ -73,6 +73,11 @@ const changesOpen = ref(false)
 function openChanges() { changesOpen.value = true }
 function closeChanges() { changesOpen.value = false }
 
+// 后台任务抽屉：AI 用 run_command(background: true) 起的长命令，从这里持续看进度与日志。
+const jobsOpen = ref(false)
+function openJobs() { jobsOpen.value = true }
+function closeJobs() { jobsOpen.value = false }
+
 export function useRuntime() {
   return {
     workspace, setWorkspace,
@@ -83,5 +88,6 @@ export function useRuntime() {
     unityGraphOpen, openUnityGraph, closeUnityGraph,
     flowOpen, openFlow, closeFlow,
     changesOpen, openChanges, closeChanges,
+    jobsOpen, openJobs, closeJobs,
   }
 }

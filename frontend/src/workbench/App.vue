@@ -38,6 +38,7 @@ const FlowCanvas = defineAsyncComponent(() => import('./components/FlowCanvas.vu
 const RegionMapDialog = defineAsyncComponent(() => import('./components/RegionMapDialog.vue'))
 const SettingsView = defineAsyncComponent(() => import('./components/SettingsView.vue'))
 const AssetCenterView = defineAsyncComponent(() => import('./components/AssetCenterView.vue'))
+const BackgroundJobsPanel = defineAsyncComponent(() => import('./components/BackgroundJobsPanel.vue'))
 // 自主开发舱已删除（v2 重构 §1.1 范围「只保留 ①实时对话视频流 ②窗口嵌入」；
 // 原 AutonomousCockpit 组件于 commit E 阶段移除；实时流与 SceneRuntimePanel 嵌入仍由 ChatDock + SceneRuntimePanel 承担）
 
@@ -60,7 +61,7 @@ const {
   revertPath, openHistory,
   openChanges,
   openRegionMap,
-  relationGraphOpen, unityGraphOpen, flowOpen, regionMapOpen, changesOpen,
+  relationGraphOpen, unityGraphOpen, flowOpen, regionMapOpen, changesOpen, jobsOpen,
   aiPanelOpen,
   workspace, setWorkspace, seedDemoRegionCards,
   closeAllTabs, closeRuntime,
@@ -218,11 +219,12 @@ function onOpenSettings(ev: Event) {
  * 重型弹层首次打开才挂载（异步 chunk 届时才下载）；挂载后常驻、关闭不销毁，
  * 保留已加载数据与缩放状态——与原先"始终挂载 + 根 v-if 隐藏"的体验一致。
  */
-const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, changes: false, settings: false })
+const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, changes: false, jobs: false, settings: false })
 watch(relationGraphOpen, (v) => { if (v) everMounted.relation = true })
 watch(unityGraphOpen, (v) => { if (v) everMounted.unity = true })
 watch(flowOpen, (v) => { if (v) everMounted.flow = true })
 watch(changesOpen, (v) => { if (v) everMounted.changes = true })
+watch(jobsOpen, (v) => { if (v) everMounted.jobs = true })
 watch(regionMapOpen, (v) => { if (v) everMounted.region = true })
 /** 当前标签可回滚：已纳入 git 且磁盘或编辑器存在改动 */
 const canRevertActive = computed(() => {
@@ -966,6 +968,7 @@ onBeforeUnmount(() => {
     <UnityGraph v-if="everMounted.unity" />
     <FlowCanvas v-if="everMounted.flow" />
     <GitChangesPanel v-if="everMounted.changes" />
+    <BackgroundJobsPanel v-if="everMounted.jobs" />
     <SelectionToolbar />
     <SettingsView v-if="everMounted.settings" :visible="settingsVisible" :initial-tab="settingsSection" @close="settingsVisible = false" />
   </div>

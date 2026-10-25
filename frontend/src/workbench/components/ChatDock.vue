@@ -17,6 +17,7 @@ import { useModelConfig } from '../composables/useModelConfig'
 import { useWorkflowGate } from '../composables/useWorkflowGate'
 import { useOrphanWorkflow } from '../composables/useOrphanWorkflow'
 import { useChatStream } from '../composables/useChatStream'
+import { useJobsFeed } from '../composables/backgroundJobs'
 import { noteBrowserEvidence } from '../composables/browserLive'
 import type { ChatActivityKind, ChatMsg, ChatTraceItem, BrowserEvidence } from '../composables/chat-types'
 import { flowOf } from '../composables/chat-types'
@@ -48,7 +49,13 @@ import type { PreviewFeedbackRequest } from '../previewFeedback'
 const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
 // 开发舱里侧栏文件树是隐藏的，「在问哪个库」只剩顶栏那颗项目名，而对话就在这块下方。
 // 所以把代码库根目录搬到输入框同一行；普通对话台不显示（旁边就是资源管理器，重复了）。
-const { tree, jumpToLine, revealPath } = useWorkbench()
+const { tree, jumpToLine, revealPath, jobsOpen, openJobs } = useWorkbench()
+// 后台任务角标与面板共用一份列表（composables/backgroundJobs.ts），不会重复轮询。
+const { running: jobsRunning, refresh: refreshJobs } = useJobsFeed()
+function openJobsPanel() {
+  void refreshJobs()
+  openJobs()
+}
 const codeRoot = computed(() => tree.value?.code_root || '')
 const codeRootLabel = computed(() => {
   const parts = codeRoot.value.replace(/[\\/]+$/, '').split(/[\\/]/)
@@ -1541,6 +1548,25 @@ const webTitle = computed(() => webOn.value
         </svg>
         <span>工作流</span>
       </button>
+      <!-- 后台任务：AI 用 run_command(background: true) 起的长命令（构建/测试/服务）。
+           角标只在真的有任务在跑时出现；列表与面板共用同一份轮询源。 -->
+      <button v-if="props.scope === 'default'"
+        class="cd-btn"
+        :class="{ 'cd-btn-on': jobsOpen }"
+        :aria-pressed="jobsOpen"
+        aria-label="后台任务"
+        :title="jobsRunning
+          ? `后台任务：${jobsRunning} 个运行中，点击查看进度与日志`
+          : '后台任务：查看长命令的进度与日志'"
+        @click.stop="openJobsPanel"
+      >
+        <svg width="13" height="13" viewBox="0 0 13 13" aria-hidden="true">
+          <rect x="1.8" y="2.2" width="9.4" height="8.6" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.05"/>
+          <path d="M3.5 4.9l1.7 1.5-1.7 1.5M6.5 8h3" fill="none" stroke="currentColor" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>后台</span>
+        <i v-if="jobsRunning" class="cd-job-badge">{{ jobsRunning }}</i>
+      </button>
       <button
         class="cd-btn cd-size-btn"
         :class="{ 'cd-btn-on': expanded }"
@@ -1985,6 +2011,14 @@ const webTitle = computed(() => webOn.value
 .cd-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cd-btn:active { transform: translateY(1px); }
 .cd-btn-on { color: var(--accent); border-color: var(--accent); background: var(--bg-selected); }
+/* 运行中任务数：窄屏 .cd-btn span 被隐藏，这枚角标仍要可见 */
+.cd-job-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 14px; height: 14px; padding: 0 4px;
+  border-radius: 7px; background: var(--accent); color: var(--bg-raised);
+  font-style: normal; font-size: 10px; font-weight: 700; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
 
 /* 弹层 */
 .cd-pop-mask {
