@@ -1,4 +1,4 @@
-# 双击本脚本即可在「桌面」生成 DocMind 快捷方式。
+﻿# 双击本脚本即可在「桌面」生成 DocMind 快捷方式。
 # （也可在资源管理器右键 dist\DocMind.exe → 发送到 → 桌面快捷方式）
 $W = New-Object -ComObject WScript.Shell
 $base = Split-Path -Parent $MyInvocation.MyCommand.Definition

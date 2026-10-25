@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [switch]$SkipInstaller,
     [switch]$ForceDependencies

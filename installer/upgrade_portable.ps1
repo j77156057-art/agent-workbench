@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$Package,
     [string]$InstallDir = (Split-Path -Parent $PSScriptRoot)
 )
