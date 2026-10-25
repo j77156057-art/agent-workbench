@@ -20,6 +20,7 @@ import { useChatStream } from '../composables/useChatStream'
 import { noteBrowserEvidence } from '../composables/browserLive'
 import type { ChatActivityKind, ChatMsg, ChatTraceItem, BrowserEvidence } from '../composables/chat-types'
 import { flowOf } from '../composables/chat-types'
+import { traceSegments } from '../composables/traceDigest'
 import type { ChatArtifact } from '../composables/chat-types'
 import ArtifactCards from './ArtifactCards.vue'
 import { useAutoScroll } from '../composables/useAutoScroll'
@@ -405,17 +406,27 @@ function cdHasFlow(msg: ChatMsg) {
   return items.some((n) => n.kind === 'think' || n.kind === 'thought')
 }
 
-/* 推理轨迹整块的展开状态（按消息 id，2026-10-20）。
-   流式过程中自动展开 —— 用户要看到"AI 正在想什么"；
-   回答结束后收成一行「推理过程 N 步」，需要时点开。
-   与问答页的 flowOpen = streaming || expanded 同一套语义。 */
-const flowExpanded = ref<Record<number, boolean>>({})
-function flowOpen(msg: ChatMsg): boolean {
-  if (msg.status === 'streaming') return true
-  return !!flowExpanded.value[msg.id]
+/* 推理轨迹的展开状态（按「消息 id + 段序号」）。
+   2026-10-25 改为按段呈现：一句话说完、跟着跑了哪些工具，就在这句话下面挂一行
+   灰色摘要；摘要默认收起，点它才摊开这一段的单步明细。这样推理过程是夹在
+   中途发言之间的，而不是整轮压成一块铺在答案前面。与问答页同一套语义。 */
+const segExpanded = ref<Record<string, boolean>>({})
+function segKey(msg: ChatMsg, si: number): string {
+  return `${msg.id}:${si}`
 }
-function toggleFlow(id: number) {
-  flowExpanded.value = { ...flowExpanded.value, [id]: !flowExpanded.value[id] }
+function segOpen(msg: ChatMsg, si: number): boolean {
+  return !!segExpanded.value[segKey(msg, si)]
+}
+function toggleSeg(msg: ChatMsg, si: number) {
+  const key = segKey(msg, si)
+  segExpanded.value = { ...segExpanded.value, [key]: !segExpanded.value[key] }
+}
+// 把交错流切成「发言 → 该段工具摘要」若干段（reasoning 分段与 ReAct Thought 都是发言）。
+function segmentsOf(msg: ChatMsg) {
+  return traceSegments(msg)
+}
+function rowKind(msg: ChatMsg, ti: number): 'action' | 'result' {
+  return msg.trace[ti]?.type === 'action' ? 'action' : 'result'
 }
 function onCardActivity() {
   // 卡片内部子代理步骤频率高：按帧合批跟随，不做每事件 nextTick
@@ -1149,7 +1160,7 @@ async function deleteWfHistory(item: WorkflowSummary) {
 
 // ---------------------------------------------------------------- 历史回灌
 /** 把服务端 turns 按「用户→助手」交替重建成消息列表（历史消息均为已完成态）。 */
-function rebuildFromTurns(turns: { user: string; assistant: string; checkpoint_id?: string }[]) {
+function rebuildFromTurns(turns: { user: string; assistant: string; checkpoint_id?: string; trace?: ChatTraceItem[] }[]) {
   const rebuilt: ChatMsg[] = []
   for (let i = 0; i < turns.length; i++) {
     const t = turns[i]
@@ -1172,7 +1183,10 @@ function rebuildFromTurns(turns: { user: string; assistant: string; checkpoint_i
         id: msgSeq++, role: 'assistant',
         text: reason ? '' : cleanLegacyPrompt(t.assistant),
         status: reason ? 'error' : 'done',
-        trace: [], reasoning: '',
+        trace: Array.isArray(t.trace)
+          ? t.trace.filter((s): s is ChatTraceItem => !!s && typeof s.type === 'string' && typeof s.text === 'string')
+          : [],
+        reasoning: '',
         notices: recoverable
           ? ['上一轮没有完成；可以点击“继续上次任务”，或输入“继续”从中断处接着做。']
           : [],
@@ -1641,92 +1655,90 @@ const webTitle = computed(() => webOn.value
                  实时生长）；历史/演示路径没有 flow，由 flowOf 兜底合成。
                  点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
             <div v-if="cdHasFlow(m)" class="cd-flow">
-              <!-- 折叠头（2026-10-20）：与问答页的「推理过程 N 步」同一套交互。
-                   此前工作台的推理轨迹是**永远铺开**的 —— 思考正文、执行计划、
-                   动作行全占位，正文被推到很下面；问答页那边却能一键收起。
-                   现在：流式过程中自动展开（用户要看到实时思考），
-                   回答结束后收成一行，需要时再点开。 -->
-              <button
-                class="cd-flow-toggle"
-                :aria-expanded="flowOpen(m)"
-                @click="toggleFlow(m.id)"
-              >
-                <span class="cd-flow-toggle-glyph" aria-hidden="true">◈</span>
-                <span class="cd-flow-toggle-label">推理过程</span>
-                <span class="cd-flow-toggle-count">{{ flowOf(m).length }} 步</span>
-                <span class="cd-flow-toggle-chevron" :class="{ open: flowOpen(m) }">⌄</span>
-              </button>
-              <div v-show="flowOpen(m)" class="cd-flow-body">
-              <div v-if="m.plan.length" class="cd-plan">
-                <div class="cd-plan-title">执行计划</div>
-                <div v-for="(s, i) in m.plan" :key="'p' + i" class="cd-plan-step">
-                  <span class="cd-plan-idx">{{ i + 1 }}</span><span>{{ s }}</span>
+              <!-- 分段呈现（2026-10-25）：一段发言 → 这段之后干了什么的一行灰色摘要 →
+                   下一段发言。推理过程因此夹在中途发言之间，而不是整轮压成一块铺完。
+                   摘要默认收起，点开才看这一段的单步明细。 -->
+              <template v-for="(seg, si) in segmentsOf(m)" :key="'seg' + si">
+                <div v-if="seg.narration.length" class="cd-narration">
+                  <p v-for="(line, li) in seg.narration" :key="'nar' + li" class="cd-narration-line">{{ line }}</p>
                 </div>
-              </div>
-              <template v-for="(node, i) in flowOf(m)" :key="i">
-                <div v-if="node.kind === 'think' || node.kind === 'thought'" class="cd-flow-think">
-                  <span class="cd-flow-dot" :class="{ on: m.status === 'streaming' && i === flowOf(m).length - 1 }"></span>
-                  <div class="cd-flow-think-body">{{ node.kind === 'think' ? node.text : m.trace[node.trace].text.trim() }}</div>
-                </div>
-                <template v-else-if="displayPrefs.showTrace">
-                  <button
-                    class="cd-flow-row"
-                    :class="[node.kind, `cd-flow-${traceState(m, m.trace[node.trace], node.trace)}`]"
-                    :aria-expanded="activityIsOpen(m.id, node.trace, m)"
-                    :aria-label="`${traceTitle(m.trace[node.trace])}，${traceStateLabel(traceState(m, m.trace[node.trace], node.trace), m.trace[node.trace])}，点击查看详情`"
-                    @click="toggleActivity(m.id, node.trace, m)"
-                  >
-                    <span class="cd-flow-glyph">{{ node.kind === 'action' ? (TRACE_GLYPH[m.trace[node.trace].type] || '↗') : '↳' }}</span>
-                    <span class="cd-flow-main">
-                      <span class="cd-flow-title">{{ traceTitle(m.trace[node.trace]) }}</span>
-                      <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
-                      <span v-if="!activityIsOpen(m.id, node.trace, m)" class="cd-flow-summary">{{ traceSummary(m.trace[node.trace]) }}</span>
-                    </span>
-                    <img
-                      v-if="node.kind === 'result' && evidenceOf(m.trace[node.trace])?.shot_after"
-                      class="cd-flow-thumb"
-                      :src="evidenceShot(evidenceOf(m.trace[node.trace])?.shot_after)"
-                      alt="动作后画面"
-                      loading="lazy"
-                    />
-                    <span class="cd-flow-meta">
-                      <span class="cd-flow-state">{{ traceStateLabel(traceState(m, m.trace[node.trace], node.trace), m.trace[node.trace]) }}</span>
-                      <span v-if="traceElapsed(m.trace[node.trace])" class="cd-flow-time">{{ traceElapsed(m.trace[node.trace]) }}</span>
-                      <span class="cd-flow-chevron">{{ activityIsOpen(m.id, node.trace, m) ? '▾' : '▸' }}</span>
-                    </span>
-                  </button>
-                  <div v-if="activityIsOpen(m.id, node.trace, m)" class="cd-flow-detail">
-                    <span class="cd-flow-detail-label">事件详情</span>
-                    <div v-if="evidenceOf(m.trace[node.trace])" class="cd-flow-evidence" data-testid="trace-evidence">
-                      <div class="cd-flow-evidence-meta">
-                        <span
-                          class="cd-flow-evidence-effect"
-                          :data-ok="evidenceOf(m.trace[node.trace])?.ok ? '1' : '0'"
-                        >{{ evidenceEffect(evidenceOf(m.trace[node.trace])) }}</span>
-                        <a
-                          v-if="evidenceOf(m.trace[node.trace])?.url"
-                          class="cd-flow-evidence-url"
-                          :href="evidenceOf(m.trace[node.trace])?.url || undefined"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >{{ evidenceOf(m.trace[node.trace])?.url }}</a>
-                      </div>
-                      <div class="cd-flow-shots">
-                        <figure v-if="evidenceOf(m.trace[node.trace])?.shot_before">
-                          <img :src="evidenceShot(evidenceOf(m.trace[node.trace])?.shot_before)" alt="动作前画面" loading="lazy" />
-                          <figcaption>动作前</figcaption>
-                        </figure>
-                        <figure v-if="evidenceOf(m.trace[node.trace])?.shot_after">
-                          <img :src="evidenceShot(evidenceOf(m.trace[node.trace])?.shot_after)" alt="动作后画面" loading="lazy" />
-                          <figcaption>动作后</figcaption>
-                        </figure>
-                      </div>
+                <button
+                  v-if="displayPrefs.showTrace && seg.digest.toolTotal"
+                  class="cd-flow-toggle"
+                  :aria-expanded="segOpen(m, si)"
+                  :aria-label="`${seg.digest.text}，点击查看这一段的单步明细`"
+                  @click="toggleSeg(m, si)"
+                >
+                  <span class="cd-flow-toggle-glyph" aria-hidden="true">{{ seg.glyph }}</span>
+                  <span class="cd-flow-toggle-count">{{ seg.digest.text }}</span>
+                  <span class="cd-flow-toggle-chevron" :class="{ open: segOpen(m, si) }">⌄</span>
+                </button>
+                <div v-if="segOpen(m, si)" class="cd-flow-body">
+                  <div v-if="si === 0 && m.plan.length" class="cd-plan">
+                    <div class="cd-plan-title">执行计划</div>
+                    <div v-for="(s, pi) in m.plan" :key="'p' + pi" class="cd-plan-step">
+                      <span class="cd-plan-idx">{{ pi + 1 }}</span><span>{{ s }}</span>
                     </div>
-                    <code>{{ m.trace[node.trace].text }}</code>
                   </div>
-                </template>
+                  <template v-for="(ti, ri) in seg.rows" :key="'r' + ri">
+                    <button
+                      class="cd-flow-row"
+                      :class="[rowKind(m, ti), `cd-flow-${traceState(m, m.trace[ti], ti)}`]"
+                      :aria-expanded="activityIsOpen(m.id, ti, m)"
+                      :aria-label="`${traceTitle(m.trace[ti])}，${traceStateLabel(traceState(m, m.trace[ti], ti), m.trace[ti])}，点击查看详情`"
+                      @click="toggleActivity(m.id, ti, m)"
+                    >
+                      <span class="cd-flow-glyph">{{ rowKind(m, ti) === 'action' ? (TRACE_GLYPH[m.trace[ti].type] || '↗') : '↳' }}</span>
+                      <span class="cd-flow-main">
+                        <span class="cd-flow-title">{{ traceTitle(m.trace[ti]) }}</span>
+                        <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
+                        <span v-if="!activityIsOpen(m.id, ti, m)" class="cd-flow-summary">{{ traceSummary(m.trace[ti]) }}</span>
+                      </span>
+                      <img
+                        v-if="rowKind(m, ti) === 'result' && evidenceOf(m.trace[ti])?.shot_after"
+                        class="cd-flow-thumb"
+                        :src="evidenceShot(evidenceOf(m.trace[ti])?.shot_after)"
+                        alt="动作后画面"
+                        loading="lazy"
+                      />
+                      <span class="cd-flow-meta">
+                        <span class="cd-flow-state">{{ traceStateLabel(traceState(m, m.trace[ti], ti), m.trace[ti]) }}</span>
+                        <span v-if="traceElapsed(m.trace[ti])" class="cd-flow-time">{{ traceElapsed(m.trace[ti]) }}</span>
+                        <span class="cd-flow-chevron">{{ activityIsOpen(m.id, ti, m) ? '▾' : '▸' }}</span>
+                      </span>
+                    </button>
+                    <div v-if="activityIsOpen(m.id, ti, m)" class="cd-flow-detail">
+                      <span class="cd-flow-detail-label">事件详情</span>
+                      <div v-if="evidenceOf(m.trace[ti])" class="cd-flow-evidence" data-testid="trace-evidence">
+                        <div class="cd-flow-evidence-meta">
+                          <span
+                            class="cd-flow-evidence-effect"
+                            :data-ok="evidenceOf(m.trace[ti])?.ok ? '1' : '0'"
+                          >{{ evidenceEffect(evidenceOf(m.trace[ti])) }}</span>
+                          <a
+                            v-if="evidenceOf(m.trace[ti])?.url"
+                            class="cd-flow-evidence-url"
+                            :href="evidenceOf(m.trace[ti])?.url || undefined"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >{{ evidenceOf(m.trace[ti])?.url }}</a>
+                        </div>
+                        <div class="cd-flow-shots">
+                          <figure v-if="evidenceOf(m.trace[ti])?.shot_before">
+                            <img :src="evidenceShot(evidenceOf(m.trace[ti])?.shot_before)" alt="动作前画面" loading="lazy" />
+                            <figcaption>动作前</figcaption>
+                          </figure>
+                          <figure v-if="evidenceOf(m.trace[ti])?.shot_after">
+                            <img :src="evidenceShot(evidenceOf(m.trace[ti])?.shot_after)" alt="动作后画面" loading="lazy" />
+                            <figcaption>动作后</figcaption>
+                          </figure>
+                        </div>
+                      </div>
+                      <code>{{ m.trace[ti].text }}</code>
+                    </div>
+                  </template>
+                </div>
               </template>
-              </div>
             </div>
             <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
                  DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
@@ -1740,7 +1752,7 @@ const webTitle = computed(() => webOn.value
               <div v-if="m.status === 'done' && m.degraded && m.consistencyReason !== 'verbatim_dump'" class="cd-consistency-warn" role="status">
                 <span class="cd-warn-badge">未完成</span>
                 本轮没有拿到可综合的完整答案——上面是兜底内容或中间证据，不是针对你问题的结论。
-                展开上方「推理过程」可核对模型实际拿到的内容；建议重试、换个问法，或换一个模型。
+                点开上方各段灰色摘要可核对模型实际拿到的内容；建议重试、换个问法，或换一个模型。
               </div>
               <template v-if="m.status === 'streaming'"><div class="cd-answer-pending"><span class="cd-caret" aria-hidden="true" /> 正在生成回答…</div></template>
               <span v-else v-html="answerHtml(m)" />
@@ -2166,52 +2178,43 @@ const webTitle = computed(() => webOn.value
    分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
    替代了旧的「cd-reason 块 + 可折叠过程流（cd-process-stream）」两段式。 */
 .cd-flow {
-  display: flex; flex-direction: column;
-  margin: 4px 0 6px 3px; padding-left: 12px;
-  border-left: 1px dashed color-mix(in srgb, var(--accent) 25%, var(--border));
+  display: flex; flex-direction: column; gap: 2px;
+  margin: 4px 0 8px;
   /* 与答案区同一把阅读栏尺：轨迹行在 1312px 通栏里太长，扫读困难 */
   max-width: var(--measure);
 }
-/* 折叠头：与问答页 .flow-toggle 同一套（◈ 推理过程 / N 步 / ⌄） */
+/* 每段的工具摘要行：一行灰色小字，点开看这一段的单步明细（参考图里的样式）。 */
 .cd-flow-toggle {
   align-self: flex-start;
-  display: inline-flex; align-items: center; gap: 7px;
-  border: 1px dashed var(--border);
-  background: var(--bg-hover);
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none;
+  background: none;
   border-radius: var(--r-sm);
-  padding: 3px 10px;
+  padding: 1px 4px;
+  margin-left: -4px;
   cursor: pointer;
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  font-size: var(--fs-cap);
-  transition: color .15s ease, border-color .15s ease, background .15s ease;
-}
-.cd-flow-toggle:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-raised); }
-.cd-flow-toggle:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
-.cd-flow-toggle-glyph { color: var(--accent-2); font-size: var(--fs-cap); }
-.cd-flow-toggle-label { font-weight: 700; color: var(--text); }
-.cd-flow-toggle-count {
   color: var(--text-faint);
-  border-left: 1px solid var(--border);
-  padding-left: 7px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  transition: color .15s ease, background .15s ease;
 }
-.cd-flow-toggle-chevron { color: var(--text-faint); font-size: var(--fs-cap); transition: transform .18s var(--ease-standard); }
+.cd-flow-toggle:hover { color: var(--text-muted); background: var(--bg-hover); }
+.cd-flow-toggle:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
+.cd-flow-toggle-glyph { color: var(--text-faint); font-size: var(--fs-sm); }
+.cd-flow-toggle-count { color: var(--text-faint); }
+.cd-flow-toggle-chevron { color: var(--text-faint); font-size: 9px; opacity: .55; transition: transform .18s var(--ease-standard), opacity .15s ease; }
+.cd-flow-toggle:hover .cd-flow-toggle-chevron,
+.cd-flow-toggle[aria-expanded="true"] .cd-flow-toggle-chevron { opacity: 1; }
 .cd-flow-toggle-chevron.open { transform: rotate(180deg); }
-.cd-flow-body { display: flex; flex-direction: column; margin-top: 6px; }
-.cd-flow-think { display: flex; gap: 8px; padding: 2px 0; }
-.cd-flow-dot {
-  flex: 0 0 6px; width: 6px; height: 6px; margin-top: 6px;
-  border-radius: 50%; background: var(--text-faint);
+.cd-narration { margin: 0; }
+.cd-narration-line {
+  margin: 0 0 8px; color: var(--text);
+  font-size: var(--fs-md); line-height: 1.66;
+  font-family: var(--font-ui); white-space: pre-wrap; word-break: break-word;
 }
-.cd-flow-dot.on { background: var(--accent); animation: cd-run-pulse 1.1s infinite; }
-.cd-flow-think-body {
-  min-width: 0; flex: 1;
-  font-size: var(--fs-sm); line-height: 1.6;
-  color: color-mix(in srgb, var(--accent) 42%, var(--ink));
-  padding-left: 9px; border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
-  white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 220px; overflow: auto;
-}
+.cd-narration-line:last-child { margin-bottom: 2px; }
+.cd-flow-body { display: flex; flex-direction: column; margin-top: 2px; }
 
 /* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
 .cd-flow-row {

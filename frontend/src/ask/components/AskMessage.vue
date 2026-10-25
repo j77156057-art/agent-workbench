@@ -56,34 +56,44 @@ function openArtifact(a: ChatArtifact) {
 // reasoning 的轮次切分发生在 useChatStream（动作事件即切点，思考随帧实时
 // 生长）；历史回放/演示等绕开管线的路径没有 flow，由 flowOf 兜底按 trace
 // 顺序合成（reasoning 只剩整块，当第一个 think——切点没留下来，不假装知道）。
-import { flowOf } from '../../workbench/composables/chat-types'
-const flowItems = computed(() => flowOf(props.msg))
-/** 交错流是否有可见节点：先看有没有节点——历史消息不落 trace/reasoning，
- *  合成结果为空时不能渲染容器（只看 showTrace 会给历史消息留个空 flow）。
- *  有节点时：思考类恒显示，动作/返回行随「显示推理轨迹」偏好。 */
-const hasFlow = computed(() => {
-  const items = flowItems.value
-  if (!items.length) return false
-  return prefs.showTrace || items.some((n) => n.kind === 'think' || n.kind === 'thought')
-})
-// 展示优化 B：一轮跑完后，整条中文推理链默认折叠成一行「推理过程 · N 步」，
-// 点开展开看全文。流式中恒展开（用户要看着思考实时生长）；done/stopped 才收。
-const flowExpanded = ref(false)
-const flowOpen = computed(() => streaming.value || flowExpanded.value)
-const flowStepCount = computed(() => flowItems.value.length)
-function traceAt(node: { trace: number }): ChatTraceItem {
-  return props.msg.trace[node.trace]
+import { traceSegments } from '../../workbench/composables/traceDigest'
+// 按「发言 → 该段工具摘要」切段（与工作台 ChatDock 同一份实现）：推理过程夹在
+// 中途发言之间，而不是整轮压成一块铺在答案前面。摘要行默认收起，点开看单步。
+const segments = computed(() => traceSegments(props.msg))
+/** 交错流是否有可见内容：有发言就渲染发言；动作/返回摘要随「显示推理轨迹」偏好。 */
+const hasFlow = computed(() =>
+  segments.value.some((s) => s.narration.length || (prefs.showTrace && s.digest.toolTotal)),
+)
+// 每段摘要行的展开状态（段只会往后追加，按下标记是稳定的）。
+const openSegs = ref<Set<number>>(new Set())
+function segOpen(i: number) { return openSegs.value.has(i) }
+function toggleSeg(i: number) {
+  const next = new Set(openSegs.value)
+  if (next.has(i)) next.delete(i)
+  else next.add(i)
+  openSegs.value = next
 }
+function rowKind(ti: number): 'action' | 'result' {
+  return props.msg.trace[ti]?.type === 'action' ? 'action' : 'result'
+}
+// 流式中最后一次动作/返回（自动摊开规则用）
+const lastRowTrace = computed(() => {
+  for (let i = props.msg.trace.length - 1; i >= 0; i--) {
+    const t = props.msg.trace[i]?.type
+    if (t === 'action' || t === 'observation') return i
+  }
+  return -1
+})
 
 // 动作/返回行的全文展开：手动展开与手动收起各记一个集合——显式操作必须能
 // 盖过「流式中最新一条自动摊开」的自动规则（只记展开的单一集合会让用户点
-// 一条想收起来时点了没反应）。
+// 一条想收起来时点了没反应）。按 trace 下标记，跨段也唯一。
 const openRows = ref<Set<number>>(new Set())
 const mutedRows = ref<Set<number>>(new Set())
 function rowOpen(i: number) {
   if (openRows.value.has(i)) return true
   if (mutedRows.value.has(i)) return false
-  return prefs.autoExpandTrace && streaming.value && i === flowItems.value.length - 1
+  return prefs.autoExpandTrace && streaming.value && i === lastRowTrace.value
 }
 function toggleRow(i: number) {
   const open = rowOpen(i)
@@ -205,36 +215,37 @@ const phaseLabel = computed(() => {
              答案之前全部可见、无边框（容器只有左侧一条虚线时间线）。
              点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
         <div v-if="hasFlow" class="flow-wrap">
-          <button
-            v-if="!streaming"
-            class="flow-toggle"
-            type="button"
-            :aria-expanded="flowExpanded"
-            @click="flowExpanded = !flowExpanded"
-          >
-            <span class="flow-toggle-glyph" aria-hidden="true">◈</span>
-            <span class="flow-toggle-label">推理过程</span>
-            <span class="flow-toggle-count">{{ flowStepCount }} 步</span>
-            <span class="chev" :class="{ open: flowExpanded }">⌄</span>
-          </button>
-          <div v-show="flowOpen" class="flow">
-            <template v-for="(node, i) in flowItems" :key="i">
-              <div v-if="node.kind === 'think' || node.kind === 'thought'" class="flow-think">
-                <span class="flow-dot" :class="{ on: streaming && i === flowItems.length - 1 }"></span>
-                <div class="flow-think-body">{{ node.kind === 'think' ? node.text : traceAt(node).text.trim() }}</div>
-              </div>
-              <template v-else-if="prefs.showTrace">
-                <button class="flow-row" :class="node.kind" @click="toggleRow(i)">
-                  <span class="flow-glyph">{{ node.kind === 'action' ? '↗' : '↳' }}</span>
-                  <span class="flow-title">{{ stepTitle(traceAt(node)) }}</span>
-                  <span v-if="!rowOpen(i)" class="flow-summary">{{ stepSummary(traceAt(node)) }}</span>
-                  <span v-if="fmtElapsed(traceAt(node).elapsedMs)" class="flow-time">{{ fmtElapsed(traceAt(node).elapsedMs) }}</span>
-                  <span class="chev" :class="{ open: rowOpen(i) }">⌄</span>
+          <!-- 分段呈现（2026-10-25）：发言 → 这段之后干了什么的一行灰色摘要 → 下一段发言。
+               推理过程夹在中途发言之间；摘要默认收起，点开才看这一段的单步明细。 -->
+          <template v-for="(seg, si) in segments" :key="'seg' + si">
+            <div v-if="seg.narration.length" class="ask-narration">
+              <p v-for="(line, li) in seg.narration" :key="'nar' + li" class="ask-narration-line">{{ line }}</p>
+            </div>
+            <button
+              v-if="prefs.showTrace && seg.digest.toolTotal"
+              class="flow-toggle"
+              type="button"
+              :aria-expanded="segOpen(si)"
+              :aria-label="`${seg.digest.text}，点击查看这一段的单步明细`"
+              @click="toggleSeg(si)"
+            >
+              <span class="flow-toggle-glyph" aria-hidden="true">{{ seg.glyph }}</span>
+              <span class="flow-toggle-count">{{ seg.digest.text }}</span>
+              <span class="chev" :class="{ open: segOpen(si) }">⌄</span>
+            </button>
+            <div v-if="segOpen(si)" class="flow">
+              <template v-for="(ti, ri) in seg.rows" :key="'r' + ri">
+                <button class="flow-row" :class="rowKind(ti)" @click="toggleRow(ti)">
+                  <span class="flow-glyph">{{ rowKind(ti) === 'action' ? '↗' : '↳' }}</span>
+                  <span class="flow-title">{{ stepTitle(msg.trace[ti]) }}</span>
+                  <span v-if="!rowOpen(ti)" class="flow-summary">{{ stepSummary(msg.trace[ti]) }}</span>
+                  <span v-if="fmtElapsed(msg.trace[ti].elapsedMs)" class="flow-time">{{ fmtElapsed(msg.trace[ti].elapsedMs) }}</span>
+                  <span class="chev" :class="{ open: rowOpen(ti) }">⌄</span>
                 </button>
-                <pre v-if="rowOpen(i)" class="flow-detail">{{ traceAt(node).text.trim() }}</pre>
+                <pre v-if="rowOpen(ti)" class="flow-detail">{{ msg.trace[ti].text.trim() }}</pre>
               </template>
-            </template>
-          </div>
+            </div>
+          </template>
         </div>
 
         <!-- 工作流卡片：start_workflow 的动作与观察由卡片承载，不进交错流 -->
@@ -264,7 +275,7 @@ const phaseLabel = computed(() => {
               <span class="flag-badge">覆盖存疑</span>
               本回合摘要对过程证据的关键词覆盖率仅
               {{ Math.round((msg.consistencyRatio || 0) * 100) }}%——结论未必有错，但可能有细节没纳入摘要。
-              展开上方「推理过程」可逐项核对。
+              点开上方各段灰色摘要可逐项核对。
             </div>
             <!-- BUG-7：与覆盖率徽章正交的另一条终态标记。逐行裸铺源码的「答案」把观察里的
                  行号/路径原样抄了进来，关键词命中率反而≈100% → 上面那条徽章不弹（假阴）。
@@ -273,7 +284,7 @@ const phaseLabel = computed(() => {
             <div v-if="msg.status === 'done' && msg.consistencyReason === 'verbatim_dump'" class="flag warn">
               <span class="flag-badge">未综合结论</span>
               本回合的回答以**原始源码逐行罗列**为主，缺少针对你问题的归纳结论——它读起来像证据、
-              但不是答案。展开上方「推理过程」可查看模型实际读到了什么。
+              但不是答案。点开上方各段灰色摘要可查看模型实际读到了什么。
             </div>
             <span v-html="html"></span>
           </div>
@@ -389,6 +400,7 @@ border-radius: var(--r-sm); }
 
 .typing { color: var(--text-muted); font-size: var(--fs-md); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--font-sans); }
 .typing-phase { color: var(--text); font-weight: 600; }
+.typing-tools { color: var(--text-faint); font-weight: 500; font-size: var(--fs-sm); }
 .typing-time {
   font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted);
   background: var(--bg-hover); border: 1px solid var(--border); padding: 1px 8px;
@@ -456,49 +468,38 @@ border-radius: var(--r-sm); }
    无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning
    分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
    替代了旧的「reason 独立块 + 可折叠过程流」两段式。 */
-.flow-wrap { display: flex; flex-direction: column; gap: 4px; }
+.flow-wrap { display: flex; flex-direction: column; gap: 2px; }
+.ask-narration { margin: 0; }
+.ask-narration-line {
+  margin: 0 0 8px; color: var(--text);
+  font-size: var(--fs-md); line-height: 1.66;
+  white-space: pre-wrap; word-break: break-word;
+}
+.ask-narration-line:last-child { margin-bottom: 2px; }
+/* 每段的工具摘要行：一行灰色小字，点开看这一段的单步明细（参考图里的样式）。 */
 .flow-toggle {
   align-self: flex-start;
-  display: inline-flex; align-items: center; gap: 7px;
-  border: 1px dashed var(--border);
-  background: var(--bg-hover);
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none;
+  background: none;
   border-radius: var(--r-sm);
-  padding: 3px 10px;
+  padding: 1px 4px;
+  margin-left: -4px;
   cursor: pointer;
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   font-size: var(--fs-sm);
-  color: var(--text-muted);
-  transition: background 130ms, color 130ms, border-color 130ms;
-}
-.flow-toggle:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-raised); }
-.flow-toggle-glyph { color: var(--accent-2); font-size: var(--fs-cap); }
-.flow-toggle-label { font-weight: 700; color: var(--text); }
-.flow-toggle-count {
+  line-height: 1.5;
   color: var(--text-faint);
-  border-left: 1px solid var(--border);
-  padding-left: 7px;
+  transition: background 130ms, color 130ms;
 }
+.flow-toggle:hover { color: var(--text-muted); background: var(--bg-hover); }
+.flow-toggle:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
+.flow-toggle-glyph { color: var(--text-faint); font-size: var(--fs-sm); }
+.flow-toggle-count { color: var(--text-faint); }
 .flow {
   display: flex;
   flex-direction: column;
-  margin: 2px 0 6px 3px;
-  padding-left: 12px;
-  border-left: 1px dashed var(--border);
-}
-.flow-think { display: flex; gap: 8px; padding: 2px 0; }
-.flow-dot {
-  flex: 0 0 6px; width: 6px; height: 6px; margin-top: 6px;
-  border-radius: 50%; background: var(--text-faint);
-}
-.flow-dot.on { background: var(--accent-2); animation: reason-pulse 1.1s infinite; }
-@keyframes reason-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-.flow-think-body {
-  min-width: 0; flex: 1;
-  font-family: var(--font-sans);
-  font-size: var(--fs-sm); line-height: 1.6;
-  color: var(--text-muted);
-  white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 220px; overflow: auto;
+  margin: 2px 0 6px;
 }
 
 /* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
