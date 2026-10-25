@@ -133,6 +133,11 @@ class ParseKeyedKeepsKnownFieldsCleanTests(unittest.TestCase):
 class PageActionRejectsBorrowedKeysTests(unittest.TestCase):
     """`dev_page_action` 必须显式拒绝 `preview_project` 的键。"""
 
+    @staticmethod
+    def _txt(res):
+        """合法调用返回 ToolResult，拒绝/校验路径返回纯字符串；统一取文本再断言。"""
+        return res.text if hasattr(res, "text") else res
+
     def setUp(self):
         # dev_page_action 第一件事就是 `_get_code_root()`，没配就提前返回
         # "尚未配置代码库根目录" —— 那样根本测不到参数校验。指到临时目录。
@@ -144,7 +149,7 @@ class PageActionRejectsBorrowedKeysTests(unittest.TestCase):
 
     def _call(self, arg):
         import tools
-        return tools.TOOLS["dev_page_action"]["func"](arg)
+        return self._txt(tools.TOOLS["dev_page_action"]["func"](arg))
 
     def test_code_root_is_configured(self):
         """自检：别再把「没配 code_root」当成「校验生效」。"""

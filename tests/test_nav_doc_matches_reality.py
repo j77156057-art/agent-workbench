@@ -95,6 +95,17 @@ def _doc():
     return NAV_DOC.read_text(encoding="utf-8")
 
 
+def _doc_tracked() -> bool:
+    """`docs/next-steps.md` 是否被 git 跟踪。
+
+    它按 §0 的设计**故意不单独提交**（提交本身会让声明的 HEAD 立刻陈旧一笔），
+    于是干净检出（CI）里根本没有这份文件。区分两种「文件不在」：
+      · 未跟踪 + 不在 —— 预期的本地专属文档，CI 本就没有 → skip，不是缺陷。
+      · 已跟踪 + 不在 —— 真被人删了/丢了 → 才是判据该报的失败。
+    """
+    return bool(_git("ls-files", "--", "docs/next-steps.md").strip())
+
+
 class NavigationDocIsSelfDeclared(unittest.TestCase):
     """先把范围钉住：这份文档确实自称「指路入口」。"""
 
@@ -104,11 +115,22 @@ class NavigationDocIsSelfDeclared(unittest.TestCase):
         这条同时是「判据有没有白跑」的自检：文档改名/改定位后，
         其余两条会跳过（不是红），那就该回来重议范围了。
         """
+        if not NAV_DOC.exists():
+            self.skipTest(
+                "docs/next-steps.md 不在这份检出里（它按设计只存在于本地工作树、"
+                "故意不提交）——没有文档就无从判断它自称的角色，跳过而非红。")
         self.assertIn(NAN_CLAIM, _doc(),
                       "next-steps.md 不再自称「%s」了 —— "
                       "本判据的范围依据失效，需重新议「哪份文档该对现状负责」" % NAN_CLAIM)
 
     def test_the_doc_exists(self):
+        if not NAV_DOC.exists():
+            if _doc_tracked():
+                self.fail("docs/next-steps.md 被 git 跟踪却不在工作树里 —— "
+                          "指路文档丢了，接手的人没有入口了。")
+            self.skipTest(
+                "docs/next-steps.md 按 §0 设计故意不单独提交，是本地工作树专属文档；"
+                "干净检出（CI）里没有它属正常，不是缺陷。")
         self.assertTrue(NAV_DOC.exists(),
                         "docs/next-steps.md 不在 —— 判据的文件都找不到了")
 
@@ -130,6 +152,15 @@ class HeadClaimMatchesReality(unittest.TestCase):
     所以判据只在「§0 在工作树里有未提交改动」时才响；文档原样提交（干净）时
     明确 skip —— 不静默 return（静默通过和恒真判据在输出里长得一模一样）。
     """
+
+    def setUp(self):
+        # 干净检出（CI）里没有这份文档：读它会 FileNotFoundError。
+        # 未跟踪 + 不在 → 预期的本地专属文档，跳过；已跟踪却不在 → 交给
+        # NavigationDocIsSelfDeclared.test_the_doc_exists 报真失败，这里不重复。
+        if not NAV_DOC.exists():
+            self.skipTest(
+                "docs/next-steps.md 不在这份检出里（本地工作树专属、故意不提交）——"
+                "无从读取它的 HEAD 声明，跳过而非红/错。")
 
     def test_declared_head_equals_real_head(self):
         doc = _doc()
@@ -176,6 +207,12 @@ def _doc_dirty() -> bool:
 
 class UncommittedClaimMatchesReality(unittest.TestCase):
     """文档声明的「未提交文件」必须在 `git status` 里真的还在。"""
+
+    def setUp(self):
+        if not NAV_DOC.exists():
+            self.skipTest(
+                "docs/next-steps.md 不在这份检出里（本地工作树专属、故意不提交）——"
+                "无从读取它的「未提交」声明，跳过而非红/错。")
 
     def test_named_files_are_still_uncommitted(self):
         doc = _doc()
@@ -240,6 +277,12 @@ class WorktreeClaimMatchesReality(unittest.TestCase):
 
     CLAIM_CLEAN = "工作树内容干净"
     CLAIM_DIRTY = "工作树有未提交改动"
+
+    def setUp(self):
+        if not NAV_DOC.exists():
+            self.skipTest(
+                "docs/next-steps.md 不在这份检出里（本地工作树专属、故意不提交）——"
+                "无从读取它的工作树声明，跳过而非红/错。")
 
     def test_clean_claim_requires_content_clean_tree(self):
         doc = _doc()

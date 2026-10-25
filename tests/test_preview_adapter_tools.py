@@ -131,39 +131,41 @@ class PreviewAdapterToolTests(unittest.TestCase):
         invalid_target = json.loads(tools.dev_desktop_action("action: click\ntarget: hwnd\nx: 1\ny: 2"))
         self.assertFalse(invalid_target["ok"])
 
-    def test_desktop_action_approval_hides_text_and_binds_exact_parameters(self):
-        request = json.loads(tools.dev_desktop_action(
-            "action: type\ntarget: embedded\ntext: super secret"))
-        self.assertTrue(request["blocked"])
-        self.assertTrue(request["approval_required"])
-        self.assertEqual(request["action"], "desktop_action")
-        self.assertNotIn("super secret", request["target"])
+    def test_desktop_action_executes_directly_and_never_echoes_text(self):
+        """「留地板、拆其余」：可逆的桌面点击/输入不再逐次弹审批卡，直接执行。
 
-        with patch("desktop_actions.perform", return_value={"ok": True, "events": 2}) as perform:
-            # The exact same arguments are accepted after the user approval.
-            from game_workbench import approval
-            approval(self.root, "desktop_action", "user", approved=True, target=request["target"])
+        幸存的地板是隐私——送进输入层的文本绝不能回显到工具结果里。逐次审批门
+        （gate）已被拆成死代码，这里断言的是当前真实行为。
+        """
+        import desktop_actions
+        sent = {}
+
+        def fake_perform(action, **kw):
+            sent["action"] = action
+            sent["text"] = kw.get("text", "")
+            return {"ok": True, "action": action, "target": kw.get("target"),
+                    "events": 2, "window": {"width": 200, "height": 100}, "error": ""}
+
+        with patch.object(desktop_actions, "perform", side_effect=fake_perform):
             result = json.loads(tools.dev_desktop_action(
                 "action: type\ntarget: embedded\ntext: super secret"))
-        self.assertTrue(result["ok"])
-        perform.assert_called_once()
 
-        # Changing the text changes the approval binding and blocks again.
-        changed = json.loads(tools.dev_desktop_action(
-            "action: type\ntarget: embedded\ntext: another value"))
-        self.assertTrue(changed["blocked"])
-        self.assertNotEqual(changed["target"], request["target"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(sent["action"], "type")
+        # 文本确实原样送到了输入层……
+        self.assertEqual(sent["text"], "super secret")
+        # ……但绝不出现在返回给调用方/日志的结果里。
+        self.assertNotIn("super secret", json.dumps(result, ensure_ascii=False))
+        self.assertNotIn("blocked", result, "逐次审批卡已拆，桌面可逆动作不再有 blocked 门")
 
     def test_desktop_action_save_maps_to_control_s(self):
         import desktop_actions
-        from game_workbench import approval
-        first = json.loads(tools.dev_desktop_action("action: save\ntarget: foreground"))
-        approval(self.root, "desktop_action", "user", approved=True, target=first["target"])
         with patch("desktop_actions.perform", return_value={"ok": True}) as perform:
             result = json.loads(tools.dev_desktop_action("action: save\ntarget: foreground"))
         self.assertTrue(result["ok"])
-        self.assertEqual(perform.call_args.kwargs["key"], "")
+        # save 直接透传到 perform（无逐次审批卡），由 perform 内部映射 Control_L+s
         self.assertEqual(perform.call_args.args[0], "save")
+        self.assertEqual(perform.call_args.kwargs["key"], "")
         with patch.object(desktop_actions, "_resolve_target", return_value=(1, {
                 "origin": {"x": 0, "y": 0}, "rect": {"width": 10, "height": 10}}, "")), \
              patch.object(desktop_actions, "_focus", return_value=(True, "")), \
@@ -173,11 +175,10 @@ class PreviewAdapterToolTests(unittest.TestCase):
         press.assert_called_once_with("Control_L+s")
 
     def test_desktop_action_does_not_fake_success_when_bridge_fails(self):
-        from game_workbench import approval
-        first = json.loads(tools.dev_desktop_action("action: click\ntarget: embedded\nx: 4\ny: 5"))
-        approval(self.root, "desktop_action", "user", approved=True, target=first["target"])
-        with patch("desktop_actions.perform", return_value={"ok": False, "error": "Windows 未确认输入事件"}):
-            result = json.loads(tools.dev_desktop_action("action: click\ntarget: embedded\nx: 4\ny: 5"))
+        with patch("desktop_actions.perform",
+                   return_value={"ok": False, "error": "Windows 未确认输入事件"}):
+            result = json.loads(tools.dev_desktop_action(
+                "action: click\ntarget: embedded\nx: 4\ny: 5"))
         self.assertFalse(result["ok"])
         self.assertIn("Windows", result["error"])
 

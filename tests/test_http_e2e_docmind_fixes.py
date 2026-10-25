@@ -221,9 +221,13 @@ class AuditSurfacingThroughHttpTests(HttpE2EBase):
                       "reflection 没点名声称的数字 194：%r" % joined_refl[:300])
         self.assertTrue(("截断" in joined_refl) or ("确定性口吻" in joined_refl),
                         "reflection 未交代截断证据/确定性口吻的碰撞：%r" % joined_refl[:300])
-        # 二次仍不过门 → final 带上核验结论。
-        self.assertIn("核验", final_text,
-                      "定位类未过门的 final 应带核验结论注记：%r" % final_text[:300])
+        # 「留地板、拆其余」：纠偏一次后模型仍坚持同一数字 → 原样交付模型的答案，
+        # 不再往 final 追加 harness 写的「（核验：…）」横幅（那是被拆掉的"事后盖章"）。
+        # 外显保证仍在：上面已断言 reflection 事件经 HTTP 产出并点名 194/截断。
+        self.assertIn("准确总数：194", final_text,
+                      "未过门仍应把模型的真实计数答案原样交付，不能吞掉：%r" % final_text[:300])
+        self.assertNotIn("核验", final_text,
+                         "harness 核验横幅已随「留地板、拆其余」拆除，不该再盖到用户答案上")
 
 
 class PureCountSurfacingFixedTests(HttpE2EBase):
@@ -254,12 +258,12 @@ class PureCountSurfacingFixedTests(HttpE2EBase):
                       "reflection 没点名声称的数字 194：%r" % joined_refl[:300])
         self.assertTrue(("截断" in joined_refl) or ("确定性" in joined_refl),
                         "reflection 未交代截断证据/确定性口吻的碰撞：%r" % joined_refl[:300])
-        # 二次仍不过门 → final 带上核验结论，且点名那条自相矛盾的声称（非空泛 FAIL）。
-        self.assertIn("核验", final_text,
-                      "纯计数题未过门的 final 应带核验结论注记：%r" % final_text[:300])
-        self.assertIn("FAIL", final_text, "核验结论应如实标 FAIL：%r" % final_text[:300])
-        self.assertIn("准确总数", final_text,
-                      "核验注记应点名『准确总数』这条被截断证据支撑的声称：%r" % final_text[:300])
+        # 「留地板、拆其余」：纯计数题过度声称同样只经 reflection 外显一次，
+        # 最终原样交付模型的那句话，不再贴 harness 的「核验 … FAIL …」横幅。
+        self.assertIn("准确总数：194", final_text,
+                      "应原样交付模型的计数答案、不吞掉：%r" % final_text[:300])
+        self.assertNotIn("核验", final_text,
+                         "事后盖章横幅已拆除，不该再出现在用户答案里：%r" % final_text[:300])
 
     def test_audit_itself_computes_fail_and_content_fail_when_not_required(self):
         """把修复的数据源钉死：审计对同一输入**确实**判 FAIL，并置 `content_fail=True`。

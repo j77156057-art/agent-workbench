@@ -32,6 +32,15 @@ def _git_available():
 GIT_OK = _git_available()
 
 
+def _txt(res):
+    """工具成功路径返回 ToolResult（带 ok/artifacts），拒绝路径返回纯字符串。
+
+    测试里对返回值做子串断言前统一取文本：ToolResult 取其 .text，字符串原样返回，
+    这样无论走哪条返回类型都能断言，不会因 ToolResult 不可迭代而 TypeError。
+    """
+    return res.text if hasattr(res, "text") else res
+
+
 class _CodeRootCase(unittest.TestCase):
     """把 code_root 临时指向一个目录，用完恢复。"""
 
@@ -277,7 +286,7 @@ class TestDevApplyEdits(_CodeRootCase):
         out = tools.dev_apply_edits(
             "path: a.py\nold_text: X = 1\nnew_text: X = 11\n"
             "\n---\n\npath: b.py\nold_text: Y = 2\nnew_text: Y = 22\n")
-        self.assertIn("已原子写入 2 个文件", out)
+        self.assertIn("已原子写入 2 个文件", _txt(out))
         self.assertIn("X = 11", open(os.path.join(self.tmp, "a.py"), encoding="utf-8").read())
         self.assertIn("Y = 22", open(os.path.join(self.tmp, "b.py"), encoding="utf-8").read())
 
@@ -329,7 +338,7 @@ class TestDevApplyEdits(_CodeRootCase):
         self.write("doc.md", "head\n---\ntail\n")
         out = tools.dev_apply_edits(
             "path: doc.md\nold_text: head\nnew_text: head2\n---\nbody\n")
-        self.assertIn("已原子写入 1 个文件", out)
+        self.assertIn("已原子写入 1 个文件", _txt(out))
         body = open(os.path.join(self.tmp, "doc.md"), encoding="utf-8").read()
         self.assertIn("head2\n---\nbody", body)
 

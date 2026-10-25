@@ -30,6 +30,15 @@ from agent_runtime import lanes
 import tools as tools_mod
 
 
+def _txt(res):
+    """apply_edit 成功路径返回 ToolResult（带 ok/artifacts），拒绝路径返回纯字符串。
+
+    统一取文本后再做子串断言：ToolResult 取 .text，字符串原样返回，避免 ToolResult
+    不可迭代导致的 TypeError。
+    """
+    return res.text if hasattr(res, "text") else res
+
+
 class LanesWriteGateTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="lanes_gate_")
@@ -59,8 +68,8 @@ class LanesWriteGateTests(unittest.TestCase):
             p.stop()
 
     def _edit(self, new_text, old_text="X = 1"):
-        return tools_mod.apply_edit(
-            "path: mod.py\nold_text: %s\nnew_text: %s" % (old_text, new_text))
+        return _txt(tools_mod.apply_edit(
+            "path: mod.py\nold_text: %s\nnew_text: %s" % (old_text, new_text)))
 
     def _read(self, path):
         with open(path, encoding="utf-8") as f:

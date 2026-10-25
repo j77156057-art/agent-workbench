@@ -132,19 +132,24 @@ class VerdictRenderingTests(unittest.TestCase):
         self.assertNotIn("未核实的引用", note,
                          "PASS 时仍要求用户自行复查——那等于没给出任何正向信号")
 
-    def test_pass_is_actually_rendered_by_the_agent_loop(self):
-        """上一版我在提交信息里声称「PASS 时会报 N 处引用可核验」，实际没实现。
+    def test_agent_loop_keeps_the_nudge_but_does_not_stamp_a_verdict(self):
+        """「留地板、拆其余」：核验通过/失败都不再往用户答案上盖横幅。
 
-        这里把它钉住，避免又出现一次「文档说了、代码没做」。
+        判据函数 `_evidence_verdict_note` 本身保留、由本类其它用例直测；但 `_run` 已
+        刻意不再调用它去追加「（核验：PASS·N 处…）／FAIL…」横幅——那是被拆掉的
+        "事后盖章"。这里钉的是**当前契约**：一次性证据纠偏闸门仍在，且 PASS/FAIL
+        横幅不由 `_run` 追加，防止"处处受限"式盖章悄悄长回来。
         """
         import inspect
         src = inspect.getsource(agent_mod.Agent._run)
-        self.assertIn(
+        self.assertIn("if evidence_nudges < 1:", src,
+                      "一次性证据纠偏闸门必须仍在（内部 re-ask，不盖章）")
+        self.assertNotIn(
             'if evidence_audit.get("required") and evidence_audit.get("references"):', src,
-            "定位类问题全通过时不渲染任何核验结论——用户无从知道引用是否被检查过")
-        self.assertGreaterEqual(
-            src.count("_evidence_verdict_note(evidence_audit)"), 2,
-            "渲染点只有失败分支那一个，PASS 分支没接上")
+            "逐次盖章分支应已随「留地板、拆其余」拆除")
+        self.assertEqual(
+            src.count("_evidence_verdict_note(evidence_audit)"), 0,
+            "PASS/FAIL 横幅已不再由 _run 追加；>0 说明「事后盖章」又回来了")
 
     def test_fail_names_the_bad_references(self):
         refs = [{"path": "a.gd", "start_line": 7, "exists": True, "in_root": True, "line_ok": True},

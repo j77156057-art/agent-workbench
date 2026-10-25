@@ -66,6 +66,7 @@
 （先 `get()` 记住、用完 `set()` 回去）。
 """
 
+import json
 import os
 import pathlib
 import re
@@ -315,12 +316,13 @@ class BrowserChainTests(unittest.TestCase):
         out = call("dev_page_action",
                    "action: type\npage: %s\nselector: #fld\n"
                    "value: 基线 typed\nsettle: 700\n" % self.page)
-        # 判定同样读回 DOM，不匹配文案；但 effect 必须是 typed 而非 no_change
-        # （这条正是被修的东西，所以两个都要钉）。判定行的格式是
-        # "type：<outcome> —— DOM..."，no_change 时 outcome 是「【没有观察到变化】」，
-        # 所以要带前缀匹配，别把解释行里的引语也算进去。
-        self.assertIn("type：生效（文本已填入", out,
-                      "type 后没判生效：%s" % out[:200])
+        # 判定读回 DOM，不匹配文案；outcome 必须是「生效」而非「没有观察到变化」
+        # （这条正是被修的东西）。判定行格式 "type：<outcome> —— DOM..."，成功分支
+        # 文案会变（"文本已填入" / "画面变了，DOM 没变 —— canvas..." 都算生效），
+        # 所以只钉「type：生效」前缀，不锁死具体措辞；no_change 才是假阴性回归。
+        outcome_head = out.split("——", 1)[0]
+        self.assertTrue(outcome_head.startswith("type：生效"),
+                        "type 后没判生效：%s" % out[:200])
         self.assertNotIn("type：【没有观察到变化】", out,
                          "type 落入成功却报 no_change —— 假阴性回归了：%s" % out[:200])
         got = call("dev_page_action",
@@ -340,17 +342,21 @@ class DesktopAndGameTests(unittest.TestCase):
         self.assertRegex(out, r"\d+\s*[x×]\s*\d+",
                          "截屏回报里没有尺寸：%s" % out[:120])
 
-    def test_desktop_action_reports_that_it_needs_approval(self):
-        """`dev_desktop_action` 是 ADMIN：首次调用**按设计**要审批。
+    def test_desktop_action_reports_a_coherent_result(self):
+        """`dev_desktop_action` 是 ADMIN：按当前设计，可逆动作**直接执行或如实报错**。
 
-        判据盯的是「**如实回报要审批**」，不是「动作生效」——
-        它既不算能用、也不算跑不通。
+        「留地板、拆其余」重构里逐次审批门被拆（gate 恒为 None），所以这里不再断言
+        「需要审批」——那已是死代码。基线回到「如实回报」：结果必须是带布尔 ok 的
+        结构化 JSON，绝不静默、绝不假成功、也绝不谎称要审批。用 target=engine 做
+        非侵入探针（测试环境没起引擎，解析不到窗口→如实报错），不去点真实前台窗口。
         """
         out = call("dev_desktop_action",
-                   "action: click\ntarget: foreground\nx: 10\ny: 10\n")
-        self.assertTrue(
-            "approval_required" in out or "审批" in out,
-            "ADMIN 工具既没动作也没说要审批：%s" % out[:140])
+                   "action: click\ntarget: engine\nx: 10\ny: 10\n")
+        payload = json.loads(out)
+        self.assertIsInstance(payload.get("ok"), bool,
+                              "dev_desktop_action 没回结构化 ok：%s" % out[:140])
+        self.assertNotIn("approval_required", payload,
+                         "逐次审批卡已拆，不该再谎称需要审批")
 
     @unittest.skipUnless(os.name == "nt", "前台窗口抓屏是 Windows GDI 能力")
     def test_game_screenshot_reports_source_and_size(self):

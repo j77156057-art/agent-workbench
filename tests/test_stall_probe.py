@@ -204,13 +204,24 @@ class ProbeIsWiredToTheStallBranchTests(unittest.TestCase):
         self.assertIn("_dump_stall_probe(", self.src)
 
     def test_it_is_called_next_to_the_stall_diagnostic(self):
-        """落盘必须与 `degraded` 诊断**同一处**——那是唯一拿得到 messages 的时刻。"""
-        stall_at = self.src.find('turn.outcome = "format_stall"')
-        probe_at = self.src.find("_dump_stall_probe(")
+        """落盘必须在 `format_stall` 分支内、且在抛出 degraded final **之前**——
+        那是唯一还拿得到 messages/acc 现场的时刻。
+
+        `_run` 里有不止一处探针（不同停滞分支各一处），所以按「离第一处探针的
+        字符距离」判会量到别处、被无关的大段注释撑爆。这里改成结构判据：从停滞
+        判定往下，本分支自己的落盘调用必须早于它 yield 的 degraded final。
+        """
+        src = self.src
+        stall_at = src.find('turn.outcome = "format_stall"')
         self.assertNotEqual(stall_at, -1, "停滞分支不在了——探针会失去落盘点")
-        self.assertNotEqual(probe_at, -1)
-        self.assertLess(abs(stall_at - probe_at), 3000,
-                        "落盘点离停滞判定太远——messages 早就被重建掉了")
+        probe_at = src.find("_dump_stall_probe(", stall_at)
+        self.assertNotEqual(probe_at, -1, "停滞分支内没有落盘调用——探针挂到了别处")
+        yield_at = src.find('"degraded": True,', probe_at)
+        self.assertNotEqual(yield_at, -1, "停滞分支的 degraded 收尾不在了")
+        self.assertLess(probe_at, yield_at,
+                        "落盘发生在抛出 degraded final 之后——messages 现场已释放")
+        self.assertIn("messages", src[probe_at:probe_at + 120],
+                      "探针没接 messages 现场")
 
     def test_the_probe_never_replaces_the_user_facing_conclusion(self):
         """探针是**旁路**：它不能改 `acc`，也不能插进要返回的那段文字里。"""
