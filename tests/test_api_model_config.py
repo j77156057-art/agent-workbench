@@ -399,6 +399,80 @@ class ProjectKeyPersistenceTests(unittest.TestCase):
         )
 
 
+class NoProjectKeyPersistenceTests(unittest.TestCase):
+    """首次启动还没登记项目时保存的 Key 也必须跨重启保留（Key 不依赖项目）。"""
+
+    def setUp(self):
+        self._old_state_root = config.STATE_ROOT
+        self._old_state_file = config.STATE_FILE
+        self._old_runtime = dict(config._RUNTIME)
+        self._old_llm = api.agent.llm
+        self._tmp = tempfile.TemporaryDirectory(prefix="docmind_noproject_key_")
+        self._state_root = os.path.join(self._tmp.name, "state")
+        os.makedirs(self._state_root)
+        config.STATE_ROOT = self._state_root
+        config.STATE_FILE = os.path.join(self._state_root, ".docmind_state.json")
+        config._RUNTIME.clear()
+        # 明确的「还没有任何项目、也没有旧 code_root」形状
+        config.save_state("projects", {})
+        config.save_state("current_project_id", "")
+        config.save_state("code_root", "")
+
+    def tearDown(self):
+        config.STATE_ROOT = self._old_state_root
+        config.STATE_FILE = self._old_state_file
+        config._RUNTIME.clear()
+        config._RUNTIME.update(self._old_runtime)
+        api.agent.llm = self._old_llm
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _blank_keys():
+        return patch.dict(os.environ, {
+            "DASHSCOPE_API_KEY": "", "DEEPSEEK_API_KEY": "", "LLM_API_KEY": "",
+        })
+
+    def test_key_saved_without_any_project_survives_restart(self):
+        with self._blank_keys(), patch.object(api, "LLM_API_KEY", ""), \
+                patch.object(api, "CODE_ROOT", ""):
+            self.assertIsNone(api._project_root_or_error())
+            resp = _call(provider="deepseek", model="deepseek-chat",
+                         api_key="sk-no-project")
+            self.assertTrue(resp["ok"])
+
+            # 全局密钥库（没有项目也能读）与自动生成的预设槽位都已落盘
+            self.assertEqual(secrets_store.load(None, "deepseek"), "sk-no-project")
+            presets = config.load_model_presets()
+            self.assertTrue(presets)
+            self.assertEqual(
+                secrets_store.load(None, api._preset_secret_slot(presets[0]["id"])),
+                "sk-no-project",
+            )
+
+            # 模拟重启：清运行时 → 恢复选择 → 恢复密钥（没有任何项目可依赖）
+            config._RUNTIME.clear()
+            config._apply_persisted_state()
+            self.assertIsNone(api._project_root_or_error())
+            asyncio.run(api._restore_persisted_llm())
+
+        self.assertEqual(config.get_runtime("llm_api_key"), "sk-no-project")
+        self.assertEqual(api.agent.llm.provider, "deepseek")
+        self.assertEqual(api.agent.llm.api_key, "sk-no-project")
+
+    def test_key_saved_with_project_is_mirrored_to_global_store(self):
+        project_root = os.path.join(self._tmp.name, "proj")
+        os.makedirs(project_root)
+        pid = projects.ensure_project(project_root)
+        self.assertTrue(projects.set_current(pid))
+
+        with self._blank_keys(), patch.object(api, "LLM_API_KEY", ""):
+            resp = _call(provider="deepseek", model="deepseek-chat",
+                         api_key="sk-mirrored")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(secrets_store.load(project_root, "deepseek"), "sk-mirrored")
+        self.assertEqual(secrets_store.load(None, "deepseek"), "sk-mirrored")
+
+
 class MissingKeyPreflightTests(unittest.TestCase):
     """切云端模型前必须确认有 Key：阻断要发生在任何状态变更之前。"""
 

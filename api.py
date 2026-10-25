@@ -689,7 +689,7 @@ def _cockpit_mode() -> str:
 def _build_cockpit_llm(preset: dict, root: str):
     """按预设 + 项目密钥槽构造 LLMClient；缺 Key（且无环境变量）返回 None。"""
     slot = _preset_secret_slot(preset["id"])
-    stored = secrets_store.load(root, slot) if root else ""
+    stored = _load_secret(root, slot)
     env_name = PROVIDERS.get(preset["provider"], {}).get("api_key_env", "")
     if env_name and not stored and not os.getenv(env_name, ""):
         return None
@@ -747,11 +747,11 @@ def _cockpit_auto_info(pid: str) -> dict:
                 "reason": "自动升级只面向云端模型，本地（Ollama / llama.cpp）预设不能作为升级目标。"}
     root = _project_root_for(pid)
     env_name = PROVIDERS.get(provider, {}).get("api_key_env", "")
-    has_key = bool((root and secrets_store.load(root, _preset_secret_slot(preset["id"])))
+    has_key = bool(_load_secret(root, _preset_secret_slot(preset["id"]))
                    or (env_name and os.getenv(env_name, "")))
     if env_name and not has_key:
         return {"available": False, "preset": _preset_brief(preset),
-                "reason": "该云端预设在当前项目还没有保存 API Key，请先在对话台「模型设置」里填好 Key。"}
+                "reason": "该云端预设还没有保存 API Key，请先在对话台「模型设置」里填好 Key。"}
     return {"available": True, "reason": "", "preset": _preset_brief(preset)}
 
 
@@ -1049,46 +1049,79 @@ def _project_root_or_error():
     return root if root and os.path.isdir(root) else None
 
 
+def _load_secret(root, provider):
+    """读取已保存密钥：项目库优先，项目库没有时回落到全局库。
+
+    Key 属于这台机器上的 Windows 用户，不绑定项目——首次启动还没添加项目、
+    或换了项目而该项目没单独存过 Key 时，仍应拿到全局库里的那一把。
+    """
+    value = secrets_store.load(root, provider)
+    if value or not root:
+        return value
+    return secrets_store.load(None, provider)
+
+
+def _save_secret(root, provider, value):
+    """保存密钥：始终写全局库；选中项目时再镜像一份到项目库。
+
+    过去只写项目库，于是「首次启动还没加项目就填 Key」只留在内存，重启即丢。
+    两处都写既保留既有项目级读取，也让 Key 彻底不再依赖项目是否存在。
+    """
+    ok = False
+    try:
+        ok = bool(secrets_store.save(None, provider, value).get('ok'))
+    except Exception:  # noqa: BLE001 - 项目镜像失败不应让全局保存失败
+        pass
+    if root:
+        try:
+            ok = bool(secrets_store.save(root, provider, value).get('ok')) or ok
+        except Exception:  # noqa: BLE001
+            pass
+    return ok
+
+
 def _preset_secret_slot(preset_id: str) -> str:
     return f"preset:{preset_id}"
 
 
 def _presets_payload():
-    """预设列表 + 当前项目下每个预设是否已存 Key（Key 本身不回显）。"""
+    """预设列表 + 每个预设是否已存 Key（项目库或全局库；Key 本身不回显）。"""
     root = _project_root_or_error()
     out = []
     for p in load_model_presets():
         item = dict(p)
-        item["has_key"] = bool(root and secrets_store.load(root, _preset_secret_slot(p["id"])))
+        item["has_key"] = bool(_load_secret(root, _preset_secret_slot(p["id"])))
         out.append(item)
     return out
 
 
 async def _restore_persisted_llm():
-    """启动时恢复模型客户端和项目密钥；任何恢复失败都降级为当前客户端。
+    """启动时恢复模型客户端和保存的密钥；任何恢复失败都降级为当前客户端。
 
-    模型选择保存在 STATE_FILE，API key 只从当前项目的 secrets_store 读取，
-    绝不写入状态文件或接口响应。持久化配置来自用户此前成功保存的选择，
-    所以恢复失败不应阻断服务启动，而应在 /api/config 的 warnings 中提示修复。
+    模型选择保存在 STATE_FILE，API key 只从加密密钥库（当前项目库优先、
+    全局库兜底）读取，绝不写入状态文件或接口响应。持久化配置来自用户此前
+    成功保存的选择，所以恢复失败不应阻断服务启动，而应在 /api/config 的
+    warnings 中提示修复。
     """
     provider = get_runtime("llm_provider") or LLM_PROVIDER
     model = get_runtime("llm_model") or LLM_MODEL or PROVIDERS.get(provider, {}).get("default_model", "")
     base_url = get_runtime("llm_base_url") or ""
 
-    # 仅在运行时没有显式 key 时尝试读取项目密钥；环境变量仍由 LLMClient 作为后备。
+    # 仅在运行时没有显式 key 时尝试读取保存的密钥；没有项目时读全局库——
+    # 否则「首次启动填的 Key」在重启后会凭空消失。环境变量仍由 LLMClient 兜底。
     if not get_runtime("llm_api_key"):
         root = _project_root_or_error()
-        if root:
-            stored_key = secrets_store.load(root, provider)
-            if stored_key:
-                set_runtime("llm_api_key", stored_key)
-            elif provider in secrets_store.providers(root):
-                # Keep startup non-fatal, but make an unreadable/mismatched
-                # protected secret visible instead of silently sending EMPTY.
-                set_runtime(
-                    "llm_startup_warning",
-                    "已找到该项目保存的 API Key，但当前启动环境无法解密；请在模型设置中重新保存一次 Key。",
-                )
+        stored_key = _load_secret(root, provider)
+        if stored_key:
+            set_runtime("llm_api_key", stored_key)
+        elif (provider in secrets_store.providers(root)
+              or provider in secrets_store.providers(None)):
+            # Keep startup non-fatal, but make an unreadable/mismatched
+            # protected secret visible instead of silently sending EMPTY.
+            set_runtime(
+                "llm_startup_warning",
+                "已找到保存的 API Key，但当前启动环境无法解密；请在模型设置中重新保存一次 Key。",
+            )
 
     # 云端厂商需要 Key 但项目/环境都没有：给出可操作的启动提示。
     # 不覆盖上面更具体的「无法解密」警告；真正的拦截在 LLMClient.chat()，
@@ -2467,7 +2500,7 @@ def _resolve_cloud_client(routing):
         cloud_model = preset.get("model") or ""
         cloud_base_url = preset.get("base_url") or ""
         _root = _project_root_or_error()
-        key = secrets_store.load(_root, _preset_secret_slot(preset["id"])) if _root else ""
+        key = _load_secret(_root, _preset_secret_slot(preset["id"]))
     if not cloud_provider:
         # 旧路径：运行时/环境变量指定的云端厂商（默认 deepseek），仅在需要 key 时使用
         cloud_provider = get_runtime("cloud_llm_provider") or os.getenv("AGENT_CLOUD_PROVIDER", "deepseek")
@@ -4010,6 +4043,9 @@ def _voice_key(kind: str, provider: str) -> tuple[str, str]:
         stored = secrets_store.load(root, _voice_secret_slot(kind, provider))
         if stored:
             return stored, "project"
+    stored = secrets_store.load(None, _voice_secret_slot(kind, provider))
+    if stored:
+        return stored, "global"
 
     runtime_key = (get_runtime(f"voice_{kind}_api_key") or "").strip()
     runtime_provider = (get_runtime(f"voice_{kind}_api_key_provider") or "").strip().lower()
@@ -4025,8 +4061,8 @@ def _voice_key(kind: str, provider: str) -> tuple[str, str]:
             return provider_key, "provider_env"
     # 复用同一服务商已保存的对话模型 Key（OpenAI / 硅基流动 / 通义都在此列）。
     # custom 不复用：那个槽位属于另一个端点，Key 未必通用。
-    if root and provider in PROVIDERS and provider != "custom":
-        llm_key = secrets_store.load(root, provider)
+    if provider in PROVIDERS and provider != "custom":
+        llm_key = _load_secret(root, provider)
         if llm_key:
             return llm_key, "project_llm"
     return "", "none"
@@ -4139,17 +4175,15 @@ async def save_voice_config_ep(req: VoiceConfigReq):
 
     wants_key = any((item.api_key or "").strip() for _kind, item in items)
     root = _project_root_or_error() if wants_key else ""
-    if wants_key and not root:
-        return JSONResponse({"ok": False, "error": "当前没有可用项目，无法保存语音 API Key。"},
-                            status_code=400)
 
     try:
         for kind, item in items:
             set_voice_config(kind, provider=item.provider, url=item.url,
                              model=item.model, voice=item.voice)
             key = (item.api_key or "").strip()
-            if key and root:
-                secrets_store.save(root, _voice_secret_slot(kind, item.provider), key)
+            if key:
+                # 没有项目时写全局库：语音 Key 同样不该依赖项目存在。
+                _save_secret(root, _voice_secret_slot(kind, item.provider), key)
                 set_runtime(f"voice_{kind}_api_key", key)
                 set_runtime(f"voice_{kind}_api_key_provider",
                             (item.provider or "").strip().lower())
@@ -4961,6 +4995,9 @@ async def get_config():
         get_runtime("llm_api_key")
         or LLM_API_KEY
         or (_envk and os.getenv(_envk, ""))
+        # 已保存到密钥库（项目库优先、全局库兜底）也算「有 Key」：只认运行时
+        # 会让刚保存、尚未重建客户端的配置显示成未配置。
+        or _load_secret(_project_root_or_error(), prov)
     )
     return {
         "llm_provider": prov,
@@ -5765,22 +5802,19 @@ async def _apply_config(req: ConfigReq):
     # 厂商返回 401，界面却显示成「网络/模型故障」，用户也不知道该去补 Key。
     root_for_secret = _project_root_or_error()
     provided_key = (req.api_key or "").strip()
-    stored_key = (
-        secrets_store.load(root_for_secret, req.provider)
-        if root_for_secret else ""
-    )
+    stored_key = _load_secret(root_for_secret, req.provider)
     # 只有同一厂商的运行时 Key 才算数：切厂商时不能把手头另一家的 Key 带过去。
     runtime_key = get_runtime("llm_api_key") if previous_provider == req.provider else ""
     api_key_env = PROVIDERS[req.provider].get("api_key_env", "")
     env_key = os.getenv(api_key_env, "") if api_key_env else ""
-    # 与 LLMClient 的兜底来源对齐（显式填写 > 同厂商运行时 > 项目密钥库 >
-    # 厂商环境变量 > 全局 LLM_API_KEY）。
+    # 与 LLMClient 的兜底来源对齐（显式填写 > 同厂商运行时 > 已保存密钥
+    # （项目库优先、全局库兜底）> 厂商环境变量 > 全局 LLM_API_KEY）。
     effective_key = provided_key or runtime_key or stored_key or env_key or LLM_API_KEY
     if api_key_env and not effective_key:
         provider_label = PROVIDERS[req.provider].get("label", req.provider)
         return JSONResponse(
             {"ok": False,
-             "error": f"当前项目还没有保存 {provider_label} 的 API Key，请填写 Key 后再切换模型。"},
+             "error": f"还没有保存 {provider_label} 的 API Key，请填写 Key 后再切换模型。"},
             status_code=400)
 
     custom_base_url = ""
@@ -5855,10 +5889,10 @@ async def _apply_config(req: ConfigReq):
     set_runtime("llm_model", target_model)
     if provided_key:
         set_runtime("llm_api_key", provided_key)
-        if root_for_secret:
-            secrets_store.save(root_for_secret, req.provider, provided_key)
+        # 没有项目也要落盘（全局库），否则重启后这把 Key 就没了。
+        _save_secret(root_for_secret, req.provider, provided_key)
     elif previous_provider != req.provider:
-        # 切换厂商时优先恢复该厂商已保存的项目密钥，避免误用上一个厂商的 key。
+        # 切换厂商时优先恢复该厂商已保存的密钥，避免误用上一个厂商的 key。
         # 需要 Key 却完全没有来源的云端切换已在函数入口拦下，这里只剩本地/免 Key 厂商。
         if stored_key:
             set_runtime("llm_api_key", stored_key)
@@ -5919,7 +5953,7 @@ async def _apply_config(req: ConfigReq):
     _RUNTIME.pop("llm_startup_warning", None)
 
     # 成功切换的真实模型自动进入快速切换列表。相同 provider/model/端点复用已有预设，
-    # 保留用户给它起的名称；密钥仍只存在当前项目的 secrets_store，不写进状态 JSON。
+    # 保留用户给它起的名称；密钥只进加密密钥库（全局 + 项目），不写进状态 JSON。
     if req.provider != "mock":
         try:
             existing = next((p for p in load_model_presets()
@@ -5935,11 +5969,11 @@ async def _apply_config(req: ConfigReq):
                     "context_window": get_context_window_override(req.provider, target_model) or 0,
                 })
             root_for_preset = _project_root_or_error()
-            if preset and root_for_preset:
-                key_for_preset = (req.api_key or secrets_store.load(root_for_preset, req.provider)
+            if preset:
+                key_for_preset = (req.api_key or _load_secret(root_for_preset, req.provider)
                                   or (get_runtime("llm_api_key") if previous_provider == req.provider else ""))
                 if key_for_preset:
-                    secrets_store.save(root_for_preset, _preset_secret_slot(preset["id"]), key_for_preset)
+                    _save_secret(root_for_preset, _preset_secret_slot(preset["id"]), key_for_preset)
         except Exception as exc:  # noqa: BLE001 - 预设保存失败不能撤销已成功的模型切换
             warnings.append(f"模型已切换，但未能加入快速切换列表：{exc}")
 
@@ -6036,7 +6070,7 @@ async def list_model_presets():
 
 @app.post("/api/model_presets")
 async def save_model_preset_ep(req: PresetReq):
-    """新增/更新命名模型预设；api_key（如有）存当前项目的 preset:<id> 槽位。"""
+    """新增/更新命名模型预设；api_key（如有）存 preset:<id> 槽位（全局库 + 项目库）。"""
     preset, err = upsert_model_preset({
         "id": (req.id or "").strip(),
         "label": req.label,
@@ -6048,10 +6082,7 @@ async def save_model_preset_ep(req: PresetReq):
     if err:
         return JSONResponse({"ok": False, "error": err}, status_code=400)
     if req.api_key:
-        root = _project_root_or_error()
-        if not root:
-            return JSONResponse({"ok": False, "error": "当前没有可用项目，无法保存 API Key。"}, status_code=400)
-        secrets_store.save(root, _preset_secret_slot(preset["id"]), req.api_key)
+        _save_secret(_project_root_or_error(), _preset_secret_slot(preset["id"]), req.api_key)
     return {"ok": True, "presets": _presets_payload()}
 
 
@@ -6165,12 +6196,12 @@ async def cockpit_model_set(req: CockpitModelReq):
         return JSONResponse({"ok": False, "error": "指定的模型预设不存在。"}, status_code=400)
     root = _project_root_for(pid)
     env_name = PROVIDERS.get(preset["provider"], {}).get("api_key_env", "")
-    has_key = bool((root and secrets_store.load(root, _preset_secret_slot(preset_id)))
+    has_key = bool(_load_secret(root, _preset_secret_slot(preset_id))
                    or (env_name and os.getenv(env_name, "")))
     if env_name and not has_key:
         return JSONResponse(
             {"ok": False,
-             "error": "该预设在当前项目还没有保存 API Key，请先在对话台「模型设置」里为预设填好 Key。"},
+             "error": "该预设还没有保存 API Key，请先在对话台「模型设置」里为预设填好 Key。"},
             status_code=400)
     try:
         client = await run_in_threadpool(lambda: _build_cockpit_llm(preset, root))
@@ -6199,16 +6230,16 @@ async def activate_model_preset_ep(preset_id: str):
         return JSONResponse({"ok": False, "error": "预设不存在。"}, status_code=404)
     root = _project_root_or_error()
     slot = _preset_secret_slot(match["id"])
-    stored = secrets_store.load(root, slot) if root else ""
+    stored = _load_secret(root, slot)
     # 兼容自动记住模型之前保存的厂商密钥：切走再切回来也无需重填。
-    provider_key = secrets_store.load(root, match["provider"]) if root else ""
+    provider_key = _load_secret(root, match["provider"])
     needs_key = bool(PROVIDERS.get(match["provider"], {}).get("api_key_env"))
     if needs_key and not (stored or provider_key) and not (
             get_runtime("llm_api_key") if (get_runtime("llm_provider") == match["provider"]) else ""):
         # 切过去也没有可用 key（环境变量除外，LLMClient 会兜底）：给出明确提示而非静默切空
         if not os.getenv(PROVIDERS[match["provider"]].get("api_key_env", ""), ""):
             return JSONResponse(
-                {"ok": False, "error": f"该预设在当前项目还没有保存 API Key，请在模型设置中填好 Key 后重新激活。"},
+                {"ok": False, "error": f"该预设还没有保存 API Key，请在模型设置中填好 Key 后重新激活。"},
                 status_code=400)
     req = ConfigReq(
         provider=match["provider"],

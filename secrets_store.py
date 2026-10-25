@@ -1,13 +1,26 @@
-"""本地 API 密钥加密存储：优先 Windows DPAPI，其他平台使用受保护密钥文件。"""
+"""本地 API 密钥加密存储：优先 Windows DPAPI，其他平台使用受保护密钥文件。
+
+密钥属于「这台机器上的这个 Windows 用户」，不属于某个项目：首次启动、还没
+添加任何项目时也必须能保存并在重启后恢复。因此 ``root`` 为空时读写
+``STATE_ROOT/.docmind/secrets.json`` 这个全局密钥库；指定项目时仍按项目保存
+（兼容既有安装与多项目各自的覆盖），调用方可在项目库没有时回落到全局库。
+"""
 import base64, json, os
 import ctypes
 from pathlib import Path
+import config
 import project_state
 try:
     from cryptography.fernet import Fernet
 except Exception: Fernet = None
 
-def _key_path(root): return Path(project_state.path(root, 'secret.key', legacy='.docmind_secret.key'))
+def _global_dir(): return Path(config.STATE_ROOT) / '.docmind'
+def _secrets_path(root):
+    if root: return Path(project_state.path(root, 'secrets.json', legacy='.docmind_secrets.json'))
+    return _global_dir() / 'secrets.json'
+def _key_path(root):
+    if root: return Path(project_state.path(root, 'secret.key', legacy='.docmind_secret.key'))
+    return _global_dir() / 'global_secret.key'
 def _box(root):
     p=_key_path(root); p.parent.mkdir(parents=True,exist_ok=True)
     if not p.exists(): p.write_bytes(Fernet.generate_key() if Fernet else os.urandom(32));
@@ -33,7 +46,7 @@ def _dpapi_decrypt(token):
     except Exception: return None
 def save(root, provider, value):
     if not value: return {'ok':False,'error':'空密钥不保存'}
-    p=Path(project_state.path(root, 'secrets.json', legacy='.docmind_secrets.json')); data={}
+    p=_secrets_path(root); data={}
     if p.exists():
         try: data=json.loads(p.read_text(encoding='utf-8'))
         except Exception: data={}
@@ -41,6 +54,7 @@ def save(root, provider, value):
     if token: scheme='dpapi'
     else:
         box=_box(root); token=box.encrypt(value.encode()).decode() if box else base64.b64encode(value.encode()).decode(); scheme='fernet' if box else 'base64'
+    p.parent.mkdir(parents=True,exist_ok=True)
     data[str(provider)]={'ciphertext':token,'scheme':scheme}; p.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     return {'ok':True,'provider':provider,'stored':True}
 def load(root, provider):
@@ -51,15 +65,21 @@ def load(root, provider):
     launcher), try the original project-local file before giving up.  This is
     deliberately read-only: an explicit save is still required to rewrite a
     key with the current user's protection context.
+
+    ``root`` 为空时只读全局密钥库（``STATE_ROOT/.docmind/secrets.json``）；
+    没有项目不等于没有密钥。
     """
     candidates = []
-    try:
-        candidates.append(Path(project_state.path(root, 'secrets.json', legacy='.docmind_secrets.json')))
-    except Exception:
-        pass
-    legacy = Path(os.path.abspath(root or '')) / '.docmind_secrets.json'
-    if legacy not in candidates:
-        candidates.append(legacy)
+    if root:
+        try:
+            candidates.append(_secrets_path(root))
+        except Exception:
+            pass
+        legacy = Path(os.path.abspath(root)) / '.docmind_secrets.json'
+        if legacy not in candidates:
+            candidates.append(legacy)
+    else:
+        candidates.append(_secrets_path(None))
 
     for path in candidates:
         try:
@@ -80,13 +100,14 @@ def load(root, provider):
     return ''
 
 def providers(root):
-    try: return sorted(json.loads(Path(project_state.path(root, 'secrets.json', legacy='.docmind_secrets.json')).read_text(encoding='utf-8')).keys())
+    try: return sorted(json.loads(_secrets_path(root).read_text(encoding='utf-8')).keys())
     except Exception: return []
 
 def remove(root, provider):
-    p=Path(project_state.path(root, 'secrets.json', legacy='.docmind_secrets.json'))
+    p=_secrets_path(root)
     try: data=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
     except Exception: data={}
     existed=str(provider) in data; data.pop(str(provider),None)
+    p.parent.mkdir(parents=True,exist_ok=True)
     p.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     return {'ok':True,'removed':existed,'provider':str(provider)}
