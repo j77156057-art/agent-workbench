@@ -155,9 +155,9 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 | | |
 |---|---|
-| 后端测试 | 全量 pytest 收在 `tests/`，CI 每次跑全量 |
+| 后端测试 | 全量测试收在 `tests/`，以 `unittest.TestCase` 为主、CI 每次跑全量（`python -m unittest discover`）；module 级 `def test_*` 走独立 pytest lane，`pytest` 与 `unittest` 两条都能收 |
 | 前端测试 | `node --test` 直跑生产模块，不做打包后测试 |
-| CI | GitHub Actions 单 workflow，两矩阵（SQLite / Postgres 16），覆盖：依赖安装 → 前端构建 → 前端测试 → 编译检查 → 评测门 → **变异测试电池** → 检索回归 → 离线工作流验收 → 全量 pytest → Postgres 严格集成 → 真实 LLM 冒烟 |
+| CI | GitHub Actions 单 workflow，两矩阵（SQLite / Postgres 16），覆盖：依赖安装 → 前端构建 → 前端测试 → 编译检查 → 评测门 → **变异测试电池** → 检索回归 → 离线工作流验收 → 全量测试 → Postgres 严格集成 → 真实 LLM 冒烟 |
 | 变异测试 | 改坏实现，门禁必须抓到（"写了测试但抓不住 bug"和没写测试一样糟） |
 | baseline 回归门 | 黄金题库分 L1 单跳 / L2 多跳 / L3 抗干扰三档，pass→fail 即**退出码 1**，已接入冻结发布流程 |
 | 视觉回归 | 多套基线逐像素比对，单像素通道差 > 4 的像素超过 200 个即失败 |
@@ -252,7 +252,7 @@ agent-workbench/
 │       ├── components/    # 工作台组件
 │       ├── composables/   # 组合式逻辑
 │       └── lib/           # 纯函数模块（可被 node 单测直跑）
-├── tests/                 # 后端全量 pytest
+├── tests/                 # 后端全量测试
 └── docs/                  # 设计文档与缺陷口径
 ```
 

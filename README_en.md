@@ -37,7 +37,7 @@ Agent Workbench has two identities that only make sense together:
 
 | | |
 |---|---|
-| **Harness (the core)** | An agent runtime that runs fully offline. 125 tools, 322 HTTP endpoints, 5702 backend tests. Per-turn trace ledger, capability leases, a human approval ledger, region governance, DAG multi-agent orchestration, golden-set regression gates — **observable, orchestrable, regressable**. |
+| **Harness (the core)** | An agent runtime that runs fully offline. A systematic tool registry, HTTP endpoints and a full backend test suite, plus a per-turn trace ledger, capability leases, a human approval ledger, region governance, DAG multi-agent orchestration, golden-set regression gates — **observable, orchestrable, regressable**. |
 | **Workbench (the landing)** | A local workbench for game / Mod projects: code Q&A, controlled rewriting, scene canvas, runtime timeline, engine embedding, GPU coordination, EDA acceptance. |
 
 The workbench is not a skin over the core — it is the Harness's **real landing environment**: a complex, side-effect-heavy engineering project that can actually break. Without such an environment, guardrails are just paperwork.
@@ -59,7 +59,7 @@ When an agent meets a real codebase, it falls into the same two traps:
 | Layer | Responsibility | Key implementation |
 |---|---|---|
 | **E Execution loop** | ReAct + reflection retry, native function-calling, plan mode, sub-agent delegation, parallel read-only batches, DAG multi-agent orchestration with failure re-planning | `agent.py` · `orchestrator.py` |
-| **T Tool registry** | 125 tools; argument validation, domain allowlist, **controlled writes** (read-before-write + size cap + syntax check + human approval) | `tools.py` · `agent_runtime/tool_domains.py` |
+| **T Tool registry** | A declarative tool registry; argument validation, domain allowlist, **controlled writes** (read-before-write + size cap + syntax check + human approval) | `tools.py` · `agent_runtime/tool_domains.py` |
 | **C Context management** | prompt token budget, observation truncation, trail pruning (system prompt and current question never dropped), rolling history summary | `agent.py::_fit_budget` |
 | **S State storage** | per-turn trace ledger (**metadata only, never prompt/answer text**), session isolation & persistence, survives restart | `agent_trace.py` · `sessions.py` |
 | **L Lifecycle hooks** | hot-pluggable hooks / skills, human approval gate, per-provider pricing with cost circuit breaker | `hooks.py` · `skills.py` · `pricing.py` |
@@ -93,7 +93,7 @@ A few worth calling out:
 
 ## Capabilities
 
-### The tool surface: 16 domains / 125 tools
+### The tool surface: declarative, grouped by domain
 
 Classification is **declarative** (`agent_runtime/tool_domains.py`), never inferred from names — a new tool that doesn't declare a domain fails the gate. The full list is available at runtime via the `tool_catalog` tool.
 
@@ -130,7 +130,7 @@ The tool inventory answers "what exists"; it cannot answer "why it is cut this w
 
 | | Development workflow | Tool-flow orchestrator |
 |---|---|---|
-| Entry | `start_workflow` / `POST /api/agent/workflow/**` (37+ endpoints) | `POST /api/flows` |
+| Entry | `start_workflow` / `POST /api/agent/workflow/**` (a group of endpoints) | `POST /api/flows` |
 | Lifecycle | plan choice → plan approval → execute → staged apply/review/cleanup → acceptance → visual feedback → checkpoint / rollback → interrupt / resume / revise | list / save / delete / run-step |
 | Character | Persists across windows, human gates, SSE event stream (with replay and heartbeat) | Lightweight |
 
@@ -154,12 +154,12 @@ This is where Agent Workbench separates itself from "call an API and call it an 
 
 | | |
 |---|---|
-| Backend tests | **5702** (397 files under `tests/`) |
-| Frontend tests | **129** (`node --test` runs the production modules directly) |
-| CI | One GitHub Actions workflow, two matrices (SQLite / Postgres 16): dependency install → frontend build → frontend tests → compile check → eval gate → **mutation-test battery** → retrieval regression → offline workflow acceptance → full pytest → strict Postgres integration → live LLM smoke |
+| Backend tests | The full suite lives in `tests/`, mostly `unittest.TestCase`; CI runs it every time (`python -m unittest discover`), with a separate pytest lane for module-level `def test_*` — both `pytest` and `unittest` collect them |
+| Frontend tests | `node --test` runs the production modules directly, no post-bundle testing |
+| CI | One GitHub Actions workflow, two matrices (SQLite / Postgres 16): dependency install → frontend build → frontend tests → compile check → eval gate → **mutation-test battery** → retrieval regression → offline workflow acceptance → full test suite → strict Postgres integration → live LLM smoke |
 | Mutation testing | Break the implementation on purpose; the gate must catch it. A test that cannot fail is no better than no test. |
-| Baseline regression gate | 42 golden questions (L1 single-hop / L2 multi-hop / L3 distractor), pass→fail raises **exit code 1**; wired into the frozen release flow |
-| Visual regression | 5 baselines compared pixel-by-pixel; failing when more than 200 pixels differ by more than 4 channels |
+| Baseline regression gate | A golden set spanning L1 single-hop / L2 multi-hop / L3 distractor tiers; pass→fail raises **exit code 1**; wired into the frozen release flow |
+| Visual regression | Multiple baselines compared pixel-by-pixel; failing when more than 200 pixels differ by more than 4 channels |
 | Real engines | Godot / Unity / Unreal HWND embedding verified on a real Win32 host: reparenting, style stripping, resize tracking, **real synthesized keyboard and mouse** delivered into the engine, restore-on-detach, DPI consistency |
 
 ## Getting started
@@ -227,13 +227,13 @@ curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持�
 
 ```
 agent-workbench/
-├── api.py                 # HTTP / SSE entry point (203 routes)
-├── api_routes/            # Domain routers (119 routes): agent (62, of which 38 are workflow) · engine (36) · gpu (10) ·
-│                          #   eda (6) · projects (5) · resources (assets & ComfyUI)
+├── api.py                 # HTTP / SSE entry point
+├── api_routes/            # Domain routers: agent (incl. workflow) · engine · gpu ·
+│                          #   eda · projects · resources (assets & ComfyUI)
 ├── agent.py               # ReAct loop, reflection retry, code-first routing, evidence guardrails;
 │                          #   native FC, plan mode, sub-agent delegation, parallel batches
-├── tools.py               # The 121-entry tool registry (16 domains)
-├── agent_runtime/         # Runtime contracts and capability implementations (85 modules + 2 packages)
+├── tools.py               # The tool registry (grouped declaratively by domain)
+├── agent_runtime/         # Runtime contracts and capability implementations
 ├── regions.py             # Regions 2.0: declarative config, contract validation, changesets, rollback
 ├── scene_runtime.py       # Scene canvas core: .tscn block parsing → graph model → controlled edits
 ├── workbench_fs.py        # Sandboxed file tree, read/write, git history & rollback, symbol map, relation graph
@@ -247,13 +247,13 @@ agent-workbench/
 ├── artifact_tools.py      # Structured DOCX / PDF / PPTX / XLSX generation with read-back verification
 ├── orchestrator.py        # Multi-agent orchestration: task DAG + parallelism + re-planning + synthesis
 ├── agent_eval.py / run_golden.py / golden/   # Golden set and the baseline regression gate
-├── frontend/              # Vue 3 + Vite workbench (149 .vue/.ts files, output to ../web)
+├── frontend/              # Vue 3 + Vite workbench (output to ../web)
 │   └── src/workbench/
-│       ├── components/    # 55 components
-│       ├── composables/   # 28 composables
+│       ├── components/    # workbench components
+│       ├── composables/   # compositional logic
 │       └── lib/           # Pure modules (directly runnable by node's test runner)
-├── tests/                 # 397 files / 5702 cases
-└── docs/                  # 58 design docs and defect write-ups
+├── tests/                 # full backend test suite
+└── docs/                  # design docs and defect write-ups
 ```
 
 ## Configuration
