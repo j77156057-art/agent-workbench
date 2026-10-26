@@ -270,5 +270,165 @@ class MemoryTests(_IsoBase):
                         % ret_foobar)
 
 
+class TransparentLearningTests(_IsoBase):
+    """方案 B：透明偏好学习——确定性计数、默认关、可删可清、绝不推断。"""
+
+    def _on(self):
+        return patch("config.get_memory_learn", return_value=True)
+
+    def _off(self):
+        return patch("config.get_memory_learn", return_value=False)
+
+    def test_off_is_byte_identical_and_writes_nothing(self):
+        memory.update_profile("u-off", {"display_name": "小李", "language": "中文"})
+        with self._off():
+            before = memory.profile_context("u-off")
+            p = memory.learn_habits("u-off", question="请用中文，回答详细点",
+                                    paths=["a.py", "b.py", "scene.tscn"],
+                                    tools=["run_command"])
+            self.assertEqual(p["learned"], {}, "关时 learn_habits 不得写入任何统计")
+            self.assertEqual(memory.profile_context("u-off"), before,
+                             "关时注入串必须逐字节不变")
+        # 关掉后再比对一个纯显式画像基线（不含任何 learned 追加）
+        baseline = ("【用户画像（仅来自用户明确表达，可被用户修改；不要推断隐藏属性）】\n"
+                    + json.dumps({"display_name": "小李", "language": "中文"}, ensure_ascii=False))
+        self.assertEqual(memory.profile_context("u-off"), baseline)
+
+    def test_on_counts_style_focus_tasks_deterministically(self):
+        with self._on():
+            p = memory.learn_habits("u-on", question="请用中文回答，详细点",
+                                    paths=["game.py", "utils.py", "main.tscn"],
+                                    tools=["run_command"])
+            learned = p["learned"]
+            style_vals = {r["value"]: r["count"] for r in learned["answer_style"]}
+            self.assertGreaterEqual(style_vals.get("中文", 0), 1)
+            self.assertGreaterEqual(style_vals.get("详细", 0), 1)
+            focus = {r["value"]: r["count"] for r in learned["focus"]}
+            self.assertEqual(focus.get(".py"), 2)
+            self.assertEqual(focus.get(".tscn"), 1)
+            self.assertTrue(learned["tasks"], "应至少记到一个工具 domain 计数")
+            # 重复调用：计数累加且可复现
+            p2 = memory.learn_habits("u-on", question="请用中文回答，详细点",
+                                     paths=["game.py", "utils.py", "main.tscn"],
+                                     tools=["run_command"])
+            style2 = {r["value"]: r["count"] for r in p2["learned"]["answer_style"]}
+            self.assertEqual(style2.get("中文"), style_vals.get("中文", 0) + 1)
+            focus2 = {r["value"]: r["count"] for r in p2["learned"]["focus"]}
+            self.assertEqual(focus2.get(".py"), 4)
+            # 确定性排序：同输入两次渲染完全一致
+            self.assertEqual(json.dumps(p2["learned"], sort_keys=True),
+                             json.dumps(memory.get_profile("u-on")["learned"], sort_keys=True))
+
+    def test_learned_never_leaks_into_explicit_block_and_is_advisory(self):
+        memory.update_profile("u-order", {"display_name": "小王"})
+        with self._on():
+            memory.learn_habits("u-order", question="请用中文",
+                                paths=["a.py"], tools=["run_command"])
+            ctx = memory.profile_context("u-order")
+            explicit = "【用户画像（仅来自用户明确表达，可被用户修改；不要推断隐藏属性）】"
+            learned_tag = "【系统学到的使用习惯"
+            self.assertIn(explicit, ctx)
+            self.assertIn(learned_tag, ctx)
+            # 学习块永远排在显式块之后（显式优先）
+            self.assertLess(ctx.index(explicit), ctx.index(learned_tag))
+            # 学到的内容绝不混进显式画像 JSON
+            seg = ctx[ctx.index(learned_tag):]
+            self.assertNotIn("小王", seg.split("】", 1)[0])
+
+    def test_clear_learned_keeps_explicit_fields(self):
+        memory.update_profile("u-clear", {"display_name": "小张", "language": "中文"})
+        with self._on():
+            memory.learn_habits("u-clear", question="请用中文", paths=["a.py"], tools=["run_command"])
+            self.assertTrue(memory.get_profile("u-clear")["learned"].get("answer_style"))
+        cleared = memory.clear_learned("u-clear")
+        self.assertEqual(cleared["learned"], {})
+        self.assertEqual(cleared["display_name"], "小张", "清空只清 learned，不动显式字段")
+        self.assertEqual(cleared["language"], "中文")
+
+    def test_patch_cannot_write_or_erase_learned(self):
+        with self._on():
+            memory.learn_habits("u-patch", question="请用中文", paths=["a.py"], tools=["run_command"])
+        learned_before = memory.get_profile("u-patch")["learned"]
+        self.assertTrue(learned_before.get("answer_style"))
+        # 客户端 PATCH 试图写 learned → 被白名单忽略；且不得抹掉已学的计数
+        memory.update_profile("u-patch", {"learned": {"answer_style": [{"value": "伪造", "count": 999}]},
+                                           "display_name": "老刘"})
+        after = memory.get_profile("u-patch")
+        self.assertEqual(after["display_name"], "老刘")
+        self.assertEqual(after["learned"], learned_before, "PATCH 既写不进也抹不掉 learned")
+
+    def test_learned_injection_is_bounded(self):
+        # 灌大量扩展名 + 巨大计数，验证注入块有字符上限、不会撑破预算
+        many_paths = ["f%d.%s" % (i, e) for i in range(40)
+                      for e in ("py", "tscn", "gd", "json", "cfg", "md")]
+        with self._on():
+            memory.learn_habits("u-big", question="请用中文回答，详细点",
+                                paths=many_paths, tools=["run_command"])
+            ctx = memory.profile_context("u-big")
+        learned_tag = "【系统学到的使用习惯"
+        self.assertIn(learned_tag, ctx)
+        seg = ctx[ctx.index(learned_tag):]
+        # 后端 scrub 到 600 字符上限；留点余量断言远小于预算
+        self.assertLess(len(seg), 800, "学习注入块必须被截断到上限内")
+
+
+class TransparentLearningApiTests(_IsoBase):
+    """开关读写往返 + 清空端点走真实 HTTP（独立于总开关，不污染 state 文件）。"""
+
+    def setUp(self):
+        super().setUp()
+        import config
+        self.config = config
+        self._old_state = config.STATE_FILE
+        config.STATE_FILE = os.path.join(self.tmp, ".docmind_state.json")
+        self._had_learn = "memory_learn" in config._RUNTIME
+        self._old_learn = config._RUNTIME.get("memory_learn")
+        config._RUNTIME.pop("memory_learn", None)
+
+    def tearDown(self):
+        config = self.config
+        config.STATE_FILE = self._old_state
+        if self._had_learn:
+            config._RUNTIME["memory_learn"] = self._old_learn
+        else:
+            config._RUNTIME.pop("memory_learn", None)
+        super().tearDown()
+
+    def test_memory_learn_round_trip_is_independent(self):
+        import api
+        from starlette.testclient import TestClient
+        with TestClient(api.app) as client:
+            self.assertFalse(client.get("/api/memory-settings").json()["memory_learn"])
+            post = client.post("/api/memory-settings", json={"memory_learn": True}).json()
+            self.assertTrue(post["ok"])
+            self.assertTrue(post["memory_learn"])
+            # 独立开关：翻 learn 不得把 memory_optimized 总开关带起来
+            self.assertFalse(post["memory_optimized"])
+            self.assertFalse(client.get("/api/memory-settings").json()["memory_optimized"])
+            # /api/config 也回显 learn（前端初始态来源）
+            cfg = client.get("/api/config").json()
+            self.assertTrue(cfg["memory_learn"])
+            self.assertFalse(cfg["memory_optimized"])
+            # 关回去
+            client.post("/api/memory-settings", json={"memory_learn": False})
+            self.assertFalse(client.get("/api/memory-settings").json()["memory_learn"])
+
+    def test_learned_clear_endpoint_keeps_explicit_profile(self):
+        import api
+        from starlette.testclient import TestClient
+        uid = "api-learn-user"
+        memory.update_profile(uid, {"display_name": "小李", "language": "中文"})
+        with patch("config.get_memory_learn", return_value=True):
+            memory.learn_habits(uid, question="请用中文", paths=["a.py"], tools=["run_command"])
+        with TestClient(api.app) as client:
+            got = client.get("/api/agent/profile", headers={"X-DocMind-User": uid}).json()["profile"]
+            self.assertTrue(got["learned"].get("answer_style"))
+            cleared = client.post("/api/agent/profile/learned/clear",
+                                  headers={"X-DocMind-User": uid}).json()
+            self.assertTrue(cleared["ok"])
+            self.assertEqual(cleared["profile"]["learned"], {})
+            self.assertEqual(cleared["profile"]["display_name"], "小李", "清空端点只清 learned")
+
+
 if __name__ == "__main__":
     unittest.main()

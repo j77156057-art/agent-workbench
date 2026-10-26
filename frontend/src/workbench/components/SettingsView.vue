@@ -15,7 +15,7 @@ import {
   type BudgetStatus, type TraceSummary,
   type McpAutoConnectCandidate, type McpAutoConnectConfig, type McpProbeRes, type McpDirectoryResult,
   type McpRegisterStatusRes, type McpRegisterTier, type McpRegisterState,
-  type UserProfile, type MemoryItem,
+  type UserProfile, type MemoryItem, type LearnedRow,
   type ModelStatus,
 } from '../api'
 import Icon from './Icon.vue'
@@ -139,6 +139,27 @@ async function deleteMemory(id: string) {
   try { const r = await agentApi.deleteMemory(id); if (r.ok) memoryItems.value = memoryItems.value.filter(item => item.id !== id) }
   catch (e) { profileError.value = (e as { message?: string }).message || '删除记忆失败' }
 }
+const clearingLearned = ref(false)
+async function clearLearned() {
+  if (clearingLearned.value) return
+  clearingLearned.value = true; profileError.value = ''; profileSaved.value = ''
+  try {
+    const r = await agentApi.clearLearnedProfile()
+    if (r.ok === false) { profileError.value = r.error || '清空学习习惯失败'; return }
+    if (r.profile) profile.value = { ...profile.value, ...r.profile }
+    profileSaved.value = '已清空学到的使用习惯（不影响你手动填写的画像）'
+  } catch (e) { profileError.value = (e as { message?: string }).message || '清空学习习惯失败' }
+  finally { clearingLearned.value = false }
+}
+const learnedGroups = computed(() => {
+  const l = profile.value.learned || {}
+  const defs: Array<[string, LearnedRow[] | undefined]> = [
+    ['回答风格', l.answer_style], ['常改文件', l.focus], ['常用能力', l.tasks],
+  ]
+  return defs
+    .map(([label, items]) => ({ label, items: (items || []).filter(r => r && r.value) }))
+    .filter(g => g.items.length)
+})
 function updateGoals(event: Event) {
   const value = (event.target as HTMLTextAreaElement | null)?.value || ''
   profile.value.goals = value.split('\n').map(v => v.trim()).filter(Boolean)
@@ -372,6 +393,11 @@ const memoryOptimized = ref(false)
 const memorySaving = ref(false)
 const memorySaved = ref('')
 
+// 透明学习习惯开关：独立于总开关，默认关；切换即 POST /api/memory-settings 的 memory_learn。
+const memoryLearn = ref(false)
+const learnSaving = ref(false)
+const learnSaved = ref('')
+
 /** 上界只从载荷取。载荷没到（还在加载 / 老后端没有 ranges）时返回 0，
  *  调用方据此**不设 max** —— 回落到一个硬编码数字就等于把刚删掉的第二份拷贝请回来。 */
 function capacityMax(field: CapacityField): number {
@@ -579,6 +605,7 @@ async function loadConfig() {
     wfApiKey.value = ''
     wfApiUrl.value = c.web_fetch_api_url || ''
     memoryOptimized.value = !!c.memory_optimized
+    memoryLearn.value = !!c.memory_learn
   } catch (e) {
     errorMsg.value = (e as { message?: string }).message || '读取配置失败'
   } finally {
@@ -606,6 +633,30 @@ async function toggleMemory() {
     errorMsg.value = (e as { message?: string }).message || '切换失败'
   } finally {
     memorySaving.value = false
+  }
+}
+
+// 切换「学习习惯」独立开关：翻当前值 → POST 专用端点(只带 memory_learn) → 以服务端回读值为准。
+async function toggleLearn() {
+  if (learnSaving.value) return
+  const want = !memoryLearn.value
+  learnSaving.value = true
+  learnSaved.value = ''
+  errorMsg.value = ''
+  try {
+    const res = await memorySettingsApi.saveLearn(want)
+    if (res.ok === false) {
+      errorMsg.value = res.error || '切换失败'
+      return
+    }
+    memoryLearn.value = !!res.memory_learn
+    learnSaved.value = memoryLearn.value
+      ? '已开启：只统计你的显式要求与实际改动，形成可删可清的建议级习惯，绝不推断个人信息'
+      : '已关闭：不再统计，也不再向模型注入学到的习惯（与改动前一致）'
+  } catch (e) {
+    errorMsg.value = (e as { message?: string }).message || '切换失败'
+  } finally {
+    learnSaving.value = false
   }
 }
 
@@ -1898,6 +1949,15 @@ async function powerAction(action: 'on' | 'off') {
             <p v-if="memorySaving" class="sv-field-sub">正在切换…</p>
             <p v-else-if="memorySaved" class="sv-ok">{{ memorySaved }}</p>
             <div class="sv-sep"></div>
+            <h4 class="sv-h4">学习习惯（透明统计）</h4>
+            <p class="sv-hint">开启后，系统只从你能看见的信号里做纯计数——你明确提出的回答要求（如「简洁点」「用中文」）、你本轮实际改动的文件类型、常用到的能力——形成一份建议级的使用习惯，帮 Agent 更贴合你的偏好。它不调用模型、不联网、绝不推断任何隐藏个人信息；学到的内容永远只是参考，你手动填写的画像优先级更高，且随时可逐条查看或一键清空。关闭则完全停止统计、也不再注入，行为与改动前逐字一致。默认关闭，切换即时生效并落盘，重启后仍保持。</p>
+            <label class="sv-toggle-row">
+              <input type="checkbox" :checked="memoryLearn" :disabled="learnSaving" @change="toggleLearn" />
+              <span>启用学习习惯透明统计（不推断个人信息）</span>
+            </label>
+            <p v-if="learnSaving" class="sv-field-sub">正在切换…</p>
+            <p v-else-if="learnSaved" class="sv-ok">{{ learnSaved }}</p>
+            <div class="sv-sep"></div>
             <h4 class="sv-h4">智能体（本地预设）</h4>
             <p class="sv-hint">保存常用 Agent 预设（名称 / 模型 / 提示词），便于在对话前快速切换。当前存于本机浏览器。</p>
             <ul class="sv-list" v-if="agents.length">
@@ -1953,6 +2013,23 @@ async function powerAction(action: 'on' | 'off') {
               </div>
             </div>
             <p v-else-if="!memoryLoading" class="sv-hint">当前项目还没有长期记忆。</p>
+            <div class="sv-sep"></div>
+            <div class="sv-section-head">
+              <div>
+                <h4 class="sv-h4">系统学到的使用习惯</h4>
+                <p class="sv-hint">下面是从你实际使用中做纯计数得到的习惯（非推断个人信息），仅供 Agent 参考、优先级低于你手动填写的画像。可随时逐条清空。</p>
+              </div>
+              <button class="sv-mini" :disabled="clearingLearned" @click="clearLearned">{{ clearingLearned ? '清空中…' : '一键清空' }}</button>
+            </div>
+            <p v-if="!learnedGroups.length" class="sv-hint">还没有学到任何习惯{{ memoryLearn ? '（开启后会在你正常使用的过程中逐步统计）' : '（需先开启上方「学习习惯透明统计」开关）' }}。</p>
+            <div v-else class="sv-memory-list">
+              <div v-for="g in learnedGroups" :key="g.label" class="sv-memory-row">
+                <div class="sv-list-main">
+                  <b>{{ g.label }}</b>
+                  <span class="sv-list-sub">{{ g.items.map(r => `${r.value}×${r.count}`).join('、') }}</span>
+                </div>
+              </div>
+            </div>
           </section>
 
           <!-- 模型参数统一入口；模型芯片只负责快速切换已保存预设。 -->

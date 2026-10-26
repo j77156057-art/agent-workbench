@@ -26,9 +26,14 @@ export interface ProjectProfile {
   preview_adapters?: string[]; sources?: string[]; updated_at?: string
 }
 export interface ProjectProfileResp { ok?: boolean; profile?: ProjectProfile; error?: string }
+export interface LearnedRow { value: string; count: number }
+export interface LearnedHabits {
+  answer_style?: LearnedRow[]; focus?: LearnedRow[]; tasks?: LearnedRow[]
+}
 export interface UserProfile {
   user_id?: string; display_name: string; language: string; timezone: string;
-  location: string; preferences: Record<string, unknown>; goals: string[]; notes: string; updated?: string
+  location: string; preferences: Record<string, unknown>; goals: string[]; notes: string; updated?: string;
+  learned?: LearnedHabits
 }
 export interface UserProfileResp { ok?: boolean; profile?: UserProfile; error?: string }
 export interface MemoryItem { id: string; kind: string; title: string; content: string; evidence?: string; source?: string; repeats?: number; updated?: string }
@@ -352,6 +357,9 @@ export const agentApi = {
     return request('/api/agent/profile', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
     })
+  },
+  clearLearnedProfile(): Promise<UserProfileResp> {
+    return request('/api/agent/profile/learned/clear', { method: 'POST' })
   },
   memories(query = '', limit = 20): Promise<MemoryListResp> {
     const params = new URLSearchParams({ query, limit: String(limit) })

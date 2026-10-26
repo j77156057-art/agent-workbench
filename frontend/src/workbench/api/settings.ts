@@ -31,6 +31,8 @@ export interface SettingsConfigInfo {
   web_fetch_has_key: boolean
   /** 长期记忆优化总开关（异步蒸馏 + 重要度/语义混合召回）当前状态，默认关。 */
   memory_optimized: boolean
+  /** 透明学习习惯开关（只统计显式信号，不推断个人信息）当前状态，独立于总开关，默认关。 */
+  memory_learn: boolean
 }
 
 export interface SaveSettingsReq {
@@ -138,14 +140,21 @@ export const agentCapacityApi = {
 export interface MemorySettingsInfo {
   ok?: boolean
   memory_optimized?: boolean
+  memory_learn?: boolean
   error?: string
 }
 export const memorySettingsApi = {
   get(): Promise<MemorySettingsInfo> {
     return request('/api/memory-settings')
   },
-  save(memory_optimized: boolean): Promise<MemorySettingsInfo> {
-    return rawJson('/api/memory-settings', { memory_optimized })
+  save(memory_optimized: boolean, memory_learn?: boolean): Promise<MemorySettingsInfo> {
+    const body: Record<string, boolean> = { memory_optimized }
+    if (memory_learn !== undefined) body.memory_learn = memory_learn
+    return rawJson('/api/memory-settings', body)
+  },
+  saveLearn(memory_learn: boolean): Promise<MemorySettingsInfo> {
+    // 只翻学习开关：不传 memory_optimized，避免把总开一并覆盖回默认值
+    return rawJson('/api/memory-settings', { memory_learn })
   },
 }
 

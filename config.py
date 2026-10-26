@@ -1526,14 +1526,37 @@ def set_memory_optimized(enabled):
     return enabled
 
 
+# ---- 透明偏好学习：独立开关（默认关），与「长期记忆优化」并列但不联动 ----
+# 刻意不进 _MEMORY_SUBKEYS —— 学习只统计可观测使用信号（显式要求 + 实际改动），
+# 是纯本地计数，和异步蒸馏/向量召回是两回事，用户可只开其一。关时 agent_memory
+# 既不写 learned、profile_context() 也不追加学习块，行为与今天逐字节一致。
+def get_memory_learn():
+    """学习习惯开关当前值：显式 runtime 优先；否则回落环境 DOCMIND_MEMORY_LEARN。"""
+    v = get_runtime("memory_learn")
+    if v is not None:
+        return bool(v)
+    return _env_truthy("DOCMIND_MEMORY_LEARN")
+
+
+def set_memory_learn(enabled):
+    """落库学习习惯开关（set_runtime + save_state，重启后仍生效）。"""
+    enabled = bool(enabled)
+    set_runtime("memory_learn", enabled)
+    save_state("memory_learn", enabled)
+    return enabled
+
+
 def _apply_memory_state(data):
-    """开机恢复：master 键优先，向后同步三个子键；显式 set_runtime 覆盖磁盘值。"""
+    """开机恢复：master 键优先，向后同步三个子键；显式 set_runtime 覆盖磁盘值。
+    memory_learn 是独立开关，单独恢复，与 memory_optimized 互不牵连。"""
     m = data.get("memory_optimized")
-    if m is None:
-        return
-    m = bool(m)
-    if "memory_optimized" not in _RUNTIME:
-        _RUNTIME["memory_optimized"] = m
-    for key in _MEMORY_SUBKEYS:
-        if key not in _RUNTIME:
-            _RUNTIME[key] = m
+    if m is not None:
+        m = bool(m)
+        if "memory_optimized" not in _RUNTIME:
+            _RUNTIME["memory_optimized"] = m
+        for key in _MEMORY_SUBKEYS:
+            if key not in _RUNTIME:
+                _RUNTIME[key] = m
+    learn = data.get("memory_learn")
+    if learn is not None and "memory_learn" not in _RUNTIME:
+        _RUNTIME["memory_learn"] = bool(learn)

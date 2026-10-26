@@ -76,6 +76,8 @@ from config import (
     set_web_fetch_api_url,
     get_memory_optimized,
     set_memory_optimized,
+    get_memory_learn,
+    set_memory_learn,
     get_voice_config,
     effective_voice_config,
     set_voice_config,
@@ -4274,6 +4276,14 @@ async def agent_profile_patch_ep(payload: dict, request: Request):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+@app.post("/api/agent/profile/learned/clear")
+async def agent_profile_learned_clear_ep(request: Request):
+    """一键清空「系统学到的使用习惯」，只清 learned 统计，绝不动用户显式填写的画像字段。"""
+    import agent_memory
+    profile = agent_memory.clear_learned(_request_user_id(request))
+    return {"ok": True, "profile": profile}
+
+
 @app.delete("/api/agent/memory/{memory_id}")
 async def agent_memory_delete_ep(memory_id: str):
     import agent_memory
@@ -5049,6 +5059,8 @@ async def get_config():
         "web_fetch_has_key": bool(get_web_fetch_api_key()),
         # 长期记忆优化总开关（异步蒸馏 + 混合召回）当前状态，供面板回显勾选
         "memory_optimized": get_memory_optimized(),
+        # 透明学习习惯开关（独立于总开关，默认关）当前状态，供面板回显勾选
+        "memory_learn": get_memory_learn(),
         # 模型选择模式 + 自动模式所用云端预设 + 已保存预设（含每预设 has_key）
         "llm_mode": get_runtime("llm_mode") or "fixed",
         "auto_cloud_preset_id": get_runtime("auto_cloud_preset_id") or "",
@@ -5168,18 +5180,23 @@ async def set_agent_capacity(req: AgentCapacityReq):
 # 真实的 LLM provider 覆盖成默认的 mock。这里只碰记忆开关这一个 runtime 键，安全。
 class MemorySettingsReq(BaseModel):
     memory_optimized: Optional[bool] = None
+    memory_learn: Optional[bool] = None
 
 
 @app.get("/api/memory-settings")
 async def get_memory_settings():
-    return {"ok": True, "memory_optimized": get_memory_optimized()}
+    return {"ok": True, "memory_optimized": get_memory_optimized(),
+            "memory_learn": get_memory_learn()}
 
 
 @app.post("/api/memory-settings")
 async def set_memory_settings(req: MemorySettingsReq):
     if req.memory_optimized is not None:
         set_memory_optimized(req.memory_optimized)
-    return {"ok": True, "memory_optimized": get_memory_optimized()}
+    if req.memory_learn is not None:
+        set_memory_learn(req.memory_learn)
+    return {"ok": True, "memory_optimized": get_memory_optimized(),
+            "memory_learn": get_memory_learn()}
 
 
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://127.0.0.1:11434")

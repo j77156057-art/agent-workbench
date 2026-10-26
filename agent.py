@@ -5843,6 +5843,22 @@ class Agent:
                         self._schedule_memory_distill(_ep_mid, question, final_text, error, _ep_backed)
                     except Exception:  # noqa: BLE001
                         pass
+                    # 透明偏好学习：把本轮**可观测**信号（触碰文件 / 用到的工具）
+                    # 累加进画像 learned。默认关（learning_enabled() False）→ 整段跳过，
+                    # 连一次 DB 读都不做，行为逐字节同今天。单独包 try——学习异常绝不
+                    # 影响上面已完成的 episode 落库。learned 只作建议级上下文、可一键清除。
+                    try:
+                        if _memory.learning_enabled():
+                            _js = journal_state or {}
+                            _memory.learn_habits(
+                                question=question,
+                                paths=[fc.get("path") for fc in (_js.get("file_changes") or [])
+                                       if isinstance(fc, dict)],
+                                tools=[sig[0] for sig in (_js.get("executed") or [])
+                                       if isinstance(sig, (list, tuple)) and sig],
+                            )
+                    except Exception:  # noqa: BLE001
+                        pass
                 except Exception:
                     pass
             # 断连时关闭内层循环，确保不再执行后续工具调用（已耗尽时 close 是空操作）。
