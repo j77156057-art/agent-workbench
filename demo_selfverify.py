@@ -1,4 +1,5 @@
-def f(
-    x
-):
-    print("Hello, world!")
+"""临时自验证演示文件：语法错误已修复。"""
+
+
+def f(x):
+    return 1
