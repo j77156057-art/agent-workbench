@@ -428,6 +428,34 @@ function toggleSeg(msg: ChatMsg, si: number) {
   const key = segKey(msg, si)
   segExpanded.value = { ...segExpanded.value, [key]: !segExpanded.value[key] }
 }
+/* 回合结束后把整条推理轨迹（中途旁白 + 工具行）折成一块，正文只留最终答案；
+   流式中不折——用户要实时看到每一步。默认收起，点「推理轨迹」头才摊开。
+   过去旁白恒作为正文行铺在答案前面，看起来像模型把思考/代码直接贴进对话，
+   而不是写文件；收进这条折叠块后，done 的回合只剩答案 + 一行轨迹概览。 */
+const traceExpanded = ref<Record<string, boolean>>({})
+function traceOpen(msg: ChatMsg): boolean {
+  return !!traceExpanded.value[msg.id]
+}
+function toggleTrace(msg: ChatMsg) {
+  traceExpanded.value = { ...traceExpanded.value, [msg.id]: !traceExpanded.value[msg.id] }
+}
+/** 折叠头的一句话概览：把各段活动摘要合并成整轮口径（编辑 N 个文件 · 执行 N 条命令 ·
+   思考 N 次…），思考恒排最后。数字与展开后的单步明细同源，不会各说各话。 */
+function traceHeadline(msg: ChatMsg): string {
+  const agg = new Map<string, { count: number; unit: string }>()
+  for (const s of traceSegments(msg)) {
+    for (const p of s.digest.parts) {
+      const cur = agg.get(p.label)
+      if (cur) cur.count += p.count
+      else agg.set(p.label, { count: p.count, unit: p.unit })
+    }
+  }
+  const entries = [...agg.entries()]
+  const think = entries.find((e) => e[0] === '思考')
+  const rest = entries.filter((e) => e[0] !== '思考')
+  const ordered = think ? [...rest, think] : entries
+  return ordered.map(([label, v]) => `${label} ${v.count} ${v.unit}`).join(' · ')
+}
 // 把交错流切成「发言 → 该段工具摘要」若干段（reasoning 分段与 ReAct Thought 都是发言）。
 function segmentsOf(msg: ChatMsg) {
   return traceSegments(msg)
@@ -1639,12 +1667,12 @@ const webTitle = computed(() => webOn.value
           </div>
           <template v-else>
             <div v-if="m.trace.length || m.reasoning || m.status === 'streaming'" class="cd-run-head">
-              <span class="cd-run-avatar">✦</span>
+              <span class="cd-run-avatar">●</span>
               <span class="cd-run-role">交付代理</span>
               <!-- degraded 是后端明确说的「这轮不是干净交付」。挂在绿色「已完成」下面
                    就是在宣称一件没做到的事，所以降级回合改显「未完成」。 -->
               <span class="cd-run-status wb-status-chip" :class="[`cd-run-${m.status}`, { 'cd-run-degraded': m.status === 'done' && m.degraded }]">
-                {{ m.status === 'streaming' ? '正在执行' : m.status === 'done' ? (m.degraded ? '未完成' : '已完成') : m.status === 'error' ? '执行失败' : '已停止' }}
+                {{ m.status === 'streaming' ? '⏳ 正在执行' : m.status === 'done' ? (m.degraded ? '⚠️ 未完成' : '✅ 已完成') : m.status === 'error' ? '❌ 执行失败' : '⏹ 已停止' }}
               </span>
               <span class="cd-run-time" v-if="elapsedLabel(m)">· {{ elapsedLabel(m) }}</span>
             </div>
@@ -1680,7 +1708,20 @@ const webTitle = computed(() => webOn.value
                  reasoning 的轮次切分在 useChatStream（动作事件即切点，思考随帧
                  实时生长）；历史/演示路径没有 flow，由 flowOf 兜底合成。
                  点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
-            <div v-if="cdHasFlow(m)" class="cd-flow">
+            <div v-if="cdHasFlow(m)" class="cd-trace-wrap">
+              <!-- done 后整块轨迹默认收起，只留一行「推理轨迹 · 概览」头；流式中不显头、直接铺开实时流。 -->
+              <button
+                v-if="m.status !== 'streaming'"
+                class="cd-trace-head"
+                :aria-expanded="traceOpen(m)"
+                @click="toggleTrace(m)"
+              >
+                <span class="cd-trace-glyph" aria-hidden="true">◷</span>
+                <span class="cd-trace-label">推理轨迹</span>
+                <span v-if="traceHeadline(m)" class="cd-trace-count">{{ traceHeadline(m) }}</span>
+                <span class="cd-trace-chevron" :class="{ open: traceOpen(m) }">⌄</span>
+              </button>
+              <div v-show="m.status === 'streaming' || traceOpen(m)" class="cd-flow">
               <!-- 分段呈现（2026-10-25）：一段发言 → 这段之后干了什么的一行灰色摘要 →
                    下一段发言。推理过程因此夹在中途发言之间，而不是整轮压成一块铺完。
                    摘要默认收起，点开才看这一段的单步明细。 -->
@@ -1714,7 +1755,7 @@ const webTitle = computed(() => webOn.value
                       :aria-label="`${traceTitle(m.trace[ti])}，${traceStateLabel(traceState(m, m.trace[ti], ti), m.trace[ti])}，点击查看详情`"
                       @click="toggleActivity(m.id, ti, m)"
                     >
-                      <span class="cd-flow-glyph">{{ rowKind(m, ti) === 'action' ? (TRACE_GLYPH[m.trace[ti].type] || '↗') : '↳' }}</span>
+                      <span class="cd-flow-glyph">{{ rowKind(m, ti) === 'action' ? (TRACE_GLYPH[m.trace[ti].type] || '→') : '•' }}</span>
                       <span class="cd-flow-main">
                         <span class="cd-flow-title">{{ traceTitle(m.trace[ti]) }}</span>
                         <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
@@ -1765,6 +1806,7 @@ const webTitle = computed(() => webOn.value
                   </template>
                 </div>
               </template>
+              </div>
             </div>
             <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
                  DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
@@ -1778,7 +1820,7 @@ const webTitle = computed(() => webOn.value
               <div v-if="m.status === 'done' && m.degraded && m.consistencyReason !== 'verbatim_dump'" class="cd-consistency-warn" role="status">
                 <span class="cd-warn-badge">未完成</span>
                 本轮没有拿到可综合的完整答案——上面是兜底内容或中间证据，不是针对你问题的结论。
-                点开上方各段灰色摘要可核对模型实际拿到的内容；建议重试、换个问法，或换一个模型。
+                点开上方「推理轨迹」可核对模型实际拿到的内容；建议重试、换个问法，或换一个模型。
               </div>
               <template v-if="m.status === 'streaming'"><div class="cd-answer-pending"><span class="cd-caret" aria-hidden="true" /> 正在生成回答…</div></template>
               <span v-else v-html="answerHtml(m)" />
@@ -2211,6 +2253,35 @@ const webTitle = computed(() => webOn.value
    无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning
    分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
    替代了旧的「cd-reason 块 + 可折叠过程流（cd-process-stream）」两段式。 */
+/* 回合结束后把整条推理轨迹折成一块：一行低饱和度的「推理轨迹 · 概览」头，
+   点开才摊开下方 .cd-flow（旁白 + 工具行）。流式中不显头，直接铺实时流。 */
+.cd-trace-wrap { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; }
+.cd-trace-head {
+  align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 7px;
+  border: none; background: none;
+  border-radius: var(--r-sm);
+  padding: 3px 6px; margin-left: -6px;
+  cursor: pointer;
+  color: var(--text-faint);
+  font-family: var(--font-ui); font-size: var(--fs-sm);
+  max-width: var(--measure);
+}
+.cd-trace-head:hover { color: var(--text-muted); background: var(--bg-hover); }
+.cd-trace-head:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
+.cd-trace-glyph { color: var(--text-faint); font-size: var(--fs-sm); }
+.cd-trace-label { color: var(--text-muted); font-weight: 650; white-space: nowrap; }
+.cd-trace-count {
+  color: var(--text-faint); font-size: var(--fs-cap);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.cd-trace-chevron {
+  color: var(--text-faint); font-size: 9px; opacity: .55;
+  transition: transform .18s var(--ease-standard), opacity .15s ease;
+}
+.cd-trace-head:hover .cd-trace-chevron,
+.cd-trace-head[aria-expanded="true"] .cd-trace-chevron { opacity: 1; }
+.cd-trace-chevron.open { transform: rotate(180deg); }
 .cd-flow {
   display: flex; flex-direction: column; gap: 2px;
   margin: 4px 0 8px;

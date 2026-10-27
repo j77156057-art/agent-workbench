@@ -65,6 +65,37 @@ export function actionToolOf(raw: string): string {
   return /^([\w.-]+)\s*\(/.exec((raw || '').trim())?.[1] || ''
 }
 
+// 模型有时会把「即将写进文件的代码」整段复述进 reasoning 流，两种形态：
+//  · 写文件工具：「……接下来创建 models.py。 new_text: """完整源码……」
+//  · 改用 python_exec 写：「……绕开收尾问题。 from pathlib import Path code = '''完整源码'''」
+// 于是本应简短的解说被撑成几千字代码块，源码泄漏到可见的推理轨迹里。代码只应
+// 落盘、在工具摘要行里以「编辑 N 个文件」体现，不该摊在解说上。
+// reasoning 流里的换行常被压成空格，不能按行锚定；改为在整段里找「最早的代码
+// 起点」下标截断，只留前面的自然语言旁白。关键词两侧要求 ASCII 词边界，避免误伤
+// 中文旁白里偶现的 import/def 等字样。
+const NAR_CODE_STARTS: RegExp[] = [
+  /\b(?:new_text|old_text|file_text)\s*[:：]/,        // 写文件工具参数
+  /'''|"""/,                                            // 三引号串（含 docstring）
+  /\bfrom\s+[A-Za-z_][\w.]*\s+import\b/,              // from x import y
+  /\b(?:import|def|class|return)\s+[A-Za-z_(]/,       // import x / def f / class C
+  /[A-Za-z_]\w*\s*=\s*(?:r?'''|r?""")/,               // code = '''…
+  /@[\w.]+\(/,                                          // 装饰器调用
+]
+const NAR_MAX = 600
+export function cleanNarration(raw: string): string {
+  let t = (raw || '').trim()
+  let cut = -1
+  for (const re of NAR_CODE_STARTS) {
+    const m = re.exec(t)
+    if (m && (cut < 0 || m.index < cut)) cut = m.index
+  }
+  if (cut > 0) t = t.slice(0, cut)
+  else if (cut === 0) t = ''
+  t = t.replace(/\n{3,}/g, '\n\n').trim()
+  if (t.length > NAR_MAX) t = t.slice(0, NAR_MAX).trimEnd() + ' …'
+  return t
+}
+
 export interface TraceDigest {
   parts: { label: string; count: number; unit: string }[]
   /** 「编辑 1 个文件 · 执行 1 条命令 · 思考 2 次」 */
@@ -92,7 +123,7 @@ export function digestFromTools(tools: string[] | undefined | null, think = 0): 
 
 /** 一段「发言 + 它之后的工具」：解说在前，活动摘要紧跟其后，再进入下一段。 */
 export interface TraceSegment {
-  /** 本段的解说段落（reasoning 分段 / ReAct Thought / 复核） */
+  /** 本段的解说段落（仅 ReAct Thought / 复核；原始 reasoning 不再进解说） */
   narration: string[]
   /** 本段动作/返回在 msg.trace 里的下标（展开看单步明细用） */
   rows: number[]
@@ -103,12 +134,13 @@ export interface TraceSegment {
 }
 
 /**
- * 按解说段落把交错流切段。
+ * 按发言段落把交错流切段。
  *
- * 现在的对话效果是「解说 → 摘要 → 解说 → 摘要」，而不是把整轮推理压成一块：
- * 一段发言之后跑了哪些工具，就在这段下面挂一行灰色摘要；下一次发言即开新段。
- * 连续的思考（reasoning 连到 ReAct Thought）并进同一段，不凭空造出空摘要。
- * 复核（reflection）当发言看，观察（observation）当工具返回看。
+ * 对话效果是「解说 → 摘要 → 解说 → 摘要」：一段发言之后跑了哪些工具，就在这段
+ * 下面挂一行灰色摘要；下一次发言即开新段。可见解说只取简洁的 ReAct Thought / 复核；
+ * 模型原生 reasoning_content（think 节点）不再摊出来——思考型模型会把即将写进文件
+ * 的代码也打在思考流里，摊出来既长又泄漏源码，这里只把它计入「思考 N 次」。
+ * 观察（observation）当工具返回看。
  */
 export function traceSegments(msg: {
   trace: ChatTraceItem[]
@@ -134,16 +166,18 @@ export function traceSegments(msg: {
   }
 
   for (const node of flowOf(msg)) {
-    const item = node.kind === 'think' ? null : trace[node.trace]
-    const spoken = node.kind === 'think'
-      || node.kind === 'thought'
-      || item?.type === 'reflection'
+    // 原始 reasoning_content（think 节点）不再摊成可见解说：思考型模型会把即将
+    // 写进文件的代码也打在这条流里，解说因此被撑成几千字代码块。这里只把它计入
+    // 「思考 N 次」，可见旁白一律交给简洁的 ReAct Thought / 复核。
+    if (node.kind === 'think') { think++; continue }
+    const item = trace[node.trace]
+    const spoken = node.kind === 'thought' || item?.type === 'reflection'
     if (spoken) {
       // 这一段已经跑过工具：先结段，再让这句话成为下一段的开头
       if (rows.length) flush()
       think++
-      const text = node.kind === 'think' ? node.text : (item?.text || '')
-      if (text.trim()) narration.push(text.trim())
+      const clean = cleanNarration(item?.text || '')
+      if (clean) narration.push(clean)
       continue
     }
     if (!item) continue

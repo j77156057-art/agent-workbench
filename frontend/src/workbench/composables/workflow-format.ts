@@ -116,7 +116,7 @@ export const ROLE_META: Record<string, { label: string; avatar: string }> = {
   artist: { label: '美术员', avatar: '美' },
   audio: { label: '音频员', avatar: '音' },
 }
-export const STEP_GLYPH: Record<string, string> = { thought: '◌', action: '↗', observation: '✓', reflection: '↻' }
+export const STEP_GLYPH: Record<string, string> = { thought: '○', action: '→', observation: '•', reflection: '↺' }
 export const STEP_LABEL: Record<string, string> = { thought: '思考', action: '工具调用', observation: '观察结果', reflection: '复核' }
 export const TOOL_NAMES: Record<string, string> = {
   search_code: '检索代码', search_knowledge: '检索知识库', read_file: '读取文件',

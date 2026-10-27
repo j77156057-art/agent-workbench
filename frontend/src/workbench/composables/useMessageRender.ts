@@ -102,7 +102,7 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     thought: '分析摘要', action: '执行动作', observation: '返回结果', reflection: '执行提示',
   }
   const TRACE_GLYPH: Record<string, string> = {
-    thought: '◌', action: '↗', observation: '✓', reflection: '↻',
+    thought: '○', action: '→', observation: '•', reflection: '↺',
   }
   const nowTick = ref(Date.now())
   let elapsedTimer: number | null = null
