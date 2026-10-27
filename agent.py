@@ -5113,6 +5113,11 @@ class Agent:
                 messages.append({"role": "user", "content": memory_context})
         except Exception:
             pass
+        # 记下「固定上下文块」的结束下标：0..此处之前 = 系统提示 + 各 system 注入
+        # （项目规则/路由/画像/计划/联网开关/**早期对话摘要**）+ memory_context，
+        # 这些全部【永不可裁】；只有其后的历史问答对才是预算裁剪的对象。
+        # _fit_budget 依此下标裁剪，避免误删摘要/系统规则/当前问题。
+        self._head_fixed_end = len(messages)
         # 能带几十轮原文，小窗口模型只带最近几轮；AGENT_HISTORY_TURNS 是硬上限。
         for turn in self._history_window():
             messages.append({"role": "user", "content": turn["user"]})
@@ -5270,7 +5275,10 @@ class Agent:
         裁剪顺序（保住最相关上下文）：
         1) 存量历史里的内部调度标记（见下，纯污染，无条件删）；
         2) trail 最早的工具/反思/续写往返（至少保留最近 1 轮）；
-        3) head 中最早的历史问答对（system 规则与当前问题永不动）。
+        3) head 里最早的历史问答对——只在固定上下文块（系统提示/项目规则/路由画像
+           计划联网等 system 注入/**早期对话摘要**/memory_context，由
+           self._head_fixed_end 标注，全部永不动）之后、当前问题（head[-1]，永不动）
+           之前这段可裁区间内成对删除。
         """
         # 存量会话兜底清洗：旧版本并行批次会写一条「（并行调用）read_file、…」的
         # assistant 消息（现已在回填处移除，但磁盘上的老会话还在）。它是 harness
@@ -5295,10 +5303,19 @@ class Agent:
                 idx, span = found
                 del trail[idx:idx + span]
                 continue
-            # head: [system, (system rules), 历史问答对..., 当前问题]
-            sys_end = 2 if len(head) > 1 and head[1].get("role") == "system" else 1
-            if len(head) > sys_end + 1:
-                del head[sys_end:sys_end + 2]
+            # head 结构：[固定上下文块(系统/规则/摘要/memory，永不动) | 历史问答对(可裁) | 当前问题(永不动)]
+            # 只在「固定块之后、当前问题之前」的历史问答对里删最旧的一对（2 条，
+            # 保持 user 打头不产生 assistant-first 非法序列）。固定块和最后一条当前
+            # 问题由下标边界结构性保护，绝不参与裁剪。
+            hist_start = getattr(self, "_head_fixed_end", None)
+            if not isinstance(hist_start, int) or hist_start < 1 or hist_start >= len(head):
+                # 兜底：理论不该发生（head 均由 _build_messages 构造）。退回保守起点，
+                # 但仍由下面的条件确保绝不删 head[-1]（当前问题）。
+                hist_start = 2 if len(head) > 1 and head[1].get("role") == "system" else 1
+            # 需 len - hist_start >= 3：删 [hist_start, hist_start+1] 后，被删两下标
+            # 均 <= len-2，当前问题(len-1)恒不受影响；可把历史裁到 0 对仍留住问题。
+            if len(head) - hist_start >= 3:
+                del head[hist_start:hist_start + 2]
                 continue
             break
         # 工具图片只允许留在【最后一条】带图 trail 观察上：历史轮次只保留文字，
