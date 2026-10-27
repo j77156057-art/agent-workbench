@@ -1052,11 +1052,16 @@ def _project_root_or_error():
 
 
 def _load_secret(root, provider):
-    """读取已保存密钥：项目库优先，项目库没有时回落到全局库。
+    """读取已保存密钥。作用域由 ``config.SECRETS_SCOPE`` 决定：
 
-    Key 属于这台机器上的 Windows 用户，不绑定项目——首次启动还没添加项目、
-    或换了项目而该项目没单独存过 Key 时，仍应拿到全局库里的那一把。
+    - ``global``（默认）：只认全局密钥库。Key 属于这台机器上的用户、不绑定项目，
+      换任何项目都取同一把。保存始终写全局库，历史项目级 key 也已一次性回填进
+      全局库，所以这里直接忽略项目覆盖，彻底消除「切项目 Key 就消失」的问题。
+    - 其他值（如 ``project``）：项目库优先、全局库兜底——保留按项目覆盖的能力。
     """
+    import config as _cfg
+    if getattr(_cfg, "SECRETS_SCOPE", "global") == "global":
+        return secrets_store.load(None, provider)
     value = secrets_store.load(root, provider)
     if value or not root:
         return value

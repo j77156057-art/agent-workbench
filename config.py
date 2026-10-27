@@ -37,6 +37,13 @@ PROJECT_WEB_DIR = os.path.join(PROJECT_DIR, "web")
 # 显式 DOCMIND_STATE_ROOT 优先；测试进程默认隔离到临时目录（不污染仓库）。
 STATE_ROOT = os.getenv("DOCMIND_STATE_ROOT") or BASE_DIR
 
+# API Key 作用域：默认 global —— 只认全局密钥库（.docmind/secrets.json），
+# 换任何项目都通用，符合「凭据属于这台机器上的用户、不绑定项目」的设计意图。
+# 保存时始终写全局库；历史遗留的项目级 key 已由一次性回填脚本提升进全局库。
+# 若确需按项目覆盖同一厂商的 key，设 DOCMIND_SECRETS_SCOPE=project 退回旧的
+# 「项目库优先、全局库兜底」读取顺序。
+SECRETS_SCOPE = (os.getenv("DOCMIND_SECRETS_SCOPE") or "global").strip().lower()
+
 
 def _running_under_unittest():
     """当前进程是否由 `python -m unittest ...` 驱动（严格判据）。
