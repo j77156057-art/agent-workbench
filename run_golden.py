@@ -16,8 +16,9 @@
 
 设计约定：
 - 输出字段与既有 results_baseline.jsonl 保持一致（id/question/model/session_id/expect/
-  elapsed_s/n_actions/actions/thoughts/observations/reflections/final/error），
-  保证 agent_eval.py 无需改动即可消费。
+  elapsed_s/n_actions/actions/thoughts/observations/reflections/final/error），并**追加**
+  两个诚实性元标志 `degraded` / `verification_status`（取自 final 事件）。追加是向后兼容的：
+  老 baseline 没有这两个键也照样打分——agent_eval 只在题目 expect 显式要求时才检查它们。
 - 默认关闭 trace 落盘（DOCMIND_TRACE=0），避免污染真实使用账本。
 - 软超时：单题超过 --max-seconds 就中断并记录，不会让整轮挂死。
 - 每题写完立即 flush，中途 Ctrl-C 也保留已完成部分。
@@ -80,6 +81,11 @@ def run_one(question: str, *, llm, session_id: str, allowlist, max_seconds: floa
     final = ""
     error = None
     timed_out = False
+    # 诚实性元标志：final 上的 degraded / verification_status 是「这轮是不是干净的
+    # 完整交付」的权威信号，纯文本判据测不稳（被替换的那句中文会随话术漂移）。捕获进
+    # 结果行，供 agent_eval 的 degraded / verification_status 判据消费。
+    degraded = None
+    verification_status = None
 
     agent = Agent(llm=llm, session_id=session_id, tool_allowlist=allowlist, project_id=project_id)
     t0 = time.monotonic()
@@ -103,6 +109,9 @@ def run_one(question: str, *, llm, session_id: str, allowlist, max_seconds: floa
                     reflections.append(text[:200])
             elif typ == "final":
                 final = ev.get("text", "")
+                degraded = bool(ev.get("degraded"))
+                if "verification_status" in ev:
+                    verification_status = ev.get("verification_status")
             elif typ == "error":
                 error = ev.get("text") or ev.get("message")
     except Exception as e:  # noqa: BLE001 —— 单题崩溃不能拖垮整轮
@@ -118,6 +127,8 @@ def run_one(question: str, *, llm, session_id: str, allowlist, max_seconds: floa
         "reflections": reflections,
         "final": final,
         "error": error,
+        "degraded": degraded,
+        "verification_status": verification_status,
         "elapsed_s": round(time.monotonic() - t0, 1),
     }
 
@@ -287,6 +298,18 @@ def main(argv=None) -> int:
         return 1
 
     llm = LLMClient(provider=args.provider or None, model=args.model or None)
+    # 独立进程没有服务端的运行时密钥，也没把密钥塞进 env——这里回落到与工作台
+    # 相同的全局密钥库（api.py 在全局作用域下就是 secrets_store.load(None, provider)），
+    # 让黄金题库能直接用已保存的 Key 跑，而不必先手动 export。只打印 provider，绝不打印密钥。
+    if getattr(llm, "requires_api_key", False) and not getattr(llm, "api_key", ""):
+        try:
+            import secrets_store
+            _k = secrets_store.load(None, getattr(llm, "provider", "") or "")
+            if _k:
+                llm = LLMClient(provider=llm.provider, model=llm.model, api_key=_k)
+                print(f"已从全局密钥库为 {llm.provider} 注入 API Key")
+        except Exception as e:  # noqa: BLE001 —— 回落失败不阻断，交给单题 error 兜底
+            print(f"警告：从全局密钥库读取 {getattr(llm, 'provider', '')} 密钥失败：{type(e).__name__}: {e}")
     model_name = getattr(llm, "model", "") or args.model or os.getenv("LLM_MODEL", "")
     allowlist = build_allowlist(
         [s.strip() for s in args.disable_tools.split(",") if s.strip()],
@@ -365,6 +388,8 @@ def main(argv=None) -> int:
                 "observations": res["observations"],
                 "reflections": res["reflections"],
                 "final": res["final"],
+                "degraded": res["degraded"],
+                "verification_status": res["verification_status"],
                 "error": res["error"],
             }
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")

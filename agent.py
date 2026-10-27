@@ -5743,6 +5743,13 @@ class Agent:
                     if turn.verification_targets and not turn.verified:
                         ev["text"] = "修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。"
                         ev["verification_status"] = "unverified"
+                        # 诚实终态必须抵达 UI：前端两处「未完成」徽章只认 m.degraded
+                        # （useChatStream 仅由 ev.degraded===true 置位，从不读
+                        # verification_status/outcome）。此前这一支只换正文、只写
+                        # outcome，没打 degraded，于是后端记着「未验证」而前端仍染成
+                        # 绿色「已完成」。补上 degraded=True，与 harness 自写兜底 final
+                        # （见本文件 6231/7639/7789）同一信号对齐。
+                        ev["degraded"] = True
                         turn.outcome = "verification_incomplete"
                         if self.history and self.history[-1].get("user") == question:
                             self.history[-1]["assistant"] = ev["text"]

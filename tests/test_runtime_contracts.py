@@ -36,6 +36,9 @@ class RuntimeContracts(unittest.TestCase):
         self.assertFalse(instance.last_turn_record["verified"])
         final = next(event for event in events if event.get("type") == "final")
         self.assertEqual(final.get("verification_status"), "unverified")
+        # 未验证终态必须带 degraded=True，否则前端两处「未完成」徽章（只认
+        # m.degraded）会把它染成绿色「已完成」。
+        self.assertTrue(final.get("degraded"))
         self.assertNotIn("所有功能都正常", final["text"])
 
     def test_successful_production_preview_closes_write_verification(self):
@@ -90,6 +93,7 @@ class RuntimeContracts(unittest.TestCase):
             events = list(a.run("请创建 a.py 和 b.py 文件"))
         final = next(e for e in events if e["type"] == "final")
         self.assertEqual(final.get("verification_status"), "unverified")
+        self.assertTrue(final.get("degraded"))
         self.assertNotIn("全部成功", final["text"])
         self.assertFalse(a.last_turn_record["verified"])
         self.assertEqual(a.last_turn_record["verification"]["targets"], 2)
