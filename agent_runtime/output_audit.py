@@ -404,6 +404,42 @@ def _trace_steps(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, (list, tuple)) else []
 
 
+#: 会真正落盘、改变代码库状态的写入工具。模型亲手写出一个文件，是这个文件
+#: 「本轮确实存在」的最硬证据——比「读过」还强（读只是碰巧见到，写是它自己造的）。
+#: 因此这些动作的 `path:` 目标也要喂进裸文件名兜底索引，否则「写完直接裸名引用」
+#: 会被误判成幻觉路径（实测 booklog 现场：create_file 写了 booklog/probe_report.py
+#: 并 py_compile 验过，结论里写 probe_report.py 却判「打不开」，白烧一轮纠偏）。
+_WRITE_TOOLS = ("create_file", "apply_edit", "dev_region_edit", "dev_apply_edits")
+
+
+def _write_target_paths(actions: Any) -> list[str]:
+    """从写入动作里取出**被写的目标路径**（只取 path，绝不碰 new_text 正文）。
+
+    与 `_read_paths_from_actions` 分开写，是因为写入动作的形状是
+    `create_file(path: <p>, new_text: <一大段代码>)`——若沿用通用的 keyed/bare
+    提取器扫整段文本，`new_text` 里的 `import foo`、`open("bar.py")` 这类代码
+    会被当成"读过的路径"塞进索引，反而制造放行幻觉。所以这里只认**第一个**
+    `path:` 键的值，或退回到括号内的第一个实参；命中即停，后面的正文一律不看。
+    """
+    found: list[str] = []
+    keyed = re.compile(r"(?:path|file|filename)\s*[:：]\s*([^\s,;()]+)", re.I)
+    for action in (actions or []):
+        text = str(action or "")
+        if not re.match(r"\s*(?:%s)\s*\(" % "|".join(_WRITE_TOOLS), text, re.I):
+            continue
+        hit = keyed.search(text)
+        if hit:
+            found.append(_strip_uri_scheme(hit.group(1)))
+            continue
+        # 无键名（`create_file(相对路径, new_text: ...)`）：取括号里的第一个实参。
+        inside = re.search(r"\(([^)]*)", text)
+        if inside:
+            first = re.split(r"[,;]", inside.group(1))[0].strip()
+            if first and re.search(r"\.[A-Za-z0-9_]+$", first):
+                found.append(_strip_uri_scheme(first))
+    return found
+
+
 def _read_paths_from_actions(actions: Any) -> list[str]:
     """从动作文本里取出**本轮 read_file/grep/search_code 真正读过的路径**。
 
@@ -441,6 +477,59 @@ def _read_paths_from_actions(actions: Any) -> list[str]:
                 token = bare.match(token.strip())
                 if token:
                     found.append(_strip_uri_scheme(token.group(1)))
+    return found
+
+
+#: 全库检索类工具：动作里常只有 pattern/query、没有 `path:`，但**成功的观察**
+#: 会逐行打印命中文件的完整路径（`booklog\stats.py:49: def count_by_status...`）。
+_CODE_SEARCH_TOOLS = ("grep", "search_code")
+
+
+def _observed_ref_paths(steps: Any) -> list[str]:
+    r"""从**检索类工具的成功观察**里取出被列出的文件路径。
+
+    ## 为什么需要它（实测 booklog 现场 `stats.py:?` 等 6 条裸名被判幻觉）
+
+    模型跑 `grep(pattern: count_by_status|def stats)`——动作参数里**根本没有
+    `path:`**，路径是工具在**观察结果**里逐行打出来的：
+
+        booklog\stats.py:49: def count_by_status(...)
+        booklog\cli.py:170: def _cmd_stats(...)
+
+    模型据此用裸文件名 `stats.py` 引用，是**看着工具给的完整路径**缩写的，
+    不是凭空捏造。可兜底索引此前只从**动作**提路径，这条 grep 动作里没 path，
+    于是索引恒空、6 条真引用全判「打不开」，逼模型多读两轮文件去"修"没写错的路径。
+
+    ## 边界：只信 grep/search_code 且 ok=True 的观察
+
+    不扫 python_exec / read_command_output 之类任意工具的输出——那里的 `xxx.py`
+    可能只是报错文本或模型自打的字符串，不是工具确证存在的文件。只认这两个
+    「命中即证明文件在库里」的检索工具、且只认成功返回的观察。
+    """
+    found: list[str] = []
+    prev_action = ""
+    for item in (steps or []):
+        if not isinstance(item, Mapping):
+            continue
+        act = str(item.get("action") or item.get("tool") or "").strip()
+        typ = str(item.get("type") or "").lower()
+        if act:
+            prev_action = act
+        # 形状①（直接 Agent / 并行批）：观察文本挂在**动作 step 自己的 obs 字段**，
+        #   没有独立的 observation 节点。工具名就是这条 step 的 action。
+        # 形状②（工作流 traj）：动作与观察分成两个节点，观察节点靠 prev_action 溯源。
+        if act:
+            tool = _tool_name(act)
+            obs = str(item.get("obs") or "")
+        elif typ == "observation":
+            tool = _tool_name(prev_action)
+            obs = str(item.get("text") or item.get("obs") or item.get("observation") or "")
+        else:
+            continue
+        if tool not in _CODE_SEARCH_TOOLS or item.get("ok") is False:
+            continue
+        for m in _FILE_REF.finditer(obs):
+            found.append(_strip_uri_scheme(m.group(1)))
     return found
 
 
@@ -538,8 +627,23 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # 上一轮就是「文件引用全部可核验、根却是编的」，原有门禁完全看不见。
     root_claims = _project_root_claims(text)
     root = Path(code_root).resolve() if code_root else None
-    # 本轮真实读过的路径（从 action 文本里取），供裸文件名回退判定用。
-    read_basenames = _basename_index(_read_paths_from_actions(actions))
+    # 本轮真实经手过的路径，供裸文件名回退判定用。三路合并（各自带来源标签）：
+    #   read     —— read_file/grep/search_code 动作里带的 path
+    #   write    —— create_file/apply_edit 等写入动作的目标（模型亲手写的，最硬）
+    #   observed —— grep/search_code 成功观察里逐行列出的命中文件（动作没 path、
+    #               但工具确证这些文件在库里；实测 booklog grep 现场靠这条救回）
+    _sourced: dict[str, list] = {}
+    for _src, _paths in (("read", _read_paths_from_actions(actions)),
+                         ("write", _write_target_paths(actions)),
+                         ("observed", _observed_ref_paths(steps))):
+        for _p in _paths:
+            _norm = _strip_uri_scheme(str(_p or "")).strip()
+            if not _norm:
+                continue
+            _base = _norm.rsplit("/", 1)[-1]
+            if _base and _base not in (".", ".."):
+                _sourced.setdefault(_base.lower(), []).append((_norm, _src))
+    read_basenames = _sourced
     for ref in refs[:50]:
         rel = ref["path"]
         path = Path(rel)
@@ -570,15 +674,18 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
         # 而 harness 自己记着这件事却不用，拿根下查不到去否它是在打自己的脸。
         # `read_verified` 单独记一份，避免把「文件系统有」与「这轮读过」混成一件事。
         read_verified = False
+        verified_via = ""
         if not exists and read_basenames:
             hits = read_basenames.get(rel.lower())
             if hits:
                 exists = True
                 read_verified = True
+                verified_via = hits[0][1] if hits and isinstance(hits[0], (tuple, list)) else "read"
                 if root is not None and not path.is_absolute():
                     in_root = True  # 已确认存在，无需再判越界
         file_checks.append(dict(ref, exists=exists, in_root=in_root,
-                                line_ok=line_ok, read_verified=read_verified))
+                                line_ok=line_ok, read_verified=read_verified,
+                                verified_via=verified_via))
     # A trace can be supplied by a workflow runner or by a direct Agent.  A
     # successful flag is the only portable signal; failure observations remain
     # evidence of an attempted read, not proof of verification.

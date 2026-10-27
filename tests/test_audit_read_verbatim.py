@@ -179,5 +179,85 @@ class ExistingTestsStillHoldTests(unittest.TestCase):
         self.assertIn("read_file_present", row["checks"])
 
 
+class BareNameThatWasWrittenThisTurnTests(unittest.TestCase):
+    """这一轮**亲手写出来**的文件 -> 裸名引用该认（实测 booklog probe_report.py:?）。
+
+    写入比读取是更强的存在证据：读只是碰巧见到，写是模型自己造的。此前兜底
+    只认读过的路径，于是「写完直接用裸名引用、没读回」被判成幻觉、白烧一轮纠偏。
+    """
+
+    def _audit(self, steps, text):
+        return audit_evidence({"text": text, "trace": {"steps": steps}},
+                              question="统计逻辑在哪个文件？", require_read=True)
+
+    def test_a_bare_name_the_model_just_wrote_now_passes(self):
+        steps = [{"action": "create_file(path: booklog/probe_report.py, "
+                            "new_text: def summary(): return 1)",
+                  "ok": True, "obs": "已创建 booklog/probe_report.py"}]
+        row = self._audit(steps, "统计探针逻辑见 probe_report.py。")
+        bare = [r for r in row["references"] if r["path"] == "probe_report.py"]
+        self.assertTrue(bare, "结论里应有 probe_report.py")
+        self.assertTrue(bare[0]["exists"],
+                        "模型刚 create_file 写出的文件，裸名引用却判打不开")
+        self.assertEqual(bare[0].get("verified_via"), "write",
+                         "没标出放行凭据是「本轮写过」")
+        self.assertTrue(row["gate_checks"]["references_exist"],
+                        "references_exist 仍 false——整份结论被否掉")
+
+    def test_paths_inside_new_text_body_do_not_pollute_the_index(self):
+        """边界：只认被写的 path，绝不把 new_text 正文里的 `xxx.py` 当经手文件。"""
+        steps = [{"action": "create_file(path: booklog/probe_report.py, "
+                            "new_text: import decoy_helper)",
+                  "ok": True, "obs": "已创建 booklog/probe_report.py"}]
+        row = self._audit(steps, "依赖见 decoy_helper.py。")
+        decoy = [r for r in row["references"] if r["path"] == "decoy_helper.py"]
+        self.assertTrue(decoy)
+        self.assertFalse(decoy[0]["exists"],
+                         "new_text 正文里的代码路径被误当成本轮经手文件放行了")
+
+
+class BareNameSeenInSearchObservationTests(unittest.TestCase):
+    r"""grep/search_code 动作里没 path，但**成功观察**逐行列出了文件 -> 该认。
+
+    实测 booklog 现场：模型 `grep(pattern: count_by_status|def stats)`，观察里
+    打印 `booklog\stats.py:49`，结论缩写成裸名 `stats.py` 却被判幻觉、逼它多读两轮。
+    """
+
+    def _audit(self, steps, text):
+        return audit_evidence({"text": text, "trace": {"steps": steps}},
+                              question="统计逻辑在哪个文件？", require_read=True)
+
+    def test_a_bare_name_listed_in_a_successful_grep_observation_passes(self):
+        obs = "booklog\\stats.py:49: def count_by_status(books):\n" \
+              "booklog\\service.py:126: def count_by_status(self):"
+        steps = [{"action": "grep(pattern: count_by_status|def stats)",
+                  "ok": True, "obs": obs}]
+        row = self._audit(steps, "统计逻辑见 stats.py 和 service.py。")
+        for name in ("stats.py", "service.py"):
+            bare = [r for r in row["references"] if r["path"] == name]
+            self.assertTrue(bare, "结论里应有 %s" % name)
+            self.assertTrue(bare[0]["exists"],
+                            "grep 观察里明明列出了 %s，裸名引用却判打不开" % name)
+            self.assertEqual(bare[0].get("verified_via"), "observed")
+
+    def test_a_failed_search_observation_does_not_rescue_any_bare_name(self):
+        steps = [{"action": "grep(pattern: whatever)", "ok": False,
+                  "obs": "booklog\\ghost.py:1: 命中"}]
+        row = self._audit(steps, "逻辑见 ghost.py。")
+        bare = [r for r in row["references"] if r["path"] == "ghost.py"]
+        self.assertTrue(bare)
+        self.assertFalse(bare[0]["exists"],
+                         "失败的检索观察不该替任何裸名背书")
+
+    def test_a_bare_name_never_written_read_or_seen_is_still_blocked(self):
+        steps = [{"action": "grep(pattern: count_by_status)", "ok": True,
+                  "obs": "booklog\\stats.py:49: def count_by_status(books):"}]
+        row = self._audit(steps, "还有个幽灵文件 ghost_module.py。")
+        bare = [r for r in row["references"] if r["path"] == "ghost_module.py"]
+        self.assertTrue(bare)
+        self.assertFalse(bare[0]["exists"],
+                         "本轮没经手的裸名被放行了——兜底不能变成放水")
+
+
 if __name__ == "__main__":
     unittest.main()

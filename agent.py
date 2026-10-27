@@ -3229,6 +3229,11 @@ def _audit_live_answer(text, question, trail, executed_steps=None):
         steps = [{"action": str(s.get("action") or ""), "ok": bool(s.get("ok")),
                   "truncated": bool(s.get("truncated"))}
                  for s in executed_steps]
+        # 观察文本单独挂回（executed_steps 里带 obs 才有）：裸文件名兜底要从
+        # grep/search_code 的成功观察里提取被列出的文件路径（见 _observed_ref_paths）。
+        for step, s in zip(steps, executed_steps):
+            if s.get("obs"):
+                step["obs"] = str(s.get("obs"))
     else:
         steps = []
         pending = None
@@ -6341,7 +6346,10 @@ class Agent:
                     # 会让「本轮读过哪些路径」索引恒空，裸文件名引用全被判幻觉）。
                     audit_steps.extend({"action": "%s(%s)" % (nm, _ar), "ok": bool(_ok),
                                         # 乙：并行批同样拿原始 obs（_o，未 clip）打截断标。
-                                        "truncated": obs_reports_code_undercount(nm, _o)}
+                                        "truncated": obs_reports_code_undercount(nm, _o),
+                                        # 原始观察文本：裸文件名兜底要从 grep/search_code
+                                        # 成功观察里提取被列出的文件路径（见 _observed_ref_paths）。
+                                        "obs": str(_o or "")}
                                        for nm, _ar, _o, _ok, _i in results)
                     # 免费导航只消耗导航额度（与拆批时判定的 batch_free 同序），
                     # 其余结果按实际数量计入工具步数。
@@ -7152,7 +7160,10 @@ class Agent:
                     "action": "%s(%s)" % (parsed["action"], parsed["action_input"] or ""),
                     "ok": bool(_tool_ok),
                     # 乙：拿**原始 obs**（此处尚未 clip）判这次代码检索有没有自报少计型截断。
-                    "truncated": obs_reports_code_undercount(parsed["action"], obs)})
+                    "truncated": obs_reports_code_undercount(parsed["action"], obs),
+                    # 原始观察文本：裸文件名兜底要从 grep/search_code 成功观察里
+                    # 提取被列出的文件路径（见 _observed_ref_paths）。
+                    "obs": str(obs or "")})
 
                 # 写操作改变了代码库状态：清空已执行记录，允许随后用【相同命令】
                 # 重新跑测试做验证（防重复护栏针对的是无意义空转，不是改后复验）。
