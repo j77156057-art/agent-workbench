@@ -87,6 +87,9 @@ golden/results_smoke_*.jsonl
 golden/results_trial.jsonl
 golden/results_pte.jsonl
 golden/results_*_verify*.jsonl
+golden/results_full_*.jsonl
+golden/*.bak
+golden/results_baseline.old*
 
 # ===== 引擎工程导入元数据（Godot/Unity 自动生成，不入库）=====
 *.import

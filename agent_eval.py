@@ -13,9 +13,12 @@
       "any_of": [".gd:", "behaviors/"],               // 至少出现一条
       "must_not_include": ["player.py"],              // 幻觉标记，出现即失败
       "regex": "\\\\w+\\\\.gd:\\\\d+",                  // 正则必须命中
-      "must_call": ["search_code"],                   // 必须调用过的工具（按前缀匹配）
+      "must_call": ["search_code"],                   // 必须调用过的工具（按前缀匹配，AND：全部都要）
+      "any_of_call": ["grep", "search_code"],         // 至少调用过其中之一（OR： interchangeable 检索工具）
       "min_actions": 1, "max_actions": 8,
       "no_error": true,
+      "degraded": true,                               // final 是否必须被标降级（未验证写=true / 干净已验证写=false）
+      "verification_status": "unverified",            // 期望的写后自验证终态（如未验证）
       "judge_criteria": "答案是否给出了具体的文件与行号，且未编造"  // 仅 --judge 时生效
     }
   }
@@ -45,6 +48,33 @@ def _action_called(tool, actions):
     return any(a == tool or a.startswith(tool + "(") for a in actions)
 
 
+#: 子句分隔符：中文句读 + 换行。用来把「命中禁用词的那一小句」切出来单独判否定。
+_CLAUSE_SPLIT_RE = re.compile(r"[。！？；;!?]\s*|\n")
+
+#: 否定/辟谣线索。命中即认为该子句是在**否定**这个字符串（如「不是 12」
+#: 「不会直接照搬」「k8s/deployment.yaml 不存在」「这是禁用清单里的反例」），
+#: 而不是模型真的把幻觉当成事实输出。宁可稍宽——真正的肯定式编造（「项目里有
+#: X，在第 N 行」）句子里不含任何否定线索，仍会被判违规。
+_NEGATION_CUE_RE = re.compile(
+    r"不|没|无|非|别|未|勿|拒绝|禁止|禁|错|误|反例|幻觉|幻|编造|捏造|虚假|并不|压根|而非"
+)
+
+
+def _all_mentions_negated(term, text):
+    """`term` 出现在 `text` 里的每一处都落在带否定线索的子句中 → 返回 True（可豁免）。
+
+    只要有一处命中的子句**不含**任何否定线索，就说明它是肯定式陈述，返回 False。
+    """
+    saw_hit = False
+    for clause in _CLAUSE_SPLIT_RE.split(text):
+        if term in clause:
+            saw_hit = True
+            if not _NEGATION_CUE_RE.search(clause):
+                return False
+    # 没有任何子句命中（term 可能跨标点）：保守起见视为未豁免。
+    return saw_hit
+
+
 def score_record(rec, llm=None, judge=False):
     """对单条结果打分。返回 {id, scored, checks[], passed, score}。"""
     exp = rec.get("expect") or {}
@@ -67,7 +97,12 @@ def score_record(rec, llm=None, judge=False):
         hit = [s for s in any_of if s in final]
         add("any_of", bool(hit), f"命中 {hit[:3]}" if hit else f"均未出现：{any_of[:3]}")
     for s in exp.get("must_not_include") or []:
-        add(f"must_not_include:{s}", s not in final, "" if s not in final else "出现幻觉标记")
+        present = s in final
+        if present and _all_mentions_negated(s, final):
+            add(f"must_not_include:{s}", True, "仅出现于否定/辟谣语境，豁免")
+        else:
+            add(f"must_not_include:{s}", not present,
+                "" if not present else "出现幻觉标记")
     if exp.get("regex"):
         try:
             add("regex", bool(re.search(exp["regex"], final)), exp["regex"])
@@ -75,12 +110,30 @@ def score_record(rec, llm=None, judge=False):
             add("regex", False, f"正则非法：{e}")
     for tool in exp.get("must_call") or []:
         add(f"must_call:{tool}", _action_called(tool, actions), f"actions={actions[:5]}")
+    any_of_call = exp.get("any_of_call") or []
+    if any_of_call:
+        hit = [t for t in any_of_call if _action_called(t, actions)]
+        add("any_of_call", bool(hit),
+            f"命中 {hit}" if hit else f"均未调用：{any_of_call}；actions={actions[:5]}")
     if exp.get("min_actions") is not None:
         add("min_actions", len(actions) >= int(exp["min_actions"]),
             f"实际 {len(actions)}")
     if exp.get("max_actions") is not None:
         add("max_actions", len(actions) <= int(exp["max_actions"]),
             f"实际 {len(actions)}")
+
+    # 诚实性元标志判据：只在题目 expect 显式要求时才检查，老题不受影响。
+    # degraded / verification_status 由 run_golden 从 final 事件落进结果行。
+    if "degraded" in exp:
+        want = bool(exp["degraded"])
+        got = bool(rec.get("degraded"))
+        add("degraded", got == want,
+            "" if got == want else f"期望 degraded={want}，实际 {rec.get('degraded')!r}")
+    if exp.get("verification_status") is not None:
+        want = exp["verification_status"]
+        got = rec.get("verification_status")
+        add("verification_status", got == want,
+            "" if got == want else f"期望 verification_status={want!r}，实际 {got!r}")
 
     if judge and llm is not None and exp.get("judge_criteria"):
         ok, detail = _llm_judge(llm, rec, exp["judge_criteria"])

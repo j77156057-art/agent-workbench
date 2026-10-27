@@ -224,6 +224,32 @@ cd frontend && npm ci && npm run build     # 产物 -> ../web
 curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持哪些文件格式？"
 ```
 
+### 跑黄金题库回归（可选）
+
+黄金题是**端到端**回归：拿真实模型跑 `golden/questions_v2.json` 里的题，再用规则判分器 `agent_eval.py` 打分，与 `golden/results_baseline.jsonl` 对比 —— pass→fail 即回归（退出码 1）。与单元测试互补：单测锁确定性契约，黄金题锁「活模型 + 真检索 + 真工具」整条链路不被改坏。
+
+```bash
+# 1) 实跑：产出每题结果行（写类题必须 --isolate-fs，跑前备份、跑后还原）
+.venv\Scripts\python.exe run_golden.py --ids G01,G02,... --provider deepseek --model deepseek-flash \
+    --project-id <prj> --isolate-fs --out golden/results.jsonl --max-seconds 200
+# 2) 打分 + 回归门
+.venv\Scripts\python.exe agent_eval.py --results golden/results.jsonl --baseline golden/results_baseline.jsonl
+```
+
+题库跨**两个 code_root**：本项目自身源码（`config.py`/`tools.py`/`agent.py`/`capacity.py`…）与一份附带的示例库 `booklog`。`--project-id` 决定当前 code_root，所以两套题要**分两批跑**再合并。L3 抗干扰降级档用 `--disable-tools search_code` 单独跑。
+
+没有云端 API Key、或云模型临时不可用（欠费 / 限流）时，可切**本地 Ollama**兜底跑通整库，零 Key：加 `--provider ollama --model <本地已拉取模型>`（如 `qwen3.6:35b-a3b`）即可，其余参数与上面一致。注意这只是**能力演示**——本地小模型的答准率通常低于校准基线用的云端模型，跑出来的结果行**不要**折进 `results_baseline.jsonl` 锚点：基线只在单一校准模型上才有「pass→fail 即回归」的意义，混模型会让回归门失真。
+
+`expect` 支持的判据：`must_include` / `any_of` / `must_not_include` / `regex` / `must_call`（AND，全调过）/ `any_of_call`（OR，可互换的检索工具任一即可）/ `min_actions` / `max_actions` / `no_error`，以及诚实性元标志 `degraded` / `verification_status`（opt-in，老题不受影响）。
+
+几处**踩过的坑**，改题时务必知道：
+
+- **判分器对 `must_not_include` 有子句否定豁免**：禁用词若只出现在否定/辟谣子句里（「不是 12」「`k8s/deployment.yaml` 不存在」），视为模型在**如实反驳**而非幻觉，判通过；肯定式编造仍判失败。
+- **`expect` 会被冻结进每行结果**：改了题库的 `expect`，必须**重跑该题**刷新结果行，否则打分用的还是旧判据。
+- **`max_actions` 只判分、不封顶运行**：真正兜住死循环的是软超时（`--max-seconds`）与重复/失守早退，不是步数上限。
+- **容量类问法会被零-Token 能力面板拦截**：`agent.py` 的 `_CAPACITY_HELP_RE` 命中「容量词（token/步数/上限…）+ 疑问词（多少/如何…）」会直接从设置作答、`actions=0`、根本不检索源码。问「某常量默认值」的题要用祈使句直接点名「打开 `<文件>`、找到 `<标识符>`、报告其赋值」绕开它。
+- **只收「活的、可端到端观测、且没被单测锁死」的行为**：已被移除的死门 / 已被单测钉死的确定性逻辑，不进黄金库（否则要么不可复现、要么和单测重复）。
+
 ## 代码地图
 
 ```
