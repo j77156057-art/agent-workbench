@@ -73,6 +73,17 @@ function toggleSeg(i: number) {
   else next.add(i)
   openSegs.value = next
 }
+// 单块「深度思考」（原始 reasoning）done 后下沉进本段的单步明细；流式期仍在顶层随帧生长。
+function segHasThink(seg: { narration: { kind: string; text: string }[] }): boolean {
+  return seg.narration.some((l) => l.kind === 'reasoning')
+}
+// 顶层该显示哪些解说行：流式期全显示；done 后只留 ReAct 旁白，深度思考移入单步明细。
+function topNarration(
+  seg: { narration: { kind: string; text: string }[] },
+  streaming: boolean,
+): { kind: string; text: string }[] {
+  return streaming ? seg.narration : seg.narration.filter((l) => l.kind !== 'reasoning')
+}
 function rowKind(ti: number): 'action' | 'result' {
   return props.msg.trace[ti]?.type === 'action' ? 'action' : 'result'
 }
@@ -218,11 +229,17 @@ const phaseLabel = computed(() => {
           <!-- 分段呈现（2026-10-25）：发言 → 这段之后干了什么的一行灰色摘要 → 下一段发言。
                推理过程夹在中途发言之间；摘要默认收起，点开才看这一段的单步明细。 -->
           <template v-for="(seg, si) in segments" :key="'seg' + si">
-            <div v-if="seg.narration.length" class="ask-narration">
-              <p v-for="(line, li) in seg.narration" :key="'nar' + li" class="ask-narration-line">{{ line }}</p>
+            <div v-if="topNarration(seg, streaming).length" class="ask-narration">
+              <template v-for="(line, li) in topNarration(seg, streaming)" :key="'nar' + li">
+                <div v-if="line.kind === 'reasoning'" class="ask-nar-reasoning-wrap">
+                  <span class="ask-nar-tag" aria-hidden="true">✦ 深度思考</span>
+                  <p class="ask-narration-line ask-nar-reasoning">{{ line.text }}</p>
+                </div>
+                <p v-else class="ask-narration-line ask-nar-thought">{{ line.text }}</p>
+              </template>
             </div>
             <button
-              v-if="prefs.showTrace && seg.digest.toolTotal"
+              v-if="prefs.showTrace && (seg.digest.toolTotal || (!streaming && segHasThink(seg)))"
               class="flow-toggle"
               type="button"
               :aria-expanded="segOpen(si)"
@@ -234,6 +251,15 @@ const phaseLabel = computed(() => {
               <span class="chev" :class="{ open: segOpen(si) }">⌄</span>
             </button>
             <div v-if="segOpen(si)" class="flow">
+              <!-- done 后本段深度思考下沉到单步明细之首；流式期不重复（顶层已随帧长） -->
+              <template v-if="!streaming">
+                <div v-for="(line, li) in seg.narration" :key="'det-think' + li">
+                  <div v-if="line.kind === 'reasoning'" class="ask-nar-reasoning-wrap">
+                    <span class="ask-nar-tag" aria-hidden="true">✦ 深度思考</span>
+                    <p class="ask-narration-line ask-nar-reasoning">{{ line.text }}</p>
+                  </div>
+                </div>
+              </template>
               <template v-for="(ti, ri) in seg.rows" :key="'r' + ri">
                 <button class="flow-row" :class="rowKind(ti)" @click="toggleRow(ti)">
                   <span class="flow-glyph">{{ rowKind(ti) === 'action' ? '↗' : '↳' }}</span>
@@ -471,11 +497,29 @@ border-radius: var(--r-sm); }
 .flow-wrap { display: flex; flex-direction: column; gap: 2px; }
 .ask-narration { margin: 0; }
 .ask-narration-line {
-  margin: 0 0 8px; color: var(--text);
+  margin: 0 0 8px;
   font-size: var(--fs-md); line-height: 1.66;
   white-space: pre-wrap; word-break: break-word;
 }
 .ask-narration-line:last-child { margin-bottom: 2px; }
+/* ReAct Thought / 复核旁白：低调灰字 */
+.ask-nar-thought { color: var(--text-muted); }
+/* 深度思考（原始 reasoning）块 */
+.ask-nar-reasoning-wrap { margin: 0 0 10px; }
+.ask-nar-tag {
+  flex: 0 0 auto;
+  color: var(--accent-deep);
+  font-size: var(--fs-sm); font-weight: 700; letter-spacing: .04em;
+  white-space: nowrap;
+}
+/* 思考正文：左侧强调条 + 淡主色底块，比旁白更醒目 */
+.ask-nar-reasoning {
+  color: var(--text);
+  margin: 2px 0 0; padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 0 6px 6px 0;
+}
 /* 每段的工具摘要行：一行灰色小字，点开看这一段的单步明细（参考图里的样式）。 */
 .flow-toggle {
   align-self: flex-start;

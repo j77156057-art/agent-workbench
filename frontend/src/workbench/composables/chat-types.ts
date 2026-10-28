@@ -18,8 +18,23 @@ export interface BrowserEvidence {
   live?: boolean
 }
 
-/** ReAct 执行轨迹：思考 → 工具动作 → 观察 → 复核 */
-export type ChatTraceKind = 'thought' | 'action' | 'observation' | 'reflection'
+/** 写文件工具随 observation 事件透传的「文件改动」记录（完整 before/after）。
+ *  仅前端「查看改动」消费，模型侧看不到，对 agent 决策与黄金题评分中性。
+ *  - `truncated=false`：带 `old`/`new` 全文，前端可用 diffLines 渲染真正的行级对比。
+ *  - `truncated=true`：内容超上限未下发全文，只有 `diff`（后端简短 unified diff）。 */
+export interface FileDiffEntry {
+  path: string
+  kind: 'modify' | 'create'
+  old?: string
+  new?: string
+  diff: string
+  truncated?: boolean
+}
+
+/** ReAct 执行轨迹：思考 → 工具动作 → 观察 → 复核。
+ *  `reasoning`：模型原生思考流（reasoning_content）合并后的整块，仅历史回灌时由
+ *  后端随 trace 一起下发（实时流式走独立的 flow，不进 trace 数组）。 */
+export type ChatTraceKind = 'thought' | 'action' | 'observation' | 'reflection' | 'reasoning'
 
 export interface ChatTraceItem {
   type: ChatTraceKind
@@ -34,6 +49,8 @@ export interface ChatTraceItem {
   ok?: boolean
   /** 浏览器动作留痕（只有 observation 条目会带）：前后缩略图与地址。 */
   evidence?: BrowserEvidence
+  /** 写文件工具的完整改动（只有 observation 条目会带）：点击「查看改动」渲染 diff。 */
+  file_diffs?: FileDiffEntry[]
 }
 
 /**
@@ -208,6 +225,13 @@ export function flowOf(msg: {
   if (msg.reasoning) items.push({ kind: 'think', text: msg.reasoning })
   msg.trace.forEach((item, i) => {
     if (skip.has(i)) return
+    // 历史回灌：后端把合并后的原始思考作为 type="reasoning" 步骤随 trace 下发。
+    // 当成 think 节点（带 .text），与实时流式同构，交错的思考位置得以保留；
+    // 否则会落到 flowKindOf 的 'result' 兜底、渲染成一条空结果行。
+    if (item.type === 'reasoning') {
+      items.push({ kind: 'think', text: item.text })
+      return
+    }
     items.push({ kind: flowKindOf(item.type), trace: i })
   })
   return items

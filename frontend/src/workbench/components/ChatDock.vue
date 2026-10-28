@@ -43,8 +43,11 @@ import WorkflowHistoryPopover from './WorkflowHistoryPopover.vue'
 const WorkflowCard = defineAsyncComponent(() => import('./WorkflowCard.vue'))
 import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
+import FileDiffDialog from './FileDiffDialog.vue'
+
 import type { WorkflowSummary, WorkflowState } from '../api'
 import type { PreviewFeedbackRequest } from '../previewFeedback'
+import type { FileDiffEntry } from '../composables/chat-types'
 
 const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
 // 开发舱里侧栏文件树是隐藏的，「在问哪个库」只剩顶栏那颗项目名，而对话就在这块下方。
@@ -402,12 +405,34 @@ function toggleRefs(msg: ChatMsg) {
   else next.add(msg.id)
   refsExpanded.value = next
 }
+/* flowOf / traceSegments 是 (trace 长度, flow 长度, reasoning 长度, status) 的纯函数。
+   用 WeakMap 按消息对象缓存并回传同一数组引用：完成后的消息签名不变 → 命中缓存 →
+   v-for 拿到稳定引用可跳过整段重渲染；流式期签名每帧变，正常重算。 */
+const _flowSig = (m: ChatMsg) => `${m.trace?.length ?? 0}:${m.flow?.length ?? 0}:${(m.reasoning || '').length}:${m.status}`
+const _flowCache = new WeakMap<object, { sig: string; flow: ReturnType<typeof flowOf> }>()
+function flowOfCached(msg: ChatMsg) {
+  const sig = _flowSig(msg)
+  const hit = _flowCache.get(msg)
+  if (hit && hit.sig === sig) return hit.flow
+  const flow = flowOf(msg)
+  _flowCache.set(msg, { sig, flow })
+  return flow
+}
+const _segCache = new WeakMap<object, { sig: string; segs: ReturnType<typeof traceSegments> }>()
+function segmentsOfCached(msg: ChatMsg) {
+  const sig = _flowSig(msg)
+  const hit = _segCache.get(msg)
+  if (hit && hit.sig === sig) return hit.segs
+  const segs = traceSegments(msg)
+  _segCache.set(msg, { sig, segs })
+  return segs
+}
 /** 交错流是否有可见节点（供模板决定是否渲染 .cd-flow 容器）：
  *  先看有没有节点——历史消息不落 trace/reasoning，flowOf 合成结果为空，
  *  早年只看 showTrace 会给每条历史消息渲染一个空容器（死 DOM）。
  *  有节点时：思考类恒显示，动作/返回行随「显示推理轨迹」偏好。 */
 function cdHasFlow(msg: ChatMsg) {
-  const items = flowOf(msg)
+  const items = flowOfCached(msg)
   if (!items.length) return false
   if (displayPrefs.showTrace) return true
   return items.some((n) => n.kind === 'think' || n.kind === 'thought')
@@ -428,6 +453,19 @@ function toggleSeg(msg: ChatMsg, si: number) {
   const key = segKey(msg, si)
   segExpanded.value = { ...segExpanded.value, [key]: !segExpanded.value[key] }
 }
+/* 本段是否含「深度思考」（原始 reasoning）：done 后思考下沉进单步明细，即使这段没跑
+   工具（纯思考收尾段）也要给出可点开的摘要行，否则思考没地方露。 */
+function segHasThink(seg: { narration: { kind: string; text: string }[] }): boolean {
+  return seg.narration.some((l) => l.kind === 'reasoning')
+}
+/* 顶层该显示哪些解说行：流式期全显示（深度思考在顶层随帧生长）；done 后只留 ReAct
+   旁白，深度思考已下沉到该段「点开才见」的单步明细里。 */
+function topNarration(
+  seg: { narration: { kind: string; text: string }[] },
+  streaming: boolean,
+): { kind: string; text: string }[] {
+  return streaming ? seg.narration : seg.narration.filter((l) => l.kind !== 'reasoning')
+}
 /* 回合结束后把整条推理轨迹（中途旁白 + 工具行）折成一块，正文只留最终答案；
    流式中不折——用户要实时看到每一步。默认收起，点「推理轨迹」头才摊开。
    过去旁白恒作为正文行铺在答案前面，看起来像模型把思考/代码直接贴进对话，
@@ -439,11 +477,26 @@ function traceOpen(msg: ChatMsg): boolean {
 function toggleTrace(msg: ChatMsg) {
   traceExpanded.value = { ...traceExpanded.value, [msg.id]: !traceExpanded.value[msg.id] }
 }
+/* 原始 reasoning_content（「深度思考」）不再单独成块——现在由 traceDigest 按发生顺序
+   摆进下面的「推理轨迹」交错流（清洗剥源码 + 截断上限 THINK_MAX），与工具行同流。
+   纯思考、未跑工具的回合也因此在轨迹里有内容，不再「没有推理轨迹」。 */
+/* 「查看改动」弹窗：写文件工具的 observation 带结构化 file_diffs（完整前后内容），
+   点一下把这一步的改动交给 FileDiffDialog 渲染统一 diff。同一时刻只开一个。 */
+const diffDialogOpen = ref(false)
+const diffDialogEntries = ref<FileDiffEntry[]>([])
+function openFileDiff(entries?: FileDiffEntry[]) {
+  if (!entries || !entries.length) return
+  diffDialogEntries.value = entries
+  diffDialogOpen.value = true
+}
+function closeFileDiff() {
+  diffDialogOpen.value = false
+}
 /** 折叠头的一句话概览：把各段活动摘要合并成整轮口径（编辑 N 个文件 · 执行 N 条命令 ·
    思考 N 次…），思考恒排最后。数字与展开后的单步明细同源，不会各说各话。 */
 function traceHeadline(msg: ChatMsg): string {
   const agg = new Map<string, { count: number; unit: string }>()
-  for (const s of traceSegments(msg)) {
+  for (const s of segmentsOfCached(msg)) {
     for (const p of s.digest.parts) {
       const cur = agg.get(p.label)
       if (cur) cur.count += p.count
@@ -458,7 +511,7 @@ function traceHeadline(msg: ChatMsg): string {
 }
 // 把交错流切成「发言 → 该段工具摘要」若干段（reasoning 分段与 ReAct Thought 都是发言）。
 function segmentsOf(msg: ChatMsg) {
-  return traceSegments(msg)
+  return segmentsOfCached(msg)
 }
 function rowKind(msg: ChatMsg, ti: number): 'action' | 'result' {
   return msg.trace[ti]?.type === 'action' ? 'action' : 'result'
@@ -1702,6 +1755,7 @@ const webTitle = computed(() => webOn.value
               <span class="cd-wf-spinner" aria-hidden="true" />
               正在创建工作流，方案马上在对话中展开…
             </div>
+
             <!-- 2026-10-14：交错流——思考（reasoning 分段 / ReAct Thought）与
                  工具调用按发生顺序排成一条故事线：think → 调用 → 返回 → think
                  → … 答案之前全部可见、无边框（容器只有左侧一条虚线时间线）。
@@ -1726,11 +1780,19 @@ const webTitle = computed(() => webOn.value
                    下一段发言。推理过程因此夹在中途发言之间，而不是整轮压成一块铺完。
                    摘要默认收起，点开才看这一段的单步明细。 -->
               <template v-for="(seg, si) in segmentsOf(m)" :key="'seg' + si">
-                <div v-if="seg.narration.length" class="cd-narration">
-                  <p v-for="(line, li) in seg.narration" :key="'nar' + li" class="cd-narration-line">{{ line }}</p>
+                <!-- 顶层解说：ReAct 旁白恒在；深度思考只在流式期于顶层随帧生长，
+                     done 后下沉到下面「点开才见」的单步明细里（见 cd-flow-body）。 -->
+                <div v-if="topNarration(seg, m.status === 'streaming').length" class="cd-narration">
+                  <template v-for="(line, li) in topNarration(seg, m.status === 'streaming')" :key="'nar' + li">
+                    <div v-if="line.kind === 'reasoning'" class="cd-nar-reasoning-wrap">
+                      <span class="cd-nar-tag" aria-hidden="true">✦ 深度思考</span>
+                      <p class="cd-narration-line cd-nar-reasoning">{{ line.text }}</p>
+                    </div>
+                    <p v-else class="cd-narration-line cd-nar-thought">{{ line.text }}</p>
+                  </template>
                 </div>
                 <button
-                  v-if="displayPrefs.showTrace && seg.digest.toolTotal"
+                  v-if="displayPrefs.showTrace && (seg.digest.toolTotal || (m.status !== 'streaming' && segHasThink(seg)))"
                   class="cd-flow-toggle"
                   :aria-expanded="segOpen(m, si)"
                   :aria-label="`${seg.digest.text}，点击查看这一段的单步明细`"
@@ -1741,6 +1803,16 @@ const webTitle = computed(() => webOn.value
                   <span class="cd-flow-toggle-chevron" :class="{ open: segOpen(m, si) }">⌄</span>
                 </button>
                 <div v-if="segOpen(m, si)" class="cd-flow-body">
+                  <!-- done 后本段的深度思考下沉到这里：作为「推理过程」的第一步，排在
+                       动作明细之上。流式期不在此重复（顶层已随帧生长）。 -->
+                  <template v-if="m.status !== 'streaming'">
+                    <div v-for="(line, li) in seg.narration" :key="'det-think' + li">
+                      <div v-if="line.kind === 'reasoning'" class="cd-nar-reasoning-wrap">
+                        <span class="cd-nar-tag" aria-hidden="true">✦ 深度思考</span>
+                        <p class="cd-narration-line cd-nar-reasoning">{{ line.text }}</p>
+                      </div>
+                    </div>
+                  </template>
                   <div v-if="si === 0 && m.plan.length" class="cd-plan">
                     <div class="cd-plan-title">执行计划</div>
                     <div v-for="(s, pi) in m.plan" :key="'p' + pi" class="cd-plan-step">
@@ -1802,6 +1874,15 @@ const webTitle = computed(() => webOn.value
                         </div>
                       </div>
                       <code>{{ m.trace[ti].text }}</code>
+                      <button
+                        v-if="m.trace[ti]?.file_diffs?.length"
+                        class="cd-flow-diffbtn"
+                        @click="openFileDiff(m.trace[ti]?.file_diffs)"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h6M2 7h8M2 10h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
+                        查看改动
+                        <span class="cd-flow-diffbtn-count">{{ m.trace[ti].file_diffs!.length }} 个文件</span>
+                      </button>
                     </div>
                   </template>
                 </div>
@@ -1936,6 +2017,8 @@ const webTitle = computed(() => webOn.value
       @manage="openUnifiedModelSettings"
       @saved="onModelSaved"
     />
+    <FileDiffDialog :open="diffDialogOpen" :entries="diffDialogEntries" @close="closeFileDiff" />
+
   </section>
 </template>
 
@@ -2282,6 +2365,7 @@ const webTitle = computed(() => webOn.value
 .cd-trace-head:hover .cd-trace-chevron,
 .cd-trace-head[aria-expanded="true"] .cd-trace-chevron { opacity: 1; }
 .cd-trace-chevron.open { transform: rotate(180deg); }
+
 .cd-flow {
   display: flex; flex-direction: column; gap: 2px;
   margin: 4px 0 8px;
@@ -2314,11 +2398,29 @@ const webTitle = computed(() => webOn.value
 .cd-flow-toggle-chevron.open { transform: rotate(180deg); }
 .cd-narration { margin: 0; }
 .cd-narration-line {
-  margin: 0 0 8px; color: var(--text);
+  margin: 0 0 8px;
   font-size: var(--fs-md); line-height: 1.66;
   font-family: var(--font-ui); white-space: pre-wrap; word-break: break-word;
 }
 .cd-narration-line:last-child { margin-bottom: 2px; }
+/* ReAct Thought / 复核旁白：低调灰字，是「过程说明」不是结论 */
+.cd-nar-thought { color: var(--text-muted); }
+/* 深度思考（原始 reasoning）块 */
+.cd-nar-reasoning-wrap { margin: 0 0 10px; }
+.cd-nar-tag {
+  flex: 0 0 auto;
+  color: var(--accent-deep);
+  font-size: var(--fs-sm); font-weight: 700; letter-spacing: .04em;
+  white-space: nowrap;
+}
+/* 思考正文：左侧强调条 + 淡主色底块，比旁白更醒目 */
+.cd-nar-reasoning {
+  color: var(--text);
+  margin: 2px 0 0; padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-radius: 0 6px 6px 0;
+}
 .cd-flow-body { display: flex; flex-direction: column; margin-top: 2px; }
 
 /* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
@@ -2363,6 +2465,22 @@ const webTitle = computed(() => webOn.value
 }
 .cd-flow-detail-label { display: block; margin-bottom: 3px; color: var(--text-faint); font: 9.5px/1.2 var(--font-ui); letter-spacing: .04em; }
 .cd-flow-detail code { display: block; color: inherit; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 「查看改动」：写文件步骤详情里的绿调胶囊按钮，点开统一 diff 弹窗 */
+.cd-flow-diffbtn {
+  margin-top: 8px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--border-strong));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 12%, var(--bg-raised));
+  color: var(--green);
+  font-family: var(--font-ui); font-size: var(--fs-cap); font-weight: 600;
+  cursor: pointer;
+  transition: background .16s ease, border-color .16s ease;
+}
+.cd-flow-diffbtn:hover { background: color-mix(in srgb, var(--green) 22%, var(--bg-raised)); border-color: var(--green); }
+.cd-flow-diffbtn:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
+.cd-flow-diffbtn-count { color: var(--text-faint); font-weight: 500; }
 
 /* 浏览器动作：折叠行上给一张"动作后"小图，一眼就知道它当时看到了什么 */
 .cd-flow-thumb {

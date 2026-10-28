@@ -81,18 +81,33 @@ const NAR_CODE_STARTS: RegExp[] = [
   /[A-Za-z_]\w*\s*=\s*(?:r?'''|r?""")/,               // code = '''…
   /@[\w.]+\(/,                                          // 装饰器调用
 ]
+// 深度思考（原始 reasoning）专用：只认「模型马上要把整段源码贴进解说」的硬信号——
+// 写文件参数 new_text:/old_text:/file_text: 与三引号串。不再因为思考里提到
+// def/import/class/return 这类**词**就掐断后文：写代码的 agent 复述函数名极常见，
+// 用完整 NAR_CODE_STARTS 会把连贯思路从第一个代码关键词处整段砍掉（实测一块 2802
+// 字的思考被砍到 263 字）。旁白仍用完整规则，思考用这套宽松版。
+const NAR_CODE_DUMPS: RegExp[] = [
+  /\b(?:new_text|old_text|file_text)\s*[:：]/,        // 写文件工具参数
+  /'''|"""/,                                            // 三引号串（含 docstring）
+]
 const NAR_MAX = 600
-export function cleanNarration(raw: string): string {
+// 原始 reasoning_content（模型思考流）现在也摆进推理轨迹解说（用户要求「深度思考
+// 塞进推理轨迹」）。它比 ReAct 脑白长得多，且现在默认折叠、不点开不排版，布局卡顿
+// 顾虑已弱——给一个很高的截断上限 THINK_MAX（远大于旁白 600），并只做「真代码转储」
+// 剥离（dumpOnly），让连贯思路尽量完整可见。
+const THINK_MAX = 12000
+export function cleanNarration(raw: string, max: number = NAR_MAX, dumpOnly = false): string {
   let t = (raw || '').trim()
+  const patterns = dumpOnly ? NAR_CODE_DUMPS : NAR_CODE_STARTS
   let cut = -1
-  for (const re of NAR_CODE_STARTS) {
+  for (const re of patterns) {
     const m = re.exec(t)
     if (m && (cut < 0 || m.index < cut)) cut = m.index
   }
   if (cut > 0) t = t.slice(0, cut)
   else if (cut === 0) t = ''
   t = t.replace(/\n{3,}/g, '\n\n').trim()
-  if (t.length > NAR_MAX) t = t.slice(0, NAR_MAX).trimEnd() + ' …'
+  if (t.length > max) t = t.slice(0, max).trimEnd() + ' …'
   return t
 }
 
@@ -121,10 +136,20 @@ export function digestFromTools(tools: string[] | undefined | null, think = 0): 
   return { parts, text, toolTotal: (tools || []).length, think }
 }
 
+/** 一条可见解说，带来源标记：
+ *  - `reasoning`：模型原生思考流（reasoning_content / think 节点）——「深度思考」，
+ *    前端用更醒目的样式（左侧强调条 + 主色）单独呈现。
+ *  - `thought`：ReAct 的 Thought / 复核旁白——保持低调灰字。 */
+export type NarrationKind = 'reasoning' | 'thought'
+export interface NarrationLine {
+  kind: NarrationKind
+  text: string
+}
+
 /** 一段「发言 + 它之后的工具」：解说在前，活动摘要紧跟其后，再进入下一段。 */
 export interface TraceSegment {
-  /** 本段的解说段落（仅 ReAct Thought / 复核；原始 reasoning 不再进解说） */
-  narration: string[]
+  /** 本段的解说段落（ReAct Thought / 复核 + 清洗后的原始 reasoning 思考流，各带来源） */
+  narration: NarrationLine[]
   /** 本段动作/返回在 msg.trace 里的下标（展开看单步明细用） */
   rows: number[]
   /** 本段的活动摘要（只统计本段的工具与思考，不外溢到别的段） */
@@ -137,10 +162,10 @@ export interface TraceSegment {
  * 按发言段落把交错流切段。
  *
  * 对话效果是「解说 → 摘要 → 解说 → 摘要」：一段发言之后跑了哪些工具，就在这段
- * 下面挂一行灰色摘要；下一次发言即开新段。可见解说只取简洁的 ReAct Thought / 复核；
- * 模型原生 reasoning_content（think 节点）不再摊出来——思考型模型会把即将写进文件
- * 的代码也打在思考流里，摊出来既长又泄漏源码，这里只把它计入「思考 N 次」。
- * 观察（observation）当工具返回看。
+ * 下面挂一行灰色摘要；下一次发言即开新段。可见解说取简洁的 ReAct Thought / 复核
+ * 以及模型原生 reasoning_content（think 节点，清洗后按发生顺序摆入，截断上限 THINK_MAX）；
+ * 思考流里复述的源码由 cleanNarration 剥除，只留自然语言旁白。
+* 观察（observation）当工具返回看。
  */
 export function traceSegments(msg: {
   trace: ChatTraceItem[]
@@ -149,7 +174,7 @@ export function traceSegments(msg: {
 }): TraceSegment[] {
   const trace = msg.trace || []
   const segments: TraceSegment[] = []
-  let narration: string[] = []
+  let narration: NarrationLine[] = []
   let rows: number[] = []
   let tools: string[] = []
   let think = 0
@@ -166,10 +191,16 @@ export function traceSegments(msg: {
   }
 
   for (const node of flowOf(msg)) {
-    // 原始 reasoning_content（think 节点）不再摊成可见解说：思考型模型会把即将
-    // 写进文件的代码也打在这条流里，解说因此被撑成几千字代码块。这里只把它计入
-    // 「思考 N 次」，可见旁白一律交给简洁的 ReAct Thought / 复核。
-    if (node.kind === 'think') { think++; continue }
+    // 原始 reasoning_content（think 节点）现在摆进推理轨迹：清洗（剥代码起点）后按发生
+    // 顺序作为一段可见解说，与工具行交错排成故事线。纯思考、未跑工具的回合也因此
+    // 有内容（修复「没有推理轨迹」）。截断上限用较高的 THINK_MAX；同时仍计入「思考 N 次」。
+    if (node.kind === 'think') {
+      think++
+      if (rows.length) flush()
+      const clean = cleanNarration(node.text, THINK_MAX, true)
+      if (clean) narration.push({ kind: 'reasoning', text: clean })
+      continue
+    }
     const item = trace[node.trace]
     const spoken = node.kind === 'thought' || item?.type === 'reflection'
     if (spoken) {
@@ -177,7 +208,7 @@ export function traceSegments(msg: {
       if (rows.length) flush()
       think++
       const clean = cleanNarration(item?.text || '')
-      if (clean) narration.push(clean)
+      if (clean) narration.push({ kind: 'thought', text: clean })
       continue
     }
     if (!item) continue

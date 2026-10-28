@@ -7022,6 +7022,12 @@ class Agent:
                     # 内置浏览器的每一步留痕：前端流程行据此显示"点之前/点之后"的缩略图
                     # 与地址。只有相对路径，没有图片正文。
                     observation_event["browser_evidence"] = _evidence
+                _fdiffs = (_result.data or {}).get("file_diffs") if isinstance(_result.data, dict) else None
+                if _fdiffs:
+                    # 写文件工具的完整 before/after：只给前端「查看改动」渲染 diff 用。
+                    # 模型侧看不到（trail 用的是 obs 文本，非本字段），对 agent 决策与
+                    # 黄金题评分中性。与 artifacts 同因不写图片正文/巨块，按条数封顶。
+                    observation_event["file_diffs"] = list(_fdiffs)[:16]
                 yield observation_event
                 # 实时刷新上下文用量指示：把本轮已产生的工具往返一并计入。旧实现只在
                 # 开工/压缩后各上报一次，长回合里进度条会一直停在初始值（用户反馈的

@@ -459,17 +459,41 @@ def _mark_in_flight_terminal(rec: dict, status: str = "done") -> None:
     threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict).start()
 
 
-_TRACE_STEP_TYPES = ("thought", "action", "observation", "reflection")
+_TRACE_STEP_TYPES = ("thought", "action", "observation", "reflection", "reasoning")
+#: 单块合并后 reasoning 落盘的字符上限（防轨迹文件膨胀；前端另有更小的显示截断）。
+_REASONING_PERSIST_MAX = 20000
 
 
 def _build_turn_trace(events) -> list:
     """把 in-flight 的原始 SSE 事件序列，蒸馏成可持久化的「推理轨迹」步骤列表。
 
-    只保留 thought/action/observation/reflection 四类带正文的事件；observation 透传
+    保留 thought/action/observation/reflection 四类带正文的事件；observation 透传
     ok（真实成败）。正文原样存（不截断），供刷新后回灌完整步骤流。异常一律返回 []。
+
+    reasoning（模型原生思考流 reasoning_content）也要落盘：前端把它合并进「推理
+    轨迹」交错流展示，但它是碎片流（实测一轮可达万万个字符级 reasoning 事件），
+    逐个存会把轨迹文件撑爆。故把**连续**的 reasoning 事件合并成一个 type="reasoning"
+    整块再存；不连续的（被 thought/action 隔开）各成一块，从而保留交错位置。
     """
     try:
         steps = []
+        pending_reasoning = []  # 缓冲当前连续 reasoning 块的文本片段
+
+        def flush_reasoning():
+            if not pending_reasoning:
+                return
+            text = "".join(pending_reasoning)
+            pending_reasoning.clear()
+            text = text.strip()
+            if not text:
+                return
+            # 宽松上限：思考型模型一轮 reasoning 可达十万字级（实测 129270 字符），
+            # 整块原样落盘会把轨迹文件撑爆。截到 _REASONING_PERSIST_MAX 字（远大于
+            # 前端单段显示截断，够回灌出可读的思考轮廓），超出补省略号。
+            if len(text) > _REASONING_PERSIST_MAX:
+                text = text[:_REASONING_PERSIST_MAX].rstrip() + " …"
+            steps.append({"type": "reasoning", "text": text})
+
         for ev in events or []:
             if not isinstance(ev, dict):
                 continue
@@ -479,10 +503,19 @@ def _build_turn_trace(events) -> list:
             text = ev.get("text")
             if not isinstance(text, str) or not text.strip():
                 continue
+            if typ == "reasoning":
+                # 连续 reasoning 只累加到缓冲，直到遇到下一个非 reasoning 步骤才整块落盘
+                pending_reasoning.append(text)
+                continue
+            flush_reasoning()
             step = {"type": typ, "text": text}
             if isinstance(ev.get("ok"), bool):
                 step["ok"] = ev["ok"]
+            if typ == "observation" and isinstance(ev.get("file_diffs"), list) and ev["file_diffs"]:
+                # 透传写文件工具的完整 before/after：刷新后仍能点开「查看改动」。
+                step["file_diffs"] = ev["file_diffs"][:16]
             steps.append(step)
+        flush_reasoning()  # 流结束时还有未落盘的 reasoning 块
         return steps
     except Exception:  # noqa: BLE001
         return []

@@ -5,7 +5,7 @@
 //  3) notice / plan / workflow / context / final 事件分类分发，业务差异通过钩子注入。
 // 不持有 messages 数组、不绑定请求生命周期（abort/epoch 仍由调用方管理）。
 import type { SseEvent } from '../api'
-import type { BrowserEvidence, ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef, ChatAsk, ChatArtifact } from './chat-types'
+import type { BrowserEvidence, ChatFlowItem, ChatTraceItem, ChatTraceKind, ChatWorkflowRef, ChatAsk, ChatArtifact, FileDiffEntry } from './chat-types'
 // ⚠ 相对导入必须带 `.ts` 扩展名：`frontend/tests/*.test.mjs` 用
 // `node --experimental-strip-types` 直接跑生产模块（见 tests/test_frontend_node_tests.py），
 // node 的 ESM 解析器不认无扩展名路径（Vite 认，所以只有 node 这条链会炸）。
@@ -127,7 +127,7 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     thinkOpen.clear()
   }
 
-  function appendTrace(turn: T, type: ChatTraceKind, text: string, evidence?: BrowserEvidence, ok?: boolean) {
+  function appendTrace(turn: T, type: ChatTraceKind, text: string, evidence?: BrowserEvidence, ok?: boolean, fileDiffs?: FileDiffEntry[]) {
     const at = Date.now()
     // 观察/反思通常是前一个工具动作的返回，将两者之间的时间显示为动作耗时。
     if (type === 'observation' || type === 'reflection') {
@@ -138,6 +138,7 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       type, text, at,
       ...(evidence ? { evidence } : {}),
       ...(typeof ok === 'boolean' ? { ok } : {}),
+      ...(fileDiffs && fileDiffs.length ? { file_diffs: fileDiffs } : {}),
     })
     // 轨迹事件即轮次边界：先切断思考分段，再把动作节点接进交错流
     closeThink(turn)
@@ -259,7 +260,7 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
     } else if (ev.type === 'thought' || ev.type === 'action'
                || ev.type === 'observation' || ev.type === 'reflection') {
       // 轮次边界：先结算未提交的思考文本（保住实时节奏），再切断分段、接动作节点
-      if (ev.text) { settleThink(turn); appendTrace(turn, ev.type, ev.text, ev.browser_evidence, ev.ok) }
+      if (ev.text) { settleThink(turn); appendTrace(turn, ev.type, ev.text, ev.browser_evidence, ev.ok, ev.file_diffs as FileDiffEntry[] | undefined) }
       // 产物：工具落盘/截图那一刻自报，跟着那一次观察走。
       // 不从 action 文本反推 —— 被安全拦截的调用同样带 path，反推会把没做的记成做了。
       if (ev.type === 'observation' && ev.artifacts?.length) {

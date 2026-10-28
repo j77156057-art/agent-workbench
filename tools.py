@@ -6624,6 +6624,35 @@ def _diff_summary(a, b):
     return "Diff:\n" + "\n".join(body)
 
 
+#: 单侧全文随事件下发前端的字节上限。超过则不下发完整 before/after，只给
+#: 简短 unified diff（前端退化为文本 diff），避免巨型 payload 撑爆 SSE。
+_FILE_DIFF_FULL_MAX = 200_000
+
+
+def _file_diff_entry(rel, old, new, kind):
+    """构造一条「文件改动」记录，供 observation 事件透传给前端渲染 before/after diff。
+
+    只服务于 SSE 事件与前端「查看改动」：模型侧看不到这个字段，它对 agent 决策
+    与黄金题评分都是中性的（run_golden 只读 observation.text）。单侧内容超过
+    ``_FILE_DIFF_FULL_MAX`` 时不下发全文，置 ``truncated=True``，前端退用 ``diff``
+    里的简短 unified diff。rel 一律正斜杠，和 artifacts 口径一致。
+    """
+    old = old or ""
+    new = new or ""
+    entry = {
+        "path": rel.replace("\\", "/"),
+        "kind": kind,  # "modify" | "create"
+        "diff": _diff_summary(old, new),
+    }
+    if len(old) <= _FILE_DIFF_FULL_MAX and len(new) <= _FILE_DIFF_FULL_MAX:
+        entry["old"] = old
+        entry["new"] = new
+        entry["truncated"] = False
+    else:
+        entry["truncated"] = True
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # 待确认修改暂存：当「人工确认」模式开启时，apply_edit / create_file 不直接写盘，
 # 而是校验通过后暂存到内存，返回 pending id + diff，由人工在界面上确认/拒绝。
@@ -7042,6 +7071,7 @@ def apply_edit(arg):
     return ToolResult(
         ok=True,
         text=f"已写入 {rel}（{nbytes} 字节，路径沙箱校验通过）。\n{summary}",
+        data={"file_diffs": [_file_diff_entry(rel, old_content, new_content, "modify")]},
         artifacts=[{
             # 正斜杠：产物路径要直接拼进预览 URL（/api/assets/raw?path=…），
             # 反斜杠会被编码成 %5C。
@@ -7234,6 +7264,7 @@ def dev_apply_edits(arg):
 
     out = [f"已原子写入 {len(written)} 个文件："]
     artifacts = []
+    file_diffs = []
     for p in written:
         rel = os.path.relpath(p["target"], p["root_abs"])
         nbytes = len(p["new_content"].encode("utf-8", "ignore"))
@@ -7247,9 +7278,11 @@ def dev_apply_edits(arg):
             "bytes": nbytes,
             "evidence": ["tool:apply_edit"],
         })
+        file_diffs.append(_file_diff_entry(rel, p["old_content"], p["new_content"], "modify"))
     return ToolResult(
         ok=True,
         text="\n".join(out),
+        data={"file_diffs": file_diffs},
         artifacts=artifacts,
     )
 
@@ -7363,6 +7396,7 @@ def create_file(arg):
     return ToolResult(
         ok=True,
         text=f"已创建 {rel}（{nbytes} 字节，路径沙箱校验通过）。",
+        data={"file_diffs": [_file_diff_entry(rel, "", content, "create")]},
         artifacts=[{
             # 正斜杠：产物路径要直接拼进预览 URL（/api/assets/raw?path=…），
             # 反斜杠会被编码成 %5C，和 apply_edit 那批也不一致。
