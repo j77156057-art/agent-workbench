@@ -209,12 +209,11 @@ html[data-layout='split'] .wb-main { border-left: 2px solid var(--edge-ink); }
 html[data-layout='focus'] .wb-main::before,
 html[data-layout='focus'] .wb-main::after { content: ''; }
 
-/* —— ④ 概览内部列数 —— */
-html[data-layout] .ov-columns,
-html[data-layout] .ov-inner {
-  grid-template-columns: var(--lay-ov-cols) !important;
+/* 专注与分屏使用单列；常规概览由组件按可用宽度排版。 */
+html[data-layout='focus'] .ov-columns,
+html[data-layout='split'] .ov-columns {
+  grid-template-columns: 1fr;
 }
-html[data-layout] .ov-columns { gap: var(--style-space-l) !important; }
 
 /* —— ⑤ 排版尺度：字号整体缩放 + 行距/留白跟随布局 ——
    2026-10-20：字号缩放搬进了字阶令牌本身（--fs-* 全部是 calc(基准 * var(--style-scale))），
@@ -256,6 +255,25 @@ html[data-layout='focus'] .wb-main {
   html[data-layout] .ov-columns { grid-template-columns: 1fr !important; }
 }
 
+@media (max-width: 640px) {
+  html[data-layout] .wb-body { position: relative; }
+  html[data-layout] .wb-body > .ft-panel {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: min(300px, calc(100vw - 48px)) !important;
+    max-width: none;
+    z-index: 32;
+    box-shadow: var(--modal-shadow);
+  }
+  .wb-mobile-scrim { position: absolute; inset: 0; border: 0; background: var(--scrim); z-index: 31; }
+  html[data-layout] .wb-shell { --wb-main-min: 216px; }
+  html[data-layout] .wb-topbar { height: 108px; flex-basis: 108px; flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  html[data-layout] .wb-topbar .lb.wb-locate-slot { order: 3; width: 100%; flex: 1 0 100%; }
+  .wb-topbar .wb-proj-btn { max-width: 112px; }
+  .wb-topbar .wb-brand-name em { display: none; }
+  .wb-topbar .wb-topbar-right { gap: 4px; }
+  .wb-topbar .wb-ask-link { display: none; }
+}
 
 /* ==========================================================
    ⑥ 资源管理器宽度拖拽（fixed 专用）
@@ -308,7 +326,7 @@ body.ft-col-resizing * { cursor: col-resize !important; }
    用户上次拖到的位置。其他布局不参与：dock/focus/split/grid 的侧栏
    本身就是另一种空间语义，收起会破坏那套布局的表达。
    ========================================================== */
-html[data-layout='fixed'] .wb-rail-restore {
+html[data-layout] .wb-rail-restore {
   flex: 0 0 36px;
   width: 36px;
   align-self: stretch;
@@ -328,16 +346,16 @@ html[data-layout='fixed'] .wb-rail-restore {
   z-index: 2;
   transition: background .15s var(--ease-standard, ease), color .15s var(--ease-standard, ease);
 }
-html[data-layout='fixed'] .wb-rail-restore:hover,
-html[data-layout='fixed'] .wb-rail-restore:focus-visible {
+html[data-layout] .wb-rail-restore:hover,
+html[data-layout] .wb-rail-restore:focus-visible {
   background: var(--bg-hover);
   color: var(--accent);
   outline: none;
 }
-html[data-layout='fixed'] .wb-rail-restore:focus-visible {
+html[data-layout] .wb-rail-restore:focus-visible {
   box-shadow: inset 0 0 0 2px var(--accent);
 }
-html[data-layout='fixed'] .wb-rail-restore-label {
+html[data-layout] .wb-rail-restore-label {
   writing-mode: vertical-rl;
   font-family: var(--font-mono);
   font-size: 10px;

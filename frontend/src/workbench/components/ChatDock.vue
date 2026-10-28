@@ -45,7 +45,7 @@ import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
 import FileDiffDialog from './FileDiffDialog.vue'
 
-import type { WorkflowSummary, WorkflowState } from '../api'
+import type { WorkflowSummary } from '../api'
 import type { PreviewFeedbackRequest } from '../previewFeedback'
 import type { FileDiffEntry } from '../composables/chat-types'
 
@@ -526,9 +526,9 @@ function focusComposer() { composerEl.value?.focus() }
 /** 空态的快捷问题（2026-10-20）：点一下就落到输入框里，不自动发送 ——
  *  用户可能想先改一改措辞。与概览页「试试问 AI」同一批问题。 */
 const QUICK_PROMPTS = [
-  '这个项目的战斗数值是怎么算的？',
-  '敌人 AI 的巡逻逻辑在哪个文件？',
-  '这个函数被谁调用了？',
+  '梳理项目结构',
+  '解释当前文件',
+  '分析报错原因',
 ]
 function askQuick(q: string) { input.value = q; focusComposer() }
 const pendingImages = ref<File[]>([])
@@ -1480,7 +1480,7 @@ onBeforeUnmount(() => {
 
 // 消息展示层（流式 markdown 节流/成稿引用缓存/trace 步骤/计时）
 const {
-  scheduleLiveMd, finishLiveMd, streamHtmlOf,
+  scheduleLiveMd, finishLiveMd,
   answerHtml, refsOf, webRefsOf, openRef, TRACE_GLYPH,
   toggleActivity, activityIsOpen, traceTitle, traceSummary,
   traceState, traceStateLabel,
@@ -1522,7 +1522,7 @@ function evidenceShot(path?: string): string {
 }
 
 // 流式接收管线（帧合批/trace 计时/事件分类）抽到 useChatStream，问答页共用同一实现。
-const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
+const { drain, dispatch } = useChatStream<ChatMsg>({
   onActivity: (t) => { t.lastActivityAt = Date.now() },
   // 帧内正文增量提交后挂 125ms 节流的 markdown 重渲染
   onTextFlushed: (t) => { scheduleLiveMd(t); speakDelta(t) },
@@ -1569,6 +1569,7 @@ const webTitle = computed(() => webOn.value
       'cd-expanded': expanded && !collapsed,
       'cd-clipping': collapsed,
       'cd-gate-blocked': gateBlocking,
+      'cd-idle': !messages.length && !orphanWf && !gateBlocking && props.scope === 'default',
     }"
   >
     <header class="cd-head">
@@ -1594,7 +1595,7 @@ const webTitle = computed(() => webOn.value
           <i class="cd-live-dot" aria-hidden="true" />工作流进行中
         </span>
       </span>
-      <span class="cd-hint">用大白话问代码：数值在哪 · 逻辑怎么走 · 报错怎么改</span>
+      <span class="cd-hint">理解代码，一起完成下一步</span>
       <!-- 开发舱专属：把当前代码库搬到对话台同一行（完整路径在 title 里） -->
       <span v-if="props.scope === 'cockpit' && codeRootLabel" class="cd-root" :title="`当前代码库：${codeRoot}`">
         <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 3 Q1 2.2 1.8 2.2 H4.6 L5.6 3.2 H10.2 Q11 3.2 11 4 V9 Q11 9.8 10.2 9.8 H1.8 Q1 9.8 1 9 Z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
@@ -1694,7 +1695,7 @@ const webTitle = computed(() => webOn.value
              （模板里没有引用），所以右栏一打开就是一片空白 —— 改三栏 IDE 之后这块
              空白更显眼。这里补上：一句引导 + 三个能直接问的快捷问题。 -->
         <div v-if="!messages.length" class="cd-empty">
-          <div class="cd-empty-title">用大白话问代码</div>
+          <div class="cd-empty-title">试着问问</div>
           <div class="cd-quicks">
             <button
               v-for="q in QUICK_PROMPTS"
@@ -2211,7 +2212,13 @@ const webTitle = computed(() => webOn.value
   border: 1px solid var(--edge-ink-soft, var(--border)); border-radius: 12px;
   background: transparent; color: var(--text-muted); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
-.cd-quick:hover { color: var(--accent); border-color: var(--accent); background: var(--bg-selected); transform: translateX(2px); }
+.cd-quick:hover { color: var(--accent-text); border-color: var(--border-strong); background: var(--bg-hover); }
+.cd-idle:not(.cd-expanded):not(.cd-collapsed) { height: auto; min-height: 0; }
+.cd-idle .cd-body { min-height: 0; padding: 12px 20px; }
+.cd-idle .cd-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 0; max-width: none; }
+.cd-idle .cd-empty-title { margin: 0; font-size: var(--fs-sm); }
+.cd-idle .cd-quicks { flex-direction: row; flex-wrap: wrap; gap: 8px; }
+.cd-idle .cd-quick { font-size: var(--fs-sm); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px 12px; }
 
 .cd-msg { margin-bottom: 10px; }
 .cd-user-bubble {

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AskMessage fixture</title>
+    <style>
+      /* 仅夹具：复刻 AskApp 里 scoped 的对话外栏，不进入生产构建。 */
+      .ask-main { height: 100dvh; display: flex; flex-direction: column; background: var(--surface); }
+      .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+      .chat-col { width: min(840px, 100%); margin: 0 auto; padding: 32px; display: flex; flex-direction: column; gap: 32px; }
+      @media (max-width: 600px) { .chat-col { padding: 20px 16px; gap: 24px; } }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./ask-message.fixture.ts"></script>
+  </body>
+</html>

@@ -1,12 +1,5 @@
 <script setup lang="ts">
-// AI 问答页左侧栏：品牌、当前项目（只读状态 + 跳转开发台）、资料文档上传、当前模型。
-// 全部为只读/轻操作；代码建索引等重操作统一收口到代码工作台。
-//
-// 2026-10-19 瘦身（P1）：删掉「运行状态」整块（模型 / 显存占用 / 预加载 / 卸载）——
-// 预加载与卸载显存模型是**运维级操作**，不是聊天主流程，已搬到工作台的
-// 设置 → 模型 →「本机显存与模型驻留」。侧栏只留"当前模型"一行（要知道在拿哪个模型问），
-// 连带问答页每 20 秒一次的 /api/model_status 轮询也一并省掉。
-// 资料文档留在侧栏：上传资料是问答页的主流程动作，不该绕到设置里去。
+// 问答侧栏只承载会话与资料轻操作；项目管理和索引统一进入代码工作台。
 import { computed, ref } from 'vue'
 import type { ModelConfigInfo, ProjectInfo, SessionInfo } from '../../workbench/api'
 
@@ -20,6 +13,8 @@ const props = defineProps<{
   sessions?: SessionInfo[]
   currentSessionId?: string
   sessionBusy?: boolean
+  /** 空对话首屏：项目/资料移到首页右栏，桌面侧栏只保留导航与历史。 */
+  home?: boolean
 }>()
 const emit = defineEmits<{
   (e: 'ingest', file: File): void
@@ -27,6 +22,7 @@ const emit = defineEmits<{
   (e: 'newSession'): void
   (e: 'switchSession', id: string): void
   (e: 'deleteSession', id: string): void
+  (e: 'close'): void
 }>()
 
 const fileInput = ref<HTMLInputElement | null>(null)
@@ -34,6 +30,9 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const current = computed(() =>
   props.projects.find((p) => p.project_id === props.currentPid) || null)
 const files = computed(() => props.config?.ingested_files || [])
+const visibleFiles = computed(() => props.demo
+  ? ['数值设计案.pdf', '战斗规则.md', '常见问题.txt']
+  : files.value)
 
 function pickFile() {
   fileInput.value?.click()
@@ -43,10 +42,6 @@ function onFileChange(e: Event) {
   const f = input.files?.[0]
   if (f) emit('ingest', f)
   input.value = ''
-}
-
-function shortPath(p: string, n = 34): string {
-  return p.length > n ? p.slice(0, n - 2) + '…' : p
 }
 
 function sessTitle(s: SessionInfo): string {
@@ -65,306 +60,627 @@ function sessTime(v?: string): string {
 </script>
 
 <template>
-  <aside class="ask-side">
-    <div class="brand">
+  <aside class="ask-side" :class="{ 'is-home': home }" aria-label="工作空间与会话">
+    <header class="brand">
       <div class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="17" height="17"><path fill="#fff" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
+        <svg viewBox="0 0 32 32" width="32" height="32" fill="none">
+          <path d="M5 6.5h9l3 3v17l-4-3H5z" fill="currentColor" opacity=".16" />
+          <path d="M16 9.5 21 6h6v17h-6l-5 3.5L11 23H5V6h6l5 3.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
+          <path d="M16 9.5v17M9 11h2l2 1.5M9 15h2l2 1.5M20 12.5l2-1.5h2M20 16.5l2-1.5h2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
       </div>
       <div class="brand-text">
-        <div class="brand-name">Agent Workbench</div>
-        <div class="brand-sub">AI 问答 · 读代码答问题</div>
+        <div class="brand-name">DocMind</div>
+        <div class="brand-sub">工作空间</div>
       </div>
-    </div>
+      <button
+        type="button"
+        class="icon-button sidebar-close"
+        title="关闭侧栏"
+        aria-label="关闭侧栏"
+        @click="emit('close')"
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+          <path d="m6 6 12 12M18 6 6 18" />
+        </svg>
+      </button>
+    </header>
 
-    <button class="btn block new-chat" @click="emit('newSession')">＋ 新对话</button>
+    <button type="button" class="new-chat" @click="emit('newSession')">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      新对话
+    </button>
 
-    <div class="ask-middle">
-      <section class="card">
-        <div class="card-title">会话历史</div>
-      <div class="sess-list">
+    <nav class="side-nav" aria-label="主导航">
+      <a class="nav-link" href="/" aria-current="page" @click.prevent="emit('close')">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 11.5a8 8 0 0 1-8 8H5l-3 2 1.8-5A8 8 0 1 1 20 11.5Z" />
+          <path d="M8 10h8M8 14h5" />
+        </svg>
+        AI 问答
+      </a>
+      <a class="nav-link" href="/workbench">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="m7 9 3 3-3 3M13 15h4" />
+        </svg>
+        代码工作台
+      </a>
+    </nav>
+
+    <section class="history-section" aria-labelledby="sidebar-history-title">
+      <h2 id="sidebar-history-title" class="section-title">最近对话</h2>
+      <div class="sess-list" :aria-busy="sessionBusy">
         <div
           v-for="s in (sessions || [])"
           :key="s.session_id"
           class="sess-item"
           :class="{ active: s.session_id === currentSessionId }"
         >
-          <button class="sess-main" :disabled="sessionBusy" @click="emit('switchSession', s.session_id)">
-            <span class="ah-dot">{{ s.session_id === currentSessionId ? '●' : '○' }}</span>
+          <button
+            type="button"
+            class="sess-main"
+            :title="sessTitle(s)"
+            :aria-current="s.session_id === currentSessionId ? 'true' : undefined"
+            :disabled="sessionBusy"
+            @click="emit('switchSession', s.session_id)"
+          >
             <span class="sess-copy">
               <strong>{{ sessTitle(s) }}</strong>
               <small v-if="sessTime(s.updated_at)">{{ sessTime(s.updated_at) }}</small>
             </span>
           </button>
-          <button class="sess-del" title="删除这条问答历史" :disabled="sessionBusy" @click.stop="emit('deleteSession', s.session_id)">×</button>
+          <button
+            type="button"
+            class="icon-button sess-del"
+            :title="`删除对话：${sessTitle(s)}`"
+            :aria-label="`删除对话：${sessTitle(s)}`"
+            :disabled="sessionBusy"
+            @click.stop="emit('deleteSession', s.session_id)"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" />
+            </svg>
+          </button>
         </div>
-        <div v-if="!(sessions || []).length" class="sess-empty">还没有已保存的问答</div>
+        <p v-if="!(sessions || []).length" class="empty-note">新建对话，开始探索你的资料</p>
       </div>
     </section>
 
-    <!-- 当前项目：只读展示。选择 / 切换 / 建索引等重操作统一收口到代码工作台。
-         当前模型也并在这一块 —— 模型名要看得见（知道在拿哪个模型问），
-         但显存与驻留这类运维信息已搬到工作台设置，这里不占地方。 -->
-    <section class="card">
-      <div class="card-title">当前项目</div>
-      <div v-if="demo" class="project-name">示例游戏项目</div>
-      <div v-else-if="current" class="project-name">{{ current.name }}</div>
-      <div v-else class="project-name muted">未选择项目</div>
-      <div v-if="current?.root" class="project-root" :title="current.root">{{ shortPath(current.root) }}</div>
-      <p class="project-hint">
-        问答页无需绑定项目，可直接提问。需要建索引、分区开发或切换项目，请到代码工作台。
-      </p>
-      <a class="card-link" href="/workbench">打开代码工作台，管理项目与索引 →</a>
-      <div class="model-line">
-        <span class="model-k">模型</span>
-        <b :title="config?.llm_model">{{ config?.llm_model || '未配置' }}</b>
-        <button class="gear" title="模型参数设置" @click="emit('openSettings')">
-          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M19.4 13a7.8 7.8 0 000-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 00-1.7-1l-.4-2.6H10.1l-.4 2.6a7.6 7.6 0 00-1.7 1l-2.4-1-2 3.4L3.6 11a7.8 7.8 0 000 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.7 1.7 1l.4 2.6h3.8l.4-2.6c.6-.3 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6zM12 15.5A3.5 3.5 0 1112 8.5a3.5 3.5 0 010 7z"/></svg>
-        </button>
-      </div>
-    </section>
+    <div class="workspace-resources">
+      <section class="project-section" aria-labelledby="sidebar-project-title">
+        <div class="section-heading">
+          <h2 id="sidebar-project-title" class="section-title">当前项目</h2>
+          <a class="section-action" href="/workbench" title="在代码工作台管理项目与索引">管理</a>
+        </div>
+        <div class="project-name" :class="{ muted: !demo && !current }" :title="demo ? '示例游戏项目' : current?.name">
+          {{ demo ? '示例游戏项目' : current?.name || '未选择项目' }}
+        </div>
+        <div v-if="current?.root" class="project-root" :title="current.root">{{ current.root }}</div>
+        <p v-else-if="!demo && !current" class="empty-note">也可以直接提问</p>
+      </section>
 
-    <!-- 资料文档：上传是问答页的主流程动作，留在侧栏；
-         2026-10-19 把整宽的「上传资料文档」大按钮收成标题行里的小按钮，卡片矮了一截。 -->
-    <section class="card">
-      <div class="card-title">
-        资料文档
-        <span class="card-count">{{ demo ? 3 : files.length }}</span>
-        <button
-          class="btn sm add-doc"
-          :disabled="demo || ingestBusy"
-          :title="ingestBusy ? '正在摄取…' : '上传资料文档（PDF / Markdown / 文本）'"
-          @click="pickFile"
-        >{{ ingestBusy ? '摄取中…' : '＋ 上传' }}</button>
-      </div>
-      <input ref="fileInput" type="file" accept=".pdf,.md,.txt" hidden @change="onFileChange">
-      <div v-if="ingestMsg" class="ingest-msg" :class="{ err: ingestMsg.includes('失败') }">{{ ingestMsg }}</div>
-      <div class="file-list">
-        <template v-if="demo">
-          <div v-for="n in ['数值设计案.pdf', '战斗规则.md', '常见问题.txt']" :key="n" class="file-item">
-            <span class="file-ic">{{ n.split('.').pop()!.slice(0, 3).toUpperCase() }}</span>
-            <span class="file-nm">{{ n }}</span>
-          </div>
-        </template>
-        <template v-else>
-          <div v-for="n in files" :key="n" class="file-item">
-            <span class="file-ic">{{ (n.split('.').pop() || '?').slice(0, 3).toUpperCase() }}</span>
+      <section class="documents-section" aria-labelledby="sidebar-documents-title" :aria-busy="ingestBusy">
+        <div class="section-heading">
+          <h2 id="sidebar-documents-title" class="section-title">
+            资料文档 <span class="section-count">{{ visibleFiles.length }}</span>
+          </h2>
+          <button
+            type="button"
+            class="section-action add-doc"
+            :disabled="demo || ingestBusy"
+            :title="demo ? '示例模式暂不支持上传' : ingestBusy ? '正在处理资料文档' : '上传资料文档（PDF / Markdown / 文本）'"
+            aria-label="上传资料文档"
+            @click="pickFile"
+          >
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 16V4m-4 4 4-4 4 4M4 15v5h16v-5" />
+            </svg>
+            {{ ingestBusy ? '处理中' : '上传' }}
+          </button>
+        </div>
+        <input ref="fileInput" type="file" accept=".pdf,.md,.txt" hidden @change="onFileChange">
+        <div class="ingest-status" role="status" aria-live="polite" aria-atomic="true">
+          <p v-if="ingestMsg" class="ingest-msg">{{ ingestMsg }}</p>
+        </div>
+        <div class="file-list">
+          <div v-for="n in visibleFiles" :key="n" class="file-item">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14 3H5v18h14V8l-5-5Zm0 0v5h5M8 12h8M8 16h6" />
+            </svg>
             <span class="file-nm" :title="n">{{ n }}</span>
           </div>
-          <div v-if="!files.length" class="file-empty">尚未上传文档</div>
-        </template>
-      </div>
-    </section>
+          <p v-if="!visibleFiles.length" class="empty-note">上传 PDF、Markdown 或文本</p>
+        </div>
+      </section>
     </div>
+
+    <footer class="sidebar-footer">
+      <button type="button" class="model-settings" title="模型参数设置" aria-label="打开模型参数设置" @click="emit('openSettings')">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7h16M4 17h16" />
+          <circle cx="9" cy="7" r="2.5" fill="var(--bg-raised)" />
+          <circle cx="15" cy="17" r="2.5" fill="var(--bg-raised)" />
+        </svg>
+        <span class="model-copy">
+          <span class="model-label">模型设置</span>
+          <span class="model-name" :title="config?.llm_model">{{ config?.llm_model || '未配置模型' }}</span>
+        </span>
+        <svg class="settings-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m9 6 6 6-6 6" />
+        </svg>
+      </button>
+    </footer>
   </aside>
 </template>
 
 <style scoped>
-/* ===== Agent 工作台 问答页侧栏 · 高级粗野风 ===== */
 .ask-side {
-  flex: 0 0 296px;
-  width: 296px;
-  height: 100vh;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 12px 12px 14px;
-  background: var(--bg-raised);
-  border-right: var(--edge-w-heavy) solid var(--edge-ink);
+  box-sizing: border-box;
   display: flex;
+  flex: 0 0 256px;
   flex-direction: column;
-  gap: 8px;
-}
-/* 侧栏整体作为单一滚动列：所有卡片保持自然高度（flex 不收缩、不中途裁切），
-   内容超出视口时整栏平滑滚动。短视口下不会出现卡片被压扁/互相重叠。 */
-.ask-middle { display: contents; }
-.brand { flex: 0 0 auto; }
-.new-chat { flex: 0 0 auto; }
-
-.brand { display: flex; align-items: center; gap: 10px; padding: 0 2px 4px; }
-.brand-mark {
-  width: 30px; height: 30px;
-  border: var(--edge-w-heavy) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  background: var(--accent);
-  display: flex; align-items: center; justify-content: center;
-  box-shadow: var(--sh-hard-sm);
-}
-.brand-name { font-family: var(--font-display); font-size: var(--fs-lead); font-weight: 900; letter-spacing: .01em; color: var(--ink); }
-.brand-sub { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-muted); letter-spacing: .04em; }
-
-.card {
-  flex: 0 0 auto;
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
-  box-shadow: var(--sh-hard-sm);
-  padding: 9px;
-}
-.card-title {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-bottom: 5px;
-}
-.card-count {
-  margin-left: auto;
-  background: var(--ink);
-  color: var(--bg);
-  font-family: var(--font-mono);
-  font-size: var(--fs-cap);
-  padding: 1px 7px;
-  line-height: 18px;
-}
-.card-link {
-  display: block;
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--accent-text);
-  text-decoration: none;
-  border-bottom: 2px solid transparent;
-}
-.card-link:hover { border-bottom-color: var(--accent); }
-
-.project-name { font-family: var(--font-display); font-size: var(--fs-h3); font-weight: 900; word-break: break-all; color: var(--ink); }
-.project-name.muted { color: var(--text-muted); }
-.project-hint {
-  margin: 6px 0 0;
-  font-family: var(--font-sans);
-  font-size: var(--fs-sm);
-  line-height: 1.55;
-  color: var(--text-muted);
-}
-.project-root {
-  margin-top: 6px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--text-muted);
-}
-.ingest-msg { margin-top: 6px; font-family: var(--font-sans); font-size: var(--fs-sm); color: var(--green); word-break: break-all; }
-.ingest-msg.err { color: var(--danger); }
-.file-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; max-height: 78px; overflow-y: auto; }
-.file-item { display: flex; align-items: center; gap: 8px; font-family: var(--font-sans); font-size: var(--fs-md); }
-.file-ic {
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-cap);
-  font-weight: 700;
-  color: #fff;
-  background: var(--ink);
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  padding: 1px 5px;
-}
-.file-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-empty { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); padding: 2px 0; }
-
-.new-chat { width: 100%; margin-bottom: 0; }
-
-.sess-list { display: flex; flex-direction: column; gap: 6px; max-height: 108px; overflow-y: auto; }
-.sess-item {
-  display: flex;
-  align-items: stretch;
-  gap: 6px;
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
+  gap: 16px;
+  width: 256px;
+  height: 100dvh;
+  min-height: 0;
+  padding: 20px 12px 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
   background: var(--bg);
-  box-shadow: var(--sh-hard-sm);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
 }
-.sess-item.active { background: var(--accent); }
-.sess-item.active .sess-main strong,
-.sess-item.active .sess-main small { color: var(--accent-ink); }
-.sess-item.active .ah-dot { color: var(--accent-ink); }
-.sess-main {
-  flex: 1 1 auto;
+
+.ask-side button,
+.ask-side a {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  -webkit-tap-highlight-color: var(--bg-hover);
+}
+
+.ask-side button {
+  cursor: pointer;
+}
+
+.ask-side button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.ask-side :is(button, a):focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: -2px;
+}
+
+.ask-side svg {
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 8px;
+}
+
+.brand-mark {
   display: flex;
   align-items: center;
-  gap: 9px;
-  text-align: left;
-  background: none;
-  border: none;
-  padding: 9px 10px;
-  cursor: pointer;
-  color: var(--text);
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: var(--accent-text);
+}
+
+.brand-text {
+  flex: 1;
   min-width: 0;
 }
-.sess-main:disabled { cursor: default; opacity: .6; }
-.ah-dot { flex: 0 0 auto; font-size: var(--fs-cap); color: var(--text-faint); }
-.sess-copy { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
-.sess-copy strong {
-  font-family: var(--font-sans);
-  font-size: var(--fs-md);
-  font-weight: 700;
+
+.brand-name {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -.03em;
+}
+
+.brand-sub {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.icon-button {
+  display: inline-flex;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+}
+
+.sidebar-close {
+  display: none;
+  margin-right: -8px;
+}
+
+.new-chat {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-deep);
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.new-chat:hover {
+  background: color-mix(in srgb, var(--accent) 88%, var(--ink));
+  color: var(--accent-ink);
+}
+.icon-button:hover:not(:disabled) {
+  background: var(--bg-hover);
   color: var(--ink);
+}
+
+.side-nav {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.nav-link:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.nav-link[aria-current='page'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  box-shadow: inset 2px 0 0 var(--accent);
+  font-weight: 600;
+}
+
+.history-section {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 96px;
+}
+
+.section-title {
+  margin: 0;
+  padding: 0 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.sess-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--bg-raised);
+}
+
+.sess-item {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  min-width: 0;
+  border-radius: 8px;
+}
+
+.sess-item:hover,
+.sess-item:focus-within {
+  background: var(--bg-hover);
+}
+
+.sess-item.active {
+  background: var(--bg-selected);
+}
+
+.sess-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  text-align: left;
+}
+
+.sess-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sess-copy strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sess-main[aria-current='true'] strong {
+  font-weight: 600;
+}
+
+.sess-copy small {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.sess-del {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sess-item:hover .sess-del,
+.sess-item:focus-within .sess-del {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.workspace-resources {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-height: 40px;
+}
+
+.section-heading .section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.section-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.ask-side .section-action {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.section-action:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.project-name,
+.project-root {
+  margin: 0 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sess-copy small { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-muted); }
-.sess-del {
-  flex: 0 0 auto;
-  width: 30px;
-  border: none;
-  border-left: var(--edge-w-strong) solid var(--edge-ink);
-  background: none;
+
+.project-name {
+  font-weight: 500;
+}
+
+.project-name.muted {
   color: var(--text-muted);
-  font-size: var(--fs-h2);
-  line-height: 1;
-  cursor: pointer;
-  transition: background 130ms, color 130ms;
 }
-.sess-del:hover:not(:disabled) { background: var(--danger); color: var(--danger-ink); }
-.sess-del:disabled { opacity: .4; cursor: default; }
-.sess-empty { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-faint); padding: 4px 2px; }
 
-/* 资料文档：标题行右侧的小上传按钮（2026-10-19 取代整宽大按钮） */
-.add-doc {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  font-size: var(--fs-cap);
-  box-shadow: none;
-  transform: none;
-}
-.add-doc:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: var(--sh-hard-sm); }
-
-.model-line { display: flex; gap: 10px; font-family: var(--font-sans); font-size: var(--fs-md); padding: 1px 0; }
-.model-k { flex: 0 0 34px; color: var(--text-faint); font-family: var(--font-mono); font-size: var(--fs-cap); text-transform: uppercase; }
-.model-line b { font-weight: 600; word-break: break-all; }
-.gear {
-  margin-left: auto;
-  border: var(--edge-w-strong, 2px) solid transparent;
-  background: none;
+.project-root {
+  margin-top: 4px;
   color: var(--text-muted);
-  cursor: pointer;
-  padding: 3px;
-  display: flex;
-  transition: background 130ms, color 130ms, border-color 130ms;
-}
-.gear:hover { background: var(--bg-hover); color: var(--accent); border-color: var(--border-strong); }
-
-.btn {
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  --btn-fill: var(--accent);
-  background: var(--accent);
-  color: var(--accent-ink);
   font-family: var(--font-mono);
-  font-weight: 700;
-  padding: 6px 12px;
-  font-size: var(--fs-md);
-  cursor: pointer;
-  box-shadow: var(--sh-hard-sm);
-  transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms;
+  font-size: 12px;
 }
-.btn:hover { transform: translate(-2px, -2px); box-shadow: var(--sh-hard); }
-.btn:disabled { opacity: .55; cursor: default; }
-.btn.ghost { --btn-fill: initial; background: var(--bg-raised); color: var(--text); }
-.btn.ghost:hover { transform: translate(-2px, -2px); --btn-fill: var(--ink); background: var(--ink); color: var(--bg); }
-.btn.block { width: 100%; }
-.btn.sm { padding: 5px 10px; font-size: var(--fs-sm); }
+
+.empty-note {
+  margin: 0;
+  padding: 4px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ingest-msg {
+  max-height: 64px;
+  margin: 0 10px 6px;
+  overflow-y: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.file-list {
+  max-height: 96px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) var(--bg-raised);
+}
+
+.file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+}
+
+.file-item svg {
+  color: var(--text-muted);
+}
+
+.file-nm {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-footer {
+  flex-shrink: 0;
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.model-settings {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ink);
+  text-align: left;
+}
+
+.model-settings:hover {
+  background: var(--bg-hover);
+}
+
+.model-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.model-label {
+  font-weight: 500;
+}
+
+.model-name {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-chevron {
+  color: var(--text-muted);
+}
+
+@media (min-width: 921px) {
+  .ask-side.is-home .workspace-resources { display: none; }
+  .ask-side.is-home .history-section { flex: 1 1 auto; }
+}
+
+@media (hover: none), (any-pointer: coarse) {
+  .sess-del {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (max-height: 700px) {
+  .ask-side {
+    gap: 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .history-section {
+    flex: 1 0 136px;
+  }
+
+  .file-list {
+    max-height: 64px;
+  }
+}
+
+@media (max-width: 920px) {
+  .ask-side {
+    display: none;
+  }
+
+  .ask-side.is-open {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 60;
+    display: flex;
+    width: min(288px, 85vw);
+    height: 100dvh;
+    padding-top: max(16px, env(safe-area-inset-top));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .sidebar-close {
+    display: inline-flex;
+  }
+}
 </style>

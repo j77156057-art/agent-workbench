@@ -204,7 +204,7 @@ function onVideoPick(ev: Event) {
         :value="modelValue"
         class="cd-input"
         rows="2"
-        placeholder="提问：角色数值在哪 / 解释这段逻辑 / 这个报错怎么改…（Ctrl+Enter 发送）"
+        placeholder="描述你的目标或问题…（Ctrl+Enter 发送）"
         @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
         @keydown="onKeydown"
         @paste="onPaste"
@@ -227,7 +227,7 @@ function onVideoPick(ev: Event) {
   flex: 1; resize: none;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border-graphic); border-radius: 7px;
-  padding: 7px 10px; font-size: var(--fs-sm); font-family: inherit;
+  padding: 10px 12px; font-size: var(--fs-body); font-family: inherit;
   outline: none; max-height: 110px;
 }
 .cd-input:focus { border-color: var(--accent); }
@@ -235,9 +235,9 @@ function onVideoPick(ev: Event) {
    3.85 / 4.49:1，全部不过 AA。占位符是输入框里唯一的说明文字，不能靠浏览器默认色。 */
 .cd-input::placeholder { color: var(--text-muted); opacity: 1; }
 .cd-send {
-  height: 30px; padding: 0 16px; border-radius: 7px;
-  border: 1px solid var(--accent-deep); background: linear-gradient(180deg, var(--accent-loud), var(--accent));
-  color: #fff; font-size: var(--fs-sm); font-weight: 600; cursor: pointer;
+  height: 38px; padding: 0 16px; border-radius: var(--r-sm);
+  border: 1px solid var(--accent-deep); background: var(--accent);
+  color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600; cursor: pointer;
 }
 .cd-send:disabled { opacity: .4; cursor: default; }
 .cd-stop { background: transparent; color: var(--danger); border-color: var(--danger); }

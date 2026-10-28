@@ -33,16 +33,39 @@ const streaming = computed(() => props.msg.status === 'streaming')
 // 展示偏好直接读 askPrefs 里那份共享 reactive —— 不再自己 ref(loadAskPrefs()) + 挂
 // ASK_PREFS_EVENT 监听器。同一件事两套机制，漏挂或时序差就是「设置改了界面不跟」。
 
-// 引用条数上限（0 = 不限制）：答案里可能引用几十处代码，默认只挑前几条展示。
-// 但截断不能是静默的 —— 少掉的那几条要数得出来、点得开，否则用户以为答案只引用了这些。
+// 文中引用是**回答文本里提取的位置**，不是后端核验过的证据；默认折叠，
+// 展开后先给偏好上限，再允许查看全部（截断必须数得出来、点得开）。
+const refsOpen = ref(false)
 const refsAll = ref(false)
+const refsLimited = computed(() => prefs.maxRefs > 0 && refs.value.length > prefs.maxRefs)
 const shownRefs = computed(() => {
-  const all = refs.value
-  const n = prefs.maxRefs
-  return n > 0 && !refsAll.value ? all.slice(0, n) : all
+  if (!refsOpen.value) return []
+  return refsLimited.value && !refsAll.value ? refs.value.slice(0, prefs.maxRefs) : refs.value
 })
 const hiddenRefs = computed(() => refs.value.length - shownRefs.value.length)
-const canCollapseRefs = computed(() => refsAll.value && prefs.maxRefs > 0 && refs.value.length > prefs.maxRefs)
+function refName(path: string): string {
+  return path.split('/').pop() || path
+}
+function refDir(path: string): string {
+  const parts = path.split('/')
+  return parts.length > 1 ? parts.slice(0, -1).join('/') : ''
+}
+
+const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
+let copyTimer = 0
+async function copyAnswer() {
+  if (!props.msg.text || streaming.value) return
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
+    await navigator.clipboard.writeText(props.msg.text)
+    copyState.value = 'copied'
+  } catch {
+    copyState.value = 'failed'
+  }
+  window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => { copyState.value = 'idle' }, 2200)
+}
+onBeforeUnmount(() => window.clearTimeout(copyTimer))
 
 /** 点开一个文件产物：走问答页既有的「打开文件」通道。 */
 function openArtifact(a: ChatArtifact) {
@@ -57,33 +80,54 @@ function openArtifact(a: ChatArtifact) {
 // 生长）；历史回放/演示等绕开管线的路径没有 flow，由 flowOf 兜底按 trace
 // 顺序合成（reasoning 只剩整块，当第一个 think——切点没留下来，不假装知道）。
 import { traceSegments } from '../../workbench/composables/traceDigest'
-// 按「发言 → 该段工具摘要」切段（与工作台 ChatDock 同一份实现）：推理过程夹在
-// 中途发言之间，而不是整轮压成一块铺在答案前面。摘要行默认收起，点开看单步。
+import { getMessagePresentation } from '../messagePresentation'
+// 按「发言 → 该段工具摘要」切段（与工作台 ChatDock 同一份实现）。
+// 本轮只保留一个外层「执行过程」折叠；段内工具行仍可单独展开看全文。
 const segments = computed(() => traceSegments(props.msg))
-/** 交错流是否有可见内容：有发言就渲染发言；动作/返回摘要随「显示推理轨迹」偏好。 */
-const hasFlow = computed(() =>
+const processOpen = ref(false)
+const hasProcess = computed(() =>
   segments.value.some((s) => s.narration.length || (prefs.showTrace && s.digest.toolTotal)),
 )
-// 每段摘要行的展开状态（段只会往后追加，按下标记是稳定的）。
-const openSegs = ref<Set<number>>(new Set())
-function segOpen(i: number) { return openSegs.value.has(i) }
-function toggleSeg(i: number) {
-  const next = new Set(openSegs.value)
-  if (next.has(i)) next.delete(i)
-  else next.add(i)
-  openSegs.value = next
-}
-// 单块「深度思考」（原始 reasoning）done 后下沉进本段的单步明细；流式期仍在顶层随帧生长。
-function segHasThink(seg: { narration: { kind: string; text: string }[] }): boolean {
-  return seg.narration.some((l) => l.kind === 'reasoning')
-}
-// 顶层该显示哪些解说行：流式期全显示；done 后只留 ReAct 旁白，深度思考移入单步明细。
-function topNarration(
-  seg: { narration: { kind: string; text: string }[] },
-  streaming: boolean,
-): { kind: string; text: string }[] {
-  return streaming ? seg.narration : seg.narration.filter((l) => l.kind !== 'reasoning')
-}
+const processGlyph = computed(() =>
+  segments.value.some((s) => s.glyph === '✎') ? '✎' : '◷',
+)
+// 摘要聚合各段的计数（标签顺序按首次出现）；不是“成功次数”，只表示发生过什么。
+const processSummary = computed(() => {
+  if (!prefs.showTrace) return '查看思考过程'
+  const counts = new Map<string, { count: number; unit: string }>()
+  for (const seg of segments.value) {
+    for (const part of seg.digest.parts) {
+      const cur = counts.get(part.label) || { count: 0, unit: part.unit }
+      cur.count += part.count
+      counts.set(part.label, cur)
+    }
+  }
+  const text = [...counts.entries()]
+    .map(([label, v]) => `${label} ${v.count} ${v.unit}`)
+    .join(' · ')
+  return text || '思考过程'
+})
+const presentation = computed(() => getMessagePresentation(props.msg, askAnswered.value))
+const statusLabel = computed(() =>
+  streaming.value && !props.msg.text ? phaseLabel.value : presentation.value.label,
+)
+const qualityNote = computed(() => {
+  const m = props.msg
+  if (m.status === 'error') {
+    return { label: '失败', text: m.error || '请求失败', tone: 'danger' }
+  }
+  if (m.status !== 'done') return null
+  if (m.degraded) {
+    return { label: '未完成', text: '本轮没有拿到可综合的完整答案，上面是兜底内容或中间证据。', tone: 'warning' }
+  }
+  if (m.consistencyReason === 'verbatim_dump') {
+    return { label: '未综合结论', text: '回答以原始源码罗列为主，缺少针对问题的归纳结论。', tone: 'warning' }
+  }
+  if (m.consistency === 'warn') {
+    return { label: '需核对', text: `摘要对过程证据的覆盖率约 ${Math.round((m.consistencyRatio || 0) * 100)}%，可能有细节未纳入。`, tone: 'warning' }
+  }
+  return null
+})
 function rowKind(ti: number): 'action' | 'result' {
   return props.msg.trace[ti]?.type === 'action' ? 'action' : 'result'
 }
@@ -133,13 +177,6 @@ function oneLine(s: string, n = 80): string {
   return t.length > n ? t.slice(0, n) + '…' : t
 }
 
-/** P1：错误条按 final.error_kind 分流到样式 class。
- *  与 ChatDock.errorKindClass 同款口径，避免两边各写一份飘走。 */
-function errorKindClass(kind?: string): string {
-  if (kind === 'permanent') return 'flag-permanent'
-  if (kind === 'retried_failed') return 'flag-warn'
-  return 'flag-soft'
-}
 function stepTitle(item: ChatTraceItem): string {
   const raw = item.text.trim()
   if (item.type === 'action') {
@@ -206,9 +243,9 @@ const phaseLabel = computed(() => {
 </script>
 
 <template>
-  <div class="msg" :class="msg.role">
-    <div v-if="msg.role === 'user'" class="msg-row user-row">
-      <div class="bubble user-bubble">
+  <div class="msg" :class="msg.role" :data-message-id="msg.id">
+    <div v-if="msg.role === 'user'" class="user-row">
+      <div class="user-bubble">
         <div v-if="msg.images?.length" class="user-imgs">
           <img v-for="(src, i) in msg.images" :key="i" :src="src" alt="附件图片">
         </div>
@@ -216,62 +253,57 @@ const phaseLabel = computed(() => {
       </div>
     </div>
 
-    <div v-else class="msg-row ai-row">
-      <div class="ai-avatar" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="#fff" d="M12 2l2.4 5.6L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.6-1.4z"/></svg>
+    <div v-else class="ai-row">
+      <div class="ai-head">
+        <span class="ai-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 6c-3-2-6-2-9-1v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Z" />
+            <path d="M12 6v14" />
+          </svg>
+        </span>
+        <span class="ai-name">DocMind</span>
+        <span class="ai-status" :class="`tone-${presentation.tone}`" role="status">{{ statusLabel }}</span>
+        <span v-if="streaming" class="live-dots" aria-hidden="true"><i /><i /><i /></span>
+        <span v-if="elapsedLabel" class="ai-time">{{ elapsedLabel }}</span>
       </div>
       <div class="ai-col">
-        <!-- 2026-10-14：交错流——思考（reasoning 分段 / ReAct Thought）与工具
-             调用按发生顺序排成一条故事线：think → 调用 → 返回 → think → …
-             答案之前全部可见、无边框（容器只有左侧一条虚线时间线）。
-             点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
-        <div v-if="hasFlow" class="flow-wrap">
-          <!-- 分段呈现（2026-10-25）：发言 → 这段之后干了什么的一行灰色摘要 → 下一段发言。
-               推理过程夹在中途发言之间；摘要默认收起，点开才看这一段的单步明细。 -->
-          <template v-for="(seg, si) in segments" :key="'seg' + si">
-            <div v-if="topNarration(seg, streaming).length" class="ask-narration">
-              <template v-for="(line, li) in topNarration(seg, streaming)" :key="'nar' + li">
-                <div v-if="line.kind === 'reasoning'" class="ask-nar-reasoning-wrap">
-                  <span class="ask-nar-tag" aria-hidden="true">✦ 深度思考</span>
-                  <p class="ask-narration-line ask-nar-reasoning">{{ line.text }}</p>
-                </div>
-                <p v-else class="ask-narration-line ask-nar-thought">{{ line.text }}</p>
+        <!-- 执行过程：整轮只保留这一层折叠。展开后按原 segment 顺序阅读，
+             单步工具行仍可各自展开；默认关闭，正文优先。 -->
+        <div v-if="hasProcess" class="process">
+          <button
+            class="process-toggle"
+            type="button"
+            :aria-expanded="processOpen"
+            :aria-controls="`process-${msg.id}`"
+            :aria-label="`${processOpen ? '收起' : '展开'}执行过程：${processSummary}`"
+            @click="processOpen = !processOpen"
+          >
+            <span class="process-glyph" aria-hidden="true">{{ processGlyph }}</span>
+            <span class="process-label">{{ processOpen ? '收起执行过程' : '执行过程' }}</span>
+            <span class="process-summary">{{ processSummary }}</span>
+            <span class="chev" :class="{ open: processOpen }">⌄</span>
+          </button>
+          <div v-if="processOpen" :id="`process-${msg.id}`" class="process-body">
+            <template v-for="(seg, si) in segments" :key="'seg' + si">
+              <div v-for="(line, li) in seg.narration" :key="'n' + li" class="narration" :class="line.kind">
+                <span v-if="line.kind === 'reasoning'" class="narration-tag">深度思考</span>
+                <span class="narration-text">{{ line.text }}</span>
+              </div>
+              <template v-if="prefs.showTrace">
+                <template v-for="(ti, ri) in seg.rows" :key="'r' + ri">
+                  <button class="flow-row" :class="rowKind(ti)" type="button" @click="toggleRow(ti)">
+                    <span class="flow-glyph" aria-hidden="true">{{ rowKind(ti) === 'action' ? '↗' : '↳' }}</span>
+                    <span class="flow-title">{{ stepTitle(msg.trace[ti]) }}</span>
+                    <span v-if="!rowOpen(ti)" class="flow-summary">{{ stepSummary(msg.trace[ti]) }}</span>
+                    <span v-if="fmtElapsed(msg.trace[ti].elapsedMs)" class="flow-time">{{ fmtElapsed(msg.trace[ti].elapsedMs) }}</span>
+                    <span class="chev" :class="{ open: rowOpen(ti) }">⌄</span>
+                  </button>
+                  <pre v-if="rowOpen(ti)" class="flow-detail">{{ msg.trace[ti].text.trim() }}</pre>
+                </template>
               </template>
-            </div>
-            <button
-              v-if="prefs.showTrace && (seg.digest.toolTotal || (!streaming && segHasThink(seg)))"
-              class="flow-toggle"
-              type="button"
-              :aria-expanded="segOpen(si)"
-              :aria-label="`${seg.digest.text}，点击查看这一段的单步明细`"
-              @click="toggleSeg(si)"
-            >
-              <span class="flow-toggle-glyph" aria-hidden="true">{{ seg.glyph }}</span>
-              <span class="flow-toggle-count">{{ seg.digest.text }}</span>
-              <span class="chev" :class="{ open: segOpen(si) }">⌄</span>
-            </button>
-            <div v-if="segOpen(si)" class="flow">
-              <!-- done 后本段深度思考下沉到单步明细之首；流式期不重复（顶层已随帧长） -->
-              <template v-if="!streaming">
-                <div v-for="(line, li) in seg.narration" :key="'det-think' + li">
-                  <div v-if="line.kind === 'reasoning'" class="ask-nar-reasoning-wrap">
-                    <span class="ask-nar-tag" aria-hidden="true">✦ 深度思考</span>
-                    <p class="ask-narration-line ask-nar-reasoning">{{ line.text }}</p>
-                  </div>
-                </div>
-              </template>
-              <template v-for="(ti, ri) in seg.rows" :key="'r' + ri">
-                <button class="flow-row" :class="rowKind(ti)" @click="toggleRow(ti)">
-                  <span class="flow-glyph">{{ rowKind(ti) === 'action' ? '↗' : '↳' }}</span>
-                  <span class="flow-title">{{ stepTitle(msg.trace[ti]) }}</span>
-                  <span v-if="!rowOpen(ti)" class="flow-summary">{{ stepSummary(msg.trace[ti]) }}</span>
-                  <span v-if="fmtElapsed(msg.trace[ti].elapsedMs)" class="flow-time">{{ fmtElapsed(msg.trace[ti].elapsedMs) }}</span>
-                  <span class="chev" :class="{ open: rowOpen(ti) }">⌄</span>
-                </button>
-                <pre v-if="rowOpen(ti)" class="flow-detail">{{ msg.trace[ti].text.trim() }}</pre>
-              </template>
-            </div>
-          </template>
+            </template>
+            <p v-if="!segments.length" class="process-empty">这一轮没有可展开的过程记录。</p>
+          </div>
         </div>
 
         <!-- 工作流卡片：start_workflow 的动作与观察由卡片承载，不进交错流 -->
@@ -284,43 +316,18 @@ const phaseLabel = computed(() => {
           @gate="(open: boolean) => emit('wfGate', open)"
         />
 
-        <!-- 正文（永远在最下、常驻展开、不会因过程流回缩而消失） -->
-        <div class="bubble ai-bubble">
-          <div v-if="!msg.text && streaming" class="typing" :title="`已等待 ${elapsedLabel || '0s'}`">
-            <span class="typing-phase">{{ phaseLabel }}</span>
-            <span v-if="elapsedLabel" class="typing-time">{{ elapsedLabel }}</span>
-            <span class="td"></span><span class="td"></span><span class="td"></span>
+        <!-- 正文常驻展开：过程收起时也不影响阅读；状态用一行说明，不压过答案。 -->
+        <div class="ai-bubble">
+          <div v-if="qualityNote" class="quality-note" :class="qualityNote.tone" role="status">
+            <span class="quality-badge">{{ qualityNote.label }}</span>
+            <span>{{ qualityNote.text }}</span>
           </div>
-          <div v-else-if="msg.text" class="answer" :class="{ streaming }">
-            <!-- P0：摘要一致性自检。observation 关键词命中率 < 阈值时，本回合的
-                 「摘要对过程证据的覆盖度」偏低——明确标注为「覆盖存疑」终态，而非静默
-                 记完成（BUG-4）。措辞刻意避开「核验」二字：它与后端追加的
-                 「（核验：PASS · N 处引用可核验）」说的是两件不同的事（引用能不能定位
-                 vs 摘要有没有漏掉过程细节），同屏出现不能让它们看着互相打架。 -->
-            <div v-if="msg.status === 'done' && msg.consistency === 'warn'" class="flag warn">
-              <span class="flag-badge">覆盖存疑</span>
-              本回合摘要对过程证据的关键词覆盖率仅
-              {{ Math.round((msg.consistencyRatio || 0) * 100) }}%——结论未必有错，但可能有细节没纳入摘要。
-              点开上方各段灰色摘要可逐项核对。
-            </div>
-            <!-- BUG-7：与覆盖率徽章正交的另一条终态标记。逐行裸铺源码的「答案」把观察里的
-                 行号/路径原样抄了进来，关键词命中率反而≈100% → 上面那条徽章不弹（假阴）。
-                 后端用 `_consistency_reason` 单独识别 dump 下发 consistency_reason，这里给一句
-                 **语义正确**的话：问题不是「没纳入摘要」，而是「全是原文、没归纳」。 -->
-            <div v-if="msg.status === 'done' && msg.consistencyReason === 'verbatim_dump'" class="flag warn">
-              <span class="flag-badge">未综合结论</span>
-              本回合的回答以**原始源码逐行罗列**为主，缺少针对你问题的归纳结论——它读起来像证据、
-              但不是答案。点开上方各段灰色摘要可查看模型实际读到了什么。
-            </div>
+          <div v-if="msg.text" class="answer" :class="{ streaming }">
             <span v-html="html"></span>
           </div>
           <!-- 产物：本轮模型写下的文件、截到的图。直接摆在回答下面，
                不用再去路径里自己搜。图片给缩略图，文件给可点的名字。 -->
           <ArtifactCards :artifacts="msg.artifacts" :open="openArtifact" />
-          <div v-if="msg.status === 'stopped' && msg.text" class="flag stopped">已停止</div>
-          <!-- P1：错误条按 error_kind 分流（permanent=红 / retried_failed=黄 / 其他=灰）。
-               老的「服务异常」/异常类名字符串走默认灰条，与 ChatDock 同款口径。 -->
-          <div v-if="msg.status === 'error'" class="flag error" :class="errorKindClass(msg.errorKind)">{{ msg.error || '请求失败' }}</div>
         </div>
 
         <!-- P0 结构化「提问 / 授权」出口：拿不准 / 歧义写 / 安全门拦下时弹可点选项框 -->
@@ -342,23 +349,53 @@ const phaseLabel = computed(() => {
           </div>
         </div>
 
-        <!-- 文件引用（条数上限由展示偏好控制；被截断的条数必须数得出来、点得开） -->
-        <div v-if="shownRefs.length" class="refs">
-          <span class="refs-label">引用</span>
+        <!-- 文中引用：默认折叠；展开后按偏好显示前 N 条，可再看全部。 -->
+        <div v-if="refs.length" class="refs">
           <button
-            v-for="(r, i) in shownRefs" :key="i"
-            class="ref-chip"
-            :title="r.path + (r.line ? ':' + r.line : '')"
-            @click="emit('openFile', r.path, r.line)"
+            class="refs-toggle"
+            type="button"
+            :aria-expanded="refsOpen"
+            :aria-controls="`refs-${msg.id}`"
+            @click="refsOpen = !refsOpen"
           >
-            <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M6 2h8l4 4v16H6V2zm7 1.5V7h3.5L13 3.5zM8 11h8v1.5H8V11zm0 3.5h8V16H8v-1.5zm0 3.5h5v1.5H8V18z"/></svg>
-            <span class="ref-path">{{ r.path }}</span><span v-if="r.line" class="ref-line">:{{ r.line }}</span>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6" />
+            </svg>
+            <span class="refs-label">文中引用</span>
+            <span class="refs-count">{{ refs.length }}</span>
+            <span class="chev" :class="{ open: refsOpen }">⌄</span>
           </button>
-          <button v-if="hiddenRefs > 0" type="button" class="ref-chip ref-more"
-                  :title="'还有 ' + hiddenRefs + ' 处引用未显示'"
-                  @click="refsAll = true">+{{ hiddenRefs }} 处</button>
-          <button v-else-if="canCollapseRefs" type="button" class="ref-chip ref-more"
-                  @click="refsAll = false">收起</button>
+          <div v-if="refsOpen" :id="`refs-${msg.id}`" class="refs-list">
+            <button
+              v-for="(r, i) in shownRefs" :key="i"
+              class="ref-item"
+              :title="r.path + (r.line ? ':' + r.line : '')"
+              @click="emit('openFile', r.path, r.line)"
+            >
+              <span class="ref-file">{{ refName(r.path) }}<span v-if="r.line" class="ref-line">:{{ r.line }}</span></span>
+              <span v-if="refDir(r.path)" class="ref-dir">{{ refDir(r.path) }}</span>
+            </button>
+            <button v-if="hiddenRefs > 0" type="button" class="refs-more" @click="refsAll = true">
+              显示全部 {{ refs.length }} 处
+            </button>
+            <button v-else-if="refsLimited" type="button" class="refs-more" @click="refsAll = false">
+              只看前 {{ prefs.maxRefs }} 处
+            </button>
+          </div>
+        </div>
+
+        <div v-if="msg.text && !streaming" class="answer-actions">
+          <button class="action-btn" type="button" @click="copyAnswer">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="11" height="12" rx="2" />
+              <path d="M5 15V5a2 2 0 0 1 2-2h8" />
+            </svg>
+            复制回答
+          </button>
+          <span class="action-feedback" role="status" aria-live="polite">
+            <template v-if="copyState === 'copied'">已复制到剪贴板</template>
+            <template v-else-if="copyState === 'failed'">复制失败，请选择文本复制</template>
+          </span>
         </div>
 
         <!-- 运行期提示（transient notice）：只在流式中显示，不进历史 -->
@@ -371,75 +408,85 @@ const phaseLabel = computed(() => {
 </template>
 
 <style scoped>
-/* ===== Agent 工作台 问答气泡 · 高级粗野风 ===== */
-.msg-row { display: flex; gap: 12px; animation: msg-in .22s ease both; }
-.user-row { justify-content: flex-end; }
+/* 阅读优先：用户问题轻量靠右，助手回答占满整栏，不再让头像列吃掉正文宽度。 */
+.msg { min-width: 0; }
+.user-row { display: flex; justify-content: flex-end; animation: msg-in .18s ease both; }
+.user-bubble {
+  max-width: min(640px, 88%);
+  padding: 12px 16px;
+  background: var(--bg-hover);
+  color: var(--text);
+  border-radius: var(--r-lg);
+}
+.user-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-ui); font-size: var(--fs-h2); line-height: 1.75; }
+.user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.user-imgs img { max-width: 180px; max-height: 180px; border-radius: var(--r-sm); }
+
+.ai-row { min-width: 0; animation: msg-in .18s ease both; }
+.ai-head { display: flex; align-items: center; gap: 8px; min-height: 24px; margin-bottom: 10px; }
+.ai-mark {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.ai-name { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.ai-time { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); }
+
 @keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
-  .msg-row { animation: none !important; }
-  .td, .flow-dot.on { animation: none !important; }
-  .td { opacity: .5; }
+  .user-row, .ai-row { animation: none !important; }
+  .live-dots i { animation: none !important; opacity: .6; }
   .answer.streaming::after { animation: none !important; opacity: .6; }
 }
 
-.bubble { border-radius: 0; padding: 12px 16px; max-width: 100%; }
-.user-bubble {
-  max-width: min(560px, 82%);
-  background: var(--accent);
-  color: #fff;
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  box-shadow: var(--sh-hard-sm);
-}
-.user-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-sans); }
-.user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.user-imgs img { max-width: 180px; max-height: 180px; border: var(--edge-w-strong) solid var(--edge-ink);
-border-radius: var(--r-sm); }
+.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.ai-bubble { background: transparent; border: 0; padding: 0; width: 100%; max-width: 100%; }
 
-.ai-avatar {
-  flex: 0 0 32px;
-  width: 32px;
-  height: 32px;
-  border: var(--edge-w-heavy) solid var(--edge-ink);
-  border-radius: 0;
-  background: var(--ink);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-top: 2px;
+/* 回答正文是主视觉：16px / 1.8，标题逐级放大；不改共享 markdown 层，避免影响工作台。 */
+.answer {
+  word-break: break-word;
+  font-family: var(--font-ui);
+  font-size: var(--fs-h2);
+  line-height: 1.8;
+  letter-spacing: 0;
+  color: var(--text);
 }
-.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-/* 2026-10-14：无边框 chat——去 background / border / box-shadow / padding，让答案
-   就是文字流；max-width 仍按容器 100% 跑，不挤压但也不再"卡在一个框里"。 */
-.ai-bubble {
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
-  padding: 0;
-  width: 100%;
-  max-width: 100%;
+.answer :deep(.md-p) { margin: 0 0 12px; }
+.answer :deep(.md-p:last-child) { margin-bottom: 0; }
+.answer :deep(.md-h) { font-weight: 600; line-height: 1.35; color: var(--ink); }
+.answer :deep(.md-h1) { margin: 28px 0 12px; font-size: 24px; }
+.answer :deep(.md-h2) { margin: 26px 0 10px; font-size: 20px; }
+.answer :deep(.md-h3), .answer :deep(.md-h4) { margin: 22px 0 8px; font-size: 17px; }
+.answer :deep(.md-h:first-child) { margin-top: 0; }
+.answer :deep(.md-ul) { margin: 0 0 12px; padding-left: 1.4em; }
+.answer :deep(.md-ul li) { margin: 4px 0; }
+.answer :deep(.md-ic) {
+  font-size: 14px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: var(--r-xs);
+  padding: 1px 5px;
 }
-.answer { word-break: break-word; font-family: var(--font-sans); line-height: 1.65; }
-.answer :deep(.md-link) { color: var(--accent); border-bottom: 2px solid transparent; }
-.answer :deep(.md-link:hover) { border-bottom-color: var(--accent); }
+.answer :deep(.md-pre) { margin: 16px 0; border-radius: var(--r-md); }
+.answer :deep(.md-pre code) { font-size: 13px; line-height: 1.7; }
+.answer :deep(.md-link) { color: var(--accent-text); border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.answer :deep(.md-link:hover) { border-bottom-color: var(--accent-text); }
 
-.typing { color: var(--text-muted); font-size: var(--fs-md); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-family: var(--font-sans); }
-.typing-phase { color: var(--text); font-weight: 600; }
-.typing-tools { color: var(--text-faint); font-weight: 500; font-size: var(--fs-sm); }
-.typing-time {
-  font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted);
-  background: var(--bg-hover); border: 1px solid var(--border); padding: 1px 8px;
-}
-.td {
-  width: 6px; height: 6px; background: var(--accent-2);
-  display: inline-block; animation: td-blink 1.4s ease-in-out infinite;
-}
-.td ~ .td { animation-delay: .18s; }
-.td ~ .td ~ .td { animation-delay: .36s; }
-@keyframes td-blink { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
+.ai-status { font-size: var(--fs-sm); color: var(--text-muted); }
+.ai-status.tone-accent { color: var(--accent-text); }
+.ai-status.tone-warning { color: var(--amber); }
+.ai-status.tone-danger { color: var(--danger); }
+.live-dots { display: inline-flex; gap: 3px; }
+.live-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent-text); animation: live-blink 1.2s ease-in-out infinite; }
+.live-dots i:nth-child(2) { animation-delay: .15s; }
+.live-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes live-blink { 0%, 100% { opacity: .2; } 50% { opacity: 1; } }
 
-/* 流式正文末端插入粗野风方块光标，传达「生成中」的实时感（仅 streaming 时显示） */
+/* 流式正文末端光标 */
 .answer.streaming::after {
   content: '';
   display: inline-block;
@@ -452,176 +499,208 @@ border-radius: var(--r-sm); }
 }
 @keyframes ai-caret { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
 
-.flag { margin-top: 8px; font-family: var(--font-mono); font-size: var(--fs-sm); }
-.flag.stopped { color: var(--text-faint); }
-.flag.error { color: var(--danger); }
-/* P1 重试层错误染色（与 ChatDock 同款口径）：
- *   flag-permanent — 不可恢复（fallback 也失败 / 非网络错）→ 红
- *   flag-warn      — 重试用尽 + 无 fallback → 黄（温和但可见）
- *   flag-soft      — 旧的「服务异常」/未识别 → 灰（不显眼）
- */
-.flag.error.flag-permanent { color: var(--danger); font-weight: 600; }
-.flag.error.flag-warn { color: var(--amber); }
-.flag.error.flag-soft { color: var(--text-faint); }
-/* P0 一致性自检提示：observation 关键词命中率 < 50% 时给用户一个不挡眼但可见的提示。
- * 位置在 .answer 顶部第一行；不挡后续内容、不改 status。 */
-.flag.warn {
-  display: block;
-  color: var(--amber);
-  background: color-mix(in srgb, var(--amber) 6%, transparent);
-  border: 1px solid color-mix(in srgb, var(--amber) 22%, transparent);
-  border-radius: 6px;
-  padding: 4px 8px;
-  margin: 0 0 8px;
-  font-family: var(--font-ui);
-  line-height: 1.45;
-}
-.flag-badge {
-  display: inline-block;
-  margin-right: 6px;
-  padding: 0 6px;
-  border: 1px solid color-mix(in srgb, var(--amber) 50%, transparent);
-  border-radius: 4px;
-  font-size: var(--fs-cap);
-  font-weight: 700;
-  letter-spacing: .02em;
-  color: var(--amber);
-  background: color-mix(in srgb, var(--amber) 12%, transparent);
-  vertical-align: baseline;
-}
-
-/* 交错流（2026-10-14）：思考 ↔ 工具调用按发生顺序的一条故事线。
-   无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning
-   分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
-   替代了旧的「reason 独立块 + 可折叠过程流」两段式。 */
-.flow-wrap { display: flex; flex-direction: column; gap: 2px; }
-.ask-narration { margin: 0; }
-.ask-narration-line {
-  margin: 0 0 8px;
-  font-size: var(--fs-md); line-height: 1.66;
-  white-space: pre-wrap; word-break: break-word;
-}
-.ask-narration-line:last-child { margin-bottom: 2px; }
-/* ReAct Thought / 复核旁白：低调灰字 */
-.ask-nar-thought { color: var(--text-muted); }
-/* 深度思考（原始 reasoning）块 */
-.ask-nar-reasoning-wrap { margin: 0 0 10px; }
-.ask-nar-tag {
-  flex: 0 0 auto;
-  color: var(--accent-deep);
-  font-size: var(--fs-sm); font-weight: 700; letter-spacing: .04em;
-  white-space: nowrap;
-}
-/* 思考正文：左侧强调条 + 淡主色底块，比旁白更醒目 */
-.ask-nar-reasoning {
-  color: var(--text);
-  margin: 2px 0 0; padding: 8px 12px;
-  border-left: 3px solid var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  border-radius: 0 6px 6px 0;
-}
-/* 每段的工具摘要行：一行灰色小字，点开看这一段的单步明细（参考图里的样式）。 */
-.flow-toggle {
-  align-self: flex-start;
-  display: inline-flex; align-items: center; gap: 6px;
-  border: none;
-  background: none;
-  border-radius: var(--r-sm);
-  padding: 1px 4px;
-  margin-left: -4px;
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  color: var(--text-faint);
-  transition: background 130ms, color 130ms;
-}
-.flow-toggle:hover { color: var(--text-muted); background: var(--bg-hover); }
-.flow-toggle:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
-.flow-toggle-glyph { color: var(--text-faint); font-size: var(--fs-sm); }
-.flow-toggle-count { color: var(--text-faint); }
-.flow {
+.quality-note {
   display: flex;
-  flex-direction: column;
-  margin: 2px 0 6px;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  line-height: 1.6;
 }
+.quality-note.warning { border-left-color: var(--amber); }
+.quality-note.danger { border-left-color: var(--danger); color: var(--danger); }
+.quality-badge { flex: none; font-weight: 600; color: var(--text); }
+.quality-note.warning .quality-badge { color: var(--amber); }
+.quality-note.danger .quality-badge { color: var(--danger); }
 
-/* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
-.flow-row {
+/* 执行过程：整轮唯一的折叠层；展开后按时间顺序阅读，单步仍可各自展开。 */
+.process { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-raised); overflow: hidden; }
+.process-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background 150ms;
+}
+.process-toggle:hover { background: var(--bg-hover); }
+/* hover 底色比 surface 深一档，弱化文字必须同步往 ink 收，否则纸面皮肤跌到 4.34:1。 */
+.process-toggle:hover .process-summary,
+.process-toggle:hover .chev,
+.refs-toggle:hover .chev,
+.flow-row:hover .flow-summary,
+.flow-row:hover .flow-time,
+.flow-row:hover .chev,
+.ref-item:hover .ref-dir,
+.ref-item:hover .ref-line {
+  color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover));
+}
+.process-glyph { flex: none; color: var(--text-faint); }
+.process-label { flex: none; font-weight: 500; color: var(--text); }
+.process-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
+.process-body { max-height: 320px; overflow-y: auto; padding: 2px 12px 10px; border-top: 1px solid var(--border); }
+.process-empty { margin: 10px 0; color: var(--text-muted); font-size: var(--fs-sm); }
+
+.narration { padding: 8px 0; font-size: var(--fs-md); line-height: 1.7; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
+.narration.reasoning {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-strong);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--surface);
+  color: var(--text);
+}
+.narration-tag { display: block; margin-bottom: 2px; color: var(--accent-text); font-size: var(--fs-cap); font-weight: 600; }
+
+.flow-row {
   display: flex;
   align-items: baseline;
   gap: 7px;
-  padding: 3px 0;
-  border: none;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
   background: none;
-  cursor: pointer;
-  font-family: var(--font-sans);
-  font-size: var(--fs-sm);
-  text-align: left;
   color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
 }
 .flow-row:hover { color: var(--text); }
-.flow-glyph { flex: 0 0 13px; color: var(--text-faint); font-size: var(--fs-sm); }
-.flow-title { flex: 0 0 auto; color: var(--text); font-weight: 650; }
-.flow-summary {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-muted);
-}
-/* 返回行缩进挂在对应动作行下，读作「这次调用的结果」 */
-.flow-row.result { padding-left: 20px; color: var(--text-faint); font-size: var(--fs-sm); }
-.flow-row.result .flow-summary { color: var(--text-faint); }
-.flow-time { flex: 0 0 auto; color: var(--text-faint); font-size: var(--fs-cap); font-family: var(--font-mono); }
+.flow-glyph { flex: 0 0 13px; color: var(--text-faint); }
+.flow-title { flex: none; color: var(--text); font-weight: 600; }
+.flow-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-row.result { padding-left: 20px; color: var(--text-muted); }
+.flow-row.result .flow-summary { color: var(--text-muted); }
+.flow-time { flex: none; color: var(--text-faint); font-size: var(--fs-cap); font-family: var(--font-mono); }
 .flow-detail {
-  margin: 0 0 4px 20px;
-  padding: 3px 0 3px 8px;
+  margin: 0 0 6px 20px;
+  padding: 6px 0 6px 10px;
   border-left: 2px solid var(--border);
   font-family: var(--font-mono);
   font-size: var(--fs-cap);
-  line-height: 1.6;
+  line-height: 1.65;
   color: var(--text-muted);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 240px;
   overflow: auto;
 }
-
-/* 文件引用 chips */
-.refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.refs-label {
-  font-family: var(--font-mono);
-  font-size: var(--fs-cap);
-  font-weight: 700;
-  letter-spacing: .04em;
-  color: var(--text-faint);
-  margin-right: 2px;
+@media (max-width: 600px) {
+  .process-toggle { align-items: flex-start; }
+  .process-summary {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+    line-height: 1.5;
+  }
 }
-.ref-chip {
-  display: inline-flex;
+
+/* 文中引用：折叠摘要 + 可展开的文件列表 */
+.refs { border-top: 1px solid var(--border); padding-top: 4px; }
+.refs-toggle {
+  display: flex;
   align-items: center;
-  gap: 4px;
-  max-width: 320px;
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
-  background: var(--bg-raised);
-  padding: 3px 9px;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 2px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+.refs-toggle:hover { color: var(--text); }
+.refs-label { font-weight: 500; color: var(--text); }
+.refs-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-full);
+  background: var(--bg-hover);
+  color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover));
+  font-size: var(--fs-cap);
+  text-align: center;
+}
+.refs-toggle .chev { margin-left: auto; }
+.refs-list { display: flex; flex-direction: column; padding-bottom: 4px; }
+.ref-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 4px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: none;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+.ref-item:hover { background: var(--bg-hover); }
+.ref-file {
+  flex: none;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  /* 填色令牌不能当文字色：var(--accent) 压在 --bg-raised 上 paper 皮肤实测 2.71:1。
-     仓库约定是纸底强调字走 --accent-text（graphite 下同样已按 4.5:1 解算）。 */
   color: var(--accent-text);
-  cursor: pointer;
-  transition: background 130ms, color 130ms, border-color 130ms;
 }
-.ref-chip:hover { --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
-.ref-more { font-weight: 700; letter-spacing: .02em; }
-.ref-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ref-line { color: var(--text-muted); font-family: var(--font-mono); }
-.ref-chip:hover .ref-line { color: var(--accent-ink); }
+.ref-line { color: var(--text-muted); }
+.ref-dir { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--text-muted); font-size: var(--fs-sm); }
+.refs-more {
+  align-self: flex-start;
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--accent-text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.refs-more:hover { background: var(--bg-hover); }
+
+.answer-actions { display: flex; align-items: center; gap: 10px; min-height: 32px; }
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+.action-btn:hover { background: var(--bg-hover); color: var(--text); }
+.action-feedback { min-height: 18px; color: var(--text-muted); font-size: var(--fs-sm); }
 
 /* ===== P0 提问 / 授权 选项框 ===== */
 .ask-box {

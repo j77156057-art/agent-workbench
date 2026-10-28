@@ -203,14 +203,14 @@ button:disabled:hover { transform: none; }
      实测（禁动画探针，把 dock 顶成满高逼上方收缩）：宽屏 118px / 960–860px 126px / 760px 143px，
      数值随顶栏与编辑器内容换行而变。这里一律取实测值之上一点，
      dock 展开后上方恰好压到底、dock 底边贴视口底，输入栏不会被顶出视口。 */
-  --wb-main-min: 124px;
+  --wb-main-min: 146px;
 }
-@media (max-width: 1000px) { .wb-shell { --wb-main-min: 132px; } }
-@media (max-width: 820px)  { .wb-shell { --wb-main-min: 150px; } }
+@media (max-width: 1000px) { .wb-shell { --wb-main-min: 154px; } }
+@media (max-width: 820px)  { .wb-shell { --wb-main-min: 172px; } }
 
 .wb-topbar {
-  height: 52px;
-  flex: 0 0 52px;
+  height: 64px;
+  flex: 0 0 64px;
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
@@ -231,7 +231,7 @@ button:disabled:hover { transform: none; }
 .wb-topbar > * { flex: 0 0 auto; }
 
 .wb-brand { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
-.wb-mark { display: inline-flex; color: var(--accent); }
+.wb-mark { display: inline-flex; color: var(--accent-text); }
 /* 品牌即入口（2026-10-19）：点 Agent 工作台 回 AI 问答页，替代原先顶栏右侧的
    「问答页」文字链接 —— 顶栏右侧只留「设置 / 更多」两枚控件。 */
 .wb-brand-home { color: inherit; text-decoration: none; }
@@ -586,7 +586,7 @@ html[data-material='glass'] .wb-proj-notice {
 .ft-chevron.rotated { transform: rotate(90deg); }
 
 .ft-folder { flex: 0 0 auto; }
-.ft-folder:not([style]) { color: #6f84a6; }
+.ft-folder:not([style]) { color: var(--text-faint); }
 
 .ft-name {
   font-family: var(--font-sans, var(--font-ui));
@@ -603,38 +603,36 @@ html[data-material='glass'] .wb-proj-notice {
   padding-left: 8px;
 }
 
+/* 文件类型只保留文字标签：一排彩色胶囊把资源管理器变成配置清单，
+   真正的状态信号（git 点、选中、定位）反而被淹没。 */
 .ft-chip {
   flex: 0 0 auto;
-  min-width: 30px;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: var(--r-sm);
+  min-width: 26px;
+  padding: 0;
+  border: 0;
+  background: none;
   font-family: var(--font-mono);
-  font-size: var(--fs-cap);
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--ink);
-  background: var(--bg);
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  color: var(--text-faint);
 }
-.ft-chip-code  { color: var(--accent-text); border-color: var(--chip-edge, var(--accent)); background: color-mix(in srgb, var(--accent) 13%, transparent); }
-.ft-chip-data  { color: var(--amber-deep); border-color: var(--chip-edge, var(--amber)); background: rgba(200,129,28,.10); }
-.ft-chip-web   { color: var(--accent-2-deep); border-color: var(--chip-edge, var(--accent-2)); background: color-mix(in srgb, var(--accent-2) 8%, transparent); }
-.ft-chip-doc   { color: var(--text-muted); }
-.ft-chip-media { color: var(--green-deep); border-color: var(--chip-edge, var(--green)); background: rgba(28,158,102,.10); }
-.ft-chip-lib   { color: var(--muted); }
-.ft-chip-plain { color: var(--text-faint); background: transparent; border-color: transparent; }
+.ft-chip-code { color: var(--accent-text); }
+.ft-chip-data, .ft-chip-web, .ft-chip-doc, .ft-chip-media, .ft-chip-lib,
+.ft-chip-plain { color: var(--text-faint); background: none; border: 0; }
 
 .ft-gitdot {
   margin-left: auto;
-  width: 7px; height: 7px;
+  width: 6px; height: 6px;
   border-radius: 50%;
   flex: 0 0 auto;
 }
-.ft-git-untracked { background: var(--green); box-shadow: none; }
+/* 未跟踪文件通常成片出现：实心绿点会把整列染绿。改成空心弱标记，
+   只有真正有未提交改动的文件才用实心琥珀点。 */
+.ft-git-untracked { background: transparent; box-shadow: inset 0 0 0 1px var(--text-faint); }
 .ft-git-dirty { background: var(--amber); box-shadow: none; }
 
 /* 阶段 1：业务标签徽章（顶到行尾，git 点贴在徽章右边） */
@@ -742,10 +740,12 @@ html[data-material='glass'] .wb-proj-notice {
 .cv-readonly { color: var(--amber); border-color: var(--amber); background: rgba(200,129,28,.10); }
 .cv-faint { font-size: var(--fs-cap); color: var(--text-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
-.cv-host { flex: 1; min-height: 0; overflow: auto; background: var(--accent-soft); }
-.cv-previewbar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 9px 16px; color: var(--text-muted); background: var(--accent-soft); border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+/* 大块阅读/编辑面必须是中性白：强调色只做选中、定位等小面积信号，
+   否则换一次 accent 就把整块编辑器染色（代码区曾被 --accent-soft 染成淡绿）。 */
+.cv-host { flex: 1; min-height: 0; overflow: auto; background: var(--bg-raised); }
+.cv-previewbar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 9px 16px; color: var(--text-muted); background: var(--bg); border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
 .cv-previewbar strong { color: var(--text); }
-.cv-host .cm-editor { height: 100%; background: var(--accent-soft); }
+.cv-host .cm-editor { height: 100%; background: var(--bg-raised); }
 .cv-host .cm-editor.cm-focused { outline: none; }
 
 /* 图片预览：居中、可滚动，原图不超过视口 */
@@ -769,7 +769,7 @@ html[data-material='glass'] .wb-proj-notice {
   margin: 0; padding: 12px 16px; max-width: 560px; width: 100%;
   font-family: var(--font-mono); font-size: var(--fs-sm); line-height: 1.7;
   white-space: pre-wrap; overflow-wrap: anywhere; text-align: left;
-  color: var(--text); background: var(--accent-soft);
+  color: var(--text); background: var(--bg);
   border: 1px solid var(--border); border-radius: 8px;
 }
 
@@ -1691,19 +1691,19 @@ a:focus-visible,
   border-radius: var(--r-sm) !important;
   background: var(--bg-raised) !important;
   color: var(--ink) !important;
-  font-family: var(--font-mono) !important;
-  font-size: var(--fs-sm) !important;
-  font-weight: 700;
-  box-shadow: var(--sh-hard-sm);
-  transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms, color 130ms !important;
+  font-family: var(--font-ui) !important;
+  font-size: var(--fs-md) !important;
+  font-weight: 500;
+  box-shadow: none;
+  transition: background 150ms, color 150ms !important;
 }
 .wb-topbar-right > a:hover,
 .wb-topbar-right > span > button:hover,
 .wb-topbar-right > button:hover {
-  transform: translate(-2px,-2px) !important;
-  box-shadow: var(--sh-hard) !important;
-  background: var(--ink) !important;
-  color: var(--bg) !important;
+  transform: none !important;
+  box-shadow: none !important;
+  background: var(--bg-hover) !important;
+  color: var(--ink) !important;
 }
 
 /* —— 几何统一：内层控件统一圆角（状态点本就方形/刻意圆形，不受影响） —— */
@@ -1721,13 +1721,6 @@ a:focus-visible,
      冷蓝描边→墨、浏览器默认链接蓝→墨）
    ============================================================= */
 #app .lb-box,
-#app .ws-tab,
-#app .ov-group,
-#app .ov-strip,
-#app .ov-chip,
-#app .ov-step,
-#app .ov-step-num,
-#app .ov-folder,
 #app .rh-card,
 #app .rh-refresh,
 #app .rh-missing,
@@ -1737,17 +1730,7 @@ a:focus-visible,
 #app .cd-head-toggle,
 #app .cd-input { border-radius: var(--r-sm) !important; }
 
-#app .ov-group,
-#app .ov-strip,
-#app .ws-tab.ws-active,
 #app .cd-dock { box-shadow: none !important; }
-#app .ov-folder {
-  background: var(--bg-raised) !important;
-  border: 1px solid var(--edge-ink-soft, var(--border)) !important;
-}
-
-#app .ov-group { border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink)) !important; }
-#app .ov-strip { border-color: var(--border) !important; }
 #app .cd-send {
   border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border)) !important;
   border-radius: var(--r-sm) !important;
@@ -1835,7 +1818,6 @@ a:focus-visible,
   color: var(--text) !important;
   line-height: 1.3;
 }
-#app .ov-group-head + * { margin-top: var(--style-space-l, 16px); }
 
 /* ② 卡片标题：居中于 11/12/14 三档之间
    ⚠️ .ft-head-title 是 flex 容器，文字在 .ft-head-root（自带 12px）里 ——
@@ -1863,7 +1845,6 @@ a:focus-visible,
 
 /* ④ 次要容器的描边 → 极淡底色差 + 留白（减边框噪音）
    ⚠️ 必须覆盖 border 简写而不是 border-color：简写里每一项都会重置。 */
-#app .ov-group,
 #app .rh-card,
 #app .cd-body,
 #app .acp-stage-content {
@@ -1873,7 +1854,6 @@ a:focus-visible,
 /* 主分区（对话坞）保留描边 —— 结构骨架，去掉会失去方位感 */
 #app .cd-dock { border-color: var(--border-strong) !important; }
 /* 相邻块用留白分开 */
-#app .ov-columns { gap: calc(var(--style-space-l, 16px) * 1.5) !important; }
 #app .rh-grid { gap: calc(var(--style-space-l, 16px) * 1.25) !important; }
 
 /* ⑤ 标题换行更匀（中文标题排版） */

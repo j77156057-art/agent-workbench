@@ -102,12 +102,12 @@ body::after {
 }
 .md-pre code { color: var(--ink); }
 
-/* ---------- 几何统一：问答页控件零圆角（对齐开发台粗野风） ---------- */
-.md-pre { border-radius: 0; }
-.md-ic { border-radius: 0; }
+/* ---------- 几何统一：跟随皮肤圆角；paper 的 --r-* 本就是 0 ---------- */
+.md-pre { border-radius: var(--r-md); }
+.md-ic { border-radius: var(--r-xs); }
 .ask-modal {
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: 0;
-  box-shadow: var(--sh-hard);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--modal-shadow);
 }
-.ask-overlay { background: color-mix(in srgb, var(--ink) 42%, transparent); }
+.ask-overlay { background: var(--scrim); }

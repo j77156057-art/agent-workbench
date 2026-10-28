@@ -1372,7 +1372,10 @@ async function powerAction(action: 'on' | 'off') {
   <div v-if="visible" class="sv-mask wb-modal-backdrop" @mousedown.self="close">
     <div class="sv-box wb-modal-shell" role="dialog" aria-modal="true">
       <div class="sv-head wb-modal-head">
-        <h3 class="sv-title">设置</h3>
+        <div class="sv-title-wrap">
+          <h3 class="sv-title">设置</h3>
+          <p class="sv-sub">工作区、模型与连接</p>
+        </div>
         <button class="sv-x" @click="close" title="关闭">×</button>
       </div>
       <div class="sv-body">
@@ -2429,8 +2432,8 @@ async function powerAction(action: 'on' | 'off') {
 .sv-provider-row .sv-kind { text-align: left; font-size: var(--fs-cap); }
 /* 缓存命中：有命中才上色——满屏灰色「—」没有信息量，命中那行才该被看见。
    数字用等宽，避免长数字在 grid 里抖动。 */
-.sv-provider-row .sv-cache { font-size: var(--fs-cap); font-variant-numeric: tabular-nums; opacity: 0.55; }
-.sv-provider-row .sv-cache.on { opacity: 1; color: var(--accent-text); }
+.sv-provider-row .sv-cache { font-size: var(--fs-cap); font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.sv-provider-row .sv-cache.on { color: var(--accent-text); }
 .sv-meter-sub { display: block; margin-top: 4px; font-size: var(--fs-cap); line-height: 1.45; color: var(--text-faint); }
 .sv-provider-row.simulated { background: color-mix(in srgb, var(--bg-selected) 55%, transparent); }
 .sv-note { margin: 8px 0 0; padding-left: 9px; border-left: 2px solid var(--accent); color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.55; }
@@ -2582,6 +2585,59 @@ async function powerAction(action: 'on' | 'off') {
 @media (prefers-reduced-motion: reduce) {
   .dm-spin, .sv-progress span { animation: none; }
 }
+
+/* 产品化设置面板：暖灰导航 + 白色工作面 + 卡片化指标，减少后台表格感。 */
+.sv-box { width: min(1040px, calc(100vw - 32px)); height: min(820px, calc(100vh - 48px)); }
+.sv-head { padding: 18px 24px 14px; align-items: center; }
+.sv-title-wrap { display: flex; flex-direction: column; gap: 3px; }
+.sv-title { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.sv-sub { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); }
+.sv-x {
+  width: 32px; height: 32px; display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: var(--r-sm); font-size: 20px;
+}
+.sv-x:hover { background: var(--bg-hover); border-color: var(--border); }
+.sv-nav { width: 200px; padding: 16px 12px; gap: 2px; background: var(--bg-hover); }
+.sv-nav-item {
+  padding: 10px 12px; border-radius: var(--r-sm); font-size: var(--fs-body);
+  color: var(--text-muted);
+}
+.sv-nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.sv-nav-item.on {
+  background: var(--surface); color: var(--accent-text); border-color: var(--border);
+  box-shadow: 0 1px 2px rgba(17, 17, 22, .06);
+}
+.sv-content { padding: 24px 28px 28px; background: var(--surface); }
+.sv-panel { gap: 8px; }
+.sv-h4 { margin-bottom: 8px; font-size: 18px; }
+.sv-hint { color: var(--text-muted); font-size: var(--fs-md); line-height: 1.7; }
+.sv-meter-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px; margin: 16px 0 12px; border: 0;
+}
+.sv-meter,
+.sv-meter:nth-child(n) {
+  padding: 16px; border: 1px solid var(--border);
+  border-radius: var(--r-md); background: var(--bg);
+}
+.sv-meter span { color: var(--text-muted); }
+.sv-meter b { margin-top: 6px; font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
+.sv-provider-list {
+  margin-top: 16px; border: 1px solid var(--border); border-radius: var(--r-md);
+  overflow: hidden; background: var(--surface); overflow-x: auto;
+}
+.sv-provider-head { padding: 10px 14px; background: var(--bg); color: var(--text-muted); }
+.sv-provider-row { padding: 11px 14px; border-bottom: 1px solid var(--border); }
+.sv-provider-row:last-child { border-bottom: 0; }
+.sv-provider-row:hover { background: var(--bg); }
+.sv-label { margin-top: 16px; font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.sv-input { min-height: 38px; border-radius: var(--r-sm); background: var(--surface); }
+.sv-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.sv-input::placeholder { color: var(--text-muted); opacity: 1; }
+.sv-btn { min-height: 36px; padding: 7px 16px; border-radius: var(--r-sm); }
+.sv-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.sv-mini { min-height: 30px; padding: 4px 10px; border-radius: var(--r-sm); }
+.sv-form-grid { gap: 14px 16px; }
 
 @media (max-width: 680px) {
   .sv-box { height: calc(100vh - 20px); max-width: calc(100vw - 20px); }

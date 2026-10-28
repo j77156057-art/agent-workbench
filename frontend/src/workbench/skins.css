@@ -304,7 +304,7 @@ html[data-style] :is(h1, h2, h3, h4, h5) {
   --accent-ink: #ffffff;
   --accent-2: var(--accent);
   --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
-  --accent-text: #185854;   /* color-mix(accent 62%, ink) 解算值 */
+  --accent-text: #185854;
   /* 状态色（沿用 paper 的解算值——它们本就是按浅底 4.5:1 定的） */
   --danger: #c23127;
   --amber: #8d5f14;

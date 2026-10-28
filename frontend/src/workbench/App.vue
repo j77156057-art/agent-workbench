@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Agent Workbench 开发工作台 · P0 任务 4：多标签编辑 + 保存 + 新建/改名/删除。
-import { onMounted, onBeforeUnmount, computed, defineAsyncComponent, nextTick, reactive, ref, watch, Teleport } from 'vue'
+import { onMounted, onBeforeUnmount, computed, defineAsyncComponent, nextTick, reactive, ref, watch } from 'vue'
 import FileTree from './components/FileTree.vue'
 import CodeView from './components/CodeView.vue'
 import EditorTabs from './components/EditorTabs.vue'
@@ -102,12 +102,20 @@ try {
   railCollapsed.value = window.localStorage.getItem(RAIL_COLLAPSED_KEY) === '1'
 } catch { /* 存储不可用时默认展开 */ }
 
-/** 只在固定布局生效：其他布局的侧栏形态由那套空间语义决定。 */
+const mobileViewport = window.matchMedia('(max-width: 640px)')
+const mobileWorkbench = ref(mobileViewport.matches)
+const mobileRailOpen = ref(false)
+function syncMobileWorkbench() {
+  mobileWorkbench.value = mobileViewport.matches
+  mobileRailOpen.value = false
+}
+onMounted(() => mobileViewport.addEventListener('change', syncMobileWorkbench))
+onBeforeUnmount(() => mobileViewport.removeEventListener('change', syncMobileWorkbench))
 const railCollapsedActive = computed(
-  () => layoutKey.value === 'fixed' && railCollapsed.value && !runtimeResident.value,
+  () => !runtimeResident.value && (mobileWorkbench.value ? !mobileRailOpen.value : layoutKey.value === 'fixed' && railCollapsed.value),
 )
 const railResizable = computed(
-  () => layoutKey.value === 'fixed' && !runtimeResident.value && !railCollapsedActive.value,
+  () => !mobileWorkbench.value && layoutKey.value === 'fixed' && !runtimeResident.value && !railCollapsedActive.value,
 )
 const railStyle = computed<Record<string, string> | undefined>(() =>
   railResizable.value ? { '--lay-rail': `${railWidth.value}px` } : undefined,
@@ -164,6 +172,14 @@ function nudgeRail(dx: number) {
 // 收起后焦点会随按钮一起消失，转到窄条上，键盘用户不会「丢焦点」。
 const railRestoreBtn = ref<HTMLButtonElement | null>(null)
 function toggleRailCollapsed() {
+  if (mobileWorkbench.value) {
+    mobileRailOpen.value = !mobileRailOpen.value
+    void nextTick(() => {
+      if (mobileRailOpen.value) document.querySelector<HTMLElement>('.ft-panel button')?.focus()
+      else railRestoreBtn.value?.focus()
+    })
+    return
+  }
   railCollapsed.value = !railCollapsed.value
   try {
     window.localStorage.setItem(RAIL_COLLAPSED_KEY, railCollapsed.value ? '1' : '0')
@@ -514,20 +530,19 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="wb-shell">
+  <div class="wb-shell" @keydown.esc="mobileRailOpen && toggleRailCollapsed()">
     <header class="wb-topbar">
       <div class="wb-brand">
         <span class="wb-mark" aria-hidden="true">
-          <svg width="15" height="15" viewBox="0 0 15 15">
-            <rect x="1.5" y="2.5" width="9" height="10" rx="1.5" fill="none" stroke="var(--accent)" stroke-width="1.3" />
-            <path d="M11 5.5 H12.5 L14 7 V12.5 H11 Z" fill="color-mix(in srgb, var(--accent) 13%, transparent)" stroke="var(--accent)" stroke-width="1.3" stroke-linejoin="round" />
+          <svg width="28" height="28" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M16 9.5 21 6h6v17h-6l-5 3.5L11 23H5V6h6l5 3.5ZM16 9.5v17M9 11h2l2 1.5M9 15h2l2 1.5M20 12.5l2-1.5h2M20 16.5l2-1.5h2" />
           </svg>
         </span>
         <!-- 2026-10-19：顶栏右侧原本有一个「问答页」文字链接，现并入品牌 ——
              品牌即产品入口（点 Agent 工作台 回问答页），顶栏右侧只留「设置 / 更多」。
              问答页那边也有一个对称的「代码工作台」入口，双向可达。 -->
         <span class="wb-brand-name">
-          <a class="wb-brand-home" href="/" title="回到 AI 问答页">Agent 工作台</a>
+          <a class="wb-brand-home" href="/" title="回到 AI 问答页">DocMind</a>
           <em>代码工作台</em>
         </span>
       </div>
@@ -796,10 +811,12 @@ onBeforeUnmount(() => {
         :tree="tree"
         :selected-path="selectedPath"
         :loading="treeLoading"
-        :collapsible="layoutKey === 'fixed'"
-        @select="openNode"
+        :collapsible="mobileWorkbench || layoutKey === 'fixed'"
+        @select="openNode($event); mobileRailOpen && toggleRailCollapsed()"
         @collapse="toggleRailCollapsed"
       />
+
+      <button v-if="mobileRailOpen" class="wb-mobile-scrim" aria-label="关闭资源管理器" tabindex="-1" @click="toggleRailCollapsed" />
 
       <!-- 收起态窄条（仅固定布局）：整条都是按钮，点一下展开。
            FileTree 用 v-show 保持挂载，目录展开状态不会因收起而丢。 -->
@@ -874,7 +891,7 @@ onBeforeUnmount(() => {
 
       <!-- 主区用 v-show 常驻（而非 v-if）：保证 #wb-playpane-slot 在组件挂载期就已存在于文档中。
            否则树/演示分支异步渲染，Teleport 目标在挂载时解析为 null → dock 迁移抛错、常驻面板落空。 -->
-      <main class="wb-main" v-show="tree || demoMode">
+      <main class="wb-main" v-show="tree || demoMode" :inert="mobileRailOpen">
         <WorkspaceTabs v-show="!wsBarCollapsed" @collapse="setWsBarCollapsed(true)" />
         <!-- 阶段 4：运行面板常驻（docked）承载槽（主区，左侧文件树/示例保留，便于边玩边改） -->
         <div id="wb-playpane-slot" class="wb-playpane-slot" v-show="runtimeResident" />

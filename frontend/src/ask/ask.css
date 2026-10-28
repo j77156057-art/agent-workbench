@@ -97,22 +97,3 @@ small { font-size: var(--fs-sm); }
   flex-direction: column;
   overflow: hidden;
 }
-
-@media (max-width: 920px) {
-  .ask-side { display: none; }
-}
-
-/* ---------- 视觉层级重建：问答页减边框（原 hierarchy-fix.css ④' 段，2026-10-07 并层） ----------
-   问答页层级本就正常（有 26px 主标题 / 20px / 17px / 16px×6），
-   只做「减边框」这一件 —— 卡片描边密度 35/127 = 27.6%，比工作台更高。
-   ⚠️ 只动边框，不动字号：硬套工作台的数字反而会破坏它。
-   必须覆盖 border 简写而非 border-color（简写里每一项都会重置）。 */
-#app .sess-list > *,
-#app .sess-item {
-  border: 1px solid transparent !important;
-  background-color: color-mix(in srgb, var(--bg-raised) 62%, transparent) !important;
-}
-#app .ask-side,
-#app .ask-topbar { border-color: var(--border-strong) !important; }
-#app .ask-side { border-right: var(--edge-w, 1px) solid var(--edge-ink, var(--ink)) !important; }
-#app .ask-topbar { border-bottom: var(--edge-w, 1px) solid var(--edge-ink, var(--ink)) !important; }

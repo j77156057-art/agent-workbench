@@ -627,6 +627,7 @@ async function save() {
         <span class="ms-title-txt">模型设置</span>
         <button type="button" class="ms-x" title="关闭（Esc）" aria-label="关闭模型设置" @click="emit('close')">✕</button>
       </h3>
+      <p class="ms-sub">调整对话模型、检索与语音服务</p>
 
       <label class="ms-label">模型选择方式</label>
       <div class="ms-seg" role="radiogroup" aria-label="模型选择方式">
@@ -1278,6 +1279,47 @@ async function save() {
 .ms-primary:disabled { opacity: .5; cursor: default; }
 @keyframes ms-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ms-rise { from { opacity: 0; transform: translateY(7px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+/* 产品化设置弹窗：更宽的阅读面、白色工作面、卡片化预设；提示语不再一律告警色。 */
+.ms-box {
+  width: min(720px, calc(100vw - 24px));
+  max-width: min(720px, calc(100vw - 24px));
+  padding: 24px 28px 20px; gap: 8px;
+  background: var(--surface); border-radius: var(--modal-radius);
+  box-shadow: var(--modal-shadow);
+}
+.ms-title { margin: 0; font-size: 20px; font-weight: 600; }
+.ms-sub { margin: 2px 0 10px; color: var(--text-muted); font-size: var(--fs-sm); }
+.ms-x {
+  width: 32px; height: 32px; border-radius: var(--r-sm);
+  border-color: var(--border); background: var(--surface);
+}
+.ms-label { margin-top: 18px; font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.ms-hint { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.6; }
+.ms-hint.ms-hint-err { color: var(--danger); }
+.ms-input { min-height: 38px; border-radius: var(--r-sm); background: var(--surface); }
+.ms-input:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+.ms-input::placeholder { color: var(--text-muted); opacity: 1; }
+.ms-sep { margin: 22px 0 4px; background: color-mix(in srgb, var(--border) 70%, transparent); }
+.ms-seg-opt { border-radius: var(--r-md); background: var(--bg); }
+.ms-seg-opt.ms-seg-on { background: var(--surface); box-shadow: var(--shadow-panel, none); }
+.ms-preset-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ms-preset-item {
+  padding: 10px 12px; border-radius: var(--r-md); background: var(--bg);
+  box-shadow: var(--shadow-panel, none);
+}
+.ms-preset-item:hover { background: var(--bg-hover); transform: none; }
+.ms-preset-actions { flex-direction: row; }
+.ms-mini { min-height: 28px; }
+.ms-actions {
+  margin-top: 20px; padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.ms-btn { min-height: 38px; }
+@media (max-width: 560px) {
+  .ms-preset-list { grid-template-columns: 1fr; }
+  .ms-preset-actions { flex-direction: row; }
+}
+
 @media (max-width: 560px) { .ms-mask { align-items: flex-end; }.ms-box { width: 100%; max-width: none; max-height: calc(100vh - 12px); border-radius: 12px 12px 0 0; padding: 15px 14px 13px; }.ms-seg { flex-direction: column; }.ms-cap-edit label { align-items: stretch; flex-direction: column; gap: 4px; }.ms-select { min-width: 0; width: 100%; }.ms-voice-grid { grid-template-columns: 1fr; }.ms-actions { position: sticky; bottom: -13px; padding-top: 10px; padding-bottom: 2px; background: linear-gradient(180deg, transparent, var(--bg) 26%); } }
 @media (prefers-reduced-motion: reduce) { .ms-mask, .ms-box, .ms-mini, .ms-cap-tag, .ms-seg-opt, .ms-preset-item, .ms-btn { animation: none; transition: none; } }
 </style>
