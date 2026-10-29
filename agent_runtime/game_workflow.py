@@ -1709,9 +1709,17 @@ class GameWorkflowManager:
                 state = self._load(workflow_id, register=False)
             except WorkflowError:
                 continue
+            if workflow_id in self._states:
+                continue  # 本进程已有活状态，别当孤儿降级/重跑
             policy = state.policy or {}
-            if state.status not in {"planned", "executing"} or not state.execution_session_id \
-                    or policy.get("approval_mode") != "high" or not state.tasks:
+            eligible = (state.status in {"planned", "executing"}
+                        and state.execution_session_id
+                        and policy.get("approval_mode") == "high"
+                        and state.tasks)
+            if not eligible:
+                downgraded = self._downgrade_orphaned_progress(workflow_id, state)
+                if downgraded:
+                    recovered.append(downgraded)
                 continue
             try:
                 with self._workflow_lease(workflow_id):
@@ -1745,6 +1753,45 @@ class GameWorkflowManager:
                     recovered.append({"workflow_id": workflow_id, "status": "lease_busy",
                                       "error": error_name})
         return recovered
+
+    def _downgrade_orphaned_progress(self, workflow_id: str,
+                                     state: WorkflowState) -> dict[str, Any] | None:
+        """启动恢复：把没有活 worker 的中间态降级成可操作状态。
+
+        进程在方案生成/规划/联网调研/汇总复核中途退出时，内存线程消失但磁盘
+        状态仍是进行中；`recover_pending` 原本只认 planned/executing，这些状态
+        会永远停在「正在…」，卡片也没有中断/重试出口。这里降到可操作的门
+        （awaiting_choice）或可恢复的 interrupted。
+        """
+        status = state.status
+        policy = state.policy or {}
+        if status == "executing":
+            if (state.execution_session_id and policy.get("approval_mode") == "high"
+                    and state.tasks):
+                return None  # 正常恢复路径处理
+            state.status, state.phase = "interrupted", "execute"
+            state.interrupt_reason = (
+                "进程重启时执行会话不完整，无法自动恢复；可恢复执行后重跑"
+                "（已完成的副作用按幂等台账处理）")
+        elif status in {"generating_options", "planning", "researching"}:
+            if not state.options:
+                try:
+                    state.options = [asdict(item) for item in self._profile_options(
+                        state.kind, state.request, tuple(state.sources or ("direct",)))]
+                except Exception:
+                    state.options = []
+            state.status, state.phase = "awaiting_choice", "clarify"
+            state.interrupt_reason = "进程重启，后台步骤已中断；请重新选择方案或重新规划"
+        elif status == "reviewing":
+            state.status, state.phase = "interrupted", "execute"
+            state.interrupt_reason = "进程重启时汇总/复核中断；可恢复执行后重新复核"
+        else:
+            return None
+        self._event(state, "recovery_downgraded", from_status=status,
+                    to_status=state.status, reason=state.interrupt_reason)
+        self._save(state, register=False)
+        return {"workflow_id": workflow_id, "status": state.status,
+                "recovered": False, "from_status": status}
 
     def __del__(self):  # pragma: no cover - interpreter shutdown ordering
         # Avoid touching optional/native resources while CPython is tearing
@@ -2961,6 +3008,10 @@ class GameWorkflowManager:
             return state.public()
         graph = self.build_langgraph(workflow_id=workflow_id)
         if graph is None:
+            current = self._load(workflow_id)
+            if current.status != "generating_options":
+                return current.public()  # 已被用户选择/中断，不能覆盖
+            state = current
             state.status, state.phase = "awaiting_choice", "clarify"
             state.interrupt_reason = ""
             self._event(state, "options_generated", option_source="deterministic")
@@ -2971,6 +3022,12 @@ class GameWorkflowManager:
                 self._graph_payload(state, option_generation_pending=True),
                 graph=graph,
             )
+            # 生成期间用户可能已经选择方案或中断：线程晚到的结果绝不能
+            # 把 planning/interrupted 覆盖回 awaiting_choice。
+            current = self._load(workflow_id)
+            if current.status != "generating_options":
+                return current.public()
+            state = current
             generated_options = graph_view.get("options") or state.options
             state.options = [dict(item) for item in generated_options]
             state.status, state.phase = "awaiting_choice", "clarify"
@@ -2982,6 +3039,10 @@ class GameWorkflowManager:
                 option_count=len(state.options),
             )
         except Exception as exc:  # noqa: BLE001 - deterministic options remain usable
+            current = self._load(workflow_id)
+            if current.status != "generating_options":
+                return current.public()
+            state = current
             state.status, state.phase = "awaiting_choice", "clarify"
             state.interrupt_reason = ""
             state.error = "方案生成失败，已保留本地方案：" + type(exc).__name__

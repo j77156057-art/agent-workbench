@@ -226,7 +226,7 @@ async function discardStage() {
         <span v-if="state?.replans">· 重规划 {{ state.replans }} 次</span>
         <span v-if="state?.observability?.duration_ms">· 耗时 {{ fmtMs(state.observability.duration_ms) }}</span>
         <span class="wf-spacer" />
-        <button v-if="status === 'executing'" class="wf-mini-btn wf-mini-danger" :disabled="busy" @click="interrupt">中断</button>
+        <button v-if="['executing','generating_options','planning','researching','reviewing'].includes(status)" class="wf-mini-btn wf-mini-danger" :disabled="busy" @click="interrupt">中断</button>
         <button v-if="status === 'interrupted'" class="wf-mini-btn wf-mini-primary" :disabled="busy" @click="resume">恢复执行</button>
       </div>
       <div v-if="state?.tasks?.length" class="wf-progress" role="progressbar" :aria-valuenow="completedCount" aria-valuemin="0" :aria-valuemax="state.tasks.length">

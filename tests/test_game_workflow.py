@@ -243,6 +243,34 @@ class GameWorkflowTests(unittest.TestCase):
         self.assertEqual(done["status"], "completed")
         self.assertEqual(manager.get(wid)["execution_session_id"], "workflow")
 
+    def test_option_generation_does_not_overwrite_interrupt(self):
+        """晚到的选项生成结果不能把用户的中断覆盖回 awaiting_choice。"""
+        import threading
+        from agent_runtime import game_workflow as gw
+        if gw.StateGraph is None:
+            self.skipTest("LangGraph not installed")
+        started, release = threading.Event(), threading.Event()
+
+        def slow_options(_prompt, _plan):
+            started.set()
+            release.wait(5)
+            return '{"options":[]}'
+
+        state = self.manager.start("生成中中断", llm_enabled=True,
+                                   option_generator=slow_options,
+                                   defer_option_generation=True)
+        wid = state["workflow_id"]
+        self.assertEqual(state["status"], "generating_options")
+        worker = threading.Thread(target=self.manager.generate_options,
+                                  args=(wid,), daemon=True)
+        worker.start()
+        self.assertTrue(started.wait(5), "option generator 未被调用")
+        self.manager.interrupt(wid, "用户中断")
+        release.set()
+        worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.manager.get(wid)["status"], "interrupted")
+
     def test_choose_auto_execute_returns_planning_and_runs_to_completion(self):
         from agent_runtime import game_workflow as gw
         if gw.StateGraph is None:
@@ -385,6 +413,57 @@ class GameWorkflowTests(unittest.TestCase):
         recovered = restarted.recover_pending()
         self.assertEqual(recovered[0]["workflow_id"], wid)
         self.assertEqual(restarted.get(wid)["status"], "completed")
+
+    def test_recovery_downgrades_orphaned_option_generation(self):
+        """进程死在方案生成线程里：重启后不能永远停在 generating_options。
+
+        真形态：option_generator + defer 启动，状态 generating_options；
+        新进程 recover_pending 原本只认 planned/executing，直接跳过。
+        """
+        state_root = tempfile.mkdtemp()
+        first = GameWorkflowManager(state_root)
+        wid = first.start("生成中崩溃", llm_enabled=True,
+                          option_generator=lambda prompt, plan: '{"options":[]}',
+                          defer_option_generation=True)["workflow_id"]
+        self.assertEqual(first.get(wid)["status"], "generating_options")
+        restarted = GameWorkflowManager(state_root)
+        restarted.set_execution_resolver(lambda _state: {
+            "runner": lambda *_: {"status": "ok", "conclusion": "ok", "steps": 1}})
+        recovered = restarted.recover_pending()
+        state = restarted.get(wid)
+        self.assertEqual(state["status"], "awaiting_choice")
+        self.assertTrue(state["options"], "降级后必须重新给出可选方案")
+        self.assertTrue(any(item["workflow_id"] == wid for item in recovered))
+
+    def test_recovery_downgrades_orphaned_planning(self):
+        state_root = tempfile.mkdtemp()
+        first = GameWorkflowManager(state_root)
+        wid = first.start("规划中崩溃")["workflow_id"]
+        state = first._load(wid)
+        state.status, state.phase = "planning", "plan"
+        first._save(state)
+        restarted = GameWorkflowManager(state_root)
+        restarted.set_execution_resolver(lambda _state: {
+            "runner": lambda *_: {"status": "ok", "conclusion": "ok", "steps": 1}})
+        restarted.recover_pending()
+        self.assertEqual(restarted.get(wid)["status"], "awaiting_choice")
+
+    def test_recovery_downgrades_executing_without_session_id(self):
+        state_root = tempfile.mkdtemp()
+        first = GameWorkflowManager(state_root)
+        wid = first.start("执行态缺 session")["workflow_id"]
+        state = first._load(wid)
+        state.status, state.phase = "executing", "execute"
+        state.tasks = [{"id": "a", "role": "tester", "task": "验证"}]
+        state.execution_session_id = ""
+        first._save(state)
+        restarted = GameWorkflowManager(state_root)
+        restarted.set_execution_resolver(lambda _state: {
+            "runner": lambda *_: {"status": "ok", "conclusion": "ok", "steps": 1}})
+        restarted.recover_pending()
+        state = restarted.get(wid)
+        self.assertEqual(state["status"], "interrupted")
+        self.assertIn("执行会话", state["interrupt_reason"])
 
     def test_concurrent_active_workflow_same_project_is_rejected(self):
         root = tempfile.mkdtemp()
