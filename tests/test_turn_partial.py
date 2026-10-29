@@ -111,6 +111,29 @@ class InFlightTurnRegistryTests(unittest.TestCase):
         resp = self._call_partial("t-missing", "s", None)
         self.assertEqual(resp.status_code, 404)
 
+    def test_stop_endpoint_sets_the_event_and_checks_ownership(self):
+        import threading
+        rec = self._register("t-stop", session_id="s", project_id="p1")
+        rec["stop"] = threading.Event()
+        with patch.object(api, "_http_origin_allowed", return_value=True), \
+                patch.object(api, "_ctx_project_id", return_value="p1"):
+            ok = asyncio.run(api.stop_turn("t-stop", session_id="s"))
+            self.assertTrue(ok["ok"])
+            self.assertTrue(rec["stop"].is_set())
+            bad = asyncio.run(api.stop_turn("t-stop", session_id="other"))
+            self.assertEqual(bad.status_code, 404)
+
+    def test_frontend_stop_calls_the_server_endpoint(self):
+        chat_ts = (ROOT / "frontend/src/workbench/api/chat.ts").read_text(encoding="utf-8")
+        block = chat_ts[chat_ts.index("stopTurn"):chat_ts.index("stopTurn") + 400]
+        self.assertIn("/stop", block)
+        self.assertIn("session_id", block)
+        dock = (ROOT / "frontend/src/workbench/components/ChatDock.vue").read_text(
+            encoding="utf-8")
+        self.assertIn("aiApi.stopTurn", dock)
+        ask = (ROOT / "frontend/src/ask/AskApp.vue").read_text(encoding="utf-8")
+        self.assertIn("aiApi.stopTurn", ask)
+
     def test_frontend_passes_session_id_to_partial(self):
         chat_ts = (ROOT / "frontend/src/workbench/api/chat.ts").read_text(encoding="utf-8")
         block = chat_ts[chat_ts.index("getTurnPartial"):chat_ts.index("getTurnPartial") + 500]

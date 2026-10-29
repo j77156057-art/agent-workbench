@@ -96,6 +96,17 @@ export const aiApi = {
     const body = await res.json()
     return body
   },
+  /** 显式停止一轮生成：不依赖 TCP 断连（浏览器/代理不保证服务端及时看到）。 */
+  async stopTurn(turnId: string, sessionId?: string): Promise<boolean> {
+    const qs = new URLSearchParams({ session_id: sessionId || getSessionId() })
+    try {
+      const res = await fetch(`/api/turn/${encodeURIComponent(turnId)}/stop?${qs.toString()}`,
+        withProject({ method: 'POST', headers: { Accept: 'application/json' } }))
+      return res.ok
+    } catch {
+      return false
+    }
+  },
 }
 
 /** 语音服务（STT / TTS）配置。url/model/voice 是用户保存值；effective_* 是实际生效值。 */

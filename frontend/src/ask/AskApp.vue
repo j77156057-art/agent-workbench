@@ -627,10 +627,12 @@ async function send(preset?: string) {
 }
 
 function stop() {
+  const t = messages.value[messages.value.length - 1]
+  // 显式停服务端这一轮：abort 只关前端连接，服务端不保证及时看到断连。
+  if (t?.role === 'assistant' && t.turnId) void aiApi.stopTurn(t.turnId)
   abortCtl?.abort()
   chatEpoch++
   drain()
-  const t = messages.value[messages.value.length - 1]
   if (t && t.role === 'assistant' && t.status === 'streaming') {
     t.status = 'stopped'
     if (!t.text) t.text = '（已停止）'

@@ -846,6 +846,9 @@ function stop() {
   preserveInterrupted()
   drain()
   const turn = messages.value[messages.value.length - 1]
+  // 显式告诉服务端停这一轮：浏览器 abort 不保证服务端及时看到断连
+  // （实测点停止后 UI 停了、服务端仍在 streaming 继续烧 token）。
+  if (turn?.turnId) void aiApi.stopTurn(turn.turnId, currentSessionId())
   if (turn?.status === 'streaming' && !turn.workflow) turn.recoverable = true
   if (turn) finishLiveMd(turn.id, () => answerHtml(turn))
   if (turn?.status === 'streaming') {

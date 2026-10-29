@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 
 # SSE 心跳仅提示前端连接仍活跃，不改变模型请求超时或单轮截止策略。
-CHAT_STREAM_HEARTBEAT_S = max(0.5, float(os.getenv("DOCMIND_CHAT_HEARTBEAT_S", "15")))
+CHAT_STREAM_HEARTBEAT_S = max(0.5, float(os.getenv("DOCMIND_CHAT_HEARTBEAT_S", "2")))
 SSE_HEADERS = {
     "Cache-Control": "no-cache, no-transform",
     "Connection": "keep-alive",
@@ -545,6 +545,17 @@ def _get_in_flight_turn(turn_id: str) -> Optional[dict]:
         return None
     # 兜底期：即便已被踢出注册表，只要进程未重启、调用方缓存里还有，也仍能取到。
     # 这里靠「终态后 60s 内不踢」来覆盖刷新窗口期，所以只需读注册表即可。
+    return rec
+
+
+def _owned_in_flight_turn(turn_id: str, session_id: str) -> Optional[dict]:
+    """按当前请求的会话/项目取 in-flight turn；归属不匹配一律当作不存在。"""
+    rec = _get_in_flight_turn(turn_id)
+    sid = (session_id or "").strip() or "default"
+    if (rec is None
+            or str(rec.get("session_id") or "") != sid
+            or (rec.get("project_id") or None) != (_ctx_project_id() or None)):
+        return None
     return rec
 
 
@@ -2941,9 +2952,12 @@ async def chat(
     # ContextVar 不会自动传入 Thread，必须在请求仍绑定项目时捕获执行上下文。
     agent_context = contextvars.copy_context()
 
-    def event_stream():
+    async def event_stream():
         # 注意：此处不得再申请 GPU 租约。llm.py 的 _ollama_chat 已以 owner="ollama"
         # 持租约，SSE 层若以别的 owner 再申请，serial 模式不可重入 → 必然自锁报"GPU 正忙"。
+        # 必须是 **async** 生成器：客户端断开时 Starlette 取消响应任务，取消会传进
+        # async 生成器的 finally；同步生成器跑在线程池里，断开后不会被 close ——
+        # worker_stop 永不置位，模型会继续生成（真机验证：UI 已停、后端仍 streaming）。
         gen = None
         worker = None
         worker_stop = threading.Event()
@@ -2955,6 +2969,9 @@ async def chat(
         # 供 GET /api/turn/{turn_id}/partial 拉起。终态由 _mark_in_flight_terminal
         # 在 finally 里设，60s 后才从注册表下线（覆盖刷新兜底期）。
         inflight = _register_in_flight_turn(turn_id, session_id, _ctx_project_id() or None)
+        # 显式停止端点（POST /api/turn/{id}/stop）与断连检测共用同一个事件：
+        # 置位即让 worker 退出，event_stream 的 finally 落 stopped。
+        inflight["stop"] = worker_stop
         # 首条 SSE 事件同步告知前端本轮 turn_id，便于刷新后回查 partial
         _append_in_flight_event(inflight, {"type": "turn", "turn_id": turn_id,
                                             "session_id": session_id})
@@ -3091,17 +3108,45 @@ async def chat(
             worker = threading.Thread(target=lambda: agent_context.run(produce),
                                       name="docmind-chat-agent", daemon=True)
             worker.start()
+            last_keepalive = time.monotonic()
+            # 断连轮询粒度：不超过 0.5s，也不超过心跳间隔（测试会调小心跳）。
+            poll_s = min(0.5, CHAT_STREAM_HEARTBEAT_S)
             while True:
+                if worker_stop.is_set():
+                    # 显式停止端点在另一请求里置位：立即退出，finally 落 stopped。
+                    return
                 try:
-                    kind, payload = events.get(timeout=CHAT_STREAM_HEARTBEAT_S)
+                    # 0.5s 轮询：uvicorn 只在 send 时才会抛 ClientDisconnected，
+                    # 模型长思考期间没有事件可 send；必须自己 poll ASGI 的
+                    # http.disconnect，才能让「用户点停止」真的停掉后端 worker。
+                    kind, payload = await run_in_threadpool(events.get, True, poll_s)
                 except queue.Empty:
+                    # 停止后 worker 正常退出、队列也空：这是预期路径，不是事故。
+                    # 必须先于看门狗判断，否则「点停止」会被记成 worker 异常。
+                    if worker_stop.is_set():
+                        return
                     # worker 静默死亡（异常发生在 produce 的兜底之外）时，不能无限
                     # 发心跳把前端挂死：转成一条明确的错误终态。
                     if worker is not None and not worker.is_alive() and events.empty():
                         raise RuntimeError("SSE 工作线程异常退出，未产生终态事件")
-                    # SSE 心跳保持连接，但不向对话添加重复提示。
-                    yield ": keep-alive\n\n"
+                    if request is not None:
+                        try:
+                            if await request.is_disconnected():
+                                worker_stop.set()
+                                return
+                        except Exception:  # noqa: BLE001 - 探测失败按未断开处理
+                            pass
+                    now = time.monotonic()
+                    if now - last_keepalive >= CHAT_STREAM_HEARTBEAT_S:
+                        last_keepalive = now
+                        # SSE 心跳保持连接，但不向对话添加重复提示。
+                        yield ": keep-alive\n\n"
                     continue
+                last_keepalive = time.monotonic()
+                if worker_stop.is_set():
+                    # 停止期间 agent 可能吐出「被取消」的 error final；用户主动
+                    # 停止不应被记成执行失败 —— 直接退出，finally 落 stopped。
+                    return
                 if kind == "done":
                     break
                 if kind == "error":
@@ -3125,10 +3170,18 @@ async def chat(
                     yield ("data: " + json.dumps(
                         {"type": "workflow", "phase": "started", **pending_wf},
                         ensure_ascii=False) + "\n\n")
-        except (GeneratorExit, KeyboardInterrupt):
+        except (GeneratorExit, KeyboardInterrupt, asyncio.CancelledError):
             # 客户端断开 / 进程关闭：原样上抛，交给 Starlette 正常收尾（不要转成错误 final，否则会向已关闭的连接写数据）。
             raise
         except BaseException as e:
+            # 用户主动停止（/stop 置位 worker_stop）或客户端已断开时，写 SSE 会抛
+            # ClientDisconnected / BrokenPipe 之类异常。那是「停止」的预期副作用，
+            # 不能落成 error 终态 —— 否则用户点了停止，服务端却记成执行失败。
+            # finally 会把仍是 streaming 的 turn 收敛成 stopped。
+            if worker_stop.is_set() or type(e).__name__ == "ClientDisconnected" or isinstance(
+                    e, (BrokenPipeError, ConnectionResetError)):
+                worker_stop.set()
+                return
             # 关键硬化：此处必须接住 BaseException 而非 Exception。
             # 沙箱 safe-delete 钩子会在累计若干次预算锁 unlink 后抛出 SystemExit(1)（属 BaseException），
             # 若只 except Exception，SystemExit 会直接穿透 SSE 生成器 → 连接被 abrupt 切断 →
@@ -3215,14 +3268,10 @@ async def get_turn_partial(turn_id: str, session_id: str = "default",
         return JSONResponse({"ok": False, "error": "turn_id 缺失。"}, status_code=400)
     if not _http_origin_allowed(request):
         return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
-    rec = _get_in_flight_turn(turn_id)
-    sid = (session_id or "").strip() or "default"
-    req_pid = _ctx_project_id() or None
     # 归属校验：会话与项目都必须匹配。不匹配与不存在返回**同一个 404**，
     # 避免把「这条 turn 属于别的会话/项目」当成可探测的信息。
-    if (rec is None
-            or str(rec.get("session_id") or "") != sid
-            or (rec.get("project_id") or None) != req_pid):
+    rec = _owned_in_flight_turn(turn_id, session_id)
+    if rec is None:
         return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
                             status_code=404)
     events_snapshot = list(rec.get("events") or [])
@@ -3237,6 +3286,27 @@ async def get_turn_partial(turn_id: str, session_id: str = "default",
         "events": events_snapshot,
         "final": final_ev,
     }
+
+
+@app.post("/api/turn/{turn_id}/stop")
+async def stop_turn(turn_id: str, session_id: str = "default", request: Request = None):
+    """显式停止一轮生成。
+
+    TCP 断连在浏览器/代理链路里不总被服务端及时看到（实测：点停止后 UI 停了，
+    /api/turn/active 仍 streaming，worker 继续生成）。前端点停止时直接 POST 这里，
+    不依赖连接断开语义。
+    """
+    turn_id = (turn_id or "").strip()
+    if not turn_id:
+        return JSONResponse({"ok": False, "error": "turn_id 缺失。"}, status_code=400)
+    if not _http_origin_allowed(request):
+        return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
+    rec = _owned_in_flight_turn(turn_id, session_id)
+    if rec is None:
+        return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
+                            status_code=404)
+    rec["stop"].set()
+    return {"ok": True, "turn_id": turn_id, "status": rec.get("status", "streaming")}
 
 
 # P2：会话进入页面时调用，按 session_id 列当前所有 in-flight turn，便于前端

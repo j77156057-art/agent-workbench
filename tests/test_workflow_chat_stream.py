@@ -397,6 +397,28 @@ class ChatSseWorkflowEventTests(unittest.TestCase):
             api.CHAT_STREAM_HEARTBEAT_S = old_heartbeat
             config.set_runtime("llm_provider", old_provider or "")
 
+    def test_chat_event_stream_is_async_and_polls_disconnect(self):
+        """真机踩过：同步 event_stream 断开后 finally 不跑，后端继续生成。
+
+        这里钉住两个承重条件：生成器必须是 async，且必须主动 poll
+        request.is_disconnected() —— 缺一个，「停止」就只停了前端 UI。
+        """
+        import inspect
+        import api
+        src = inspect.getsource(api.chat)
+        self.assertIn("async def event_stream", src)
+        self.assertIn("is_disconnected", src)
+        self.assertIn("worker_stop.set()", src)
+        # 真机回归：点停止后 worker 立刻退出、队列也空，看门狗抢在 stop 判断前
+        # 抛「工作线程异常退出」，于是用户停止被记成 error。停止判断必须先于看门狗。
+        empty_branch = src[src.index("except queue.Empty:"):src.index("SSE 工作线程异常退出")]
+        self.assertIn("worker_stop.is_set()", empty_branch,
+                      "停止后 worker 正常退出不能被看门狗当成事故")
+        # 停止/断连时写 SSE 会抛 ClientDisconnected，不能落 error 终态。
+        err_branch = src[src.index("except BaseException as e:"):]
+        self.assertIn("worker_stop.is_set()", err_branch[:400])
+        self.assertIn("ClientDisconnected", err_branch[:400])
+
     def test_chat_stream_passes_cancellation_event_to_agent(self):
         import config
         from starlette.testclient import TestClient
