@@ -298,6 +298,17 @@ interface InterruptedRecovery {
 let msgSeq = 1
 const messages = ref<ChatMsg[]>([])
 let chatProject = getProjectId(), chatSession = currentSessionId(), chatEpoch = 0
+/** 每个项目各自的会话 id：会话在服务端终身归属首次使用的项目，
+ *  切项目继续用旧 id 会把 B 的对话写进 A（A 能看到），B 自己刷新后又看不到。 */
+const projectSessionKey = (pid: string) => 'docmind.workbenchSession:' + pid
+function rememberProjectSession(pid: string, sid: string) {
+  if (props.scope !== 'default' || !pid || !sid) return
+  try { sessionStorage.setItem(projectSessionKey(pid), sid) } catch { /* memory only */ }
+}
+function recalledProjectSession(pid: string): string {
+  try { return sessionStorage.getItem(projectSessionKey(pid)) || '' } catch { return '' }
+}
+rememberProjectSession(chatProject, chatSession)
 const draftKey = () => 'docmind.workbenchChatDraft:' + chatProject + ':' + chatSession
 const recoveryKey = () => 'docmind.interrupted:' + chatProject + ':' + chatSession
 const historyError = ref('')
@@ -1020,10 +1031,48 @@ function resetChatContext() {
   preserveInterrupted()
   stop()
   chatProject = getProjectId(); chatSession = currentSessionId()
+  rememberProjectSession(chatProject, chatSession)
   messages.value = []; usage.value = null; historyError.value = ''
   orphanWf.value = null
   input.value = readDraft()
   void restoreHistory(true).then(() => { if (props.scope === 'default') void detectOrphanWorkflow() })
+}
+let projectSwitchSeq = 0
+/** 项目切换：会话在服务端终身归属首次使用的项目（owner + code_root）。
+ *  继续复用旧 session id 会把新项目的对话写进旧项目，新项目自己刷新后反而看不到。
+ *  因此按项目切换/恢复各自会话；没有记录的才新建。 */
+async function onProjectChanged() {
+  if (props.scope !== 'default') { resetChatContext(); return }
+  const seq = ++projectSwitchSeq
+  const project = getProjectId()
+  rememberProjectSession(chatProject, chatSession)
+  if (!project) { resetChatContext(); return }
+  if (project === chatProject) {
+    // 切换失败回滚/重复事件：把标签的会话指针拨回该项目记住的那条
+    const mapped = recalledProjectSession(project)
+    if (mapped && mapped !== currentSessionId()) {
+      const ok = await selectSession(mapped)
+      if (seq === projectSwitchSeq && ok) chatSession = currentSessionId()
+    }
+    return
+  }
+  preserveInterrupted()
+  stop()
+  let sid = recalledProjectSession(project)
+  let selected = sid ? await selectSession(sid) : false
+  if (seq !== projectSwitchSeq || project !== getProjectId()) return
+  if (!selected) {
+    sid = await createSession()
+    if (seq !== projectSwitchSeq || project !== getProjectId()) return
+  }
+  chatProject = project
+  chatSession = currentSessionId()
+  rememberProjectSession(chatProject, chatSession)
+  messages.value = []; usage.value = null; historyError.value = ''
+  orphanWf.value = null; resetGates()
+  input.value = readDraft()
+  await restoreHistory(true)
+  if (props.scope === 'default') void detectOrphanWorkflow()
 }
 function onPageHide() { preserveInterrupted(); stop() }
 function onBeforeLeave(e: BeforeUnloadEvent) { if (sending.value) { preserveInterrupted(); e.preventDefault(); e.returnValue = '' } }
@@ -1101,6 +1150,7 @@ async function switchSession(id: string) {
     if (!claimed) throw new Error('这个会话正在其他标签页使用，无法在当前标签切换。')
     chatProject = getProjectId()
     chatSession = target
+    rememberProjectSession(chatProject, chatSession)
     clearMessages()
     try { sessionStorage.removeItem(recoveryKey()) } catch {}
     input.value = readDraft()
@@ -1123,6 +1173,7 @@ async function createConversation() {
     if (!next) throw new Error('无法创建新的独立会话，请刷新页面重试。')
     chatProject = getProjectId()
     chatSession = next
+    rememberProjectSession(chatProject, chatSession)
     clearMessages()
     input.value = ''
     pendingImages.value = []
@@ -1478,7 +1529,7 @@ onMounted(() => {
   // 全局事件统一走类型化事件总线（eventBus.ts），返回值即取消订阅
   offFocusChat = appEvents.on('docmind:focus-chat', onFocusChat)
   offSendChat = appEvents.on('docmind:send-chat', onSendChat)
-  offContextChanged = appEvents.on('docmind:project-context-changed', resetChatContext)
+  offContextChanged = appEvents.on('docmind:project-context-changed', onProjectChanged)
   offOpenModelSettings = appEvents.on('docmind:open-model-settings', () => openModelSettings())
   // 两种 scope 都订阅最新帧（附加发送已放开给普通对话）；时间线仍只有驾驶舱消费。
   offLiveVisionFrame = appEvents.on('docmind:live-vision-frame', detail => {
