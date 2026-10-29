@@ -39,8 +39,30 @@ class RankingTests(unittest.TestCase):
     def test_focus_terms_drop_generic_modifiers(self):
         self.assertEqual(tools._focus_terms("GDScript typed array 类型数组"),
                          ["gdscript", "typed", "array"])
-        self.assertEqual(tools._focus_terms("Godot 4.7 release notes"), ["godot"])
+        self.assertEqual(tools._focus_terms("Godot 4.7 release notes"), ["godot", "4.7"])
         self.assertEqual(tools._focus_terms("深度求索 训练成本"), [])
+
+    def test_version_token_is_a_ranking_signal(self):
+        """版本号也要参与排序：Python 3.13 的查询不该把 3.12 的文章排第一。"""
+        old = {"title": "Python 3.12 新特性", "snippet": "python 3.12 新特性说明",
+               "url": "https://a.example.com/312"}
+        new = {"title": "Python 3.13 新特性", "snippet": "python 3.13 新特性说明",
+               "url": "https://b.example.com/313"}
+        ranked = tools._rank_search_rows("Python 3.13 新特性", [old, new])
+        self.assertIs(ranked[0], new)
+
+    def test_version_terms_are_extracted_with_boundaries(self):
+        self.assertIn("3.13", tools._search_terms("Python 3.13 新特性"))
+        self.assertNotIn("4", tools._search_terms("Godot 4 发布"))
+        self.assertTrue(tools._term_hit("3.13", "python 3.13 新特性"))
+        self.assertTrue(tools._term_hit("3.13", "python 3.13.0 发布"))
+        self.assertFalse(tools._term_hit("3.13", "python 3.130 新特性"))
+        self.assertFalse(tools._term_hit("3.13", "python 13.13 新特性"))
+
+    def test_relevance_gate_accepts_a_version_match(self):
+        text = "Python 3.13 新特性：新的交互式解释器"
+        self.assertTrue(tools._query_relevant("Python 3.13 新特性", text,
+                                              "Python 3.13 新特性", "https://docs.python.org/3.13/"))
 
     def test_retry_recovers_the_diluted_topic(self):
         original = _rows(

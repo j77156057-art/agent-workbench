@@ -2227,6 +2227,9 @@ def _search_terms(query):
             terms.extend(word[i:i + 2] for i in range(len(word) - 1))
         else:
             terms.append(word)
+    # 版本号是强检索信号（Python 3.13 / Godot 4.7 / Minecraft 1.21）：只收带点的
+    # 多段数字，裸整数（Windows 11 / top 10）歧义太大，不收。
+    terms.extend(VERSION_RE.findall(clean_query))
     return [term for term in dict.fromkeys(terms)
             if term not in {"official", "docs", "documentation", "推荐", "今天", "如何", "怎么", "最新"}]
 
@@ -2255,8 +2258,13 @@ def _query_relevant(query, text, title="", url=""):
     signals = [term for term in terms if term not in _GENERIC_QUERY_TERMS]
     if signals:
         terms = signals
-    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", str(text or "").lower())
-    matched = sum(term in normalized for term in terms)
+    raw_text = str(text or "").lower()
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", raw_text)
+
+    def _hit(term):
+        return _term_hit(term, raw_text) if "." in term else term in normalized
+
+    matched = sum(1 for term in terms if _hit(term))
     if re.search(r"[\u4e00-\u9fff]", query):
         required = 1 if len(terms) <= 4 else max(2, min(3, (len(terms) * 3 + 9) // 10))
         required = min(required, len(terms))
@@ -2293,9 +2301,10 @@ def _query_relevant(query, text, title="", url=""):
         path = urllib.parse.urlparse(url).path
     except Exception:
         path = ""
-    anchor_text = re.sub(r"[^\w\u4e00-\u9fff]+", "",
-                         (str(title) + " " + path).lower())
-    anchor_matches = sum(term in anchor_text for term in terms)
+    anchor_raw = (str(title) + " " + path).lower()
+    anchor_text = re.sub(r"[^\w\u4e00-\u9fff]+", "", anchor_raw)
+    anchor_matches = sum(1 for term in terms
+                         if (_term_hit(term, anchor_raw) if "." in term else term in anchor_text))
     anchor_required = 1 if len(terms) <= 2 else max(2, min(3, (len(terms) + 3) // 4))
     return anchor_matches >= anchor_required
 
@@ -2328,7 +2337,15 @@ def _search_source_status(raw):
     return "未返回结构化候选"
 
 
-_FOCUS_WORD_RE = re.compile(r"[a-z][a-z0-9_+-]{2,}")
+VERSION_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)+(?!\d)")
+_FOCUS_WORD_RE = re.compile(r"[a-z][a-z0-9_+-]{2,}|\d+(?:\.\d+)+")
+
+
+def _term_hit(term, raw_text):
+    """词命中。版本号按数字边界匹配：3.13 命中 3.13/3.13.0，不命中 3.130/13.13。"""
+    if "." in term:
+        return re.search(r"(?<![\d.])" + re.escape(term) + r"(?!\d)", raw_text) is not None
+    return term in raw_text
 
 
 def _focus_terms(query):
@@ -2383,8 +2400,8 @@ def _rank_search_rows(query, rows):
     def score(i):
         text = texts[i]
         title = str(rows[i].get("title", "")).lower()
-        matched = sum(weights[t] for t in terms if t in text)
-        title_hits = sum(weights[t] for t in terms if t in title)
+        matched = sum(weights[t] for t in terms if _term_hit(t, text))
+        title_hits = sum(weights[t] for t in terms if _term_hit(t, title))
         source, _reason = _source_score(rows[i].get("url", ""), rows[i].get("title", ""),
                                         rows[i].get("snippet", ""))
         if focus_total:
@@ -2479,11 +2496,11 @@ def _merge_builtin_results(query, named_results):
             if not key:
                 continue
             haystack = (row.get("title", "") + " " + row.get("snippet", "")).lower()
-            matched = sum(1 for term in terms if term in haystack)
+            matched = sum(1 for term in terms if _term_hit(term, haystack))
             score, reason = _source_score(row.get("url", ""), row.get("title", ""), row.get("snippet", ""))
             # 相关性优先，域名/‘官方’标签只能小幅辅助，不能把跑题资料顶到前面。
             rank = (matched / max(1, len(terms))) * 3 + score * 0.15
-            rank += sum(term in row.get("title", "").lower() for term in terms) * 0.03
+            rank += sum(_term_hit(term, row.get("title", "").lower()) for term in terms) * 0.03
             # 中文旅行/推荐/口碑问题中，通用 Bing 摘要经常只有泛化攻略标题；
             # 社区原站更适合承载体验和避坑信息。仅在这类意图下调整排序，
             # 技术文档和代码查询仍按主题命中优先。
