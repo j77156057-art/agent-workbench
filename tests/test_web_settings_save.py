@@ -108,6 +108,15 @@ class WebSettingsSaveTests(unittest.TestCase):
                 field, "wsApiKey" if field.startswith("web_search") else "wfApiKey"), block,
                 "%s 留空时必须以 undefined 省略，不能发空串" % field)
 
+    def test_saved_key_hint_is_scoped_to_the_selected_provider(self):
+        """Key 按厂商分槽后，"已保存" 只能对当前选中的厂商成立。"""
+        source = (ROOT / "frontend/src/workbench/components/SettingsView.vue").read_text(
+            encoding="utf-8")
+        self.assertIn("wsProvider.value === cfg.value?.web_search_provider", source)
+        self.assertIn("wfProvider.value === cfg.value?.web_fetch_provider", source)
+        self.assertIn("wsHasSavedKey ? '已保存，留空表示不修改'", source)
+        self.assertIn("wfHasSavedKey ? '已保存，留空表示不修改'", source)
+
     def test_omitting_the_key_field_preserves_the_stored_key(self):
         """API 层契约：不提交 key 字段 = 不改动已存 Key。"""
         config.set_runtime("web_search_provider", "bocha")

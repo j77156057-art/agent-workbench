@@ -486,8 +486,16 @@ async function saveAgentCapacity() {
 
 const wsNeedsKey = computed(() => WEB_SEARCH_PROVIDERS.find(p => p.value === wsProvider.value)?.needs_key)
 const wsNeedsUrl = computed(() => WEB_SEARCH_PROVIDERS.find(p => p.value === wsProvider.value)?.needs_url)
+// Key 按厂商分槽存：has_key 只代表「当前生效厂商」的那一把。
+// 切到另一家时要显示「未保存」，否则用户会以为新厂商已经有 key 了。
+const wsHasSavedKey = computed(() =>
+  !!cfg.value?.web_search_has_key
+  && wsProvider.value === cfg.value?.web_search_provider)
 const wfNeedsKey = computed(() => WEB_FETCH_PROVIDERS.find(p => p.value === wfProvider.value)?.needs_key)
 const wfNeedsUrl = computed(() => WEB_FETCH_PROVIDERS.find(p => p.value === wfProvider.value)?.needs_url)
+const wfHasSavedKey = computed(() =>
+  !!cfg.value?.web_fetch_has_key
+  && wfProvider.value === cfg.value?.web_fetch_provider)
 
 // ---------------- MCP ----------------
 const mcpServers = ref<McpServer[]>([])
@@ -681,6 +689,21 @@ async function saveSearch() {
     }
     savedMsg.value = '已保存'
     if (res.warnings?.length) errorMsg.value = res.warnings.join('；')
+    // 用服务端回传的有效值刷新：provider 可能被归一化，has_key 只对当前厂商有效。
+    if (cfg.value) {
+      cfg.value.web_search_provider =
+        (res.web_search_provider ?? wsProvider.value) as SettingsConfigInfo['web_search_provider']
+      cfg.value.web_search_api_url = res.web_search_api_url ?? wsApiUrl.value
+      cfg.value.web_search_has_key = !!res.web_search_has_key
+      cfg.value.web_fetch_provider =
+        (res.web_fetch_provider ?? wfProvider.value) as SettingsConfigInfo['web_fetch_provider']
+      cfg.value.web_fetch_api_url = res.web_fetch_api_url ?? wfApiUrl.value
+      cfg.value.web_fetch_has_key = !!res.web_fetch_has_key
+      wsProvider.value = cfg.value.web_search_provider
+      wfProvider.value = cfg.value.web_fetch_provider
+    }
+    wsApiKey.value = ''
+    wfApiKey.value = ''
   } catch (e) {
     errorMsg.value = (e as { message?: string }).message || '保存失败'
   } finally {
@@ -1502,7 +1525,7 @@ async function powerAction(action: 'on' | 'off') {
                 <span class="sv-key-toggle" @click="showWsKey = !showWsKey">{{ showWsKey ? '隐藏' : '显示' }}</span>
               </label>
               <input v-model="wsApiKey" class="sv-input" :type="showWsKey ? 'text' : 'password'"
-                     :placeholder="cfg?.web_search_has_key ? '已保存，留空表示不修改' : 'sk-...'" autocomplete="off" spellcheck="false" />
+                     :placeholder="wsHasSavedKey ? '已保存，留空表示不修改' : 'sk-...'" autocomplete="off" spellcheck="false" />
             </template>
             <template v-if="wsNeedsUrl">
               <label class="sv-label">API 地址（自建实例 / 网关）</label>
@@ -1520,7 +1543,7 @@ async function powerAction(action: 'on' | 'off') {
                 <span class="sv-key-toggle" @click="showWfKey = !showWfKey">{{ showWfKey ? '隐藏' : '显示' }}</span>
               </label>
               <input v-model="wfApiKey" class="sv-input" :type="showWfKey ? 'text' : 'password'"
-                     :placeholder="cfg?.web_fetch_has_key ? '已保存，留空表示不修改' : 'sk-...'" autocomplete="off" spellcheck="false" />
+                     :placeholder="wfHasSavedKey ? '已保存，留空表示不修改' : 'sk-...'" autocomplete="off" spellcheck="false" />
             </template>
             <template v-if="wfNeedsUrl">
               <label class="sv-label">API 地址</label>
