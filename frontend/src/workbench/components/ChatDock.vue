@@ -981,8 +981,13 @@ async function recoverActiveTurns() {
       const noticeMsg = '⚠ 上次页面刷新中断，已恢复到最后状态。'
       if (!turn.notices.includes(noticeMsg)) turn.notices.unshift(noticeMsg)
     } else {
-      // 还在 in-flight：把它标 recoverable=true 让用户可以继续
+      // 后端可能仍在跑，但本页没有订阅它的后续事件。如实标成已停止并给提示，
+      // 让「继续上次任务」成为下一步；否则界面会挂一条永远「正在执行」的消息。
+      sending.value = false
+      turn.status = 'stopped'
       turn.recoverable = true
+      const noticeMsg = '已恢复到最后状态；原回合可能仍在后台执行，发送新消息会打断它。'
+      if (!turn.notices.includes(noticeMsg)) turn.notices.unshift(noticeMsg)
     }
     void nextTick(scrollToBottom)
   } catch (e) {

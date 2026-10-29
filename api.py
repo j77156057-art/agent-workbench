@@ -428,16 +428,26 @@ def _register_in_flight_turn(turn_id: str, session_id: str, project_id: Optional
 
 def _append_in_flight_event(rec: dict, ev: dict) -> None:
     """追加一条事件到 in-flight buffer（用于刷新后 partial 回放）。"""
-    if rec is None:
+    if rec is None or not isinstance(ev, dict):
         return
     try:
-        rec["events"].append(dict(ev))
+        payload = dict(ev)
+        # reasoning 是逐片段流（实测一轮可上万条）。连续片段合并成一条，否则
+        # partial buffer 会按 token 级膨胀，60s 保留期内常驻数十 MB。
+        if (payload.get("type") == "reasoning"
+                and isinstance(payload.get("text"), str)
+                and rec["events"]
+                and rec["events"][-1].get("type") == "reasoning"):
+            prev = rec["events"][-1]
+            prev["text"] = str(prev.get("text") or "") + payload["text"]
+        else:
+            rec["events"].append(payload)
         # 单独累积 observation 文本，方便一致性自检复算
-        if isinstance(ev, dict) and ev.get("type") == "observation" and isinstance(ev.get("text"), str):
-            rec["observations"].append(ev["text"])
+        if payload.get("type") == "observation" and isinstance(payload.get("text"), str):
+            rec["observations"].append(payload["text"])
         # final 是终态标志，单独保存方便 GET 直接返回
-        if isinstance(ev, dict) and ev.get("type") == "final":
-            rec["final"] = dict(ev)
+        if payload.get("type") == "final":
+            rec["final"] = dict(payload)
     except Exception:  # noqa: BLE001
         # in-flight 是 best-effort，缓冲异常绝不能拖垮 SSE 主链路
         pass
@@ -446,13 +456,24 @@ def _append_in_flight_event(rec: dict, ev: dict) -> None:
 def _mark_in_flight_terminal(rec: dict, status: str = "done") -> None:
     if rec is None:
         return
+    status = str(status or "").strip()
+    # 只有 final 会把 status 置成 done/error；没走到 final 就进 finally（断线/中断）
+    # 时不能继续标 streaming —— 否则 /api/turn/active 会把一条死回合当成 in-flight，
+    # 前端刷新后挂一条永远「正在执行」的幽灵消息。
+    if not status or status == "streaming":
+        status = "stopped"
     rec["status"] = status
+
     # 60s 缓冲：到期后才真正从注册表下线，期间 GET 仍能拿到 partial
     def _evict():
         with _IN_FLIGHT_TURNS_LOCK:
-            _IN_FLIGHT_TURNS.pop(rec["turn_id"], None)
-    threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict).daemon = True
-    threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict).start()
+            # 同 turn_id 可能已被新回合覆盖（前端会复用 turn_id）：只删自己那条。
+            if _IN_FLIGHT_TURNS.get(rec["turn_id"]) is rec:
+                _IN_FLIGHT_TURNS.pop(rec["turn_id"], None)
+
+    timer = threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict)
+    timer.daemon = True
+    timer.start()
 
 
 _TRACE_STEP_TYPES = ("thought", "action", "observation", "reflection", "reasoning")
@@ -544,6 +565,8 @@ def _list_in_flight_turns(session_id: str, project_id: Optional[str]) -> list[di
             "event_count": len(rec.get("events") or []),
             "has_final": bool(rec.get("final")),
         })
+    # 注册表按插入顺序返回；前端只取最后一条 live，必须按真实创建时间排。
+    out.sort(key=lambda item: item.get("created_at") or 0)
     return out
 
 
