@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 import asyncio
 import anyio
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 
@@ -426,7 +426,8 @@ _IN_FLIGHT_TURN_GRACE_S = 60.0
 BLOCK_LLM_TEST = os.getenv("BLOCK_LLM_TEST", "")
 
 
-def _register_in_flight_turn(turn_id: str, session_id: str, project_id: Optional[str]) -> dict:
+def _register_in_flight_turn(turn_id: str, session_id: str, project_id: Optional[str],
+                             owner_base: str = "") -> dict:
     """注册一条 in-flight turn；返回 partial buffer + cancel 句柄。
 
     buffer.events 是 list[dict]，按到达顺序追加 SSE 事件（含已序列化的 dict）。
@@ -442,10 +443,12 @@ def _register_in_flight_turn(turn_id: str, session_id: str, project_id: Optional
         "final": None,         # final 事件 dict（终态时落）
         "status": "streaming",
         "stop": threading.Event(),
+        "owner_base": str(owner_base or "").rstrip("/"),
     }
     with _IN_FLIGHT_TURNS_LOCK:
         # 同 turn_id 不会重复分配（uuid4().hex 32 字节）；只去重项
         _IN_FLIGHT_TURNS[turn_id] = rec
+    _write_turn_index(rec)
     return rec
 
 
@@ -486,6 +489,7 @@ def _mark_in_flight_terminal(rec: dict, status: str = "done") -> None:
     if not status or status == "streaming":
         status = "stopped"
     rec["status"] = status
+    _touch_turn_index(rec)
 
     # 60s 缓冲：到期后才真正从注册表下线，期间 GET 仍能拿到 partial
     def _evict():
@@ -493,6 +497,7 @@ def _mark_in_flight_terminal(rec: dict, status: str = "done") -> None:
             # 同 turn_id 可能已被新回合覆盖（前端会复用 turn_id）：只删自己那条。
             if _IN_FLIGHT_TURNS.get(rec["turn_id"]) is rec:
                 _IN_FLIGHT_TURNS.pop(rec["turn_id"], None)
+        _remove_turn_index(rec["turn_id"], rec.get("created_at"))
 
     timer = threading.Timer(_IN_FLIGHT_TURN_GRACE_S, _evict)
     timer.daemon = True
@@ -602,6 +607,172 @@ def _list_in_flight_turns(session_id: str, project_id: Optional[str]) -> list[di
     # 注册表按插入顺序返回；前端只取最后一条 live，必须按真实创建时间排。
     out.sort(key=lambda item: item.get("created_at") or 0)
     return out
+
+
+# ---------------------------------------------------------------- 跨实例 turn 索引
+# in-flight 注册表是进程内的：同 STATE_ROOT 的两个实例，B 看不到 A 正在跑的
+# turn，/partial 与 /stop 会 404。这里把「turn 属于哪个实例」落一个很小的索引文件；
+# 事件缓冲仍只在 owner 内存里，B 的 /partial、/stop、/active 通过索引转发到 owner。
+# 每条记录只在注册/终态/30s 心跳时写一次，不按事件写。
+_TURN_INDEX_LOCK = threading.Lock()
+_TURN_INDEX_TTL_S = 300.0
+
+
+def _turn_index_dir() -> Path:
+    return Path(STATE_ROOT) / ".docmind" / "inflight"
+
+
+def _turn_index_path(turn_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(turn_id or ""))[:64]
+    return _turn_index_dir() / (safe + ".json")
+
+
+def _write_turn_index(rec: dict) -> None:
+    if not isinstance(rec, dict) or not rec.get("owner_base") or not rec.get("turn_id"):
+        return
+    entry = {
+        "turn_id": rec["turn_id"],
+        "session_id": rec.get("session_id") or "default",
+        "project_id": rec.get("project_id") or None,
+        "owner_base": str(rec.get("owner_base") or "").rstrip("/"),
+        "status": rec.get("status") or "streaming",
+        "created_at": rec.get("created_at") or time.time(),
+        "updated_at": time.time(),
+    }
+    try:
+        path = _turn_index_path(rec["turn_id"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _TURN_INDEX_LOCK:
+            fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp",
+                                             dir=str(path.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(entry, fh, ensure_ascii=False)
+                os.replace(temporary, path)
+            except OSError:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
+def _touch_turn_index(rec: dict) -> None:
+    _write_turn_index(rec)
+
+
+def _remove_turn_index(turn_id: str, created_at: float | None = None) -> None:
+    path = _turn_index_path(turn_id)
+    try:
+        if created_at is not None:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            if float(entry.get("created_at") or 0) != float(created_at):
+                return
+        path.unlink()
+    except (OSError, ValueError):
+        pass
+
+
+def _read_turn_index(turn_id: str) -> Optional[dict]:
+    try:
+        entry = json.loads(_turn_index_path(turn_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _list_turn_index(session_id: str, project_id: Optional[str]) -> list[dict]:
+    directory = _turn_index_dir()
+    if not directory.is_dir():
+        return []
+    now = time.time()
+    out: list[dict] = []
+    for path in directory.glob("*.json"):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("session_id") or "default") != (session_id or "default"):
+            continue
+        if (entry.get("project_id") or None) != (project_id or None):
+            continue
+        try:
+            age = now - float(entry.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            age = _TURN_INDEX_TTL_S + 1
+        ttl = _TURN_INDEX_TTL_S if entry.get("status") == "streaming" else _IN_FLIGHT_TURN_GRACE_S + 30
+        if age > ttl:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            continue
+        out.append(entry)
+    out.sort(key=lambda item: item.get("created_at") or 0)
+    return out
+
+
+def _remote_turn_owner(turn_id: str, session_id: str, request: Request | None) -> str:
+    """非本实例持有的 turn 返回 owner base；本实例/已过期/跨归属返回空。"""
+    if request is None or (request.headers.get("x-docmind-forwarded") or "") == "1":
+        return ""
+    entry = _read_turn_index(turn_id)
+    if not entry:
+        return ""
+    if str(entry.get("session_id") or "default") != ((session_id or "").strip() or "default"):
+        return ""
+    if (entry.get("project_id") or None) != (_ctx_project_id() or None):
+        return ""
+    try:
+        age = time.time() - float(entry.get("updated_at") or 0)
+    except (TypeError, ValueError):
+        age = _TURN_INDEX_TTL_S + 1
+    if age > _TURN_INDEX_TTL_S:
+        return ""
+    owner = str(entry.get("owner_base") or "").rstrip("/")
+    parsed = urlsplit(owner)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    if not owner:
+        return ""
+    if owner == str(request.base_url).rstrip("/"):
+        return ""
+    return owner
+
+
+def _forward_turn_request(owner_base: str, method: str, path: str,
+                          query: dict | None = None,
+                          project_id: str = "") -> JSONResponse:
+    parsed = urlsplit(owner_base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return JSONResponse({"ok": False, "error": "turn 所属实例地址无效。"},
+                            status_code=502)
+    url = owner_base.rstrip("/") + path
+    if query:
+        url += ("&" if "?" in url else "?") + urlencode(query)
+    headers = {"Accept": "application/json", "X-DocMind-Forwarded": "1"}
+    if project_id:
+        headers["X-DocMind-Project"] = project_id
+    request = urllib.request.Request(
+        url, method=method, data=b"" if method == "POST" else None,
+        headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            raw = response.read()
+            body = json.loads(raw) if raw else {}
+            return JSONResponse(body, status_code=response.status)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read())
+        except Exception:
+            body = {"ok": False, "error": "turn 所属实例返回错误。"}
+        return JSONResponse(body, status_code=exc.code)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "turn 所属实例不可达。"},
+                            status_code=502)
 
 
 # 一致性自检（P0 摘要漏报无信号）：收集本轮 observation 里的「关键标识」——
@@ -3008,7 +3179,9 @@ async def chat(
         # P2：注册 in-flight turn。所有 SSE 事件双写：原路给前端 + 落进 rec.events
         # 供 GET /api/turn/{turn_id}/partial 拉起。终态由 _mark_in_flight_terminal
         # 在 finally 里设，60s 后才从注册表下线（覆盖刷新兜底期）。
-        inflight = _register_in_flight_turn(turn_id, session_id, _ctx_project_id() or None)
+        inflight = _register_in_flight_turn(
+            turn_id, session_id, _ctx_project_id() or None,
+            owner_base=(str(request.base_url).rstrip("/") if request is not None else ""))
         # 显式停止端点（POST /api/turn/{id}/stop）与断连检测共用同一个事件：
         # 置位即让 worker 退出，event_stream 的 finally 落 stopped。
         inflight["stop"] = worker_stop
@@ -3149,9 +3322,13 @@ async def chat(
                                       name="docmind-chat-agent", daemon=True)
             worker.start()
             last_keepalive = time.monotonic()
+            last_index_touch = time.monotonic()
             # 断连轮询粒度：不超过 0.5s，也不超过心跳间隔（测试会调小心跳）。
             poll_s = min(0.5, CHAT_STREAM_HEARTBEAT_S)
             while True:
+                if time.monotonic() - last_index_touch >= 30:
+                    last_index_touch = time.monotonic()
+                    _touch_turn_index(inflight)
                 if worker_stop.is_set():
                     # 显式停止端点在另一请求里置位：立即退出，finally 落 stopped。
                     return
@@ -3315,6 +3492,12 @@ async def get_turn_partial(turn_id: str, session_id: str = "default",
     # 避免把「这条 turn 属于别的会话/项目」当成可探测的信息。
     rec = _owned_in_flight_turn(turn_id, session_id)
     if rec is None:
+        owner = _remote_turn_owner(turn_id, session_id, request)
+        if owner:
+            return await run_in_threadpool(
+                _forward_turn_request, owner, "GET",
+                f"/api/turn/{turn_id}/partial", {"session_id": session_id},
+                _ctx_project_id() or "")
         return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
                             status_code=404)
     events_snapshot = list(rec.get("events") or [])
@@ -3346,6 +3529,12 @@ async def stop_turn(turn_id: str, session_id: str = "default", request: Request 
         return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
     rec = _owned_in_flight_turn(turn_id, session_id)
     if rec is None:
+        owner = _remote_turn_owner(turn_id, session_id, request)
+        if owner:
+            return await run_in_threadpool(
+                _forward_turn_request, owner, "POST",
+                f"/api/turn/{turn_id}/stop", {"session_id": session_id},
+                _ctx_project_id() or "")
         return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
                             status_code=404)
     rec["stop"].set()
@@ -3359,7 +3548,23 @@ async def list_active_turns(session_id: str = "default", request: Request = None
     session_id = (session_id or "").strip() or "default"
     if not _http_origin_allowed(request):
         return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
-    items = _list_in_flight_turns(session_id, _ctx_project_id() or None)
+    project_id = _ctx_project_id() or None
+    items = _list_in_flight_turns(session_id, project_id)
+    seen = {str(item.get("turn_id") or "") for item in items}
+    # 合并其他实例登记在共享索引里的 turn；事件仍在 owner 内存，partial 会转发。
+    for entry in _list_turn_index(session_id, project_id):
+        turn_id = str(entry.get("turn_id") or "")
+        if not turn_id or turn_id in seen:
+            continue
+        items.append({
+            "turn_id": turn_id,
+            "status": entry.get("status") or "streaming",
+            "created_at": entry.get("created_at"),
+            "event_count": 0,
+            "has_final": False,
+            "remote": True,
+        })
+    items.sort(key=lambda item: item.get("created_at") or 0)
     return {"ok": True, "session_id": session_id, "turns": items}
 
 
