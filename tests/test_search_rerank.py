@@ -85,6 +85,56 @@ class RankingTests(unittest.TestCase):
         first = out.split("· ")[1].splitlines()[0]
         self.assertIn("GDScript", first)
 
+    def test_version_gap_triggers_a_focused_retry(self):
+        """查询点名 3.13、整批结果却一条都没有 → 用 python 3.13 补搜一次。"""
+        original = _rows(
+            ("Python 3.15.2 documentation", "python docs", "https://docs.python.org/3/"),
+            ("Python 安装教程", "python 入门", "https://example.com/install"),
+        )
+        extra = _row("Python 3.13 新特性", "python 3.13 新特性",
+                     "https://docs.python.org/3.13/whatsnew/3.13.html")
+        with mock.patch.object(tools, "_api_web_search", return_value=extra) as api:
+            out = tools._rerank_and_focus("bocha", "Python 3.13 新特性", original)
+        api.assert_called_once_with("bocha", "python 3.13")
+        self.assertIn("3.13", out.split("· ")[1].splitlines()[0])
+
+    def test_builtin_retry_uses_the_builtin_backend(self):
+        """保底侧补搜必须走 _builtin_search，不能误调 API 通道。"""
+        original = _rows(
+            ("Python 3.15.2 documentation", "python docs", "https://docs.python.org/3/"),
+            ("Python 安装教程", "python 入门", "https://example.com/install"),
+        )
+        extra = _row("Python 3.13 新特性", "python 3.13",
+                     "https://docs.python.org/3.13/")
+        with mock.patch.object(tools, "_builtin_search", return_value=extra) as builtin, \
+                mock.patch.object(tools, "_api_web_search") as api:
+            out = tools._rerank_and_focus("builtin_auto", "Python 3.13 新特性",
+                                          original, allow_aux=True)
+        builtin.assert_called_once_with("builtin_auto", "python 3.13", include_aux=True)
+        api.assert_not_called()
+        self.assertIn("3.13", out.split("· ")[1].splitlines()[0])
+
+    def test_builtin_without_retry_keeps_the_raw_result(self):
+        original = _rows(
+            ("Python 3.13 新特性", "python 3.13", "https://docs.python.org/3.13/"),
+            ("Python 3.13.0 release", "python 3.13.0", "https://example.com/313"),
+        )
+        with mock.patch.object(tools, "_builtin_search") as builtin:
+            out = tools._rerank_and_focus("builtin_auto", "Python 3.13 新特性",
+                                          original, rank_without_retry=False)
+        builtin.assert_not_called()
+        self.assertEqual(out, original, "没触发补搜时内置结果必须原样返回")
+
+    def test_retry_can_be_disabled_for_site_scoped_queries(self):
+        original = _rows(
+            ("Python 3.15.2 documentation", "python docs", "https://docs.python.org/3/"),
+            ("Python 安装教程", "python 入门", "https://example.com/install"),
+        )
+        with mock.patch.object(tools, "_api_web_search") as api:
+            tools._rerank_and_focus("bocha", "Python 3.13 新特性", original,
+                                    allow_retry=False)
+        api.assert_not_called()
+
     def test_no_retry_when_the_topic_term_is_already_present(self):
         original = _rows(
             ("Godot 4.7 release notes", "godot release notes", "https://godotengine.org/news"),

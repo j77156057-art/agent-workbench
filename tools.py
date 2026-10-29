@@ -2021,10 +2021,19 @@ def web_search(query, _allow_aux=True):
         result = _api_web_search(provider, q)
     if specialized_error and not any(result.startswith(m) for m in _SEARCH_EMPTY_MARKERS):
         result = specialized_error + "\n\n通用搜索回退结果：\n" + result
-    if provider != "builtin_auto":
+    if provider == "builtin_auto":
+        # 内置聚合已经排过序：只在主题词/版本词整体缺席时补搜，补搜后才重排；
+        # 没触发补搜时原样返回，保住「来源：bing」这类标注格式。
+        result = _rerank_and_focus(provider, q, result, allow_aux=_allow_aux,
+                                   allow_retry=not site, rank_without_retry=False)
+    elif provider in ("ddg", "bing", "baidu"):
+        result = _filter_search_results(q, result)
+        result = _rerank_and_focus(provider, q, result, allow_aux=_allow_aux,
+                                   allow_retry=not site)
+    else:
         result = _filter_search_results(q, result)
         # 词面过滤之后再做主题重排：同名词条（JS 教程）不该压过专有名词（GDScript）。
-        result = _rerank_and_focus(provider, q, result)
+        result = _rerank_and_focus(provider, q, result, allow_retry=not site)
     if _search_cache_enabled() and not any(result.startswith(m) for m in _SEARCH_EMPTY_MARKERS):
         _web_cache_write(cache_key, result)
     return result
@@ -2418,26 +2427,46 @@ def _rank_search_rows(query, rows):
     return [rows[i] for i in order]
 
 
-def _rerank_and_focus(provider, query, result):
-    """API 结果统一重排；主题词被整体稀释时用主题词子查询补搜一次。
+def _focus_search(provider, query, allow_aux=True):
+    """补搜走与主路径相同的后端：内置/API 两类不能混用。"""
+    if provider in ("builtin_auto", "ddg", "bing", "baidu"):
+        return _builtin_search(provider, query, include_aux=allow_aux)
+    return _api_web_search(provider, query)
 
-    触发条件刻意很窄：最长的主题词在整批结果里一次都没出现（说明搜索引擎把
-    查询理解成了另一个话题）。此时补一次 `focus terms` 查询，最多多花一个请求；
-    主题词已经出现时不发第二次请求，排序也不改结果集。
+
+def _rerank_and_focus(provider, query, result, *, allow_aux=True, allow_retry=True,
+                      rank_without_retry=True):
+    """结果统一重排；主题词/版本词整体缺席时用聚焦查询补搜一次。
+
+    触发条件刻意很窄：
+    - 最长的主题词在整批结果里一次都没出现（搜索引擎理解成了另一个话题）；
+    - 或查询点名了版本号（3.13），而整批结果一条都没提到它（典型：搜 3.13
+      返回 3.12/3.15 文章）。
+    主体词已经出现时不发第二次请求。`rank_without_retry=False` 用于内置聚合结果：
+    没触发补搜就原样返回，保住原有的来源标注格式。
     """
     rows = _formatted_search_rows(result)
     if len(rows) < 2:
         return result
     focus = _focus_terms(query)
     primary = max(focus, key=len) if focus else ""
+    versions = [term for term in focus if "." in term]
+    def _row_has(term):
+        return any(_term_hit(term, _row_text(r)) if "." in term else term in _row_text(r)
+                   for r in rows)
+
+    missing_primary = bool(primary) and not _row_has(primary)
+    missing_versions = [v for v in versions if not _row_has(v)]
     retried = False
-    if primary and not any(primary in _row_text(r) for r in rows):
-        extra = _api_web_search(provider, " ".join(focus))
+    if allow_retry and (missing_primary or missing_versions):
+        extra = _focus_search(provider, " ".join(focus), allow_aux=allow_aux)
         if extra and not str(extra).startswith(_SEARCH_EMPTY_MARKERS):
             extra_rows = _formatted_search_rows(extra)
             if extra_rows:
                 rows = _merge_unique_rows(rows, extra_rows)
                 retried = True
+    if not retried and not rank_without_retry:
+        return result
     ranked = _rank_search_rows(query, rows)[:_search_result_limit()]
     if not retried and ranked == rows:
         return result
