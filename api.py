@@ -5237,6 +5237,54 @@ async def set_memory_settings(req: MemorySettingsReq):
             "memory_learn": get_memory_learn()}
 
 
+# ---- 网络搜索 / URL 抓取设置（专用端点）----
+# 与上面的记忆开关同一个理由，且这次有实测证据：设置页保存网络搜索时只提交
+# web_* 字段，而 /api/config 的 ConfigReq.provider 默认值是 "mock" —— 一次
+# 局部保存就会把用户真实的 LLM provider/model 覆盖成离线 mock 并写盘
+# （复现：deepseek/deepseek-flash → 只 POST web_* → mock/mock，重启仍是 mock）。
+# 这里只碰 web_* 这些 runtime 键，绝不触碰模型选择。
+class WebSettingsReq(BaseModel):
+    web_search_provider: Optional[str] = None
+    web_search_api_key: Optional[str] = None
+    web_search_api_url: Optional[str] = None
+    web_search_prefer_builtin: Optional[bool] = None
+    web_fetch_provider: Optional[str] = None
+    web_fetch_api_key: Optional[str] = None
+    web_fetch_api_url: Optional[str] = None
+
+
+@app.post("/api/web-settings")
+async def set_web_settings(req: WebSettingsReq):
+    if req.web_search_provider is not None:
+        set_web_search_provider(req.web_search_provider)
+    if req.web_search_api_key is not None:
+        set_web_search_api_key(req.web_search_api_key)
+    if req.web_search_api_url is not None:
+        set_web_search_api_url(req.web_search_api_url)
+    if req.web_search_prefer_builtin is not None:
+        set_web_search_prefer_builtin(req.web_search_prefer_builtin)
+    if req.web_fetch_provider is not None:
+        set_web_fetch_provider(req.web_fetch_provider)
+    if req.web_fetch_api_key is not None:
+        set_web_fetch_api_key(req.web_fetch_api_key)
+    if req.web_fetch_api_url is not None:
+        set_web_fetch_api_url(req.web_fetch_api_url)
+    return {
+        "ok": True,
+        "warnings": [],
+        "web_search_provider": get_web_search_provider(),
+        "web_search_api_url": get_web_search_api_url(),
+        "web_search_has_key": bool(get_web_search_api_key()),
+        "web_search_prefer_builtin": get_web_search_prefer_builtin(),
+        "web_fetch_provider": get_web_fetch_provider(),
+        "web_fetch_api_url": get_web_fetch_api_url(),
+        "web_fetch_has_key": bool(get_web_fetch_api_key()),
+        # 回传当前模型：保存搜索设置不应改变它，前端可据此核对。
+        "llm_provider": get_runtime("llm_provider") or LLM_PROVIDER,
+        "llm_model": get_runtime("llm_model") or LLM_MODEL,
+    }
+
+
 OLLAMA_BASE = os.getenv("OLLAMA_BASE", "http://127.0.0.1:11434")
 
 
@@ -5846,6 +5894,15 @@ async def _apply_config(req: ConfigReq):
 
     /api/config 与「预设一键激活」共用本函数，保证两条路径行为完全一致。
     """
+    # ConfigReq.provider 的默认值是 "mock"。没有显式点名 provider 的局部请求
+    #（典型：设置页只提交 web_*）若继续执行，会把用户真实的模型覆盖成离线 mock
+    # 并写盘 —— 2026-10-29 实测定型。这里 fail-closed：切模型必须显式给 provider，
+    # 局部设置请走各自的专用端点（如 /api/web-settings、/api/memory-settings）。
+    if "provider" not in req.model_fields_set:
+        return JSONResponse(
+            {"ok": False,
+             "error": "保存模型配置必须显式提供 provider；网络搜索等设置请走对应专用端点。"},
+            status_code=400)
     if req.provider not in PROVIDERS:
         return JSONResponse({"ok": False, "error": f"未知 provider: {req.provider}"}, status_code=400)
 

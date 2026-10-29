@@ -43,8 +43,6 @@ export interface SaveSettingsReq {
   web_fetch_provider?: WebFetchProvider
   web_fetch_api_key?: string
   web_fetch_api_url?: string
-  /** 长期记忆优化总开关；不传=不变。 */
-  memory_optimized?: boolean
 }
 
 export interface AgentCapacitySettings {
@@ -120,9 +118,11 @@ export const settingsApi = {
   get(): Promise<SettingsConfigInfo & ModelConfigInfo> {
     return request('/api/config')
   },
-  /** 保存网络搜索 / URL 获取设置（复用 /api/config 的保存通道）。 */
-  save(req: SaveSettingsReq): Promise<SettingsConfigInfo & ModelConfigInfo & { ok?: boolean; error?: string; warnings?: string[] }> {
-    return rawJson<SettingsConfigInfo & ModelConfigInfo & { ok?: boolean; error?: string; warnings?: string[] }>('/api/config', req)
+  /** 保存网络搜索 / URL 获取设置（专用端点）。
+   *  不能复用 /api/config：它的 ConfigReq.provider 默认是 "mock"，只带 web_* 的
+   *  局部请求会把用户真实的 LLM provider 覆盖成离线 mock 并写盘。 */
+  save(req: SaveSettingsReq): Promise<Partial<SettingsConfigInfo> & { ok?: boolean; error?: string; warnings?: string[] }> {
+    return rawJson<Partial<SettingsConfigInfo> & { ok?: boolean; error?: string; warnings?: string[] }>('/api/web-settings', req)
   },
 }
 
