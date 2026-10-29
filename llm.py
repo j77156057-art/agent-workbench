@@ -11,6 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from gpu_coordinator import acquire as _gpu_acquire, release as _gpu_release, note_activity as _gpu_note_activity
 
 from openai import OpenAI
@@ -589,6 +590,26 @@ def _first_message(resp):
     return msg
 
 
+# OpenCode Go 网关的额外出站头。
+# 一手实测（2026-10-29）：只带 Authorization 时 chat/completions 直接 400
+# {"type":"MissingSessionID"}；补上 x-opencode-session 后同 key 正常返回。
+# 会话 id 取进程级稳定值，让同一进程内的多轮请求共享网关路由/提示缓存；
+# 需要跨进程复用时可用 OPENCODE_SESSION 显式指定。官方文档还要求使用
+# 客户端自己的 User-Agent（"not a generic SDK"），因此一并覆盖。
+_OPENCODE_SESSION = (os.getenv("OPENCODE_SESSION", "").strip()
+                     or f"docmind-{uuid.uuid4().hex}")
+_OPENCODE_USER_AGENT = (os.getenv("OPENCODE_USER_AGENT", "").strip()
+                        or "DocMind-Workbench/1.0")
+
+
+def provider_default_headers(provider: str) -> dict:
+    """返回该 provider 需要额外注入的 HTTP 头；无额外要求时返回空字典。"""
+    if (provider or "").strip().lower() == "opencode":
+        return {"x-opencode-session": _OPENCODE_SESSION,
+                "User-Agent": _OPENCODE_USER_AGENT}
+    return {}
+
+
 class LLMClient:
     def __init__(self, provider=None, model=None, api_key=None, base_url=None, web_fn=None):
         self.provider = provider or get_runtime("llm_provider") or LLM_PROVIDER
@@ -708,7 +729,10 @@ class LLMClient:
         # OpenAI SDK 构造需要非空字符串；requires_api_key 的厂商已在 chat()
         # 入口拦截，不会真的把 "EMPTY" 发出去。本地兼容端点（llamacpp/custom）
         # 仍依赖这个占位值。
-        self.client = OpenAI(base_url=self.base_url, api_key=key or "EMPTY", timeout=self.timeout)
+        # default_headers 用厂商特定头覆盖 SDK 默认值（OpenCode Go 的会话头/UA）。
+        self.client = OpenAI(base_url=self.base_url, api_key=key or "EMPTY",
+                             timeout=self.timeout,
+                             default_headers=provider_default_headers(self.provider) or None)
 
     def clone(self):
         """复制一份**独立**的客户端（同 provider/model/key），供并发子代理使用。"""
@@ -856,7 +880,9 @@ class LLMClient:
         # `disabled` 是官方文档明确列出的合法值（api-docs.deepseek.com/api/create-chat-completion：
         # "Possible values: [enabled, disabled]"），不是我们推的。
         if self.capability.get("thinking") == "toggle":
-            if (self.provider or "").strip().lower() == "deepseek":
+            # OpenCode Go 网关代理的就是 DeepSeek 同一套形状（2026-10-29 真跑：
+            # thinking.enabled/disabled 生效，disabled 时 reasoning=0）。
+            if (self.provider or "").strip().lower() in ("deepseek", "opencode"):
                 kwargs["extra_body"] = {"thinking": {"type": "enabled" if thinking_on else "disabled"}}
             else:
                 kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": bool(thinking_on)}}

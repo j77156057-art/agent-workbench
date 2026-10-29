@@ -110,7 +110,7 @@ def state_path(env_name, default):
 
 # ---- LLM Provider ----
 # 可选: qwen(通义千问) / deepseek / kimi(月之暗面) / zhipu(智谱) /
-#       siliconflow(硅基流动) / openai / ollama / llamacpp /
+#       siliconflow(硅基流动) / openai / opencode(OpenCode Go) / ollama / llamacpp /
 #       custom(任意 OpenAI 兼容端点，base_url 运行时填写) / mock(离线演示)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "mock")
 
@@ -157,6 +157,17 @@ PROVIDERS = {
         "base_url": "https://api.openai.com/v1",
         "api_key_env": "OPENAI_API_KEY",
         "default_model": "gpt-4o-mini",
+        "cloud": True,
+    },
+    # OpenCode Go（订阅制网关，OpenAI 兼容）。除 Bearer Key 外，网关强制要求
+    # `x-opencode-session` 请求头（缺了直接 400 MissingSessionID），并建议使用
+    # 客户端自己的 User-Agent；这两个头由 llm.py 的 provider_default_headers 注入。
+    # Key 形如 oc_sk_…；普通 Console 口与 Go 口不通用（Console 口可能 402）。
+    "opencode": {
+        "label": "OpenCode Go",
+        "base_url": "https://opencode.ai/inference/go/openai/v1",
+        "api_key_env": "OPENCODE_API_KEY",
+        "default_model": "deepseek-v4.1-flash",
         "cloud": True,
     },
     "ollama": {
@@ -319,6 +330,8 @@ _PROVIDER_CONTEXT_DEFAULT = {
     "zhipu": 131072,
     "siliconflow": 65536,
     "openai": 128000,
+    # OpenCode Go 是聚合网关，各模型窗口不一；先给保守默认，命中文档检索会校正。
+    "opencode": 131072,
     "ollama": 16384,
     "llamacpp": 16384,
     "custom": 32768,
@@ -355,6 +368,11 @@ _TOGGLE_THINK_RULES = (
     # 同一模型，所以一并覆盖。
     ("deepseek", "deepseek-flash"),
     ("deepseek", "deepseek-v4-flash"),
+    # OpenCode Go 网关（2026-10-29 真跑验证）：deepseek-v4.1-flash 默认就返回
+    # reasoning_content；显式发 thinking {enabled|disabled} 能真实开关 ——
+    # disabled 时 reasoning=0 且 prompt 少 26 tokens，流式 delta 同样带
+    # reasoning_content。只钉住实测过的这个 model id：网关其余模型未验证，不猜。
+    ("opencode", "deepseek-v4.1-flash"),
 )
 
 # 每个"可开关"模型实际接受的思考强度参数词汇 —— **保守白名单**：
@@ -383,6 +401,9 @@ _NATIVE_VISION_HINTS = (
     # DeepSeek-V4.1-Flash（2026-09-10 起，model id=deepseek-flash）原生多模态，
     # 标准 OpenAI image_url 格式；旧名 deepseek-v4-flash(-vision-exp) 已路由到同一模型。
     "deepseek-flash", "deepseek-v4-flash",
+    # OpenCode Go 网关的 model id 带点，上面两条子串都匹配不到。实测（2026-10-29）
+    # 标准 image_url data URL 可用，正确答出 16x16 红色图的颜色（开/关思考都成立）。
+    "deepseek-v4.1-flash",
 )
 _NATIVE_VIDEO_HINTS = ("gemini", "gpt-4o", "gpt-4.1", "gpt-5", "qwen3-vl")
 

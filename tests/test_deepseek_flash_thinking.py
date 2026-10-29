@@ -82,6 +82,14 @@ class TestDeepSeekFlashThinkingProfile:
         for prov in ("qwen", "ollama", "llamacpp", "custom", "siliconflow"):
             assert model_thinking_mode(prov, "qwen3-35b-a3b") == "toggle", prov
 
+    def test_opencode_gateway_flash_is_toggleable(self):
+        """OpenCode Go 网关的 model id 带点，既有子串一个都匹配不到。
+
+        2026-10-29 真跑：默认返回 reasoning_content；发 thinking disabled 后
+        reasoning=0 且 prompt 少 26 tokens —— 开关是真实的，不是摆设。
+        """
+        assert model_thinking_mode("opencode", "deepseek-v4.1-flash") == "toggle"
+
 
 # ---------------------------------------------------------------------------
 # 真实发出的参数（**调生产代码**，不复刻）
@@ -139,6 +147,15 @@ class TestThinkingParameterShapeReallySent:
         got = _real_kwargs("qwen", "qwen3-35b-a3b", True)
         assert got.get("extra_body") == {"chat_template_kwargs": {"enable_thinking": True}}, (
             "qwen3 的参数形状被 deepseek 分支带走了：%r" % got.get("extra_body"))
+
+    def test_opencode_gateway_gets_the_deepseek_shape(self):
+        """OpenCode Go 代理 DeepSeek，思考形状必须同款（发 qwen 形状会被忽略）。"""
+        on = _real_kwargs("opencode", "deepseek-v4.1-flash", True)
+        assert on.get("extra_body") == {"thinking": {"type": "enabled"}}, (
+            "opencode 开启时尚发的是 qwen 形状：%r" % on.get("extra_body"))
+        off = _real_kwargs("opencode", "deepseek-v4.1-flash", False)
+        assert off.get("extra_body") == {"thinking": {"type": "disabled"}}, (
+            "opencode 关闭时的参数不对：%r" % off.get("extra_body"))
 
     def test_non_thinking_model_sends_no_parameter_at_all(self):
         """画像=none 时**一个参数都不发** —— 带上会被上游拒。"""
