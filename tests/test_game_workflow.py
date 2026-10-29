@@ -213,6 +213,36 @@ class GameWorkflowTests(unittest.TestCase):
         done = _wait_terminal(self.manager, wid)
         self.assertEqual(done["status"], "completed")
 
+    def test_execute_without_request_session_persists_recoverable_id(self):
+        """批准后直接执行的路径没有请求 session，也必须落可恢复 id。
+
+        真 bug：execute() 只在 session_id 非空时写 execution_session_id，
+        而 UI 的「批准」走 approve(auto_execute=True)，从不传 session。进程
+        重启后 recover_pending 因空 id 跳过它，工作流永远卡在 executing。
+        """
+        state = self.manager.start("无请求 session", policy=WorkflowPolicy(approval_mode="high"))
+        wid = state["workflow_id"]
+        self.manager.choose(wid, "recommended")
+        self.manager.plan(wid, [{"id": "a", "role": "tester", "task": "验证"}])
+        done = self.manager.execute(wid, lambda *_: {
+            "status": "ok", "conclusion": "ok", "steps": 1})
+        self.assertEqual(done["status"], "completed")
+        self.assertEqual(self.manager.get(wid)["execution_session_id"], "workflow")
+
+    def test_approve_auto_execute_persists_recoverable_id(self):
+        manager = GameWorkflowManager(tempfile.mkdtemp())
+        state = manager.start("批准即跑", policy=WorkflowPolicy(max_subagents=1))
+        wid = state["workflow_id"]
+        manager.choose(wid, "recommended")
+        manager.plan(wid, [{"id": "a", "role": "tester", "task": "验证"}])
+        manager.set_execution_resolver(lambda _state: {
+            "runner": lambda *_: {"status": "ok", "conclusion": "批准后完成", "steps": 1}})
+        approved = manager.approve(wid, True, auto_execute=True)
+        self.assertEqual(approved["status"], "planned")
+        done = _wait_terminal(manager, wid)
+        self.assertEqual(done["status"], "completed")
+        self.assertEqual(manager.get(wid)["execution_session_id"], "workflow")
+
     def test_choose_auto_execute_returns_planning_and_runs_to_completion(self):
         from agent_runtime import game_workflow as gw
         if gw.StateGraph is None:

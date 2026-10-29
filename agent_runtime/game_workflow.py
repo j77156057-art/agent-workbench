@@ -4024,7 +4024,8 @@ class GameWorkflowManager:
 
             state.status, state.phase = "executing", "execute"
             state.interrupt_reason = ""
-            state.execution_session_id = _clean_text(session_id or state.execution_session_id, 160)
+            state.execution_session_id = _clean_text(
+                session_id or state.execution_session_id or "workflow", 160)
             self._ensure_capability_lease(state)
             self._event(state, "subagent_retry_start", task_id=task_id,
                         attempt=attempt, previous_status=previous_status,
@@ -4195,6 +4196,11 @@ class GameWorkflowManager:
         }
         if session_id:
             state.execution_session_id = _clean_text(session_id, 160)
+        elif not state.execution_session_id:
+            # 批准后直接执行（auto_execute）没有请求 session；仍必须落一个
+            # 可恢复的 id，否则进程重启后 recover_pending 会跳过它，
+            # 工作流永远卡在 executing。
+            state.execution_session_id = "workflow"
         if policy.approval_mode == "safe":
             state.status, state.phase = "awaiting_approval", "execute"
             state.interrupt_reason = "执行计划包含可能产生副作用的操作，等待用户审核"
@@ -4655,6 +4661,9 @@ class GameWorkflowManager:
                 if callbacks is None:
                     self._event(state, "auto_execute_unavailable", reason="进程重启后执行回调不可恢复")
                 else:
+                    if not state.execution_session_id:
+                        # 落盘可恢复 id，覆盖「批准后、线程真正 execute 前」的重启窗口。
+                        state.execution_session_id = "workflow"
                     self._event(state, "auto_execute_start")
                     self._workflow_hook(state, "after_approval", approved=True,
                                         task_count=len(state.tasks))
