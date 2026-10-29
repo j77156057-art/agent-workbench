@@ -2474,13 +2474,26 @@ def _searxng_search(q, url):
 def _bocha_search(q, key):
     if not key:
         return "Bocha 需要 API Key，请在「网络搜索」设置中填写后保存。"
-    api_url = "https://api.bochaai.com/openapi/v1/web-search"
+    # 2026-10-29 实测：旧路径 /openapi/v1/web-search 已 404（No message available）；
+    # 新文档端点（api.bocha.cn/v1/web-search）鉴权/quota 判断正常（403 带 JSON 错误体）。
+    api_url = "https://api.bocha.cn/v1/web-search"
     payload = {"query": q, "count": 30, "freshness": "noLimit"}
     req = urllib.request.Request(
         api_url, data=json.dumps(payload).encode("utf-8"),
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        data = json.loads(r.read().decode("utf-8", "replace"))
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        # 博查的错误体是 {"code","message","log_id"}（如未领资源包时 403
+        # "You do not have enough money or package quota"）。不解析就只剩
+        # "HTTP Error 403: Forbidden"，用户分不清是 key 错、路径错还是没额度。
+        body = exc.read(600).decode("utf-8", "replace")
+        try:
+            message = (json.loads(body) or {}).get("message") or body
+        except ValueError:
+            message = body
+        raise RuntimeError(f"HTTP {exc.code}: {str(message)[:200]}") from exc
     results = ((data.get("data") or {}).get("webPages") or {}).get("value") or []
     if not results:
         return "搜索未返回结果，可能是网络受限或该关键词无结果。"

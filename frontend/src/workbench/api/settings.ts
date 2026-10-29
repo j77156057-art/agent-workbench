@@ -97,7 +97,7 @@ export const WEB_SEARCH_PROVIDERS: ProviderOption[] = [
   { value: 'exa', label: 'Exa', needs_key: true, desc: 'api.exa.ai，语义检索' },
   { value: 'tavily', label: 'Tavily', needs_key: true, desc: 'api.tavily.com' },
   { value: 'searxng', label: 'SearXNG', needs_url: true, desc: '自建实例' },
-  { value: 'bocha', label: 'Bocha 博查', needs_key: true, desc: 'api.bochaai.com' },
+  { value: 'bocha', label: 'Bocha 博查', needs_key: true, desc: 'api.bocha.cn' },
   { value: 'firecrawl', label: 'Firecrawl', needs_key: true, desc: '搜索 + 抓取' },
   { value: 'zhipu', label: '智谱搜索', needs_url: true, desc: '通用 keyed POST' },
   { value: 'querit', label: 'Querit', needs_url: true, desc: '通用 keyed POST' },
