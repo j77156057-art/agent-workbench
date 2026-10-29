@@ -88,6 +88,7 @@ golden/results_xm_*.jsonl
 golden/results_smoke_*.jsonl
 golden/results_trial.jsonl
 golden/results_pte.jsonl
+golden/results_reg*.jsonl
 golden/results_*_verify*.jsonl
 golden/results_full_*.jsonl
 golden/*.bak

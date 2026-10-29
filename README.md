@@ -289,7 +289,7 @@ agent-workbench/
 
 | 组 | 代表变量 |
 |---|---|
-| LLM Provider | `LLM_PROVIDER`（`mock` / qwen / deepseek / ollama / llamacpp）、`LLM_MODEL`、`LLM_API_KEY` |
+| LLM Provider | `LLM_PROVIDER`（`mock` / qwen / deepseek / kimi / zhipu / siliconflow / openai / opencode / ollama / llamacpp / custom）、`LLM_MODEL`、`LLM_API_KEY` |
 | Harness 视觉辅助 | `DOCMIND_VISION_PROVIDER/MODEL/BASE_URL/API_KEY`、`DOCMIND_VISION_ALLOW_UNVERIFIED` |
 | Embedding | `EMBEDDING_PROVIDER`、`EMBEDDING_MODEL` |
 | 路径与检索 | `CHROMA_DIR`、`CHUNK_SIZE`、`TOP_K`、`DOCMIND_RETRIEVAL_MODE`（dense / hybrid / hybrid_rerank） |
