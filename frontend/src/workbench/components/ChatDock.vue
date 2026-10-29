@@ -30,6 +30,8 @@ import { useMessageRender } from '../composables/useMessageRender'
 // 不用 /api/config 的 code_root —— 那个字段是遗留指针，后端自己写明「切换项目后可能
 // 滞后」（api.py 的 _project_root_or_error 注释），标错库比不标更糟。
 import { useWorkbench } from '../composables/workbench'
+// 右侧预览栏：点击时即时判断空间条件（fixed + 视口 ≥1200），不满足就回落原行为。
+import { canUseRightRail } from '../lib/rightRail'
 // 展示偏好与问答页同源（一份 localStorage + 一个变更事件）：这里必须真的消费它，
 // 否则「设置里关掉推理轨迹」在开发台对话台不生效。
 import { prefs as displayPrefs } from '../../ask/askPrefs'
@@ -52,7 +54,8 @@ import type { FileDiffEntry } from '../composables/chat-types'
 const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
 // 开发舱里侧栏文件树是隐藏的，「在问哪个库」只剩顶栏那颗项目名，而对话就在这块下方。
 // 所以把代码库根目录搬到输入框同一行；普通对话台不显示（旁边就是资源管理器，重复了）。
-const { tree, jumpToLine, revealPath, jobsOpen, openJobs } = useWorkbench()
+const { tree, jumpToLine, revealPath, jobsOpen, openJobs,
+  openRightRailDiff, openRightRailFile, openRightRailBrowser } = useWorkbench()
 // 后台任务角标与面板共用一份列表（composables/backgroundJobs.ts），不会重复轮询。
 const { running: jobsRunning, refresh: refreshJobs } = useJobsFeed()
 function openJobsPanel() {
@@ -480,12 +483,17 @@ function toggleTrace(msg: ChatMsg) {
 /* 原始 reasoning_content（「深度思考」）不再单独成块——现在由 traceDigest 按发生顺序
    摆进下面的「推理轨迹」交错流（清洗剥源码 + 截断上限 THINK_MAX），与工具行同流。
    纯思考、未跑工具的回合也因此在轨迹里有内容，不再「没有推理轨迹」。 */
-/* 「查看改动」弹窗：写文件工具的 observation 带结构化 file_diffs（完整前后内容），
-   点一下把这一步的改动交给 FileDiffDialog 渲染统一 diff。同一时刻只开一个。 */
+/* 「查看改动」：写文件工具的 observation 带结构化 file_diffs（完整前后内容），
+   点一下把这一步的改动交给统一 diff 渲染。固定布局且视口够宽时进右侧预览栏
+   （改动与对话可以并排看，不遮住对话）；空间不够时仍开原来的弹窗。 */
 const diffDialogOpen = ref(false)
 const diffDialogEntries = ref<FileDiffEntry[]>([])
 function openFileDiff(entries?: FileDiffEntry[]) {
   if (!entries || !entries.length) return
+  if (canUseRightRail()) {
+    openRightRailDiff(entries)
+    return
+  }
   diffDialogEntries.value = entries
   diffDialogOpen.value = true
 }
@@ -1493,15 +1501,45 @@ const {
 /**
  * 点开一个文件产物：在工作台里定位到它（文件树展开 + 打开预览）。
  * 图片走 ArtifactCards 自己的新标签打开，不走这里。
+ * 右栏可用时先给只读预览（不打断当前编辑器标签）；
+ * 要看可编辑版本，点栏内「在编辑器中打开」。
  */
 async function openArtifact(a: ChatArtifact) {
   if (!a?.path) return
+  if (canUseRightRail()) {
+    openRightRailFile(a.path, 1)
+    return
+  }
   try {
     await jumpToLine(a.path, 1)
     revealPath(a.path)
   } catch {
     // 产物可能已被删/移走：让文件树去报，不在这里吞掉用户的操作意图
   }
+}
+
+/** 文中文件引用：右栏可用 → 只读预览；否则回落编辑器（原行为）。 */
+function openRefSmart(r: Parameters<typeof openRef>[0]) {
+  if (canUseRightRail()) {
+    openRightRailFile(r.path, r.line || 1)
+    return
+  }
+  void openRef(r)
+}
+
+/** 浏览器动作证据里的网址：右栏只读镜像（可复用实况会话）；不可用则新标签打开。 */
+function openEvidenceInRail(ev?: BrowserEvidence) {
+  const url = ev?.url || ''
+  if (!url) return
+  if (canUseRightRail()) openRightRailBrowser(url, ev?.page || '', 'mirror')
+  else window.open(url, '_blank', 'noopener')
+}
+
+/** 联网来源：右栏真实嵌入；不可用则新标签打开（与原链接一致）。 */
+function openWebInRail(url: string) {
+  if (!url) return
+  if (canUseRightRail()) openRightRailBrowser(url, '', 'page')
+  else window.open(url, '_blank', 'noopener')
 }
 
 // ---- 浏览器动作留痕（流程行展开后的"动作前 / 动作后"画面） ----
@@ -1862,6 +1900,13 @@ const webTitle = computed(() => webOn.value
                             target="_blank"
                             rel="noopener noreferrer"
                           >{{ evidenceOf(m.trace[ti])?.url }}</a>
+                          <button
+                            v-if="evidenceOf(m.trace[ti])?.url"
+                            type="button"
+                            class="cd-flow-evidence-rail"
+                            title="在内置浏览器（只读镜像）查看这个页面；侧栏不可用时在新标签打开"
+                            @click="openEvidenceInRail(evidenceOf(m.trace[ti]))"
+                          >内置浏览器</button>
                         </div>
                         <div class="cd-flow-shots">
                           <figure v-if="evidenceOf(m.trace[ti])?.shot_before">
@@ -1912,11 +1957,19 @@ const webTitle = computed(() => webOn.value
             <ArtifactCards :artifacts="m.artifacts" :open="openArtifact" />
             <details v-if="m.status === 'done' && webRefsOf(m).length" class="cd-web-sources">
               <summary>联网来源（{{ webRefsOf(m).length }}）</summary>
-              <a v-for="(s, i) in webRefsOf(m)" :key="s.url + i" class="cd-web-source" :href="s.url" target="_blank" rel="noopener noreferrer">
-                <span class="cd-web-source-title">{{ s.title }}</span>
-                <span class="cd-web-source-url">{{ s.url }}</span>
-                <span v-if="s.score" class="cd-web-source-score">参考 {{ s.score }}</span>
-              </a>
+              <div v-for="(s, i) in webRefsOf(m)" :key="s.url + i" class="cd-web-source">
+                <a class="cd-web-source-main" :href="s.url" target="_blank" rel="noopener noreferrer">
+                  <span class="cd-web-source-title">{{ s.title }}</span>
+                  <span class="cd-web-source-url">{{ s.url }}</span>
+                  <span v-if="s.score" class="cd-web-source-score">参考 {{ s.score }}</span>
+                </a>
+                <button
+                  type="button"
+                  class="cd-web-source-rail"
+                  title="在右侧预览栏打开这个来源；侧栏不可用时在新标签打开"
+                  @click="openWebInRail(s.url)"
+                >侧栏</button>
+              </div>
             </details>
             <div v-if="m.status === 'error'" class="cd-error" :class="errorKindClass(m.errorKind)">⚠ {{ m.error }}</div>
             <div v-if="m.status === 'done' && shownRefs(m).length" class="cd-refs">
@@ -1925,7 +1978,7 @@ const webTitle = computed(() => webOn.value
                 :key="r.path + ':' + r.line"
                 class="cd-ref"
                 :title="'打开 ' + r.path + (r.line ? ':' + r.line : '')"
-                @click="openRef(r)"
+                @click="openRefSmart(r)"
               >
                 <svg width="11" height="11" viewBox="0 0 11 11"><path d="M2 1.5 H6.5 L9 4 V9.5 H2 Z M6.5 1.5 V4 H9" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg>
                 <span class="cd-ref-path">{{ r.path }}</span>
@@ -2513,6 +2566,19 @@ const webTitle = computed(() => webOn.value
   color: var(--accent); font: var(--fs-cap)/1.4 var(--font-mono);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 「内置浏览器」：把证据网址交给右侧预览栏的只读镜像（不可用时回落新标签） */
+.cd-flow-evidence-rail {
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  font-family: var(--font-ui); font-size: var(--fs-cap); font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cd-flow-evidence-rail:hover { color: var(--text); border-color: var(--accent); background: var(--bg-hover); }
+.cd-flow-evidence-rail:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 1px; }
 .cd-flow-shots { display: flex; gap: 8px; flex-wrap: wrap; }
 .cd-flow-shots figure { margin: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .cd-flow-shots img {
@@ -2538,11 +2604,26 @@ const webTitle = computed(() => webOn.value
 .cd-ref-line { color: var(--amber); }
 .cd-web-sources { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 5px; max-width: 96%; }
 .cd-web-sources summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-cap); }
-.cd-web-source { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; margin-top: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); text-decoration: none; background: var(--bg); }
+.cd-web-source { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; margin-top: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--bg); }
 .cd-web-source:hover { border-color: var(--accent); background: var(--bg-selected); }
+.cd-web-source-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; min-width: 0; color: inherit; text-decoration: none; }
 .cd-web-source-title { font-size: var(--fs-cap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cd-web-source-url { grid-column: 1 / -1; color: var(--accent); font-size: var(--fs-cap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cd-web-source-score { color: var(--text-faint); font-size: var(--fs-cap); }
+/* 「侧栏」：在主链接之外单独可点，不嵌进 <a>（避免交互元素套娃） */
+.cd-web-source-rail {
+  align-self: start;
+  padding: 1px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  font-family: var(--font-ui); font-size: var(--fs-cap); font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cd-web-source-rail:hover { color: var(--text); border-color: var(--accent); background: var(--bg-hover); }
+.cd-web-source-rail:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 1px; }
 
 
 

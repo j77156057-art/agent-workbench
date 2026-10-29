@@ -2,6 +2,7 @@
 // 画布/运行面板（弹窗态 runtimeOpen 与常驻态 runtimeResident 互斥）。
 import { ref, type Ref } from 'vue'
 import type { EditorTab } from './workbench-types'
+import type { FileDiffEntry } from './chat-types'
 
 // 工作区视图只有三个。
 // 'cockpit'（开发舱）曾是这个联合的第四项，但 AutonomousCockpit 组件在 v2 重构 E 阶段
@@ -78,6 +79,43 @@ const jobsOpen = ref(false)
 function openJobs() { jobsOpen.value = true }
 function closeJobs() { jobsOpen.value = false }
 
+// ---------------------------------------------------------------- 右侧预览栏（第三栏）
+// 只读预览：文件源码 / 本轮改动 diff / 网页（iframe 或只读镜像）。
+// 打开状态与内容放这里：App 负责渲染栏壳与宽度，ChatDock 负责从对话里把内容送进来。
+export type RightRailTab = 'browser' | 'file' | 'diff'
+export type RightRailBrowserMode = 'page' | 'mirror'
+
+const rightRailOpen = ref(false)
+const rightRailTab = ref<RightRailTab>('browser')
+const rightRailBrowser = ref<{ url: string; page: string; mode: RightRailBrowserMode }>({
+  url: '', page: '', mode: 'page',
+})
+const rightRailFile = ref<{ path: string; line: number }>({ path: '', line: 1 })
+const rightRailDiff = ref<FileDiffEntry[]>([])
+
+/** 打开网页预览。page 是浏览器实况的会话 id（来自 browser_evidence），有值时可直接看只读镜像。 */
+function openRightRailBrowser(url: string, page = '', mode: RightRailBrowserMode = 'page') {
+  rightRailBrowser.value = { url: String(url || ''), page: String(page || ''), mode }
+  rightRailTab.value = 'browser'
+  rightRailOpen.value = true
+}
+/** 打开只读源码预览；line 为目标行（1 起）。 */
+function openRightRailFile(path: string, line = 1) {
+  const n = Number(line)
+  rightRailFile.value = { path: String(path || ''), line: Number.isFinite(n) && n > 0 ? Math.floor(n) : 1 }
+  rightRailTab.value = 'file'
+  rightRailOpen.value = true
+}
+/** 打开改动预览；没有条目时不打开（避免空栏）。 */
+function openRightRailDiff(entries: FileDiffEntry[]) {
+  if (!entries || !entries.length) return
+  rightRailDiff.value = entries
+  rightRailTab.value = 'diff'
+  rightRailOpen.value = true
+}
+function toggleRightRail() { rightRailOpen.value = !rightRailOpen.value }
+function closeRightRail() { rightRailOpen.value = false }
+
 export function useRuntime() {
   return {
     workspace, setWorkspace,
@@ -89,5 +127,8 @@ export function useRuntime() {
     flowOpen, openFlow, closeFlow,
     changesOpen, openChanges, closeChanges,
     jobsOpen, openJobs, closeJobs,
+    rightRailOpen, rightRailTab, rightRailBrowser, rightRailFile, rightRailDiff,
+    openRightRailBrowser, openRightRailFile, openRightRailDiff,
+    toggleRightRail, closeRightRail,
   }
 }

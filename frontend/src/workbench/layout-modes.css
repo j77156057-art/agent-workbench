@@ -316,6 +316,40 @@ html[data-layout='fixed'] .wb-body--rail-resize .ft-panel { border-right: 0; }
 body.ft-col-resizing { cursor: col-resize; user-select: none; }
 body.ft-col-resizing * { cursor: col-resize !important; }
 
+/* ==========================================================
+   ⑥b 右侧预览栏宽度拖拽（第三栏）
+   ----------------------------------------------------------
+   与左栏同款手感，但拖的是右栏**左边缘**：向左拖 = 变宽。
+   宽度写进 .wb-body 的 --lay-rail-right，RightRail 的 flex-basis 跟随。
+   元素本身只在 fixed 布局、视口 ≥1200 且右栏打开时渲染（App.vue 的
+   rightRailActive），所以这里不必再套 html[data-layout='fixed']。
+   ========================================================== */
+.rr-resizer {
+  flex: 0 0 3px;
+  width: 3px;
+  align-self: stretch;
+  position: relative;
+  z-index: 3;
+  cursor: col-resize;
+  background: var(--edge-ink);
+  touch-action: none;
+  transition: background .15s var(--ease-standard, ease), box-shadow .15s var(--ease-standard, ease);
+}
+.rr-resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0 -4px;
+}
+.rr-resizer:hover,
+.rr-resizer.dragging,
+.rr-resizer:focus-visible {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  outline: none;
+}
+body.rr-col-resizing { cursor: col-resize; user-select: none; }
+body.rr-col-resizing * { cursor: col-resize !important; }
+
 
 /* ==========================================================
    ⑦ 资源管理器收起 / 展开（fixed 专用）

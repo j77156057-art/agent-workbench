@@ -70,7 +70,7 @@ const {
 } = useSemantic()
 
 // 工作区视图 + 画布/运行面板抽到 workbench-runtime.ts（tabs 在文件末尾注入）
-export type { WorkspaceView, RuntimePanelTab } from './workbench-runtime'
+export type { WorkspaceView, RuntimePanelTab, RightRailTab, RightRailBrowserMode } from './workbench-runtime'
 const {
   workspace, setWorkspace,
   runtimeOpen, runtimeTab, runtimeResident,
@@ -81,6 +81,9 @@ const {
   flowOpen, openFlow, closeFlow,
   changesOpen, openChanges, closeChanges,
   jobsOpen, openJobs, closeJobs,
+  rightRailOpen, rightRailTab, rightRailBrowser, rightRailFile, rightRailDiff,
+  openRightRailBrowser, openRightRailFile, openRightRailDiff,
+  toggleRightRail, closeRightRail,
 } = useRuntime()
 
 // 最近打开的文件抽到 workbench-recent.ts（tree/openPath 在文件末尾注入）
@@ -669,6 +672,10 @@ export function useWorkbench() {
     changesOpen, openChanges, closeChanges,
     // 后台任务进度/日志抽屉
     jobsOpen, openJobs, closeJobs,
+    // 右侧预览栏（第三栏）：文件 / 改动 / 网页
+    rightRailOpen, rightRailTab, rightRailBrowser, rightRailFile, rightRailDiff,
+    openRightRailBrowser, openRightRailFile, openRightRailDiff,
+    toggleRightRail, closeRightRail,
     // fs ops
     createAt, renameNode, deleteNode,
     // menus / dialogs

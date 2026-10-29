@@ -24,7 +24,12 @@ import BrowserLivePanel from './components/BrowserLivePanel.vue'
 import HarnessPanel from './components/HarnessPanel.vue'
 import SemanticLocateBar from './components/SemanticLocateBar.vue'
 import WorkspaceTabs from './components/WorkspaceTabs.vue'
+import RightRail from './components/RightRail.vue'
 import { useWorkbench, askConfirm } from './composables/workbench'
+import {
+  RIGHT_RAIL_DEFAULT_W, RIGHT_RAIL_MIN_W, RIGHT_RAIL_MAX_W, RIGHT_RAIL_MIN_VIEWPORT,
+  clampRightRailWidth,
+} from './lib/rightRail'
 import { probeBackend, demoMode, demoTagMap, demoRegionCards } from './composables/demo'
 import { regionColor } from './theme'
 import { projectApi, getProjectId, setProjectId, type ProjectInfo } from './api'
@@ -67,6 +72,8 @@ const {
   closeAllTabs, closeRuntime,
   // 阶段 4：运行面板常驻（docked）态
   runtimeResident,
+  // 右侧预览栏（第三栏）
+  rightRailOpen, toggleRightRail,
 } = useWorkbench()
 
 const dirtyCount = computed(() => tabs.value.filter((t) => t.dirty).length)
@@ -168,6 +175,110 @@ function nudgeRail(dx: number) {
   railWidth.value = clampRailWidth(railWidth.value + dx)
   persistRailWidth()
 }
+
+// ---------------------------------------------------------------- 右侧预览栏（第三栏）
+// 「查看改动 / 文中引用 / 文件产物 / 网页」在固定布局下进入最右侧只读栏，
+// 而不是弹窗或编辑器标签。栏可拖拽改宽、双击复位、←/→ 微调；
+// 关闭后**不占位也不留窄条**（零痕迹），恢复入口在顶栏「更多 → 预览侧栏」。
+// 只在 fixed 布局且视口 ≥1200 时占位：dock 是竖排、split 是对半分，
+// 强塞第三栏会破坏那套布局的空间语义；窄屏同理，入口回落为弹窗/编辑器。
+const RIGHT_RAIL_WIDTH_KEY = 'docmind.rightRailWidth'
+const rightRailWidth = ref(RIGHT_RAIL_DEFAULT_W)
+
+/** 宽度上限同时受视口与左栏实际占宽约束：主区至少留 520px。
+ *  左栏收起时仍留 36px 恢复窄条（不是 0），右栏自己还有 3px 拖拽条 —— 都要扣掉。 */
+function rightRailClamp(w: number) {
+  const left = railCollapsedActive.value ? 36 : railWidth.value + 3
+  return clampRightRailWidth(w, {
+    innerWidth: window.innerWidth,
+    leftWidth: left + 3,
+  })
+}
+try {
+  const saved = Number(window.localStorage.getItem(RIGHT_RAIL_WIDTH_KEY))
+  if (Number.isFinite(saved) && saved > 0) rightRailWidth.value = rightRailClamp(saved)
+} catch { /* 隐私模式等存储不可用时保持默认 */ }
+
+const rightRailViewport = window.matchMedia(`(min-width: ${RIGHT_RAIL_MIN_VIEWPORT}px)`)
+const rightRailViewportWide = ref(rightRailViewport.matches)
+function syncRightRailViewport() {
+  rightRailViewportWide.value = rightRailViewport.matches
+  rightRailWidth.value = rightRailClamp(rightRailWidth.value)
+}
+onMounted(() => rightRailViewport.addEventListener('change', syncRightRailViewport))
+onBeforeUnmount(() => rightRailViewport.removeEventListener('change', syncRightRailViewport))
+
+/** 当前布局/视口撑得起第三栏（不含用户开关态）。 */
+const rightRailAvailable = computed(
+  () => !!tree.value
+    && !runtimeResident.value
+    && !edaResident.value
+    && layoutKey.value === 'fixed'
+    && rightRailViewportWide.value
+    && !mobileWorkbench.value,
+)
+/** 右栏真正占位：可用 + 用户已打开。 */
+const rightRailActive = computed(() => rightRailAvailable.value && rightRailOpen.value)
+const rightRailStyle = computed<Record<string, string> | undefined>(() =>
+  rightRailActive.value ? { '--lay-rail-right': `${rightRailWidth.value}px` } : undefined,
+)
+
+const rightRailDragging = ref(false)
+let rrDragStartX = 0
+let rrDragStartW = 0
+let rrDragPointer = -1
+
+function persistRightRailWidth() {
+  try { window.localStorage.setItem(RIGHT_RAIL_WIDTH_KEY, String(rightRailWidth.value)) } catch { /* 仅本次会话 */ }
+}
+function detachRightRailDrag() {
+  rightRailDragging.value = false
+  rrDragPointer = -1
+  document.body.classList.remove('rr-col-resizing')
+  window.removeEventListener('pointermove', onRightRailPointerMove)
+  window.removeEventListener('pointerup', onRightRailPointerUp)
+  window.removeEventListener('pointercancel', onRightRailPointerUp)
+}
+function onRightRailPointerMove(e: PointerEvent) {
+  if (!rightRailDragging.value || e.pointerId !== rrDragPointer) return
+  // 拖的是右栏左边缘：向左 = 变宽，向右 = 变窄
+  rightRailWidth.value = rightRailClamp(rrDragStartW - (e.clientX - rrDragStartX))
+}
+function onRightRailPointerUp(e: PointerEvent) {
+  if (!rightRailDragging.value || e.pointerId !== rrDragPointer) return
+  detachRightRailDrag()
+  persistRightRailWidth()
+}
+function onRightRailPointerDown(e: PointerEvent) {
+  if (e.button !== 0) return
+  // 同左栏：不 preventDefault，否则随后的 dblclick 会被吞掉，双击复位失效。
+  rightRailDragging.value = true
+  ;(e.currentTarget as HTMLElement | null)?.setPointerCapture?.(e.pointerId)
+  rrDragStartX = e.clientX
+  rrDragStartW = rightRailWidth.value
+  rrDragPointer = e.pointerId
+  document.body.classList.add('rr-col-resizing')
+  window.addEventListener('pointermove', onRightRailPointerMove)
+  window.addEventListener('pointerup', onRightRailPointerUp)
+  window.addEventListener('pointercancel', onRightRailPointerUp)
+}
+function resetRightRailWidth() {
+  rightRailWidth.value = rightRailClamp(RIGHT_RAIL_DEFAULT_W)
+  persistRightRailWidth()
+}
+function nudgeRightRail(dx: number) {
+  rightRailWidth.value = rightRailClamp(rightRailWidth.value + dx)
+  persistRightRailWidth()
+}
+// 左栏拖宽/收起展开会改变右栏上限（主区至少 520），需要重新夹取。
+watch([railWidth, railCollapsedActive], () => {
+  rightRailWidth.value = rightRailClamp(rightRailWidth.value)
+})
+function onWindowResizeForRightRail() {
+  rightRailWidth.value = rightRailClamp(rightRailWidth.value)
+}
+onMounted(() => window.addEventListener('resize', onWindowResizeForRightRail))
+onBeforeUnmount(() => window.removeEventListener('resize', onWindowResizeForRightRail))
 
 // 收起后焦点会随按钮一起消失，转到窄条上，键盘用户不会「丢焦点」。
 const railRestoreBtn = ref<HTMLButtonElement | null>(null)
@@ -705,6 +816,20 @@ onBeforeUnmount(() => {
               <span class="wb-menu-glyph" aria-hidden="true">≡</span>
               <span class="wb-menu-item-name">改动总览</span>
             </button>
+            <!-- 右栏关闭后不从界面留任何窄条/图标，恢复入口只在这里 —— 与左栏收起
+                 后焦点转到「更多」是同一套「零痕迹 + 可找回」思路。 -->
+            <button
+              type="button"
+              class="wb-menu-item"
+              :disabled="!rightRailAvailable"
+              :title="rightRailAvailable
+                ? (rightRailActive ? '关闭右侧预览栏（文件 / 改动 / 网页只读预览）' : '打开右侧预览栏：文件 / 改动 / 网页只读预览，可拖动调整宽度')
+                : '预览侧栏仅在固定布局、窗口宽度 ≥1200 且无运行面板常驻时可用'"
+              @click="toggleRightRail()"
+            >
+              <span class="wb-menu-glyph" aria-hidden="true">▭</span>
+              <span class="wb-menu-item-name">{{ rightRailActive ? '关闭预览侧栏' : '预览侧栏' }}</span>
+            </button>
             <div class="wb-menu-sep" />
             <div class="wb-menu-label">开发工具与运行</div>
             <button type="button" class="wb-menu-item" title="任务与生成：任务分支、Godot 控制、ComfyUI 画图、Unreal" @click="teRef?.show()">
@@ -797,7 +922,7 @@ onBeforeUnmount(() => {
         'wb-body--rail-resize': tree && railResizable,
         'wb-body--rail-collapsed': tree && railCollapsedActive,
       }"
-      :style="railStyle"
+      :style="[railStyle, rightRailStyle]"
     >
       <aside v-if="treeError" class="wb-tree-error">
         <p class="wb-tree-error-title">文件树不可用</p>
@@ -949,6 +1074,30 @@ onBeforeUnmount(() => {
         <div id="wb-chat-slot" class="wb-chat-host" v-show="!runtimeResident && !edaResident" />
       </main>
 
+      <!-- 右侧预览栏（第三栏）左边缘拖拽条：3px 视觉线 + 两侧各 4px 命中区。
+           拖动改宽、双击复位 460px、聚焦后 ←/→ 每次 16px（左=变宽，因为拖的是右栏左缘）。
+           只在 fixed + 视口 ≥1200 且右栏打开时出现；关闭后与整栏一起消失，不占位。 -->
+      <div
+        v-if="rightRailActive"
+        class="rr-resizer"
+        :class="{ dragging: rightRailDragging }"
+        role="separator"
+        aria-orientation="vertical"
+        :aria-label="`预览侧栏宽度：${rightRailWidth} 像素，拖动或按左右方向键调整`"
+        :aria-valuenow="rightRailWidth"
+        :aria-valuemin="RIGHT_RAIL_MIN_W"
+        :aria-valuemax="RIGHT_RAIL_MAX_W"
+        tabindex="0"
+        title="拖动调整预览侧栏宽度（双击恢复默认）"
+        @pointerdown="onRightRailPointerDown"
+        @dblclick="resetRightRailWidth"
+        @keydown.left.prevent="nudgeRightRail(16)"
+        @keydown.right.prevent="nudgeRightRail(-16)"
+      />
+      <!-- v-if 而非 v-show：关闭后整栏从 DOM 移除（零痕迹），
+           栏内 iframe 也随之中止 —— 不留一个看不见却还在加载/播放的页面。 -->
+      <RightRail v-if="rightRailActive" />
+
       <div v-if="!treeError && !tree && !demoMode" class="wb-booting">
         <div class="cv-spinner" />
         <p>正在连接本地 Agent 工作台 服务…</p>
@@ -971,7 +1120,9 @@ onBeforeUnmount(() => {
         @dock="edaResident = true" @undock="edaResident = false" />
       <HarnessPanel ref="hpRef" />
       <LiveStreamPanel ref="lsRef" />
-      <BrowserLivePanel />
+      <!-- 右栏打开时隐藏右侧浮窗（两者都在右边，会重叠）；右栏「只读镜像」页签
+           接管实况画面，关闭右栏后这个浮窗自动回来。 -->
+      <BrowserLivePanel v-if="!rightRailActive" />
     </div>
 
     <ContextMenu />

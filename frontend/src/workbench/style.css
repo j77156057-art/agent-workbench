@@ -944,6 +944,10 @@ html[data-material='glass'] .wb-proj-notice {
   color: var(--text);
 }
 .wb-menu-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+/* 不可用的菜单项（如窄视口/非固定布局下的「预览侧栏」）：变淡 + 禁止光标，
+   悬停不再给反馈，避免"看着能点、点了没反应"。 */
+.wb-menu-item:disabled { opacity: .5; cursor: not-allowed; }
+.wb-menu-item:disabled:hover { background: transparent; border-color: transparent; }
 .wb-menu-item-name { font-size: var(--fs-sm); font-weight: 600; }
 .wb-menu-item small { font-size: var(--fs-cap); color: var(--text-faint); line-height: 1.35; }
 .wb-menu-label {
