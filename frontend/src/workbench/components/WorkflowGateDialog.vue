@@ -358,7 +358,7 @@ function submitRevise() {
 .wg-custom { margin-top: 10px; display: grid; gap: 8px; }
 .wg-tasks { margin: 10px 0; display: grid; gap: 7px; max-height: 38vh; overflow-y: auto; }
 .wg-task { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface, var(--bg-hover)); transition: border-color .15s ease, background .15s ease, transform .15s ease; }.wg-task:hover { border-color: var(--border-strong); background: var(--bg-selected); transform: translateX(2px); }
-.wg-task b { flex: 0 0 auto; font-size: var(--fs-cap); color: var(--accent); font-family: ui-monospace, monospace; padding-top: 1px; }
+.wg-task b { flex: 0 0 auto; font-size: var(--fs-cap); color: var(--accent); font-family: var(--font-mono); padding-top: 1px; }
 .wg-task-main { min-width: 0; display: grid; gap: 2px; font-size: var(--fs-sm); line-height: 1.5; }
 .wg-task-role { font-size: var(--fs-cap); color: var(--text-faint); font-weight: 600; }
 .wg-task-main small { color: var(--text-faint); font-size: var(--fs-cap); }

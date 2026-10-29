@@ -207,6 +207,9 @@ function isDocDirty(docText: string, saved: string): boolean {
 watch(() => props.tab?.savedContent, () => {
   if (!props.tab) return
   const st = states.get(props.tab.id)
+  // tab 是父级持有的共享可变对象（workbench.ts 的冲突检测也读这个标记），
+  // 沿用既有约定回写；改成 emit 需要连带重做编辑器状态的所有权。
+  // eslint-disable-next-line vue/no-mutating-props
   if (st) props.tab.dirty = isDocDirty(st.doc.toString(), props.tab.savedContent)
 })
 

@@ -142,7 +142,7 @@ async function openInEditor() {
 .rr-file-path {
   flex: 1 1 auto;
   min-width: 0;
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-sm);
   color: var(--text-muted);
   overflow: hidden;
@@ -176,7 +176,7 @@ async function openInEditor() {
   min-height: 0;
   overflow: auto;
   padding: 6px 0 14px;
-  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-sm);
   line-height: 1.6;
 }

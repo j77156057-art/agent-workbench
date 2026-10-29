@@ -897,7 +897,7 @@ onBeforeUnmount(stopTimer)
   flex: 1 1 170px; min-width: 140px; font: inherit; font-size: var(--fs-sm);
   border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; background: var(--bg-raised);
 }
-.ag-key-mask { font-size: var(--fs-sm); color: var(--text-muted); font-family: ui-monospace, monospace; }
+.ag-key-mask { font-size: var(--fs-sm); color: var(--text-muted); font-family: var(--font-mono); }
 .ag-link { font-size: var(--fs-cap); color: var(--accent); text-decoration: none; }
 .ag-link:hover { text-decoration: underline; }
 .ag-provider-note { margin: 0; font-size: var(--fs-cap); color: var(--text-faint); }

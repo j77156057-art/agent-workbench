@@ -292,6 +292,9 @@ def build_tokens(p):
         "border_w": p["border_w"], "shadow": shadow,
         "fs_body": fs(14), "fs_sm": fs(12), "fs_cap": fs(11), "fs_md": fs(13),
         "fs_h3": fs(15), "fs_h2": fs(16), "fs_lead": fs(18), "fs_h1": fs(22),
+        # --fs-xl 是 20px 档（弹窗标题/统计数字）。漏了它，种子皮肤下这一档
+        # 会停在基准 20px，比周围所有字阶都小一截。
+        "fs_xl": fs(20),
         "s1": s1, "s2": s2, "s3": s3, "s4": s4, "s5": s5, "s6": s6,
         "measure": int(round(760 * p["density"])),
     }
@@ -374,8 +377,8 @@ def render_css(seed, p, t):
     L.append("  /* 字阶（基线由种子决定） */")
     L.append("  --fs-body: %spx; --fs-md: %spx; --fs-sm: %spx; --fs-cap: %spx;" %
              (t["fs_body"], t["fs_md"], t["fs_sm"], t["fs_cap"]))
-    L.append("  --fs-h2: %spx; --fs-h3: %spx; --fs-lead: %spx; --fs-h1: %spx; --fs-display: 30px;" %
-             (t["fs_h2"], t["fs_h3"], t["fs_lead"], t["fs_h1"]))
+    L.append("  --fs-h2: %spx; --fs-h3: %spx; --fs-lead: %spx; --fs-h1: %spx; --fs-xl: %spx; --fs-display: 30px;" %
+             (t["fs_h2"], t["fs_h3"], t["fs_lead"], t["fs_h1"], t["fs_xl"]))
     L.append("  --fs-micro: %spx;" % t["fs_cap"])
     L.append("")
     L.append("  /* 间距栅格 */")

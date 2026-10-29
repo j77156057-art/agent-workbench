@@ -619,7 +619,6 @@ onBeforeUnmount(() => {
 
 /* ------------------------------------------------------------------ 交互增强 */
 function setHover(id: string | null) { hoverId.value = id }
-function clearHover() { hoverId.value = null }
 
 // 折叠/展开子树：切换集合后重排（layout 会据此剪枝）
 function toggleCollapse(id: string) {
@@ -1138,10 +1137,10 @@ defineExpose({ reload, undo, redo, addChildNew })
 .sc-node.flash.bad { box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 55%, transparent); }
 .sc-node-head { display: flex; align-items: center; gap: 6px; }
 .sc-node-dot { width: 6px; height: 6px; border-radius: 2px; background: var(--nc); flex: none; }
-.sc-node-name { font-size: var(--fs-sm); color: var(--text); font-family: Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sc-node-pos { margin-left: auto; font-size: var(--fs-cap); color: var(--text-faint); font-family: Consolas, monospace; flex: none; }
+.sc-node-name { font-size: var(--fs-sm); color: var(--text); font-family: var(--font-code); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-node-pos { margin-left: auto; font-size: var(--fs-cap); color: var(--text-faint); font-family: var(--font-code); flex: none; }
 .sc-node-meta { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
-.sc-node-type { font-size: var(--fs-cap); color: var(--text-muted); font-family: Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-node-type { font-size: var(--fs-cap); color: var(--text-muted); font-family: var(--font-code); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sc-chip { font-size: var(--fs-cap); border-radius: 3px; padding: 0 4px; border: 1px solid; flex: none; }
 .sc-chip.inst { color: var(--green); border-color: color-mix(in srgb, var(--green) 38%, transparent); }
 .sc-chip.script { color: var(--viz-fn); border-color: color-mix(in srgb, var(--viz-fn) 38%, transparent); }
@@ -1162,9 +1161,9 @@ defineExpose({ reload, undo, redo, addChildNew })
 .sc-file:hover { border-color: color-mix(in srgb, var(--fc) 50%, var(--viz-hover-tint)); box-shadow: 0 2px 4px rgba(22, 33, 54, .1), 0 12px 24px rgba(22, 33, 54, .1); transform: translateY(-1px); }
 .sc-file.sel { box-shadow: 0 0 0 2px color-mix(in srgb, var(--fc) 25%, transparent), 0 8px 18px rgba(22, 33, 54, .12); }
 .sc-file.ghost { border-style: dashed; opacity: .7; }
-.sc-file-chip { flex: none; font-family: Consolas, monospace; font-size: var(--fs-cap); font-weight: 700; color: var(--fc); background: color-mix(in srgb, var(--fc) 14%, transparent); border-radius: 3px; padding: 2px 5px; }
+.sc-file-chip { flex: none; font-family: var(--font-code); font-size: var(--fs-cap); font-weight: 700; color: var(--fc); background: color-mix(in srgb, var(--fc) 14%, transparent); border-radius: 3px; padding: 2px 5px; }
 .sc-file-meta { min-width: 0; flex: 1; }
-.sc-file-name { font-family: Consolas, monospace; font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-file-name { font-family: var(--font-code); font-size: var(--fs-sm); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sc-file-sub { font-size: var(--fs-cap); color: var(--text-faint); }
 .sc-file-warn { color: var(--amber); }
 /* 折叠按钮（节点卡内，仅层级布局显示） */

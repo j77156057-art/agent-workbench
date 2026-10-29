@@ -228,10 +228,10 @@ onMounted(() => {
 }
 .cmb-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .cmb-auto { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 28%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.cmb-warn { color: var(--warning, #b8860b); border-color: rgba(184,134,11,.28); background: rgba(184,134,11,.08); }
+.cmb-warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 28%, transparent); background: color-mix(in srgb, var(--amber) 8%, transparent); }
 .cmb-hint {
   flex-basis: 100%;
-  color: var(--warning, #b8860b);
+  color: var(--amber);
   font-size: var(--fs-cap);
   overflow: hidden;
   text-overflow: ellipsis;

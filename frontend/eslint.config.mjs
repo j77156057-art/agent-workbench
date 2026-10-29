@@ -63,4 +63,10 @@ export default tseslint.config(
       "no-empty": ["error", { allowEmptyCatch: true }],
     },
   },
+  {
+    // 通用图标组件的既有名字（Icon）；全仓改成 AppIcon 只换来命名规则，
+    // 收益不抵 60+ 处调用点的改动风险。
+    files: ["src/workbench/components/Icon.vue"],
+    rules: { "vue/multi-word-component-names": "off" },
+  },
 );

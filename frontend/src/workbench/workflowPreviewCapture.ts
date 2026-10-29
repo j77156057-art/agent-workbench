@@ -51,6 +51,8 @@ export function refreshPreviewFrame(frame: HTMLIFrameElement): Promise<void> {
     const timer = setTimeout(() => { cleanup(); reject(new Error('预览加载超时，请手动刷新后重试')) }, 12000)
     frame.addEventListener('load', loaded, { once: true })
     frame.addEventListener('error', failed, { once: true })
+    // 同值赋值是刻意的：重设 src 才会触发一次新的 load，拿不到新文档就不截图。
+    // eslint-disable-next-line no-self-assign
     frame.src = frame.src
   })
 }

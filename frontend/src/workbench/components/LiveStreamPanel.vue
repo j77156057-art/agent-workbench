@@ -362,7 +362,7 @@ defineExpose({ show, hide })
 .lsp-phase[data-tone='bad'] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
 .lsp-x {
   margin-left: auto; width: 26px; height: 26px; border: none; background: transparent;
-  color: var(--text-muted); font-size: 18px; line-height: 1; cursor: pointer; border-radius: var(--r-sm);
+  color: var(--text-muted); font-size: var(--fs-lead); line-height: 1; cursor: pointer; border-radius: var(--r-sm);
 }
 .lsp-x:hover { background: var(--bg-hover); color: var(--text); }
 .lsp-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 1.15fr 1fr; }

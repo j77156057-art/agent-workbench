@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 统一设置页：左侧分组导航（用量费用 / 网络搜索 / MCP / 智能体），右侧对应面板。
-// 网络搜索与 URL 获取走 settingsApi（复用 /api/config 的保存通道，密钥不回显）；
+// 网络搜索与 URL 获取走 settingsApi 的专用端点 /api/web-settings（密钥不回显）；
+// 不能复用 /api/config —— 只带 web_* 的局部请求会按默认 provider="mock" 切走模型。
 // MCP 走 mcpApi；智能体为本地预设（localStorage），后续可升级为后端持久化。
 import { reactive, ref, watch, computed, onUnmounted } from 'vue'
 import {
@@ -2540,8 +2541,8 @@ async function powerAction(action: 'on' | 'off') {
 .mcp-node[data-state="fail"] .mcp-ring { stroke: var(--diag-fail); }
 .mcp-node[data-state="warn"] .mcp-ring { stroke: var(--diag-warn); }
 .mcp-node[data-state="idle"] .mcp-ring { stroke: var(--diag-idle); }
-.mcp-lbl { font: 510 12px var(--font-ui); fill: var(--text); text-anchor: middle; }
-.mcp-sub { font: 400 11px var(--font-ui); fill: var(--text-muted); text-anchor: middle; }
+.mcp-lbl { font: 510 var(--fs-sm) var(--font-ui); fill: var(--text); text-anchor: middle; }
+.mcp-sub { font: 400 var(--fs-cap) var(--font-ui); fill: var(--text-muted); text-anchor: middle; }
 
 /* C3 / C4：确认卡 / 注册卡（复用 .sv-mask） */
 .sv-dialog {
@@ -2590,11 +2591,11 @@ async function powerAction(action: 'on' | 'off') {
 .sv-box { width: min(1040px, calc(100vw - 32px)); height: min(820px, calc(100vh - 48px)); }
 .sv-head { padding: 18px 24px 14px; align-items: center; }
 .sv-title-wrap { display: flex; flex-direction: column; gap: 3px; }
-.sv-title { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.sv-title { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -.01em; }
 .sv-sub { margin: 0; color: var(--text-muted); font-size: var(--fs-sm); }
 .sv-x {
   width: 32px; height: 32px; display: grid; place-items: center;
-  border: 1px solid transparent; border-radius: var(--r-sm); font-size: 20px;
+  border: 1px solid transparent; border-radius: var(--r-sm); font-size: var(--fs-xl);
 }
 .sv-x:hover { background: var(--bg-hover); border-color: var(--border); }
 .sv-nav { width: 200px; padding: 16px 12px; gap: 2px; background: var(--bg-hover); }
@@ -2609,7 +2610,7 @@ async function powerAction(action: 'on' | 'off') {
 }
 .sv-content { padding: 24px 28px 28px; background: var(--surface); }
 .sv-panel { gap: 8px; }
-.sv-h4 { margin-bottom: 8px; font-size: 18px; }
+.sv-h4 { margin-bottom: 8px; font-size: var(--fs-lead); }
 .sv-hint { color: var(--text-muted); font-size: var(--fs-md); line-height: 1.7; }
 .sv-meter-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2621,7 +2622,7 @@ async function powerAction(action: 'on' | 'off') {
   border-radius: var(--r-md); background: var(--bg);
 }
 .sv-meter span { color: var(--text-muted); }
-.sv-meter b { margin-top: 6px; font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
+.sv-meter b { margin-top: 6px; font-size: calc(var(--fs-h1) + 2px); font-weight: 600; letter-spacing: -.02em; }
 .sv-provider-list {
   margin-top: 16px; border: 1px solid var(--border); border-radius: var(--r-md);
   overflow: hidden; background: var(--surface); overflow-x: auto;

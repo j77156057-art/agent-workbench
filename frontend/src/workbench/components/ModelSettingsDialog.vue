@@ -1129,7 +1129,7 @@ async function save() {
   border: 1px solid var(--border-graphic); background: var(--bg);
   font-size: var(--fs-cap); line-height: 1; color: transparent;
 }
-.ms-check-on .ms-box-tick { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.ms-check-on .ms-box-tick { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .ms-pref-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-md); color: var(--text-muted); }
 .ms-pref-select { width: 108px; }
 .ms-label-note { color: var(--text-faint); font-size: var(--fs-cap); font-weight: 400; }
@@ -1287,7 +1287,7 @@ async function save() {
   background: var(--surface); border-radius: var(--modal-radius);
   box-shadow: var(--modal-shadow);
 }
-.ms-title { margin: 0; font-size: 20px; font-weight: 600; }
+.ms-title { margin: 0; font-size: var(--fs-xl); font-weight: 600; }
 .ms-sub { margin: 2px 0 10px; color: var(--text-muted); font-size: var(--fs-sm); }
 .ms-x {
   width: 32px; height: 32px; border-radius: var(--r-sm);

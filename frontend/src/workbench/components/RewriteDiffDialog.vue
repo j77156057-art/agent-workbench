@@ -136,7 +136,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rd-path {
   font-size: var(--fs-sm);
   color: var(--text-faint);
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -177,8 +177,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   background: color-mix(in srgb, var(--text) 4%, var(--bg-raised));
 }
 .rd-stat-same { color: var(--text-faint); }
-.rd-stat-add { color: var(--green); font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
-.rd-stat-del { color: var(--danger); font-weight: 600; font-family: 'Cascadia Code', Consolas, monospace; }
+.rd-stat-add { color: var(--green); font-weight: 600; font-family: var(--font-code); }
+.rd-stat-del { color: var(--danger); font-weight: 600; font-family: var(--font-code); }
 .rd-stat-equal { color: var(--amber); }
 .rd-stat-hint { margin-left: auto; color: var(--text-faint); font-size: var(--fs-cap); }
 
@@ -186,7 +186,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   flex: 1 1 auto;
   overflow: auto;
   background: #f6f8fb;
-  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-sm);
   line-height: 1.65;
   padding: 6px 0;

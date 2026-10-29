@@ -1,11 +1,6 @@
 // 验证 openSse 的协议畸形计数与回调：5 条 malformed data 行
 // 触发一次 onProtocolError（不打断流）。
 
-interface MalformedInfo {
-  kind: 'malformed_data';
-  payload: string;
-  count: number;
-}
 
 interface CallRecord {
   count: number;

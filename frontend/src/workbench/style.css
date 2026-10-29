@@ -121,6 +121,12 @@
   --font-ui: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
   --font-display: 'Archivo Black', 'Space Grotesk', 'Noto Sans SC', sans-serif;
   --font-mono: 'Space Mono', ui-monospace, 'JetBrains Mono', Consolas, monospace;
+  /* 代码面等宽（2026-10-29 收口）：编辑器 / diff / 文件预览 / 场景图里成段的
+     代码文本走这一套，不走 --font-mono。理由：Space Mono 是展示用等宽，字幅
+     宽、字形有性格，长代码和对齐表格会发花；而代码面此前各自写死家族，实际
+     漂成了 Cascadia / ui-monospace / Consolas 三种栈。现在只有这一个来源。
+     纯标签/编号（ID、路径芯片、键名）仍用 --font-mono。 */
+  --font-code: 'Cascadia Code', 'JetBrains Mono', Consolas, ui-monospace, monospace;
   /* --font-base 同理：一处引用（场景运行台空态）从来没定义过，靠 var(--x, inherit)
      的兜底才没塌。body 本来就是 --font-ui，所以定成别名是零视觉变化。 */
   --font-base: var(--font-ui);

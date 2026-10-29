@@ -66,7 +66,7 @@
 
   /* 字阶（基线由种子决定） */
   --fs-body: 15.0px; --fs-md: 13.9px; --fs-sm: 12.9px; --fs-cap: 11.8px;
-  --fs-h2: 17.1px; --fs-h3: 16.1px; --fs-lead: 19.3px; --fs-h1: 23.6px; --fs-display: 30px;
+  --fs-h2: 17.1px; --fs-h3: 16.1px; --fs-lead: 19.3px; --fs-h1: 23.6px; --fs-xl: 21.4px; --fs-display: 30px;
   --fs-micro: 11.8px;
 
   /* 间距栅格 */

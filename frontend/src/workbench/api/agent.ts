@@ -1,5 +1,5 @@
 // Agent 策略 / 审批 / 工作流全量类型与 API（由原 workbench/api.ts 按域切分；调用方继续从 barrel ../api 引入）。
-import { getProjectId, rawJson, request, withProject } from './_base'
+import { getProjectId, rawJson, request } from './_base'
 import { openSse } from './sse'
 
 // ---------------------------------------------------------------- Agent 策略 / 审批（P4 收口）

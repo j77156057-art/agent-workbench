@@ -388,7 +388,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-root {
   font-size: var(--fs-cap);
   color: var(--text-faint);
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -485,7 +485,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-node-dir {
   fill: var(--text-muted);
   font-size: var(--fs-cap);
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
 }
 .rm-node.missing .rm-node-name { fill: var(--text-muted); }
 
@@ -513,7 +513,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-card-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .rm-card-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .rm-card-dir {
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   color: var(--text-muted);
 }
@@ -565,7 +565,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .rm-chip i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .rm-export {
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   color: var(--amber);
   background: var(--bg-hover);

@@ -48,7 +48,7 @@ export const SKINS: SkinDef[] = [
   // 「种子」是一套**由随机种子推导出来**的皮肤：色相/明度/圆角/描边/阴影/字号/间距
   // 全部来自 tools/design_seed.py 对该种子的确定性派生（色值按对比度反解，保证过 AA）。
   // 换观感就跑 `python tools/design_seed.py --new-seed` 重新生成，别手改这个文件。
-  { key: 'seed', name: '种子 569161024', desc: '由种子推导：暖红强调 + 12px 圆角 + 紧凑密度 + 深底', swatch: ['#1d1c1b', '#e7e5e4', '#e0563a', '#ffffff'] },
+  { key: 'seed', name: '种子 344284156', desc: '由种子推导：玫瑰红强调 + 14px 圆角 + 紧凑密度 + 浅底', swatch: ['#f9f8f8', '#28201f', '#904759', '#ffffff'] },
 ]
 
 // 2026-10-20：默认皮肤从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）

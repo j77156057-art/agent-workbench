@@ -278,7 +278,7 @@ watch(
 .ai-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 .ai-card-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .ai-card-origin {
-  font-size: var(--fs-cap); color: var(--text-muted); font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: var(--fs-cap); color: var(--text-muted); font-family: var(--font-code);
   max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ai-card-status { margin-left: auto; font-size: var(--fs-cap); color: var(--text-faint); }
@@ -328,7 +328,7 @@ watch(
 .ai-md :deep(.md-ul) { margin: 2px 0 8px; padding-left: 18px; }
 .ai-md :deep(.md-ul li) { margin: 2px 0; list-style: disc; }
 .ai-md :deep(code.md-ic) {
-  font-family: 'Cascadia Code', Consolas, monospace; font-size: var(--fs-cap);
+  font-family: var(--font-code); font-size: var(--fs-cap);
   background: var(--bg-hover); color: var(--amber); border: 1px solid var(--border-strong);
   border-radius: 4px; padding: 0.5px 4px;
 }
@@ -337,7 +337,7 @@ watch(
   border: 1px solid var(--border); border-radius: 8px; overflow-x: auto;
 }
 .ai-md :deep(.md-pre code) {
-  font-family: 'Cascadia Code', Consolas, monospace; font-size: var(--fs-sm);
+  font-family: var(--font-code); font-size: var(--fs-sm);
   line-height: 1.55; color: #243044; white-space: pre;
 }
 
@@ -346,7 +346,7 @@ watch(
   position: relative; margin: 2px 0 8px; padding: 9px 10px;
   background: #f6f8fb; border: 1px solid #b7dcc7; border-radius: 8px;
   overflow-x: auto;
-  font-family: 'Cascadia Code', Consolas, monospace; font-size: var(--fs-sm);
+  font-family: var(--font-code); font-size: var(--fs-sm);
   line-height: 1.55; color: #1c6b46; white-space: pre;
 }
 .ai-caret {

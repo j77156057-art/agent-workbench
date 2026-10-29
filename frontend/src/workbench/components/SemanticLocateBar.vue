@@ -44,14 +44,6 @@ function scheduleSearch() {
   }, 280)
 }
 
-function submitNow() {
-  window.clearTimeout(debounce)
-  const text = q.value.trim()
-  if (!text) return
-  openPop()
-  if (!demoMode.value) void runLocate(text)
-}
-
 // 键盘导航：region 条目排在文件之前，统一压平成可选序列
 const flatCount = computed(() => regions.value.length + files.value.length)
 function onKeydown(ev: KeyboardEvent) {

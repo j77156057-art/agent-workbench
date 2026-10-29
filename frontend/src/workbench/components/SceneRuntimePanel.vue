@@ -19,7 +19,7 @@ const engineCfg = useEngineConfig()
 // 阶段 4：popup（默认，传统固定遮罩弹窗，行为逐字不变）/ docked（常驻主区，内联填充父容器）。
 // 同一个组件实例通过 prop 切换形态，绝不重建（否则丢 iframe / 引擎嵌入状态）。
 const props = withDefaults(defineProps<{ mode?: 'popup' | 'docked'; host?: string }>(), { mode: 'popup', host: '#wb-playpane-slot' })
-const emit = defineEmits<{ close: [] }>()
+defineEmits<{ close: [] }>()
 const docked = computed(() => props.mode === 'docked')
 
 const { jumpToLine, openPath, activeTab, runtimeOpen, runtimeTab, closeRuntimeResident } = useWorkbench()
@@ -1167,7 +1167,7 @@ onUnmounted(() => {
 .pb-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--text-faint); font-size: var(--fs-body); text-align: center; padding: 30px; line-height: 1.8; }
 .pb-empty small { font-size: var(--fs-cap); max-width: 380px; }
 
-.pb-tl { flex: 1 1 45%; min-height: 150px; overflow: auto; padding: 4px 0; font: 11px var(--font-mono); }
+.pb-tl { flex: 1 1 45%; min-height: 150px; overflow: auto; padding: 4px 0; font: var(--fs-cap) var(--font-mono); }
 .pb-tl-empty { padding: 18px 12px; color: var(--text-faint); font-family: var(--font-base, inherit); line-height: 1.7; }
 .pb-ev { display: flex; align-items: baseline; gap: 7px; padding: 5px 10px; border-bottom: 1px solid rgba(35, 52, 84, 0.08); transition: background .15s ease, transform .15s ease; }
 .pb-ev:hover { background: var(--bg-selected); transform: translateX(2px); }
@@ -1225,7 +1225,7 @@ onUnmounted(() => {
 .pb-fix { border-top: 1px solid var(--border); padding: 6px 10px 10px; display: flex; flex-direction: column; gap: 6px; }
 .pb-fix-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); }
 .pb-fix-shot { font-size: var(--fs-cap); color: var(--green); }
-.pb-fix-out { margin: 0; max-height: 200px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: 11px/1.6 var(--font-mono); color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.pb-fix-out { margin: 0; max-height: 200px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: var(--fs-cap)/1.6 var(--font-mono); color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .pb-fix-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .pb-interaction-hint, .pb-visual-status { font-size: var(--fs-sm); color: var(--text-muted); }
 .pb-visual-feedback { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-raised); padding: 12px; box-shadow: 0 8px 20px rgba(35,52,84,.08); animation: pb-section-in .2s ease-out both; }

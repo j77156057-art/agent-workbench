@@ -24,14 +24,14 @@ const emit = defineEmits<{
 }>()
 
 const {
-  KIND_LABEL, STATUS_LABEL, STEP_GLYPH, EVALUATION_CHECK_LABELS, EVENT_LABELS,
+  KIND_LABEL, EVALUATION_CHECK_LABELS, EVENT_LABELS,
   state, loadError, busy, gateDismissed, gateNeeded, gateOpen,
   finalNote, recoveryRiskAcknowledged, showAllTimeline, evaluation,
   rootEl, status, stages, stageClass, headDetail,
   displayStatus, statusLabel,
   members, completedCount, reviewFailures, uncertainTaskIds,
   timelineEvents, visibleTimeline,
-  roleMeta, fmtMs, stepTitle, stepSummary,
+  roleMeta, fmtMs,
   timelineDetail, timelineTime, timelineCanReplay, criterionTaskResult,
   interrupt, resume, taskStatusOf, toggleMember, memberOpen, retryMember,
   onFinalAcceptance, applyRecovery, focusTask,
@@ -577,7 +577,7 @@ async function discardStage() {
 .wf-task-running .wf-task-dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(37,96,212,.15); animation: wf-pulse 1.4s ease-in-out infinite; }
 .wf-task-ok .wf-task-dot { background: var(--green); }
 .wf-task-failed .wf-task-dot, .wf-task-blocked .wf-task-dot { background: var(--danger); }
-.wf-task-id { font-family: ui-monospace, monospace; font-size: var(--fs-cap); color: var(--accent); }
+.wf-task-id { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--accent); }
 .wf-task-role { font-size: var(--fs-cap); color: var(--text-faint); font-weight: 600; flex: 0 0 auto; }
 .wf-task-text { flex: 1; min-width: 0; color: var(--text); line-height: 1.5; }
 .wf-task-state { flex: 0 0 auto; font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); }

@@ -110,13 +110,13 @@ const files = computed<RenderedFile[]>(() =>
 .fd-file-path {
   flex: 1 1 auto;
   min-width: 0;
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.fd-file-stat { flex: 0 0 auto; display: inline-flex; gap: 8px; font-family: 'Cascadia Code', Consolas, monospace; font-weight: 600; }
+.fd-file-stat { flex: 0 0 auto; display: inline-flex; gap: 8px; font-family: var(--font-code); font-weight: 600; }
 .fd-file-action {
   flex: 0 0 auto;
   padding: 1px 8px;
@@ -132,7 +132,7 @@ const files = computed<RenderedFile[]>(() =>
 .fd-del { color: var(--danger); }
 
 .fd-diff {
-  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-sm);
   line-height: 1.65;
   padding: 6px 0;
@@ -157,7 +157,7 @@ const files = computed<RenderedFile[]>(() =>
 .fd-fallback-note { font-size: var(--fs-sm); color: var(--amber); margin-bottom: 6px; }
 .fd-fallback-diff {
   margin: 0;
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-sm);
   line-height: 1.5;
   white-space: pre-wrap;

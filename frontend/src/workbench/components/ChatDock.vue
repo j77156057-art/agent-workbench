@@ -2105,7 +2105,8 @@ const webTitle = computed(() => webOn.value
      62vh（620px）把主区压到只剩 262px，整屏 2/3 是一个空对话框；试过"右侧常驻栏"
      也不行 —— 420px 栏里回答区只剩 389px、每行约 26 个字（中文舒适区 45–75 字/行），
      长回答被挤成电报体。38vh 让主区拿到 1312×706，回答区横跨全宽（阅读栏 680px、
-     每行约 48 字）。「展开」态仍是 calc(100vh - --wb-main-min)，需要时能手动拉满。 */
+     每行约 48 字）。「展开」态按内容自适应高度，上限是 calc(100vh - --wb-main-min)，
+     长回答才拉满。 */
   height: min(38vh, 520px);
   min-height: 300px;
   max-height: calc(100vh - 86px);
@@ -2113,13 +2114,13 @@ const webTitle = computed(() => webOn.value
   transition: height .24s cubic-bezier(.32, .72, 0, 1),
               min-height .24s cubic-bezier(.32, .72, 0, 1);
 }
-/* 展开态高度 = 视口 - 上方「顶栏 + 编辑器区」的最小高度（--wb-main-min）。
-   旧值写死 100vh-86px：实测上方最小是 118px（窄屏换行后 126/143px），86 偏小 32，
-   于是展开后 dock 把输入栏底部顶出视口 32px —— 输入框被裁掉一截（"对话框被挤没了"）。
-   现在按宽度分档把 --wb-main-min 调在实测值之上（124/132/150），
-   展开时上方恰好压到最小、dock 底边贴视口底且余量恒 >= 0，任何尺寸下都不裁输入栏。 */
+/* 展开态高度按内容走，不再无条件拉满整屏。
+   旧值写死 calc(100vh - --wb-main-min)：短会话只有底部几行答案，上方 60% 是空白，
+   「图里太空」；长回答才需要这个上限。现在 height:auto + max-height 兜底 ——
+   短会话收缩到内容高度（最低 380px），长回答超过上限后 cd-body 内部滚动。
+   上方主区的最小高度仍由 --wb-main-min 保证，输入栏不会掉出视口。 */
 .cd-dock.cd-expanded {
-  height: calc(100vh - var(--wb-main-min, 124px));
+  height: auto;
   max-height: calc(100vh - var(--wb-main-min, 124px));
   min-height: 380px;
 }
@@ -2141,8 +2142,9 @@ const webTitle = computed(() => webOn.value
     min-height: 240px;
     max-height: calc(100vh - 86px);
   }
-  /* 矮屏：上方最小高度不随视口高度变化，继续复用 --wb-main-min */
-  .cd-dock.cd-expanded { height: calc(100vh - var(--wb-main-min, 124px)); }
+  /* 矮屏：上方最小高度不随视口高度变化，继续复用 --wb-main-min；
+     高度仍由内容决定，这里只兜最大值。 */
+  .cd-dock.cd-expanded { max-height: calc(100vh - var(--wb-main-min, 124px)); }
 }
 
 .cd-head {
@@ -2320,15 +2322,22 @@ const webTitle = computed(() => webOn.value
    实测（1600px 视口）：工作台对话台是 1312px 通栏，而原来答案是 12px + max-width:96%
    ≈ 1259px 一行 —— 每行 100+ 个汉字，阅读行长严重超标，扫行很累。
    问答页那边一直有 max-width: var(--measure)（840px，60 字/行），两页观感因此不一致。
-   现在工作台也用 --measure（本页 680px，约 48 字/行，IDE 里更紧凑合适），
-   字号同时提到 --fs-body（14px，与问答页一致）。
+   现在工作台也用 --measure（本页 960px，约 68 字/行，IDE 里更紧凑合适）。
+   2026-10-29：正文由 --fs-body 降到 --fs-md（14→13px），标题同步降一档——
+   工作台是 IDE 密度，答案要和 12–13px 的栏内文字同一视线高度；
+   问答页是阅读页，仍保持 15px，不跟着缩。
    word-break/overflow-wrap：长 URL、长路径、不带空格的标识符在窄栏里会顶破面板。 */
 .cd-answer {
-  font-size: var(--fs-body);
+  font-size: var(--fs-md);
   max-width: var(--measure);
   word-break: break-word;
   overflow-wrap: anywhere;
 }
+/* 答案内标题跟着正文降一档，否则正文 13px 配 16/14px 标题会显得头重脚轻。 */
+.cd-answer :deep(.md-h1) { font-size: var(--fs-h2); }
+.cd-answer :deep(.md-h2) { font-size: var(--fs-h3); }
+.cd-answer :deep(.md-h3),
+.cd-answer :deep(.md-h4) { font-size: var(--fs-md); }
 /* 流式期的节流 markdown 与成稿同一样式；光标在块级内容后自然落到新行 */
 .cd-caret {
   display: inline-block; width: 6px; height: 1.05em; margin-left: 2px;

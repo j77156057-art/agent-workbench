@@ -233,7 +233,7 @@ function sessTime(v?: string): string {
   background: var(--bg);
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1.5;
 }
 
@@ -287,14 +287,14 @@ function sessTime(v?: string): string {
 }
 
 .brand-name {
-  font-size: 18px;
+  font-size: var(--fs-lead);
   font-weight: 650;
   letter-spacing: -.03em;
 }
 
 .brand-sub {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .icon-button {
@@ -383,7 +383,7 @@ function sessTime(v?: string): string {
   margin: 0;
   padding: 0 10px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   line-height: 20px;
 }
@@ -441,7 +441,7 @@ function sessTime(v?: string): string {
 
 .sess-copy strong {
   overflow: hidden;
-  font-size: 14px;
+  font-size: var(--fs-body);
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -454,7 +454,7 @@ function sessTime(v?: string): string {
 .sess-copy small {
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 16px;
 }
 
@@ -509,7 +509,7 @@ function sessTime(v?: string): string {
   border-radius: 6px;
   background: none;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-decoration: none;
 }
 
@@ -538,14 +538,14 @@ function sessTime(v?: string): string {
   margin-top: 4px;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .empty-note {
   margin: 0;
   padding: 4px 10px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
@@ -554,7 +554,7 @@ function sessTime(v?: string): string {
   margin: 0 10px 6px;
   overflow-y: auto;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
 }
 
@@ -625,7 +625,7 @@ function sessTime(v?: string): string {
 .model-name {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

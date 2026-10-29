@@ -107,7 +107,7 @@ const shown = computed(() => visibleArtifacts(props.artifacts))
 .ac-file:hover { border-color: var(--border-strong); color: var(--text); }
 .ac-ico { flex: 0 0 auto; opacity: .75; }
 .ac-name {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

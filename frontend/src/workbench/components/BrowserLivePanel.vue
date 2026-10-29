@@ -180,7 +180,7 @@ function shotUrl(path?: string): string {
   border-radius: 999px;
   color: var(--text);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .blp-pill:hover { border-color: var(--accent); }
 .blp-pill-label { font-weight: 600; white-space: nowrap; }
@@ -196,7 +196,7 @@ function shotUrl(path?: string): string {
   align-items: center;
   gap: 6px;
 }
-.blp-head-title { font-size: 12px; font-weight: 600; }
+.blp-head-title { font-size: var(--fs-sm); font-weight: 600; }
 .blp-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--text-faint); flex: 0 0 auto;
@@ -214,7 +214,7 @@ function shotUrl(path?: string): string {
 .blp-state { margin-left: auto; color: var(--text-faint); font-size: 10.5px; }
 .blp-icon {
   border: 0; background: transparent; color: var(--text-faint);
-  cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 4px;
+  cursor: pointer; font-size: var(--fs-md); line-height: 1; padding: 2px 4px;
 }
 .blp-icon:hover { color: var(--text); }
 
@@ -235,7 +235,7 @@ function shotUrl(path?: string): string {
   padding: 18px;
   text-align: center;
   color: var(--text-faint);
-  font-size: 11px;
+  font-size: var(--fs-cap);
 }
 .blp-wait p { margin: 8px 0 4px; color: var(--text); }
 .blp-wait small { font-size: 10px; }
@@ -252,7 +252,7 @@ function shotUrl(path?: string): string {
   color: #fff; font: 9.5px var(--font-mono);
 }
 .blp-url {
-  font: 11px/1.45 var(--font-mono);
+  font: var(--fs-cap)/1.45 var(--font-mono);
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -260,7 +260,7 @@ function shotUrl(path?: string): string {
 }
 .blp-now {
   display: flex; gap: 8px; align-items: baseline;
-  font-size: 11px;
+  font-size: var(--fs-cap);
 }
 .blp-now-label { color: var(--text-faint); flex: 0 0 auto; }
 .blp-now-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

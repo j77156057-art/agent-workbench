@@ -3,7 +3,6 @@ import { mdToHtml, extractFileRefs, extractWebRefs } from '../markdown'
 import type { FileRef } from '../markdown'
 // 同 useChatStream：node --experimental-strip-types 直接跑这些模块，
 // 相对导入必须带扩展名（tests/test_frontend_node_tests.py 的守卫链）。
-import { flowOf } from './chat-types.ts'
 import type { ChatFlowItem } from './chat-types.ts'
 import { useWorkbench } from './workbench.ts'
 import { prefs } from '../../ask/askPrefs'
@@ -37,7 +36,7 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
   const LIVE_MD_INTERVAL = 125
   const liveHtml = reactive(new Map<number, string>())
   const liveMdTimers = new Map<number, ReturnType<typeof setTimeout>>()
-  let liveMdLastAt = new Map<number, number>()
+  const liveMdLastAt = new Map<number, number>()
   function renderLiveMd(turn: T) {
     liveMdTimers.delete(turn.id)
     liveMdLastAt.set(turn.id, performance.now())

@@ -16,7 +16,7 @@ import { ref } from 'vue'
 import WorkflowCard from './WorkflowCard.vue'
 import type { WorkflowState } from '../api'
 
-const props = defineProps<{
+defineProps<{
   workflowId: string
   seed?: Partial<WorkflowState>
 }>()

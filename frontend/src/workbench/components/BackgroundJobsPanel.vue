@@ -397,7 +397,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   color: var(--text-muted);
 }
 .bj-sub code, .bj-empty code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-code);
   font-size: .95em;
   color: var(--accent-text);
   background: var(--bg);
@@ -481,7 +481,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   color: var(--text);
 }
@@ -489,7 +489,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--fs-cap);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -512,7 +512,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .bj-detail-title { display: flex; align-items: center; gap: 8px; }
 .bj-detail-spacer { flex: 1; }
 .bj-jobid {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   color: var(--text-muted);
 }
@@ -538,7 +538,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   line-height: 1.5;
   white-space: pre-wrap;
@@ -595,7 +595,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border-radius: 9px;
   background: var(--bg);
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   line-height: 1.55;
   white-space: pre-wrap;

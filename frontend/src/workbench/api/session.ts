@@ -1,5 +1,4 @@
 // 会话 id 与标签页存活探测（由原 workbench/api.ts 按域切分；调用方继续从 barrel ../api 引入）。
-import { request } from './_base'
 
 // ---------------------------------------------------------------- 会话 id
 // Shared browser lock is acquired before either page mounts (public/session.js).

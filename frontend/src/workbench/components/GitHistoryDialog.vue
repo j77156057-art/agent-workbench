@@ -155,7 +155,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .gh-path {
   font-size: var(--fs-sm);
   color: var(--text-faint);
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -212,7 +212,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   font-style: normal;
 }
 .gh-commit-meta code {
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
@@ -246,7 +246,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   min-width: 0;
 }
 .gh-preview-hash {
-  font-family: 'Cascadia Code', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-cap);
   color: var(--green);
   background: color-mix(in srgb, var(--green) 7%, transparent);
@@ -291,7 +291,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   margin: 0;
   overflow: auto;
   padding: 12px 16px;
-  font-family: 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-family: var(--font-code);
   font-size: var(--fs-sm);
   line-height: 1.6;
   color: var(--text);

@@ -118,7 +118,7 @@ function focus(id: string) {
 .wmd-item.is-bad .wmd-dot { background: var(--danger); }
 .wmd-main { flex: 1; min-width: 0; display: grid; gap: 1px; }
 .wmd-main b { font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
-.wmd-main small { color: var(--text-faint); font-weight: 400; font-family: ui-monospace, monospace; font-size: var(--fs-cap); }
+.wmd-main small { color: var(--text-faint); font-weight: 400; font-family: var(--font-mono); font-size: var(--fs-cap); }
 .wmd-task { font-size: var(--fs-cap); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmd-state { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); flex: 0 0 auto; border: 1px solid currentColor; border-radius: 99px; padding: 1px 5px; }
 .wmd-item.is-running .wmd-state { color: var(--accent); }

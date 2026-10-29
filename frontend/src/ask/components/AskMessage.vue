@@ -418,7 +418,7 @@ const phaseLabel = computed(() => {
   color: var(--text);
   border-radius: var(--r-lg);
 }
-.user-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-ui); font-size: var(--fs-h2); line-height: 1.75; }
+.user-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-ui); font-size: var(--fs-h3); line-height: 1.75; }
 .user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .user-imgs img { max-width: 180px; max-height: 180px; border-radius: var(--r-sm); }
 
@@ -446,33 +446,36 @@ const phaseLabel = computed(() => {
 .ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .ai-bubble { background: transparent; border: 0; padding: 0; width: 100%; max-width: 100%; }
 
-/* 回答正文是主视觉：16px / 1.8，标题逐级放大；不改共享 markdown 层，避免影响工作台。 */
+/* 回答正文是主视觉：15px / 1.75，标题逐级放大；不改共享 markdown 层，避免影响工作台。
+   2026-10-29：由 16px / 1.8 下调一档（用户反馈正文偏大），标题 24/20/17 → 22/19/16。
+   同日字阶收口：标题改挂 --fs-* —— 种子皮肤会把正文抬到 16.1px，写死的 16px
+   小标题会比正文还小；h2 没有 19px 档位，用 lead+1px 保持 19/20.3 并跟随缩放。 */
 .answer {
   word-break: break-word;
   font-family: var(--font-ui);
-  font-size: var(--fs-h2);
-  line-height: 1.8;
+  font-size: var(--fs-h3);
+  line-height: 1.75;
   letter-spacing: 0;
   color: var(--text);
 }
 .answer :deep(.md-p) { margin: 0 0 12px; }
 .answer :deep(.md-p:last-child) { margin-bottom: 0; }
 .answer :deep(.md-h) { font-weight: 600; line-height: 1.35; color: var(--ink); }
-.answer :deep(.md-h1) { margin: 28px 0 12px; font-size: 24px; }
-.answer :deep(.md-h2) { margin: 26px 0 10px; font-size: 20px; }
-.answer :deep(.md-h3), .answer :deep(.md-h4) { margin: 22px 0 8px; font-size: 17px; }
+.answer :deep(.md-h1) { margin: 26px 0 12px; font-size: var(--fs-h1); }
+.answer :deep(.md-h2) { margin: 24px 0 10px; font-size: calc(var(--fs-lead) + 1px); }
+.answer :deep(.md-h3), .answer :deep(.md-h4) { margin: 20px 0 8px; font-size: var(--fs-h2); }
 .answer :deep(.md-h:first-child) { margin-top: 0; }
 .answer :deep(.md-ul) { margin: 0 0 12px; padding-left: 1.4em; }
 .answer :deep(.md-ul li) { margin: 4px 0; }
 .answer :deep(.md-ic) {
-  font-size: 14px;
+  font-size: var(--fs-md);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   border-color: color-mix(in srgb, var(--accent) 12%, transparent);
   border-radius: var(--r-xs);
   padding: 1px 5px;
 }
 .answer :deep(.md-pre) { margin: 16px 0; border-radius: var(--r-md); }
-.answer :deep(.md-pre code) { font-size: 13px; line-height: 1.7; }
+.answer :deep(.md-pre code) { font-size: var(--fs-md); line-height: 1.7; }
 .answer :deep(.md-link) { color: var(--accent-text); border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
 .answer :deep(.md-link:hover) { border-bottom-color: var(--accent-text); }
 

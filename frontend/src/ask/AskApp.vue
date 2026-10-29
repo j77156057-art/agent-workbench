@@ -1309,8 +1309,8 @@ border-radius: var(--r-sm); }
   .chat-col { padding: 24px 20px; }
   .home-layout { padding: 28px 20px 8px; gap: 24px; }
   .home-rail { display: none; }
-  .welcome-title { font-size: 30px; }
-  .welcome-desc { font-size: 14px; }
+  .welcome-title { font-size: var(--fs-display); }
+  .welcome-desc { font-size: var(--fs-body); }
   .composer-wrap { padding: 12px 16px 16px; }
   .is-empty .composer-wrap { padding: 16px 20px 32px; }
   .composer { padding: 12px; }

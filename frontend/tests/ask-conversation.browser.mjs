@@ -168,7 +168,8 @@ async function newFixture(width = 1440, height = 900) {
   assert.equal(before.processOpen, 0)
   assert.match(before.processSummary, /读取 1 个文件/)
   assert.deepEqual(before.status, ['已回复', '已回复'])
-  assert.equal(before.answerFont, '16px')
+  // 2026-10-29：回答正文由 16px 降到 15px（用户反馈偏大），守卫跟着走。
+  assert.equal(before.answerFont, '15px')
   assert(before.answerWidth >= 700)
   assert.equal(before.refItems, 0)
   assert.equal(before.copyButtons, 2)

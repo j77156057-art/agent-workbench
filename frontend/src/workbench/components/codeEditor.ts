@@ -28,8 +28,6 @@ import type { EditorTab } from '../composables/workbench-types'
 //   ② 语法高亮表 → 是 JS 对象，浅底用默认高亮、深底用 oneDark 高亮，
 //      用一个 Compartment 在切肤时 reconfigure。
 // 明暗判定读 skins.css 的 --skin-dark 令牌（新增深色皮肤只改那一处）。
-const MONO_FONT = "'Cascadia Code','JetBrains Mono',Consolas,monospace"
-
 /** 当前皮肤是否深色（读 skins.css 的 --skin-dark 令牌）。 */
 export function isDarkSkin(): boolean {
   if (typeof document === 'undefined') return false
@@ -45,11 +43,15 @@ function editorTheme(dark: boolean) {
     EditorView.theme({
       '&': {
         height: '100%',
-        fontSize: '12.5px',
+        // 12.5px = --fs-sm(12) + .5px：比正文再收半档，但跟随字阶缩放，
+        // 默认皮肤像素不变；别写死成 px，否则种子皮肤下编辑器会比周围小一截。
+        fontSize: 'calc(var(--fs-sm) + 0.5px)',
         backgroundColor: 'var(--bg-raised)',
         color: 'var(--text)',
       },
-      '.cm-scroller': { fontFamily: MONO_FONT },
+      // 代码等宽家族统一走 style.css 的 --font-code（与 diff / 文件预览同一套），
+      // 不再在 JS 里复制一份字体栈。
+      '.cm-scroller': { fontFamily: 'var(--font-code)' },
       '.cm-content': { caretColor: 'var(--accent)' },
       '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--accent)' },
       '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection':
