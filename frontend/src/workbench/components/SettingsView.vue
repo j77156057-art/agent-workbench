@@ -345,6 +345,8 @@ const wfApiUrl = ref('')
 const showWsKey = ref(false)
 const showWfKey = ref(false)
 const searchSaving = ref(false)
+const wsKeyClearing = ref(false)
+const wfKeyClearing = ref(false)
 
 // ---------------- Agent 工作负载 / 显存感知 ----------------
 // 六个字段的键名只在这张表里出现一次：上界、校验、报错文案、确认清单全部由它推导。
@@ -708,6 +710,42 @@ async function saveSearch() {
     errorMsg.value = (e as { message?: string }).message || '保存失败'
   } finally {
     searchSaving.value = false
+  }
+}
+
+// 清除当前厂商已保存的 Key：显式提交空串（留空的普通保存是「不修改」）。
+async function clearSavedKey(kind: 'search' | 'fetch') {
+  const isSearch = kind === 'search'
+  const flag = isSearch ? wsKeyClearing : wfKeyClearing
+  if (flag.value) return
+  flag.value = true
+  errorMsg.value = ''
+  savedMsg.value = ''
+  try {
+    const res = isSearch
+      ? await settingsApi.save({
+          web_search_provider: wsProvider.value as SettingsConfigInfo['web_search_provider'],
+          web_search_api_key: '',
+        })
+      : await settingsApi.save({
+          web_fetch_provider: wfProvider.value as SettingsConfigInfo['web_fetch_provider'],
+          web_fetch_api_key: '',
+        })
+    if (res.ok === false) {
+      errorMsg.value = res.error || '清除失败'
+      return
+    }
+    if (cfg.value) {
+      if (isSearch) cfg.value.web_search_has_key = !!res.web_search_has_key
+      else cfg.value.web_fetch_has_key = !!res.web_fetch_has_key
+    }
+    if (isSearch) wsApiKey.value = ''
+    else wfApiKey.value = ''
+    savedMsg.value = isSearch ? '已清除搜索服务的 Key' : '已清除 URL 获取的 Key'
+  } catch (e) {
+    errorMsg.value = (e as { message?: string }).message || '清除失败'
+  } finally {
+    flag.value = false
   }
 }
 
@@ -1523,6 +1561,11 @@ async function powerAction(action: 'on' | 'off') {
             <template v-if="wsNeedsKey">
               <label class="sv-label">API Key
                 <span class="sv-key-toggle" @click="showWsKey = !showWsKey">{{ showWsKey ? '隐藏' : '显示' }}</span>
+                <button v-if="wsHasSavedKey" type="button" class="sv-key-clear"
+                        :disabled="searchSaving || wsKeyClearing"
+                        @click.prevent.stop="clearSavedKey('search')">
+                  {{ wsKeyClearing ? '清除中…' : '清除已保存' }}
+                </button>
               </label>
               <input v-model="wsApiKey" class="sv-input" :type="showWsKey ? 'text' : 'password'"
                      :placeholder="wsHasSavedKey ? '已保存，留空表示不修改' : 'sk-...'" autocomplete="off" spellcheck="false" />
@@ -1541,6 +1584,11 @@ async function powerAction(action: 'on' | 'off') {
             <template v-if="wfNeedsKey">
               <label class="sv-label">API Key
                 <span class="sv-key-toggle" @click="showWfKey = !showWfKey">{{ showWfKey ? '隐藏' : '显示' }}</span>
+                <button v-if="wfHasSavedKey" type="button" class="sv-key-clear"
+                        :disabled="searchSaving || wfKeyClearing"
+                        @click.prevent.stop="clearSavedKey('fetch')">
+                  {{ wfKeyClearing ? '清除中…' : '清除已保存' }}
+                </button>
               </label>
               <input v-model="wfApiKey" class="sv-input" :type="showWfKey ? 'text' : 'password'"
                      :placeholder="wfHasSavedKey ? '已保存，留空表示不修改' : 'sk-...'" autocomplete="off" spellcheck="false" />
@@ -1553,7 +1601,9 @@ async function powerAction(action: 'on' | 'off') {
             <p v-if="errorMsg" class="sv-err">{{ errorMsg }}</p>
             <p v-if="savedMsg" class="sv-ok">{{ savedMsg }}</p>
             <div class="sv-actions">
-              <button class="sv-btn sv-primary" :disabled="searchSaving || loading" @click="saveSearch">
+              <button class="sv-btn sv-primary"
+                      :disabled="searchSaving || loading || wsKeyClearing || wfKeyClearing"
+                      @click="saveSearch">
                 {{ searchSaving ? '保存中…' : '保存' }}
               </button>
             </div>
@@ -2429,6 +2479,12 @@ async function powerAction(action: 'on' | 'off') {
 }
 .sv-key-toggle { color: var(--accent); cursor: pointer; user-select: none; }
 .sv-key-toggle:hover { text-decoration: underline; }
+.sv-key-clear {
+  border: 0; background: none; padding: 0; font: inherit;
+  color: var(--danger); cursor: pointer;
+}
+.sv-key-clear:hover:not(:disabled) { text-decoration: underline; }
+.sv-key-clear:disabled { opacity: .55; cursor: default; }
 .sv-input {
   width: 100%; box-sizing: border-box; padding: 7px 10px; font-size: var(--fs-md);
   border: 1px solid var(--border-graphic); border-radius: 8px;

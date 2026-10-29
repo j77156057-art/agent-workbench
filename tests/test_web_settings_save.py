@@ -139,6 +139,31 @@ class WebSettingsSaveTests(unittest.TestCase):
         self.assertIn("wsHasSavedKey ? '已保存，留空表示不修改'", source)
         self.assertIn("wfHasSavedKey ? '已保存，留空表示不修改'", source)
 
+    def test_clear_key_action_sends_an_explicit_empty_string(self):
+        """清除按钮必须显式提交空串（留空的普通保存是「不修改」）。"""
+        source = (ROOT / "frontend/src/workbench/components/SettingsView.vue").read_text(
+            encoding="utf-8")
+        block = source[source.index("async function clearSavedKey"):]
+        block = block[:block.index("async function loadMcp")]
+        self.assertIn("web_search_api_key: ''", block)
+        self.assertIn("web_fetch_api_key: ''", block)
+        self.assertIn('v-if="wsHasSavedKey"', source)
+        self.assertIn('v-if="wfHasSavedKey"', source)
+
+    def test_endpoint_clear_only_removes_the_current_provider_key(self):
+        config.set_runtime("web_search_provider", "bocha")
+        config.set_web_search_api_key("sk-bocha")
+        config.set_runtime("web_search_provider", "tavily")
+        config.set_web_search_api_key("sk-tavily")
+        resp = asyncio.run(api.set_web_settings(api.WebSettingsReq(
+            web_search_provider="tavily", web_search_api_key="")))
+        self.assertTrue(resp["ok"])
+        self.assertFalse(resp["web_search_has_key"])
+        self.assertEqual(config.get_web_search_api_key(), "")
+        config.set_runtime("web_search_provider", "bocha")
+        self.assertEqual(config.get_web_search_api_key(), "sk-bocha",
+                         "清除 tavily 的 key 不能影响 bocha")
+
     def test_omitting_the_key_field_preserves_the_stored_key(self):
         """API 层契约：不提交 key 字段 = 不改动已存 Key。"""
         config.set_runtime("web_search_provider", "bocha")
