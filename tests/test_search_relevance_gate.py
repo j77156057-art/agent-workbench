@@ -117,6 +117,31 @@ class RelevanceGateTests(unittest.TestCase):
                    "https://zh.wikipedia.org/wiki/X")
         self.assertFalse(_query_relevant(q, off[0], off[1], off[2]))
 
+    # ---- 中英混合 / 版本号查询：通用修饰词不得抬高门槛 ----
+
+    def test_version_query_with_chinese_title_survives(self):
+        """实测误杀：`Godot 4.7 release notes` 的 21 条中文结果曾被全丢。
+
+        博查返回的标题是「Godot 4.7.2来了!57个修复…」——主体词齐全，只是没有
+        release/notes 两个英文修饰词。旧口径 matched 1/3、标题命中 1 < 2 → 全灭。
+        """
+        text, title, url = _row(
+            "Godot 4.7.2来了!57个修复让这款开源游戏引擎更稳了",
+            "Godot 4.7.2 正式发布，包含 57 项修复与性能改进。",
+            "https://www.toutiao.com/article/7530")
+        self.assertTrue(_query_relevant("Godot 4.7 release notes", text, title, url))
+
+    def test_version_query_still_rejects_off_topic(self):
+        """**反向守卫**：去掉修饰词不等于全放行 —— 跑题结果仍须拒绝。"""
+        text, title, url = _row("今日天气", "今天多云转晴，气温 18 到 26 度。",
+                                "https://weather.example.com/Beijing")
+        self.assertFalse(_query_relevant("Godot 4.7 release notes", text, title, url))
+
+    def test_all_generic_query_falls_back_to_the_full_term_set(self):
+        """全是通用词时退回原词表，门不能因此变成恒真。"""
+        text, title, url = _row("天气", "今天多云", "https://weather.example.com")
+        self.assertFalse(_query_relevant("release notes guide", text, title, url))
+
     # ---- 既有语义不许动 ----
 
     def test_a_single_term_query_is_always_relevant(self):

@@ -2228,15 +2228,35 @@ def _search_terms(query):
             if term not in {"official", "docs", "documentation", "推荐", "今天", "如何", "怎么", "最新"}]
 
 
+# 通用修饰词：它们不构成主题信号，却会抬高「需要命中几个词」的门槛。
+# 实测误杀（2026-10-29）：query=「Godot 4.7 release notes」，博查返回 21 条相关
+# 中文结果（标题含 Godot 4.7.2），但 release/notes 在中文标题里必然缺失
+# -> matched 1/3、标题命中 1 < 2 -> 21 条全被丢。版本号 4.7 又因为
+# `_search_terms` 只收字母开头的词，根本没算成信号。
+# 只用于这道门；`_search_terms` 的输出仍原样供 `_merge_builtin_results` 排序。
+_GENERIC_QUERY_TERMS = frozenset({
+    "release", "releases", "notes", "changelog",
+    "download", "downloads", "tutorial", "tutorials",
+    "guide", "guides", "how", "what", "using", "use",
+    "example", "examples",
+})
+
+
 def _query_relevant(query, text, title="", url=""):
     """Conservative lexical relevance gate shared by search, research, and batch paths."""
     terms = _search_terms(query)
     if len(terms) <= 1:
         return True
+    # 去掉通用修饰词后再算门槛：只剩专有名词/版本号的查询不该被修饰词拖成
+    # 「不相关」。全是通用词时退回原词表，门不能因此变成恒真。
+    signals = [term for term in terms if term not in _GENERIC_QUERY_TERMS]
+    if signals:
+        terms = signals
     normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", str(text or "").lower())
     matched = sum(term in normalized for term in terms)
     if re.search(r"[\u4e00-\u9fff]", query):
         required = 1 if len(terms) <= 4 else max(2, min(3, (len(terms) * 3 + 9) // 10))
+        required = min(required, len(terms))
         if matched >= required:
             content_match = True
         else:
@@ -2246,6 +2266,7 @@ def _query_relevant(query, text, title="", url=""):
                                 for phrase in phrases for i in range(len(phrase) - 2))
     else:
         required = max(2, (len(terms) * 3 + 9) // 10)
+        required = min(required, len(terms))
         content_match = matched >= required
     if content_match:
         return True
