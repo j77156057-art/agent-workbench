@@ -86,6 +86,30 @@ class WebSettingsSaveTests(unittest.TestCase):
         self.assertNotIn("/api/config", block,
                          "局部保存打 /api/config 会把 LLM provider 覆盖成 mock")
 
+    def test_blank_key_input_is_not_sent_as_empty_string(self):
+        """占位符写着「留空表示不修改」：前端不能把空串提交上去（会删掉已存 Key）。"""
+        source = (ROOT / "frontend/src/workbench/components/SettingsView.vue").read_text(
+            encoding="utf-8")
+        block = source[source.index("async function saveSearch"):]
+        block = block[:block.index("} finally") if "} finally" in block else 2000]
+        for field in ("web_search_api_key", "web_fetch_api_key"):
+            self.assertIn("%s: %s.value.trim() || undefined" % (
+                field, "wsApiKey" if field.startswith("web_search") else "wfApiKey"), block,
+                "%s 留空时必须以 undefined 省略，不能发空串" % field)
+
+    def test_omitting_the_key_field_preserves_the_stored_key(self):
+        """API 层契约：不提交 key 字段 = 不改动已存 Key。"""
+        secrets_store = __import__("secrets_store")
+        secrets_store.save(None, "web_search", "sk-keep-me")
+        try:
+            resp = asyncio.run(api.set_web_settings(api.WebSettingsReq(
+                web_search_provider="bocha")))
+            self.assertTrue(resp["ok"])
+            self.assertEqual(secrets_store.load(None, "web_search"), "sk-keep-me")
+            self.assertTrue(resp["web_search_has_key"])
+        finally:
+            secrets_store.remove(None, "web_search")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -668,10 +668,11 @@ async function saveSearch() {
   try {
     const res = await settingsApi.save({
       web_search_provider: wsProvider.value as SettingsConfigInfo['web_search_provider'],
-      web_search_api_key: wsApiKey.value.trim(),
+      // 留空=不修改：必须省略字段。发空串会把已存 Key 删掉（占位符承诺过相反行为）。
+      web_search_api_key: wsApiKey.value.trim() || undefined,
       web_search_api_url: wsApiUrl.value.trim(),
       web_fetch_provider: wfProvider.value as SettingsConfigInfo['web_fetch_provider'],
-      web_fetch_api_key: wfApiKey.value.trim(),
+      web_fetch_api_key: wfApiKey.value.trim() || undefined,
       web_fetch_api_url: wfApiUrl.value.trim(),
     })
     if (res.ok === false) {
