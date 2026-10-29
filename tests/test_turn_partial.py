@@ -134,6 +134,24 @@ class InFlightTurnRegistryTests(unittest.TestCase):
         ask = (ROOT / "frontend/src/ask/AskApp.vue").read_text(encoding="utf-8")
         self.assertIn("aiApi.stopTurn", ask)
 
+    def test_workflow_stop_notice_does_not_promise_auto_interrupt(self):
+        """真机核对：停止只停本轮对话，不会中断已创建的工作流（源码里也没有该调用）。
+
+        旧提示写「若服务端已经创建，会自动中断」——实测工作流仍是 awaiting_choice，
+        卡片也还在。提示必须说清它不会被中断、可从卡片/历史继续或中断；同时补探
+        孤儿工作流，覆盖「创建了但卡片没挂上」的窗口。
+        """
+        dock = (ROOT / "frontend/src/workbench/components/ChatDock.vue").read_text(
+            encoding="utf-8")
+        start = dock.index("function stop()")
+        block = dock[start:dock.index("\n}\n", start) + 3]
+        self.assertNotIn("workflowInterrupt", block, "stop() 不应擅自中断工作流")
+        self.assertNotIn("会自动中断。", block, "停止不会自动中断工作流，提示不能这样写")
+        self.assertIn("不会被自动中断", block)
+        self.assertIn("工作流历史", block)
+        self.assertIn("detectOrphanWorkflow", block,
+                      "卡片没挂上时要探测孤儿工作流，否则它会静默拦截下一次工作流请求")
+
     def test_frontend_passes_session_id_to_partial(self):
         chat_ts = (ROOT / "frontend/src/workbench/api/chat.ts").read_text(encoding="utf-8")
         block = chat_ts[chat_ts.index("getTurnPartial"):chat_ts.index("getTurnPartial") + 500]

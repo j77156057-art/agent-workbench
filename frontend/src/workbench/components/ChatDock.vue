@@ -854,13 +854,19 @@ function stop() {
   if (turn?.status === 'streaming') {
     turn.status = 'stopped'
     turn.notices.push(turn.workflow
-      ? '工作流启动已取消；若服务端已经创建，会自动中断。'
+      ? '本轮回答已停止；已创建的工作流不会被自动中断，可在上方卡片或「工作流历史」中继续/中断。'
       : '回答已中断；已执行的工具操作不会自动撤销。')
   }
   ++chatEpoch
   abortCtl?.abort()
   abortCtl = null
   sending.value = false
+  if (props.scope === 'default') {
+    // 停止可能发生在 start_workflow 刚创建、workflow 事件还没送到前端时：
+    // 卡片不会挂上，不探测的话它会成为无人知晓的活跃工作流（还会拦下一次工作流请求）。
+    // 服务端工具调用可能还在收尾，稍等再探。
+    window.setTimeout(() => { if (props.scope === 'default') void detectOrphanWorkflow() }, 1200)
+  }
 }
 function preserveInterrupted() {
   if (!sending.value) return
