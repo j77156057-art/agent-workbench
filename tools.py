@@ -39,9 +39,9 @@ from config import STATE_ROOT
 from embeddings import EmbeddingClient
 from vectorstore import pretty_source
 from agent_runtime.retrieval import get_retriever
-from ingest import _CODE_EXT, _SKIP_DIRS
+from ingest import _CODE_EXT
 from data_formats import DataFormatError, read_file as read_data_file, write_data_file
-from agent_runtime.tools import ToolResult, ToolSpec, coerce_tool_spec, upgrade_registry
+from agent_runtime.tools import ToolResult, coerce_tool_spec, upgrade_registry
 from agent_runtime.tool_catalog import catalog_tool
 from agent_runtime.enterprise_sandbox import SandboxUnavailable as EnterpriseSandboxUnavailable
 from agent_runtime.enterprise_sandbox import (execution_mode, host_fallback_active, run_agent_command,
@@ -415,15 +415,6 @@ def _web_cache_write(key, value):
             os.replace(temporary, _WEB_CACHE_FILE)
         except (OSError, ValueError, TypeError):
             return
-
-
-def clear_web_search_cache():
-    """清空摘要缓存；设置页或测试可调用，正文缓存从不落盘。"""
-    with _WEB_CACHE_LOCK:
-        try:
-            os.unlink(_WEB_CACHE_FILE)
-        except FileNotFoundError:
-            pass
 
 
 def _source_score(url, title="", snippet=""):
@@ -2008,11 +1999,13 @@ def web_search(query, _allow_aux=True):
         q = f"{q} site:{site}"
     q = _search_recency_query(q)
     provider = get_web_search_provider()
-    # 来源扇出和排序策略变更后必须换缓存命名空间，避免旧的 Bing 单源摘要继续生效。
-    cache_key = _web_cache_key(f"search:v6:{provider}:{_allow_aux}:{_search_result_limit()}", q)
+    # 来源扇出、排序或筛选策略变更后必须换缓存命名空间，避免旧结果绕过新逻辑。
+    # v7：主题/版本重排 + 泛词稀释补搜（2026-10-29）。
+    cache_key = _web_cache_key(f"search:v7:{provider}:{_allow_aux}:{_search_result_limit()}", q)
     if _search_cache_enabled():
         cached = _web_cache_read(cache_key)
         if cached:
+            # 缓存可能来自旧版本/被污染；非内置结果读回时再过一次相关性门。
             cached_result = cached if provider == "builtin_auto" else _filter_search_results(q, cached)
             return cached_result + "\n（缓存结果）"
     if provider in ("builtin_auto", "ddg", "bing", "baidu"):
@@ -3328,10 +3321,6 @@ def _fetch_page(url, *, image_budget=0, query_hint=""):
         return body
     except Exception as e: return f"网页读取失败：{type(e).__name__}: {e}"
 
-
-def _builtin_fetch(url):
-    """builtin 抓取的兼容入口（不带图片）；新代码请用 _fetch_page。"""
-    return _fetch_page(url)
 
 def web_research(query):
     """搜索并抓取多个公开来源，供 Agent 直接做联网研究。
@@ -10314,8 +10303,6 @@ def dev_desktop_action(arg=""):
             "key": (fields.get("key") or "")[:80],
             "text_sha256": hashlib.sha256((fields.get("text") or "").encode("utf-8")).hexdigest()[:16],
         }
-        approval_target = "desktop:%s:%s:%s" % (
-            action, target, hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12])
         # 「留地板、拆其余」重构：桌面点击/输入/拖拽是可逆的普通工作台操作，不是灾难
         # 地板。逐次审批卡（"请用户确认当前桌面动作"）正是用户抱怨的"处处受限"，拆掉
         # —— 直接执行。gate 恒为 None，下面 `if gate:` 分支成为死代码（保留以免影响

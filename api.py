@@ -50,12 +50,11 @@ from config import (
     EMBEDDING_PROVIDER,
     EMBEDDING_MODEL,
     LLM_API_KEY,
-    CODE_COLLECTION_NAME,
+    CODE_COLLECTION_NAME,  # noqa: F401 - re-export：test_search_code_project_scope 从 api 取
     CODE_ROOT,
     set_runtime,
     get_runtime,
     save_state,
-    load_state,
     edit_confirm_enabled,
     exec_approval_enabled,
     get_external_access_mode,
@@ -92,7 +91,6 @@ from config import (
     CHAT_VIDEO_MAX_BYTES,
     CHAT_VIDEO_MAX_FRAMES,
     model_capability,
-    model_context_window,
     set_context_window_override,
     get_context_window_override,
     get_model_capability_override,
@@ -120,7 +118,7 @@ from agent_runtime import local_runtime
 # （HTTP 端点与 agent 工具共用同一份提案存储与复核逻辑）。
 from agent_runtime import visual_click
 from agent_runtime.realtime_protocol import (
-    PROTOCOL_VERSION,
+    PROTOCOL_VERSION,  # noqa: F401 - re-export：realtime_bench / realtime 测试从 api 取
     compact_error,
     parse_binary_packet,
     parse_control_packet,
@@ -171,9 +169,7 @@ from regions import (
 )
 from pydantic import BaseModel, Field
 from voice import transcribe as voice_transcribe, speech_request as voice_speech_request
-from api_routes.gpu import GpuConfigureReq, GpuOwnerReq, GpuProcessReq
-from api_routes.projects import ProjectCreateReq, ProjectRenameReq, activate_project
-from api_routes.agent import AgentRouteReq
+from api_routes.projects import activate_project
 from agent_runtime.game_workflow import WORKFLOWS
 from api_routes.engine import (
     EngineDiagnosticsReq,
@@ -192,8 +188,8 @@ from api_routes.engine import (
 from starlette.concurrency import run_in_threadpool
 from engine_adapters import skill_for_engine
 import gpu_coordinator as gpu
-from gpu_coordinator import status as gpu_status, process_environment
-from agent_policy import route_for, permission_check, record_permission, approval_allows, apply_approved_external, routing_status, redact_for_cloud, create_external_approval, list_approvals, decide_approval
+from gpu_coordinator import status as gpu_status  # noqa: F401 - re-export：tests/test_api_routes.py 从 api 取
+from agent_policy import route_for, redact_for_cloud
 import secrets_store
 # 桌面宿主表：project_id -> hwnd。键 None = 无项目 / 全局默认宿主（等价旧单一变量，生命线）。
 # 桌面壳可为每个已打开项目各注册一个宿主；引擎端点取「本请求项目」的宿主，未登记则回落默认。
@@ -282,7 +278,7 @@ import skills as agent_skills
 import pricing as pricing_mod
 from config import PROJECT_WEB_DIR
 from scene_runtime import scene_graph, scene_op, runtime_sessions, runtime_clear, main_scene
-from game_workbench import list_tasks, upsert_task, validate_task_scope, task_impact, task_snapshot, verify_task, engine_catalog, engine_scan, engine_inspect, engine_prepare, install_unreal_bridge, engine_config, engine_status, engine_start, engine_stop, engine_reload, engine_changes, engine_logs, engine_verify, engine_embed, engine_detach, engine_focus, engine_resize, engine_place, engine_running_roots, EMBED_TOP_STRIP, install_runtime_probe, comfy_status, comfy_start, comfy_stop, comfy_templates, comfy_template_workflow, comfy_model_check, comfy_apply_parameters, comfy_queue, comfy_free_models, comfy_history, comfy_history_list, comfy_retry, comfy_wait, comfy_watch, comfy_watch_status, comfy_cancel, comfy_import, comfy_import_all, comfy_validate_provenance, comfy_resource_duplicates, comfy_unused_resources, parse_unreal_diagnostics, scene_tree, set_scene_property, runtime_events, task_revert, task_branch, validate_data, localization_check, release_check, project_memory, simulate_growth, asset_dependencies, preview_resource, create_placeholder, impact_analysis, generate_test_scene, playtest, performance_sample, approval, approval_status, require_approval, list_mcp_proposals, remove_mcp_proposal, godot_check_script, godot_addon_status, install_godot_addon, _resolve_engine_executable, start_engine_watchdog
+from game_workbench import list_tasks, upsert_task, validate_task_scope, task_impact, task_snapshot, verify_task, engine_catalog, engine_scan, engine_inspect, engine_prepare, install_unreal_bridge, engine_config, engine_status, engine_stop, engine_reload, engine_changes, engine_logs, engine_verify, engine_embed, engine_detach, engine_focus, engine_resize, engine_place, engine_running_roots, EMBED_TOP_STRIP, install_runtime_probe, comfy_status, comfy_start, comfy_stop, comfy_templates, comfy_template_workflow, comfy_model_check, comfy_apply_parameters, comfy_queue, comfy_free_models, comfy_history, comfy_history_list, comfy_retry, comfy_wait, comfy_watch, comfy_watch_status, comfy_cancel, comfy_import, comfy_import_all, comfy_validate_provenance, comfy_resource_duplicates, comfy_unused_resources, parse_unreal_diagnostics, scene_tree, set_scene_property, runtime_events, task_revert, task_branch, validate_data, localization_check, release_check, project_memory, simulate_growth, asset_dependencies, preview_resource, create_placeholder, impact_analysis, generate_test_scene, playtest, performance_sample, approval, approval_status, require_approval, list_mcp_proposals, remove_mcp_proposal, godot_check_script, godot_addon_status, install_godot_addon, _resolve_engine_executable, start_engine_watchdog
 
 
 @asynccontextmanager
@@ -3007,7 +3003,7 @@ async def chat(
                         # 成功跑完一轮 run()，跳出循环
                         events.put(("done", None))
                         return
-                    except BaseException as exc:  # propagate to the streaming owner
+                    except BaseException as exc:  # noqa: F841 - ruff 误报：exc 在下方重试/上报路径使用
                         # BLOCK_LLM_TEST=1：模拟瞬断；=2：模拟 fallback 也失败
                         if BLOCK_LLM_TEST == "1" and not fallback_done:
                             exc = _FakeConnError("BLOCK_LLM_TEST=1")
@@ -3053,7 +3049,6 @@ async def chat(
             worker = threading.Thread(target=lambda: agent_context.run(produce),
                                       name="docmind-chat-agent", daemon=True)
             worker.start()
-            last_terminal_kind = "done"
             while True:
                 try:
                     kind, payload = events.get(timeout=CHAT_STREAM_HEARTBEAT_S)
@@ -3062,10 +3057,8 @@ async def chat(
                     yield ": keep-alive\n\n"
                     continue
                 if kind == "done":
-                    last_terminal_kind = "done"
                     break
                 if kind == "error":
-                    last_terminal_kind = "error"
                     raise payload
                 # 终态识别前的 final：「留地板、拆其余」重构 —— 不再给 final 附
                 # "覆盖存疑/未综合"这类事后标注（consistency='warn'、
@@ -3102,7 +3095,6 @@ async def chat(
             except Exception:
                 pass
             # SystemExit 等多由外部钩子/环境触发，归为「服务异常」并提示重启，避免暴露内部类名、被误读成网络问题。
-            friendly_kind = "服务异常" if type(e).__name__ == "SystemExit" else type(e).__name__
             # P1 重试层：error_kind 三态：
             #   - permanent 不可恢复（fallback 也失败 / 非网络类错误）→ 红条
             #   - retried_failed 临时类（重试用尽 + 无 fallback）→ 黄条
@@ -3980,7 +3972,7 @@ async def code_root_status_ep():
     只读，不改任何状态；任何一步读不到都如实回报，不猜。
     """
     from config import (get_runtime, _CTX_SESSION_CODE_ROOT, _CTX_CODE_ROOT,
-                        _RUNTIME, reconcile_code_root_with_project)
+                        _RUNTIME)
     import projects
 
     sess = str(_CTX_SESSION_CODE_ROOT.get() or "").strip()
@@ -5262,6 +5254,24 @@ def _web_url_error(req) -> str:
     return ""
 
 
+def _apply_web_settings_fields(req) -> None:
+    """把网络搜索 / URL 获取字段落到 runtime；两个端点共用，避免字段漂移。"""
+    if req.web_search_provider is not None:
+        set_web_search_provider(req.web_search_provider)
+    if req.web_search_api_key is not None:
+        set_web_search_api_key(req.web_search_api_key)
+    if req.web_search_api_url is not None:
+        set_web_search_api_url(req.web_search_api_url)
+    if req.web_search_prefer_builtin is not None:
+        set_web_search_prefer_builtin(req.web_search_prefer_builtin)
+    if req.web_fetch_provider is not None:
+        set_web_fetch_provider(req.web_fetch_provider)
+    if req.web_fetch_api_key is not None:
+        set_web_fetch_api_key(req.web_fetch_api_key)
+    if req.web_fetch_api_url is not None:
+        set_web_fetch_api_url(req.web_fetch_api_url)
+
+
 class WebSettingsReq(BaseModel):
     web_search_provider: Optional[str] = None
     web_search_api_key: Optional[str] = None
@@ -5277,20 +5287,7 @@ async def set_web_settings(req: WebSettingsReq):
     error = _web_url_error(req)
     if error:
         return JSONResponse({"ok": False, "error": error}, status_code=400)
-    if req.web_search_provider is not None:
-        set_web_search_provider(req.web_search_provider)
-    if req.web_search_api_key is not None:
-        set_web_search_api_key(req.web_search_api_key)
-    if req.web_search_api_url is not None:
-        set_web_search_api_url(req.web_search_api_url)
-    if req.web_search_prefer_builtin is not None:
-        set_web_search_prefer_builtin(req.web_search_prefer_builtin)
-    if req.web_fetch_provider is not None:
-        set_web_fetch_provider(req.web_fetch_provider)
-    if req.web_fetch_api_key is not None:
-        set_web_fetch_api_key(req.web_fetch_api_key)
-    if req.web_fetch_api_url is not None:
-        set_web_fetch_api_url(req.web_fetch_api_url)
+    _apply_web_settings_fields(req)
     return {
         "ok": True,
         "warnings": [],
@@ -6135,20 +6132,7 @@ async def _apply_config(req: ConfigReq):
         set_external_access_mode(req.external_access_mode)
 
     # ---- 网络搜索 / URL 获取服务商配置 ----
-    if req.web_search_provider is not None:
-        set_web_search_provider(req.web_search_provider)
-    if req.web_search_api_key is not None:
-        set_web_search_api_key(req.web_search_api_key)
-    if req.web_search_api_url is not None:
-        set_web_search_api_url(req.web_search_api_url)
-    if req.web_search_prefer_builtin is not None:
-        set_web_search_prefer_builtin(req.web_search_prefer_builtin)
-    if req.web_fetch_provider is not None:
-        set_web_fetch_provider(req.web_fetch_provider)
-    if req.web_fetch_api_key is not None:
-        set_web_fetch_api_key(req.web_fetch_api_key)
-    if req.web_fetch_api_url is not None:
-        set_web_fetch_api_url(req.web_fetch_api_url)
+    _apply_web_settings_fields(req)
     if req.memory_optimized is not None:
         set_memory_optimized(req.memory_optimized)
 
