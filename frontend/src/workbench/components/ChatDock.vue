@@ -2201,7 +2201,7 @@ const webTitle = computed(() => webOn.value
 .cd-btn {
   display: inline-flex; align-items: center; gap: 5px;
   height: 22px; padding: 0 8px;
-  border: 1px solid var(--edge-ink-soft, var(--border)); border-radius: 5px;
+  border: 1px solid var(--edge-ink-soft); border-radius: 5px;
   background: transparent; color: var(--text-muted);
   font-size: var(--fs-cap); cursor: pointer;
 }
@@ -2287,7 +2287,7 @@ const webTitle = computed(() => webOn.value
 .cd-quicks { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .cd-quick {
   text-align: left; font-size: var(--fs-sm); padding: 5px 10px;
-  border: 1px solid var(--edge-ink-soft, var(--border)); border-radius: 12px;
+  border: 1px solid var(--edge-ink-soft); border-radius: 12px;
   background: transparent; color: var(--text-muted); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
 .cd-quick:hover { color: var(--accent-text); border-color: var(--border-strong); background: var(--bg-hover); }

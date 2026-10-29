@@ -2337,7 +2337,7 @@ async function powerAction(action: 'on' | 'off') {
   transition: background var(--motion-base) var(--ease-standard);
 }
 .sv-skin:hover { background: var(--bg-hover); }
-.sv-skin.on { border-color: var(--accent); --btn-fill: var(--accent-soft, var(--bg-hover)); background: var(--accent-soft, var(--bg-hover)); }
+.sv-skin.on { border-color: var(--accent); --btn-fill: var(--accent-soft); background: var(--accent-soft); }
 .sv-skin:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sv-skin-swatch { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; width: 44px; height: 44px; border: 1px solid var(--border); flex: none; }
 .sv-skin-swatch i { display: block; }
@@ -2358,7 +2358,7 @@ async function powerAction(action: 'on' | 'off') {
   transition: background var(--motion-base) var(--ease-standard);
 }
 .sv-layout:hover { background: var(--bg-hover); }
-.sv-layout.on { border-color: var(--accent); --btn-fill: var(--accent-soft, var(--bg-hover)); background: var(--accent-soft, var(--bg-hover)); }
+.sv-layout.on { border-color: var(--accent); --btn-fill: var(--accent-soft); background: var(--accent-soft); }
 .sv-layout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sv-layout:not(.on) .sv-skin-check { color: transparent; }
 .sv-layout-demo {
@@ -2397,7 +2397,7 @@ async function powerAction(action: 'on' | 'off') {
   transition: background var(--motion-base) var(--ease-standard);
 }
 .sv-mat:hover { background: var(--bg-hover); }
-.sv-mat.on { border-color: var(--accent); --btn-fill: var(--accent-soft, var(--bg-hover)); background: var(--accent-soft, var(--bg-hover)); }
+.sv-mat.on { border-color: var(--accent); --btn-fill: var(--accent-soft); background: var(--accent-soft); }
 .sv-mat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sv-mat:not(.on) .sv-skin-check { color: transparent; }
 /* 材质示意缩略图：实体=不透明方块三层；玻璃=半透+模糊，三层透出彼此 */

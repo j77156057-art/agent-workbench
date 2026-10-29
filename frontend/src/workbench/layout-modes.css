@@ -371,7 +371,7 @@ html[data-layout] .wb-rail-restore {
   margin: 0;
   padding: 12px 0;
   border: 0;
-  border-right: var(--edge-w, 1px) solid var(--edge-ink, var(--ink));
+  border-right: var(--edge-w, 1px) solid var(--edge-ink);
   border-radius: 0;
   background: var(--bg-raised);
   color: var(--text-muted);

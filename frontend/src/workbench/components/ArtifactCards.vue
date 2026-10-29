@@ -78,14 +78,14 @@ const shown = computed(() => visibleArtifacts(props.artifacts))
   height: 118px;
   object-fit: cover;
   border-radius: var(--r-sm, 6px);
-  border: 1px solid var(--border, var(--border-strong));
-  background: var(--bg, var(--bg-raised));
+  border: 1px solid var(--border);
+  background: var(--bg);
   display: block;
 }
 .ac-img:hover img { filter: brightness(1.06); }
 .ac-cap {
   font-size: var(--fs-cap, 11px);
-  color: var(--text-faint, var(--text-muted));
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -96,10 +96,10 @@ const shown = computed(() => visibleArtifacts(props.artifacts))
   gap: 6px;
   max-width: 320px;
   padding: 4px 9px;
-  border: 1px solid var(--border, var(--border-strong));
+  border: 1px solid var(--border);
   border-radius: var(--r-sm, 6px);
-  background: var(--bg, var(--bg-raised));
-  color: var(--text-muted, var(--text));
+  background: var(--bg);
+  color: var(--text-muted);
   font-size: var(--fs-cap, 11px);
   cursor: pointer;
   text-align: left;
@@ -114,7 +114,7 @@ const shown = computed(() => visibleArtifacts(props.artifacts))
   max-width: 160px;
 }
 .ac-sum {
-  color: var(--text-faint, var(--text-muted));
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

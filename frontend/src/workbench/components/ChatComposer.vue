@@ -247,7 +247,7 @@ function onVideoPick(ev: Event) {
 .cd-chip {
   display: inline-flex; align-items: center; gap: 5px;
   height: 23px; padding: 0 8px;
-  border: 1px solid var(--edge-ink-soft, var(--border)); border-radius: 12px;
+  border: 1px solid var(--edge-ink-soft); border-radius: 12px;
   background: transparent; color: var(--text-muted);
   font-size: var(--fs-cap); line-height: 1; cursor: pointer;
   max-width: 60%;

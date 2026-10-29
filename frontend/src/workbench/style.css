@@ -130,7 +130,7 @@
   /* --font-base 同理：一处引用（场景运行台空态）从来没定义过，靠 var(--x, inherit)
      的兜底才没塌。body 本来就是 --font-ui，所以定成别名是零视觉变化。 */
   --font-base: var(--font-ui);
-  /* --font-sans：工作台有 4 处 var(--font-sans, var(--font-ui))（带兜底所以没塌），
+  /* --font-sans：工作台有 4 处 var(--font-sans)（带兜底所以没塌），
      问答页有 19 处 var(--font-sans)（连兜底都没有）。landing 页早就有一套，
      这两页的 :root 都漏了。定成别名，两边都零视觉变化，死引用清零。 */
   --font-sans: var(--font-ui);
@@ -224,7 +224,7 @@ button:disabled:hover { transform: none; }
   padding: 0 18px;
   /* 粗野顶栏：实色纸面 + 墨色下边 + 硬阴影（原渐变高光/冷蓝扩散影已删） */
   background: var(--bg-raised);
-  border-bottom: var(--edge-w, 1px) solid var(--edge-ink, var(--ink));
+  border-bottom: var(--edge-w, 1px) solid var(--edge-ink);
   box-shadow: var(--sh-hard-sm);
   position: relative;
   z-index: 20;
@@ -283,7 +283,7 @@ button:disabled:hover { transform: none; }
   font-size: var(--fs-sm);
   padding: 4px 10px;
   background: var(--bg);
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
   box-shadow: var(--sh-hard-sm);
   max-width: 240px;
@@ -328,7 +328,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-proj-btn {
   display: inline-flex; align-items: center; gap: 6px;
   max-width: 240px; padding: 3px 9px;
-  background: var(--bg); border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  background: var(--bg); border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
   color: var(--text); font-size: var(--fs-sm); cursor: pointer; font-family: var(--font-mono);
   box-shadow: var(--sh-hard-sm);
@@ -343,7 +343,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-proj-backdrop { position: fixed; inset: 0; z-index: 60; }
 .wb-proj-menu {
   position: fixed; z-index: 61;
-  background: var(--bg-raised); border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
+  background: var(--bg-raised); border: var(--edge-w-strong, 2px) solid var(--edge-ink);
   border-radius: var(--r-sm); box-shadow: var(--sh-hard); padding: 6px;
   max-height: 70vh; overflow: auto;
 }
@@ -352,7 +352,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-proj-item {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 7px 9px; border: var(--edge-w-strong, 2px) solid transparent; background: transparent; border-radius: var(--r-sm);
-  text-align: left; cursor: pointer; color: var(--text); font-size: var(--fs-sm); font-family: var(--font-sans, var(--font-ui));
+  text-align: left; cursor: pointer; color: var(--text); font-size: var(--fs-sm); font-family: var(--font-sans);
 }
 .wb-proj-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 /* 当前项目行：纸底上的强调字一律走 --accent-text（仓库约定）。
@@ -366,7 +366,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-proj-sep { height: 1px; background: var(--border); margin: 6px 2px; }
 .wb-proj-open-toggle {
   width: 100%; text-align: left; padding: 7px 9px;
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink)) !important;
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink) !important;
   border-radius: var(--r-sm) !important;
   background: var(--bg-raised) !important;
   cursor: pointer; color: var(--text) !important; font-size: var(--fs-sm); font-family: var(--font-mono);
@@ -383,13 +383,13 @@ html[data-material='glass'] .wb-proj-notice {
   padding: 5px 12px; border-radius: var(--r-sm); font-size: var(--fs-sm); cursor: pointer; font-family: inherit;
 }
 .wb-proj-browse {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   background: var(--bg-raised); color: var(--text);
   box-shadow: var(--sh-hard-sm);
 }
 .wb-proj-browse:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .wb-proj-go {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   background: var(--accent); color: var(--accent-ink);
   box-shadow: var(--sh-hard-sm);
 }
@@ -405,17 +405,17 @@ html[data-material='glass'] .wb-proj-notice {
   letter-spacing: .04em;
   color: var(--ink);
   white-space: nowrap;
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
   background: var(--bg-raised);
-  box-shadow: var(--shadow-control, var(--sh-hard-sm));
+  box-shadow: var(--shadow-control);
   padding: 3px 11px;
   cursor: pointer;
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms;
 }
 .wb-region-pill:hover { transform: translate(-2px,-2px); box-shadow: var(--sh-hard); border-color: var(--border-strong); background: var(--bg-hover); }
-.wb-region-pill.off { color: var(--text-faint); border-color: var(--edge-ink-soft-off, var(--text-faint)); box-shadow: none; }
-.wb-region-pill.off:hover { border-color: var(--edge-ink-soft-off, var(--text-faint)); background: var(--bg-hover); transform: none; box-shadow: none; }
+.wb-region-pill.off { color: var(--text-faint); border-color: var(--edge-ink-soft-off); box-shadow: none; }
+.wb-region-pill.off:hover { border-color: var(--edge-ink-soft-off); background: var(--bg-hover); transform: none; box-shadow: none; }
 .wb-region-dot {
   width: 8px; height: 8px; border-radius: var(--r-full, 999px);
   background: var(--green);
@@ -470,7 +470,7 @@ html[data-material='glass'] .wb-proj-notice {
   display: flex;
   flex-direction: column;
   background: var(--bg-raised);
-  border-right: var(--edge-w, 1px) solid var(--edge-ink, var(--ink));
+  border-right: var(--edge-w, 1px) solid var(--edge-ink);
   min-height: 0;
 }
 
@@ -479,7 +479,7 @@ html[data-material='glass'] .wb-proj-notice {
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px 10px;
-  border-bottom: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
+  border-bottom: var(--edge-w-strong, 2px) solid var(--edge-ink);
 }
 .ft-head-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ft-head-label {
@@ -504,7 +504,7 @@ html[data-material='glass'] .wb-proj-notice {
   white-space: nowrap;
 }
 .ft-refresh {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
   background: var(--bg-raised);
   color: var(--text-muted);
@@ -559,7 +559,7 @@ html[data-material='glass'] .wb-proj-notice {
 .ft-region-root {
   margin-top: 4px;
   background: var(--bg);
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
 }
 .ft-region-root:hover { background: var(--bg-hover); }
@@ -595,7 +595,7 @@ html[data-material='glass'] .wb-proj-notice {
 .ft-folder:not([style]) { color: var(--text-faint); }
 
 .ft-name {
-  font-family: var(--font-sans, var(--font-ui));
+  font-family: var(--font-sans);
   font-size: var(--fs-md);
   color: var(--text);
   overflow: hidden;
@@ -700,7 +700,7 @@ html[data-material='glass'] .wb-proj-notice {
   gap: 14px;
   padding: 10px 18px;
   background: var(--bg-raised);
-  border-bottom: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
+  border-bottom: var(--edge-w-strong, 2px) solid var(--edge-ink);
   min-height: 42px;
   transition: background .16s var(--ease-standard), border-color .16s var(--ease-standard);
 }
@@ -728,7 +728,7 @@ html[data-material='glass'] .wb-proj-notice {
   line-height: 1;
   padding: 4px 8px;
   border-radius: var(--r-sm);
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   color: var(--text-muted);
   background: var(--bg);
   white-space: nowrap;
@@ -813,7 +813,7 @@ html[data-material='glass'] .wb-proj-notice {
   gap: 14px;
   padding: 0 16px;
   background: var(--bg-raised);
-  border-top: var(--edge-w, 1px) solid var(--edge-ink, var(--ink));
+  border-top: var(--edge-w, 1px) solid var(--edge-ink);
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   color: var(--text-muted);
@@ -833,9 +833,9 @@ html[data-material='glass'] .wb-proj-notice {
   padding: 18px 16px;
 }
 .wb-tree-error-title { margin: 0 0 6px; font-family: var(--font-display); font-size: var(--fs-md); font-weight: 700; color: var(--danger); }
-.wb-tree-error-msg { margin: 0 0 12px; font-family: var(--font-sans, var(--font-ui)); font-size: var(--fs-sm); line-height: 1.7; color: var(--text-muted); }
+.wb-tree-error-msg { margin: 0 0 12px; font-family: var(--font-sans); font-size: var(--fs-sm); line-height: 1.7; color: var(--text-muted); }
 .wb-retry {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
   background: var(--accent);
   color: var(--accent-ink);
@@ -902,7 +902,7 @@ html[data-material='glass'] .wb-proj-notice {
    低频分析视图与高级面板统一收进一个菜单，面板弹层仍 teleport 到 body。 */
 .wb-menu-wrap { position: relative; display: inline-flex; }
 .wb-menu-trigger {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border)) !important;
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft) !important;
   border-radius: var(--r-sm) !important;
   background: var(--bg-raised) !important;
   color: var(--text) !important;
@@ -930,7 +930,7 @@ html[data-material='glass'] .wb-proj-notice {
   overflow-y: auto;
   padding: 6px;
   background: var(--bg-raised);
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink);
   border-radius: var(--r-sm);
   box-shadow: var(--sh-hard);
 }
@@ -945,7 +945,7 @@ html[data-material='glass'] .wb-proj-notice {
   border-radius: var(--r-sm);
   text-align: left;
   cursor: pointer;
-  font-family: var(--font-sans, var(--font-ui));
+  font-family: var(--font-sans);
   font-size: var(--fs-sm);
   color: var(--text);
 }
@@ -1051,7 +1051,7 @@ html[data-material='glass'] .wb-proj-notice {
   height: 28px;
   padding: 0 12px;
   border-radius: var(--r-sm);
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   background: var(--accent);
   color: var(--accent-ink);
   font-size: var(--fs-sm);
@@ -1120,12 +1120,12 @@ html[data-material='glass'] .wb-proj-notice {
 /* ---------- 树头部按钮 ---------- */
 .ft-head-actions { display: flex; align-items: center; gap: 2px; }
 .ft-iconbtn {
-  border: var(--edge-w-strong) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong) solid var(--edge-ink-soft);
   background: transparent;
   color: var(--text-muted);
   width: 25px; height: 25px;
   border-radius: var(--r-sm);
-  box-shadow: var(--shadow-control, var(--sh-hard-sm));
+  box-shadow: var(--shadow-control);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1454,7 +1454,7 @@ html[data-material='glass'] .wb-proj-notice {
   height: 31px;
   padding: 0 15px;
   border-radius: 7px;
-  border: 1px solid var(--edge-ink-soft, var(--border));
+  border: 1px solid var(--edge-ink-soft);
   background: var(--bg-raised);
   color: var(--text);
   font-size: var(--fs-sm);
@@ -1464,10 +1464,10 @@ html[data-material='glass'] .wb-proj-notice {
 }
 .dg-btn:hover { border-color: var(--border-strong); background: var(--bg-hover); }
 .dg-primary {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border));
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   --btn-fill: var(--accent);
   background: var(--accent);
-  border-color: var(--edge-ink-soft, var(--border));
+  border-color: var(--edge-ink-soft);
   color: var(--accent-ink);
   box-shadow: var(--sh-hard-sm);
 }
@@ -1723,7 +1723,7 @@ a:focus-visible,
 .wb-topbar-right > a,
 .wb-topbar-right > span > button,
 .wb-topbar-right > button {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border)) !important;
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft) !important;
   border-radius: var(--r-sm) !important;
   background: var(--bg-raised) !important;
   color: var(--ink) !important;
@@ -1768,7 +1768,7 @@ a:focus-visible,
 
 #app .cd-dock { box-shadow: none !important; }
 #app .cd-send {
-  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft, var(--border)) !important;
+  border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft) !important;
   border-radius: var(--r-sm) !important;
   background: var(--accent) !important;   /*  shorthand 会一并清掉旧蓝渐变 background-image */
   color: var(--accent-ink) !important;

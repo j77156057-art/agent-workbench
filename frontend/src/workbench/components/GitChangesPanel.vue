@@ -280,7 +280,7 @@ function repoKey(dir: string) {
 .gc-chip i { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); }
 .gc-chip:hover { border-color: var(--border-strong); color: var(--text); }
 /* 选中态用强调色软底：写死浅蓝在深色皮肤下会变成亮块（且会盖掉皮肤强调色）。 */
-.gc-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text, var(--accent)); }
+.gc-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
 .gc-chip.active i { color: var(--accent); }
 .gc-content { flex: 1; overflow-y: auto; padding: 8px 12px 20px; }
 .gc-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: var(--fs-sm); }
