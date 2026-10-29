@@ -6306,6 +6306,17 @@ class Agent:
             # 并行批次：一轮返回多个 tool_call 且【全部只读安全】→ 并发执行后一次回填，
             # 省掉逐条往返。批内只要含写/副作用工具（或超并发上限）就整体退回顺序路径。
             if self._pending_batch:
+                # 批次的 verdict 与顺序路径一致：已强制收尾后不再执行任何调用。
+                if forced_finals >= _MAX_FORCED_FINALS:
+                    yield _evidence_final(forced_final_reason)
+                    return
+                # 批内含「已连续不可重试失败」的工具：退回顺序路径逐条裁决。
+                # 其它工具仍有执行机会；被封禁的那条由统一闸门触发证据兜底。
+                if any(_permanent_failures.get(nm, 0) >= 2
+                       for nm, _ar in self._pending_batch):
+                    self._native_queue = self._pending_batch
+                    self._pending_batch = []
+                    continue
                 if PARALLEL_TOOLS and self._parallel_safe(self._pending_batch):
                     remaining = (max(0, tool_step_limit - tool_steps)
                                  if tool_step_limit > 0 else PARALLEL_MAX)
@@ -6650,6 +6661,13 @@ class Agent:
                 # 即使换了不同参数——也不再执行/回填，直接用已有观察证据确定性兜底。
                 if forced_finals >= _MAX_FORCED_FINALS:
                     yield _evidence_final(forced_final_reason)
+                    return
+                # 同一工具连续两次「不可重试」失败后只封禁**该工具本身**；别的工具
+                # 必须放行 —— 上面的 nudge 明确让模型「改用其它工具」，若这里把任何
+                # Action 都拦下，模型唯一切换路径也被堵死，只能提前交半成品。
+                if _permanent_failures.get(parsed["action"], 0) >= 2:
+                    yield _evidence_final(forced_final_reason or (
+                        f"（工具 {parsed['action']} 已连续返回不可重试的失败，已停止重试。）"))
                     return
 
                 # 写操作同意护栏：没有明确授权时拒绝真正落盘，以一条 Observation 把模型引导
@@ -7085,7 +7103,6 @@ class Agent:
                     # 幂等存疑（idempotency_in_doubt）尤其要拦：execute_tool 已经
                     # 拒绝执行，若还让模型换参数再调，会算出新key 绕过唯一那道闸门。
                     if _fail_category == "permanent" and _permanent_failures[parsed["action"]] >= 2:
-                        forced_finals = _MAX_FORCED_FINALS
                         forced_final_reason = (
                             f"（工具 {parsed['action']} 连续 { _permanent_failures[parsed['action']] } 次"
                             "返回同类不可重试的失败（" + str(_result.error_kind or "unspecified") +
@@ -7172,6 +7189,7 @@ class Agent:
                 else:
                     # 本次执行成功：清掉该工具的连续失败计数与全局连续失败计数
                     tool_fail_streak.pop(parsed["action"], None)
+                    _permanent_failures.pop(parsed["action"], None)
                     fail_total = 0
                     if parsed["action"] in _WEB_ACTIONS:
                         web_family_failures.clear()

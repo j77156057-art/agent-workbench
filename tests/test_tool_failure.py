@@ -266,5 +266,120 @@ class EndToEndBehaviourTests(unittest.TestCase):
                       "超时是瞬时抖动，该鼓励原样重试而不是换工具")
 
 
+class PermanentFailureToolSwitchTests(unittest.TestCase):
+    """连续不可重试失败后：nudge 让换工具，就必须真的能换；重撞被禁工具才停。"""
+
+    @staticmethod
+    def _run(scripts, registry):
+        import agent as agent_mod
+
+        class _LLM:
+            provider = "mock"
+            model = "mock"
+            last_usage = {}
+
+            def __init__(self, replies):
+                self.replies = list(replies)
+
+            def count_tokens(self, messages):
+                return 100
+
+            def clone(self):
+                return self
+
+            def chat(self, messages, stream=False, **kw):
+                return self.replies.pop(0) if self.replies else "Final Answer: 结束"
+
+        agent = agent_mod.Agent(llm=_LLM(scripts), tool_registry=registry)
+        events = []
+        for ev in agent.run("做点事。", stream=True):
+            events.append(ev)
+        finals = [e.get("text") for e in events if e["type"] == "final"]
+        return events, finals[-1] if finals else ""
+
+    def test_switching_to_another_tool_is_allowed(self):
+        """实测 bug：两次不可重试失败后 nudge 说「改用其它工具」，但任何 Action 都被锁死。"""
+        from agent_runtime.tools import ToolResult
+        calls = {"flaky": 0, "good": 0}
+
+        def flaky(arg):
+            calls["flaky"] += 1
+            return ToolResult(False, "返回值不符合协议", error_kind="invalid_result")
+
+        def good(arg):
+            calls["good"] += 1
+            return "GOOD-OBS"
+
+        scripts = [
+            "Thought: 试\nAction: flaky\nAction Input: x",
+            "Thought: 再试\nAction: flaky\nAction Input: z",
+            "Thought: 换工具\nAction: good\nAction Input: y",
+            "Final Answer: 已收尾",
+        ]
+        _, final = self._run(scripts, {
+            "flaky": {"func": flaky, "capability": "read_local"},
+            "good": {"func": good, "capability": "read_local"},
+        })
+        self.assertEqual(calls["flaky"], 2)
+        self.assertEqual(calls["good"], 1, "nudge 让换工具，别的工具必须能执行")
+        self.assertEqual(final, "已收尾")
+
+    def test_retrying_the_blocked_tool_still_stops(self):
+        """封禁只针对那个工具：模型再撞它一次就停，不能无限重试。"""
+        from agent_runtime.tools import ToolResult
+        calls = {"flaky": 0}
+
+        def flaky(arg):
+            calls["flaky"] += 1
+            return ToolResult(False, "返回值不符合协议", error_kind="invalid_result")
+
+        scripts = [
+            "Thought: 试\nAction: flaky\nAction Input: x",
+            "Thought: 再试\nAction: flaky\nAction Input: z",
+            "Thought: 第三次\nAction: flaky\nAction Input: w",
+            "Final Answer: 已收尾",
+        ]
+        _, final = self._run(scripts, {
+            "flaky": {"func": flaky, "capability": "read_local"},
+        })
+        self.assertEqual(calls["flaky"], 2, "第三次调用必须在执行前被拦下")
+        self.assertIn("不可重试", final)
+
+    def test_success_resets_that_tools_permanent_streak(self):
+        """非连续失败不该累计：失败 -> 成功 -> 再失败 只是一次。"""
+        from agent_runtime.tools import ToolResult
+        calls = {"flaky": 0, "good": 0}
+        seq = [
+            ToolResult(False, "返回值不符合协议", error_kind="invalid_result"),
+            "OK",
+            ToolResult(False, "返回值不符合协议", error_kind="invalid_result"),
+        ]
+
+        def flaky(arg):
+            calls["flaky"] += 1
+            return seq.pop(0)
+
+        def good(arg):
+            calls["good"] += 1
+            return "GOOD-OBS"
+
+        scripts = [
+            "Thought: 试\nAction: flaky\nAction Input: x",
+            "Thought: 再试\nAction: flaky\nAction Input: z",
+            "Thought: 又试\nAction: flaky\nAction Input: w",
+            "Thought: 换工具\nAction: good\nAction Input: y",
+            "Final Answer: 已收尾",
+        ]
+        events, final = self._run(scripts, {
+            "flaky": {"func": flaky, "capability": "read_local"},
+            "good": {"func": good, "capability": "read_local"},
+        })
+        reflections = [e.get("text", "") for e in events if e["type"] == "reflection"]
+        self.assertFalse(any("反复返回不可重试" in t for t in reflections),
+                         "失败-成功-失败 不是连续两次，不该触发封禁提示")
+        self.assertEqual(calls["good"], 1)
+        self.assertEqual(final, "已收尾")
+
+
 if __name__ == "__main__":
     unittest.main()

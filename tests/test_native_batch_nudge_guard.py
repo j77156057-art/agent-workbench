@@ -131,6 +131,47 @@ class NativeBatchNotNudgedTests(unittest.TestCase):
                       "最终答案应收敛到模型的真实结论：%r" % finals[-1].get("text", ""))
 
 
+class PermanentBlockedToolBatchTests(unittest.TestCase):
+    """批次路径不能绕过「不可重试工具」封禁。"""
+
+    def setUp(self):
+        from agent_runtime.tools import ToolResult
+        self._orig = getattr(agent_mod, "TOOLS", None)
+        self.calls = {"flaky": 0, "good": 0}
+
+        def flaky(arg):
+            self.calls["flaky"] += 1
+            return ToolResult(False, "返回值不符合协议", error_kind="invalid_result")
+
+        def good(arg):
+            self.calls["good"] += 1
+            return "GOOD-OBS"
+
+        agent_mod.TOOLS = {
+            "flaky": {"func": flaky, "capability": "read_local"},
+            "good": {"func": good, "capability": "read_local"},
+        }
+
+    def tearDown(self):
+        if self._orig is not None:
+            agent_mod.TOOLS = self._orig
+
+    def test_blocked_tool_in_a_native_batch_cannot_bypass_the_ban(self):
+        llm = _NativeBatchLLM([
+            ([_tc("flaky", "x")], ""),                      # 单调用：失败 1
+            ([_tc("flaky", "z")], ""),                      # 换参再失败：2 次 → 封禁
+            ([_tc("good", "y"), _tc("flaky", "w")], ""),    # 批次夹带被封禁工具
+            ([], "Final Answer: 已收尾"),
+        ])
+        a = agent_mod.Agent(llm=llm, tool_mode="native")
+        events = list(a.run("做点事。", stream=True, web_enabled=False))
+        finals = [e.get("text", "") for e in events if e["type"] == "final"]
+        self.assertEqual(self.calls["flaky"], 2, "被封禁的工具不能经批次再执行")
+        self.assertEqual(self.calls["good"], 1, "批次里的其它工具仍应执行")
+        self.assertTrue(finals)
+        self.assertIn("不可重试", finals[-1])
+
+
 class RealIncompleteRoundStillNudgesTests(unittest.TestCase):
     """反向守卫：只吐非结论散文、没调工具的一轮，nudge 必须照常触发（不把门焊死）。"""
 
