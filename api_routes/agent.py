@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from agent_runtime import langsmith
 from agent_runtime.game_workflow import (WORKFLOWS, StateGraph, WorkflowError,
                                           WorkflowPolicy, review_output)
 from agent_runtime.workflow_profiles import get_profile, normalize_kind
+
+# 能力租约临期续期窗口：工作流按小时计，任务启动时若剩余不足该值就续期。
+_CAPABILITY_LEASE_RENEW_MARGIN_S = 300.0
 from agent_runtime.retrieval import retrieve_context, status as retrieval_status
 from agent_runtime.retrieval_eval import compare_reports, evaluate_modes
 from agent_runtime.workflow_eval import DEFAULT_DATASET_NAME, dataset_cases
@@ -405,11 +409,14 @@ def build_router(ctx) -> APIRouter:
     def workflow_callbacks(state, session_id=""):
         """Rebuild execution callbacks from durable workflow/session IDs."""
         sid = session_id or state.get("execution_session_id") or "workflow"
+        wid = str((state or {}).get("workflow_id") or "")
         agent = ctx._agent_for(sid, state.get("project_id") or None)
+        # 长工作流的能力租约按活动滑动续期；回调在每次工具检查/任务启动时触发。
+        refresh_lease = getattr(WORKFLOWS, "refresh_capability_lease", None)
+        if wid and callable(refresh_lease):
+            agent.capability_lease_renew = lambda wid=wid: refresh_lease(wid)
         workflow_root = str(state.get("project_root") or "")
         workflow_pid = str(state.get("project_id") or "")
-
-        wid = str((state or {}).get("workflow_id") or "")
 
         def _execution_root() -> str:
             """见 `_stage_workspace_root` 的完整说明（隔离与 git 可见性的取舍写在那里）。"""
@@ -440,8 +447,17 @@ def build_router(ctx) -> APIRouter:
             # 租约在执行开始时才创建；回调可能早于执行阶段构造，
             # 因此每个子任务都从持久工作流状态同步最新租约。
             try:
-                agent.capability_lease = dict(
+                lease = dict(
                     (WORKFLOWS.get(wid).get("capability_lease") or {}) if wid else {})
+                try:
+                    exp = float(lease.get("expires_at_epoch") or 0)
+                except (TypeError, ValueError):
+                    exp = 0.0
+                refresh_lease = getattr(WORKFLOWS, "refresh_capability_lease", None)
+                if (wid and lease and callable(refresh_lease)
+                        and exp - time.time() < _CAPABILITY_LEASE_RENEW_MARGIN_S):
+                    lease = refresh_lease(wid) or lease
+                agent.capability_lease = lease
             except Exception:
                 # A failed state read must not silently remove the boundary.
                 agent.capability_lease = {"status": "invalid"}

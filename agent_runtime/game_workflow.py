@@ -2547,7 +2547,10 @@ class GameWorkflowManager:
             ttl = float(self._capability_lease_ttl_s)
         ttl = max(300.0, min(7200.0, ttl))
         if capabilities is _UNSET:
-            selected = [item.value for item in Capability]
+            # 自动重建（例如过期后续跑/重试）沿用旧租约的能力集，不能借机
+            # 把受限租约升成全能力；没有旧租约才是首次授予（全能力）。
+            previous = [str(item) for item in (current.get("capabilities") or []) if str(item)]
+            selected = previous if current else [item.value for item in Capability]
         else:
             selected = [str(item) for item in (capabilities or ()) if str(item)]
         expires = now + ttl
@@ -2577,6 +2580,46 @@ class GameWorkflowManager:
         lease = self._ensure_capability_lease(state, ttl_seconds=ttl_seconds,
                                               capabilities=capabilities)
         return self._save(state).public().get("capability_lease") or dict(lease)
+
+    def refresh_capability_lease(self, workflow_id: str, *,
+                                 ttl_seconds: int | float | None = None) -> dict[str, Any]:
+        """滑动续期：把仍在执行的 active 租约到期时间往后推。
+
+        工作流动辄跑几小时，固定 30 分钟窗口会在中途把工具全部拦死。续期只
+        延后 `expires_at`，保留原租约 id 与 capabilities（避免把受限租约升权）；
+        已释放的租约、终态/中断状态不复活。
+        """
+        with self._lock:
+            state = self._load(workflow_id)
+            lease = dict(state.capability_lease or {})
+            if not lease or lease.get("status") != "active":
+                return lease
+            if state.status in self._TERMINAL_STATUSES or state.status == "interrupted":
+                return lease
+            try:
+                ttl = float(ttl_seconds if ttl_seconds is not None
+                            else self._capability_lease_ttl_s)
+            except (TypeError, ValueError):
+                ttl = float(self._capability_lease_ttl_s)
+            ttl = max(300.0, min(7200.0, ttl))
+            now_ts = time.time()
+            try:
+                current_expiry = float(lease.get("expires_at_epoch") or 0)
+            except (TypeError, ValueError):
+                current_expiry = 0.0
+            # 多个并行子代理会在同一窗口各调一次；租约还新鲜时不重复写盘。
+            if current_expiry > now_ts + ttl * 0.5:
+                return lease
+            expires = now_ts + ttl
+            lease["expires_at_epoch"] = expires
+            lease["expires_at"] = datetime.fromtimestamp(
+                expires, timezone.utc).isoformat(timespec="seconds")
+            lease["renewed_at"] = _now()
+            state.capability_lease = lease
+            self._event(state, "capability_lease_renewed", lease_id=lease.get("id"),
+                        expires_at=lease["expires_at"])
+            self._save(state)
+            return dict(lease)
 
     @staticmethod
     def _release_capability_lease(state: WorkflowState) -> None:
@@ -4289,6 +4332,8 @@ class GameWorkflowManager:
             def execute_wave(tasks, prior_results, remaining_steps):
                 nonlocal graph_wave_index
                 self._refresh_workflow_lease(workflow_id)
+                # 能力租约按 wave 滑动续期：长工作流（小时级）不能死在固定窗口上。
+                self.refresh_capability_lease(workflow_id)
                 self._note_role_capability(state, tasks)
                 # remaining_steps == 0 means unlimited when policy.max_steps == 0;
                 # it means exhausted only for a positive configured budget.

@@ -2455,6 +2455,9 @@ _WRITE_LEASE_TTL_SECONDS = 300.0
 # 硬上限。租约是「本轮批准过」的物化，不是长期授权：放长意味着一句「改吧」
 # 之后整个会话都能写，而用户的意思是「这次可以」。
 _WRITE_LEASE_MAX_TTL_SECONDS = 900.0
+# 工作流能力租约临近到期多久时触发滑动续期。长工作流按小时计，固定窗口
+# 不能成为中途拦死工具的理由；续期器由工作流执行器注入（见 _lease_blocked）。
+_CAPABILITY_LEASE_RENEW_MARGIN_S = 300.0
 
 
 def _write_intent(question):
@@ -4562,6 +4565,8 @@ class Agent:
         # 工作流可临时授予一组能力。它只收窄当前 Agent 的工具执行范围，
         # 不替代用户审批、工具白名单或 execute_tool 的副作用保护。
         self.capability_lease = dict(capability_lease or {})
+        # 工作流执行器注入的滑动续期回调；None = 不续期（普通对话/子代理默认）。
+        self.capability_lease_renew = None
         # 挂在类上供守卫引用 —— 测试要能直接读到上下界，否则「被夹住了」这句断言
         # 就只能照抄一个魔数，那样测的是魔数不是行为。
         self._WRITE_LEASE_MAX_TTL_SECONDS = _WRITE_LEASE_MAX_TTL_SECONDS
@@ -4843,6 +4848,22 @@ class Agent:
             expires_at = float(lease.get("expires_at_epoch") or 0)
         except (TypeError, ValueError):
             expires_at = 0.0
+        # 滑动续期：工作流可能连续跑几小时，临近到期时由执行器注入的回调
+        # 延长同一份租约（保留 capabilities），而不是到点就把工具全部拦死。
+        renew = getattr(self, "capability_lease_renew", None)
+        if callable(renew) and expires_at - time.time() < _CAPABILITY_LEASE_RENEW_MARGIN_S:
+            try:
+                fresh = renew() or {}
+            except Exception:  # noqa: BLE001 - 续期失败按过期处理，绝不放开
+                fresh = {}
+            try:
+                fresh_expiry = float((fresh or {}).get("expires_at_epoch") or 0)
+            except (TypeError, ValueError):
+                fresh_expiry = 0.0
+            if (fresh or {}).get("status") == "active" and fresh_expiry > expires_at:
+                self.capability_lease = dict(fresh)
+                lease = self.capability_lease
+                expires_at = fresh_expiry
         if expires_at <= time.time():
             return True, "当前工作流的工具权限租约已过期"
         allowed = {str(item) for item in (lease.get("capabilities") or []) if str(item)}
@@ -8274,6 +8295,9 @@ class Agent:
             capability_lease=self.capability_lease,
             run_budget=self.run_budget,
         )
+        # 子代理同样继承滑动续期器：一次长任务可能由子代理连续跑很久，
+        # 静态租约副本不续期会在中途把子代理的工具拦死。
+        child.capability_lease_renew = self.capability_lease_renew
         # 子代理继承父代理的「联网 / 深度思考」开关：否则父代理已开联网时，
         # 子代理 web_enabled 仍为 False，researcher 等子任务的 web_* 会被 _web_blocked 全拦截。
         child.web_enabled = self.web_enabled
