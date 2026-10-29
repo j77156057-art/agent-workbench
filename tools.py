@@ -10,6 +10,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -2022,6 +2023,8 @@ def web_search(query, _allow_aux=True):
         result = specialized_error + "\n\n通用搜索回退结果：\n" + result
     if provider != "builtin_auto":
         result = _filter_search_results(q, result)
+        # 词面过滤之后再做主题重排：同名词条（JS 教程）不该压过专有名词（GDScript）。
+        result = _rerank_and_focus(provider, q, result)
     if _search_cache_enabled() and not any(result.startswith(m) for m in _SEARCH_EMPTY_MARKERS):
         _web_cache_write(cache_key, result)
     return result
@@ -2323,6 +2326,111 @@ def _search_source_status(raw):
     if value.startswith("搜索结果相关性不足"):
         return "低相关"
     return "未返回结构化候选"
+
+
+_FOCUS_WORD_RE = re.compile(r"[a-z][a-z0-9_+-]{2,}")
+
+
+def _focus_terms(query):
+    """查询里承载主题的英文词（去掉 release/notes 等修饰词），保持出现顺序。
+
+    用于「查询被泛词稀释」时的补搜：`GDScript typed array 类型数组` 里真正
+    不可替代的是 gdscript，typed/array 也保留为辅助信号。
+    """
+    clean = re.sub(r"\b(?:site|after|before):\S+", " ", str(query or ""), flags=re.I).lower()
+    words = [w for w in _FOCUS_WORD_RE.findall(clean) if w not in _GENERIC_QUERY_TERMS]
+    return list(dict.fromkeys(words))
+
+
+def _row_text(row):
+    return " ".join(str(row.get(k, "")) for k in ("title", "snippet", "url")).lower()
+
+
+def _merge_unique_rows(primary_rows, extra_rows):
+    out, seen = [], set()
+    for row in list(primary_rows) + list(extra_rows):
+        key = (row.get("url") or row.get("title") or "").strip().lower()
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append(row)
+    return out
+
+
+def _rank_search_rows(query, rows):
+    """按「主题词覆盖为主、全词覆盖为辅、来源质量兜底」重排；纯本地、稳定排序。
+
+    IDF 权重解决同名词条压过专有名词的问题：`GDScript typed array 类型数组`
+    里 Java/TypeScript 教程能命中 typed/array/类型/数组，却缺 gdscript。
+    只按全词覆盖率算，中文泛词会把 JS 教程顶到第一（实测 5/6 vs 3/6）；所以
+    主题词（`_focus_terms`，去掉 release/notes 这类修饰词）的覆盖率单列为主分。
+    """
+    terms = _search_terms(query)
+    if len(rows) < 2 or not terms:
+        return rows
+    focus = [t for t in _focus_terms(query) if t in terms]
+    texts = [(str(r.get("title", "")) + " " + str(r.get("snippet", ""))).lower() for r in rows]
+    n = len(rows)
+    weights = {}
+    for term in terms:
+        df = sum(1 for text in texts if term in text)
+        weight = math.log((n + 1) / (df + 0.5)) + 0.2
+        weights[term] = weight * (0.3 if term in _GENERIC_QUERY_TERMS else 1.0)
+    total = sum(weights.values()) or 1.0
+    focus_total = sum(weights[t] for t in focus) if focus else 0.0
+
+    def score(i):
+        text = texts[i]
+        title = str(rows[i].get("title", "")).lower()
+        matched = sum(weights[t] for t in terms if t in text)
+        title_hits = sum(weights[t] for t in terms if t in title)
+        source, _reason = _source_score(rows[i].get("url", ""), rows[i].get("title", ""),
+                                        rows[i].get("snippet", ""))
+        if focus_total:
+            focus_matched = sum(weights[t] for t in focus if t in text)
+            focus_title = sum(weights[t] for t in focus if t in title)
+            base = (4.0 * focus_matched / focus_total
+                    + 1.5 * focus_title / focus_total
+                    + 0.5 * matched / total)
+        else:
+            base = 3.0 * matched / total + 1.0 * title_hits / total
+        return base + 0.15 * source
+
+    order = sorted(range(n), key=lambda i: (-score(i), i))
+    return [rows[i] for i in order]
+
+
+def _rerank_and_focus(provider, query, result):
+    """API 结果统一重排；主题词被整体稀释时用主题词子查询补搜一次。
+
+    触发条件刻意很窄：最长的主题词在整批结果里一次都没出现（说明搜索引擎把
+    查询理解成了另一个话题）。此时补一次 `focus terms` 查询，最多多花一个请求；
+    主题词已经出现时不发第二次请求，排序也不改结果集。
+    """
+    rows = _formatted_search_rows(result)
+    if len(rows) < 2:
+        return result
+    focus = _focus_terms(query)
+    primary = max(focus, key=len) if focus else ""
+    retried = False
+    if primary and not any(primary in _row_text(r) for r in rows):
+        extra = _api_web_search(provider, " ".join(focus))
+        if extra and not str(extra).startswith(_SEARCH_EMPTY_MARKERS):
+            extra_rows = _formatted_search_rows(extra)
+            if extra_rows:
+                rows = _merge_unique_rows(rows, extra_rows)
+                retried = True
+    ranked = _rank_search_rows(query, rows)[:_search_result_limit()]
+    if not retried and ranked == rows:
+        return result
+    lines_raw = str(result).splitlines()
+    first_row = next((i for i, line in enumerate(lines_raw)
+                      if line.lstrip().startswith("· ")), len(lines_raw))
+    header = [line for line in lines_raw[:first_row] if line.strip()]
+    body = [_format_search_result(r.get("title", ""), r.get("snippet", ""), r.get("url", ""))
+            for r in ranked]
+    return "\n".join(header + body)
 
 
 def _filter_search_results(query, raw):
