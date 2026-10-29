@@ -1,7 +1,7 @@
 """Wave8 第一步：把「写了但从来没人跑」的前端行为测试接进守卫。
 
 `frontend/tests/*.test.mjs` 早就躺在仓库里（5 个文件、12 项断言，跑的是
-`src/workbench/` 的真逻辑），但 `package.json` 没有 test 脚本、CI 里也没有对应步骤——
+`src/` 下各页面的真逻辑），但 `package.json` 没有 test 脚本、CI 里也没有对应步骤——
 所以这 12 项一次都没执行过，等于零守卫。
 
 这里最阴的失效不是测试变红，而是**测试静默消失**：`node --test` 匹配到 0 个文件时
@@ -112,12 +112,15 @@ class FrontendBehaviourTests(unittest.TestCase):
         `874a6d8` 改过的 `timelineLabel` 所在处。漏掉它等于让那条改动的守卫失效。
         """
         per_file, _ = declared_cases()
-        sources = (FRONTEND / "src" / "workbench")
-        # 允许子目录（`composables/`、`api/`、`components/` 下共 42 个生产模块）。
+        # 允许所有页面目录（workbench / ask / shared / landing）：守卫只问
+        # 「测的是不是 src 下的生产模块」，不假设它属于哪个页面。此前只认
+        # `src/workbench/`，7ccb40c 给问答页加 messagePresentation.test.mjs 后
+        # 这条守卫就红了 —— 是守卫的范围假设过期，不是那份测试有问题。
+        sources = FRONTEND / "src"
         # 字符类里必须带 `-`：`workflow-format.ts` 含连字符 —— 我第一版写正则时
         # 漏了它，于是这条守卫自己红着，正好说明了「正则收窄会让守卫失效」。
         pattern = re.compile(
-            r"from '\.\./src/workbench/([A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)\.ts'")
+            r"from '\.\./src/([A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)\.ts'")
         for name in per_file:
             body = (TEST_DIR / name).read_text(encoding="utf-8")
             targets = pattern.findall(body)
@@ -138,16 +141,20 @@ class FrontendBehaviourTests(unittest.TestCase):
         `src/workbench` 下明明有 `api/`（18 个 .ts）、`composables/`（23 个）、
         `components/`（1 个）三个子目录共 42 个生产模块，那条改动（`874a6d8` 的
         `timelineLabel`）就在里面。漏掉它的后果是「守卫变绿，但守的东西没被测」。
+
+        同时钉住页面目录不被写死：问答页（`src/ask/`）也有行为测试。
         """
         pattern = re.compile(
-            r"from '\.\./src/workbench/([A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)\.ts'")
-        for rel in ("liveVisionAlerts", "composables/workflow-format",
-                    "api/agent", "components/TopBar"):
-            self.assertTrue(pattern.findall("import x from '../src/workbench/%s.ts'" % rel),
+            r"from '\.\./src/([A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*)\.ts'")
+        for rel in ("workbench/liveVisionAlerts", "workbench/composables/workflow-format",
+                    "workbench/api/agent", "workbench/components/TopBar",
+                    "ask/messagePresentation", "shared/markdown"):
+            self.assertTrue(pattern.findall("import x from '../src/%s.ts'" % rel),
                             "正则认不出子目录形态 %r —— 那会让真被测的模块漏出守卫" % rel)
-        # 仍必须拒掉非生产路径与测试目录
-        self.assertFalse(pattern.findall("import x from '../src/other/x.ts'"))
+        # 正则按设计不再按目录白名单收窄：`other/` 这种不存在的模块由主用例的
+        # `is_file()` 逐个拒掉，不靠正则。这里只钉住「必须还是 src 下的 .ts」。
         self.assertFalse(pattern.findall("import x from '../tests/helper.ts'"))
+        self.assertFalse(pattern.findall("import x from '../src/workbench/foo.vue'"))
 
     def test_an_empty_glob_is_green_for_node_so_counts_are_the_only_guard(self):
         """把陷阱本身钉住：空匹配时 node 退出码 0、tests 0。

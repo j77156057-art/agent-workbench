@@ -323,9 +323,16 @@ class ModelPersistenceTests(unittest.TestCase):
 
 
 class ProjectKeyPersistenceTests(unittest.TestCase):
-    """API Key follows the current project even if legacy code_root is stale."""
+    """API Key follows the current project even if legacy code_root is stale.
+
+    这组用例锁的是**项目作用域**（`DOCMIND_SECRETS_SCOPE=project`）的读取顺序：
+    默认作用域已在 9a2bc44 改为 global（只认全局库），项目库读取只剩退路。
+    所以这里把 SECRETS_SCOPE 显式钉回 project —— 否则测的就不是这组语义了。
+    """
 
     def setUp(self):
+        self._scope_patch = patch.object(config, "SECRETS_SCOPE", "project")
+        self._scope_patch.start()
         self._old_state_root = config.STATE_ROOT
         self._old_state_file = config.STATE_FILE
         self._old_runtime = dict(config._RUNTIME)
@@ -356,6 +363,7 @@ class ProjectKeyPersistenceTests(unittest.TestCase):
         config._RUNTIME.clear()
         config._RUNTIME.update(self._old_runtime)
         api.agent.llm = self._old_llm
+        self._scope_patch.stop()
         self._tmp.cleanup()
 
     def _persist_current_game(self):
@@ -554,14 +562,26 @@ class MissingKeyPreflightTests(unittest.TestCase):
         self.assertTrue(qwen["has_key"])
 
     def test_stored_project_key_unlocks_switch_without_retyping(self):
+        """项目作用域（DOCMIND_SECRETS_SCOPE=project）下，项目库的 Key 仍能解锁切换。"""
         self.assertTrue(secrets_store.save(
             self._project_root, "deepseek", "sk-project-stored")["ok"])
-        with self._blank_keys(), patch.object(api, "LLM_API_KEY", ""):
+        with self._blank_keys(), patch.object(api, "LLM_API_KEY", ""), \
+                patch.object(config, "SECRETS_SCOPE", "project"):
             resp = _call(provider="deepseek", model="deepseek-chat")
         self.assertTrue(resp["ok"])
         self.assertEqual(config.get_runtime("llm_api_key"), "sk-project-stored")
         self.assertEqual(api.agent.llm.provider, "deepseek")
         self.assertEqual(api.agent.llm.api_key, "sk-project-stored")
+
+    def test_project_key_is_ignored_under_global_scope(self):
+        """默认作用域是 global：只存在项目库的 Key 不参与解锁（9a2bc44 的语义）。"""
+        self.assertTrue(secrets_store.save(
+            self._project_root, "deepseek", "sk-project-only")["ok"])
+        with self._blank_keys(), patch.object(api, "LLM_API_KEY", ""), \
+                patch.object(config, "SECRETS_SCOPE", "global"):
+            resp = _call(provider="deepseek", model="deepseek-chat")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("API Key", resp.body.decode("utf-8"))
 
     def test_vendor_env_key_unlocks_switch(self):
         env = {"DASHSCOPE_API_KEY": "", "DEEPSEEK_API_KEY": "sk-vendor-env",

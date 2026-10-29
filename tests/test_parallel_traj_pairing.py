@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""并行工具批次下，`_run_child` 的 action/observation 配对错位。
+r"""并行工具批次下，`_run_child` 的 action/observation 配对错位。
 
 ## 实测依据（不是设想）
 
