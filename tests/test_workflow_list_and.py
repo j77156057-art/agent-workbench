@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from agent_runtime.game_workflow import GameWorkflowManager
+from agent_runtime.game_workflow import GameWorkflowManager, WorkflowError
 
 
 class ProjectListAndMatchTests(unittest.TestCase):
@@ -105,6 +105,26 @@ class ProjectListAndMatchTests(unittest.TestCase):
         active = self.mgr.active_for_project(self.pid_a, str(self.project_a))
         self.assertIsNotNone(active)
         self.assertEqual(active["project_id"], self.pid_a)
+
+    def test_root_only_state_is_active_for_project_query(self):
+        """state 没带 project_id（对话内按 code_root 创建）也应参与该项目互斥。"""
+        wid = self.mgr.start("无 pid", project_root=str(self.project_a))["workflow_id"]
+        active = self.mgr.active_for_project(self.pid_a, str(self.project_a))
+        self.assertIsNotNone(active)
+        self.assertEqual(active["workflow_id"], wid)
+
+    def test_second_start_blocked_when_active_state_has_no_pid(self):
+        """真 bug：root-only 的活跃工作流对带项目头的启动不可见 → 同项目双开。"""
+        self.mgr.start("无 pid", project_root=str(self.project_a))
+        with self.assertRaises(WorkflowError):
+            self.mgr.start("重复", project_id=self.pid_a,
+                           project_root=str(self.project_a))
+
+    def test_root_only_state_listed_for_project(self):
+        wid = self.mgr.start("无 pid", project_root=str(self.project_a))["workflow_id"]
+        ids = [item["workflow_id"] for item in
+               self.mgr.list_workflows(self.pid_a, str(self.project_a))]
+        self.assertIn(wid, ids)
 
 
 class WindowsPathNormalizationTests(unittest.TestCase):

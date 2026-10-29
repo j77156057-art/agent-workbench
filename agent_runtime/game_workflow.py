@@ -2083,8 +2083,12 @@ class GameWorkflowManager:
                 # 「state 必须没有 root」，于是只传 project_id 时任何带 root
                 # 的 state 都被滤掉——工作台历史弹层按项目筛会凭空少条目，
                 # 互斥锁在只带 root 的启动路径下也会漏判（同项目双开）。
-                pid_ok = (not want_pid) or (want_pid == raw_pid)
-                root_ok = (not want_root) or (want_root == raw_root)
+                # 缺失绑定字段（查询侧或 state 侧）都按通配处理，由另一维约束。
+                # 只放宽查询侧不够：对话内 start_workflow 走 code_root、可能
+                # 落出没有 project_id 的 state，它对带项目头的查询既不可见、
+                # 也不参与互斥 → 同项目双开。
+                pid_ok = (not want_pid) or (not raw_pid) or (want_pid == raw_pid)
+                root_ok = (not want_root) or (not raw_root) or (want_root == raw_root)
                 if not (pid_ok and root_ok):
                     continue
             tasks = raw.get("tasks")
@@ -2172,8 +2176,11 @@ class GameWorkflowManager:
             # 「没提供的维度上 state 也必须为空」，于是只带 project_root 的
             # 启动路径（对话内 start_workflow 按 code_root 解析）看不到
             # 带 project_id 的活跃工作流 → 同项目双开，互斥锁失效。
-            pid_ok = (not want_pid) or (want_pid == have_pid)
-            root_ok = (not want_root) or (want_root == have_root)
+            # 同 list_workflows：state 侧缺失的绑定字段是通配，不能当成不匹配。
+            # 只带 project_root 的启动路径产出的 state 没有 project_id，
+            # 否则它对带项目头的查询不可见，互斥锁漏判 → 同项目双开。
+            pid_ok = (not want_pid) or (not have_pid) or (want_pid == have_pid)
+            root_ok = (not want_root) or (not have_root) or (want_root == have_root)
             if pid_ok and root_ok:
                 return state
         return None
