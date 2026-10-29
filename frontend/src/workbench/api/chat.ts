@@ -84,9 +84,11 @@ export const aiApi = {
         return body
       })
   },
-  /** P2：拉起一条 turn 的 partial（已发事件 + final） */
-  async getTurnPartial(turnId: string): Promise<TurnPartialResponse> {
-    const res = await fetch(`/api/turn/${encodeURIComponent(turnId)}/partial`,
+  /** P2：拉起一条 turn 的 partial（已发事件 + final）。
+   *  session_id 必带：后端据此校验归属，别的会话的 turn 一律 404。 */
+  async getTurnPartial(turnId: string, sessionId?: string): Promise<TurnPartialResponse> {
+    const qs = new URLSearchParams({ session_id: sessionId || getSessionId() })
+    const res = await fetch(`/api/turn/${encodeURIComponent(turnId)}/partial?${qs.toString()}`,
       withProject({ headers: { Accept: 'application/json' } }))
     if (res.status === 404) {
       return { ok: false, turn_id: turnId, session_id: '', status: 'expired', created_at: 0, events: [] }

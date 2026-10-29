@@ -7,7 +7,9 @@
 - `_mark_in_flight_terminal` 建了**两个** Timer，第二个才是被 start 的，且不是 daemon；
 - 旧回合的 60s 定时器按 turn_id 直接 pop，可能误删同 id 的新回合（前端会复用 id）。
 """
+import asyncio
 import os
+import pathlib
 import sys
 import unittest
 from unittest.mock import patch
@@ -15,6 +17,8 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import api  # noqa: E402
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 class _FakeTimer:
@@ -85,6 +89,35 @@ class InFlightTurnRegistryTests(unittest.TestCase):
         types = [ev["type"] for ev in rec["events"]]
         self.assertEqual(types, ["reasoning", "thought", "reasoning"])
         self.assertEqual(rec["events"][0]["text"], "ab")
+
+    def _call_partial(self, turn_id, session_id="s", project_id=None):
+        with patch.object(api, "_http_origin_allowed", return_value=True), \
+                patch.object(api, "_ctx_project_id", return_value=project_id):
+            return asyncio.run(api.get_turn_partial(turn_id, session_id=session_id))
+
+    def test_partial_requires_matching_session_and_project(self):
+        self._register("t-own", session_id="s", project_id="p1")
+        ok = self._call_partial("t-own", "s", "p1")
+        self.assertIsInstance(ok, dict)
+        self.assertTrue(ok["ok"])
+        for sid, pid in (("other", "p1"), ("s", "p2"), ("s", None), ("", "p1")):
+            with self.subTest(session=sid, project=pid):
+                resp = self._call_partial("t-own", sid, pid)
+                self.assertEqual(resp.status_code, 404)
+                self.assertIn("不存在或已过期", resp.body.decode("utf-8"),
+                              "归属不匹配不能泄露「存在但属于别人」")
+
+    def test_missing_turn_still_404(self):
+        resp = self._call_partial("t-missing", "s", None)
+        self.assertEqual(resp.status_code, 404)
+
+    def test_frontend_passes_session_id_to_partial(self):
+        chat_ts = (ROOT / "frontend/src/workbench/api/chat.ts").read_text(encoding="utf-8")
+        block = chat_ts[chat_ts.index("getTurnPartial"):chat_ts.index("getTurnPartial") + 500]
+        self.assertIn("session_id", block)
+        dock = (ROOT / "frontend/src/workbench/components/ChatDock.vue").read_text(
+            encoding="utf-8")
+        self.assertIn("getTurnPartial(target.turn_id, sid)", dock)
 
     def test_active_list_is_ordered_by_creation_time(self):
         older = self._register("t-older")

@@ -3208,14 +3208,21 @@ async def chat(
 # 终态 60s 兜底期内（_IN_FLIGHT_TURN_GRACE_S）仍能拉到；过期后端点会返 404，
 # 客户端应转「无 partial」路径（保留消息可恢复的 notice 仍由会话历史兜底）。
 @app.get("/api/turn/{turn_id}/partial")
-async def get_turn_partial(turn_id: str, request: Request = None):
+async def get_turn_partial(turn_id: str, session_id: str = "default",
+                           request: Request = None):
     turn_id = (turn_id or "").strip()
     if not turn_id:
         return JSONResponse({"ok": False, "error": "turn_id 缺失。"}, status_code=400)
     if not _http_origin_allowed(request):
         return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
     rec = _get_in_flight_turn(turn_id)
-    if rec is None:
+    sid = (session_id or "").strip() or "default"
+    req_pid = _ctx_project_id() or None
+    # 归属校验：会话与项目都必须匹配。不匹配与不存在返回**同一个 404**，
+    # 避免把「这条 turn 属于别的会话/项目」当成可探测的信息。
+    if (rec is None
+            or str(rec.get("session_id") or "") != sid
+            or (rec.get("project_id") or None) != req_pid):
         return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
                             status_code=404)
     events_snapshot = list(rec.get("events") or [])

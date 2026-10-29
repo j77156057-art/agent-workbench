@@ -956,7 +956,7 @@ async function recoverActiveTurns() {
     if (!live.length) return
     // 同一会话并发 in-flight 罕见，多条都拉只会乱序，只取最后一条。
     const target = live[live.length - 1]
-    const partial = await aiApi.getTurnPartial(target.turn_id)
+    const partial = await aiApi.getTurnPartial(target.turn_id, sid)
     if (!partial.ok) return
     // 列出来到取回之间它可能刚好结束：终态同样交给会话历史，别再补一条幻影。
     if (partial.status && partial.status !== 'streaming') return
