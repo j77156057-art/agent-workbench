@@ -46,6 +46,7 @@ from datetime import datetime
 
 from config import STATE_ROOT, state_path
 import projects
+from file_locks import cross_process_lock
 
 SESSIONS_DIR = state_path("DOCMIND_SESSIONS_DIR", os.path.join(STATE_ROOT, ".docmind_sessions"))
 # 逐轮「推理轨迹」旁路存储：每会话一个 JSON 文件，键为 turn_id，值为该轮完整步骤
@@ -425,7 +426,7 @@ def _inherit_turn_id(t, sig, carry_map) -> str:
     return uuid.uuid4().hex
 
 
-def save(session_id, turns, summary=None, project_id=None, archived=None) -> bool:
+def _save_unlocked(session_id, turns, summary=None, project_id=None, archived=None) -> bool:
     """整体落盘一个会话（turns = [{user, assistant}]）。
 
     archived：长会话压缩弹出的更早轮次（完整逐字），仅在压缩点由调用方传入并累进；
@@ -475,6 +476,16 @@ def save(session_id, turns, summary=None, project_id=None, archived=None) -> boo
         if archived is not None:
             data["archived"] = [_ser(t, "") for t in (archived or []) if isinstance(t, dict)]
         return _write(session_id, data, project_id)
+
+
+def save(session_id, turns, summary=None, project_id=None, archived=None) -> bool:
+    """跨进程串行化会话写：同一 STATE_ROOT 的两个实例不会交错替换同一文件。
+
+    注意：这只能防止写文件交错，不能把两份过期快照合并成完整历史；同一会话
+    真正的并发写由 api._session_run_scope 的跨进程 run 租约挡住。
+    """
+    with cross_process_lock(_path(session_id, project_id)):
+        return _save_unlocked(session_id, turns, summary, project_id, archived)
 
 
 def _turn_trace_path(session_id) -> str:

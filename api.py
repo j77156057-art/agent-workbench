@@ -15,12 +15,14 @@ import time
 import urllib.request
 import urllib.error
 import uuid
+import hashlib
 import contextvars
 import tempfile
 import base64
 import io
 import queue
 import threading
+from pathlib import Path
 import asyncio
 import anyio
 from urllib.parse import urlsplit
@@ -52,6 +54,7 @@ from config import (
     LLM_API_KEY,
     CODE_COLLECTION_NAME,  # noqa: F401 - re-export：test_search_code_project_scope 从 api 取
     CODE_ROOT,
+    STATE_ROOT,
     set_runtime,
     get_runtime,
     save_state,
@@ -106,6 +109,7 @@ from config import (
     set_context_code_root,
     reset_context_code_root,
 )
+from file_locks import CrossProcessFileLock
 from ingest import ingest_file, ingest_code_directory, load_project_rules
 from data_formats import detect_file
 from vectorstore import reset_collection, list_sources, count
@@ -354,6 +358,15 @@ def _run_lock_for(key: str) -> "threading.Lock":
         return _RUN_LOCKS.setdefault(key, threading.Lock())
 
 
+class SessionBusyError(RuntimeError):
+    """同一会话已被另一个 Agent 工作台实例占用。"""
+
+
+def _session_lease_path(key: str) -> Path:
+    digest = hashlib.sha1(str(key or "").encode("utf-8")).hexdigest()[:16]
+    return Path(STATE_ROOT) / ".docmind" / "locks" / ("session-" + digest)
+
+
 @contextmanager
 def _session_run_scope(key: str, worker_stop: "threading.Event", worker: "threading.Thread"):
     """④ interrupt-and-redirect：进入同会话 run 临界区。
@@ -361,6 +374,10 @@ def _session_run_scope(key: str, worker_stop: "threading.Event", worker: "thread
     若同会话已有活跃 run，先中断它并等其退到安全边界（在途工具返回后），再串行进入，
     杜绝两条线程并发写同一 Agent 的 self.history / _sessions.save。退出（正常/异常/
     中止）即清理注册表，释放串行锁。两个 run 的 worker 线程不同，不会自 join 死锁。
+
+    跨进程：两个服务实例共享 STATE_ROOT 时，进程内锁管不到对方；用文件租约保证
+    同一会话同时只有一个实例在跑，否则两边各自读旧历史再 save，会丢轮次
+    （实测 3 进程各 50 轮只剩 37）。
     """
     lock = _run_lock_for(key)
     prev = _ACTIVE_RUN.get(key)
@@ -368,6 +385,11 @@ def _session_run_scope(key: str, worker_stop: "threading.Event", worker: "thread
         prev["stop"].set()
         prev["thread"].join()
     with lock:
+        session_lock = CrossProcessFileLock(_session_lease_path(key), timeout=1.0)
+        try:
+            session_lock.acquire()
+        except TimeoutError as exc:
+            raise SessionBusyError("session_busy:%s" % key) from exc
         _ACTIVE_RUN[key] = {"stop": worker_stop, "thread": worker}
         try:
             yield
@@ -375,6 +397,7 @@ def _session_run_scope(key: str, worker_stop: "threading.Event", worker: "thread
             cur = _ACTIVE_RUN.get(key)
             if cur is not None and cur.get("thread") is worker:
                 _ACTIVE_RUN.pop(key, None)
+            session_lock.release()
 
 
 # ④ 重定向系统提示：声明「上轮已完成工作/推理保留、以新指令为准」，对应 Hermes
@@ -3222,6 +3245,9 @@ async def chat(
             elif isinstance(e, MissingAPIKey):
                 err_kind = "permanent"
                 err_text = str(e)
+            elif isinstance(e, SessionBusyError):
+                err_kind = "permanent"
+                err_text = "该会话正在另一个 Agent 工作台实例中运行，请稍后重试；不要同时开两个实例跑同一会话。"
             elif not _llm_is_retryable2(e):
                 err_kind = "permanent"
                 err_text = "本轮请求失败，未完成。请稍后重试，或检查模型设置/网络。"
