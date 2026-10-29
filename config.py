@@ -12,6 +12,7 @@ import tempfile
 from dotenv import load_dotenv
 
 import temp_state
+from file_locks import cross_process_lock
 
 load_dotenv()
 
@@ -904,28 +905,31 @@ _STATE_WRITE_LOCK = threading.RLock()
 def save_state(key, value):
     with _STATE_WRITE_LOCK:
         try:
-            data = {}
-            if os.path.isfile(STATE_FILE):
+            # 进程内 RLock 挡不住第二个服务实例：读-改-写必须再用 OS 文件锁串行化，
+            # 否则两边各写各的键，后写者会把前者的更新整份覆盖掉。
+            with cross_process_lock(STATE_FILE):
+                data = {}
+                if os.path.isfile(STATE_FILE):
+                    try:
+                        with open(STATE_FILE, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                    except (ValueError, OSError):
+                        data = {}
+                data[key] = value
+                directory = os.path.dirname(STATE_FILE) or "."
+                os.makedirs(directory, exist_ok=True)
+                fd, temporary = tempfile.mkstemp(prefix=".docmind_state.", suffix=".tmp",
+                                                 dir=directory)
                 try:
-                    with open(STATE_FILE, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                except (ValueError, OSError):
-                    data = {}
-            data[key] = value
-            directory = os.path.dirname(STATE_FILE) or "."
-            os.makedirs(directory, exist_ok=True)
-            fd, temporary = tempfile.mkstemp(prefix=".docmind_state.", suffix=".tmp",
-                                             dir=directory)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                os.replace(temporary, STATE_FILE)
-            except OSError:
-                try:
-                    os.unlink(temporary)
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(data, f, ensure_ascii=False, indent=2)
+                    os.replace(temporary, STATE_FILE)
                 except OSError:
-                    pass
-                raise
+                    try:
+                        os.unlink(temporary)
+                    except OSError:
+                        pass
+                    raise
         except OSError:
             pass
 

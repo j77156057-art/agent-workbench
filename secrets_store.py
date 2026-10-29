@@ -10,6 +10,7 @@ import ctypes
 from pathlib import Path
 import config
 import project_state
+from file_locks import cross_process_lock
 
 # 读-改-写必须串行：同一项目的多把 Key（LLM / 语音 / 搜索 / 预设）会从不同
 # 请求线程写入，交错时后写的那次会把先写的键整块抹掉。
@@ -67,17 +68,20 @@ def _dpapi_decrypt(token):
 def save(root, provider, value):
     if not value: return {'ok':False,'error':'空密钥不保存'}
     with _WRITE_LOCK:
-        p=_secrets_path(root); data={}
-        if p.exists():
-            try: data=json.loads(p.read_text(encoding='utf-8'))
-            except Exception: data={}
-        token=_dpapi_encrypt(value)
-        if token: scheme='dpapi'
-        else:
-            box=_box(root); token=box.encrypt(value.encode()).decode() if box else base64.b64encode(value.encode()).decode(); scheme='fernet' if box else 'base64'
-        data[str(provider)]={'ciphertext':token,'scheme':scheme}
-        _atomic_write(p, json.dumps(data,ensure_ascii=False,indent=2))
-        return {'ok':True,'provider':provider,'stored':True}
+        p=_secrets_path(root)
+        # 两个服务实例共享同一密钥库时，进程内锁管不到对方；用 OS 文件锁串行化。
+        with cross_process_lock(p):
+            data={}
+            if p.exists():
+                try: data=json.loads(p.read_text(encoding='utf-8'))
+                except Exception: data={}
+            token=_dpapi_encrypt(value)
+            if token: scheme='dpapi'
+            else:
+                box=_box(root); token=box.encrypt(value.encode()).decode() if box else base64.b64encode(value.encode()).decode(); scheme='fernet' if box else 'base64'
+            data[str(provider)]={'ciphertext':token,'scheme':scheme}
+            _atomic_write(p, json.dumps(data,ensure_ascii=False,indent=2))
+            return {'ok':True,'provider':provider,'stored':True}
 def load(root, provider):
     """Load a provider key, retaining compatibility with pre-project storage.
 
@@ -127,8 +131,9 @@ def providers(root):
 def remove(root, provider):
     with _WRITE_LOCK:
         p=_secrets_path(root)
-        try: data=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
-        except Exception: data={}
-        existed=str(provider) in data; data.pop(str(provider),None)
-        _atomic_write(p, json.dumps(data,ensure_ascii=False,indent=2))
-        return {'ok':True,'removed':existed,'provider':str(provider)}
+        with cross_process_lock(p):
+            try: data=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+            except Exception: data={}
+            existed=str(provider) in data; data.pop(str(provider),None)
+            _atomic_write(p, json.dumps(data,ensure_ascii=False,indent=2))
+            return {'ok':True,'removed':existed,'provider':str(provider)}

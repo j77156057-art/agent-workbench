@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Iterable, Mapping, TypedDict
 
 from config import STATE_ROOT
+from file_locks import CrossProcessFileLock
 from .acceptance_contract import AcceptanceError, approve as approve_acceptance
 from .acceptance_contract import (from_tasks as acceptance_from_tasks,
                                   on_plan_changed as acceptance_on_plan_changed,
@@ -1407,6 +1408,8 @@ class GameWorkflowManager:
         self._capability_lease_ttl_s = max(
             300, min(7200, int(os.getenv("DOCMIND_CAPABILITY_LEASE_S", "1800"))))
         self._leases: dict[str, tuple[int, int]] = {}
+        # 非 Postgres 模式的跨进程执行租约：wid -> (重入计数, 文件锁, 持有线程)
+        self._local_workflow_locks: dict[str, tuple[int, CrossProcessFileLock, int]] = {}
         self._checkpoint_error = ""
         self._checkpoint_backend = "native"
         self._checkpoint_schema_version: int | None = None
@@ -1525,6 +1528,14 @@ class GameWorkflowManager:
 
     def close(self) -> None:
         """Close the persistent checkpoint connection (useful for tests/servers)."""
+        with self._lock:
+            local_locks = list(self._local_workflow_locks.values())
+            self._local_workflow_locks.clear()
+        for _count, lock, _owner in local_locks:
+            try:
+                lock.release()
+            except Exception:
+                pass
         conn, self._checkpoint_conn = self._checkpoint_conn, None
         if conn is not None:
             try:
@@ -1582,9 +1593,41 @@ class GameWorkflowManager:
             "error": self._checkpoint_error,
         }
 
+    def _acquire_local_workflow_lease(self, workflow_id: str) -> int:
+        """非 Postgres 模式的跨进程执行锁：同一工作流同时只允许一个实例执行。"""
+        with self._lock:
+            active = self._local_workflow_locks.get(workflow_id)
+            if active is not None:
+                count, lock, owner = active
+                if owner != threading.get_ident():
+                    raise WorkflowError("workflow_lease_busy:%s" % workflow_id)
+                self._local_workflow_locks[workflow_id] = (count + 1, lock, owner)
+                return 0
+            lock = CrossProcessFileLock(
+                self.state_root / ".locks" / workflow_id, timeout=1.0)
+            try:
+                lock.acquire()
+            except TimeoutError as exc:
+                raise WorkflowError("workflow_lease_unavailable:%s" % workflow_id) from exc
+            self._local_workflow_locks[workflow_id] = (
+                1, lock, threading.get_ident())
+            return 0
+
+    def _release_local_workflow_lease(self, workflow_id: str) -> None:
+        with self._lock:
+            active = self._local_workflow_locks.get(workflow_id)
+            if active is None:
+                return
+            count, lock, owner = active
+            if count > 1:
+                self._local_workflow_locks[workflow_id] = (count - 1, lock, owner)
+                return
+            self._local_workflow_locks.pop(workflow_id, None)
+        lock.release()
+
     def _acquire_workflow_lease(self, workflow_id: str) -> int:
         if not self.distributed_leases:
-            return 0
+            return self._acquire_local_workflow_lease(workflow_id)
         with self._lock:
             active = self._leases.get(workflow_id)
             if active is not None:
@@ -1622,6 +1665,7 @@ class GameWorkflowManager:
 
     def _release_workflow_lease(self, workflow_id: str) -> None:
         if not self.distributed_leases:
+            self._release_local_workflow_lease(workflow_id)
             return
         with self._lock:
             active = self._leases.get(workflow_id)

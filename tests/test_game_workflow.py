@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import time
 import unittest
 import os
@@ -242,6 +243,39 @@ class GameWorkflowTests(unittest.TestCase):
         done = _wait_terminal(manager, wid)
         self.assertEqual(done["status"], "completed")
         self.assertEqual(manager.get(wid)["execution_session_id"], "workflow")
+
+    def test_local_lease_blocks_second_thread_from_double_running(self):
+        """同一进程两个线程同时 execute 同一工作流：第二个必须被租约拒绝。"""
+        state = self.manager.start("线程双跑", policy=WorkflowPolicy(
+            approval_mode="high", max_subagents=1))
+        wid = state["workflow_id"]
+        self.manager.choose(wid, "recommended")
+        self.manager.plan(wid, [{"id": "a", "role": "tester", "task": "并发"}])
+        started, release = threading.Event(), threading.Event()
+        results = {}
+
+        def runner(_task, _context):
+            started.set()
+            release.wait(5)
+            return {"status": "ok", "conclusion": "完成", "steps": 1}
+
+        def run(tag):
+            try:
+                results[tag] = self.manager.execute(wid, runner)
+            except Exception as exc:  # noqa: BLE001
+                results[tag] = exc
+
+        first = threading.Thread(target=run, args=("first",))
+        first.start()
+        self.assertTrue(started.wait(5), "第一个执行线程没有进入 runner")
+        second = threading.Thread(target=run, args=("second",))
+        second.start()
+        second.join(5)
+        self.assertIsInstance(results.get("second"), WorkflowError)
+        self.assertIn("workflow_lease", str(results.get("second")))
+        release.set()
+        first.join(10)
+        self.assertEqual(results["first"].get("status"), "completed")
 
     def test_option_generation_does_not_overwrite_interrupt(self):
         """晚到的选项生成结果不能把用户的中断覆盖回 awaiting_choice。"""
