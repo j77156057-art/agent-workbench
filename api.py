@@ -616,6 +616,64 @@ def _list_in_flight_turns(session_id: str, project_id: Optional[str]) -> list[di
 # 每条记录只在注册/终态/30s 心跳时写一次，不按事件写。
 _TURN_INDEX_LOCK = threading.Lock()
 _TURN_INDEX_TTL_S = 300.0
+# 每个 API 进程对每个 STATE_ROOT 持一把存活锁；进程崩溃时 OS 自动释放。
+# turn 索引记录 owner_instance，非 owner 探测这把锁即可判断 owner 是否还活着。
+_INSTANCE_ID = uuid.uuid4().hex[:16]
+_INSTANCE_LOCKS: dict[str, CrossProcessFileLock] = {}
+_INSTANCE_LOCK_GUARD = threading.Lock()
+
+
+def _instance_dir() -> Path:
+    return Path(STATE_ROOT) / ".docmind" / "instances"
+
+
+def _ensure_instance_lock() -> None:
+    root = str(Path(STATE_ROOT))
+    with _INSTANCE_LOCK_GUARD:
+        if root in _INSTANCE_LOCKS:
+            return
+        try:
+            _instance_dir().mkdir(parents=True, exist_ok=True)
+            lock = CrossProcessFileLock(_instance_dir() / _INSTANCE_ID, timeout=2.0)
+            lock.acquire()
+            meta = _instance_dir() / (_INSTANCE_ID + ".json")
+            fd, temporary = tempfile.mkstemp(prefix=meta.name + ".", suffix=".tmp",
+                                             dir=str(meta.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump({"instance_id": _INSTANCE_ID, "pid": os.getpid(),
+                               "started_at": time.time()}, fh)
+                os.replace(temporary, meta)
+            except OSError:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+            _INSTANCE_LOCKS[root] = lock
+        except Exception:
+            # 活锁不可用（只读/无权限）时退回 TTL 兜底，不能挡住对话主链路。
+            pass
+
+
+def _owner_instance_id() -> str:
+    return _INSTANCE_ID if str(Path(STATE_ROOT)) in _INSTANCE_LOCKS else ""
+
+
+def _instance_alive(instance_id: str) -> bool:
+    if not instance_id:
+        return True  # 旧索引没有实例号，交给 TTL
+    target = _instance_dir() / instance_id
+    if not Path(str(target) + ".lock").exists():
+        return False
+    probe = CrossProcessFileLock(target, timeout=0)
+    try:
+        probe.acquire()
+        probe.release()
+        return False  # 能拿到锁 = owner 已退出/崩溃
+    except TimeoutError:
+        return True   # 锁仍被持有
+    except Exception:
+        return True   # 探测异常按活着，宁可多等也不误删正在跑的 turn
 
 
 def _turn_index_dir() -> Path:
@@ -630,7 +688,9 @@ def _turn_index_path(turn_id: str) -> Path:
 def _write_turn_index(rec: dict) -> None:
     if not isinstance(rec, dict) or not rec.get("owner_base") or not rec.get("turn_id"):
         return
+    _ensure_instance_lock()
     entry = {
+        "owner_instance": _owner_instance_id(),
         "turn_id": rec["turn_id"],
         "session_id": rec.get("session_id") or "default",
         "project_id": rec.get("project_id") or None,
@@ -695,6 +755,13 @@ def _list_turn_index(session_id: str, project_id: Optional[str]) -> list[dict]:
             continue
         if not isinstance(entry, dict):
             continue
+        instance_id = str(entry.get("owner_instance") or "")
+        if instance_id and not _instance_alive(instance_id):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            continue
         if str(entry.get("session_id") or "default") != (session_id or "default"):
             continue
         if (entry.get("project_id") or None) != (project_id or None):
@@ -721,6 +788,10 @@ def _remote_turn_owner(turn_id: str, session_id: str, request: Request | None) -
         return ""
     entry = _read_turn_index(turn_id)
     if not entry:
+        return ""
+    instance_id = str(entry.get("owner_instance") or "")
+    if instance_id and not _instance_alive(instance_id):
+        _remove_turn_index(turn_id)
         return ""
     if str(entry.get("session_id") or "default") != ((session_id or "").strip() or "default"):
         return ""
