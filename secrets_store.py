@@ -5,11 +5,31 @@
 ``STATE_ROOT/.docmind/secrets.json`` 这个全局密钥库；指定项目时仍按项目保存
 （兼容既有安装与多项目各自的覆盖），调用方可在项目库没有时回落到全局库。
 """
-import base64, json, os
+import base64, json, os, tempfile, threading
 import ctypes
 from pathlib import Path
 import config
 import project_state
+
+# 读-改-写必须串行：同一项目的多把 Key（LLM / 语音 / 搜索 / 预设）会从不同
+# 请求线程写入，交错时后写的那次会把先写的键整块抹掉。
+_WRITE_LOCK = threading.RLock()
+
+
+def _atomic_write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp",
+                                     dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 try:
     from cryptography.fernet import Fernet
 except Exception: Fernet = None
@@ -46,17 +66,18 @@ def _dpapi_decrypt(token):
     except Exception: return None
 def save(root, provider, value):
     if not value: return {'ok':False,'error':'空密钥不保存'}
-    p=_secrets_path(root); data={}
-    if p.exists():
-        try: data=json.loads(p.read_text(encoding='utf-8'))
-        except Exception: data={}
-    token=_dpapi_encrypt(value)
-    if token: scheme='dpapi'
-    else:
-        box=_box(root); token=box.encrypt(value.encode()).decode() if box else base64.b64encode(value.encode()).decode(); scheme='fernet' if box else 'base64'
-    p.parent.mkdir(parents=True,exist_ok=True)
-    data[str(provider)]={'ciphertext':token,'scheme':scheme}; p.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    return {'ok':True,'provider':provider,'stored':True}
+    with _WRITE_LOCK:
+        p=_secrets_path(root); data={}
+        if p.exists():
+            try: data=json.loads(p.read_text(encoding='utf-8'))
+            except Exception: data={}
+        token=_dpapi_encrypt(value)
+        if token: scheme='dpapi'
+        else:
+            box=_box(root); token=box.encrypt(value.encode()).decode() if box else base64.b64encode(value.encode()).decode(); scheme='fernet' if box else 'base64'
+        data[str(provider)]={'ciphertext':token,'scheme':scheme}
+        _atomic_write(p, json.dumps(data,ensure_ascii=False,indent=2))
+        return {'ok':True,'provider':provider,'stored':True}
 def load(root, provider):
     """Load a provider key, retaining compatibility with pre-project storage.
 
@@ -104,10 +125,10 @@ def providers(root):
     except Exception: return []
 
 def remove(root, provider):
-    p=_secrets_path(root)
-    try: data=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
-    except Exception: data={}
-    existed=str(provider) in data; data.pop(str(provider),None)
-    p.parent.mkdir(parents=True,exist_ok=True)
-    p.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    return {'ok':True,'removed':existed,'provider':str(provider)}
+    with _WRITE_LOCK:
+        p=_secrets_path(root)
+        try: data=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+        except Exception: data={}
+        existed=str(provider) in data; data.pop(str(provider),None)
+        _atomic_write(p, json.dumps(data,ensure_ascii=False,indent=2))
+        return {'ok':True,'removed':existed,'provider':str(provider)}

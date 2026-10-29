@@ -5,6 +5,7 @@ import contextvars
 import os
 import re
 import sys
+import threading
 from datetime import datetime
 import tempfile
 
@@ -894,22 +895,39 @@ def reconcile_code_root_with_project(*, reason: str = "",
 # 与 .chroma 同目录（开发=源码根；冻结=_internal），只存路径类非敏感数据，
 # 避免重启后必须重新选择代码库。写入失败一律静默回落内存态，不影响主流程。
 STATE_FILE = os.path.join(STATE_ROOT, ".docmind_state.json")
+# `save_state` 是读-改-写：SSE 工作线程、设置端点、项目切换会并发调用。
+# 没有锁时两个 writer 交错读同一份旧数据，后写的那次会把先写的键整块抹掉
+# （实测形态：保存 provider 后模型设置回退成旧值）。锁 + 原子替换。
+_STATE_WRITE_LOCK = threading.RLock()
 
 
 def save_state(key, value):
-    try:
-        data = {}
-        if os.path.isfile(STATE_FILE):
+    with _STATE_WRITE_LOCK:
+        try:
+            data = {}
+            if os.path.isfile(STATE_FILE):
+                try:
+                    with open(STATE_FILE, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except (ValueError, OSError):
+                    data = {}
+            data[key] = value
+            directory = os.path.dirname(STATE_FILE) or "."
+            os.makedirs(directory, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix=".docmind_state.", suffix=".tmp",
+                                             dir=directory)
             try:
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except (ValueError, OSError):
-                data = {}
-        data[key] = value
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                os.replace(temporary, STATE_FILE)
+            except OSError:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            pass
 
 
 def load_state(key, default=None):
