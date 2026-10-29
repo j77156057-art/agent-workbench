@@ -2978,6 +2978,9 @@ async def chat(
                 # 自动接上上一次尝试刚落库的现场（见 except 分支）。
                 resume_target = (resume_checkpoint or "").strip() or None
                 while True:
+                    if worker_stop.is_set():
+                        # 客户端已断开 / 被同会话新请求打断：不再起新的 run。
+                        return
                     try:
                         with _session_run_scope(key, worker_stop, worker):
                             # 逐请求覆盖（含云端 llm）全部随 run(...) 传入：run 在 finally 里还原，
@@ -2998,19 +3001,31 @@ async def chat(
                             )
                             for ev in gen:
                                 if worker_stop.is_set():
+                                    # 断线时主动关掉内层生成器，触发它的 aborted 分支
+                                    # （落 trace / 收尾）。只 break 会让它悬在 yield 上，
+                                    # 资源与轨迹收尾都要等到 GC 才发生。
+                                    try:
+                                        gen.close()
+                                    except Exception:  # noqa: BLE001
+                                        pass
                                     break
                                 events.put(("event", ev))
+                        if worker_stop.is_set():
+                            return
                         # 成功跑完一轮 run()，跳出循环
                         events.put(("done", None))
                         return
                     except BaseException as exc:  # noqa: F841 - ruff 误报：exc 在下方重试/上报路径使用
-                        # BLOCK_LLM_TEST=1：模拟瞬断；=2：模拟 fallback 也失败
+                        if worker_stop.is_set():
+                            # 断线导致的异常（取消/连接中断）不该重试，也不该起新 run。
+                            return
+                        # BLOCK_LLM_TEST=1：只模拟主模型瞬断（fallback 用真模型）；
+                        # =2：连 fallback 也失败（每次尝试都模拟）。
                         if BLOCK_LLM_TEST == "1" and not fallback_done:
                             exc = _FakeConnError("BLOCK_LLM_TEST=1")
-                        elif BLOCK_LLM_TEST == "2" and not fallback_done:
+                        elif BLOCK_LLM_TEST == "2":
                             exc = _FakeConnError("BLOCK_LLM_TEST=2")
-                        # 已经 fallback 也炸了，不再重试，直接给 error
-                        if fallback_done or not _llm_is_retryable(exc):
+                        if not _llm_is_retryable(exc):
                             events.put(("error", exc))
                             return
                         # 同一现场续跑：_run_shell 已在 finally 里落盘 journal，
@@ -3020,29 +3035,33 @@ async def chat(
                             resume_target = _last_cp
                         attempts_left -= 1
                         if attempts_left >= 0:
-                            # 瞬断退避：0.5s / 1.5s 抖动
+                            # 瞬断退避：0.5s / 1.5s 抖动；可被断线立即打断。
                             delay = 0.5 if attempts_left == 1 else 1.5
                             delay *= (0.7 + 0.6 * _random.random())
-                            time.sleep(delay)
+                            if worker_stop.wait(delay):
+                                return
                             # 通知前端「正在重试」，但不假装是 final
                             events.put(("event", {"type": "notice",
                                                   "text": f"网络瞬断，正在第 {2 - attempts_left} 次重试…",
                                                   "transient": True}))
                             continue
-                        # 重试用尽 —— 走 fallback 模型
-                        fb = _select_fallback_llm(current_llm or getattr(selected_agent, "llm", None))
-                        if fb is not None and fb is not current_llm:
-                            fallback_done = True
-                            current_llm = fb
-                            if not fallback_notice_emitted:
-                                fallback_notice_emitted = True
-                                events.put(("event", {"type": "notice",
-                                                      "text": "已自动切换到备用模型。",
-                                                      "transient": False}))
-                            # 重置 attempts_left 让 fallback 也走两轮退避
-                            attempts_left = 2
-                            continue
-                        # 没有 fallback 或 fallback == 当前 llm：原异常上抛
+                        # 重试用尽 —— 走 fallback 模型；fallback 只切一次，但同样
+                        # 享有两轮退避（此前 fallback_done 在重试判断里短路，
+                        # 重置的 attempts_left 永远用不到）。
+                        if not fallback_done:
+                            fb = _select_fallback_llm(current_llm or getattr(selected_agent, "llm", None))
+                            if fb is not None and fb is not current_llm:
+                                fallback_done = True
+                                current_llm = fb
+                                if not fallback_notice_emitted:
+                                    fallback_notice_emitted = True
+                                    events.put(("event", {"type": "notice",
+                                                          "text": "已自动切换到备用模型。",
+                                                          "transient": False}))
+                                attempts_left = 2
+                                continue
+                        # 没有 fallback、fallback == 当前 llm、或 fallback 重试也耗尽：
+                        # 原异常上抛给 event_stream 的终态处理。
                         events.put(("error", exc))
                         return
 
@@ -3053,6 +3072,10 @@ async def chat(
                 try:
                     kind, payload = events.get(timeout=CHAT_STREAM_HEARTBEAT_S)
                 except queue.Empty:
+                    # worker 静默死亡（异常发生在 produce 的兜底之外）时，不能无限
+                    # 发心跳把前端挂死：转成一条明确的错误终态。
+                    if worker is not None and not worker.is_alive() and events.empty():
+                        raise RuntimeError("SSE 工作线程异常退出，未产生终态事件")
                     # SSE 心跳保持连接，但不向对话添加重复提示。
                     yield ": keep-alive\n\n"
                     continue
