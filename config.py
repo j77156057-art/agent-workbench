@@ -1439,14 +1439,51 @@ def set_web_search_provider(provider):
     return provider
 
 
+# ---- 网络搜索 / 抓取的 API Key：与 LLM Key 同进加密密钥库 ----
+# 2026-10-29 收口：旧版把这两个 key 明文写进 STATE_FILE（.docmind_state.json）。
+# 现在默认全局库（凭据属于这台机器上的用户、不绑定项目），读取顺序与 LLM Key 一致：
+# 运行时显式 > 密钥库 > 环境变量。启动时把旧明文迁移进库并立即抹掉。
+# 惰性 import：secrets_store 依赖 config.STATE_ROOT，模块级 import 会成环。
+_WEB_SECRET_SLOTS = {
+    "web_search_api_key": "web_search",
+    "web_fetch_api_key": "web_fetch",
+}
+
+
+def _web_secret_load(slot):
+    try:
+        import secrets_store
+        return secrets_store.load(None, slot) or ""
+    except Exception:  # noqa: BLE001 - 密钥库不可用时退回环境变量/运行时
+        return ""
+
+
+def _web_secret_save(slot, value):
+    """写全局密钥库；空值表示删除该槽位。失败抛异常，绝不回退成明文。"""
+    import secrets_store
+    if value:
+        result = secrets_store.save(None, slot, value)
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error") or "写入密钥库失败")
+        return True
+    try:
+        secrets_store.remove(None, slot)
+    except Exception:  # noqa: BLE001 - 槽位本来不存在时也算成功
+        pass
+    return True
+
+
 def get_web_search_api_key():
-    return get_runtime("web_search_api_key") or WEB_SEARCH_API_KEY or ""
+    return (get_runtime("web_search_api_key")
+            or _web_secret_load("web_search")
+            or WEB_SEARCH_API_KEY or "")
 
 
 def set_web_search_api_key(key):
     key = (key or "").strip()
     set_runtime("web_search_api_key", key)
-    save_state("web_search_api_key", key)
+    _web_secret_save("web_search", key)
+    save_state("web_search_api_key", "")  # 抹掉旧版明文（没有则写空串，无害）
     return key
 
 
@@ -1492,13 +1529,16 @@ def set_web_fetch_provider(provider):
 
 
 def get_web_fetch_api_key():
-    return get_runtime("web_fetch_api_key") or WEB_FETCH_API_KEY or ""
+    return (get_runtime("web_fetch_api_key")
+            or _web_secret_load("web_fetch")
+            or WEB_FETCH_API_KEY or "")
 
 
 def set_web_fetch_api_key(key):
     key = (key or "").strip()
     set_runtime("web_fetch_api_key", key)
-    save_state("web_fetch_api_key", key)
+    _web_secret_save("web_fetch", key)
+    save_state("web_fetch_api_key", "")
     return key
 
 
@@ -1514,12 +1554,26 @@ def set_web_fetch_api_url(url):
 
 
 def _apply_web_search_state(data):
-    """从 STATE_FILE 恢复网络搜索配置；显式 set_runtime 优先（同 external_access_mode）。"""
-    for key in ("web_search_provider", "web_search_api_key", "web_search_api_url",
-                "web_fetch_provider", "web_fetch_api_key", "web_fetch_api_url"):
+    """从 STATE_FILE 恢复网络搜索配置；显式 set_runtime 优先（同 external_access_mode）。
+
+    2026-10-29：两个 API Key 已迁出 STATE_FILE（旧版明文）。这里负责迁移：
+    把旧值写进加密密钥库并立即抹掉明文；迁移失败才退回运行时，至少不丢 Key。
+    """
+    for key in ("web_search_provider", "web_search_api_url",
+                "web_fetch_provider", "web_fetch_api_url"):
         v = data.get(key)
         if v is not None and key not in _RUNTIME:
             _RUNTIME[key] = v
+    for key, slot in _WEB_SECRET_SLOTS.items():
+        legacy = data.get(key)
+        if not legacy:
+            continue
+        try:
+            _web_secret_save(slot, str(legacy))
+            save_state(key, "")  # 抹掉旧版明文
+        except Exception:  # noqa: BLE001 - 迁移失败时保留可用性，不丢 Key
+            if key not in _RUNTIME:
+                _RUNTIME[key] = legacy
     pb = data.get("web_search_prefer_builtin")
     if pb is not None and "web_search_prefer_builtin" not in _RUNTIME:
         _RUNTIME["web_search_prefer_builtin"] = bool(pb)
