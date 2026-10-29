@@ -108,6 +108,28 @@ class WebSettingsSaveTests(unittest.TestCase):
                 field, "wsApiKey" if field.startswith("web_search") else "wfApiKey"), block,
                 "%s 留空时必须以 undefined 省略，不能发空串" % field)
 
+    def test_api_urls_must_be_http(self):
+        """搜索/抓取的 API 地址只允许 http(s)：file:// 与裸主机名都必须拒绝。"""
+        for payload in (
+            api.WebSettingsReq(web_search_provider="searxng",
+                               web_search_api_url="file:///etc/passwd"),
+            api.WebSettingsReq(web_search_provider="searxng",
+                               web_search_api_url="api.example.com"),
+            api.WebSettingsReq(web_fetch_provider="firecrawl",
+                               web_fetch_api_url="ftp://example.com"),
+        ):
+            resp = asyncio.run(api.set_web_settings(payload))
+            self.assertEqual(resp.status_code, 400, payload)
+            self.assertIn("http", resp.body.decode("utf-8"))
+
+    def test_apply_config_rejects_bad_web_url_before_any_mutation(self):
+        before = config.get_runtime("llm_provider")
+        resp = asyncio.run(api.set_config(api.ConfigReq(
+            provider="mock", web_search_api_url="file:///etc/passwd")))
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(config.get_runtime("llm_provider"), before,
+                         "URL 校验必须发生在任何模型状态变更之前")
+
     def test_saved_key_hint_is_scoped_to_the_selected_provider(self):
         """Key 按厂商分槽后，"已保存" 只能对当前选中的厂商成立。"""
         source = (ROOT / "frontend/src/workbench/components/SettingsView.vue").read_text(

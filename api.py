@@ -5243,6 +5243,25 @@ async def set_memory_settings(req: MemorySettingsReq):
 # 局部保存就会把用户真实的 LLM provider/model 覆盖成离线 mock 并写盘
 # （复现：deepseek/deepseek-flash → 只 POST web_* → mock/mock，重启仍是 mock）。
 # 这里只碰 web_* 这些 runtime 键，绝不触碰模型选择。
+def _web_url_error(req) -> str:
+    """搜索/抓取的 API 地址只允许 http(s)：与模型/语音的自定义端点同一条边界。
+
+    空串表示「清除地址」，允许；其余一律要求带 http(s) 头，避免 file:// 之类
+    被 urllib 当成资源读取，或裸主机名在运行时才以难懂的 URLError 暴露。
+    """
+    for field, label in (
+        ("web_search_api_url", "搜索 API 地址"),
+        ("web_fetch_api_url", "URL 获取 API 地址"),
+    ):
+        value = getattr(req, field, None)
+        if value is None:
+            continue
+        value = str(value).strip()
+        if value and not value.lower().startswith(("http://", "https://")):
+            return f"{label}必须以 http:// 或 https:// 开头。"
+    return ""
+
+
 class WebSettingsReq(BaseModel):
     web_search_provider: Optional[str] = None
     web_search_api_key: Optional[str] = None
@@ -5255,6 +5274,9 @@ class WebSettingsReq(BaseModel):
 
 @app.post("/api/web-settings")
 async def set_web_settings(req: WebSettingsReq):
+    error = _web_url_error(req)
+    if error:
+        return JSONResponse({"ok": False, "error": error}, status_code=400)
     if req.web_search_provider is not None:
         set_web_search_provider(req.web_search_provider)
     if req.web_search_api_key is not None:
@@ -5905,6 +5927,10 @@ async def _apply_config(req: ConfigReq):
             status_code=400)
     if req.provider not in PROVIDERS:
         return JSONResponse({"ok": False, "error": f"未知 provider: {req.provider}"}, status_code=400)
+    # 搜索/抓取地址的校验也必须在任何状态变更之前（老客户端仍可能带 web_* 打这里）。
+    url_error = _web_url_error(req)
+    if url_error:
+        return JSONResponse({"ok": False, "error": url_error}, status_code=400)
 
     # 自定义 OpenAI 兼容端点：base_url / model 必填，且只允许 http(s)
     previous_provider = get_runtime("llm_provider") or LLM_PROVIDER
