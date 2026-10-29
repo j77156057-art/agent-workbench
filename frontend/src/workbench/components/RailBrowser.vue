@@ -153,8 +153,13 @@ function effectLabel(effect?: string): string {
     </div>
 
     <template v-if="mode === 'page'">
-      <div v-if="!url" class="rr-note">
-        输入一个网址，或从对话里的联网来源 / 浏览器证据点「侧栏」打开。
+      <div v-if="!url" class="rr-empty">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M3 12h18M12 3c2.6 2.8 4 5.8 4 9s-1.4 6.2-4 9c-2.6-2.8-4-5.8-4-9s1.4-6.2 4-9Z" />
+        </svg>
+        <strong>打开网页预览</strong>
+        <p>在上方输入网址，或从对话里的联网来源、浏览器证据直接打开。</p>
       </div>
       <template v-else>
         <iframe
@@ -217,33 +222,36 @@ function effectLabel(effect?: string): string {
 
 <style scoped>
 .rr-browser { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.rr-addr-row { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px 10px 4px; }
+.rr-addr-row { flex: 0 0 auto; display: flex; gap: 6px; padding: 12px 14px 6px; background: var(--bg-raised); }
 .rr-addr {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 5px 9px;
-  font-family: 'Cascadia Code', Consolas, monospace;
+  height: 34px;
+  padding: 0 10px;
+  font-family: var(--font-mono);
   font-size: var(--fs-sm);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--bg);
+  border: 1px solid var(--border-graphic);
+  border-radius: var(--r-sm);
+  background: var(--surface);
   color: var(--text);
 }
 .rr-addr:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 1px; }
+.rr-addr::placeholder { color: var(--text-muted); opacity: 1; }
 .rr-btn {
   flex: 0 0 auto;
-  padding: 4px 10px;
+  height: 34px;
+  padding: 0 12px;
   font-size: var(--fs-sm);
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
   color: var(--text-muted);
   cursor: pointer;
 }
 .rr-btn:hover { background: var(--bg-hover); color: var(--text); }
 .rr-addr-err { margin: 0 10px; color: var(--amber); font-size: var(--fs-sm); }
 
-.rr-mode { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 4px 10px 8px; }
+.rr-mode { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; padding: 2px 14px 10px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
 .rr-mode button {
   padding: 2px 10px;
   font-size: var(--fs-cap);
@@ -254,12 +262,26 @@ function effectLabel(effect?: string): string {
   cursor: pointer;
 }
 .rr-mode button:hover { color: var(--text); background: var(--bg-hover); }
-.rr-mode button.on { color: var(--text); border-color: var(--border-strong); background: var(--bg-raised); }
+.rr-mode button.on { color: var(--text); border-color: var(--border); background: var(--surface); }
 .rr-mode-hint { margin-left: auto; font-size: var(--fs-cap); color: var(--text-faint); }
 
 .rr-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; background: #fff; }
 .rr-tip { flex: 0 0 auto; margin: 0; padding: 7px 12px; font-size: var(--fs-cap); color: var(--text-faint); line-height: 1.6; border-top: 1px solid var(--border); }
 .rr-note { padding: 10px 14px; color: var(--text-faint); font-size: var(--fs-sm); line-height: 1.7; }
+.rr-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.rr-empty svg { color: var(--text-faint); }
+.rr-empty strong { color: var(--text); font-size: var(--fs-md); font-weight: 600; }
+.rr-empty p { max-width: 34ch; margin: 0; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.8; }
 .rr-note-warn { color: var(--amber); }
 
 .rr-mirror-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 10px 6px; }

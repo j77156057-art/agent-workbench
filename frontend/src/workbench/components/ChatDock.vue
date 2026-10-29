@@ -530,6 +530,9 @@ function onCardActivity() {
 }
 
 const composerEl = ref<InstanceType<typeof ChatComposer> | null>(null)
+// 「回到底部」浮标要贴在输入栏上沿；输入栏高度随附件/多行输入变化，写死 bottom 会压住输入框
+const composerHeight = ref(0)
+let composerRO: ResizeObserver | null = null
 function focusComposer() { composerEl.value?.focus() }
 /** 空态的快捷问题（2026-10-20）：点一下就落到输入框里，不自动发送 ——
  *  用户可能想先改一改措辞。与概览页「试试问 AI」同一批问题。 */
@@ -669,6 +672,11 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
     imgs.push(new File([liveVisionFrame], `current-view-${Date.now()}.${extension}`, { type: liveVisionFrame.type || 'image/png' }))
   }
   if (!q && !imgs.length) return false
+  // 用户主动提问时把对话台展开到顶：默认 38vh 只够看一两行，问完还要手动点「展开」。
+  if (props.scope === 'default') {
+    collapsed.value = false
+    expanded.value = true
+  }
   // ④ interrupt-and-redirect：运行时输入即打断当前轮并重定向（旧流失配由 chatEpoch 守卫停写）
   const redirecting = sending.value
   if (redirecting) {
@@ -1467,6 +1475,12 @@ onMounted(() => {
   window.addEventListener('pagehide', onPageHide)
   window.addEventListener('beforeunload', onBeforeLeave)
   if (props.scope === 'default') startTabProbe()   // 普通工作台沿用跨标签探测
+  const composerNode = composerEl.value?.$el as HTMLElement | undefined
+  if (composerNode) {
+    composerHeight.value = composerNode.offsetHeight
+    composerRO = new ResizeObserver(() => { composerHeight.value = composerNode.offsetHeight })
+    composerRO.observe(composerNode)
+  }
   void loadModelConfig()
   void loadContextUsage()
   void refreshSessionList()
@@ -1474,6 +1488,8 @@ onMounted(() => {
   void restoreHistory().then(() => { if (props.scope === 'default') void detectOrphanWorkflow() })
 })
 onBeforeUnmount(() => {
+  composerRO?.disconnect()
+  composerRO = null
   if (voiceAudio) { voiceAudio.pause(); voiceAudio = null }
   voiceAudioQueue.splice(0)
   onPageHide()
@@ -1744,6 +1760,7 @@ const webTitle = computed(() => webOn.value
             >{{ q }}</button>
           </div>
         </div>
+        <div v-if="messages.length" class="cd-thread-spacer" aria-hidden="true"></div>
         <div v-for="m in messages" :key="m.id" class="cd-msg" :class="`cd-msg-${m.role}`">
           <div v-if="m.role === 'activity'" class="cd-act-note">
             <svg v-if="m.activityKind === 'inspect'" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
@@ -1993,7 +2010,7 @@ const webTitle = computed(() => webOn.value
           </template>
         </div>
       </div>
-      <button v-if="sending && !stickToBottom" class="cd-jump-bottom" title="恢复跟随最新输出" @click="resumeAutoScroll">
+      <button v-if="messages.length && !stickToBottom" class="cd-jump-bottom" :style="{ bottom: composerHeight + 8 + 'px' }" :title="sending ? '恢复跟随最新输出' : '回到最新消息'" @click="resumeAutoScroll">
         ↓ 回到底部
       </button>
 
@@ -2231,7 +2248,7 @@ const webTitle = computed(() => webOn.value
 
 /* 消息区 */
 .cd-jump-bottom {
-  position: absolute; right: 14px; bottom: 58px; z-index: 3;
+  position: absolute; right: 14px; bottom: 116px; z-index: 3;
   border: 1px solid var(--border-2); border-radius: 999px; padding: 4px 9px;
   background: var(--bg-raised); color: var(--accent); font-size: var(--fs-cap);
   box-shadow: 0 2px 8px rgba(30, 50, 90, .14); cursor: pointer;
@@ -2253,7 +2270,13 @@ const webTitle = computed(() => webOn.value
 }
 .cd-orphan-err { font-size: var(--fs-cap); color: var(--danger); margin-top: 2px; }
 .cd-orphan .cd-mini { flex: none; white-space: nowrap; }
-.cd-body { flex: 1 1 auto; overflow-y: auto; padding: 8px 14px 4px; min-height: 90px; }
+.cd-body { flex: 1 1 auto; display: flex; flex-direction: column; overflow-y: auto; padding: 8px 14px 4px; min-height: 90px; }
+/* 内容不满一屏时贴底：短会话紧挨输入框，而不是悬在顶部、下面留一大片空白。
+   用零高空节点吃剩余空间，而不是 justify-content:flex-end —— 后者在可滚动容器里
+   会把溢出内容顶到滚动起点之外（Chromium 的 flex-end 溢出裁剪问题），消息一多
+   就够不到第一条。 */
+.cd-body > * { flex: 0 0 auto; }
+.cd-thread-spacer { margin-top: auto; }
 /* 2026-10-20：对话台回到**底部抽屉**形态（38vh）后，宽度横跨全屏 ——
    空态那句引导和 3 个快捷问题如果也满宽，就会孤零零挤在左边、右侧一大片空白。
    把空态收进与答案区同宽的阅读栏（--measure），空态与正式回答左对齐在同一列。 */

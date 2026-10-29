@@ -83,7 +83,7 @@ function viewDiffFile(path: string) {
   display: flex;
   flex-direction: column;
   background: var(--bg-raised);
-  border-left: var(--edge-w, 1px) solid var(--edge-ink, var(--ink));
+  border-left: 1px solid var(--border);
   overflow: hidden;
 }
 .rr-head {
@@ -91,43 +91,40 @@ function viewDiffFile(path: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
-  border-bottom: var(--edge-w-strong, 2px) solid var(--edge-ink, var(--ink));
-  background: var(--bg);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-raised);
 }
-.rr-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.rr-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 2px; border-radius: var(--r-sm); background: var(--bg); }
 .rr-tab {
-  padding: 3px 11px;
+  padding: 5px 10px;
   font-size: var(--fs-sm);
   font-weight: 600;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--r-xs);
   background: transparent;
-  color: var(--text-faint);
+  color: var(--text-muted);
   cursor: pointer;
   white-space: nowrap;
 }
 .rr-tab:hover { color: var(--text); background: var(--bg-hover); }
-.rr-tab.on { color: var(--text); border-color: var(--border-strong); background: var(--bg-raised); }
+.rr-tab.on { color: var(--text); border-color: var(--border); background: var(--surface); box-shadow: 0 1px 2px rgba(17, 17, 22, .05); }
 .rr-chip {
   margin-left: auto;
   flex: 0 0 auto;
+  padding: 0 4px;
+  color: var(--text-muted);
   font-size: var(--fs-cap);
-  color: var(--text-faint);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 0 5px;
-  line-height: 17px;
 }
 .rr-close {
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;

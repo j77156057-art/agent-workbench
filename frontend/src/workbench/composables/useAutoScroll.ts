@@ -23,7 +23,10 @@ export function useAutoScroll() {
 
   function onWheel(ev: WheelEvent) {
     // 用户向上滚轮 = 明确要查看历史：保持流式输出，但不再把视口拽回底部
-    if (ev.deltaY < 0) stickToBottom.value = false
+    if (ev.deltaY >= 0) return
+    // 没有可滚动内容时上滚不该算「离开底部」，否则短会话会一直挂着「回到底部」入口
+    const el = scroller.value
+    if (el && el.scrollHeight - el.clientHeight > 8) stickToBottom.value = false
   }
 
   function followBottom() {

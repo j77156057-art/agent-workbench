@@ -950,6 +950,28 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-menu-item:disabled:hover { background: transparent; border-color: transparent; }
 .wb-menu-item-name { font-size: var(--fs-sm); font-weight: 600; }
 .wb-menu-item small { font-size: var(--fs-cap); color: var(--text-faint); line-height: 1.35; }
+.wb-menu-kbd { margin-left: auto; color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; letter-spacing: .02em; }
+.wb-view-menu { width: 196px; }
+.wb-view-menu .wb-menu-item[aria-current='page'] { color: var(--accent-text); background: var(--accent-soft); }
+
+/* 工作区视图下拉：替代整条标签栏，只保留当前视图一个控件。 */
+.wb-view-wrap { display: inline-flex; align-items: center; }
+.wb-view-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  font-size: var(--fs-sm); font-weight: 600;
+  cursor: pointer;
+  transition: background 130ms, color 130ms, border-color 130ms;
+}
+.wb-view-btn:hover { background: var(--bg-hover); color: var(--ink); border-color: var(--border-strong); }
+.wb-view-btn.on { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent); }
+.wb-view-label { line-height: 1; }
+.wb-view-caret { color: currentColor; opacity: .65; }
+@media (max-width: 1180px) { .wb-view-label { display: none; } .wb-view-btn { padding: 0 8px; } }
 .wb-menu-label {
   padding: 5px 10px 3px;
   color: var(--text-faint);
@@ -1107,6 +1129,10 @@ html[data-material='glass'] .wb-proj-notice {
 /* 并层时漏折：原 brutalist-overrides 的硬边+抬升效果，缺了它这是全页唯一的软边控件 */
 .ft-iconbtn:hover:not(:disabled) { transform: translate(-2px,-2px); box-shadow: var(--sh-hard); color: var(--accent); border-color: var(--accent); background: var(--bg-hover); }
 .ft-iconbtn:disabled { opacity: .5; cursor: default; }
+.ft-iconbtn.ft-iconbtn-on {
+  color: var(--accent-text); border-color: var(--accent);
+  background: var(--accent-soft); box-shadow: none;
+}
 .ft-iconbtn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 20%, transparent); outline-offset: 2px; }
 .ft-iconbtn .spinning { animation: ft-spin 0.9s linear infinite; }
 /* 收起按钮与刷新之间留一点距离：四颗按钮在 220px 窄栏里也不至于粘成一排 */

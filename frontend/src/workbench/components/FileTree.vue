@@ -33,6 +33,33 @@ const effectiveTagMap = computed<Record<string, SemanticTagRecord>>(
   () => (demoMode.value ? (demoTagMap as Record<string, SemanticTagRecord>) : tagMap.value),
 )
 
+// 默认只展示源码与资料；隐藏目录、缓存、构建产物和会话记录不进资源管理器。
+// 用户仍可用标题栏的眼睛按钮临时展开全部，偏好本地记忆。
+const HIDDEN_NAMES = new Set([
+  '__pycache__', 'node_modules', 'dist', 'build', 'coverage', 'venv',
+  '.git', '.venv', '.pytest_cache', '.docmind_turn_traces', '.claude',
+  '.trae', '.uv-cache', '.uv-cache-codex', '.next', '.cache',
+])
+const SHOW_HIDDEN_KEY = 'docmind.ftShowHidden'
+const showHidden = ref(false)
+try { showHidden.value = window.localStorage.getItem(SHOW_HIDDEN_KEY) === '1' } catch { /* 存不下就默认隐藏 */ }
+watch(showHidden, (v) => {
+  try { window.localStorage.setItem(SHOW_HIDDEN_KEY, v ? '1' : '0') } catch { /* 仅本次会话 */ }
+})
+function isNoise(node: TreeNode): boolean {
+  return node.name.startsWith('.') || HIDDEN_NAMES.has(node.name)
+}
+function visibleNodes(nodes: TreeNode[]): TreeNode[] {
+  if (showHidden.value) return nodes
+  return nodes
+    .filter((n) => !isNoise(n))
+    .map((n) => n.type === 'dir' ? { ...n, children: visibleNodes(n.children) } : n)
+}
+const shownNodes = computed(() => visibleNodes(props.tree.nodes))
+function hasNoiseSegment(path: string): boolean {
+  return path.replace(/\\/g, '/').split('/').some((seg) => seg.startsWith('.') || HIDDEN_NAMES.has(seg))
+}
+
 const openPaths = ref<Set<string>>(new Set())
 const flashPath = ref<string | null>(null)
 const flashNonce = ref(0)
@@ -72,21 +99,36 @@ function ancestorDirs(path: string): string[] {
 }
 
 function reseed(nodes: TreeNode[]) {
-  // 保留旧展开集合中仍存在的目录，再补开一级目录
+  // 默认不展开全部一级目录：那会把资源管理器变成一堵文件墙。
+  // 只保留用户主动展开的目录，以及当前选中文件的祖先路径。
   const all = new Set<string>()
   allDirPaths(nodes, all)
   const kept = new Set([...openPaths.value].filter((p) => all.has(p)))
-  for (const n of nodes) if (n.type === 'dir') kept.add(n.path)
+  if (props.selectedPath) {
+    for (const d of ancestorDirs(props.selectedPath)) if (all.has(d)) kept.add(d)
+  }
   openPaths.value = kept
 }
 
 watch(() => props.tree, (t) => reseed(t.nodes), { immediate: true })
+
+// 从最近打开 / 搜索 / 外部入口选中文件时，把它所在的目录展开到可见位置。
+watch(() => props.selectedPath, (path) => {
+  if (!path || !props.tree) return
+  if (hasNoiseSegment(path)) showHidden.value = true
+  const next = new Set(openPaths.value)
+  for (const d of ancestorDirs(path)) {
+    if (findNode(props.tree.nodes, d)) next.add(d)
+  }
+  openPaths.value = next
+})
 
 // AI 引用定位：树节点必须真实存在才展开/闪烁（幻觉路径不做反应）
 watch(treeReveal, (req) => {
   if (!req || !props.tree) return
   const node = findNode(props.tree.nodes, req.path)
   if (!node) return
+  if (hasNoiseSegment(req.path)) showHidden.value = true
   const next = new Set(openPaths.value)
   for (const d of ancestorDirs(req.path)) next.add(d)
   openPaths.value = next
@@ -138,6 +180,23 @@ function rootLabel(p: string): string {
             <path d="M7 5.6 V9.4 M5.1 7.5 H8.9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
           </svg>
         </button>
+        <button
+          class="ft-iconbtn"
+          :class="{ 'ft-iconbtn-on': showHidden }"
+          :aria-pressed="showHidden"
+          :title="showHidden ? '隐藏生成文件与隐藏目录' : '显示生成文件与隐藏目录'"
+          :aria-label="showHidden ? '隐藏生成文件与隐藏目录' : '显示生成文件与隐藏目录'"
+          @click="showHidden = !showHidden"
+        >
+          <svg v-if="showHidden" width="14" height="13" viewBox="0 0 14 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round">
+            <path d="M1.2 6.5 C3 3.3 5 1.8 7 1.8 S11 3.3 12.8 6.5 C11 9.7 9 11.2 7 11.2 S3 9.7 1.2 6.5Z" />
+            <circle cx="7" cy="6.5" r="1.9" />
+          </svg>
+          <svg v-else width="14" height="13" viewBox="0 0 14 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round">
+            <path d="M1.2 6.5 C3 3.3 5 1.8 7 1.8 S11 3.3 12.8 6.5 C11 9.7 9 11.2 7 11.2 S3 9.7 1.2 6.5Z" />
+            <path d="M2 11 L12 2" />
+          </svg>
+        </button>
         <button class="ft-iconbtn" :disabled="loading" title="重新加载文件树" @click="loadTree()">
           <svg width="13" height="13" viewBox="0 0 13 13" :class="{ spinning: loading }">
             <path d="M11.2 6.6 A4.7 4.7 0 1 1 6.5 1.8 A4.7 4.7 0 0 1 10.6 3.6 M10.8 1.6 V3.9 H8.5"
@@ -162,7 +221,7 @@ function rootLabel(p: string): string {
 
     <div class="ft-body" @contextmenu.prevent="openRootMenu($event)">
       <FileTreeNode
-        v-for="node in tree.nodes"
+        v-for="node in shownNodes"
         :key="node.path"
         :node="node"
         :depth="0"
@@ -176,8 +235,8 @@ function rootLabel(p: string): string {
         @select="emit('select', $event)"
         @contextmenu="(ev, n) => openNodeMenu(ev, n)"
       />
-      <p v-if="tree.nodes.length === 0" class="ft-empty">
-        代码库目录为空<br />右键此处新建文件或文件夹
+      <p v-if="shownNodes.length === 0" class="ft-empty">
+        {{ tree.nodes.length ? '当前只显示源码与资料；点标题栏眼睛图标可查看隐藏/生成项' : '代码库目录为空，右键此处新建文件或文件夹' }}
       </p>
       <p v-if="tree.truncated" class="ft-truncated">
         文件过多，仅显示前 2000 个节点

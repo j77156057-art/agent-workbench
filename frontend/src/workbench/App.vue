@@ -23,7 +23,6 @@ import LiveStreamPanel from './components/LiveStreamPanel.vue'
 import BrowserLivePanel from './components/BrowserLivePanel.vue'
 import HarnessPanel from './components/HarnessPanel.vue'
 import SemanticLocateBar from './components/SemanticLocateBar.vue'
-import WorkspaceTabs from './components/WorkspaceTabs.vue'
 import RightRail from './components/RightRail.vue'
 import { useWorkbench, askConfirm } from './composables/workbench'
 import {
@@ -298,31 +297,9 @@ function toggleRailCollapsed() {
   if (railCollapsed.value) nextTick(() => railRestoreBtn.value?.focus())
 }
 
-// ---------------------------------------------------------------- 工作区标签栏（整条可收起）
-// 标签栏固定占 38px 垂直空间；只用「概览」或只用「代码」的人，这一行常年是纯装饰。
-// 收起后整行不占位（不是缩成窄条）——「零痕迹」；恢复走顶栏「更多 → 显示工作区标签栏」，
-// 切换视图仍可用 Alt+1/2/3，不必先把标签栏叫回来。
-const WS_BAR_COLLAPSED_KEY = 'docmind.wsBarCollapsed'
-const wsBarCollapsed = ref(false)
-try {
-  wsBarCollapsed.value = window.localStorage.getItem(WS_BAR_COLLAPSED_KEY) === '1'
-} catch { /* 存储不可用时默认展开 */ }
-
+// 工作区视图不再占一整行标签栏：收进顶栏一个下拉，素材中心移到「更多」。
 const moreBtn = ref<HTMLButtonElement | null>(null)
-
-function setWsBarCollapsed(next: boolean, focus = true) {
-  if (wsBarCollapsed.value === next) return
-  wsBarCollapsed.value = next
-  try {
-    window.localStorage.setItem(WS_BAR_COLLAPSED_KEY, next ? '1' : '0')
-  } catch { /* 仅本次会话 */ }
-  if (!focus) return
-  // 收起后按钮随整行消失，焦点转到「更多」——恢复入口就在那里面，键盘用户不会迷路。
-  nextTick(() => {
-    if (next) moreBtn.value?.focus()
-    else (document.querySelector('.ws-bar .ws-active') as HTMLElement | null)?.focus()
-  })
-}
+const viewBtn = ref<HTMLButtonElement | null>(null)
 
 // 自主开发舱（AutonomousCockpit.vue）于 v2 重构 E 阶段移除；
 // 实时对话视频流（保留项 ①）由 ChatDock scope="cockpit" 承担、窗口嵌入（保留项 ②）由 SceneRuntimePanel 承担。
@@ -365,14 +342,19 @@ const canHistoryActive = computed(() => activeTab.value?.tracked === true)
 // AI 运行设置、运行游戏和游戏引擎连接。面板组件自带触发按钮已隐藏，
 // 仅保留 teleport 到 body 的弹层，经 ref 唤起。
 const moreMenuOpen = ref(false)
+const viewMenuOpen = ref(false)
+const viewMenuStyle = ref<Record<string, string>>({})
+const viewLabel = computed(() =>
+  workspace.value === 'assets' ? '素材' : workspace.value === 'code' ? '代码' : '概览',
+)
 // 菜单 position:fixed（逃离 .wb-topbar overflow-y:hidden 的裁剪），
 // 打开时按触发按钮实时量取坐标，左缘夹取避免溢出视口。
 const moreMenuStyle = ref<Record<string, string>>({})
 const MENU_WIDTH = 244
-function menuStyleFor(btn: HTMLElement): Record<string, string> {
+function menuStyleFor(btn: HTMLElement, width = MENU_WIDTH): Record<string, string> {
   const r = btn.getBoundingClientRect()
-  let left = Math.round(r.right - MENU_WIDTH) // 与按钮右缘对齐
-  left = Math.max(8, Math.min(left, window.innerWidth - MENU_WIDTH - 8))
+  let left = Math.round(r.right - width) // 与按钮右缘对齐
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8))
   return { top: `${Math.round(r.bottom + 6)}px`, left: `${left}px` }
 }
 function toggleMoreMenu(e: MouseEvent) {
@@ -380,8 +362,27 @@ function toggleMoreMenu(e: MouseEvent) {
   if (willOpen) moreMenuStyle.value = menuStyleFor(e.currentTarget as HTMLElement)
   moreMenuOpen.value = willOpen
 }
+function toggleViewMenu(e: MouseEvent) {
+  const willOpen = !viewMenuOpen.value
+  if (willOpen) viewMenuStyle.value = menuStyleFor(e.currentTarget as HTMLElement, 196)
+  viewMenuOpen.value = willOpen
+}
+function pickView(next: 'overview' | 'code' | 'assets') {
+  if (next === 'code' && !tabs.value.length) return
+  setWorkspace(next)
+  viewMenuOpen.value = false
+}
 function closeTopMenus() {
   moreMenuOpen.value = false
+  viewMenuOpen.value = false
+}
+function onShellEsc(event: KeyboardEvent) {
+  if (moreMenuOpen.value || viewMenuOpen.value) {
+    event.preventDefault()
+    closeTopMenus()
+    return
+  }
+  if (mobileRailOpen.value) toggleRailCollapsed()
 }
 const teRef = ref<InstanceType<typeof TaskEnginePanel> | null>(null)
 const gpRef = ref<InstanceType<typeof GpuPanel> | null>(null)
@@ -641,7 +642,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="wb-shell" @keydown.esc="mobileRailOpen && toggleRailCollapsed()">
+  <div class="wb-shell" @keydown.esc="onShellEsc">
     <header class="wb-topbar">
       <div class="wb-brand">
         <span class="wb-mark" aria-hidden="true">
@@ -739,6 +740,61 @@ onBeforeUnmount(() => {
             <rect x="7.2" y="7.2" width="4.4" height="4.4" fill="none" stroke="currentColor" stroke-width="1.1" />
           </svg>
         </button>
+
+        <!-- 工作区视图收进一个下拉，不再单独占一整行标签栏；素材中心在「更多」里。 -->
+        <div class="wb-view-wrap">
+          <button
+            ref="viewBtn"
+            type="button"
+            class="wb-view-btn"
+            :class="{ on: viewMenuOpen }"
+            aria-haspopup="menu"
+            :aria-expanded="viewMenuOpen"
+            title="切换工作区视图（Alt+1/2；素材中心在更多菜单）"
+            @click="toggleViewMenu"
+          >
+            <svg v-if="workspace === 'overview'" width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true">
+              <path d="M1.8 6 L6.5 2 L11.2 6 V10.7 H1.8 Z" stroke-linejoin="round" />
+              <path d="M5 10.7 V7.2 H8 V10.7" />
+            </svg>
+            <svg v-else-if="workspace === 'code'" width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4.4 3.4 L1.6 6.5 L4.4 9.6 M8.6 3.4 L11.4 6.5 L8.6 9.6 M7.2 2.3 L5.8 10.7" />
+            </svg>
+            <svg v-else width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true">
+              <rect x="1.6" y="2.4" width="9.8" height="8.2" rx="1" />
+              <circle cx="4.3" cy="4.9" r="0.9" />
+              <path d="M2.6 9.6 L5.2 7 L7.2 8.8 L8.8 7.4 L10.4 9" stroke-linejoin="round" />
+            </svg>
+            <span class="wb-view-label">{{ viewLabel }}</span>
+            <svg class="wb-view-caret" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><path d="M1.5 3.2 L4.5 6.2 L7.5 3.2" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <Teleport to="body">
+            <div v-show="viewMenuOpen" class="wb-menu-backdrop" @click="viewMenuOpen = false" />
+            <div v-show="viewMenuOpen" class="wb-menu wb-view-menu" role="menu" :style="viewMenuStyle" @click="viewMenuOpen = false">
+              <div class="wb-menu-label">工作区视图</div>
+              <button
+                type="button" class="wb-menu-item" role="menuitem" data-wb-view="overview"
+                :aria-current="workspace === 'overview' ? 'page' : undefined"
+                @click="pickView('overview')"
+              >
+                <span class="wb-menu-glyph" aria-hidden="true">⌂</span>
+                <span class="wb-menu-item-name">概览</span>
+                <span class="wb-menu-kbd">Alt+1</span>
+              </button>
+              <button
+                type="button" class="wb-menu-item" role="menuitem" data-wb-view="code"
+                :disabled="!tabs.length"
+                :title="tabs.length ? 'Alt+2' : '先从左侧文件树打开一个文件'"
+                :aria-current="workspace === 'code' ? 'page' : undefined"
+                @click="pickView('code')"
+              >
+                <span class="wb-menu-glyph" aria-hidden="true">{ }</span>
+                <span class="wb-menu-item-name">代码</span>
+                <span class="wb-menu-kbd">Alt+2</span>
+              </button>
+            </div>
+          </Teleport>
+        </div>
       </div>
       <SemanticLocateBar v-if="tree || demoMode" class="wb-locate-slot" />
       <div class="wb-topbar-right">
@@ -787,14 +843,14 @@ onBeforeUnmount(() => {
                任何祖先的 backdrop-filter 影响，两种材质下行为一致。 -->
           <Teleport to="body">
             <div v-show="moreMenuOpen" class="wb-menu-backdrop" @click="moreMenuOpen = false" />
-            <div v-show="moreMenuOpen" class="wb-menu" :style="moreMenuStyle" @click="moreMenuOpen = false">
+            <div v-show="moreMenuOpen" class="wb-menu wb-more-menu" :style="moreMenuStyle" @click="moreMenuOpen = false">
             <!-- 2026-10-20 菜单改单行：原来每项是「名称 + 一行说明」两行，
                  9 个项把菜单撑得很高。产品化做法是单行「字形 + 名称」，
                  说明文字挪到 title（悬停才出现），菜单高度减半。 -->
             <div class="wb-menu-label">分析与视图</div>
-            <button type="button" class="wb-menu-item" :title="wsBarCollapsed ? '恢复顶部标签栏（Alt+1/2/3 可直接切视图，无需恢复）' : '收起顶部 38px 标签栏，主区多出一行空间'" @click="setWsBarCollapsed(!wsBarCollapsed)">
-              <span class="wb-menu-glyph" aria-hidden="true">{{ wsBarCollapsed ? '⌄' : '⌃' }}</span>
-              <span class="wb-menu-item-name">{{ wsBarCollapsed ? '显示工作区标签栏' : '收起工作区标签栏' }}</span>
+            <button v-if="tree || demoMode" type="button" class="wb-menu-item" data-wb-asset :aria-current="workspace === 'assets' ? 'page' : undefined" title="素材中心：浏览项目图片、模型、音频等素材（Alt+3）" @click="setWorkspace('assets')">
+              <span class="wb-menu-glyph" aria-hidden="true">▦</span>
+              <span class="wb-menu-item-name">素材中心</span>
             </button>
             <button v-if="tree" type="button" class="wb-menu-item" title="代码地图：函数/变量在哪定义、被谁调用" @click="openSymbolMap">
               <span class="wb-menu-glyph" aria-hidden="true">◈</span>
@@ -1017,7 +1073,6 @@ onBeforeUnmount(() => {
       <!-- 主区用 v-show 常驻（而非 v-if）：保证 #wb-playpane-slot 在组件挂载期就已存在于文档中。
            否则树/演示分支异步渲染，Teleport 目标在挂载时解析为 null → dock 迁移抛错、常驻面板落空。 -->
       <main class="wb-main" v-show="tree || demoMode" :inert="mobileRailOpen">
-        <WorkspaceTabs v-show="!wsBarCollapsed" @collapse="setWsBarCollapsed(true)" />
         <!-- 阶段 4：运行面板常驻（docked）承载槽（主区，左侧文件树/示例保留，便于边玩边改） -->
         <div id="wb-playpane-slot" class="wb-playpane-slot" v-show="runtimeResident" />
         <!-- EDA 多模态验收面板常驻（docked）承载槽：EdaVerifyPanel 的 docked 主体 teleport 到此，

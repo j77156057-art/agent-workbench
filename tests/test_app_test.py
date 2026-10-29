@@ -184,7 +184,7 @@ class ProbeTests(Base):
     class Fake:
         def __init__(self, tree="PY  probe_abc123.py", counts=None):
             self.tree = tree
-            self.counts = {".wb-shell": 1, ".ws-tab": 4, ".ft-row": 1, **(counts or {})}
+            self.counts = {".wb-shell": 1, "[data-wb-view]": 2, ".ft-row": 1, **(counts or {})}
             self.active = ["概览", "素材"]
             self.clicks = []
 
@@ -196,13 +196,14 @@ class ProbeTests(Base):
             if target == "main":
                 # 活动标签决定正文；空标签＝整块没挂上
                 return {"概览": "概览驾驶舱", "素材": "素材中心"}.get(self.active[0], "")
-            if target == ".ws-active":
+            if target == ".wb-view-label":
                 return self.active[0]
             return ""
 
         def click(self, value, scope):
             self.clicks.append((value, scope))
-            self.active[0] = self.active[1]
+            if scope in (".wb-view-menu", ".wb-menu"):
+                self.active[0] = self.active[1]
             return {"ok": True, "effect": "changed"}
 
     def test_the_fixture_is_matched_by_tree_text_not_by_text_locator(self):
@@ -211,16 +212,15 @@ class ProbeTests(Base):
         fake = self.Fake()
         got = at.read_facts(fake.probe, fixture="probe_abc123.py")
         self.assertTrue(got["fixture_in_tree"])
-        self.assertEqual((got["shell"], got["tabs"], got["rows"]), (1, 4, 1))
+        self.assertEqual((got["shell"], got["tabs"], got["rows"]), (1, 2, 1))
         other = at.read_facts(fake.probe, fixture="probe_zzzzzz.py")
         self.assertFalse(other["fixture_in_tree"], "别的运行的文件名不能冒充这一行的凭据")
 
-    def test_clicking_outside_the_nav_bar_is_not_how_this_finds_the_tab(self):
-        """`text:` 全站找同名元素，「素材」在顶栏「素材区」徽标上也有——必须限定在
-        工作区标签条里点，否则点到别的按钮还报生效。"""
+    def test_view_switch_opens_the_topbar_menu_before_picking(self):
+        """视图下拉关闭时菜单项不可点；必须先点当前视图打开，再在菜单里选目标。"""
         fake = self.Fake()
         at.click_and_read(fake.probe, fake.click, tab="素材")
-        self.assertEqual(fake.clicks, [("素材", ".ws-bar")])
+        self.assertEqual(fake.clicks, [("更多", ".wb-topbar-right"), ("素材", ".wb-menu")])
 
     def test_content_change_is_a_digest_not_a_truncated_length(self):
         """不能用 `#app *` 计数：`page_action` 的候选清单在 64 个就截断，
@@ -744,7 +744,7 @@ class AskTierTests(Base):
         base = {"ask_credential": self.CREDENTIAL,
                 "ask_text": "分析\n先看一眼代码库根\nLIST_DIR\n.\n观察\n返回 39 个字符\n"
                             "根据检索到的内容，[FILE] %s —— 以上就是可用清单。" % self.CREDENTIAL,
-                "ask_shell": 1, "ask_click_ok": True,
+                "ask_shell": 1, "ask_click_ok": True, "ask_submit_ok": True,
                 "ask_question": "玩家受伤扣血的逻辑在哪里实现？",
                 "ask_question_echoed": True, "ask_truncated": False,
                 "ask_console_errors": [], "ask_failed_requests": []}
@@ -754,6 +754,12 @@ class AskTierTests(Base):
     def test_an_honest_turn_is_green(self):
         checks = at.ask_checks(self.honest())
         self.assertTrue(all(checks.values()), [k for k, v in checks.items() if not v])
+
+    def test_a_prefilled_draft_without_sending_is_not_a_finished_turn(self):
+        """改版后建议卡只填草稿：只点它、不再点发送，这一轮根本没发出去，不能算绿。"""
+        checks = at.ask_checks(self.honest(ask_submit_ok=False))
+        self.assertFalse(checks["ask_submitted"])
+        self.assertFalse(all(checks.values()))
 
     def test_the_credential_has_to_be_in_the_reply(self):
         """凭据是**那一次运行独有的随机夹具名**：它只能从 `list_dir` 的真实返回里来。
@@ -898,9 +904,8 @@ class LivePageTests(Base):
             self.assertEqual(got["failed"], ["bundle_built_after_latest_source"], detail)
         else:
             self.assertTrue(got["ok"], detail)
-        # 工作区标签条现在只有 概览 / 代码 / 素材 三个（`WorkspaceTabs.vue` 的 `real`
-        # 列表）—— 原值 4 是「开发舱」还在时留下的，那个 workspace 在 v2 重构
-        # E 阶段已被删除（`App.vue`：cockpit workspace 已删）。
+        # 工作区主视图收进顶栏下拉，只有 概览 / 代码 两个 `[data-wb-view]`；
+        # 素材入口移到「更多」。原值 4 是「开发舱」还在时留下的，已删除。
         self.assertEqual(got["observed"]["tabs"], at.EXPECTED_TABS)
         self.assertEqual([got["observed"]["active_before"], got["observed"]["active_after"]],
                          ["概览", "素材"], "活动标签必须真的换过了")

@@ -121,7 +121,7 @@ html[data-material='glass'] :is(
   .wb-topbar, .wb-statusbar, .ft-panel, .wb-card,
   .acp-panel, .acp-stage-content, .acp-head,
   .ov-group, .ov-strip, .ov-chip, .ov-step, .ov-folder,
-  .rh-card, .rh-missing, .rh-refresh, .lb-box, .ws-tab,
+  .rh-card, .rh-missing, .rh-refresh, .lb-box,
   .cd-input, .cd-btn, .cd-chip, .cd-dock, .cd-head-toggle, .ft-rail
 ) {
   background: color-mix(in srgb, var(--bg-raised) calc(var(--glass-d2-alpha) * 100%), transparent);
@@ -132,7 +132,7 @@ html[data-material='glass'] :is(
   box-shadow: var(--glass-shadow-contact), var(--glass-shadow-float), var(--glass-inset) !important;
 }
 /* 小件（chip / step / 图标块）用小圆角，否则一片 18px 圆角会显得幼稚 */
-html[data-material='glass'] :is(.ov-chip, .ov-step, .ov-folder, .cd-btn, .cd-chip, .cd-head-toggle, .ft-rail, .lb-box, .ws-tab) {
+html[data-material='glass'] :is(.ov-chip, .ov-step, .ov-folder, .cd-btn, .cd-chip, .cd-head-toggle, .ft-rail, .lb-box) {
   border-radius: var(--glass-radius-sm) !important;
   box-shadow: var(--glass-shadow-contact), var(--glass-inset) !important;
 }

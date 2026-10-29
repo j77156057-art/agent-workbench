@@ -192,14 +192,14 @@ async function openDiffFromTrace(page) {
 
 async function openMoreMenu(page) {
   await page.locator('button[aria-label="更多"]').click()
-  await page.locator('.wb-menu').waitFor({ state: 'visible' })
+  await page.locator('.wb-more-menu').waitFor({ state: 'visible' })
 }
 
 async function clickPreviewRailMenuItem(page) {
-  const item = page.locator('.wb-menu-item').filter({ hasText: /预览侧栏/ }).first()
+  const item = page.locator('.wb-more-menu .wb-menu-item').filter({ hasText: /预览侧栏/ }).first()
   await item.waitFor({ state: 'attached' })
   await page.waitForFunction(() => {
-    const hit = [...document.querySelectorAll('.wb-menu-item')].find((el) => /预览侧栏/.test(el.textContent || ''))
+    const hit = [...document.querySelectorAll('.wb-more-menu .wb-menu-item')].find((el) => /预览侧栏/.test(el.textContent || ''))
     return !!hit && !(hit instanceof HTMLButtonElement && hit.disabled)
   })
   await item.click()

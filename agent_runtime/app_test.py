@@ -121,11 +121,11 @@ def detail_text(got: dict[str, Any], **extra: Any) -> str:
 
 MAX_TEXTS = 8
 DEFAULT_TAB = "素材"
-#: 工作区标签条现在只有 概览 / 代码 / 素材 三个（`WorkspaceTabs.vue` 的 `real` 列表）。
+#: 工作区主视图收进顶栏下拉：概览 / 代码 两个 `[data-wb-view]`；素材入口在「更多」。
 #: 原值 4 是「开发舱」还在时留下的 —— 那个 workspace 在 v2 重构 E 阶段已被删除
 #: （`App.vue`：cockpit workspace 已删；`ChatDock.vue`：那个 scope 已不存在）。
-#: 判据数的是 `.ws-tab` 元素个数，所以这里必须跟着 UI 的真实标签数走。
-EXPECTED_TABS = 3
+#: 判据数的是 `[data-wb-view]` 元素个数，所以这里必须跟着 UI 的真实视图数走。
+EXPECTED_TABS = 2
 BUILD_DIR = "web"
 SOURCE_DIR = os.path.join("frontend", "src")
 #: 整页要等 uvicorn 导入完（实测冷启动 4.7s），再等 vite 产物把视图挂载
@@ -215,13 +215,16 @@ DEEP_LINK_WAIT = 20.0
 #: 而且**红得毫无信息量**（`rows: 0`、`console_errors: []`、`failed_requests: []`）。
 WORKBENCH_DATA_WAIT = 25.0
 
-#: 问答页那一档：点一个建议问题之后，等回答里出现**那一次运行独有的凭据**。
+#: 问答页那一档：提交一个问题之后，等回答里出现**那一次运行独有的凭据**。
 #: 凭据是 `list_dir` 列出的代码库根里的随机夹具文件名（`probe_<6位>.py`，见 `make_sandbox`）
 #: ——页面字幕里出现它，就只能解释为"整条链路真跑过"，照 §5.8「夹具是随机命名的文件」那条。
 ASK_WAIT = 40.0
 
-#: 建议问题按钮：问答页刚打开时有若干个（实测 3 个），点第一个就能发一轮。
+#: 建议问题按钮：问答页刚打开时有若干个（实测 3 个）。2026-10 改版后点它只把 prompt
+#: 填进草稿（`useCapability`），不再直接发送——所以后面必须再点一次发送，才算真跑一轮。
 ASK_SUGGESTION = "button.suggestion"
+ASK_COMPOSER = ".composer textarea"
+ASK_SEND = ".composer button.send-btn"
 
 
 def _deep_slug(path: str) -> str:
@@ -263,7 +266,9 @@ def ask_checks(observed: dict[str, Any]) -> dict[str, bool]:
     return {
         "ask_shell_mounted": int(observed.get("ask_shell") or 0) >= 1,
         "ask_suggestion_clicked": bool(observed.get("ask_click_ok")),
-        # 只点一下不算：得真的出现一条回答，而且它回的是我们点的那个问题
+        # 建议卡只填草稿；没有真的点发送（或按钮还 disabled）时，下面等回复是白等
+        "ask_submitted": bool(observed.get("ask_submit_ok")),
+        # 只点一下不算：得真的出现一条回答，而且它回的是我们提交的那个问题
         "ask_question_echoed": bool(observed.get("ask_question_echoed")),
         "ask_reply_arrived": bool(fixture) and fixture in text,
         # 失败文案出现就不能算通过（HTTP 200 + 有回复 ≠ 成功，§5.18 ② 那条同款）
@@ -541,21 +546,29 @@ def read_facts(probe: Callable[[str, str, str], Any], *, fixture: str) -> dict[s
     """
     tree = str(probe("text", ".ft-body", "") or "")
     return {"shell": int(probe("count", ".wb-shell", "") or 0),
-            "tabs": int(probe("count", ".ws-tab", "") or 0),
+            "tabs": int(probe("count", "[data-wb-view]", "") or 0),
             "rows": int(probe("count", ".ft-row", "") or 0),
             # 这一次独有的文件名要出现在文件树里：这是"后端数据到了 DOM"的凭据
             "fixture_in_tree": fixture in tree,
-            "active_before": str(probe("text", ".ws-active", "") or "").strip(),
+            "active_before": str(probe("text", ".wb-view-label", "") or "").strip(),
             "content_before": _digest(probe("text", "main", ""))}
 
 
 def click_and_read(probe: Callable[..., Any], click: Callable[[str, str], Any], *,
-                   tab: str, scope: str = ".ws-bar") -> dict[str, Any]:
-    """点工作区标签，然后**再读一次**：绿必须来自"点了、活动标签真的换了"。"""
+                   tab: str, scope: str = ".wb-view-menu") -> dict[str, Any]:
+    """打开顶栏视图下拉，选中目标视图，然后**再读一次**：绿必须来自"点了、视图真的换了"。"""
+    if tab == "素材":
+        opened = click("更多", ".wb-topbar-right")
+        scope = ".wb-menu"
+    else:
+        current = str(probe("text", ".wb-view-label", "") or "").strip() or "概览"
+        opened = click(current, ".wb-view-wrap")
     outcome = click(tab, scope)
-    return {"click_ok": bool(outcome.get("ok")),
-            "click_effect": str(outcome.get("effect") or outcome.get("error") or ""),
-            "active_after": str(probe("text", ".ws-active", "") or "").strip(),
+    effects = [str(opened.get("effect") or opened.get("error") or ""),
+               str(outcome.get("effect") or outcome.get("error") or "")]
+    return {"click_ok": bool(opened.get("ok")) and bool(outcome.get("ok")),
+            "click_effect": " → ".join(x for x in effects if x),
+            "active_after": str(probe("text", ".wb-view-label", "") or "").strip(),
             "content_after": _digest(probe("text", "main", ""))}
 
 
@@ -742,6 +755,7 @@ FACT_KEYS = ("shell", "tabs", "rows", "fixture_in_tree", "active_before", "activ
              "cancelled_requests", "deep_cancelled_requests",
              # 问答那一档：凭据（随机夹具名）、点了哪个问题、等了多少毫秒。
              "ask_credential", "ask_shell", "ask_click_ok", "ask_click_effect",
+             "ask_draft", "ask_submit_ok", "ask_submit_effect",
              "ask_question", "ask_question_echoed", "ask_waited_ms", "ask_text",
              "ask_truncated", "ask_console_errors", "ask_failed_requests", "ask_error",
              # 等了两级多久、数据到底来没来：红了的时候这两个数直接说明"是没等到"
@@ -892,10 +906,12 @@ def _open_with_retry(base: Path, target: str, *, timeout: float,
 
 def _drive_ask(base: Path, state: dict[str, Any], url: str, *, fixture: str,
                timeout: float) -> None:
-    """冷开问答页 `/`，点一个建议问题，等回答里出现**那一次独有的凭据**。
+    """冷开问答页 `/`，用建议卡填一个问题并提交，等回答里出现**那一次独有的凭据**。
 
-    为什么点建议按钮而不是打字：输入区在子组件里（`AskApp.vue` 只渲染 `AskMessage`），
-    而建议按钮是 `@click="send(s)"`——点一下就发一轮，不用先挖出输入框的选择器。
+    为什么要先点建议卡：问题文案由产品提供，测试不猜；改版（2026-10）后点它只把 prompt
+    填进草稿（`useCapability`），**不再直接发送**——所以必须再点一次发送键，才算真跑一轮。
+    提交前从草稿读回真正的 prompt 作为「问的是哪个问题」的凭据：按钮文字是标题+说明，
+    和真正发给模型的内容不是一回事，拿它做回显断言会假绿/假红。
     代价是问题文案不由我们定；所以凭据不能依赖问题内容，落在 `list_dir` 的返回上（见
     `ASK_WAIT`）。
     """
@@ -922,13 +938,31 @@ def _drive_ask(base: Path, state: dict[str, Any], url: str, *, fixture: str,
         if not ready.get("ok"):
             state["ask_error"] = "问答页没有出现建议问题按钮"
             return
-        # 记住第一个建议问题的文字：下面要确认"回答的是我点的那个"
-        question = str(page_action.read_page(base, page=page, selector=ASK_SUGGESTION,
-                                             mode="text").get("text") or "").strip()
         clicked = page_action.click(base, page=page, selector=ASK_SUGGESTION, nth=0,
                                     screenshot=False)
         state["ask_click_ok"] = bool(clicked.get("ok"))
         state["ask_click_effect"] = str(clicked.get("effect") or clicked.get("error") or "")[:120]
+        # 建议卡只负责填草稿；等它真的落进 textarea，读回 prompt 作为"问的是哪个问题"
+        draft, deadline = "", time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            draft = str(page_action.read_page(base, page=page, selector=ASK_COMPOSER,
+                                              mode="value").get("text") or "").strip()
+            if draft:
+                break
+            time.sleep(0.1)
+        question = draft.splitlines()[0].strip() if draft else ""
+        state["ask_draft"] = draft[:200]
+        if not question:
+            state["ask_error"] = "点建议卡没有把问题填进草稿"
+            return
+        # 草稿到位后发送键才可点；直接点 disabled 的按钮会"成功"却没有请求，白等 40 秒。
+        armed = page_action.wait_for(base, page=page, selector=ASK_SEND + ":not([disabled])",
+                                     state="present", timeout=3.0)
+        errors += list(armed.get("console_errors") or [])
+        failed += list(armed.get("failed_requests") or [])
+        submitted = page_action.click(base, page=page, selector=ASK_SEND, screenshot=False)
+        state["ask_submit_ok"] = bool(submitted.get("ok"))
+        state["ask_submit_effect"] = str(submitted.get("effect") or submitted.get("error") or "")[:120]
         # 等凭据出现在会话区里——用 `state="text"`，不带截止期地 sleep 就是跟渲染赛跑
         landed = page_action.wait_for(base, page=page, selector=".chat-scroll",
                                       state="text", value=fixture, timeout=ASK_WAIT)

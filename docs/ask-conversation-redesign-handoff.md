@@ -315,6 +315,10 @@ DOCMIND_UI_FIXTURE_URL=http://127.0.0.1:5174/tests/ask-message.fixture.html DOCM
 已完成 A/B/C/D 与计划中的测试修正：
 
 - 工作台表面：[style.css](../frontend/src/workbench/style.css) 编辑器底色从 `--accent-soft` 改为中性白，强调色只保留在选中/定位等小面积信号；文件树类型胶囊收成文字标签，未跟踪文件从实心绿点改为空心弱标记，整列不再被绿色铺满。默认 zinc 恢复原来的冷白 + `#0f766e` 青绿，避免新绿色与工作台既有状态色冲突。
+- 工作区切换：[App.vue](../frontend/src/workbench/App.vue) 删除独立标签栏（`WorkspaceTabs.vue` 已移除），主视图收进顶栏「概览 / 代码」下拉；素材中心移到「更多」菜单，保留 Alt+1/2/3。主区多出约 46px 高度。
+- 右侧预览栏：[RightRail.vue](../frontend/src/workbench/components/RightRail.vue) 页签改为分段控件、去掉重描边与方角；[RailBrowser.vue](../frontend/src/workbench/components/RailBrowser.vue) 地址栏改中性输入、空网页态改为居中空状态并补 placeholder 对比度。
+- 助手展开：[ChatDock.vue](../frontend/src/workbench/components/ChatDock.vue) 用户主动提问时自动取消折叠并展开到顶，不再停在 38vh 只看一两行；手动收起/展开仍可用。消息区改为底部锚定：内容不满一屏时贴着输入栏（零高空节点吃剩余空间，不用 `justify-content:flex-end`，避免 Chromium 在可滚动容器里把溢出内容顶出滚动起点）；上翻任意历史都会出现「回到底部」，不再只在发送中显示，浮标按输入栏实测高度上移 8px，不被多行输入或附件压住。[useAutoScroll.ts](../frontend/src/workbench/composables/useAutoScroll.ts) 同步收紧：没有可滚动内容时上滚不再判定为离开底部。
+- 资源管理器：[FileTree.vue](../frontend/src/workbench/components/FileTree.vue) 默认隐藏点目录、`__pycache__`、构建产物等运行时内容；文件夹默认收起，只保留用户已展开目录和当前文件祖先。标题栏眼睛按钮可查看全部，偏移会被本地记忆。
 - 工作台设置：[SettingsView.vue](../frontend/src/workbench/components/SettingsView.vue) 保持 1040px 宽、200px 导航、指标卡与卡片化供应商表；它现在使用恢复后的冷白/青绿令牌。
 - 首屏构图：[AskApp.vue](../frontend/src/ask/AskApp.vue) 空对话态改为工作台式首页：左侧开场与快捷开始，右侧当前工作区与资料；桌面全宽输入区，窄屏收起右栏保证输入框在首屏。侧栏在首屏隐藏重复的项目/资料块。
 - 模型设置：[ModelSettingsDialog.vue](../frontend/src/workbench/components/ModelSettingsDialog.vue) 改为 720px 宽、双列预设、非告警提示与可读 placeholder；配色随 zinc 恢复为冷白 + 青绿。
@@ -326,9 +330,11 @@ DOCMIND_UI_FIXTURE_URL=http://127.0.0.1:5174/tests/ask-message.fixture.html DOCM
 
 实际结果：
 
-- 145 项前端单测通过；修改组件 ESLint、`vue-tsc` 通过。
+- 152 项前端单测通过；修改组件 ESLint、`vue-tsc` 通过。
 - 对话验收 16 组交互（含 1440/1024/390 首屏工作台构图）、13 组主题/尺寸对比度检查通过；最低 4.71:1，无横向溢出、无页面异常、无后端写入。
-- 生产页面另跑 19 组既有回归通过；生产聊天的分帧事件来自 fetch 边界桩，不代表真实模型连通性。
+- 生产页面另跑 19 组既有回归通过（新增短/长会话贴底、可到顶、上翻回到底部 2 组交互断言）；生产聊天的分帧事件来自 fetch 边界桩，不代表真实模型连通性。
 - 工作台未改行为；本轮涉及问答页首屏、消息、源码查看和对应测试。
+
+工作区视图的 Python 现场守卫（`LivePageTests`）已用项目 `.venv` + 本机 Edge 复跑：8/8 通过（含工作台整页、深链、清理与反证）。问答页一档原本点建议卡后等回复，改版后建议卡只填草稿（`useCapability`），驱动已改为「点建议卡 → 读草稿 → 点发送」，回显断言也改用真实 prompt，现同样通过；`tests/test_app_test.py` 全集 86 项通过。
 
 已知未验证：真实后端模型流式延迟下的阅读节奏、真实工作流审批链路、真实大文件源码加载性能；这些需要连接真实服务单独复核。仓库旧的像素基线 `docs/screenshots/visual` 未重建：本轮是有意的主题改版，基线脚本不在本次验收范围内，需要单独重生成并人工确认。

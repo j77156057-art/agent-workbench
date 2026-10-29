@@ -50,7 +50,7 @@ function measure() {
   return { overflow: document.documentElement.scrollWidth > innerWidth, pairs: pairs.length, minimum: Math.min(...pairs.map(p => p.ratio)), failures: pairs.filter(p => p.ratio + .01 < p.threshold) }
 }
 
-async function createPage(skin, width, height = 900) {
+async function createPage(skin, width, height = 900, finalText = '这是隔离的界面测试回答，未调用真实模型。') {
   const page = await browser.newPage({ viewport: { width, height }, reducedMotion: 'reduce' })
   page.on('pageerror', error => report.errors.push(error.message))
   page.on('dialog', dialog => dialog.accept())
@@ -78,7 +78,7 @@ async function createPage(skin, width, height = 900) {
       if (failChat) return json({ error: '界面测试：服务暂不可用' }, 503)
       return route.fulfill({
         contentType: 'text/event-stream',
-        body: 'data: ' + JSON.stringify({ type: 'final', text: '这是隔离的界面测试回答，未调用真实模型。', status: 'done' }) + '\n\n'
+        body: 'data: ' + JSON.stringify({ type: 'final', text: finalText, status: 'done' }) + '\n\n'
           + 'data: ' + JSON.stringify({ type: 'done' }) + '\n\n',
       })
     }
@@ -111,6 +111,13 @@ try {
   const input = page.locator('.composer textarea')
   await input.waitFor()
   const contrastMutation = await page.addStyleTag({ content: '.welcome-title { color: #ffffff !important; background: #ffffff !important; }' })
+  // 注入 <style> 后浏览器不一定已经重算样式；等计算值真的变白再测，避免假阴性。
+  await page.waitForFunction(() => {
+    const el = document.querySelector('.welcome-title')
+    if (!el) return false
+    const s = getComputedStyle(el)
+    return s.color === 'rgb(255, 255, 255)' && s.backgroundColor === 'rgb(255, 255, 255)'
+  })
   const mutated = await page.evaluate(measure)
   assert(mutated.failures.some(item => item.class === 'welcome-title' && item.ratio === 1), 'Contrast guard did not detect white-on-white mutation')
   await contrastMutation.evaluate(el => el.remove())
@@ -174,11 +181,15 @@ try {
     assert.equal(calls(), 0)
     const inputBox = await page.locator('.cd-input').boundingBox()
     assert(inputBox.y + inputBox.height <= 900, 'workbench composer clipped')
-    await page.getByRole('button', { name: '素材', exact: true }).click()
-    assert.equal(await page.getByRole('button', { name: '素材', exact: true }).getAttribute('aria-current'), 'page')
-    await page.getByRole('button', { name: '概览', exact: true }).click()
-    assert.equal(await page.getByRole('button', { name: '概览', exact: true }).getAttribute('aria-current'), 'page')
-    report.interactions.push(`${skin} 工作台行动预填、输入框可见、素材与概览切换`)
+    await page.getByRole('button', { name: '更多', exact: true }).click()
+    await page.locator('[data-wb-asset]').click()
+    assert.equal(await page.locator('.wb-view-label').textContent(), '素材')
+    assert.equal(await page.locator('[data-wb-asset]').getAttribute('aria-current'), 'page')
+    const viewButton = page.locator('.wb-view-btn')
+    await viewButton.click()
+    await page.locator('[data-wb-view="overview"]').click()
+    assert.equal(await page.locator('.wb-view-label').textContent(), '概览')
+    report.interactions.push(`${skin} 工作台行动预填、输入框可见、素材从更多进入并回到概览`)
     await page.close()
   }
   for (const [width, height] of [[1024, 768], [390, 844], [1440, 600]]) {
@@ -213,6 +224,68 @@ try {
     assert.equal(await page.locator('.cd-head-toggle').getAttribute('aria-expanded'), 'true')
     report.interactions.push(`${width}×${height} 工作台无横向溢出、展开后输入框可见、折叠恢复`)
     await page.close()
+  }
+  // 对话台底部锚定：短会话贴输入框；长会话可滚到第一条、上翻出现「回到底部」并能回底
+  {
+    const bodyMetrics = (page) => page.evaluate(() => {
+      const body = document.querySelector('.cd-body')
+      const msgs = [...document.querySelectorAll('.cd-msg')]
+      const first = msgs[0].getBoundingClientRect()
+      const last = msgs.at(-1).getBoundingClientRect()
+      const box = body.getBoundingClientRect()
+      return {
+        expanded: !!document.querySelector('.cd-dock.cd-expanded'),
+        bodyHeight: body.clientHeight,
+        scrollHeight: body.scrollHeight,
+        distance: body.scrollHeight - body.scrollTop - body.clientHeight,
+        gapBelowLast: +(box.bottom - last.bottom).toFixed(1),
+        firstVisible: first.top >= box.top - 1,
+        jump: !!document.querySelector('.cd-jump-bottom'),
+      }
+    })
+    const { page: short } = await createPage('zinc', 1440)
+    await short.goto(base + '/workbench')
+    await short.locator('.cd-input').fill('短会话贴底验证')
+    await short.locator('.cd-send').click()
+    await short.waitForFunction(() => document.querySelector('.cd-msg-assistant .cd-answer')?.textContent.includes('隔离的界面测试回答'))
+    await short.waitForTimeout(700)
+    const shortM = await bodyMetrics(short)
+    assert.equal(shortM.expanded, true, `asking must expand the dock: ${JSON.stringify(shortM)}`)
+    assert(shortM.scrollHeight <= shortM.bodyHeight + 1, `short thread should not overflow: ${JSON.stringify(shortM)}`)
+    assert(shortM.gapBelowLast <= 32, `short thread must sit on the composer: ${JSON.stringify(shortM)}`)
+    assert.equal(shortM.jump, false, 'no jump control when everything is visible')
+    await short.locator('.cd-body').hover()
+    await short.mouse.wheel(0, -160)
+    await short.waitForTimeout(150)
+    assert.equal(await short.locator('.cd-jump-bottom').count(), 0, 'wheel on a short thread must not pretend to leave the bottom')
+    await short.screenshot({ path: path.join(output, 'chatdock-bottom-anchored.png') })
+    report.interactions.push('短会话贴底、无溢出时上滚不出现「回到底部」')
+    await short.close()
+
+    const longText = Array.from({ length: 40 }, (_, i) => `- 第 ${i + 1} 行：滚动回归的长回答，用来确认消息区可以正常溢出，且从顶上还能回到底部。`).join('\n')
+    const { page: long } = await createPage('zinc', 1440, 900, longText)
+    await long.goto(base + '/workbench')
+    await long.locator('.cd-input').fill('长会话滚动验证')
+    await long.locator('.cd-send').click()
+    await long.waitForFunction(() => document.querySelector('.cd-msg-assistant .cd-answer')?.textContent.includes('第 40 行'))
+    await long.waitForTimeout(900)
+    const atBottom = await bodyMetrics(long)
+    assert(atBottom.scrollHeight - atBottom.bodyHeight > 200, `long thread should overflow: ${JSON.stringify(atBottom)}`)
+    assert(atBottom.distance < 80, `answer must stay glued to the bottom: ${JSON.stringify(atBottom)}`)
+    assert.equal(atBottom.jump, false, 'no jump control while at bottom')
+    await long.evaluate(() => { const el = document.querySelector('.cd-body'); el.scrollTop = 0; el.dispatchEvent(new Event('scroll')) })
+    await long.waitForTimeout(150)
+    const upTop = await bodyMetrics(long)
+    assert.equal(upTop.firstVisible, true, `first message must be reachable at scrollTop 0: ${JSON.stringify(upTop)}`)
+    assert.equal(upTop.jump, true, 'jump control appears after scrolling up')
+    await long.screenshot({ path: path.join(output, 'chatdock-scrolled-up.png') })
+    await long.locator('.cd-jump-bottom').click()
+    await long.waitForTimeout(500)
+    const back = await bodyMetrics(long)
+    assert(back.distance < 8, `jump control must return to the newest message: ${JSON.stringify(back)}`)
+    assert.equal(back.jump, false, 'jump control hides once back at bottom')
+    report.interactions.push('长会话溢出后可到顶、上翻出现「回到底部」、点击回到最新')
+    await long.close()
   }
   assert.equal(report.errors.length, 0, JSON.stringify(report.errors))
   assert.equal(report.writes.length, 0, `Unexpected writes: ${report.writes}`)
