@@ -158,19 +158,24 @@ export async function postSse(url: string, init: RequestInit, h: SseStreamHandle
       }
     }
   }
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    let sep: number
-    while ((sep = buf.indexOf('\n\n')) >= 0) {
-      const chunk = buf.slice(0, sep)
-      buf = buf.slice(sep + 2)
-      handleChunk(chunk)
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let sep: number
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, sep)
+        buf = buf.slice(sep + 2)
+        handleChunk(chunk)
+      }
     }
+    buf += decoder.decode()
+    if (buf.trim()) handleChunk(buf)
+  } finally {
+    // 消费方（onEvent）抛错时也必须释放 body；否则连接保持打开直到 GC。
+    try { await reader.cancel() } catch { /* 已关闭/已中止 */ }
   }
-  buf += decoder.decode()
-  if (buf.trim()) handleChunk(buf)
   if (!streamDone && !h.signal?.aborted) {
     throw new FsApiError(0, '流式连接在服务完成前中断；已收到的内容已保留，请重试并检查服务日志。')
   }
@@ -240,20 +245,25 @@ export async function openSse(
       }
     }
   }
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    let sep: number
-    while ((sep = buf.indexOf('\n\n')) >= 0) {
-      const chunk = buf.slice(0, sep)
-      buf = buf.slice(sep + 2)
-      handleChunk(chunk)
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      let sep: number
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        const chunk = buf.slice(0, sep)
+        buf = buf.slice(sep + 2)
+        handleChunk(chunk)
+      }
     }
+    buf += decoder.decode()
+    if (buf.trim()) handleChunk(buf)
+  } finally {
+    // 消费方抛错时释放 body；终态自关（onDone 里 abort）时 cancel 会抛，忽略。
+    try { await reader.cancel() } catch { /* 已关闭/已中止 */ }
   }
-  buf += decoder.decode()
-  if (buf.trim()) handleChunk(buf)
   if (!streamDone && !signal.aborted) {
-    throw new FsApiError(0, '工作流事件流在终态前中断；请重新打开工作流查看最新状态。')
+    throw new FsApiError(0, '工作流事件流在终态前中断；请重新打开工作台查看最新状态。')
   }
 }

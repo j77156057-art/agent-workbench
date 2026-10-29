@@ -72,6 +72,10 @@ export interface ChatStreamHooks<T extends ChatStreamTurn> {
 export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T>) {
   interface StreamBuffer { turn: T; text: string; reasoning: string; think: string }
   const buffers = new Map<number, StreamBuffer>()
+  // 首条 final 守卫：终态可能重复下发（重试后的第二个 final、成功 final 后的
+  // error final）。此前只在问答页调用方有一份守卫，工作台对话台没有 —— 第二条
+  // 会覆盖已收到的答案/把成功翻成 error。下沉到这里，两条页面共用。
+  const finalSeen = new WeakSet<object>()
   let raf = 0
   // 每个 turn 当前是否有一个「敞开的」think 节点（reasoning 分段进行中）。
   // 为什么不能等动作事件才整段落进 flow：那会让思考在动作发生前一直不可见，
@@ -184,6 +188,10 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       return
     }
     if (!turn) return
+    if (ev.type === 'final') {
+      if (finalSeen.has(turn)) return
+      finalSeen.add(turn)
+    }
     hooks.onActivity?.(turn)
     // 结构化「提问 / 授权」载荷：终态澄清 final 与流中的 needs_confirmation 都可能带。
     // 抢先于下面的类型分支统一捕获，否则 needs_confirmation（无专门分支）会被整条丢弃。
