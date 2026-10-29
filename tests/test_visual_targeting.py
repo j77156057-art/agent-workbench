@@ -271,10 +271,11 @@ def test_desktop_review_chat_requires_current_workflow_feedback():
         missing = client.post("/api/chat", data={
             "question": "模型说未达成", "ui_context": "desktop_visual_review"})
         assert missing.status_code == 400
+        # 跨源闸门在路由前就拒绝；不再走到反馈校验的 400
         foreign = client.post("/api/chat", headers={"Origin": "https://other.example"}, data={
             "question": "模型说未达成", "ui_context": "desktop_visual_review",
             "workflow_id": "workflow-1", "feedback_id": "review-1"})
-        assert foreign.status_code == 400
+        assert foreign.status_code == 403
         valid = client.post("/api/chat", data={
             "question": "模型说未达成", "ui_context": "desktop_visual_review",
             "workflow_id": "workflow-1", "feedback_id": "review-1"})

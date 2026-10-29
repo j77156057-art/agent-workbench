@@ -1071,7 +1071,24 @@ async def project_context_middleware(request: Request, call_next):
             reset_context_code_root(token)
 
 
-# 外部接入：允许浏览器/前端跨域调用本服务（来源由 DOCMIND_CORS_ORIGINS 控制，默认 *）。
+@app.middleware("http")
+async def enforce_local_origin(request: Request, call_next):
+    """拒绝未授权来源的浏览器请求（跨源 CSRF 闸门）。
+
+    CORS 的 `*` 只决定「响应能不能被跨源页面读取」，不能当成「谁有权驱动本机
+    能力」：本服务暴露文件写入、命令执行、MCP 工具与桌面点击。桌面前端与 Vite
+    代理都是同源，curl/脚本不带 Origin；`*` 按 _origin_allowed 的既定口径不视为
+    授权来源，跨源接入必须在 DOCMIND_CORS_ORIGINS 里显式列出。
+    """
+    if request.url.path.startswith("/api/"):
+        origin = request.headers.get("origin") or ""
+        if origin and not _origin_allowed(origin, request.headers.get("host") or ""):
+            return JSONResponse({"ok": False, "error": "请求来源不被允许。"},
+                                status_code=403)
+    return await call_next(request)
+
+
+# 外部接入：允许浏览器/前端跨域调用本服务（来源由 DOCMIND_CORS_ORIGINS 控制）。
 # 必须在 optional_api_auth 之后注册——Starlette 中间件栈"后注册者在最外层"，
 # 这样 401 响应也会经过 CORS 中间件并带上 Access-Control-Allow-Origin，
 # 跨域网页端才能读到鉴权失败响应体（否则只能拿到不透明的网络错误）。
