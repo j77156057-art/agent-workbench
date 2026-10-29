@@ -75,29 +75,29 @@ function sessionTime(value: string): string {
   position: fixed; top: 58px; right: 24px;
   width: 360px; max-width: calc(100vw - 24px);
   max-height: min(70vh, 520px); overflow-y: auto;
-  background: var(--bg-raised, #fff);
-  border: 1px solid var(--border-strong, #d9dee8);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 10px;
   box-shadow: 0 14px 38px rgba(35, 52, 84, .2);
   padding: 12px; z-index: 60;
 }
 .ah-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .ah-title { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
-.ah-subtitle { color: var(--text-faint, #8a93a5); font-size: var(--fs-cap); line-height: 1.45; margin-top: 2px; }
+.ah-subtitle { color: var(--text-faint); font-size: var(--fs-cap); line-height: 1.45; margin-top: 2px; }
 .ah-mini {
   height: 24px; padding: 0 10px; font-size: var(--fs-cap); flex: none;
-  border: 1px solid var(--border-strong, #d9dee8); border-radius: 6px;
-  background: transparent; color: var(--text-muted, #667085); cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  background: transparent; color: var(--text-muted); cursor: pointer;
 }
-.ah-mini:hover:not(:disabled) { color: var(--accent, var(--accent)); border-color: var(--accent, var(--accent)); }
+.ah-mini:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
 .ah-mini:disabled { opacity: .45; cursor: default; }
 .ah-new {
   width: 100%; display: flex; align-items: center; gap: 9px; margin: 10px 0 4px;
-  padding: 9px 10px; border: 1px solid #c8dcfa; border-radius: 8px;
-  background: #f3f8ff; color: var(--accent, var(--accent));
+  padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent);
   text-align: left; cursor: pointer;
 }
-.ah-new:hover { background: var(--bg-selected, #eaf2ff); }
+.ah-new:hover { background: var(--bg-selected); }
 .ah-new:disabled { opacity: .55; cursor: default; }
 .ah-new-icon {
   width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center;
@@ -105,33 +105,33 @@ function sessionTime(value: string): string {
 }
 .ah-new b, .ah-new small { display: block; }
 .ah-new b { font-size: var(--fs-sm); }
-.ah-new small { margin-top: 2px; color: var(--text-muted, #667085); font-size: var(--fs-cap); }
+.ah-new small { margin-top: 2px; color: var(--text-muted); font-size: var(--fs-cap); }
 .ah-error {
   padding: 6px 8px; margin-top: 6px;
-  color: var(--danger, #dc4c52); background: #fff4f4;
-  border: 1px solid #f2caca; border-radius: 6px; font-size: var(--fs-cap);
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 6px; font-size: var(--fs-cap);
 }
-.ah-empty { padding: 14px 5px; color: var(--text-faint, #8a93a5); font-size: var(--fs-sm); text-align: center; }
-.ah-item { display: flex; align-items: stretch; border-top: 1px solid var(--border, #e4e8ef); }
-.ah-item.active { background: var(--bg-selected, #f1f5fb); }
+.ah-empty { padding: 14px 5px; color: var(--text-faint); font-size: var(--fs-sm); text-align: center; }
+.ah-item { display: flex; align-items: stretch; border-top: 1px solid var(--border); }
+.ah-item.active { background: var(--bg-selected); }
 .ah-main {
   flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center;
   padding: 9px 5px; border: 0; background: transparent;
   color: var(--text); text-align: left; cursor: pointer;
 }
-.ah-main:hover { background: var(--bg-hover, #f5f8fd); }
+.ah-main:hover { background: var(--bg-hover); }
 .ah-main:disabled { opacity: .6; cursor: default; }
-.ah-dot { flex: 0 0 14px; color: var(--text-faint, #8a93a5); font-size: var(--fs-cap); }
-.ah-item.active .ah-dot { color: var(--accent, var(--accent)); }
+.ah-dot { flex: 0 0 14px; color: var(--text-faint); font-size: var(--fs-cap); }
+.ah-item.active .ah-dot { color: var(--accent); }
 .ah-copy { min-width: 0; display: block; }
 .ah-copy strong, .ah-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ah-copy strong { font-size: var(--fs-sm); font-weight: 600; }
-.ah-copy small { margin-top: 2px; color: var(--text-faint, #8a93a5); font-size: var(--fs-cap); }
+.ah-copy small { margin-top: 2px; color: var(--text-faint); font-size: var(--fs-cap); }
 .ah-delete {
   align-self: center; margin-right: 5px; width: 24px; height: 24px;
-  border: 0; background: transparent; color: var(--text-faint, #8a93a5);
+  border: 0; background: transparent; color: var(--text-faint);
   cursor: pointer; font-size: var(--fs-lead); line-height: 1;
 }
-.ah-delete:hover { color: var(--danger, #dc4c52); }
+.ah-delete:hover { color: var(--danger); }
 .ah-delete:disabled { cursor: default; opacity: .5; }
 </style>

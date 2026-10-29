@@ -1097,7 +1097,7 @@ async function save() {
   width: 460px; max-width: min(460px, calc(100vw - 24px));
   max-height: min(88vh, calc(100vh - 24px));
   box-sizing: border-box;
-  background: var(--bg, #fff);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 12px 40px rgba(15, 23, 42, .18);

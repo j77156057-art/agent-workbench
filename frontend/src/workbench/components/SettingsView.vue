@@ -2293,7 +2293,7 @@ async function powerAction(action: 'on' | 'off') {
 }
 .sv-box {
   width: 760px; max-width: calc(100vw - 32px); height: 78vh; max-height: 720px;
-  background: var(--bg, #fff); border: 1px solid var(--border);
+  background: var(--bg); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 16px 48px rgba(15, 23, 42, .22);
   display: flex; flex-direction: column; overflow: hidden;
 }

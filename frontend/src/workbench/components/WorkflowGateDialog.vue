@@ -322,7 +322,7 @@ function submitRevise() {
 .wg-goal {
   margin: 10px 0 12px; padding: 9px 11px;
   border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-surface, var(--bg-hover));
+  background: var(--bg-hover);
   font-size: var(--fs-sm); line-height: 1.6; color: var(--text);
 }
 .wg-hint {
@@ -357,7 +357,7 @@ function submitRevise() {
 .wg-tag-web { background: var(--amber); color: var(--amber-ink); }
 .wg-custom { margin-top: 10px; display: grid; gap: 8px; }
 .wg-tasks { margin: 10px 0; display: grid; gap: 7px; max-height: 38vh; overflow-y: auto; }
-.wg-task { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface, var(--bg-hover)); transition: border-color .15s ease, background .15s ease, transform .15s ease; }.wg-task:hover { border-color: var(--border-strong); background: var(--bg-selected); transform: translateX(2px); }
+.wg-task { display: flex; gap: 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-hover); transition: border-color .15s ease, background .15s ease, transform .15s ease; }.wg-task:hover { border-color: var(--border-strong); background: var(--bg-selected); transform: translateX(2px); }
 .wg-task b { flex: 0 0 auto; font-size: var(--fs-cap); color: var(--accent); font-family: var(--font-mono); padding-top: 1px; }
 .wg-task-main { min-width: 0; display: grid; gap: 2px; font-size: var(--fs-sm); line-height: 1.5; }
 .wg-task-role { font-size: var(--fs-cap); color: var(--text-faint); font-weight: 600; }
@@ -385,7 +385,7 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
 .wg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wg-btn:disabled { opacity: .55; cursor: default; }
 .wg-primary { --btn-fill: var(--accent); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
-.wg-primary:hover:not(:disabled) { --btn-fill: var(--accent-strong, var(--accent)); background: var(--accent-strong, var(--accent)); color: var(--accent-ink); }
+.wg-primary:hover:not(:disabled) { --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .wg-danger { border-color: var(--danger); color: var(--danger); }
 .wg-danger:hover:not(:disabled) { background: var(--danger); color: var(--danger-ink); }
 .wg-ghost { border-style: dashed; }

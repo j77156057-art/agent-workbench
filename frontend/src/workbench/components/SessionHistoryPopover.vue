@@ -132,7 +132,7 @@ function sessionTime(value: string): string {
   border: 0;
   border-top: 1px solid var(--border);
   background: transparent;
-  color: var(--danger, #dc4c52);
+  color: var(--danger);
   font-size: var(--fs-cap);
   text-align: center;
   cursor: pointer;

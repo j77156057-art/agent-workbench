@@ -569,7 +569,7 @@ async function discardStage() {
 .wf-task {
   display: flex; align-items: baseline; gap: 8px;
   padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-surface, var(--bg-hover)); font-size: var(--fs-sm);
+  background: var(--bg-hover); font-size: var(--fs-sm);
   transition: background .16s ease, border-color .16s ease, transform .16s ease;
 }
 .wf-task:hover { background: var(--bg-hover); border-color: var(--border-strong); transform: translateX(2px); }
@@ -588,7 +588,7 @@ async function discardStage() {
 .wf-members-head { display: flex; align-items: baseline; gap: 8px; }
 .wf-members-head b { font-size: var(--fs-sm); color: var(--text); }
 .wf-members-head small { font-size: var(--fs-cap); color: var(--text-faint); }
-.wf-member { border: 1px solid var(--border); border-radius: 9px; background: var(--bg-surface, var(--bg-hover)); transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.wf-member { border: 1px solid var(--border); border-radius: 9px; background: var(--bg-hover); transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .wf-member:hover { border-color: var(--border-strong); }
 .wf-member-running { border-color: rgba(37,96,212,.45); box-shadow: inset 3px 0 0 var(--accent); }
 .wf-member-row {
