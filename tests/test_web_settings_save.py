@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -21,14 +22,21 @@ import config  # noqa: E402
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 _RUNTIME_KEYS = (
     "llm_provider", "llm_model",
-    "web_search_provider", "web_search_api_key", "web_search_api_url",
-    "web_search_prefer_builtin",
-    "web_fetch_provider", "web_fetch_api_key", "web_fetch_api_url",
+    "web_search_provider", "web_search_api_key", "web_search_api_key_provider",
+    "web_search_api_url", "web_search_prefer_builtin",
+    "web_fetch_provider", "web_fetch_api_key", "web_fetch_api_key_provider",
+    "web_fetch_api_url",
 )
 
 
 class WebSettingsSaveTests(unittest.TestCase):
     def setUp(self):
+        # 自建临时状态根：这组用例会写 state / 密钥库，关闭测试隔离时也不能碰真的。
+        self._tmp = tempfile.TemporaryDirectory(prefix="docmind_websettings_")
+        self._old_root = config.STATE_ROOT
+        self._old_file = config.STATE_FILE
+        config.STATE_ROOT = self._tmp.name
+        config.STATE_FILE = os.path.join(self._tmp.name, ".docmind_state.json")
         self._saved = {k: config.get_runtime(k) for k in _RUNTIME_KEYS}
         self._old_llm = api.agent.llm
         config.set_runtime("llm_provider", "deepseek")
@@ -43,6 +51,9 @@ class WebSettingsSaveTests(unittest.TestCase):
             else:
                 config.set_runtime(key, value)
         api.agent.llm = self._old_llm
+        config.STATE_ROOT = self._old_root
+        config.STATE_FILE = self._old_file
+        self._tmp.cleanup()
 
     def test_saving_search_settings_keeps_model_and_client(self):
         resp = asyncio.run(api.set_web_settings(api.WebSettingsReq(
@@ -99,16 +110,13 @@ class WebSettingsSaveTests(unittest.TestCase):
 
     def test_omitting_the_key_field_preserves_the_stored_key(self):
         """API 层契约：不提交 key 字段 = 不改动已存 Key。"""
-        secrets_store = __import__("secrets_store")
-        secrets_store.save(None, "web_search", "sk-keep-me")
-        try:
-            resp = asyncio.run(api.set_web_settings(api.WebSettingsReq(
-                web_search_provider="bocha")))
-            self.assertTrue(resp["ok"])
-            self.assertEqual(secrets_store.load(None, "web_search"), "sk-keep-me")
-            self.assertTrue(resp["web_search_has_key"])
-        finally:
-            secrets_store.remove(None, "web_search")
+        config.set_runtime("web_search_provider", "bocha")
+        config.set_web_search_api_key("sk-keep-me")
+        resp = asyncio.run(api.set_web_settings(api.WebSettingsReq(
+            web_search_provider="bocha")))
+        self.assertTrue(resp["ok"])
+        self.assertEqual(config.get_web_search_api_key(), "sk-keep-me")
+        self.assertTrue(resp["web_search_has_key"])
 
 
 if __name__ == "__main__":

@@ -1409,20 +1409,6 @@ def _apply_voice_state(data):
 
 
 # ---- 网络搜索 / URL 获取配置运行时覆盖 ----
-def _persist_web_search():
-    """把当前网络搜索运行时覆盖写回 STATE_FILE（供多个 setter 复用）。"""
-    save_state("web_search_provider", get_runtime("web_search_provider") or WEB_SEARCH_PROVIDER)
-    save_state("web_search_api_key", get_runtime("web_search_api_key") or WEB_SEARCH_API_KEY)
-    save_state("web_search_api_url", get_runtime("web_search_api_url") or WEB_SEARCH_API_URL)
-    save_state("web_search_prefer_builtin", bool(get_runtime("web_search_prefer_builtin")))
-
-
-def _persist_web_fetch():
-    save_state("web_fetch_provider", get_runtime("web_fetch_provider") or WEB_FETCH_PROVIDER)
-    save_state("web_fetch_api_key", get_runtime("web_fetch_api_key") or WEB_FETCH_API_KEY)
-    save_state("web_fetch_api_url", get_runtime("web_fetch_api_url") or WEB_FETCH_API_URL)
-
-
 def get_web_search_provider():
     v = get_runtime("web_search_provider")
     if v in _WEB_SEARCH_PROVIDERS:
@@ -1434,8 +1420,13 @@ def set_web_search_provider(provider):
     provider = (provider or "").strip().lower()
     if provider not in _WEB_SEARCH_PROVIDERS:
         provider = "builtin_auto"
+    previous = get_web_search_provider()
     set_runtime("web_search_provider", provider)
     save_state("web_search_provider", provider)
+    if provider != previous:
+        # 运行时 key 属于上一家：切走时清掉，避免新厂商拿到旧 key（401）。
+        _RUNTIME.pop("web_search_api_key", None)
+        _RUNTIME.pop("web_search_api_key_provider", None)
     return provider
 
 
@@ -1444,10 +1435,17 @@ def set_web_search_provider(provider):
 # 现在默认全局库（凭据属于这台机器上的用户、不绑定项目），读取顺序与 LLM Key 一致：
 # 运行时显式 > 密钥库 > 环境变量。启动时把旧明文迁移进库并立即抹掉。
 # 惰性 import：secrets_store 依赖 config.STATE_ROOT，模块级 import 会成环。
-_WEB_SECRET_SLOTS = {
-    "web_search_api_key": "web_search",
-    "web_fetch_api_key": "web_fetch",
-}
+_WEB_LEGACY_SECRET_SLOTS = {"search": "web_search", "fetch": "web_fetch"}
+
+
+def _web_secret_slot(kind: str, provider: str) -> str:
+    """按厂商分槽，与语音 Key 的 `voice:<kind>:<provider>` 同构。
+
+    单一全局槽位会让「切换搜索厂商」串用上一家的 Key：Tavily 拿到 Bocha 的
+    key 只会 401，再填一次又把 Bocha 的覆盖掉。分槽后每家的 key 各自保留。
+    """
+    name = (provider or "").strip().lower() or "default"
+    return f"web:{kind}:{name}"
 
 
 def _web_secret_load(slot):
@@ -1458,6 +1456,14 @@ def _web_secret_load(slot):
         return ""
 
 
+def _web_secret_remove(slot):
+    try:
+        import secrets_store
+        secrets_store.remove(None, slot)
+    except Exception:  # noqa: BLE001 - 槽位本来不存在时也算成功
+        pass
+
+
 def _web_secret_save(slot, value):
     """写全局密钥库；空值表示删除该槽位。失败抛异常，绝不回退成明文。"""
     import secrets_store
@@ -1466,23 +1472,35 @@ def _web_secret_save(slot, value):
         if not result.get("ok"):
             raise RuntimeError(result.get("error") or "写入密钥库失败")
         return True
-    try:
-        secrets_store.remove(None, slot)
-    except Exception:  # noqa: BLE001 - 槽位本来不存在时也算成功
-        pass
+    _web_secret_remove(slot)
     return True
 
 
 def get_web_search_api_key():
-    return (get_runtime("web_search_api_key")
-            or _web_secret_load("web_search")
+    provider = get_web_search_provider()
+    runtime_key = get_runtime("web_search_api_key")
+    runtime_provider = get_runtime("web_search_api_key_provider")
+    # 运行时覆盖只对它保存时的厂商有效；伴随键缺失 = 显式 override，沿用旧语义。
+    if runtime_key and (not runtime_provider or runtime_provider == provider):
+        return runtime_key
+    return (_web_secret_load(_web_secret_slot("search", provider))
+            # 兼容尚未跑过启动迁移的进程（离线脚本）：旧单一槽位仍可读。
+            or _web_secret_load(_WEB_LEGACY_SECRET_SLOTS["search"])
             or WEB_SEARCH_API_KEY or "")
 
 
 def set_web_search_api_key(key):
     key = (key or "").strip()
-    set_runtime("web_search_api_key", key)
-    _web_secret_save("web_search", key)
+    provider = get_web_search_provider()
+    slot = _web_secret_slot("search", provider)
+    if key:
+        set_runtime("web_search_api_key", key)
+        set_runtime("web_search_api_key_provider", provider)
+    else:
+        _RUNTIME.pop("web_search_api_key", None)
+        _RUNTIME.pop("web_search_api_key_provider", None)
+    _web_secret_save(slot, key)
+    _web_secret_remove(_WEB_LEGACY_SECRET_SLOTS["search"])  # 迁移后不再需要
     save_state("web_search_api_key", "")  # 抹掉旧版明文（没有则写空串，无害）
     return key
 
@@ -1523,21 +1541,38 @@ def set_web_fetch_provider(provider):
     provider = (provider or "").strip().lower()
     if provider not in _WEB_FETCH_PROVIDERS:
         provider = "builtin"
+    previous = get_web_fetch_provider()
     set_runtime("web_fetch_provider", provider)
     save_state("web_fetch_provider", provider)
+    if provider != previous:
+        _RUNTIME.pop("web_fetch_api_key", None)
+        _RUNTIME.pop("web_fetch_api_key_provider", None)
     return provider
 
 
 def get_web_fetch_api_key():
-    return (get_runtime("web_fetch_api_key")
-            or _web_secret_load("web_fetch")
+    provider = get_web_fetch_provider()
+    runtime_key = get_runtime("web_fetch_api_key")
+    runtime_provider = get_runtime("web_fetch_api_key_provider")
+    if runtime_key and (not runtime_provider or runtime_provider == provider):
+        return runtime_key
+    return (_web_secret_load(_web_secret_slot("fetch", provider))
+            or _web_secret_load(_WEB_LEGACY_SECRET_SLOTS["fetch"])
             or WEB_FETCH_API_KEY or "")
 
 
 def set_web_fetch_api_key(key):
     key = (key or "").strip()
-    set_runtime("web_fetch_api_key", key)
-    _web_secret_save("web_fetch", key)
+    provider = get_web_fetch_provider()
+    slot = _web_secret_slot("fetch", provider)
+    if key:
+        set_runtime("web_fetch_api_key", key)
+        set_runtime("web_fetch_api_key_provider", provider)
+    else:
+        _RUNTIME.pop("web_fetch_api_key", None)
+        _RUNTIME.pop("web_fetch_api_key_provider", None)
+    _web_secret_save(slot, key)
+    _web_secret_remove(_WEB_LEGACY_SECRET_SLOTS["fetch"])
     save_state("web_fetch_api_key", "")
     return key
 
@@ -1564,16 +1599,30 @@ def _apply_web_search_state(data):
         v = data.get(key)
         if v is not None and key not in _RUNTIME:
             _RUNTIME[key] = v
-    for key, slot in _WEB_SECRET_SLOTS.items():
-        legacy = data.get(key)
-        if not legacy:
-            continue
-        try:
-            _web_secret_save(slot, str(legacy))
-            save_state(key, "")  # 抹掉旧版明文
-        except Exception:  # noqa: BLE001 - 迁移失败时保留可用性，不丢 Key
-            if key not in _RUNTIME:
-                _RUNTIME[key] = legacy
+    for key, kind in (("web_search_api_key", "search"), ("web_fetch_api_key", "fetch")):
+        provider = get_web_search_provider() if kind == "search" else get_web_fetch_provider()
+        slot = _web_secret_slot(kind, provider)
+        legacy_slot = _WEB_LEGACY_SECRET_SLOTS[kind]
+        # ① 旧版明文（STATE_FILE）→ 当前厂商的槽位，随即抹掉明文。
+        legacy_plain = data.get(key)
+        if legacy_plain:
+            try:
+                if not _web_secret_load(slot):
+                    _web_secret_save(slot, str(legacy_plain))
+                save_state(key, "")
+            except Exception:  # noqa: BLE001 - 迁移失败时保留可用性，不丢 Key
+                if key not in _RUNTIME:
+                    _RUNTIME[key] = legacy_plain
+                    _RUNTIME[key + "_provider"] = provider
+        # ② 2026-10-29 早先的单一全局槽位 → 当前厂商的槽位，然后删旧槽位。
+        legacy_value = _web_secret_load(legacy_slot)
+        if legacy_value:
+            try:
+                if not _web_secret_load(slot):
+                    _web_secret_save(slot, legacy_value)
+                _web_secret_remove(legacy_slot)
+            except Exception:  # noqa: BLE001
+                pass
     pb = data.get("web_search_prefer_builtin")
     if pb is not None and "web_search_prefer_builtin" not in _RUNTIME:
         _RUNTIME["web_search_prefer_builtin"] = bool(pb)
