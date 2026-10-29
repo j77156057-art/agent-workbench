@@ -298,8 +298,17 @@ def build_router(ctx) -> APIRouter:
         workflow_root = _canonicalize_root(state.get("project_root") or "")
         current_id = str(ctx._request_project_id() or "")
         workflow_id_field = str(state.get("project_id") or "")
-        root_ok = (not current_root and not workflow_root) or (current_root and current_root == workflow_root)
-        id_ok = (not current_id and not workflow_id_field) or (current_id and current_id == workflow_id_field)
+        root_ok = (not current_root and not workflow_root) or (
+            bool(current_root) and bool(workflow_root) and current_root == workflow_root)
+        # pid 也按「两边都有才严格比」：对话内 start_workflow 走 code_root，
+        # 可以落出没有 project_id 的 state。若这里仍要求 pid 相等，它会被
+        # workflow/active 列出（按 root 匹配）却打不开/执行不了。
+        if current_id and workflow_id_field:
+            id_ok = current_id == workflow_id_field
+        elif current_id or workflow_id_field:
+            id_ok = bool(current_root) and bool(workflow_root) and current_root == workflow_root
+        else:
+            id_ok = True
         if root_ok and id_ok:
             return None
         return {"ok": False,

@@ -47,6 +47,10 @@ def _make_client(manager, project_id, project_root):
 
 class WorkflowOwnershipTests(unittest.TestCase):
     def setUp(self):
+        # 本文件会把模块级 api_agent.WORKFLOWS 换成测试 manager；不还原的话，
+        # 后续按字母序跑到的 SSE/chat 测试会用原始 singleton 建 workflow，
+        # 路由却读被换掉的那个 → 全线 404（实测过的测试污染）。
+        self._orig_workflows = api_agent.WORKFLOWS
         self.tmp = Path(tempfile.mkdtemp())
         self.project_a = self.tmp / "project_a"
         self.project_b = self.tmp / "project_b"
@@ -59,6 +63,7 @@ class WorkflowOwnershipTests(unittest.TestCase):
                                          project_root=str(self.project_b))["workflow_id"]
 
     def tearDown(self):
+        api_agent.WORKFLOWS = self._orig_workflows
         self.manager.close()
 
     # ----- 读端点 --------------------------------------------------------
@@ -68,6 +73,29 @@ class WorkflowOwnershipTests(unittest.TestCase):
         resp = client.get(f"/api/agent/workflow/{self.wid_a}")
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json()["ok"])
+
+    def test_root_only_workflow_is_accessible_from_its_root_project(self):
+        """对话内按 code_root 创建、没有 project_id 的 state 也要能打开。
+
+        真机形态：workflow/active 已按 root 列出它，但 workflow/{id} 因 pid 不等
+        返回 404 —— 列表里有、点进去没有，且无法执行。
+        """
+        project_c = self.tmp / "project_c"
+        project_c.mkdir()
+        wid = self.manager.start("root-only", project_root=str(project_c))["workflow_id"]
+        client = _make_client(self.manager, "pid-c", str(project_c))
+        resp = client.get(f"/api/agent/workflow/{wid}")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(resp.json()["ok"])
+        # 跨项目（不同 root）仍必须 404
+        other = _make_client(self.manager, "pid-b", str(self.project_b))
+        self.assertEqual(other.get(f"/api/agent/workflow/{wid}").status_code, 404)
+
+    def test_project_workflow_accessible_without_pid_when_root_matches(self):
+        """只有一侧有 pid 时由 root 定归属，与列表/互斥口径一致。"""
+        client = _make_client(self.manager, "", str(self.project_a))
+        resp = client.get(f"/api/agent/workflow/{self.wid_a}")
+        self.assertEqual(resp.status_code, 200, resp.text)
 
     def test_cross_project_get_returns_404(self):
         client = _make_client(self.manager, "pid-a", str(self.project_a))
