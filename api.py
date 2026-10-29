@@ -345,13 +345,13 @@ _SESSION_AGENTS: dict = {}
 # 杜绝两条线程并发写同一 Agent 的 self.history / _sessions.save（会话文件交错损坏）。
 _ACTIVE_RUN: dict[str, dict] = {}
 _RUN_LOCKS: dict[str, "threading.Lock"] = {}
+_RUN_LOCKS_GUARD = threading.Lock()
 
 def _run_lock_for(key: str) -> "threading.Lock":
-    lock = _RUN_LOCKS.get(key)
-    if lock is None:
-        lock = threading.Lock()
-        _RUN_LOCKS[key] = lock
-    return lock
+    # 惰性建锁必须原子：两个并发请求各自「查不到 -> 新建」会拿到两把不同的锁，
+    # 同会话串行化直接失效（两轮 run 并发写同一 Agent.history）。
+    with _RUN_LOCKS_GUARD:
+        return _RUN_LOCKS.setdefault(key, threading.Lock())
 
 
 @contextmanager
