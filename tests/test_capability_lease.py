@@ -32,6 +32,7 @@ def test_agent_lease_allows_declared_capability_and_blocks_other_tools():
     result = agent._run_batch([("web_search", "q")], None)[0]
     assert result[3] is False
     assert "权限租约" in result[2]
+    assert result[5] == "lease_blocked"
 
 
 def test_expired_lease_blocks_even_when_capability_is_declared():

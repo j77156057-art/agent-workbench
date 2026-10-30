@@ -6376,11 +6376,11 @@ class Agent:
                     for nm, ar in batch:
                         executed.add((nm, ar))
                     results = self._run_batch(batch, turn)
-                    for (nm, ar, _o, _k, _i), _free in zip(results, batch_free):
+                    for (nm, ar, _o, _k, _i, _ek), _free in zip(results, batch_free):
                         # step_cost 透传给外层（子代理编排器按它统计上限，免费导航不计）
                         yield {"type": "action", "text": f"{nm}({ar})",
                                "step_cost": 0 if _free else 1}
-                    for nm, ar, obs, _ok, _imgs in results:
+                    for nm, ar, obs, _ok, _imgs, _ek in results:
                         yield {"type": "observation", "text": obs, "ok": bool(_ok)}
                     # 这里**不写**一条「（并行调用）read_file、…」的 assistant 消息。
                     # 那是给人看的调度摘要，却以自然语言塞进了模型自己的历史；模型会
@@ -6389,13 +6389,14 @@ class Agent:
                     # 工具名信息没有丢：并进每条 Observation 的前缀（仍以 "Observation:"
                     # 开头，_PRUNABLE_PREFIXES 与成对裁剪照常识别），模型同样知道每条
                     # 观察来自哪个工具，且历史里不再有可被复读的孤立助手发言。
-                    for nm, ar, obs, _ok, imgs in results:
+                    for nm, ar, obs, _ok, imgs, _ek in results:
                         _obs_msg = {"role": "user",
                                     "content": f"Observation: [{nm}] {_clip_tool_observation(obs, observation_limit, nm)}"}
                         if imgs:
                             _obs_msg["images"] = list(imgs)
                         trail.append(_obs_msg)
-                    evidence.extend(f"{nm}({_clip(ar, 120)})" for nm, ar, _o, _k, _i in results)
+                    evidence.extend(f"{nm}({_clip(ar, 120)})"
+                                    for nm, ar, _o, _k, _i, _ek in results)
                     # 真实执行记录：证据审计必须读它，而不是回头扫trail 里的
                     # `Action:` 文本——这条路径不写那种标记（见 _audit_live_answer）。
                     # **带参数**，与顺序路径同形状（见上面那条的说明：只存裸工具名
@@ -6406,7 +6407,7 @@ class Agent:
                                         # 原始观察文本：裸文件名兜底要从 grep/search_code
                                         # 成功观察里提取被列出的文件路径（见 _observed_ref_paths）。
                                         "obs": str(_o or "")}
-                                       for nm, _ar, _o, _ok, _i in results)
+                                       for nm, _ar, _o, _ok, _i, _ek in results)
                     # 免费导航只消耗导航额度（与拆批时判定的 batch_free 同序），
                     # 其余结果按实际数量计入工具步数。
                     _nav_freed = sum(1 for _free in batch_free if _free)
@@ -6414,8 +6415,22 @@ class Agent:
                     tool_steps += len(results) - _nav_freed
                     last_action = results[-1][0]
                     last_obs = results[-1][2]
-                    if any(self._is_write_tool(nm) for nm, _a, _o, _k, _i in results):
+                    if any(self._is_write_tool(nm) for nm, _a, _o, _k, _i, _ek in results):
                         executed.clear()
+                    # 并行失败也必须进顺序路径同一套分类/熔断：此前 _run_batch
+                    # 只回 ok，批量失败既不封禁工具也不会计入连续失败，弱模型
+                    # 可以靠并行批次无限白试。
+                    fail_total, _batch_forced, _batch_nudge = self._record_batch_failures(
+                        results, turn, tool_fail_streak, fail_total,
+                        web_family_failures, _permanent_failures)
+                    if _batch_forced:
+                        forced_finals = _MAX_FORCED_FINALS
+                        forced_final_reason = _batch_forced
+                    if _batch_nudge:
+                        if failures < _MAX_REFLECTIONS:
+                            failures += 1
+                        trail.append({"role": "user", "content": _clip(_batch_nudge, 1600)})
+                        yield {"type": "reflection", "text": _clip(_batch_nudge, 500)}
                     _snapshot("step_done")
                     continue
                 # 含非只读安全工具：退回顺序执行
@@ -7891,11 +7906,13 @@ class Agent:
             return obs, None
 
     def _run_batch(self, batch, turn):
-        """并发执行一批只读工具，返回 [(name, arg, obs, ok, images)]（保持入参顺序）。
+        """并发执行一批只读工具，返回 [(name, arg, obs, ok, images, error_kind)]。
 
         每条仍完整走：pre_tool 钩子 → 白名单/写意图已在派发前拦过 → 执行 →
         post_tool 钩子 → 账本记步。单条异常只影响本条，不拖垮整批。
         images 为过视觉能力门后可挂到观察消息的 base64 列表（可能为 None）。
+        error_kind 供调用方复用顺序路径的 failure_guidance 分类/熔断；
+        没有真实 error_kind 的拦截（租约/钩子）分别标 lease_blocked / hook_blocked。
         """
         out = [None] * len(batch)
 
@@ -7903,17 +7920,20 @@ class Agent:
             try:
                 lease_blocked, lease_reason = self._lease_blocked(name)
                 if lease_blocked:
-                    out[i] = (name, arg, f"[权限租约] {name} 未执行：{lease_reason}。", False, None)
+                    out[i] = (name, arg, f"[权限租约] {name} 未执行：{lease_reason}。",
+                              False, None, "lease_blocked")
                     return
                 blocked, reason, arg2 = _hooks.run_pre_tool(name, arg)
                 if blocked:
-                    out[i] = (name, arg, f"[钩子拦截] {name} 未执行：{reason}", False, None)
+                    out[i] = (name, arg, f"[钩子拦截] {name} 未执行：{reason}",
+                              False, None, "hook_blocked")
                     return
                 lifecycle = _hooks.run_workflow("before_tool", _tool_event_payload(
                     name, arg2, depth=self.depth,
                     session_id=self.session_id or ""))
                 if lifecycle.get("blocked"):
-                    out[i] = (name, arg2, f"[钩子拦截] {name} 未执行：{lifecycle.get('reason') or '工具生命周期钩子拦截'}", False, None)
+                    out[i] = (name, arg2, f"[钩子拦截] {name} 未执行：{lifecycle.get('reason') or '工具生命周期钩子拦截'}",
+                              False, None, "hook_blocked")
                     return
                 t0 = time.monotonic()
                 if name == "delegate":
@@ -7937,6 +7957,7 @@ class Agent:
                 obs = _hooks.run_post_tool(name, arg2, result.text)
                 obs, obs_images = self._gate_tool_images(obs, result.data)
                 ok = result.ok and (obs == result.text or not _is_failure(obs))
+                error_kind = result.error_kind or ""
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 if result.error_kind == "timeout" and self._is_network_tool(name):
                     timeout_hook = _hooks.run_workflow("network_timeout", {
@@ -7950,6 +7971,7 @@ class Agent:
                         obs = (f"[钩子拦截] {name} 网络超时后的后续处理未放行："
                                f"{timeout_hook.get('reason') or '需要人工审核'}")
                         ok = False
+                        error_kind = "hook_blocked"
                 after = _hooks.run_workflow("after_tool", {
                     "tool": name, "ok": ok, "error_kind": result.error_kind,
                     "duration_ms": duration_ms,
@@ -7958,6 +7980,7 @@ class Agent:
                 if after.get("blocked"):
                     obs = f"[钩子拦截] {name} 结果未放行：{after.get('reason') or '工具生命周期钩子拦截'}"
                     ok = False
+                    error_kind = "hook_blocked"
                 if result.error_kind == "exception":
                     obs = "[并行执行失败] " + obs
                 if turn is not None:
@@ -7965,9 +7988,10 @@ class Agent:
                     _ev = _tool_evidence_from_obs(name, obs, ok)
                     if _ev:
                         turn.add_tool_evidence(**_ev)
-                out[i] = (name, arg2, obs, ok, (obs_images if ok else None))
+                out[i] = (name, arg2, obs, ok, (obs_images if ok else None), error_kind)
             except Exception as e:  # noqa: BLE001 —— 单条失败不能炸整批
-                out[i] = (name, arg, f"[并行执行失败] {type(e).__name__}: {e}", False, None)
+                out[i] = (name, arg, f"[并行执行失败] {type(e).__name__}: {e}",
+                          False, None, "exception")
 
         with ThreadPoolExecutor(max_workers=min(PARALLEL_MAX, max(1, len(batch)))) as ex:
             # ThreadPoolExecutor 不会传播请求 ContextVar；每个并行任务需独立
@@ -7976,7 +8000,62 @@ class Agent:
                        for i, (n, a) in enumerate(batch)]
             for f in futures:
                 f.result()
-        return [r if r is not None else ("?", "", "[并行执行未返回]", False, None) for r in out]
+        return [r if r is not None else ("?", "", "[并行执行未返回]", False, None, "exception")
+                for r in out]
+
+    def _record_batch_failures(self, results, turn, tool_fail_streak,
+                               fail_total, web_family_failures, permanent_failures):
+        """并行批次的失败复用顺序路径的 failure_guidance 分类与熔断计数。
+
+        返回 ``(new_fail_total, forced_reason, nudge)``。permanent 类只累加
+        不可重试计数、不消耗连续失败预算；达到连续/总失败上限时返回
+        forced_reason，由调用方置 forced_finals 走证据兜底。
+        """
+        nudge_lines: list[str] = []
+        forced_reason = ""
+        for nm, ar, obs, ok, _imgs, error_kind in results:
+            if ok:
+                continue
+            _category, _guidance = _tool_failure.failure_guidance(error_kind, obs)
+            if _category == "permanent":
+                permanent_failures[nm] = permanent_failures.get(nm, 0) + 1
+            if nm in _WEB_ACTIONS:
+                family = _web_query_family(ar)
+                if family:
+                    web_family_failures[family] = web_family_failures.get(family, 0) + 1
+            streak = tool_fail_streak.get(nm, 0) + 1
+            tool_fail_streak[nm] = streak
+            fail_total += _tool_failure.retry_budget_cost(_category)
+            if turn is not None:
+                turn.failure_count += 1
+                turn.max_tool_streak = max(turn.max_tool_streak, streak)
+                turn.max_consec_failures = max(turn.max_consec_failures, fail_total)
+                turn.last_failure = _clip(obs, 400)
+            is_web = nm in _WEB_ACTIONS
+            fail_limit = _WEB_RESEARCH_FAIL_LIMIT if is_web else _TOOL_FAIL_LIMIT
+            total_limit = _WEB_RESEARCH_TOTAL_LIMIT if is_web else _TOTAL_FAIL_LIMIT
+            family_count = (web_family_failures.get(_web_query_family(ar), 0)
+                            if is_web else 0)
+            family_limit_hit = is_web and family_count >= 3
+            if family_limit_hit:
+                fail_limit = min(fail_limit, 3)
+            if streak >= fail_limit or fail_total >= total_limit or family_limit_hit:
+                forced_reason = forced_reason or (
+                    f"（并行批次中工具 {nm} 已连续失败 {streak} 次，"
+                    "模型未能换出可用的调用方式，已要求收尾。）")
+                nudge_lines.append(f"{nm} 已达到失败上限，禁止再重试")
+            elif _category == "permanent" and permanent_failures.get(nm, 0) >= 2:
+                nudge_lines.append(
+                    f"{nm} 连续 {permanent_failures[nm]} 次不可重试失败，禁止再调用它")
+            else:
+                nudge_lines.append(f"{nm}：{_guidance}")
+        if forced_reason:
+            nudge_lines.append("禁止再重试，直接基于已有 Observation 输出 Final Answer 收尾，"
+                               "如实说明未完成项")
+        nudge = ""
+        if nudge_lines:
+            nudge = "Nudge: 并行调用中有工具失败——" + "；".join(nudge_lines) + "。"
+        return fail_total, forced_reason, nudge
 
     # ------------------------------------------------------------------
     # 子代理（受限委派）

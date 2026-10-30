@@ -125,6 +125,8 @@ class ParallelBatchTests(_Iso):
             self.assertIn("slow:ok", results[0][2])
             self.assertIn("并行执行失败", results[1][2])
             self.assertFalse(results[1][3])
+            self.assertEqual(results[1][5], "exception",
+                             "并行失败必须带 error_kind 供熔断分类")
         finally:
             TOOLS.pop("_boom_probe", None)
 
@@ -150,6 +152,60 @@ class ParallelBatchTests(_Iso):
         self.assertIn("network_timeout", [kind for kind, _payload in events])
         after = [payload for kind, payload in events if kind == "after_tool"]
         self.assertEqual(after[0]["error_kind"], "timeout")
+
+    def test_batch_failure_classification_counts_and_nudges(self):
+        a = agent_mod.Agent(llm=_CloningLLM())
+
+        class _Turn:
+            failure_count = 0
+            max_tool_streak = 0
+            max_consec_failures = 0
+            last_failure = ""
+
+        turn = _Turn()
+        permanent, streak, web = {}, {}, {}
+        total, forced, nudge = a._record_batch_failures(
+            [("read_file", "x", "bad payload", False, None, "invalid_result"),
+             ("web_search", "q", "timeout", False, None, "timeout")],
+            turn, streak, 0, web, permanent)
+        self.assertEqual(permanent.get("read_file"), 1)
+        self.assertEqual(streak["read_file"], 1)
+        self.assertEqual(streak["web_search"], 1)
+        self.assertEqual(total, 1, "permanent 不消耗失败预算，timeout 计 1")
+        self.assertEqual(turn.failure_count, 2)
+        self.assertIn("invalid_result", nudge)
+        self.assertIn("可重试", nudge)
+        total, forced, nudge = a._record_batch_failures(
+            [("read_file", "x", "bad payload", False, None, "invalid_result")],
+            turn, streak, total, web, permanent)
+        self.assertEqual(permanent["read_file"], 2)
+        self.assertIn("禁止", nudge)
+        streak["read_file"] = agent_mod._TOOL_FAIL_LIMIT - 1
+        total, forced, nudge = a._record_batch_failures(
+            [("read_file", "x", "bad payload", False, None, "invalid_result")],
+            turn, streak, total, web, permanent)
+        self.assertTrue(forced, "连续失败到上限必须触发证据兜底")
+        self.assertIn("收尾", nudge)
+
+    def test_native_batch_failure_produces_nudge(self):
+        def _boom(_arg):
+            raise RuntimeError("kaboom")
+
+        TOOLS["_batch_boom"] = {"description": "x", "func": _boom}
+        try:
+            llm = _CloningLLM([
+                ("tools", [("_slow_probe", {"input": "a"}),
+                           ("_batch_boom", {"input": "x"})]),
+                ("text", "Final Answer: 收尾"),
+            ])
+            a = agent_mod.Agent(llm=llm, tool_mode="native")
+            events = list(a.run("并行失败测试", stream=True))
+            reflections = [e.get("text", "") for e in events
+                           if e.get("type") == "reflection"]
+            self.assertTrue(any("并行调用中有工具失败" in text for text in reflections),
+                            reflections)
+        finally:
+            TOOLS.pop("_batch_boom", None)
 
     def test_native_multi_readonly_calls_use_batch(self):
         llm = _CloningLLM([
