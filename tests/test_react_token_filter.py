@@ -47,6 +47,17 @@ def test_plain_answer_passes_through_after_probe():
     assert out == "根据代码，答案是42"
 
 
+def test_long_plain_answer_is_not_truncated_after_probe():
+    """普通回答超过 96 字探测窗口后，后续 chunk 必须继续放行。
+
+    真机回归：300+ 字的普通回答只流出首段 96 字 + 尾 16 字，正文靠 final
+    兜底；根因是普通分支没有把 _emitting 置 True，后续全被 ReAct 分支吞掉。
+    """
+    answer = "这是一段普通的正常回答，不应该被当成 ReAct 协议。" * 12
+    chunks = [answer[i:i + 7] for i in range(0, len(answer), 7)]
+    assert _feed(chunks) == answer
+
+
 def test_long_tool_round_then_final_answer():
     # 长工具轮不能因为缓冲裁剪丢掉后续 Final Answer
     long_thought = "x" * 5000

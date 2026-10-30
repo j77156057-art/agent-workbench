@@ -3651,7 +3651,11 @@ class _ReactTokenFilter:
                 self._buffer = prefix
             elif len(prefix) >= self._PROBE or "\nThought:" in prefix or "\nAction:" in prefix:
                 # 给普通回答一个很小的探测窗口，避免把首个 "Thought" token 闪现到正文。
+                # 判定为普通回答后必须切到「放行」模式：不设 _emitting 的话，
+                # 后续每个 chunk 都会落进下面的 ReAct 分支被抑制，只在流结束吐
+                # 最后 16 字——长普通回答表现为「先出 96 字、最后才出全文」。
                 self._decided = True
+                self._emitting = True
                 out, self._buffer = self._buffer, ""
                 return out
             else:
