@@ -10,7 +10,7 @@
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**▶ 免安装直接跑：[Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** —— 解压双击 `DocMind.exe`。不需要 Python、不需要 API Key、不需要联网，默认本地 mock 模型就能跑通完整流程。
+**▶ 免安装直接跑：[Releases · DocMind-20261030-994a318-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** —— 解压双击 `DocMind.exe`。不需要 Python、不需要 API Key、不需要联网，默认本地 mock 模型就能跑通完整流程。
 
 **▶ 60 秒演示** —— 在一个真实 Godot 工程上走完五步：提问 → 模型写出数值配置文件并给出可点开的产物卡 → 关系图展开类的继承与场景挂载 → 场景画布里改节点属性、写回 `.tscn` → 一键撤销还原。
 
@@ -168,7 +168,9 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 ### 下载即用
 
-到 **[Releases](https://github.com/j77156057-art/agent-workbench/releases)** 下载 `DocMind-v1.0.0-win64.zip`（约 **230 MB**），解压后**双击 `DocMind.exe`**。
+到 **[Releases](https://github.com/j77156057-art/agent-workbench/releases)** 下载 `DocMind-20261030-994a318-win64.zip`（约 **230 MB**），解压后**双击 `DocMind.exe`**。
+
+该包构建自 `994a318`（2026-10-30），SHA-256 `d3105a8d32fd282b1a159562223793270e70c31fe7c0bf4eae71337eada033b7`；重打配方见 `packaging/build_release.ps1` 与 `docmind.spec`。
 
 无需安装 Python、无需 API Key、无需联网 —— 默认本地 mock 模型，开箱即可跑通完整流程。
 

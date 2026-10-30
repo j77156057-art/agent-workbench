@@ -10,7 +10,7 @@
 ![Offline](https://img.shields.io/badge/offline-zero--API--key-8b949e)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**▶ Run it without installing anything: [Releases · DocMind-v1.0.0-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** — unzip, double-click `DocMind.exe`. No Python, no API key, no network; the default local mock model runs the whole flow.
+**▶ Run it without installing anything: [Releases · DocMind-20261030-994a318-win64.zip](https://github.com/j77156057-art/agent-workbench/releases)** — unzip, double-click `DocMind.exe`. No Python, no API key, no network; the default local mock model runs the whole flow.
 
 **▶ 60-second demo** — five steps on a real Godot project: ask → the model writes a values file and hands you a clickable artifact card → the relation graph unfolds class inheritance and scene mounts → edit a node property in the scene canvas and write it back to the `.tscn` → undo it in one click.
 
@@ -166,7 +166,9 @@ This is where Agent Workbench separates itself from "call an API and call it an 
 
 ### Download and run
 
-Grab `DocMind-v1.0.0-win64.zip` (about **230 MB**) from [Releases](https://github.com/j77156057-art/agent-workbench/releases) and **double-click `DocMind.exe`**.
+Grab `DocMind-20261030-994a318-win64.zip` (about **230 MB**) from [Releases](https://github.com/j77156057-art/agent-workbench/releases) and **double-click `DocMind.exe`**.
+
+Built from `994a318` (2026-10-30), SHA-256 `d3105a8d32fd282b1a159562223793270e70c31fe7c0bf4eae71337eada033b7`; to repackage, use `packaging/build_release.ps1` with `docmind.spec`.
 
 No Python install, no API key, no network — the bundled local mock model runs the full flow out of the box.
 
