@@ -362,6 +362,15 @@ class SessionBusyError(RuntimeError):
     """同一会话已被另一个 Agent 工作台实例占用。"""
 
 
+class SessionStillRunningError(RuntimeError):
+    """同一会话的上一轮 worker 在超时内没有退到安全边界。"""
+
+
+# 等上一轮 worker 的上限：工具侧可能有不受 cancel 影响的阻塞，不能无限 join。
+_SESSION_JOIN_TIMEOUT_S = max(
+    1.0, float(os.getenv("DOCMIND_SESSION_JOIN_TIMEOUT_S", "30")))
+
+
 def _session_lease_path(key: str) -> Path:
     digest = hashlib.sha1(str(key or "").encode("utf-8")).hexdigest()[:16]
     return Path(STATE_ROOT) / ".docmind" / "locks" / ("session-" + digest)
@@ -383,7 +392,11 @@ def _session_run_scope(key: str, worker_stop: "threading.Event", worker: "thread
     prev = _ACTIVE_RUN.get(key)
     if prev is not None and prev.get("thread") is not None and prev["thread"].is_alive() and prev["thread"] is not worker:
         prev["stop"].set()
-        prev["thread"].join()
+        prev["thread"].join(timeout=_SESSION_JOIN_TIMEOUT_S)
+        if prev["thread"].is_alive():
+            # 不无限挂住：上一轮可能卡在不可取消的工具里。清掉 stop 标志没用，
+            # 它仍会继续收尾；这里只让新请求明确失败，用户可稍后重试/停止上一轮。
+            raise SessionStillRunningError("session_still_running:%s" % key)
     with lock:
         session_lock = CrossProcessFileLock(_session_lease_path(key), timeout=1.0)
         try:
@@ -3496,6 +3509,9 @@ async def chat(
             elif isinstance(e, SessionBusyError):
                 err_kind = "permanent"
                 err_text = "该会话正在另一个 Agent 工作台实例中运行，请稍后重试；不要同时开两个实例跑同一会话。"
+            elif isinstance(e, SessionStillRunningError):
+                err_kind = "retried_failed"
+                err_text = "同一会话的上一轮仍在执行（可能卡在不可取消的工具里），请稍后重试；如持续卡住请重启 Agent 工作台。"
             elif not _llm_is_retryable2(e):
                 err_kind = "permanent"
                 err_text = "本轮请求失败，未完成。请稍后重试，或检查模型设置/网络。"

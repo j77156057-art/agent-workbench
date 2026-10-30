@@ -31,9 +31,33 @@ class SessionRunLeaseTests(unittest.TestCase):
         finally:
             held.release()
 
+    def test_stuck_previous_run_times_out_with_clear_error(self):
+        key = "session-join-timeout-%d" % os.getpid()
+        release = threading.Event()
+
+        def stuck():
+            release.wait(3)
+
+        previous = threading.Thread(target=stuck, daemon=True)
+        previous.start()
+        api._ACTIVE_RUN[key] = {"stop": threading.Event(), "thread": previous}
+        old_timeout = api._SESSION_JOIN_TIMEOUT_S
+        api._SESSION_JOIN_TIMEOUT_S = 0.2
+        try:
+            with self.assertRaises(api.SessionStillRunningError):
+                with api._session_run_scope(key, threading.Event(),
+                                            threading.current_thread()):
+                    pass
+        finally:
+            api._SESSION_JOIN_TIMEOUT_S = old_timeout
+            api._ACTIVE_RUN.pop(key, None)
+            release.set()
+            previous.join(2)
+
     def test_busy_error_has_a_user_facing_message(self):
         source = Path(api.__file__).read_text(encoding="utf-8")
         self.assertIn("另一个 Agent 工作台实例", source)
+        self.assertIn("上一轮仍在执行", source)
 
 
 if __name__ == "__main__":
