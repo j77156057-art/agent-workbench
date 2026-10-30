@@ -1446,9 +1446,11 @@ def set_web_search_provider(provider):
     set_runtime("web_search_provider", provider)
     save_state("web_search_provider", provider)
     if provider != previous:
-        # 运行时 key 属于上一家：切走时清掉，避免新厂商拿到旧 key（401）。
+        # 运行时 key/URL 属于上一家：切走时清掉，避免新厂商拿到旧值。
         _RUNTIME.pop("web_search_api_key", None)
         _RUNTIME.pop("web_search_api_key_provider", None)
+        _RUNTIME.pop("web_search_api_url", None)
+        _RUNTIME.pop("web_search_api_url_provider", None)
     return provider
 
 
@@ -1527,15 +1529,86 @@ def set_web_search_api_key(key):
     return key
 
 
+# URL 与 Key 一样按 provider 分槽：一个全局 URL 会让「切厂商」沿用上一家的
+# 自建地址（SearXNG 地址被带到 zhipu/querit 等），搜出来的错很难归因。
+_WEB_URL_STATE = {
+    "search": ("web_search_api_urls", "web_search_api_url",
+               "web_search_api_url_provider", WEB_SEARCH_API_URL),
+    "fetch": ("web_fetch_api_urls", "web_fetch_api_url",
+              "web_fetch_api_url_provider", WEB_FETCH_API_URL),
+}
+
+
+def _web_url_provider(kind):
+    return get_web_search_provider() if kind == "search" else get_web_fetch_provider()
+
+
+def _web_url_map(kind):
+    map_key = _WEB_URL_STATE[kind][0]
+    value = get_runtime(map_key)
+    if not isinstance(value, dict):
+        value = load_state(map_key, {})
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v).strip().rstrip("/")
+            for k, v in value.items()
+            if isinstance(k, str) and isinstance(v, str) and v.strip()}
+
+
+def _get_web_url(kind):
+    _map_key, url_key, provider_key, env_default = _WEB_URL_STATE[kind]
+    provider = _web_url_provider(kind)
+    runtime_url = get_runtime(url_key)
+    runtime_provider = get_runtime(provider_key)
+    # 显式 set_runtime 的旧语义保留：没有伴随厂商标记时视为对当前厂商的覆盖。
+    if runtime_url and (not runtime_provider or runtime_provider == provider):
+        return runtime_url
+    mapping = _web_url_map(kind)
+    if provider in mapping:
+        return mapping[provider]
+    return env_default or ""
+
+
+def _set_web_url(kind, url):
+    map_key, url_key, provider_key, _env_default = _WEB_URL_STATE[kind]
+    provider = _web_url_provider(kind)
+    url = (url or "").strip().rstrip("/")
+    mapping = _web_url_map(kind)
+    if url:
+        mapping[provider] = url
+    else:
+        mapping.pop(provider, None)
+    set_runtime(map_key, mapping)
+    save_state(map_key, mapping)
+    # 旧版单值镜像保留给旧调用方；getter 用伴随厂商标记保证不串台。
+    set_runtime(url_key, url)
+    set_runtime(provider_key, provider)
+    save_state(url_key, url)
+    return url
+
+
 def get_web_search_api_url():
-    return get_runtime("web_search_api_url") or WEB_SEARCH_API_URL or ""
+    return _get_web_url("search")
 
 
 def set_web_search_api_url(url):
-    url = (url or "").strip().rstrip("/")
-    set_runtime("web_search_api_url", url)
-    save_state("web_search_api_url", url)
-    return url
+    return _set_web_url("search", url)
+
+
+def get_web_search_api_urls():
+    return _web_url_map("search")
+
+
+def get_web_fetch_api_url():
+    return _get_web_url("fetch")
+
+
+def set_web_fetch_api_url(url):
+    return _set_web_url("fetch", url)
+
+
+def get_web_fetch_api_urls():
+    return _web_url_map("fetch")
 
 
 def get_web_search_prefer_builtin():
@@ -1569,6 +1642,8 @@ def set_web_fetch_provider(provider):
     if provider != previous:
         _RUNTIME.pop("web_fetch_api_key", None)
         _RUNTIME.pop("web_fetch_api_key_provider", None)
+        _RUNTIME.pop("web_fetch_api_url", None)
+        _RUNTIME.pop("web_fetch_api_url_provider", None)
     return provider
 
 
@@ -1599,28 +1674,38 @@ def set_web_fetch_api_key(key):
     return key
 
 
-def get_web_fetch_api_url():
-    return get_runtime("web_fetch_api_url") or WEB_FETCH_API_URL or ""
-
-
-def set_web_fetch_api_url(url):
-    url = (url or "").strip().rstrip("/")
-    set_runtime("web_fetch_api_url", url)
-    save_state("web_fetch_api_url", url)
-    return url
-
-
 def _apply_web_search_state(data):
     """从 STATE_FILE 恢复网络搜索配置；显式 set_runtime 优先（同 external_access_mode）。
 
     2026-10-29：两个 API Key 已迁出 STATE_FILE（旧版明文）。这里负责迁移：
     把旧值写进加密密钥库并立即抹掉明文；迁移失败才退回运行时，至少不丢 Key。
     """
-    for key in ("web_search_provider", "web_search_api_url",
-                "web_fetch_provider", "web_fetch_api_url"):
+    for key in ("web_search_provider", "web_fetch_provider"):
         v = data.get(key)
         if v is not None and key not in _RUNTIME:
             _RUNTIME[key] = v
+    for map_key in ("web_search_api_urls", "web_fetch_api_urls"):
+        v = data.get(map_key)
+        if isinstance(v, dict) and map_key not in _RUNTIME:
+            _RUNTIME[map_key] = {
+                str(k): str(u).strip().rstrip("/")
+                for k, u in v.items()
+                if isinstance(k, str) and isinstance(u, str) and u.strip()}
+    # 旧版单值 URL → 当前厂商的槽位。绝不能恢复成全局值：否则切厂商会沿用
+    # 上一家的自建地址（实测 searxng → zhipu 仍带 searxng 的 URL）。
+    for kind, url_key in (("search", "web_search_api_url"),
+                          ("fetch", "web_fetch_api_url")):
+        map_key = _WEB_URL_STATE[kind][0]
+        if map_key in _RUNTIME:
+            continue
+        legacy = data.get(url_key)
+        if isinstance(legacy, str) and legacy.strip():
+            mapping = {_web_url_provider(kind): legacy.strip().rstrip("/")}
+            _RUNTIME[map_key] = mapping
+            try:
+                save_state(map_key, mapping)
+            except Exception:  # noqa: BLE001 - 迁移失败也不能阻断启动
+                pass
     for key, kind in (("web_search_api_key", "search"), ("web_fetch_api_key", "fetch")):
         provider = get_web_search_provider() if kind == "search" else get_web_fetch_provider()
         slot = _web_secret_slot(kind, provider)

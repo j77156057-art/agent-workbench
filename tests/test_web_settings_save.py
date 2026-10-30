@@ -23,9 +23,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 _RUNTIME_KEYS = (
     "llm_provider", "llm_model",
     "web_search_provider", "web_search_api_key", "web_search_api_key_provider",
-    "web_search_api_url", "web_search_prefer_builtin",
+    "web_search_api_url", "web_search_api_url_provider", "web_search_api_urls",
+    "web_search_prefer_builtin",
     "web_fetch_provider", "web_fetch_api_key", "web_fetch_api_key_provider",
-    "web_fetch_api_url",
+    "web_fetch_api_url", "web_fetch_api_url_provider", "web_fetch_api_urls",
 )
 
 
@@ -173,6 +174,52 @@ class WebSettingsSaveTests(unittest.TestCase):
         self.assertTrue(resp["ok"])
         self.assertEqual(config.get_web_search_api_key(), "sk-keep-me")
         self.assertTrue(resp["web_search_has_key"])
+
+    def test_api_url_is_scoped_to_its_provider(self):
+        """自建地址必须跟厂商走：searxng 切到 zhipu 不能仍返回 searxng 的端点。"""
+        config.set_web_search_provider("searxng")
+        config.set_web_search_api_url("https://searx.example/search/")
+        self.assertEqual(config.get_web_search_api_url(), "https://searx.example/search")
+        config.set_web_search_provider("zhipu")
+        self.assertEqual(config.get_web_search_api_url(), config.WEB_SEARCH_API_URL or "")
+        config.set_web_search_provider("searxng")
+        self.assertEqual(config.get_web_search_api_url(), "https://searx.example/search")
+        self.assertEqual(config.get_web_search_api_urls(),
+                         {"searxng": "https://searx.example/search"})
+
+    def test_fetch_api_url_is_scoped_to_its_provider(self):
+        config.set_web_fetch_provider("firecrawl")
+        config.set_web_fetch_api_url("https://firecrawl.example")
+        config.set_web_fetch_provider("jina")
+        self.assertEqual(config.get_web_fetch_api_url(), config.WEB_FETCH_API_URL or "")
+        config.set_web_fetch_provider("firecrawl")
+        self.assertEqual(config.get_web_fetch_api_url(), "https://firecrawl.example")
+
+    def test_legacy_single_url_migrates_only_to_the_saved_provider(self):
+        for key in ("web_search_provider", "web_search_api_url",
+                    "web_search_api_url_provider", "web_search_api_urls"):
+            config._RUNTIME.pop(key, None)
+        config._RUNTIME["web_search_provider"] = "searxng"
+        config._apply_web_search_state({
+            "web_search_provider": "searxng",
+            "web_search_api_url": "https://legacy.example/search/",
+        })
+        self.assertEqual(config.get_web_search_api_url(), "https://legacy.example/search")
+        self.assertEqual(config.get_web_search_api_urls(),
+                         {"searxng": "https://legacy.example/search"})
+        config.set_web_search_provider("zhipu")
+        self.assertEqual(config.get_web_search_api_url(), config.WEB_SEARCH_API_URL or "",
+                         "旧单值只归属保存时的厂商，不能变成对所有厂商生效")
+
+    def test_provider_switch_refills_url_from_its_own_slot(self):
+        """前端切厂商要回填该厂商自己的地址；只改下拉框时不能沿用上一家的值。"""
+        source = (ROOT / "frontend/src/workbench/components/SettingsView.vue").read_text(
+            encoding="utf-8")
+        self.assertIn("web_search_api_urls?.[p]", source)
+        self.assertIn("web_fetch_api_urls?.[p]", source)
+        # 不能按「等于已保存厂商」提前返回：切回原厂商同样要回填。
+        self.assertNotIn("p === cfg.value.web_search_provider", source)
+        self.assertNotIn("p === cfg.value.web_fetch_provider", source)
 
 
 if __name__ == "__main__":

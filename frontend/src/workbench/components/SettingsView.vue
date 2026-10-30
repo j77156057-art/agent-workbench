@@ -342,6 +342,18 @@ const wsApiUrl = ref('')
 const wfProvider = ref<ProviderOption['value']>('builtin')
 const wfApiKey = ref('')
 const wfApiUrl = ref('')
+// 切换服务商时回填该厂商自己的 API 地址（没有就留空），不能让上一家的
+// 自建地址跟着 provider 走——SearXNG 地址被带到 zhipu/querit 会直接搜错端点。
+// flush:'sync' 让回填发生在 loadConfig 后续赋值之前，服务端返回值仍是最新真相；
+// 不能按「是否等于已保存厂商」提前返回，否则切回原厂商时地址不会回填。
+watch(wsProvider, (p) => {
+  wsApiUrl.value = cfg.value?.web_search_api_urls?.[p] || ''
+  wsApiKey.value = ''
+}, { flush: 'sync' })
+watch(wfProvider, (p) => {
+  wfApiUrl.value = cfg.value?.web_fetch_api_urls?.[p] || ''
+  wfApiKey.value = ''
+}, { flush: 'sync' })
 const showWsKey = ref(false)
 const showWfKey = ref(false)
 const searchSaving = ref(false)
@@ -696,10 +708,18 @@ async function saveSearch() {
       cfg.value.web_search_provider =
         (res.web_search_provider ?? wsProvider.value) as SettingsConfigInfo['web_search_provider']
       cfg.value.web_search_api_url = res.web_search_api_url ?? wsApiUrl.value
+      cfg.value.web_search_api_urls = {
+        ...(cfg.value.web_search_api_urls || {}),
+        [cfg.value.web_search_provider]: cfg.value.web_search_api_url,
+      }
       cfg.value.web_search_has_key = !!res.web_search_has_key
       cfg.value.web_fetch_provider =
         (res.web_fetch_provider ?? wfProvider.value) as SettingsConfigInfo['web_fetch_provider']
       cfg.value.web_fetch_api_url = res.web_fetch_api_url ?? wfApiUrl.value
+      cfg.value.web_fetch_api_urls = {
+        ...(cfg.value.web_fetch_api_urls || {}),
+        [cfg.value.web_fetch_provider]: cfg.value.web_fetch_api_url,
+      }
       cfg.value.web_fetch_has_key = !!res.web_fetch_has_key
       wsProvider.value = cfg.value.web_search_provider
       wfProvider.value = cfg.value.web_fetch_provider

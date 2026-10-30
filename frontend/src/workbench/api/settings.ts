@@ -23,11 +23,15 @@ export interface ProviderOption {
 export interface SettingsConfigInfo {
   web_search_provider: WebSearchProvider
   web_search_api_url: string
+  /** 各服务商各自保存的地址；切换 provider 时回填，避免沿用上一家的自建端点。 */
+  web_search_api_urls?: Record<string, string>
   web_search_has_key: boolean
   /** Deprecated legacy API field; no model-native Web tool adapter is currently available. */
   web_search_prefer_builtin: boolean
   web_fetch_provider: WebFetchProvider
   web_fetch_api_url: string
+  /** 各服务商各自保存的地址；切换 provider 时回填。 */
+  web_fetch_api_urls?: Record<string, string>
   web_fetch_has_key: boolean
   /** 长期记忆优化总开关（异步蒸馏 + 重要度/语义混合召回）当前状态，默认关。 */
   memory_optimized: boolean
