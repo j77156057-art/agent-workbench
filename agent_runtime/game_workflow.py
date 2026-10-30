@@ -2031,15 +2031,25 @@ class GameWorkflowManager:
             return state
 
     def _tag_event_seqs(self, state: WorkflowState) -> None:
-        """给历史台账（无 seq 字段的旧事件）补齐单调序号，并推进全局游标。"""
-        advanced = False
+        """给历史台账（无 seq 字段的旧事件）补齐单调序号，并推进全局游标。
+
+        重启后载入的台账通常每个事件都已有 seq；游标仍必须推进到已有最大值，
+        否则新事件会从 1 重新编号，SSE 用 after=<旧最大值> 重连时会被整段
+        过滤掉（页面看着像工作流卡死）。
+        """
+        max_seq = 0
+        for event in state.events:
+            if not isinstance(event, Mapping):
+                continue
+            try:
+                max_seq = max(max_seq, int(event.get("seq") or 0))
+            except (TypeError, ValueError):
+                continue
+        self._event_seq = max(self._event_seq, max_seq)
         for event in state.events:
             if isinstance(event, Mapping) and not event.get("seq"):
                 self._event_seq += 1
                 event["seq"] = self._event_seq
-                advanced = True
-        if advanced:
-            self._event_seq = max(self._event_seq, len(state.events))
 
     def subscribe(self, workflow_id: str, *, maxsize: int = 256) -> queue.Queue:
         """注册一个 SSE 订阅队列（每连接独立，有界，满则丢最旧）。
