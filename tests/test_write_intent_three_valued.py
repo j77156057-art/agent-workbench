@@ -34,6 +34,7 @@ uncertain，每个审查请求都会变成一次提问 —— 那比现在更糟
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -223,19 +224,26 @@ def _drive(question: str, monkeypatch=None):
 
     def recorder(arg):
         called.append(arg)
-        return "已写入"
+        # 带可解析路径，写后自验证才会认领这个目标；fake 校验器给 passed。
+        return "已写入 a.txt"
 
     old_tools = agent_mod.TOOLS
-    old_root = None
+    old_self_verify = agent_mod._SELF_VERIFY_ENABLED
     try:
-        agent_mod.TOOLS = {"apply_edit": {"func": recorder},
-                           "read_file": {"func": lambda _a: "内容"}}
+        agent_mod._SELF_VERIFY_ENABLED = True
+        agent_mod.TOOLS = {
+            "apply_edit": {"func": recorder},
+            "read_file": {"func": lambda _a: "内容"},
+            "self_verify": {"func": lambda _a: json.dumps(
+                {"ran": ["syntax"], "failures": [], "skipped": []})},
+        }
         a = agent_mod.Agent(llm=_ScriptedLLM([_act("apply_edit", "path: x"),
                                                 _FINAL]))
         events = list(a.run(question, stream=True))
         return called, events
     finally:
         agent_mod.TOOLS = old_tools
+        agent_mod._SELF_VERIFY_ENABLED = old_self_verify
         set_runtime("code_root", "")
 
 

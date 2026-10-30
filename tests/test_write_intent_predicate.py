@@ -155,17 +155,31 @@ def test_write_plus_a_quantifier_is_now_a_request_and_that_is_recorded():
         守卫误放行 0/22    目标句漏放行 0/6
     How-to 问句（「怎么写一个这样的功能？」）由疑问词分支兜住，仍 denied。
 
-    剩一条**已知限制**：不带量词的裸祈使「写取消函数」仍 denied。它上面那条断言
-    是事实记录，不是认可 —— 哪天有人做了祈使句判定，那条会红，那正是我们要的。
+    2026-10-30 补上了**上下文模式**：不带量词的「写取消函数」也放行，同时
+    「写操作 / 写工具 / 写在哪里 / 怎么写的」等名词/疑问用法仍 denied。
     """
     assert intent("写一个读取文件的函数") == G, (
         "「写 + 量词」退回去了 —— vibecoding 最高频说法会重新被 create_file 拦死"
     )
-    assert intent("写取消函数") == D, (
-        "裸「写」（不带量词）现在判成 "
-        f"{intent('写取消函数')!r} —— 它可能进词表了，请重新评估它对"
-        "「分析一下写操作和读操作的区别」这类名词用法的影响"
+    assert intent("写取消函数") == G, (
+        "带对象的裸「写」仍被拦 —— 检查 _WRITE_VERBS 里的上下文排除模式"
     )
+
+
+def test_contextual_predicates_cover_real_requests_without_noun_traps():
+    """实现/设计/写 的上下文模式：真实写请求放行，名词/疑问陷阱不放行。
+
+    方向是「过拦」，所以放行这几句不会误改文件；但名词陷阱若被放行，护栏会
+    在审查/提问时允许落盘。
+    """
+    for question in ("帮我实现取消按钮", "设计撤回机制",
+                     "写取消函数", "实现回滚功能"):
+        assert intent(question) == G, f"{question!r} 是明确写请求，仍被拦"
+    for question in ("这个实现有什么问题", "当前的移动策略是怎么实现的",
+                     "分析一下写操作和读操作的区别", "列出所有写工具",
+                     "看一下这个函数怎么写的", "解释清楚设计。",
+                     "评估这个设计方案"):
+        assert intent(question) == D, f"{question!r} 是名词/疑问陷阱，被放行了"
 
 
 def test_the_quantifier_pattern_does_not_leak_into_howto_questions():
