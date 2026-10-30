@@ -526,6 +526,7 @@ def _mark_in_flight_terminal(rec: dict, status: str = "done") -> None:
         status = "stopped"
     rec["status"] = status
     _touch_turn_index(rec)
+    _clear_remote_stop(rec["turn_id"])
 
     # 60s 缓冲：到期后才真正从注册表下线，期间 GET 仍能拿到 partial
     def _evict():
@@ -758,6 +759,35 @@ def _touch_turn_index(rec: dict) -> None:
     _write_turn_index(rec)
 
 
+def _turn_stop_path(turn_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(turn_id or ""))[:64]
+    return _turn_index_dir() / (safe + ".stop")
+
+
+def _request_remote_stop(turn_id: str) -> None:
+    """共享停止请求：owner HTTP 不可达时，事件循环仍能轮询到并停止。"""
+    try:
+        path = _turn_stop_path(turn_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("1", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _remote_stop_requested(turn_id: str) -> bool:
+    try:
+        return _turn_stop_path(turn_id).exists()
+    except OSError:
+        return False
+
+
+def _clear_remote_stop(turn_id: str) -> None:
+    try:
+        _turn_stop_path(turn_id).unlink()
+    except OSError:
+        pass
+
+
 def _remove_turn_index(turn_id: str, created_at: float | None = None) -> None:
     path = _turn_index_path(turn_id)
     try:
@@ -768,6 +798,7 @@ def _remove_turn_index(turn_id: str, created_at: float | None = None) -> None:
         path.unlink()
     except (OSError, ValueError):
         pass
+    _clear_remote_stop(turn_id)
 
 
 def _read_turn_index(turn_id: str) -> Optional[dict]:
@@ -866,20 +897,24 @@ def _forward_turn_request(owner_base: str, method: str, path: str,
     request = urllib.request.Request(
         url, method=method, data=b"" if method == "POST" else None,
         headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            raw = response.read()
-            body = json.loads(raw) if raw else {}
-            return JSONResponse(body, status_code=response.status)
-    except urllib.error.HTTPError as exc:
+    for attempt in range(2):
         try:
-            body = json.loads(exc.read())
+            with urllib.request.urlopen(request, timeout=5) as response:
+                raw = response.read()
+                body = json.loads(raw) if raw else {}
+                return JSONResponse(body, status_code=response.status)
+        except urllib.error.HTTPError as exc:
+            try:
+                body = json.loads(exc.read())
+            except Exception:
+                body = {"ok": False, "error": "turn 所属实例返回错误。"}
+            return JSONResponse(body, status_code=exc.code)
         except Exception:
-            body = {"ok": False, "error": "turn 所属实例返回错误。"}
-        return JSONResponse(body, status_code=exc.code)
-    except Exception:
-        return JSONResponse({"ok": False, "error": "turn 所属实例不可达。"},
-                            status_code=502)
+            if attempt == 0:
+                time.sleep(0.2)
+                continue
+            return JSONResponse({"ok": False, "error": "turn 所属实例不可达。"},
+                                status_code=502)
 
 
 # 一致性自检（P0 摘要漏报无信号）：收集本轮 observation 里的「关键标识」——
@@ -3439,6 +3474,11 @@ async def chat(
                 if worker_stop.is_set():
                     # 显式停止端点在另一请求里置位：立即退出，finally 落 stopped。
                     return
+                if _remote_stop_requested(turn_id):
+                    # 另一实例的 /stop 已落共享停止请求：它的 HTTP 转发可能失败，
+                    # 但 owner 的事件循环仍能在这里看到并停止。
+                    worker_stop.set()
+                    return
                 try:
                     # 0.5s 轮询：uvicorn 只在 send 时才会抛 ClientDisconnected，
                     # 模型长思考期间没有事件可 send；必须自己 poll ASGI 的
@@ -3604,10 +3644,24 @@ async def get_turn_partial(turn_id: str, session_id: str = "default",
     if rec is None:
         owner = _remote_turn_owner(turn_id, session_id, request)
         if owner:
-            return await run_in_threadpool(
+            response = await run_in_threadpool(
                 _forward_turn_request, owner, "GET",
                 f"/api/turn/{turn_id}/partial", {"session_id": session_id},
                 _ctx_project_id() or "")
+            if response.status_code < 300:
+                return response
+            if response.status_code == 404:
+                _remove_turn_index(turn_id)
+                return response
+            # owner 活着但 HTTP 不可达：给前端一个可恢复的降级快照，
+            # 不让一次网络故障静默丢掉「该会话还有一轮」这个事实。
+            entry = _read_turn_index(turn_id) or {}
+            return JSONResponse({
+                "ok": True, "turn_id": turn_id, "session_id": session_id,
+                "project_id": entry.get("project_id"),
+                "status": "streaming", "created_at": entry.get("created_at"),
+                "events": [], "final": None, "unreachable": True,
+            })
         return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
                             status_code=404)
     events_snapshot = list(rec.get("events") or [])
@@ -3641,10 +3695,22 @@ async def stop_turn(turn_id: str, session_id: str = "default", request: Request 
     if rec is None:
         owner = _remote_turn_owner(turn_id, session_id, request)
         if owner:
-            return await run_in_threadpool(
+            # 先落共享停止请求：HTTP 转发失败（owner 暂时不可达）时，owner 的
+            # 事件循环仍能轮询到并停下，不再把 502 当成「停不了」。
+            _request_remote_stop(turn_id)
+            response = await run_in_threadpool(
                 _forward_turn_request, owner, "POST",
                 f"/api/turn/{turn_id}/stop", {"session_id": session_id},
                 _ctx_project_id() or "")
+            if response.status_code < 300:
+                return response
+            if response.status_code == 404:
+                _clear_remote_stop(turn_id)
+                _remove_turn_index(turn_id)
+                return response
+            return JSONResponse({"ok": True, "turn_id": turn_id,
+                                 "status": "stopping", "queued": True,
+                                 "unreachable": True}, status_code=202)
         return JSONResponse({"ok": False, "error": "turn 不存在或已过期。"},
                             status_code=404)
     rec["stop"].set()

@@ -36,6 +36,7 @@ class TurnIndexTests(unittest.TestCase):
         with api._IN_FLIGHT_TURNS_LOCK:
             api._IN_FLIGHT_TURNS.pop("t-index", None)
         api._remove_turn_index("t-index")
+        api._clear_remote_stop("t-stop-flag")
 
     def test_index_roundtrip_and_owner_lookup(self):
         rec = api._register_in_flight_turn(
@@ -70,6 +71,12 @@ class TurnIndexTests(unittest.TestCase):
         path.write_text(json.dumps(entry), encoding="utf-8")
         self.assertEqual(api._remote_turn_owner("t-dead", "s", _Request()), "")
         self.assertFalse(path.exists())
+
+    def test_remote_stop_flag_roundtrip(self):
+        api._request_remote_stop("t-stop-flag")
+        self.assertTrue(api._remote_stop_requested("t-stop-flag"))
+        api._clear_remote_stop("t-stop-flag")
+        self.assertFalse(api._remote_stop_requested("t-stop-flag"))
 
     def test_terminal_status_is_written_and_removed(self):
         rec = api._register_in_flight_turn(
