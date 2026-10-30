@@ -1,6 +1,7 @@
 // 记忆 v2 · 上下文面板 API（查看各层注入内容、直接编辑）。
 import { request } from './_base'
 
+export interface MemoryPanelEdge { type?: string; to?: string; direction?: string }
 export interface MemoryPanelItem {
   id?: string
   kind?: string
@@ -9,7 +10,7 @@ export interface MemoryPanelItem {
   pinned?: boolean
   confidence?: number
   importance?: number
-  edges?: Array<Record<string, unknown>>
+  edges?: MemoryPanelEdge[]
   [key: string]: unknown
 }
 
@@ -93,6 +94,13 @@ export const memoryPanelApi = {
   },
   promoteItem(itemId: string): Promise<{ ok?: boolean; promoted?: boolean; reasons?: string[]; pinned?: boolean }> {
     return call('POST', `/api/memory/items/${encodeURIComponent(itemId)}/promote`)
+  },
+  linkItem(itemId: string, to: string, type: string): Promise<Record<string, unknown>> {
+    return call('POST', `/api/memory/items/${encodeURIComponent(itemId)}/links`, { to, type })
+  },
+  unlinkItem(itemId: string, to: string, type: string): Promise<Record<string, unknown>> {
+    const query = new URLSearchParams({ to, type })
+    return request(`/api/memory/items/${encodeURIComponent(itemId)}/links?${query.toString()}`, { method: 'DELETE' })
   },
   deleteItem(itemId: string): Promise<Record<string, unknown>> {
     return request(`/api/memory/items/${encodeURIComponent(itemId)}?confirm=true`, { method: 'DELETE' })

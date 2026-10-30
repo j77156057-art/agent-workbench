@@ -79,6 +79,17 @@ class _MemBase(unittest.TestCase):
             return [json.loads(line)["event"] for line in handle if line.strip()]
 
 
+class SemanticFlagTests(_MemBase):
+    def test_runtime_flag_enables_embed_path(self):
+        config.set_runtime("memory_semantic", True)
+        self.assertTrue(index._embed_enabled())
+
+
+class OutputCapTests(unittest.TestCase):
+    def test_qwen_output_budget_is_capped(self):
+        self.assertLessEqual(config.output_token_budget("qwen", "qwen-plus", 1_000_000), 32768)
+
+
 class FlagTests(_MemBase):
     def test_v2_flag_runtime_over_env(self):
         os.environ["DOCMIND_MEMORY_V2"] = "0"
@@ -754,6 +765,24 @@ class SearchEdgeTests(_MemBase):
         self.assertFalse(any(row["id"] == other["id"] for row in rows))
         rows_other = index.search("复现", project="prj-other")
         self.assertTrue(any(row["id"] == other["id"] for row in rows_other))
+
+    def test_semantic_relevance_breaks_keyword_tie(self):
+        a = self._shared("记录 甲 结论：先复现再修复", task="ta")
+        self._shared("记录 乙 结论：先复现再修复", task="tb")
+
+        def fake_embed(text):
+            if "甲" in text:
+                return [1.0, 0.0]
+            if "乙" in text:
+                return [0.0, 1.0]
+            return [1.0, 0.0]
+
+        config.set_runtime("memory_embed", True)
+        with patch.object(index, "_embed_one", side_effect=fake_embed):
+            index.rebuild(verify=True)
+            rows = index.search("记录", limit=5, project="prj")
+        self.assertEqual(rows[0]["id"], a["id"], "关键词打平时语义更近的条目应排第一")
+        self.assertGreater(rows[0].get("_semantic", 0), 0)
 
     def test_memory_search_merges_v2(self):
         a = self._shared("共享检索命中：先复现再修复", task="ta")

@@ -147,6 +147,7 @@ export interface MemorySettingsInfo {
   memory_learn?: boolean
   memory_v2?: boolean
   memory_model?: string
+  memory_semantic?: boolean
   error?: string
 }
 export const memorySettingsApi = {
@@ -167,6 +168,9 @@ export const memorySettingsApi = {
   },
   saveModel(memory_model: string): Promise<MemorySettingsInfo> {
     return rawJson('/api/memory-settings', { memory_model })
+  },
+  saveSemantic(memory_semantic: boolean): Promise<MemorySettingsInfo> {
+    return rawJson('/api/memory-settings', { memory_semantic })
   },
 }
 

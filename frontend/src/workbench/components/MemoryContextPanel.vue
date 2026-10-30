@@ -38,6 +38,8 @@ const hookDrafts = ref<Record<string, string>>({})
 const taskDrafts = ref<Record<string, string>>({})
 const newHook = ref('')
 const newHookKind = ref('fact')
+const linkTargets = ref<Record<string, string>>({})
+const linkTypes = ref<Record<string, string>>({})
 
 const STATE_LABELS: Record<string, string> = {
   todo: '待办', doing: '进行中', done_pending_merge: '待验收', done: '已完成',
@@ -64,8 +66,14 @@ function refreshDrafts() {
       }
     }
     if (layer.key === 'L2') {
+      linkTargets.value = {}
+      linkTypes.value = {}
       for (const item of (layer.items || []) as MemoryPanelItem[]) {
-        if (item.id) itemDrafts.value[item.id] = String(item.body || '')
+        if (item.id) {
+          itemDrafts.value[item.id] = String(item.body || '')
+          linkTargets.value[item.id] = ''
+          linkTypes.value[item.id] = 'refines'
+        }
       }
     }
     if (layer.key === 'L3') {
@@ -166,6 +174,24 @@ async function removeItem(item: MemoryPanelItem) {
   await run(async () => {
     await memoryPanelApi.deleteItem(item.id!)
     notice.value = '已删除'
+  })
+}
+
+async function addLink(item: MemoryPanelItem) {
+  if (!item.id) return
+  const target = (linkTargets.value[item.id] || '').trim()
+  if (!target) return
+  await run(async () => {
+    await memoryPanelApi.linkItem(item.id!, target, linkTypes.value[item.id!] || 'refines')
+    notice.value = '关联已添加'
+  })
+}
+
+async function removeLink(item: MemoryPanelItem, edge: { type?: string; to?: string }) {
+  if (!item.id || !edge.to || !edge.type) return
+  await run(async () => {
+    await memoryPanelApi.unlinkItem(item.id!, edge.to!, edge.type!)
+    notice.value = '关联已解除'
   })
 }
 
@@ -351,6 +377,23 @@ async function reindex() {
           <div class="mp-actions">
             <button class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="saveItem(item)">保存</button>
             <button class="mp-mini mp-danger" type="button" :disabled="busy || mode === 'last'" @click="removeItem(item)">删除</button>
+          </div>
+          <div v-if="item.edges?.length" class="mp-links">
+            <div v-for="edge in item.edges" :key="`${edge.type}:${edge.to}`" class="mp-link">
+              <span>{{ edge.type }} → {{ edge.to }}</span>
+              <button class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="removeLink(item, edge)">解除</button>
+            </div>
+          </div>
+          <div v-if="mode !== 'last'" class="mp-add mp-link-add">
+            <select v-model="linkTypes[String(item.id)]" class="mp-input mp-select" aria-label="关联类型">
+              <option value="refines">refines</option>
+              <option value="supersedes">supersedes</option>
+              <option value="derived_from">derived_from</option>
+              <option value="used_in">used_in</option>
+              <option value="contradicts">contradicts</option>
+            </select>
+            <input v-model="linkTargets[String(item.id)]" class="mp-input" placeholder="目标条目 id" />
+            <button class="mp-mini" type="button" :disabled="busy || !linkTargets[String(item.id)]" @click="addLink(item)">关联</button>
           </div>
         </div>
         <details v-if="retrievableItems.length" class="mp-retrievable">
@@ -558,6 +601,10 @@ async function reindex() {
 .mp-pin { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .mp-pin input { accent-color: var(--accent); }
 .mp-warn { color: var(--amber); font-size: var(--fs-cap); }
+.mp-links { margin: 6px 0 0; padding-top: 5px; border-top: 1px dashed var(--border); }
+.mp-link { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text-muted); font-size: var(--fs-cap); padding: 2px 0; }
+.mp-link-add { margin: 6px 0 0; }
+.mp-link-add .mp-input { margin-bottom: 0; }
 .mp-retrievable { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
 .mp-retrievable summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-cap); margin-bottom: 6px; }
 .mp-body-text { margin: 0 0 6px; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.6; white-space: pre-wrap; }

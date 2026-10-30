@@ -477,6 +477,14 @@ OUTPUT_TOKEN_MIN = int(os.getenv("DOCMIND_OUTPUT_MIN_TOKENS", str(LLM_MAX_TOKENS
 OUTPUT_TOKEN_MAX = int(os.getenv("DOCMIND_OUTPUT_MAX_TOKENS", "0"))
 
 
+# 单次输出硬上限：qwen 兼容接口拒绝 max_tokens > 32768。
+# 窗口派生值（1M → ~346k）会直接 400；这是「模型真实允许的输出上限」，
+# 与上下文窗口不是一回事，必须在派生后单独封顶。
+_PROVIDER_OUTPUT_CAP = {
+    "qwen": 32768,
+}
+
+
 def output_token_budget(provider: str, model: str, context_window: int = None) -> int:
     """单次补全可输出的最大 token，按模型真实窗口派生。
 
@@ -497,6 +505,9 @@ def output_token_budget(provider: str, model: str, context_window: int = None) -
     if OUTPUT_TOKEN_MAX > 0:          # 0 = 不设硬顶，交给窗口本身约束
         out = min(OUTPUT_TOKEN_MAX, out)
     out = min(out, max(256, win - OUTPUT_TOKEN_RESERVE))
+    cap = _PROVIDER_OUTPUT_CAP.get((provider or "").strip().lower())
+    if cap:
+        out = min(out, cap)
     return out
 
 
@@ -1801,6 +1812,21 @@ def set_memory_v2(enabled):
     return enabled
 
 
+def get_memory_semantic():
+    """语义召回开关（v2）：runtime 优先；否则环境 DOCMIND_MEMORY_SEMANTIC。"""
+    v = get_runtime("memory_semantic")
+    if v is not None:
+        return bool(v)
+    return _env_truthy("DOCMIND_MEMORY_SEMANTIC")
+
+
+def set_memory_semantic(enabled):
+    enabled = bool(enabled)
+    set_runtime("memory_semantic", enabled)
+    save_state("memory_semantic", enabled)
+    return enabled
+
+
 def get_memory_model():
     """固化模型：空 = 跟随主模型；否则同名 provider 下的模型名。"""
     v = get_runtime("memory_model")
@@ -1836,3 +1862,6 @@ def _apply_memory_state(data):
     model = data.get("memory_model")
     if model is not None and "memory_model" not in _RUNTIME:
         _RUNTIME["memory_model"] = str(model or "").strip()
+    semantic = data.get("memory_semantic")
+    if semantic is not None and "memory_semantic" not in _RUNTIME:
+        _RUNTIME["memory_semantic"] = bool(semantic)

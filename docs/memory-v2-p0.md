@@ -1,6 +1,6 @@
 # 记忆系统 v2 · P0 规格
 
-> 状态：P0 全部落地 + P1 本轮四项完成（2026-10-31，flag 默认关）。
+> 状态：P0 + P1 本轮（检索/边/画像/语义/成本）完成（2026-10-31，flag 默认关；真实设置已开启）。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
 > 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
 
@@ -333,12 +333,14 @@ POST   /api/memory/reindex
 ### 16.1 按需检索（可召回未注入）
 - `index.search` 按关键词打分并叠加 pin 分，**按当前项目隔离**（`global` + 当前项目），项目候选（status=candidate）也在检索范围内；索引新增 `body` 与 `project` 列，旧索引自动补列。
 - `memory_search` 在 v2 开启时合并 v2 检索结果（带 `source=memory_v2`、scope、置信、关联来源），v2 关时输出保持旧形状。
+- 语义召回：`memory_semantic`（设置页 v2 分区）或旧 `memory_embed` 开启时，重建索引会为条目写向量，检索按 `0.35·语义 + 0.20·关键词 + 0.20·重要度 + 0.15·置信 + 0.10·时效` 排序；嵌入后端故障自动退化为关键词。注意：本机 Ollama 尚无 `bge-m3` 时会退回本地哈希（非语义），要真实语义需选 qwen 嵌入或先拉取 `bge-m3`。
 - 上下文面板「共享记忆」下新增「可召回但未注入」折叠区：共享未 pin 条目可直接 pin，项目候选可点「晋升」；晋升失败会展示具体原因（缺回执/缺采纳/通用化不通过）。
 
 ### 16.2 关联边
 - 边类型：`supersedes / derived_from / used_in / refines / contradicts`；存储在条目 frontmatter 的 `edges`，索引同步到 edges 表。
 - 晋升保留边；`POST/DELETE /api/memory/items/{id}/links` 增删；检索对前 3 条结果做 1 跳扩展（同样受项目隔离约束），返回 `related_to`。
-- 语义/图数据库仍未引入：当前是关键词 + 1 跳，不做 Personalized PageRank。
+- 面板支持增加/解除边：在 pin 条目下选择类型、填目标 id 即可；浏览器实测「解除 → 添加」两端生效。
+- 语义召回已接入（见 16.1）；图数据库与 Personalized PageRank 仍未引入。
 
 ### 16.3 画像文件化
 - 新增 `profile/declared.md`（frontmatter 存声明字段）与 `profile/learned.json`（只读镜像）。
@@ -357,5 +359,22 @@ POST   /api/memory/reindex
 
 说明：这是**有界样本**，不是数小时长任务；外推假设每轮开销接近本样本（主模型 token 主要来自工具 schema/历史，长任务会波动）。固化已加 `max_output_tokens=1024`（qwen-plus 的 32768 上限下此前会 400），因此成本与延迟都受控；仍未设硬预算。
 
+**完整 53 题长任务（qwen-plus，2026-10-31）**：只读黄金题库，排除 3 道会写文件的（G41/G43/G45），独立记忆/轨迹目录：
+
+| 项目 | 实测 |
+|---|---|
+| 结果 | 53/53 完成；评测 **47 通过 / 6 失败，通过率 88.7%，平均分 0.96** |
+| 运行 | 1440.5s（约 24 分钟），142 次工具动作 |
+| 固化 | 49 calls / 4 keep=false / 0 error；28,601 in / 6,665 out；p50 4.7s / p95 7.3s；**¥0.0223** |
+| 记忆产物 | 49 个项目候选，0 晋升（无回执/采纳） |
+| 失败 | G50/G51 是 booklog 题但按 rag-agent 项目跑（项目不匹配）；G01 选 read_file 而非 grep；G26/G27 无工具动作；G42 复述了不该复述的原文 |
+
+主模型精确账单未进 trace（golden runner 不记录 token）；按 5 回合样本 ¥0.0326/轮估算，53 题主模型约 ¥1.7。固化实测 ¥0.0223，仍只占约 1–2%。
+
 ### 16.5 仍未做
-语义向量召回（embeddings 已留列但未写入）、边的可视化编辑、多用户/团队隔离、跨设备同步。
+多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank。语义召回与边编辑本轮已落地。
+
+### 16.6 应用状态与模型
+- `.docmind_state.json` 已开启 `memory_v2: true`；默认模型从余额为 0 的 `deepseek-flash` 切到可用的 `qwen-plus`（DashScope 全局密钥库有 Key），`/api/config` 实测返回 `qwen/qwen-plus` + `has_key=true`。
+- `output_token_budget` 新增 qwen 厂商上限 32768，修复 qwen-plus 的 `max_tokens` 400；5 回合与 53 题长任务均验证通过。
+- 尝试过 opencode `deepseek-v4.1-flash`：探针与前 21 题正常，随后长时间无新结果，已停止并改用 qwen-plus。

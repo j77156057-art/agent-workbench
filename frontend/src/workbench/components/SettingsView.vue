@@ -420,6 +420,9 @@ const memoryV2Saved = ref('')
 const memoryModel = ref('')
 const memoryModelSaving = ref(false)
 const memoryModelSaved = ref('')
+const memorySemantic = ref(false)
+const memorySemanticSaving = ref(false)
+const memorySemanticSaved = ref('')
 
 /** 上界只从载荷取。载荷没到（还在加载 / 老后端没有 ranges）时返回 0，
  *  调用方据此**不设 max** —— 回落到一个硬编码数字就等于把刚删掉的第二份拷贝请回来。 */
@@ -640,6 +643,7 @@ async function loadConfig() {
     const mem = await memorySettingsApi.get()
     memoryV2.value = !!mem.memory_v2
     memoryModel.value = mem.memory_model || ''
+    memorySemantic.value = !!mem.memory_semantic
   } catch (e) {
     errorMsg.value = (e as { message?: string }).message || '读取配置失败'
   } finally {
@@ -715,6 +719,30 @@ async function toggleMemoryV2() {
     errorMsg.value = (e as { message?: string }).message || '切换失败'
   } finally {
     memoryV2Saving.value = false
+  }
+}
+
+// 语义召回：需要可用的嵌入后端（qwen 或 Ollama bge-m3）；否则退化为本地哈希。
+async function toggleMemorySemantic() {
+  if (memorySemanticSaving.value) return
+  const want = !memorySemantic.value
+  memorySemanticSaving.value = true
+  memorySemanticSaved.value = ''
+  errorMsg.value = ''
+  try {
+    const res = await memorySettingsApi.saveSemantic(want)
+    if (res.ok === false) {
+      errorMsg.value = res.error || '切换失败'
+      return
+    }
+    memorySemantic.value = !!res.memory_semantic
+    memorySemanticSaved.value = memorySemantic.value
+      ? '已开启：检索会叠加语义向量；嵌入后端不可用时自动退化为关键词'
+      : '已关闭：只按关键词与置信排序'
+  } catch (e) {
+    errorMsg.value = (e as { message?: string }).message || '切换失败'
+  } finally {
+    memorySemanticSaving.value = false
   }
 }
 
@@ -2122,6 +2150,12 @@ async function powerAction(action: 'on' | 'off') {
             </div>
             <p class="sv-hint">只允许和主模型同一服务商；不同厂商会回退主模型。固化开销见 data 目录的 metrics。</p>
             <p v-if="memoryModelSaved" class="sv-ok">{{ memoryModelSaved }}</p>
+            <label class="sv-toggle-row">
+              <input type="checkbox" :checked="memorySemantic" :disabled="memorySemanticSaving" @change="toggleMemorySemantic" />
+              <span>语义召回（需要嵌入后端；不可用时退化为关键词）</span>
+            </label>
+            <p v-if="memorySemanticSaving" class="sv-field-sub">正在切换…</p>
+            <p v-else-if="memorySemanticSaved" class="sv-ok">{{ memorySemanticSaved }}</p>
             <div class="sv-sep"></div>
             <h4 class="sv-h4">学习习惯（透明统计）</h4>
             <p class="sv-hint">开启后，系统只从你能看见的信号里做纯计数——你明确提出的回答要求（如「简洁点」「用中文」）、你本轮实际改动的文件类型、常用到的能力——形成一份建议级的使用习惯，帮 Agent 更贴合你的偏好。它不调用模型、不联网、绝不推断任何隐藏个人信息；学到的内容永远只是参考，你手动填写的画像优先级更高，且随时可逐条查看或一键清空。关闭则完全停止统计、也不再注入，行为与改动前逐字一致。默认关闭，切换即时生效并落盘，重启后仍保持。</p>

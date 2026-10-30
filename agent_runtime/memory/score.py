@@ -40,3 +40,17 @@ def pin_score(item, now=None):
                  0.30 * _clamp(item.get("confidence")) +
                  0.15 * usage_score +
                  0.10 * recency, 4)
+
+
+def retrieval_score(item, keyword=0.0, semantic=0.0, now=None):
+    """检索综合分：0.35 语义 + 0.20 关键词 + 0.20 重要度 + 0.15 置信 + 0.10 时效。
+
+    keyword / semantic 由调用方归一化到 0..1；没有向量时 semantic=0，
+    排序退化为关键词 + 置信/重要度/时效，不会因缺向量而把关键词命中挤掉。
+    """
+    recency = _recency(item.get("last_used") or item.get("updated"), now)
+    return round(0.35 * _clamp(semantic) +
+                 0.20 * _clamp(keyword) +
+                 0.20 * _clamp(item.get("importance")) +
+                 0.15 * _clamp(item.get("confidence")) +
+                 0.10 * recency, 4)

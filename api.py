@@ -87,6 +87,8 @@ from config import (
     set_memory_v2,
     get_memory_model,
     set_memory_model,
+    get_memory_semantic,
+    set_memory_semantic,
     get_voice_config,
     effective_voice_config,
     set_voice_config,
@@ -6053,6 +6055,7 @@ class MemorySettingsReq(BaseModel):
     memory_learn: Optional[bool] = None
     memory_v2: Optional[bool] = None
     memory_model: Optional[str] = None
+    memory_semantic: Optional[bool] = None
 
 
 @app.get("/api/memory-settings")
@@ -6060,7 +6063,8 @@ async def get_memory_settings():
     return {"ok": True, "memory_optimized": get_memory_optimized(),
             "memory_learn": get_memory_learn(),
             "memory_v2": get_memory_v2(),
-            "memory_model": get_memory_model()}
+            "memory_model": get_memory_model(),
+            "memory_semantic": get_memory_semantic()}
 
 
 @app.post("/api/memory-settings")
@@ -6076,7 +6080,8 @@ async def set_memory_settings(req: MemorySettingsReq):
     return {"ok": True, "memory_optimized": get_memory_optimized(),
             "memory_learn": get_memory_learn(),
             "memory_v2": get_memory_v2(),
-            "memory_model": get_memory_model()}
+            "memory_model": get_memory_model(),
+            "memory_semantic": get_memory_semantic()}
 
 
 # ---- 网络搜索 / URL 抓取设置（专用端点）----

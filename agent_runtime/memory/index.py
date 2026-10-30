@@ -6,6 +6,8 @@ P1 起索引共享条目与项目候选，支持关键词检索、1 跳关联扩
 from __future__ import annotations
 
 import glob
+import json
+import math
 import os
 import re
 import sqlite3
@@ -75,6 +77,66 @@ def _fts(conn):
         return conn.execute("SELECT 1 FROM sqlite_master WHERE name='items_fts'").fetchone() is not None
     except sqlite3.Error:
         return False
+
+
+_EMBED_CLIENT = None
+_EMBED_FAILED = False
+
+
+def _embed_enabled():
+    try:
+        from config import get_memory_semantic
+        if get_memory_semantic():
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from agent_memory import _embed_enabled as enabled
+        return bool(enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _embed_one(text):
+    global _EMBED_CLIENT, _EMBED_FAILED
+    if _EMBED_FAILED:
+        return []
+    if _EMBED_CLIENT is None:
+        try:
+            from embeddings import EmbeddingClient
+            _EMBED_CLIENT = EmbeddingClient()
+        except Exception:  # noqa: BLE001
+            _EMBED_FAILED = True
+            return []
+    try:
+        vectors = _EMBED_CLIENT.embed([str(text or "")[:4000]])
+        return list(vectors[0]) if vectors and vectors[0] else []
+    except Exception:  # noqa: BLE001 —— 嵌入失败退化为关键词
+        return []
+
+
+def _cosine(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _ensure_vector(conn, item):
+    if not _embed_enabled():
+        return
+    row = conn.execute("SELECT body_hash FROM vectors WHERE id=?", (item["id"],)).fetchone()
+    if row and row["body_hash"] == item["body_hash"]:
+        return
+    vector = _embed_one((item.get("title") or "") + "\n" + (item.get("body") or ""))
+    if not vector:
+        return
+    conn.execute(
+        "INSERT OR REPLACE INTO vectors(id,model,dim,vec,body_hash) VALUES(?,?,?,?,?)",
+        (item["id"], str(getattr(_EMBED_CLIENT, "model", "") or ""), len(vector),
+         json.dumps(vector), item["body_hash"]))
 
 
 def scan_files():
@@ -164,37 +226,42 @@ def rebuild(verify=False):
                 seen_ids.add(item["id"])
                 if relative not in existing:
                     stats["inserted"] += 1
+                    row_changed = True
                 elif (existing[relative][0] != item["body_hash"]
                       or not existing[relative][1]
                       or (relative.startswith("projects/") and not existing[relative][2])):
                     stats["updated"] += 1
+                    row_changed = True
                 else:
                     stats["unchanged"] += 1
-                    continue
-                conn.execute("DELETE FROM items WHERE id=? OR path=?", (item["id"], relative))
-                conn.execute(
-                    "INSERT INTO items(id,kind,scope,project,status,path,title,body,body_hash,"
-                    "confidence,importance,usage,created,updated,last_used) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (item["id"], item["kind"], item["scope"], item["project"], item["status"],
-                     item["path"], item["title"], item["body"], item["body_hash"],
-                     item["confidence"], item["importance"], item["usage"], item["created"],
-                     item["updated"], item["last_used"]))
-                conn.execute("DELETE FROM edges WHERE src=?", (item["id"],))
-                for edge in item["edges"]:
-                    conn.execute("INSERT OR REPLACE INTO edges(src,dst,type) VALUES(?,?,?)",
-                                 (item["id"], edge["to"], edge["type"]))
-                    stats["edges"] += 1
-                if fts:
-                    conn.execute("DELETE FROM items_fts WHERE id=?", (item["id"],))
-                    conn.execute("INSERT INTO items_fts(id,title,body) VALUES(?,?,?)",
-                                 (item["id"], item["title"], item["body"]))
+                    row_changed = False
+                if row_changed:
+                    conn.execute("DELETE FROM items WHERE id=? OR path=?", (item["id"], relative))
+                    conn.execute(
+                        "INSERT INTO items(id,kind,scope,project,status,path,title,body,body_hash,"
+                        "confidence,importance,usage,created,updated,last_used) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (item["id"], item["kind"], item["scope"], item["project"], item["status"],
+                         item["path"], item["title"], item["body"], item["body_hash"],
+                         item["confidence"], item["importance"], item["usage"], item["created"],
+                         item["updated"], item["last_used"]))
+                    conn.execute("DELETE FROM edges WHERE src=?", (item["id"],))
+                    for edge in item["edges"]:
+                        conn.execute("INSERT OR REPLACE INTO edges(src,dst,type) VALUES(?,?,?)",
+                                     (item["id"], edge["to"], edge["type"]))
+                        stats["edges"] += 1
+                    if fts:
+                        conn.execute("DELETE FROM items_fts WHERE id=?", (item["id"],))
+                        conn.execute("INSERT INTO items_fts(id,title,body) VALUES(?,?,?)",
+                                     (item["id"], item["title"], item["body"]))
+                _ensure_vector(conn, item)
             for relative in sorted(set(existing) - seen):
                 row = conn.execute("SELECT id FROM items WHERE path=?", (relative,)).fetchone()
                 if not row:
                     continue
                 conn.execute("DELETE FROM items WHERE path=?", (relative,))
                 conn.execute("DELETE FROM edges WHERE src=? OR dst=?", (row["id"], row["id"]))
+                conn.execute("DELETE FROM vectors WHERE id=?", (row["id"],))
                 if fts:
                     conn.execute("DELETE FROM items_fts WHERE id=?", (row["id"],))
                 stats["removed"] += 1
@@ -280,7 +347,11 @@ def set_edges(src, edges):
 
 
 def search(query="", limit=10, scope=None, project=None):
-    """关键词检索 + 1 跳关联扩展；空查询按 pin 分返回最近可用条目。"""
+    """关键词 + 可选语义向量检索，再对前 3 条做 1 跳关联扩展。
+
+    语义仅在 DOCMIND_MEMORY_EMBED / runtime memory_embed 开启且条目有向量时参与；
+    任何嵌入故障都退化为关键词，不影响检索可用性。
+    """
     terms = _terms(query)
     conn = _connect()
     try:
@@ -294,14 +365,33 @@ def search(query="", limit=10, scope=None, project=None):
             sql += " AND (scope='global' OR project=?)"
             params.append(str(project))
         rows = [dict(row) for row in conn.execute(sql, params)]
+        qvec = _embed_one(query) if terms and _embed_enabled() else []
+        vectors = {}
+        if qvec:
+            for row in rows:
+                found = conn.execute("SELECT vec FROM vectors WHERE id=?",
+                                     (row["id"],)).fetchone()
+                if not found:
+                    continue
+                try:
+                    vector = json.loads(found["vec"])
+                except (TypeError, ValueError):
+                    continue
+                if len(vector) == len(qvec):
+                    vectors[row["id"]] = vector
         if terms:
             ranked = []
             for row in rows:
                 text = (str(row.get("title") or "") + " " + str(row.get("body") or "")).lower()
                 hits = sum(1 for term in terms if term in text)
-                if hits:
-                    row["_score"] = round(hits + score.pin_score(row), 4)
-                    ranked.append(row)
+                keyword = hits / len(terms)
+                semantic = _cosine(qvec, vectors.get(row["id"], [])) if qvec else 0.0
+                if hits == 0 and semantic < 0.25:
+                    continue
+                row["_score"] = score.retrieval_score(row, keyword=keyword,
+                                                      semantic=semantic)
+                row["_semantic"] = round(semantic, 4)
+                ranked.append(row)
             ranked.sort(key=lambda item: item["_score"], reverse=True)
             rows = ranked
         else:
