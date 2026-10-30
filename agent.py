@@ -5122,6 +5122,16 @@ class Agent:
                 messages.append({"role": "system", "content": profile_hint})
         except Exception:
             pass
+        # 记忆 v2 · L2 共享层：只注入被 pin 的跨项目沉淀，放在任务书之前。
+        if _v2_on and _memory_v2_injection is not None:
+            try:
+                _l2_blocks = _memory_v2_injection.build_shared_injection()
+            except Exception:  # noqa: BLE001
+                _l2_blocks = []
+            if _l2_blocks:
+                self._last_injection = list(self._last_injection) + _l2_blocks
+                for _l2_block in _l2_blocks:
+                    messages.append({"role": "system", "content": _l2_block["text"]})
         # 任务清单每轮注入。这是让「上下文压缩」不再有损的那一环：
         # 摘要可以放心压，因为目标本身在磁盘上、每轮都会被重新告知模型。
         # 没有这一步，清单只是个模型可能忘记去读的旁路文件。
@@ -5963,7 +5973,7 @@ class Agent:
                             from agent_runtime.memory import turns as _memory_v2_turns
                             _v2_status = ("failed" if error else "interrupted" if aborted
                                           else "completed" if (final_text or "").strip() else "partial")
-                            _memory_v2_turns.record_turn(
+                            _v2_recorded = _memory_v2_turns.record_turn(
                                 session_id=self.session_id,
                                 project_id=self.project_id or "",
                                 question=question,
@@ -5973,6 +5983,11 @@ class Agent:
                                 journal=journal_state,
                                 error=error or "",
                             )
+                            if _v2_recorded.get("record"):
+                                from agent_runtime.memory import consolidate as _memory_v2_consolidate
+                                _memory_v2_consolidate.schedule(
+                                    self.project_id or "", self.session_id,
+                                    self._child_llm(), _v2_recorded["record"])
                     except Exception:  # noqa: BLE001
                         pass
                     # B3：per-number 背书审计旁路（§5 高估观测化）。**只观测、不改 backed/trust/

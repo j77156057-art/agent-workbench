@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 
-from . import episodes, errors, hooks, receipts, store
+from . import episodes, errors, hooks, promote, receipts, store, taskbook
 from .injection import enabled
 
 # 只有明确的"要记住"才升成约定钩子，避免把普通请求都写进钩子层。
@@ -91,10 +91,16 @@ def record_turn(*, session_id, project_id, question, final_text, status="complet
 
     if not next_step:
         next_step = _plan_next_step()
+    try:
+        task_id = taskbook.current_id(project)
+    except Exception:  # noqa: BLE001
+        task_id = ""
 
     episode = {
+        "id": episode_id,
         "session": store.safe_id(session),
         "project": store.safe_id(project),
+        "task": task_id,
         "goal": question_text,
         "actions": actions,
         "files": files,
@@ -108,8 +114,12 @@ def record_turn(*, session_id, project_id, question, final_text, status="complet
     }
     episodes.append(project, session, episode)
     try:
-        from . import taskbook
         taskbook.maybe_draft(project, question_text, next_step, len(actions))
     except Exception:  # noqa: BLE001
         pass
-    return {"episode": episode_id, "receipts": receipt_ids, "errors": len(recorded_errors)}
+    try:
+        promote.sweep(project)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"episode": episode_id, "receipts": receipt_ids,
+            "errors": len(recorded_errors), "record": episode}

@@ -1,9 +1,12 @@
 """记忆系统 v2 · P0 回归：开关门、宪法注入顺序与上限、保存/哈希审计、
 索引重建幂等、路径越界、turn trace 快照。
 """
+import json
 import os
+import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import agent as agent_mod
 import config
@@ -15,6 +18,9 @@ from agent_runtime.memory import (
     hooks,
     index,
     injection,
+    metrics,
+    migrate,
+    promote,
     receipts,
     store,
     taskbook,
@@ -389,9 +395,210 @@ class FinalEventTests(_MemBase):
         agent._pending_file_changes = []
 
         class _T:
-            verification_targets = {"a.py": True}
+            def __init__(self):
+                self.verification_targets = {"a.py": True}
 
         self.assertTrue(agent._final_event("完成", _T())["deliverable"])
+
+
+class _MemoryLLM:
+    provider = "stub"
+    model = "stub"
+
+    def __init__(self, output):
+        self.output = output
+        self.last_usage = {"prompt_tokens": 11, "completion_tokens": 5}
+
+    def clone(self):
+        return _MemoryLLM(self.output)
+
+    def chat(self, messages, stream=False, temperature=0.0, **kw):
+        return self.output
+
+
+class PromoteTests(_MemBase):
+    TEXT = "合并前先跑完整测试，能显著降低回归率"
+
+    def _candidate(self, text=None, importance=0.8, task="tb-1"):
+        rid = receipts.record("prj", type="verify", result="pass")
+        candidate = promote.create_candidate(
+            "prj", "fact", text or self.TEXT, importance=importance,
+            receipt_ids=[rid], task=task)
+        return candidate, rid
+
+    def test_requires_adoption_before_promotion(self):
+        self._candidate()
+        self.assertEqual(promote.sweep("prj")["promoted"], 0)
+        self.assertEqual(promote.shared_items(), [])
+        feedback.record("prj", session="s1", stars=5, task="tb-1")
+        self.assertEqual(promote.sweep("prj")["promoted"], 1)
+        shared = promote.shared_items()
+        self.assertEqual(len(shared), 1)
+        self.assertEqual(shared[0]["scope"], "global")
+        self.assertTrue(shared[0]["pinned"])
+        block = injection.build_shared_injection()[0]
+        self.assertEqual(block["layer"], "L2")
+        self.assertIn("先跑完整测试", block["text"])
+
+    def test_secret_and_context_rejected(self):
+        rid = receipts.record("prj", type="verify", result="pass")
+        promote.create_candidate("prj", "fact", "api_key=sk-abcdefghijklmnop 用于鉴权",
+                                 importance=0.9, receipt_ids=[rid], task="t1")
+        promote.create_candidate("prj", "fact", "本项目的入口在注册表里，先读再改",
+                                 importance=0.9, receipt_ids=[rid], task="t1")
+        feedback.record("prj", session="s1", stars=5, task="t1")
+        self.assertEqual(promote.sweep("prj")["promoted"], 0)
+        self.assertEqual(promote.shared_items(), [])
+
+    def test_absolute_path_is_redacted_before_promotion(self):
+        rid = receipts.record("prj", type="verify", result="pass")
+        candidate = promote.create_candidate(
+            "prj", "fact", "配置文件在 D:\\work\\proj\\conf.ini，改完要重启验证",
+            importance=0.9, receipt_ids=[rid], task="t2")
+        feedback.record("prj", session="s1", stars=5, task="t2")
+        self.assertEqual(promote.sweep("prj")["promoted"], 1)
+        body = promote.shared_items()[0]["body"]
+        self.assertIn("<path>", body)
+        self.assertNotIn("D:\\work", body)
+
+    def test_low_importance_and_no_receipt_stay_candidates(self):
+        promote.create_candidate("prj", "fact", "低价值的一次性观察，先记下来", importance=0.2)
+        candidate, _ = self._candidate(importance=0.9)
+        self.assertEqual(promote.sweep("prj")["promoted"], 0)
+        self.assertEqual(len(promote.candidates("prj")), 2)
+        self.assertEqual(candidate["status"], "candidate")
+
+    def test_promotion_is_idempotent(self):
+        self._candidate()
+        feedback.record("prj", session="s1", stars=5, task="tb-1")
+        self.assertEqual(promote.sweep("prj")["promoted"], 1)
+        self.assertEqual(promote.sweep("prj")["promoted"], 0)
+        self.assertEqual(len(promote.shared_items()), 1)
+
+    def test_project_candidate_indexed(self):
+        self._candidate()
+        out = index.rebuild(verify=True)
+        self.assertEqual((out["items"], out["verified"]), (1, True))
+
+
+def _consolidate_episode(*, status="completed", actions=1,
+                         summary="完成了一次可复用的改动，记录了合并前先跑测试的结论。",
+                         receipts_list=(), task=""):
+    return {"id": "ep-test", "session": "s1", "task": task,
+            "actions": [{"tool": "x"}] * actions,
+            "result": {"status": status, "summary": summary, "error": ""},
+            "files": [], "errors": [], "next": "", "receipts": list(receipts_list)}
+
+
+class ConsolidateTests(_MemBase):
+    _episode = staticmethod(_consolidate_episode)
+
+    def _out(self, keep=True, text="合并前先跑完整测试能降低回归率", kind="fact", importance=0.7):
+        return json.dumps({"keep": keep, "kind": kind, "title": "t",
+                           "text": text, "importance": importance}, ensure_ascii=False)
+
+    def test_keep_true_creates_candidate_and_meters(self):
+        result = consolidate_run(self, self._out())
+        self.assertTrue(result["kept"])
+        self.assertEqual(len(promote.candidates("prj")), 1)
+        report = metrics.report()
+        self.assertEqual(report["consolidate_calls"], 1)
+        self.assertEqual(report["errors"], 0)
+
+    def test_keep_false_and_trivial_are_skipped(self):
+        result = consolidate_run(self, self._out(keep=False))
+        self.assertFalse(result["kept"])
+        self.assertEqual(promote.candidates("prj"), [])
+        result = consolidate_run(self, self._out(), episode=self._episode(actions=0, summary="好"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(metrics.report()["skipped"], 2)
+
+    def test_receipt_and_rating_promote_in_same_run(self):
+        rid = receipts.record("prj", type="verify", result="pass")
+        feedback.record("prj", session="s1", stars=5, task="tb-1")
+        result = consolidate_run(self, self._out(importance=0.8),
+                                 episode=self._episode(receipts_list=[rid], task="tb-1"))
+        self.assertEqual(result["promoted"], 1)
+        self.assertEqual(len(promote.shared_items()), 1)
+
+
+def consolidate_run(case, output, episode=None):
+    from agent_runtime.memory import consolidate
+    return consolidate.run_once("prj", "s1", _MemoryLLM(output),
+                                episode or _consolidate_episode())
+
+
+class MigrateTests(_MemBase):
+    def _legacy_db(self):
+        path = os.path.join(self.tmp, "legacy.sqlite3")
+        connection = sqlite3.connect(path)
+        connection.executescript("""
+        CREATE TABLE memories (
+          scope TEXT, id TEXT, kind TEXT, title TEXT, content TEXT, evidence TEXT,
+          source TEXT, repeats INTEGER, updated TEXT, status TEXT, backed INTEGER,
+          importance REAL);
+        CREATE TABLE checkpoints (
+          scope TEXT, id TEXT, session TEXT, question TEXT, status TEXT, reason TEXT,
+          events TEXT, answer TEXT, updated TEXT, journal TEXT);
+        """)
+        rows = [
+            ("prj", "f1", "fact", "入口", "入口文件是 main.py，启动前先跑测试", "", "agent", 1,
+             "2026-10-01", "active", 0, 0.7),
+            ("prj", "d1", "episode", "蒸馏", "模型报告（已蒸馏）：合并前必须跑完整测试，否则回归率高",
+             "", "model_report", 1, "2026-10-02", "active", 1, 0.8),
+            ("prj", "e1", "episode", "转写", "模型报告（尚需核对验收）：逐字转写内容", "", "model_report",
+             1, "2026-10-03", "active", 0, 0.5),
+            ("prj", "p1", "preference", "语言", "使用中文沟通", "使用中文沟通", "user_explicit",
+             1, "2026-10-04", "active", 0, 0.5),
+            ("prj", "r1", "episode", "退休", "模型报告（尚需核对验收）：旧结论", "", "model_report",
+             1, "2026-10-05", "retired", 0, 0.5),
+        ]
+        connection.executemany(
+            "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        connection.execute(
+            "INSERT INTO checkpoints VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("prj", "c1", "s1", "问题", "completed", "", "[]", "答案", "2026-10-06", "{}"))
+        connection.commit()
+        connection.close()
+        return path
+
+    def test_migration_exports_and_is_idempotent(self):
+        db = self._legacy_db()
+        with patch.object(migrate, "_migrate_experience", lambda result: None):
+            first = migrate.run(db_path=db)
+            self.assertEqual(first["archived"], 5)
+            self.assertEqual(first["seeded_facts"], 2)
+            self.assertEqual(first["preferences"], 1)
+            self.assertEqual(first["checkpoints"], 1)
+            self.assertEqual(first["retired"], 1)
+            self.assertEqual(len(promote.shared_items()), 0, "迁移只进候选，不 pin")
+            archive = os.path.join(store.root(), "archive", "legacy", "episodes.jsonl")
+            self.assertTrue(os.path.exists(archive))
+            second = migrate.run(db_path=db)
+            self.assertTrue(second.get("skipped"))
+            forced = migrate.run(db_path=db, force=True)
+            self.assertEqual(forced["seeded_facts"], 2)
+            shared_files = []
+            for kind in ("facts", "lessons"):
+                directory = os.path.join(store.root(), "shared", kind)
+                if os.path.isdir(directory):
+                    shared_files.extend(os.listdir(directory))
+            self.assertEqual(len(shared_files), 2, "重跑不得重复")
+
+
+class SharedInjectionTests(_MemBase):
+    def test_pinned_shared_reaches_prompt(self):
+        rid = receipts.record("prj", type="verify", result="pass")
+        promote.create_candidate("prj", "fact", "合并前先跑完整测试，能显著降低回归率",
+                                 importance=0.9, receipt_ids=[rid], task="tb-1")
+        feedback.record("prj", session="s1", stars=5, task="tb-1")
+        promote.sweep("prj")
+        agent = agent_mod.Agent(llm=_LLM(), session_id="s1", project_id="prj")
+        messages = agent._build_messages("继续")
+        text = "\n".join(str(m.get("content") or "") for m in messages)
+        self.assertIn("【共享记忆", text)
+        self.assertIn("先跑完整测试", text)
+        self.assertEqual([block["layer"] for block in agent._last_injection], ["L0", "L2"])
 
 
 class IndexTests(_MemBase):

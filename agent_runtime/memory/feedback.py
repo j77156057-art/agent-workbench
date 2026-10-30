@@ -82,3 +82,26 @@ def list_for_task(project_id, task, session="", limit=20):
     except OSError:
         return []
     return rows[-max(1, int(limit)):]
+
+
+def max_stars(project_id, task):
+    """跨该项目的所有会话找这个任务的最高星级；无反馈返回 0。"""
+    import glob
+    base = store.safe_path("projects", store.safe_id(project_id))
+    best = 0
+    for target in glob.glob(os.path.join(base, "**", PATH_NAME), recursive=True):
+        try:
+            with open(target, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(value, dict):
+                        continue
+                    if task and str(value.get("task") or "") != str(task):
+                        continue
+                    best = max(best, int(value.get("stars") or 0))
+        except OSError:
+            continue
+    return best

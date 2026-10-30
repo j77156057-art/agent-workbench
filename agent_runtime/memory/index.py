@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS vectors(
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
 """
 
-_PATTERNS = ("shared/facts/*.md", "shared/lessons/*.md")
+_PATTERNS = ("shared/facts/*.md", "shared/lessons/*.md",
+             "projects/*/facts/*.md", "projects/*/lessons/*.md")
 
 
 def path():

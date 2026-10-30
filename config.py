@@ -1801,6 +1801,21 @@ def set_memory_v2(enabled):
     return enabled
 
 
+def get_memory_model():
+    """固化模型：空 = 跟随主模型；否则同名 provider 下的模型名。"""
+    v = get_runtime("memory_model")
+    if v is not None:
+        return str(v or "").strip()
+    return str(os.getenv("DOCMIND_MEMORY_MODEL", "") or "").strip()
+
+
+def set_memory_model(value):
+    value = str(value or "").strip()[:120]
+    set_runtime("memory_model", value)
+    save_state("memory_model", value)
+    return value
+
+
 def _apply_memory_state(data):
     """开机恢复：master 键优先，向后同步三个子键；显式 set_runtime 覆盖磁盘值。
     memory_learn / memory_v2 是独立开关，单独恢复，与 memory_optimized 互不牵连。"""
@@ -1818,3 +1833,6 @@ def _apply_memory_state(data):
     v2 = data.get("memory_v2")
     if v2 is not None and "memory_v2" not in _RUNTIME:
         _RUNTIME["memory_v2"] = bool(v2)
+    model = data.get("memory_model")
+    if model is not None and "memory_model" not in _RUNTIME:
+        _RUNTIME["memory_model"] = str(model or "").strip()

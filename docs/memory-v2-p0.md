@@ -1,6 +1,6 @@
 # 记忆系统 v2 · P0 规格
 
-> 状态：P0-1、P0-2、P0-3 已落地（2026-10-31，flag 默认关）；P0-4 起待做。
+> 状态：P0-1 ~ P0-4 已落地（2026-10-31，flag 默认关）；P0-5 待做。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
 > 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
 
@@ -172,6 +172,8 @@ created: ...  updated: ...  last_used: ...
 
 晋升门（session/project → global）硬条件：≥1 张验证回执 ∧ ≥1 次采纳/复用 ∧ 通用性检查（脱敏、去路径、去客户名、脱离项目可读懂）。技能只能提案 → 用户批准。
 
+**P0-4 实现说明**：项目候选写在 `projects/<pid>/facts|lessons/`；晋升门校验"通过的 test/verify/merge 回执 + 采纳（4–5 星或复用≥2）+ 通用化（拒绝密钥/项目标识/强上下文指代，绝对路径替换为 `<path>`）"。晋升后 `confidence=0.85`，`importance≥0.7` 才自动 pin；未 pin 的共享条目只进索引，不进每轮提示词。实时固化由单 worker 异步执行，跳过未完成/平凡轮，失败只计量；模型可用 `DOCMIND_MEMORY_MODEL` 单独指定（仅限同 provider，否则回退主模型）。
+
 ## 7. 任务书
 
 - 模型按判据自评：跨回合 / 从零建项目 / 步骤 >5 且相互依赖 / 用户要计划。**不阻断开工。**
@@ -247,6 +249,8 @@ POST   /api/memory/reindex
 - 运行时：显式模型不可用 → 记录一次告警，回退主模型 clone，**不丢回合**。
 - 计量记录**实际生效模型**；报告单列"固化成本占比"。
 
+**P0-4 实现说明**：配置层已支持 `get_memory_model/set_memory_model`（runtime 优先、env `DOCMIND_MEMORY_MODEL` 回落、重启恢复）；设置页下拉在 P0-5 补。显式模型只在同 provider 下生效，避免把 A 家的 Key 发到 B 家端点。
+
 ## 11. 迁移
 
 旧库只读导出，幂等可重跑：
@@ -264,6 +268,8 @@ POST   /api/memory/reindex
 
 全程 ledger；旧库不改动；跑两遍结果一致。
 
+**P0-4 实测（本机旧库）**：归档 464 条、共享候选 41 条、偏好 1 条、checkpoint 352 条、experience 23 条、退休 13 条；第二次运行直接跳过；`--force` 不产生重复文件。旧库以只读 URI 打开。
+
 ## 12. 计量（不设硬预算）
 
 先测后定阈值：
@@ -274,6 +280,8 @@ POST   /api/memory/reindex
 - 结构性控制（不是预算）：单 worker；前台生成时暂停；积压 >1 时合并为一次调用；同会话 10 分钟 >20 次触发则退避 10 分钟；提供商报错跳过。
 - 可选软上限：设置页可填每日上限，默认"不限"。
 - 定阈值：跑满 2 周或 1000 轮后，按 p95 的 2 倍给出建议值，用户确认后启用。
+
+**P0-4 实现说明**：计量落在 `metrics/<date>.jsonl`；`python -m agent_runtime.memory report` 汇总调用数、token、p50/p95、晋升数。结构性控制已实现：单 worker、同会话在跑则跳过、平凡轮跳过、LLM 异常只计量。仍未设任何硬预算。
 
 ## 13. 验收测试
 
