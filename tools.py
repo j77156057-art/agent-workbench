@@ -379,6 +379,18 @@ def _web_cache_key(prefix, query):
     return f"{prefix}:{hashlib.sha256((query or '').encode('utf-8')).hexdigest()}"
 
 
+def _web_search_cache_prefix(provider, allow_aux):
+    """搜索缓存命名空间：provider/扇出/条数 + API 地址指纹。
+
+    只按 provider 分桶不够：SearXNG/自建兼容端点的地址改了，旧缓存仍会命中，
+    用户会以为新实例没生效。地址只取哈希，不把 URL（可能含凭据）写进缓存键。
+    """
+    url = (get_web_search_api_url() or "").strip()
+    url_tag = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    return "search:v8:%s:%s:%s:%s" % (
+        provider, bool(allow_aux), _search_result_limit(), url_tag)
+
+
 def _web_cache_read(key):
     if os.getenv("DOCMIND_WEB_CACHE", "1").strip().lower() in ("0", "false", "no"):
         return None
@@ -2000,8 +2012,8 @@ def web_search(query, _allow_aux=True):
     q = _search_recency_query(q)
     provider = get_web_search_provider()
     # 来源扇出、排序或筛选策略变更后必须换缓存命名空间，避免旧结果绕过新逻辑。
-    # v7：主题/版本重排 + 泛词稀释补搜（2026-10-29）。
-    cache_key = _web_cache_key(f"search:v7:{provider}:{_allow_aux}:{_search_result_limit()}", q)
+    # v8：主题/版本重排 + 泛词稀释补搜 + API 地址指纹（换自建实例不再命中旧缓存）。
+    cache_key = _web_cache_key(_web_search_cache_prefix(provider, _allow_aux), q)
     if _search_cache_enabled():
         cached = _web_cache_read(cache_key)
         if cached:
