@@ -27,6 +27,7 @@ const l2Items = computed(() => (current.value?.items || []) as MemoryPanelItem[]
 const l4Items = computed(() => (current.value?.items || []) as MemoryPanelHook[])
 const l3Items = computed(() => (current.value?.items || []) as MemoryPanelTaskItem[])
 const l4Errors = computed(() => (current.value?.errors || []) as Array<Record<string, unknown>>)
+const retrievableItems = computed(() => (current.value?.retrievable_items || []) as Array<Record<string, unknown>>)
 
 const constitutionDraft = ref('')
 const profileDraft = ref({
@@ -112,8 +113,10 @@ async function run(action: () => Promise<void>) {
   try {
     await action()
     const message = notice.value
+    const failure = error.value
     await load(mode.value)
     notice.value = message
+    error.value = failure
   } catch (e) {
     error.value = (e as Error)?.message || '保存失败'
   } finally {
@@ -163,6 +166,26 @@ async function removeItem(item: MemoryPanelItem) {
   await run(async () => {
     await memoryPanelApi.deleteItem(item.id!)
     notice.value = '已删除'
+  })
+}
+
+async function pinRetrievable(item: Record<string, unknown>) {
+  if (!item.id) return
+  await run(async () => {
+    await memoryPanelApi.patchItem(String(item.id), { pinned: true })
+    notice.value = '已 pin，下一回合注入'
+  })
+}
+
+async function promoteCandidate(item: Record<string, unknown>) {
+  if (!item.id) return
+  await run(async () => {
+    const result = await memoryPanelApi.promoteItem(String(item.id))
+    if (result.promoted) {
+      notice.value = result.pinned ? '已晋升并 pin' : '已晋升（重要度不足，暂不常驻）'
+    } else {
+      error.value = '未晋升：' + ((result.reasons || []).join('；') || '未满足晋升门')
+    }
   })
 }
 
@@ -317,11 +340,11 @@ async function reindex() {
 
       <template v-else-if="current.kind === 'items'">
         <p v-if="!l2Items.length" class="mp-hint">
-          没有 pin 的共享记忆。候选共 {{ current.retrievable || 0 }} 条，需通过晋升门后才会出现在这里。
+          没有 pin 的共享记忆。可召回条目 {{ retrievableItems.length }} 条，可在下方检索或晋升。
         </p>
         <div v-for="item in l2Items" :key="String(item.id)" class="mp-item">
           <div class="mp-item-head">
-            <span>{{ item.kind === 'lesson' ? '教训' : '事实' }} · 置信 {{ Number(item.confidence || 0).toFixed(2) }}</span>
+            <span>{{ item.kind === 'lesson' ? '教训' : '事实' }} · 置信 {{ Number(item.confidence || 0).toFixed(2) }} · 关联 {{ (item.edges || []).length }}</span>
             <label class="mp-pin"><input type="checkbox" :checked="!!item.pinned" @change="togglePin(item)" /> pin</label>
           </div>
           <textarea v-model="itemDrafts[String(item.id)]" class="mp-textarea" :rows="4" :disabled="mode === 'last'" />
@@ -330,6 +353,20 @@ async function reindex() {
             <button class="mp-mini mp-danger" type="button" :disabled="busy || mode === 'last'" @click="removeItem(item)">删除</button>
           </div>
         </div>
+        <details v-if="retrievableItems.length" class="mp-retrievable">
+          <summary>可召回但未注入（{{ retrievableItems.length }}）</summary>
+          <div v-for="item in retrievableItems" :key="String(item.id)" class="mp-item">
+            <div class="mp-item-head">
+              <span>{{ item.scope === 'global' ? '共享' : '项目候选' }} · {{ item.kind === 'lesson' ? '教训' : '事实' }} · 置信 {{ Number(item.confidence || 0).toFixed(2) }}</span>
+              <span v-if="item.edges" class="mp-hint">关联 {{ item.edges }}</span>
+            </div>
+            <p class="mp-body-text">{{ item.body }}</p>
+            <div class="mp-actions">
+              <button v-if="item.scope === 'global'" class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="pinRetrievable(item)">pin</button>
+              <button v-else class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="promoteCandidate(item)">晋升</button>
+            </div>
+          </div>
+        </details>
       </template>
 
       <template v-else-if="current.kind === 'taskbook'">
@@ -521,6 +558,9 @@ async function reindex() {
 .mp-pin { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .mp-pin input { accent-color: var(--accent); }
 .mp-warn { color: var(--amber); font-size: var(--fs-cap); }
+.mp-retrievable { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.mp-retrievable summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-cap); margin-bottom: 6px; }
+.mp-body-text { margin: 0 0 6px; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.6; white-space: pre-wrap; }
 .mp-add { display: flex; gap: 6px; align-items: flex-start; margin: 8px 0; }
 .mp-add .mp-input { margin-bottom: 0; flex: 1 1 auto; width: auto; min-width: 0; }
 .mp-add .mp-btn { flex: 0 0 auto; white-space: nowrap; }

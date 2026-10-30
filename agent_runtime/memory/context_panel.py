@@ -8,7 +8,8 @@ import os
 
 from config import get_runtime
 
-from . import constitution, episodes, errors, hooks, injection, promote, store, taskbook
+from . import (constitution, episodes, errors, hooks, injection, profile, promote,
+               store, taskbook)
 
 BUDGETS = {"L0": 600, "L1": 500, "L2": 800, "L3": 400, "L4": 600}
 TITLES = {"L0": "宪法", "L1": "用户画像", "L2": "共享记忆", "L3": "任务书", "L4": "会话钩子"}
@@ -25,13 +26,12 @@ def _layer(key, title, text, *, editable, source, kind, **extra):
 
 def _profile_layer():
     try:
-        import agent_memory
-        profile = agent_memory.get_profile()
-        text = agent_memory.profile_context()
-        declared = {key: profile.get(key) for key in
+        data = profile.load()
+        text = profile.context()
+        declared = {key: data.get(key) for key in
                     ("display_name", "language", "timezone", "location", "notes",
                      "preferences", "goals")}
-        learned = profile.get("learned") or {}
+        learned = data.get("learned") or {}
     except Exception:  # noqa: BLE001
         declared, learned, text = {}, {}, ""
     return _layer("L1", "用户画像", text, editable=True, source="用户/系统",
@@ -65,15 +65,18 @@ def next_view(project_id, session_id, code_root=""):
 
     pinned = promote.pinned_shared(5)
     block = injection.build_shared_injection()
+    retrievable_items = promote.retrievable(project, 30)
     layers.append(_layer("L2", "共享记忆", block[0]["text"] if block else "",
                          editable=True, source="已验证沉淀", kind="items",
                          items=[{"id": item.get("id"), "kind": item.get("kind"),
                                  "title": item.get("title"), "body": item.get("body"),
                                  "pinned": bool(item.get("pinned")),
                                  "confidence": item.get("confidence"),
-                                 "importance": item.get("importance")}
+                                 "importance": item.get("importance"),
+                                 "edges": item.get("edges") or []}
                                 for item in pinned],
-                         retrievable=len(promote.shared_items())))
+                         retrievable=len(retrievable_items),
+                         retrievable_items=retrievable_items))
 
     book = taskbook.info(project)
     layers.append(_layer("L3", "任务书", taskbook.summary(project), editable=True,
@@ -142,12 +145,11 @@ def save_constitution(text, base_version=None):
 
 
 def update_profile(patch, user_id=None):
-    import agent_memory
     allowed = ("display_name", "language", "timezone", "location", "preferences", "goals", "notes")
     clean = {key: patch[key] for key in allowed if key in patch}
     if promote.secret_hit(json.dumps(clean, ensure_ascii=False)):
         raise ValueError("内容含密钥/令牌，未保存")
-    return agent_memory.update_profile(user_id, clean)
+    return profile.save(clean, user_id)
 
 
 def edit_shared(item_id, *, text=None, pinned=None):

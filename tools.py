@@ -11767,7 +11767,37 @@ def memory_search(arg=""):
     import agent_memory as memory
     try:
         rows = memory.recall(memory.current_scope()[0], str(arg or ""), limit=20)
-        return json.dumps({"ok": True, "items": rows, "advisory": True}, ensure_ascii=False)
+        items = [dict(row) for row in rows]
+        try:
+            from config import get_memory_v2
+            if get_memory_v2():
+                from agent_runtime.memory import index as v2_index
+                from projects import current_project_id
+                seen = {str(item.get("content") or "").strip() for item in items}
+                for row in v2_index.search(str(arg or ""), limit=12,
+                                           project=current_project_id() or "default"):
+                    content = str(row.get("body") or "").strip()
+                    if not content or content in seen:
+                        continue
+                    seen.add(content)
+                    items.append({
+                        "source": "memory_v2",
+                        "id": row.get("id"),
+                        "kind": row.get("kind"),
+                        "title": row.get("title"),
+                        "content": content,
+                        "scope": row.get("scope"),
+                        "confidence": row.get("confidence"),
+                        "importance": row.get("importance"),
+                        "pinned": bool(row.get("pinned")),
+                        "score": row.get("_score"),
+                        "related_to": row.get("related_to"),
+                    })
+                for item in items:
+                    item.setdefault("source", "memory_v1")
+        except Exception:  # noqa: BLE001 —— v2 检索失败不影响旧记忆
+            pass
+        return json.dumps({"ok": True, "items": items[:24], "advisory": True}, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"ok": False, "error": memory.scrub(str(exc), 500)}, ensure_ascii=False)
 

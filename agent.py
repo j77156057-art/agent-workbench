@@ -5117,7 +5117,11 @@ class Agent:
         for context_message in self.last_context_plan.messages:
             messages.append({"role": "system", "content": context_message})
         try:
-            profile_hint = _memory.profile_context()
+            if _v2_on:
+                from agent_runtime.memory import profile as _memory_v2_profile
+                profile_hint = _memory_v2_profile.context()
+            else:
+                profile_hint = _memory.profile_context()
             if profile_hint:
                 messages.append({"role": "system", "content": profile_hint})
         except Exception:

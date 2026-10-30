@@ -4872,7 +4872,11 @@ async def voice_dialogue_ep(payload: dict):
 async def agent_profile_patch_ep(payload: dict, request: Request):
     import agent_memory
     try:
-        profile = agent_memory.update_profile(_request_user_id(request), payload or {})
+        if get_memory_v2():
+            from agent_runtime.memory import profile as profile_store
+            profile = profile_store.save(payload or {}, _request_user_id(request))
+        else:
+            profile = agent_memory.update_profile(_request_user_id(request), payload or {})
         return {"ok": True, "profile": profile}
     except (TypeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
@@ -4980,6 +4984,42 @@ async def memory_profile_ep(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "profile": profile}
+
+
+@app.post("/api/memory/items/{item_id}/promote")
+async def memory_item_promote_ep(item_id: str):
+    _memory_require()
+    from agent_runtime.memory import promote
+    result = promote.promote(_request_project_id() or "default", item_id)
+    if not result.get("ok"):
+        return {"ok": True, "promoted": False, "reasons": result.get("reasons") or []}
+    return {"ok": True, "promoted": True, "item": result.get("item"),
+            "pinned": result.get("pinned")}
+
+
+@app.post("/api/memory/items/{item_id}/links")
+async def memory_item_link_ep(item_id: str, request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    from agent_runtime.memory import promote
+    try:
+        item = promote.link(item_id, body.get("to") or body.get("dst"),
+                            body.get("type"), _request_project_id() or "default")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到条目")
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/memory/items/{item_id}/links")
+async def memory_item_unlink_ep(item_id: str, to: str = "", type: str = ""):
+    _memory_require()
+    from agent_runtime.memory import promote
+    item = promote.unlink(item_id, to, type)
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到条目")
+    return {"ok": True, "item": item}
 
 
 @app.patch("/api/memory/items/{item_id}")

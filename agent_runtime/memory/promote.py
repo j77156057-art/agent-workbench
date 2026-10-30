@@ -20,6 +20,7 @@ _SECRET = re.compile(
 _ABS_PATH = re.compile(r"(?:[A-Za-z]:\\[^\s\"'<>|]+|/(?:home|Users|var|tmp|opt|mnt|srv)/[^\s\"'<>|]+)")
 _CONTEXT = re.compile(r"本项目|这个项目|当前项目|我们项目|该项目")
 _PASS_TYPES = {"test", "verify", "merge"}
+EDGE_TYPES = {"supersedes", "derived_from", "used_in", "refines", "contradicts"}
 
 
 def _clamp(value, default=0.5):
@@ -82,8 +83,23 @@ def genericize(text, project_id=""):
     return cleaned[:MAX_TEXT], []
 
 
+def _clean_edges(edges):
+    out = []
+    seen = set()
+    for raw in edges or []:
+        if not isinstance(raw, dict):
+            continue
+        target = str(raw.get("to") or raw.get("dst") or "").strip()[:80]
+        kind = str(raw.get("type") or "").strip()
+        if not target or kind not in EDGE_TYPES or (kind, target) in seen:
+            continue
+        seen.add((kind, target))
+        out.append({"type": kind, "to": target})
+    return out[:20]
+
+
 def create_candidate(project_id, kind, text, *, title="", importance=0.6,
-                     source_turn="", receipt_ids=(), task=""):
+                     source_turn="", receipt_ids=(), task="", edges=None):
     kind = _normalize_kind(kind)
     body = str(text or "").strip()[:MAX_TEXT]
     if not body:
@@ -103,7 +119,7 @@ def create_candidate(project_id, kind, text, *, title="", importance=0.6,
         "pinned": False, "source_turn": str(source_turn or ""),
         "receipts": [str(rid) for rid in (receipt_ids or [])][:20],
         "task": str(task or "")[:120], "promoted_to": "",
-        "created": now, "updated": now,
+        "edges": _clean_edges(edges), "created": now, "updated": now,
     }
     _write(path, header, body)
     store.ledger("memory.candidate", id=mid, kind=kind, project=store.safe_id(project_id))
@@ -193,6 +209,7 @@ def promote(project_id, candidate_id):
         "importance": _clamp(item.get("importance")),
         "usage": int(item.get("usage") or 0), "pinned": False,
         "receipts": list(item.get("receipts") or []),
+        "edges": _clean_edges(item.get("edges") or []),
         "promoted_from": os.path.relpath(item["path"], store.root()).replace("\\", "/"),
         "promoted_at": now, "created": item.get("created") or now, "updated": now,
     }
@@ -303,3 +320,98 @@ def delete_shared(item_id_value):
     os.remove(item["path"])
     store.ledger("memory.delete_shared", id=item_id_value, kind=item.get("kind"))
     return True
+
+
+def _find_item(item_id_value, project_id=""):
+    item = shared_item(item_id_value)
+    if item:
+        return item, "global"
+    if project_id:
+        for kind in ("fact", "lesson"):
+            path = os.path.join(_dir(project_id, kind), str(item_id_value) + ".md")
+            item = _read(path)
+            if item:
+                item["kind"] = kind
+                return item, "project"
+    return None, ""
+
+
+def link(item_id_value, target, edge_type, project_id=""):
+    """给条目加一条类型化边（supersedes / derived_from / used_in / refines / contradicts）。"""
+    edge_type = str(edge_type or "").strip()
+    if edge_type not in EDGE_TYPES:
+        raise ValueError(f"未知关联类型: {edge_type}")
+    target = str(target or "").strip()[:80]
+    if not target:
+        raise ValueError("关联目标不能为空")
+    if target == str(item_id_value):
+        raise ValueError("不能关联自己")
+    item, _scope = _find_item(item_id_value, project_id)
+    if item is None:
+        return None
+    edges = _clean_edges(item.get("edges") or [])
+    if not any(edge["type"] == edge_type and edge["to"] == target for edge in edges):
+        edges.append({"type": edge_type, "to": target})
+    item["edges"] = edges
+    item["updated"] = store.now()
+    _write(item["path"], {key: value for key, value in item.items()
+                          if key not in ("body", "path")}, item.get("body") or "")
+    try:
+        from . import index
+        index.set_edges(item_id_value, edges)
+    except Exception:  # noqa: BLE001 —— 索引更新失败不阻断文件事实
+        pass
+    store.ledger("memory.link", id=item_id_value, dst=target, type=edge_type)
+    return item
+
+
+def unlink(item_id_value, target, edge_type=""):
+    item, _scope = _find_item(item_id_value)
+    if item is None:
+        return None
+    edges = [edge for edge in _clean_edges(item.get("edges") or [])
+             if not (edge["to"] == str(target)
+                     and (not edge_type or edge["type"] == str(edge_type)))]
+    item["edges"] = edges
+    item["updated"] = store.now()
+    _write(item["path"], {key: value for key, value in item.items()
+                          if key not in ("body", "path")}, item.get("body") or "")
+    try:
+        from . import index
+        index.set_edges(item_id_value, edges)
+    except Exception:  # noqa: BLE001
+        pass
+    store.ledger("memory.unlink", id=item_id_value, dst=target, type=edge_type or "")
+    return item
+
+
+def related(item_id_value, limit=5):
+    from . import index
+    return index.related(item_id_value, limit)
+
+
+def retrievable(project_id, limit=30):
+    """未注入但可按需检索的条目：共享层未 pin + 项目层待晋升候选。"""
+    rows = []
+    for item in shared_items():
+        if item.get("pinned"):
+            continue
+        rows.append({"id": item.get("id"), "kind": item.get("kind"),
+                     "scope": "global", "status": item.get("status"),
+                     "title": item.get("title"), "body": item.get("body"),
+                     "confidence": item.get("confidence"),
+                     "importance": item.get("importance"),
+                     "pinned": False,
+                     "edges": len(_clean_edges(item.get("edges") or []))})
+    for item in candidates(project_id):
+        if item.get("status") != "candidate":
+            continue
+        rows.append({"id": item.get("id"), "kind": _normalize_kind(item.get("kind")),
+                     "scope": "project", "status": item.get("status"),
+                     "title": item.get("title"), "body": item.get("body"),
+                     "confidence": item.get("confidence"),
+                     "importance": item.get("importance"),
+                     "pinned": False,
+                     "edges": len(_clean_edges(item.get("edges") or []))})
+    rows.sort(key=score.pin_score, reverse=True)
+    return rows[:max(1, int(limit))]

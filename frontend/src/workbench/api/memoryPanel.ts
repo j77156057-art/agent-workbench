@@ -9,6 +9,7 @@ export interface MemoryPanelItem {
   pinned?: boolean
   confidence?: number
   importance?: number
+  edges?: Array<Record<string, unknown>>
   [key: string]: unknown
 }
 
@@ -51,6 +52,7 @@ export interface MemoryLayer {
   next?: string
   book?: { id?: string; title?: string; status?: string }
   retrievable?: number
+  retrievable_items?: Array<Record<string, unknown>>
 }
 
 export interface MemoryContextResult {
@@ -88,6 +90,9 @@ export const memoryPanelApi = {
   },
   patchItem(itemId: string, payload: { text?: string; pinned?: boolean }): Promise<Record<string, unknown>> {
     return call('PATCH', `/api/memory/items/${encodeURIComponent(itemId)}`, payload)
+  },
+  promoteItem(itemId: string): Promise<{ ok?: boolean; promoted?: boolean; reasons?: string[]; pinned?: boolean }> {
+    return call('POST', `/api/memory/items/${encodeURIComponent(itemId)}/promote`)
   },
   deleteItem(itemId: string): Promise<Record<string, unknown>> {
     return request(`/api/memory/items/${encodeURIComponent(itemId)}?confirm=true`, { method: 'DELETE' })

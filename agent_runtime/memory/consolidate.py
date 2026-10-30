@@ -136,7 +136,7 @@ def run_once(project_id, session_id, llm, episode=None):
     client, mode = _client(llm)
     try:
         output = client.chat([{"role": "user", "content": _prompt(ep)}],
-                             stream=False, temperature=0.2)
+                             stream=False, temperature=0.2, max_output_tokens=1024)
     except Exception as exc:  # noqa: BLE001
         metrics.record("consolidate.error", project=project_id, session=session_id,
                        episode=ep.get("id"), error=str(exc)[:200],

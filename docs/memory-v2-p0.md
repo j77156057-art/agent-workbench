@@ -1,6 +1,6 @@
 # 记忆系统 v2 · P0 规格
 
-> 状态：P0-1 ~ P0-5 全部落地（2026-10-31，flag 默认关）；P0 完成，P1 待做。
+> 状态：P0 全部落地 + P1 本轮四项完成（2026-10-31，flag 默认关）。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
 > 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
 
@@ -325,3 +325,37 @@ POST   /api/memory/reindex
 1. **上下文面板 P0 只展示"已注入"条目**；"可召回但未注入"留到 P1，UI 预留折叠位。
 2. **用户直接编辑共享记忆**后：`source=user_edit`、清空 `receipts`、`confidence=0.5`、晋升冻结直到重新验证；用户仍可显式 pin（用户意图高于自动门）。
 3. **"须知"不单独成层**：并入项目规则 + 开工检查清单，避免第四块常驻内容。
+
+## 16. P1 增量（2026-10-31）
+
+本轮完成四项：按需检索、关联边、画像文件化、真实成本校准。P0 的六个层与开关不变。
+
+### 16.1 按需检索（可召回未注入）
+- `index.search` 按关键词打分并叠加 pin 分，**按当前项目隔离**（`global` + 当前项目），项目候选（status=candidate）也在检索范围内；索引新增 `body` 与 `project` 列，旧索引自动补列。
+- `memory_search` 在 v2 开启时合并 v2 检索结果（带 `source=memory_v2`、scope、置信、关联来源），v2 关时输出保持旧形状。
+- 上下文面板「共享记忆」下新增「可召回但未注入」折叠区：共享未 pin 条目可直接 pin，项目候选可点「晋升」；晋升失败会展示具体原因（缺回执/缺采纳/通用化不通过）。
+
+### 16.2 关联边
+- 边类型：`supersedes / derived_from / used_in / refines / contradicts`；存储在条目 frontmatter 的 `edges`，索引同步到 edges 表。
+- 晋升保留边；`POST/DELETE /api/memory/items/{id}/links` 增删；检索对前 3 条结果做 1 跳扩展（同样受项目隔离约束），返回 `related_to`。
+- 语义/图数据库仍未引入：当前是关键词 + 1 跳，不做 Personalized PageRank。
+
+### 16.3 画像文件化
+- 新增 `profile/declared.md`（frontmatter 存声明字段）与 `profile/learned.json`（只读镜像）。
+- 首次读取从 SQLite 导入；旧接口/显式自我介绍更新 SQLite 后，下次读取按 `updated` 自动合并进文件；面板与 `PATCH /api/agent/profile` 在 v2 下写文件并镜像 SQLite。
+- v2 开启时 Agent 注入改用文件画像；关闭时仍用旧 SQLite 画像，行为不变。
+
+### 16.4 固化成本校准（真实 5 回合，qwen-plus）
+只读任务（README/docs/memory 模块/测试/总结），`qwen-plus`，v2 开、旧蒸馏关：
+
+| 项目 | 实测 |
+|---|---|
+| 主模型 | 11 calls / 477,962 in / 2,619 out / ¥0.1628（≈¥0.0326/轮） |
+| 固化 | 5 calls / 3,383 in / 816 out / ¥0.0043（≈¥0.0009/轮），p50 3.6s / p95 4.9s |
+| 记忆产物 | 5 个项目候选，0 晋升（无回执/采纳） |
+| 外推（按轮数） | 60 轮 ≈ ¥2.01；120 轮 ≈ ¥4.01；200 轮 ≈ ¥6.69；固化约占 2.5% |
+
+说明：这是**有界样本**，不是数小时长任务；外推假设每轮开销接近本样本（主模型 token 主要来自工具 schema/历史，长任务会波动）。固化已加 `max_output_tokens=1024`（qwen-plus 的 32768 上限下此前会 400），因此成本与延迟都受控；仍未设硬预算。
+
+### 16.5 仍未做
+语义向量召回（embeddings 已留列但未写入）、边的可视化编辑、多用户/团队隔离、跨设备同步。

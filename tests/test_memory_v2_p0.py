@@ -9,8 +9,10 @@ import unittest
 from unittest.mock import patch
 
 import agent as agent_mod
+import agent_memory as legacy_memory
 import agent_trace
 import config
+import tools as agent_tools
 from agent_runtime.memory import (
     constitution,
     context_panel,
@@ -24,6 +26,7 @@ from agent_runtime.memory import (
     migrate,
     promote,
     receipts,
+    profile,
     store,
     taskbook,
     turns,
@@ -51,6 +54,8 @@ class _MemBase(unittest.TestCase):
         os.environ["DOCMIND_MEMORY_V2"] = "1"
         self._runtime = dict(config._RUNTIME)
         config._RUNTIME.pop("memory_v2", None)
+        self._old_mem_db = legacy_memory.DB_PATH
+        legacy_memory.DB_PATH = os.path.join(self.tmp, "legacy_memory.sqlite3")
 
     def tearDown(self):
         for key, value in self._env.items():
@@ -60,6 +65,7 @@ class _MemBase(unittest.TestCase):
                 os.environ[key] = value
         config._RUNTIME.clear()
         config._RUNTIME.update(self._runtime)
+        legacy_memory.DB_PATH = self._old_mem_db
 
     def build(self, question="你好"):
         return agent_mod.Agent(llm=_LLM(), session_id="memv2")._build_messages(question)
@@ -680,6 +686,94 @@ class ContextPanelTests(_MemBase):
         item = promote.pinned_shared(1)[0]
         self.assertTrue(context_panel.delete_shared(item["id"]))
         self.assertEqual(promote.shared_items(), [])
+
+
+class ProfileFileTests(_MemBase):
+    def test_bootstrap_save_and_sqlite_merge(self):
+        legacy_memory.update_profile("local-user", {"display_name": "小李", "language": "中文"})
+        data = profile.load()
+        self.assertEqual(data["display_name"], "小李")
+        self.assertTrue(os.path.exists(profile.path()))
+        self.assertTrue(os.path.exists(profile.learned_path()))
+        self.assertIn("小李", profile.context())
+
+        profile.save({"notes": "喜欢简短回答"})
+        self.assertEqual(legacy_memory.get_profile().get("notes"), "喜欢简短回答")
+        legacy_memory.update_profile("local-user", {"location": "广州"})
+        self.assertEqual(profile.load()["location"], "广州")
+
+        view = context_panel.next_view("prj", "s1")
+        l1 = next(layer for layer in view["layers"] if layer["key"] == "L1")
+        self.assertEqual(l1["profile"]["display_name"], "小李")
+        self.assertIn("小李", l1["text"])
+
+
+class SearchEdgeTests(_MemBase):
+    def _shared(self, text, *, importance=0.6, task="t"):
+        rid = receipts.record("prj", type="verify", result="pass")
+        promote.create_candidate("prj", "fact", text, importance=importance,
+                                 receipt_ids=[rid], task=task)
+        feedback.record("prj", session="s1", stars=5, task=task)
+        promote.sweep("prj")
+        return next(item for item in promote.shared_items() if item["body"] == text)
+
+    def test_keyword_search_expands_one_hop(self):
+        a = self._shared("回归失败时先看日志，再决定是否重跑", task="ta")
+        b = self._shared("退出码非零先核对命令参数", task="tb")
+        promote.link(a["id"], b["id"], "refines")
+        index.rebuild(verify=True)
+        rows = index.search("回归", limit=5)
+        ids = [row["id"] for row in rows]
+        self.assertIn(a["id"], ids)
+        self.assertIn(b["id"], ids)
+        related = next(row for row in rows if row["id"] == b["id"])
+        self.assertEqual(related.get("related_to"), a["id"])
+
+    def test_retrievable_list_and_promotion_reasons(self):
+        a = self._shared("共享但未 pin 的结论：先复现再修复", task="ta")
+        pending = promote.create_candidate("prj", "fact", "项目候选：还没过晋升门",
+                                           importance=0.6)
+        rows = promote.retrievable("prj", 30)
+        self.assertTrue(any(row["id"] == a["id"] and row["scope"] == "global" for row in rows))
+        self.assertTrue(any(row["id"] == pending["id"] and row["scope"] == "project" for row in rows))
+        view = context_panel.next_view("prj", "s1")
+        l2 = next(layer for layer in view["layers"] if layer["key"] == "L2")
+        self.assertTrue(any(item["id"] == a["id"] for item in l2["retrievable_items"]))
+        result = promote.promote("prj", pending["id"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["reasons"])
+
+    def test_search_is_project_scoped(self):
+        mine = self._shared("共享条目：先复现再修复，能减少盲目改动", task="ta")
+        other = promote.create_candidate("prj-other", "fact",
+                                         "别的项目候选：先复现再修复的私有结论",
+                                         importance=0.8)
+        index.rebuild(verify=True)
+        rows = index.search("复现", project="prj")
+        self.assertTrue(any(row["id"] == mine["id"] for row in rows))
+        self.assertFalse(any(row["id"] == other["id"] for row in rows))
+        rows_other = index.search("复现", project="prj-other")
+        self.assertTrue(any(row["id"] == other["id"] for row in rows_other))
+
+    def test_memory_search_merges_v2(self):
+        a = self._shared("共享检索命中：先复现再修复", task="ta")
+        index.rebuild()
+        out = json.loads(agent_tools.memory_search("复现"))
+        self.assertTrue(any(item.get("source") == "memory_v2" and item.get("id") == a["id"]
+                            for item in out["items"]))
+
+    def test_promotion_preserves_edges(self):
+        a = self._shared("关联目标条目：先写测试再合并，能降低回归", task="ta")
+        rid = receipts.record("prj", type="verify", result="pass")
+        promote.create_candidate("prj", "fact", "被关联的新结论：测试先行", importance=0.8,
+                                 receipt_ids=[rid], task="tb",
+                                 edges=[{"type": "refines", "to": a["id"]}])
+        feedback.record("prj", session="s1", stars=5, task="tb")
+        promote.sweep("prj")
+        fresh = next(item for item in promote.shared_items()
+                     if item["body"].startswith("被关联"))
+        self.assertTrue(any(edge.get("to") == a["id"] and edge.get("type") == "refines"
+                            for edge in fresh["edges"]))
 
 
 class IndexTests(_MemBase):
