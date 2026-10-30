@@ -20,6 +20,7 @@ import contextvars
 import tempfile
 import base64
 import io
+import ipaddress
 import queue
 import threading
 from pathlib import Path
@@ -3911,6 +3912,23 @@ class _RealtimeUpload:
         return self.file.seek(offset)
 
 
+def _host_header_is_local(host: str) -> bool:
+    """Host 头是回环名或 IP 字面量才可走「Origin == Host」同源判定。
+
+    DNS rebinding 会把攻击者域名解析到 127.0.0.1：此时浏览器发出的 Origin 与
+    Host 天然相同（都是攻击者域名），只比字符串的闸门等于没设。域名形式的来源
+    必须进 DOCMIND_CORS_ORIGINS 显式放行；IP/回环访问仍按同源处理。
+    """
+    name = (urlsplit("//" + (host or "")).hostname or "").rstrip(".").lower()
+    if name in {"localhost", "::1"}:
+        return True
+    try:
+        ipaddress.ip_address(name)
+        return True
+    except ValueError:
+        return False
+
+
 def _origin_allowed(origin: str, host: str) -> bool:
     """同源放行；`DOCMIND_CORS_ORIGINS` 里显式列出的来源也放行。
 
@@ -3922,7 +3940,8 @@ def _origin_allowed(origin: str, host: str) -> bool:
         return True
     parsed = urlsplit(origin)
     host = (host or "").split(",", 1)[0].strip().lower()
-    if parsed.scheme in {"http", "https"} and parsed.netloc.lower() == host:
+    if (parsed.scheme in {"http", "https"} and parsed.netloc.lower() == host
+            and _host_header_is_local(host)):
         return True
     return origin in DOCMIND_CORS_ORIGINS and origin != "*"
 
