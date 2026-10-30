@@ -20,6 +20,9 @@ class RunLockStabilityTests(unittest.TestCase):
         for key in list(api._RUN_LOCKS):
             if key.startswith("lock-test-"):
                 api._RUN_LOCKS.pop(key, None)
+        for key in list(api._RUN_LOCK_REFS):
+            if key.startswith("lock-test-"):
+                api._RUN_LOCK_REFS.pop(key, None)
 
     def test_concurrent_callers_share_one_lock(self):
         for round_no in range(20):

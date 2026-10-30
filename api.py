@@ -349,13 +349,33 @@ _SESSION_AGENTS: dict = {}
 # 杜绝两条线程并发写同一 Agent 的 self.history / _sessions.save（会话文件交错损坏）。
 _ACTIVE_RUN: dict[str, dict] = {}
 _RUN_LOCKS: dict[str, "threading.Lock"] = {}
+# 每个 run 锁的使用计数；最后一位离开时删掉锁，避免 session/project 多了以后
+# _RUN_LOCKS 只增不删。计数必须与建锁在同一 guard 内原子更新。
+_RUN_LOCK_REFS: dict[str, int] = {}
 _RUN_LOCKS_GUARD = threading.Lock()
 
 def _run_lock_for(key: str) -> "threading.Lock":
     # 惰性建锁必须原子：两个并发请求各自「查不到 -> 新建」会拿到两把不同的锁，
     # 同会话串行化直接失效（两轮 run 并发写同一 Agent.history）。
     with _RUN_LOCKS_GUARD:
-        return _RUN_LOCKS.setdefault(key, threading.Lock())
+        lock = _RUN_LOCKS.setdefault(key, threading.Lock())
+        _RUN_LOCK_REFS[key] = _RUN_LOCK_REFS.get(key, 0) + 1
+        return lock
+
+
+def _release_run_lock(key: str) -> None:
+    """释放一次 `_run_lock_for` 的引用；最后一个引用离开时删除锁。"""
+    with _RUN_LOCKS_GUARD:
+        refs = _RUN_LOCK_REFS.get(key, 0) - 1
+        if refs > 0:
+            _RUN_LOCK_REFS[key] = refs
+            return
+        _RUN_LOCK_REFS.pop(key, None)
+        lock = _RUN_LOCKS.get(key)
+        # refs 归零时锁不应还被持有/等待（等待者也会持有一个 ref）；保守起见
+        # 仍检查 locked()，避免直接调用方长期持锁时被误删。
+        if lock is not None and not lock.locked():
+            _RUN_LOCKS.pop(key, None)
 
 
 class SessionBusyError(RuntimeError):
@@ -389,28 +409,31 @@ def _session_run_scope(key: str, worker_stop: "threading.Event", worker: "thread
     （实测 3 进程各 50 轮只剩 37）。
     """
     lock = _run_lock_for(key)
-    prev = _ACTIVE_RUN.get(key)
-    if prev is not None and prev.get("thread") is not None and prev["thread"].is_alive() and prev["thread"] is not worker:
-        prev["stop"].set()
-        prev["thread"].join(timeout=_SESSION_JOIN_TIMEOUT_S)
-        if prev["thread"].is_alive():
-            # 不无限挂住：上一轮可能卡在不可取消的工具里。清掉 stop 标志没用，
-            # 它仍会继续收尾；这里只让新请求明确失败，用户可稍后重试/停止上一轮。
-            raise SessionStillRunningError("session_still_running:%s" % key)
-    with lock:
-        session_lock = CrossProcessFileLock(_session_lease_path(key), timeout=1.0)
-        try:
-            session_lock.acquire()
-        except TimeoutError as exc:
-            raise SessionBusyError("session_busy:%s" % key) from exc
-        _ACTIVE_RUN[key] = {"stop": worker_stop, "thread": worker}
-        try:
-            yield
-        finally:
-            cur = _ACTIVE_RUN.get(key)
-            if cur is not None and cur.get("thread") is worker:
-                _ACTIVE_RUN.pop(key, None)
-            session_lock.release()
+    try:
+        prev = _ACTIVE_RUN.get(key)
+        if prev is not None and prev.get("thread") is not None and prev["thread"].is_alive() and prev["thread"] is not worker:
+            prev["stop"].set()
+            prev["thread"].join(timeout=_SESSION_JOIN_TIMEOUT_S)
+            if prev["thread"].is_alive():
+                # 不无限挂住：上一轮可能卡在不可取消的工具里。清掉 stop 标志没用，
+                # 它仍会继续收尾；这里只让新请求明确失败，用户可稍后重试/停止上一轮。
+                raise SessionStillRunningError("session_still_running:%s" % key)
+        with lock:
+            session_lock = CrossProcessFileLock(_session_lease_path(key), timeout=1.0)
+            try:
+                session_lock.acquire()
+            except TimeoutError as exc:
+                raise SessionBusyError("session_busy:%s" % key) from exc
+            _ACTIVE_RUN[key] = {"stop": worker_stop, "thread": worker}
+            try:
+                yield
+            finally:
+                cur = _ACTIVE_RUN.get(key)
+                if cur is not None and cur.get("thread") is worker:
+                    _ACTIVE_RUN.pop(key, None)
+                session_lock.release()
+    finally:
+        _release_run_lock(key)
 
 
 # ④ 重定向系统提示：声明「上轮已完成工作/推理保留、以新指令为准」，对应 Hermes

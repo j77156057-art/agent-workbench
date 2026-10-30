@@ -54,6 +54,14 @@ class SessionRunLeaseTests(unittest.TestCase):
             release.set()
             previous.join(2)
 
+    def test_run_lock_is_evicted_after_scope(self):
+        key = "session-lock-evict-%d" % os.getpid()
+        with api._session_run_scope(key, threading.Event(), threading.current_thread()):
+            self.assertIn(key, api._RUN_LOCKS)
+            self.assertEqual(api._RUN_LOCK_REFS.get(key), 1)
+        self.assertNotIn(key, api._RUN_LOCKS)
+        self.assertNotIn(key, api._RUN_LOCK_REFS)
+
     def test_busy_error_has_a_user_facing_message(self):
         source = Path(api.__file__).read_text(encoding="utf-8")
         self.assertIn("另一个 Agent 工作台实例", source)
