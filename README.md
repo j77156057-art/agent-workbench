@@ -188,7 +188,7 @@ cp .env.example .env        # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 # 3. 后端
 .venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 
-# 4. 前端产物（工作台页 /workbench 依赖它；问答页不受影响）
+# 4. 前端产物（/ 与 /workbench 都依赖它；未构建时页面会提示先执行本步）
 cd frontend && npm ci && npm run build     # 产物 -> ../web
 
 # 5. 打开

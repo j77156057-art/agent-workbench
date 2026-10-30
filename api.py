@@ -5427,7 +5427,18 @@ async def favicon():
 
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(PROJECT_WEB_DIR, "index.html"))
+    """RAG 问答页（Vite 多页构建产物 web/index.html，由 frontend/ 工程构建）。
+
+    源码态若尚未构建前端，返回明确提示而不是让 FileResponse 抛 500 ——
+    空白机器按 README 先起后端、后构建前端时，默认打开的 `/` 会先被访问到。
+    """
+    page = os.path.join(PROJECT_WEB_DIR, "index.html")
+    if not os.path.isfile(page):
+        return JSONResponse(
+            {"ok": False, "error": "问答页前端未构建：请先在 frontend/ 目录执行 npm ci && npm run build（或直接运行 启动DocMind.bat）。"},
+            status_code=404,
+        )
+    return FileResponse(page)
 
 
 @app.get("/api/dev/browser/pages")

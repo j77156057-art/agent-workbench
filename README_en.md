@@ -186,7 +186,7 @@ cp .env.example .env        # set LLM_PROVIDER=qwen and fill DASHSCOPE_API_KEY
 # 3. Backend
 .venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 
-# 4. Frontend bundle (the /workbench page needs it; the Q&A page does not)
+# 4. Frontend bundle (both / and /workbench need it; until built, those pages show a build hint)
 cd frontend && npm ci && npm run build     # output -> ../web
 
 # 5. Open

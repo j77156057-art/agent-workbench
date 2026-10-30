@@ -13,7 +13,9 @@
 import importlib
 import os
 import re
+import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -91,6 +93,21 @@ class DesktopEntryTests(unittest.TestCase):
         for path in ('/workbench', '/workbench.html', '/trace', '/trace.html'):
             self.assertEqual(client.get(path, follow_redirects=True).status_code, 200,
                              f'{path} 应最终 200')
+
+    def test_missing_index_page_returns_actionable_error(self):
+        """未构建前端时 `/` 必须给出构建指引，不能 500。
+
+        空白机器按 README 先起后端、后构建前端时，默认入口 `/` 会先被访问；
+        旧实现直接 FileResponse 一个不存在的文件，浏览器看到的是一屏
+        Internal Server Error，而隔壁 `/workbench` 早有明确提示。
+        """
+        from fastapi.testclient import TestClient
+        import api
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(api, "PROJECT_WEB_DIR", tmp):
+                resp = TestClient(api.app).get("/")
+        self.assertEqual(resp.status_code, 404)
+        self.assertIn("npm run build", resp.json().get("error", ""))
 
     def test_workbench_links_back_to_question_page(self):
         path = os.path.join(ROOT, 'frontend', 'src', 'workbench', 'App.vue')
