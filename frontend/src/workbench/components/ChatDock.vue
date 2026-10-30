@@ -46,6 +46,7 @@ const WorkflowCard = defineAsyncComponent(() => import('./WorkflowCard.vue'))
 import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
 import TaskFeedbackBar from './TaskFeedbackBar.vue'
+import MemoryContextPanel from './MemoryContextPanel.vue'
 import FileDiffDialog from './FileDiffDialog.vue'
 
 import type { WorkflowSummary } from '../api'
@@ -334,6 +335,9 @@ async function submitFeedback(stars: number) {
 function dismissFeedback() {
   if (feedbackTarget.value) feedbackTarget.value.feedbackSubmitted = true
 }
+
+// 记忆 v2 上下文面板：右侧抽屉，可查看/编辑各层实际注入内容。
+const memoryOpen = ref(false)
 let chatProject = getProjectId(), chatSession = currentSessionId(), chatEpoch = 0
 /** 每个项目各自的会话 id：会话在服务端终身归属首次使用的项目，
  *  切项目继续用旧 id 会把 B 的对话写进 A（A 能看到），B 自己刷新后又看不到。 */
@@ -2177,6 +2181,7 @@ const webTitle = computed(() => webOn.value
         @cycle-thinking="cycleThinking"
         @open-model-switcher="openModelSwitcher"
         @toggle-voice="toggleVoice"
+        @memory="memoryOpen = true"
       />
 
     <WorkflowMembersDock
@@ -2184,6 +2189,14 @@ const webTitle = computed(() => webOn.value
       :members="wfActiveTeam?.members || []"
       @focus="focusWfMember"
     />
+
+    <Teleport to="body">
+      <MemoryContextPanel
+        :visible="memoryOpen"
+        :session-id="getSessionId()"
+        @close="memoryOpen = false"
+      />
+    </Teleport>
     <ModelSettingsDialog
       v-if="settingsOpen"
       :visible="settingsOpen"

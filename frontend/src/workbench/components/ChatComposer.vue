@@ -38,6 +38,7 @@ const emit = defineEmits<{
   (e: 'images-picked', files: FileList | File[]): void
   (e: 'video-picked', file: File): void
   (e: 'remove-image', index: number): void
+  (e: 'memory'): void
   (e: 'update:webOn', v: boolean): void
   (e: 'toggle-thinking'): void
   (e: 'cycle-thinking'): void
@@ -181,6 +182,21 @@ function onVideoPick(ev: Event) {
         <span>深度思考</span>
         <span class="cd-chip-badge">{{ thinkingMode === 'unknown' ? '待确认' : '不支持' }}</span>
       </span>
+
+      <!-- 记忆 v2：打开右侧上下文面板，查看/编辑各层实际注入的内容 -->
+      <button
+        class="cd-chip"
+        type="button"
+        title="查看本窗口装载的记忆并直接编辑"
+        aria-label="上下文记忆"
+        @click="emit('memory')"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12">
+          <path d="M2 1.5h5.2a1.3 1.3 0 0 1 1.3 1.3v7.7H3.3A1.3 1.3 0 0 1 2 9.2z" fill="none" stroke="currentColor" stroke-width="1"/>
+          <path d="M3.5 3.8h4M3.5 5.8h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+        </svg>
+        <span>记忆</span>
+      </button>
 
       <!-- 上下文窗口占用：按当前模型真实窗口估算，65% 转黄、80%（压缩触发线）转红 -->
       <span

@@ -413,6 +413,14 @@ const memoryLearn = ref(false)
 const learnSaving = ref(false)
 const learnSaved = ref('')
 
+// 分层记忆 v2：默认关；开启后宪法/结构化回合/任务书/共享记忆/上下文面板生效。
+const memoryV2 = ref(false)
+const memoryV2Saving = ref(false)
+const memoryV2Saved = ref('')
+const memoryModel = ref('')
+const memoryModelSaving = ref(false)
+const memoryModelSaved = ref('')
+
 /** 上界只从载荷取。载荷没到（还在加载 / 老后端没有 ranges）时返回 0，
  *  调用方据此**不设 max** —— 回落到一个硬编码数字就等于把刚删掉的第二份拷贝请回来。 */
 function capacityMax(field: CapacityField): number {
@@ -629,6 +637,9 @@ async function loadConfig() {
     wfApiUrl.value = c.web_fetch_api_url || ''
     memoryOptimized.value = !!c.memory_optimized
     memoryLearn.value = !!c.memory_learn
+    const mem = await memorySettingsApi.get()
+    memoryV2.value = !!mem.memory_v2
+    memoryModel.value = mem.memory_model || ''
   } catch (e) {
     errorMsg.value = (e as { message?: string }).message || '读取配置失败'
   } finally {
@@ -680,6 +691,53 @@ async function toggleLearn() {
     errorMsg.value = (e as { message?: string }).message || '切换失败'
   } finally {
     learnSaving.value = false
+  }
+}
+
+// 切换「分层记忆 v2」：默认关；开关只影响新路径，关闭时提示词与旧版逐字节一致。
+async function toggleMemoryV2() {
+  if (memoryV2Saving.value) return
+  const want = !memoryV2.value
+  memoryV2Saving.value = true
+  memoryV2Saved.value = ''
+  errorMsg.value = ''
+  try {
+    const res = await memorySettingsApi.saveV2(want)
+    if (res.ok === false) {
+      errorMsg.value = res.error || '切换失败'
+      return
+    }
+    memoryV2.value = !!res.memory_v2
+    memoryV2Saved.value = memoryV2.value
+      ? '已开启：宪法常驻、结构化回合、任务书与共享记忆生效'
+      : '已关闭：回到旧行为（提示词逐字节一致）'
+  } catch (e) {
+    errorMsg.value = (e as { message?: string }).message || '切换失败'
+  } finally {
+    memoryV2Saving.value = false
+  }
+}
+
+// 固化模型：空 = 跟随主模型；只允许同 provider，避免把 Key 发到别家端点。
+async function saveMemoryModel() {
+  if (memoryModelSaving.value) return
+  memoryModelSaving.value = true
+  memoryModelSaved.value = ''
+  errorMsg.value = ''
+  try {
+    const res = await memorySettingsApi.saveModel(memoryModel.value.trim())
+    if (res.ok === false) {
+      errorMsg.value = res.error || '保存失败'
+      return
+    }
+    memoryModel.value = res.memory_model || ''
+    memoryModelSaved.value = memoryModel.value
+      ? `已保存：固化使用 ${memoryModel.value}`
+      : '已改为跟随主模型'
+  } catch (e) {
+    errorMsg.value = (e as { message?: string }).message || '保存失败'
+  } finally {
+    memoryModelSaving.value = false
   }
 }
 
@@ -2046,6 +2104,24 @@ async function powerAction(action: 'on' | 'off') {
             </label>
             <p v-if="memorySaving" class="sv-field-sub">正在切换…</p>
             <p v-else-if="memorySaved" class="sv-ok">{{ memorySaved }}</p>
+            <div class="sv-sep"></div>
+            <h4 class="sv-h4">分层记忆 v2（实验）</h4>
+            <p class="sv-hint">开启后：宪法常驻、结构化回合/钩子/回执、任务书、共享记忆晋升与上下文面板生效。关闭时完全回到旧行为（提示词逐字节一致）。</p>
+            <label class="sv-toggle-row">
+              <input type="checkbox" :checked="memoryV2" :disabled="memoryV2Saving" @change="toggleMemoryV2" />
+              <span>启用分层记忆 v2</span>
+            </label>
+            <p v-if="memoryV2Saving" class="sv-field-sub">正在切换…</p>
+            <p v-else-if="memoryV2Saved" class="sv-ok">{{ memoryV2Saved }}</p>
+            <label class="sv-label">固化模型（留空 = 跟随主模型）</label>
+            <div class="sv-actions">
+              <input v-model="memoryModel" class="sv-input" placeholder="例如 deepseek:deepseek-flash" spellcheck="false" />
+              <button class="sv-btn sv-primary" :disabled="memoryModelSaving" @click="saveMemoryModel">
+                {{ memoryModelSaving ? '保存中…' : '保存' }}
+              </button>
+            </div>
+            <p class="sv-hint">只允许和主模型同一服务商；不同厂商会回退主模型。固化开销见 data 目录的 metrics。</p>
+            <p v-if="memoryModelSaved" class="sv-ok">{{ memoryModelSaved }}</p>
             <div class="sv-sep"></div>
             <h4 class="sv-h4">学习习惯（透明统计）</h4>
             <p class="sv-hint">开启后，系统只从你能看见的信号里做纯计数——你明确提出的回答要求（如「简洁点」「用中文」）、你本轮实际改动的文件类型、常用到的能力——形成一份建议级的使用习惯，帮 Agent 更贴合你的偏好。它不调用模型、不联网、绝不推断任何隐藏个人信息；学到的内容永远只是参考，你手动填写的画像优先级更高，且随时可逐条查看或一键清空。关闭则完全停止统计、也不再注入，行为与改动前逐字一致。默认关闭，切换即时生效并落盘，重启后仍保持。</p>

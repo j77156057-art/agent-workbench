@@ -1,6 +1,6 @@
 # 记忆系统 v2 · P0 规格
 
-> 状态：P0-1 ~ P0-4 已落地（2026-10-31，flag 默认关）；P0-5 待做。
+> 状态：P0-1 ~ P0-5 全部落地（2026-10-31，flag 默认关）；P0 完成，P1 待做。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
 > 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
 
@@ -240,7 +240,9 @@ PATCH  /api/memory/taskbook/items/{key} {text?, done?, order?}
 POST   /api/memory/reindex
 ```
 
-前端：`ChatComposer.vue` 增加 `memory` 事件；新增 `MemoryContextPanel.vue`；`frontend/src/workbench/api/memory.ts`。
+前端：`ChatComposer.vue` 增加 `memory` 事件；新增 `MemoryContextPanel.vue`；`frontend/src/workbench/api/memoryPanel.ts`。
+
+**P0-5 实现说明**：面板已落地——输入区「记忆」按钮打开右侧抽屉（Teleport 到 body，避免被对话台定位上下文裁切），按层显示字符/预算，支持「下一回合 / 上一回合」双视图；L0 宪法、L1 画像、L2 共享条目、L3 任务书、L4 钩子可直接编辑，episodes / 错误账本 / 项目规则 / 历史摘要只读。L1 编辑沿用现有画像接口（SQLite），文件化的 `profile/declared.md` 留到 P1。"可召回但未注入"按 §15 决策留到 P1，面板只显示已注入项。
 
 ## 10. 固化模型设置
 
@@ -250,6 +252,8 @@ POST   /api/memory/reindex
 - 计量记录**实际生效模型**；报告单列"固化成本占比"。
 
 **P0-4 实现说明**：配置层已支持 `get_memory_model/set_memory_model`（runtime 优先、env `DOCMIND_MEMORY_MODEL` 回落、重启恢复）；设置页下拉在 P0-5 补。显式模型只在同 provider 下生效，避免把 A 家的 Key 发到 B 家端点。
+
+**P0-5 实现说明**：设置页「智能体」分区新增「分层记忆 v2」开关与固化模型输入（留空 = 跟随主模型），切换即时落盘；浏览器实测开关回显与 `GET/POST /api/memory-settings` 一致。
 
 ## 11. 迁移
 
@@ -298,6 +302,8 @@ POST   /api/memory/reindex
 11. 任务书兜底：15 步无任务书 → 自动草稿
 12. 上下文面板：显示内容与 turn trace `injection` 对账一致；编辑下回合生效；409 冲突；密钥拒绝；删除需确认
 13. 固化模型设置：默认跟随主模型；显式模型生效；不可用回退并告警
+
+**P0 完成验收（2026-10-31）**：后端 **271 passed**（memory v2 53 + trace/记忆/prompt/plan/hooks/API）；前端 **158** 个 node 测试通过，`vue-tsc` 与 `vite build` 通过。Edge 实测：上下文面板 7 层显示、宪法编辑保存后 `version 0→1` 且 `raw` 持久化、钩子添加/删除、失败回执拦截与用户覆盖；设置页 v2 开关回显与服务端一致；普通回答不弹满意度卡，交付型回合弹并成功写入 `feedback.jsonl`。
 
 ## 14. 接线点与实施顺序
 

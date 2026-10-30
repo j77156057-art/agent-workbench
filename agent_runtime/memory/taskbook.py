@@ -295,5 +295,28 @@ def reopen(project_id, key):
         return item
 
 
+def edit_text(project_id, key, text):
+    with _LOCK:
+        book = _load(project_id)
+        item = next((row for row in book["items"] if row.get("key") == key), None)
+        if item is None:
+            return None
+        value = str(text or "").strip()[:MAX_TEXT]
+        if not value:
+            raise ValueError("条目内容不能为空")
+        item["text"] = value
+        item["updated"] = store.now()
+        _save(project_id, book)
+        _event(project_id, "edit", task=book["id"], key=key)
+        return item
+
+
+def info(project_id):
+    book = _load(project_id)
+    return {"id": book.get("id"), "title": book.get("title"),
+            "status": book.get("status"), "updated": book.get("updated"),
+            "items": book.get("items") or []}
+
+
 def render(project_id):
     return _render_md(_load(project_id))

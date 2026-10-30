@@ -255,3 +255,51 @@ def set_shared_pinned(item_id_value, pinned):
         store.ledger("memory.pin", id=item_id_value, pinned=bool(pinned))
         return item
     return None
+
+
+def shared_item(item_id_value):
+    for kind in ("fact", "lesson"):
+        item = _read(os.path.join(shared_dir(kind), str(item_id_value) + ".md"))
+        if item:
+            item["kind"] = _normalize_kind(item.get("kind") or kind)
+            return item
+    return None
+
+
+def secret_hit(text):
+    return bool(_SECRET.search(str(text or "")))
+
+
+def edit_shared(item_id_value, *, text=None, pinned=None):
+    """用户直接编辑共享条目：标 user_edit、清空回执、置信回 0.5（编辑即未验证）。"""
+    item = shared_item(item_id_value)
+    if item is None:
+        return None
+    now = store.now()
+    if text is not None:
+        body = str(text).strip()[:MAX_TEXT]
+        if not body:
+            raise ValueError("正文不能为空")
+        if secret_hit(body):
+            raise ValueError("内容含密钥/令牌，未保存")
+        item["body"] = body
+        item["source"] = "user_edit"
+        item["receipts"] = []
+        item["confidence"] = 0.5
+        item["updated"] = now
+    if pinned is not None:
+        item["pinned"] = bool(pinned)
+        item["updated"] = now
+    _write(item["path"], {key: value for key, value in item.items()
+                          if key not in ("body", "path")}, item["body"])
+    store.ledger("memory.edit_shared", id=item_id_value, pinned=item.get("pinned"))
+    return item
+
+
+def delete_shared(item_id_value):
+    item = shared_item(item_id_value)
+    if item is None:
+        return False
+    os.remove(item["path"])
+    store.ledger("memory.delete_shared", id=item_id_value, kind=item.get("kind"))
+    return True

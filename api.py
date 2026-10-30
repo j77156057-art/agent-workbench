@@ -40,7 +40,7 @@ SSE_HEADERS = {
 
 from typing import Any, Optional
 
-from fastapi import FastAPI, File, Form, UploadFile, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, UploadFile, Request, Response, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -83,6 +83,10 @@ from config import (
     set_memory_optimized,
     get_memory_learn,
     set_memory_learn,
+    get_memory_v2,
+    set_memory_v2,
+    get_memory_model,
+    set_memory_model,
     get_voice_config,
     effective_voice_config,
     set_voice_config,
@@ -4926,6 +4930,183 @@ async def feedback_task_get_ep(session_id: str = "", task: str = ""):
             "enabled": bool(get_memory_v2())}
 
 
+# ---------------- 分层记忆 v2 · 上下文面板 ----------------
+async def _memory_body(request: Request) -> dict:
+    try:
+        value = await request.json()
+    except Exception:  # noqa: BLE001
+        value = {}
+    return value if isinstance(value, dict) else {}
+
+
+def _memory_require() -> None:
+    if not get_memory_v2():
+        raise HTTPException(status_code=409, detail="记忆 v2 未启用")
+
+
+@app.get("/api/memory/context")
+async def memory_context_ep(session_id: str = "", mode: str = "next"):
+    from agent_runtime.memory import context_panel
+    if not get_memory_v2():
+        return {"ok": False, "enabled": False, "error": "记忆 v2 未启用", "layers": []}
+    project = _request_project_id() or "default"
+    if mode == "last":
+        return context_panel.last_view(session_id)
+    return context_panel.next_view(project, session_id)
+
+
+@app.put("/api/memory/constitution")
+async def memory_constitution_ep(request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    from agent_runtime.memory import constitution, context_panel
+    try:
+        out = context_panel.save_constitution(str(body.get("text") or ""),
+                                              body.get("base_version"))
+    except constitution.VersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, **out}
+
+
+@app.put("/api/memory/profile")
+async def memory_profile_ep(request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    from agent_runtime.memory import context_panel
+    try:
+        profile = context_panel.update_profile(body, _request_user_id(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "profile": profile}
+
+
+@app.patch("/api/memory/items/{item_id}")
+async def memory_item_ep(item_id: str, request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    from agent_runtime.memory import context_panel
+    try:
+        item = context_panel.edit_shared(item_id, text=body.get("text"),
+                                         pinned=body.get("pinned"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到共享记忆")
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/memory/items/{item_id}")
+async def memory_item_delete_ep(item_id: str, confirm: bool = False):
+    _memory_require()
+    if not confirm:
+        raise HTTPException(status_code=400, detail="删除需要 confirm=true")
+    from agent_runtime.memory import context_panel
+    return {"ok": context_panel.delete_shared(item_id)}
+
+
+@app.post("/api/memory/hooks")
+async def memory_hook_add_ep(request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    session = str(body.get("session_id") or "").strip()
+    if not session:
+        raise HTTPException(status_code=400, detail="缺少 session_id")
+    from agent_runtime.memory import context_panel
+    try:
+        row = context_panel.add_hook(
+            _request_project_id() or "default", session,
+            str(body.get("kind") or "fact"), str(body.get("text") or ""),
+            pinned=body.get("pinned", True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "item": row}
+
+
+@app.patch("/api/memory/hooks/{item_id}")
+async def memory_hook_ep(item_id: str, request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    session = str(body.get("session_id") or "").strip()
+    if not session:
+        raise HTTPException(status_code=400, detail="缺少 session_id")
+    from agent_runtime.memory import context_panel
+    try:
+        row = context_panel.edit_hook(
+            _request_project_id() or "default", session, item_id,
+            text=body.get("text"), pinned=body.get("pinned"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="未找到钩子")
+    return {"ok": True, "item": row}
+
+
+@app.delete("/api/memory/hooks/{item_id}")
+async def memory_hook_delete_ep(item_id: str, session_id: str = "", confirm: bool = False):
+    _memory_require()
+    if not confirm:
+        raise HTTPException(status_code=400, detail="删除需要 confirm=true")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="缺少 session_id")
+    from agent_runtime.memory import context_panel
+    return {"ok": context_panel.delete_hook(
+        _request_project_id() or "default", session_id, item_id)}
+
+
+@app.patch("/api/memory/taskbook/items/{key}")
+async def memory_task_item_ep(key: str, request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    from agent_runtime.memory import context_panel
+    try:
+        item = context_panel.edit_task_item(
+            _request_project_id() or "default", key, str(body.get("text") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到任务条目")
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/memory/taskbook/items/{key}/complete")
+async def memory_task_complete_ep(key: str, request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    receipt_ids = body.get("receipt_ids") or []
+    if not isinstance(receipt_ids, list):
+        receipt_ids = []
+    from agent_runtime.memory import context_panel
+    try:
+        item = context_panel.complete_task_item(
+            _request_project_id() or "default", key,
+            receipt_ids=[str(rid) for rid in receipt_ids][:20],
+            merge=str(body.get("merge") or ""), override=bool(body.get("override")))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到任务条目")
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/memory/taskbook/items/{key}/reopen")
+async def memory_task_reopen_ep(key: str):
+    _memory_require()
+    from agent_runtime.memory import context_panel
+    item = context_panel.reopen_task_item(_request_project_id() or "default", key)
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到任务条目")
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/memory/reindex")
+async def memory_reindex_ep():
+    _memory_require()
+    from agent_runtime.memory import context_panel
+    return {"ok": True, **context_panel.reindex()}
+
+
 @app.get("/api/context")
 async def context_usage_ep(session_id: str = ""):
     """当前会话的上下文窗口占用（供刷新页面后恢复「上下文已用 N%」指示）。
@@ -5830,12 +6011,16 @@ async def set_agent_capacity(req: AgentCapacityReq):
 class MemorySettingsReq(BaseModel):
     memory_optimized: Optional[bool] = None
     memory_learn: Optional[bool] = None
+    memory_v2: Optional[bool] = None
+    memory_model: Optional[str] = None
 
 
 @app.get("/api/memory-settings")
 async def get_memory_settings():
     return {"ok": True, "memory_optimized": get_memory_optimized(),
-            "memory_learn": get_memory_learn()}
+            "memory_learn": get_memory_learn(),
+            "memory_v2": get_memory_v2(),
+            "memory_model": get_memory_model()}
 
 
 @app.post("/api/memory-settings")
@@ -5844,8 +6029,14 @@ async def set_memory_settings(req: MemorySettingsReq):
         set_memory_optimized(req.memory_optimized)
     if req.memory_learn is not None:
         set_memory_learn(req.memory_learn)
+    if req.memory_v2 is not None:
+        set_memory_v2(req.memory_v2)
+    if req.memory_model is not None:
+        set_memory_model(req.memory_model)
     return {"ok": True, "memory_optimized": get_memory_optimized(),
-            "memory_learn": get_memory_learn()}
+            "memory_learn": get_memory_learn(),
+            "memory_v2": get_memory_v2(),
+            "memory_model": get_memory_model()}
 
 
 # ---- 网络搜索 / URL 抓取设置（专用端点）----

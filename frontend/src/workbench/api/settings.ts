@@ -145,6 +145,8 @@ export interface MemorySettingsInfo {
   ok?: boolean
   memory_optimized?: boolean
   memory_learn?: boolean
+  memory_v2?: boolean
+  memory_model?: string
   error?: string
 }
 export const memorySettingsApi = {
@@ -159,6 +161,12 @@ export const memorySettingsApi = {
   saveLearn(memory_learn: boolean): Promise<MemorySettingsInfo> {
     // 只翻学习开关：不传 memory_optimized，避免把总开一并覆盖回默认值
     return rawJson('/api/memory-settings', { memory_learn })
+  },
+  saveV2(memory_v2: boolean): Promise<MemorySettingsInfo> {
+    return rawJson('/api/memory-settings', { memory_v2 })
+  },
+  saveModel(memory_model: string): Promise<MemorySettingsInfo> {
+    return rawJson('/api/memory-settings', { memory_model })
   },
 }
 

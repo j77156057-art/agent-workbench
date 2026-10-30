@@ -89,6 +89,27 @@ def set_pinned(project_id, session_id, item_id, pinned):
     return None
 
 
+def update_item(project_id, session_id, item_id, *, text=None, pinned=None):
+    """面板编辑钩子：只改文本/pin，kind 与来源不动。"""
+    with _LOCK:
+        rows = items(project_id, session_id)
+        for row in rows:
+            if row.get("id") != item_id:
+                continue
+            if text is not None:
+                value = str(text).strip()[:MAX_TEXT]
+                if not value:
+                    raise ValueError("钩子内容不能为空")
+                row["text"] = value
+                row["verified"] = False
+            if pinned is not None:
+                row["pinned"] = bool(pinned)
+            row["updated"] = store.now()
+            store.save_items(path(project_id, session_id), rows)
+            return row
+    return None
+
+
 def remove(project_id, session_id, item_id):
     with _LOCK:
         rows = items(project_id, session_id)

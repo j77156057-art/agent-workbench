@@ -89,7 +89,7 @@ export async function request<T>(url: string, init?: RequestInit): Promise<T> {
     const { ok: _ok, error: _e, ...extra } = body || {}
     throw new FsApiError(
       res.status,
-      body?.error || `请求失败（HTTP ${res.status}）`,
+      body?.error || body?.detail || `请求失败（HTTP ${res.status}）`,
       extra as Record<string, unknown>,
     )
   }

@@ -9,9 +9,11 @@ import unittest
 from unittest.mock import patch
 
 import agent as agent_mod
+import agent_trace
 import config
 from agent_runtime.memory import (
     constitution,
+    context_panel,
     episodes,
     errors,
     feedback,
@@ -452,7 +454,7 @@ class PromoteTests(_MemBase):
 
     def test_absolute_path_is_redacted_before_promotion(self):
         rid = receipts.record("prj", type="verify", result="pass")
-        candidate = promote.create_candidate(
+        promote.create_candidate(
             "prj", "fact", "配置文件在 D:\\work\\proj\\conf.ini，改完要重启验证",
             importance=0.9, receipt_ids=[rid], task="t2")
         feedback.record("prj", session="s1", stars=5, task="t2")
@@ -599,6 +601,85 @@ class SharedInjectionTests(_MemBase):
         self.assertIn("【共享记忆", text)
         self.assertIn("先跑完整测试", text)
         self.assertEqual([block["layer"] for block in agent._last_injection], ["L0", "L2"])
+
+
+def _pinned_shared(text="合并前先跑完整测试，能显著降低回归率", importance=0.9):
+    rid = receipts.record("prj", type="verify", result="pass")
+    promote.create_candidate("prj", "fact", text, importance=importance,
+                             receipt_ids=[rid], task="tb-1")
+    feedback.record("prj", session="s1", stars=5, task="tb-1")
+    promote.sweep("prj")
+
+
+class ContextPanelTests(_MemBase):
+    def test_next_view_has_all_layers(self):
+        view = context_panel.next_view("prj", "s1")
+        keys = [layer["key"] for layer in view["layers"]]
+        self.assertEqual(keys, ["L0", "L1", "rules", "L2", "L3", "L4", "summary"])
+        self.assertTrue(view["layers"][0]["editable"])
+        self.assertIn("【系统宪法", view["layers"][0]["text"])
+        self.assertEqual(view["layers"][0]["budget"], 600)
+
+    def test_shared_and_taskbook_items_are_editable_data(self):
+        _pinned_shared()
+        taskbook.open_book("prj", "任务", [{"text": "补测试"}])
+        view = context_panel.next_view("prj", "s1")
+        l2 = next(layer for layer in view["layers"] if layer["key"] == "L2")
+        self.assertEqual(len(l2["items"]), 1)
+        self.assertIn("先跑完整测试", l2["text"])
+        l3 = next(layer for layer in view["layers"] if layer["key"] == "L3")
+        self.assertEqual(l3["items"][0]["text"], "补测试")
+
+    def test_last_view_reads_turn_snapshot(self):
+        target = os.path.join(self.tmp, "traces.jsonl")
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "session_id": "s1", "turn_id": "t1", "ts": "2026-10-31",
+                "injection": [{"layer": "L0", "chars": 3, "hash": "abc",
+                               "version": 1, "text": "宪法快照"}],
+            }, ensure_ascii=False) + "\n")
+        with patch.object(agent_trace, "TRACE_FILE", target):
+            view = context_panel.last_view("s1")
+        self.assertEqual(view["mode"], "last")
+        self.assertEqual(view["layers"][0]["text"], "宪法快照")
+        self.assertFalse(view["layers"][0]["editable"])
+
+    def test_constitution_save_conflict_and_edit_evidence_reset(self):
+        first = context_panel.next_view("prj", "s1")["layers"][0]
+        saved = context_panel.save_constitution(first["raw"], base_version=0)
+        self.assertEqual(saved["version"], 1)
+        with self.assertRaises(constitution.VersionConflict):
+            context_panel.save_constitution(first["raw"], base_version=0)
+
+        _pinned_shared()
+        item = promote.pinned_shared(1)[0]
+        edited = context_panel.edit_shared(item["id"], text="用户改过的共享结论，仍可读")
+        self.assertEqual(edited["source"], "user_edit")
+        self.assertEqual(edited["receipts"], [])
+        self.assertEqual(edited["confidence"], 0.5)
+        with self.assertRaises(ValueError):
+            context_panel.edit_shared(item["id"], text="api_key=sk-abcdefghijklmnop")
+
+    def test_hook_and_taskbook_edits(self):
+        row = hooks.add("prj", "s1", "fact", "入口在 main.py")
+        edited = context_panel.edit_hook("prj", "s1", row["id"], text="入口在 app.py")
+        self.assertEqual(edited["text"], "入口在 app.py")
+        self.assertTrue(context_panel.delete_hook("prj", "s1", row["id"]))
+
+        taskbook.open_book("prj", "任务", [{"text": "补测试"}])
+        key = taskbook.items("prj")[0]["key"]
+        self.assertEqual(context_panel.edit_task_item("prj", key, "补单元测试")["text"],
+                         "补单元测试")
+        with self.assertRaises(ValueError):
+            context_panel.complete_task_item("prj", key)
+        self.assertEqual(context_panel.complete_task_item("prj", key, override=True)["state"],
+                         "done")
+
+    def test_delete_shared(self):
+        _pinned_shared()
+        item = promote.pinned_shared(1)[0]
+        self.assertTrue(context_panel.delete_shared(item["id"]))
+        self.assertEqual(promote.shared_items(), [])
 
 
 class IndexTests(_MemBase):
