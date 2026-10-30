@@ -7,6 +7,7 @@
 """
 import json
 import os
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -85,20 +86,32 @@ class RecallHygieneTests(_IsoBase):
         self.assertIn("乙", top, "增强模式必须让高重要度行浮到最前")
 
     def test_vector_relevance_breaks_keyword_tie(self):
-        """EMBED+ENHANCED 开：两条都关键词命中、重要度中性，靠向量余弦分高下。"""
+        """EMBED+ENHANCED 开：两条关键词**完全打平**，只有余弦能分胜负。
+
+        关键词分必须相等（两行都命中"水果""记录"）——否则字面命中先决出高下，
+        余弦就算整个死掉测试也照样绿（旧版就是这个坑：`_cosine` 缺 `import math`
+        恒抛 NameError 被静默吞掉，本用例仍然通过）。打平时丢弃余弦会退回
+        updated DESC 的平手序（乙在后、先出），与断言的"甲"相反。
+        """
         def fake_embed(text):
-            if "苹果" in text:
+            if "甲" in text:
                 return [1.0, 0.0]
-            if "橘子" in text:
+            if "乙" in text:
                 return [0.0, 1.0]
-            return [1.0, 0.0]  # query 苹果 → 与"苹果"行同向
+            return [1.0, 0.0]  # query → 与"甲"行同向
         with patch.dict(os.environ, {"DOCMIND_MEMORY_EMBED": "1", "DOCMIND_MEMORY_ENHANCED": "1"}), \
                 patch.object(memory, "_embed_one", side_effect=fake_embed):
-            memory.remember("p", "fact", "f1", "水果 苹果 记录", "e", key="a")
-            memory.remember("p", "fact", "f2", "水果 橘子 记录", "e", key="b")
-            ranked = memory.recall("p", "苹果", limit=5)
-        self.assertIn("苹果", ranked[0]["content"],
-                      "查'苹果'时语义更近的行应排第一")
+            memory.remember("p", "fact", "f1", "水果 记录 甲", "e", key="a")
+            memory.remember("p", "fact", "f2", "水果 记录 乙", "e", key="b")
+            ranked = memory.recall("p", "水果 记录", limit=5)
+        self.assertIn("甲", ranked[0]["content"],
+                      "关键词完全打平时，语义更近的行必须排第一")
+
+    def test_cosine_is_real(self):
+        """余弦本身可用：同向=1、正交=0、零向量=0（旧版缺 import math 会直接 NameError）。"""
+        self.assertAlmostEqual(memory._cosine([1.0, 0.0], [1.0, 0.0]), 1.0)
+        self.assertAlmostEqual(memory._cosine([1.0, 0.0], [0.0, 1.0]), 0.0)
+        self.assertEqual(memory._cosine([0.0, 0.0], [1.0, 0.0]), 0.0)
 
 
 class EmbedFailureTests(_IsoBase):
@@ -215,7 +228,56 @@ class DistillPathTests(_IsoBase):
         self.assertEqual(pool.calls, 0, "失败/空答复轮次不应触发蒸馏")
 
 
-class ExtractJsonTests(unittest.TestCase):
+class ContextBlockTests(_IsoBase):
+    def test_context_is_always_parseable_json(self):
+        """注入串必须始终是可解析的 JSON：超预算丢**整条**，绝不切半个字符串。
+
+        旧版对 json.dumps 结果直接 scrub(…, 5000)，8 条长 episode 时最后一条被
+        切成半个字符串，模型每轮拿到坏 JSON（实测 line 1 column 4008 unterminated）。
+        """
+        for i in range(8):
+            memory.remember("p", "episode", f"问题 {i}",
+                            f"苹果 记录 {i} " + "填充" * 800, "e",
+                            source="model_report", key=f"k{i}")
+        ctx = memory.context("p", "苹果")
+        self.assertTrue(ctx.startswith(memory.CONTEXT_HEADER))
+        rows = json.loads(ctx[len(memory.CONTEXT_HEADER):])  # 旧版这里抛 ValueError
+        self.assertTrue(1 <= len(rows) <= 8, "超预算时应少注入几条，而不是切坏")
+        self.assertLessEqual(len(ctx), len(memory.CONTEXT_HEADER) + memory.CONTEXT_MAX_CHARS,
+                             "整块不得超过「头 + 预算」")
+        for row in rows:
+            self.assertLessEqual(len(row["content"]), memory.CONTEXT_ROW_CHARS + 1,
+                                 "单条自由文本必须硬截断，防一条吃掉全部预算")
+
+    def test_small_memory_block_is_byte_identical(self):
+        """小记忆的注入串与旧版公式逐字节一致（MEMORY_CHARS=309 校准口径不漂）。"""
+        memory.remember("p", "fact", "t", "内容", "e")
+        rows = memory.recall("p", "", 8, include_preferences=True)
+        legacy = memory.CONTEXT_HEADER + memory.scrub(json.dumps(rows, ensure_ascii=False), 5000)
+        self.assertEqual(memory.context("p", ""), legacy)
+
+
+class MemoryRotationTests(_IsoBase):
+    def test_episode_cap_never_evicts_facts(self):
+        """500 条轮换只裁 episode：fact/preference 不能被逐轮转写挤掉。"""
+        memory.remember("p", "fact", "关键事实", "这条事实 永久 保留", "e", key="keep")
+        memory.remember("p", "preference", "pref", "这条偏好 永久 保留", "e",
+                        source="user_explicit", key="keep-pref")
+        for i in range(505):
+            memory.remember("p", "episode", f"问 {i}", f"转写 {i}", "e",
+                            source="model_report", key=f"ep{i}")
+        conn = sqlite3.connect(memory.DB_PATH)
+        try:
+            counts = dict(conn.execute(
+                "SELECT kind, COUNT(*) FROM memories WHERE scope='p' GROUP BY kind").fetchall())
+        finally:
+            conn.close()
+        self.assertEqual(counts.get("episode"), 500, "episode 池仍须有上限")
+        self.assertEqual(counts.get("fact"), 1, "fact 不参与轮换，不能被转写挤掉")
+        self.assertEqual(counts.get("preference"), 1, "preference 不参与轮换")
+        hits = memory.recall("p", "永久 保留", limit=5)
+        self.assertEqual({r["kind"] for r in hits}, {"fact", "preference"},
+                         "非 episode 记忆必须仍可召回")
     def test_extracts_balanced_object_ignoring_prose(self):
         self.assertEqual(agent._extract_json_obj('前面废话 {"keep": true, "n": 3} 后面废话'),
                          {"keep": True, "n": 3})
