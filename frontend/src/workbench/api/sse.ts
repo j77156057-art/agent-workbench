@@ -49,6 +49,10 @@ export interface SseEvent {
   clarification_required?: boolean
   /** final：本轮为降级收尾（信息不足 / 未核验等），非一次干净的完整交付。 */
   degraded?: boolean
+  /** final：记忆 v2 交付型回合（写了文件 / 跑了验证），前端据此弹满意度卡。 */
+  deliverable?: boolean
+  /** final：本轮对应的任务书 id（无任务书时为空）。 */
+  task?: string
   /** 结构化「向用户提问 / 请求授权」载荷：终态澄清 final 与 needs_confirmation
    *  事件都可携带；前端渲染成可点选项框，点某项即把其 value 作为下一轮消息发回。 */
   ask?: ChatAsk

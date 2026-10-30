@@ -186,6 +186,12 @@ export interface ChatMsg {
   clarificationRequired?: boolean
   /** final：本轮为降级收尾（信息不足 / 未核验等），非干净的完整交付。 */
   degraded?: boolean
+  /** final：交付型回合（记忆 v2 开时后端标记），决定是否弹满意度卡。 */
+  deliverable?: boolean
+  /** final：本轮对应的任务书 id（没有任务书时为空）。 */
+  task?: string
+  /** 本次任务满意度是否已提交/忽略。 */
+  feedbackSubmitted?: boolean
   /** 结构化「向用户提问 / 请求授权」载荷：存在时渲染成可点选项框。 */
   ask?: ChatAsk
 }

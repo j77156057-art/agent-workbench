@@ -6,7 +6,7 @@
 import { nextTick, ref, watch, onMounted, onBeforeUnmount, computed, defineAsyncComponent } from 'vue'
 // 直接依赖对话框域，避免经 workbench 聚合桶拖入编辑器链
 import { askConfirm, askAlert } from '../composables/dialogs'
-import { aiApi, voiceApi, agentApi, visionApi, contextApi, harnessApi, modelApi, browserLiveApi, getSessionId, getProjectId, setSessionId, startNewSession, startTabProbe } from '../api'
+import { aiApi, voiceApi, agentApi, visionApi, contextApi, harnessApi, modelApi, browserLiveApi, feedbackApi, getSessionId, getProjectId, setSessionId, startNewSession, startTabProbe } from '../api'
 import type { ContextUsage, SessionInfo } from '../api'
 import type { SseEvent } from '../api'
 import { appEvents } from '../eventBus'
@@ -45,6 +45,7 @@ import WorkflowHistoryPopover from './WorkflowHistoryPopover.vue'
 const WorkflowCard = defineAsyncComponent(() => import('./WorkflowCard.vue'))
 import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
+import TaskFeedbackBar from './TaskFeedbackBar.vue'
 import FileDiffDialog from './FileDiffDialog.vue'
 
 import type { WorkflowSummary } from '../api'
@@ -297,6 +298,42 @@ interface InterruptedRecovery {
 
 let msgSeq = 1
 const messages = ref<ChatMsg[]>([])
+
+// ---------------- 任务满意度（记忆 v2）：只对交付型回合弹一次 ----------------
+const feedbackBusy = ref(false)
+const feedbackHint = ref('')
+const feedbackThanks = ref(false)
+const feedbackTarget = computed<ChatMsg | null>(() => {
+  const last = messages.value[messages.value.length - 1]
+  if (!last || last.role !== 'assistant') return null
+  if (!last.deliverable || last.feedbackSubmitted) return null
+  if (last.status !== 'done' || last.degraded) return null
+  return last
+})
+async function submitFeedback(stars: number) {
+  const target = feedbackTarget.value
+  if (!target || feedbackBusy.value) return
+  feedbackBusy.value = true
+  feedbackHint.value = ''
+  try {
+    const res = await feedbackApi.submit({
+      stars,
+      task: target.task || '',
+      session_id: getSessionId(),
+    })
+    if (res.ok === false) throw new Error(res.error || '提交失败')
+    target.feedbackSubmitted = true
+    feedbackThanks.value = true
+    window.setTimeout(() => { feedbackThanks.value = false }, 2400)
+  } catch (e) {
+    feedbackHint.value = (e as Error)?.message || '提交失败，请稍后再试'
+  } finally {
+    feedbackBusy.value = false
+  }
+}
+function dismissFeedback() {
+  if (feedbackTarget.value) feedbackTarget.value.feedbackSubmitted = true
+}
 let chatProject = getProjectId(), chatSession = currentSessionId(), chatEpoch = 0
 /** 每个项目各自的会话 id：会话在服务端终身归属首次使用的项目，
  *  切项目继续用旧 id 会把 B 的对话写进 A（A 能看到），B 自己刷新后又看不到。 */
@@ -2097,6 +2134,15 @@ const webTitle = computed(() => webOn.value
         </button>
       </div>
 
+      <div v-if="feedbackHint" class="cd-feedback-hint">{{ feedbackHint }}</div>
+      <div v-else-if="feedbackThanks" class="cd-feedback-thanks">已记录，感谢反馈</div>
+      <TaskFeedbackBar
+        v-else-if="feedbackTarget"
+        :busy="feedbackBusy"
+        @submit="submitFeedback"
+        @dismiss="dismissFeedback"
+      />
+
       <ChatComposer
         ref="composerEl"
         v-model="input"
@@ -2796,6 +2842,16 @@ const webTitle = computed(() => webOn.value
   box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .cd-answer { line-height: 1.7; padding: 0; background: transparent; border: none; box-shadow: none; }
+/* 任务满意度（记忆 v2）：交付型回合结束后的一条细带，不抢答案的注意力 */
+.cd-feedback-hint,
+.cd-feedback-thanks {
+  padding: 5px 14px;
+  border-top: 1px dashed var(--border);
+  background: var(--bg-raised);
+  font-size: var(--fs-cap);
+  color: var(--text-muted);
+}
+.cd-feedback-hint { color: var(--danger); }
 /* 交错流的行悬停 feedback：极淡的底色 + 2px 右移，不搞卡片感 */
 .cd-flow-row { border-radius: 6px; padding: 4px 6px; margin: 0 -6px; transition: background .16s, color .16s, transform .16s var(--ease-spring); }
 .cd-flow-row:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); transform: translateX(2px); }

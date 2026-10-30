@@ -1784,9 +1784,26 @@ def set_memory_learn(enabled):
     return enabled
 
 
+# ---- 记忆系统 v2：分层记忆总开关（默认关）----
+# 关时所有新路径不执行，提示词与今天逐字节一致；开时才注入宪法、启用文件存储与索引。
+def get_memory_v2():
+    """显式 runtime（设置页）优先；否则回落环境 DOCMIND_MEMORY_V2。"""
+    v = get_runtime("memory_v2")
+    if v is not None:
+        return bool(v)
+    return _env_truthy("DOCMIND_MEMORY_V2")
+
+
+def set_memory_v2(enabled):
+    enabled = bool(enabled)
+    set_runtime("memory_v2", enabled)
+    save_state("memory_v2", enabled)
+    return enabled
+
+
 def _apply_memory_state(data):
     """开机恢复：master 键优先，向后同步三个子键；显式 set_runtime 覆盖磁盘值。
-    memory_learn 是独立开关，单独恢复，与 memory_optimized 互不牵连。"""
+    memory_learn / memory_v2 是独立开关，单独恢复，与 memory_optimized 互不牵连。"""
     m = data.get("memory_optimized")
     if m is not None:
         m = bool(m)
@@ -1798,3 +1815,6 @@ def _apply_memory_state(data):
     learn = data.get("memory_learn")
     if learn is not None and "memory_learn" not in _RUNTIME:
         _RUNTIME["memory_learn"] = bool(learn)
+    v2 = data.get("memory_v2")
+    if v2 is not None and "memory_v2" not in _RUNTIME:
+        _RUNTIME["memory_v2"] = bool(v2)

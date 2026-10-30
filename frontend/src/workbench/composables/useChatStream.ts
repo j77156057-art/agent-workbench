@@ -48,6 +48,12 @@ export interface ChatStreamTurn {
   clarificationRequired?: boolean
   /** final：本轮为降级收尾（信息不足 / 未核验等），非干净的完整交付。 */
   degraded?: boolean
+  /** final：交付型回合（写了文件 / 跑了验证），前端据此弹满意度卡。 */
+  deliverable?: boolean
+  /** final：本轮对应的任务书 id（没有任务书时为空）。 */
+  task?: string
+  /** 满意度是否已提交/忽略，避免同一回合反复弹卡。 */
+  feedbackSubmitted?: boolean
   /** 结构化「向用户提问 / 请求授权」载荷（来自 final 或 needs_confirmation 事件）。 */
   ask?: ChatAsk
 }
@@ -229,6 +235,9 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       // 「猜你想问」等把澄清当正常答案的渲染（BUG-3）。
       if (ev.clarification_required === true) turn.clarificationRequired = true
       if (ev.degraded === true) turn.degraded = true
+      // 记忆 v2：交付型回合才弹满意度卡；task 用于把反馈挂到任务书。
+      if (ev.deliverable === true) turn.deliverable = true
+      if (typeof ev.task === 'string' && ev.task) turn.task = ev.task
       // 精确断点续跑：后端给出 checkpoint id，失败回合的「继续」据此取回逐步现场。
       if (typeof ev.checkpoint_id === 'string' && ev.checkpoint_id) turn.checkpointId = ev.checkpoint_id
       hooks.onFinal?.(turn, ev.text)

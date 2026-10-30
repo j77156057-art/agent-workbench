@@ -87,6 +87,9 @@ class Turn:
         self.question_chars = len(question or "")
         self.messages_hash = None
         self.messages_count = 0
+        # 本回合实际注入的记忆分层块（P0 只有 L0 宪法）；空列表不写进 record，
+        # 保证记忆 v2 关闭时 trace 与旧版逐字节一致。
+        self.injection = []
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.cache_read_tokens = 0      # prompt caching 命中（按折扣价计费）
@@ -130,6 +133,20 @@ class Turn:
         self.messages_hash = messages_hash(messages)
         self.messages_count = len(messages or [])
         return self.messages_hash
+
+    def add_injection(self, blocks):
+        """记录命中的记忆块；只留摘要字段与截断文本，供面板对账与审计。"""
+        try:
+            self.injection = [
+                {"layer": str(block.get("layer") or ""),
+                 "chars": int(block.get("chars") or 0),
+                 "hash": str(block.get("hash") or ""),
+                 "version": block.get("version"),
+                 "text": str(block.get("text") or "")[:2000]}
+                for block in (blocks or []) if isinstance(block, dict)
+            ]
+        except Exception:  # noqa: BLE001 —— 埋点失败绝不影响回合
+            self.injection = []
 
     def add_usage(self, usage):
         """累加一次 LLM 调用的 token 用量（键名兼容 OpenAI / Ollama / Anthropic）。"""
@@ -192,7 +209,7 @@ class Turn:
         self.aborted = bool(aborted)
 
     def to_record(self):
-        return {
+        record = {
             "turn_id": self.turn_id,
             "ts": self.started_at,
             "session_id": self.session_id,
@@ -232,6 +249,9 @@ class Turn:
             "error": self.error,
             "elapsed_ms": int((time.monotonic() - self._t0) * 1000),
         }
+        if self.injection:
+            record["injection"] = self.injection
+        return record
 
 
 # ---------------------------------------------------------------------------

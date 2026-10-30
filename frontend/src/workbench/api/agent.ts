@@ -294,6 +294,22 @@ export interface RetrievalTraceEvent {
   [key: string]: unknown
 }
 
+// ---------------------------------------------------------------- 任务满意度（记忆 v2）
+// 只落盘外部信号，供记忆置信/晋升消费；忽略不等于差评。
+export interface TaskFeedbackResp { ok?: boolean; id?: string; stars?: number; error?: string }
+export const feedbackApi = {
+  submit(payload: { stars: number; task?: string; session_id?: string; note?: string }): Promise<TaskFeedbackResp> {
+    return rawJson<TaskFeedbackResp>('/api/feedback/task', payload)
+  },
+  latest(session_id = '', task = ''): Promise<{ ok?: boolean; item?: Record<string, unknown> | null; items?: Array<Record<string, unknown>> }> {
+    const query = new URLSearchParams()
+    if (session_id) query.set('session_id', session_id)
+    if (task) query.set('task', task)
+    const suffix = query.toString()
+    return request(`/api/feedback/task${suffix ? '?' + suffix : ''}`)
+  },
+}
+
 export const agentApi = {
   /** Agent 路由策略（本地/云端、自动转云开关）。 */
   routing(): Promise<AgentRoutingResp> {

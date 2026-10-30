@@ -4888,6 +4888,44 @@ async def agent_memory_delete_ep(memory_id: str):
     return {"ok": agent_memory.forget(agent_memory.scope_key(_request_project_id() or None), memory_id)}
 
 
+@app.post("/api/feedback/task")
+async def feedback_task_ep(request: Request):
+    """任务级星级反馈（记忆 v2）：外部信号，只影响置信/晋升，不改提示词。"""
+    from fastapi import HTTPException
+    from config import get_memory_v2
+    if not get_memory_v2():
+        raise HTTPException(status_code=409, detail="记忆 v2 未启用")
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        from agent_runtime.memory import feedback as feedback_store
+        row = feedback_store.record(
+            _request_project_id() or "default",
+            session=str(payload.get("session_id") or ""),
+            stars=payload.get("stars"),
+            task=str(payload.get("task") or ""),
+            note=str(payload.get("note") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "id": row["id"], "stars": row["stars"]}
+
+
+@app.get("/api/feedback/task")
+async def feedback_task_get_ep(session_id: str = "", task: str = ""):
+    from config import get_memory_v2
+    from agent_runtime.memory import feedback as feedback_store
+    project = _request_project_id() or "default"
+    if task:
+        return {"ok": True, "items": feedback_store.list_for_task(project, task, session_id)}
+    return {"ok": True, "item": feedback_store.latest(project, session_id),
+            "enabled": bool(get_memory_v2())}
+
+
 @app.get("/api/context")
 async def context_usage_ep(session_id: str = ""):
     """当前会话的上下文窗口占用（供刷新页面后恢复「上下文已用 N%」指示）。

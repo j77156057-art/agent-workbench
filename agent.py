@@ -30,6 +30,7 @@ from config import (
     COMPACT_KEEP_RATIO,
     COMPACT_TRIGGER_RATIO,
     LLM_MAX_TOKENS,
+    get_memory_v2,
     get_runtime,
     # 会话级代码库绑定（2026-10-10，见 docs/known-defect-code-root-scope-too-coarse.md）
     set_ctx_session_code_root as _set_ctx_session_code_root,
@@ -4611,6 +4612,8 @@ class Agent:
         self.context_router = ContextRouter(
             max_chars=int(os.getenv("DOCMIND_CONTEXT_ROUTER_CHARS", "6000")))
         self.last_context_plan = None
+        # 记忆 v2 本回合实际注入的分层块（P0 只有 L0 宪法）；关时永远是空列表。
+        self._last_injection = []
         # Per-request metadata is injected as a system message and restored
         # after the generator finishes; it must never become user history.
         self.ingested_sources = ()
@@ -5054,6 +5057,24 @@ class Agent:
         if _PTC_BRIDGE_ENABLED:
             _channel_prompt = _ptc_variant_system_prompt(_channel_prompt)
         messages = [{"role": "system", "content": _channel_prompt}]
+        # 记忆 v2 · L0 宪法：放在基础 system 之后的最前段，先于时间/项目规则/画像。
+        # 开关关时 blocks 为空且不 import 该包，提示词与旧版逐字节一致。
+        _v2_blocks = []
+        _memory_v2_injection = None
+        try:
+            _v2_on = bool(get_memory_v2())
+        except Exception:  # noqa: BLE001
+            _v2_on = False
+        if _v2_on:
+            try:
+                from agent_runtime.memory import injection as _memory_v2_injection
+                _v2_blocks = _memory_v2_injection.build_injection()
+            except Exception:  # noqa: BLE001 —— 记忆故障绝不影响问答
+                _memory_v2_injection = None
+                _v2_blocks = []
+        self._last_injection = _v2_blocks
+        for _v2_block in _v2_blocks:
+            messages.append({"role": "system", "content": _v2_block["text"]})
         now = datetime.now().astimezone()
         messages.append({"role": "system", "content": (
             f"【当前时间】{now.isoformat(timespec='seconds')}。今天指 {now.date().isoformat()}，"
@@ -5104,14 +5125,30 @@ class Agent:
         # 任务清单每轮注入。这是让「上下文压缩」不再有损的那一环：
         # 摘要可以放心压，因为目标本身在磁盘上、每轮都会被重新告知模型。
         # 没有这一步，清单只是个模型可能忘记去读的旁路文件。
-        try:
-            from agent_runtime import plan_state
-            plan_hint = plan_state.summary_for_prompt(get_runtime("code_root", ""))
-            if plan_hint:
-                messages.append({"role": "system", "content": plan_hint})
-        except Exception:
-            # 清单读不出来只是少一条提示，绝不能因此让整轮问答失败
-            pass
+        # 记忆 v2 开启时改由 L3 任务书接管（带状态与回执约束）；没有任务书才回落计划摘要。
+        _l3_blocks = []
+        if _v2_on and _memory_v2_injection is not None:
+            try:
+                from agent_runtime.memory import taskbook as _memory_v2_taskbook
+                _memory_v2_taskbook.sync_from_plan(
+                    getattr(self, "project_id", ""), get_runtime("code_root", ""))
+                _l3_blocks = _memory_v2_injection.build_taskbook_injection(
+                    getattr(self, "project_id", ""))
+            except Exception:  # noqa: BLE001 —— 任务书故障绝不影响问答
+                _l3_blocks = []
+            if _l3_blocks:
+                self._last_injection = list(self._last_injection) + _l3_blocks
+                for _l3_block in _l3_blocks:
+                    messages.append({"role": "system", "content": _l3_block["text"]})
+        if not _l3_blocks:
+            try:
+                from agent_runtime import plan_state
+                plan_hint = plan_state.summary_for_prompt(get_runtime("code_root", ""))
+                if plan_hint:
+                    messages.append({"role": "system", "content": plan_hint})
+            except Exception:
+                # 清单读不出来只是少一条提示，绝不能因此让整轮问答失败
+                pass
         for context_message in self._request_system_context:
             value = str(context_message or "").strip()
             if value:
@@ -5151,6 +5188,18 @@ class Agent:
                 messages.append({"role": "user", "content": memory_context})
         except Exception:
             pass
+        # 记忆 v2 · L4 会话钩子：放在长期记忆之后、历史之前；压缩后这些钩子仍保留。
+        # 开关关时 _memory_v2_injection 为 None，提示词与旧版逐字节一致。
+        if _v2_on and _memory_v2_injection is not None:
+            try:
+                _v2_session_blocks = _memory_v2_injection.build_session_injection(
+                    getattr(self, "session_id", ""), getattr(self, "project_id", ""))
+            except Exception:  # noqa: BLE001
+                _v2_session_blocks = []
+            if _v2_session_blocks:
+                self._last_injection = list(self._last_injection) + _v2_session_blocks
+                for _v2_block in _v2_session_blocks:
+                    messages.append({"role": "system", "content": _v2_block["text"]})
         # 记下「固定上下文块」的结束下标：0..此处之前 = 系统提示 + 各 system 注入
         # （项目规则/路由/画像/计划/联网开关/**早期对话摘要**）+ memory_context，
         # 这些全部【永不可裁】；只有其后的历史问答对才是预算裁剪的对象。
@@ -5371,6 +5420,21 @@ class Agent:
             elif len(msg["images"]) > 4:
                 msg["images"] = list(msg["images"])[:4]
         return head + trail
+
+    def _final_event(self, text, turn):
+        """成功收尾的 final 事件：记忆 v2 开着时附带「是否交付型回合」与任务书 id，
+        供前端决定是否弹满意度卡；关时事件与旧版完全一致。"""
+        payload = {"type": "final", "text": text}
+        try:
+            if get_memory_v2():
+                payload["deliverable"] = bool(self._pending_file_changes) or bool(
+                    getattr(turn, "verification_targets", {}) or {})
+                from agent_runtime.memory import taskbook as _memory_v2_taskbook
+                payload["task"] = _memory_v2_taskbook.current_id(self.project_id or "default")
+        except Exception:  # noqa: BLE001 —— 埋点失败不影响 final
+            payload.pop("deliverable", None)
+            payload.pop("task", None)
+        return payload
 
     def run(self, question, stream=True, images=None, deadline=None, *,
             web_enabled=None, thinking_enabled=None, thinking_level=None, tool_mode=None, plan_mode=None,
@@ -5652,6 +5716,7 @@ class Agent:
             model=getattr(self.llm, "model", ""),
             question=question,
         )
+
         if TURN_DEADLINE_S > 0 and deadline is None:
             deadline = time.monotonic() + TURN_DEADLINE_S
 
@@ -5891,6 +5956,25 @@ class Agent:
                     _ep_mid = _memory.remember(self.memory_scope, "episode", _memory.scrub(question, 200),
                         ("未完成：" + (error or "停止/中断") if error or not final_text else "模型报告（尚需核对验收）：" + final_text),
                         "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed)
+                    # 记忆 v2 · L4：结构化回合 + 钩子/错误/回执。只影响本层，
+                    # 绝不影响上面已完成的老记忆落库；开关关时直接返回。
+                    try:
+                        if get_memory_v2():
+                            from agent_runtime.memory import turns as _memory_v2_turns
+                            _v2_status = ("failed" if error else "interrupted" if aborted
+                                          else "completed" if (final_text or "").strip() else "partial")
+                            _memory_v2_turns.record_turn(
+                                session_id=self.session_id,
+                                project_id=self.project_id or "",
+                                question=question,
+                                final_text=final_text or "",
+                                status=_v2_status,
+                                turn=turn,
+                                journal=journal_state,
+                                error=error or "",
+                            )
+                    except Exception:  # noqa: BLE001
+                        pass
                     # B3：per-number 背书审计旁路（§5 高估观测化）。**只观测、不改 backed/trust/
                     # recall/to_record**；默认关，仅当 DOCMIND_PROVENANCE_AUDIT 落盘才写。自包一层
                     # try——审计异常一律吞掉，绝不影响上面已完成的落库。
@@ -6458,6 +6542,7 @@ class Agent:
             messages = self._fit_budget(head, trail)
             if turn is not None and turn.messages_hash is None:
                 turn.snapshot_prompt(messages)
+                turn.add_injection(getattr(self, "_last_injection", []))
             acc = ""
             finish_reason = None
             # 续写纠偏重试：本次调用暂时关思考，把输出预算留给答案本身
@@ -7313,7 +7398,7 @@ class Agent:
                         turn.outcome = "verbatim"
                     final_text = _format_verbatim(parsed["action"], obs)
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text}
+                    yield self._final_event(final_text, turn)
                     return
 
                 # 把本轮结果回填，进入下一轮推理。观察先截断，防止撑爆 n_ctx。
@@ -7512,7 +7597,7 @@ class Agent:
                     # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
                     # "未能综合成结论"横幅、不再标 degraded。那是用户抱怨的"事后盖章"。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text}
+                    yield self._final_event(final_text, turn)
                     return
                 # 终态硬门 B：**中间证据冒充答案**。上一步是 verbatim 工具（典型是
                 # python_exec），模型/兜底却只交出一串数字或行号清单——这不是对问题的
@@ -7542,7 +7627,7 @@ class Agent:
                     # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
                     # "未能综合"横幅、不再标 degraded。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text}
+                    yield self._final_event(final_text, turn)
                     return
                 # 终态硬门 C：**原样重贴工具观察**。这条兜的是形状判据抓不住的
                 # 混合输出（实测真实 DeepSeek：`总行数 8298` + 五行 `while/def`），
@@ -7570,7 +7655,7 @@ class Agent:
                     # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
                     # "未能综合"横幅、不再标 degraded。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text}
+                    yield self._final_event(final_text, turn)
                     return
                 # 终态硬门 D：**截头回答**。实测工作台长任务：前端原生通道缓冲被
                 # final 整体替换，只剩从「` 或补 Action: 的 Nudge。\n28. ...」开始的
@@ -7597,7 +7682,7 @@ class Agent:
                     # 「留地板、拆其余」：逼重写一次后仍如此，就原样交付 —— 不再挂
                     # "未能完整交付/请重新提问"横幅、不再标 degraded。
                     self.history.append({"user": question, "assistant": final_text})
-                    yield {"type": "final", "text": final_text}
+                    yield self._final_event(final_text, turn)
                     return
                 evidence_audit = _audit_live_answer(final_text, question, trail, audit_steps)
                 # 闸门只看**事实项**（引用能不能打开、行号是否越界）。
@@ -7646,7 +7731,7 @@ class Agent:
                 # 「（核验：PASS·N 处引用可核验）」横幅。那是往用户答案上贴的"事后盖章"，
                 # 与 FAIL 侧同一种"处处受限"。判据函数保留，直测仍钉它。
                 self.history.append({"user": question, "assistant": final_text})
-                yield {"type": "final", "text": final_text}
+                yield self._final_event(final_text, turn)
                 return
 
             # 没有有效动作也没有合格 Final：可能是输出被长度截断 / 只有思考没有正文 /
