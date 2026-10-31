@@ -629,6 +629,58 @@ def _pinned_shared(text="合并前先跑完整测试，能显著降低回归率"
     promote.sweep("prj")
 
 
+class DedupeSweepTests(_MemBase):
+    def test_historical_duplicates_merge(self):
+        with patch.object(promote, "find_similar", return_value=(0.0, None)):
+            promote.create_candidate("prj", "fact", "合并前先跑完整测试，能降低回归率",
+                                     importance=0.6)
+            promote.create_candidate("prj", "fact", "合并前先跑完整测试，可降低回归率",
+                                     importance=0.9)
+        self.assertEqual(len(promote.candidates("prj")), 2)
+        result = promote.dedupe_candidates("prj")
+        self.assertEqual(result["merged"], 1)
+        active = [item for item in promote.candidates("prj")
+                  if item.get("status") == "candidate"]
+        self.assertEqual(len(active), 1)
+        self.assertEqual(int(active[0]["usage"]), 1)
+
+
+class DedupeTests(_MemBase):
+    def test_near_duplicate_merges_into_one(self):
+        first = promote.create_candidate(
+            "prj", "fact", "合并前先跑完整测试，能降低回归率", importance=0.6)
+        second = promote.create_candidate(
+            "prj", "fact", "合并前先跑完整测试，可降低回归率", importance=0.9)
+        self.assertEqual(first["id"], second["id"])
+        self.assertTrue(second.get("_merged"))
+        rows = promote.candidates("prj")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(int(rows[0]["usage"]), 1)
+        self.assertEqual(float(rows[0]["importance"]), 0.9)
+
+    def test_different_kind_not_merged(self):
+        fact = promote.create_candidate(
+            "prj", "fact", "合并前先跑完整测试，能降低回归率", importance=0.6)
+        lesson = promote.create_candidate(
+            "prj", "lesson", "合并前先跑完整测试，能降低回归率", importance=0.6)
+        self.assertNotEqual(fact["id"], lesson["id"])
+
+
+class EpisodeRetentionTests(_MemBase):
+    def test_compact_archives_old_and_keeps_recent(self):
+        for index in range(30):
+            episodes.append("prj", "s1", {"goal": "目标 %d" % index})
+        removed = episodes.compact("prj", "s1", keep=10)
+        self.assertEqual(removed, 20)
+        latest = episodes.latest("prj", "s1", 10)
+        self.assertEqual(len(latest), 10)
+        archive = store.safe_path("projects", "prj", "archive", "episodes")
+        files = os.listdir(archive)
+        self.assertEqual(len(files), 1)
+        with open(os.path.join(archive, files[0]), "r", encoding="utf-8") as handle:
+            self.assertEqual(len([line for line in handle if line.strip()]), 20)
+
+
 class LearningLoopTests(_MemBase):
     def test_adopt_creates_review_receipt_and_promotes(self):
         candidate = promote.create_candidate(
@@ -803,7 +855,7 @@ class SearchEdgeTests(_MemBase):
 
     def test_semantic_relevance_breaks_keyword_tie(self):
         a = self._shared("记录 甲 结论：先复现再修复", task="ta")
-        self._shared("记录 乙 结论：先复现再修复", task="tb")
+        self._shared("记录 乙 结论：核对日志后再改动", task="tb")
 
         def fake_embed(text):
             if "甲" in text:

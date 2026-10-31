@@ -9,6 +9,7 @@ from __future__ import annotations
 import glob
 import os
 import re
+from difflib import SequenceMatcher
 
 from . import feedback, receipts, score, store
 
@@ -29,6 +30,79 @@ def _clamp(value, default=0.5):
     except (TypeError, ValueError):
         return default
     return max(0.0, min(1.0, number))
+
+
+def _grams(text):
+    raw = re.sub(r"\s+", "", str(text or "").lower())
+    tokens = set(re.findall(r"[a-z0-9_]+", raw))
+    for chunk in re.findall(r"[一-鿿]+", raw):
+        if len(chunk) <= 2:
+            tokens.add(chunk)
+        else:
+            tokens.update(chunk[index:index + 2] for index in range(len(chunk) - 1))
+    return tokens
+
+
+def text_similarity(a, b):
+    """轻量确定性相似度：中文 bigram + 英文词的 Jaccard；短文本更保守。"""
+    na = re.sub(r"\s+", "", str(a or "").lower())
+    nb = re.sub(r"\s+", "", str(b or "").lower())
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    grams_a, grams_b = _grams(na), _grams(nb)
+    if not grams_a or not grams_b:
+        return 0.0
+    score = len(grams_a & grams_b) / len(grams_a | grams_b)
+    if len(na) < 24 or len(nb) < 24:
+        if na in nb or nb in na:
+            return max(score, 0.9)
+        # 短句用字符级相似度：一词之差应算重复，主题相近但选项不同不算。
+        return max(score, SequenceMatcher(None, na, nb).ratio())
+    return score
+
+
+def find_similar(project_id, kind, text, *, threshold=0.88):
+    """在共享 active 与项目候选中找近似条目；共享优先（同分）。"""
+    kind = _normalize_kind(kind)
+    best_score, best_item = 0.0, None
+    for item in shared_items() + candidates(project_id):
+        if _normalize_kind(item.get("kind")) != kind:
+            continue
+        if item.get("scope") == "project" and item.get("status") != "candidate":
+            continue
+        score = text_similarity(text, item.get("body"))
+        if score > best_score:
+            best_score, best_item = score, item
+    if best_item is None or best_score < threshold:
+        return 0.0, None
+    return best_score, best_item
+
+
+def _merge_into(item, body, importance, source_turn, receipt_ids, task):
+    now = store.now()
+    merged = dict(item)
+    merged["receipts"] = list(dict.fromkeys(
+        list(item.get("receipts") or []) + list(receipt_ids or [])))[:20]
+    merged["importance"] = max(_clamp(item.get("importance")),
+                               _clamp(importance))
+    merged["usage"] = int(item.get("usage") or 0) + 1
+    merged["last_used"] = now
+    merged["updated"] = now
+    if merged.get("scope") == "project":
+        turns = [str(merged.get("source_turn") or ""), str(source_turn or "")]
+        merged["source_turn"] = ";".join(dict.fromkeys(item for item in turns if item))[:200]
+    if task and not merged.get("task"):
+        merged["task"] = str(task)[:120]
+    _write(merged["path"], {key: value for key, value in merged.items()
+                            if key not in ("body", "path")}, merged.get("body") or "")
+    _sync_index(merged)
+    store.ledger("memory.merge", id=merged.get("id"),
+                 into_scope=merged.get("scope"), usage=merged["usage"])
+    merged["_new"] = False
+    merged["_merged"] = True
+    return merged
 
 
 def _normalize_kind(kind):
@@ -111,6 +185,9 @@ def create_candidate(project_id, kind, text, *, title="", importance=0.6,
     if existing:
         existing["_new"] = False
         return existing
+    _score, similar = find_similar(project_id, kind, body)
+    if similar is not None:
+        return _merge_into(similar, body, importance, source_turn, receipt_ids, task)
     now = store.now()
     header = {
         "id": mid, "kind": kind, "scope": "project", "status": "candidate",
@@ -516,3 +593,37 @@ def _sync_index(item):
         index.upsert_item(item)
     except Exception:  # noqa: BLE001 —— 索引同步失败不阻断文件事实
         pass
+
+
+def dedupe_candidates(project_id, threshold=0.88):
+    """对存量候选做一次近似合并（新写入已自动合并，这里清理历史碎片）。"""
+    rows = [item for item in candidates(project_id) if item.get("status") == "candidate"]
+    rows.sort(key=lambda item: str(item.get("created") or item.get("updated") or ""))
+    kept = []
+    merged = 0
+    for item in rows:
+        match = None
+        for keeper in kept:
+            if _normalize_kind(keeper.get("kind")) != _normalize_kind(item.get("kind")):
+                continue
+            if text_similarity(item.get("body"), keeper.get("body")) >= threshold:
+                match = keeper
+                break
+        if match is None:
+            kept.append(item)
+            continue
+        updated = _merge_into(match, item.get("body") or "",
+                              item.get("importance") or 0.5,
+                              item.get("source_turn") or "",
+                              item.get("receipts") or [], item.get("task") or "")
+        kept = [updated if keeper is match else keeper for keeper in kept]
+        item["status"] = "merged"
+        item["merged_into"] = match.get("id")
+        item["updated"] = store.now()
+        _write(item["path"], {key: value for key, value in item.items()
+                              if key not in ("body", "path")}, item.get("body") or "")
+        _sync_index(item)
+        merged += 1
+    store.ledger("memory.dedupe", project=store.safe_id(project_id),
+                 checked=len(rows), merged=merged)
+    return {"checked": len(rows), "merged": merged}

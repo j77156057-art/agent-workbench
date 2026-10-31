@@ -344,18 +344,24 @@ def related(item_id, limit=5, conn=None):
 
 def upsert_item(item):
     """单条 upsert：面板编辑/晋升后立即同步行、边、FTS 与向量，不等全量重建。"""
+    relative = str(item.get("path") or "")
+    if os.path.isabs(relative):
+        try:
+            relative = os.path.relpath(relative, store.root()).replace("\\", "/")
+        except ValueError:
+            pass
     conn = _connect()
     try:
         with conn:
             conn.execute("DELETE FROM items WHERE id=? OR path=?",
-                         (item["id"], item.get("path", "")))
+                         (item["id"], relative))
             conn.execute(
                 "INSERT INTO items(id,kind,scope,project,status,path,title,body,body_hash,"
                 "confidence,importance,pinned,usage,created,updated,last_used) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (item["id"], item.get("kind", "fact"), item.get("scope", "global"),
                  item.get("project", ""), item.get("status", "active"),
-                 item.get("path", ""), item.get("title", ""), item.get("body", ""),
+                 relative, item.get("title", ""), item.get("body", ""),
                  item.get("body_hash") or store.sha256_text(item.get("body", "")),
                  item.get("confidence", 0.5), item.get("importance", 0.5),
                  int(item.get("pinned") or 0), int(item.get("usage") or 0),

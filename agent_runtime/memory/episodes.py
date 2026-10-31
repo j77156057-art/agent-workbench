@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 
 from . import store
@@ -14,6 +15,9 @@ from . import store
 MAX_TAIL_BYTES = 256 * 1024
 MAX_ACTIONS = 40
 MAX_FILES = 20
+COMPACT_BYTES = 512 * 1024
+KEEP_LINES = 200
+_LOCK = threading.RLock()
 
 
 def new_id():
@@ -47,9 +51,38 @@ def append(project_id, session_id, record):
     target = path(project_id, session_id)
     store.ensure_dir(os.path.dirname(target))
     line = json.dumps(item, ensure_ascii=False, sort_keys=True)
-    with open(target, "a", encoding="utf-8", newline="\n") as handle:
-        handle.write(line + "\n")
+    with _LOCK:
+        with open(target, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
+        try:
+            if os.path.getsize(target) > COMPACT_BYTES:
+                compact(project_id, session_id, keep=KEEP_LINES)
+        except OSError:
+            pass
     return item["id"]
+
+
+def compact(project_id, session_id, keep=KEEP_LINES):
+    """回合流超过阈值时把旧行移到 archive，保留最近 keep 条；返回归档行数。"""
+    target = path(project_id, session_id)
+    try:
+        lines = [line for line in store.read_text(target).splitlines() if line.strip()]
+    except OSError:
+        return 0
+    keep = max(5, int(keep))
+    if len(lines) <= keep:
+        return 0
+    old, recent = lines[:-keep], lines[-keep:]
+    stamp = store.now().replace(":", "").replace("-", "")[:15]
+    archive = store.safe_path("projects", store.safe_id(project_id), "archive",
+                              "episodes", "%s-%s.jsonl"
+                              % (store.safe_id(session_id), stamp))
+    store.ensure_dir(os.path.dirname(archive))
+    with open(archive, "a", encoding="utf-8", newline="\n") as handle:
+        for line in old:
+            handle.write(line + "\n")
+    store.atomic_write(target, "\n".join(recent) + "\n")
+    return len(old)
 
 
 def latest(project_id, session_id, limit=3):

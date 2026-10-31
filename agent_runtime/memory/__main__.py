@@ -21,6 +21,8 @@ def main(argv=None):
     sub.add_parser("stats", help="查看索引统计")
     sweep_cmd = sub.add_parser("sweep", help="扫描项目候选并按晋升门晋升")
     sweep_cmd.add_argument("--project", required=True)
+    dedupe_cmd = sub.add_parser("dedupe", help="合并历史近似候选")
+    dedupe_cmd.add_argument("--project", required=True)
     promote_cmd = sub.add_parser("promote", help="晋升单条候选")
     promote_cmd.add_argument("--project", required=True)
     promote_cmd.add_argument("--id", required=True)
@@ -36,6 +38,8 @@ def main(argv=None):
         out = index.stats()
     elif args.cmd == "sweep":
         out = promote.sweep(args.project)
+    elif args.cmd == "dedupe":
+        out = promote.dedupe_candidates(args.project)
     elif args.cmd == "promote":
         out = promote.promote(args.project, args.id)
     elif args.cmd == "migrate":

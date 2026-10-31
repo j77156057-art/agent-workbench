@@ -372,7 +372,7 @@ POST   /api/memory/reindex
 主模型精确账单未进 trace（golden runner 不记录 token）；按 5 回合样本 ¥0.0326/轮估算，53 题主模型约 ¥1.7。固化实测 ¥0.0223，仍只占约 1–2%。
 
 ### 16.5 仍未做
-多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank。语义召回、边编辑、学习闭环与真实迁移已落地。
+多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank；另有真实嵌入后端（本机缺 bge-m3）、记忆专用评测、跨会话错误记忆。语义召回、边编辑、学习闭环、去重/保留与真实迁移已落地。
 
 ### 16.6 应用状态与模型
 - `.docmind_state.json` 已开启 `memory_v2: true`；默认模型现为 **opencode / deepseek-v4.1-flash**，Key 优先读环境变量 `OC_KEY`（其次 `OPENCODE_API_KEY`，最后全局密钥库）；`/api/config` 实测返回 `opencode/deepseek-v4.1-flash` + `has_key=true`，3 题冒烟 3/3 通过。
@@ -388,3 +388,12 @@ POST   /api/memory/reindex
 - **索引一致性**：共享条目编辑、晋升、采纳、状态/pin 变化立即 `upsert_item`；`rebuild` 现在比较标题/状态/置信/重要度/pin/usage/时间，不再只看 body_hash。
 - **真实迁移已执行**：旧库只读导出 **471** 条归档、41 条事实 + 13 条经验教训（active 低置信、不 pin）、1 条偏好、354 条 checkpoint、23 条 experience、13 条退休；第二次运行 `skipped`；索引重建 **82 条，verified=true**。迁移条目可被检索、可在面板 pin/编辑。
 - **验证**：后端 **283 passed**、前端 158 node、build/typecheck 通过；Edge 实测候选「采纳」后 1→0、提示「已采纳并 pin」、无控制台错误。
+
+
+### 16.8 去重、保留与索引一致性（2026-10-31）
+
+- **写入近似去重**：`create_candidate` 先找同 kind 的共享 active/项目候选；中文 bigram + 英文词 Jaccard，短句叠加 `SequenceMatcher`，阈值 0.88。命中则合并 receipts、重要度（取高）、usage、last_used，不再新增碎片；共享副本优先，不同 kind 不合并。
+- **历史清理**：`python -m agent_runtime.memory dedupe --project <id>` 对存量候选做一次合并；本机 28 条检查、0 条命中（本轮候选彼此差异足够大）。
+- **回合保留**：`episodes.jsonl` 超过 512KB 自动把旧行移到 `projects/<pid>/archive/episodes/`，保留最近 200 条；`latest` 仍只读尾部。
+- **索引一致性**：`upsert_item` 在编辑/晋升/采纳/状态/pin 变化时立即同步行、边、FTS 与向量；`rebuild` 比较标题/状态/置信/重要度/pin/usage/时间，不再只看 body_hash。
+- **验证**：后端 **287 passed**；前端 158 node、build 通过；历史去重 CLI 与真实迁移幂等均已实跑。
