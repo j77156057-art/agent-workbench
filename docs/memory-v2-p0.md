@@ -516,7 +516,7 @@ POST   /api/memory/reindex
 
 - **根因**：`_FAILURE_MARKERS` 是一串**中文工具错误文案**（"读取失败/拒绝访问/计算失败"…），没有任何通用英文失败标记。于是真正的 pytest 失败输出被判成"非失败"：`[exit code 1] FAILED tests/test_a.py::x` → `_is_failure False` → `_tool_ok True` → 写出一条 `test/pass`。这是**主路径**，不是边角。同理 `[exit code 4] ERROR: file or directory not found`、`[exit code 2] can't open the file` 也过 —— 一次根本没跑起来的测试能拿到"通过"凭证，而这条凭证正是晋升门 `_has_pass_receipt` 唯一信任的东西。
 - **为什么不顺手把 `_is_failure` 改严**：它还得继续放 `grep` 无匹配过关（合法答案，误判会喂 `_TOOL_FAIL_LIMIT=3` 熔断并给出误导性结论）。往 markers 里加 `FAILED`/`Traceback` 会把"文件内容里正好含这些字样"一并判成失败 —— 正是当年加无匹配白名单要救的坑。
-- **做法**：新门口径独立 —— `_EXIT_CODE` 解析 `run_command` 恒定的 `[exit code N]` 头（tools.py:8191），`_test_command_passed(obs)` **只认 N==0**；拿不到退出码（后台化、超时、被截断）一律按"没有凭证"。两条派发路径（顺序 agent.py:7243、并行批处理 8187）都改用它。
+- **做法**：新门口径独立 —— `_EXIT_CODE` 解析 `run_command` 恒定的 `[exit code N]` 头（`_render_command_result`，tools.py:7762），`_test_command_passed(obs)` **只认 N==0**；拿不到退出码（后台化、超时、被截断）一律按"没有凭证"。两条派发路径（顺序、并行批处理）都改用它。
 - **验证**：`tests/test_test_command_receipt_gate.py` 6 passed —— 四种非零形状不得产出凭证、无退出码不得产出、**反向守卫**（`_is_failure` 对真实测试失败依旧判非失败，这条被钉住是为了阻止有人用错层修它）、两处赋值点源码级钉死（漏一条即红）、`_test_command_verified` 仍要求有待验证文件改动。
 
 ### 16.22 跨回合 prompt 前缀与命中率视图（2026-10-31）
@@ -527,3 +527,31 @@ POST   /api/memory/reindex
 - **结论**：想拿这份缓存收益，要改的是**裁剪器**（跳过非历史消息，或把易变块正式纳入固定区），不是挪消息。已留一条守卫钉住这条不变量：`test_memory_v2_p0.test_time_block_stays_in_the_fixed_head` —— 断言时间块位于 `_head_fixed_end` 之前，且可裁区只剩成对历史。
 - **度量（已落地）**：`agent_trace.summary()` 早就算好了 token 与 `cache_saved_cny`，缺的是**按回合**那条。新增 `cache_hit_turns / cache_hit_rate / cache_hit_turn_share`（顶层 + 每个 provider），设置页「用量与费用」加一行同时报两条率 —— 只看 token 率会把"跨回合几乎没复用"这件事完全藏住。
 - **验证**：撤销后针对性复跑 **176 passed / 0 failed**（`test_fit_budget_head_prune`、天气恢复、票价澄清、指代门、回执门、注入缩放、memory v2 全套 88 条含新增守卫）。前端 typecheck + build 通过。
+
+### 16.23 失败判据改走结构：退出码 + 命令文本（2026-10-31）
+
+§16.21 只堵住了这个洞的一个出口。同一个 `_is_failure` 还牵着另外三条更要紧的路，所以这次把判据本身改掉。
+
+- **三处下游**（`_tool_ok = _result.ok and not _is_failure(obs)`，agent.py 顺序与并行各一处）：
+  1. `turn.failure_count += 1` / `last_failure` → 回合收尾 `turns.py:105` 决定**写不写 L4 error 钩子**；
+  2. `tool_fail_streak` / `fail_total` → `_TOOL_FAIL_LIMIT=3` **熔断**与重试配额；
+  3. `turn.tool_step(ok=…)` → episode 里的 actions 与证据链。
+  于是一条真跑失败的 pytest：**既没沉淀成"下次别再这么干"的记忆，也没触发换路重试，模型还收到"这一步成功了"**。L4 长期空转（真实项目 0 钩子）与这条直接相关。
+- **为什么不往 `_FAILURE_MARKERS` 里加 `FAILED`/`Traceback`**（ tempting 的错修法）：那会把 `grep` 无匹配、以及**文件内容里恰好含这些字样**的合法 `read_file` 一并判成失败，喂给 3 次熔断并给出误导性结论 —— 正是当年加无匹配白名单要救的坑。已在测试里反向钉住：`test_marker_table_still_has_no_generic_failure_words` 断言这些词**不许**出现在表里。
+- **新口径**（`_exit_code_verdict`）：只有拿到工具上下文且 `tool == "run_command"` 时接管。`[exit code 0]` → 非失败；非零 → 失败；`[exit code ...]` 头里不是整数 → 失败（`process_runner.run_bounded` 只在"命令不存在 / 命令无法启动"两个分支回 `exit_code=None`）；没有头（后台任务 JSON）→ 交回原判据。
+- **非零即答案的豁免族**（`_NONZERO_IS_ANSWER`，只豁免 **1** 号码，≥2 仍失败）：`grep/egrep/fgrep/rg/ag/sift/findstr`（查无匹配）、`diff/cmp/fc/comm`（有差异）、`test`/`[`（判假）、`which/where/dir`（查无此项）、`pgrep/pkill/killall`（查无进程 —— 本项目数泄漏的浏览器进程就靠它）、`git diff|grep`（`--quiet` 靠退出码传结论）。命令前缀 `cd x &&` 与 `sudo`/`env` 先剥掉再比开头。
+- **接线三处**：顺序派发、并行派发、PTC 服务环。`execute_tool(function, argument, legacy_failure)` 的契约是只喂观察文本，所以上下文用 `_failure_for(tool, arg)` 在派发点绑好再交出去；`_ptc_build_server` 新增**可选** `failure_for` 参数，不传时逐字节走原 `is_failure`（PTC 的测试替身就是 `lambda obs: …`，多传一个参数会当场 TypeError）。
+- **刻意保留的三个缺口**（都写成了断言，不留在注释里等人发现 —— `KnownLimitsTests`）：`pytest | tail` 的退出码是 `tail` 的（shell 语义，要修得改 `run_command` 的输出协议）；`dev_region_verify` 把头印在第二行（`运行 X 的 verify 命令：…\n[exit code N]`），结构判定只看首行所以仍走字符串判据；只拿 1 个参数的调用点（如 `_audit_live_answer` 的文本协议兜底）保持原判据。
+- **验证**：`tests/test_failure_verdict.py` **21 passed / 20 subtests** —— 四种真失败形状、九种"非零即答案"、同一族 2 号码仍失败、`exit code None`、结构判定压过 markers、后台 JSON 不受影响、**没给上下文等于今天**（反向守卫，含其它工具）、`_failure_for` 恰好 1 参数、`execute_tool` 级别的真接线断言、PTC 两条、两处派发点源码级钉死、画像拒写三条。
+- **三次变异都有牙**：关掉结构判定 → **11 红**；去掉豁免族 → **9 红**；只把并行派发点退回旧判据 → **仅接线守卫 1 条红、20 条行为测试全绿**（这条最能说明为什么纯行为测试不够：漏接一条路径时它照样发版）。
+- **回归网未破**：既有判据相关 10 个文件 **194 passed / 94 subtests**（`test_failure_markers`、`test_no_match_is_not_failure`、`test_web_search_markers`、`test_ptc_attribution`、`test_ptc_write_bridge`、`test_region_apply_and_stream_fixes`、`test_self_verify`、`test_tool_arg_syntax_tolerance`、`test_test_command_receipt_gate`、`test_failure_verdict`）；记忆与长跑套件 **157 passed**。
+- **顺带（第 8 条）**：`capture_explicit_profile` 原先无条件写 `DEFAULT_USER_ID` 那一行**全局**画像，评测题里只要有一句"我叫…/我在…"就会永久进真实用户的常驻背景并注入之后每个窗口。画像表按 user 键、**不按 scope 分行**，所以不能像 `capture_preferences` 那样改投 scope（改键等于改读，`profile_context()` 和设置页读的是同一行）；正确做法是**拒写** —— 新增 `write_project` 参数，非空（隔离流量）直接返回现有画像。三条测试：隔离回合不写、真实回合照写（反向守卫）、不传参等于今天。
+
+### 16.24 内部定时检查：默认真开 + 排期按「上次真跑过的时刻」（2026-10-31）
+
+- **实测到的吃灰**：`maintenance-last.json` **不存在** = 这个功能在真实安装里一次都没跑过。两个原因叠在一起：① `get_memory_check_interval()` 默认 0；② 就算设了值，`_loop()` 用 `time.monotonic()` 从**进程启动**起算 —— 间隔一天，而机器每天重启，就永远触发不了。
+- **做法**：`DEFAULT_MEMORY_CHECK_INTERVAL = 1440`（`load_state` 只在键**不存在**时给默认，用户显式存 0 仍然关闭）；新增 `_seconds_to_next(minutes)` 按 `last_status()["ts"]` 算剩余，超期（含从没跑过）只等 `STARTUP_GRACE_SECONDS = 20` 再跑，之后每轮重算 —— 用户把间隔改小也能跟上。时间戳读不出来时**宁可多查一次**，也不静默再也不查。
+- **代价确认有界**（这才敢设默认开）：`health.maintain(apply=True)` 的索引重建按 `body_hash` 逐条比对，没变就不重嵌（`index.rebuild` 的 `unchanged` 分支）；gc 只归档超过保留期的失效项；所有动作落 `archive/memory` 可回溯；不做 active 事实删除。
+- **验证**：`tests/test_maintenance.py` **10 passed** —— 默认开、显式 0 仍关（反向守卫）、从没跑过即刻到期、满间隔要等、**重启不重置时钟**、坏时间戳 fail-open、以及一条走真线程的集成守卫。变异：把 `_loop` 退回 monotonic 起算 → **只有那条集成守卫红，9 条纯函数测试全绿**（证明纯函数测试挡不住接线写错）。
+- **第 6 条脏钩子清理**：两个探针项目（`prj-7a57e11901e9` orchid-loop 夹具、`prj-f86113b0ed62` 长跑探针）里 10 条 pinned error 钩子 + 对应错误账本（会话级 10 条 + 项目级 10 条）清空；先整档复制到 `archive/2026-10-31-probe-hooks-pre-cleanup/`（8 个文件）再删，删后复核三处计数全 0，真实项目 `prj-af6142eae52c` 保持 0。
+- **更正一个我自己的计数**：把这 10 条统称"误判钩子"是我混了数。按今天的判据逐条回放（`hooks.md` 里的原文）只有 **5 条是误判**：3× `[exit code 0]`、1× `grep` 的 `[exit code 1]` 无匹配、1× `memory_search` 的 `{"ok": true…}`；另外 **5 条是真失败形状**（2× `read_file 文件不存在`、1× `[exit code 4]`、2× `[exit code 1]` 的 pytest/脚本失败），新判据现在也会判它们失败。清它们的原因是**它们属于探针残留**（会话名 `longtask-*`，不是真实使用），不是因为 10 条都判错。
