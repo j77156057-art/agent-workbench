@@ -83,20 +83,83 @@ class FitBudgetHeadPruneTests(unittest.TestCase):
                         "早期对话摘要必须保留，否则跨轮记忆彻底丢失")
 
     def test_prunes_only_history_pairs_never_orphan_assistant_first(self):
-        # 若干历史对：裁剪后结果里，固定块之后的历史段必须仍以 user 打头成对出现，
-        # 不能出现「assistant 紧跟固定块」这种 assistant-first 非法序列。
+        # 裁剪后，可裁区间 [_head_fixed_end, 尾部保护区) 内必须仍以 user 打头成对出现，
+        # 不能出现「assistant 紧跟固定块」这种 assistant-first 非法序列；尾部那条
+        # 「当前时间」system 与当前问题一样永不可裁（2026-10-31 两边界契约）。
         a = self._agent(8)
         question = "Q_last"
         head = a._build_messages(question)
         hist_start = a._head_fixed_end
         result = a._fit_budget(head, [])
-        tail = result[hist_start:]  # 固定块之后（含可能的历史残留 + 当前问题）
-        hist_msgs = tail[:-1]
+        self.assertEqual(result[-1].get("content"), question)
+        self.assertIn("当前时间", str(result[-2].get("content")),
+                      "尾部时间块必须存活且紧贴当前问题")
+        self.assertEqual(result[-2].get("role"), "system")
+        hist_msgs = result[hist_start:-2]
         for m in hist_msgs:
             self.assertIn(m.get("role"), ("user", "assistant"))
         if hist_msgs:
             self.assertEqual(hist_msgs[0].get("role"), "user",
                              "历史段必须 user 打头，避免 assistant-first 非法序列")
+
+    def test_partial_prune_keeps_whole_units_including_resume_triples(self):
+        """**部分**裁剪（不是裁到地板）下，存活区间必须恰好等于「最近 K 个完整单元」。
+
+        为什么不能只用极小预算裁到地板：地板会把历史全删光，删除顺序里的错位/孤儿
+        在最终结果里被「自愈」掉，变异（把 3 条单元当 2 条删）照样全绿 —— 第一版
+        测试就是这么没牙的。这里把预算精确设成「固定块+尾部+最近 3 单元」的 token
+        数，逼裁剪器停在历史中间，任何拆单元的行为都会让存活切片对不上。
+        """
+        a = self._agent(0)
+        a.llm.prompt_budget = 100000  # 先让历史滑窗放下全部 6 单元，再收紧逼裁剪
+        a.history = [
+            {"user": "u%d" % i + "x" * 60, "assistant": "a%d" % i + "y" * 60,
+             "resume_context": ("现场%d" % i) if i in (0, 3, 5) else "", "ts": ""}
+            for i in range(6)
+        ]
+        head = a._build_messages("Q_partial")
+        hs, ts = a._head_fixed_end, a._head_tail_start
+        region = head[hs:ts]
+        units = []
+        for m in region:
+            is_resume = str(m.get("content", "")).startswith(agent_mod._RESUME_CONTEXT_MARK)
+            if m.get("role") == "user" and not is_resume:
+                units.append([m])
+            elif units:
+                units[-1].append(m)
+        self.assertEqual(len(units), 6, "历史应被切成 6 个单元（3 个带 resume）")
+        # 尺寸刻意取 [3,2,2,3,2,3]：待删的前 3 单元共 7 条（奇数），成对删除不可能
+        # 恰好删完它们 —— 对称尺寸（如 3,2,3,2,3,2）会让拆单元删法碰巧重新对齐，
+        # 变异就杀不掉（第一版正是这么漏的）。
+        self.assertEqual([len(u) for u in units], [3, 2, 2, 3, 2, 3])
+        keep = [m for unit in units[-3:] for m in unit]
+        desired = head[:hs] + keep + head[ts:]
+        a.llm.prompt_budget = a._prompt_tokens(desired, [])
+        result = a._fit_budget(head, [])
+        self.assertEqual([(m.get("role"), m.get("content")) for m in result],
+                         [(m.get("role"), m.get("content")) for m in desired],
+                         "部分裁剪必须整单元删：存活切片对不上说明单元被拆着删了")
+
+    def test_cross_turn_prefix_is_stable_for_provider_cache(self):
+        """跨回合前缀缓存的收益证明：第二轮的 head 必须把第一轮「固定块+全部历史」
+        原样当前缀，分叉只允许发生在尾部（时间块 + 新问题）。
+
+        时间块还在固定头区第 3 条时，公共前缀长度只有 2 —— 历史明明只在尾部追加，
+        却整段无法命中 provider 缓存（按回合命中率 12.91% 的根因）。
+        """
+        a = self._agent(0)
+        a.history = [{"user": "h-u%d" % i, "assistant": "h-a%d" % i, "ts": ""}
+                     for i in range(3)]
+        head1 = a._build_messages("第一问")
+        a.history = a.history + [{"user": "第一问", "assistant": "第一答", "ts": ""}]
+        head2 = a._build_messages("第二问")
+        common = 0
+        for m1, m2 in zip(head1, head2):
+            if m1.get("role") != m2.get("role") or m1.get("content") != m2.get("content"):
+                break
+            common += 1
+        self.assertEqual(common, len(head1) - 2,
+                         "跨回合公共前缀应铺到第一轮历史末尾（只留尾部两条分叉）")
 
     def test_boundary_attribute_is_set_by_build_messages(self):
         a = self._agent(3)

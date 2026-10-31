@@ -115,25 +115,31 @@ class ConstitutionTests(_MemBase):
     def test_first_injection_after_base_prompt(self):
         messages = self.build()
         self.assertTrue(str(messages[1]["content"]).startswith("【系统宪法 v0"))
-        self.assertIn("当前时间", str(messages[2]["content"]))
+        # 时间块不再固定在 [2]：它为跨回合前缀缓存挪到了历史之后的受保护尾部
+        # （2026-10-31 两边界契约），这里按内容找、并钉住它的新位置。
+        time_idx = next(i for i, m in enumerate(messages)
+                        if "当前时间" in str(m.get("content") or ""))
+        self.assertEqual(time_idx, len(messages) - 2)
         self.assertLessEqual(len(messages[1]["content"]), constitution.INJECT_MAX_CHARS)
 
-    def test_time_block_stays_in_the_fixed_head(self):
-        """时间块留在固定头区，**不许**为了 prompt 缓存挪进可裁历史区。
+    def test_time_block_sits_after_history_inside_its_own_protected_tail(self):
+        """时间块在历史之后、当前问题之前，且被 `_head_tail_start` 结构性保护。
 
-        挪过去确实能把跨回合的最长公共前缀铺到历史末尾（实测按回合命中率仅 12.91%），
-        但 `_fit_budget` 的成对删除建立在「`_head_fixed_end` 与当前问题之间只有
-        user/assistant 成对历史」这条不变量上；插一条 system 进去会把它打破
-        （`test_fit_budget_head_prune` 当场红）。要拿这份缓存收益，得先改裁剪器，
-        不是挪消息。
+        这条守卫的历史：最初时间块在固定头区第 3 条，跨回合前缀从那里分叉（按回合
+        命中率仅 12.91%）；第一次裸挪进历史区被 `_fit_budget` 的成对不变量当场拦下。
+        现在的契约是**先改裁剪器再挪消息**：可裁区间 = [_head_fixed_end,
+        _head_tail_start)，尾部这条 system 与当前问题一样永不可裁。
         """
         agent = agent_mod.Agent(llm=_LLM(), session_id="memv2")
+        agent.history = [{"user": "旧问", "assistant": "旧答", "ts": ""}]
         first = agent._build_messages("同一问")
-        self.assertLess(first.index(
-            next(m for m in first if "当前时间" in str(m.get("content") or ""))),
-            agent._head_fixed_end, "时间块跑进可裁区了")
+        time_idx = first.index(
+            next(m for m in first if "当前时间" in str(m.get("content") or "")))
+        self.assertEqual(time_idx, agent._head_tail_start, "时间块必须是尾部保护区的第一条")
+        self.assertGreater(time_idx, agent._head_fixed_end, "时间块必须在历史之后")
+        self.assertEqual(time_idx, len(first) - 2, "时间块必须紧贴当前问题之前")
         self.assertTrue(all(m.get("role") in ("user", "assistant")
-                            for m in first[agent._head_fixed_end:-1]),
+                            for m in first[agent._head_fixed_end:agent._head_tail_start]),
                         "可裁区混进了非历史消息")
 
     def test_bootstrap_once_then_save_bumps_version(self):
