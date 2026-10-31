@@ -555,3 +555,12 @@ POST   /api/memory/reindex
 - **验证**：`tests/test_maintenance.py` **10 passed** —— 默认开、显式 0 仍关（反向守卫）、从没跑过即刻到期、满间隔要等、**重启不重置时钟**、坏时间戳 fail-open、以及一条走真线程的集成守卫。变异：把 `_loop` 退回 monotonic 起算 → **只有那条集成守卫红，9 条纯函数测试全绿**（证明纯函数测试挡不住接线写错）。
 - **第 6 条脏钩子清理**：两个探针项目（`prj-7a57e11901e9` orchid-loop 夹具、`prj-f86113b0ed62` 长跑探针）里 10 条 pinned error 钩子 + 对应错误账本（会话级 10 条 + 项目级 10 条）清空；先整档复制到 `archive/2026-10-31-probe-hooks-pre-cleanup/`（8 个文件）再删，删后复核三处计数全 0，真实项目 `prj-af6142eae52c` 保持 0。
 - **更正一个我自己的计数**：把这 10 条统称"误判钩子"是我混了数。按今天的判据逐条回放（`hooks.md` 里的原文）只有 **5 条是误判**：3× `[exit code 0]`、1× `grep` 的 `[exit code 1]` 无匹配、1× `memory_search` 的 `{"ok": true…}`；另外 **5 条是真失败形状**（2× `read_file 文件不存在`、1× `[exit code 4]`、2× `[exit code 1]` 的 pytest/脚本失败），新判据现在也会判它们失败。清它们的原因是**它们属于探针残留**（会话名 `longtask-*`，不是真实使用），不是因为 10 条都判错。
+
+### 16.25 「下一步」接上证据型生产者；健康警告按项目过滤；压缩生效范围写清（2026-10-31）
+
+活体收口（#28）之后顺着 L4 往下查，补了三件事。
+
+- **「下一步」通道原先没有普通回合的生产者**：`turns.record_turn` 的 `next_step` 只来自调用方显式传值或 `_plan_next_step()`（读 Plan 模式的 `plan_state`）。普通回合没有计划文件 → 实测 **77 个 episode 里 0 条带 next**，L4 的这一支等于没接线。新增 `_unverified_next_step(turn, journal)`：本回合改了文件（`verification_targets` 非空）却还没有通过回执（测试快照不一致、或 `journal.verified` 不为真）→ next = 「验证改动：<paths>（跑测试或验收，取得回执后才算完成）」。这是普通回合里真实存在、不需要编造的待办，正好是 C-003 要盯的那件事。**已验证 / 没改文件一律返回空**，绝不造一个下一步出来；Plan 与显式传值仍优先（顺序有守卫）。
+- **健康面板的固化错误警告被别的项目污染**：`metrics` 落盘是全局的（成本要能跨项目合计），但 `health.report` 直接拿 `metrics.report(days=7)` 的全局 `errors` 挂警告。实测那条「最近固化有 1 次错误」来自 **2026-10-30 17:47Z 的评测会话 `golden-…-G27` 撞 DeepSeek 402**（余额不足，已知条件）—— 隔离写入之后，这是评测流量残留在真实项目体检上的最后一块污染面。`metrics.report` 加 `project=None` 参数（缺省保持全局口径，成本视图不变），`health.report` 传 `project_id`。
+- **压缩的生效范围写进文档而不是加硬上限**：触发线 = 本模型 prompt 预算 × `COMPACT_TRIGGER_RATIO`(0.8)，另有 `MAX_TURNS=200` 硬上限与 `DEFAULT_TRIGGER_TOKENS=7000` 兜底。活数：**923 个会话文件里只有 3 份 summary，全部是探针/验证夹具**（`longtask-20261031-104557/105719`、`verify_compact_0916`），最长真实会话 **10 轮**，离两条线都极远。结论：大窗口模型上压缩事实上从不触发，它真正服务小窗口本地模型；不加绝对 token 上限（会在大窗口引入没人验证过的截断行为）。两份 README 各加一条「压缩的实际生效范围」。
+- **验证**：`tests/test_memory_v2_p0.py` **97 passed**（88 旧 + 9 新）。新增 `NextStepProducerTests` 6 条（未验证产出 next 且进 L4 注入、已验证不产出、无改动不产出、journal 已验证不产出、测试快照过期仍算未验证、Plan/显式优先）与 `MetricsProjectScopeTests` 2 条（别项目的 402 不挂本项目警告、全局口径不变；按项目只数自己的调用）。变异：删掉 `_unverified_next_step` 接线 → 2 红；删掉 `metrics.report` 的项目过滤 → 2 红；恢复即绿。
