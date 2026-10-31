@@ -111,6 +111,8 @@ _reg("plan", "计划与区域", "dev_plan", "dev_propose", "dev_propose_regions"
      "dev_region_read", "dev_region_verify")
 _reg("plan", "流程与交接", "start_workflow", "dev_lanes", "dev_handoff",
      "dev_pricing", "dev_refactor")
+_reg("plan", "定时与等待", "timer_set", "timer_list", "timer_cancel")
+_reg("plan", "计划与决策", "plan_decision")
 
 _reg("task", "缺陷与任务", "dev_list_bugs", "dev_update_bug", "dev_capture_bug")
 _reg("task", "技能", "dev_skill_create", "dev_skill_approve", "dev_skill_reject",

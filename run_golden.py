@@ -34,6 +34,12 @@ os.environ.setdefault("DOCMIND_TRACE", "0")
 # 子进程里硬杀进程（整轮 0 题写出）。用赋值而非 setdefault，确保覆盖任何预置值。
 os.environ["DOCMIND_GOLDEN_NO_LOCK"] = "1"
 
+# 记忆 v2 的写入隔离 scope。与上面那条同一个理由：黄金题是**评测流量**，不该
+# 改动任何长期状态。实测代价——真实项目 56 个记忆会话里 55 个是 golden-*，
+# 46 条候选全部来自评测或旧库迁移，还留下 12 条误判的 pinned 钩子。
+# 读仍按被问项目（不动提示词构成，历史基线可比），只有写改投这里。
+EVAL_MEMORY_SCOPE = "eval-golden"
+
 import argparse  # noqa: E402
 import json  # noqa: E402
 import sys  # noqa: E402
@@ -72,7 +78,8 @@ def build_allowlist(disabled: list[str], only: list[str] | None = None):
         return None
 
 
-def run_one(question: str, *, llm, session_id: str, allowlist, max_seconds: float, project_id=None):
+def run_one(question: str, *, llm, session_id: str, allowlist, max_seconds: float, project_id=None,
+            memory_write_project=EVAL_MEMORY_SCOPE):
     """跑单题，返回一个结果 dict（不抛异常，错误写进 error 字段）。"""
     thoughts: list[str] = []
     actions: list[str] = []
@@ -87,7 +94,8 @@ def run_one(question: str, *, llm, session_id: str, allowlist, max_seconds: floa
     degraded = None
     verification_status = None
 
-    agent = Agent(llm=llm, session_id=session_id, tool_allowlist=allowlist, project_id=project_id)
+    agent = Agent(llm=llm, session_id=session_id, tool_allowlist=allowlist, project_id=project_id,
+                  memory_write_project=memory_write_project)
     t0 = time.monotonic()
 
     try:
@@ -280,6 +288,10 @@ def main(argv=None) -> int:
                     help="项目 id（如 prj-xxxx）。代码问答按项目隔离，跑题前务必确认它指向被问的代码库；"
                          "留空则用「当前项目」，很容易指错")
     ap.add_argument("--max-seconds", type=float, default=300.0, help="单题软超时秒数")
+    ap.add_argument("--memory-write-project", default=EVAL_MEMORY_SCOPE,
+                    help="记忆 v2 的**写入** scope（读仍按 --project-id）。默认 %(default)s："
+                         "评测流量关进自己的桶，不再往真实项目灌回合/钩子/候选/回执；"
+                         "传空串 = 关闭隔离，写回被问项目（旧行为，做记忆回归时才用）")
     ap.add_argument("--isolate-fs", action="store_true",
                     help="每题文件系统隔离：跑前对 code_root 源码子树做基线备份，"
                          "跑后还原新增/被改/被删文件，消除写文件类题目的跨轮污染（默认关闭）")
@@ -321,7 +333,8 @@ def main(argv=None) -> int:
 
     print(f"题库 {args.questions} 共 {len(questions)} 题 · model={model_name or '(默认)'} "
           f"· temp={os.getenv('DOCMIND_LLM_TEMPERATURE', '0.3')} "
-          f"· 禁用工具={args.disable_tools or '无'} · project={args.project_id or '(当前项目)'}")
+          f"· 禁用工具={args.disable_tools or '无'} · project={args.project_id or '(当前项目)'} "
+          f"· 记忆写入={args.memory_write_project or '(同 project，未隔离)'}")
     # --- 绑定项目上下文 ---------------------------------------------------
     # search_code / grep / read_file 是按「当前项目」取代码集合的，
     # 只给 Agent(project_id=) 不够——必须真正把当前项目指针切过去，
@@ -374,6 +387,7 @@ def main(argv=None) -> int:
                 allowlist=allowlist,
                 max_seconds=args.max_seconds,
                 project_id=args.project_id or None,
+                memory_write_project=args.memory_write_project,
             )
             rec = {
                 "id": qid,

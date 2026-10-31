@@ -1842,6 +1842,30 @@ def set_memory_model(value):
     return value
 
 
+def get_memory_check_interval():
+    """内部记忆检查间隔（分钟，0=关闭）；持久化值优先于环境变量。"""
+    value = get_runtime("memory_check_interval_minutes")
+    if value is not None:
+        try:
+            return max(0, min(10080, int(value)))
+        except (TypeError, ValueError):
+            return 0
+    try:
+        return max(0, min(10080, int(load_state("memory_check_interval_minutes", 0) or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_memory_check_interval(minutes):
+    try:
+        value = max(0, min(10080, int(minutes)))
+    except (TypeError, ValueError):
+        value = 0
+    set_runtime("memory_check_interval_minutes", value)
+    save_state("memory_check_interval_minutes", value)
+    return value
+
+
 def _apply_memory_state(data):
     """开机恢复：master 键优先，向后同步三个子键；显式 set_runtime 覆盖磁盘值。
     memory_learn / memory_v2 是独立开关，单独恢复，与 memory_optimized 互不牵连。"""
@@ -1865,3 +1889,9 @@ def _apply_memory_state(data):
     semantic = data.get("memory_semantic")
     if semantic is not None and "memory_semantic" not in _RUNTIME:
         _RUNTIME["memory_semantic"] = bool(semantic)
+    interval = data.get("memory_check_interval_minutes")
+    if interval is not None and "memory_check_interval_minutes" not in _RUNTIME:
+        try:
+            _RUNTIME["memory_check_interval_minutes"] = max(0, min(10080, int(interval)))
+        except (TypeError, ValueError):
+            _RUNTIME["memory_check_interval_minutes"] = 0

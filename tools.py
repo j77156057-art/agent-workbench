@@ -11810,6 +11810,97 @@ def memory_search(arg=""):
         return json.dumps({"ok": False, "error": memory.scrub(str(exc), 500)}, ensure_ascii=False)
 
 
+def _timer_fields(arg):
+    text = str(arg or "").strip()
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return {str(key): str(value) for key, value in data.items()}
+        except ValueError:
+            pass
+    return _parse_keyed(text, ["message", "delay_seconds", "after_seconds",
+                               "interval_seconds", "every_seconds", "task",
+                               "repeat", "at", "due_at", "timer_id"])
+
+
+def timer_set(arg=""):
+    """设置会话定时提醒；到了时间会把提醒注入模型的下一轮上下文。"""
+    from agent_runtime import timers
+    fields = _timer_fields(arg)
+    message = (fields.get("message") or "").strip()
+    if not message:
+        return json.dumps({"ok": False, "error": "message 不能为空"}, ensure_ascii=False)
+    project, session = timers.scope()
+    if not session:
+        return json.dumps({"ok": False, "error": "没有活动会话，不能设置定时器"},
+                          ensure_ascii=False)
+    delay = fields.get("delay_seconds") or fields.get("after_seconds") or 60
+    at = (fields.get("at") or fields.get("due_at") or "").strip()
+    if at:
+        try:
+            from datetime import datetime, timezone
+            stamp = datetime.fromisoformat(at.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            delay = max(1, int((stamp - datetime.now(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError):
+            return json.dumps({"ok": False, "error": "at 不是合法的 ISO 时间"},
+                              ensure_ascii=False)
+    interval = fields.get("interval_seconds") or fields.get("every_seconds") or 0
+    repeat_raw = str(fields.get("repeat") or "").strip().lower()
+    repeat = None
+    if repeat_raw:
+        repeat = repeat_raw in ("1", "true", "yes", "on", "repeat")
+    try:
+        item = timers.create(project, session, message=message,
+                             delay_seconds=delay, interval_seconds=interval,
+                             task=fields.get("task") or "", repeat=repeat)
+    except (TypeError, ValueError) as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    return json.dumps({"ok": True, "timer": item,
+                       "how_to_cancel": "timer_cancel(timer_id: %s)" % item["id"]},
+                      ensure_ascii=False)
+
+
+def timer_list(arg=""):
+    from agent_runtime import timers
+    project, session = timers.scope()
+    if not session:
+        return json.dumps({"ok": False, "error": "没有活动会话"}, ensure_ascii=False)
+    rows = timers.list_timers(project, session, include_inactive=False)
+    return json.dumps({"ok": True, "timers": rows}, ensure_ascii=False)
+
+
+def timer_cancel(arg=""):
+    from agent_runtime import timers
+    fields = _timer_fields(arg)
+    timer_id = (fields.get("timer_id") or str(arg or "").strip()).strip()
+    if not timer_id:
+        return json.dumps({"ok": False, "error": "缺少 timer_id"}, ensure_ascii=False)
+    project, session = timers.scope()
+    if not session:
+        return json.dumps({"ok": False, "error": "没有活动会话"}, ensure_ascii=False)
+    row = timers.cancel(project, session, timer_id)
+    return json.dumps({"ok": bool(row), "timer": row} if row
+                      else {"ok": False, "error": "未找到定时器"}, ensure_ascii=False)
+
+
+def plan_decision(arg=""):
+    """记录 Plan 模式的一次关键决断，供用户事后在 plan 表审查。"""
+    from agent_runtime import plan_log
+    fields = _parse_keyed(str(arg or ""), ["decision", "text", "rationale", "task"])
+    text = (fields.get("decision") or fields.get("text") or str(arg or "")).strip()
+    if not text:
+        return json.dumps({"ok": False, "error": "decision 不能为空"}, ensure_ascii=False)
+    project, session = plan_log.scope()
+    if not session:
+        return json.dumps({"ok": False, "error": "没有活动会话"}, ensure_ascii=False)
+    row = plan_log.decision(text, rationale=fields.get("rationale") or "",
+                            task=fields.get("task") or "")
+    return json.dumps({"ok": bool(row), "decision": row}, ensure_ascii=False)
+
+
 def memory_forget(arg):
     import agent_memory as memory
     try:
@@ -12052,6 +12143,27 @@ TOOLS = {
     },
     "memory_save": {"description": "保存当前项目的长期记忆。输入 JSON 或多行 kind(fact/preference/workflow)/title/content/evidence[/supersedes]。只保留有用摘要，不存密码、图片或整段网页。preference 必须 evidence 引用用户明确表达的原文，禁止推测用户画像。workflow 是流程资料，需用 dev_skill_create 起草技能、审核后启用。若这是对被先前某条错误结论的更正，带上 supersedes=<那条的 id>，旧结论即自动作废、不再回灌；id 需为本项目活跃记忆，否则只存新不废旧。", "func": memory_save, "capability": "write_local", "side_effect": "mutating", "parallel_safe": False, "group": "general"},
     "memory_search": {"description": "检索当前项目的历史结果、失败教训、用户偏好和流程。输入关键词，空串列出最近记忆；历史内容仅供参考，model_report 不是已验证事实。", "func": memory_search, "parallel_safe": False, "group": "general"},
+    "timer_set": {
+        "description": ("设置会话定时提醒。输入 keyed/JSON：message（必填）、delay_seconds 或 at（ISO 时间）、"
+                        "interval_seconds（重复间隔）、task、repeat。到期后提醒会注入模型的下一轮上下文；"
+                        "重复定时器不会自动关闭，任务完成后必须调用 timer_cancel(timer_id: ...)。"
+                        "适合等待后台任务、轮询长构建、隔一段时间检查是否有新进展。"),
+        "func": timer_set, "parallel_safe": False, "group": "plan",
+    },
+    "timer_list": {
+        "description": "列出本会话仍 active 的定时器（id、消息、下次到期时间、间隔、已触发次数）。",
+        "func": timer_list, "parallel_safe": True, "group": "plan",
+    },
+    "timer_cancel": {
+        "description": "取消本会话的定时器；任务完成或不再需要提醒时必须调用。输入 timer_id 或 JSON {\"timer_id\":\"tm-...\"}。",
+        "func": timer_cancel, "parallel_safe": False, "group": "plan",
+    },
+    "plan_decision": {
+        "description": ("记录 Plan 模式的一次关键决断，供用户事后审查。输入 keyed/JSON："
+                        "decision（必填）、rationale（依据/取舍）、task（关联任务文本）。"
+                        "每做一个会影响方向、范围或验收的取舍就记一条；不要记录每条工具调用。"),
+        "func": plan_decision, "parallel_safe": False, "group": "plan",
+    },
     "memory_forget": {"description": "删除当前项目的一条长期记忆，输入 id 或 id: <值>。用户纠正偏好或要求忘记时使用；删除记忆不会删除原始会话和任务日志。", "func": memory_forget, "capability": "write_local", "side_effect": "idempotent_write", "parallel_safe": False, "group": "general"},
     "run_command": {
         "description": (

@@ -1,9 +1,54 @@
 """L0 注入入口：总开关关时返回空列表，调用方保持原提示词逐字节不变。"""
 from __future__ import annotations
 
+import os
+
 from config import get_memory_v2
 
 from . import constitution, store
+
+# 可自由裁量的三层（L2 共享 / L3 任务书 / L4 会话钩子）随模型窗口长一道**天花板**。
+# 下限就是它们一直以来的固定值：小窗口模型上绝不许比今天注入得更少 —— 这几层没有
+# "这轮先不注入"的退路。上限则挡住另一头：共享层真攒到几百条时，别让记忆把正文挤掉。
+# L0 宪法 / L1 画像刻意**不在**这张表里 —— 它们的内容有界，换个大模型不会变长。
+DISCRETIONARY_FLOORS = {"L2": 800, "L3": 400, "L4": 600}
+DISCRETIONARY_CAPS = {"L2": 3200, "L3": 1200, "L4": 2400}
+GROW_RATIO = float(os.getenv("DOCMIND_MEMORY_INJECT_RATIO", "0.02"))
+# 实测这份中英混排语料约 0.9 token/字符，取其倒数把 token 预算换算成字符上限。
+CHARS_PER_TOKEN = 1.1
+
+
+def _current_prompt_tokens():
+    """没有 Agent 实例的调用方（面板预览）按当前运行时模型估一份。"""
+    try:
+        from config import get_runtime, prompt_token_budget
+        return int(prompt_token_budget(str(get_runtime("llm_provider") or ""),
+                                        str(get_runtime("llm_model") or "")) or 0)
+    except Exception:  # noqa: BLE001 —— 估不出来就退回下限，绝不放大
+        return 0
+
+
+def discretionary_budgets(prompt_tokens=None):
+    """整池 `clamp(下限合计, 预算×比例, 上限合计)`，再按各层下限占比分余量。
+
+    比例只作用在**池子**上，各层维持既有的相对比例（800:400:600）—— 不会出现
+    "随窗口漂移成给任务书的空间比共享记忆还多"。
+    """
+    tokens = int(_current_prompt_tokens() if prompt_tokens is None else prompt_tokens)
+    total_floor = sum(DISCRETIONARY_FLOORS.values())
+    total_cap = sum(DISCRETIONARY_CAPS.values())
+    wanted = int(tokens * GROW_RATIO * CHARS_PER_TOKEN)
+    surplus = max(0, min(total_cap, max(total_floor, wanted)) - total_floor)
+    return {key: min(floor + int(surplus * floor / total_floor), DISCRETIONARY_CAPS[key])
+            for key, floor in DISCRETIONARY_FLOORS.items()}
+
+
+def layer_chars(key, prompt_tokens):
+    """取某一层的字符上限。**必须显式说预算**：默认值留在各 build_* 里当下限，
+    谁想要随窗口缩放，谁就自己把模型的 prompt 预算传进来。"""
+    if key not in DISCRETIONARY_FLOORS:
+        raise ValueError("只有 L2/L3/L4 可按窗口缩放，%s 是固定下限" % key)
+    return discretionary_budgets(prompt_tokens)[key]
 
 
 def enabled():

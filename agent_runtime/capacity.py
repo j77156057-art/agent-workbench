@@ -108,7 +108,13 @@ MAX_TOKEN_BUDGET_CAP = 10_000_000
 #: ⚠️ **它保证不了「能跑几轮」** —— 既然是累计上限，任何有限值都会在
 #: 若干轮后耗尽，**那是设计不是 bug**。用户想跑更多轮就填更大，
 #: 或填 0 表示不限。这个下界挡的是「**填了等于完全不能用**」。
-MIN_TASK_TOKEN_BUDGET = 21_381
+#:
+#: ⚠ **2026-10-31 重标定 21381 → 21534。** plan 域新增 4 个工具
+#: （`timer_set` / `timer_list` / `timer_cancel` / `plan_decision`）与 2 个分面标签，
+#: profile-free 裸提示词 22058 → **22262** 字符（+204）；带 309 记忆时 chars=22571，
+#: `test_task_token_budget_floor` 报「只撑 2/3 轮」。撑满 3 轮的最小值是 **21534**
+#: （21533 只撑 2，贴线成立）。
+MIN_TASK_TOKEN_BUDGET = 21_534
 
 
 def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:

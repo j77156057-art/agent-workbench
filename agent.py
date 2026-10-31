@@ -53,6 +53,8 @@ import agent_memory as _memory
 import hooks as _hooks
 import skills as _skills
 import agent_runtime.agent_log as _agent_log
+from agent_runtime import timers as _timers
+from agent_runtime import plan_log as _plan_log
 import pricing as _pricing
 from artifact_tools import bind_project_intro_request, reset_project_intro_request
 try:
@@ -4514,7 +4516,7 @@ class Agent:
     def __init__(self, llm=None, session_id=None, tool_mode=None, plan_mode=False,
                  depth=0, tool_allowlist=None, project_id=None, tool_registry=None,
                  application_id="developer", system_prompt=None, capability_lease=None,
-                 run_budget=None, narration=None):
+                 run_budget=None, narration=None, memory_write_project=None):
         self.llm = llm or LLMClient()
         # session_id 为空 = 纯内存会话（测试/临时，行为与旧版一致）；
         # 非空则按会话落盘、跨重启恢复，并启用超阈值摘要压缩。
@@ -4523,6 +4525,11 @@ class Agent:
         self.project_id = project_id
         self.application_id = application_id
         self.memory_scope = _memory.scope_key(project_id, application_id)
+        # 记忆写入 scope：默认与读取同一个。评测流量把 `memory_write_project` 指到
+        # 独立桶，读写就此分家 —— 读必须跟着被问项目（否则提示词变了，黄金题基线
+        # 不可比），写不该落在真实项目上（一次全量跑题=几十条评测记忆）。
+        self.memory_write_scope = (self.memory_scope if not memory_write_project
+                                   else _memory.scope_key(memory_write_project, application_id))
         # Tool authority is bound to this Agent instance. A caller cannot add
         # tools later through a prompt or request parameter.
         source_tools = dict(tool_registry) if tool_registry is not None else TOOLS
@@ -4614,6 +4621,8 @@ class Agent:
         # 传 False 才关 —— 所以「默认开」是这里的**真默认**，不是靠调用方记得传。
         self.narration = bool(NARRATION if narration is None else narration)
         self.plan_mode = bool(plan_mode)
+        # 上面 memory_write_scope 的原始入参；v2 写入落点用它改投独立桶。
+        self.memory_write_project = str(memory_write_project or "")
         self.depth = int(depth or 0)
         # A top-level turn creates this budget; child agents inherit the same
         # object so their calls, reflections, synthesis and replanning share it.
@@ -5114,6 +5123,9 @@ class Agent:
         self._last_injection = _v2_blocks
         for _v2_block in _v2_blocks:
             messages.append({"role": "system", "content": _v2_block["text"]})
+        # 「当前时间」块必须留在固定头区。想把它挪到历史之后以恢复跨回合的 prompt
+        # 前缀缓存，实测会打破 `_fit_budget` 的不变量（可裁区只能含 user/assistant
+        # 成对历史），由 tests/test_fit_budget_head_prune.py 当场拦下。
         now = datetime.now().astimezone()
         messages.append({"role": "system", "content": (
             f"【当前时间】{now.isoformat(timespec='seconds')}。今天指 {now.date().isoformat()}，"
@@ -5168,7 +5180,8 @@ class Agent:
         # 记忆 v2 · L2 共享层：只注入被 pin 的跨项目沉淀，放在任务书之前。
         if _v2_on and _memory_v2_injection is not None:
             try:
-                _l2_blocks = _memory_v2_injection.build_shared_injection()
+                _l2_blocks = _memory_v2_injection.build_shared_injection(
+                    max_chars=_memory_v2_injection.layer_chars("L2", self._prompt_budget()))
             except Exception:  # noqa: BLE001
                 _l2_blocks = []
             if _l2_blocks:
@@ -5186,7 +5199,8 @@ class Agent:
                 _memory_v2_taskbook.sync_from_plan(
                     getattr(self, "project_id", ""), get_runtime("code_root", ""))
                 _l3_blocks = _memory_v2_injection.build_taskbook_injection(
-                    getattr(self, "project_id", ""))
+                    getattr(self, "project_id", ""),
+                    max_chars=_memory_v2_injection.layer_chars("L3", self._prompt_budget()))
             except Exception:  # noqa: BLE001 —— 任务书故障绝不影响问答
                 _l3_blocks = []
             if _l3_blocks:
@@ -5246,7 +5260,8 @@ class Agent:
         if _v2_on and _memory_v2_injection is not None:
             try:
                 _v2_session_blocks = _memory_v2_injection.build_session_injection(
-                    getattr(self, "session_id", ""), getattr(self, "project_id", ""))
+                    getattr(self, "session_id", ""), getattr(self, "project_id", ""),
+                    max_chars=_memory_v2_injection.layer_chars("L4", self._prompt_budget()))
             except Exception:  # noqa: BLE001
                 _v2_session_blocks = []
             if _v2_session_blocks:
@@ -5560,9 +5575,11 @@ class Agent:
         exec_owner_token = set_exec_owner(_exec_owner_value)
         memory_token = _memory.bind(self.memory_scope, "\n".join(
             [str(item.get("user") or "") for item in self.history[-20:]] + [question]))
+        timer_tokens = _timers.bind(self.project_id or "", self.session_id or "")
+        plan_log_tokens = _plan_log.bind(self.project_id or "", self.session_id or "")
         try:
             _memory.capture_explicit_profile(question)
-            _memory.capture_preferences(self.memory_scope, question)
+            _memory.capture_preferences(self.memory_write_scope, question)
         except Exception:
             pass
         project_intro_token = bind_project_intro_request(bool(
@@ -5599,6 +5616,8 @@ class Agent:
             # 任何出口（含 close()/断连）都还原为原值，杜绝逐请求覆盖污染共享单例。
             end_read_conversation(_read_conv_token)
             _memory.reset(memory_token)
+            _timers.reset(timer_tokens)
+            _plan_log.reset(plan_log_tokens)
             reset_project_intro_request(project_intro_token)
             (self.web_enabled, self.thinking_enabled, self.thinking_level,
              self.tool_mode, self.plan_mode, self.narration,
@@ -5872,7 +5891,7 @@ class Agent:
             persist_checkpoint()
             if self.session_id:
                 try:
-                    _memory.capture_preferences(self.memory_scope, question)
+                    _memory.capture_preferences(self.memory_write_scope, question)
                 except Exception:
                     pass
             # 「留地板、拆其余」重构：天气缺地点、出行缺出发/到达/日期 —— 这两道门
@@ -6012,7 +6031,7 @@ class Agent:
                 try:
                     _ep_backed = _episode_is_backed(
                         final_text, getattr(turn, "tool_evidence", None) if turn is not None else None)
-                    _ep_mid = _memory.remember(self.memory_scope, "episode", _memory.scrub(question, 200),
+                    _ep_mid = _memory.remember(self.memory_write_scope, "episode", _memory.scrub(question, 200),
                         ("未完成：" + (error or "停止/中断") if error or not final_text else "模型报告（尚需核对验收）：" + final_text),
                         "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed)
                     # 记忆 v2 · L4：结构化回合 + 钩子/错误/回执。只影响本层，
@@ -6022,9 +6041,12 @@ class Agent:
                             from agent_runtime.memory import turns as _memory_v2_turns
                             _v2_status = ("failed" if error else "interrupted" if aborted
                                           else "completed" if (final_text or "").strip() else "partial")
+                            # 写入 scope 与读取 scope 可以分开：评测流量读真实项目、
+                            # 只写自己的桶，既不再污染，也仍然把记忆链路走一遍。
+                            _v2_project = self.memory_write_project or (self.project_id or "")
                             _v2_recorded = _memory_v2_turns.record_turn(
                                 session_id=self.session_id,
-                                project_id=self.project_id or "",
+                                project_id=_v2_project,
                                 question=question,
                                 final_text=final_text or "",
                                 status=_v2_status,
@@ -6035,7 +6057,7 @@ class Agent:
                             if _v2_recorded.get("record"):
                                 from agent_runtime.memory import consolidate as _memory_v2_consolidate
                                 _memory_v2_consolidate.schedule(
-                                    self.project_id or "", self.session_id,
+                                    _v2_project, self.session_id,
                                     self._child_llm(), _v2_recorded["record"])
                     except Exception:  # noqa: BLE001
                         pass
@@ -6602,6 +6624,15 @@ class Agent:
                 self._native_queue = self._pending_batch
                 self._pending_batch = []
 
+            # 到期定时器只在模型下一次准备发言时注入；工具执行中途不打断。
+            if self.depth == 0 and self.session_id:
+                try:
+                    for _reminder in _timers.due(self.project_id or "", self.session_id):
+                        trail.append({"role": "user", "content": _reminder["reminder"]})
+                        yield {"type": "notice",
+                               "text": "定时提醒：" + _reminder["message"][:160]}
+                except Exception:  # noqa: BLE001 —— 定时器故障不影响问答
+                    pass
             # 每轮送模型前都做一次 token 预算裁剪（trail 往返 -> head 历史）
             messages = self._fit_budget(head, trail)
             if turn is not None and turn.messages_hash is None:

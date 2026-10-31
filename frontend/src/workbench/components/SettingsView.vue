@@ -270,6 +270,22 @@ const cacheWriteNote = computed(() => {
   return `（另含缓存写入 ${tokens(wrote)}，写入价高于全价，不计入节省）`
 })
 
+/**
+ * 两条命中率回答的是两个问题，只看一条会互相掩盖：
+ * 按 token = 多少钱走了折扣；按回合 = 有多少回合**根本没复用**。
+ * 实测本机 88% / 13% —— 前者好看，后者才是"跨回合前缀还在不在"的真信号。
+ */
+const cacheRateNote = computed(() => {
+  const summary = traceSummary.value
+  const turns = Number(summary?.turns || 0)
+  const tokenRate = Number(summary?.cache_hit_rate || 0)
+  const turnShare = Number(summary?.cache_hit_turn_share || 0)
+  if (!turns || tokenRate <= 0) return ''
+  return `按 token 算 ${Math.round(tokenRate * 100)}% 的输入走了缓存；`
+    + `但 ${turns} 个回合里只有 ${Math.round(turnShare * 100)}% 真的命中过 —— `
+    + '剩下的回合整段输入都是重算的。'
+})
+
 async function loadUsage() {
   usageLoading.value = true
   usageError.value = ''
@@ -423,6 +439,9 @@ const memoryModelSaved = ref('')
 const memorySemantic = ref(false)
 const memorySemanticSaving = ref(false)
 const memorySemanticSaved = ref('')
+const memoryCheckInterval = ref(0)
+const memoryCheckSaving = ref(false)
+const memoryCheckSaved = ref('')
 
 /** 上界只从载荷取。载荷没到（还在加载 / 老后端没有 ranges）时返回 0，
  *  调用方据此**不设 max** —— 回落到一个硬编码数字就等于把刚删掉的第二份拷贝请回来。 */
@@ -644,6 +663,7 @@ async function loadConfig() {
     memoryV2.value = !!mem.memory_v2
     memoryModel.value = mem.memory_model || ''
     memorySemantic.value = !!mem.memory_semantic
+    memoryCheckInterval.value = Number(mem.memory_check_interval_minutes || 0)
   } catch (e) {
     errorMsg.value = (e as { message?: string }).message || '读取配置失败'
   } finally {
@@ -743,6 +763,30 @@ async function toggleMemorySemantic() {
     errorMsg.value = (e as { message?: string }).message || '切换失败'
   } finally {
     memorySemanticSaving.value = false
+  }
+}
+
+// 内部记忆定时检查：分钟数，0=关闭；后台按间隔做健康检查+保守维护。
+async function saveMemoryCheckInterval() {
+  if (memoryCheckSaving.value) return
+  const value = Math.max(0, Math.min(10080, Math.round(Number(memoryCheckInterval.value) || 0)))
+  memoryCheckSaving.value = true
+  memoryCheckSaved.value = ''
+  errorMsg.value = ''
+  try {
+    const res = await memorySettingsApi.saveCheckInterval(value)
+    if (res.ok === false) {
+      errorMsg.value = res.error || '保存失败'
+      return
+    }
+    memoryCheckInterval.value = Number(res.memory_check_interval_minutes || 0)
+    memoryCheckSaved.value = memoryCheckInterval.value > 0
+      ? `已开启：每 ${memoryCheckInterval.value} 分钟检查并执行保守维护`
+      : '已关闭定时检查'
+  } catch (e) {
+    errorMsg.value = (e as { message?: string }).message || '保存失败'
+  } finally {
+    memoryCheckSaving.value = false
   }
 }
 
@@ -1617,6 +1661,7 @@ async function powerAction(action: 'on' | 'off') {
               缓存命中按折扣价（通常约为输入全价的 1/10）计费，累计<b>省下 ¥{{ cacheSavedCny.toFixed(4) }}</b>。
               没有这部分命中，同样的输入需要 ¥{{ (Number(traceSummary?.total_cost_cny || 0) + cacheSavedCny).toFixed(4) }}。
             </p>
+            <p v-if="cacheRateNote" class="sv-note">{{ cacheRateNote }}</p>
             <p v-if="providerUsage.some(item => item.pricing_state === 'unknown' && item.tokens > 0)" class="sv-note">
               标为「未配置单价」的供应商费用<b>并未计入</b>——那个 ¥0 只代表「没算」，不代表免费。
               用 dev_pricing(action: apply) 从官方目录检索并写入单价。
@@ -2156,6 +2201,15 @@ async function powerAction(action: 'on' | 'off') {
             </label>
             <p v-if="memorySemanticSaving" class="sv-field-sub">正在切换…</p>
             <p v-else-if="memorySemanticSaved" class="sv-ok">{{ memorySemanticSaved }}</p>
+            <label class="sv-label">内部记忆检查间隔（分钟，0 = 关闭）</label>
+            <div class="sv-actions">
+              <input v-model.number="memoryCheckInterval" type="number" min="0" max="10080" class="sv-input" />
+              <button class="sv-btn sv-primary" :disabled="memoryCheckSaving" @click="saveMemoryCheckInterval">
+                {{ memoryCheckSaving ? '保存中…' : '保存' }}
+              </button>
+            </div>
+            <p class="sv-hint">后台按间隔执行记忆健康检查与保守维护：候选/共享去重、超过保留期的失效条目归档、重建索引；不会删除 active 事实。</p>
+            <p v-if="memoryCheckSaved" class="sv-ok">{{ memoryCheckSaved }}</p>
             <div class="sv-sep"></div>
             <h4 class="sv-h4">学习习惯（透明统计）</h4>
             <p class="sv-hint">开启后，系统只从你能看见的信号里做纯计数——你明确提出的回答要求（如「简洁点」「用中文」）、你本轮实际改动的文件类型、常用到的能力——形成一份建议级的使用习惯，帮 Agent 更贴合你的偏好。它不调用模型、不联网、绝不推断任何隐藏个人信息；学到的内容永远只是参考，你手动填写的画像优先级更高，且随时可逐条查看或一键清空。关闭则完全停止统计、也不再注入，行为与改动前逐字一致。默认关闭，切换即时生效并落盘，重启后仍保持。</p>

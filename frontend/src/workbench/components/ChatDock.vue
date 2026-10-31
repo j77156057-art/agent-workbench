@@ -47,6 +47,7 @@ import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
 import TaskFeedbackBar from './TaskFeedbackBar.vue'
 import MemoryContextPanel from './MemoryContextPanel.vue'
+import PlanPanel from './PlanPanel.vue'
 import FileDiffDialog from './FileDiffDialog.vue'
 
 import type { WorkflowSummary } from '../api'
@@ -338,6 +339,8 @@ function dismissFeedback() {
 
 // 记忆 v2 上下文面板：右侧抽屉，可查看/编辑各层实际注入内容。
 const memoryOpen = ref(false)
+// Plan 长跑：超长途无人值守，任务书全部划掉前不停，只有用户能关。
+const planOpen = ref(false)
 let chatProject = getProjectId(), chatSession = currentSessionId(), chatEpoch = 0
 /** 每个项目各自的会话 id：会话在服务端终身归属首次使用的项目，
  *  切项目继续用旧 id 会把 B 的对话写进 A（A 能看到），B 自己刷新后又看不到。 */
@@ -2182,6 +2185,7 @@ const webTitle = computed(() => webOn.value
         @open-model-switcher="openModelSwitcher"
         @toggle-voice="toggleVoice"
         @memory="memoryOpen = true"
+        @plan="planOpen = true"
       />
 
     <WorkflowMembersDock
@@ -2195,6 +2199,13 @@ const webTitle = computed(() => webOn.value
         :visible="memoryOpen"
         :session-id="getSessionId()"
         @close="memoryOpen = false"
+      />
+    </Teleport>
+    <Teleport to="body">
+      <PlanPanel
+        :visible="planOpen"
+        :session-id="getSessionId()"
+        @close="planOpen = false"
       />
     </Teleport>
     <ModelSettingsDialog

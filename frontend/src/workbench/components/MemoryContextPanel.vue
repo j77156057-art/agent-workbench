@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { askConfirm } from '../composables/dialogs'
+import { askConfirm, askPrompt } from '../composables/dialogs'
 import { memoryPanelApi } from '../api'
 import type {
   MemoryContextResult,
+  MemoryHealth,
   MemoryPanelHook,
   MemoryPanelItem,
   MemoryPanelTaskItem,
@@ -19,10 +20,18 @@ const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
+const health = ref<MemoryHealth | null>(null)
+const healthLoading = ref(false)
+const healthBusy = ref(false)
+const healthError = ref('')
+const healthNotice = ref('')
 
 const layers = computed(() => data.value?.layers || [])
 const current = computed(() => layers.value.find(layer => layer.key === active.value) || layers.value[0] || null)
 const totalChars = computed(() => data.value?.total_chars || 0)
+const missingVectors = computed(() => Math.max(
+  0, Number(health.value?.index?.items || 0) - Number(health.value?.index?.vectors || 0),
+))
 const l2Items = computed(() => (current.value?.items || []) as MemoryPanelItem[])
 const l4Items = computed(() => (current.value?.items || []) as MemoryPanelHook[])
 const l3Items = computed(() => (current.value?.items || []) as MemoryPanelTaskItem[])
@@ -100,7 +109,8 @@ async function load(nextMode: 'next' | 'last' = mode.value) {
     const result = await memoryPanelApi.context(props.sessionId, nextMode)
     data.value = result
     if (result.ok === false) error.value = result.error || '记忆 v2 未启用'
-    if (result.layers?.length && !result.layers.some(layer => layer.key === active.value)) {
+    if (active.value !== 'health' && result.layers?.length &&
+        !result.layers.some(layer => layer.key === active.value)) {
       active.value = result.layers[0].key
     }
     refreshDrafts()
@@ -111,7 +121,64 @@ async function load(nextMode: 'next' | 'last' = mode.value) {
   }
 }
 
-watch(() => props.visible, visible => { if (visible) void load('next') })
+async function loadHealth() {
+  if (!props.visible) return
+  healthLoading.value = true
+  healthError.value = ''
+  try {
+    health.value = await memoryPanelApi.health()
+  } catch (e) {
+    healthError.value = (e as Error)?.message || '健康数据读取失败'
+  } finally {
+    healthLoading.value = false
+  }
+}
+
+function openHealth() {
+  active.value = 'health'
+  void loadHealth()
+}
+
+async function maintainHealth(apply: boolean) {
+  if (healthBusy.value) return
+  if (apply) {
+    const confirmed = await askConfirm({
+      title: '执行记忆维护',
+      message: '会合并近似候选、把重复共享条目标为失效，并归档超过保留期的失效条目；正文会先复制到 archive/memory，索引随后重建。',
+      confirmText: '执行维护',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+  healthBusy.value = true
+  healthError.value = ''
+  healthNotice.value = ''
+  try {
+    const result = await memoryPanelApi.maintain({
+      apply,
+      confirm: apply,
+      retention_days: Number(health.value?.stale?.retention_days || 90),
+    })
+    const candidateMerged = Number((result.candidates as Record<string, unknown>)?.merged || 0)
+    const sharedMerged = Number((result.shared as Record<string, unknown>)?.duplicates || 0)
+    const gcArchived = Number((result.gc as Record<string, unknown>)?.archived || 0)
+    healthNotice.value = apply
+      ? `维护完成：候选合并 ${candidateMerged}，共享去重 ${sharedMerged}，归档 ${gcArchived}`
+      : `预览：候选合并 ${candidateMerged}，共享去重 ${sharedMerged}，可归档 ${gcArchived}`
+    await loadHealth()
+    if (apply) await load(mode.value)
+  } catch (e) {
+    healthError.value = (e as Error)?.message || '维护失败'
+  } finally {
+    healthBusy.value = false
+  }
+}
+
+watch(() => props.visible, visible => {
+  if (!visible) return
+  void load('next')
+  if (active.value === 'health') void loadHealth()
+})
 watch(() => props.sessionId, () => { if (props.visible) void load(mode.value) })
 
 async function run(action: () => Promise<void>) {
@@ -175,6 +242,21 @@ async function removeItem(item: MemoryPanelItem) {
   await run(async () => {
     await memoryPanelApi.deleteItem(item.id!)
     notice.value = '已删除'
+  })
+}
+
+async function invalidateItem(item: MemoryPanelItem) {
+  if (!item.id) return
+  const target = await askPrompt({
+    title: '标记共享记忆失效',
+    message: '输入取代它的共享条目 id。旧条目会保留审计记录，但不再参与召回或注入。',
+    defaultValue: '',
+    placeholder: 'mem-...',
+  })
+  if (!target?.trim()) return
+  await run(async () => {
+    await memoryPanelApi.supersedeItem(item.id!, target.trim(), true)
+    notice.value = '已标记失效；新条目仍可继续检索'
   })
 }
 
@@ -345,7 +427,72 @@ async function reindex() {
       </button>
     </div>
 
-    <div v-if="current" class="mp-body">
+    <div v-if="active === 'health'" class="mp-body">
+      <p v-if="healthLoading" class="mp-hint">读取中…</p>
+      <p v-if="healthError" class="mp-error">{{ healthError }}</p>
+      <p v-else-if="healthNotice" class="mp-ok">{{ healthNotice }}</p>
+      <template v-if="health">
+        <div class="mp-health-grid">
+          <div class="mp-health-card">
+            <strong>{{ health.shared?.active ?? 0 }}</strong><span>共享 active</span>
+          </div>
+          <div class="mp-health-card">
+            <strong>{{ health.shared?.pinned ?? 0 }}</strong><span>共享 pin</span>
+          </div>
+          <div class="mp-health-card">
+            <strong>{{ health.project?.candidate ?? 0 }}</strong><span>项目候选</span>
+          </div>
+          <div class="mp-health-card">
+            <strong>{{ health.project?.promoted ?? 0 }}</strong><span>已晋升</span>
+          </div>
+          <div class="mp-health-card">
+            <strong>{{ health.shared?.superseded ?? 0 }}</strong><span>共享失效</span>
+          </div>
+          <div class="mp-health-card" :class="{ 'mp-health-warn': (health.duplicates?.project || 0) + (health.duplicates?.shared || 0) > 0 }">
+            <strong>{{ (health.duplicates?.project || 0) + (health.duplicates?.shared || 0) }}</strong><span>重复项</span>
+          </div>
+          <div class="mp-health-card" :class="{ 'mp-health-warn': missingVectors > 0 }">
+            <strong>{{ missingVectors }}</strong><span>缺向量</span>
+          </div>
+          <div class="mp-health-card" :class="{ 'mp-health-warn': (health.stale?.superseded || 0) > 0 }">
+            <strong>{{ health.stale?.superseded ?? 0 }}</strong><span>待归档失效</span>
+          </div>
+        </div>
+
+        <div v-if="health.warnings?.length" class="mp-health-warnings">
+          <strong>需要处理</strong>
+          <p v-for="warning in health.warnings" :key="warning.code" class="mp-warn">
+            · {{ warning.message }}
+          </p>
+        </div>
+
+        <div class="mp-readonly">
+          <strong>上下文预算</strong>
+          <div v-for="layer in health.context?.layers || []" :key="String(layer.key)" class="mp-health-row">
+            <span>{{ layer.title }}</span>
+            <span>{{ layer.chars }}<template v-if="layer.budget">/{{ layer.budget }}</template></span>
+          </div>
+        </div>
+
+        <div class="mp-readonly">
+          <strong>近 7 天固化</strong>
+          <p>
+            {{ health.metrics?.consolidate_calls ?? 0 }} 次调用 ·
+            跳过 {{ health.metrics?.skipped ?? 0 }} ·
+            错误 {{ health.metrics?.errors ?? 0 }} ·
+            p50 {{ health.metrics?.p50_ms ?? 0 }}ms
+          </p>
+        </div>
+
+        <div class="mp-actions">
+          <span class="mp-hint">维护会先归档再移出工作区，可 dry-run</span>
+          <button class="mp-mini" type="button" :disabled="healthBusy" @click="maintainHealth(false)">预览维护</button>
+          <button class="mp-btn" type="button" :disabled="healthBusy" @click="maintainHealth(true)">执行维护</button>
+        </div>
+      </template>
+    </div>
+
+    <div v-else-if="current" class="mp-body">
       <template v-if="current.kind === 'markdown'">
         <p class="mp-meta">
           v{{ current.version }} ·
@@ -391,6 +538,7 @@ async function reindex() {
           <textarea v-model="itemDrafts[String(item.id)]" class="mp-textarea" :rows="4" :disabled="mode === 'last'" />
           <div class="mp-actions">
             <button class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="saveItem(item)">保存</button>
+            <button class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="invalidateItem(item)">失效</button>
             <button class="mp-mini mp-danger" type="button" :disabled="busy || mode === 'last'" @click="removeItem(item)">删除</button>
           </div>
           <div v-if="item.edges?.length" class="mp-links">
@@ -489,7 +637,16 @@ async function reindex() {
 
     <footer class="mp-foot">
       <span>合计 {{ totalChars }} 字符</span>
-      <button class="mp-mini" type="button" :disabled="busy" @click="reindex">重建索引</button>
+      <div class="mp-foot-actions">
+        <button
+          class="mp-mini"
+          :class="{ on: active === 'health' }"
+          type="button"
+          :aria-pressed="active === 'health'"
+          @click="openHealth"
+        >健康</button>
+        <button class="mp-mini" type="button" :disabled="busy" @click="reindex">重建索引</button>
+      </div>
     </footer>
   </aside>
 </template>
@@ -634,6 +791,39 @@ async function reindex() {
 .mp-add .mp-input { margin-bottom: 0; flex: 1 1 auto; width: auto; min-width: 0; }
 .mp-add .mp-btn { flex: 0 0 auto; white-space: nowrap; }
 .mp-readonly { margin-top: 10px; color: var(--text-muted); font-size: var(--fs-cap); }
+.mp-health-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.mp-health-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.mp-health-card strong { font-size: var(--fs-md); color: var(--text); }
+.mp-health-card span { color: var(--text-muted); font-size: var(--fs-cap); }
+.mp-health-warn { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
+.mp-health-warnings {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px dashed color-mix(in srgb, var(--amber) 50%, var(--border));
+  border-radius: 7px;
+}
+.mp-health-warnings p { margin: 4px 0 0; }
+.mp-health-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.mp-health-row:last-child { border-bottom: 0; }
 .mp-pre {
   white-space: pre-wrap;
   word-break: break-word;
@@ -656,6 +846,12 @@ async function reindex() {
   border-top: 1px solid var(--border);
   color: var(--text-faint);
   font-size: var(--fs-cap);
+}
+.mp-foot-actions { display: flex; gap: 6px; }
+.mp-foot .mp-mini.on {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 .mp :deep(button:focus-visible),
 .mp :deep(textarea:focus-visible),

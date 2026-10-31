@@ -321,13 +321,14 @@ def summary():
         "total_tokens": 0,
         "total_cost_cny": 0.0,
         "cache_saved_cny": 0.0,
+        "cache_hit_turns": 0,
         "avg_elapsed_ms": 0,
         "aborted": 0,
         "errors": 0,
         "by_provider": {},
     }
     if not rows:
-        return agg
+        return _add_cache_rates(agg)
     elapsed = 0
     for r in rows:
         p = int(r.get("prompt_tokens") or 0)
@@ -351,9 +352,14 @@ def summary():
             "turns": 0, "prompt_tokens": 0, "completion_tokens": 0,
             "cache_read_tokens": 0, "cache_creation_tokens": 0,
             "tokens": 0, "cost_cny": 0.0, "model": r.get("model") or "",
-            "provider": key, "cache_saved_cny": 0.0,
+            "provider": key, "cache_saved_cny": 0.0, "cache_hit_turns": 0,
         })
         slot["turns"] += 1
+        if cr:
+            # 命中**次数**占比与命中**token**占比是两件事：长回合逐步重发天然会命中，
+            # 只看 token 比例会把"跨回合完全没复用"这件事藏起来（实测 91% vs 21%）。
+            agg["cache_hit_turns"] += 1
+            slot["cache_hit_turns"] += 1
         slot["prompt_tokens"] += p
         slot["completion_tokens"] += c
         slot["cache_read_tokens"] += cr
@@ -385,6 +391,21 @@ def summary():
         except Exception:  # noqa: BLE001 - 状态只是附注，取不到不影响统计
             slot["pricing_state"] = ""
     agg["avg_elapsed_ms"] = int(elapsed / len(rows))
+    _add_cache_rates(agg)
+    return agg
+
+
+def _add_cache_rates(agg):
+    """补两条命中率：按 token 与按回合。空账本也要有键，前端不必分支。"""
+    prompt = int(agg.get("prompt_tokens") or 0)
+    turns = int(agg.get("turns") or 0)
+    agg["cache_hit_rate"] = round(int(agg.get("cache_read_tokens") or 0) / prompt, 4) if prompt else 0.0
+    agg["cache_hit_turn_share"] = round(int(agg.get("cache_hit_turns") or 0) / turns, 4) if turns else 0.0
+    for slot in (agg.get("by_provider") or {}).values():
+        slot_prompt = int(slot.get("prompt_tokens") or 0)
+        slot_turns = int(slot.get("turns") or 0)
+        slot["cache_hit_rate"] = round(int(slot.get("cache_read_tokens") or 0) / slot_prompt, 4) if slot_prompt else 0.0
+        slot["cache_hit_turn_share"] = round(int(slot.get("cache_hit_turns") or 0) / slot_turns, 4) if slot_turns else 0.0
     return agg
 
 

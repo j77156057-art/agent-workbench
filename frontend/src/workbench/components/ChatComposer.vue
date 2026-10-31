@@ -39,6 +39,7 @@ const emit = defineEmits<{
   (e: 'video-picked', file: File): void
   (e: 'remove-image', index: number): void
   (e: 'memory'): void
+  (e: 'plan'): void
   (e: 'update:webOn', v: boolean): void
   (e: 'toggle-thinking'): void
   (e: 'cycle-thinking'): void
@@ -196,6 +197,21 @@ function onVideoPick(ev: Event) {
           <path d="M3.5 3.8h4M3.5 5.8h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
         </svg>
         <span>记忆</span>
+      </button>
+
+      <!-- Plan 长跑：无人值守连续执行任务书；后端只在开发台表面开放 -->
+      <button
+        class="cd-chip"
+        type="button"
+        title="Plan 长跑：连续执行任务书直到全部划掉，之后定期复盘；只有你能停止"
+        aria-label="Plan 长跑"
+        @click="emit('plan')"
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12">
+          <path d="M3 1 v10" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+          <path d="M3.6 1.8h5.2L7.2 4l1.6 2.2H3.6z" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/>
+        </svg>
+        <span>长跑</span>
       </button>
 
       <!-- 上下文窗口占用：按当前模型真实窗口估算，65% 转黄、80%（压缩触发线）转红 -->

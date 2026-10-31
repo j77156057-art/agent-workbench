@@ -99,6 +99,12 @@ export interface TraceSummary {
   cache_creation_tokens?: number
   /** 缓存命中省下的钱（后端算，前端只显示——单价和阶梯档都在后端）。 */
   cache_saved_cny?: number
+  /** 命中过的回合数。与 `cache_read_tokens` 一起才看得出"跨回合到底有没有复用"。 */
+  cache_hit_turns?: number
+  /** 命中 token / 输入 token。长回合逐步重发天然会推高它，别拿它当"缓存生效"。 */
+  cache_hit_rate?: number
+  /** 命中回合 / 总回合。实测本机 88% 对 13% —— 这条才是跨回合复用的真信号。 */
+  cache_hit_turn_share?: number
   total_tokens: number
   total_cost_cny: number
   avg_elapsed_ms: number
@@ -117,6 +123,9 @@ export interface TraceSummary {
     pricing_state?: string
     /** 该 provider 的缓存命中省下的钱（后端按每一行自己的 model 折算）。 */
     cache_saved_cny?: number
+    cache_hit_turns?: number
+    cache_hit_rate?: number
+    cache_hit_turn_share?: number
     model?: string
     provider?: string
   }>

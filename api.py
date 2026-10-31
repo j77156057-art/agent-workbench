@@ -89,6 +89,8 @@ from config import (
     set_memory_model,
     get_memory_semantic,
     set_memory_semantic,
+    get_memory_check_interval,
+    set_memory_check_interval,
     get_voice_config,
     effective_voice_config,
     set_voice_config,
@@ -305,6 +307,12 @@ async def _app_lifespan(app):
     # 模块导入时默认 Agent 已经创建；模型选择是在启动期从状态文件恢复的，
     # 因此这里需要重新构造客户端，确保首次请求就使用上次选择的 provider/model。
     await _restore_persisted_llm()
+    # 内部记忆定时检查：间隔由用户设置（0=关闭），后台线程只做健康检查 + 保守维护。
+    try:
+        from agent_runtime import maintenance as _maintenance
+        _maintenance.start()
+    except Exception:  # noqa: BLE001 —— 定时器故障不影响服务启动
+        pass
     # GPU 协调：先恢复上次残留的租约/队列（转 recovered），再起后台线程。
     # 该恢复过去挂在 gpu_coordinator 导入期，现改为 lifespan 显式调用（gpu.init()）。
     gpu.init()
@@ -343,6 +351,11 @@ async def _app_lifespan(app):
     try:
         yield
     finally:
+        try:
+            from agent_runtime import maintenance as _maintenance
+            _maintenance.stop()
+        except Exception:  # noqa: BLE001
+            pass
         gpu.stop_background()
 
 
@@ -3019,6 +3032,14 @@ async def chat(
     # 旧的 partial 串到新轮）。
     turn_id = (turn_id or "").strip() or uuid.uuid4().hex
     question = (question or "").strip()
+    try:
+        from agent_runtime import plan_runner as _plan_runner
+        _plan_project = _request_project_id() or (projects.current_project_id() or "default")
+        if _plan_runner.is_active(_plan_project, session_id):
+            return JSONResponse({"ok": False, "error": "Plan 长跑正在运行；请先在 Plan 面板停止它，再发消息。"},
+                                status_code=409)
+    except Exception:  # noqa: BLE001 —— 状态读取失败不阻断普通问答
+        pass
     # 图片必须在进入 SSE 流之前完成读取与校验，错误才能以 400 JSON 返回给前端
     try:
         b64_images = _read_chat_images(images)
@@ -5001,13 +5022,30 @@ async def memory_profile_ep(request: Request):
     return {"ok": True, "profile": profile}
 
 
+def _memory_project_hint(project: str, reasons: list) -> list:
+    """候选按**请求头里的项目**取；顶栏停在别的项目时，"未找到"和"点了没生效"
+    在界面上长得一模一样 —— 实测就因此白按过一次。所以把"在哪个项目里找的"写进原因。
+
+    只给"未找到"这类补出处；晋升门本身的原因（缺采纳/复用信号…）原样透出。
+    """
+    label = project
+    try:
+        label = (projects.get_project(project) or {}).get("name") or project
+    except Exception:  # noqa: BLE001 —— 取不到名字也要把话说完
+        pass
+    return [f"{reason}（当前项目：{label}；该候选可能属于别的项目，请先把顶栏切过去）"
+            if "未找到" in str(reason) else reason for reason in reasons]
+
+
 @app.post("/api/memory/items/{item_id}/promote")
 async def memory_item_promote_ep(item_id: str):
     _memory_require()
     from agent_runtime.memory import promote
-    result = promote.promote(_request_project_id() or "default", item_id)
+    project = _request_project_id() or "default"
+    result = promote.promote(project, item_id)
     if not result.get("ok"):
-        return {"ok": True, "promoted": False, "reasons": result.get("reasons") or []}
+        return {"ok": True, "promoted": False,
+                "reasons": _memory_project_hint(project, result.get("reasons") or [])}
     return {"ok": True, "promoted": True, "item": result.get("item"),
             "pinned": result.get("pinned")}
 
@@ -5041,10 +5079,12 @@ async def memory_item_unlink_ep(item_id: str, to: str = "", type: str = ""):
 async def memory_item_adopt_ep(item_id: str):
     _memory_require()
     from agent_runtime.memory import promote
-    result = promote.adopt(_request_project_id() or "default", item_id)
+    project = _request_project_id() or "default"
+    result = promote.adopt(project, item_id)
     if not result.get("ok"):
         reasons = result.get("reasons") or ["未找到待晋升候选"]
-        raise HTTPException(status_code=404, detail=str(reasons[0]))
+        raise HTTPException(status_code=404,
+                            detail=str(_memory_project_hint(project, reasons)[0]))
     return {"ok": True, **result}
 
 
@@ -5175,6 +5215,141 @@ async def memory_reindex_ep():
     _memory_require()
     from agent_runtime.memory import context_panel
     return {"ok": True, **context_panel.reindex()}
+
+
+# ---------------- Plan 长跑（仅开发台） ----------------
+def _require_workbench_surface(request: Request) -> None:
+    if str(request.headers.get("x-docmind-surface") or "").strip().lower() != "workbench":
+        raise HTTPException(status_code=403, detail="Plan 长跑只在开发台开放")
+
+
+class PlanStartReq(BaseModel):
+    session_id: str = ""
+    goal: str = ""
+    review_interval_minutes: int = 30
+    max_iterations: int = 200
+
+
+class PlanStopReq(BaseModel):
+    session_id: str = ""
+    confirm: bool = False
+
+
+@app.post("/api/plan/start")
+async def plan_start_ep(req: PlanStartReq, request: Request):
+    _require_workbench_surface(request)
+    if not get_memory_v2():
+        raise HTTPException(status_code=409, detail="Plan 长跑依赖分层记忆 v2")
+    session_id = str(req.session_id or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="缺少 session_id")
+    project = _request_project_id() or (projects.current_project_id() or "default")
+    key = _agent_key(session_id, project)
+    active_run = _ACTIVE_RUN.get(key)
+    if active_run is not None and active_run.get("thread") is not None and active_run["thread"].is_alive():
+        raise HTTPException(status_code=409, detail="该会话正在执行普通回合，不能同时启动 Plan")
+    from agent_runtime import plan_runner
+    if plan_runner.is_active(project, session_id):
+        raise HTTPException(status_code=409, detail="该会话已有 Plan 在运行")
+    selected = _agent_for(session_id, project)
+    llm = getattr(selected, "llm", None)
+    if callable(getattr(llm, "clone", None)):
+        try:
+            llm = llm.clone()
+        except Exception:  # noqa: BLE001
+            pass
+    code_root = ""
+    try:
+        code_root = (projects.get_project(project) or {}).get("root") or ""
+    except Exception:  # noqa: BLE001
+        pass
+    result = plan_runner.start(
+        project, session_id, req.goal, llm=llm, code_root=code_root,
+        review_interval_minutes=req.review_interval_minutes,
+        max_iterations=req.max_iterations)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "启动失败")
+    return result
+
+
+@app.post("/api/plan/stop")
+async def plan_stop_ep(req: PlanStopReq, request: Request):
+    _require_workbench_surface(request)
+    session_id = str(req.session_id or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="缺少 session_id")
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="需要 confirm=true 才能停止 Plan")
+    project = _request_project_id() or (projects.current_project_id() or "default")
+    from agent_runtime import plan_runner
+    result = plan_runner.stop(project, session_id, by="user")
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("error") or "没有 Plan 记录")
+    return result
+
+
+@app.get("/api/plan/status")
+async def plan_status_ep(session_id: str = "", request: Request = None):
+    _require_workbench_surface(request)
+    project = _request_project_id() or (projects.current_project_id() or "default")
+    from agent_runtime import plan_runner
+    return plan_runner.status(project, session_id)
+
+
+@app.get("/api/plan/log")
+async def plan_log_ep(session_id: str = "", limit: int = 200, request: Request = None):
+    _require_workbench_surface(request)
+    project = _request_project_id() or (projects.current_project_id() or "default")
+    from agent_runtime import plan_log
+    return {"ok": True, "session_id": session_id,
+            "items": plan_log.rows(project, session_id, limit=max(1, min(500, limit)))}
+
+
+@app.get("/api/memory/health")
+async def memory_health_ep():
+    _memory_require()
+    from agent_runtime.memory import health
+    return health.report(_request_project_id() or "default")
+
+
+@app.post("/api/memory/maintain")
+async def memory_maintain_ep(request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    apply = bool(body.get("apply"))
+    if apply:
+        from agent_runtime.memory import gates
+        try:
+            gates.require_confirm(bool(body.get("confirm")), "记忆维护")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from agent_runtime.memory import health
+    try:
+        retention = int(body.get("retention_days") or 90)
+        threshold = float(body.get("threshold") or 0.88)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="retention_days/threshold 非法") from exc
+    return health.maintain(_request_project_id() or "default", apply=apply,
+                           retention_days=max(0, retention),
+                           threshold=min(0.99, max(0.5, threshold)))
+
+
+@app.post("/api/memory/items/{item_id}/supersede")
+async def memory_item_supersede_ep(item_id: str, request: Request):
+    _memory_require()
+    body = await _memory_body(request)
+    target = str(body.get("by") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="缺少 by（取代它的共享条目 id）")
+    from agent_runtime.memory import gates, promote
+    try:
+        gates.require_confirm(bool(body.get("confirm")), "共享记忆失效")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    old = promote.supersede_shared(item_id, target, reason="user")
+    if old is None:
+        raise HTTPException(status_code=404, detail="未找到两条 active 共享条目")
+    return {"ok": True, "item": old}
 
 
 @app.get("/api/context")
@@ -6084,6 +6259,7 @@ class MemorySettingsReq(BaseModel):
     memory_v2: Optional[bool] = None
     memory_model: Optional[str] = None
     memory_semantic: Optional[bool] = None
+    memory_check_interval_minutes: Optional[int] = None
 
 
 @app.get("/api/memory-settings")
@@ -6092,7 +6268,8 @@ async def get_memory_settings():
             "memory_learn": get_memory_learn(),
             "memory_v2": get_memory_v2(),
             "memory_model": get_memory_model(),
-            "memory_semantic": get_memory_semantic()}
+            "memory_semantic": get_memory_semantic(),
+            "memory_check_interval_minutes": get_memory_check_interval()}
 
 
 @app.post("/api/memory-settings")
@@ -6105,11 +6282,14 @@ async def set_memory_settings(req: MemorySettingsReq):
         set_memory_v2(req.memory_v2)
     if req.memory_model is not None:
         set_memory_model(req.memory_model)
+    if req.memory_check_interval_minutes is not None:
+        set_memory_check_interval(req.memory_check_interval_minutes)
     return {"ok": True, "memory_optimized": get_memory_optimized(),
             "memory_learn": get_memory_learn(),
             "memory_v2": get_memory_v2(),
             "memory_model": get_memory_model(),
-            "memory_semantic": get_memory_semantic()}
+            "memory_semantic": get_memory_semantic(),
+            "memory_check_interval_minutes": get_memory_check_interval()}
 
 
 # ---- 网络搜索 / URL 抓取设置（专用端点）----

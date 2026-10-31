@@ -80,7 +80,8 @@ def find_similar(project_id, kind, text, *, threshold=0.88):
     return best_score, best_item
 
 
-def _merge_into(item, body, importance, source_turn, receipt_ids, task):
+def _merge_into(item, body, importance, source_turn, receipt_ids, task,
+                pending_supersedes=()):
     now = store.now()
     merged = dict(item)
     merged["receipts"] = list(dict.fromkeys(
@@ -95,6 +96,10 @@ def _merge_into(item, body, importance, source_turn, receipt_ids, task):
         merged["source_turn"] = ";".join(dict.fromkeys(item for item in turns if item))[:200]
     if task and not merged.get("task"):
         merged["task"] = str(task)[:120]
+    if pending_supersedes:
+        merged["pending_supersedes"] = list(dict.fromkeys(
+            list(merged.get("pending_supersedes") or []) +
+            [str(item) for item in pending_supersedes if item]))[:3]
     _write(merged["path"], {key: value for key, value in merged.items()
                             if key not in ("body", "path")}, merged.get("body") or "")
     _sync_index(merged)
@@ -180,7 +185,8 @@ def _clean_edges(edges):
 
 
 def create_candidate(project_id, kind, text, *, title="", importance=0.6,
-                     source_turn="", receipt_ids=(), task="", edges=None):
+                     source_turn="", receipt_ids=(), task="", edges=None,
+                     pending_supersedes=()):
     kind = _normalize_kind(kind)
     body = str(text or "").strip()[:MAX_TEXT]
     if not body:
@@ -194,7 +200,8 @@ def create_candidate(project_id, kind, text, *, title="", importance=0.6,
         return existing
     _score, similar = find_similar(project_id, kind, body)
     if similar is not None:
-        return _merge_into(similar, body, importance, source_turn, receipt_ids, task)
+        return _merge_into(similar, body, importance, source_turn, receipt_ids, task,
+                           pending_supersedes)
     now = store.now()
     header = {
         "id": mid, "kind": kind, "scope": "project", "status": "candidate",
@@ -203,6 +210,8 @@ def create_candidate(project_id, kind, text, *, title="", importance=0.6,
         "pinned": False, "source_turn": str(source_turn or ""),
         "receipts": [str(rid) for rid in (receipt_ids or [])][:20],
         "task": str(task or "")[:120], "promoted_to": "",
+        "pending_supersedes": [str(item) for item in (pending_supersedes or [])
+                               if item][:3],
         "edges": _clean_edges(edges), "created": now, "updated": now,
     }
     _write(path, header, body)
@@ -254,7 +263,7 @@ def seed_shared(kind, text, *, importance=0.5, confidence=0.4, title="", meta=No
         return mid
     now = store.now()
     header = {
-        "id": mid, "kind": kind,
+        "id": mid, "kind": kind, "scope": "global",
         "status": status if status in ("candidate", "active") else "candidate",
         "title": str(title or body.splitlines()[0])[:80],
         "confidence": _clamp(confidence), "importance": _clamp(importance),
@@ -327,10 +336,17 @@ def promote(project_id, candidate_id):
         "receipts": list(item.get("receipts") or []),
         "edges": _clean_edges(item.get("edges") or []),
         "promoted_from": os.path.relpath(item["path"], store.root()).replace("\\", "/"),
-        "promoted_at": now, "created": item.get("created") or now, "updated": now,
+        "promoted_at": now, "valid_at": now, "valid_until": "",
+        "superseded_by": "",
+        "pending_supersedes": list(item.get("pending_supersedes") or [])[:3],
+        "created": item.get("created") or now, "updated": now,
     }
     header["pinned"] = bool(header["confidence"] >= 0.8 and header["importance"] >= 0.7)
     _write(shared_path, header, verdict["text"])
+    superseded = []
+    for old_id in header.get("pending_supersedes") or []:
+        if supersede_shared(old_id, candidate_id, reason="晋升新证据"):
+            superseded.append(str(old_id))
     item["status"] = "promoted"
     item["promoted_to"] = os.path.relpath(shared_path, store.root()).replace("\\", "/")
     item["updated"] = now
@@ -341,7 +357,8 @@ def promote(project_id, candidate_id):
     header["body"] = verdict["text"]
     header["path"] = shared_path
     _sync_index(header)
-    return {"ok": True, "item": header, "pinned": header["pinned"]}
+    return {"ok": True, "item": header, "pinned": header["pinned"],
+            "superseded": superseded}
 
 
 def sweep(project_id):
@@ -375,6 +392,7 @@ def supersede(project_id, old_id, new_id, *, reason=""):
     old["status"] = "superseded"
     old["superseded_by"] = new_id
     old["superseded_at"] = now
+    old["valid_until"] = now
     old["supersede_reason"] = str(reason or "")[:200]
     old["updated"] = now
     _write(old["path"], {key: value for key, value in old.items()
@@ -393,13 +411,52 @@ def supersede(project_id, old_id, new_id, *, reason=""):
     return old
 
 
-def shared_items():
+def supersede_shared(old_id, new_id, *, reason="", require_active=True):
+    """共享层时间失效：旧条目 status→superseded，新条目加 supersedes 边。
+
+    只改动文件与索引，不删除正文；旧条目保留 superseded_by/valid_until 供审计。
+    """
+    old_id, new_id = str(old_id or ""), str(new_id or "")
+    if not old_id or not new_id or old_id == new_id:
+        return None
+    old, new = shared_item(old_id), shared_item(new_id)
+    if old is None or new is None:
+        return None
+    if require_active and old.get("status") != "active":
+        return old
+    if new.get("status") != "active":
+        return None
+    now = store.now()
+    old["status"] = "superseded"
+    old["superseded_by"] = new_id
+    old["superseded_at"] = now
+    old["valid_until"] = now
+    old["supersede_reason"] = str(reason or "")[:200]
+    old["updated"] = now
+    _write(old["path"], {key: value for key, value in old.items()
+                         if key not in ("body", "path")}, old.get("body") or "")
+    edges = _clean_edges(new.get("edges") or [])
+    if not any(edge["type"] == "supersedes" and edge["to"] == old_id for edge in edges):
+        edges.append({"type": "supersedes", "to": old_id})
+        new["edges"] = edges
+        new["updated"] = now
+        _write(new["path"], {key: value for key, value in new.items()
+                             if key not in ("body", "path")}, new.get("body") or "")
+        _sync_index(new)
+    _sync_index(old)
+    store.ledger("memory.supersede_shared", old=old_id, new=new_id,
+                 reason=str(reason or "")[:120])
+    return old
+
+
+def shared_items(include_inactive=False):
     rows = []
     for kind in ("fact", "lesson"):
         for path in sorted(glob.glob(os.path.join(shared_dir(kind), "*.md"))):
             item = _read(path)
-            if item and item.get("status") == "active":
+            if item and (include_inactive or item.get("status") == "active"):
                 item["kind"] = _normalize_kind(item.get("kind") or kind)
+                item["scope"] = "global"
                 rows.append(item)
     return rows
 
@@ -430,6 +487,7 @@ def shared_item(item_id_value):
         item = _read(os.path.join(shared_dir(kind), str(item_id_value) + ".md"))
         if item:
             item["kind"] = _normalize_kind(item.get("kind") or kind)
+            item["scope"] = "global"
             return item
     return None
 
@@ -520,7 +578,8 @@ def adopt(project_id, candidate_id):
         return {"ok": True, "promoted": False,
                 "reasons": result.get("reasons") or [], "item": item}
     return {"ok": True, "promoted": True, "item": result.get("item"),
-            "pinned": result.get("pinned")}
+            "pinned": result.get("pinned"),
+            "superseded": result.get("superseded") or []}
 
 
 def apply_feedback(project_id, task, stars):
@@ -664,12 +723,13 @@ def _sync_index(item):
         pass
 
 
-def dedupe_candidates(project_id, threshold=0.88):
+def dedupe_candidates(project_id, threshold=0.88, apply=True):
     """对存量候选做一次近似合并（新写入已自动合并，这里清理历史碎片）。"""
     rows = [item for item in candidates(project_id) if item.get("status") == "candidate"]
     rows.sort(key=lambda item: str(item.get("created") or item.get("updated") or ""))
     kept = []
     merged = 0
+    planned = []
     for item in rows:
         match = None
         for keeper in kept:
@@ -680,6 +740,10 @@ def dedupe_candidates(project_id, threshold=0.88):
                 break
         if match is None:
             kept.append(item)
+            continue
+        merged += 1
+        planned.append({"id": item.get("id"), "into": match.get("id")})
+        if not apply:
             continue
         updated = _merge_into(match, item.get("body") or "",
                               item.get("importance") or 0.5,
@@ -692,7 +756,45 @@ def dedupe_candidates(project_id, threshold=0.88):
         _write(item["path"], {key: value for key, value in item.items()
                               if key not in ("body", "path")}, item.get("body") or "")
         _sync_index(item)
-        merged += 1
-    store.ledger("memory.dedupe", project=store.safe_id(project_id),
-                 checked=len(rows), merged=merged)
-    return {"checked": len(rows), "merged": merged}
+    if apply:
+        store.ledger("memory.dedupe", project=store.safe_id(project_id),
+                     checked=len(rows), merged=merged)
+    return {"checked": len(rows), "merged": merged, "apply": bool(apply),
+            "planned": planned[:20]}
+
+
+def dedupe_shared(threshold=0.9, apply=False):
+    """共享层近似去重：默认只预览；应用时把重复项标 superseded（不删除正文）。
+
+    pin 条目不动——它们正在被注入，自动合并需要用户先 unpin 再决定。
+    """
+    rows = shared_items()
+    rows.sort(key=lambda item: str(item.get("created") or item.get("updated") or ""))
+    kept, duplicates, skipped_pinned = [], [], 0
+    for item in rows:
+        if item.get("pinned"):
+            kept.append(item)
+            skipped_pinned += 1
+            continue
+        match = None
+        for keeper in kept:
+            if keeper.get("pinned"):
+                continue
+            if _normalize_kind(keeper.get("kind")) != _normalize_kind(item.get("kind")):
+                continue
+            if text_similarity(item.get("body"), keeper.get("body")) >= threshold:
+                match = keeper
+                break
+        if match is None:
+            kept.append(item)
+            continue
+        duplicates.append({"id": item.get("id"), "into": match.get("id"),
+                           "text": str(item.get("body") or "")[:120]})
+        if apply:
+            supersede_shared(item.get("id"), match.get("id"), reason="共享层近似去重")
+    if apply:
+        store.ledger("memory.dedupe_shared", checked=len(rows),
+                     merged=len(duplicates), skipped_pinned=skipped_pinned)
+    return {"checked": len(rows), "duplicates": len(duplicates),
+            "skipped_pinned": skipped_pinned, "apply": bool(apply),
+            "planned": duplicates[:20]}

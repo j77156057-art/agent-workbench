@@ -450,3 +450,71 @@ POST   /api/memory/reindex
 - **CI pytest-style lane**：1084 passed / 1 failed / 1 skipped；唯一失败 `test_live_vision` 的 `origin not allowed` 同样在父提交复现。
 - **前端**：`npm run test:node` **158 passed**；`npm run build`（含 typecheck）通过。
 - **静态/评测门**：`compileall`、`workflow_eval --self-check`、`dev_eval --self-check` 均通过（pass_rate 1.0，无回归）。
+
+### 16.15 共享层时间失效 + 定期维护 + 健康面板（2026-10-31）
+
+- **共享条目失效**：`promote.supersede_shared(old, new)` 把旧共享条目置 `superseded`，写 `superseded_by` / `superseded_at` / `valid_until`，并给新条目加 `supersedes` 边；旧正文保留审计，但从 `shared_items`、可召回列表和索引检索中排除。手动入口：`POST /api/memory/items/{id}/supersede`、CLI `invalidate --old --new`。
+- **晋升后生效**：固化时把 active 共享条目一并交给模型；若新候选声明取代共享条目，先写入候选的 `pending_supersedes`，**只有候选通过回执 + 采纳/星级 + 泛化晋升门后**才真正让旧共享条目失效，避免未晋升候选提前改坏共享层。
+- **定期维护**：`health.maintain(project, apply=False, retention_days=90)` 先 dry-run，`apply=True` 才执行：项目候选去重、共享 active 去重（跳过 pin）、把超过保留期的 `superseded/merged` 条目复制到 `archive/memory/` 后移出工作区，最后重建索引。CLI：`python -m agent_runtime.memory maintain [--apply]`；API：`POST /api/memory/maintain`（apply 需 `confirm=true`）。
+- **健康面板**：`GET /api/memory/health` + 上下文面板底部「健康」按钮；展示共享 active/pin/失效、项目候选/晋升、重复项、缺向量、待归档失效、上下文预算与近 7 天固化；提供「预览维护 / 执行维护」。当前实测：共享 0 / 项目候选 46 / 晋升 0 / 重复 0 / 缺向量 5 / 待归档 0。
+- **验证**：记忆后端套件 **117 passed**；前端 typecheck、build 通过；Edge 实测健康面板与「预览维护」按钮正常（截图 `artifacts/shots/memory-health-panel.png`）。
+- **仍未做**：pin 的共享条目不做自动去重；GC 只处理失效/已合并条目，不自动删除 active 事实；维护目前是手动/CLI，未接定时调度。（定时调度已在 16.16 接上，其余不变。）
+
+### 16.16 定时器与 Plan 长跑（2026-10-31）
+
+- **内部定时器（记忆体检）**：`agent_runtime/maintenance.py` 起一条守护线程，按用户在设置页填的「内部记忆检查间隔（分钟，0 = 关闭）」周期性跑 `health.report` + `health.maintain(apply=True)`，结果写 `.docmind/memory/maintenance-last.json`，健康面板的 `scheduler` 区块直接读它。**先睡后跑**：进程重启不会立刻补一发维护。间隔持久化在 runtime + `STATE_FILE`（`memory_check_interval_minutes`），API 走既有的 `GET/POST /api/memory-settings`。
+- **外部定时器（模型自己挂）**：`agent_runtime/timers.py` 按 `projects/<pid>/session/<sid>/timers.json` 落盘，工具 `timer_set` / `timer_list` / `timer_cancel`（域 `plan`）。到期提醒在**每次准备把消息发给模型之前**注入 `trail`（`agent.py` 的 ReAct 循环内，不是回合开头），所以「本回合起个后台任务、下一迭代就被提醒」这条主用法成立；同时上抛 `notice` 事件让人类看得见（前端 `useChatStream` 已有 notice 通道）。重复定时器**不会自动关**，提醒正文里直接给出 `timer_cancel(timer_id=...)`；一次性提醒触发即 `fired`。上限只数**活动**定时器（`MAX_ACTIVE=24`），终态行留最近 12 条，否则长会话挂满一次性提醒后会永久设不动新定时器。
+- **Plan 长跑**：`agent_runtime/plan_runner.py` 后台线程连续驱动真 `Agent`，每轮用 `system_context` 重申不变量（推进任务书 / 不许停下等用户 / 未验证不许勾 / 取舍记账 / 不能自关）。**停止门是任务书**：`_closed()` 只认 `done` 与 `done_pending_merge`；全部划掉后转入 `reviewing`，按 `review_interval_minutes` 反复问四件事（审查过全部改动？真实测试跑完？确定没有遗漏？还有什么可改进？），发现新工作就 `dev_plan(append)` 回到执行。runner 走的是真 `Agent.run`，所以每一轮照常落进该会话的历史与固化管线——回开发台能看到长跑期间每个回合的工具明细与 diff（那些「【Plan 长跑 · 执行】」开头的 user 消息是 runner 发的，不是用户打的）。
+- **只有用户能关**：模型侧没有 stop 工具；`POST /api/plan/stop` 要求 `confirm=true`，前端还要过一道二次确认。关闭面板 ≠ 停止 Plan（实测钉住）。Plan 运行期间普通 `/api/chat` 返回 409，避免用户消息和 runner 同踩一个会话。
+- **只开放在开发台**：`/api/plan/**` 全部经 `_require_workbench_surface` 校验 `X-DocMind-Surface: workbench`，问答页拿不到这个头即 403；前端 Plan 面板也只挂在开发台对话台。
+- **决策账本**：`agent_runtime/plan_log.py` 每会话一份 `plan-log.jsonl`（start / turn / review / stop / error 由 runner 自动记，含动作清单与任务书快照；`plan_decision` 工具记模型主动写的取舍），超 1 MB 保留最近 2000 行。面板「决策账本」区展示，供用户事后逐条审查。
+- **验证**：`tests/test_timers.py` 6 passed（含**回合内**设定时器 → 同回合回灌）、`tests/test_maintenance.py` 3 passed、`tests/test_plan_runner.py` 5 passed（含 runner 真驱动一轮并记账、空任务书首轮要求建计划）、`tests/test_plan_api.py` 9 passed（surface 403 / 记忆 v2 门 / confirm 门 / 会话互斥 / 状态透传）。前端 `npm run typecheck` + `vite build` 通过；`node verify_plan_ui.mjs` 在一次性夹具（独立 `DOCMIND_MEMORY_DIR`、Plan 请求走 route 桩，不发真实模型请求）上 **12 项全绿**，截图 `artifacts/shots/plan-panel.png`、`artifacts/shots/plan-panel-running.png`。
+- **仍未做**：会话空闲时到期的定时器不会自己唤起一轮（只在模型下一次准备发言时回灌）；Plan 的复盘间隔仍是全局每会话一个值，没有按任务差异化；runner 复用会话历史，长 Plan 的上下文压缩仍走既有 L5 路径，未单独调预算。
+
+### 16.17 评测流量与真实记忆隔离（2026-10-31）
+
+- **实测到的污染**：真实项目 prj-af6142eae52c（rag-agent）的 56 个记忆会话里 **55 个是 `golden-*` 评测跑**，只有 1 个真实 web 会话；55 个 episode 全部来自评测；46 条候选里 28 条挂在评测 episode 上、18 条来自旧库迁移回填；另外留下 12 条 pinned 的误判 error 钩子（`_is_failure` 修好之前记的）。也就是说「记忆在长东西」这件事几乎全是评测流量制造的，真实使用反而一条没留下 —— 晋升门永远等不到回执。
+- **机制**：`Agent(memory_write_project=...)` 只改**写入** scope，**读**仍按被问项目。落点有两处，缺一不可：v2 是 `agent.py` 回合收尾唯一的写入处（`turns.record_turn` + `consolidate.schedule`）；v1 是同一回合的 `_memory.remember(scope, "episode", ...)` 与两处 `capture_preferences(scope, ...)`，改投新增的 `Agent.memory_write_scope`。只隔 v2 等于隔了半个 —— `memory_search` 把 v1/v2 两张表一起回灌进提示词，实测真实项目 v1 库里 136 条 episode 有 **54 条标题逐字命中黄金题库**。空串 = 与今天逐字节一致。读不能一起隔离的理由：改读等于改提示词构成，黄金题基线就不可比了。
+- **默认值即防线**：`run_golden.py` 的 `EVAL_MEMORY_SCOPE = "eval-golden"`，`--memory-write-project` 可覆盖（传空串退回旧行为，做记忆回归时才用）；banner 会打印「记忆写入=eval-golden」。与既有的 `DOCMIND_GOLDEN_NO_LOCK` 同一个理由：评测不该改动任何长期状态。
+- **存量搬运**：55 个 `golden-*` 会话目录整目录先复制到 `archive/2026-10-31-golden-sessions-pre-isolation/`（含 manifest.json），再把 episode 记录里的 `project` 字段改成 `eval-golden`、move 进 `projects/eval-golden/session/`。真实项目会话数 56 → 1。索引不受影响（`_PATTERNS` 只扫 `facts/`、`lessons/`，不扫 `session/*/episodes.jsonl`），99 items / 99 vectors 不变。v1 侧：54 条命中题库的 episode 行整行导出到 `archive/2026-10-31-golden-rows-pre-isolation/memories.json` 后再删，本项目 136 → 82 条；删前另存了整库副本。
+- **保留的判断**：46 条候选**没有**跟着搬 —— 它们是这个代码库的真实事实（常量默认值、集合名、护栏语义），只是获取路径是评测。要一并搬走是 `projects/prj-af6142eae52c/{facts,lessons}/*.md` 里 `source_turn` 命中评测 episode 的那 28 条，一条脚本即可，代价是真实项目候选从 46 掉到 18。
+- **仍留的小口子**：`_memory.capture_explicit_profile(question)` 不按 scope 键控（它写的是用户画像），所以理论上仍有一条评测题能往 L1 画像里学一条偏好；实测题库里没有「我叫…/请用中文…」这类自述句式，故未动。
+- **验证**：`tests/test_eval_memory_isolation.py` 5 passed —— 隔离写入只落 eval 桶且真实项目连 session 目录都不建、**反向守卫**（不传参必须逐字保持旧行为）、读取仍跟被问项目（L3 任务书照样注入）、`run_golden.run_one` 的默认值本身就是隔离、v1 episode 行跟着走。两次变异各自把落点改回 `self.project_id` / `self.memory_scope`，对应用例立刻红（`0 != 1`、`'episode' not found in []`），改回即绿。
+
+### 16.18 学习闭环第一次真正闭合（2026-10-31）
+
+在此之前共享层一直是 0 —— 机制全绿但没人真的走过去。这次用隔离夹具项目 orchid-loop（`prj-7a57e11901e9`）跑通了一遍，通道是**真的** `POST /api/chat`（与工作台同一端点同一份表单），不是脚本自造的中间态。
+
+- **真任务**：夹具的 SPEC.md 与实现有两处真实不一致 —— Known issue 声称 `parse("1, 2, 3")` 会抛 `ValueError`（其实 `int()` 容忍空白、已有测试通过），而 `compute(items, strict=True)` 的 `ERR_NEGATIVE_INPUT` 既没进 SPEC 也没测试覆盖，而 SPEC 自己写着「Every behavior change needs a test」。要求：核实、补齐、**最后一次改动之后**再跑 `python -m pytest tests -q`。
+- **链路实测**：基线 6 passed → 改 SPEC + 补 2 条测试 → 终跑 **8 passed / exit 0** → 回执 `rc-20261031081954-df5e65 = test/pass` → 固化出候选 `mem-bd4d8a4f8c531e62`（正文含 strict 与非严格路径两条事实，并挂 2 条回执）→ 采纳 → **`shared.active=1 / pinned=1 / confidence=0.85 / receipts=3`**，项目侧 `by_status` 变成 `candidate 5 / promoted 1 / superseded 1`。
+- **晋升门是"差一步"被证实的**：采纳前实跑 `promote.evaluate()`，未满足项只有一句「缺采纳/复用信号」；回执、重要度 0.7、泛化（正文一字未被削）、无冻结全过。也就是说门没写坏，之前只是从来没有真实信号。
+- **对照（关键）**：晋升**之前**在另一个空项目 `prj-b6cd69a42c54` 开新窗口问「strict 负数的错误码 + 你从哪层知道」→ 注入侧 L2 **0 字符**，回答侧模型**拒绝编造**并自述「来源层 = 无（证据缺失）」。晋升**之后**同一问题同一项目 → 注入侧 L2 **252 字符**命中该条，回答侧给出正确错误码且自述「来源层是共享记忆（跨项目沉淀），本轮没有调用任何工具」。唯一变量就是那次采纳。
+- **采纳落点**：`POST /api/memory/items/{id}/adopt` → 写 `review/pass · user_review` 回执 + `adopted=True` + `usage+1` → 立刻 `promote()`。面板按钮是「采纳即晋升」，成功文案「已采纳并 pin」（confidence 0.85 ≥ 0.8 且 importance 0.7 ≥ 0.7 才 pin）。
+- **踩到的真问题**：第一次点击**没落到后端** —— 账本无 `memory.promote`、没有 `user_review` 回执、候选文件 mtime 未变。根因是 `/api/memory/items/{id}/adopt` 按**请求头里的项目**找候选（`_request_project_id()`），顶栏停在别的项目时同一 id 得到的是同一句 404「未找到待晋升候选」，红字极易被当成"点了没反应"。把顶栏切到候选所属项目后一次成功。
+- **告警侧的可观测变化**：`shared_empty` 与 `no_promotion` 两条告警在项目晋升后**消失**，只剩 `consolidation_errors`（2026-10-30 一次 402 余额错误，非代码问题）。
+- **善后**：为对照临时登记的 `prj-b6cd69a42c54` 已注销（`remove_project` 只注销不删盘），一次性服务已停、端口 8000 已释放，服务端当前项目已还原为 rag-agent；orchid-loop 保留在册，因为晋升条目的 `promoted_from` 指向它。
+
+### 16.19 采纳失败要说清「在哪个项目里找的」（2026-10-31）
+
+- **动机**：16.18 里第一次采纳白按一次 —— `/api/memory/items/{id}/adopt` 与 `/promote` 都按请求头里的项目取候选，顶栏停在别的项目时返回的是光秃秃一句「未找到待晋升候选」，和"点了没生效"在界面上完全同形。
+- **改法**：`api._memory_project_hint(project, reasons)` 只给含「未找到」的原因补上出处（项目**名**，取不到名字时退回 pid），晋升门本身的原因（「缺采纳/复用信号」「重要度不足」…）**原样透出**，不许被后缀稀释 —— 用户要照那句话去补条件。
+- **实测响应**：`{"detail":"未找到待晋升候选（当前项目：rag-agent；该候选可能属于别的项目，请先把顶栏切过去）"}`；`/promote` 同形。
+- **验证**：`tests/test_memory_adopt_project_hint.py` 4 passed（adopt 带项目名、promote 带项目名、**反向守卫**门原因逐字不变、注册表读不动时至少报 pid）。变异验证：把 adopt 那行退回 `reasons[0]` 后两条立刻红（`'orchid-loop' not found in '未找到待晋升候选'`）。
+
+### 16.20 注入上限改为「固定下限 + 随窗口缩放的天花板」（2026-10-31）
+
+- **为什么不整体改成按比例**：压缩的历史是无界的，比例合理；注入的内容是有界的 —— 宪法不会因为换个大模型就该写得更长。实测两套口径的差别很直白：5% 预算在 8k 窗口模型上只给 230 tok，**连 L0 宪法一条（472 字符 ≈ 425 tok）都装不下**；在 1M 窗口上给 35,101 tok，而各层真实占用是 L0 79% / L1 67% / L3 36% / L2 32% / L4 **0%** —— 卡住注入的一直是内容量，不是预算。所以比例只能当**帽子**，不能当**分配**。
+- **做法**：`injection.DISCRETIONARY_FLOORS = {L2:800, L3:400, L4:600}`（就是原来的固定值，即下限）与 `DISCRETIONARY_CAPS = {L2:3200, L3:1200, L4:2400}`；`discretionary_budgets(prompt_tokens)` 先把**整池** clamp 到 `[1800, 6800]`（`池 = 预算 × GROW_RATIO(0.02) × CHARS_PER_TOKEN(1.1)`，比例可 `DOCMIND_MEMORY_INJECT_RATIO` 覆盖），再按各层下限占比分余量 —— 保持 800:400:600 的相对比例不随窗口漂移。
+- **L0 / L1 刻意不进这张表**：`layer_chars` 对它们直接 `ValueError`。这两层没有"这轮先不注入"的退路，换模型也不会变长。
+- **实测生效值**：8k/16k 本地窗口 → 逐字等于今天的 800/400/600；当前 deepseek（预算 87,307）→ 853/426/640；1M 窗口 → 3022/1200/2266（L3 先顶到帽，余量**不挪给别层** —— 宁可少注入也不失控，所以有效总池 6488 < cap 合计 6800）。
+- **接线**：`agent._build_messages` 三处按 `self._prompt_budget()` 传（用的是**本模型**的预算，会话级换模型会自动跟着变）；`context_panel.next_view` 用运行时模型估一份，并把同一个数字同时用于取数和**面板显示的 budget**，否则界面会显示一份假的。估不出预算时 `_current_prompt_tokens()` 返回 0 → 退回下限，绝不放大。
+- **验证**：`tests/test_memory_inject_scaling.py` 7 passed —— 小窗口逐字等于今天（反向守卫）、大窗口增长但逐层 ≤ cap 且相对比例不漂、L0/L1 拒绝缩放、估不出预算退回下限、builder 真接到更大天花板（注入内容确实变多）、**Agent 确实把自己那个模型的 prompt 预算传给三层**、面板显示的预算与它真正用的同一份。变异验证：把 L3 那处接线删掉，接线守卫立刻红（`Items in the second set but not the first: 'L3'`）。
+
+### 16.22 跨回合 prompt 前缀与命中率视图（2026-10-31）
+
+- **先纠正一次假测量**：我一度报"命中率 0%"，是因为按 API 原始字段名（`cached_tokens`/`cache_read_input_tokens`）去扫轨迹，而落库键叫 **`cache_read_tokens`**（agent_trace.py:229）。搜错键 = 探针自己造了个零。真实基线：**6150 回合、123,833,918 输入 token、109,500,023 命中读 = 按 token 88.42%；但只有 794 个回合命中 = 按回合 12.91%；累计省 ¥96.61**（deepseek 94.0%/76.0%，custom 62.3%/74.2%，ollama 与 mock 恒 0 —— 本地与假模型没有 provider 缓存）。
+- **打断前缀的东西**：`【当前时间】` 带秒级时间戳，原先作为 `messages[2]` 插在渠道提示词与宪法之后。`now` 每回合只取一次，所以**回合内**逐步重发的前缀是稳的（88% 就是这么来的）；被打断的是**跨回合** —— 下一回合历史只在尾部追加，本可整段复用，却从第 3 条起全废。
+- **试过的做法与它的下场（已撤销）**：把整块（值 + 天气/票价政策文字）移到历史之后、当前问题之前。**全量回归当场拒绝**：`tests/test_fit_budget_head_prune.py::test_prunes_only_history_pairs_never_orphan_assistant_first` 红（`'system' not found in ('user', 'assistant')`，单独跑 0.13s 即复现）。`_fit_budget` 的成对删除建立在一条不变量上 —— **`_head_fixed_end` 与当前问题之间只允许 user/assistant 成对历史** —— 插一条 system 进去就把它打破了。对照实验同时证实这是代码问题而非数据问题：干净 worktree 空数据 28 红，加上这批改动、同样空数据 149 红，两次跳过数都是 52，数据变量被排除在外。
+- **结论**：想拿这份缓存收益，要改的是**裁剪器**（跳过非历史消息，或把易变块正式纳入固定区），不是挪消息。已留一条守卫钉住这条不变量：`test_memory_v2_p0.test_time_block_stays_in_the_fixed_head` —— 断言时间块位于 `_head_fixed_end` 之前，且可裁区只剩成对历史。
+- **度量（已落地）**：`agent_trace.summary()` 早就算好了 token 与 `cache_saved_cny`，缺的是**按回合**那条。新增 `cache_hit_turns / cache_hit_rate / cache_hit_turn_share`（顶层 + 每个 provider），设置页「用量与费用」加一行同时报两条率 —— 只看 token 率会把"跨回合几乎没复用"这件事完全藏住。
+- **验证**：撤销后针对性复跑 **176 passed / 0 failed**（`test_fit_budget_head_prune`、天气恢复、票价澄清、指代门、回执门、注入缩放、memory v2 全套 88 条含新增守卫）。前端 typecheck + build 通过。

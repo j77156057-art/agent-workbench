@@ -110,6 +110,7 @@ def _prompt(episode, existing=()):
         "receipts": episode.get("receipts") or [],
         "existing": [{
             "id": str(item.get("id") or ""),
+            "scope": str(item.get("scope") or "project"),
             "kind": str(item.get("kind") or ""),
             "text": str(item.get("body") or "")[:240],
             "updated": str(item.get("updated") or ""),
@@ -120,7 +121,8 @@ def _prompt(episode, existing=()):
         "判断其中是否有可复用的确定事实或经验教训；寒暄、命令回显、一次性细节、"
         "未验证的猜测都不要记。\n"
         "如果本轮结果证明某条已有候选已经过时或错误（例如旧诊断已被修复），"
-        "把它的 id 放进 supersedes；只是主题相关、并不矛盾的不要列。\n"
+        "把它的 id 放进 supersedes；只是主题相关、并不矛盾的不要列。"
+        "项目候选会立即失效；共享条目会等新候选通过晋升门后再失效。\n"
         "只输出一个 JSON 对象，不要解释、不要代码围栏：\n"
         '{"keep": true 或 false, "kind": "fact" 或 "lesson", '
         '"title": "短标题", "text": "脱离本轮上下文也能读懂的独立结论，最多 300 字", '
@@ -148,7 +150,8 @@ def run_once(project_id, session_id, llm, episode=None):
     client, mode = _client(llm)
     existing = sorted(
         [item for item in promote.candidates(project_id)
-         if item.get("status") == "candidate"],
+         if item.get("status") == "candidate"] +
+        list(promote.shared_items()),
         key=lambda item: str(item.get("updated") or ""), reverse=True)[:10]
     try:
         output = client.chat([{"role": "user", "content": _prompt(ep, existing)}],
@@ -179,19 +182,29 @@ def run_once(project_id, session_id, llm, episode=None):
         importance = min(1.0, max(0.0, float(data.get("importance"))))
     except (TypeError, ValueError):
         importance = 0.6
-    candidate = promote.create_candidate(
-        project_id, kind, text, importance=importance,
-        source_turn=str(ep.get("id") or ""),
-        receipt_ids=ep.get("receipts") or [], task=str(ep.get("task") or ""))
-    new_id = str((candidate or {}).get("id") or "")
-    known = {str(item.get("id") or "") for item in existing}
     requested = data.get("supersedes")
     if not isinstance(requested, (list, tuple)):
         requested = []
-    superseded = []
+    scopes = {str(item.get("id") or ""): str(item.get("scope") or "project")
+              for item in existing}
+    project_targets, shared_targets = [], []
     for old_id in requested[:3]:
         old_id = str(old_id or "")
-        if (old_id and old_id != new_id and old_id in known
+        if not old_id or old_id not in scopes:
+            continue
+        if scopes[old_id] == "global":
+            shared_targets.append(old_id)
+        else:
+            project_targets.append(old_id)
+    candidate = promote.create_candidate(
+        project_id, kind, text, importance=importance,
+        source_turn=str(ep.get("id") or ""),
+        receipt_ids=ep.get("receipts") or [], task=str(ep.get("task") or ""),
+        pending_supersedes=shared_targets)
+    new_id = str((candidate or {}).get("id") or "")
+    superseded = []
+    for old_id in project_targets:
+        if (old_id != new_id
                 and promote.supersede(project_id, old_id, new_id,
                                       reason="新回合证据取代旧候选")):
             superseded.append(old_id)
@@ -203,9 +216,11 @@ def run_once(project_id, session_id, llm, episode=None):
                    tokens_in=usage_in, tokens_out=usage_out,
                    latency_ms=round((time.perf_counter() - start) * 1000),
                    promoted=swept.get("promoted", 0),
-                   superseded=len(superseded))
+                   superseded=len(superseded),
+                   pending_shared=len(shared_targets))
     return {"ok": True, "kept": True, "candidate": (candidate or {}).get("id"),
-            "promoted": swept.get("promoted", 0), "superseded": superseded}
+            "promoted": swept.get("promoted", 0), "superseded": superseded,
+            "pending_shared": shared_targets}
 
 
 def schedule(project_id, session_id, llm, episode=None):
@@ -235,4 +250,26 @@ def schedule(project_id, session_id, llm, episode=None):
     except Exception:  # noqa: BLE001
         with _LOCK:
             _INFLIGHT.discard(key)
+        return False
+
+
+def inflight():
+    """当前排队/在跑的固化任务键，用于断言"没有任务漂到下一个用例"。"""
+    with _LOCK:
+        return sorted(_INFLIGHT)
+
+
+def drain(timeout=120):
+    """等已提交的固化任务全部跑完。
+
+    执行器是模块级单例、任务是异步的：测试在用例内把 `DOCMIND_MEMORY_DIR` 指到临时
+    目录再触发回合，tearDown 还原环境变量之后，那个任务才会落地 —— 于是它写进了
+    **下一个用例**的存储。实测这样能在完整 discover 里把 30 红放大到 148 红。
+    跑真回合的测试必须在收尾前 drain()。
+    单 worker + FIFO，所以排一个哨兵等它完成 = 之前的都完成了。
+    """
+    try:
+        _EXECUTOR.submit(lambda: None).result(timeout=timeout)
+        return True
+    except Exception:  # noqa: BLE001 —— 排不干净也不该把测试拖崩
         return False

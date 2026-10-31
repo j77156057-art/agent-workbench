@@ -148,6 +148,7 @@ export interface MemorySettingsInfo {
   memory_v2?: boolean
   memory_model?: string
   memory_semantic?: boolean
+  memory_check_interval_minutes?: number
   error?: string
 }
 export const memorySettingsApi = {
@@ -171,6 +172,9 @@ export const memorySettingsApi = {
   },
   saveSemantic(memory_semantic: boolean): Promise<MemorySettingsInfo> {
     return rawJson('/api/memory-settings', { memory_semantic })
+  },
+  saveCheckInterval(memory_check_interval_minutes: number): Promise<MemorySettingsInfo> {
+    return rawJson('/api/memory-settings', { memory_check_interval_minutes })
   },
 }
 

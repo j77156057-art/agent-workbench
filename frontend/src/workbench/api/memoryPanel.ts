@@ -71,6 +71,61 @@ export interface MemoryContextResult {
   total_chars?: number
 }
 
+export interface MemoryHealthWarning {
+  code?: string
+  message?: string
+}
+
+export interface MemoryHealthLayer {
+  key?: string
+  title?: string
+  chars?: number
+  budget?: number | null
+}
+
+export interface MemoryHealthMetrics {
+  consolidate_calls?: number
+  skipped?: number
+  errors?: number
+  tokens_in?: number
+  tokens_out?: number
+  p50_ms?: number
+  p95_ms?: number
+  promoted?: number
+}
+
+export interface MemoryHealth {
+  ok?: boolean
+  project_id?: string
+  generated_at?: string
+  shared?: { active?: number; pinned?: number; superseded?: number }
+  project?: {
+    total?: number
+    candidate?: number
+    adopted?: number
+    frozen?: number
+    promoted?: number
+    superseded?: number
+    merged?: number
+    by_status?: Record<string, number>
+  }
+  duplicates?: { project?: number; shared?: number; planned?: Array<Record<string, unknown>> }
+  stale?: { retention_days?: number; superseded?: number }
+  index?: { items?: number; vectors?: number; edges?: number; fts?: boolean; rebuilt_at?: string }
+  context?: { total_chars?: number; layers?: MemoryHealthLayer[] }
+  metrics?: MemoryHealthMetrics
+  warnings?: MemoryHealthWarning[]
+}
+
+export interface MemoryMaintenanceResult {
+  ok?: boolean
+  apply?: boolean
+  candidates?: Record<string, unknown>
+  shared?: Record<string, unknown>
+  gc?: Record<string, unknown>
+  index?: Record<string, unknown>
+}
+
 function call<T>(method: string, url: string, payload?: unknown): Promise<T> {
   return request<T>(url, {
     method,
@@ -108,6 +163,9 @@ export const memoryPanelApi = {
     const query = new URLSearchParams({ to, type })
     return request(`/api/memory/items/${encodeURIComponent(itemId)}/links?${query.toString()}`, { method: 'DELETE' })
   },
+  supersedeItem(itemId: string, by: string, confirm = true): Promise<Record<string, unknown>> {
+    return call('POST', `/api/memory/items/${encodeURIComponent(itemId)}/supersede`, { by, confirm })
+  },
   deleteItem(itemId: string): Promise<Record<string, unknown>> {
     return request(`/api/memory/items/${encodeURIComponent(itemId)}?confirm=true`, { method: 'DELETE' })
   },
@@ -132,5 +190,16 @@ export const memoryPanelApi = {
   },
   reindex(): Promise<Record<string, unknown>> {
     return call('POST', '/api/memory/reindex')
+  },
+  health(): Promise<MemoryHealth> {
+    return request('/api/memory/health')
+  },
+  maintain(payload: {
+    apply?: boolean
+    confirm?: boolean
+    retention_days?: number
+    threshold?: number
+  }): Promise<MemoryMaintenanceResult> {
+    return call('POST', '/api/memory/maintain', payload)
   },
 }

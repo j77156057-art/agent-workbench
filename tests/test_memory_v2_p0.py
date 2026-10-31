@@ -14,12 +14,14 @@ import agent_trace
 import config
 import tools as agent_tools
 from agent_runtime.memory import (
+    consolidate,
     constitution,
     context_panel,
     episodes,
     errors,
     feedback,
     graph,
+    health,
     hooks,
     index,
     injection,
@@ -59,6 +61,9 @@ class _MemBase(unittest.TestCase):
         legacy_memory.DB_PATH = os.path.join(self.tmp, "legacy_memory.sqlite3")
 
     def tearDown(self):
+        # 固化任务是异步的（模块级单 worker）。不排空，它就会在本用例还原环境变量
+        # **之后**才落地，写进下一个用例的存储 —— 实测能把 30 红放大到 148 红。
+        consolidate.drain()
         for key, value in self._env.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -112,6 +117,24 @@ class ConstitutionTests(_MemBase):
         self.assertTrue(str(messages[1]["content"]).startswith("【系统宪法 v0"))
         self.assertIn("当前时间", str(messages[2]["content"]))
         self.assertLessEqual(len(messages[1]["content"]), constitution.INJECT_MAX_CHARS)
+
+    def test_time_block_stays_in_the_fixed_head(self):
+        """时间块留在固定头区，**不许**为了 prompt 缓存挪进可裁历史区。
+
+        挪过去确实能把跨回合的最长公共前缀铺到历史末尾（实测按回合命中率仅 12.91%），
+        但 `_fit_budget` 的成对删除建立在「`_head_fixed_end` 与当前问题之间只有
+        user/assistant 成对历史」这条不变量上；插一条 system 进去会把它打破
+        （`test_fit_budget_head_prune` 当场红）。要拿这份缓存收益，得先改裁剪器，
+        不是挪消息。
+        """
+        agent = agent_mod.Agent(llm=_LLM(), session_id="memv2")
+        first = agent._build_messages("同一问")
+        self.assertLess(first.index(
+            next(m for m in first if "当前时间" in str(m.get("content") or ""))),
+            agent._head_fixed_end, "时间块跑进可裁区了")
+        self.assertTrue(all(m.get("role") in ("user", "assistant")
+                            for m in first[agent._head_fixed_end:-1]),
+                        "可裁区混进了非历史消息")
 
     def test_bootstrap_once_then_save_bumps_version(self):
         first = constitution.load(ensure=True)
@@ -621,6 +644,21 @@ class ConsolidateTests(_MemBase):
         self.assertNotIn(old["id"], retrievable, "过时候选不得继续出现在可召回列表")
         self.assertIn(result["candidate"], retrievable)
 
+    def test_shared_supersede_waits_for_promotion(self):
+        promote.seed_shared("fact", "旧共享结论：空输入返回 0 是正常行为",
+                            importance=0.8, confidence=0.85, status="active")
+        old = promote.shared_items()[0]
+        result = consolidate_run(
+            self, self._out(text="新共享结论：空输入必须抛 ERR_EMPTY_INPUT",
+                            importance=0.9, supersedes=[old["id"]]))
+        self.assertTrue(result["kept"])
+        self.assertEqual(result["pending_shared"], [old["id"]])
+        candidate = next(item for item in promote.candidates("prj")
+                         if item["id"] == result["candidate"])
+        self.assertEqual(candidate.get("pending_supersedes"), [old["id"]])
+        self.assertEqual(promote.shared_item(old["id"])["status"], "active",
+                         "新候选未晋升前，旧共享条目不能提前失效")
+
     def test_unknown_supersede_id_is_ignored(self):
         result = consolidate_run(
             self, self._out(text="空列表改为抛 ERR_EMPTY_INPUT，测试通过",
@@ -841,6 +879,82 @@ class DedupeTests(_MemBase):
         lesson = promote.create_candidate(
             "prj", "lesson", "合并前先跑完整测试，能降低回归率", importance=0.6)
         self.assertNotEqual(fact["id"], lesson["id"])
+
+
+class SharedMaintenanceTests(_MemBase):
+    def _seed(self, text, kind="fact"):
+        promote.seed_shared(kind, text, importance=0.8, confidence=0.85, status="active")
+        return next(item for item in promote.shared_items(include_inactive=True)
+                    if item.get("body") == text)
+
+    def test_supersede_shared_marks_old_and_links_new(self):
+        old = self._seed("旧结论：合并前不需要跑测试，直接提交即可")
+        new = self._seed("新结论：合并前必须先跑完整测试，再提交")
+        result = promote.supersede_shared(old["id"], new["id"], reason="test")
+        self.assertEqual(result["status"], "superseded")
+        self.assertEqual(result["superseded_by"], new["id"])
+        active = {item["id"] for item in promote.shared_items()}
+        self.assertNotIn(old["id"], active)
+        self.assertIn(new["id"], active)
+        archived = promote.shared_item(old["id"])
+        self.assertEqual(archived["status"], "superseded")
+        self.assertEqual(archived["valid_until"], archived["superseded_at"])
+        new_row = promote.shared_item(new["id"])
+        self.assertTrue(any(edge["type"] == "supersedes" and edge["to"] == old["id"]
+                            for edge in new_row["edges"]))
+        self.assertNotIn(old["id"], {item["id"] for item in promote.retrievable("prj")})
+
+    def test_promotion_applies_pending_shared_supersede(self):
+        old = self._seed("旧结论：空输入返回 0 是正常行为")
+        rid = receipts.record("prj", type="verify", result="pass")
+        candidate = promote.create_candidate(
+            "prj", "fact", "新结论：空输入必须抛 ERR_EMPTY_INPUT，不能返回 0",
+            importance=0.9, receipt_ids=[rid], task="tb-shared",
+            pending_supersedes=[old["id"]])
+        result = promote.adopt("prj", candidate["id"])
+        self.assertTrue(result["promoted"])
+        self.assertEqual(result["superseded"], [old["id"]])
+        self.assertEqual(promote.shared_item(old["id"])["status"], "superseded")
+
+    def test_shared_dedupe_dry_run_and_apply(self):
+        first = self._seed("共享结论：先跑测试再合并，能降低回归率")
+        second = self._seed("共享结论：先跑测试再合并，可降低回归率")
+        preview = promote.dedupe_shared(apply=False)
+        self.assertEqual(preview["duplicates"], 1)
+        self.assertEqual(len(promote.shared_items()), 2)
+        applied = promote.dedupe_shared(apply=True)
+        self.assertEqual(applied["duplicates"], 1)
+        self.assertEqual(len(promote.shared_items()), 1)
+        rows = {item["id"]: item for item in promote.shared_items(include_inactive=True)}
+        self.assertIn(rows[first["id"]]["status"], ("active", "superseded"))
+        self.assertIn(rows[second["id"]]["status"], ("active", "superseded"))
+
+    def test_gc_archives_old_superseded_file(self):
+        old = promote.create_candidate("prj", "fact", "旧候选：空输入返回 0，稍后再改",
+                                       importance=0.6)
+        new = promote.create_candidate("prj", "fact", "新候选：空输入已改为抛异常",
+                                       importance=0.8)
+        promote.supersede("prj", old["id"], new["id"], reason="test")
+        result = health.gc("prj", retention_days=0, apply=True)
+        self.assertEqual(result["archived"], 1)
+        self.assertFalse(os.path.exists(old["path"]))
+        archive = store.safe_path("archive", "memory", "project", "facts",
+                                  os.path.basename(old["path"]))
+        self.assertTrue(os.path.exists(archive))
+
+    def test_health_report_and_maintain_dry_run(self):
+        self._seed("共享健康检查：先复现再修复，减少盲目改动")
+        promote.create_candidate("prj", "fact", "项目健康检查：先跑测试再合并",
+                                 importance=0.7)
+        index.rebuild()
+        report = health.report("prj")
+        self.assertEqual(report["shared"]["active"], 1)
+        self.assertEqual(report["project"]["candidate"], 1)
+        self.assertTrue(report["warnings"])
+        dry = health.maintain("prj", apply=False)
+        self.assertFalse(dry["apply"])
+        self.assertFalse(dry["candidates"]["apply"])
+        self.assertFalse(dry["shared"]["apply"])
 
 
 class EpisodeRetentionTests(_MemBase):
@@ -1130,6 +1244,34 @@ class IndexTests(_MemBase):
         os.unlink(path)
         removed = index.rebuild()
         self.assertEqual((removed["removed"], removed["items"]), (1, 0))
+
+
+class ConsolidateDrainTests(_MemBase):
+    """固化任务是异步的，测试必须能把它排干再还原环境。
+
+    不排干的后果是实测出来的：临时目录里的回合，任务会在 tearDown 把
+    `DOCMIND_MEMORY_DIR` 还原**之后**才落地，于是写进下一个用例的存储 ——
+    完整 discover 里 30 红被放大到 148 红，而两两配对跑全绿。
+    """
+
+    def test_drain_reports_clean_and_clears_inflight(self):
+        self.assertTrue(consolidate.drain())
+        self.assertEqual(consolidate.inflight(), [])
+        self.assertTrue(consolidate.schedule("prj-drain", "s-drain", _LLM(),
+                                             {"summary": "需要固化的回合"}))
+        self.assertTrue(consolidate.drain(timeout=180))
+        self.assertEqual(consolidate.inflight(), [],
+                         "排空之后还有任务在飞，它会漂到下一个用例")
+
+    def test_drain_survives_a_failing_job(self):
+        """worker 里的任务抛异常，也不许把排空方拖崩或留下心跳任务。"""
+        def _boom(*_a, **_kw):
+            raise RuntimeError("固化炸了")
+
+        with patch.object(consolidate, "run_once", side_effect=_boom):
+            self.assertTrue(consolidate.schedule("prj-drain", "s-boom", _LLM()))
+            self.assertTrue(consolidate.drain(timeout=180))
+        self.assertEqual(consolidate.inflight(), [])
 
 
 if __name__ == "__main__":

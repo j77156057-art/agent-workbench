@@ -15,11 +15,11 @@ BUDGETS = {"L0": 600, "L1": 500, "L2": 800, "L3": 400, "L4": 600}
 TITLES = {"L0": "宪法", "L1": "用户画像", "L2": "共享记忆", "L3": "任务书", "L4": "会话钩子"}
 
 
-def _layer(key, title, text, *, editable, source, kind, **extra):
+def _layer(key, title, text, *, editable, source, kind, budget=None, **extra):
     value = str(text or "")
     data = {"key": key, "title": title, "text": value, "chars": len(value),
-            "budget": BUDGETS.get(key), "editable": bool(editable),
-            "source": source, "kind": kind}
+            "budget": BUDGETS.get(key) if budget is None else budget,
+            "editable": bool(editable), "source": source, "kind": kind}
     data.update(extra)
     return data
 
@@ -43,6 +43,8 @@ def next_view(project_id, session_id, code_root=""):
     project = store.safe_id(project_id or "default")
     session = str(session_id or "")
     layers = []
+    # 与 agent._build_messages 同一套随窗口缩放的天花板，否则面板显示的预算是假的。
+    caps = injection.discretionary_budgets()
 
     doc = constitution.load(ensure=True)
     raw = ""
@@ -66,9 +68,10 @@ def next_view(project_id, session_id, code_root=""):
                          kind="readonly", path="DOCMIND_RULES.md"))
 
     pinned = promote.pinned_shared(5)
-    block = injection.build_shared_injection()
+    block = injection.build_shared_injection(max_chars=caps["L2"])
     retrievable_items = promote.retrievable(project, 30)
     layers.append(_layer("L2", "共享记忆", block[0]["text"] if block else "",
+                         budget=caps["L2"],
                          editable=True, source="已验证沉淀", kind="items",
                          items=[{"id": item.get("id"), "kind": item.get("kind"),
                                  "title": item.get("title"), "body": item.get("body"),
@@ -81,15 +84,17 @@ def next_view(project_id, session_id, code_root=""):
                          retrievable_items=retrievable_items))
 
     book = taskbook.info(project)
-    layers.append(_layer("L3", "任务书", taskbook.summary(project), editable=True,
+    layers.append(_layer("L3", "任务书", taskbook.summary(project, max_chars=caps["L3"]),
+                         budget=caps["L3"], editable=True,
                          source="任务", kind="taskbook",
                          book={"id": book.get("id"), "title": book.get("title"),
                                "status": book.get("status")},
                          items=book.get("items") or []))
 
-    block = injection.build_session_injection(session, project)
+    block = injection.build_session_injection(session, project, max_chars=caps["L4"])
     latest = episodes.latest(project, session, 1) if session else []
     layers.append(_layer("L4", "会话钩子", block[0]["text"] if block else "",
+                         budget=caps["L4"],
                          editable=True, source="本窗口", kind="hooks",
                          items=hooks.items(project, session) if session else [],
                          errors=errors.top(project, session, 5) if session else [],
