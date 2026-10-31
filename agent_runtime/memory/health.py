@@ -68,7 +68,7 @@ def report(project_id):
     inactive = _inactive(project_id)
     stale = [scope_item for scope_item in inactive
              if (_age_days(scope_item[1].get("updated")) or 0) >= DEFAULT_RETENTION_DAYS]
-    consolidation = metrics.report(days=7)
+    consolidation = metrics.report(days=7, project=project_id)
     context = _context_usage(project_id)
     warnings = []
     if not shared_active and project_candidates:

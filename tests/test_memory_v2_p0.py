@@ -1274,5 +1274,86 @@ class ConsolidateDrainTests(_MemBase):
         self.assertEqual(consolidate.inflight(), [])
 
 
+class NextStepProducerTests(_MemBase):
+    """「下一步」通道在普通回合里必须有生产者，且只认证据、不编造。
+
+    原先唯一的生产者是 Plan 模式的 plan_state：普通回合没有计划文件，实测 77 个
+    episode 里 0 条带 next，L4 的这一支等于没接线。
+    """
+
+    def _turn(self, targets=None, tested=None, ok=False):
+        turn = Turn(session_id="s1", provider="p", model="m", question="改一下 a.py")
+        turn.verification_targets = dict(targets or {})
+        turn.test_command_targets = dict(tested if tested is not None else (targets or {}))
+        turn.test_command_ok = ok
+        return turn
+
+    def _record(self, turn, journal=None, **kw):
+        return turns.record_turn(session_id="s1", project_id="prj", question="改一下 a.py",
+                                 final_text="改完了", turn=turn, journal=journal or {}, **kw)
+
+    def test_unverified_changes_produce_a_next_step(self):
+        result = self._record(self._turn({"a.py": 1}))
+        self.assertTrue(result["record"]["next"].startswith("验证改动：a.py"),
+                        result["record"]["next"])
+        latest = episodes.latest("prj", "s1", 1)
+        self.assertEqual(latest[0]["next"], result["record"]["next"])
+        block = injection.build_session_injection("s1", "prj")
+        self.assertTrue(block, "有 next 就必须进 L4 注入")
+        self.assertIn("[下一步]", block[0]["text"])
+
+    def test_verified_turn_produces_no_next(self):
+        """反向守卫：测试通过且覆盖的就是这批改动 → 没有待办，不许编一个下一步。"""
+        result = self._record(self._turn({"a.py": 1}, ok=True))
+        self.assertEqual(result["record"]["next"], "")
+
+    def test_no_file_changes_produces_no_next(self):
+        """反向守卫：纯问答回合没有验证缺口，next 必须留空。"""
+        self.assertEqual(self._record(self._turn()).get("record", {}).get("next", ""), "")
+
+    def test_journal_verified_suppresses_next(self):
+        result = self._record(self._turn({"a.py": 1}),
+                              journal={"verified": True, "verification": {"tests": True}})
+        self.assertEqual(result["record"]["next"], "")
+
+    def test_stale_test_snapshot_still_counts_as_unverified(self):
+        """测试跑过但之后又改了文件（快照不一致）→ 仍是未验证，next 要回来。"""
+        turn = self._turn({"a.py": 1, "b.py": 1}, tested={"a.py": 1}, ok=True)
+        result = self._record(turn)
+        self.assertTrue(result["record"]["next"].startswith("验证改动："))
+
+    def test_plan_and_explicit_next_step_still_win(self):
+        """接线顺序守卫：Plan 计划与调用方显式给的 next 优先于证据型推导。"""
+        with patch.object(turns, "_plan_next_step", return_value="计划里的下一件"):
+            self.assertEqual(self._record(self._turn({"a.py": 1}))["record"]["next"],
+                             "计划里的下一件")
+        self.assertEqual(self._record(self._turn({"a.py": 1}), next_step="用户指定的")
+                         ["record"]["next"], "用户指定的")
+
+
+class MetricsProjectScopeTests(_MemBase):
+    """健康面板按项目看，固化错误警告不许被别的项目（尤其是评测流量）污染。"""
+
+    def test_error_in_another_project_does_not_warn_here(self):
+        metrics.record("consolidate.error", project="prj-eval", error="402 insufficient balance")
+        metrics.record("consolidate", project="prj-real", latency_ms=10, tokens_in=5)
+        self.assertEqual(metrics.report()["errors"], 1, "全局成本口径必须保持不变")
+        self.assertEqual(metrics.report(project="prj-eval")["errors"], 1)
+        self.assertEqual(metrics.report(project="prj-real")["errors"], 0)
+        codes = {w["code"] for w in health.report("prj-real")["warnings"]}
+        self.assertNotIn("consolidation_errors", codes,
+                         "评测项目的 402 不该挂在真实项目的体检上")
+        self.assertIn("consolidation_errors",
+                      {w["code"] for w in health.report("prj-eval")["warnings"]})
+
+    def test_scoped_stats_only_count_own_calls(self):
+        metrics.record("consolidate", project="prj-a", latency_ms=10, tokens_in=5)
+        metrics.record("consolidate", project="prj-b", latency_ms=20, tokens_in=7)
+        scoped = metrics.report(project="prj-a")
+        self.assertEqual(scoped["consolidate_calls"], 1)
+        self.assertEqual(scoped["tokens_in"], 5)
+        self.assertEqual(metrics.report()["consolidate_calls"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

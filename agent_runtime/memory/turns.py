@@ -46,6 +46,27 @@ def _plan_next_step():
         return ""
 
 
+def _unverified_next_step(turn, journal):
+    """本回合改了文件却还没有通过回执 → 下一步就是去验证它。
+
+    「下一步」通道原先唯一的生产者是 Plan 模式的 `plan_state`：普通回合没有计划
+    文件，于是 77 个 episode 里 0 条带 next，L4 的这一支等于没接线。验证缺口是
+    普通回合里真实存在、且不需要编造的待办 —— 正好是「没有回执不得声称完成」
+    要盯的那件事。已验证或没改文件一律返回空，绝不造一个下一步出来。
+    """
+    targets = dict(getattr(turn, "verification_targets", None) or {})
+    if not targets:
+        return ""
+    tested = dict(getattr(turn, "test_command_targets", None) or {})
+    if getattr(turn, "test_command_ok", False) and tested == targets:
+        return ""
+    if journal.get("verified"):
+        return ""
+    paths = sorted(targets)
+    shown = ", ".join(paths[:3]) + (" 等" if len(paths) > 3 else "")
+    return ("验证改动：" + shown + "（跑测试或验收，取得回执后才算完成）")[:160]
+
+
 def record_turn(*, session_id, project_id, question, final_text, status="completed",
                 turn=None, journal=None, error="", next_step=""):
     """写入一条结构化回合；flag 关或无会话时返回空 dict。"""
@@ -118,6 +139,8 @@ def record_turn(*, session_id, project_id, question, final_text, status="complet
 
     if not next_step:
         next_step = _plan_next_step()
+    if not next_step:
+        next_step = _unverified_next_step(turn, journal)
     try:
         task_id = taskbook.current_id(project)
     except Exception:  # noqa: BLE001
