@@ -12,7 +12,7 @@ import os
 import re
 import sqlite3
 
-from . import score, store
+from . import graph, score, store
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items(
@@ -460,8 +460,41 @@ def search(query="", limit=10, scope=None, project=None):
                 row["_score"] = score.pin_score(row)
             rows.sort(key=lambda item: item["_score"], reverse=True)
         rows = rows[:max(1, min(50, int(limit)))]
-        extra = []
         seen = {row["id"] for row in rows}
+        edges = [(edge["src"], edge["dst"])
+                 for edge in conn.execute("SELECT src,dst FROM edges")]
+        if edges:
+            seeds = {row["id"]: float(row.get("_score") or 0)
+                     for row in rows[:3] if float(row.get("_score") or 0) > 0}
+            ppr = graph.personalized_pagerank(edges, seeds)
+            if ppr:
+                max_seed = max(seeds.values()) if seeds else 1.0
+                max_ppr = max(ppr.values()) or 1.0
+                top_seed = rows[0]["id"] if rows else ""
+                extra = []
+                for node, value in sorted(ppr.items(), key=lambda pair: pair[1],
+                                          reverse=True):
+                    if node in seen:
+                        continue
+                    found = conn.execute("SELECT * FROM items WHERE id=?", (node,)).fetchone()
+                    if not found:
+                        continue
+                    item = dict(found)
+                    if item.get("status") not in ("active", "candidate"):
+                        continue
+                    if item.get("scope") == "project" and item.get("status") != "candidate":
+                        continue
+                    if project and item.get("scope") != "global"                             and item.get("project") != str(project):
+                        continue
+                    item["_score"] = round(max_seed * 0.35 * (value / max_ppr), 4)
+                    item["_graph"] = round(value / max_ppr, 4)
+                    item["related_to"] = top_seed
+                    extra.append(item)
+                    seen.add(node)
+                    if len(extra) >= 6:
+                        break
+                return rows + extra
+        extra = []
         for row in rows[:3]:
             for neighbour in related(row["id"], 3, conn=conn):
                 if neighbour["id"] in seen:

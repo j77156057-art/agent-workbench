@@ -372,7 +372,7 @@ POST   /api/memory/reindex
 主模型精确账单未进 trace（golden runner 不记录 token）；按 5 回合样本 ¥0.0326/轮估算，53 题主模型约 ¥1.7。固化实测 ¥0.0223，仍只占约 1–2%。
 
 ### 16.5 仍未做
-多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank。其余（语义召回、边编辑、学习闭环、去重/保留、跨会话错误、bge-m3 语义、记忆评测、宪法闸门、真实迁移）已落地。
+多用户/团队隔离（需要先定认证与共享边界）与跨设备同步（需要传输与冲突协议）。图检索已用本地 Personalized PageRank 落地（不引入外部图数据库）；其余（语义召回、边编辑、学习闭环、去重/保留、跨会话错误、bge-m3 语义、记忆评测、宪法闸门、真实迁移）均已落地。
 
 ### 16.6 应用状态与模型
 - `.docmind_state.json` 已开启 `memory_v2: true`；默认模型现为 **opencode / deepseek-v4.1-flash**，Key 优先读环境变量 `OC_KEY`（其次 `OPENCODE_API_KEY`，最后全局密钥库）；`/api/config` 实测返回 `opencode/deepseek-v4.1-flash` + `has_key=true`，3 题冒烟 3/3 通过。
@@ -423,4 +423,11 @@ POST   /api/memory/reindex
 - 8 条 `machine_check` 逐条绑定真实落点：C-001/002/006 命令黑名单、C-003 任务书回执门、C-004 无模型写入路径、C-005 密钥扫描、C-007 晋升脱敏、C-008 删除确认。
 - 宪法加载时会校验并暴露 `gates_ok/missing_gates`；未绑定条款写入 ledger，面板 L0 显示“未绑定闸门”。
 - `tests/test_memory_gates.py` 对每条条款调用真实闸门做回归；`tests/test_memory_eval.py` 锁住评测最低线。
-- 总回归：后端 **300 passed**；前端 158 node、build/typecheck 通过。
+- 总回归：后端 **302 passed**；前端 158 node、build/typecheck 通过。
+
+### 16.12 本地图检索 / Personalized PageRank（2026-10-31）
+
+- 不引入 Neo4j 等外部图库：在现有 edges 表上做 **Personalized PageRank**，边按无向激活传播（关联/取代语义仍保留在边的 type 上）。
+- 检索先用关键词 + 语义得到基础档序，再以 top-3 为种子做 PPR，把 1–2 跳关联条目带进结果（`_graph` 标记），并继续受项目隔离与状态过滤约束；无 edges 时回退到原来的 1 跳扩展。
+- 测试：链式 A→B→C 中只查 A 的命中，PPR 仍能带出两跳 C；项目隔离与原有边测试保持通过。
+- 总回归 **302 passed**。

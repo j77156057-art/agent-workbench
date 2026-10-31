@@ -19,6 +19,7 @@ from agent_runtime.memory import (
     episodes,
     errors,
     feedback,
+    graph,
     hooks,
     index,
     injection,
@@ -829,6 +830,36 @@ class ProfileFileTests(_MemBase):
         l1 = next(layer for layer in view["layers"] if layer["key"] == "L1")
         self.assertEqual(l1["profile"]["display_name"], "小李")
         self.assertIn("小李", l1["text"])
+
+
+class GraphRetrievalTests(_MemBase):
+    def _shared(self, text, *, task):
+        rid = receipts.record("prj", type="verify", result="pass")
+        promote.create_candidate("prj", "fact", text, importance=0.6,
+                                 receipt_ids=[rid], task=task)
+        feedback.record("prj", session="s1", stars=5, task=task)
+        promote.sweep("prj")
+        return next(item for item in promote.shared_items() if item["body"] == text)
+
+    def test_pagerank_propagates_along_chain(self):
+        scores = graph.personalized_pagerank(
+            [("a", "b"), ("b", "c")], {"a": 1.0})
+        self.assertGreater(scores["b"], 0)
+        self.assertGreater(scores["c"], 0)
+        self.assertGreater(scores["a"], scores["c"])
+
+    def test_ppr_surfaces_two_hop_neighbor(self):
+        a = self._shared("起点：先写测试再合并，降低回归", task="ga")
+        b = self._shared("中间节点：核对日志后再改动", task="gb")
+        c = self._shared("两跳结论：合并前保持验收回执", task="gc")
+        promote.link(a["id"], b["id"], "refines")
+        promote.link(b["id"], c["id"], "refines")
+        index.rebuild(verify=True)
+        rows = index.search("起点", limit=6, project="prj")
+        ids = [row["id"] for row in rows]
+        self.assertIn(c["id"], ids, "PPR 应把两跳关联条目带进结果")
+        hit = next(row for row in rows if row["id"] == c["id"])
+        self.assertGreater(hit.get("_graph", 0), 0)
 
 
 class SearchEdgeTests(_MemBase):
