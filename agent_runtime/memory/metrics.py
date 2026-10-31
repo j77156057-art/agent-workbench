@@ -53,6 +53,10 @@ def report(days=7, project=None):
         rows = [row for row in rows
                 if str(row.get("project") or "") == str(project)]
     calls = [row for row in rows if row.get("event") == "consolidate"]
+    by_event: dict[str, int] = {}
+    for row in rows:
+        name = str(row.get("event") or "unknown")
+        by_event[name] = by_event.get(name, 0) + 1
     latencies = sorted(int(row.get("latency_ms") or 0) for row in calls)
     def pct(percent):
         if not latencies:
@@ -62,6 +66,7 @@ def report(days=7, project=None):
     return {
         "days": len(files),
         "events": len(rows),
+        "by_event": by_event,
         "consolidate_calls": len(calls),
         "skipped": sum(1 for row in rows if row.get("event") == "consolidate.skip"),
         "errors": sum(1 for row in rows if row.get("event") == "consolidate.error"),

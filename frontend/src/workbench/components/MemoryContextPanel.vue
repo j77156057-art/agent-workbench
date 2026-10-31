@@ -467,6 +467,20 @@ async function reindex() {
         </div>
 
         <div class="mp-readonly">
+          <strong>学习环漏斗（近 {{ health.funnel?.days ?? 30 }} 天）</strong>
+          <div class="mp-funnel">
+            <span
+              v-for="stage in health.funnel?.stages || []"
+              :key="String(stage.key)"
+              class="mp-funnel-step"
+              :class="{ 'mp-funnel-zero': !stage.count }"
+            >{{ stage.label }} <strong>{{ stage.count ?? 0 }}</strong></span>
+          </div>
+          <p v-if="health.funnel?.stalled_at" class="mp-funnel-note mp-funnel-stall">· {{ health.funnel.stalled_at }}</p>
+          <p v-else-if="health.funnel" class="mp-funnel-note">· 七级全通：晋升出去的共享记忆已经回到提示词</p>
+        </div>
+
+        <div class="mp-readonly">
           <strong>上下文预算</strong>
           <div v-for="layer in health.context?.layers || []" :key="String(layer.key)" class="mp-health-row">
             <span>{{ layer.title }}</span>
@@ -780,6 +794,22 @@ async function reindex() {
 .mp-pin { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .mp-pin input { accent-color: var(--accent); }
 .mp-warn { color: var(--amber); font-size: var(--fs-cap); }
+.mp-funnel { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.mp-funnel-step {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  /* 漏斗是要读数字的，不走 --fs-cap（11px）；次级文字档 12px 是能读的下限 */
+  font-size: var(--fs-sm);
+}
+.mp-funnel-step strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.mp-funnel-zero strong { color: var(--amber); }
+.mp-funnel-note { margin: 5px 0 0; color: var(--green); font-size: var(--fs-sm); }
+.mp-funnel-stall { color: var(--amber); }
 .mp-links { margin: 6px 0 0; padding-top: 5px; border-top: 1px dashed var(--border); }
 .mp-link { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text-muted); font-size: var(--fs-cap); padding: 2px 0; }
 .mp-link-add { margin: 6px 0 0; }

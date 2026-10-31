@@ -94,10 +94,25 @@ export interface MemoryHealthMetrics {
   promoted?: number
 }
 
+export interface MemoryFunnelStage {
+  key?: string
+  label?: string
+  count?: number
+}
+
+export interface MemoryFunnel {
+  days?: number
+  counts?: Record<string, number>
+  stages?: MemoryFunnelStage[]
+  /** 第一个「上一级有量、这一级归零」的断点；空串表示七级全通。 */
+  stalled_at?: string
+}
+
 export interface MemoryHealth {
   ok?: boolean
   project_id?: string
   generated_at?: string
+  funnel?: MemoryFunnel
   shared?: { active?: number; pinned?: number; superseded?: number }
   project?: {
     total?: number

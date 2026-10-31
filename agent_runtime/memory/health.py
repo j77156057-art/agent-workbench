@@ -8,9 +8,25 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from . import context_panel, index, metrics, promote, store
+from . import context_panel, episodes, index, metrics, promote, store
 
 DEFAULT_RETENTION_DAYS = 90
+
+#: 学习环的七级漏斗。**对新回合**每级是上一级的子集，第一个归零处即断点；
+#: 历史回合可能缺后加的字段，所以 `funnel()` 另报 `inversions`，不假装单调。
+#: 加它的理由很具体：此前只能报"真实项目 0 回执 / 46 条候选全来自评测"这种端点数，
+#: 说不清断在哪一级，于是"量没起来"既没法归因也没法判断有没有变好。
+FUNNEL_STAGES = (
+    ("turns", "真实回合"),
+    ("with_changes", "改了文件"),
+    ("test_run", "跑过测试"),
+    ("with_receipt", "拿到回执"),
+    ("adopted", "被采纳"),
+    ("promoted", "晋升共享"),
+    # 只统计 L2 共享层真的回到提示词（`memory.inject` 在 agent 的 L2 分支记）。
+    # 标签刻意不写"回注提示词"：L3/L4 的注入不在这条计量里，写成全部会谎报口径。
+    ("injected", "共享层回注"),
+)
 
 
 def _age_days(value):
@@ -45,6 +61,59 @@ def _context_usage(project_id):
                     "chars": int(layer.get("chars") or 0),
                     "budget": layer.get("budget")}
                    for layer in view.get("layers") or []],
+    }
+
+
+def funnel(project_id, days=30):
+    """学习环七级漏斗的当前计数 + 第一个断点。
+
+    口径说明：episode 按项目分桶，评测流量已经隔离到 `eval-golden`，所以这里的
+    `turns` 就是**这个项目的真实回合**，不需要再减什么。`injected` 来自
+    `memory.inject` 计量（L2 共享层真的进了提示词才记），不是"检索命中过"。
+    """
+    counts = {key: 0 for key, _ in FUNNEL_STAGES}
+    for row in episodes.iter_project(project_id):
+        age = _age_days(row.get("ts"))
+        if age is not None and age > days:
+            continue
+        counts["turns"] += 1
+        if row.get("files"):
+            counts["with_changes"] += 1
+        if row.get("test_run"):
+            counts["test_run"] += 1
+        if row.get("receipts"):
+            counts["with_receipt"] += 1
+    items = promote.candidates(project_id)
+    counts["adopted"] = sum(1 for item in items if item.get("adopted"))
+    counts["promoted"] = sum(1 for item in items if str(item.get("status") or "") == "promoted")
+    counts["injected"] = int(metrics.report(days=days, project=project_id)
+                             .get("by_event", {}).get("memory.inject", 0))
+    # 倒挂检测：后级比前级多。对**新**回合每级确实是上一级的子集，但历史回合可能压根
+    # 没有后加的字段（`test_run` 就是 2026-11-01 才落的），实测探针项目就是
+    # 「真实回合 10 → 改了文件 0 → 跑过测试 0 → 拿到回执 4」。不报出来的话，
+    # `stalled_at` 会把这种缺字段的旧数据说成「断在 真实回合→改了文件」，纯属误导。
+    inversions = []
+    for (key, label), (nkey, nlabel) in zip(FUNNEL_STAGES, FUNNEL_STAGES[1:]):
+        if counts[nkey] > counts[key]:
+            inversions.append({"from": key, "to": nkey,
+                               "message": f"「{label}」{counts[key]} < 「{nlabel}」{counts[nkey]}"})
+    stalled = ""
+    if not counts["turns"]:
+        stalled = "还没有真实回合"
+    else:
+        for (key, label), (nkey, nlabel) in zip(FUNNEL_STAGES, FUNNEL_STAGES[1:]):
+            if counts[key] and not counts[nkey]:
+                stalled = f"断在「{label} → {nlabel}」"
+                break
+        if inversions and stalled:
+            stalled += "（注意：有 " + str(len(inversions)) + " 处倒挂，早期回合缺字段，别按断点解读）"
+    return {
+        "days": int(days),
+        "counts": counts,
+        "stalled_at": stalled,
+        "inversions": inversions,
+        "stages": [{"key": key, "label": label, "count": counts[key]}
+                   for key, label in FUNNEL_STAGES],
     }
 
 
@@ -111,6 +180,7 @@ def report(project_id):
         "project_id": project_id,
         "generated_at": store.now(),
         "scheduler": scheduler,
+        "funnel": funnel(project_id),
         "shared": {
             "active": len(shared_active),
             "pinned": sum(1 for item in shared_active if item.get("pinned")),

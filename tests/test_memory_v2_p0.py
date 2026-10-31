@@ -1361,5 +1361,112 @@ class MetricsProjectScopeTests(_MemBase):
         self.assertEqual(metrics.report()["consolidate_calls"], 2)
 
 
+class FunnelTests(_MemBase):
+    """学习环七级漏斗：每级都是上一级的子集，第一个归零处就是断点。
+
+    加它的理由：此前只能报"真实项目 0 回执 / 46 条候选全来自评测"这种端点数，
+    说不清断在哪一级，于是"量没起来"既没法归因、也没法判断有没有变好。
+    """
+
+    def _turn(self, test_command="", ok=False, targets=None):
+        turn = Turn(session_id="s1", provider="p", model="m", question="q")
+        turn.test_command = test_command
+        turn.test_command_ok = ok
+        turn.verification_targets = dict(targets or {})
+        turn.test_command_targets = dict(targets or {}) if ok else {}
+        return turn
+
+    def _record(self, turn, files=()):
+        journal = {"file_changes": [{"path": name} for name in files]}
+        return turns.record_turn(session_id="s1", project_id="prj", question="q",
+                                 final_text="答完了", turn=turn, journal=journal)
+
+    def _counts(self):
+        return health.funnel("prj")["counts"]
+
+    def test_empty_project_says_no_real_turns(self):
+        report = health.funnel("prj")
+        self.assertEqual(report["counts"]["turns"], 0)
+        self.assertEqual(report["stalled_at"], "还没有真实回合")
+
+    def test_stalled_at_walks_forward_stage_by_stage(self):
+        """逐级喂流量，断点必须**逐级往后挪** —— 这才叫漏斗，不是七个孤立计数。"""
+        self._record(self._turn())
+        self.assertEqual(self._counts()["turns"], 1)
+        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「真实回合 → 改了文件」")
+
+        self._record(self._turn(), files=("a.py",))
+        self.assertEqual(self._counts()["with_changes"], 1)
+        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「改了文件 → 跑过测试」")
+
+        self._record(self._turn(test_command="pytest -q"), files=("b.py",))
+        self.assertEqual(self._counts()["test_run"], 1)
+        self.assertEqual(self._counts()["with_receipt"], 0,
+                         "跑了但没过：不算回执")
+        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「跑过测试 → 拿到回执」")
+
+        self._record(self._turn(test_command="pytest -q", ok=True, targets={"b.py": 1}),
+                     files=("b.py",))
+        self.assertEqual(self._counts()["with_receipt"], 1)
+        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「拿到回执 → 被采纳」")
+
+        candidate = promote.create_candidate(
+            "prj", "fact", "漏斗候选：先复现再修复，减少盲目改动", importance=0.8)
+        promote.adopt("prj", candidate["id"])
+        counts = self._counts()
+        self.assertEqual(counts["adopted"], 1)
+        self.assertEqual(counts["promoted"], 1)
+        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「晋升共享 → 共享层回注」")
+
+        metrics.record("memory.inject", project="prj", layer="L2", chars=120)
+        self.assertEqual(self._counts()["injected"], 1)
+        self.assertEqual(health.funnel("prj")["stalled_at"], "",
+                         "七级都通了就不该再报断点")
+
+    def test_test_run_flag_is_persisted_on_the_episode(self):
+        """`test_run` 必须落在 episode 上：actions 里只有工具名和 ok，认不出跑的是不是测试。"""
+        result = self._record(self._turn(test_command="npm run test"), files=("c.py",))
+        self.assertTrue(result["record"]["test_run"])
+        result = self._record(self._turn(), files=("d.py",))
+        self.assertFalse(result["record"]["test_run"])
+        self.assertEqual(episodes.latest("prj", "s1", 1)[0].get("test_run"), False)
+
+    def test_eval_traffic_does_not_fill_the_real_project_funnel(self):
+        """隔离守卫：评测 scope 的回合不许进真实项目的漏斗。"""
+        self._record(self._turn(), files=("a.py",))
+        turns.record_turn(session_id="golden-1", project_id="eval-golden", question="q",
+                          final_text="a", turn=self._turn(test_command="pytest -q", ok=True,
+                                                          targets={"x.py": 1}),
+                          journal={"file_changes": [{"path": "x.py"}]})
+        counts = self._counts()
+        self.assertEqual(counts["turns"], 1, "评测回合漏进真实项目漏斗了")
+        self.assertEqual(counts["with_receipt"], 0)
+        eval_counts = health.funnel("eval-golden")["counts"]
+        self.assertEqual(eval_counts["turns"], 1)
+        self.assertEqual(eval_counts["with_receipt"], 1)
+
+    def test_legacy_episodes_are_reported_as_inversions_not_a_fake_breakpoint(self):
+        """后加的字段（`test_run`）在历史回合里根本不存在 → 漏斗会倒挂。
+
+        实测探针项目就是「真实回合 10 → 改了文件 0 → 跑过测试 0 → 拿到回执 4」。
+        不报倒挂的话，`stalled_at` 会把缺字段的旧数据说成"断在 真实回合→改了文件"，
+        那是纯误导；这条守卫钉住必须带提示。
+        """
+        episodes.append("prj", "legacy", {"goal": "旧回合", "receipts": ["rc-1"],
+                                          "files": [], "result": {"status": "completed"}})
+        report = health.funnel("prj")
+        self.assertEqual(report["counts"]["turns"], 1)
+        self.assertEqual(report["counts"]["with_receipt"], 1)
+        self.assertEqual(report["counts"]["with_changes"], 0)
+        self.assertTrue(report["inversions"], "倒挂没被检测出来")
+        self.assertIn("倒挂", report["stalled_at"])
+
+    def test_report_carries_the_funnel_and_metrics_tally_events(self):
+        metrics.record("memory.inject", project="prj", chars=10)
+        tally = metrics.report(project="prj")["by_event"]
+        self.assertEqual(tally.get("memory.inject"), 1)
+        self.assertIn("funnel", health.report("prj"))
+
+
 if __name__ == "__main__":
     unittest.main()

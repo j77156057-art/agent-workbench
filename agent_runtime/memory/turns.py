@@ -159,6 +159,10 @@ def record_turn(*, session_id, project_id, question, final_text, status="complet
         "errors": recorded_errors,
         "next": next_step,
         "receipts": receipt_ids,
+        # 漏斗要能回答「这一回合到底跑过测试命令没有」，而 actions 里只有工具名和
+        # ok，看不出跑的是不是测试。`test_command` 由派发点在识别出测试命令时写入，
+        # 这里落一个布尔，避免下游再去猜参数。
+        "test_run": bool(str(getattr(turn, "test_command", "") or "").strip()),
         "tokens": {"in": int(getattr(turn, "prompt_tokens", 0) or 0),
                    "out": int(getattr(turn, "completion_tokens", 0) or 0)},
     }

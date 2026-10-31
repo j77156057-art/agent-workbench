@@ -85,6 +85,37 @@ def compact(project_id, session_id, keep=KEEP_LINES):
     return len(old)
 
 
+def iter_project(project_id):
+    """逐条产出该项目**所有会话**的 episode（老→新）。
+
+    漏斗要按项目统计，而 `latest()` 只读单会话尾部；这里全量扫，容忍坏行。
+    会话数与每会话行数都有上限（`compact` 的 KEEP_LINES），所以量级可控。
+    """
+    base = store.safe_path("projects", store.safe_id(project_id), "session")
+    try:
+        sessions = sorted(os.listdir(base))
+    except OSError:
+        return
+    for name in sessions:
+        target = os.path.join(base, name, "episodes.jsonl")
+        if not os.path.isfile(target):
+            continue
+        try:
+            with open(target, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line.startswith("{"):
+                        continue
+                    try:
+                        value = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(value, dict):
+                        yield value
+        except OSError:
+            continue
+
+
 def latest(project_id, session_id, limit=3):
     """读最近 N 条（新→旧）。只读文件尾部，长会话不会全量加载。"""
     target = path(project_id, session_id)

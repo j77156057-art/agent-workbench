@@ -5270,6 +5270,13 @@ class Agent:
                 self._last_injection = list(self._last_injection) + _l2_blocks
                 for _l2_block in _l2_blocks:
                     messages.append({"role": "system", "content": _l2_block["text"]})
+                # 漏斗最后一级要有证据：晋升出去的共享记忆**确实回到了这一轮的提示词**。
+                # 没有这一条，"环闭了"和"环在空转"在面板上长得一样。
+                from agent_runtime.memory import metrics as _memory_v2_metrics
+                _memory_v2_metrics.record(
+                    "memory.inject", layer="L2", project=self.project_id or "default",
+                    session=self.session_id or "",
+                    chars=sum(int(b.get("chars") or 0) for b in _l2_blocks))
         # 任务清单每轮注入。这是让「上下文压缩」不再有损的那一环：
         # 摘要可以放心压，因为目标本身在磁盘上、每轮都会被重新告知模型。
         # 没有这一步，清单只是个模型可能忘记去读的旁路文件。
