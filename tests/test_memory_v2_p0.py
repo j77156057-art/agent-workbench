@@ -590,7 +590,8 @@ class MigrateTests(_MemBase):
             self.assertEqual(first["preferences"], 1)
             self.assertEqual(first["checkpoints"], 1)
             self.assertEqual(first["retired"], 1)
-            self.assertEqual(len(promote.shared_items()), 0, "迁移只进候选，不 pin")
+            self.assertEqual(len(promote.shared_items()), 2, "迁移后应可召回，但未 pin")
+            self.assertFalse(any(item["pinned"] for item in promote.shared_items()))
             archive = os.path.join(store.root(), "archive", "legacy", "episodes.jsonl")
             self.assertTrue(os.path.exists(archive))
             second = migrate.run(db_path=db)
@@ -626,6 +627,37 @@ def _pinned_shared(text="合并前先跑完整测试，能显著降低回归率"
                              receipt_ids=[rid], task="tb-1")
     feedback.record("prj", session="s1", stars=5, task="tb-1")
     promote.sweep("prj")
+
+
+class LearningLoopTests(_MemBase):
+    def test_adopt_creates_review_receipt_and_promotes(self):
+        candidate = promote.create_candidate(
+            "prj", "fact", "用户采纳的候选：先复现再修复，减少盲目改动", importance=0.8)
+        result = promote.adopt("prj", candidate["id"])
+        self.assertTrue(result["promoted"])
+        shared = promote.shared_items()
+        self.assertEqual(len(shared), 1)
+        self.assertTrue(shared[0]["pinned"])
+        rows = receipts.list_receipts("prj", limit=5)
+        self.assertTrue(any(row.get("type") == "review" for row in rows))
+
+    def test_feedback_freezes_and_then_promotes(self):
+        promote.create_candidate(
+            "prj", "fact", "任务候选：先复现再修复，减少盲目改动",
+            importance=0.8, task="tb-x")
+        promote.apply_feedback("prj", "tb-x", 2)
+        candidate = promote.candidates("prj")[0]
+        self.assertTrue(candidate["promotion_frozen"])
+        self.assertEqual(promote.sweep("prj")["promoted"], 0)
+        out = promote.apply_feedback("prj", "tb-x", 5)
+        self.assertEqual(out["promoted"], 1)
+        self.assertEqual(len(promote.shared_items()), 1)
+
+    def test_touch_increments_usage(self):
+        candidate = promote.create_candidate(
+            "prj", "fact", "检索命中的候选：先复现再修复，减少盲目改动", importance=0.8)
+        self.assertEqual(promote.touch([candidate["id"]], "prj"), 1)
+        self.assertEqual(int(promote.candidates("prj")[0]["usage"]), 1)
 
 
 class ContextPanelTests(_MemBase):
@@ -674,6 +706,9 @@ class ContextPanelTests(_MemBase):
         self.assertEqual(edited["source"], "user_edit")
         self.assertEqual(edited["receipts"], [])
         self.assertEqual(edited["confidence"], 0.5)
+        hits = index.search("用户改过", project="prj")
+        self.assertTrue(any("用户改过" in row.get("body", "") for row in hits),
+                        "编辑后索引必须立即同步")
         with self.assertRaises(ValueError):
             context_panel.edit_shared(item["id"], text="api_key=sk-abcdefghijklmnop")
 

@@ -1,6 +1,6 @@
 # 记忆系统 v2 · P0 规格
 
-> 状态：P0 + P1 本轮（检索/边/画像/语义/成本）完成（2026-10-31，flag 默认关；真实设置已开启）。
+> 状态：记忆系统 v2 P0 + P1 完成（含学习闭环与真实迁移，2026-10-31；真实设置已开启）。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
 > 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
 
@@ -366,15 +366,25 @@ POST   /api/memory/reindex
 | 结果 | 53/53 完成；评测 **47 通过 / 6 失败，通过率 88.7%，平均分 0.96** |
 | 运行 | 1440.5s（约 24 分钟），142 次工具动作 |
 | 固化 | 49 calls / 4 keep=false / 0 error；28,601 in / 6,665 out；p50 4.7s / p95 7.3s；**¥0.0223** |
-| 记忆产物 | 49 个项目候选，0 晋升（无回执/采纳） |
+| 记忆产物 | 49 个项目候选，0 晋升（当时学习闭环未接；现在可采纳/按星级晋升） |
 | 失败 | G50/G51 是 booklog 题但按 rag-agent 项目跑（项目不匹配）；G01 选 read_file 而非 grep；G26/G27 无工具动作；G42 复述了不该复述的原文 |
 
 主模型精确账单未进 trace（golden runner 不记录 token）；按 5 回合样本 ¥0.0326/轮估算，53 题主模型约 ¥1.7。固化实测 ¥0.0223，仍只占约 1–2%。
 
 ### 16.5 仍未做
-多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank。语义召回与边编辑本轮已落地。
+多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank。语义召回、边编辑、学习闭环与真实迁移已落地。
 
 ### 16.6 应用状态与模型
 - `.docmind_state.json` 已开启 `memory_v2: true`；默认模型现为 **opencode / deepseek-v4.1-flash**，Key 优先读环境变量 `OC_KEY`（其次 `OPENCODE_API_KEY`，最后全局密钥库）；`/api/config` 实测返回 `opencode/deepseek-v4.1-flash` + `has_key=true`，3 题冒烟 3/3 通过。
 - qwen-plus 仍可用：`output_token_budget` 新增 qwen 厂商上限 32768，修复 `max_tokens` 400；5 回合与 53 题长任务均验证通过，可随时在设置里切回。
 - 注意：opencode 的长任务曾在前 21 题后长时间无新结果（已停止）；短会话已验证正常。若长任务再次停滞，优先检查 opencode 会话/限流，或临时切回 qwen-plus。
+
+
+### 16.7 学习闭环与真实迁移（2026-10-31）
+
+- **候选采纳**：面板「可召回但未注入」里的项目候选新增「采纳」。采纳会生成 `review` 回执（`cmd=user_review`）、置 `adopted=true`、`usage+1`、清除冻结，并立即尝试晋升；成功后共享条目与索引同步 upsert。
+- **星级归因**：4–5 星会对该 task 的候选生成 `review` 回执并采纳/晋升；1–2 星置 `promotion_frozen=true` 且 `evaluate` 拒绝晋升（不删除）；3 星中性。没有 task 的星级只统计，不做归因（防止误伤所有候选）。
+- **复用计数**：`memory_search` 命中 v2 条目与采纳都会递增 `usage/last_used`，`pin_score` 的复用权重开始生效；索引 `touch` 同步。
+- **索引一致性**：共享条目编辑、晋升、采纳、状态/pin 变化立即 `upsert_item`；`rebuild` 现在比较标题/状态/置信/重要度/pin/usage/时间，不再只看 body_hash。
+- **真实迁移已执行**：旧库只读导出 **471** 条归档、41 条事实 + 13 条经验教训（active 低置信、不 pin）、1 条偏好、354 条 checkpoint、23 条 experience、13 条退休；第二次运行 `skipped`；索引重建 **82 条，verified=true**。迁移条目可被检索、可在面板 pin/编辑。
+- **验证**：后端 **283 passed**、前端 158 node、build/typecheck 通过；Edge 实测候选「采纳」后 1→0、提示「已采纳并 pin」、无控制台错误。

@@ -11772,10 +11772,12 @@ def memory_search(arg=""):
             from config import get_memory_v2
             if get_memory_v2():
                 from agent_runtime.memory import index as v2_index
+                from agent_runtime.memory import promote as v2_promote
                 from projects import current_project_id
                 seen = {str(item.get("content") or "").strip() for item in items}
-                for row in v2_index.search(str(arg or ""), limit=12,
-                                           project=current_project_id() or "default"):
+                v2_rows = v2_index.search(str(arg or ""), limit=12,
+                                          project=current_project_id() or "default")
+                for row in v2_rows:
                     content = str(row.get("body") or "").strip()
                     if not content or content in seen:
                         continue
@@ -11793,6 +11795,12 @@ def memory_search(arg=""):
                         "score": row.get("_score"),
                         "related_to": row.get("related_to"),
                     })
+                if v2_rows and str(arg or "").strip():
+                    try:
+                        v2_promote.touch([row.get("id") for row in v2_rows if row.get("id")],
+                                         current_project_id() or "default")
+                    except Exception:  # noqa: BLE001 —— 计数失败不影响检索
+                        pass
                 for item in items:
                     item.setdefault("source", "memory_v1")
         except Exception:  # noqa: BLE001 —— v2 检索失败不影响旧记忆

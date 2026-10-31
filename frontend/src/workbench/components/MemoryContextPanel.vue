@@ -203,6 +203,18 @@ async function pinRetrievable(item: Record<string, unknown>) {
   })
 }
 
+async function adoptCandidate(item: Record<string, unknown>) {
+  if (!item.id) return
+  await run(async () => {
+    const result = await memoryPanelApi.adoptItem(String(item.id))
+    if (result.promoted) {
+      notice.value = result.pinned ? '已采纳并 pin' : '已采纳并晋升（重要度不足，暂不常驻）'
+    } else {
+      error.value = '未晋升：' + ((result.reasons || []).join('；') || '未满足晋升门')
+    }
+  })
+}
+
 async function promoteCandidate(item: Record<string, unknown>) {
   if (!item.id) return
   await run(async () => {
@@ -366,7 +378,7 @@ async function reindex() {
 
       <template v-else-if="current.kind === 'items'">
         <p v-if="!l2Items.length" class="mp-hint">
-          没有 pin 的共享记忆。可召回条目 {{ retrievableItems.length }} 条，可在下方检索或晋升。
+          没有 pin 的共享记忆。可召回条目 {{ retrievableItems.length }} 条，可在下方检索或采纳。
         </p>
         <div v-for="item in l2Items" :key="String(item.id)" class="mp-item">
           <div class="mp-item-head">
@@ -406,7 +418,10 @@ async function reindex() {
             <p class="mp-body-text">{{ item.body }}</p>
             <div class="mp-actions">
               <button v-if="item.scope === 'global'" class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="pinRetrievable(item)">pin</button>
-              <button v-else class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="promoteCandidate(item)">晋升</button>
+              <template v-else>
+                <button class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="adoptCandidate(item)">采纳</button>
+                <button class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="promoteCandidate(item)">晋升</button>
+              </template>
             </div>
           </div>
         </details>

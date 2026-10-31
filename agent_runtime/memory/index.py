@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS items(
   body_hash TEXT NOT NULL DEFAULT '',
   confidence REAL NOT NULL DEFAULT 0.5,
   importance REAL NOT NULL DEFAULT 0.5,
+  pinned INTEGER NOT NULL DEFAULT 0,
   usage INTEGER NOT NULL DEFAULT 0,
   created TEXT NOT NULL DEFAULT '',
   updated TEXT NOT NULL DEFAULT '',
@@ -64,6 +65,8 @@ def _connect():
         conn.execute("ALTER TABLE items ADD COLUMN body TEXT NOT NULL DEFAULT ''")
     if "project" not in columns:
         conn.execute("ALTER TABLE items ADD COLUMN project TEXT NOT NULL DEFAULT ''")
+    if "pinned" not in columns:
+        conn.execute("ALTER TABLE items ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS items_fts "
                      "USING fts5(id UNINDEXED, title, body)")
@@ -187,6 +190,7 @@ def _item_from_file(absolute, relative):
         "body_hash": store.sha256_text(body),
         "confidence": _clamp(header.get("confidence")),
         "importance": _clamp(header.get("importance")),
+        "pinned": 1 if header.get("pinned") else 0,
         "usage": int(header.get("usage") or 0),
         "created": str(header.get("created") or ""),
         "updated": str(header.get("updated") or ""),
@@ -203,9 +207,13 @@ def rebuild(verify=False):
     try:
         fts = _fts(conn)
         stats["fts"] = fts
-        existing = {row["path"]: (row["body_hash"], row["body"], row["project"])
+        existing = {row["path"]: (row["body_hash"], row["body"], row["project"],
+                                  row["status"], row["title"], row["confidence"],
+                                  row["importance"], row["pinned"], row["usage"],
+                                  row["last_used"], row["updated"])
                     for row in conn.execute(
-                        "SELECT path, body_hash, body, project FROM items")}
+                        "SELECT path, body_hash, body, project, status, title, confidence,"
+                        " importance, pinned, usage, last_used, updated FROM items")}
         seen = set()
         seen_ids = set()
         with conn:
@@ -224,10 +232,14 @@ def rebuild(verify=False):
                                                  "error": "重复 id（共享副本优先）"})
                     continue
                 seen_ids.add(item["id"])
+                signature = (item["body_hash"], item["body"], item["project"],
+                             item["status"], item["title"], item["confidence"],
+                             item["importance"], item["pinned"], item["usage"],
+                             item["last_used"], item["updated"])
                 if relative not in existing:
                     stats["inserted"] += 1
                     row_changed = True
-                elif (existing[relative][0] != item["body_hash"]
+                elif (existing[relative] != signature
                       or not existing[relative][1]
                       or (relative.startswith("projects/") and not existing[relative][2])):
                     stats["updated"] += 1
@@ -328,6 +340,49 @@ def related(item_id, limit=5, conn=None):
     finally:
         if owned:
             conn.close()
+
+
+def upsert_item(item):
+    """单条 upsert：面板编辑/晋升后立即同步行、边、FTS 与向量，不等全量重建。"""
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute("DELETE FROM items WHERE id=? OR path=?",
+                         (item["id"], item.get("path", "")))
+            conn.execute(
+                "INSERT INTO items(id,kind,scope,project,status,path,title,body,body_hash,"
+                "confidence,importance,pinned,usage,created,updated,last_used) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item["id"], item.get("kind", "fact"), item.get("scope", "global"),
+                 item.get("project", ""), item.get("status", "active"),
+                 item.get("path", ""), item.get("title", ""), item.get("body", ""),
+                 item.get("body_hash") or store.sha256_text(item.get("body", "")),
+                 item.get("confidence", 0.5), item.get("importance", 0.5),
+                 int(item.get("pinned") or 0), int(item.get("usage") or 0),
+                 item.get("created", ""), item.get("updated", ""),
+                 item.get("last_used", "")))
+            conn.execute("DELETE FROM edges WHERE src=?", (item["id"],))
+            for edge in item.get("edges") or []:
+                conn.execute("INSERT OR REPLACE INTO edges(src,dst,type) VALUES(?,?,?)",
+                             (item["id"], edge.get("to"), edge.get("type")))
+            if _fts(conn):
+                conn.execute("DELETE FROM items_fts WHERE id=?", (item["id"],))
+                conn.execute("INSERT INTO items_fts(id,title,body) VALUES(?,?,?)",
+                             (item["id"], item.get("title", ""), item.get("body", "")))
+            _ensure_vector(conn, item)
+    finally:
+        conn.close()
+
+
+def touch(item_id, usage, last_used):
+    """同步检索/采纳后的复用计数（文件侧由 promote.touch 写回）。"""
+    conn = _connect()
+    try:
+        with conn:
+            conn.execute("UPDATE items SET usage=?, last_used=? WHERE id=?",
+                         (int(usage or 0), str(last_used or ""), str(item_id)))
+    finally:
+        conn.close()
 
 
 def set_edges(src, edges):

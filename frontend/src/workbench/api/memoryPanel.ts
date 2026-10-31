@@ -95,6 +95,9 @@ export const memoryPanelApi = {
   promoteItem(itemId: string): Promise<{ ok?: boolean; promoted?: boolean; reasons?: string[]; pinned?: boolean }> {
     return call('POST', `/api/memory/items/${encodeURIComponent(itemId)}/promote`)
   },
+  adoptItem(itemId: string): Promise<{ ok?: boolean; promoted?: boolean; reasons?: string[]; pinned?: boolean }> {
+    return call('POST', `/api/memory/items/${encodeURIComponent(itemId)}/adopt`)
+  },
   linkItem(itemId: string, to: string, type: string): Promise<Record<string, unknown>> {
     return call('POST', `/api/memory/items/${encodeURIComponent(itemId)}/links`, { to, type })
   },

@@ -58,7 +58,7 @@ def _migrate_experience(result):
             if not text:
                 continue
             if promote.seed_shared(
-                    "lesson", text, importance=0.5, confidence=0.4,
+                    "lesson", text, importance=0.5, confidence=0.4, status="active",
                     meta={"migrated_from": "experience",
                           "source_project": str(meta.get("project_id") or ""),
                           "outcome": str(meta.get("outcome") or "")}):
@@ -107,12 +107,13 @@ def run(db_path=None, force=False):
             continue
         if kind == "fact" and status != "retired":
             promote.seed_shared("fact", content, importance=_importance(row), confidence=0.6,
+                                status="active",
                                 meta={"migrated_from": "fact", "source_id": str(row.get("id") or "")})
             result["seeded_facts"] += 1
         elif content.startswith(DISTILLED):
             text = content[len(DISTILLED):].lstrip("：: ").strip()
             if text and promote.seed_shared(
-                    "fact", text, importance=_importance(row), confidence=0.4,
+                    "fact", text, importance=_importance(row), confidence=0.4, status="active",
                     meta={"migrated_from": "distilled", "source_id": str(row.get("id") or "")}):
                 result["seeded_facts"] += 1
 

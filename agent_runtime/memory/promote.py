@@ -19,7 +19,7 @@ _SECRET = re.compile(
     r"\s*[:=]\s*[^\s,;\n]+|sk-[A-Za-z0-9_-]{10,}|AKIA[0-9A-Z]{16}|Bearer\s+[\w.\-/+=]+")
 _ABS_PATH = re.compile(r"(?:[A-Za-z]:\\[^\s\"'<>|]+|/(?:home|Users|var|tmp|opt|mnt|srv)/[^\s\"'<>|]+)")
 _CONTEXT = re.compile(r"本项目|这个项目|当前项目|我们项目|该项目")
-_PASS_TYPES = {"test", "verify", "merge"}
+_PASS_TYPES = {"test", "verify", "merge", "review"}
 EDGE_TYPES = {"supersedes", "derived_from", "used_in", "refines", "contradicts"}
 
 
@@ -129,7 +129,8 @@ def create_candidate(project_id, kind, text, *, title="", importance=0.6,
     return header
 
 
-def seed_shared(kind, text, *, importance=0.5, confidence=0.4, title="", meta=None):
+def seed_shared(kind, text, *, importance=0.5, confidence=0.4, title="", meta=None,
+                status="candidate"):
     """迁移/回填用：直接写共享候选（不 pin、无回执，等后续验证）。"""
     kind = _normalize_kind(kind)
     body = str(text or "").strip()[:MAX_TEXT]
@@ -141,7 +142,8 @@ def seed_shared(kind, text, *, importance=0.5, confidence=0.4, title="", meta=No
         return mid
     now = store.now()
     header = {
-        "id": mid, "kind": kind, "scope": "global", "status": "candidate",
+        "id": mid, "kind": kind,
+        "status": status if status in ("candidate", "active") else "candidate",
         "title": str(title or body.splitlines()[0])[:80],
         "confidence": _clamp(confidence), "importance": _clamp(importance),
         "usage": 0, "pinned": False, "receipts": [], "promoted_from": "",
@@ -176,6 +178,8 @@ def _has_pass_receipt(project_id, receipt_ids):
 
 def evaluate(project_id, item):
     reasons = []
+    if item.get("promotion_frozen"):
+        reasons.append("用户低评分冻结晋升")
     if not _has_pass_receipt(project_id, item.get("receipts") or []):
         reasons.append("缺通过的测试/验收/合并回执")
     adoption = (bool(item.get("adopted")) or int(item.get("usage") or 0) >= 2)
@@ -224,6 +228,7 @@ def promote(project_id, candidate_id):
                  project=store.safe_id(project_id), pinned=header["pinned"])
     header["body"] = verdict["text"]
     header["path"] = shared_path
+    _sync_index(header)
     return {"ok": True, "item": header, "pinned": header["pinned"]}
 
 
@@ -309,6 +314,7 @@ def edit_shared(item_id_value, *, text=None, pinned=None):
         item["updated"] = now
     _write(item["path"], {key: value for key, value in item.items()
                           if key not in ("body", "path")}, item["body"])
+    _sync_index(item)
     store.ledger("memory.edit_shared", id=item_id_value, pinned=item.get("pinned"))
     return item
 
@@ -320,6 +326,93 @@ def delete_shared(item_id_value):
     os.remove(item["path"])
     store.ledger("memory.delete_shared", id=item_id_value, kind=item.get("kind"))
     return True
+
+
+def touch(item_ids, project_id=""):
+    """检索/采纳后的复用计数：写回文件并同步索引 usage（pin 排序会用到）。"""
+    now = store.now()
+    touched = 0
+    for item_id_value in item_ids or []:
+        item, _scope = _find_item(item_id_value, project_id)
+        if item is None:
+            continue
+        item["usage"] = int(item.get("usage") or 0) + 1
+        item["last_used"] = now
+        item["updated"] = now
+        _write(item["path"], {key: value for key, value in item.items()
+                              if key not in ("body", "path")}, item.get("body") or "")
+        try:
+            from . import index
+            index.touch(item_id_value, item["usage"], now)
+        except Exception:  # noqa: BLE001
+            pass
+        touched += 1
+    return touched
+
+
+def adopt(project_id, candidate_id):
+    """用户采纳项目候选：生成 review 回执、记采纳、尝试晋升。"""
+    item = next((row for row in candidates(project_id)
+                 if row.get("id") == candidate_id and row.get("status") == "candidate"), None)
+    if item is None:
+        return {"ok": False, "reasons": ["未找到待晋升候选"]}
+    now = store.now()
+    receipt_id = receipts.record(project_id, type="review", result="pass",
+                                 cmd="user_review", evidence="user adopted candidate",
+                                 detail=str(candidate_id))
+    item["receipts"] = list(dict.fromkeys(list(item.get("receipts") or []) + [receipt_id]))[:20]
+    item["adopted"] = True
+    item["promotion_frozen"] = False
+    item["usage"] = int(item.get("usage") or 0) + 1
+    item["last_used"] = now
+    item["updated"] = now
+    _write(item["path"], {key: value for key, value in item.items()
+                          if key not in ("body", "path")}, item.get("body") or "")
+    _sync_index(item)
+    result = promote(project_id, candidate_id)
+    if not result.get("ok"):
+        return {"ok": True, "promoted": False,
+                "reasons": result.get("reasons") or [], "item": item}
+    return {"ok": True, "promoted": True, "item": result.get("item"),
+            "pinned": result.get("pinned")}
+
+
+def apply_feedback(project_id, task, stars):
+    """把任务级星级归因到该任务的候选：4–5 星采纳，1–2 星冻结。"""
+    task = str(task or "").strip()
+    if not task:
+        return {"applied": 0, "promoted": 0}
+    try:
+        score = int(stars)
+    except (TypeError, ValueError):
+        return {"applied": 0, "promoted": 0}
+    affected = 0
+    for item in candidates(project_id):
+        if item.get("status") != "candidate" or str(item.get("task") or "") != task:
+            continue
+        affected += 1
+        now = store.now()
+        if score >= 4:
+            receipt_id = receipts.record(project_id, type="review", result="pass",
+                                         cmd="user_rating", evidence="task rated %d stars" % score,
+                                         detail=str(item.get("id") or ""))
+            item["receipts"] = list(dict.fromkeys(
+                list(item.get("receipts") or []) + [receipt_id]))[:20]
+            item["adopted"] = True
+            item["promotion_frozen"] = False
+            item["usage"] = int(item.get("usage") or 0) + 1
+            item["last_used"] = now
+        elif score <= 2:
+            item["promotion_frozen"] = True
+            item["confidence"] = min(float(item.get("confidence") or 0.5), 0.3)
+        item["updated"] = now
+        _write(item["path"], {key: value for key, value in item.items()
+                              if key not in ("body", "path")}, item.get("body") or "")
+        _sync_index(item)
+    promoted = sweep(project_id).get("promoted", 0) if score >= 4 else 0
+    store.ledger("memory.feedback", task=task, stars=score, applied=affected,
+                 promoted=promoted)
+    return {"applied": affected, "promoted": promoted}
 
 
 def _find_item(item_id_value, project_id=""):
@@ -415,3 +508,11 @@ def retrievable(project_id, limit=30):
                      "edges": len(_clean_edges(item.get("edges") or []))})
     rows.sort(key=score.pin_score, reverse=True)
     return rows[:max(1, int(limit))]
+
+
+def _sync_index(item):
+    try:
+        from . import index
+        index.upsert_item(item)
+    except Exception:  # noqa: BLE001 —— 索引同步失败不阻断文件事实
+        pass

@@ -4916,10 +4916,11 @@ async def feedback_task_ep(request: Request):
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
+    project = _request_project_id() or "default"
     try:
         from agent_runtime.memory import feedback as feedback_store
         row = feedback_store.record(
-            _request_project_id() or "default",
+            project,
             session=str(payload.get("session_id") or ""),
             stars=payload.get("stars"),
             task=str(payload.get("task") or ""),
@@ -4927,7 +4928,14 @@ async def feedback_task_ep(request: Request):
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "id": row["id"], "stars": row["stars"]}
+    applied = {}
+    if row.get("task"):
+        try:
+            from agent_runtime.memory import promote as promote_store
+            applied = promote_store.apply_feedback(project, row["task"], row["stars"])
+        except Exception:  # noqa: BLE001 —— 星级归因失败不影响反馈落盘
+            applied = {}
+    return {"ok": True, "id": row["id"], "stars": row["stars"], "applied": applied}
 
 
 @app.get("/api/feedback/task")
@@ -5027,6 +5035,17 @@ async def memory_item_unlink_ep(item_id: str, to: str = "", type: str = ""):
     if not item:
         raise HTTPException(status_code=404, detail="未找到条目")
     return {"ok": True, "item": item}
+
+
+@app.post("/api/memory/items/{item_id}/adopt")
+async def memory_item_adopt_ep(item_id: str):
+    _memory_require()
+    from agent_runtime.memory import promote
+    result = promote.adopt(_request_project_id() or "default", item_id)
+    if not result.get("ok"):
+        reasons = result.get("reasons") or ["未找到待晋升候选"]
+        raise HTTPException(status_code=404, detail=str(reasons[0]))
+    return {"ok": True, **result}
 
 
 @app.patch("/api/memory/items/{item_id}")
