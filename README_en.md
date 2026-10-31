@@ -89,6 +89,7 @@ A few worth calling out:
 - The **scene canvas** draws Godot `.tscn` as a node graph, parent edges and instance edges in separate colors, properties and positions editable, **everything undoable and undo restores the file byte-for-byte**.
 - **Live conversation** streams camera / screen-share frames and voice into a local realtime multimodal model over WebSocket.
 - The **task panel** carries four actions: scope validation, snapshot, snapshot rollback and impact analysis — you first pin down which paths the task is allowed to touch, and a violation is rejected on the spot; rollback restores files to their snapshot content (files created after the snapshot are removed); a task branch opens a git branch named `docmind/<task>` and refuses to switch while the worktree has uncommitted changes.
+- **Context memory**: the "Memory" button beside the composer opens a right-hand drawer with the content actually injected next turn — L0 constitution / L1 profile / L2 shared memory / L3 task book / L4 session hooks / history summary. Constitution, profile, task book and hooks are editable; candidates can be adopted or promoted; relation edges can be added/removed; the index can be rebuilt.
 - **Voice models**: the endpoint, model and voice of STT / TTS / realtime Omni are edited and persisted from the settings page — **no `.env` edit and no restart**.
 
 ## Capabilities
@@ -115,6 +116,26 @@ Classification is **declarative** (`agent_runtime/tool_domains.py`), never infer
 | `eda` | Really run Vivado / KLayout / simulation and parse the output, turn online reports into structured facts, produce a three-state acceptance verdict |
 | `net` | HTTP requests constrained by an allowlist (SSRF defense) |
 | `catalog` | Look up tool inventory and usage by domain |
+
+### Long-term memory: layered, retrievable, auditable
+
+Enable **Layered memory v2** in Settings; when off, the old verbatim memory path and prompts are unchanged. Memory is **file-first, with SQLite as a rebuildable index** — a broken index cannot lose facts, and legacy stores migrate per project instead of leaking into a global bucket.
+
+| Layer | What it holds | Mechanism |
+|---|---|---|
+| **L0 Constitution** | Working principles the model cannot change; the user can edit them | Injected every turn, 600-char cap; version / hash / gate checks; critical clauses bind real code gates |
+| **L1 Profile** | Explicitly stated name, language, timezone, location, notes; observed usage habits | File-first (`profile/declared.md`); declared and learned data are separate; no inference of unstated attributes; learned habits can be cleared |
+| **L2 Shared memory** | Cross-project facts and lessons | Promotion gate: passing receipt + adoption/4–5 stars + genericization; unpromoted project candidates stay retrievable on demand; new evidence can mark an outdated candidate `superseded` |
+| **L3 Task book** | todo / doing / done board for long tasks | Drafted from plans or sustained action; **completion requires a test/acceptance/merge receipt**, visible across windows |
+| **L4 Session hooks** | Key agreements, error signatures and next step for this window | Survive compaction; errors roll up across sessions; 80-item cap, unpinned old items evicted first |
+| **L5 Archive** | Compacted early turns and legacy memory | Append-only; the UI can replay full history — compaction only shrinks the model's working window |
+
+Retrieval and consolidation:
+
+- **Hybrid recall**: keyword + bge-m3 semantic vectors (1024-d) + importance / confidence / recency, then 1–2-hop Personalized PageRank over relation edges. If embeddings are unavailable it falls back to keywords without blocking chat.
+- **Per-turn async consolidation**: a single worker extracts reusable facts/lessons, skipping greetings, empty summaries and explicitly unverified turns; candidates stay project-scoped and are never auto-promoted. Measured consolidation cost with deepseek-v4.1-flash is about **¥0.001/turn** (model- and input-dependent).
+- **Auditable**: test / acceptance / merge / review receipts are immutable; 4–5-star feedback adopts or promotes, 1–2 stars freezes promotion; cross-session error ledgers and L4 injection are char-budgeted.
+- **Editable panel**: the "Context memory" drawer shows what is actually injected, supports editing the constitution/profile/hooks/task book, adopting/promoting candidates, adding/removing relation edges and rebuilding the index; "Last turn" shows the actual injection snapshot.
 
 ### A few deliberate design choices
 
