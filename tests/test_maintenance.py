@@ -130,7 +130,11 @@ class ScheduleTests(unittest.TestCase):
                 patch.object(maintenance, "STARTUP_GRACE_SECONDS", 0), \
                 patch.object(maintenance, "run_check",
                              wraps=maintenance.run_check) as spy:
-            maintenance.start()
+            # 先夺回线程所有权：同一次 pytest 里别处（app lifespan）可能已经起过一个
+            # 按旧间隔空转的线程，那时 start() 会返回 False，本守卫就成了跨文件干扰。
+            maintenance.stop()
+            started = maintenance.start()
+            self.assertTrue(started, "维护线程没起来（已有别的线程占位）")
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline and not spy.call_count:
                 time.sleep(0.2)
