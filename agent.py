@@ -301,12 +301,16 @@ def _ptc_variant_system_prompt(channel_prompt: str) -> str:
 
 
 def _ptc_build_server(*, tool_lookup, spec_lookup, execute_tool_fn, is_failure,
-                      evidence_fn, turn, side_effect_default):
+                      evidence_fn, turn, side_effect_default, failure_for=None):
     """PTC 服务回调构造器（步 6c）——纯依赖注入，便于用桩单测归因流。
 
     返回内层 `_server(name, arg) -> (ok, obs_text)`：把子进程 bridge 请求经父侧
     `execute_tool` 走**完整治理**（stage 门 + 幂等 claim + 异常脱敏），并持锁把每次
     子调用归因进当前 `turn`（tool_step + add_tool_evidence）→ provenance 在 PTC 下不丢。
+
+    `failure_for(name, arg)` 是可选的上下文绑定点：`run_command` 这类工具光看观察
+    文本判不出失败（退出码非零得配命令文本一起看）。缺省（测试替身传的
+    `lambda obs: …`）时逐字节走 `is_failure` 原样。
 
     fail-closed：未知/无实现工具、execute_tool 抛异常 → 一律回 ok=False，绝不静默成功。
     """
@@ -323,13 +327,14 @@ def _ptc_build_server(*, tool_lookup, spec_lookup, execute_tool_fn, is_failure,
         except Exception:  # noqa: BLE001
             spec = None
         se = spec.side_effect if spec is not None else side_effect_default
+        judge = failure_for(name, arg) if failure_for is not None else is_failure
         _t0 = time.monotonic()
         try:
-            result = execute_tool_fn(fn, arg, is_failure, tool_name=name, side_effect=se)
+            result = execute_tool_fn(fn, arg, judge, tool_name=name, side_effect=se)
         except Exception as e:  # noqa: BLE001
             return (False, "bridge 服务异常：%s（未确认执行）" % type(e).__name__)
         obs = getattr(result, "text", "") or ""
-        ok = bool(getattr(result, "ok", False)) and not is_failure(obs)
+        ok = bool(getattr(result, "ok", False)) and not judge(obs)
         dur_ms = int((time.monotonic() - _t0) * 1000)
         if turn is not None:
             turn.tool_step(name, arg, dur_ms, obs, ok=ok)
@@ -3200,16 +3205,56 @@ def _is_test_command(arg):
 
 _EXIT_CODE = re.compile(r"^\[exit code (-?\d+)\]")
 
+# 命令族：非零退出码**本身就是答案**，不是失败。
+# grep/rg/findstr 查无匹配（1）、diff/cmp/fc/comm 有差异（1）、test/[ 判假（1）、
+# which/where/dir 查无此项（1）、`git diff|grep` 同理（--quiet 靠退出码传结论）、
+# pgrep/pkill/killall 查无进程（1）—— 本项目数泄漏的浏览器进程就靠它。
+# 只豁免 1；≥2 仍是真失败（正则语法错、文件根本读不了）。
+_NONZERO_IS_ANSWER = re.compile(
+    r"(?i)^\s*(?:(?:cd|pushd)\s+[^&|;]+\s*(?:&&|;)\s*)?"
+    r"(?:sudo\s+|env\s+)*"
+    r"(?:grep|egrep|fgrep|rg|ag|sift|findstr|diff|cmp|fc|comm|test|\[\[?|"
+    r"which|where|dir|pgrep|pkill|killall|git\s+(?:diff|grep))\b")
+
+
+def _nonzero_is_the_answer(arg):
+    """这条命令的非零退出码是不是「答案」而非「失败」（只看命令开头，保守）。"""
+    command = str(arg or "").strip().splitlines()
+    return bool(_NONZERO_IS_ANSWER.match(command[0] if command else ""))
+
+
+def _exit_code_verdict(text, arg=""):
+    """命令观察的结构判定：None 表示「这条观察没有结构信号，交回字符串判据」。
+
+    为什么必须有这道判定：`_FAILURE_MARKERS` 是一串**中文工具错误文案**，没有任何
+    通用英文失败标记，于是 `[exit code 1] FAILED tests/test_a.py::x - assert 0 == 1`
+    被 `_is_failure` 判成非失败 —— 真跑失败的 pytest 既不写 error 钩子、也不进重试
+    配额、更不触发熔断（模型看到自己刚跑失败的输出，却被告知这一步成功了）。
+    反过来，退出码非零里也藏着合法答案（`grep` 没匹配上就是 1），所以判据必须同时
+    看见**退出码**和**命令文本**，两者都在派发点手里，只是原先没人传给判据。
+
+    `[exit code ...]` 头里不是整数只有一种来源：`process_runner.run_bounded` 在
+    「命令不存在 / 命令无法启动」两个分支里回 `exit_code=None` —— 那当然是失败。
+    """
+    stripped = str(text or "").strip()
+    if not stripped.startswith("[exit code "):
+        return None
+    match = _EXIT_CODE.match(stripped)
+    if not match:
+        return True
+    code = int(match.group(1))
+    if code == 0:
+        return False
+    if code == 1 and _nonzero_is_the_answer(arg):
+        return False
+    return True
+
 
 def _test_command_passed(obs):
     """测试命令的「通过」凭证只认退出码 0。
 
-    这里刻意不复用 `_is_failure`：那个判据还得继续放 `grep` 无匹配过关（它是合法
-    答案，不是失败，误判会喂给 3 次熔断），而"根本没跑起来的 pytest"恰好也长得像
-    无匹配 —— 实测 `[exit code 4] ERROR: file or directory not found`、
-    `[exit code 2] No such file or directory`、`[exit code 1] … not found` 三种形状
-    都被 `_is_failure` 判成非失败。两件事必须分开口径，否则一次没跑的测试能拿到
-    `test/pass` 回执，而这条回执正是记忆晋升门唯一信任的凭证。
+    这里刻意不复用 `_is_failure`：凭证门要的是"这条测试真的跑起来了且全绿"，
+    判据口径必须独立、可单点审计（见 tests/test_test_command_receipt_gate.py）。
     拿不到退出码（后台化、超时、被截断）一律按"没有凭证"处理。
     """
     match = _EXIT_CODE.match(str(obs or "").strip())
@@ -3226,10 +3271,21 @@ def _test_command_verified(turn):
     return dict(getattr(turn, "test_command_targets", None) or {}) == targets
 
 
-def _is_failure(obs):
+def _is_failure(obs, tool="", arg=""):
+    """工具观察是不是失败。
+
+    `tool`/`arg` 可选是刻意的：`_FAILURE_MARKERS` 那套字符串判据只能认工具自己
+    吐出的中文错误文案，对「命令跑了、返回码非零」完全瞎眼。命令类工具（今天只有
+    `run_command`）改走结构判定 —— 只有真知道命令文本时才接管，其余工具、其余调用
+    点（含只回传观察文本的旧路径）逐字节保持原判据。
+    """
     text = str(obs or "")
     if not text.strip():
         return True
+    if tool == "run_command":
+        verdict = _exit_code_verdict(text, arg)
+        if verdict is not None:
+            return verdict
     # 命令退出码 0 是成功；输出里出现的“拒绝访问/文件不存在”可能只是
     # pytest 缓存警告或被测代码打印的数据，不能反过来判失败。
     if text.strip().startswith("[exit code 0]"):
@@ -3248,6 +3304,18 @@ def _is_failure(obs):
     if _is_no_match_only(text):
         return False
     return any(marker in text for marker in _FAILURE_MARKERS)
+
+
+def _failure_for(tool, arg=""):
+    """把工具上下文绑进判据，对外仍是 1 参数可调用。
+
+    `execute_tool(function, argument, legacy_failure)` 的契约是「只喂观察文本」，
+    不能改它去接两个参数（PTC 的测试替身就是 `lambda obs: …`）。所以上下文在派发点
+    绑好，再交出去。
+    """
+    def judge(obs):
+        return _is_failure(obs, tool, arg)
+    return judge
 
 
 def _probe_audit_root(code_root, refs):
@@ -4987,6 +5055,7 @@ class Agent:
             spec_lookup=self._tool_spec,
             execute_tool_fn=execute_tool,
             is_failure=_is_failure,
+            failure_for=_failure_for,
             evidence_fn=_tool_evidence_from_obs,
             turn=turn,
             side_effect_default=SideEffect.PURE,
@@ -5596,7 +5665,7 @@ class Agent:
         timer_tokens = _timers.bind(self.project_id or "", self.session_id or "")
         plan_log_tokens = _plan_log.bind(self.project_id or "", self.session_id or "")
         try:
-            _memory.capture_explicit_profile(question)
+            _memory.capture_explicit_profile(question, write_project=self.memory_write_project)
             _memory.capture_preferences(self.memory_write_scope, question)
         except Exception:
             pass
@@ -7222,12 +7291,14 @@ class Agent:
                     _tool_trace = _nullcontext()
                 with self._ptc_server_scope(action_name, turn), _tool_trace:
                     _result = execute_tool(
-                        _fn, action_arg, _is_failure, tool_name=action_name,
+                        _fn, action_arg, _failure_for(action_name, action_arg),
+                        tool_name=action_name,
                         side_effect=_side_effect,
                     )
                 obs = _hooks.run_post_tool(action_name, action_arg, _result.text)
                 obs, obs_images = self._gate_tool_images(obs, _result.data)
-                _tool_ok = _result.ok and (obs == _result.text or not _is_failure(obs))
+                _tool_ok = _result.ok and (
+                    obs == _result.text or not _is_failure(obs, action_name, action_arg))
                 if _tool_ok and action_name in _WEB_ACTIONS and not _web_result_relevant(action_name, action_arg, obs):
                     # 非空不等于有用：把明显跑题的搜索结果标记为可恢复失败，
                     # 让模型继续换关键词/年份/平台，而不是把它写进结论。
@@ -8172,12 +8243,13 @@ class Agent:
                     _tool_trace = _nullcontext()
                 with _tool_trace:
                     result = execute_tool(
-                        function, arg2, _is_failure, tool_name=name,
+                        function, arg2, _failure_for(name, arg2), tool_name=name,
                         side_effect=spec.side_effect if spec is not None else SideEffect.PURE,
                     )
                 obs = _hooks.run_post_tool(name, arg2, result.text)
                 obs, obs_images = self._gate_tool_images(obs, result.data)
-                ok = result.ok and (obs == result.text or not _is_failure(obs))
+                ok = result.ok and (
+                    obs == result.text or not _is_failure(obs, name, arg2))
                 error_kind = result.error_kind or ""
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 if result.error_kind == "timeout" and self._is_network_tool(name):

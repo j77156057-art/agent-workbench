@@ -52,21 +52,29 @@ class TestCommandPassedTests(unittest.TestCase):
                 self.assertFalse(agent_mod._test_command_passed(obs))
 
     def test_failure_judge_cannot_be_the_gate(self):
-        """**反向守卫**：`_is_failure` 根本认不出测试失败，所以它不能当凭证门。
+        """**反向守卫**：凭证门不许改回 `_is_failure`，哪怕判据后来被修好了。
 
         `_FAILURE_MARKERS` 是一串**中文工具错误文案**（"读取失败/拒绝访问/计算失败"…），
-        没有任何通用英文失败标记。于是真正的 pytest 失败输出在它眼里是"非失败"：
-        这才是那条假 `test/pass` 的**主路径**（不是边角）。也正因为如此，不许把
-        这个洞用"往 markers 里加 FAILED/Traceback"的方式补上 —— 那会把 grep 无匹配
-        与文件内容里出现的字样一律判成失败，喂给 3 次熔断。退出码才是权威。
+        没有任何通用英文失败标记。真正的 pytest 失败输出在**单参数调用**下仍是"非失败"
+        —— 这正是当初那条假 `test/pass` 的主路径。判据后来在
+        `tests/test_failure_verdict.py` 里补了结构判定，但那是**带工具上下文**的调用
+        （`tool="run_command"` + 命令文本）；凭证门要的是一个不依赖调用点是否传对上下文的
+        独立口径，否则哪天派发点漏传一个参数，假凭证就静默回来了。
+        也不许把 `_is_failure` 改成"往 markers 里加 FAILED/Traceback"：那会把 grep 无匹配
+        与文件内容里出现的字样一律判成失败，喂给 3 次熔断。
         """
         real_pytest_failure = "[exit code 1] · 2.1s\nFAILED tests/test_a.py::x - assert 0 == 1\n1 failed in 2.1s"
         self.assertFalse(agent_mod._is_failure(real_pytest_failure),
-                         "判据认不出真实测试失败 —— 正是必须改用退出码门的原因")
+                         "判据在没有工具上下文时仍认不出测试失败 —— 凭证门必须自成一格")
+        # 带上下文时判据确实修好了（钉住这条，防止有人以为还要靠门去兜底）
+        self.assertTrue(agent_mod._is_failure(real_pytest_failure, "run_command", "pytest -q"),
+                        "run_command 的结构判定应当认出真实测试失败")
         self.assertFalse(agent_mod._test_command_passed(real_pytest_failure),
                          "新门必须拦住它")
         # grep 无匹配仍是合法答案，不能被顺手改严
         self.assertFalse(agent_mod._is_failure("[exit code 1] · 0.4s\n（无匹配）"))
+        self.assertFalse(agent_mod._is_failure("[exit code 1] · 0.4s\n（无匹配）",
+                                               "run_command", "grep -rn TODO src/"))
         self.assertFalse(agent_mod._is_failure(
             "[exit code 0] · 1.65s\n" + PYTEST_CACHE_WARN + "\n8 passed"))
 

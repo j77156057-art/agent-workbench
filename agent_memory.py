@@ -576,8 +576,18 @@ def update_profile(user_id=None, patch=None):
     return get_profile(uid)
 
 
-def capture_explicit_profile(question, user_id=None):
-    """Extract only direct first-person declarations from the user's message."""
+def capture_explicit_profile(question, user_id=None, write_project=""):
+    """Extract only direct first-person declarations from the user's message.
+
+    `write_project` 非空 = 这一回合的写入被隔离到了别的 scope（评测流量，
+    `run_golden` 默认 `eval-golden`）。画像表按 `user_id` 全局键，**没有**按项目
+    分行，所以不能像 `capture_preferences` 那样改投 scope —— 改投等于改读，
+    `profile_context()` 与设置页读的都是那一行默认用户。这里唯一的正确做法是
+    拒写：题库里只要出现一句「我叫…/我在…」，评测跑就会把它永久写进真实用户的
+    常驻画像并注入之后每一个窗口。
+    """
+    if str(write_project or "").strip():
+        return get_profile(user_id)
     text = str(question or "").strip()
     patch = {}
     match = re.search(r"(?:我叫|我的名字是|称呼我为)\s*([^，。！？\n]{1,40})", text)
