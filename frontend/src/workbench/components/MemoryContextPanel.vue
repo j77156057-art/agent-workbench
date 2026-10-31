@@ -349,7 +349,9 @@ async function reindex() {
       <template v-if="current.kind === 'markdown'">
         <p class="mp-meta">
           v{{ current.version }} ·
-          {{ current.hash_ok ? '哈希一致' : '手改/哈希不一致（已记审计）' }}
+          {{ current.hash_ok ? '哈希一致' : '手改/哈希不一致（已记审计）' }} ·
+          <span v-if="current.gates_ok">条款闸门齐全</span>
+          <span v-else class="mp-warn">未绑定闸门：{{ (current.missing_gates || []).join('、') }}</span>
         </p>
         <textarea
           v-model="constitutionDraft"

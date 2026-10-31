@@ -9,7 +9,7 @@ import json
 import os
 import threading
 
-from . import store
+from . import gates, store
 
 PATH = "constitution.md"
 INJECT_MAX_CHARS = 600
@@ -44,6 +44,7 @@ DEFAULT_BODY = (
 _LOCK = threading.RLock()
 _CACHE = {}
 _MISMATCH_SEEN = set()
+_GATES_SEEN = set()
 
 
 class VersionConflict(Exception):
@@ -105,7 +106,8 @@ def parse(text):
 
 def _empty(error="", path=""):
     return {"path": path, "version": 0, "updated": "", "hash": "", "hash_ok": False,
-            "clauses": [], "body": "", "text": "", "error": error}
+            "gates_ok": False, "missing_gates": [], "clauses": [], "body": "",
+            "text": "", "error": error}
 
 
 def bootstrap():
@@ -150,6 +152,15 @@ def load(ensure=True):
             _MISMATCH_SEEN.add(marker)
             store.ledger("constitution.hash_mismatch", expected=doc["hash"] or "(empty)",
                          actual=actual, version=doc["version"])
+    missing = gates.missing_checks(doc["clauses"])
+    doc["gates_ok"] = not missing
+    doc["missing_gates"] = missing
+    if missing:
+        marker = (path, tuple(missing), doc["version"])
+        if marker not in _GATES_SEEN:
+            _GATES_SEEN.add(marker)
+            store.ledger("constitution.gates_missing", missing=",".join(missing),
+                         version=doc["version"])
     doc["path"] = path
     doc["text"] = injected_text(doc)
     _CACHE[path] = (cache_key, dict(doc))

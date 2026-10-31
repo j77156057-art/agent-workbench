@@ -44,6 +44,8 @@ export interface MemoryLayer {
   raw?: string
   version?: number
   hash_ok?: boolean
+  gates_ok?: boolean
+  missing_gates?: string[]
   error?: string
   path?: string
   profile?: Record<string, unknown>

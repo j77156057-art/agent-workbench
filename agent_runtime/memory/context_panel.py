@@ -55,6 +55,8 @@ def next_view(project_id, session_id, code_root=""):
                          source="用户", kind="markdown", raw=raw,
                          version=doc.get("version") or 0,
                          hash_ok=bool(doc.get("hash_ok")),
+                         gates_ok=bool(doc.get("gates_ok")),
+                         missing_gates=doc.get("missing_gates") or [],
                          error=doc.get("error") or "", path=doc.get("path") or ""))
 
     layers.append(_profile_layer())

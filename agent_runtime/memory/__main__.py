@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 
+from . import eval as eval_mod
 from . import index, metrics, migrate, promote
 
 
@@ -30,6 +31,8 @@ def main(argv=None):
     migrate_cmd.add_argument("--force", action="store_true")
     report_cmd = sub.add_parser("report", help="固化开销计量")
     report_cmd.add_argument("--days", type=int, default=7)
+    eval_cmd = sub.add_parser("eval", help="记忆专用评测（检索/晋升/去重/隔离）")
+    eval_cmd.add_argument("--semantic", action="store_true", help="叠加真实嵌入语义排序")
     args = parser.parse_args(argv)
 
     if args.cmd == "rebuild":
@@ -44,9 +47,13 @@ def main(argv=None):
         out = promote.promote(args.project, args.id)
     elif args.cmd == "migrate":
         out = migrate.run(force=args.force)
+    elif args.cmd == "eval":
+        out = eval_mod.run(semantic=args.semantic)
     else:
         out = metrics.report(args.days)
     print(json.dumps(out, ensure_ascii=False, indent=2))
+    if args.cmd == "eval":
+        return 0 if out.get("ok") else 1
     return 0
 
 

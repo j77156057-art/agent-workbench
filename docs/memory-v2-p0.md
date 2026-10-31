@@ -1,6 +1,6 @@
 # 记忆系统 v2 · P0 规格
 
-> 状态：记忆系统 v2 P0 + P1 完成（含学习闭环、真实迁移与 bge-m3 语义后端，2026-10-31；真实设置已开启）。
+> 状态：记忆系统 v2 P0 + P1 完成（含学习闭环、真实迁移、bge-m3 语义、记忆评测与宪法闸门，2026-10-31；真实设置已开启）。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
 > 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
 
@@ -372,7 +372,7 @@ POST   /api/memory/reindex
 主模型精确账单未进 trace（golden runner 不记录 token）；按 5 回合样本 ¥0.0326/轮估算，53 题主模型约 ¥1.7。固化实测 ¥0.0223，仍只占约 1–2%。
 
 ### 16.5 仍未做
-多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank；另有记忆专用评测与宪法条款逐条代码回归。语义召回、边编辑、学习闭环、去重/保留、跨会话错误、bge-m3 语义后端与真实迁移已落地。
+多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank。其余（语义召回、边编辑、学习闭环、去重/保留、跨会话错误、bge-m3 语义、记忆评测、宪法闸门、真实迁移）已落地。
 
 ### 16.6 应用状态与模型
 - `.docmind_state.json` 已开启 `memory_v2: true`；默认模型现为 **opencode / deepseek-v4.1-flash**，Key 优先读环境变量 `OC_KEY`（其次 `OPENCODE_API_KEY`，最后全局密钥库）；`/api/config` 实测返回 `opencode/deepseek-v4.1-flash` + `has_key=true`，3 题冒烟 3/3 通过。
@@ -411,3 +411,16 @@ POST   /api/memory/reindex
 - 已落盘 `embedding_provider=ollama`、`embedding_model=bge-m3`、`memory_semantic=true`；索引重建 **85 条 / 85 个向量，5.5s**，混合检索的 `_semantic` 实测约 0.42–0.60。
 - **迁移隔离修正**：原迁移把旧项目记忆写成 global 共享，检索会带出别的项目路径；已改为按原 scope 落项目候选（`project_item_id` 带项目前缀），旧 global 迁移产物归档后重跑。当前共享层 0，当前项目候选 46，跨项目不再互相召回。
 - 注：语义向量按模型维度固定；若改用 qwen 嵌入需重建索引，避免维度不一致。
+
+### 16.11 记忆评测与宪法闸门（2026-10-31）
+
+**记忆专用评测**：`python -m agent_runtime.memory eval [--semantic]`
+- 临时库种 6 条标准事实 + 6 条干扰项、6 个查询；同时跑晋升门（缺回执拒绝/采纳晋升）、历史去重、跨项目隔离、低星冻结。
+- 实测：关键词 recall@3 **0.833 / MRR 0.833**；bge-m3 语义 **recall@3 1.0 / MRR 1.0**；7 项结构检查全 true。
+- 每次运行使用临时记忆目录、结束清理，不污染真实库；`--semantic` 需要可用嵌入后端，失败时明确标注 `semantic_effective=false`。
+
+**宪法条款代码闸门**：`agent_runtime/memory/gates.py`
+- 8 条 `machine_check` 逐条绑定真实落点：C-001/002/006 命令黑名单、C-003 任务书回执门、C-004 无模型写入路径、C-005 密钥扫描、C-007 晋升脱敏、C-008 删除确认。
+- 宪法加载时会校验并暴露 `gates_ok/missing_gates`；未绑定条款写入 ledger，面板 L0 显示“未绑定闸门”。
+- `tests/test_memory_gates.py` 对每条条款调用真实闸门做回归；`tests/test_memory_eval.py` 锁住评测最低线。
+- 总回归：后端 **300 passed**；前端 158 node、build/typecheck 通过。

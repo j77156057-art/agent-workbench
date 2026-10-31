@@ -5066,9 +5066,11 @@ async def memory_item_ep(item_id: str, request: Request):
 @app.delete("/api/memory/items/{item_id}")
 async def memory_item_delete_ep(item_id: str, confirm: bool = False):
     _memory_require()
-    if not confirm:
-        raise HTTPException(status_code=400, detail="删除需要 confirm=true")
-    from agent_runtime.memory import context_panel
+    from agent_runtime.memory import context_panel, gates
+    try:
+        gates.require_confirm(confirm, "删除共享记忆")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": context_panel.delete_shared(item_id)}
 
 
@@ -5112,11 +5114,13 @@ async def memory_hook_ep(item_id: str, request: Request):
 @app.delete("/api/memory/hooks/{item_id}")
 async def memory_hook_delete_ep(item_id: str, session_id: str = "", confirm: bool = False):
     _memory_require()
-    if not confirm:
-        raise HTTPException(status_code=400, detail="删除需要 confirm=true")
     if not session_id:
         raise HTTPException(status_code=400, detail="缺少 session_id")
-    from agent_runtime.memory import context_panel
+    from agent_runtime.memory import context_panel, gates
+    try:
+        gates.require_confirm(confirm, "删除钩子")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": context_panel.delete_hook(
         _request_project_id() or "default", session_id, item_id)}
 
