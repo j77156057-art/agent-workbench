@@ -443,3 +443,10 @@ POST   /api/memory/reindex
 - **中间轮验证**：`run_command` 命中测试命令（pytest/npm test/go test 等）且退出码 0，同时测试后未再改文件 → 收尾门接受为 `verification_status=test_command`，不再替换成“未验证”；`record_turn` 同步写 `type=test, result=pass` 回执，供后续晋升门使用。
 - **仍未做**：已晋升到共享层条目的自动失效仍需人工/共享层流程；候选取代依赖模型判断，可能漏判；摘要提示词已收紧一次性指令/环境噪声，但仍需长期观察。
 - **验证**：相关后端套件全绿（最近三组 **126 / 108 / 31 passed**：failure markers、session archive、memory v2、trace、memory opt/eval/gates）；真实复验 write+pytest 回合 final 未再被替换，状态为 `test_command`，回执含 `test/pass`；复测报告见 `artifacts/longtask/report.json` 与 `artifacts/longtask2/report.json`。
+
+### 16.14 全量回归基线（2026-10-31）
+
+- **后端 unittest discover**：5114 tests / 1300s，6 failures + 10 errors + 14 skipped。其中只有 `test_llmslice_clip` 是本次摘要改动引入的（提示词含“截断”被旧断言误读、源上限已从 400 提升到 1200）；已在 `2bca9da` 修正并单独 6/6 通过。其余 **15 条红全部在父提交 874257e 的干净 worktree 上同形复现**：engine_start 相关 10 条、voice secrets 2 条、workflow SSE 2 条、MCP live playwright 1 条，均为存量/环境问题，不属于本次改动。
+- **CI pytest-style lane**：1084 passed / 1 failed / 1 skipped；唯一失败 `test_live_vision` 的 `origin not allowed` 同样在父提交复现。
+- **前端**：`npm run test:node` **158 passed**；`npm run build`（含 typecheck）通过。
+- **静态/评测门**：`compileall`、`workflow_eval --self-check`、`dev_eval --self-check` 均通过（pass_rate 1.0，无回归）。
