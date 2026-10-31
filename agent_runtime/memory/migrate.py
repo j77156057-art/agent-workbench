@@ -43,6 +43,20 @@ def _importance(row):
         return 0.5
 
 
+def _project_of(row):
+    raw = str(row.get("scope") or "").strip()
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    if isinstance(value, list) and value:
+        raw = str(value[0])
+    elif isinstance(value, dict):
+        raw = str(value.get("project") or "")
+    project = raw.strip()
+    return project if project and project not in ("legacy", "default") else "default"
+
+
 def _migrate_experience(result):
     try:
         from config import EXPERIENCE_COLLECTION_NAME
@@ -57,12 +71,14 @@ def _migrate_experience(result):
             text = str(meta.get("lesson") or document or "").strip()
             if not text:
                 continue
-            if promote.seed_shared(
-                    "lesson", text, importance=0.5, confidence=0.4, status="active",
+            source_project = str(meta.get("project_id") or "default")
+            if promote.seed_project(
+                    source_project, "lesson", text, importance=0.5, confidence=0.4,
                     meta={"migrated_from": "experience",
-                          "source_project": str(meta.get("project_id") or ""),
+                          "source_project": source_project,
                           "outcome": str(meta.get("outcome") or "")}):
                 result["experience"] += 1
+                result["seeded_lessons"] += 1
     except Exception as exc:  # noqa: BLE001 —— 经验库不可用不阻断迁移
         result["experience_error"] = str(exc)[:200]
 
@@ -106,15 +122,18 @@ def run(db_path=None, force=False):
         if not content:
             continue
         if kind == "fact" and status != "retired":
-            promote.seed_shared("fact", content, importance=_importance(row), confidence=0.6,
-                                status="active",
-                                meta={"migrated_from": "fact", "source_id": str(row.get("id") or "")})
+            promote.seed_project(_project_of(row), "fact", content,
+                                 importance=_importance(row), confidence=0.6,
+                                 meta={"migrated_from": "fact",
+                                       "source_id": str(row.get("id") or "")})
             result["seeded_facts"] += 1
         elif content.startswith(DISTILLED):
             text = content[len(DISTILLED):].lstrip("：: ").strip()
-            if text and promote.seed_shared(
-                    "fact", text, importance=_importance(row), confidence=0.4, status="active",
-                    meta={"migrated_from": "distilled", "source_id": str(row.get("id") or "")}):
+            if text and promote.seed_project(
+                    _project_of(row), "fact", text,
+                    importance=_importance(row), confidence=0.4,
+                    meta={"migrated_from": "distilled",
+                          "source_id": str(row.get("id") or "")}):
                 result["seeded_facts"] += 1
 
     _write_jsonl(os.path.join(archive, "episodes.jsonl"), archived_rows)

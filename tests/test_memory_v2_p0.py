@@ -602,20 +602,23 @@ class MigrateTests(_MemBase):
             self.assertEqual(first["preferences"], 1)
             self.assertEqual(first["checkpoints"], 1)
             self.assertEqual(first["retired"], 1)
-            self.assertEqual(len(promote.shared_items()), 2, "迁移后应可召回，但未 pin")
-            self.assertFalse(any(item["pinned"] for item in promote.shared_items()))
+            self.assertEqual(len(promote.shared_items()), 0, "迁移不得把项目记忆灌进 global")
+            project_candidates = [item for item in promote.candidates("prj")
+                                  if item.get("status") == "candidate"]
+            self.assertEqual(len(project_candidates), 2)
+            self.assertFalse(any(item["pinned"] for item in project_candidates))
             archive = os.path.join(store.root(), "archive", "legacy", "episodes.jsonl")
             self.assertTrue(os.path.exists(archive))
             second = migrate.run(db_path=db)
             self.assertTrue(second.get("skipped"))
             forced = migrate.run(db_path=db, force=True)
             self.assertEqual(forced["seeded_facts"], 2)
-            shared_files = []
+            project_files = []
             for kind in ("facts", "lessons"):
-                directory = os.path.join(store.root(), "shared", kind)
+                directory = os.path.join(store.root(), "projects", "prj", kind)
                 if os.path.isdir(directory):
-                    shared_files.extend(os.listdir(directory))
-            self.assertEqual(len(shared_files), 2, "重跑不得重复")
+                    project_files.extend(os.listdir(directory))
+            self.assertEqual(len(project_files), 2, "重跑不得重复")
 
 
 class SharedInjectionTests(_MemBase):
@@ -655,6 +658,16 @@ class DedupeSweepTests(_MemBase):
                   if item.get("status") == "candidate"]
         self.assertEqual(len(active), 1)
         self.assertEqual(int(active[0]["usage"]), 1)
+
+
+class ProjectScopedIdTests(_MemBase):
+    def test_same_text_across_projects_gets_distinct_ids(self):
+        text = "同一文案在不同项目必须分开：先复现再修复，减少盲目改动"
+        first = promote.create_candidate("prj-a", "fact", text, importance=0.8)
+        second = promote.create_candidate("prj-b", "fact", text, importance=0.8)
+        self.assertNotEqual(first["id"], second["id"])
+        index.rebuild(verify=True)
+        self.assertEqual(index.stats()["items"], 2)
 
 
 class DedupeTests(_MemBase):

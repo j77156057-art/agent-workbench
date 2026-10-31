@@ -1,6 +1,6 @@
 # 记忆系统 v2 · P0 规格
 
-> 状态：记忆系统 v2 P0 + P1 完成（含学习闭环与真实迁移，2026-10-31；真实设置已开启）。
+> 状态：记忆系统 v2 P0 + P1 完成（含学习闭环、真实迁移与 bge-m3 语义后端，2026-10-31；真实设置已开启）。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
 > 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
 
@@ -372,7 +372,7 @@ POST   /api/memory/reindex
 主模型精确账单未进 trace（golden runner 不记录 token）；按 5 回合样本 ¥0.0326/轮估算，53 题主模型约 ¥1.7。固化实测 ¥0.0223，仍只占约 1–2%。
 
 ### 16.5 仍未做
-多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank；另有真实嵌入后端（本机缺 bge-m3）与记忆专用评测。语义召回、边编辑、学习闭环、去重/保留、跨会话错误与真实迁移已落地。
+多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank；另有记忆专用评测与宪法条款逐条代码回归。语义召回、边编辑、学习闭环、去重/保留、跨会话错误、bge-m3 语义后端与真实迁移已落地。
 
 ### 16.6 应用状态与模型
 - `.docmind_state.json` 已开启 `memory_v2: true`；默认模型现为 **opencode / deepseek-v4.1-flash**，Key 优先读环境变量 `OC_KEY`（其次 `OPENCODE_API_KEY`，最后全局密钥库）；`/api/config` 实测返回 `opencode/deepseek-v4.1-flash` + `has_key=true`，3 题冒烟 3/3 通过。
@@ -386,7 +386,7 @@ POST   /api/memory/reindex
 - **星级归因**：4–5 星会对该 task 的候选生成 `review` 回执并采纳/晋升；1–2 星置 `promotion_frozen=true` 且 `evaluate` 拒绝晋升（不删除）；3 星中性。没有 task 的星级只统计，不做归因（防止误伤所有候选）。
 - **复用计数**：`memory_search` 命中 v2 条目与采纳都会递增 `usage/last_used`，`pin_score` 的复用权重开始生效；索引 `touch` 同步。
 - **索引一致性**：共享条目编辑、晋升、采纳、状态/pin 变化立即 `upsert_item`；`rebuild` 现在比较标题/状态/置信/重要度/pin/usage/时间，不再只看 body_hash。
-- **真实迁移已执行**：旧库只读导出 **471** 条归档、41 条事实 + 13 条经验教训（active 低置信、不 pin）、1 条偏好、354 条 checkpoint、23 条 experience、13 条退休；第二次运行 `skipped`；索引重建 **82 条，verified=true**。迁移条目可被检索、可在面板 pin/编辑。
+- **真实迁移已执行（按原项目隔离）**：旧库只读导出 **471** 条归档、41 条事实 + 23 条经验教训（按原 scope 落项目候选、低置信、不 pin）、1 条偏好、354 条 checkpoint、23 条 experience、13 条退休；第二次运行 `skipped`；索引重建 **85 条，verified=true**。共享层 0（不再把项目记忆灌进 global）；当前项目候选 46 条可召回。第一轮误灌 global 的产物已移到 `archive/legacy/migrated-shared-*` 并按 scope 重跑。
 - **验证**：后端 **283 passed**、前端 158 node、build/typecheck 通过；Edge 实测候选「采纳」后 1→0、提示「已采纳并 pin」、无控制台错误。
 
 
@@ -396,7 +396,7 @@ POST   /api/memory/reindex
 - **历史清理**：`python -m agent_runtime.memory dedupe --project <id>` 对存量候选做一次合并；本机 28 条检查、0 条命中（本轮候选彼此差异足够大）。
 - **回合保留**：`episodes.jsonl` 超过 512KB 自动把旧行移到 `projects/<pid>/archive/episodes/`，保留最近 200 条；`latest` 仍只读尾部。
 - **索引一致性**：`upsert_item` 在编辑/晋升/采纳/状态/pin 变化时立即同步行、边、FTS 与向量；`rebuild` 比较标题/状态/置信/重要度/pin/usage/时间，不再只看 body_hash。
-- **验证**：后端 **287 passed**；前端 158 node、build 通过；历史去重 CLI 与真实迁移幂等均已实跑。
+- **验证**：后端 **289 passed**；前端 158 node、build 通过；历史去重 CLI 与真实迁移幂等均已实跑。
 
 ### 16.9 跨会话错误记忆（2026-10-31）
 
@@ -404,3 +404,10 @@ POST   /api/memory/reindex
 - L4 注入在会话错误之外追加「跨会话易错」，并排除本窗口已出现的签名，避免重复；总预算仍受 600 字符上限约束。
 - 上下文面板 L4 分开展示「本窗口易错点」与「跨会话易错点」，均为只读。
 - 验收：后端 **288 passed**；跨会话签名计数、注入和面板数据均有测试覆盖。
+
+### 16.10 bge-m3 语义后端与迁移隔离修正（2026-10-31）
+
+- `ollama pull bge-m3` 完成（1.2GB，Ollama 0.40.13）；`EmbeddingClient` 实测 **1024 维、degraded=false**。
+- 已落盘 `embedding_provider=ollama`、`embedding_model=bge-m3`、`memory_semantic=true`；索引重建 **85 条 / 85 个向量，5.5s**，混合检索的 `_semantic` 实测约 0.42–0.60。
+- **迁移隔离修正**：原迁移把旧项目记忆写成 global 共享，检索会带出别的项目路径；已改为按原 scope 落项目候选（`project_item_id` 带项目前缀），旧 global 迁移产物归档后重跑。当前共享层 0，当前项目候选 46，跨项目不再互相召回。
+- 注：语义向量按模型维度固定；若改用 qwen 嵌入需重建索引，避免维度不一致。

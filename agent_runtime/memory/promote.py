@@ -123,6 +123,13 @@ def item_id(kind, text):
     return "mem-" + store.sha256_text(_normalize_kind(kind) + "|" + normalized)[:16]
 
 
+def project_item_id(project_id, kind, text):
+    """项目候选 id 带项目前缀，避免同一文案在两个项目互相覆盖索引。"""
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    seed = store.safe_id(project_id or "default") + "|" + _normalize_kind(kind) + "|" + normalized
+    return "mem-" + store.sha256_text(seed)[:16]
+
+
 def _read(path):
     try:
         header, body = store.split_frontmatter(store.read_text(path))
@@ -179,7 +186,7 @@ def create_candidate(project_id, kind, text, *, title="", importance=0.6,
     if not body:
         return None
     target_dir = _dir(project_id, kind)
-    mid = item_id(kind, body)
+    mid = project_item_id(project_id, kind, body)
     path = os.path.join(target_dir, mid + ".md")
     existing = _read(path) if os.path.exists(path) else None
     if existing:
@@ -204,6 +211,34 @@ def create_candidate(project_id, kind, text, *, title="", importance=0.6,
     header["path"] = path
     header["_new"] = True
     return header
+
+
+def seed_project(project_id, kind, text, *, importance=0.5, confidence=0.4,
+                 title="", meta=None):
+    """迁移用：按原 scope 落项目候选，保留项目隔离；晋升仍需门。"""
+    kind = _normalize_kind(kind)
+    body = str(text or "").strip()[:MAX_TEXT]
+    if not body:
+        return None
+    mid = project_item_id(project_id, kind, body)
+    path = os.path.join(_dir(project_id, kind), mid + ".md")
+    if os.path.exists(path):
+        return mid
+    now = store.now()
+    header = {
+        "id": mid, "kind": kind, "scope": "project", "status": "candidate",
+        "title": str(title or body.splitlines()[0])[:80],
+        "confidence": _clamp(confidence), "importance": _clamp(importance),
+        "usage": 0, "pinned": False, "receipts": [], "promoted_to": "",
+        "created": now, "updated": now,
+    }
+    for key, value in (meta or {}).items():
+        if key not in header:
+            header[key] = value
+    _write(path, header, body)
+    store.ledger("memory.seed_project", id=mid, kind=kind,
+                 project=store.safe_id(project_id))
+    return mid
 
 
 def seed_shared(kind, text, *, importance=0.5, confidence=0.4, title="", meta=None,
