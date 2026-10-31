@@ -10,6 +10,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 
 from .memory import health, metrics, store
 
@@ -17,6 +18,9 @@ _STOP = threading.Event()
 _THREAD = None
 _LOCK = threading.RLock()
 LAST_FILE = "maintenance-last.json"
+#: 到点后先等这一小段再真的开跑：健康检查会开 SQLite、可能触发重嵌入，
+#: 不该压在服务启动与首批请求中间。
+STARTUP_GRACE_SECONDS = 20
 
 
 def _last_path():
@@ -79,6 +83,25 @@ def run_check(project_id=None):
     return result
 
 
+def _seconds_to_next(minutes, now_value=None):
+    """距下一次检查还有多少秒；`<= 0` 表示现在就该跑（含「从没跑过」）。
+
+    为什么不能只按 monotonic 睡一个间隔：服务每次重启都会从零开始计时，间隔设成
+    一天就意味着「只要这台机器每天重启一次，这个检查永远不发生」。实测正是这样 ——
+    功能交付了，`maintenance-last.json` 一直是空的。
+    """
+    if now_value is None:
+        now_value = time.time()
+    last = last_status().get("ts")
+    if not last:
+        return 0
+    try:
+        then = datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0
+    return minutes * 60 - (now_value - then)
+
+
 def _loop():
     while not _STOP.is_set():
         try:
@@ -89,10 +112,16 @@ def _loop():
         if minutes <= 0:
             _STOP.wait(15)
             continue
-        deadline = time.monotonic() + minutes * 60
-        while not _STOP.is_set() and time.monotonic() < deadline:
-            _STOP.wait(min(15, max(1, deadline - time.monotonic())))
-        if _STOP.is_set():
+        wait = _seconds_to_next(minutes)
+        if wait > STARTUP_GRACE_SECONDS:
+            # 还没到点：分片睡，停服时能立刻退出；间隔被用户改小时下一轮自然跟上。
+            deadline = time.monotonic() + wait - STARTUP_GRACE_SECONDS
+            while not _STOP.is_set() and time.monotonic() < deadline:
+                _STOP.wait(min(15, max(1, deadline - time.monotonic())))
+            if _STOP.is_set():
+                break
+        # 到点或从没跑过：留一小段宽限让服务先起来（健康检查会开 SQLite、可能重嵌向量）。
+        if _STOP.wait(STARTUP_GRACE_SECONDS):
             break
         run_check()
 

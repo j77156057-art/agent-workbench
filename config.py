@@ -1842,8 +1842,19 @@ def set_memory_model(value):
     return value
 
 
+#: 内部记忆定时检查的默认间隔（分钟）。0 会让这个功能在真实安装里永不运行。
+DEFAULT_MEMORY_CHECK_INTERVAL = 1440
+
+
 def get_memory_check_interval():
-    """内部记忆检查间隔（分钟，0=关闭）；持久化值优先于环境变量。"""
+    """内部记忆检查间隔（分钟，0=关闭）；持久化值优先于环境变量。
+
+    默认 1440（一天一次），不是 0。理由：这个开关交付时默认 0 = 功能存在但永不运行
+    ——「内部定时检查」在真实安装里吃灰，而记忆健康/去重/归档只有手动点面板才会发生。
+    显式存 0 仍然算关闭（`load_state` 只在**键不存在**时给默认），代价也确认有界：
+    `health.maintain(apply=True)` 的索引重建按 body_hash 逐条比对，没变就不重嵌；
+    gc 只归档超过保留期的失效项，且全部落 `archive/memory` 可回溯。
+    """
     value = get_runtime("memory_check_interval_minutes")
     if value is not None:
         try:
@@ -1851,7 +1862,8 @@ def get_memory_check_interval():
         except (TypeError, ValueError):
             return 0
     try:
-        return max(0, min(10080, int(load_state("memory_check_interval_minutes", 0) or 0)))
+        return max(0, min(10080, int(load_state("memory_check_interval_minutes",
+                                                DEFAULT_MEMORY_CHECK_INTERVAL) or 0)))
     except (TypeError, ValueError):
         return 0
 
