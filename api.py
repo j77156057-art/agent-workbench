@@ -1485,6 +1485,11 @@ def _load_secret(root, provider):
     - 其他值（如 ``project``）：项目库优先、全局库兜底——保留按项目覆盖的能力。
     """
     import config as _cfg
+    if provider == "opencode":
+        # 本机约定：OpenCode 的 Key 在 OC_KEY 环境变量里；环境变量优先于密钥库。
+        env_key = os.getenv("OC_KEY") or os.getenv("OPENCODE_API_KEY")
+        if env_key:
+            return env_key
     if getattr(_cfg, "SECRETS_SCOPE", "global") == "global":
         return secrets_store.load(None, provider)
     value = secrets_store.load(root, provider)

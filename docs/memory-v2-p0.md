@@ -375,6 +375,6 @@ POST   /api/memory/reindex
 多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank。语义召回与边编辑本轮已落地。
 
 ### 16.6 应用状态与模型
-- `.docmind_state.json` 已开启 `memory_v2: true`；默认模型从余额为 0 的 `deepseek-flash` 切到可用的 `qwen-plus`（DashScope 全局密钥库有 Key），`/api/config` 实测返回 `qwen/qwen-plus` + `has_key=true`。
-- `output_token_budget` 新增 qwen 厂商上限 32768，修复 qwen-plus 的 `max_tokens` 400；5 回合与 53 题长任务均验证通过。
-- 尝试过 opencode `deepseek-v4.1-flash`：探针与前 21 题正常，随后长时间无新结果，已停止并改用 qwen-plus。
+- `.docmind_state.json` 已开启 `memory_v2: true`；默认模型现为 **opencode / deepseek-v4.1-flash**，Key 优先读环境变量 `OC_KEY`（其次 `OPENCODE_API_KEY`，最后全局密钥库）；`/api/config` 实测返回 `opencode/deepseek-v4.1-flash` + `has_key=true`，3 题冒烟 3/3 通过。
+- qwen-plus 仍可用：`output_token_budget` 新增 qwen 厂商上限 32768，修复 `max_tokens` 400；5 回合与 53 题长任务均验证通过，可随时在设置里切回。
+- 注意：opencode 的长任务曾在前 21 题后长时间无新结果（已停止）；短会话已验证正常。若长任务再次停滞，优先检查 opencode 会话/限流，或临时切回 qwen-plus。

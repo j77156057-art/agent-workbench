@@ -725,6 +725,9 @@ class LLMClient:
         key = api_key or get_runtime("llm_api_key") or LLM_API_KEY
         if cfg["api_key_env"]:
             key = key or os.getenv(cfg["api_key_env"], "")
+        # OpenCode 的本地约定使用 OC_KEY；与 provider 专用变量等价，环境变量优先。
+        if not key and self.provider == "opencode":
+            key = os.getenv("OC_KEY", "")
         self.api_key = key or ""
         # OpenAI SDK 构造需要非空字符串；requires_api_key 的厂商已在 chat()
         # 入口拦截，不会真的把 "EMPTY" 发出去。本地兼容端点（llamacpp/custom）
