@@ -27,6 +27,7 @@ const l2Items = computed(() => (current.value?.items || []) as MemoryPanelItem[]
 const l4Items = computed(() => (current.value?.items || []) as MemoryPanelHook[])
 const l3Items = computed(() => (current.value?.items || []) as MemoryPanelTaskItem[])
 const l4Errors = computed(() => (current.value?.errors || []) as Array<Record<string, unknown>>)
+const l4ProjectErrors = computed(() => (current.value?.project_errors || []) as Array<Record<string, unknown>>)
 const retrievableItems = computed(() => (current.value?.retrievable_items || []) as Array<Record<string, unknown>>)
 
 const constitutionDraft = ref('')
@@ -466,8 +467,12 @@ async function reindex() {
           <button class="mp-btn" type="button" :disabled="busy || !newHook.trim()" @click="addHook">添加</button>
         </div>
         <div v-if="l4Errors.length" class="mp-readonly">
-          <strong>易错点（只读）</strong>
+          <strong>本窗口易错点（只读）</strong>
           <pre class="mp-pre">{{ l4Errors.map(e => `- ${e.label}: ${e.cause}（×${e.occurrences}）`).join('\n') }}</pre>
+        </div>
+        <div v-if="l4ProjectErrors.length" class="mp-readonly">
+          <strong>跨会话易错点（只读）</strong>
+          <pre class="mp-pre">{{ l4ProjectErrors.map(e => `- ${e.label}: ${e.cause}（×${e.occurrences}）`).join('\n') }}</pre>
         </div>
         <div v-if="current.next" class="mp-readonly">
           <strong>上一回合下一步（只读）</strong>

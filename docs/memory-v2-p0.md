@@ -372,7 +372,7 @@ POST   /api/memory/reindex
 主模型精确账单未进 trace（golden runner 不记录 token）；按 5 回合样本 ¥0.0326/轮估算，53 题主模型约 ¥1.7。固化实测 ¥0.0223，仍只占约 1–2%。
 
 ### 16.5 仍未做
-多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank；另有真实嵌入后端（本机缺 bge-m3）、记忆专用评测、跨会话错误记忆。语义召回、边编辑、学习闭环、去重/保留与真实迁移已落地。
+多用户/团队隔离（需要先定认证与共享边界）、跨设备同步（需要存储与冲突合并协议）、图数据库/PagerRank；另有真实嵌入后端（本机缺 bge-m3）与记忆专用评测。语义召回、边编辑、学习闭环、去重/保留、跨会话错误与真实迁移已落地。
 
 ### 16.6 应用状态与模型
 - `.docmind_state.json` 已开启 `memory_v2: true`；默认模型现为 **opencode / deepseek-v4.1-flash**，Key 优先读环境变量 `OC_KEY`（其次 `OPENCODE_API_KEY`，最后全局密钥库）；`/api/config` 实测返回 `opencode/deepseek-v4.1-flash` + `has_key=true`，3 题冒烟 3/3 通过。
@@ -397,3 +397,10 @@ POST   /api/memory/reindex
 - **回合保留**：`episodes.jsonl` 超过 512KB 自动把旧行移到 `projects/<pid>/archive/episodes/`，保留最近 200 条；`latest` 仍只读尾部。
 - **索引一致性**：`upsert_item` 在编辑/晋升/采纳/状态/pin 变化时立即同步行、边、FTS 与向量；`rebuild` 比较标题/状态/置信/重要度/pin/usage/时间，不再只看 body_hash。
 - **验证**：后端 **287 passed**；前端 158 node、build 通过；历史去重 CLI 与真实迁移幂等均已实跑。
+
+### 16.9 跨会话错误记忆（2026-10-31）
+
+- `errors.record` 现在同时写会话账本与项目汇总 `projects/<pid>/errors.md`；同一错误签名跨窗口累计次数。
+- L4 注入在会话错误之外追加「跨会话易错」，并排除本窗口已出现的签名，避免重复；总预算仍受 600 字符上限约束。
+- 上下文面板 L4 分开展示「本窗口易错点」与「跨会话易错点」，均为只读。
+- 验收：后端 **288 passed**；跨会话签名计数、注入和面板数据均有测试覆盖。

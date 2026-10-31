@@ -50,6 +50,7 @@ export interface MemoryLayer {
   learned?: Record<string, unknown>
   items?: Array<Record<string, unknown>>
   errors?: Array<Record<string, unknown>>
+  project_errors?: Array<Record<string, unknown>>
   next?: string
   book?: { id?: string; title?: string; status?: string }
   retrievable?: number

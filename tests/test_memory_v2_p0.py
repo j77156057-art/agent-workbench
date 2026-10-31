@@ -224,6 +224,18 @@ class HooksTests(_MemBase):
         self.assertFalse([r for r in hooks.items("prj", "s1") if r["id"] == row["id"]])
 
 
+class CrossSessionErrorTests(_MemBase):
+    def test_project_rollup_is_visible_in_new_session(self):
+        sig = errors.signature("run_command", "exit 1\n pytest failed")
+        errors.record("prj", "s1", sig, tool="run_command", cause="exit 1 pytest failed")
+        errors.record("prj", "s2", sig, tool="run_command", cause="exit 1 pytest failed")
+        self.assertEqual(errors.top_project("prj", 1)[0]["occurrences"], 2)
+        block = injection.build_session_injection("s3", "prj")
+        self.assertTrue(block)
+        self.assertIn("跨会话易错", block[0]["text"])
+        self.assertIn("pytest", block[0]["text"])
+
+
 class ErrorsTests(_MemBase):
     def test_signature_dedupes_and_counts(self):
         sig = errors.signature("run_command", "exit 1\n  pytest failed")

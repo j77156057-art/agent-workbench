@@ -91,6 +91,7 @@ def next_view(project_id, session_id, code_root=""):
                          editable=True, source="本窗口", kind="hooks",
                          items=hooks.items(project, session) if session else [],
                          errors=errors.top(project, session, 5) if session else [],
+                         project_errors=errors.top_project(project, 5),
                          next=str((latest[0].get("next") if latest else "") or "")))
 
     summary = ""

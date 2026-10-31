@@ -58,6 +58,11 @@ def build_session_injection(session_id, project_id, max_chars=600):
         error_text = errors.render(project, session_id, limit=2, max_chars=200)
         if error_text:
             parts.append(error_text)
+        session_sigs = {row.get("sig") for row in errors.top(project, session_id, 20)}
+        cross_text = errors.render_project(project, limit=2, max_chars=180,
+                                           exclude=session_sigs)
+        if cross_text:
+            parts.append(cross_text)
         latest = episodes.latest(project, session_id, 1)
         next_step = str((latest[0].get("next") if latest else "") or "").strip()
         if next_step:
