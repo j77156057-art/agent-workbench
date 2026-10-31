@@ -607,9 +607,22 @@ def _turns_tokens(turns, counter) -> int:
 
 
 _SUMMARY_PROMPT = (
-    "你是对话压缩器。把下面这段【早期对话】压缩成不超过 300 字的中文要点，"
-    "务必保留：已确认的结论、涉及的文件路径与行号、用户的偏好与约束、尚未解决的问题。"
-    "不要复述寒暄，不要编造未出现的信息。只输出要点本身。\n\n早期对话：\n"
+    "你是对话压缩器。把下面这段【早期对话】压缩成不超过 300 字的中文要点。"
+    "只保留：已确认的项目事实、精确标识符/签名/错误码、涉及的文件路径与行号、"
+    "用户长期有效的偏好与约束、真正尚未解决的问题。"
+    "不要保留：一次性的操作步骤、工具运行过程/命令回显、寒暄、已经解决的事项、"
+    "用户只针对某一轮格式的要求、一次性的“先读某文件/不要重试/只读不改”等指令、"
+    "环境警告（缓存权限/依赖弃用/插件配置）。原文被截断时明确标注，不要编造。"
+    "只输出要点本身。"
+    "\n\n早期对话：\n"
+)
+_SUMMARY_TURN_CHARS = 1200
+_SUMMARY_MAX_CHARS = 1200
+_SUMMARY_MERGE_PROMPT = (
+    "你是对话压缩器。把【旧摘要】和【新增摘要】合并成不超过 400 字的中文要点。"
+    "保留长期事实、精确标识符/签名/错误码、约束和真正未决项；去重；"
+    "删除一次性操作细节、一次性指令和环境警告；不要编造。只输出要点本身。"
+    "\n\n旧摘要：\n{prev}\n\n新增摘要：\n{new}"
 )
 
 
@@ -655,8 +668,8 @@ def _llm_summary(turns, llm) -> str:
     # （LONGCTX-LLMSlice-Leak：修复此前只装了兜底、主路径漏装）。
     convo = "\n".join(
         "用户：%s\n助手：%s" % (
-            _clip_with_mark(t.get("user") or "", 400)[0],
-            _clip_with_mark(t.get("assistant") or "", 400)[0],
+            _clip_with_mark(t.get("user") or "", _SUMMARY_TURN_CHARS)[0],
+            _clip_with_mark(t.get("assistant") or "", _SUMMARY_TURN_CHARS)[0],
         )
         for t in turns
     )
@@ -669,6 +682,44 @@ def _llm_summary(turns, llm) -> str:
         return out or _naive_summary(turns)
     except Exception:  # noqa: BLE001 —— 压缩失败绝不能打断正常问答
         return _naive_summary(turns)
+
+
+def _cap_summary(text):
+    value = str(text or "").strip()
+    if len(value) <= _SUMMARY_MAX_CHARS:
+        return value
+    cut = value[:_SUMMARY_MAX_CHARS]
+    mark = max(cut.rfind("。"), cut.rfind("\n"), cut.rfind("；"))
+    if mark >= int(_SUMMARY_MAX_CHARS * 0.6):
+        return cut[:mark + 1].rstrip()
+    return cut.rstrip() + "…"
+
+
+def _merge_summary(prev, new_sum, llm=None):
+    """合并新旧摘要并封顶；超限时让压缩器再合并一次，失败则确定性截断。"""
+    prev = str(prev or "").strip()
+    new_sum = str(new_sum or "").strip()
+    if not prev:
+        return _cap_summary(new_sum)
+    if not new_sum:
+        return _cap_summary(prev)
+    combined = prev + "\n" + new_sum
+    if len(combined) <= _SUMMARY_MAX_CHARS:
+        return combined
+    if llm is not None:
+        try:
+            out = llm.chat(
+                [{"role": "user", "content": _SUMMARY_MERGE_PROMPT.format(prev=prev, new=new_sum)}],
+                stream=False, temperature=0.2,
+            )
+            out = str(out or "").strip()
+            if out:
+                return _cap_summary(out)
+        except Exception:  # noqa: BLE001 —— 合并失败必须退化为确定性截断
+            pass
+    room = max(0, _SUMMARY_MAX_CHARS - len(new_sum) - 2)
+    body = (prev[-room:] + "\n" + new_sum).strip()
+    return (body[:_SUMMARY_MAX_CHARS - 1].rstrip() + "…")[:_SUMMARY_MAX_CHARS]
 
 
 def maybe_compact(session_id, turns, llm=None, trigger_tokens=None, keep_tokens=None,
@@ -707,7 +758,7 @@ def maybe_compact(session_id, turns, llm=None, trigger_tokens=None, keep_tokens=
     old = turns[: len(turns) - len(kept)]
     prev = summary_text(session_id, project_id)
     new_sum = _llm_summary(old, llm)
-    summary = (prev + "\n" + new_sum).strip() if prev else new_sum
+    summary = _merge_summary(prev, new_sum, llm)
     return kept, summary
 
 

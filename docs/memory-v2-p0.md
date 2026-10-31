@@ -431,3 +431,15 @@ POST   /api/memory/reindex
 - 检索先用关键词 + 语义得到基础档序，再以 top-3 为种子做 PPR，把 1–2 跳关联条目带进结果（`_graph` 标记），并继续受项目隔离与状态过滤约束；无 edges 时回退到原来的 1 跳扩展。
 - 测试：链式 A→B→C 中只查 A 的命中，PPR 仍能带出两跳 C；项目隔离与原有边测试保持通过。
 - 总回归 **302 passed**。
+
+### 16.13 长任务实测：钩子 / 压缩 / 固化质量（2026-10-31）
+
+- **真实任务**：临时项目 ORCHID-2718，6 回合读代码、制造一次确定性读文件失败、修两个 bug、写决策文档、全量测试；用 `DOCMIND_SESSION_MAX_TURNS=4` 强制触发会话压缩；模型 opencode/deepseek-v4.1-flash。
+- **自动钩子**：确实自动生成，但目前只有两类——工具失败（`error`）与用户明确“记住/约定”（`user_agreement`）；普通结论不会自动进 L4。首轮出现 4 条假/错钩子：pytest 缓存 `拒绝访问` 警告被 `_is_failure` 当失败、失败文本截到 400 字只剩警告头、钩子用 `journal.last_action` 把 `run_command` 失败标成 `grep`。已修：退出码 0 / 结构化 `ok:true` 直接判成功；`Turn.last_failure_tool` 记录真正失败工具；钩子按失败签名去重并只留 `FAILED/error` 行。
+- **自动压缩**：压缩触发后摘要从 448 → 1110 → 1200 字符；首轮摘要因每轮只喂 400 字而丢掉两个 API 签名，且只追加不合并、无上限。已修：每轮源文本 1200 字、提示词只留长期事实/精确标识符/错误码、旧新摘要超 1200 时二次合并并封顶、硬截断带省略号。
+- **压缩后记忆**：同会话重启（只靠摘要 + 保留轮次）能准确答出项目代号、三个 API 签名、`ERR_EMPTY_INPUT`、`ORCHID-2718 sum=6`、已废弃旧代号；新窗口通过 `memory_search` 也能召回 v2 候选与旧 episode。
+- **长期记忆**：首轮 4 条候选，2 条有用，1 条“本轮未验证”中间态、1 条低价值；已修：`consolidate._trivial` 跳过明确“尚未完成验证”的回合。复测 3 条候选：规格偏差事实、终检清单、确定性读文件失败经验；0 条晋升（仍需回执 + 采纳/5 星 + 泛化，符合设计）。
+- **候选时间失效**：固化时把最近 10 条项目候选一并交给模型；新回合若证明旧候选过时，输出 `supersedes` 旧 id。`promote.supersede` 把旧条目改为 `superseded`（不再检索/可召回），并在新条目上加 `supersedes` 边。真实 LLM 已在 scratch 项目上把“compute 返回 0、测试失败”的旧诊断替换为终检后的新事实。
+- **中间轮验证**：`run_command` 命中测试命令（pytest/npm test/go test 等）且退出码 0，同时测试后未再改文件 → 收尾门接受为 `verification_status=test_command`，不再替换成“未验证”；`record_turn` 同步写 `type=test, result=pass` 回执，供后续晋升门使用。
+- **仍未做**：已晋升到共享层条目的自动失效仍需人工/共享层流程；候选取代依赖模型判断，可能漏判；摘要提示词已收紧一次性指令/环境噪声，但仍需长期观察。
+- **验证**：相关后端套件全绿（最近三组 **126 / 108 / 31 passed**：failure markers、session archive、memory v2、trace、memory opt/eval/gates）；真实复验 write+pytest 回合 final 未再被替换，状态为 `test_command`，回执含 `test/pass`；复测报告见 `artifacts/longtask/report.json` 与 `artifacts/longtask2/report.json`。

@@ -138,6 +138,39 @@ class SnapshotArchiveTests(Base):
                          "按快照分叉却带上了原会话的完整归档——历史错位")
 
 
+class _SummaryLLM:
+    def __init__(self):
+        self.prompts = []
+
+    def chat(self, messages, **kwargs):
+        prompt = str((messages or [{}])[0].get("content") or "")
+        self.prompts.append(prompt)
+        return "合并后的摘要" if "旧摘要" in prompt else "摘要"
+
+
+class SummaryQualityTests(Base):
+    def test_summary_source_keeps_facts_past_400_chars(self):
+        long_answer = "开头" + "x" * 650 + " ALPHA-7731-OMEGA " + "y" * 500
+        turns = [{"user": "问题一", "assistant": long_answer},
+                 {"user": "问题二", "assistant": "回答二"},
+                 {"user": "问题三", "assistant": "回答三"}]
+        llm = _SummaryLLM()
+        kept, _summary = sessions.maybe_compact(
+            self.sid, turns, llm=llm, trigger_tokens=1, keep_tokens=1)
+        self.assertLess(len(kept), len(turns))
+        self.assertTrue(any("ALPHA-7731-OMEGA" in prompt for prompt in llm.prompts),
+                        "摘要输入仍按 400 字腰斩，精确标识符会在压缩前丢失")
+
+    def test_summary_merge_is_capped(self):
+        llm = _SummaryLLM()
+        merged = sessions._merge_summary("旧" * 900, "新" * 500, llm)
+        self.assertEqual(merged, "合并后的摘要")
+        fallback = sessions._merge_summary("旧" * 900, "新" * 500, None)
+        self.assertLessEqual(len(fallback), sessions._SUMMARY_MAX_CHARS)
+        self.assertIn("新", fallback)
+        self.assertTrue(fallback.endswith("…"), "硬截断必须显式标注，不能停在半个句子里")
+
+
 class CompactionArithmeticTests(Base):
     """钉死 agent 归档逻辑依赖的算术前提：kept 是 turns 的后缀，
     dropped = turns[:len(turns)-len(kept)]，archived+kept 完整还原。"""

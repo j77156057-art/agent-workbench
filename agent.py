@@ -3182,13 +3182,52 @@ def _is_no_match_only(obs):
 
 
 
-def _is_failure(obs):
-    if not obs or not obs.strip():
-        return True
-    # 「没有匹配」先出局：它是合法答案，不能计入失败配额、更不能触发熔断。
-    if _is_no_match_only(obs):
+_TEST_COMMAND = re.compile(
+    r"(?i)^\s*(?:(?:cd|pushd)\s+[^&|;]+\s*(?:&&|;)\s*)?"
+    r"(?:python[0-9.]*\s+-m\s+(?:pytest|unittest)|py\s+-m\s+(?:pytest|unittest)|"
+    r"pytest|npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+(?:run\s+)?test|"
+    r"npx\s+(?:jest|vitest)|vitest|jest|go\s+test|cargo\s+test|"
+    r"dotnet\s+test|mvn\s+test|gradlew?\s+test|tox|nox)\b")
+
+
+def _is_test_command(arg):
+    """保守识别真正的测试命令：只认命令开头，避免 grep pytest 之类的误报。"""
+    command = str(arg or "").strip().splitlines()[0] if str(arg or "").strip() else ""
+    return bool(_TEST_COMMAND.match(command))
+
+
+def _test_command_verified(turn):
+    """测试命令通过且之后没再改文件，才算本回合有验证证据。"""
+    if turn is None or not getattr(turn, "test_command_ok", False):
         return False
-    return any(marker in obs for marker in _FAILURE_MARKERS)
+    targets = dict(getattr(turn, "verification_targets", None) or {})
+    if not targets:
+        return False
+    return dict(getattr(turn, "test_command_targets", None) or {}) == targets
+
+
+def _is_failure(obs):
+    text = str(obs or "")
+    if not text.strip():
+        return True
+    # 命令退出码 0 是成功；输出里出现的“拒绝访问/文件不存在”可能只是
+    # pytest 缓存警告或被测代码打印的数据，不能反过来判失败。
+    if text.strip().startswith("[exit code 0]"):
+        return False
+    # 结构化工具（memory_search 等）已明确 ok=true 时，正文里的失败词只是
+    # 检索到的历史内容，不是本次调用失败。
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data.get("ok") is True:
+            return False
+    # 「没有匹配」先出局：它是合法答案，不能计入失败配额、更不能触发熔断。
+    if _is_no_match_only(text):
+        return False
+    return any(marker in text for marker in _FAILURE_MARKERS)
 
 
 def _probe_audit_root(code_root, refs):
@@ -5858,18 +5897,24 @@ class Agent:
                     ev = dict(ev)
                     ev["text"] = _strip_internal_prompt_leak(ev.get("text") or "")
                     if turn.verification_targets and not turn.verified:
-                        ev["text"] = "修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。"
-                        ev["verification_status"] = "unverified"
-                        # 诚实终态必须抵达 UI：前端两处「未完成」徽章只认 m.degraded
-                        # （useChatStream 仅由 ev.degraded===true 置位，从不读
-                        # verification_status/outcome）。此前这一支只换正文、只写
-                        # outcome，没打 degraded，于是后端记着「未验证」而前端仍染成
-                        # 绿色「已完成」。补上 degraded=True，与 harness 自写兜底 final
-                        # （见本文件 6231/7639/7789）同一信号对齐。
-                        ev["degraded"] = True
-                        turn.outcome = "verification_incomplete"
-                        if self.history and self.history[-1].get("user") == question:
-                            self.history[-1]["assistant"] = ev["text"]
+                        # 本轮写文件后跑过测试且退出码 0，且测试之后没再改文件：
+                        # 这与 self_verify 一样是真实验收证据，不应再替换成“未验证”。
+                        if _test_command_verified(turn):
+                            turn.verified = True
+                            ev["verification_status"] = "test_command"
+                        else:
+                            ev["text"] = "修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。"
+                            ev["verification_status"] = "unverified"
+                            # 诚实终态必须抵达 UI：前端两处「未完成」徽章只认 m.degraded
+                            # （useChatStream 仅由 ev.degraded===true 置位，从不读
+                            # verification_status/outcome）。此前这一支只换正文、只写
+                            # outcome，没打 degraded，于是后端记着「未验证」而前端仍染成
+                            # 绿色「已完成」。补上 degraded=True，与 harness 自写兜底 final
+                            # （见本文件 6231/7639/7789）同一信号对齐。
+                            ev["degraded"] = True
+                            turn.outcome = "verification_incomplete"
+                            if self.history and self.history[-1].get("user") == question:
+                                self.history[-1]["assistant"] = ev["text"]
                     final_text = ev.get("text") or ""
                     incomplete = {"verification_incomplete", "failed", "deadline_exceeded", "max_steps", "truncated", "empty"}
                     status = turn.outcome if turn.outcome in incomplete else "completed"
@@ -7165,6 +7210,11 @@ class Agent:
                 if _after_tool.get("blocked"):
                     obs = f"[钩子拦截] {action_name} 结果未放行：{_after_tool.get('reason') or '工具生命周期钩子拦截'}"
                     _tool_ok = False
+                if (turn is not None and action_name == "run_command"
+                        and _is_test_command(action_arg)):
+                    turn.test_command_ok = bool(_tool_ok)
+                    turn.test_command = _clip(str(action_arg), 200)
+                    turn.test_command_targets = dict(getattr(turn, "verification_targets", None) or {})
                 if turn is not None:
                     turn.tool_step(
                         action_name, action_arg,
@@ -7254,7 +7304,8 @@ class Agent:
                         turn.failure_count += 1
                         turn.max_tool_streak = max(turn.max_tool_streak, streak)
                         turn.max_consec_failures = max(turn.max_consec_failures, fail_total)
-                        turn.last_failure = _clip(obs, 400)
+                        turn.last_failure = _clip(obs, 4000)
+                        turn.last_failure_tool = str(parsed["action"])
                     # 同一工具反复撞「重试必然同样失败」的类别：立刻要求换工具，
                     # 不再走下面的通用熔断（那条要3 次才触发，而这里每次都是白试）。
                     # 幂等存疑（idempotency_in_doubt）尤其要拦：execute_tool 已经
@@ -8104,6 +8155,10 @@ class Agent:
                     error_kind = "hook_blocked"
                 if result.error_kind == "exception":
                     obs = "[并行执行失败] " + obs
+                if turn is not None and name == "run_command" and _is_test_command(arg2):
+                    turn.test_command_ok = bool(ok)
+                    turn.test_command = _clip(str(arg2), 200)
+                    turn.test_command_targets = dict(getattr(turn, "verification_targets", None) or {})
                 if turn is not None:
                     turn.tool_step(name, arg2, (time.monotonic() - t0) * 1000, obs, ok=ok)
                     _ev = _tool_evidence_from_obs(name, obs, ok)
@@ -8151,7 +8206,8 @@ class Agent:
                 turn.failure_count += 1
                 turn.max_tool_streak = max(turn.max_tool_streak, streak)
                 turn.max_consec_failures = max(turn.max_consec_failures, fail_total)
-                turn.last_failure = _clip(obs, 400)
+                turn.last_failure = _clip(obs, 4000)
+                turn.last_failure_tool = str(nm)
             is_web = nm in _WEB_ACTIONS
             fail_limit = _WEB_RESEARCH_FAIL_LIMIT if is_web else _TOOL_FAIL_LIMIT
             total_limit = _WEB_RESEARCH_TOTAL_LIMIT if is_web else _TOTAL_FAIL_LIMIT

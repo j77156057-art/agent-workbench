@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 
-from . import promote, store
+from . import profile, promote, store
 
 MARKER = ".migrated-p0-4.json"
+PROFILE_MARKER = ".profile-backfilled.json"
 DISTILLED = "模型报告（已蒸馏）"
+_PATH_ARG = re.compile(
+    r"(?m)^\s*(?:path|file|target|source|dest|new_path|old_path)\s*:\s*[\"']?([^\"'\n]+)")
 
 
 def default_db():
@@ -83,11 +87,167 @@ def _migrate_experience(result):
         result["experience_error"] = str(exc)[:200]
 
 
-def run(db_path=None, force=False):
+def _json_value(raw, fallback):
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        value = json.loads(str(raw or ""))
+    except ValueError:
+        return fallback
+    return value if isinstance(value, type(fallback)) else fallback
+
+
+def _profile_patch(legacy, preference_rows, current):
+    legacy = legacy if isinstance(legacy, dict) else {}
+    current = current if isinstance(current, dict) else {}
+    patch = {}
+    for key in ("display_name", "language", "timezone", "location", "notes"):
+        value = str(legacy.get(key) or "").strip()
+        if value and not current.get(key):
+            patch[key] = value
+    prefs = dict(current.get("preferences") or {})
+    for key, value in _json_value(legacy.get("preferences"), {}).items():
+        prefs.setdefault(key, value)
+    for row in preference_rows or ():
+        title = str(row.get("title") or "").strip()
+        content = str(row.get("content") or "").strip()
+        if not content:
+            continue
+        if title in ("language", "语言") or "沟通" in content:
+            language = ""
+            if "中文" in content:
+                language = "中文"
+            elif "英文" in content or "英语" in content:
+                language = "英文"
+            if language and not (current.get("language") or patch.get("language")):
+                patch["language"] = language
+        elif title in ("detail", "详细度") or "回答" in content:
+            if "简洁" in content:
+                prefs["detail"] = "简洁"
+            elif "详细" in content:
+                prefs["detail"] = "详细"
+        elif title:
+            prefs.setdefault(title, content)
+    if prefs != (current.get("preferences") or {}):
+        patch["preferences"] = prefs
+    goals = _json_value(legacy.get("goals"), [])
+    if goals:
+        merged = list(current.get("goals") or [])
+        for goal in goals:
+            if goal and goal not in merged:
+                merged.append(goal)
+        if merged != (current.get("goals") or []):
+            patch["goals"] = merged
+    return patch
+
+
+def _journal_records(rows):
+    records = []
+    for row in rows or ():
+        journal = row.get("journal")
+        if isinstance(journal, str):
+            try:
+                journal = json.loads(journal)
+            except ValueError:
+                journal = {}
+        if not isinstance(journal, dict):
+            journal = {}
+        tools, paths = [], []
+        for entry in (journal.get("executed") or []):
+            if isinstance(entry, (list, tuple)):
+                if not entry:
+                    continue
+                tools.append(str(entry[0]))
+                args = str(entry[1]) if len(entry) > 1 else ""
+                for match in _PATH_ARG.finditer(args):
+                    value = match.group(1).strip().strip("'\"")
+                    if value:
+                        paths.append(value)
+            elif isinstance(entry, dict):
+                tool = entry.get("name") or entry.get("tool")
+                if tool:
+                    tools.append(str(tool))
+                value = entry.get("path") or entry.get("file")
+                if value:
+                    paths.append(str(value))
+        for change in (journal.get("file_changes") or []):
+            if isinstance(change, dict):
+                value = change.get("path") or change.get("file")
+            else:
+                value = change
+            if value:
+                paths.append(str(value))
+        records.append({"question": str(row.get("question") or ""),
+                        "paths": paths, "tools": tools})
+    return records
+
+
+def backfill_profile(db_path=None, force=False):
+    """把旧库的显式画像/偏好与历史回合学习信号回填到 L1。
+
+    旧迁移只归档 preference，没把它接到画像；实时 learning 又只统计开关打开
+    之后的回合，导致升级后画像看起来全空。这里用可复现的确定性计数补齐：
+    声明字段只搬旧库里已有的值，风格/扩展名/工具 domain 来自历史 checkpoint
+    的 journal，绝不推断隐藏属性。
+    """
     db_path = db_path or default_db()
-    marker_path = store.safe_path(MARKER)
+    marker_path = store.safe_path(PROFILE_MARKER)
     if os.path.exists(marker_path) and not force:
         return {"ok": True, "skipped": True, "marker": marker_path}
+    result = {"ok": True, "db": db_path, "declared": 0, "learned_records": 0}
+    if not os.path.exists(db_path):
+        result.update({"ok": False, "error": "旧库不存在"})
+        return result
+    connection = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        legacy = (_rows(connection, "user_profiles") or [{}])[0]
+        preference_rows = [row for row in _rows(connection, "memories")
+                           if str(row.get("kind") or "") == "preference"]
+        checkpoints = _rows(connection, "checkpoints")
+    finally:
+        connection.close()
+
+    patch = _profile_patch(legacy, preference_rows, profile.load())
+    if patch:
+        try:
+            profile.save(patch)
+            result["declared"] = len(patch)
+        except Exception as exc:  # noqa: BLE001 —— 画像不可写不阻断迁移
+            result["declared_error"] = str(exc)[:200]
+
+    records = _journal_records(checkpoints)
+    if records:
+        try:
+            import agent_memory
+            agent_memory.learn_habits_bulk(records)
+            result["learned_records"] = len(records)
+        except Exception as exc:  # noqa: BLE001 —— 学习回填失败不阻断迁移
+            result["learned_error"] = str(exc)[:200]
+    try:
+        data = profile.load()
+        result["language"] = data.get("language") or ""
+        result["learned"] = data.get("learned") or {}
+    except Exception:  # noqa: BLE001
+        pass
+
+    store.atomic_write(marker_path, json.dumps(
+        {"schema_version": 1, "ts": store.now(), "db": db_path,
+         "result": {key: value for key, value in result.items()
+                    if key in ("declared", "learned_records", "language")}},
+        ensure_ascii=False, indent=2) + "\n")
+    store.ledger("profile.backfill", declared=result["declared"],
+                 learned_records=result["learned_records"])
+    return result
+
+
+def run(db_path=None, force=False):
+    db_path = db_path or default_db()
+    profile_result = backfill_profile(db_path)
+    marker_path = store.safe_path(MARKER)
+    if os.path.exists(marker_path) and not force:
+        return {"ok": True, "skipped": True, "marker": marker_path,
+                "profile": profile_result}
     result = {"ok": True, "db": db_path, "archived": 0, "seeded_facts": 0,
               "seeded_lessons": 0, "preferences": 0, "checkpoints": 0, "experience": 0,
               "retired": 0}
@@ -152,6 +312,7 @@ def run(db_path=None, force=False):
     result["checkpoints"] = len(checkpoint_rows)
 
     _migrate_experience(result)
+    result["profile"] = profile_result
 
     marker = {"schema_version": 1, "ts": store.now(), "db": db_path, "result": result}
     store.atomic_write(marker_path, json.dumps(marker, ensure_ascii=False, indent=2) + "\n")

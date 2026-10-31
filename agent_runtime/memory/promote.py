@@ -359,6 +359,40 @@ def sweep(project_id):
     return {"checked": checked, "promoted": promoted}
 
 
+def supersede(project_id, old_id, new_id, *, reason=""):
+    """把旧候选标为 superseded（不再召回），并在新条目上留 supersedes 边。
+
+    只处理项目候选：已晋升的共享条目需要人工/共享层失效，不在自动固化里做。
+    """
+    old_id, new_id = str(old_id or ""), str(new_id or "")
+    if not old_id or not new_id or old_id == new_id:
+        return None
+    items = {str(item.get("id")): item for item in candidates(project_id)}
+    old, new = items.get(old_id), items.get(new_id)
+    if old is None or new is None or old.get("status") != "candidate":
+        return None
+    now = store.now()
+    old["status"] = "superseded"
+    old["superseded_by"] = new_id
+    old["superseded_at"] = now
+    old["supersede_reason"] = str(reason or "")[:200]
+    old["updated"] = now
+    _write(old["path"], {key: value for key, value in old.items()
+                         if key not in ("body", "path")}, old.get("body") or "")
+    edges = _clean_edges(new.get("edges") or [])
+    if not any(edge["type"] == "supersedes" and edge["to"] == old_id for edge in edges):
+        edges.append({"type": "supersedes", "to": old_id})
+        new["edges"] = edges
+        new["updated"] = now
+        _write(new["path"], {key: value for key, value in new.items()
+                             if key not in ("body", "path")}, new.get("body") or "")
+        _sync_index(new)
+    _sync_index(old)
+    store.ledger("memory.supersede", old=old_id, new=new_id,
+                 project=store.safe_id(project_id), reason=str(reason or "")[:120])
+    return old
+
+
 def shared_items():
     rows = []
     for kind in ("fact", "lesson"):

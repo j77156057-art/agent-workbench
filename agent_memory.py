@@ -655,6 +655,31 @@ def _tally_topk(counter, topk):
     return [{"value": str(k), "count": int(v)} for k, v in items]
 
 
+def _learned_counts(learned, key):
+    return {str(row["value"]): int(row.get("count") or 0)
+            for row in (learned.get(key) or [])
+            if isinstance(row, dict) and row.get("value")}
+
+
+def _merge_learned(uid, style=None, focus=None, tasks=None):
+    profile = get_profile(uid)
+    learned = dict(profile.get("learned") or {})
+    limits = {"answer_style": _LEARN_STYLE_TOPK, "focus": _LEARN_TOPK, "tasks": _LEARN_TOPK}
+    for key, incoming in (("answer_style", style), ("focus", focus), ("tasks", tasks)):
+        counts = _learned_counts(learned, key)
+        for value, count in (incoming or {}).items():
+            counts[str(value)] = int(counts.get(str(value), 0)) + int(count)
+        learned[key] = _tally_topk(counts, limits[key])
+    blob = scrub(json.dumps(learned, ensure_ascii=False), _LEARN_BLOB_CAP)
+    with _LOCK, closing(_connect()) as conn, conn:
+        if conn.execute("SELECT 1 FROM user_profiles WHERE user_id=?", (uid,)).fetchone():
+            conn.execute("UPDATE user_profiles SET learned=?, updated=? WHERE user_id=?", (blob, _now(), uid))
+        else:
+            conn.execute("INSERT INTO user_profiles (user_id, updated, learned) VALUES (?,?,?)",
+                         (uid, _now(), blob))
+    return get_profile(uid)
+
+
 def learn_habits(user_id=None, question="", paths=(), tools=()):
     """把本轮可观测的使用信号累加进 user_profiles.learned。仅开关开时生效，
     关时直接返回、零写入。纯计数、无模型、无网络：
@@ -665,14 +690,7 @@ def learn_habits(user_id=None, question="", paths=(), tools=()):
     if not _learn_enabled():
         return get_profile(user_id)
     uid = _profile_user_id(user_id)
-    profile = get_profile(uid)
-    learned = dict(profile.get("learned") or {})
-    style = {row["value"]: row["count"] for row in (learned.get("answer_style") or [])
-             if isinstance(row, dict) and row.get("value")}
-    focus = {row["value"]: row["count"] for row in (learned.get("focus") or [])
-             if isinstance(row, dict) and row.get("value")}
-    tasks = {row["value"]: row["count"] for row in (learned.get("tasks") or [])
-             if isinstance(row, dict) and row.get("value")}
+    style, focus, tasks = {}, {}, {}
     text = str(question or "")
     for label, pattern in _STYLE_PATTERNS:
         if re.search(pattern, text):
@@ -685,17 +703,28 @@ def learn_habits(user_id=None, question="", paths=(), tools=()):
         dom = _tool_domain(_as_tool(t))
         if dom:
             tasks[dom] = int(tasks.get(dom, 0)) + 1
-    learned["answer_style"] = _tally_topk(style, _LEARN_STYLE_TOPK)
-    learned["focus"] = _tally_topk(focus, _LEARN_TOPK)
-    learned["tasks"] = _tally_topk(tasks, _LEARN_TOPK)
-    blob = scrub(json.dumps(learned, ensure_ascii=False), _LEARN_BLOB_CAP)
-    with _LOCK, closing(_connect()) as conn, conn:
-        if conn.execute("SELECT 1 FROM user_profiles WHERE user_id=?", (uid,)).fetchone():
-            conn.execute("UPDATE user_profiles SET learned=?, updated=? WHERE user_id=?", (blob, _now(), uid))
-        else:
-            conn.execute("INSERT INTO user_profiles (user_id, updated, learned) VALUES (?,?,?)",
-                         (uid, _now(), blob))
-    return get_profile(uid)
+    return _merge_learned(uid, style, focus, tasks)
+
+
+def learn_habits_bulk(records, user_id=None):
+    """历史回合批量回填 learned（迁移用，不受实时开关限制）。
+    每条记录支持 question / paths / tools，计数口径与 learn_habits 完全一致。"""
+    uid = _profile_user_id(user_id)
+    style, focus, tasks = {}, {}, {}
+    for record in records or ():
+        record = record if isinstance(record, dict) else {}
+        for label, pattern in _STYLE_PATTERNS:
+            if re.search(pattern, str(record.get("question") or "")):
+                style[label] = int(style.get(label, 0)) + 1
+        for p in (record.get("paths") or ()):
+            ext = _file_ext(p)
+            if ext:
+                focus[ext] = int(focus.get(ext, 0)) + 1
+        for t in (record.get("tools") or ()):
+            dom = _tool_domain(_as_tool(t))
+            if dom:
+                tasks[dom] = int(tasks.get(dom, 0)) + 1
+    return _merge_learned(uid, style, focus, tasks)
 
 
 def clear_learned(user_id=None):

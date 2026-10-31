@@ -181,8 +181,21 @@ class _RecordTurn:
         ]
         self.failure_count = 1
         self.last_failure = "命令退出码 1：pytest 失败"
+        self.last_failure_tool = "run_command"
         self.prompt_tokens = 120
         self.completion_tokens = 30
+
+
+class _TestVerifiedTurn(_RecordTurn):
+    def __init__(self):
+        super().__init__()
+        self.failure_count = 0
+        self.last_failure = None
+        self.last_failure_tool = ""
+        self.verification_targets = {"a.py": True}
+        self.test_command_ok = True
+        self.test_command = "python -m pytest -q"
+        self.test_command_targets = {"a.py": True}
 
 
 class EpisodeTests(_MemBase):
@@ -296,6 +309,47 @@ class TurnRecordTests(_MemBase):
         self.assertEqual(result, {})
         self.assertEqual(episodes.latest("prj", "s1", 1), [])
         self.assertEqual(hooks.items("prj", "s1"), [])
+
+    def test_passing_test_command_writes_test_receipt(self):
+        result = turns.record_turn(
+            session_id="s1", project_id="prj", question="修一下并跑测试",
+            final_text="已修复，7 passed", status="completed",
+            turn=_TestVerifiedTurn(), journal={"file_changes": [{"path": "a.py"}]},
+            next_step="")
+        self.assertEqual(len(result["receipts"]), 1)
+        receipt = receipts.get("prj", result["receipts"][0])
+        self.assertEqual((receipt["type"], receipt["result"]), ("test", "pass"))
+        self.assertIn("pytest", receipt["cmd"])
+
+    def test_test_receipt_coexists_with_failed_self_verify(self):
+        result = turns.record_turn(
+            session_id="s1", project_id="prj", question="修复并跑测试",
+            final_text="pytest 通过", status="completed", turn=_TestVerifiedTurn(),
+            journal={"file_changes": [{"path": "a.py"}],
+                     "verification": {"a.py": False}, "verified": False},
+            next_step="")
+        rows = [receipts.get("prj", rid) for rid in result["receipts"]]
+        kinds = {(row["type"], row["result"]) for row in rows if row}
+        self.assertIn(("verify", "fail"), kinds)
+        self.assertIn(("test", "pass"), kinds)
+
+    def test_error_hook_uses_failing_tool_and_actionable_tail(self):
+        turn = _RecordTurn()
+        turn.last_failure = (
+            "PytestCacheWarning: could not create cache path 拒绝访问\n"
+            "=========================== short test summary info ===========================\n"
+            "FAILED tests/test_calc.py::test_compute_empty_raises - DID NOT RAISE\n"
+            "2 failed, 3 passed, 2 warnings in 0.67s")
+        journal = {"last_action": "grep", "last_obs": "匹配成功", "file_changes": []}
+        turns.record_turn(
+            session_id="s1", project_id="prj", question="跑测试", final_text="完成",
+            status="completed", turn=turn, journal=journal, next_step="")
+        rows = [item for item in hooks.items("prj", "s1") if item["kind"] == "error"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("run_command 失败", rows[0]["text"])
+        self.assertIn("FAILED tests/test_calc.py", rows[0]["text"])
+        self.assertNotIn("PytestCacheWarning", rows[0]["text"])
+        self.assertEqual(errors.top("prj", "s1")[0]["tool"], "run_command")
 
     def test_failed_verification_writes_fail_receipt(self):
         journal = {"verification": {"a.py": False}, "verified": False,
@@ -525,9 +579,13 @@ def _consolidate_episode(*, status="completed", actions=1,
 class ConsolidateTests(_MemBase):
     _episode = staticmethod(_consolidate_episode)
 
-    def _out(self, keep=True, text="合并前先跑完整测试能降低回归率", kind="fact", importance=0.7):
-        return json.dumps({"keep": keep, "kind": kind, "title": "t",
-                           "text": text, "importance": importance}, ensure_ascii=False)
+    def _out(self, keep=True, text="合并前先跑完整测试能降低回归率", kind="fact",
+             importance=0.7, supersedes=None):
+        data = {"keep": keep, "kind": kind, "title": "t",
+                "text": text, "importance": importance}
+        if supersedes is not None:
+            data["supersedes"] = list(supersedes)
+        return json.dumps(data, ensure_ascii=False)
 
     def test_keep_true_creates_candidate_and_meters(self):
         result = consolidate_run(self, self._out())
@@ -544,6 +602,38 @@ class ConsolidateTests(_MemBase):
         result = consolidate_run(self, self._out(), episode=self._episode(actions=0, summary="好"))
         self.assertFalse(result["ok"])
         self.assertEqual(metrics.report()["skipped"], 2)
+
+    def test_new_evidence_supersedes_stale_candidate(self):
+        old = promote.create_candidate(
+            "prj", "fact", "空输入当前会静默返回零，两个测试失败", importance=0.6)
+        result = consolidate_run(
+            self, self._out(text="compute 对空列表已改为抛 ERR_EMPTY_INPUT，回归全部通过",
+                            importance=0.8, supersedes=[old["id"]]))
+        self.assertTrue(result["kept"])
+        self.assertEqual(result["superseded"], [old["id"]])
+        rows = {item["id"]: item for item in promote.candidates("prj")}
+        self.assertEqual(rows[old["id"]]["status"], "superseded")
+        self.assertEqual(rows[old["id"]]["superseded_by"], result["candidate"])
+        new_edges = rows[result["candidate"]]["edges"]
+        self.assertTrue(any(edge["type"] == "supersedes" and edge["to"] == old["id"]
+                            for edge in new_edges))
+        retrievable = {item["id"] for item in promote.retrievable("prj")}
+        self.assertNotIn(old["id"], retrievable, "过时候选不得继续出现在可召回列表")
+        self.assertIn(result["candidate"], retrievable)
+
+    def test_unknown_supersede_id_is_ignored(self):
+        result = consolidate_run(
+            self, self._out(text="空列表改为抛 ERR_EMPTY_INPUT，测试通过",
+                            supersedes=["mem-does-not-exist"]))
+        self.assertTrue(result["kept"])
+        self.assertEqual(result["superseded"], [])
+
+    def test_unverified_turn_is_not_consolidated(self):
+        result = consolidate_run(self, self._out(), episode=self._episode(
+            summary="修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "unverified_turn")
+        self.assertEqual(metrics.report()["skipped"], 1)
 
     def test_receipt_and_rating_promote_in_same_run(self):
         rid = receipts.record("prj", type="verify", result="pass")
@@ -620,6 +710,67 @@ class MigrateTests(_MemBase):
                 if os.path.isdir(directory):
                     project_files.extend(os.listdir(directory))
             self.assertEqual(len(project_files), 2, "重跑不得重复")
+
+
+class ProfileBackfillTests(_MemBase):
+    def _db(self):
+        path = os.path.join(self.tmp, "legacy_profile.sqlite3")
+        connection = sqlite3.connect(path)
+        connection.executescript("""
+        CREATE TABLE memories (
+          scope TEXT, id TEXT, kind TEXT, title TEXT, content TEXT, evidence TEXT,
+          source TEXT, repeats INTEGER, updated TEXT, status TEXT, backed INTEGER,
+          importance REAL);
+        CREATE TABLE checkpoints (
+          scope TEXT, id TEXT, session TEXT, question TEXT, status TEXT, reason TEXT,
+          events TEXT, answer TEXT, updated TEXT, journal TEXT);
+        CREATE TABLE user_profiles (
+          user_id TEXT PRIMARY KEY, display_name TEXT, language TEXT, timezone TEXT,
+          location TEXT, preferences TEXT, goals TEXT, notes TEXT, updated TEXT,
+          learned TEXT);
+        """)
+        connection.execute(
+            "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("prj", "p1", "preference", "语言", "使用中文沟通", "", "user_explicit",
+             1, "2026-10-04", "active", 0, 0.5))
+        connection.execute(
+            "INSERT INTO user_profiles VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("local-user", "", "", "", "", "{}", "[]", "喜欢简短回答",
+             "2026-10-04", "{}"))
+        journal = json.dumps({"executed": [
+            ["read_file", "path: agent.py"],
+            ["create_file", "path: web/src/App.vue"],
+            ["run_command", "command: pytest -q"],
+        ], "file_changes": []}, ensure_ascii=False)
+        connection.execute(
+            "INSERT INTO checkpoints VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("prj", "c1", "s1", "请用中文回答，回答简洁点", "completed", "",
+             "[]", "好", "2026-10-06", journal))
+        connection.commit()
+        connection.close()
+        return path
+
+    def test_backfill_imports_preference_and_history_without_inference(self):
+        db = self._db()
+        result = migrate.backfill_profile(db_path=db)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["declared"], 2, "notes + language")
+        self.assertEqual(result["learned_records"], 1)
+        data = profile.load()
+        self.assertEqual(data["notes"], "喜欢简短回答")
+        self.assertEqual(data["language"], "中文")
+        self.assertEqual(data["timezone"], "", "未被旧库声明的字段不得猜测")
+        learned = data["learned"]
+        styles = {row["value"]: row["count"] for row in learned["answer_style"]}
+        self.assertGreaterEqual(styles.get("中文", 0), 1)
+        self.assertGreaterEqual(styles.get("简洁", 0), 1)
+        focus = {row["value"]: row["count"] for row in learned["focus"]}
+        self.assertEqual(focus.get(".py"), 1)
+        self.assertEqual(focus.get(".vue"), 1)
+        tasks = {row["value"]: row["count"] for row in learned["tasks"]}
+        self.assertGreaterEqual(tasks.get("files", 0), 2)
+        self.assertGreaterEqual(tasks.get("jobs", 0), 1)
+        self.assertTrue(migrate.backfill_profile(db_path=db).get("skipped"))
 
 
 class SharedInjectionTests(_MemBase):

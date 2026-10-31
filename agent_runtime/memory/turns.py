@@ -20,6 +20,21 @@ def _clip(value, limit):
     return str(value or "")[:limit]
 
 
+_FAIL_SIGNAL = re.compile(
+    r"(?i)(failed|failure|error|traceback|exception|文件不存在|读取失败|参数缺失|"
+    r"拒绝写入|拒绝访问|失败)")
+_FAIL_NOISE = re.compile(r"(?i)(warning|deprecat|warnings\.warn)")
+
+
+def _failure_excerpt(text, limit=300):
+    """钩子只留可执行的失败证据：优先失败/异常行，跳过 pytest 警告噪声。"""
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    picked = [line for line in lines if _FAIL_SIGNAL.search(line) and not _FAIL_NOISE.search(line)]
+    if not picked:
+        picked = lines[-4:]
+    return _clip("\n".join(picked[-4:]), limit)
+
+
 def _plan_next_step():
     try:
         from agent_runtime import plan_state
@@ -71,17 +86,29 @@ def record_turn(*, session_id, project_id, question, final_text, status="complet
         receipt_ids.append(receipts.record(
             project, session=session, type="verify", result=outcome, cmd="self_verify",
             evidence=json.dumps(verification, ensure_ascii=False)[:2000]))
+    if getattr(turn, "test_command_ok", False):
+        targets = dict(getattr(turn, "verification_targets", None) or {})
+        tested = dict(getattr(turn, "test_command_targets", None) or {})
+        if targets and tested == targets:
+            receipt_ids.append(receipts.record(
+                project, session=session, type="test", result="pass",
+                cmd=_clip(getattr(turn, "test_command", ""), 200),
+                evidence=json.dumps({"exit_code": 0, "source": "run_command",
+                                     "targets": sorted(targets)},
+                                    ensure_ascii=False)[:2000]))
 
     recorded_errors = []
     failure_count = int(getattr(turn, "failure_count", 0) or 0)
-    failure_text = str(getattr(turn, "last_failure", "") or journal.get("last_obs") or "").strip()
-    tool = str(journal.get("last_action") or "").strip()
+    failure_text = _failure_excerpt(
+        getattr(turn, "last_failure", "") or journal.get("last_obs") or "")
+    tool = str(getattr(turn, "last_failure_tool", "") or journal.get("last_action") or "").strip()
     if failure_count > 0 and failure_text:
         sig = errors.signature(tool, failure_text)
         errors.record(project, session, sig, tool=tool, cause=failure_text, label=tool or sig)
         hooks.add(project, session, "error",
                   (f"{tool} 失败：{failure_text}" if tool else f"失败：{failure_text}")[:300],
-                  source_turn=episode_id, verified=False, pinned=True)
+                  source_turn=episode_id, verified=False, pinned=True,
+                  key="error|" + sig)
         recorded_errors.append({"sig": sig, "cause": failure_text[:200]})
 
     question_text = str(question or "")

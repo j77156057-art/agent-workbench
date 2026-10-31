@@ -117,6 +117,11 @@ class Turn:
         self.max_tool_streak = 0     # 单工具连续失败的最大次数
         self.max_consec_failures = 0 # 全局连续失败的最大长度（fail_total 的历史峰值）
         self.last_failure = None     # 最近一次失败观察（已截断，脱敏后用于经验决策）
+        self.last_failure_tool = ""  # 产生上次失败的工具（钩子/经验归属用，避免张冠李戴）
+        # 测试命令证据：通过后仍需确认之后没再改文件，才接入收尾验证门。
+        self.test_command_ok = False
+        self.test_command = ""
+        self.test_command_targets = {}
         self.experience = None       # 回合收尾经验记录结果 {recorded, outcome}
         self.finish_reason = None
         self.final_chars = 0

@@ -373,5 +373,33 @@ class TruncationRetryTests(_IsoBase):
         self.assertTrue(any(e["type"] == "final" for e in events))
 
 
+class TestCommandEvidenceTests(unittest.TestCase):
+    def test_recognizes_test_commands_without_grep_false_positive(self):
+        for command in (
+            "python -m pytest tests -q",
+            "py -m pytest",
+            "pytest",
+            "npm test",
+            "npm run test",
+            "pnpm test",
+            "go test ./...",
+            "cargo test",
+            "cd sub && python -m pytest -q",
+        ):
+            self.assertTrue(agent_mod._is_test_command(command), command)
+        for command in ("grep pytest", "echo npm test", "python script.py --test"):
+            self.assertFalse(agent_mod._is_test_command(command), command)
+
+    def test_test_evidence_requires_unchanged_targets(self):
+        turn = agent_trace.Turn()
+        turn.verification_targets = {"a.py": "hash-1"}
+        turn.test_command_ok = True
+        turn.test_command_targets = {"a.py": "hash-1"}
+        self.assertTrue(agent_mod._test_command_verified(turn))
+        turn.verification_targets = {"a.py": "hash-2"}
+        self.assertFalse(agent_mod._test_command_verified(turn),
+                         "测试之后又改了文件，旧测试结果不能继续作数")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ __pycache__/
 # ===== 向量库（本地数据，不入库）=====
 .chroma/
 .docmind_state.json
+.docmind_state.json.lock
 
 # ===== Agent 运行账本与会话（本地元数据，不入库）=====
 .docmind_traces.jsonl

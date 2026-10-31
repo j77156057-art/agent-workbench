@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,8 @@ def _trivial(episode):
     summary = str(result.get("summary") or "").strip()
     if not summary:
         return "empty_summary"
+    if re.search(r"尚未完成验证|不能确认任务成功|未通过验证", summary):
+        return "unverified_turn"
     if not episode.get("actions") and len(summary) < 40:
         return "trivial_turn"
     return ""
@@ -96,7 +99,7 @@ def _client(llm):
     return llm, "follow"
 
 
-def _prompt(episode):
+def _prompt(episode, existing=()):
     payload = {
         "goal": str(episode.get("goal") or "")[:300],
         "actions": [str(item.get("tool") or "") for item in episode.get("actions") or []][:20],
@@ -105,14 +108,23 @@ def _prompt(episode):
         "errors": episode.get("errors") or [],
         "next": str(episode.get("next") or "")[:200],
         "receipts": episode.get("receipts") or [],
+        "existing": [{
+            "id": str(item.get("id") or ""),
+            "kind": str(item.get("kind") or ""),
+            "text": str(item.get("body") or "")[:240],
+            "updated": str(item.get("updated") or ""),
+        } for item in existing],
     }
     return (
-        "你在维护跨会话的项目记忆。下面是一轮已完成任务的摘要。判断其中是否有"
-        "可复用的确定事实或经验教训；寒暄、命令回显、一次性细节、未验证的猜测都不要记。\n"
+        "你在维护跨会话的项目记忆。下面是一轮已完成任务的摘要，以及已有的项目候选。"
+        "判断其中是否有可复用的确定事实或经验教训；寒暄、命令回显、一次性细节、"
+        "未验证的猜测都不要记。\n"
+        "如果本轮结果证明某条已有候选已经过时或错误（例如旧诊断已被修复），"
+        "把它的 id 放进 supersedes；只是主题相关、并不矛盾的不要列。\n"
         "只输出一个 JSON 对象，不要解释、不要代码围栏：\n"
         '{"keep": true 或 false, "kind": "fact" 或 "lesson", '
         '"title": "短标题", "text": "脱离本轮上下文也能读懂的独立结论，最多 300 字", '
-        '"importance": 0.0 到 1.0}\n'
+        '"importance": 0.0 到 1.0, "supersedes": ["旧候选 id"]}\n'
         "规则：不得包含绝对路径、密钥、项目名；不确定就 keep=false。\n\n"
         + json.dumps(payload, ensure_ascii=False)
     )
@@ -134,8 +146,12 @@ def run_once(project_id, session_id, llm, episode=None):
     if llm is None:
         return {"ok": False, "reason": "no_llm"}
     client, mode = _client(llm)
+    existing = sorted(
+        [item for item in promote.candidates(project_id)
+         if item.get("status") == "candidate"],
+        key=lambda item: str(item.get("updated") or ""), reverse=True)[:10]
     try:
-        output = client.chat([{"role": "user", "content": _prompt(ep)}],
+        output = client.chat([{"role": "user", "content": _prompt(ep, existing)}],
                              stream=False, temperature=0.2, max_output_tokens=1024)
     except Exception as exc:  # noqa: BLE001
         metrics.record("consolidate.error", project=project_id, session=session_id,
@@ -167,6 +183,18 @@ def run_once(project_id, session_id, llm, episode=None):
         project_id, kind, text, importance=importance,
         source_turn=str(ep.get("id") or ""),
         receipt_ids=ep.get("receipts") or [], task=str(ep.get("task") or ""))
+    new_id = str((candidate or {}).get("id") or "")
+    known = {str(item.get("id") or "") for item in existing}
+    requested = data.get("supersedes")
+    if not isinstance(requested, (list, tuple)):
+        requested = []
+    superseded = []
+    for old_id in requested[:3]:
+        old_id = str(old_id or "")
+        if (old_id and old_id != new_id and old_id in known
+                and promote.supersede(project_id, old_id, new_id,
+                                      reason="新回合证据取代旧候选")):
+            superseded.append(old_id)
     swept = promote.sweep(project_id)
     metrics.record("consolidate", project=project_id, session=session_id,
                    episode=ep.get("id"), candidate=(candidate or {}).get("id"),
@@ -174,9 +202,10 @@ def run_once(project_id, session_id, llm, episode=None):
                    model=getattr(client, "model", ""), mode=mode,
                    tokens_in=usage_in, tokens_out=usage_out,
                    latency_ms=round((time.perf_counter() - start) * 1000),
-                   promoted=swept.get("promoted", 0))
+                   promoted=swept.get("promoted", 0),
+                   superseded=len(superseded))
     return {"ok": True, "kept": True, "candidate": (candidate or {}).get("id"),
-            "promoted": swept.get("promoted", 0)}
+            "promoted": swept.get("promoted", 0), "superseded": superseded}
 
 
 def schedule(project_id, session_id, llm, episode=None):
