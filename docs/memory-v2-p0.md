@@ -510,6 +510,15 @@ POST   /api/memory/reindex
 - **接线**：`agent._build_messages` 三处按 `self._prompt_budget()` 传（用的是**本模型**的预算，会话级换模型会自动跟着变）；`context_panel.next_view` 用运行时模型估一份，并把同一个数字同时用于取数和**面板显示的 budget**，否则界面会显示一份假的。估不出预算时 `_current_prompt_tokens()` 返回 0 → 退回下限，绝不放大。
 - **验证**：`tests/test_memory_inject_scaling.py` 7 passed —— 小窗口逐字等于今天（反向守卫）、大窗口增长但逐层 ≤ cap 且相对比例不漂、L0/L1 拒绝缩放、估不出预算退回下限、builder 真接到更大天花板（注入内容确实变多）、**Agent 确实把自己那个模型的 prompt 预算传给三层**、面板显示的预算与它真正用的同一份。变异验证：把 L3 那处接线删掉，接线守卫立刻红（`Items in the second set but not the first: 'L3'`）。
 
+### 16.21 `test/pass` 回执只认退出码（2026-10-31）
+
+闭合学习环之后回头查 L4，顺出这条：**回执凭证原先取自 `_tool_ok`，而 `_tool_ok` 来自 `_is_failure` 的反面 —— 那个判据认不出测试失败。**
+
+- **根因**：`_FAILURE_MARKERS` 是一串**中文工具错误文案**（"读取失败/拒绝访问/计算失败"…），没有任何通用英文失败标记。于是真正的 pytest 失败输出被判成"非失败"：`[exit code 1] FAILED tests/test_a.py::x` → `_is_failure False` → `_tool_ok True` → 写出一条 `test/pass`。这是**主路径**，不是边角。同理 `[exit code 4] ERROR: file or directory not found`、`[exit code 2] can't open the file` 也过 —— 一次根本没跑起来的测试能拿到"通过"凭证，而这条凭证正是晋升门 `_has_pass_receipt` 唯一信任的东西。
+- **为什么不顺手把 `_is_failure` 改严**：它还得继续放 `grep` 无匹配过关（合法答案，误判会喂 `_TOOL_FAIL_LIMIT=3` 熔断并给出误导性结论）。往 markers 里加 `FAILED`/`Traceback` 会把"文件内容里正好含这些字样"一并判成失败 —— 正是当年加无匹配白名单要救的坑。
+- **做法**：新门口径独立 —— `_EXIT_CODE` 解析 `run_command` 恒定的 `[exit code N]` 头（tools.py:8191），`_test_command_passed(obs)` **只认 N==0**；拿不到退出码（后台化、超时、被截断）一律按"没有凭证"。两条派发路径（顺序 agent.py:7243、并行批处理 8187）都改用它。
+- **验证**：`tests/test_test_command_receipt_gate.py` 6 passed —— 四种非零形状不得产出凭证、无退出码不得产出、**反向守卫**（`_is_failure` 对真实测试失败依旧判非失败，这条被钉住是为了阻止有人用错层修它）、两处赋值点源码级钉死（漏一条即红）、`_test_command_verified` 仍要求有待验证文件改动。
+
 ### 16.22 跨回合 prompt 前缀与命中率视图（2026-10-31）
 
 - **先纠正一次假测量**：我一度报"命中率 0%"，是因为按 API 原始字段名（`cached_tokens`/`cache_read_input_tokens`）去扫轨迹，而落库键叫 **`cache_read_tokens`**（agent_trace.py:229）。搜错键 = 探针自己造了个零。真实基线：**6150 回合、123,833,918 输入 token、109,500,023 命中读 = 按 token 88.42%；但只有 794 个回合命中 = 按回合 12.91%；累计省 ¥96.61**（deepseek 94.0%/76.0%，custom 62.3%/74.2%，ollama 与 mock 恒 0 —— 本地与假模型没有 provider 缓存）。

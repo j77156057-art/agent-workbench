@@ -3198,6 +3198,24 @@ def _is_test_command(arg):
     return bool(_TEST_COMMAND.match(command))
 
 
+_EXIT_CODE = re.compile(r"^\[exit code (-?\d+)\]")
+
+
+def _test_command_passed(obs):
+    """测试命令的「通过」凭证只认退出码 0。
+
+    这里刻意不复用 `_is_failure`：那个判据还得继续放 `grep` 无匹配过关（它是合法
+    答案，不是失败，误判会喂给 3 次熔断），而"根本没跑起来的 pytest"恰好也长得像
+    无匹配 —— 实测 `[exit code 4] ERROR: file or directory not found`、
+    `[exit code 2] No such file or directory`、`[exit code 1] … not found` 三种形状
+    都被 `_is_failure` 判成非失败。两件事必须分开口径，否则一次没跑的测试能拿到
+    `test/pass` 回执，而这条回执正是记忆晋升门唯一信任的凭证。
+    拿不到退出码（后台化、超时、被截断）一律按"没有凭证"处理。
+    """
+    match = _EXIT_CODE.match(str(obs or "").strip())
+    return bool(match) and match.group(1) == "0"
+
+
 def _test_command_verified(turn):
     """测试命令通过且之后没再改文件，才算本回合有验证证据。"""
     if turn is None or not getattr(turn, "test_command_ok", False):
@@ -7243,7 +7261,7 @@ class Agent:
                     _tool_ok = False
                 if (turn is not None and action_name == "run_command"
                         and _is_test_command(action_arg)):
-                    turn.test_command_ok = bool(_tool_ok)
+                    turn.test_command_ok = _test_command_passed(obs)
                     turn.test_command = _clip(str(action_arg), 200)
                     turn.test_command_targets = dict(getattr(turn, "verification_targets", None) or {})
                 if turn is not None:
@@ -8187,7 +8205,7 @@ class Agent:
                 if result.error_kind == "exception":
                     obs = "[并行执行失败] " + obs
                 if turn is not None and name == "run_command" and _is_test_command(arg2):
-                    turn.test_command_ok = bool(ok)
+                    turn.test_command_ok = _test_command_passed(obs)
                     turn.test_command = _clip(str(arg2), 200)
                     turn.test_command_targets = dict(getattr(turn, "verification_targets", None) or {})
                 if turn is not None:
