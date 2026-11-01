@@ -903,3 +903,35 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 **踩到的是我探针的坑，不是电池的坑**：多行锚点用 `open(newline='')` 读进来带 `\r\n`，跟电池里写死的 `\n` 锚点对不上，命中数 0 —— 我一度以为"这条变异没有锚点"。引擎的做法是 `read_text`/`write_text`（读时归一成 `\n`，写时按平台还原），照它改完就命中 1 次并判红。**锚点命中数必须按引擎的读法量**，否则会把"我的探针错了"记成"电池坏了"。
 
 **结论**：`363/383 + 20 未验证` 在本机的真实覆盖面是 **383 条全部抓住、0 条活下来**。全部跑完后 1126 个跟踪文件的 SHA-256 汇总与开跑前逐字节一致。
+
+### 16.43 写后收尾门补上 `dev_move` 与 `dev_add_region`：移动断链终于有人验（2026-11-02）
+
+§16.39 列的 13 个「不在收尾门内」的写工具里，真正会弄坏代码的只剩两个：`dev_move`（移动/重命名后没有任何东西验引用是否断掉）和 `dev_add_region`（与已做的 `dev_apply_regions` 同一载荷、同一目标文件，纯属漏网）。这次一并补掉，门内工具从 6 个变成 8 个。
+
+**`dev_move` 原来是什么情况**：`patch_apply.render_move` 落盘后只回一句「已移动 src → dst（engine）」，而它自己的工具文档写着「移动后请用 dev_find_references / grep 检查旧路径的 import 与引用，再用 dev_diagnostics 确认没有打断」——那句话本来就该是收尾门干的，交给模型自觉等于没做。更糟的是门当时也认不下这条输出：`_parse_written_rel` 只解析新文件，而 `py_compile` 只编译新文件，旧引用一条都不查，**门"跑过了"却什么都没验到**，比不跑更像已验证。
+
+**`_sv_verify_moves`（新 scope `moves`）** 按 `dev_move` 的 observation 拿到 (旧路径, 新路径)，三件事按顺序判：
+
+| 判据 | 红的样子 |
+|---|---|
+| 新路径必须是存在的文件 | `移动后目标不存在：<dst>` |
+| 旧路径必须已不在（防「只复制没移动」） | `旧路径仍然存在（移动没有生效）` |
+| 全仓跟踪文件里不该再有人引用旧路径 | `<引用方> 还在引用已移走的 <src>` |
+
+第三条只搜两种**足够具体**的形态，守收尾门「宁漏不误报」的通则（每次写都跑，假红会诱导模型去改本来正确的文件）：
+- ① `git grep -F` 搜带目录的相对路径原文。**只在 `src` 含 `/` 时才搜**：裸文件名（`foo.py`）到处都在写，搜它必假红。
+- ② `git grep -E` 搜 Python 导入行：`(^|[^A-Za-z0-9_.])(import|from) +<点号模块名>([^A-Za-z0-9_]|$)`。`pkg/old_name.py` 变成 `pkg.old_name`，`__init__` 折成包名；前置排除 `[A-Za-z0-9_.]` 让 `from pkg.old_name_v2` 不算命中，后置排除 `[A-Za-z0-9_]` 让 `old_name_backup` 不算命中；同时覆盖 `import x`、`import x as y`、`from x import y`、缩进与行首。
+- TS/Vue 的相对说明符（`./foo/bar`）要逐个引用方解析才能判，本轮不做，写进 `note` 说明没覆盖。
+
+**`git grep` 的返回码是三态，不是两态**：0（有命中）和 1（查过、无命中）才算"知道"；其他（不是 git 仓库、pattern 非法、git 不在 PATH）返回 `None` = **不知道** → 记 `skipped`，既不记失败也不记通过。这条差点没牙：见下面变异。
+
+**`dev_add_region`**：`tools.py:9617` 的成功文案是「已新增/更新分区 key（dir/）并写入 regions.json。」，`_parse_written_rel` 原先只认 `dev_apply_regions` 的文案，这条没进 → 现在两条都落到 `regions.json`，`_sv_verify_regions`（§16.41）跟着跑。
+
+**验证**：`tests/test_self_verify.py` 新增 `SelfVerifyMovesTest` 8 条 + `WriteGateCoverageTest` 2 条。moves 那 8 条在**真临时 git 仓库**里跑（建包、写真 import、真移动、再让门去 grep），其中一条直接用 `render_move` 的真实输出文案做端到端，文案一改就红。合跑 `test_self_verify` + `test_memory_v2_p0` + `test_dev_patch_move` = **227 passed**（230 秒）。
+
+**五条变异里两条一开始活下来，都是我的用例没造出现场**：
+- 变异「关掉 ①（路径原文搜索）」活下来 —— 8 条用例的引用全是 Python import 行，① 一条都没被触发过。补 `test_path_reference_after_move_is_red`（引用写在 `.md` 里的路径原文，只有 ① 抓得到）→ 红。
+- 变异「把 git 报错当成没人引用」活下来 —— 原 `test_no_git_is_skipped_not_green` 造的是「根本不像个仓库」，走的是另一条分支。补 `test_git_error_is_not_read_as_nobody_references_it`（仓库正常、pattern 非法使返回码为 2）→ 红。
+- 另三条（新文件不查在不在 / 旧文件仍在也放行 / `dev_add_region` 不在门内）第一次就各自判红。
+
+**为什么剩下那 11 个写工具仍然不进门**：`create_external_file` / `edit_external_file` / `delete_external_file` 写的是仓库外的用户文件，代码校验器管不着，也不该把用户桌面判红；`create_artifact` / `dev_skill_create` / `dev_preview_adapter_create` 产的是文档、技能、适配器；`dev_mcp_remove` / `dev_asset_get` / `dev_asset_register` / `memory_save` 改的是注册表与记忆。共同点是**不产生会被 import 的代码**，硬接进代码收尾门只换来假红。至此「写工具 vs 收尾门」这条轴的覆盖问题收尾。
