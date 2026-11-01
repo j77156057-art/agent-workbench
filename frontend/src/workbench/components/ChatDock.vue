@@ -1102,11 +1102,13 @@ async function onProjectChanged() {
   }
   preserveInterrupted()
   stop()
-  let sid = recalledProjectSession(project)
+  const sid = recalledProjectSession(project)
   let selected = sid ? await selectSession(sid) : false
   if (seq !== projectSwitchSeq || project !== getProjectId()) return
   if (!selected) {
-    sid = await createSession()
+    // 新建会话后取的是当前会话指针，不是 createSession 的返回值 —— 赋给 sid
+    // 之后没人读，是死赋值。
+    await createSession()
     if (seq !== projectSwitchSeq || project !== getProjectId()) return
   }
   chatProject = project

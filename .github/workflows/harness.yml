@@ -8,6 +8,9 @@ jobs:
   test:
     name: ${{ matrix.backend }} tests
     runs-on: ubuntu-latest
+    # 没有超时的 job 会一路挂到 GitHub 默认的 6 小时：一次死锁的浏览器启动就把
+    # runner 占满，红名单也出不来。整条 lane 的正常耗时实测约 20–30 分钟。
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -77,6 +80,15 @@ jobs:
         # 「声明了多少 vs 真跑了多少」判定在 tests/test_frontend_node_tests.py 里，
         # 会随 pytest lane 一起跑——这里只负责人类可读的那份日志。
         run: npm run test:node
+      - name: Lint workbench frontend (eslint)
+        if: matrix.backend == 'sqlite'
+        working-directory: frontend
+        # eslint 早就装了、flat config 也配好了，agent 的 `dev_diagnostics` 也会按需跑它
+        # （`diagnostics.LINT_GATES = True`），**但 CI 从没跑过** —— 于是改前端时没人吹哨，
+        # 红只会在某个恰好去诊断的时刻冒出来。第一次以 CI 口径跑就抓到一处躺在仓库里的
+        # 真实缺陷：ChatDock.vue 切项目时 `sid` 赋值后再没被读（死赋值）。
+        # 守卫 tests/test_ci_lint_gate.py 钉住「步骤在、跑在 npm ci 之后、退出码没被吞」。
+        run: npm run lint
       - name: Compile runtime
         run: python -m compileall -q agent_runtime api_routes
       - name: Verify Postgres driver and pool API
