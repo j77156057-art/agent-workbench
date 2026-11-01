@@ -179,6 +179,16 @@ class WorkflowWiringTests(unittest.TestCase):
             self.assertIn("exit $rc", run,
                           "%s 报了红名单却把失败吞成绿色" % name)
 
+    def test_shell_errexit_is_disabled_around_the_test_command(self):
+        """`run:` 默认是 `bash -e`：不关掉的话测试一失败就退出，红名单永远打不出来。
+
+        这条红过一轮：第一次接线后 CI 里一条注释都没有，因为 `rc=$?` 根本没执行到。
+        """
+        steps = self._steps()
+        for name in ("Run full test suite", "Run pytest-style lane"):
+            run = steps.get(name, "")
+            self.assertIn("set +e", run, "%s 没关 errexit" % name)
+
     def test_tests_run_before_the_summary_is_rendered(self):
         run = self._steps().get("Run full test suite", "")
         self.assertLess(run.index("unittest discover"), run.index("ci_red_summary.py"),

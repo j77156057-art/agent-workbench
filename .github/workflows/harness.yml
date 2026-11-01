@@ -150,6 +150,7 @@ jobs:
           PY
           )
           test -n "$files"
+          set +e   # 同上：默认 -e 会让 pytest 一失败就跳过红名单
           python -m pytest $files -q -p no:cacheprovider > /tmp/pytest-lane.log 2>&1
           rc=$?
           cat /tmp/pytest-lane.log
@@ -189,6 +190,7 @@ jobs:
         env:
           DOCMIND_TRACE: "1"
         run: |
+          set +e   # run: 默认 bash -e，测试一失败脚本就退出，后面的红名单永远不会执行
           python -m unittest discover -s tests -p "test*.py" -q > /tmp/unittest.log 2>&1
           rc=$?
           cat /tmp/unittest.log
