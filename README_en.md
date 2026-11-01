@@ -93,8 +93,7 @@ A few worth calling out:
   project automatically leaves both its pre-write **and post-write** content behind (a single
   write funnel + an append-only journal + content-addressed blobs; since 2026-11-01 the
   post-write bytes are stored too, so a file removed by something outside the journal can
-  still be recovered by its fingerprint — previously only the hash was kept and one real
-  loss turned out to be unrecoverable), so **no commit and no manual "take
+  still be recovered by its fingerprint), so **no commit and no manual "take
   snapshot" click is required**; it dry-runs by default and only lands with `apply: true`;
   files changed after that turn are skipped with an honest conflict report instead of being
   overwritten; the same turn cannot be undone twice; the journal keeps 200 turns / 7 days
