@@ -11330,7 +11330,7 @@ def _sv_classify(targets):
     永远拿不到验证结论（仓库里 .json 1399 个、.md 215 个，不是边角）。
     """
     import re as _re
-    py, fe, scene, engine, data, docs = [], [], [], [], [], []
+    py, fe, scene, engine, data, docs, sql = [], [], [], [], [], [], []
     for t in targets:
         p = str(t)
         low = p.lower()
@@ -11347,7 +11347,9 @@ def _sv_classify(targets):
             data.append(p)
         if low.endswith(_SV_DOC_SUFFIXES):
             docs.append(p)
-    return py, fe, scene, engine, _sv_web_files(targets), data, docs
+        if low.endswith(_SV_SQL_SUFFIXES):
+            sql.append(p)
+    return py, fe, scene, engine, _sv_web_files(targets), data, docs, sql
 
 
 # 前端**静态产物**扩展名（单文件 HTML / 样式表）——web 桶的唯一真源，
@@ -11359,6 +11361,8 @@ _WEB_PAGE_EXTS = (".html", ".htm")
 _SV_DATA_SUFFIXES = (".json", ".jsonl", ".yaml", ".yml", ".toml")
 # 文档：只验可读性与代码围栏，不查链接可达（指向「以后才会有」的文件是正常写法）。
 _SV_DOC_SUFFIXES = (".md", ".markdown")
+# SQL：只验语句完整性（切句 + 闭合），不连库执行 —— 见 `_sv_verify_sql`。
+_SV_SQL_SUFFIXES = (".sql",)
 
 
 def _sv_web_files(targets):
@@ -11566,6 +11570,57 @@ def _sv_verify_docs(files, root, result):
                                        "error": "代码围栏不成对（``` 出现 %d 次）" % fences})
             continue
         result["ran"].append("docs_markdown:%s" % name)
+
+
+def _sv_verify_sql(files, root, result):
+    """SQL 的**语句完整性**校验：逐条切句，最后不许剩下没以分号收尾的半截语句。
+
+    用标准库的 `sqlite3.complete_statement` 切句 —— 它能正确处理字符串字面量里的
+    分号与 `CREATE TRIGGER … BEGIN … END;` 的内部分号，且零依赖。
+    **刻意不连库执行**：这些脚本多是建表/迁移，引用尚不存在的表是语义问题不是语法
+    错误，执行它会把正确脚本判红；收尾门必须零误报。
+    """
+    import sqlite3
+    for path in files:
+        name = os.path.basename(path)
+        try:
+            raw = open(path, "rb").read()
+        except OSError as exc:
+            result["failures"].append({"scope": "sql", "file": path,
+                                       "error": "读不到：%s" % exc})
+            continue
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            result["failures"].append({"scope": "sql", "file": path,
+                                       "error": "不是合法 UTF-8：%s" % exc})
+            continue
+        buffer = ""
+        count = 0
+        for line in text.splitlines(keepends=True):
+            buffer += line
+            if sqlite3.complete_statement(buffer):
+                if _sql_has_code(buffer):
+                    count += 1
+                buffer = ""
+        if buffer.strip() and _sql_has_code(buffer):
+            result["failures"].append({
+                "scope": "sql", "file": path,
+                "error": "最后一条语句没有以分号结束（可能被截断）：%s"
+                         % " ".join(buffer.strip().split())[:80]})
+            continue
+        result["ran"].append("sql_statements:%s（%d 条）" % (name, count))
+
+
+def _sql_has_code(statement):
+    """去掉注释与空行后还有没有实际语句（纯注释文件不算错，也不算一条语句）。"""
+    lines = []
+    for line in str(statement or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        lines.append(stripped)
+    return bool(lines)
 
 
 def _sv_verify_web(web_files, root, result):
@@ -11808,7 +11863,7 @@ def self_verify(arg=""):
     """对代码库最近改动做轻量自验证，返回结构化 JSON 字符串（与文本协议 Action Input 同形）。
 
     入参（单行/多行 key: value）：
-      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / data / docs / all / skip
+      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / data / docs / sql / all / skip
       files: 显式指定待校验文件（相对/绝对路径，可多行或逗号分隔）；缺省时用 git diff 自动发现
     返回 JSON：{"scope","ran":[...],"passed":bool,"failures":[...],"note":""}
       status 区分 passed/failed/skipped/partial；无检查或跳过不视为通过。
@@ -11855,7 +11910,7 @@ def self_verify(arg=""):
     targets = safe_targets
 
     (py_files, fe_files, scene_files, engine_files, web_files,
-     data_files, doc_files) = _sv_classify(targets)
+     data_files, doc_files, sql_files) = _sv_classify(targets)
     web_pages = _sv_web_pages(targets)
 
     # 2) 选 scope：auto 按改动文件类型自动选策略。
@@ -11885,6 +11940,8 @@ def self_verify(arg=""):
             scopes.append("data")
         if doc_files:
             scopes.append("docs")
+        if sql_files:
+            scopes.append("sql")
         if web_pages and os.getenv("DOCMIND_SELF_VERIFY_VISUAL") != "0":
             scopes.append("visual")
         elif web_pages:
@@ -11902,7 +11959,7 @@ def self_verify(arg=""):
                               "显式 scope:engine 或开 DOCMIND_SELF_VERIFY_ENGINE=1 可启用）")
     elif scope == "all":
         scopes = ["backend", "frontend", "scene", "web", "engine", "visual",
-                  "data", "docs"]
+                  "data", "docs", "sql"]
     else:
         scopes = [scope]
 
@@ -11922,6 +11979,8 @@ def self_verify(arg=""):
                 _sv_verify_data(data_files, root, result)
             elif sc == "docs":
                 _sv_verify_docs(doc_files, root, result)
+            elif sc == "sql":
+                _sv_verify_sql(sql_files, root, result)
             elif sc == "visual":
                 # auto 档把本次网页传进去当截图入口（产物不叫 index.html 也要验得到画面）；
                 # 显式 scope:visual 不传，沿用项目入口发现。

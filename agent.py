@@ -467,13 +467,43 @@ def _has_project_evidence(evidence):
 _BATCH_WRITTEN_LINE = re.compile(r"^-\s+([^\s（(]+)")
 
 
+#: 写后触发自验证收尾门的工具。`dev_patch` 是 2026-11-02 补进来的：它能一次改多个
+#: 文件，不在门内时整轮没有任何验证目标 —— 既不落 pass 也不落 fail，是「没有证据」，
+#: 比记错更隐蔽。收在这里而不是散在生成器里，是为了让测试能直接钉住这个集合。
+_VERIFY_AFTER_WRITE_TOOLS = ("apply_edit", "dev_apply_edits", "create_file",
+                             "dev_region_edit", "dev_patch")
+
+
+def _parse_patch_written(obs):
+    """从 `dev_patch` 的成功 Observation 里解析出被改的文件（逗号分隔）。
+
+    格式来自 `patch_apply.render_patch`：
+        补丁已应用：2 个文件，+10 -3
+          a.py  +4 -1
+          b.py  +6 -2（新建）
+    dry_run 的文案是「校验通过（dry_run，未写盘）」，没有写盘，返回 None。
+    """
+    text = obs or ""
+    if "校验通过（dry_run" in text:
+        return None
+    files = []
+    for line in text.splitlines():
+        match = re.match(r"^\s{2}(.+?)\s+\+\d+ -\d+(（新建）)?\s*$", line)
+        if match:
+            files.append(match.group(1).strip())
+    return ",".join(files) if files else None
+
+
 def _parse_written_rel(obs):
     """从写工具成功 Observation 里解析出刚写入的相对路径（已写入/已创建 <rel>）。
 
     批量写工具（dev_apply_edits）一次会写入多个文件，这里返回逗号分隔的多个路径
     （self_verify 的 files 支持逗号分隔），保证批量写同样触发写后自验证收尾门。
+    `dev_patch` 的渲染格式不同，走 `_parse_patch_written`。
     """
     text = obs or ""
+    if "补丁已应用" in text or "校验通过（dry_run" in text:
+        return _parse_patch_written(text)
     if "已原子写入" in text:
         rels = [m.group(1) for m in (_BATCH_WRITTEN_LINE.match(ln) for ln in text.splitlines()) if m]
         return ",".join(rels) if rels else None
@@ -7601,13 +7631,13 @@ class Agent:
 
                 # 写操作改变了代码库状态：清空已执行记录，允许随后用【相同命令】
                 # 重新跑测试做验证（防重复护栏针对的是无意义空转，不是改后复验）。
-                if parsed["action"] in ("apply_edit", "dev_apply_edits", "create_file", "dev_region_edit"):
+                if parsed["action"] in _VERIFY_AFTER_WRITE_TOOLS:
                     executed.clear()
 
                 # 写后自验证收尾门（Phase 1 闭环）：写成功即校验改动，失败把结果回填
                 # 模型触发 ReAct 自修；成功则在 trace 标记 verified=True。纯内部调用，
                 # 不占工具步数；自修循环由本轮动态工具预算与既有失败上限护栏封顶。
-                if (parsed["action"] in ("apply_edit", "dev_apply_edits", "create_file", "dev_region_edit")
+                if (parsed["action"] in _VERIFY_AFTER_WRITE_TOOLS
                         and _tool_ok and turn is not None):
                     _written = _parse_written_rel(obs)
                     # Every successful write invalidates previous evidence for that file.

@@ -426,16 +426,16 @@ class SelfVerifyVisualAutoTest(unittest.TestCase):
 
 class ClassifyTest(unittest.TestCase):
     def test_classify_scene(self):
-        _py, _fe, scene, engine, _web, _data, _docs = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
+        _py, _fe, scene, engine, _web, _data, _docs, _sql = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
         self.assertTrue(scene)
         self.assertFalse(engine)
 
     def test_classify_engine(self):
-        _py, _fe, scene, engine, _web, _data, _docs = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
+        _py, _fe, scene, engine, _web, _data, _docs, _sql = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
         self.assertTrue(engine)
 
     def test_classify_web(self):
-        _py, _fe, _scene, _engine, web, _data, _docs = tools._sv_classify(
+        _py, _fe, _scene, _engine, web, _data, _docs, _sql = tools._sv_classify(
             ["index.html", "game.HTM", "style.css", "main.py"])
         # 合并后 web 桶统一取 `_WEB_EXTS`（.html/.htm/.css）：.css 也收，因为 web 门
         # 有 CSS 花括号平衡校验器；.py 仍不进桶。两个并行分支曾各自定义一套 web
@@ -502,7 +502,7 @@ class SelfVerifyDataDocsTest(unittest.TestCase):
 
     def test_mjs_counts_as_frontend(self):
         target = os.path.join(self.proj.dir, "frontend", "tests", "x.browser.mjs")
-        py, fe, _scene, _engine, _web, _data, _docs = tools._sv_classify([target])
+        py, fe, _scene, _engine, _web, _data, _docs, _sql = tools._sv_classify([target])
         self.assertEqual(fe, [target], "浏览器回归（.mjs）不该落在「无校验器」里")
 
     def test_json_and_md_no_longer_report_the_no_validator_gap(self):
@@ -511,6 +511,97 @@ class SelfVerifyDataDocsTest(unittest.TestCase):
         for rel in ("data/ok.json", "docs/ok.md"):
             note = self._run(rel).get("note") or ""
             self.assertNotIn("无对应校验器", note, rel)
+
+
+class SelfVerifySqlTest(unittest.TestCase):
+    """SQL 的语句完整性校验：切句要认字符串里的分号与 TRIGGER 的内部分号，不连库执行。"""
+
+    def setUp(self):
+        self.proj = _TmpProject()
+
+    def tearDown(self):
+        self.proj.close()
+
+    def _run(self, rel):
+        return json.loads(tools.self_verify("scope: auto\nfiles: " + rel))
+
+    def test_valid_sql_counts_statements(self):
+        self.proj.write("db/ok.sql",
+                        "CREATE TABLE t (id INTEGER PRIMARY KEY);\n"
+                        "INSERT INTO t VALUES (1, 'a;b');\n")
+        data = self._run("db/ok.sql")
+        self.assertTrue(data["passed"], data)
+        self.assertIn("（2 条）", data["ran"][0], "字符串里的分号不该被切句")
+
+    def test_semicolon_at_end_of_a_string_line_does_not_split(self):
+        """按行尾分号切句会把它切成两条 —— 必须按 SQL 字面量规则切。"""
+        self.proj.write("db/str.sql",
+                        "INSERT INTO t VALUES ('a;\nb');\n"
+                        "SELECT 1;\n")
+        data = self._run("db/str.sql")
+        self.assertTrue(data["passed"], data)
+        self.assertIn("（2 条）", data["ran"][0])
+
+    def test_truncated_sql_fails(self):
+        self.proj.write("db/bad.sql", "CREATE TABLE t (\n  id INTEGER\n")
+        data = self._run("db/bad.sql")
+        self.assertFalse(data["passed"])
+        self.assertIn("没有以分号结束", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_comment_only_file_is_not_an_error(self):
+        self.proj.write("db/note.sql", "-- 只有注释\n-- 没有语句\n")
+        data = self._run("db/note.sql")
+        self.assertTrue(data["passed"], data)
+        self.assertIn("（0 条）", data["ran"][0])
+
+    def test_trigger_body_semicolons_are_not_split(self):
+        self.proj.write("db/trigger.sql",
+                        "CREATE TRIGGER tr AFTER INSERT ON t BEGIN\n"
+                        "  UPDATE t SET name = 'x';\nEND;\n")
+        data = self._run("db/trigger.sql")
+        self.assertTrue(data["passed"], data)
+        self.assertIn("（1 条）", data["ran"][0])
+
+
+class WriteObservationParseTest(unittest.TestCase):
+    """写后收尾门的入口：从 Observation 里取「刚写了哪些文件」。"""
+
+    PATCH = ("补丁已应用：2 个文件，+10 -3\n"
+             "  src/a.py  +4 -1\n"
+             "  docs/b.md  +6 -2（新建）\n"
+             "提示: 行号已自动对齐")
+
+    def test_patch_observation_yields_every_file(self):
+        self.assertEqual(agent._parse_written_rel(self.PATCH), "src/a.py,docs/b.md")
+
+    def test_dry_run_patch_writes_nothing(self):
+        self.assertIsNone(agent._parse_written_rel(
+            "校验通过（dry_run，未写盘）：1 个文件，+2 -0\n  src/c.py  +2 -0\n"))
+
+    def test_legacy_write_observation_still_parses(self):
+        self.assertEqual(
+            agent._parse_written_rel("已创建 docs/x.md（513 字节，路径沙箱校验通过）"),
+            "docs/x.md")
+
+    def test_dev_patch_is_covered_by_the_post_write_gate(self):
+        """它能一次改多个文件；不在门内时整轮既没有 pass 也没有 fail（没有证据）。"""
+        self.assertIn("dev_patch", agent._VERIFY_AFTER_WRITE_TOOLS)
+
+    def test_real_dev_patch_output_round_trips_into_verification(self):
+        """真打一次补丁，用**真实渲染输出**喂解析器，再拿解析出的路径去校验。
+
+        `patch_apply.render_patch` 的格式一变，解析器就会静默取不到文件（收尾门
+        看起来还在、实际什么都没验）。这条用例把两边的格式钉在一起。
+        """
+        proj = _TmpProject()
+        try:
+            proj.write("a.py", "x = 1\n")
+            obs = tools.dev_patch("--- a/a.py\n+++ b/a.py\n@@ -1,1 +1,1 @@\n-x = 1\n+x = 2\n")
+            self.assertEqual(agent._parse_written_rel(obs), "a.py")
+            data = json.loads(tools.self_verify("scope: auto\nfiles: a.py"))
+            self.assertTrue(data["passed"], data)
+        finally:
+            proj.close()
 
 
 if __name__ == "__main__":
