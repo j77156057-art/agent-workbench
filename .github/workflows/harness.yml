@@ -91,6 +91,16 @@ jobs:
         run: npm run lint
       - name: Compile runtime
         run: python -m compileall -q agent_runtime api_routes
+      - name: Static defect gate (ruff F821/F811/F402)
+        # 只放**真缺陷类**三条：F821 未定义名、F811 重复定义且旧值没被用、F402 循环变量
+        # 遮蔽了导入。不放开整组 `F` —— 实测量过本仓库 `--select F` 有 195 条（F401 未用
+        # import 132 + F841 未用变量 50 + …），裸接进 CI 的第一天就是 195 行噪声，比没有门
+        # 更坏：它让人误以为有人在管。存量按批单独清，清一批再把规则放进来。
+        # 接这道门当天它抓到 3 条活的缺陷：`app_test.py` 把 `Mapping` 只写进注解却没 import，
+        # 文件有 `from __future__ import annotations` 所以导入不炸，但
+        # `typing.get_type_hints(server_env)` 实测抛 `NameError`。
+        # 守卫 tests/test_ci_static_defect_gate.py —— 规则集从本文件读、并当场真跑一次。
+        run: python -m ruff check --select F821,F811,F402 .
       - name: Verify Postgres driver and pool API
         if: matrix.backend == 'postgres'
         run: |
