@@ -7397,6 +7397,25 @@ class Agent:
                     # 工作流预览协议消费的持久证据；图片正文仍只通过 data.images
                     # 进入视觉通道，避免把 base64 写进事件和 checkpoint。
                     observation_event["artifacts"] = list(_result.artifacts)[:16]
+                    # 主路径的「本轮改了哪些文件」也在这里落。此前 `file_changes` 只有
+                    # 两处来源：子代理的 observation 出口（见 `_run_child`）与 resume 账本，
+                    # 主代理自己写盘时**一条都不进**。实测真实项目 21 个回合里有 3 个调了
+                    # `create_file`，episode 的 `files` 却是空 → 漏斗把「改了文件」报成 0，
+                    # 学习环的断点因此归错地方。取值口径与子代理那处一致：不填 `kind`
+                    # （它被 `preview_adapters` 当适配器路由键，填错会让产物清单变 0 条）。
+                    for _artifact in _result.artifacts:
+                        if not isinstance(_artifact, Mapping):
+                            continue
+                        _apath = str(_artifact.get("path") or "").strip()
+                        if (_apath and _apath not in _seen_file_changes
+                                and len(_file_changes) < 100):
+                            _seen_file_changes.add(_apath)
+                            _file_changes.append({
+                                "path": _apath,
+                                "label": str(_artifact.get("label")
+                                             or os.path.basename(_apath)),
+                                "summary": _clip(_artifact.get("summary"), 160),
+                            })
                 _evidence = (_result.data or {}).get("browser_evidence") if isinstance(_result.data, dict) else None
                 if _evidence:
                     # 内置浏览器的每一步留痕：前端流程行据此显示"点之前/点之后"的缩略图
