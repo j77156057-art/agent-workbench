@@ -70,34 +70,45 @@ def run_check(project_id=None):
             "index": maintenance.get("index"),
         }
         result["latency_ms"] = round((time.perf_counter() - started) * 1000)
-        # 磁盘保留期：**只出计划，绝不动手**。这里在后台线程里跑，所以能承担 5 秒级
-        # 的整盘扫描；挂在 health 每次加载上就会让面板肉眼可见地变慢（实测 2.6s / 5.3s）。
-        # 真回收要人显式 `python -m agent_runtime.disk_retention --apply`（宪法 C-006）。
+        # 磁盘回收：**默认只出计划**；只有用户自己在面板里把间隔设成正数，才按到点动手。
+        # 间隔 / 保留天数 / 白名单都是用户可设项（`disk_retention.load_settings_file`），
+        # 这段只回答"到点没到点"。后台线程能承担 5 秒级整盘扫描；面板读这里落下的记录
+        # （`maintenance-last.json` 的 disk 段）而不是现场扫 —— 实测 2.6s / 5.3s。
+        # 状态根按 `config.STATE_ROOT/.docmind` 取（与工作流存储同一个推导）；不用
+        # `store.root()` 反推：`DOCMIND_MEMORY_DIR` 指到别处时 dirname 会退化成系统临时目录。
         try:
-            from . import disk_retention
-            # 状态根按 `config.STATE_ROOT/.docmind` 取 —— 与工作流存储同一个推导
-            # （`game_workflow` 用的就是 `STATE_ROOT/.docmind/workflows`，试做区在它上一级）。
-            # 不用 `store.root()` 反推：`DOCMIND_MEMORY_DIR` 指到别处时 dirname 会退化成
-            # 系统临时目录，拿整盘去扫就是新问题。
             import config as _config
+            from . import disk_retention
             state_root = os.path.join(str(getattr(_config, "STATE_ROOT", "") or ""), ".docmind")
             code_root = str(_config.get_runtime("code_root") or "")
             if os.path.isdir(state_root):
-                plan = disk_retention.scan(state_root, code_root)
-                summary = plan["summary"]
-                result["disk"] = {
-                    "reclaimable_bytes": summary["reclaimable_bytes"],
-                    "reclaimable_items": summary["reclaimable_items"],
-                    "needs_review_bytes": summary["needs_review_bytes"],
-                    "needs_review_items": summary["needs_review_items"],
-                    "by_kind": summary["by_kind"],
-                    "rules": plan["rules"],
-                    "applied": False,
+                out = disk_retention.scheduled_pass(state_root, code_root)
+                plan = out.get("plan") or {}
+                record = out.get("record") or {}
+                sched = out.get("scheduled") or {}
+                settings = out.get("settings") or {}
+                disk = {
+                    "ok": True,
+                    "interval_days": sched.get("interval_days"),
+                    "due": bool(sched.get("due")),
+                    "applied": bool(out.get("applied")),
+                    "idle_days": settings.get("idle_days"),
+                    "whitelist": settings.get("whitelist"),
+                    "reclaimable_bytes": plan.get("reclaimable_bytes", 0),
+                    "reclaimable_items": plan.get("reclaimable_items", 0),
+                    "blocked_by_whitelist_bytes": plan.get("blocked_by_whitelist_bytes", 0),
+                    "needs_review_bytes": plan.get("needs_review_bytes", 0),
+                    "needs_review_items": plan.get("needs_review_items", 0),
+                    "freed_bytes": int(record.get("freed_bytes") or 0),
+                    "failed_items": int(record.get("failed_items") or 0),
+                    "ts": record.get("ts"),
                 }
-                metrics.record("disk.plan", project=project,
-                               reclaimable_bytes=summary["reclaimable_bytes"],
-                               reclaimable_items=summary["reclaimable_items"],
-                               needs_review_items=summary["needs_review_items"])
+                result["disk"] = disk
+                metrics.record("disk.retention", project=project,
+                               reclaimable_bytes=disk["reclaimable_bytes"],
+                               reclaimable_items=disk["reclaimable_items"],
+                               applied=disk["applied"], freed_bytes=disk["freed_bytes"],
+                               interval_days=disk["interval_days"])
             else:
                 result["disk"] = {"ok": True, "skipped": "no_state_root"}
         except Exception as exc:  # noqa: BLE001 —— 扫描失败不影响记忆检查

@@ -274,7 +274,7 @@ class ScanAndApplyTests(unittest.TestCase):
         plan = self._scan({"wf-dead": "failed"})
         self.assertTrue(any(i["decision"] == "reclaim" for i in plan["items"]),
                         "计划里没有可回收项，这条 dry-run 断言就是空过")
-        result = dr.apply(plan["items"], state_root=self.state, dry_run=True)
+        result = dr.apply_items(plan["items"], state_root=self.state, dry_run=True)
         self.assertTrue(result["dry_run"])
         self.assertGreater(result["freed_bytes"], 0)
         self.assertTrue(os.path.isdir(base), "dry-run 把目录删了")
@@ -283,7 +283,7 @@ class ScanAndApplyTests(unittest.TestCase):
         dead = self._stage("wf-dead", age_days=30, status="failed")
         live = self._stage("wf-live", age_days=30, status="running")
         plan = self._scan({"wf-dead": "failed", "wf-live": "running"})
-        result = dr.apply(plan["items"], state_root=self.state, dry_run=False)
+        result = dr.apply_items(plan["items"], state_root=self.state, dry_run=False)
         self.assertFalse(os.path.isdir(dead), "可回收项没被删")
         self.assertTrue(os.path.isdir(live), "未终态的区被删了")
         self.assertEqual(result["failed"], [], result["failed"])
@@ -313,19 +313,51 @@ class ScanAndApplyTests(unittest.TestCase):
             {"kind": dr.STAGES, "name": "wf-skip", "path": good, "bytes": 1,
              "decision": "keep"},
         ]
-        result = dr.apply(items, state_root=self.state, dry_run=False)
+        result = dr.apply_items(items, state_root=self.state, dry_run=False)
         self.assertEqual(len(result["removed"]), 1, result)
         self.assertEqual(len(result["failed"]), 2, result["failed"])
         self.assertFalse(os.path.isdir(good), "合法项没删掉")
         self.assertTrue(os.path.isfile(pointer), "路径是文件的条目竟然删成功了")
         self.assertTrue(os.path.isdir(outside), "越出预期根的路径被删了 —— 根校验没生效")
 
+    def test_apply_items_stops_at_the_per_run_cap(self):
+        """单次上限兜住"保留天数设成 1 天"这种一口气清几百项的形状。"""
+        items = [{"kind": dr.CHECKPOINTS, "name": "cp-%d" % i, "bytes": 10,
+                  "decision": "reclaim",
+                  "path": self._checkpoint("cp-%d" % i)} for i in range(3)]
+        result = dr.apply_items(items, state_root=self.state, dry_run=False, max_items=1)
+        self.assertEqual(len(result["removed"]), 1, result)
+        self.assertEqual(len(result["skipped"]), 2, result)
+        self.assertIn("单次上限", result["skipped"][0]["reason"])
+        # 剩下的两项必须还在原处（"下轮再收"不等于"顺手删了"）。
+        self.assertTrue(os.path.isdir(items[1]["path"]))
+        self.assertTrue(os.path.isdir(items[2]["path"]))
+
+    def _checkpoint(self, name):
+        path = os.path.join(self.state, "project_checkpoints", "wf-a", name)
+        os.makedirs(path, exist_ok=True)
+        return path
+
     def test_items_skipped_when_not_reclaim(self):
         keep = self._stage("wf-keep", age_days=1, status="completed")
         plan = self._scan({"wf-keep": "completed"})
-        result = dr.apply(plan["items"], state_root=self.state, dry_run=False)
+        result = dr.apply_items(plan["items"], state_root=self.state, dry_run=False)
         self.assertEqual(result["removed"], [], result)
         self.assertTrue(os.path.isdir(keep))
+
+    def test_apply_items_refuses_a_whitelisted_name_even_when_told_to_reclaim(self):
+        """动手处再钉一遍白名单：`items` 可能来自别的调用方，不能只信计划阶段那一道。"""
+        good = self._stage("wf-keepme", age_days=40, status="completed")
+        items = [{"kind": dr.STAGES, "name": "wf-keepme", "path": good, "bytes": 10,
+                  "decision": "reclaim"}]
+        result = dr.apply_items(items, state_root=self.state, dry_run=False,
+                                whitelist=["wf-keepme"])
+        self.assertEqual(result["removed"], [], result)
+        self.assertIn("白名单", result["skipped"][0]["reason"])
+        self.assertTrue(os.path.isdir(good), "用户点名不清的副本被删了")
+        # 同一批不带名单时确实删得掉 —— 证明上一条挡住它的是白名单，不是别的守卫。
+        dr.apply_items(items, state_root=self.state, dry_run=False)
+        self.assertFalse(os.path.isdir(good), "对照组删不掉，挡它的就不是白名单")
 
 
 if __name__ == "__main__":
