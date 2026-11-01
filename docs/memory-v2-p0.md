@@ -952,3 +952,25 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 - **不把 `ruff check` 裸接进 CI**。`ruff` 在 `requirements.txt` 里、`dev_diagnostics` 会按需跑，但本仓库没有 ruff 配置，`diagnostics.py` 自己记着原因（默认规则会把上千条风格提醒刷给 Agent）。接进去的第一天就是上千条噪声，比没有门更坏 —— 它让人误以为有人在管。要接得先定规则集并量存量。
 - **不加 `concurrency`（并发取消）**：它会取消同一 ref 在飞的验证 run，而现在每次推送都想要一份完整结论。
 - **不把 `frontend/tests/*.mjs` 纳入 lint 范围**：`eslint src` 只扫 `src`，仓库里 205 个 `.mjs` 大多在测试目录；扩范围要先量存量，不能凭想象。
+
+### 16.45 Python 侧同族缺口：ruff 真缺陷门接进 CI，接的门当天抓到 3 条活的（2026-11-02）
+
+§16.44 之后同形状的第二条：`ruff` 在 `requirements.txt:43`、`dev_diagnostics` 会按需跑它，但 `harness.yml` 里 `ruff` 出现 **0 次** —— Python 侧合并前没有静态缺陷门。
+
+**先量存量再决定放哪几条规则**（这条决定整道门的成败）：`ruff check --select F` 在本仓库 **195 条** —— F401 未用 import 132、F841 未用变量 50、F541 4、F402 3、F811 3、F821 3。裸接整组 `F` 的第一天就是 195 行噪声，比没有门更坏（它让人误以为有人在管）。所以只放**真缺陷类**三条 `F821`（未定义名）/ `F811`（重复定义且旧值没被用）/ `F402`（循环变量遮蔽导入）= **9 条**，逐条修掉：
+
+| 位置 | 规则 | 实况 |
+|---|---|---|
+| `agent_runtime/app_test.py` 425/686/775 | F821 | `Mapping` 只写进注解却没 import。文件第 24 行有 `from __future__ import annotations`，**导入期不炸**，但 `typing.get_type_hints(server_env)` 实测抛 `NameError: name 'Mapping' is not defined` —— 一做类型内省就死，与本仓 `receipts` 未导入那类同族 |
+| `regions.py:246` | F811 | 函数里再 `import sys`，模块级第 20 行已有 → 删局部 |
+| `tests/test_log_view.py:232` | F811 | 函数里 `import tools` 会**绕过电池注入的被变异模块**（模块级那份就是为 `BIND='tools'` 准备的）→ 删掉局部导入后电池反而更有效，复跑 `job_logs` **6/6 抓到** |
+| `tests/test_workflow_three_valued_status.py` | F811 | `review_status` 模块级导了、函数里又导一次，而模块级那份没人用 → 从模块级列表摘掉，保留函数内那份（按 `sys.modules` 现取，重载后仍拿到新实现） |
+| `tests/test_memory_v2_p0.py` 1048/1531/1570 | F402 | `for index in range(...)` 把同文件导入的 `index` 模块遮蔽 → 循环变量改名 `n` |
+
+**接线**：`Static defect gate (ruff F821/F811/F402)` 步骤，排在装 Python 依赖之后，**两条 lane 都跑**（不带 `if`，防止被悄悄 park 到一条上）。
+
+**守卫 `tests/test_ci_static_defect_gate.py`（9 条）的核心设计：规则集从工作流里解析出来，再拿它当场真跑一次。** 于是「把规则改宽成整组 `F`」被现场 195 条判红、「缩到只剩 `F821`」被子集断言判红 —— 两种方向都跑不掉。其余断言：扫描目标必须是仓库根（缩成一个子目录就只守一小块却仍然显示绿）、退出码不许被 `|| true` / `continue-on-error` 吞、ruff 必须在 `requirements.txt` 里、以及**邻门的命令仍在**（`npm run lint` / `npm run test:node` / `compileall`）—— 那是 §16.44 今早刚付过学费的一条：只删步骤头三行时，剩下的 `run:` 会并进上一条步骤、YAML 同键后者覆盖前者。
+
+**验证**：10 条变异（整块删步骤、只删头三行、`|| true`、放成 `F`、缩成 `F821`、目标缩到子目录、`continue-on-error`、park 到单条 lane、排到装依赖之前、ruff 从依赖消失）**0 条活下来**，两个被改文件按字节还原一致。受影响用例：`test_log_view` + `test_workflow_three_valued_status` + `test_app_test` **133 passed / 145 subtests**，`test_memory_v2_p0` + 两份 regions **142 passed**，`job_logs` 电池 6/6，两份接线门守卫 22 passed。CI 侧 §16.44 那批已双矩阵 success（`Lint workbench frontend (eslint)` 步骤 conclusion=success，是这道门第一次在 CI 环境真跑）。
+
+**刻意不做**：整组 `F`（195 条噪声）；`ruff check --fix` 一把梭（140 条可自动修，会连带改到别的 lane 的文件，并把真缺陷和无用 import 混进同一个提交）。F401/F841 的存量按批单独清，**清一批再把那条规则放进门** —— 门的规则集只增不减，由守卫的子集断言钉住。
