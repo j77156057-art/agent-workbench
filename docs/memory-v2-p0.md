@@ -826,3 +826,31 @@ observation: [自验证未完成] docs\notes\passed-vs-score.md：无可执行�
 **没做**：没有给 `.md` 加一个「文件存在且非空」式校验器去凑 pass —— 那是把没验过的东西标成验过，比记 unsure 更糟。要让文档写入产出真证据，得有一个有判别力的文档校验（外链可达 / 代码块配平 / 引用可解析），那是另一件事，单独做。
 
 **验证**：`test_self_verify.py` 新增三条（无校验器→None、只跑一部分→None、异常→None），`test_memory_v2_p0.py` 新增两条（None→uncertain、同时有 False 时仍 fail）；两文件 **153 passed**；三条变异真红（skipped 退回 False / 回执层不区分三态 / 异常退回 False）。
+
+### 16.39 校验器覆盖审计：还有哪些写操作「没有校验器」（2026-11-02）
+
+§16.38 修完 `.md` 之后问了一句"别处是不是也缺"，按两条轴量了一遍。
+
+**轴一：文件类型**（`_sv_classify` 的桶 vs 仓库实际文件数；数字来自 `os.walk`，排除 `.git/.venv/.docmind/dist/web/__pycache__`）
+
+| 类型 | 之前 | 现在 | 仓库里有 |
+|---|---|---|---|
+| `.py` | backend | — | 2001 |
+| `.ts/.tsx/.vue/.js` | frontend | — | 101 / 32 |
+| **`.mjs`** | **无** | frontend | 45 |
+| `.html/.htm/.css` | web（html 另挂 visual） | — | 46 / 39 |
+| **`.json`** | **无** | data（json 解析） | 1399 |
+| **`.jsonl`** | **无** | data（逐行解析，报行号） | 33 |
+| **`.yaml/.yml/.toml`** | **无** | data（safe_load / tomllib） | — |
+| **`.md`** | **无** | docs（UTF-8 / 无 NUL / 围栏成对） | 215 |
+| `.sql` | 无 | **仍未做** | 80 |
+| `.gd/.tscn` | 仅路径含 `scene` 才进 scene 桶 | **仍未做** | — |
+
+**轴二：写工具 vs 写后收尾门**。收尾门只认 `apply_edit / dev_apply_edits / create_file / dev_region_edit` 四个工具；17 个写类工具里另外 13 个不在门内：`dev_patch`、`dev_apply_regions`、`dev_move`、`create_external_file`、`edit_external_file`、`delete_external_file`、`create_artifact`、`dev_skill_create`、`dev_preview_adapter_create`、`dev_mcp_remove`、`dev_asset_get/register`、`memory_save`。其中 **`dev_patch` / `dev_apply_regions` 是改代码的工具**：用它们改完代码，回合里没有任何验证目标，于是既不 pass 也不 fail —— 是**没有证据**，比 `.md` 那条更隐蔽（那条至少落了一笔错的 fail）。
+
+**本轮做的**：`.mjs` 归前端；新增 `data` / `docs` 两个 scope（只做解析与可读性，宁漏不误报 —— 收尾门每次写都跑，假红会诱导模型改本来正确的文件）。八条用例 + 四条变异（`.mjs` 不算前端 / `.json` 不进数据桶 / 围栏不配对也放行 / NUL 不查）逐条真红。
+
+**本轮没做，以及为什么**：
+- `dev_patch` / `dev_apply_regions` 接进收尾门 —— 要先弄清它们 observation 里的写入路径格式（`_parse_written_rel` 目前只认「已写入 / 已创建」与批量原子写两种），盲接会把路径解析错、去验证另一个文件。
+- `.sql` 语法校验 —— 标准库没有解析器，为它引第三方依赖不划算。
+- `.gd/.tscn` —— 现有 scene 桶按"路径里含 scene"判断，`scripts/player.gd` 会漏；要按扩展名重建桶，得先有 Godot 侧的校验器。
