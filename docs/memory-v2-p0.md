@@ -677,7 +677,7 @@ POST   /api/memory/reindex
 
 **踩到又改掉的一条规则**：`keep_per_workflow` 用在试做区上等于**永不回收**（一个工作流只有一个区目录，"每区保留最近一份"就是全部保留）。改成全局 `keep_newest=3`。
 
-**执行边界**（本节写于当天上午，**当天下午就被 §16.34 取代**：后台现在会在**用户自己设的间隔**到点时动手，默认间隔 0 仍是"只出计划"）：`run_check()`（后台线程）只调 `scan()` 出计划、写 `maintenance-last.json` 的 `disk` 段，**不调 `apply`**；`scan()` 实测 2.6 s（只扫 `.docmind`）/ 5.3 s（含 `dist` + `git grep`），所以**不进 `health.report()`** —— 那是面板每次加载都要跑的路径。真回收是 `python -m agent_runtime.disk_retention --apply`（默认 dry-run，宪法 C-006）。`apply()` 还钉了一道根目录校验：条目路径必须落在 `state_root/project_stages|project_checkpoints` 下，越界一律拒绝（试做区走 `project_stage.cleanup_stage` 原有守卫，不自己拼删除）。
+**执行边界**（本节写于当天上午，**当天下午就被 §16.34 取代**：后台现在按用户设的间隔动手，默认 30 天一次、首轮只记基线）：`run_check()`（后台线程）只调 `scan()` 出计划、写 `maintenance-last.json` 的 `disk` 段，**不调 `apply`**；`scan()` 实测 2.6 s（只扫 `.docmind`）/ 5.3 s（含 `dist` + `git grep`），所以**不进 `health.report()`** —— 那是面板每次加载都要跑的路径。真回收是 `python -m agent_runtime.disk_retention --apply`（默认 dry-run，宪法 C-006）。`apply()` 还钉了一道根目录校验：条目路径必须落在 `state_root/project_stages|project_checkpoints` 下，越界一律拒绝（试做区走 `project_stage.cleanup_stage` 原有守卫，不自己拼删除）。
 
 **验证**：`tests/test_disk_retention.py` **24 passed** + `tests/test_maintenance.py` 12 passed（新增磁盘 2 条）。七处变异逐条真红：未终态也回收 / 最近区不保护 / 无状态当可回收 / 忽略保留期 / 数据文件也算依赖 / 根校验不生效 / 无视 dry-run。两处变异是**测试自己先错**：一是 `plan_checkpoint_dirs` 里写了 `item["age_days"]`（`KeyError`，被测试当场抓出）；二是引用前缀那条用例用 `.txt` 样本会空过，换成 `.py` 才真的有牙。
 
@@ -731,13 +731,15 @@ POST   /api/memory/reindex
 
 **三个可设项**，落在 `.docmind/disk-retention-settings.json`：
 
-- `interval_days`（默认 **0 = 永不自动清**）—— 多久清一次。不可逆动作的授权必须由用户做出（宪法 C-006），所以默认档仍然只出计划。
+- `interval_days`（默认 **30 天一次**，0 = 关闭自动清）—— 多久清一次，就是用户点名的「默认按时间回收」。
 - `idle_days`（默认 30，下界 **1**）—— 闲置多少天算过期，三类共用一个数。下界不给 0：0 天等于「工作流一终态就删」，一次误设能清掉刚跑完的副本。
 - `whitelist` —— 名单里的名字永不清。`normalize_whitelist` 把内置 `release / installer / *.zip` **叠在任何用户输入之前**，传 `[]` 也拿不掉；上限 64 条、单条 200 字符。
 
+**做反过一次，就地改回**：第一版把默认间隔设成 0（"不可逆动作默认关闭"），而指令说的是**默认按时间回收**、由用户设频率。默认 0 等于装好即静默，正好是指令的反面。改回 30 天后出现的新风险是「升级完第一次体检当场删 3 GB」，所以调度锚点改成：**上次真动手的时刻**；从没真清过时用 `first_seen_ts`（第一次有记录的时刻）——首轮体检只记基线，第一轮真清落在 30 天后。`first_seen_ts` 跨记录保留，否则用户每点一次「重新扫描」就把自动清往后推一个周期；`_last_apply_ts` 仍然只认 `applied=True`，干跑不续期。
+
 **白名单是两道，不是一道**：计划阶段 `filter_whitelisted` 把命中项从 `reclaim` 改回 `keep` 并写上 `whitelisted_by`（面板据此回答「这条明明超期为什么不清」）；`apply_items` 在动手处再过一遍，因为 `items` 可能来自别的调用方。两道互为备份的代价是**单点变异测不出来**——所以 `test_apply_items_refuses_a_whitelisted_name_even_when_told_to_reclaim` 直接喂给执行器，并带一条「不带名单就真删得掉」的对照组，证明挡住它的是白名单而不是别的守卫。
 
-**调度**：`schedule_due(now, last_apply_ts, interval)` 在 `interval <= 0` 时恒 False；`_last_apply_ts` **只认 `applied=True` 的记录**（否则一次干跑会把下次真清推迟整整一个周期）。后台 `scheduled_pass()` 每次体检都刷新计划，只有到点才 `apply=True`。界面里写的是诚实口径：体检本身每天一次，所以真正动手可能比你设的日期晚一天。
+**调度**：`schedule_state()` 一处给出 `due / last_apply_ts / first_seen_ts / next_due_ts`，面板与后台线程读同一份判定，不各写一套。后台 `scheduled_pass()` 每次体检都刷新计划，只有到点才 `apply=True`。界面里写的是诚实口径：体检本身每天一次，真正动手可能比你设的日期晚一天；从没跑过体检时显示「首轮只记基线」，不写成「未到点」。
 
 **三个专用端点**（不走 `/api/config`，理由与记忆开关同一条）：`GET /api/disk-retention` 给设置 + `ranges` + 到点判定 + 上次记录，**不现扫**；`POST /api/disk-retention/settings` 只覆盖请求里出现的字段（一次改一格不许把另外两格写回默认）；`POST /api/disk-retention/run` 的 `apply=true` 必须带 `confirm`，缺了直接 400，与 `/api/memory/maintain` 同一道闸。
 
@@ -745,6 +747,6 @@ POST   /api/memory/reindex
 
 **实测**：真接口 `POST /run {apply:false}` 在这台机器上 **13.4 s**，可回收 **3.37 GB / 7 项**（全部来自 `dist/`），`kept_items` 159。13 秒意味着按钮必须有反馈，忙态文案写成「正在扫描整盘副本，要十几秒…」。顺带核实一条与项目记忆相反的环境事实：记忆里写着「本机 `shutil.rmtree` 被换成回收站」，实测本 venv 里它是 stock —— 那条是 WorkBuddy 沙箱的条件，不是这里；所以 UI 不写「记得清空回收站」。
 
-**验证**：`tests/test_disk_retention.py` 27 passed、`tests/test_disk_retention_api.py` 14 passed、`tests/test_maintenance.py` 12 passed。变异九条真红：局部更新丢掉 `None` 守卫 / 丢 `confirm` 闸 / `interval=0` 判到点 / 干跑真删 / 白名单丢内置项（端点层 5 条）+ 动手处白名单失效 / 单次上限失效 / 越界根校验失效 / 干跑标志失效（执行层 4 条）；计划层白名单那一条单独变异**不红**（被执行层兜住），按上面的对照组拆开各钉一层。前端 `frontend/tests/diskRetention.browser.mjs` 34/34，`memoryFunnel.browser.mjs` 47/47 未回归，`vue-tsc` 干净。
+**验证**：`tests/test_disk_retention.py` 27 passed、`tests/test_disk_retention_api.py` 18 passed、`tests/test_maintenance.py` 12 passed。变异十三条真红：局部更新丢掉 `None` 守卫 / 丢 `confirm` 闸 / `interval=0` 判到点 / 干跑真删 / 白名单丢内置项（端点层 5 条）+ 动手处白名单失效 / 单次上限失效 / 越界根校验失效 / 干跑标志失效（执行层 4 条）+ 干跑不继承真动手时刻 / 调度只看基线 / 从没记录就判到点 / 默认间隔退回 0（调度层 4 条）。计划层白名单那一条单独变异**不红**（被执行层兜住），按上面的对照组拆开各钉一层。前端 `frontend/tests/diskRetention.browser.mjs` 40/40，`memoryFunnel.browser.mjs` 47/47 未回归，`vue-tsc` 干净。
 
 **没做**：设置页没再放一份同样的三格——面板那三格旁边就是实时数字，两处放等于两个真值来源；`dist/` 条目在 `apply_items` 里没有根目录校验（`roots` 只映射 `.docmind` 下那两类），因为它的路径来自 `project_root/dist` 现场扫描、且 API 不接受调用方传路径 —— 将来接第三方调用方时得先补这一道。
