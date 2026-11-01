@@ -866,3 +866,25 @@ observation: [自验证未完成] docs\notes\passed-vs-score.md：无可执行�
 **验证**：`test_self_verify.py` 新增 10 条（SQL 5 + 观测解析 5，其中一条是**真打补丁**的往返：真实 render → 解析 → 自验证，格式一变就红）；`test_self_verify.py` + `test_memory_v2_p0.py` **171 passed**；四条变异真红（SQL 截断不报 / 按行尾分号硬切 / dry-run 也触发验证 / dev_patch 不在门内）。其中「按行尾分号硬切」第一次**没抓住** —— 原用例的两条语句恰好都在行尾结束，补了一条"分号在字符串行尾"的用例才有牙。
 
 **仍未做**：`dev_apply_regions`（写的是 `regions.json`，不是代码）；`.gd/.tscn`（要先有 Godot 侧校验器）。
+
+### 16.41 补上分区配置与 Godot 文本资源的校验器（2026-11-02）
+
+§16.40 之后还剩两项，这次一并补掉。
+
+**`dev_apply_regions`（写 `regions.json`）**：它 apply 时已经 `validate_region_config` 过一遍方案，所以再验一遍方案没有信息量。真正会坏的是**落盘之后**的状态：文件被写成非法 JSON，或者分区目录被别的写操作删掉 —— 后者一旦发生，后续所有按分区限定的写都会以"越区"被拒。`_sv_verify_regions` 因此只查三件事：JSON 可解析、每条 key/dir 齐全且 key 不重复、目录真的存在。`regions.json` 从 `data` 桶里摘出来单独走这个桶（不重复报两次），并加进写后收尾门集合。
+
+**Godot 文本资源**（`.gd` / `.tscn` / `.tres` / `.gdshader` / `project.godot`）：不调 Godot 本体（`--check-only` 要二进制、会拉引擎，CI 与大多数写后场景都没有），只做**结构**校验：
+
+| 类型 | 判据 |
+|---|---|
+| `.gd` | 跳过字符串与 `#` 注释后 `() [] {}` 配平 |
+| `.gdshader` | 跳过字符串与 `//` `/* */` 注释后配平 |
+| `.tscn` | 配平 + 必须以 `[gd_scene` 开头 |
+| `.tres` | 配平 + 必须以 `[gd_resource` 开头 |
+| `project.godot` | 配平 |
+
+字符串里的 `{`（如 `print("{ok}")`）不算括号 —— 收尾门的通则是宁漏不误报。它抓的是截断（`var d = {` 写到一半），不是语义错误；语义只有 Godot 能判。
+
+**验证**：`test_self_verify.py` 新增 11 条（Godot 5 + 分区 4 + 观测解析/门内 2），连同记忆套件 **180 passed**；四条变异真红（分区目录不查 / `.gd` 不查配平 / `.tscn` 不查文件头 / `dev_apply_regions` 不在门内）。变异脚本用 `try/finally` 保证还原，并按字节比对确认 `tools.py`、`agent.py` 已还原。
+
+**仍未做**：`.tscn` 里 `ext_resource path="res://…"` 的悬空引用 —— 需要先定位 Godot 工程根并区分「导入期生成」的资源，误报风险比收益大。
