@@ -388,6 +388,27 @@ class TurnRecordTests(_MemBase):
             status="completed", turn=_RecordTurn(), journal=journal, next_step="")
         self.assertEqual(receipts.get("prj", result["receipts"][0])["result"], "fail")
 
+    def test_unverifiable_write_is_uncertain_not_failed(self):
+        """`.md` 这类没有校验器的写入：没能校验 ≠ 校验失败。
+
+        实测 30 天 3 条回执全是 `verify/fail/self_verify`，证据都是 docs 文件 ——
+        全是「没有对应校验器」被记成了失败。
+        """
+        journal = {"verification": {"docs/x.md": None}, "verified": False,
+                   "last_action": "create_file", "last_obs": "无可执行的校验"}
+        result = turns.record_turn(
+            session_id="s1", project_id="prj", question="写个文档", final_text="完成",
+            status="completed", turn=_RecordTurn(), journal=journal, next_step="")
+        self.assertEqual(receipts.get("prj", result["receipts"][0])["result"], "uncertain")
+
+    def test_one_real_failure_outranks_an_unknown(self):
+        journal = {"verification": {"docs/x.md": None, "a.py": False}, "verified": False,
+                   "last_action": "create_file", "last_obs": "py_compile 失败"}
+        result = turns.record_turn(
+            session_id="s1", project_id="prj", question="写文档并改代码", final_text="完成",
+            status="completed", turn=_RecordTurn(), journal=journal, next_step="")
+        self.assertEqual(receipts.get("prj", result["receipts"][0])["result"], "fail")
+
 
 class SessionInjectionTests(_MemBase):
     def test_l4_block_reaches_prompt_and_trace(self):

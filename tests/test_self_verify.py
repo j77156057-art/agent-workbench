@@ -140,9 +140,25 @@ class AgentGateFormatTest(unittest.TestCase):
 
     def test_exception_is_unverified(self):
         with mock.patch.object(agent, "self_verify", side_effect=RuntimeError("kaboom")):
-            obs, passed = agent._run_self_verify("x.py")
-        self.assertFalse(passed)
+            obs, state = agent._run_self_verify("x.py")
+        self.assertIsNone(state, "校验器异常是「没能校验」，不是「校验失败」")
         self.assertIn("跳过", obs)
+
+    def test_no_validator_is_unknown_not_failed(self):
+        """`.md` 这类没有校验器的写入：不能记成失败，否则学习环拿到的全是假负面。"""
+        with mock.patch.object(agent, "self_verify", return_value=json.dumps(
+                {"scope": "auto", "ran": [], "passed": False, "failures": [],
+                 "note": "无可执行的校验（该文件类型无对应校验器）"})):
+            obs, state = agent._run_self_verify("docs/x.md")
+        self.assertIsNone(state)
+        self.assertIn("自验证未完成", obs)
+
+    def test_partial_run_is_unknown(self):
+        with mock.patch.object(agent, "self_verify", return_value=json.dumps(
+                {"scope": "auto", "ran": ["py_compile:a.py"], "skipped": ["node --check"],
+                 "passed": False, "failures": [], "note": ""})):
+            _obs, state = agent._run_self_verify("a.py")
+        self.assertIsNone(state, "跑了一部分不等于通过，也不等于失败")
 
 
 class SelfVerifyScopeAutoTest(unittest.TestCase):

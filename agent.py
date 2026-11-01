@@ -482,14 +482,15 @@ def _parse_written_rel(obs):
 
 
 def _run_self_verify(rel_path, verifier=None):
-    """调用当前 Agent 的校验器，返回 (observation_text, passed)。
+    """调用当前 Agent 的校验器，返回 (observation_text, state)。
 
-    校验器异常或未执行检查均为未验证，不中断生成器，也不伪装成通过。
+    `state` 三态：True=通过 / False=校验失败 / None=没能校验。校验器异常也归
+    「没能校验」而不是失败——判据是"跑过并失败"才算失败。
     """
     try:
         data = json.loads((verifier or self_verify)("scope: auto\nfiles: " + str(rel_path)))
     except Exception as e:  # noqa: BLE001
-        return ("[自验证跳过] 校验器调用异常（%s），改动尚未验证。" % type(e).__name__, False)
+        return ("[自验证跳过] 校验器调用异常（%s），改动尚未验证。" % type(e).__name__, None)
     return verification_message(data, rel_path)
 
 
@@ -6452,8 +6453,11 @@ class Agent:
                     if _path:
                         _seen_file_changes.add(_path)
             if turn is not None and isinstance(journal.get("verification"), dict):
+                # 三态原样恢复：None=没能校验，不能塌成 False（那会把「没跑过」
+                # 记成「校验失败」）。
                 turn.verification_targets = {
-                    str(k): bool(v) for k, v in journal["verification"].items()}
+                    str(k): (None if v is None else bool(v))
+                    for k, v in journal["verification"].items()}
                 turn.verified = bool(journal.get("verified"))
 
             def _pairs(value):
@@ -7612,7 +7616,7 @@ class Agent:
                     turn.verified = False
                     if _written and _SELF_VERIFY_ENABLED:
                         _verifier = self.tools.get("self_verify")
-                        _sv_obs, _sv_passed = _run_self_verify(
+                        _sv_obs, _sv_state = _run_self_verify(
                             _written, _verifier.func if _verifier else None)
                         trail.append(
                             {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
@@ -7620,13 +7624,15 @@ class Agent:
                         trail.append(
                             {"role": "user", "content": "Observation: " + _clip_tool_observation(_sv_obs, observation_limit, "self_verify")}
                         )
-                        yield {"type": "observation", "text": _sv_obs, "ok": bool(_sv_passed)}
-                        turn.verification_targets[_target] = _sv_passed
-                        turn.verified = all(turn.verification_targets.values())
+                        # 三态只影响「记什么」：未通过要人看，没能校验同样不能算过。
+                        yield {"type": "observation", "text": _sv_obs, "ok": _sv_state is True}
+                        turn.verification_targets[_target] = _sv_state
+                        turn.verified = all(value is True
+                                            for value in turn.verification_targets.values())
                         # agent 自身结构化日志：self_verify 失败事件（与现有 verdict
                         # 字段并列；不引入新决策，只是「agent 看自己」的可观测面）。
                         # 永静默：失败时 event() 内部 try/except 全包，不影响主流程。
-                        if not _sv_passed:
+                        if _sv_state is False:
                             self._agent_log_event(
                                 self._session_code_root or "",
                                 "self_verify_failed",

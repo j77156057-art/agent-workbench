@@ -100,7 +100,9 @@ def record_turn(*, session_id, project_id, question, final_text, status="complet
     if isinstance(verification, dict) and verification:
         if journal.get("verified"):
             outcome = "pass"
-        elif any(not bool(value) for value in verification.values()):
+        elif any(value is False for value in verification.values()):
+            # 只有「校验器跑过并失败」才算 fail；None=没能校验（该文件类型没有
+            # 校验器 / 被跳过）落在 uncertain，不能记成负面证据。
             outcome = "fail"
         else:
             outcome = "uncertain"
