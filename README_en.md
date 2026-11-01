@@ -89,6 +89,17 @@ A few worth calling out:
 - The **scene canvas** draws Godot `.tscn` as a node graph, parent edges and instance edges in separate colors, properties and positions editable, **everything undoable and undo restores the file byte-for-byte**.
 - **Live conversation** streams camera / screen-share frames and voice into a local realtime multimodal model over WebSocket.
 - The **task panel** carries four actions: scope validation, snapshot, snapshot rollback and impact analysis — you first pin down which paths the task is allowed to touch, and a violation is rejected on the spot; rollback restores files to their snapshot content (files created after the snapshot are removed); a task branch opens a git branch named `docmind/<task>` and refuses to switch while the worktree has uncommitted changes.
+- **Three rollback granularities**: **per turn** (`dev_undo_turn`) — every write inside the
+  project automatically leaves its pre-write content behind (a single write funnel + an
+  append-only journal + content-addressed blobs), so **no commit and no manual "take
+  snapshot" click is required**; it dry-runs by default and only lands with `apply: true`;
+  files changed after that turn are skipped with an honest conflict report instead of being
+  overwritten; the same turn cannot be undone twice; the journal keeps 200 turns / 7 days.
+  **Per task** — the task panel's snapshot/rollback above, restoring the files the task
+  declared. **Per changeset** (`dev_rollback_changeset`) — `git revert` inside each region's
+  own git repository, producing inverse commits without rewriting history, and it does not
+  count as done if any region fails. There is also restoring a single file to a given commit
+  (which lands as an ordinary uncommitted change, so it can itself be rolled back).
 - **Context memory**: the "Memory" button beside the composer opens a right-hand drawer with the content actually injected next turn — L0 constitution / L1 profile / L2 shared memory / L3 task book / L4 session hooks / history summary. Constitution, profile, task book and hooks are editable; candidates can be adopted or promoted; relation edges can be added/removed; the index can be rebuilt.
 - **Voice models**: the endpoint, model and voice of STT / TTS / realtime Omni are edited and persisted from the settings page — **no `.env` edit and no restart**.
 - **Plan runs**: the "Plan" chip beside the composer opens the Plan panel — give it a goal and a review interval and the model keeps executing the task book in the background, **and does not stop until every item is crossed off**; once closed out it switches to periodic review (reviewed every change? actually ran the tests? anything obviously missing? what could still improve?). Each turn's actions and the trade-offs the model logs itself land in the decision ledger for later review. **Only the user can stop it**: closing the panel does not, the model has no stop tool, and ordinary chat requests return 409 while a Plan runs.
@@ -102,7 +113,7 @@ Classification is **declarative** (`agent_runtime/tool_domains.py`), never infer
 | Domain | Covers |
 |---|---|
 | `files` | Read/write inside the project, content / symbol / glob search, reference location, atomic multi-file rewrite, read/write/delete outside the allowlist |
-| `verify` | Run tests, CI conclusions, contract validation, dependency reconciliation, index rebuild, changeset rollback, approval status |
+| `verify` | Run tests, CI conclusions, contract validation, dependency reconciliation, index rebuild, changeset rollback, **per-turn undo**, approval status |
 | `frontend` | Start a dev server, click / type / read in a real browser, capture and drive the desktop, **visual locate + visual click**, Vue component-level and app-level acceptance |
 | `preview_adapter` | Design a declarative preview adapter for a new file type or runtime: draft → approve → controlled refresh → rollback → fixture test |
 | `mcp` | Connector config and probing, calls, official Registry search, **candidate discovery from a natural-language need**, capability approval, isolated install and audit |
