@@ -931,7 +931,7 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 
 **五条变异里两条一开始活下来，都是我的用例没造出现场**：
 - 变异「关掉 ①（路径原文搜索）」活下来 —— 8 条用例的引用全是 Python import 行，① 一条都没被触发过。补 `test_path_reference_after_move_is_red`（引用写在 `.md` 里的路径原文，只有 ① 抓得到）→ 红。
-- 变异「把 git 报错当成没人引用」活下来 —— 原 `test_no_git_is_skipped_not_green` 造的是「根本不像个仓库」，走的是另一条分支。补 `test_git_error_is_not_read_as_nobody_references_it`（仓库正常、pattern 非法使返回码为 2）→ 红。
+- 变异「把 git 报错当成没人引用」（`if proc.returncode not in (0,1): return None` → `if False:`）活下来 —— 原 `test_no_git_is_skipped_not_green` 是**整块 patch 掉 `_git_grep_files`** 让它返回 None，函数内部「返回码不是 0/1 就算不知道」那条分支根本没被执行到。补 `test_git_error_is_not_read_as_nobody_references_it`：仓库照常、只把 `subprocess.run` 里 git grep 那一步换成返回码 2，断言判 partial/skipped 而不是通过 → 红。**patch 掉整个协作者 = 该协作者内部的所有分支都没被这条用例碰过**，这是它活下来的根因。
 - 另三条（新文件不查在不在 / 旧文件仍在也放行 / `dev_add_region` 不在门内）第一次就各自判红。
 
 **为什么剩下那 11 个写工具仍然不进门**：`create_external_file` / `edit_external_file` / `delete_external_file` 写的是仓库外的用户文件，代码校验器管不着，也不该把用户桌面判红；`create_artifact` / `dev_skill_create` / `dev_preview_adapter_create` 产的是文档、技能、适配器；`dev_mcp_remove` / `dev_asset_get` / `dev_asset_register` / `memory_save` 改的是注册表与记忆。共同点是**不产生会被 import 的代码**，硬接进代码收尾门只换来假红。至此「写工具 vs 收尾门」这条轴的覆盖问题收尾。
