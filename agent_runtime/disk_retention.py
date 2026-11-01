@@ -66,7 +66,9 @@ DEFAULT_RULES: dict[str, dict[str, Any]] = {
 #   idle_days      闲置多少天才算可回收（"按时间回收"的那个时间）。
 #   whitelist      永不删除的名字/前缀，用户可以往里加。
 #
-# 自动清是**不可逆**动作，所以默认关闭（0），要用户自己设成正数才生效。
+# 默认就是**按时间回收**（30 天一次）：用户要的是"默认替我清"，而不是"装好即静默"。
+# 不可逆动作的护栏放在两处——首轮体检只记基线不动手（见 `schedule_state`），
+# 以及动手前白名单 / 终态 / 最近 N 区 / 闲置天数四道判定。
 INTERVAL_MIN_DAYS = 0
 INTERVAL_MAX_DAYS = 3650
 IDLE_MIN_DAYS = 1          # 0 = "终态就删、不看闲置多久"，一次误设就能把刚跑完的全清掉
@@ -80,7 +82,7 @@ MAX_ITEMS_PER_RUN = 2000
 BUILTIN_WHITELIST = ("release", "installer", "*.zip")
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "interval_days": 0,
+    "interval_days": 30,
     "idle_days": 30,
     "whitelist": list(BUILTIN_WHITELIST),
 }
@@ -600,7 +602,13 @@ def load_last_run(state_root: str) -> dict[str, Any]:
 def record_run(state_root: str, *, plan: Mapping[str, Any], result: Mapping[str, Any],
                settings: Mapping[str, Any], trigger: str, applied: bool,
                now: float | None = None) -> dict[str, Any]:
-    """把这一轮做了什么落盘：用户要能事后查"什么时候清的、清了多少、什么失败了"。"""
+    """把这一轮做了什么落盘：用户要能事后查"什么时候清的、清了多少、什么失败了"。
+
+    `first_seen_ts` / `last_apply_ts` 跨记录保留：前者是"从没真清过"时的调度锚点，
+    后者是"干跑之后还得知道上次真动手是什么时候"。两个都被每轮记录覆盖掉的话，
+    用户点一次「重新扫描」就能把自动清往后推一个周期（或提前触发一次）。
+    """
+    previous = load_last_run(state_root)
     row = {
         "ts": round(now if now is not None else time.time(), 3),
         "trigger": str(trigger or "manual"),
@@ -613,6 +621,12 @@ def record_run(state_root: str, *, plan: Mapping[str, Any], result: Mapping[str,
         "settings": dict(settings or {}),
         "plan_summary": dict(plan.get("summary") or {}),
     }
+    first_seen = _ts_of(previous, "first_seen_ts") or _ts_of(previous, "ts") or row["ts"]
+    last_apply = row["ts"] if applied else (
+        _ts_of(previous, "last_apply_ts")
+        or (_ts_of(previous, "ts") if previous.get("applied") else 0.0))
+    row["first_seen_ts"] = round(float(first_seen), 3)
+    row["last_apply_ts"] = round(float(last_apply), 3) if last_apply else None
     try:
         os.makedirs(str(state_root), exist_ok=True)
         tmp = last_run_path(state_root) + ".tmp"
@@ -632,7 +646,7 @@ def run_once(state_root: str, project_root: str = "", *,
     """一次回收：出计划 → （可选）动手 → 落记录。UI 的「立即回收」与后台定时走同一条路。
 
     `apply=False` 是默认，也是**只读**语义：不可逆动作要么由用户点按钮触发，
-    要么由用户显式设过回收间隔后由后台执行（宪法 C-006）。
+    要么由后台在用户设的间隔（默认 30 天）到点后执行（宪法 C-006）。
     """
     norm = normalize_settings(settings)
     plan = scan(state_root, project_root, settings=norm, include_orphans=include_orphans,
@@ -650,31 +664,59 @@ def run_once(state_root: str, project_root: str = "", *,
             "result": result, "record": row, "settings": norm}
 
 
-def _last_apply_ts(state_root: str) -> float:
-    """上一次**真的动手**的时间戳（干跑不算，否则永远"还没到点"）。"""
-    raw = load_last_run(state_root)
-    if not raw.get("applied"):
-        return 0.0
+def _ts_of(raw: Mapping[str, Any], key: str) -> float:
     try:
-        return float(raw.get("ts") or 0.0)
+        return float(raw.get(key) or 0.0)
     except (TypeError, ValueError):
         return 0.0
 
 
+def _last_apply_ts_of(raw: Mapping[str, Any]) -> float:
+    """上一次**真的动手**的时间戳（干跑不算，否则永远"还没到点"）。
+
+    老记录（本轮之前写的）没有 `last_apply_ts` 字段，退回按 `applied` 判。
+    """
+    return _ts_of(raw, "last_apply_ts") or (_ts_of(raw, "ts") if raw.get("applied") else 0.0)
+
+
+def schedule_state(state_root: str, now: float | None = None, *,
+                   settings: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """到点没到点，以及下次什么时候到点。
+
+    锚点 = 上次**真动手**；从没动手过时用 `first_seen_ts`（第一次有记录的时刻）。
+    所以装好之后的**第一次体检只记基线、不删东西**：默认间隔 30 天时，第一轮真清
+    发生在 30 天后，而不是升级完 20 秒就被清掉几 GB。
+    """
+    stamp = now if now is not None else time.time()
+    norm = normalize_settings(settings if settings is not None else load_settings_file(state_root))
+    raw = load_last_run(state_root)
+    last_apply = _last_apply_ts_of(raw)
+    first_seen = _ts_of(raw, "first_seen_ts") or _ts_of(raw, "ts")
+    anchor = last_apply or first_seen
+    interval = norm["interval_days"]
+    due = bool(anchor) and schedule_due(stamp, anchor, interval)
+    return {
+        "interval_days": interval,
+        "due": bool(due),
+        "last_apply_ts": last_apply or None,
+        "first_seen_ts": first_seen or None,
+        "next_due_ts": (anchor + interval * 86400.0) if anchor and interval > 0 else None,
+    }
+
+
 def scheduled_pass(state_root: str, project_root: str = "", *,
                    now: float | None = None) -> dict[str, Any]:
-    """后台体检调这里：`interval_days = 0` 时**永远不动手**，只把计划刷新进记录。
+    """后台体检调这里：`interval_days = 0` 时永远不动手；到点才 `apply=True`。
 
     间隔是用户自己设的（面板里那格），所以"多久清一次磁盘"这个决定权在设置里，
     不在这段代码里；这里只回答"到点没到点"。
     """
     stamp = now if now is not None else time.time()
     settings = load_settings_file(state_root)
-    due = schedule_due(stamp, _last_apply_ts(state_root), settings["interval_days"])
-    out = run_once(state_root, project_root, settings=settings, apply=bool(due),
+    sched = schedule_state(state_root, stamp, settings=settings)
+    out = run_once(state_root, project_root, settings=settings, apply=bool(sched["due"]),
                    trigger="scheduled", now=stamp)
-    out["scheduled"] = {"interval_days": settings["interval_days"], "due": bool(due),
-                        "last_apply_ts": _last_apply_ts(state_root)}
+    out["scheduled"] = sched
     return out
 
 

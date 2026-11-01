@@ -6322,8 +6322,7 @@ def _disk_retention_payload() -> dict:
     state_root = _disk_state_root()
     settings = disk_retention.load_settings_file(state_root)
     last_run = disk_retention.load_last_run(state_root)
-    stamp = time.time()
-    last_apply = disk_retention._last_apply_ts(state_root)
+    sched = disk_retention.schedule_state(state_root, settings=settings)
     return {
         "ok": True,
         "enabled": os.path.isdir(state_root),
@@ -6340,11 +6339,7 @@ def _disk_retention_payload() -> dict:
             "max_items_per_run": disk_retention.MAX_ITEMS_PER_RUN,
         },
         "builtin_whitelist": list(disk_retention.BUILTIN_WHITELIST),
-        "schedule": {
-            "interval_days": settings["interval_days"],
-            "due": disk_retention.schedule_due(stamp, last_apply, settings["interval_days"]),
-            "last_apply_ts": last_apply or None,
-        },
+        "schedule": sched,
         "last_run": last_run,
         "plan": dict(last_run.get("plan_summary") or {}),
     }

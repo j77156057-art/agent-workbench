@@ -224,7 +224,14 @@ export interface DiskRetentionState {
   settings: DiskRetentionSettings
   ranges: DiskRetentionRanges
   builtin_whitelist: string[]
-  schedule?: { interval_days?: number; due?: boolean; last_apply_ts?: number | null }
+  schedule?: {
+    interval_days?: number
+    due?: boolean
+    last_apply_ts?: number | null
+    /** 第一次有记录的时刻；从没真清过时以它为调度锚点。 */
+    first_seen_ts?: number | null
+    next_due_ts?: number | null
+  }
   last_run?: DiskRetentionLastRun
   plan?: DiskRetentionPlan
 }

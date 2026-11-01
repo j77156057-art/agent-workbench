@@ -236,6 +236,15 @@ const diskTriggerLabel = computed(() => {
   }
   return map[String(disk.value?.last_run?.trigger || '')] || '未知来源'
 })
+/** 到点状态三种说法，别把「还没跑过体检」写成「未到点」——那会让人以为已经在计时。 */
+const diskScheduleNote = computed(() => {
+  const sched = disk.value?.schedule
+  if (!sched) return ''
+  if (!sched.interval_days) return '（0 = 不自动清，只能手动点）'
+  if (!sched.first_seen_ts) return '（还没跑过体检：首轮只记基线，不会当场删）'
+  if (sched.due) return '（当前已到期，下次体检就会清）'
+  return sched.next_due_ts ? `（下次不早于 ${fmtDiskTime(sched.next_due_ts)}）` : ''
+})
 
 /** 白名单条目的删除按钮只对用户自己加的开放：内置项（release / installer / *.zip）
  *  移掉就等于把发布物交给自动删除，后端也挡不住"用户以为自己在移除"这种误操作。 */
@@ -726,9 +735,9 @@ async function reindex() {
                 :disabled="diskBusy"
               />
               <span class="mp-disk-hint">
-                0 = 不自动清（默认），只能自己点「立即回收」；设成正数后由后台体检按点执行
-                —— 体检本身每天跑一次，所以真正动手的时间可能比你设的日期晚一天{{
-                  disk.schedule?.due ? '（当前已到期，下次体检就会清）' : '（当前未到点）' }}
+                0 = 不自动清，只能自己点「立即回收」；正数（默认 30 天）到点由后台体检执行
+                —— 体检本身每天跑一次，真正动手可能比你设的日期晚一天{{
+                  diskScheduleNote }}
               </span>
             </label>
             <label class="mp-field">闲置多少天才算过期

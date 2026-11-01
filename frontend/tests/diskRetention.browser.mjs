@@ -46,7 +46,8 @@ function diskState(overrides = {}) {
       whitelist_max_entries: 64, max_items_per_run: 2000,
     },
     builtin_whitelist: ['release', 'installer', '*.zip'],
-    schedule: { interval_days: 0, due: false, last_apply_ts: null },
+    schedule: { interval_days: 0, due: false, last_apply_ts: null,
+      first_seen_ts: null, next_due_ts: null },
     last_run: { ts: 1764000000, trigger: 'scheduled', applied: false,
       freed_bytes: 0, freed_items: 0, failed_items: 0 },
     plan: {
@@ -288,11 +289,21 @@ try {
     await ctx.close()
   }
 
-  // ---- ② 1020px + 无计划记录 + 状态目录不存在 ----
+  // ---- ② 1020px + 无计划记录 + 状态目录不存在 + 到点三态 ----
   for (const [tag, state] of [
     ['窄屏', diskState()],
     ['无记录', diskState({ last_run: {}, plan: {} })],
     ['无状态目录', diskState({ enabled: false })],
+    ['已到期', diskState({
+      settings: { interval_days: 30, idle_days: 30, whitelist: ['release', 'installer', '*.zip'] },
+      schedule: { interval_days: 30, due: true, last_apply_ts: 1760000000,
+        first_seen_ts: 1760000000, next_due_ts: 1762592000 },
+    })],
+    ['等基线', diskState({
+      settings: { interval_days: 30, idle_days: 30, whitelist: ['release', 'installer', '*.zip'] },
+      schedule: { interval_days: 30, due: false, last_apply_ts: null,
+        first_seen_ts: null, next_due_ts: null },
+    })],
   ]) {
     const width = tag === '窄屏' ? 1020 : 1440
     const ctx = await browser.newContext({ viewport: { width, height: 900 } })
@@ -313,6 +324,17 @@ try {
       check('状态目录不存在时给出可读说明且收起控件',
         info.buttons.length === 0 && !info.interval, JSON.stringify(info.buttons))
     }
+    if (tag === '已到期') {
+      check('到点时明说「下次体检就会清」',
+        info.hints.join(' ').includes('已到期'), info.hints.join(' / '))
+      check('间隔默认档在输入框里显示 30 天', info.interval.value === '30',
+        JSON.stringify(info.interval))
+    }
+    if (tag === '等基线') {
+      check('首轮只记基线，不许写成「未到点」骗人已在计时',
+        info.hints.join(' ').includes('首轮只记基线')
+        && !info.hints.join(' ').includes('未到点'), info.hints.join(' / '))
+    }
     await ctx.close()
   }
 
@@ -332,6 +354,8 @@ try {
     check('真接口的边界与后端常量一致（3650 天）',
       info.interval && info.interval.max === '3650' && info.idle.max === '3650',
       JSON.stringify({ interval: info.interval, idle: info.idle }))
+    check('真接口的默认间隔是 30 天（按时间回收，不是关闭）',
+      info.interval && info.interval.value === '30', JSON.stringify(info.interval))
     await ctx.close()
   }
 } finally {

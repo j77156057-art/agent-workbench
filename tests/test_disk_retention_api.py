@@ -34,6 +34,18 @@ def _call(coro):
     return asyncio.run(coro)
 
 
+def _write_last_run(state_root: Path, **fields):
+    """直接落一条历史记录：调度是全时间函数，用合成时间比真等 30 天唯一可靠。"""
+    row = {"ts": 0.0, "trigger": "scheduled", "applied": False,
+           "freed_bytes": 0, "freed_items": 0, "failed_items": 0,
+           "skipped_items": 0, "failures": [], "settings": {},
+           "plan_summary": {}, "first_seen_ts": 0.0}
+    row.update(fields)
+    target = Path(dr.last_run_path(str(state_root)))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(row), encoding="utf-8")
+
+
 class DiskRetentionApiTests(unittest.TestCase):
     def setUp(self):
         self.state_root = Path(tempfile.mkdtemp(prefix="dr-state-"))
@@ -70,10 +82,11 @@ class DiskRetentionApiTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["settings"], dr.normalize_settings(None))
-        self.assertEqual(payload["settings"]["interval_days"], 0,
-                         "默认档必须是「不自动清」，否则用户第一天就被删了副本还没人告知")
+        self.assertEqual(payload["settings"]["interval_days"], 30,
+                         "用户要的是「默认按时间回收」；默认 0 等于装好即静默、永不自动清")
         self.assertFalse(payload["schedule"]["due"],
-                         "间隔为 0 时报「到点」= 后台随时可能动手")
+                         "从没有过记录就判「到点」= 升级后第一次体检当场删掉几 GB")
+        self.assertIsNone(payload["schedule"]["first_seen_ts"])
         self.assertEqual(payload["builtin_whitelist"], list(dr.BUILTIN_WHITELIST))
 
     def test_ranges_match_the_backend_clamp_constants(self):
@@ -132,13 +145,61 @@ class DiskRetentionApiTests(unittest.TestCase):
             api.DiskRetentionSettingsReq(whitelist=["  ", "", "a" * 500])))
         self.assertEqual(resp["settings"]["whitelist"], list(dr.BUILTIN_WHITELIST))
 
-    def test_schedule_flips_to_due_once_interval_is_positive(self):
-        not_due = _call(api.get_disk_retention())["schedule"]
-        self.assertFalse(not_due["due"])
-        _call(api.set_disk_retention_settings(api.DiskRetentionSettingsReq(interval_days=3)))
-        due = _call(api.get_disk_retention())["schedule"]
-        self.assertTrue(due["due"], "设了间隔又从没清过 → 应当判定到点")
-        self.assertEqual(due["interval_days"], 3)
+    def test_first_pass_only_records_a_baseline(self):
+        """首轮体检只记基线：默认间隔 30 天时，升级完不该当场删东西。"""
+        _write_last_run(self.docmind, ts=time.time() - 400 * DAY,
+                        first_seen_ts=time.time() - 400 * DAY)
+        # 有基线且早过 30 天 → 到点
+        self.assertTrue(_call(api.get_disk_retention())["schedule"]["due"])
+        # 换成"从没有记录" → 不到点（这一轮只负责写基线）
+        Path(dr.last_run_path(str(self.docmind))).unlink()
+        first = _call(api.get_disk_retention())["schedule"]
+        self.assertFalse(first["due"])
+        self.assertIsNone(first["first_seen_ts"])
+
+    def test_interval_counts_from_the_baseline_until_a_real_run(self):
+        now = time.time()
+        _write_last_run(self.docmind, ts=now - 20 * DAY, first_seen_ts=now - 20 * DAY)
+        self.assertFalse(_call(api.get_disk_retention())["schedule"]["due"],
+                         "20 天 < 30 天间隔，却被判到点")
+        next_due = _call(api.get_disk_retention())["schedule"]["next_due_ts"]
+        self.assertAlmostEqual(next_due, now - 20 * DAY + 30 * DAY, delta=5)
+
+    def test_dry_runs_do_not_postpone_the_next_automatic_clean(self):
+        now = time.time()
+        # 真清发生在 40 天前，今天又干跑了一轮（记录 ts 是今天、applied=False）
+        _write_last_run(self.docmind, ts=now, applied=False,
+                        first_seen_ts=now - 90 * DAY, last_apply_ts=now - 40 * DAY)
+        sched = _call(api.get_disk_retention())["schedule"]
+        self.assertTrue(sched["due"], "干跑后丢了「上次真动手」→ 自动清被无限推迟")
+        self.assertAlmostEqual(sched["last_apply_ts"], now - 40 * DAY, delta=5)
+        # 上次真动手在 20 天前 → 没到点
+        _write_last_run(self.docmind, ts=now, applied=False,
+                        first_seen_ts=now - 90 * DAY, last_apply_ts=now - 20 * DAY)
+        self.assertFalse(_call(api.get_disk_retention())["schedule"]["due"])
+
+    def test_record_run_carries_schedule_anchors_forward(self):
+        """直接在记账层钉：干跑既不能抹掉「上次真动手」，也不能抹掉基线。"""
+        state = str(self.docmind)
+        base = {"plan": {"summary": {}}, "result": {}, "settings": dr.normalize_settings(None)}
+        first = dr.record_run(state, **base, trigger="scheduled", applied=False, now=1000.0)
+        self.assertEqual(first["first_seen_ts"], 1000.0)
+        self.assertIsNone(first["last_apply_ts"])
+        second = dr.record_run(state, **base, trigger="scheduled", applied=True, now=2000.0)
+        self.assertEqual(second["last_apply_ts"], 2000.0)
+        self.assertEqual(second["first_seen_ts"], 1000.0)
+        third = dr.record_run(state, **base, trigger="manual", applied=False, now=3000.0)
+        self.assertEqual(third["last_apply_ts"], 2000.0, "干跑把上次真动手抹掉了")
+        self.assertEqual(third["first_seen_ts"], 1000.0, "干跑把基线抹掉了")
+
+    def test_interval_zero_never_becomes_due(self):
+        now = time.time()
+        _call(api.set_disk_retention_settings(api.DiskRetentionSettingsReq(interval_days=0)))
+        _write_last_run(self.docmind, ts=now - 400 * DAY, applied=True,
+                        first_seen_ts=now - 400 * DAY)
+        sched = _call(api.get_disk_retention())["schedule"]
+        self.assertFalse(sched["due"], "用户明确关了自动清，却被判到点")
+        self.assertIsNone(sched["next_due_ts"])
 
     # ---- POST run：确认闸 + 干跑不动手 + 动手时白名单挡得住 ----
 
