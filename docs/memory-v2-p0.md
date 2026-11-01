@@ -801,3 +801,28 @@ CI 日志的下载域名（objects.githubusercontent.com）在这台机器上不
 **验证**：健康用例 9 条（含"60 天前的回执不算进 30 天"）；三条变异真红（不报缺证据 / 有 pass 也报全未通过 / 窗口失效）；浏览器 47/47 未回归，新行对比度 14.89、12px、不溢出。
 
 **没做**：没有为了让数字好看去生成或回填回执——采纳要有证据，证据不能造。
+
+### 16.38 30 天没有 pass 回执：`.md` 写入没有校验器，被记成了「校验失败」（2026-11-02）
+
+§16.37 只说"没有通过的回执"，没说为什么。追到会话原文（`web-25b8f39d3f0043c5989fd2ad`）：
+
+```
+observation: 已创建 docs\notes\passed-vs-score.md（513 字节，路径沙箱校验通过）
+observation: [自验证未完成] docs\notes\passed-vs-score.md：无可执行的校验（该文件类型无对应校验器）…
+```
+
+写成功了，但 `self_verify` 对 `.md` 没有可跑的检查 → `finalize_verification` 给 `status=skipped`、`passed=False`；而 `verification_message` 对 skipped / partial / failed **都返回 False**，于是 `turn.verification_targets[file]=False` → 台账 `"verification": {"…md": false}, "verified": false` → 回执 `result=fail` → 固化按「未验证回合」跳过。整条链上「没能校验」被压成了「校验失败」，30 天 3 条回执全是这么来的（三个 docs 写入）。
+
+**改法：把结论改成三态**，一路透传：
+
+| 位置 | 之前 | 现在 |
+|---|---|---|
+| `verification_message` | skipped/partial → False | → **None**（没能校验） |
+| `_run_self_verify` 异常 | False | → **None** |
+| `turn.verification_targets` | bool | `True / False / None`（`verified = all(is True)`） |
+| 台账持久化 / 恢复 | `bool(v)` | 原样保留 None |
+| `turns.record_turn` 回执 | 任一 falsy → fail | **只有 `is False` 才是 fail**，其余 uncertain |
+
+**没做**：没有给 `.md` 加一个「文件存在且非空」式校验器去凑 pass —— 那是把没验过的东西标成验过，比记 unsure 更糟。要让文档写入产出真证据，得有一个有判别力的文档校验（外链可达 / 代码块配平 / 引用可解析），那是另一件事，单独做。
+
+**验证**：`test_self_verify.py` 新增三条（无校验器→None、只跑一部分→None、异常→None），`test_memory_v2_p0.py` 新增两条（None→uncertain、同时有 False 时仍 fail）；两文件 **153 passed**；三条变异真红（skipped 退回 False / 回执层不区分三态 / 异常退回 False）。
