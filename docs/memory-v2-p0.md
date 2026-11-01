@@ -533,7 +533,7 @@ POST   /api/memory/reindex
 §16.21 只堵住了这个洞的一个出口。同一个 `_is_failure` 还牵着另外三条更要紧的路，所以这次把判据本身改掉。
 
 - **三处下游**（`_tool_ok = _result.ok and not _is_failure(obs)`，agent.py 顺序与并行各一处）：
-  1. `turn.failure_count += 1` / `last_failure` → 回合收尾 `turns.py:105` 决定**写不写 L4 error 钩子**；
+  1. `turn.failure_count += 1` / `last_failure` → 回合收尾 `agent_runtime/memory/turns.py:126` 决定**写不写 L4 error 钩子**；
   2. `tool_fail_streak` / `fail_total` → `_TOOL_FAIL_LIMIT=3` **熔断**与重试配额；
   3. `turn.tool_step(ok=…)` → episode 里的 actions 与证据链。
   于是一条真跑失败的 pytest：**既没沉淀成"下次别再这么干"的记忆，也没触发换路重试，模型还收到"这一步成功了"**。L4 长期空转（真实项目 0 钩子）与这条直接相关。
@@ -623,4 +623,4 @@ POST   /api/memory/reindex
 - **补上 `prune` 的引用集合漏洞**：`referenced` 原本只算 `before_sha`。单独看它没错（那时确实只存改前），但 `after` 一落盘，漏这一条就会在保留期截断时**把存活条目的最新内容当孤儿删掉** —— 修完新功能的同一轮就把旧保留逻辑的引用集补全，这是配套，不是两件事。
 - **验证**：`tests/test_write_journal.py` 21 → **25 passed**。两处不变量各做行为级变异：`after` 不落 blob → 断言真红（`AssertionError: False is not true`）；`prune` 漏 `after_sha` → 断言真红。**第一次变异我写成了空 `if` 体**，得到的是 collection error 而不是真红，重写成「标记恒 False」才算数 —— 语法坏掉的变异不算变异。
 - **顺带消掉一个跨文件顺序依赖红**：`test_tool_domains.py` 的提示／注册表脱节守卫单跑全绿、排在 `test_ptc_write_bridge.py` 之后必红。根因不在提示也不在注册表：`importlib.reload(tools)` **换掉**了 `TOOLS` 这个 dict 对象，而 `agent` 早已导入、`agent.TOOLS` 还指着旧表；`orchestrate` / `delegate` / `dev_use_skill` / `tool_search` 只在 agent 侧 `_register_dynamic_tools()`（agent.py:4554）注册，于是守卫拿**新表**比**旧提示**报脱节 —— **假阳性**。修法：两处 reload 后重新对齐并补回动态注册，另加一条守卫测试断言「reload 后两侧共用一张表且四个动态名仍在」；把对齐改成 `pass` 做变异，同一配对立刻 2 failed。9 文件同进程回归 **249 passed**。
-- **本轮明确没做**：把 `.tmp/check_docs_refs.py`（文档 `path:line` 自检）提为 `tools/` 下的常驻守卫 —— 它现在在 `.tmp/`（被 gitignore），一次 `.tmp` 清理就没了；升成常驻要同时决定挂进哪条 CI 门，不塞进这个提交。
+- **文档引用自检升为常驻**：`.tmp/check_docs_refs.py` → **`tools/check_docs_refs.py`**（`.tmp/` 被 gitignore，一次清理就没；本仓库已有 `tools/gh_api_push.py` 这类开发脚本，同一个落点）。覆盖从 3 份笔记扩到 6 份（含两份 README 与本设计稿），实跑 **55 条引用全绿**。扩的瞬间就抓到一处既有漂移：`docs/memory-v2-p0.md:536` 写成裸文件名（当时指向第 105 行）—— 本仓库同名文件散在多个目录，且 `agent_runtime/memory/turns.py` 第 105 行现在是 `else:`，真正决定写不写 L4 error 钩子的是 **126 行**（`if failure_count > 0 and failure_text:`），已改全。守卫自己有牙：把该条改回裸名 → 「文件不存在」；行号改成 9999 → 「超出实际行数 179」。**仍未做**：挂进 CI 门（要先定它算硬门还是提示）。
