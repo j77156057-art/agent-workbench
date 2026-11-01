@@ -1,0 +1,5 @@
+# 纯换行符/空白归一化提交，blame 时跳过（git blame --ignore-revs-file .git-blame-ignore-revs）
+# 2026-11-01：我用 python write_text 整文件重写 docs/memory-v2-p0.md，把 LF blob 翻成
+# 全 CRLF，随后又改回 LF —— 这两次提交没有内容变化，却会让 615 行的 blame 全部指向它们。
+8087b43764f9f6b3463159d45fed431b76456aa9
+44999dbe536119b4edd2b935c077ee58b922d0c9
