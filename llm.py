@@ -1278,6 +1278,23 @@ class LLMClient:
         other = len(text) - cjk
         return int(cjk * 1.1 + other / 3.2) + 40
 
+    @staticmethod
+    def _mock_stream(text):
+        """mock 的流式输出。
+
+        默认零延迟，行为与历来一致（测试、回归、真实使用都不受影响）。
+        设 DOCMIND_MOCK_PACE_MS>0 时按字符节流 —— 录屏/演示专用：
+        mock 是瞬时出结果的，不加节流的话 Thought / Action 会在一帧内刷完，肉眼看不到推理过程。
+        """
+        try:
+            delay = max(0, int(os.getenv("DOCMIND_MOCK_PACE_MS", "0"))) / 1000.0
+        except ValueError:
+            delay = 0.0
+        for ch in text:
+            if delay and not ch.isspace():
+                time.sleep(delay)
+            yield ch
+
     # ------------------------------------------------------------------
     # 离线 mock：模拟一个 ReAct 风格 Agent 的多步推理，便于无 key 演示与端到端验证
     # 支持：检索命中 -> 直接回答；检索未命中 -> 自我反思并换用联网搜索
@@ -1305,10 +1322,7 @@ class LLMClient:
             )
             _mark(answer)
             if stream:
-                def g_img():
-                    for ch in answer:
-                        yield ch
-                return g_img()
+                return self._mock_stream(answer)
             return answer
 
         last = messages[-1]["content"] if messages else ""
@@ -1370,9 +1384,5 @@ class LLMClient:
 
         _mark(answer)
         if stream:
-            def g():
-                for ch in answer:
-                    yield ch
-
-            return g()
+            return self._mock_stream(answer)
         return answer

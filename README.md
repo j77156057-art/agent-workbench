@@ -21,6 +21,15 @@
 <sub>演示里的每一步都是真操作：写入的文件落在工程里，关系图来自真实的继承与挂载解析，场景属性真的写回 `.tscn`，撤销真的把它还原。
 [看 MP4（1440×900，62 秒）](https://raw.githubusercontent.com/j77156057-art/agent-workbench/main/docs/screenshots/demo.mp4) · [仓库内文件](docs/screenshots/demo.mp4)</sub>
 
+**▶ 50 秒真实模型演示（qwen-plus，非 mock）** —— 问一个必须读代码才能答的问题：`score_record` 里 `passed` 和 `score` 各在第几行、怎么算、分别被谁消费。答案里的 143 / 148 / 193 / 199 / 202 行可以逐条对着 `agent_eval.py` 核；「推理轨迹」展开的是这一轮真实的检索与读取记录，不是事后补写的说明。
+
+<div align="center">
+  <img src="docs/screenshots/demo-hard-poster.png" alt="50 秒真实模型演示：读 agent_eval.py 定位 passed / score 并逐条给出行号" width="760" />
+</div>
+
+<sub>这一条用的是真实模型（不是离线 mock），行号来自它读到的文件；录制全程真实时间，没有加速。
+[看 MP4（1440×900，50 秒）](https://raw.githubusercontent.com/j77156057-art/agent-workbench/main/docs/screenshots/demo-hard.mp4) · [仓库内文件](docs/screenshots/demo-hard.mp4)</sub>
+
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace 账本：逐回合的 token / 延迟 / 工具序列 / 结局，只记元数据" width="49%" />
   <img src="docs/screenshots/scene-canvas.png" alt="场景画布：Godot .tscn 的可视化与可编辑节点图" width="49%" />

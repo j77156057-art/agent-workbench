@@ -21,6 +21,15 @@
 <sub>Every step in the demo is a real operation: the written file lands in the project, the relation graph comes from real inheritance and mount parsing, the property is really written back to the `.tscn`, and undo really restores it.
 [Watch the MP4 (1440×900, 62s)](https://raw.githubusercontent.com/j77156057-art/agent-workbench/main/docs/screenshots/demo.mp4) · [file in the repo](docs/screenshots/demo.mp4)</sub>
 
+**▶ 50-second demo with a real model (qwen-plus, not mock)** — a question you cannot answer without reading the code: where exactly `passed` and `score` are computed in `score_record`, how, and who consumes them. Every line number in the answer (143 / 148 / 193 / 199 / 202) can be checked against `agent_eval.py`, and the trace panel shows the real retrievals behind it.
+
+<div align="center">
+  <img src="docs/screenshots/demo-hard-poster.png" alt="50-second demo with a real model: locating passed / score in agent_eval.py with line numbers" width="760" />
+</div>
+
+<sub>Real model, real file reads, real time — no speed-up in the recording.
+[Watch the MP4 (1440×900, 50s)](https://raw.githubusercontent.com/j77156057-art/agent-workbench/main/docs/screenshots/demo-hard.mp4) · [file in the repo](docs/screenshots/demo-hard.mp4)</sub>
+
 <div align="center">
   <img src="docs/screenshots/trace-ledger.png" alt="Trace ledger: per-turn tokens, latency, tool sequence and outcome — metadata only" width="49%" />
   <img src="docs/screenshots/scene-canvas.png" alt="Scene canvas: a visual, editable node graph of a Godot .tscn" width="49%" />
