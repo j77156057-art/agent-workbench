@@ -127,9 +127,9 @@ class DistPlanTests(unittest.TestCase):
                 dr.plan_dist(entries, references, NOW, RULES)}
 
     def test_only_disposable_prefixes_are_reclaimable(self):
-        decisions = self._rows([_entry("DocMind_p0_210820", mtime=NOW - 60 * DAY),
-                                _entry("regression-20260918", mtime=NOW - 60 * DAY),
-                                _entry("acceptance-20260918", mtime=NOW - 60 * DAY)])
+        decisions = self._rows([_entry("DocMind_sample_000000", mtime=NOW - 60 * DAY),
+                                _entry("regression-sample-000000", mtime=NOW - 60 * DAY),
+                                _entry("acceptance-sample-000000", mtime=NOW - 60 * DAY)])
         self.assertEqual({v[0] for v in decisions.values()}, {"reclaim"}, decisions)
 
     def test_release_installer_and_zip_are_never_touched(self):
@@ -140,9 +140,9 @@ class DistPlanTests(unittest.TestCase):
         self.assertEqual({v[0] for v in decisions.values()}, {"keep"}, decisions)
 
     def test_referenced_name_is_kept(self):
-        decisions = self._rows([_entry("regression-20260918", mtime=NOW - 90 * DAY)],
-                               references={"regression-20260918"})
-        self.assertEqual(decisions["regression-20260918"][0], "keep",
+        decisions = self._rows([_entry("regression-sample-000000", mtime=NOW - 90 * DAY)],
+                               references={"regression-sample-000000"})
+        self.assertEqual(decisions["regression-sample-000000"][0], "keep",
                          "仍被 README/脚本按名字引用的副本被判定可回收")
 
     def test_unknown_prefix_kept(self):
@@ -191,6 +191,21 @@ class ReferenceScanTests(unittest.TestCase):
         self.assertFalse(dr._counts_as_reference("tests/fixtures/recorder.py"))
         self.assertTrue(dr._counts_as_reference("packaging/build_release.ps1"))
         self.assertTrue(dr._counts_as_reference("agent_runtime/visual_acceptance.py"))
+
+    def test_name_appearing_only_in_tests_is_not_a_dependency(self):
+        """保留期自己的测试数据不许把真目录判成"仍在用"。
+
+        实测踩过：测试样本里写了 `DocMind_p0_210820`，那三个 dist 目录就全被豁免，
+        默认规则下可回收从 4.01 GB 掉到 2.69 GB —— 守卫自己造了个假依赖。
+        """
+        def runner(cmd, *a, **kw):
+            class _R:
+                returncode = 0
+                stdout = b"tests/test_disk_retention.py\n"
+            return _R()
+        with patch.object(dr.subprocess, "run", side_effect=runner):
+            self.assertEqual(dr.referenced_names("/tmp", ["DocMind_sample_000000"]), set(),
+                             "只在 tests/ 里出现就当依赖 —— 白名单等于没有")
 
     def test_only_code_hits_mark_a_name_as_referenced(self):
         calls = []

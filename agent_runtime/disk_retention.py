@@ -99,8 +99,12 @@ def workflow_statuses(state_root: str) -> dict[str, str]:
 #: 是记录不是依赖。按记录判保留，等于给这批副本发了永久豁免。
 REFERENCE_CODE_SUFFIXES = (".py", ".ps1", ".bat", ".cmd", ".sh", ".yml", ".yaml",
                            ".toml", ".cfg", ".ini", ".json", ".ndjson")
-#: 数据/结果/夹具目录：里面出现的路径是历史记录，不是消费方。
-REFERENCE_DATA_PREFIXES = ("golden/", "tests/fixtures/", "docs/", "dist/")
+#: 数据/结果/测试/文档目录：里面出现的路径是记录或样本，不是消费方。
+#: `tests/` 也在里面是实测逼出来的：保留期自己的测试与注释里写了真实副本目录名
+#: （形如 `DocMind_<构建时间戳>`），于是那些目录被自己的文字判成"仍被引用"，
+#: 默认规则下可回收从 4.01 GB 掉到 2.69 GB，再掉到 3.46 GB。
+#: 教训两条：测试字符串不是依赖方；**代码与文档里要写占位符名，不写真实副本名**。
+REFERENCE_DATA_PREFIXES = ("golden/", "tests/", "docs/", "dist/")
 
 
 def _counts_as_reference(path: str) -> bool:
