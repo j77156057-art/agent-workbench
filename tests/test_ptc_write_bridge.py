@@ -52,6 +52,18 @@ _WRITE_SEED = frozenset({
 class FlagLayeringTests(unittest.TestCase):
     """写开关必须**叠加**在主开关之上：主关 → 写开关再开也失效。"""
 
+    def _rebind_agent(self):
+        """`importlib.reload(tools)` 会**换掉** `TOOLS` 这个 dict 对象。
+
+        `agent` 早就导入过了，它的 `agent.TOOLS` 还指着旧表，于是此后
+        「运行时派发表」和 `tools.TOOLS` 不是同一份 —— 挂在 `tools_mod.TOOLS`
+        上的提示/注册表脱节守卫就会报出 `delegate` / `orchestrate` /
+        `dev_use_skill`：它们只在 agent 侧 `_register_dynamic_tools()` 注册。
+        实测表现是「tests/test_tool_domains.py 单跑全绿、排在本文件之后就红」。
+        """
+        agent_mod.TOOLS = tools_mod.TOOLS
+        agent_mod._register_dynamic_tools()
+
     def _reload(self, main, write):
         env = dict(os.environ)
         env.pop("DOCMIND_PTC_BRIDGE", None)
@@ -63,6 +75,7 @@ class FlagLayeringTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             import importlib
             importlib.reload(tools_mod)
+            self._rebind_agent()
 
     def tearDown(self):
         # 复原：清掉两个 env 再 reload，避免污染后续用例的全局常量。
@@ -72,6 +85,15 @@ class FlagLayeringTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             import importlib
             importlib.reload(tools_mod)
+            self._rebind_agent()
+
+    def test_reload_does_not_desync_agent_registry_from_tools(self):
+        """跨文件不污染：reload 之后 agent 与 tools 必须仍共用一张表，
+        且 agent 侧动态注册的名字还在（丢了就是后续用例的顺序依赖红）。"""
+        self._reload(None, None)
+        self.assertIs(agent_mod.TOOLS, tools_mod.TOOLS)
+        for name in ("orchestrate", "delegate", "dev_use_skill", "tool_search"):
+            self.assertIn(name, tools_mod.TOOLS, "%s 被 reload 冲掉了" % name)
 
     def test_default_off(self):
         self._reload(None, None)
