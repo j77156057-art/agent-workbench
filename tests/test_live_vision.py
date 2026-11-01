@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+import pytest
 
 import api
 
@@ -30,9 +31,15 @@ def test_live_stream_delivers_timestamped_model_observation_without_chat_history
                           "captured_at": captured_at, "focused": True}).encode() + b"\n" + b"jpeg-frame"
     with patch.object(api.projects, "get_project", return_value={"root": "test-root"}), \
             patch.object(api, "analyze_live_frame_ep", side_effect=analyze):
+        # 带 origin 连，且必须是**本机同源**对：`_origin_allowed` 只放
+        # 「origin == host 且 host 是本机」或 `DOCMIND_CORS_ORIGINS` 里显式列出的来源。
+        # 原来这里写死 `http://testserver`（TestClient 的默认 host 不是本机地址），
+        # 于是握手直接被 1008「origin not allowed」关掉 —— CI 与本机同形复现，
+        # 而它把 lane 步骤判红后，workflow 后面的全量 discover 根本不执行。
         with TestClient(api.app).websocket_connect(
                 "/api/vision/live-stream?project_id=stream-test",
-                headers={"origin": "http://testserver"}) as socket:
+                headers={"origin": "http://127.0.0.1:8000",
+                         "host": "127.0.0.1:8000"}) as socket:
             socket.send_text(HELLO)
             hello = socket.receive_json()
             assert hello["type"] == "hello.ok"
@@ -281,3 +288,25 @@ def test_desktop_frame_strict_project_does_not_fall_back_to_engine_window():
     assert response.status_code == 200
     assert response.json()["ok"] is False
     eng.assert_not_called()
+
+def test_foreign_origin_live_stream_socket_is_closed():
+    """反向守卫：非本机同源的 origin 必须被 1008 关掉。
+
+    上面那条正例改的是**夹具**（原来发了个 `http://testserver`，不是本机同源对），
+    不是放宽守卫。这条钉住守卫本身还咬人 —— 否则"把测试改绿"会变成"把守卫改松"。
+    """
+    with pytest.raises(WebSocketDisconnect) as info:
+        with patch.object(api.projects, "get_project", return_value={"root": "test-root"}):
+            # 必须先把项目做成有效的：这条端点**先查项目再查 origin**，
+            # 不 patch 的话关掉原因是 "unknown project"，测的就不是 origin 那道门了。
+            with TestClient(api.app).websocket_connect(
+                    "/api/vision/live-stream?project_id=stream-test",
+                    headers={"origin": "http://evil.example.com",
+                             "host": "127.0.0.1:8000"}) as socket:
+                socket.send_text(HELLO)
+                socket.receive_json()
+    assert info.value.code == 1008, info.value.code
+    # 只断言"被关掉"是不够的：关掉它的可能是另一条策略（实测放宽 origin 守卫后
+    # 这条仍然绿，因为握手阶段另有 1008 关闭路径）。必须钉住**原因**是 origin。
+    assert "origin" in (info.value.reason or "").lower(), info.value.reason
+
