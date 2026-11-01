@@ -82,7 +82,7 @@ _reg("verify", "写后自验证", "self_verify")
 _reg("verify", "契约与对账", "dev_verify_contracts", "dev_diagnostics",
      "dev_headcheck", "dev_patch", "dev_agent_log")
 _reg("verify", "依赖与索引", "dev_deps", "dev_rebuild_index", "dev_probe")
-_reg("verify", "回滚", "dev_rollback_changeset")
+_reg("verify", "回滚", "dev_rollback_changeset", "dev_undo_turn")
 
 _reg("frontend", "真实浏览器", "preview_project", "dev_page_action", "dev_vue",
      "dev_apptest", "dev_media")

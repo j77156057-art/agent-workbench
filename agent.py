@@ -55,6 +55,7 @@ import skills as _skills
 import agent_runtime.agent_log as _agent_log
 from agent_runtime import timers as _timers
 from agent_runtime import plan_log as _plan_log
+from agent_runtime import write_journal as _write_journal
 import pricing as _pricing
 from artifact_tools import bind_project_intro_request, reset_project_intro_request
 try:
@@ -5905,6 +5906,9 @@ class Agent:
             model=getattr(self.llm, "model", ""),
             question=question,
         )
+        # 回合级撤销要按回合归组写入，所以把 trace 的 turn_id 绑进写账本。
+        # 用 contextvar 而非线程本地：并行工具批次走 copy_context()。
+        _journal_turn_token = _write_journal.bind_turn(turn.turn_id)
 
         if TURN_DEADLINE_S > 0 and deadline is None:
             deadline = time.monotonic() + TURN_DEADLINE_S
@@ -6130,6 +6134,7 @@ class Agent:
                 pass
             raise
         finally:
+            _write_journal.reset_turn(_journal_turn_token)
             if error:
                 turn.outcome = "failed"
             if error or not final_text:

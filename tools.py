@@ -5633,6 +5633,49 @@ def _file_lock(target):
         return _FILE_LOCKS.setdefault(key, threading.RLock())
 
 
+def _write_project_file(target, content, *, codec="utf-8", rel="", op="modify",
+                        root="", record=True):
+    """项目文件文本写入的**唯一落点**：写盘 + 给撤销账本记一笔。
+
+    为什么必须有它：回合级撤销的前提是「每一次写都被记到」。写点散在八处时，漏一处
+    就等于那个文件退不回去 —— 实测就是漏过的：`apply_edit`/`dev_apply_edits`/
+    `create_file` 三处记了 lanes 账本，另外五处（含暂存确认后的两条写路径）什么都没记。
+    这里把「落盘 + 记账」收成一个动作，调用方各自的锁与并行冲突检查**保持不动**。
+
+    `after_sha` 取**写完再读回来的字节**，不是把新内容 encode 一下：Windows 文本模式会
+    做换行翻译，撤销时的冲突比较读的也是磁盘字节，两侧必须同一口径，否则每次撤销都会
+    被自己误判成"别人改过"。
+    """
+    before = None
+    if record and os.path.isfile(target):
+        try:
+            with open(target, "rb") as handle:
+                before = handle.read()
+        except OSError:
+            before = None
+    with open(target, "w", encoding=codec) as handle:
+        handle.write(content)
+    if not record:
+        return
+    after = None
+    try:
+        with open(target, "rb") as handle:
+            after = handle.read()
+    except OSError:
+        after = None
+    if after is None:
+        after = str(content).encode(codec, "ignore")
+    try:
+        from agent_runtime import lanes as _lanes
+        from agent_runtime import write_journal
+        write_journal.record(root or (_get_code_root() or ""),
+                             rel or os.path.abspath(target), op=op,
+                             before=before, after=after,
+                             lane=_lanes.get_current_lane())
+    except Exception:  # noqa: BLE001 —— 记账失败绝不能把已经成功的写入带崩
+        pass
+
+
 def _resolve_in_root(path):
     """把 path 解析为 code_root 内的绝对路径；越界返回 (None, root_abs, reason)。
 
@@ -6910,8 +6953,7 @@ def confirm_edit(pid):
                 parent = os.path.dirname(target)
                 if parent and not os.path.isdir(parent):
                     os.makedirs(parent, exist_ok=True)
-                with open(target, "w", encoding="utf-8") as f:
-                    f.write(e["new_content"])
+                _write_project_file(target, e["new_content"], rel=e["rel"], op="create")
             _read_store()[0].add(os.path.normcase(target))
         elif kind == "delete_external_file":
             if not os.path.isfile(target):
@@ -6934,8 +6976,8 @@ def confirm_edit(pid):
                 if not _ok:
                     return False, ("拒绝写入：无法可靠判定该文件编码（%s 不可无损往返），"
                                    "请先规范成 UTF-8 后再确认。" % (_enc or "unknown"))
-                with open(target, "w", encoding=_codec) as f:
-                    f.write(e["new_content"])
+                _write_project_file(target, e["new_content"], codec=_codec,
+                                    rel=e["rel"], op="modify")
             _read_store()[0].add(os.path.normcase(target))
     except Exception as ex:  # noqa: BLE001
         return False, f"写入/删除失败: {ex}"
@@ -7249,8 +7291,8 @@ def apply_edit(arg):
             current = current.replace("\r\n", "\n").replace("\r", "\n")
             if current != old_content:
                 return "并行修改冲突：文件在本次编辑准备后已发生变化，请重新 read_file 后再改。"
-            with open(target, "w", encoding=_write_codec) as f:
-                f.write(new_content)
+            _write_project_file(target, new_content, codec=_write_codec,
+                                rel=rel, root=root_abs, op="modify")
             lanes.record_write(
                 root_abs, lanes.get_current_lane(), rel, "modify",
                 hashlib.sha256(old_content.encode("utf-8")).hexdigest())
@@ -7430,8 +7472,8 @@ def dev_apply_edits(arg):
                 current = current.replace("\r\n", "\n").replace("\r", "\n")
                 if current != p["old_content"]:
                     raise RuntimeError(f"{p['path']}：并行修改冲突，文件在预检后已变化。")
-                with open(p["target"], "w", encoding=p["write_codec"]) as fh:
-                    fh.write(p["new_content"])
+                _write_project_file(p["target"], p["new_content"], codec=p["write_codec"],
+                                    rel=p["path"], root=p["root_abs"], op="modify")
                 lanes.record_write(
                     p["root_abs"], lanes.get_current_lane(),
                     os.path.relpath(p["target"], p["root_abs"]), "modify",
@@ -7441,8 +7483,8 @@ def dev_apply_edits(arg):
         rolled = []
         for p in reversed(written):
             try:
-                with open(p["target"], "w", encoding=p["write_codec"]) as fh:
-                    fh.write(p["old_content"])
+                _write_project_file(p["target"], p["old_content"], codec=p["write_codec"],
+                                    rel=p["path"], root=p["root_abs"], op="rollback")
                 rolled.append(p["path"])
             except Exception:  # noqa: BLE001
                 pass
@@ -7574,8 +7616,7 @@ def create_file(arg):
         with _file_lock(target):
             if os.path.exists(target):
                 return "并行创建冲突：目标文件已被另一个代理创建，请改用 apply_edit。"
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(content)
+            _write_project_file(target, content, rel=rel, root=root_abs, op="create")
             lanes.record_write(root_abs, lanes.get_current_lane(), rel, "create", "")
     except Exception as e:  # noqa: BLE001
         return f"写入失败: {e}"
@@ -9286,6 +9327,69 @@ def dev_list_changesets(arg):
     lines = [f"共 {len(cs)} 个变更集："]
     for c in cs:
         lines.append(f"- id={c.get('id')} message={c.get('message','')} 分区={list((c.get('commits') or {}).keys())}")
+    return "\n".join(lines)
+
+
+def dev_undo_turn(arg):
+    """撤销 agent 某回合对项目文件的改动：改前内容从写账本取，反序恢复。
+
+    输入 keyed 多行（全部可选）：
+      action: status（默认，只看账本）/ undo
+      turn: <回合id>（省略＝最近一个有记录的回合）
+      apply: true（**必须显式给**才真的落盘；不给就是干跑）
+      prune: true + keep_turns: <n> + max_age_days: <n> + apply: true（清账本与孤儿 blob）
+
+    为什么默认干跑：撤销会**删除本回合新建的文件**、并把改过的文件写回旧内容，
+    这是不可逆类操作（宪法 C-006 要求先确认）。两条安全阀：某文件在这一回合之后
+    又被改过（磁盘内容 ≠ 账本记的写入后内容），会**跳过并如实报冲突**，绝不覆盖
+    别人/后续回合的改动；改前内容没存下的（超 1MB 或二进制）报"恢复不了"，不假装成功。
+    撤销动作本身也会记账（撤销前的内容照样存成 blob，数据不丢），但**同一回合拒绝
+    退第二次** —— 把补偿记录再重放一遍只会让同一批文件来回搬。
+    """
+    f = _parse_keyed(str(arg or ""), ["action", "turn", "apply", "prune",
+                                      "keep_turns", "max_age_days"])
+    action = (f.get("action") or "status").strip().lower()
+    apply_it = (f.get("apply") or "").strip().lower() in ("1", "true", "yes", "y", "on")
+    root = _get_code_root()
+    if not root:
+        return "尚未选择项目，无法定位代码库。请在顶栏的项目菜单里「打开项目」。"
+    from agent_runtime import write_journal
+    if (f.get("prune") or "").strip().lower() in ("1", "true", "yes", "on"):
+        stats = write_journal.prune(
+            root, keep_turns=int(f.get("keep_turns") or write_journal.KEEP_TURNS),
+            max_age_days=int(f.get("max_age_days") or write_journal.MAX_AGE_DAYS),
+            apply=apply_it)
+        return ("已清理写账本：%s 条记录被丢弃，保留 %s 条，删除孤儿 blob %s 个%s"
+                % (stats["dropped_entries"], stats["kept_entries"], stats["removed_blobs"],
+                   "" if apply_it else "（dry-run：没真删，加 apply: true 才执行）"))
+    if action in ("status", "list"):
+        info = write_journal.summarize(root)
+        lines = ["写账本：共 %d 笔记录 / %d 个回合，其中 %d 笔可恢复；最近回合 %s"
+                 % (info["writes"], info["turns"], info["restorable"], info["last_turn"] or "-")]
+        for row in info["recent"]:
+            lines.append("  · %s %s %s%s" % (str(row.get("turn") or "-")[:12],
+                                             row.get("op"), row.get("path"),
+                                             "" if row.get("restorable") else "（不可恢复）"))
+        if not info["writes"]:
+            lines.append("  账本是空的 —— 这个项目还没有经过写漏斗的改动。")
+        return "\n".join(lines)
+    if action != "undo":
+        return "参数缺失或无法识别：action 只能是 status / undo。"
+    result = write_journal.undo_turn(root, turn=(f.get("turn") or "").strip(),
+                                     dry_run=not apply_it)
+    if result.get("error"):
+        return "撤销未完成：%s" % result["error"]
+    head = ("已撤销回合 %s：%d 个文件恢复" % (result["turn"], len(result["restored"]))
+            if apply_it else
+            "【干跑】回合 %s 将恢复 %d 个文件（真要执行请加 apply: true）"
+            % (result["turn"], len(result["restored"])))
+    lines = [head]
+    for row in result["restored"]:
+        lines.append("  · %s：%s（%s 字节）" % (row["path"], row["action"], row["bytes"]))
+    for row in result["skipped"]:
+        lines.append("  ! 跳过 %s：%s" % (row["path"], row["reason"]))
+    if result["skipped"] and apply_it:
+        lines.append("注意：有文件没恢复成功，本次撤销不算完整。")
     return "\n".join(lines)
 
 
@@ -12723,6 +12827,10 @@ TOOLS = {
     "dev_rollback_changeset": {
         "description": "整体回滚某变更集：对每个分区 revert 其记录的 commit（生成新提交撤销改动）。输入：changeset: <变更集id> 或 id: <变更集id>。先用 dev_list_changesets 查看 id。",
         "func": dev_rollback_changeset,
+    },
+    "dev_undo_turn": {
+        "description": "撤销 agent 某回合对项目文件的改动（不需要先 commit，改前内容来自写账本）。输入 keyed 多行：`action: status`（默认，看账本里有哪些回合可退）、`action: undo` + `turn: <回合id>`（省略 turn＝最近一个回合）、`apply: true`（**必须显式给**才真的落盘，否则只是干跑）。撤销会删除本回合新建的文件、并把改过的文件写回改前内容，所以属于不可逆类操作、默认干跑。这一回合之后又被改过的文件会被**跳过并如实报冲突**（绝不覆盖别人的改动），改前内容超 1MB 或二进制的会明说「恢复不了」。撤销动作本身也记账（撤销前的内容不丢），但同一回合拒绝退第二次，避免把同一批文件来回搬。另有 `prune: true` + `apply: true` 清理账本与孤儿 blob。",
+        "func": dev_undo_turn,
     },
     "list_dir": {
         "description": "浏览代码库内的目录结构（限定 code_root，供 Agent 研判代码库组织方式）。输入：目录相对路径，可直接写 behaviors/ 或 behaviors（也兼容 path: behaviors/）；留空列根目录。返回子项（目录/文件）及大小/类型。在研判分区方案前先用它勘察顶层有哪些模块/资源目录。",

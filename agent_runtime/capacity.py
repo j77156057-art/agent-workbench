@@ -114,7 +114,13 @@ MAX_TOKEN_BUDGET_CAP = 10_000_000
 #: profile-free 裸提示词 22058 → **22262** 字符（+204）；带 309 记忆时 chars=22571，
 #: `test_task_token_budget_floor` 报「只撑 2/3 轮」。撑满 3 轮的最小值是 **21534**
 #: （21533 只撑 2，贴线成立）。
-MIN_TASK_TOKEN_BUDGET = 21_534
+#:
+#: ⚠ **2026-11-01 重标定 21534 → 21576。** 新增回合级撤销工具 `dev_undo_turn`
+#: 并把 `dev_undo_turn` 登记进 verify/回滚 分面，profile-free 裸提示词 22262 →
+#: **22315** 字符（+53）；带 309 记忆时 chars=**22624**，旧下界只撑 2/3 轮。
+#: 二分量出撑满 3 轮的最小值是 **21576**（21575 只撑 2，贴线成立）；
+#: 无记忆侧只需 21342，取带记忆侧这个更严的值。
+MIN_TASK_TOKEN_BUDGET = 21_576
 
 
 def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
