@@ -6292,6 +6292,120 @@ async def set_memory_settings(req: MemorySettingsReq):
             "memory_check_interval_minutes": get_memory_check_interval()}
 
 
+# ---- 磁盘保留期：回收间隔 / 白名单 / 手动回收（专用端点）----
+# 三类有界副本（试做区、项目快照、dist 构建副本）默认**按时间**回收：
+# 间隔多久清一次、闲置多少天算过期、哪些名字永不清 —— 三样都由用户设，落在
+# `.docmind/disk-retention-settings.json`。间隔默认 0（=不自动清），因为自动清是
+# 不可逆动作，得用户自己表态（宪法 C-006）。
+#
+# GET 不现场扫描：整盘扫描实测 2.6~5.3s，挂在面板加载上就是肉眼可见的卡顿。计划读
+# 后台体检落下的 `disk_retention-last.json`；要刷新的话点「重新扫描」，那条路走
+# POST /run 的干跑（用户在等，几秒可接受）。
+def _disk_state_root() -> str:
+    """状态根按 `STATE_ROOT/.docmind` 取 —— 与工作流存储同一个推导。
+
+    不用 `store.root()` 反推：`DOCMIND_MEMORY_DIR` 指到别处时 dirname 会退化成系统
+    临时目录，拿整盘去扫就是新问题。
+    """
+    return os.path.join(str(STATE_ROOT), ".docmind")
+
+
+class DiskRetentionSettingsReq(BaseModel):
+    interval_days: Optional[int] = None
+    idle_days: Optional[int] = None
+    whitelist: Optional[list[str]] = None
+
+
+def _disk_retention_payload() -> dict:
+    """面板一次拿全：当前设置 + 后端下发的边界 + 到点判定 + 上次回收的记录与计划。"""
+    from agent_runtime import disk_retention
+    state_root = _disk_state_root()
+    settings = disk_retention.load_settings_file(state_root)
+    last_run = disk_retention.load_last_run(state_root)
+    stamp = time.time()
+    last_apply = disk_retention._last_apply_ts(state_root)
+    return {
+        "ok": True,
+        "enabled": os.path.isdir(state_root),
+        "state_root": state_root,
+        "project_root": str(get_runtime("code_root") or CODE_ROOT or ""),
+        "settings": settings,
+        # ⚠ 边界由后端下发，前端不自己写数字（与 /api/agent-capacity 同一条纪律）。
+        "ranges": {
+            "interval_days_min": disk_retention.INTERVAL_MIN_DAYS,
+            "interval_days_max": disk_retention.INTERVAL_MAX_DAYS,
+            "idle_days_min": disk_retention.IDLE_MIN_DAYS,
+            "idle_days_max": disk_retention.IDLE_MAX_DAYS,
+            "whitelist_max_entries": disk_retention.WHITELIST_MAX_ENTRIES,
+            "max_items_per_run": disk_retention.MAX_ITEMS_PER_RUN,
+        },
+        "builtin_whitelist": list(disk_retention.BUILTIN_WHITELIST),
+        "schedule": {
+            "interval_days": settings["interval_days"],
+            "due": disk_retention.schedule_due(stamp, last_apply, settings["interval_days"]),
+            "last_apply_ts": last_apply or None,
+        },
+        "last_run": last_run,
+        "plan": dict(last_run.get("plan_summary") or {}),
+    }
+
+
+@app.get("/api/disk-retention")
+async def get_disk_retention():
+    return _disk_retention_payload()
+
+
+@app.post("/api/disk-retention/settings")
+async def set_disk_retention_settings(req: DiskRetentionSettingsReq):
+    from agent_runtime import disk_retention
+    state_root = _disk_state_root()
+    merged = disk_retention.load_settings_file(state_root)
+    # 只覆盖请求里出现的字段：面板一次只改一格时不能把另外两格写回默认值。
+    for field in ("interval_days", "idle_days", "whitelist"):
+        value = getattr(req, field, None)
+        if value is not None:
+            merged[field] = value
+    saved = disk_retention.save_settings_file(state_root, merged)
+    payload = _disk_retention_payload()
+    payload["settings"] = saved      # 回读一次并覆盖：面板显示的就是真正生效（夹过界）的值
+    return payload
+
+
+class DiskRetentionRunReq(BaseModel):
+    apply: bool = False
+    confirm: bool = False
+    include_orphans: bool = False
+
+
+@app.post("/api/disk-retention/run")
+async def run_disk_retention(req: DiskRetentionRunReq):
+    """一次回收：`apply=False` 只出计划（重新扫描走这条），`apply=True` 真删除。
+
+    真删除必须带 `confirm`，与 `/api/memory/maintain` 同一道闸 —— 面板上那是
+    一个要点两次的按钮，不是一个键盘宏能触发的东西。
+    """
+    from agent_runtime import disk_retention
+    if req.apply:
+        from agent_runtime.memory import gates
+        try:
+            gates.require_confirm(bool(req.confirm), "磁盘回收")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state_root = _disk_state_root()
+    if not os.path.isdir(state_root):
+        raise HTTPException(status_code=409, detail="状态目录不存在：没有可回收的副本")
+    settings = disk_retention.load_settings_file(state_root)
+    project_root = str(get_runtime("code_root") or CODE_ROOT or "")
+    out = await run_in_threadpool(
+        disk_retention.run_once, state_root, project_root,
+        settings=settings, apply=bool(req.apply), trigger="manual",
+        include_orphans=bool(req.include_orphans))
+    return {"ok": True, "applied": out["applied"], "dry_run": out["dry_run"],
+            "plan": out["plan"], "result": out["result"], "record": out["record"],
+            "items": out["items"][:80], "blocked": out["blocked"][:80],
+            "settings": out["settings"]}
+
+
 # ---- 网络搜索 / URL 抓取设置（专用端点）----
 # 与上面的记忆开关同一个理由，且这次有实测证据：设置页保存网络搜索时只提交
 # web_* 字段，而 /api/config 的 ConfigReq.provider 默认值是 "mock" —— 一次
