@@ -1,5 +1,5 @@
 """Game-development helpers built on top of the region workspace."""
-import json, os, re, subprocess, math, time, mimetypes, sys, ast as _ast, urllib.request, urllib.parse, urllib.error, shutil, zipfile, tempfile, uuid, hashlib, threading
+import json, os, re, subprocess, math, time, mimetypes, sys, ast as _ast, urllib.request, urllib.parse, urllib.error, shutil, zipfile, tempfile, uuid, hashlib, threading, base64
 from collections import deque
 import mcp_client
 import gpu_coordinator as _gpu
@@ -2255,11 +2255,27 @@ def task_revert(root, task):
     for rel in task.get('files') or []:
         try:
             saved=snap.get(str(rel).replace('\\','/'))
-            if saved and 'content' in saved:
+            if saved and saved.get('content_b64'):
+                raw = base64.b64decode(saved['content_b64'])
+                target,_=workbench_fs._resolve(root, rel, must_exist=False, for_write=True)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target,'wb') as f: f.write(raw)
+                with open(target,'rb') as f: after=hashlib.sha256(f.read()).hexdigest()
+                want = str(saved.get('sha256') or '')
+                if want and after != want:
+                    # 写完对不上指纹就是没还原成功，绝不报 ok
+                    results.append({'ok':False,'path':rel,'error':'restored bytes hash mismatch',
+                                    'expected':want[:16],'actual':after[:16]})
+                else:
+                    results.append({'ok':True,'path':rel,'restored':'snapshot'})
+            elif saved and 'content' in saved:
+                # 旧快照（本次修复之前存的）只有替换过的文本，字节已经回不来了。
+                # 照样写回去至少能恢复结构，但必须如实标 lossy，不许报干净的还原。
                 target,_=workbench_fs._resolve(root, rel, must_exist=False, for_write=True)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with open(target,'w',encoding='utf-8',newline='') as f: f.write(saved['content'])
-                results.append({'ok':True,'path':rel,'restored':'snapshot'})
+                results.append({'ok':False,'path':rel,'restored':'snapshot-lossy',
+                                'error':'旧快照按文本存的，非 UTF-8 字节已不可恢复'})
             elif saved is None and os.path.lexists(_file(root, rel)):
                 target,_=workbench_fs._resolve(root, rel, must_exist=True, for_write=True)
                 os.remove(target)
@@ -2367,7 +2383,14 @@ def task_impact(root, task):
     return {"ok": True, "direct_files": direct, "semantic_files": related, "related_files": graph_files, "files": files}
 
 def task_snapshot(root, task):
-    """Capture lightweight pre-edit mtimes and sizes for task auditing."""
+    """Capture pre-edit mtimes, sizes and **byte-exact** content for task auditing.
+
+    内容必须按字节存（`content_b64` + `sha256`），不能按文本存：
+    原先这里是 `open(..., encoding='utf-8', errors='replace')` 读、`task_revert` 再
+    以 utf-8 写回 —— 非 UTF-8（GBK / 带 BOM 的二进制-ish）文件在一趟「存快照 → 回滚」
+    里被不可逆改写，实测 27 字节 GBK 变 45 字节、满屏 U+FFFD，而返回还是 `ok: True`。
+    静默损坏 + 谎报成功，是这两条一起修的。
+    """
     rows = {}
     for rel in task.get("files") or []:
         try:
@@ -2375,7 +2398,13 @@ def task_snapshot(root, task):
             key = str(rel).replace("\\", "/")
             item = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
             if st.st_size <= 512 * 1024:
-                with open(_file(root, str(rel)), encoding='utf-8', errors='replace') as f: item['content'] = f.read()
+                with open(_file(root, str(rel)), 'rb') as f: raw = f.read()
+                item["content_b64"] = base64.b64encode(raw).decode("ascii")
+                item["sha256"] = hashlib.sha256(raw).hexdigest()
+                try:
+                    item["content"] = raw.decode("utf-8")   # 只在无损时给文本预览
+                except UnicodeDecodeError:
+                    pass
             rows[key] = item
         except OSError:
             rows[str(rel).replace("\\", "/")] = None

@@ -23,7 +23,7 @@ export const taskApi = {
       })
       .finally(() => clearTimeout(timer))
   },
-  snapshot(payload: Record<string, unknown>) { return rawJson<{ ok: boolean; error?: string; snapshot?: { created_at?: string; files: Record<string, { mtime_ns?: number; size?: number; content?: string } | null> }; scope?: { errors?: { path: string; error: string }[] } }>('/api/tasks/snapshot', payload) },
+  snapshot(payload: Record<string, unknown>) { return rawJson<{ ok: boolean; error?: string; snapshot?: { created_at?: string; files: Record<string, { mtime_ns?: number; size?: number; content?: string; content_b64?: string; sha256?: string } | null> }; scope?: { errors?: { path: string; error: string }[] } }>('/api/tasks/snapshot', payload) },
   verify(payload: Record<string, unknown>) { return postJson<{ ok: boolean; checks: { command: string; ok: boolean; output?: string; error?: string }[] }>('/api/tasks/verify', payload) },
   branch(payload: Record<string, unknown>) { return postJson<{ ok: boolean; branch?: string; error?: string }>('/api/tasks/branch', payload) },
   /** 回滚到快照：**破坏性操作**（会覆盖/删除任务文件），调用方必须先取得用户确认。 */

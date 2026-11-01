@@ -682,3 +682,20 @@ POST   /api/memory/reindex
 **验证**：`tests/test_disk_retention.py` **24 passed** + `tests/test_maintenance.py` 12 passed（新增磁盘 2 条）。七处变异逐条真红：未终态也回收 / 最近区不保护 / 无状态当可回收 / 忽略保留期 / 数据文件也算依赖 / 根校验不生效 / 无视 dry-run。两处变异是**测试自己先错**：一是 `plan_checkpoint_dirs` 里写了 `item["age_days"]`（`KeyError`，被测试当场抓出）；二是引用前缀那条用例用 `.txt` 样本会空过，换成 `.py` 才真的有牙。
 
 **没做**：没执行任何实际删除（本轮只交付机制与数字）；`maintenance` 的磁盘段没进健康面板 UI（`scheduler.last` 里已有原始数据，要不要单独渲染等你定）；`project_stages` 的复制本身仍是整项目两份，`_MAX_TOTAL_BYTES` 只管 cp 不管 stage —— 那是「让副本变小」的另一件事，不在保留期这一条里。
+
+### 16.32 任务快照改成按字节存，并停止谎报还原成功（2026-11-01）
+
+§16.28 记下的那条「本轮未修」缺陷今天修了。它不是理论风险，是**可复现的静默数据损坏 + 一次假绿**：
+
+- `task_snapshot`（game_workbench.py:2378 旧版）用 `open(..., encoding='utf-8', errors='replace')` 读内容存进快照；
+- `task_revert` 再以 utf-8 把那段文本写回去。
+
+最小复现（本轮实测）：一个 27 字节的 GBK 文本文件，「存快照 → 改 → 回滚」之后变成 **45 字节**，开头是 `efbfbd`（U+FFFD 的 UTF-8 编码），逐字节还原失败 —— 而返回值是 `{'ok': True, 'restored': 'snapshot'}`。损坏与谎报是同一条代码造成的，所以一起修。
+
+- **存储**：`content_b64` + `sha256`（按字节，≤512 KB 上限不变）；`content` 只在能无损 UTF-8 解码时才给，作为预览 —— 反向守卫钉着这条，免得"改成一律 base64"把文本可读性一起弄没。
+- **回滚**：按字节写，写完重读比对 `sha256`，**不一致就 `ok: False` + `restored bytes hash mismatch`**；不再出现"没还原成功却报成功"。
+- **旧快照**（修复前存的、只有 lossy 文本）：仍写回文本以尽量恢复结构，但结果标 `restored: snapshot-lossy` 且 `ok: False` —— 那些字节本来就救不回来，不能假装可以。
+
+**验证**：新增 `tests/test_task_snapshot_bytes.py` **6 passed**（GBK 逐字节 / 含 NUL 的二进制 / UTF-8 预览仍在 / 旧快照不许报干净 / 快照被篡改要报错 / 超限不内联）。三处变异逐条真红：退回按文本存 1 failed、写完不校验指纹 1 failed、lossy 仍报成功 1 failed。回归 `test_agent_workflow` + `test_task_route_wiring` + `test_game_workflow` + `test_write_journal` **102 passed**；前端 `engine.ts` 的快照响应类型同步补上 `content_b64` / `sha256`。
+
+**没做**：`task_snapshot` 的 512 KB 上限之上仍是「不落内容、回滚走 git 路径」，非 Git 项目里超限文件的回滚仍只有 mtime/size 记账 —— 那是另一个决定（要不要把大文件内容放 blob 存储，而不是内联进任务 JSON）。
