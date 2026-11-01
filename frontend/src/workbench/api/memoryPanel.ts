@@ -173,6 +173,89 @@ export interface MemoryMaintenanceResult {
   index?: Record<string, unknown>
 }
 
+/** 磁盘保留期：三类有界副本（试做区 / 项目快照 / dist 构建副本）的回收设置与计划。 */
+export interface DiskRetentionSettings {
+  /** 每隔多少天自动清一次；0 = 不自动清（默认），只能手动点。 */
+  interval_days: number
+  /** 闲置多少天才算过期。 */
+  idle_days: number
+  /** 永不删除的名字/前缀；内置项只加不减。 */
+  whitelist: string[]
+}
+
+export interface DiskRetentionRanges {
+  interval_days_min: number
+  interval_days_max: number
+  idle_days_min: number
+  idle_days_max: number
+  whitelist_max_entries: number
+  max_items_per_run: number
+}
+
+export interface DiskRetentionPlan {
+  reclaimable_bytes?: number
+  reclaimable_items?: number
+  blocked_by_whitelist_bytes?: number
+  blocked_by_whitelist_items?: number
+  needs_review_bytes?: number
+  needs_review_items?: number
+  kept_items?: number
+  max_items_per_run?: number
+  by_kind?: Record<string, number>
+}
+
+export interface DiskRetentionLastRun {
+  ts?: number
+  trigger?: string
+  applied?: boolean
+  freed_bytes?: number
+  freed_items?: number
+  failed_items?: number
+  skipped_items?: number
+  failures?: string[]
+  plan_summary?: DiskRetentionPlan
+}
+
+export interface DiskRetentionState {
+  ok: boolean
+  enabled: boolean
+  state_root?: string
+  project_root?: string
+  settings: DiskRetentionSettings
+  ranges: DiskRetentionRanges
+  builtin_whitelist: string[]
+  schedule?: { interval_days?: number; due?: boolean; last_apply_ts?: number | null }
+  last_run?: DiskRetentionLastRun
+  plan?: DiskRetentionPlan
+}
+
+export interface DiskRetentionRow {
+  kind?: string
+  name?: string
+  path?: string
+  bytes?: number
+  reason?: string
+  whitelisted_by?: string
+}
+
+export interface DiskRetentionRunResult {
+  ok: boolean
+  applied: boolean
+  dry_run: boolean
+  plan?: DiskRetentionPlan
+  items?: DiskRetentionRow[]
+  blocked?: DiskRetentionRow[]
+  result?: {
+    removed?: Array<Record<string, unknown>>
+    failed?: Array<Record<string, unknown>>
+    skipped?: Array<Record<string, unknown>>
+    freed_bytes?: number
+    freed_items?: number
+  }
+  record?: DiskRetentionLastRun
+  settings?: DiskRetentionSettings
+}
+
 function call<T>(method: string, url: string, payload?: unknown): Promise<T> {
   return request<T>(url, {
     method,
@@ -248,5 +331,20 @@ export const memoryPanelApi = {
     threshold?: number
   }): Promise<MemoryMaintenanceResult> {
     return call('POST', '/api/memory/maintain', payload)
+  },
+  /** 磁盘回收：读当前设置 + 后端下发的边界 + 上次计划（不现场扫描，秒级返回）。 */
+  diskRetention(): Promise<DiskRetentionState> {
+    return request('/api/disk-retention')
+  },
+  saveDiskRetention(payload: Partial<DiskRetentionSettings>): Promise<DiskRetentionState> {
+    return call('POST', '/api/disk-retention/settings', payload)
+  },
+  /** `apply=false` 只出计划（也是「重新扫描」）；真删除必须同时给 `confirm=true`。 */
+  runDiskRetention(payload: {
+    apply?: boolean
+    confirm?: boolean
+    include_orphans?: boolean
+  }): Promise<DiskRetentionRunResult> {
+    return call('POST', '/api/disk-retention/run', payload)
   },
 }

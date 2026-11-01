@@ -3,6 +3,8 @@ import { computed, ref, watch } from 'vue'
 import { askConfirm, askPrompt } from '../composables/dialogs'
 import { memoryPanelApi } from '../api'
 import type {
+  DiskRetentionRunResult,
+  DiskRetentionState,
   MemoryContextResult,
   MemoryHealth,
   MemoryPanelHook,
@@ -174,6 +176,7 @@ async function loadHealth() {
 function openHealth() {
   active.value = 'health'
   void loadHealth()
+  void loadDisk()
 }
 
 async function maintainHealth(apply: boolean) {
@@ -211,10 +214,158 @@ async function maintainHealth(apply: boolean) {
   }
 }
 
+// ---- 磁盘保留期：间隔 / 过期天数 / 白名单都归用户，动手要确认 ----
+const disk = ref<DiskRetentionState | null>(null)
+const diskBusy = ref(false)
+const diskError = ref('')
+const diskNotice = ref('')
+// 表单值与已保存值分开：用户改到一半就能看出「还没保存」，保存后以后端回读为准。
+const diskInterval = ref(0)
+const diskIdle = ref(30)
+const diskOrphans = ref(false)
+const diskNewEntry = ref('')
+
+const diskWhitelist = computed(() => disk.value?.settings?.whitelist || [])
+const diskDirty = computed(() => !!disk.value && (
+  diskInterval.value !== disk.value.settings.interval_days
+  || diskIdle.value !== disk.value.settings.idle_days))
+/** 记录里的 trigger 是后端键名，界面翻成中文：用户要看得懂那一次是谁触发的。 */
+const diskTriggerLabel = computed(() => {
+  const map: Record<string, string> = {
+    manual: '手动', scheduled: '定时体检', cli: '命令行',
+  }
+  return map[String(disk.value?.last_run?.trigger || '')] || '未知来源'
+})
+
+/** 白名单条目的删除按钮只对用户自己加的开放：内置项（release / installer / *.zip）
+ *  移掉就等于把发布物交给自动删除，后端也挡不住"用户以为自己在移除"这种误操作。 */
+function diskIsBuiltin(entry: string): boolean {
+  return (disk.value?.builtin_whitelist || []).includes(entry)
+}
+
+function fmtBytes(value?: number): string {
+  const n = Number(value || 0)
+  if (n <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let index = 0
+  let size = n
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024
+    index += 1
+  }
+  return `${size >= 100 || index === 0 ? Math.round(size) : size.toFixed(1)} ${units[index]}`
+}
+
+function fmtDiskTime(ts?: number | null): string {
+  if (!ts) return '从未'
+  const date = new Date(ts * 1000)
+  return Number.isNaN(date.getTime()) ? '未知时间' : date.toLocaleString()
+}
+
+function applyDiskState(state: DiskRetentionState) {
+  disk.value = state
+  diskInterval.value = state.settings.interval_days
+  diskIdle.value = state.settings.idle_days
+}
+
+async function loadDisk() {
+  try {
+    applyDiskState(await memoryPanelApi.diskRetention())
+  } catch (e) {
+    diskError.value = (e as Error)?.message || '磁盘保留期读取失败'
+  }
+}
+
+async function saveDiskSettings() {
+  if (diskBusy.value) return
+  diskBusy.value = true
+  diskError.value = ''
+  diskNotice.value = ''
+  try {
+    applyDiskState(await memoryPanelApi.saveDiskRetention({
+      interval_days: diskInterval.value,
+      idle_days: diskIdle.value,
+    }))
+    diskNotice.value = disk.value?.settings.interval_days
+      ? `已保存：每 ${disk.value.settings.interval_days} 天回收一次，闲置满 ${disk.value.settings.idle_days} 天的副本进回收`
+      : `已保存：不自动回收（间隔 0 天），只能手动点「立即回收」`
+  } catch (e) {
+    diskError.value = (e as Error)?.message || '设置保存失败'
+  } finally {
+    diskBusy.value = false
+  }
+}
+
+async function patchDiskWhitelist(next: string[]) {
+  if (diskBusy.value) return
+  diskBusy.value = true
+  diskError.value = ''
+  try {
+    applyDiskState(await memoryPanelApi.saveDiskRetention({ whitelist: next }))
+    diskNotice.value = '白名单已保存'
+  } catch (e) {
+    diskError.value = (e as Error)?.message || '白名单保存失败'
+  } finally {
+    diskBusy.value = false
+  }
+}
+
+function addDiskWhitelist() {
+  const entry = diskNewEntry.value.trim()
+  if (!entry || diskWhitelist.value.includes(entry)) return
+  diskNewEntry.value = ''
+  void patchDiskWhitelist([...diskWhitelist.value, entry])
+}
+
+function removeDiskWhitelist(entry: string) {
+  if (diskIsBuiltin(entry)) return
+  void patchDiskWhitelist(diskWhitelist.value.filter(item => item !== entry))
+}
+
+async function runDisk(apply: boolean) {
+  if (diskBusy.value) return
+  if (apply) {
+    const confirmed = await askConfirm({
+      title: '立即回收磁盘',
+      message: `会永久删除闲置超过 ${diskIdle.value} 天的旧副本（试做区 / 项目快照 / dist 构建副本）。`
+        + '未跑完的工作流、最近的试做区、白名单里的名字都不动。删除不可撤销。',
+      confirmText: '删除并释放空间',
+      danger: true,
+    })
+    if (!confirmed) return
+  }
+  diskBusy.value = true
+  diskError.value = ''
+  diskNotice.value = ''
+  try {
+    const out: DiskRetentionRunResult = await memoryPanelApi.runDiskRetention({
+      apply,
+      confirm: apply,
+      include_orphans: diskOrphans.value,
+    })
+    const plan = out.plan || {}
+    const failed = Number(out.result?.failed?.length || 0)
+    diskNotice.value = apply
+      ? `已回收 ${fmtBytes(out.result?.freed_bytes)}（${out.result?.freed_items ?? 0} 项）`
+        + `${failed ? ` · ${failed} 项失败` : ''}`
+      : `可回收 ${fmtBytes(plan.reclaimable_bytes)} / ${plan.reclaimable_items ?? 0} 项`
+        + ` · 白名单挡下 ${fmtBytes(plan.blocked_by_whitelist_bytes)}`
+        + ` · 待人工 ${fmtBytes(plan.needs_review_bytes)} / ${plan.needs_review_items ?? 0} 项`
+    await loadDisk()
+  } catch (e) {
+    diskError.value = (e as Error)?.message || (apply ? '回收失败' : '扫描失败')
+  } finally {
+    diskBusy.value = false
+  }
+}
+
 watch(() => props.visible, visible => {
   if (!visible) return
   void load('next')
-  if (active.value === 'health') void loadHealth()
+  if (active.value === 'health') {
+    void loadHealth()
+    void loadDisk()
+  }
 })
 watch(() => props.sessionId, () => { if (props.visible) void load(mode.value) })
 
@@ -539,6 +690,101 @@ async function reindex() {
             错误 {{ health.metrics?.errors ?? 0 }} ·
             p50 {{ health.metrics?.p50_ms ?? 0 }}ms
           </p>
+        </div>
+
+        <div class="mp-readonly mp-disk">
+          <strong>磁盘保留期</strong>
+          <p v-if="diskError" class="mp-error">{{ diskError }}</p>
+          <p v-else-if="diskNotice" class="mp-ok">{{ diskNotice }}</p>
+          <p v-if="disk && !disk.enabled" class="mp-hint">状态目录还不存在：没有需要回收的副本。</p>
+          <template v-if="disk?.enabled">
+            <div class="mp-disk-stats">
+              <span>可回收 <strong>{{ fmtBytes(disk.plan?.reclaimable_bytes) }}</strong>
+                / {{ disk.plan?.reclaimable_items ?? 0 }} 项</span>
+              <span>白名单挡下 <strong>{{ fmtBytes(disk.plan?.blocked_by_whitelist_bytes) }}</strong>
+                / {{ disk.plan?.blocked_by_whitelist_items ?? 0 }} 项</span>
+              <span>待人工 <strong>{{ fmtBytes(disk.plan?.needs_review_bytes) }}</strong>
+                / {{ disk.plan?.needs_review_items ?? 0 }} 项</span>
+            </div>
+            <p v-if="!disk.last_run?.ts" class="mp-disk-note">
+              还没有扫描记录：点「重新扫描」算一次计划（只列清单，不删任何东西）。
+            </p>
+            <p v-else class="mp-disk-note">
+              数字来自 {{ fmtDiskTime(disk.last_run.ts) }} 的{{ disk.last_run?.applied ? '回收' : '扫描' }}
+              （{{ diskTriggerLabel }}）；上次释放 {{ fmtBytes(disk.last_run?.freed_bytes) }}
+              / {{ disk.last_run?.freed_items ?? 0 }} 项<template v-if="disk.last_run?.failed_items">
+                · <span class="mp-warn">{{ disk.last_run.failed_items }} 项失败</span></template>
+            </p>
+            <label class="mp-field">每隔多少天自动清一次
+              <input
+                v-model.number="diskInterval"
+                class="mp-input"
+                data-k="interval"
+                type="number"
+                :min="disk.ranges.interval_days_min"
+                :max="disk.ranges.interval_days_max"
+                :disabled="diskBusy"
+              />
+              <span class="mp-disk-hint">
+                0 = 不自动清（默认），只能自己点「立即回收」；设成正数后由后台体检按点执行
+                —— 体检本身每天跑一次，所以真正动手的时间可能比你设的日期晚一天{{
+                  disk.schedule?.due ? '（当前已到期，下次体检就会清）' : '（当前未到点）' }}
+              </span>
+            </label>
+            <label class="mp-field">闲置多少天才算过期
+              <input
+                v-model.number="diskIdle"
+                class="mp-input"
+                data-k="idle"
+                type="number"
+                :min="disk.ranges.idle_days_min"
+                :max="disk.ranges.idle_days_max"
+                :disabled="diskBusy"
+              />
+              <span class="mp-disk-hint">试做区、项目快照、dist 构建副本都按这一档判</span>
+            </label>
+            <div class="mp-disk-whitelist">
+              <span class="mp-disk-wl-title">白名单（这些名字永不清）</span>
+              <div class="mp-disk-chips">
+                <span
+                  v-for="entry in diskWhitelist"
+                  :key="entry"
+                  class="mp-disk-chip"
+                  :class="{ 'mp-disk-chip-builtin': diskIsBuiltin(entry) }"
+                >{{ entry }}<button
+                  v-if="!diskIsBuiltin(entry)"
+                  type="button"
+                  class="mp-disk-chip-x"
+                  :disabled="diskBusy"
+                  aria-label="移出白名单"
+                  @click="removeDiskWhitelist(entry)"
+                >×</button></span>
+              </div>
+              <div class="mp-disk-wl-add">
+                <input
+                  v-model="diskNewEntry"
+                  class="mp-input"
+                  data-k="whitelist"
+                  placeholder="加一条：目录名或前缀，如 DocMind_p0_*"
+                  :disabled="diskBusy"
+                  @keyup.enter="addDiskWhitelist"
+                />
+                <button class="mp-mini" type="button" :disabled="diskBusy || !diskNewEntry.trim()" @click="addDiskWhitelist">加入</button>
+              </div>
+              <p class="mp-disk-hint">内置 {{ disk.builtin_whitelist.length }} 条（发布物 / 安装包 / zip）不可移除；当前上限 {{ disk.ranges.whitelist_max_entries }} 条。</p>
+            </div>
+            <label class="mp-pin"><input v-model="diskOrphans" type="checkbox" :disabled="diskBusy" /> 把认不出状态的副本也算进回收</label>
+            <div class="mp-actions">
+              <span class="mp-hint">
+                <template v-if="diskBusy">正在扫描整盘副本，要十几秒…</template>
+                <template v-else-if="diskDirty">设置改动还没保存</template>
+                <template v-else>单次最多回收 {{ disk.ranges.max_items_per_run }} 项</template>
+              </span>
+              <button class="mp-mini" type="button" :disabled="diskBusy" @click="saveDiskSettings">保存设置</button>
+              <button class="mp-mini" type="button" :disabled="diskBusy" @click="runDisk(false)">重新扫描</button>
+              <button class="mp-btn mp-danger" type="button" :disabled="diskBusy" @click="runDisk(true)">立即回收</button>
+            </div>
+          </template>
         </div>
 
         <div class="mp-actions">
@@ -878,6 +1124,39 @@ async function reindex() {
 .mp-add .mp-input { margin-bottom: 0; flex: 1 1 auto; width: auto; min-width: 0; }
 .mp-add .mp-btn { flex: 0 0 auto; white-space: nowrap; }
 .mp-readonly { margin-top: 10px; color: var(--text-muted); font-size: var(--fs-cap); }
+/* 磁盘保留期：数字是主角，说明文字退到次要层级；边界值一律来自后端。 */
+.mp-disk-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 4px; font-size: var(--fs-sm); }
+.mp-disk-stats strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.mp-disk-note { margin: 2px 0 6px; color: var(--text); font-size: var(--fs-sm); }
+.mp-disk-hint { display: block; margin-top: 2px; color: var(--text-muted); font-size: var(--fs-sm); }
+.mp-disk .mp-field .mp-input { max-width: 160px; }
+.mp-disk-whitelist { margin: 8px 0 6px; }
+.mp-disk-wl-title { color: var(--text); font-size: var(--fs-sm); }
+.mp-disk-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.mp-disk-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+.mp-disk-chip-builtin { border-style: dashed; }
+.mp-disk-chip-x {
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  line-height: 1;
+  padding: 0 1px;
+}
+.mp-disk-chip-x:hover:not(:disabled) { color: var(--danger); }
+.mp-disk-wl-add { display: flex; gap: 6px; align-items: flex-start; }
+.mp-disk-wl-add .mp-input { flex: 1; margin-bottom: 0; }
 .mp-health-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
