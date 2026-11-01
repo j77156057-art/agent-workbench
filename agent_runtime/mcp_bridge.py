@@ -294,13 +294,28 @@ def _truthy_flag(value: Any) -> bool:
     return bool(value)
 
 
+#: 起浏览器、能到达外部站点的 MCP 服务。传输是 stdio（本地进程），但它驱动的浏览器
+#: 会访问外网 —— 联网开关必须管住它。2026-10-15 为 godot/unity 这类「本地引擎连接器」
+#: 加的 stdio 豁免把这一族也顺带放行了，真握手用例因此一直是红的（见
+#: `test_real_handshake_projects_browser_tools_and_respects_web_gate` 第 4 步）。
+_BROWSER_SERVER_TOKENS = ("playwright", "puppeteer", "chromium", "chrome",
+                          "msedge", "selenium", "browser")
+
+
+def is_browser_server(name: str) -> bool:
+    text = str(name or "").lower()
+    return any(token in text for token in _BROWSER_SERVER_TOKENS)
+
+
 def build_specs(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """把 discover 的条目变成 ToolSpec 可用的注册项。"""
     from agent_runtime.tools import Capability, SideEffect, ToolSpec
 
     specs: dict[str, Any] = {}
     for entry in entries:
-        group = "web" if entry.get("http") else "mcp"
+        # group 是「是否跨外网」的唯一判据（`Agent._web_blocked`），所以浏览器型
+        # 连接器要按 web 算，哪怕它是 stdio。
+        group = "web" if (entry.get("http") or is_browser_server(entry.get("server"))) else "mcp"
         capability = Capability.NETWORK
         specs[entry["name"]] = ToolSpec(
             name=entry["name"],

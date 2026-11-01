@@ -135,7 +135,9 @@ class LivePlaywrightHandshake(unittest.TestCase):
         spec = specs["mcp__playwright__browser_evaluate"]
         from agent_runtime.tools import Capability, SideEffect
         self.assertIs(spec.capability, Capability.NETWORK)
-        self.assertEqual(spec.group, "mcp")  # stdio 传输走 mcp group，不是 web
+        # group="web"：浏览器连接器虽然走 stdio，但它驱动的浏览器真的会访问外网，
+        # 所以要落在联网开关下面（`Agent._web_blocked` 的判据就是 group=="web"）。
+        self.assertEqual(spec.group, "web")
         self.assertIs(spec.side_effect, SideEffect.MUTATING)  # 没打 inline_read_only
         self.assertFalse(spec.parallel_safe)
         self.assertIn("developer", spec.applications)

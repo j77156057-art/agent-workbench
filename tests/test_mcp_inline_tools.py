@@ -220,10 +220,10 @@ class NamingCases(_BridgeCase):
 # --------------------------------------------------------------------------- #
 
 class SpecCases(_BridgeCase):
-    def _entry(self, transport="stdio", read_only=False):
-        self.install(FakeMCP(servers={"demo": _server(transport=transport,
+    def _entry(self, transport="stdio", read_only=False, server="demo"):
+        self.install(FakeMCP(servers={server: _server(transport=transport,
                                                       read_only=read_only)},
-                             tools={"demo": [_tool("search", required=("query",),
+                             tools={server: [_tool("search", required=("query",),
                                                    props={"query": {"type": "string"},
                                                           "max": {"type": "integer"}},
                                                    description="检索外部资料")]}))
@@ -248,6 +248,17 @@ class SpecCases(_BridgeCase):
     def test_http_transport_is_under_the_web_switch(self):
         spec = list(mcp_bridge.build_specs(self._entry(transport="http")).values())[0]
         self.assertEqual(spec.group, "web")
+
+    def test_browser_connector_is_under_the_web_switch_even_on_stdio(self):
+        """stdio 的浏览器连接器真的能上网，不能被「本地进程」豁免掉。"""
+        spec = list(mcp_bridge.build_specs(self._entry(server="playwright")).values())[0]
+        self.assertEqual(spec.group, "web")
+
+    def test_local_engine_connector_stays_outside_the_web_switch(self):
+        """godot/unity 这类本地引擎仍按 mcp 分组：联网开关默认关，不能把引擎一起关掉。"""
+        for server in ("godot", "unity"):
+            spec = list(mcp_bridge.build_specs(self._entry(server=server)).values())[0]
+            self.assertEqual(spec.group, "mcp", server)
 
     def test_read_only_marker_makes_it_parallel_safe(self):
         from agent_runtime.tools import SideEffect
