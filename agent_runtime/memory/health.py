@@ -12,21 +12,27 @@ from . import context_panel, episodes, index, metrics, promote, store
 
 DEFAULT_RETENTION_DAYS = 90
 
-#: 学习环的七级漏斗。**对新回合**每级是上一级的子集，第一个归零处即断点；
-#: 历史回合可能缺后加的字段，所以 `funnel()` 另报 `inversions`，不假装单调。
+#: 学习环的七级漏斗。**这七级数的不是同一种东西**：前四级数「回合」、五六级数「条目」、
+#: 第七级数「有过 L2 回注的会话」，而且第七条目的内容来自**全局共享池**，不是本项目晋升的那几条。
+#: 所以「每级是上一级的子集」只在单位与作用域都相同时成立 —— 口径必须写进结构里，
+#: 由 `funnel()` 逐对判 `comparable`，不能靠读的人记住，也不能让断点跨单位乱走。
 #: 加它的理由很具体：此前只能报"真实项目 0 回执 / 46 条候选全来自评测"这种端点数，
 #: 说不清断在哪一级，于是"量没起来"既没法归因也没法判断有没有变好。
+#: 第 5 个字段是 episode 上对应的判据字段名（`None` = 不来自 episode）。
 FUNNEL_STAGES = (
-    ("turns", "真实回合"),
-    ("with_changes", "改了文件"),
-    ("test_run", "跑过测试"),
-    ("with_receipt", "拿到回执"),
-    ("adopted", "被采纳"),
-    ("promoted", "晋升共享"),
+    ("turns", "真实回合", "turn", "project", None),
+    ("with_changes", "改了文件", "turn", "project", "files"),
+    ("test_run", "跑过测试", "turn", "project", "test_run"),
+    ("with_receipt", "拿到回执", "turn", "project", "receipts"),
+    ("adopted", "被采纳", "item", "project", None),
+    ("promoted", "晋升共享", "item", "project", None),
     # 只统计 L2 共享层真的回到提示词（`memory.inject` 在 agent 的 L2 分支记）。
     # 标签刻意不写"回注提示词"：L3/L4 的注入不在这条计量里，写成全部会谎报口径。
-    ("injected", "共享层回注"),
+    ("injected", "共享层回注", "session", "project|global", None),
 )
+
+_UNIT_CN = {"turn": "回合", "item": "条目", "session": "会话"}
+_SCOPE_CN = {"project": "本项目", "project|global": "本项目回合 × 全局共享池"}
 
 
 def _age_days(value):
@@ -65,55 +71,167 @@ def _context_usage(project_id):
 
 
 def funnel(project_id, days=30):
-    """学习环七级漏斗的当前计数 + 第一个断点。
+    """学习环七级漏斗的当前计数 + 每级的口径 + 只在可比级之间判的断点。
 
-    口径说明：episode 按项目分桶，评测流量已经隔离到 `eval-golden`，所以这里的
-    `turns` 就是**这个项目的真实回合**，不需要再减什么。`injected` 来自
-    `memory.inject` 计量（L2 共享层真的进了提示词才记），不是"检索命中过"。
+    三条实测出来的口径约束（2026-11-01）：
+
+    1. **单位不同不许比大小** —— 前四级是回合、五六是条目、七是会话。真实项目当时的形状是
+       「回执 3（回合）→ 采纳 0（条目）→ 晋升 0（条目）→ 回注 63（事件，全部落在一天里）」，
+       旧版把它读成「断在 晋升共享 → 共享层回注」，其实是跨单位乱走。
+    2. **字段在但值为空 ≠ 缺字段** —— 21 条 episode 全都带 `files` / `test_run` 键，值为空是
+       真没改文件（只跑验证也能出回执）。旧版注释把倒挂归因成「早期回合缺字段」，对本项目是
+       错的断言，所以这里改成实测：按行统计「该级是否可测」（`measurable`），缺多少报多少。
+    3. **窗口必须是同一个窗口** —— `metrics.report()` 的 `days` 是「最后 N 个日文件」，不是 N 天；
+       和按 `ts` 过滤的 episode 放一起比就会错位。这里改用 `metrics.rows()` 的真实时间窗。
     """
-    counts = {key: 0 for key, _ in FUNNEL_STAGES}
+    window = max(1, int(days))
+    counts = {key: 0 for key, *_ in FUNNEL_STAGES}
+    measurable = {key: 0 for key, *_ in FUNNEL_STAGES}
+
     for row in episodes.iter_project(project_id):
         age = _age_days(row.get("ts"))
-        if age is not None and age > days:
+        if age is not None and age > window:
             continue
         counts["turns"] += 1
-        if row.get("files"):
-            counts["with_changes"] += 1
-        if row.get("test_run"):
-            counts["test_run"] += 1
-        if row.get("receipts"):
-            counts["with_receipt"] += 1
+        for key, _label, _unit, _scope, field in FUNNEL_STAGES:
+            if not field:
+                continue
+            if field in row:                      # 键在 = 这一级对该回合可判
+                measurable[key] += 1
+                if row.get(field):
+                    counts[key] += 1
+    measurable["turns"] = counts["turns"]
+    missing_field = {key: counts["turns"] - measurable[key]
+                     for key, _label, unit, _scope, field in FUNNEL_STAGES
+                     if unit == "turn" and field}
+    # 一级彻底不可判（窗口内有回合，但没有一条带这个字段）就不能拿来当断点 ——
+    # 否则「缺字段的旧数据」会被读成「断在这里」，那是量具的毛病不是流量的毛病。
+    unmeasurable = [key for key, _label, unit, _scope, field in FUNNEL_STAGES
+                    if unit == "turn" and field and counts["turns"] and not measurable[key]]
+
+    # 条目级：窗口按 `updated` 卡（采纳/晋升本身没时间戳，updated 是唯一可用的代理）。
     items = promote.candidates(project_id)
-    counts["adopted"] = sum(1 for item in items if item.get("adopted"))
-    counts["promoted"] = sum(1 for item in items if str(item.get("status") or "") == "promoted")
-    counts["injected"] = int(metrics.report(days=days, project=project_id)
-                             .get("by_event", {}).get("memory.inject", 0))
-    # 倒挂检测：后级比前级多。对**新**回合每级确实是上一级的子集，但历史回合可能压根
-    # 没有后加的字段（`test_run` 就是 2026-11-01 才落的），实测探针项目就是
-    # 「真实回合 10 → 改了文件 0 → 跑过测试 0 → 拿到回执 4」。不报出来的话，
-    # `stalled_at` 会把这种缺字段的旧数据说成「断在 真实回合→改了文件」，纯属误导。
+    undated = 0
+    windowed = []
+    for item in items:
+        age = _age_days(item.get("updated"))
+        if age is None:
+            undated += 1
+            windowed.append(item)                 # 读不出时间就留在窗口里，别悄悄丢数据
+        elif age <= window:
+            windowed.append(item)
+    counts["adopted"] = sum(1 for item in windowed if item.get("adopted"))
+    counts["promoted"] = sum(1 for item in windowed if str(item.get("status") or "") == "promoted")
+    stock = {
+        "adopted": sum(1 for item in items if item.get("adopted")),
+        "promoted": sum(1 for item in items if str(item.get("status") or "") == "promoted"),
+    }
+
+    # 会话级：同一张时间窗里，有多少个不同会话真的拿到过 L2 注入（事件数另报，不混用）。
+    inject_rows = metrics.rows(days=window, project=project_id, event="memory.inject")
+    sessions = {str(row.get("session") or "") for row in inject_rows} - {""}
+    counts["injected"] = len(sessions)
+    inject_events = len(inject_rows)
+    inject_unattributed = sum(1 for row in inject_rows if not str(row.get("session") or ""))
+
+    labels = {key: label for key, label, *_rest in FUNNEL_STAGES}
+    meta = {key: (unit, scope) for key, _label, unit, scope, _f in FUNNEL_STAGES}
+    comparable_pairs = []
+    handoffs = []
     inversions = []
-    for (key, label), (nkey, nlabel) in zip(FUNNEL_STAGES, FUNNEL_STAGES[1:]):
-        if counts[nkey] > counts[key]:
-            inversions.append({"from": key, "to": nkey,
-                               "message": f"「{label}」{counts[key]} < 「{nlabel}」{counts[nkey]}"})
+    for (key, _l, unit, scope, _f), (nkey, _nl, nunit, nscope, _nf) in zip(
+            FUNNEL_STAGES, FUNNEL_STAGES[1:]):
+        pair = {"from": key, "to": nkey,
+                "from_label": labels[key], "to_label": labels[nkey]}
+        if unit == nunit and scope == nscope:
+            pair["comparable"] = True
+            comparable_pairs.append(pair)
+            if counts[nkey] > counts[key]:
+                # 倒挂的成因看**两级任一侧**有缺字段：上一级不可判时，分母本身就虚。
+                kind = "missing_field" if (missing_field.get(key) or missing_field.get(nkey)) else "legitimate"
+                inversions.append({
+                    "from": key, "to": nkey, "kind": kind,
+                    "message": "「%s」%d < 「%s」%d（%s）" % (
+                        labels[key], counts[key], labels[nkey], counts[nkey],
+                        "有 %d 个回合缺字段，这一级判不准" % (
+                            max(missing_field.get(nkey, 0), missing_field.get(key, 0)))
+                        if kind == "missing_field" else
+                        "字段齐备，是真发生了：同单位下一级也不必须是上一级的子集"),
+                })
+        else:
+            pair["comparable"] = False
+            pair["reason"] = "单位 %s→%s%s" % (
+                _UNIT_CN[unit], _UNIT_CN[nunit],
+                "" if scope == nscope else "，且作用域 %s→%s" % (_SCOPE_CN[scope], _SCOPE_CN[nscope]))
+            handoffs.append(pair)
+            if counts[nkey] > counts[key]:
+                inversions.append({
+                    "from": key, "to": nkey, "kind": "cross_unit",
+                    "message": "「%s」%d（%s·%s）< 「%s」%d（%s·%s）—— 两种量纲，不是倒挂" % (
+                        labels[key], counts[key], _UNIT_CN[unit], _SCOPE_CN[scope],
+                        labels[nkey], counts[nkey], _UNIT_CN[nunit], _SCOPE_CN[nscope]),
+                })
+
     stalled = ""
+    skipped = []
     if not counts["turns"]:
         stalled = "还没有真实回合"
     else:
-        for (key, label), (nkey, nlabel) in zip(FUNNEL_STAGES, FUNNEL_STAGES[1:]):
-            if counts[key] and not counts[nkey]:
-                stalled = f"断在「{label} → {nlabel}」"
+        for pair in comparable_pairs:                       # 断点只在同单位同作用域之间走
+            if pair["to"] in unmeasurable:
+                skipped.append({"at": "%s → %s" % (pair["from_label"], pair["to_label"]),
+                                "reason": "这一级没有一条记录带判据字段，判不了"})
+                continue
+            if counts[pair["from"]] and not counts[pair["to"]]:
+                stalled = "断在「%s → %s」（单位：%s）" % (
+                    pair["from_label"], pair["to_label"], _UNIT_CN[meta[pair["to"]][0]])
                 break
-        if inversions and stalled:
-            stalled += "（注意：有 " + str(len(inversions)) + " 处倒挂，早期回合缺字段，别按断点解读）"
+        if not stalled:
+            # 同单位段内都通了，卡在跨单位交接处 —— 这仍然要说出来（学习环没闭合就是卡这儿），
+            # 但措辞必须是「交接」而不是「子集断了」：上一级数回合、下一级数条目，没有包含关系。
+            # 不因后面某级有数就免职：真实项目就是「采纳 0、晋升 0，但回注 63」—— 回注的内容
+            # 来自**全局共享池**，不代表本项目这一环闭合了。
+            for pair in handoffs:
+                if counts[pair["from"]] and not counts[pair["to"]]:
+                    stalled = "交接处停在「%s（%s）→ %s（%s）」，后面那级若有数，来源不是本级" % (
+                        pair["from_label"], _UNIT_CN[meta[pair["from"]][0]],
+                        pair["to_label"], _UNIT_CN[meta[pair["to"]][0]])
+                    break
+    cross = sum(1 for item in inversions if item["kind"] == "cross_unit")
+    gaps = sum(1 for item in inversions if item["kind"] == "missing_field")
+    legit = sum(1 for item in inversions if item["kind"] == "legitimate")
+    caveats = []
+    if inversions:
+        parts = []
+        if gaps:
+            parts.append("%d 处判据字段缺失、这一级判不准" % gaps)
+        if cross:
+            parts.append("%d 处是跨单位比较（量纲不同，不是倒挂）" % cross)
+        if legit:
+            parts.append("%d 处属正常形状（后级多于前级，例如跑验证不必改文件）" % legit)
+        caveats.append("后级多于前级：" + "；".join(parts))
+
     return {
-        "days": int(days),
+        "days": window,
         "counts": counts,
         "stalled_at": stalled,
+        "caveats": caveats,
         "inversions": inversions,
-        "stages": [{"key": key, "label": label, "count": counts[key]}
-                   for key, label in FUNNEL_STAGES],
+        "comparability": comparable_pairs + handoffs,
+        "handoffs": handoffs,
+        "missing_field": missing_field,
+        "unmeasurable": unmeasurable,
+        "skipped_breakpoints": skipped,
+        "stages": [{"key": key, "label": label, "count": counts[key],
+                    "unit": unit, "unit_label": _UNIT_CN[unit],
+                    "scope": scope, "scope_label": _SCOPE_CN[scope],
+                    "measurable": measurable[key] if unit == "turn" else None,
+                    "events": inject_events if key == "injected" else None,
+                    "stock": stock.get(key) if unit == "item" else None}
+                   for key, label, unit, scope, _f in FUNNEL_STAGES],
+        "item_window_by": "updated（采纳/晋升本身无时间戳，用更新时间作代理；%d 条读不出时间仍计入）" % undated,
+        "inject_events": inject_events,
+        "inject_unattributed": inject_unattributed,
     }
 
 

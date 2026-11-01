@@ -1390,25 +1390,35 @@ class FunnelTests(_MemBase):
         self.assertEqual(report["stalled_at"], "还没有真实回合")
 
     def test_stalled_at_walks_forward_stage_by_stage(self):
-        """逐级喂流量，断点必须**逐级往后挪** —— 这才叫漏斗，不是七个孤立计数。"""
+        """逐级喂流量，断点必须**逐级往后挪** —— 这才叫漏斗，不是七个孤立计数。
+
+        同单位段内才是「子集」关系，措辞用「断在」；跨单位处（回合→条目、条目→会话）
+        没有包含关系，措辞必须是「交接处停在」，否则会谎报量纲。
+        """
         self._record(self._turn())
         self.assertEqual(self._counts()["turns"], 1)
-        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「真实回合 → 改了文件」")
+        self.assertEqual(health.funnel("prj")["stalled_at"],
+                         "断在「真实回合 → 改了文件」（单位：回合）")
 
         self._record(self._turn(), files=("a.py",))
         self.assertEqual(self._counts()["with_changes"], 1)
-        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「改了文件 → 跑过测试」")
+        self.assertEqual(health.funnel("prj")["stalled_at"],
+                         "断在「改了文件 → 跑过测试」（单位：回合）")
 
         self._record(self._turn(test_command="pytest -q"), files=("b.py",))
         self.assertEqual(self._counts()["test_run"], 1)
         self.assertEqual(self._counts()["with_receipt"], 0,
                          "跑了但没过：不算回执")
-        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「跑过测试 → 拿到回执」")
+        self.assertEqual(health.funnel("prj")["stalled_at"],
+                         "断在「跑过测试 → 拿到回执」（单位：回合）")
 
         self._record(self._turn(test_command="pytest -q", ok=True, targets={"b.py": 1}),
                      files=("b.py",))
         self.assertEqual(self._counts()["with_receipt"], 1)
-        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「拿到回执 → 被采纳」")
+        stalled = health.funnel("prj")["stalled_at"]
+        self.assertIn("交接处停在", stalled)
+        self.assertIn("拿到回执（回合）→ 被采纳（条目）", stalled)
+        self.assertNotIn("断在", stalled, "跨单位处不许说成「断在」—— 两级不是同一个量纲")
 
         candidate = promote.create_candidate(
             "prj", "fact", "漏斗候选：先复现再修复，减少盲目改动", importance=0.8)
@@ -1416,12 +1426,97 @@ class FunnelTests(_MemBase):
         counts = self._counts()
         self.assertEqual(counts["adopted"], 1)
         self.assertEqual(counts["promoted"], 1)
-        self.assertEqual(health.funnel("prj")["stalled_at"], "断在「晋升共享 → 共享层回注」")
+        stalled = health.funnel("prj")["stalled_at"]
+        self.assertIn("交接处停在", stalled)
+        self.assertIn("晋升共享（条目）→ 共享层回注（会话）", stalled)
 
-        metrics.record("memory.inject", project="prj", layer="L2", chars=120)
+        metrics.record("memory.inject", project="prj", session="s1", layer="L2", chars=120)
         self.assertEqual(self._counts()["injected"], 1)
         self.assertEqual(health.funnel("prj")["stalled_at"], "",
                          "七级都通了就不该再报断点")
+
+    def test_every_stage_declares_its_unit_and_scope(self):
+        """口径必须写进结构里，不能只写在注释里等人读。"""
+        stages = {s["key"]: s for s in health.funnel("prj")["stages"]}
+        self.assertEqual(stages["turns"]["unit"], "turn")
+        self.assertEqual(stages["with_receipt"]["unit"], "turn")
+        self.assertEqual(stages["adopted"]["unit"], "item")
+        self.assertEqual(stages["promoted"]["unit"], "item")
+        self.assertEqual(stages["injected"]["unit"], "session")
+        self.assertEqual(stages["injected"]["scope"], "project|global")
+        self.assertNotEqual(stages["promoted"]["scope"], stages["injected"]["scope"])
+
+    def test_injected_counts_sessions_not_events(self):
+        """旧版直接把 `memory.inject` 的事件数当第七级 —— 一个回合刷 5 次就变 5。"""
+        for index in range(3):
+            metrics.record("memory.inject", project="prj", session="s%d" % (index % 2),
+                           layer="L2", chars=50 + index)
+        report = health.funnel("prj")
+        self.assertEqual(report["counts"]["injected"], 2, "同一会话的多次注入被数成了两级")
+        self.assertEqual(report["inject_events"], 3, "事件数要另存一份，别和会话数混")
+
+    def test_item_stages_honour_the_same_time_window(self):
+        """采纳/晋升是条目存量，旧版完全不卡窗口：30 天前晋升的也算进「最近 30 天」。"""
+        candidate = promote.create_candidate(
+            "prj", "fact", "窗口守卫：这条要在窗口外，不该被最近 30 天计入", importance=0.8)
+        promote.adopt("prj", candidate["id"])
+        self.assertEqual(self._counts()["promoted"], 1, "先确认窗口内算得到")
+        item = next(row for row in promote.candidates("prj") if row.get("id") == candidate["id"])
+        stale = dict(item)
+        stale["updated"] = "2020-01-01T00:00:00+00:00"
+        promote._write(item["path"], stale, item.get("body") or "")
+        report = health.funnel("prj", days=30)
+        self.assertEqual(report["counts"]["promoted"], 0, "窗口没生效：存量被当成了流量")
+        self.assertEqual(report["stages"][5]["stock"], 1, "存量要另外报出来，不能悄悄消失")
+
+    def test_unmeasurable_stage_is_never_called_a_breakpoint(self):
+        """整级都没有判据字段时，那是量具不可判，不许读成「断在这里」。"""
+        episodes.append("prj", "legacy", {"goal": "旧回合", "files": ["a.py"],
+                                          "receipts": [], "result": {"status": "done"}})
+        report = health.funnel("prj")
+        self.assertEqual(report["unmeasurable"], ["test_run"])
+        self.assertNotIn("跑过测试", report["stalled_at"])
+        self.assertTrue([s for s in report["skipped_breakpoints"] if "跑过测试" in s["at"]])
+        self.assertEqual(report["missing_field"]["test_run"], 1)
+        self.assertEqual(report["missing_field"]["with_changes"], 0,
+                         "files 键在、值为空 = 真没改文件，不是缺字段")
+
+    def test_empty_files_with_receipt_is_a_real_shape_not_a_missing_field(self):
+        """真实项目现在的形状：21 回合全都带 files/test_run 键，回执 3 条而改文件 0 条。
+
+        这只说明「跑验证没改文件」，**不能**解释成缺字段 —— 上一轮我就是把它错归因成
+        「早期回合缺字段」，这条守卫钉住那个错误结论。
+        """
+        for index in range(3):
+            turns.record_turn(session_id="s%d" % index, project_id="prj", question="q",
+                              final_text="答完", turn=self._turn(test_command="pytest -q", ok=True,
+                                                                 targets={"x.py": 1}),
+                              journal={"file_changes": []})
+        report = health.funnel("prj")
+        counts = report["counts"]
+        self.assertEqual((counts["turns"], counts["with_changes"], counts["with_receipt"]),
+                         (3, 0, 3))
+        self.assertEqual(sum(report["missing_field"].values()), 0, "字段都在，不许报缺")
+        self.assertEqual(report["stalled_at"], "断在「真实回合 → 改了文件」（单位：回合）",
+                         "这就是真断点：回合有，改文件没有")
+        kinds = {item["kind"] for item in report["inversions"]}
+        self.assertIn("legitimate", kinds, "回执>改文件 该被判成合法形状，不是量具毛病")
+        self.assertNotIn("missing_field", kinds)
+
+    def test_metrics_rows_use_real_time_window_not_file_count(self):
+        """`report(days=N)` 取的是「最后 N 个日文件」，中间空几天就会把窗口悄悄拉长。"""
+        from agent_runtime.memory import store as mstore
+        import json as _json
+        target = mstore.safe_path("metrics", "2020-01-01.jsonl")
+        mstore.ensure_dir(os.path.dirname(target))
+        row = {"ts": "2020-01-01T00:00:00+00:00", "event": "memory.inject",
+               "project": "prj", "session": "old", "layer": "L2", "chars": 10}
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(_json.dumps(row, ensure_ascii=False) + "\n")
+        metrics.record("memory.inject", project="prj", session="now", layer="L2", chars=20)
+        self.assertEqual(len(metrics.rows(days=30, project="prj", event="memory.inject")), 1,
+                         "过期文件里的行被当成最近 30 天")
+        self.assertEqual(health.funnel("prj")["counts"]["injected"], 1)
 
     def test_test_run_flag_is_persisted_on_the_episode(self):
         """`test_run` 必须落在 episode 上：actions 里只有工具名和 ok，认不出跑的是不是测试。"""
@@ -1458,8 +1553,11 @@ class FunnelTests(_MemBase):
         self.assertEqual(report["counts"]["turns"], 1)
         self.assertEqual(report["counts"]["with_receipt"], 1)
         self.assertEqual(report["counts"]["with_changes"], 0)
-        self.assertTrue(report["inversions"], "倒挂没被检测出来")
-        self.assertIn("倒挂", report["stalled_at"])
+        self.assertTrue(report["inversions"], "后级多于前级没被检测出来")
+        self.assertTrue(report["caveats"], "口径提示丢了")
+        self.assertIn("判据字段缺失", report["caveats"][0])
+        self.assertEqual(report["stalled_at"], "断在「真实回合 → 改了文件」（单位：回合）",
+                         "断点措辞里不许混进口径说明，两者分开字段")
 
     def test_report_carries_the_funnel_and_metrics_tally_events(self):
         metrics.record("memory.inject", project="prj", chars=10)

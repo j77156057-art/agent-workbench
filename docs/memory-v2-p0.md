@@ -624,3 +624,28 @@ POST   /api/memory/reindex
 - **验证**：`tests/test_write_journal.py` 21 → **25 passed**。两处不变量各做行为级变异：`after` 不落 blob → 断言真红（`AssertionError: False is not true`）；`prune` 漏 `after_sha` → 断言真红。**第一次变异我写成了空 `if` 体**，得到的是 collection error 而不是真红，重写成「标记恒 False」才算数 —— 语法坏掉的变异不算变异。
 - **顺带消掉一个跨文件顺序依赖红**：`test_tool_domains.py` 的提示／注册表脱节守卫单跑全绿、排在 `test_ptc_write_bridge.py` 之后必红。根因不在提示也不在注册表：`importlib.reload(tools)` **换掉**了 `TOOLS` 这个 dict 对象，而 `agent` 早已导入、`agent.TOOLS` 还指着旧表；`orchestrate` / `delegate` / `dev_use_skill` / `tool_search` 只在 agent 侧 `_register_dynamic_tools()`（agent.py:4554）注册，于是守卫拿**新表**比**旧提示**报脱节 —— **假阳性**。修法：两处 reload 后重新对齐并补回动态注册，另加一条守卫测试断言「reload 后两侧共用一张表且四个动态名仍在」；把对齐改成 `pass` 做变异，同一配对立刻 2 failed。9 文件同进程回归 **249 passed**。
 - **文档引用自检升为常驻**：`.tmp/check_docs_refs.py` → **`tools/check_docs_refs.py`**（`.tmp/` 被 gitignore，一次清理就没；本仓库已有 `tools/gh_api_push.py` 这类开发脚本，同一个落点）。覆盖从 3 份笔记扩到 6 份（含两份 README 与本设计稿），实跑 **55 条引用全绿**。扩的瞬间就抓到一处既有漂移：`docs/memory-v2-p0.md:536` 写成裸文件名（当时指向第 105 行）—— 本仓库同名文件散在多个目录，且 `agent_runtime/memory/turns.py` 第 105 行现在是 `else:`，真正决定写不写 L4 error 钩子的是 **126 行**（`if failure_count > 0 and failure_text:`），已改全。守卫自己有牙：把该条改回裸名 → 「文件不存在」；行号改成 9999 → 「超出实际行数 179」。**仍未做**：挂进 CI 门（要先定它算硬门还是提示）。
+
+### 16.30 漏斗口径：七级数的不是同一种东西（2026-11-01）
+
+第 16.27 节那版漏斗把七级当成一条单调链来读，实测**读错了两处**，本节把口径钉死。
+
+- **量纲混着**：`turns/with_changes/test_run/with_receipt` 数**回合**，`adopted/promoted` 数**条目（存量）**，`injected` 数**注入事件**。真实项目的形状是「回执 3（回合）→ 采纳 0（条目）→ 晋升 0（条目）→ 回注 63（事件）」，旧版据此报「断在「晋升共享 → 共享层回注」」—— 条目和会话之间没有子集关系，这个断点是量具造出来的。
+- **窗口不是同一个窗口**：`metrics.report(days=N)` 取的是「最后 N 个**日文件**」而不是 N 天（实测 3 个日文件里 63 条 `memory.inject` 全落在 11-01 一天）。和按 `ts` 过滤的 episode 放一起比就是错位。新增 `metrics.rows(days, project, event)` 逐行按真实时间窗过滤，漏斗改用它；`report()` 保留原语义（成本视图够用），docstring 里写清两者差别。
+- **结构里带口径**：每级新增 `unit / unit_label / scope / scope_label / measurable / stock / events`；相邻级新增 `comparability` 与 `handoffs`（跨单位处）；整级无判据字段进 `unmeasurable` + `skipped_breakpoints`；断点措辞分成「断在「A → B」（单位：X）」（同量纲）与「交接处停在「A（回合）→ B（条目）」」（跨量纲）；口径说明从 `stalled_at` 里拆出来单独放 `caveats`，面板分两个节点渲染。
+- **倒挂分三种，不许一律说成「缺字段」**：`missing_field`（判不了）/ `cross_unit`（量纲不同，本来就该不等）/ `legitimate`（真发生了）。
+  我上一轮把「回执 3 而改文件 0」归因成「早期回合缺字段」—— **实测是错的**：21 条 episode 全都带 `files`、`test_run` 键，值为空是真没记上或真没改。
+- **顺着这条测出上游真缺陷**：主代理路径的写盘**从来没进过 `file_changes`**。`file_changes` 只有两个生产者 —— 子代理的 observation 出口（`agent.py` 的 `_run_child`）与 resume 账本合并；`Agent.__init__` 里那个 `self._pending_file_changes` 只初始化、没有任何代码往里写。实测真实项目 21 个回合里 3 个调了 `create_file`，episode 的 `files` 全空 → 漏斗「改了文件 0」有一半是记录漏了，不是用量形状。修法是把收集挪到主路径发 observation 事件的地方（`agent.py:7396` 附近，`_result.artifacts` 落事件的那一处），取值口径与子代理一致、**不填 `kind`**（它是 `preview_adapters` 的路由键，填过 `"file"` 会让产物清单变 0 条）。
+
+**验证**
+
+- 后端：`tests/test_memory_v2_p0.py` 103 → **109 passed**（新增 6 条，各钉一个口径面：单位角标、会话数≠事件数、条目级窗口、无判据级不当断点、真实形状判为 legitimate、`rows()` 的真实时间窗）。
+- 主路径：新增 `tests/test_file_changes_main_path.py` **3 passed**（正向 / 反向只读不记 / 同文件去重）。
+- 变异各有牙：漏斗 6 处（断点跨单位乱走、回注按事件数、条目级不卡窗口、无判据级当断点、一律归因缺字段、时间窗退回文件数）逐条 1 failed；主路径 1 处（不收集）→ 2 failed 而**只读守卫仍绿**，说明没把漏报换成误报。
+- 真机：`frontend/tests/memoryFunnel.browser.mjs` 从 23 项扩到 **47/47 通过**，新增载荷覆盖「缺字段」「全通」「真实形状」三种；1020px 窄档实测不溢出；单位角标对比度实测 14.53:1，chip 正文 5.62:1，都过 4.5。
+- 联合回归 10 个文件同进程 **200 passed**。
+
+**如实记下的限制**
+
+1. **历史回合不回填**：修复前录下的 21 个回合里那 3 个写文档回合，`files` 仍是空 —— 漏斗对旧数据只能报「记录时没拿到」，新回合才开始对得上。面板上「近 30 天」这一段仍会被旧数据拉低，判读时要看 `missing_field` 与新回合。
+2. **正在跑的服务是旧代码**：:8000 的进程早于本次改动启动，`/api/memory/health` 回的还是旧文案（真机 pass 里那行 ℹ 就是这个），要等它重启才切到新口径；浏览器脚本对真接口只验渲染，不做版本耦合的文案断言。
+3. **采纳/晋升没有自己的时间戳**：条目级窗口只能用 `updated` 作代理（面板脚注写明），一次「改标题」会把条目挪回窗口内 —— 这是已知偏差，不是 bug 掩盖。

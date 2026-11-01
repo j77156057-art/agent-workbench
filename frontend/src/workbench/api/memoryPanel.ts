@@ -98,14 +98,46 @@ export interface MemoryFunnelStage {
   key?: string
   label?: string
   count?: number
+  /** 这一级数的是什么：turn=回合 / item=条目 / session=会话。单位不同的两级不能比大小。 */
+  unit?: 'turn' | 'item' | 'session' | string
+  unit_label?: string
+  scope?: string
+  scope_label?: string
+  /** 回合级：窗口内有多少条记录真的带这一级的判据字段；null 表示不适用。 */
+  measurable?: number | null
+  /** 「共享层回注」的事件数（一个回合可能注入多次），与会话数分开报。 */
+  events?: number | null
+  /** 条目级的存量（不受时间窗约束），与窗口内流量并列。 */
+  stock?: number | null
+}
+
+export interface MemoryFunnelHandoff {
+  from?: string
+  to?: string
+  from_label?: string
+  to_label?: string
+  comparable?: boolean
+  reason?: string
 }
 
 export interface MemoryFunnel {
   days?: number
   counts?: Record<string, number>
   stages?: MemoryFunnelStage[]
-  /** 第一个「上一级有量、这一级归零」的断点；空串表示七级全通。 */
+  /** 第一个「上一级有量、这一级归零」的断点；跨单位处改用「交接处停在…」措辞。空串 = 全通。 */
   stalled_at?: string
+  /** 后级多于前级的解释（缺字段 / 跨单位 / 正常形状），与断点分开显示。 */
+  caveats?: string[]
+  /** 单位或作用域不同的相邻级 —— 这些地方没有「子集」关系。 */
+  handoffs?: MemoryFunnelHandoff[]
+  /** 整级没有判据字段，不能当断点看。 */
+  unmeasurable?: string[]
+  skipped_breakpoints?: Array<{ at?: string; reason?: string }>
+  missing_field?: Record<string, number>
+  /** 采纳/晋升的窗口按 `updated` 卡（采纳本身无时间戳）。 */
+  item_window_by?: string
+  inject_events?: number
+  inject_unattributed?: number
 }
 
 export interface MemoryHealth {

@@ -39,6 +39,43 @@ const l4Errors = computed(() => (current.value?.errors || []) as Array<Record<st
 const l4ProjectErrors = computed(() => (current.value?.project_errors || []) as Array<Record<string, unknown>>)
 const retrievableItems = computed(() => (current.value?.retrievable_items || []) as Array<Record<string, unknown>>)
 
+/** 漏斗的渲染序列：七级之间按后端标的 `handoffs` 插入「跨单位」分隔，
+ *  免得把「3 个回合拿到回执」和「0 个条目被采纳」读成同一条链断了一格。 */
+type FunnelStep =
+  | { kind: 'step'; key: string; label: string; count: number; unit: string; note: string; unmeasurable: boolean }
+  | { kind: 'handoff'; key: string; reason: string }
+
+const funnelSteps = computed<FunnelStep[]>(() => {
+  const funnel = health.value?.funnel
+  const stages = funnel?.stages || []
+  const unmeasurable = new Set((funnel?.unmeasurable || []).map(String))
+  const handoffByFrom = new Map((funnel?.handoffs || []).map(item => [String(item.from), item]))
+  const steps: FunnelStep[] = []
+  stages.forEach((stage, index) => {
+    const key = String(stage.key || '')
+    const extras: string[] = []
+    if (stage.measurable !== null && stage.measurable !== undefined && unmeasurable.has(key)) {
+      extras.push('无判据')
+    }
+    if (stage.stock !== null && stage.stock !== undefined) extras.push(`存量 ${stage.stock}`)
+    if (stage.events !== null && stage.events !== undefined) extras.push(`事件 ${stage.events}`)
+    steps.push({
+      kind: 'step',
+      key,
+      label: String(stage.label || key),
+      count: Number(stage.count || 0),
+      unit: String(stage.unit_label || ''),
+      note: extras.join(' · '),
+      unmeasurable: unmeasurable.has(key),
+    })
+    const hand = handoffByFrom.get(key)
+    if (hand && index < stages.length - 1) {
+      steps.push({ kind: 'handoff', key: `${key}-handoff`, reason: String(hand.reason || '单位不同') })
+    }
+  })
+  return steps
+})
+
 const constitutionDraft = ref('')
 const profileDraft = ref({
   display_name: '', language: '', timezone: '', location: '', notes: '',
@@ -469,15 +506,21 @@ async function reindex() {
         <div class="mp-readonly">
           <strong>学习环漏斗（近 {{ health.funnel?.days ?? 30 }} 天）</strong>
           <div class="mp-funnel">
-            <span
-              v-for="stage in health.funnel?.stages || []"
-              :key="String(stage.key)"
-              class="mp-funnel-step"
-              :class="{ 'mp-funnel-zero': !stage.count }"
-            >{{ stage.label }} <strong>{{ stage.count ?? 0 }}</strong></span>
+            <template v-for="step in funnelSteps" :key="step.key">
+              <span
+                v-if="step.kind === 'step'"
+                class="mp-funnel-step"
+                :class="{ 'mp-funnel-zero': !step.count, 'mp-funnel-unmeasured': step.unmeasurable }"
+              >{{ step.label }} <strong>{{ step.count }}</strong
+                ><em v-if="step.unit" class="mp-funnel-unit">{{ step.unit }}</em
+                ><em v-if="step.note" class="mp-funnel-meta">{{ step.note }}</em></span>
+              <span v-else class="mp-funnel-handoff" :title="step.reason">⇢ {{ step.reason }}</span>
+            </template>
           </div>
           <p v-if="health.funnel?.stalled_at" class="mp-funnel-note mp-funnel-stall">· {{ health.funnel.stalled_at }}</p>
-          <p v-else-if="health.funnel" class="mp-funnel-note">· 七级全通：晋升出去的共享记忆已经回到提示词</p>
+          <p v-else-if="health.funnel" class="mp-funnel-note">· 各级都通了：晋升出去的共享记忆已经回到提示词</p>
+          <p v-for="(note, index) in health.funnel?.caveats || []" :key="`caveat-${index}`" class="mp-funnel-note mp-funnel-caveat">· {{ note }}</p>
+          <p v-if="health.funnel?.item_window_by" class="mp-funnel-note mp-funnel-meta-line">· 采纳/晋升的窗口：{{ health.funnel.item_window_by }}</p>
         </div>
 
         <div class="mp-readonly">
@@ -808,8 +851,22 @@ async function reindex() {
 }
 .mp-funnel-step strong { color: var(--text); font-variant-numeric: tabular-nums; }
 .mp-funnel-zero strong { color: var(--amber); }
+/* 单位角标是能读信息（不是装饰），所以用正文色而非 --text-muted，尺寸走次级档 */
+.mp-funnel-unit { margin-left: 2px; color: var(--text); font-style: normal; font-size: var(--fs-sm); }
+.mp-funnel-meta { margin-left: 4px; color: var(--text); font-style: normal; font-size: var(--fs-sm); }
+.mp-funnel-handoff {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 5px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+.mp-funnel-unmeasured { border-style: dashed; }
 .mp-funnel-note { margin: 5px 0 0; color: var(--green); font-size: var(--fs-sm); }
 .mp-funnel-stall { color: var(--amber); }
+.mp-funnel-caveat, .mp-funnel-meta-line { color: var(--text); }
 .mp-links { margin: 6px 0 0; padding-top: 5px; border-top: 1px dashed var(--border); }
 .mp-link { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text-muted); font-size: var(--fs-cap); padding: 2px 0; }
 .mp-link-add { margin: 6px 0 0; }
