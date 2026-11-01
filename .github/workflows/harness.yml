@@ -133,6 +133,11 @@ jobs:
         if: matrix.backend == 'sqlite'
         # unittest collects TestCase classes only, so files whose tests are
         # module-level `def test_*` functions never reach the step below.
+        #
+        # 两个 lane 都把输出落盘再过一遍 `tools/ci_red_summary.py`：
+        # 原始日志的下载域名（objects.githubusercontent.com）在开发机上不可达，
+        # 而它打出的 `::error` 注释挂在 check-run 上，`gh api .../annotations`
+        # 走 api.github.com 就能读到红名单。
         run: |
           files=$(python - <<'PY'
           import ast, pathlib
@@ -145,7 +150,11 @@ jobs:
           PY
           )
           test -n "$files"
-          python -m pytest $files -q -p no:cacheprovider
+          python -m pytest $files -q -p no:cacheprovider > /tmp/pytest-lane.log 2>&1
+          rc=$?
+          cat /tmp/pytest-lane.log
+          python tools/ci_red_summary.py /tmp/pytest-lane.log || true
+          exit $rc
       - name: Browser preflight
         if: matrix.backend == 'sqlite'
         # 浏览器是真能力，不是「现场层」：它起不来时，后面 37 条用例会以 5 种
@@ -179,7 +188,12 @@ jobs:
         if: matrix.backend == 'sqlite'
         env:
           DOCMIND_TRACE: "1"
-        run: python -m unittest discover -s tests -p "test*.py" -q
+        run: |
+          python -m unittest discover -s tests -p "test*.py" -q > /tmp/unittest.log 2>&1
+          rc=$?
+          cat /tmp/unittest.log
+          python tools/ci_red_summary.py /tmp/unittest.log || true
+          exit $rc
       - name: Verify strict Postgres integration
         if: matrix.backend == 'postgres'
         env:
