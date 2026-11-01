@@ -24,7 +24,7 @@ import sys
 MAX_ANNOTATIONS = 50
 
 _UNITTEST = re.compile(r"^(FAIL|ERROR):\s+(.+?)\s+\(([\w.]+)\)\s*$")
-_PYTEST = re.compile(r"^FAILED\s+([\w./\\-]+\.py)::(\S+?)(?:\s+-\s+.*)?$")
+_PYTEST = re.compile(r"^FAILED\s+([\w./\\-]+\.py)::(\S+?)(?:\s+-\s+(.*))?$")
 _RAN = re.compile(r"^Ran (\d+) tests? in ")
 _SUMMARY = re.compile(r"^FAILED \((.*)\)\s*$")
 
@@ -61,18 +61,24 @@ def parse_pytest_line(line: str) -> dict | None:
     match = _PYTEST.match(line.strip())
     if not match:
         return None
-    path, node = match.groups()
+    path, node, reason = match.groups()
     return {"kind": "FAILED", "path": path.replace("\\", "/"),
-            "title": node.replace("::", "."), "source": "pytest"}
+            "title": node.replace("::", "."), "source": "pytest",
+            "detail": str(reason or "")[:200]}
 
 
 def parse(text: str) -> dict:
-    """返回 {reds, annotations_truncated, ran, failures, errors, summary_line}。"""
+    """返回 {reds, annotations_truncated, ran, failures, errors, summary_line}。
+
+    每条红额外带 `detail`：该用例 traceback 的**最后一行非空文本**（异常类型+消息）。
+    没有它就只剩一个用例名，归因时还得回去下载那份被墙的原始日志。
+    """
     reds: list[dict] = []
     seen: set[tuple[str, str]] = set()
     ran = 0
     failures = errors = 0
     summary_line = ""
+    pending: dict | None = None
     for line in str(text or "").splitlines():
         ran_match = _RAN.match(line.strip())
         if ran_match:
@@ -93,13 +99,21 @@ def parse(text: str) -> dict:
                     errors = number
             continue
         row = parse_unittest_line(line) or parse_pytest_line(line)
-        if row is None:
+        if row is not None:
+            row.setdefault("detail", "")   # pytest 的短摘要行自带原因，别覆盖掉
+            key = (row["path"], row["title"])
+            if key not in seen:
+                seen.add(key)
+                reds.append(row)
+                pending = row
+            else:
+                pending = None
             continue
-        key = (row["path"], row["title"])
-        if key in seen:
-            continue
-        seen.add(key)
-        reds.append(row)
+        # traceback 正文：一条横线分隔块，最后一行非空文本才是异常本身。
+        stripped = line.strip()
+        if pending is not None and stripped and not stripped.startswith(("===", "---", "File \"")):
+            if line.startswith((" ", "\t")) or "Error" in stripped or "Exception" in stripped:
+                pending["detail"] = stripped[:200]
     return {"reds": reds, "ran": ran, "failures": failures, "errors": errors,
             "summary_line": summary_line,
             "annotations_truncated": max(0, len(reds) - MAX_ANNOTATIONS)}
@@ -119,13 +133,18 @@ def render(report: dict) -> list[str]:
     if report["ran"]:
         header += "，共运行 %d 条" % report["ran"]
     lines = [header]
-    lines += ["RED %s::%s" % (row["path"], row["title"]) for row in reds]
+    lines += ["RED %s::%s%s" % (row["path"], row["title"],
+                                ("  ← " + row["detail"]) if row.get("detail") else "")
+              for row in reds]
     if report["annotations_truncated"]:
         lines.append("（注释只取前 %d 条，其余见上面的 RED 行）" % MAX_ANNOTATIONS)
     for row in reds[:MAX_ANNOTATIONS]:
+        message = "%s %s" % (row["kind"], row["title"])
+        if row.get("detail"):
+            message += " — " + row["detail"]
         lines.append("::error file=%s,title=%s %s::%s" % (
             row["path"], _escape(row["kind"]), _escape(row["title"]),
-            _escape("%s %s" % (row["kind"], row["title"]))))
+            _escape(message)))
     return lines
 
 

@@ -73,6 +73,16 @@ class ParseTests(unittest.TestCase):
         self.assertIn("VoiceConfigApiTests.setUpClass",
                       [row["title"] for row in report["reds"]])
 
+    def test_reason_line_is_captured_for_each_red(self):
+        """只有用例名没法归因 —— 带上那行异常文本。"""
+        rows = {row["title"]: row for row in summary.parse(UNITTEST_LOG)["reds"]}
+        self.assertIn("2 != 1", rows["EngineTests.test_engine_single_instance"]["detail"])
+        self.assertIn("缺少密钥", rows["VoiceConfigApiTests.setUpClass"]["detail"])
+
+    def test_pytest_short_summary_reason_is_kept(self):
+        row = summary.parse(PYTEST_LOG)["reds"][0]
+        self.assertIn("closed", row["detail"])
+
     def test_pytest_summary_line_is_parsed(self):
         report = summary.parse(PYTEST_LOG)
         self.assertEqual(len(report["reds"]), 1)
@@ -125,6 +135,10 @@ class RenderTests(unittest.TestCase):
     def test_red_lines_are_present_for_humans(self):
         lines = summary.render(summary.parse(UNITTEST_LOG))
         self.assertEqual(len([row for row in lines if row.startswith("RED ")]), 3)
+
+    def test_annotation_carries_the_reason(self):
+        lines = summary.render(summary.parse(UNITTEST_LOG))
+        self.assertTrue(any("::error " in row and "缺少密钥" in row for row in lines), lines)
 
 
 class MainTests(unittest.TestCase):
