@@ -11330,7 +11330,8 @@ def _sv_classify(targets):
     永远拿不到验证结论（仓库里 .json 1399 个、.md 215 个，不是边角）。
     """
     import re as _re
-    py, fe, scene, engine, data, docs, sql = [], [], [], [], [], [], []
+    py, fe, scene, engine, data, docs, sql, godot, regions = ([], [], [], [],
+                                                             [], [], [], [], [])
     for t in targets:
         p = str(t)
         low = p.lower()
@@ -11343,13 +11344,19 @@ def _sv_classify(targets):
             scene.append(p)
         if "engine_embed" in low or ("embed" in low and "desktop" in low) or low.endswith("desktop_bridge.py"):
             engine.append(p)
-        if low.endswith(_SV_DATA_SUFFIXES):
+        # regions.json 归 regions 桶（要验结构），不重复进 data
+        if low.endswith(_SV_DATA_SUFFIXES) and os.path.basename(low) != _SV_REGION_CONFIG:
             data.append(p)
         if low.endswith(_SV_DOC_SUFFIXES):
             docs.append(p)
         if low.endswith(_SV_SQL_SUFFIXES):
             sql.append(p)
-    return py, fe, scene, engine, _sv_web_files(targets), data, docs, sql
+        if low.endswith(_SV_GODOT_SUFFIXES):
+            godot.append(p)
+        if os.path.basename(low) == _SV_REGION_CONFIG:
+            regions.append(p)
+    return (py, fe, scene, engine, _sv_web_files(targets), data, docs, sql,
+            godot, regions)
 
 
 # 前端**静态产物**扩展名（单文件 HTML / 样式表）——web 桶的唯一真源，
@@ -11363,6 +11370,10 @@ _SV_DATA_SUFFIXES = (".json", ".jsonl", ".yaml", ".yml", ".toml")
 _SV_DOC_SUFFIXES = (".md", ".markdown")
 # SQL：只验语句完整性（切句 + 闭合），不连库执行 —— 见 `_sv_verify_sql`。
 _SV_SQL_SUFFIXES = (".sql",)
+# Godot 文本资源：.gd 脚本 / .tscn 场景 / .tres 资源 / .gdshader / project.godot。
+# 只做**结构**校验（括号配平 + 场景头），真正的语义要 Godot 本体，不能在这里跑。
+_SV_GODOT_SUFFIXES = (".gd", ".tscn", ".tres", ".godot", ".gdshader")
+_SV_REGION_CONFIG = "regions.json"
 
 
 def _sv_web_files(targets):
@@ -11623,6 +11634,156 @@ def _sql_has_code(statement):
     return bool(lines)
 
 
+def _godot_unbalanced(text, *, hash_comments=True, slash_comments=False):
+    """跳过字符串与注释后，判断 `() [] {}` 是否配平（不配平返回 True）。
+
+    这是零依赖的结构检查，不做语义分析：`scripts/player.gd` 被截断一半时，
+    括号通常会先失衡；而字符串里的 `{`、注释里的括号不能算数。
+    """
+    pairs = {")": "(", "]": "[", "}": "{"}
+    stack = []
+    quote = ""
+    line_comment = False
+    block_comment = False
+    index, length = 0, len(text)
+    while index < length:
+        ch = text[index]
+        nxt = text[index + 1] if index + 1 < length else ""
+        if line_comment:
+            if ch == "\n":
+                line_comment = False
+            index += 1
+            continue
+        if block_comment:
+            if ch == "*" and nxt == "/":
+                block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+        if quote:
+            if ch == "\\":
+                index += 2
+                continue
+            if ch == quote:
+                quote = ""
+            index += 1
+            continue
+        if slash_comments and ch == "/" and nxt == "/":
+            line_comment = True
+            index += 2
+            continue
+        if slash_comments and ch == "/" and nxt == "*":
+            block_comment = True
+            index += 2
+            continue
+        if hash_comments and ch == "#":
+            line_comment = True
+            index += 1
+            continue
+        if ch in "\"'":
+            quote = ch
+            index += 1
+            continue
+        if ch in "([{":
+            stack.append(ch)
+        elif ch in ")]}":
+            if not stack or stack[-1] != pairs[ch]:
+                return True
+            stack.pop()
+        index += 1
+    return bool(stack) or bool(quote)
+
+
+def _sv_verify_godot(files, root, result):
+    """Godot 文本资源的结构校验：括号配平 + 场景/资源头 + UTF-8。
+
+    刻意不调 Godot 本体（`--check-only` 需要二进制且会拉引擎）：这是每次写后都跑的
+    收尾门，缺二进制时必须退化成结构检查，而不是把一切判红。
+    """
+    for path in files:
+        name = os.path.basename(path)
+        low = name.lower()
+        try:
+            raw = open(path, "rb").read()
+        except OSError as exc:
+            result["failures"].append({"scope": "godot", "file": path,
+                                       "error": "读不到：%s" % exc})
+            continue
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            result["failures"].append({"scope": "godot", "file": path,
+                                       "error": "不是合法 UTF-8：%s" % exc})
+            continue
+        if low.endswith(".gdshader"):
+            unbalanced = _godot_unbalanced(text, hash_comments=False, slash_comments=True)
+        elif low.endswith(".gd"):
+            unbalanced = _godot_unbalanced(text)
+        else:
+            unbalanced = _godot_unbalanced(text, hash_comments=False)
+        if unbalanced:
+            result["failures"].append({"scope": "godot", "file": path,
+                                       "error": "括号/引号不配平（文件可能被截断）"})
+            continue
+        head = text.lstrip()
+        if low.endswith(".tscn") and not head.startswith("[gd_scene"):
+            result["failures"].append({"scope": "godot", "file": path,
+                                       "error": "缺少 [gd_scene] 文件头"})
+            continue
+        if low.endswith(".tres") and not head.startswith("[gd_resource"):
+            result["failures"].append({"scope": "godot", "file": path,
+                                       "error": "缺少 [gd_resource] 文件头"})
+            continue
+        result["ran"].append("godot_structure:%s" % name)
+
+
+def _sv_verify_regions(files, root, result):
+    """分区配置的落盘状态校验：regions.json 可解析、key/dir 齐全且不重复、目录真的在。
+
+    工具在 apply 时已 `validate_region_config` 过一次；这里验的是**写完以后**的状态：
+    分区目录一旦被别的写操作删掉，后续按分区限定的写会全部被拒 —— 必须当场发现。
+    """
+    for path in files:
+        if os.path.basename(path) != _SV_REGION_CONFIG:
+            continue
+        try:
+            with open(path, encoding="utf-8-sig") as handle:
+                data = json.load(handle)
+        except (OSError, ValueError) as exc:
+            result["failures"].append({"scope": "regions", "file": path,
+                                       "error": "读不到或不是合法 JSON：%s" % exc})
+            continue
+        rows = data if isinstance(data, list) else (
+            data.get("regions") if isinstance(data, dict) else None)
+        if not isinstance(rows, list) or not rows:
+            result["failures"].append({"scope": "regions", "file": path,
+                                       "error": "分区清单为空或结构不对（应为数组或 {regions: [...]}）"})
+            continue
+        seen, errors = set(), []
+        for row in rows:
+            if not isinstance(row, dict):
+                errors.append("分区条目不是对象")
+                continue
+            key = str(row.get("key") or "").strip()
+            dirname = str(row.get("dir") or "").strip()
+            if not key or not dirname:
+                errors.append("分区缺少 key 或 dir")
+                continue
+            if key in seen:
+                errors.append("分区 key 重复：%s" % key)
+                continue
+            seen.add(key)
+            if not os.path.isdir(os.path.join(str(root or ""), dirname)):
+                errors.append("分区目录不存在：%s" % dirname)
+        if errors:
+            for message in errors[:6]:
+                result["failures"].append({"scope": "regions", "file": path,
+                                           "error": message})
+            continue
+        result["ran"].append("regions_scheme:%s（%d 个分区）" % (os.path.basename(path), len(rows)))
+
+
 def _sv_verify_web(web_files, root, result):
     """静态产物校验：HTML 标签闭合（stdlib）+ 内联脚本 node --check（无 node 则降级）。
 
@@ -11863,7 +12024,7 @@ def self_verify(arg=""):
     """对代码库最近改动做轻量自验证，返回结构化 JSON 字符串（与文本协议 Action Input 同形）。
 
     入参（单行/多行 key: value）：
-      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / data / docs / sql / all / skip
+      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / data / docs / sql / godot / regions / all / skip
       files: 显式指定待校验文件（相对/绝对路径，可多行或逗号分隔）；缺省时用 git diff 自动发现
     返回 JSON：{"scope","ran":[...],"passed":bool,"failures":[...],"note":""}
       status 区分 passed/failed/skipped/partial；无检查或跳过不视为通过。
@@ -11910,7 +12071,7 @@ def self_verify(arg=""):
     targets = safe_targets
 
     (py_files, fe_files, scene_files, engine_files, web_files,
-     data_files, doc_files, sql_files) = _sv_classify(targets)
+     data_files, doc_files, sql_files, godot_files, region_files) = _sv_classify(targets)
     web_pages = _sv_web_pages(targets)
 
     # 2) 选 scope：auto 按改动文件类型自动选策略。
@@ -11942,6 +12103,10 @@ def self_verify(arg=""):
             scopes.append("docs")
         if sql_files:
             scopes.append("sql")
+        if godot_files:
+            scopes.append("godot")
+        if region_files:
+            scopes.append("regions")
         if web_pages and os.getenv("DOCMIND_SELF_VERIFY_VISUAL") != "0":
             scopes.append("visual")
         elif web_pages:
@@ -11959,7 +12124,7 @@ def self_verify(arg=""):
                               "显式 scope:engine 或开 DOCMIND_SELF_VERIFY_ENGINE=1 可启用）")
     elif scope == "all":
         scopes = ["backend", "frontend", "scene", "web", "engine", "visual",
-                  "data", "docs", "sql"]
+                  "data", "docs", "sql", "godot", "regions"]
     else:
         scopes = [scope]
 
@@ -11981,6 +12146,10 @@ def self_verify(arg=""):
                 _sv_verify_docs(doc_files, root, result)
             elif sc == "sql":
                 _sv_verify_sql(sql_files, root, result)
+            elif sc == "godot":
+                _sv_verify_godot(godot_files, root, result)
+            elif sc == "regions":
+                _sv_verify_regions(region_files, root, result)
             elif sc == "visual":
                 # auto 档把本次网页传进去当截图入口（产物不叫 index.html 也要验得到画面）；
                 # 显式 scope:visual 不传，沿用项目入口发现。

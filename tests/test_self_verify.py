@@ -426,16 +426,16 @@ class SelfVerifyVisualAutoTest(unittest.TestCase):
 
 class ClassifyTest(unittest.TestCase):
     def test_classify_scene(self):
-        _py, _fe, scene, engine, _web, _data, _docs, _sql = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
+        _py, _fe, scene, engine, _web, _data, _docs, _sql, _godot, _regions = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
         self.assertTrue(scene)
         self.assertFalse(engine)
 
     def test_classify_engine(self):
-        _py, _fe, scene, engine, _web, _data, _docs, _sql = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
+        _py, _fe, scene, engine, _web, _data, _docs, _sql, _godot, _regions = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
         self.assertTrue(engine)
 
     def test_classify_web(self):
-        _py, _fe, _scene, _engine, web, _data, _docs, _sql = tools._sv_classify(
+        _py, _fe, _scene, _engine, web, _data, _docs, _sql, _g, _r = tools._sv_classify(
             ["index.html", "game.HTM", "style.css", "main.py"])
         # 合并后 web 桶统一取 `_WEB_EXTS`（.html/.htm/.css）：.css 也收，因为 web 门
         # 有 CSS 花括号平衡校验器；.py 仍不进桶。两个并行分支曾各自定义一套 web
@@ -502,7 +502,7 @@ class SelfVerifyDataDocsTest(unittest.TestCase):
 
     def test_mjs_counts_as_frontend(self):
         target = os.path.join(self.proj.dir, "frontend", "tests", "x.browser.mjs")
-        py, fe, _scene, _engine, _web, _data, _docs, _sql = tools._sv_classify([target])
+        py, fe, _scene, _engine, _web, _data, _docs, _sql, _g, _r = tools._sv_classify([target])
         self.assertEqual(fe, [target], "浏览器回归（.mjs）不该落在「无校验器」里")
 
     def test_json_and_md_no_longer_report_the_no_validator_gap(self):
@@ -602,6 +602,70 @@ class WriteObservationParseTest(unittest.TestCase):
             self.assertTrue(data["passed"], data)
         finally:
             proj.close()
+
+
+class SelfVerifyGodotRegionsTest(unittest.TestCase):
+    """Godot 文本资源的结构校验 + 分区配置的落盘状态校验。"""
+
+    def setUp(self):
+        self.proj = _TmpProject()
+
+    def tearDown(self):
+        self.proj.close()
+
+    def _run(self, rel):
+        return json.loads(tools.self_verify("scope: auto\nfiles: " + rel))
+
+    def test_gd_with_braces_inside_strings_is_fine(self):
+        self.proj.write("scripts/player.gd",
+                        'extends Node\n\nfunc _ready():\n\tprint("{ok}")\n')
+        data = self._run("scripts/player.gd")
+        self.assertTrue(data["passed"], data)
+
+    def test_truncated_gd_fails(self):
+        self.proj.write("scripts/broken.gd", "extends Node\n\nfunc _ready():\n\tvar d = {\n")
+        data = self._run("scripts/broken.gd")
+        self.assertFalse(data["passed"])
+        self.assertIn("不配平", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_tscn_without_header_fails(self):
+        self.proj.write("levels/bad.tscn", '[node name="Root" type="Node"]\n')
+        data = self._run("levels/bad.tscn")
+        self.assertFalse(data["passed"])
+        self.assertIn("gd_scene", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_tscn_with_header_passes(self):
+        self.proj.write("levels/level1.tscn",
+                        "[gd_scene load_steps=2 format=3]\n\n[node name=\"Root\" type=\"Node\"]\n")
+        self.assertTrue(self._run("levels/level1.tscn")["passed"])
+
+    def test_gdshader_balanced_passes(self):
+        self.proj.write("shaders/s.gdshader",
+                        "shader_type canvas_item;\nvoid fragment() {\n\tCOLOR = vec4(1.0);\n}\n")
+        self.assertTrue(self._run("shaders/s.gdshader")["passed"])
+
+    def test_regions_with_missing_dir_fails(self):
+        os.makedirs(os.path.join(self.proj.dir, "scripts"), exist_ok=True)
+        self.proj.write("regions.json", json.dumps(
+            [{"key": "scripts", "dir": "scripts"}, {"key": "ghost", "dir": "nope"}]))
+        data = self._run("regions.json")
+        self.assertFalse(data["passed"])
+        self.assertIn("分区目录不存在", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_regions_scheme_passes_when_dirs_exist(self):
+        os.makedirs(os.path.join(self.proj.dir, "scripts"), exist_ok=True)
+        self.proj.write("regions.json", json.dumps([{"key": "scripts", "dir": "scripts"}]))
+        data = self._run("regions.json")
+        self.assertTrue(data["passed"], data)
+        self.assertIn("regions_scheme", data["ran"][0])
+
+    def test_apply_regions_message_targets_regions_json(self):
+        self.assertEqual(
+            agent._parse_written_rel("已应用 Agent 研判的分区方案。分区目录已初始化"),
+            "regions.json")
+
+    def test_dev_apply_regions_is_in_the_gate(self):
+        self.assertIn("dev_apply_regions", agent._VERIFY_AFTER_WRITE_TOOLS)
 
 
 if __name__ == "__main__":

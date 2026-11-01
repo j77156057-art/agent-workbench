@@ -46,7 +46,8 @@ from tools import (TOOLS, tool_schemas, self_verify,
                    _query_relevant,
                    begin_read_conversation, end_read_conversation,
                    bind_read_conversation,
-                   _get_code_root as _tool_code_root)
+                   _get_code_root as _tool_code_root,
+                   _SV_REGION_CONFIG as _REGION_CONFIG_FILE)
 import agent_trace as _trace
 import sessions as _sessions
 import agent_memory as _memory
@@ -470,8 +471,10 @@ _BATCH_WRITTEN_LINE = re.compile(r"^-\s+([^\s（(]+)")
 #: 写后触发自验证收尾门的工具。`dev_patch` 是 2026-11-02 补进来的：它能一次改多个
 #: 文件，不在门内时整轮没有任何验证目标 —— 既不落 pass 也不落 fail，是「没有证据」，
 #: 比记错更隐蔽。收在这里而不是散在生成器里，是为了让测试能直接钉住这个集合。
+#: `dev_apply_regions` 写的是 `regions.json`：分区目录一旦缺席，后续按分区限定的
+#: 写会全部被拒，所以它也必须进门（验的是落盘后的结构，不是再跑一遍 apply 校验）。
 _VERIFY_AFTER_WRITE_TOOLS = ("apply_edit", "dev_apply_edits", "create_file",
-                             "dev_region_edit", "dev_patch")
+                             "dev_region_edit", "dev_patch", "dev_apply_regions")
 
 
 def _parse_patch_written(obs):
@@ -502,6 +505,8 @@ def _parse_written_rel(obs):
     `dev_patch` 的渲染格式不同，走 `_parse_patch_written`。
     """
     text = obs or ""
+    if "已应用 Agent 研判的分区方案" in text:
+        return _REGION_CONFIG_FILE
     if "补丁已应用" in text or "校验通过（dry_run" in text:
         return _parse_patch_written(text)
     if "已原子写入" in text:
