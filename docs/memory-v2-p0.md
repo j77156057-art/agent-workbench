@@ -699,3 +699,28 @@ POST   /api/memory/reindex
 **验证**：新增 `tests/test_task_snapshot_bytes.py` **6 passed**（GBK 逐字节 / 含 NUL 的二进制 / UTF-8 预览仍在 / 旧快照不许报干净 / 快照被篡改要报错 / 超限不内联）。三处变异逐条真红：退回按文本存 1 failed、写完不校验指纹 1 failed、lossy 仍报成功 1 failed。回归 `test_agent_workflow` + `test_task_route_wiring` + `test_game_workflow` + `test_write_journal` **102 passed**；前端 `engine.ts` 的快照响应类型同步补上 `content_b64` / `sha256`。
 
 **没做**：`task_snapshot` 的 512 KB 上限之上仍是「不落内容、回滚走 git 路径」，非 Git 项目里超限文件的回滚仍只有 mtime/size 记账 —— 那是另一个决定（要不要把大文件内容放 blob 存储，而不是内联进任务 JSON）。
+
+### 16.33 CI 为什么"每次推都红"：一条夹具错误挡住了后面所有步骤（2026-11-01）
+
+一直记着的事实是「仓库 Actions 每次推都红 → 门等于不存在」。今天把它量到底了：
+
+- `sqlite tests` job 里 `Run pytest-style lane` 步骤的结果是 **1 failed, 1081 passed, 4 skipped**，
+  唯一红项是 `tests/test_live_vision.py::test_live_stream_delivers_...`，异常是 `starlette WebSocketDisconnect`。
+- 这条**不是活体网络测试**（`analyze_live_frame_ep` 被 patch 掉了），本机同形复现：
+  测试发 `origin: http://testserver`，而 `_origin_allowed`（api.py:3964）只放
+  「origin == host 且 host 是本机」或 `DOCMIND_CORS_ORIGINS` 显式列出的来源 → 握手被 1008 关掉。
+  守卫是后来加的（`503e27e4`），测试夹具没跟上（`d9b59223`）—— 所以错的是夹具，不是守卫。
+- **真正的危害是级联**：GitHub Actions 步骤失败即跳过后续步骤，于是排在这条 lane 之后的
+  `python -m unittest discover -s tests` 长期**根本没执行过**。本轮新增的写账本、
+  磁盘保留期、快照字节、漏斗口径那批测试一次都没被 CI 跑过 —— 我一直以为"测试都在 CI 里红着或绿着"，
+  实际是"它们没进过 CI"。
+
+修：夹具换成本机同源对（`origin == host == 127.0.0.1:8000`），顺带把"带 origin 的浏览器套节能连上"真验上。
+另加反向守卫 `test_foreign_origin_live_stream_socket_is_closed`。它第一版是**假守卫**：
+只断言"连接被关"，而这条端点先查项目再查 origin，真实关闭原因是 `unknown project`，
+所以把 `_origin_allowed` 放宽成恒真它照样绿。补上 `get_project` 的 patch 与**原因断言**之后，
+放宽守卫才会红（`DID NOT RAISE`）。双向变异都验过：夹具退回 `testserver` → 正例红；放宽守卫 → 反例红。
+
+**下一层的判据要先看 CI 实测**：红被修掉之后，那条一直没跑的 `unittest discover` 第一次真跑会报什么，
+我现在不知道。所以本轮不预先建"已知红名单"机制（没有数据的白名单就是自欺）；
+等 `ae7f486` 这条 run 的结果出来，按它的真实红集合再定。
