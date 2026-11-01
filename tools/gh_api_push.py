@@ -30,16 +30,16 @@ SSH（github.com:22）虽然常常能连，但要账号里有一台机器认识�
 
 ## ⚠ 三个必须知道的边界
 
-1. **远端 commit 的 SHA 会和本地不一样。** Git Data API 不允许设 committer，
-   服务端会把 committer 写成当前 gh 用户 + 当前时间，于是 hash 必然变。
-   但 **tree（=文件内容）逐字节相同**，脚本末尾会拿「本地 HEAD 的 tree」和
-   「服务端返回的 tree」对比来证明内容一致。事后 github.com 直连恢复时若想让
-   本地 hash 对齐远端，跑 `git fetch && git reset --hard origin/<branch>`
-   （内容相同，不丢东西）。在那之前别再直接 `git push`，会因 hash 分叉被拒。
-   **但本脚本本身还能继续用**：若服务端 tip 这个对象本地没有（正是上次重放的后果），
-   它会自动按「服务端当前 tree」在本地反查内容一致的那个 commit 当 diff base，
-   新 commit 仍挂到真实的服务端 tip 上（内容一致 → 依旧 fast-forward）。也就是说
-   「连着用本脚本推」不需要先 fetch；只是原生 `git push` 依旧推不动。
+1. **commit 的 SHA 是可以和本地完全一致的。** `POST /git/commits` 接受 `committer`
+   字段（name/email/date），本脚本把作者的 `%aI/%an/%ae` 与提交者的 `%cI/%cn/%ce`
+   一并传上去，服务端返回的 hash 就等于本地 hash（2026-11-01 实测 5 个提交逐对象一致）。
+   早先这里写的是「API 不允许设 committer，hash 必然变」—— **那句是错的**，代价很实在：
+   SHA 一变，README 与设计稿里「构建自 `994a318`」这类**按 SHA 的引用**就在远端查无此号，
+   而且本地 `be4b185` 与远端 `60509a6` 会变成同一内容的两个身份。
+   所以：脚本末尾同时校验 tree 与 SHA，SHA 不等就打警告而不是当成正常。
+   若服务端 tip 这个对象本地没有（历史遗留的那种分叉身份），脚本仍按「服务端当前 tree」
+   在本地反查内容一致的 commit 当 diff base，新 commit 挂到真实服务端 tip 上 —— 依旧 fast-forward，
+   **连着用不需要先 fetch**；只是原生 `git push` 在这种历史上依旧推不动。
 
 2. **只支持 fast-forward。** 脚本用服务端的**真实 tip**当 base（不是本地那个可能
    过期的 `origin/<branch>` —— 拿错的 base 会报 422 `not a fast forward`）。
@@ -171,9 +171,12 @@ class Github:
             raise SystemExit("建 tree 失败 %s: %s" % (r.status_code, r.text[:400]))
         return r.json()["sha"]
 
-    def commit(self, message: str, tree: str, parents: list[str],
-               author: dict) -> str:
+    def commit(self, message: str, tree: str, parents: list[str], author: dict,
+               committer: dict | None = None) -> str:
         body = {"message": message, "tree": tree, "parents": parents, "author": author}
+        if committer:
+            # 不传 committer 时服务端会填「当前 gh 用户 + 当前时间」，hash 就和本地不同了。
+            body["committer"] = committer
         r = self.s.post(self._url("git", "commits"), json=body)
         if r.status_code not in (200, 201):
             raise SystemExit("建 commit 失败 %s: %s" % (r.status_code, r.text[:400]))
@@ -196,10 +199,12 @@ class Github:
 
 
 def commit_meta(sha: str) -> dict:
-    line = run("show", "-s", "--format=%H%x00%P%x00%T%x00%aI%x00%an%x00%ae", sha).strip()
-    h, parents, tree, date, an, ae = line.split("\x00")
+    line = run("show", "-s",
+               "--format=%H%x00%P%x00%T%x00%aI%x00%an%x00%ae%x00%cI%x00%cn%x00%ce", sha).strip()
+    h, parents, tree, adate, an, ae, cdate, cn, ce = line.split("\x00")
     return {"sha": h, "parents": parents.split(), "tree": tree,
-            "date": date, "author": {"name": an, "email": ae, "date": date},
+            "date": adate, "author": {"name": an, "email": ae, "date": adate},
+            "committer": {"name": cn, "email": ce, "date": cdate},
             "message": run("show", "-s", "--format=%B", sha)}
 
 
@@ -251,7 +256,8 @@ def replay_one(gh: Github, meta: dict, local_parent: str, server_parent: str,
         type_ = "commit" if mode == "160000" else "blob"
         entries.append({"path": path, "mode": mode, "type": type_, "sha": sha})
     tree = gh.tree(base_tree, entries)
-    csha = gh.commit(meta["message"], tree, [server_parent], meta["author"])
+    csha = gh.commit(meta["message"], tree, [server_parent], meta["author"],
+                     meta.get("committer"))
     return csha, tree
 
 
@@ -328,12 +334,15 @@ def main() -> None:
     server_parent = server_tip  # 首个新 commit 挂到服务端真实 tip（保证 fast-forward）
     base_tree = run("rev-parse", "%s^{tree}" % diff_base).strip()  # 服务端也持有这棵 tree
     final = server_tip
+    sha_all_match = True
     for s in to_push:
         meta = commit_meta(s)
         final, base_tree = replay_one(gh, meta, local_parent, server_parent, base_tree, uploaded)
         local_parent = s        # 下一个 commit 的 diff 基于本地父子
         server_parent = final   # 下一个 commit 挂在服务端新建链上
-        print("  重放 %s -> %s" % (s[:8], final[:8]))
+        same = final == s
+        sha_all_match = sha_all_match and same
+        print("  重放 %s -> %s%s" % (s[:8], final[:8], "（SHA 一致）" if same else "（SHA 不同）"))
 
     gh.update_ref(branch, final)
     local_tree = run("rev-parse", "HEAD^{tree}").strip()
@@ -342,8 +351,12 @@ def main() -> None:
         print("内容一致：服务端 tree == 本地 HEAD tree（%s）。" % local_tree[:8])
     else:
         print("⚠ tree 不一致！本地=%s 服务端=%s —— 请核对。" % (local_tree, base_tree))
-    print("提醒：远端 commit hash(%s) 与本地(%s) 不同属正常（API 无法保留 committer），"
-          "内容已逐字节一致。" % (final[:8], local_head[:8]))
+    if sha_all_match:
+        print("SHA 全部与本地一致：按 SHA 的引用（README 的构建自 `994a318` 这类）在远端可查。")
+    else:
+        print("⚠ 有 commit 的远端 hash 与本地不同 —— 同一内容会有两个身份，"
+              "文档里按 SHA 的引用会在远端查不到。核对是服务端没采用传上去的 committer，"
+              "还是历史上遗留的分叉 tip（那种按 tree 锚定仍能继续推，但要留意引用漂移）。")
 
 
 if __name__ == "__main__":
