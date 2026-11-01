@@ -935,3 +935,20 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 - 另三条（新文件不查在不在 / 旧文件仍在也放行 / `dev_add_region` 不在门内）第一次就各自判红。
 
 **为什么剩下那 11 个写工具仍然不进门**：`create_external_file` / `edit_external_file` / `delete_external_file` 写的是仓库外的用户文件，代码校验器管不着，也不该把用户桌面判红；`create_artifact` / `dev_skill_create` / `dev_preview_adapter_create` 产的是文档、技能、适配器；`dev_mcp_remove` / `dev_asset_get` / `dev_asset_register` / `memory_save` 改的是注册表与记忆。共同点是**不产生会被 import 的代码**，硬接进代码收尾门只换来假红。至此「写工具 vs 收尾门」这条轴的覆盖问题收尾。
+
+### 16.44 CI 补上前端 lint 门与 job 超时（外加一条被变异逼出来的「邻门」断言）（2026-11-02）
+
+§16.43 收尾后按根因排下来的第一条：**能力躺在仓库里、CI 从不执行它**。实量：`frontend/eslint.config.mjs` 配着、`eslint` 在 devDependencies 里、`lint` 脚本也在，agent 的 `dev_diagnostics` 甚至会按需跑它（`diagnostics.py` 的 `LINT_GATES = True`）—— 但 `harness.yml` 里 `lint / eslint / coverage` 出现 **0 次**；同一份文件里 `timeout-minutes`、`concurrency`、`upload-artifact` 各 **0 处**。也就是说前端源码在**合并前**没有任何 lint 门，红只会在某个恰好去诊断的时刻冒出来。
+
+第一次以 CI 口径跑 `npm run lint`：**退出码 1，1 条 error** —— [frontend/src/workbench/components/ChatDock.vue:1109](../frontend/src/workbench/components/ChatDock.vue) 的 `no-useless-assignment`（`sid = await createSession()` 赋完再没被读，下游读的是 `currentSessionId()`）。改动只把 `let sid` 收成 `const`、去掉那次赋值，行为不变；`npm run typecheck` 退出码 0、`npm run test:node` **158 passed / 0 fail**。
+
+**做了三件事**：① 修掉那条死赋值；② sqlite lane 加 `Lint workbench frontend (eslint)` 步骤（必须挂 sqlite —— `setup-node` 只在那条 lane 装，挂 postgres 会因为没 `npm ci` 而红）；③ job 补 `timeout-minutes: 60`（整条 lane 正常耗时实测 20–30 分钟；默认 6 小时意味着一次死锁就把 runner 占满，而红名单摘要只有走到那一步才打印）。
+
+**守卫 `tests/test_ci_lint_gate.py`（13 条）**：步骤在不在（按命令本体找，改名绕不过）、`working-directory` 对不对、跑没跑在 `npm ci` 之后、挂在哪条 lane、退出码有没有被 `|| true` / `continue-on-error` 吞、eslint 是不是真依赖、flat config 存不存在、`lint` 脚本是不是真扫 `src`（扫一个空目录=恒绿的假门），以及**当场真跑一次 linter 证明它现在绿** —— 一个当场就红的门接进 CI 只是把 CI 点着。
+
+**一条变异活下来，逼出「邻门」断言**：变异「删掉步骤头三行（`- name:` / `if:` / `working-directory:`）」跑完守卫 **10 条全绿**。原因不是守卫失灵，而是删完只剩一行 `run: npm run lint`，它**并进上一条步骤的 YAML 映射**，同键后者覆盖前者 —— 于是「跑前端行为测试」那一步悄悄变成了跑 lint，而所有断言都只盯 lint 自己。补 `SiblingGatesSurviveTests`（lint 命令恰好只出现在 1 个步骤、`npm run test:node` 与 `npm run build` 都还在）后：整块删除与只删头三行两种变异**都判红**。最终 10 条变异 **0 条活下来**，三个被改文件按字节还原一致。教训：**接新门必须同时断言邻门的命令没被吃掉**，YAML 同键覆盖是静默的。
+
+**刻意不做，以及为什么**：
+- **不把 `ruff check` 裸接进 CI**。`ruff` 在 `requirements.txt` 里、`dev_diagnostics` 会按需跑，但本仓库没有 ruff 配置，`diagnostics.py` 自己记着原因（默认规则会把上千条风格提醒刷给 Agent）。接进去的第一天就是上千条噪声，比没有门更坏 —— 它让人误以为有人在管。要接得先定规则集并量存量。
+- **不加 `concurrency`（并发取消）**：它会取消同一 ref 在飞的验证 run，而现在每次推送都想要一份完整结论。
+- **不把 `frontend/tests/*.mjs` 纳入 lint 范围**：`eslint src` 只扫 `src`，仓库里 205 个 `.mjs` 大多在测试目录；扩范围要先量存量，不能凭想象。
