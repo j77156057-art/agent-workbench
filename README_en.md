@@ -90,11 +90,16 @@ A few worth calling out:
 - **Live conversation** streams camera / screen-share frames and voice into a local realtime multimodal model over WebSocket.
 - The **task panel** carries four actions: scope validation, snapshot, snapshot rollback and impact analysis — you first pin down which paths the task is allowed to touch, and a violation is rejected on the spot; rollback restores files to their snapshot content (files created after the snapshot are removed); a task branch opens a git branch named `docmind/<task>` and refuses to switch while the worktree has uncommitted changes.
 - **Three rollback granularities**: **per turn** (`dev_undo_turn`) — every write inside the
-  project automatically leaves its pre-write content behind (a single write funnel + an
-  append-only journal + content-addressed blobs), so **no commit and no manual "take
+  project automatically leaves both its pre-write **and post-write** content behind (a single
+  write funnel + an append-only journal + content-addressed blobs; since 2026-11-01 the
+  post-write bytes are stored too, so a file removed by something outside the journal can
+  still be recovered by its fingerprint — previously only the hash was kept and one real
+  loss turned out to be unrecoverable), so **no commit and no manual "take
   snapshot" click is required**; it dry-runs by default and only lands with `apply: true`;
   files changed after that turn are skipped with an honest conflict report instead of being
-  overwritten; the same turn cannot be undone twice; the journal keeps 200 turns / 7 days.
+  overwritten; the same turn cannot be undone twice; the journal keeps 200 turns / 7 days
+  (blobs are truncated on the same window; the price is at most 2× storage, held down by
+  content addressing deduplicating identical writes).
   **Per task** — the task panel's snapshot/rollback above, restoring the files the task
   declared. **Per changeset** (`dev_rollback_changeset`) — `git revert` inside each region's
   own git repository, producing inverse commits without rewriting history, and it does not

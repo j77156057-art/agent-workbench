@@ -613,3 +613,14 @@ POST   /api/memory/reindex
 - **连带重标定**：新增 `dev_undo_turn`（登记进 `verify/回滚` 分面）使裸提示词 22262 → **22315** 字符，带 309 记忆时 22624，旧下界 `MIN_TASK_TOKEN_BUDGET=21534` 只撑 2/3 轮 → 重量得 **21576**（21575 只撑 2，贴线成立）。
 - **顺手查出的既有缺陷（本轮未修）**：`task_snapshot` 用 `errors='replace'` 读旧内容、`task_revert` 又把那段文本写回去 —— **非 UTF-8（GBK/二进制）文件在"存快照 → 回滚"这一趟里会被不可逆污染**。修法应按字节存、按字节写（与本 journal 同口径），但要动 `game_workbench` 及其既有测试，不塞进这个提交。
 - **本轮明确没做**：外部文件写路径（2 处）、redo、UI 入口（目前只有工具能撤销）、以及「撤销产回执」—— `receipts` 的语义是**某事通过了的证据**，回滚不是通过；且晋升门 `_has_pass_receipt` 刚用退出码焊死，往同一张表塞新类型再小心排除，等于在刚修好的凭证面上开第二道口子。撤销该做的是把由它产生的候选/钩子标 `superseded`（记忆层已有该机制），那是另一轮。
+
+### 16.29 丢档之后：账本把「最新内容」也存下来（2026-11-01）
+
+**先记我自己的错**：把 `docs/notes/citation-precision.md` 与 `evidence-checkability.md` 判成「评测流量写进真仓库的污染」，还向用户索要删除确认并删掉了 —— 实际那两份是 DocMind 按用户原话产出的正式设计稿（12:16 / 12:23 两笔 `create_file`）。**根因是断言了一个没查过的成因**，而证据就在一次查询之外（`.docmind_sessions/*.json` 的 `user` 字段就是原始任务原文）。§16.28 之前那条「评测流量把文件写进真仓库」的前提**同时被证伪**，第 1 条不能按原前提做。
+
+- **恢复路径穷尽、全部落空**（这才是要害）：`write_journal` 当时只有 3 笔 `create`，`blobs/` 目录**根本不存在** —— `record()` 对 create 只写 `after_sha` 这个**指纹**，字节只存在于工作树一处；83 个 `project_checkpoints` 无命中；回收站无；会话 `assistant` 字段被验证门文案替换；`resume_context` 里的正文被观测预算截断。两份文件从 `resume_context` 逐字恢复了前段（citation-precision 约 3.0 KB／原 3923 字节、evidence-checkability 约 2.0 KB／原 7167 字节），尾部按原任务原文补写，文首标明逐字／补写边界。原件 sha256（`131d4124…` / `2954eaa3…`）留档，日后出现完全一致副本可当场验证。
+- **修复**：`record()` 现在把 `after` 也落内容寻址 blob，新增 `read_blob(root, digest)` 按指纹取回（**指纹非 16 进制直接拒绝，不照它拼路径**）。代价是 blob 最坏翻倍，由内容寻址去重 + 回合／天数保留期压住。
+- **补上 `prune` 的引用集合漏洞**：`referenced` 原本只算 `before_sha`。单独看它没错（那时确实只存改前），但 `after` 一落盘，漏这一条就会在保留期截断时**把存活条目的最新内容当孤儿删掉** —— 修完新功能的同一轮就把旧保留逻辑的引用集补全，这是配套，不是两件事。
+- **验证**：`tests/test_write_journal.py` 21 → **25 passed**。两处不变量各做行为级变异：`after` 不落 blob → 断言真红（`AssertionError: False is not true`）；`prune` 漏 `after_sha` → 断言真红。**第一次变异我写成了空 `if` 体**，得到的是 collection error 而不是真红，重写成「标记恒 False」才算数 —— 语法坏掉的变异不算变异。
+- **顺带消掉一个跨文件顺序依赖红**：`test_tool_domains.py` 的提示／注册表脱节守卫单跑全绿、排在 `test_ptc_write_bridge.py` 之后必红。根因不在提示也不在注册表：`importlib.reload(tools)` **换掉**了 `TOOLS` 这个 dict 对象，而 `agent` 早已导入、`agent.TOOLS` 还指着旧表；`orchestrate` / `delegate` / `dev_use_skill` / `tool_search` 只在 agent 侧 `_register_dynamic_tools()`（agent.py:4554）注册，于是守卫拿**新表**比**旧提示**报脱节 —— **假阳性**。修法：两处 reload 后重新对齐并补回动态注册，另加一条守卫测试断言「reload 后两侧共用一张表且四个动态名仍在」；把对齐改成 `pass` 做变异，同一配对立刻 2 failed。9 文件同进程回归 **249 passed**。
+- **本轮明确没做**：把 `.tmp/check_docs_refs.py`（文档 `path:line` 自检）提为 `tools/` 下的常驻守卫 —— 它现在在 `.tmp/`（被 gitignore），一次 `.tmp` 清理就没了；升成常驻要同时决定挂进哪条 CI 门，不塞进这个提交。
