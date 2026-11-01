@@ -105,6 +105,20 @@ def _store_blob(root: str, value: bytes) -> str:
     return digest
 
 
+def read_blob(root: str, digest: str) -> bytes | None:
+    """按 sha256 取回存下来的内容字节；没存/被裁掉/指纹不符返回 None（不抛）。"""
+    digest = str(digest or "").lower()
+    if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        return None                      # 账本里的指纹可能被手改过：不照它拼路径
+    target = _blob_path(root, digest)
+    try:
+        with open(target, "rb") as handle:
+            value = handle.read()
+    except OSError:
+        return None
+    return value if sha256_bytes(value) == digest else None
+
+
 def _read_lines(root: str) -> list[dict[str, Any]]:
     target = _ledger(root)
     rows = []
@@ -129,6 +143,14 @@ def record(root: str, rel: str, *, op: str, before: bytes | None,
            after: bytes | None, lane: str = "", turn: str = "") -> dict[str, Any]:
     """记一笔写入。`before=None` 表示"改前内容拿不到"（撤销时会如实说恢复不了）。
 
+    `after` 也存一份 blob：改前内容只能把文件退回**上一个**状态，
+    「最新内容」此前在账本里只有一个 sha256 指纹、没有字节 —— 文件一旦被删
+    （含被账本之外的手段删掉），那份内容在这个系统里就不存在了。
+    2026-11-01 真实丢档就是这么发生的，事后确认无法逐字节恢复。
+
+    代价：blob 存储量最坏翻倍。用两处压住：内容寻址（同内容只存一份）
+    + `prune()` 的回合数/天数保留期。
+
     best-effort：任何 I/O 失败都不许把主写路径带崩 —— 记账丢了只是这一笔退不了，
     抛异常则整条改动都白做。
     """
@@ -141,6 +163,7 @@ def record(root: str, rel: str, *, op: str, before: bytes | None,
         "op": str(op or "modify"),
         "after_sha": sha256_bytes(after or b""),
         "before_sha": "",
+        "after_restorable": False,
         "restorable": False,
     }
     if op == "create":
@@ -150,6 +173,8 @@ def record(root: str, rel: str, *, op: str, before: bytes | None,
         if digest:
             entry["before_sha"] = digest
             entry["restorable"] = True
+    if after:
+        entry["after_restorable"] = _store_blob(root, after) == entry["after_sha"]
     with _LOCK:
         try:
             os.makedirs(os.path.dirname(_ledger(root)), exist_ok=True)
@@ -344,6 +369,8 @@ def prune(root: str, *, keep_turns: int = KEEP_TURNS,
         kept = [row for row in kept if not row.get("turn") or str(row["turn"]) in allowed]
     dropped = len(rows) - len(kept)
     referenced = {str(row.get("before_sha") or "") for row in kept}
+    referenced |= {str(row.get("after_sha") or "") for row in kept if row.get("after_restorable")}
+    referenced.discard("")
     removed_blobs = 0
     if apply and dropped:
         target = _ledger(root)

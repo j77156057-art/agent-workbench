@@ -7,7 +7,7 @@
 （注释写明"单用户模式零 I/O"）。于是单人日常用下来：agent 改了文件、没 commit，
 `git revert` 与 `restore_file_at` 都救不了 —— 最容易真丢东西的那一档没有兜底。
 
-## 三条设计约束（都是实测出来的坑）
+## 四条设计约束（都是实测出来的坑）
 
 1. **`after_sha` 取写完再读回来的磁盘字节**，不是把新内容 encode 一下。Windows 文本
    模式会做换行翻译，撤销时的冲突比较读的也是磁盘字节；两侧口径不一致会让每次撤销
@@ -16,6 +16,9 @@
    线程本地在工作线程里读不到，那一批写入会记成"没有回合"，撤销时整批漏掉。
 3. **冲突就跳过，不覆盖**；改前内容没存下就明说恢复不了。宁可少退一个文件，
    也不把别人（或后续回合）的改动抹掉。
+4. **`after` 也要落 blob**，且 `prune()` 的引用集合同时算上 `before_sha` 与 `after_sha`：
+   只记指纹不存字节时，文件一旦被账本外手段删掉，那份"最新内容"在本系统里就不存在了
+   （2026-11-01 真实丢档）；反过来把 after 全当引用又会让保留期形同不存在。
 """
 import ast
 import contextlib
@@ -104,6 +107,39 @@ class RecordTests(_StateRoot):
             write_journal.reset_turn(token)
         rows = write_journal.entries_for(self.repo, turn="t1")
         self.assertFalse(rows[0]["restorable"], "超限内容不该被谎称可恢复")
+
+    def test_after_content_survives_deleting_the_file(self):
+        """最新内容也进账本：文件被账本之外的手段删掉，还能按指纹取回字节。
+
+        2026-11-01 真实事故：三份 docs/notes 被误删后无法逐字节恢复 —— 当时
+        `create` 只记了 after_sha 这个指纹，字节只存在于工作树一处。
+        """
+        token = write_journal.bind_turn("t1")
+        try:
+            self.write("note.md", "正文内容\n")
+        finally:
+            write_journal.reset_turn(token)
+        rows = write_journal.entries_for(self.repo, turn="t1")
+        self.assertTrue(rows[0]["after_restorable"], "内容存下来了就必须标可恢复")
+        on_disk = self.read_bytes("note.md")
+        os.remove(os.path.join(self.repo, "note.md"))
+        self.assertEqual(write_journal.read_blob(self.repo, rows[0]["after_sha"]), on_disk)
+
+    def test_oversized_after_is_not_stored_and_says_so(self):
+        big = "x" * (write_journal.MAX_BLOB_BYTES + 10)
+        token = write_journal.bind_turn("t1")
+        try:
+            self.write("big.py", big)
+        finally:
+            write_journal.reset_turn(token)
+        rows = write_journal.entries_for(self.repo, turn="t1")
+        self.assertFalse(rows[0]["after_restorable"], "超限内容不该被谎称可恢复")
+        self.assertIsNone(write_journal.read_blob(self.repo, rows[0]["after_sha"]))
+
+    def test_read_blob_refuses_non_hex_digest(self):
+        """指纹来自账本文件，不能照它直接拼路径（../ 会跑出 blob 区）。"""
+        for bad in ("", "../evil", "0" * 63, "z" * 64):
+            self.assertIsNone(write_journal.read_blob(self.repo, bad))
 
 
 class UndoTests(_StateRoot):
@@ -337,6 +373,29 @@ class PruneTests(_StateRoot):
         write_journal.prune(self.repo, keep_turns=10, max_age_days=999, apply=True)
         self.assertTrue(os.listdir(os.path.join(blob_dir, os.listdir(blob_dir)[0])),
                         "还在账本引用里的 blob 不许删")
+
+    def test_prune_keeps_after_blobs_and_drops_the_rest(self):
+        """引用集合必须同时含 before_sha 与 after_sha：漏了后者会删掉存活条目的最新内容，
+        全当引用又会让保留期形同不存在 —— 两个方向都要红。"""
+        token = write_journal.bind_turn("tGone")
+        try:
+            self.write("gone.md", "该裁的\n")
+        finally:
+            write_journal.reset_turn(token)
+        gone_sha = write_journal.entries_for(self.repo, turn="tGone")[0]["after_sha"]
+        token = write_journal.bind_turn("tKeep")
+        try:
+            self.write("keep.md", "该留的\n")
+        finally:
+            write_journal.reset_turn(token)
+        keep_sha = write_journal.entries_for(self.repo, turn="tKeep")[0]["after_sha"]
+        self.assertTrue(os.path.isfile(write_journal._blob_path(self.repo, keep_sha)))
+        applied = write_journal.prune(self.repo, keep_turns=1, max_age_days=999, apply=True)
+        self.assertEqual(applied["dropped_entries"], 1)
+        self.assertTrue(os.path.isfile(write_journal._blob_path(self.repo, keep_sha)),
+                        "存活条目的 after blob 不许当孤儿删掉")
+        self.assertFalse(os.path.isfile(write_journal._blob_path(self.repo, gone_sha)),
+                         "被裁条目的 blob 要真删，否则保留期只是说说")
 
 
 if __name__ == "__main__":
