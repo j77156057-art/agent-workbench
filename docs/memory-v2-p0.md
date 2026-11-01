@@ -750,3 +750,17 @@ POST   /api/memory/reindex
 **验证**：`tests/test_disk_retention.py` 27 passed、`tests/test_disk_retention_api.py` 18 passed、`tests/test_maintenance.py` 12 passed。变异十三条真红：局部更新丢掉 `None` 守卫 / 丢 `confirm` 闸 / `interval=0` 判到点 / 干跑真删 / 白名单丢内置项（端点层 5 条）+ 动手处白名单失效 / 单次上限失效 / 越界根校验失效 / 干跑标志失效（执行层 4 条）+ 干跑不继承真动手时刻 / 调度只看基线 / 从没记录就判到点 / 默认间隔退回 0（调度层 4 条）。计划层白名单那一条单独变异**不红**（被执行层兜住），按上面的对照组拆开各钉一层。前端 `frontend/tests/diskRetention.browser.mjs` 40/40，`memoryFunnel.browser.mjs` 47/47 未回归，`vue-tsc` 干净。
 
 **没做**：设置页没再放一份同样的三格——面板那三格旁边就是实时数字，两处放等于两个真值来源；`dist/` 条目在 `apply_items` 里没有根目录校验（`roots` 只映射 `.docmind` 下那两类），因为它的路径来自 `project_root/dist` 现场扫描、且 API 不接受调用方传路径 —— 将来接第三方调用方时得先补这一道。
+
+### 16.35 学习环最后两格为什么是 0：回执被结论文本压过去了（2026-11-01）
+
+量了才看清。30 天里固化实际跑了 106 次（keep 60 / skip 39 / 错误 1）、产出 57 个候选，而**采纳 0 / 晋升 0**；本项目 57 个候选里 **0 个带 `receipts`**。所以断点不在"没人点采纳"，在**证据根本没挂到候选上**。
+
+根因在 `_trivial()`：只要最终答复里出现「尚未完成验证 / 不能确认任务成功 / 未通过验证」，整轮固化就被跳过，不管这轮有没有回执。全库 12 个带回执的回合里 **6 个**因此被跳过（`consolidate.skip` 的原因分布：`status:failed` 27、`keep_false` 6、`unverified_turn` 6）；本项目唯一那个带回执的回合（`ep-4aa02e6892d9`）正是这么被跳过的。那句措辞的真实含义通常是"没把整套套件跑完"，而 pass 回执说明验证确实跑过并通过——结构化的回执应当压过散文措辞。
+
+判据改成**回执优先**：有 `result == "pass"` 的回执时文本不再决定跳过；`fail` / `uncertain` 回执不改变保守方向（仍然跳过）。
+
+写这段时踩到一个自己的坑：`_has_pass_receipt` 第一版把 `receipts.get` 包在 `except Exception` 里，而 `receipts` 根本没 import —— `NameError` 被吞成「没有回执」，连跑两次测试才看出来。现在不吞（`receipts.get` 自己已经把坏文件归成 None），编程错误要能当场炸。
+
+**没做**：没有回填历史回合（被跳过的那几轮不会重跑固化），所以第一个带证据的候选要等下一轮真实带回执的回合；采纳仍然必须由人点（不代点）。
+
+**验证**：`tests/test_memory_v2_p0.py` 的固化用例 9 条全绿，整套记忆测试 **174 passed**；两条变异真红（退回"文本压过回执"、任意回执都当通过）。

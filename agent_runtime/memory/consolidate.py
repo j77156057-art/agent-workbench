@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from config import get_memory_model
 
-from . import episodes, metrics, promote
+from . import episodes, metrics, promote, receipts
 from .injection import enabled
 
 MAX_SUMMARY = 1200
@@ -24,7 +24,20 @@ _INFLIGHT = set()
 _LOCK = threading.Lock()
 
 
-def _trivial(episode):
+def _has_pass_receipt(project_id, episode):
+    """这回合有没有一条**通过**的回执。回执是结构化证据，结论文本只是措辞。
+
+    这里不吞异常：`receipts.get` 自己已经把「文件坏了/没有」归成 None，再包一层
+    `except Exception` 只会把导入缺失这类编程错误也伪装成「没回执」（真踩过）。
+    """
+    for receipt_id in episode.get("receipts") or []:
+        row = receipts.get(project_id, str(receipt_id))
+        if (row or {}).get("result") == "pass":
+            return True
+    return False
+
+
+def _trivial(episode, project_id=""):
     result = episode.get("result") if isinstance(episode.get("result"), dict) else {}
     status = str(result.get("status") or "")
     if status != "completed":
@@ -33,7 +46,12 @@ def _trivial(episode):
     if not summary:
         return "empty_summary"
     if re.search(r"尚未完成验证|不能确认任务成功|未通过验证", summary):
-        return "unverified_turn"
+        # 文本判据不能压过回执：这句话通常只表示「没把整套套件跑完」，而 pass 回执
+        # 说明验证真的跑过并通过。曾经因此把带回执的回合全判成未验证（实测 6/12），
+        # 候选因此永远没有证据，采纳/晋升两格恒为 0。
+        project = str(episode.get("project") or project_id or "")
+        if not (project and _has_pass_receipt(project, episode)):
+            return "unverified_turn"
     if not episode.get("actions") and len(summary) < 40:
         return "trivial_turn"
     return ""
@@ -140,7 +158,7 @@ def run_once(project_id, session_id, llm, episode=None):
     ep = episode or (episodes.latest(project_id, session_id, 1) or [None])[0]
     if not isinstance(ep, dict):
         return {"ok": False, "reason": "no_episode"}
-    reason = _trivial(ep)
+    reason = _trivial(ep, project_id)
     if reason:
         metrics.record("consolidate.skip", project=project_id, session=session_id,
                        episode=ep.get("id"), reason=reason)

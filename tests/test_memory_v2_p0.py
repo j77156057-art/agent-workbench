@@ -679,6 +679,26 @@ class ConsolidateTests(_MemBase):
         self.assertEqual(result["reason"], "unverified_turn")
         self.assertEqual(metrics.report()["skipped"], 1)
 
+    def test_pass_receipt_outranks_the_unverified_wording(self):
+        """「尚未完成验证」只说明没跑完整套件；pass 回执说明验证确实跑过并通过。"""
+        rid = receipts.record("prj", type="verify", result="pass")
+        result = consolidate_run(self, self._out(), episode=self._episode(
+            summary="改完一处；尚未完成验证，不能确认整套套件都过。",
+            receipts_list=[rid]))
+        self.assertTrue(result.get("kept"), result)
+        candidate = next(item for item in promote.candidates("prj")
+                         if item["id"] == result["candidate"])
+        self.assertEqual(candidate.get("receipts"), [rid],
+                         "带回执的回合被固化后，候选必须继承这条证据")
+
+    def test_failed_receipt_does_not_unlock_an_unverified_turn(self):
+        rid = receipts.record("prj", type="verify", result="fail")
+        result = consolidate_run(self, self._out(), episode=self._episode(
+            summary="修改尚未完成验证，不能确认任务成功。", receipts_list=[rid]))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "unverified_turn")
+        self.assertEqual(promote.candidates("prj"), [])
+
     def test_receipt_and_rating_promote_in_same_run(self):
         rid = receipts.record("prj", type="verify", result="pass")
         feedback.record("prj", session="s1", stars=5, task="tb-1")
