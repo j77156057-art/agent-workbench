@@ -161,6 +161,8 @@ export interface MemoryHealth {
   index?: { items?: number; vectors?: number; edges?: number; fts?: boolean; rebuilt_at?: string }
   context?: { total_chars?: number; layers?: MemoryHealthLayer[] }
   metrics?: MemoryHealthMetrics
+  /** 近 N 天的验证回执分布：采纳/晋升的上游证据。 */
+  receipts?: { days?: number; total?: number; pass?: number; fail?: number; uncertain?: number }
   warnings?: MemoryHealthWarning[]
 }
 

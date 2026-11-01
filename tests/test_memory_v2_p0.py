@@ -982,6 +982,45 @@ class SharedMaintenanceTests(_MemBase):
         self.assertFalse(dry["candidates"]["apply"])
         self.assertFalse(dry["shared"]["apply"])
 
+    def test_health_names_missing_evidence_as_the_bottleneck(self):
+        """没有回执时要说「候选没证据」，不能只报「没晋升」——后者会让人去点采纳。"""
+        promote.create_candidate("prj", "fact", "项目候选：先跑测试再合并", importance=0.7)
+        report = health.report("prj")
+        codes = {w["code"] for w in report["warnings"]}
+        self.assertIn("no_receipt", codes)
+        self.assertEqual(report["receipts"]["total"], 0)
+        self.assertEqual(report["receipts"]["days"], health.RECEIPT_WINDOW_DAYS)
+
+    def test_only_failed_receipts_is_reported_separately(self):
+        receipts.record("prj", type="verify", result="fail")
+        report = health.report("prj")
+        codes = {w["code"] for w in report["warnings"]}
+        self.assertIn("no_pass_receipt", codes)
+        self.assertNotIn("no_receipt", codes)
+        self.assertEqual((report["receipts"]["total"], report["receipts"]["fail"]), (1, 1))
+
+    def test_a_pass_receipt_clears_the_evidence_warning(self):
+        receipts.record("prj", type="verify", result="pass")
+        report = health.report("prj")
+        codes = {w["code"] for w in report["warnings"]}
+        self.assertNotIn("no_receipt", codes)
+        self.assertNotIn("no_pass_receipt", codes)
+        self.assertEqual(report["receipts"]["pass"], 1)
+
+    def test_receipts_outside_the_window_are_ignored(self):
+        from datetime import datetime, timedelta, timezone
+        rid = receipts.record("prj", type="verify", result="pass")
+        path = os.path.join(receipts._dir("prj"), rid + ".json")
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        payload["ts"] = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        report = health.report("prj")
+        self.assertEqual(report["receipts"]["total"], 0,
+                         "60 天前的回执被算进「近 30 天」了")
+        self.assertIn("no_receipt", {w["code"] for w in report["warnings"]})
+
 
 class EpisodeRetentionTests(_MemBase):
     def test_compact_archives_old_and_keeps_recent(self):

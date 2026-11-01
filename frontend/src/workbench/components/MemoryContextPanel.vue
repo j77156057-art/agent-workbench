@@ -699,6 +699,11 @@ async function reindex() {
             错误 {{ health.metrics?.errors ?? 0 }} ·
             p50 {{ health.metrics?.p50_ms ?? 0 }}ms
           </p>
+          <p v-if="health.receipts" class="mp-receipts">
+            近 {{ health.receipts.days ?? 30 }} 天验证回执 {{ health.receipts.total ?? 0 }} 条
+            （通过 {{ health.receipts.pass ?? 0 }} / 未通过 {{ health.receipts.fail ?? 0 }}）——
+            采纳/晋升要的是「通过」的回执
+          </p>
         </div>
 
         <div class="mp-readonly mp-disk">
@@ -1133,6 +1138,7 @@ async function reindex() {
 .mp-add .mp-input { margin-bottom: 0; flex: 1 1 auto; width: auto; min-width: 0; }
 .mp-add .mp-btn { flex: 0 0 auto; white-space: nowrap; }
 .mp-readonly { margin-top: 10px; color: var(--text-muted); font-size: var(--fs-cap); }
+.mp-receipts { color: var(--text); font-size: var(--fs-sm); }
 /* 磁盘保留期：数字是主角，说明文字退到次要层级；边界值一律来自后端。 */
 .mp-disk-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 4px; font-size: var(--fs-sm); }
 .mp-disk-stats strong { color: var(--text); font-variant-numeric: tabular-nums; }

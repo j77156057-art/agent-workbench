@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from . import context_panel, episodes, index, metrics, promote, store
+from . import context_panel, episodes, index, metrics, promote, receipts, store
 
 DEFAULT_RETENTION_DAYS = 90
+#: 回执统计窗口：与漏斗同步，面板说「近 30 天」时两处指的都是同一段时间。
+RECEIPT_WINDOW_DAYS = 30
 
 #: 学习环的七级漏斗。**这七级数的不是同一种东西**：前四级数「回合」、五六级数「条目」、
 #: 第七级数「有过 L2 回注的会话」，而且第七条目的内容来自**全局共享池**，不是本项目晋升的那几条。
@@ -235,6 +237,33 @@ def funnel(project_id, days=30):
     }
 
 
+def _receipt_stats(project_id, days=RECEIPT_WINDOW_DAYS):
+    """近 N 天的回执分布。
+
+    采纳/晋升的上游是**通过**的回执：没有 pass 回执，候选就没有证据，采纳这一步
+    只能靠猜。面板要能区分「链路断了」和「这项目压根没产出过验证证据」。
+    """
+    stats = {"days": int(days), "total": 0, "pass": 0, "fail": 0, "uncertain": 0}
+    try:
+        rows = receipts.list_receipts(project_id, limit=500)
+    except Exception:  # noqa: BLE001 —— 回执目录读不到不影响其余体检
+        return stats
+    cutoff = datetime.now(timezone.utc) - timedelta(days=int(days))
+    for row in rows:
+        try:
+            stamp = datetime.fromisoformat(str(row.get("ts") or ""))
+        except ValueError:
+            continue
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        if stamp < cutoff:
+            continue
+        stats["total"] += 1
+        result = str(row.get("result") or "uncertain")
+        stats[result] = stats.get(result, 0) + 1
+    return stats
+
+
 def report(project_id):
     """返回可直接给面板/CLI 的健康快照。"""
     project_id = str(project_id or "default")
@@ -256,6 +285,7 @@ def report(project_id):
     stale = [scope_item for scope_item in inactive
              if (_age_days(scope_item[1].get("updated")) or 0) >= DEFAULT_RETENTION_DAYS]
     consolidation = metrics.report(days=7, project=project_id)
+    receipt_stats = _receipt_stats(project_id)
     context = _context_usage(project_id)
     warnings = []
     if not shared_active and project_candidates:
@@ -263,6 +293,16 @@ def report(project_id):
                          "message": f"共享层为空：{len(project_candidates)} 条项目候选尚未采纳/晋升"})
     if not by_status.get("promoted"):
         warnings.append({"code": "no_promotion", "message": "还没有候选通过晋升门"})
+    # 没有 pass 回执时，「0 采纳」的瓶颈在证据这一层，不在晋升门。分开报，
+    # 否则面板只会让人去点一个本来就无从判断的「采纳」。
+    if not receipt_stats["total"]:
+        warnings.append({"code": "no_receipt",
+                         "message": "近 %d 天没有验证回执：候选拿不到证据，采纳这一步无从判断"
+                                    % receipt_stats["days"]})
+    elif not receipt_stats["pass"]:
+        warnings.append({"code": "no_pass_receipt",
+                         "message": "近 %d 天 %d 条回执全部未通过：候选没有可采纳的证据"
+                                    % (receipt_stats["days"], receipt_stats["total"])})
     if project_dupes.get("duplicates", project_dupes.get("merged", 0)):
         count = project_dupes.get("duplicates", project_dupes.get("merged", 0))
         warnings.append({"code": "candidate_duplicates",
@@ -327,6 +367,7 @@ def report(project_id):
         "index": index_stats,
         "context": context,
         "metrics": consolidation,
+        "receipts": receipt_stats,
         "warnings": warnings,
     }
 
