@@ -5,7 +5,9 @@
 在本机不可达，而 check-run 注释走 api.github.com。所以解析必须**确定**——
 漏一条等于把一条真回归藏起来，多一条等于把别人的红记到自己账上。
 """
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 import tempfile
@@ -142,21 +144,36 @@ class RenderTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
+    """`main()` 会往 stdout 打 `::error` 行 —— 测试里必须接住，绝不能漏进 CI 日志。
+
+    漏出去不是小事：GitHub 会把整个 step 的输出当 workflow 命令解析，于是夹具里
+    那条假的 `tests/test_engine_single_instance.py` 会变成一条**真的** check-run
+    注释，看起来就像那个文件红了一次（2026-11-01 真踩到）。
+    """
+
     def _run(self, text):
         handle = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8")
         handle.write(text)
         handle.close()
+        buffer = io.StringIO()
         try:
-            return summary.main([handle.name])
+            with contextlib.redirect_stdout(buffer):
+                code = summary.main([handle.name])
+            return code, buffer.getvalue()
         finally:
             os.unlink(handle.name)
 
     def test_main_never_fails_the_step(self):
-        self.assertEqual(self._run(UNITTEST_LOG), 0)
-        self.assertEqual(self._run(""), 0)
+        code, out = self._run(UNITTEST_LOG)
+        self.assertEqual(code, 0)
+        self.assertIn("::error ", out, "main 应当把注释行打出来（否则 CI 收不到红名单）")
+        self.assertEqual(self._run(""), (0, "红名单：0 条（没有解析到失败行）\n"))
 
     def test_missing_log_file_is_not_a_crash(self):
-        self.assertEqual(summary.main(["no-such-file.log"]), 0)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = summary.main(["no-such-file.log"])
+        self.assertEqual(code, 0)
 
 
 class WorkflowWiringTests(unittest.TestCase):

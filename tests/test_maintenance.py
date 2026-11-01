@@ -194,7 +194,11 @@ class ScheduleTests(unittest.TestCase):
             started = maintenance.start()
             self.assertTrue(started, "维护线程没起来（已有别的线程占位）")
             deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and not spy.call_count:
+            # 等到**副作用**落地，不是等到函数被调用：`call_count` 在进入的那一刻就加一，
+            # 检查还在跑（整盘磁盘扫描可达十几秒）时就停线程，时间戳自然还没写。
+            # CI 上这条因此红过一次（AssertionError: None is not true）。
+            while time.monotonic() < deadline and not (
+                    spy.call_count and maintenance.last_status().get("ts")):
                 time.sleep(0.2)
             maintenance.stop()
         self.assertGreaterEqual(spy.call_count, 1, "服务起来后超期的检查没有真的发生")
