@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """内部记忆定时检查：run_check 落盘、可启动/停止、不因空库报错、排期按上次运行算。"""
+import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
@@ -80,6 +82,62 @@ class MaintenanceTests(unittest.TestCase):
                 config.set_runtime("memory_check_interval_minutes", old)
 
 
+class DiskPlanTests(unittest.TestCase):
+    """run_check 里的磁盘保留期计划：只出数、不删东西、坏了也不带红记忆检查。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="dm_maint_disk_")
+        self._old_env = os.environ.get("DOCMIND_MEMORY_DIR")
+        os.environ["DOCMIND_MEMORY_DIR"] = os.path.join(self.tmp, "memory")
+        self._old_state = config.STATE_ROOT
+        config.STATE_ROOT = self.tmp
+
+    def tearDown(self):
+        maintenance.stop()
+        config.STATE_ROOT = self._old_state
+        if self._old_env is None:
+            os.environ.pop("DOCMIND_MEMORY_DIR", None)
+        else:
+            os.environ["DOCMIND_MEMORY_DIR"] = self._old_env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _stage(self, workflow, *, age_days=30, status="failed"):
+        base = os.path.join(self.tmp, ".docmind", "project_stages", workflow)
+        os.makedirs(os.path.join(base, "workspace"), exist_ok=True)
+        with open(os.path.join(base, "workspace", "x.txt"), "w", encoding="utf-8") as handle:
+            handle.write("x" * 64)
+        stamp = time.time() - age_days * 86400
+        os.utime(base, (stamp, stamp))
+        workflows = os.path.join(self.tmp, ".docmind", "workflows")
+        os.makedirs(workflows, exist_ok=True)
+        with open(os.path.join(workflows, workflow + ".json"), "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"status": status}))
+        return base
+
+    def test_run_check_reports_disk_plan_and_deletes_nothing(self):
+        # 默认规则保留全局最近 3 个试做区，所以造 4 个：只有最旧那个才该判可回收
+        oldest = self._stage("wf-oldest", age_days=33)
+        for name, age in (("wf-old-1", 30), ("wf-old-2", 31), ("wf-old-3", 32)):
+            self._stage(name, age_days=age)
+        with patch("config.get_memory_v2", return_value=True),                 patch.object(config, "get_runtime", return_value=""):
+            result = maintenance.run_check("prj-disk")
+        self.assertTrue(result["ok"], result)
+        disk = result.get("disk") or {}
+        self.assertEqual(disk.get("reclaimable_items"), 1, disk)
+        self.assertIs(disk.get("applied"), False, "后台检查不许自作主张删磁盘")
+        self.assertTrue(os.path.isdir(oldest), "run_check 把试做区删了 —— 还能回滚的副本没了")
+
+    def test_disk_scan_failure_does_not_break_the_memory_check(self):
+        os.makedirs(os.path.join(self.tmp, ".docmind"), exist_ok=True)
+        from agent_runtime import disk_retention
+        with patch("config.get_memory_v2", return_value=True),                 patch.object(disk_retention, "scan", side_effect=OSError("盘没了")):
+            result = maintenance.run_check("prj-disk-fail")
+        self.assertTrue(result["ok"], result)
+        disk = result.get("disk") or {}
+        self.assertIs(disk.get("ok"), False, disk)
+        self.assertIn("OSError", str(disk.get("error")), disk)
+
+
 class ScheduleTests(unittest.TestCase):
     """排期按「上次真正跑过的时刻」算，不按「进程起来了多久」算。"""
 
@@ -141,7 +199,6 @@ class ScheduleTests(unittest.TestCase):
             maintenance.stop()
         self.assertGreaterEqual(spy.call_count, 1, "服务起来后超期的检查没有真的发生")
         self.assertTrue(maintenance.last_status().get("ts"), "跑完要落下可查的时间戳")
-
 
 if __name__ == "__main__":
     unittest.main()

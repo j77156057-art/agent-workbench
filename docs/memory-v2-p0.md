@@ -649,3 +649,31 @@ POST   /api/memory/reindex
 1. **历史回合不回填**：修复前录下的 21 个回合里那 3 个写文档回合，`files` 仍是空 —— 漏斗对旧数据只能报「记录时没拿到」，新回合才开始对得上。面板上「近 30 天」这一段仍会被旧数据拉低，判读时要看 `missing_field` 与新回合。
 2. **正在跑的服务是旧代码**：:8000 的进程早于本次改动启动，`/api/memory/health` 回的还是旧文案（真机 pass 里那行 ℹ 就是这个），要等它重启才切到新口径；浏览器脚本对真接口只验渲染，不做版本耦合的文案断言。
 3. **采纳/晋升没有自己的时间戳**：条目级窗口只能用 `updated` 作代理（面板脚注写明），一次「改标题」会把条目挪回窗口内 —— 这是已知偏差，不是 bug 掩盖。
+
+### 16.31 磁盘保留期：三类有界副本第一次有了过期语义（2026-11-01）
+
+新增 `agent_runtime/disk_retention.py`。起因是第 16.30 之后排"还剩什么"时量的数——**上一轮我报的数还是错的**：
+我只量了 `.docmind/projects`（0.04 GB），漏了同级的 `project_stages`。全量实测：
+
+| 位置 | 实测 | 说明 |
+|---|---|---|
+| `.docmind/project_stages` | **5.02 GB / 57 区 / 5.8 万文件**，单区最大 728 MB | 工作流试做区（baseline + workspace 两份整项目复制） |
+| `.docmind/project_checkpoints` | 0.78 GB / 82 区 | 每批 cp 上限 32 MB，但批数无上限 |
+| `dist/` 一次性副本 | 3.37 GB / 7 项（4 个 `DocMind_*` + 2 个 `regression-*` + 1 个 `acceptance-*`） | 最老 52 天 |
+| `.docmind` 合计 | 6.25 GB | 其中 80% 是 `project_stages`（5.02 / 6.25） |
+
+判据（三条都刻意保守）：
+
+1. **只清终态**：`completed / completed_unverified / failed`；`interrupted`（可续跑）与 `awaiting_choice`（等人选方案）**永不动** —— 那些副本存在的理由就是能回滚。
+2. **认不出状态的不自动删**：试做区里有 5 区、检查点里有 11 区找不到 `workflows/wf-*.json`。没有状态文件不等于已结束（图状态在 `langgraph_checkpoints.sqlite` 里），这类进 `needs_review`，要 `include_orphans` 才放行。
+3. **`dist/` 认前缀 + 认代码引用**：白名单三类才判；`release/` `installer/` `*.zip` 永不碰；命中若只在 `golden/*.jsonl`、`docs/`、`tests/fixtures/` 里出现，**不算依赖**。
+
+**被自己的量具抓到的一次误判**：第一版引用扫描在全仓搜名字，结果 `dist/` 那 4.06 GB **全部**被判「仍被引用 → 保留」，可回收数从 4.01 GB 掉到 0.64 GB。查下去发现唯一命中是 `golden/results_baseline.jsonl` 里的历史评测输出文本 —— 那是**记录不是依赖**，按它判等于给这批副本发永久豁免、`dist` 的保留期完全失效。于是把引用面收紧到代码/构建定义后缀，并把「数据目录前缀」单独排除；`tests/fixtures/recorder.py` 这条用例是专门用来钉它的（早先用 `.txt` 样本会被后缀规则先判掉，前缀规则等于没测）。
+
+**踩到又改掉的一条规则**：`keep_per_workflow` 用在试做区上等于**永不回收**（一个工作流只有一个区目录，"每区保留最近一份"就是全部保留）。改成全局 `keep_newest=3`。
+
+**执行边界**：`run_check()`（后台线程）只调 `scan()` 出计划、写 `maintenance-last.json` 的 `disk` 段，**不调 `apply`**；`scan()` 实测 2.6 s（只扫 `.docmind`）/ 5.3 s（含 `dist` + `git grep`），所以**不进 `health.report()`** —— 那是面板每次加载都要跑的路径。真回收是 `python -m agent_runtime.disk_retention --apply`（默认 dry-run，宪法 C-006）。`apply()` 还钉了一道根目录校验：条目路径必须落在 `state_root/project_stages|project_checkpoints` 下，越界一律拒绝（试做区走 `project_stage.cleanup_stage` 原有守卫，不自己拼删除）。
+
+**验证**：`tests/test_disk_retention.py` **24 passed** + `tests/test_maintenance.py` 12 passed（新增磁盘 2 条）。七处变异逐条真红：未终态也回收 / 最近区不保护 / 无状态当可回收 / 忽略保留期 / 数据文件也算依赖 / 根校验不生效 / 无视 dry-run。两处变异是**测试自己先错**：一是 `plan_checkpoint_dirs` 里写了 `item["age_days"]`（`KeyError`，被测试当场抓出）；二是引用前缀那条用例用 `.txt` 样本会空过，换成 `.py` 才真的有牙。
+
+**没做**：没执行任何实际删除（本轮只交付机制与数字）；`maintenance` 的磁盘段没进健康面板 UI（`scheduler.last` 里已有原始数据，要不要单独渲染等你定）；`project_stages` 的复制本身仍是整项目两份，`_MAX_TOTAL_BYTES` 只管 cp 不管 stage —— 那是「让副本变小」的另一件事，不在保留期这一条里。

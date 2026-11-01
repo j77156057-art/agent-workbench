@@ -70,6 +70,38 @@ def run_check(project_id=None):
             "index": maintenance.get("index"),
         }
         result["latency_ms"] = round((time.perf_counter() - started) * 1000)
+        # 磁盘保留期：**只出计划，绝不动手**。这里在后台线程里跑，所以能承担 5 秒级
+        # 的整盘扫描；挂在 health 每次加载上就会让面板肉眼可见地变慢（实测 2.6s / 5.3s）。
+        # 真回收要人显式 `python -m agent_runtime.disk_retention --apply`（宪法 C-006）。
+        try:
+            from . import disk_retention
+            # 状态根按 `config.STATE_ROOT/.docmind` 取 —— 与工作流存储同一个推导
+            # （`game_workflow` 用的就是 `STATE_ROOT/.docmind/workflows`，试做区在它上一级）。
+            # 不用 `store.root()` 反推：`DOCMIND_MEMORY_DIR` 指到别处时 dirname 会退化成
+            # 系统临时目录，拿整盘去扫就是新问题。
+            import config as _config
+            state_root = os.path.join(str(getattr(_config, "STATE_ROOT", "") or ""), ".docmind")
+            code_root = str(_config.get_runtime("code_root") or "")
+            if os.path.isdir(state_root):
+                plan = disk_retention.scan(state_root, code_root)
+                summary = plan["summary"]
+                result["disk"] = {
+                    "reclaimable_bytes": summary["reclaimable_bytes"],
+                    "reclaimable_items": summary["reclaimable_items"],
+                    "needs_review_bytes": summary["needs_review_bytes"],
+                    "needs_review_items": summary["needs_review_items"],
+                    "by_kind": summary["by_kind"],
+                    "rules": plan["rules"],
+                    "applied": False,
+                }
+                metrics.record("disk.plan", project=project,
+                               reclaimable_bytes=summary["reclaimable_bytes"],
+                               reclaimable_items=summary["reclaimable_items"],
+                               needs_review_items=summary["needs_review_items"])
+            else:
+                result["disk"] = {"ok": True, "skipped": "no_state_root"}
+        except Exception as exc:  # noqa: BLE001 —— 扫描失败不影响记忆检查
+            result["disk"] = {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
         metrics.record("memory.check", project=project, latency_ms=result["latency_ms"],
                        warnings=len(result["warnings"]),
                        dedupe_candidates=(maintenance.get("candidates") or {}).get("merged"),
