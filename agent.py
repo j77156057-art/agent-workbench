@@ -474,7 +474,17 @@ _BATCH_WRITTEN_LINE = re.compile(r"^-\s+([^\s（(]+)")
 #: `dev_apply_regions` 写的是 `regions.json`：分区目录一旦缺席，后续按分区限定的
 #: 写会全部被拒，所以它也必须进门（验的是落盘后的结构，不是再跑一遍 apply 校验）。
 _VERIFY_AFTER_WRITE_TOOLS = ("apply_edit", "dev_apply_edits", "create_file",
-                             "dev_region_edit", "dev_patch", "dev_apply_regions")
+                             "dev_region_edit", "dev_patch", "dev_apply_regions",
+                             "dev_add_region", "dev_move")
+
+
+def _parse_moved_rel(obs):
+    """从 `dev_move` 的成功 Observation 里取出 (旧路径, 新路径)。
+
+    格式来自 `patch_apply.render_move`：`已移动 <src> → <dst>（<engine>）`。
+    """
+    match = re.search(r"已移动\s+(\S+)\s*(?:→|->)\s*(\S+?)（", obs or "")
+    return (match.group(1), match.group(2)) if match else None
 
 
 def _parse_patch_written(obs):
@@ -505,8 +515,11 @@ def _parse_written_rel(obs):
     `dev_patch` 的渲染格式不同，走 `_parse_patch_written`。
     """
     text = obs or ""
-    if "已应用 Agent 研判的分区方案" in text:
+    if "已应用 Agent 研判的分区方案" in text or "并写入 regions.json" in text:
         return _REGION_CONFIG_FILE
+    if "已移动 " in text:
+        moved = _parse_moved_rel(text)
+        return moved[1] if moved else None
     if "补丁已应用" in text or "校验通过（dry_run" in text:
         return _parse_patch_written(text)
     if "已原子写入" in text:
@@ -516,14 +529,18 @@ def _parse_written_rel(obs):
     return m.group(2).strip() if m else None
 
 
-def _run_self_verify(rel_path, verifier=None):
+def _run_self_verify(rel_path, verifier=None, moved=None):
     """调用当前 Agent 的校验器，返回 (observation_text, state)。
 
     `state` 三态：True=通过 / False=校验失败 / None=没能校验。校验器异常也归
     「没能校验」而不是失败——判据是"跑过并失败"才算失败。
+    `moved=(旧, 新)` 时额外带一行 `moved:`，让 `moves` scope 去查旧路径的残留引用。
     """
+    arg = "scope: auto\nfiles: " + str(rel_path)
+    if moved:
+        arg += "\nmoved: %s -> %s" % (moved[0], moved[1])
     try:
-        data = json.loads((verifier or self_verify)("scope: auto\nfiles: " + str(rel_path)))
+        data = json.loads((verifier or self_verify)(arg))
     except Exception as e:  # noqa: BLE001
         return ("[自验证跳过] 校验器调用异常（%s），改动尚未验证。" % type(e).__name__, None)
     return verification_message(data, rel_path)
@@ -7645,6 +7662,8 @@ class Agent:
                 if (parsed["action"] in _VERIFY_AFTER_WRITE_TOOLS
                         and _tool_ok and turn is not None):
                     _written = _parse_written_rel(obs)
+                    # 移动还额外带上旧路径：只验新文件在不在，查不出引用断没断。
+                    _moved = _parse_moved_rel(obs)
                     # Every successful write invalidates previous evidence for that file.
                     _target = _written or "unknown-write-target"
                     turn.verification_targets[_target] = False
@@ -7652,7 +7671,7 @@ class Agent:
                     if _written and _SELF_VERIFY_ENABLED:
                         _verifier = self.tools.get("self_verify")
                         _sv_obs, _sv_state = _run_self_verify(
-                            _written, _verifier.func if _verifier else None)
+                            _written, _verifier.func if _verifier else None, moved=_moved)
                         trail.append(
                             {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
                         )

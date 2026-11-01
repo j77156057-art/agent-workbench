@@ -11266,6 +11266,27 @@ def start_workflow(arg=""):
 # （前端自验证也可用 "files: frontend/src/x.ts"）。
 # ===========================================================================
 
+def _parse_moved_pairs(arg):
+    """解析 self_verify 入参里的 `moved: <旧路径> -> <新路径>` 行（可多行）。
+
+    只有 `dev_move` 的收尾门会写这一行：移动必须带上"从哪里走的"，
+    否则没有任何东西能判断旧引用是否断了。
+    """
+    pairs = []
+    for line in str(arg or "").splitlines():
+        text = line.strip()
+        if not text.lower().startswith("moved:"):
+            continue
+        body = text[len("moved:"):].strip()
+        for sep in (" -> ", " → ", "->", "→"):
+            if sep in body:
+                old, _, new = body.partition(sep)
+                if old.strip() and new.strip():
+                    pairs.append((old.strip(), new.strip()))
+                break
+    return pairs
+
+
 def _parse_self_verify_arg(arg):
     """把 self_verify 的入参字符串解析为 (scope, files)。"""
     arg = (arg or "").strip()
@@ -11784,6 +11805,83 @@ def _sv_verify_regions(files, root, result):
         result["ran"].append("regions_scheme:%s（%d 个分区）" % (os.path.basename(path), len(rows)))
 
 
+def _sv_verify_moves(moves, root, result):
+    """移动/重命名后的引用校验：旧路径不该再被任何跟踪文件引用。
+
+    `dev_move` 的文档自己写着「移动后请用 dev_find_references / grep 检查旧路径的
+    import 与引用，再用 dev_diagnostics 确认没有打断」——那句话本来就该是收尾门干的，
+    交给模型自觉等于没做。
+
+    只搜两种**足够具体**的形态，宁漏不误报：
+      ① 带目录的相对路径原文（裸文件名到处都在写，搜它会假红）；
+      ② Python 的 `import 旧模块` / `from 旧模块 ...` 行。
+    TS/Vue 的相对说明符（`./foo/bar`）需要逐个引用方解析才能判，这里不做，
+    在 note 里说明没覆盖。git 不可用时记 skipped（不知道），不记失败也不记通过。
+    """
+    for src, dst in moves:
+        src_rel = str(src or "").strip().replace("\\", "/")
+        dst_rel = str(dst or "").strip().replace("\\", "/")
+        while src_rel.startswith("./"):
+            src_rel = src_rel[2:]
+        while dst_rel.startswith("./"):
+            dst_rel = dst_rel[2:]
+        if not src_rel or not dst_rel:
+            result["failures"].append({"scope": "moves", "file": dst_rel or src_rel,
+                                       "error": "移动记录缺少 from/to"})
+            continue
+        if not os.path.isfile(os.path.join(str(root or ""), dst_rel)):
+            result["failures"].append({"scope": "moves", "file": dst_rel,
+                                       "error": "移动后目标不存在：%s" % dst_rel})
+            continue
+        if os.path.exists(os.path.join(str(root or ""), src_rel)):
+            result["failures"].append({"scope": "moves", "file": src_rel,
+                                       "error": "旧路径仍然存在（移动没有生效）"})
+            continue
+        dangling = set()
+        unknown = False
+        if "/" in src_rel:
+            hits = _git_grep_files(root, ["-F"], src_rel)
+            if hits is None:
+                unknown = True
+            else:
+                dangling.update(h for h in hits if h != dst_rel)
+        if src_rel.endswith(".py"):
+            module = src_rel[:-3].replace("/", ".")
+            if module.endswith(".__init__"):
+                module = module[: -len(".__init__")]
+            hits = _git_grep_files(
+                root, ["-E"],
+                r"(^|[^A-Za-z0-9_.])(import|from) +%s([^A-Za-z0-9_]|$)" % re.escape(module))
+            if hits is None:
+                unknown = True
+            else:
+                dangling.update(h for h in hits if h != dst_rel)
+        if unknown and not dangling:
+            result.setdefault("skipped", []).append(
+                "moves:%s（git 不可用，旧引用查不了）" % src_rel)
+            continue
+        if dangling:
+            for ref in sorted(dangling)[:6]:
+                result["failures"].append({"scope": "moves", "file": ref,
+                                           "error": "还在引用已移走的 %s" % src_rel})
+            continue
+        result["ran"].append("moves_dangling:%s→%s" % (src_rel, dst_rel))
+
+
+def _git_grep_files(root, flags, pattern):
+    """`git grep -l` 的一次调用。返回命中文件列表；git 不可用/报错返回 None（= 不知道）。"""
+    import subprocess
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "grep", "-l", *flags, "--", pattern],
+                              capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode not in (0, 1):   # 2+ 是 git 自己出错，不能当成"没人引用"
+        return None
+    out = proc.stdout.decode("utf-8", "replace").splitlines()
+    return [line.strip().replace("\\", "/") for line in out if line.strip()]
+
+
 def _sv_verify_web(web_files, root, result):
     """静态产物校验：HTML 标签闭合（stdlib）+ 内联脚本 node --check（无 node 则降级）。
 
@@ -12024,12 +12122,14 @@ def self_verify(arg=""):
     """对代码库最近改动做轻量自验证，返回结构化 JSON 字符串（与文本协议 Action Input 同形）。
 
     入参（单行/多行 key: value）：
-      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / data / docs / sql / godot / regions / all / skip
+      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / data / docs / sql / godot / regions / moves / all / skip
+      moved: <旧路径> -> <新路径>（可多行，只有 dev_move 的收尾门会写）
       files: 显式指定待校验文件（相对/绝对路径，可多行或逗号分隔）；缺省时用 git diff 自动发现
     返回 JSON：{"scope","ran":[...],"passed":bool,"failures":[...],"note":""}
       status 区分 passed/failed/skipped/partial；无检查或跳过不视为通过。
     """
     scope, files = _parse_self_verify_arg(arg)
+    moves = _parse_moved_pairs(arg)
     from agent_runtime.verification import finalize_verification
     root = _get_code_root()
     result = {"scope": scope, "ran": [], "passed": True, "failures": [], "note": ""}
@@ -12050,7 +12150,7 @@ def self_verify(arg=""):
             targets.append(os.path.abspath(f))
     else:
         targets = _sv_changed_via_git(root) if root else []
-    if not targets and scope != "visual":
+    if not targets and scope != "visual" and not moves:
         result["note"] = "未发现可校验的改动（无 git 改动或显式文件）。"
         return json.dumps(finalize_verification(result), ensure_ascii=False)
 
@@ -12107,6 +12207,8 @@ def self_verify(arg=""):
             scopes.append("godot")
         if region_files:
             scopes.append("regions")
+        if moves:
+            scopes.append("moves")
         if web_pages and os.getenv("DOCMIND_SELF_VERIFY_VISUAL") != "0":
             scopes.append("visual")
         elif web_pages:
@@ -12124,7 +12226,7 @@ def self_verify(arg=""):
                               "显式 scope:engine 或开 DOCMIND_SELF_VERIFY_ENGINE=1 可启用）")
     elif scope == "all":
         scopes = ["backend", "frontend", "scene", "web", "engine", "visual",
-                  "data", "docs", "sql", "godot", "regions"]
+                  "data", "docs", "sql", "godot", "regions", "moves"]
     else:
         scopes = [scope]
 
@@ -12150,6 +12252,8 @@ def self_verify(arg=""):
                 _sv_verify_godot(godot_files, root, result)
             elif sc == "regions":
                 _sv_verify_regions(region_files, root, result)
+            elif sc == "moves":
+                _sv_verify_moves(moves, root, result)
             elif sc == "visual":
                 # auto 档把本次网页传进去当截图入口（产物不叫 index.html 也要验得到画面）；
                 # 显式 scope:visual 不传，沿用项目入口发现。

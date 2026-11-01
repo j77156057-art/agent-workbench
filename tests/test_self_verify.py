@@ -9,6 +9,7 @@
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -666,6 +667,146 @@ class SelfVerifyGodotRegionsTest(unittest.TestCase):
 
     def test_dev_apply_regions_is_in_the_gate(self):
         self.assertIn("dev_apply_regions", agent._VERIFY_AFTER_WRITE_TOOLS)
+
+
+class SelfVerifyMovesTest(unittest.TestCase):
+    """`dev_move` 的收尾门：移动后旧路径的残留引用必须判红。
+
+    `dev_move` 的文档自己写着「移动后请用 dev_find_references / grep 检查旧路径的
+    import 与引用」——那句话本来就该是收尾门干的，交给模型自觉等于没做。
+    """
+
+    @staticmethod
+    def _git_available():
+        try:
+            proc = subprocess.run(["git", "--version"], capture_output=True, timeout=15)
+        except Exception:  # noqa: BLE001
+            return False
+        return proc.returncode == 0
+
+    def setUp(self):
+        if not self._git_available():
+            self.skipTest("本机没有 git，引用搜索无从验证")
+        self.dir = tempfile.mkdtemp(prefix="sv_move_")
+        def git(*args):
+            return subprocess.run(["git", *args], cwd=self.dir, capture_output=True, timeout=30)
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "probe@example.com")
+        git("config", "user.name", "probe")
+        self.git = git
+        self._write("pkg/__init__.py", "")
+        self._write("pkg/old_name.py", "VALUE = 1\n")
+        self._write("user.py", "from pkg.old_name import VALUE\n\nprint(VALUE)\n")
+        git("add", "-A")
+        git("commit", "-q", "-m", "init")
+        self._patch = mock.patch.object(tools, "_get_code_root", lambda: self.dir)
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, rel, text):
+        path = os.path.join(self.dir, rel)
+        os.makedirs(os.path.dirname(path) or self.dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def _verify(self, src, dst, files=None):
+        arg = "scope: auto\nfiles: %s\nmoved: %s -> %s" % (files or dst, src, dst)
+        return json.loads(tools.self_verify(arg))
+
+    def test_stale_import_after_move_is_red(self):
+        os.replace(os.path.join(self.dir, "pkg", "old_name.py"),
+                   os.path.join(self.dir, "pkg", "new_name.py"))
+        data = self._verify("pkg/old_name.py", "pkg/new_name.py")
+        self.assertFalse(data["passed"], data)
+        self.assertIn("user.py", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_reference_fixed_after_move_turns_green(self):
+        os.replace(os.path.join(self.dir, "pkg", "old_name.py"),
+                   os.path.join(self.dir, "pkg", "new_name.py"))
+        self._write("user.py", "from pkg.new_name import VALUE\n\nprint(VALUE)\n")
+        data = self._verify("pkg/old_name.py", "pkg/new_name.py")
+        self.assertTrue(data["passed"], data)
+        self.assertTrue(any("moves_dangling" in r for r in data["ran"]), data["ran"])
+
+    def test_missing_destination_is_red(self):
+        data = self._verify("pkg/old_name.py", "pkg/never_created.py")
+        self.assertFalse(data["passed"])
+        self.assertIn("目标不存在", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_old_path_still_present_is_red(self):
+        # 旧文件还在 = 移动根本没发生（复制而非移动，或 git mv 失败）
+        data = self._verify("pkg/old_name.py", "pkg/old_name.py")
+        self.assertFalse(data["passed"])
+        self.assertIn("仍然存在", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_no_git_is_skipped_not_green(self):
+        """查不了引用时不能报通过：py_compile 跑了 + 引用没查 = partial，仍不是 passed。"""
+        with mock.patch.object(tools, "_git_grep_files", lambda *a, **k: None):
+            os.replace(os.path.join(self.dir, "pkg", "old_name.py"),
+                       os.path.join(self.dir, "pkg", "new_name.py"))
+            data = self._verify("pkg/old_name.py", "pkg/new_name.py")
+        self.assertFalse(data["passed"], data)
+        self.assertIn(data["status"], ("partial", "skipped"), data)
+        self.assertIn("git 不可用", json.dumps(data["skipped"], ensure_ascii=False))
+
+    def test_path_reference_after_move_is_red(self):
+        """路径式引用（文档/配置里写着 `pkg/old_name.py`）也要抓到。
+
+        这条是补 AI 变异的：只搜 import 行的话，把路径搜索整段关掉测试照样绿。
+        """
+        self._write("user.py", "print('这里不 import 它')\n")
+        self._write("notes.md", "实现见 pkg/old_name.py，勿改路径。\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "docs 引用旧路径")
+        os.replace(os.path.join(self.dir, "pkg", "old_name.py"),
+                   os.path.join(self.dir, "pkg", "new_name.py"))
+        data = self._verify("pkg/old_name.py", "pkg/new_name.py")
+        self.assertFalse(data["passed"], data)
+        self.assertIn("notes.md", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_git_error_is_not_read_as_nobody_references_it(self):
+        """`git grep` 返回 2 是 git 自己坏了，不能当成「没人引用」——那是假绿。"""
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and cmd and str(cmd[0]) == "git" and "grep" in cmd:
+                class _Broken:
+                    returncode = 2
+                    stdout = b""
+                return _Broken()
+            return real_run(cmd, *args, **kwargs)
+
+        os.replace(os.path.join(self.dir, "pkg", "old_name.py"),
+                   os.path.join(self.dir, "pkg", "new_name.py"))
+        with mock.patch("subprocess.run", fake_run):
+            data = self._verify("pkg/old_name.py", "pkg/new_name.py")
+        self.assertFalse(data["passed"], data)
+        self.assertIn(data["status"], ("partial", "skipped"), data)
+
+    def test_real_dev_move_output_feeds_the_gate(self):
+        obs = tools.dev_move("from: pkg/old_name.py\nto: pkg/new_name.py")
+        self.assertEqual(agent._parse_written_rel(obs), "pkg/new_name.py")
+        self.assertEqual(agent._parse_moved_rel(obs),
+                         ("pkg/old_name.py", "pkg/new_name.py"))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "pkg", "old_name.py")))
+
+
+class WriteGateCoverageTest(unittest.TestCase):
+    """写后收尾门覆盖哪些工具 —— 漏一个就是那一类改动完全没有验证。"""
+
+    def test_move_and_region_tools_are_in_the_gate(self):
+        for name in ("dev_move", "dev_add_region", "dev_apply_regions", "dev_patch"):
+            self.assertIn(name, agent._VERIFY_AFTER_WRITE_TOOLS, name)
+
+    def test_add_region_message_targets_regions_json(self):
+        self.assertEqual(
+            agent._parse_written_rel("已新增/更新分区 web（web/）并写入 regions.json。分区已建"),
+            "regions.json")
 
 
 if __name__ == "__main__":
