@@ -764,3 +764,23 @@ POST   /api/memory/reindex
 **没做**：没有回填历史回合（被跳过的那几轮不会重跑固化），所以第一个带证据的候选要等下一轮真实带回执的回合；采纳仍然必须由人点（不代点）。
 
 **验证**：`tests/test_memory_v2_p0.py` 的固化用例 9 条全绿，整套记忆测试 **174 passed**；两条变异真红（退回"文本压过回执"、任意回执都当通过）。
+
+### 16.36 CI 红名单通道：先让红可读，再逐条归因（2026-11-01）
+
+CI 日志的下载域名（objects.githubusercontent.com）在这台机器上不可达，"CI 红"一直是零信息量。做法：两个测试 lane 把输出落盘 → `tools/ci_red_summary.py` 解析（unittest 的 `FAIL: x (mod.Cls.test)`、pytest 的 `FAILED path::node - reason`）→ 打成 `::error file=,title=::` 注释 → `gh api .../check-runs/<job>/annotations` 走 api.github.com 可读。注释带 traceback 最后一行（异常文本），只给用例名等于还要回去捞日志。
+
+**两个踩坑，都记进守卫**：
+
+1. `run:` 默认 `bash -e`。测试返回 1 就直接终止，`rc=$?` 与摘要步骤从未执行 —— 第一次上线后 CI 一条注释都没有。两步都加 `set +e`，并由 `test_shell_errexit_is_disabled_around_the_test_command` 钉住。
+2. `python -m unittest` **默认不缓冲**测试输出，而 `main()` 会往 stdout 打 `::error` 行 —— 于是**夹具里那条假红**（`test_engine_single_instance`）进了 step 日志，被 GitHub 当成真注释。夹具的「红」和真的红在 API 里长得一模一样，这是这次最贵的一课：测试里改用 `redirect_stdout` 接住，并断言它确实打出了注释行。
+
+**归因结果**（真 CI 跑 + 本地 5322 条全量交叉核对）：
+
+| 红 | 结论 |
+|---|---|
+| engine_start 10 条 | **真缺陷**：`api_routes/engine.py` 调 `ctx.engine_start`，api.py 没导入它 → `POST /api/engine/start` 一调就 AttributeError。补导入后 66 passed |
+| MCP live playwright 1 条 | **真缺陷**：浏览器连接器走 stdio，被 10-15 的本地引擎豁免顺带放行，联网关关着浏览器工具仍在工具集里。按服务名归到 `group="web"` |
+| voice 2 / SSE 2 | 本地全量与 CI 绿色 run 都没复现；探针 run 里那两条注释其实是上面第 2 条的夹具泄漏，不是它们真的红了 |
+| ScheduleTests 1 条 | **测试自身的竞态**：等 `call_count` 一加一就停线程，检查还在跑（磁盘扫描十几秒），时间戳没落盘。改成等副作用 |
+
+**方法结论**：原来的"14 红基线"里有 **11 条是真缺陷**。基线红不等于已知无害 —— 它们被当成环境噪声忽略了若干轮，其中一条是端点一调就崩。
