@@ -38,7 +38,7 @@ sys.path.insert(0, ROOT)
 
 from agent_runtime.game_workflow import (  # noqa: E402
     STATUS_COMPLETED, STATUS_COMPLETED_UNVERIFIED, STATUS_FAILED,
-    TERMINAL_STATUSES, is_terminal_status, is_successful_status, review_status,
+    TERMINAL_STATUSES, is_terminal_status, is_successful_status,
     settle_status,
 )
 

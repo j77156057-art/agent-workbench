@@ -243,7 +243,6 @@ _GIT_MISSING_HINT_FROZEN = (
 
 
 def _git_missing_hint():
-    import sys
     return _GIT_MISSING_HINT_FROZEN if getattr(sys, "frozen", False) else _GIT_MISSING_HINT
 
 

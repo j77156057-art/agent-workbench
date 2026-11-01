@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from agent_runtime import dev_server, loopback_http, page_action, vue_component
 

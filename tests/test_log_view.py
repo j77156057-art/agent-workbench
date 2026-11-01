@@ -229,7 +229,9 @@ class ToolSurfaceTests(unittest.TestCase):
     """`fold:` / `level:` 必须真的落到模块上——参数没落到模块，本仓为此付过学费。"""
 
     def _patch_logs(self, logs, calls):
-        import tools
+        # 用模块级的 `tools`：电池是按**测试模块的属性**注入被变异模块的
+        # （BIND='tools'），函数里再 `import tools` 会从 sys.modules 另取一份，
+        # 把注入的那份绕过去 —— 变异于是对这条用例隐形。
         from agent_runtime import process_runner
 
         def fake_job_logs(job_id="", *, offset=0):

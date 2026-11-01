@@ -1045,8 +1045,8 @@ class SharedMaintenanceTests(_MemBase):
 
 class EpisodeRetentionTests(_MemBase):
     def test_compact_archives_old_and_keeps_recent(self):
-        for index in range(30):
-            episodes.append("prj", "s1", {"goal": "目标 %d" % index})
+        for n in range(30):
+            episodes.append("prj", "s1", {"goal": "目标 %d" % n})
         removed = episodes.compact("prj", "s1", keep=10)
         self.assertEqual(removed, 20)
         latest = episodes.latest("prj", "s1", 10)
@@ -1528,9 +1528,9 @@ class FunnelTests(_MemBase):
 
     def test_injected_counts_sessions_not_events(self):
         """旧版直接把 `memory.inject` 的事件数当第七级 —— 一个回合刷 5 次就变 5。"""
-        for index in range(3):
-            metrics.record("memory.inject", project="prj", session="s%d" % (index % 2),
-                           layer="L2", chars=50 + index)
+        for n in range(3):
+            metrics.record("memory.inject", project="prj", session="s%d" % (n % 2),
+                           layer="L2", chars=50 + n)
         report = health.funnel("prj")
         self.assertEqual(report["counts"]["injected"], 2, "同一会话的多次注入被数成了两级")
         self.assertEqual(report["inject_events"], 3, "事件数要另存一份，别和会话数混")
@@ -1567,8 +1567,8 @@ class FunnelTests(_MemBase):
         这只说明「跑验证没改文件」，**不能**解释成缺字段 —— 上一轮我就是把它错归因成
         「早期回合缺字段」，这条守卫钉住那个错误结论。
         """
-        for index in range(3):
-            turns.record_turn(session_id="s%d" % index, project_id="prj", question="q",
+        for n in range(3):
+            turns.record_turn(session_id="s%d" % n, project_id="prj", question="q",
                               final_text="答完", turn=self._turn(test_command="pytest -q", ok=True,
                                                                  targets={"x.py": 1}),
                               journal={"file_changes": []})
