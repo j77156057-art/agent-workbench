@@ -888,3 +888,18 @@ observation: [自验证未完成] docs\notes\passed-vs-score.md：无可执行�
 **验证**：`test_self_verify.py` 新增 11 条（Godot 5 + 分区 4 + 观测解析/门内 2），连同记忆套件 **180 passed**；四条变异真红（分区目录不查 / `.gd` 不查配平 / `.tscn` 不查文件头 / `dev_apply_regions` 不在门内）。变异脚本用 `try/finally` 保证还原，并按字节比对确认 `tools.py`、`agent.py` 已还原。
 
 **仍未做**：`.tscn` 里 `ext_resource path="res://…"` 的悬空引用 —— 需要先定位 Godot 工程根并区分「导入期生成」的资源，误报风险比收益大。
+
+### 16.42 那 20 条「本环境未验证」在本机逐条验掉（2026-11-02）
+
+CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既不算抓住也不算活下来。本机是 Windows + 真 Edge，逐条跑了一遍：
+
+| 电池 | 条数 | 怎么验的 | 结果 |
+|---|---|---|---|
+| `windows_sandbox` | 10 | 整块去掉 `--no-live` 重跑 | **28/28 抓到，0 未验证**（304 秒） |
+| `app_test` | 3 | `LivePageTests`（基线 8 条全绿，161 秒） | 就绪探测恒真 → `test_a_backend_that_cannot_start_is_red_not_silent` 红；服务不回收 → 6 条红（含 `test_nothing_is_left_behind`）；不带假设备 → `test_the_stream_tier_actually_hears_the_fake_microphone` 红 |
+| `page_action` | 4 | `BrowserActionTests` 两条（基线 9 条全绿，35 秒） | 四条各自判红 1 条（可见性判定、不可见命中单独计、`full_length` 上报、读取截断） |
+| `workflow_events` | 3 | `ToolHooksActuallyFireTests`（基线 6 条全绿，30 秒） | 不转发 → 2 红；只转 before → 1 红；配额压到 1 → 3 红 |
+
+**踩到的是我探针的坑，不是电池的坑**：多行锚点用 `open(newline='')` 读进来带 `\r\n`，跟电池里写死的 `\n` 锚点对不上，命中数 0 —— 我一度以为"这条变异没有锚点"。引擎的做法是 `read_text`/`write_text`（读时归一成 `\n`，写时按平台还原），照它改完就命中 1 次并判红。**锚点命中数必须按引擎的读法量**，否则会把"我的探针错了"记成"电池坏了"。
+
+**结论**：`363/383 + 20 未验证` 在本机的真实覆盖面是 **383 条全部抓住、0 条活下来**。全部跑完后 1126 个跟踪文件的 SHA-256 汇总与开跑前逐字节一致。
