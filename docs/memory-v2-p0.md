@@ -854,3 +854,15 @@ observation: [自验证未完成] docs\notes\passed-vs-score.md：无可执行�
 - `dev_patch` / `dev_apply_regions` 接进收尾门 —— 要先弄清它们 observation 里的写入路径格式（`_parse_written_rel` 目前只认「已写入 / 已创建」与批量原子写两种），盲接会把路径解析错、去验证另一个文件。
 - `.sql` 语法校验 —— 标准库没有解析器，为它引第三方依赖不划算。
 - `.gd/.tscn` —— 现有 scene 桶按"路径里含 scene"判断，`scripts/player.gd` 会漏；要按扩展名重建桶，得先有 Godot 侧的校验器。
+
+### 16.40 补上 SQL 与 dev_patch：两条最贵的「没有校验器」缺口（2026-11-02）
+
+§16.39 审计出两处：`.sql` 没有校验器（仓库里 80 个），`dev_patch` 不在写后收尾门内 —— 而它是**改代码**的工具，用它改完，回合既不 pass 也不 fail，是「没有证据」。
+
+**SQL**：`_sv_verify_sql` 用标准库 `sqlite3.complete_statement` 切句，检查"最后不许剩下没以分号收尾的半截语句"。它按 SQL 字面量规则切，所以字符串里的分号、`CREATE TRIGGER … BEGIN … END;` 的内部分号都不会误切。**刻意不连库执行**：迁移脚本引用尚不存在的表是语义问题不是语法错误，执行它会把正确脚本判红。纯注释文件按 0 条语句通过。
+
+**dev_patch**：`patch_apply.render_patch` 成功时的输出是「补丁已应用：N 个文件…」+ 每行「  路径  +a -r（新建）」。`_parse_written_rel` 增加该格式（多文件返回逗号分隔）；`dry_run` 的文案是「校验通过（dry_run，未写盘）」，此时返回 None —— 没写盘就不能触发验证。写工具集合抽成 `agent._VERIFY_AFTER_WRITE_TOOLS`，测试可以直接断言门内有哪些工具。
+
+**验证**：`test_self_verify.py` 新增 10 条（SQL 5 + 观测解析 5，其中一条是**真打补丁**的往返：真实 render → 解析 → 自验证，格式一变就红）；`test_self_verify.py` + `test_memory_v2_p0.py` **171 passed**；四条变异真红（SQL 截断不报 / 按行尾分号硬切 / dry-run 也触发验证 / dev_patch 不在门内）。其中「按行尾分号硬切」第一次**没抓住** —— 原用例的两条语句恰好都在行尾结束，补了一条"分号在字符串行尾"的用例才有牙。
+
+**仍未做**：`dev_apply_regions`（写的是 `regions.json`，不是代码）；`.gd/.tscn`（要先有 Godot 侧校验器）。
