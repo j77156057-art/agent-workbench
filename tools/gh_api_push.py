@@ -32,7 +32,9 @@ SSH（github.com:22）虽然常常能连，但要账号里有一台机器认识�
 
 1. **commit 的 SHA 是可以和本地完全一致的。** `POST /git/commits` 接受 `committer`
    字段（name/email/date），本脚本把作者的 `%aI/%an/%ae` 与提交者的 `%cI/%cn/%ce`
-   一并传上去，服务端返回的 hash 就等于本地 hash（2026-11-01 实测 5 个提交逐对象一致）。
+   一并传上去，服务端返回的 hash 就等于本地 hash。message 必须取
+   `git cat-file commit` 的**对象原文** —— `--format=%B` 末尾多一个换行，实测就是这
+   一个字节让 `5c2f9a2` 重放成 `f92e2f2`（2026-11-01 逐对象实测）。
    早先这里写的是「API 不允许设 committer，hash 必然变」—— **那句是错的**，代价很实在：
    SHA 一变，README 与设计稿里「构建自 `994a318`」这类**按 SHA 的引用**就在远端查无此号，
    而且本地 `be4b185` 与远端 `60509a6` 会变成同一内容的两个身份。
@@ -202,10 +204,15 @@ def commit_meta(sha: str) -> dict:
     line = run("show", "-s",
                "--format=%H%x00%P%x00%T%x00%aI%x00%an%x00%ae%x00%cI%x00%cn%x00%ce", sha).strip()
     h, parents, tree, adate, an, ae, cdate, cn, ce = line.split("\x00")
+    # message 必须取**对象原文**：`--format=%B` 会在末尾多给一个换行。
+    # 实测就差这一个字节 —— 同一个提交用 %B 重放出来是 f92e2f2 而不是本地 5c2f9a2。
+    raw = subprocess.run(["git", "-C", REPO, "cat-file", "commit", sha],
+                         capture_output=True).stdout
+    message = raw.split(b"\n\n", 1)[1].decode("utf-8", "surrogateescape")
     return {"sha": h, "parents": parents.split(), "tree": tree,
             "date": adate, "author": {"name": an, "email": ae, "date": adate},
             "committer": {"name": cn, "email": ce, "date": cdate},
-            "message": run("show", "-s", "--format=%B", sha)}
+            "message": message}
 
 
 def local_has(rev: str) -> bool:
