@@ -426,16 +426,16 @@ class SelfVerifyVisualAutoTest(unittest.TestCase):
 
 class ClassifyTest(unittest.TestCase):
     def test_classify_scene(self):
-        _py, _fe, scene, engine, _web = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
+        _py, _fe, scene, engine, _web, _data, _docs = tools._sv_classify(["x/scenes/Main.tscn", "scene_runtime.py"])
         self.assertTrue(scene)
         self.assertFalse(engine)
 
     def test_classify_engine(self):
-        _py, _fe, scene, engine, _web = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
+        _py, _fe, scene, engine, _web, _data, _docs = tools._sv_classify(["desktop_bridge.py", "engine_embed.py"])
         self.assertTrue(engine)
 
     def test_classify_web(self):
-        _py, _fe, _scene, _engine, web = tools._sv_classify(
+        _py, _fe, _scene, _engine, web, _data, _docs = tools._sv_classify(
             ["index.html", "game.HTM", "style.css", "main.py"])
         # 合并后 web 桶统一取 `_WEB_EXTS`（.html/.htm/.css）：.css 也收，因为 web 门
         # 有 CSS 花括号平衡校验器；.py 仍不进桶。两个并行分支曾各自定义一套 web
@@ -443,6 +443,74 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(len(web), 3)
         self.assertTrue(any(p.endswith("index.html") for p in web))
         self.assertFalse(any(p.endswith("main.py") for p in web))
+
+
+class SelfVerifyDataDocsTest(unittest.TestCase):
+    """数据文件（json/jsonl/toml）与文档（md）的写后校验。
+
+    2026-11-02 之前这两类一个桶都不进：`.json` 1399 个、`.md` 215 个，纯数据/文档
+    写入永远拿不到验证结论（要么「无对应校验器」，要么被前一张网当成校验失败）。
+    """
+
+    def setUp(self):
+        self.proj = _TmpProject()
+
+    def tearDown(self):
+        self.proj.close()
+
+    def _run(self, rel):
+        return json.loads(tools.self_verify("scope: auto\nfiles: " + rel))
+
+    def test_valid_json_passes(self):
+        self.proj.write("data/ok.json", '{"a": 1, "b": [1, 2]}\n')
+        data = self._run("data/ok.json")
+        self.assertTrue(data["passed"], data)
+        self.assertIn("data_json:ok.json", data["ran"])
+
+    def test_truncated_json_is_a_failure(self):
+        self.proj.write("data/bad.json", '{"a": 1')
+        data = self._run("data/bad.json")
+        self.assertFalse(data["passed"])
+        self.assertIn("data", [f["scope"] for f in data["failures"]])
+
+    def test_jsonl_bad_line_names_the_line(self):
+        self.proj.write("data/bad.jsonl", '{"a": 1}\nnot json\n')
+        data = self._run("data/bad.jsonl")
+        self.assertFalse(data["passed"])
+        self.assertIn("第 2 行", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_markdown_with_balanced_fences_passes(self):
+        self.proj.write("docs/ok.md", "# 标题\n\n```py\nx = 1\n```\n")
+        data = self._run("docs/ok.md")
+        self.assertTrue(data["passed"], data)
+        self.assertIn("docs_markdown:ok.md", data["ran"])
+
+    def test_markdown_with_odd_fences_fails(self):
+        self.proj.write("docs/bad.md", "# 标题\n\n```py\nx = 1\n")
+        data = self._run("docs/bad.md")
+        self.assertFalse(data["passed"])
+        self.assertIn("围栏", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_markdown_with_nul_bytes_fails(self):
+        path = os.path.join(self.proj.dir, "docs", "nul.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(b"# t\x00\n")
+        data = self._run("docs/nul.md")
+        self.assertFalse(data["passed"])
+        self.assertIn("NUL", json.dumps(data["failures"], ensure_ascii=False))
+
+    def test_mjs_counts_as_frontend(self):
+        target = os.path.join(self.proj.dir, "frontend", "tests", "x.browser.mjs")
+        py, fe, _scene, _engine, _web, _data, _docs = tools._sv_classify([target])
+        self.assertEqual(fe, [target], "浏览器回归（.mjs）不该落在「无校验器」里")
+
+    def test_json_and_md_no_longer_report_the_no_validator_gap(self):
+        self.proj.write("data/ok.json", "{}\n")
+        self.proj.write("docs/ok.md", "# t\n")
+        for rel in ("data/ok.json", "docs/ok.md"):
+            note = self._run(rel).get("note") or ""
+            self.assertNotIn("无对应校验器", note, rel)
 
 
 if __name__ == "__main__":

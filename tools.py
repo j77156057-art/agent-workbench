@@ -11318,27 +11318,36 @@ def _sv_changed_via_git(root):
 
 
 def _sv_classify(targets):
-    """把文件列表分到各 scope 的桶里，返回 (py, frontend, scene, engine, web) 绝对路径列表。
+    """把文件列表分到各 scope 的桶里，返回 (py, frontend, scene, engine, web, data, docs)。
 
     web 桶 = 前端**静态产物**（.html/.htm/.css），定义唯一真源是 `_sv_web_files`
     （合并两侧实现时统一：一个「web 集合」两种说法会让 auto 档的判定出现分叉）。
     静态产物在 auto 档会挂两级门：`web`（离线结构/语法）与——仅 .html/.htm——
     `visual`（真浏览器画面），见 self_verify 的 scope 选择。
+
+    data（.json/.jsonl/.yaml/.yml/.toml）与 docs（.md）是 2026-11-02 补的：
+    此前它们一个桶都不进，跑完 `ran=[]` → 判「无对应校验器」→ 纯文档/数据写入
+    永远拿不到验证结论（仓库里 .json 1399 个、.md 215 个，不是边角）。
     """
     import re as _re
-    py, fe, scene, engine = [], [], [], []
+    py, fe, scene, engine, data, docs = [], [], [], [], [], []
     for t in targets:
         p = str(t)
         low = p.lower()
         if low.endswith(".py"):
             py.append(p)
-        if low.endswith((".ts", ".tsx", ".vue", ".js")) or "/frontend/" in low:
+        # `.mjs` 与 .js 是同一类：本仓库的浏览器回归全是 .browser.mjs
+        if low.endswith((".ts", ".tsx", ".vue", ".js", ".mjs")) or "/frontend/" in low:
             fe.append(p)
         if _re.search(r"scene", low):
             scene.append(p)
         if "engine_embed" in low or ("embed" in low and "desktop" in low) or low.endswith("desktop_bridge.py"):
             engine.append(p)
-    return py, fe, scene, engine, _sv_web_files(targets)
+        if low.endswith(_SV_DATA_SUFFIXES):
+            data.append(p)
+        if low.endswith(_SV_DOC_SUFFIXES):
+            docs.append(p)
+    return py, fe, scene, engine, _sv_web_files(targets), data, docs
 
 
 # 前端**静态产物**扩展名（单文件 HTML / 样式表）——web 桶的唯一真源，
@@ -11346,6 +11355,10 @@ def _sv_classify(targets):
 _WEB_EXTS = (".html", ".htm", ".css")
 # 能截出画面的子集：样式表没有「画面」可验，visual 门只对网页跑。
 _WEB_PAGE_EXTS = (".html", ".htm")
+# 结构化数据：只做**解析**（语法），不比对 schema —— 写后收尾门必须零误报。
+_SV_DATA_SUFFIXES = (".json", ".jsonl", ".yaml", ".yml", ".toml")
+# 文档：只验可读性与代码围栏，不查链接可达（指向「以后才会有」的文件是正常写法）。
+_SV_DOC_SUFFIXES = (".md", ".markdown")
 
 
 def _sv_web_files(targets):
@@ -11465,6 +11478,94 @@ def _sv_verify_frontend(fe_files, root, result):
     except Exception as e:  # noqa: BLE001
         result["failures"].append({"scope": "frontend", "file": fe_dir,
                                    "error": "typecheck 无法运行：" + str(e)[:200]})
+
+
+def _sv_verify_data(files, root, result):
+    """结构化数据文件的**语法**校验：json / jsonl（逐行）/ yaml / toml。
+
+    只解析、不比对 schema：写后收尾门每次写入都跑，误报会诱导模型去改本来正确的
+    文件（见 `_sv_verify_web` 的同一条理由）。schema 由各自的测试负责。
+    动机：仓库里 `.json` 有 1399 个（第二多），此前整类都落在「无对应校验器」。
+    """
+    import json as _json
+    for path in files:
+        name = os.path.basename(path)
+        low = name.lower()
+        try:
+            raw = open(path, "rb").read()
+        except OSError as exc:
+            result["failures"].append({"scope": "data", "file": path,
+                                       "error": "读不到：%s" % exc})
+            continue
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            result["failures"].append({"scope": "data", "file": path,
+                                       "error": "不是合法 UTF-8：%s" % exc})
+            continue
+        checker = "data"
+        try:
+            if low.endswith(".jsonl"):
+                checker = "jsonl"
+                for line_no, line in enumerate(text.splitlines(), 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        _json.loads(line)
+                    except ValueError as exc:
+                        raise ValueError("第 %d 行：%s" % (line_no, exc)) from exc
+            elif low.endswith(".json"):
+                checker = "json"
+                _json.loads(text)
+            elif low.endswith((".yaml", ".yml")):
+                checker = "yaml"
+                import yaml
+                yaml.safe_load(text)
+            else:
+                checker = "toml"
+                import tomllib
+                tomllib.loads(text)
+        except ImportError as exc:
+            result.setdefault("skipped", []).append(
+                "data:%s（本机缺少 %s 解析器）" % (name, type(exc).__name__))
+            continue
+        except Exception as exc:  # noqa: BLE001 —— 各解析器抛的异常类型不止一种
+            result["failures"].append({"scope": "data", "file": path,
+                                       "error": "%s 解析失败：%s" % (checker, exc)})
+            continue
+        result["ran"].append("data_%s:%s" % (checker, name))
+
+
+def _sv_verify_docs(files, root, result):
+    """Markdown 的可读性校验：UTF-8 可解码、无 NUL、代码围栏成对。
+
+    刻意**不查链接是否可达**：文档指向尚不存在的文件是正常写法，收尾门假红会
+    诱导模型去改本来正确的文档，比漏检更贵。
+    """
+    for path in files:
+        name = os.path.basename(path)
+        try:
+            raw = open(path, "rb").read()
+        except OSError as exc:
+            result["failures"].append({"scope": "docs", "file": path,
+                                       "error": "读不到：%s" % exc})
+            continue
+        if b"\x00" in raw:
+            result["failures"].append({"scope": "docs", "file": path,
+                                       "error": "含 NUL 字节（多半是二进制误写）"})
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            result["failures"].append({"scope": "docs", "file": path,
+                                       "error": "不是合法 UTF-8：%s" % exc})
+            continue
+        fences = sum(1 for line in text.splitlines() if line.lstrip().startswith("```"))
+        if fences % 2:
+            result["failures"].append({"scope": "docs", "file": path,
+                                       "error": "代码围栏不成对（``` 出现 %d 次）" % fences})
+            continue
+        result["ran"].append("docs_markdown:%s" % name)
 
 
 def _sv_verify_web(web_files, root, result):
@@ -11707,7 +11808,7 @@ def self_verify(arg=""):
     """对代码库最近改动做轻量自验证，返回结构化 JSON 字符串（与文本协议 Action Input 同形）。
 
     入参（单行/多行 key: value）：
-      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / all / skip
+      scope: auto(默认, 按改动文件自动选) / backend / frontend / scene / engine / visual / data / docs / all / skip
       files: 显式指定待校验文件（相对/绝对路径，可多行或逗号分隔）；缺省时用 git diff 自动发现
     返回 JSON：{"scope","ran":[...],"passed":bool,"failures":[...],"note":""}
       status 区分 passed/failed/skipped/partial；无检查或跳过不视为通过。
@@ -11753,7 +11854,8 @@ def self_verify(arg=""):
                                        "error": "校验目标超出当前项目范围"})
     targets = safe_targets
 
-    py_files, fe_files, scene_files, engine_files, web_files = _sv_classify(targets)
+    (py_files, fe_files, scene_files, engine_files, web_files,
+     data_files, doc_files) = _sv_classify(targets)
     web_pages = _sv_web_pages(targets)
 
     # 2) 选 scope：auto 按改动文件类型自动选策略。
@@ -11779,6 +11881,10 @@ def self_verify(arg=""):
             scopes.append("scene")
         if web_files:
             scopes.append("web")
+        if data_files:
+            scopes.append("data")
+        if doc_files:
+            scopes.append("docs")
         if web_pages and os.getenv("DOCMIND_SELF_VERIFY_VISUAL") != "0":
             scopes.append("visual")
         elif web_pages:
@@ -11795,7 +11901,8 @@ def self_verify(arg=""):
                               "（engine 域自检需真 Godot 且默认关闭，已跳过；"
                               "显式 scope:engine 或开 DOCMIND_SELF_VERIFY_ENGINE=1 可启用）")
     elif scope == "all":
-        scopes = ["backend", "frontend", "scene", "web", "engine", "visual"]
+        scopes = ["backend", "frontend", "scene", "web", "engine", "visual",
+                  "data", "docs"]
     else:
         scopes = [scope]
 
@@ -11811,6 +11918,10 @@ def self_verify(arg=""):
                 _sv_verify_script("verify_engine_embed.py", "engine", root, result)
             elif sc == "web":
                 _sv_verify_web(web_files, root, result)
+            elif sc == "data":
+                _sv_verify_data(data_files, root, result)
+            elif sc == "docs":
+                _sv_verify_docs(doc_files, root, result)
             elif sc == "visual":
                 # auto 档把本次网页传进去当截图入口（产物不叫 index.html 也要验得到画面）；
                 # 显式 scope:visual 不传，沿用项目入口发现。
