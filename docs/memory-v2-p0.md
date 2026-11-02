@@ -1058,4 +1058,12 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 
 **成本实测**：同一组测试 plain 29 秒 → 带 coverage 34 秒（1.17 倍，这组子进程多，生产代码密集的会更高）；CI 侧 pytest lane 365 秒、全量 unittest 480 秒、sqlite lane 全程 22 分 21 秒 —— 把两 lane 包进 coverage 后离 60 分钟 job 超时仍有大余量，而且**没有为此再跑一遍测试**。
 
-**验证**：`tests/test_coverage_eval.py` 27 passed；`--self-check` 9 个合成判据全过（子进程验）；真仓库端到端（临时 git 仓库 + 合成报告）：整块未执行判红、补齐覆盖判绿、base 取不到 fail-closed；12 条变异 0 存活；两份接线守卫（lint 门 + 静态缺陷门）与邻门命令仍在。
+**验证**：`tests/test_coverage_eval.py` 首版 27 passed（修完 CLI 进程内验之后 34 passed）；`--self-check` 9 个合成判据全过；真仓库端到端（临时 git 仓库 + 合成报告）：整块未执行判红、补齐覆盖判绿、base 取不到 fail-closed；12 条变异 0 存活；两份接线守卫（lint 门 + 静态缺陷门）与邻门命令仍在。
+
+**门上线第一次真跑，就把作者自己判红了**（run 41394706664，sqlite lane）：`::error 改动行覆盖率 87.3% 低于门槛 90.0%`，未执行的 35 行全在 `coverage_eval.py` 自己身上 —— `self_check()`、`main()` 的人话分支、fail-closed 的打印。根因不是"门太严"，是**我的验法把最要紧的断言放进了子进程**：`tests/test_coverage_eval.py` 里用 `subprocess` 跑 `--self-check` 与 CLI，子进程不被 trace，所以那些行在 CI 的覆盖率视野里等于不存在。
+
+修的方式是照单干活，不是降门槛：把这些用例改成**进程内**调用（`cov.main([...])` + `contextlib.redirect_stdout` 断言打印体），顺带补了三个真留白 —— `classify` 落到最后一条 `not_tracked` 的路径、`normalize_key` 的空 root 与跨盘符分支、以及 `present` 与 `missing` 必须共用同一套归一化（原来 `main` 里那句 `split("rag-agent/")[-1]` 是个目录名耦合的土办法，抽出 `normalize_key`/`normalize_keys` 后，报告键是绝对路径也不会把文件误判成"没被测"）。另外 `if __name__ == "__main__"` 那一行标 `# pragma: no cover` —— 它结构上不可能被进程内用例执行，而 `evaluate` 明确减去 `excluded_lines`，所以排除是可见的、不是伪造覆盖。
+
+改完实测：`coverage_eval.py` 被自家测试覆盖到 **100.0%**（0 行未执行），四份接线/红名单守卫 **74 passed**，六条静态规则干净。同时把注释升级成 `::warning file=<路径>,line=<行>::`，让"改而未执行"直接落在 diff 的那一行上 —— 这次那 35 行只给了一串行号，作者还得自己去数。
+
+这条是本节全部立论的活证据：**门说的"这次改的行没人走过"，通常是真的没人走过**，包括写门的人自己。
