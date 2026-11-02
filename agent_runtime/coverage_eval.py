@@ -55,7 +55,12 @@ ROOT_LEVEL_PRODUCTION = re.compile(r"^[a-z0-9_]+\.py$")
 #: （实测，见 `tests/test_eval_memory_isolation.py:98` 的 docstring）。
 #: 所以它只能子进程跑，进程内永远覆盖不到它的行。
 #: 这份清单由 `tests/test_coverage_eval.py` 钉住：加一项必须同时给出理由。
+#: 2026-11-02 补两个：`tools/mutation/mutate_*`（变异电池驱动，按定义手工跑、测试永不 import）
+#: 与 `tools/design_seed.py`（一次性种子脚本）。依据同 run_golden：判定是**结构性**的 ——
+#: 它们的入口是命令行，测试里没有也不该有调用点；把它们算成 production 会让门拿
+#: 「测试本来就不该执行的行」判红，那是量具错，不是代码错。
 MANUAL_SCRIPTS = ("verify_", "tools/mutation/probe_", "tools/mutation/diagnose_",
+                  "tools/mutation/mutate_", "tools/design_seed.py",
                   "make_lnk_pure.py", "demo_", "tools/backfill_", "run_golden.py")
 
 

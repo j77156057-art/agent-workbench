@@ -69,6 +69,15 @@ class EngineLogCloseTests(unittest.TestCase):
             self.assertNotIn(key, gw._ENGINE_LOGS)
 
 
+    def test_a_failing_close_does_not_escape(self):
+        """close() 自己抛异常时也要吞掉并把登记表清干净 —— 否则停止流程会被日志句柄带崩。"""
+        handle = mock.Mock()
+        handle.close.side_effect = OSError("close failed")
+        gw._ENGINE_LOGS["root-x"] = handle
+        gw._close_engine_log("root-x")      # 不抛就够
+        self.assertNotIn("root-x", gw._ENGINE_LOGS, "抛异常后没摘登记表")
+
+
 class ProfileReleaseTests(unittest.TestCase):
     def test_release_marks_the_temporary_directory_as_cleaned(self):
         """目录被 rmtree 删掉之后，对象也要收尾 —— 否则 gc 时还会报「Implicitly cleaning up」。
