@@ -103,7 +103,6 @@ class SaveAnimationLibraryTests(unittest.TestCase):
     def test_animation_aggregates_to_one_library_item(self):
         m = self._save()
         lib = assets.library(self.root)
-        kinds = [it['kind'] for it in lib['dirs'][0]['items']] if lib['dirs'] else []
         anims = [it for d in lib['dirs'] for it in d['items'] if it['kind'] == 'animation']
         self.assertEqual(len(anims), 1)
         a = anims[0]

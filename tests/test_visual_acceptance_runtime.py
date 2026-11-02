@@ -215,11 +215,11 @@ class VisualAcceptanceRuntimeTests(unittest.TestCase):
                     os.utime(path, (now - 24 * 3600, now - 24 * 3600))
                     return path
 
-                abandoned = make("docmind-visual-preview-aaaaaaaa", str(dead.pid), dead_port)
+                make("docmind-visual-preview-aaaaaaaa", str(dead.pid), dead_port)
                 owner_alive = make("docmind-visual-preview-bbbbbbbb", str(os.getpid()), dead_port)
                 browser_alive = make("docmind-visual-preview-cccccccc", str(dead.pid), live_port)
                 no_port_file = make("docmind-visual-preview-dddddddd", str(dead.pid), None)
-                unclaimed = make("docmind-visual-preview-eeeeeeee", None, dead_port)
+                make("docmind-visual-preview-eeeeeeee", None, dead_port)
                 foreign = make("someone-else-preview-ffffffff", str(dead.pid), dead_port)
 
                 removed = [os.path.basename(p) for p in sweep_stale_profiles(root)]
@@ -466,7 +466,7 @@ class BrowserLaunchDisciplineTests(unittest.TestCase):
             f"subprocess.{self.P}([python, 'x.py'])  # knowledge: cutting-edge",
             f"subprocess.{self.P}(['node', 'build.js'], env={{'EDGE_TOKEN': '1'}})",
             f"subprocess.{self.P}([encoder, '--input', path])",
-            f"subprocess.run(['taskkill', '/PID', str(p.pid), '/T', '/F'])  # 见 _msedge_pids_using",
+            "subprocess.run(['taskkill', '/PID', str(p.pid), '/T', '/F'])  # 见 _msedge_pids_using",
         ):
             with self.subTest(text=text[:46]):
                 self.assertEqual(_raw_browser_spawns(text), [])

@@ -53,7 +53,7 @@ class EngineGpuLeaseTests(unittest.TestCase):
             new = MagicMock(); new.pid = 1002; new.poll.return_value = None
             rect = {'x': 11, 'y': 22, 'width': 640, 'height': 360}
             with patch.object(gw, '_resolve_engine_executable', return_value='dummy'), \
-                 patch.object(gw.subprocess, 'Popen', side_effect=[old, new, new]) as popen, \
+                 patch.object(gw.subprocess, 'Popen', side_effect=[old, new, new]), \
                  patch.object(gw._gpu, '_probe_override', lambda: [{'index': 0, 'name': 'test', 'used_mb': 0, 'total_mb': 8192, 'free_mb': 8192, 'utilization': 0, 'temperature_c': 0}]), \
                  patch.object(gw, 'engine_detach', return_value={'was_embedded': True}), \
                  patch('desktop_bridge.terminate_tree', return_value=[1001]), \

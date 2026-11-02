@@ -109,7 +109,7 @@ class RetrieverAdapterTests(unittest.TestCase):
                     "metadatas": [[{"source": "other.gd"}]],
                     "distances": [[0.1]],
                 }):
-            docs = HybridRetriever(collection="trace-docs", top_k=2, candidate_k=2,
+            HybridRetriever(collection="trace-docs", top_k=2, candidate_k=2,
                                    embedding_client=_Embedding(), reranker=None).invoke("exact movement")
             events = retrieval_events(10)
         self.assertTrue(events)

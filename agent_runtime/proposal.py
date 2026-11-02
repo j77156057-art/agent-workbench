@@ -127,7 +127,6 @@ def build(root: str, *, title: str = "", body: str = "", files: list[str] | None
     stamp = time.strftime("%Y%m%d-%H%M%S")
     name = slugify(title or (changed[0] if changed else "proposal"))
     patch_name = "proposals/%s-%s.patch" % (name, stamp)
-    draft_name = "proposals/%s-%s.md" % (name, stamp)
     patch_path = Path(os.path.abspath(str(code_intel_path_root(root, patch_name))))
     draft_path = patch_path.with_suffix(".md")
     header = ("# 由 Agent 工作台 dev_propose 生成（未提交、未推送）\n"

@@ -229,7 +229,7 @@ class B2_MigrationIdempotent(QABase):
                            "current_project_id": pidb})
         # 直接改 STATE_FILE 后再读
         with open(config.STATE_FILE, encoding="utf-8") as f:
-            st = json.load(f)
+            json.load(f)  # 读回一遍：写进 STATE_FILE 的必须是合法 JSON
         for _ in range(3):
             config._apply_persisted_state()
         self.assertEqual(len(projects.list_projects()), 2, "既有 2 项目不得增长")

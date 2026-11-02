@@ -132,7 +132,7 @@ class DiscoveryCases(_BridgeCase):
         self.assertEqual(fake.list_calls, ["other"])   # 没打标记的连问都不问
 
     def test_disabled_server_is_reported_as_skipped(self):
-        fake = self.install(FakeMCP(servers={"demo": _server(enabled=False)}))
+        self.install(FakeMCP(servers={"demo": _server(enabled=False)}))
         out = mcp_bridge.discover(self.tmp)
         self.assertEqual(out["entries"], [])
         self.assertEqual(out["skipped"][0]["reason"], "未启用")

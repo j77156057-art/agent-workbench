@@ -190,8 +190,6 @@ def test_run_child_actually_forwards_the_event_into_the_return(monkeypatch):
     """
     import agent as A
 
-    captured: dict = {}
-    real_run = A.Agent.run
 
     def spy(self, question, stream=True, **kw):
         # 转发一个 needs_confirmation 事件，然后立刻收尾
@@ -274,7 +272,6 @@ def test_the_field_is_always_present_even_with_no_block():
     而且没有任何报错。
     """
     a, called, events = _child_run(lease=True)
-    out = {"status": "ok"}
     # 直接验字段存在性：真跑一次 _run_child 太重，这里验契约。
     src = (Path(agent_mod.__file__).read_text(encoding="utf-8"))
     assert '"needs_confirmation"' in src, "返回结构里没有这个字段"

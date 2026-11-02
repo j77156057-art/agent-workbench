@@ -649,7 +649,6 @@ def locate(root: str, q: str, limit: int = 20, *, vector_search=None) -> dict:
                     return vs_query(emb, k=k, collection=CODE_COLLECTION_NAME)
 
             res = vector_search(q, 25) or {}
-            docs0 = (res.get("documents") or [[]])[0]
             metas0 = (res.get("metadatas") or [[]])[0]
             seen_src: set = set()
             for idx, m in enumerate(metas0):

@@ -191,7 +191,7 @@ def run_suite(target: Path, argv: list[str], *, kind: str, state_root: Path | st
     状态根单独给一个检出外的临时目录：套件会写 sqlite/缓存，写进检出就把回收搞脏了。
     """
     runner = runner or process_runner.run_bounded
-    cleaned = safe_relative(str(argv[0])) or str(argv[0])
+    safe_relative(str(argv[0]))
     row: dict[str, Any] = {"kind": kind, "argv": [Path(str(argv[0])).name, *argv[1:]][:8],
                            "ok": False, "ran": False, "exit_code": None, "detail": "",
                            "passed": 0, "failed_count": 0, "skipped": 0}

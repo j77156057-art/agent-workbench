@@ -126,7 +126,7 @@ class NoOrphanTests(_OrphanHarness):
                     patch.object(tools_mod, "_PTC_BRIDGE_SERVER", server), \
                     patch.object(tools_mod.subprocess, "Popen", spy), \
                     patch.object(tools_mod, "_PTC_TRACE_PATH", None):
-                out = tools_mod._python_exec_ptc_run(code, ceiling=1, allow_escalate=False)
+                tools_mod._python_exec_ptc_run(code, ceiling=1, allow_escalate=False)
             proc = holder.get("proc")
         self.assertIsNotNone(proc)
         self.assertIsNotNone(proc.poll(), "断连后子进程未被收尸 → 孤儿")

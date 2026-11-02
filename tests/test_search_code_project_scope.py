@@ -178,7 +178,6 @@ class SearchCodeProjectScopeTests(unittest.TestCase):
     def test_it_does_not_filter_when_the_ingest_root_is_unknown(self):
         """拿不到 ingest 根时**不过滤**——宁可少一道防护，也不把工具打死。"""
         self._patch([_Doc("pkg/a.py")], ingest_root=None)
-        calls = []
         with mock.patch.object(projects, "get_project", mock.Mock(return_value=None)):
             out = tools.search_code("入口")
 

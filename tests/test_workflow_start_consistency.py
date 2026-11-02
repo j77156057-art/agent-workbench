@@ -72,7 +72,7 @@ class LaunchWorkflowConsistencyTests(unittest.TestCase):
         # 走根反查得到 B，不匹配。
         other = self.tmp / "other"
         other.mkdir()
-        other_pid = projects.project_id(str(other))
+        projects.project_id(str(other))
         # 用 self.pid_a 作 request_pid，但根是 other
         client = _client(str(other), self.pid_a)
         resp = client.post("/api/agent/workflow/start",

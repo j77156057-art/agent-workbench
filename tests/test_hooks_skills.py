@@ -134,7 +134,7 @@ class HookRegistryTests(_HookBase):
         events = []
         sink = lambda kind, payload, result: events.append((kind, payload, result))
         with hooks.workflow_event_scope(sink):
-            result = hooks.run_workflow("before_tool", {"tool": "calculate"})
+            hooks.run_workflow("before_tool", {"tool": "calculate"})
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0][0], "before_tool")
         self.assertEqual(events[0][1]["tool"], "calculate")
@@ -148,7 +148,6 @@ class HookRegistryTests(_HookBase):
             "    raise RuntimeError('observe failed')\n"
         ))
         hooks.reload()
-        events = []
         with hooks.workflow_event_scope(
                 lambda kind, payload, result: (_ for _ in ()).throw(RuntimeError("sink failed"))):
             result = hooks.run_workflow("before_tool", {"tool": "calculate"})

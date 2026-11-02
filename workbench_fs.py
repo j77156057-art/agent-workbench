@@ -244,7 +244,6 @@ def _git_snapshot(root):
 def _find_repo(target: str, snap: dict):
     """找包含 target 的（最深）git 仓库；返回 (repo_abs, state) 或 (None, None)。"""
     cur = os.path.realpath(target)
-    root_repo = None
     while True:
         if cur in snap:
             return cur, snap[cur]

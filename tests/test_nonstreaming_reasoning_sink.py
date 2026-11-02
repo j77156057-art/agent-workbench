@@ -64,7 +64,7 @@ class _Completions:
     def create(self, **kwargs):
         self.kwargs = kwargs
         if kwargs.get("stream"):
-            resp = _Resp(self._msg)
+            _Resp(self._msg)
             # 只有一个 chunk；StreamChat 会逐 chunk 读 delta
             class _Chunk:
                 class choices:

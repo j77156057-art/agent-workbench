@@ -39,7 +39,7 @@ class TurnIndexTests(unittest.TestCase):
         api._clear_remote_stop("t-stop-flag")
 
     def test_index_roundtrip_and_owner_lookup(self):
-        rec = api._register_in_flight_turn(
+        api._register_in_flight_turn(
             "t-index", "s", None, owner_base="http://127.0.0.1:8100")
         entry = api._read_turn_index("t-index")
         self.assertEqual(entry["session_id"], "s")

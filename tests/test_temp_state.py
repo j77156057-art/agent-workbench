@@ -80,7 +80,7 @@ class TempStateTests(unittest.TestCase):
                 os.utime(path, (now - 86400, now - 86400))
                 return path
 
-            abandoned = make("docmind_test_state_aaaaaaaa", dead.pid)
+            make("docmind_test_state_aaaaaaaa", dead.pid)
             in_use = make("docmind_test_state_bbbbbbbb", os.getpid())
             unmarked = make("docmind_test_state_cccccccc", None)
             foreign = make("someone_elses_state_dddddddd", dead.pid)

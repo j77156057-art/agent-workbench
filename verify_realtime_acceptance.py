@@ -358,7 +358,7 @@ def main() -> int:
     # ---- scenario 5: a video frame -----------------------------------------
     video_ok = None
     if not args.quick:
-        video_turn = Turn(label="video")
+        Turn(label="video")
         # 1x1 PNG is enough to prove the event is accepted, not to be understood
         tiny = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00"
                 b"\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\n"

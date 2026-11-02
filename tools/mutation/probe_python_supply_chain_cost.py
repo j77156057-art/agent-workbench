@@ -123,7 +123,6 @@ def main() -> int:
         # 它不能建立在 35% 的覆盖率上。
         # 代价：172 次 PyPI 请求（约 0.2-0.5s each），可接受。
 
-    total_sampled = len(frozen) if checked >= len(frozen) else checked
     print("  抽样: %d / %d 个（网络不够时 unknown 会列出来）"
           % (checked, len(frozen)))
     print()

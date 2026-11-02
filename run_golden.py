@@ -74,7 +74,7 @@ def build_allowlist(disabled: list[str], only: list[str] | None = None):
         from tools import TOOLS
         return [name for name in TOOLS if name not in set(disabled)]
     except ImportError:
-        print(f"警告：无法导入 TOOLS，--disable-tools 已忽略", file=sys.stderr)
+        print("警告：无法导入 TOOLS，--disable-tools 已忽略", file=sys.stderr)
         return None
 
 

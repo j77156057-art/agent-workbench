@@ -124,12 +124,10 @@ def main() -> None:
     req_lines = [ln.strip() for ln in req.read_text(encoding="utf-8").splitlines()
                  if ln.strip() and not ln.strip().startswith("#")] if req.exists() else []
     pinned = [ln for ln in req_lines if "==" in ln]
-    hashed = [ln for ln in req_lines if "--hash" in ln]
     fact("Python 侧钉版本", bool(pinned) and len(pinned) == len(req_lines),
          "%d/%d 行用 ==（0 行 --hash）" % (len(pinned), len(req_lines)))
 
     boot = (ROOT / "dependency_bootstrap.py").read_text(encoding="utf-8")
-    pip_call = re.search(r"_run\(\[str\(pip\).*?\]\s*,", boot, re.S)
     has_binary = "--only-binary" in boot
     has_hash = "--require-hashes" in boot
     fact("pip 关 lifecycle / source", has_binary or has_hash,

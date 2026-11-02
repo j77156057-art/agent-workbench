@@ -827,7 +827,6 @@ def main():
         check('解除后 WS_CHILD 被清掉', not (style_after & 0x40000000), hex(style_after))
         check('解除后边框样式已还原', bool(style_after & 0x00CF0000), hex(style_after & 0x00CF0000))
         rect_after = db.window_rect(hwnd_child)
-        orig = detached.get('restored_rect') or rect_after
         check('解除后窗口回到嵌入前的屏幕位置',
               abs(rect_after['x'] - before_rect['x']) <= 3
               and abs(rect_after['y'] - before_rect['y']) <= 3,

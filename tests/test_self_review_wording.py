@@ -49,7 +49,6 @@ def _state(*, ok_tasks, review, status="failed", bad_tasks=0):
         results["t%d" % i] = {"status": "ok", "conclusion": "结论 %d" % i}
     for i in range(bad_tasks):
         results["bad%d" % i] = {"status": "failed", "error": "boom"}
-    total = ok_tasks + bad_tasks
     return {"status": status, "results": results, "review": review,
             "tasks": [{"id": k} for k in results]}
 

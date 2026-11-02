@@ -301,7 +301,6 @@ def build_tokens(p):
 
 
 def render_css(seed, p, t):
-    name = "种子 %s" % seed
     L = []
     L.append("/* =============================================================")
     L.append("   Agent 工作台 · 种子皮肤（由 tools/design_seed.py 生成，**不要手改**）")

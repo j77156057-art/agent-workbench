@@ -211,8 +211,6 @@ class ToolInstallManager:
                              else completed.get("returncode", 0))
             stdout = str(getattr(completed, "stdout", "") if not isinstance(completed, Mapping)
                          else completed.get("stdout", ""))[-500:]
-            stderr = str(getattr(completed, "stderr", "") if not isinstance(completed, Mapping)
-                         else completed.get("stderr", ""))[-500:]
             if returncode != 0:
                 raise ToolInstallError("安装命令退出码 %s" % returncode)
             target = Path(plan["target"]).resolve()

@@ -370,7 +370,7 @@ class GameWorkflowTests(unittest.TestCase):
         wid = state["workflow_id"]
         self.manager.choose(wid, "recommended")
         self.manager.plan(wid, [{"id": "a", "task": "验证"}])
-        done = self.manager.execute(wid, lambda *_: {
+        self.manager.execute(wid, lambda *_: {
             "status": "ok", "conclusion": "通过", "steps": 1})
         evaluation = self.manager.evaluate(wid)
         self.assertTrue(evaluation["passed"])

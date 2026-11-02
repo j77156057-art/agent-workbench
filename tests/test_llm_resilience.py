@@ -127,7 +127,7 @@ class OllamaStreamCancellationTests(unittest.TestCase):
     def test_cancel_event_closes_blocked_response(self):
         cancel = threading.Event()
         response = self._Response()
-        stream = _OllamaStream(response, cancel_event=cancel)
+        _OllamaStream(response, cancel_event=cancel)
         cancel.set()
         self.assertTrue(response.closed.wait(1.0), "取消后应关闭底层 Ollama 响应")
 

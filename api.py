@@ -7537,7 +7537,7 @@ async def activate_model_preset_ep(preset_id: str):
         # 切过去也没有可用 key（环境变量除外，LLMClient 会兜底）：给出明确提示而非静默切空
         if not os.getenv(PROVIDERS[match["provider"]].get("api_key_env", ""), ""):
             return JSONResponse(
-                {"ok": False, "error": f"该预设还没有保存 API Key，请在模型设置中填好 Key 后重新激活。"},
+                {"ok": False, "error": "该预设还没有保存 API Key，请在模型设置中填好 Key 后重新激活。"},
                 status_code=400)
     req = ConfigReq(
         provider=match["provider"],

@@ -243,8 +243,6 @@ class LegacyReadThroughTests(ProjectsBase):
         实测切项目会重新绑定代码库（原缺陷重演）。"""
         self.assertTrue(sessions.save("fresh-9", [{"user": "u", "assistant": "a"}]))
         flat = os.path.join(sessions.SESSIONS_DIR, sessions._slug("fresh-9") + ".json")
-        bucket = os.path.join(sessions.SESSIONS_DIR, sessions._slug(self.pid),
-                              sessions._slug("fresh-9") + ".json")
         self.assertTrue(os.path.isfile(flat))
         self.assertFalse(os.path.isdir(os.path.join(sessions.SESSIONS_DIR,
                                                     sessions._slug(self.pid))),

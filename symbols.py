@@ -312,7 +312,6 @@ def _extract_gdscript(text):
             m = _GD_FUNC.match(s_code)
             if m:
                 end = _gd_block_end(raw, code, i, ind)
-                args = m.group(2).strip()
                 ret = (m.group(3) or "").strip()
                 detail = ("-> " + ret) if ret else ""
                 symbols.append(_mk(m.group(1), FUNCTION, start_line, end,
@@ -489,7 +488,6 @@ def _extract_godot_scene(text, lang):
     lines = text.split("\n")
     symbols = []
     section_start = None
-    section_kind = None
 
     def flush(end_line):
         if section_start is not None:
@@ -650,7 +648,6 @@ def _brace_span_end(lines, open_idx, start_depth):
 
 
 def _extract_java(text):
-    raw = text.split("\n")
     lines = _java_mask(text).split("\n")
     n = len(lines)
     jdoc = _java_javadoc_ends(text)

@@ -137,8 +137,8 @@ class SseAtomicSubscribeTests(unittest.TestCase):
         """delete_workflow 一次性把 subscribers set 一起 pop 掉。"""
         wid = self.mgr.start("x", project_id=self.pid,
                               project_root=str(self.project))["workflow_id"]
-        q1 = self.mgr.subscribe(wid)
-        q2 = self.mgr.subscribe(wid)
+        self.mgr.subscribe(wid)
+        self.mgr.subscribe(wid)
         self.assertEqual(len(self.mgr._subscribers.get(wid, set())), 2)
         state = self.mgr._load(wid)
         state.status = "completed"

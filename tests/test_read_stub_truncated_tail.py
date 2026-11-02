@@ -103,7 +103,7 @@ class TruncatedReadCoverageTests(unittest.TestCase):
 
     def test_rereading_whole_truncated_file_is_not_stubbed_as_complete(self):
         """整文件重读也不能谎称整份读过——尾段仍未见，应重新给（截断的）正文。"""
-        first = self._read("path: big.gd")
+        self._read("path: big.gd")
         again = self._read("path: big.gd")
         self.assertFalse(self._is_stub(again),
                          "整读被截断，却对『再整读』发全覆盖存根——尾段依旧拿不到")

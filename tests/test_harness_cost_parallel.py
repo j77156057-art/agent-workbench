@@ -129,7 +129,7 @@ class CostAwareTests(_BudgetEnv):
             captured["ctx"] = ctx
             captured["attempt"] = attempt
             return None
-        rep = orch.run_plan(orch.parse_plan([
+        orch.run_plan(orch.parse_plan([
             {"id": "a", "task": "甲"},
         ]), self._runner(), replanner=replanner, max_replans=1,
             budget_session="s", vram_provider=lambda: 123.4)
@@ -139,7 +139,7 @@ class CostAwareTests(_BudgetEnv):
         def runner_fail(task, ctx):
             return {"status": "failed", "error": "boom"}
 
-        rep = orch.run_plan(orch.parse_plan([{"id": "a", "task": "甲"}]),
+        orch.run_plan(orch.parse_plan([{"id": "a", "task": "甲"}]),
                             runner_fail, replanner=replanner, max_replans=1,
                             budget_session="s", vram_provider=lambda: 123.4)
         self.assertIn("ctx", captured)

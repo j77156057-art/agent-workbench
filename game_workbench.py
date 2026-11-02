@@ -2087,7 +2087,6 @@ def comfy_wait(prompt_id, url="http://127.0.0.1:8188", timeout=120, interval=1.0
     while time.time()<deadline:
         result=comfy_history(prompt_id,url,_release=False,root=root)
         if not result.get("ok"): return result
-        status=result.get("status") or {}
         if result.get("finished"):
             return result
         time.sleep(max(.1,min(float(interval),10)))
@@ -2463,7 +2462,6 @@ def localization_check(root):
                 if isinstance(data,dict): keys[name]=set(data)
             except Exception: pass
     if len(keys)>1:
-        ref=set.intersection(*keys.values())
         allk=set.union(*keys.values())
         missing=[{"file":n,"keys":sorted(allk-v)} for n,v in keys.items() if v != allk]
     return {"ok": not missing, "files": list(keys), "missing": missing}

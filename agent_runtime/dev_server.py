@@ -137,7 +137,7 @@ def owns_port(port: int, *, host: str = "127.0.0.1",
             if "charset=" in str(ctype):
                 charset = str(ctype).split("charset=", 1)[1].split(";")[0].strip()
             text = body.decode(charset, "replace")
-    except urllib.error.HTTPError as exc:
+    except urllib.error.HTTPError:
         text = ""
     except (OSError, ValueError) as exc:
         return False, "端口 %d 上取不到页面（%s）" % (port, exc)
@@ -223,7 +223,6 @@ def start(root: str, command: str, *, argv: list[str], cwd: str = "", port: int 
         seconds = DEFAULT_WAIT
     deadline = time.monotonic() + seconds
 
-    seen = 0
     offset = 0
     log = ""
     reason = ""

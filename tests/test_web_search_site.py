@@ -89,7 +89,7 @@ class BaiduBackendTests(unittest.TestCase):
     def test_forced_baidu_backend(self):
         # 指定单后端：经 config.get_web_search_provider() 读取，不走 auto 故障转移
         with patch("tools.get_web_search_provider", return_value="baidu"), \
-                patch("tools._baidu_search", return_value="· 百度关键词\n  百度关键词匹配结果") as m, \
+                patch("tools._baidu_search", return_value="· 百度关键词\n  百度关键词匹配结果"), \
                 patch("tools._ddg_search", return_value="x") as ddg:
             out = tools.web_search("百度关键词")
         self.assertIn("· 百度关键词", out)

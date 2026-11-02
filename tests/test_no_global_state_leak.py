@@ -185,7 +185,6 @@ class GlobalStateLeakTests(unittest.TestCase):
         （`_setup` 在一个**循环里被调 6 次**、`lambda` 晚绑定导致 6 个 cleanup 全还原
         成同一个值）**没被咬住** —— 而那正是我自己的第一版修法。
         """
-        loader = unittest.TestLoader()
         for cls in _ERROR_BUDGET_CASES:
             names = [n for n in dir(cls)
                      if n.startswith("test") and callable(getattr(cls, n))]

@@ -360,7 +360,7 @@ def main():
         ok = _open_browser()
     _log("浏览器打开尝试 -> %s" % ok)
     if ok:
-        print(f"[Agent 工作台] 已尝试用默认浏览器打开页面。")
+        print("[Agent 工作台] 已尝试用默认浏览器打开页面。")
     else:
         print(f"[Agent 工作台] 未能自动打开浏览器，请手动访问：{URL}")
 

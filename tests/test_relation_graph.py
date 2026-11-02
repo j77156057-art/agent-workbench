@@ -58,7 +58,7 @@ class RelationGraphTests(unittest.TestCase):
         # 节点形态：命名类 / 匿名脚本 / 引擎外部节点
         base = _node(g, "gd:values/base.gd")
         child = _node(g, "gd:behaviors/child.gd")
-        enemy = _node(g, "gd:behaviors/enemy.gd")
+        _node(g, "gd:behaviors/enemy.gd")
         engine = _node(g, "ext:engine:CharacterBody3D")
         self.assertEqual(base["kind"], "class")
         self.assertEqual(base["label"], "BaseThing")

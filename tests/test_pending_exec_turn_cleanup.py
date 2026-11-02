@@ -68,7 +68,7 @@ class DropPendingExecsTests(unittest.TestCase):
 
     def test_drops_only_matching_owner(self):
         with _owner("sess-A"):
-            pa = _stage()
+            _stage()
         with _owner("sess-B"):
             pb = _stage()
         self.assertEqual(tools_mod.drop_pending_execs("sess-A"), 1)

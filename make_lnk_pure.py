@@ -137,11 +137,9 @@ def verify_lnk(lnk_path: str, expect_target: str):
         item_count += 1
         p += cb
     # 解析 LinkInfo 的 LocalBasePath (ANSI)
-    li_off = off + 2 + (idlist_size - 2) + 2  # 跳到 LinkInfo 起点（IDList 之后）
     # LinkInfo 在 IDList 之后；IDList 段长度 = 2 + (idlist_size-2) = idlist_size，
     # 但含终止 2 字节已计入 idlist_size，故 LinkInfo 起点 = 76 + idlist_size
     li_start = 76 + idlist_size
-    li_size = struct.unpack_from("<I", d, li_start)[0]
     local_off = struct.unpack_from("<I", d, li_start + 16)[0]  # LinkInfo header 第5个I = LocalBasePathOffset
     base = li_start + local_off
     # ANSI 读到 null
