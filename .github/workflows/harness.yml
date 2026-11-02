@@ -48,6 +48,10 @@ jobs:
       DOCMIND_BROWSER_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
+        # 改动行覆盖率门要 `git diff <base>..HEAD`，默认浅克隆只有 1 个提交，
+        # 取不到 base 会让门 fail-closed 变成恒红（见 agent_runtime/coverage_eval）。
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -177,7 +181,11 @@ jobs:
           )
           test -n "$files"
           set +e   # 同上：默认 -e 会让 pytest 一失败就跳过红名单
-          python -m pytest $files -q -p no:cacheprovider > /tmp/pytest-lane.log 2>&1
+          mkdir -p .tmp/ci-cov
+          # 同一趟测试顺便量覆盖率（`coverage run -m pytest`，不是再跑一遍测试）：
+          # 实测这样只贵 ~17%（plain 29s → 34s），比重复跑一条 lane 省一倍时间。
+          python -m coverage run --data-file=.tmp/ci-cov/.coverage.pytest --source=. \
+            -m pytest $files -q -p no:cacheprovider > /tmp/pytest-lane.log 2>&1
           rc=$?
           cat /tmp/pytest-lane.log
           python tools/ci_red_summary.py /tmp/pytest-lane.log || true
@@ -217,10 +225,29 @@ jobs:
           DOCMIND_TRACE: "1"
         run: |
           set +e   # run: 默认 bash -e，测试一失败脚本就退出，后面的红名单永远不会执行
-          python -m unittest discover -s tests -p "test*.py" -q > /tmp/unittest.log 2>&1
+          mkdir -p .tmp/ci-cov
+          python -m coverage run --data-file=.tmp/ci-cov/.coverage.unittest --source=. \
+            -m unittest discover -s tests -p "test*.py" -q > /tmp/unittest.log 2>&1
           rc=$?
           cat /tmp/unittest.log
           python tools/ci_red_summary.py /tmp/unittest.log || true
+          exit $rc
+      - name: Changed-line coverage gate (改动行覆盖率门)
+        if: matrix.backend == 'sqlite'
+        # 门盯的是「这次改的行有没有任何用例走过」，不是全仓百分比。
+        # 实测依据：同一份覆盖率报告里全仓 15.4%（12.4 万条语句的分母），而改动行覆盖率
+        # 95.1% —— 前者涨跌都回答不了本次改动，后者能。门槛与 fail-closed 三条都在
+        # `agent_runtime/coverage_eval.py`，守卫 tests/test_coverage_eval.py。
+        run: |
+          set +e
+          BASE="${{ github.event.before }}"
+          case "$BASE" in ""|0000000000000000000000000000000000000000) BASE=$(git rev-parse HEAD^);; esac
+          python -m coverage combine --data-file=.tmp/ci-cov/.coverage .tmp/ci-cov/.coverage.pytest .tmp/ci-cov/.coverage.unittest
+          python -m coverage json --ignore-errors --data-file=.tmp/ci-cov/.coverage -o .tmp/ci-cov/report.json
+          python -m agent_runtime.coverage_eval --report .tmp/ci-cov/report.json --base "$BASE"
+          rc=$?
+          # 门自己也要能被验出牙：把报告路径改坏时它必须红，而不是"没数据=通过"。
+          if [ "$rc" != "0" ]; then echo "改动行覆盖率门判红（exit=$rc）"; fi
           exit $rc
       - name: Verify strict Postgres integration
         if: matrix.backend == 'postgres'
