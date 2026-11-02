@@ -10,9 +10,11 @@
   **warning**（照样以 `::warning` 注释露出来），不判红。
 - 「改了一整块却一行都没被执行」（≥5 行）单独判红：合计规则会把这种形状藏起来。
 """
+import fnmatch
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import unittest
@@ -427,6 +429,34 @@ class CiWiringTests(unittest.TestCase):
         gate = _code(self._gate_step())
         self.assertIn("coverage combine", gate, "两趟覆盖率数据没合并，门只会看到半边")
         self.assertIn("coverage json", gate, "门没有可读的报告输入")
+
+    def test_report_step_omits_the_synthetic_filename(self):
+        """出报告的命令必须排掉**合成文件名**，否则每次跑都产一条解析告警。
+
+        `tests/test_tool_taxonomy.py` 用 `compile(源码切片, "tools.py:TOOLS", "exec")`
+        在不动真 import 的前提下取 `TOOLS` 注册表。coverage 把这个键记进数据文件，
+        报告阶段就去 open 它，于是每次 run 的门步骤日志里都有一条
+        `CoverageWarning: Couldn't parse '.../tools.py:TOOLS'`（run 41401092750 实测）。
+        路径里带冒号的不可能是真文件，所以排除它是精确的：本地对拍过加 `--omit`
+        前后的两份报告，690 个文件、125116 条语句一字不差。
+
+        这条断言刻意**不只看 CI 那一行**：它去读测试里真正用的合成文件名，两边必须对得上。
+        否则有人把名字改成 `tools.py|TOOLS`，CI 的 omit 就悄悄失效，而守卫仍绿。
+        """
+        gate = _code(self._gate_step())
+        json_lines = [ln for ln in gate.splitlines() if "coverage json" in ln]
+        self.assertEqual(len(json_lines), 1, "出报告的命令不止一条：门的输入被分成两半")
+        match = re.search(r'--omit\s+"([^"]+)"', json_lines[0])
+        self.assertIsNotNone(match, "coverage json 没有 --omit：合成文件名会每次产一条解析告警")
+        pattern = match.group(1)
+        src = (ROOT / "tests" / "test_tool_taxonomy.py").read_text(encoding="utf-8")
+        synthetic = re.findall(r'compile\([^,]+,\s*"([^"]+)"', src)
+        self.assertTrue(synthetic, "读不到那个合成文件名：测试的形状变了，omit 得跟着改")
+        for name in synthetic:
+            self.assertTrue(fnmatch.fnmatch(name, pattern),
+                            "%r 对不上 CI 的 --omit %r —— 排除已失效" % (name, pattern))
+        self.assertIn("--ignore-errors", json_lines[0],
+                      "真读不到的文件会让整份报告失败，门就没输入了")
 
     def test_checkout_fetches_full_history(self):
         checkout = [s for s in _steps() if "checkout" in str(s.get("uses") or "")]

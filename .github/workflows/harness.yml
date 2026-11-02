@@ -103,20 +103,24 @@ jobs:
         run: npm run lint
       - name: Compile runtime
         run: python -m compileall -q agent_runtime api_routes
-      - name: Static defect gate (ruff F821/F811/F402/F541/F841/F401)
-        # 放的是**真缺陷类**六条：F821 未定义名、F811 重复定义且旧值没被用、F402 循环变量
-        # 遮蔽了导入、F541 f-string 根本没有占位符、F841 赋值后没人读、F401 未用 import。
+      - name: Static defect gate (ruff F821/F811/F402/F541/F841/F401/W605)
+        # 放的是**真缺陷类**七条：F821 未定义名、F811 重复定义且旧值没被用、F402 循环变量
+        # 遮蔽了导入、F541 f-string 根本没有占位符、F841 赋值后没人读、F401 未用 import、
+        # W605 非法转义序列。
         # 不放开整组 `F` —— 实测量过本仓库 `--select F` 有 195 条，裸接进 CI 的第一天就是
         # 195 行噪声，比没有门更坏：它让人误以为有人在管。判据是**只增不减**：
         # F541(4)+F841(50) 于 2026-11-02 清零后放入；F401 同批清掉 119 条后放入，
         # 剩下 10 条是**带证据的豁免**（再导出 / 走模块对象取名字 / `ctx.engine_start`
-        # 这类静态扫描看不见的动态取用），拆成独立语句逐行 `# noqa: F401`，
+        # 这类静态扫描看不见的动态取用），拆成独立语句逐行标 noqa 豁免，
         # 绝不用一行 noqa 顺手豁免同行的真死导入。
+        # W605 是 2026-11-02 从**改动行覆盖率门自己的日志**里挖出来的：`coverage json` 在
+        # 解析源码时把 `SyntaxWarning: invalid escape sequence '\S'` 打了出来 —— Python 3.12
+        # 只是警告，往后就是 SyntaxError。实测全仓 2 条，清零后放入。
         # 接这道门当天它抓到 3 条活的缺陷：`app_test.py` 把 `Mapping` 只写进注解却没 import，
         # 文件有 `from __future__ import annotations` 所以导入不炸，但
         # `typing.get_type_hints(server_env)` 实测抛 `NameError`。
         # 守卫 tests/test_ci_static_defect_gate.py —— 规则集从本文件读、并当场真跑一次。
-        run: python -m ruff check --select F821,F811,F402,F541,F841,F401 .
+        run: python -m ruff check --select F821,F811,F402,F541,F841,F401,W605 .
       - name: Verify Postgres driver and pool API
         if: matrix.backend == 'postgres'
         run: |
@@ -251,7 +255,13 @@ jobs:
           BASE="${{ github.event.before }}"
           case "$BASE" in ""|0000000000000000000000000000000000000000) BASE=$(git rev-parse HEAD^);; esac
           python -m coverage combine --data-file=.tmp/ci-cov/.coverage .tmp/ci-cov/.coverage.pytest .tmp/ci-cov/.coverage.unittest
-          python -m coverage json --ignore-errors --data-file=.tmp/ci-cov/.coverage -o .tmp/ci-cov/report.json
+          # `--omit "*:TOOLS"` 排掉的是 `tests/test_tool_taxonomy.py` 里那个**合成文件名**：
+          # 它 exec 一段从 tools.py 切出来的字面量时给的 filename 是 `tools.py:TOOLS`，
+          # coverage 把它记进数据文件，报告阶段就去 open 它 —— 于是每次跑都有一条
+          # `CoverageWarning: Couldn't parse ...`（run 41401092750 实测）。路径里带冒号的
+          # 键不可能是真文件，所以这条 omit 只排合成条目：本地对拍过两份报告，
+          # 690 个文件、125116 条语句一字不差。守卫在 tests/test_coverage_eval.py。
+          python -m coverage json --ignore-errors --omit "*:TOOLS" --data-file=.tmp/ci-cov/.coverage -o .tmp/ci-cov/report.json
           python -m agent_runtime.coverage_eval --report .tmp/ci-cov/report.json --base "$BASE"
           rc=$?
           # 门自己也要能被验出牙：把报告路径改坏时它必须红，而不是"没数据=通过"。
