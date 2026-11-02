@@ -1146,6 +1146,39 @@ run 41411405586 的 sqlite lane 红了，红在 `Install dependencies`，报的�
 
 **其余实测**：本机 10 份读 `harness.yml` 的守卫加上启动器用例合跑 **174 passed（245.88 秒）**，无跨文件干扰；三组变异电池 9/9（动作与 runner 标签）、4/4（启动器语义）、5/5（CPU 索引）全杀；被电池改过的五个文件（`harness.yml`、`retrieval.py`、`启动DocMind.bat`、`test_coverage_eval.py`、`test_tool_taxonomy.py`）跑完**全部与 HEAD 按字节一致**，无残留。
 
+### 16.52 句柄那一族：SIM115 清零、把规则放进门，然后发现门有个看不见的盲区（2026-11-02）
+
+上一节量到本机全量有 **181 条 ResourceWarning**（129 `unclosed file` / 49 `TemporaryDirectory` 靠回收 / 3 `subprocess still running`）。这一条先处理它的**静态对应物**：ruff `SIM115`（文件打开后没用上下文管理）。
+
+**先量形状再动手**：`--select SIM115` 全仓 **90 处**，按区域分成 生产/根级 **23**（`game_workbench` 8、`tools.py` 4、`ci_status` 3、`api.py` 3、另 5 个单点）、`tools/` 脚本 **6**、`tests/` **61**（36 个文件）。顺序按「生产 → 工具脚本 → 测试」。拆法：能机械化的三种形状（`名 = open(...).read()`、`assertIn(..., open(...).read())`、整行的 `open(...).write(x)`）用一次性脚本改（每条规则要求唯一命中、改完逐文件 `compile()`），其余（多行、带分号并列、`NamedTemporaryFile`、以及**句柄本身就是被测对象**的锁）手改。
+
+**留下的 3 处是带证据的豁免，不是漏网**：`game_workbench.engine_start` 的引擎日志句柄（子进程通过它写 stdout/stderr，关闭点在 `engine_stop`）、`file_locks` 的锁句柄、`test_temp_state` / `test_visual_acceptance_runtime` 里那两个**用来制造「目录被占用」**的 fd（with 一退出占用就没了，断言也不成立）。
+
+**顺手抓到三个真缺陷**（机械替换之外）：
+- `engine_stop` 的**早退分支**（进程自己已经退出）从来不摘 `_ENGINE_LOGS`，句柄要等 GC —— 正常停止分支才关。抽出 `_close_engine_log(root_abs)` 两处共用。
+- `visual_acceptance.spawn_browser_in_job` 把 `stderr=_browser_stderr_target(argv)` 直接塞进 `Popen`，父进程那份句柄**从此没人关**（每起一次浏览器漏一个 fd）。改成先拿住、`Popen` 之后在 `finally` 立刻关 —— 子进程已经 dup 了自己那份。
+- `game_workbench` 读记忆文件写成 `return open(path).read() if ... else ""`。
+
+**把规则放进门之后，电池暴露了门自己的盲区**。我按老规矩做变异：M1 摘掉规则、M2 换成别的代码 —— 都被守卫抓住；M3「往被扫描路径里放一个真实的未关闭句柄」**活下来了**。追下去发现不是接线问题，是 **SIM115 的形状盲区**。用形状探针实测：
+
+| 写法 | SIM115 |
+|---|---|
+| `text = open(p).read()` | ✅ 判 |
+| `if "x" in open(p).read():` | ✅ 判 |
+| `handle = open(p); handle.close()` | ✅ 判（**假阳性**：这类其实关得对） |
+| `return open(p).read()` | ❌ **不判** |
+| `return json.load(open(p))` | ❌ **不判** |
+
+假阴性的方向最危险：把「SIM115 清零」当成「没有内联句柄」，而泄漏恰好躲在 `return` 里。**真的在仓库里找到 6 处**（去掉 `dist/`、`_archived_builds/` 里的第三方副本、以及 `webbrowser.open`/`opener().open` 这类非文件调用）—— 于是同一个批次里补了一道 **AST 守卫**：`tests/test_no_inline_open_in_return.py`，只扫活代码（根级 `.py` + `agent_runtime/` + `api_routes/` + `tools/` + `tests/`），要求「return 里被消费掉的 open」为 0。判据的边界写死在夹具里（`return open(...)` 直接把活句柄交出去的形状不算，它要求调用方写清关闭点；`webbrowser.open` 不算）。**3/3 变异杀死**（普通形状 / `json.load(open())` / `io.open` 绕道）。
+
+**门现在八条规则**：`--select F821,F811,F402,F541,F841,F401,W605,SIM115`，守卫的 `REQUIRED_RULES` 同步抬到八条、并真跑一次（所以「规则往回缩」和「仓库过不了」都会当场红）。
+
+**一次跨文件假红的归因（顺手记下方法）**：15 个文件合跑时 `test_handoff` 里一条用例红，单跑却绿。用 `git worktree add` 把 **HEAD 干净副本**开出来跑同一组合 —— `1 failed, 314 passed`，与工作树**一模一样**，结论：既有的测试隔离缺陷（全局 `CODE_ROOT` 被别的用例污染），不是本批次引入。**「单独绿、合跑红」先怀疑全局状态泄漏，再用 HEAD 副本在同一组合里复现，才算归因闭合。**
+
+**本机全量复跑（CI 口径 `DOCMIND_TRACE=1`）**：`Ran 5454 tests in 924.623s — OK (skipped=14)`，**0 红**。ResourceWarning 三类合计 **181 → 76**：`unclosed file` **129 → 24**、`Implicitly cleaning up TemporaryDirectory` **49 → 49**、`subprocess still running` **3 → 3**。也就是说这一批只吃掉了句柄那一类的静态可判部分；后两类（运行期对象生命周期）原样留着，是下一批的目标。起手先做了一次归因尝试：开 `PYTHONTRACEMALLOC=20` 跑 `test_connector_routing` + `test_visual_acceptance_runtime`，3 条 `Implicitly cleaning up <TemporaryDirectory 'D:\Temp\docmind-visual-preview-…'>` 被直接点名 —— 创建点在**测试侧**的预览目录，而不是 `visual_acceptance.browser_session`（那条路的 `finally` 里本来就有 `_release_profile`）。**归因要先看对象名和创建栈，别按「哪个文件里出现过 TemporaryDirectory」猜。**
+
+另一个必须记住的数：这次全量 924.6 秒，比上一轮 1451.2 秒快 36%。两轮都在同一台机器上、测试数还多了 3 条（新守卫 `test_no_inline_open_in_return.py`）。原因没查：可能是缓存变热、也可能是那几次 CI 轮询与本机全量同时跑造成的负载差异。**别把「变快了」当成修复的功劳** —— 要报就报「本轮没测这一项」。
+
 **CI 往返结论（run 41414220773，head `0adbb33`，两条 lane 全 success、注解 0 条）**：
 - 装到的是 `torch-2.15.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`（**209.5 MB**），`Successfully installed` 里就是 `torch-2.15.0+cpu`。
 - 整份 sqlite job 日志里 `nvidia_` 出现 **0 次**；第二步的 `Installing collected packages` 清单变成 `sqlite-vec, pypika, proxy_tools, flatbuffers, durationpy, bottle, zstandard, …` —— CUDA 那批**根本没进解析**，也没有任何 `Uninstalling torch` 之类的回换，说明「先 torch 后 requirements」这个顺序按设计生效。
