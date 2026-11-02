@@ -1006,3 +1006,32 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 | **电池 BIND 注入点** | `tests/test_log_view.py` 模块级 `import tools`（注释自己写着「电池要把被变异的 tools 塞进这个属性」） | 保留 —— §16.45 刚为它删过**局部**副本 |
 
 清完这批再把 F401 放进门。规则集仍遵守**只增不减**：守卫的子集断言会拒绝任何人把 `--select` 缩回去。
+
+### 16.47 第三批：F401 清 119 条、留 10 条带证据的豁免，门放宽到六条（2026-11-02）
+
+§16.46 留下的 F401（未用 import）129 条是这条轴的最后一批。它不能照 F841 的脚本走，因为**「本文件没用到」不等于「没人用」**。删之前先把每条归类，三种形态分开处理：
+
+| 形态 | 判据（查什么） | 实测例子 | 处理 |
+|---|---|---|---|
+| 真死导入 | 全仓没有下面两类命中 | `agent_runtime/acceptance.py` 的 `os`、`plan_runner.py` 的 `time`、`langsmith.py` 的 `datetime/timezone` | 删（共 119 条，`ruff --select F401 --fix`，96 个文件） |
+| **穿过本模块的再导出** | 有人写 `from <本模块> import <名字>` | `game_workbench.py` 的 `scene_tree/runtime_events/set_scene_property`（`api.py:299`、`tests/test_agent_workflow.py:3`）、`vectorstore.py` 的 `CODE_COLLECTION_NAME`（`game_workbench.py:2610`） | 拆成独立语句 + `# noqa: F401`，注释写清消费方 |
+| **走模块对象的属性取用** | 有人写 `<本模块>.<名字>` | `mcp_autoconnect.py` 的 `registry_fn_for`（`tools.py:988` 是代码不是注释）、`ALLOWED_LAUNCHERS`（`tests/test_mcp_registry.py:175` 断言两份白名单必须相等）、`render_diagnostic_svg`/`DEFAULT_DIAG_STAGES`/`PROVIDER_ADAPTERS`（`tests/test_mcp_autoconnect.py` 三处代码） | 同上 |
+| **静态扫描的盲区** | 取用方拿到的是模块对象本身 | `api.py` 的 `engine_start`：`api_routes/engine.py:85` 写的是 `ctx.engine_start`，而 `ctx = sys.modules[__name__]` 就是 api | 必须留 —— 本仓 2026-11-02 刚为「api.py 少了这个导入」修过一次生产缺陷，删回去等于复发 |
+
+**两处刻意做严的地方**：
+1. **不整行豁免**。要留的名字在原语句里往往和真死名字同行（`from mcp_validation import (ALLOWED_LAUNCHERS, TRUSTED_SOURCE_DOMAINS, …)`），一行 `# noqa: F401` 会顺手把同行的真死导入也豁免掉。做法是把要留的名字拆成独立语句单独标，剩下的交给 `--fix`。
+2. **注释命中不算消费方**。`mcp_registry.py:33` 提到 `mcp_autoconnect.ALLOWED_LAUNCHERS` 只是句注释，真正的取用是测试里的断言行 —— 判「谁在用」时把每条命中打开看过是代码还是注释，否则豁免理由会是我自己编的。
+
+**这道门的真实含义**（避免误解）：仓库里本来就有 **134 行** `# noqa: F401`，所以把 F401 放进门不是「消灭豁免」，而是「**新增**的未用 import 会被抓，且每条豁免要带证据」。
+
+**自己犯的错**：第一批豁免注释里我把 5 条「属性取用」写成了「再导出：`from X import …`」，与实际消费方形式不符；逐条打开消费行后改成准确措辞并带上行号。
+
+**验证**：
+- 六条规则 `ruff check --select F821,F811,F402,F541,F841,F401 .` → **All checks passed**；`compileall` 退出码 0；`config/tools/agent/game_workbench/mcp_autoconnect/vectorstore/api` 六个入口导入通过。
+- `ruff --fix` 改动的 96 个文件，改动前/后逐个比字节，**行尾风格零翻转**（这个坑在本批第一次踩：`desktop.py` 被编辑器从 LF 改成 CRLF，已还原）。
+- 全量 `unittest discover`：**Ran 5392 tests in 1264.436s — failures=1, skipped=14**；那唯一一条是 `test_frontend_bundle_fresh`（环境绑定，见下），**这批删除没有引入新的红**。
+- 变异电池：`--no-live` **363/383 抓到、20 条本环境未验证、0 条活下来、1144 秒**，与基线逐条一致。
+- 棘轮单独验：往 tracked 文件追加一条 `import zlib`（没人用）→ 守卫当场判红（断言里带着 `F401 [*] `zlib` imported but unused`），文件按字节还原。
+- 门与守卫：`--select` 抬到六条后 `tests/test_ci_static_defect_gate.py` + `tests/test_ci_lint_gate.py` **22 passed**。
+
+**顺带归因并修掉的那条红**：`test_the_bundle_is_not_older_than_the_sources` 比的是 `frontend/src/**` 与 `web/assets` 的最新 mtime —— 实测 src 03:46:45 vs `web/` 00:06:13，产物确实旧了 3 小时 40 分。这是本机状态而非仓库状态：`git ls-files web` 只有 3 个文件，构建产物不入库（`35f704ac`、`523d0ce7`），CI 绿是因为 `Build workbench frontend` 排在测试 lane 之前。跑 `npm run build`（10.19 秒，退出码 0）后复跑该文件 **7 tests OK**。次序上刻意等电池跑完才构建：电池会临时改写源码，此时构建会把被变异的内容烘进产物。
