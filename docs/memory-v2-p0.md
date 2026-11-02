@@ -1035,3 +1035,27 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 - 门与守卫：`--select` 抬到六条后 `tests/test_ci_static_defect_gate.py` + `tests/test_ci_lint_gate.py` **22 passed**。
 
 **顺带归因并修掉的那条红**：`test_the_bundle_is_not_older_than_the_sources` 比的是 `frontend/src/**` 与 `web/assets` 的最新 mtime —— 实测 src 03:46:45 vs `web/` 00:06:13，产物确实旧了 3 小时 40 分。这是本机状态而非仓库状态：`git ls-files web` 只有 3 个文件，构建产物不入库（`35f704ac`、`523d0ce7`），CI 绿是因为 `Build workbench frontend` 排在测试 lane 之前。跑 `npm run build`（10.19 秒，退出码 0）后复跑该文件 **7 tests OK**。次序上刻意等电池跑完才构建：电池会临时改写源码，此时构建会把被变异的内容烘进产物。
+
+
+### 16.48 改动行覆盖率门：不盯全仓百分比，盯「这次改的行有没有人走过」（2026-11-02）
+
+「工具躺在仓库里没人执行」这一族的第三件：`agent_runtime/code_coverage.py`（两趟跑法 + 三条 fail-closed）、`coverage>=7,<8`（`requirements.txt:48`）、`dev_testrun coverage:`（`test_run.py` 21 处引用）都在，但 `harness.yml` 里 `coverage` 出现 **0 次**。
+
+**先量，再决定门长什么样**（这一步决定了后面所有选择）：
+- 拿今天这批真实改动跑一遍：`git diff dc6246e~1..HEAD` 里生产 .py 有 **41 行新增/修改**；在一组相关测试上带 coverage 真跑（332.96 秒，203 passed / 40 subtests），得到**改动行覆盖率 95.1%**，未执行的两行是 `desktop.py:319/363`。
+- 同一份报告里的**全仓数字是 15.4%**（19237/124712 条语句）。这两个数放一起就说明：全仓百分比当门是无效的 —— 它涨跌都回答不了「我改的那几行被走过吗」。我原本打算做的「基线不回退门」其实就是这个百分比门槛的变体，**当场放弃**。
+- 口径换成三条：合计 ≥ **90%**；单文件改动 ≥5 行而**一行都没执行** → 直接红（合计会把这种形状藏起来）；改动的生产文件**不出现在报告里 → 红**（未知不许读成已覆盖）。
+- 为什么不取 100%：今天量到的未执行行就是活例子 —— `agent_runtime/dev_server.py:140`（把 `except HTTPError as exc:` 的 `as exc` 去掉）与 `agent_runtime/head_check.py:194`（保留下来的校验器调用）。要求这种行必须被执行，会把人逼去写「只为覆盖而存在」的用例，而那正好污染变异电池（它靠「改坏实现有测试变红」判有没有牙）。这类改成 **warning**，照样以 `::warning` 注释露出来。
+
+**范围口径的教训（我差点把量具当结论）**：第一遍我用自己随手挑的 10 个测试文件量出 **88.1%** → 门会把今天的批次判红。不是批次有问题，是**我的子集没带上 `test_dev_server.py` / `test_head_check.py` / `test_desktop_entry.py`**；把该带的带上，同一批改动就是 95.1%。所以门的口径必须是 **CI 自己那两条 lane 的并集**（两趟 `coverage run` + `coverage combine`），不能是任何人手挑的子集。
+
+**门的形状**：`agent_runtime/coverage_eval.py`（纯函数 `parse_diff_added_lines` / `missing_lines_from_report` / `evaluate` + CLI），CI 里三条 lane 命令包成 `coverage run`、门那一步 combine→json→判定，红就退出码 1，warning/error 都走 `::` 注释（沿用 §16.36 那条不依赖日志域名的通道）。两个结构性配套：`actions/checkout` 必须 `fetch-depth: 0`（浅克隆取不到 base，门会 fail-closed 变恒红）；`run_golden.py` 归入「人工脚本」，理由是**结构性**的 —— 它导入期就写进程环境，进程内导入会把 unittest lane 的红从 30 放大到 146（`tests/test_eval_memory_isolation.py` 里那句「不许在这里 import run_golden」就是证据），它的行永远不可能被进程内用例覆盖。
+
+**12 条变异、0 条活下来**，其中三条是「守卫自己被证伪」后才补的：
+- 「把 `tests/` 的排除那行删掉」一开始**活下来**（`tests/...` 本来就不在生产允许清单里 → 等价变异）。补法：运行时把 `PRODUCTION_PREFIXES` 打上 `tests/` 再断言仍不判，把「排除」变成显式契约。
+- 「把 fail-closed 那句 `"ok": False` 改成 True」**活下来**：退出码仍是 1，只看退出码的断言看不见那句谎。补成同时断言打印体 `ok=false`。
+- 「把 pytest lane 的 `coverage run` 摘掉」**活下来两次**：第一次因为整份文件里别处还有 `coverage` 字样（改成按步骤找）；第二次因为**我自己给那一步写的注释里正好有「coverage run」这四个字**，字符串断言被注释糊过去了 —— 补成先剥 `#` 开头的行再看命令。**用字符串断言审 shell 步骤，必须先剥注释行**，这是本轮最便宜也最容易再犯的一条。
+
+**成本实测**：同一组测试 plain 29 秒 → 带 coverage 34 秒（1.17 倍，这组子进程多，生产代码密集的会更高）；CI 侧 pytest lane 365 秒、全量 unittest 480 秒、sqlite lane 全程 22 分 21 秒 —— 把两 lane 包进 coverage 后离 60 分钟 job 超时仍有大余量，而且**没有为此再跑一遍测试**。
+
+**验证**：`tests/test_coverage_eval.py` 27 passed；`--self-check` 9 个合成判据全过（子进程验）；真仓库端到端（临时 git 仓库 + 合成报告）：整块未执行判红、补齐覆盖判绿、base 取不到 fail-closed；12 条变异 0 存活；两份接线守卫（lint 门 + 静态缺陷门）与邻门命令仍在。
