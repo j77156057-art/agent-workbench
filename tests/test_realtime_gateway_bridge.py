@@ -727,7 +727,10 @@ def test_cancel_interrupts_the_native_provider(gateway, provider):
                                      "reason": "user_interrupt"}))
         event = socket.receive_json()
     assert event["type"] == "cancel.ok"
-    assert provider.interrupts == 1, "用户抢话必须真的打断原生模型"
+    # 服务端处理器是异步收尾的：`cancel.ok` 发出去时 `provider.interrupt()` 可能还没跑完
+    # （本文件另两条 cancel 用例就用 `_wait_for`，理由见它的 docstring）。
+    # 立即读会偶发 `0 == 1` 的假失败——CI 在高负载下就是这么红的（2026-11-02 run 41381149909）。
+    assert _wait_for(lambda: provider.interrupts == 1, timeout=2), "用户抢话必须真的打断原生模型"
 
 
 # ---- 5. 音频 delta 必须能过 JSON（前端只解析文本事件） -----------------------
