@@ -123,6 +123,12 @@ class CockpitLiveReapingTests(unittest.TestCase):
                                    timeout=20)
                 child.kill()
                 child.wait(timeout=20)
+                # stderr=PIPE 只在失败路径被读过；成功路径不关，就会在 gc 时留一条
+                # `unclosed file <_io.BufferedReader name=…>`（本机全量里那条就是它）。
+                try:
+                    child.stderr.close()
+                except Exception:  # noqa: BLE001
+                    pass
                 # 作业对象只收进程，不收目录；红的时候也不能把 profile 留在盘上——
                 # 生产的 sweep 刻意不碰 live-preview 这一族（它可能是别人开着的长驻会话），
                 # 所以这里的垃圾由本测试自己负责。

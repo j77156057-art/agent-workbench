@@ -102,6 +102,9 @@ class LivePlaywrightHandshake(unittest.TestCase):
                 if proc is not None and proc.poll() is None:
                     try:
                         proc.terminate()
+                        # terminate 之后必须 wait：不回收的话进程还挂着，gc 时留下
+                        # 一条 `subprocess … is still running`（本机全量里那条就是它）。
+                        proc.wait(timeout=10)
                     except Exception:
                         pass
         except Exception:

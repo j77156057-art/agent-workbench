@@ -79,6 +79,7 @@ while time.time() < deadline:
 print(json.dumps({"want": want, "created": len(held), "alive": alive, "errors": errors}))
 for proc in held:
     proc.kill()
+    proc.wait()
 '''
 
 #: 回收那条用的孩子：它**自己不会退出**（睡 300 秒），所以父进程消失只可能是因为

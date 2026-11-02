@@ -53,7 +53,14 @@ def _serve(body: str):
     srv = HTTPServer(("127.0.0.1", 0), H)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
-    return srv.server_address[1], srv.shutdown
+
+    def stop() -> None:
+        # `shutdown()` 只停循环，**不关监听套接字**；不调 server_close 的话那个
+        # 已绑定的 socket 会活到 gc，留一条 `unclosed <socket.socket … laddr=(…)>`。
+        srv.shutdown()
+        srv.server_close()
+
+    return srv.server_address[1], stop
 
 
 def test_it_recognises_a_matching_marker():

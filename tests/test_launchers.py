@@ -110,6 +110,7 @@ class LauncherFailureVisibilityTests(unittest.TestCase):
                 if not finished:
                     proc.kill()
                 out = proc.stdout.read()
+                proc.stdout.close()
                 proc.wait()
                 code = proc.returncode if finished else None
                 if proc.stdin is not None:

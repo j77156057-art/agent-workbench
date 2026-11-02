@@ -4784,6 +4784,16 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
     # 子进程退出 → stdout/stderr 到 EOF → drain 线程自然收尾
     t_out.join(timeout=5)
     t_err.join(timeout=5)
+    # 三个管道都要收：读线程只负责读到 EOF，不负责关。以前只关了 stdin，
+    # 于是每次 PTC 调用漏两个包装器 —— 本机全量里成对出现的
+    # `unclosed file <_io.TextIOWrapper name=…>` 就是这么来的。
+    # 线程还活着时不动它的流：关闭正在迭代的文件会让线程把「关闭」记成读取异常。
+    for _thread, _stream in ((t_out, proc.stdout), (t_err, proc.stderr)):
+        try:
+            if _stream is not None and not _thread.is_alive():
+                _stream.close()
+        except Exception:  # noqa: BLE001
+            pass
     try:
         proc.stdin.close()
     except Exception:  # noqa: BLE001
