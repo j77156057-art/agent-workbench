@@ -186,6 +186,30 @@ class EvaluateTests(unittest.TestCase):
 
 
 class SelfCheckTests(unittest.TestCase):
+    """self-check 必须**在进程内**跑。
+
+    这条是被门自己判红逼出来的：CI 的覆盖率门第一次跑就把本模块判成 87.3% < 90%，
+    未执行的 35 行几乎全在 `self_check` / `main` 的人话分支里 —— 因为我原来的验法
+    是「起子进程跑 `--self-check`」，子进程不被 trace，等于把最要紧的断言藏到覆盖率
+    视野之外。现在两种都验：进程内验行为，子进程只验 CLI 契约。
+    """
+
+    def test_in_process_cases_all_agree_with_their_expectation(self):
+        cases = cov._self_check_cases()
+        self.assertGreaterEqual(len(cases), 8)
+        self.assertEqual([name for name, ok in cases if not ok], [])
+
+    def test_self_check_returns_zero_and_prints_counts(self):
+        import contextlib
+        import io
+        import json
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cov.self_check(), 0)
+        body = json.loads(buf.getvalue())
+        self.assertEqual(body["self_check"]["failed"], [])
+        self.assertGreaterEqual(body["self_check"]["cases"], 8)
+
     def test_module_self_check_passes_as_a_subprocess(self):
         proc = subprocess.run([sys.executable, "-m", "agent_runtime.coverage_eval", "--self-check"],
                               capture_output=True, text=True, encoding="utf-8",
@@ -196,25 +220,90 @@ class SelfCheckTests(unittest.TestCase):
         self.assertEqual(body["self_check"]["failed"], [])
 
 
+class ClassifyMoreTests(unittest.TestCase):
+    def test_non_python_and_manual_not_in_report(self):
+        self.assertEqual(cov.classify("docs/memory-v2-p0.md"), "not_tracked")
+        self.assertEqual(cov.classify("web/assets/index.js"), "not_tracked")
+        # 人工脚本又不在报告里：只出 warning，不进判定
+        out = cov.evaluate({"verify_scene_canvas.py": [1, 2, 3, 4, 5]}, {}, present=set())
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(any("人工脚本" in item for item in out["warnings"]), out["warnings"])
+
+    def test_paths_in_report_are_normalized(self):
+        """报告里的键可能是绝对路径 / 带 root 前缀 —— 都必须归一成同一套相对键。
+
+        `present`（这文件在不在报告里）与 `missing` 必须共用一次归一化，否则同一个
+        文件会被判成「不在报告里」→ 误判红。跨盘符那种键平台相关（Windows 留原样、
+        POSIX 变 `../tmp/...`），所以只断言「它能被找到」，不断言具体形态。
+        """
+        payload = {"files": {str(ROOT / "agent_runtime" / "e.py"):
+                             {"summary": {}, "missing_lines": [3], "excluded_lines": []},
+                             "some/where/f.py":
+                             {"summary": {}, "missing_lines": [9], "excluded_lines": [9]},
+                             "/tmp/elsewhere/g.py":
+                             {"summary": {}, "missing_lines": [5], "excluded_lines": []}},
+                   "totals": {}}
+        missing = cov.missing_lines_from_report(payload, str(ROOT))
+        self.assertEqual(missing["agent_runtime/e.py"], {3})
+        self.assertEqual(missing["some/where/f.py"], set())
+        self.assertTrue(any(k.endswith("g.py") for k in missing), sorted(missing))
+        keys = cov.normalize_keys(payload, str(ROOT))
+        self.assertIn("agent_runtime/e.py", keys)
+        self.assertEqual(cov.normalize_key(str(ROOT / "x.py"), str(ROOT)), "x.py")
+        self.assertEqual(cov.normalize_key("y/z.py", str(ROOT)), "y/z.py")
+
+    def test_loose_ends_of_the_parsers(self):
+        """既非生产也非人工的 .py、文件头之前出现的 hunk、以及归一化的三种路径。"""
+        import tempfile
+        self.assertEqual(cov.classify("docs/notes/x.py"), "not_tracked")
+        self.assertEqual(cov.parse_diff_added_lines("@@ -1 +1 @@\n+x\n"), {})
+        # 没给 root：原样返回相对路径
+        self.assertEqual(cov.normalize_key("./x.py", ""), "x.py")
+        # root 之外的绝对路径：Windows 上跨盘符会走 except 分支、POSIX 上能算出相对路径，
+        # 两种都接受，只要求它是字符串且不炸（注意 `isabs("/tmp/x")` 在 Windows 是 False，
+        # 所以这里必须用 tempfile 给的真实绝对路径，不能硬写斜杠开头）。
+        out = cov.normalize_key(os.path.join(tempfile.gettempdir(), "g.py"), str(ROOT))
+        self.assertIsInstance(out, str)
+        self.assertTrue(out.endswith("g.py"), out)
+        # 另一个盘符上的绝对路径（Windows 才有这种形状）：relpath 会抛 ValueError，
+        # 必须原样返回而不是炸掉整道门。POSIX 上这就是个普通相对路径，两种都可接受。
+        other = cov.normalize_key("Z:/elsewhere/h.py", str(ROOT))
+        self.assertTrue(other.endswith("h.py"), other)
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(cov.main(["--self-check"]), 0)      # CLI 的 self-check 分支
+        self.assertIn("self_check", buf.getvalue())
+
+
 class CliFailClosedTests(unittest.TestCase):
     def test_missing_base_is_red_and_says_so(self):
         """退出码 1 还不够：打印的内容也不能说「通过」。
 
-        这条是被变异逼出来的 —— 有人把 fail-closed 那句 `"ok": False` 改成 True，
-        退出码仍然是 1，只看退出码的断言就看不见那句谎。
+        这条是被变异逼出来的 —— 把 fail-closed 那句 `"ok": False` 改成 True 时，
+        退出码仍然是 1，只看退出码的断言看不见那句谎。
+        也必须是**进程内**调用：门第一次真跑把我自己判红，未执行的行里就有这几条 ——
+        原来我用子进程验 CLI，子进程不被 trace，等于把关键断言藏到覆盖率视野之外。
         """
-        proc = subprocess.run([sys.executable, "-m", "agent_runtime.coverage_eval",
-                               "--report", "nope.json"],
-                              capture_output=True, text=True, encoding="utf-8",
-                              cwd=str(ROOT), timeout=180)
-        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        body = json.loads(proc.stdout)
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cov.main(["--report", "nope.json"])
+        self.assertEqual(rc, 1)
+        body = json.loads(buf.getvalue())
         self.assertFalse(body["ok"], body)
         self.assertTrue(body["failures"], body)
 
     def test_unreadable_report_is_red_not_green(self):
-        bad = pathlib.Path(os.devnull)
-        self.assertEqual(cov.main(["--report", str(bad), "--base", "HEAD~1", "--root", str(ROOT)]), 1)
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cov.main(["--report", os.devnull, "--base", "HEAD~1", "--root", str(ROOT)])
+        self.assertEqual(rc, 1)
+        self.assertIn("读不出来", buf.getvalue())
 
 
 class EndToEndRepoTests(unittest.TestCase):
@@ -270,6 +359,35 @@ class EndToEndRepoTests(unittest.TestCase):
         rc = cov.main(["--report", self._report([]), "--base", "deadbeef" * 5,
                        "--root", self.dir, "--json"])
         self.assertEqual(rc, 1)
+
+    def test_text_output_points_at_the_exact_line(self):
+        """人话模式要打出合计，并把每条「改而未执行」指到 file=,line= 上。
+
+        为什么值得测：CI 里那 35 行就是靠这个格式变成 diff 上的行内注释的；
+        没这两行的定位信息，作者只会看到一串行号。
+        """
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cov.main(["--report", self._report([1, 3]), "--base", self.base,
+                           "--root", self.dir])
+        text = buf.getvalue()
+        self.assertEqual(rc, 1)
+        self.assertIn("改动行覆盖率", text)
+        self.assertIn("::warning file=agent_runtime/mod.py,line=1::", text)
+        self.assertIn("::warning file=agent_runtime/mod.py,line=3::", text)
+        self.assertIn("::error::", text)
+        self.assertNotIn("门：通过", text)
+
+    def test_text_output_announces_pass_when_covered(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cov.main(["--report", self._report([]), "--base", self.base, "--root", self.dir])
+        self.assertEqual(rc, 0)
+        self.assertIn("改动行覆盖率门：通过", buf.getvalue())
 
 
 class CiWiringTests(unittest.TestCase):

@@ -99,16 +99,40 @@ def parse_diff_added_lines(diff_text: str) -> dict[str, list[int]]:
     return {name: sorted(lines) for name, lines in out.items() if lines}
 
 
+def normalize_key(name: str, base: str) -> str:
+    """覆盖率报告里的键 → 仓库相对路径。
+
+    单独抽出来是因为 `present`（这文件在不在报告里）与 `missing` 必须用**同一套**
+    归一化，否则同一文件会被算成「不在报告里」→ 误判红。
+    Windows 跨盘符没有相对路径，那种键原样留着：它只会「不算已覆盖」，不会冒充覆盖。
+    """
+    rel = str(name or "").replace("\\", "/")
+    root = str(base or "").replace("\\", "/").rstrip("/")
+    if not root:
+        return rel.lstrip("./")
+    abspath = os.path.abspath(root)
+    if rel.startswith(abspath.replace("\\", "/") + "/"):
+        return rel[len(abspath) + 1:]
+    if os.path.isabs(rel):
+        try:
+            return os.path.relpath(os.path.normpath(rel), abspath).replace("\\", "/")
+        except ValueError:
+            return rel
+    return rel.lstrip("./")
+
+
+def normalize_keys(payload: dict[str, Any], root: str = ".") -> set[str]:
+    """报告里出现过的文件集合（归一化后），用来判「这个改动文件根本没被测」。"""
+    base = os.path.abspath(root or ".")
+    return {normalize_key(name, base) for name in (payload.get("files") or {})}
+
+
 def missing_lines_from_report(payload: dict[str, Any], root: str = ".") -> dict[str, set[int]]:
     """覆盖率报告 → {相对路径: 未执行行号集合}（减去 coverage 自己标记的 excluded）。"""
-    base = os.path.abspath(root or ".").replace("\\", "/").rstrip("/")
+    base = os.path.abspath(root or ".")
     out: dict[str, set[int]] = {}
     for name, body in (payload.get("files") or {}).items():
-        rel = str(name).replace("\\", "/")
-        if rel.startswith(base + "/"):
-            rel = rel[len(base) + 1:]
-        elif os.path.isabs(rel):
-            rel = os.path.relpath(os.path.normpath(rel), base).replace("\\", "/")
+        rel = normalize_key(name, base)
         missing = {int(x) for x in ((body or {}).get("missing_lines") or [])}
         excluded = {int(x) for x in ((body or {}).get("excluded_lines") or [])}
         out[rel] = missing - excluded
@@ -249,15 +273,20 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(json.dumps({"ok": False, "failures": ["拿不到 git diff：%s（浅克隆要 fetch-depth: 0）" % exc]},
                          ensure_ascii=False))
         return 1
-    present = {k for k, v in (payload.get("files") or {}).items() if classify(
-        str(k).replace("\\", "/").split("rag-agent/")[-1]) != "not_tracked"}
+    present = {key for key in normalize_keys(payload, args.root) if classify(key) != "not_tracked"}
     result = evaluate(changed, missing_lines_from_report(payload, args.root),
-                      floor=args.floor, present={_norm(p) for p in present})
+                      floor=args.floor, present=present)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print("改动行覆盖率 %.1f%%（门槛 %.1f%%）｜生产改动 %d 行、被执行 %d 行"
               % (result["percent"], args.floor, result["changed_total"], result["covered_total"]))
+        for row in result["files"]:
+            # 每条「改而未执行」都指到具体源码行上：GitHub 会把它渲染成那一行的行内注释，
+            # 作者在自己的 diff 上就能看见是哪一行没人走过，而不是只看到一串行号。
+            for ln in row["missed_lines"]:
+                tag = "::warning" if row["kind"] == "production" else "::notice"
+                print("%s file=%s,line=%d::这一行改完没有任何用例执行过" % (tag, row["file"], ln))
         for item in result["warnings"]:
             print("::warning:: %s" % item)
         for item in result["failures"]:
@@ -267,10 +296,5 @@ def main(argv: Iterable[str] | None = None) -> int:
     return 0 if result["ok"] else 1
 
 
-def _norm(path: str) -> str:
-    rel = str(path or "").replace("\\", "/").lstrip("./")
-    return rel.split("rag-agent/")[-1]
-
-
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover —— 作为脚本执行的那一行，进程内测不到
     sys.exit(main())
