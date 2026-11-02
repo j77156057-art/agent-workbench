@@ -97,7 +97,8 @@ class NoUndefinedNameTests(unittest.TestCase):
     def test_api_has_no_undefined_names(self):
         import ast
         import builtins
-        source = open(os.path.join(ROOT, "api.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "api.py"), encoding="utf-8") as handle:
+            source = handle.read()
         tree = ast.parse(source)
         # 模块级绑定：import / def / class / 赋值
         bound = set(dir(builtins))

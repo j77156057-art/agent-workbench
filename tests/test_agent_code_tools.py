@@ -287,8 +287,10 @@ class TestDevApplyEdits(_CodeRootCase):
             "path: a.py\nold_text: X = 1\nnew_text: X = 11\n"
             "\n---\n\npath: b.py\nold_text: Y = 2\nnew_text: Y = 22\n")
         self.assertIn("已原子写入 2 个文件", _txt(out))
-        self.assertIn("X = 11", open(os.path.join(self.tmp, "a.py"), encoding="utf-8").read())
-        self.assertIn("Y = 22", open(os.path.join(self.tmp, "b.py"), encoding="utf-8").read())
+        with open(os.path.join(self.tmp, "a.py"), encoding="utf-8") as handle:
+            self.assertIn("X = 11", handle.read())
+        with open(os.path.join(self.tmp, "b.py"), encoding="utf-8") as handle:
+            self.assertIn("Y = 22", handle.read())
 
     def test_atomic_failure_writes_nothing(self):
         self.use_root()
@@ -298,8 +300,10 @@ class TestDevApplyEdits(_CodeRootCase):
             "path: a.py\nold_text: X = 1\nnew_text: X = 99\n"
             "\n---\n\npath: b.py\nold_text: 不存在的片段\nnew_text: Y = 22\n")
         self.assertIn("未写入任何文件", out)
-        self.assertIn("X = 1", open(os.path.join(self.tmp, "a.py"), encoding="utf-8").read())
-        self.assertIn("Y = 2", open(os.path.join(self.tmp, "b.py"), encoding="utf-8").read())
+        with open(os.path.join(self.tmp, "a.py"), encoding="utf-8") as handle:
+            self.assertIn("X = 1", handle.read())
+        with open(os.path.join(self.tmp, "b.py"), encoding="utf-8") as handle:
+            self.assertIn("Y = 2", handle.read())
 
     def test_syntax_error_blocks_every_file(self):
         self.use_root()
@@ -309,7 +313,8 @@ class TestDevApplyEdits(_CodeRootCase):
             "path: bad.py\nold_text: def f(:\nnew_text: def f(: :\n"
             "\n---\n\npath: a.py\nold_text: X = 1\nnew_text: X = 2\n")
         self.assertIn("未写入任何文件", out)
-        self.assertIn("X = 1", open(os.path.join(self.tmp, "a.py"), encoding="utf-8").read())
+        with open(os.path.join(self.tmp, "a.py"), encoding="utf-8") as handle:
+            self.assertIn("X = 1", handle.read())
 
     def test_ambiguous_old_text_rejected(self):
         self.use_root()
@@ -339,7 +344,8 @@ class TestDevApplyEdits(_CodeRootCase):
         out = tools.dev_apply_edits(
             "path: doc.md\nold_text: head\nnew_text: head2\n---\nbody\n")
         self.assertIn("已原子写入 1 个文件", _txt(out))
-        body = open(os.path.join(self.tmp, "doc.md"), encoding="utf-8").read()
+        with open(os.path.join(self.tmp, "doc.md"), encoding="utf-8") as handle:
+            body = handle.read()
         self.assertIn("head2\n---\nbody", body)
 
     def test_out_of_root_rejected(self):

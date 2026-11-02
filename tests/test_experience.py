@@ -324,11 +324,10 @@ class TestRecallExperienceTool(unittest.TestCase):
 # ---------------------------------------------------------------------------
 class TestGoldenGate(unittest.TestCase):
     def _write(self, rows):
-        f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False,
-                                       encoding="utf-8")
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        f.close()
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False,
+                                         encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
         return f.name
 
     def _passing(self, ids):

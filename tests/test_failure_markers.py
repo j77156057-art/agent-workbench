@@ -142,8 +142,9 @@ class FailureMarkerTableTests(unittest.TestCase):
         ——判据与实现脱节，正是 `_FAILURE_MARKERS` 当年靠注释约定、
         没有守卫而漂移的同一个坑。
         """
-        src = open(os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "tools.py"), encoding="utf-8").read()
+        with open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "tools.py"), encoding="utf-8") as handle:
+            src = handle.read()
         for marker in agent._NO_MATCH_MARKERS:
             with self.subTest(marker=marker):
                 self.assertIn(

@@ -164,7 +164,8 @@ class GuardsSurviveTests(unittest.TestCase):
     def test_repeat_protection_is_still_active(self):
         """同一 (工具, 参数) 重复调用必须仍被拒——步数归零后，这是仅剩的兜底之一。"""
         # 重复护栏不在 capacity 里，靠的是 Agent.run 里的 executed 集合。
-        source = open(agent_mod.__file__, encoding="utf-8").read()
+        with open(agent_mod.__file__, encoding="utf-8") as handle:
+            source = handle.read()
         self.assertIn("executed = set()", source)
 
 

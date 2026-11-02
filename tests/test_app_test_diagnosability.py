@@ -78,7 +78,8 @@ def _code_lines(module_or_path):
     """
     import ast
     path = getattr(module_or_path, "__file__", module_or_path)
-    src = io.open(path, encoding="utf-8").read()
+    with io.open(path, encoding="utf-8") as handle:
+        src = handle.read()
     tree = ast.parse(src)
     for node in ast.walk(tree):
         if (isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
@@ -110,7 +111,8 @@ class ActivePortReadTests(unittest.TestCase):
         """
         import io
         import ast
-        src = io.open(va.__file__, encoding="utf-8").read()
+        with io.open(va.__file__, encoding="utf-8") as handle:
+            src = handle.read()
         tree = ast.parse(src)
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "browser_session")
@@ -190,7 +192,8 @@ class ReadyBudgetTests(unittest.TestCase):
         """
         for name in ("page_action.py", "media_fixture.py", "visual_acceptance.py"):
             path = Path(va.__file__).parent / name
-            src = io.open(path, encoding="utf-8").read()
+            with io.open(path, encoding="utf-8") as handle:
+                src = handle.read()
             self.assertIn("page_ready_js(", src,
                           "%s 应改用共用的 page_ready_js" % name)
             self.assertNotIn("n<120", _code_lines(path),
@@ -222,7 +225,8 @@ class DetailNotTruncatedTests(unittest.TestCase):
         """
         import ast
         import io
-        tree = ast.parse(io.open(at.__file__, encoding="utf-8").read())
+        with io.open(at.__file__, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "detail_text")
         first_assign = None

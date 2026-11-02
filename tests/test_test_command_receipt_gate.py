@@ -85,8 +85,9 @@ class WiringTests(unittest.TestCase):
 
         漏一条 = 那条路径上凭证依旧可伪造，而单测全绿。
         """
-        source = open(os.path.join(os.path.dirname(os.path.abspath(agent_mod.__file__)),
-                                   "agent.py"), encoding="utf-8").read()
+        with open(os.path.join(os.path.dirname(os.path.abspath(agent_mod.__file__)),
+                              "agent.py"), encoding="utf-8") as handle:
+            source = handle.read()
         sites = re.findall(r"turn\.test_command_ok = (.+)", source)
         self.assertEqual(len(sites), 2, "测试命令凭证的赋值点应恰好两处")
         for expr in sites:

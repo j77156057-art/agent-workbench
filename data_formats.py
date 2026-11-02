@@ -547,12 +547,11 @@ def write_data_file(root: str | os.PathLike[str], spec: Mapping[str, Any]) -> di
         # 保留目标扩展名，回读时仍能走同一格式识别逻辑；先校验临时文件，
         # 只有校验成功才替换目标，避免留下半成品或不可解析文件。
         suffix = target.suffix or ("." + fmt)
-        handle = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             dir=target.parent, prefix=".docmind-data-", suffix=suffix, delete=False
-        )
-        temporary = Path(handle.name)
-        handle.write(encoded)
-        handle.close()
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(encoded)
         validation = detect_file(temporary)
         if fmt in {"binary", "godot_binary_scene"}:
             if validation["format"] != fmt or temporary.read_bytes() != encoded:

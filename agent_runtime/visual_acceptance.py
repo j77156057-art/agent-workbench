@@ -336,6 +336,9 @@ def _browser_stderr_target(argv: list[str]):
         if text.startswith("--user-data-dir="):
             directory = text.split("=", 1)[1]
             try:
+                # 返回的是**活句柄**：调用方（spawn_browser_in_job）在 Popen 之后立刻关掉它。
+                # ruff 的 SIM115 与 AST 扫描都看不见这种「返回后由调用方收尾」的形状，
+                # 所以关闭点写在调用方，别在这里改成 with。
                 return open(os.path.join(directory, _STDERR_NAME), "wb")
             except OSError:
                 return subprocess.DEVNULL
@@ -381,10 +384,17 @@ def spawn_browser_in_job(argv: list[str], creationflags: int = 0):
         # POSIX 上没有 Windows 作业对象那样的等价物，只 terminate() 那个 launcher
         # 的话，renderer / gpu / utility 会留下来继续占着 profile 目录，
         # 于是「收尾干净」在 Linux 上根本做不到（详见 _terminate_browser_group）。
-        process = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
-                                   stderr=_browser_stderr_target(argv),
-                                   creationflags=creationflags,
-                                   start_new_session=True)
+        stderr_sink = _browser_stderr_target(argv)
+        try:
+            process = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                       stderr=stderr_sink,
+                                       creationflags=creationflags,
+                                       start_new_session=True)
+        finally:
+            # Popen 已把句柄 dup 给子进程；父进程这一份必须立刻关 —— 否则每次起浏览器
+            # 都漏一个 fd，直到 GC 才关（本机全量里的 ResourceWarning 就是这么来的）。
+            if hasattr(stderr_sink, "close"):
+                stderr_sink.close()
         return process, None, ""
     kernel32 = _kernel32()
     job = _make_job()

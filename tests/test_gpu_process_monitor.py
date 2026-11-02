@@ -47,7 +47,8 @@ class GpuProcessMonitorTests(unittest.TestCase):
         old=g.SAMPLES_FILE; fd,path=tempfile.mkstemp(); os.close(fd); g.SAMPLES_FILE=pathlib.Path(path)
         try:
             g.set_gpu_probe(lambda: None); g._sample_once()
-            data=json.load(open(path,encoding='utf-8'))
+            with open(path,encoding='utf-8') as handle:
+                data=json.load(handle)
             self.assertFalse(data['available']); self.assertFalse(data['samples'][-1]['available'])
         finally:
             g.SAMPLES_FILE=old

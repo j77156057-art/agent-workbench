@@ -43,7 +43,8 @@ class WebExportHelpersTest(unittest.TestCase):
         added, idx = we.ensure_web_preset(self.tmp)
         self.assertTrue(added)
         self.assertEqual(idx, 0)
-        cfg = open(os.path.join(self.tmp, "export_presets.cfg"), encoding="utf-8").read()
+        with open(os.path.join(self.tmp, "export_presets.cfg"), encoding="utf-8") as handle:
+            cfg = handle.read()
         self.assertIn('platform="Web"', cfg)
         self.assertIn(".docmind/web/index.html", cfg)
         added2, idx2 = we.ensure_web_preset(self.tmp)
@@ -96,7 +97,8 @@ class WebExportHelpersTest(unittest.TestCase):
         with open(idx, "w", encoding="utf-8") as f:
             f.write("<html><body><canvas></canvas></body></html>")
         self.assertTrue(we._inject_html_bridge(idx))
-        text = open(idx, encoding="utf-8").read()
+        with open(idx, encoding="utf-8") as handle:
+            text = handle.read()
         self.assertIn("__docmind_recv", text)
         self.assertFalse(we._inject_html_bridge(idx))
 

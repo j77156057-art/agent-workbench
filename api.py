@@ -2366,7 +2366,8 @@ async def gen_animation_ep(req: GenAnimReq):
                 if not global_root or os.path.normcase(os.path.abspath(global_root)) == os.path.normcase(os.path.abspath(root)):
                     raise
                 full, _ = asset_sources.raw_file(global_root, rp)
-            frame_bytes = open(full, "rb").read()
+            with open(full, "rb") as handle:
+                frame_bytes = handle.read()
             if len(frame_bytes) > FRAME_UPLOAD_MAX:
                 return {"ok": False, "error": "首帧图片超过 10MB。"}
         except asset_sources.AssetError as e:
@@ -2528,7 +2529,8 @@ async def cloud_animation_ep(req: CloudAnimReq):
                 if not global_root or os.path.normcase(os.path.abspath(global_root)) == os.path.normcase(os.path.abspath(root)):
                     raise
                 full, _ = asset_sources.raw_file(global_root, rp)
-            first_frame = open(full, "rb").read()
+            with open(full, "rb") as handle:
+                first_frame = handle.read()
             if len(first_frame) > FRAME_UPLOAD_MAX:
                 return {"ok": False, "error": "首帧图片超过 10MB。"}
         except asset_sources.AssetError as e:
@@ -7736,7 +7738,8 @@ async def mcp_autoconnect_register_status_ep(task_id: str):
     path = project_state.path(os.getcwd(), "autoconnect_sessions.json", legacy=".docmind_autoconnect_sessions.json")
     data = {}
     if os.path.exists(path):
-        try: data = json.load(open(path, encoding="utf-8"))
+        try:
+            with open(path, encoding="utf-8") as handle: data = json.load(handle)
         except Exception: data = {}
     return {"ok": True, **data.get(task_id, {})}
 

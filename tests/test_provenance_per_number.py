@@ -146,12 +146,12 @@ class EmitGateTests(unittest.TestCase):
 
     def test_unwritable_path_degrades_silently(self):
         # 把一个普通文件当父目录 -> makedirs 抛 -> 捕获 -> 回 False，不炸主流程
-        f = tempfile.NamedTemporaryFile(delete=False, suffix=".notadir")
-        f.close()
-        bad = os.path.join(f.name, "audit.jsonl")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".notadir") as f:
+            scratch = f.name
+        bad = os.path.join(scratch, "audit.jsonl")
         with mock.patch.dict(os.environ, {"DOCMIND_PROVENANCE_AUDIT": bad}):
             ok = _emit({"backed_hit": False, "fnums": [], "backed": [], "unbacked": []})
-        os.unlink(f.name)
+        os.unlink(scratch)
         self.assertFalse(ok)
 
     def test_malformed_audit_dict_defaults(self):
@@ -160,7 +160,8 @@ class EmitGateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"DOCMIND_PROVENANCE_AUDIT": target}):
             ok = _emit({})                       # 缺键也不抛，写默认
         self.assertTrue(ok)
-        rec = json.loads(open(target, encoding="utf-8").read().strip())
+        with open(target, encoding="utf-8") as handle:
+            rec = json.loads(handle.read().strip())
         self.assertFalse(rec["backed_hit"])
         self.assertEqual(rec["n_fnums"], 0)
 

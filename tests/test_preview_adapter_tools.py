@@ -36,7 +36,9 @@ class PreviewAdapterToolTests(unittest.TestCase):
         self.assertEqual(result["manifest"]["status"], "pending")
         path = os.path.join(self.root, ".docmind", "preview-adapters", "cad-scene.json")
         self.assertTrue(os.path.isfile(path))
-        self.assertEqual(json.loads(open(path, encoding="utf-8").read())["status"], "pending")
+        with open(path, encoding="utf-8") as handle:
+            payload = json.loads(handle.read())
+        self.assertEqual(payload["status"], "pending")
 
     def test_create_requires_project(self):
         with patch.object(tools, "_get_code_root", return_value=""):

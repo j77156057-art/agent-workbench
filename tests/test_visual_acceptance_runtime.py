@@ -176,7 +176,8 @@ class VisualAcceptanceRuntimeTests(unittest.TestCase):
             profile = tempfile.TemporaryDirectory(dir=outer, ignore_cleanup_errors=True)
             lockfile = os.path.join(profile.name, "leveldb.lock")
             pathlib.Path(lockfile).write_text("x")
-            handle = open(lockfile, "rb")
+            # 同 test_temp_state：这个打开的句柄就是「目录被占用」的制造者，不能提前关。
+            handle = open(lockfile, "rb")  # noqa: SIM115
             try:
                 self.assertFalse(_release_profile(profile), "文件被占用时应当如实报告没删净")
                 self.assertTrue(os.path.isdir(profile.name))

@@ -457,10 +457,9 @@ def create_artifact(arg: str) -> str:
             }]
         output_dir = _output_dir()
         target = _unique_path(output_dir, _filename(data.get("filename"), fmt))
-        handle = tempfile.NamedTemporaryFile(prefix=".docmind-", suffix=f".{fmt}",
-                                             dir=output_dir, delete=False)
-        temporary = Path(handle.name)
-        handle.close()
+        with tempfile.NamedTemporaryFile(prefix=".docmind-", suffix=f".{fmt}",
+                                         dir=output_dir, delete=False) as handle:
+            temporary = Path(handle.name)
         validation = _RENDERERS[fmt](data, temporary)
         os.replace(temporary, target)
         temporary = None

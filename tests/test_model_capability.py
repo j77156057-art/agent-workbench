@@ -304,11 +304,11 @@ class ContextWindowOverrideTests(unittest.TestCase):
     def test_persist_and_reapply(self):
         import tempfile
         import config
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
-        tmp.close()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+            state_path = tmp.name
         old_state = config.STATE_FILE
         try:
-            config.STATE_FILE = tmp.name
+            config.STATE_FILE = state_path
             set_context_window_override(self.P, self.M, 88000)
             # 落盘内容可读回
             self.assertEqual(load_state("context_window_overrides", {})[f"{self.P}/{self.M}"], 88000)
@@ -321,7 +321,7 @@ class ContextWindowOverrideTests(unittest.TestCase):
             # 直接摘内存键，绝不在恢复 STATE_FILE 后调用 clear（那会把清空结果写进真实状态文件）
             config._CONTEXT_WINDOW_OVERRIDES.pop(f"{self.P}/{self.M}", None)
             config.STATE_FILE = old_state
-            os.unlink(tmp.name)
+            os.unlink(state_path)
 
 
 class OllamaBudgetTests(unittest.TestCase):

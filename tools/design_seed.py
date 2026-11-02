@@ -398,7 +398,8 @@ def main():
     seed = None
     if os.path.exists(SEED_FILE):
         try:
-            seed = json.load(open(SEED_FILE, encoding="utf-8")).get("seed")
+            with open(SEED_FILE, encoding="utf-8") as handle:
+                seed = json.load(handle).get("seed")
         except Exception:
             seed = None
     if args.new_seed or seed is None:

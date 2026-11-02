@@ -96,9 +96,8 @@ class GateBitesCases(unittest.TestCase):
         self.assertTrue(report["results"][0]["passed"], report["results"][0]["checks"])
 
         def baseline_of(passed: bool) -> str:
-            handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
-                                                 encoding="utf-8")
-            with handle:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8") as handle:
                 json.dump({"schema_version": 1, "total": 1, "scored": 1,
                            "passed": 1 if passed else 0,
                            "results": [{"id": "stable", "passed": passed, "skipped": ""}]},
@@ -151,7 +150,8 @@ class GateBitesCases(unittest.TestCase):
         path = os.path.join(tempfile.mkdtemp(prefix="devbase_"), "baseline.json")
         try:
             dev_eval.write_baseline(report, path)
-            saved = json.loads(open(path, encoding="utf-8").read())
+            with open(path, encoding="utf-8") as handle:
+                saved = json.loads(handle.read())
             self.assertEqual(saved["results"][0]["id"], "roundtrip")
             self.assertTrue(saved["results"][0]["passed"])
             self.assertFalse(os.path.exists(path + ".tmp"))

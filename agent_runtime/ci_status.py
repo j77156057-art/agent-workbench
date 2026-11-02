@@ -47,7 +47,8 @@ def _git_paths(root: str) -> tuple[str, str, str]:
     gitdir = pointer
     if os.path.isfile(pointer):
         try:
-            text = open(pointer, encoding="utf-8").read()
+            with open(pointer, encoding="utf-8") as handle:
+                text = handle.read()
         except OSError as exc:
             return "", "", "读不到 .git 指针：%s" % exc
         line = next((row for row in text.splitlines() if row.startswith("gitdir:")), "")
@@ -62,7 +63,8 @@ def _git_paths(root: str) -> tuple[str, str, str]:
     commondir_file = os.path.join(gitdir, "commondir")
     if os.path.isfile(commondir_file):
         try:
-            rel = open(commondir_file, encoding="utf-8").read().strip()
+            with open(commondir_file, encoding="utf-8") as handle:
+                rel = handle.read().strip()
         except OSError:
             rel = ""
         if rel:
@@ -158,7 +160,8 @@ def current_head(root: str) -> str:
     if err:
         return ""
     try:
-        text = open(os.path.join(gitdir, "HEAD"), encoding="utf-8").read().strip()
+        with open(os.path.join(gitdir, "HEAD"), encoding="utf-8") as handle:
+            text = handle.read().strip()
     except OSError:
         return ""
     if not text.startswith("ref:"):
@@ -168,7 +171,8 @@ def current_head(root: str) -> str:
         direct = os.path.join(base, *ref.split("/"))
         if os.path.isfile(direct):
             try:
-                return open(direct, encoding="utf-8").read().strip()[:40]
+                with open(direct, encoding="utf-8") as handle:
+                    return handle.read().strip()[:40]
             except OSError:
                 return ""
         packed = os.path.join(base, "packed-refs")

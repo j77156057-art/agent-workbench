@@ -25,15 +25,15 @@ class RetrievalDatasetTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             from agent_runtime.retrieval_eval import load_retrieval_dataset
             import tempfile
-            handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", delete=False)
-            try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".json", delete=False) as handle:
                 json.dump({"documents": [{"id": "a", "content": "x"}],
                            "cases": [{"query": "x"}]}, handle)
-                handle.close()
-                load_retrieval_dataset(handle.name)
+                temporary = handle.name
+            try:
+                load_retrieval_dataset(temporary)
             finally:
                 import os
-                os.unlink(handle.name)
+                os.unlink(temporary)
 
     def test_live_case_schema_and_per_mode_gate(self):
         from agent_runtime.retrieval_eval import load_retrieval_cases, live_regression_gate

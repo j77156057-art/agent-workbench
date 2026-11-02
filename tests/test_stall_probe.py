@@ -91,7 +91,11 @@ class _ProbeEnvMixin(unittest.TestCase):
     def dumps(self):
         files = sorted(glob.glob(os.path.join(agent._STALL_PROBE_DIR, "*.json")))
         self.assertTrue(files, "没有落盘任何文件")
-        return [json.load(io.open(path, encoding="utf-8")) for path in files]
+        rows = []
+        for path in files:
+            with io.open(path, encoding="utf-8") as handle:
+                rows.append(json.load(handle))
+        return rows
 
 
 class ProbeIsOffByDefaultTests(_ProbeEnvMixin):

@@ -111,7 +111,9 @@ def engine_inspect(root, engine=''):
     if engine=='unity':
         ver=os.path.join(base,'ProjectSettings','ProjectVersion.txt')
         if os.path.isfile(ver):
-            result['manifests'].append({'path':'ProjectSettings/ProjectVersion.txt','version':next((x.split(':',1)[1].strip() for x in open(ver,encoding='utf-8',errors='replace') if x.startswith('m_EditorVersion:' )), '')})
+            with open(ver,encoding='utf-8',errors='replace') as handle:
+                version_lines=handle.readlines()
+            result['manifests'].append({'path':'ProjectSettings/ProjectVersion.txt','version':next((x.split(':',1)[1].strip() for x in version_lines if x.startswith('m_EditorVersion:' )), '')})
         for dp,_,files in os.walk(base):
             if any(x in dp.split(os.sep) for x in ('.git','Library','Temp','Logs','obj')): continue
             for fn in files:
@@ -120,7 +122,8 @@ def engine_inspect(root, engine=''):
                 elif fn.endswith('.prefab'): result['prefabs'].append({'path':rel})
                 elif fn.endswith('.meta'):
                     try:
-                        text=open(os.path.join(dp,fn),encoding='utf-8',errors='replace').read(4000)
+                        with open(os.path.join(dp,fn),encoding='utf-8',errors='replace') as handle:
+                            text=handle.read(4000)
                         m=re.search(r'^guid:\s*([0-9a-fA-F]+)',text,re.M)
                         if m: result['assets'].append({'path':rel[:-5],'meta':rel,'guid':m.group(1)})
                     except OSError: pass
@@ -142,7 +145,8 @@ def engine_inspect(root, engine=''):
                     item={'path':rel,'kind':'build' if fn.endswith('.Build.cs') else 'source'}
                     if fn.endswith('.Build.cs'):
                         try:
-                            text=open(os.path.join(dp,fn),encoding='utf-8',errors='replace').read(12000)
+                            with open(os.path.join(dp,fn),encoding='utf-8',errors='replace') as handle:
+                                text=handle.read(12000)
                             item['dependencies']=re.findall(r'"([A-Za-z0-9_]+)"', text)
                         except OSError: pass
                     result['symbols'].append(item)
@@ -894,7 +898,10 @@ def engine_start(root, executable="godot", scene="", host_hwnd=None, embed=False
     child_env.update(_gpu_process_environment(lease.get("gpu")))
     try:
         log_path = _project_state.path(root_abs, "engine.log", legacy=".docmind_engine.log")
-        log = open(log_path, "a", encoding="utf-8")
+        # 这个句柄必须活到引擎停止：子进程通过它写 stdout/stderr。关闭点两处 ——
+        # engine_stop() 正常停止分支，以及「进程自己已经退了」的早退分支（曾经漏了后者，
+        # 句柄要等 GC 才关）。所以这里不能用 with。
+        log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115
         p = subprocess.Popen(args, cwd=root_abs, stdout=log, stderr=subprocess.STDOUT, text=True, env=child_env)
         _ENGINE_PROCS[root_abs] = p
         _ENGINE_SNAPSHOT[root_abs] = _engine_snapshot(root_abs)
@@ -938,6 +945,15 @@ def engine_start(root, executable="godot", scene="", host_hwnd=None, embed=False
         _gpu.release(lease_owner)
         return {"ok": False, "error": f"无法启动 {selected}：{e}"}
 
+def _close_engine_log(root_abs):
+    """关掉引擎日志句柄并把它从登记表里摘掉；没有句柄时什么也不做。"""
+    log = _ENGINE_LOGS.pop(root_abs, None)
+    if log:
+        try:
+            log.close()
+        except Exception:  # noqa: BLE001
+            pass
+
 def engine_stop(root):
     """停止引擎。**先解除嵌入再结束进程**——顺序反了会留下失效的子窗口。
 
@@ -949,6 +965,7 @@ def engine_stop(root):
     detached = engine_detach(root_abs)
     if not p or p.poll() is not None:
         if p: _gpu.unregister_process(p.pid, "exited")
+        _close_engine_log(root_abs)
         _ENGINE_PROCS.pop(root_abs, None)
         _ENGINE_LAUNCH.pop(root_abs, None)
         _ENGINE_SNAPSHOT.pop(root_abs, None)
@@ -971,12 +988,7 @@ def engine_stop(root):
             p.wait(timeout=3)
         except subprocess.TimeoutExpired:
             pass
-    log = _ENGINE_LOGS.pop(root_abs, None)
-    if log:
-        try:
-            log.close()
-        except Exception:  # noqa: BLE001
-            pass
+    _close_engine_log(root_abs)
     _ENGINE_PROCS.pop(root_abs, None)
     _ENGINE_LAUNCH.pop(root_abs, None)
     _ENGINE_SNAPSHOT.pop(root_abs, None)
@@ -2477,7 +2489,10 @@ def project_memory(root, content=None):
     path=_file(root,"DOCMIND_MEMORY.md")
     if content is not None:
         with open(path,"w",encoding="utf-8") as f: f.write(content)
-    return open(path,encoding="utf-8").read() if os.path.isfile(path) else ""
+    if not os.path.isfile(path):
+        return ""
+    with open(path,encoding="utf-8") as f:
+        return f.read()
 
 def simulate_growth(levels=50, base=100, growth=1.08, model="geometric", k=None):
     """模拟数值成长曲线，返回逐等级数值 + 摘要统计。
@@ -2570,7 +2585,8 @@ def asset_dependencies(root):
         for name in files:
             if os.path.splitext(name)[1].lower() not in {".py",".js",".ts",".cs",".json",".yaml",".yml"}: continue
             p=os.path.join(base,name)
-            try: text=open(p,encoding="utf-8",errors="ignore").read()
+            try:
+                with open(p,encoding="utf-8",errors="ignore") as handle: text=handle.read()
             except OSError: continue
             for m in re.finditer(r"(?:asset|sprite|texture|sound|audio|resource)[_:/\"']+([A-Za-z0-9_./-]+)",text,re.I):
                 refs.append({"source":os.path.relpath(p,root),"asset":m.group(1)})
@@ -2586,7 +2602,8 @@ def create_placeholder(root, rel, kind="text"):
     if kind == "json": content="{}\n"
     elif kind == "svg": content='<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128"><rect width="128" height="128" fill="#777"/><text x="10" y="68" fill="white">PLACEHOLDER</text></svg>\n'
     else: content="# PLACEHOLDER\n"
-    open(p,"w",encoding="utf-8").write(content); return preview_resource(root,rel)
+    with open(p,"w",encoding="utf-8") as handle: handle.write(content)
+    return preview_resource(root,rel)
 
 def _rel(root_abs, src):
     """把检索到的 source 路径规整为相对 code_root 的路径（已是相对则原样返回）。"""
@@ -2631,7 +2648,9 @@ def impact_analysis(root, query, k=8):
                 continue
             p = os.path.join(base, name)
             try:
-                if query.lower() in open(p, encoding="utf-8", errors="ignore").read().lower():
+                with open(p, encoding="utf-8", errors="ignore") as handle:
+                    matched = query.lower() in handle.read().lower()
+                if matched:
                     hits.append(os.path.relpath(p, root))
             except OSError:
                 pass
@@ -2645,7 +2664,8 @@ def _extract_symbols(path):
     """从源码文件提取可测符号（函数/类/方法名）。Python 走 ast，其它语言走启发式正则。"""
     ext = os.path.splitext(path)[1].lower()
     try:
-        text = open(path, encoding="utf-8", errors="ignore").read()
+        with open(path, encoding="utf-8", errors="ignore") as handle:
+            text = handle.read()
     except OSError:
         return []
     if ext == ".py":

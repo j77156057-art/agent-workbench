@@ -84,7 +84,9 @@ def main():
 
     root = build_fixture()
     scene = os.path.join(root, "scenes", "Main.tscn")
-    read = lambda: open(scene, encoding="utf-8-sig").read()  # noqa: E731
+    def read():
+        with open(scene, encoding="utf-8-sig") as handle:
+            return handle.read()
 
     import config
     config.set_runtime("code_root", root)

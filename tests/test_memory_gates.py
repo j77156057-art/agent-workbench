@@ -45,7 +45,8 @@ class ClauseBehaviorTests(_MemBase):
             taskbook.complete("prj", key)
 
     def test_c004_no_model_write_path(self):
-        source = open("tools.py", encoding="utf-8").read()
+        with open("tools.py", encoding="utf-8") as handle:
+            source = handle.read()
         self.assertNotIn("constitution.save", source)
         self.assertNotIn("constitution.save_text", source)
 

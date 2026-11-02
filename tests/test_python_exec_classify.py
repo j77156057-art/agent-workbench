@@ -80,7 +80,7 @@ class ExecClassifyTests(unittest.TestCase):
         home = os.path.expanduser("~")
         probe = os.path.join(home, "__docmind_classify_del__.txt")
         try:
-            open(probe, "w").write("x")  # 既有文件 → 删除 = 不可回滚
+            with open(probe, "w") as handle: handle.write("x")  # 既有文件 → 删除 = 不可回滚
             with patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"}):
                 with tempfile.TemporaryDirectory() as d:
                     set_runtime("code_root", d)
@@ -94,7 +94,7 @@ class ExecClassifyTests(unittest.TestCase):
         home = os.path.expanduser("~")
         probe = os.path.join(home, "__docmind_classify_over__.txt")
         try:
-            open(probe, "w").write("x")  # 覆盖既有文件（非新建）
+            with open(probe, "w") as handle: handle.write("x")  # 覆盖既有文件（非新建）
             with patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"}):
                 with tempfile.TemporaryDirectory() as d:
                     set_runtime("code_root", d)

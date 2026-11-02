@@ -86,7 +86,8 @@ class LauncherFailureVisibilityTests(unittest.TestCase):
         import subprocess
         import tempfile
         import time
-        real = open(os.path.join(ROOT, self.LAUNCHER), 'rb').read()
+        with open(os.path.join(ROOT, self.LAUNCHER), 'rb') as handle:
+            real = handle.read()
         root = tempfile.mkdtemp(prefix='dm_launcher_')
         try:
             with open(os.path.join(root, 'run_desktop.bat'), 'wb') as handle:

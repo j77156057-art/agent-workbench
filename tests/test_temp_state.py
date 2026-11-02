@@ -114,7 +114,9 @@ class TempStateTests(unittest.TestCase):
             target.mkdir()
             lock = target / "lock.bin"
             lock.write_text("x", encoding="utf-8")
-            handle = open(lock, "rb")
+            # 句柄本身就是被测对象：Windows 上「目录被占用」靠这个打开的 fd 制造，
+            # with 一退出占用就没了，断言也就不成立。关闭点在下面的 finally。
+            handle = open(lock, "rb")  # noqa: SIM115
             try:
                 released = temp_state.release(target)
                 if os.name == "nt":

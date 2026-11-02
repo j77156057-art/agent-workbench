@@ -261,7 +261,8 @@ class SessionScopedCodeRootTests(unittest.TestCase):
 
         self._make("s-nowrite", self.proj_a)
 
-        after = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as handle:
+            after = json.load(handle)
         self.assertEqual(after.get("code_root"), str(self.proj_a),
                          "老会话没被绑定 —— 它会永远回落全局，原缺陷仍在")
         for key in ("turns", "summary", "snapshots", "session_id"):

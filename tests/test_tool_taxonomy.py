@@ -94,7 +94,8 @@ def _raw_registry() -> dict:
     这上面，报了个假的「变化 0」）。要量表真实参与决策的那一刻，只能重新
     exec 那段字面量。
     """
-    src = open(os.path.join(ROOT, "tools.py"), encoding="utf-8").read().splitlines()
+    with open(os.path.join(ROOT, "tools.py"), encoding="utf-8") as handle:
+        src = handle.read().splitlines()
     start = next(i for i, ln in enumerate(src) if ln.startswith("TOOLS = {"))
     end = next(i for i, ln in enumerate(src[start:], start)
                if ln.startswith("upgrade_registry("))

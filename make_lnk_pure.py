@@ -116,7 +116,8 @@ def build_lnk(target: str, lnk_path: str, workdir: str, icon: str):
 
 
 def verify_lnk(lnk_path: str, expect_target: str):
-    d = open(lnk_path, "rb").read()
+    with open(lnk_path, "rb") as handle:
+        d = handle.read()
     hdr_size = struct.unpack_from("<I", d, 0)[0]
     cls = struct.unpack_from("16s", d, 4)[0].hex()
     flags = struct.unpack_from("<I", d, 20)[0]

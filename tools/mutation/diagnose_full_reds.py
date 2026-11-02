@@ -16,7 +16,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def read(p: str) -> str:
-    return io.open(str(ROOT / p), encoding="utf-8").read()
+    with io.open(str(ROOT / p), encoding="utf-8") as handle:
+        return handle.read()
 
 
 def mtimes() -> tuple[float, float]:
@@ -38,7 +39,8 @@ def run(targets: list[str]) -> str:
 
 def main() -> None:
     print("  === 段 5：脚本按旧文件名收集（我改名时全量正在跑）===")
-    tail = io.open(r"D:\Temp\opencode\full_seg5.txt", encoding="utf-8").read()
+    with io.open(r"D:\Temp\opencode\full_seg5.txt", encoding="utf-8") as handle:
+        tail = handle.read()
     for line in tail.splitlines():
         if "not found" in line or "no tests ran" in line:
             print("    %s" % line.strip()[:96])

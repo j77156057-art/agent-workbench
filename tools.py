@@ -11528,7 +11528,8 @@ def _sv_verify_data(files, root, result):
         name = os.path.basename(path)
         low = name.lower()
         try:
-            raw = open(path, "rb").read()
+            with open(path, "rb") as handle:
+                raw = handle.read()
         except OSError as exc:
             result["failures"].append({"scope": "data", "file": path,
                                        "error": "读不到：%s" % exc})
@@ -11581,7 +11582,8 @@ def _sv_verify_docs(files, root, result):
     for path in files:
         name = os.path.basename(path)
         try:
-            raw = open(path, "rb").read()
+            with open(path, "rb") as handle:
+                raw = handle.read()
         except OSError as exc:
             result["failures"].append({"scope": "docs", "file": path,
                                        "error": "读不到：%s" % exc})
@@ -11616,7 +11618,8 @@ def _sv_verify_sql(files, root, result):
     for path in files:
         name = os.path.basename(path)
         try:
-            raw = open(path, "rb").read()
+            with open(path, "rb") as handle:
+                raw = handle.read()
         except OSError as exc:
             result["failures"].append({"scope": "sql", "file": path,
                                        "error": "读不到：%s" % exc})
@@ -11726,7 +11729,8 @@ def _sv_verify_godot(files, root, result):
         name = os.path.basename(path)
         low = name.lower()
         try:
-            raw = open(path, "rb").read()
+            with open(path, "rb") as handle:
+                raw = handle.read()
         except OSError as exc:
             result["failures"].append({"scope": "godot", "file": path,
                                        "error": "读不到：%s" % exc})

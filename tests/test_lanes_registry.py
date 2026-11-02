@@ -339,7 +339,8 @@ class ToolLayerCases(_StateRoot):
     def test_registration_and_prompt(self):
         names = {row["function"]["name"] for row in tools.tool_schemas()}
         self.assertIn("dev_lanes", names)
-        prompt = open(os.path.join(ROOT, "agent.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "agent.py"), encoding="utf-8") as handle:
+            prompt = handle.read()
         self.assertIn("- dev_lanes(action", prompt)
 
     def test_unknown_action_lists_options(self):

@@ -241,7 +241,8 @@ class ReadOnlyGuaranteeTests(RepoCase):
         `diff` 走的是 `code_intel.git_diff_preview`（它内部自己过同一道白名单）。
         写错一个 `add` 或 `commit`，这里立刻红。
         """
-        source = open(handoff.__file__, encoding="utf-8").read()
+        with open(handoff.__file__, encoding="utf-8") as handle:
+            source = handle.read()
         direct = set(re.findall(r"_run_git\(\[\s*\"([a-z][a-z0-9-]*)\"", source))
         self.assertTrue(direct, "没找到任何 _run_git 调用——这个断言本身失效了")
         allowed = set(code_intel._GIT_ALLOWED)

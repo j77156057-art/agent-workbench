@@ -45,7 +45,8 @@ class StateWriteConcurrencyTests(unittest.TestCase):
             thread.start()
         for thread in threads:
             thread.join()
-        data = json.loads(open(config.STATE_FILE, encoding="utf-8").read())
+        with open(config.STATE_FILE, encoding="utf-8") as handle:
+            data = json.loads(handle.read())
         missing = [(i, j) for i in range(threads_n) for j in range(keys_n)
                    if data.get("k%d_%d" % (i, j)) != j]
         self.assertEqual(missing, [], "并发写丢键：%r" % (missing[:5],))

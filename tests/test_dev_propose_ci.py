@@ -98,8 +98,10 @@ class ProposalCases(_RepoCase):
             self.assertFalse(os.path.normpath(path).startswith(os.path.normpath(self.tmp)),
                              "产物必须在仓库外：%s" % path)
             self.assertTrue(os.path.isfile(path))
-        patch = open(res["patch"], encoding="utf-8").read()
-        draft = open(res["draft"], encoding="utf-8").read()
+        with open(res["patch"], encoding="utf-8") as handle:
+            patch = handle.read()
+        with open(res["draft"], encoding="utf-8") as handle:
+            draft = handle.read()
         self.assertIn("@@", patch)
         self.assertIn("+x = 2", patch)
         self.assertIn("未提交、未推送", patch)
@@ -113,8 +115,10 @@ class ProposalCases(_RepoCase):
         self.write("brand_new.md", "# fresh\n")
         res = proposal.build(self.tmp, title="带新文件")
         self.assertTrue(res["ok"], res["error"])
-        patch = open(res["patch"], encoding="utf-8").read()
-        draft = open(res["draft"], encoding="utf-8").read()
+        with open(res["patch"], encoding="utf-8") as handle:
+            patch = handle.read()
+        with open(res["draft"], encoding="utf-8") as handle:
+            draft = handle.read()
         self.assertNotIn("brand_new.md", patch, "未跟踪文件不该混进补丁正文")
         self.assertIn("brand_new.md", draft)
         self.assertIn("不在补丁里", draft)
@@ -125,7 +129,8 @@ class ProposalCases(_RepoCase):
         self.write("a.py", "x = 2\n")
         self.write("keep.py", "y = 9\n")
         res = proposal.build(self.tmp, title="只打 a.py", files=["a.py"])
-        patch = open(res["patch"], encoding="utf-8").read()
+        with open(res["patch"], encoding="utf-8") as handle:
+            patch = handle.read()
         self.assertIn("a.py", patch)
         self.assertNotIn("keep.py", patch)
 
@@ -145,7 +150,8 @@ class ProposalCases(_RepoCase):
         self.git("add", "a.py")
         staged = proposal.build(self.tmp, title="暂存区", staged=True)
         self.assertTrue(staged["ok"], staged["error"])
-        self.assertIn("+x = 3", open(staged["patch"], encoding="utf-8").read())
+        with open(staged["patch"], encoding="utf-8") as handle:
+            self.assertIn("+x = 3", handle.read())
         escaped = proposal.build(self.tmp, title="越界", files=["../outside.py"])
         self.assertFalse(escaped["ok"])
         self.assertIn("越界", escaped["error"])
@@ -157,7 +163,8 @@ class ProposalCases(_RepoCase):
         self.write("a.py", "x = 2\n")
         self.write("keep.py", "y = 2\nz = 3\n")
         res = proposal.build(self.tmp, title="round trip")
-        patch = open(res["patch"], encoding="utf-8").read()
+        with open(res["patch"], encoding="utf-8") as handle:
+            patch = handle.read()
         mirror = tempfile.mkdtemp(prefix="docmind_replay_")
         try:
             for rel in ("a.py", "keep.py"):
@@ -166,8 +173,10 @@ class ProposalCases(_RepoCase):
             applied = patch_apply.apply_patch(mirror, patch)
             self.assertTrue(applied["ok"], applied["errors"])
             for rel in ("a.py", "keep.py"):
-                got = open(os.path.join(mirror, rel), encoding="utf-8").read()
-                want = open(os.path.join(self.tmp, rel), encoding="utf-8").read()
+                with open(os.path.join(mirror, rel), encoding="utf-8") as handle:
+                    got = handle.read()
+                with open(os.path.join(self.tmp, rel), encoding="utf-8") as handle:
+                    want = handle.read()
                 self.assertEqual(got, want, rel)
         finally:
             shutil.rmtree(mirror, ignore_errors=True)
@@ -341,7 +350,8 @@ class ToolLayerCases(_RepoCase):
         names = {row["function"]["name"] for row in tools.tool_schemas()}
         self.assertIn("dev_propose", names)
         self.assertIn("dev_ci_status", names)
-        prompt = open(os.path.join(ROOT, "agent.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "agent.py"), encoding="utf-8") as handle:
+            prompt = handle.read()
         self.assertIn("- dev_propose(title?", prompt)
         self.assertIn("- dev_ci_status(branch?", prompt)
 

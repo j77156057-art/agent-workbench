@@ -85,7 +85,7 @@ class ExecApprovalFlowTests(unittest.TestCase):
         home = os.path.expanduser("~")
         victim = os.path.join(home, "__docmind_flow_del3__.txt")
         try:
-            open(victim, "w").write("x")  # 既有文件 → 根外删除 = 第三档
+            with open(victim, "w") as handle: handle.write("x")  # 既有文件 → 根外删除 = 第三档
             with tempfile.TemporaryDirectory() as d:
                 out = self._python_exec("import os; os.remove(%r)" % victim, d)
                 self.assertNotIn("__EXEC_PENDING__", out,

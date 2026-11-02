@@ -53,7 +53,8 @@ def _workflow_callback_keys():
     刻意不把键名硬编码在测试里：那个 dict 一改，测试必须跟着失败——
     这正是本缺陷的成因（签名与调用方各写各的）。
     """
-    tree = ast.parse(open(ROUTE_FILE, encoding="utf-8").read())
+    with open(ROUTE_FILE, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or node.name != "workflow_callbacks":
             continue

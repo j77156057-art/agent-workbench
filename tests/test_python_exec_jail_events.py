@@ -47,7 +47,7 @@ class ExecHookEventTests(unittest.TestCase):
         home = os.path.expanduser("~")
         probe = os.path.join(home, "__docmind_evt_del__.txt")
         try:
-            open(probe, "w").write("x")
+            with open(probe, "w") as handle: handle.write("x")
             _, out = self._run("import os; os.remove(%r)" % probe, ceiling=1)
             self.assertIn("安全拦截", out, "根外删除应被拦：%r" % out)
             self.assertIn("PermissionError", out, "应 PermissionError 中止：%r" % out)
@@ -60,7 +60,7 @@ class ExecHookEventTests(unittest.TestCase):
         # victim 落在 code_root【内】→ 根内删除=第二档：ceiling=1 拦、ceiling=2 放行真删。
         with tempfile.TemporaryDirectory() as d:
             victim = os.path.join(d, "gone.txt")
-            open(victim, "w").write("x")
+            with open(victim, "w") as handle: handle.write("x")
             _, out = self._run("import os; os.remove(%r); print('DEL_OK')" % victim,
                                ceiling=1, root=d)
             self.assertIn("安全拦截", out, "根内删除在免批档应拦：%r" % out)

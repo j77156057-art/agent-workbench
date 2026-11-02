@@ -152,9 +152,8 @@ class MainTests(unittest.TestCase):
     """
 
     def _run(self, text):
-        handle = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8")
-        handle.write(text)
-        handle.close()
+        with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False, encoding="utf-8") as handle:
+            handle.write(text)
         buffer = io.StringIO()
         try:
             with contextlib.redirect_stdout(buffer):

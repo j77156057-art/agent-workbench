@@ -21,7 +21,8 @@ def run() -> str:
 
 
 def main() -> None:
-    bak = io.open(TARGET, "rb").read()
+    with io.open(TARGET, "rb") as handle:
+        bak = handle.read()
     lines = bak.decode("utf-8").split("\n")
     # 必须插到**函数体内**。第一版插在 docstring 里（那一行在 `"""` 之前），
     # 插入的语句根本不在可执行路径上 —— 那是**无效变异**，
@@ -44,14 +45,17 @@ def main() -> None:
     indent = len(lines[hit]) - len(lines[hit].lstrip())
     lines.insert(hit + 1,
                  " " * indent + "_probe = dev_server.owns_port(5173, markers=['x'])  # MUTATED")
-    io.open(TARGET, "w", encoding="utf-8", newline="").write("\n".join(lines))
+    with io.open(TARGET, "w", encoding="utf-8", newline="") as handle:
+        handle.write("\n".join(lines))
     try:
         import ast
-        ast.parse(io.open(TARGET, encoding="utf-8").read())
+        with io.open(TARGET, encoding="utf-8") as handle:
+            ast.parse(handle.read())
         print("  插入点语法 ok（行 %d）" % (hit + 1))
         print("  变异「插入真实调用」: %s" % run())
     finally:
-        io.open(TARGET, "wb").write(bak)
+        with io.open(TARGET, "wb") as handle:
+            handle.write(bak)
     print("  复原后             : %s" % run())
 
 

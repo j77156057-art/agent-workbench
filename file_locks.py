@@ -54,7 +54,9 @@ class CrossProcessFileLock:
 
     def acquire(self) -> "CrossProcessFileLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(self.path, "a+b")
+        # 锁句柄必须活到 release()：锁是 fd 级的，with 一退出锁就没了。关闭点两处 ——
+        # 失败路径（下面的 except 分支）与 release()。
+        handle = open(self.path, "a+b")  # noqa: SIM115
         try:
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:

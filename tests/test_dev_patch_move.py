@@ -351,7 +351,8 @@ class ToolLayerCases(_TmpRoot):
         names = {row["function"]["name"] for row in tools.tool_schemas()}
         self.assertIn("dev_patch", names)
         self.assertIn("dev_move", names)
-        prompt = open(os.path.join(ROOT, "agent.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "agent.py"), encoding="utf-8") as handle:
+            prompt = handle.read()
         self.assertIn("- dev_patch:", prompt)
         self.assertIn("- dev_move(from, to", prompt)
 

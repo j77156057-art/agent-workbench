@@ -306,7 +306,8 @@ class ToolSurfaceCases(_TmpRoot):
             self.assertIn(name, tools.TOOLS)
             self.assertTrue(tools.TOOLS[name]["description"])
             self.assertIn(name, names)
-        prompt = open(os.path.join(ROOT, "agent.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "agent.py"), encoding="utf-8") as handle:
+            prompt = handle.read()
         for name in ("dev_glob", "dev_git_log"):
             self.assertIn("- " + name + "(", prompt)
 

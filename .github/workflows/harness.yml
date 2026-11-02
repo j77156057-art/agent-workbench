@@ -119,10 +119,10 @@ jobs:
         run: npm run lint
       - name: Compile runtime
         run: python -m compileall -q agent_runtime api_routes
-      - name: Static defect gate (ruff F821/F811/F402/F541/F841/F401/W605)
-        # 放的是**真缺陷类**七条：F821 未定义名、F811 重复定义且旧值没被用、F402 循环变量
+      - name: Static defect gate (ruff F821/F811/F402/F541/F841/F401/W605/SIM115)
+        # 放的是**真缺陷类**八条：F821 未定义名、F811 重复定义且旧值没被用、F402 循环变量
         # 遮蔽了导入、F541 f-string 根本没有占位符、F841 赋值后没人读、F401 未用 import、
-        # W605 非法转义序列。
+        # W605 非法转义序列、SIM115 文件打开后没用上下文管理（句柄靠 gc 关）。
         # 不放开整组 `F` —— 实测量过本仓库 `--select F` 有 195 条，裸接进 CI 的第一天就是
         # 195 行噪声，比没有门更坏：它让人误以为有人在管。判据是**只增不减**：
         # F541(4)+F841(50) 于 2026-11-02 清零后放入；F401 同批清掉 119 条后放入，
@@ -132,11 +132,15 @@ jobs:
         # W605 是 2026-11-02 从**改动行覆盖率门自己的日志**里挖出来的：`coverage json` 在
         # 解析源码时把 `SyntaxWarning: invalid escape sequence '\S'` 打了出来 —— Python 3.12
         # 只是警告，往后就是 SyntaxError。实测全仓 2 条，清零后放入。
+        # SIM115 同一天从**本机全量的 ResourceWarning** 里挖出来：129 条 `unclosed file`
+        # 的静态对应物。实测全仓 90 处（生产代码 23 / tools 脚本 6 / 测试 61），清零后放入 ——
+        # 剩下 3 处是**带证据的豁免**（引擎日志句柄活到 engine_stop、两处锁句柄本身就是被测对象），
+        # 逐行标 noqa 并写明关闭点。判据仍是只增不减。
         # 接这道门当天它抓到 3 条活的缺陷：`app_test.py` 把 `Mapping` 只写进注解却没 import，
         # 文件有 `from __future__ import annotations` 所以导入不炸，但
         # `typing.get_type_hints(server_env)` 实测抛 `NameError`。
         # 守卫 tests/test_ci_static_defect_gate.py —— 规则集从本文件读、并当场真跑一次。
-        run: python -m ruff check --select F821,F811,F402,F541,F841,F401,W605 .
+        run: python -m ruff check --select F821,F811,F402,F541,F841,F401,W605,SIM115 .
       - name: Verify Postgres driver and pool API
         if: matrix.backend == 'postgres'
         run: |
