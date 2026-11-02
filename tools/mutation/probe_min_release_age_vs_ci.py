@@ -26,7 +26,6 @@ CI `harness.yml:59`）**都走 `npm ci`**。推理上 `npm ci` 严格按 lockfil
 
 from __future__ import annotations
 
-import hashlib
 import json
 import pathlib
 import shutil

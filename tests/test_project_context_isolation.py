@@ -123,7 +123,6 @@ import 时定死的模块级常量（133 处引用、46 个文件）。用户选
 """
 
 import pathlib
-import subprocess
 import unittest
 
 import pytest

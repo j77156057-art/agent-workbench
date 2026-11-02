@@ -45,12 +45,12 @@ from .context_router import (CONTEXT_LAYERS, ContextPlan, ContextRouter,
                              close_persistent_compression_worker, compress_layers_durable,
                              layer_snapshot_digest,
                              summarize_subagent_result)
-from .workflow_profiles import DEFAULT_KIND, VALID_KINDS, get_profile, normalize_kind
+from .workflow_profiles import DEFAULT_KIND, get_profile, normalize_kind
 
 #: 工具生命周期事件的四种 kind。放这里而不是各写一份字面量：
 #: 开发舱面板按这几个字面量过滤持久事件流，两边必须同源。
 #: 无循环依赖（已实测两个方向的导入顺序都成立）。
-from agent import SINK_FORWARDED_HOOKS, SINK_TOOL_HOOKS, _SUBAGENT_ROLES
+from agent import SINK_FORWARDED_HOOKS, _SUBAGENT_ROLES
 # 完整的三键提案契约（add / drop / replace，revise/cancel 为别名；含「已执行任务
 # 不可删改」的安全边界与逐条 ignored 清单）**只在这里实现过一次**。
 # replan_node 曾自己写了份**退化版**：只取第一个非空键、drop 完全不读、

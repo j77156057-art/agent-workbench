@@ -10,7 +10,6 @@
 + 关键参数（tool_name / key / db_path），对外仍只暴露类型名（不泄漏
 消息可能包含的凭据/外部数据）。
 """
-import logging
 import os
 import sys
 import unittest

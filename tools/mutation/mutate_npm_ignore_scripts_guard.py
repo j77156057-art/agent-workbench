@@ -33,7 +33,6 @@ import hashlib
 import pathlib
 import subprocess
 import sys
-import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TARGETS = [

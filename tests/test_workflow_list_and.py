@@ -144,7 +144,6 @@ class WindowsPathNormalizationTests(unittest.TestCase):
         self.mgr.start("X", project_id="pid-x",
                         project_root=str(self.project))
         canonical = str(self.project)
-        from agent_runtime.game_workflow import _canonical_project_root
         # 同目录不同表示
         variants = [
             canonical,

@@ -316,7 +316,7 @@ def main():
     # 必须在建宿主窗口之前把进程提到 per-monitor v2：否则在 125%/150% 缩放下
     # 本进程拿到的是虚拟化坐标，而 Godot 是 DPI 感知的，父/子窗口坐标系不一致 → 嵌入错位。
     try:
-        from desktop_bridge import dpi_awareness, ensure_dpi_awareness
+        from desktop_bridge import ensure_dpi_awareness
         ok, mode = ensure_dpi_awareness()
         _log("进程 DPI 感知：%s（设置%s）" % (mode, '成功' if ok else '失败，可能错位'))
     except Exception as e:  # noqa: BLE001

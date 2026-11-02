@@ -5,7 +5,6 @@
 固定。这里锁住：临期续期保留租约 id/能力集、已释放/终态不复活、自动重建不升权，
 以及 Agent 的租约检查会调用执行器注入的续期器。
 """
-import os
 import sys
 import tempfile
 import time

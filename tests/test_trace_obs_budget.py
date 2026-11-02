@@ -37,11 +37,8 @@
 这是同一条线上第五次证明同一件事：`start_line:` 语法、`read_file` 键名、
 证据块 420/1600、并行 tool_call 误判、这里。
 """
-import io
-import json
 import os
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

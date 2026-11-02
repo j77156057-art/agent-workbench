@@ -40,7 +40,6 @@
 """
 
 import json
-import os
 import unittest
 
 import agent as agent_mod

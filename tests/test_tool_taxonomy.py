@@ -58,7 +58,7 @@ if ROOT not in sys.path:
 import agent  # noqa: E402
 import tools  # noqa: E402
 from agent_runtime.tools import (  # noqa: E402
-    ADMIN_TOOLS, EXEC_TOOLS, IRREVERSIBLE_TOOLS, WRITE_TOOLS, Capability,
+    ADMIN_TOOLS, EXEC_TOOLS, WRITE_TOOLS, Capability,
     SideEffect, coerce_tool_spec,
 )
 

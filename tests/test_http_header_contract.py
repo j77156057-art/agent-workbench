@@ -36,7 +36,6 @@
 本文件只读源码，不写任何文件。
 """
 
-import io
 import os
 import pathlib
 import re

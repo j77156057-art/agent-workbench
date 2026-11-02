@@ -129,7 +129,6 @@ def test_it_still_has_no_production_caller():
     免得文档继续说「未接线」而代码已接。
     """
     import pathlib
-    import re
 
     root = pathlib.Path(__file__).resolve().parents[1]
     callers = []

@@ -9,7 +9,6 @@
 - before hook 异常 → 拒绝执行，返回明确错误；
 - after hook 异常 → 不影响 MCP 结果，但记 warning 日志。
 """
-import logging
 import os
 import sys
 import unittest

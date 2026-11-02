@@ -128,7 +128,6 @@ class ActivePortReadTests(unittest.TestCase):
 
     def test_it_retries_while_the_file_is_not_readable(self):
         """**反向守卫**：文件存在但读不了时，必须继续等而不是立刻抛。"""
-        import time as _time
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "DevToolsActivePort"
 

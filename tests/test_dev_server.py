@@ -4,7 +4,6 @@
 "服务起来了吗"，而是 **"应答的那个服务是谁起的"**——下面 `OwnershipTests` 那组就是从
 一次确定性的假绿里来的。
 """
-import socket
 import sys
 import threading
 import unittest

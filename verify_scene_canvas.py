@@ -13,7 +13,6 @@ r"""场景画布 / 运行时时间线端到端自检（走真实 HTTP 路由，�
 （历史上 props/properties 字段名漂移就是这么发现的）。
 """
 import difflib
-import json
 import os
 import shutil
 import sys

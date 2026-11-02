@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import io
 import pathlib
-import re
 import subprocess
 import sys
 

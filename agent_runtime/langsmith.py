@@ -14,7 +14,6 @@ import time
 import uuid
 import contextvars
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from typing import Any, Iterator, Mapping
 
 

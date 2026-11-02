@@ -253,7 +253,6 @@ def remember(scope, kind, title, content, evidence="", *, source="agent", key=No
 def _embed_one(text):
     """把一段文本求成一条语义向量；后端不可用返回 []（调用方按无向量处理）。
     独立小函数便于 recall 复用同一 client，且隔离 import 失败。"""
-    import embeddings
     client = _embed_client()
     if client is None:
         return []

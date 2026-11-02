@@ -1,5 +1,4 @@
 """Exercise the current WorkflowPreview Vue component in isolated Edge."""
-import base64
 import json
 import shutil
 import subprocess

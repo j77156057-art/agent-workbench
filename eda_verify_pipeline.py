@@ -32,7 +32,6 @@ CLI：`python eda_verify_pipeline.py` 打印两条演示：
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import sys

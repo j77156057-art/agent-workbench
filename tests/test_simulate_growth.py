@@ -4,7 +4,6 @@
 成长模型并返回摘要统计。本测试锁定：向后兼容（geometric 数值不变）、各模型行为、
 边界（levels 截断 / 未知 model 兜底 / base<=0 修正）与端点形态。
 """
-import json
 import unittest
 
 import game_workbench as gw

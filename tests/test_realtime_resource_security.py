@@ -25,7 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api
-from agent_runtime import realtime_bridge, realtime_metrics as metrics, realtime_provider
+from agent_runtime import realtime_bridge, realtime_provider
 
 PROJECT_A = "r9-project-a"
 PROJECT_B = "r9-project-b"

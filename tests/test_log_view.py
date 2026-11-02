@@ -8,10 +8,8 @@
   有中段被丢时禁止任何"日志里没有 X"的读法。
 """
 
-import io
 import json
 import os
-import re
 import sys
 import unittest
 from pathlib import Path

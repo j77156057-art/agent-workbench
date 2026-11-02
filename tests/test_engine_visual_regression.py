@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """M2·① 引擎取像链单测：抓帧全部喂注入替身，不碰 GDI/网络/VLM。"""
 import numpy as np
-import pytest
 
 from agent_runtime import visual_regression as vr
 from agent_runtime import engine_visual_regression as ev

@@ -9,7 +9,7 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
-from typing import Any, Mapping
+from typing import Mapping
 
 try:  # 非 Windows 平台没有 ctypes.wintypes（那里 import 它抛的是 ValueError 不是 ImportError）。
     # 本模块在那些平台只走 subprocess fallback，但**必须能被 import**：限位表要能在 CI 上被测。

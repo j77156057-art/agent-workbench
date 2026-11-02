@@ -28,7 +28,6 @@ from typing import Any, Callable
 from . import dev_server, loopback_http
 from .dev_server import loopback_url
 import temp_state
-import urllib.request
 
 
 class VisualAcceptanceError(RuntimeError):

@@ -31,9 +31,7 @@
 import argparse
 import hashlib
 import json
-import math
 import os
-import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

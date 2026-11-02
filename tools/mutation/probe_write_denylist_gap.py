@@ -15,7 +15,6 @@ Hermes 的 `HERMES_WRITE_SAFE_ROOT` 有一层**与白名单无关的地板**：
 """
 from __future__ import annotations
 
-import io
 import os
 import pathlib
 import sys

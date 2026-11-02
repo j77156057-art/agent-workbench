@@ -225,7 +225,7 @@ def _render_pdf(data: dict, path: Path) -> dict:
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import (HRFlowable, ListFlowable, ListItem, Paragraph,
-                                    SimpleDocTemplate, Spacer, Table, TableStyle)
+                                    SimpleDocTemplate, Spacer)
 
     font = _register_pdf_font()
     styles = getSampleStyleSheet()

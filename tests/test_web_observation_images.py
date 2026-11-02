@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """T2：web_fetch / web_research 网页图片观察通道（本地 HTTP 夹具，不触外网）。"""
 import io
-import json
 import os
 import sys
 import threading

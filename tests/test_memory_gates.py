@@ -3,7 +3,6 @@
 这不是复述提示词：测试直接调用真实闸门（命令黑名单、回执门、脱敏、
 删除确认），并检查宪法加载器会标出未绑定条款。
 """
-import os
 import unittest
 
 import agent_memory  # noqa: F401 —— 确保 memory 包导入链与生产一致

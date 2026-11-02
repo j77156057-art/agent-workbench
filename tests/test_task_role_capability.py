@@ -326,7 +326,7 @@ class ZeroToolDispatchTests(unittest.TestCase):
         那个洞永远不会被发现（`dev_mcp_call` 是 `irreversible`，被另一层拦住了）。
         """
         import tools as tools_mod
-        from agent_runtime.tools import coerce_tool_spec, tool_mutates
+        from agent_runtime.tools import coerce_tool_spec
 
         connectors = [n for n, v in tools_mod.TOOLS.items()
                       if coerce_tool_spec(n, v).domain == "mcp"]

@@ -12,7 +12,7 @@ from agent_runtime.context_router import (allocate_layer_budgets, compress_conte
                                            compress_text, layer_snapshot_digest,
                                            summarize_subagent_result,
                                            compress_layers_durable, persistent_compression_worker)
-from agent_runtime.workflow_eval import compare_evaluation, evaluate_workflow
+from agent_runtime.workflow_eval import compare_evaluation
 
 
 def _wait_terminal(manager, wid, timeout=10.0):

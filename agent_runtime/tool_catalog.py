@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .tool_domains import DOMAINS, TOOL_DOMAINS, facets_of
+from .tool_domains import DOMAINS, facets_of
 
 #: 目录里每个小类最多列出几个工具名，超出只给数量。
 #:

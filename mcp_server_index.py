@@ -15,7 +15,7 @@ postgres / slack …）直接返回官方安装命令，彻底绕开"官方文�
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any
 
 _SERVER_INDEX: list[dict[str, Any]] = [
     {

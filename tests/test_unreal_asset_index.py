@@ -1,4 +1,4 @@
-import unittest,tempfile,os,json
+import unittest,tempfile,os
 import game_workbench as gw
 class UnrealAssetIndexTests(unittest.TestCase):
  def test_classifies_assets(self):

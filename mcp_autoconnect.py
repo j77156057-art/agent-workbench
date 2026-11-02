@@ -32,21 +32,32 @@ import project_state
 import temp_state
 from textutil import as_text as _as_text
 from mcp_server_index import match_curated_server, curated_entry_to_config
-import mcp_registry
-from mcp_registry_bridge import registry_fn_for, humanize_registry_error, _registry_layer
+from mcp_registry_bridge import _registry_layer
+# 属性取用（不是 from-import）：`tools.py:988` 写的是 `mcp_autoconnect.registry_fn_for(root)`，
+# 静态检查看不见「通过模块对象拿这个名字」这条路，删掉本行会当场炸它。
+from mcp_registry_bridge import registry_fn_for  # noqa: F401
+# 属性取用：`tests/test_mcp_registry.py:175` 断言 `mcp_registry.ALLOWED_LAUNCHERS ==
+# mcp_autoconnect.ALLOWED_LAUNCHERS`（两份白名单必须一致），走的是本模块的属性。
+from mcp_validation import ALLOWED_LAUNCHERS  # noqa: F401
 from mcp_validation import (
-    ALLOWED_LAUNCHERS, TRUSTED_SOURCE_DOMAINS, ALLOWED_KEYS, SECRET_INLINE_RE,
-    SHELL_META_RE, ALLOWED_URL_RE, HTTP_ENDPOINT_RE,
-    _split_tokens, _LAUNCHER_PATTERNS, parse_install_command, _domain_of,
+    SECRET_INLINE_RE,
+    ALLOWED_URL_RE, HTTP_ENDPOINT_RE,
+    parse_install_command, _domain_of,
     is_trusted_domain, _safe_dir, _looks_like_secret,
     validate_extracted_config as _validate_extracted_config,
 )
+# 属性取用：`tests/test_mcp_autoconnect.py:205` 调 `mcp_autoconnect.render_diagnostic_svg(...)`，
+# `:208` 读 `mcp_autoconnect.DEFAULT_DIAG_STAGES` —— 都是走本模块对象取名字。
+from mcp_candidates import DEFAULT_DIAG_STAGES, render_diagnostic_svg  # noqa: F401
 from mcp_candidates import (
-    DEFAULT_DIAG_STAGES, render_diagnostic_svg, build_candidate,
-    _is_official_namespace, _trust_tier, _candidate_view, _dedupe,
+    build_candidate,
+    _candidate_view, _dedupe,
 )
+# 属性取用：`tests/test_mcp_autoconnect.py:862/863` 读 `mcp_autoconnect.PROVIDER_ADAPTERS[...]`
+# 来断言各家适配器不许默认自动提交，走的是本模块对象而不是 from-import。
+from mcp_providers import PROVIDER_ADAPTERS  # noqa: F401
 from mcp_providers import (
-    DEFAULT_USER_PROMPT, PROVIDER_ADAPTERS, CHALLENGE_KEYWORDS, CHALLENGE_URL_MARKERS,
+    DEFAULT_USER_PROMPT, CHALLENGE_KEYWORDS, CHALLENGE_URL_MARKERS,
     select_provider_adapter, _adapter_by_url, _provider_url_trusted,
 )
 
@@ -484,7 +495,6 @@ def _edge_available() -> bool:
 
 def _playwright_available() -> bool:
     try:
-        import playwright  # 惰性探测；不在此拉起浏览器
         return True
     except Exception:
         return False

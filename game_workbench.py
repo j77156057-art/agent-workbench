@@ -2245,7 +2245,9 @@ def comfy_unused_resources(root, directory="assets/generated"):
     return {'ok': True, 'directory': directory, 'unused': unused, 'files': count, 'unused_count': len(unused)}
 
 # Dedicated module keeps scene inspection and runtime capture independently testable.
-from scene_runtime import scene_tree, runtime_events, set_scene_property
+# 再导出：`api.py:296` 与 `tests/test_agent_workflow.py:3` 是**从本模块**拿这三个名字的，
+# 本文件自己不直接用 —— 按「本文件没用到」删掉会当场炸那两个消费方。
+from scene_runtime import scene_tree, runtime_events, set_scene_property  # noqa: F401
 
 def task_revert(root, task):
     import workbench_fs

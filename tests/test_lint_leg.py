@@ -15,7 +15,6 @@
 3. **只报不卡是真的不卡**：eslint 报了东西，`ok` 仍然是 `True`、`count` 仍然只数类型问题。
 """
 import json
-import os
 import sys
 import tempfile
 import unittest

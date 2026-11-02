@@ -42,7 +42,6 @@ from .realtime_provider import (
     EVENT_STATUS,
     EVENT_TEXT_DELTA,
     EVENT_TRANSCRIPT,
-    RealtimeEvent,
     RealtimeProvider,
     register,
 )

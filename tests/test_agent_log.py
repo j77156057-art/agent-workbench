@@ -8,13 +8,11 @@
 5. 截断：写满 MAX_BYTES 后老内容被丢弃（验证日志不会无限增长）
 6. JSON 损坏的单行不导致 read() 整体失败
 """
-import json
 import os
 import shutil
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:

@@ -6,12 +6,10 @@
 """
 
 import importlib
-import io
 import os
 import sys
 import unittest
 import warnings
-from pathlib import Path
 from types import SimpleNamespace
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

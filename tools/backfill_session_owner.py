@@ -20,7 +20,6 @@
    对不上就不猜、跳过并报出来。
 """
 
-import os
 import pathlib
 import sys
 

@@ -12,7 +12,6 @@ import json
 import re
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 

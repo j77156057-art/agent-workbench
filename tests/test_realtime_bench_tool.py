@@ -19,7 +19,6 @@ import tempfile
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 import api
 import realtime_bench as bench

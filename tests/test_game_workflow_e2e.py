@@ -6,8 +6,6 @@ This keeps CI offline but still verifies the user-visible lifecycle end to end.
 """
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 import sys
 import tempfile

@@ -65,7 +65,6 @@ def test_session_run_scope_self_join_no_deadlock():
 
 def test_redirect_hint_injected_when_active_run():
     """同会话已有活跃 run 时，chat() 必须把重定向提示注入 system_context。"""
-    import os
     import tempfile
     import config
     from unittest.mock import patch

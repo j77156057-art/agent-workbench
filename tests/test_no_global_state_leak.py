@@ -53,7 +53,6 @@ import agent_memory  # noqa: E402
 import agent_trace  # noqa: E402
 import config  # noqa: E402
 import sessions  # noqa: E402
-import tools  # noqa: E402
 from tests import test_chat_sse, test_error_budget, test_llm_stub  # noqa: E402
 
 # 只 import **模块**，不 import 具体用例类：`from tests.test_x import SomeTests`

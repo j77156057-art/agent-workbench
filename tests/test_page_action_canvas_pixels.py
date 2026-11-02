@@ -29,7 +29,6 @@
 """
 
 import base64
-import hashlib
 import pathlib
 import shutil
 import sys

@@ -6,7 +6,6 @@ B 的对话被追加进 A 的会话（A 能看到 B 的问题），B 自己刷�
 （owner_project_id != B 被隐藏），且会话的 code_root 仍绑 A。
 本文件锁住前端「按项目记住会话、切项目选回/新建」的契约。
 """
-import os
 import sys
 import unittest
 from pathlib import Path

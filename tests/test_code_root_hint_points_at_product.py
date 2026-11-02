@@ -30,7 +30,6 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import agent  # noqa: E402
-import tools  # noqa: E402
 
 LEGACY = "/api/ingest_code"
 PRODUCT_PATH = "顶栏的项目菜单里「打开项目」"

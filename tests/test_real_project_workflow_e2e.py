@@ -11,7 +11,6 @@ import json
 import hashlib
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 import unittest

@@ -30,7 +30,6 @@ import json
 import os
 import pathlib
 import shutil
-import sys
 import unittest
 
 
@@ -54,7 +53,6 @@ def tearDownModule():
     S.SESSIONS_DIR = S._REAL_SESSIONS_DIR
 
 
-import config as _C  # noqa: E402
 import sessions as S  # noqa: E402
 
 if not hasattr(S, "_REAL_SESSIONS_DIR"):

@@ -3,8 +3,6 @@
 覆盖：turn_id 稳定继承、轨迹全量落盘（不截断）、孤儿回收、静默降级。
 用 tmp 目录重定向 SESSIONS_DIR / TURN_TRACE_DIR，绝不碰真实会话数据。
 """
-import json
-import os
 
 import pytest
 

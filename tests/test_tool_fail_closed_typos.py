@@ -10,7 +10,6 @@
 显式通配 target:* 仍放行、完全省略 old_text/gate 仍走原设计分支。
 全部离线，不真正落审批台账、不真正改文件、不真正跑子进程。
 """
-import json
 import os
 import tempfile
 import types

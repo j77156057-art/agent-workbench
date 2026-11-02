@@ -2,7 +2,9 @@
 import chromadb
 import re
 
-from config import CHROMA_DIR, COLLECTION_NAME, CODE_COLLECTION_NAME, ensure_dirs
+from config import CHROMA_DIR, COLLECTION_NAME, ensure_dirs
+# 再导出：`game_workbench.py:2608` 写的是 `from vectorstore import CODE_COLLECTION_NAME`。
+from config import CODE_COLLECTION_NAME  # noqa: F401
 
 # 去掉上传时为防重名加的 32 位 hex uuid 前缀，让 UI 展示干净的原始文件名
 _UUID_PREFIX = re.compile(r"^[0-9a-f]{32}_")

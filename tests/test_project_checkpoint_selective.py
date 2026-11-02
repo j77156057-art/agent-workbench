@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from agent_runtime.project_checkpoint import create_checkpoint, restore_checkpoint
 

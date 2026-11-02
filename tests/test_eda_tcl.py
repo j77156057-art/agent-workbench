@@ -9,7 +9,6 @@
 - 注入假 runner 的 run_and_parse 集成路径（工具不可用也 fail-closed）。
 """
 from agent_runtime.eda_tcl import (
-    EdaFact,
     ExecResult,
     parse_report,
     parse_vivado_timing,

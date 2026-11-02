@@ -19,7 +19,6 @@
 运行：`.venv/Scripts/python.exe -B -m unittest tests.test_project_routing_qa -v`
 """
 import asyncio
-import json
 import os
 import shutil
 import sys

@@ -5,7 +5,6 @@
 owner 并转发；索引只在注册/终态/30s 心跳时写。
 """
 import json
-import os
 import sys
 import tempfile
 import time

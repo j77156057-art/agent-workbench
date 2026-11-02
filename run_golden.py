@@ -46,7 +46,6 @@ import sys  # noqa: E402
 import time  # noqa: E402
 import shutil  # noqa: E402
 import tempfile  # noqa: E402
-import subprocess  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")

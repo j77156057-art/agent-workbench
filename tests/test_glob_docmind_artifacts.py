@@ -22,8 +22,6 @@ Godot 的 Web 导出默认就写在 `.docmind/web/`（见 `export_presets.cfg`
 * 冒出的列表只含 docmind 状态目录，不把 `.git` 之类混进来。
 """
 
-import json
-import os
 import pathlib
 import shutil
 import sys

@@ -36,7 +36,6 @@
 from __future__ import annotations
 
 import pathlib
-import shutil
 import subprocess
 import sys
 import tempfile

@@ -8,7 +8,6 @@
 import os
 import tempfile
 import threading
-import time
 import unittest
 
 import orchestrator as orch

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ast
 import pathlib
-import re
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BRIDGE = ROOT / "agent_runtime/mcp_bridge.py"

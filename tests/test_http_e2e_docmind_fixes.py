@@ -24,7 +24,6 @@ grep 截断披露 / test_chat_sse）都是直接调 `tools.read_file`、`tools.g
 import os
 import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 

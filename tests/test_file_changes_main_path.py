@@ -28,7 +28,6 @@ import os
 import shutil
 import tempfile
 import unittest
-from unittest.mock import patch
 
 import agent as agent_mod
 import config

@@ -8,7 +8,6 @@
 
 如果只测"清单存在时能读出来"，会漏掉整个设计的核心：压缩之后还在。
 """
-import io
 import os
 import shutil
 import sys
