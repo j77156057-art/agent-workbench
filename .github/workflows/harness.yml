@@ -7,7 +7,11 @@ on:
 jobs:
   test:
     name: ${{ matrix.backend }} tests
-    runs-on: ubuntu-latest
+    # 钉死而不是 `ubuntu-latest`：2026-11-02 实测 latest 仍解析到 `Image: ubuntu-24.04`
+    # （run 41398743596 的 Set up job 日志），但注解同时预告了「beginning October 19, 2026
+    # 迁到 Ubuntu 26」。标签一飘，浏览器/沙箱/AppArmor 的行为跟着变，而红名单只会告诉我们
+    # 「测试红了」，不会告诉我们原因是镜像。守卫：tests/test_ci_runner_and_action_pins.py
+    runs-on: ubuntu-24.04
     # 没有超时的 job 会一路挂到 GitHub 默认的 6 小时：一次死锁的浏览器启动就把
     # runner 占满，红名单也出不来。整条 lane 的正常耗时实测约 20–30 分钟。
     timeout-minutes: 60
@@ -47,16 +51,20 @@ jobs:
       # 里开（Linux 桌面端默认不开），且只作用于一次性 runner。
       DOCMIND_BROWSER_NO_SANDBOX: "1"
     steps:
-      - uses: actions/checkout@v4
+      # 三个动作都要 node24 的大版本：v4/v5/v4 的 `action.yml` 仍写着 `using: node20`，
+      # 于是每次跑都吃一条「Node.js 20 is deprecated … forced to run on Node.js 24」告警。
+      # 逐 tag 读 action.yml 得到的分界线：checkout v5 起、setup-python v6 起、setup-node v5 起
+      # 才是 node24；这一批要求的 runner 版本 v2.327.1，托管 runner 实测 2.338.2 —— 够用。
+      - uses: actions/checkout@v7
         # 改动行覆盖率门要 `git diff <base>..HEAD`，默认浅克隆只有 1 个提交，
         # 取不到 base 会让门 fail-closed 变成恒红（见 agent_runtime/coverage_eval）。
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: matrix.backend == 'sqlite'
         with:
           # node 24 自带的 npm 11.x 才认得出 frontend/.npmrc 的 `min-release-age`
