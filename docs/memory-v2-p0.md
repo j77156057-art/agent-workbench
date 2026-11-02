@@ -1179,6 +1179,12 @@ run 41411405586 的 sqlite lane 红了，红在 `Install dependencies`，报的�
 
 另一个必须记住的数：这次全量 924.6 秒，比上一轮 1451.2 秒快 36%。两轮都在同一台机器上、测试数还多了 3 条（新守卫 `test_no_inline_open_in_return.py`）。原因没查：可能是缓存变热、也可能是那几次 CI 轮询与本机全量同时跑造成的负载差异。**别把「变快了」当成修复的功劳** —— 要报就报「本轮没测这一项」。
 
+**改动行覆盖率门把这批改动判红了，而它是对的**（run 41430694766，head `e93c066`）：**70.4%（81 行生产改动、57 行被执行）**。点名的都是我这批 `with` 改造里**从没被用例走过的分支**：`engine_inspect` 的 Unity 分支（`ProjectVersion` / `.meta` guid）与 unreal 的 `.Build.cs` 依赖解析、`_close_engine_log` 的 except 分支、`api.py` 自动连接状态端点的三条读取路径；再加上 `game_workbench` 五个普通产品函数里的 13 行（`project_memory` / `asset_dependencies` / `create_placeholder` / `impact_analysis` / `_extract_symbols`）。处理方式是补用例，两处 manual 分类则改成**结构性**判断（`tools/mutation/mutate_*` 与 `tools/design_seed.py` 按定义手工跑、测试里不该有调用点）。复算：**100.0%（94/94）**；CI run 41440110928（head `96475fc`）两条 lane `success`、门 `通过`（本次增量 5/5）、八规则静态门 `success`、非 notice 注解 0 条。
+
+**这一轮最值钱的方法教训：注解 ≠ 清单**。GitHub 对 `::warning` / `::error` / `::notice` **每类每步只留 10 条**，而门是**逐行**打注解的；超出的既不出现在注解里、也不回显到步骤日志（被平台吃成注解了）。我第一次按注解清，只拿到 15 行，而真实未执行是 24 行 —— **按注解清会永远差一截，而且看不出来**。正确量法是本地按 CI 同一套算法复算：两条 lane 各跑一遍 `coverage run` → `coverage combine` → `coverage json` → 用同一个 `coverage_eval` 对**批次前的基线提交**算一遍，拿到的才是完整清单。这条对任何「平台有配额的可视化产物」都成立：**配额内的样本不能当全集**。
+
+**两处按真实行为写的用例**（不是按我的想象）：① `_extract_symbols` 的正则在 `public class Hero` 上只会抓到 `class`（关键字自己当了名字），夹具改用 `class Hero`，局限写进注释；② `impact_analysis` 先走向量分支，而本机装着真的 `.chroma` 代码库 —— 用 `sys.modules` 把 `vectorstore` 置空，测到的才是回退 grep 那条路（CI 没有 `.chroma`，走同一条）。另外两个环境事实：`engine_inspect` 会跳过任何路径段叫 `Temp` 的目录（本机默认临时目录就是 `D:\Temp`，夹具必须放仓库内 `.tmp`）；coverage 那条 unittest lane 在本机会因为 `test_frontend_bundle_fresh`（前端产物比源码旧）红，那是既有的本机专属红，要 `npm run build`，与代码无关。
+
 **CI 往返结论（run 41414220773，head `0adbb33`，两条 lane 全 success、注解 0 条）**：
 - 装到的是 `torch-2.15.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`（**209.5 MB**），`Successfully installed` 里就是 `torch-2.15.0+cpu`。
 - 整份 sqlite job 日志里 `nvidia_` 出现 **0 次**；第二步的 `Installing collected packages` 清单变成 `sqlite-vec, pypika, proxy_tools, flatbuffers, durationpy, bottle, zstandard, …` —— CUDA 那批**根本没进解析**，也没有任何 `Uninstalling torch` 之类的回换，说明「先 torch 后 requirements」这个顺序按设计生效。
