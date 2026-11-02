@@ -49,7 +49,7 @@ def _has_non_ascii(text):
 
 
 class LauncherFailureVisibilityTests(unittest.TestCase):
-    """启动器**失败时不能一闪而过**（Wave31）。
+    r"""启动器**失败时不能一闪而过**（Wave31）。
 
     实测形状：`启动DocMind.bat` 原来是 `call "%~dp0run_desktop.bat"` 紧接
     `exit /b %ERRORLEVEL%`。而 `run_desktop.bat` 的三条失败分支都调了 `pause`，
@@ -65,11 +65,27 @@ class LauncherFailureVisibilityTests(unittest.TestCase):
 
     LAUNCHER = '启动DocMind.bat'
 
-    def _run_with_stub(self, callee: bytes):
-        """把真启动器放进临时目录、配一个 stub callee，跑一次并返回 (exit, 屏幕)。"""
+    def _probe_hold(self, callee: bytes, hold_seconds: int = 5, feed: bool = False):
+        """跑一次启动器，返回 (是否在 hold_seconds 内结束, 退出码, 屏幕)。
+
+        原来这两条用例断言的是 `pause` 提示语的英文字面「Press any key」。那行字是
+        cmd.exe 按控制台代码页印的：中文 Windows 上是「按任意键继续. . .」，而且 stdout
+        是 cp936 —— 用 utf-8 解码只剩一串乱码。本机（zh-CN）实测因此**恒红**，而批处理
+        行为其实是对的（窗口确实停住了），也就是说红的是断言，不是产品。
+        现在断言的是它代指的那个机制：**失败路径会阻塞等人按键，成功路径不会**。
+
+        两趟分工，缺一趟就少钉一件事：
+        - `feed=False` 验「停没停」。stdin 是一根**保持打开、不写也不关**的管道，
+          `pause` 拿不到字节就真的不返回。这里不能用 `communicate()` —— 它会先把
+          stdin 关掉，`pause` 立刻走过去，我第一次改完就是这样假绿变假红。等待期间
+          不读 stdout：屏幕内容只有我们回显的两行，远不到管道缓冲区上限。
+        - `feed=True` 验「退出码传没传」。喂一个回车让 `pause` 走过去，脚本跑到
+          `exit /b %DOCMIND_EXIT%`；`feed=False` 那一趟是被 kill 的，拿不到真实退出码。
+        """
         import shutil
         import subprocess
         import tempfile
+        import time
         real = open(os.path.join(ROOT, self.LAUNCHER), 'rb').read()
         root = tempfile.mkdtemp(prefix='dm_launcher_')
         try:
@@ -77,29 +93,52 @@ class LauncherFailureVisibilityTests(unittest.TestCase):
                 handle.write(callee)
             with open(os.path.join(root, 'w.bat'), 'wb') as handle:
                 handle.write(real)
-            got = subprocess.run(['cmd.exe', '/c', os.path.join(root, 'w.bat')],
-                                 capture_output=True, cwd=root, timeout=60, input=b'\r\n')
-            return got.returncode, got.stdout.decode('utf-8', 'replace')
+            argv = ['cmd.exe', '/c', os.path.join(root, 'w.bat')]
+            if feed:
+                proc = subprocess.run(argv, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, cwd=root, input=b'\r\n',
+                                      timeout=60)
+                out, finished, code = proc.stdout, True, proc.returncode
+            else:
+                proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, cwd=root)
+                deadline = time.monotonic() + hold_seconds
+                while time.monotonic() < deadline and proc.poll() is None:
+                    time.sleep(0.2)
+                finished = proc.poll() is not None
+                if not finished:
+                    proc.kill()
+                out = proc.stdout.read()
+                proc.wait()
+                code = proc.returncode if finished else None
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            # 我们自己回显的两行是 ASCII，任何代码页解码都一致；不做语言假设。
+            return finished, code, (out or b'').decode('utf-8', 'replace')
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
     @unittest.skipUnless(os.name == 'nt', '批处理行为要在 cmd.exe 上验')
     def test_a_failing_inner_launcher_keeps_the_window_and_names_the_code(self):
-        code, screen = self._run_with_stub(
-            b'@echo off\r\necho inner: ModuleNotFoundError\r\nexit /b 1\r\n')
-        self.assertEqual(code, 1)
+        broken = b'@echo off\r\necho inner: ModuleNotFoundError\r\nexit /b 1\r\n'
+        finished, _code, _screen = self._probe_hold(broken)
+        self.assertFalse(finished,
+                         '脚本没等按键就退出了 —— 崩溃信息一闪而过，等于没有报错')
+        # 停住那一趟是被 kill 的，退出码要另喂一个按键跑到 `exit /b` 才拿得到。
+        finished, code, screen = self._probe_hold(broken, feed=True)
+        self.assertTrue(finished, '喂了按键还停着：pause 之后没有正常收尾')
+        self.assertEqual(code, 1, '失败码没传出去：外面只看得到「脚本跑完了」')
         self.assertIn('ModuleNotFoundError', screen, '内层的报错必须还在屏幕上')
-        self.assertIn('Press any key', screen,
-                      '窗口没有停住——一闪而过就等于没有报错')
         self.assertIn('Agent Workbench exited with code 1', screen, '失败时必须说出退出码')
 
     @unittest.skipUnless(os.name == 'nt', '批处理行为要在 cmd.exe 上验')
     def test_a_successful_run_is_not_held_open(self):
         """反过来也要钉：成功路径**不能**被 pause 拖住（那会让正常启动看起来像卡住）。"""
-        code, screen = self._run_with_stub(
+        finished, code, screen = self._probe_hold(
             b'@echo off\r\necho inner: all good\r\nexit /b 0\r\n')
+        self.assertTrue(finished, '成功路径被停住了：正常启动看起来像卡死')
         self.assertEqual(code, 0)
-        self.assertNotIn('Press any key', screen, '成功路径不该等人按键')
+        self.assertNotIn('exited with code', screen, '成功时不该报退出码')
 
 
 class LauncherEncodingTests(unittest.TestCase):
