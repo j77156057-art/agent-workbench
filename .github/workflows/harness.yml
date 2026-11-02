@@ -91,19 +91,20 @@ jobs:
         run: npm run lint
       - name: Compile runtime
         run: python -m compileall -q agent_runtime api_routes
-      - name: Static defect gate (ruff F821/F811/F402/F541/F841)
-        # 放的是**真缺陷类**五条：F821 未定义名、F811 重复定义且旧值没被用、F402 循环变量
-        # 遮蔽了导入、F541 f-string 里根本没有占位符、F841 赋值后没人读。
-        # 不放开整组 `F` —— 实测量过本仓库 `--select F` 有 195 条（F401 未用
-        # import 132 + F841 未用变量 50 + …），裸接进 CI 的第一天就是 195 行噪声，比没有门
-        # 更坏：它让人误以为有人在管。判据是**只增不减**：2026-11-02 把 F541(4) 与 F841(50)
-        # 清零后放进来；F401 的 129 条要先逐条分清「再导出 / 电池 BIND 注入」与真死导入，
-        # 清完一批再放一条。
+      - name: Static defect gate (ruff F821/F811/F402/F541/F841/F401)
+        # 放的是**真缺陷类**六条：F821 未定义名、F811 重复定义且旧值没被用、F402 循环变量
+        # 遮蔽了导入、F541 f-string 根本没有占位符、F841 赋值后没人读、F401 未用 import。
+        # 不放开整组 `F` —— 实测量过本仓库 `--select F` 有 195 条，裸接进 CI 的第一天就是
+        # 195 行噪声，比没有门更坏：它让人误以为有人在管。判据是**只增不减**：
+        # F541(4)+F841(50) 于 2026-11-02 清零后放入；F401 同批清掉 119 条后放入，
+        # 剩下 10 条是**带证据的豁免**（再导出 / 走模块对象取名字 / `ctx.engine_start`
+        # 这类静态扫描看不见的动态取用），拆成独立语句逐行 `# noqa: F401`，
+        # 绝不用一行 noqa 顺手豁免同行的真死导入。
         # 接这道门当天它抓到 3 条活的缺陷：`app_test.py` 把 `Mapping` 只写进注解却没 import，
         # 文件有 `from __future__ import annotations` 所以导入不炸，但
         # `typing.get_type_hints(server_env)` 实测抛 `NameError`。
         # 守卫 tests/test_ci_static_defect_gate.py —— 规则集从本文件读、并当场真跑一次。
-        run: python -m ruff check --select F821,F811,F402,F541,F841 .
+        run: python -m ruff check --select F821,F811,F402,F541,F841,F401 .
       - name: Verify Postgres driver and pool API
         if: matrix.backend == 'postgres'
         run: |
