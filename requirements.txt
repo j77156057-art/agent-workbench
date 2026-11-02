@@ -46,6 +46,13 @@ ruff>=0.16,<1
 # changed. When the report can't be produced the tool says "coverage unknown"
 # rather than folding it into a number.
 coverage>=7,<8
+# PEP 440 版本语义的量具。CI 那两步的顺序（先从 PyTorch 官方 CPU 索引装 torch，
+# 再装本文件）依赖一个事实：本地版本号 `2.15.0+cpu` 满足 `sentence-transformers`
+# 声明的 `torch>=2.2`，所以 pip 不会回头把带 CUDA 的那份换上来。守卫
+# tests/test_ci_cpu_only_torch.py 直接断言这条语义，因此 `packaging` 必须是
+# 声明过的依赖，不能靠传递安装 —— 否则守卫会在一个没装它的环境里红，而红的原因
+# 跟被验的东西毫无关系。
+packaging>=24,<27
 # MCP SDK: client side plus `agent_runtime.mcp_server`, which re-publishes the
 # harness's own read-only tools to the other agents working this repo.
 mcp>=2,<3

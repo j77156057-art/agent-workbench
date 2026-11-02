@@ -128,6 +128,28 @@ class WhyThisIsSafeTests(unittest.TestCase):
         self.assertEqual(_top_level_imports(lazy), [], "判据把函数体内的导入也算成模块级")
 
 
+    def test_packaging_is_a_declared_dependency(self):
+        """上一条断言用的量具必须在清单里 —— 靠传递安装的话，守卫会在没装它的环境里红。"""
+        text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertRegex(text, r"(?im)^\s*packaging\b",
+                         "`packaging` 不在 requirements.txt 里：语义断言会因环境缺件而误红")
+
+    def test_cpu_local_version_satisfies_the_torch_constraint(self):
+        """`+cpu` 这种本地版本号能满足 `>=` 约束 —— 「先装 torch 再装 requirements」成立的前提。
+
+        约束文本 `torch>=2.2` 是 2026-11-02 从 PyPI 的
+        `sentence-transformers` 元数据里读出来的（`info.requires_dist`）；这里钉的是
+        **PEP 440 的匹配语义**，不是那个数：哪天解析器或版本策略变了，这条会先响，
+        而不是等 lane 在 CI 上把 CUDA 那批重新装回来。
+        """
+        from packaging.specifiers import SpecifierSet
+
+        self.assertTrue(SpecifierSet(">=2.2").contains("2.15.0+cpu"),
+                        "本地版本号不再满足 >= 约束：那 CPU torch 会被 requirements 换回 CUDA 那份")
+        self.assertFalse(SpecifierSet(">=2.2").contains("2.1.0+cpu"),
+                         "约束判据反了：低于 2.2 也算满足")
+
+
 class SiblingStepsSurviveTests(unittest.TestCase):
     def test_the_gates_next_to_it_still_own_their_commands(self):
         """改这一步不许把邻门的命令吃掉（YAML 同键后者覆盖前者）。"""
