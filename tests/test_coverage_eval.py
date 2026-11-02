@@ -11,6 +11,8 @@
 - 「改了一整块却一行都没被执行」（≥5 行）单独判红：合计规则会把这种形状藏起来。
 """
 import fnmatch
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -202,9 +204,6 @@ class SelfCheckTests(unittest.TestCase):
         self.assertEqual([name for name, ok in cases if not ok], [])
 
     def test_self_check_returns_zero_and_prints_counts(self):
-        import contextlib
-        import io
-        import json
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             self.assertEqual(cov.self_check(), 0)
@@ -271,8 +270,6 @@ class ClassifyMoreTests(unittest.TestCase):
         # 必须原样返回而不是炸掉整道门。POSIX 上这就是个普通相对路径，两种都可接受。
         other = cov.normalize_key("Z:/elsewhere/h.py", str(ROOT))
         self.assertTrue(other.endswith("h.py"), other)
-        import contextlib
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             self.assertEqual(cov.main(["--self-check"]), 0)      # CLI 的 self-check 分支
@@ -288,8 +285,6 @@ class CliFailClosedTests(unittest.TestCase):
         也必须是**进程内**调用：门第一次真跑把我自己判红，未执行的行里就有这几条 ——
         原来我用子进程验 CLI，子进程不被 trace，等于把关键断言藏到覆盖率视野之外。
         """
-        import contextlib
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = cov.main(["--report", "nope.json"])
@@ -299,8 +294,6 @@ class CliFailClosedTests(unittest.TestCase):
         self.assertTrue(body["failures"], body)
 
     def test_unreadable_report_is_red_not_green(self):
-        import contextlib
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = cov.main(["--report", os.devnull, "--base", "HEAD~1", "--root", str(ROOT)])
@@ -345,22 +338,47 @@ class EndToEndRepoTests(unittest.TestCase):
         out.write_text(json.dumps(payload), encoding="utf-8")
         return str(out)
 
+    def _main_json(self, argv):
+        """跑 CLI，把 stdout 收成 JSON 返回 (退出码, 解析后的载荷)。
+
+        不接住输出就会**污染 CI 的测试日志**：run 41398743596/41406783090 的
+        「Run full test suite」步骤里出现过一句 `"改动行覆盖率 0.0% 低于门槛 90.0%"`，
+        来自本类合成的夹具 —— 那不是门判红，是测试把自己编的假红句子打进了真 stdout。
+        日志里出现假的红句子比没有门更坏（读的人分不清），所以这里既收音也顺便断言载荷内容。
+        """
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cov.main(argv)
+        return rc, json.loads(buf.getvalue())
+
     def test_changed_lines_are_seen_and_blanket_miss_is_red(self):
         changed = cov.changed_python_files(self.base, "HEAD", self.dir)
         self.assertEqual(changed.get("agent_runtime/mod.py"), [1, 2, 3, 4, 5])
-        rc = cov.main(["--report", self._report([1, 2, 3, 4, 5]), "--base", self.base,
-                       "--root", self.dir, "--json"])
+        rc, payload = self._main_json(
+            ["--report", self._report([1, 2, 3, 4, 5]), "--base", self.base,
+             "--root", self.dir, "--json"])
         self.assertEqual(rc, 1)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["changed_total"], 5)
+        self.assertTrue(any("一行都没被执行" in text for text in payload["failures"]),
+                        "整块未执行这条判据没落地：%s" % payload["failures"])
 
     def test_same_change_with_coverage_is_green(self):
-        rc = cov.main(["--report", self._report([]), "--base", self.base,
-                       "--root", self.dir, "--json"])
+        rc, payload = self._main_json(
+            ["--report", self._report([]), "--base", self.base,
+             "--root", self.dir, "--json"])
         self.assertEqual(rc, 0)
+        self.assertTrue(payload["ok"], payload["failures"])
+        self.assertEqual(payload["percent"], 100.0)
 
     def test_untracked_base_fails_closed(self):
-        rc = cov.main(["--report", self._report([]), "--base", "deadbeef" * 5,
-                       "--root", self.dir, "--json"])
+        rc, payload = self._main_json(
+            ["--report", self._report([]), "--base", "deadbeef" * 5,
+             "--root", self.dir, "--json"])
         self.assertEqual(rc, 1)
+        self.assertFalse(payload["ok"], "取不到 base 却报 ok:true —— fail-closed 被换成 fail-open")
+        self.assertTrue(any("git diff" in text for text in payload["failures"]),
+                        "没有说明失败原因：%s" % payload["failures"])
 
     def test_text_output_points_at_the_exact_line(self):
         """人话模式要打出合计，并把每条「改而未执行」指到 file=,line= 上。
@@ -368,8 +386,6 @@ class EndToEndRepoTests(unittest.TestCase):
         为什么值得测：CI 里那 35 行就是靠这个格式变成 diff 上的行内注释的；
         没这两行的定位信息，作者只会看到一串行号。
         """
-        import contextlib
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = cov.main(["--report", self._report([1, 3]), "--base", self.base,
@@ -383,8 +399,6 @@ class EndToEndRepoTests(unittest.TestCase):
         self.assertNotIn("门：通过", text)
 
     def test_text_output_announces_pass_when_covered(self):
-        import contextlib
-        import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = cov.main(["--report", self._report([]), "--base", self.base, "--root", self.dir])
