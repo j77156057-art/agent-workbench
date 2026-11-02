@@ -974,3 +974,35 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 **验证**：10 条变异（整块删步骤、只删头三行、`|| true`、放成 `F`、缩成 `F821`、目标缩到子目录、`continue-on-error`、park 到单条 lane、排到装依赖之前、ruff 从依赖消失）**0 条活下来**，两个被改文件按字节还原一致。受影响用例：`test_log_view` + `test_workflow_three_valued_status` + `test_app_test` **133 passed / 145 subtests**，`test_memory_v2_p0` + 两份 regions **142 passed**，`job_logs` 电池 6/6，两份接线门守卫 22 passed。CI 侧 §16.44 那批已双矩阵 success（`Lint workbench frontend (eslint)` 步骤 conclusion=success，是这道门第一次在 CI 环境真跑）。
 
 **刻意不做**：整组 `F`（195 条噪声）；`ruff check --fix` 一把梭（140 条可自动修，会连带改到别的 lane 的文件，并把真缺陷和无用 import 混进同一个提交）。F401/F841 的存量按批单独清，**清一批再把那条规则放进门** —— 门的规则集只增不减，由守卫的子集断言钉住。
+
+### 16.46 第二批：F541 与 F841 清零并把门放宽到五条（2026-11-02）
+
+§16.45 立的判据是「清一批放一条」，这一批就是第一次执行它：F541（f-string 根本没有占位符）**4 条**、F841（赋值后没人读）**50 条**，共 54 处，42 个文件、新增 29 行 / 删除 57 行。清完把规则放进门：`--select F821,F811,F402,F541,F841`。
+
+**为什么不用 `--fix`**：ruff 把 F841 全标成 **unsafe fix** —— 它不知道右边那次调用有没有副作用。判据写成显式规则，由 `.tmp/clear_f841.py` 逐处分类：
+
+| RHS 形状 | 处理 | 例子 |
+|---|---|---|
+| 没有调用（字面量、算术、`None`、推导） | 整行删 | `seen = 0`、`root_repo = None`、`events = []` |
+| 全部调用都在**纯函数白名单**里（`len` / `sorted` / `str` / `json.load` / `os.path.join` / `.get` / `.split` / `re.search` / `struct.unpack_from` / `unittest.TestLoader` …） | 整行删 | `ref=set.intersection(*keys.values())`、`orig = detached.get('restored_rect') or rect_after` |
+| 只要有一个**不认识的调用** | **保留调用、去掉绑定** | `q1 = self.mgr.subscribe(wid)` → `self.mgr.subscribe(wid)`；`abandoned = make(...)`；`result = hooks.run_workflow(...)` |
+| `except X as e:` 里 `e` 没人用 | 去掉 ` as e` | `dev_server.py` 的 `except urllib.error.HTTPError as exc:` |
+| `with ctx() as v:` 里 `v` 没人用 | 去掉 ` as v`（手工，2 处） | `patch.object(gw.subprocess,'Popen',...) as popen` |
+
+**两处必须人判的**：`head_check.py` 的 `cleaned = safe_relative(str(argv[0])) or str(argv[0])` —— `safe_relative` 是**校验器**，可能抛错，所以保留调用（去掉无副作用的 `or` 尾巴）而不是删整行；`tool_install.py` 的 `stderr = str(getattr(completed, "stderr", ...) ...)` 是纯取值，整行删（它的兄弟 `stdout` 才是被用的那份）。
+
+**自己造的一个新缺陷（被 ast 全量扫描抓到，不是被单测抓到的）**：脚本按行删除时把 `tests/test_projects_qa.py` 里 `with open(config.STATE_FILE, ...) as f:` 的**唯一语句体**删掉了 → `SyntaxError: expected an indented block after 'with' statement`。这类"删除把块掏空"的形态，靠跑测试也可能被跳过（该文件不在快子集里），所以改完对**全部 43 个被改 py 文件**跑一遍 `ast.parse`，一处坏全部现形。补法保留原意：`with open(...) as f: json.load(f)`（读回一遍，写进 STATE_FILE 的必须是合法 JSON）。另有一处 `desktop.py` 被编辑器从 LF 改成 CRLF，按原风格还原。
+
+**棘轮有没有牙，另外单独验**：往 tracked 文件里注入一条新死赋值（F841）与一条新的无占位符 f-string（F541），各跑一次守卫 → 两次都判红（`1 failed`），文件按字节还原一致。这条是必须的：加了规则却没人因此变红，等于门里放了个装饰。
+
+**验证**：被改动的 30 个测试文件 + `test_dev_server` / `test_head_check` / `test_tool_install` / `test_symbols` / `test_workbench_fs` 合跑 **547 passed / 72 subtests，退出码 0**（11 分 25 秒）；全量变异电池 `--no-live` **363/383 抓到、20 条本环境未验证、0 条活下来、1184 秒** —— 与基线逐条一致，说明这批删除没碰到任何锚点；`ruff check --select F841,F541` 现场 0 条；两份接线守卫 22 passed。
+
+**还剩**：F401（未用 import）**129 条** —— 这批**不能**按同一脚本走。现场样本里就有三种不同性质，判据是「谁通过这个**模块名**在引用它」，只能逐条查：
+
+| 形态 | 例子（实测） | 处理方式 |
+|---|---|---|
+| 确实没人用 | `agent_runtime/acceptance.py:13` 的 `os`、`agent_runtime/plan_runner.py:14` 的 `time`、`agent_runtime/langsmith.py:17` 的 `datetime`/`timezone` | 删 |
+| 疑似**再导出**（本模块不用，但可能有别的模块从本模块拿这个名字） | `agent_runtime/game_workflow.py:48` 的 `VALID_KINDS`、`:53` 的 `SINK_TOOL_HOOKS`。**这两条已实测**：`tests/test_workflow_profiles.py:20` 是从源头 `workflow_profiles` 直接导入，`SINK_TOOL_HOOKS` 的消费方（`agent.py:8611`、`agent_runtime/dev_eval.py:1170`）也都在定义处 `agent.py` 一侧 —— 所以它们**不是**再导出，可以删。但这是 129 条里的 2 条抽样，不是结论 | 按名字全仓查「`from <本模块> import <名字>`」有没有命中；有就保留并写 `__all__` 或注明是再导出，没有才删 |
+| **电池 BIND 注入点** | `tests/test_log_view.py` 模块级 `import tools`（注释自己写着「电池要把被变异的 tools 塞进这个属性」） | 保留 —— §16.45 刚为它删过**局部**副本 |
+
+清完这批再把 F401 放进门。规则集仍遵守**只增不减**：守卫的子集断言会拒绝任何人把 `--select` 缩回去。
