@@ -500,15 +500,21 @@ def _release_profile(profile) -> bool:
     `sweep_stale_profiles` 按归属 PID 兜底。
     """
     path = profile if isinstance(profile, str) else profile.name
+    removed = False
     for _ in range(20):
         shutil.rmtree(path, ignore_errors=True)
         if not os.path.isdir(path):
-            return True
+            removed = True
+            break
         time.sleep(0.15)
     cleanup = getattr(profile, "cleanup", None)
     if cleanup is not None:
+        # 目录即使已经被上面的 rmtree 删掉，也必须调一次 cleanup()：它负责把
+        # TemporaryDirectory 的回收器标记成已完成。不调的话对象被 gc 时会再报一句
+        # `Implicitly cleaning up <TemporaryDirectory …>` —— 本机全量里那 49 条就是这么来的
+        # （目录真的删了，报的是**对象没收尾**）。
         cleanup()
-    return not os.path.isdir(path)
+    return removed or not os.path.isdir(path)
 
 
 # 存活判断只在 `temp_state` 里实现一份：本模块的 profile 回收和它的测试状态回收面对的是

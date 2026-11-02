@@ -295,10 +295,26 @@ class VisualAcceptanceRuntimeTests(unittest.TestCase):
 
     def test_cleanup_deviations_are_reported_and_clean_runs_stay_silent(self):
         from agent_runtime.visual_acceptance import browser_session
-        with patch("agent_runtime.visual_acceptance._release_profile", return_value=False):
-            cleanup = {}
-            with browser_session(20.0, cleanup=cleanup):
-                pass
+        # 模拟「释放失败」：_release_profile 被顶掉、永远返回 False。夹具借这条路径制造偏差，
+        # 所以那个真实存在的 profile 对象也必须由夹具收尾 —— 否则它会活到 gc，
+        # 在本机全量的日志里留一句 `Implicitly cleaning up <TemporaryDirectory …>`。
+        leaked = []
+
+        def fail_release(profile):
+            leaked.append(profile)
+            return False
+
+        try:
+            with patch("agent_runtime.visual_acceptance._release_profile", side_effect=fail_release):
+                cleanup = {}
+                with browser_session(20.0, cleanup=cleanup):
+                    pass
+        finally:
+            for profile in leaked:
+                try:
+                    profile.cleanup()
+                except OSError:
+                    pass
         self.assertFalse(cleanup["profile_released"], "偏离必须被如实记录")
         self.assertTrue(cleanup["spawned"])
         self.assertTrue(cleanup["job_closed"])

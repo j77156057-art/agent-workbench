@@ -69,6 +69,45 @@ class EngineLogCloseTests(unittest.TestCase):
             self.assertNotIn(key, gw._ENGINE_LOGS)
 
 
+class ProfileReleaseTests(unittest.TestCase):
+    def test_release_marks_the_temporary_directory_as_cleaned(self):
+        """目录被 rmtree 删掉之后，对象也要收尾 —— 否则 gc 时还会报「Implicitly cleaning up」。
+
+        本机全量里那 49 条 `Implicitly cleaning up <TemporaryDirectory 'D:\\Temp\\docmind-visual-preview-…'>`
+        就是这么来的：`_release_profile` 用 rmtree 把目录删了就直接 return，没调 `cleanup()`，
+        TemporaryDirectory 的回收器还是一副「没人管我」的样子。
+        """
+        import gc
+        import shutil
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            profile = tempfile.TemporaryDirectory(prefix="docmind-visual-preview-")
+            path = profile.name
+            shutil.rmtree(path, ignore_errors=True)   # 目录先没了：走「rmtree 成功」那条路径
+            self.assertTrue(va._release_profile(profile), "目录已经删了却报没删掉")
+            del profile
+            gc.collect()
+        implicit = [w for w in caught if "Implicitly cleaning up" in str(w.message)]
+        self.assertEqual(implicit, [], "对象没被标记为已收尾：gc 时还会报 Implicitly cleaning up")
+
+    def test_release_still_reports_failure_when_the_directory_survives(self):
+        """反方向：目录删不掉时必须如实返回 False（调用方靠它判偏差）。"""
+        with tempfile.TemporaryDirectory() as root:
+            blocked = Path(root) / "docmind-visual-preview-blocked"
+            blocked.mkdir()
+            (blocked / "keep.txt").write_text("x", encoding="utf-8")
+
+            with mock.patch.object(va.shutil, "rmtree", return_value=None), \
+                 mock.patch.object(va.time, "sleep", return_value=None):
+                profile = mock.Mock()
+                profile.name = str(blocked)
+                ok = va._release_profile(profile)
+            self.assertFalse(ok, "目录还在却报成功：偏差就被抹掉了")
+            self.assertTrue(blocked.is_dir())
+
+
 class BrowserStderrSinkTests(unittest.TestCase):
     def test_target_is_a_writable_handle_inside_the_profile_dir(self):
         with tempfile.TemporaryDirectory() as root:
