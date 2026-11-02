@@ -1128,3 +1128,20 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 - **第三次栽在「用字符串审 shell 步骤」上**：我验证 `--omit` 生效时 `grep -c "Couldn't parse"` 得到 **1**，差点报成「告警没消掉」。那 1 次命中的是**我自己写在那一步里的注释**（GitHub 会把整段 `run:` 脚本连注释一起回显）。换成不可能出现在注释里的签名 `No source for code` 才是 **0** —— 同一条教训在 §16.48 已经记过两次，这轮轮到 grep 命令自己犯。
 - **本机全量的 7 条红是我自己配错环境**：那条 lane 我按「少写盘」的想法设了 `DOCMIND_TRACE=0`，而 CI 明写着 `DOCMIND_TRACE: "1"`。7 条全是 `agent_trace.recent(1)[0]` 越界。A/B 当场做完：同一批 7 条 `TRACE=0` → 7 failed、`TRACE=1` → 7 passed。**跑别人的口径之前先抄别人的 env**，否则报出来的红名单要人替你归因。
 - 按 CI 口径的本机全量结论：**`Ran 5439 tests in 1313.769s`，除上面那 7 条配置性错误外 0 红**（skipped 17）。本轮新加的启动器用例在 Windows 上真跑通过 —— 那条路径 CI 上 `skipUnless(os.name == 'nt')` 跳过，只有本机验得到。
+
+### 16.51 lane 死于 `[Errno 28] No space left on device`：往没有 GPU 的 runner 上搬 CUDA 才是根因（2026-11-02）
+
+run 41411405586 的 sqlite lane 红了，红在 `Install dependencies`，报的是 `Installing collected packages` 解包时 `OSError: [Errno 28] No space left on device`；同一份 `requirements.txt` 在另一台 runner（上一轮 run 与本次重跑）上过了。**两条 lane 都在拿磁盘余量赌运气**，而红名单只会给你一句 errno 28，看不出根因。
+
+**根因是依赖形状**：`requirements.txt:69` 的 `sentence-transformers` 会连带 PyPI 的 `torch`，而 linux 上那份 `torch` 依赖整套 `nvidia-cudnn-cu13 / cublas / cusolver / cusparse / cufft / nccl / nvshmem / triton`。按该步骤日志里逐条 MB 级下载加总：**3.27 GB**，步骤耗时 **2 分 12 秒**。GitHub 托管 runner 没有 GPU，所以这些字节永远是死重 —— 只挤磁盘、只拖时间，换不来任何被验证的行为。
+
+**改法的关键是顺序**：先从 PyTorch 官方 CPU 索引装 `torch`，再装 `requirements.txt`。两个前提都核过而不是靠印象：
+- 抓 `download.pytorch.org/whl/cpu/torch/` 的索引页，确认存在对得上 runner 的轮子 `torch-2.15.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`（cp312 / x86_64，正是 `Image: ubuntu-24.04` + Python 3.12.15 那台）。
+- **取那个轮子的 PEP 658 元数据把 `Requires-Dist` 逐条读出来**：只有 `filelock / typing-extensions / setuptools / sympy / networkx / jinja2 / fsspec`（外加三个 `extra ==` 可选件）—— **一条 nvidia/cuda/triton 都没有**。也就是说装它**结构上不可能**把 CUDA 那批带回来。
+- PyPI 上 `sentence-transformers` 的约束是 `torch>=2.2`，PEP 440 下 `2.15.0+cpu` 满足它；第二步没有 `--upgrade`，pip 看见「已满足」就不回头换 PyPI 那份。**把两行调个顺序就等于没改** —— 所以顺序必须有断言。
+
+**守卫**：`tests/test_ci_cpu_only_torch.py` 10 条 —— 顺序（CPU 行在前、requirements 在后）、索引只能是 `/whl/cpu`（混进 `/whl/cu` 判红）、退出码不被吞、不许挂到单条 lane、`requirements.txt` 里确实还有那个拖 torch 的包、邻门命令仍在。另有一条**夹具**证明「模块级导入」判据本身不是空的：我**没有**真去把 `retrieval.py` 的懒导入提到模块级做变异 —— 那会让本机没装的包进入导入链、收集阶段就 `ModuleNotFoundError`，是一次「为了错误的原因变红」的杀死，证明不了任何事。**5/5 变异杀死**，其中「两行调换顺序」只有顺序断言抓得到。
+
+**同轮两次「测具自己骗人」**：① 多变异电池必须以进入前的干净文本为底本 —— 我第一版写了 `path.read_text()`，于是 P1 调换两行之后，P2 要删的锚点已经不在文件里，被记成「未施加」；没造成假绿，但把「5 条变异」报成了不足数。② 我用 `grep -c "Couldn't parse"` 验 `--omit` 生效，得到 **1**，差点报成「告警没消掉」—— 命中的是我自己写进步骤的注释（GitHub 连注释一起回显 `run:` 脚本）。换成注释里不可能出现的签名 `No source for code` 才是 **0**。**§16.48 立的「审 shell 步骤先剥注释行」这条，这轮轮到 grep 命令自己犯。**
+
+**其余实测**：本机 10 份读 `harness.yml` 的守卫加上启动器用例合跑 **174 passed（245.88 秒）**，无跨文件干扰；三组变异电池 9/9（动作与 runner 标签）、4/4（启动器语义）、5/5（CPU 索引）全杀；被电池改过的五个文件（`harness.yml`、`retrieval.py`、`启动DocMind.bat`、`test_coverage_eval.py`、`test_tool_taxonomy.py`）跑完**全部与 HEAD 按字节一致**，无残留。
