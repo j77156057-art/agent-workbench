@@ -1067,3 +1067,7 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 改完实测：`coverage_eval.py` 被自家测试覆盖到 **100.0%**（0 行未执行），四份接线/红名单守卫 **74 passed**，六条静态规则干净。同时把注释升级成 `::warning file=<路径>,line=<行>::`，让"改而未执行"直接落在 diff 的那一行上 —— 这次那 35 行只给了一串行号，作者还得自己去数。
 
 这条是本节全部立论的活证据：**门说的"这次改的行没人走过"，通常是真的没人走过**，包括写门的人自己。
+
+**复跑结论（run 41398743596，两条 lane 全 success）**：`Changed-line coverage gate` 步骤 **success**，用时 7 秒。它留下两条 `::warning file=agent_runtime/coverage_eval.py,line=119/120::` —— 正是 Windows 跨盘符 `relpath` 抛 `ValueError` 那两行：它们在 CI（Linux）上永远不执行，在本机（Windows）才走得到。我**不**给它们加 `pragma: no cover`：留着这条 warning 才是实情（"平台专用分支在另一个平台上没被走过"），抹掉它等于让门少说话。这也验证了 `file=,line=` 格式的作用 —— 两条 warning 直接落在源码行上，不用数行号。
+
+**成本重测（不再用外推）**：同一条 lane 包进 `coverage run` 前后 —— pytest lane **365s → 376s**、全量 unittest **480s → 481s**、整条 sqlite lane 22.4 分 → **20.9 分**（波动小于测试自身的抖动），加上线程/解析开销也不到 3%。我之前按 1.17 倍外推担心要重排 CI 结构，是多余的：**这两条 lane 的耗时大头本来就在子进程与 I/O，不在解释器执行**。
