@@ -1145,3 +1145,11 @@ run 41411405586 的 sqlite lane 红了，红在 `Install dependencies`，报的�
 **同轮两次「测具自己骗人」**：① 多变异电池必须以进入前的干净文本为底本 —— 我第一版写了 `path.read_text()`，于是 P1 调换两行之后，P2 要删的锚点已经不在文件里，被记成「未施加」；没造成假绿，但把「5 条变异」报成了不足数。② 我用 `grep -c "Couldn't parse"` 验 `--omit` 生效，得到 **1**，差点报成「告警没消掉」—— 命中的是我自己写进步骤的注释（GitHub 连注释一起回显 `run:` 脚本）。换成注释里不可能出现的签名 `No source for code` 才是 **0**。**§16.48 立的「审 shell 步骤先剥注释行」这条，这轮轮到 grep 命令自己犯。**
 
 **其余实测**：本机 10 份读 `harness.yml` 的守卫加上启动器用例合跑 **174 passed（245.88 秒）**，无跨文件干扰；三组变异电池 9/9（动作与 runner 标签）、4/4（启动器语义）、5/5（CPU 索引）全杀；被电池改过的五个文件（`harness.yml`、`retrieval.py`、`启动DocMind.bat`、`test_coverage_eval.py`、`test_tool_taxonomy.py`）跑完**全部与 HEAD 按字节一致**，无残留。
+
+**CI 往返结论（run 41414220773，head `0adbb33`，两条 lane 全 success、注解 0 条）**：
+- 装到的是 `torch-2.15.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`（**209.5 MB**），`Successfully installed` 里就是 `torch-2.15.0+cpu`。
+- 整份 sqlite job 日志里 `nvidia_` 出现 **0 次**；第二步的 `Installing collected packages` 清单变成 `sqlite-vec, pypika, proxy_tools, flatbuffers, durationpy, bottle, zstandard, …` —— CUDA 那批**根本没进解析**，也没有任何 `Uninstalling torch` 之类的回换，说明「先 torch 后 requirements」这个顺序按设计生效。
+- `Install dependencies` 步骤的 MB 级下载合计 **3.27 GB → 0.48 GB**（28 条）。改完最大的单件是 `transformers-5.22.1`（13.1 MB），也就是说没有同量级的死重留在树里了。
+- 诚实交代边界：`errno 28` 这次没复现，而**同头提交重跑本来就绿**（run 41411405586 重跑后两条 lane success），所以这条改动消掉的是「每条 lane 拿磁盘余量赌运气」这个风险，不能报成「我把它从红修成绿」。
+
+
