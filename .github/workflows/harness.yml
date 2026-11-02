@@ -75,7 +75,23 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        # 顺序是有意的：**先**从 PyTorch 官方 CPU 索引拿 torch，**再**装 requirements.txt。
+        # 依据（都是实测，不是理念）：
+        # - `sentence-transformers`（requirements.txt:69）会连带拉 PyPI 的 torch，而 PyPI 那份
+        #   在 linux 上依赖整套 `nvidia-*-cu13` + `triton` + `cudnn`。一次安装实测下载
+        #   **3.27 GB**、耗时 2 分 12 秒，而 GitHub 的 runner **没有 GPU** —— 这些字节永远是死重。
+        # - run 41411405586 的 sqlite lane 就在 `Installing collected packages` 这一步死于
+        #   `OSError: [Errno 28] No space left on device`；同一份 requirements 在另一台 runner
+        #   上过了，也就是说每条 lane 都在拿磁盘余量赌运气。
+        # - 该 CPU 索引确实有对得上 runner 的轮子：`torch-2.15.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`
+        #   （2026-11-02 直接抓索引页核过，索引上只有 `+cpu` 这一支，不会把 CUDA 依赖带回来）。
+        # - PEP 440 里 `2.15.0+cpu` 满足 `sentence-transformers` 的 torch 约束，而第二步没有
+        #   `--upgrade`，pip 看见已满足就不回头换 CUDA 那份。
+        # 守卫：tests/test_ci_cpu_only_torch.py（顺序、索引、退出码没被吞、邻门仍在）。
+        # 红了就整段回退成一行 `python -m pip install -r requirements.txt`。
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python -m pip install -r requirements.txt
       - name: Build workbench frontend
         if: matrix.backend == 'sqlite'
         working-directory: frontend
