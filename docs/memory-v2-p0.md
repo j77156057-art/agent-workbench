@@ -1071,3 +1071,54 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 **复跑结论（run 41398743596，两条 lane 全 success）**：`Changed-line coverage gate` 步骤 **success**，用时 7 秒。它留下两条 `::warning file=agent_runtime/coverage_eval.py,line=119/120::` —— 正是 Windows 跨盘符 `relpath` 抛 `ValueError` 那两行：它们在 CI（Linux）上永远不执行，在本机（Windows）才走得到。我**不**给它们加 `pragma: no cover`：留着这条 warning 才是实情（"平台专用分支在另一个平台上没被走过"），抹掉它等于让门少说话。这也验证了 `file=,line=` 格式的作用 —— 两条 warning 直接落在源码行上，不用数行号。
 
 **成本重测（不再用外推）**：同一条 lane 包进 `coverage run` 前后 —— pytest lane **365s → 376s**、全量 unittest **480s → 481s**、整条 sqlite lane 22.4 分 → **20.9 分**（波动小于测试自身的抖动），加上线程/解析开销也不到 3%。我之前按 1.17 倍外推担心要重排 CI 结构，是多余的：**这两条 lane 的耗时大头本来就在子进程与 I/O，不在解释器执行**。
+
+**零改动那条分支也被真实 run 走了一遍**（run 41401092750，只推文档的一次提交）：diff 里生产 .py 新增行为 0，门那一步按「无改动生产行」判 100% 放行，两条 lane 全 `success`。这条分支在单测里有用例，但它真正的意义是**门不会拦住不含代码的提交** —— 否则每次写文档都要先凑覆盖率。
+
+### 16.49 天天挂在红名单旁边的两条弃用告警，今天变成门（2026-11-02）
+
+每次 run 的 job 注解里都有这两句，已经连着好几天没人理：
+
+- `warning`：`Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5`
+- `notice`：`The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026`
+
+「被强制跑到 node24」此刻还没炸，是因为 GitHub 在替我们兜着，而这个兜底**有截止日期**：真被 runner 拒绝那天，两条 lane 会一起变成「Set up job 就红」，红名单里只有一句环境噪声，看不出是我们自己没升版本。
+
+**先量，不猜**：
+- 每个大版本跑的 node 从动作自己的 `action.yml` 逐 tag 读（GitHub API）：`checkout v4=node20 / v5=node24`、`setup-python v5=node20 / v6=node24`、`setup-node v4=node20 / v5=node24`。所以「最低能用的大版本」是三条确定数字，不是印象。
+- 这批 node24 动作要求的 runner 是 **v2.327.1**；托管 runner 实测 **2.338.2** —— 满足。
+- `ubuntu-latest` 今天解析到什么镜像，去 completed run 的 `Set up job` 日志里读：run 41398743596 是 `Image: ubuntu-24.04`（`Included Software` 指向 `ubuntu24/20261025.353`）。也就是说**迁移还没落到我们头上**，所以钉成 `ubuntu-24.04` 不是换环境，是把已经量到的环境说出口；标签继续飘着，飘的那天行为变了没人知道原因（浏览器启动、用户命名空间沙箱、AppArmor 全在镜像里）。
+- 升版本前把三个动作 v→v7 的 breaking 逐条对过：checkout v7 只挡 `pull_request_target`/`workflow_run` 的 fork 检出（我们只有 `push`/`pull_request`）；setup-node v6 把自动缓存限到 npm（本来就是 npm），v7 删掉的是那个用不上的 `NODE_AUTH_TOKEN` 占位导出；setup-python v7 删的 `pip-install` 输入我们没传。**没有一条命中我们**。
+
+**落点**：`actions/checkout@v7` + `actions/setup-python@v7` + `actions/setup-node@v7`（取最新大版本而不是最低可用大版本 —— v5/v6 那条线更老，等着下一轮再升一次没意义），`runs-on: ubuntu-24.04`。
+
+**守卫的形状比版本号更重要**（`tests/test_ci_runner_and_action_pins.py`，12 条）：升这三个动作的连带风险不是版本本身，而是改步骤时顺手吃掉输入，而每个输入正守着另一道门 ——
+- `fetch-depth: 0` → 改动行覆盖率门（§16.48：浅克隆取不到 base，门会 fail-closed 变恒红）；
+- `node-version: "24"` → npm ≥ 11.6 才认 `min-release-age`，本仓唯一的 npm 侧供应链防护；
+- `cache` / `cache-dependency-path` → 掉了就每次重装，lane 时长直接变形。
+再加一条 `uses:` 必须是 `vN` 标签（不许 `@main` 这种可变引用），以及邻门命令仍在。
+
+**9 条变异 0 存活**，两条值得留档：
+- 「只删 `- uses: actions/setup-node@v7` 这一行」被 **4 条断言**同时抓住 —— 掉下来的 `with:` 会并进上一个步骤，YAML 同键后者覆盖前者，于是 setup-python 的 `python-version/cache` 被 npm 那份输入悄悄替换。这正是 §16.44 付过一次学费的那个形状，这次是**按构造**抓住的，不靠运气。
+- 「`checkout@main`」被两条抓住（可变引用 + 解析不出大版本）。
+- **探针还抓住守卫自己的假阳性**：我在文档里先写了「精确补丁标签 `checkout@v7.0.1` 不会被误判」，实测 `1 failed` —— `_major` 只认 `^v(\d+)$`，于是**钉得比 `v7` 更死的那种写法被判定成违规**。已放开成 `vN` 与 `vN.M.P` 都解析得出大版本（docstring 里写清为什么），放开后 9 条变异仍 0 存活。假阴比假阳危险，但假阳性会把人推向「绕过守卫」，一样要当缺陷处理。
+
+**刻意不做的两件事**：① 不按完整 commit SHA 钉动作。本仓没有 dependabot 配置，SHA 钉死会一路烂到某天突然不兼容，而 tag 钉版 + 这道门是当下能维持的组合；② 不抢先上 `ubuntu-26.04`。没量过的镜像不进 CI —— 要换就在一次专门的往返里换，让红名单只可能有一个原因。
+
+**验证**：新守卫 12 passed（含把精确标签探针从判红改成放行之后）；把 `harness.yml` 整份读进断言的测试一共 8 份（lint 门、静态缺陷门、覆盖率门、红名单摘要、git log 取 base、npm 输入、windows 沙箱、本守卫）**154 passed**；9/9 变异杀死；CI 往返以本次推送的 run 为准，红了就整批回退（回退只动这四行，不牵连别处）。
+
+### 16.50 门自己的日志里挖出三件事：一条假红、一条哑豁免、一条每次必产的告警（2026-11-02）
+
+起因只是确认「零改动那条分支」走没走过 —— 把 run 41401092750 的门步骤日志整份拉下来看。分支确实走了（`改动行覆盖率 100.0%（门槛 90.0%）｜生产改动 0 行、被执行 0 行` → `通过`，两条 lane 全 success），但同一段日志里还有三行没被当成结论的东西：
+
+**① `SyntaxWarning: invalid escape sequence '\S'`（`tests/test_launchers.py:56`）**
+`coverage json` 解析源码时把解释器的警告打了出来。这正是 ruff 的 **W605**：文档字符串里写 `.venv\Scripts\python.exe`，`\S`/`\p` 不是合法转义。Python 3.12 只警告，往后就是 `SyntaxError`。全仓实测 **2 条**（同一行），改成 raw 文档字符串后清零，并把门从六条放宽到**七条**：`--select F821,F811,F402,F541,F841,F401,W605`。守卫仍是从 CI 里读规则集再当场真跑一次，所以「加了规则但仓库过不了」这种形状进不了主干。
+
+**② `warning: Invalid # noqa directive on tests/test_ci_static_defect_gate.py:38`**
+这条更难看，因为它是**一条哑豁免**：我在静态缺陷门守卫的注释里写了字面量 `` `# noqa: F401` `` 来解释豁免怎么写 —— ruff 会把注释里的这种字面量当成**本行**的豁免指令解析，格式不对就只留一句 warning。后果不是判错，而是「写 noqa 的人以为自己在豁免，其实什么都没豁免」。已把那句改写成正文描述（不出现井号紧跟 noqa 的形态），并在旁边写下这条禁忌。
+
+**③ `CoverageWarning: Couldn't parse '.../tools.py:TOOLS'`（每次跑都产一条）**
+`tests/test_tool_taxonomy.py:102` 用 `compile(源码切片, "tools.py:TOOLS", "exec")` 在不碰真 import 的前提下取 `TOOLS` 注册表 —— 名字是合成的，coverage 却把它记进数据文件，报告阶段真去 open 它。修法精确到只有一个目标：`coverage json` 加 `--omit "*:TOOLS"`（路径里带冒号的不可能是真文件）。本地对拍过加与不加的两份报告：**690 个文件、125116 条语句一字不差**，也就是说这条排除不吞任何真实测量。守卫 `test_report_step_omits_the_synthetic_filename` 不只看 CI 那一行，还回头读测试里真正用的那个 filename，两边必须对得上 —— 否则有人把它改名，omit 就悄悄失效而守卫仍绿。4 条变异（摘 `--omit`／改成对不上的模式／摘 `--ignore-errors`／改 filename）0 存活。
+
+**顺手关掉一条本机恒红的假阳性**。`test_a_failing_inner_launcher_keeps_the_window...` 断言的是 `pause` 提示语的英文字面「Press any key」，而那行字由 cmd.exe 按控制台代码页印：中文 Windows 上是「按任意键继续. . .」，stdout 还是 cp936（用 utf-8 解码只剩乱码）。**先证明这不是我改出来的**：把 `HEAD` 那版文件写回去跑，同样 `1 failed, 8 passed, 1 warning`；换成我的版本是 `1 failed`（改完 `r"""` 后 warning 归零）→ 红的是断言，不是产品。修法是把断言换成它代指的**机制**：失败路径真会阻塞等人按键（`feed=False`：stdin 是一根保持打开、不写也不关的管道，脚本 5 秒内没退出即算「停住」），成功路径不会（`feed=True`：喂一个回车让它跑到 `exit /b`，退出码必须传出来）。两趟分工是因为被 kill 的那趟拿不到真实退出码。第一版我用了 `communicate(timeout=…)`，它**会先把 stdin 关掉**，`pause` 立刻走过去 —— 于是「停住」验不出来；这就是 `DEVNULL` 那一类坑的另一种形态。4 条变异 0 存活，其中 M2（把 `pause` 改成无条件）恰好由「成功不该拖住窗口」那条抓住，说明两条断言各管一边。
+
+**电池自己的一个坑**（记下来防止误读结论）：多变异循环里必须以**进入前的干净文本**为底本，不能 `path.read_text()` —— 我这版写了后者，第一个变异把 `--omit` 摘掉后，后面两个变异的锚点就不存在了，输出里显示成「未施加」。它没造成假绿（未施加会被单列），但会把「4 条变异」悄悄报成「2/4 杀死」，读起来像是守卫没牙。

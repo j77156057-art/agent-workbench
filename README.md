@@ -196,7 +196,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 |---|---|
 | 后端测试 | 全量测试收在 `tests/`，以 `unittest.TestCase` 为主、CI 每次跑全量（`python -m unittest discover`）；module 级 `def test_*` 走独立 pytest lane，`pytest` 与 `unittest` 两条都能收 |
 | 前端测试 | `node --test` 直跑生产模块，不做打包后测试 |
-| CI | GitHub Actions 单 workflow，两矩阵（SQLite / Postgres 16），job 级 60 分钟超时，覆盖：依赖安装 → 前端构建 → 前端测试 → **前端 lint（eslint）** → 编译检查 → **静态缺陷门（ruff F821/F811/F402/F541/F841/F401）** → **改动行覆盖率门（这次改的行有没有用例走过，不盯全仓百分比）** → 评测门 → **变异测试电池** → 检索回归 → 离线工作流验收 → 全量测试 → Postgres 严格集成 → 真实 LLM 冒烟。两个测试 lane 失败时会把红名单打成 check-run 注释（`tools/ci_red_summary.py`），用 `gh api repos/{o}/{r}/commits/{sha}/check-runs` 加 `/annotations` 就能读——不依赖 objects.githubusercontent.com 那个在本机被墙的日志下载域名 |
+| CI | GitHub Actions 单 workflow，两矩阵（SQLite / Postgres 16），job 级 60 分钟超时，覆盖：依赖安装 → 前端构建 → 前端测试 → **前端 lint（eslint）** → 编译检查 → **静态缺陷门（ruff F821/F811/F402/F541/F841/F401/W605）** → **改动行覆盖率门（这次改的行有没有用例走过，不盯全仓百分比）** → 评测门 → **变异测试电池** → 检索回归 → 离线工作流验收 → 全量测试 → Postgres 严格集成 → 真实 LLM 冒烟。两个测试 lane 失败时会把红名单打成 check-run 注释（`tools/ci_red_summary.py`），用 `gh api repos/{o}/{r}/commits/{sha}/check-runs` 加 `/annotations` 就能读——不依赖 objects.githubusercontent.com 那个在本机被墙的日志下载域名。runner 标签钉成 `ubuntu-24.04`（不用会飘的 `-latest`），`checkout` / `setup-python` / `setup-node` 全部升到 node24 大版本 v7，每次跑不再挂「Node.js 20 is deprecated」告警 |
 | 变异测试 | 改坏实现，门禁必须抓到（"写了测试但抓不住 bug"和没写测试一样糟） |
 | baseline 回归门 | 黄金题库分 L1 单跳 / L2 多跳 / L3 抗干扰三档，pass→fail 即**退出码 1**，已接入冻结发布流程 |
 | 视觉回归 | 多套基线逐像素比对，单像素通道差 > 4 的像素超过 200 个即失败 |
