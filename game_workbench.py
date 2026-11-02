@@ -1,5 +1,5 @@
 """Game-development helpers built on top of the region workspace."""
-import json, os, re, subprocess, math, time, mimetypes, sys, ast as _ast, urllib.request, urllib.parse, urllib.error, shutil, zipfile, tempfile, uuid, hashlib, threading, base64
+import json, os, re, subprocess, math, time, mimetypes, sys, ast as _ast, urllib.request, urllib.parse, urllib.error, shutil, zipfile, tempfile, uuid, hashlib, threading, base64, atexit
 from collections import deque
 import mcp_client
 import gpu_coordinator as _gpu
@@ -910,7 +910,7 @@ def engine_start(root, executable="godot", scene="", host_hwnd=None, embed=False
                                     'rect': dict(rect) if isinstance(rect, dict) else None,
                                     'fill': bool(fill), 'engine': selected}
         _gpu.register_process(p.pid, lease_owner, lease.get('gpu'), selected)
-        _ENGINE_LOGS[root_abs] = log
+        _register_engine_log(root_abs, log)
         result = {"ok": True, "running": True, "pid": p.pid, "gpu": lease.get("gpu")}
         # 软租约下显存门槛只出警告、不阻断（单卡让用户自行判断）；透传给前端展示。
         if lease.get("warning"):
@@ -945,6 +945,16 @@ def engine_start(root, executable="godot", scene="", host_hwnd=None, embed=False
         _gpu.release(lease_owner)
         return {"ok": False, "error": f"无法启动 {selected}：{e}"}
 
+def _register_engine_log(root_abs, log):
+    """登记引擎日志句柄；同一项目重启/重载时**先关旧句柄再覆盖**。
+
+    不先关就等于每重载一次漏一个 fd（本机全量里那条
+    `unclosed file <_io.FileIO name='…\\engine.log'>` 就是它）——只有走 engine_stop
+    的路径才会关，而重启是「新的起来、旧的没人停」。
+    """
+    _close_engine_log(root_abs)
+    _ENGINE_LOGS[root_abs] = log
+
 def _close_engine_log(root_abs):
     """关掉引擎日志句柄并把它从登记表里摘掉；没有句柄时什么也不做。"""
     log = _ENGINE_LOGS.pop(root_abs, None)
@@ -953,6 +963,18 @@ def _close_engine_log(root_abs):
             log.close()
         except Exception:  # noqa: BLE001
             pass
+
+def _close_all_engine_logs(*_args):
+    """退出时把还挂着的引擎日志句柄关掉 —— 覆盖「起来了但没人 stop」的路径。
+
+    子进程自己有 dup 的一份 fd，关父进程这份不影响它写日志；不关的话解释器退出时
+    会报 `unclosed file <_io.FileIO name='…\\engine.log'>`（本机全量里那条）。
+    """
+    for root_abs in list(_ENGINE_LOGS):
+        _close_engine_log(root_abs)
+
+
+atexit.register(_close_all_engine_logs)
 
 def engine_stop(root):
     """停止引擎。**先解除嵌入再结束进程**——顺序反了会留下失效的子窗口。

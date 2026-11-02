@@ -69,6 +69,25 @@ class EngineLogCloseTests(unittest.TestCase):
             self.assertNotIn(key, gw._ENGINE_LOGS)
 
 
+    def test_restarting_closes_the_previous_log(self):
+        """重启/重载同一项目时，被覆盖的旧句柄必须先关。
+
+        不关就等于每次重载漏一个 fd：本机全量里那条
+        `unclosed file <_io.FileIO name='…\\engine.log'>` 就是它——只有 engine_stop
+        会关，而重启是「新的起来、旧的没人停」。
+        """
+        with tempfile.TemporaryDirectory() as root:
+            first = self._open_log(root)
+            gw._ENGINE_LOGS[root] = first
+            second = self._open_log(root)
+            try:
+                gw._register_engine_log(root, second)
+                self.assertTrue(first.closed, "被覆盖的旧句柄没关：每重载一次漏一个 fd")
+                self.assertIs(gw._ENGINE_LOGS[root], second, "登记的不是新句柄")
+            finally:
+                # 新句柄也要收：临时目录在 Windows 上删不掉还被占用的文件。
+                gw._close_engine_log(root)
+
     def test_a_failing_close_does_not_escape(self):
         """close() 自己抛异常时也要吞掉并把登记表清干净 —— 否则停止流程会被日志句柄带崩。"""
         handle = mock.Mock()

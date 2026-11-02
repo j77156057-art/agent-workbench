@@ -4599,6 +4599,21 @@ def _ptc_bridge_write_dispatch(name, arg, state, session_id=""):
             "pending": pid, "tier": tier, "replayed": False}
 
 
+def _close_quietly(stream):
+    """关一个流；关失败也不抛（关失败不该把调用方带崩）。
+
+    单独成函数是为了让「close 失败」这条兜底分支能被单测直接击穿 —— 正常执行路径里
+    close() 不会失败，把 try/except 内联在调用处只会留下两行永远不被执行的分支，
+    改动行覆盖率门会如实点它的名。
+    """
+    if stream is None:
+        return
+    try:
+        stream.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
     """PTC 路径 B 服务环（步 3：Popen 双读线程 + IPC 回调 execute_tool）。
 
@@ -4789,11 +4804,8 @@ def _python_exec_ptc_run(code, ceiling=1, allow_escalate=True):
     # `unclosed file <_io.TextIOWrapper name=…>` 就是这么来的。
     # 线程还活着时不动它的流：关闭正在迭代的文件会让线程把「关闭」记成读取异常。
     for _thread, _stream in ((t_out, proc.stdout), (t_err, proc.stderr)):
-        try:
-            if _stream is not None and not _thread.is_alive():
-                _stream.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if not _thread.is_alive():
+            _close_quietly(_stream)
     try:
         proc.stdin.close()
     except Exception:  # noqa: BLE001

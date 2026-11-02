@@ -8,7 +8,9 @@ import game_workbench as gw
 class EngineGpuLeaseTests(unittest.TestCase):
     def tearDown(self):
         gw._ENGINE_PROCS.clear()
-        gw._ENGINE_LOGS.clear()
+        # 先关再清：直接 clear() 只是把句柄丢掉，等 gc 时才关 —— 本机全量里
+        # `unclosed file <_io.FileIO name='…engine.log'>` 就是这么来的。
+        gw._close_all_engine_logs()
         gw._ENGINE_LAUNCH.clear()
         gw._ENGINE_SNAPSHOT.clear()
         gw._EMBED_STATE.clear()
