@@ -105,6 +105,13 @@ class LivePlaywrightHandshake(unittest.TestCase):
                         # terminate 之后必须 wait：不回收的话进程还挂着，gc 时留下
                         # 一条 `subprocess … is still running`（本机全量里那条就是它）。
                         proc.wait(timeout=10)
+                        # 会话的 stdin/stdout/stderr 都是 PIPE，关掉才算收完 —— 否则 gc 时
+                        # 还会留一条 `unclosed file <_io.TextIOWrapper …>`。
+                        for stream in (getattr(proc, "stdin", None),
+                                       getattr(proc, "stdout", None),
+                                       getattr(proc, "stderr", None)):
+                            if stream is not None:
+                                stream.close()
                     except Exception:
                         pass
         except Exception:

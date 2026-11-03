@@ -487,8 +487,9 @@ class WindowsOnlyLiveTests(unittest.TestCase):
             while popen.poll() is None and time.time() < deadline:
                 time.sleep(0.2)
             leaked = popen.poll() is None
-            if leaked:
-                popen.kill()
+            # 收尾用生产代码里同一个函数：需要时 kill，并且把 stdout 管道关掉
+            # （spawn_isolated 给的是 PIPE，测试自己也得负责收）。
+            ws._reap_quietly(popen)
             self.assertFalse(leaked,
                              "作业对象句柄关掉之后，子进程还活着——"
                              "KILL_ON_JOB_CLOSE 没起作用，会变成下一个 99°C")

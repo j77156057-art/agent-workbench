@@ -135,6 +135,34 @@ def _create_job(memory_bytes: int):
     return kernel32, handle
 
 
+def _reap_quietly(popen, timeout: float = 5.0) -> None:
+    """杀掉并**回收**一个子进程，再把它的管道包装器关掉；任何一步失败都不抛。
+
+    `kill()` 之后不 `wait()` 时：进程对象要等 gc 才回收，管道包装器也一起活到 gc ——
+    本机全量里 `subprocess … is still running` 与成对出现的
+    `unclosed file <_io.TextIOWrapper name=…>` 就是拒绝执行这条路径留下的。
+    """
+    if popen is None:
+        return
+    try:
+        if popen.poll() is None:
+            popen.kill()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        popen.wait(timeout=timeout)
+    except Exception:  # noqa: BLE001
+        pass
+    for stream in (getattr(popen, "stdin", None), getattr(popen, "stdout", None),
+                   getattr(popen, "stderr", None)):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def run_isolated(command: list[str], *, cwd: str, env: Mapping[str, str], timeout: int,
                  memory_bytes: int = 512 * 1024 * 1024):
     """Run one process under a bounded Job Object and return CompletedProcess."""
@@ -176,10 +204,7 @@ def run_isolated(command: list[str], *, cwd: str, env: Mapping[str, str], timeou
                 kernel32.TerminateJobObject(job, 125)
             except Exception:
                 pass
-            try:
-                process.kill()
-            except Exception:
-                pass
+            _reap_quietly(process)
         kernel32.CloseHandle(job)
 
 
@@ -208,11 +233,7 @@ def spawn_isolated(command: list[str], *, cwd: str, env: Mapping[str, str],
             raise _win32_error("无法将进程加入 Job Object")
         return popen, kernel32, job
     except BaseException:
-        if popen is not None and popen.poll() is None:
-            try:
-                popen.kill()
-            except Exception:
-                pass
+        _reap_quietly(popen)
         kernel32.CloseHandle(job)
         raise
 

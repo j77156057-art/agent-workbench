@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+import atexit
 import urllib.request
 import urllib.error
 import uuid
@@ -715,6 +716,25 @@ def _ensure_instance_lock() -> None:
         except Exception:
             # 活锁不可用（只读/无权限）时退回 TTL 兜底，不能挡住对话主链路。
             pass
+
+
+def _release_instance_locks() -> None:
+    """进程正常退出时释放存活锁。
+
+    锁的语义是「这个 API 进程还活着」；正常退出就该放手。不释放也不会坏（OS 会回收），
+    但句柄要等 gc 才关 —— 本机全量里那 3 条
+    `unclosed file <_io.BufferedRandom name='…\.docmind\instances\…'>` 就是它们。
+    单测直接调用本函数（正常释放 / 释放抛异常两种），所以不是「只在退出时执行」的死行。
+    """
+    for lock in list(_INSTANCE_LOCKS.values()):
+        try:
+            lock.release()
+        except Exception:  # noqa: BLE001
+            pass
+    _INSTANCE_LOCKS.clear()
+
+
+atexit.register(_release_instance_locks)
 
 
 def _owner_instance_id() -> str:
