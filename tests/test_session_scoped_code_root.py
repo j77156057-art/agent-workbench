@@ -265,10 +265,16 @@ class SessionScopedCodeRootTests(unittest.TestCase):
             after = json.load(handle)
         self.assertEqual(after.get("code_root"), str(self.proj_a),
                          "老会话没被绑定 —— 它会永远回落全局，原缺陷仍在")
-        for key in ("turns", "summary", "snapshots", "session_id"):
+        for key in ("turns", "snapshots", "session_id"):
             self.assertEqual(after.get(key), original[key],
                              "绑定代码库时**改动了 %s** —— 那是用户数据，"
                              "只能追加字段，不能改写" % key)
+        # 摘要自 2026-11 起不再整段落盘：内容必须原样保住在 rolling，
+        # 读出来的渲染结果与原文逐字一致，才算「没改写用户历史」。
+        self.assertNotIn("summary", after, "摘要应改为 pinned/rolling 两段落盘")
+        self.assertEqual(after.get("rolling"), original["summary"],
+                         "绑定代码库时**改写了摘要内容**")
+        self.assertEqual(sessions.summary_text("s-nowrite"), original["summary"])
 
     # ---------- 优先级 ----------
 

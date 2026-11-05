@@ -154,7 +154,8 @@ class MigrationCompatTests(unittest.TestCase):
         row = [r for r in rows if r["path"] == path]
         self.assertEqual(len(row), 1)
         self.assertTrue(os.path.exists(row[0]["backup"]))
-        raw = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
         self.assertNotIn("summary", raw, "新格式不得再落一整段 summary")
         migrated = sessions._summary_state_from_raw(raw)["summary"]
         parsed = sessions._parse_summary(migrated)
@@ -163,10 +164,12 @@ class MigrationCompatTests(unittest.TestCase):
         self.assertIn("pinned_from_legacy_head", migrated)
         self.assertLessEqual(len(migrated), 400)
 
-        before = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as handle:
+            before = json.load(handle)
         again = sessions.migrate_summaries(400)
         self.assertEqual([r for r in again if r["path"] == path], [])
-        self.assertEqual(json.load(open(path, encoding="utf-8")), before)
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle), before)
 
     def test_within_limit_legacy_is_zero_change(self):
         sid = "pin-small"
@@ -175,7 +178,8 @@ class MigrationCompatTests(unittest.TestCase):
         rows = [r for r in sessions.migrate_summaries(400) if r["path"] == path]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["mode"], "split")
-        raw = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
         self.assertNotIn("summary", raw)
         self.assertEqual(raw["pinned"], [])
         self.assertEqual(raw["rolling"], legacy)
@@ -194,12 +198,15 @@ class MigrationCompatTests(unittest.TestCase):
         rows = [r for r in sessions.migrate_summaries(400) if r["path"] == path]
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["mode"], "tombstone_backfill")
-        raw = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
         self.assertEqual(raw["pinned_tombstones"], [])
-        before = json.load(open(path, encoding="utf-8"))
+        with open(path, encoding="utf-8") as handle:
+            before = json.load(handle)
         again = [r for r in sessions.migrate_summaries(400) if r["path"] == path]
         self.assertEqual(again, [])
-        self.assertEqual(json.load(open(path, encoding="utf-8")), before)
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle), before)
 
         empty = os.path.join(self.tmp, sessions._slug("pin-empty") + ".json")
         with open(empty, "w", encoding="utf-8") as handle:
@@ -207,11 +214,13 @@ class MigrationCompatTests(unittest.TestCase):
                        "rolling": "只有近期进展。", "turns": [],
                        "updated_at": "2026-11-05T00:00:00"},
                       handle, ensure_ascii=False)
-        original = open(empty, encoding="utf-8").read()
+        with open(empty, encoding="utf-8") as handle:
+            original = handle.read()
         self.assertEqual([r for r in sessions.migrate_summaries(400)
                           if r["path"] == empty], [])
-        self.assertEqual(open(empty, encoding="utf-8").read(), original,
-                         "pinned=[] 的老会话不得升格或改写")
+        with open(empty, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), original,
+                             "pinned=[] 的老会话不得升格或改写")
 
     def test_unmarked_summary_still_readable_and_merges(self):
         parsed = sessions._parse_summary("无标记旧摘要：ORCHID-2718。")
