@@ -21,11 +21,13 @@
    restore 回到不属于这条链的状态。
 """
 
+import asyncio
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -112,7 +114,11 @@ class RewindTests(Base):
         """摘要与 turns 必须同时回到那一刻，否则模型会拿着"第4轮的摘要"配"第2轮的历史"。"""
         self._seed()
         got = sessions.restore_snapshot(self.sid, 2)
-        self.assertEqual(got["summary"], "摘要2")
+        # 结构性改造 1 之后摘要以 pinned/rolling 渲染文本返回，语义仍必须是第 2 轮。
+        self.assertEqual(sessions._parse_summary(got["summary"])["rolling"], "摘要2")
+        self.assertNotIn("摘要4", got["summary"])
+        self.assertEqual(
+            sessions._parse_summary(sessions.summary_text(self.sid))["rolling"], "摘要2")
 
     def test_it_persists(self):
         """回退必须真的落盘——否则刷新页面又变回去了。"""
@@ -139,6 +145,56 @@ class RewindTests(Base):
         sessions.restore_snapshot(self.sid, 1)
         remaining = [item["seq"] for item in sessions.snapshots(self.sid)]
         self.assertEqual(remaining, [1])
+
+
+class SafeRewindTests(Base):
+
+    def _seed(self):
+        for n in (1, 2, 3):
+            turns = [self._turn(i) for i in range(1, n + 1)]
+            sessions.save(self.sid, turns, "摘要%d" % n)
+            sessions.snapshot(self.sid, turns, label="第%d轮" % n)
+        sessions.save(self.sid, [self._turn(i) for i in range(1, 5)], "摘要4")
+
+    def test_safe_rewind_keeps_a_forkable_pre_rewind_backup(self):
+        self._seed()
+        got = sessions.rewind_with_backup(self.sid, 1)
+        self.assertTrue(got["ok"])
+        self.assertEqual(got["backup_seq"], 4)
+        self.assertEqual(len(sessions.history(self.sid)), 1)
+        self.assertEqual([item["seq"] for item in sessions.snapshots(self.sid)], [1, 4])
+        backup = sessions.snapshots(self.sid)[-1]
+        self.assertEqual(backup["total_turn_count"], 4)
+        forked = sessions.fork_session(self.sid, "sess-backup-fork", at_seq=4)
+        self.assertTrue(forked["ok"])
+        self.assertEqual(len(sessions.history("sess-backup-fork")), 4)
+        self.assertEqual(len(sessions.history(self.sid)), 1)
+
+    def test_missing_snapshot_does_not_create_a_backup_or_change_history(self):
+        self._seed()
+        got = sessions.rewind_with_backup(self.sid, 99)
+        self.assertFalse(got["ok"])
+        self.assertIn("找不到", got["reason"])
+        self.assertEqual(len(sessions.history(self.sid)), 4)
+        self.assertEqual(len(sessions.snapshots(self.sid)), 3)
+
+    def test_unfinished_turn_is_rejected_before_writing_a_backup(self):
+        self._seed()
+        data = sessions.load(self.sid)
+        data["turns"][-1]["status"] = "streaming"
+        sessions._write(self.sid, data)
+        got = sessions.rewind_with_backup(self.sid, 1)
+        self.assertFalse(got["ok"])
+        self.assertIn("未完成", got["reason"])
+        self.assertEqual(len(sessions.history(self.sid)), 4)
+        self.assertEqual(len(sessions.snapshots(self.sid)), 3)
+
+    def test_snapshot_metadata_includes_archived_turns_in_impact_count(self):
+        sessions.save(self.sid, [self._turn(2)], "", archived=[self._turn(1)])
+        sessions.snapshot(self.sid, [self._turn(2)], label="含归档")
+        item = sessions.snapshots(self.sid)[0]
+        self.assertEqual(item["archived_count"], 1)
+        self.assertEqual(item["total_turn_count"], 2)
 
 
 class ForkTests(Base):
@@ -191,6 +247,23 @@ class ForkTests(Base):
     def test_forking_an_empty_session_is_refused(self):
         got = sessions.fork_session("never-existed", "sess-copy")
         self.assertFalse(got["ok"])
+
+
+class ApiGenerationGuardTests(unittest.TestCase):
+
+    def test_active_generation_is_rejected_without_calling_rewind(self):
+        import api
+        sid = "sess-generating"
+        key = api._agent_key(sid)
+        thread = mock.Mock()
+        thread.is_alive.return_value = True
+        api._ACTIVE_RUN[key] = {"thread": thread, "stop": mock.Mock()}
+        self.addCleanup(api._ACTIVE_RUN.pop, key, None)
+        with mock.patch.object(api.session_store, "rewind_with_backup") as rewind:
+            got = asyncio.run(api.session_rewind_ep(sid, 1))
+        self.assertFalse(got["ok"])
+        self.assertIn("生成中", got["error"])
+        rewind.assert_not_called()
 
 
 class ApiSurfaceTests(unittest.TestCase):
