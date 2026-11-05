@@ -64,6 +64,10 @@ from config import (
     exec_approval_enabled,
     get_external_access_mode,
     set_external_access_mode,
+    get_desktop_approval_mode,
+    set_desktop_approval_mode,
+    get_mcp_unproven_mode,
+    set_mcp_unproven_mode,
     get_web_search_provider,
     set_web_search_provider,
     get_web_search_api_key,
@@ -270,6 +274,7 @@ def _desktop_host_source(project_id) -> str:
     return 'none'
 
 import workbench_fs
+import system_resources
 import flows
 import asset_sources
 import asset_gen
@@ -329,6 +334,13 @@ async def _app_lifespan(app):
     gpu.register_hook("ollama", _gpu_ollama_evict_hook)
     gpu.register_hook("comfyui", _gpu_comfy_evict_hook)
     gpu.start_background()
+    # 系统资源采样：静态能力画像（CPU/GPU/OS/内存，开局一次）+ 后台线程按固定
+    # 间隔采样 CPU/内存/磁盘/GPU；GET /api/system/resources 只读内存快照，
+    # 避免前端轮询触发冷采、也避免把 CPU 自己拉高。启动失败不影响主链路。
+    try:
+        system_resources.start()
+    except Exception:  # noqa: BLE001 —— 采样故障不阻断服务启动
+        pass
     # 引擎崩溃看门狗：进程异常退出（没走 /api/engine/stop）时清理 _EMBED_STATE 残留，
     # 避免失效 hwnd / 误报嵌入状态；GPU 租约由 gpu_coordinator 进程死亡看门狗统一释放。
     start_engine_watchdog()
@@ -361,6 +373,10 @@ async def _app_lifespan(app):
         except Exception:  # noqa: BLE001
             pass
         gpu.stop_background()
+        try:
+            system_resources.stop()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 app = FastAPI(title="Agent Workbench", lifespan=_app_lifespan)
@@ -723,7 +739,7 @@ def _release_instance_locks() -> None:
 
     锁的语义是「这个 API 进程还活着」；正常退出就该放手。不释放也不会坏（OS 会回收），
     但句柄要等 gc 才关 —— 本机全量里那 3 条
-    `unclosed file <_io.BufferedRandom name='…\.docmind\instances\…'>` 就是它们。
+    `unclosed file <_io.BufferedRandom name='…\\.docmind\\instances\\…'>` 就是它们。
     单测直接调用本函数（正常释放 / 释放抛异常两种），所以不是「只在退出时执行」的死行。
     """
     for lock in list(_INSTANCE_LOCKS.values()):
@@ -4508,7 +4524,7 @@ def _vision_action_project(request: Request) -> tuple[str, str]:
 async def locate_click_ep(request: Request, payload: dict | None = None):
     """让视觉模型在嵌入窗口里定位一个可点击目标，产出**一次性**提案。
 
-    本端点只定位、不点击。执行走 `/api/vision/execute-click` 并须带 `confirmed`。
+    本端点只定位、不点击。执行走 `/api/vision/execute-click`，审批后用同一提案重试。
     捕获用 `strict_project`：点错窗口的代价远高于「找不到窗口」，所以这里绝不
     回退到遗留默认宿主。
 
@@ -4540,10 +4556,10 @@ async def locate_click_ep(request: Request, payload: dict | None = None):
 
 @app.post("/api/vision/execute-click")
 async def execute_click_ep(request: Request, payload: dict | None = None):
-    """执行一次已确认的点击提案；提案单次使用，画面变了就作废。
+    """审批后执行一次性视觉提案；客户端 confirmed 不再是授权凭据。
 
-    三道闸门，缺一不可：①用户确认；②重新捕获的画面仍是同一个窗口、目标位置像素
-    没变；③审批台账留痕。任何一道没过都不点。
+    strict/user/model 统一走 execute_desktop_action。pending 返回 202 和稳定 ticket，
+    批准后用同一 proposal_id 重试；终态按 ticket 幂等，视觉 used 再兜住单次执行。
     """
     if not _http_origin_allowed(request):
         return JSONResponse({"ok": False, "error": "请求来源不被允许。"}, status_code=403)
@@ -4553,17 +4569,42 @@ async def execute_click_ep(request: Request, payload: dict | None = None):
     body = payload if isinstance(payload, dict) else {}
     proposal_id = str(body.get("proposal_id") or "").strip()
     root = _project_root_or_error()
+    from agent_runtime.enterprise_sandbox import execute_desktop_action
     try:
-        result = await run_in_threadpool(
-            visual_click.execute, pid, root, proposal_id=proposal_id,
-            confirmed=bool(body.get("confirmed")))
+        from agent_runtime.tools import stage_origin_root
+        ledger_root = stage_origin_root() or root
+    except Exception:
+        ledger_root = root
+    ticket_id = "vision-" + proposal_id
+
+    async def run_boundary():
+        return await run_in_threadpool(
+            execute_desktop_action,
+            root=ledger_root, channel="vision", action="click", target="embedded",
+            details=visual_click.execution_details(proposal_id), ticket=ticket_id,
+            executor=lambda: visual_click.execute(
+                pid, root, proposal_id=proposal_id, confirmed=True, gate=False,
+                approval_actor="desktop_boundary"))
+
+    try:
+        result = await run_boundary()
+        if result.get("renewal_required"):
+            renewal = result
+            # 旧 strict 批准已消费；用包含 renewal 的新摘要重新签票，不能直接点击。
+            result = await run_boundary()
+            result = {**result, "renewed": True, "renewal": renewal["renewal"],
+                      "renewal_message": renewal["message"]}
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             {"ok": False, "error": f"点击失败：{type(exc).__name__}: {str(exc)[:200]}"}, status_code=502)
+    if result.get("approval_required"):
+        return JSONResponse({**result, "ok": False, "state": "pending", "pending": True,
+                             "ticket_id": ticket_id, "proposal_id": proposal_id,
+                             "executed": False, "result": None}, status_code=202)
     if not result.get("ok"):
-        # 失败体原样回传（含 used/before 等已发生的事实），状态码按语义给。
-        return JSONResponse(result, status_code=int(result.get("status") or 400))
-    return result
+        return JSONResponse({**result, "state": "error", "pending": False,
+                             "ticket_id": ticket_id}, status_code=int(result.get("status") or 400))
+    return {**result, "state": "completed", "pending": False, "ticket_id": ticket_id}
 
 
 @app.get("/api/trace")
@@ -4654,6 +4695,98 @@ async def agent_memory_ep(query: str = "", limit: int = 20):
     import agent_memory
     scope = agent_memory.scope_key(_request_project_id() or None)
     return {"ok": True, "items": agent_memory.recall(scope, query, limit), "advisory": True}
+
+
+@app.get("/api/agent/memory/inspect")
+async def agent_memory_inspect_ep(session_id: str = "", agent_id: str = "main", soft: int = 0):
+    """当前会话/代理的实际注入、库存、守则与可核验合规证据（只读）。
+
+    `soft=1` 用于树/面板这类「节点快照还在、进程内实例已不在」的正常空状态：
+    返回 available=false 与真实原因，而不是 404，避免把预期内的空状态记成前端控制台错误。
+    该响应不包含任何注入/库存数值，视图必须据此显示空状态，不得当作该 Agent 的上下文。
+    """
+    from agent_runtime.memory import inspector
+    project = _request_project_id() or "default"
+    session = str(session_id or "").strip() or "default"
+    if agent_id != "main":
+        from agent_runtime import delegation
+        selected = delegation.agent_for(session, agent_id)
+        if selected is None:
+            if soft:
+                return {
+                    "ok": False,
+                    "available": False,
+                    "reason": "agent_instance_unavailable",
+                    "error": "当前会话不存在该 Agent 实例",
+                    "session_id": session,
+                    "agent_id": agent_id,
+                }
+            raise HTTPException(status_code=404, detail="当前会话不存在该 Agent 实例")
+    else:
+        selected = _agent_for(session, project)
+    return inspector.view(selected, project=project, session=session, agent_id=agent_id)
+
+
+@app.get("/api/agent/delegations")
+async def agent_delegations_ep(session_id: str = ""):
+    from agent_runtime import delegation
+    return delegation.tree(str(session_id or "").strip() or "default")
+
+
+# ---------------------------------------------------------------- Agent 卡片墙（只读）
+# 花名册 / 对话记录 / 记忆 / 使用台账。全部读持久化数据，不依赖进程内实例。
+@app.get("/api/agents")
+async def agents_roster_ep(session_id: str = ""):
+    import agent_workbench
+    return agent_workbench.roster(_request_project_id() or "", str(session_id or "").strip() or "default")
+
+
+@app.get("/api/agents/{agent_id}/conversation")
+async def agent_conversation_ep(agent_id: str, session_id: str = ""):
+    import agent_workbench
+    return agent_workbench.conversation(
+        _request_project_id() or "", str(session_id or "").strip() or "default", agent_id)
+
+
+@app.get("/api/agents/{agent_id}/memory")
+async def agent_scoped_memory_ep(agent_id: str, session_id: str = ""):
+    import agent_workbench
+    return agent_workbench.memories(
+        _request_project_id() or "", str(session_id or "").strip() or "default", agent_id)
+
+
+@app.get("/api/agents/{agent_id}/usage")
+async def agent_usage_ep(agent_id: str, session_id: str = "", limit: int = 200):
+    import agent_workbench
+    return agent_workbench.usage(
+        _request_project_id() or "", str(session_id or "").strip() or "default", agent_id, limit)
+
+
+@app.post("/api/agent/delegations/{node_id}/decision")
+async def agent_delegation_decision_ep(node_id: str, request: Request):
+    from agent_runtime import delegation
+    body = await _memory_body(request)
+    session = str(body.get("session_id") or "").strip() or "default"
+    approved = body.get("approved") is True
+    selected = _agent_for(session, _request_project_id() or "default")
+    actor = str(body.get("approved_by") or _request_user_id(request))
+    return await run_in_threadpool(delegation.decide, session, node_id, approved, selected, actor)
+
+
+@app.post("/api/agent/task-assistant")
+async def agent_task_assistant_ep(request: Request):
+    body = await _memory_body(request)
+    goal = str(body.get("goal") or "").strip()
+    if not goal:
+        raise HTTPException(status_code=400, detail="缺少任务目标")
+    session = str(body.get("session_id") or "").strip() or "default"
+    project = _request_project_id() or "default"
+    selected = _agent_for(session, project)
+    try:
+        max_replans = max(0, min(3, int(body.get("max_replans", 1))))
+    except (TypeError, ValueError):
+        max_replans = 1
+    return await run_in_threadpool(lambda: selected.task_assist(goal, max_replans=max_replans))
 
 
 def _request_user_id(request: Request | None = None) -> str:
@@ -5018,6 +5151,36 @@ async def memory_context_ep(session_id: str = "", mode: str = "next"):
     if mode == "last":
         return context_panel.last_view(session_id)
     return context_panel.next_view(project, session_id)
+
+
+@app.get("/api/memory/pinned")
+async def memory_pinned_ep(session_id: str = "", agent_id: str = "main"):
+    """固定事实只读列表（按 agent 作用域解析会话，不触碰 memories 表）。"""
+    from agent_runtime.memory import context_panel
+    if not get_memory_v2():
+        return {"ok": False, "enabled": False, "error": "记忆 v2 未启用",
+                "entries": [], "tombstones": [], "audit": []}
+    return context_panel.pinned_view(session_id, agent_id)
+
+
+@app.delete("/api/memory/pinned/{entry_id}")
+async def memory_pinned_delete_ep(entry_id: str, session_id: str = "",
+                                  agent_id: str = "main", confirm: bool = False):
+    """用户删除固定事实：必须带一次确认；模型没有删除入口。"""
+    _memory_require()
+    from agent_runtime.memory import context_panel, gates
+    try:
+        gates.require_confirm(confirm, "删除固定事实")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        out = context_panel.delete_pinned(entry_id, session_id, agent_id,
+                                          actor="user")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not out.get("ok"):
+        raise HTTPException(status_code=404, detail=out.get("reason") or "未找到固定事实")
+    return {**out, "ok": True}
 
 
 @app.put("/api/memory/constitution")
@@ -5468,19 +5631,37 @@ async def session_snapshots_ep(session_id: str):
 
 @app.post("/api/sessions/{session_id}/rewind")
 async def session_rewind_ep(session_id: str, seq: int = 0):
-    """回到第 seq 个快照那一刻的会话状态。
-
-    **有损且不可逆**：被回退掉的轮次会丢弃，所以先落在同一份会话文件里
-    （`snapshots` 字段），一旦 rewind 就真的没了。找不到快照时返回 ok=False
-    并给出原因，而不是 404——前端要能把这句话直接显示给用户。
-    """
-    result = session_store.restore_snapshot(
-        session_id, seq, project_id=_request_project_id() or None)
+    """先备份当前状态，再回到指定快照；生成中或未完成轮次明确拒绝。"""
+    key = _agent_key(session_id)
+    active = _ACTIVE_RUN.get(key)
+    if (active and active.get("thread") is not None
+            and active["thread"].is_alive()):
+        return {"ok": False, "session_id": str(session_id or ""),
+                "error": "会话正在生成中，请停止或等待完成后再回退。"}
+    with _IN_FLIGHT_TURNS_LOCK:
+        generating = any(str(item.get("session_id") or "") == str(session_id or "")
+                         and item.get("status") == "streaming"
+                         for item in _IN_FLIGHT_TURNS.values())
+    if generating:
+        return {"ok": False, "session_id": str(session_id or ""),
+                "error": "会话有正在生成的轮次，请停止或等待完成后再回退。"}
+    # 与聊天 run 使用同一把跨进程文件锁；拿不到说明另一实例仍在生成，绝不打断它。
+    session_lock = CrossProcessFileLock(_session_lease_path(key), timeout=0.0)
+    try:
+        session_lock.acquire()
+    except TimeoutError:
+        return {"ok": False, "session_id": str(session_id or ""),
+                "error": "会话正在其他工作台实例中生成，请稍后再回退。"}
+    try:
+        result = session_store.rewind_with_backup(
+            session_id, seq, project_id=_request_project_id() or None)
+    finally:
+        session_lock.release()
     if not result.get("ok"):
         return {"ok": False, "error": result.get("reason") or "回退失败。",
                 "session_id": str(session_id or "")}
     # 常驻 Agent 的内存历史必须一起退，否则重开工作台时旧历史又回来了。
-    agent = _SESSION_AGENTS.get(_agent_key(session_id))
+    agent = _SESSION_AGENTS.get(key)
     if agent is not None:
         try:
             agent.history = [dict(t) for t in result["turns"]]
@@ -5490,6 +5671,7 @@ async def session_rewind_ep(session_id: str, seq: int = 0):
             pass
     return {"ok": True, "session_id": str(session_id or ""),
             "turns": result["turns"], "summary": result.get("summary") or "",
+            "backup_seq": result.get("backup_seq"),
             "message": result.get("reason") or ""}
 
 
@@ -5516,6 +5698,8 @@ async def session_delete_ep(session_id: str):
     agent_memory.delete_checkpoints(agent_memory.scope_key(_request_project_id() or None), session_id)
     # 同时丢弃常驻 Agent，避免删除后旧历史仍在内存里续用（键与 _agent_for 一致）
     _SESSION_AGENTS.pop(_agent_key(session_id), None)
+    from agent_runtime import delegation
+    delegation.clear(session_id)
     return {"ok": session_store.delete(session_id, project_id=_request_project_id() or None)}
 
 
@@ -5681,6 +5865,10 @@ async def orchestrate_ep(req: OrchestrateReq):
     """多代理编排：按任务图并行调度受限子代理，返回结构化结果。
 
     含 waves / 各任务结论 / merged 合成 / replans 重规划次数。
+    同会话、同项目、未扩权且未超限的直接子任务同步执行并返回 ok/failed；
+    高风险任务返回 pending 和 plan_id，任务图与各节点结果持久化到 .docmind/orchestrations。
+    批准后按节点恢复，已完成节点不重跑；全部结束后重新汇总和合成。
+    拒绝分支的下游标记 skipped；GET /api/orchestrate/{plan_id} 可读取恢复进度与最终报告。
     `replan=True`（默认）时任务失败会自动追加补救任务（受 `max_replans` 限制）。
     """
     a = _agent_for(req.session_id or "default")
@@ -5689,7 +5877,22 @@ async def orchestrate_ep(req: OrchestrateReq):
         (req.max_parallel or None), None, req.replan,
         (None if req.max_replans < 0 else req.max_replans),
     )
-    return {"ok": bool(rep.get("ok")), "report": rep}
+    return {"ok": bool(rep.get("ok")), "plan_id": rep.get("plan_id", ""),
+            "final": bool(rep.get("final", True)), "report": rep}
+
+
+@app.get("/api/orchestrate/{plan_id}")
+async def orchestrate_status_ep(plan_id: str):
+    """读取持久化 DAG；进程重启后也可恢复同一最终报告。"""
+    from agent_runtime import orchestration
+    record = await run_in_threadpool(orchestration.get, plan_id)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "未找到编排计划"}, status_code=404)
+    report = record.get("report") or {"tasks": record.get("tasks") or [],
+                                      "results": record.get("results") or {}}
+    return {"ok": bool(report.get("ok")), "plan_id": plan_id,
+            "status": record.get("status"), "final": bool(record.get("final")),
+            "report": report}
 
 
 @app.get("/trace")
@@ -6034,8 +6237,12 @@ class ConfigReq(BaseModel):
     video_capability: Optional[str] = None
     # 全局默认思考等级：off/low/medium/high 设置；''=清空回落默认；None=不变
     thinking_level: Optional[str] = None
-    # AI 越界访问模式：'safe'=仅项目内；'high'=允许受控越界读写。None=不变
+    # AI 写权限：safe=仅项目内；high=允许非敏感外部路径。None=不变
     external_access_mode: Optional[str] = None
+    # 桌面审批：strict=每次确认；user=同摘要30分钟复用；model=模型判断并留痕。None=不变
+    desktop_approval_mode: Optional[str] = None
+    # MCP 未证明只读：allow=放行并标记；reject=拒绝。None=不变
+    mcp_unproven_mode: Optional[str] = None
     # 模型选择模式：'fixed'=固定用当前模型；'auto'=每轮按任务复杂度在本地/云端间自动路由
     llm_mode: Optional[str] = None
     # 自动模式下复杂任务使用的云端模型预设 id
@@ -6145,8 +6352,9 @@ async def get_config():
         "build_time": _build_time(),
         # 持久化配置损坏/服务暂不可达时不阻断启动，但把降级原因展示给用户。
         "warnings": ([get_runtime("llm_startup_warning")] if get_runtime("llm_startup_warning") else []),
-        # AI 越界访问模式：safe=仅项目内；high=允许受控越界读写（须配置白名单）
         "external_access_mode": get_external_access_mode(),
+        "desktop_approval_mode": get_desktop_approval_mode(),
+        "mcp_unproven_mode": get_mcp_unproven_mode(),
         # 网络搜索 / URL 获取服务商配置（密钥不回显，仅回 has_key）
         "web_search_provider": get_web_search_provider(),
         "web_search_api_url": get_web_search_api_url(),
@@ -7315,20 +7523,22 @@ async def _apply_config(req: ConfigReq):
     if req.edit_confirm is not None:
         set_runtime("edit_confirm", bool(req.edit_confirm))
 
-    # AI 越界访问模式：safe=仅项目内；high=允许受控越界读写（须配置白名单目录）
+    # AI 写权限：safe=仅项目内；high=允许非敏感外部路径，不再使用目录白名单。
     if req.external_access_mode is not None:
         if req.external_access_mode not in ("safe", "high"):
             return JSONResponse(
-                {"ok": False, "error": "越界访问模式仅支持 'safe' 或 'high'。"}, status_code=400)
-        if req.external_access_mode == "high":
-            # 高权限必须先配置白名单，否则等于「无限制越界」——明确拒绝，避免误开
-            ext_dirs = os.getenv("DOCMIND_EXTERNAL_DIRS", "").strip()
-            if not ext_dirs:
-                return JSONResponse(
-                    {"ok": False, "error": "开启高权限模式前，请先配置环境变量 DOCMIND_EXTERNAL_DIRS"
-                                "（分号分隔的允许越界目录白名单）。未配置时不可用高权限模式。"},
-                    status_code=400)
+                {"ok": False, "error": "写权限仅支持 'safe' 或 'high'。"}, status_code=400)
         set_external_access_mode(req.external_access_mode)
+    if req.desktop_approval_mode is not None:
+        if req.desktop_approval_mode not in ("strict", "user", "model"):
+            return JSONResponse(
+                {"ok": False, "error": "桌面审批仅支持 'strict'、'user' 或 'model'。"}, status_code=400)
+        set_desktop_approval_mode(req.desktop_approval_mode)
+    if req.mcp_unproven_mode is not None:
+        if req.mcp_unproven_mode not in ("allow", "reject"):
+            return JSONResponse(
+                {"ok": False, "error": "MCP 未证明只读策略仅支持 'allow' 或 'reject'。"}, status_code=400)
+        set_mcp_unproven_mode(req.mcp_unproven_mode)
 
     # ---- 网络搜索 / URL 获取服务商配置 ----
     _apply_web_settings_fields(req)
@@ -7353,6 +7563,8 @@ async def _apply_config(req: ConfigReq):
         "ingested_files": sorted(_INGESTED),
         "warnings": warnings,
         "external_access_mode": get_external_access_mode(),
+        "desktop_approval_mode": get_desktop_approval_mode(),
+        "mcp_unproven_mode": get_mcp_unproven_mode(),
         "web_search_provider": get_web_search_provider(),
         "web_search_api_url": get_web_search_api_url(),
         "web_search_api_urls": get_web_search_api_urls(),
@@ -8163,6 +8375,7 @@ from api_routes.engine import build_router as build_engine_router
 from api_routes.resources import build_router as build_resources_router
 from api_routes.eda import build_router as build_eda_router
 from api_routes.jobs import build_router as build_jobs_router
+from api_routes.system import build_router as build_system_router
 # FastAPI 0.141 keeps included routers as lazy wrapper routes.  The project has
 # route-integrity checks and diagnostics that enumerate concrete APIRoute
 # objects, so domain routers are flattened deliberately at this composition
@@ -8175,6 +8388,7 @@ for _domain_router in (
     build_resources_router(sys.modules[__name__]),
     build_eda_router(sys.modules[__name__]),
     build_jobs_router(sys.modules[__name__]),
+    build_system_router(sys.modules[__name__]),
 ):
     app.router.routes.extend(_domain_router.routes)
 
