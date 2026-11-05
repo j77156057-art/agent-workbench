@@ -1,23 +1,30 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { askConfirm, askPrompt } from '../composables/dialogs'
 import { memoryPanelApi } from '../api'
+import MemoryOverview from './MemoryOverview.vue'
 import type {
   DiskRetentionRunResult,
   DiskRetentionState,
   MemoryContextResult,
   MemoryHealth,
+  MemoryInspectResult,
   MemoryPanelHook,
   MemoryPanelItem,
   MemoryPanelTaskItem,
+  MemoryPinnedEntry,
 } from '../api'
 
-const props = defineProps<{ visible: boolean; sessionId: string }>()
+const props = withDefaults(defineProps<{ visible: boolean; sessionId: string; agentId?: string; agentLabel?: string }>(), { agentId: 'main', agentLabel: '平台助手' })
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const mode = ref<'next' | 'last'>('next')
 const data = ref<MemoryContextResult | null>(null)
-const active = ref('L0')
+const inspection = ref<MemoryInspectResult | null>(null)
+const active = ref('overview')
+const pinnedFacts = ref<MemoryPinnedEntry[]>([])
+const pinnedError = ref('')
+let loadSequence = 0
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
@@ -31,6 +38,22 @@ const healthNotice = ref('')
 const layers = computed(() => data.value?.layers || [])
 const current = computed(() => layers.value.find(layer => layer.key === active.value) || layers.value[0] || null)
 const totalChars = computed(() => data.value?.total_chars || 0)
+const permissionError = computed(() => /401|403|forbidden|unauthorized|无权限|权限不足/i.test(error.value))
+/** 子 Agent 的独立上下文只存在于进程内实例；快照仍在但实例不在时，必须给空状态，
+ *  不能拿主 Agent 或上一个 Agent 的 inspection 冒充。 */
+const agentScoped = computed(() => props.agentId !== 'main')
+const agentUnavailable = computed(() => agentScoped.value && !loading.value
+  && (inspection.value?.available === false || (!inspection.value && !!error.value)))
+const agentUnavailableReason = computed(() => {
+  if (inspection.value?.available === false) {
+    return inspection.value.error
+      || '该 Agent 在任务树里有快照，但当前会话没有活动的进程内实例；独立上下文不随快照持久化，重启后无法恢复。'
+  }
+  if (/不存在该 Agent 实例|404|not found/i.test(error.value)) {
+    return '该 Agent 在任务树里有快照，但当前会话没有活动的进程内实例；独立上下文不随快照持久化，重启后无法恢复。'
+  }
+  return error.value || '该 Agent 的独立上下文读取失败。'
+})
 const missingVectors = computed(() => Math.max(
   0, Number(health.value?.index?.items || 0) - Number(health.value?.index?.vectors || 0),
 ))
@@ -98,13 +121,35 @@ function stateLabel(state: unknown): string {
   return STATE_LABELS[String(state || '')] || String(state || '')
 }
 
+/** tab 计数必须带单位：否则 "472/600" 会被读成库存容量，实际是"本轮注入字数/上限"。 */
+function layerCount(layer: { key: string; chars?: number; budget?: number | null }): string {
+  const chars = Number(layer.chars || 0)
+  if (layer.key === 'summary') {
+    return layer.budget ? `${chars} 字 / 注入上限 ${Number(layer.budget)}` : `${chars} 字`
+  }
+  if (layer.budget) return `${chars}/${Number(layer.budget)} 字`
+  return `${chars} 字`
+}
+
+/** 历史摘要的分子是磁盘存储字数，分母是注入侧"保头尾、丢中间"的硬截上限；口径必须说清。 */
+function layerHint(layer: { key: string; budget?: number | null }): string {
+  if (layer.key === 'summary') {
+    const cap = Number(layer.budget || 0)
+    if (!cap) {
+      return '分子=存储的摘要字数；分母=注入硬截上限（由 token 预算派生）；超限时保留开头（约 40%）与结尾（约 60%），中间部分标注省略。'
+    }
+    return `分子=存储的摘要字数，分母=注入硬截上限 ${cap} 字；超限时保留开头（约 40%）与结尾（约 60%），中间部分标注省略。`
+  }
+  return '分子=本轮注入模型的字数，分母=本轮注入上限；不是存储容量'
+}
+
 function refreshDrafts() {
   itemDrafts.value = {}
   hookDrafts.value = {}
   taskDrafts.value = {}
   for (const layer of layers.value) {
-    if (layer.key === 'L0') constitutionDraft.value = layer.raw || ''
-    if (layer.key === 'L1') {
+    if (layer.key === 'rule') constitutionDraft.value = layer.raw || ''
+    if (layer.key === 'profile') {
       const profile = (layer.profile || {}) as Record<string, unknown>
       profileDraft.value = {
         display_name: String(profile.display_name || ''),
@@ -114,7 +159,7 @@ function refreshDrafts() {
         notes: String(profile.notes || ''),
       }
     }
-    if (layer.key === 'L2') {
+    if (layer.key === 'shared') {
       linkTargets.value = {}
       linkTypes.value = {}
       for (const item of (layer.items || []) as MemoryPanelItem[]) {
@@ -125,12 +170,12 @@ function refreshDrafts() {
         }
       }
     }
-    if (layer.key === 'L3') {
+    if (layer.key === 'taskbook') {
       for (const item of (layer.items || []) as MemoryPanelTaskItem[]) {
         if (item.key) taskDrafts.value[item.key] = String(item.text || '')
       }
     }
-    if (layer.key === 'L4') {
+    if (layer.key === 'hook') {
       for (const item of (layer.items || []) as MemoryPanelHook[]) {
         if (item.id) hookDrafts.value[item.id] = String(item.text || '')
       }
@@ -138,25 +183,47 @@ function refreshDrafts() {
   }
 }
 
-async function load(nextMode: 'next' | 'last' = mode.value) {
-  if (!props.visible) return
+async function load(nextMode: 'next' | 'last' = mode.value, prefetch = false) {
+  if (!prefetch && !props.visible) return
+  const sequence = ++loadSequence
+  const sessionId = props.sessionId
+  const agentId = props.agentId
   mode.value = nextMode
   loading.value = true
   error.value = ''
   notice.value = ''
+  performance.mark('memory:load:start', { detail: { sequence, prefetch } })
   try {
-    const result = await memoryPanelApi.context(props.sessionId, nextMode)
+    const [inspectResult, result, pinnedResult] = await Promise.all([
+      memoryPanelApi.inspect(sessionId, agentId, agentId !== 'main'),
+      memoryPanelApi.context(sessionId, nextMode),
+      memoryPanelApi.pinned(sessionId, agentId).catch((e: unknown) => ({
+        ok: false,
+        error: (e as Error)?.message || '固定事实读取失败',
+        entries: [] as MemoryPinnedEntry[],
+      })),
+    ])
+    if (sequence !== loadSequence || sessionId !== props.sessionId || agentId !== props.agentId) return
+    performance.mark('memory:data:commit:start', { detail: { sequence, prefetch } })
+    inspection.value = inspectResult
     data.value = result
-    if (result.ok === false) error.value = result.error || '记忆 v2 未启用'
-    if (active.value !== 'health' && result.layers?.length &&
+    pinnedFacts.value = Array.isArray(pinnedResult.entries) ? pinnedResult.entries : []
+    pinnedError.value = pinnedResult.ok === false ? (pinnedResult.error || '固定事实读取失败') : ''
+    if (result.ok === false && active.value !== 'overview') error.value = result.error || '记忆 v2 未启用'
+    if (!['health', 'overview', 'pinned'].includes(active.value) && result.layers?.length &&
         !result.layers.some(layer => layer.key === active.value)) {
       active.value = result.layers[0].key
     }
     refreshDrafts()
+    performance.mark('memory:data:commit:end', { detail: { sequence, prefetch } })
   } catch (e) {
+    if (sequence !== loadSequence) return
     error.value = (e as Error)?.message || '读取失败'
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) {
+      loading.value = false
+      performance.mark('memory:load:end', { detail: { sequence, prefetch } })
+    }
   }
 }
 
@@ -368,6 +435,11 @@ async function runDisk(apply: boolean) {
   }
 }
 
+onMounted(() => {
+  // 首次打开前预取快照；打开时仍刷新，但先用已缓存数据呈现骨架与力导向。
+  void load('next', true)
+})
+
 watch(() => props.visible, visible => {
   if (!visible) return
   void load('next')
@@ -376,7 +448,15 @@ watch(() => props.visible, visible => {
     void loadDisk()
   }
 })
-watch(() => props.sessionId, () => { if (props.visible) void load(mode.value) })
+watch(() => [props.sessionId, props.agentId], () => {
+  loadSequence += 1
+  data.value = null
+  inspection.value = null
+  pinnedFacts.value = []
+  pinnedError.value = ''
+  active.value = 'overview'
+  if (props.visible) void load(mode.value)
+})
 
 async function run(action: () => Promise<void>) {
   if (busy.value) return
@@ -395,6 +475,27 @@ async function run(action: () => Promise<void>) {
   } finally {
     busy.value = false
   }
+}
+
+function pinnedActorLabel(actor?: string): string {
+  if (actor === 'user') return '用户'
+  if (actor === 'migration') return '迁移'
+  return '模型'
+}
+
+async function deletePinnedFact(entry: MemoryPinnedEntry) {
+  if (busy.value || mode.value === 'last') return
+  const confirmed = await askConfirm({
+    title: '删除固定事实',
+    message: '删除后该条不再注入；同一事实的后续自动提取会被墓碑阻挡。',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
+  await run(async () => {
+    await memoryPanelApi.deletePinned(entry.id, props.sessionId, props.agentId)
+    notice.value = '已删除固定事实'
+  })
 }
 
 async function saveConstitution() {
@@ -594,21 +695,29 @@ async function reindex() {
 </script>
 
 <template>
-  <aside v-if="visible" class="mp" role="complementary" aria-label="上下文记忆">
+  <Transition name="mp-panel">
+    <aside v-if="visible" class="mp" :class="{ 'is-overview': active === 'overview' }" :data-agent-id="agentId" data-memory-panel role="complementary" aria-label="上下文记忆">
     <header class="mp-head">
-      <strong>上下文记忆</strong>
-      <div class="mp-modes" role="group" aria-label="注入视图">
+      <div class="mp-identity">
+        <span class="mp-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div><strong>{{ agentLabel }} 的上下文 · 独立</strong><span>{{ agentId }} · {{ sessionId || '未选择会话' }}</span></div>
+      </div>
+      <span v-if="active === 'overview'" class="mp-observing"><i></i>观测中</span>
+      <div v-else class="mp-modes" role="group" aria-label="注入视图">
         <button type="button" :class="{ on: mode === 'next' }" @click="load('next')">下一回合</button>
         <button type="button" :class="{ on: mode === 'last' }" @click="load('last')">上一回合</button>
       </div>
       <button class="mp-close" type="button" aria-label="关闭上下文记忆" @click="emit('close')">×</button>
     </header>
 
-    <p v-if="loading" class="mp-hint">读取中…</p>
-    <p v-if="error" class="mp-error">{{ error }}</p>
-    <p v-else-if="notice" class="mp-ok">{{ notice }}</p>
+    <div v-if="!agentUnavailable && loading && active !== 'overview'" class="mp-inline-status" role="status"><i></i>正在读取当前层级的真实数据</div>
+    <div v-if="!agentUnavailable && error && active !== 'overview'" class="mp-message is-error" role="alert"><span>{{ error }}</span><button type="button" @click="load(mode)">重试</button></div>
+    <div v-else-if="!agentUnavailable && notice" class="mp-message is-ok" role="status">{{ notice }}</div>
 
-    <div class="mp-tabs" role="tablist">
+    <div v-if="!agentUnavailable" class="mp-tabs" role="tablist">
+      <button type="button" role="tab" :aria-selected="active === 'overview'" class="mp-tab" :class="{ on: active === 'overview' }" @click="active = 'overview'">
+        记忆总览 <span title="分子=本轮实际注入的记忆条数，分母=该 Agent 记忆库存总条数；单位是条，不是字数/容量">{{ inspection?.injected.length || 0 }}/{{ inspection?.memories.length || 0 }} 条</span>
+      </button>
       <button
         v-for="layer in layers"
         :key="layer.key"
@@ -617,14 +726,50 @@ async function reindex() {
         :aria-selected="active === layer.key"
         class="mp-tab"
         :class="{ on: active === layer.key }"
+        :title="layerHint(layer)"
         @click="active = layer.key"
       >
         {{ layer.title }}
-        <span>{{ layer.chars }}<template v-if="layer.budget">/{{ layer.budget }}</template></span>
+        <span>{{ layerCount(layer) }}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="active === 'pinned'"
+        class="mp-tab"
+        :class="{ on: active === 'pinned' }"
+        title="会话内固定事实：只增不删，只有用户能删除"
+        @click="active = 'pinned'"
+      >
+        固定事实
+        <span>{{ pinnedFacts.length }} 条</span>
       </button>
     </div>
 
-    <div v-if="active === 'health'" class="mp-body">
+    <div v-if="agentScoped && !agentUnavailable" class="mp-scope-note" data-agent-scope-note>
+      <strong>Agent 私有视图</strong>
+      <p>记忆总览来自 <code>/api/agent/memory/inspect?agent_id={{ agentId }}</code>，是该 Agent 实例的注入、守则与库存；其余层级 tab 来自会话级 <code>/api/memory/context</code>（后端不接受 agent_id），不是该 Agent 私有数据。</p>
+    </div>
+
+    <div v-if="agentUnavailable" class="mp-body mp-agent-empty" data-agent-context-empty>
+      <span class="mp-agent-empty-mark" aria-hidden="true"></span>
+      <strong>{{ agentLabel }} 的独立上下文不可读</strong>
+      <p>{{ agentUnavailableReason }}</p>
+      <small>数据来源：<code>GET /api/agent/memory/inspect?agent_id={{ agentId }}</code>。该接口只解析进程内活动 Agent 实例；<code>.docmind/delegations</code> 快照不包含上下文正文。</small>
+      <button type="button" @click="load(mode)">重新读取</button>
+    </div>
+
+    <div v-else-if="active === 'overview'" class="mp-body">
+      <MemoryOverview
+        :data="inspection"
+        :loading="loading && !inspection"
+        :error="error"
+        :permission="permissionError"
+        @retry="load(mode)"
+      />
+    </div>
+
+    <div v-else-if="active === 'health'" class="mp-body">
       <p v-if="healthLoading" class="mp-hint">读取中…</p>
       <p v-if="healthError" class="mp-error">{{ healthError }}</p>
       <p v-else-if="healthNotice" class="mp-ok">{{ healthNotice }}</p>
@@ -809,6 +954,29 @@ async function reindex() {
       </template>
     </div>
 
+    <div v-else-if="active === 'pinned'" class="mp-body" data-memory-pinned>
+      <p v-if="pinnedError" class="mp-warn" role="alert">{{ pinnedError }}</p>
+      <p class="mp-hint">固定事实只增不删，只有用户可以删除；被删除的条目会记墓碑，后续自动提取同一事实会被丢弃。</p>
+      <p v-if="!pinnedFacts.length" class="mp-body-text">暂无固定事实</p>
+      <div v-for="entry in pinnedFacts" :key="entry.id" class="mp-item">
+        <div class="mp-item-head">
+          <span>{{ pinnedActorLabel(entry.actor) }}</span>
+          <button
+            class="mp-mini mp-danger"
+            type="button"
+            :disabled="busy || mode === 'last'"
+            :aria-label="`删除固定事实：${entry.text}`"
+            @click="deletePinnedFact(entry)"
+          >删除</button>
+        </div>
+        <p class="mp-body-text">{{ entry.text }}</p>
+        <div class="mp-item-head">
+          <span>来源：{{ entry.source || '未标注' }}</span>
+          <span>时间：{{ entry.added_at || '未记录' }}</span>
+        </div>
+      </div>
+    </div>
+
     <div v-else-if="current" class="mp-body">
       <template v-if="current.kind === 'markdown'">
         <p class="mp-meta">
@@ -965,280 +1133,168 @@ async function reindex() {
         <button class="mp-mini" type="button" :disabled="busy" @click="reindex">重建索引</button>
       </div>
     </footer>
-  </aside>
+    </aside>
+  </Transition>
 </template>
 
 <style scoped>
-.mp {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 400;
-  width: min(460px, 94vw);
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-raised);
-  border-left: 1px solid var(--border-strong);
-  box-shadow: -12px 0 34px rgba(35, 52, 84, .16);
-  color: var(--text);
-  font-size: var(--fs-sm);
-}
-.mp-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.mp-head strong { font-size: var(--fs-md); }
-.mp-modes { display: inline-flex; gap: 2px; margin-left: auto; }
-.mp-modes button {
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--fs-cap);
-  padding: 3px 8px;
-  border-radius: 5px;
-  cursor: pointer;
-}
-.mp-modes button.on { color: var(--text); border-color: var(--border); background: var(--bg-hover); }
-.mp-close {
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px;
-}
-.mp-close:hover { color: var(--text); }
-.mp-hint { margin: 8px 14px; color: var(--text-muted); font-size: var(--fs-cap); }
-.mp-ok { margin: 8px 14px; color: var(--green); font-size: var(--fs-cap); }
-.mp-error { margin: 8px 14px; color: var(--danger); font-size: var(--fs-cap); }
-.mp-tabs {
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-}
-.mp-tab {
-  flex: 0 0 auto;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: var(--fs-cap);
-  cursor: pointer;
-}
-.mp-tab span { color: var(--text-faint); margin-left: 4px; }
-.mp-tab.on { color: var(--text); border-color: var(--border); background: var(--bg-hover); }
-.mp-body { flex: 1 1 auto; overflow-y: auto; padding: 10px 14px 14px; }
-.mp-meta { color: var(--text-muted); font-size: var(--fs-cap); margin: 0 0 6px; }
-.mp-textarea, .mp-input {
-  width: 100%;
-  box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-  padding: 6px 8px;
-  resize: vertical;
-}
-.mp-textarea { line-height: 1.6; margin-bottom: 6px; font-size: var(--fs-cap); }
-.mp-input { margin-bottom: 6px; }
-.mp-select { width: 92px; flex: 0 0 auto; }
-.mp-field { display: block; margin-bottom: 6px; color: var(--text-muted); font-size: var(--fs-cap); }
-.mp-field .mp-input, .mp-field .mp-textarea { margin-top: 3px; color: var(--text); }
-.mp-actions { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.mp-actions .mp-hint { margin: 0; }
-.mp-actions .mp-btn, .mp-actions .mp-mini { margin-left: auto; }
-.mp-actions .mp-mini + .mp-mini { margin-left: 0; }
-.mp-btn {
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--bg-hover);
-  color: var(--text);
-  padding: 4px 10px;
-  font-size: var(--fs-cap);
-  cursor: pointer;
-}
-.mp-btn:disabled, .mp-mini:disabled { opacity: .45; cursor: default; }
-.mp-mini {
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-muted);
-  padding: 2px 8px;
-  font-size: var(--fs-cap);
-  cursor: pointer;
-}
-.mp-mini:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.mp-danger { color: var(--danger); }
-.mp-item {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px;
-  margin-bottom: 8px;
-  background: color-mix(in srgb, var(--bg) 60%, transparent);
-}
-.mp-item-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--text-muted);
-  font-size: var(--fs-cap);
-  margin-bottom: 5px;
-}
-.mp-pin { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
-.mp-pin input { accent-color: var(--accent); }
-.mp-warn { color: var(--amber); font-size: var(--fs-cap); }
-.mp-funnel { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-.mp-funnel-step {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 3px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--text-muted);
-  /* 漏斗是要读数字的，不走 --fs-cap（11px）；次级文字档 12px 是能读的下限 */
-  font-size: var(--fs-sm);
-}
-.mp-funnel-step strong { color: var(--text); font-variant-numeric: tabular-nums; }
-.mp-funnel-zero strong { color: var(--amber); }
-/* 单位角标是能读信息（不是装饰），所以用正文色而非 --text-muted，尺寸走次级档 */
-.mp-funnel-unit { margin-left: 2px; color: var(--text); font-style: normal; font-size: var(--fs-sm); }
-.mp-funnel-meta { margin-left: 4px; color: var(--text); font-style: normal; font-size: var(--fs-sm); }
-.mp-funnel-handoff {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 5px;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  font-size: var(--fs-sm);
-}
-.mp-funnel-unmeasured { border-style: dashed; }
-.mp-funnel-note { margin: 5px 0 0; color: var(--green); font-size: var(--fs-sm); }
-.mp-funnel-stall { color: var(--amber); }
-.mp-funnel-caveat, .mp-funnel-meta-line { color: var(--text); }
-.mp-links { margin: 6px 0 0; padding-top: 5px; border-top: 1px dashed var(--border); }
-.mp-link { display: flex; align-items: center; justify-content: space-between; gap: 6px; color: var(--text-muted); font-size: var(--fs-cap); padding: 2px 0; }
-.mp-link-add { margin: 6px 0 0; }
-.mp-link-add .mp-input { margin-bottom: 0; }
-.mp-retrievable { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 8px; }
-.mp-retrievable summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-cap); margin-bottom: 6px; }
-.mp-body-text { margin: 0 0 6px; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.6; white-space: pre-wrap; }
-.mp-add { display: flex; gap: 6px; align-items: flex-start; margin: 8px 0; }
-.mp-add .mp-input { margin-bottom: 0; flex: 1 1 auto; width: auto; min-width: 0; }
+.mp { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(var(--mi-panel-width-base), 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); color-scheme: dark; font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
+.mp *, .mp *::before, .mp *::after { box-sizing: border-box; }
+.mp.is-overview { width: min(var(--mi-panel-width), 100vw); }
+.mp-panel-leave-active { transition: transform var(--mi-duration-slow) var(--mi-ease-enter), opacity var(--mi-duration-base) var(--mi-ease-standard); }
+.mp-panel-leave-to { transform: translateX(100%); opacity: 0; }
+.mp-head { display: flex; align-items: center; gap: var(--mi-space-4); min-height: var(--mi-header-height); padding: 0 var(--mi-space-5); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); background: var(--mi-bg); }
+.mp-identity { display: flex; align-items: center; gap: var(--mi-space-3); flex: 1; min-width: 0; }
+.mp-identity > div { display: flex; flex-direction: column; min-width: 0; }
+.mp-identity strong { font-size: var(--mi-fs-title); line-height: var(--mi-lh-title); font-weight: var(--mi-weight-semibold); }
+.mp-identity span:last-child { overflow: hidden; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); line-height: var(--mi-lh-caption); text-overflow: ellipsis; white-space: nowrap; }
+.mp-mark { position: relative; flex: 0 0 var(--mi-space-6); width: var(--mi-space-6); height: var(--mi-space-6); }
+.mp-mark i { position: absolute; inset: 0; border: var(--mi-border-width) solid var(--mi-border-strong); border-radius: var(--mi-radius-lg); }
+.mp-mark i:nth-child(2) { inset: var(--mi-space-2); border-color: var(--mi-accent-dim); }
+.mp-mark i:nth-child(3) { inset: var(--mi-space-3); border: 0; background: var(--mi-accent); box-shadow: var(--mi-glow-node); }
+.mp-observing { display: inline-flex; align-items: center; gap: var(--mi-space-2); color: var(--mi-accent); font-size: var(--mi-fs-caption); white-space: nowrap; }
+.mp-observing i { width: var(--mi-status-dot); height: var(--mi-status-dot); border-radius: var(--mi-radius-lg); background: var(--mi-accent); box-shadow: var(--mi-glow-node); }
+.mp-modes { display: inline-flex; gap: var(--mi-space-1); margin-left: auto; }
+.mp-modes button { min-height: var(--mi-control-height-sm); padding: 0 var(--mi-space-3); border: var(--mi-border-width) solid transparent; border-radius: var(--mi-radius-control); background: transparent; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); cursor: pointer; }
+.mp-modes button.on { border-color: var(--mi-border-level-3); background: var(--mi-surface-level-3); color: var(--mi-text); box-shadow: var(--mi-shadow-level-2); }
+.mp-close { flex: 0 0 var(--mi-icon-button); width: var(--mi-icon-button); height: var(--mi-icon-button); padding: 0; border: var(--mi-border-width) solid transparent; border-radius: var(--mi-radius-control); background: transparent; color: var(--mi-text-secondary); font-size: var(--mi-fs-title); line-height: 1; cursor: pointer; }
+.mp-close:hover { border-color: var(--mi-border); background: var(--mi-hover); color: var(--mi-text); }
+.mp-inline-status { display: flex; align-items: center; gap: var(--mi-space-2); margin: var(--mi-space-3) var(--mi-space-5) 0; color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); }
+.mp-inline-status i { width: var(--mi-status-dot); height: var(--mi-status-dot); border-radius: var(--mi-radius-lg); background: var(--mi-accent); animation: mp-status var(--mi-duration-flow) var(--mi-ease-standard) infinite; }
+.mp-message { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--mi-space-3); margin: var(--mi-space-3) var(--mi-space-5) 0; padding: var(--mi-space-2) var(--mi-space-3); border-left: var(--mi-focus-width) solid var(--mi-border-strong); background: var(--mi-surface); color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); line-height: var(--mi-lh-secondary); }
+.mp-message.is-error { border-left-color: var(--mi-danger); color: var(--mi-danger); }
+.mp-message.is-ok { border-left-color: var(--mi-success); color: var(--mi-success); }
+.mp-message button { flex: 0 0 auto; padding: 0; border: 0; background: transparent; color: var(--mi-text); cursor: pointer; }
+/* 八个 tab 在 719px 可视宽度里一行放不下：换行（而不是隐藏滚动条），
+   让人一眼看见「还有内容」，不把会话钩子/历史摘要藏到视口外。 */
+.mp-tabs { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-content: flex-start; gap: var(--mi-space-2) var(--mi-space-5); min-height: var(--mi-space-7); padding: 0 var(--mi-space-5); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); }
+.mp-tab { position: relative; flex: 0 0 auto; min-height: var(--mi-space-7); padding: 0; border: 0; background: transparent; color: var(--mi-text-muted); font-size: var(--mi-fs-secondary); white-space: nowrap; cursor: pointer; }
+.mp-tab::after { content: ''; position: absolute; right: 0; bottom: 0; left: 0; height: var(--mi-focus-width); background: var(--mi-accent); transform: scaleX(0); transform-origin: left; transition: transform var(--mi-duration-base) var(--mi-ease-standard); }
+.mp-tab.on { color: var(--mi-text); }
+.mp-tab.on::after { transform: scaleX(1); }
+.mp-tab span { margin-left: var(--mi-space-1); color: var(--mi-text-muted); font-family: var(--mi-font-mono); font-size: var(--mi-fs-caption); font-variant-numeric: tabular-nums; }
+.mp-body { flex: 1 1 auto; min-width: 0; overflow-x: hidden; overflow-y: auto; padding: var(--mi-space-5) var(--mi-space-5); scrollbar-color: var(--mi-border-strong) transparent; }
+.mp.is-overview .mp-body { padding-top: 0; }
+/* 子 Agent 的上下文只对活动实例可读：给明确空状态，不拿别人的 inspection 顶替。 */
+.mp-scope-note { margin: var(--mi-space-3) var(--mi-space-5) 0; padding: var(--mi-space-2) var(--mi-space-3); border-left: var(--mi-focus-width) solid var(--mi-accent-dim); background: var(--mi-surface); }
+.mp-scope-note strong { color: var(--mi-text-secondary); font-size: var(--mi-fs-caption); font-weight: var(--mi-weight-medium); }
+.mp-scope-note p { margin: var(--mi-space-1) 0 0; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); line-height: var(--mi-lh-caption); }
+.mp-scope-note code, .mp-agent-empty code { overflow-wrap: anywhere; font-family: var(--mi-font-mono); }
+.mp-agent-empty { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: var(--mi-space-2); }
+.mp-agent-empty-mark { width: var(--mi-space-6); height: var(--mi-space-6); margin-bottom: var(--mi-space-2); border: var(--mi-border-width) dashed var(--mi-border-strong); border-radius: var(--mi-radius-lg); }
+.mp-agent-empty strong { font-size: var(--mi-fs-title); line-height: var(--mi-lh-title); font-weight: var(--mi-weight-medium); }
+.mp-agent-empty p { max-width: var(--mi-copy-width); margin: 0; color: var(--mi-text-secondary); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); }
+.mp-agent-empty small { max-width: var(--mi-copy-width); color: var(--mi-text-muted); font-size: var(--mi-fs-caption); line-height: var(--mi-lh-caption); }
+.mp-agent-empty button { min-height: var(--mi-control-height); margin-top: var(--mi-space-2); padding: 0 var(--mi-space-4); border: var(--mi-border-width) solid var(--mi-border-level-3); border-radius: var(--mi-radius-control); background: var(--mi-surface-level-2); color: var(--mi-text); font-family: inherit; font-size: var(--mi-fs-secondary); cursor: pointer; }
+.mp-hint, .mp-ok, .mp-error { margin: var(--mi-space-2) 0; color: var(--mi-text-muted); font-size: var(--mi-fs-secondary); line-height: var(--mi-lh-secondary); }
+.mp-ok { color: var(--mi-success); }
+.mp-error { color: var(--mi-danger); }
+.mp-meta { margin: 0 0 var(--mi-space-3); color: var(--mi-text-muted); font-size: var(--mi-fs-caption); line-height: var(--mi-lh-caption); }
+.mp-textarea, .mp-input { width: 100%; border: var(--mi-border-width) solid var(--mi-border-level-2); border-radius: var(--mi-radius-control); background: var(--mi-bg-deep); color: var(--mi-text); font: var(--mi-fs-body)/var(--mi-lh-body) var(--mi-font-ui); padding: var(--mi-space-3); resize: vertical; }
+.mp-textarea { margin-bottom: var(--mi-space-2); }
+.mp-input { min-height: var(--mi-control-height); margin-bottom: var(--mi-space-2); padding-block: var(--mi-space-1); }
+.mp-input::placeholder, .mp-textarea::placeholder { color: var(--mi-text-muted); }
+.mp-select { flex: 0 0 var(--mi-select-width); width: var(--mi-select-width); }
+.mp-field { display: block; margin-bottom: var(--mi-space-3); color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); }
+.mp-field .mp-input, .mp-field .mp-textarea { margin-top: var(--mi-space-1); color: var(--mi-text); }
+.mp-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--mi-space-2); margin-top: var(--mi-space-2); }
+.mp-actions .mp-hint { margin: 0 auto 0 0; }
+.mp-btn, .mp-mini { min-height: var(--mi-control-height); padding: 0 var(--mi-space-4); border: var(--mi-border-width) solid var(--mi-border-level-3); border-radius: var(--mi-radius-control); background: var(--mi-surface-level-2); color: var(--mi-text); font-size: var(--mi-fs-secondary); cursor: pointer; transition: background var(--mi-duration-fast) var(--mi-ease-standard), border-color var(--mi-duration-fast) var(--mi-ease-standard); }
+.mp-btn { border-color: var(--mi-accent); background: var(--mi-accent); color: var(--mi-accent-ink); }
+.mp-mini { min-height: var(--mi-control-height-sm); padding-inline: var(--mi-space-3); color: var(--mi-text-secondary); font-size: var(--mi-fs-caption); }
+.mp-btn:disabled, .mp-mini:disabled { opacity: var(--mi-opacity-disabled); cursor: default; }
+.mp-btn:hover:not(:disabled) { background: var(--mi-accent-strong); }
+.mp-mini:hover:not(:disabled) { border-color: var(--mi-accent-dim); background: var(--mi-hover); color: var(--mi-text); }
+.mp-danger { border-color: var(--mi-danger); color: var(--mi-danger); }
+.mp-item { padding: var(--mi-space-5) 0; border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); }
+.mp-item-head { display: flex; align-items: center; justify-content: space-between; gap: var(--mi-space-3); margin-bottom: var(--mi-space-3); color: var(--mi-text-muted); font-size: var(--mi-fs-caption); }
+.mp-pin { display: inline-flex; align-items: center; gap: var(--mi-space-1); cursor: pointer; }
+.mp-pin input { accent-color: var(--mi-accent); }
+.mp-warn { color: var(--mi-warning); font-size: var(--mi-fs-secondary); }
+.mp-funnel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--mi-space-5); }
+.mp-funnel-step { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: baseline; gap: var(--mi-space-2); padding: var(--mi-space-2) 0; border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); }
+.mp-funnel-step strong { color: var(--mi-text); font-family: var(--mi-font-mono); font-variant-numeric: tabular-nums; }
+.mp-funnel-zero strong { color: var(--mi-warning); }
+.mp-funnel-unit, .mp-funnel-meta { color: var(--mi-text-muted); font-style: normal; font-size: var(--mi-fs-caption); }
+.mp-funnel-meta { grid-column: 1 / -1; }
+.mp-funnel-handoff { grid-column: 1 / -1; padding: var(--mi-space-2) 0; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); }
+.mp-funnel-unmeasured { border-bottom-style: dashed; }
+.mp-funnel-note { margin: var(--mi-space-2) 0 0; color: var(--mi-success); font-size: var(--mi-fs-secondary); line-height: var(--mi-lh-secondary); }
+.mp-funnel-stall { color: var(--mi-warning); }
+.mp-funnel-caveat, .mp-funnel-meta-line { color: var(--mi-text-muted); }
+.mp-links { margin-top: var(--mi-space-3); padding-top: var(--mi-space-2); border-top: var(--mi-border-width) solid var(--mi-border-subtle); }
+.mp-link { display: flex; align-items: center; justify-content: space-between; gap: var(--mi-space-3); padding: var(--mi-space-1) 0; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); }
+.mp-link-add { margin-top: var(--mi-space-3); }
+.mp-link-add .mp-input, .mp-add .mp-input { margin-bottom: 0; }
+.mp-retrievable { margin-top: var(--mi-space-5); padding-top: var(--mi-space-4); border-top: var(--mi-border-width) solid var(--mi-border-subtle); }
+.mp-retrievable summary { margin-bottom: var(--mi-space-2); color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); cursor: pointer; }
+.mp-body-text { max-width: var(--mi-copy-width); margin: 0 0 var(--mi-space-3); color: var(--mi-text-secondary); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); white-space: pre-wrap; }
+.mp-add { display: flex; flex-wrap: wrap; gap: var(--mi-space-2); align-items: flex-start; margin: var(--mi-space-3) 0; }
+.mp-add .mp-input { flex: 1 1 auto; width: auto; min-width: calc(var(--mi-space-8) * 2); }
 .mp-add .mp-btn { flex: 0 0 auto; white-space: nowrap; }
-.mp-readonly { margin-top: 10px; color: var(--text-muted); font-size: var(--fs-cap); }
-.mp-receipts { color: var(--text); font-size: var(--fs-sm); }
-/* 磁盘保留期：数字是主角，说明文字退到次要层级；边界值一律来自后端。 */
-.mp-disk-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 4px; font-size: var(--fs-sm); }
-.mp-disk-stats strong { color: var(--text); font-variant-numeric: tabular-nums; }
-.mp-disk-note { margin: 2px 0 6px; color: var(--text); font-size: var(--fs-sm); }
-.mp-disk-hint { display: block; margin-top: 2px; color: var(--text-muted); font-size: var(--fs-sm); }
-.mp-disk .mp-field .mp-input { max-width: 160px; }
-.mp-disk-whitelist { margin: 8px 0 6px; }
-.mp-disk-wl-title { color: var(--text); font-size: var(--fs-sm); }
-.mp-disk-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
-.mp-disk-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: var(--bg-hover);
-  color: var(--text);
-  font-size: var(--fs-sm);
-}
-.mp-disk-chip-builtin { border-style: dashed; }
-.mp-disk-chip-x {
-  border: 0;
-  background: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--fs-sm);
-  line-height: 1;
-  padding: 0 1px;
-}
-.mp-disk-chip-x:hover:not(:disabled) { color: var(--danger); }
-.mp-disk-wl-add { display: flex; gap: 6px; align-items: flex-start; }
+.mp-readonly { margin-top: var(--mi-space-5); padding: var(--mi-space-4); border: var(--mi-border-width) solid var(--mi-border-level-2); border-radius: var(--mi-radius-card); background: var(--mi-surface-level-2); box-shadow: var(--mi-shadow-level-2); color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); }
+.mp-readonly > strong { display: block; margin-bottom: var(--mi-space-3); color: var(--mi-text); font-size: var(--mi-fs-section); line-height: var(--mi-lh-section); font-weight: var(--mi-weight-semibold); }
+.mp-receipts { color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); }
+.mp-disk-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--mi-space-3); margin: 0 0 var(--mi-space-4); font-size: var(--mi-fs-secondary); }
+.mp-disk-stats span { padding-bottom: var(--mi-space-2); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); }
+.mp-disk-stats strong { display: block; color: var(--mi-text); font-family: var(--mi-font-mono); font-variant-numeric: tabular-nums; }
+.mp-disk-note { margin: var(--mi-space-2) 0; color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); line-height: var(--mi-lh-secondary); }
+.mp-disk-hint { display: block; margin-top: var(--mi-space-1); color: var(--mi-text-muted); font-size: var(--mi-fs-caption); line-height: var(--mi-lh-caption); }
+.mp-disk .mp-field .mp-input { max-width: calc(var(--mi-space-8) * 2); }
+.mp-disk-whitelist { margin: var(--mi-space-4) 0; }
+.mp-disk-wl-title { color: var(--mi-text); font-size: var(--mi-fs-secondary); }
+.mp-disk-chips { display: flex; flex-direction: column; margin: var(--mi-space-2) 0; }
+.mp-disk-chip { display: flex; align-items: center; justify-content: space-between; gap: var(--mi-space-3); padding: var(--mi-space-2) 0; border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); }
+.mp-disk-chip-builtin { border-bottom-style: dashed; }
+.mp-disk-chip-x { width: var(--mi-control-height-sm); height: var(--mi-control-height-sm); padding: 0; border: 0; background: transparent; color: var(--mi-text-muted); cursor: pointer; }
+.mp-disk-chip-x:hover:not(:disabled) { color: var(--mi-danger); }
+.mp-disk-wl-add { display: flex; gap: var(--mi-space-2); align-items: flex-start; }
 .mp-disk-wl-add .mp-input { flex: 1; margin-bottom: 0; }
-.mp-health-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-  margin-bottom: 10px;
+/* 浏览器契约（frontend/tests/memoryFunnel.browser.mjs、diskRetention.browser.mjs）：
+   健康漏斗与磁盘审计这两块是"要逐项读数"的密集审计区，字号不得低于 12px。
+   2026-11-04 全局字阶收窄后，这里显式保底，避免契约测试与可读性一起退化。 */
+.mp-funnel-step, .mp-funnel-note,
+.mp-disk-stats, .mp-disk-note, .mp-disk-hint,
+.mp-disk-chip, .mp-disk-wl-title {
+  font-size: 12px;
+  line-height: 18px;
 }
-.mp-health-card {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 7px 8px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-}
-.mp-health-card strong { font-size: var(--fs-md); color: var(--text); }
-.mp-health-card span { color: var(--text-muted); font-size: var(--fs-cap); }
-.mp-health-warn { border-color: color-mix(in srgb, var(--amber) 45%, var(--border)); }
-.mp-health-warnings {
-  margin: 8px 0;
-  padding: 8px;
-  border: 1px dashed color-mix(in srgb, var(--amber) 50%, var(--border));
-  border-radius: 7px;
-}
-.mp-health-warnings p { margin: 4px 0 0; }
-.mp-health-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 2px 0;
-  border-bottom: 1px dashed var(--border);
-}
+.mp-health-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: var(--mi-space-5); border-block: var(--mi-border-width) solid var(--mi-border-subtle); }
+.mp-health-card { display: flex; flex-direction: column; gap: var(--mi-space-1); padding: var(--mi-space-4) var(--mi-space-3); border-left: var(--mi-border-width) solid var(--mi-border-subtle); }
+.mp-health-card:nth-child(4n + 1) { border-left: 0; }
+.mp-health-card strong { color: var(--mi-text); font-family: var(--mi-font-mono); font-size: var(--mi-fs-title); line-height: var(--mi-lh-title); font-variant-numeric: tabular-nums; }
+.mp-health-card span { color: var(--mi-text-muted); font-size: var(--mi-fs-caption); }
+.mp-health-warn strong { color: var(--mi-warning); }
+.mp-health-warnings { margin: var(--mi-space-4) 0; padding-left: var(--mi-space-3); border-left: var(--mi-focus-width) solid var(--mi-warning); }
+.mp-health-warnings > strong { color: var(--mi-warning); }
+.mp-health-warnings p { margin: var(--mi-space-1) 0 0; }
+.mp-health-row { display: flex; justify-content: space-between; gap: var(--mi-space-4); padding: var(--mi-space-2) 0; border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); font-variant-numeric: tabular-nums; }
 .mp-health-row:last-child { border-bottom: 0; }
-.mp-pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 4px 0 0;
-  padding: 8px;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text-muted);
-  font: 11px/1.6 var(--font-mono);
-  max-height: 220px;
-  overflow: auto;
+.mp-pre { max-width: var(--mi-copy-width); max-height: var(--mi-pre-height); margin: var(--mi-space-2) 0 0; padding: var(--mi-space-3); overflow: auto; border: var(--mi-border-width) solid var(--mi-border-subtle); border-radius: var(--mi-radius-sm); background: var(--mi-bg-deep); color: var(--mi-text-secondary); font: var(--mi-fs-caption)/var(--mi-lh-caption) var(--mi-font-mono); white-space: pre-wrap; word-break: break-word; }
+.mp-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--mi-space-3); min-height: var(--mi-space-7); padding: var(--mi-space-2) var(--mi-space-5); border-top: var(--mi-border-width) solid var(--mi-border-subtle); background: var(--mi-bg-deep); color: var(--mi-text-muted); font-size: var(--mi-fs-caption); }
+.mp-foot > span { font-variant-numeric: tabular-nums; }
+.mp-foot-actions { display: flex; gap: var(--mi-space-2); }
+.mp-foot .mp-mini.on { border-color: var(--mi-accent-dim); background: var(--mi-hover); color: var(--mi-text); }
+.mp :deep(button:focus-visible), .mp :deep(textarea:focus-visible), .mp :deep(input:focus-visible), .mp :deep(select:focus-visible), .mp :deep(summary:focus-visible) { outline: var(--mi-focus-width) solid var(--mi-accent); outline-offset: var(--mi-space-1); }
+@keyframes mp-status { 0%, 100% { opacity: var(--mi-opacity-skeleton); } 50% { opacity: 1; } }
+@media (max-width: 1280px) { .mp.is-overview { width: min(var(--mi-panel-width-md), 100vw); } }
+@media (max-width: 1100px) {
+  .mp.is-overview { width: min(var(--mi-panel-width-sm), 100vw); }
+  .mp-head, .mp-tabs { padding-inline: var(--mi-space-4); }
+  .mp-body { padding-inline: var(--mi-space-4); }
+  .mp-foot { padding-inline: var(--mi-space-4); }
+  .mp-health-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mp-health-card:nth-child(odd) { border-left: 0; }
+  .mp-health-card:nth-child(even) { border-left: var(--mi-border-width) solid var(--mi-border-subtle); }
 }
-.mp-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 14px;
-  border-top: 1px solid var(--border);
-  color: var(--text-faint);
-  font-size: var(--fs-cap);
+@media (max-width: 720px) {
+  .mp, .mp.is-overview { width: 100vw; }
+  .mp-observing { display: none; }
+  .mp-funnel, .mp-disk-stats { grid-template-columns: 1fr; }
+  .mp-identity span:last-child { max-width: var(--mi-copy-width); }
 }
-.mp-foot-actions { display: flex; gap: 6px; }
-.mp-foot .mp-mini.on {
-  color: var(--text);
-  border-color: var(--border-strong);
-  background: var(--bg-hover);
-}
-.mp :deep(button:focus-visible),
-.mp :deep(textarea:focus-visible),
-.mp :deep(input:focus-visible),
-.mp :deep(select:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+@media (prefers-reduced-motion: reduce) {
+  .mp, .mp *, .mp *::before, .mp *::after, .mp :deep(*), .mp :deep(*)::before, .mp :deep(*)::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .mp-panel-enter-from, .mp-panel-leave-to { transform: none; }
 }
 </style>

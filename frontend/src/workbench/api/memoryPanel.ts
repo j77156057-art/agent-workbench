@@ -71,6 +71,130 @@ export interface MemoryContextResult {
   total_chars?: number
 }
 
+export interface MemoryPinnedEntry {
+  id: string
+  text: string
+  source?: string
+  added_at?: string
+  actor?: string
+}
+
+export interface MemoryPinnedResult {
+  ok?: boolean
+  enabled?: boolean
+  error?: string
+  session_id?: string
+  agent_id?: string
+  entries?: MemoryPinnedEntry[]
+  tombstones?: Array<Record<string, unknown>>
+  audit?: Array<Record<string, unknown>>
+}
+
+export type MemoryLayerKey = 'rule' | 'shared' | 'legacy' | 'project' | 'hook'
+
+export interface MemoryInspectNode {
+  id: string
+  store: 'legacy' | 'shared' | 'project' | 'hook' | string
+  /** store 真实语义分层；后端配置（agent_runtime/memory/layers.py）决定，前端只渲染。 */
+  layer_key: MemoryLayerKey
+  /** 中文层名，与 layer_key 一起由后端返回。 */
+  layer_label?: string
+  /** true = 这个 store 没有在层级映射表里登记，落到了 fallback（不是真实层级）。 */
+  layer_fallback?: boolean
+  kind: string
+  title: string
+  content: string
+  injected_content?: string
+  evidence?: string
+  source: string
+  status: string
+  created_at?: string
+  created_at_semantics?: string
+  updated_at?: string
+  importance: number
+  importance_estimated?: boolean
+  use_count: number
+  use_count_semantics?: string
+  last_used_at?: string
+  used: boolean
+}
+
+export interface MemoryInspectRule {
+  id: string
+  source: 'user' | 'project' | 'session' | 'system' | string
+  title: string
+  text: string
+}
+
+export interface MemoryComplianceItem {
+  id: string
+  requirement: string
+  source: string
+  status: 'pass' | 'fail' | 'unknown' | string
+  behavior: string
+  evidence: string
+}
+
+export interface MemoryGraphEdge {
+  /** 端点 key 形如 `project:mem-…`（与节点 key 同口径）。 */
+  source: string
+  target: string
+  /** edges 表没有权重列 → null；前端按默认线宽画，不补数。 */
+  weight: number | null
+  weight_semantics?: string
+  type?: string
+}
+
+export interface MemoryLayerConfig {
+  order: MemoryLayerKey[]
+  labels: Record<MemoryLayerKey, string>
+  store_map: Record<string, MemoryLayerKey>
+  brightness: Record<MemoryLayerKey, number>
+  /** 亮度顺序依据（当前 = 内容稳定度，产品口径待确认）。 */
+  brightness_basis?: string
+  injected_boost: number
+  fallback_layer: MemoryLayerKey
+  calibrated: boolean
+  pending_confirmation: string
+  misfits: Array<{ store?: string; mapped_layer?: string; actual?: string; issue?: string; honest_label?: string }>
+}
+
+export interface MemoryEdgeStats {
+  readable: boolean
+  source?: string
+  error?: string
+  in_table: number
+  resolved: number
+  unresolved: number
+  unresolved_rows?: Array<{ source?: string; target?: string; type?: string }>
+  by_type?: Record<string, number>
+  weight_available: boolean
+}
+
+export interface MemoryInspectResult {
+  ok: boolean
+  layer_config?: MemoryLayerConfig
+  hub?: { id?: string; layer_key?: MemoryLayerKey; layer_label?: string; label?: string; note?: string }
+  edges?: MemoryGraphEdge[]
+  edge_stats?: MemoryEdgeStats
+  /** 仅 soft=1 时出现：false 表示该 Agent 在快照里有节点，但进程内没有活动实例。 */
+  available?: boolean
+  reason?: string
+  session_id: string
+  agent_id: string
+  error?: string
+  captured_at?: string
+  turn_id?: string
+  has_snapshot: boolean
+  stale: boolean
+  injected: MemoryInspectNode[]
+  prompt_blocks: Array<{ layer_key?: string; title?: string; text?: string; chars?: number; item_ids?: string[] }>
+  rules: MemoryInspectRule[]
+  memories: MemoryInspectNode[]
+  compliance: MemoryComplianceItem[]
+  degraded: string[]
+}
+
 export interface MemoryHealthWarning {
   code?: string
   message?: string
@@ -274,11 +398,26 @@ function call<T>(method: string, url: string, payload?: unknown): Promise<T> {
 }
 
 export const memoryPanelApi = {
+  inspect(sessionId = '', agentId = 'main', soft = false): Promise<MemoryInspectResult> {
+    const query = new URLSearchParams({ session_id: sessionId, agent_id: agentId })
+    if (soft) query.set('soft', '1')
+    return request(`/api/agent/memory/inspect?${query.toString()}`)
+  },
   context(sessionId = '', mode: 'next' | 'last' = 'next'): Promise<MemoryContextResult> {
     const query = new URLSearchParams()
     if (sessionId) query.set('session_id', sessionId)
     query.set('mode', mode)
     return request(`/api/memory/context?${query.toString()}`)
+  },
+  /** 固定事实：只读列表；agent 由后端解析到自己的会话（子 agent 不能读主会话）。 */
+  pinned(sessionId = '', agentId = 'main'): Promise<MemoryPinnedResult> {
+    const query = new URLSearchParams({ session_id: sessionId, agent_id: agentId })
+    return request(`/api/memory/pinned?${query.toString()}`)
+  },
+  /** 用户删除单条固定事实；必须带 confirm=true，模型没有删除入口。 */
+  deletePinned(entryId: string, sessionId = '', agentId = 'main'): Promise<Record<string, unknown>> {
+    const query = new URLSearchParams({ session_id: sessionId, agent_id: agentId, confirm: 'true' })
+    return request(`/api/memory/pinned/${encodeURIComponent(entryId)}?${query.toString()}`, { method: 'DELETE' })
   },
   saveConstitution(text: string, baseVersion?: number): Promise<{ ok?: boolean; version?: number; hash_ok?: boolean }> {
     return call('PUT', '/api/memory/constitution', { text, base_version: baseVersion })
