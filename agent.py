@@ -4661,11 +4661,17 @@ class Agent:
     def __init__(self, llm=None, session_id=None, tool_mode=None, plan_mode=False,
                  depth=0, tool_allowlist=None, project_id=None, tool_registry=None,
                  application_id="developer", system_prompt=None, capability_lease=None,
-                 run_budget=None, narration=None, memory_write_project=None):
+                 run_budget=None, narration=None, memory_write_project=None,
+                 agent_id=None, memory_session_id=None):
         self.llm = llm or LLMClient()
         # session_id 为空 = 纯内存会话（测试/临时，行为与旧版一致）；
         # 非空则按会话落盘、跨重启恢复，并启用超阈值摘要压缩。
         self.session_id = session_id
+        self.agent_id = str(agent_id or "main")
+        # 子代理历史保持独立；这个标识只用于观测面板归属，不加载/写入主会话历史。
+        self.memory_session_id = str(memory_session_id or session_id or "")
+        #: 最近一次真实工具步数，供心跳的 progress（已用步数）使用。
+        self._hb_steps = 0
         # P3：会话按项目隔离；project_id=None = 当前项目（向后兼容）。
         self.project_id = project_id
         self.application_id = application_id
@@ -4805,8 +4811,11 @@ class Agent:
         self.context_router = ContextRouter(
             max_chars=int(os.getenv("DOCMIND_CONTEXT_ROUTER_CHARS", "6000")))
         self.last_context_plan = None
-        # 记忆 v2 本回合实际注入的分层块（P0 只有 L0 宪法）；关时永远是空列表。
+        # 记忆 v2 本回合实际注入的分层块（P0 只有常驻守则）；关时永远是空列表。
         self._last_injection = []
+        self._last_legacy_injection = []
+        self._last_memory_snapshot = None
+        self._last_memory_behavior = None
         # Per-request metadata is injected as a system message and restored
         # after the generator finishes; it must never become user history.
         self.ingested_sources = ()
@@ -5251,7 +5260,7 @@ class Agent:
         if _PTC_BRIDGE_ENABLED:
             _channel_prompt = _ptc_variant_system_prompt(_channel_prompt)
         messages = [{"role": "system", "content": _channel_prompt}]
-        # 记忆 v2 · L0 宪法：放在基础 system 之后的最前段，先于时间/项目规则/画像。
+        # 记忆 v2 · 常驻守则：放在基础 system 之后的最前段，先于时间/项目规则/画像。
         # 开关关时 blocks 为空且不 import 该包，提示词与旧版逐字节一致。
         _v2_blocks = []
         _memory_v2_injection = None
@@ -5312,11 +5321,11 @@ class Agent:
                 messages.append({"role": "system", "content": profile_hint})
         except Exception:
             pass
-        # 记忆 v2 · L2 共享层：只注入被 pin 的跨项目沉淀，放在任务书之前。
+        # 记忆 v2 · 共享记忆：只注入被 pin 的跨项目沉淀，放在任务书之前。
         if _v2_on and _memory_v2_injection is not None:
             try:
                 _l2_blocks = _memory_v2_injection.build_shared_injection(
-                    max_chars=_memory_v2_injection.layer_chars("L2", self._prompt_budget()))
+                    max_chars=_memory_v2_injection.layer_chars("shared", self._prompt_budget()))
             except Exception:  # noqa: BLE001
                 _l2_blocks = []
             if _l2_blocks:
@@ -5327,13 +5336,13 @@ class Agent:
                 # 没有这一条，"环闭了"和"环在空转"在面板上长得一样。
                 from agent_runtime.memory import metrics as _memory_v2_metrics
                 _memory_v2_metrics.record(
-                    "memory.inject", layer="L2", project=self.project_id or "default",
+                    "memory.inject", layer="shared", project=self.project_id or "default",
                     session=self.session_id or "",
                     chars=sum(int(b.get("chars") or 0) for b in _l2_blocks))
         # 任务清单每轮注入。这是让「上下文压缩」不再有损的那一环：
         # 摘要可以放心压，因为目标本身在磁盘上、每轮都会被重新告知模型。
         # 没有这一步，清单只是个模型可能忘记去读的旁路文件。
-        # 记忆 v2 开启时改由 L3 任务书接管（带状态与回执约束）；没有任务书才回落计划摘要。
+        # 记忆 v2 开启时改由任务书接管（带状态与回执约束）；没有任务书才回落计划摘要。
         _l3_blocks = []
         if _v2_on and _memory_v2_injection is not None:
             try:
@@ -5342,7 +5351,7 @@ class Agent:
                     getattr(self, "project_id", ""), get_runtime("code_root", ""))
                 _l3_blocks = _memory_v2_injection.build_taskbook_injection(
                     getattr(self, "project_id", ""),
-                    max_chars=_memory_v2_injection.layer_chars("L3", self._prompt_budget()))
+                    max_chars=_memory_v2_injection.layer_chars("project", self._prompt_budget()))
             except Exception:  # noqa: BLE001 —— 任务书故障绝不影响问答
                 _l3_blocks = []
             if _l3_blocks:
@@ -5384,26 +5393,33 @@ class Agent:
         # 更早的会话已被压缩成一段摘要（见 sessions.maybe_compact），作为独立
         # system 消息注入，让模型在滑窗之外仍知道"之前聊过什么"。
         if self.summary:
+            # 注入侧统一封顶：只压 rolling，pinned 原样拼回（结构性改造 4）。
+            # 上限由本实例的 prompt 预算派生（与写回同一函数）。
+            _injected_summary = _sessions.inject_summary_text(
+                self.summary, _sessions.summary_char_budget(self._prompt_budget()))
             messages.append(
                 {"role": "system", "content": "【早期对话摘要（更早的轮次已压缩，**可能有损/被截断，不代表已验证事实**）】\n"
-                 + self.summary
+                 + _injected_summary
                  + "\n（对其中精确标识符/数值/早期约定保持低置信：需要引用具体值时先重读来源或向用户确认，"
                    "切勿把摘要里的残缺/疑似截断值当完整事实直接作答。）"}
             )
         # 历史回放按模型真实预算开 token 窗口（见 _history_window）：大窗口模型
+        _legacy_memory_rows = []
+        _legacy_memory_context = ""
         try:
-            memory_context = _memory.context(self.memory_scope, routing_question)
-            if memory_context:
-                messages.append({"role": "user", "content": memory_context})
+            _legacy_memory_context, _legacy_memory_rows = _memory.context_with_rows(
+                self.memory_scope, routing_question, agent_id=self.agent_id)
+            if _legacy_memory_context:
+                messages.append({"role": "user", "content": _legacy_memory_context})
         except Exception:
             pass
-        # 记忆 v2 · L4 会话钩子：放在长期记忆之后、历史之前；压缩后这些钩子仍保留。
+        # 记忆 v2 · 会话钩子：放在长期记忆之后、历史之前；压缩后这些钩子仍保留。
         # 开关关时 _memory_v2_injection 为 None，提示词与旧版逐字节一致。
         if _v2_on and _memory_v2_injection is not None:
             try:
                 _v2_session_blocks = _memory_v2_injection.build_session_injection(
                     getattr(self, "session_id", ""), getattr(self, "project_id", ""),
-                    max_chars=_memory_v2_injection.layer_chars("L4", self._prompt_budget()))
+                    max_chars=_memory_v2_injection.layer_chars("hook", self._prompt_budget()))
             except Exception:  # noqa: BLE001
                 _v2_session_blocks = []
             if _v2_session_blocks:
@@ -5446,6 +5462,13 @@ class Agent:
         if images:
             current["images"] = list(images)
         messages.append(current)
+        try:
+            from agent_runtime.memory import inspector as _memory_inspector
+            _memory_inspector.capture(
+                self, question=question, legacy_rows=_legacy_memory_rows,
+                legacy_text=_legacy_memory_context, project_rules=rules)
+        except Exception:  # noqa: BLE001 —— 可视化快照不得影响问答
+            pass
         return messages
 
     def _prompt_budget(self) -> int:
@@ -5659,9 +5682,29 @@ class Agent:
                 msg["images"] = list(msg["images"])[:4]
         return head + trail
 
+    def _heartbeat(self, phase, *, steps=None, event=""):
+        """执行侧心跳：只在真实业务事件上打点（派发/工具返回/模型起止/收尾）。
+
+        不做任何后台定时器。agent_id 为 delegation ticket 时写到对应子节点；
+        main 首次打点会创建根节点心跳记录。写失败不得影响 Agent 主流程。
+        """
+        session = str(getattr(self, "memory_session_id", "")
+                      or getattr(self, "session_id", "") or "")
+        node = str(getattr(self, "agent_id", "") or "main")
+        if not session:
+            return False
+        progress = None if steps is None else {"steps": max(0, int(steps))}
+        try:
+            from agent_runtime import delegation as _delegation
+            return _delegation.beat(session, node, phase=str(phase or ""),
+                                    event=str(event or ""), progress=progress)
+        except Exception:  # noqa: BLE001 —— 心跳失败不能中断任务
+            return False
+
     def _final_event(self, text, turn):
         """成功收尾的 final 事件：记忆 v2 开着时附带「是否交付型回合」与任务书 id，
         供前端决定是否弹满意度卡；关时事件与旧版完全一致。"""
+        self._heartbeat("final", steps=getattr(self, "_hb_steps", 0), event="final")
         payload = {"type": "final", "text": text}
         try:
             if get_memory_v2():
@@ -5745,6 +5788,9 @@ class Agent:
         exec_owner_token = set_exec_owner(_exec_owner_value)
         memory_token = _memory.bind(self.memory_scope, "\n".join(
             [str(item.get("user") or "") for item in self.history[-20:]] + [question]))
+        # agent 归属随执行上下文绑定：memory_save 等工具写入时按此维度落库，
+        # 与主 agent 的 project/user scope 是正交的两层（scope 管项目，agent_id 管是谁）。
+        memory_agent_token = _memory.bind_agent(self.agent_id)
         timer_tokens = _timers.bind(self.project_id or "", self.session_id or "")
         plan_log_tokens = _plan_log.bind(self.project_id or "", self.session_id or "")
         try:
@@ -5786,6 +5832,7 @@ class Agent:
             # 任何出口（含 close()/断连）都还原为原值，杜绝逐请求覆盖污染共享单例。
             end_read_conversation(_read_conv_token)
             _memory.reset(memory_token)
+            _memory.reset_agent(memory_agent_token)
             _timers.reset(timer_tokens)
             _plan_log.reset(plan_log_tokens)
             reset_project_intro_request(project_intro_token)
@@ -5793,6 +5840,7 @@ class Agent:
              self.tool_mode, self.plan_mode, self.narration,
              self._request_system_context, self.ingested_sources) = prev
             self.llm = prev_llm
+            self._heartbeat("turn_closed", steps=self._hb_steps, event="turn_closed")
             # 会话级：同样包 try（跨 context reset 会抛 ValueError，见上面注释）
             try:
                 _reset_ctx_session_code_root(_sess_root_token)
@@ -5882,36 +5930,43 @@ class Agent:
         ② 把更新后的会话历史落盘并按阈值做摘要压缩。
         客户端断连（生成器被 close）走 aborted 分支，仍留一条可观测记录。
         """
+        # resume 新鲜度必须按压缩前的工作窗口判断；压缩缩短 history 不代表没有新对话。
+        _resume_rec = self._resolve_resume_record(resume)
+        _resume_history_len = len(self.history)
+        if (_resume_rec and self.history
+                and self.history[-1].get("checkpoint_id") == _resume_rec.get("id")):
+            _resume_history_len -= 1
         # P1：每轮问答前自动摘要压缩。
         # 原 sessions.maybe_compact 已写好但 run() 入口没接，导致长会话
-        # 50+KB 抖动、模型窗口超限时直接报「上下文超出」。此处按模型真实窗口
+        # 50+KB 抖动、模型窗口超限时直接报「上下文超出」。回合前后统一按 prompt 预算
         # 算 trigger / keep 阈值，跑完压缩后立即落盘，下次回复窗口就干净了。
         try:
             from sessions import maybe_compact as _sessions_maybe_compact
-            window = int(self.context_window or 0)
-            # 与 sessions.py 的常量口径一致：trigger=window*0.8 / keep=window*0.4
-            _trigger = max(1, window // 5 * 4) if window > 0 else None
-            _keep = max(1, window // 5 * 2) if window > 0 else None
+            _budget = self._prompt_budget()
+            _trigger = int(_budget * COMPACT_TRIGGER_RATIO)
+            _keep = int(_budget * COMPACT_KEEP_RATIO)
             new_history, new_summary = _sessions_maybe_compact(
                 self.session_id or "", list(self.history or []),
                 llm=self.llm,
                 trigger_tokens=_trigger,
                 keep_tokens=_keep,
                 project_id=self.project_id,
+                prompt_budget=_budget,
             )
             if new_history != self.history or new_summary != self.summary:
                 # 压缩只收缩喂 LLM 的工作窗口（self.history），被弹出的更早轮次
                 # 必须归档到 self.archived 完整留存（供 UI 回灌完整历史），
                 # 否则就重现「长会话把前面的对话删了」。new_history 是旧历史的后缀。
                 _old = list(self.history or [])
-                if len(new_history) < len(_old):
-                    self.archived = (self.archived or []) + _old[:len(_old) - len(new_history)]
+                _dropped = _old[:len(_old) - len(new_history)]
+                if _dropped:
+                    self.archived = (self.archived or []) + _dropped
                 self.history = list(new_history)
                 self.summary = str(new_summary or "")
                 try:
                     _sessions.save(self.session_id or "", self.history,
                                    self.summary, project_id=self.project_id,
-                                   archived=self.archived)
+                                   archived=self.archived, compaction_turns=_dropped)
                 except Exception:  # noqa: BLE001
                     # 落盘失败不能阻塞本轮（缩了；下次起进程会话文件兜底）
                     pass
@@ -5924,7 +5979,6 @@ class Agent:
         # 一并落盘，恢复后直接从**下一步**继续，已完成的工具调用不会重放。
         # 只有「此后没有更新的会话轮次」时才认这份现场：旧快照若盖掉用户后来
         # 聊过的内容，比不精确更糟。
-        _resume_rec = self._resolve_resume_record(resume)
         _resume_journal = None
         if _resume_rec:
             _orig_q = str(_resume_rec.get("question") or "").strip()
@@ -5939,7 +5993,7 @@ class Agent:
                     _hist_len = int(_j.get("history_len") or 0)
                 except (TypeError, ValueError):
                     _hist_len = 0
-                if len(self.history) <= _hist_len:
+                if _resume_history_len <= _hist_len:
                     _resume_journal = _j
                     question = _orig_q
                 else:
@@ -5957,6 +6011,7 @@ class Agent:
             provider=getattr(self.llm, "provider", ""),
             model=getattr(self.llm, "model", ""),
             question=question,
+            agent_id=self.agent_id,
         )
         # 回合级撤销要按回合归组写入，所以把 trace 的 turn_id 绑进写账本。
         # 用 contextvar 而非线程本地：并行工具批次走 copy_context()。
@@ -6142,15 +6197,16 @@ class Agent:
                         self.session_id, self.history, self.llm,
                         trigger_tokens=int(_budget * COMPACT_TRIGGER_RATIO),
                         keep_tokens=int(_budget * COMPACT_KEEP_RATIO),
-                        project_id=self.project_id)
+                        project_id=self.project_id, prompt_budget=_budget)
                     if len(kept) < before_n:
                         # 压缩弹出的更早轮次完整归档（kept 是压缩前 self.history 的后缀），
                         # 供 UI 回灌完整历史；LLM 工作窗口 self.history 仍按压缩结果走。
-                        self.archived = (self.archived or []) + self.history[:before_n - len(kept)]
+                        _dropped = self.history[:before_n - len(kept)]
+                        self.archived = (self.archived or []) + _dropped
                         self.history = kept
                         self.summary = summary
                         _sessions.save(self.session_id, kept, summary, self.project_id,
-                                       archived=self.archived)
+                                       archived=self.archived, compaction_turns=_dropped)
                         yield {"type": "notice",
                                "text": f"早期 {before_n - len(kept)} 轮对话已自动压缩为摘要，新问答不受影响。"}
                         # 压缩后刷新一次用量指示，让进度条立即回落
@@ -6207,8 +6263,9 @@ class Agent:
                         final_text, getattr(turn, "tool_evidence", None) if turn is not None else None)
                     _ep_mid = _memory.remember(self.memory_write_scope, "episode", _memory.scrub(question, 200),
                         ("未完成：" + (error or "停止/中断") if error or not final_text else "模型报告（尚需核对验收）：" + final_text),
-                        "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed)
-                    # 记忆 v2 · L4：结构化回合 + 钩子/错误/回执。只影响本层，
+                        "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed,
+                        agent_id=self.agent_id)
+                    # 记忆 v2 · 会话钩子：结构化回合 + 钩子/错误/回执。只影响本层，
                     # 绝不影响上面已完成的老记忆落库；开关关时直接返回。
                     try:
                         if get_memory_v2():
@@ -6319,6 +6376,13 @@ class Agent:
                 turn.experience = {"recorded": False, "error": "hook_failed"}
             rec = turn.to_record()
             self.last_turn_record = rec      # 供父代理读取（子代理轨迹/成本回传）
+            try:
+                from agent_runtime.memory import inspector as _memory_inspector
+                _memory_inspector.complete(
+                    self, final_text=final_text,
+                    file_changes=(journal_state or {}).get("file_changes") or [], record=rec)
+            except Exception:  # noqa: BLE001 —— 合规证据快照不得影响收尾
+                pass
             _trace.record(rec)
             _langsmith.export_turn(rec)
             if turn.cost_cny:
@@ -6362,6 +6426,8 @@ class Agent:
         tool_steps = 0
         nav_free_used = 0  # 已用掉的免费目录导航次数（_NAV_TOOLS，超出后照常计步）
         iterations = 0
+        self._hb_steps = 0
+        self._heartbeat("started", steps=0, event="run_start")
         # 工具/观察预算按本轮真实用户问题动态选择。项目缺陷审查通常需要同时核对
         # 脚本、场景、输入与 UI，不能与普通问答共用同一个很小的固定上限。
         # 工作流子代理按任务显式申请加步时（tool_step_override），以申请值为准——
@@ -6777,6 +6843,9 @@ class Agent:
                     _nav_freed = sum(1 for _free in batch_free if _free)
                     nav_free_used += _nav_freed
                     tool_steps += len(results) - _nav_freed
+                    self._hb_steps = tool_steps
+                    self._heartbeat("tool_batch", steps=tool_steps,
+                                    event=",".join(str(row[0]) for row in results)[:80])
                     last_action = results[-1][0]
                     last_obs = results[-1][2]
                     if any(self._is_write_tool(nm) for nm, _a, _o, _k, _i, _ek in results):
@@ -6814,7 +6883,9 @@ class Agent:
             messages = self._fit_budget(head, trail)
             if turn is not None and turn.messages_hash is None:
                 turn.snapshot_prompt(messages)
-                turn.add_injection(getattr(self, "_last_injection", []))
+                turn.add_injection(
+                    list(getattr(self, "_last_injection", []) or [])
+                    + list(getattr(self, "_last_legacy_injection", []) or []))
             acc = ""
             finish_reason = None
             # 续写纠偏重试：本次调用暂时关思考，把输出预算留给答案本身
@@ -6883,6 +6954,7 @@ class Agent:
                             chat_kwargs["max_output_tokens"] = lookup_output_limit
                         _raw_stream = self.llm.chat(**chat_kwargs)
                         _llm_wait_emit("llm_wait_start", _llm_wait_purpose)
+                        self._heartbeat("thinking", steps=self._hb_steps, event="llm_start")
 
                         def _traced_stream(_src=_raw_stream):
                             """迭代结束（含异常关闭）时补上 llm_wait_end。
@@ -6899,6 +6971,8 @@ class Agent:
                                 _llm_wait_emit(
                                     "llm_wait_end", _llm_wait_purpose,
                                     ms=int((time.monotonic() - _llm_wait_t0) * 1000))
+                                self._heartbeat("thinking_done",
+                                                steps=self._hb_steps, event="llm_end")
 
                         chat_stream = _raw_stream
                         for tok in _traced_stream():
@@ -6944,12 +7018,15 @@ class Agent:
                             chat_kwargs["max_output_tokens"] = lookup_output_limit
                         _llm_wait_t0 = time.monotonic()
                         _llm_wait_emit("llm_wait_start", _llm_wait_purpose)
+                        self._heartbeat("thinking", steps=self._hb_steps, event="llm_start")
                         try:
                             acc = self.llm.chat(**chat_kwargs)
                         finally:
                             _llm_wait_emit(
                                 "llm_wait_end", _llm_wait_purpose,
                                 ms=int((time.monotonic() - _llm_wait_t0) * 1000))
+                            self._heartbeat("thinking_done",
+                                            steps=self._hb_steps, event="llm_end")
                         # 上游给出 content=None 且这一轮没有 tool_calls 时，`chat()` 会把
                         # None 原样返回（`llm.py` 的 `getattr(msg, "content", None)`）。
                         # 那在「tool-call-only 消息」上是**对的**——原生 FC 通道正是靠
@@ -7446,6 +7523,9 @@ class Agent:
                 # post-tool 钩子 + 相关性判定）。前端据此染色，**不再从返回正文里
                 # grep「错误/失败/超时」**——read_file 读到的源码/日志天然含这些字，
                 # 历史上把成功的一次读取整排标红（实测 agent.py 前 80 行那次）。
+                self._hb_steps = tool_steps
+                self._heartbeat("tool", steps=tool_steps,
+                                event=f"{action_name}:{'ok' if _tool_ok else 'fail'}")
                 observation_event = {"type": "observation", "text": obs,
                                      "ok": bool(_tool_ok)}
                 if _result.artifacts:
@@ -8500,6 +8580,7 @@ class Agent:
         if not mid:
             return
         scope = self.memory_scope
+        owner = self.agent_id
         llm = self._child_llm()
         q = _memory.scrub(question, 800)
         a = _memory.scrub(final_text, 4000)
@@ -8536,7 +8617,7 @@ class Agent:
                     imp = None
                 _memory.remember(scope, "episode", _memory.scrub(question, 200),
                     "模型报告（已蒸馏）：" + summary, "",
-                    source="model_report", key=question, backed=backed, importance=imp)
+                    source="model_report", key=question, backed=backed, importance=imp, agent_id=owner)
             except Exception:  # noqa: BLE001 —— 蒸馏异常绝不影响主流程
                 pass
 
@@ -8547,13 +8628,16 @@ class Agent:
 
     def _run_child(self, role, task, context=None, turn=None, *, persona="",
                    tool_allowlist=None, mcp_policy="auto", reflect=True,
-                   max_steps=None, step_sink=None, llm=None):
+                   max_steps=None, step_sink=None, llm=None, _delegation_ticket="",
+                   _plan_id="", _task_id=""):
         """跑一个受限子代理，返回 {status, conclusion, steps, error}（delegate 与 orchestrate 共用）。
 
         - 角色决定**默认**工具集与角色提示（researcher / coder / reviewer / tester）；
           主 agent 可以指定自己的工具集，也可以自造角色名，不再受那 11 个枚举约束；
         - 子代理持**独立** LLMClient、独立会话（不落盘、不污染父会话历史）；
         - 递归深度受 SUBAGENT_MAX_DEPTH 限制（套娃由这个兜住）；
+        - 同会话、同项目、depth 0→1、未扩权且未超限的直接子代理登记后立即执行；
+          跨层、跨项目、扩权、超限或无法证明安全的派发返回 pending，先审批再执行；
         - `context`（{上游id: 结论}）会被注入子任务提示——这是"下游看得见上游"的关键；
         - 子代理 token 计入父回合账本；
         - `step_sink(item)` 可选：每产生一条 thought/action/observation 实时回调
@@ -8598,9 +8682,43 @@ class Agent:
                                 f"（{'、'.join(_SUBAGENT_ROLES)}），"
                                 "也可以自己起一个并说明这个角色要做什么。"}
             spec = {"tools": list(self.tools), "hint": ""}
+        interactive_session = str(self.memory_session_id or self.session_id or "")
         if self.depth >= SUBAGENT_MAX_DEPTH:
-            return {"status": "failed", "conclusion": "", "steps": 0,
-                    "error": f"已达子代理最大嵌套深度 {SUBAGENT_MAX_DEPTH}"}
+            if not interactive_session:
+                return {"status": "failed", "conclusion": "", "steps": 0,
+                        "error": f"已达子代理最大嵌套深度 {SUBAGENT_MAX_DEPTH}"}
+        from agent_runtime import delegation as _delegation
+        resolved = _delegation.resolve_tools(
+            self, default_tools=spec["tools"], tool_allowlist=tool_allowlist,
+            mcp_policy=mcp_policy, read_only=role_name in _READ_ONLY_ROLES,
+            interactive_session=interactive_session)
+        requested_tools = resolved["requested_tools"]
+        allowlist_provided = resolved["allowlist_provided"]
+        allowed = resolved["allowed"]
+        policy = resolved["policy"]
+        if interactive_session and not _delegation_ticket:
+            request = _delegation.request(
+                self, role=role_name, task=str(task or ""),
+                session_id=interactive_session, project_id=self.project_id,
+                effective_tools=allowed, plan_id=_plan_id, task_id=_task_id,
+                execution={"context": context or {}, "persona": persona,
+                           "reflect": bool(reflect), "max_steps": max_steps, "mcp_policy": policy},
+                run=lambda: self._run_child(
+                    role, task, context=context, turn=turn, persona=persona,
+                    tool_allowlist=tool_allowlist, mcp_policy=mcp_policy, reflect=reflect,
+                    max_steps=max_steps, step_sink=step_sink, llm=llm,
+                    _delegation_ticket=request["id"], _plan_id=_plan_id, _task_id=_task_id))
+            if request["approval_required"]:
+                reason = ("超过默认防护上限，需明确允许继续"
+                          if request["requires_limit_confirmation"]
+                          else "；".join(request["approval_reasons"]) or "派发风险无法证明安全")
+                return {"status": "pending", "conclusion": "", "steps": 0, "error": "",
+                        "plan_id": _plan_id, "task_id": _task_id, "delegation_id": request["id"],
+                        "delegation": request,
+                        "needs_confirmation": {
+                            "kind": "delegation", "action": "delegate", "id": request["id"],
+                            "reason": reason}}
+            return _delegation.execute(interactive_session, request["id"])
 
         hook_events = []
 
@@ -8738,6 +8856,10 @@ class Agent:
         #     写工具），不该靠放宽校验端来救。该生成端问题仍未解决，记在
         #     docs/next-steps.md，不在本提交里改。
         allowed = [name for name in allowed if name in self.tools]
+        if interactive_session:
+            # 递归编排是一等能力；跨层递归会在入口处按风险分档要求审批。
+            allowed = list(dict.fromkeys(allowed + [
+                name for name in ("delegate", "orchestrate") if name in self.tools]))
         # 显式点名了非空名单、过滤后却一个不剩 → **结构上无法完成**，当场失败。
         #
         # 为什么不放它跑（2026-10-16 实测，见 `.tmp/repro_planner_zero_tools.py`）：
@@ -8771,9 +8893,12 @@ class Agent:
                                    "issues": ["zero_effective_tools"]},
                     "trace": _child_trace([], [], hooks=hook_events)}
         cap = _resolve_child_max_steps(max_steps)
+        # 子 agent 也是正常 Agent：分配真实 session_id，走同一个 sessions 落盘路径。
+        # id 由委派 ticket 确定性推导（sub-<ticket>），重启后工作台仍能按 id 找回，
+        # 且 sessions.list_sessions 默认过滤该前缀，不把主会话列表塞脏。
         child = Agent(
             llm=child_llm,
-            session_id=None,
+            session_id=_sessions.subagent_session_id(_delegation_ticket),
             tool_mode=self.tool_mode,
             plan_mode=False,
             depth=self.depth + 1,
@@ -8784,7 +8909,12 @@ class Agent:
             system_prompt=self.system_prompt,
             capability_lease=self.capability_lease,
             run_budget=self.run_budget,
+            agent_id=(_delegation_ticket or "main"),
+            memory_session_id=interactive_session,
         )
+        if _delegation_ticket:
+            from agent_runtime import delegation as _delegation
+            _delegation.register_agent(_delegation_ticket, child)
         # 子代理同样继承滑动续期器：一次长任务可能由子代理连续跑很久，
         # 静态租约副本不续期会在中途把子代理的工具拦死。
         child.capability_lease_renew = self.capability_lease_renew
@@ -8833,6 +8963,9 @@ class Agent:
         # 空、无法核实」并放弃，而它那轮的真实观察其实是有的；父代理据此判失败、
         # replan、再派一次，每次都基于同一份错配的证据，连错三次。
         traj, pending = [], deque()
+        # 与主会话同一套轨迹结构（type/text），供工作台子 agent 窗口刷新后重建推理过程。
+        # 子 agent 的 SSE 不经过 api.py 的 in-flight 蒸馏路径，必须在这里自己收。
+        trace_steps: list[dict] = []
         artifacts = []
         # 「需要用户确认」的上浮载体：子代理被授权问题卡住时，从事件流收进来，
         # 最后进 `output["needs_confirmation"]`（必填，无内容时是空 dict）。
@@ -8870,6 +9003,7 @@ class Agent:
                             # 免费目录导航 step_cost=0：不占子任务步数上限（与内层同一口径）
                             used += int(ev.get("step_cost", 1))
                             emit_sink("action", ev.get("text") or "")
+                            trace_steps.append({"type": "action", "text": ev.get("text") or ""})
                             if len(traj) < ORCH_TRACE_STEPS:
                                 # 入队而不是覆盖：并行批次会连着来多个 action，
                                 # 队列先进先出才能让观察回到它自己那次调用。
@@ -8883,11 +9017,15 @@ class Agent:
                                 pass
                         elif et == "thought":
                             thoughts.append(ev.get("text") or "")
+                            trace_steps.append({"type": "thought", "text": ev.get("text") or ""})
                             emit_sink("thought", ev.get("text") or "")
                         elif et == "reflection":
                             reflections.append(ev.get("text") or "")
+                            trace_steps.append({"type": "reflection", "text": ev.get("text") or ""})
                         elif et == "observation":
                             last_obs = ev.get("text") or ""
+                            trace_steps.append({"type": "observation", "text": last_obs,
+                                                "ok": ev.get("ok")})
                             for artifact in list(ev.get("artifacts") or []):
                                 if isinstance(artifact, dict) and len(artifacts) < 16:
                                     artifacts.append(dict(artifact))
@@ -8978,6 +9116,14 @@ class Agent:
                 conclusion = "（子代理未在步数内收尾，以下为过程要点）\n" + _clip(salvage, 900)
         # 即使有安全网兜底 final（文字非空），其来源不是模型 Final Answer，仍属降级结论。
         degraded = degraded or final_degraded
+        # 子 agent 的逐轮记录已由 child.run 写进 sessions（sub-<ticket>）；这里把同一份
+        # 推理轨迹挂到那轮上，工作台「独立对话窗口」刷新后能重建 think/action/观察，
+        # 而不是只剩任务与结论。失败时静默——轨迹是锦上添花。
+        if child.session_id and trace_steps:
+            try:
+                _sessions.attach_turn_trace(child.session_id, question, final_text, trace_steps)
+            except Exception:  # noqa: BLE001
+                pass
         reflection = (_reflection_result(
             child_llm, role=role, task=task, conclusion=conclusion,
             traj=traj, context=context, budget=self.run_budget) if reflect else {
@@ -8986,6 +9132,13 @@ class Agent:
         status = "ok" if reflection.get("ok") else "failed"
         error = "" if status == "ok" else "子代理反思未通过：" + "; ".join(
             str(item) for item in (reflection.get("issues") or []))
+        if _delegation_ticket and not _needs_confirm:
+            from agent_runtime import delegation as _delegation
+            pending_child = _delegation.latest_pending(interactive_session, _delegation_ticket)
+            if pending_child:
+                _needs_confirm.update({
+                    "kind": "delegation", "action": "delegate", "id": pending_child["id"],
+                    "reason": "下一层子代理等待用户审批"})
         output = {"status": status, "conclusion": conclusion, "steps": used,
                 "max_steps": cap,
                 "error": error, "degraded": degraded, "reflection": reflection,
@@ -9038,6 +9191,10 @@ class Agent:
             # 第三种状态：不是失败，是**等用户拍板**。措辞不能说「失败」——
             # 那会让主 Agent 去重试或放弃，而正确做法是去问用户。
             need = out["needs_confirmation"]
+            if need.get("kind") == "delegation":
+                return ("[delegate 等待派发审批] 子代理尚未执行。审批编号 %s；%s。"
+                        "请在 Agent 树中查看派发人、任务和预计影响，由用户批准或拒绝。"
+                        % (need.get("id", ""), need.get("reason", "")))
             return ("[delegate 需要用户确认] %s：%s。"
                     "子代理无法自行确认写授权（它拿不到用户的原话），"
                     "请在 Final Answer 里向用户确认后再继续，不要重试同一调用。"
@@ -9069,7 +9226,8 @@ class Agent:
             persona=task.get("persona", ""), tool_allowlist=(task.get("tools") or None),
             mcp_policy=task.get("mcp", "auto"),
             reflect=bool(task.get("reflection", True)),
-            max_steps=task.get("max_steps"))
+            max_steps=task.get("max_steps"), _plan_id=task.get("_plan_id", ""),
+            _task_id=task.get("id", ""))
 
     def _synth(self, tasks, results, turn=None):
         """把所有子任务结论合成一段最终答复（一次 LLM 调用；失败退回原始拼接）。"""
@@ -9209,6 +9367,33 @@ class Agent:
             return obj
         return []
 
+    def task_assist(self, goal, turn=None, max_replans=1):
+        """只编排的任务助手：规划/恢复/总结不拿业务工具，执行全部走审批子代理。"""
+        from agent_runtime import task_assistant as _assistant
+        llm = self._child_llm()
+
+        def ask(prompt):
+            out = llm.chat([{"role": "user", "content": prompt}], stream=False, temperature=0.2)
+            if turn is not None:
+                turn.add_usage(getattr(llm, "last_usage", None))
+            return out
+
+        try:
+            tasks = _assistant.parse_tasks(ask(_assistant.planner_prompt(goal)), goal)
+        except Exception as exc:  # noqa: BLE001 —— 规划失败也要自然语言上报
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                    "tasks": [], "results": {}, "waves": [], "order": [], "blocked": [],
+                    "merged": "任务助手无法把要求整理成标准任务规格：" + str(exc),
+                    "assistant": {"orchestrator_only": True, "business_tools": []}}
+
+        from agent_runtime import orchestration
+        return orchestration.run(
+            self, "task_assist", tasks,
+            {"goal": str(goal or ""), "max_replans": max(0, min(3, int(max_replans))),
+             "max_parallel": 4},
+            turn=turn,
+        )["report"]
+
     def orchestrate(self, plan, synth=True, max_parallel=None, turn=None,
                     replan=True, max_replans=None):
         """执行一张任务图，返回结构化结果（工具与 /api/orchestrate 共用）。
@@ -9242,24 +9427,16 @@ class Agent:
         mp = effective_parallelism(getattr(self.llm, "provider", ""),
                                    getattr(self.llm, "model", ""), requested_mp,
                                    base_url=getattr(self.llm, "base_url", ""))
-        synth_runner = (lambda ts, rs: self._synth(ts, rs, turn=turn)) if synth else None
-        rp = None
-        if replan:
-            rp = lambda fs, rs, att, ctx=None: self._replanner(fs, rs, att, turn=turn)  # noqa: E731
         if turn is not None:
             turn.subagents_dispatched = dispatched + len(tasks)
-        report = _orchestrator.run_plan(
-            tasks,
-            lambda t, ctx: self._task_runner(t, ctx, turn=turn),
-            synth_runner=synth_runner,
-            max_parallel=mp,
-            replanner=rp,
-            max_replans=(ORCH_MAX_REPLANS if max_replans is None else int(max_replans)),
-            max_tasks=task_limit,
-            budget_session=self.session_id or "",
-            vram_provider=(lambda: (_gpu.memory_info() or {}).get("free_mb") if _gpu else None),
-            cost_aware=True,
-        )
+        from agent_runtime import orchestration
+        report = orchestration.run(
+            self, "orchestrate", tasks,
+            {"synth": bool(synth), "replan": bool(replan),
+             "max_replans": (ORCH_MAX_REPLANS if max_replans is None else int(max_replans)),
+             "max_parallel": mp, "task_limit": task_limit},
+            turn=turn,
+        )["report"]
         final_task_count = len(report.get("tasks") or tasks)
         if turn is not None:
             turn.subagents_dispatched += max(0, final_task_count - len(tasks))
