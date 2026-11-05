@@ -1,0 +1,8 @@
+{
+  "fact_in_pinned": false,
+  "fact_in_rolling": true,
+  "fact_in_summary": true,
+  "final_summary": "【固定事实】\n\n【近期进展】\n\n项目主要数据库是 PostgreSQL 15，部署在杭州机房。",
+  "pinned_text": "",
+  "rolling_text": "项目主要数据库是 PostgreSQL 15，部署在杭州机房。"
+}

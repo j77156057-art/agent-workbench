@@ -1,0 +1,7 @@
+{
+  "final_summary": "【固定事实】\n\nPINNED-SECRET-CONSTRAINT-42：必须保持 Python 3.9 兼容；三个公开 API 签名不得改动\n\n【近期进展】\n\n压缩后的近期进展：完成导出排查。",
+  "llm_calls": 2,
+  "pinned_in_rolling_prompt": false,
+  "rolling_prompt_count": 1,
+  "rolling_token_in_all_prompts": true
+}

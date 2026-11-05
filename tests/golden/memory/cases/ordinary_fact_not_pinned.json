@@ -1,0 +1,26 @@
+{
+  "why": "守住性质 11（反例）：不含“必须/不得/禁止”等词的普通事实不得被固定进 pinned，防止过度固定。",
+  "scenario": "ordinary_fact_not_pinned",
+  "session_id": "golden-ordinary-fact",
+  "fact": "项目主要数据库是 PostgreSQL 15，部署在杭州机房。",
+  "seed": {
+    "turns": [
+      {"user": "继续推进。", "assistant": "完成。"},
+      {"user": "补测试。", "assistant": "完成。"}
+    ],
+    "summary": "【固定事实】"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 11000,
+    "add": [{"user": "汇报环境信息。", "assistant": "已记录。"}],
+    "llm_reply": "项目主要数据库是 PostgreSQL 15，部署在杭州机房。"
+  },
+  "llm_default": "进展摘要。",
+  "assertions": [
+    {"type": "is_false", "field": "fact_in_pinned"},
+    {"type": "is_true", "field": "fact_in_rolling"},
+    {"type": "is_true", "field": "fact_in_summary"}
+  ]
+}

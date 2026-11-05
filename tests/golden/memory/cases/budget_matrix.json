@@ -1,0 +1,53 @@
+{
+  "why": "守住性质 10：同一压缩用例在 770 字小预算与 2117 字默认预算下都成立，断言完全相同。",
+  "scenario": "budget_matrix",
+  "session_id": "golden-budget-matrix",
+  "code_token": "项目代号 ORCHID-2718",
+  "api_token": "必须保持 Python 3.9 兼容；三个公开 API 签名不得改动",
+  "budgets": [4000, 11000],
+  "seed": {
+    "turns": [
+      {"user": "继续推进。", "assistant": "完成。"},
+      {"user": "补测试。", "assistant": "完成。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。"
+  },
+  "llm_replies": ["早期摘要：完成阶段一。"],
+  "llm_default": "进展摘要。",
+  "cycles": [
+    {
+      "trigger_tokens": 1,
+      "keep_tokens": 1,
+      "add": [
+        {
+          "user": "阶段二过程记录：目录整理、日志字段、失败重试、分页参数、临时开关、回归记录、交接说明、导出路径、异常提示、周报整理，这些内容只是过程记录。",
+          "assistant": "完成阶段二。"
+        }
+      ]
+    },
+    {
+      "trigger_tokens": 1,
+      "keep_tokens": 1,
+      "add": [
+        {
+          "user": "阶段三过程记录：参数核对、返回结构、异常分支、日志位置、复现步骤、回滚方式、版本核对与发布检查，这些内容只是过程记录。",
+          "assistant": "完成阶段三。"
+        }
+      ]
+    }
+  ],
+  "assertions": [
+    {"type": "int_le", "field": "budget_4000.chars", "limit_field": "budget_4000.limit"},
+    {"type": "int_eq", "field": "budget_4000.limit", "limit": 770},
+    {"type": "is_true", "field": "budget_4000.has_code"},
+    {"type": "is_true", "field": "budget_4000.has_api"},
+    {"type": "is_true", "field": "budget_4000.markers_ok"},
+    {"type": "is_true", "field": "budget_4000.pinned_has_code"},
+    {"type": "int_le", "field": "budget_11000.chars", "limit_field": "budget_11000.limit"},
+    {"type": "int_eq", "field": "budget_11000.limit", "limit": 2117},
+    {"type": "is_true", "field": "budget_11000.has_code"},
+    {"type": "is_true", "field": "budget_11000.has_api"},
+    {"type": "is_true", "field": "budget_11000.markers_ok"},
+    {"type": "is_true", "field": "budget_11000.pinned_has_code"}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "delete_ok": true,
+  "deleted_gone": true,
+  "final_entries": [
+    "禁止修改 migrations/ 目录下任何文件，包括新增。"
+  ],
+  "final_summary": "【固定事实】\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架。",
+  "readd_present": false,
+  "readd_suppressed_count": 1,
+  "remaining_after_delete": 1,
+  "tombstone_count": 1,
+  "tombstones": [
+    "项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。"
+  ]
+}

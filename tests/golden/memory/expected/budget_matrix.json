@@ -1,0 +1,20 @@
+{
+  "budget_11000": {
+    "chars": 88,
+    "has_api": true,
+    "has_code": true,
+    "limit": 2117,
+    "markers_ok": true,
+    "pinned_has_code": true,
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n【近期进展】\n\n早期摘要：完成阶段一。\n\n进展摘要。"
+  },
+  "budget_4000": {
+    "chars": 88,
+    "has_api": true,
+    "has_code": true,
+    "limit": 770,
+    "markers_ok": true,
+    "pinned_has_code": true,
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n【近期进展】\n\n早期摘要：完成阶段一。\n\n进展摘要。"
+  }
+}

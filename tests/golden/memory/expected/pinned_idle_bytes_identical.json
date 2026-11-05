@@ -1,0 +1,11 @@
+{
+  "bytes_equal": true,
+  "final_summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。\n\n【近期进展】\n\n本轮巡检完成：整理了目录、日志与交接记录。\n\n本轮巡检完成：整理了目录、日志与交接记录。\n\n本轮巡检完成：整理了目录、日志与交接记录。\n\n本轮巡检完成：整理了目录、日志与交接记录。\n\n本轮巡检完成：整理了目录、日志与交接记录。",
+  "llm_calls": 62,
+  "pinned_after": "项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。",
+  "pinned_before": "项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。",
+  "pinned_sha256_after": "0b51db7f677ec7f7db4dccc040389a816ed99a058912026e8ff96434fd1f155b",
+  "pinned_sha256_before": "0b51db7f677ec7f7db4dccc040389a816ed99a058912026e8ff96434fd1f155b",
+  "rounds": 60,
+  "summary_chars": 237
+}

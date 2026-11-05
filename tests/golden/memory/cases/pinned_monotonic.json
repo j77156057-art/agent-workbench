@@ -1,0 +1,32 @@
+{
+  "why": "黄金用例 22（90 轮压测）：pinned 只能由模型增加、不能自己减少。吸收新硬约束必然追加，所以断言不是“整块字节全等”，而是两条同时成立——旧 pinned 全部内容逐字节保留在新 pinned 最前面，且增长只追加在旧前缀之后；另加条目数单调校验（非 user 路径不得减少）。",
+  "sequence": 22,
+  "scenario": "pinned_monotonic",
+  "session_id": "golden-pinned-monotonic",
+  "rounds": 90,
+  "seed": {
+    "turns": [
+      {"user": "初始化项目。", "assistant": "已完成。"},
+      {"user": "确认约束。", "assistant": "已记录。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [
+      {"user": "第 {i} 轮：禁止修改 build/step{i}/ 目录下任何文件。", "assistant": "记录第 {i} 轮。"}
+    ]
+  },
+  "llm_default": "本轮巡检完成：整理了目录、日志与交接记录。",
+  "assertions": [
+    {"type": "int_eq", "field": "rounds", "limit": 90},
+    {"type": "is_true", "field": "old_prefix_verbatim"},
+    {"type": "is_true", "field": "append_at_tail_only"},
+    {"type": "int_ge", "field": "pinned_growth_chars", "limit": 1},
+    {"type": "is_true", "field": "monotonic"},
+    {"type": "equals", "field": "decreased_rounds", "value": []},
+    {"type": "int_ge", "field": "final_count", "limit": 2}
+  ]
+}

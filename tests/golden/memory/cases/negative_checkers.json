@@ -1,0 +1,29 @@
+{
+  "why": "守住性质 11/12 的检查器敏感度：故意构造超长、标记被切开、pinned 被淘汰三种坏结果，检查器必须判红。",
+  "scenario": "negative_checkers",
+  "limit": 256,
+  "pinned_token": "必须保持 Python 3.9 兼容",
+  "render_summary": "【固定事实】\n\n必须保持 Python 3.9 兼容。\n【近期进展】\n\n过程记录一：脚手架、依赖安装、目录整理、临时调试结论、排查顺序与复现步骤。过程记录二：日志字段、失败重试、分页参数、临时开关、回归记录与交接说明。过程记录三：导出路径、异常提示、周报整理、版本核对与发布检查。过程记录四：接口变更、兼容性验证、回滚方案、监控指标与告警阈值。过程记录五：测试覆盖、边界输入、错误码、限流策略与灰度计划。过程记录六：文档更新、示例命令、常见问题与维护约定。过程记录七：性能采样、缓存命中、队列积压与超时重试。过程记录八：权限校验、审计日志、数据脱敏与导出边界。过程记录九：发布窗口、回滚演练、值班交接与复盘记录。",
+  "payloads": {
+    "overlong": "合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。合规正文。",
+    "within": "【固定事实】\n\n必须保持 Python 3.9 兼容。\n\n【近期进展】\n\n进展正常。",
+    "bisected": "【固定事\n\n必须保持 Python 3.9 兼容。\n\n【近期进展】\n\n进展正常。",
+    "partial_marker_with_valid_pinned": "【固定事实】\n\n必须保持 Python 3.9 兼容。\n\n【近期进\n\n进展正常。",
+    "intact": "【固定事实】\n\n必须保持 Python 3.9 兼容。\n\n【近期进展】\n\n进展正常。",
+    "missing_pinned": "【固定事实】\n\n【近期进展】\n\n只有过程记录，没有关键约束。",
+    "with_pinned": "【固定事实】\n\n必须保持 Python 3.9 兼容。\n\n【近期进展】\n\n进展正常。"
+  },
+  "assertions": [
+    {"type": "is_true", "field": "product_markers_ok"},
+    {"type": "is_true", "field": "product_markers_intact"},
+    {"type": "is_true", "field": "product_markers_position_ok"},
+    {"type": "is_false", "field": "product_corrupted_markers_ok"},
+    {"type": "is_false", "field": "len_check_overlong"},
+    {"type": "is_true", "field": "len_check_within"},
+    {"type": "is_false", "field": "marker_check_bisected"},
+    {"type": "is_false", "field": "marker_check_partial"},
+    {"type": "is_true", "field": "marker_check_intact"},
+    {"type": "is_false", "field": "pinned_check_missing"},
+    {"type": "is_true", "field": "pinned_check_present"}
+  ]
+}

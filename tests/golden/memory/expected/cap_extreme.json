@@ -1,0 +1,13 @@
+{
+  "capped": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n【近期进展】\n\n过程记录一：脚手架、依赖安装、目录整理、临时调试结论、排查顺序与复现步骤。\n（中间 157 字已省略）\n记录七：性能采样、缓存命中、队列积压与超时重试。过程记录八：权限校验、审计日志、数据脱敏与导出边界。过程记录九：发布窗口、回滚演练、值班交接与复盘记录。过程记录十：后续计划、待办清单、风险项与验收标准。",
+  "capped_chars": 223,
+  "derived_limit": 770,
+  "limit": 256,
+  "markers_intact": true,
+  "markers_ok": true,
+  "markers_position_ok": true,
+  "markers_unique": true,
+  "pinned_header_count": 1,
+  "pinned_header_present": true,
+  "rolling_header_count": 1
+}

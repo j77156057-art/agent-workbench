@@ -1,0 +1,15 @@
+{
+  "baseline_growth_chars": 68,
+  "baseline_ok": true,
+  "caught": {
+    "prefix_byte_changed": true,
+    "prefix_segments_reordered": true,
+    "prefix_tail_truncated": true
+  },
+  "mutation_count": 3,
+  "mutations_caught": true,
+  "mutations_missed": [],
+  "pinned_chars_after": 174,
+  "pinned_chars_before": 106,
+  "rounds": 4
+}

@@ -1,0 +1,25 @@
+{
+  "why": "黄金用例 20（新不变量 2）：模型路径只能追加。写回更短摘要、调用删除接口、传空列表覆盖，三种攻击都必须被忽略，条目数与旧条目三字段不变。",
+  "sequence": 20,
+  "scenario": "pinned_model_no_delete",
+  "session_id": "golden-pinned-model-no-delete",
+  "seed": {
+    "turns": [
+      {"user": "初始化项目。", "assistant": "已完成。"},
+      {"user": "确认约束。", "assistant": "已记录。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n发布包必须同时支持 Linux x86_64 与 macOS arm64，版本号不得低于 v2.4.0。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架。"
+  },
+  "model_shrink_summary": "【固定事实】\n\n模型只记得这一条：必须保持 Python 3.9 兼容。\n\n【近期进展】\n\n模型重写过一轮进展。",
+  "assertions": [
+    {"type": "int_eq", "field": "count_before", "limit": 3},
+    {"type": "int_eq", "field": "count_after", "limit": 3},
+    {"type": "is_true", "field": "entries_unchanged"},
+    {"type": "is_false", "field": "delete_ok"},
+    {"type": "equals", "field": "delete_reason", "value": "actor_not_user"},
+    {"type": "int_eq", "field": "append_added", "limit": 0},
+    {"type": "int_ge", "field": "shrink_rejected_audits", "limit": 1},
+    {"type": "int_eq", "field": "delete_audits", "limit": 0},
+    {"type": "is_true", "field": "all_texts_still_in_summary"}
+  ]
+}

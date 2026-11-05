@@ -1,0 +1,33 @@
+{
+  "why": "黄金用例 21：用户删除某条固定事实后，跑一次完整提取（LLM 摘要与原轮次里都再次出现同一事实），该事实不得回流到 pinned，且审计里必须有 pinned_readd_suppressed。",
+  "sequence": 21,
+  "scenario": "pinned_tombstone",
+  "session_id": "golden-pinned-tombstone",
+  "fact_token": "ORCHID-2718",
+  "fact_text": "项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。",
+  "rounds": 1,
+  "seed": {
+    "turns": [
+      {"user": "初始化项目。", "assistant": "已完成。"},
+      {"user": "确认约束。", "assistant": "已记录。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [
+      {"user": "再次强调：项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。", "assistant": "已记录。"}
+    ]
+  },
+  "llm_reply": "项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。",
+  "assertions": [
+    {"type": "is_true", "field": "delete_ok"},
+    {"type": "is_true", "field": "deleted_gone"},
+    {"type": "int_eq", "field": "remaining_after_delete", "limit": 1},
+    {"type": "is_false", "field": "readd_present"},
+    {"type": "int_ge", "field": "readd_suppressed_count", "limit": 1},
+    {"type": "int_eq", "field": "tombstone_count", "limit": 1}
+  ]
+}

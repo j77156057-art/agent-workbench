@@ -1,0 +1,17 @@
+{
+  "why": "守住回归 13：任务书超过 80 条时不丢新条目，只淘汰最旧的 done 条目。",
+  "scenario": "taskbook_evict",
+  "project_id": "golden-taskbook",
+  "title": "黄金任务书",
+  "seed_items": {"prefix": "任务-", "count": 80, "width": 3},
+  "mark_done_texts": ["任务-001", "任务-002", "任务-003", "任务-004", "任务-005"],
+  "append_items": {"prefix": "新任务-", "count": 10, "width": 3},
+  "assertions": [
+    {"type": "int_le", "field": "item_count", "limit_field": "max_items"},
+    {"type": "int_eq", "field": "item_count", "limit": 80},
+    {"type": "is_true", "field": "has_newest"},
+    {"type": "is_false", "field": "has_oldest_done"},
+    {"type": "equals", "field": "newest_text", "value": "新任务-010"},
+    {"type": "contains", "field": "texts", "value": "新任务-001"}
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "why": "守住性质 1：早期硬约束必须穿过 20 轮压缩后仍然逐字可见，不能被 rolling 淘汰。",
+  "scenario": "hard_constraints_survive",
+  "session_id": "golden-hard-constraints",
+  "code_token": "项目代号 ORCHID-2718",
+  "api_token": "必须保持 Python 3.9 兼容；三个公开 API 签名不得改动",
+  "budget": {"prompt_budget": 11000, "trigger_tokens": 1, "keep_tokens": 120},
+  "seed": {
+    "turns": [
+      {
+        "user": "项目启动。项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。",
+        "assistant": "已记录，后续所有改动都遵守该约束。"
+      },
+      {"user": "先搭基础脚手架。", "assistant": "完成。"},
+      {"user": "补充单元测试。", "assistant": "完成。"},
+      {"user": "整理文档。", "assistant": "完成。"}
+    ],
+    "summary": ""
+  },
+  "first_cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 120,
+    "prompt_budget": 11000,
+    "add": [],
+    "llm_reply": "项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。"
+  },
+  "repeat": {
+    "times": 19,
+    "trigger_tokens": 1,
+    "keep_tokens": 120,
+    "prompt_budget": 11000,
+    "add": [
+      {
+        "user": "第{i}轮继续推进模块{i}的功能实现与回归验证，记录请求参数、返回结构、异常分支、日志位置、复现步骤与回滚方式，方便后续查阅和交接。",
+        "assistant": "第{i}轮完成并通过回归。"
+      }
+    ],
+    "llm_reply": "本轮进展：完成一个模块的实现与回归。"
+  },
+  "assertions": [
+    {"type": "contains", "field": "final_summary", "value": "项目代号 ORCHID-2718"},
+    {"type": "contains", "field": "final_summary", "value": "必须保持 Python 3.9 兼容；三个公开 API 签名不得改动"},
+    {"type": "is_true", "field": "pinned_has_code"},
+    {"type": "is_true", "field": "pinned_has_api"},
+    {"type": "int_eq", "field": "cycles", "limit": 20},
+    {"type": "int_le", "field": "summary_chars", "limit_field": "summary_limit"},
+    {"type": "contains", "field": "final_summary", "value": "【固定事实】"},
+    {"type": "contains", "field": "final_summary", "value": "【近期进展】"}
+  ]
+}

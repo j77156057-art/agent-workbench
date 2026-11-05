@@ -1,0 +1,18 @@
+{
+  "why": "守住性质 6：分节标记唯一，极端上限 256 下不被腰斩，总长永不超上限。",
+  "scenario": "cap_extreme",
+  "limit": 256,
+  "derived_budget": {"prompt_tokens": 4000},
+  "summary": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n【近期进展】\n\n过程记录一：脚手架、依赖安装、目录整理、临时调试结论、排查顺序与复现步骤。过程记录二：日志字段、失败重试、分页参数、临时开关、回归记录与交接说明。过程记录三：导出路径、异常提示、周报整理、版本核对与发布检查。过程记录四：接口变更、兼容性验证、回滚方案、监控指标与告警阈值。过程记录五：测试覆盖、边界输入、错误码、限流策略与灰度计划。过程记录六：文档更新、示例命令、常见问题与维护约定。过程记录七：性能采样、缓存命中、队列积压与超时重试。过程记录八：权限校验、审计日志、数据脱敏与导出边界。过程记录九：发布窗口、回滚演练、值班交接与复盘记录。过程记录十：后续计划、待办清单、风险项与验收标准。"
+  ,
+  "assertions": [
+    {"type": "int_le", "field": "capped_chars", "limit_field": "limit"},
+    {"type": "is_true", "field": "markers_unique"},
+    {"type": "is_true", "field": "markers_intact"},
+    {"type": "is_true", "field": "markers_position_ok"},
+    {"type": "is_true", "field": "pinned_header_present"},
+    {"type": "int_le", "field": "pinned_header_count", "limit": 1},
+    {"type": "int_le", "field": "rolling_header_count", "limit": 1},
+    {"type": "int_eq", "field": "derived_limit", "limit": 770}
+  ]
+}

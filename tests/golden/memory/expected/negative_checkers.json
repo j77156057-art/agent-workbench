@@ -1,0 +1,14 @@
+{
+  "len_check_overlong": false,
+  "len_check_within": true,
+  "marker_check_bisected": false,
+  "marker_check_intact": true,
+  "marker_check_partial": false,
+  "pinned_check_missing": false,
+  "pinned_check_present": true,
+  "product_cap": "【固定事实】\n\n必须保持 Python 3.9 兼容。\n\n【近期进展】\n\n过程记录一：脚手架、依赖安装、目录整理、临时调试结论、排查顺序与复现步骤。过程记录二：日志字段、失败重试、分页参数、临时开关、回归记录与交接说明。\n（中间 77 字已省略）\n入、错误码、限流策略与灰度计划。过程记录六：文档更新、示例命令、常见问题与维护约定。过程记录七：性能采样、缓存命中、队列积压与超时重试。过程记录八：权限校验、审计日志、数据脱敏与导出边界。过程记录九：发布窗口、回滚演练、值班交接与复盘记录。",
+  "product_corrupted_markers_ok": false,
+  "product_markers_intact": true,
+  "product_markers_ok": true,
+  "product_markers_position_ok": true
+}

@@ -1,0 +1,12 @@
+{
+  "why": "守住回归 16：子 agent 会话写入真实会话目录，但默认列表不展示；显式 include_subagents=True 才可见。",
+  "scenario": "subagent_sessions",
+  "main_session": "golden-main",
+  "subagent_session": "sub-agent-golden",
+  "assertions": [
+    {"type": "is_true", "field": "default_has_main"},
+    {"type": "is_false", "field": "default_has_sub"},
+    {"type": "is_true", "field": "include_has_main"},
+    {"type": "is_true", "field": "include_has_sub"}
+  ]
+}

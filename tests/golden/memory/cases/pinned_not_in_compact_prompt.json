@@ -1,0 +1,33 @@
+{
+  "why": "守住性质 2：压缩 LLM 的提示词绝不能再次收到 pinned 正文，只能收到 rolling。",
+  "scenario": "pinned_not_in_compact_prompt",
+  "session_id": "golden-pinned-prompt",
+  "pinned_text": "PINNED-SECRET-CONSTRAINT-42：必须保持 Python 3.9 兼容；三个公开 API 签名不得改动",
+  "rolling_token": "ROLLING-ONLY-9Z",
+  "rolling_prompt_marker": "【近期进展】压缩",
+  "seed": {
+    "turns": [
+      {"user": "继续实现导出功能。", "assistant": "已完成导出。"},
+      {"user": "补充导出失败的提示。", "assistant": "已补充。"},
+      {"user": "整理本周进展。", "assistant": "已完成。"}
+    ],
+    "summary": "【固定事实】\n\nPINNED-SECRET-CONSTRAINT-42：必须保持 Python 3.9 兼容；三个公开 API 签名不得改动\n\n【近期进展】\n\nROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。ROLLING-ONLY-9Z 普通进展：本轮只讨论导出路径、日志字段、失败重试、分页参数、临时开关、回归记录和交接说明，这些内容都只是过程记录。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [{"user": "整理本轮进展。", "assistant": "已整理。"}]
+  },
+  "llm_replies": [
+    "早期对话摘要：完成导出功能与失败提示。",
+    "压缩后的近期进展：完成导出排查。"
+  ],
+  "llm_default": "压缩后的近期进展：完成导出排查。",
+  "assertions": [
+    {"type": "int_ge", "field": "rolling_prompt_count", "limit": 1},
+    {"type": "is_false", "field": "pinned_in_rolling_prompt"},
+    {"type": "is_true", "field": "rolling_token_in_all_prompts"},
+    {"type": "contains", "field": "final_summary", "value": "PINNED-SECRET-CONSTRAINT-42"}
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "why": "live 组：用真实模型做一次压缩冒烟；默认跳过，只有 --live 才会执行，且不参与快照比对。",
+  "live": true,
+  "scenario": "live_smoke",
+  "session_id": "golden-live-smoke",
+  "seed": {
+    "turns": [
+      {"user": "项目代号 ORCHID-2718。必须保持 Python 3.9 兼容。", "assistant": "已记录。"},
+      {"user": "继续推进。", "assistant": "完成。"},
+      {"user": "补测试。", "assistant": "完成。"}
+    ],
+    "summary": ""
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 11000,
+    "add": [{"user": "继续。", "assistant": "完成。"}]
+  },
+  "assertions": [
+    {"type": "int_ge", "field": "summary_chars", "limit": 1}
+  ]
+}

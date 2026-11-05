@@ -1,0 +1,32 @@
+{
+  "why": "守住性质 7：maybe_compact 重复调用幂等，第二次不产生二次压缩，文本与轮次都不变。",
+  "scenario": "idempotent",
+  "session_id": "golden-idempotent",
+  "seed": {
+    "turns": [
+      {"user": "问题一", "assistant": "答一"},
+      {"user": "问题二", "assistant": "答二"},
+      {"user": "问题三", "assistant": "答三"},
+      {"user": "问题四", "assistant": "答四"},
+      {"user": "问题五", "assistant": "答五"},
+      {"user": "问题六", "assistant": "答六"},
+      {"user": "问题七", "assistant": "答七"},
+      {"user": "问题八", "assistant": "答八"}
+    ],
+    "summary": ""
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 11000,
+    "add": [],
+    "llm_reply": "早期摘要：必须保持接口稳定。"
+  },
+  "llm_default": "进展摘要。",
+  "assertions": [
+    {"type": "is_true", "field": "equal"},
+    {"type": "equals_field", "field": "second_summary", "other": "first_summary"},
+    {"type": "int_eq", "field": "second_turns", "limit": 2},
+    {"type": "int_eq", "field": "second_llm_calls", "limit": 0}
+  ]
+}

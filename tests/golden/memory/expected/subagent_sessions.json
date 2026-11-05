@@ -1,0 +1,13 @@
+{
+  "default_has_main": true,
+  "default_has_sub": false,
+  "default_ids": [
+    "golden-main"
+  ],
+  "include_has_main": true,
+  "include_has_sub": true,
+  "include_ids": [
+    "golden-main",
+    "sub-agent-golden"
+  ]
+}

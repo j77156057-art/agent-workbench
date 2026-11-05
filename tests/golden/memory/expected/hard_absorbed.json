@@ -1,0 +1,7 @@
+{
+  "final_summary": "【固定事实】\n\n旧约束：接口只读，不写库。\n\n必须禁止在生产环境开启 debug。",
+  "final_summary_chars": 41,
+  "full_note_present": false,
+  "pinned_has_new": true,
+  "pinned_text": "旧约束：接口只读，不写库。\n\n必须禁止在生产环境开启 debug。"
+}

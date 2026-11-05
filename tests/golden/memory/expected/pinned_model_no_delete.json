@@ -1,0 +1,12 @@
+{
+  "all_texts_still_in_summary": true,
+  "append_added": 0,
+  "count_after": 3,
+  "count_before": 3,
+  "delete_audits": 0,
+  "delete_ok": false,
+  "delete_reason": "actor_not_user",
+  "entries_unchanged": true,
+  "final_summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n发布包必须同时支持 Linux x86_64 与 macOS arm64，版本号不得低于 v2.4.0。\n\n【近期进展】\n\n模型重写过一轮进展。",
+  "shrink_rejected_audits": 2
+}

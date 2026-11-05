@@ -1,0 +1,33 @@
+{
+  "why": "任务一用例②（断言自检）：对真实压缩产出的 pinned 做三种变异——改旧前缀一个字节、截断旧前缀尾部、重排旧前缀三段，同一套“旧前缀逐字节保留 + 只追加尾部”判定必须全部判红。任何一种没判红，说明断言没有牙，本用例直接红。",
+  "sequence": 24,
+  "scenario": "pinned_prefix_checker_teeth",
+  "session_id": "golden-pinned-prefix-teeth",
+  "rounds": 4,
+  "seed": {
+    "turns": [
+      {"user": "初始化项目。", "assistant": "已完成。"},
+      {"user": "确认约束。", "assistant": "已记录。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [
+      {"user": "第 {i} 轮：禁止修改 build/step{i}/ 目录下任何文件。", "assistant": "记录第 {i} 轮。"}
+    ]
+  },
+  "llm_default": "本轮巡进完成：整理了目录与日志。",
+  "assertions": [
+    {"type": "int_eq", "field": "mutation_count", "limit": 3},
+    {"type": "is_true", "field": "baseline_ok"},
+    {"type": "int_ge", "field": "baseline_growth_chars", "limit": 1},
+    {"type": "is_true", "field": "mutations_caught"},
+    {"type": "equals", "field": "mutations_missed", "value": []},
+    {"type": "is_true", "field": "caught.prefix_byte_changed"},
+    {"type": "is_true", "field": "caught.prefix_tail_truncated"},
+    {"type": "is_true", "field": "caught.prefix_segments_reordered"}
+  ]
+}

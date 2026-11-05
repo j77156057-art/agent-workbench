@@ -1,0 +1,31 @@
+{
+  "why": "守住新不变量：pinned 满时出现“固定事实前缀已满”，但既有条目（含非约束）一条都不许被淘汰/改写；装不下的新硬约束留在 rolling（内容不丢）。",
+  "scenario": "pinned_full_evict",
+  "session_id": "golden-pinned-full",
+  "evicted_token": "这些内容只用于回顾过程",
+  "new_hard_token": "禁止把调试开关带入发布构建",
+  "seed": {
+    "turns": [
+      {"user": "继续推进。", "assistant": "完成。"},
+      {"user": "补测试。", "assistant": "完成。"}
+    ],
+    "summary": "【固定事实】\n\n旧的非约束记录：第一阶段完成了脚手架与基础目录整理，记录了运行方式、依赖安装步骤、常见报错处理办法、临时调试结论、排查顺序、复现步骤、版本核对与发布检查；这些内容只用于回顾过程，不构成长期约定，也不影响后续接口设计。这里再补充一些历史细节：目录命名、脚本入口、配置位置、日志目录、测试命令、演示步骤、交接说明与回滚演练，全部属于过程性记录。\n\n必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [{"user": "追加发布约束。", "assistant": "已记录。"}],
+    "llm_reply": "新增约束：必须禁止把调试开关带入发布构建，所有发布包都要在干净环境中重新生成并通过完整回归；同时必须确保发布说明与接口文档保持同步，不得遗漏任何一项检查。发布前必须由值班同学核对回归记录、版本号、依赖锁定文件和回滚方案，任何例外都要登记在发布记录中。发布期间不得跳过冒烟测试，也不得关闭告警；遇到失败必须立即回滚并保留现场，禁止直接修改线上配置绕过检查。所有发布操作必须可追溯，禁止使用未登记的一次性脚本，不得删除审计日志，也不得绕过审批流程，必须保留完整的发布记录与回滚证据。所有例外都必须记录原因、影响范围、恢复步骤与责任人，不得口头批准，也不得事后补记。发布记录必须保留至少九十天，禁止提前清理，也不得关闭审计开关。"
+  },
+  "llm_default": "进展摘要。",
+  "assertions": [
+    {"type": "int_eq", "field": "full_note_count", "limit": 1},
+    {"type": "is_false", "field": "pinned_has_new"},
+    {"type": "is_true", "field": "rolling_has_new"},
+    {"type": "is_false", "field": "rolling_has_evicted"},
+    {"type": "is_true", "field": "pinned_has_evicted"},
+    {"type": "contains", "field": "pinned_text", "value": "必须保持 Python 3.9 兼容"},
+    {"type": "int_le", "field": "summary_chars", "limit": 770}
+  ]
+}

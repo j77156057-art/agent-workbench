@@ -1,0 +1,15 @@
+{
+  "why": "守住性质 9：写回磁盘的摘要与真正注入 prompt 的片段逐字一致（比对实际 system 消息，而不是函数返回值）。",
+  "scenario": "write_inject",
+  "session_id": "golden-write-inject",
+  "prompt_budget": 11000,
+  "pinned_token": "项目代号 ORCHID-2718",
+  "question": "请复述当前项目约束。",
+  "summary": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n【近期进展】\n\n完成脚手架与基础目录整理。",
+  "assertions": [
+    {"type": "is_true", "field": "byte_identical"},
+    {"type": "is_true", "field": "injected_has_pinned"},
+    {"type": "contains", "field": "injected", "value": "【固定事实】"},
+    {"type": "contains", "field": "injected", "value": "【近期进展】"}
+  ]
+}

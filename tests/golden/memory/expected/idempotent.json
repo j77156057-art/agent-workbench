@@ -1,0 +1,8 @@
+{
+  "equal": true,
+  "first_summary": "【固定事实】\n\n早期摘要：必须保持接口稳定。",
+  "first_turns": 2,
+  "second_llm_calls": 0,
+  "second_summary": "【固定事实】\n\n早期摘要：必须保持接口稳定。",
+  "second_turns": 2
+}

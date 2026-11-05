@@ -1,0 +1,11 @@
+{
+  "bytes_equal": true,
+  "final_summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n发布包必须同时支持 Linux x86_64 与 macOS arm64，版本号不得低于 v2.4.0。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。\n\n日志必须按 ISO-8601 记录 UTC 时间，保留期不得少于 90 天。\n\n禁止在 migrations/ 目录下新增破坏性变更，回滚脚本必须与版本号一一对应。\n\n必须保证 ERROR_CODE 表与公开文档同步，所有 SOURCE_ID 不得重复。\n\n缓存键必须包含 tenant_id 与 shard_id，不得跨租户复用。\n\n（固定事实前缀已满）\n\n【近期进展】\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。\n\n本轮巡检进展记录。",
+  "llm_calls": 92,
+  "pinned_after": "项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n发布包必须同时支持 Linux x86_64 与 macOS arm64，版本号不得低于 v2.4.0。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。\n\n日志必须按 ISO-8601 记录 UTC 时间，保留期不得少于 90 天。\n\n禁止在 migrations/ 目录下新增破坏性变更，回滚脚本必须与版本号一一对应。\n\n必须保证 ERROR_CODE 表与公开文档同步，所有 SOURCE_ID 不得重复。\n\n缓存键必须包含 tenant_id 与 shard_id，不得跨租户复用。",
+  "pinned_before": "项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n发布包必须同时支持 Linux x86_64 与 macOS arm64，版本号不得低于 v2.4.0。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。\n\n日志必须按 ISO-8601 记录 UTC 时间，保留期不得少于 90 天。\n\n禁止在 migrations/ 目录下新增破坏性变更，回滚脚本必须与版本号一一对应。\n\n必须保证 ERROR_CODE 表与公开文档同步，所有 SOURCE_ID 不得重复。\n\n缓存键必须包含 tenant_id 与 shard_id，不得跨租户复用。",
+  "pinned_sha256_after": "736d01610b42d92c8785935a5f1db40cda9d0269e0c7c33c9ba4cbb0122646b8",
+  "pinned_sha256_before": "736d01610b42d92c8785935a5f1db40cda9d0269e0c7c33c9ba4cbb0122646b8",
+  "rounds": 90,
+  "summary_chars": 494
+}

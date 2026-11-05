@@ -1,0 +1,32 @@
+{
+  "why": "黄金用例 18：pinned 正文与“【固定事实…】”标记不得出现在任何一份压缩/合并提示词里。不是抽检——StubLLM 记录的每一份提示词都做全量计数，命中必须为 0。",
+  "sequence": 18,
+  "scenario": "pinned_absent_all_prompts",
+  "session_id": "golden-pinned-absent",
+  "rounds": 4,
+  "pinned_token": "ORCHID-2718",
+  "seed": {
+    "turns": [
+      {"user": "初始化项目。", "assistant": "已完成。"},
+      {"user": "确认约束。", "assistant": "已记录。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架与基础目录整理。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [
+      {"user": "第 {i} 轮巡检。", "assistant": "记录第 {i} 轮。"},
+      {"user": "第 {i} 轮补测。", "assistant": "补充第 {i} 轮记录。"}
+    ]
+  },
+  "llm_default": "本轮记录：整理基础目录、依赖安装、日志字段、失败重试、分页参数、回归记录、交接说明、导出路径、异常提示、周报整理、权限校验、审计日志、数据脱敏、导出边界、性能采样、缓存命中、队列积压、超时重试、发布窗口、回滚演练、值班交接与复盘记录。本轮记录：整理基础目录、依赖安装、日志字段、失败重试、分页参数、回归记录、交接说明、导出路径、异常提示、周报整理、权限校验、审计日志、数据脱敏、导出边界、性能采样、缓存命中、队列积压、超时重试、发布窗口、回滚演练、值班交接与复盘记录。本轮记录：整理基础目录、依赖安装、日志字段、失败重试、分页参数、回归记录、交接说明、导出路径、异常提示、周报整理、权限校验、审计日志、数据脱敏、导出边界、性能采样、缓存命中、队列积压、超时重试、发布窗口、回滚演练、值班交接与复盘记录。",
+  "assertions": [
+    {"type": "int_eq", "field": "pinned_hits", "limit": 0},
+    {"type": "int_eq", "field": "pinned_marker_hits", "limit": 0},
+    {"type": "is_true", "field": "all_prompts_clean"},
+    {"type": "int_ge", "field": "prompt_count", "limit": 4},
+    {"type": "int_ge", "field": "rolling_prompt_count", "limit": 2}
+  ]
+}

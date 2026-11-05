@@ -1,0 +1,29 @@
+{
+  "why": "任务一用例①：没有新硬约束的轮次，pinned 必须逐字节完全相同（不是“包含关键词”）。这是对“旧前缀逐字节保留”断言的对照组：允许新增，但没东西可增时一个字节都不许动。",
+  "sequence": 23,
+  "scenario": "pinned_bytes_stable",
+  "session_id": "golden-pinned-idle-identical",
+  "rounds": 60,
+  "seed": {
+    "turns": [
+      {"user": "初始化项目。", "assistant": "已完成。"},
+      {"user": "确认约束。", "assistant": "已记录。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容。\n\n禁止修改 migrations/ 目录下任何文件，包括新增。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [
+      {"user": "第 {i} 轮巡检：整理日志。", "assistant": "第 {i} 轮巡检完成。"}
+    ]
+  },
+  "llm_default": "本轮巡检完成：整理了目录、日志与交接记录。",
+  "assertions": [
+    {"type": "int_eq", "field": "rounds", "limit": 60},
+    {"type": "is_true", "field": "bytes_equal"},
+    {"type": "equals_field", "field": "pinned_sha256_after", "other": "pinned_sha256_before"},
+    {"type": "equals_field", "field": "pinned_after", "other": "pinned_before"}
+  ]
+}

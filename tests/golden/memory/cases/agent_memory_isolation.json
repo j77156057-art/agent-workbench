@@ -1,0 +1,14 @@
+{
+  "why": "守住回归 15：agent 记忆按 agent_id 隔离，A 写入的记录不出现在 B 的检索结果。",
+  "scenario": "agent_memory_isolation",
+  "scope": "golden-agent-scope",
+  "agent_a": "agent-A",
+  "agent_b": "agent-B",
+  "query_token": "ORCHID-2718",
+  "assertions": [
+    {"type": "is_true", "field": "recall_a_has"},
+    {"type": "is_false", "field": "recall_b_has"},
+    {"type": "int_ge", "field": "recall_a_count", "limit": 1},
+    {"type": "int_eq", "field": "recall_b_count", "limit": 0}
+  ]
+}

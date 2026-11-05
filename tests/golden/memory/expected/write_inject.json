@@ -1,0 +1,6 @@
+{
+  "byte_identical": true,
+  "disk_summary": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n【近期进展】\n\n完成脚手架与基础目录整理。",
+  "injected": "【固定事实】\n\n项目代号 ORCHID-2718。必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n【近期进展】\n\n完成脚手架与基础目录整理。",
+  "injected_has_pinned": true
+}

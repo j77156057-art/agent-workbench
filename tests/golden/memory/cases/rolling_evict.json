@@ -1,0 +1,30 @@
+{
+  "why": "守住性质 3：rolling 超限时只淘汰最旧段，最新段保留，淘汰长度可在摘要标记中定位。",
+  "scenario": "rolling_evict",
+  "session_id": "golden-rolling-evict",
+  "oldest_token": "OLDEST-SEG-ALPHA",
+  "newest_token": "NEWEST-SEG-DELTA",
+  "seed": {
+    "turns": [
+      {"user": "第一步。", "assistant": "完成。"},
+      {"user": "第二步。", "assistant": "完成。"},
+      {"user": "继续推进。", "assistant": "完成。"}
+    ],
+    "summary": "【固定事实】\n\n约束：接口版本保持 v1。\n【近期进展】\n\nOLDEST-SEG-ALPHA 最早的过程记录：脚手架、依赖安装、目录整理、临时调试结论、排查顺序与复现步骤，只用于回顾，不构成长期约定；这里再补充目录命名、脚本入口、配置位置、日志目录、测试命令、演示步骤、交接说明与回滚演练，全部属于过程性记录。\n\nSEG-BETA 中段过程记录：补充日志字段、失败重试、分页参数、临时开关、回归记录与交接说明，内容仍然只是过程记录；这里再补充请求参数、返回结构、异常分支、重试策略、监控指标与告警阈值，用于回顾当时的排查顺序。\n\nSEG-GAMMA 较新的过程记录：完成导出路径确认、异常提示补充与周报整理；这里再补充文档更新、示例命令、常见问题、权限校验、审计日志与数据脱敏的处理结论，等待下一轮验证。\n\nNEWEST-SEG-DELTA 最新过程记录：完成发布检查、回滚演练、值班交接与复盘记录；这里再补充版本核对、依赖锁定、发布窗口、灰度计划、验收标准与后续待办，作为当前最新的进展保留。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 2000,
+    "add": [{"user": "继续推进。", "assistant": "完成。"}]
+  },
+  "assertions": [
+    {"type": "is_false", "field": "has_oldest"},
+    {"type": "is_true", "field": "has_newest"},
+    {"type": "is_true", "field": "evict_marker_found"},
+    {"type": "regex", "field": "evict_marker", "pattern": "（最旧进展 \\d+ 字已省略）"},
+    {"type": "contains", "field": "final_summary", "value": "【近期进展】"},
+    {"type": "contains", "field": "final_summary", "value": "SEG-GAMMA"},
+    {"type": "int_le", "field": "final_summary_chars", "limit": 385}
+  ]
+}

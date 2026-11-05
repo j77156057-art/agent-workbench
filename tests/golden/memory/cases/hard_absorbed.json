@@ -1,0 +1,27 @@
+{
+  "why": "守住性质 5：pinned 未满时，压缩中途新增的硬约束应直接进入固定事实，不出现已满标记。",
+  "scenario": "hard_absorbed",
+  "session_id": "golden-hard-absorbed",
+  "new_hard_token": "必须禁止在生产环境开启 debug",
+  "seed": {
+    "turns": [
+      {"user": "完成只读接口。", "assistant": "完成。"},
+      {"user": "补测试。", "assistant": "完成。"}
+    ],
+    "summary": "【固定事实】\n\n旧约束：接口只读，不写库。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 11000,
+    "add": [{"user": "追加一条发布约束。", "assistant": "已记录。"}],
+    "llm_reply": "必须禁止在生产环境开启 debug。"
+  },
+  "llm_default": "进展摘要。",
+  "assertions": [
+    {"type": "is_true", "field": "pinned_has_new"},
+    {"type": "is_false", "field": "full_note_present"},
+    {"type": "contains", "field": "pinned_text", "value": "旧约束：接口只读，不写库。"},
+    {"type": "int_le", "field": "final_summary_chars", "limit": 1270}
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "why": "黄金用例 17：连续 90 轮压缩后，pinned 逐字节不变（断言是字节相等 + sha256 相等，不是“包含关键词”）。pinned 只进不出，任何一轮的 rolling 压缩都不得改写它。",
+  "sequence": 17,
+  "scenario": "pinned_bytes_stable",
+  "session_id": "golden-pinned-bytes",
+  "rounds": 90,
+  "seed": {
+    "turns": [
+      {"user": "初始化项目。", "assistant": "已完成。"},
+      {"user": "确认约束。", "assistant": "已记录。"}
+    ],
+    "summary": "【固定事实】\n\n项目代号 ORCHID-2718；必须保持 Python 3.9 兼容；三个公开 API 签名不得改动。\n\n发布包必须同时支持 Linux x86_64 与 macOS arm64，版本号不得低于 v2.4.0。\n\n配置键前缀固定为 dm_，环境变量不得覆盖 data/ 下的运行时文件。\n\n日志必须按 ISO-8601 记录 UTC 时间，保留期不得少于 90 天。\n\n禁止在 migrations/ 目录下新增破坏性变更，回滚脚本必须与版本号一一对应。\n\n必须保证 ERROR_CODE 表与公开文档同步，所有 SOURCE_ID 不得重复。\n\n缓存键必须包含 tenant_id 与 shard_id，不得跨租户复用。\n\n【近期进展】\n\n第 0 轮进展：完成脚手架。"
+  },
+  "cycle": {
+    "trigger_tokens": 1,
+    "keep_tokens": 1,
+    "prompt_budget": 4000,
+    "add": [{"user": "第 {i} 轮巡检。", "assistant": "记录第 {i} 轮。"}]
+  },
+  "llm_default": "本轮巡检进展记录。",
+  "assertions": [
+    {"type": "is_true", "field": "bytes_equal"},
+    {"type": "equals_field", "field": "pinned_sha256_after", "other": "pinned_sha256_before"},
+    {"type": "equals_field", "field": "pinned_after", "other": "pinned_before"},
+    {"type": "int_eq", "field": "rounds", "limit": 90},
+    {"type": "int_le", "field": "summary_chars", "limit": 770}
+  ]
+}
