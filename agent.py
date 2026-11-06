@@ -1465,6 +1465,26 @@ def _task_token_budget():
         return 0
 
 
+class _PromptProbeLLM:
+    """只用于量提示词体积，不发起任何模型调用。"""
+
+    def count_tokens(self, text):
+        return max(1, len(str(text or "")) // 4)
+
+
+def minimal_prompt_chars(question="你好"):
+    """实测本机「最小请求」的提示词字符数。
+
+    走与真实回合相同的 `_build_messages` / `_fit_budget`，因此系统提示词、
+    工具定义、项目记忆与画像都已计入。不做 stub：容量设置要的就是本机此刻
+    的真实体积，据此现算 `task_token_budget` 下界。失败时由调用方回落基线。
+    """
+    probe = Agent(llm=_PromptProbeLLM(), session_id=None)
+    head = probe._build_messages(question)
+    return sum(len(str(m.get("content") or ""))
+               for m in probe._fit_budget(head, []) if isinstance(m, dict))
+
+
 # 额度/能力咨询必须能在费用预算或任务预算耗尽后继续回答，因此这类问题
 # 走本地配置读取，不进入 LLM。匹配保持收窄，避免把普通开发任务误判成帮助页。
 _CAPACITY_HELP_RE = re.compile(

@@ -9,7 +9,22 @@
 
 界面不报错、设置页不提示、服务照常启动 —— **根因完全不可见**。
 实测：一次「你好」的最小提示词约 4766 token，加每轮输出预留 3072
-= 7838；跑完一次带工具的问答约需 15676。所以下界取 16000。
+= 7838；跑完一次带工具的问答约需 15676。
+
+## 下界怎么来的（2026-11-06 起改为动态）
+
+固定常量 21576 是按「带记忆 22624 字符」二分出来的 3 轮累计值，
+公式与 `RunBudget` 完全一致：
+
+    N * P + (N - 1) * R + O
+    P = prompt_chars / 4   （随提示词体积增长）
+    R = output_tokens / 4  （每轮固定）
+    O = output_tokens      （一次性预留）
+
+提示词一变长（例如项目记忆从 309 字符涨到 610），固定值就过期 ——
+这正是 `test_the_bound_covers_a_whole_multi_tool_answer` 变红的原因。
+现在 `capacity.task_token_budget_floor(prompt_chars)` 现算，两种运行态
+（带/不带记忆）用同一个函数、同一套参数，只换实测 chars。
 
 ## 判据怎么写的（重要）
 
@@ -35,6 +50,7 @@
 """
 
 import asyncio
+import functools
 import json
 import pathlib
 import unittest
@@ -97,20 +113,30 @@ def _smallest_prompt_chars() -> int:
     return chars
 
 
+@functools.lru_cache(maxsize=1)
+def _live_prompt_chars() -> int:
+    """生产口径：不 stub 记忆，量本机此刻真实提示词（含项目记忆/画像）。"""
+    return agent_mod.minimal_prompt_chars()
+
+
+def _live_floor() -> int:
+    return capacity.task_token_budget_floor(_live_prompt_chars())
+
+
 class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
-    MIN = capacity.MIN_TASK_TOKEN_BUDGET
-
-    # ---------- 下界本身贴着真实需求（判据问权威实现，不复刻公式）----------
-
-    #: 下界要保证「跑完 3 轮问答」。实测（2026-10-19 重标定，轻度瘦身 + stub profile_context 后）：
-    #:   无长期记忆时 3 轮 = 20013（裸提示词 20541 字符 = 5135 token/轮）
-    #:   带 309 字符记忆时 = 20244   <- 下界取这个（保守侧）
     MIN_ROUNDS = 3
 
     #: 带 `【项目长期记忆：…】` 时的提示词长度（实测 309 字符）。
-    #: 下界按「带记忆」定，所以判据要用带记忆的长度来验 ——
-    #: 否则会验出一个比下界更宽松的条件。
     MEMORY_CHARS = 309
+
+    @classmethod
+    def setUpClass(cls):
+        """按实测提示词现算下界（不再引用固定常量）。"""
+        cls.bare_chars = _smallest_prompt_chars()
+        cls.floor_bare = capacity.task_token_budget_floor(cls.bare_chars)
+        cls.floor_memory = capacity.task_token_budget_floor(
+            cls.bare_chars + cls.MEMORY_CHARS)
+        cls.MIN = cls.floor_memory
 
     def test_the_bound_covers_a_whole_multi_tool_answer(self):
         """下界必须够跑完 **3 轮**问答，且**贴着**这个需求。
@@ -128,7 +154,7 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
           下界 - 1 -> 撑不到（差一个 token 就不够）
           事故值 5000 -> 撑 0 轮
         """
-        chars = _smallest_prompt_chars() + self.MEMORY_CHARS
+        chars = self.bare_chars + self.MEMORY_CHARS
         out = agent_mod.LLM_MAX_TOKENS
 
         def rounds_survived(limit):
@@ -170,9 +196,10 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
         下界若只按其中一种量，另一种运行态下就会失效。
         """
         out = agent_mod.LLM_MAX_TOKENS
-        bare = _smallest_prompt_chars()
+        bare = self.bare_chars
         for label, chars in (("无记忆", bare), ("带记忆", bare + self.MEMORY_CHARS)):
-            rb = RunBudget(self.MIN)
+            floor = capacity.task_token_budget_floor(chars)
+            rb = RunBudget(floor)
             alive = 0
             for _ in range(self.MIN_ROUNDS):
                 if not rb.preflight(chars, out):
@@ -182,6 +209,36 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
             self.assertEqual(alive, self.MIN_ROUNDS,
                              "%s（%d 字符）下只撑 %d/%d 轮 —— 下界必须对两种"
                              "运行态都成立" % (label, chars, alive, self.MIN_ROUNDS))
+            # 同一个公式算出的下界必须贴线：少 1 就撑不满。
+            rb_low = RunBudget(floor - 1)
+            low = 0
+            for _ in range(self.MIN_ROUNDS):
+                if not rb_low.preflight(chars, out):
+                    break
+                low += 1
+                rb_low.record(None, prompt_chars=chars, output_chars=out)
+            self.assertLess(low, self.MIN_ROUNDS,
+                            "%s 的下界减 1 仍撑满 %d 轮 -> 公式取大了"
+                            % (label, self.MIN_ROUNDS))
+
+    def test_the_floor_grows_with_prompt_volume(self):
+        """新契约守门人：同一任务、只把提示词加长，下界必须变大。
+
+        没有这条，未来把公式改回固定常数也能全绿 —— 那等于没修。
+        两种运行态用同一套参数，增量必须完全一致。
+        """
+        delta_chars = 4_000
+        expected_delta = self.MIN_ROUNDS * (delta_chars // 4)
+        for label, base in (("无记忆", self.bare_chars),
+                            ("带记忆", self.bare_chars + self.MEMORY_CHARS)):
+            grown = capacity.task_token_budget_floor(base + delta_chars)
+            current = capacity.task_token_budget_floor(base)
+            self.assertGreater(grown, current,
+                               "%s 下提示词加长 %d 字符，下界没变"
+                               % (label, delta_chars))
+            self.assertEqual(grown - current, expected_delta,
+                             "%s 下的增量应严格等于 rounds * Δchars/4"
+                             % label)
 
     # ---------- 契约边界 ----------
 
@@ -191,9 +248,11 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
             capacity.normalize_settings({"task_token_budget": 0})["task_token_budget"], 0)
 
     def test_at_and_above_the_bound_pass_through(self):
+        chars = self.bare_chars + self.MEMORY_CHARS
         for v in (self.MIN, self.MIN + 1, 100000):
             self.assertEqual(
-                capacity.normalize_settings({"task_token_budget": v})["task_token_budget"],
+                capacity.normalize_settings({"task_token_budget": v},
+                                            prompt_chars=chars)["task_token_budget"],
                 v, "下界及以上应原样保留 —— 夹取会改掉用户填的语义")
 
     def test_below_the_bound_raises_not_clamps(self):
@@ -204,7 +263,9 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
         语义不是他填的那个。而留着 5000 更糟：问答直接死且不报错。
         """
         with self.assertRaises(ValueError) as ctx:
-            capacity.normalize_settings({"task_token_budget": self.MIN - 1})
+            capacity.normalize_settings(
+                {"task_token_budget": self.MIN - 1},
+                prompt_chars=self.bare_chars + self.MEMORY_CHARS)
         msg = str(ctx.exception)
         self.assertIn(str(self.MIN), msg,
                       "错误文案必须说清至少要多少，否则用户不知道填多少")
@@ -250,8 +311,8 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
         self.assertEqual(getattr(resp, "status_code", 200), 400)
         body = json.loads(resp.body)
         self.assertFalse(body["ok"])
-        self.assertIn(str(capacity.MIN_TASK_TOKEN_BUDGET), body["error"],
-                      "400 的文案必须给出可用下界，用户才知道填多少")
+        self.assertIn(str(_live_floor()), body["error"],
+                      "400 的文案必须给出本次实测的可用下界，用户才知道填多少")
 
     # ---------- 下界随 ranges 下发 ----------
 
@@ -262,8 +323,8 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
         # 内层已经跑完拿到 dict，再套一层会报 "a coroutine was expected"。
         payload = asyncio.run(api.get_agent_capacity())
         self.assertEqual(payload["ranges"]["task_token_budget_min"],
-                         capacity.MIN_TASK_TOKEN_BUDGET,
-                         "ranges 里没有下界 —— 前端拿不到它")
+                         _live_floor(),
+                         "ranges 里没有本次实测的下界 —— 前端拿不到它")
 
 
 if __name__ == "__main__":

@@ -120,11 +120,58 @@ MAX_TOKEN_BUDGET_CAP = 10_000_000
 #: **22315** 字符（+53）；带 309 记忆时 chars=**22624**，旧下界只撑 2/3 轮。
 #: 二分量出撑满 3 轮的最小值是 **21576**（21575 只撑 2，贴线成立）；
 #: 无记忆侧只需 21342，取带记忆侧这个更严的值。
-MIN_TASK_TOKEN_BUDGET = 21_576
+#: 下界要保证「跑完几轮问答」。
+PROMPT_ROUNDS = 3
+#: 每轮 preflight 预留的输出 token（与 agent.LLM_MAX_TOKENS 的默认值一致）。
+OUTPUT_RESERVE_TOKENS = 3_072
+#: RunBudget 的保守估算口径：4 字符 / token。
+CHARS_PER_TOKEN = 4
 
 
-def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
+def task_token_budget_floor(prompt_chars: int, *,
+                            rounds: int = PROMPT_ROUNDS,
+                            output_tokens: int = OUTPUT_RESERVE_TOKENS) -> int:
+    """按**实际提示词体积**推出能跑完 ``rounds`` 轮问答的最小累计预算。
+
+    口径完全跟随 `RunBudget`（`agent_runtime/run_budget.py`）：
+
+    * 每轮 preflight：``累计已用 + prompt_tokens + output_tokens <= limit``
+    * 每轮 record：``累计 += prompt_tokens + output_chars/4``
+      （调用方把 ``output_tokens`` 当字符数传入，所以记录增量是 ``output_tokens/4``）
+
+    合并后第 N 轮 preflight 的门槛是::
+
+        N * P + (N - 1) * R + O
+
+    其中：
+
+    * ``P = prompt_chars / 4`` —— **随提示词体积线性增长**（系统提示词、工具定义、
+      项目记忆、画像都在这份 chars 里，由调用方实测传入）；
+    * ``R = output_tokens / 4`` —— **每轮固定开销**（完成量按字符折算）；
+    * ``O = output_tokens`` —— **一次性固定开销**（最后一轮 preflight 的输出预留）。
+
+    所以提示词变长时下界自动上升，不需要再手工重标定一个更大的常数。
+    """
+    prompt_tokens = max(1, int(max(0, prompt_chars) / CHARS_PER_TOKEN))
+    completion_per_round = max(0, int(max(0, output_tokens) / CHARS_PER_TOKEN))
+    rounds = max(0, int(rounds))
+    return (rounds * prompt_tokens
+            + max(0, rounds - 1) * completion_per_round
+            + max(0, int(output_tokens)))
+
+
+#: 启动/读取持久化状态时的兜底基线：按 2026-11-01 实测的带记忆提示词
+#: 22624 字符代入同一个公式得到 21576。**它只用于没有请求上下文的读取路径**
+#: （`get_settings` 读存量配置），请求边界必须用 `task_token_budget_floor()`
+#: 按本次实测的提示词体积现算，否则提示词一变长就又会过期。
+BASELINE_PROMPT_CHARS = 22_624
+MIN_TASK_TOKEN_BUDGET = task_token_budget_floor(BASELINE_PROMPT_CHARS)
+
+
+def normalize_settings(value: Mapping[str, Any] | None, *,
+                       prompt_chars: int | None = None) -> dict[str, Any]:
     """归一化容量设置。
+
 
     ⚠⚠ **负值在这里 raise，不静默修正。** 但调用方要分两层看：
 
@@ -139,6 +186,10 @@ def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
     * 负值 -> **raise**（无法推断意图；夹到 0 反而变成「不限」，
       那是安全方向的反面 —— 手滑打 -1 的人拿到最宽松配置）
     * 非数字 / None -> 回落 DEFAULTS（无法解析，不是用户明确表达的值）
+
+    ``prompt_chars`` 是**本次请求实测的提示词字符数**。传入时下界按
+    `task_token_budget_floor()` 现算（提示词越长下界越高）；不传时退回
+    `MIN_TASK_TOKEN_BUDGET` 基线，仅供启动/读存量配置这类拿不到提示词的路径。
     """
     raw = value if isinstance(value, Mapping) else {}
     try:
@@ -191,14 +242,18 @@ def normalize_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
     #
     # 分层与其他负值一致：请求边界靠 raise 转 400；读取路径（`get_settings`）
     # 自己 try 住并回落 DEFAULTS，所以开机不会因此起不来。
-    if 0 < task_token_budget < MIN_TASK_TOKEN_BUDGET:
+    # 下界按本次实测提示词体积现算；没有请求上下文时退回启动基线。
+    floor = (task_token_budget_floor(prompt_chars)
+             if prompt_chars is not None else MIN_TASK_TOKEN_BUDGET)
+    if 0 < task_token_budget < floor:
         raise ValueError(
             "task_token_budget 太小（收到 %d）：连一次最简单的问答都跑不完，"
             "提问会在第一轮就被判「已达到 Token 上限」而直接失败。"
-            "实测最小提示词约需 4688 token，加每轮输出预留 3072；"
-            "跑完 3 轮问答实测需 %d（累计口径）。"
+            "本次提示词实测 %s 字符，按累计口径跑完 %d 轮需 %d。"
             "请填 %d 以上，或填 0 表示不限。"
-            % (task_token_budget, MIN_TASK_TOKEN_BUDGET, MIN_TASK_TOKEN_BUDGET))
+            % (task_token_budget,
+               "?" if prompt_chars is None else int(prompt_chars),
+               PROMPT_ROUNDS, floor, floor))
     return {
         "max_agents": max_agents,
         "main_max_steps": main_max_steps,

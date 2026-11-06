@@ -46,7 +46,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from agent import Agent, _is_raw_source_echo
+from agent import Agent, _is_raw_source_echo, minimal_prompt_chars
 from config import (
     PROVIDERS,
     LLM_PROVIDER,
@@ -6435,7 +6435,7 @@ async def get_agent_capacity():
             # （第一轮 preflight 就 False，模型一次都不被调用），
             # 而界面不报错、设置页不提示 —— 根因完全不可见。
             # 前端读到它就能在输入框上标出「至少要这么多」。
-            "task_token_budget_min": agent_capacity.MIN_TASK_TOKEN_BUDGET,
+            "task_token_budget_min": _task_token_budget_floor_now(),
         },
         "model": {"provider": provider, "name": model, "local_endpoint": local_endpoint},
         "resources": snapshot,
@@ -6447,6 +6447,14 @@ async def get_agent_capacity():
             "当前模型端点不在本机；服务端/集群资源不可由本机显卡探测，使用你设定的上限。"
         ),
     }
+
+
+def _task_token_budget_floor_now():
+    """按本次实测提示词体积现算下界；量不到时退回启动基线。"""
+    try:
+        return agent_capacity.task_token_budget_floor(minimal_prompt_chars())
+    except Exception:  # noqa: BLE001 - 量不到提示词不能挡住设置页
+        return agent_capacity.MIN_TASK_TOKEN_BUDGET
 
 
 @app.post("/api/agent-capacity")
@@ -6474,7 +6482,12 @@ async def set_agent_capacity(req: AgentCapacityReq):
     # 否则某个漏网字段（例如将来新增的字段忘了加校验）会让整请求 500，
     # 而用户看到的是「服务异常」而不是「这个数不合法」。
     try:
-        settings = agent_capacity.normalize_settings(fields)
+        prompt_chars = minimal_prompt_chars()
+    except Exception:  # noqa: BLE001 - 量不到就走基线，不能让设置页 500
+        prompt_chars = None
+    try:
+        settings = agent_capacity.normalize_settings(
+            fields, prompt_chars=prompt_chars)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     set_runtime(agent_capacity.SETTING_KEY, settings)
