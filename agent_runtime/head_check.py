@@ -31,6 +31,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -43,7 +44,7 @@ from agent_runtime import process_runner
 #: 入口模块：从这些进就能把仓里主要的 import 图走一遍（config→tools→agent 是真实依赖顺序）。
 ENTRY_MODULES = ("config", "tools", "agent")
 #: 本模块只允许的 git 子命令：全部是读或 worktree 生命周期，没有 history/暂存/推送。
-GIT_ALLOWED = frozenset({"rev-parse", "worktree", "ls-files", "ls-tree", "status"})
+GIT_ALLOWED = frozenset({"rev-parse", "worktree", "ls-files", "ls-tree", "status", "show"})
 MAX_REF_LENGTH = 80
 #: ref 允许的形状：不能以 `-` 开头（否则被 git 当选项），不含空格/glob/`..`/分号。
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.^~/-]*$")
@@ -78,6 +79,28 @@ _SKIPPED_RE = re.compile(r"(\d+) (?:skipped|deselected)")
 _NO_TESTS_RE = re.compile(r"no tests ran|^\s*collected 0 items", re.MULTILINE)
 #: `-rf` 打出来的失败清单：`FAILED tests/x.py::test_y - AssertionError`
 _FAILED_ID_RE = re.compile(r"^FAILED (\S+?)(?: - .*)?$", re.MULTILINE)
+
+# --------------------------------------------------------------------------- #
+# A 档守门：只看【已提交内容】的前端相对依赖闭包
+# --------------------------------------------------------------------------- #
+# 2026-11-06 的事故：`MemoryOverview.vue` 引用的文件还在工作区磁盘上，所以本地 install/build
+# 一切正常；但它没进 HEAD，clean checkout 里 Rollup 直接 `Could not resolve ./…`。
+# 这一档只做静态闭包，不跑 npm：秒级、零外部依赖，适合挂日常；真构建留给发布前（B 档）。
+
+#: 扫描根。构建链配置（vite/tsconfig）不在这里，由 typecheck 兜底。
+FRONTEND_SRC = "frontend/src"
+#: 前端源码里可能被相对路径引用的扩展名；worker/资源也按这个表补全。
+FRONTEND_EXTS = (".ts", ".tsx", ".vue", ".js", ".mjs", ".cjs", ".css", ".scss",
+                 ".json", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".woff2", ".woff")
+#: `import x from './a'` / `export * from './a'` / `import('./a')` 都吃这一条；
+#: 裸包、`@/` 别名、绝对 URL 不在这里判（它们不是"漏提交文件"的形状）。
+_RE_RELATIVE_IMPORT = re.compile(r"""(?:from|import)\s*\(?\s*['"]([^'"\n]+)['"]""")
+#: worker 入口不是 import：`new Worker(new URL('./x.worker.ts', import.meta.url), …)`。
+_RE_WORKER_URL = re.compile(r"""new\s+URL\(\s*['"]([^'"\n]+)['"]\s*,\s*import\.meta\.url\s*\)""")
+#: CSS 与 SFC `<style>` 里的 `url(...)`。
+_RE_CSS_URL = re.compile(r"""url\(\s*['"]?([^'")\s]+)['"]?\s*\)""")
+#: 模板属性只认相对路径：`src="/api/…"` 是运行时 URL，不是文件。
+_RE_VUE_ATTR = re.compile(r"""\b(?:src|href)\s*=\s*["']([^"'\n]+)["']""")
 
 
 def safe_relative(path: Any) -> str:
@@ -305,6 +328,144 @@ def run_suites(target: Path, repo: str, *, want_gate: bool, tests: tuple[str, ..
     return rows
 
 
+def _frontend_specs(line: str, suffix: str) -> list[str]:
+    """一行里所有可能是本地文件的引用（后面还要按 `.` 开头过滤）。"""
+    specs = [m.group(1) for m in _RE_RELATIVE_IMPORT.finditer(line)]
+    specs += [m.group(1) for m in _RE_WORKER_URL.finditer(line)]
+    if suffix in (".css", ".scss", ".vue", ".html"):
+        specs += [m.group(1) for m in _RE_CSS_URL.finditer(line)]
+    if suffix in (".vue", ".html"):
+        specs += [m.group(1) for m in _RE_VUE_ATTR.finditer(line)]
+    return specs
+
+
+def _resolve_frontend(spec: str, importer: str, committed: set[str],
+                      root: Path) -> tuple[str, bool] | None:
+    """把相对引用解析成仓内相对路径。返回 (目标, 在提交里)；不是相对引用返回 None。
+
+    补全顺序与打包器一致：原样 → 逐个扩展名 → `index.<ext>`。
+    找不到任何候选时返回 ("", False)，让调用方报"哪里都没有"。
+    """
+    text = spec.split("?")[0].split("#")[0].strip()
+    if not text.startswith("."):
+        return None
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(importer), text))
+    candidates = [base]
+    if not posixpath.splitext(base)[1]:
+        candidates += [base + ext for ext in FRONTEND_EXTS]
+        candidates += [posixpath.join(base, "index" + ext) for ext in FRONTEND_EXTS]
+    else:
+        candidates += [base + ext for ext in FRONTEND_EXTS]
+    for candidate in candidates:
+        if candidate in committed:
+            return candidate, True
+    for candidate in candidates:
+        if (root / candidate).is_file():
+            return candidate, False
+    return "", False
+
+
+def _dirty_frontend(target: Path, timeout: int) -> set[str] | None:
+    """`frontend/src` 下与提交不一致的路径。返回 None 表示拿不到（当成全脏，走慢路径）。"""
+    rep = _git(str(target), ["status", "--porcelain", "--untracked-files=no",
+                             "--", FRONTEND_SRC], timeout=timeout,
+               head_chars=4_000_000, tail_chars=1)
+    if rep.get("error") or rep.get("exit_code") != 0 or rep.get("truncated"):
+        return None
+    dirty: set[str] = set()
+    for line in (rep.get("output") or "").splitlines():
+        if not line.strip():
+            continue
+        path = line[3:]
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1]
+        dirty.add(path.strip())
+    return dirty
+
+
+def _committed_text(target: Path, sha: str, rel: str, timeout: int) -> str | None:
+    """取【提交里】这一版的内容（`git show sha:path`）。"""
+    rep = _git(str(target), ["show", "%s:%s" % (sha, rel)], timeout=timeout,
+               head_chars=4_000_000, tail_chars=1)
+    if rep.get("error") or rep.get("exit_code") != 0 or rep.get("truncated"):
+        return None
+    return rep.get("output") or ""
+
+
+def frontend_closure(target: Path | str, sha: str = "HEAD", *, timeout: int = 60) -> dict[str, Any]:
+    """遍历提交里 `frontend/src/**`，沿相对 import 走一遍，列出不在提交里的目标。
+
+    "在不在提交里"只由 `git ls-tree` 判定，内容取的是**提交那一版**（磁盘干净时直读，
+    不干净时回退 `git show`）——磁盘上有、提交里没有，正是要抓的形状。
+
+    空清单不能当通过：一个 `frontend/src` 文件都没扫到时 `ok` 为 False。
+    """
+    target = Path(target)
+    # 清单是"全部已提交文件"，本项目 1000+ 行输出，默认 8 KB 窗口会截断；
+    # 截断过的清单会让人以为 `frontend/src` 不存在，所以窗口放大且截断即判失败。
+    listed = _git(str(target), ["ls-tree", "-r", sha], timeout=timeout,
+                  head_chars=4_000_000, tail_chars=1)
+    if listed.get("error") or listed.get("exit_code") != 0:
+        return {"ok": False, "applicable": False, "scanned": 0, "edges": 0, "missing": [],
+                "error": "拿不到提交里的文件清单：%s"
+                         % str(listed.get("output") or listed.get("error") or "")[-200:]}
+    if listed.get("truncated"):
+        return {"ok": False, "applicable": False, "scanned": 0, "edges": 0, "missing": [],
+                "error": "提交里的文件清单被截断（%s 字符），不能据此判闭包"
+                         % listed.get("total_chars")}
+    blobs: dict[str, str] = {}
+    for line in (listed.get("output") or "").splitlines():
+        meta, _, path = line.partition("\t")
+        parts = meta.split()
+        if len(parts) >= 3 and parts[1] == "blob" and path:
+            blobs[path] = parts[2]
+    committed = set(blobs)
+    sources = sorted(row for row in committed if row.startswith(FRONTEND_SRC + "/"))
+    if not sources:
+        return {"ok": False, "applicable": False, "scanned": 0, "edges": 0, "missing": [],
+                "error": "提交里没有 %s/**，空清单不能当通过" % FRONTEND_SRC}
+
+    seen: set[str] = set()
+    missing: list[dict[str, Any]] = []
+    edges = 0
+    dirty = _dirty_frontend(target, timeout)
+    queue = list(sources)
+    while queue:
+        rel = queue.pop(0)
+        if rel in seen:
+            continue
+        seen.add(rel)
+        text = None
+        if dirty is not None and rel not in dirty:
+            try:
+                text = (target / rel).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = None
+        if text is None:
+            text = _committed_text(target, sha, rel, timeout)
+        if text is None:
+            return {"ok": False, "applicable": True, "scanned": len(seen), "edges": edges,
+                    "missing": missing, "error": "读不到提交里的文件内容：%s" % rel}
+        suffix = posixpath.splitext(rel)[1].lower()
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for spec in _frontend_specs(line, suffix):
+                hit = _resolve_frontend(spec, rel, committed, target)
+                if hit is None:
+                    continue
+                edges += 1
+                resolved, in_commit = hit
+                if in_commit:
+                    if resolved not in seen:
+                        queue.append(resolved)
+                    continue
+                row = {"importer": rel, "line": lineno, "spec": spec,
+                       "target": resolved, "on_disk": bool(resolved)}
+                if row not in missing:
+                    missing.append(row)
+    return {"ok": bool(seen) and not missing, "applicable": True, "scanned": len(seen),
+            "edges": edges, "missing": missing, "error": ""}
+
+
 class HeadCheckError(RuntimeError):
     """HEAD 自洽检查无法开始。"""
 
@@ -322,13 +483,19 @@ def resolve_ref(root: str, ref: str = "HEAD") -> dict[str, Any]:
     return {"ok": True, "ref": text, "sha": lines[0] if lines else ""}
 
 
-def _git(root: str, args: list[str], *, timeout: int = 60) -> dict[str, Any]:
+def _git(root: str, args: list[str], *, timeout: int = 60,
+         head_chars: int = 0, tail_chars: int = 0) -> dict[str, Any]:
     if not args or args[0] not in GIT_ALLOWED:
         return {"ok": False, "exit_code": None, "output": "",
                 "error": "拒绝执行：%s 不在 HEAD 自检白名单内。" % (args[0] if args else "")}
     argv = ["git", "--no-pager", "-c", "core.quotepath=false", *args]
+    extra: dict[str, Any] = {}
+    if head_chars:
+        extra["head_chars"] = head_chars
+    if tail_chars:
+        extra["tail_chars"] = tail_chars
     return process_runner.run_bounded(argv, cwd=root, timeout=timeout,
-                                      command_text=" ".join(argv))
+                                      command_text=" ".join(argv), **extra)
 
 
 def worktree_base(root: str) -> Path:
@@ -494,6 +661,7 @@ def check(root: str | Path, *, ref: str = "HEAD", modules: tuple[str, ...] | Non
                 "error": added["error"], "ref": resolved["ref"], "sha": sha}
     results: list[dict[str, Any]] = []
     suites: list[dict[str, Any]] = []
+    frontend: dict[str, Any] = {}
     cleanup: dict[str, Any] = {"ok": False, "removed": False, "error": "没走到收回"}
     run_root = worktree_base(repo) / ("run-%s-%s" % (sha[:8], _token()))
     try:
@@ -509,6 +677,7 @@ def check(root: str | Path, *, ref: str = "HEAD", modules: tuple[str, ...] | Non
                     if row.get("importer"):
                         row["importer"] = _relative_importer(row["importer"], target, repo)
             results.append(row)
+        frontend = frontend_closure(target, sha=sha, timeout=int(timeout))
         if gate or tests:
             # 套件写出来的东西（sqlite/缓存/临时目录）一律落在检出**外面**，
             # 否则 `worktree remove` 会碰到自己刚建的目录，回收判据就不可信了。
@@ -528,11 +697,22 @@ def check(root: str | Path, *, ref: str = "HEAD", modules: tuple[str, ...] | Non
     if suites:
         checks["every_suite_ran"] = all(row.get("ran") for row in suites)
         checks["every_suite_green"] = all(row.get("ok") for row in suites)
-    passed = checks["every_entry_imported"] and checks.get("every_suite_green", True)
+    # `frontend/src` 不存在时这一档不适用（applicable=False），不能拿空清单换绿；
+    # 只要适用，就必须真的扫到文件且没有缺失目标。
+    if frontend.get("applicable"):
+        checks["frontend_closure_ok"] = bool(frontend.get("scanned")) and bool(frontend.get("ok"))
+    passed = (checks["every_entry_imported"]
+              and checks.get("every_suite_green", True)
+              and checks.get("frontend_closure_ok", True))
     why = []
     if not checks["every_entry_imported"]:
         why.append("import 失败：%s" % ", ".join(row["module"] for row in results
                                                 if not row.get("ok")))
+    if frontend.get("applicable") and not checks.get("frontend_closure_ok", True):
+        why.append("前端相对依赖闭包不通过：%s"
+                   % (str(frontend.get("error") or "") or "；".join(
+                       "%s:%s → %s" % (row["importer"], row["line"], row["target"] or row["spec"])
+                       for row in (frontend.get("missing") or [])[:4])))
     for row in suites:
         if not row.get("ok"):
             why.append("%s 未通过：%s" % (row["kind"], str(row.get("detail") or "")[-200:]))
@@ -540,6 +720,7 @@ def check(root: str | Path, *, ref: str = "HEAD", modules: tuple[str, ...] | Non
             "sha": sha, "modules": list(wanted), "results": results,
             "worktree": added["path"], "cleanup": cleanup,
             "suites": suites, "suite_state_removed": not run_root.exists(),
+            "frontend": frontend,
             "imported": [row["module"] for row in ok_imports],
             "failures": [row for row in results if not row.get("ok")],
             "error": "" if passed else "；".join(why)}
@@ -561,6 +742,20 @@ def render(result: dict[str, Any]) -> str:
                 lines.append("  引用它的地方：%s:%s（import %s）" % (
                     row["importer"], row.get("importer_line") or "?",
                     row.get("import_statement") or "?"))
+    frontend = result.get("frontend") or {}
+    if frontend.get("applicable"):
+        if frontend.get("ok"):
+            lines.append("前端闭包：%d 个已提交文件、%d 条相对引用，目标都在提交里。" % (
+                int(frontend.get("scanned") or 0), int(frontend.get("edges") or 0)))
+        else:
+            lines.append("前端闭包：未通过（扫了 %d 个文件，%d 个目标不在提交里）。%s" % (
+                int(frontend.get("scanned") or 0), len(frontend.get("missing") or []),
+                str(frontend.get("error") or "")))
+            for item in (frontend.get("missing") or [])[:8]:
+                lines.append("  %s:%s → %s（%s）" % (
+                    item.get("importer"), item.get("line"),
+                    item.get("target") or item.get("spec"),
+                    "磁盘上有 = 漏提交" if item.get("on_disk") else "磁盘上也没有"))
     for row in result.get("suites") or []:
         name = "门禁整集" if row.get("kind") == "gate" else "指定测试"
         if row.get("ok"):
@@ -599,6 +794,8 @@ def render(result: dict[str, Any]) -> str:
         lines.append("注意：这次跑套件用的临时状态目录没删掉（多半是句柄还没被系统收走）。")
     if result.get("ok"):
         ran = "上面这些入口能被真的 import 起来"
+        if (result.get("frontend") or {}).get("applicable"):
+            ran += "，前端相对依赖闭包在提交里是完整的"
         if result.get("suites"):
             ran += "，且请求的离线套件在那棵树上真的跑绿"
         lines.append("能证明的只有这些：%s。" % ran)
@@ -608,8 +805,8 @@ def render(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["ENTRY_MODULES", "GATE_BASELINE", "GIT_ALLOWED", "HeadCheckError", "add_worktree",
-           "attribute", "check", "classify", "find_importer", "gate_argv", "import_module",
-           "make_target", "parse_gate", "parse_pytest", "pytest_argv", "remove_worktree",
-           "render", "resolve_ref", "run_suite", "run_suites", "safe_relative",
-           "worktree_base"]
+__all__ = ["ENTRY_MODULES", "FRONTEND_EXTS", "FRONTEND_SRC", "GATE_BASELINE", "GIT_ALLOWED",
+           "HeadCheckError", "add_worktree", "attribute", "check", "classify", "find_importer",
+           "frontend_closure", "gate_argv", "import_module", "make_target", "parse_gate",
+           "parse_pytest", "pytest_argv", "remove_worktree", "render", "resolve_ref",
+           "run_suite", "run_suites", "safe_relative", "worktree_base"]
