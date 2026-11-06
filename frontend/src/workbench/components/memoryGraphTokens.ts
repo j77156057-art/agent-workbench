@@ -1,0 +1,150 @@
+/** 神经网的几何与运动令牌；视觉颜色、字阶和 CSS 动效见 memory-inspector-tokens.css。 */
+export const MEMORY_GRAPH = {
+  width: 720,
+  height: 480,
+  maxVisible: 384,
+  skeletonNodes: 16,
+  presentation: {
+    initialNodeBatch: 4,
+    initialLinkBatch: 8,
+    maxNodeBatch: 16,
+    maxLinkBatch: 32,
+    mountBudgetMs: 6,
+    catalogInitial: 8,
+  },
+  core: { x: 360, y: 240 },
+  goldenAngle: 2.399963,
+  angleOffset: -Math.PI / 2,
+  ringAngleStep: 0.47,
+  angleJitter: 0.52,
+  radialBase: 0.88,
+  radialJitter: 0.24,
+  /* 2026-11-04：环数与顺序改由 store 真实语义分层驱动（不再是 L0–L4 编号，也不再是 importance 三档）。
+     store→layer 的归属在后端 agent_runtime/memory/layers.py（配置项）；
+     这里只放“层 → 环几何 / 亮度”这一份渲染配置，数值与后端 brightness 一致。
+     rule 是中心 hub，不进环。
+     亮度顺序依据 = **内容稳定度**：常驻守则（最稳定）> 共享记忆 > 项目长期记忆 > 晋升候选 > 会话钩子（最易变）。
+     这是产品口径，待确认；不再写“越底层越亮”。 */
+  layers: {
+    order: ['rule', 'shared', 'legacy', 'project', 'hook'] as const,
+    brightness: { rule: 1.00, shared: 0.80, legacy: 0.64, project: 0.46, hook: 0.30 },
+    /** 注入 = 在层级基线上提亮一档：opacity = min(1, brightness * boost)。 */
+    injectedBoost: 1.22,
+    opacityMin: 0.10,
+    /** 外环再叠一点深度衰减，系在层级亮度上，不替代它。 */
+    depthFalloff: 0.18,
+    rings: {
+      shared: { rx: 112, ry: 78, depth: 0.08 },
+      legacy: { rx: 190, ry: 130, depth: 0.36 },
+      project: { rx: 262, ry: 176, depth: 0.58 },
+      hook: { rx: 320, ry: 214, depth: 0.74 },
+    },
+    labels: {
+      rule: '常驻守则',
+      shared: '共享记忆',
+      legacy: '项目长期记忆',
+      project: '晋升候选',
+      hook: '会话钩子',
+    },
+    /** 亮度顺序依据（后端 layer_config 也会原样返回）。 */
+    brightnessBasis: '内容稳定度：常驻守则（最稳定）> 共享记忆 > 项目长期记忆 > 晋升候选 > 会话钩子（最易变）',
+    pendingConfirmation: '亮度顺序依据：内容稳定度（产品口径，待确认）',
+  },
+  depthJitter: 0.12,
+  depthScale: 0.32,
+  depthHaloScale: 4,
+  pulsePhaseStep: 0.17,
+  nodeRadiusMin: 3.4,
+  nodeRadiusRange: 7.4,
+  haloPadding: 8,
+  usedRingPadding: 4,
+  stateRingPadding: 7,
+  waveRingPadding: 12,
+  waveGlowPadding: 4,
+  labelPadding: 10,
+  labelLength: 16,
+  edgeWidthMin: 0.35,
+  edgeWidthRange: 1.10,
+  edgeDepthScale: 0.35,
+  edgeBend: 0.24,
+  flowWidthBoost: 0.45,
+  hub: {
+    haloRadius: 48,
+    outerRadius: 28,
+    innerRadius: 17,
+    coreRadius: 5,
+    tickLength: 7,
+    labelOffset: 50,
+  },
+  force: {
+    repulsion: 28,
+    repulsionDistanceMax: 260,
+    theta: 0.85,
+    spring: 0.14,
+    injectedSpring: 0.52,
+    linkDistance: 46,
+    injectedLinkDistance: 88,
+    centerStrength: 0.018,
+    centerStrengthY: 0.022,
+    injectedCenterStrength: 0.12,
+    injectedCenterStrengthY: 0.14,
+    velocityDecay: 0.32,
+    alphaInitial: 1,
+    alphaTarget: 0,
+    alphaMin: 0.015,
+    alphaDecay: 0.022,
+    reheatAlpha: 0.32,
+    frameBudgetMs: 4,
+    maxStepsPerFrame: 24,
+    maxTicks: 600,
+    collisionPadding: 4,
+    collisionIterations: 2,
+    boundaryPadding: 10,
+  },
+  /* 2026-11-04：动效改由 memoryMotion.ts 单帧驱动（不再用 SMIL animateMotion，
+     便于统一分帧、暂停与性能采样）。速度按 px/s 给，duration = 路径长度 / speed。 */
+  motion: {
+    pulseSpeed: 62,
+    pulseRadius: 3.8,
+    trailRadius: 2.2,
+    trailRatio: 0.13,
+    maxPulseLinks: 24,
+    breathMin: 1.9,
+    breathMax: 3.9,
+    breathAmpMin: 0.05,
+    breathAmpMax: 0.15,
+    waveHopMs: 95,
+    waveMaxHops: 6,
+    waveAmp: 0.5,
+    dragHops: 2,
+    dragMaxNodes: 36,
+    dragReach: 190,
+    dragPush: 0.9,
+    dragStiffness: 150,
+    dragDamping: 15,
+    releaseStiffness: 210,
+    releaseDamping: 9.5,
+    clickSuppressPx: 4,
+    /* 2026-11-04 弱机降级（第二版）：按 vsync 归一化的「帧超支率」判定。
+       - refreshInterval = clamp(最近 medianWindow 帧间隔的中位数)；
+       - 每帧超支 = max(0, dt - refreshInterval) / refreshInterval；
+       - 连续 enterFrames 帧窗口超支率 > enterRatio → 降级；
+       - 连续 exitFrames 帧 < exitRatio → 恢复（滞回带内计数清零，不抖动）；
+       - profile.tier === 'low' 开局预降级，连续 upgradeFrames 帧 < upgradeRatio 可升回。
+       上限夹取防止「整机稳定慢」把自身慢归一化成 0 超支；下限夹取防止首帧噪声。 */
+    degrade: {
+      medianWindow: 30,
+      refreshFallbackMs: 16.7,
+      refreshMinMs: 8,
+      refreshMaxMs: 17.5,
+      windowFrames: 30,
+      enterRatio: 0.5,
+      enterFrames: 30,
+      exitRatio: 0.2,
+      exitFrames: 60,
+      upgradeRatio: 0.1,
+      upgradeFrames: 120,
+      pulseEvery: 2,
+    },
+  },
+} as const
