@@ -163,12 +163,19 @@ class SummaryQualityTests(Base):
 
     def test_summary_merge_is_capped(self):
         llm = _SummaryLLM()
-        merged = sessions._merge_summary("旧" * 900, "新" * 500, llm)
-        self.assertEqual(merged, "合并后的摘要")
-        fallback = sessions._merge_summary("旧" * 900, "新" * 500, None)
-        self.assertLessEqual(len(fallback), sessions._SUMMARY_MAX_CHARS)
+        # 上限由 token 预算派生，样本必须跟着上限走，不能再假设写死 1200。
+        cap = sessions._SUMMARY_MAX_CHARS
+        old, new = "旧" * (cap - 50), "新" * 300
+        merged = sessions._merge_summary(old, new, llm)
+        # 旧摘要首次超限时，头部逐字搬进 pinned（不送 LLM 重压）。
+        self.assertIn("【固定事实｜pinned_from_legacy_head】", merged)
+        self.assertLessEqual(len(merged), cap)
+        fallback = sessions._merge_summary(old, new, None)
+        self.assertLessEqual(len(fallback), cap)
+        self.assertIn("【固定事实｜pinned_from_legacy_head】", fallback)
         self.assertIn("新", fallback)
-        self.assertTrue(fallback.endswith("…"), "硬截断必须显式标注，不能停在半个句子里")
+        self.assertIn("（最旧进展", fallback)
+        self.assertNotIn("…", fallback, "回退裁剪用省略标记，不能停在半个句子里")
 
 
 class CompactionArithmeticTests(Base):

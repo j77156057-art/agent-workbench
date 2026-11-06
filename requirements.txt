@@ -33,6 +33,17 @@ psycopg[binary,pool]>=3.2,<4
 # Test runner. The CI `unittest discover` step cannot collect module-level
 # `def test_*` functions, so a pytest lane runs the files that stay invisible.
 pytest>=9.1,<10
+# 系统资源采样（system_resources.py）：CPU / 内存 / 磁盘。GPU 走 pynvml（可选）
+# 或 nvidia-smi；两者都拿不到时接口明确返回 available=false + 原因，不编造占用率。
+psutil>=7.2,<8
+# GPU 实时指标的可选依赖：运行期不强制，代码用 `try/except ImportError` 降级
+# （没有它就走 nvidia-smi；两者都没有时接口返回 available=false + 原因）。
+# 导入名是 `pynvml`，对应的发行包是 `nvidia-ml-py`（本机装的是 nvidia-ml-py
+# 13.615.71，提供 pynvml 13.0.1）；这里按导入名声明，与依赖对账器的
+# `pep503(module) in declared` 口径一致。
+# 显式声明是因为本仓没有 pyproject.toml / extras，requirements.txt 是唯一清单，
+# 而 `tests/test_deps_sync.py` 会把「import 了但清单没写」判成缺陷。
+pynvml>=13,<14
 # Symbol lookup for TS/JS/Vue. `code_intel` falls back to the word-boundary
 # regex when these are missing, so the harness still runs without them.
 tree-sitter>=0.23,<1

@@ -193,10 +193,10 @@ class StoreTests(_MemBase):
         empty = Turn(session_id="s").to_record()
         self.assertNotIn("injection", empty)
         turn = Turn(session_id="s")
-        turn.add_injection([{"layer": "L0", "chars": 12, "hash": "abc",
+        turn.add_injection([{"layer_key": "rule", "chars": 12, "hash": "abc",
                              "version": 3, "text": "宪法正文"}])
         record = turn.to_record()
-        self.assertEqual(record["injection"][0]["layer"], "L0")
+        self.assertEqual(record["injection"][0]["layer_key"], "rule")
         self.assertEqual(record["injection"][0]["version"], 3)
 
 
@@ -421,10 +421,10 @@ class SessionInjectionTests(_MemBase):
         self.assertIn("【会话钩子", text)
         self.assertIn("以后都用中文", text)
         self.assertIn("下一步", text)
-        self.assertEqual([b["layer"] for b in agent._last_injection], ["L0", "L4"])
+        self.assertEqual([b["layer_key"] for b in agent._last_injection], ["rule", "hook"])
         turn = Turn(session_id="s1")
         turn.add_injection(agent._last_injection)
-        self.assertEqual(turn.to_record()["injection"][1]["layer"], "L4")
+        self.assertEqual(turn.to_record()["injection"][1]["layer_key"], "hook")
 
     def test_l4_absent_when_off(self):
         os.environ.pop("DOCMIND_MEMORY_V2", None)
@@ -491,7 +491,7 @@ class TaskbookTests(_MemBase):
     def test_injection_and_prompt(self):
         taskbook.open_book("prj", "任务", [{"text": "补测试"}, {"text": "跑验收"}])
         block = injection.build_taskbook_injection("prj")[0]
-        self.assertEqual(block["layer"], "L3")
+        self.assertEqual(block["layer_key"], "taskbook")
         self.assertLessEqual(len(block["text"]), 400)
         messages = agent_mod.Agent(
             llm=_LLM(), session_id="s1", project_id="prj")._build_messages("继续")
@@ -573,7 +573,7 @@ class PromoteTests(_MemBase):
         self.assertEqual(shared[0]["scope"], "global")
         self.assertTrue(shared[0]["pinned"])
         block = injection.build_shared_injection()[0]
-        self.assertEqual(block["layer"], "L2")
+        self.assertEqual(block["layer_key"], "shared")
         self.assertIn("先跑完整测试", block["text"])
 
     def test_secret_and_context_rejected(self):
@@ -870,7 +870,7 @@ class SharedInjectionTests(_MemBase):
         text = "\n".join(str(m.get("content") or "") for m in messages)
         self.assertIn("【共享记忆", text)
         self.assertIn("先跑完整测试", text)
-        self.assertEqual([block["layer"] for block in agent._last_injection], ["L0", "L2"])
+        self.assertEqual([block["layer_key"] for block in agent._last_injection], ["rule", "shared"])
 
 
 def _pinned_shared(text="合并前先跑完整测试，能显著降低回归率", importance=0.9):
@@ -1093,7 +1093,7 @@ class ContextPanelTests(_MemBase):
     def test_next_view_has_all_layers(self):
         view = context_panel.next_view("prj", "s1")
         keys = [layer["key"] for layer in view["layers"]]
-        self.assertEqual(keys, ["L0", "L1", "rules", "L2", "L3", "L4", "summary"])
+        self.assertEqual(keys, ["rule", "profile", "rules", "shared", "taskbook", "hook", "summary"])
         self.assertTrue(view["layers"][0]["editable"])
         self.assertIn("【系统宪法", view["layers"][0]["text"])
         self.assertEqual(view["layers"][0]["budget"], 600)
@@ -1102,10 +1102,10 @@ class ContextPanelTests(_MemBase):
         _pinned_shared()
         taskbook.open_book("prj", "任务", [{"text": "补测试"}])
         view = context_panel.next_view("prj", "s1")
-        l2 = next(layer for layer in view["layers"] if layer["key"] == "L2")
+        l2 = next(layer for layer in view["layers"] if layer["key"] == "shared")
         self.assertEqual(len(l2["items"]), 1)
         self.assertIn("先跑完整测试", l2["text"])
-        l3 = next(layer for layer in view["layers"] if layer["key"] == "L3")
+        l3 = next(layer for layer in view["layers"] if layer["key"] == "taskbook")
         self.assertEqual(l3["items"][0]["text"], "补测试")
 
     def test_last_view_reads_turn_snapshot(self):
@@ -1178,7 +1178,7 @@ class ProfileFileTests(_MemBase):
         self.assertEqual(profile.load()["location"], "广州")
 
         view = context_panel.next_view("prj", "s1")
-        l1 = next(layer for layer in view["layers"] if layer["key"] == "L1")
+        l1 = next(layer for layer in view["layers"] if layer["key"] == "profile")
         self.assertEqual(l1["profile"]["display_name"], "小李")
         self.assertIn("小李", l1["text"])
 
@@ -1242,7 +1242,7 @@ class SearchEdgeTests(_MemBase):
         self.assertTrue(any(row["id"] == a["id"] and row["scope"] == "global" for row in rows))
         self.assertTrue(any(row["id"] == pending["id"] and row["scope"] == "project" for row in rows))
         view = context_panel.next_view("prj", "s1")
-        l2 = next(layer for layer in view["layers"] if layer["key"] == "L2")
+        l2 = next(layer for layer in view["layers"] if layer["key"] == "shared")
         self.assertTrue(any(item["id"] == a["id"] for item in l2["retrievable_items"]))
         result = promote.promote("prj", pending["id"])
         self.assertFalse(result["ok"])
