@@ -21,6 +21,11 @@ from file_locks import cross_process_lock
 _LOCK = threading.RLock()
 _ROOTS = {}
 _DIR = Path(".docmind") / "delegations"
+
+# 只有仍在占用算力的节点计入额度（总量 / 单父）。completed、failed、expired、
+# rejected 以及重启后被标记为 unknown 的节点都不再占额度，否则长会话里每个跑完
+# 的子代理都会永久挤占配额，最终把正常的直接派发全部推入审批。
+_QUOTA_HOLDING_STATUSES = frozenset({"pending", "running", "waiting_child"})
 #: 心跳字段都平铺在节点上，便于直接用 `.docmind/delegations/<sha>.json` 审计。
 _HB_FIELDS = ("last_seen", "last_seen_epoch", "heartbeat_interval", "beats",
               "progress", "last_event", "recent_beats")
@@ -553,8 +558,10 @@ def request(parent, *, role, task, tool_allowlist=None, run,
     with _LOCK:
         root = _root(session)
         siblings = len([node for node in root["nodes"].values()
-                        if node["parent_id"] == parent_id and node["status"] != "rejected"])
-        total = len([node for node in root["nodes"].values() if node["status"] != "rejected"])
+                        if node["parent_id"] == parent_id
+                        and node["status"] in _QUOTA_HOLDING_STATUSES])
+        total = len([node for node in root["nodes"].values()
+                     if node["status"] in _QUOTA_HOLDING_STATUSES])
         risk = classify(parent, session_id=session, project_id=project_id,
                         depth=depth, effective_tools=effective, total=total, siblings=siblings)
         now_epoch = time.time()
