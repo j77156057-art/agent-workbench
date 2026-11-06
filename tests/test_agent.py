@@ -1016,6 +1016,11 @@ class DynamicOrchestrationContractTests(unittest.TestCase):
                             if "重规划" in prompt))
 
     def test_subagent_context_is_isolated_from_parent_history(self):
+        from agent_runtime import delegation
+        # 该用例会走 delegation 闸门，派发登记按 cwd 落到 .docmind/delegations/。
+        # 不清账本时，同一目录重复跑会把历次节点累加成额度，用例从绿退化为 pending。
+        delegation.clear("parent-session")
+        self.addCleanup(delegation.clear, "parent-session")
         llm = self._PlannerLLM()
         parent = agent_mod.Agent(llm=llm, session_id="parent-session", tool_registry={})
         parent.history = [{"user": "父会话私有内容", "assistant": "不要泄漏"}]
