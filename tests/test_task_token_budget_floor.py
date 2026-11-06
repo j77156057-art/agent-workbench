@@ -8,22 +8,26 @@
 `llm.chat` 被调用 **0 次**，用户只看到「（已达到本任务 Token 上限，已停止继续调用模型。）」。
 
 界面不报错、设置页不提示、服务照常启动 —— **根因完全不可见**。
-实测：一次「你好」的最小提示词约 4766 token，加每轮输出预留 3072
-= 7838；跑完一次带工具的问答约需 15676。
+实测（Qwen3.5 tokenizer）：一次「你好」的最小提示词约 11416 token，
+第一轮门槛 = 11416 + 3072 = 14488；跑完 3 轮约需 40552。
 
 ## 下界怎么来的（2026-11-06 起改为动态）
 
-固定常量 21576 是按「带记忆 22624 字符」二分出来的 3 轮累计值，
-公式与 `RunBudget` 完全一致：
+旧常量 21576 是按「带记忆 22624 字符」、用未实测的 `chars/4` 二分出来的
+3 轮累计值。2026-11-06 用本机 Qwen3.5 tokenizer 实测（只分词，不推理）：
+
+    22626 字符 -> 11416 token   （1.98 字符/token）
+    22936 字符 -> 11580 token   （1.98 字符/token）
+
+`chars/4` 把提示词低估了约一半，旧常量在真实运行态撑不住 3 轮。
+现在字符→token 统一用 `run_budget.CHARS_PER_TOKEN = 1.9`（实测 1.98，留余量）：
 
     N * P + (N - 1) * R + O
-    P = prompt_chars / 4   （随提示词体积增长）
-    R = output_tokens / 4  （每轮固定）
-    O = output_tokens      （一次性预留）
+    P = prompt_chars / CHARS_PER_TOKEN   （随提示词体积增长）
+    R = output_tokens / CHARS_PER_TOKEN  （每轮固定）
+    O = output_tokens                    （一次性预留）
 
-提示词一变长（例如项目记忆从 309 字符涨到 610），固定值就过期 ——
-这正是 `test_the_bound_covers_a_whole_multi_tool_answer` 变红的原因。
-现在 `capacity.task_token_budget_floor(prompt_chars)` 现算，两种运行态
+`capacity.task_token_budget_floor(prompt_chars)` 现算，两种运行态
 （带/不带记忆）用同一个函数、同一套参数，只换实测 chars。
 
 ## 判据怎么写的（重要）
@@ -228,7 +232,9 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
         两种运行态用同一套参数，增量必须完全一致。
         """
         delta_chars = 4_000
-        expected_delta = self.MIN_ROUNDS * (delta_chars // 4)
+        # 增量应约等于 rounds * Δchars / CHARS_PER_TOKEN；逐项 int 截断
+        # 会带来最多 rounds 个 token 的零头，所以按 delta 比较而不是严格相等。
+        expected_delta = self.MIN_ROUNDS * int(delta_chars / capacity.CHARS_PER_TOKEN)
         for label, base in (("无记忆", self.bare_chars),
                             ("带记忆", self.bare_chars + self.MEMORY_CHARS)):
             grown = capacity.task_token_budget_floor(base + delta_chars)
@@ -236,9 +242,37 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
             self.assertGreater(grown, current,
                                "%s 下提示词加长 %d 字符，下界没变"
                                % (label, delta_chars))
-            self.assertEqual(grown - current, expected_delta,
-                             "%s 下的增量应严格等于 rounds * Δchars/4"
-                             % label)
+            self.assertAlmostEqual(
+                grown - current, expected_delta, delta=self.MIN_ROUNDS,
+                msg="%s 下的增量应约等于 rounds * Δchars / CHARS_PER_TOKEN"
+                    % label)
+
+    def test_the_floor_covers_the_tokenizer_measured_tokens(self):
+        """独立守门：用真实 tokenizer 量到的 token 数验下界够不够。
+
+        ⚠ 提示词那一项**不再用 chars/4 估算**：右边是 2026-11-06 用本机
+        Qwen3.5 tokenizer（`llama-tokenize` 读 GGUF，只分词不推理）量出的
+        真实 token 数。左边是下界；每轮完成量仍按公式里的 R 计。
+        若有人把除数改回 4，下界会掉到真实需求以下，这条先红。
+
+        实测对：
+            无记忆  22626 字符 -> 11416 token
+            带记忆  22936 字符 -> 11580 token
+        若提示词构成明显变化（更多中文/更少代码），应重新量并更新这里。
+        """
+        measured = (("无记忆", 22_626, 11_416), ("带记忆", 22_936, 11_580))
+        out = agent_mod.LLM_MAX_TOKENS
+        per_round_output = int(out / capacity.CHARS_PER_TOKEN)
+        for label, chars, real_tokens in measured:
+            floor = capacity.task_token_budget_floor(chars)
+            need = (self.MIN_ROUNDS * real_tokens
+                    + (self.MIN_ROUNDS - 1) * per_round_output
+                    + out)
+            self.assertGreaterEqual(
+                floor, need,
+                "%s：下界 %d 低于 tokenizer 实测需求 %d"
+                "（真实 %d token/轮）—— 除数可能被改回去了"
+                % (label, floor, need, real_tokens))
 
     # ---------- 契约边界 ----------
 

@@ -17,7 +17,9 @@ class RunBudgetTests(unittest.TestCase):
     def test_fallback_estimate_and_hard_stop(self):
         budget = RunBudget(100)
         budget.record(None, prompt_chars=160, output_chars=40)
-        self.assertEqual(budget.total_tokens, 50)
+        # 字符→token 除数 1.9（tokenizer 实测，见 run_budget.CHARS_PER_TOKEN）：
+        # 160/1.9 = 84，40/1.9 = 21 -> 105。旧口径 /4 会得到 50。
+        self.assertEqual(budget.total_tokens, 105)
         self.assertFalse(budget.preflight(100, 60))
         self.assertTrue(budget.snapshot()["exhausted"])
 

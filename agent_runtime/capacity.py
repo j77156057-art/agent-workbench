@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from . import loopback_http
+from .run_budget import CHARS_PER_TOKEN
 
 SETTING_KEY = "agent_capacity_settings"
 
@@ -124,8 +125,8 @@ MAX_TOKEN_BUDGET_CAP = 10_000_000
 PROMPT_ROUNDS = 3
 #: 每轮 preflight 预留的输出 token（与 agent.LLM_MAX_TOKENS 的默认值一致）。
 OUTPUT_RESERVE_TOKENS = 3_072
-#: RunBudget 的保守估算口径：4 字符 / token。
-CHARS_PER_TOKEN = 4
+#: 字符 -> token 的除数统一由 `RunBudget` 提供：1.9，来自 Qwen tokenizer 实测
+#: （详见 `run_budget.py` 顶部）。**不要在这里另定一个 4。**
 
 
 def task_token_budget_floor(prompt_chars: int, *,
@@ -145,9 +146,10 @@ def task_token_budget_floor(prompt_chars: int, *,
 
     其中：
 
-    * ``P = prompt_chars / 4`` —— **随提示词体积线性增长**（系统提示词、工具定义、
-      项目记忆、画像都在这份 chars 里，由调用方实测传入）；
-    * ``R = output_tokens / 4`` —— **每轮固定开销**（完成量按字符折算）；
+    * ``P = prompt_chars / CHARS_PER_TOKEN`` —— **随提示词体积线性增长**
+      （系统提示词、工具定义、项目记忆、画像都在这份 chars 里，由调用方实测传入）。
+      除数 1.9 来自 Qwen tokenizer 实测（旧值 4 会把中文提示词低估约一半）；
+    * ``R = output_tokens / CHARS_PER_TOKEN`` —— **每轮固定开销**（完成量按字符折算）；
     * ``O = output_tokens`` —— **一次性固定开销**（最后一轮 preflight 的输出预留）。
 
     所以提示词变长时下界自动上升，不需要再手工重标定一个更大的常数。
@@ -160,8 +162,9 @@ def task_token_budget_floor(prompt_chars: int, *,
             + max(0, int(output_tokens)))
 
 
-#: 启动/读取持久化状态时的兜底基线：按 2026-11-01 实测的带记忆提示词
-#: 22624 字符代入同一个公式得到 21576。**它只用于没有请求上下文的读取路径**
+#: 启动/读取持久化状态时的兜底基线：按带记忆提示词 22624 字符代入同一个公式
+#: （除数 1.9）得到 **42025**。旧的 21576 是用未实测的 `/4` 算的，已废弃。
+#: **它只用于没有请求上下文的读取路径**
 #: （`get_settings` 读存量配置），请求边界必须用 `task_token_budget_floor()`
 #: 按本次实测的提示词体积现算，否则提示词一变长就又会过期。
 BASELINE_PROMPT_CHARS = 22_624
