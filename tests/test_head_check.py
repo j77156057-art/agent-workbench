@@ -206,6 +206,22 @@ class CleanCheckoutTests(RepoCase):
         self.assertTrue(result["checks"]["no_leftover_checkout"])
         self.assertIn("别人未提交的新文件被提交引用", hchk.render(result))
 
+    def test_a_frontend_reference_outside_the_commit_makes_the_check_red(self):
+        """前端闭包也必须进 `passed`：只写进 `checks` 不进结论，等于装了门不锁。
+
+        `tests/test_frontend_closure.py` 证的是闭包本身判得对；这条证的是它接进了
+        `check()` 的最终结论——把 `and checks.get("frontend_closure_ok", True)` 换成
+        `and True` 时，只有这里会红。
+        """
+        self.write("entry.py", "VALUE = 1\n")
+        self.write("frontend/src/main.ts", "import './leaf'\n")
+        self.write("frontend/src/leaf.ts", "export const a = 1\n")   # 只在磁盘上，不提交
+        self.commit("entry.py", "frontend/src/main.ts")
+        result = hchk.check(self.repo, modules=("entry",), timeout=60)
+        self.assertIs(result["ok"], False, json.dumps(result, ensure_ascii=False, default=str)[:900])
+        self.assertFalse(result["checks"]["frontend_closure_ok"])
+        self.assertIn("前端相对依赖闭包不通过", result["error"])
+
     def test_a_module_that_is_nowhere_is_a_different_answer(self):
         self.write("entry.py", "import totally_absent_xyz\n")
         self.commit("entry.py")

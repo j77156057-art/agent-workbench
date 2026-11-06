@@ -37,8 +37,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import agent as agent_mod  # noqa: E402
 from agent_runtime.output_audit import audit_evidence  # noqa: E402
 
-PROJECT = os.getenv("DOCMIND_REAL_GAME_PROJECT", r"<sample-project>")
+_PROJECT_ENV = "DOCMIND_REAL_GAME_PROJECT"
+_PROJECT_RAW = os.getenv(_PROJECT_ENV, "").strip()
+PROJECT = _PROJECT_RAW or r"<sample-project>"
 HAVE_PROJECT = os.path.isdir(PROJECT)
+#: 跳过原因必须能直接告出「该设哪个变量」以及「设了但设错了」这两种情形。
+PROJECT_SKIP = (
+    "未设置 %s：默认占位符不是真实项目；把它设成真实 Godot 项目根目录后可运行"
+    % _PROJECT_ENV
+    if not _PROJECT_RAW else
+    "%s=%r 指向的目录不存在；改成真实 Godot 项目根目录后可运行"
+    % (_PROJECT_ENV, _PROJECT_RAW)
+)
 
 READ = [{"action": "read_file", "ok": True, "input": "behaviors/enemy.gd"}]
 ANSWER = "扣多少看 behaviors/enemy.gd:7，实际改血在 behaviors/player.gd:39。"
@@ -48,7 +58,7 @@ QUESTION = "玩家受伤扣多少血在哪算的？"
 class GateIgnoresTheProcessCheckTests(unittest.TestCase):
     """Q2 不得再驱动闸门。"""
 
-    @unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+    @unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
     def test_no_read_record_but_valid_refs_passes_the_gate(self):
         """没有 read_file 记录、但引用全部可核验 -> 门禁必须放行。
 
@@ -62,14 +72,14 @@ class GateIgnoresTheProcessCheckTests(unittest.TestCase):
         self.assertFalse(out["checks"]["read_file_present"],
                          "用例前提不成立：read_file_present 本应是 False")
 
-    @unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+    @unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
     def test_verdict_is_partial_not_fail_in_that_case(self):
         out = audit_evidence({"text": ANSWER, "trace": {"steps": []}},
                              question=QUESTION, code_root=PROJECT)
         self.assertEqual(out["verdict"], "PARTIAL",
                          "引用可核验、只是缺旁证 -> PARTIAL，不是 FAIL")
 
-    @unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+    @unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
     def test_ok_still_requires_the_process_check_for_legacy_callers(self):
         """`ok` 保留旧语义，避免悄悄改变其它调用方的行为。"""
         out = audit_evidence({"text": ANSWER, "trace": {"steps": []}},
@@ -81,7 +91,7 @@ class GateIgnoresTheProcessCheckTests(unittest.TestCase):
 class GateStillBlocksRealErrorsTests(unittest.TestCase):
     """Q1 必须仍然是硬门禁——放松过程项不等于放松事实项。"""
 
-    @unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+    @unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
     def test_an_unopenable_reference_fails_the_gate(self):
         out = audit_evidence({"text": "显示在 hud.gd:20 处理。", "trace": {"steps": READ}},
                              question="HUD 在哪刷新？", code_root=PROJECT)
@@ -90,14 +100,14 @@ class GateStillBlocksRealErrorsTests(unittest.TestCase):
                          "能查且查出了问题 -> FAIL。PARTIAL 只给环境限制，"
                          "不得用作「我不确定」的逃逸口")
 
-    @unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+    @unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
     def test_an_out_of_range_line_fails_the_gate(self):
         out = audit_evidence({"text": "数值在 behaviors/enemy.gd:999。", "trace": {"steps": READ}},
                              question="扣血在哪算？", code_root=PROJECT)
         self.assertFalse(out["gate_ok"], "越界行号放行了——那是幻觉行号")
         self.assertEqual(out["verdict"], "FAIL")
 
-    @unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+    @unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
     def test_no_reference_at_all_fails_the_gate(self):
         out = audit_evidence({"text": "扣血逻辑在角色控制器里。", "trace": {"steps": READ}},
                              question=QUESTION, code_root=PROJECT)
@@ -219,7 +229,7 @@ class VerificationAvoidanceIsNamedTests(unittest.TestCase):
                       "必须允许如实声明未核实——否则模型只能假装确认过")
 
 
-@unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+@unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
 class PartialMeansTwoDifferentThingsTests(unittest.TestCase):
     """两种 PARTIAL 的含义完全不同，措辞必须分开。
 
@@ -313,7 +323,7 @@ class RemedyMatchesTheActualProblemTests(unittest.TestCase):
         self.assertIn("怎么改", remedy)
 
 
-@unittest.skipUnless(HAVE_PROJECT, "需要真实项目")
+@unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
 class UnopenableFileMustNotAlsoBeReportedAsBadLinesTests(unittest.TestCase):
     """打不开的文件**不能**同时被报成「行号越界」。
 

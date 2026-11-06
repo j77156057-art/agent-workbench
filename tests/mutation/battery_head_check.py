@@ -36,7 +36,7 @@ LAYER_EXEMPT = {
 }
 
 #: 本块电池的变异条数下限：删一条变异必须显式改这里，「守卫悄悄变少」不该是绿灯
-MINIMUM_MUTATIONS = 44
+MINIMUM_MUTATIONS = 45
 
 MUTATIONS = [
     ("空模块列表也算通过（`all([])` 是 True）",
@@ -58,9 +58,8 @@ MUTATIONS = [
      'if target.exists():',
      'if False:'),
     ("git 白名单放开",
-     'GIT_ALLOWED = frozenset({"rev-parse", "worktree", "ls-files", "ls-tree", "status"})',
-     'GIT_ALLOWED = frozenset({"rev-parse", "worktree", "ls-files", "ls-tree", "status", '
-     '"commit", "reset", "checkout", "push", "add"})'),
+     'GIT_ALLOWED = frozenset({',
+     'GIT_ALLOWED = frozenset({"commit", "reset", "checkout", "push", "add", '),
     ("检出不收回（临时目录越堆越多）",
      'cleanup = remove_worktree(repo, target, timeout=int(timeout))',
      'cleanup = {"ok": True, "removed": True, "error": ""}'),
@@ -91,8 +90,11 @@ MUTATIONS = [
      '        checks["every_suite_ran"] = all(row.get("ran") for row in suites)',
      '        checks["every_suite_ran"] = True'),
     ("行为红不算这次的红（只看 import）",
-     '    passed = checks["every_entry_imported"] and checks.get("every_suite_green", True)',
-     '    passed = checks["every_entry_imported"]'),
+     '              and checks.get("every_suite_green", True)',
+     '              and True'),
+    ("前端闭包红不算这次的红（只看 import 与套件）",
+     '              and checks.get("frontend_closure_ok", True)',
+     '              and True'),
     ("红了不重跑：抖一下就被说成提交坏了",
      '            if retry.get("ok"):',
      '            if False:'),

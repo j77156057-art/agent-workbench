@@ -31,8 +31,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import agent as agent_mod  # noqa: E402
 from agent_runtime.output_audit import audit_evidence  # noqa: E402
 
-PROJECT = os.getenv("DOCMIND_REAL_GAME_PROJECT", r"<sample-project>")
+_PROJECT_ENV = "DOCMIND_REAL_GAME_PROJECT"
+_PROJECT_RAW = os.getenv(_PROJECT_ENV, "").strip()
+PROJECT = _PROJECT_RAW or r"<sample-project>"
 HAVE_PROJECT = os.path.isdir(PROJECT)
+#: 跳过原因必须能直接告出「该设哪个变量」以及「设了但设错了」这两种情形。
+PROJECT_SKIP = (
+    "未设置 %s：默认占位符不是真实项目；把它设成真实 Godot 项目根目录后可运行"
+    % _PROJECT_ENV
+    if not _PROJECT_RAW else
+    "%s=%r 指向的目录不存在；改成真实 Godot 项目根目录后可运行"
+    % (_PROJECT_ENV, _PROJECT_RAW)
+)
 
 
 class DetailTranslationTests(unittest.TestCase):
@@ -112,7 +122,7 @@ class NudgeTextIsNoLongerHardcodedTests(unittest.TestCase):
                       "给用户看的 reflection 仍在用固定文案")
 
 
-@unittest.skipUnless(HAVE_PROJECT, "需要真实的 godot_sample 项目")
+@unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
 class RealAuditBehaviourTests(unittest.TestCase):
     """用真实文件确认：完整读取算数，而路径写错会被明确判为 references_exist。"""
 
@@ -138,7 +148,7 @@ class RealAuditBehaviourTests(unittest.TestCase):
         self.assertIn("hud.gd:20", detail)
 
 
-@unittest.skipUnless(HAVE_PROJECT, "需要真实的 godot_sample 项目")
+@unittest.skipUnless(HAVE_PROJECT, PROJECT_SKIP)
 class CjkAdjacencyTests(unittest.TestCase):
     """`**\\w**` 在 Python 3 的 str 模式下包含 CJK —— 前置断言用 `\\w` 会切错路径。
 

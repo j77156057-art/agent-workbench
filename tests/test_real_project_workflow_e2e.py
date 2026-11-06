@@ -24,8 +24,30 @@ import tools as audited_tools
 from vectorstore import get_collection
 
 
-SOURCE_PROJECT = Path(os.getenv("DOCMIND_REAL_GAME_PROJECT", r"<sample-project>"))
-GODOT = os.getenv("DOCMIND_GODOT_EXECUTABLE", r"<godot-executable>")
+_PROJECT_ENV = "DOCMIND_REAL_GAME_PROJECT"
+_ENGINE_ENV = "DOCMIND_GODOT_EXECUTABLE"
+_E2E_ENV = "DOCMIND_REAL_GAME_E2E"
+SOURCE_PROJECT = Path(os.getenv(_PROJECT_ENV, "").strip() or r"<sample-project>")
+GODOT = os.getenv(_ENGINE_ENV, "").strip()
+
+
+def _project_skip_reason() -> str:
+    raw = os.getenv(_PROJECT_ENV, "").strip()
+    if not raw:
+        return ("未设置 %s：默认占位符不是真实项目；"
+                "设成含 project.godot 的项目根目录后可运行" % _PROJECT_ENV)
+    if not SOURCE_PROJECT.is_dir():
+        return "%s=%r 指向的目录不存在；改成含 project.godot 的项目根目录" % (
+            _PROJECT_ENV, raw)
+    return "%s=%r 不是 Godot 项目（缺 project.godot）" % (_PROJECT_ENV, raw)
+
+
+def _engine_skip_reason() -> str:
+    raw = os.getenv(_ENGINE_ENV, "").strip()
+    if not raw:
+        return "未设置 %s：默认占位符不是可执行文件；设成 Godot 可执行文件的完整路径" % (
+            _ENGINE_ENV)
+    return "%s=%r 指向的文件不存在；改成 Godot 可执行文件的完整路径" % (_ENGINE_ENV, raw)
 
 
 def _copy_project(source: Path, target: Path) -> None:
@@ -48,14 +70,14 @@ def _tree_digest(root: Path) -> str:
 
 class RealProjectWorkflowE2ETests(unittest.TestCase):
     @unittest.skipUnless(
-        os.getenv("DOCMIND_REAL_GAME_E2E", "").strip().lower() in {"1", "true", "yes"},
-        "set DOCMIND_REAL_GAME_E2E=1 to run against a real game project",
+        os.getenv(_E2E_ENV, "").strip().lower() in {"1", "true", "yes"},
+        "未设置 %s=1：真实项目全流程 E2E 需要显式开启" % _E2E_ENV,
     )
     def test_real_project_runs_full_harness_lifecycle(self):
-        if not SOURCE_PROJECT.is_dir() or not (SOURCE_PROJECT / "project.godot").is_file():
-            self.skipTest("real Godot project is not available")
-        if not Path(GODOT).is_file():
-            self.skipTest("real Godot executable is not available")
+        if not (SOURCE_PROJECT.is_dir() and (SOURCE_PROJECT / "project.godot").is_file()):
+            self.skipTest(_project_skip_reason())
+        if not GODOT or not Path(GODOT).is_file():
+            self.skipTest(_engine_skip_reason())
 
         source_digest_before = _tree_digest(SOURCE_PROJECT)
 
