@@ -55,6 +55,8 @@ frontend/node_modules/
 web/assets/
 web/workbench.html
 web/index.html
+# Vite 每次启动都会写的临时配置副本（2026-11-06 曾误入库一次）
+vite.config.ts.timestamp-*.mjs
 
 # ===== 系统 / 编辑器 =====
 .DS_Store
@@ -105,6 +107,8 @@ golden/results_baseline.old*
 HANDOFF.md
 DocMind_BUILD.md
 DEMO.md
+# 固定事实治理报告：含本机路径与会话细节，2026-11-06 决定不公开（本地保留）
+pinned-governance-report-*.md
 game_project_template.md
 分区开发设计.md
 docs/agent-self-verify-memory.md
