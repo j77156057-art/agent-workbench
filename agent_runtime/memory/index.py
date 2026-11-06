@@ -75,6 +75,32 @@ def _connect():
     return conn
 
 
+def read_edges():
+    """只读导出 `edges` 表（含两端条目的 scope），供记忆图呈现真实邻接。
+
+    - 索引文件不存在 / 表不存在 / 被占用：返回空列表，由调用方显示“真实边 0 条”；
+    - 绝不建库、不重建索引，`mode=ro` 打开，保证 GET 接口只读。
+    """
+    target = path()
+    if not os.path.isfile(target):
+        return []
+    uri = "file:" + target.replace("\\", "/") + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=2)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT e.src, e.dst, e.type, s.scope AS src_scope, d.scope AS dst_scope "
+            "FROM edges e LEFT JOIN items s ON s.id = e.src "
+            "LEFT JOIN items d ON d.id = e.dst").fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return []
+    return [{"src": str(row["src"]), "dst": str(row["dst"]),
+            "type": str(row["type"] or ""),
+            "src_scope": str(row["src_scope"] or ""),
+            "dst_scope": str(row["dst_scope"] or "")} for row in rows]
+
+
 def _fts(conn):
     try:
         return conn.execute("SELECT 1 FROM sqlite_master WHERE name='items_fts'").fetchone() is not None

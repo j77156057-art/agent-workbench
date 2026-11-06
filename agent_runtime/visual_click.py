@@ -14,20 +14,19 @@ Agent 工作台 里模型操控界面有两条路：
 
 ## 一处实现，两个出口
 
-`locate()` / `execute()` 是唯一实现；HTTP 端点与 agent 工具都调它：
-
-* HTTP 出口的「用户确认」来自**前端点了确认**（`confirmed=true`）；
-* agent 出口的「用户确认」来自**审批台账**（用户在工作台的审核队列里批准，
-  agent 随后用**完全相同**的参数重试）。
+`locate()` / `execute()` 是唯一实现；HTTP 端点与 agent 工具都调它。
+两个出口统一先走 `execute_desktop_action`：strict/user 由审批台账授权，model 自动审批
+并留痕；只有审批边界放行后，才由后端以内部 `confirmed=True` 调用执行器。HTTP 请求体
+里的 `confirmed` 不参与授权，用户批准后仍用**完全相同**的提案参数重试。
 
 两条出口共用同一份提案存储、同一套画面指纹复核、同一套复验判据 —— 所以
 「UI 定位的提案」和「模型定位的提案」是同一种东西，谁都能执行。
 
 ## 三道闸，缺一不可
 
-1. **确认**：HTTP 侧是 UI 点确认；agent 侧是审批台账里 `desktop_action` 的
-   approved 记录。**模型自己说「我确认了」不算** —— 那等于自我授权。
-   审批 target 绑定了点击参数哈希，批准之后改坐标必须重新批准。
+1. **确认**：两个出口统一由桌面审批边界决定；strict/user 认审批台账里
+   `desktop_action` 的 approved 记录，model 由审批模型留痕决策。**客户端或主模型自己说
+   「我确认了」不算** —— 那等于自我授权。审批 target 绑定了提案标识。
 2. **画面复核**：执行前重新抓帧，窗口句柄要一致、目标位置的像素指纹要一致。
    定位时看到的是这个按钮、点的时候已经不是了 —— 这时必须不点。
 3. **提案单次使用**：标记必须在真正发点击**之前**，否则重复请求能连点两次。
@@ -54,15 +53,15 @@ import uuid
 from typing import Any
 
 from agent_runtime.visual_targeting import (
-    parse_visual_target,
+    parse_visual_target_detailed,
     parse_visual_verification,
     target_fingerprint,
     target_still_matches,
 )
 
-#: 提案只在内存里活一小会儿。模型定位到的窗口和像素会随画面随时失效，
-#: 把提案长期存下来等于给「点错地方」留后门。
-PROPOSAL_TTL_SECONDS = 120.0
+#: 提案默认保留 300 秒；到期后先复核窗口与像素，仍一致可续签并重新审批。
+#: 环境变量 `DOCMIND_VISION_PROPOSAL_TTL_SECONDS` 可覆盖，非法值保守回落默认值。
+PROPOSAL_TTL_SECONDS = 300.0
 MAX_PROPOSALS = 32
 #: 点击后等界面反应再复验，否则截到的还是点击前的画面。
 SETTLE_SECONDS = 0.35
@@ -85,12 +84,17 @@ GATE_ACTION = "desktop_action"
 PROPOSALS: dict[str, dict[str, Any]] = {}
 
 
+def proposal_ttl_seconds() -> float:
+    try:
+        value = float(os.getenv("DOCMIND_VISION_PROPOSAL_TTL_SECONDS")
+                      or PROPOSAL_TTL_SECONDS)
+        return value if value > 0 else 300.0
+    except (TypeError, ValueError):
+        return 300.0
+
+
 def prune(now: float | None = None) -> None:
-    """清掉过期提案，并给内存里存的提案数封顶。"""
-    moment = float(now if now is not None else time.time())
-    for key, entry in list(PROPOSALS.items()):
-        if moment - float(entry.get("created_at") or 0) > PROPOSAL_TTL_SECONDS:
-            PROPOSALS.pop(key, None)
+    """只按容量淘汰；到期提案留给执行层复核续签，不能直接丢成无法续期。"""
     while len(PROPOSALS) > MAX_PROPOSALS:
         oldest = min(PROPOSALS, key=lambda item: PROPOSALS[item]["created_at"])
         PROPOSALS.pop(oldest, None)
@@ -283,11 +287,12 @@ def locate(pid: str, *, description: str, goal: str = "",
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "status": 502,
                 "error": "视觉模型调用失败：%s: %s" % (type(exc).__name__, str(exc)[:200])}
-    target = parse_visual_target(answer)
+    target, parse_error = parse_visual_target_detailed(answer)
     if target is None:
         return {"ok": False, "status": 422,
-                "error": "模型没有给出可信的目标位置（需要明确的 bbox、画面依据和 ≥0.8 的把握）。"
-                          "换更具体的描述再试，例如「右上角那个蓝色的保存按钮」。"}
+                "error": "模型没有给出可信的目标位置（%s）。"
+                          "换更具体的描述再试，例如「右上角那个蓝色的保存按钮」。"
+                          % (parse_error or "需要明确的 bbox、画面依据和 ≥0.8 的把握")}
     bbox = target["bbox"]
     point = {"x": int(((bbox[0] + bbox[2]) / 2) * width),
              "y": int(((bbox[1] + bbox[3]) / 2) * height)}
@@ -298,18 +303,32 @@ def locate(pid: str, *, description: str, goal: str = "",
     PROPOSALS[proposal_id] = {
         "project_id": pid, "hwnd": int(hwnd), "width": int(width), "height": int(height),
         "capture_target": capture_target,
-        "bbox": bbox, "point": point, "fingerprint": fingerprint,
+        "bbox": bbox, "raw_bbox": target["raw_bbox"],
+        "coordinate_space": target["coordinate_space"],
+        "point": point, "fingerprint": fingerprint,
         "label": target["label"], "evidence": target["evidence"], "goal": str(goal or ""),
         "image": image, "created_at": now, "used": False,
     }
     return {"ok": True, "proposal_id": proposal_id, "image": image, "bbox": bbox,
+            "raw_bbox": target["raw_bbox"],
+            "coordinate_space": target["coordinate_space"],
             "point": point, "label": target["label"], "evidence": target["evidence"],
             "confidence": target["confidence"], "vision_source": source,
             "window": {"width": int(width), "height": int(height)},
-            "expires_in": int(PROPOSAL_TTL_SECONDS)}
+            "expires_in": int(proposal_ttl_seconds())}
 
 
 # --------------------------------------------------------------------------- 执行
+
+def execution_details(proposal_id: str) -> dict[str, Any]:
+    """续签代数进入审批摘要：新一期 strict/user 批准不能复用旧 target。"""
+    entry = PROPOSALS.get(str(proposal_id or "")) or {}
+    details: dict[str, Any] = {"proposal_id": str(proposal_id or "")}
+    renewal = int(entry.get("renewal") or 0)
+    if renewal:
+        details["renewal"] = renewal
+    return details
+
 
 def approval_target(point: dict[str, Any]) -> str:
     """审批 target：与 `dev_desktop_action` **同一套格式**。
@@ -328,7 +347,7 @@ def approval_target(point: dict[str, Any]) -> str:
 
 
 def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
-            gate: bool = False) -> dict[str, Any]:
+            gate: bool = False, approval_actor: str = "agent") -> dict[str, Any]:
     """执行一个已登记的提案。
 
     - `confirmed=True`：HTTP 出口用（前端已让用户点过确认）。
@@ -342,7 +361,7 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
     entry = PROPOSALS.get(proposal_id)
     if entry is None or entry["project_id"] != pid:
         # 别的项目的提案在这里「不存在」，不回 403：不向调用方泄露它是否存在。
-        return {"ok": False, "status": 404, "error": "提案不存在或已过期，请重新定位。"}
+        return {"ok": False, "status": 404, "error": "提案已失效或不再可用，必须重新定位。"}
     if entry["used"]:
         return {"ok": False, "status": 409, "error": "该提案已经执行过一次，请重新定位。"}
     if not confirmed and not gate:
@@ -404,6 +423,29 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
                                "自检沙箱未覆盖该点击：%s" % (sandbox_reason or "未开启"))
             blocked["sandbox"] = {"active": False, "reason": sandbox_reason}
             return blocked
+    if time.time() - float(entry.get("created_at") or 0) > proposal_ttl_seconds():
+        # 到期不等于像素已失效：先复核同一窗口与目标指纹，仍一致才允许续签。
+        # 这里不点击、不置 used；续签后的 renewal 会进入新的审批 target。
+        capture_target = entry.get("capture_target") or "embedded"
+        try:
+            frame = _grab_frame(pid, root, capture_target=capture_target)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "status": 502,
+                    "error": "续签复核失败：%s: %s" % (type(exc).__name__, str(exc)[:200])}
+        if not frame:
+            return {"ok": False, "status": 409,
+                    "error": "提案已失效：目标窗口已不可见，必须重新定位。"}
+        raw, width, height, hwnd = frame
+        if (int(hwnd) != int(entry["hwnd"])
+                or not target_still_matches(
+                    entry["fingerprint"], target_fingerprint(raw, width, height, entry["bbox"]))):
+            return {"ok": False, "status": 409,
+                    "error": "提案已失效：窗口或目标画面已变化，必须重新定位。"}
+        entry["renewal"] = int(entry.get("renewal") or 0) + 1
+        entry["created_at"] = time.time()
+        return {"ok": False, "status": 410, "renewal_required": True,
+                "renewal": entry["renewal"], "proposal_id": proposal_id,
+                "message": "提案已过有效期，窗口与目标仍未变化，已重新签票；请再次批准，无需重新定位。"}
     try:
         import screen_capture
         capture_target = entry.get("capture_target") or "embedded"
@@ -427,7 +469,7 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
         row = None
         try:
             import game_workbench
-            row = game_workbench.approval(ledger_root, GATE_ACTION, "agent", approved=True,
+            row = game_workbench.approval(ledger_root, GATE_ACTION, approval_actor, approved=True,
                                           target=entry["label"])
         except Exception:
             row = None
@@ -490,5 +532,5 @@ def execute(pid: str, root: str, *, proposal_id: str, confirmed: bool = False,
 
 
 __all__ = ["GATE_ACTION", "MAX_PROPOSALS", "PROPOSALS", "PROPOSAL_TTL_SECONDS", "SETTLE_SECONDS",
-           "approval_target", "execute", "locate", "prune", "resolve_vision_llm",
-           "target_prompt", "verification_prompt"]
+           "approval_target", "execute", "execution_details", "locate", "proposal_ttl_seconds",
+           "prune", "resolve_vision_llm", "target_prompt", "verification_prompt"]

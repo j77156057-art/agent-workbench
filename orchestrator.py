@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import re
@@ -110,6 +111,15 @@ def parse_plan(raw, known_ids=None, max_tasks=None):
             "mcp": mcp,
             "reflection": bool(t.get("reflection", True)),
         }
+        if any(key in t for key in ("goal", "input", "outputs", "boundaries", "acceptance")):
+            # 任务助手的标准规格必须穿过通用 DAG，不得在 parse_plan 被削成一句 task。
+            item.update({
+                "goal": str(t.get("goal") or desc),
+                "input": list(t.get("input") or [desc]),
+                "outputs": list(t.get("outputs") or ["结构化结论"]),
+                "boundaries": list(t.get("boundaries") or ["遵守用户边界"]),
+                "acceptance": list(t.get("acceptance") or ["产出可核对证据"]),
+            })
         # 逐任务步数申请与用户可配置的子代理步数上限保持一致。
         # 非法/越界值（布尔、10.7 这类浮点、非数字串）回退默认步数。
         steps_value = _strict_int_steps(t.get("max_steps"))
@@ -275,8 +285,11 @@ def _deps_state(tid, by_id, results):
         r = results.get(d)
         if r is None:
             return False, None                     # 依赖还没跑完
-        if r.get("status") != "ok" and not _is_optional(d, by_id, results):
-            return True, f"上游 {d} {r.get('status')}"
+        status = str(r.get("status") or "")
+        if status in {"pending", "running", "unknown"}:
+            return False, None                    # 等审批或恢复未知结果，不能提前判死下游
+        if status != "ok" and not _is_optional(d, by_id, results):
+            return True, f"上游 {d} {status}"
     return True, None
 
 
@@ -417,10 +430,10 @@ def apply_proposal(proposal, by_id, tasks, results, max_tasks):
 def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
              replanner=None, max_replans=0, max_tasks=None,
              budget_session="", vram_provider=None, cost_aware=False,
-             max_steps=None):
+             max_steps=None, resume=None, checkpoint=None):
     """迭代调度任务图（支持**动态重规划**）。
 
-    runner(task, context) -> {"status": "ok"|"failed", "conclusion": str,
+    runner(task, context) -> {"status": "ok"|"failed"|"pending", "conclusion": str,
                               "steps": int, "error": str}
       context = {上游任务id: 上游结论}（仅含非空结论）
     synth_runner(tasks, results) -> str（可选，结果合成/冲突标注）
@@ -428,8 +441,10 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
       某轮有任务失败时调用，返回**补救任务**（可依赖已完成的任务）。
       返回空/非法/抛异常都视为"不再重规划"。最多调用 max_replans 次。
 
-    调度语义：每轮挑出「依赖已全部落定且未被阻断」的任务并行执行；
-    上游失败且不再重规划时，其下游标记 blocked 而不空跑（optional 上游除外）。
+    调度语义：pending/running/unknown 的下游继续等待，不提前阻断；rejected/skipped
+    向下游传播 skipped，普通失败仍传播 blocked。resume 可恢复既有 results/waves/
+    revisions，已完成结果不会重跑。只有不存在 pending/running/unknown 时才执行合成并
+    返回 final=True。checkpoint 与 on_event 分离，持久化失败不会被埋点异常处理吞掉。
     单个任务异常只影响它自己。
     """
     t0 = time.monotonic()
@@ -438,14 +453,18 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
     tasks = parse_plan(list(tasks), max_tasks=task_limit)
     topological_waves(tasks)          # 静态校验：先炸出循环依赖
     limit_tasks = task_limit
-    results = {}
-    blocked = {}
-    rounds = []                       # 每轮实际执行的 id 列表（≈ 拓扑波）
-    replans = 0
-    revisions = []                    # 每次重规划做了什么（审计）
-    dispatches = []                   # planner/dispatcher 动态派发审计
+    resume = resume or {}
+    results = copy.deepcopy(resume.get("results") or {})
+    blocked = {tid: str(r.get("error") or "") for tid, r in results.items()
+               if r.get("status") == "blocked"}
+    skipped = {tid: str(r.get("error") or "") for tid, r in results.items()
+               if r.get("status") == "skipped"}
+    rounds = copy.deepcopy(resume.get("waves") or [])
+    replans = int(resume.get("replans") or 0)
+    revisions = copy.deepcopy(resume.get("revisions") or [])
+    dispatches = copy.deepcopy(resume.get("dispatches") or [])
     step_limit = max(0, int(max_steps or 0))
-    steps_used = 0
+    steps_used = int(resume.get("steps_used") or 0)
 
     def _emit(kind, payload):
         if on_event:
@@ -453,6 +472,8 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
                 on_event(kind, payload)
             except Exception:  # noqa: BLE001 —— 埋点/通知失败不影响调度
                 pass
+        if checkpoint:
+            checkpoint(kind, payload)
 
     # 批次内去重：合并完全相同的 (role, 任务) 副本，依赖重路由到保留副本
     tasks, _dropped, _remap = dedup_tasks(tasks, max_tasks=task_limit)
@@ -474,8 +495,12 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
             if not settled:
                 continue
             if reason:
-                blocked[tid] = reason
-                results[tid] = {"status": "blocked", "conclusion": "", "steps": 0,
+                is_skipped = any((results.get(dep) or {}).get("status") in {"rejected", "skipped"}
+                                 for dep in t.get("depends_on") or [])
+                status = "skipped" if is_skipped else "blocked"
+                target = skipped if is_skipped else blocked
+                target[tid] = reason
+                results[tid] = {"status": status, "conclusion": "", "steps": 0,
                                 "error": reason, "elapsed_ms": 0}
             else:
                 runnable.append(t)
@@ -534,7 +559,7 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
                 tid, out = f.result()
                 results[tid] = out
                 steps_used += int(out.get("steps") or 0)
-                _emit("task", {"id": tid, "status": out.get("status")})
+                _emit("task", {"id": tid, "status": out.get("status"), "result": out})
         rounds.append([t["id"] for t in runnable])
 
         # A planner/dispatcher is allowed to return a structured task list.
@@ -582,21 +607,26 @@ def run_plan(tasks, runner, synth_runner=None, max_parallel=4, on_event=None,
                 continue
         # 不再重规划：失败者的下游由下一轮 _deps_state 标记为 blocked
 
+    unsettled = any(r.get("status") in {"pending", "running", "unknown"}
+                    for r in results.values())
     merged = ""
-    if synth_runner and any(r.get("status") == "ok" for r in results.values()):
+    if not unsettled and synth_runner and any(r.get("status") == "ok" for r in results.values()):
         try:
             merged = synth_runner(tasks, results) or ""
         except Exception as e:  # noqa: BLE001 —— 合成失败退回只给各任务结论
             merged = f"（结果合成失败：{type(e).__name__}: {e}）"
 
     return {
+        "final": not unsettled,
         # 注意：被 drop 的任务已从 by_id 移除，这里必须用 .get / 结果标记兜底
         "ok": all((r.get("status") == "ok") or _is_optional(tid, by_id, results)
                   for tid, r in results.items()),
+        "tasks": [dict(task) for task in tasks],
         "waves": rounds,
         "order": list(results.keys()),
         "results": results,
         "blocked": sorted(blocked),
+        "skipped": sorted(skipped),
         "merged": merged,
         "replans": replans,
         "steps_used": steps_used,

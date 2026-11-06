@@ -1,4 +1,4 @@
-"""L3 任务书：跨窗口共享的任务状态；JSON 为真，markdown 只渲染。
+"""任务书（旧编号 L3，已废弃；提示词块，不是记忆 store）：跨窗口共享的任务状态；JSON 为真，markdown 只渲染。
 
 完成态不由模型宣布：`done` 必须挂"测试/验收通过的回执"和一条合并记录；
 只有回执没有合并 → `done_pending_merge`；两者都没有 → 拒绝标记完成。
@@ -44,6 +44,39 @@ def _key_of(text):
     return slug.strip("-")[:48] or "item-" + uuid.uuid4().hex[:8]
 
 
+def _evict(items, limit=MAX_ITEMS):
+    """把条目收敛到 limit：**先淘汰已完成的旧条目**，绝不按列表尾部切。
+
+    旧实现 `items[:MAX_ITEMS]` 在超出时砍掉列表尾部——当新任务追加在尾部时，
+    丢的恰好是最新的任务。这里改为：
+      1. 只有 state=done 的条目可被淘汰，按完成时间（done_at → updated → created）
+         从旧到新丢；
+      2. 若全是未完成仍超限，才按 updated/created 淘汰最旧的，保留较新的；
+      3. 未被淘汰的条目**保持原列表顺序**（任务书渲染与 UI 顺序语义不变）。
+    """
+    rows = list(items or [])
+    if len(rows) <= limit:
+        return rows
+
+    def _stamp(item):
+        return str(item.get("done_at") or item.get("updated")
+                   or item.get("created") or "")
+
+    drop = set()
+    done_keys = [index for index, item in enumerate(rows)
+                 if str(item.get("state") or "") == "done"]
+    for index in sorted(done_keys, key=lambda i: (_stamp(rows[i]), i)):
+        if len(rows) - len(drop) <= limit:
+            break
+        drop.add(index)
+    if len(rows) - len(drop) > limit:
+        for index in sorted(range(len(rows)), key=lambda i: (_stamp(rows[i]), i)):
+            if len(rows) - len(drop) <= limit:
+                break
+            drop.add(index)
+    return [item for index, item in enumerate(rows) if index not in drop]
+
+
 def _load(project_id):
     try:
         with open(book_path(project_id), "r", encoding="utf-8") as handle:
@@ -59,7 +92,7 @@ def _load(project_id):
         "status": str(value.get("status") or "open"),
         "created": str(value.get("created") or store.now()),
         "updated": str(value.get("updated") or ""),
-        "items": [item for item in (value.get("items") or []) if isinstance(item, dict)][:MAX_ITEMS],
+        "items": _evict([item for item in (value.get("items") or []) if isinstance(item, dict)]),
     }
 
 
@@ -88,6 +121,7 @@ def _render_md(book):
 
 def _save(project_id, book):
     book["updated"] = store.now()
+    book["items"] = _evict(book.get("items") or [])
     store.atomic_write(book_path(project_id),
                        json.dumps(book, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
     store.atomic_write(md_path(project_id), _render_md(book))
@@ -120,7 +154,7 @@ def open_book(project_id, title, items):
         book["title"] = str(title or "").strip()[:MAX_TEXT]
         book["status"] = "open"
         book["created"] = store.now()
-        book["items"] = fresh[:MAX_ITEMS]
+        book["items"] = _evict(fresh)
         _save(project_id, book)
         _event(project_id, "open", task=book["id"], title=book["title"], items=len(fresh))
         return book
@@ -164,7 +198,7 @@ def sync_from_plan(project_id, code_root):
             items.append(item)
         changed = json.dumps(items, ensure_ascii=False, sort_keys=True) != \
             json.dumps(book.get("items"), ensure_ascii=False, sort_keys=True)
-        book["items"] = items[:MAX_ITEMS]
+        book["items"] = _evict(items)
         if not book.get("title"):
             book["title"] = str(plan.get("title") or "任务书")[:MAX_TEXT]
         if changed:

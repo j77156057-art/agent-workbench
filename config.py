@@ -720,10 +720,18 @@ EXTERNAL_API_ALLOWLIST = [
     if h.strip()
 ]
 
-# ---- AI 越界访问模式：safe=仅项目内；high=允许受控越界读写（须配置白名单）----
+# ---- AI 写权限：safe=仅项目内；high=允许非敏感外部路径，无目录白名单 ----
 EXTERNAL_ACCESS_MODE = os.getenv("DOCMIND_ACCESS_MODE", "safe").strip().lower()
 if EXTERNAL_ACCESS_MODE not in ("safe", "high"):
     EXTERNAL_ACCESS_MODE = "safe"
+# 桌面动作不可逆，默认 strict 每次确认且 TTL=0；user 的 30 分钟摘要复用须显式选择。
+DESKTOP_APPROVAL_MODE = os.getenv("DOCMIND_DESKTOP_APPROVAL", "strict").strip().lower()
+if DESKTOP_APPROVAL_MODE not in ("strict", "user", "model"):
+    DESKTOP_APPROVAL_MODE = "strict"
+# MCP 未证明只读：reject=连接前拒绝（默认）；allow=用户显式选择的可用性优先模式。
+MCP_UNPROVEN_MODE = os.getenv("DOCMIND_MCP_UNPROVEN", "reject").strip().lower()
+if MCP_UNPROVEN_MODE not in ("allow", "reject"):
+    MCP_UNPROVEN_MODE = "reject"
 
 # ---- 网络搜索 / URL 获取服务商配置 ----
 # 默认从 .env 读取；运行时可通过 /api/config 切换并持久化到 STATE_FILE。
@@ -1225,6 +1233,12 @@ def _apply_persisted_state():
     m = data.get("external_access_mode")
     if m in ("safe", "high") and "external_access_mode" not in _RUNTIME:
         _RUNTIME["external_access_mode"] = m
+    desktop_mode = data.get("desktop_approval_mode")
+    if desktop_mode in ("strict", "user", "model") and "desktop_approval_mode" not in _RUNTIME:
+        _RUNTIME["desktop_approval_mode"] = desktop_mode
+    mcp_mode = data.get("mcp_unproven_mode")
+    if mcp_mode in ("allow", "reject") and "mcp_unproven_mode" not in _RUNTIME:
+        _RUNTIME["mcp_unproven_mode"] = mcp_mode
     # 模型选择模式：fixed=固定模型（默认）；auto=每轮按任务复杂度在本地/云端预设间自动路由
     mode = data.get("llm_mode")
     if mode in ("fixed", "auto") and "llm_mode" not in _RUNTIME:
@@ -1296,11 +1310,8 @@ def exec_tier_confirm(tier):
     return EXEC_TIER3_CONFIRM
 
 
-# ---- AI 越界访问模式 ----
-# safe：工具只能读写当前代码库（code_root）内文件，禁止任何项目外访问；
-# high：在配置 DOCMIND_EXTERNAL_DIRS 白名单的前提下，允许对其他目录增删改查。
-# 默认取 .env 的 DOCMIND_ACCESS_MODE；运行时经 /api/config 切换并持久化（见
-# set_external_access_mode）。所有受控越界工具都须先过 get_external_access_mode()。
+# ---- AI 写权限与桌面审批 ----
+# safe 仅项目内；high 允许非敏感外部路径，不再读取外部目录白名单。
 def get_external_access_mode():
     """返回 'safe' | 'high'：运行时覆盖优先，否则取 .env DOCMIND_ACCESS_MODE。"""
     v = get_runtime("external_access_mode")
@@ -1315,12 +1326,44 @@ def external_access_high():
 
 
 def set_external_access_mode(mode):
-    """切换越界访问模式：'safe' 或 'high'；非法值回落 'safe'。跨重启持久化。"""
+    """切换写权限：'safe' 或 'high'；非法值回落 'safe'。跨重启持久化。"""
     mode = (mode or "").strip().lower()
     if mode not in ("safe", "high"):
         mode = "safe"
     set_runtime("external_access_mode", mode)
     save_state("external_access_mode", mode)
+    return mode
+
+
+def get_desktop_approval_mode():
+    """返回 strict|user|model；缺字段的旧配置默认 strict，不改写已有选择。"""
+    value = get_runtime("desktop_approval_mode")
+    return value if value in ("strict", "user", "model") else DESKTOP_APPROVAL_MODE
+
+
+def set_desktop_approval_mode(mode):
+    """切换桌面审批模式并持久化；非法值保守回落 strict。"""
+    mode = str(mode or "").strip().lower()
+    if mode not in ("strict", "user", "model"):
+        mode = "strict"
+    set_runtime("desktop_approval_mode", mode)
+    save_state("desktop_approval_mode", mode)
+    return mode
+
+
+def get_mcp_unproven_mode():
+    """返回 allow|reject；缺字段的旧配置默认 reject，不改写已有选择。"""
+    value = get_runtime("mcp_unproven_mode")
+    return value if value in ("allow", "reject") else MCP_UNPROVEN_MODE
+
+
+def set_mcp_unproven_mode(mode):
+    """切换未证明只读 MCP 调用策略并持久化；非法值回落 reject。"""
+    mode = str(mode or "").strip().lower()
+    if mode not in ("allow", "reject"):
+        mode = "reject"
+    set_runtime("mcp_unproven_mode", mode)
+    save_state("mcp_unproven_mode", mode)
     return mode
 
 

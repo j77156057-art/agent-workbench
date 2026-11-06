@@ -7,6 +7,10 @@
 
 设计原则（重要）：
 - **只记元数据，不记正文**：prompt 与回答只记字符数，正文永不落盘（避免把用户代码/密钥写进日志）。
+  唯一例外是「使用台账」需要的**入参摘要**：仅对检索/技能/MCP/发现类只读工具记录首行
+  摘要（≤120 字），写文件/执行命令等工具一律记「未记录」，不落正文。
+- **agent 归属**：record.agent_id 标明本回合由哪个 agent 执行（main=平台助手，
+  其余为委派节点 id），供按 agent 切分对话与使用台账。
 - append-only JSONL，超过上限自动轮转为 `<file>.1`，不会无限增长。
 - 默认开启；设 `DOCMIND_TRACE=0` 可整体关闭（写盘失败一律静默降级，不影响主流程）。
 """
@@ -35,6 +39,59 @@ _USAGE_OUT_KEYS = ("completion_tokens", "out", "eval_count", "output_tokens")
 # prompt caching 字段（平铺键 + 嵌套 prompt_tokens_details.* 两种口径都兼容）
 _CACHE_READ_KEYS = ("cache_read_input_tokens", "cache_read_tokens", "cached_tokens")
 _CACHE_CREATION_KEYS = ("cache_creation_input_tokens", "cache_creation_tokens")
+
+# 使用台账的类型判定：按工具名归类，未知工具记 tool。
+_SEARCH_ACTIONS = {
+    "web_search", "web_search_batch", "web_research", "web_fetch", "web_subtitles",
+    "search_knowledge", "search_assets", "search_code", "grep", "tool_search",
+    "dev_glob", "list_dir", "dev_list_regions", "dev_list_connectors",
+    "dev_list_connector_tools", "dev_lanes",
+}
+_SKILL_ACTIONS = {"dev_use_skill"}
+_MCP_ACTIONS = {"dev_mcp_call", "dev_route_connector"}
+# 允许记录入参首行摘要的只读类工具；其余（写文件/改代码/执行命令/浏览器操作）
+# 一律不落正文，台账显示「未记录」，维持 trace 的隐私边界。
+PREVIEW_ACTIONS = _SEARCH_ACTIONS | _SKILL_ACTIONS | _MCP_ACTIONS
+PREVIEW_CHARS = 120
+
+
+def classify_action(action: str) -> str:
+    action = str(action or "").strip()
+    if action in _SEARCH_ACTIONS:
+        return "search"
+    if action in _SKILL_ACTIONS:
+        return "skill"
+    if action in _MCP_ACTIONS:
+        return "mcp"
+    return "tool"
+
+
+def preview_arg(action: str, arg) -> str:
+    """只读类工具取入参首行做摘要；写/执行类工具返回空（台账显示未记录）。"""
+    if action not in PREVIEW_ACTIONS:
+        return ""
+    text = str(arg or "").strip()
+    if not text:
+        return ""
+    first = text.splitlines()[0].strip()
+    return first[:PREVIEW_CHARS]
+
+
+def _arg_name(action: str, arg) -> str:
+    """从入参里尽量提取人类可读的「名称」（技能名 / connector.key / 查询词）。"""
+    text = str(arg or "").strip()
+    if not text or action not in PREVIEW_ACTIONS:
+        return ""
+    try:
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 —— 非 JSON 入参按文本处理
+        data = None
+    if isinstance(data, dict):
+        for key in ("name", "skill", "tool", "key", "query", "q", "pattern", "path"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:PREVIEW_CHARS]
+    return text.splitlines()[0].strip()[:PREVIEW_CHARS]
 
 
 def _pick(d, keys):
@@ -77,9 +134,11 @@ def messages_hash(messages) -> str:
 class Turn:
     """一个 Agent 回合的埋点累加器。由 agent.Agent.run 创建、on-finish 落盘。"""
 
-    def __init__(self, session_id="default", provider="", model="", route=None, question=""):
+    def __init__(self, session_id="default", provider="", model="", route=None, question="",
+                 agent_id="main"):
         self.turn_id = uuid.uuid4().hex[:12]
         self.session_id = session_id or "default"
+        self.agent_id = str(agent_id or "main")
         self.provider = provider
         self.model = model
         self.route = route
@@ -87,7 +146,7 @@ class Turn:
         self.question_chars = len(question or "")
         self.messages_hash = None
         self.messages_count = 0
-        # 本回合实际注入的记忆分层块（P0 只有 L0 宪法）；空列表不写进 record，
+        # 本回合实际注入的记忆分层块（P0 只有常驻守则；旧编号 L0 已废弃）；空列表不写进 record，
         # 保证记忆 v2 关闭时 trace 与旧版逐字节一致。
         self.injection = []
         self.prompt_tokens = 0
@@ -142,14 +201,19 @@ class Turn:
     def add_injection(self, blocks):
         """记录命中的记忆块；只留摘要字段与截断文本，供面板对账与审计。"""
         try:
-            self.injection = [
-                {"layer": str(block.get("layer") or ""),
-                 "chars": int(block.get("chars") or 0),
-                 "hash": str(block.get("hash") or ""),
-                 "version": block.get("version"),
-                 "text": str(block.get("text") or "")[:2000]}
-                for block in (blocks or []) if isinstance(block, dict)
-            ]
+            self.injection = []
+            for block in (blocks or []):
+                if not isinstance(block, dict):
+                    continue
+                row = {"layer_key": str(block.get("layer_key") or block.get("layer") or ""),
+                       "chars": int(block.get("chars") or 0),
+                       "hash": str(block.get("hash") or ""),
+                       "version": block.get("version"),
+                       "text": str(block.get("text") or "")[:2000]}
+                item_ids = [str(item) for item in (block.get("item_ids") or [])][:30]
+                if item_ids:
+                    row["item_ids"] = item_ids
+                self.injection.append(row)
         except Exception:  # noqa: BLE001 —— 埋点失败绝不影响回合
             self.injection = []
 
@@ -172,14 +236,20 @@ class Turn:
     def tool_step(self, action, arg="", latency_ms=0, obs="", ok=True):
         with self._lk:
             self.actions.append(action)
-            self.steps.append({
+            step = {
                 "i": len(self.steps),
                 "action": action,
                 "arg_chars": len(arg or ""),
                 "latency_ms": int(latency_ms or 0),
                 "obs_chars": len(obs or ""),
                 "ok": bool(ok),
-            })
+                # 使用台账字段：类型 / 名称 / 入参摘要。入参摘要仅只读类工具记录，
+                # 写/执行类为空串（UI 如实显示「未记录」）。
+                "kind": classify_action(action),
+                "name": _arg_name(action, arg) or str(action or ""),
+                "arg_preview": preview_arg(action, arg),
+            }
+            self.steps.append(step)
 
     def note_reflection(self):
         self.reflections += 1
@@ -218,6 +288,7 @@ class Turn:
             "turn_id": self.turn_id,
             "ts": self.started_at,
             "session_id": self.session_id,
+            "agent_id": self.agent_id,
             "provider": self.provider,
             "model": self.model,
             "route": self.route,
