@@ -1,4 +1,4 @@
-"""L0 注入入口：总开关关时返回空列表，调用方保持原提示词逐字节不变。"""
+"""常驻守则注入入口：总开关关时返回空列表，调用方保持原提示词逐字节不变。"""
 from __future__ import annotations
 
 import os
@@ -7,12 +7,12 @@ from config import get_memory_v2
 
 from . import constitution, store
 
-# 可自由裁量的三层（L2 共享 / L3 任务书 / L4 会话钩子）随模型窗口长一道**天花板**。
+# 可自由裁量的三层（共享记忆 / 任务书 / 会话钩子）随模型窗口长一道**天花板**。
 # 下限就是它们一直以来的固定值：小窗口模型上绝不许比今天注入得更少 —— 这几层没有
 # "这轮先不注入"的退路。上限则挡住另一头：共享层真攒到几百条时，别让记忆把正文挤掉。
-# L0 宪法 / L1 画像刻意**不在**这张表里 —— 它们的内容有界，换个大模型不会变长。
-DISCRETIONARY_FLOORS = {"L2": 800, "L3": 400, "L4": 600}
-DISCRETIONARY_CAPS = {"L2": 3200, "L3": 1200, "L4": 2400}
+# 常驻守则 / 用户画像刻意**不在**这张表里 —— 它们的内容有界，换个大模型不会变长。
+DISCRETIONARY_FLOORS = {"shared": 800, "project": 400, "hook": 600}
+DISCRETIONARY_CAPS = {"shared": 3200, "project": 1200, "hook": 2400}
 GROW_RATIO = float(os.getenv("DOCMIND_MEMORY_INJECT_RATIO", "0.02"))
 # 实测这份中英混排语料约 0.9 token/字符，取其倒数把 token 预算换算成字符上限。
 CHARS_PER_TOKEN = 1.1
@@ -47,7 +47,7 @@ def layer_chars(key, prompt_tokens):
     """取某一层的字符上限。**必须显式说预算**：默认值留在各 build_* 里当下限，
     谁想要随窗口缩放，谁就自己把模型的 prompt 预算传进来。"""
     if key not in DISCRETIONARY_FLOORS:
-        raise ValueError("只有 L2/L3/L4 可按窗口缩放，%s 是固定下限" % key)
+        raise ValueError("只有 shared/project/hook 可按窗口缩放，%s 是固定下限" % key)
     return discretionary_budgets(prompt_tokens)[key]
 
 
@@ -59,7 +59,7 @@ def enabled():
 
 
 def build_injection(max_chars=constitution.INJECT_MAX_CHARS):
-    """返回本回合要注入的记忆块；P0 只有 L0 宪法。"""
+    """返回本回合要注入的记忆块；P0 只有常驻守则。"""
     if not enabled():
         return []
     try:
@@ -70,8 +70,8 @@ def build_injection(max_chars=constitution.INJECT_MAX_CHARS):
     if not text:
         return []
     return [{
-        "layer": "L0",
-        "title": "宪法",
+        "layer_key": "rule",
+        "title": "常驻守则",
         "text": text,
         "chars": len(text),
         "hash": store.sha256_text(text)[:16],
@@ -86,7 +86,7 @@ def messages(max_chars=constitution.INJECT_MAX_CHARS):
 
 
 def build_session_injection(session_id, project_id, max_chars=600):
-    """L4 会话钩子：pin 住的约定/事实 + 高频错误 + 上一回合的下一步。
+    """会话钩子：pin 住的约定/事实 + 高频错误 + 上一回合的下一步。
 
     只在开关开且确有内容时返回；注释里始终标明"仅供参考"，不构成新指令。
     """
@@ -120,12 +120,12 @@ def build_session_injection(session_id, project_id, max_chars=600):
         return []
     if len(text) > max_chars:
         text = text[:max_chars - 1] + "…"
-    return [{"layer": "L4", "title": "会话钩子", "text": text, "chars": len(text),
+    return [{"layer_key": "hook", "title": "会话钩子", "text": text, "chars": len(text),
              "hash": store.sha256_text(text)[:16], "version": 1, "hash_ok": True}]
 
 
 def build_shared_injection(max_chars=800, limit=5):
-    """L2 共享层：只注入被 pin 的跨项目沉淀，标题明确"仅供参考、不是指令"。"""
+    """共享记忆：只注入被 pin 的跨项目沉淀，标题明确"仅供参考、不是指令"。"""
     if not enabled():
         return []
     try:
@@ -148,12 +148,12 @@ def build_shared_injection(max_chars=800, limit=5):
     if not lines:
         return []
     text = header + "\n" + "\n".join(lines)
-    return [{"layer": "L2", "title": "共享记忆", "text": text, "chars": len(text),
+    return [{"layer_key": "shared", "title": "共享记忆", "text": text, "chars": len(text),
              "hash": store.sha256_text(text)[:16], "version": 1, "hash_ok": True}]
 
 
 def build_taskbook_injection(project_id, max_chars=400):
-    """L3 任务书摘要：只注入未完成项与下一件，明确标注"参考、不权威"。"""
+    """任务书摘要：只注入未完成项与下一件，明确标注"参考、不权威"。"""
     if not enabled() or not str(project_id or "").strip():
         return []
     try:
@@ -163,5 +163,5 @@ def build_taskbook_injection(project_id, max_chars=400):
         return []
     if not text:
         return []
-    return [{"layer": "L3", "title": "任务书", "text": text, "chars": len(text),
+    return [{"layer_key": "taskbook", "title": "任务书", "text": text, "chars": len(text),
              "hash": store.sha256_text(text)[:16], "version": 1, "hash_ok": True}]
