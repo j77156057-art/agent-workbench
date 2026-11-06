@@ -68,6 +68,9 @@ MAX_TOKEN_BUDGET_CAP = 10_000_000
 #: 我第一版就栽在这：不调 `record` 反复 `preflight`，
 #: 等于每次从 0 出发，于是 16000 被它放过（实测只撑 2 轮）。
 #:
+#:     ⚠ 下面这一段是 2026-10 的历史重标定记录，**当时按未实测的 /4 折算**；
+#:     现行口径是 `run_budget.CHARS_PER_TOKEN = 1.9`（tokenizer 实测），
+#:     不要拿这些旧数字重算下界。
 #: 实测（`RunBudget` 按 4 字符/token 估；每轮 **preflight** 用
 #: `prompt_chars/4 + LLM_MAX_TOKENS(3072)`，**record** 用
 #: `prompt_chars/4 + output_chars/4`（output_chars 传的是 3072 **字符**，
@@ -137,8 +140,10 @@ def task_token_budget_floor(prompt_chars: int, *,
     口径完全跟随 `RunBudget`（`agent_runtime/run_budget.py`）：
 
     * 每轮 preflight：``累计已用 + prompt_tokens + output_tokens <= limit``
-    * 每轮 record：``累计 += prompt_tokens + output_chars/4``
-      （调用方把 ``output_tokens`` 当字符数传入，所以记录增量是 ``output_tokens/4``）
+    * 每轮 record：``累计 += prompt_tokens + output_chars/CHARS_PER_TOKEN``
+      （调用方把 ``output_tokens`` 当字符数传入，所以记录增量是
+      ``output_tokens/CHARS_PER_TOKEN``，即 1.9 字符/token，来自 Qwen
+      tokenizer 实测；旧注释写的 `/4` 已废弃）
 
     合并后第 N 轮 preflight 的门槛是::
 
@@ -243,8 +248,9 @@ def normalize_settings(value: Mapping[str, Any] | None, *,
     # 拿到的却是「能跑一次完整问答」，语义不是他填的那个。
     # 而留着 5000 的后果更糟：问答在第一轮就死，且界面不报错（见常量注释）。
     #
-    # 分层与其他负值一致：请求边界靠 raise 转 400；读取路径（`get_settings`）
-    # 自己 try 住并回落 DEFAULTS，所以开机不会因此起不来。
+    # 分层与其他负值一致：请求边界靠 raise 转 400；读取路径改用
+    # `normalize_settings_lenient` **逐字段**处理（坏字段只回落它自己，
+    # 不牵连用户设的其它护栏），所以开机不会因此起不来。
     # 下界按本次实测提示词体积现算；没有请求上下文时退回启动基线。
     floor = (task_token_budget_floor(prompt_chars)
              if prompt_chars is not None else MIN_TASK_TOKEN_BUDGET)
@@ -275,15 +281,110 @@ def remaining_agent_capacity(max_agents: int, dispatched: int) -> int | None:
     return None if limit == 0 else max(0, limit - used)
 
 
-def get_settings() -> dict[str, Any]:
+def _jsonable(value: Any) -> Any:
+    """把原值转成可放进 JSON 响应的形状（GET 载荷会直接下发）。"""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return repr(value)
+
+
+def normalize_settings_lenient(
+    value: Mapping[str, Any] | None, *,
+    floor: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """**读取路径专用**：逐字段归一化，绝不因一个字段越界而整份回落。
+
+    与 `normalize_settings` 的分工是一条硬界线，不要拆：
+
+    * **写入路径**（`POST /api/agent-capacity`）继续用 `normalize_settings`：
+      负值 / 低于下界一律 raise -> 400，不替用户猜意图；
+    * **读取路径**（开机恢复、设置页 GET）用本函数：坏字段只处理它自己，
+      其它字段原样保留。否则用户设的 `max_agents=8`、`main_max_steps=24`
+      会因为 `task_token_budget` 一项过期而被一起清成 0（不限）——
+      那是静默放宽，比不改更坏。
+
+    `task_token_budget` 低于下界时**夹到 `floor`**。读取路径没有请求上下文，
+    默认用 `MIN_TASK_TOKEN_BUDGET`（由实测基线提示词按同一公式算出）；
+    调用方若已量到更贴近当前的提示词体积，可以显式传入。
+
+    每次调整都写进返回的 ``adjustments``，供 GET 载荷原样下发到设置页，
+    回答「我原来的 21576 去哪了」。每项形如::
+
+        {"field": "task_token_budget", "reason": "below_floor",
+         "original": 21576, "adjusted": 42025, "floor": 42025}
+
+    ``reason`` 取值：``below_floor`` / ``above_max`` / ``invalid``。
+    """
+    raw = value if isinstance(value, Mapping) else {}
+    base_floor = max(0, int(floor if floor is not None else MIN_TASK_TOKEN_BUDGET))
+    caps = {
+        "max_agents": MAX_AGENTS_CAP,
+        "main_max_steps": MAX_STEPS_CAP,
+        "child_max_steps": MAX_STEPS_CAP,
+        "max_nudges": MAX_NUDGES_CAP,
+        "max_final_continuations": MAX_NUDGES_CAP,
+        "task_token_budget": MAX_TOKEN_BUDGET_CAP,
+    }
+    settings: dict[str, Any] = {}
+    adjustments: list[dict[str, Any]] = []
+    for field, high in caps.items():
+        default = DEFAULTS[field]
+        original = raw.get(field, default)
+        try:
+            number = int(original)
+        except (TypeError, ValueError):
+            settings[field] = default
+            adjustments.append({
+                "field": field, "reason": "invalid",
+                "original": _jsonable(original), "adjusted": default,
+            })
+            continue
+        if number < 0:
+            # 读取路径不能 raise；只把这一项回落到它自己的默认值。
+            settings[field] = default
+            adjustments.append({
+                "field": field, "reason": "invalid",
+                "original": number, "adjusted": default,
+            })
+        elif number > high:
+            settings[field] = high
+            adjustments.append({
+                "field": field, "reason": "above_max",
+                "original": number, "adjusted": high,
+            })
+        elif field == "task_token_budget" and 0 < number < base_floor:
+            settings[field] = base_floor
+            adjustments.append({
+                "field": field, "reason": "below_floor",
+                "original": number, "adjusted": base_floor, "floor": base_floor,
+            })
+        else:
+            settings[field] = number
+    settings["local_auto_limit"] = raw.get("local_auto_limit", True) is not False
+    return settings, adjustments
+
+
+def get_settings_with_adjustments(
+    *, floor: int | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """读取路径：返回归一化后的设置 **以及** 逐字段调整记录。
+
+    与 `get_settings()` 的差别只是多返回一个 ``adjustments``，供
+    `GET /api/agent-capacity` 原样下发给设置页。
+    """
     try:
         from config import get_runtime, load_state
         value = get_runtime(SETTING_KEY)
         if value is None:
             value = load_state(SETTING_KEY, DEFAULTS)
-        return normalize_settings(value)
+        return normalize_settings_lenient(value, floor=floor)
     except Exception:
-        return dict(DEFAULTS)
+        return dict(DEFAULTS), []
+
+
+def get_settings(*, floor: int | None = None) -> dict[str, Any]:
+    """读取路径的兼容入口：逐字段归一化，坏字段不牵连其它字段。"""
+    return get_settings_with_adjustments(floor=floor)[0]
 
 
 def gpu_snapshot() -> dict[str, Any]:

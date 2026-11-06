@@ -1259,15 +1259,13 @@ def _apply_persisted_state():
 
     capacity = data.get("agent_capacity_settings")
     if isinstance(capacity, dict) and "agent_capacity_settings" not in _RUNTIME:
-        from agent_runtime.capacity import normalize_settings, DEFAULTS
-        # ⚠⚠ 持久化状态**可能含负值**（手改状态文件 / 旧版本写入 / 导入），
-        # 而 normalize_settings 对负值是 raise（请求边界靠它 400 拒绝）；
-        # 但这里是**开机恢复路径**，一个坏字段不能让服务起不来。
-        # 所以 try 住并回落到 DEFAULTS，与 get_settings() 同一策略。
-        try:
-            _RUNTIME["agent_capacity_settings"] = normalize_settings(capacity)
-        except ValueError:
-            _RUNTIME["agent_capacity_settings"] = dict(DEFAULTS)
+        # 原样装载；逐字段归一化交给 `capacity.get_settings()`。
+        # 这里**不能**再整份 normalize + 回落 DEFAULTS：一个过期字段
+        # （如旧的 task_token_budget 21576）会把 max_agents / 步数 / 纠偏
+        # 等护栏一起清成 0（不限）—— 静默放宽，且用户看不到。
+        # 保留原值还有一个用途：GET /api/agent-capacity 能据此报告
+        # 「21576 -> 42025」，而不是第二次读就只剩调整后的数字。
+        _RUNTIME["agent_capacity_settings"] = dict(capacity)
 
     # 网络搜索 / URL 获取配置恢复
     _apply_web_search_state(data)

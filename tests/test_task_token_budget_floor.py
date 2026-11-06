@@ -49,8 +49,9 @@
 
 与其他非法值一致：
 * **请求边界** → 400（`tests/test_capacity_api_negative_400.py` 已覆盖负数）
-* **开机路径** → `get_settings` 自己 try 住回落 DEFAULTS，服务起得来
-  （存量配置里就有关键字时不能炸 —— 见 `test_a_saved_bad_value_does_not_block_startup`）
+* **开机路径** → `get_settings` 逐字段修正：越界字段只处理它自己，
+  其它字段原样保留，服务起得来（见 `test_a_saved_bad_value_does_not_block_startup`
+  与守门用例 `test_one_out_of_range_field_does_not_clear_others`）
 """
 
 import asyncio
@@ -307,20 +308,75 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
     # ---------- 分层：开机路径不能炸 ----------
 
     def test_a_saved_bad_value_does_not_block_startup(self):
-        """存量配置里就是 5000 时，`get_settings` 必须回落而不是抛。
+        """存量 21576 在读取路径上只调整它自己，不牵连其它护栏。
 
-        否则服务起不来 —— 那比问答失效更严重。
+        旧实现整份回落 DEFAULTS：`task_token_budget=5000` 会把用户设的
+        `max_agents=64` / 步数=1000 / 纠偏=1000 一起清成 0（不限）——
+        静默放宽，比不改更坏。现在只把 token 一项夹到当前下界。
         """
         import config
-        bad = {"max_agents": 64, "main_max_steps": 1000, "child_max_steps": 1000,
-               "max_nudges": 1000, "max_final_continuations": 1000,
-               "task_token_budget": 5000, "local_auto_limit": True}
-        with patch.object(config, "get_runtime", return_value=dict(bad)), \
-             patch.object(config, "load_state", return_value=dict(bad)):
+        legacy = {"max_agents": 64, "main_max_steps": 1000, "child_max_steps": 1000,
+                  "max_nudges": 1000, "max_final_continuations": 1000,
+                  "task_token_budget": 21_576, "local_auto_limit": True}
+        with patch.object(config, "get_runtime", return_value=dict(legacy)), \
+             patch.object(config, "load_state", return_value=dict(legacy)):
             got = capacity.get_settings()
-        self.assertEqual(got["task_token_budget"], 0,
-                         "存量坏值应回落到 DEFAULTS（0=不限），"
-                         "而不是让服务起不来")
+        self.assertEqual(got["task_token_budget"], capacity.MIN_TASK_TOKEN_BUDGET,
+                         "存量低值应夹到当前下界，服务不能因此起不来")
+        self.assertEqual(got["max_agents"], 64,
+                         "一项越界不得清掉用户设的并发上限")
+        self.assertEqual(got["main_max_steps"], 1000)
+        self.assertEqual(got["child_max_steps"], 1000)
+        self.assertEqual(got["max_nudges"], 1000)
+        self.assertEqual(got["max_final_continuations"], 1000)
+
+    def test_one_out_of_range_field_does_not_clear_others(self):
+        """⚠ 守门：一个字段越界不得清除其它字段，且要留下完整调整记录。
+
+        这条钉的是「读取路径逐字段处理」——以后若有人图省事改回
+        `except ValueError: return DEFAULTS`，这里会立刻红。
+        调整记录必须能回答：原来多少、改成多少、依据哪个下界。
+        """
+        import config
+        legacy = {"max_agents": 64, "main_max_steps": 1000, "child_max_steps": 1000,
+                  "max_nudges": 1000, "max_final_continuations": 1000,
+                  "task_token_budget": 21_576, "local_auto_limit": True}
+        with patch.object(config, "get_runtime", return_value=dict(legacy)), \
+             patch.object(config, "load_state", return_value=dict(legacy)):
+            settings, adjustments = capacity.get_settings_with_adjustments()
+
+        self.assertEqual(
+            {k: settings[k] for k in (
+                "max_agents", "main_max_steps", "child_max_steps",
+                "max_nudges", "max_final_continuations")},
+            {"max_agents": 64, "main_max_steps": 1000, "child_max_steps": 1000,
+             "max_nudges": 1000, "max_final_continuations": 1000},
+            "只有 task_token_budget 越界，其它字段必须原样保留")
+        self.assertEqual(settings["task_token_budget"],
+                         capacity.MIN_TASK_TOKEN_BUDGET)
+        self.assertEqual(len(adjustments), 1, "只应记录真正被调整的那一项")
+        adj = adjustments[0]
+        self.assertEqual(adj["field"], "task_token_budget")
+        self.assertEqual(adj["reason"], "below_floor")
+        self.assertEqual(adj["original"], 21_576)
+        self.assertEqual(adj["adjusted"], capacity.MIN_TASK_TOKEN_BUDGET)
+        self.assertEqual(adj["floor"], capacity.MIN_TASK_TOKEN_BUDGET)
+
+    def test_negative_field_only_resets_itself(self):
+        """单项非法（负值）也只回落它自己，其它字段不动。"""
+        import config
+        legacy = {"max_agents": 64, "main_max_steps": 1000, "child_max_steps": 1000,
+                  "max_nudges": 2, "max_final_continuations": 2,
+                  "task_token_budget": -1, "local_auto_limit": True}
+        with patch.object(config, "get_runtime", return_value=dict(legacy)), \
+             patch.object(config, "load_state", return_value=dict(legacy)):
+            settings, adjustments = capacity.get_settings_with_adjustments()
+        self.assertEqual(settings["task_token_budget"], 0)
+        self.assertEqual(settings["max_agents"], 64)
+        self.assertEqual(settings["max_nudges"], 2)
+        self.assertEqual([a["field"] for a in adjustments],
+                         ["task_token_budget"])
+        self.assertEqual(adjustments[0]["reason"], "invalid")
 
     # ---------- 端点 ----------
 
@@ -348,6 +404,33 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
         self.assertIn(str(_live_floor()), body["error"],
                       "400 的文案必须给出本次实测的可用下界，用户才知道填多少")
 
+    def test_rejected_write_does_not_touch_disk(self):
+        """写入路径仍然拒绝：同一份 21576 走 POST 是 400，且不写盘。"""
+        import api
+
+        class Req:
+            task_token_budget = 21_576
+
+            def __init__(self):
+                for k in ("max_agents", "main_max_steps", "child_max_steps",
+                          "max_nudges", "max_final_continuations"):
+                    setattr(self, k, 0)
+
+            def model_dump(self):
+                return {"max_agents": 0, "main_max_steps": 0, "child_max_steps": 0,
+                        "max_nudges": 0, "max_final_continuations": 0,
+                        "task_token_budget": self.task_token_budget}
+
+        with patch.object(api, "minimal_prompt_chars",
+                          return_value=self.bare_chars + self.MEMORY_CHARS), \
+             patch.object(api, "set_runtime") as set_rt, \
+             patch.object(api, "save_state") as save_st:
+            resp = asyncio.run(api.set_agent_capacity(Req()))
+        self.assertEqual(getattr(resp, "status_code", 200), 400,
+                         "写入路径必须继续拒绝，不能跟着读取路径一起放宽")
+        set_rt.assert_not_called()
+        save_st.assert_not_called()
+
     # ---------- 下界随 ranges 下发 ----------
 
     def test_the_bound_is_published_to_the_frontend(self):
@@ -359,6 +442,32 @@ class TaskTokenBudgetLowerBoundTests(unittest.TestCase):
         self.assertEqual(payload["ranges"]["task_token_budget_min"],
                          _live_floor(),
                          "ranges 里没有本次实测的下界 —— 前端拿不到它")
+
+    def test_get_payload_reports_original_adjusted_and_floor(self):
+        """设置页要能回答「我原来的 21576 去哪了」。
+
+        `settings_invalid` 必须同时给出原值、调整后、依据的下界，
+        只给其中一个都回答不了这个问题。
+        """
+        import api
+        import config
+        legacy = {"max_agents": 64, "main_max_steps": 1000, "child_max_steps": 1000,
+                  "max_nudges": 1000, "max_final_continuations": 1000,
+                  "task_token_budget": 21_576, "local_auto_limit": True}
+        with patch.object(config, "get_runtime", return_value=dict(legacy)), \
+             patch.object(config, "load_state", return_value=dict(legacy)):
+            payload = asyncio.run(api.get_agent_capacity())
+        self.assertEqual(payload["settings"]["max_agents"], 64,
+                         "读取路径不得把其它护栏一起清零")
+        self.assertEqual(payload["settings"]["task_token_budget"],
+                         capacity.MIN_TASK_TOKEN_BUDGET)
+        self.assertEqual(
+            payload["settings_invalid"],
+            [{"field": "task_token_budget", "reason": "below_floor",
+              "original": 21_576,
+              "adjusted": capacity.MIN_TASK_TOKEN_BUDGET,
+              "floor": capacity.MIN_TASK_TOKEN_BUDGET}],
+            "GET 载荷必须带原值 / 调整后 / 依据的下界")
 
 
 if __name__ == "__main__":

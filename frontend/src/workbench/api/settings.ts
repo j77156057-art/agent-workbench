@@ -69,9 +69,35 @@ export type AgentCapacityRanges = { [K in keyof AgentCapacitySettings]-?: number
   task_token_budget_min?: number
 }
 
+export type AgentCapacityAdjustmentField =
+  | 'max_agents'
+  | 'main_max_steps'
+  | 'child_max_steps'
+  | 'max_nudges'
+  | 'max_final_continuations'
+  | 'task_token_budget'
+
+/** 读取路径对存量配置做的一次逐字段调整。
+ *
+ *  后端只在**读取**时逐字段修正（写入仍 400 拒绝），并把这些记录放进
+ *  GET /api/agent-capacity 的 `settings_invalid`，让设置页能说清
+ *  「原来的 21576 去哪了」，而不是让用户对着一排数字猜。 */
+export interface AgentCapacityAdjustment {
+  field: AgentCapacityAdjustmentField
+  reason: 'below_floor' | 'above_max' | 'invalid'
+  /** 存盘原值（可能不是数字，例如 "abc" / null）。 */
+  original: number | string | boolean | null
+  /** 修正后的值。 */
+  adjusted: number
+  /** 仅 `below_floor` 有：本次调高依据的下界。 */
+  floor?: number
+}
+
 export interface AgentCapacityInfo {
   ok?: boolean
   settings: AgentCapacitySettings
+  /** 读取路径做过的逐字段调整；缺省/空数组 = 存盘值与当前规则一致。 */
+  settings_invalid?: AgentCapacityAdjustment[]
   /** 老后端可能没有这个字段，所以可选；缺省时界面不设上界（见 bound()）。 */
   ranges?: Partial<AgentCapacityRanges>
   model: { provider: string; name: string; local_endpoint: boolean }

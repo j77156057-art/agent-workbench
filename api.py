@@ -6397,7 +6397,9 @@ class AgentCapacityReq(BaseModel):
 
 @app.get("/api/agent-capacity")
 async def get_agent_capacity():
-    settings = agent_capacity.get_settings()
+    # 读取路径用**逐字段**归一化：一个过期字段只调整它自己，不牵连其它护栏。
+    # 同时把调整记录下发给设置页，回答「我原来的值去哪了」。
+    settings, capacity_adjustments = agent_capacity.get_settings_with_adjustments()
     provider = str(get_runtime("llm_provider") or LLM_PROVIDER).lower()
     model = str(get_runtime("llm_model") or LLM_MODEL or "")
     base_url = str(get_runtime("llm_base_url") or PROVIDERS.get(provider, {}).get("base_url", ""))
@@ -6416,6 +6418,11 @@ async def get_agent_capacity():
     return {
         "ok": True,
         "settings": settings,
+        # 读取路径做过哪些逐字段调整。空数组 = 存盘值与当前规则一致。
+        # 每项：field / reason / original / adjusted / floor（见
+        # `capacity.normalize_settings_lenient`）。设置页据此告诉用户
+        # 「原来的 21576 已按新下界上调」，而不是让他对着一排数字猜。
+        "settings_invalid": capacity_adjustments,
         # ⚠⚠ **边界由后端下发，前端不自己写数字。**
         # 之前前端 input 把 max 硬编码在模板里，后端 normalize_settings 另外写一套，
         # 两边靠一条锁测试保证相等。相等不等于单源：哪天后端改上界，前端不改，
