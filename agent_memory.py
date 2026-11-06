@@ -36,6 +36,7 @@ from config import STATE_ROOT, get_runtime, state_path
 DB_PATH = state_path("DOCMIND_MEMORY_DB", os.path.join(STATE_ROOT, ".docmind_memory.sqlite3"))
 _LOCK = threading.RLock()
 _SCOPE = ContextVar("agent_memory_scope", default=None)
+_AGENT = ContextVar("agent_memory_agent", default="main")
 KINDS = {"fact", "preference", "workflow", "episode"}
 DEFAULT_USER_ID = "local-user"
 
@@ -71,6 +72,21 @@ def current_scope():
     return _SCOPE.get() or (scope_key(), "")
 
 
+def bind_agent(agent_id):
+    """绑定当前执行 agent 的归属 id（main / 委派节点 id），供记忆写入使用。"""
+    return _AGENT.set(str(agent_id or "main"))
+
+
+def reset_agent(token):
+    """只还原 agent 归属。必须与 _SCOPE 的 reset 分开：把 agent 的 token 交给
+    reset() 会抛 ValueError（token 被另一个 ContextVar 创建）。"""
+    _AGENT.reset(token)
+
+
+def current_agent():
+    return _AGENT.get() or "main"
+
+
 def _connect():
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=5)
@@ -81,6 +97,7 @@ def _connect():
             title TEXT NOT NULL, content TEXT NOT NULL, evidence TEXT NOT NULL,
             source TEXT NOT NULL, repeats INTEGER NOT NULL, updated TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'active', supersedes TEXT NOT NULL DEFAULT '',
+            agent_id TEXT NOT NULL DEFAULT '', agent_legacy INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(scope, id));
         CREATE TABLE IF NOT EXISTS checkpoints (
             scope TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL,
@@ -103,6 +120,21 @@ def _connect():
         conn.execute("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
     if "supersedes" not in _cols:
         conn.execute("ALTER TABLE memories ADD COLUMN supersedes TEXT NOT NULL DEFAULT ''")
+    # 记忆归属维度（agent 隔离）：agent_id 是**独立于 scope/layers 的新维度**。
+    # scope 仍是 project+app，layers 的 shared/project/hook/rule 是内容语义分类，
+    # 二者都不回答"这条记忆是谁写的"。老库补列时把既有行统一归到平台助手
+    # main，并打 agent_legacy=1（UI 标「历史未分类」），避免历史条目凭空消失。
+    if "agent_id" not in _cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''")
+        conn.execute("ALTER TABLE memories ADD COLUMN agent_legacy INTEGER NOT NULL DEFAULT 0")
+    elif "agent_legacy" not in _cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN agent_legacy INTEGER NOT NULL DEFAULT 0")
+    # 幂等回填：任何仍没有 agent 归属的行都归到平台助手 main 并标 legacy=1。
+    # 新写入一律显式带 agent_id，所以这里只会命中「引入维度之前」的历史行。
+    # 必须显式 commit：sqlite3 对 ALTER 会自动提交，但紧随其后的 UPDATE 属于
+    # 新的隐式事务，不 commit 会在连接关闭时回滚（实测会留下空归属列）。
+    conn.execute("UPDATE memories SET agent_id='main', agent_legacy=1 WHERE agent_id=''")
+    conn.commit()
     # Provenance W-C：episode 落库时是否被工具产出背书（1=final 关键数命中强归因证据）。
     # 默认 0 = fail-closed：既有行/未背书写入与今天逐字节一致；仅用于 recall 信任档排序，
     # 绝不进 context() 注入串（recall 里像 status/supersedes 一样 pop 掉），不触 MEMORY_CHARS=309。
@@ -197,7 +229,7 @@ def _now():
 
 
 def remember(scope, kind, title, content, evidence="", *, source="agent", key=None,
-             supersedes=None, backed=False, importance=None):
+             supersedes=None, backed=False, importance=None, agent_id="main"):
     if kind not in KINDS or not str(content or "").strip():
         raise ValueError("需要有效的 kind 和非空 content")
     title, content, evidence = scrub(title, 200), scrub(content, 4000), scrub(evidence, 1200)
@@ -226,8 +258,8 @@ def remember(scope, kind, title, content, evidence="", *, source="agent", key=No
     with _LOCK, closing(_connect()) as conn, conn:
         conn.execute("""INSERT INTO memories
             (scope, id, kind, title, content, evidence, source, repeats, updated, status, supersedes, backed,
-             importance, emb, emb_dim)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'active', ?, ?, COALESCE(?, 0.5), ?, ?)
+             importance, emb, emb_dim, agent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 'active', ?, ?, COALESCE(?, 0.5), ?, ?, ?)
             ON CONFLICT(scope, id) DO UPDATE SET content=excluded.content,
             title=excluded.title, evidence=excluded.evidence, source=excluded.source,
             repeats=memories.repeats+1, updated=excluded.updated, backed=excluded.backed,
@@ -235,7 +267,7 @@ def remember(scope, kind, title, content, evidence="", *, source="agent", key=No
             emb=CASE WHEN excluded.emb<>'' THEN excluded.emb ELSE memories.emb END,
             emb_dim=CASE WHEN excluded.emb<>'' THEN excluded.emb_dim ELSE memories.emb_dim END""" % imp_set,
             (scope, mid, kind, title, content, evidence, source, _now(), str(supersedes or ""),
-             1 if backed else 0, imp_val, emb_json, emb_dim))
+             1 if backed else 0, imp_val, emb_json, emb_dim, str(agent_id or "")))
         # 缺口 C · A：显式取代——把被推翻的旧行标 superseded，从此不再被 recall 浮出。
         # 不传 supersedes 时这段完全不执行，行为与今天逐字节一致。ON CONFLICT 分支
         # 故意不改 status，避免重记同一 id 把一条已 retire/supersede 的行悄悄复活。
@@ -281,14 +313,21 @@ def _embed_client():
     return _EMBED_CLIENT
 
 
-def recall(scope, query="", limit=8, *, include_preferences=False, include_all=False):
+def recall(scope, query="", limit=8, *, include_preferences=False, include_all=False, agent_id=None):
     terms = set(re.findall(r"[a-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", str(query).lower()))
     terms |= {term[i:i+2] for term in list(terms) if re.fullmatch(r"[\u4e00-\u9fff]{3,}", term) for i in range(len(term)-1)}
     # 缺口 C · A：默认只浮出 active 记忆——被 supersede/retire 的旧错误结论不再回到
     # 注入上下文（这才是"修好后旧教训自动作废"的落点）。include_all=True 仅供审计。
     where = "scope=?" if include_all else "scope=? AND status='active'"
+    params = [scope]
+    # agent_id=None 保持旧行为（不按 agent 过滤），供测试/全局审计使用；
+    # 传入具体 agent_id 时只召回该 agent 名下的记忆（真隔离，不只是 UI 过滤）。
+    if agent_id is not None:
+        where += " AND agent_id=?"
+        params.append(str(agent_id))
     with _LOCK, closing(_connect()) as conn:
-        rows = [dict(row) for row in conn.execute("SELECT * FROM memories WHERE " + where + " ORDER BY updated DESC", (scope,))]
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM memories WHERE " + where + " ORDER BY updated DESC", tuple(params))]
     # 长期记忆优化 W-A：默认走与今天**逐字节一致**的关键词档序（score,trust，
     # updated DESC 稳定平手）；仅 DOCMIND_MEMORY_ENHANCED 打开才启用向量+重要度混合。
     # 增强但没开 DOCMIND_MEMORY_EMBED 时，qvec=None 且行无向量 → 无向量项，重要度
@@ -325,6 +364,9 @@ def recall(scope, query="", limit=8, *, include_preferences=False, include_all=F
             row.pop("emb_dim", None)
             row.pop("access_count", None)
             row.pop("last_accessed", None)
+            # agent 归属是内部元数据，同样不进注入串（否则破坏既有 309/上下文校准）。
+            row.pop("agent_id", None)
+            row.pop("agent_legacy", None)
             # 信任档：未核实的 model_report episode（每轮自动存的 final_text，
             # "尚需核对验收"）记低档，避免"重复=更新=正确"的回音室靠 recency
             # 把它顶到已核实记忆之上（MEM-ErrorEchoChamber 方向②）。
@@ -762,16 +804,11 @@ def _context_row(row):
     return slim
 
 
-def context(scope, query):
-    """把召回结果渲染成可注入的 JSON 文本。
-
-    按**整条**取舍：先逐条精简，再从头累加，超预算就丢掉后面整条——绝不截断
-    JSON 字符串本身（旧版对 `json.dumps` 结果直接 scrub(…, 5000)，会把最后一条
-    切成半个字符串，模型拿到的是无法解析的坏 JSON）。单条已硬截断，至少留一条。
-    """
-    rows = recall(scope, query, include_preferences=True)
+def context_with_rows(scope, query, agent_id=None):
+    """返回实际注入文本与逐字进入该文本的行，供只读检查器对账。"""
+    rows = recall(scope, query, include_preferences=True, agent_id=agent_id)
     if not rows:
-        return ""
+        return "", []
     kept, blob = [], ""
     for row in rows:
         candidate = kept + [_context_row(row)]
@@ -780,7 +817,26 @@ def context(scope, query):
             break
         kept, blob = candidate, text
     # 落库时已 scrub 过；这里再兜一遍脱敏，limit 留余量以免二次截断切断 JSON。
-    return CONTEXT_HEADER + scrub(blob, CONTEXT_MAX_CHARS + 1024)
+    return CONTEXT_HEADER + scrub(blob, CONTEXT_MAX_CHARS + 1024), kept
+
+
+def context(scope, query, agent_id=None):
+    """把召回结果渲染成可注入的 JSON 文本。"""
+    return context_with_rows(scope, query, agent_id=agent_id)[0]
+
+
+def audit(scope, agent_id=None):
+    """记忆检查器专用全量只读目录；不改变 recall/context 的既有注入契约。"""
+    columns = ("id,kind,title,content,evidence,source,repeats,updated,status,supersedes,"
+               "backed,importance,access_count,last_accessed,agent_id,agent_legacy")
+    where, params = "scope=?", [scope]
+    if agent_id is not None:
+        where += " AND agent_id=?"
+        params.append(str(agent_id))
+    with _LOCK, closing(_connect()) as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT " + columns + " FROM memories WHERE " + where + " ORDER BY updated DESC",
+            tuple(params))]
 
 
 def _learned_context(learned):
