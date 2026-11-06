@@ -11,6 +11,7 @@ import {
   type SettingsConfigInfo, type ModelConfigInfo, type ProviderOption, type McpServer,
   type McpPendingProposal,
   type AgentCapacityInfo,
+  type AgentCapacityAdjustment,
   type AgentCapacityRanges,
   type McpCapabilityCandidate,
   type BudgetStatus, type TraceSummary,
@@ -27,8 +28,8 @@ import EngineConnectPopover from './EngineConnectPopover.vue'
 import EngineSetupPanel from './EngineSetupPanel.vue'
 import { appEvents } from '../eventBus'
 import { costLabel, money, type PricingState } from '../composables/costLabel'
-import { SKINS, loadSkin, setSkin, onSkinChange, type SkinKey } from '../skins'
 import { loadMaterial, setMaterial, onMaterialChange, type Material } from '../glassPointer'
+import { preferredScrollBehavior } from '../composables/motionPreference'
 import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '../layoutMode'
 // 对话展示偏好：与问答页 / 模型设置弹窗同一份（reactive 视图 + localStorage）。
 // 这里不复制状态，直接绑到共享对象上，改完写存储并派发事件让两个入口同时刷新。
@@ -47,21 +48,6 @@ function selectTab(next: Tab) {
   tabTouched.value = true
   tab.value = next
 }
-
-// ---------------- 皮肤（视觉风格）----------------
-// 纯前端：写 localStorage + 改 <html data-skin>，skins.css 里的 html[data-skin='x']
-// 覆写 :root 令牌，浏览器立即重算全部 var()，无需刷新也不走后端。
-const skin = ref<SkinKey>(loadSkin())
-
-function chooseSkin(key: SkinKey) {
-  // setSkin 内部会夹住非法值并返回实际生效的 key，用返回值回填避免 UI 显示与实际不一致
-  skin.value = setSkin(key)
-  const s = SKINS.find((x) => x.key === key)
-  appEvents.emit('docmind:appearance-changed', { kind: 'skin', label: s?.name ?? key })
-}
-
-// 另一个入口（问答页 / 另一个窗口）改了皮肤时同步本组件的选中态
-onSkinChange((k) => { skin.value = k })
 
 // ---------------- 对话与运行展示偏好 ----------------
 // 控件直接绑共享 dp（v-model 已经把新值写进这份 reactive），这里只负责落盘。
@@ -352,6 +338,19 @@ async function resetUsageSpent() {
 
 // ---------------- 网络搜索 / URL 获取 ----------------
 const cfg = ref<SettingsConfigInfo & ModelConfigInfo | null>(null)
+const currentModelSummary = computed(() => {
+  if (!cfg.value) return '正在读取配置'
+  const provider = cfg.value.provider_meta?.[cfg.value.llm_provider]?.label || cfg.value.llm_provider
+  return `${provider} · ${cfg.value.llm_model || '默认模型'}`
+})
+const currentModelStatus = computed(() => {
+  if (!cfg.value) return { label: '读取中', tone: 'muted' }
+  const meta = cfg.value.provider_meta?.[cfg.value.llm_provider]
+  if (meta?.needs_key && !cfg.value.has_key) return { label: '缺少凭证', tone: 'bad' }
+  if (cfg.value.ollama_status?.blocks_conversation) return { label: '对话不可用', tone: 'bad' }
+  if (cfg.value.ollama_status?.search_degraded) return { label: '检索降级', tone: 'warn' }
+  return { label: '已配置', tone: 'ok' }
+})
 const wsProvider = ref<ProviderOption['value']>('builtin_auto')
 const wsApiKey = ref('')
 const wsApiUrl = ref('')
@@ -397,6 +396,31 @@ const CAPACITY_LABEL: Record<CapacityField, string> = {
 }
 
 const capacityInfo = ref<AgentCapacityInfo | null>(null)
+/** 读取路径对存量配置做过哪些逐字段调整（后端 settings_invalid）。 */
+const capacityAdjustments = computed<AgentCapacityAdjustment[]>(
+  () => capacityInfo.value?.settings_invalid ?? [],
+)
+const ADJUSTMENT_FIELD_LABEL: Record<AgentCapacityAdjustment['field'], string> = {
+  max_agents: 'Agent 数量',
+  main_max_steps: '主 Agent 工具步数',
+  child_max_steps: '子代理工具步数',
+  max_nudges: '纠偏次数',
+  max_final_continuations: '续写次数',
+  task_token_budget: '任务 Token 上限',
+}
+/** 把一条调整记录翻成人话，直接回答「我原来的值去哪了」。 */
+function capacityAdjustmentLine(a: AgentCapacityAdjustment): string {
+  const label = ADJUSTMENT_FIELD_LABEL[a.field] || a.field
+  const before = a.original === null ? '空' : String(a.original)
+  if (a.reason === 'below_floor') {
+    return `${label}：${before} → ${a.adjusted}（低于读取路径下界 ${a.floor ?? a.adjusted}，`
+      + '已按能跑完 3 轮问答的最小值上调；其它字段未改动）'
+  }
+  if (a.reason === 'above_max') {
+    return `${label}：${before} → ${a.adjusted}（超过服务端上限，已收窄；其它字段未改动）`
+  }
+  return `${label}：${before} → ${a.adjusted}（原值不合法，已恢复该项默认值 0 = 不限；其它字段未改动）`
+}
 // 初值一律空串：真实值由 loadAgentCapacity() 填。以前这里写着 '8' / '24' / '50000'，
 // 后端默认全改成 0（不限）之后它们就是过期复制 —— 加载失败时界面会亮着一排
 // 谁都没同意的数字。空框用户看得见，比塞个错值诚实。
@@ -949,6 +973,15 @@ const acDiag = computed<DiagNode[]>(() => {
   return buildDiag(base, subs)
 })
 
+const AC_STAGE_COPY = [
+  ['搜索需要的能力', '输入服务或领域名称；搜索结果会明确说明是否找到可用候选。'],
+  ['核对自动填参', '正在读取文档并提取命令；失败会保留原因并转入手动填写。'],
+  ['选择可信候选', '核对命令、参数与来源，再测试连接；必要凭证不会省略。'],
+  ['验证连接', '测试失败会保留原始原因；需要时可展开诊断或填写凭证。'],
+  ['确认写入', '只有你确认后才写入本机，完整配置仍可展开检查。'],
+] as const
+const acStageCopy = computed(() => AC_STAGE_COPY[Math.max(0, Math.min(4, wizardStep.value - 1))])
+
 function acStepState(n: WizardStep): 'done' | 'active' | 'idle' | 'fail' {
   if (n === 2 && fillState.value === 'error') return 'fail'
   if (wizardStep.value > n) return 'done'
@@ -1127,7 +1160,7 @@ function useDirectoryOption(item: McpDirectoryResult, option: McpDirectoryResult
   }
   mcpDirectoryResults.value = []
   mcpError.value = `${item.label}：请补充官方连接信息后测试连接。`
-  document.querySelector<HTMLInputElement>('[data-mcp-manual-key]')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  document.querySelector<HTMLInputElement>('[data-mcp-manual-key]')?.scrollIntoView({ behavior: preferredScrollBehavior(), block: 'center' })
 }
 
 async function probeCandidate(c: McpAutoConnectCandidate) {
@@ -1589,17 +1622,27 @@ async function powerAction(action: 'on' | 'off') {
           <h3 class="sv-title">设置</h3>
           <p class="sv-sub">工作区、模型与连接</p>
         </div>
+        <div class="sv-context" aria-live="polite">
+          <span class="sv-context-label">当前对话模型</span>
+          <strong>{{ currentModelSummary }}</strong>
+          <span class="sv-context-status" :class="currentModelStatus.tone">{{ currentModelStatus.label }}</span>
+        </div>
         <button class="sv-x" @click="close" title="关闭">×</button>
       </div>
       <div class="sv-body">
         <!-- 左侧分组导航 -->
-        <nav class="sv-nav">
+        <nav class="sv-nav" aria-label="设置分组">
+          <span class="sv-nav-group">概览</span>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'usage' }" :aria-current="tab === 'usage' ? 'page' : undefined" @click.stop="selectTab('usage')">用量与费用</button>
+          <span class="sv-nav-group">连接</span>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'search' }" :aria-current="tab === 'search' ? 'page' : undefined" @click.stop="selectTab('search')">网络搜索</button>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'mcp' }" :aria-current="tab === 'mcp' ? 'page' : undefined" @click.stop="selectTab('mcp')">MCP</button>
-          <button type="button" class="sv-nav-item" :class="{ on: tab === 'agent' }" :aria-current="tab === 'agent' ? 'page' : undefined" @click.stop="selectTab('agent')">智能体</button>
+          <span class="sv-nav-group">模型与检索</span>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'model' }" :aria-current="tab === 'model' ? 'page' : undefined" @click.stop="selectTab('model')">模型</button>
+          <button type="button" class="sv-nav-item" :class="{ on: tab === 'agent' }" :aria-current="tab === 'agent' ? 'page' : undefined" @click.stop="selectTab('agent')">智能体</button>
+          <span class="sv-nav-group">运行时</span>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'runtime' }" :aria-current="tab === 'runtime' ? 'page' : undefined" @click.stop="selectTab('runtime')">运行与引擎</button>
+          <span class="sv-nav-group">个性化</span>
           <button type="button" class="sv-nav-item" :class="{ on: tab === 'appearance' }" :aria-current="tab === 'appearance' ? 'page' : undefined" @click.stop="selectTab('appearance')">外观</button>
         </nav>
 
@@ -1775,12 +1818,16 @@ async function powerAction(action: 'on' | 'off') {
                 <template v-else><Icon name="zap" :size="16" /> 自动连接</template>
               </button>
             </div>
-            <div class="sv-step-rail" data-role="wizard-rail">
-              <button class="sv-step" :data-state="acStepState(1)" data-step="1"><Icon name="search" :size="16" />搜索</button>
-              <button class="sv-step" :data-state="acStepState(2)" data-step="2"><Icon name="zap" :size="16" />自动填参</button>
-              <button class="sv-step" :data-state="acStepState(3)" data-step="3"><Icon name="list" :size="16" />预览</button>
-              <button class="sv-step" :data-state="acStepState(4)" data-step="4"><Icon name="activity" :size="16" />试连</button>
-              <button class="sv-step" :data-state="acStepState(5)" data-step="5"><Icon name="shield-check" :size="16" />确认落盘</button>
+            <div class="sv-step-rail" data-role="wizard-rail" aria-label="自动连接步骤">
+              <button type="button" class="sv-step" :data-state="acStepState(1)" data-step="1" :aria-current="acStepState(1) === 'active' ? 'step' : undefined"><span class="sv-step-no">01</span><span>搜索</span></button>
+              <button type="button" class="sv-step" :data-state="acStepState(2)" data-step="2" :aria-current="acStepState(2) === 'active' ? 'step' : undefined"><span class="sv-step-no">02</span><span>自动填参</span></button>
+              <button type="button" class="sv-step" :data-state="acStepState(3)" data-step="3" :aria-current="acStepState(3) === 'active' ? 'step' : undefined"><span class="sv-step-no">03</span><span>预览</span></button>
+              <button type="button" class="sv-step" :data-state="acStepState(4)" data-step="4" :aria-current="acStepState(4) === 'active' ? 'step' : undefined"><span class="sv-step-no">04</span><span>试连</span></button>
+              <button type="button" class="sv-step" :data-state="acStepState(5)" data-step="5" :aria-current="acStepState(5) === 'active' ? 'step' : undefined"><span class="sv-step-no">05</span><span>确认落盘</span></button>
+            </div>
+            <div class="sv-stage-brief" aria-live="polite">
+              <span class="sv-stage-index">{{ String(wizardStep).padStart(2, '0') }} / 05</span>
+              <div><b>{{ acStageCopy[0] }}</b><p>{{ acStageCopy[1] }}</p></div>
             </div>
 
             <div class="sv-wizard-body" data-role="wizard-body">
@@ -1790,12 +1837,12 @@ async function powerAction(action: 'on' | 'off') {
                 <span>正在读取官方文档并提取连接命令…</span>
               </div>
               <!-- 无候选 -->
-              <div v-else-if="fillState === 'empty'" class="sv-ac-state">
+              <div v-else-if="fillState === 'empty'" class="sv-ac-state" data-tone="warn">
                 <Icon name="circle-alert" :size="20" />
                 <span>暂时没有完整连接参数，下面列出这个领域可选择的 MCP 连接方式。</span>
               </div>
               <!-- 抽取失败 -->
-              <div v-else-if="fillState === 'error'" class="sv-ac-state">
+              <div v-else-if="fillState === 'error'" class="sv-ac-state" data-tone="error">
                 <Icon name="circle-x" :size="20" />
                 <span>文档里没找到可信任的命令，已转为手动填写（见下方手动添加）。</span>
               </div>
@@ -2161,6 +2208,18 @@ async function powerAction(action: 'on' | 'off') {
                 进程 {{ app.process_name || '未知' }} · {{ (app.used_mb / 1024).toFixed(1) }} GB
               </div>
             </div>
+            <!-- 读取路径逐字段修正过存量配置时，把「原值 → 新值」写出来。
+                 没有这块，用户只会看到一排数字变了，不知道 21576 去了哪里。 -->
+            <div
+              v-if="capacityAdjustments.length"
+              class="sv-note"
+              data-tone="warn"
+              data-role="capacity-adjusted"
+            >
+              <div><strong>原有容量设置已按当前规则逐字段调整</strong>（其它字段保持不变）：</div>
+              <div v-for="a in capacityAdjustments" :key="a.field">{{ capacityAdjustmentLine(a) }}</div>
+              <div>保存一次后这里不再提示；写入路径仍会拒绝低于下界的值。</div>
+            </div>
             <p v-if="capacityError" class="sv-err">{{ capacityError }}</p>
             <p v-if="capacitySaved" class="sv-ok">{{ capacitySaved }}</p>
             <div class="sv-actions">
@@ -2369,42 +2428,18 @@ async function powerAction(action: 'on' | 'off') {
             <EngineConnectPopover v-if="tab === 'runtime'" embedded />
           </section>
 
-          <!-- 外观：皮肤（视觉风格） -->
+          <!-- 外观：工作台固定使用观测舱令牌；布局与材质仍可调整。 -->
           <section v-show="tab === 'appearance'" class="sv-panel">
             <div class="sv-section-head">
               <div>
                 <h4 class="sv-h4">外观</h4>
-                <p class="sv-hint">皮肤只改配色、圆角与阴影质感，不动布局与字号。选择后立即生效，问答页与工作台共用同一套。</p>
+                <p class="sv-hint">工作台统一使用低亮度观测舱皮肤，避免记忆面板与主工作区产生割裂；问答页的皮肤偏好不受影响。</p>
               </div>
             </div>
 
-            <div class="sv-skins" role="radiogroup" aria-label="皮肤">
-              <button
-                v-for="s in SKINS"
-                :key="s.key"
-                type="button"
-                class="sv-skin"
-                :class="{ on: skin === s.key }"
-                role="radio"
-                :aria-checked="skin === s.key"
-                @click="chooseSkin(s.key)"
-              >
-                <span class="sv-skin-swatch" aria-hidden="true">
-                  <i v-for="(c, i) in s.swatch" :key="i" :style="{ background: c }" />
-                </span>
-                <span class="sv-skin-text">
-                  <b>{{ s.name }}</b>
-                  <small>{{ s.desc }}</small>
-                </span>
-                <span class="sv-skin-check" aria-hidden="true">
-                  <Icon v-if="skin === s.key" name="circle-check" :size="16" />
-                </span>
-              </button>
-            </div>
-
             <p class="sv-note" data-tone="neutral">
-              全部 {{ SKINS.length }} 套配色都过了 WCAG AA 对比度校验（正文与实心块上的文字 ≥ 4.5:1，描边 ≥ 3:1）——
-              深色皮肤下最容易塌的第三级灰字与状态色是逐套解算出来的，不是手调的。
+              当前配色：<strong>观测舱</strong>。背景、正文、分隔线与控件全部引用 <code>memory-inspector-tokens.css</code>；
+              下方仅调整空间布局和表面材质，不会切回浅色皮肤。
             </p>
 
             <!-- 布局：空间构成 -->
@@ -2488,10 +2523,8 @@ async function powerAction(action: 'on' | 'off') {
             </div>
 
             <p class="sv-note" data-tone="neutral">
-              可调的三层互相独立：<b>皮肤</b>（{{ SKINS.map((s) => s.name).join(' / ') }}）·<b>材质</b>（实体/玻璃）·<b>布局</b>（5 种空间构成）。
-              造型不再是一个独立开关：硬边还是细线，由所选皮肤自己带（素纸朱红 / 石墨夜航 = 零圆角 + 墨描边 + 硬阴影，
-              锌白细线 = 1px 灰边 + 6px 圆角 + 零阴影），全部走 <code>skins.css</code> 的令牌。
-              调形状参数改 <code>layout-modes.css</code>，改材质参数改 <code>glass.css</code>，改完刷新即生效，不需要重新构建。
+              配色固定为观测舱；<b>材质</b>（实体/玻璃）与 <b>布局</b>（5 种空间构成）仍可独立调整。
+              色彩与圆角取自 <code>memory-inspector-tokens.css</code>，空间参数取自 <code>layout-modes.css</code>，材质参数取自 <code>glass.css</code>。
             </p>
 
             <div class="sv-section-head" style="margin-top: 18px;">
@@ -2528,7 +2561,7 @@ async function powerAction(action: 'on' | 'off') {
 .sv-box {
   width: 760px; max-width: calc(100vw - 32px); height: 78vh; max-height: 720px;
   background: var(--bg); border: 1px solid var(--border);
-  border-radius: 12px; box-shadow: 0 16px 48px rgba(15, 23, 42, .22);
+  border-radius: var(--mi-radius-lg); box-shadow: var(--mi-shadow-pop);
   display: flex; flex-direction: column; overflow: hidden;
 }
 .sv-head {
@@ -2559,27 +2592,10 @@ async function powerAction(action: 'on' | 'off') {
 .sv-nav-item:hover { background: var(--bg-raised); }
 .sv-nav-item.on { background: var(--bg-raised); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 
-/* 外观：皮肤卡片（色板 + 名称 + 说明 + 选中态）
-   色板用 SKINS 里的 swatch 四色直接内联，**不读当前皮肤的 CSS 变量** ——
-   否则所有卡片都会显示当前皮肤的颜色，就分不出"点了会变成什么样"了。 */
-.sv-skins { display: grid; grid-template-columns: repeat(auto-fill, minmax(258px, 1fr)); gap: 10px; margin-top: 12px; }
-.sv-skin {
-  display: grid; grid-template-columns: 44px 1fr 18px; align-items: center; gap: 11px;
-  padding: 11px 12px; text-align: left; cursor: pointer;
-  background: var(--bg-raised); border: var(--edge-w-strong, 2px) solid var(--border);
-  border-radius: var(--radius-md); color: var(--text);
-  transition: background var(--motion-base) var(--ease-standard);
-}
-.sv-skin:hover { background: var(--bg-hover); }
-.sv-skin.on { border-color: var(--accent); --btn-fill: var(--accent-soft); background: var(--accent-soft); }
-.sv-skin:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.sv-skin-swatch { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; width: 44px; height: 44px; border: 1px solid var(--border); flex: none; }
-.sv-skin-swatch i { display: block; }
 .sv-skin-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sv-skin-text b { font-size: var(--fs-md); font-weight: 700; color: var(--text); }
 .sv-skin-text small { font-size: var(--fs-cap, 11px); line-height: 1.45; color: var(--text-muted); }
 .sv-skin-check { display: grid; place-items: center; color: var(--accent); }
-.sv-skin:not(.on) .sv-skin-check { color: transparent; }
 
 /* 布局示意缩略图：**形状本身就是信息** —— 侧栏在哪、主区多宽、是否居中，
    五张必须长得不一样（不是同一张换配色）。i.rail=侧栏，i.main=主区。 */
@@ -2641,7 +2657,7 @@ async function powerAction(action: 'on' | 'off') {
 .sv-mat-demo[data-kind='solid'] i:nth-child(2) { top: 18px; opacity: .55; }
 .sv-mat-demo[data-kind='solid'] i:nth-child(3) { top: 29px; opacity: .25; }
 .sv-mat-demo[data-kind='glass'] { background: linear-gradient(135deg, var(--accent) 0%, var(--bg-hover) 60%); }
-.sv-mat-demo[data-kind='glass'] i { position: absolute; left: 6px; right: 6px; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--bg-raised) 55%, transparent); box-shadow: inset 0 1px 0 rgba(255,255,255,.6); }
+.sv-mat-demo[data-kind='glass'] i { position: absolute; left: 6px; right: 6px; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--bg-raised) 55%, transparent); box-shadow: inset 0 1px 0 var(--mi-border-subtle); }
 .sv-mat-demo[data-kind='glass'] i:nth-child(1) { top: 6px; }
 .sv-mat-demo[data-kind='glass'] i:nth-child(2) { top: 17px; }
 .sv-mat-demo[data-kind='glass'] i:nth-child(3) { top: 28px; }
@@ -2870,7 +2886,7 @@ async function powerAction(action: 'on' | 'off') {
 .sv-nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .sv-nav-item.on {
   background: var(--surface); color: var(--accent-text); border-color: var(--border);
-  box-shadow: 0 1px 2px rgba(17, 17, 22, .06);
+  box-shadow: var(--mi-shadow-control);
 }
 .sv-content { padding: 24px 28px 28px; background: var(--surface); }
 .sv-panel { gap: 8px; }
@@ -2903,6 +2919,41 @@ async function powerAction(action: 'on' | 'off') {
 .sv-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .sv-mini { min-height: 30px; padding: 4px 10px; border-radius: var(--r-sm); }
 .sv-form-grid { gap: 14px 16px; }
+
+/* v4 向导：步骤轨说明当前判断点，技术参数继续完整保留。 */
+.sv-step-rail { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; }
+.sv-step { justify-content: flex-start; gap: 6px; padding: 8px 7px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; font-size: var(--fs-sm); }
+.sv-step:last-child { border-right: 0; }
+.sv-step[data-state="active"] { box-shadow: inset 0 -2px 0 var(--accent); }
+.sv-step-no { color: var(--text-faint); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-cap); }
+.sv-stage-brief { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; margin: 12px 0; padding: 5px 0 5px 12px; border-left: 2px solid var(--accent); }
+.sv-stage-index { color: var(--text-muted); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-cap); font-variant-numeric: tabular-nums; }
+.sv-stage-brief b { color: var(--text); font-size: var(--fs-body); }
+.sv-stage-brief p { margin: 3px 0 0; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.6; }
+.sv-ac-state[data-tone="warn"] { border-left: 3px solid var(--amber); }
+.sv-ac-state[data-tone="error"] { border-left: 3px solid var(--danger); color: var(--danger); }
+.sv-preview { border-left: 2px solid var(--border-strong); border-radius: 6px; }
+.sv-cmd, .sv-detail { font-family: var(--ui2-font-mono, var(--font-mono)); font-variant-numeric: tabular-nums; }
+
+/* v3 信息架构：分组导航 + 当前模型事实摘要。 */
+.sv-context { display: grid; grid-template-columns: auto auto; align-items: center; gap: 2px 12px; margin-left: auto; text-align: right; }
+.sv-context-label { color: var(--text-muted); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-cap); letter-spacing: .06em; }
+.sv-context strong { grid-column: 1; color: var(--text); font-size: var(--fs-sm); font-weight: 500; }
+.sv-context-status { grid-column: 2; grid-row: 1 / span 2; align-self: center; padding: 2px 7px; border-left: 2px solid currentColor; font-size: var(--fs-cap); white-space: nowrap; }
+.sv-context-status.ok { color: var(--green); }
+.sv-context-status.warn { color: var(--amber); }
+.sv-context-status.bad { color: var(--danger); }
+.sv-context-status.muted { color: var(--text-muted); }
+.sv-nav-group { margin: 14px 12px 5px; color: var(--text-faint); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-cap); letter-spacing: .1em; }
+.sv-nav-group:first-child { margin-top: 0; }
+.sv-nav-item.on { border-left: 2px solid var(--accent); box-shadow: none; }
+.sv-panel :is(h4, .sv-h4) { letter-spacing: -.01em; }
+.sv-panel .sv-section-head { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.sv-panel .sv-section-head + * { margin-top: 4px; }
+
+@media (max-width: 860px) {
+  .sv-context { display: none; }
+}
 
 @media (max-width: 680px) {
   .sv-box { height: calc(100vh - 20px); max-width: calc(100vw - 20px); }
