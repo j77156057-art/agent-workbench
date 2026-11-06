@@ -24,8 +24,8 @@ import tools as audited_tools
 from vectorstore import get_collection
 
 
-SOURCE_PROJECT = Path(os.getenv("DOCMIND_REAL_GAME_PROJECT", r"D:\WorkBuddy\godot_sample"))
-GODOT = os.getenv("DOCMIND_GODOT_EXECUTABLE", r"D:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe")
+SOURCE_PROJECT = Path(os.getenv("DOCMIND_REAL_GAME_PROJECT", r"<sample-project>"))
+GODOT = os.getenv("DOCMIND_GODOT_EXECUTABLE", r"<godot-executable>")
 
 
 def _copy_project(source: Path, target: Path) -> None:

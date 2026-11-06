@@ -1033,7 +1033,7 @@ def _case_bat_guard_refuses_an_escaped_closing_quote(root: str,
 
     存在的理由是本仓 2026-10-02 那次启动失败：`%~dp0` 展开后以反斜杠结尾，紧跟其后的
     闭合引号被外部程序按 MSVCRT 规则当成「转义过的引号」，bootstrap 于是收到
-    `D:\WorkBuddy\rag-agent"`（路径末尾多一个字面引号）。最后一组检查是【把前提量出来】
+    `<repo>"`（路径末尾多一个字面引号）。最后一组检查是【把前提量出来】
     而不是相信注释：连 Python 自己拼 argv 的 list2cmdline 都要在这种值前再补一个反斜杠，
     所以手写的那对引号一定是转义、不是闭合。
     """

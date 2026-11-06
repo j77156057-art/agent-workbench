@@ -47,7 +47,7 @@ _SKIP_DIRS = frozenset({
 # 导出默认就在 `.docmind/web/index.html`（见 export_presets.cfg 的 export_path）。
 #
 # ⚠ 这里曾经把整个 `.docmind` 塞进 `_SKIP_DIRS`。实测后果：Agent 在
-# `D:\WorkBuddy\godot_sample` 里 `dev_glob('**/*.html')` 回报
+# `<sample-project>` 里 `dev_glob('**/*.html')` 回报
 # 「没有命中文件」，而 `.docmind/web/index.html` 就在脚下 ——
 # 一个**没有任何保留的假否定**，比"扫到一半被截断"危险得多，因为它读起来
 # 就是"这个项目没有 html"。

@@ -3,15 +3,15 @@ r"""Windows 批处理的引号静态门：一条会静默毁掉参数的 bug 类
 ## 这个坑长什么样（2026-10-02 真实踩到）
 
 `run_desktop.bat` 里写着 `... dependency_bootstrap.py --root "%~dp0"`。`%~dp0` 展开成
-`D:\WorkBuddy\rag-agent\`——**它天生以反斜杠结尾**，于是命令行上的字节是：
+`<repo>\`——**它天生以反斜杠结尾**，于是命令行上的字节是：
 
-    --root "D:\WorkBuddy\rag-agent\"
+    --root "<repo>\"
 
 cmd 自己不在乎，但被调用的**外部程序**（python / powershell / node / npm…）按 MSVCRT 的
 argv 规则解析这串字节：`\"` 是「转义过的引号」，**闭合引号就此消失**，参数值里多出一个
 字面 `"`。现场症状是这样一个既不像引号问题也不像路径问题的错：
 
-    FileNotFoundError: missing D:\WorkBuddy\rag-agent"\requirements.txt
+    FileNotFoundError: missing <repo>"\requirements.txt
 
 源码里看着一切正常，只有双击运行才炸——所以这道门必须在静态层就咬住。
 

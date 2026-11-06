@@ -36,8 +36,8 @@ _REPO_STATE = os.path.join(_REPO_ROOT, ".docmind_state.json")
 _REPO_SESSIONS = os.path.join(_REPO_ROOT, ".docmind_sessions")
 
 # 桌面安装的真实状态与历史会话（P2 迁移的真实背景）
-_REAL_STATE = r"D:\WorkBuddy\rag-agent\_internal\.docmind_state.json"
-_REAL_LEGACY = r"D:\WorkBuddy\rag-agent\_internal\.docmind_sessions\web-118ac75087ff.json"
+_REAL_STATE = os.path.join(_REPO_ROOT, "_internal", ".docmind_state.json")
+_REAL_LEGACY = os.path.join(_REPO_ROOT, "_internal", ".docmind_sessions", "web-118ac75087ff.json")
 
 
 def _snapshot_repo():
@@ -130,7 +130,7 @@ class A_UserScenarioReadThrough(QABase):
         turns_before = len(sessions._read_raw(flat).get("turns") or [])
         self.assertGreaterEqual(turns_before, 1, "前置：旧会话必须含 turns")
 
-        # ② STATE_FILE 写 code_root=<真实存在目录>（真实背景为 D:\WorkBuddy\godot_sample）
+        # ② STATE_FILE 写 code_root=<真实存在目录>（真实背景为 <sample-project>）
         proj_root = None
         if os.path.isfile(_REAL_STATE):
             try:

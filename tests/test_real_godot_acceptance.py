@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def _project_root() -> Path:
-    return Path(os.getenv("DOCMIND_REAL_GAME_PROJECT", r"D:\WorkBuddy\godot_sample"))
+    return Path(os.getenv("DOCMIND_REAL_GAME_PROJECT", r"<sample-project>"))
 
 
 def _godot() -> str:
@@ -24,8 +24,8 @@ def _godot() -> str:
         return explicit
     return shutil.which("godot4") or shutil.which("godot") or \
         next((str(path) for path in (
-            Path(r"D:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe"),
-            Path(r"C:\Tools\Godot\Godot_v4.7.2-stable_win64_console.exe"),
+            Path("<godot-executable>"),
+            Path("<godot-executable>"),
         ) if path.is_file()), "")
 
 

@@ -5,7 +5,7 @@
 
 修之前，连续两轮工作流的**每一次**工具调用都落在真实项目：
 
-    wf-7cc2e86620ce   python_exec 自报「执行目录：D:\\WorkBuddy\\godot_sample
+    wf-7cc2e86620ce   python_exec 自报「执行目录：<sample-project>
                       ← 不在试做区内，相对路径会写进真实项目」
     wf-db3caef9623f   6 次 before_tool 全部 @WorkBuddy/godot_sample
 

@@ -3,7 +3,7 @@
 > 状态：设计已定（架构师），进入实现。
 > 范围：仅覆盖「注册 / 取凭证」阶段；发现 / 抽取 / 校验沿用现有链路（`mcp_autoconnect.py`）。
 > 关联文件：`mcp_autoconnect.py`、`api.py`（MCP autoconnect 端点）、`frontend/src/workbench/api.ts`、`frontend/src/workbench/components/SettingsView.vue`、`docmind.spec`。
-> 行号以本仓库（`D:\WorkBuddy\rag-agent`）为准。
+> 行号以本仓库（`<repo>`）为准。
 
 ## 0. 两条纠偏
 - 行号：本树 `subprocess.Popen` 在 `mcp_client.py:432`、`save_server` 在 `mcp_client.py:352`（更早简报里的 :405/:340 属旧树）。

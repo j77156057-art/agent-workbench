@@ -10973,7 +10973,7 @@ def dev_testrun(arg=""):
     ② 摘要说 N passed 而退出码不匹配时判 `counts_agree_with_exit`，防止输出被截断污染；
     ③ 本仓 `.pytest_cache` 写不进去（Permission denied），所以 pytest 自己的 `--lf` 不可靠，
     失败清单由本工具记账到项目状态目录，`only_failed` 用的是这份账；④ basetemp 一律钉在项目内
-    （用户名带引号时默认 pytest-of-* 会 PermissionError）。
+    （用户名带引号时默认系统临时目录会 PermissionError）。
     覆盖率（`coverage: true`）：真跑一遍并回【哪些文件哪些行没被执行过】；配合 `related:`
     时按你改动的文件圈定范围——比一个全仓百分比有用得多，因为 87% 的横幅完全可能没碰到
     你刚写的三行分支。报告读不出来、或改动文件不在报告里，都明确说「覆盖率未知」而不是

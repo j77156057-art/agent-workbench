@@ -194,9 +194,9 @@ class ExecutionRootIsReportedTests(unittest.TestCase):
     #: `_get_code_root()` 在**什么都没设**时返回第三个——这一点很关键，
     #: 说明「读到空结果」完全可能只是落到了仓库根，而不是试做区失效。
     CANDIDATE_ROOTS = [
-        r"D:\WorkBuddy\godot_sample",
-        r"D:\WorkBuddy\rag-agent\.docmind\project_stages\wf-abc\workspace",
-        r"D:\WorkBuddy\rag-agent",
+        r"C:\work\godot_sample",
+        r"C:\work\rag-agent\.docmind\project_stages\wf-abc\workspace",
+        r"C:\work\rag-agent",
     ]
 
     def test_the_short_form_separates_all_three_roots(self):

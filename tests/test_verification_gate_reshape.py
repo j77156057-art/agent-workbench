@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import agent as agent_mod  # noqa: E402
 from agent_runtime.output_audit import audit_evidence  # noqa: E402
 
-PROJECT = r"D:\WorkBuddy\godot_sample"
+PROJECT = os.getenv("DOCMIND_REAL_GAME_PROJECT", r"<sample-project>")
 HAVE_PROJECT = os.path.isdir(PROJECT)
 
 READ = [{"action": "read_file", "ok": True, "input": "behaviors/enemy.gd"}]

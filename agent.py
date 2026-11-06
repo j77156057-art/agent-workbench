@@ -1882,7 +1882,7 @@ def _dump_stall_probe(llm, messages, acc, turn=None, session_id=""):
 def _short_root(root: str) -> str:
     """执行目录的短形式（最后两段），够区分三种根又不至于把事件行撑爆。
 
-    `D:\\WorkBuddy\\godot_sample` -> `WorkBuddy/godot_sample`
+    `D:\\work\\godot_sample` -> `WorkBuddy/godot_sample`
     `…\\project_stages\\wf-xxx\\workspace` -> `wf-xxx/workspace`
     """
     text = str(root or "").replace("\\", "/").rstrip("/")

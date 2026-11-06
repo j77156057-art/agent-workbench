@@ -23,8 +23,8 @@ from agent_runtime import test_run as tr  # noqa: E402
 
 REAL_SUMMARY = """................FFFF                                       [100%]
 ================================== FAILURES ==================================
-D:\\WorkBuddy\\rag-agent\\tests\\test_a.py:12: AssertionError: 1 != 2
-D:\\WorkBuddy\\rag-agent\\tests\\test_a.py:18: IndexError: list index out of range
+D:\\repo\\rag-agent\\tests\\test_a.py:12: AssertionError: 1 != 2
+D:\\repo\\rag-agent\\tests\\test_a.py:18: IndexError: list index out of range
 =========================== short test summary info ============================
 FAILED tests/test_a.py::T::test_one - AssertionError: 1 != 2
 FAILED tests/test_a.py::T::test_two - IndexError: list index out of range

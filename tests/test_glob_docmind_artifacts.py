@@ -3,7 +3,7 @@
 
 ## 实测事故（2026-10-10）
 
-交付代理在 `D:\\WorkBuddy\\godot_sample` 里跑 `dev_glob('**/*.html')`，
+交付代理在 `<sample-project>` 里跑 `dev_glob('**/*.html')`，
 回报「没有命中文件」，而 `.docmind/web/index.html` 就在脚下 ——
 Godot 的 Web 导出默认就写在 `.docmind/web/`（见 `export_presets.cfg`
 的 `export_path`）。

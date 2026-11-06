@@ -122,7 +122,7 @@ start
 
 ## 端到端验收
 
-`tests/test_game_workflow_e2e.py` 提供一个离线 Godot 最小项目 fixture。它使用真实的 `GameWorkflowManager`，依次验证需求澄清、推荐方案、四任务 DAG、审批、无依赖任务并行、项目文件创建、静态自测、结果复核、五层上下文状态和 LangSmith 事件计数。测试 runner 只替代实际 ToolSpec 执行器，所有文件仍写入临时项目根目录，不访问网络或用户项目。若开发机存在真实项目，可运行 `tests/test_real_godot_acceptance.py`；它会调用真实 Godot headless 主场景并要求收到 `player_ready` 运行事件，当前 `D:\WorkBuddy\godot_sample` 已实际通过该验收。
+`tests/test_game_workflow_e2e.py` 提供一个离线 Godot 最小项目 fixture。它使用真实的 `GameWorkflowManager`，依次验证需求澄清、推荐方案、四任务 DAG、审批、无依赖任务并行、项目文件创建、静态自测、结果复核、五层上下文状态和 LangSmith 事件计数。测试 runner 只替代实际 ToolSpec 执行器，所有文件仍写入临时项目根目录，不访问网络或用户项目。若开发机存在真实项目，可运行 `tests/test_real_godot_acceptance.py`；它会调用真实 Godot headless 主场景并要求收到 `player_ready` 运行事件，当前 `<sample-project>` 已实际通过该验收。
 
 完整真实项目副本验收使用：
 
@@ -136,14 +136,14 @@ $env:DOCMIND_NO_TEST_ISOLATION="1"
 
 ```text
 .venv\\Scripts\\python.exe -m agent_runtime.acceptance \\
-  --project D:\\WorkBuddy\\godot_sample \\
+  --project <sample-project> \\
   --godot D:\\Tools\\Godot\\Godot_v4.7.2-stable_win64_console.exe \\
   --collection docmind_code --json
 ```
 
 报告会逐项记录检索、澄清、分工、审批、执行、Godot headless、自测复核和源项目完整性；使用 `--require-event` 可把运行时事件（例如 `player_ready`）提升为硬门禁。CI 或发布脚本应检查进程退出码和报告中的 `ok`、`source_unchanged`。
 
-该测试从真实项目的 Chroma 代码索引读取证据，把项目复制到临时目录，在副本中执行需求澄清、方案选择、两个无依赖 Subagent 并行、文件写入、审批后的执行、Godot 导入初始化、主场景 Playtest、结果复核和输出审计；源项目不会被写入。当前真实 `D:\WorkBuddy\godot_sample` 副本验收已通过。
+该测试从真实项目的 Chroma 代码索引读取证据，把项目复制到临时目录，在副本中执行需求澄清、方案选择、两个无依赖 Subagent 并行、文件写入、审批后的执行、Godot 导入初始化、主场景 Playtest、结果复核和输出审计；源项目不会被写入。当前真实 `<sample-project>` 副本验收已通过。
 
 任务 DAG 可为每个 Subagent 指定 `persona`、`tools`、`mcp`（`auto|allow|deny`）和 `reflection`。主 Agent 不固定生成成员数量：简单任务可以直接派一个执行代理；复杂文件任务可以先派只读 `dispatcher`（兼容 `planner`，负责任务拆解与分工），由它分析目录、依赖和验收标准，并返回受限 `tasks` JSON。主 Agent 校验后才把这些任务动态加入 DAG，再决定实际执行成员数量。工具权限只能在角色白名单内进一步收窄，不能由模型扩大；`dispatcher/planner` 强制 `MCP=deny` 且不允许写文件，主 Agent 负责汇总、终审和最终写入决策。这些字段会经过白名单和长度校验，持久化到 `subagents`，执行后记录反思结论；反思失败会把任务交回主 Agent 的复核/重规划路径。
 

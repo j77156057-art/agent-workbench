@@ -532,7 +532,7 @@ class FlagSanitizerTests(unittest.TestCase):
         # `assertIn("\\", str(self.wav))` 必红，而它测的其实不是这件事。
         # 这里把路径**换成** Windows 形状再喂给 sanitize_flags：哪个平台上测的
         # 都是同一条判据。
-        windows_path = r"C:\Users\tester\Media\f.wav"
+        windows_path = r"C:\Media\f.wav"
         flags = [flag.replace(str(self.wav), windows_path)
                  for flag in mf.fake_media_flags(self.wav)]
         self.assertEqual(len(visual.sanitize_flags(flags)), 4)

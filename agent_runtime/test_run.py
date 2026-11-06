@@ -9,7 +9,7 @@
    信息，模型读文本时最容易漏的就是这几行。
 3. **`--lf` 在这台机器上不能用**：本工作树的 `.pytest_cache/` 是 `Permission denied`
    （实测每条 pytest 都带 `PytestCacheWarning: could not create cache path
-   D:\\WorkBuddy\\rag-agent\\.pytest_cache\\v\\cache`），pytest 自己的 lastfailed 存不下来。
+   D:\\work\\rag-agent\\.pytest_cache\\v\\cache`），pytest 自己的 lastfailed 存不下来。
    所以"只重跑上次失败的"由本模块自己记账（状态目录里的 last-failed.json），
    并且一律带 `-p no:cacheprovider`——否则每次跑都在刷那条警告，也把"缓存写成功"
    误当成"记账成功"。
@@ -127,7 +127,7 @@ def command(*, paths: list[str], keyword: str, nodeids: list[str],
     argv = ["-m", "pytest", "-q", "--no-header", "-rf", "--tb=line",
             # 本工作树的 .pytest_cache 写不进去（Permission denied），记账由 last-failed.json 做
             "-p", "no:cacheprovider",
-            # 用户名带引号时默认 pytest-of-* 目录会 PermissionError，必须钉在项目内
+            # 用户名带引号时默认系统临时目录会 PermissionError，必须钉在项目内
             "--basetemp=%s" % basetemp]
     if keyword:
         argv += ["-k", keyword]

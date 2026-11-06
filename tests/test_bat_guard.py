@@ -2,7 +2,7 @@
 r"""`agent_runtime/bat_guard.py` 的回归：批处理引号静态门。
 
 这道门防的是 2026-10-02 那次真实事故：`--root "%~dp0"` 让 bootstrap 收到
-`D:\WorkBuddy\rag-agent"`（多一个字面引号），双击启动就炸。它只在**运行时**暴露，
+`<repo>"`（多一个字面引号），双击启动就炸。它只在**运行时**暴露，
 静态检查看不出来，所以判据必须留在纯函数层。
 
 三类用例都在钉不同的东西：
@@ -355,7 +355,7 @@ class RealRepoLauncherTests(unittest.TestCase):
         self.fail(
             "工作树里有启动器现在就会炸（不是这条门的 bug，是那个 .bat 的实参写法）。\n"
             "2026-10-02 已经为这个写法炸过一次：bootstrap 收到 "
-            '"D:\\WorkBuddy\\rag-agent"。\n' + detail)
+            '"<repo>"。\n' + detail)
 
     def test_head_committed_launchers_are_clean(self):
         listing = self._git(["ls-tree", "-r", "--name-only", "-z", "HEAD"])

@@ -5,7 +5,7 @@
 单元测试里调的是 `code_intel.glob_files` / `_parse_keyed`；这里调
 `tools.TOOLS["dev_glob"]["func"]` / `["dev_page_action"]["func"]` /
 `["dev_serve"]["func"]` —— Agent 真正走的入口，参数也是 Agent 真正会写的
-那串多行文本，项目目录用实录里那个 `D:\\WorkBuddy\\godot_sample`。
+那串多行文本，项目目录用实录里那个 `<sample-project>`。
 
 ## ⚠ 脚本自己踩过的两个坑（记在这，免得重犯）
 
@@ -18,6 +18,7 @@
 ## 会真的起 Edge 与静态站，用完必须回收。
 """
 
+import os
 import pathlib
 import re
 import sys
@@ -28,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 import config                                            # noqa: E402
 import tools                                             # noqa: E402
 
-PROJECT = pathlib.Path(r"D:\WorkBuddy\godot_sample")
+PROJECT = pathlib.Path(os.getenv("DOCMIND_REAL_GAME_PROJECT", r"<sample-project>"))
 if not PROJECT.is_dir():
     raise SystemExit("  项目目录不在: %s" % PROJECT)
 config.set_runtime("code_root", str(PROJECT))

@@ -221,12 +221,12 @@ class StageCwdReportTests(unittest.TestCase):
         self.assertNotIn("不在试做区内", text)
 
     def test_the_real_project_counts_as_outside(self):
-        text = agent_runtime_tools.stage_cwd_report(r"D:\WorkBuddy\godot_sample")
+        text = agent_runtime_tools.stage_cwd_report(r"C:\godot_sample")
         self.assertIn("不在试做区内", text)
 
     def test_it_does_not_depend_on_where_state_root_is(self):
         """同一个 stage 路径换个基址也得判成在内。"""
-        for base in (r"C:\tmp\xyz", r"D:\WorkBuddy\rag-agent\.docmind",
+        for base in (r"C:\tmp\xyz", r"C:\work\rag-agent\.docmind",
                      r"/home/u/.docmind"):
             text = agent_runtime_tools.stage_cwd_report(
                 os.path.join(base, "project_stages", "wf-9", "workspace"))
