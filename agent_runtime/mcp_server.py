@@ -10,7 +10,7 @@ MCP 不是绕过护栏的后门，只是换一个入口。
 
 用法：
 
-    python -m agent_runtime.mcp_server --project D:/WorkBuddy/rag-agent [--allow-writes]
+    python -m agent_runtime.mcp_server --project <repo> [--allow-writes]
     python -m agent_runtime.mcp_server --list          # 看会暴露哪些工具
 
 stdio 传输，本机进程级；不开网络端口，因此不存在远程可达面。

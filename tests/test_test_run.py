@@ -403,15 +403,15 @@ class LocationTests(unittest.TestCase):
 
     def test_out_of_project_frames_are_not_passed_off_as_the_scene(self):
         row = {"nodeid": "tests/test_a.py::T::t", "location": "C:/py/unittest/case.py:900"}
-        kept = tr.keep_project_location(row, "D:/WorkBuddy/rag-agent")
+        kept = tr.keep_project_location(row, "D:/repo/rag-agent")
         self.assertEqual(kept["location"], "tests/test_a.py")
         self.assertEqual(kept["external_frame"], "C:/py/unittest/case.py:900")
 
     def test_in_project_locations_are_kept(self):
         row = {"nodeid": "tests/test_a.py::T::t",
-               "location": "D:/WorkBuddy/rag-agent/tests/test_a.py:12"}
-        kept = tr.keep_project_location(row, "D:/WorkBuddy/rag-agent")
-        self.assertEqual(kept["location"], "D:/WorkBuddy/rag-agent/tests/test_a.py:12")
+               "location": "D:/repo/rag-agent/tests/test_a.py:12"}
+        kept = tr.keep_project_location(row, "D:/repo/rag-agent")
+        self.assertEqual(kept["location"], "D:/repo/rag-agent/tests/test_a.py:12")
         self.assertNotIn("external_frame", kept)
 
 
