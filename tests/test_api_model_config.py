@@ -599,5 +599,94 @@ class MissingKeyPreflightTests(unittest.TestCase):
         self.assertFalse(llm.is_retryable(caught.exception))
 
 
+class EmbeddingProviderValidationTests(unittest.TestCase):
+    """embedding_provider 白名单 + 降级可见性。
+
+    以前这里不校验：拼错的值会一路写进运行时与状态文件，embeddings.py 再静默
+    退回哈希兜底 —— 界面显示配置成功，检索其实已经变成字面匹配。
+    """
+
+    def setUp(self):
+        self._old_state = config.STATE_FILE
+        self._old_runtime = dict(config._RUNTIME)
+        self._old_llm = api.agent.llm
+        fd, self._state = tempfile.mkstemp(prefix="docmind_embed_state_", suffix=".json")
+        os.close(fd)
+        os.unlink(self._state)
+        config.STATE_FILE = self._state
+        config.set_runtime("llm_provider", "mock")
+        config.set_runtime("llm_model", "mock")
+
+    def tearDown(self):
+        config.STATE_FILE = self._old_state
+        config._RUNTIME.clear()
+        config._RUNTIME.update(self._old_runtime)
+        api.agent.llm = self._old_llm
+        try:
+            os.unlink(self._state)
+        except OSError:
+            pass
+
+    def test_illegal_value_is_rejected_with_legal_values(self):
+        config.set_runtime("embedding_provider", "local")
+        resp = _call(provider="mock", model="mock",
+                     embedding_provider="openai-embedding")
+        self.assertEqual(resp.status_code, 400)
+        body = json.loads(resp.body.decode("utf-8"))
+        self.assertFalse(body["ok"])
+        for legal in api.SUPPORTED_EMBEDDING_PROVIDERS:
+            self.assertIn(legal, body["error"],
+                          "拒绝信息没列出合法值 %r，用户不知道改成什么" % legal)
+        # 拒绝发生在任何变更之前：运行时与全局 agent 都没被动过
+        self.assertEqual(config.get_runtime("embedding_provider"), "local")
+        self.assertIs(api.agent.llm, self._old_llm)
+
+    def test_legal_value_is_accepted_and_triggers_rebuild(self):
+        config.set_runtime("embedding_provider", "ollama")
+        with patch.object(api, "set_embedding_provider") as setter, \
+                patch.object(api, "reset_collection") as reset:
+            resp = _call(provider="mock", model="mock", embedding_provider="local")
+        self.assertTrue(resp["ok"])
+        setter.assert_called_once_with("local")
+        reset.assert_called_once()
+
+    def test_config_payload_carries_options_and_status(self):
+        async def go():
+            with patch("api.check_ollama", return_value={"reachable": False}):
+                return await api.get_config()
+        resp = asyncio.run(go())
+        self.assertEqual(resp["embedding_options"],
+                         list(api.SUPPORTED_EMBEDDING_PROVIDERS))
+        self.assertIn("embedding_status", resp)
+        for key in ("provider", "degraded", "degraded_reason", "guidance"):
+            self.assertIn(key, resp["embedding_status"])
+
+    def test_qwen_without_key_reports_actionable_guidance(self):
+        with patch.object(api, "get_runtime",
+                          side_effect=lambda name, default=None:
+                          "" if name == "llm_api_key" else default), \
+                patch.dict(os.environ, {"DASHSCOPE_API_KEY": ""}):
+            status = api._embedding_status("qwen")
+        self.assertTrue(status["degraded"])
+        self.assertIn("DASHSCOPE_API_KEY", status["guidance"])
+        self.assertIn("ollama", status["guidance"])
+
+    def test_local_is_reported_as_healthy(self):
+        status = api._embedding_status("local")
+        self.assertFalse(status["degraded"])
+        self.assertEqual(status["guidance"], "")
+
+    def test_ollama_status_reuses_probe_result(self):
+        status = api._embedding_status("ollama", {
+            "reachable": True,
+            "missing_models": ["bge-m3"],
+            "search_degraded": True,
+            "guidance": "ollama pull bge-m3",
+        })
+        self.assertTrue(status["degraded"])
+        self.assertIn("bge-m3", status["degraded_reason"])
+        self.assertEqual(status["guidance"], "ollama pull bge-m3")
+
+
 if __name__ == "__main__":
     unittest.main()

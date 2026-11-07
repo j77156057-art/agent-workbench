@@ -129,6 +129,11 @@ from ingest import ingest_file, ingest_code_directory, load_project_rules
 from data_formats import detect_file
 from vectorstore import reset_collection, list_sources, count
 from llm import LLMClient, MissingAPIKey, probe_ollama_context
+from embeddings import (
+    QWEN_KEY_GUIDANCE,
+    guidance_for as embedding_guidance_for,
+)
+from embeddings import SUPPORTED_PROVIDERS as SUPPORTED_EMBEDDING_PROVIDERS
 from agent_runtime.vision import analyze_images
 from agent_runtime.live_vision_alerts import parse_live_vision_result
 from agent_runtime import capacity as agent_capacity
@@ -6294,11 +6299,54 @@ def _context_source(prov: str, model: str) -> str:
     return "profile"
 
 
+def _embedding_status(emb: str, ollama_status=None) -> dict:
+    """embedding 后端的当前可用性，供 /api/config 回显。
+
+    与 ``EmbeddingClient`` 的降级通道同一口径：不可用时给 ``degraded=True`` +
+    可照做的 ``guidance``，而不是让界面显示「配置成功」、实际却在用哈希兜底。
+
+    - local：用户主动选择，degraded 恒 False（这不是故障）
+    - qwen：缺 Key 即降级（静态判定，不打网络）
+    - ollama：复用 ``check_ollama`` 的探测结果（3s 超时 + 30s 缓存），不重复探测
+    """
+    if emb == "local":
+        return {"provider": emb, "degraded": False,
+                "degraded_reason": "", "guidance": ""}
+    if emb == "qwen":
+        key = get_runtime("llm_api_key") or os.getenv("DASHSCOPE_API_KEY", "")
+        if key:
+            return {"provider": emb, "degraded": False,
+                    "degraded_reason": "", "guidance": ""}
+        return {"provider": emb, "degraded": True,
+                "degraded_reason": "云端嵌入 qwen 未配置 API Key，检索会退回本地哈希向量（非语义）。",
+                "guidance": QWEN_KEY_GUIDANCE}
+    if emb == "ollama":
+        status = ollama_status or {}
+        missing = status.get("missing_models") or []
+        degraded = bool(status.get("search_degraded") or missing)
+        reason = ""
+        if not status.get("reachable", False):
+            reason = "本机 Ollama 未运行，检索会退回本地哈希向量（非语义）。"
+        elif missing:
+            reason = "Ollama 已运行但缺少嵌入模型：%s。" % "、".join(missing)
+        guidance = ""
+        if degraded:
+            guidance = status.get("guidance") or embedding_guidance_for("ollama")
+        return {"provider": emb, "degraded": degraded,
+                "degraded_reason": reason, "guidance": guidance}
+    # 正常路径到不了这里：保存入口已按白名单拒绝。状态文件被手改时仍给结论，不抛。
+    return {"provider": emb, "degraded": True,
+            "degraded_reason": "未知 embedding_provider，已退回本地哈希向量（非语义）。",
+            "guidance": "合法值：%s。" % " / ".join(SUPPORTED_EMBEDDING_PROVIDERS)}
+
+
 @app.get("/api/config")
 async def get_config():
     """返回当前生效的模型配置（不回显 key）。"""
     prov = get_runtime("llm_provider") or LLM_PROVIDER
     emb = get_runtime("embedding_provider") or EMBEDDING_PROVIDER
+    # Ollama 探测只做一次：它带 30s TTL 缓存，且不可达时单次就可能 ~2s。
+    ollama_status = await run_in_threadpool(check_ollama)
     eff_model = get_runtime("llm_model") or LLM_MODEL or PROVIDERS.get(prov, {}).get("default_model", "")
     _ctx_override = get_context_window_override(prov, eff_model)
     _cap_override = get_model_capability_override(prov, eff_model) or {}
@@ -6343,7 +6391,9 @@ async def get_config():
         "capability_override": _cap_override,
         # 当前生效窗口的来源：custom 手填 / probe Ollama 实时探测 / profile 内置画像
         "context_source": _context_source(prov, eff_model),
-        "embedding_options": ["local", "ollama", "qwen"],
+        "embedding_options": list(SUPPORTED_EMBEDDING_PROVIDERS),
+        # 当前后端是否降级 + 可照做的指引（与 embedding_provider 同源，避免只显示「已选中」）
+        "embedding_status": _embedding_status(emb, ollama_status),
         "ingested_files": sorted(_INGESTED),
         "code_root": get_runtime("code_root") or CODE_ROOT,
         "code_sources": count(projects.code_collection(_request_project_id())),
@@ -6374,7 +6424,7 @@ async def get_config():
         "auto_cloud_preset_id": get_runtime("auto_cloud_preset_id") or "",
         "model_presets": _presets_payload(),
         # 同步 urllib 探活放线程池，Ollama 不可达时不阻塞事件循环/拖慢面板打开
-        "ollama_status": await run_in_threadpool(check_ollama),
+        "ollama_status": ollama_status,
     }
 
 
@@ -7351,6 +7401,15 @@ async def _apply_config(req: ConfigReq):
             status_code=400)
     if req.provider not in PROVIDERS:
         return JSONResponse({"ok": False, "error": f"未知 provider: {req.provider}"}, status_code=400)
+    # embedding provider 白名单：必须在任何运行时/持久化变更之前拒绝。
+    # 以前这里不校验，写进一个拼错的值只会让 embeddings.py 静默退回哈希兜底
+    # —— 检索悄悄退化成字面匹配，界面却显示配置成功。
+    if req.embedding_provider and req.embedding_provider not in SUPPORTED_EMBEDDING_PROVIDERS:
+        return JSONResponse(
+            {"ok": False,
+             "error": "embedding_provider 不支持 %r，合法值：%s。"
+                      % (req.embedding_provider, " / ".join(SUPPORTED_EMBEDDING_PROVIDERS))},
+            status_code=400)
     # 搜索/抓取地址的校验也必须在任何状态变更之前（老客户端仍可能带 web_* 打这里）。
     url_error = _web_url_error(req)
     if url_error:
