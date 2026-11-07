@@ -94,6 +94,75 @@ class ScreenCapturePureTests(unittest.TestCase):
                 screen_capture.save_encoded_jpeg("not-a-data-url", tmp))
 
 
+def _gradient_bgra(width, height):
+    """每像素用 (x, y) 编码的合成 BGRA 帧，裁剪后可逐像素核对来源坐标。"""
+    raw = bytearray(width * height * 4)
+    for y in range(height):
+        row = y * width * 4
+        for x in range(width):
+            offset = row + x * 4
+            raw[offset] = x & 0xFF
+            raw[offset + 1] = y & 0xFF
+            raw[offset + 2] = 7
+            raw[offset + 3] = 255
+    return bytes(raw)
+
+
+class CaptureGeometryContractTests(unittest.TestCase):
+    """截图坐标系契约：输出图像的 (0,0) 必须是客户区的 (0,0)。"""
+
+    # 实测的 8,31 是这台机器一个典型顶层窗口的非客户区偏移；它不该写死，
+    # 只作为「已知矩形 → 偏移」的核对样例。
+    WINDOW = {"x": 100, "y": 100, "width": 816, "height": 631}
+    CLIENT = {"width": 800, "height": 600}
+    ORIGIN = {"x": 108, "y": 131}
+
+    def test_known_rect_crop_offset(self):
+        crop = screen_capture.compute_client_crop(
+            self.WINDOW, self.CLIENT, self.ORIGIN)
+        self.assertEqual((crop["left"], crop["top"]), (8, 31))
+        self.assertEqual((crop["right"], crop["bottom"]), (8, 0))
+        self.assertEqual((crop["width"], crop["height"]), (800, 600))
+
+    def test_full_window_frame_is_cropped_to_client(self):
+        width, height = 100, 60
+        window = {"x": 10, "y": 20, "width": width, "height": height}
+        client = {"width": 80, "height": 40}
+        origin = {"x": 15, "y": 26}  # 左 5、上 6
+        crop = screen_capture.compute_client_crop(window, client, origin)
+        raw, out_w, out_h = screen_capture.crop_client_frame(
+            _gradient_bgra(width, height), width, height, crop)
+        self.assertEqual((out_w, out_h), (80, 40))
+        self.assertEqual((raw[0], raw[1], raw[3]), (5, 6, 255))
+        self.assertEqual((raw[-4], raw[-3]), (5 + 80 - 1, 6 + 40 - 1))
+        screen_capture.assert_frame_matches_client(out_w, out_h, 80, 40)
+
+    def test_size_mismatch_raises_geometry_error(self):
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.assert_frame_matches_client(798, 600, 800, 600)
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.assert_frame_matches_client(800, 598, 800, 600)
+        # 1px 取整误差是允许的
+        screen_capture.assert_frame_matches_client(801, 599, 800, 600)
+
+    def test_crop_rejects_client_outside_window(self):
+        bad_origin = {"x": 90, "y": 100}  # 客户区原点在外框左侧之外
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.compute_client_crop(self.WINDOW, self.CLIENT, bad_origin)
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.compute_client_crop(
+                self.WINDOW, {"width": 900, "height": 600}, self.ORIGIN)
+
+    def test_crop_frame_rejects_bad_bytes_and_bounds(self):
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.crop_client_frame(b"short", 2, 2, {
+                "left": 0, "top": 0, "width": 2, "height": 2})
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.crop_client_frame(
+                _gradient_bgra(4, 4), 4, 4,
+                {"left": 3, "top": 0, "width": 2, "height": 2})
+
+
 class EmbeddedTargetTests(unittest.TestCase):
     def test_picks_largest_alive_child_for_project(self):
         children = [

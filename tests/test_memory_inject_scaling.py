@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""L2/L3/L4 注入上限随模型窗口缩放：下限不许跌破，上限不许失控，宪法永远固定。
+"""共享/项目/钩子注入上限随模型窗口缩放：下限不许跌破，上限不许失控，常驻守则永远固定。
 
 动机不是"大窗口要多塞记忆"，而是挡两头：
-- 小窗口模型上，把比例当唯一依据会算出 230 字符这种连宪法都装不下的数（实测 8k 窗口
+- 小窗口模型上，把比例当唯一依据会算出 230 字符这种连常驻守则都装不下的数（实测 8k 窗口
   → 预算 4608 tok → 5% 只有 230 tok）；
 - 百万窗口上，同一比例会给出 35k tok 的记忆空间，而卡住注入的一直是**内容量**
-  （实测 L2 用 32%、L4 用 0%）—— 放大预算只会让固化堆得更凶。
+  （实测共享层用 32%、会话钩子用 0%）—— 放大预算只会让固化堆得更凶。
 """
 import os
 import tempfile
@@ -38,11 +38,11 @@ class DiscretionaryBudgetTests(unittest.TestCase):
 
     def test_big_window_grows_but_stays_capped(self):
         mid = injection.discretionary_budgets(87307)
-        self.assertGreater(mid["L2"], injection.DISCRETIONARY_FLOORS["L2"])
-        self.assertLess(mid["L2"], injection.DISCRETIONARY_CAPS["L2"])
-        # 相对比例不许随窗口漂移：L2 > L4 > L3
-        self.assertGreater(mid["L2"], mid["L4"])
-        self.assertGreater(mid["L4"], mid["L3"])
+        self.assertGreater(mid["shared"], injection.DISCRETIONARY_FLOORS["shared"])
+        self.assertLess(mid["shared"], injection.DISCRETIONARY_CAPS["shared"])
+        # 相对比例不许随窗口漂移：共享 > 会话钩子 > 项目
+        self.assertGreater(mid["shared"], mid["hook"])
+        self.assertGreater(mid["hook"], mid["project"])
         floors = injection.discretionary_budgets(0)
         huge = injection.discretionary_budgets(702034)
         for key, cap in injection.DISCRETIONARY_CAPS.items():
@@ -50,14 +50,14 @@ class DiscretionaryBudgetTests(unittest.TestCase):
                 self.assertLessEqual(huge[key], cap)
                 self.assertGreaterEqual(huge[key], floors[key])
         self.assertLessEqual(sum(huge.values()), sum(injection.DISCRETIONARY_CAPS.values()))
-        # 各层 cap 不是同一比例，所以 L3 先顶到帽；剩下的余量**不挪给别层**，
+        # 各层 cap 不是同一比例，所以项目层先顶到帽；剩下的余量**不挪给别层**，
         # 于是有效总池小于 cap 合计 —— 这是刻意的：宁可少注入，也不随窗口失控。
-        self.assertEqual(huge["L3"], injection.DISCRETIONARY_CAPS["L3"])
+        self.assertEqual(huge["project"], injection.DISCRETIONARY_CAPS["project"])
         self.assertGreater(sum(huge.values()), sum(floors.values()))
 
     def test_constitution_and_profile_are_not_scalable(self):
-        """L0/L1 换个大模型不会变长，放进这张表就是设计错误。"""
-        for key in ("L0", "L1", "rules", "summary"):
+        """常驻守则/画像/任务书换个大模型不会变长，放进这张表就是设计错误。"""
+        for key in ("rule", "profile", "rules", "summary", "taskbook"):
             with self.subTest(key=key):
                 with self.assertRaises(ValueError):
                     injection.layer_chars(key, 87307)
@@ -113,7 +113,7 @@ class WiringTests(unittest.TestCase):
                                     project_id="prj-wire")
         with patch.object(injection, "layer_chars", side_effect=spy):
             instance._build_messages("随便问问")
-        self.assertEqual(set(seen), {"L2", "L3", "L4"}, "三层里有人没接上缩放")
+        self.assertEqual(set(seen), {"shared", "project", "hook"}, "三层里有人没接上缩放")
         self.assertEqual(set(seen.values()), {instance._prompt_budget()},
                          "用的不是本模型的 prompt 预算")
 
@@ -123,13 +123,14 @@ class WiringTests(unittest.TestCase):
             view = context_panel.next_view("prj-panel", "s-panel")
             expected = injection.discretionary_budgets(702034)
         layers = {layer["key"]: layer for layer in view["layers"]}
-        for key in ("L2", "L3", "L4"):
-            self.assertEqual(layers[key]["budget"], expected[key],
+        for key in ("shared", "taskbook", "hook"):
+            expected_key = "project" if key == "taskbook" else key
+            self.assertEqual(layers[key]["budget"], expected[expected_key],
                              "面板显示的预算和它真正用的不是一份")
             self.assertGreaterEqual(layers[key]["budget"],
-                                    injection.DISCRETIONARY_FLOORS[key])
-        self.assertEqual(layers["L0"]["budget"], constitution.INJECT_MAX_CHARS,
-                         "宪法那层不许跟着窗口漂")
+                                    injection.DISCRETIONARY_FLOORS[expected_key])
+        self.assertEqual(layers["rule"]["budget"], constitution.INJECT_MAX_CHARS,
+                         "常驻守则那层不许跟着窗口漂")
 
 
 if __name__ == "__main__":

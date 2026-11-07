@@ -148,6 +148,21 @@ def call(nm, *a, **kw):
     return tx(REG[nm].func(*a, **kw))
 
 
+def call_approved(nm, *a, **kw):
+    """走真实用户审批台账批准后重试，不绕过统一桌面边界。"""
+    out = call(nm, *a, **kw)
+    try:
+        payload = json.loads(out)
+    except (TypeError, ValueError):
+        return out
+    if not payload.get("approval_required"):
+        return out
+    import game_workbench
+    game_workbench.approval(str(BOX), payload["action"], "pytest-user",
+                            approved=True, target=payload["target"])
+    return call(nm, *a, **kw)
+
+
 class CodeBaseToolsTests(unittest.TestCase):
     """代码库类：读 / 检索 / 计算 / 文档 / 写入 / 记忆 / 自省。"""
 
@@ -265,9 +280,9 @@ class BrowserChainTests(unittest.TestCase):
         time.sleep(1.5)
         cls.page = ""
         try:
-            out = call("dev_page_action",
-                       "action: open\nurl: http://127.0.0.1:%d/page.html\n"
-                       % cls.port)
+            out = call_approved("dev_page_action",
+                                "action: open\nurl: http://127.0.0.1:%d/page.html\n"
+                                % cls.port)
             m = re.search(r"page=([0-9a-f]+)", out)
             cls.page = m.group(1) if m else ""
             cls.open_out = out
@@ -297,9 +312,9 @@ class BrowserChainTests(unittest.TestCase):
         「生效（DOM 变了）」，于是被判成「半通」。读回 DOM 是与措辞无关的。
         """
         self.assertTrue(self.page, "前置：本轮没能开出会话")
-        call("dev_page_action",
-             "action: click\npage: %s\nselector: #btn\nsettle: 700\n"
-             % self.page)
+        call_approved("dev_page_action",
+                      "action: click\npage: %s\nselector: #btn\nsettle: 700\n"
+                      % self.page)
         got = call("dev_page_action",
                    "action: read\npage: %s\nselector: #hi\n" % self.page)
         self.assertIn("clicked", got,
@@ -313,9 +328,9 @@ class BrowserChainTests(unittest.TestCase):
         「字已经进框了」也回报 ok:false——Agent 会去重试或回报填不进去。
         """
         self.assertTrue(self.page, "前置：本轮没能开出会话")
-        out = call("dev_page_action",
-                   "action: type\npage: %s\nselector: #fld\n"
-                   "value: 基线 typed\nsettle: 700\n" % self.page)
+        out = call_approved("dev_page_action",
+                            "action: type\npage: %s\nselector: #fld\n"
+                            "value: 基线 typed\nsettle: 700\n" % self.page)
         # 判定读回 DOM，不匹配文案；outcome 必须是「生效」而非「没有观察到变化」
         # （这条正是被修的东西）。判定行格式 "type：<outcome> —— DOM..."，成功分支
         # 文案会变（"文本已填入" / "画面变了，DOM 没变 —— canvas..." 都算生效），
@@ -343,20 +358,18 @@ class DesktopAndGameTests(unittest.TestCase):
                          "截屏回报里没有尺寸：%s" % out[:120])
 
     def test_desktop_action_reports_a_coherent_result(self):
-        """`dev_desktop_action` 是 ADMIN：按当前设计，可逆动作**直接执行或如实报错**。
-
-        「留地板、拆其余」重构里逐次审批门被拆（gate 恒为 None），所以这里不再断言
-        「需要审批」——那已是死代码。基线回到「如实回报」：结果必须是带布尔 ok 的
-        结构化 JSON，绝不静默、绝不假成功、也绝不谎称要审批。用 target=engine 做
-        非侵入探针（测试环境没起引擎，解析不到窗口→如实报错），不去点真实前台窗口。
-        """
+        """首次如实要求审批；真实台账批准后重试，返回结构化执行结果。"""
         out = call("dev_desktop_action",
                    "action: click\ntarget: engine\nx: 10\ny: 10\n")
         payload = json.loads(out)
-        self.assertIsInstance(payload.get("ok"), bool,
-                              "dev_desktop_action 没回结构化 ok：%s" % out[:140])
-        self.assertNotIn("approval_required", payload,
-                         "逐次审批卡已拆，不该再谎称需要审批")
+        self.assertFalse(payload["ok"])
+        self.assertTrue(payload["approval_required"])
+        approved_out = call_approved("dev_desktop_action",
+                                     "action: click\ntarget: engine\nx: 10\ny: 10\n")
+        approved = json.loads(approved_out)
+        self.assertIsInstance(approved.get("ok"), bool,
+                              "批准后没回结构化 ok：%s" % approved_out[:140])
+        self.assertNotIn("approval_required", approved)
 
     @unittest.skipUnless(os.name == "nt", "前台窗口抓屏是 Windows GDI 能力")
     def test_game_screenshot_reports_source_and_size(self):

@@ -163,6 +163,20 @@ class TestThinkingParameterShapeReallySent:
         assert "extra_body" not in got, (
             "明确不支持思考的模型也发了参数：%r" % got.get("extra_body"))
 
+    @pytest.mark.parametrize("provider,model", [
+        ("deepseek", "deepseek-flash"),
+        ("opencode", "deepseek-v4.1-flash"),
+    ])
+    def test_thinking_omits_ignored_sampling_parameters(self, provider, model):
+        on = _real_kwargs(provider, model, True)
+        assert "temperature" not in on
+        off = _real_kwargs(provider, model, False)
+        assert off.get("temperature") == llm_mod.LLM_TEMPERATURE
+
+    def test_qwen_thinking_keeps_temperature(self):
+        got = _real_kwargs("qwen", "qwen3-35b-a3b", True)
+        assert got.get("temperature") == llm_mod.LLM_TEMPERATURE
+
     def test_json_serialisable(self):
         """`extra_body` 最终要进 HTTP body —— 不可序列化等于发不出去。"""
         for prov, model in (("deepseek", "deepseek-flash"), ("qwen", "qwen3-35b-a3b")):

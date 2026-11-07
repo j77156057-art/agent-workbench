@@ -12,13 +12,18 @@
 
 隔离
 ----
-- setUp 把 `config.STATE_FILE` / `sessions.SESSIONS_DIR` / `config.CHROMA_DIR` 指到临时目录，
+- setUp 把 `config.STATE_FILE` / `sessions.SESSIONS_DIR` / `config.CHROMA_DIR`
+  （连同 `vectorstore` 里 import 时复制的 `CHROMA_DIR` 与惰性 client）都指到临时目录，
   快照并还原 `config._RUNTIME` 与 `api._SESSION_AGENTS`，`DOCMIND_PROJECTS=1`；
-- tearDown 断言仓库真实 `.docmind_state.json` / `.docmind_sessions/` / `.chroma/` **字节级不变**。
+- tearDown 断言仓库真实 `.docmind_state.json` / `.docmind_sessions/` 未被污染，
+  且整个用例期间 `CHROMA_DIR` 始终指向临时目录。
+  **不再对真实 `.chroma/` 做字节级快照**：它是 workspace 级运行期 DB（8000/8124 的
+  常驻服务也在写），字节变化无法归因到本用例；隔离本身由上面的路径断言保证。
 
 运行：`.venv/Scripts/python.exe -B -m unittest tests.test_project_routing_qa -v`
 """
 import asyncio
+import hashlib
 import os
 import shutil
 import sys
@@ -37,7 +42,50 @@ import api  # noqa: E402
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_STATE = os.path.join(_REPO_ROOT, ".docmind_state.json")
 _REPO_SESSIONS = os.path.join(_REPO_ROOT, ".docmind_sessions")
-_REPO_CHROMA = os.path.join(_REPO_ROOT, ".chroma")
+
+# 快照哨兵的失败输出有硬上限：先比「长度 + sha256」，不一致时才展开；
+# 展开后每项只留前 N 字节、每次最多列 M 条，整条消息不超过 REPORT_MAX。
+_SNAP_BYTES_SHOWN = 64
+_SNAP_ITEMS_SHOWN = 12
+_SNAP_CHANGED_SHOWN = 3
+_SNAP_REPORT_MAX = 4096
+
+
+def _sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _blob_info(value):
+    """把 bytes / 标记 / 路径元组压成一行可读摘要（内容只留前 N 字节）。"""
+    if value is None:
+        return "<missing>"
+    if isinstance(value, bytes):
+        return "len=%d sha256=%s head=%r" % (
+            len(value), _sha256(value)[:16], value[:_SNAP_BYTES_SHOWN])
+    if isinstance(value, (tuple, list)):
+        return repr(tuple(value))[:_SNAP_BYTES_SHOWN]
+    return str(value)
+
+
+def _value_fp(value):
+    """比较用的轻量指纹：bytes 只留长度 + 哈希，不物化内容。"""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return ("bytes", len(value), _sha256(value))
+    if isinstance(value, (tuple, list)):
+        return ("seq", tuple(str(v) for v in value))
+    return ("marker", str(value))
+
+
+def _item_equal(before, after):
+    if isinstance(before, dict) or isinstance(after, dict):
+        if not (isinstance(before, dict) and isinstance(after, dict)):
+            return False
+        if set(before) != set(after):
+            return False
+        return all(_value_fp(before[k]) == _value_fp(after[k]) for k in before)
+    return _value_fp(before) == _value_fp(after)
 
 
 def _dir_snapshot(path):
@@ -62,7 +110,48 @@ def _snapshot_repo():
     if os.path.isfile(_REPO_STATE):
         with open(_REPO_STATE, "rb") as f:
             state = f.read()
-    return state, _dir_snapshot(_REPO_SESSIONS), _dir_snapshot(_REPO_CHROMA)
+    import vectorstore as _vs  # 本模块已被 api 导入；这里只读它的运行时路径
+    return state, _dir_snapshot(_REPO_SESSIONS), (
+        config.CHROMA_DIR, getattr(_vs, "CHROMA_DIR", None))
+
+
+_SNAP_LABELS = (" .docmind_state.json", " .docmind_sessions/",
+                " CHROMA_DIR（config, vectorstore）")
+
+
+def _snapshot_mismatch(before, after):
+    """相等返回 None；不等返回一段可读且有硬上限的 diff（绝不无界打印）。"""
+    if all(_item_equal(b, a) for b, a in zip(before, after)):
+        return None
+    lines = []
+    for label, b, a in zip(_SNAP_LABELS, before, after):
+        if _item_equal(b, a):
+            continue
+        lines.append("[%s] 不一致" % label)
+        if isinstance(b, dict) and isinstance(a, dict):
+            bk, ak = set(b), set(a)
+            added, removed = sorted(ak - bk), sorted(bk - ak)
+            changed = sorted(k for k in bk & ak if _value_fp(b[k]) != _value_fp(a[k]))
+            lines.append("  条数 before=%d after=%d" % (len(b), len(a)))
+            if added:
+                lines.append("  + 新增 %d: %s" % (len(added), ", ".join(added[:_SNAP_ITEMS_SHOWN])))
+            if removed:
+                lines.append("  - 删除 %d: %s" % (len(removed), ", ".join(removed[:_SNAP_ITEMS_SHOWN])))
+            if changed:
+                lines.append("  ~ 变更 %d（展示前 %d）:" % (
+                    len(changed), min(len(changed), _SNAP_CHANGED_SHOWN)))
+                for key in changed[:_SNAP_CHANGED_SHOWN]:
+                    lines.append("    %s: before=%s after=%s" % (
+                        key, _blob_info(b[key]), _blob_info(a[key])))
+        else:
+            lines.append("  before: %s" % _blob_info(b))
+            lines.append("  after : %s" % _blob_info(a))
+        if sum(len(x) for x in lines) > _SNAP_REPORT_MAX:
+            break
+    text = "\n".join(lines)
+    if len(text) > _SNAP_REPORT_MAX:
+        text = text[:_SNAP_REPORT_MAX] + "\n…（已截断：报告上限 %d 字符）" % _SNAP_REPORT_MAX
+    return ("用例污染了仓库真实状态（或测试期 CHROMA_DIR 被改回真实目录）\n" + text)
 
 
 def _build_probe_app():
@@ -112,10 +201,19 @@ class QABase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="dm_p3qa_")
         self._old_state_file = config.STATE_FILE
         self._old_sessions_dir = sessions.SESSIONS_DIR
+        self._old_chroma_dir = config.CHROMA_DIR
+        import vectorstore as _vs
+        # vectorstore 在 import 时把 CHROMA_DIR 复制成了模块常量，惰性 client 也缓存了
+        # 真实目录；只改 config 不够，必须一起重定向（否则本用例仍会写真实 .chroma）。
+        self._old_vectorstore = (_vs, _vs.CHROMA_DIR, _vs._client)
         self._old_runtime = dict(config._RUNTIME)
         self._old_agents = dict(api._SESSION_AGENTS)
         config.STATE_FILE = os.path.join(self.tmp, ".docmind_state.json")
         sessions.SESSIONS_DIR = os.path.join(self.tmp, "sessions")
+        chroma_tmp = os.path.join(self.tmp, "chroma")
+        config.CHROMA_DIR = chroma_tmp
+        _vs.CHROMA_DIR = chroma_tmp
+        _vs._client = None
         self._env = mock.patch.dict(os.environ, {"DOCMIND_PROJECTS": "1",
                                                  "DOCMIND_OLLAMA_PROBE": "0"})
         self._env.start()
@@ -135,17 +233,23 @@ class QABase(unittest.TestCase):
         self._repo_before = _snapshot_repo()
 
     def tearDown(self):
+        # 污染哨兵：在还原隔离之前取快照（此时 CHROMA_DIR 必须仍指向 tmp）。
+        # 先比长度/哈希，不等才生成有硬上限的 diff；失败也必须先把状态还原干净。
+        mismatch = _snapshot_mismatch(self._repo_before, _snapshot_repo())
         self._env.stop()
         config.STATE_FILE = self._old_state_file
         sessions.SESSIONS_DIR = self._old_sessions_dir
+        config.CHROMA_DIR = self._old_chroma_dir
+        _vs, _vs_dir, _vs_client = self._old_vectorstore
+        _vs.CHROMA_DIR = _vs_dir
+        _vs._client = _vs_client
         config._RUNTIME.clear()
         config._RUNTIME.update(self._old_runtime)
         api._SESSION_AGENTS.clear()
         api._SESSION_AGENTS.update(self._old_agents)
-        # 污染哨兵：仓库真实状态必须字节级不变
-        self.assertEqual(_snapshot_repo(), self._repo_before,
-                         "用例污染了仓库真实 .docmind_state.json/.docmind_sessions/.chroma")
         shutil.rmtree(self.tmp, ignore_errors=True)
+        if mismatch:
+            self.fail(mismatch)
 
     def _mkdir(self, name):
         d = os.path.join(self.tmp, name)

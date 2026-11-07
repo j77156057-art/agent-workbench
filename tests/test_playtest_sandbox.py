@@ -117,12 +117,13 @@ def test_dev_desktop_action_executes_directly_but_only_on_its_own_window(monkeyp
     """
     root = _project(tmp_path)
     game_workbench.grant_playtest_sandbox(root, "tester")
+    monkeypatch.setattr(game_workbench, "require_approval", lambda *args, **kwargs: None)
     monkeypatch.setattr(tools, "_get_code_root", lambda: root)
     resolved, sent = _drive_desktop(monkeypatch, root)
 
     ok = json.loads(tools.dev_desktop_action(
         "action: click\ntarget: engine\nx: 10\ny: 20"))
-    assert ok["ok"] is True, "当场指定的桌面动作不再需要逐次审批"
+    assert ok["ok"] is True, f"统一审批通过后可执行桌面动作：{ok}"
     assert resolved[0]["root"] == root, "引擎窗口必须按当前项目根解析"
     assert sent == [2]
 
@@ -139,14 +140,15 @@ def test_dev_desktop_action_executes_directly_but_only_on_its_own_window(monkeyp
 
 
 def test_dev_desktop_action_foreground_resolves_without_leaking_a_root(monkeypatch, tmp_path):
-    """foreground 也直接执行（旧逐次审批门已拆），但它不能借到项目根的窗口。"""
+    """foreground 经统一审批后可执行，但不能借到项目根的窗口。"""
     root = _project(tmp_path)
+    monkeypatch.setattr(game_workbench, "require_approval", lambda *args, **kwargs: None)
     monkeypatch.setattr(tools, "_get_code_root", lambda: root)
     resolved, sent = _drive_desktop(monkeypatch, root)
 
     result = json.loads(tools.dev_desktop_action(
         "action: click\ntarget: foreground\nx: 5\ny: 5"))
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert [item["target"] for item in resolved] == ["foreground"]
     assert len(sent) == 1
 
@@ -233,7 +235,7 @@ def test_visual_click_rides_the_sandbox_then_falls_back_after_expiry(monkeypatch
 
         result = visual_click.execute("prj-x", root,
                                       proposal_id=located["proposal_id"], gate=True)
-        assert result["ok"] is True and result["executed"] is True
+        assert result["ok"] is True, result and result["executed"] is True
         assert result["sandbox"]["lease_id"]
         assert len(clicked) == 1
 
@@ -297,6 +299,7 @@ def test_stage_dev_desktop_action_resolves_the_stage_window(monkeypatch, tmp_pat
     origin = _project(tmp_path, "origin")
     stage = _project(tmp_path, "stage")
     game_workbench.grant_playtest_sandbox(origin, "tester")
+    monkeypatch.setattr(game_workbench, "require_approval", lambda *args, **kwargs: None)
     monkeypatch.setattr(tools, "_get_code_root", lambda: stage)
     resolved, _sent = _drive_desktop(monkeypatch, stage)
 
@@ -304,7 +307,7 @@ def test_stage_dev_desktop_action_resolves_the_stage_window(monkeypatch, tmp_pat
         result = json.loads(tools.dev_desktop_action(
             "action: click\ntarget: engine\nx: 10\ny: 20"))
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert resolved and resolved[-1]["root"] == stage, "窗口解析必须留在试做区副本"
     assert not os.path.exists(game_workbench.playtest_sandbox_path(stage)), \
         "试做区目录下不应出现租约副本"

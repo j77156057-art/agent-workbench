@@ -134,10 +134,10 @@ class PreviewAdapterToolTests(unittest.TestCase):
         self.assertFalse(invalid_target["ok"])
 
     def test_desktop_action_executes_directly_and_never_echoes_text(self):
-        """「留地板、拆其余」：可逆的桌面点击/输入不再逐次弹审批卡，直接执行。
+        """local 模式直接执行桥接动作，且输入文本绝不回显。
 
-        幸存的地板是隐私——送进输入层的文本绝不能回显到工具结果里。逐次审批门
-        （gate）已被拆成死代码，这里断言的是当前真实行为。
+        enterprise 默认 strict 的逐次审批契约由 test_enterprise_sandbox_boundaries.py 覆盖；
+        这里只验证 local 桥接与隐私行为，不把两种执行模式混在一条断言里。
         """
         import desktop_actions
         sent = {}
@@ -148,7 +148,8 @@ class PreviewAdapterToolTests(unittest.TestCase):
             return {"ok": True, "action": action, "target": kw.get("target"),
                     "events": 2, "window": {"width": 200, "height": 100}, "error": ""}
 
-        with patch.object(desktop_actions, "perform", side_effect=fake_perform):
+        with patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"}), \
+                patch.object(desktop_actions, "perform", side_effect=fake_perform):
             result = json.loads(tools.dev_desktop_action(
                 "action: type\ntarget: embedded\ntext: super secret"))
 
@@ -158,14 +159,15 @@ class PreviewAdapterToolTests(unittest.TestCase):
         self.assertEqual(sent["text"], "super secret")
         # ……但绝不出现在返回给调用方/日志的结果里。
         self.assertNotIn("super secret", json.dumps(result, ensure_ascii=False))
-        self.assertNotIn("blocked", result, "逐次审批卡已拆，桌面可逆动作不再有 blocked 门")
+        self.assertNotIn("blocked", result)
 
     def test_desktop_action_save_maps_to_control_s(self):
         import desktop_actions
-        with patch("desktop_actions.perform", return_value={"ok": True}) as perform:
+        with patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"}), \
+                patch("desktop_actions.perform", return_value={"ok": True}) as perform:
             result = json.loads(tools.dev_desktop_action("action: save\ntarget: foreground"))
         self.assertTrue(result["ok"])
-        # save 直接透传到 perform（无逐次审批卡），由 perform 内部映射 Control_L+s
+        # local 模式直接透传到 perform，由 perform 内部映射 Control_L+s。
         self.assertEqual(perform.call_args.args[0], "save")
         self.assertEqual(perform.call_args.kwargs["key"], "")
         with patch.object(desktop_actions, "_resolve_target", return_value=(1, {
@@ -177,8 +179,9 @@ class PreviewAdapterToolTests(unittest.TestCase):
         press.assert_called_once_with("Control_L+s")
 
     def test_desktop_action_does_not_fake_success_when_bridge_fails(self):
-        with patch("desktop_actions.perform",
-                   return_value={"ok": False, "error": "Windows 未确认输入事件"}):
+        with patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"}), \
+                patch("desktop_actions.perform",
+                      return_value={"ok": False, "error": "Windows 未确认输入事件"}):
             result = json.loads(tools.dev_desktop_action(
                 "action: click\ntarget: embedded\nx: 4\ny: 5"))
         self.assertFalse(result["ok"])

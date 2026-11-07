@@ -4,7 +4,8 @@
 
 - 默认全量离线，确定性可复现：固定响应桩 LLM，不联网、不依赖模型额度。
 - 每个用例一个独立临时目录（临时 `.docmind_sessions` / sqlite / memory），跑完即删；绝不写仓库里的真实记忆、`data/state.db` 或真实会话文件。
-- 真实模型用例单独放在 `cases/live/`，默认 `SKIP`，只有显式 `--live` 才跑，且不参与快照比对。
+- 真实模型用例单独放在 `cases/live/`，默认 `SKIP`；只有 `pytest --live`（或环境变量 `DOCMIND_GOLDEN_LIVE=1`）才跑，且不参与快照比对。
+- 24 条离线用例已接入 pytest（`tests/test_memory_golden.py`），CI 每次都会跑；`runner.py` 只用于 `--live` 与单例调试。
 - 不改产品代码。本套件只通过公开/现有函数调用产品逻辑；若某条性质必须改产品代码才能测，应在评审里停下来讨论，而不是顺手改。
 
 ## 目录
@@ -18,16 +19,27 @@ tests/golden/memory/
   expected/*.json      黄金快照（逐字期望观测结果）
 ```
 
+pytest 入口在 `tests/test_memory_golden.py`：24 条离线用例逐条参数化，
+并额外守住「用例数固定 24」与「cases/expected 一一对应」两道闸。
+
 ## 每条用例为什么存在
 
 | 用例 | 守住的性质（一句话） |
 | --- | --- |
 | `hard_constraints_survive` | 早期硬约束必须穿过 20 轮压缩后仍逐字可见，不能被 rolling 淘汰。 |
 | `pinned_not_in_compact_prompt` | 压缩 LLM 的提示词只能收到 rolling，绝不能再次收到 pinned 正文。 |
+| `pinned_absent_all_prompts` | pinned 正文与「【固定事实…】」标记不得出现在任何一份压缩/合并提示词里（全量计数，不是抽检）。 |
+| `pinned_prefix_checker_teeth` | 对真实 pinned 做改字节/截断/重排三种变异，同一套「旧前缀逐字节保留 + 只追加尾部」判定必须全部判红。 |
+| `pinned_tombstone` | 用户删除固定事实后跑完整提取，该事实不得回流 pinned，审计里必须有 `pinned_readd_suppressed`。 |
+| `pinned_model_no_delete` | 模型路径只能追加：更短摘要、删除接口、空列表覆盖三种攻击都必须被忽略。 |
+| `pinned_monotonic` | 90 轮压测下旧 pinned 逐字节保留在最前、增长只追加尾部，条目数在非 user 路径不得减少。 |
+| `pinned_bytes_stable` | 连续 90 轮压缩后 pinned 逐字节不变（字节相等 + sha256 相等）。 |
+| `pinned_idle_bytes_identical` | 没有新硬约束的轮次，pinned 必须逐字节完全相同（旧前缀逐字节保留的对照组）。 |
 | `rolling_evict` | rolling 超限时只淘汰最旧段，最新段保留，并留下可定位的省略标记。 |
 | `pinned_full_evict` | pinned 满时出现「固定事实前缀已满」，最旧非约束条目移入 rolling 且内容不丢。 |
 | `hard_absorbed` | pinned 未满时，压缩中途新增的硬约束直接进入固定事实。 |
 | `cap_extreme` | 分节标记唯一，极端上限 256 下不腰斩，总长永不超上限。 |
+| `det_cap_guard` | DET 回退路径下 cap 系列从未收到含 pinned 的串，裁剪/淘汰标记也不会切在 pinned 内部。 |
 | `idempotent` | `maybe_compact` 重复调用幂等：第二次不二次压缩，文本与轮次都不变。 |
 | `legacy_migration` | 无标记旧摘要逐字截头进 pinned，标注 `pinned_from_legacy_head`，两次结果一致。 |
 | `write_inject` | 写回磁盘的摘要与真正注入 prompt 的片段逐字一致（比对实际 system 消息）。 |
@@ -42,14 +54,22 @@ tests/golden/memory/
 
 ## 运行
 
-```powershell
-# 全量离线（live 自动 SKIP）
-.venv\Scripts\python.exe tests/golden/memory/runner.py --all
+**CI / 日常回归走 pytest**（24 条离线用例逐条独立，失败即定位到 case id）：
 
-# 单条
+```powershell
+.venv\Scripts\python.exe -m pytest tests/test_memory_golden.py -q
+
+# 只跑某条
+.venv\Scripts\python.exe -m pytest tests/test_memory_golden.py -q -k rolling_evict
+```
+
+`runner.py` 保留给两类场景：真实模型 live 组，以及单例调试（带表头、耗时与第一处差异）：
+
+```powershell
+# 单例调试（与 pytest 共用同一套执行与快照比对）
 .venv\Scripts\python.exe tests/golden/memory/runner.py --case rolling_evict
 
-# 额外跑 live 组（会调用真实模型，默认套件不会）
+# 额外跑 live 组（会调用真实模型；也可用 pytest --live 或 DOCMIND_GOLDEN_LIVE=1）
 .venv\Scripts\python.exe tests/golden/memory/runner.py --all --live
 ```
 

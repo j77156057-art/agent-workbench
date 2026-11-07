@@ -10,7 +10,7 @@
     FAILED tests/test_a.py::x - assert 0 == 1          -> _is_failure False
 
 而 `_is_failure` 的反面就是 `_tool_ok`，`_tool_ok` 决定三件事：
-1. `turn.failure_count += 1` / `last_failure` → 回合收尾写不写 **L4 error 钩子**；
+1. `turn.failure_count += 1` / `last_failure` → 回合收尾写不写 **会话钩子的 error 条目（旧编号 L4，已废弃）**；
 2. `tool_fail_streak` / `fail_total` → **3 次熔断**与重试配额；
 3. `turn.tool_step(ok=…)` → episode 里的 actions 与证据链。
 
@@ -295,7 +295,7 @@ class WiringTests(unittest.TestCase):
 
 
 class ProfileCaptureIsolationTests(_IsoBase):
-    """L1 画像表按 user_id 全局键，不按 scope 分行 —— 所以隔离流量必须拒写。
+    """画像表（旧编号 L1，已废弃）按 user_id 全局键，不按 scope 分行 —— 所以隔离流量必须拒写。
 
     评测题只要出现一句「我叫…/我在…」，原先会永久写进真实用户的常驻画像，
     并注入之后每一个窗口（`profile_context()` 读的就是那一行）。

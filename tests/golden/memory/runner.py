@@ -144,6 +144,69 @@ def _collect_failure(row):
     return ""
 
 
+def run_case(case_path, *, run_live=False, update_golden=False,
+             timeout=PER_CASE_TIMEOUT_SECONDS):
+    """执行单条用例：子进程隔离跑 → 断言 → 快照比对，返回 `(row, config_missing)`。
+
+    `main()` 与 pytest 接入（`tests/test_memory_golden.py`）共用这一份编排，
+    避免「CLI 能跑、CI 跑的是另一套」这种双份逻辑各自漂移。
+    """
+    case_path = Path(case_path)
+    payload = _load_case(case_path)
+    name = case_path.stem
+    if _is_live(case_path, payload) and not run_live:
+        return {"name": name, "status": _SKIP, "seconds": 0.0}, False
+
+    workdir = Path(tempfile.mkdtemp(prefix="dm_golden_%s_" % name))
+    begin = time.monotonic()
+    try:
+        result = _run_child(case_path, workdir, float(timeout))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    row = {"name": name, "status": _PASS, "seconds": time.monotonic() - begin,
+           "assertion_results": [], "error": result.get("error"),
+           "traceback_tail": result.get("traceback_tail")}
+    config_missing = False
+    if result.get("error"):
+        row["status"] = _FAIL
+        return row, config_missing
+
+    row["assertion_results"] = result.get("assertion_results", [])
+    if any(not item.get("ok") for item in row["assertion_results"]):
+        row["status"] = _FAIL
+    if _is_live(case_path, payload):
+        return row, config_missing  # live 用例没有黄金快照，只看断言。
+
+    expected_path = EXPECTED_DIR / ("%s.json" % name)
+    observations = result.get("observations", {})
+    if not expected_path.exists():
+        if update_golden and row["status"] == _PASS:
+            expected_text = _canonical(observations)
+            expected_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(expected_path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(expected_text)
+            print("生成快照: %s" % expected_path)
+        else:
+            if row["status"] == _PASS:
+                row["status"] = _MISSING
+                config_missing = True
+            row["diff"] = "缺少快照 %s（先评审后运行 --update-golden --yes）" % expected_path
+        return row, config_missing
+
+    with open(expected_path, "r", encoding="utf-8") as handle:
+        expected = handle.read()
+    actual = _canonical(observations)
+    if expected != actual:
+        if update_golden and row["status"] == _PASS:
+            with open(expected_path, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(actual)
+            print("覆盖既有期望: %s" % expected_path)
+        else:
+            row["status"] = _FAIL
+            row["diff"] = _first_diff(expected, actual)
+    return row, config_missing
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="记忆/压缩黄金回归套件")
     parser.add_argument("--all", action="store_true", help="运行全部离线用例")
@@ -197,51 +260,9 @@ def main(argv=None):
                                   % TOTAL_BUDGET_SECONDS})
             continue
         timeout = max(1.0, min(float(args.timeout), remaining))
-        workdir = Path(tempfile.mkdtemp(prefix="dm_golden_%s_" % name))
-        begin = time.monotonic()
-        try:
-            result = _run_child(path, workdir, timeout)
-        finally:
-            shutil.rmtree(workdir, ignore_errors=True)
-        seconds = time.monotonic() - begin
-        row = {"name": name, "status": _PASS, "seconds": seconds,
-               "assertion_results": [], "error": result.get("error"),
-               "traceback_tail": result.get("traceback_tail")}
-        if result.get("error"):
-            row["status"] = _FAIL
-        else:
-            row["assertion_results"] = result.get("assertion_results", [])
-            if any(not item.get("ok") for item in row["assertion_results"]):
-                row["status"] = _FAIL
-            if _is_live(path, payload):
-                pass  # live 用例没有黄金快照，只看断言。
-            else:
-                expected_path = EXPECTED_DIR / ("%s.json" % name)
-                observations = result.get("observations", {})
-                if not expected_path.exists():
-                    if args.update_golden and row["status"] == _PASS:
-                        expected_text = _canonical(observations)
-                        expected_path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(expected_path, "w", encoding="utf-8", newline="\n") as handle:
-                            handle.write(expected_text)
-                        print("生成快照: %s" % expected_path)
-                    else:
-                        if row["status"] == _PASS:
-                            row["status"] = _MISSING
-                            config_missing = True
-                        row["diff"] = "缺少快照 %s（先评审后运行 --update-golden --yes）" % expected_path
-                else:
-                    with open(expected_path, "r", encoding="utf-8") as handle:
-                        expected = handle.read()
-                    actual = _canonical(observations)
-                    if expected != actual:
-                        if args.update_golden and row["status"] == _PASS:
-                            with open(expected_path, "w", encoding="utf-8", newline="\n") as handle:
-                                handle.write(actual)
-                            print("覆盖既有期望: %s" % expected_path)
-                        else:
-                            row["status"] = _FAIL
-                            row["diff"] = _first_diff(expected, actual)
+        row, missing = run_case(path, run_live=args.live,
+                                update_golden=args.update_golden, timeout=timeout)
+        config_missing = config_missing or missing
         rows.append(row)
         failure = _collect_failure(row)
         if failure:

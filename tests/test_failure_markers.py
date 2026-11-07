@@ -81,7 +81,7 @@ NORMAL_CASES = [
      '{"ok": true, "connectors": [{"key": "godot", "label": "Godot 4", '
      '"enabled": true}], "count": 1}', False),
     # 长任务实测（2026-10-31）：pytest 成功但缓存目录权限警告带“拒绝访问”，
-    # 被当成失败写进 L4 错误钩子；退出码 0 必须直接判成功。
+    # 被当成失败写进会话钩子（旧编号 L4，已废弃）；退出码 0 必须直接判成功。
     ("命令成功但包含权限警告",
      "[exit code 0] · 1.2s\nPytestCacheWarning: ... 拒绝访问。: '.pytest_cache'", False),
     # memory_search 的正文里可能包含历史失败文案，但工具本身 ok=true。

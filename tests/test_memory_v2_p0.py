@@ -114,7 +114,7 @@ class FlagTests(_MemBase):
 class ConstitutionTests(_MemBase):
     def test_first_injection_after_base_prompt(self):
         messages = self.build()
-        self.assertTrue(str(messages[1]["content"]).startswith("【系统宪法 v0"))
+        self.assertTrue(str(messages[1]["content"]).startswith("【常驻守则 v0"))
         # 时间块不再固定在 [2]：它为跨回合前缀缓存挪到了历史之后的受保护尾部
         # （2026-10-31 两边界契约），这里按内容找、并钉住它的新位置。
         time_idx = next(i for i, m in enumerate(messages)
@@ -161,7 +161,7 @@ class ConstitutionTests(_MemBase):
         store.atomic_write(target, text)
         doc = constitution.load(ensure=True)
         self.assertFalse(doc["hash_ok"])
-        self.assertIn("系统宪法", doc["text"])
+        self.assertIn("常驻守则", doc["text"])
         self.assertIn("constitution.hash_mismatch", self.ledger_events())
 
     def test_injection_is_capped(self):
@@ -1095,7 +1095,7 @@ class ContextPanelTests(_MemBase):
         keys = [layer["key"] for layer in view["layers"]]
         self.assertEqual(keys, ["rule", "profile", "rules", "shared", "taskbook", "hook", "summary"])
         self.assertTrue(view["layers"][0]["editable"])
-        self.assertIn("【系统宪法", view["layers"][0]["text"])
+        self.assertIn("【常驻守则", view["layers"][0]["text"])
         self.assertEqual(view["layers"][0]["budget"], 600)
 
     def test_shared_and_taskbook_items_are_editable_data(self):
@@ -1113,7 +1113,7 @@ class ContextPanelTests(_MemBase):
         with open(target, "w", encoding="utf-8") as handle:
             handle.write(json.dumps({
                 "session_id": "s1", "turn_id": "t1", "ts": "2026-10-31",
-                "injection": [{"layer": "L0", "chars": 3, "hash": "abc",
+                "injection": [{"layer_key": "rule", "chars": 3, "hash": "abc",
                                "version": 1, "text": "宪法快照"}],
             }, ensure_ascii=False) + "\n")
         with patch.object(agent_trace, "TRACE_FILE", target):
@@ -1364,7 +1364,7 @@ class NextStepProducerTests(_MemBase):
     """「下一步」通道在普通回合里必须有生产者，且只认证据、不编造。
 
     原先唯一的生产者是 Plan 模式的 plan_state：普通回合没有计划文件，实测 77 个
-    episode 里 0 条带 next，L4 的这一支等于没接线。
+    episode 里 0 条带 next，会话钩子（旧编号 L4，已废弃）的这一支等于没接线。
     """
 
     def _turn(self, targets=None, tested=None, ok=False):
@@ -1385,7 +1385,7 @@ class NextStepProducerTests(_MemBase):
         latest = episodes.latest("prj", "s1", 1)
         self.assertEqual(latest[0]["next"], result["record"]["next"])
         block = injection.build_session_injection("s1", "prj")
-        self.assertTrue(block, "有 next 就必须进 L4 注入")
+        self.assertTrue(block, "有 next 就必须进会话钩子注入")
         self.assertIn("[下一步]", block[0]["text"])
 
     def test_verified_turn_produces_no_next(self):
@@ -1510,7 +1510,7 @@ class FunnelTests(_MemBase):
         self.assertIn("交接处停在", stalled)
         self.assertIn("晋升共享（条目）→ 共享层回注（会话）", stalled)
 
-        metrics.record("memory.inject", project="prj", session="s1", layer="L2", chars=120)
+        metrics.record("memory.inject", project="prj", session="s1", layer="shared", chars=120)
         self.assertEqual(self._counts()["injected"], 1)
         self.assertEqual(health.funnel("prj")["stalled_at"], "",
                          "七级都通了就不该再报断点")
@@ -1530,7 +1530,7 @@ class FunnelTests(_MemBase):
         """旧版直接把 `memory.inject` 的事件数当第七级 —— 一个回合刷 5 次就变 5。"""
         for n in range(3):
             metrics.record("memory.inject", project="prj", session="s%d" % (n % 2),
-                           layer="L2", chars=50 + n)
+                           layer="shared", chars=50 + n)
         report = health.funnel("prj")
         self.assertEqual(report["counts"]["injected"], 2, "同一会话的多次注入被数成了两级")
         self.assertEqual(report["inject_events"], 3, "事件数要另存一份，别和会话数混")
@@ -1590,10 +1590,10 @@ class FunnelTests(_MemBase):
         target = mstore.safe_path("metrics", "2020-01-01.jsonl")
         mstore.ensure_dir(os.path.dirname(target))
         row = {"ts": "2020-01-01T00:00:00+00:00", "event": "memory.inject",
-               "project": "prj", "session": "old", "layer": "L2", "chars": 10}
+               "project": "prj", "session": "old", "layer": "shared", "chars": 10}
         with open(target, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(_json.dumps(row, ensure_ascii=False) + "\n")
-        metrics.record("memory.inject", project="prj", session="now", layer="L2", chars=20)
+        metrics.record("memory.inject", project="prj", session="now", layer="shared", chars=20)
         self.assertEqual(len(metrics.rows(days=30, project="prj", event="memory.inject")), 1,
                          "过期文件里的行被当成最近 30 天")
         self.assertEqual(health.funnel("prj")["counts"]["injected"], 1)

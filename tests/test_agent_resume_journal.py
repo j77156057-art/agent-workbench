@@ -12,6 +12,7 @@ from unittest.mock import patch
 import agent as agent_mod
 import agent_memory as memory
 import config
+import sessions
 from agent_runtime.tools import ToolResult
 from tests.test_agent_trace import _FakeLLM, _IsoBase
 
@@ -244,6 +245,32 @@ class ExactResumeTests(_IsoBase):
         rec = memory.checkpoint_get(scope, "sess-stale", cid)
         self.assertEqual(rec["journal"]["phase"], "step_done")
         self.assertEqual(rec["journal"]["executed"], [["read_file", "one.txt"]])
+
+    def test_compaction_does_not_make_stale_journal_fresh_again(self):
+        session = "sess-stale-compacted"
+        sessions.save(session, [
+            {"user": "旧问题%d" % i + "甲" * 30,
+             "assistant": "旧回答%d" % i + "乙" * 30} for i in range(5)
+        ], "", project_id="p")
+        scope, cid = self._seed(session, history_len=5)
+        for topic in ("后续新话题" + "丙" * 30, "更多后续话题" + "丁" * 30):
+            llm = _CapturingLLM(["Final Answer: 新话题完成"])
+            llm.prompt_budget = 100000
+            a = agent_mod.Agent(llm=llm, session_id=session, project_id="p")
+            list(a.run(topic, stream=True))
+
+        resume_llm = _CapturingLLM(["Final Answer: 不应恢复旧现场"])
+        resume_llm.prompt_budget = 20
+        resume_llm.capability = {"context_window": 20}
+        a = agent_mod.Agent(llm=resume_llm, session_id=session, project_id="p")
+        events = list(a.run("继续", resume=cid, stream=True))
+
+        self.assertTrue(a.archived, "测试必须先真正触发压缩")
+        self.assertFalse(any(e.get("type") == "notice" and "已从断点继续" in e.get("text", "")
+                             for e in events))
+        self.assertNotEqual(a.history[-1]["user"], QUESTION)
+        rec = memory.checkpoint_get(scope, session, cid)
+        self.assertEqual(rec["journal"]["phase"], "step_done")
 
     def test_completed_checkpoint_is_not_resumed(self):
         scope = memory.scope_key("p")

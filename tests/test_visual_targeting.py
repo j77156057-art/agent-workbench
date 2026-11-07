@@ -1,14 +1,24 @@
 import base64
+import json
+import os
 from pathlib import Path
+import tempfile
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 import api
 import desktop_actions
+import game_workbench
 import screen_capture
 from agent_runtime.visual_targeting import (parse_visual_target,
+                                            parse_visual_target_detailed,
                                             parse_visual_verification, target_still_matches)
+
+
+def target_json(box, confidence=0.9):
+    return json.dumps({"found": True, "label": "保存", "evidence": "可见保存文字",
+                       "bbox": box, "confidence": confidence}, ensure_ascii=False)
 
 
 def test_visual_target_parser_rejects_uncertain_or_outside_boxes():
@@ -19,6 +29,49 @@ def test_visual_target_parser_rejects_uncertain_or_outside_boxes():
     assert parse_visual_target('{"found":true,"label":"保存","evidence":"可见保存文字",'
                                '"bbox":[0.2,0.2,0.4,0.4],"confidence":0.4}') is None
     assert not target_still_matches(bytes([10] * 20), bytes([90] * 20))
+
+
+def test_visual_target_accepts_both_normalized_and_pixels_1000_bbox():
+    normalized = parse_visual_target(target_json([0.2, 0.2, 0.4, 0.4]))
+    assert normalized["coordinate_space"] == "normalized"
+    assert normalized["raw_bbox"] == [0.2, 0.2, 0.4, 0.4]
+    assert normalized["bbox"] == [0.2, 0.2, 0.4, 0.4]
+
+    pixels = parse_visual_target(target_json([200, 200, 400, 400]))
+    assert pixels["coordinate_space"] == "pixels_1000"
+    assert pixels["raw_bbox"] == [200, 200, 400, 400]
+    assert pixels["bbox"] == [0.2, 0.2, 0.4, 0.4]
+
+
+def test_visual_target_boundary_never_mistakes_normalized_for_pixels():
+    # [0,0,1,1] 是合法的整屏归一化框，不能除以 1000 变成左上角小点。
+    full = parse_visual_target(target_json([0, 0, 1, 1]))
+    assert full["coordinate_space"] == "normalized"
+    assert full["bbox"] == [0, 0, 1, 1]
+    # 只要有一个数 ≤1，就不能是 0–1000 像素尺度。
+    mixed = parse_visual_target_detailed(target_json([0.2, 200, 0.4, 400]))
+    assert mixed[0] is None
+    assert "混合" in mixed[1]
+
+
+def test_visual_target_rejects_invalid_bbox_shapes_and_ranges():
+    cases = {
+        "越界": [200, 200, 400, 1200],
+        "颠倒": [0.4, 0.2, 0.2, 0.4],
+        "宽高为 0": [0.2, 0.2, 0.2, 0.4],
+        "缺一项": [0.2, 0.2, 0.4],
+        "非数字": [0.2, 0.2, 0.4, "右边"],
+        "负值": [-0.2, 0.2, 0.4, 0.4],
+    }
+    for label, box in cases.items():
+        target, reason = parse_visual_target_detailed(target_json(box))
+        assert target is None, label
+        assert reason, label
+
+    missing = parse_visual_target_detailed(
+        '{"found":true,"label":"保存","evidence":"可见","confidence":0.9}')
+    assert missing[0] is None
+    assert "四个数" in missing[1]
 
 
 def test_visual_verification_parser_requires_evidence_and_confidence():
@@ -46,14 +99,16 @@ def test_visual_click_requires_review_and_uses_single_use_proposal():
             return ('{"found":true,"label":"保存按钮","evidence":"可见保存文字",'
                     '"bbox":[0.2,0.2,0.8,0.8],"confidence":0.94}')
 
-    with patch.object(api, "_ctx_project_id", return_value="project-test"), \
-            patch.object(api, "_project_root_or_error", return_value=str(Path(__file__).resolve().parents[1])), \
+    with tempfile.TemporaryDirectory() as root, \
+            patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "enterprise"}), \
+            patch("config.get_desktop_approval_mode", return_value="strict"), \
+            patch.object(api, "_ctx_project_id", return_value="project-test"), \
+            patch.object(api, "_project_root_or_error", return_value=root), \
             patch.object(api, "_get_cockpit_llm", return_value=(None, Model())), \
             patch("screen_capture.grab_embedded", return_value=frame), \
             patch("screen_capture.encode_frame", return_value=image), \
             patch("desktop_actions._resolve_target", return_value=(123, {}, "")), \
             patch("desktop_actions.perform", return_value={"ok": True, "events": 2}) as perform, \
-            patch("game_workbench.approval", return_value={"approved": True}) as approval, \
             patch.object(api.time, "sleep", return_value=None):
         client = TestClient(api.app, headers={"X-DocMind-Project": "project-test"})
         located = client.post("/api/vision/locate-click", json={"description": "保存按钮"})
@@ -61,20 +116,28 @@ def test_visual_click_requires_review_and_uses_single_use_proposal():
         proposal = located.json()
         assert proposal["ok"] is True
         assert proposal["point"] == {"x": 2, "y": 2}
-        denied = client.post("/api/vision/execute-click", json={"proposal_id": proposal["proposal_id"]})
-        assert denied.status_code == 400
-        assert perform.call_count == 0
-        confirmed = client.post("/api/vision/execute-click", json={
+        pending = client.post("/api/vision/execute-click", json={
             "proposal_id": proposal["proposal_id"], "confirmed": True})
+        assert pending.status_code == 202
+        assert pending.json()["state"] == "pending"
+        assert perform.call_count == 0
+        assert api._VISUAL_CLICK_PROPOSALS[proposal["proposal_id"]]["used"] is False
+        game_workbench.approval(root, "desktop_action", "pytest-user",
+                                approved=True, target=pending.json()["target"])
+        confirmed = client.post("/api/vision/execute-click", json={
+            "proposal_id": proposal["proposal_id"]})
+        assert confirmed.status_code == 200
         assert confirmed.json()["executed"] is True
         assert confirmed.json()["after"] == image
         assert perform.call_count == 1
-        approval.assert_called_once()
         replay = client.post("/api/vision/execute-click", json={
             "proposal_id": proposal["proposal_id"], "confirmed": True})
-        assert replay.status_code == 409
+        assert replay.status_code == 200
+        assert replay.json()["idempotent"] is True
+        assert perform.call_count == 1
 
 
+@patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"})
 def test_visual_click_refuses_changed_window():
     api._VISUAL_CLICK_PROPOSALS.clear()
     raw = bytes([20, 40, 60, 255] * 16)
@@ -101,6 +164,7 @@ def test_visual_click_refuses_changed_window():
         perform.assert_not_called()
 
 
+@patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"})
 def test_visual_click_refuses_changed_target_pixels():
     api._VISUAL_CLICK_PROPOSALS.clear()
     before = bytes([20, 40, 60, 255] * 16)
@@ -167,6 +231,7 @@ def test_desktop_click_rechecks_target_after_focus():
         send_click.assert_not_called()
 
 
+@patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"})
 def test_visual_click_verifies_before_after_without_automatic_second_click():
     api._VISUAL_CLICK_PROPOSALS.clear()
     raw = bytes([20, 40, 60, 255] * 16)
@@ -213,6 +278,7 @@ def test_visual_click_verifies_before_after_without_automatic_second_click():
         assert model.calls == 2
 
 
+@patch.dict(os.environ, {"DOCMIND_EXECUTION_MODE": "local"})
 def test_visual_click_does_not_verify_a_different_window():
     api._VISUAL_CLICK_PROPOSALS.clear()
     raw = bytes([20, 40, 60, 255] * 16)

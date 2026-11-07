@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -213,6 +214,27 @@ class EndToEndCompactionTests(_Base):
         start_ctx, end_ctx = compacted
         self.assertLess(end_ctx["used_tokens"], start_ctx["used_tokens"])
         self.assertLess(end_ctx["percent"], start_ctx["percent"])
+
+    def test_pre_and_post_compaction_share_prompt_budget_thresholds(self):
+        import config as config_mod
+        budget = 12000
+        llm = _FakeLLM(
+            ["Final Answer: ok"],
+            capability={"context_window": 16384, "thinking": "none", "cloud": False},
+            prompt_budget=budget)
+        calls = []
+        original = sessions.maybe_compact
+
+        def capture(*args, **kwargs):
+            calls.append(kwargs)
+            return original(*args, **kwargs)
+
+        with patch.object(sessions, "maybe_compact", new=capture):
+            list(agent_mod.Agent(llm=llm, session_id="same-budget").run("q", stream=True))
+        self.assertEqual(len(calls), 2)  # 回合前、回合后各一次
+        for call in calls:
+            self.assertEqual(call["trigger_tokens"], int(budget * config_mod.COMPACT_TRIGGER_RATIO))
+            self.assertEqual(call["keep_tokens"], int(budget * config_mod.COMPACT_KEEP_RATIO))
 
 
 class ContextApiTests(_Base):

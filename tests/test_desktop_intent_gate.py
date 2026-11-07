@@ -54,9 +54,7 @@ class DesktopIntentTurnTests(unittest.TestCase):
 
 
 class DevDesktopActionPreAuthTests(unittest.TestCase):
-    """「留地板、拆其余」：dev_desktop_action 的逐次审批门已拆 —— 无论 pre-auth
-    与 target（含 foreground），点击/输入都直接执行。危险组合键仍由
-    desktop_actions._VK 白名单挡在门外（那是灾难地板，保留）。"""
+    """统一审批通过后的各 target 执行路径；未批准分支由边界测试另行覆盖。"""
 
     def setUp(self):
         self.root = tempfile.mkdtemp()
@@ -76,10 +74,8 @@ class DevDesktopActionPreAuthTests(unittest.TestCase):
         tools_mod.set_runtime("code_root", "")
 
     def _call(self, arg):
-        with patch.object(tools_mod, "_mcp_gate_blocked", return_value=dict(self._blocked_gate)), \
-             patch.object(desktop_actions, "perform", side_effect=self._fake_perform), \
-             patch("game_workbench.playtest_sandbox_desktop_allowed",
-                   return_value=(False, "未开启", {})):
+        with patch("game_workbench.require_approval", return_value=None), \
+             patch.object(desktop_actions, "perform", side_effect=self._fake_perform):
             return json.loads(tools_mod.dev_desktop_action(arg))
 
     def test_engine_click_preauthorized_skips_gate(self):

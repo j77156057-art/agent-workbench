@@ -37,6 +37,16 @@ import pytest
 _MODE_SWITCH = "DOCMIND_REALTIME_PROVIDER"
 
 
+def pytest_addoption(parser):
+    """`pytest --live`：额外运行需要真实模型的记忆黄金 live 组（默认不跑）。"""
+    parser.addoption(
+        "--live",
+        action="store_true",
+        default=False,
+        help="额外运行 tests/golden/memory/cases/live 下需要真实模型的用例",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _isolate_realtime_provider_env():
     """让整个测试套件默认走兼容抽帧通道；测试结束后原样还原。"""

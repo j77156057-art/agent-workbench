@@ -87,7 +87,7 @@ class EvalMemoryIsolationTests(unittest.TestCase):
         self.assertEqual(self._episode_lines(self.scope, "web-real-1"), 0)
 
     def test_reads_still_follow_the_asked_project(self):
-        """读路径不受隔离影响：被问项目的 L3 任务书照样注入。"""
+        """读路径不受隔离影响：被问项目的任务书（旧编号 L3，已废弃）照样注入。"""
         taskbook.open_book(self.project, "评测隔离", ["必须先跑 pytest 才能勾掉"])
         _agent, llm = self._run("golden-iso-2", memory_write_project=self.scope)
         self.assertTrue(llm.messages, "模型一次都没被调用")

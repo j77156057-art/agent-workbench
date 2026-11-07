@@ -46,10 +46,27 @@ class Base(unittest.TestCase):
         self._old = sessions.SESSIONS_DIR
         sessions.SESSIONS_DIR = self.tmp
         self.addCleanup(setattr, sessions, "SESSIONS_DIR", self._old)
+        self._old_trace_dir = sessions.TURN_TRACE_DIR
+        sessions.TURN_TRACE_DIR = os.path.join(self.tmp, "traces")
+        self.addCleanup(setattr, sessions, "TURN_TRACE_DIR", self._old_trace_dir)
+        self._old_trace_max = sessions.TURN_TRACE_MAX_TURNS
+        self.addCleanup(setattr, sessions, "TURN_TRACE_MAX_TURNS", self._old_trace_max)
         self.sid = "sess-archive"
 
     def _turn(self, n):
         return {"user": "问题%d" % n, "assistant": "回答%d" % n}
+
+
+# 取自现有真实会话 longtask-20261031-105719 的工作轮次（长现场只保留相关片段）。
+REAL_WORKING_TURN = {
+    "user": "继续：让 format_report([1,2,3]) 精确等于 'ORCHID-2718 sum=6'，补测试并运行 pytest；同时检查 SPEC 里关于 parse 空白的 Known issue 是否真的存在，用测试结果说明，不要为不存在的问题改代码。",
+    "assistant": "修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。",
+    "ts": "2026-10-31T11:01:22",
+    "turn_id": "fb1e308081d14eca9e86c38389404e49",
+    "resume_context": "状态：verification_incomplete\nobservation: 已写入 tests\\test_calc.py",
+    "checkpoint_id": "bc4a326c98a947308148ff6997803f92",
+    "failure_reason": "修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。",
+}
 
 
 class SaveArchiveTests(Base):
@@ -76,6 +93,27 @@ class SaveArchiveTests(Base):
         self.assertEqual([t["user"] for t in sessions.archived_turns(self.sid)],
                          ["问题1", "问题2"])
 
+    def test_archive_inherits_real_turn_timestamp_and_never_defaults_empty(self):
+        sessions.save(self.sid, [dict(REAL_WORKING_TURN)], "")
+        in_memory = sessions.history(self.sid)  # Agent 工作窗口不含 ts/turn_id
+        self.assertNotIn("ts", in_memory[0])
+        sessions.save(self.sid, [], "", archived=in_memory)
+        archived = sessions.archived_turns(self.sid)
+        self.assertEqual(archived[0]["ts"], "2026-10-31T11:01:22")
+        self.assertEqual(archived[0]["turn_id"], REAL_WORKING_TURN["turn_id"])
+
+        sessions.save("brand-new-archive", [], "",
+                      archived=[{"user": "无历史时间", "assistant": "仍须非空"}])
+        self.assertTrue(sessions.archived_turns("brand-new-archive")[0]["ts"])
+
+        legacy = dict(REAL_WORKING_TURN, ts="")
+        data = sessions.load("legacy-empty-ts")
+        data["archived"] = [legacy]
+        sessions._write("legacy-empty-ts", data)
+        sessions.save("legacy-empty-ts", [], "", archived=[legacy])
+        self.assertEqual(sessions.archived_turns("legacy-empty-ts")[0]["ts"], "",
+                         "旧数据原本就没有原时刻，不能伪填成当前压缩时间")
+
 
 class FullHistoryTests(Base):
 
@@ -98,6 +136,7 @@ class FullHistoryTests(Base):
         self.assertEqual(sessions.archived_turns(self.sid), [])
         self.assertEqual([t["user"] for t in sessions.full_history(self.sid)],
                          ["问题1"])
+        self.assertEqual(sessions.load(self.sid)["compaction_manifest"]["entries"], [])
 
 
 class ListSessionsTests(Base):
@@ -167,7 +206,7 @@ class SummaryQualityTests(Base):
         cap = sessions._SUMMARY_MAX_CHARS
         old, new = "旧" * (cap - 50), "新" * 300
         merged = sessions._merge_summary(old, new, llm)
-        # 旧摘要首次超限时，头部逐字搬进 pinned（不送 LLM 重压）。
+        # 方案 A：旧摘要首次超限时，头部逐字搬进 pinned（不送 LLM 重压）。
         self.assertIn("【固定事实｜pinned_from_legacy_head】", merged)
         self.assertLessEqual(len(merged), cap)
         fallback = sessions._merge_summary(old, new, None)
@@ -176,6 +215,43 @@ class SummaryQualityTests(Base):
         self.assertIn("新", fallback)
         self.assertIn("（最旧进展", fallback)
         self.assertNotIn("…", fallback, "回退裁剪用省略标记，不能停在半个句子里")
+
+    def test_unfinished_real_turn_appends_must_keep_but_completed_turn_does_not(self):
+        completed = {"user": "已解决事项唯一标记不应进入 must-keep", "assistant": "已完成"}
+        turns = [dict(REAL_WORKING_TURN), completed, self._turn(3), self._turn(4)]
+        kept, summary = sessions.maybe_compact(
+            self.sid, turns, llm=_SummaryLLM(), trigger_tokens=1, keep_tokens=1)
+        self.assertLess(len(kept), len(turns))
+        self.assertIn("【未完成现场 must-keep】", summary)
+        self.assertIn("当前约束/待办：", summary)
+        self.assertIn(REAL_WORKING_TURN["failure_reason"], summary)
+        self.assertIn("checkpoint_id：" + REAL_WORKING_TURN["checkpoint_id"], summary)
+        self.assertNotIn(completed["user"], summary)
+
+
+class CompactionManifestTests(Base):
+    def test_real_archive_manifest_tracks_sources_files_and_trace_eviction(self):
+        sessions.save(self.sid, [dict(REAL_WORKING_TURN), self._turn(2)], "")
+        tid = REAL_WORKING_TURN["turn_id"]
+        sessions.save_turn_trace(self.sid, tid, [{"type": "observation", "text": "真实工具证据"}])
+        in_memory = sessions.history(self.sid)
+        dropped = in_memory[:1]
+        sessions.save(self.sid, in_memory[1:], "摘要", archived=dropped,
+                      compaction_turns=dropped)
+        entry = sessions.load(self.sid)["compaction_manifest"]["entries"][-1]
+        self.assertEqual(entry["source_turn_ids"], [tid])
+        self.assertEqual(entry["time_range"], {
+            "start": "2026-10-31T11:01:22", "end": "2026-10-31T11:01:22"})
+        self.assertIn("tests/test_calc.py", entry["files"])
+        self.assertTrue(entry["evidence_available"])
+        self.assertTrue(entry["evidence"][0]["available"])
+
+        sessions.TURN_TRACE_MAX_TURNS = 1
+        sessions.save_turn_trace(self.sid, "new-trace", [{"type": "observation", "text": "新证据"}])
+        entry = sessions.load(self.sid)["compaction_manifest"]["entries"][-1]
+        self.assertFalse(entry["evidence_available"])
+        self.assertFalse(entry["evidence"][0]["available"])
+        self.assertFalse(sessions.load(self.sid)["compaction_manifest"]["evidence_available"])
 
 
 class CompactionArithmeticTests(Base):
