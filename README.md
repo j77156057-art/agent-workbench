@@ -214,32 +214,45 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 ### 从源码运行
 
-空白电脑只需要两样东西：**Python ≥ 3.11** 和 **Node ≥ 22**（Node 只在需要构建前端时用得上）。
+空白电脑需要 **Python ≥ 3.11** 和 **Node 24**（`.nvmrc` 与 CI 都用 24；Node 22 也能构建，但 npm 护栏会静默失效，见下）。
+
+**联网要求**：只有第一次装依赖需要联网；装完之后默认 `mock` 模型可完全离线运行，不需要任何 API Key。切云端模型才需要网络与 key。
 
 ```bash
-# 1. Python 环境与依赖（国内建议阿里云镜像）
+# 1. Python 版本与依赖
+python -V                                  # 需要 ≥ 3.11
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10
+# 默认 PyPI 在国内可能在大包（torch）上读超时；镜像 + 更耐心的超时重试能装完，失败也能明确报错、直接重跑。
+# 也可以用自己的源：先设 PIP_INDEX_URL，pip 会优先使用它。
 
-# 2. 配置（可选，默认 mock 模式无需 key）
+# 2. 前端产物（先构建、再起后端最稳；后端也支持构建后免重启）
+cd frontend
+npm ci                       # 严格按 package-lock.json 还原
+npm run build                # 产物 -> ../web
+cd ..
+
+# 3. 配置（可选，默认 mock 模式无需 key）
 cp .env.example .env        # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 
-# 3. 后端
+# 4. 后端
 .venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
-
-# 4. 前端产物（/ 与 /workbench 都依赖它；未构建时页面会提示先执行本步）
-cd frontend && npm ci && npm run build     # 产物 -> ../web
 
 # 5. 打开
 #   工作台 : http://127.0.0.1:8000/workbench
 #   问答页 : http://127.0.0.1:8000
 ```
 
-> Windows 上直接跑 `启动DocMind.bat` 更省事：首次启动自动建 `.venv`、装依赖、装前端并构建 `web/`，之后双击即用。
+> **先起后端、后构建前端也可以**：`/assets` 按请求判断目录，`npm run build` 完成后刷新页面即可，不需要重启后端。反过来，**完全没构建**时 `/` 与 `/workbench` 返回的是 **HTTP 404 + JSON**（`{"ok": false, "error": "…未构建…请先…npm ci && npm run build…"}`），`/assets/*.js` 也是 404 —— 不是 200 的提示页，也不是空白 500。
+>
+> Windows 上直接跑 `启动DocMind.bat` 更省事：首次启动自动建 `.venv`、装依赖、装前端并构建 `web/`，之后双击即用。它内部走 `dependency_bootstrap.py`：pip 带 `--timeout` / `--retries`，默认源失败会自动切阿里云镜像，并打印每一步在做什么。网络参数可用 `DOCMIND_PIP_TIMEOUT` / `DOCMIND_PIP_RETRIES`（默认源）与 `DOCMIND_PIP_MIRROR` / `DOCMIND_PIP_MIRROR_TIMEOUT` / `DOCMIND_PIP_MIRROR_RETRIES`（镜像）调整；设置了 `PIP_INDEX_URL` 时只使用你指定的源，不再自动切镜像。
 >
 > 服务地址用 `127.0.0.1` 而不是 `localhost`（本机 IPv6 解析会连不上）。
-> `frontend/.npmrc` 里有 `min-release-age=2`：npm 不安装**发布不足 2 天**的包版本 —— 供应链护栏，挡"刚发就被投毒"的版本。
+>
+> `frontend/.npmrc` 里有 `min-release-age=2`：npm 不安装**发布不足 2 天**的包版本 —— 供应链护栏，挡"刚发就被投毒"的版本。**它需要 npm ≥ 11.6（Node 24 自带），Node 22 自带的 npm 10 会静默失效** —— 这就是 `.nvmrc` 选 24 的原因：与 CI 一致，且让护栏真正生效。`npm ci` 不受影响（严格按 lockfile 装，不进入版本解析）。
+>
+> **旧 Python 拦截的覆盖范围**：只有走 `启动DocMind.bat` / `run_desktop.bat` / `dependency_bootstrap.py` 的入口，会在装依赖前检查 `Python ≥ 3.11` 并给出可照做的提示。手动 `pip install` + `uvicorn` 不经过这层，老解释器会在导入阶段以语法错误失败 —— 手动路径请先 `python -V`。
 
 ### 空白电脑自检清单
 
@@ -247,13 +260,18 @@ cd frontend && npm ci && npm run build     # 产物 -> ../web
 
 | # | 检查 | 命令 / 预期 |
 |---|---|---|
-| 1 | Python 版本够 | `python -V` → ≥ 3.11。老版本会在**装依赖之前**被拦下，并说清楚要装哪个 |
-| 2 | Python 依赖装得上 | `pip install -r requirements.txt` → 无报错（国内加阿里云镜像） |
-| 3 | 前端依赖装得上 | `cd frontend && npm ci` → 依据 `package-lock.json` 精确还原（Node ≥ 22，见 `.nvmrc`） |
+| 1 | Python 版本够 | `python -V` → ≥ 3.11。走一键脚本时老版本会在**装依赖之前**被拦下；手动 `uvicorn` 路径不经过这层，先自己确认 |
+| 2 | Python 依赖装得上 | `pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10` → 无报错 |
+| 3 | 前端依赖装得上 | `cd frontend && npm ci` → 依据 `package-lock.json` 精确还原（Node 24 / npm ≥ 11.6，见 `.nvmrc`） |
 | 4 | 前端能构建 | `npm run build` → 产物落到 `../web`（`web/workbench.html` + `web/assets/`） |
 | 5 | 后端能起 | `python -m uvicorn api:app --port 8000` → `GET /api/health` 返回 `{"ok":true}` |
 | 6 | 不用配置也能用 | **不建 `.env`** 直接起 → provider 默认 `mock`，`POST /api/chat` 能拿到完整 SSE 回答 |
-| 7 | 页面能打开 | `/` 与 `/workbench` 都 200，且 `/workbench` 引用的 `assets/*.js` 都取得到 |
+| 7 | 页面能打开 | 先构建再起（或起后构建，均无需重启）：`/` 与 `/workbench` 都 200，`/workbench` 引用的 `assets/*.js` 都取得到；**未构建时它们是 404 + JSON，不是空白页** |
+
+### 两条容易误判为出错的日志
+
+- `pynvml ... is deprecated`：GPU 监控依赖自身的弃用告警，不影响启动与问答；没有 NVIDIA GPU 时也会出现。
+- 浏览器中途断开 SSE 时，Windows 的 asyncio Proactor 可能打一条 `ConnectionResetError` / `_ProactorBasePipeTransport` traceback：那是连接已断后的清理噪音，不是服务端崩溃；重新打开页面即可。
 
 ### 用真实模型
 

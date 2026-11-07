@@ -226,32 +226,45 @@ No Python install, no API key, no network — the bundled local mock model runs 
 
 ### Run from source
 
-A blank machine needs exactly two things: **Python ≥ 3.11** and **Node ≥ 22** (Node only matters when building the frontend).
+A blank machine needs **Python ≥ 3.11** and **Node 24** (`.nvmrc` and CI both use 24; Node 22 can still build, but the npm guard silently no-ops — see below).
+
+**Network**: only the first dependency install needs the network. After that the default `mock` model runs fully offline with no API key. Cloud models need network and a key.
 
 ```bash
-# 1. Python env and dependencies (Aliyun mirror recommended in China)
+# 1. Python version and dependencies
+python -V                                  # must be ≥ 3.11
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10
+# The default PyPI can read-timeout on large wheels (torch) in China; the mirror + patient retries
+# finish the job, and failures are explicit — just rerun. To use your own index, set PIP_INDEX_URL.
 
-# 2. Configuration (optional — the default mock mode needs no key)
+# 2. Frontend bundle (build first, then start the backend; the backend also picks up a later build without restart)
+cd frontend
+npm ci                       # exact restore from package-lock.json
+npm run build                # output -> ../web
+cd ..
+
+# 3. Configuration (optional — the default mock mode needs no key)
 cp .env.example .env        # set LLM_PROVIDER=qwen and fill DASHSCOPE_API_KEY
 
-# 3. Backend
+# 4. Backend
 .venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
-
-# 4. Frontend bundle (both / and /workbench need it; until built, those pages show a build hint)
-cd frontend && npm ci && npm run build     # output -> ../web
 
 # 5. Open
 #   Workbench : http://127.0.0.1:8000/workbench
 #   Q&A page  : http://127.0.0.1:8000
 ```
 
-> On Windows, `启动DocMind.bat` is the short path: the first launch creates `.venv`, installs the dependencies, installs the frontend lockfile and builds `web/`; after that, double-click and go.
+> **Starting the backend before building also works**: `/assets` checks the directory per request, so after `npm run build` just refresh — no backend restart. If nothing has been built yet, `/` and `/workbench` return **HTTP 404 + JSON** (`{"ok": false, "error": "…not built…run npm ci && npm run build…"}`), and `/assets/*.js` is also 404 — not a 200 hint page, not a blank 500.
+>
+> On Windows, `启动DocMind.bat` is the short path: the first launch creates `.venv`, installs dependencies, installs the frontend lockfile and builds `web/`; after that, double-click and go. It runs `dependency_bootstrap.py`, whose pip step passes `--timeout` / `--retries`, falls back to the Aliyun mirror when the default index fails, and prints each step. Tune it with `DOCMIND_PIP_TIMEOUT` / `DOCMIND_PIP_RETRIES` (default index) and `DOCMIND_PIP_MIRROR` / `DOCMIND_PIP_MIRROR_TIMEOUT` / `DOCMIND_PIP_MIRROR_RETRIES` (mirror); when `PIP_INDEX_URL` is set, that source is used exclusively and no mirror fallback happens.
 >
 > Use `127.0.0.1` rather than `localhost` (IPv6 resolution on some machines won't connect).
-> `frontend/.npmrc` sets `min-release-age=2`: npm will not install a package version published less than two days ago — a supply-chain guard against "published and poisoned within hours" releases.
+>
+> `frontend/.npmrc` sets `min-release-age=2`: npm will not install a package version published less than two days ago — a supply-chain guard. **It requires npm ≥ 11.6 (bundled with Node 24); Node 22 ships npm 10, where the key is silently ignored** — that is why `.nvmrc` is 24: it matches CI and makes the guard real. `npm ci` is unaffected (it installs strictly from the lockfile and does not resolve versions).
+>
+> **Scope of the old-Python check**: only entries that go through `启动DocMind.bat` / `run_desktop.bat` / `dependency_bootstrap.py` check `Python ≥ 3.11` before installing and print an actionable message. A manual `pip install` + `uvicorn` bypasses it; an old interpreter will fail later with a syntax error — run `python -V` first on the manual path.
 
 ### Clean-machine checklist
 
@@ -259,13 +272,18 @@ Run these seven steps on a fresh machine to know whether it will work at all:
 
 | # | Check | Command / expectation |
 |---|---|---|
-| 1 | Python is new enough | `python -V` → ≥ 3.11. An older version is rejected **before** anything is installed, with the required version spelled out |
-| 2 | Python dependencies install | `pip install -r requirements.txt` → no errors (add the Aliyun mirror in China) |
-| 3 | Frontend dependencies install | `cd frontend && npm ci` → reproduced exactly from `package-lock.json` (Node ≥ 22, see `.nvmrc`) |
+| 1 | Python is new enough | `python -V` → ≥ 3.11. The one-click script rejects an old version **before installing**; the manual `uvicorn` path does not, so check first |
+| 2 | Python dependencies install | `pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10` → no errors |
+| 3 | Frontend dependencies install | `cd frontend && npm ci` → exact restore from `package-lock.json` (Node 24 / npm ≥ 11.6, see `.nvmrc`) |
 | 4 | Frontend builds | `npm run build` → output lands in `../web` (`web/workbench.html` + `web/assets/`) |
 | 5 | Backend starts | `python -m uvicorn api:app --port 8000` → `GET /api/health` returns `{"ok":true}` |
 | 6 | It works with no configuration | Start **without creating `.env`** → the provider defaults to `mock` and `POST /api/chat` returns a complete SSE answer |
-| 7 | The pages load | `/` and `/workbench` both return 200, and every `assets/*.js` referenced by `/workbench` is served |
+| 7 | The pages load | Build first, then start (or build after starting — neither needs a restart): `/` and `/workbench` return 200 and every `assets/*.js` referenced by `/workbench` is served; **before building they return 404 + JSON, not a blank page** |
+
+### Two logs that look like failures
+
+- `pynvml ... is deprecated`: a deprecation warning from the GPU-monitoring dependency; it does not affect startup or Q&A and also appears without an NVIDIA GPU.
+- When a browser drops the SSE connection mid-stream, Windows' asyncio Proactor may print a `ConnectionResetError` / `_ProactorBasePipeTransport` traceback: that is post-disconnect cleanup noise, not a server crash; reopen the page.
 
 ### Using a real model
 
