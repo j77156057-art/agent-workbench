@@ -84,6 +84,21 @@ class ExtractFramesTests(unittest.TestCase):
             g.extract_frames(p)
 
 
+class FfmpegResolutionTests(unittest.TestCase):
+    def test_missing_ffmpeg_raises_gen_error_with_hint(self):
+        """分发版剔除了捆绑 ffmpeg：缺系统 ffmpeg 时要给出可操作的中文指引。"""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('IMAGEIO_FFMPEG_EXE', None)
+            with mock.patch.object(g.shutil, 'which', return_value=None), \
+                 mock.patch('imageio_ffmpeg.get_ffmpeg_exe',
+                            side_effect=RuntimeError('no bundled ffmpeg')):
+                with self.assertRaises(g.GenError) as ctx:
+                    g.extract_frames('whatever.mp4')
+        msg = str(ctx.exception)
+        self.assertIn('ffmpeg', msg)
+        self.assertIn('IMAGEIO_FFMPEG_EXE', msg)
+
+
 class SaveAnimationLibraryTests(unittest.TestCase):
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()

@@ -10,7 +10,8 @@
 - v1 不做背景抠像（帧保留原背景）；
 - 视频必须来自真实视频模型管线（UNETLoader fl2va + MiniMaxH3ImageToVideo +
   CreateVideo + 视频 VAE + SaveVideo），禁止用单图推镜/图片合成冒充；
-- ffmpeg 由 imageio-ffmpeg 捆绑二进制提供，不依赖系统 PATH；
+- ffmpeg 由系统提供：优先 ``IMAGEIO_FFMPEG_EXE``，其次 PATH 中的 ``ffmpeg``；
+  分发版不再捆绑 imageio-ffmpeg 的 exe（约 100MB），缺 ffmpeg 时给出明确中文指引；
 - ComfyUI 为常驻外部进程，提交/取历史/取消复用 game_workbench，本模块只负责
   参数化、产物后处理与入库登记。
 """
@@ -19,6 +20,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -439,6 +441,29 @@ def grid_dims(n: int) -> tuple[int, int]:
     return cols, rows
 
 
+def _ensure_ffmpeg() -> None:
+    """解析 ffmpeg 可执行文件：IMAGEIO_FFMPEG_EXE → 系统 PATH → 包内捆绑。
+
+    分发版已剔除 imageio-ffmpeg 捆绑的 100MB exe，所以最后一步在冻结包里
+    必然失败；这时给出明确的中文指引，避免用户看到 PackageNotFoundError
+    或 ExecutableNotFound 这类体系级报错。源码安装仍可复用 venv 内的捆绑版。
+    """
+    exe = str(os.getenv('IMAGEIO_FFMPEG_EXE', '') or '').strip()
+    if exe and os.path.isfile(exe):
+        return
+    found = shutil.which('ffmpeg')
+    if found:
+        os.environ['IMAGEIO_FFMPEG_EXE'] = found
+        return
+    try:
+        import imageio_ffmpeg
+        imageio_ffmpeg.get_ffmpeg_exe()
+        return
+    except Exception:  # 捆绑版被裁掉 / 解析失败
+        raise GenError('未找到 ffmpeg：请安装系统 ffmpeg 并加入 PATH，'
+                       '或设置 IMAGEIO_FFMPEG_EXE 指向 ffmpeg.exe。') from None
+
+
 def extract_frames(video_path: str, target_fps: int = DEFAULT_FPS,
                    max_frames: int = DEFAULT_MAX_FRAMES) -> tuple[list, dict]:
     """均匀抽帧为 RGB PIL 图像。
@@ -446,7 +471,11 @@ def extract_frames(video_path: str, target_fps: int = DEFAULT_FPS,
     步长 = 源fps / 目标fps（目标≥源时逐帧）；最多取 max_frames 帧，
     源视频不够长时有多少取多少（不复制帧填充）。
     """
-    import imageio
+    _ensure_ffmpeg()
+    try:
+        import imageio
+    except Exception as e:  # 冻结包缺元数据等
+        raise GenError(f'视频解码组件不可用（imageio 加载失败）：{e}') from e
     from PIL import Image
     reader = None
     frames: list = []

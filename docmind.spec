@@ -4,7 +4,7 @@
 # 产物：dist\DocMind\DocMind.exe + 依赖 DLL（文件夹分发；启动更快、索引可持久化）
 import os
 import shutil
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 block_cipher = None
 
@@ -15,21 +15,26 @@ docx_datas, docx_binaries, docx_hiddenimports = collect_all("docx")
 reportlab_datas, reportlab_binaries, reportlab_hiddenimports = collect_all("reportlab")
 openpyxl_datas, openpyxl_binaries, openpyxl_hiddenimports = collect_all("openpyxl")
 pptx_datas, pptx_binaries, pptx_hiddenimports = collect_all("pptx")
-playwright_datas, playwright_binaries, playwright_hiddenimports = collect_all("playwright")
+# 注意：不再 collect_all("playwright")。它只服务 mcp_autoconnect 的浏览器自动注册
+# （L1），该路径失败会自动退化为 L2 手动回填；整包收集却要付 105 MB（含 node 驱动）。
 
 a = Analysis(
     ["desktop.py"],
     pathex=[],
     binaries=(chromadb_binaries + webview_binaries + docx_binaries +
-              reportlab_binaries + openpyxl_binaries + pptx_binaries +
-              playwright_binaries),
+              reportlab_binaries + openpyxl_binaries + pptx_binaries),
     datas=[
         # 注意：不要打包 .chroma！它是用户本地代码索引库（含用户代码向量），
         # 随包分发会泄漏开发者的本地索引、徒增约 377MB 体积，且对用户自己的代码库毫无用处。
         # 冻结版首次启动由 chromadb 自动创建空 .chroma 目录，用户自行 /api/ingest_code 索引自己的代码。
         ("web", "web"),
         ("agent_skills", "agent_skills"),
-    ] + chromadb_datas + webview_datas + docx_datas + reportlab_datas + openpyxl_datas + pptx_datas + playwright_datas,
+        # imageio 在 import 时执行 get_version("imageio")，冻结包缺 dist-info 会直接抛
+        # PackageNotFoundError，视频抽帧（/api/vision/video）在 import 阶段就挂掉。
+        # imageio_ffmpeg 同理：保留其 Python 绑定（只剔除捆绑的 100MB ffmpeg.exe），
+        # 它自身也用 importlib.metadata 读取版本。
+    ] + copy_metadata("imageio") + copy_metadata("imageio_ffmpeg") + \
+        chromadb_datas + webview_datas + docx_datas + reportlab_datas + openpyxl_datas + pptx_datas,
     hiddenimports=[
         "fastapi",
         "uvicorn",
@@ -45,6 +50,11 @@ a = Analysis(
         "openai",
         "pypdf",
         "markdown",
+        # imageio 的插件是按模块名字符串动态导入的（imageio.plugins.ffmpeg），
+        # 静态分析看不到；视频抽帧走的就是 FFMPEG 插件 → imageio_ffmpeg 绑定。
+        "imageio",
+        "imageio.plugins.ffmpeg",
+        "imageio_ffmpeg",
         # 发行名是 python-multipart，可导入模块名是 multipart / python_multipart；
         # 写发行名只会得到一条 "Hidden import not found" 警告，表单上传实际没被钉住。
         "multipart",
@@ -62,7 +72,7 @@ a = Analysis(
         "opentelemetry",
         "opentelemetry.trace",
         "opentelemetry.sdk.trace",
-    ] + chromadb_hiddenimports + webview_hiddenimports + docx_hiddenimports + reportlab_hiddenimports + openpyxl_hiddenimports + pptx_hiddenimports + playwright_hiddenimports,
+    ] + chromadb_hiddenimports + webview_hiddenimports + docx_hiddenimports + reportlab_hiddenimports + openpyxl_hiddenimports + pptx_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -74,12 +84,34 @@ a = Analysis(
         # 连带 torch（约 370MB）、transformers、scipy、sklearn 全部进包。
         # 分发版保持「缺包即降级」的旧行为，不把这些训练栈烤进去。
         "torch", "sentence_transformers", "transformers", "sklearn", "scipy",
+        # 与 torch 同理：都是「代码里只有可选路径」的重包，删掉只降级不崩。
+        # playwright（含 node 驱动约 105MB）：仅 mcp_autoconnect 的浏览器自动注册（L1）用，
+        #   _browser_run 的 try/except 会把 ImportError 变成 launch_error，退回 L2 手动回填。
+        # imageio_ffmpeg 不再整体排除：抽帧需要它的 Python 绑定，但捆绑的
+        #   ffmpeg-win-*.exe 有 100MB，改由下方 a.binaries 过滤剔除（用户自备系统 ffmpeg）。
+        # langgraph / psycopg*：game_workflow 的可选后端，import 本身就在 try/except 里，
+        #   psycopg 更是只在 LANGGRAPH_CHECKPOINT_POSTGRES_DSN 非空时才加载。
+        "playwright",
+        "langgraph", "psycopg", "psycopg_binary", "psycopg_pool",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
+
+# 只保留 imageio_ffmpeg 的 Python 绑定，剔除它捆绑的 ffmpeg 可执行文件
+# （imageio_ffmpeg/binaries/ffmpeg-win-x86_64-*.exe，约 100MB）。
+# 运行时由 asset_gen.extract_frames 解析 IMAGEIO_FFMPEG_EXE / 系统 PATH 的 ffmpeg；
+# 用户没装 ffmpeg 时得到的是明确的中文指引，而不是“找不到可执行文件”。
+_ffmpeg_bins_before = len(a.binaries)
+a.binaries = [
+    b for b in a.binaries
+    if not ("imageio_ffmpeg" in b[0].replace("\\", "/")
+            and b[0].lower().endswith(".exe"))
+]
+print("[docmind.spec] imageio_ffmpeg binaries dropped: %d -> %d"
+      % (_ffmpeg_bins_before, len(a.binaries)))
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
