@@ -1,0 +1,36 @@
+# 可选：Cross-Encoder 语义重排（ML 档）。
+#
+# 什么情况下需要装这个文件：
+#   只有想把检索重排从默认的 `heuristic`（词面/位置启发式，零依赖）升级成
+#   `cross_encoder`（sentence-transformers 的 CrossEncoder）时才装。
+#
+# 怎么装：
+#   pip install -r requirements-ml.txt
+# 启用：
+#   DOCMIND_RERANKER=cross_encoder
+#   （或 DOCMIND_RETRIEVAL_MODE=hybrid_rerank）
+#
+# 不装会怎样：
+#   agent_runtime/retrieval.py 里那句 `from sentence_transformers import CrossEncoder`
+#   是函数体内懒加载。没装时该分支捕获异常并退回 heuristic，检索与问答照常工作，
+#   只是少了重排增益——不会 ModuleNotFoundError，也不会启动失败。
+#
+# 为什么单独拆出来（实测，非估算）：
+#   干净 venv 里 sentence-transformers 会连带解析出
+#     torch 513.7 + scipy 127.8 + transformers 103.3 + sympy 65.4 + sklearn 40.1
+#     + networkx 15.2 + 其它 ≈ 889.5 MB / 30,514 文件
+#   占 site-packages 的 54.3%。默认路径一次都不会 import 它们，属于纯死重。
+#
+# 注意：
+#   - embedding（向量化）不走这个文件。embedding 的三条路径分别是
+#     qwen（云端 API）/ ollama（本机 HTTP，模型在 Ollama 仓库）/ local（哈希兜底），
+#     都不需要 torch。
+#   - 依赖对账器（agent_runtime/deps_sync.py）把本文件视为「可选声明」：
+#     这里的包不会因为代码里有 import 就被报成缺依赖。
+#
+# Linux / 无 GPU 的机器：
+#   PyPI 的 torch 在 linux 上会拖整套 nvidia-*-cu13 + triton + cudnn（实测 3.27 GB）。
+#   只要 CPU 推理的话，先预装 CPU 轮再装本文件，pip 就不会回头换 CUDA 那份：
+#     pip install --index-url https://download.pytorch.org/whl/cpu torch
+#     pip install -r requirements-ml.txt
+sentence-transformers

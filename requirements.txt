@@ -57,12 +57,11 @@ ruff>=0.16,<1
 # changed. When the report can't be produced the tool says "coverage unknown"
 # rather than folding it into a number.
 coverage>=7,<8
-# PEP 440 版本语义的量具。CI 那两步的顺序（先从 PyTorch 官方 CPU 索引装 torch，
-# 再装本文件）依赖一个事实：本地版本号 `2.15.0+cpu` 满足 `sentence-transformers`
-# 声明的 `torch>=2.2`，所以 pip 不会回头把带 CUDA 的那份换上来。守卫
-# tests/test_ci_cpu_only_torch.py 直接断言这条语义，因此 `packaging` 必须是
-# 声明过的依赖，不能靠传递安装 —— 否则守卫会在一个没装它的环境里红，而红的原因
-# 跟被验的东西毫无关系。
+# PEP 440 版本语义的量具。守卫 tests/test_ci_cpu_only_torch.py 用
+# `SpecifierSet(">=2.2").contains("2.15.0+cpu")` 钉住「本地版本号满足约束」这条
+# 语义（它决定了 requirements-ml.txt 里 torch 的解析行为），因此 `packaging`
+# 必须是声明过的依赖，不能靠传递安装 —— 否则守卫会在一个没装它的环境里红，
+# 而红的原因跟被验的东西毫无关系。
 packaging>=24,<27
 # MCP SDK: client side plus `agent_runtime.mcp_server`, which re-publishes the
 # harness's own read-only tools to the other agents working this repo.
@@ -84,7 +83,11 @@ numpy            # tests/test_asset_gen.py
 psycopg-pool     # agent_runtime/game_workflow.py, tests/test_postgres_workflow_integration.py
 pydantic         # agent_runtime/retrieval.py, api.py, api_routes/agent.py 等 8 处
 PyYAML           # data_formats.py
-sentence-transformers   # agent_runtime/retrieval.py（弱证据：本机未装发行包，映射靠同名）
+# sentence-transformers 已移出默认清单：它只为 `cross_encoder` 重排这一可选能力服务，
+# 却会连带把 torch（Windows CPU 轮 513 MB）＋ transformers / scipy / sklearn / sympy
+# 一并装进来（干净 venv 实测 889.5 MB / 30,514 文件）。默认重排器是 heuristic，
+# 不依赖它。要用时按 requirements-ml.txt 单独安装；缺装时 retrieval.py 会退回 heuristic。
+# 依赖对账器把它归入「可选声明」，不会报成缺依赖（agent_runtime/deps_sync.py）。
 starlette        # api.py, api_routes/agent.py, api_routes/engine.py 等 32 处
 # pywin32 是**纯 Windows** 发行包（PyPI 上没有 Linux/macOS 的 wheel）。
 # 不加环境标记的话，CI（ubuntu-latest）的 `pip install -r requirements.txt` 会以
@@ -115,7 +118,6 @@ pywin32; sys_platform == "win32"   # make_shortcut.py 的 pythoncom / win32com /
 #   也就是说加一行 hash = 变成「全量 hash 钉死」（本文件 42 行 -> 172 行）。
 #   那件事该单独决定，不该被这一行顺带拖进来。
 #
-# 依据与探针：docs/harness-research-verified.md §1.4，
-# 探针 tools/mutation/probe_pin_one_hash.py（可复算），
+# 依据与探针：tools/mutation/probe_pin_one_hash.py（可复算），
 # 守卫 tests/test_proxy_tools_pinned.py
 proxy_tools==0.1.0

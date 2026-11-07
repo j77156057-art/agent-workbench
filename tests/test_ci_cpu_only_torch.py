@@ -1,35 +1,39 @@
-"""CI 装依赖时用的是 CPU 版 torch，而不是拖着整套 CUDA 的 PyPI 那份。
+"""默认依赖清单不再包含 torch —— 它跟着 sentence-transformers 一起被拆到可选档。
 
-现象（不是推测）：run 41411405586 的 sqlite lane 在 `Install dependencies` 里死于
-`OSError: [Errno 28] No space left on device`，位置就在 `Installing collected packages`
-解包那一段；同一份 `requirements.txt` 在另一台 runner（同一个 commit 的重跑与上一轮 run）
-上过了。也就是说**每条 lane 都在拿磁盘余量赌运气**，而红的时候只会显示一句 pip 的
-errno 28，看不出是结构性问题。
+背景（实测，不是推测）：
+- `sentence-transformers` 是 `cross_encoder` 重排的可选依赖，却会把 torch 硬拉进来。
+  干净 venv 里拆开前实测：torch 513.7 MB / 14,603 文件，整棵子树
+  （torch + scipy + transformers + sympy + sklearn + networkx + ...）
+  **889.5 MB / 30,514 文件**，占 site-packages 54.3%，而默认路径一次都不 import。
+- linux 上 PyPI 的 torch 还会拖 `nvidia-*-cu13` + `triton` + `cudnn`，
+  一次安装 3.27 GB（run 41411405586 的 sqlite lane 直接死于 No space left）。
+- 现在默认清单只装真正要用的东西；CI 也不再需要从 PyTorch CPU 索引预装 torch。
 
-量到的数：
-- `sentence-transformers`（`requirements.txt:69`）把 PyPI 的 `torch` 连带
-  `nvidia-cudnn-cu13 / cublas / cusolver / cusparse / cufft / nccl / nvshmem / triton`
-  一起拉进来。按该步骤日志里的每条 MB 级下载合计：**3.27 GB**，步骤耗时 **2 分 12 秒**。
-- GitHub 托管 runner **没有 GPU**，所以这一堆字节永远是死重：装它只会挤磁盘、拖时间，
-  换不来任何被验证的行为。
-- CPU 索引对得上：抓 `https://download.pytorch.org/whl/cpu/torch/` 的索引页实测有
-  `torch-2.15.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`，正好是 runner 的
-  cp312 / x86_64；而 `+cpu` 这一支不依赖 `nvidia-*`，所以 CUDA 那批根本不会进解析结果。
-
-为什么**顺序**才是关键：PEP 440 下已安装的 `2.15.0+cpu` 满足 `sentence-transformers`
-对 torch 的约束，而第二步没有 `--upgrade`，pip 看见「已满足」就不回头换 PyPI 那份。
-把两行调了个顺序（先 requirements 再 torch）就回到原样 —— 所以这条必须有断言。
+本文件测的是**依赖形状**，不是重排功能：
+1. `requirements.txt` 不含 sentence-transformers / torch；
+2. `requirements-ml.txt` 承接它，并写清「什么时候需要」；
+3. CI 的安装步骤只有一条 `-r requirements.txt`，没有偷偷预装 torch；
+4. `retrieval.py` 里的导入仍在函数体内（懒加载），所以没装 s-t 也不影响启动；
+5. `packaging` 仍被声明（PEP 440 语义断言要用它）。
 """
 
 import re
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CI_FILE = ROOT / ".github" / "workflows" / "harness.yml"
+REQUIREMENTS = ROOT / "requirements.txt"
+REQUIREMENTS_ML = ROOT / "requirements-ml.txt"
 CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+
+#: 默认档里绝不该出现的发行包（sentence-transformers 的直接依赖 + 它的传递依赖）。
+ML_ONLY_PACKAGES = ("sentence-transformers", "sentence_transformers", "torch",
+                    "transformers", "scipy", "scikit-learn", "sympy", "networkx")
 
 
 def _steps():
@@ -44,6 +48,19 @@ def _code(step) -> str:
     return "\n".join(ln for ln in run.splitlines() if not ln.strip().startswith("#"))
 
 
+def _declared(path: Path) -> list[str]:
+    """按 requirements 的行格式取包名（去掉注释、标记、版本约束）。"""
+    names = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        hit = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)", line)
+        if hit:
+            names.append(re.sub(r"[-_.]+", "-", hit.group(1)).lower())
+    return names
+
+
 def _top_level_imports(src: str):
     """挑出模块级（顶格）的 sentence_transformers 导入 —— 懒加载的反面形状。"""
     return [ln for ln in src.splitlines()
@@ -51,34 +68,52 @@ def _top_level_imports(src: str):
 
 
 def _install_step():
-    hits = [s for s in _steps() if "pip install -r requirements.txt" in _code(s)]
-    return hits
+    return [s for s in _steps() if "-r requirements.txt" in _code(s)]
 
 
-class TorchCpuInstallTests(unittest.TestCase):
-    def test_install_step_installs_torch_from_the_cpu_index(self):
+class DefaultRequirementsShapeTests(unittest.TestCase):
+    def test_default_requirements_do_not_declare_the_ml_stack(self):
+        declared = _declared(REQUIREMENTS)
+        for pkg in ML_ONLY_PACKAGES:
+            self.assertNotIn(pkg, declared,
+                             "默认清单里又出现了 %r：它会重新把 torch 拉进每一次安装" % pkg)
+
+    def test_optional_file_carries_sentence_transformers(self):
+        self.assertTrue(REQUIREMENTS_ML.is_file(),
+                        "requirements-ml.txt 不在：可选重排的安装入口丢了")
+        self.assertIn("sentence-transformers", _declared(REQUIREMENTS_ML))
+
+    def test_optional_file_says_when_it_is_needed(self):
+        text = REQUIREMENTS_ML.read_text(encoding="utf-8")
+        for fragment in ("cross_encoder", "heuristic", "pip install -r requirements-ml.txt"):
+            self.assertIn(fragment, text,
+                          "可选清单没写清 %r：用户不知道什么时候该装它" % fragment)
+
+    def test_packaging_is_still_declared(self):
+        """PEP 440 语义断言（见下）用的量具必须在清单里，不能靠传递安装。"""
+        self.assertIn("packaging", _declared(REQUIREMENTS))
+
+
+class CiInstallStepTests(unittest.TestCase):
+    def test_exactly_one_install_step(self):
         hits = _install_step()
         self.assertEqual(len(hits), 1, "装依赖的步骤不唯一：%d" % len(hits))
-        code = _code(hits[0])
-        self.assertIn(CPU_INDEX, code,
-                      "CI 又从 PyPI 拿带 CUDA 的 torch 了：一次 3.27 GB 死重，磁盘余量赌运气")
-        torch_lines = [ln for ln in code.splitlines() if CPU_INDEX in ln]
-        self.assertEqual(len(torch_lines), 1, "CPU 索引那行不唯一")
-        self.assertRegex(torch_lines[0], r"pip install\s+--index-url\s+\S+/whl/cpu\s+torch\s*$",
-                         "CPU 索引那一行必须只装 torch 本身：%r" % torch_lines[0].strip())
 
-    def test_cpu_index_comes_before_requirements(self):
-        """顺序反了就等于没改：先装 requirements 会把 CUDA 那批先拉下来。"""
+    def test_no_torch_preinstall_step_remains(self):
         code = _code(_install_step()[0])
-        lines = [ln for ln in code.splitlines() if "pip install" in ln]
-        self.assertEqual(len(lines), 2, "装依赖应当是两行（torch CPU 先行，再 requirements）：%s" % lines)
-        self.assertIn(CPU_INDEX, lines[0], "第一行不是 CPU 索引的 torch")
-        self.assertIn("requirements.txt", lines[1], "第二行不是 requirements.txt")
+        self.assertNotIn(CPU_INDEX, code,
+                         "CI 仍在从 PyTorch CPU 索引预装 torch：默认清单已经不需要它")
+        self.assertNotIn("/whl/cu", code, "装依赖里混进了 GPU 索引")
+        pip_lines = [ln for ln in code.splitlines() if "pip install" in ln]
+        self.assertEqual(len(pip_lines), 1,
+                         "装依赖应当只剩一行 -r requirements.txt：%s" % pip_lines)
+        self.assertNotRegex(code, r"pip install[^\n]*\btorch\b",
+                            "CI 仍在显式安装 torch")
 
-    def test_no_cuda_index_url_sneaks_in(self):
+    def test_no_optional_ml_file_in_ci(self):
+        """CI 只验默认路径；可选档装不装都不该影响 lane。"""
         code = _code(_install_step()[0])
-        for bad in ("/whl/cu", "download.pytorch.org/whl/stable"):
-            self.assertNotIn(bad, code, "装依赖里混进了 GPU 索引 %r" % bad)
+        self.assertNotIn("requirements-ml.txt", code)
 
     def test_exit_codes_are_not_swallowed(self):
         step = _install_step()[0]
@@ -92,34 +127,17 @@ class TorchCpuInstallTests(unittest.TestCase):
         self.assertNotIn("if", step, "装依赖被挂上条件：另一条 lane 就没装依赖了")
 
 
-class WhyThisIsSafeTests(unittest.TestCase):
-    """CPU 版够用的**结构性依据**，不是「看起来没问题」。"""
+class LazyImportTests(unittest.TestCase):
+    """没装 s-t 时启动不能崩 —— 依据是那句 import 在函数体内，而不是模块级。"""
 
-    def test_sentence_transformers_is_the_thing_that_pulls_torch(self):
-        text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        self.assertRegex(text, r"(?im)^\s*sentence-transformers\b",
-                         "requirements.txt 里没有 sentence-transformers：那这个守卫的前提就变了")
-
-    def test_product_code_imports_it_lazily_not_at_module_level(self):
-        """`retrieval.py` 里那句 import 在函数体内 —— 所以 CI 永远不会真去要 GPU 版 torch。
-
-        有人把它提成模块级 import 时，这条必须响：那时 sentence-transformers 进入
-        导入链，装没装上就不再是「懒加载可选件」的问题，而 lane 是否还需要 torch
-        也得重新量。
-        """
+    def test_product_code_imports_it_lazily(self):
         src = (ROOT / "agent_runtime" / "retrieval.py").read_text(encoding="utf-8")
         self.assertEqual(_top_level_imports(src), [],
-                         "sentence_transformers 变成了模块级导入：%s" % _top_level_imports(src))
+                         "sentence_transformers 变成了模块级导入：没装它的环境启动就崩")
         self.assertIn("from sentence_transformers import", src,
                       "函数体内的懒导入不见了：这条可选依赖可能整个被删掉")
 
     def test_the_lazy_import_detector_is_not_vacuous(self):
-        """判据本身要能认出那个形状，否则它只是在读文件。
-
-        为什么不真去改 `retrieval.py` 做变异：把导入提到模块级会让本机没装的包进入导入链，
-        测试收集阶段就 `ModuleNotFoundError` —— 那是一次「为了错误的原因变红」的杀死，
-        证明不了任何事。夹具对照才是干净的证伪。
-        """
         module_level = "from sentence_transformers import CrossEncoder\n\n\ndef f():\n    pass\n"
         lazy = "def f():\n    from sentence_transformers import CrossEncoder\n    return CrossEncoder\n"
         self.assertEqual(_top_level_imports(module_level),
@@ -127,32 +145,37 @@ class WhyThisIsSafeTests(unittest.TestCase):
                          "判据认不出模块级导入 —— 那它对真实文件也永远是空的")
         self.assertEqual(_top_level_imports(lazy), [], "判据把函数体内的导入也算成模块级")
 
+    def test_missing_package_degrades_instead_of_raising(self):
+        """真把包从导入链里拿走：重排应退回原顺序，而不是抛 ImportError。"""
+        import agent_runtime.retrieval as retrieval
 
-    def test_packaging_is_a_declared_dependency(self):
-        """上一条断言用的量具必须在清单里 —— 靠传递安装的话，守卫会在没装它的环境里红。"""
-        text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-        self.assertRegex(text, r"(?im)^\s*packaging\b",
-                         "`packaging` 不在 requirements.txt 里：语义断言会因环境缺件而误红")
+        class _Doc:
+            def __init__(self, text):
+                self.page_content = text
+                self.metadata = {}
 
+        reranker = retrieval.SentenceTransformerReranker("BAAI/bge-reranker-base")
+        docs = [_Doc("b"), _Doc("a")]
+        with patch.dict(sys.modules, {"sentence_transformers": None}):
+            out = reranker.rerank("q", docs)
+        self.assertEqual([d.page_content for d in out], ["b", "a"],
+                         "缺包时必须退回原始顺序，而不是重排或抛异常")
+        self.assertTrue(reranker.error, "降级没有留痕：error 为空，事后无法区分「没装」和「排序一致」")
+
+
+class PackagingSemanticsTests(unittest.TestCase):
     def test_cpu_local_version_satisfies_the_torch_constraint(self):
-        """`+cpu` 这种本地版本号能满足 `>=` 约束 —— 「先装 torch 再装 requirements」成立的前提。
-
-        约束文本 `torch>=2.2` 是 2026-11-02 从 PyPI 的
-        `sentence-transformers` 元数据里读出来的（`info.requires_dist`）；这里钉的是
-        **PEP 440 的匹配语义**，不是那个数：哪天解析器或版本策略变了，这条会先响，
-        而不是等 lane 在 CI 上把 CUDA 那批重新装回来。
-        """
+        """`+cpu` 本地版本号能满足 `>=` 约束 —— requirements-ml.txt 解析的前提仍成立。"""
         from packaging.specifiers import SpecifierSet
 
         self.assertTrue(SpecifierSet(">=2.2").contains("2.15.0+cpu"),
-                        "本地版本号不再满足 >= 约束：那 CPU torch 会被 requirements 换回 CUDA 那份")
+                        "本地版本号不再满足 >= 约束：装 CPU 档时会被换回 CUDA 那份")
         self.assertFalse(SpecifierSet(">=2.2").contains("2.1.0+cpu"),
                          "约束判据反了：低于 2.2 也算满足")
 
 
 class SiblingStepsSurviveTests(unittest.TestCase):
     def test_the_gates_next_to_it_still_own_their_commands(self):
-        """改这一步不许把邻门的命令吃掉（YAML 同键后者覆盖前者）。"""
         joined = "\n".join(_code(s) for s in _steps())
         for fragment, label in (("ruff check", "静态缺陷门"),
                                 ("npm run lint", "前端 lint 门"),
