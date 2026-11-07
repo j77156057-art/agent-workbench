@@ -58,7 +58,7 @@ def test_pinned_exactly():
     assert PINNED in lines, (
         "requirements.txt 里没有 `%s` —— 它是堵 `pywebview` 那个"
         "**无版本约束**的传递依赖用的。删掉它等于把洞重新打开。"
-        "依据 docs/harness-research-verified.md §1.4" % PINNED)
+        "依据 tools/mutation/probe_pin_one_hash.py（可复算）" % PINNED)
 
     # 也不能写成裸 `proxy_tools`（那样约束就没了）—— 那正是改动前的状态。
     bare = [ln for ln in lines

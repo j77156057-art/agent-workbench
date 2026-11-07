@@ -62,7 +62,8 @@ def test_the_file_ships_with_the_flag():
     """文件在、键在、值是**非零且不过大**的天数。"""
     assert NPMRC.exists(), (
         "frontend/.npmrc 不见了 —— `min-release-age` 是本仓库唯一的 npm 侧"
-        "「别解析到刚发布的包」防护（依据 docs/harness-research-verified.md §1.4）")
+        "「别解析到刚发布的包」防护（前提与探针见 frontend/.npmrc 注释、"
+        "tools/mutation/probe_min_release_age.py）")
     text = NPMRC.read_text(encoding="utf-8")
     m = re.search(r"^\s*min-release-age\s*=\s*(\S+)", text, re.M)
     assert m, "frontend/.npmrc 里没有 min-release-age 那一行"

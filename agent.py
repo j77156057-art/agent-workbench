@@ -117,7 +117,7 @@ _NATIVE_CAPABLE = {"qwen", "deepseek", "ollama", "llamacpp", "openai", "azure", 
 #: 收进 `turn.reasoning` 了（实测一次提问 129270 字符）。它管的是更靠上游的一件事：
 #: **要不要在提示词里允许模型写「工具调用之间的话」**。
 #:
-#: 核实到的三家做法（见 `docs/harness-research-verified.md`）：
+#: 核实到的三家做法（依据各自公开的 README / docs 原文）：
 #:   · **opencode 没有这个开关**。它的渲染侧对模型散文只有一个判据：非空
 #:     （`message-part.tsx:717`、`index.tsx:1690`）。散文多少**由提示词决定** ——
 #:     `prompt/gpt.txt:81-97` 要求写进度更新，`prompt/default.txt:17-19` 要求

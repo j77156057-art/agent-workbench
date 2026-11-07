@@ -2,9 +2,9 @@
 
 ## 为什么必须真跑
 
-`docs/harness-research-verified.md` §1.4 记着我在这条上**连续四次说过头**
-（见那节表格）。第3 次最典型：「esbuild 的 postinstall 在下载二进制，关了 CI
-的 build 会失败」—— 听起来非常合理，实测不成立（二进制来自 optional 包）。
+这一条我**连续四次说过头**（下面的判据就是为纠正它写的）。第 3 次最典型：
+「esbuild 的 postinstall 在下载二进制，关了 CI 的 build 会失败」—— 听起来非常合理，
+实测不成立（二进制来自 optional 包）。
 
 **四次里我一次都没跑过 npm。** 这是纪律问题，不是知识问题。
 

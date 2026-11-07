@@ -337,7 +337,7 @@ AssertionError: 3.6553988456726074 not less than 3.5 : 超时没有立刻生效
 把三后端搜索的真实响应录一次、提交 cassette，之后重放。
 **所以别因为这节而以为「录放」这条路整体否掉了。**
 
-依据见 `docs/harness-research-verified.md`（一手来源核实记录）。
+依据：对三个 harness 项目公开 README / docs 的一手核对。
 
 ---
 

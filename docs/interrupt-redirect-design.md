@@ -1,6 +1,6 @@
 # ④ interrupt-and-redirect 设计方案
 
-> 来源：`docs/next-steps.md` §7 第 4 项 + `docs/harness-research-verified.md` §2.10。
+> 来源：Hermes 公开文档里 interrupt-and-redirect 的三种模式（2026-10 调研）。
 > 状态：设计稿（待授权落地，对应 task #30）。
 > 调研事实锚点：`api.py` / `agent.py` / `frontend/src/workbench/components/ChatDock.vue` / `frontend/src/ask/AskApp.vue`（均为写作时真实行号）。
 

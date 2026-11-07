@@ -127,7 +127,7 @@ def test_bootstrap_passes_the_flag():
         assert "--ignore-scripts" in argv, (
             "npm ci 的 argv 里没有 --ignore-scripts: %s —— "
             "实测证明加它对产物零影响（逐字节相同），去掉它等于让任意依赖的 "
-            "postinstall 在启动时执行。依据 docs/harness-research-verified.md §1.4"
+            "postinstall 在启动时执行。探针 tools/mutation/probe_npm_ignore_scripts.py"
             % argv)
 
 
@@ -235,7 +235,7 @@ def test_no_new_lifecycle_script_dependency_slips_in():
         "        必须重跑 tools/mutation/probe_npm_ignore_scripts.py："
         "若关掉脚本后产物不再逐字节相同，就要把该包移出白名单策略，"
         "改用 Pi 那套「显式白名单」而不是全禁。\n"
-        "        依据 docs/harness-research-verified.md §1.4"
+        "        依据 tools/mutation/probe_npm_ignore_scripts.py 的逐字节比对"
         % sorted(new))
 
     gone = KNOWN_LIFECYCLE_PACKAGES - actual
