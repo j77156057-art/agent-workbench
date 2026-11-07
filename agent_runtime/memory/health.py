@@ -15,7 +15,7 @@ DEFAULT_RETENTION_DAYS = 90
 RECEIPT_WINDOW_DAYS = 30
 
 #: 学习环的七级漏斗。**这七级数的不是同一种东西**：前四级数「回合」、五六级数「条目」、
-#: 第七级数「有过 L2 回注的会话」，而且第七条目的内容来自**全局共享池**，不是本项目晋升的那几条。
+#: 第七级数「有过 shared 回注的会话」，而且第七条目的内容来自**全局共享池**，不是本项目晋升的那几条。
 #: 所以「每级是上一级的子集」只在单位与作用域都相同时成立 —— 口径必须写进结构里，
 #: 由 `funnel()` 逐对判 `comparable`，不能靠读的人记住，也不能让断点跨单位乱走。
 #: 加它的理由很具体：此前只能报"真实项目 0 回执 / 46 条候选全来自评测"这种端点数，
@@ -28,8 +28,8 @@ FUNNEL_STAGES = (
     ("with_receipt", "拿到回执", "turn", "project", "receipts"),
     ("adopted", "被采纳", "item", "project", None),
     ("promoted", "晋升共享", "item", "project", None),
-    # 只统计 L2 共享层真的回到提示词（`memory.inject` 在 agent 的 L2 分支记）。
-    # 标签刻意不写"回注提示词"：L3/L4 的注入不在这条计量里，写成全部会谎报口径。
+    # 只统计 shared 共享层真的回到提示词（`memory.inject` 在 agent 的 shared 分支记）。
+    # 标签刻意不写"回注提示词"：project/hook 的注入不在这条计量里，写成全部会谎报口径。
     ("injected", "共享层回注", "session", "project|global", None),
 )
 
@@ -129,7 +129,7 @@ def funnel(project_id, days=30):
         "promoted": sum(1 for item in items if str(item.get("status") or "") == "promoted"),
     }
 
-    # 会话级：同一张时间窗里，有多少个不同会话真的拿到过 L2 注入（事件数另报，不混用）。
+    # 会话级：同一张时间窗里，有多少个不同会话真的拿到过 shared 注入（事件数另报，不混用）。
     inject_rows = metrics.rows(days=window, project=project_id, event="memory.inject")
     sessions = {str(row.get("session") or "") for row in inject_rows} - {""}
     counts["injected"] = len(sessions)

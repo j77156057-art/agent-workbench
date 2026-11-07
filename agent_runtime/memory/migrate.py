@@ -183,7 +183,7 @@ def _journal_records(rows):
 
 
 def backfill_profile(db_path=None, force=False):
-    """把旧库的显式画像/偏好与历史回合学习信号回填到 L1。
+    """把旧库的显式画像/偏好与历史回合学习信号回填到用户画像（旧编号 L1，已废弃）。
 
     旧迁移只归档 preference，没把它接到画像；实时 learning 又只统计开关打开
     之后的回合，导致升级后画像看起来全空。这里用可复现的确定性计数补齐：

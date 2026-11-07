@@ -1,4 +1,4 @@
-"""L0 宪法：用户制定、常驻注入、唯一允许用祈使句的记忆层。
+"""常驻守则（旧编号 L0，已废弃）：用户制定、常驻注入、唯一允许用祈使句的记忆层。
 
 模型没有写入路径（只有用户能保存）；哈希用于审计与变更留痕，不做访问控制。
 文件损坏时 fail-closed：不注入任何内容，只记审计，绝不把坏 YAML 塞进提示词。
@@ -170,7 +170,7 @@ def load(ensure=True):
 def injected_text(doc, max_chars=INJECT_MAX_CHARS):
     """拼注入串：头部 + 条款 + 正文；超上限时先省正文，绝不切坏 YAML/条款。"""
     version = int(doc.get("version") or 0)
-    header = f"【系统宪法 v{version}｜用户制定，最高优先级，必须遵守】"
+    header = f"【常驻守则 v{version}｜用户制定，最高优先级，必须遵守】"
     lines = []
     for clause in doc.get("clauses") or []:
         if not isinstance(clause, dict):
