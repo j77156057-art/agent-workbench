@@ -11,6 +11,7 @@ import WorkflowPreview from './WorkflowPreview.vue'
 import AdapterManagerPanel from './AdapterManagerPanel.vue'
 import WorkflowMemberWindow from './WorkflowMemberWindow.vue'
 import { agentApi } from '../api/agent'
+import { preferredScrollBehavior } from '../composables/motionPreference'
 
 const props = defineProps<{
   workflowId: string
@@ -116,7 +117,7 @@ watch(hasFinalAnswer, (now, prev) => {
   if (!now || prev) return
   nextTick(() => {
     window.requestAnimationFrame(() => {
-      finalEl.value?.scrollIntoView({ block: 'end', behavior: 'smooth' })
+      finalEl.value?.scrollIntoView({ block: 'end', behavior: preferredScrollBehavior() })
     })
   })
 })

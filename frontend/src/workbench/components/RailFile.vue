@@ -170,7 +170,7 @@ async function openInEditor() {
   align-items: center;
   gap: 8px;
 }
-.rr-file-image img { max-width: 100%; height: auto; border: 1px solid var(--border); background: #fff; }
+.rr-file-image img { max-width: 100%; height: auto; border: 1px solid var(--border); background: var(--mi-surface); }
 .rr-code {
   flex: 1 1 auto;
   min-height: 0;

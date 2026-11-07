@@ -45,8 +45,8 @@
 .md-pre {
   margin: 8px 0;
   padding: 10px 12px;
-  background: #0f1623;
-  border: 1px solid #202a3d;
+  background: var(--mi-bg-deep, #0f1623);
+  border: 1px solid var(--mi-border, #202a3d);
   border-radius: 10px;
   overflow-x: auto;
 }
@@ -54,6 +54,6 @@
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   line-height: 1.6;
-  color: #c7d4e8;
+  color: var(--mi-text-secondary, #c7d4e8);
   white-space: pre;
 }

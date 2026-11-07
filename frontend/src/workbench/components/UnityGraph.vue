@@ -7,6 +7,7 @@ import { fsApi } from '../api'
 import type { UnityGraphResp, UnityNode, UnityEdge } from '../api'
 import { useWorkbench } from '../composables/workbench'
 import { cat, catAlpha } from '../theme'
+import { useReducedMotion } from '../composables/motionPreference'
 
 const { unityGraphOpen, closeUnityGraph, jumpToLine } = useWorkbench()
 
@@ -14,6 +15,7 @@ const data = ref<UnityGraphResp | null>(null)
 const loading = ref(false)
 const error = ref('')
 const ready = ref(false)
+const reducedMotion = useReducedMotion()
 const query = ref('')
 const showMissing = ref(false)
 const hiddenKinds = ref<Set<string>>(new Set())
@@ -429,6 +431,18 @@ function step(a: number) {
 
 function reheat(v = 0.6) {
   alpha = Math.max(alpha, v)
+  if (reducedMotion.value) {
+    // 同一力学模型同步收敛，拖拽中只提交用户的直接位移。
+    let remaining = 600
+    while (alpha > 0.02 && !dragSim && remaining > 0) {
+      step(alpha)
+      alpha *= 0.96
+      remaining -= 1
+    }
+    alpha = 0
+    syncDom()
+    return
+  }
   if (!raf && ready.value) raf = requestAnimationFrame(loop)
 }
 
@@ -449,6 +463,12 @@ function cancelRaf() {
   raf = 0
   alpha = 0
 }
+
+watch(reducedMotion, reduced => {
+  if (!reduced) return
+  cancelRaf()
+  reheat()
+})
 
 function endpoints(sa: Sim, sb: Sim) {
   const dx = sb.x - sa.x

@@ -310,7 +310,7 @@ defineExpose({ show })
   padding: 12px; background: var(--bg-raised);
   border: 1px solid var(--border-strong); border-radius: 8px;
   z-index: 300; font-size: var(--fs-sm); line-height: 1.6;
-  box-shadow: 0 12px 32px rgba(35, 52, 84, 0.16);
+  box-shadow: var(--mi-shadow-pop);
   animation: gp-pop-in .2s cubic-bezier(.2,.8,.2,1) both;
 }
 .gp-head { display: flex; align-items: center; gap: 8px; }
@@ -334,11 +334,11 @@ defineExpose({ show })
 .gp-legend b { width: 8px; height: 3px; border-radius: 1px; display: inline-block; }
 
 .gp-card { margin-top: 10px; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: 6px; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
-.gp-card:hover { border-color: var(--border); box-shadow: 0 4px 12px rgba(35,52,84,.07); transform: translateY(-1px); }
+.gp-card:hover { border-color: var(--border); box-shadow: var(--mi-shadow-control); transform: translateY(-1px); }
 .gp-card-head { display: flex; align-items: baseline; gap: 8px; }
 .gp-card-head b { font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
 .gp-card-head em { font-style: normal; font-weight: 400; color: var(--text-muted); font-size: var(--fs-cap); }
-.gp-bar { height: 6px; border-radius: 3px; background: rgba(35, 52, 84, 0.08); margin-top: 6px; overflow: hidden; }
+.gp-bar { height: 6px; border-radius: 3px; background: var(--mi-bg); margin-top: 6px; overflow: hidden; }
 .gp-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .35s ease; }
 .gp-bar-row { display: flex; justify-content: space-between; margin-top: 3px; font-size: var(--fs-cap); color: var(--text-muted); }
 
@@ -367,6 +367,21 @@ button:disabled { opacity: 0.5; cursor: default; }
 .gp-danger:hover:not(:disabled) { background: rgba(224, 72, 79, 0.1); }
 @keyframes gp-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes gp-pop-in { from { opacity: 0; transform: translateY(-6px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+/* v3 GPU 仪表：采样、事实、槽位分层，数字按等宽字体对齐。 */
+.gp-pop { width: min(600px, calc(100vw - 32px)); padding: 16px; }
+.gp-head { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.gp-head b { font-size: var(--fs-body); }
+.gp-mode { font-family: var(--ui2-font-mono, var(--font-code)); }
+.gp-chart-wrap { padding: 10px 0 12px; border-bottom: 1px solid var(--border); }
+.gp-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; border-color: var(--border); }
+.gp-card-head, .gp-bar, .gp-bar-row, .gp-holder { grid-column: 1 / -1; }
+.gp-card-head b { font-size: var(--fs-body); }
+.gp-card-head em, .gp-bar-row, .gp-holder { font-family: var(--ui2-font-mono, var(--font-code)); font-variant-numeric: tabular-nums; }
+.gp-idle { padding: 12px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.gp-idle-title { margin-bottom: 4px; font-weight: 600; }
+.gp-idle-meta, .gp-faint { line-height: 1.65; }
+.gp-input { font-family: var(--ui2-font-mono, var(--font-code)); font-variant-numeric: tabular-nums; }
+
 @media (max-width: 620px) {
   .gp-pop { left: 8px; right: 8px; top: 8px; bottom: 8px; width: auto; max-width: none; max-height: none; border-radius: 10px; }
   .gp-card-head, .gp-holder, .gp-idle-row { flex-wrap: wrap; }

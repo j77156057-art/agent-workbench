@@ -985,7 +985,7 @@ const colorOf = regionColor
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 24px 70px rgba(35, 52, 84, 0.16);
+  box-shadow: var(--mi-shadow-pop);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1212,7 +1212,7 @@ const colorOf = regionColor
   background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  box-shadow: 0 10px 30px rgba(35, 52, 84, 0.16);
+  box-shadow: var(--mi-shadow-pop);
   padding: 11px 13px;
   font-size: var(--fs-sm);
   z-index: 5;
@@ -1252,7 +1252,7 @@ const colorOf = regionColor
 .rg-d-empty { margin: 0 0 2px; font-size: var(--fs-cap); color: var(--text-faint); }
 .rg-d-open {
   width: 100%; margin-top: 10px;
-  border: 1px solid var(--accent-deep); background: var(--accent); color: #fff;
+  border: 1px solid var(--accent-deep); background: var(--accent); color: var(--accent-ink);
   border-radius: 6px; padding: 7px 10px; font-size: var(--fs-sm); cursor: pointer;
 }
 .rg-d-open:disabled { opacity: .5; cursor: not-allowed; }

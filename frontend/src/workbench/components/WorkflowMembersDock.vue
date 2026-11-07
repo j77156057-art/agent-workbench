@@ -68,10 +68,10 @@ function focus(id: string) {
   display: inline-flex; align-items: center; gap: 7px;
   height: 28px; padding: 0 11px;
   border: 1px solid var(--border-strong); border-radius: 99px;
-  background: var(--bg-raised); box-shadow: 0 4px 14px rgba(35,52,84,.16);
+  background: var(--bg-raised); box-shadow: var(--mi-shadow-control);
   color: var(--text); font-size: var(--fs-sm); cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease;
 }
-.wmd-strip:hover { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(35,52,84,.18); }.wmd-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wmd-strip:hover { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }.wmd-strip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wmd-strip b { font-weight: 600; }
 .wmd-strip em { font-style: normal; color: var(--text-faint); font-size: var(--fs-cap); font-variant-numeric: tabular-nums; }
 .wmd-arrow {
@@ -93,7 +93,7 @@ function focus(id: string) {
   width: 310px; max-width: calc(100vw - 24px);
   max-height: 42vh; overflow-y: auto;
   border: 1px solid var(--border-strong); border-radius: 10px;
-  background: var(--bg-raised); box-shadow: 0 14px 34px rgba(35,52,84,.22);
+  background: var(--bg-raised); box-shadow: var(--mi-shadow-pop);
   padding: 8px; display: grid; gap: 3px;
   transform-origin: left bottom;
   animation: wmd-pop .18s cubic-bezier(.32, .72, 0, 1);

@@ -1,0 +1,278 @@
+:root {
+  /* 色彩：低饱和蓝灰中性层；faint 只用于图形与非正文装饰。 */
+  --mi-bg-deep: oklch(0.145 0.018 245);
+  --mi-bg: oklch(0.175 0.018 245);
+  --mi-surface: oklch(0.205 0.018 240);
+  --mi-surface-raised: oklch(0.245 0.020 240);
+  --mi-hover: oklch(0.275 0.022 240);
+  --mi-selected: oklch(0.285 0.032 215);
+  --mi-text: oklch(0.910 0.012 220);
+  --mi-text-secondary: oklch(0.740 0.018 230);
+  --mi-text-muted: oklch(0.675 0.018 235);
+  --mi-text-faint: oklch(0.540 0.018 235);
+  --mi-accent: oklch(0.790 0.100 178);
+  --mi-accent-strong: oklch(0.870 0.115 176);
+  --mi-accent-dim: oklch(0.640 0.070 185);
+  --mi-accent-ink: oklch(0.200 0.030 210);
+  --mi-success: oklch(0.760 0.100 155);
+  --mi-warning: oklch(0.800 0.090 85);
+  --mi-danger: oklch(0.740 0.120 25);
+  --mi-border-subtle: oklch(0.320 0.020 240 / 0.48);
+  --mi-border: oklch(0.340 0.020 240);
+  --mi-border-strong: oklch(0.470 0.025 230);
+  --mi-graph-node: oklch(0.570 0.025 230);
+  --mi-graph-edge: oklch(0.490 0.025 230);
+  --mi-graph-grid: oklch(0.500 0.025 230 / 0.09);
+  /* 2026-11-04：图上只剩真实边（合成邻接已删），原来的 0.12→0.42 在深底上几乎看不见，
+     提到 0.28→0.68 保证「有无关联、连到谁」可读；仍低于节点亮度，不抢主体的层级编码。 */
+  --mi-graph-edge-start-opacity: 0.28;
+  --mi-graph-edge-end-opacity: 0.68;
+  --mi-graph-flow-start-opacity: 0.22;
+  --mi-graph-flow-end-opacity: 0.82;
+  --mi-overlay: oklch(0.080 0.015 245 / 0.64);
+  --mi-shadow-panel: -24px 0 80px oklch(0.050 0.010 240 / 0.46);
+  --mi-shadow-drawer: -20px 0 56px oklch(0.050 0.010 240 / 0.52);
+  --mi-shadow-focus: 0 0 0 3px oklch(0.790 0.100 178 / 0.20);
+  --mi-glow-node: 0 0 5px oklch(0.790 0.100 178 / 0.48);
+  --mi-glow-signal: 0 0 4px oklch(0.790 0.100 178 / 0.72);
+
+  /* 六级字阶：展示数字 / 面板标题 / 区块标题 / 正文 / 次级 / 辅助。
+     2026-11-04 收窄：32px 的三联 KPI 数字是最大的"演示味"来源，降到 26px；
+     标题 20→17、区块 15→13，正文 13→12.5，次级 12→11，辅助 11→10.5。
+     行高同步收紧（40→31 / 28→23 / 24→19 / 22→18 / 20→17 / 18→15），
+     避免只缩字不缩行盒导致视觉更稀。健康/磁盘审计块的字号在组件里另行保底 12px
+     （见 MemoryContextPanel 的 .mp-funnel/.mp-disk 规则，浏览器契约测试要求 ≥12px）。 */
+  --mi-font-ui: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  --mi-font-mono: 'Space Mono', ui-monospace, 'JetBrains Mono', Consolas, monospace;
+  --mi-fs-display: 26px;
+  --mi-lh-display: 31px;
+  --mi-fs-title: 17px;
+  --mi-lh-title: 23px;
+  --mi-fs-section: 13px;
+  --mi-lh-section: 19px;
+  --mi-fs-body: 12.5px;
+  --mi-lh-body: 18px;
+  --mi-fs-secondary: 11px;
+  --mi-lh-secondary: 17px;
+  --mi-fs-caption: 10.5px;
+  --mi-lh-caption: 15px;
+  --mi-weight-regular: 400;
+  --mi-weight-medium: 520;
+  --mi-weight-semibold: 620;
+  --mi-tracking-label: 0.08em;
+
+  /* 4 / 8 / 12 / 16 / 24 / 32 / 48 / 64 间距刻度。 */
+  --mi-space-1: 4px;
+  --mi-space-2: 8px;
+  --mi-space-3: 12px;
+  --mi-space-4: 16px;
+  --mi-space-5: 24px;
+  --mi-space-6: 32px;
+  --mi-space-7: 48px;
+  --mi-space-8: 64px;
+
+  --mi-radius-xs: 2px;
+  --mi-radius-sm: 4px;
+  --mi-radius-md: 8px;
+  --mi-radius-lg: 12px;
+  --mi-border-width: 1px;
+  --mi-focus-width: 2px;
+
+  --mi-duration-fast: 120ms;
+  --mi-duration-base: 180ms;
+  --mi-duration-slow: 280ms;
+  --mi-duration-flow: 2600ms;
+  --mi-duration-pulse: 3200ms;
+  --mi-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --mi-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --mi-panel-width: 720px;
+  --mi-panel-width-md: 680px;
+  --mi-panel-width-sm: 640px;
+  --mi-panel-width-base: 520px;
+  --mi-header-height: 68px;
+  --mi-control-height: 32px;
+  --mi-control-height-sm: 28px;
+  --mi-icon-button: 32px;
+  --mi-graph-height: 430px;
+  --mi-graph-height-compact: 390px;
+  --mi-detail-width: 344px;
+  --mi-detail-width-compact: 312px;
+  --mi-copy-width: 68ch;
+  --mi-pre-height: 280px;
+  --mi-catalog-height: 420px;
+  --mi-select-width: 104px;
+  --mi-tree-branch-width: 16px;
+  --mi-status-dot: 6px;
+  --mi-node-legend-dot: 7px;
+  --mi-label-backdrop-width: 3px;
+  --mi-detail-label-width: 88px;
+  --mi-skeleton-line-medium: 82%;
+  --mi-skeleton-line-short: 64%;
+  --mi-node-scale-min: 0.88;
+  --mi-node-scale-max: 1.08;
+  --mi-reveal-scale: 0.998;
+  --mi-graph-center-x: 50%;
+  --mi-graph-center-y: 48%;
+  --mi-graph-halo-stop: 54%;
+  --mi-graph-background-accent: 5%;
+  --mi-backdrop-blur: 16px;
+  --mi-opacity-disabled: 0.45;
+  --mi-opacity-flow: 0.18;
+  --mi-opacity-halo: 0.10;
+  --mi-opacity-halo-active: 0.22;
+  --mi-opacity-used-ring: 0.64;
+  --mi-opacity-hover-ring: 0.56;
+  --mi-opacity-node-pulse-min: 0.76;
+  --mi-opacity-skeleton: 0.52;
+  --mi-z-panel: 400;
+  --mi-z-drawer: 4;
+  --mi-radius-pill: 999px;
+  --mi-shadow-control: 0 1px 2px oklch(0.050 0.010 240 / 0.24);
+  --mi-shadow-pop: 0 16px 48px oklch(0.050 0.010 240 / 0.48);
+
+  /* 2026-11-04 组件层级：表面三级 / 圆角三档 / 状态第二信号。
+     三级表面只靠「背景亮度 + 边框强度 + 阴影深度」区分，不引入新色相；
+     状态除颜色外必须带形态信号（虚线 / 进度弧 / 对勾 / 斜纹），这是无障碍要求。 */
+  --mi-surface-level-1: var(--mi-bg);              /* 主内容面：页面与面板底，无阴影 */
+  --mi-surface-level-2: var(--mi-surface);         /* 次级面：区块卡片，细边 + 低阴影 */
+  --mi-surface-level-3: var(--mi-surface-raised);  /* 悬浮/选中面：更亮 + 强边 + 深阴影 */
+  --mi-border-level-1: var(--mi-border-subtle);
+  --mi-border-level-2: var(--mi-border);
+  --mi-border-level-3: var(--mi-border-strong);
+  --mi-shadow-level-1: none;
+  --mi-shadow-level-2: 0 1px 0 oklch(0.910 0.012 220 / 0.04),
+    0 6px 18px oklch(0.050 0.010 240 / 0.26);
+  --mi-shadow-level-3: 0 10px 28px oklch(0.050 0.010 240 / 0.42);
+
+  --mi-radius-container: var(--mi-radius-lg);
+  --mi-radius-card: var(--mi-radius-md);
+  --mi-radius-control: 6px;
+
+  --mi-state-mark-size: 8px;
+  --mi-state-mark-gap: 6px;
+  --mi-state-signal-width: 2px;
+  --mi-state-run-duration: 1400ms;
+  --mi-state-stripe-width: 2px;
+  --mi-state-stripe-gap: 3px;
+  --mi-state-pending-edge: oklch(0.800 0.090 85 / 0.62);
+  --mi-state-failed-stripe: repeating-linear-gradient(
+    135deg,
+    oklch(0.740 0.120 25 / 0.62) 0 var(--mi-state-stripe-width),
+    transparent var(--mi-state-stripe-width) calc(var(--mi-state-stripe-width) + var(--mi-state-stripe-gap))
+  );
+}
+
+/* 工作台唯一皮肤。旧组件继续消费原变量名，但颜色、阴影与形状只从这里取值。 */
+:root:root:root:root[data-skin='observatory'] {
+  color-scheme: dark;
+  --skin-dark: 1;
+  color: var(--mi-text);
+  background-color: var(--mi-bg-deep);
+  --bg: var(--mi-bg);
+  --surface: var(--mi-surface);
+  --bg-raised: var(--mi-surface-raised);
+  --bg-hover: var(--mi-hover);
+  --bg-selected: var(--mi-selected);
+  --ink: var(--mi-text);
+  --text: var(--mi-text);
+  --muted: var(--mi-text-muted);
+  --text-muted: var(--mi-text-muted);
+  --faint: var(--mi-text-faint);
+  --text-faint: var(--mi-text-muted);
+  --text-dim: var(--mi-text-secondary);
+  --border: var(--mi-border-subtle);
+  --border-strong: var(--mi-border-strong);
+  --border-graphic: var(--mi-border-strong);
+  --border-2: color-mix(in oklch, var(--mi-accent) 24%, var(--mi-surface));
+  --edge-ink: var(--mi-border);
+  --edge-ink-soft: transparent;
+  --edge-ink-soft-off: transparent;
+  --chip-edge: transparent;
+  --accent: var(--mi-accent);
+  --accent-loud: var(--mi-accent-strong);
+  --accent-deep: var(--mi-accent-dim);
+  --accent-ink: var(--mi-accent-ink);
+  --accent-2: var(--mi-accent);
+  --accent-2-ink: var(--mi-accent-ink);
+  --accent-2-deep: var(--mi-accent-dim);
+  --accent-soft: color-mix(in oklch, var(--mi-accent) 12%, transparent);
+  --accent-text: var(--mi-accent-strong);
+  --danger: var(--mi-danger);
+  --amber: var(--mi-warning);
+  --green: var(--mi-success);
+  --danger-ink: var(--mi-bg-deep);
+  --amber-ink: var(--mi-bg-deep);
+  --green-ink: var(--mi-bg-deep);
+  --amber-deep: var(--mi-warning);
+  --green-deep: var(--mi-success);
+  --amber-soft: color-mix(in oklch, var(--mi-warning) 12%, var(--mi-surface));
+  --green-soft: color-mix(in oklch, var(--mi-success) 12%, var(--mi-surface));
+  --danger-soft: color-mix(in oklch, var(--mi-danger) 12%, var(--mi-surface));
+  --tool: var(--mi-accent-dim);
+  --trust-verified-fg: var(--mi-success);
+  --trust-verified-bg: color-mix(in oklch, var(--mi-success) 12%, transparent);
+  --trust-community-fg: var(--mi-warning);
+  --trust-community-bg: color-mix(in oklch, var(--mi-warning) 12%, transparent);
+  --trust-unknown-fg: var(--mi-text-muted);
+  --trust-unknown-bg: color-mix(in oklch, var(--mi-text-muted) 12%, transparent);
+  --shadow-control: var(--mi-shadow-control);
+  --shadow-soft: var(--mi-shadow-control);
+  --shadow-pop: var(--mi-shadow-pop);
+  --modal-shadow: var(--mi-shadow-pop);
+  --sh-hard: var(--mi-shadow-control);
+  --sh-hard-sm: var(--mi-shadow-control);
+  --sh-hard-lg: var(--mi-shadow-pop);
+  --r-xs: var(--mi-radius-xs);
+  --r-sm: var(--mi-radius-sm);
+  --r-md: var(--mi-radius-md);
+  --r-lg: var(--mi-radius-lg);
+  --r-full: var(--mi-radius-pill);
+  --radius-sm: var(--mi-radius-sm);
+  --radius-md: var(--mi-radius-md);
+  --radius-lg: var(--mi-radius-lg);
+  --radius-xl: var(--mi-radius-lg);
+  --radius-pill: var(--mi-radius-pill);
+  --modal-radius: var(--mi-radius-md);
+  --edge-w: var(--mi-border-width);
+  --edge-w-strong: var(--mi-border-width);
+  --edge-w-heavy: var(--mi-border-width);
+  --scrim: var(--mi-overlay);
+  --scrim-soft: color-mix(in oklch, var(--mi-overlay) 70%, transparent);
+  --style-font-ui: var(--mi-font-ui);
+  --style-font-display: var(--mi-font-ui);
+  --style-font-mono: var(--mi-font-mono);
+  --style-weight-title: var(--mi-weight-semibold);
+  --style-weight-body: var(--mi-weight-regular);
+  --font-display: var(--mi-font-ui);
+  --ui2-font-display: var(--mi-font-ui);
+  --skin-grain: 0;
+  --skin-vignette: 0%;
+  --skin-dots: 0;
+  --style-grain: 0;
+  --style-texture: 0;
+  --ui2-rail-bg: var(--mi-bg-deep);
+  --ui2-rail-text: var(--mi-text);
+  --ui2-rail-muted: var(--mi-text-secondary);
+  --ui2-rail-line: var(--mi-border-subtle);
+  --ui2-line: var(--mi-border-subtle);
+  --ui2-line-strong: var(--mi-border);
+}
+
+/* 全工作台动效总闸：覆盖本地组件、共享层和第三方 light-DOM。 */
+@media (prefers-reduced-motion: reduce) {
+  :root[data-skin='observatory'] *,
+  :root[data-skin='observatory'] *::before,
+  :root[data-skin='observatory'] *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  :root[data-skin='observatory'] [data-flow-signal],
+  :root[data-skin='observatory'] .mo-signal {
+    display: none !important;
+  }
+  :root[data-skin='observatory'] .cd-caret {
+    opacity: 1 !important;
+  }
+}

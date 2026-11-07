@@ -79,7 +79,7 @@ const files = computed<RenderedFile[]>(() =>
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  background: #f6f8fb;
+  background: var(--mi-bg);
   padding: 4px 0 12px;
 }
 .fd-empty { margin: 14px 16px; color: var(--text-faint); font-size: var(--fs-sm); }
@@ -147,7 +147,7 @@ const files = computed<RenderedFile[]>(() =>
   font-size: var(--fs-cap);
 }
 .fd-sign { flex: 0 0 18px; text-align: center; user-select: none; }
-.fd-code { flex: 1 1 auto; padding-right: 16px; color: #243044; }
+.fd-code { flex: 1 1 auto; padding-right: 16px; color: var(--mi-text); }
 .fd-del { background: color-mix(in srgb, var(--danger) 12%, var(--bg-raised)); }
 .fd-del .fd-sign, .fd-del .fd-code { color: var(--danger); }
 .fd-add { background: color-mix(in srgb, var(--green) 12%, var(--bg-raised)); }

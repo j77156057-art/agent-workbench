@@ -75,12 +75,14 @@ export const visionApi = {
   },
   executeClick(proposalId: string): Promise<{
     ok: boolean; executed?: boolean; before?: string | null; after?: string | null; label?: string; error?: string
+    httpStatus?: number; state?: 'pending' | 'completed' | 'error' | string; pending?: boolean
+    ticket_id?: string; action?: string; target?: string; idempotent?: boolean
     verification?: { status: 'met' | 'unmet' | 'uncertain' | 'unavailable'; evidence: string; confidence?: number; next_target?: string }
   }> {
     return fetch('/api/vision/execute-click', withProject({
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ proposal_id: proposalId, confirmed: true }),
-    })).then(res => res.json())
+      body: JSON.stringify({ proposal_id: proposalId }),
+    })).then(async res => ({ ...await res.json(), httpStatus: res.status }))
   },
   analyzeVideo(file: File): Promise<{ ok: boolean; context?: string[]; info?: { frame_count?: number }; error?: string }> {
     const fd = new FormData()
@@ -146,8 +148,12 @@ export interface ModelConfigInfo {
   thinking_level_default?: string
   /** 当前生效窗口来源：custom 手填 / probe Ollama 实时探测 / profile 内置画像 */
   context_source?: 'custom' | 'probe' | 'profile'
-  /** AI 越界访问模式：safe=仅限项目内；high=允许受控越界读写（须配置白名单） */
+  /** AI 写权限：safe=仅项目内；high=允许非敏感外部路径 */
   external_access_mode?: 'safe' | 'high'
+  /** 桌面动作审批：user=逐动作用户确认；model=模型判断并留痕 */
+  desktop_approval_mode?: 'strict' | 'user' | 'model'
+  /** MCP 未证明只读：allow=放行并显式标记；reject=拒绝 */
+  mcp_unproven_mode?: 'allow' | 'reject'
   // 以下字段问答页（/）使用，后端 /api/config 始终返回；工作台类型里保留为可选
   /** 已入库资料文档文件名列表（/api/ingest 上传的 PDF/MD/TXT） */
   ingested_files?: string[]
@@ -192,8 +198,12 @@ export interface SaveModelReq {
   video_capability?: string
   /** 全局默认思考等级：off/low/medium/high 设置；''=清空；undefined=不改动 */
   thinking_level?: string
-  /** AI 越界访问模式：'safe' | 'high'；undefined=不改动 */
+  /** AI 写权限：'safe' | 'high'；undefined=不改动 */
   external_access_mode?: 'safe' | 'high'
+  /** 桌面动作审批：'strict' | 'user' | 'model'；undefined=不改动 */
+  desktop_approval_mode?: 'strict' | 'user' | 'model'
+  /** MCP 未证明只读：'allow' | 'reject'；undefined=不改动 */
+  mcp_unproven_mode?: 'allow' | 'reject'
   /** 模型选择模式：'fixed' | 'auto'；undefined=不改动 */
   llm_mode?: 'fixed' | 'auto'
   /** 自动模式云端预设 id（'' 可清空） */

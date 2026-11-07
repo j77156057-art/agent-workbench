@@ -10,7 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   harnessApi, setSessionId, getSessionId, startNewSession, fmtTraceError,
   type SessionInfo,
-  type TraceItem, type TraceSummary, type SkillInfo,
+  type TraceItem, type TraceSummary, type SkillInfo, type SkillRegressionReport,
   agentApi, type LangSmithStatus,
 } from '../api'
 import {
@@ -35,6 +35,9 @@ const traces = ref<TraceItem[]>([])
 const traceSummary = ref<TraceSummary | null>(null)
 const skills = ref<SkillInfo[]>([])
 const skillsDir = ref('')
+type RegressionState = { loading: boolean; report: SkillRegressionReport | null; error: string }
+const regressions = ref<Record<string, RegressionState>>({})
+const regressionBaselines = ref<Record<string, string>>({})
 const hooksCounts = ref<Record<string, number>>({ pre_tool: 0, post_tool: 0, pre_turn: 0, post_turn: 0 })
 const hooksWorkflowCounts = ref<Record<string, number>>({})
 const hookKinds = ref<string[]>([])
@@ -123,6 +126,48 @@ const langsmithSmithUrl = computed(() => 'https://smith.langchain.com/')
 function skillHistoryText(skill: SkillInfo): string {
   return (skill.history_versions || []).map(item => item.version || '—').join('、')
 }
+function percent(value: number | null | undefined): string {
+  return value === null || value === undefined ? '未设置' : `${(value * 100).toFixed(1)}%`
+}
+function regressionStatus(report?: SkillRegressionReport | null): string {
+  if (!report) return '未读取'
+  if (!report.scored) return '待评估'
+  if (report.regressed) return report.baseline_success_rate === null ? '低于阈值' : '低于基线'
+  return report.baseline_success_rate === null ? '未设基线' : '达到基线'
+}
+async function loadSkillRegression(skill: SkillInfo) {
+  const rawBaseline = String(regressionBaselines.value[skill.name] ?? '').trim()
+  const baselinePercent = rawBaseline ? Number(rawBaseline) : null
+  if (baselinePercent !== null && (!Number.isFinite(baselinePercent) || baselinePercent < 0 || baselinePercent > 100)) {
+    regressions.value = {
+      ...regressions.value,
+      [skill.name]: { loading: false, report: null, error: '基线需为 0–100 的数值' },
+    }
+    return
+  }
+  regressions.value = {
+    ...regressions.value,
+    [skill.name]: { loading: true, report: null, error: '' },
+  }
+  try {
+    const result = await harnessApi.skillRegression(
+      skill.name, baselinePercent === null ? undefined : baselinePercent / 100,
+    )
+    regressions.value = {
+      ...regressions.value,
+      [skill.name]: { loading: false, report: result.report, error: '' },
+    }
+  } catch (e) {
+    regressions.value = {
+      ...regressions.value,
+      [skill.name]: { loading: false, report: null, error: (e as Error).message || '回归报告读取失败' },
+    }
+  }
+}
+function loadSkillRegressions(items: SkillInfo[]) {
+  regressions.value = {}
+  void Promise.all(items.map(loadSkillRegression))
+}
 async function loadAll() {
   loading.value = true
   error.value = ''
@@ -134,6 +179,7 @@ async function loadAll() {
       traceSummary.value = demoTraceSummary as unknown as TraceSummary
       skills.value = [...demoSkills.items]
       skillsDir.value = demoSkills.skills_dir
+      regressions.value = {}
       hooksCounts.value = { ...demoHooks.counts }
       langsmith.value = { ok: true, installed: true, key_configured: true, enabled: false, realtime: false, project: 'demo' }
       return
@@ -150,6 +196,7 @@ async function loadAll() {
     traceSummary.value = t.summary
     skills.value = sk.items || []
     skillsDir.value = sk.skills_dir
+    loadSkillRegressions(skills.value)
     hooksCounts.value = hk.counts || hooksCounts.value
     hooksWorkflowCounts.value = hk.workflow_counts || hooksWorkflowCounts.value
     hookKinds.value = hk.workflow_kinds || hookKinds.value
@@ -284,8 +331,15 @@ defineExpose({ show })
         <p v-if="error" class="hp-err">{{ error }} <button class="hp-link" @click="loadAll">重试</button></p>
         <p v-if="actionMsg" class="hp-actionmsg">{{ actionMsg }}</p>
 
-        <div class="hp-tabs">
-          <button v-for="t in TABS" :key="t.key" :class="{ active: tab === t.key }" @click="tab = t.key">{{ t.label }}</button>
+        <div class="hp-facts" aria-label="运行台概览">
+          <span><small>会话</small><b>{{ sessions.length }}</b></span>
+          <span><small>运行记录</small><b>{{ traces.length }}</b></span>
+          <span><small>技能</small><b>{{ skills.length }}</b></span>
+          <span class="hp-fact-status" :class="{ on: langsmith?.enabled }"><small>轨迹上报</small><b>{{ langsmith?.enabled ? '已开启' : '未开启' }}</b></span>
+        </div>
+
+        <div class="hp-tabs" aria-label="运行台数据域">
+          <button v-for="(t, i) in TABS" :key="t.key" :class="{ active: tab === t.key }" @click="tab = t.key"><span>{{ String(i + 1).padStart(2, '0') }}</span>{{ t.label }}</button>
         </div>
 
         <!-- ---------------- 对话 ---------------- -->
@@ -310,12 +364,12 @@ defineExpose({ show })
 
         <!-- ---------------- 轨迹 ---------------- -->
         <div v-else-if="tab === 'trace'" class="hp-pane">
-          <div v-if="traceSummary" class="hp-sumline">
-            共 <b>{{ traceSummary.turns }}</b> 轮回答 ·
-            累计 <b>{{ traceSummary.total_tokens.toLocaleString() }}</b> token ·
-            平均每轮 <b>{{ fmtMs(traceSummary.avg_elapsed_ms) }}</b> ·
-            错误 <b :class="{ bad: traceSummary.errors > 0 }">{{ traceSummary.errors }}</b> ·
-            中止 <b>{{ traceSummary.aborted }}</b>
+          <div v-if="traceSummary" class="hp-metrics" aria-label="运行记录汇总">
+            <span><small>回答轮次</small><b>{{ traceSummary.turns }}</b></span>
+            <span><small>累计 token</small><b>{{ traceSummary.total_tokens.toLocaleString() }}</b></span>
+            <span><small>平均每轮</small><b>{{ fmtMs(traceSummary.avg_elapsed_ms) }}</b></span>
+            <span><small>错误</small><b :class="{ bad: traceSummary.errors > 0 }">{{ traceSummary.errors }}</b></span>
+            <span><small>中止</small><b>{{ traceSummary.aborted }}</b></span>
           </div>
           <p class="hp-plain">AI 每轮回答调用了哪些工具、用了多少 token、结果如何，都记在这里（不记录对话正文，只记操作元数据）。</p>
           <!-- LangSmith 轨迹：只显示状态与开启指引，不在应用内做在线配置 -->
@@ -377,6 +431,32 @@ defineExpose({ show })
               <span>{{ sk.description }}</span>
               <em>适用：{{ sk.when_to_use }}</em>
               <small>版本 {{ sk.version || '—' }} · 使用 {{ sk.stats?.uses || 0 }} 次 · 成功 {{ sk.stats?.successes || 0 }} · 失败 {{ sk.stats?.failures || 0 }}</small>
+              <div class="hp-regression" :class="{ bad: regressions[sk.name]?.report?.regressed }">
+                <template v-if="regressions[sk.name]?.loading">
+                  <small>回归报告读取中…</small>
+                </template>
+                <template v-else-if="regressions[sk.name]?.error">
+                  <small>回归报告读取失败：{{ regressions[sk.name].error }}</small>
+                  <button class="hp-btn sm" @click="loadSkillRegression(sk)">重试</button>
+                </template>
+                <template v-else-if="regressions[sk.name]?.report">
+                  <div class="hp-regression-head">
+                    <b>回归报告</b>
+                    <span class="hp-regression-status">{{ regressionStatus(regressions[sk.name]?.report) }}</span>
+                  </div>
+                  <small v-if="regressions[sk.name]?.report?.scored">
+                    成功率 {{ percent(regressions[sk.name]?.report?.success_rate) }} · 基线 {{ percent(regressions[sk.name]?.report?.baseline_success_rate) }} · 评估 {{ regressions[sk.name]?.report?.evaluated }} 次
+                  </small>
+                  <small v-else>暂无评估数据 · 基线 {{ percent(regressions[sk.name]?.report?.baseline_success_rate) }}</small>
+                </template>
+                <small v-else>未读取回归报告</small>
+                <div class="hp-baseline">
+                  <label>对比基线（%）
+                    <input v-model="regressionBaselines[sk.name]" type="number" min="0" max="100" step="1" placeholder="未设置" :aria-label="`${sk.name} 对比基线百分比`" @keyup.enter="loadSkillRegression(sk)" />
+                  </label>
+                  <button class="hp-btn sm" type="button" :disabled="regressions[sk.name]?.loading" @click="loadSkillRegression(sk)">对比</button>
+                </div>
+              </div>
               <small v-if="sk.history_versions?.length" class="hp-skill-history">历史版本：{{ skillHistoryText(sk) }}</small>
               <button v-if="sk.source === 'user'" class="hp-btn sm hp-skill-rollback" @click="rollbackSkill(sk)">回滚</button>
             </div>
@@ -440,7 +520,7 @@ defineExpose({ show })
   width: 480px; max-width: calc(100vw - 32px);
   max-height: calc(100vh - 70px); overflow: auto;
   background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 14px;
-  box-shadow: 0 18px 50px rgba(35, 52, 84, .22);
+  box-shadow: var(--mi-shadow-pop);
   padding: 15px 16px 14px;
 }
 .hp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
@@ -456,7 +536,7 @@ defineExpose({ show })
   flex: 1; border: none; background: transparent; cursor: pointer;
   font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); padding: 6px 0; border-radius: 7px;
 }
-.hp-tabs button.active { background: var(--bg-raised); color: var(--accent-text); box-shadow: 0 1px 4px rgba(35,52,84,.12); }
+.hp-tabs button.active { background: var(--bg-raised); color: var(--accent-text); box-shadow: var(--mi-shadow-control); }
 .hp-pane { font-size: var(--fs-sm); }
 .hp-statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
 .hp-stat { background: var(--bg-raised); border: 1px solid var(--border-2); border-radius: 11px; padding: 10px 11px; display: flex; flex-direction: column; gap: 3px; }
@@ -517,6 +597,16 @@ defineExpose({ show })
 .hp-skill em { font-style: normal; font-size: var(--fs-cap); color: var(--accent-text); }
 .hp-skill small { font-size: var(--fs-cap); color: var(--text-muted); }
 .hp-skill-history { color: var(--accent-text) !important; }
+.hp-regression { margin-top: 5px; padding: 7px 8px; border-left: 2px solid var(--border-strong); background: var(--bg); }
+.hp-regression.bad { border-left-color: var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--bg)); }
+.hp-regression-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+.hp-regression-status { padding: 1px 5px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-muted) !important; font-size: var(--fs-cap) !important; line-height: 1.5 !important; white-space: nowrap; }
+.hp-regression.bad .hp-regression-status { border-color: var(--danger); color: var(--danger) !important; font-weight: 600; }
+.hp-regression .hp-btn { margin-top: 5px; }
+.hp-baseline { display: flex; align-items: flex-end; gap: 6px; margin-top: 6px; }
+.hp-baseline label { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: var(--fs-cap); }
+.hp-baseline input { width: 72px; height: 26px; padding: 3px 6px; border: 1px solid var(--border-2); border-radius: 4px; background: var(--bg-raised); color: var(--text); font: inherit; }
+.hp-baseline .hp-btn { margin-top: 0; }
 .hp-skill-rollback { align-self: flex-start; margin-top: 4px; }
 .hp-hook-breakpoint { margin-top:10px; padding:8px 9px; border: 1px solid var(--border-2); border-radius:8px; background: var(--bg-raised); }
 .hp-hook-breakpoint .hp-subhead { margin:0 0 6px; }
@@ -540,4 +630,46 @@ defineExpose({ show })
 .hp-ls-guide { margin:6px 0 0; color: var(--amber); font-size: var(--fs-cap); line-height:1.7; }
 .hp-ls-err { display:inline-block; margin-right:4px; padding:0 5px; border-radius:4px; background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger); font-size: var(--fs-cap); font-style:normal; }
 .hp-ls .hp-linkline { display:inline-block; margin-top:7px; }
+
+/* v5 运行台：关键事实摘要 + 编号数据域 + 等宽技术明细。 */
+.hp-pop { width: min(620px, calc(100vw - 32px)); padding: 16px; border-radius: 10px; }
+.hp-head { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.hp-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin-top: 12px; border: 1px solid var(--border); border-radius: 6px; }
+.hp-facts > span { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-right: 1px solid var(--border); }
+.hp-facts > span:last-child { border-right: 0; }
+.hp-facts small { color: var(--text-muted); font-size: var(--fs-cap); }
+.hp-facts b { color: var(--text); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-body); font-weight: 600; font-variant-numeric: tabular-nums; }
+.hp-fact-status b { color: var(--amber); font-family: var(--font-ui); font-size: var(--fs-sm); }
+.hp-fact-status.on b { color: var(--green); }
+.hp-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 12px 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: transparent; }
+.hp-tabs button { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 7px 6px; border: 0; border-right: 1px solid var(--border); border-radius: 0; }
+.hp-tabs button:last-child { border-right: 0; }
+.hp-tabs button span { color: var(--text-faint); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-cap); }
+.hp-tabs button.active { box-shadow: inset 0 -2px 0 var(--accent); }
+.hp-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 6px; }
+.hp-metrics > span { display: flex; flex-direction: column; gap: 2px; padding: 8px; border-right: 1px solid var(--border); }
+.hp-metrics > span:last-child { border-right: 0; }
+.hp-metrics small { color: var(--text-muted); font-size: var(--fs-cap); }
+.hp-metrics b { color: var(--text); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.hp-metrics b.bad { color: var(--danger); }
+.hp-item, .hp-trace, .hp-skill { border-radius: 6px; box-shadow: none; }
+.hp-item.on { border-left: 2px solid var(--accent); box-shadow: none; }
+.hp-item-main b, .hp-item-main em, .hp-time, .hp-model, .hp-nums, .hp-skill small, .hp-hook-item, .hp-ls-text { font-family: var(--ui2-font-mono, var(--font-mono)); font-variant-numeric: tabular-nums; }
+.hp-trace-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 5px 8px; }
+.hp-spacer { display: none; }
+.hp-nums { grid-column: 1 / -1; line-height: 1.6; }
+.hp-tools i { font-family: var(--ui2-font-mono, var(--font-mono)); }
+.hp-skill { border-left: 2px solid var(--border-strong); }
+.hp-hook-breakpoint { border-left: 2px solid var(--border-strong); border-radius: 6px; }
+.hp-ls { border-radius: 6px; }
+.hp-ls.on { border-left: 2px solid var(--green); background: var(--bg-raised); }
+@media (max-width: 720px) {
+  .hp-pop { right: 8px; width: calc(100vw - 16px); max-width: none; }
+  .hp-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hp-facts > span:nth-child(2) { border-right: 0; }
+  .hp-facts > span:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .hp-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .hp-metrics > span:nth-child(3) { border-right: 0; }
+  .hp-metrics > span:nth-child(-n+3) { border-bottom: 1px solid var(--border); }
+}
 </style>

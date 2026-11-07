@@ -265,7 +265,7 @@ function effectLabel(effect?: string): string {
 .rr-mode button.on { color: var(--text); border-color: var(--border); background: var(--surface); }
 .rr-mode-hint { margin-left: auto; font-size: var(--fs-cap); color: var(--text-faint); }
 
-.rr-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; background: #fff; }
+.rr-frame { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; background: var(--mi-bg); }
 .rr-tip { flex: 0 0 auto; margin: 0; padding: 7px 12px; font-size: var(--fs-cap); color: var(--text-faint); line-height: 1.6; border-top: 1px solid var(--border); }
 .rr-note { padding: 10px 14px; color: var(--text-faint); font-size: var(--fs-sm); line-height: 1.7; }
 .rr-empty {
@@ -299,9 +299,9 @@ function effectLabel(effect?: string): string {
   overflow: hidden;
 }
 .rr-mirror-frame { max-width: 100%; max-height: 100%; object-fit: contain; }
-.rr-mirror-wait { padding: 16px; text-align: center; color: #c6ccd6; font-size: var(--fs-sm); line-height: 1.7; }
+.rr-mirror-wait { padding: 16px; text-align: center; color: var(--mi-text-secondary); font-size: var(--fs-sm); line-height: 1.7; }
 .rr-mirror-wait p { margin: 0 0 6px; }
-.rr-mirror-wait small { color: #8b929d; }
+.rr-mirror-wait small { color: var(--mi-text-muted); }
 .rr-mirror-meta { flex: 0 0 auto; padding: 7px 12px 4px; border-top: 1px solid var(--border); }
 .rr-mirror-url { font-size: var(--fs-sm); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rr-mirror-act { margin-top: 2px; font-size: var(--fs-cap); color: var(--text-faint); }

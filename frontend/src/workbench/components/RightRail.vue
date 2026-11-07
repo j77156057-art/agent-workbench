@@ -108,7 +108,7 @@ function viewDiffFile(path: string) {
   white-space: nowrap;
 }
 .rr-tab:hover { color: var(--text); background: var(--bg-hover); }
-.rr-tab.on { color: var(--text); border-color: var(--border); background: var(--surface); box-shadow: 0 1px 2px rgba(17, 17, 22, .05); }
+.rr-tab.on { color: var(--text); border-color: var(--border); background: var(--surface); box-shadow: var(--mi-shadow-control); }
 .rr-chip {
   margin-left: auto;
   flex: 0 0 auto;

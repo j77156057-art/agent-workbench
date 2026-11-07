@@ -109,18 +109,18 @@ function onVideoPick(ev: Event) {
       <input ref="imageInput" class="cd-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple @change="onImagePick" />
       <input ref="videoInput" class="cd-file-input" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/avi,image/gif" @change="onVideoPick" />
       <button class="cd-chip cd-attach" :disabled="demoMode || sending" :title="visionLabel" @click="imageInput?.click()">
-        <span aria-hidden="true">▧</span><span>图片</span>
+        <span>图片</span>
       </button>
       <button class="cd-chip cd-attach" :disabled="demoMode || sending || videoBusy" title="视频会由 Harness 抽帧并生成时间轴观察" @click="videoInput?.click()">
-        <span aria-hidden="true">▹</span><span>{{ videoBusy ? '分析视频…' : '视频' }}</span>
+        <span>{{ videoBusy ? '分析视频…' : '视频' }}</span>
       </button>
       <button v-if="voiceSupported" class="cd-chip cd-attach" :class="{ 'cd-chip-on': voiceActive }" :aria-pressed="voiceActive" title="语音协作：发言时段会匹配当前项目画面；无同步画面时明确说明" @click="emit('toggle-voice')">
-        <span aria-hidden="true">{{ voiceActive ? '◼' : '◉' }}</span><span>{{ voiceActive ? '听取中' : '语音' }}</span>
+        <span>{{ voiceActive ? '听取中' : '语音' }}</span>
       </button>
       <!-- 能力缺失时不能只是让按钮消失：用户分不清「这里没有语音」和「语音坏了」。
            禁用态 + tooltip 点名缺的是哪一项、怎么补。普通对话台不传 hint，仍然不渲染。 -->
       <button v-else-if="voiceHint" type="button" class="cd-chip cd-attach" disabled :title="voiceHint">
-        <span aria-hidden="true">◌</span><span>语音不可用</span>
+        <span>语音不可用</span>
       </button>
       <span v-if="pendingImages.length" class="cd-attachments">
         <span v-for="(img, i) in pendingImages" :key="img.name + i" class="cd-attachment">
@@ -253,21 +253,21 @@ function onVideoPick(ev: Event) {
 
 <style scoped>
 /* 输入区 */
-.cd-inputbar { display: flex; flex-direction: column; gap: 6px; padding: 7px 12px 9px; }
+.cd-inputbar { display: flex; flex-direction: column; gap: 8px; padding: 8px 12px 10px; }
 .cd-input-row { display: flex; gap: 8px; align-items: flex-end; }
 .cd-input {
   flex: 1; resize: none;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border-graphic); border-radius: 7px;
-  padding: 10px 12px; font-size: var(--fs-body); font-family: inherit;
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--r-md);
+  padding: 10px 12px; font-size: var(--fs-body); line-height: 1.7; font-family: inherit;
   outline: none; max-height: 110px;
 }
-.cd-input:focus { border-color: var(--accent); }
+.cd-input:focus { border-color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent-soft); }
 /* 不给 ::placeholder 上色的话，Chromium 用 UA 默认 #757575 —— 实测三套皮 3.73 /
    3.85 / 4.49:1，全部不过 AA。占位符是输入框里唯一的说明文字，不能靠浏览器默认色。 */
 .cd-input::placeholder { color: var(--text-muted); opacity: 1; }
 .cd-send {
-  height: 38px; padding: 0 16px; border-radius: var(--r-sm);
+  height: 36px; padding: 0 15px; border-radius: var(--r-md);
   border: 1px solid var(--accent-deep); background: var(--accent);
   color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600; cursor: pointer;
 }
@@ -313,7 +313,7 @@ function onVideoPick(ev: Event) {
 .cd-switch i {
   position: absolute; top: 1.5px; left: 2px;
   width: 9px; height: 9px; border-radius: 50%;
-  background: var(--bg-raised); box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  background: var(--bg-raised); box-shadow: var(--mi-shadow-control);
   transition: left .15s;
 }
 .cd-switch.on { --btn-fill: var(--accent); background: var(--accent); }
@@ -352,7 +352,7 @@ function onVideoPick(ev: Event) {
 
 /* 输入工具行的层次与微动效 */
 .cd-tools { padding: 1px 2px 0; }
-.cd-inputbar { border-top: 1px solid color-mix(in srgb, var(--border) 84%, white); }
+.cd-inputbar { border-top: 1px solid var(--mi-border-subtle); }
 .cd-attachments { animation: cd-attachment-in .2s var(--ease-spring) both; }
 .cd-attachment { background: color-mix(in srgb, var(--bg-raised) 66%, transparent); transition: border-color .16s, background .16s, transform .16s var(--ease-spring); }
 .cd-attachment:hover { border-color: var(--accent); background: var(--bg-raised); transform: translateY(-1px); }

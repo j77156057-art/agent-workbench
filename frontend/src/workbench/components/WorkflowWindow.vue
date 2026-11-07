@@ -119,7 +119,7 @@ const popStyle = () => pos.value
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 18px 50px rgba(35, 52, 84, 0.22);
+  box-shadow: var(--mi-shadow-pop);
   overflow: hidden;
   animation: wf-win-in .22s cubic-bezier(.2,.8,.2,1) both;
 }

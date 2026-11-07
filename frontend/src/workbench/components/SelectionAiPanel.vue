@@ -333,21 +333,21 @@ watch(
   border-radius: 4px; padding: 0.5px 4px;
 }
 .ai-md :deep(.md-pre) {
-  margin: 7px 0; padding: 9px 10px; background: #f6f8fb;
+  margin: 7px 0; padding: 9px 10px; background: var(--mi-bg);
   border: 1px solid var(--border); border-radius: 8px; overflow-x: auto;
 }
 .ai-md :deep(.md-pre code) {
   font-family: var(--font-code); font-size: var(--fs-sm);
-  line-height: 1.55; color: #243044; white-space: pre;
+  line-height: 1.55; color: var(--mi-text); white-space: pre;
 }
 
 /* 改写代码块 */
 .ai-code {
   position: relative; margin: 2px 0 8px; padding: 9px 10px;
-  background: #f6f8fb; border: 1px solid #b7dcc7; border-radius: 8px;
+  background: var(--mi-bg-deep); border: 1px solid color-mix(in oklch, var(--mi-success) 45%, var(--mi-border)); border-radius: 8px;
   overflow-x: auto;
   font-family: var(--font-code); font-size: var(--fs-sm);
-  line-height: 1.55; color: #1c6b46; white-space: pre;
+  line-height: 1.55; color: var(--mi-success); white-space: pre;
 }
 .ai-caret {
   display: inline-block; width: 6.5px; height: 13px; margin-left: 1px;

@@ -40,7 +40,7 @@
   --style-scale: 1;
   --style-space-s: 8px;
   --style-space-l: 16px;
-  --style-line: 1.65;
+  --style-line: 1.5;          /* 与 workbench-typo.css 的 --lh-body 对齐；原 1.65 是 14px 时代的行距 */
 }
 
 /* ==========================================================

@@ -20,7 +20,7 @@ import { useChatStream } from '../composables/useChatStream'
 import { useJobsFeed } from '../composables/backgroundJobs'
 import { noteBrowserEvidence } from '../composables/browserLive'
 import type { ChatActivityKind, ChatMsg, ChatTraceItem, BrowserEvidence } from '../composables/chat-types'
-import { flowOf } from '../composables/chat-types'
+import { flowOf, finalAnswerText } from '../composables/chat-types'
 import { traceSegments } from '../composables/traceDigest'
 import type { ChatArtifact } from '../composables/chat-types'
 import ArtifactCards from './ArtifactCards.vue'
@@ -47,14 +47,22 @@ import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
 import TaskFeedbackBar from './TaskFeedbackBar.vue'
 import MemoryContextPanel from './MemoryContextPanel.vue'
+import AgentWallPanel from './AgentWallPanel.vue'
 import PlanPanel from './PlanPanel.vue'
 import FileDiffDialog from './FileDiffDialog.vue'
+import { agentWallOpen, memoryPanelOpen, memoryAgentId, memoryAgentLabel, openAgentWall, closeMemoryPanel, closeAgentWall } from '../uiPanels'
 
 import type { WorkflowSummary } from '../api'
 import type { PreviewFeedbackRequest } from '../previewFeedback'
 import type { FileDiffEntry } from '../composables/chat-types'
 
-const props = withDefaults(defineProps<{ scope?: 'default' | 'cockpit' }>(), { scope: 'default' })
+const props = withDefaults(defineProps<{
+  scope?: 'default' | 'cockpit' | 'replay'
+  /** replay 专用：只读回看这个 session，不参与工作台的全局会话/锁/发送链路 */
+  replaySessionId?: string
+  replayTitle?: string
+  replayEmptyHint?: string
+}>(), { scope: 'default', replaySessionId: '', replayTitle: '', replayEmptyHint: '' })
 // 开发舱里侧栏文件树是隐藏的，「在问哪个库」只剩顶栏那颗项目名，而对话就在这块下方。
 // 所以把代码库根目录搬到输入框同一行；普通对话台不显示（旁边就是资源管理器，重复了）。
 const { tree, jumpToLine, revealPath, jobsOpen, openJobs,
@@ -338,16 +346,48 @@ function dismissFeedback() {
 }
 
 // 记忆 v2 上下文面板：右侧抽屉，可查看/编辑各层实际注入内容。
-const memoryOpen = ref(false)
+// 与 Agent 树抽屉共用互斥开关（uiPanels.ts）：两者语义不同，但都占右栏。
+// 入口先落到 Agent 卡片墙：不默认把「记忆」等同于平台助手那一份，
+// 点卡片看各自的对话 / 记忆 / 使用记录；卡片内再进完整六 Tab 上下文面板。
+function openMemoryPanel() {
+  performance.mark('memory:open')
+  openAgentWall()
+}
 // Plan 长跑：超长途无人值守，任务书全部划掉前不停，只有用户能关。
 const planOpen = ref(false)
 let chatProject = getProjectId(), chatSession = currentSessionId(), chatEpoch = 0
 /** 每个项目各自的会话 id：会话在服务端终身归属首次使用的项目，
  *  切项目继续用旧 id 会把 B 的对话写进 A（A 能看到），B 自己刷新后又看不到。 */
 const projectSessionKey = (pid: string) => 'docmind.workbenchSession:' + pid
+/** 最近一次进入的项目会话：sessionStorage 只活到标签页关闭，localStorage 用来
+ *  在「关掉再打开」后恢复上次对话；多标签冲突由 selectSession 的 Web Lock 兜底。 */
+const lastSessionKey = (pid: string) => 'docmind.workbenchLastSession:' + pid
+/** 启动瞬间的上次会话快照：必须在 rememberProjectSession 之前读。
+ *  否则模块初始化会把当前（新标签页刚分配的）会话写成「上次会话」，
+ *  覆盖掉真正要恢复的那条，adoptLastSession 永远只能看到自己。 */
+const startupLastSession = (() => {
+  try { const pid = getProjectId(); return pid ? localStorage.getItem(lastSessionKey(pid)) || '' : '' }
+  catch { return '' }
+})()
 function rememberProjectSession(pid: string, sid: string) {
   if (props.scope !== 'default' || !pid || !sid) return
   try { sessionStorage.setItem(projectSessionKey(pid), sid) } catch { /* memory only */ }
+  try { localStorage.setItem(lastSessionKey(pid), sid) } catch { /* memory only */ }
+}
+async function adoptLastSession(): Promise<boolean> {
+  // 仅普通对话台：重新打开时如果当前会话和上次记录不同，先尝试接管上次会话。
+  // selectSession 内部走 Web Lock，另一个标签页仍占着该会话时会返回 false，不抢。
+  if (props.scope !== 'default') return false
+  const pid = getProjectId()
+  const saved = startupLastSession
+  if (!saved || saved === currentSessionId()) return false
+  const claimed = await selectSession(saved)
+  if (!claimed) return false
+  chatProject = pid
+  chatSession = saved
+  rememberProjectSession(pid, saved)
+  clearMessages()
+  return true
 }
 function recalledProjectSession(pid: string): string {
   try { return sessionStorage.getItem(projectSessionKey(pid)) || '' } catch { return '' }
@@ -496,45 +536,6 @@ function cdHasFlow(msg: ChatMsg) {
   return items.some((n) => n.kind === 'think' || n.kind === 'thought')
 }
 
-/* 推理轨迹的展开状态（按「消息 id + 段序号」）。
-   2026-10-25 改为按段呈现：一句话说完、跟着跑了哪些工具，就在这句话下面挂一行
-   灰色摘要；摘要默认收起，点它才摊开这一段的单步明细。这样推理过程是夹在
-   中途发言之间的，而不是整轮压成一块铺在答案前面。与问答页同一套语义。 */
-const segExpanded = ref<Record<string, boolean>>({})
-function segKey(msg: ChatMsg, si: number): string {
-  return `${msg.id}:${si}`
-}
-function segOpen(msg: ChatMsg, si: number): boolean {
-  return !!segExpanded.value[segKey(msg, si)]
-}
-function toggleSeg(msg: ChatMsg, si: number) {
-  const key = segKey(msg, si)
-  segExpanded.value = { ...segExpanded.value, [key]: !segExpanded.value[key] }
-}
-/* 本段是否含「深度思考」（原始 reasoning）：done 后思考下沉进单步明细，即使这段没跑
-   工具（纯思考收尾段）也要给出可点开的摘要行，否则思考没地方露。 */
-function segHasThink(seg: { narration: { kind: string; text: string }[] }): boolean {
-  return seg.narration.some((l) => l.kind === 'reasoning')
-}
-/* 顶层该显示哪些解说行：流式期全显示（深度思考在顶层随帧生长）；done 后只留 ReAct
-   旁白，深度思考已下沉到该段「点开才见」的单步明细里。 */
-function topNarration(
-  seg: { narration: { kind: string; text: string }[] },
-  streaming: boolean,
-): { kind: string; text: string }[] {
-  return streaming ? seg.narration : seg.narration.filter((l) => l.kind !== 'reasoning')
-}
-/* 回合结束后把整条推理轨迹（中途旁白 + 工具行）折成一块，正文只留最终答案；
-   流式中不折——用户要实时看到每一步。默认收起，点「推理轨迹」头才摊开。
-   过去旁白恒作为正文行铺在答案前面，看起来像模型把思考/代码直接贴进对话，
-   而不是写文件；收进这条折叠块后，done 的回合只剩答案 + 一行轨迹概览。 */
-const traceExpanded = ref<Record<string, boolean>>({})
-function traceOpen(msg: ChatMsg): boolean {
-  return !!traceExpanded.value[msg.id]
-}
-function toggleTrace(msg: ChatMsg) {
-  traceExpanded.value = { ...traceExpanded.value, [msg.id]: !traceExpanded.value[msg.id] }
-}
 /* 原始 reasoning_content（「深度思考」）不再单独成块——现在由 traceDigest 按发生顺序
    摆进下面的「推理轨迹」交错流（清洗剥源码 + 截断上限 THINK_MAX），与工具行同流。
    纯思考、未跑工具的回合也因此在轨迹里有内容，不再「没有推理轨迹」。 */
@@ -572,6 +573,22 @@ function traceHeadline(msg: ChatMsg): string {
   const ordered = think ? [...rest, think] : entries
   return ordered.map(([label, v]) => `${label} ${v.count} ${v.unit}`).join(' · ')
 }
+// 与问答页同一折叠口径：执行中展开，最终答案开始后自动收起；当前轮手动选择优先。
+const traceUserChoice = ref<Record<number, boolean>>({})
+function traceOpen(msg: ChatMsg): boolean {
+  const selected = traceUserChoice.value[msg.id]
+  return typeof selected === 'boolean' ? selected : msg.status === 'streaming' && !finalAnswerText(msg)
+}
+function toggleTrace(msg: ChatMsg) {
+  traceUserChoice.value = { ...traceUserChoice.value, [msg.id]: !traceOpen(msg) }
+}
+function traceCompactHeadline(msg: ChatMsg): string {
+  const count = msg.trace.filter((item) => item.type === 'action').length
+  const parts = [count ? `${count} 步工具调用` : '思考过程']
+  const elapsed = elapsedLabel(msg)
+  if (elapsed) parts.push(elapsed)
+  return parts.join(' · ')
+}
 // 把交错流切成「发言 → 该段工具摘要」若干段（reasoning 分段与 ReAct Thought 都是发言）。
 function segmentsOf(msg: ChatMsg) {
   return segmentsOfCached(msg)
@@ -605,10 +622,11 @@ const videoBusy = ref(false)
 const dockStateKey = (part: 'collapsed' | 'expanded') => props.scope === 'default'
   ? `docmind.chatDock${part === 'collapsed' ? 'Collapsed' : 'Expanded'}`
   : `docmind.chatDock.cockpit.${part}`
-const collapsed = ref(window.localStorage.getItem(dockStateKey('collapsed')) === '1')
-const expanded = ref(window.localStorage.getItem(dockStateKey('expanded')) === '1')
-watch(collapsed, (v) => window.localStorage.setItem(dockStateKey('collapsed'), v ? '1' : '0'))
-watch(expanded, (v) => window.localStorage.setItem(dockStateKey('expanded'), v ? '1' : '0'))
+const isReplay = computed(() => props.scope === 'replay')
+const collapsed = ref(isReplay.value ? false : window.localStorage.getItem(dockStateKey('collapsed')) === '1')
+const expanded = ref(isReplay.value ? false : window.localStorage.getItem(dockStateKey('expanded')) === '1')
+watch(collapsed, (v) => { if (!isReplay.value) window.localStorage.setItem(dockStateKey('collapsed'), v ? '1' : '0') })
+watch(expanded, (v) => { if (!isReplay.value) window.localStorage.setItem(dockStateKey('expanded'), v ? '1' : '0') })
 function toggleDock() {
   // 审批门打开时禁止折叠（pointer-events 已挡鼠标，这里挡已聚焦元素的键盘触发），
   // 否则 33px 裁剪会把居中审批模态吞掉
@@ -1042,7 +1060,7 @@ async function recoverActiveTurns() {
     if (finalEv) {
       sending.value = false
       turn.recoverable = !finalEv.status || finalEv.status === 'error'
-      const noticeMsg = '⚠ 上次页面刷新中断，已恢复到最后状态。'
+      const noticeMsg = '上次页面刷新中断，已恢复到最后状态。'
       if (!turn.notices.includes(noticeMsg)) turn.notices.unshift(noticeMsg)
     } else {
       // 后端可能仍在跑，但本页没有订阅它的后续事件。如实标成已停止并给提示，
@@ -1247,6 +1265,36 @@ async function loadContextUsage() {
   }
 }
 
+/** 从现有会话分叉：后端复制成功后切到新会话，原历史保持不变。 */
+async function forkSessionItem(id: string, atSeq?: number) {
+  const target = String(id || '').trim()
+  if (!target || sessionBusy.value) return
+  sessionBusy.value = true
+  sessionError.value = ''
+  try {
+    const result = await harnessApi.forkSession(target, atSeq)
+    const next = String(result.session_id || '').trim()
+    if (!next) throw new Error('后端未返回新的会话编号')
+    await refreshSessionList()
+    sessionBusy.value = false
+    await switchSession(next)
+  } catch (e) {
+    sessionError.value = (e as Error).message || '分叉会话失败'
+  } finally {
+    sessionBusy.value = false
+  }
+}
+
+/** 回退成功后刷新列表；若正是当前会话，按服务端结果重建历史，弹层保持打开以展示备份。 */
+async function onSessionRewound(id: string) {
+  await refreshSessionList()
+  if (id !== chatSession || sending.value) return
+  clearMessages()
+  try { sessionStorage.removeItem(recoveryKey()) } catch {}
+  await restoreHistory(true)
+  await loadContextUsage()
+}
+
 /** 删除会话历史中的某一条；当前会话走 clearConversation（含工作流离开确认）。 */
 async function deleteSessionItem(id: string) {
   const target = String(id || '').trim()
@@ -1424,11 +1472,14 @@ async function restoreHistory(force = false) {
   if (!force && messages.value.length) return
   // 记住进入时的消息数：await 期间用户可能已发送新消息（SSE 正在流），
   // 重建会整体覆盖 messages 并让 live() 匹配不到、静默丢流，故 await 后需复检。
-  const project = getProjectId(), session = currentSessionId(), epoch = chatEpoch
+  const replay = props.scope === 'replay'
+  const project = getProjectId(), session = replay ? props.replaySessionId : currentSessionId(), epoch = chatEpoch
+  if (replay && !session) return
   const before = messages.value.length
   try {
     const detail = await harnessApi.sessionDetail(session)
-    if (project !== getProjectId() || session !== currentSessionId() || epoch !== chatEpoch) return
+    if (replay) { if (session !== props.replaySessionId) return }
+    else if (project !== getProjectId() || session !== currentSessionId() || epoch !== chatEpoch) return
     const turns = detail.turns || []
     // Never silently load a different conversation into a fresh session.
     if (force && !turns.length && !sending.value) messages.value = []
@@ -1440,13 +1491,18 @@ async function restoreHistory(force = false) {
       stickToBottom.value = true
       await nextTick(scrollToBottom)
     }
-    restoreInterrupted(turns)
-    // P2：拉起 in-flight turn —— 服务端还有该会话正在跑的回合时按 partial 重建。
-    // 必须在 restoreInterrupted 之后做：旧的 sessionStorage 兜底覆盖了部分场景，
-    // 这里再补一次「服务端也认」的双重兜底，让刷新后的窗口期也能恢复。
-    await recoverActiveTurns()
+    if (!replay) {
+      restoreInterrupted(turns)
+      // P2：拉起 in-flight turn —— 服务端还有该会话正在跑的回合时按 partial 重建。
+      // 必须在 restoreInterrupted 之后做：旧的 sessionStorage 兜底覆盖了部分场景，
+      // 这里再补一次「服务端也认」的双重兜底，让刷新后的窗口期也能恢复。
+      await recoverActiveTurns()
+    }
   } catch (e) {
-    if (epoch === chatEpoch) { historyError.value = '历史加载失败：' + (e as Error).message; restoreInterrupted([]) }
+    if (epoch === chatEpoch) {
+      historyError.value = '历史加载失败：' + (e as Error).message
+      if (!replay) restoreInterrupted([])
+    }
   }
 }
 
@@ -1566,6 +1622,11 @@ let offContextChanged = () => {}
 let offOpenModelSettings = () => {}
 let offLiveVisionFrame = () => {}
 onMounted(() => {
+  // replay：只读回看指定 session，不注册全局会话/发送/项目切换监听，也不碰 Web Lock。
+  if (props.scope === 'replay') {
+    if (props.replaySessionId) void restoreHistory(true)
+    return
+  }
   // 语音能力探测不再按 scope 门控：cockpit scope 已不存在，
   // 只在 cockpit 下探测等于**永远探测不到**，后端配了 STT/TTS 也用不上。
   void voiceApi.status().then(status => {
@@ -1596,7 +1657,19 @@ onMounted(() => {
   void loadContextUsage()
   void refreshSessionList()
   // 历史回灌完成后再探测孤儿：避免本会话卡片已随历史逻辑存在时误报
-  void restoreHistory().then(() => { if (props.scope === 'default') void detectOrphanWorkflow() })
+  void (async () => {
+    const adopted = await adoptLastSession()
+    if (adopted) await refreshSessionList()
+    await restoreHistory(adopted)
+    if (props.scope === 'default') void detectOrphanWorkflow()
+  })()
+})
+// replay 窗口常驻时切换子 agent：按新 session 重新回灌，不沿用上一个 agent 的消息。
+watch(() => props.replaySessionId, (id) => {
+  if (!isReplay.value || !id) return
+  messages.value = []
+  historyError.value = ''
+  void restoreHistory(true)
 })
 onBeforeUnmount(() => {
   composerRO?.disconnect()
@@ -1615,15 +1688,15 @@ onBeforeUnmount(() => {
 
 // 消息展示层（流式 markdown 节流/成稿引用缓存/trace 步骤/计时）
 const {
-  scheduleLiveMd, finishLiveMd,
-  answerHtml, refsOf, webRefsOf, openRef, TRACE_GLYPH,
+  scheduleLiveMd, finishLiveMd, streamHtmlOf,
+  answerHtml, refsOf, webRefsOf, openRef,
   toggleActivity, activityIsOpen, traceTitle, traceSummary,
   traceState, traceStateLabel,
   traceElapsed, elapsedLabel, resetRenderState,
 } = useMessageRender<ChatMsg>(() =>
   sending.value
   || messages.value.some(m => m.status === 'streaming' || (m.workflow?.workflowId && !m.finishedAt))
-  || activeWorkflowIds.value.length > 0)
+  || activeWorkflowIds.value.length > 0, finalAnswerText)
 
 /**
  * 点开一个文件产物：在工作台里定位到它（文件树展开 + 打开预览）。
@@ -1689,12 +1762,10 @@ function evidenceShot(path?: string): string {
 // 流式接收管线（帧合批/trace 计时/事件分类）抽到 useChatStream，问答页共用同一实现。
 const { drain, dispatch } = useChatStream<ChatMsg>({
   onActivity: (t) => { t.lastActivityAt = Date.now() },
-  // 帧内正文增量提交后挂 125ms 节流的 markdown 重渲染
+  // 帧内正文增量提交后挂 90ms 节流的 markdown 重渲染
   onTextFlushed: (t) => { scheduleLiveMd(t); speakDelta(t) },
   // 一次 rAF 帧提交后跟随一次（微任务里读到本帧最新布局），不逐 token 强排
   onFrame: () => queueMicrotask(followBottom),
-  // 深度思考默认折叠：用户点「深度思考」开关自行展开，避免长推理轨迹未请求即铺开（也更省空间）。
-  // 流式期间该开关仍显示「…」提示模型正在思考，无需自动展开。
   onContext: (ev) => applyUsage(ev),
   onStructural: () => scheduleFollow(),
   onFinal: (t, text) => {
@@ -1735,11 +1806,13 @@ const webTitle = computed(() => webOn.value
       'cd-clipping': collapsed,
       'cd-gate-blocked': gateBlocking,
       'cd-idle': !messages.length && !orphanWf && !gateBlocking && props.scope === 'default',
+      'cd-replay': isReplay,
     }"
   >
     <header class="cd-head">
       <!-- 折叠/收起只响应明确的标题热区，避免选中提示文字等误触把面板收起来 -->
       <span
+        v-if="!isReplay"
         class="cd-head-toggle"
         role="button"
         :aria-expanded="!collapsed"
@@ -1760,7 +1833,8 @@ const webTitle = computed(() => webOn.value
           <i class="cd-live-dot" aria-hidden="true" />工作流进行中
         </span>
       </span>
-      <span class="cd-hint">理解代码，一起完成下一步</span>
+      <span v-else class="cd-title cd-title-replay">{{ props.replayTitle || '子 Agent 对话' }}</span>
+      <span v-if="!isReplay" class="cd-hint">理解代码，一起完成下一步</span>
       <!-- 开发舱专属：把当前代码库搬到对话台同一行（完整路径在 title 里） -->
       <span v-if="props.scope === 'cockpit' && codeRootLabel" class="cd-root" :title="`当前代码库：${codeRoot}`">
         <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true"><path d="M1 3 Q1 2.2 1.8 2.2 H4.6 L5.6 3.2 H10.2 Q11 3.2 11 4 V9 Q11 9.8 10.2 9.8 H1.8 Q1 9.8 1 9 Z" fill="none" stroke="currentColor" stroke-width="1.1"/></svg>
@@ -1768,6 +1842,7 @@ const webTitle = computed(() => webOn.value
       </span>
       <span class="cd-spacer" />
       <button
+        v-if="!isReplay"
         class="cd-btn"
         :class="{ 'cd-btn-on': sessionOpen }"
         :aria-pressed="sessionOpen"
@@ -1815,6 +1890,7 @@ const webTitle = computed(() => webOn.value
         <i v-if="jobsRunning" class="cd-job-badge">{{ jobsRunning }}</i>
       </button>
       <button
+        v-if="!isReplay"
         class="cd-btn cd-size-btn"
         :class="{ 'cd-btn-on': expanded }"
         :aria-pressed="expanded"
@@ -1834,9 +1910,10 @@ const webTitle = computed(() => webOn.value
 
     <SessionHistoryPopover
       :open="sessionOpen" :items="sessionItems" :busy="sessionBusy" :error="sessionError"
-      :current-id="chatSession" :can-clear="!!messages.length || demoMode"
+      :current-id="chatSession" :generating="sending" :can-clear="!!messages.length || demoMode"
       @close="sessionOpen = false" @refresh="refreshSessionList" @create="createConversation"
-      @select="switchSession" @delete="deleteSessionItem" @clear="clearCurrentFromPop"
+      @select="switchSession" @delete="deleteSessionItem" @fork="forkSessionItem"
+      @rewound="onSessionRewound" @clear="clearCurrentFromPop"
     />
     <WorkflowHistoryPopover
       :open="wfHistoryOpen" :items="wfHistoryItems" :busy="wfHistoryBusy" :error="wfHistoryError"
@@ -1860,16 +1937,19 @@ const webTitle = computed(() => webOn.value
              （模板里没有引用），所以右栏一打开就是一片空白 —— 改三栏 IDE 之后这块
              空白更显眼。这里补上：一句引导 + 三个能直接问的快捷问题。 -->
         <div v-if="!messages.length" class="cd-empty">
-          <div class="cd-empty-title">试着问问</div>
-          <div class="cd-quicks">
-            <button
-              v-for="q in QUICK_PROMPTS"
-              :key="q"
-              type="button"
-              class="cd-quick"
-              @click="askQuick(q)"
-            >{{ q }}</button>
-          </div>
+          <div v-if="isReplay" class="cd-empty-title">{{ props.replayEmptyHint || '暂无已归档的逐轮记录' }}</div>
+          <template v-else>
+            <div class="cd-empty-title">试着问问</div>
+            <div class="cd-quicks">
+              <button
+                v-for="q in QUICK_PROMPTS"
+                :key="q"
+                type="button"
+                class="cd-quick"
+                @click="askQuick(q)"
+              >{{ q }}</button>
+            </div>
+          </template>
         </div>
         <div v-if="messages.length" class="cd-thread-spacer" aria-hidden="true"></div>
         <div v-for="m in messages" :key="m.id" class="cd-msg" :class="`cd-msg-${m.role}`">
@@ -1887,12 +1967,12 @@ const webTitle = computed(() => webOn.value
           </div>
           <template v-else>
             <div v-if="m.trace.length || m.reasoning || m.status === 'streaming'" class="cd-run-head">
-              <span class="cd-run-avatar">●</span>
+              <span class="cd-run-avatar" aria-hidden="true"></span>
               <span class="cd-run-role">交付代理</span>
               <!-- degraded 是后端明确说的「这轮不是干净交付」。挂在绿色「已完成」下面
                    就是在宣称一件没做到的事，所以降级回合改显「未完成」。 -->
               <span class="cd-run-status wb-status-chip" :class="[`cd-run-${m.status}`, { 'cd-run-degraded': m.status === 'done' && m.degraded }]">
-                {{ m.status === 'streaming' ? '⏳ 正在执行' : m.status === 'done' ? (m.degraded ? '⚠️ 未完成' : '✅ 已完成') : m.status === 'error' ? '❌ 执行失败' : '⏹ 已停止' }}
+                {{ m.status === 'streaming' ? '正在执行' : m.status === 'done' ? (m.degraded ? '未完成' : '已完成') : m.status === 'error' ? '执行失败' : '已停止' }}
               </span>
               <span class="cd-run-time" v-if="elapsedLabel(m)">· {{ elapsedLabel(m) }}</span>
             </div>
@@ -1907,7 +1987,7 @@ const webTitle = computed(() => webOn.value
               <span>{{ n }}</span>
             </div>
             <button v-if="m.recoverable" class="cd-resume" :disabled="sending" @click="resumeTurn(m)">
-              ↻ 继续上次任务
+              继续上次任务
             </button>
             <WorkflowCard
               v-if="m.workflow?.workflowId"
@@ -1930,56 +2010,33 @@ const webTitle = computed(() => webOn.value
                  实时生长）；历史/演示路径没有 flow，由 flowOf 兜底合成。
                  点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
             <div v-if="cdHasFlow(m)" class="cd-trace-wrap">
-              <!-- done 后整块轨迹默认收起，只留一行「推理轨迹 · 概览」头；流式中不显头、直接铺开实时流。 -->
+              <!-- 轨迹执行中展开，答案阶段自动收起；点击可覆盖当前轮的默认状态。 -->
               <button
-                v-if="m.status !== 'streaming'"
                 class="cd-trace-head"
+                type="button"
                 :aria-expanded="traceOpen(m)"
+                :aria-controls="`cd-trace-${m.id}`"
                 @click="toggleTrace(m)"
               >
-                <span class="cd-trace-glyph" aria-hidden="true">◷</span>
-                <span class="cd-trace-label">推理轨迹</span>
-                <span v-if="traceHeadline(m)" class="cd-trace-count">{{ traceHeadline(m) }}</span>
+                <span class="cd-trace-label">推理过程</span>
+                <span class="cd-trace-count">{{ traceOpen(m) ? (displayPrefs.showTrace ? (traceHeadline(m) || '思考过程') : '思考过程') : traceCompactHeadline(m) }}</span>
+                <span v-if="m.status === 'streaming' && !finalAnswerText(m)" class="cd-trace-live">进行中</span>
                 <span class="cd-trace-chevron" :class="{ open: traceOpen(m) }">⌄</span>
               </button>
-              <div v-show="m.status === 'streaming' || traceOpen(m)" class="cd-flow">
-              <!-- 分段呈现（2026-10-25）：一段发言 → 这段之后干了什么的一行灰色摘要 →
-                   下一段发言。推理过程因此夹在中途发言之间，而不是整轮压成一块铺完。
-                   摘要默认收起，点开才看这一段的单步明细。 -->
+              <div v-if="traceOpen(m)" :id="`cd-trace-${m.id}`" class="cd-flow">
+              <!-- 一段解说之后紧跟该段工具与返回，保持原事件顺序。 -->
               <template v-for="(seg, si) in segmentsOf(m)" :key="'seg' + si">
-                <!-- 顶层解说：ReAct 旁白恒在；深度思考只在流式期于顶层随帧生长，
-                     done 后下沉到下面「点开才见」的单步明细里（见 cd-flow-body）。 -->
-                <div v-if="topNarration(seg, m.status === 'streaming').length" class="cd-narration">
-                  <template v-for="(line, li) in topNarration(seg, m.status === 'streaming')" :key="'nar' + li">
+                <!-- 解说、深度思考与工具行按原发生顺序常驻可见。 -->
+                <div v-if="seg.narration.length" class="cd-narration">
+                  <template v-for="(line, li) in seg.narration" :key="'nar' + li">
                     <div v-if="line.kind === 'reasoning'" class="cd-nar-reasoning-wrap">
-                      <span class="cd-nar-tag" aria-hidden="true">✦ 深度思考</span>
+                      <span class="cd-nar-tag">深度思考</span>
                       <p class="cd-narration-line cd-nar-reasoning">{{ line.text }}</p>
                     </div>
                     <p v-else class="cd-narration-line cd-nar-thought">{{ line.text }}</p>
                   </template>
                 </div>
-                <button
-                  v-if="displayPrefs.showTrace && (seg.digest.toolTotal || (m.status !== 'streaming' && segHasThink(seg)))"
-                  class="cd-flow-toggle"
-                  :aria-expanded="segOpen(m, si)"
-                  :aria-label="`${seg.digest.text}，点击查看这一段的单步明细`"
-                  @click="toggleSeg(m, si)"
-                >
-                  <span class="cd-flow-toggle-glyph" aria-hidden="true">{{ seg.glyph }}</span>
-                  <span class="cd-flow-toggle-count">{{ seg.digest.text }}</span>
-                  <span class="cd-flow-toggle-chevron" :class="{ open: segOpen(m, si) }">⌄</span>
-                </button>
-                <div v-if="segOpen(m, si)" class="cd-flow-body">
-                  <!-- done 后本段的深度思考下沉到这里：作为「推理过程」的第一步，排在
-                       动作明细之上。流式期不在此重复（顶层已随帧生长）。 -->
-                  <template v-if="m.status !== 'streaming'">
-                    <div v-for="(line, li) in seg.narration" :key="'det-think' + li">
-                      <div v-if="line.kind === 'reasoning'" class="cd-nar-reasoning-wrap">
-                        <span class="cd-nar-tag" aria-hidden="true">✦ 深度思考</span>
-                        <p class="cd-narration-line cd-nar-reasoning">{{ line.text }}</p>
-                      </div>
-                    </div>
-                  </template>
+                <div v-if="displayPrefs.showTrace && seg.rows.length" class="cd-flow-body">
                   <div v-if="si === 0 && m.plan.length" class="cd-plan">
                     <div class="cd-plan-title">执行计划</div>
                     <div v-for="(s, pi) in m.plan" :key="'p' + pi" class="cd-plan-step">
@@ -1994,7 +2051,7 @@ const webTitle = computed(() => webOn.value
                       :aria-label="`${traceTitle(m.trace[ti])}，${traceStateLabel(traceState(m, m.trace[ti], ti), m.trace[ti])}，点击查看详情`"
                       @click="toggleActivity(m.id, ti, m)"
                     >
-                      <span class="cd-flow-glyph">{{ rowKind(m, ti) === 'action' ? (TRACE_GLYPH[m.trace[ti].type] || '→') : '•' }}</span>
+                      <span class="cd-flow-glyph" aria-hidden="true"></span>
                       <span class="cd-flow-main">
                         <span class="cd-flow-title">{{ traceTitle(m.trace[ti]) }}</span>
                         <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
@@ -2063,23 +2120,30 @@ const webTitle = computed(() => webOn.value
               </template>
               </div>
             </div>
-            <!-- 流式中按 ~8fps 节流重渲染 markdown（格式边出边成型，又不逐 token 重建
-                 DOM）；结束瞬间由 answerHtml 缓存接管成稿，视觉无跳变 -->
-            <div v-if="m.text" class="ai-md cd-answer" :class="{ 'cd-answer-live': m.status === 'streaming' }">
-              <!-- 「留地板、拆其余」重构：移除「覆盖存疑」「未综合结论」两条 nag 徽章
-                   （它们把每个正常回答都标注得可疑，是工作台「事后打脸」感的来源）。
-                   保留下面「未完成」徽章——那是诚实的失败终态，不是设卡。 -->
-              <!-- 通用的「没答完」终态：后端 degraded=true 说明这一轮不是模型写出的
-                   完整结论（兜底诊断 / 中间证据 / 达到步数上限）。此前前端只接了标志、
-                   从不显示，于是任何兜底都挂在绿色「已完成」下面。 -->
-              <div v-if="m.status === 'done' && m.degraded && m.consistencyReason !== 'verbatim_dump'" class="cd-consistency-warn" role="status">
-                <span class="cd-warn-badge">未完成</span>
-                本轮没有拿到可综合的完整答案——上面是兜底内容或中间证据，不是针对你问题的结论。
-                点开上方「推理轨迹」可核对模型实际拿到的内容；建议重试、换个问法，或换一个模型。
+            <!-- 轨迹偏移后的正文 token 进入独立的最终答案区，继续按 90ms 限流逐字渲染。 -->
+            <section v-if="finalAnswerText(m)" class="cd-final-answer" aria-label="最终答案">
+              <header class="cd-final-answer-head">
+                <span>最终答案</span>
+                <span v-if="m.status === 'streaming'" class="cd-final-answer-live">正在输出</span>
+              </header>
+              <div class="ai-md cd-answer" :class="{ 'cd-answer-live': m.status === 'streaming' }">
+                <!-- 「留地板、拆其余」重构：移除「覆盖存疑」「未综合结论」两条 nag 徽章
+                     （它们把每个正常回答都标注得可疑，是工作台「事后打脸」感的来源）。
+                     保留下面「未完成」徽章——那是诚实的失败终态，不是设卡。 -->
+                <!-- 通用的「没答完」终态：后端 degraded=true 说明这一轮不是模型写出的
+                     完整结论（兜底诊断 / 中间证据 / 达到步数上限）。此前前端只接了标志、
+                     从不显示，于是任何兜底都挂在绿色「已完成」下面。 -->
+                <div v-if="m.status === 'done' && m.degraded && m.consistencyReason !== 'verbatim_dump'" class="cd-consistency-warn" role="status">
+                  <span class="cd-warn-badge">未完成</span>
+                  本轮没有拿到可综合的完整答案——上面是兜底内容或中间证据，不是针对你问题的结论。
+                  可在上方推理轨迹核对模型实际拿到的内容；建议重试、换个问法，或换一个模型。
+                </div>
+                <template v-if="m.status === 'streaming'">
+                  <span v-html="streamHtmlOf(m)" />
+                </template>
+                <span v-else v-html="answerHtml(m)" />
               </div>
-              <template v-if="m.status === 'streaming'"><div class="cd-answer-pending"><span class="cd-caret" aria-hidden="true" /> 正在生成回答…</div></template>
-              <span v-else v-html="answerHtml(m)" />
-            </div>
+            </section>
             <!-- 产物：本轮模型写下的文件、截到的图。直接摆在回答下面，
                  不用再去路径里自己搜。图片给缩略图，文件给可点的名字。 -->
             <ArtifactCards :artifacts="m.artifacts" :open="openArtifact" />
@@ -2099,7 +2163,7 @@ const webTitle = computed(() => webOn.value
                 >侧栏</button>
               </div>
             </details>
-            <div v-if="m.status === 'error'" class="cd-error" :class="errorKindClass(m.errorKind)">⚠ {{ m.error }}</div>
+            <div v-if="m.status === 'error'" class="cd-error" :class="errorKindClass(m.errorKind)">{{ m.error }}</div>
             <div v-if="m.status === 'done' && shownRefs(m).length" class="cd-refs">
               <button
                 v-for="r in shownRefs(m)"
@@ -2127,7 +2191,6 @@ const webTitle = computed(() => webOn.value
 
       <!-- 孤儿工作流恢复条：后端未终结但当前对话没有卡片（多为刷新后），不处理会持续拦截新请求 -->
       <div v-if="orphanWf && props.scope === 'default'" class="cd-orphan" role="alert">
-        <span class="cd-orphan-glyph" aria-hidden="true">⚠</span>
         <div class="cd-orphan-body">
           <div class="cd-orphan-title">
             该项目有一个未结束的工作流（{{ orphanStatusLabel }}），当前对话里没有它的审批卡片
@@ -2143,16 +2206,18 @@ const webTitle = computed(() => webOn.value
         </button>
       </div>
 
-      <div v-if="feedbackHint" class="cd-feedback-hint">{{ feedbackHint }}</div>
-      <div v-else-if="feedbackThanks" class="cd-feedback-thanks">已记录，感谢反馈</div>
+      <!-- replay 是只读回看：反馈/评分属于「当前这轮」的交互，不在这里复现 -->
+      <div v-if="!isReplay && feedbackHint" class="cd-feedback-hint">{{ feedbackHint }}</div>
+      <div v-else-if="!isReplay && feedbackThanks" class="cd-feedback-thanks">已记录，感谢反馈</div>
       <TaskFeedbackBar
-        v-else-if="feedbackTarget"
+        v-else-if="!isReplay && feedbackTarget"
         :busy="feedbackBusy"
         @submit="submitFeedback"
         @dismiss="dismissFeedback"
       />
 
       <ChatComposer
+        v-if="!isReplay"
         ref="composerEl"
         v-model="input"
         :sending="sending"
@@ -2186,7 +2251,7 @@ const webTitle = computed(() => webOn.value
         @cycle-thinking="cycleThinking"
         @open-model-switcher="openModelSwitcher"
         @toggle-voice="toggleVoice"
-        @memory="memoryOpen = true"
+        @memory="openMemoryPanel"
         @plan="planOpen = true"
       />
 
@@ -2196,14 +2261,25 @@ const webTitle = computed(() => webOn.value
       @focus="focusWfMember"
     />
 
-    <Teleport to="body">
-      <MemoryContextPanel
-        :visible="memoryOpen"
-        :session-id="getSessionId()"
-        @close="memoryOpen = false"
+    <!-- 全局弹层只在正常工作台对话台挂载；replay 示例会从卡片墙里打开，
+         若不排除会再挂一份 AgentWallPanel / MemoryContextPanel（可见标记是全局的）。 -->
+    <Teleport v-if="!isReplay" to="body">
+      <AgentWallPanel
+        :visible="agentWallOpen"
+        :session-id="currentSessionId()"
+        @close="closeAgentWall"
       />
     </Teleport>
-    <Teleport to="body">
+    <Teleport v-if="!isReplay" to="body">
+      <MemoryContextPanel
+        :visible="memoryPanelOpen"
+        :session-id="currentSessionId()"
+        :agent-id="memoryAgentId"
+        :agent-label="memoryAgentLabel"
+        @close="closeMemoryPanel"
+      />
+    </Teleport>
+    <Teleport v-if="!isReplay" to="body">
       <PlanPanel
         :visible="planOpen"
         :session-id="getSessionId()"
@@ -2211,14 +2287,14 @@ const webTitle = computed(() => webOn.value
       />
     </Teleport>
     <ModelSettingsDialog
-      v-if="settingsOpen"
+      v-if="!isReplay && settingsOpen"
       :visible="settingsOpen"
       :config="modelConfig"
       @close="settingsOpen = false"
       @saved="onModelSaved"
     />
     <ModelSwitcherPopover
-      :visible="modelSwitcherOpen"
+      :visible="!isReplay && modelSwitcherOpen"
       :config="modelConfig"
       :load-error="modelSwitchError"
       @close="modelSwitcherOpen = false"
@@ -2251,6 +2327,9 @@ const webTitle = computed(() => webOn.value
   transition: height .24s cubic-bezier(.32, .72, 0, 1),
               min-height .24s cubic-bezier(.32, .72, 0, 1);
 }
+/* replay：作为独立窗口里的只读对话台，高度交给外层容器，不参与工作台折叠/展开动画 */
+.cd-dock.cd-replay { height: 100%; max-height: none; min-height: 0; flex: 1 1 auto; border-top: 0; }
+.cd-title-replay { font-weight: 600; }
 /* 展开态高度按内容走，不再无条件拉满整屏。
    旧值写死 calc(100vh - --wb-main-min)：短会话只有底部几行答案，上方 60% 是空白，
    「图里太空」；长回答才需要这个上限。现在 height:auto + max-height 兜底 ——
@@ -2370,7 +2449,7 @@ const webTitle = computed(() => webOn.value
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  box-shadow: 0 14px 38px rgba(35,52,84,.2);
+  box-shadow: var(--mi-shadow-pop);
   padding: 10px 12px;
   z-index: 60;
   animation: cd-pop-in .18s var(--ease-spring) both;
@@ -2390,7 +2469,7 @@ const webTitle = computed(() => webOn.value
   position: absolute; right: 14px; bottom: 116px; z-index: 3;
   border: 1px solid var(--border-2); border-radius: 999px; padding: 4px 9px;
   background: var(--bg-raised); color: var(--accent); font-size: var(--fs-cap);
-  box-shadow: 0 2px 8px rgba(30, 50, 90, .14); cursor: pointer;
+  box-shadow: var(--mi-shadow-control); cursor: pointer;
 }
 .cd-jump-bottom:hover { background: var(--bg-selected); transform: translateY(-1px); }
 /* 孤儿工作流恢复条：贴在输入框上沿，琥珀色提示但不遮挡消息流 */
@@ -2400,7 +2479,6 @@ const webTitle = computed(() => webOn.value
   border: 1px solid var(--amber); border-radius: 8px;
   background: color-mix(in srgb, var(--amber) 10%, var(--bg-raised));
 }
-.cd-orphan-glyph { color: var(--amber); font-size: var(--fs-md); line-height: 1; flex: none; }
 .cd-orphan-body { flex: 1 1 auto; min-width: 0; }
 .cd-orphan-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .cd-orphan-desc {
@@ -2409,7 +2487,7 @@ const webTitle = computed(() => webOn.value
 }
 .cd-orphan-err { font-size: var(--fs-cap); color: var(--danger); margin-top: 2px; }
 .cd-orphan .cd-mini { flex: none; white-space: nowrap; }
-.cd-body { flex: 1 1 auto; display: flex; flex-direction: column; overflow-y: auto; padding: 8px 14px 4px; min-height: 90px; }
+.cd-body { flex: 1 1 auto; display: flex; flex-direction: column; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; padding: 8px 14px 4px; min-height: 90px; }
 /* 内容不满一屏时贴底：短会话紧挨输入框，而不是悬在顶部、下面留一大片空白。
    用零高空节点吃剩余空间，而不是 justify-content:flex-end —— 后者在可滚动容器里
    会把溢出内容顶到滚动起点之外（Chromium 的 flex-end 溢出裁剪问题），消息一多
@@ -2435,15 +2513,14 @@ const webTitle = computed(() => webOn.value
 .cd-idle .cd-quicks { flex-direction: row; flex-wrap: wrap; gap: 8px; }
 .cd-idle .cd-quick { font-size: var(--fs-sm); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px 12px; }
 
-.cd-msg { margin-bottom: 10px; }
+.cd-msg { margin-bottom: 12px; }
 .cd-user-bubble {
-  /* 与问答页同一口径：气泡不横跨整个通栏（82% × 1312px ≈ 1075px 太宽，
-     一条气泡占满一行反而难读），封顶 560px。 */
   display: inline-block; max-width: min(560px, 82%);
   margin-left: auto;
-  padding: 6px 10px; border-radius: 9px 9px 2px 9px;
-  background: var(--bg-selected); color: var(--text);
-  font-size: var(--fs-sm); white-space: pre-wrap;
+  padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: var(--r-lg) var(--r-lg) var(--r-xs) var(--r-lg);
+  background: var(--bg-hover); color: var(--text);
+  font-size: var(--fs-md); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .cd-msg-user { display: flex; justify-content: flex-end; }
 /* 应用自发起活动字条：居中、弱化，不是用户气泡也不是 AI 回复 */
@@ -2464,6 +2541,10 @@ const webTitle = computed(() => webOn.value
    工作台是 IDE 密度，答案要和 12–13px 的栏内文字同一视线高度；
    问答页是阅读页，仍保持 15px，不跟着缩。
    word-break/overflow-wrap：长 URL、长路径、不带空格的标识符在窄栏里会顶破面板。 */
+.cd-final-answer { max-width: var(--measure); }
+.cd-final-answer-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--text); font-size: var(--fs-sm); font-weight: 600; }
+.cd-final-answer-head::before { content: ''; width: 14px; height: 2px; background: var(--accent-text); }
+.cd-final-answer-live { color: var(--accent-text); font-size: var(--fs-cap); font-weight: 400; }
 .cd-answer {
   font-size: var(--fs-md);
   max-width: var(--measure);
@@ -2482,10 +2563,14 @@ const webTitle = computed(() => webOn.value
   background: var(--accent); animation: cd-caret 1.05s steps(1, end) infinite;
 }
 @keyframes cd-caret { 0%, 55% { opacity: 1; } 56%, 100% { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .cd-caret { animation: none; } }
-/* 答案未出结果前的占位：不再逐字吐正文（看着像卡在最后一行被截断），完成才整块显示 */
+@media (prefers-reduced-motion: reduce) { .cd-caret, .cd-answer-live::after, .cd-flow-running .cd-flow-glyph { animation: none; } }
+.cd-answer-live::after {
+  content: ''; display: inline-block; width: 2px; height: 1.05em; margin-left: 2px;
+  vertical-align: text-bottom; background: var(--accent-text);
+  animation: cd-caret 1s steps(1, end) infinite;
+}
 .cd-answer-pending {
-  display: inline-flex; align-items: center; gap: 2px;
+  display: inline-flex; align-items: center; gap: 5px;
   font-size: var(--fs-sm); color: var(--text-faint);
 }
 .cd-thinking, .cd-error { font-size: var(--fs-sm); color: var(--text-muted); padding: 6px 9px; border-radius: 7px; background: var(--bg-hover); }
@@ -2532,10 +2617,12 @@ const webTitle = computed(() => webOn.value
   color: var(--text-muted); font-size: var(--fs-cap);
 }
 .cd-run-avatar {
-  width: 17px; height: 17px; border-radius: 50%;
+  width: 20px; height: 20px; border-radius: var(--r-sm);
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--accent-ink); background: var(--accent); font-size: var(--fs-cap);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-text); background: var(--accent-soft);
 }
+.cd-run-avatar::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .cd-run-role { color: var(--text); font-weight: 600; }
 .cd-run-status { color: var(--text-faint); }
 .cd-run-streaming { color: var(--accent); }
@@ -2561,70 +2648,21 @@ const webTitle = computed(() => webOn.value
 }
 @keyframes cd-wf-spin { to { transform: rotate(360deg); } }
 
-/* 交错流（2026-10-14）：思考 ↔ 工具调用按发生顺序的一条故事线。
-   无边框——容器只有左侧一条虚线时间线；节点全是文字行。思考（reasoning
-   分段 / ReAct Thought）实时外露随帧生长，动作/返回行一行摘要、点开看全文。
-   替代了旧的「cd-reason 块 + 可折叠过程流（cd-process-stream）」两段式。 */
-/* 回合结束后把整条推理轨迹折成一块：一行低饱和度的「推理轨迹 · 概览」头，
-   点开才摊开下方 .cd-flow（旁白 + 工具行）。流式中不显头，直接铺实时流。 */
-.cd-trace-wrap { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; }
-.cd-trace-head {
-  align-self: flex-start;
-  display: inline-flex; align-items: center; gap: 7px;
-  border: none; background: none;
-  border-radius: var(--r-sm);
-  padding: 3px 6px; margin-left: -6px;
-  cursor: pointer;
-  color: var(--text-faint);
-  font-family: var(--font-ui); font-size: var(--fs-sm);
-  max-width: var(--measure);
+/* 执行过程与问答页一致：轻量卡片常驻，摘要保持可见，仅技术详情单步展开。 */
+.cd-trace-wrap {
+  display: flex; flex-direction: column; gap: 3px;
+  max-width: var(--measure); margin: 4px 0 10px; padding: 9px 11px 7px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
 }
-.cd-trace-head:hover { color: var(--text-muted); background: var(--bg-hover); }
-.cd-trace-head:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
-.cd-trace-glyph { color: var(--text-faint); font-size: var(--fs-sm); }
-.cd-trace-label { color: var(--text-muted); font-weight: 650; white-space: nowrap; }
-.cd-trace-count {
-  color: var(--text-faint); font-size: var(--fs-cap);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
-}
-.cd-trace-chevron {
-  color: var(--text-faint); font-size: 9px; opacity: .55;
-  transition: transform .18s var(--ease-standard), opacity .15s ease;
-}
-.cd-trace-head:hover .cd-trace-chevron,
-.cd-trace-head[aria-expanded="true"] .cd-trace-chevron { opacity: 1; }
+.cd-trace-wrap:has(.cd-trace-live) { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }
+.cd-trace-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 22px; padding: 0; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
+.cd-trace-chevron { flex: none; color: var(--text-faint); transition: transform .15s; }
 .cd-trace-chevron.open { transform: rotate(180deg); }
-
-.cd-flow {
-  display: flex; flex-direction: column; gap: 2px;
-  margin: 4px 0 8px;
-  /* 与答案区同一把阅读栏尺：轨迹行在 1312px 通栏里太长，扫读困难 */
-  max-width: var(--measure);
-}
-/* 每段的工具摘要行：一行灰色小字，点开看这一段的单步明细（参考图里的样式）。 */
-.cd-flow-toggle {
-  align-self: flex-start;
-  display: inline-flex; align-items: center; gap: 6px;
-  border: none;
-  background: none;
-  border-radius: var(--r-sm);
-  padding: 1px 4px;
-  margin-left: -4px;
-  cursor: pointer;
-  color: var(--text-faint);
-  font-family: var(--font-ui);
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  transition: color .15s ease, background .15s ease;
-}
-.cd-flow-toggle:hover { color: var(--text-muted); background: var(--bg-hover); }
-.cd-flow-toggle:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
-.cd-flow-toggle-glyph { color: var(--text-faint); font-size: var(--fs-sm); }
-.cd-flow-toggle-count { color: var(--text-faint); }
-.cd-flow-toggle-chevron { color: var(--text-faint); font-size: 9px; opacity: .55; transition: transform .18s var(--ease-standard), opacity .15s ease; }
-.cd-flow-toggle:hover .cd-flow-toggle-chevron,
-.cd-flow-toggle[aria-expanded="true"] .cd-flow-toggle-chevron { opacity: 1; }
-.cd-flow-toggle-chevron.open { transform: rotate(180deg); }
+.cd-trace-label { flex: none; color: var(--text); font-size: var(--fs-sm); font-weight: 600; }
+.cd-trace-count { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-cap); }
+.cd-trace-live { flex: none; color: var(--accent-text); font-size: var(--fs-cap); }
+.cd-flow { display: flex; flex-direction: column; gap: 2px; }
 .cd-narration { margin: 0; }
 .cd-narration-line {
   margin: 0 0 8px;
@@ -2637,37 +2675,35 @@ const webTitle = computed(() => webOn.value
 /* 深度思考（原始 reasoning）块 */
 .cd-nar-reasoning-wrap { margin: 0 0 10px; }
 .cd-nar-tag {
-  flex: 0 0 auto;
-  color: var(--accent-deep);
-  font-size: var(--fs-sm); font-weight: 700; letter-spacing: .04em;
+  display: block; margin-bottom: 2px;
+  color: var(--accent-text);
+  font-size: var(--fs-cap); font-weight: 600;
   white-space: nowrap;
 }
-/* 思考正文：左侧强调条 + 淡主色底块，比旁白更醒目 */
 .cd-nar-reasoning {
   color: var(--text);
-  margin: 2px 0 0; padding: 8px 12px;
-  border-left: 3px solid var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
-  border-radius: 0 6px 6px 0;
+  margin: 2px 0 0; padding: 5px 0 5px 12px;
+  border-left: 1px solid var(--border);
 }
 .cd-flow-body { display: flex; flex-direction: column; margin-top: 2px; }
 
 /* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
 .cd-flow-row {
-  width: 100%; min-width: 0; display: flex; align-items: center; gap: 7px;
-  border: 0; background: transparent; padding: 4px 0; text-align: left;
-  color: var(--text-muted); cursor: pointer;
+  width: 100%; min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 7px;
+  border: 0; border-radius: var(--r-xs); background: transparent; padding: 4px;
+  text-align: left; color: var(--text-muted); cursor: pointer;
 }
-.cd-flow-row:hover { color: var(--text); }
+.cd-flow-row:hover { color: var(--text); background: var(--bg-hover); }
 .cd-flow-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .cd-flow-glyph {
-  flex: 0 0 15px; width: 15px; text-align: center;
-  color: var(--text-faint); font-size: var(--fs-md); line-height: 1;
+  flex: 0 0 6px; width: 6px; height: 6px;
+  border: 1px solid var(--text-faint); border-radius: 50%;
 }
-.cd-flow-running .cd-flow-glyph { color: var(--accent); }
-.cd-flow-ok .cd-flow-glyph { color: var(--green); }
-.cd-flow-warn .cd-flow-glyph { color: var(--amber); }
-.cd-flow-error .cd-flow-glyph { color: var(--danger); }
+.cd-flow-row.action .cd-flow-glyph { border-color: var(--accent-text); background: var(--accent-soft); }
+.cd-flow-running .cd-flow-glyph { border-color: var(--accent); background: var(--accent); animation: cd-live-pulse 1.2s ease-in-out infinite; }
+.cd-flow-ok .cd-flow-glyph { border-color: var(--green); }
+.cd-flow-warn .cd-flow-glyph { border-color: var(--amber); }
+.cd-flow-error .cd-flow-glyph { border-color: var(--danger); }
 .cd-flow-main { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 7px; }
 .cd-flow-title { flex: 0 0 auto; color: var(--text); font-size: var(--fs-sm); font-weight: 650; white-space: nowrap; }
 .cd-flow-summary {
@@ -2687,10 +2723,10 @@ const webTitle = computed(() => webOn.value
 .cd-flow-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .cd-flow-chevron { color: var(--text-faint); font-size: var(--fs-cap); }
 .cd-flow-detail {
-  margin: 0 0 4px 20px; padding: 3px 0 3px 8px;
-  border-left: 2px solid var(--border);
-  color: var(--text-dim); font: 10.5px/1.5 var(--font-mono, monospace);
-  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 130px; overflow: auto;
+  margin: 0 0 6px 20px; padding: 8px 10px;
+  border-left: 2px solid var(--border); background: var(--surface);
+  color: var(--text-muted); font: var(--fs-cap)/1.65 var(--font-mono, monospace);
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto;
 }
 .cd-flow-detail-label { display: block; margin-bottom: 3px; color: var(--text-faint); font: 9.5px/1.2 var(--font-ui); letter-spacing: .04em; }
 .cd-flow-detail code { display: block; color: inherit; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -2845,29 +2881,19 @@ const webTitle = computed(() => webOn.value
 }
 /* 尊重系统「减少动态效果」：高度/箭头翻转改为瞬时，光标不闪烁 */
 @media (prefers-reduced-motion: reduce) {
-  .cd-dock { transition: none; }
-  .cd-chevron { transition: none; }
+  .cd-dock, .cd-chevron { transition: none; }
+  .cd-msg { animation: none; }
 }
 
 /* ---------- 对话区视觉细化 ---------- */
-.cd-dock {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 98%, transparent), color-mix(in srgb, var(--bg-raised) 90%, transparent));
-  box-shadow: 0 -8px 26px rgba(35,52,84,.06);
-}
+.cd-dock { background: var(--bg-raised); box-shadow: none; }
 .cd-head {
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 96%, transparent), color-mix(in srgb, var(--bg-raised) 88%, transparent));
+  background: transparent;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 82%, var(--bg-raised));
 }
-.cd-body {
-  scroll-behavior: smooth;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-raised) 50%, transparent), color-mix(in srgb, var(--bg-raised) 80%, transparent));
-}
-.cd-msg { animation: cd-message-in .22s var(--ease-spring) both; }
-.cd-user-bubble {
-  border: 1px solid color-mix(in srgb, var(--accent) 10%, transparent);
-  box-shadow: 0 3px 10px color-mix(in srgb, var(--accent) 8%, transparent);
-}
-.cd-answer { line-height: 1.7; padding: 0; background: transparent; border: none; box-shadow: none; }
+.cd-body { scroll-behavior: auto; background: transparent; }
+.cd-msg { animation: cd-message-in .18s ease-out both; }
+.cd-answer { line-height: 1.75; padding: 0; background: transparent; border: none; box-shadow: none; }
 /* 任务满意度（记忆 v2）：交付型回合结束后的一条细带，不抢答案的注意力 */
 .cd-feedback-hint,
 .cd-feedback-thanks {

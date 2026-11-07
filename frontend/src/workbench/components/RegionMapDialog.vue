@@ -7,6 +7,7 @@ import { useWorkbench, askConfirm } from '../composables/workbench'
 import { appEvents } from '../eventBus'
 import { withProject } from '../api'
 import { regionColor, cat, catAlpha } from '../theme'
+import { preferredScrollBehavior } from '../composables/motionPreference'
 import type { RegionInfo } from '../api'
 
 const {
@@ -132,7 +133,7 @@ function edgePath(e: LaidEdge): string {
 
 function selectNode(key: string) {
   selectedKey.value = key
-  document.getElementById(`rm-card-${key}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  document.getElementById(`rm-card-${key}`)?.scrollIntoView({ behavior: preferredScrollBehavior(), block: 'nearest' })
 }
 
 function verifyText(r: RegionInfo): string {

@@ -154,7 +154,7 @@ let zSeq = 0
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 16px 44px rgba(35, 52, 84, 0.22);
+  box-shadow: var(--mi-shadow-pop);
   overflow: hidden;
   animation: wf-mwin-in .2s cubic-bezier(.2,.8,.2,1) both;
 }

@@ -145,7 +145,7 @@ async function reject(item: PendingExec) {
 
 <style scoped>
 .ea-root{position:fixed;right:16px;bottom:16px;z-index:420;display:flex;flex-direction:column;gap:10px;width:min(360px,calc(100vw - 32px));max-height:calc(100vh - 120px);overflow:auto;font-size: var(--fs-sm);line-height:1.6}
-.ea-card{padding:12px 13px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-strong);box-shadow:0 16px 42px rgba(35,52,84,.22)}
+.ea-card{padding:12px 13px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-strong);box-shadow:var(--mi-shadow-pop)}
 .ea-warn{border-color:var(--amber)}
 .ea-danger{border-color:var(--danger)}
 .ea-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
@@ -163,7 +163,7 @@ async function reject(item: PendingExec) {
 .ea-actions button{border-radius:6px;padding:6px 12px;font-size: var(--fs-sm);cursor:pointer;border:1px solid transparent;transition:filter .16s ease,transform .16s ease,opacity .16s ease}
 .ea-actions button:active:not(:disabled){transform:translateY(1px)}
 .ea-actions button:disabled{opacity:.6;cursor:default}
-.ea-confirm{background:linear-gradient(180deg,#e8a13a,#d98a1f);border-color:#c47a15;color:#fff;font-weight:600}
+.ea-confirm{background:linear-gradient(180deg,#e8a13a,#d98a1f);border-color:#c47a15;color:var(--mi-bg-deep);font-weight:600}
 .ea-danger .ea-confirm{background:linear-gradient(180deg,#e2565d,#c93a42);border-color:#b52f37}
 .ea-confirm:hover:not(:disabled){filter:brightness(1.06)}
 .ea-reject{background:transparent;border-color:var(--border-strong);color:var(--text-muted)}

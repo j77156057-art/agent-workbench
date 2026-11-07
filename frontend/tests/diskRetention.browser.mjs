@@ -15,6 +15,8 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 
+/* global process, console, document, getComputedStyle, window */
+
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE
   || path.join(process.env.USERPROFILE || process.env.HOME,
@@ -111,22 +113,51 @@ async function openHealthTab(page) {
 async function readDisk(page) {
   return page.evaluate(() => {
     const block = document.querySelector('.mp-disk')
-    const lum = (rgb) => {
-      const [r, g, b] = (rgb.match(/\d+/g) || [0, 0, 0]).map(Number)
+    // 同 memoryFunnel：oklch() 在 computed style 里原样返回，旧的数字正则会把
+    // "oklch(0.74 0.018 230)" 误读为 rgb(0,74,0)。改用 canvas 解析真实 sRGB，
+    // 半透明底按层合成。只修取色，不改阈值与令牌。
+    const canvas = document.createElement('canvas')
+    canvas.width = 1
+    canvas.height = 1
+    const ctx2d = canvas.getContext('2d', { willReadFrequently: true })
+    const srgb = (color) => {
+      ctx2d.clearRect(0, 0, 1, 1)
+      ctx2d.fillStyle = '#000000'
+      ctx2d.fillStyle = color
+      ctx2d.fillRect(0, 0, 1, 1)
+      const [r, g, b, a] = ctx2d.getImageData(0, 0, 1, 1).data
+      return { r, g, b, a: a / 255 }
+    }
+    const flatten = (fg, bg) => ({
+      r: Math.round(fg.r * fg.a + bg.r * (1 - fg.a)),
+      g: Math.round(fg.g * fg.a + bg.g * (1 - fg.a)),
+      b: Math.round(fg.b * fg.a + bg.b * (1 - fg.a)),
+      a: 1,
+    })
+    const lum = (c) => {
       const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
-      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+      return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
     }
     const bgOf = (el) => {
+      const layers = []
       let node = el
       while (node && node !== document.body) {
-        const c = getComputedStyle(node).backgroundColor
-        if (c && !c.includes('rgba(0, 0, 0, 0)')) return c
+        const s = srgb(getComputedStyle(node).backgroundColor)
+        if (s.a > 0) layers.push(s)
+        if (s.a >= 1) break
         node = node.parentElement
       }
-      return getComputedStyle(document.body).backgroundColor
+      if (!layers.length || layers[layers.length - 1].a < 1) {
+        layers.push(srgb(getComputedStyle(document.body).backgroundColor))
+      }
+      let out = layers[layers.length - 1]
+      for (let i = layers.length - 2; i >= 0; i--) out = flatten(layers[i], out)
+      return out
     }
-    const ratio = (a, b) => {
-      const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m)
+    const ratio = (fgColor, bg) => {
+      const fg = srgb(fgColor)
+      const solid = fg.a < 1 ? flatten(fg, bg) : fg
+      const [x, y] = [lum(solid), lum(bg)].sort((m, n) => n - m)
       return +((x + 0.05) / (y + 0.05)).toFixed(2)
     }
     const text = (el) => (el ? el.innerText.replace(/\s+/g, ' ').trim() : '')

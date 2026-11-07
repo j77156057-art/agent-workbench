@@ -162,7 +162,7 @@ function contractText(c: RegionCard): string {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-.rh-card:hover:not(:disabled) { border-color: #a9c5ef; background: var(--bg-raised); box-shadow: 0 8px 22px rgba(35,52,84,.11); transform: translateY(-2px); }
+.rh-card:hover:not(:disabled) { border-color: #a9c5ef; background: var(--bg-raised); box-shadow: var(--mi-shadow-control); transform: translateY(-2px); }
 .rh-card:disabled { cursor: default; }
 .rh-card:disabled .rh-locator { display: none; }
 .rh-rail { width: 3px; flex: 0 0 3px; }

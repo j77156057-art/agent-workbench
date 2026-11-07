@@ -531,3 +531,59 @@ export function workflowEvents(
     ctrl.abort()
   }
 }
+
+// ---------------------------------------------------------------- Agent 卡片墙（只读）
+// 对应后端 /api/agents*，数据源是持久化的 sessions / 委派快照 / trace / 记忆库。
+export interface AgentCard {
+  agent_id: string; name: string; role: string; role_label?: string
+  status: string; status_label?: string; last_active: string
+  message_count: number; session_id: string; source: string; is_main: boolean
+  /** 子 agent 自己的真 session（sub-<ticket>）；旧数据没有归档时为 undefined */
+  chat_session_id?: string
+  /** sessions = 已归档逐轮记录；delegation = 只有委派快照（历史未归档） */
+  archive_source?: 'sessions' | 'delegation' | string
+  memory_owner?: string; parent_id?: string; depth?: number
+}
+export interface AgentRosterResp { ok?: boolean; session_id?: string; items: AgentCard[]; count?: number }
+
+export interface AgentMessage {
+  role: 'user' | 'assistant' | string; text: string; ts?: string; kind?: string; turn_id?: string
+}
+export interface AgentConversationResp {
+  ok?: boolean; available?: boolean; archived?: boolean; agent_id: string; session_id?: string
+  chat_session_id?: string
+  messages: AgentMessage[]; total_turns?: number; source?: string; note?: string
+}
+
+export interface AgentMemoryRow {
+  id: string; kind: string; title: string; content: string; evidence?: string
+  source?: string; status: string; updated?: string; agent_id?: string
+  legacy_unclassified?: boolean
+}
+export interface AgentMemoryResp {
+  ok?: boolean; agent_id: string; items: AgentMemoryRow[]; count: number
+  active_count?: number; legacy_unclassified_count?: number; note?: string; source?: string
+}
+
+export interface AgentUsageRow {
+  type: 'search' | 'skill' | 'mcp' | 'tool' | string; name: string; summary: string
+  status: string; duration_ms: number | null; agent_id?: string; ts?: string
+}
+export interface AgentUsageResp {
+  ok?: boolean; agent_id: string; items: AgentUsageRow[]; count: number
+  counts?: Record<string, number>; source?: string; note?: string
+}
+
+export const agentsApi = {
+  roster: (sessionId: string) =>
+    request<AgentRosterResp>(`/api/agents?session_id=${encodeURIComponent(sessionId || '')}`),
+  conversation: (agentId: string, sessionId: string) =>
+    request<AgentConversationResp>(
+      `/api/agents/${encodeURIComponent(agentId)}/conversation?session_id=${encodeURIComponent(sessionId || '')}`),
+  memory: (agentId: string, sessionId: string) =>
+    request<AgentMemoryResp>(
+      `/api/agents/${encodeURIComponent(agentId)}/memory?session_id=${encodeURIComponent(sessionId || '')}`),
+  usage: (agentId: string, sessionId: string, limit = 200) =>
+    request<AgentUsageResp>(
+      `/api/agents/${encodeURIComponent(agentId)}/usage?session_id=${encodeURIComponent(sessionId || '')}&limit=${limit}`),
+}

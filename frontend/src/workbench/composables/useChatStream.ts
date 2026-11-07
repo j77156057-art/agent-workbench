@@ -27,6 +27,8 @@ export interface ChatStreamTurn {
   workflow?: ChatWorkflowRef
   /** 本轮产物（模型写的文件、截的图）：由 observation 事件里的 artifacts 收集 */
   artifacts?: ChatArtifact[]
+  /** 最后一条轨迹时的正文偏移，用于分离前置旁白与最终答案流。 */
+  answerStart?: number
   status?: string
   error?: string
   /** P1：final.error_kind 三态（permanent / retried_failed / 其他）。
@@ -150,6 +152,9 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       ...(typeof ok === 'boolean' ? { ok } : {}),
       ...(fileDiffs && fileDiffs.length ? { file_diffs: fileDiffs } : {}),
     })
+    // 前置旁白可能也走 token；记录最后一条轨迹时的正文位置，只有后续文本
+    // 才进入最终答案区。包含当前 rAF 帧里尚未提交的字符，避免偏移少算。
+    turn.answerStart = turn.text.length + (buffers.get(turn.id)?.text.length || 0)
     // 轨迹事件即轮次边界：先切断思考分段，再把动作节点接进交错流
     closeThink(turn)
     const flow = (turn.flow ??= [])
@@ -240,6 +245,8 @@ export function useChatStream<T extends ChatStreamTurn>(hooks: ChatStreamHooks<T
       if (typeof ev.task === 'string' && ev.task) turn.task = ev.task
       // 精确断点续跑：后端给出 checkpoint id，失败回合的「继续」据此取回逐步现场。
       if (typeof ev.checkpoint_id === 'string' && ev.checkpoint_id) turn.checkpointId = ev.checkpoint_id
+      // final 是干净的完整成稿，不再套用流式阶段的前置旁白偏移。
+      turn.answerStart = 0
       hooks.onFinal?.(turn, ev.text)
       if (ev.status === 'error') {
         turn.status = 'error'

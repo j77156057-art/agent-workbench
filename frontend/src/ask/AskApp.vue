@@ -322,6 +322,25 @@ async function switchAskSession(id: string) {
     sessionBusy.value = false
   }
 }
+async function forkAskSession(id: string) {
+  const target = String(id || '').trim()
+  if (!target || sessionBusy.value) return
+  sessionBusy.value = true
+  try {
+    const result = await harnessApi.forkSession(target)
+    const next = String(result.session_id || '').trim()
+    if (!next) throw new Error('后端未返回新的会话编号')
+    await refreshSessionList()
+    sessionBusy.value = false
+    await switchAskSession(next)
+    if (sid() === next) showToast('已创建分叉对话，原对话已保留')
+  } catch (e) {
+    showToast((e as Error).message || '分叉对话失败')
+  } finally {
+    sessionBusy.value = false
+  }
+}
+
 async function deleteAskSession(id: string) {
   const target = String(id || '').trim()
   if (!target || sessionBusy.value) return
@@ -486,8 +505,9 @@ function isContinuationRequest(value: string): boolean {
 
 // 流式接收管线与工作台共用 useChatStream：rAF 帧合批、trace 计时、事件分类
 const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
-  onFrame: () => followScroll(),
-  onStructural: () => followScroll(),
+  // 等 Vue 把本帧正文提交到 DOM 后再测量高度，避免滚动总比内容慢一帧。
+  onFrame: () => { void nextTick(followScroll) },
+  onStructural: () => { void nextTick(followScroll) },
   onContext: (ev) => applyUsage(ev),
   // 中断快照要跟正文走，不能只跟 final 走：savePartial() 的守卫读的就是这个字段，
   // 只在 onFinal 里赋值等于"只有回答完整结束才允许恢复中断"，恰好错过它存在的场景。
@@ -855,6 +875,7 @@ onMounted(async () => {
       @new-session="newSidebarChat"
       @switch-session="selectSidebarSession"
       @delete-session="deleteAskSession"
+      @fork-session="forkAskSession"
     />
 
     <main class="ask-main" :class="{ 'is-empty': !messages.length }" :inert="sidebarOpen">
@@ -864,7 +885,6 @@ onMounted(async () => {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
           </button>
           <h1 class="tb-title">AI 问答</h1>
-          <span class="tb-sub">你的项目思考伙伴</span>
         </div>
         <div class="tb-right">
           <span v-if="usageLabel" class="tb-usage"
@@ -893,12 +913,9 @@ onMounted(async () => {
           <div class="chat-col" :class="{ 'is-welcome': !messages.length }">
           <div v-if="!messages.length" class="home-layout">
             <section class="welcome" aria-labelledby="welcome-title">
-              <div class="welcome-eyebrow">
-                <span class="welcome-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6c-3-2-6-2-9-1v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Z"/><path d="M12 6v14M6 9h3M15 9h3M6 13h3M15 13h3"/></svg></span>
-                <span>从一个好问题开始</span>
-              </div>
-              <h2 id="welcome-title" class="welcome-title">让想法，更进一步。</h2>
-              <p class="welcome-desc">读懂代码，梳理资料。和 AI 一起，把问题变成清晰的下一步。</p>
+              <div class="welcome-eyebrow">项目知识问答</div>
+              <h2 id="welcome-title" class="welcome-title">把问题，变成可核验的答案。</h2>
+              <p class="welcome-desc">基于当前项目的代码与资料作答，推理轨迹和最终答案分区呈现，让每个结论都有迹可循。</p>
               <div class="suggestions">
                 <button v-for="s in SUGGESTIONS" :key="s.title" class="suggestion" type="button" @click="useCapability(s.prompt)">
                   <svg class="suggestion-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -960,7 +977,7 @@ onMounted(async () => {
           </template>
 
           <div v-if="followups.length && !draft.trim() && !sending" class="followups">
-            <span class="followups-label"><span class="followups-ico" aria-hidden="true">✦</span>猜你想问</span>
+            <span class="followups-label">继续追问</span>
             <div class="followups-row">
               <button v-for="(q, i) in followups" :key="i" class="followup" type="button" @click="send(q)"><span class="followup-arrow" aria-hidden="true">→</span><span class="followup-label">{{ q }}</span></button>
             </div>
@@ -973,7 +990,6 @@ onMounted(async () => {
       </div>
 
       <div v-if="orphanWf" class="wf-orphan" role="alert">
-        <span class="wf-orphan-glyph" aria-hidden="true">⚠</span>
         <div class="wf-orphan-body">
           <div>该项目有一个未结束的工作流（{{ orphanStatusLabel }}），当前对话里没有它的审批卡片。</div>
           <div v-if="orphanError" class="wf-orphan-err">{{ orphanError }}</div>
@@ -1073,10 +1089,9 @@ onMounted(async () => {
 <style scoped>
 .ask-shell { display: flex; height: 100dvh; overflow: hidden; background: var(--bg); }
 .ask-main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100dvh; background: var(--surface); }
-.ask-topbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 64px; padding: 12px 32px; border-bottom: 1px solid var(--border); }
-.tb-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-.tb-title { margin: 0; font-family: var(--font-ui); font-size: var(--fs-body); font-weight: 600; color: var(--ink); white-space: nowrap; }
-.tb-sub { padding-left: 16px; border-left: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ask-topbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; padding: 10px 28px; border-bottom: 1px solid var(--border); }
+.tb-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.tb-title { margin: 0; font-family: var(--font-ui); font-size: var(--fs-h3); font-weight: 600; letter-spacing: -.02em; color: var(--ink); white-space: nowrap; }
 .tb-right { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
 .tb-usage { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; }
 .tb-usage.is-warn { color: var(--amber); }
@@ -1087,16 +1102,14 @@ onMounted(async () => {
 .sidebar-toggle:hover { background: var(--bg-hover); }
 .sidebar-backdrop { position: fixed; inset: 0; border: 0; background: var(--scrim); z-index: 59; }
 
-/* 横幅：粗边框卡片 */
 .banner {
   flex: 0 0 auto;
-  margin: 16px 28px 0;
-  padding: 12px 16px;
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
+  margin: 12px 28px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   background: var(--bg-raised);
-  box-shadow: var(--sh-hard-sm);
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   font-size: var(--fs-sm);
   line-height: 1.6;
 }
@@ -1104,7 +1117,7 @@ onMounted(async () => {
 .banner.warn { background: color-mix(in srgb, var(--amber) 10%, transparent); border-color: var(--amber); color: var(--amber); }
 
 .chat-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
-.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .jump-latest {
   position: absolute;
   left: 50%;
@@ -1123,10 +1136,10 @@ onMounted(async () => {
   font-family: var(--font-ui);
   font-size: var(--fs-sm);
   cursor: pointer;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .14);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .10);
 }
 .jump-latest:hover { background: var(--bg-hover); }
-.chat-col { width: min(840px, 100%); margin: 0 auto; padding: 32px; display: flex; flex-direction: column; gap: 32px; }
+.chat-col { width: min(840px, 100%); margin: 0 auto; padding: 28px 32px 40px; display: flex; flex-direction: column; gap: 30px; }
 .ask-main.is-empty { overflow-y: auto; }
 .is-empty .chat-stage { display: contents; }
 .is-empty .chat-scroll { flex: 0 0 auto; overflow: visible; margin-top: 0; scrollbar-gutter: auto; }
@@ -1134,19 +1147,18 @@ onMounted(async () => {
 .home-layout {
   width: min(1180px, 100%);
   margin: 0 auto;
-  padding: 56px 40px 8px;
+  padding: 48px 40px 8px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 56px;
+  gap: 48px;
   align-items: start;
 }
 .welcome { min-width: 0; text-align: left; }
-.welcome-eyebrow { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; color: var(--accent-text); font-size: var(--fs-md); font-weight: 500; }
-.welcome-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent-text); }
-.welcome-title { margin: 0 0 16px; font-family: var(--font-ui); font-size: clamp(28px, 3vw, 40px); font-weight: 600; line-height: 1.3; letter-spacing: -.04em; color: var(--ink); }
-.welcome-desc { margin: 0; font-size: var(--fs-h3); line-height: 1.8; color: var(--text-muted); }
-.suggestions { display: flex; flex-direction: column; gap: 8px; margin: 28px 0 0; }
-.suggestion { display: flex; align-items: center; gap: 12px; position: relative; text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); color: var(--text); padding: 14px 16px; cursor: pointer; box-shadow: var(--shadow-panel, none); transition: background 150ms, border-color 150ms; }
+.welcome-eyebrow { margin-bottom: 14px; color: var(--accent-text); font-size: var(--fs-sm); font-weight: 600; letter-spacing: .04em; }
+.welcome-title { margin: 0 0 14px; font-family: var(--font-ui); font-size: clamp(28px, 3vw, 38px); font-weight: 600; line-height: 1.3; letter-spacing: -.035em; color: var(--ink); }
+.welcome-desc { margin: 0; max-width: 600px; font-size: var(--fs-h3); line-height: 1.75; color: var(--text-muted); }
+.suggestions { display: flex; flex-direction: column; gap: 8px; margin: 26px 0 0; }
+.suggestion { display: flex; align-items: center; gap: 12px; position: relative; text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: transparent; color: var(--text); padding: 12px 14px; cursor: pointer; transition: background 150ms, border-color 150ms; }
 .suggestion:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 .suggestion:hover .suggestion-copy > span,
 .suggestion:hover .suggestion-arrow { color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover)); }
@@ -1194,32 +1206,30 @@ onMounted(async () => {
 .rail-meta dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .rail-link { display: inline-flex; margin-top: 14px; color: var(--accent-text); font-size: var(--fs-sm); text-decoration: none; }
 .rail-link:hover { text-decoration: underline; text-underline-offset: 3px; }
-.composer-wrap { flex: 0 0 auto; width: min(840px, 100%); align-self: center; padding: 16px 32px 20px; }
-.is-empty .composer-wrap { width: min(1180px, 100%); margin-bottom: 0; padding: 24px 40px 48px; }
+.composer-wrap { flex: 0 0 auto; width: min(840px, 100%); align-self: center; padding: 12px 32px 18px; }
+.is-empty .composer-wrap { width: min(1180px, 100%); margin-bottom: 0; padding: 24px 40px 40px; }
 .is-empty .composer { max-width: none; }
-.composer { background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 16px; box-shadow: var(--shadow-panel, var(--sh-hard)); transition: border-color 150ms, box-shadow 150ms; }
+.composer { background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: 12px 14px; transition: border-color 150ms, box-shadow 150ms; }
 .composer:focus-within { border-color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent-soft); }
 .composer-input { position: relative; }
-.composer textarea { display: block; width: 100%; min-height: 56px; border: none; outline: none; resize: none; background: transparent; font-family: var(--font-ui); font-size: var(--fs-h2); line-height: 1.75; color: var(--text); padding: 4px; max-height: 160px; }
+.composer textarea { display: block; width: 100%; min-height: 50px; border: none; outline: none; resize: none; background: transparent; font-family: var(--font-ui); font-size: var(--fs-h3); line-height: 1.7; color: var(--text); padding: 4px; max-height: 160px; }
 .composer textarea::placeholder { color: var(--text-muted); }
-.ghost-text { position: absolute; inset: 0; padding: 4px; font-size: var(--fs-h2); line-height: 1.75; color: var(--text-muted); pointer-events: none; }
-.composer-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 4px 0; color: var(--text-muted); font-size: var(--fs-sm); }
-.followups { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding: 8px 4px 0; border-top: 1px dashed var(--border); }
-.followups-label { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: var(--fs-cap); font-weight: 700; color: var(--text-muted); letter-spacing: .04em; }
-.followups-ico { color: var(--accent-2); font-size: var(--fs-cap); }
+.ghost-text { position: absolute; inset: 0; padding: 4px; font-size: var(--fs-h3); line-height: 1.7; color: var(--text-muted); pointer-events: none; }
+.composer-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 9px 4px 0; color: var(--text-muted); font-size: var(--fs-cap); }
+.followups { display: flex; flex-direction: column; gap: 8px; margin-top: -8px; padding: 0 2px; }
+.followups-label { color: var(--text-muted); font-size: var(--fs-cap); font-weight: 500; }
 .followups-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .followup {
   display: inline-flex; align-items: flex-start; gap: 6px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--r-sm); background: var(--bg); color: var(--text);
-  font-family: var(--font-sans); font-size: var(--fs-md);
-  padding: 7px 13px; cursor: pointer; text-align: left; line-height: 1.4;
-  transition: transform 130ms cubic-bezier(.2,.8,.2,1), background 130ms, color 130ms, border-color 130ms;
+  border: 1px solid var(--border);
+  border-radius: var(--r-full); background: transparent; color: var(--text);
+  font-family: var(--font-sans); font-size: var(--fs-sm);
+  padding: 6px 11px; cursor: pointer; text-align: left; line-height: 1.5;
+  transition: background 130ms, color 130ms, border-color 130ms;
 }
-.followup-arrow { flex: none; color: var(--accent-2); font-weight: 700; transition: color 130ms; }
+.followup-arrow { flex: none; color: var(--accent-text); }
 .followup-label { min-width: 0; overflow-wrap: anywhere; }
-.followup:hover { transform: translate(-1px, -1px); --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-color: var(--border-strong); }
-.followup:hover .followup-arrow { color: var(--accent-ink); }
+.followup:hover { background: var(--bg-hover); border-color: var(--border-strong); }
 
 .img-preview { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 6px 8px; }
 .img-thumb { position: relative; }
@@ -1235,17 +1245,17 @@ border-radius: var(--r-sm); }
 }
 .attach-err { padding: 0 6px 6px; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--danger); }
 
-.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; }
+.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 8px; }
 .bar-left { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .bar-right { display: flex; gap: 8px; flex: 0 0 auto; }
 .tool-btn { width: 36px; height: 36px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .tool-btn:hover { color: var(--accent-text); background: var(--bg-hover); }
-.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; padding: 6px 10px; cursor: pointer; transition: background 150ms, color 150ms; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; padding: 5px 9px; cursor: pointer; transition: background 150ms, color 150ms; }
 .chip:hover { background: var(--bg-hover); color: var(--ink); }
 .chip.on { background: var(--accent-soft); color: var(--accent-text); }
 .chip.on::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .chip.native { cursor: default; }
-.send-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600; padding: 8px 16px; cursor: pointer; transition: background 150ms; }
+.send-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600; padding: 7px 14px; cursor: pointer; transition: background 150ms; }
 .send-btn:hover:not(:disabled) { background: var(--accent-deep); }
 .send-btn:disabled { background: var(--bg-hover); color: var(--text-muted); cursor: not-allowed; }
 .send-btn.stop { background: var(--bg-raised); color: var(--danger); border-color: var(--danger); }
@@ -1256,8 +1266,8 @@ border-radius: var(--r-sm); }
   position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: var(--bg);
   font-family: var(--font-mono); font-size: var(--fs-sm);
-  padding: 10px 18px; border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm); box-shadow: var(--sh-hard-sm);
+  padding: 10px 16px; border: 1px solid var(--edge-ink);
+  border-radius: var(--r-md); box-shadow: 0 4px 16px rgba(0, 0, 0, .14);
   z-index: 200; max-width: 70vw;
 }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, -8px); }
@@ -1267,24 +1277,23 @@ border-radius: var(--r-sm); }
 .wf-orphan {
   flex: 0 0 auto;
   display: flex; align-items: center; gap: 12px;
-  margin: 0 28px 10px; padding: 12px 16px;
-  border: 2px solid var(--amber); background: color-mix(in srgb, var(--amber) 10%, transparent);
-  font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text);
+  margin: 0 28px 10px; padding: 10px 12px;
+  border: 1px solid var(--amber); border-radius: var(--r-md); background: color-mix(in srgb, var(--amber) 8%, transparent);
+  font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--text);
 }
-.wf-orphan-glyph { color: var(--amber); font-size: var(--fs-h3); }
 .wf-orphan-body { flex: 1; min-width: 0; }
 .wf-orphan-err { color: var(--danger); margin-top: 3px; }
 .wf-orphan-btn {
   flex: 0 0 auto;
-  border: var(--edge-w-strong) solid var(--edge-ink);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-sm); background: var(--bg-raised); color: var(--text);
-  font-family: var(--font-mono); font-size: var(--fs-sm); padding: 6px 12px; cursor: pointer;
+  font-family: var(--font-ui); font-size: var(--fs-sm); padding: 6px 12px; cursor: pointer;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .wf-orphan-btn:hover { background: var(--ink); color: var(--bg); }
 .wf-orphan-btn.danger:hover { background: var(--danger); border-color: var(--danger); color: var(--danger-ink); }
 .wf-orphan-btn:disabled { opacity: .55; cursor: default; }
-.gate-hint { flex: 0 0 auto; margin: 0 28px 8px; text-align: center; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--amber); }
+.gate-hint { flex: 0 0 auto; margin: 0 28px 8px; text-align: center; font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--amber); }
 .composer.blocked { opacity: .7; }
 .composer.blocked textarea { pointer-events: none; }
 
@@ -1307,7 +1316,7 @@ border-radius: var(--r-sm); }
 @media (max-width: 600px) {
   .ask-topbar { padding: 8px 12px; gap: 8px; }
   .tb-left { gap: 8px; }
-  .tb-sub, .tb-usage, .composer-shortcut { display: none; }
+  .tb-usage, .composer-shortcut { display: none; }
   .chat-col { padding: 24px 20px; }
   .home-layout { padding: 28px 20px 8px; gap: 24px; }
   .home-rail { display: none; }

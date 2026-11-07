@@ -143,7 +143,7 @@ onMounted(() => { void load() })
 .adapter-error { margin: 0; color: var(--danger); }
 .adapter-grid { display: grid; gap: 5px; }
 .adapter-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
-.adapter-item:hover { border-color: var(--border-strong); background: var(--bg-selected); box-shadow: 0 3px 10px rgba(35,52,84,.06); }
+.adapter-item:hover { border-color: var(--border-strong); background: var(--bg-selected); box-shadow: var(--mi-shadow-control); }
 .adapter-item div { display: grid; gap: 2px; min-width: 0; }.adapter-item small { overflow-wrap: anywhere; }
 .adapter-code { grid-column: 1 / -1; width: 100%; color: var(--text-muted); }.adapter-code summary { cursor: pointer; color: var(--accent); }.adapter-code small { display: block; margin-top: 4px; }.adapter-code pre { max-height: 180px; overflow: auto; margin: 5px 0 0; padding: 6px; white-space: pre-wrap; font: 10px/1.45 var(--font-mono); color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 5px; }.adapter-code .adapter-diff { color: var(--text); border-color: var(--accent); }
 .adapter-item > span { flex: 0 0 auto; font-size: var(--fs-cap); border: 1px solid currentColor; border-radius: 99px; padding: 1px 6px; }.on, .ok { color: var(--green); background: rgba(52,168,112,.05); }.off, .bad { color: var(--danger); background: rgba(214,78,78,.05); }

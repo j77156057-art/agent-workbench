@@ -275,7 +275,7 @@ function connectorGuide(s: McpServer) {
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  box-shadow: 0 14px 38px rgba(35,52,84,.2);
+  box-shadow: var(--mi-shadow-pop);
   padding: 10px 12px;
   z-index: 60;
   animation: cd-pop-in .2s cubic-bezier(.2,.8,.2,1) both;

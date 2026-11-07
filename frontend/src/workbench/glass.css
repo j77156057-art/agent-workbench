@@ -69,7 +69,7 @@ html[data-material='glass'] {
   --glass-shadow-contact: 0 1px 2px color-mix(in srgb, var(--ink) 14%, transparent);
   --glass-shadow-float: 0 8px 28px -6px color-mix(in srgb, var(--ink) 26%, transparent),
                           0 20px 48px -12px color-mix(in srgb, var(--ink) 18%, transparent);
-  --glass-inset: inset 0 1px 0 color-mix(in srgb, #fff 60%, transparent),
+  --glass-inset: inset 0 1px 0 color-mix(in oklch, var(--mi-text) 32%, transparent),
                  inset 0 -1px 0 color-mix(in srgb, var(--ink) 10%, transparent);
 
   /* — 光标高光与视差（由 glassPointer.ts 写入）—
@@ -92,21 +92,6 @@ html[data-material='glass'] {
      模糊失效后，底下的内容会直接透上来抢注意力（文字叠文字）。
      所以不支持时必须把 alpha 顶上去，宁可"像不透明"也不能"花"。 */
   --glass-fallback-alpha: 0.94;
-}
-
-/* 深色皮肤下的微调：高光要压低（深色底上的白描边本来就显眼），
-   阴影要加重（深色底上看不出投影，玻璃会"浮不起来"） */
-html[data-material='glass'][data-skin='graphite'] {
-  --glass-highlight: 0.34;
-  --glass-shadow-contact: 0 1px 2px rgba(0, 0, 0, .5);
-  --glass-shadow-float: 0 10px 30px -6px rgba(0, 0, 0, .62),
-                         0 24px 54px -12px rgba(0, 0, 0, .5);
-  --glass-inset: inset 0 1px 0 rgba(255, 255, 255, .22),
-                 inset 0 -1px 0 rgba(0, 0, 0, .3);
-  --glass-d1-alpha: 0.72;
-  --glass-d2-alpha: 0.54;
-  --glass-d3-alpha: 0.42;
-  --glass-fallback-alpha: 0.96;
 }
 
 /* ---------- ② 玻璃基元 ---------- */
@@ -178,7 +163,7 @@ html[data-material='glass'] :is(.wb-card, .acp-panel, .acp-stage-content, .ov-gr
   background: radial-gradient(
     420px circle at
     calc(50% + var(--glass-x) * 34%) calc(50% + var(--glass-y) * 34%),
-    color-mix(in srgb, #fff calc(var(--glass-highlight) * 42%), transparent) 0%,
+    color-mix(in oklch, var(--mi-text) calc(var(--glass-highlight) * 32%), transparent) 0%,
     transparent 62%
   );
   opacity: var(--glass-p);
@@ -223,16 +208,6 @@ html[data-material='glass'] {
       color-mix(in srgb, var(--bg-hover) 100%, transparent) 100%);
   background-attachment: fixed;
 }
-/* 深色皮肤下底色要更深，色晕才不明显（否则整页发灰） */
-html[data-material='glass'][data-skin='graphite'] {
-  background-image:
-    radial-gradient(120% 90% at 12% 8%,
-      color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 55%),
-    radial-gradient(100% 80% at 88% 92%,
-      color-mix(in srgb, #000 26%, transparent) 0%, transparent 60%),
-    linear-gradient(168deg, #101318 0%, #191d24 100%);
-}
-
 /* ---------- ⑤ 按钮与输入框：薄玻璃 ----------
    按钮不加大模糊（要能读清字），只给半透 + 内高光；
    输入框反而要更实一点，否则输入的文字和底下的内容会互相干扰。

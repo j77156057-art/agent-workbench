@@ -276,7 +276,7 @@ onBeforeUnmount(() => {
 .lb-clear:hover { color: var(--text); }
 .lb-spin {
   width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto;
-  border: 2px solid #cfd9ea; border-top-color: var(--accent);
+  border: 2px solid var(--mi-border-strong); border-top-color: var(--accent);
   animation: lbspin .7s linear infinite;
 }
 @keyframes lbspin { to { transform: rotate(360deg); } }

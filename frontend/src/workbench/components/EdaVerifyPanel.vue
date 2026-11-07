@@ -712,7 +712,7 @@ defineExpose({ show })
   position: fixed; right: 16px; top: 64px; width: 640px; max-width: calc(100vw - 32px);
   max-height: calc(100vh - 80px); overflow-y: auto; padding: 12px 14px;
   background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 8px;
-  z-index: 300; font-size: var(--fs-sm); line-height: 1.6; box-shadow: 0 12px 32px rgba(35,52,84,.16);
+  z-index: 300; font-size: var(--fs-sm); line-height: 1.6; box-shadow: var(--mi-shadow-pop);
 }
 /* 常驻（docked）：被 teleport 进主区 host 槽，去掉固定弹层的定位/尺寸/阴影，内联填充父容器。
    animation: none 必须——弹层入场动画的 to 帧会钉住 transform，静态 transform:none 压不住它。 */
@@ -726,7 +726,7 @@ defineExpose({ show })
 .ev-spacer { flex: 1; }
 .ev-link { background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: var(--fs-cap); }
 .ev-note { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent-text); font-size: var(--fs-cap); }
-.ev-note code { background: rgba(0,0,0,.06); padding: 0 3px; border-radius: 3px; }
+.ev-note code { background: var(--mi-bg); padding: 0 3px; border-radius: 3px; }
 .ev-presets { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .ev-sub { color: var(--text-muted); font-size: var(--fs-cap); }
 .ev-chip { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 12px; font-size: var(--fs-cap); padding: 2px 9px; cursor: pointer; }
@@ -779,7 +779,7 @@ button:disabled { opacity: .5; cursor: default; }
 .ev-esc { color: var(--amber); }
 .ev-reasons { list-style: none; margin: 6px 0 0; padding: 0; }
 .ev-reasons li { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
-.ev-rs-tag { background: rgba(0,0,0,.06); border-radius: 8px; padding: 0 6px; font-size: var(--fs-cap); color: var(--text-muted); }
+.ev-rs-tag { background: var(--mi-bg); border-radius: 8px; padding: 0 6px; font-size: var(--fs-cap); color: var(--text-muted); }
 .ev-rs { font-size: var(--fs-cap); color: var(--text); }
 .ev-exec { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border-strong); font-size: var(--fs-cap); color: var(--text-muted); }
 .ev-prov-line { margin-top: 4px; }
@@ -787,7 +787,7 @@ button:disabled { opacity: .5; cursor: default; }
 .ev-rollback { margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--border-strong); }
 .ev-rollback-h { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .ev-rollback-badge { background: rgba(224,72,79,.14); color: var(--danger); border-radius: 8px; padding: 1px 8px; font-size: var(--fs-cap); font-weight: 600; }
-.ev-rollback p code { background: rgba(0,0,0,.06); padding: 0 3px; border-radius: 3px; }
+.ev-rollback p code { background: var(--mi-bg); padding: 0 3px; border-radius: 3px; }
 .ev-btn-rollback { border-color: var(--danger); color: var(--danger); }
 .ev-btn-rollback:hover:not(:disabled) { background: rgba(224,72,79,.10); }
 

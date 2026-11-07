@@ -338,7 +338,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding: 16px 18px 0;
   background: var(--bg-raised);
   border-left: 1px solid var(--border-2);
-  box-shadow: -18px 0 50px rgba(35, 52, 84, .18);
+  box-shadow: var(--mi-shadow-pop);
   animation: bj-in .18s ease-out;
 }
 .bj-head {
@@ -615,9 +615,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   .bj-dot.busy, .bj-live i { animation: none; }
   .bj-progress i { transition: none; }
 }
+/* v3 技术信息扫读：任务索引与日志详情分栏，事实按等宽网格对齐。 */
+.bj-drawer { width: min(880px, 100vw); gap: 12px; }
+.bj-body { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; }
+.bj-list { max-height: none; min-height: 0; padding: 0 16px 0 0; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; }
+.bj-item { padding: 9px 8px; border-left: 2px solid transparent; border-radius: 5px; }
+.bj-item.on { border-left-color: var(--accent); }
+.bj-cmd { line-height: 1.5; }
+.bj-detail { padding-bottom: 14px; }
+.bj-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 16px; font-family: var(--ui2-font-mono, var(--font-code)); }
+.bj-logs { min-height: 260px; }
+@media (max-width: 860px) {
+  .bj-body { grid-template-columns: 200px minmax(0, 1fr); gap: 12px; }
+}
+
 @media (max-width: 720px) {
   .bj-drawer { width: 100vw; padding: 12px 12px 0; }
-  .bj-list { max-height: 34%; }
+  .bj-body { grid-template-columns: 1fr; }
+  .bj-list { max-height: 34%; padding-right: 0; border-right: 0; }
   .bj-sub { font-size: var(--fs-cap); }
 }
 </style>

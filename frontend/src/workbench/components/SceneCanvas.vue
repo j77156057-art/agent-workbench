@@ -16,6 +16,7 @@ import {
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
+import { reducedMotionQuery } from '../composables/motionPreference'
 import type { Node, Edge, NodeChange, EdgeChange, VueFlowStore } from '@vue-flow/core'
 // Vue Flow 的样式不带在包里，必须显式引（漏了不会报错，只会让 .vue-flow__node
 // 退化成 position:static —— 画布看起来"有东西"但节点其实堆成一列）。
@@ -297,7 +298,7 @@ function scheduleFitView() {
       const store = vf.value
       const el = canvasEl.value
       if (!store || !el || !nodes.value.length || el.clientWidth < 2 || el.clientHeight < 2) return
-      try { store.fitView({ padding: 0.18, duration: 180 }) } catch { /* 节点尚未完成测量时由 ResizeObserver 重试 */ }
+      try { store.fitView({ padding: 0.18, duration: reducedMotionQuery.matches ? 0 : 180 }) } catch { /* 节点尚未完成测量时由 ResizeObserver 重试 */ }
     })
   })
 }

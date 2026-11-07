@@ -483,7 +483,7 @@ function providerLabel(p: string) {
   background: var(--bg);
   border: 1px solid var(--border-2);
   border-radius: 14px;
-  box-shadow: 0 22px 60px rgba(31, 45, 72, .28);
+  box-shadow: var(--mi-shadow-pop);
   display: flex; flex-direction: column; overflow: hidden; animation: fl-rise .22s cubic-bezier(.2,.8,.2,1) both;
 }
 .fl-head {
@@ -519,7 +519,7 @@ function providerLabel(p: string) {
   flex: 1; border: none; background: transparent; font: inherit; font-size: var(--fs-sm); font-weight: 600;
   color: var(--text-muted); padding: 5px 0; border-radius: 6px; cursor: pointer;
 }
-.fl-seg button.on { background: var(--bg-raised); color: var(--accent-text); box-shadow: 0 1px 4px rgba(35,52,84,.12); }
+.fl-seg button.on { background: var(--bg-raised); color: var(--accent-text); box-shadow: var(--mi-shadow-control); }
 .fl-filter input {
   /* 控件边界走 --border-graphic 档：1.4.11 的 3:1 落在输入框上。
      原来用 --border-2（容器档），zinc 下只有 1.36:1、paper 下 1.38:1 —— 画布探针量出来了。 */
@@ -533,7 +533,7 @@ function providerLabel(p: string) {
   text-align: left; border: 1px solid var(--border-2); background: var(--bg-raised); border-radius: 10px;
   padding: 8px 10px; cursor: pointer; font: inherit; display: flex; flex-direction: column; gap: 3px; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
-.fl-turn:hover { border-color: var(--border); background: var(--bg-selected); transform: translateX(2px); box-shadow: 0 3px 9px rgba(35,52,84,.08); }.fl-turn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fl-turn:hover { border-color: var(--border); background: var(--bg-selected); transform: translateX(2px); box-shadow: var(--mi-shadow-control); }.fl-turn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fl-turn.on { border-color: var(--accent); background: var(--bg-selected); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
 .fl-turn-row { display: flex; align-items: center; justify-content: space-between; }
 .fl-turn-time { font-size: var(--fs-cap); color: var(--text-muted); font-variant-numeric: tabular-nums; }
@@ -564,9 +564,9 @@ function providerLabel(p: string) {
 /* Vue Flow 自定义节点 */
 .fl-node {
   background: var(--bg-raised); border: 1.5px solid var(--border-2); border-radius: 12px;
-  padding: 10px 12px; box-shadow: 0 3px 10px rgba(31, 45, 72, .08); transition: box-shadow .16s ease, transform .16s ease, border-color .16s ease;
+  padding: 10px 12px; box-shadow: var(--mi-shadow-control); transition: box-shadow .16s ease, transform .16s ease, border-color .16s ease;
 }
-.fl-node:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(31,45,72,.14); }
+.fl-node:hover { transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }
 .fl-n-head { display: flex; align-items: center; gap: 8px; }
 .fl-n-head b { font-size: var(--fs-sm); color: var(--text); }
 .fl-n-glyph {

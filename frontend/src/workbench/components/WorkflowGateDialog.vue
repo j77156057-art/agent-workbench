@@ -341,7 +341,7 @@ function submitRevise() {
   background: var(--bg-raised); padding: 10px 12px; cursor: pointer;
   transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease;
 }
-.wg-option:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(35,52,84,.08); }
+.wg-option:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }
 .wg-option:active:not(:disabled) { transform: scale(.995); }
 .wg-option:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wg-option:has(.wg-tag) { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 4%, var(--bg-raised)); }
@@ -381,7 +381,7 @@ textarea:focus, input:focus, select:focus { outline: none; border-color: var(--a
   border: 1px solid var(--border-strong); background: var(--bg-raised);
   color: var(--text); font-size: var(--fs-sm); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
-.wg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(35,52,84,.08); }
+.wg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }
 .wg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .wg-btn:disabled { opacity: .55; cursor: default; }
 .wg-primary { --btn-fill: var(--accent); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }

@@ -238,11 +238,17 @@ function voiceServicePayload(kind: 'stt' | 'tts') {
   }
 }
 
-// AI 越界访问模式：safe=仅限项目内；high=允许受控越界读写（须配置白名单目录）
+// AI 写权限：safe=仅项目内；high=允许非敏感外部路径，无目录白名单
 const accessMode = ref<'safe' | 'high'>('safe')
+const desktopApprovalMode = ref<'strict' | 'user' | 'model'>('strict')
+const mcpUnprovenMode = ref<'allow' | 'reject'>('reject')
 const thinkingCapability = ref('')
 const visionCapability = ref('')
 const videoCapability = ref('')
+const showDeepSeekSamplingNote = computed(() =>
+  ['deepseek', 'opencode'].includes(provider.value)
+  && ['toggle', 'native'].includes(thinkingCapability.value),
+)
 
 // 命名模型预设：保存多套云端/自定义配置，切换免重填参数与 Key
 const presets = ref<ModelPreset[]>([])
@@ -316,6 +322,8 @@ function hydrateConfig(config: ModelConfigInfo) {
     baseUrl.value = config.custom_base_url || ''
     ctxWindow.value = config.context_window_override ? String(config.context_window_override) : ''
     accessMode.value = config.external_access_mode || 'safe'
+    desktopApprovalMode.value = config.desktop_approval_mode || 'strict'
+    mcpUnprovenMode.value = config.mcp_unproven_mode || 'reject'
     thinkingCapability.value = config.capability?.thinking || 'unknown'
     visionCapability.value = config.capability?.vision || 'unknown'
     videoCapability.value = config.capability?.video || 'unknown'
@@ -553,6 +561,8 @@ async function save() {
       video_capability: videoCapability.value,
       // 越界访问模式：safe/high（与模型切换一并保存，幂等）
       external_access_mode: accessMode.value,
+      desktop_approval_mode: desktopApprovalMode.value,
+      mcp_unproven_mode: mcpUnprovenMode.value,
       // 固定 / 自动模式；自动时附带复杂任务所用云端预设
       llm_mode: llmMode.value,
       auto_cloud_preset_id: llmMode.value === 'auto' ? autoCloudPresetId.value : '',
@@ -575,6 +585,8 @@ async function save() {
     warnings.value = res.warnings || []
     ctxWindow.value = res.context_window_override ? String(res.context_window_override) : ''
     accessMode.value = (res.external_access_mode as 'safe' | 'high') || accessMode.value
+    desktopApprovalMode.value = (res.desktop_approval_mode as 'strict' | 'user' | 'model') || desktopApprovalMode.value
+    mcpUnprovenMode.value = (res.mcp_unproven_mode as 'allow' | 'reject') || mcpUnprovenMode.value
     llmMode.value = res.llm_mode === 'auto' ? 'auto' : 'fixed'
     autoCloudPresetId.value = res.auto_cloud_preset_id || ''
     presets.value = res.model_presets || presets.value
@@ -986,24 +998,68 @@ async function save() {
         </label>
       </div>
       <p class="ms-hint ms-cap-help">“未知 / 交给 Harness”不会把图片直接发送给当前模型；需配置 DOCMIND_VISION_MODEL 才会自动生成图片观察。</p>
+      <p v-if="showDeepSeekSamplingNote" class="ms-hint ms-cap-help">
+        思考模式开启时，<code>temperature</code>、<code>presence_penalty</code>、<code>frequency_penalty</code>
+        不生效；请求会省略这些采样参数，关闭思考后恢复发送，不会改动已保存的默认值。
+      </p>
 
       <div class="ms-sep"></div>
-      <label class="ms-label">AI 越界访问权限</label>
-      <div class="ms-seg" role="radiogroup" aria-label="越界访问模式">
+      <label class="ms-label">AI 写权限</label>
+      <div class="ms-seg" role="radiogroup" aria-label="写权限模式">
         <button type="button" class="ms-seg-opt" :class="{ 'ms-seg-on': accessMode === 'safe' }"
                 :disabled="saving" @click="accessMode = 'safe'">
-          <span class="ms-seg-name">安全模式</span>
-          <span class="ms-seg-desc">仅限当前项目内读写</span>
+          <span class="ms-seg-name">仅项目内写</span>
+          <span class="ms-seg-desc">默认，项目外一律拒绝</span>
         </button>
         <button type="button" class="ms-seg-opt" :class="{ 'ms-seg-on ms-seg-high': accessMode === 'high' }"
                 :disabled="saving" @click="accessMode = 'high'">
-          <span class="ms-seg-name">高权限模式</span>
-          <span class="ms-seg-desc">可越界读写其他项目</span>
+          <span class="ms-seg-name">允许写外部</span>
+          <span class="ms-seg-desc">项目外可写，敏感文件仍拒绝</span>
         </button>
       </div>
       <p class="ms-hint ms-acm-note">
-        高权限模式允许 AI 对 <code>DOCMIND_EXTERNAL_DIRS</code> 白名单内的其他项目进行增删改查；
-        未配置该环境变量时保存会被拒绝。安全模式始终禁止任何项目外访问。
+        不再使用外部目录白名单；原有 DOCMIND_EXTERNAL_DIRS 不参与授权。凭据、私钥等硬拦截在两种模式下都生效。
+      </p>
+
+      <div class="ms-sep"></div>
+      <label class="ms-label">桌面与浏览器审批</label>
+      <div class="ms-seg" role="radiogroup" aria-label="桌面与浏览器审批模式">
+        <button type="button" class="ms-seg-opt" :class="{ 'ms-seg-on': desktopApprovalMode === 'strict' }"
+                :disabled="saving" @click="desktopApprovalMode = 'strict'">
+          <span class="ms-seg-name">每次确认</span>
+          <span class="ms-seg-desc">默认，TTL=0，每个物理动作重新确认</span>
+        </button>
+        <button type="button" class="ms-seg-opt" :class="{ 'ms-seg-on': desktopApprovalMode === 'user' }"
+                :disabled="saving" @click="desktopApprovalMode = 'user'">
+          <span class="ms-seg-name">用户审批</span>
+          <span class="ms-seg-desc">可用性优先，同一动作摘要 30 分钟内不重复询问</span>
+        </button>
+        <button type="button" class="ms-seg-opt" :class="{ 'ms-seg-on ms-seg-high': desktopApprovalMode === 'model' }"
+                :disabled="saving" @click="desktopApprovalMode = 'model'">
+          <span class="ms-seg-name">模型自动审批</span>
+          <span class="ms-seg-desc">模型给出决定与理由后执行</span>
+        </button>
+      </div>
+      <p class="ms-hint ms-acm-note">
+        桌面动作不可逆，默认每次确认最保守；用户审批档需显式选择且会复用 30 分钟审批。覆盖桌面、视觉点击和浏览器动作，审计写入 desktop_approvals.jsonl。
+      </p>
+
+      <div class="ms-sep"></div>
+      <label class="ms-label">MCP 未证明只读</label>
+      <div class="ms-seg" role="radiogroup" aria-label="MCP 未证明只读策略">
+        <button type="button" class="ms-seg-opt" :class="{ 'ms-seg-on': mcpUnprovenMode === 'allow' }"
+                :disabled="saving" @click="mcpUnprovenMode = 'allow'">
+          <span class="ms-seg-name">放行并记录</span>
+          <span class="ms-seg-desc">显式开启后，放行未证明只读调用并标记</span>
+        </button>
+        <button type="button" class="ms-seg-opt" :class="{ 'ms-seg-on ms-seg-high': mcpUnprovenMode === 'reject' }"
+                :disabled="saving" @click="mcpUnprovenMode = 'reject'">
+          <span class="ms-seg-name">拒绝调用</span>
+          <span class="ms-seg-desc">默认，无法静态判定时连接前拒绝</span>
+        </button>
+      </div>
+      <p class="ms-hint ms-acm-note">
+        显式副作用始终拒绝；静态只读规则无法证明的调用不会默默当作只读。
       </p>
 
       <template v-if="meta?.needs_key || isCustom">
@@ -1100,7 +1156,7 @@ async function save() {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 12px 40px rgba(15, 23, 42, .18);
+  box-shadow: var(--mi-shadow-pop);
   padding: 18px 20px 16px;
   display: flex; flex-direction: column; gap: 6px; animation: ms-rise .2s cubic-bezier(.2,.8,.2,1) both; scrollbar-gutter: stable;
 }
@@ -1167,7 +1223,7 @@ async function save() {
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
   cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
-.ms-mini:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(35,52,84,.08); }
+.ms-mini:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }
 .ms-mini:disabled { opacity: .5; cursor: default; }
 .ms-ctx-note { font-size: var(--fs-cap); color: var(--text-faint); }
 .ms-lookup {
@@ -1231,7 +1287,7 @@ async function save() {
   padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
   background: var(--bg); color: var(--text); cursor: pointer; text-align: left; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
-.ms-seg-opt:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 3px 9px rgba(35,52,84,.07); }.ms-seg-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ms-seg-opt:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }.ms-seg-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ms-seg-on { border-color: var(--accent); background: var(--bg-selected); }
 .ms-seg-high.ms-seg-on { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, var(--bg-raised)); }
 .ms-seg-name { font-size: var(--fs-md); font-weight: 600; }
@@ -1274,7 +1330,7 @@ async function save() {
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
   cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
-.ms-btn:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 3px 9px rgba(35,52,84,.08); }.ms-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ms-btn:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }.ms-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ms-primary { --btn-fill: var(--accent); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .ms-primary:disabled { opacity: .5; cursor: default; }
 @keyframes ms-fade { from { opacity: 0; } to { opacity: 1; } }

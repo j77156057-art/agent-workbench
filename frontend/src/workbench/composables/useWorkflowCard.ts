@@ -7,6 +7,7 @@ import {
 } from '../api'
 import type { AcceptanceItem, WorkflowChildTrace, WorkflowEvaluation, WorkflowEvent, WorkflowState, WorkflowStepItem } from '../api'
 import { appEvents } from '../eventBus'
+import { preferredScrollBehavior } from './motionPreference'
 import {
   DIRECT_GATE_STATUSES, EVALUATION_CHECK_LABELS, EVENT_LABELS, GATE_STATUSES, KIND_LABEL,
   STAGES, STATUS_LABEL, STEP_GLYPH, TERMINAL,
@@ -511,7 +512,7 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
     const id = option.task_ids?.[0] || uncertainTaskIds.value[0]
     if (id) focusTask(id)
     else (rootEl.value?.querySelector('.wf-review, .wf-members, .wf-acceptance') || rootEl.value)
-      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      ?.scrollIntoView({ behavior: preferredScrollBehavior(), block: 'center' })
   }
   async function rollbackProject() {
     if (busy.value || !state.value?.project_checkpoint?.id) return
@@ -562,7 +563,7 @@ export function useWorkflowCard(props: WorkflowCardProps, emit: WorkflowCardEmit
     requestAnimationFrame(() => {
       const target = [...(rootEl.value?.querySelectorAll<HTMLElement>('.wf-member') || [])]
         .find(element => element.dataset.taskId === id)
-      ;(target || rootEl.value)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      ;(target || rootEl.value)?.scrollIntoView({ behavior: preferredScrollBehavior(), block: 'center' })
     })
   }
   function onFocusEvent(detail: { workflowId: string; taskId: string }) {

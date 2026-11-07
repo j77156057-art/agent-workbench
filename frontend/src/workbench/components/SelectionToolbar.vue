@@ -91,7 +91,7 @@ function press(_e: MouseEvent) {}
   background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  box-shadow: 0 10px 30px rgba(35, 52, 84, 0.18), 0 0 0 1px rgba(35, 52, 84, 0.08);
+  box-shadow: var(--mi-shadow-pop);
   backdrop-filter: blur(6px);
   user-select: none;
   animation: sel-ai-pop 0.12s ease-out;

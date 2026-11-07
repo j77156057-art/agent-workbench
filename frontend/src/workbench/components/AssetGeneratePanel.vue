@@ -903,7 +903,7 @@ onBeforeUnmount(stopTimer)
 .ag-provider-note { margin: 0; font-size: var(--fs-cap); color: var(--text-faint); }
 
 .ag-primary {
-  border: 1px solid var(--accent-deep); --btn-fill: var(--accent); background: var(--accent); color: #fff; border-radius: 6px;
+  border: 1px solid var(--accent-deep); --btn-fill: var(--accent); background: var(--accent); color: var(--accent-ink); border-radius: 6px;
   padding: 8px 12px; font-size: var(--fs-md); cursor: pointer;
 }
 .ag-primary-cloud { border-color: #7152c9; --btn-fill: #8b6cf0; background: #8b6cf0; }
@@ -944,7 +944,7 @@ onBeforeUnmount(stopTimer)
 .ag-job-state { color: var(--text-muted); }
 .ag-spacer { flex: 1 1 auto; }
 .ag-cancel { border-color: #d88; color: #c23a40; }
-.ag-bar { height: 6px; border-radius: 3px; background: #e7ebf0; overflow: hidden; }
+.ag-bar { height: 6px; border-radius: 3px; background: var(--mi-bg); overflow: hidden; }
 .ag-bar i { display: block; height: 100%; background: var(--accent); transition: width .3s ease; }
 .ag-job-note { margin: 0; font-size: var(--fs-cap); color: var(--text-faint); }
 

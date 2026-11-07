@@ -194,6 +194,15 @@ export interface ChatMsg {
   feedbackSubmitted?: boolean
   /** 结构化「向用户提问 / 请求授权」载荷：存在时渲染成可点选项框。 */
   ask?: ChatAsk
+  /** 最后一条轨迹事件时的正文长度（含尚未提交的当前帧缓冲）。
+   *  仅流式展示使用：其后的 token 才进入最终答案区；正式 final 到达后归零。 */
+  answerStart?: number
+}
+
+/** 最终答案与前置旁白/轨迹正文分离；历史消息没有偏移时直接使用成稿全文。 */
+export function finalAnswerText(msg: { text: string; answerStart?: number }): string {
+  const start = Math.max(0, Math.min(msg.answerStart ?? 0, msg.text.length))
+  return msg.text.slice(start)
 }
 
 /** start_workflow 动作行与其观察由工作流卡片承载，交错流里不重复展示。 */

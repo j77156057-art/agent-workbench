@@ -8,6 +8,7 @@
 <script setup lang="ts">
 /** SpriteSheet 逐帧播放器：按 fps 循环裁剪图集网格绘制到 canvas。 */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useReducedMotion } from '../composables/motionPreference'
 
 const props = withDefaults(defineProps<{
   src: string
@@ -26,6 +27,7 @@ function totalFrames(): number {
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 const error = ref(false)
+const reducedMotion = useReducedMotion()
 let img: HTMLImageElement | null = null
 let raf = 0
 let start = 0
@@ -48,20 +50,30 @@ function draw(now: number) {
         props.frameW, props.frameH, 0, 0, props.frameW, props.frameH)
     }
   }
-  raf = requestAnimationFrame(draw)
+  raf = reducedMotion.value ? 0 : requestAnimationFrame(draw)
 }
 
 function load() {
   cancelAnimationFrame(raf)
   error.value = false
   img = new Image()
-  img.onload = () => { start = performance.now(); raf = requestAnimationFrame(draw) }
+  img.onload = () => {
+    start = performance.now()
+    draw(start)
+  }
   img.onerror = () => { error.value = true }
   img.src = props.src
 }
 
 onMounted(load)
 watch(() => props.src, load)
+watch(reducedMotion, reduced => {
+  cancelAnimationFrame(raf)
+  if (reduced) {
+    start = performance.now()
+    draw(start)
+  } else load()
+})
 onBeforeUnmount(() => cancelAnimationFrame(raf))
 </script>
 
@@ -72,9 +84,9 @@ onBeforeUnmount(() => cancelAnimationFrame(raf))
   height: auto;
   image-rendering: pixelated;
   border: 1px solid var(--border-strong);
-  background: #eef1f5;
+  background: var(--mi-bg-deep);
   border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(35,52,84,.08);
+  box-shadow: var(--mi-shadow-control);
 }
 .sp-err { font-size: var(--fs-cap); color: var(--danger); margin: 0; padding: 4px 7px; border-radius: 5px; background: color-mix(in srgb, var(--danger) 8%, transparent); }
 </style>

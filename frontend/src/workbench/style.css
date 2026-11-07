@@ -1,23 +1,23 @@
-/* Agent 工作台 开发工作台设计系统（浅色亲和版）
-   明亮暖灰底、白色卡片、柔和描边与阴影；分区色作为高饱和强调来源。 */
+/* Agent 工作台设计系统：低亮度观测舱。所有中性色与控件色来自 --mi-* 令牌。 */
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
   /* ===== Agent 工作台 统一设计系统：高级粗野风（neo-brutalism, restrained）=====
      暖骨白底 / 墨黑字 / 单一响亮强调（朱红）/ 硬偏移阴影 / 零圆角。
      仅重定义 token，不改动任何组件结构——全树即时换肤。 */
 
   /* 表面：暖纸 */
-  --bg: #ece7db;
-  --bg-raised: #faf8f2;
-  --bg-hover: #e3dccd;
-  --bg-selected: #f1e7d3;
+  --bg: var(--mi-bg);
+  --surface: var(--mi-surface);
+  --bg-raised: var(--mi-surface-raised);
+  --bg-hover: var(--mi-hover);
+  --bg-selected: var(--mi-selected);
 
   /* 墨与文字 */
-  --ink: #14110f;
-  --text: #14110f;
-  --text-muted: #6b6356;
-  --text-faint: #9a9183;
+  --ink: var(--mi-text);
+  --text: var(--mi-text);
+  --text-muted: var(--mi-text-muted);
+  --text-faint: var(--mi-text-muted);
   /* --text-dim 曾被对话台/连接弹层引用却从没定义过：color: var(--text-dim) 在计算值
      阶段整条失效，字色退回继承父色 —— 那几行"碰巧"看得清，但从来没有一处跟着皮肤走。
      语义是"次级说明文字"，落到 --text-muted 这一档（三套皮里它与 --text-faint 同值，
@@ -25,10 +25,10 @@
   --text-dim: var(--text-muted);
 
   /* 描边：细线用于分隔，墨黑用于结构 */
-  --border: #d9d1c0;
+  --border: var(--mi-border-subtle);
   /* 描边三档：容器 / 强调 / 控件边界。1.4.11 的 3:1 只落在控件边界那一档，
      容器外框与分隔线是装饰性的（1.4.11 对纯装饰图形对象豁免）。分档见 skins.css。 */
-  --border-strong: #14110f;
+  --border-strong: var(--mi-border-strong);
   --border-graphic: var(--border);
   /* 2026-10-02 重构新增：色值归并后需要「淡描边」这一档。
      原来 12 处 var(--border-2)（淡蓝描边）是写死的，换皮肤时不跟随 → 细线框在深色皮肤下
@@ -36,21 +36,21 @@
   --border-2: color-mix(in srgb, var(--accent) 32%, var(--bg-raised));
 
   /* 强调：朱红（唯一响亮色） + 次级沉静蓝 */
-  --accent: #ff4d2e;
-  --accent-2: #1f5fe0;
-  --accent-soft: rgba(255, 77, 46, .12);
+  --accent: var(--mi-accent);
+  --accent-2: var(--mi-accent);
+  --accent-soft: color-mix(in oklch, var(--mi-accent) 12%, transparent);
   /* 深/浅两档强调：主色不够用时按明度取。
      var(--accent-deep) 这类深蓝描边、var(--accent) 这类深蓝按下态都归到 deep 档。 */
-  --accent-deep: #c9301a;
-  --accent-ink: #ffffff;
+  --accent-deep: var(--mi-accent-dim);
+  --accent-ink: var(--mi-accent-ink);
   /* 压在表面上的强调字（不是填色）。四套皮肤各自解算过：纸底的 #ff674d 太亮，
      混 58% 向墨才够 4.5:1。这里是兜底档（未套皮肤的那一帧）。 */
-  --accent-text: color-mix(in srgb, var(--accent) 58%, var(--ink));
+  --accent-text: var(--mi-accent-strong);
 
   /* 状态色 */
-  --danger: #d8453a;
-  --amber: #c8861c;
-  --green: #1c9e66;
+  --danger: var(--mi-danger);
+  --amber: var(--mi-warning);
+  --green: var(--mi-success);
   /* --amber-deep 曾被 7 处引用却从没定义过：color: var(--amber-deep) 在计算值阶段
      整条失效，color 退回 inherit，于是"手动""已修改""脏状态"这些本该是琥珀色的
      标记一直显示成父级继承色。
@@ -59,41 +59,41 @@
      混 65% 向 --ink 才是"深一档"的字色：浅色皮上压暗、深色皮上提亮，
      两边都离 4.5:1 更远（65% 是按四套皮肤算出来的最坏值：纸底那套亮琥珀
      #ff674d 承不住白字，只有 65% 起步才够）。 */
-  --amber-deep: color-mix(in srgb, var(--amber) 65%, var(--ink));
-  --green-deep: color-mix(in srgb, var(--green) 65%, var(--ink));
-  --accent-2-deep: color-mix(in srgb, var(--accent-2) 65%, var(--ink));
+  --amber-deep: var(--mi-warning);
+  --green-deep: var(--mi-success);
+  --accent-2-deep: var(--mi-accent-dim);
   /* 状态色上的文字色（--accent-ink 同族）。默认档的绿/ amber 不够暗，
      白字压上去只有 3.42 / 3.05，必须用 ink 档 */
-  --green-ink: var(--ink);
-  --amber-ink: var(--ink);
-  --accent-2-ink: #ffffff;
+  --green-ink: var(--mi-bg-deep);
+  --amber-ink: var(--mi-bg-deep);
+  --accent-2-ink: var(--mi-accent-ink);
   /* default 档的 --danger #d8453a 压白字只有 4.35、压 ink 4.33 —— 两个方向都不到
      4.5，要治得改填色。这里给白是「最接近」而非「达标」，且 default 只在挂载前
      那一帧生效（两页 main.ts 都在 mount 前 applyStoredSkin），三套真皮各自覆写。 */
-  --danger-ink: #ffffff;
+  --danger-ink: var(--mi-bg-deep);
   /* 2026-10-02 色值重构：色相归并后需要「淡底」档（原来这些淡底是写死的，
      换皮肤时不跟随 —— 深色皮肤下会在深底上留一片浅块）。 */
-  --amber-soft: #fdf6e7;
-  --green-soft: #e8f8f4;
-  --danger-soft: #fdeaeb;
+  --amber-soft: color-mix(in oklch, var(--mi-warning) 12%, var(--mi-surface));
+  --green-soft: color-mix(in oklch, var(--mi-success) 12%, var(--mi-surface));
+  --danger-soft: color-mix(in oklch, var(--mi-danger) 12%, var(--mi-surface));
   /* 「原生工具调用」的功能标识色。**原来叫 --violet 且从未定义过**，
      5 处 `var(--violet, #7c5cd6)` 一直在走兜底的紫 —— 违反项目 P0「禁紫粉」。
      改为「工具色」令牌并定成青碧（与朱红区分得开，且 8 套皮肤都能过 AA）。 */
-  --tool: #1f6f7a;
+  --tool: var(--mi-accent-dim);
 
   /* 阴影：硬偏移（粗野签名）；soft 改作墨色平线，避免小元素被硬影压垮 */
-  --shadow-soft: 0 2px 0 rgba(20, 17, 15, .08);
-  --shadow-pop: 6px 6px 0 var(--ink);
-  --sh-hard: 4px 4px 0 var(--ink);
-  --sh-hard-sm: 3px 3px 0 var(--ink);
-  --sh-hard-lg: 8px 8px 0 var(--ink);
+  --shadow-soft: var(--mi-shadow-control);
+  --shadow-pop: var(--mi-shadow-pop);
+  --sh-hard: var(--mi-shadow-control);
+  --sh-hard-sm: var(--mi-shadow-control);
+  --sh-hard-lg: var(--mi-shadow-pop);
 
   /* 圆角：统一为零 */
-  --radius-sm: 0;
-  --radius-md: 0;
-  --radius-lg: 0;
-  --radius-xl: 0;
-  --radius-pill: 0;
+  --radius-sm: var(--mi-radius-sm);
+  --radius-md: var(--mi-radius-md);
+  --radius-lg: var(--mi-radius-lg);
+  --radius-xl: var(--mi-radius-lg);
+  --radius-pill: var(--mi-radius-pill);
   --modal-radius: 0;
   /* 模态阴影属于"阴影族"，不属于"墨色族"：以前直接写 var(--ink)，
      于是 graphite 的弹层带出一条 8px 浅色硬影（那套皮肤里其它阴影全是 #05070a 暗色），
@@ -119,7 +119,7 @@
 
   /* 字体：grotesque 作 UI/标题，等宽作标签代码 */
   --font-ui: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
-  --font-display: 'Archivo Black', 'Space Grotesk', 'Noto Sans SC', sans-serif;
+  --font-display: var(--mi-font-ui);
   --font-mono: 'Space Mono', ui-monospace, 'JetBrains Mono', Consolas, monospace;
   /* 代码面等宽（2026-10-29 收口）：编辑器 / diff / 文件预览 / 场景图里成段的
      代码文本走这一套，不走 --font-mono。理由：Space Mono 是展示用等宽，字幅
@@ -136,18 +136,18 @@
   --font-sans: var(--font-ui);
 
   /* ---------- MCP 自动连接链路 Token（与 docs/mcp-autoconnect/design-tokens.css 同源） ---------- */
-  --radius-sm: 0;
-  --radius-md: 0;
-  --radius-lg: 0;
-  --radius-xl: 0;
-  --radius-pill: 0;
+  --radius-sm: var(--mi-radius-sm);
+  --radius-md: var(--mi-radius-md);
+  --radius-lg: var(--mi-radius-lg);
+  --radius-xl: var(--mi-radius-lg);
+  --radius-pill: var(--mi-radius-pill);
 
   --trust-verified-fg: var(--green);
-  --trust-verified-bg: rgba(28, 158, 102, .12);
+  --trust-verified-bg: color-mix(in oklch, var(--mi-success) 12%, transparent);
   --trust-community-fg: var(--amber);
-  --trust-community-bg: rgba(200, 129, 28, .12);
+  --trust-community-bg: color-mix(in oklch, var(--mi-warning) 12%, transparent);
   --trust-unknown-fg: var(--text-faint);
-  --trust-unknown-bg: rgba(154, 145, 131, .14);
+  --trust-unknown-bg: color-mix(in oklch, var(--mi-text-muted) 12%, transparent);
 
   --diag-done: var(--green);
   --diag-fail: var(--danger);
@@ -419,7 +419,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-region-dot {
   width: 8px; height: 8px; border-radius: var(--r-full, 999px);
   background: var(--green);
-  box-shadow: 0 0 0 3px #1c9e661f;
+  box-shadow: 0 0 0 3px var(--green-soft);
 }
 .wb-region-pill.off .wb-region-dot { background: var(--text-faint); box-shadow: none; }
 
@@ -441,7 +441,7 @@ html[data-material='glass'] .wb-proj-notice {
   font-size: var(--fs-sm);
   letter-spacing: .03em;
   color: var(--amber);
-  background: rgba(200, 129, 28, .12);
+  background: var(--amber-soft);
   border: var(--edge-w-strong, 2px) solid var(--amber);
   border-radius: var(--r-sm);
   box-shadow: var(--sh-hard-sm);
@@ -575,8 +575,8 @@ html[data-material='glass'] .wb-proj-notice {
 /* AI 引用定位闪烁 */
 .ft-flash { animation: ft-flash 1.8s ease-out 1; }
 @keyframes ft-flash {
-  0%   { background: rgba(245, 181, 66, .42); box-shadow: inset 0 0 0 1px rgba(200, 129, 28, .75); }
-  60%  { background: rgba(245, 181, 66, .16); box-shadow: inset 0 0 0 1px rgba(200, 129, 28, .32); }
+  0%   { background: color-mix(in oklch, var(--amber) 42%, transparent); box-shadow: inset 0 0 0 1px var(--amber); }
+  60%  { background: var(--amber-soft); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--amber) 32%, transparent); }
   100% { background: transparent; box-shadow: none; }
 }
 
@@ -652,7 +652,7 @@ html[data-material='glass'] .wb-proj-notice {
   line-height: 15px;
   font-weight: 600;
   color: var(--accent-2);
-  background: rgba(122, 90, 248, .09);
+  background: var(--accent-soft);
   border-radius: 4px;
   padding: 0;
   opacity: 0;
@@ -661,19 +661,19 @@ html[data-material='glass'] .wb-proj-notice {
 .ft-row:hover .ft-tagbadge,
 .ft-row.ft-selected .ft-tagbadge,
 .ft-row.ft-located .ft-tagbadge { max-width: 110px; padding: 0 5px; opacity: 1; }
-.ft-tagbadge.ft-tag-manual { color: var(--amber-deep); background: rgba(200, 129, 28, .1); }
+.ft-tagbadge.ft-tag-manual { color: var(--amber-deep); background: var(--amber-soft); }
 .ft-tagbadge.ft-tag-stale { opacity: .55; }
 .ft-tagbadge + .ft-gitdot { margin-left: 5px; }
 
 /* 阶段 1：大白话定位命中行持续高亮（琥珀色描边，与一次性闪烁区分） */
 .ft-located {
-  background: rgba(245, 181, 66, .12);
-  box-shadow: inset 0 0 0 1px rgba(200, 129, 28, .45);
+  background: var(--amber-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--amber) 45%, transparent);
 }
-.ft-located:hover { background: rgba(245, 181, 66, .18); }
+.ft-located:hover { background: color-mix(in oklch, var(--amber) 18%, var(--mi-surface)); }
 .ft-located.ft-selected {
   background: var(--bg-selected) !important;
-  box-shadow: inset 0 0 0 1px var(--accent), inset 3px 0 0 rgba(200, 129, 28, .8);
+  box-shadow: inset 0 0 0 1px var(--accent), inset 3px 0 0 var(--amber);
 }
 
 .ft-empty, .ft-truncated {
@@ -739,11 +739,11 @@ html[data-material='glass'] .wb-proj-notice {
   letter-spacing: 0.06em;
   font-size: var(--fs-cap);
 }
-.cv-git-untracked { color: var(--green); border-color: var(--green); background: rgba(28,158,102,.10); }
-.cv-git-dirty { color: var(--amber); border-color: var(--amber); background: rgba(200,129,28,.10); }
+.cv-git-untracked { color: var(--green); border-color: var(--green); background: var(--green-soft); }
+.cv-git-dirty { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
 .cv-git-clean { color: var(--text-muted); }
 .cv-git-none { color: var(--text-faint); }
-.cv-readonly { color: var(--amber); border-color: var(--amber); background: rgba(200,129,28,.10); }
+.cv-readonly { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
 .cv-faint { font-size: var(--fs-cap); color: var(--text-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 /* 大块阅读/编辑面必须是中性白：强调色只做选中、定位等小面积信号，
@@ -883,6 +883,8 @@ html[data-material='glass'] .wb-proj-notice {
   padding: 0 !important;
   display: inline-flex; align-items: center; justify-content: center;
 }
+/* Agent 树抽屉打开时给入口一个明确状态，避免用户找不到它从哪儿弹出来的。 */
+.wb-agent-btn[aria-expanded="true"] { border-color: var(--accent) !important; color: var(--accent) !important; }
 .wb-ask-link {
   display: inline-flex; align-items: center; gap: 6px;
   text-decoration: none;
@@ -1107,14 +1109,14 @@ html[data-material='glass'] .wb-proj-notice {
   padding: 0 3px;
   border-radius: 8px;
   background: var(--amber);
-  color: #fff;
+  color: var(--amber-ink);
   font-size: var(--fs-cap);
   font-weight: 800;
   font-style: normal;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 1px 3px rgba(200,129,28,.5);
+  box-shadow: var(--mi-shadow-control);
 }
 
 /* ---------- 树头部按钮 ---------- */
@@ -1477,7 +1479,7 @@ html[data-material='glass'] .wb-proj-notice {
 .dg-btn.dg-danger {
   background: linear-gradient(180deg, var(--danger), var(--danger));
   border-color: var(--danger);
-  color: #fff;
+  color: var(--danger-ink);
 }
 .dg-danger:hover { filter: brightness(1.05); }
 .dg-btn:active:not(:disabled) { transform: translateY(1px); }
@@ -1530,7 +1532,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-demo-tag {
   margin-left: 6px; padding: 0 5px; border-radius: 5px;
   font-size: var(--fs-cap); font-family: inherit; font-weight: 600;
-  background: rgba(124, 92, 255, .16); color: #7c5cff;
+  background: var(--accent-soft); color: var(--accent-text);
   vertical-align: 1px; white-space: nowrap;
 }
 .wb-demo-side > p {
@@ -1543,8 +1545,8 @@ html[data-material='glass'] .wb-proj-notice {
    打架（brutalist-overrides.css 曾逐条在外面压它）。合并时赢家值已并入上面的
    基础规则，这里只保留仍然生效的部分：动效、面板阴影、hover 位移。 */
 :root {
-  --shadow-panel: 0 10px 30px rgba(35, 52, 84, .07);
-  --shadow-hover: 0 14px 34px rgba(35, 52, 84, .12);   /* AutonomousCockpit.vue 在用 */
+  --shadow-panel: var(--mi-shadow-control);
+  --shadow-hover: var(--mi-shadow-pop);   /* AutonomousCockpit.vue 在用 */
   --ease-spring: cubic-bezier(.22, .8, .24, 1);
 }
 
@@ -1633,7 +1635,7 @@ a:focus-visible,
 }
 .wb-menu-backdrop,
 .wb-proj-backdrop {
-  background: rgba(24, 39, 64, .035);
+  background: var(--scrim-soft);
   backdrop-filter: blur(1px);
   animation: wb-backdrop-in .16s ease-out both;
 }
@@ -1648,7 +1650,7 @@ a:focus-visible,
 .wb-menu-item:nth-child(2) { animation-delay: .015s; }
 .wb-menu-item:nth-child(3) { animation-delay: .03s; }
 .wb-menu-item:nth-child(4) { animation-delay: .045s; }
-.wb-booting { background: radial-gradient(circle at center, rgba(255,255,255,.72), transparent 58%); }
+.wb-booting { background: radial-gradient(circle at center, var(--mi-surface), transparent 58%); }
 .wb-booting p { animation: wb-loading-pulse 1.8s ease-in-out infinite; }
 .wb-booting .cv-spinner { box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 6%, transparent), 0 7px 18px color-mix(in srgb, var(--accent) 13%, transparent); }
 
@@ -1749,7 +1751,7 @@ a:focus-visible,
 .wb-shell textarea { border-radius: var(--r-sm); }
 
 /* —— 大白话定位命中（蓝描边 → 朱红） —— */
-.ft-located.ft-selected { box-shadow: inset 0 0 0 1px var(--accent), inset 3px 0 0 rgba(200,129,28,.8); }
+.ft-located.ft-selected { box-shadow: inset 0 0 0 1px var(--accent), inset 3px 0 0 var(--amber); }
 
 /* =============================================================
    两页统一：概览 / 分区首页 / 对话坞的旧皮残留收口

@@ -319,6 +319,65 @@ const libTotal = ref(0)
 const libLoading = ref(false)
 const libLoaded = ref(false)
 const libPreview = ref<LibraryItem | null>(null)
+type PlaceholderKind = 'text' | 'json' | 'svg'
+interface PlaceholderResource { path: string; mime: string; size: number; extension: string }
+const placeholderDefaults: Record<PlaceholderKind, string> = {
+  text: 'assets/placeholders/notes.md',
+  json: 'assets/placeholders/config.json',
+  svg: 'assets/placeholders/icon.svg',
+}
+const placeholderOpen = ref(false)
+const placeholderKind = ref<PlaceholderKind>('text')
+const placeholderPath = ref(placeholderDefaults.text)
+const placeholderBusy = ref(false)
+const placeholderError = ref('')
+const placeholderResult = ref<PlaceholderResource | null>(null)
+function openPlaceholder() {
+  placeholderOpen.value = true
+  placeholderError.value = ''
+  placeholderResult.value = null
+}
+function selectPlaceholderKind(kind: PlaceholderKind) {
+  if (placeholderPath.value === placeholderDefaults[placeholderKind.value]) {
+    placeholderPath.value = placeholderDefaults[kind]
+  }
+  placeholderKind.value = kind
+  placeholderError.value = ''
+  placeholderResult.value = null
+}
+async function createPlaceholder() {
+  if (placeholderBusy.value) return
+  if (demoMode.value) {
+    showToast('示例演示模式不会真实创建文件；连接本地项目后可使用此功能')
+    return
+  }
+  const path = placeholderPath.value.trim()
+  if (!path) {
+    placeholderError.value = '请输入项目内的资源路径'
+    return
+  }
+  placeholderBusy.value = true
+  placeholderError.value = ''
+  placeholderResult.value = null
+  try {
+    const result = await assetsApi.createPlaceholder(path, placeholderKind.value)
+    if (!result.resource) throw new Error('后端未返回资源预览')
+    placeholderResult.value = result.resource
+    showToast(`已创建：${result.resource.path}`)
+    libLoaded.value = false
+    void loadTree()
+    if (tab.value === 'library') void loadLibrary()
+  } catch (e) {
+    placeholderError.value = (e as FsApiError).message || '占位资源创建失败'
+  } finally {
+    placeholderBusy.value = false
+  }
+}
+function locatePlaceholder() {
+  if (!placeholderResult.value) return
+  revealPath(placeholderResult.value.path)
+  showToast(`已在左侧文件树定位：${placeholderResult.value.path}`)
+}
 
 async function loadLibrary(force = false) {
   if (libLoading.value || (libLoaded.value && !force)) return
@@ -509,8 +568,39 @@ onMounted(() => {
     <div v-else class="ac-scroll">
       <div class="ac-lib-head">
         <span v-if="!libLoading" class="ac-lib-count">共 {{ libTotal }} 个素材（含 ComfyUI 生成物）</span>
-        <button v-if="libLoaded" type="button" class="ac-refresh" @click="loadLibrary(true)">刷新</button>
+        <div class="ac-lib-head-actions">
+          <button type="button" class="ac-refresh" @click="openPlaceholder">新建占位资源</button>
+          <button v-if="libLoaded" type="button" class="ac-refresh" @click="loadLibrary(true)">刷新</button>
+        </div>
       </div>
+      <section v-if="placeholderOpen" class="ac-placeholder" aria-label="创建占位资源">
+        <div class="ac-placeholder-head">
+          <div><b>创建占位资源</b><small>真实写入项目，不调用 AI；已有文件不会被覆盖。</small></div>
+          <button type="button" class="ac-x" aria-label="关闭占位资源表单" @click="placeholderOpen = false">×</button>
+        </div>
+        <form class="ac-placeholder-form" @submit.prevent="createPlaceholder">
+          <div class="ac-placeholder-kinds" aria-label="占位资源类型">
+            <button type="button" :class="{ on: placeholderKind === 'text' }" @click="selectPlaceholderKind('text')">文本</button>
+            <button type="button" :class="{ on: placeholderKind === 'json' }" @click="selectPlaceholderKind('json')">JSON</button>
+            <button type="button" :class="{ on: placeholderKind === 'svg' }" @click="selectPlaceholderKind('svg')">SVG</button>
+          </div>
+          <input v-model="placeholderPath" type="text" aria-label="项目内资源路径" placeholder="assets/placeholders/notes.md" :disabled="placeholderBusy">
+          <button type="submit" class="ac-primary" :disabled="placeholderBusy">{{ placeholderBusy ? '创建中…' : '创建' }}</button>
+        </form>
+        <div v-if="placeholderError" class="ac-placeholder-error" role="alert">
+          <span>{{ placeholderError }}</span>
+          <button type="button" class="ac-mini-btn" :disabled="placeholderBusy" @click="createPlaceholder">重试</button>
+        </div>
+        <div v-if="placeholderResult" class="ac-placeholder-result" role="status">
+          <dl>
+            <div><dt>路径</dt><dd>{{ placeholderResult.path }}</dd></div>
+            <div><dt>MIME</dt><dd>{{ placeholderResult.mime }}</dd></div>
+            <div><dt>大小</dt><dd>{{ fmtSize(placeholderResult.size) }}</dd></div>
+            <div><dt>扩展名</dt><dd>{{ placeholderResult.extension || '无' }}</dd></div>
+          </dl>
+          <button type="button" class="ac-mini-btn" @click="locatePlaceholder">文件树定位</button>
+        </div>
+      </section>
       <p v-if="libLoading" class="ac-loading">正在扫描素材库…</p>
       <p v-else-if="!libDirs.length" class="ac-empty">
         素材库还是空的。到「网络素材」挑 CC0 模型/贴图，或用 ComfyUI 生成图片，都会出现在这里。
@@ -771,8 +861,8 @@ onMounted(() => {
   transition: background .12s, color .12s;
 }
 .ac-seg:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--text); }
-.ac-seg.on { background: var(--bg-raised); border-color: var(--border); color: var(--accent-text); box-shadow: 0 1px 2px rgba(35,52,84,.07); }
-.ac-sub.on { background: var(--bg-raised); color: var(--accent-text); box-shadow: 0 1px 2px rgba(35,52,84,.08); }
+.ac-seg.on { background: var(--bg-raised); border-color: var(--border); color: var(--accent-text); box-shadow: var(--mi-shadow-control); }
+.ac-sub.on { background: var(--bg-raised); color: var(--accent-text); box-shadow: var(--mi-shadow-control); }
 .ac-seg:focus-visible, .ac-sub:focus-visible, .ac-kind:focus-visible,
 .ac-search-btn:focus-visible, .ac-more-item:focus-visible, .ac-pack-open:focus-visible,
 .ac-card:focus-visible, .ac-refresh:focus-visible, .ac-mini-btn:focus-visible,
@@ -790,7 +880,7 @@ onMounted(() => {
 .ac-more-menu {
   position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
   min-width: 220px; background: var(--bg-raised); border: 1px solid var(--border);
-  border-radius: 9px; box-shadow: 0 8px 28px rgba(35,52,84,.16); padding: 6px;
+  border-radius: 9px; box-shadow: var(--mi-shadow-pop); padding: 6px;
   animation: ac-pop-in .16s ease-out both;
 }
 .ac-more-title { margin: 2px 6px 6px; font-size: var(--fs-cap); color: var(--text-faint); }
@@ -848,7 +938,7 @@ onMounted(() => {
 button.ac-card { font: inherit; color: inherit; }
 .ac-card:hover {
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  box-shadow: 0 5px 18px rgba(35,52,84,.1);
+  box-shadow: var(--mi-shadow-control);
   transform: translateY(-1px);
 }
 .ac-pack-card { cursor: default; }
@@ -923,6 +1013,24 @@ button.ac-card { font: inherit; color: inherit; }
   font-family: var(--font-ui); color: var(--text-muted);
 }
 .ac-refresh:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.ac-lib-head-actions { display: flex; gap: 6px; margin-left: auto; }
+.ac-lib-head-actions .ac-refresh { margin-left: 0; }
+.ac-placeholder { margin: 0 0 12px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); }
+.ac-placeholder-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.ac-placeholder-head b, .ac-placeholder-head small { display: block; }
+.ac-placeholder-head b { font-size: var(--fs-sm); }
+.ac-placeholder-head small { margin-top: 3px; color: var(--text-faint); font-size: var(--fs-cap); }
+.ac-placeholder-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ac-placeholder-kinds { display: flex; gap: 2px; padding: 2px; border-radius: 6px; background: var(--bg-hover); }
+.ac-placeholder-kinds button { padding: 4px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); cursor: pointer; }
+.ac-placeholder-kinds button.on { background: var(--bg-raised); color: var(--accent-text); }
+.ac-placeholder-form > input { flex: 1 1 240px; min-width: 0; height: 30px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: var(--fs-sm); }
+.ac-placeholder-form .ac-primary { min-height: 30px; }
+.ac-placeholder-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--danger); font-size: var(--fs-cap); }
+.ac-placeholder-result { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
+.ac-placeholder-result dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); flex: 1 1 420px; gap: 8px; margin: 0; }
+.ac-placeholder-result dt { color: var(--text-faint); font-size: var(--fs-cap); }
+.ac-placeholder-result dd { margin: 2px 0 0; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-cap); overflow-wrap: anywhere; }
 .ac-lib-group { margin-bottom: 18px; }
 .ac-lib-dir {
   display: flex; align-items: center; gap: 6px;
@@ -949,7 +1057,7 @@ button.ac-card { font: inherit; color: inherit; }
   width: 440px; max-width: 92%; height: 100%;
   background: var(--bg-raised); border-left: 1px solid var(--border);
   display: flex; flex-direction: column;
-  box-shadow: -8px 0 30px rgba(35,52,84,.14);
+  box-shadow: var(--mi-shadow-pop);
   animation: ac-drawer-in .2s cubic-bezier(.2,.8,.2,1) both;
 }
 .ac-drawer-head {
@@ -1022,7 +1130,7 @@ button.ac-card { font: inherit; color: inherit; }
   width: 900px; max-width: 100%; height: min(640px, 88%);
   background: var(--bg-raised); border-radius: 12px; border: 1px solid var(--border);
   display: flex; flex-direction: column; overflow: hidden;
-  box-shadow: 0 18px 60px rgba(35,52,84,.25);
+  box-shadow: var(--mi-shadow-pop);
   animation: ac-modal-in .2s cubic-bezier(.2,.8,.2,1) both;
 }
 .ac-modal-sub { margin: 3px 0 0; font-size: var(--fs-cap); color: var(--text-faint); }
@@ -1082,7 +1190,7 @@ button.ac-card { font: inherit; color: inherit; }
   position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
   z-index: 60; max-width: 70%;
   background: var(--ink); color: var(--bg); font-size: var(--fs-sm); line-height: 1.5;
-  padding: 9px 16px; border-radius: 9px; box-shadow: 0 8px 30px rgba(20,32,56,.3);
+  padding: 9px 16px; border-radius: 9px; box-shadow: var(--mi-shadow-pop);
   margin: 0;
 }
 .ac-toast-enter-active, .ac-toast-leave-active { transition: opacity .18s, transform .18s; }

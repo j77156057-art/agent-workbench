@@ -121,7 +121,7 @@ function sessionTime(value: string): string {
   right: 10px; bottom: 64px;
   width: 360px; max-width: calc(100vw - 24px);
   background: var(--bg-raised); border: 1px solid var(--border-strong);
-  border-radius: 8px; box-shadow: 0 14px 38px rgba(35,52,84,.2);
+  border-radius: 8px; box-shadow: var(--mi-shadow-pop);
   padding: 10px; z-index: 60; animation: cd-history-in .18s cubic-bezier(.2,.8,.2,1) both;
 }
 .cd-session-head { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }

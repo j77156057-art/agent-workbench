@@ -19,6 +19,8 @@ import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 
+/* global process, console, document, getComputedStyle, window */
+
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE
   || path.join(process.env.USERPROFILE || process.env.HOME,
@@ -125,13 +127,36 @@ async function readPanel(page, tag, width, strict = true) {
   const info = await page.evaluate(() => {
     const box = document.querySelector('.mp-funnel')
     const block = box.closest('.mp-readonly')
-    const lum = (rgb) => {
-      const [r, g, b] = (rgb.match(/\d+/g) || [0, 0, 0]).map(Number)
-      const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
-      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    // 颜色解析：Chromium 111+ 的 getComputedStyle 对 oklch()/color() 会原样返回，
+    // 旧的 `/\\d+/g` 取色把 "oklch(0.74 0.018 230)" 读成 rgb(0,74,0)（0.74 → 74），
+    // 于是对比度断言在真实达标的颜色上假红。改为交给 canvas 解析成真实 sRGB，
+    // 半透明层按 CSS 合成规则逐层压到不透明底上 —— 只修取色，不动阈值与令牌。
+    const canvas = document.createElement('canvas')
+    canvas.width = 1
+    canvas.height = 1
+    const ctx2d = canvas.getContext('2d', { willReadFrequently: true })
+    const srgb = (color) => {
+      ctx2d.clearRect(0, 0, 1, 1)
+      ctx2d.fillStyle = '#000000'
+      ctx2d.fillStyle = color
+      ctx2d.fillRect(0, 0, 1, 1)
+      const [r, g, b, a] = ctx2d.getImageData(0, 0, 1, 1).data
+      return { r, g, b, a: a / 255 }
     }
-    const ratio = (a, b) => {
-      const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m)
+    const flatten = (fg, bg) => ({
+      r: Math.round(fg.r * fg.a + bg.r * (1 - fg.a)),
+      g: Math.round(fg.g * fg.a + bg.g * (1 - fg.a)),
+      b: Math.round(fg.b * fg.a + bg.b * (1 - fg.a)),
+      a: 1,
+    })
+    const lum = (c) => {
+      const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
+      return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
+    }
+    const ratio = (fgColor, bg) => {
+      const fg = srgb(fgColor)
+      const solid = fg.a < 1 ? flatten(fg, bg) : fg
+      const [x, y] = [lum(solid), lum(bg)].sort((m, n) => n - m)
       return (x + 0.05) / (y + 0.05)
     }
     const chips = [...document.querySelectorAll('.mp-funnel-step')]
@@ -141,13 +166,20 @@ async function readPanel(page, tag, width, strict = true) {
     const caveats = [...block.querySelectorAll('.mp-funnel-caveat')]
     const metaLine = block.querySelector('.mp-funnel-meta-line')
     const bgOf = (el) => {
+      const layers = []
       let node = el
       while (node && node !== document.body) {
-        const c = getComputedStyle(node).backgroundColor
-        if (c && !c.includes('rgba(0, 0, 0, 0)')) return c
+        const s = srgb(getComputedStyle(node).backgroundColor)
+        if (s.a > 0) layers.push(s)
+        if (s.a >= 1) break
         node = node.parentElement
       }
-      return getComputedStyle(document.body).backgroundColor
+      if (!layers.length || layers[layers.length - 1].a < 1) {
+        layers.push(srgb(getComputedStyle(document.body).backgroundColor))
+      }
+      let out = layers[layers.length - 1]
+      for (let i = layers.length - 2; i >= 0; i--) out = flatten(layers[i], out)
+      return out
     }
     return {
       heading: block.querySelector('strong')?.innerText || '',
@@ -167,6 +199,7 @@ async function readPanel(page, tag, width, strict = true) {
       markColor: marks.length ? getComputedStyle(marks[0]).color : '',
       stall: stall ? stall.innerText.trim() : '',
       stallColor: stall ? getComputedStyle(stall).color : '',
+      stallRgb: stall ? srgb(getComputedStyle(stall).color) : null,
       caveats: caveats.map((el) => el.innerText.trim()),
       metaLine: metaLine ? metaLine.innerText.trim() : '',
       noteFontSize: (stall || block.querySelector('.mp-funnel-note'))
@@ -226,7 +259,8 @@ try {
     const page = await ctx.newPage()
     await openHealthTab(page)
     const info = await readPanel(page, tag, width)
-    const [sr, sg] = (info.stallColor.match(/\d+/g) || [0, 0, 0]).map(Number)
+    // 同一处取色问题：告警色是 oklch，必须走与比例计算相同的 canvas 解析。
+    const { r: sr, g: sg } = info.stallRgb || { r: 0, g: 0 }
     if (tag === '缺字段') {
       check('缺字段级标成「判不了」而非零值断点',
         info.steps.some((s) => s.unmeasured && s.label === '跑过测试'), '')

@@ -22,6 +22,7 @@ const emit = defineEmits<{
   (e: 'newSession'): void
   (e: 'switchSession', id: string): void
   (e: 'deleteSession', id: string): void
+  (e: 'forkSession', id: string): void
   (e: 'close'): void
 }>()
 
@@ -33,6 +34,15 @@ const files = computed(() => props.config?.ingested_files || [])
 const visibleFiles = computed(() => props.demo
   ? ['数值设计案.pdf', '战斗规则.md', '常见问题.txt']
   : files.value)
+const sessionQuery = ref('')
+const filteredSessions = computed(() => {
+  const needle = sessionQuery.value.trim().toLowerCase()
+  const items = props.sessions || []
+  if (!needle) return items
+  return items.filter((item) => [
+    sessTitle(item), item.session_id, item.preview || '', item.updated_at || '', String(item.turns ?? ''),
+  ].join(' ').toLowerCase().includes(needle))
+})
 
 function pickFile() {
   fileInput.value?.click()
@@ -111,10 +121,13 @@ function sessTime(v?: string): string {
     </nav>
 
     <section class="history-section" aria-labelledby="sidebar-history-title">
-      <h2 id="sidebar-history-title" class="section-title">最近对话</h2>
+      <div class="history-heading">
+        <h2 id="sidebar-history-title" class="section-title">最近对话</h2>
+        <input v-model="sessionQuery" class="session-search" type="search" placeholder="搜索标题或会话 ID" aria-label="搜索会话标题或会话 ID" />
+      </div>
       <div class="sess-list" :aria-busy="sessionBusy">
         <div
-          v-for="s in (sessions || [])"
+          v-for="s in filteredSessions"
           :key="s.session_id"
           class="sess-item"
           :class="{ active: s.session_id === currentSessionId }"
@@ -129,12 +142,20 @@ function sessTime(v?: string): string {
           >
             <span class="sess-copy">
               <strong>{{ sessTitle(s) }}</strong>
-              <small v-if="sessTime(s.updated_at)">{{ sessTime(s.updated_at) }}</small>
+              <small>{{ s.turns ?? 0 }} 轮<template v-if="sessTime(s.updated_at)"> · {{ sessTime(s.updated_at) }}</template></small>
             </span>
           </button>
           <button
             type="button"
-            class="icon-button sess-del"
+            class="icon-button sess-action sess-fork"
+            :title="`分叉对话：${sessTitle(s)}（保留原对话）`"
+            :aria-label="`分叉对话：${sessTitle(s)}`"
+            :disabled="sessionBusy"
+            @click.stop="emit('forkSession', s.session_id)"
+          >分叉</button>
+          <button
+            type="button"
+            class="icon-button sess-action sess-del"
             :title="`删除对话：${sessTitle(s)}`"
             :aria-label="`删除对话：${sessTitle(s)}`"
             :disabled="sessionBusy"
@@ -146,6 +167,7 @@ function sessTime(v?: string): string {
           </button>
         </div>
         <p v-if="!(sessions || []).length" class="empty-note">新建对话，开始探索你的资料</p>
+        <p v-else-if="sessionQuery && !filteredSessions.length" class="empty-note">没有匹配的对话</p>
       </div>
     </section>
 
@@ -388,6 +410,11 @@ function sessTime(v?: string): string {
   line-height: 20px;
 }
 
+.history-heading { display: flex; flex-direction: column; gap: 6px; }
+.session-search { width: calc(100% - 20px); height: 30px; margin: 0 10px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); outline: none; }
+.session-search:focus { border-color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent-soft); }
+.session-search::placeholder { color: var(--text-muted); }
+
 .sess-list {
   display: flex;
   flex: 1;
@@ -458,13 +485,13 @@ function sessTime(v?: string): string {
   line-height: 16px;
 }
 
-.sess-del {
+.sess-action {
   opacity: 0;
   pointer-events: none;
 }
 
-.sess-item:hover .sess-del,
-.sess-item:focus-within .sess-del {
+.sess-item:hover .sess-action,
+.sess-item:focus-within .sess-action {
   opacity: 1;
   pointer-events: auto;
 }
@@ -640,7 +667,7 @@ function sessTime(v?: string): string {
 }
 
 @media (hover: none), (any-pointer: coarse) {
-  .sess-del {
+  .sess-action {
     opacity: 1;
     pointer-events: auto;
   }

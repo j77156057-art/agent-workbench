@@ -138,6 +138,32 @@ export interface SessionInfo {
   title?: string
   preview?: string
 }
+export interface SessionTurn {
+  user: string
+  assistant: string
+  ts?: string
+  turn_id?: string
+  checkpoint_id?: string
+  status?: string
+  completed?: boolean
+  done?: boolean
+  trace?: {
+    type: 'thought' | 'action' | 'observation' | 'reflection'
+    text: string
+    at?: number
+    elapsedMs?: number
+    ok?: boolean
+  }[]
+}
+export interface SessionSnapshot {
+  seq: number
+  at: string
+  label: string
+  turn_count: number
+  archived_count: number
+  total_turn_count: number
+  question: string
+}
 export interface SkillInfo {
   name: string
   description: string
@@ -148,6 +174,19 @@ export interface SkillInfo {
   checksum?: string
   history_versions?: Array<{ version?: string; checksum?: string }>
   stats?: { uses?: number; successes?: number; failures?: number; last_score?: number }
+}
+
+export interface SkillRegressionReport {
+  name: string
+  uses: number
+  successes: number
+  failures: number
+  evaluated: number
+  success_rate: number | null
+  baseline_success_rate: number | null
+  min_success_rate: number
+  scored: boolean
+  regressed: boolean
 }
 
 export const harnessApi = {
@@ -179,20 +218,7 @@ export const harnessApi = {
   sessionDetail(id: string): Promise<{
     ok: boolean
     session_id: string
-    turns: {
-      user: string
-      assistant: string
-      ts?: string
-      turn_id?: string
-      checkpoint_id?: string
-      trace?: {
-        type: 'thought' | 'action' | 'observation' | 'reflection'
-        text: string
-        at?: number
-        elapsedMs?: number
-        ok?: boolean
-      }[]
-    }[]
+    turns: SessionTurn[]
     summary?: string
     updated_at?: string
   }> {
@@ -200,6 +226,27 @@ export const harnessApi = {
   },
   deleteSession(id: string): Promise<{ ok: boolean }> {
     return fetch(`/api/sessions/${encodeURIComponent(id)}`, withProject({ method: 'DELETE' })).then((r) => r.json())
+  },
+  sessionSnapshots(id: string): Promise<{ ok: boolean; session_id: string; items: SessionSnapshot[]; error?: string }> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/snapshots`)
+  },
+  rewindSession(id: string, seq: number): Promise<{
+    ok: boolean
+    session_id: string
+    turns: SessionTurn[]
+    summary?: string
+    backup_seq?: number
+    message?: string
+    error?: string
+  }> {
+    return postJson(`/api/sessions/${encodeURIComponent(id)}/rewind?seq=${encodeURIComponent(seq)}`, {})
+  },
+  /** 无损复制一条会话；可从指定快照分叉，原会话保持不变。 */
+  forkSession(id: string, atSeq?: number): Promise<{ ok: boolean; session_id?: string; turns?: unknown[]; message?: string; error?: string }> {
+    const prefix = id.split('-')[0] || 'web'
+    const newId = `${prefix}-${globalThis.crypto.randomUUID().replaceAll('-', '')}`
+    const seqQuery = atSeq === undefined ? '' : `&at_seq=${encodeURIComponent(atSeq)}`
+    return postJson(`/api/sessions/${encodeURIComponent(id)}/fork?new_id=${encodeURIComponent(newId)}${seqQuery}`, {})
   },
   trace(limit = 30): Promise<{ ok: boolean; items: TraceItem[]; summary: TraceSummary }> {
     return request(`/api/trace?limit=${limit}`)
@@ -209,6 +256,10 @@ export const harnessApi = {
   },
   skills(): Promise<{ ok: boolean; skills_dir: string; exists: boolean; count: number; errors: string[]; items: SkillInfo[] }> {
     return request('/api/skills')
+  },
+  skillRegression(name: string, baseline?: number): Promise<{ ok: boolean; report: SkillRegressionReport; error?: string }> {
+    const baselineQuery = baseline === undefined ? '' : `&baseline=${encodeURIComponent(baseline)}`
+    return request(`/api/skills/regression?name=${encodeURIComponent(name)}${baselineQuery}`)
   },
   reloadSkills(): Promise<{ ok: boolean; count?: number; errors?: string[] }> {
     return postJson('/api/skills/reload', {})

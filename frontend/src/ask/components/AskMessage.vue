@@ -9,6 +9,7 @@ import { prefs } from '../askPrefs'
 const WorkflowCard = defineAsyncComponent(() => import('../../workbench/components/WorkflowCard.vue'))
 import ArtifactCards from '../../workbench/components/ArtifactCards.vue'
 import type { ChatMsg, ChatTraceItem, ChatArtifact } from '../../workbench/composables/chat-types'
+import { finalAnswerText } from '../../workbench/composables/chat-types'
 
 const props = defineProps<{ msg: ChatMsg }>()
 const emit = defineEmits<{
@@ -26,9 +27,30 @@ function chooseAsk(value: string) {
   emit('ask', value)
 }
 
-const html = computed(() => mdToHtml(props.msg.text || ''))
-const refs = computed(() => extractFileRefs(props.msg.text || ''))
 const streaming = computed(() => props.msg.status === 'streaming')
+const answerText = computed(() => finalAnswerText(props.msg))
+// SSE 已在数据层按 rAF 合批；Markdown 再做短间隔限流，避免每个渲染帧都销毁并
+// 重建整段正文 DOM。首个增量立即渲染，结束后立刻补齐，不会等待整段生成。
+const html = ref('')
+const LIVE_HTML_INTERVAL = 90
+let htmlTimer = 0
+let lastHtmlAt = 0
+function renderHtml() {
+  if (htmlTimer) { window.clearTimeout(htmlTimer); htmlTimer = 0 }
+  html.value = mdToHtml(answerText.value)
+  lastHtmlAt = performance.now()
+}
+function scheduleHtml() {
+  if (!streaming.value || !lastHtmlAt || !html.value) { renderHtml(); return }
+  if (htmlTimer) return
+  const wait = Math.max(0, LIVE_HTML_INTERVAL - (performance.now() - lastHtmlAt))
+  htmlTimer = window.setTimeout(renderHtml, wait)
+}
+watch(answerText, scheduleHtml, { immediate: true })
+watch(streaming, (on) => { if (!on) renderHtml() })
+onBeforeUnmount(() => { if (htmlTimer) window.clearTimeout(htmlTimer) })
+// 引用在成稿时提取即可，避免流式期间每个正文帧重复扫描全文。
+const refs = computed(() => extractFileRefs(streaming.value ? '' : answerText.value))
 
 // 展示偏好直接读 askPrefs 里那份共享 reactive —— 不再自己 ref(loadAskPrefs()) + 挂
 // ASK_PREFS_EVENT 监听器。同一件事两套机制，漏挂或时序差就是「设置改了界面不跟」。
@@ -54,10 +76,10 @@ function refDir(path: string): string {
 const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
 let copyTimer = 0
 async function copyAnswer() {
-  if (!props.msg.text || streaming.value) return
+  if (!answerText.value || streaming.value) return
   try {
     if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable')
-    await navigator.clipboard.writeText(props.msg.text)
+    await navigator.clipboard.writeText(answerText.value)
     copyState.value = 'copied'
   } catch {
     copyState.value = 'failed'
@@ -82,18 +104,14 @@ function openArtifact(a: ChatArtifact) {
 import { traceSegments } from '../../workbench/composables/traceDigest'
 import { getMessagePresentation } from '../messagePresentation'
 // 按「发言 → 该段工具摘要」切段（与工作台 ChatDock 同一份实现）。
-// 本轮只保留一个外层「执行过程」折叠；段内工具行仍可单独展开看全文。
+// 过程时间线始终内联可见；只有技术细节全文保留单步展开，避免遮住当前进度。
 const segments = computed(() => traceSegments(props.msg))
-const processOpen = ref(false)
 const hasProcess = computed(() =>
   segments.value.some((s) => s.narration.length || (prefs.showTrace && s.digest.toolTotal)),
 )
-const processGlyph = computed(() =>
-  segments.value.some((s) => s.glyph === '✎') ? '✎' : '◷',
-)
 // 摘要聚合各段的计数（标签顺序按首次出现）；不是“成功次数”，只表示发生过什么。
 const processSummary = computed(() => {
-  if (!prefs.showTrace) return '查看思考过程'
+  if (!prefs.showTrace) return '思考过程'
   const counts = new Map<string, { count: number; unit: string }>()
   for (const seg of segments.value) {
     for (const part of seg.digest.parts) {
@@ -108,9 +126,10 @@ const processSummary = computed(() => {
   return text || '思考过程'
 })
 const presentation = computed(() => getMessagePresentation(props.msg, askAnswered.value))
-const statusLabel = computed(() =>
-  streaming.value && !props.msg.text ? phaseLabel.value : presentation.value.label,
-)
+const statusLabel = computed(() => {
+  if (streaming.value) return answerText.value ? presentation.value.label : phaseLabel.value
+  return presentation.value.label === '已回复' ? '' : presentation.value.label
+})
 const qualityNote = computed(() => {
   const m = props.msg
   if (m.status === 'error') {
@@ -227,6 +246,22 @@ const elapsedLabel = computed(() => {
   return s >= 1 ? `${s}s` : ''
 })
 
+// 默认：轨迹执行中展开，最终答案开始后收起。用户在同一轮的手动选择优先，
+// 不被后续自动折叠打断；历史消息因 status 非 streaming 而默认收起。
+const processUserChoice = ref<boolean | null>(null)
+const processOpen = computed(() =>
+  processUserChoice.value ?? (streaming.value && !answerText.value),
+)
+function toggleProcess() {
+  processUserChoice.value = !processOpen.value
+}
+const processCompactSummary = computed(() => {
+  const count = props.msg.trace.filter((item) => item.type === 'action').length
+  const parts = [count ? `${count} 步工具调用` : '思考过程']
+  if (elapsedLabel.value) parts.push(elapsedLabel.value)
+  return parts.join(' · ')
+})
+
 const phaseLabel = computed(() => {
   const t = props.msg
   if (t.workflow?.workflowId) return '工作流进行中，在下方卡片查看进度与审批'
@@ -262,25 +297,23 @@ const phaseLabel = computed(() => {
           </svg>
         </span>
         <span class="ai-name">DocMind</span>
-        <span class="ai-status" :class="`tone-${presentation.tone}`" role="status">{{ statusLabel }}</span>
+        <span v-if="statusLabel" class="ai-status" :class="`tone-${presentation.tone}`" role="status">{{ statusLabel }}</span>
         <span v-if="streaming" class="live-dots" aria-hidden="true"><i /><i /><i /></span>
         <span v-if="elapsedLabel" class="ai-time">{{ elapsedLabel }}</span>
       </div>
       <div class="ai-col">
-        <!-- 执行过程：整轮只保留这一层折叠。展开后按原 segment 顺序阅读，
-             单步工具行仍可各自展开；默认关闭，正文优先。 -->
-        <div v-if="hasProcess" class="process">
+        <!-- 推理轨迹执行中展开，答案阶段自动收起；点击可覆盖当前轮的默认状态。 -->
+        <section v-if="hasProcess" class="process" :class="{ 'is-live': streaming && !answerText }" aria-label="推理轨迹">
           <button
-            class="process-toggle"
+            class="process-head"
             type="button"
             :aria-expanded="processOpen"
             :aria-controls="`process-${msg.id}`"
-            :aria-label="`${processOpen ? '收起' : '展开'}执行过程：${processSummary}`"
-            @click="processOpen = !processOpen"
+            @click="toggleProcess"
           >
-            <span class="process-glyph" aria-hidden="true">{{ processGlyph }}</span>
-            <span class="process-label">{{ processOpen ? '收起执行过程' : '执行过程' }}</span>
-            <span class="process-summary">{{ processSummary }}</span>
+            <span class="process-label">推理过程</span>
+            <span class="process-summary">{{ processOpen ? processSummary : processCompactSummary }}</span>
+            <span v-if="streaming && !answerText" class="process-live">进行中</span>
             <span class="chev" :class="{ open: processOpen }">⌄</span>
           </button>
           <div v-if="processOpen" :id="`process-${msg.id}`" class="process-body">
@@ -291,8 +324,14 @@ const phaseLabel = computed(() => {
               </div>
               <template v-if="prefs.showTrace">
                 <template v-for="(ti, ri) in seg.rows" :key="'r' + ri">
-                  <button class="flow-row" :class="rowKind(ti)" type="button" @click="toggleRow(ti)">
-                    <span class="flow-glyph" aria-hidden="true">{{ rowKind(ti) === 'action' ? '↗' : '↳' }}</span>
+                  <button
+                    class="flow-row"
+                    :class="[rowKind(ti), { 'is-running': streaming && ti === lastRowTrace }]"
+                    type="button"
+                    :aria-expanded="rowOpen(ti)"
+                    @click="toggleRow(ti)"
+                  >
+                    <span class="flow-marker" aria-hidden="true"></span>
                     <span class="flow-title">{{ stepTitle(msg.trace[ti]) }}</span>
                     <span v-if="!rowOpen(ti)" class="flow-summary">{{ stepSummary(msg.trace[ti]) }}</span>
                     <span v-if="fmtElapsed(msg.trace[ti].elapsedMs)" class="flow-time">{{ fmtElapsed(msg.trace[ti].elapsedMs) }}</span>
@@ -302,9 +341,8 @@ const phaseLabel = computed(() => {
                 </template>
               </template>
             </template>
-            <p v-if="!segments.length" class="process-empty">这一轮没有可展开的过程记录。</p>
           </div>
-        </div>
+        </section>
 
         <!-- 工作流卡片：start_workflow 的动作与观察由卡片承载，不进交错流 -->
         <WorkflowCard
@@ -316,19 +354,29 @@ const phaseLabel = computed(() => {
           @gate="(open: boolean) => emit('wfGate', open)"
         />
 
-        <!-- 正文常驻展开：过程收起时也不影响阅读；状态用一行说明，不压过答案。 -->
-        <div class="ai-bubble">
-          <div v-if="qualityNote" class="quality-note" :class="qualityNote.tone" role="status">
-            <span class="quality-badge">{{ qualityNote.label }}</span>
-            <span>{{ qualityNote.text }}</span>
+        <!-- 轨迹偏移后的正文 token 进入最终答案区：独立成块并继续逐字流式输出，
+             不用 status=done 人为推迟，也不与推理轨迹混排。 -->
+        <section v-if="answerText || msg.artifacts?.length || qualityNote || (streaming && !hasProcess)" class="final-answer" aria-label="最终答案">
+          <header v-if="answerText" class="final-answer-head">
+            <span>最终答案</span>
+            <span v-if="streaming" class="final-answer-live">正在输出</span>
+          </header>
+          <div class="ai-bubble">
+            <div v-if="qualityNote" class="quality-note" :class="qualityNote.tone" role="status">
+              <span class="quality-badge">{{ qualityNote.label }}</span>
+              <span>{{ qualityNote.text }}</span>
+            </div>
+            <div v-if="streaming && !answerText && !hasProcess" class="answer-loading" aria-hidden="true">
+              <span></span><span></span>
+            </div>
+            <div v-if="answerText" class="answer" :class="{ streaming }">
+              <span v-html="html"></span>
+            </div>
+            <!-- 产物：本轮模型写下的文件、截到的图。直接摆在回答下面，
+                 不用再去路径里自己搜。图片给缩略图，文件给可点的名字。 -->
+            <ArtifactCards :artifacts="msg.artifacts" :open="openArtifact" />
           </div>
-          <div v-if="msg.text" class="answer" :class="{ streaming }">
-            <span v-html="html"></span>
-          </div>
-          <!-- 产物：本轮模型写下的文件、截到的图。直接摆在回答下面，
-               不用再去路径里自己搜。图片给缩略图，文件给可点的名字。 -->
-          <ArtifactCards :artifacts="msg.artifacts" :open="openArtifact" />
-        </div>
+        </section>
 
         <!-- P0 结构化「提问 / 授权」出口：拿不准 / 歧义写 / 安全门拦下时弹可点选项框 -->
         <div v-if="msg.ask && !streaming" class="ask-box" :class="msg.ask.kind === 'permission' ? 'is-perm' : 'is-clarify'">
@@ -412,39 +460,49 @@ const phaseLabel = computed(() => {
 .msg { min-width: 0; }
 .user-row { display: flex; justify-content: flex-end; animation: msg-in .18s ease both; }
 .user-bubble {
-  max-width: min(640px, 88%);
-  padding: 12px 16px;
+  max-width: min(640px, 82%);
+  padding: 10px 14px;
   background: var(--bg-hover);
   color: var(--text);
-  border-radius: var(--r-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: var(--r-lg) var(--r-lg) var(--r-xs) var(--r-lg);
 }
-.user-text { white-space: pre-wrap; word-break: break-word; font-family: var(--font-ui); font-size: var(--fs-h3); line-height: 1.75; }
+.user-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-ui); font-size: var(--fs-h3); line-height: 1.7; }
 .user-imgs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .user-imgs img { max-width: 180px; max-height: 180px; border-radius: var(--r-sm); }
 
 .ai-row { min-width: 0; animation: msg-in .18s ease both; }
-.ai-head { display: flex; align-items: center; gap: 8px; min-height: 24px; margin-bottom: 10px; }
+.ai-head { display: flex; align-items: center; gap: 7px; min-height: 22px; margin-bottom: 10px; }
 .ai-mark {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
   border-radius: var(--r-sm);
   background: var(--accent-soft);
   color: var(--accent-text);
 }
-.ai-name { font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+.ai-name { font-size: var(--fs-md); font-weight: 600; letter-spacing: -.01em; color: var(--text); }
 .ai-time { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); }
 
 @keyframes msg-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {
   .user-row, .ai-row { animation: none !important; }
-  .live-dots i { animation: none !important; opacity: .6; }
+  .live-dots i, .flow-row.is-running .flow-marker, .answer-loading span { animation: none !important; opacity: .6; }
   .answer.streaming::after { animation: none !important; opacity: .6; }
 }
 
-.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.ai-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.final-answer { min-width: 0; }
+.final-answer-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; color: var(--text); font-size: var(--fs-sm); font-weight: 600; }
+.final-answer-head::before { content: ''; width: 14px; height: 2px; background: var(--accent-text); }
+.final-answer-live { color: var(--accent-text); font-size: var(--fs-cap); font-weight: 400; }
 .ai-bubble { background: transparent; border: 0; padding: 0; width: 100%; max-width: 100%; }
+.answer-loading { display: flex; flex-direction: column; gap: 9px; padding: 4px 0; }
+.answer-loading span { display: block; width: min(420px, 78%); height: 9px; border-radius: var(--r-full); background: var(--bg-hover); animation: loading-breathe 1.4s ease-in-out infinite; }
+.answer-loading span:last-child { width: min(280px, 52%); animation-delay: .18s; }
+@keyframes loading-breathe { 0%, 100% { opacity: .45; } 50% { opacity: .9; } }
 
 /* 回答正文是主视觉：15px / 1.75，标题逐级放大；不改共享 markdown 层，避免影响工作台。
    2026-10-29：由 16px / 1.8 下调一档（用户反馈正文偏大），标题 24/20/17 → 22/19/16。
@@ -521,61 +579,36 @@ const phaseLabel = computed(() => {
 .quality-note.warning .quality-badge { color: var(--amber); }
 .quality-note.danger .quality-badge { color: var(--danger); }
 
-/* 执行过程：整轮唯一的折叠层；展开后按时间顺序阅读，单步仍可各自展开。 */
-.process { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-raised); overflow: hidden; }
-.process-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 12px;
-  border: 0;
-  background: none;
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  font-size: var(--fs-md);
-  text-align: left;
-  cursor: pointer;
-  transition: background 150ms;
+/* 执行过程：轻量时间线常驻对话流，摘要保持可见，技术全文仍可单步展开。 */
+.process {
+  padding: 10px 12px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
 }
-.process-toggle:hover { background: var(--bg-hover); }
-/* hover 底色比 surface 深一档，弱化文字必须同步往 ink 收，否则纸面皮肤跌到 4.34:1。 */
-.process-toggle:hover .process-summary,
-.process-toggle:hover .chev,
-.refs-toggle:hover .chev,
-.flow-row:hover .flow-summary,
-.flow-row:hover .flow-time,
-.flow-row:hover .chev,
-.ref-item:hover .ref-dir,
-.ref-item:hover .ref-line {
-  color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover));
-}
-.process-glyph { flex: none; color: var(--text-faint); }
-.process-label { flex: none; font-weight: 500; color: var(--text); }
-.process-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-sm); }
-.process-body { max-height: 320px; overflow-y: auto; padding: 2px 12px 10px; border-top: 1px solid var(--border); }
-.process-empty { margin: 10px 0; color: var(--text-muted); font-size: var(--fs-sm); }
+.process.is-live { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }
+.process-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 24px; margin-bottom: 4px; padding: 0; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
+.process-label { flex: none; color: var(--text); font-size: var(--fs-sm); font-weight: 600; }
+.process-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: var(--fs-cap); }
+.process-live { flex: none; color: var(--accent-text); font-size: var(--fs-cap); }
+.process-body { padding-left: 1px; }
 
-.narration { padding: 8px 0; font-size: var(--fs-md); line-height: 1.7; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
+.narration { padding: 7px 0 7px 16px; border-left: 1px solid var(--border); font-size: var(--fs-md); line-height: 1.7; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .narration.reasoning {
-  margin: 6px 0;
-  padding: 8px 10px;
-  border-left: 2px solid var(--border-strong);
-  border-radius: 0 var(--r-sm) var(--r-sm) 0;
-  background: var(--surface);
+  margin: 4px 0;
   color: var(--text);
 }
 .narration-tag { display: block; margin-bottom: 2px; color: var(--accent-text); font-size: var(--fs-cap); font-weight: 600; }
 
 .flow-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 7px;
   width: 100%;
-  padding: 6px 0;
+  min-height: 34px;
+  padding: 6px 4px;
   border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: var(--r-xs);
   background: none;
   color: var(--text-muted);
   font-family: var(--font-ui);
@@ -583,17 +616,27 @@ const phaseLabel = computed(() => {
   text-align: left;
   cursor: pointer;
 }
-.flow-row:hover { color: var(--text); }
-.flow-glyph { flex: 0 0 13px; color: var(--text-faint); }
-.flow-title { flex: none; color: var(--text); font-weight: 600; }
+.flow-row:hover { background: var(--bg-hover); color: var(--text); }
+.flow-row:hover .flow-summary,
+.flow-row:hover .flow-time,
+.flow-row:hover .chev,
+.refs-toggle:hover .chev,
+.ref-item:hover .ref-dir,
+.ref-item:hover .ref-line { color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover)); }
+.flow-marker { flex: 0 0 6px; width: 6px; height: 6px; border: 1px solid var(--text-faint); border-radius: 50%; }
+.flow-row.action .flow-marker { border-color: var(--accent-text); background: var(--accent-soft); }
+.flow-row.is-running .flow-marker { background: var(--accent-text); animation: flow-pulse 1.2s ease-in-out infinite; }
+@keyframes flow-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+.flow-title { flex: none; color: var(--text); font-weight: 550; }
 .flow-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-row.result { padding-left: 20px; color: var(--text-muted); }
-.flow-row.result .flow-summary { color: var(--text-muted); }
+.flow-row.result { padding-left: 20px; }
+.flow-row.result .flow-title { color: var(--text-muted); font-weight: 400; }
 .flow-time { flex: none; color: var(--text-faint); font-size: var(--fs-cap); font-family: var(--font-mono); }
 .flow-detail {
   margin: 0 0 6px 20px;
-  padding: 6px 0 6px 10px;
+  padding: 8px 10px;
   border-left: 2px solid var(--border);
+  background: var(--surface);
   font-family: var(--font-mono);
   font-size: var(--fs-cap);
   line-height: 1.65;
@@ -604,14 +647,11 @@ const phaseLabel = computed(() => {
   overflow: auto;
 }
 @media (max-width: 600px) {
-  .process-toggle { align-items: flex-start; }
-  .process-summary {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    white-space: normal;
-    line-height: 1.5;
-  }
+  .process { padding-inline: 10px; }
+  .process-head { align-items: flex-start; flex-wrap: wrap; }
+  .process-summary { flex-basis: 100%; order: 3; white-space: normal; line-height: 1.5; }
+  .flow-row { align-items: flex-start; }
+  .flow-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; line-height: 1.5; }
 }
 
 /* 文中引用：折叠摘要 + 可展开的文件列表 */
@@ -709,12 +749,12 @@ const phaseLabel = computed(() => {
 .ask-box {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  border: var(--edge-w-strong) solid var(--edge-ink);
-  border-radius: var(--r-sm);
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-text);
+  border-radius: var(--r-md);
   background: var(--bg-raised);
-  box-shadow: var(--sh-hard-sm);
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 .ask-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ask-badge {
@@ -757,10 +797,11 @@ const phaseLabel = computed(() => {
 .notice {
   font-family: var(--font-sans);
   font-size: var(--fs-sm);
+  line-height: 1.6;
   color: var(--text-muted);
   background: var(--bg-hover);
-  border: var(--edge-w-strong, 2px) solid var(--border);
-  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
 }
 
 .chev { color: var(--text-faint); transition: transform .15s; }

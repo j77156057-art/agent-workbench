@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue'
-import { runtimeApi, engineApi, playApi, sceneApi, regionsApi, bugsApi, changesetApi, aiApi, getProjectId } from '../api'
+import { runtimeApi, engineApi, playApi, sceneApi, regionsApi, bugsApi, changesetApi, aiApi, agentApi, visionApi, getProjectId } from '../api'
 import { createPoller } from '../composables/polling'
+import { preferredScrollBehavior } from '../composables/motionPreference'
 import { appEvents } from '../eventBus'
 import { blobDataUrl } from '../previewFeedback'
 import { capturePreviewFrame } from '../workflowPreviewCapture'
+import { createVisualClickFlow, initialVisualClickState } from '../visualActionLoop'
+import type { VisualClickViewState } from '../visualActionLoop'
 import type { WebTemplates, WebExportResult, DesktopHost, EmbedRect, BugItem, RegionInfo } from '../api'
 import { useWorkbench } from '../composables/workbench'
 import { useEngineConfig } from '../composables/useEngineConfig'
@@ -48,6 +51,54 @@ const visualOpen = ref(false)
 const visualPanel = ref<HTMLElement | null>(null)
 let visualGeneration = 0
 
+// 桌面视觉点击：202 只展示待审批；批准后由控制器用同一 proposal_id 重试一次。
+const clickDescription = ref('')
+const clickGoal = ref('')
+const clickBusy = ref(false)
+const clickLocateError = ref('')
+const clickState = ref<VisualClickViewState>(initialVisualClickState())
+const clickFlow = createVisualClickFlow({
+  execute: proposalId => visionApi.executeClick(proposalId),
+  listApprovals: () => agentApi.approvalRequests(),
+  decide: (id, approved) => agentApi.decideApprovalRequest(id, approved),
+}, next => { clickState.value = next })
+const clickOperating = computed(() => clickBusy.value
+  || ['executing', 'approving', 'rejecting'].includes(clickState.value.phase))
+
+async function locateClickTarget() {
+  const description = clickDescription.value.trim()
+  if (!description || clickOperating.value) return
+  const projectId = getProjectId(), ticket = ++visualGeneration
+  clickBusy.value = true
+  clickLocateError.value = ''
+  clickFlow.reset()
+  try {
+    const result = await visionApi.locateClick(description, clickGoal.value.trim())
+    if (ticket !== visualGeneration || projectId !== getProjectId()) return
+    if (!result.ok || !result.proposal_id || !result.image || !result.bbox || !result.point) {
+      throw new Error(result.error || '没有找到可靠的点击位置')
+    }
+    clickFlow.propose({
+      proposal_id: result.proposal_id, image: result.image, bbox: result.bbox,
+      point: result.point, label: result.label || description,
+      evidence: result.evidence || '', expires_in: result.expires_in || 45,
+    })
+  } catch (cause) {
+    if (ticket === visualGeneration && projectId === getProjectId()) {
+      clickLocateError.value = (cause as Error).message || '视觉定位失败'
+    }
+  } finally {
+    if (ticket === visualGeneration) clickBusy.value = false
+  }
+}
+
+function clickTargetStyle() {
+  const box = clickState.value.proposal?.bbox
+  if (!box || box.length !== 4) return {}
+  return { left: `${box[0] * 100}%`, top: `${box[1] * 100}%`,
+    width: `${(box[2] - box[0]) * 100}%`, height: `${(box[3] - box[1]) * 100}%` }
+}
+
 async function openVisualFeedback() {
   if (visualBusy.value || visualSending.value) return
   const frame = iframeEl.value
@@ -63,7 +114,7 @@ async function openVisualFeedback() {
     visualOpen.value = true
     visualStatus.value = '已截取此刻画面。请确认截图包含你要反馈的内容。'
     await nextTick()
-    visualPanel.value?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    visualPanel.value?.scrollIntoView({ block: 'start', behavior: preferredScrollBehavior() })
   } catch (e) { visualStatus.value = (e as Error).message || '截图失败，请通过聊天上传截图。' }
   finally { visualBusy.value = false }
 }
@@ -871,6 +922,8 @@ function resetProject() {
   visualGeneration++
   visualOpen.value = false; visualBlob.value = null; visualImage.value = ''
   visualNote.value = ''; visualStatus.value = ''; visualSending.value = false
+  clickFlow.reset()
+  clickDescription.value = ''; clickGoal.value = ''; clickLocateError.value = ''; clickBusy.value = false
   stopTimers()
   events.value = []
   seen.clear()
@@ -1020,6 +1073,72 @@ onUnmounted(() => {
               <div><button class="pb-btn" :disabled="visualBusy || visualSending" @click="openVisualFeedback">重新截取</button><button class="pb-btn primary" :disabled="!visualNote.trim() || visualSending" @click="sendVisualFeedback">{{ visualSending ? 'AI 分析中…' : '发送截图与意见' }}</button></div>
               <p role="status">{{ visualStatus }}</p>
               <small>截图和意见发送到当前聊天使用的模型；分析回复不代表文件已修改。审核并完成修改后，再重新导出试玩检查效果。</small>
+            </section>
+
+            <section class="pb-visual-feedback pb-visual-click" aria-label="桌面控件视觉点击">
+              <header><b>桌面控件视觉点击</b><small>仅操作当前项目窗口 · 每次点击都要审批</small></header>
+              <div class="pb-click-inputs">
+                <input v-model="clickDescription" maxlength="160" placeholder="例如：画面右上角的保存按钮"
+                       aria-label="要点击的控件" :disabled="clickOperating" @keydown.enter="locateClickTarget" />
+                <input v-model="clickGoal" maxlength="240" placeholder="期望的可见效果（可选）"
+                       aria-label="点击后的预期效果" :disabled="clickOperating" />
+                <button class="pb-btn primary" :disabled="clickOperating || !clickDescription.trim()" @click="locateClickTarget">
+                  {{ clickBusy ? 'AI 定位中…' : 'AI 定位控件' }}
+                </button>
+              </div>
+              <p v-if="clickLocateError" class="pb-msg err" role="alert">{{ clickLocateError }}</p>
+
+              <div v-if="clickState.proposal" class="pb-click-proposal">
+                <div class="pb-click-shot">
+                  <img :src="clickState.proposal.image" alt="待审批点击目标的桌面窗口截图" />
+                  <span :style="clickTargetStyle()" />
+                </div>
+                <div class="pb-click-detail">
+                  <b>{{ clickState.proposal.label }}</b>
+                  <small>{{ clickState.proposal.evidence }}</small>
+                  <small>窗口坐标 {{ clickState.proposal.point.x }}, {{ clickState.proposal.point.y }} · 建议 {{ clickState.proposal.expires_in }} 秒内处理</small>
+                  <div v-if="clickState.phase === 'ready'" class="pb-click-actions">
+                    <button class="pb-btn" @click="clickFlow.reset('已取消这次提案，可以重新定位。')">取消</button>
+                    <button class="pb-btn primary" @click="clickFlow.execute()">提交点击审批</button>
+                  </div>
+                </div>
+              </div>
+
+              <section v-if="['pending', 'approving', 'rejecting'].includes(clickState.phase)"
+                       class="pb-click-pending" role="status" aria-live="polite">
+                <b>{{ clickState.renewed ? '过期已续签，等待再次批准' : '待审批，尚未点击' }}</b>
+                <dl>
+                  <dt>ticket_id</dt><dd>{{ clickState.ticketId }}</dd>
+                  <dt>action</dt><dd>{{ clickState.action }}</dd>
+                  <dt>target</dt><dd>{{ clickState.target }}</dd>
+                </dl>
+                <p>{{ clickState.notice }}</p>
+                <div class="pb-click-actions">
+                  <button class="pb-btn primary" :disabled="clickState.phase !== 'pending'" @click="clickFlow.approve()">
+                    {{ clickState.phase === 'approving' ? '批准中…' : '批准并重试一次' }}
+                  </button>
+                  <button class="pb-btn" :disabled="clickState.phase !== 'pending'" @click="clickFlow.retry()">已在审批队列批准？重试</button>
+                  <button class="pb-btn warn" :disabled="clickState.phase !== 'pending'" @click="clickFlow.reject()">
+                    {{ clickState.phase === 'rejecting' ? '拒绝中…' : '拒绝' }}
+                  </button>
+                </div>
+              </section>
+
+              <p v-if="clickState.error" class="pb-msg err" role="alert">{{ clickState.error }}</p>
+              <p v-if="clickState.notice && !['pending', 'approving', 'rejecting', 'completed'].includes(clickState.phase)" role="status">
+                {{ clickState.notice }}
+              </p>
+              <section v-if="clickState.phase === 'completed' && clickState.result" class="pb-click-result" aria-label="视觉点击结果">
+                <b>点击已执行</b>
+                <p v-if="clickState.notice" role="status">{{ clickState.notice }}</p>
+                <div class="pb-click-images">
+                  <figure v-if="clickState.result.before"><img :src="clickState.result.before" alt="点击前画面" /><figcaption>点击前</figcaption></figure>
+                  <figure v-if="clickState.result.after"><img :src="clickState.result.after" alt="点击后画面" /><figcaption>点击后</figcaption></figure>
+                </div>
+                <p v-if="clickState.result.verification">
+                  视觉复验：{{ clickState.result.verification.status }} · {{ clickState.result.verification.evidence }}
+                </p>
+              </section>
             </section>
           </div>
 
@@ -1235,6 +1354,31 @@ onUnmounted(() => {
 .pb-visual-feedback p { margin: 0; font-size: var(--fs-sm); }
 .pb-visual-feedback small { color: var(--text-muted); }
 
+.pb-visual-click { gap: var(--mi-space-3); }
+.pb-visual-click header small { font-size: var(--fs-cap); }
+.pb-visual-feedback > .pb-click-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--mi-space-2); }
+.pb-visual-click input { min-width: 0; padding: var(--mi-space-2) var(--mi-space-3); border: var(--mi-border-width) solid var(--border); border-radius: 6px; color: var(--text); background: var(--bg); font: inherit; font-size: var(--fs-sm); }
+.pb-visual-feedback > .pb-click-proposal { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(180px, .8fr); gap: var(--mi-space-3); }
+.pb-click-shot { position: relative; align-self: start; }
+.pb-click-shot img { display: block; width: 100%; }
+.pb-click-shot span { position: absolute; box-sizing: border-box; border: 2px solid var(--green); background: color-mix(in srgb, var(--green) 18%, transparent); pointer-events: none; }
+.pb-click-detail { display: grid; align-content: start; gap: var(--mi-space-2); }
+.pb-click-detail small { overflow-wrap: anywhere; }
+.pb-click-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--mi-space-2); }
+.pb-click-pending, .pb-click-result { display: grid; gap: var(--mi-space-2); padding: var(--mi-space-3); border: var(--mi-border-width) solid var(--border); border-radius: 7px; }
+.pb-click-pending { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, var(--bg-raised)); }
+.pb-click-pending > b { color: var(--amber); }
+.pb-click-pending p, .pb-click-result p { margin: 0; font-size: var(--fs-sm); }
+.pb-click-pending dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--mi-space-1) var(--mi-space-3); margin: 0; font-size: var(--fs-cap); }
+.pb-click-pending dt { color: var(--text-muted); }
+.pb-click-pending dd { margin: 0; font-family: var(--font-mono); overflow-wrap: anywhere; }
+.pb-click-result { border-color: var(--green); }
+.pb-click-result > b { color: var(--green); }
+.pb-click-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--mi-space-2); }
+.pb-click-images figure { margin: 0; min-width: 0; }
+.pb-click-images img { display: block; width: 100%; }
+.pb-click-images figcaption { margin-top: var(--mi-space-1); color: var(--text-muted); font-size: var(--fs-cap); }
+
 @keyframes pb-mask-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes pb-pop-in { from { opacity: 0; transform: translate(-50%, -48%) scale(.985); } to { opacity: 1; transform: translate(-50%, -50%) scale(1); } }
 @keyframes pb-section-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
@@ -1258,6 +1402,7 @@ onUnmounted(() => {
   .pb-framewrap, .pb-pop-inline .pb-framewrap { height: 58vw; min-height: 190px; }
   .pb-side-head { align-items: flex-start; gap: 6px; flex-direction: column; }
   .pb-side-head > div { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+  .pb-visual-feedback > .pb-click-inputs, .pb-visual-feedback > .pb-click-proposal { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

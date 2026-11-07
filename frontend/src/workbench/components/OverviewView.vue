@@ -17,6 +17,12 @@ const tasks = ref<{ id: string; title: string; status: string }[]>([])
 const projectRoot = computed(() => tree.value?.code_root || '')
 const regionsEnabled = computed(() => demoMode.value || !!tree.value?.regions_enabled)
 const noProject = computed(() => !demoMode.value && !projectRoot.value)
+const rootStatus = ref<Awaited<ReturnType<typeof projectApi.codeRootStatus>> | null>(null)
+const rootStatusLoading = ref(false)
+const rootStatusError = ref('')
+const rootSourceLabel = computed(() => ({
+  session: '会话覆盖目录', project_context: '当前项目目录', global: '全局配置目录',
+}[rootStatus.value?.source || ''] || '目录来源未知'))
 
 function normalizePath(path: string) {
   return path.replace(/\\/g, '/').replace(/\/+$/, '')
@@ -36,7 +42,10 @@ watch([projectRoot, demoMode], async ([root, isDemo], _previous, onCleanup) => {
   onCleanup(() => { active = false })
   tasks.value = []
   projects.value = []
-  if (!root || isDemo) return
+  rootStatus.value = null
+  rootStatusError.value = ''
+  if (!root || isDemo) { rootStatusLoading.value = false; return }
+  rootStatusLoading.value = true
   const projectId = getProjectId()
   await Promise.all([
     projectApi.list().then((r) => {
@@ -50,7 +59,13 @@ watch([projectRoot, demoMode], async ([root, isDemo], _previous, onCleanup) => {
         status: String(t.status ?? ''),
       }))
     }).catch(() => { /* 任务不可用时不展示空的统计或示例任务。 */ }),
+    projectApi.codeRootStatus().then((status) => {
+      if (active && projectId === getProjectId()) rootStatus.value = status
+    }).catch((error: Error) => {
+      if (active) rootStatusError.value = error.message || '检索目录核对失败'
+    }),
   ])
+  if (active) rootStatusLoading.value = false
 }, { immediate: true })
 
 function countFiles(nodes: TreeNode[]): number {
@@ -126,6 +141,19 @@ function showSymbolMap() {
           </div>
         </dl>
         <p v-if="!demoMode && tree?.truncated" class="ov-stats-note">文件树仅加载了部分内容，统计不代表项目文件总数。</p>
+        <div v-if="!demoMode && projectRoot" class="ov-root-status" aria-live="polite">
+          <span class="ov-root-status-label">检索根目录</span>
+          <span v-if="rootStatusLoading" class="ov-root-status-muted">正在核对…</span>
+          <span v-else-if="rootStatusError" class="ov-root-status-error">{{ rootStatusError }}</span>
+          <template v-else-if="rootStatus">
+            <span class="ov-root-status-source" :title="rootStatus.effective">{{ rootSourceLabel }}</span>
+            <span v-if="!rootStatus.effective" class="ov-root-status-error">未设置生效目录</span>
+            <span v-else-if="rootStatus.mismatch_top_vs_project" class="ov-root-status-warning" :title="rootStatus.hint">
+              顶层目录与当前项目不一致，可能检索到旧目录
+            </span>
+            <span v-else class="ov-root-status-ok">与当前项目一致</span>
+          </template>
+        </div>
       </section>
 
       <div class="ov-columns">
@@ -253,12 +281,13 @@ function showSymbolMap() {
   flex-wrap: wrap;
   gap: 20px 28px;
   padding: 20px 24px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-raised);
+  border: 1px solid var(--mi-border-level-2);
+  border-radius: var(--mi-radius-card);
+  background: var(--mi-surface-level-2);
+  box-shadow: var(--mi-shadow-level-2);
 }
 .ov-project-context { flex: 1 1 260px; display: flex; align-items: center; gap: 14px; min-width: 0; }
-.ov-folder { flex: none; display: grid; place-items: center; width: 40px; height: 40px; color: var(--text-muted); background: var(--bg); border-radius: 8px; }
+.ov-folder { flex: none; display: grid; place-items: center; width: 40px; height: 40px; color: var(--text-muted); background: var(--mi-surface-level-1); border-radius: var(--mi-radius-card); }
 .ov-project-info { min-width: 0; }
 .ov-project-name { margin: 0; font-size: var(--fs-h2); font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 .ov-root { margin: 4px 0 0; color: var(--text-muted); font: var(--fs-sm)/1.6 var(--font-mono); overflow-wrap: anywhere; }
@@ -267,9 +296,16 @@ function showSymbolMap() {
 .ov-stat dt { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.5; }
 .ov-stat dd { margin: 0; font-size: var(--fs-xl); font-weight: 600; line-height: 1.4; font-variant-numeric: tabular-nums; }
 .ov-stats-note { flex-basis: 100%; margin: 0; color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.6; }
+.ov-root-status { flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: var(--fs-sm); line-height: 1.6; }
+.ov-root-status-label { color: var(--text); font-family: var(--ui2-font-mono, var(--font-mono)); font-size: var(--fs-cap); letter-spacing: .06em; }
+.ov-root-status-source { color: var(--text-muted); font-family: var(--font-mono); }
+.ov-root-status-muted { color: var(--text-muted); }
+.ov-root-status-ok { color: var(--green); }
+.ov-root-status-warning { color: var(--amber); }
+.ov-root-status-error { color: var(--danger); }
 .ov-columns { display: grid; grid-template-columns: minmax(0, 1fr) 280px; align-items: start; gap: 28px; }
 .ov-main { min-width: 0; display: flex; flex-direction: column; gap: 20px; }
-.ov-start { padding: 28px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-raised); }
+.ov-start { padding: 28px; border: 1px solid var(--mi-border-level-2); border-radius: var(--mi-radius-card); background: var(--mi-surface-level-2); box-shadow: var(--mi-shadow-level-2); }
 .ov-eyebrow { display: block; margin-bottom: 12px; font-size: var(--fs-sm); font-weight: 600; color: var(--accent-text); }
 .ov-start h2 { margin: 0; font-size: var(--fs-h1); font-weight: 600; line-height: 1.5; letter-spacing: -.02em; }
 .ov-start p { max-width: 520px; margin: 12px 0 24px; font-size: var(--fs-body); line-height: 1.8; color: var(--text-muted); }
@@ -281,9 +317,9 @@ function showSymbolMap() {
   justify-content: center;
   gap: 12px;
   padding: 9px 16px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-raised);
+  border: 1px solid var(--mi-border-level-2);
+  border-radius: var(--mi-radius-control);
+  background: var(--mi-surface-level-2);
   color: var(--text);
   font-size: var(--fs-body);
   font-weight: 500;
@@ -296,18 +332,18 @@ function showSymbolMap() {
 .ov-region-settings { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 0 4px 20px; border-bottom: 1px solid var(--border); }
 .ov-region-settings h3 { margin: 0; font-size: var(--fs-body); font-weight: 500; line-height: 1.5; }
 .ov-region-settings p { margin: 5px 0 0; font-size: var(--fs-md); line-height: 1.6; color: var(--text-muted); }
-.ov-text-button { flex: none; min-height: 32px; padding: 6px 8px; border: 0; border-radius: 5px; background: none; color: var(--text-muted); font-size: var(--fs-md); line-height: 1.5; cursor: pointer; }
+.ov-text-button { flex: none; min-height: 32px; padding: 6px 8px; border: 0; border-radius: var(--mi-radius-control); background: none; color: var(--text-muted); font-size: var(--fs-md); line-height: 1.5; cursor: pointer; }
 .ov-text-button:hover { color: var(--accent-text); background: var(--bg-hover); }
 .ov-rail { min-width: 0; display: flex; flex-direction: column; gap: 24px; }
 .ov-group { min-width: 0; }
 .ov-group + .ov-group { padding-top: 20px; border-top: 1px solid var(--border); }
 .ov-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; margin-bottom: 12px; }
 .ov-group-head h2 { margin: 0; font-size: var(--fs-body); line-height: 1.5; font-weight: 600; }
-.ov-dismiss { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: none; border-radius: 5px; background: none; color: var(--text-muted); cursor: pointer; }
+.ov-dismiss { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: none; border-radius: var(--mi-radius-control); background: none; color: var(--text-muted); cursor: pointer; }
 .ov-dismiss:hover { background: var(--bg-hover); color: var(--text); }
 .ov-steps, .ov-recent, .ov-task-list { list-style: none; margin: 0; padding: 0; }
 .ov-steps { display: flex; flex-direction: column; gap: 4px; }
-.ov-step, .ov-step-static { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 8px; text-align: left; border: 0; border-radius: 6px; background: none; color: var(--text); }
+.ov-step, .ov-step-static { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 8px; text-align: left; border: 0; border-radius: var(--mi-radius-control); background: none; color: var(--text); }
 .ov-step { cursor: pointer; }
 .ov-step:hover:not(:disabled) { background: var(--bg-hover); }
 .ov-step:disabled { opacity: .55; cursor: not-allowed; }
@@ -316,7 +352,7 @@ function showSymbolMap() {
 .ov-step-text b { font-size: var(--fs-md); font-weight: 500; line-height: 1.6; }
 .ov-step-text > span { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.6; }
 .ov-guide-foot { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; padding: 0 8px; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.6; }
-.ov-recent-item { width: 100%; display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); cursor: pointer; }
+.ov-recent-item { width: 100%; display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px 8px; border: 0; border-radius: var(--mi-radius-control); background: none; color: var(--text); cursor: pointer; }
 .ov-recent-item:hover { background: var(--bg-hover); }
 .ov-recent-name { max-width: 100%; font-size: var(--fs-md); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-recent-dir { max-width: 100%; color: var(--text-muted); font: var(--fs-cap)/1.6 var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

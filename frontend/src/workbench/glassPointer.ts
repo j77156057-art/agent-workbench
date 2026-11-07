@@ -59,6 +59,7 @@ export function initGlassPointer(root: HTMLElement | Document = document): Glass
   }
 
   const onMove = (e: MouseEvent) => {
+    if (REDUCED.matches) { onLeave(); return }
     lastX = e.clientX
     lastY = e.clientY
     if (raf) return                       // 一帧最多写一次

@@ -136,7 +136,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   background: var(--bg-raised);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  box-shadow: 0 24px 70px rgba(35, 52, 84, 0.16);
+  box-shadow: var(--mi-shadow-pop);
   display: flex;
   flex-direction: column;
   overflow: hidden;

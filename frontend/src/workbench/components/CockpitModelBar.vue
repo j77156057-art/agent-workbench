@@ -167,7 +167,7 @@ onMounted(() => {
   border-radius: 9px;
   background: var(--bg-hover, color-mix(in srgb, var(--accent) 4%, transparent));
   font-size: var(--fs-sm);
-  box-shadow: inset 3px 0 color-mix(in srgb, var(--accent) 42%, transparent), 0 3px 12px rgba(35,52,84,.05);
+  box-shadow: inset 3px 0 color-mix(in srgb, var(--accent) 42%, transparent), var(--mi-shadow-control);
   transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
 }
 .cmb:focus-within { border-color: color-mix(in srgb, var(--accent) 45%, transparent); box-shadow: inset 3px 0 color-mix(in srgb, var(--accent) 70%, transparent), 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent); }

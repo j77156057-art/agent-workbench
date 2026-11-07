@@ -72,19 +72,26 @@ export function withProject(init?: RequestInit, projectId = getProjectId()): Req
   return base
 }
 
+let memoryRequestTrace = 0
+
 export async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const tracingMemory = url.includes('/api/agent/memory/inspect') || url.includes('/api/memory/context')
+  const traceId = tracingMemory ? ++memoryRequestTrace : 0
+  if (tracingMemory) performance.mark('memory:fetch:start', { detail: { traceId, url } })
   let res: Response
   try {
     res = await fetch(url, withProject(init))
   } catch {
     throw new FsApiError(0, '无法连接本地服务（127.0.0.1:8000），请确认 Agent 工作台 已启动。')
   }
+  if (tracingMemory) performance.mark('memory:fetch:end', { detail: { traceId, url } })
   let body: any = null
   try {
     body = await res.json()
   } catch {
     /* 非 JSON 响应走下面的状态码分支 */
   }
+  if (tracingMemory) performance.mark('memory:json:end', { detail: { traceId, url } })
   if (!res.ok || body?.ok === false) {
     const { ok: _ok, error: _e, ...extra } = body || {}
     throw new FsApiError(

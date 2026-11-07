@@ -2,10 +2,12 @@
 // GLB 3D 预览：@google/model-viewer 本地打包，动态 import 拆成懒 chunk；
 // 加载失败时降级为提示（文件仍可正常导入，不影响主流程）。
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useReducedMotion } from '../composables/motionPreference'
 
 const props = defineProps<{ src: string; poster?: string; cameraControls?: boolean }>()
 
 const status = ref<'loading' | 'ready' | 'error'>('loading')
+const reducedMotion = useReducedMotion()
 let disposed = false
 
 async function loadViewer() {
@@ -31,7 +33,7 @@ onBeforeUnmount(() => { disposed = true })
       :src="src"
       :poster="poster || undefined"
       :camera-controls="cameraControls !== false"
-      auto-rotate
+      :auto-rotate.prop="!reducedMotion"
       shadow-intensity="0.6"
       exposure="1"
       loading="lazy"
@@ -58,13 +60,13 @@ onBeforeUnmount(() => { disposed = true })
   width: 100%;
   height: 100%;
   min-height: 120px;
-  background: #eef2f8;
+  background: var(--mi-bg-deep);
   background-image:
-    repeating-linear-gradient(0deg, rgba(35,52,84,.05) 0 1px, transparent 1px 16px),
-    repeating-linear-gradient(90deg, rgba(35,52,84,.05) 0 1px, transparent 1px 16px);
+    repeating-linear-gradient(0deg, var(--mi-graph-grid) 0 1px, transparent 1px 16px),
+    repeating-linear-gradient(90deg, var(--mi-graph-grid) 0 1px, transparent 1px 16px);
   border-radius: 6px;
   overflow: hidden;
-  box-shadow: inset 0 0 0 1px rgba(35,52,84,.04);
+  box-shadow: inset 0 0 0 1px var(--mi-border-subtle);
 }
 .m3d-viewer {
   display: block;
@@ -84,10 +86,10 @@ onBeforeUnmount(() => { disposed = true })
   gap: 8px;
   color: var(--text-faint);
   font-size: var(--fs-cap);
-  background: rgba(238,242,248,.72);
+  background: color-mix(in oklch, var(--mi-bg-deep) 88%, transparent);
   animation: m3d-fallback-in .18s ease-out both;
 }
-.m3d-error { color: #b06a2b; background: rgba(253,243,223,.82); }
+.m3d-error { color: var(--mi-warning); background: color-mix(in oklch, var(--mi-bg-deep) 88%, transparent); }
 .m3d-spinner {
   width: 18px;
   height: 18px;

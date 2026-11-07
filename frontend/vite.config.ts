@@ -121,10 +121,11 @@ export default defineConfig({
       //
       // ws: true —— 实时对话走 WebSocket（/api/vision/live-stream），
       // 不开这个开关，dev 下浏览器会把 WS 请求直接发给 vite，握手必然失败。
-      // headers.origin —— 后端对 WS/HTTP 都做**同源**校验（比对 Origin 与 Host），
-      // 而 dev 页面在 5173、代理目标在 8012，不改写 Origin 会被判成跨源拒掉。
+      // changeOrigin + headers.origin —— 后端对 WS/HTTP 都做**同源**校验
+      // （比对 Origin 与 Host），两个头必须一起改写到代理目标，不能只改 Origin。
       '/api': {
         target: `http://127.0.0.1:${process.env.DOCMIND_PORT || 8000}`,
+        changeOrigin: true,
         ws: true,
         headers: { origin: `http://127.0.0.1:${process.env.DOCMIND_PORT || 8000}` },
       },

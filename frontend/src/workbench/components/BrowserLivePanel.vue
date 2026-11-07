@@ -249,7 +249,7 @@ function shotUrl(path?: string): string {
   padding: 1px 5px;
   border-radius: 3px;
   background: color-mix(in srgb, #000 55%, transparent);
-  color: #fff; font: 9.5px var(--font-mono);
+  color: var(--mi-text); font: 9.5px var(--font-mono);
 }
 .blp-url {
   font: var(--fs-cap)/1.45 var(--font-mono);

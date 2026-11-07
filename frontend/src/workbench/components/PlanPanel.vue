@@ -224,7 +224,7 @@ onBeforeUnmount(stopPoll)
   flex-direction: column;
   background: var(--bg-raised);
   border-left: 1px solid var(--border-strong);
-  box-shadow: -12px 0 34px rgba(35, 52, 84, .16);
+  box-shadow: var(--mi-shadow-pop);
   color: var(--text);
   font-size: var(--fs-sm);
 }

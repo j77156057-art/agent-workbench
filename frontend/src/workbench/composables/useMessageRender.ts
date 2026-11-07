@@ -27,20 +27,23 @@ export interface RenderMessage {
  * 对话消息的展示层：流式 markdown 节流渲染、成稿/引用缓存、trace 步骤
  * 标题/状态/计时、思考折叠。纯派生逻辑，不持有消息数组本身。
  */
-export function useMessageRender<T extends RenderMessage>(isActive: () => boolean) {
+export function useMessageRender<T extends RenderMessage>(
+  isActive: () => boolean,
+  textOf: (msg: T) => string = (msg) => msg.text,
+) {
   const { nodeExists, jumpToLine, revealPath } = useWorkbench()
 
   // ------------------------------------------------- 流式 markdown 节流
-  // token 仍逐帧进 m.text（便宜），markdown 重渲染按消息限流到 ~8 次/秒——
-  // 这是人眼「格式实时跟随」与「不逐 token 重建 DOM」之间的平衡点。
-  const LIVE_MD_INTERVAL = 125
+  // token 仍逐帧进 m.text（便宜），markdown 重渲染按消息限流到约 11 次/秒，
+  // 与问答页同为 90ms：保留实时感，同时避免逐 token 重建整段 DOM。
+  const LIVE_MD_INTERVAL = 90
   const liveHtml = reactive(new Map<number, string>())
   const liveMdTimers = new Map<number, ReturnType<typeof setTimeout>>()
   const liveMdLastAt = new Map<number, number>()
   function renderLiveMd(turn: T) {
     liveMdTimers.delete(turn.id)
     liveMdLastAt.set(turn.id, performance.now())
-    liveHtml.set(turn.id, mdToHtml(turn.text || ''))
+    liveHtml.set(turn.id, mdToHtml(textOf(turn)))
   }
   function scheduleLiveMd(turn: T) {
     if (liveMdTimers.has(turn.id)) return
@@ -60,7 +63,7 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
     renderNow()
   }
   function streamHtmlOf(msg: T): string {
-    return liveHtml.get(msg.id) ?? mdToHtml(msg.text || '')
+    return liveHtml.get(msg.id) ?? mdToHtml(textOf(msg))
   }
 
   // ------------------------------------------------- 成稿/引用缓存
@@ -68,27 +71,30 @@ export function useMessageRender<T extends RenderMessage>(isActive: () => boolea
   // 文本不变时不做重复解析（流式期间走纯文本层，根本不进 markdown 解析）。
   const answerHtmlCache = new Map<number, { src: string; html: string }>()
   function answerHtml(msg: T): string {
+    const source = textOf(msg)
     const hit = answerHtmlCache.get(msg.id)
-    if (hit && hit.src === msg.text) return hit.html
-    const html = mdToHtml(msg.text || '')
-    answerHtmlCache.set(msg.id, { src: msg.text, html })
+    if (hit && hit.src === source) return hit.html
+    const html = mdToHtml(source)
+    answerHtmlCache.set(msg.id, { src: source, html })
     return html
   }
   const refsCache = new Map<number, { src: string; refs: FileRef[] }>()
   function refsOf(msg: T): FileRef[] {
     // 只对真实存在于文件树中的路径生成卡片（过滤幻觉引用）
+    const source = textOf(msg)
     const hit = refsCache.get(msg.id)
-    if (hit && hit.src === msg.text) return hit.refs
-    const refs = extractFileRefs(msg.text).filter((r) => nodeExists(r.path))
-    refsCache.set(msg.id, { src: msg.text, refs })
+    if (hit && hit.src === source) return hit.refs
+    const refs = extractFileRefs(source).filter((r) => nodeExists(r.path))
+    refsCache.set(msg.id, { src: source, refs })
     return refs
   }
   const webRefsCache = new Map<number, { src: string; refs: ReturnType<typeof extractWebRefs> }>()
   function webRefsOf(msg: T) {
+    const source = textOf(msg)
     const hit = webRefsCache.get(msg.id)
-    if (hit && hit.src === msg.text) return hit.refs
-    const refs = extractWebRefs(msg.text)
-    webRefsCache.set(msg.id, { src: msg.text, refs })
+    if (hit && hit.src === source) return hit.refs
+    const refs = extractWebRefs(source)
+    webRefsCache.set(msg.id, { src: source, refs })
     return refs
   }
   async function openRef(r: FileRef) {

@@ -135,6 +135,11 @@ export const assetsApi = {
   packPreviewUrl(token: string, file: string) {
     return `/api/assets/packs/preview?token=${encodeURIComponent(token)}&file=${encodeURIComponent(file)}`
   },
+  createPlaceholder(path: string, kind: 'text' | 'json' | 'svg') {
+    return postJson<{ ok: boolean; resource?: {
+      path: string; mime: string; size: number; extension: string
+    }; error?: string }>('/api/create_placeholder', { path, kind })
+  },
   library() {
     return request<LibraryResp>('/api/assets/library')
   },

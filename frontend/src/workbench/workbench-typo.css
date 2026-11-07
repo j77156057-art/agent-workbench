@@ -13,9 +13,9 @@
      **2026-10-02 已撤销**：实测证明"不动密度"的代价是两页各走各的——
      开发舱 89 个文字元素里 **74 个行高是 `normal`**（浏览器默认，中文行距偏挤），
      字距 95% 是 normal，而问答页是 1.70 / .02em。用户据此要求统一排版。
-     现两页 body 基线都取 **14px / 1.65 / .02em**；
+     现两页 body 基线都取 **12.5px / 1.50 / .012em**（2026-11-04 收窄，原 14/1.65/.02）；
      为避免撑高控件，控件族（button/input/textarea/select/chip）单独回落到
-     `--lh-snug` 1.40。组件里那些 11~14px 的**显式**字号不受影响，密度基本保住。
+     `--lh-snug` 1.36。组件里那些 10.5~13px 的**显式**字号不受影响，密度基本保住。
 
    设计约束（R14 铁律）：
    - 纯增量层：只新增源码里尚不存在的令牌
@@ -39,28 +39,35 @@
      切「单列专注 / 对半分屏」时密度其实一点没变 —— 令牌空转。
      现在档位本身含缩放，931 处 var(--fs-*) 全部自动跟随布局，零组件改动。
      默认布局 fixed 的 --style-scale = 1，所以视觉零变化。 */
-  --fs-display: calc(30px * var(--style-scale, 1));   /* 顶栏/英雄标题档：≥28px 的主角字 */
-  --fs-h1: calc(22px * var(--style-scale, 1));        /* 一级标题 */
-  --fs-xl: calc(20px * var(--style-scale, 1));        /* 副标题档（原 20px 孤档） */
-  --fs-lead: calc(18px * var(--style-scale, 1));      /* 引导语/要点档（原 17 与 18 两档并入） */
-  --fs-h2: calc(16px * var(--style-scale, 1));        /* 区段标题 */
-  --fs-h3: calc(15px * var(--style-scale, 1));        /* 卡片标题 */
-  --fs-body: calc(14px * var(--style-scale, 1));      /* 正文（两页统一基线） */
-  --fs-md: calc(13px * var(--style-scale, 1));        /* 强调正文（原 13px 孤档） */
-  --fs-sm: calc(12px * var(--style-scale, 1));        /* 次级文字 */
-  --fs-cap: calc(11px * var(--style-scale, 1));       /* 说明/标签 */
-  --fs-micro: calc(11px * var(--style-scale, 1));     /* 元信息/等宽小字（与 cap 同尺寸，靠族/字距区分） */
+  /* 2026-11-04 收窄：原 12 档里 11/12/13 三档挤在 2px 内，视觉上是"一坨"，
+     顶部却跳到 30px。改为「小字保持可读、大字整体降两档」的窄字阶：
+     正文 14→12.5、区段标题 16/15→14/13、标题 22→19、展示数字 30→24。
+     大档降幅 13%~20%，小档降 0.5~1px；配合行高 1.65→1.50，正文行盒高度
+     从 23.1px 降到 18.8px（-19%），信息密度提升主要来自这里而不是把 11px 再压小。 */
+  --fs-display: calc(24px * var(--style-scale, 1));   /* 顶栏/英雄标题档：≥24px 的主角字 */
+  --fs-h1: calc(19px * var(--style-scale, 1));        /* 一级标题 */
+  --fs-xl: calc(16px * var(--style-scale, 1));        /* 副标题档 */
+  --fs-lead: calc(15px * var(--style-scale, 1));      /* 引导语/要点档 */
+  --fs-h2: calc(14px * var(--style-scale, 1));        /* 区段标题 */
+  --fs-h3: calc(13px * var(--style-scale, 1));        /* 卡片标题 */
+  --fs-body: calc(12.5px * var(--style-scale, 1));    /* 正文基线（原 14px） */
+  --fs-md: calc(12px * var(--style-scale, 1));        /* 强调正文（原 13px） */
+  --fs-sm: calc(11px * var(--style-scale, 1));        /* 次级文字（原 12px） */
+  --fs-cap: calc(10.5px * var(--style-scale, 1));     /* 说明/标签（原 11px，可读下限） */
+  --fs-micro: calc(10.5px * var(--style-scale, 1));   /* 元信息/等宽小字 */
 
   /* —— 阅读栏宽度：正文与输入框共用同一把尺 ——
      原 680px 在 ~1300px 宽的对话台里靠左排，右边空出一大条；提到 960px
      既吃掉那块突兀留白，又不至于让中文一行长到读着累。 */
   --measure: min(960px, 100%);
 
-  /* —— 行高 / 字距 —— */
-  --lh-tight: 1.15;
-  --lh-snug: 1.40;      /* 控件内（button/input/chip）：跟着舒展会撑高控件，故单独一档 */
-  --lh-body: 1.65;      /* 中文长文更舒展；原 1.6 偏挤 */
-  --ls-body: .02em;     /* 中文在 Windows 上默认偏挤，补一点字距 */
+  /* —— 行高 / 字距 ——
+     字号收窄后不能只缩字不缩行盒，否则视觉密度不升反降（行距显得更空）。
+     正文 1.65→1.50；控件仍走 snug，避免按钮被行高撑高。中文不再额外加宽字距。 */
+  --lh-tight: 1.12;
+  --lh-snug: 1.36;      /* 控件内（button/input/chip） */
+  --lh-body: 1.50;      /* 中文长文 */
+  --ls-body: .012em;    /* 中文在 Windows 上默认略挤，保留一点点字距 */
 
   /* —— 8px 间距栅格 —— */
   --s1: 4px;

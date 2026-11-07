@@ -26,10 +26,27 @@ export interface ProjectMutationResp {
   error?: string
 }
 
+export interface CodeRootStatus {
+  ok: boolean
+  effective: string
+  source: 'session' | 'project_context' | 'global' | string
+  layers: { session: string; project_context: string; global: string }
+  project_id: string
+  project_root: string
+  mismatch_top_vs_project: boolean
+  suggested: string
+  reconcile_available: boolean
+  hint: string
+}
+
 export const projectApi = {
   /** 项目列表 + 当前项目。返回字段：ok / current / projects[]。 */
   list(): Promise<ProjectListResp> {
     return projectRequest<ProjectListResp>('/api/projects')
+  },
+  /** 只读核对实际检索根目录及其与当前项目的一致性。 */
+  codeRootStatus(): Promise<CodeRootStatus> {
+    return projectRequest<CodeRootStatus>('/api/code_root_status')
   },
   /** 登记并激活一个代码库（后端 ensure+activate）。root 必须是已存在目录。 */
   create(root: string, name?: string): Promise<ProjectMutationResp> {
