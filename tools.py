@@ -45,8 +45,11 @@ from agent_runtime.tools import ToolResult, coerce_tool_spec, upgrade_registry
 from agent_runtime.tool_catalog import catalog_tool
 from agent_runtime.enterprise_sandbox import SandboxUnavailable as EnterpriseSandboxUnavailable
 from agent_runtime.enterprise_sandbox import (execution_mode, host_fallback_active, run_agent_command,
-                                               stage_execution_active, stage_backend)
+                                               stage_execution_active, stage_backend,
+                                               enforce_file_write_boundary, enforce_mcp_boundary,
+                                               execute_desktop_action)
 from agent_runtime import job_window
+from file_locks import cross_process_lock
 
 
 _PYTHON_EXEC_TIMEOUT = int(os.getenv("DOCMIND_PYTHON_EXEC_TIMEOUT", "1800") or 1800)
@@ -488,10 +491,18 @@ def dev_mcp_call(arg):
         return ("MCP 调用前钩子异常（%s），拒绝执行以免绕过审计。"
                 "请检查 hooks 配置后重试。" % type(exc).__name__)
     result = _dev_mcp_call_impl(arg)
+    boundary = {}
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict) and isinstance(parsed.get("boundary"), dict):
+            boundary = parsed["boundary"]
+    except (TypeError, ValueError):
+        pass
     try:
         _workflow_hooks.run_workflow("after_mcp", {
-            "ok": not str(result or "").startswith("MCP 调用失败"),
+            "ok": not str(result or "").startswith(("MCP 调用失败", "拒绝执行")),
             "result_chars": len(str(result or "")),
+            "boundary": boundary,
         })
     except Exception as exc:
         # after_mcp 异常不影响 MCP 已完成的事实，但记日志让排查可见
@@ -540,6 +551,13 @@ def _dev_mcp_call_impl(arg):
         side_effect = str(data.get('side_effect', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         allow_side_effect_fallback = str(data.get('allow_side_effect_fallback', '')).strip().lower() in ('1', 'true', 'yes', 'on')
         try:
+            boundary = enforce_mcp_boundary(
+                side_effect=side_effect,
+                allow_side_effect_fallback=allow_side_effect_fallback,
+                name=name, arguments=args)
+        except EnterpriseSandboxUnavailable as exc:
+            return f"拒绝执行：{exc}"
+        try:
             result = mcp_client.call_tool_with_fallback(
                 root, key, name, args, fallback_keys=fallback,
                 task_hint=hint, timeout=mcp_client.CALL_TIMEOUT,
@@ -552,7 +570,15 @@ def _dev_mcp_call_impl(arg):
             return (f'MCP 调用失败：{exc}{suffix}'
                     + (f'（{hint}）' if hint else
                        '（可改用内置工具或人工检查连接器）'))
-        return json.dumps(result, ensure_ascii=False)[:6000]
+        if isinstance(result, dict):
+            result = {"boundary": boundary, **result}
+        else:
+            result = {"boundary": boundary, "result": result}
+        encoded = json.dumps(result, ensure_ascii=False)
+        if len(encoded) > 6000:
+            encoded = json.dumps({"boundary": boundary, "truncated": True,
+                                  "result": encoded[:5600]}, ensure_ascii=False)
+        return encoded
     except Exception as e: return f'MCP 调用失败：{e}（若怀疑是连接器选择有误，可先调用 dev_route_connector 重新挑选已启用连接器）'
 
 
@@ -5668,6 +5694,7 @@ def _write_project_file(target, content, *, codec="utf-8", rel="", op="modify",
     做换行翻译，撤销时的冲突比较读的也是磁盘字节，两侧必须同一口径，否则每次撤销都会
     被自己误判成"别人改过"。
     """
+    enforce_file_write_boundary(project_root=root or _get_code_root() or "", target=target)
     before = None
     if record and os.path.isfile(target):
         try:
@@ -6417,6 +6444,9 @@ def generate_data_file(arg):
         payload = json.loads(str(arg or "").strip())
         if not isinstance(payload, dict):
             raise DataFormatError("参数必须是 JSON 对象")
+        target = os.path.abspath(os.path.join(root, str(payload.get("path") or "")))
+        enforce_file_write_boundary(project_root=root, target=target,
+                                    content=json.dumps(payload, ensure_ascii=False, default=str))
         result = write_data_file(root, payload)
         result["relative_path"] = os.path.relpath(result["path"], os.path.abspath(root)).replace(os.sep, "/")
         return json.dumps(result, ensure_ascii=False, default=str)
@@ -6439,27 +6469,10 @@ def _strip_arg_quotes(text):
 
 
 def read_external_file(path):
-    """读取【项目外】白名单目录内的文件（受控越界读）。
-
-    仅允许读取 DOCMIND_EXTERNAL_DIRS（分号分隔的绝对目录）之内的文件；其它路径一律拒绝。
-    用于用户明确授权让 AI 访问代码库之外的资料（如另一个项目、下载目录里的文档）。
-    输入 path 为文件绝对路径；返回文件内容（截断到 4000 字）。
-    """
-    if not external_access_high():
-        return ("当前为安全模式（仅限项目内）。读取项目外文件需要在「模型设置」中"
-                "切换为高权限模式（high）后方可执行。")
-    dirs_raw = (os.getenv("DOCMIND_EXTERNAL_DIRS") or "").strip()
-    if not dirs_raw:
-        return ("未配置允许访问的外部目录。如需让 AI 读取项目外文件，请设置环境变量 "
-                "DOCMIND_EXTERNAL_DIRS 为分号分隔的绝对路径白名单，例如 "
-                "D:/OtherProject;D:/Downloads。未配置时出于安全默认拒绝越界读取。")
-    allowed = [os.path.normpath(d) for d in re.split(r"[;；]", dirs_raw) if d.strip()]
-    if not allowed:
-        return "未配置允许访问的外部目录（DOCMIND_EXTERNAL_DIRS 为空）。"
-    target = os.path.normpath(os.path.abspath(path))
-    ok = any(target == d or target.startswith(d + os.sep) for d in allowed)
-    if not ok:
-        return f"拒绝访问：{path} 不在允许访问的外部目录白名单内（{', '.join(allowed)}）。"
+    """在 high 模式读取非敏感外部文件；safe 模式仅允许项目内。"""
+    target, err = _resolve_external_path(path)
+    if err:
+        return err
     if not os.path.isfile(target):
         return f"文件不存在：{path}"
     try:
@@ -6473,38 +6486,21 @@ def read_external_file(path):
     return f"=== {target} ===\n{content}"
 
 
-# --- 受控越界读写：仅在「高权限模式」+ DOCMIND_EXTERNAL_DIRS 白名单内生效 ---
-# 安全模式下以下三个工具一律拒绝（见 _resolve_external_path 的第一道门禁）。
-# 设计意图：让用户可授权 AI 访问其它项目并增删改查，但路径被钉死在白名单目录，
-# 既不会误伤系统目录，也不会因 mode 误开而"无限制越界"。
+# --- 外部读写：safe 仅项目内；high 允许非敏感外部路径 ---
+# 凭据、私钥与 NT 设备命名空间继续由硬地板拒绝，不使用目录白名单。
 _READ_EXTERNAL_FILES = set()  # 本次会话内已用 read_external_file 读过的文件（整体重写护栏）
 
 
 def _resolve_external_path(path):
-    """解析受控越界路径：返回 (target, err)。err 非空即拒绝原因。
-
-    门禁链：① 必须处于高权限模式（external_access_high）；② 必须配置
-    DOCMIND_EXTERNAL_DIRS 白名单；③ 目标必须落在白名单目录内。任一不满足返回 err。
-    """
+    """解析受控越界路径：safe 仅项目内；high 允许非敏感外部路径。"""
     if not external_access_high():
-        return None, ("当前为安全模式（仅限项目内）。对其他项目增删改查需要在「模型设置」中"
-                      "切换为高权限模式（high）后方可执行。")
-    dirs_raw = (os.getenv("DOCMIND_EXTERNAL_DIRS") or "").strip()
-    if not dirs_raw:
-        return None, ("未配置允许越界的外部目录白名单（DOCMIND_EXTERNAL_DIRS 为空）。"
-                      "高权限模式下也必须在环境变量中显式列出允许访问的目录，"
-                      "例如 D:/OtherProject;D:/Downloads。")
-    allowed = [os.path.normpath(d) for d in re.split(r"[;；]", dirs_raw) if d.strip()]
+        return None, ("当前为仅项目内写模式。允许写外部需要在「模型设置」中"
+                      "切换为允许写外部（high）。")
     target = os.path.normpath(os.path.abspath(path))
     floor = _hard_floor_reason(target)
     if floor:
-        # 即便目标落在外部白名单目录内，凭据存储类 / NT 设备命名空间仍硬拦（无 override）。
         return None, floor
-    ok = any(target == d or target.startswith(d + os.sep) for d in allowed)
-    if not ok:
-        return None, f"拒绝访问：{path} 不在允许越界的目录白名单内（{', '.join(allowed)}）。"
-    # ③ symlink 闭合（审计 F1/F3 统一入口）：外部白名单路径只重跑地板（check_root=False），
-    # 不闭合回 code_root——外部本就是受控越界，但凭据地板仍硬拦。
+    # symlink 闭合后仍重跑凭据与 NT 设备硬地板，不使用目录白名单。
     resolved = _resolve_floor_checked(None, target, check_root=False)
     if resolved:
         return None, resolved
@@ -6512,9 +6508,9 @@ def _resolve_external_path(path):
 
 
 def create_external_file(arg):
-    """在白名单目录内【新建】文件（不覆盖已有文件），受控越界写。格式同 create_file。
+    """在 high 模式【新建】外部文件（不覆盖已有文件）。格式同 create_file。
 
-    门禁：高权限模式 + DOCMIND_EXTERNAL_DIRS 白名单。输入 path: <绝对路径>，
+    输入 path: <绝对路径>，
     new_text: <内容>。护栏：不覆盖已存在；200KB 上限；.py 语法校验；「人工确认」开启时暂存。
     """
     path, _, content = _parse_edit_input(arg)
@@ -6525,6 +6521,10 @@ def create_external_file(arg):
     target, err = _resolve_external_path(path)
     if err:
         return err
+    try:
+        enforce_file_write_boundary(project_root=_get_code_root() or "", target=target)
+    except EnterpriseSandboxUnavailable as exc:
+        return f"拒绝执行：{exc}"
     if os.path.exists(target):
         return f"文件已存在：{path}（create_external_file 不覆盖已有文件；修改请用 edit_external_file）。"
     if len(content.encode("utf-8", "ignore")) > _APPLY_MAX_BYTES:
@@ -6566,13 +6566,13 @@ def create_external_file(arg):
     except Exception as e:  # noqa: BLE001
         return f"写入失败: {e}"
     _READ_EXTERNAL_FILES.add(os.path.normcase(target))
-    return f"已在白名单目录内创建 {path}（{len(content.encode('utf-8', 'ignore'))} 字节）。"
+    return f"已在允许写外部模式中创建 {path}（{len(content.encode('utf-8', 'ignore'))} 字节）。"
 
 
 def edit_external_file(arg):
-    """在白名单目录内修改【已存在】文件，受控越界写。格式同 apply_edit。
+    """在 high 模式修改【已存在】外部文件。格式同 apply_edit。
 
-    门禁：高权限模式 + 白名单。两种用法：
+    两种用法：
       · 局部替换：path + old_text + new_text（唯一定位，匹配 0/>1 处拒绝）；
       · 整体重写：path + new_text（须先用 read_external_file 读过该文件确认内容）。
     护栏：200KB 上限；.py 语法校验失败回滚；「人工确认」开启时暂存。
@@ -6585,6 +6585,10 @@ def edit_external_file(arg):
     target, err = _resolve_external_path(path)
     if err:
         return err
+    try:
+        enforce_file_write_boundary(project_root=_get_code_root() or "", target=target)
+    except EnterpriseSandboxUnavailable as exc:
+        return f"拒绝执行：{exc}"
     if not os.path.isfile(target):
         return f"文件不存在：{path}（edit_external_file 只修改已存在文件）。"
     try:
@@ -6636,13 +6640,13 @@ def edit_external_file(arg):
             f.write(new_content)
     except Exception as e:  # noqa: BLE001
         return f"写入失败: {e}"
-    return f"已写入白名单目录内文件 {path}（{nbytes} 字节）。\n{summary}"
+    return f"已写入外部文件 {path}（{nbytes} 字节）。\n{summary}"
 
 
 def delete_external_file(arg):
-    """删除白名单目录内的【文件】（危险操作，受控越界删）。
+    """在 high 模式删除外部【文件】（危险操作）。
 
-    门禁：高权限模式 + 白名单。输入 path: <绝对路径> 且必须含 `confirm: yes`
+    输入 path: <绝对路径> 且必须含 `confirm: yes`
     明确确认（防误删）。只删文件不删目录。「人工确认」开启时改为暂存待批准。
     """
     # delete 是单行命令式输入（path: 一行 + confirm: yes 一行），用独立解析避免
@@ -6654,6 +6658,10 @@ def delete_external_file(arg):
     target, err = _resolve_external_path(path)
     if err:
         return err
+    try:
+        enforce_file_write_boundary(project_root=_get_code_root() or "", target=target)
+    except EnterpriseSandboxUnavailable as exc:
+        return f"拒绝执行：{exc}"
     if not re.search(r"(?im)^\s*confirm\s*:\s*yes\b", arg or ""):
         return "删除是危险操作：请在输入中加入 `confirm: yes` 以明确确认删除。"
     if os.path.isdir(target):
@@ -6667,7 +6675,7 @@ def delete_external_file(arg):
         os.remove(target)
     except Exception as e:  # noqa: BLE001
         return f"删除失败: {e}"
-    return f"已删除白名单目录内文件 {path}。"
+    return f"已删除外部文件 {path}。"
 
 
 def grep(pattern):
@@ -6930,6 +6938,7 @@ def stage_edit(kind, target, rel, old_content, new_content, diff):
             "target": target,        # 绝对路径
             "rel": rel,
             "old_content": old_content,
+            "old_sha256": hashlib.sha256((old_content or "").encode("utf-8")).hexdigest(),
             "new_content": new_content,
             "diff": diff,
         }
@@ -6969,7 +6978,7 @@ def confirm_edit(pid):
 
     try:
         if kind == "create_file":
-            with _file_lock(target):
+            with _file_lock(target), cross_process_lock(target, timeout=10):
                 if os.path.exists(target):
                     return _discard(f"目标文件已存在：{e['rel']}（暂存后文件被创建，为避免覆盖已取消）。")
                 parent = os.path.dirname(target)
@@ -6978,11 +6987,12 @@ def confirm_edit(pid):
                 _write_project_file(target, e["new_content"], rel=e["rel"], op="create")
             _read_store()[0].add(os.path.normcase(target))
         elif kind == "delete_external_file":
-            if not os.path.isfile(target):
-                return _discard(f"目标文件已不存在：{e['rel']}（暂存后已被删除，已取消）。")
-            os.remove(target)
+            with _file_lock(target), cross_process_lock(target, timeout=10):
+                if not os.path.isfile(target):
+                    return _discard(f"目标文件已不存在：{e['rel']}（暂存后已被删除，已取消）。")
+                os.remove(target)
         else:  # apply_edit
-            with _file_lock(target):
+            with _file_lock(target), cross_process_lock(target, timeout=10):
                 if not os.path.isfile(target):
                     return _discard(f"目标文件已不存在：{e['rel']}")
                 # 防「暂存后被改动」：内容不一致则拒绝，避免覆盖他人在暂存期间的修改
@@ -6992,6 +7002,9 @@ def confirm_edit(pid):
                 except Exception as ex:  # noqa: BLE001
                     return False, f"读取目标失败: {ex}"
                 cur = cur.replace("\r\n", "\n").replace("\r", "\n")
+                current_sha = hashlib.sha256(cur.encode("utf-8")).hexdigest()
+                if current_sha != e.get("old_sha256"):
+                    return _discard("目标文件内容哈希在暂存后发生变化；已拒绝覆盖，请重新读取并暂存。")
                 if cur != e["old_content"]:
                     return _discard("目标文件在暂存后被修改，内容已变化；请重新 read_file 后再改。")
                 _codec, _ok = _roundtrip_codec(_enc)
@@ -8331,6 +8344,11 @@ def dev_refactor(arg):
             content = fh.read()
     except Exception as e:  # noqa: BLE001
         return f"读取源文件失败: {e}"
+    try:
+        for target in (src_target, dst_target):
+            enforce_file_write_boundary(project_root=root, target=target, content=content)
+    except EnterpriseSandboxUnavailable as exc:
+        return f"拒绝搬移：{exc}"
     create_res = create_file(_emit_edit_arg(dst_target, None, content))
     # 「人工确认」模式：仅暂存、未落盘 → 不要动源文件，等用户确认后再搬
     if "待人工确认" in create_res:
@@ -9012,6 +9030,10 @@ def dev_deps(arg=""):
     applied = None
     if action == "apply":
         try:
+            wanted = _one("source") or report.get("declared_source") or ""
+            target = os.path.join(root, wanted)
+            additions = "\n".join(deps_sync.missing_lines(report))
+            enforce_file_write_boundary(project_root=root, target=target, content=additions)
             applied = deps_sync.apply(root, report, source=_one("source"))
         except Exception as exc:  # noqa: BLE001
             applied = {"ok": False, "applied": [], "error": "%s: %s" % (type(exc).__name__, exc)}
@@ -9187,6 +9209,15 @@ def dev_patch(arg):
                     "为避免在你意图不明时误写盘，本次未执行任何改动。" % (val or "空"))
     from agent_runtime import patch_apply
     try:
+        if not dry_run:
+            candidates, candidate_errors = patch_apply.parse_unified(text, root)
+            if not candidate_errors:
+                added = "\n".join(payload for candidate in candidates
+                                  for hunk in candidate["hunks"]
+                                  for op, payload in hunk["lines"] if op == "+")
+                for candidate in candidates:
+                    target = os.path.join(root, *candidate["path"].split("/"))
+                    enforce_file_write_boundary(project_root=root, target=target, content=added)
         res = patch_apply.apply_patch(root, text, dry_run=dry_run)
     except Exception as exc:  # noqa: BLE001
         return f"dev_patch 无法运行：{type(exc).__name__}: {str(exc)[:200]}"
@@ -9223,6 +9254,14 @@ def dev_move(arg):
         return "dev_move 需要两行：`from: <旧路径>` 与 `to: <新路径>`（相对代码根目录）。"
     from agent_runtime import patch_apply
     try:
+        source_path = os.path.join(root, *src.split("/"))
+        destination_path = os.path.join(root, *dst.split("/"))
+        source_content = None
+        if os.path.isfile(source_path):
+            with open(source_path, "rb") as handle:
+                source_content = handle.read(131072)
+        for target in (source_path, destination_path):
+            enforce_file_write_boundary(project_root=root, target=target, content=source_content)
         res = patch_apply.move_path(root, src, dst, timeout=timeout)
     except Exception as exc:  # noqa: BLE001
         return f"dev_move 无法运行：{type(exc).__name__}: {str(exc)[:200]}"
@@ -10441,51 +10480,14 @@ def dev_desktop_action(arg=""):
             "key": (fields.get("key") or "")[:80],
             "text_sha256": hashlib.sha256((fields.get("text") or "").encode("utf-8")).hexdigest()[:16],
         }
-        # 「留地板、拆其余」重构：桌面点击/输入/拖拽是可逆的普通工作台操作，不是灾难
-        # 地板。逐次审批卡（"请用户确认当前桌面动作"）正是用户抱怨的"处处受限"，拆掉
-        # —— 直接执行。gate 恒为 None，下面 `if gate:` 分支成为死代码（保留以免影响
-        # 其它引用；危险组合键仍由 desktop_actions._VK 白名单挡在门外）。
-        gate = None
-        # 本轮用户已口头授权桌面动作（「在 (400,300) 点一下」「click target=engine」
-        # 这类当场指令）时，对 target=engine/embedded 跳过逐次审批门与自检沙箱，
-        # 直接执行——游戏控制由此降级为普通对话能力，不再非走工作流 lease 不可。
-        # foreground 永不走此路：它可能操作任意前台窗口，必须显式审批。危险组合键
-        # （win/meta/super）不在此路豁免——`desktop_actions._VK` 白名单本就不认它们。
-        if gate and target in ("engine", "embedded"):
-            try:
-                from agent_runtime.tools import desktop_pre_authorized
-                _preauth = desktop_pre_authorized()
-            except Exception:  # noqa: BLE001 - 读不到授权信号一律按未授权
-                _preauth = False
-            if _preauth:
-                gate = None
-        sandbox = {}
-        if gate:
-            # 逐次审批没过时，再看一次自检沙箱租约：它只在计划获批后的
-            # 时间窗内、且只覆盖本项目自己的窗口。前台任意窗口永远不在
-            # 边界内，终端/Win 键也不在 —— 沙箱是"一次批边界"，不是"免审"。
-            try:
-                from game_workbench import playtest_sandbox_desktop_allowed
-                allowed, sandbox_reason, lease = playtest_sandbox_desktop_allowed(
-                    ledger_root, action=action, target=target,
-                    key=str(fields.get("key") or ""))
-            except Exception as exc:  # noqa: BLE001 - 检查失败必须按拦截处理
-                allowed, sandbox_reason, lease = False, "沙箱检查失败：%s" % type(exc).__name__, {}
-            if not allowed:
-                gate["hint"] = ("请用户确认当前桌面动作；确认后必须用完全相同的参数重试。"
-                                "自检沙箱未覆盖该动作：%s" % (sandbox_reason or "未开启"))
-                gate["sandbox"] = {"active": False, "reason": sandbox_reason}
-                return json.dumps(gate, ensure_ascii=False)
-            sandbox = {"lease_id": lease.get("id", ""),
-                       "expires_at": lease.get("expires_at", ""),
-                       "scope": "project-window"}
         import desktop_actions
-        result = desktop_actions.perform(
-            action, target=target, project_id=None, root=root,
-            x=payload["x"], y=payload["y"], to_x=payload["to_x"], to_y=payload["to_y"],
-            text=fields.get("text") or "", key=fields.get("key") or "")
-        if sandbox and isinstance(result, dict):
-            result.setdefault("sandbox", sandbox)
+        result = execute_desktop_action(
+            root=ledger_root, channel="desktop", action=action, target=target,
+            details=payload,
+            executor=lambda: desktop_actions.perform(
+                action, target=target, project_id=None, root=root,
+                x=payload["x"], y=payload["y"], to_x=payload["to_x"], to_y=payload["to_y"],
+                text=fields.get("text") or "", key=fields.get("key") or ""))
         return json.dumps(result, ensure_ascii=False)
     except (OSError, TypeError, ValueError) as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
@@ -10503,7 +10505,7 @@ def vision_locate_click(arg=""):
 
     返回 JSON：proposal_id / label / bbox / point / evidence / confidence /
     vision_source（视觉模型来自 cockpit|main|harness）/ window。
-    拿到 proposal_id 后用 `vision_click` 执行（执行需要用户在审核队列点头）。
+    拿到 proposal_id 后用 `vision_click` 执行（用户档进入审核队列，模型档自动审批并留痕）。
     """
     fields = _parse_keyed(arg or "", ["description", "goal"])
     description = str(fields.get("description") or "").strip()
@@ -10535,14 +10537,14 @@ def vision_locate_click(arg=""):
 def vision_click(arg=""):
     """执行一个已定位的视觉提案（`vision_locate_click` 产出的 proposal_id）。
 
-    ⚠ 这是**会真的点下去**的操作，所以确认来自**用户**：第一次调用会被审批门拦下，
-    并把请求送进工作台的审核队列；用户在队列里批准后，用**完全相同的参数**重试本工具
-    才会真的点。模型自己说"我确认了"不算 —— 那等于自我授权。
+    ⚠ 这是**会真的点下去**的操作，必须经过当前审批模式：用户档把请求送进工作台
+    审核队列，批准后用相同参数重试；模型档由审批模型给出决定与理由并完整留痕。
+    主模型自己说"我确认了"不算 —— 那等于自我授权。
 
     输入（多行 keyed）：
       proposal_id: <定位返回的 id>
 
-    三道闸，缺一不可：①用户批准；②重新抓帧确认还是同一个窗口、目标位置像素没变；
+    三道闸，缺一不可：①当前审批模式通过；②重新抓帧确认还是同一个窗口、目标位置像素没变；
     ③提案单次使用（点过就没了，防止重复请求连点两次）。
     """
     fields = _parse_keyed(arg or "", ["proposal_id"])
@@ -10560,10 +10562,17 @@ def vision_click(arg=""):
         return json.dumps({"ok": False, "error": "当前没有项目上下文，无法确定要点哪个窗口。"},
                           ensure_ascii=False)
     try:
-        # 「留地板、拆其余」重构：视觉点击的定位目标只会是 embedded/engine（不针对
-        # 前台任意窗口），是一次可逆操作，不是灾难地板。gate=True 会把点击送进审核
-        # 队列、等用户批准才执行 —— 这正是"处处受限"。改成 gate=False 直接执行。
-        result = visual_click.execute(pid, root, proposal_id=proposal_id, gate=False)
+        try:
+            from agent_runtime.tools import stage_origin_root
+            ledger_root = stage_origin_root() or root
+        except Exception:
+            ledger_root = root
+        result = execute_desktop_action(
+            root=ledger_root, channel="vision", action="click", target="embedded",
+            details=visual_click.execution_details(proposal_id),
+            executor=lambda: visual_click.execute(
+                pid, root, proposal_id=proposal_id, confirmed=True, gate=False,
+                approval_actor="desktop_boundary"))
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"ok": False, "error": "视觉点击失败：%s: %s" % (type(exc).__name__, str(exc)[:200])},
                           ensure_ascii=False)
@@ -10781,43 +10790,61 @@ def dev_page_action(arg=""):
 
     action = (_one("action") or "open").lower()
     from agent_runtime import page_action
-    try:
+    if action not in {"open", "click", "type", "press", "wait", "read", "locate", "list", "status", "close"}:
+        return ("dev_page_action 不支持 action: %s（可用：open|click|type|press|wait|read|"
+                "locate|list|close）。" % action)
+    def perform():
         if action == "open":
-            result = page_action.open_page(root, url=_one("url"), entry=_one("entry"))
-        elif action == "click":
-            result = page_action.click(root, page=_one("page"), selector=_one("selector"),
-                                       text=_one("text"), nth=_one("nth"), scope=_one("scope"),
-                                       settle=_one("settle", 600),
-                                       screenshot=_flag("screenshot", True))
-        elif action == "type":
-            result = page_action.type_text(root, page=_one("page"), value=fields.get("value") or "",
-                                           selector=_one("selector"), text=_one("text"),
-                                           nth=_one("nth"), scope=_one("scope"),
-                                           replace=_flag("replace", True),
-                                           settle=_one("settle", 600),
-                                           screenshot=_flag("screenshot", True))
-        elif action == "press":
-            result = page_action.press_key(root, page=_one("page"), key=_one("key"),
-                                           selector=_one("selector"), settle=_one("settle", 600),
-                                           screenshot=_flag("screenshot", True))
-        elif action == "wait":
-            result = page_action.wait_for(root, page=_one("page"), selector=_one("selector"),
-                                          state=_one("state", "present"), value=_one("value"),
-                                          timeout=_one("timeout", 4))
-        elif action == "read":
-            result = page_action.read_page(root, page=_one("page"), selector=_one("selector"),
-                                           mode=_one("mode", "text"), attr=_one("attr"),
-                                           nth=_one("nth"), needle=_one("needle"))
-        elif action == "locate":
-            result = page_action.locate(root, page=_one("page"), selector=_one("selector"),
-                                        text=_one("text"), nth=_one("nth"), scope=_one("scope"))
-        elif action in ("list", "status"):
-            result = {"action": "list", "live": page_action.live_pages()}
-        elif action == "close":
-            result = page_action.close_page(_one("page"))
+            return page_action.open_page(root, url=_one("url"), entry=_one("entry"))
+        if action == "click":
+            return page_action.click(root, page=_one("page"), selector=_one("selector"),
+                                     text=_one("text"), nth=_one("nth"), scope=_one("scope"),
+                                     settle=_one("settle", 600), screenshot=_flag("screenshot", True))
+        if action == "type":
+            return page_action.type_text(root, page=_one("page"), value=fields.get("value") or "",
+                                         selector=_one("selector"), text=_one("text"),
+                                         nth=_one("nth"), scope=_one("scope"),
+                                         replace=_flag("replace", True), settle=_one("settle", 600),
+                                         screenshot=_flag("screenshot", True))
+        if action == "press":
+            return page_action.press_key(root, page=_one("page"), key=_one("key"),
+                                         selector=_one("selector"), settle=_one("settle", 600),
+                                         screenshot=_flag("screenshot", True))
+        if action == "wait":
+            return page_action.wait_for(root, page=_one("page"), selector=_one("selector"),
+                                        state=_one("state", "present"), value=_one("value"),
+                                        timeout=_one("timeout", 4))
+        if action == "read":
+            return page_action.read_page(root, page=_one("page"), selector=_one("selector"),
+                                         mode=_one("mode", "text"), attr=_one("attr"),
+                                         nth=_one("nth"), needle=_one("needle"))
+        if action == "locate":
+            return page_action.locate(root, page=_one("page"), selector=_one("selector"),
+                                      text=_one("text"), nth=_one("nth"), scope=_one("scope"))
+        if action in ("list", "status"):
+            return {"action": "list", "live": page_action.live_pages()}
+        return page_action.close_page(_one("page"))
+    try:
+        if action in {"click", "type", "press", "wait", "read", "locate"} and not _one("page"):
+            # 参数错误先于审批，避免为必然失败的动作制造待确认记录。
+            result = perform()
+        elif action in {"open", "click", "type", "press"}:
+            from urllib.parse import urlsplit
+            try:
+                safe_url = urlsplit(_one("url"))._replace(query="", fragment="").geturl()[:500]
+            except Exception:
+                safe_url = ""
+            result = execute_desktop_action(
+                root=root, channel="browser", action=action, target="loopback_browser",
+                details={"page": _one("page"), "url": safe_url,
+                         "selector": _one("selector")[:300], "text": _one("text")[:200],
+                         "key": _one("key")[:80],
+                         "value_sha256": hashlib.sha256(str(fields.get("value") or "").encode("utf-8")).hexdigest()[:16]},
+                executor=perform)
+            if result.get("blocked") or result.get("error"):
+                return json.dumps(result, ensure_ascii=False)
         else:
-            return ("dev_page_action 不支持 action: %s（可用：open|click|type|press|wait|read|"
-                    "locate|list|close）。" % action)
+            result = perform()
     except page_action.PageActionError as exc:
         return str(exc)
     except Exception as exc:  # noqa: BLE001
@@ -12325,7 +12352,8 @@ def memory_save(arg):
         supersedes = str(data.get("supersedes") or "").strip()
         supersede_target = supersedes if (supersedes and memory.is_active(scope, supersedes)) else ""
         mid = memory.remember(scope, kind, data.get("title", ""), data.get("content", ""), evidence,
-            source="user_explicit" if kind == "preference" else "agent", supersedes=supersede_target or None)
+            source="user_explicit" if kind == "preference" else "agent", supersedes=supersede_target or None,
+            agent_id=memory.current_agent())
         out = {"ok": True, "id": mid, "kind": kind}
         if supersedes and not supersede_target:
             out["note"] = "supersedes=%s 不是本项目的活跃记忆，未作废任何旧记忆（新记忆已保存）。" % memory.scrub(supersedes, 80)
@@ -12652,7 +12680,7 @@ TOOLS = {
         "func": read_file,
     },
     "read_external_file": {
-        "description": "读取【项目之外】白名单目录内的文件（受控越界读）。仅允许读取 DOCMIND_EXTERNAL_DIRS（分号分隔的绝对目录）之内的文件，越界拒绝；用于用户授权 AI 访问仓库外的资料（如其它项目、下载目录文档）。输入为文件绝对路径。未配置白名单时提示如何开启。注意：只有在「高权限模式」下越界读才被放行；安全模式下本工具会拒绝。",
+        "description": "在 high 模式读取非敏感外部文件；safe 模式仅允许项目内。输入为文件绝对路径，凭据与私钥等硬拦截始终生效。",
         "func": read_external_file,
         # 越界读必须与「读项目内」分开记账，否则只租用了项目内读的工作流
         # 也能把文件读出去：实测租约只含 read_local 时它照常通过
@@ -12664,7 +12692,7 @@ TOOLS = {
         "capability": "read_external",
     },
     "create_external_file": {
-        "description": "在白名单目录内【新建】文件（受控越界写，不覆盖已有文件）。仅在「高权限模式」+ 已配置 DOCMIND_EXTERNAL_DIRS 白名单时生效；安全模式或被列出白名单外一律拒绝。用于给其他项目新增文件/模块。输入同 create_file：第一行 path: <绝对路径>，最后 new_text: <文件内容（可多行）>。受单文件 200KB 上限与 .py 语法校验约束；「人工确认」开启时只暂存不落盘。",
+        "description": "在 high 模式【新建】外部文件（不覆盖已有文件）。safe 模式仅允许项目内。输入同 create_file：第一行 path: <绝对路径>，最后 new_text: <文件内容（可多行）>。受单文件 200KB 上限与 .py 语法校验约束；「人工确认」开启时只暂存不落盘。",
         "func": create_external_file,
         # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
         # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
@@ -12673,7 +12701,7 @@ TOOLS = {
         "parallel_safe": False,
     },
     "edit_external_file": {
-        "description": "在白名单目录内修改【已存在】文件（受控越界写）。仅在「高权限模式」+ 白名单内生效。两种用法：① 局部替换——path + old_text（精确旧片段）+ new_text；② 整体重写——path + new_text（须先用 read_external_file 读过该文件）。受 200KB 上限与 .py 语法校验约束；「人工确认」开启时暂存。",
+        "description": "在 high 模式修改【已存在】外部文件。两种用法：① 局部替换——path + old_text（精确旧片段）+ new_text；② 整体重写——path + new_text（须先用 read_external_file 读过该文件）。受 200KB 上限与 .py 语法校验约束；「人工确认」开启时暂存。",
         "func": edit_external_file,
         # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
         # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。
@@ -12682,7 +12710,7 @@ TOOLS = {
         "parallel_safe": False,
     },
     "delete_external_file": {
-        "description": "删除白名单目录内的【单个文件】（危险操作，受控越界删）。仅在「高权限模式」+ 白名单内生效。输入需含 path: <绝对路径> 与 confirm: yes 明确确认；只删文件不删目录；「人工确认」开启时改为暂存待批准。用于清理其它项目的无用文件。",
+        "description": "在 high 模式删除外部【单个文件】（危险操作）。输入需含 path: <绝对路径> 与 confirm: yes 明确确认；只删文件不删目录；「人工确认」开启时改为暂存待批准。",
         "func": delete_external_file,
         # 写盘工具：曾被声明为 read_local/pure/parallel_safe，
         # 于是绕过写意图护栏、拿不到幂等账本、还能和只读工具并发写。

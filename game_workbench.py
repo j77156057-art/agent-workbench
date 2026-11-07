@@ -3023,12 +3023,14 @@ def is_approved(root, action, target, ttl=APPROVAL_TTL_SECONDS):
             rows = [json.loads(line) for line in f if line.strip()]
     except Exception:  # noqa: BLE001
         return False
-    for r in rows:
-        if not r.get("approved"):
-            continue
+    for r in reversed(rows):
         if r.get("action") != action:
             continue
         if (r.get("target") or "").strip() != target:
+            continue
+        if r.get("consumed"):
+            return False
+        if not r.get("approved"):
             continue
         ts = r.get("time")
         if not ts:
@@ -3042,6 +3044,18 @@ def is_approved(root, action, target, ttl=APPROVAL_TTL_SECONDS):
     return False
 
 
+def consume_approval(root, action, target):
+    """消费一次批准；strict 在执行前写入，确保下一物理动作必须重新确认。"""
+    path = approval_ledger_path(root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    row = {"action": action, "target": (target or "").strip(),
+           "user": "desktop_boundary", "approved": False, "consumed": True,
+           "time": datetime.now().isoformat(timespec="seconds")}
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return row
+
+
 def approval_status(root, action, target):
     """查询某操作当前是否已通过审批（供前端/Agent 判断是否需先审批）。"""
     return {
@@ -3052,7 +3066,7 @@ def approval_status(root, action, target):
     }
 
 
-def require_approval(root, action, target):
+def require_approval(root, action, target, *, reuse_window_seconds=APPROVAL_TTL_SECONDS):
     """门禁检查：已审批返回 None；未审批返回阻断结构，由敏感操作原样向上返回。
 
     阻断结构含 blocked / approval_required / action / target / message，
@@ -3074,7 +3088,8 @@ def require_approval(root, action, target):
         "message": (
             f"操作 {action}(target={target or '*'}) 需要先审批。"
             f"请先调用审批（action={action}, target={target or '*'}, approved=true），"
-            f"审批通过后 {APPROVAL_TTL_SECONDS // 60} 分钟内该操作放行。"
+            + ("本次批准仅放行一个物理动作，执行后立即失效。" if reuse_window_seconds == 0
+               else f"审批通过后 {reuse_window_seconds // 60} 分钟内该操作放行。")
         ),
     }
 

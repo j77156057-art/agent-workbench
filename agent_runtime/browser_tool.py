@@ -43,10 +43,13 @@
 """
 from __future__ import annotations
 
+import hashlib
 from typing import Any
+from urllib.parse import urlsplit
 
 from agent_runtime import page_action
 from agent_runtime import url_policy
+from agent_runtime.enterprise_sandbox import execute_desktop_action
 
 #: 这个模块只操作公网会话。写死在这里而不是当参数传，是为了杜绝"调用方传错了
 #: 于是拿公网浏览器去点本机服务"这种事——那种错误一旦发生，护栏就形同虚设。
@@ -78,7 +81,7 @@ def _flag(fields: dict[str, Any], key: str, default: bool) -> bool:
     return text in _BOOL_WORDS
 
 
-def run_browser_action(root: str, spec: dict[str, Any]) -> dict[str, Any]:
+def _run_browser_action(root: str, spec: dict[str, Any]) -> dict[str, Any]:
     """执行一次内置浏览器动作，返回 `{"ok", "text", ...}`。
 
     `text` 是给模型看的渲染结果（与 `dev_page_action` 同一套 `page_action.render`），
@@ -174,6 +177,32 @@ def run_browser_action(root: str, spec: dict[str, Any]) -> dict[str, Any]:
             "live": bool(result.get("live")),
         }
     return response
+
+
+def run_browser_action(root: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """Route state-changing browser actions through the shared approval boundary."""
+    fields = dict(spec or {})
+    action = str(_one(fields, "action") or "open").strip().lower()
+    if action not in {"open", "click", "type", "press"}:
+        return _run_browser_action(root, fields)
+    if action == "open" and not check_url(_one(fields, "url"))[0]:
+        # 地址非法时不产生无意义的审批请求，也不会启动浏览器。
+        return _run_browser_action(root, fields)
+    raw_url = _one(fields, "url")
+    try:
+        safe_url = urlsplit(raw_url)._replace(query="", fragment="").geturl()[:500]
+    except Exception:
+        safe_url = ""
+    details = {
+        "page": _one(fields, "page"), "url": safe_url,
+        "selector": _one(fields, "selector")[:300], "text": _one(fields, "text")[:200],
+        "key": _one(fields, "key")[:80],
+        "allow_password": _flag(fields, "allow_password", False),
+        "value_sha256": hashlib.sha256(str(fields.get("value") or "").encode("utf-8")).hexdigest()[:16],
+    }
+    return execute_desktop_action(
+        root=root, channel="browser", action=action, target="public_browser",
+        details=details, executor=lambda: _run_browser_action(root, fields))
 
 
 def check_url(url: str) -> tuple[bool, str]:

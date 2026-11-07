@@ -6,8 +6,9 @@ from typing import Any, Mapping, Sequence
 
 #: 字符 → token 的折算除数。**实测值，不是拍脑袋的 4。**
 #:
-#: 2026-11-06 用本机 Qwen3.5 tokenizer（`D:\llama.cpp\llama-tokenize.exe`
-#: 读本机 GGUF，只做本地分词，不发起任何模型请求）量了「最小提示词」的三种形态：
+#: 2026-11-06 用 Qwen3.5 tokenizer（`llama-tokenize`，由环境变量
+#: `DOCMIND_TOKENIZER_BIN` 指定；未设置时从 `PATH` 查找；读本地 GGUF，只做
+#: 本地分词，不发起任何模型请求）量了「最小提示词」的三种形态：
 #:
 #:     无记忆   22626 字符 -> 11416 token   （1.982 字符/token）
 #:     带记忆   22936 字符 -> 11580 token   （1.981 字符/token）

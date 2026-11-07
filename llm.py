@@ -870,6 +870,12 @@ class LLMClient:
         if max_output_tokens is not None:
             output_limit = min(output_limit, max(1, int(max_output_tokens)))
         kwargs = {"max_tokens": output_limit}
+        # DeepSeek/OpenCode 思考模式会静默忽略采样参数；省略发送而不修改调用方默认值。
+        deepseek_thinking = (
+            (self.provider or "").strip().lower() in ("deepseek", "opencode") and thinking_on
+        )
+        if not deepseek_thinking:
+            kwargs["temperature"] = temperature
         # qwen3 toggle 家族（含 DashScope 兼容模式/自建端点）：按开关透传 enable_thinking。
         # 不支持思考的模型绝不带这个参数，避免 400；native 模型本身始终推理，无需传。
         #
@@ -918,10 +924,8 @@ class LLMClient:
             #    在思考模式下被静默忽略。**
             #    文档原文："...will not trigger an error but will also have no effect."
             #
-            #    → 下面 `create()` 是**无条件**发 `temperature=temperature` 的。
-            #    用户设了 1.0 想让它有创造性，开思考后实际用的是 provider 默认值，
-            #    **不报错、没有任何信号**。已立 TODO（见 docs/next-steps.md §7），
-            #    待决定：抑制该参数并在 UI 说明，还是接受这个偏差。
+            #    → 思考开启时省略 temperature；presence_penalty / frequency_penalty
+            #    本就不发送。关闭思考后恢复原 temperature，不改调用方保存的默认值。
         call_timeout = self.timeout if timeout is None else timeout
         if tools:
             kwargs["tools"] = tools
@@ -931,7 +935,7 @@ class LLMClient:
                 extra = {"stream_options": {"include_usage": True}} if with_usage else {}
                 resp = self.client.chat.completions.create(
                     model=self.model, messages=oai_messages, stream=True,
-                    temperature=temperature, timeout=call_timeout, **kwargs, **extra
+                    timeout=call_timeout, **kwargs, **extra
                 )
                 return StreamChat(resp, usage_sink=self.last_usage,
                                   tool_sink=self.last_tool_calls,
@@ -972,7 +976,7 @@ class LLMClient:
             def _complete():
                 resp = self.client.chat.completions.create(
                     model=self.model, messages=oai_messages, stream=False,
-                    temperature=temperature, timeout=call_timeout, **kwargs
+                    timeout=call_timeout, **kwargs
                 )
                 self._record_usage(resp)
                 msg = _first_message(resp)
@@ -1278,6 +1282,23 @@ class LLMClient:
         other = len(text) - cjk
         return int(cjk * 1.1 + other / 3.2) + 40
 
+    @staticmethod
+    def _mock_stream(text):
+        """mock 的流式输出。
+
+        默认零延迟，行为与历来一致（测试、回归、真实使用都不受影响）。
+        设 DOCMIND_MOCK_PACE_MS>0 时按字符节流 —— 录屏/演示专用：
+        mock 是瞬时出结果的，不加节流的话 Thought / Action 会在一帧内刷完，肉眼看不到推理过程。
+        """
+        try:
+            delay = max(0, int(os.getenv("DOCMIND_MOCK_PACE_MS", "0"))) / 1000.0
+        except ValueError:
+            delay = 0.0
+        for ch in text:
+            if delay and not ch.isspace():
+                time.sleep(delay)
+            yield ch
+
     # ------------------------------------------------------------------
     # 离线 mock：模拟一个 ReAct 风格 Agent 的多步推理，便于无 key 演示与端到端验证
     # 支持：检索命中 -> 直接回答；检索未命中 -> 自我反思并换用联网搜索
@@ -1305,10 +1326,7 @@ class LLMClient:
             )
             _mark(answer)
             if stream:
-                def g_img():
-                    for ch in answer:
-                        yield ch
-                return g_img()
+                return self._mock_stream(answer)
             return answer
 
         last = messages[-1]["content"] if messages else ""
@@ -1370,9 +1388,5 @@ class LLMClient:
 
         _mark(answer)
         if stream:
-            def g():
-                for ch in answer:
-                    yield ch
-
-            return g()
+            return self._mock_stream(answer)
         return answer

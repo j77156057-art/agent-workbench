@@ -4,16 +4,25 @@
 * **不引入 pywin32**，只用 user32/gdi32 的 ctypes 绑定；
 * **不提供按任意 HWND/PID 截图的入口**：抓取目标只能来自 desktop_bridge 的
   嵌入子窗口登记表或系统前台窗口，Agent 无法借此枚举/窥视其它进程窗口；
-* PrintWindow(PW_RENDERFULLCONTENT=2) 优先（对 GPU 渲染窗口兼容性最好），
-  失败回退 GetDC + BitBlt；
+* **坐标系契约：返回图像的 (0,0) 就是客户区 (0,0)，尺寸等于客户区尺寸。**
+  PrintWindow(PW_RENDERFULLCONTENT=2) 把**整个窗口**（含标题栏/边框）画进整窗
+  大小的位图，再按非客户区偏移精确裁剪到客户区；PrintWindow 失败时回退
+  GetDC(hwnd) + BitBlt（该路径本身就是客户区图像，不再裁剪）。裁剪偏移不是
+  写死的 (8,31)，而是每次由 GetWindowRect + ClientToScreen + GetClientRect 现算；
+* 尺寸不变量在运行期强制校验（容差 1px），不满足抛 CaptureGeometryError，
+  绝不带着偏移继续点；
+* DPI：先 ensure per-monitor v2，GetWindowRect/ClientToScreen/GetClientRect 与
+  点击端（desktop_actions 的 client_origin）都返回物理像素，截图与点击同一空间；
 * 底层取像素函数可注入（``frame_grabber``），测试用替身即可在任何平台跑。
 """
 import ctypes
 import ctypes.wintypes
 import datetime
 import io
+import logging
 import os
 import random
+import threading
 
 # PW_RENDERFULLCONTENT：Win10 1607+，对 DirectComposition/GPU 内容也能出图；
 # 老系统不认这个 flag 时 PrintWindow 返回失败，调用方自动回退 BitBlt。
@@ -22,6 +31,14 @@ SRCCOPY = 0x00CC0020
 DIB_RGB_COLORS = 0
 CAPTURE_MAX_EDGE = 1600
 JPEG_QUALITY = 82
+#: 截图尺寸必须等于客户区尺寸；只容忍 1px 的取整误差。
+CLIENT_SIZE_TOLERANCE_PX = 1
+
+logger = logging.getLogger(__name__)
+
+
+class CaptureGeometryError(RuntimeError):
+    """截图几何与客户区不一致：宁可失败，也不带着偏移去点。"""
 
 
 class _BITMAPINFOHEADER(ctypes.Structure):
@@ -59,6 +76,12 @@ def _libs():
     user32.GetClientRect.argtypes = [ctypes.c_void_p,
                                      ctypes.POINTER(ctypes.wintypes.RECT)]
     user32.GetClientRect.restype = ctypes.wintypes.BOOL
+    user32.GetWindowRect.argtypes = [ctypes.c_void_p,
+                                     ctypes.POINTER(ctypes.wintypes.RECT)]
+    user32.GetWindowRect.restype = ctypes.wintypes.BOOL
+    user32.ClientToScreen.argtypes = [ctypes.c_void_p,
+                                      ctypes.POINTER(ctypes.wintypes.POINT)]
+    user32.ClientToScreen.restype = ctypes.wintypes.BOOL
     user32.PrintWindow.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                    ctypes.wintypes.UINT]
     user32.PrintWindow.restype = ctypes.wintypes.BOOL
@@ -85,26 +108,137 @@ def _libs():
     return user32, gdi32
 
 
-def capture_window(hwnd, *, frame_grabber=None):
-    """抓取单个窗口客户区，返回 ``(bgra_bytes, width, height)``；失败返回 None。
+_DPI_LOCK = threading.Lock()
+_DPI_STATE = {"checked": False, "awareness": "unknown"}
 
-    ``frame_grabber(hwnd)`` 注入时直接使用注入实现（测试替身），否则走 GDI。
+
+def ensure_capture_dpi(hwnd=None):
+    """进程级 DPI 感知只提升一次，返回本次抓帧空间的 {awareness, dpi}。
+
+    必须在建窗口之前提到 per-monitor v2，否则 125%/150% 缩放下 GetWindowRect /
+    ClientToScreen 返回的是被虚拟化的逻辑坐标，位图与点击会落在不同空间。
+    提升失败（进程已用别的感知模式初始化）时如实记录当前模式，不假装成功。
     """
-    hwnd = int(hwnd or 0)
-    if not hwnd:
-        return None
-    if frame_grabber is not None:
-        return frame_grabber(hwnd)
-    user32, gdi32 = _libs()
-    if user32 is None:
-        return None
-    rect = ctypes.wintypes.RECT()
-    if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
-        return None
-    width, height = int(rect.right - rect.left), int(rect.bottom - rect.top)
-    if width <= 0 or height <= 0:
-        return None
+    with _DPI_LOCK:
+        if not _DPI_STATE["checked"]:
+            _DPI_STATE["checked"] = True
+            try:
+                import desktop_bridge
+                ok, mode = desktop_bridge.ensure_dpi_awareness()
+                _DPI_STATE["awareness"] = mode
+                logger.info("capture dpi awareness ensure ok=%s mode=%s", ok, mode)
+            except Exception as exc:  # noqa: BLE001 - 记录真实模式即可，不阻断抓帧
+                logger.warning("capture dpi awareness setup failed: %s", exc)
+        awareness = _DPI_STATE["awareness"]
+    dpi = 96
+    if hwnd:
+        try:
+            import desktop_bridge
+            dpi = int(desktop_bridge.dpi_of(hwnd) or 96)
+        except Exception:  # noqa: BLE001
+            dpi = 96
+    return {"awareness": awareness, "dpi": dpi}
 
+
+def compute_client_crop(window_rect, client_rect, client_origin):
+    """由窗口外框、客户区尺寸、客户区屏幕原点算出客户区在整窗图像里的裁剪矩形。
+
+    纯函数（不依赖 Win32），契约测试可直接用已知矩形验证：
+        left = client_origin.x - window_rect.x
+        top  = client_origin.y - window_rect.y
+        right/bottom = 外框到客户区右侧/底部的非客户区宽度
+    几何自相矛盾（客户区跑到外框外）时抛 CaptureGeometryError。
+    """
+    try:
+        wx, wy = int(window_rect["x"]), int(window_rect["y"])
+        ww, wh = int(window_rect["width"]), int(window_rect["height"])
+        cw, ch = int(client_rect["width"]), int(client_rect["height"])
+        ox, oy = int(client_origin["x"]), int(client_origin["y"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CaptureGeometryError("无法计算客户区裁剪：几何参数不完整（%s）" % exc)
+    if ww <= 0 or wh <= 0 or cw <= 0 or ch <= 0:
+        raise CaptureGeometryError(
+            "无法计算客户区裁剪：外框 %sx%s、客户区 %sx%s 必须为正数"
+            % (ww, wh, cw, ch))
+    left, top = ox - wx, oy - wy
+    right = (wx + ww) - (ox + cw)
+    bottom = (wy + wh) - (oy + ch)
+    if left < 0 or top < 0:
+        raise CaptureGeometryError(
+            "客户区原点 (%d,%d) 落在外框 (%d,%d) 左上角之外，无法裁剪" % (ox, oy, wx, wy))
+    if left + cw > ww or top + ch > wh:
+        raise CaptureGeometryError(
+            "客户区 %dx%d + 偏移 (%d,%d) 超出外框 %dx%d，无法裁剪"
+            % (cw, ch, left, top, ww, wh))
+    return {"left": left, "top": top, "width": cw, "height": ch,
+            "right": right, "bottom": bottom,
+            "window": {"width": ww, "height": wh},
+            "client": {"width": cw, "height": ch}}
+
+
+def crop_client_frame(raw, width, height, crop):
+    """把整窗 BGRA 帧按 crop 裁成客户区帧，返回 ``(bytes, width, height)``。
+
+    任何尺寸不符（帧本身、裁剪越界）都抛 CaptureGeometryError。
+    """
+    width, height = int(width), int(height)
+    left, top = int(crop["left"]), int(crop["top"])
+    cw, ch = int(crop["width"]), int(crop["height"])
+    raw = bytes(raw)
+    if width <= 0 or height <= 0 or len(raw) != width * height * 4:
+        raise CaptureGeometryError(
+            "整窗帧字节数与 %dx%d 不符（%d 字节），无法裁剪" % (width, height, len(raw)))
+    if cw <= 0 or ch <= 0 or left < 0 or top < 0 \
+            or left + cw > width or top + ch > height:
+        raise CaptureGeometryError(
+            "裁剪矩形 (%d,%d) %dx%d 超出整窗帧 %dx%d" % (left, top, cw, ch, width, height))
+    stride = width * 4
+    row_bytes = cw * 4
+    rows = [raw[row * stride + left * 4: row * stride + left * 4 + row_bytes]
+            for row in range(top, top + ch)]
+    return b"".join(rows), cw, ch
+
+
+def assert_frame_matches_client(width, height, client_width, client_height,
+                                tolerance=CLIENT_SIZE_TOLERANCE_PX, context=""):
+    """运行期不变量：截图尺寸必须等于客户区尺寸（容差 1px），否则直接失败。"""
+    dw = abs(int(width) - int(client_width))
+    dh = abs(int(height) - int(client_height))
+    if dw > int(tolerance) or dh > int(tolerance):
+        raise CaptureGeometryError(
+            "截图尺寸 %dx%d 与客户区 %dx%d 不一致（差 %dpx/%dpx，容差 %dpx）%s。"
+            "坐标系不可信，已拒绝返回该帧。"
+            % (int(width), int(height), int(client_width), int(client_height),
+               dw, dh, int(tolerance), (" " + context) if context else ""))
+
+
+def _client_geometry(user32, hwnd):
+    """读取 (窗口外框, 客户区尺寸, 客户区屏幕原点)，任一失败返回 None。"""
+    window = ctypes.wintypes.RECT()
+    client = ctypes.wintypes.RECT()
+    point = ctypes.wintypes.POINT(0, 0)
+    if not user32.GetWindowRect(hwnd, ctypes.byref(window)):
+        return None
+    if not user32.GetClientRect(hwnd, ctypes.byref(client)):
+        return None
+    if not user32.ClientToScreen(hwnd, ctypes.byref(point)):
+        return None
+    return (
+        {"x": int(window.left), "y": int(window.top),
+         "width": int(window.right - window.left),
+         "height": int(window.bottom - window.top)},
+        {"width": int(client.right - client.left),
+         "height": int(client.bottom - client.top)},
+        {"x": int(point.x), "y": int(point.y)},
+    )
+
+
+def _render_window_bgra(hwnd, user32, gdi32, width, height, *, print_window):
+    """把窗口画进指定尺寸的 32 位位图并读回 BGRA；失败返回 None。
+
+    print_window=True 时整窗渲染（图像原点 = 外框左上角，调用方负责裁剪）；
+    False 时从客户区 DC BitBlt（图像原点 = 客户区左上角）。
+    """
     hwnd_dc = mem_dc = bmp = prev_bmp = None
     try:
         hwnd_dc = user32.GetDC(hwnd)
@@ -115,10 +249,10 @@ def capture_window(hwnd, *, frame_grabber=None):
         if not mem_dc or not bmp:
             return None
         prev_bmp = gdi32.SelectObject(mem_dc, bmp)
-        printed = int(user32.PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT) or 0)
-        if printed != 1:
-            # GPU/最小化等场景 PrintWindow 失败：回退屏幕 BitBlt（被遮挡区域会丢内容，
-            # 但比没有证据强；观察文本会注明来源方式由调用方按需扩展）。
+        if print_window:
+            if int(user32.PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT) or 0) != 1:
+                return None
+        else:
             if not gdi32.BitBlt(mem_dc, 0, 0, width, height, hwnd_dc, 0, 0, SRCCOPY):
                 return None
         info = _BITMAPINFO()
@@ -148,6 +282,67 @@ def capture_window(hwnd, *, frame_grabber=None):
                 gdi32.DeleteDC(mem_dc)
             if hwnd_dc is not None and user32 is not None:
                 user32.ReleaseDC(hwnd, hwnd_dc)
+
+
+def capture_window(hwnd, *, frame_grabber=None, strict_geometry=True):
+    """抓取单个窗口**客户区**，返回 ``(bgra_bytes, width, height)``；失败返回 None。
+
+    坐标系契约：图像的 (0,0) = 客户区的 (0,0)，且宽高等于客户区宽高。
+
+    实现选型：**整窗 PrintWindow + 按非客户区偏移裁剪**（不用 PW_CLIENTONLY）。
+    * PW_CLIENTONLY(0x1) 与 PW_RENDERFULLCONTENT(0x2) 的组合位（3）没有文档保证，
+      部分 Windows 版本会整窗空白或忽略 CLIENTONLY，GPU/DWM 内容尤其不可靠；
+    * 整窗 PrintWindow 已在本机实测能出图（含 DirectComposition 内容）；
+    * 偏移不写死：每次由 GetWindowRect、GetClientRect、ClientToScreen(0,0) 现算
+      （left = client_origin.x - window_rect.x；top 同理），DPI 变化自动跟随。
+
+    尺寸不变量在返回前强制校验；不一致抛 CaptureGeometryError（strict_geometry=False
+    时仅记录日志）。``frame_grabber(hwnd)`` 注入时直接使用注入实现（测试替身）。
+    """
+    hwnd = int(hwnd or 0)
+    if not hwnd:
+        return None
+    if frame_grabber is not None:
+        return frame_grabber(hwnd)
+    user32, gdi32 = _libs()
+    if user32 is None:
+        return None
+    dpi_info = ensure_capture_dpi(hwnd)
+    geometry = _client_geometry(user32, hwnd)
+    if not geometry:
+        return None
+    window_rect, client_rect, client_origin = geometry
+    cw, ch = client_rect["width"], client_rect["height"]
+    if cw <= 0 or ch <= 0:
+        return None
+    crop = compute_client_crop(window_rect, client_rect, client_origin)
+    ww, wh = window_rect["width"], window_rect["height"]
+
+    full = _render_window_bgra(hwnd, user32, gdi32, ww, wh, print_window=True)
+    if full:
+        path = "printwindow-full+crop"
+        raw, out_w, out_h = crop_client_frame(full[0], full[1], full[2], crop)
+    else:
+        # PrintWindow 失败（GPU/最小化/旧系统）：回退客户区 BitBlt，该路径本身就是
+        # 客户区图像，不再裁剪；尺寸不变量继续兜底。
+        path = "bitblt-client"
+        client_frame = _render_window_bgra(hwnd, user32, gdi32, cw, ch, print_window=False)
+        if not client_frame:
+            return None
+        raw, out_w, out_h = client_frame
+    try:
+        assert_frame_matches_client(out_w, out_h, cw, ch, context="path=%s" % path)
+    except CaptureGeometryError:
+        if strict_geometry:
+            raise
+        logger.error("capture geometry mismatch tolerated: path=%s image=%dx%d client=%dx%d",
+                     path, out_w, out_h, cw, ch)
+    logger.info(
+        "capture hwnd=%s path=%s client=%dx%d image=%dx%d crop=(%d,%d) "
+        "nonclient_right=%d nonclient_bottom=%d dpi=%s awareness=%s",
+        hwnd, path, cw, ch, out_w, out_h, crop["left"], crop["top"],
+        crop["right"], crop["bottom"], dpi_info["dpi"], dpi_info["awareness"])
+    return raw, out_w, out_h
 
 
 def _embedded_target(project_id=None, *, strict_project=False):
