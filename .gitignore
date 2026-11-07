@@ -150,3 +150,23 @@ docs/cockpit-v2-*.md
 docs/ui-slimdown-plan.md
 docs/autonomous-development-cockpit-design.md
 docs/*-discipline.md
+
+# ===== 压测 / 截图 / 备份的过程产物（2026-11-07 收尾补）=====
+# verify_shots/：压测脚本每轮写的截图（501 文件 / 24.1 MB），不是基线截图。
+verify_shots/
+# 本地备份与调试截图，均含当次运行状态。
+.backups/
+.screenshots/
+# 已确认没有任何 md / README 引用的截图目录：
+# 分别是记忆层神经图、工作台性能页、工作台统一版的改版过程图。
+docs/screenshots/memory-neural/
+docs/screenshots/workbench-performance/
+docs/screenshots/workbench-unified/
+
+# ===== 一次性报告与冻结清单（内部过程文档，含本机路径）=====
+# 根目录的 *-report-2026110*.md（如 neuron-layers-report-20261104.md 第 3 行含本机绝对路径）。
+/*-report-2026110*.md
+/*-freeze-manifest*.json
+/frontend-outofscope-start.json
+# notes/ 下的交接笔记只在本机流转，不入库。
+notes/inflight-handoff-*.md
