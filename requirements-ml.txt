@@ -20,6 +20,8 @@
 #     torch 513.7 + scipy 127.8 + transformers 103.3 + sympy 65.4 + sklearn 40.1
 #     + networkx 15.2 + 其它 ≈ 889.5 MB / 30,514 文件
 #   占 site-packages 的 54.3%。默认路径一次都不会 import 它们，属于纯死重。
+#   注意口径：889.5 MB 是「拆出去的那棵子树」的增量；默认档装完总量约 762 MB
+#   （实测 758.4 MB / 23,780 文件）。两者不是同一口径，不要相减或相加。
 #
 # 注意：
 #   - embedding（向量化）不走这个文件。embedding 的三条路径分别是
