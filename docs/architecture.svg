@@ -5,7 +5,7 @@
 <rect x="20" y="20" width="640" height="660" rx="14" fill="#FFFFFF" stroke="#D3D1C7" stroke-width="0.5"/>
 
 <text x="40" y="52" font-size="15" font-weight="500" fill="#2C2C2A">Agent 工作台 · Agent Harness 六层架构</text>
-<text x="40" y="74" font-size="11" fill="#5F5E5A">H = (E, T, C, S, L, V) + P　｜　47 个工具 · 1131 项自动化测试全绿 · 零 API Key 可离线运行</text>
+<text x="40" y="74" font-size="11" fill="#5F5E5A">H = (E, T, C, S, L, V) + P　｜　131 个工具 · 6093 项自动化测试 · 零 API Key 可离线运行</text>
 <line x1="40" y1="88" x2="640" y2="88" stroke="#D3D1C7" stroke-width="0.5"/>
 
 <rect x="40" y="100" width="600" height="72" rx="8" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
@@ -23,7 +23,7 @@
 <text x="72" y="215" font-size="13" font-weight="500" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">T</text>
 <text x="100" y="205" font-size="12" font-weight="500" fill="#0C447C" dominant-baseline="central">工具注册</text>
 <text x="100" y="229" font-size="11" fill="#5F5E5A" dominant-baseline="central">tools.py</text>
-<text x="290" y="205" font-size="11" fill="#2C2C2A" dominant-baseline="central">47 个工具统一注册与派发 · 参数校验</text>
+<text x="290" y="205" font-size="11" fill="#2C2C2A" dominant-baseline="central">131 个工具统一注册与派发 · 参数校验</text>
 <text x="290" y="229" font-size="11" fill="#2C2C2A" dominant-baseline="central">域名白名单 · 受控写四护栏（含人工确认）</text>
 
 <rect x="40" y="258" width="600" height="72" rx="8" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
@@ -42,7 +42,7 @@
 <text x="100" y="363" font-size="12" font-weight="500" fill="#0C447C" dominant-baseline="central">状态存储</text>
 <text x="100" y="387" font-size="11" fill="#5F5E5A" dominant-baseline="central">agent_trace.py · sessions.py</text>
 <text x="290" y="363" font-size="11" fill="#2C2C2A" dominant-baseline="central">逐轮 trace 账本（只记元数据不记正文）</text>
-<text x="290" y="387" font-size="11" fill="#2C2C2A" dominant-baseline="central">会话隔离持久化 · 跨重启恢复 · 变更集回滚</text>
+<text x="290" y="387" font-size="11" fill="#2C2C2A" dominant-baseline="central">会话隔离 · 跨重启恢复 · 三层记忆</text>
 
 <rect x="40" y="416" width="600" height="72" rx="8" fill="#F1EFE8" stroke="#D3D1C7" stroke-width="0.5"/>
 <rect x="40" y="432" width="4" height="40" rx="2" fill="#185FA5"/>
@@ -59,7 +59,7 @@
 <text x="72" y="531" font-size="13" font-weight="500" fill="#FFFFFF" text-anchor="middle" dominant-baseline="central">V</text>
 <text x="100" y="521" font-size="12" font-weight="500" fill="#0C447C" dominant-baseline="central">评估接口</text>
 <text x="100" y="545" font-size="11" fill="#5F5E5A" dominant-baseline="central">agent_eval.py · run_golden.py</text>
-<text x="290" y="521" font-size="11" fill="#2C2C2A" dominant-baseline="central">黄金题 40 题（单跳 / 多跳 / 抗干扰）</text>
+<text x="290" y="521" font-size="11" fill="#2C2C2A" dominant-baseline="central">黄金题 56 题（单跳 / 多跳 / 抗干扰）</text>
 <text x="290" y="545" font-size="11" fill="#2C2C2A" dominant-baseline="central">反幻觉黑名单 · must_call 校验 · 回归门</text>
 
 <line x1="40" y1="579" x2="640" y2="579" stroke="#D3D1C7" stroke-width="0.5"/>

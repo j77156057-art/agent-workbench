@@ -16,21 +16,21 @@
 
 | 作用域 | 层 | 内容 | 写者 |
 |---|---|---|---|
-| global | L0 宪法 | 身份、不可越界、证据纪律、升级规则、记忆边界 | 仅用户（模型只能提案） |
-| global | L1 画像 | 用户声明 + 确定性学习计数 | 用户 / 系统 |
-| global | L2 共享记忆 | 事实、教训、技能 | 模型提炼 → 晋升门；技能需审批 |
-| project | L3 任务书 | 目标、条目、状态、回执引用 | 模型写，状态由回执裁决 |
+| global | 常驻守则（旧编号 L0，已废弃） | 身份、不可越界、证据纪律、升级规则、记忆边界 | 仅用户（模型只能提案） |
+| global | 用户画像（旧编号 L1，已废弃） | 用户声明 + 确定性学习计数 | 用户 / 系统 |
+| global | 共享记忆（旧编号 L2，已废弃） | 事实、教训、技能 | 模型提炼 → 晋升门；技能需审批 |
+| project | 任务书（旧编号 L3，已废弃） | 目标、条目、状态、回执引用 | 模型写，状态由回执裁决 |
 | project | 项目规则 | `DOCMIND_RULES.md`（已有） | 用户 / 分区初始化 |
-| session | L4 会话私有 | 结构化回合、钩子、错误账本 | 系统自动 |
-| session | L5 归档 | 快照、摘要、交接包 | 后台任务 |
+| session | 会话钩子（旧编号 L4，已废弃） | 结构化回合、钩子、错误账本 | 系统自动 |
+| session | 归档 | 快照、摘要、交接包 | 后台任务 |
 
 ## 2. 目录与文件格式
 
 ```
 .docmind/memory/
-  constitution.md                 # L0
-  profile/declared.md             # L1 用户声明
-  profile/learned.json            # L1 确定性计数（可清空）
+  constitution.md                 # 常驻守则
+  profile/declared.md             # 用户画像声明
+  profile/learned.json            # 用户画像确定性计数（可清空）
   shared/facts/<id>.md
   shared/lessons/<id>.md
   shared/skills/<name>/SKILL.md   # 沿用现有 skills.py 格式
@@ -86,7 +86,7 @@ created: ...  updated: ...  last_used: ...
 
 学习状态（confidence/importance/usage/edges）必须落在文件里，索引重建不丢失。
 
-### 2.3 回合记录（L4）
+### 2.3 回合记录（会话钩子，旧编号 L4）
 
 ```json
 {"id":"ep-...","ts":"...","session":"...","task":"...","goal":"...",
@@ -130,17 +130,17 @@ created: ...  updated: ...  last_used: ...
 ## 4. 注入顺序、优先级与预算
 
 1. 系统工具规范（现状，不动）
-2. L0 宪法（≤600 字符，带 version）
-3. L1 画像（≤500）
+2. 常驻守则（≤600 字符，带 version）
+3. 用户画像（≤500）
 4. 项目规则（已有）
-5. L2 pinned（≤5 条 / ≤800 字符）
-6. L3 任务书摘要（≤400，未完成前 8 项 + 下一件事）
-7. L4 钩子 + 压缩摘要（≤600）
+5. 共享记忆 pinned（≤5 条 / ≤800 字符）
+6. 任务书摘要（≤400，未完成前 8 项 + 下一件事）
+7. 会话钩子 + 压缩摘要（≤600）
 8. 历史滑窗 + 当前问题
 
-前 7 块顺序固定、内容稳定，利于 prompt 缓存。优先级：**平台安全 > 宪法 > 当前明确请求 > 项目规则 > 画像 > 记忆**。
+前 7 块顺序固定、内容稳定，利于 prompt 缓存。优先级：**平台安全 > 常驻守则 > 当前明确请求 > 项目规则 > 用户画像 > 记忆**。
 
-每回合把实际注入块写入 turn trace：`injection: [{layer, chars, hash, text}]`，供上下文面板与验收测试对账。
+每回合把实际注入块写入 turn trace：`injection: [{layer_key, chars, hash, text}]`，供上下文面板与验收测试对账。
 
 ## 5. 宪法与代码闸门
 
@@ -149,7 +149,7 @@ created: ...  updated: ...  last_used: ...
 | 禁强推 / 改写已发布历史 | `git_force_push_blocked` | 命令黑名单 |
 | 提交 / 推送需批准 | `git_push_requires_approval` | 审批层 |
 | 无回执不得声称完成 | `done_requires_receipt` | 任务书状态机 |
-| 不得写 L0 | `constitution_readonly` | 存储层路径守卫 |
+| 不得写常驻守则（旧编号 L0） | `constitution_readonly` | 存储层路径守卫 |
 | 不得把密钥写进记忆 | `secret_rejected` | scrub + 写入拒绝 |
 | 危险 / 递归删除需确认 | `destructive_needs_confirm` | 命令闸门 |
 | 跨项目晋升须脱敏 | `promotion_scrubbed` | 晋升门 |
@@ -201,17 +201,18 @@ created: ...  updated: ...  last_used: ...
   `宪法 / 画像 / 共享记忆 / 任务书 / 钩子 / 项目规则 / 历史摘要`。
 - 每层显示：渲染文本、字符数 / 上限、来源徽标（用户 / 系统 / 模型 / 回执）、可编辑状态。
 - 双视图：「下一回合将注入」（默认，可编辑）与「上一回合实际注入」（只读，来自 turn trace `injection`）。
+- Agent 树页展示每个派发节点的角色、层级、有效工具、额度与运行状态。安全的同会话/同项目直接子代理登记后立即进入 `running → completed`；只有跨层、跨项目、扩权、超限或无法证明安全的节点显示为 `pending` 并提供批准/拒绝。直接节点同样占用分支额度，普通工具审批不因派发免批而绕过。批准 pending 只执行该分支，不承诺原 DAG 自动续跑。
 
 ### 9.2 可编辑范围
 
 | 层 | 可编辑 | 规则 |
 |---|---|---|
-| L0 宪法 | 是（仅用户） | 二次确认 + 版本自增 + ledger；提示"影响所有项目" |
-| L1 画像 | 声明可编辑；学习计数只读 + 一键清空 | 保存即生效 |
-| L2 共享记忆 | 文本 / pin / 删除 | 全局条目二次确认；编辑后 `source=user_edit`、`receipts=[]`、`confidence=0.5`、晋升冻结至重新验证；删除需确认 |
-| L3 任务书 | 条目文本 / 勾选 / 排序 | `done` 需回执或 `user_override` |
-| L4 钩子 | 文本 / pin / 删除 | 保存即生效 |
-| L4 episodes | **只读** | 系统证据，不进编辑面 |
+| 常驻守则 | 是（仅用户） | 二次确认 + 版本自增 + ledger；提示"影响所有项目" |
+| 用户画像 | 声明可编辑；学习计数只读 + 一键清空 | 保存即生效 |
+| 共享记忆 | 文本 / pin / 删除 | 全局条目二次确认；编辑后 `source=user_edit`、`receipts=[]`、`confidence=0.5`、晋升冻结至重新验证；删除需确认 |
+| 任务书 | 条目文本 / 勾选 / 排序 | `done` 需回执或 `user_override` |
+| 会话钩子 | 文本 / pin / 删除 | 保存即生效 |
+| 会话钩子 episodes | **只读** | 系统证据，不进编辑面 |
 | 项目规则 | 只读（给"打开文件"入口） | 避免面板与 ingest 双写 |
 | 历史摘要 | 只读 | 由压缩任务生成 |
 
@@ -223,7 +224,7 @@ created: ...  updated: ...  last_used: ...
 
 ### 9.4 安全
 
-- 用户编辑仍属"记忆文本"，除 L0 外**不是指令**，面板展示该提示。
+- 用户编辑仍属"记忆文本"，除常驻守则外**不是指令**，面板展示该提示。
 - 写入前跑密钥扫描（C-005）：命中 → 拒绝并说明，不静默脱敏。
 - 所有编辑 / 删除写 ledger（层、条目、diff hash、时间）。
 
@@ -233,7 +234,7 @@ created: ...  updated: ...  last_used: ...
 GET    /api/memory/context?session_id=&project_id=&mode=next|last
 PUT    /api/memory/constitution        {body, base_version}
 PUT    /api/memory/profile/declared    {body}
-PATCH  /api/memory/items/{id}          {title?, body?, pinned?}   # L2
+PATCH  /api/memory/items/{id}          {title?, body?, pinned?}   # 共享记忆
 DELETE /api/memory/items/{id}?confirm=true
 PATCH  /api/memory/hooks/{id}          {text?, pinned?}
 PATCH  /api/memory/taskbook/items/{key} {text?, done?, order?}
@@ -242,7 +243,7 @@ POST   /api/memory/reindex
 
 前端：`ChatComposer.vue` 增加 `memory` 事件；新增 `MemoryContextPanel.vue`；`frontend/src/workbench/api/memoryPanel.ts`。
 
-**P0-5 实现说明**：面板已落地——输入区「记忆」按钮打开右侧抽屉（Teleport 到 body，避免被对话台定位上下文裁切），按层显示字符/预算，支持「下一回合 / 上一回合」双视图；L0 宪法、L1 画像、L2 共享条目、L3 任务书、L4 钩子可直接编辑，episodes / 错误账本 / 项目规则 / 历史摘要只读。L1 编辑沿用现有画像接口（SQLite），文件化的 `profile/declared.md` 留到 P1。"可召回但未注入"按 §15 决策留到 P1，面板只显示已注入项。
+**P0-5 实现说明**：面板已落地——输入区「记忆」按钮打开右侧抽屉（Teleport 到 body，避免被对话台定位上下文裁切），按层显示字符/预算，支持「下一回合 / 上一回合」双视图；常驻守则、用户画像、共享记忆、任务书、会话钩子可直接编辑，episodes / 错误账本 / 项目规则 / 历史摘要只读。用户画像编辑沿用现有画像接口（SQLite），文件化的 `profile/declared.md` 留到 P1。"可召回但未注入"按 §15 决策留到 P1，面板只显示已注入项。
 
 ## 10. 固化模型设置
 
@@ -264,9 +265,9 @@ POST   /api/memory/reindex
 | 462 条逐字 episode | `archive/legacy/episodes.jsonl`（不注入） |
 | 40 条蒸馏摘要 | `shared/facts/` 候选（低置信、不 pin） |
 | 13 条已退休 | 归档保留 |
-| 1 fact + 1 preference | L1/L2（preference 保留原文证据） |
+| 1 fact + 1 preference | 用户画像/共享记忆（preference 保留原文证据） |
 | 352 条 checkpoint | `archive/legacy/checkpoints/`（保留 30 天） |
-| experience 集合 | L2 lessons（带 project_id 来源） |
+| experience 集合 | 共享记忆 lessons（带 project_id 来源） |
 | skills | 原地不动 |
 | plan-v1.json | 任务书草稿 |
 
@@ -401,8 +402,8 @@ POST   /api/memory/reindex
 ### 16.9 跨会话错误记忆（2026-10-31）
 
 - `errors.record` 现在同时写会话账本与项目汇总 `projects/<pid>/errors.md`；同一错误签名跨窗口累计次数。
-- L4 注入在会话错误之外追加「跨会话易错」，并排除本窗口已出现的签名，避免重复；总预算仍受 600 字符上限约束。
-- 上下文面板 L4 分开展示「本窗口易错点」与「跨会话易错点」，均为只读。
+- 会话钩子（旧编号 L4）注入在会话错误之外追加「跨会话易错」，并排除本窗口已出现的签名，避免重复；总预算仍受 600 字符上限约束。
+- 上下文面板会话钩子分开展示「本窗口易错点」与「跨会话易错点」，均为只读。
 - 验收：后端 **288 passed**；跨会话签名计数、注入和面板数据均有测试覆盖。
 
 ### 16.10 bge-m3 语义后端与迁移隔离修正（2026-10-31）
@@ -421,7 +422,7 @@ POST   /api/memory/reindex
 
 **宪法条款代码闸门**：`agent_runtime/memory/gates.py`
 - 8 条 `machine_check` 逐条绑定真实落点：C-001/002/006 命令黑名单、C-003 任务书回执门、C-004 无模型写入路径、C-005 密钥扫描、C-007 晋升脱敏、C-008 删除确认。
-- 宪法加载时会校验并暴露 `gates_ok/missing_gates`；未绑定条款写入 ledger，面板 L0 显示“未绑定闸门”。
+- 宪法加载时会校验并暴露 `gates_ok/missing_gates`；未绑定条款写入 ledger，面板常驻守则显示“未绑定闸门”。
 - `tests/test_memory_gates.py` 对每条条款调用真实闸门做回归；`tests/test_memory_eval.py` 锁住评测最低线。
 - 总回归：后端 **302 passed**；前端 158 node、build/typecheck 通过。
 
@@ -435,7 +436,7 @@ POST   /api/memory/reindex
 ### 16.13 长任务实测：钩子 / 压缩 / 固化质量（2026-10-31）
 
 - **真实任务**：临时项目 ORCHID-2718，6 回合读代码、制造一次确定性读文件失败、修两个 bug、写决策文档、全量测试；用 `DOCMIND_SESSION_MAX_TURNS=4` 强制触发会话压缩；模型 opencode/deepseek-v4.1-flash。
-- **自动钩子**：确实自动生成，但目前只有两类——工具失败（`error`）与用户明确“记住/约定”（`user_agreement`）；普通结论不会自动进 L4。首轮出现 4 条假/错钩子：pytest 缓存 `拒绝访问` 警告被 `_is_failure` 当失败、失败文本截到 400 字只剩警告头、钩子用 `journal.last_action` 把 `run_command` 失败标成 `grep`。已修：退出码 0 / 结构化 `ok:true` 直接判成功；`Turn.last_failure_tool` 记录真正失败工具；钩子按失败签名去重并只留 `FAILED/error` 行。
+- **自动钩子**：确实自动生成，但目前只有两类——工具失败（`error`）与用户明确“记住/约定”（`user_agreement`）；普通结论不会自动进会话钩子。首轮出现 4 条假/错钩子：pytest 缓存 `拒绝访问` 警告被 `_is_failure` 当失败、失败文本截到 400 字只剩警告头、钩子用 `journal.last_action` 把 `run_command` 失败标成 `grep`。已修：退出码 0 / 结构化 `ok:true` 直接判成功；`Turn.last_failure_tool` 记录真正失败工具；钩子按失败签名去重并只留 `FAILED/error` 行。
 - **自动压缩**：压缩触发后摘要从 448 → 1110 → 1200 字符；首轮摘要因每轮只喂 400 字而丢掉两个 API 签名，且只追加不合并、无上限。已修：每轮源文本 1200 字、提示词只留长期事实/精确标识符/错误码、旧新摘要超 1200 时二次合并并封顶、硬截断带省略号。
 - **压缩后记忆**：同会话重启（只靠摘要 + 保留轮次）能准确答出项目代号、三个 API 签名、`ERR_EMPTY_INPUT`、`ORCHID-2718 sum=6`、已废弃旧代号；新窗口通过 `memory_search` 也能召回 v2 候选与旧 episode。
 - **长期记忆**：首轮 4 条候选，2 条有用，1 条“本轮未验证”中间态、1 条低价值；已修：`consolidate._trivial` 跳过明确“尚未完成验证”的回合。复测 3 条候选：规格偏差事实、终检清单、确定性读文件失败经验；0 条晋升（仍需回执 + 采纳/5 星 + 泛化，符合设计）。
@@ -478,8 +479,8 @@ POST   /api/memory/reindex
 - **默认值即防线**：`run_golden.py` 的 `EVAL_MEMORY_SCOPE = "eval-golden"`，`--memory-write-project` 可覆盖（传空串退回旧行为，做记忆回归时才用）；banner 会打印「记忆写入=eval-golden」。与既有的 `DOCMIND_GOLDEN_NO_LOCK` 同一个理由：评测不该改动任何长期状态。
 - **存量搬运**：55 个 `golden-*` 会话目录整目录先复制到 `archive/2026-10-31-golden-sessions-pre-isolation/`（含 manifest.json），再把 episode 记录里的 `project` 字段改成 `eval-golden`、move 进 `projects/eval-golden/session/`。真实项目会话数 56 → 1。索引不受影响（`_PATTERNS` 只扫 `facts/`、`lessons/`，不扫 `session/*/episodes.jsonl`），99 items / 99 vectors 不变。v1 侧：54 条命中题库的 episode 行整行导出到 `archive/2026-10-31-golden-rows-pre-isolation/memories.json` 后再删，本项目 136 → 82 条；删前另存了整库副本。
 - **保留的判断**：46 条候选**没有**跟着搬 —— 它们是这个代码库的真实事实（常量默认值、集合名、护栏语义），只是获取路径是评测。要一并搬走是 `projects/prj-af6142eae52c/{facts,lessons}/*.md` 里 `source_turn` 命中评测 episode 的那 28 条，一条脚本即可，代价是真实项目候选从 46 掉到 18。
-- **仍留的小口子**：`_memory.capture_explicit_profile(question)` 不按 scope 键控（它写的是用户画像），所以理论上仍有一条评测题能往 L1 画像里学一条偏好；实测题库里没有「我叫…/请用中文…」这类自述句式，故未动。
-- **验证**：`tests/test_eval_memory_isolation.py` 5 passed —— 隔离写入只落 eval 桶且真实项目连 session 目录都不建、**反向守卫**（不传参必须逐字保持旧行为）、读取仍跟被问项目（L3 任务书照样注入）、`run_golden.run_one` 的默认值本身就是隔离、v1 episode 行跟着走。两次变异各自把落点改回 `self.project_id` / `self.memory_scope`，对应用例立刻红（`0 != 1`、`'episode' not found in []`），改回即绿。
+- **仍留的小口子**：`_memory.capture_explicit_profile(question)` 不按 scope 键控（它写的是用户画像），所以理论上仍有一条评测题能往用户画像里学一条偏好；实测题库里没有「我叫…/请用中文…」这类自述句式，故未动。
+- **验证**：`tests/test_eval_memory_isolation.py` 5 passed —— 隔离写入只落 eval 桶且真实项目连 session 目录都不建、**反向守卫**（不传参必须逐字保持旧行为）、读取仍跟被问项目（任务书照样注入）、`run_golden.run_one` 的默认值本身就是隔离、v1 episode 行跟着走。两次变异各自把落点改回 `self.project_id` / `self.memory_scope`，对应用例立刻红（`0 != 1`、`'episode' not found in []`），改回即绿。
 
 ### 16.18 学习闭环第一次真正闭合（2026-10-31）
 
@@ -488,7 +489,7 @@ POST   /api/memory/reindex
 - **真任务**：夹具的 SPEC.md 与实现有两处真实不一致 —— Known issue 声称 `parse("1, 2, 3")` 会抛 `ValueError`（其实 `int()` 容忍空白、已有测试通过），而 `compute(items, strict=True)` 的 `ERR_NEGATIVE_INPUT` 既没进 SPEC 也没测试覆盖，而 SPEC 自己写着「Every behavior change needs a test」。要求：核实、补齐、**最后一次改动之后**再跑 `python -m pytest tests -q`。
 - **链路实测**：基线 6 passed → 改 SPEC + 补 2 条测试 → 终跑 **8 passed / exit 0** → 回执 `rc-20261031081954-df5e65 = test/pass` → 固化出候选 `mem-bd4d8a4f8c531e62`（正文含 strict 与非严格路径两条事实，并挂 2 条回执）→ 采纳 → **`shared.active=1 / pinned=1 / confidence=0.85 / receipts=3`**，项目侧 `by_status` 变成 `candidate 5 / promoted 1 / superseded 1`。
 - **晋升门是"差一步"被证实的**：采纳前实跑 `promote.evaluate()`，未满足项只有一句「缺采纳/复用信号」；回执、重要度 0.7、泛化（正文一字未被削）、无冻结全过。也就是说门没写坏，之前只是从来没有真实信号。
-- **对照（关键）**：晋升**之前**在另一个空项目 `prj-b6cd69a42c54` 开新窗口问「strict 负数的错误码 + 你从哪层知道」→ 注入侧 L2 **0 字符**，回答侧模型**拒绝编造**并自述「来源层 = 无（证据缺失）」。晋升**之后**同一问题同一项目 → 注入侧 L2 **252 字符**命中该条，回答侧给出正确错误码且自述「来源层是共享记忆（跨项目沉淀），本轮没有调用任何工具」。唯一变量就是那次采纳。
+- **对照（关键）**：晋升**之前**在另一个空项目 `prj-b6cd69a42c54` 开新窗口问「strict 负数的错误码 + 你从哪层知道」→ 注入侧共享记忆 **0 字符**，回答侧模型**拒绝编造**并自述「来源层 = 无（证据缺失）」。晋升**之后**同一问题同一项目 → 注入侧共享记忆 **252 字符**命中该条，回答侧给出正确错误码且自述「来源层是共享记忆（跨项目沉淀），本轮没有调用任何工具」。唯一变量就是那次采纳。
 - **采纳落点**：`POST /api/memory/items/{id}/adopt` → 写 `review/pass · user_review` 回执 + `adopted=True` + `usage+1` → 立刻 `promote()`。面板按钮是「采纳即晋升」，成功文案「已采纳并 pin」（confidence 0.85 ≥ 0.8 且 importance 0.7 ≥ 0.7 才 pin）。
 - **踩到的真问题**：第一次点击**没落到后端** —— 账本无 `memory.promote`、没有 `user_review` 回执、候选文件 mtime 未变。根因是 `/api/memory/items/{id}/adopt` 按**请求头里的项目**找候选（`_request_project_id()`），顶栏停在别的项目时同一 id 得到的是同一句 404「未找到待晋升候选」，红字极易被当成"点了没反应"。把顶栏切到候选所属项目后一次成功。
 - **告警侧的可观测变化**：`shared_empty` 与 `no_promotion` 两条告警在项目晋升后**消失**，只剩 `consolidation_errors`（2026-10-30 一次 402 余额错误，非代码问题）。
@@ -503,16 +504,16 @@ POST   /api/memory/reindex
 
 ### 16.20 注入上限改为「固定下限 + 随窗口缩放的天花板」（2026-10-31）
 
-- **为什么不整体改成按比例**：压缩的历史是无界的，比例合理；注入的内容是有界的 —— 宪法不会因为换个大模型就该写得更长。实测两套口径的差别很直白：5% 预算在 8k 窗口模型上只给 230 tok，**连 L0 宪法一条（472 字符 ≈ 425 tok）都装不下**；在 1M 窗口上给 35,101 tok，而各层真实占用是 L0 79% / L1 67% / L3 36% / L2 32% / L4 **0%** —— 卡住注入的一直是内容量，不是预算。所以比例只能当**帽子**，不能当**分配**。
-- **做法**：`injection.DISCRETIONARY_FLOORS = {L2:800, L3:400, L4:600}`（就是原来的固定值，即下限）与 `DISCRETIONARY_CAPS = {L2:3200, L3:1200, L4:2400}`；`discretionary_budgets(prompt_tokens)` 先把**整池** clamp 到 `[1800, 6800]`（`池 = 预算 × GROW_RATIO(0.02) × CHARS_PER_TOKEN(1.1)`，比例可 `DOCMIND_MEMORY_INJECT_RATIO` 覆盖），再按各层下限占比分余量 —— 保持 800:400:600 的相对比例不随窗口漂移。
-- **L0 / L1 刻意不进这张表**：`layer_chars` 对它们直接 `ValueError`。这两层没有"这轮先不注入"的退路，换模型也不会变长。
-- **实测生效值**：8k/16k 本地窗口 → 逐字等于今天的 800/400/600；当前 deepseek（预算 87,307）→ 853/426/640；1M 窗口 → 3022/1200/2266（L3 先顶到帽，余量**不挪给别层** —— 宁可少注入也不失控，所以有效总池 6488 < cap 合计 6800）。
+- **为什么不整体改成按比例**：压缩的历史是无界的，比例合理；注入的内容是有界的 —— 常驻守则不会因为换个大模型就该写得更长。实测两套口径的差别很直白：5% 预算在 8k 窗口模型上只给 230 tok，**连常驻守则一条（472 字符 ≈ 425 tok）都装不下**；在 1M 窗口上给 35,101 tok，而各层真实占用是 常驻守则 79% / 用户画像 67% / 任务书 36% / 共享记忆 32% / 会话钩子 **0%** —— 卡住注入的一直是内容量，不是预算。所以比例只能当**帽子**，不能当**分配**。
+- **做法**：`injection.DISCRETIONARY_FLOORS = {shared:800, project:400, hook:600}`（就是原来的固定值，即下限）与 `DISCRETIONARY_CAPS = {shared:3200, project:1200, hook:2400}`；`discretionary_budgets(prompt_tokens)` 先把**整池** clamp 到 `[1800, 6800]`（`池 = 预算 × GROW_RATIO(0.02) × CHARS_PER_TOKEN(1.1)`，比例可 `DOCMIND_MEMORY_INJECT_RATIO` 覆盖），再按各层下限占比分余量 —— 保持 800:400:600 的相对比例不随窗口漂移。
+- **常驻守则 / 用户画像刻意不进这张表**：`layer_chars` 对它们直接 `ValueError`。这两层没有"这轮先不注入"的退路，换模型也不会变长。
+- **实测生效值**：8k/16k 本地窗口 → 逐字等于今天的 800/400/600；当前 deepseek（预算 87,307）→ 853/426/640；1M 窗口 → 3022/1200/2266（项目层先顶到帽，余量**不挪给别层** —— 宁可少注入也不失控，所以有效总池 6488 < cap 合计 6800）。
 - **接线**：`agent._build_messages` 三处按 `self._prompt_budget()` 传（用的是**本模型**的预算，会话级换模型会自动跟着变）；`context_panel.next_view` 用运行时模型估一份，并把同一个数字同时用于取数和**面板显示的 budget**，否则界面会显示一份假的。估不出预算时 `_current_prompt_tokens()` 返回 0 → 退回下限，绝不放大。
-- **验证**：`tests/test_memory_inject_scaling.py` 7 passed —— 小窗口逐字等于今天（反向守卫）、大窗口增长但逐层 ≤ cap 且相对比例不漂、L0/L1 拒绝缩放、估不出预算退回下限、builder 真接到更大天花板（注入内容确实变多）、**Agent 确实把自己那个模型的 prompt 预算传给三层**、面板显示的预算与它真正用的同一份。变异验证：把 L3 那处接线删掉，接线守卫立刻红（`Items in the second set but not the first: 'L3'`）。
+- **验证**：`tests/test_memory_inject_scaling.py` 7 passed —— 小窗口逐字等于今天（反向守卫）、大窗口增长但逐层 ≤ cap 且相对比例不漂、常驻守则/用户画像拒绝缩放、估不出预算退回下限、builder 真接到更大天花板（注入内容确实变多）、**Agent 确实把自己那个模型的 prompt 预算传给三层**、面板显示的预算与它真正用的同一份。变异验证：把任务书那处接线删掉，接线守卫立刻红（`Items in the second set but not the first: 'project'`）。
 
 ### 16.21 `test/pass` 回执只认退出码（2026-10-31）
 
-闭合学习环之后回头查 L4，顺出这条：**回执凭证原先取自 `_tool_ok`，而 `_tool_ok` 来自 `_is_failure` 的反面 —— 那个判据认不出测试失败。**
+闭合学习环之后回头查会话钩子，顺出这条：**回执凭证原先取自 `_tool_ok`，而 `_tool_ok` 来自 `_is_failure` 的反面 —— 那个判据认不出测试失败。**
 
 - **根因**：`_FAILURE_MARKERS` 是一串**中文工具错误文案**（"读取失败/拒绝访问/计算失败"…），没有任何通用英文失败标记。于是真正的 pytest 失败输出被判成"非失败"：`[exit code 1] FAILED tests/test_a.py::x` → `_is_failure False` → `_tool_ok True` → 写出一条 `test/pass`。这是**主路径**，不是边角。同理 `[exit code 4] ERROR: file or directory not found`、`[exit code 2] can't open the file` 也过 —— 一次根本没跑起来的测试能拿到"通过"凭证，而这条凭证正是晋升门 `_has_pass_receipt` 唯一信任的东西。
 - **为什么不顺手把 `_is_failure` 改严**：它还得继续放 `grep` 无匹配过关（合法答案，误判会喂 `_TOOL_FAIL_LIMIT=3` 熔断并给出误导性结论）。往 markers 里加 `FAILED`/`Traceback` 会把"文件内容里正好含这些字样"一并判成失败 —— 正是当年加无匹配白名单要救的坑。
@@ -533,10 +534,10 @@ POST   /api/memory/reindex
 §16.21 只堵住了这个洞的一个出口。同一个 `_is_failure` 还牵着另外三条更要紧的路，所以这次把判据本身改掉。
 
 - **三处下游**（`_tool_ok = _result.ok and not _is_failure(obs)`，agent.py 顺序与并行各一处）：
-  1. `turn.failure_count += 1` / `last_failure` → 回合收尾 `agent_runtime/memory/turns.py:126` 决定**写不写 L4 error 钩子**；
+  1. `turn.failure_count += 1` / `last_failure` → 回合收尾 `agent_runtime/memory/turns.py:126` 决定**写不写会话钩子错误条目**；
   2. `tool_fail_streak` / `fail_total` → `_TOOL_FAIL_LIMIT=3` **熔断**与重试配额；
   3. `turn.tool_step(ok=…)` → episode 里的 actions 与证据链。
-  于是一条真跑失败的 pytest：**既没沉淀成"下次别再这么干"的记忆，也没触发换路重试，模型还收到"这一步成功了"**。L4 长期空转（真实项目 0 钩子）与这条直接相关。
+  于是一条真跑失败的 pytest：**既没沉淀成"下次别再这么干"的记忆，也没触发换路重试，模型还收到"这一步成功了"**。会话钩子（旧编号 L4，已废弃）长期空转（真实项目 0 钩子）与这条直接相关。
 - **为什么不往 `_FAILURE_MARKERS` 里加 `FAILED`/`Traceback`**（ tempting 的错修法）：那会把 `grep` 无匹配、以及**文件内容里恰好含这些字样**的合法 `read_file` 一并判成失败，喂给 3 次熔断并给出误导性结论 —— 正是当年加无匹配白名单要救的坑。已在测试里反向钉住：`test_marker_table_still_has_no_generic_failure_words` 断言这些词**不许**出现在表里。
 - **新口径**（`_exit_code_verdict`）：只有拿到工具上下文且 `tool == "run_command"` 时接管。`[exit code 0]` → 非失败；非零 → 失败；`[exit code ...]` 头里不是整数 → 失败（`process_runner.run_bounded` 只在"命令不存在 / 命令无法启动"两个分支回 `exit_code=None`）；没有头（后台任务 JSON）→ 交回原判据。
 - **非零即答案的豁免族**（`_NONZERO_IS_ANSWER`，只豁免 **1** 号码，≥2 仍失败）：`grep/egrep/fgrep/rg/ag/sift/findstr`（查无匹配）、`diff/cmp/fc/comm`（有差异）、`test`/`[`（判假）、`which/where/dir`（查无此项）、`pgrep/pkill/killall`（查无进程 —— 本项目数泄漏的浏览器进程就靠它）、`git diff|grep`（`--quiet` 靠退出码传结论）。命令前缀 `cd x &&` 与 `sudo`/`env` 先剥掉再比开头。
@@ -558,12 +559,12 @@ POST   /api/memory/reindex
 
 ### 16.25 「下一步」接上证据型生产者；健康警告按项目过滤；压缩生效范围写清（2026-10-31）
 
-活体收口（#28）之后顺着 L4 往下查，补了三件事。
+活体收口（#28）之后顺着会话钩子往下查，补了三件事。
 
-- **「下一步」通道原先没有普通回合的生产者**：`turns.record_turn` 的 `next_step` 只来自调用方显式传值或 `_plan_next_step()`（读 Plan 模式的 `plan_state`）。普通回合没有计划文件 → 实测 **77 个 episode 里 0 条带 next**，L4 的这一支等于没接线。新增 `_unverified_next_step(turn, journal)`：本回合改了文件（`verification_targets` 非空）却还没有通过回执（测试快照不一致、或 `journal.verified` 不为真）→ next = 「验证改动：<paths>（跑测试或验收，取得回执后才算完成）」。这是普通回合里真实存在、不需要编造的待办，正好是 C-003 要盯的那件事。**已验证 / 没改文件一律返回空**，绝不造一个下一步出来；Plan 与显式传值仍优先（顺序有守卫）。
+- **「下一步」通道原先没有普通回合的生产者**：`turns.record_turn` 的 `next_step` 只来自调用方显式传值或 `_plan_next_step()`（读 Plan 模式的 `plan_state`）。普通回合没有计划文件 → 实测 **77 个 episode 里 0 条带 next**，会话钩子的这一支等于没接线。新增 `_unverified_next_step(turn, journal)`：本回合改了文件（`verification_targets` 非空）却还没有通过回执（测试快照不一致、或 `journal.verified` 不为真）→ next = 「验证改动：<paths>（跑测试或验收，取得回执后才算完成）」。这是普通回合里真实存在、不需要编造的待办，正好是 C-003 要盯的那件事。**已验证 / 没改文件一律返回空**，绝不造一个下一步出来；Plan 与显式传值仍优先（顺序有守卫）。
 - **健康面板的固化错误警告被别的项目污染**：`metrics` 落盘是全局的（成本要能跨项目合计），但 `health.report` 直接拿 `metrics.report(days=7)` 的全局 `errors` 挂警告。实测那条「最近固化有 1 次错误」来自 **2026-10-30 17:47Z 的评测会话 `golden-…-G27` 撞 DeepSeek 402**（余额不足，已知条件）—— 隔离写入之后，这是评测流量残留在真实项目体检上的最后一块污染面。`metrics.report` 加 `project=None` 参数（缺省保持全局口径，成本视图不变），`health.report` 传 `project_id`。
 - **压缩的生效范围写进文档而不是加硬上限**：触发线 = 本模型 prompt 预算 × `COMPACT_TRIGGER_RATIO`(0.8)，另有 `MAX_TURNS=200` 硬上限与 `DEFAULT_TRIGGER_TOKENS=7000` 兜底。活数：**923 个会话文件里只有 3 份 summary，全部是探针/验证夹具**（`longtask-20261031-104557/105719`、`verify_compact_0916`），最长真实会话 **10 轮**，离两条线都极远。结论：大窗口模型上压缩事实上从不触发，它真正服务小窗口本地模型；不加绝对 token 上限（会在大窗口引入没人验证过的截断行为）。两份 README 各加一条「压缩的实际生效范围」。
-- **验证**：`tests/test_memory_v2_p0.py` **97 passed**（88 旧 + 9 新）。新增 `NextStepProducerTests` 6 条（未验证产出 next 且进 L4 注入、已验证不产出、无改动不产出、journal 已验证不产出、测试快照过期仍算未验证、Plan/显式优先）与 `MetricsProjectScopeTests` 2 条（别项目的 402 不挂本项目警告、全局口径不变；按项目只数自己的调用）。变异：删掉 `_unverified_next_step` 接线 → 2 红；删掉 `metrics.report` 的项目过滤 → 2 红；恢复即绿。
+- **验证**：`tests/test_memory_v2_p0.py` **97 passed**（88 旧 + 9 新）。新增 `NextStepProducerTests` 6 条（未验证产出 next 且进会话钩子注入、已验证不产出、无改动不产出、journal 已验证不产出、测试快照过期仍算未验证、Plan/显式优先）与 `MetricsProjectScopeTests` 2 条（别项目的 402 不挂本项目警告、全局口径不变；按项目只数自己的调用）。变异：删掉 `_unverified_next_step` 接线 → 2 红；删掉 `metrics.report` 的项目过滤 → 2 红；恢复即绿。
 
 ### 16.26 先改裁剪器再挪时间块：跨回合前缀缓存接通（2026-11-01）
 
@@ -582,8 +583,8 @@ POST   /api/memory/reindex
 
 第 5 条「零真实流量」此前只能报端点数（真实项目 0 回执 / 46 条候选全来自评测），说不清**断在哪一级**，于是既没法归因、也没法判断有没有变好。先把漏斗做成可见的。
 
-- **七级**（`health.FUNNEL_STAGES`）：真实回合 → 改了文件 → 跑过测试 → 拿到回执 → 被采纳 → 晋升共享 → 共享层回注。数据源分别是 episode 计数、`files`、新增的 `test_run`、`receipts`、候选 `adopted`、候选 `status=promoted`、新计量事件 `memory.inject`。最后一级**只统计 L2**（`memory.inject` 在 agent 的 L2 分支记），所以标签叫「共享层回注」而不是「回注提示词」—— L3/L4 的注入不在这条计量里，写成全部就是谎报口径。
-- **为此新增的四处**：`episodes.iter_project()`（项目级全量扫，`latest()` 只读单会话尾部，做不了聚合）；episode 落 `test_run` 布尔（`actions` 里只有工具名和 ok，**认不出跑的是不是测试命令**）；`metrics.report()` 增加 `by_event` 事件计数；`agent` 的 L2 分支在真的注入时记一条 `memory.inject`（没有这一条，"环闭了"和"环在空转"在面板上长得一样）。
+- **七级**（`health.FUNNEL_STAGES`）：真实回合 → 改了文件 → 跑过测试 → 拿到回执 → 被采纳 → 晋升共享 → 共享层回注。数据源分别是 episode 计数、`files`、新增的 `test_run`、`receipts`、候选 `adopted`、候选 `status=promoted`、新计量事件 `memory.inject`。最后一级**只统计共享记忆**（`memory.inject` 在 agent 的共享记忆分支记），所以标签叫「共享层回注」而不是「回注提示词」—— 任务书/会话钩子的注入不在这条计量里，写成全部就是谎报口径。
+- **为此新增的四处**：`episodes.iter_project()`（项目级全量扫，`latest()` 只读单会话尾部，做不了聚合）；episode 落 `test_run` 布尔（`actions` 里只有工具名和 ok，**认不出跑的是不是测试命令**）；`metrics.report()` 增加 `by_event` 事件计数；`agent` 的共享记忆分支在真的注入时记一条 `memory.inject`（没有这一条，"环闭了"和"环在空转"在面板上长得一样）。
 - **实测当场打掉我自己的假设**：注释里写的是「每级都是上一级的子集」。真实数据是探针项目 `真实回合 10 → 改了文件 0 → 跑过测试 0 → 拿到回执 4` —— 后级比前级多，因为 `test_run` 是这次才加的字段，历史回合压根没有。照原逻辑 `stalled_at` 会报「断在 真实回合→改了文件」，那是**纯误导**。于是加 `inversions`（后级 > 前级的倒挂清单），断点文案在存在倒挂时自动带上「别按断点解读」，注释也改成「对新回合成立」。
 - **真实项目当前读数**：`turns=0`、`stalled_at="还没有真实回合"`。这就是第 5 条的真相 —— **断在第一级**，不是门太严；配套证据是全库 6372 个回合里只有 44 个含 `run_command`（0.69%），即这套环唯一信任的凭证路径在真实使用方式里几乎不发生。
 - **前端**：健康面板加一行 chip 链 + 断点/全通提示。`verify` 脚本 `.tmp/funnel_ui.mjs`（msedge headless，真接口 + route mock 三种状态）**25/25 通过**。其中一条把我自己拦下了：第一版 chip 用 `--fs-cap`，实测计算值 **11px** 不满足我写的「≥12px」可读性下限 → 换 `--fs-sm`（12px），提示行同理；另钉了告警色 `rgb(141,95,20)`、通过色 `rgb(21,119,77)`、431×56 不溢出视口。
@@ -623,7 +624,7 @@ POST   /api/memory/reindex
 - **补上 `prune` 的引用集合漏洞**：`referenced` 原本只算 `before_sha`。单独看它没错（那时确实只存改前），但 `after` 一落盘，漏这一条就会在保留期截断时**把存活条目的最新内容当孤儿删掉** —— 修完新功能的同一轮就把旧保留逻辑的引用集补全，这是配套，不是两件事。
 - **验证**：`tests/test_write_journal.py` 21 → **25 passed**。两处不变量各做行为级变异：`after` 不落 blob → 断言真红（`AssertionError: False is not true`）；`prune` 漏 `after_sha` → 断言真红。**第一次变异我写成了空 `if` 体**，得到的是 collection error 而不是真红，重写成「标记恒 False」才算数 —— 语法坏掉的变异不算变异。
 - **顺带消掉一个跨文件顺序依赖红**：`test_tool_domains.py` 的提示／注册表脱节守卫单跑全绿、排在 `test_ptc_write_bridge.py` 之后必红。根因不在提示也不在注册表：`importlib.reload(tools)` **换掉**了 `TOOLS` 这个 dict 对象，而 `agent` 早已导入、`agent.TOOLS` 还指着旧表；`orchestrate` / `delegate` / `dev_use_skill` / `tool_search` 只在 agent 侧 `_register_dynamic_tools()`（agent.py:4554）注册，于是守卫拿**新表**比**旧提示**报脱节 —— **假阳性**。修法：两处 reload 后重新对齐并补回动态注册，另加一条守卫测试断言「reload 后两侧共用一张表且四个动态名仍在」；把对齐改成 `pass` 做变异，同一配对立刻 2 failed。9 文件同进程回归 **249 passed**。
-- **文档引用自检升为常驻**：`.tmp/check_docs_refs.py` → **`tools/check_docs_refs.py`**（`.tmp/` 被 gitignore，一次清理就没；本仓库已有 `tools/gh_api_push.py` 这类开发脚本，同一个落点）。覆盖从 3 份笔记扩到 6 份（含两份 README 与本设计稿），实跑 **55 条引用全绿**。扩的瞬间就抓到一处既有漂移：`docs/memory-v2-p0.md:536` 写成裸文件名（当时指向第 105 行）—— 本仓库同名文件散在多个目录，且 `agent_runtime/memory/turns.py` 第 105 行现在是 `else:`，真正决定写不写 L4 error 钩子的是 **126 行**（`if failure_count > 0 and failure_text:`），已改全。守卫自己有牙：把该条改回裸名 → 「文件不存在」；行号改成 9999 → 「超出实际行数 179」。**仍未做**：挂进 CI 门（要先定它算硬门还是提示）。
+- **文档引用自检升为常驻**：`.tmp/check_docs_refs.py` → **`tools/check_docs_refs.py`**（`.tmp/` 被 gitignore，一次清理就没；本仓库已有 `tools/gh_api_push.py` 这类开发脚本，同一个落点）。覆盖从 3 份笔记扩到 6 份（含两份 README 与本设计稿），实跑 **55 条引用全绿**。扩的瞬间就抓到一处既有漂移：`docs/memory-v2-p0.md:536` 写成裸文件名（当时指向第 105 行）—— 本仓库同名文件散在多个目录，且 `agent_runtime/memory/turns.py` 第 105 行现在是 `else:`，真正决定写不写会话钩子错误条目的是 **126 行**（`if failure_count > 0 and failure_text:`），已改全。守卫自己有牙：把该条改回裸名 → 「文件不存在」；行号改成 9999 → 「超出实际行数 179」。**仍未做**：挂进 CI 门（要先定它算硬门还是提示）。
 
 ### 16.30 漏斗口径：七级数的不是同一种东西（2026-11-01）
 

@@ -58,7 +58,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 | 层 | 职责 | 关键实现 |
 |---|---|---|
-| **E 执行循环** | ReAct + 反思重试、原生 function-calling、plan 模式、子代理委派、并行只读批次、DAG 多代理编排与失败重规划 | `agent.py` · `orchestrator.py` |
+| **E 执行循环** | ReAct + 反思重试、原生 function-calling、plan 模式、风险分档的子代理委派、并行只读批次、DAG 多代理编排与失败重规划 | `agent.py` · `agent_runtime/delegation.py` · `orchestrator.py` |
 | **T 工具注册** | 声明式工具注册表；参数校验、域名白名单、**受控写**（先读后写 + 体积上限 + 语法校验 + 人工确认） | `tools.py` · `agent_runtime/tool_domains.py` |
 | **C 上下文管理** | prompt token 预算、观察截断、轨迹裁剪（保 system 与当前问题）、历史滚动摘要 | `agent.py::_fit_budget` |
 | **S 状态存储** | 逐轮 trace 账本（**只记元数据不记正文**）、会话隔离与持久化、跨重启恢复 | `agent_trace.py` · `sessions.py` |
@@ -184,6 +184,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 |---|---|
 | **证据地板** | 引用必须能落地：文件行号、代码块哈希、检索命中数都是硬门槛。截断过的检索结果**不许**被当成全量（"确定性计数自检"直接判红）。 |
 | **能力租约** | 读项目 / 读外部 / 写项目 / 写外部 / 执行 / 联网 / 管理，七类能力**分别租用**。模型"顺手读了外部文件"能被查出来。 |
+| **派发风险分档** | 同会话、同项目、depth 0→1、未扩权且未超限的直接子代理登记后立即执行；跨层、跨项目、扩权、超限或无法证明安全的派发才进入 `pending`。直接节点也占用分支额度并进入 Agent 树，普通工具自身审批不绕过。 |
 | **人工审批台账** | MCP 连接器与能力装配、工具安装、预览适配器回滚、技能回滚/更新、**视觉点击**都要过 `require_approval`。台账追加写 `.docmind/approvals.jsonl`，可查。**Agent 不能给自己批**（`dev_approve` 只认工作台里人的操作）。可逆的桌面点击/输入/拖拽**不走逐次审批**（见「范围与取舍」），危险组合键由 `desktop_actions._VK` 白名单挡在门外。 |
 | **分级执行确认** | `DOCMIND_EXEC_APPROVAL` / `TIER2_CONFIRM` / `TIER3_CONFIRM`，第三档要连点 3 次。 |
 | **区域治理** | 一键把工程切成 assets / values / behaviors / levels / ui / audio / net / bugs 等分区，每区**独立 git**；Agent 越区写直接拒；依赖单向 DAG，契约校验防循环耦合。 |
