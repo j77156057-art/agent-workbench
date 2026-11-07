@@ -317,7 +317,7 @@ curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持�
 | `ollama` | The local Ollama `/v1/embeddings`, default `bge-m3` (the model lives in the Ollama repository, about 1.2 GB), zero key | Ollama running locally |
 | `qwen` | DashScope `text-embedding-v3` | `DASHSCOPE_API_KEY` |
 
-An invalid `EMBEDDING_PROVIDER` is now **rejected with HTTP 400 before it is written**, and the response lists the valid values (`local` / `ollama` / `qwen`) — it no longer degrades silently into literal matching.
+When saved through the model settings (or a one-click preset activation), an invalid `EMBEDDING_PROVIDER` is **rejected with HTTP 400 before it is written**, and the response lists the valid values (`local` / `ollama` / `qwen`). Boundary: a value set directly in `.env` does not go through this check — it still falls back to local hashing and shows `degraded` in `embedding_status` on `/api/config`.
 
 ## Code map
 

@@ -304,7 +304,7 @@ curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持�
 | `ollama` | 本机 Ollama 的 `/v1/embeddings`，默认 `bge-m3`（模型在 Ollama 仓库里，约 1.2 GB），零 Key | 本机跑着 Ollama |
 | `qwen` | 通义千问 `text-embedding-v3` | 需 `DASHSCOPE_API_KEY` |
 
-非法的 `EMBEDDING_PROVIDER` 现在会在写入配置前被 **400 拒绝**并列出合法值（`local` / `ollama` / `qwen`），不再静默退化成字面匹配。
+通过模型设置保存（或预设一键激活）时，非法的 `EMBEDDING_PROVIDER` 会在写入配置前被 **400 拒绝**并列出合法值（`local` / `ollama` / `qwen`）。边界：直接写进 `.env` 的 `EMBEDDING_PROVIDER` 不经过这道校验，非法值仍会退回本地哈希，并在 `/api/config` 的 `embedding_status` 里标 `degraded`。
 
 ### 跑黄金题库回归（可选）
 

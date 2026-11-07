@@ -207,7 +207,7 @@ LLM_MODEL = os.getenv("LLM_MODEL", "")  # 为空则用 provider 默认
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")  # 直接指定可覆盖环境变量
 
 # ---- Embedding ----
-# 可选: qwen(通义千问 text-embedding-v3, 需 key) / ollama(本机 Ollama nomic-embed-text, 零 Key) / local(本地哈希占位, 仅离线演示)
+# 可选: qwen(通义千问 text-embedding-v3, 需 key) / ollama(本机 Ollama bge-m3, 零 Key) / local(本地哈希占位, 仅离线演示)
 EMBEDDING_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "local")
 EMBEDDING_MODEL = os.getenv(
     "EMBEDDING_MODEL",
