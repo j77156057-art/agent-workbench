@@ -412,5 +412,48 @@ class RealRepoTests(unittest.TestCase):
             % [(r["module"], r["distribution"]) for r in result["missing"]])
 
 
+class OptionalRequirementTests(Case):
+    """可选能力清单（requirements-ml.txt）里的声明不算缺依赖，但也不消失在报告外。
+
+    背景：`sentence-transformers` 从默认清单挪到可选档后，`retrieval.py` 里那句
+    函数体内的懒加载仍会被 ast.walk 扫到。如果对账器只会把它报成「缺依赖」，
+    这条 lane 每天都会红，最后必然被加进 ignore 名单 —— 那时连真的缺也看不见了。
+    """
+
+    def test_a_module_declared_only_in_the_optional_file_is_not_missing(self):
+        write(self.path("requirements.txt"), "fastapi>=0.110\n")
+        write(self.path("requirements-ml.txt"),
+              "# 可选：cross_encoder 重排\nsentence-transformers\n")
+        write(self.path("a.py"),
+              "def f():\n    from sentence_transformers import CrossEncoder\n"
+              "    return CrossEncoder\n")
+        result = ds.reconcile(self.dir)
+        self.assertEqual(result["missing"], [],
+                         "可选档里的包被报成缺依赖：CI 会每天红一次")
+        self.assertTrue(result["ok"])
+        self.assertEqual([r["module"] for r in result["optional"]],
+                         ["sentence_transformers"])
+        self.assertEqual(result["optional"][0]["source"], "requirements-ml.txt")
+        self.assertEqual(result["optional_source"], "requirements-ml.txt")
+        self.assertTrue(any("可选清单" in note for note in result["notes"]))
+
+    def test_optional_file_does_not_excuse_a_package_it_does_not_list(self):
+        write(self.path("requirements.txt"), "fastapi>=0.110\n")
+        write(self.path("requirements-ml.txt"), "sentence-transformers\n")
+        write(self.path("a.py"), "import torch\n")
+        result = ds.reconcile(self.dir)
+        self.assertEqual([r["module"] for r in result["missing"]], ["torch"],
+                         "没被任何清单声明的包被可选档顺手放过了")
+        self.assertFalse(result["ok"])
+
+    def test_without_the_optional_file_behaviour_is_unchanged(self):
+        write(self.path("requirements.txt"), "fastapi>=0.110\n")
+        write(self.path("a.py"), "import sentence_transformers\n")
+        result = ds.reconcile(self.dir)
+        self.assertEqual([r["module"] for r in result["missing"]],
+                         ["sentence_transformers"],
+                         "没有可选清单时仍应照常报缺（默认行为不能被削弱）")
+
+
 if __name__ == "__main__":
     unittest.main()

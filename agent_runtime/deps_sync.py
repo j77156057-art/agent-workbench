@@ -51,6 +51,11 @@ MAX_UNUSED = 120
 
 #: 需求清单文件名，按优先级。只读第一个存在的（`declared.source` 会回显用的是哪个）。
 REQUIREMENT_FILES = ("requirements.txt", "requirements-dev.txt")
+#: 可选能力清单：这些文件里的声明**不算缺依赖**（用户按需安装），但也不当作必装项。
+#: 目前是 `requirements-ml.txt`（cross_encoder 重排用的 sentence-transformers）。
+#: 单独列出来是为了让「代码 import 了 -> 必须进默认清单」这条判据不再误报，
+#: 同时不削弱它：可选件只从 missing 挪到 optional，仍然可见、仍然要人确认。
+OPTIONAL_REQUIREMENT_FILES = ("requirements-ml.txt",)
 PYPROJECT = "pyproject.toml"
 
 #: 永远不扫的目录名。
@@ -341,6 +346,22 @@ def declared_dependencies(root: str) -> dict[str, Any]:
                      % (" / ".join(REQUIREMENT_FILES), PYPROJECT)}
 
 
+def optional_dependencies(root: str) -> dict[str, str]:
+    """读可选能力清单，返回 `{归一化包名: 清单文件名}`。读不了就当没有（不阻断）。"""
+    base = Path(root)
+    found: dict[str, str] = {}
+    for name in OPTIONAL_REQUIREMENT_FILES:
+        path = base / name
+        if not path.is_file():
+            continue
+        text, err = _read(path)
+        if err:
+            continue
+        for pkg in parse_requirements(text)["names"]:
+            found.setdefault(pkg, name)
+    return found
+
+
 # --------------------------------------------------------------------------- #
 # 使用侧：扫 import
 # --------------------------------------------------------------------------- #
@@ -535,8 +556,10 @@ def reconcile(root: str, *, paths: list[str] | None = None) -> dict[str, Any]:
     stdlib = stdlib_names()
 
     missing: list[dict[str, Any]] = []
+    optional: list[dict[str, Any]] = []
     unknown: list[dict[str, Any]] = []
     declared_names = declared.get("names") or {}
+    optional_names = optional_dependencies(base)
 
     for module, files in (scan.get("importers") or {}).items():
         if module in local or module in stdlib:
@@ -554,6 +577,15 @@ def reconcile(root: str, *, paths: list[str] | None = None) -> dict[str, Any]:
             continue
         # 声明里有（或归一后有）就不算缺。
         if pep503(dist) in declared_names or pep503(module) in declared_names:
+            continue
+        # 只写在可选清单里的：不是缺依赖，但也不是「没人管」——单独列出，仍可见。
+        opt_source = (optional_names.get(pep503(dist))
+                      or optional_names.get(pep503(module)))
+        if opt_source:
+            optional.append({"module": module, "distribution": dist,
+                             "source": opt_source,
+                             "importers": external[:6],
+                             "file_count": len(external)})
             continue
         missing.append({"module": module, "distribution": dist,
                         "confidence": found["confidence"],
@@ -592,6 +624,11 @@ def reconcile(root: str, *, paths: list[str] | None = None) -> dict[str, Any]:
     if weak:
         notes.append("这 %d 条是**弱证据**（本机没装对应发行包，映射靠同名或查表）：%s"
                      % (len(weak), ", ".join(weak[:8])))
+    if optional:
+        notes.append("另有 %d 条 import 由**可选清单**承接（不算缺，但需按需安装）：%s"
+                     % (len(optional),
+                        ", ".join("%s ← %s" % (row["module"], row["source"])
+                                  for row in optional[:8])))
 
     # fail-closed：只看得出「没发现缺什么」，但扫描本身不完整时，不能报干净。
     complete = not scan.get("truncated") and not scan.get("unparsed") and not declared.get("error")
@@ -604,6 +641,11 @@ def reconcile(root: str, *, paths: list[str] | None = None) -> dict[str, Any]:
         "declared": sorted(declared_names),
         "missing": missing[:MAX_MISSING],
         "missing_total": len(missing),
+        "optional": optional[:MAX_MISSING],
+        "optional_total": len(optional),
+        "optional_source": ", ".join(
+            name for name in OPTIONAL_REQUIREMENT_FILES
+            if (Path(base) / name).is_file()),
         "unknown": unknown[:MAX_MISSING],
         "unknown_total": len(unknown),
         "unused": unused[:MAX_UNUSED],
