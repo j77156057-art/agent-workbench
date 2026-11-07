@@ -236,8 +236,9 @@ python -V                                  # must be ≥ 3.11
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10
-# The default PyPI can read-timeout on large wheels (torch) in China; the mirror + patient retries
-# finish the job, and failures are explicit — just rerun. To use your own index, set PIP_INDEX_URL.
+# The default install is about 762 MB; direct PyPI can read-timeout on large wheels in China, while
+# the mirror + patient retries finish the job and report failures explicitly — just rerun.
+# To use your own index, set PIP_INDEX_URL.
 
 # 2. Frontend bundle (build first, then start the backend; the backend also picks up a later build without restart)
 cd frontend
@@ -256,6 +257,8 @@ cp .env.example .env        # set LLM_PROVIDER=qwen and fill DASHSCOPE_API_KEY
 #   Q&A page  : http://127.0.0.1:8000
 ```
 
+> **The default install is about 762 MB** (1.67 GB before the split, roughly 54% smaller) and **does not include torch or `sentence-transformers`**: both only serve the optional cross-encoder reranker. Install `pip install -r requirements-ml.txt` when you want it — that is the only tier with torch (about 3.27 GB on Linux, not part of the default install). The default `heuristic` reranker needs nothing extra.
+>
 > **Starting the backend before building also works**: `/assets` checks the directory per request, so after `npm run build` just refresh — no backend restart. If nothing has been built yet, `/` and `/workbench` return **HTTP 404 + JSON** (`{"ok": false, "error": "…not built…run npm ci && npm run build…"}`), and `/assets/*.js` is also 404 — not a 200 hint page, not a blank 500.
 >
 > On Windows, `启动DocMind.bat` is the short path: the first launch creates `.venv`, installs dependencies, installs the frontend lockfile and builds `web/`; after that, double-click and go. It runs `dependency_bootstrap.py`, whose pip step passes `--timeout` / `--retries`, falls back to the Aliyun mirror when the default index fails, and prints each step. Tune it with `DOCMIND_PIP_TIMEOUT` / `DOCMIND_PIP_RETRIES` (default index) and `DOCMIND_PIP_MIRROR` / `DOCMIND_PIP_MIRROR_TIMEOUT` / `DOCMIND_PIP_MIRROR_RETRIES` (mirror); when `PIP_INDEX_URL` is set, that source is used exclusively and no mirror fallback happens.
@@ -294,6 +297,27 @@ Or edit `.env`: `LLM_PROVIDER=qwen` / `EMBEDDING_PROVIDER=qwen` / `DASHSCOPE_API
 ```bash
 curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持哪些文件格式？"
 ```
+
+### Retrieval and embedding choices
+
+**Reranking has two tiers**, selected by `DOCMIND_RERANKER`:
+
+| Tier | Value | Needs | Behavior |
+|---|---|---|---|
+| Default | `heuristic` | nothing | Deterministic secondary ordering by lexical overlap; it does not overturn the RRF order of hybrid retrieval |
+| Cross-encoder | `cross_encoder` | optional tier `pip install -r requirements-ml.txt` | Rescores with `DOCMIND_RERANKER_MODEL` (default `BAAI/bge-reranker-base`); **without the optional tier it silently falls back to the original order**, so Q&A still works |
+
+`DOCMIND_RETRIEVAL_MODE` (`dense` / `hybrid` / `hybrid_rerank`) is a separate switch for the retrieval strategy itself, not the reranker.
+
+**Three embedding providers** (`EMBEDDING_PROVIDER`):
+
+| Value | What it is | Needs |
+|---|---|---|
+| `local` | Character n-gram hashing into fixed-size vectors, **not semantic** — only guarantees the pipeline runs | Nothing, and **no torch** |
+| `ollama` | The local Ollama `/v1/embeddings`, default `bge-m3` (the model lives in the Ollama repository, about 1.2 GB), zero key | Ollama running locally |
+| `qwen` | DashScope `text-embedding-v3` | `DASHSCOPE_API_KEY` |
+
+An invalid `EMBEDDING_PROVIDER` is now **rejected with HTTP 400 before it is written**, and the response lists the valid values (`local` / `ollama` / `qwen`) — it no longer degrades silently into literal matching.
 
 ## Code map
 

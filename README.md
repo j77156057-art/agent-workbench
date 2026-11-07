@@ -224,7 +224,7 @@ python -V                                  # 需要 ≥ 3.11
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10
-# 默认 PyPI 在国内可能在大包（torch）上读超时；镜像 + 更耐心的超时重试能装完，失败也能明确报错、直接重跑。
+# 默认依赖约 762 MB；国内直连 PyPI 可能在若干大轮子上读超时，镜像 + 更耐心的超时重试能装完，失败也会明确报错、直接重跑。
 # 也可以用自己的源：先设 PIP_INDEX_URL，pip 会优先使用它。
 
 # 2. 前端产物（先构建、再起后端最稳；后端也支持构建后免重启）
@@ -244,6 +244,8 @@ cp .env.example .env        # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 #   问答页 : http://127.0.0.1:8000
 ```
 
+> **默认依赖约 762 MB**（拆分前约 1.67 GB，降约 54%），**不含 torch 与 `sentence-transformers`**：两者只服务于可选的交叉编码器重排，需要时单独 `pip install -r requirements-ml.txt`（这一档才含 torch，Linux 上约 3.27 GB；它不是默认安装的一部分）。默认的 `heuristic` 重排零依赖。
+>
 > **先起后端、后构建前端也可以**：`/assets` 按请求判断目录，`npm run build` 完成后刷新页面即可，不需要重启后端。反过来，**完全没构建**时 `/` 与 `/workbench` 返回的是 **HTTP 404 + JSON**（`{"ok": false, "error": "…未构建…请先…npm ci && npm run build…"}`），`/assets/*.js` 也是 404 —— 不是 200 的提示页，也不是空白 500。
 >
 > Windows 上直接跑 `启动DocMind.bat` 更省事：首次启动自动建 `.venv`、装依赖、装前端并构建 `web/`，之后双击即用。它内部走 `dependency_bootstrap.py`：pip 带 `--timeout` / `--retries`，默认源失败会自动切阿里云镜像，并打印每一步在做什么。网络参数可用 `DOCMIND_PIP_TIMEOUT` / `DOCMIND_PIP_RETRIES`（默认源）与 `DOCMIND_PIP_MIRROR` / `DOCMIND_PIP_MIRROR_TIMEOUT` / `DOCMIND_PIP_MIRROR_RETRIES`（镜像）调整；设置了 `PIP_INDEX_URL` 时只使用你指定的源，不再自动切镜像。
@@ -282,6 +284,27 @@ cp .env.example .env        # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 ```bash
 curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持哪些文件格式？"
 ```
+
+### 检索与 embedding 选型
+
+**重排（rerank）两档**，由 `DOCMIND_RERANKER` 控制：
+
+| 档 | 值 | 依赖 | 行为 |
+|---|---|---|---|
+| 默认 | `heuristic` | 无 | 用词面重叠做确定性次级排序，不推翻混合检索的 RRF 顺序 |
+| 交叉编码器 | `cross_encoder` | 可选档 `pip install -r requirements-ml.txt` | 用 `DOCMIND_RERANKER_MODEL`（默认 `BAAI/bge-reranker-base`）重新打分；**没装可选档时自动退回原排序**，不影响问答 |
+
+`DOCMIND_RETRIEVAL_MODE` 的 `dense` / `hybrid` / `hybrid_rerank` 是另一层开关（检索策略本身），与上面的重排器分开。
+
+**Embedding 三档**（`EMBEDDING_PROVIDER`）：
+
+| 值 | 说明 | 依赖 |
+|---|---|---|
+| `local` | 字符 n-gram 哈希成固定维向量，**非语义**，只保证链路可跑 | 零依赖，**不需要 torch** |
+| `ollama` | 本机 Ollama 的 `/v1/embeddings`，默认 `bge-m3`（模型在 Ollama 仓库里，约 1.2 GB），零 Key | 本机跑着 Ollama |
+| `qwen` | 通义千问 `text-embedding-v3` | 需 `DASHSCOPE_API_KEY` |
+
+非法的 `EMBEDDING_PROVIDER` 现在会在写入配置前被 **400 拒绝**并列出合法值（`local` / `ollama` / `qwen`），不再静默退化成字面匹配。
 
 ### 跑黄金题库回归（可选）
 
