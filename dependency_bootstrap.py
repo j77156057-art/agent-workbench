@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -43,6 +44,24 @@ PRERELEASE_RE = re.compile(r"(alpha|beta|rc|dev|pre)", re.I)
 #: 看到的是"请装 Python 3.11+"而不是一屏看不懂的 traceback。
 MIN_PYTHON = (3, 11)
 
+#: pip 的网络参数。默认源在国内经常是「连得上但读不动」——不设超时就会卡在
+#: 一个 100MB+ 的 wheel 上几十分钟，看起来像死机。
+#:
+#: 两档耐心值：
+#:   - 默认源：快速失败（60s / 2 次），目的是尽快触发镜像回退，而不是在死连接上耗着。
+#:   - 镜像 / 用户显式指定的 `PIP_INDEX_URL`：更耐心（300s / 10 次），因为国内镜像
+#:     偶尔会在大 wheel 上停顿；实测这一档能装完，60s 那一档会读超时。
+#: 机器上已有的 `PIP_DEFAULT_TIMEOUT` / `PIP_RETRIES` 会被沿用（不覆盖用户的显式设置）。
+PIP_TIMEOUT_S = os.getenv("DOCMIND_PIP_TIMEOUT") or os.getenv("PIP_DEFAULT_TIMEOUT") or "60"
+PIP_RETRIES = os.getenv("DOCMIND_PIP_RETRIES") or os.getenv("PIP_RETRIES") or "2"
+PIP_MIRROR_TIMEOUT_S = os.getenv("DOCMIND_PIP_MIRROR_TIMEOUT") or "300"
+PIP_MIRROR_RETRIES = os.getenv("DOCMIND_PIP_MIRROR_RETRIES") or "10"
+
+#: 默认源失败后的镜像回退。可用 `DOCMIND_PIP_MIRROR` 改成公司内网源。
+#: 设置了 `PIP_INDEX_URL` 时**不再**回退——那是用户明确指定的源，换掉它等于
+#: 绕过用户的配置。
+PIP_MIRROR_URL = os.getenv("DOCMIND_PIP_MIRROR", "https://mirrors.aliyun.com/pypi/simple/")
+
 
 def check_python_version() -> str:
     """返回当前 Python 版本；低于 MIN_PYTHON 直接抛错（信息要能照做）。"""
@@ -67,11 +86,73 @@ def _hash_if_exists(path: Path) -> str:
     return _sha256(path) if path.is_file() else ""
 
 
+#: 长命令的进度心跳。pip / npm 的输出在控制台被重定向或缓冲时看不到，
+#: 这里每隔一段时间报一次「还在跑」，避免看起来像卡死。
+RUN_HEARTBEAT_S = 30
+
+
 def _run(command: list[str], root: Path, *, label: str) -> None:
     print(f"[Agent Workbench] {label}: {' '.join(command)}", flush=True)
-    completed = subprocess.run(command, cwd=str(root), check=False)
-    if completed.returncode:
-        raise RuntimeError(f"{label} failed with exit code {completed.returncode}")
+    started = time.monotonic()
+    process = subprocess.Popen(command, cwd=str(root))
+    try:
+        while True:
+            try:
+                returncode = process.wait(timeout=RUN_HEARTBEAT_S)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed = int(time.monotonic() - started)
+                print(f"[Agent Workbench] {label} 仍在进行（已 {elapsed}s）……", flush=True)
+    except KeyboardInterrupt:
+        process.terminate()
+        raise
+    if returncode:
+        raise RuntimeError(f"{label} failed with exit code {returncode}")
+
+
+def _pip_install(pip: Path, requirements: Path, project: Path) -> None:
+    """装 Python 依赖；默认源失败时自动走镜像。
+
+    顺序：
+      1. 环境里显式给了 `PIP_INDEX_URL` → 只用那个源（用户的选择优先）。
+      2. 否则先试默认 PyPI；失败后打印原因并自动切到镜像重试一次。
+
+    两条路径都带 `--timeout` / `--retries`，所以网络差时是**明确的失败与重试**，
+    不会在某个大包上无声地卡住。
+    """
+    base = [
+        str(pip), "install", "--upgrade", "-r", str(requirements),
+        "--timeout", str(PIP_TIMEOUT_S), "--retries", str(PIP_RETRIES),
+        "--disable-pip-version-check",
+    ]
+    timeout_note = f"单次连接超时 {PIP_TIMEOUT_S}s、重试 {PIP_RETRIES} 次"
+    mirror_note = f"单次连接超时 {PIP_MIRROR_TIMEOUT_S}s、重试 {PIP_MIRROR_RETRIES} 次"
+    configured = os.getenv("PIP_INDEX_URL", "").strip()
+    if configured:
+        patient = [
+            str(pip), "install", "--upgrade", "-r", str(requirements),
+            "--timeout", str(PIP_MIRROR_TIMEOUT_S), "--retries", str(PIP_MIRROR_RETRIES),
+            "--disable-pip-version-check",
+        ]
+        print(f"[Agent Workbench] 使用 PIP_INDEX_URL 指定的源：{configured}（{mirror_note}）",
+              flush=True)
+        _run(patient, project, label="同步 Python 依赖")
+        return
+
+    print(f"[Agent Workbench] 先从默认源安装 Python 依赖（{timeout_note}）；"
+          f"失败会自动切换到镜像 {PIP_MIRROR_URL}（{mirror_note}）", flush=True)
+    try:
+        _run(base, project, label="同步 Python 依赖")
+    except RuntimeError as exc:
+        print(f"[Agent Workbench] 默认源失败：{exc}", flush=True)
+        print(f"[Agent Workbench] 自动切换到镜像 {PIP_MIRROR_URL} 重试"
+              f"（{mirror_note}）……", flush=True)
+        patient = [
+            str(pip), "install", "--upgrade", "-r", str(requirements),
+            "--timeout", str(PIP_MIRROR_TIMEOUT_S), "--retries", str(PIP_MIRROR_RETRIES),
+            "--disable-pip-version-check", "--index-url", PIP_MIRROR_URL,
+        ]
+        _run(patient, project, label="同步 Python 依赖（镜像回退）")
 
 
 def _python_for_venv(venv: Path) -> Path:
@@ -411,8 +492,7 @@ def ensure_dependencies(root: str | os.PathLike[str], *, force: bool = False,
 
     if python_changed:
         # Do not pin pip itself: the requirements file is the project-owned contract.
-        _run([str(pip), "install", "--upgrade", "-r", str(requirements)], project,
-             label="同步 Python 依赖")
+        _pip_install(pip, requirements, project)
         report["python_changed"] = True
         _write_snapshot(project, SNAPSHOT_REQUIREMENTS,
                         requirements.read_text(encoding="utf-8"))
