@@ -6204,7 +6204,7 @@ async def workbench():
     page = os.path.join(PROJECT_WEB_DIR, "workbench.html")
     if not os.path.isfile(page):
         return JSONResponse(
-            {"ok": False, "error": "工作台前端未构建：请先在 frontend/ 目录执行 npm install && npm run build。"},
+            {"ok": False, "error": "工作台前端未构建：请先在 frontend/ 目录执行 npm ci && npm run build（或直接运行 启动DocMind.bat）。"},
             status_code=404,
         )
     return FileResponse(page)
@@ -8414,8 +8414,28 @@ for _domain_router in (
 
 app.mount("/static", StaticFiles(directory=PROJECT_WEB_DIR), name="static")
 
+class _LazyStaticFiles(StaticFiles):
+    """目录还没生成时返回 404，生成后自动开始服务（无需重启）。
+
+    Starlette 的 ``check_dir=False`` 只跳过构造时的检查；首个请求仍会
+    ``check_config()``，目录不存在就抛 ``RuntimeError`` → 500。这里把
+    「目录还不存在」当成正常状态（首个请求 404），而不是让构建顺序变成
+    服务端错误。目录出现后 ``lookup_path`` 每次请求都会重新 stat，因此
+    构建产物一落地就能访问。
+    """
+
+    async def check_config(self) -> None:
+        if self.directory is None:
+            return
+        try:
+            await anyio.to_thread.run_sync(os.stat, self.directory)
+        except FileNotFoundError:
+            return
+        await super().check_config()
+
+
 # Vite 构建产物（web/assets/*，workbench.html 以 /assets/... 绝对路径引用）。
-# 未执行前端构建时该目录不存在，跳过挂载以免源码态启动崩溃。
+# 目录存在性按请求判断：先起后端、后构建前端时不用重启，构建完成后刷新即可；
+# 目录还没生成时返回 404（不是 500，也不是启动失败）。
 _ASSETS_DIR = os.path.join(PROJECT_WEB_DIR, "assets")
-if os.path.isdir(_ASSETS_DIR):
-    app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
+app.mount("/assets", _LazyStaticFiles(directory=_ASSETS_DIR, check_dir=False), name="assets")
