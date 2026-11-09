@@ -27,8 +27,8 @@ import type { EditorTab } from '../composables/workbench-types'
 //   ① 主体配色 → 全部读令牌，随皮肤自动跟随；
 //   ② 语法高亮表 → 是 JS 对象，浅底用默认高亮、深底用 oneDark 高亮，
 //      用一个 Compartment 在切肤时 reconfigure。
-// 明暗判定读 skins.css 的 --skin-dark 令牌（新增深色皮肤只改那一处）。
-/** 当前皮肤是否深色（读 skins.css 的 --skin-dark 令牌）。 */
+// 明暗判定读工作台令牌的 --skin-dark（memory-inspector-tokens.css 两档各声明一次）。
+/** 当前工作台配色是否深色（读 --skin-dark 令牌：浅色 0 / 观测舱 1）。 */
 export function isDarkSkin(): boolean {
   if (typeof document === 'undefined') return false
   const v = getComputedStyle(document.documentElement).getPropertyValue('--skin-dark').trim()

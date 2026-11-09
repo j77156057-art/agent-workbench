@@ -31,6 +31,7 @@ import { costLabel, money, type PricingState } from '../composables/costLabel'
 import { loadMaterial, setMaterial, onMaterialChange, type Material } from '../glassPointer'
 import { preferredScrollBehavior } from '../composables/motionPreference'
 import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '../layoutMode'
+import { loadPalette, setPalette, onPaletteChange, type PaletteKey } from '../palette'
 // 对话展示偏好：与问答页 / 模型设置弹窗同一份（reactive 视图 + localStorage）。
 // 这里不复制状态，直接绑到共享对象上，改完写存储并派发事件让两个入口同时刷新。
 import { prefs as dp, saveAskPrefs } from '../../ask/askPrefs'
@@ -75,6 +76,23 @@ onMaterialChange((m) => { material.value = m })
 
 // 风格（造型语言）选择器已随造型收敛移除：造型固定为 brutal（零圆角 + 2px 墨描边
 // + 硬阴影 + 孔版颗粒），令牌在 skins.css，data-style 仍由 styleMode.initStyle() 写入。
+
+// ---------------- 配色（浅色默认 / 深色观测舱可选） ----------------
+// 2026-11-09：工作台此前把配色写死成深色观测舱，首次打开也是黑的。
+// 两档只换颜色令牌（memory-inspector-tokens.css），布局 / 造型 / 材质不受影响。
+const PALETTES: { key: PaletteKey; name: string; desc: string }[] = [
+  { key: 'light', name: '浅色（默认）', desc: '白底深字；记忆面板与主工作区共用同一套浅色令牌。' },
+  { key: 'observatory', name: '深色 · 观测舱', desc: '低亮度深底；夜间长时间盯屏时使用。' },
+]
+const palette = ref<PaletteKey>(loadPalette())
+
+function choosePalette(k: PaletteKey) {
+  palette.value = setPalette(k)
+  const p = PALETTES.find((x) => x.key === k)
+  appEvents.emit('docmind:appearance-changed', { kind: 'skin', label: p?.name ?? k })
+}
+
+onPaletteChange((k) => { palette.value = k })
 
 // ---------------- 布局（空间构成）----------------
 // 皮肤管颜色、风格管造型、布局管空间：侧栏在哪、主区多宽、该居中还是铺满。
@@ -2431,19 +2449,51 @@ async function powerAction(action: 'on' | 'off') {
             <EngineConnectPopover v-if="tab === 'runtime'" embedded />
           </section>
 
-          <!-- 外观：工作台固定使用观测舱令牌；布局与材质仍可调整。 -->
+          <!-- 外观：配色可切（浅色默认 / 深色观测舱）；布局与材质独立。 -->
           <section v-show="tab === 'appearance'" class="sv-panel">
             <div class="sv-section-head">
               <div>
                 <h4 class="sv-h4">外观</h4>
-                <p class="sv-hint">工作台统一使用低亮度观测舱皮肤，避免记忆面板与主工作区产生割裂；问答页的皮肤偏好不受影响。</p>
+                <p class="sv-hint">默认浅色；深色是可选档。两档共用同一套布局与材质，只换颜色令牌；问答页的皮肤偏好不受影响。</p>
               </div>
             </div>
 
             <p class="sv-note" data-tone="neutral">
-              当前配色：<strong>观测舱</strong>。背景、正文、分隔线与控件全部引用 <code>memory-inspector-tokens.css</code>；
-              下方仅调整空间布局和表面材质，不会切回浅色皮肤。
+              当前配色：<strong>{{ palette === 'observatory' ? '深色 · 观测舱' : '浅色' }}</strong>。背景、正文、分隔线与控件全部引用 <code>memory-inspector-tokens.css</code>；
+              布局与材质可独立调整。
             </p>
+
+            <!-- 配色：浅色 / 深色 -->
+            <div class="sv-section-head" style="margin-top: 18px;">
+              <div>
+                <h4 class="sv-h4">配色</h4>
+                <p class="sv-hint">首次打开是浅色；选过深色会记住，下次进入沿用。想回到白底选「浅色」即可。</p>
+              </div>
+            </div>
+
+            <div class="sv-layouts" role="radiogroup" aria-label="配色">
+              <button
+                v-for="p in PALETTES"
+                :key="p.key"
+                type="button"
+                class="sv-layout"
+                :class="{ on: palette === p.key }"
+                role="radio"
+                :aria-checked="palette === p.key"
+                @click="choosePalette(p.key)"
+              >
+                <span class="sv-layout-demo" :data-palette-demo="p.key" aria-hidden="true">
+                  <i class="rail" /><i class="main" />
+                </span>
+                <span class="sv-skin-text">
+                  <b>{{ p.name }}</b>
+                  <small>{{ p.desc }}</small>
+                </span>
+                <span class="sv-skin-check" aria-hidden="true">
+                  <Icon v-if="palette === p.key" name="circle-check" :size="16" />
+                </span>
+              </button>
+            </div>
 
             <!-- 布局：空间构成 -->
             <div class="sv-section-head" style="margin-top: 18px;">
@@ -2526,7 +2576,7 @@ async function powerAction(action: 'on' | 'off') {
             </div>
 
             <p class="sv-note" data-tone="neutral">
-              配色固定为观测舱；<b>材质</b>（实体/玻璃）与 <b>布局</b>（5 种空间构成）仍可独立调整。
+              配色两档（浅色 / 深色观测舱）只换颜色；<b>材质</b>（实体/玻璃）与 <b>布局</b>（5 种空间构成）仍可独立调整。
               色彩与圆角取自 <code>memory-inspector-tokens.css</code>，空间参数取自 <code>layout-modes.css</code>，材质参数取自 <code>glass.css</code>。
             </p>
 
@@ -2621,6 +2671,14 @@ async function powerAction(action: 'on' | 'off') {
 .sv-layout-demo i { position: absolute; display: block; background: var(--ink); }
 .sv-layout-demo i.rail { background: var(--accent); }
 .sv-layout-demo i.main { background: var(--ink); }
+/* 配色示意：不用占位图，直接用两档的原始色值画「底 + 侧栏 + 主区」。
+   色值必须与 memory-inspector-tokens.css 两档的 --mi-bg / --mi-accent / --mi-text 一致。 */
+.sv-layout-demo[data-palette-demo='light'] { background: oklch(0.972 0.003 245); border-color: oklch(0.870 0.006 240); }
+.sv-layout-demo[data-palette-demo='light'] i.rail { left: 0; top: 0; width: 12px; height: 100%; background: oklch(0.520 0.090 180); }
+.sv-layout-demo[data-palette-demo='light'] i.main { left: 15px; top: 0; right: 0; height: 100%; background: oklch(0.235 0.015 240); }
+.sv-layout-demo[data-palette-demo='observatory'] { background: oklch(0.175 0.018 245); border-color: oklch(0.320 0.020 240); }
+.sv-layout-demo[data-palette-demo='observatory'] i.rail { left: 0; top: 0; width: 12px; height: 100%; background: oklch(0.790 0.100 178); }
+.sv-layout-demo[data-palette-demo='observatory'] i.main { left: 15px; top: 0; right: 0; height: 100%; background: oklch(0.910 0.012 220); }
 /* ① fixed：左窄栏 + 右满宽 */
 .sv-layout-demo[data-layout-demo='fixed'] .rail { left: 0; top: 0; width: 12px; height: 100%; }
 .sv-layout-demo[data-layout-demo='fixed'] .main { left: 15px; top: 0; right: 0; height: 100%; }

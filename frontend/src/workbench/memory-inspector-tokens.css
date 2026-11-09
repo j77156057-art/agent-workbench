@@ -1,40 +1,46 @@
+/* 配色两档：:root 是浅色（默认），[data-skin='observatory'] 是深色观测舱（可选）。
+   两档只换颜色令牌，字号 / 间距 / 圆角 / 动效等几何令牌共用下面的 :root。
+   浅色档沿用同一色相（中性 245 / 强调 180），强调与状态色按白底重新解算到 4.5:1 以上
+   —— 直接把深色档的亮青搬上白底只有 ~2:1，不能复用。 */
 :root {
+  color-scheme: light;
+  --skin-dark: 0;
   /* 色彩：低饱和蓝灰中性层；faint 只用于图形与非正文装饰。 */
-  --mi-bg-deep: oklch(0.145 0.018 245);
-  --mi-bg: oklch(0.175 0.018 245);
-  --mi-surface: oklch(0.205 0.018 240);
-  --mi-surface-raised: oklch(0.245 0.020 240);
-  --mi-hover: oklch(0.275 0.022 240);
-  --mi-selected: oklch(0.285 0.032 215);
-  --mi-text: oklch(0.910 0.012 220);
-  --mi-text-secondary: oklch(0.740 0.018 230);
-  --mi-text-muted: oklch(0.675 0.018 235);
-  --mi-text-faint: oklch(0.540 0.018 235);
-  --mi-accent: oklch(0.790 0.100 178);
-  --mi-accent-strong: oklch(0.870 0.115 176);
-  --mi-accent-dim: oklch(0.640 0.070 185);
-  --mi-accent-ink: oklch(0.200 0.030 210);
-  --mi-success: oklch(0.760 0.100 155);
-  --mi-warning: oklch(0.800 0.090 85);
-  --mi-danger: oklch(0.740 0.120 25);
-  --mi-border-subtle: oklch(0.320 0.020 240 / 0.48);
-  --mi-border: oklch(0.340 0.020 240);
-  --mi-border-strong: oklch(0.470 0.025 230);
-  --mi-graph-node: oklch(0.570 0.025 230);
-  --mi-graph-edge: oklch(0.490 0.025 230);
-  --mi-graph-grid: oklch(0.500 0.025 230 / 0.09);
+  --mi-bg-deep: oklch(0.952 0.004 245);
+  --mi-bg: oklch(0.972 0.003 245);
+  --mi-surface: oklch(0.985 0.002 245);
+  --mi-surface-raised: oklch(1 0 0);
+  --mi-hover: oklch(0.945 0.006 240);
+  --mi-selected: oklch(0.930 0.020 215);
+  --mi-text: oklch(0.235 0.015 240);
+  --mi-text-secondary: oklch(0.440 0.014 235);
+  --mi-text-muted: oklch(0.480 0.012 235);
+  --mi-text-faint: oklch(0.600 0.010 235);
+  --mi-accent: oklch(0.520 0.090 180);
+  --mi-accent-strong: oklch(0.450 0.085 180);
+  --mi-accent-dim: oklch(0.560 0.060 185);
+  --mi-accent-ink: oklch(0.995 0.002 180);
+  --mi-success: oklch(0.520 0.110 155);
+  --mi-warning: oklch(0.560 0.110 75);
+  --mi-danger: oklch(0.540 0.170 27);
+  --mi-border-subtle: oklch(0.900 0.005 240 / 0.85);
+  --mi-border: oklch(0.870 0.006 240);
+  --mi-border-strong: oklch(0.640 0.012 240);
+  --mi-graph-node: oklch(0.550 0.020 230);
+  --mi-graph-edge: oklch(0.620 0.020 230);
+  --mi-graph-grid: oklch(0.700 0.010 230 / 0.10);
   /* 2026-11-04：图上只剩真实边（合成邻接已删），原来的 0.12→0.42 在深底上几乎看不见，
      提到 0.28→0.68 保证「有无关联、连到谁」可读；仍低于节点亮度，不抢主体的层级编码。 */
   --mi-graph-edge-start-opacity: 0.28;
   --mi-graph-edge-end-opacity: 0.68;
   --mi-graph-flow-start-opacity: 0.22;
   --mi-graph-flow-end-opacity: 0.82;
-  --mi-overlay: oklch(0.080 0.015 245 / 0.64);
-  --mi-shadow-panel: -24px 0 80px oklch(0.050 0.010 240 / 0.46);
-  --mi-shadow-drawer: -20px 0 56px oklch(0.050 0.010 240 / 0.52);
-  --mi-shadow-focus: 0 0 0 3px oklch(0.790 0.100 178 / 0.20);
-  --mi-glow-node: 0 0 5px oklch(0.790 0.100 178 / 0.48);
-  --mi-glow-signal: 0 0 4px oklch(0.790 0.100 178 / 0.72);
+  --mi-overlay: oklch(0.300 0.015 245 / 0.32);
+  --mi-shadow-panel: -24px 0 80px oklch(0.250 0.010 240 / 0.12);
+  --mi-shadow-drawer: -20px 0 56px oklch(0.250 0.010 240 / 0.14);
+  --mi-shadow-focus: 0 0 0 3px oklch(0.520 0.090 180 / 0.25);
+  --mi-glow-node: 0 0 5px oklch(0.520 0.090 180 / 0.20);
+  --mi-glow-signal: 0 0 4px oklch(0.520 0.090 180 / 0.30);
 
   /* 六级字阶：展示数字 / 面板标题 / 区块标题 / 正文 / 次级 / 辅助。
      2026-11-04 收窄：32px 的三联 KPI 数字是最大的"演示味"来源，降到 26px；
@@ -128,8 +134,8 @@
   --mi-z-panel: 400;
   --mi-z-drawer: 4;
   --mi-radius-pill: 999px;
-  --mi-shadow-control: 0 1px 2px oklch(0.050 0.010 240 / 0.24);
-  --mi-shadow-pop: 0 16px 48px oklch(0.050 0.010 240 / 0.48);
+  --mi-shadow-control: 0 1px 2px oklch(0.250 0.010 240 / 0.10);
+  --mi-shadow-pop: 0 16px 48px oklch(0.250 0.010 240 / 0.18);
 
   /* 2026-11-04 组件层级：表面三级 / 圆角三档 / 状态第二信号。
      三级表面只靠「背景亮度 + 边框强度 + 阴影深度」区分，不引入新色相；
@@ -141,9 +147,9 @@
   --mi-border-level-2: var(--mi-border);
   --mi-border-level-3: var(--mi-border-strong);
   --mi-shadow-level-1: none;
-  --mi-shadow-level-2: 0 1px 0 oklch(0.910 0.012 220 / 0.04),
-    0 6px 18px oklch(0.050 0.010 240 / 0.26);
-  --mi-shadow-level-3: 0 10px 28px oklch(0.050 0.010 240 / 0.42);
+  --mi-shadow-level-2: 0 1px 0 oklch(0.250 0.010 240 / 0.04),
+    0 6px 18px oklch(0.250 0.010 240 / 0.08);
+  --mi-shadow-level-3: 0 10px 28px oklch(0.250 0.010 240 / 0.12);
 
   --mi-radius-container: var(--mi-radius-lg);
   --mi-radius-card: var(--mi-radius-md);
@@ -155,6 +161,52 @@
   --mi-state-run-duration: 1400ms;
   --mi-state-stripe-width: 2px;
   --mi-state-stripe-gap: 3px;
+  --mi-state-pending-edge: oklch(0.560 0.110 75 / 0.55);
+  --mi-state-failed-stripe: repeating-linear-gradient(
+    135deg,
+    oklch(0.540 0.170 27 / 0.55) 0 var(--mi-state-stripe-width),
+    transparent var(--mi-state-stripe-width) calc(var(--mi-state-stripe-width) + var(--mi-state-stripe-gap))
+  );
+}
+
+/* 深色档（可选）：观测舱。只覆盖颜色令牌，几何令牌与别名映射与浅色档共用。 */
+:root:root:root:root[data-skin='observatory'] {
+  color-scheme: dark;
+  --skin-dark: 1;
+  --mi-bg-deep: oklch(0.145 0.018 245);
+  --mi-bg: oklch(0.175 0.018 245);
+  --mi-surface: oklch(0.205 0.018 240);
+  --mi-surface-raised: oklch(0.245 0.020 240);
+  --mi-hover: oklch(0.275 0.022 240);
+  --mi-selected: oklch(0.285 0.032 215);
+  --mi-text: oklch(0.910 0.012 220);
+  --mi-text-secondary: oklch(0.740 0.018 230);
+  --mi-text-muted: oklch(0.675 0.018 235);
+  --mi-text-faint: oklch(0.540 0.018 235);
+  --mi-accent: oklch(0.790 0.100 178);
+  --mi-accent-strong: oklch(0.870 0.115 176);
+  --mi-accent-dim: oklch(0.640 0.070 185);
+  --mi-accent-ink: oklch(0.200 0.030 210);
+  --mi-success: oklch(0.760 0.100 155);
+  --mi-warning: oklch(0.800 0.090 85);
+  --mi-danger: oklch(0.740 0.120 25);
+  --mi-border-subtle: oklch(0.320 0.020 240 / 0.48);
+  --mi-border: oklch(0.340 0.020 240);
+  --mi-border-strong: oklch(0.470 0.025 230);
+  --mi-graph-node: oklch(0.570 0.025 230);
+  --mi-graph-edge: oklch(0.490 0.025 230);
+  --mi-graph-grid: oklch(0.500 0.025 230 / 0.09);
+  --mi-overlay: oklch(0.080 0.015 245 / 0.64);
+  --mi-shadow-panel: -24px 0 80px oklch(0.050 0.010 240 / 0.46);
+  --mi-shadow-drawer: -20px 0 56px oklch(0.050 0.010 240 / 0.52);
+  --mi-shadow-focus: 0 0 0 3px oklch(0.790 0.100 178 / 0.20);
+  --mi-glow-node: 0 0 5px oklch(0.790 0.100 178 / 0.48);
+  --mi-glow-signal: 0 0 4px oklch(0.790 0.100 178 / 0.72);
+  --mi-shadow-control: 0 1px 2px oklch(0.050 0.010 240 / 0.24);
+  --mi-shadow-pop: 0 16px 48px oklch(0.050 0.010 240 / 0.48);
+  --mi-shadow-level-2: 0 1px 0 oklch(0.910 0.012 220 / 0.04),
+    0 6px 18px oklch(0.050 0.010 240 / 0.26);
+  --mi-shadow-level-3: 0 10px 28px oklch(0.050 0.010 240 / 0.42);
   --mi-state-pending-edge: oklch(0.800 0.090 85 / 0.62);
   --mi-state-failed-stripe: repeating-linear-gradient(
     135deg,
@@ -163,10 +215,9 @@
   );
 }
 
-/* 工作台唯一皮肤。旧组件继续消费原变量名，但颜色、阴影与形状只从这里取值。 */
-:root:root:root:root[data-skin='observatory'] {
-  color-scheme: dark;
-  --skin-dark: 1;
+/* 旧组件继续消费原变量名：两档共用这套映射，明暗只由上面的原始色值决定。 */
+:root,
+:root[data-skin='observatory'] {
   color: var(--mi-text);
   background-color: var(--mi-bg-deep);
   --bg: var(--mi-bg);
@@ -259,20 +310,21 @@
   --ui2-line-strong: var(--mi-border);
 }
 
-/* 全工作台动效总闸：覆盖本地组件、共享层和第三方 light-DOM。 */
+/* 全工作台动效总闸：覆盖本地组件、共享层和第三方 light-DOM。
+   两档配色都要生效，所以挂在 :root 上，不再只挂观测舱。 */
 @media (prefers-reduced-motion: reduce) {
-  :root[data-skin='observatory'] *,
-  :root[data-skin='observatory'] *::before,
-  :root[data-skin='observatory'] *::after {
+  :root *,
+  :root *::before,
+  :root *::after {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
   }
-  :root[data-skin='observatory'] [data-flow-signal],
-  :root[data-skin='observatory'] .mo-signal {
+  :root [data-flow-signal],
+  :root .mo-signal {
     display: none !important;
   }
-  :root[data-skin='observatory'] .cd-caret {
+  :root .cd-caret {
     opacity: 1 !important;
   }
 }

@@ -14,19 +14,14 @@ import './glass.css'
 import '../shared/markdown.css'
 import '../shared/ui-v2.css'
 import './memory-inspector-tokens.css'
-import { onSkinChange } from './skins'
+import { applyPalette, loadPalette } from './palette'
 import { initStyle } from './styleMode'
 import { initLayout } from './layoutMode'
 import { initMaterial } from './glassPointer'
 
-// 工作台固定使用观测舱皮肤；问答页仍保留自己的皮肤偏好。
-function applyObservatorySkin() {
-  document.documentElement.setAttribute('data-skin', 'observatory')
-  document.documentElement.style.colorScheme = 'dark'
-}
-applyObservatorySkin()
-// 其他入口换肤不得把浅色皮肤带回工作台；CodeView 的深色高亮订阅会继续触发。
-onSkinChange(applyObservatorySkin)
+// 配色：默认浅色；深色观测舱由设置页切换（docmind.workbenchPalette）。
+// 2026-11-09 之前这里写死 observatory + dark，导致首次打开就是黑、旧偏好也无效。
+applyPalette(loadPalette())
 // 风格（造型语言）、布局（空间构成）、材质（实体/玻璃）同样要在挂载前应用，
 // 否则先按默认骨架渲染再重排会闪一下（尤其 focus 模式是限宽居中，闪一下很明显）。
 initStyle()

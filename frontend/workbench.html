@@ -6,13 +6,16 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <!-- 字体已全部自托管，见 src/fonts.ts —— 不再依赖任何外部字体 CDN -->
     <title>DocMind · 代码工作台</title>
-    <!-- 首帧与 memory-inspector-tokens.css 的 --mi-bg-deep 保持一致，避免模块下载前闪白。 -->
+    <!-- 首帧配色：与 src/workbench/palette.ts 同源同默认（浅色）。深色偏好在这里就应用，
+         避免模块下载前先闪一下白，也避免旧版本「强制观测舱」的首帧硬编码。 -->
     <script>
       (function () {
         var el = document.documentElement
-        el.setAttribute('data-skin', 'observatory')
-        el.style.colorScheme = 'dark'
-        el.style.background = 'oklch(0.145 0.018 245)'
+        var dark = false
+        try { dark = window.localStorage.getItem('docmind.workbenchPalette') === 'observatory' } catch (e) {}
+        if (dark) el.setAttribute('data-skin', 'observatory')
+        el.style.colorScheme = dark ? 'dark' : 'light'
+        el.style.background = dark ? 'oklch(0.145 0.018 245)' : 'oklch(0.952 0.004 245)'
       })()
     </script>
   </head>
