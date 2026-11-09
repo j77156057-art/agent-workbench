@@ -18,6 +18,9 @@
   --text: #14110f;
   --text-muted: #6b6356;
   --text-faint: #9a9183;
+  /* 复用工作台的子 Agent 对话窗用 --fg/--fg-muted 命名，问答页只有 --ink/--text-muted。 */
+  --fg: var(--ink);
+  --fg-muted: var(--text-muted);
   --accent: #ff4d2e;
   --accent-2: #1f5fe0;
   --accent-soft: rgba(255, 77, 46, .12);

@@ -5,7 +5,8 @@ import type { AgentCard, AgentConversationResp, AgentMemoryResp, AgentUsageResp 
 import { closeAgentWall, openAgentContext } from '../uiPanels'
 import SubagentChatWindow from './SubagentChatWindow.vue'
 
-const props = defineProps<{ visible: boolean; sessionId: string }>()
+// askHost：同一个卡片墙也挂在问答页侧栏入口下，那里不需要再指回问答页。
+const props = defineProps<{ visible: boolean; sessionId: string; askHost?: boolean }>()
 
 type TabKey = 'conversation' | 'memory' | 'usage'
 const TABS: Array<{ key: TabKey; label: string }> = [
@@ -160,7 +161,7 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
             <span>卡片墙 · 会话 {{ sessionId || '未记录' }}</span>
           </div>
         </div>
-        <a class="aw-link" href="/">平台助手在问答页 ↗</a>
+        <a v-if="!askHost" class="aw-link" href="/">平台助手在问答页 ↗</a>
         <button class="aw-close" type="button" aria-label="关闭" @click="closeAgentWall">×</button>
       </header>
 

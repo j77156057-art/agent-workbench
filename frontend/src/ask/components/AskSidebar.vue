@@ -23,6 +23,11 @@ const emit = defineEmits<{
   (e: 'switchSession', id: string): void
   (e: 'deleteSession', id: string): void
   (e: 'forkSession', id: string): void
+  // 平台助手入口（2026-11）：从顶栏按钮挪进侧栏，和问答历史并列。
+  // 三块各自复用工作台组件：对话=本页问答区，卡片墙/上下文=AgentWallPanel / MemoryContextPanel。
+  (e: 'openAssistantChat'): void
+  (e: 'openAgentWall'): void
+  (e: 'openAssistantMemory'): void
   (e: 'close'): void
 }>()
 
@@ -67,6 +72,12 @@ function sessTime(v?: string): string {
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`
   return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
 }
+
+// 侧栏入口的副标题：当前问答会话就是平台助手这轮对话的落点。
+const currentSessionTitle = computed(() => {
+  const item = (props.sessions || []).find(s => s.session_id === props.currentSessionId)
+  return item ? sessTitle(item) : '当前对话'
+})
 </script>
 
 <template>
@@ -119,6 +130,37 @@ function sessTime(v?: string): string {
         代码工作台
       </a>
     </nav>
+
+    <section class="assistant-block" aria-labelledby="sidebar-assistant-title">
+      <h2 id="sidebar-assistant-title" class="section-title">平台助手</h2>
+      <button class="assistant-entry" type="button" @click="emit('openAssistantChat')">
+        <span class="assistant-entry-main">
+          <strong>平台助手对话</strong>
+          <small>{{ currentSessionTitle }}</small>
+        </span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m9 6 6 6-6 6" />
+        </svg>
+      </button>
+      <button class="assistant-entry" type="button" @click="emit('openAgentWall')">
+        <span class="assistant-entry-main">
+          <strong>子 Agent 卡片墙</strong>
+          <small>状态 · 记忆 · 用量</small>
+        </span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m9 6 6 6-6 6" />
+        </svg>
+      </button>
+      <button class="assistant-entry" type="button" @click="emit('openAssistantMemory')">
+        <span class="assistant-entry-main">
+          <strong>记忆与上下文</strong>
+          <small>注入快照与记忆库存</small>
+        </span>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m9 6 6 6-6 6" />
+        </svg>
+      </button>
+    </section>
 
     <section class="history-section" aria-labelledby="sidebar-history-title">
       <div class="history-heading">
@@ -391,6 +433,60 @@ function sessTime(v?: string): string {
   color: var(--accent-text);
   box-shadow: inset 2px 0 0 var(--accent);
   font-weight: 600;
+}
+
+/* 平台助手：与「最近对话」并列的独立入口块 */
+.assistant-block {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.assistant-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: calc(100% - 20px);
+  margin: 0 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--ink);
+  text-align: left;
+}
+
+.assistant-entry:hover {
+  border-color: var(--accent-text);
+  background: var(--bg-hover);
+}
+
+.assistant-entry-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.assistant-entry-main strong {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.assistant-entry-main small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-entry svg {
+  color: var(--text-muted);
 }
 
 .history-section {
