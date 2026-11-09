@@ -411,10 +411,11 @@ def supersede(project_id, old_id, new_id, *, reason=""):
     return old
 
 
-def supersede_shared(old_id, new_id, *, reason="", require_active=True):
+def supersede_shared(old_id, new_id, *, reason="", require_active=True, actor="main"):
     """共享层时间失效：旧条目 status→superseded，新条目加 supersedes 边。
 
     只改动文件与索引，不删除正文；旧条目保留 superseded_by/valid_until 供审计。
+    写侧归属校验：新旧两条都必须归调用方，跨 agent 失效抛 PermissionError。
     """
     old_id, new_id = str(old_id or ""), str(new_id or "")
     if not old_id or not new_id or old_id == new_id:
@@ -422,6 +423,8 @@ def supersede_shared(old_id, new_id, *, reason="", require_active=True):
     old, new = shared_item(old_id), shared_item(new_id)
     if old is None or new is None:
         return None
+    _require_owner(old, actor)
+    _require_owner(new, actor)
     if require_active and old.get("status") != "active":
         return old
     if new.get("status") != "active":
@@ -496,11 +499,27 @@ def secret_hit(text):
     return bool(_SECRET.search(str(text or "")))
 
 
-def edit_shared(item_id_value, *, text=None, pinned=None):
-    """用户直接编辑共享条目：标 user_edit、清空回执、置信回 0.5（编辑即未验证）。"""
+def _require_owner(item, actor):
+    """v2 文件条目的写侧归属校验：owner 缺省视为 main（历史条目的归属）。
+
+    删除/编辑/失效都必须先过这一关——子 agent 对共享（owner=main）条目的
+    写请求一律抛 PermissionError，由端点转成 403，而不是静默改掉别人的记忆。
+    """
+    holder = str(item.get("owner") or "main")
+    actor_id = str(actor or "main")
+    if holder != actor_id:
+        raise PermissionError("该条目属于 agent %s，当前 agent %s 无权修改" % (holder, actor_id))
+
+
+def edit_shared(item_id_value, *, text=None, pinned=None, actor="main"):
+    """用户直接编辑共享条目：标 user_edit、清空回执、置信回 0.5（编辑即未验证）。
+
+    写侧归属校验：跨 agent 编辑抛 PermissionError（不静默改写别人的记忆）。
+    """
     item = shared_item(item_id_value)
     if item is None:
         return None
+    _require_owner(item, actor)
     now = store.now()
     if text is not None:
         body = str(text).strip()[:MAX_TEXT]
@@ -523,10 +542,13 @@ def edit_shared(item_id_value, *, text=None, pinned=None):
     return item
 
 
-def delete_shared(item_id_value):
+def delete_shared(item_id_value, *, actor="main"):
+    """删除共享条目。写侧归属校验：跨 agent 删除抛 PermissionError（不是返回 False
+    假装"没找到"）；共享条目归属 main，子 agent 的删除请求一律被拒。"""
     item = shared_item(item_id_value)
     if item is None:
         return False
+    _require_owner(item, actor)
     os.remove(item["path"])
     store.ledger("memory.delete_shared", id=item_id_value, kind=item.get("kind"))
     return True

@@ -89,5 +89,74 @@ class MemoryInspectorTests(_IsoBase):
             api._SESSION_AGENTS.pop(key, None)
 
 
+    def test_agent_memory_api_scopes_lists_but_keeps_shared_rows(self):
+        import api
+        from starlette.testclient import TestClient
+
+        scope = memory.scope_key("p")
+        # agent_id="" 模拟引入 agent 维度前的历史行：下一次 _connect() 会把它回填成
+        # main + agent_legacy=1，即「共享/项目级」池，所有 Agent 都应看得到。
+        shared = memory.remember(scope, "fact", "共享历史", "项目级共享知识", agent_id="")
+        main_private = memory.remember(scope, "fact", "main 私有", "只有 main 看得到")
+        a_private = memory.remember(scope, "fact", "ag-a 私有", "只有 ag-a 看得到", agent_id="ag-a")
+        b_private = memory.remember(scope, "fact", "ag-b 私有", "只有 ag-b 看得到", agent_id="ag-b")
+
+        with patch.object(api, "_request_project_id", return_value="p"), TestClient(api.app) as client:
+            def list_payload(agent_id, level="agent"):
+                resp = client.get(f"/api/agent/memory?agent_id={agent_id}&level={level}")
+                self.assertEqual(resp.status_code, 200)
+                return resp.json()
+
+            a = list_payload("ag-a")
+            b = list_payload("ag-b")
+            project = list_payload("ag-a", "project")
+
+        a_ids = {row["id"] for row in a["items"]}
+        b_ids = {row["id"] for row in b["items"]}
+        project_ids = {row["id"] for row in project["items"]}
+        self.assertEqual(a["level"], "agent")
+        self.assertEqual(a["agent_id"], "ag-a")
+        self.assertNotEqual(a_ids, b_ids)
+        # 两个 Agent 都能看到共享/项目级行，且只多出自己名下的私有行。
+        for ids in (a_ids, b_ids):
+            self.assertIn(shared, ids)
+            self.assertNotIn(main_private, ids)
+        self.assertIn(a_private, a_ids)
+        self.assertNotIn(a_private, b_ids)
+        self.assertIn(b_private, b_ids)
+        self.assertNotIn(b_private, a_ids)
+        # 项目级浏览是另一种口径：返回该项目下所有 Agent 的 active 记忆。
+        self.assertEqual(project["level"], "project")
+        self.assertIsNone(project["agent_id"])
+        self.assertTrue({shared, main_private, a_private, b_private} <= project_ids)
+
+    def test_memory_delete_api_enforces_agent_ownership(self):
+        """DELETE 跨 agent 必须返回错误码（403），不是 200，也不能静默。"""
+        import api
+        from starlette.testclient import TestClient
+
+        scope = memory.scope_key("p")
+        main_mid = memory.remember(scope, "fact", "main 私有", "只有 main 能删")
+        sub_mid = memory.remember(scope, "fact", "ag-a 私有", "只有 ag-a 能删", agent_id="ag-a")
+
+        with patch.object(api, "_request_project_id", return_value="p"), TestClient(api.app) as client:
+            project = client.get("/api/agent/memory?level=project").json()
+            cross = client.delete(f"/api/agent/memory/{main_mid}?agent_id=ag-a")
+            missing = client.delete("/api/agent/memory/not-a-real-id?agent_id=main")
+            own = client.delete(f"/api/agent/memory/{main_mid}?agent_id=main")
+            sub_own = client.delete(f"/api/agent/memory/{sub_mid}?agent_id=ag-a")
+
+        # 项目级列表回传归属，删除时 UI 才能显式声明删谁的记忆。
+        owners = {row["id"]: row["agent_id"] for row in project["items"]}
+        self.assertEqual(owners[main_mid], "main")
+        self.assertEqual(owners[sub_mid], "ag-a")
+        self.assertEqual(cross.status_code, 403)
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(own.status_code, 200)
+        self.assertTrue(own.json()["ok"])
+        self.assertEqual(sub_own.status_code, 200)
+        self.assertIsNone(memory.owner(scope, main_mid))
+
+
 if __name__ == "__main__":
     unittest.main()

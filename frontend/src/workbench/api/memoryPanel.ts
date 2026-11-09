@@ -55,6 +55,8 @@ export interface MemoryLayer {
   project_errors?: Array<Record<string, unknown>>
   next?: string
   book?: { id?: string; title?: string; status?: string }
+  owner_scope?: 'global' | 'project' | 'agent'
+  scope_label?: string
   retrievable?: number
   retrievable_items?: Array<Record<string, unknown>>
 }
@@ -65,6 +67,7 @@ export interface MemoryContextResult {
   error?: string
   mode?: string
   session?: string
+  agent_id?: string
   turn_id?: string
   ts?: string
   layers?: MemoryLayer[]
@@ -403,9 +406,10 @@ export const memoryPanelApi = {
     if (soft) query.set('soft', '1')
     return request(`/api/agent/memory/inspect?${query.toString()}`)
   },
-  context(sessionId = '', mode: 'next' | 'last' = 'next'): Promise<MemoryContextResult> {
+  context(sessionId = '', mode: 'next' | 'last' = 'next', agentId = 'main'): Promise<MemoryContextResult> {
     const query = new URLSearchParams()
     if (sessionId) query.set('session_id', sessionId)
+    if (agentId) query.set('agent_id', agentId)
     query.set('mode', mode)
     return request(`/api/memory/context?${query.toString()}`)
   },

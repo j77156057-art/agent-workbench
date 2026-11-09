@@ -193,10 +193,12 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
             <strong>{{ selected.name }}</strong>
             <span>{{ selected.status_label || selected.status }} · 会话 {{ selected.session_id || '未记录' }}</span>
           </div>
-          <button v-if="selected.is_main" type="button" class="aw-link" @click="openFullContext">打开完整上下文面板</button>
-          <template v-else>
+          <button type="button" class="aw-link" @click="openFullContext">
+            {{ selected.is_main ? '打开完整上下文面板' : '打开该 Agent 上下文面板' }}
+          </button>
+          <template v-if="!selected.is_main">
             <button type="button" class="aw-link" @click="openChat(selected)">打开独立对话窗口</button>
-            <span class="aw-source">记忆已按 agent 隔离，六 Tab 上下文面板仅对平台助手开放</span>
+            <span class="aw-source">项目级层（守则/画像/规则/共享/任务书）所有 Agent 共享；会话钩子与历史摘要按 agent 隔离</span>
           </template>
         </div>
 

@@ -8626,7 +8626,9 @@ class Agent:
                 if not isinstance(data, dict):
                     return  # 解析失败 → 保留同步逐字记录，不做破坏性改动
                 if not data.get("keep", True):
-                    _memory.retire(scope, mid)
+                    # 写侧归属校验：后台线程没有 ContextVar，必须显式带上这条 episode
+                    # 的归属 agent，否则 current_agent() 回落 main，子 agent 的行删不动。
+                    _memory.retire(scope, mid, agent_id=owner)
                     return
                 summary = str(data.get("summary") or "").strip()
                 if not summary:

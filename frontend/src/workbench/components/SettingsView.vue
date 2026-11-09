@@ -103,7 +103,9 @@ const memoryLoading = ref(false)
 async function loadMemoryProfile() {
   profileLoading.value = true; memoryLoading.value = true; profileError.value = ''
   try {
-    const [p, m] = await Promise.all([agentApi.userProfile(), agentApi.memories('', 30)])
+    // 这里是项目级库存浏览（所有 Agent 共享），不是某个 Agent 的私有记忆：
+    // level='project' 显式声明口径，避免接口默认值让人误以为是 main 的私有列表。
+    const [p, m] = await Promise.all([agentApi.userProfile(), agentApi.memories('', 30, 'project')])
     if (p.profile) profile.value = { ...profile.value, ...p.profile }
     memoryItems.value = m.items || []
   } catch (e) { profileError.value = (e as { message?: string }).message || '读取长期记忆失败' }
@@ -122,8 +124,8 @@ async function saveMemoryProfile() {
   } catch (e) { profileError.value = (e as { message?: string }).message || '保存用户画像失败' }
   finally { profileSaving.value = false }
 }
-async function deleteMemory(id: string) {
-  try { const r = await agentApi.deleteMemory(id); if (r.ok) memoryItems.value = memoryItems.value.filter(item => item.id !== id) }
+async function deleteMemory(id: string, agentId = 'main') {
+  try { const r = await agentApi.deleteMemory(id, agentId); if (r.ok) memoryItems.value = memoryItems.value.filter(item => item.id !== id) }
   catch (e) { profileError.value = (e as { message?: string }).message || '删除记忆失败' }
 }
 const clearingLearned = ref(false)
@@ -2327,10 +2329,11 @@ async function powerAction(action: 'on' | 'off') {
             <p v-if="profileSaved" class="sv-ok">{{ profileSaved }}</p>
             <div class="sv-actions"><button class="sv-btn sv-primary" :disabled="profileSaving" @click="saveMemoryProfile">{{ profileSaving ? '保存中…' : '保存画像' }}</button></div>
             <div v-if="memoryItems.length" class="sv-memory-list">
-              <div class="sv-memory-head"><span>项目长期记忆</span><span>{{ memoryItems.length }} 条</span></div>
+              <div class="sv-memory-head"><span>项目级长期记忆（所有 Agent 共享）</span><span>{{ memoryItems.length }} 条</span></div>
+              <p class="sv-hint">这里是项目级浏览，包含该项目下所有 Agent 的记忆；单个 Agent 的私有记忆请到它的上下文面板查看。</p>
               <div v-for="item in memoryItems" :key="item.id" class="sv-memory-row">
                 <div class="sv-list-main"><b>{{ item.title || item.kind }}</b><span class="sv-list-sub">{{ item.content }}</span></div>
-                <button class="sv-mini" title="删除这条记忆" @click="deleteMemory(item.id)">删除</button>
+                <button class="sv-mini" title="删除这条记忆" @click="deleteMemory(item.id, item.agent_id || 'main')">删除</button>
               </div>
             </div>
             <p v-else-if="!memoryLoading" class="sv-hint">当前项目还没有长期记忆。</p>

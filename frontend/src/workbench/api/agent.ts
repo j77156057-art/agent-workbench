@@ -36,8 +36,13 @@ export interface UserProfile {
   learned?: LearnedHabits
 }
 export interface UserProfileResp { ok?: boolean; profile?: UserProfile; error?: string }
-export interface MemoryItem { id: string; kind: string; title: string; content: string; evidence?: string; source?: string; repeats?: number; updated?: string }
-export interface MemoryListResp { ok?: boolean; items?: MemoryItem[]; error?: string }
+export interface MemoryItem { id: string; kind: string; title: string; content: string; evidence?: string; source?: string; repeats?: number; updated?: string; agent_id?: string }
+export interface MemoryListResp {
+  ok?: boolean; items?: MemoryItem[]; error?: string
+  // 后端回显本次浏览口径：agent = 该 Agent 自己的 + 共享/项目级；project = 项目级全量浏览
+  level?: 'agent' | 'project'
+  agent_id?: string | null
+}
 export interface PreviewAdapterInfo {
   id: string; label?: string; kind?: string; evidence?: string
   capture_adapter?: string; available?: boolean; requires_connector?: boolean
@@ -377,12 +382,20 @@ export const agentApi = {
   clearLearnedProfile(): Promise<UserProfileResp> {
     return request('/api/agent/profile/learned/clear', { method: 'POST' })
   },
-  memories(query = '', limit = 20): Promise<MemoryListResp> {
-    const params = new URLSearchParams({ query, limit: String(limit) })
+  // level='agent' 与 memory_search 同口径（该 agent 自己的 + 共享/项目级）；
+  // level='project' 是项目级浏览（所有 Agent 的 active 记忆），供设置页库存视图使用。
+  memories(query = '', limit = 20, level: 'agent' | 'project' = 'agent',
+           agentId = 'main'): Promise<MemoryListResp> {
+    const params = new URLSearchParams({
+      query, limit: String(limit), level, agent_id: agentId,
+    })
     return rawJson(`/api/agent/memory?${params.toString()}`)
   },
-  deleteMemory(id: string): Promise<{ ok?: boolean; error?: string }> {
-    return request(`/api/agent/memory/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  // 写侧归属校验：DELETE 必须带上该行的归属 agent，跨 agent 会返回 403；
+  // 项目级库存视图用行里的 agent_id 显式声明删谁的记忆，而不是默认删 main 的。
+  deleteMemory(id: string, agentId = 'main'): Promise<{ ok?: boolean; error?: string }> {
+    const query = new URLSearchParams({ agent_id: agentId })
+    return request(`/api/agent/memory/${encodeURIComponent(id)}?${query.toString()}`, { method: 'DELETE' })
   },
   workflowStart(
     prompt: string,

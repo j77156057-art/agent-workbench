@@ -9,12 +9,13 @@
 - view 在 edges 为空时仍返回完整载荷（图可渲染“无边状态”）
 """
 import os
+import shutil
 import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_runtime.memory import index, inspector, layers
+from agent_runtime.memory import index, inspector, layers, promote, store
 
 
 class LayerMappingTests(unittest.TestCase):
@@ -135,6 +136,56 @@ class EdgeReadTests(unittest.TestCase):
         self.assertEqual(payload["layer_config"]["store_map"]["project"], "project")
         self.assertEqual(payload["memories"][0]["layer_key"], "legacy")
         self.assertEqual(payload["hub"]["layer_key"], "rule")
+
+
+class OwnerWriteGuardTests(unittest.TestCase):
+    """v2 写侧归属校验：upsert 不能覆盖别人的行，删除共享条目要 owner 匹配。"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="dm_owner_")
+        self._old = os.environ.get("DOCMIND_MEMORY_DIR")
+        os.environ["DOCMIND_MEMORY_DIR"] = self.tmp
+
+    def tearDown(self):
+        if self._old is None:
+            os.environ.pop("DOCMIND_MEMORY_DIR", None)
+        else:
+            os.environ["DOCMIND_MEMORY_DIR"] = self._old
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _item(self, owner="main", body="v1"):
+        return {"id": "mem-owner", "kind": "fact", "scope": "global", "owner": owner,
+                "title": "t", "body": body, "path": "shared/facts/mem-owner.md",
+                "created": "c", "updated": "u"}
+
+    def _stored(self):
+        conn = index._connect()
+        try:
+            row = conn.execute("SELECT owner, body FROM items WHERE id='mem-owner'").fetchone()
+            return (row["owner"], row["body"]) if row else None
+        finally:
+            conn.close()
+
+    def test_upsert_rejects_cross_owner_overwrite(self):
+        index.upsert_item(self._item())
+        with self.assertRaises(PermissionError):
+            index.upsert_item(self._item(owner="ag-a", body="劫持"))
+        self.assertEqual(self._stored(), ("main", "v1"))
+        # 归属者自己更新正常
+        index.upsert_item(self._item(body="v2"))
+        self.assertEqual(self._stored(), ("main", "v2"))
+
+    def test_delete_shared_requires_matching_owner(self):
+        path = os.path.join(promote.shared_dir("fact"), "mem-shared.md")
+        store.ensure_dir(os.path.dirname(path))
+        store.atomic_write(path, store.render_frontmatter(
+            {"id": "mem-shared", "kind": "fact", "status": "active", "owner": "main",
+             "title": "共享", "confidence": 0.5}, "共享正文"))
+        with self.assertRaises(PermissionError):
+            promote.delete_shared("mem-shared", actor="ag-a")
+        self.assertTrue(os.path.exists(path))
+        self.assertTrue(promote.delete_shared("mem-shared", actor="main"))
+        self.assertFalse(os.path.exists(path))
 
 
 if __name__ == "__main__":

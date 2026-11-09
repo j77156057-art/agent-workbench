@@ -71,10 +71,33 @@ def _profile_layer():
                   kind="profile", profile=declared, learned=learned)
 
 
-def next_view(project_id, session_id, code_root=""):
-    """下一回合将注入的内容；与 agent._build_messages 的取数口径一致。"""
+def _mark_scope(layer):
+    """标注该层是「项目/全局共享」还是「该 Agent 自己的会话」。
+
+    守则/画像/项目规则/共享记忆/任务书本质是项目级数据（所有 Agent 看到同一份），
+    不能硬塞 agent 过滤；只有会话钩子与历史摘要属于某个 Agent 的会话。
+    """
+    key = str(layer.get("key") or "")
+    if key in ("hook", "summary"):
+        layer["owner_scope"] = "agent"
+        layer["scope_label"] = "该 Agent 会话"
+    elif key in ("rule", "profile"):
+        layer["owner_scope"] = "global"
+        layer["scope_label"] = "全局（所有 Agent 共享）"
+    else:
+        layer["owner_scope"] = "project"
+        layer["scope_label"] = "项目级（所有 Agent 共享）"
+    return layer
+
+
+def next_view(project_id, session_id, code_root="", agent_id="main"):
+    """下一回合将注入的内容；与 agent._build_messages 的取数口径一致。
+
+    `agent_id` 只作用于会话级层（hook/summary）：子 Agent 一律解析到 `sub-<agent_id>`
+    自己的会话，绝不读平台助手主会话；项目级层保持共享并显式标注。
+    """
     project = store.safe_id(project_id or "default")
-    session = str(session_id or "")
+    owner, session = _agent_scoped_session(session_id, agent_id)
     layers = []
     # 与 agent._build_messages 同一套随窗口缩放的天花板，否则面板显示的预算是假的。
     caps = injection.discretionary_budgets()
@@ -144,19 +167,24 @@ def next_view(project_id, session_id, code_root=""):
     layers.append(_layer("summary", "历史摘要", summary, editable=False,
                          source="系统", kind="readonly"))
 
+    for layer in layers:
+        _mark_scope(layer)
     return {"ok": True, "enabled": True, "mode": "next", "project": project,
-            "session": session, "layers": layers,
+            "session": session, "agent_id": owner, "layers": layers,
             "total_chars": sum(layer["chars"] for layer in layers)}
 
 
-def last_view(session_id):
-    """上一回合实际注入的快照（来自 turn trace 的 injection 字段）。"""
+def last_view(session_id, agent_id="main"):
+    """上一回合实际注入的快照（来自 turn trace 的 injection 字段）。
+
+    与 next_view 同一套 agent→session 解析：子 Agent 只看自己会话的快照。
+    """
     try:
         import agent_trace
         rows = agent_trace.recent(500)
     except Exception:  # noqa: BLE001
         rows = []
-    session = str(session_id or "")
+    owner, session = _agent_scoped_session(session_id, agent_id)
     record = None
     for row in reversed(rows):
         if not isinstance(row, dict) or not row.get("injection"):
@@ -172,10 +200,12 @@ def last_view(session_id):
                 continue
             layer_key = _prompt_layer_key(block.get("layer_key") or block.get("layer"))
             text = str(block.get("text") or "")
-            layers.append(_layer(layer_key, TITLES.get(layer_key, layer_key), text,
-                                 editable=False, source="上一回合快照", kind="readonly",
-                                 hash=block.get("hash"), version=block.get("version")))
+            layers.append(_mark_scope(_layer(
+                layer_key, TITLES.get(layer_key, layer_key), text,
+                editable=False, source="上一回合快照", kind="readonly",
+                hash=block.get("hash"), version=block.get("version"))))
     return {"ok": True, "enabled": True, "mode": "last", "session": session,
+            "agent_id": owner,
             "turn_id": (record or {}).get("turn_id"), "ts": (record or {}).get("ts"),
             "layers": layers, "total_chars": sum(layer["chars"] for layer in layers)}
 
@@ -193,14 +223,14 @@ def update_profile(patch, user_id=None):
     return profile.save(clean, user_id)
 
 
-def edit_shared(item_id, *, text=None, pinned=None):
+def edit_shared(item_id, *, text=None, pinned=None, actor="main"):
     if text is not None and promote.secret_hit(text):
         raise ValueError("内容含密钥/令牌，未保存")
-    return promote.edit_shared(item_id, text=text, pinned=pinned)
+    return promote.edit_shared(item_id, text=text, pinned=pinned, actor=actor)
 
 
-def delete_shared(item_id):
-    return promote.delete_shared(item_id)
+def delete_shared(item_id, *, actor="main"):
+    return promote.delete_shared(item_id, actor=actor)
 
 
 def add_hook(project_id, session_id, kind, text, pinned=True):

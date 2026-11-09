@@ -4696,10 +4696,31 @@ async def sessions_ep(limit: int = 50):
 
 
 @app.get("/api/agent/memory")
-async def agent_memory_ep(query: str = "", limit: int = 20):
+async def agent_memory_ep(query: str = "", limit: int = 20,
+                          agent_id: str = "main", level: str = "agent"):
+    """项目长期记忆列表。
+
+    `level=agent`（默认）与 memory_search 同口径：该 agent 自己的 + 共享/项目级
+    （agent_legacy=1 的历史回填行）。`level=project` 是项目级浏览，返回该项目下
+    所有 agent 的 active 记忆，供设置页这类「项目级库存」视图使用。
+    """
     import agent_memory
     scope = agent_memory.scope_key(_request_project_id() or None)
-    return {"ok": True, "items": agent_memory.recall(scope, query, limit), "advisory": True}
+    mode = (level or "agent").strip().lower()
+    if mode not in ("agent", "project"):
+        mode = "agent"
+    if mode == "project":
+        items = agent_memory.recall(scope, query, limit)
+        # recall() 会 pop 掉 agent_id（保注入串逐字节不变）；项目级库存视图显式带回
+        # 归属，UI 才能标明这条属于谁，并在删除时把 agent_id 一起传给 DELETE。
+        owners = agent_memory.agent_map(scope, [item.get("id") for item in items])
+        for item in items:
+            item["agent_id"] = owners.get(str(item.get("id")), "main")
+    else:
+        items = agent_memory.recall(scope, query, limit,
+                                    agent_id=agent_id, include_shared=True)
+    return {"ok": True, "items": items, "advisory": True,
+            "level": mode, "agent_id": agent_id if mode == "agent" else None}
 
 
 @app.get("/api/agent/memory/inspect")
@@ -5082,9 +5103,23 @@ async def agent_profile_learned_clear_ep(request: Request):
 
 
 @app.delete("/api/agent/memory/{memory_id}")
-async def agent_memory_delete_ep(memory_id: str):
+async def agent_memory_delete_ep(memory_id: str, agent_id: str = "main"):
+    """删除一条记忆。写侧归属校验：只能删 `agent_id` 名下的行。
+
+    跨 agent 删除返回 403（不是 200），行不存在返回 404——拒绝必须可区分，
+    不能被前端当成"已删除"静默吞掉。`agent_legacy=1` 的共享行归属 main：
+    所有 agent 可读，但子 agent 删除会被 403 拒绝。项目级库存视图删除时
+    由前端把该行的 agent_id 一并传回（等于用户显式声明删谁的记忆）。
+    """
     import agent_memory
-    return {"ok": agent_memory.forget(agent_memory.scope_key(_request_project_id() or None), memory_id)}
+    scope = agent_memory.scope_key(_request_project_id() or None)
+    holder = agent_memory.owner(scope, memory_id)
+    if holder is None:
+        raise HTTPException(status_code=404, detail="未找到该记忆")
+    if holder != str(agent_id or "main"):
+        raise HTTPException(status_code=403,
+                            detail="该记忆属于 agent %s，当前身份 %s 无权删除" % (holder, agent_id))
+    return {"ok": agent_memory.forget(scope, memory_id, agent_id=agent_id)}
 
 
 @app.post("/api/feedback/task")
@@ -5148,14 +5183,14 @@ def _memory_require() -> None:
 
 
 @app.get("/api/memory/context")
-async def memory_context_ep(session_id: str = "", mode: str = "next"):
+async def memory_context_ep(session_id: str = "", mode: str = "next", agent_id: str = "main"):
     from agent_runtime.memory import context_panel
     if not get_memory_v2():
         return {"ok": False, "enabled": False, "error": "记忆 v2 未启用", "layers": []}
     project = _request_project_id() or "default"
     if mode == "last":
-        return context_panel.last_view(session_id)
-    return context_panel.next_view(project, session_id)
+        return context_panel.last_view(session_id, agent_id)
+    return context_panel.next_view(project, session_id, agent_id=agent_id)
 
 
 @app.get("/api/memory/pinned")
@@ -5282,13 +5317,15 @@ async def memory_item_adopt_ep(item_id: str):
 
 
 @app.patch("/api/memory/items/{item_id}")
-async def memory_item_ep(item_id: str, request: Request):
+async def memory_item_ep(item_id: str, request: Request, agent_id: str = "main"):
     _memory_require()
     body = await _memory_body(request)
     from agent_runtime.memory import context_panel
     try:
         item = context_panel.edit_shared(item_id, text=body.get("text"),
-                                         pinned=body.get("pinned"))
+                                         pinned=body.get("pinned"), actor=agent_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not item:
@@ -5297,14 +5334,18 @@ async def memory_item_ep(item_id: str, request: Request):
 
 
 @app.delete("/api/memory/items/{item_id}")
-async def memory_item_delete_ep(item_id: str, confirm: bool = False):
+async def memory_item_delete_ep(item_id: str, confirm: bool = False, agent_id: str = "main"):
     _memory_require()
     from agent_runtime.memory import context_panel, gates
     try:
         gates.require_confirm(confirm, "删除共享记忆")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": context_panel.delete_shared(item_id)}
+    try:
+        ok = context_panel.delete_shared(item_id, actor=agent_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"ok": ok}
 
 
 @app.post("/api/memory/hooks")
@@ -5528,7 +5569,7 @@ async def memory_maintain_ep(request: Request):
 
 
 @app.post("/api/memory/items/{item_id}/supersede")
-async def memory_item_supersede_ep(item_id: str, request: Request):
+async def memory_item_supersede_ep(item_id: str, request: Request, agent_id: str = "main"):
     _memory_require()
     body = await _memory_body(request)
     target = str(body.get("by") or "").strip()
@@ -5539,7 +5580,10 @@ async def memory_item_supersede_ep(item_id: str, request: Request):
         gates.require_confirm(bool(body.get("confirm")), "共享记忆失效")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    old = promote.supersede_shared(item_id, target, reason="user")
+    try:
+        old = promote.supersede_shared(item_id, target, reason="user", actor=agent_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     if old is None:
         raise HTTPException(status_code=404, detail="未找到两条 active 共享条目")
     return {"ok": True, "item": old}

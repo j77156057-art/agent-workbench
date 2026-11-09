@@ -12350,13 +12350,18 @@ def memory_save(arg):
         # fail-closed 诚实：只有该 id 确在本 scope 且仍 active 才真正下发取代；否则新记忆照存，
         # 但明确告知"没有作废任何旧记忆"，绝不谎称 supersede 成功。
         supersedes = str(data.get("supersedes") or "").strip()
-        supersede_target = supersedes if (supersedes and memory.is_active(scope, supersedes)) else ""
+        # 写侧归属校验：supersedes 只能指向**当前 agent 自己**的活跃记忆。
+        # 指到别人的（含 legacy 共享行的 owner=main）时不当场报错，但绝不作废，
+        # 并在 note 里如实说明"没有作废任何旧记忆"（fail-closed）。
+        agent_id = memory.current_agent()
+        supersede_target = supersedes if (
+            supersedes and memory.is_active(scope, supersedes, agent_id=agent_id)) else ""
         mid = memory.remember(scope, kind, data.get("title", ""), data.get("content", ""), evidence,
             source="user_explicit" if kind == "preference" else "agent", supersedes=supersede_target or None,
-            agent_id=memory.current_agent())
+            agent_id=agent_id)
         out = {"ok": True, "id": mid, "kind": kind}
         if supersedes and not supersede_target:
-            out["note"] = "supersedes=%s 不是本项目的活跃记忆，未作废任何旧记忆（新记忆已保存）。" % memory.scrub(supersedes, 80)
+            out["note"] = "supersedes=%s 不存在、已失效或不属于当前 agent，未作废任何旧记忆（新记忆已保存）。" % memory.scrub(supersedes, 80)
         elif supersede_target:
             out["superseded"] = supersede_target
         return json.dumps(out, ensure_ascii=False)
@@ -12367,7 +12372,8 @@ def memory_save(arg):
 def memory_search(arg=""):
     import agent_memory as memory
     try:
-        rows = memory.recall(memory.current_scope()[0], str(arg or ""), limit=20)
+        rows = memory.recall(memory.current_scope()[0], str(arg or ""), limit=20,
+                             agent_id=memory.current_agent(), include_shared=True)
         items = [dict(row) for row in rows]
         try:
             from config import get_memory_v2
@@ -12377,7 +12383,8 @@ def memory_search(arg=""):
                 from projects import current_project_id
                 seen = {str(item.get("content") or "").strip() for item in items}
                 v2_rows = v2_index.search(str(arg or ""), limit=12,
-                                          project=current_project_id() or "default")
+                                          project=current_project_id() or "default",
+                                          owner=memory.current_agent())
                 for row in v2_rows:
                     content = str(row.get("body") or "").strip()
                     if not content or content in seen:
@@ -12503,10 +12510,22 @@ def plan_decision(arg=""):
 
 
 def memory_forget(arg):
+    """删除当前项目的一条长期记忆。写侧归属校验：只能删当前 agent 自己的记忆；
+    跨 agent（含 legacy 共享行，owner=main）一律拒绝并说明原因，不静默返回成功。"""
     import agent_memory as memory
     try:
         mid = _parse_keyed(str(arg), ["id"]).get("id") or str(arg).strip()
-        return json.dumps({"ok": memory.forget(memory.current_scope()[0], mid)}, ensure_ascii=False)
+        scope, agent_id = memory.current_scope()[0], memory.current_agent()
+        if memory.forget(scope, mid, agent_id=agent_id):
+            return json.dumps({"ok": True}, ensure_ascii=False)
+        holder = memory.owner(scope, mid)
+        if holder is None:
+            return json.dumps({"ok": False, "error": "未找到该记忆（id 不存在或已删除）"}, ensure_ascii=False)
+        return json.dumps({
+            "ok": False,
+            "error": "该记忆属于 agent %s，当前 agent %s 无权删除"
+                     % (memory.scrub(holder, 80), memory.scrub(agent_id, 80)),
+        }, ensure_ascii=False)
     except Exception as exc:
         return json.dumps({"ok": False, "error": memory.scrub(str(exc), 500)}, ensure_ascii=False)
 

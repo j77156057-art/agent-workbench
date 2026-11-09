@@ -10,7 +10,9 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
+from datetime import datetime
 
 from . import graph, score, store
 
@@ -20,6 +22,7 @@ CREATE TABLE IF NOT EXISTS items(
   kind TEXT NOT NULL DEFAULT 'fact',
   scope TEXT NOT NULL DEFAULT 'global',
   project TEXT NOT NULL DEFAULT '',
+  owner TEXT NOT NULL DEFAULT 'main',
   status TEXT NOT NULL DEFAULT 'active',
   path TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
@@ -49,9 +52,41 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAUL
 _PATTERNS = ("shared/facts/*.md", "shared/lessons/*.md",
              "projects/*/facts/*.md", "projects/*/lessons/*.md")
 
+# 最近一次 owner 迁移的备份路径（只在补列那次非空），供 migrate_owner 汇报。
+_LAST_OWNER_BACKUP = ""
+
 
 def path():
     return store.safe_path("shared", "index.sqlite3")
+
+
+def _backup_file(target):
+    """迁移前备份数据库文件（只在补列那次做）。文件名带秒级时间戳，可重复跑。"""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = "%s.bak-%s" % (target, stamp)
+    shutil.copy2(target, backup)
+    return backup
+
+
+def _ensure_owner(conn, target):
+    """幂等补 owner 列：老库先备份，再 ALTER + 回填 main。
+
+    新库由 SCHEMA 直接带上 owner，不会触发备份；重复调用只会看到列已存在，
+    返回空字符串，因此可以安全地反复执行。
+    """
+    global _LAST_OWNER_BACKUP
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(items)")}
+    if "owner" in columns:
+        return ""
+    backup = ""
+    if os.path.isfile(target):
+        backup = _backup_file(target)
+        _LAST_OWNER_BACKUP = backup
+    conn.execute("ALTER TABLE items ADD COLUMN owner TEXT NOT NULL DEFAULT 'main'")
+    conn.execute("UPDATE items SET owner='main' WHERE owner='' OR owner IS NULL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner)")
+    conn.commit()
+    return backup
 
 
 def _connect():
@@ -67,12 +102,53 @@ def _connect():
         conn.execute("ALTER TABLE items ADD COLUMN project TEXT NOT NULL DEFAULT ''")
     if "pinned" not in columns:
         conn.execute("ALTER TABLE items ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+    if "owner" not in columns:
+        _ensure_owner(conn, target)
+    else:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner)")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS items_fts "
                      "USING fts5(id UNINDEXED, title, body)")
     except sqlite3.OperationalError:
         pass
     return conn
+
+
+def migrate_owner(default="main"):
+    """幂等迁移 owner 维度：老库先备份、补列并回填，返回可复核的计数。
+
+    第一次在有数据的老库上调用：`added_column=True` 且 `backed_up` 指向备份文件，
+    既有行全部归到 default（main）。第二次调用：列已存在，`added_column=False`、
+    `backed_up=''`、`backfilled=0`，items 总数与 owner 分布保持不变。
+    """
+    target = path()
+    existed = os.path.isfile(target)
+    had_owner = False
+    if existed:
+        try:
+            probe = sqlite3.connect("file:%s?mode=ro" % target.replace("\\", "/"), uri=True)
+            had_owner = "owner" in {row[1] for row in probe.execute("PRAGMA table_info(items)")}
+            probe.close()
+        except sqlite3.Error:
+            had_owner = False
+    conn = _connect()
+    try:
+        with conn:
+            cursor = conn.execute("UPDATE items SET owner=? WHERE owner='' OR owner IS NULL",
+                                  (str(default),))
+            backfilled = cursor.rowcount
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner)")
+        owners = {row["owner"]: row["n"] for row in conn.execute(
+            "SELECT owner, COUNT(*) n FROM items GROUP BY owner ORDER BY n DESC")}
+        total = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    finally:
+        conn.close()
+    migrated = existed and not had_owner
+    return {"ok": True, "db": target, "existed": existed,
+            "added_column": migrated,
+            "backed_up": _LAST_OWNER_BACKUP if migrated else "",
+            "backfilled": int(backfilled or 0), "total": int(total),
+            "owners": owners}
 
 
 def read_edges():
@@ -209,6 +285,7 @@ def _item_from_file(absolute, relative):
         "kind": str(header.get("kind") or "fact").strip(),
         "scope": str(header.get("scope") or "global").strip(),
         "project": project,
+        "owner": str(header.get("owner") or "main").strip() or "main",
         "status": str(header.get("status") or "active").strip(),
         "path": relative,
         "title": title or str(header.get("id") or relative),
@@ -234,11 +311,11 @@ def rebuild(verify=False):
         fts = _fts(conn)
         stats["fts"] = fts
         existing = {row["path"]: (row["body_hash"], row["body"], row["project"],
-                                  row["status"], row["title"], row["confidence"],
+                                  row["owner"], row["status"], row["title"], row["confidence"],
                                   row["importance"], row["pinned"], row["usage"],
                                   row["last_used"], row["updated"])
                     for row in conn.execute(
-                        "SELECT path, body_hash, body, project, status, title, confidence,"
+                        "SELECT path, body_hash, body, project, owner, status, title, confidence,"
                         " importance, pinned, usage, last_used, updated FROM items")}
         seen = set()
         seen_ids = set()
@@ -259,7 +336,7 @@ def rebuild(verify=False):
                     continue
                 seen_ids.add(item["id"])
                 signature = (item["body_hash"], item["body"], item["project"],
-                             item["status"], item["title"], item["confidence"],
+                             item["owner"], item["status"], item["title"], item["confidence"],
                              item["importance"], item["pinned"], item["usage"],
                              item["last_used"], item["updated"])
                 if relative not in existing:
@@ -276,11 +353,11 @@ def rebuild(verify=False):
                 if row_changed:
                     conn.execute("DELETE FROM items WHERE id=? OR path=?", (item["id"], relative))
                     conn.execute(
-                        "INSERT INTO items(id,kind,scope,project,status,path,title,body,body_hash,"
+                        "INSERT INTO items(id,kind,scope,project,owner,status,path,title,body,body_hash,"
                         "confidence,importance,usage,created,updated,last_used) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (item["id"], item["kind"], item["scope"], item["project"], item["status"],
-                         item["path"], item["title"], item["body"], item["body_hash"],
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (item["id"], item["kind"], item["scope"], item["project"], item["owner"],
+                         item["status"], item["path"], item["title"], item["body"], item["body_hash"],
                          item["confidence"], item["importance"], item["usage"], item["created"],
                          item["updated"], item["last_used"]))
                     conn.execute("DELETE FROM edges WHERE src=?", (item["id"],))
@@ -368,25 +445,38 @@ def related(item_id, limit=5, conn=None):
             conn.close()
 
 
-def upsert_item(item):
-    """单条 upsert：面板编辑/晋升后立即同步行、边、FTS 与向量，不等全量重建。"""
+def upsert_item(item, *, actor=None):
+    """单条 upsert：面板编辑/晋升后立即同步行、边、FTS 与向量，不等全量重建。
+
+    owner 写侧校验：不能把别人名下的行改写成自己的。库里已有同 id/path 的行、
+    且其 owner 与本次写入身份不一致时抛 PermissionError，不做覆盖。`actor`
+    缺省取条目自带 owner（文件同步这类内部调用）；只有显式声明身份时才具备
+    跨 owner 的语义，非法覆盖一律拒绝而不是"只写不查"。
+    """
     relative = str(item.get("path") or "")
     if os.path.isabs(relative):
         try:
             relative = os.path.relpath(relative, store.root()).replace("\\", "/")
         except ValueError:
             pass
+    actor_id = str(actor or item.get("owner") or "main")
     conn = _connect()
     try:
         with conn:
+            existing = conn.execute("SELECT owner FROM items WHERE id=? OR path=?",
+                                    (item["id"], relative)).fetchone()
+            if existing is not None and str(existing["owner"] or "main") != actor_id:
+                raise PermissionError("不能覆盖其他 Agent 的记忆：owner=%s，写入身份=%s"
+                                      % (existing["owner"] or "main", actor_id))
             conn.execute("DELETE FROM items WHERE id=? OR path=?",
                          (item["id"], relative))
             conn.execute(
-                "INSERT INTO items(id,kind,scope,project,status,path,title,body,body_hash,"
+                "INSERT INTO items(id,kind,scope,project,owner,status,path,title,body,body_hash,"
                 "confidence,importance,pinned,usage,created,updated,last_used) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (item["id"], item.get("kind", "fact"), item.get("scope", "global"),
-                 item.get("project", ""), item.get("status", "active"),
+                 item.get("project", ""), item.get("owner") or "main",
+                 item.get("status", "active"),
                  relative, item.get("title", ""), item.get("body", ""),
                  item.get("body_hash") or store.sha256_text(item.get("body", "")),
                  item.get("confidence", 0.5), item.get("importance", 0.5),
@@ -433,8 +523,11 @@ def set_edges(src, edges):
         conn.close()
 
 
-def search(query="", limit=10, scope=None, project=None):
+def search(query="", limit=10, scope=None, project=None, owner=None):
     """关键词 + 可选语义向量检索，再对前 3 条做 1 跳关联扩展。
+
+    owner 过滤只限制「agent 私有」条目：global/project 层是共享/项目级知识，
+    对所有 Agent 可见（与 memory_search 的召回口径一致）。
 
     语义仅在 DOCMIND_MEMORY_EMBED / runtime memory_embed 开启且条目有向量时参与；
     任何嵌入故障都退化为关键词，不影响检索可用性。
@@ -451,6 +544,9 @@ def search(query="", limit=10, scope=None, project=None):
         if project:
             sql += " AND (scope='global' OR project=?)"
             params.append(str(project))
+        if owner:
+            sql += " AND (owner=? OR scope IN ('global','project'))"
+            params.append(str(owner))
         rows = [dict(row) for row in conn.execute(sql, params)]
         qvec = _embed_one(query) if terms and _embed_enabled() else []
         vectors = {}
@@ -508,6 +604,9 @@ def search(query="", limit=10, scope=None, project=None):
                     item = dict(found)
                     if item.get("status") not in ("active", "candidate"):
                         continue
+                    if owner and not (item.get("owner") == str(owner)
+                                      or item.get("scope") in ("global", "project")):
+                        continue
                     if item.get("scope") == "project" and item.get("status") != "candidate":
                         continue
                     if project and item.get("scope") != "global"                             and item.get("project") != str(project):
@@ -524,6 +623,9 @@ def search(query="", limit=10, scope=None, project=None):
         for row in rows[:3]:
             for neighbour in related(row["id"], 3, conn=conn):
                 if neighbour["id"] in seen:
+                    continue
+                if owner and not (neighbour.get("owner") == str(owner)
+                                  or neighbour.get("scope") in ("global", "project")):
                     continue
                 if project and neighbour.get("scope") != "global"                         and neighbour.get("project") != str(project):
                     continue

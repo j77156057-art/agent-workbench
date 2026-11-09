@@ -21,6 +21,7 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const mode = ref<'next' | 'last'>('next')
 const data = ref<MemoryContextResult | null>(null)
 const inspection = ref<MemoryInspectResult | null>(null)
+const inspectError = ref('')
 const active = ref('overview')
 const pinnedFacts = ref<MemoryPinnedEntry[]>([])
 const pinnedError = ref('')
@@ -43,12 +44,14 @@ const permissionError = computed(() => /401|403|forbidden|unauthorized|无权限
  *  不能拿主 Agent 或上一个 Agent 的 inspection 冒充。 */
 const agentScoped = computed(() => props.agentId !== 'main')
 const agentUnavailable = computed(() => agentScoped.value && !loading.value
-  && (inspection.value?.available === false || (!inspection.value && !!error.value)))
+  && (inspection.value?.available === false
+    || (!!inspectError.value && !inspection.value)))
 const agentUnavailableReason = computed(() => {
   if (inspection.value?.available === false) {
     return inspection.value.error
       || '该 Agent 在任务树里有快照，但当前会话没有活动的进程内实例；独立上下文不随快照持久化，重启后无法恢复。'
   }
+  if (inspectError.value) return inspectError.value
   if (/不存在该 Agent 实例|404|not found/i.test(error.value)) {
     return '该 Agent 在任务树里有快照，但当前会话没有活动的进程内实例；独立上下文不随快照持久化，重启后无法恢复。'
   }
@@ -192,11 +195,20 @@ async function load(nextMode: 'next' | 'last' = mode.value, prefetch = false) {
   loading.value = true
   error.value = ''
   notice.value = ''
+  inspectError.value = ''
   performance.mark('memory:load:start', { detail: { sequence, prefetch } })
   try {
+    // 子 Agent 的 inspect 只解析进程内实例；实例不在时不能让它拖垮整个面板——
+    // 六个 Tab 仍要按 agent_id 从 /api/memory/context 取自己的会话数据。
+    const inspectPromise = memoryPanelApi.inspect(sessionId, agentId, agentId !== 'main')
+      .catch((e: unknown) => {
+        if (agentId === 'main') throw e
+        inspectError.value = (e as Error)?.message || '独立上下文读取失败'
+        return null
+      })
     const [inspectResult, result, pinnedResult] = await Promise.all([
-      memoryPanelApi.inspect(sessionId, agentId, agentId !== 'main'),
-      memoryPanelApi.context(sessionId, nextMode),
+      inspectPromise,
+      memoryPanelApi.context(sessionId, nextMode, agentId),
       memoryPanelApi.pinned(sessionId, agentId).catch((e: unknown) => ({
         ok: false,
         error: (e as Error)?.message || '固定事实读取失败',
@@ -710,11 +722,11 @@ async function reindex() {
       <button class="mp-close" type="button" aria-label="关闭上下文记忆" @click="emit('close')">×</button>
     </header>
 
-    <div v-if="!agentUnavailable && loading && active !== 'overview'" class="mp-inline-status" role="status"><i></i>正在读取当前层级的真实数据</div>
-    <div v-if="!agentUnavailable && error && active !== 'overview'" class="mp-message is-error" role="alert"><span>{{ error }}</span><button type="button" @click="load(mode)">重试</button></div>
-    <div v-else-if="!agentUnavailable && notice" class="mp-message is-ok" role="status">{{ notice }}</div>
+    <div v-if="loading && active !== 'overview'" class="mp-inline-status" role="status"><i></i>正在读取当前层级的真实数据</div>
+    <div v-if="error && active !== 'overview'" class="mp-message is-error" role="alert"><span>{{ error }}</span><button type="button" @click="load(mode)">重试</button></div>
+    <div v-else-if="notice" class="mp-message is-ok" role="status">{{ notice }}</div>
 
-    <div v-if="!agentUnavailable" class="mp-tabs" role="tablist">
+    <div class="mp-tabs" role="tablist">
       <button type="button" role="tab" :aria-selected="active === 'overview'" class="mp-tab" :class="{ on: active === 'overview' }" @click="active = 'overview'">
         记忆总览 <span title="分子=本轮实际注入的记忆条数，分母=该 Agent 记忆库存总条数；单位是条，不是字数/容量">{{ inspection?.injected.length || 0 }}/{{ inspection?.memories.length || 0 }} 条</span>
       </button>
@@ -746,12 +758,12 @@ async function reindex() {
       </button>
     </div>
 
-    <div v-if="agentScoped && !agentUnavailable" class="mp-scope-note" data-agent-scope-note>
+    <div v-if="agentScoped" class="mp-scope-note" data-agent-scope-note>
       <strong>Agent 私有视图</strong>
-      <p>记忆总览来自 <code>/api/agent/memory/inspect?agent_id={{ agentId }}</code>，是该 Agent 实例的注入、守则与库存；其余层级 tab 来自会话级 <code>/api/memory/context</code>（后端不接受 agent_id），不是该 Agent 私有数据。</p>
+      <p>记忆总览来自 <code>/api/agent/memory/inspect?agent_id={{ agentId }}</code>，是该 Agent 实例的注入、守则与库存；该接口只解析进程内活动实例，实例不在时总览不可读，但其余 Tab 仍可用。六 Tab 中「常驻守则 / 用户画像 / 项目规则 / 共享记忆 / 任务书」是项目级共享层，所有 Agent 看到同一份；「会话钩子 / 历史摘要」按 <code>agent_id={{ agentId }}</code> 解析到该 Agent 自己的会话（<code>{{ data?.session || 'sub-' + agentId }}</code>），不读平台助手主会话。</p>
     </div>
 
-    <div v-if="agentUnavailable" class="mp-body mp-agent-empty" data-agent-context-empty>
+    <div v-if="active === 'overview' && agentUnavailable" class="mp-body mp-agent-empty" data-agent-context-empty>
       <span class="mp-agent-empty-mark" aria-hidden="true"></span>
       <strong>{{ agentLabel }} 的独立上下文不可读</strong>
       <p>{{ agentUnavailableReason }}</p>
@@ -759,7 +771,7 @@ async function reindex() {
       <button type="button" @click="load(mode)">重新读取</button>
     </div>
 
-    <div v-else-if="active === 'overview'" class="mp-body">
+    <div v-if="active === 'overview' && !agentUnavailable" class="mp-body">
       <MemoryOverview
         :data="inspection"
         :loading="loading && !inspection"
@@ -978,6 +990,10 @@ async function reindex() {
     </div>
 
     <div v-else-if="current" class="mp-body">
+      <p class="mp-meta" data-layer-scope>
+        <strong>{{ current.scope_label || '项目级（所有 Agent 共享）' }}</strong>
+        <span v-if="current.owner_scope === 'agent'"> · 会话 {{ data?.session || sessionId || '未记录' }}</span>
+      </p>
       <template v-if="current.kind === 'markdown'">
         <p class="mp-meta">
           v{{ current.version }} ·

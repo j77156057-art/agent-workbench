@@ -3,6 +3,7 @@ python -m agent_runtime.memory rebuild [--verify] | stats
 python -m agent_runtime.memory sweep --project prj-xxx
 python -m agent_runtime.memory promote --project prj-xxx --id mem-xxxx
 python -m agent_runtime.memory migrate [--force]
+python -m agent_runtime.memory migrate-owner [--owner main]
 python -m agent_runtime.memory report [--days 7]
 """
 from __future__ import annotations
@@ -40,6 +41,8 @@ def main(argv=None):
     promote_cmd.add_argument("--id", required=True)
     migrate_cmd = sub.add_parser("migrate", help="只读迁移旧版记忆库")
     migrate_cmd.add_argument("--force", action="store_true")
+    owner_cmd = sub.add_parser("migrate-owner", help="幂等补/回填 v2 索引 owner（迁移前备份）")
+    owner_cmd.add_argument("--owner", default="main")
     report_cmd = sub.add_parser("report", help="固化开销计量")
     report_cmd.add_argument("--days", type=int, default=7)
     eval_cmd = sub.add_parser("eval", help="记忆专用评测（检索/晋升/去重/隔离）")
@@ -69,6 +72,8 @@ def main(argv=None):
         out = promote.promote(args.project, args.id)
     elif args.cmd == "migrate":
         out = migrate.run(force=args.force)
+    elif args.cmd == "migrate-owner":
+        out = index.migrate_owner(args.owner)
     elif args.cmd == "eval":
         out = eval_mod.run(semantic=args.semantic)
     elif args.cmd == "health":

@@ -456,5 +456,118 @@ class TransparentLearningApiTests(_IsoBase):
             self.assertEqual(cleared["profile"]["display_name"], "小李", "清空端点只清 learned")
 
 
+class MemoryWriteOwnershipTests(_IsoBase):
+    """写侧越权：forget / retire / is_active / supersedes / memory_forget 都按归属校验。"""
+
+    def test_cross_agent_delete_and_retire_are_rejected(self):
+        scope = memory.scope_key("p")
+        main_mid = memory.remember(scope, "fact", "main 私有", "只有 main 能改")
+        sub_mid = memory.remember(scope, "fact", "ag-a 私有", "只有 ag-a 能改", agent_id="ag-a")
+
+        # 主 agent 写 → 子 agent 删不掉、作废不了，也不能把它当 supersedes 目标
+        self.assertFalse(memory.forget(scope, main_mid, agent_id="ag-a"))
+        self.assertFalse(memory.retire(scope, main_mid, agent_id="ag-a"))
+        self.assertFalse(memory.is_active(scope, main_mid, agent_id="ag-a"))
+        self.assertEqual(memory.owner(scope, main_mid), "main")
+        self.assertTrue(memory.is_active(scope, main_mid, agent_id="main"))
+        self.assertIn(main_mid, [row["id"] for row in memory.recall(
+            scope, agent_id="main", include_shared=True)])
+
+        # 子 agent 写 → 主 agent 也删不掉（双向隔离，不是"主 agent 全权"）
+        self.assertFalse(memory.forget(scope, sub_mid, agent_id="main"))
+        self.assertEqual(memory.owner(scope, sub_mid), "ag-a")
+        self.assertTrue(memory.recall(scope, agent_id="ag-a")[0]["id"] == sub_mid)
+        # 只有归属者自己能删
+        self.assertTrue(memory.forget(scope, sub_mid, agent_id="ag-a"))
+        self.assertIsNone(memory.owner(scope, sub_mid))
+        self.assertTrue(memory.forget(scope, main_mid))
+
+    def test_legacy_shared_rows_readable_but_not_sub_agent_deletable(self):
+        """边界结论：agent_legacy=1 是引入归属维度前的项目级共享行（owner=main）。
+
+        所有 agent 都可以读（include_shared=True 是**有意为之**：这些是项目级知识，
+        不是泄漏）；但写侧只有归属者 main 能删/作废，子 agent 的删除请求必须失败。
+        """
+        scope = memory.scope_key("p")
+        # agent_id="" 模拟历史行；下一次 _connect() 回填成 main + agent_legacy=1
+        shared = memory.remember(scope, "fact", "共享历史", "项目级共享知识", agent_id="")
+        self.assertEqual(memory.owner(scope, shared), "main")
+        visible = memory.recall(scope, "共享", agent_id="ag-a", include_shared=True)
+        self.assertIn(shared, [row["id"] for row in visible])
+        # 私有口径里看不到（它不是 ag-a 的私有记忆）——共享靠显式 include_shared
+        self.assertNotIn(shared, [row["id"] for row in memory.recall(
+            scope, "共享", agent_id="ag-a", include_shared=False)])
+        # 工具层同样有意共享：memory_search 固定 include_shared=True，子 agent
+        # 能检索到项目级 legacy 行（这是设计，不是漏出来的）；写侧仍然被拒。
+        scope_token = memory.bind(scope, "")
+        agent_token = memory.bind_agent("ag-a")
+        try:
+            found = json.loads(tools.memory_search("共享"))
+            self.assertIn(shared, [row["id"] for row in found["items"]])
+        finally:
+            memory.reset_agent(agent_token)
+            memory.reset(scope_token)
+        # 可读 ≠ 可写：子 agent 删/作废/取代判定都为 False，行对 main 仍 active。
+        # 注意 is_active() 现在同时回答"存在 + active + 归属调用方"，所以子 agent
+        # 拿 legacy 行当 supersedes 目标会得到 False——这正是写侧该有的拒绝。
+        self.assertFalse(memory.forget(scope, shared, agent_id="ag-a"))
+        self.assertFalse(memory.retire(scope, shared, agent_id="ag-a"))
+        self.assertFalse(memory.is_active(scope, shared, agent_id="ag-a"))
+        self.assertTrue(memory.is_active(scope, shared, agent_id="main"))
+        self.assertEqual(memory.owner(scope, shared), "main")
+        # 归属者 main 可以删
+        self.assertTrue(memory.forget(scope, shared, agent_id="main"))
+
+    def test_same_title_from_two_agents_never_overwrites(self):
+        """同名记忆不能靠 ON CONFLICT 互相覆盖：归属进入 id 派生，各写各的行。"""
+        scope = memory.scope_key("p")
+        main_mid = memory.remember(scope, "fact", "同名结论", "main 的正文")
+        sub_mid = memory.remember(scope, "fact", "同名结论", "ag-a 的正文", agent_id="ag-a")
+        self.assertNotEqual(main_mid, sub_mid)
+        self.assertEqual(memory.owner(scope, main_mid), "main")
+        self.assertEqual(memory.owner(scope, sub_mid), "ag-a")
+        self.assertEqual([(row["id"], row["content"]) for row in
+                          memory.recall(scope, "同名", agent_id="main")],
+                         [(main_mid, "main 的正文")])
+        self.assertEqual([(row["id"], row["content"]) for row in
+                          memory.recall(scope, "同名", agent_id="ag-a")],
+                         [(sub_mid, "ag-a 的正文")])
+
+    def test_episode_rotation_is_per_agent(self):
+        """逐字 episode 的 500 条轮换只裁本 agent，不能挤掉别人的记录。"""
+        scope = memory.scope_key("p")
+        main_ep = memory.remember(scope, "episode", "main 回合", "main 的逐字记录", key="main-q")
+        for i in range(505):
+            memory.remember(scope, "episode", "ag-a 回合", "ag-a 第 %d 轮" % i,
+                            key="ag-a-q-%d" % i, agent_id="ag-a")
+        self.assertEqual(memory.owner(scope, main_ep), "main")  # 没被别人的轮换挤掉
+        sub_eps = [row for row in memory.recall(scope, "回合", limit=600, agent_id="ag-a")]
+        self.assertLessEqual(len(sub_eps), 500)
+        self.assertTrue(sub_eps)
+
+    def test_tools_memory_forget_and_supersedes_enforce_agent_ownership(self):
+        main_mid = memory.remember("p", "fact", "主结论", "旧结论")
+        scope_token = memory.bind("p", "")
+        agent_token = memory.bind_agent("ag-a")
+        try:
+            denied = json.loads(tools.memory_forget(main_mid))
+            self.assertFalse(denied["ok"])
+            self.assertIn("无权删除", denied["error"])
+            # 子 agent 想用 supersedes 顶掉 main 的记忆：新记忆照存，旧记忆绝不作废
+            saved = json.loads(tools.memory_save(json.dumps(
+                {"kind": "fact", "title": "子结论", "content": "新结论", "supersedes": main_mid})))
+            self.assertTrue(saved["ok"])
+            self.assertIn("note", saved)
+            self.assertTrue(memory.is_active("p", main_mid, agent_id="main"))
+            # 子 agent 自己的记忆：主 agent 删不掉，归属者自己能删
+            own = json.loads(tools.memory_save(json.dumps(
+                {"kind": "fact", "title": "子私有", "content": "只有 ag-a 看得见"})))
+            self.assertFalse(memory.forget("p", own["id"], agent_id="main"))
+            self.assertTrue(json.loads(tools.memory_forget(own["id"]))["ok"])
+        finally:
+            memory.reset_agent(agent_token)
+            memory.reset(scope_token)
+
+
 if __name__ == "__main__":
     unittest.main()

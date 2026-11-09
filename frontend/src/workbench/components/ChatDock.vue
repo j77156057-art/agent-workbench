@@ -219,6 +219,11 @@ function currentSessionId(): string {
     return fallbackCockpitSessions.get(key)!
   }
 }
+/** 记忆面板按当前选中 Agent 取会话：子 Agent 用 sub-<agent_id> 自己的会话，
+ *  不能拿平台助手主会话给它做六 Tab 的 hook/summary 取数。 */
+function memoryPanelSessionId(): string {
+  return memoryAgentId.value === 'main' ? currentSessionId() : `sub-${memoryAgentId.value}`
+}
 async function selectSession(id: string): Promise<boolean> {
   if (props.scope === 'default') return setSessionId(id)
   if (!id.startsWith('dev-')) return false
@@ -2273,7 +2278,7 @@ const webTitle = computed(() => webOn.value
     <Teleport v-if="!isReplay" to="body">
       <MemoryContextPanel
         :visible="memoryPanelOpen"
-        :session-id="currentSessionId()"
+        :session-id="memoryPanelSessionId()"
         :agent-id="memoryAgentId"
         :agent-label="memoryAgentLabel"
         @close="closeMemoryPanel"

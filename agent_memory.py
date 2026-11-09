@@ -233,7 +233,13 @@ def remember(scope, kind, title, content, evidence="", *, source="agent", key=No
     if kind not in KINDS or not str(content or "").strip():
         raise ValueError("需要有效的 kind 和非空 content")
     title, content, evidence = scrub(title, 200), scrub(content, 4000), scrub(evidence, 1200)
-    mid = hashlib.sha256((kind + "|" + str(key or title or content)).encode()).hexdigest()[:24]
+    seed = kind + "|" + str(key or title or content)
+    # 归属进入主键派生：main 保持历史 id 不变（老行与既有 supersedes 指针零迁移），
+    # 其他 agent 加前缀。否则两个 agent 写同名记忆会命中同一个 ON CONFLICT，
+    # 把别人的正文改掉——那是"只写不查"的隐藏写侧越权。
+    if agent_id and str(agent_id) != "main":
+        seed = str(agent_id) + "|" + seed
+    mid = hashlib.sha256(seed.encode()).hexdigest()[:24]
     # 长期记忆优化 W-A：importance 只在接受到显式数值时才规范化并落库；
     # None → 不写（INSERT 用列默认 0.5；ON CONFLICT 用 COALESCE 保留旧值，
     # 避免"重记同一 id"把已调过的价值分悄悄抹回 0.5）。
@@ -272,13 +278,21 @@ def remember(scope, kind, title, content, evidence="", *, source="agent", key=No
         # 不传 supersedes 时这段完全不执行，行为与今天逐字节一致。ON CONFLICT 分支
         # 故意不改 status，避免重记同一 id 把一条已 retire/supersede 的行悄悄复活。
         if supersedes:
-            conn.execute("UPDATE memories SET status='superseded' WHERE scope=? AND id=?",
-                (scope, str(supersedes)))
+            # 写侧归属校验：只作废**本 agent** 名下的旧行。调用方（memory_save）
+            # 已用 is_active(agent_id=...) 预检，这里再在 SQL 上兜一层，避免直接
+            # 调 remember(supersedes=...) 绕过校验去作废别人的记忆。
+            conn.execute("UPDATE memories SET status='superseded' WHERE scope=? AND id=? AND agent_id=?",
+                (scope, str(supersedes), str(agent_id or "main")))
         # 500 条轮换只裁逐字 episode：fact / preference / workflow 是模型或用户
         # 明确沉淀的知识，不能被逐轮转写挤掉（旧版按整个 scope 裁，老事实会被刷没）。
-        conn.execute("""DELETE FROM memories WHERE scope=? AND kind='episode' AND id NOT IN
-            (SELECT id FROM memories WHERE scope=? AND kind='episode' ORDER BY updated DESC LIMIT 500)""",
-            (scope, scope))
+        # 轮换也只裁**本 agent** 的 episode：否则一个 agent 写得勤就会挤掉别人的
+        # 逐字记录（跨 agent 隐式删除，同样是写侧越权）。
+        _trim_owner = str(agent_id or "main")
+        conn.execute("""DELETE FROM memories WHERE scope=? AND kind='episode' AND agent_id=?
+            AND id NOT IN
+            (SELECT id FROM memories WHERE scope=? AND kind='episode' AND agent_id=?
+             ORDER BY updated DESC LIMIT 500)""",
+            (scope, _trim_owner, scope, _trim_owner))
     return mid
 
 
@@ -313,17 +327,24 @@ def _embed_client():
     return _EMBED_CLIENT
 
 
-def recall(scope, query="", limit=8, *, include_preferences=False, include_all=False, agent_id=None):
+def recall(scope, query="", limit=8, *, include_preferences=False, include_all=False,
+           agent_id=None, include_shared=False):
     terms = set(re.findall(r"[a-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", str(query).lower()))
     terms |= {term[i:i+2] for term in list(terms) if re.fullmatch(r"[\u4e00-\u9fff]{3,}", term) for i in range(len(term)-1)}
     # 缺口 C · A：默认只浮出 active 记忆——被 supersede/retire 的旧错误结论不再回到
     # 注入上下文（这才是"修好后旧教训自动作废"的落点）。include_all=True 仅供审计。
     where = "scope=?" if include_all else "scope=? AND status='active'"
     params = [scope]
-    # agent_id=None 保持旧行为（不按 agent 过滤），供测试/全局审计使用；
-    # 传入具体 agent_id 时只召回该 agent 名下的记忆（真隔离，不只是 UI 过滤）。
+    # agent_id=None 保持旧行为（不按 agent 过滤），供测试/全局审计使用。
+    # 传入具体 agent_id 时默认只召回该 agent 名下的记忆（注入路径的真隔离）。
+    # include_shared=True 供 memory_search 工具使用：额外放行 agent_legacy=1 的
+    # 历史行——它们是引入 agent 维度之前的项目级长期记忆（已统一回填给 main），
+    # 属于「共享/项目级」知识，子 Agent 检索时应能看到，但看不到 main 新写的私有行。
     if agent_id is not None:
-        where += " AND agent_id=?"
+        if include_shared:
+            where += " AND (agent_id=? OR agent_legacy=1)"
+        else:
+            where += " AND agent_id=?"
         params.append(str(agent_id))
     with _LOCK, closing(_connect()) as conn:
         rows = [dict(row) for row in conn.execute(
@@ -428,25 +449,66 @@ def _touch_access(scope, ids):
             [(now, scope, mid) for mid in ids])
 
 
-def forget(scope, mid):
-    with _LOCK, closing(_connect()) as conn, conn:
-        return conn.execute("DELETE FROM memories WHERE scope=? AND id=?", (scope, str(mid))).rowcount > 0
+def _actor(agent_id):
+    """写侧归属校验的调用方身份：显式传入优先，否则取当前执行 agent（默认 main）。"""
+    return str(agent_id if agent_id is not None else current_agent())
 
 
-def retire(scope, mid):
-    """软作废：置 status='retired'，行保留（审计留痕），但不再被 recall 浮出。
-    区别于 forget() 的硬删——默认不销毁证据，只是停止呈现（fail-closed）。"""
-    with _LOCK, closing(_connect()) as conn, conn:
-        return conn.execute("UPDATE memories SET status='retired' WHERE scope=? AND id=?",
-            (scope, str(mid))).rowcount > 0
-
-
-def is_active(scope, mid):
-    """精确单行判定：该 id 在本 scope 是否存在且仍 active。供工具层诚实校验
-    supersedes 指针——指到不存在的 id 时不能谎称"旧记忆已作废"。"""
+def owner(scope, mid):
+    """该记忆归属的 agent id；行不存在返回 None。供 API 区分 404（不存在）与
+    403（存在但属于别的 agent），避免把跨 agent 拒绝伪装成"已删除"。"""
     with _LOCK, closing(_connect()) as conn:
-        return conn.execute("SELECT 1 FROM memories WHERE scope=? AND id=? AND status='active'",
-            (scope, str(mid))).fetchone() is not None
+        row = conn.execute("SELECT agent_id FROM memories WHERE scope=? AND id=?",
+                           (scope, str(mid))).fetchone()
+    return (str(row["agent_id"] or "main") if row else None)
+
+
+def agent_map(scope, ids):
+    """批量取 id→归属 agent。人类界面的项目级库存视图用：recall() 会 pop 掉
+    agent_id（保注入串逐字节不变），这里再显式带回，供 UI 标明归属并正确删除。"""
+    ids = [str(item) for item in ids or [] if item]
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    with _LOCK, closing(_connect()) as conn:
+        rows = conn.execute("SELECT id, agent_id FROM memories WHERE scope=? AND id IN (%s)" % marks,
+                            (scope, *ids)).fetchall()
+    return {str(row["id"]): str(row["agent_id"] or "main") for row in rows}
+
+
+def forget(scope, mid, *, agent_id=None):
+    """硬删一条记忆，只删属于该 agent 的行。
+
+    写侧归属校验：跨 agent 删除必须是**失败**而不是静默成功——SQL 带上
+    `agent_id=?`，不属于调用方的行 rowcount=0，调用方据此明确报拒绝。
+    `agent_legacy=1` 的共享/项目级历史行 owner 是 main：所有 agent 可读
+    （recall include_shared），但只有 main 能删；子 agent 删除一律被拒。
+    """
+    with _LOCK, closing(_connect()) as conn, conn:
+        return conn.execute("DELETE FROM memories WHERE scope=? AND id=? AND agent_id=?",
+                            (scope, str(mid), _actor(agent_id))).rowcount > 0
+
+
+def retire(scope, mid, *, agent_id=None):
+    """软作废：置 status='retired'，行保留（审计留痕），但不再被 recall 浮出。
+    区别于 forget() 的硬删——默认不销毁证据，只是停止呈现（fail-closed）。
+    归属校验同 forget()：不能作废别人的记忆（含 legacy 共享行，只有 main 能作废）。"""
+    with _LOCK, closing(_connect()) as conn, conn:
+        return conn.execute(
+            "UPDATE memories SET status='retired' WHERE scope=? AND id=? AND agent_id=?",
+            (scope, str(mid), _actor(agent_id))).rowcount > 0
+
+
+def is_active(scope, mid, *, agent_id=None):
+    """精确单行判定：该 id 在本 scope 是否存在、仍 active、且归属调用方。
+
+    供工具层诚实校验 supersedes 指针——指到不存在的 id、或指到别人的记忆时，
+    都不能谎称"旧记忆已作废"（跨 agent 取代必须被拒）。agent_legacy=1 共享行
+    的 owner 是 main，子 agent 用它当 supersedes 目标时同样返回 False。"""
+    with _LOCK, closing(_connect()) as conn:
+        return conn.execute(
+            "SELECT 1 FROM memories WHERE scope=? AND id=? AND status='active' AND agent_id=?",
+            (scope, str(mid), _actor(agent_id))).fetchone() is not None
 
 
 JOURNAL_LIMIT_CHARS = 600000
