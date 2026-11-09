@@ -24,9 +24,13 @@
 
 body { background: var(--ui2-canvas); font-kerning: normal; }
 
-/* 深墨色导航轨道是产品的视觉锚点；只覆盖导航令牌，不影响正文皮肤。 */
-.ask-side.ask-side,
-.ft-panel.ft-panel {
+/* 深墨色导航轨道是产品的视觉锚点；只覆盖导航令牌，不影响正文皮肤。
+   `.ask-side` 是第三级：组件作用域样式编译成 `.ask-side[data-v-xxx]`，同样是
+   0,2,0，而问答页的组件 CSS 后加载，会把 background/color 改回浅底+白字；
+   提到 0,3,0 才能让轨道稳定胜出（工作台 `.ft-panel` 的竞争规则只有 0,1,0，
+   提高一级不改变胜负）。 */
+.ask-side.ask-side.ask-side,
+.ft-panel.ft-panel.ft-panel {
   --text: var(--ui2-rail-text);
   --ink: var(--ui2-rail-text);
   --text-muted: var(--ui2-rail-muted);
