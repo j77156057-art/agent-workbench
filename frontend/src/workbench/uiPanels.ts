@@ -9,17 +9,14 @@ export const agentTreeOpen = ref(false)
 // - agentWallOpen：Agent 卡片墙（一排卡片 → 对话 / 记忆 / 使用记录）
 export const agentWallOpen = ref(false)
 
-// 记忆面板当前看的是哪个 Agent 的上下文。点 Agent 树节点会把这里切成该节点，
-// 但始终是同一个工作台、同一个项目、同一个会话，不新开窗口。
-export const memoryAgentId = ref('main')
-export const memoryAgentLabel = ref('平台助手')
+// 记忆面板当前看的是哪个 Agent 的上下文。平台助手（main）已挪到问答页，
+// 工作台的入口只给子 Agent，不再把 main 当默认值。
+export const memoryAgentId = ref('')
+export const memoryAgentLabel = ref('')
 
+/** 「记忆」入口的默认落点：Agent 卡片墙（只列子 Agent）；平台助手记忆在问答页。 */
 export function openMemoryPanel() {
-  memoryAgentId.value = 'main'
-  memoryAgentLabel.value = '平台助手'
-  agentTreeOpen.value = false
-  agentWallOpen.value = false
-  memoryPanelOpen.value = true
+  openAgentWall()
 }
 
 /** 「记忆」入口的默认落点：先看 Agent 卡片墙，不直接假定是平台助手的记忆。 */
@@ -34,8 +31,9 @@ export function closeAgentWall() {
 }
 
 export function openAgentContext(agentId: string, label: string) {
-  memoryAgentId.value = agentId || 'main'
-  memoryAgentLabel.value = label || (agentId === 'main' ? '平台助手' : agentId)
+  if (!agentId) return
+  memoryAgentId.value = agentId
+  memoryAgentLabel.value = label || agentId
   agentTreeOpen.value = false
   agentWallOpen.value = false
   memoryPanelOpen.value = true

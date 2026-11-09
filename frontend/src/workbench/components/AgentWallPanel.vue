@@ -14,10 +14,13 @@ const TABS: Array<{ key: TabKey; label: string }> = [
   { key: 'usage', label: '使用记录' },
 ]
 
-const cards = ref<AgentCard[]>([])
+const allCards = ref<AgentCard[]>([])
 const rosterError = ref('')
 const loading = ref(false)
-const selectedId = ref('main')
+// 平台助手（main）已挪到问答页，不再作为工作台里的一个 agent 展示。
+// 后端 roster 仍返回 main（兼容旧接口），这里只在读侧过滤掉。
+const cards = computed(() => allCards.value.filter(card => !card.is_main))
+const selectedId = ref('')
 const tab = ref<TabKey>('conversation')
 
 const conversation = ref<AgentConversationResp | null>(null)
@@ -72,20 +75,20 @@ async function loadRoster() {
   rosterError.value = ''
   try {
     const data = await agentsApi.roster(props.sessionId)
-    cards.value = Array.isArray(data.items) ? data.items : []
+    allCards.value = Array.isArray(data.items) ? data.items : []
     if (!cards.value.some(card => card.agent_id === selectedId.value)) {
-      selectedId.value = cards.value[0]?.agent_id || 'main'
+      selectedId.value = cards.value[0]?.agent_id || ''
     }
   } catch (e) {
     rosterError.value = (e as Error).message || 'Agent 列表加载失败'
-    cards.value = []
+    allCards.value = []
   } finally {
     loading.value = false
   }
 }
 
 async function loadDetail() {
-  if (!props.visible) return
+  if (!props.visible || !selectedId.value) return
   detailLoading.value = true
   detailError.value = ''
   try {
@@ -133,7 +136,8 @@ function onCardClick(card: AgentCard) {
 
 function openFullContext() {
   const card = selected.value
-  openAgentContext(card?.agent_id || selectedId.value, card?.name || '平台助手')
+  if (!card) return
+  openAgentContext(card.agent_id, card.name || card.agent_id)
 }
 
 watch(() => props.visible, visible => {
@@ -156,6 +160,7 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
             <span>卡片墙 · 会话 {{ sessionId || '未记录' }}</span>
           </div>
         </div>
+        <a class="aw-link" href="/">平台助手在问答页 ↗</a>
         <button class="aw-close" type="button" aria-label="关闭" @click="closeAgentWall">×</button>
       </header>
 
@@ -175,7 +180,7 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
             <span class="aw-card-name">{{ card.name }}</span>
             <span class="aw-chip" :class="statusClass(card.status)">{{ card.status_label || card.status }}</span>
           </span>
-          <span class="aw-card-role">{{ card.role_label || card.role }}{{ card.is_main ? ' · 主 agent' : ' · 委派 agent' }}</span>
+          <span class="aw-card-role">{{ card.role_label || card.role }} · 委派 agent</span>
           <span class="aw-card-meta">
             <span>消息 {{ card.message_count }}</span>
             <span v-if="!card.is_main" class="aw-archive" :class="{ 'is-legacy': card.archive_source !== 'sessions' }">
@@ -184,7 +189,10 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
             <span>最近 {{ fmtTime(card.last_active) }}</span>
           </span>
         </button>
-        <div v-if="!loading && !cards.length && !rosterError" class="aw-empty">还没有任何 Agent 记录。</div>
+        <div v-if="!loading && !cards.length && !rosterError" class="aw-empty">
+          <p>还没有子 Agent 记录。</p>
+          <p>平台助手已挪到问答页：<a href="/">去问答页打开平台助手 ↗</a></p>
+        </div>
       </div>
 
       <div v-if="selected" class="aw-detail">

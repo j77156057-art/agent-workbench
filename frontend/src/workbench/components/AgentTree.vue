@@ -73,7 +73,9 @@ const flatNodes = computed(() => {
     out.push({ ...node, level })
     ;(node.children || []).forEach(child => visit(child, level + 1))
   }
-  if (data.value?.root) visit(data.value.root, 0)
+  // 平台助手（main）已挪到问答页，不再作为工作台 Agent 树的根节点展示；
+  // 子树直接从它的下一层开始，parentLabel 仍显示「平台助手」保持层级语义。
+  if (data.value?.root) (data.value.root.children || []).forEach(child => visit(child, 0))
   return out
 })
 
@@ -296,44 +298,10 @@ async function decide(node: DelegationNode, approved: boolean) {
     <div v-if="error && data" class="at-message" role="alert">{{ error }}<button type="button" @click="load">重试</button></div>
     <div v-if="decisionError" class="at-message" role="alert">{{ decisionError }}</div>
 
-    <section class="at-assistant" aria-label="平台助手需求细化">
-      <header><div><span>01</span><h3>平台助手 · 需求细化</h3></div><small>只细化与派发，不直接执行业务</small></header>
-      <p class="at-description">平台助手有独立上下文，能力等同普通 Agent：先做语义路由、把目标细化成标准任务规格，再派给子 Agent 并汇总结果。</p>
-      <textarea v-model="assistantGoal" rows="3" placeholder="描述目标、输入、产出物和边界…" :disabled="assistantBusy" />
-      <button type="button" class="at-approve" :disabled="assistantBusy || !assistantGoal.trim()" @click="runAssistant">
-        {{ assistantBusy ? '正在细化与分派…' : '细化并分派' }}
-      </button>
-      <div v-if="assistantReport" class="at-assistant-report">
-        <p>{{ assistantReport.merged }}</p>
-        <details v-for="task in assistantReport.tasks" :key="task.id">
-          <summary>{{ task.goal || task.task }} · {{ statusLabels[assistantReport.results[task.id]?.status || ''] || assistantReport.results[task.id]?.status || '未执行' }}</summary>
-          <dl>
-            <dt>输入</dt><dd>{{ (task.input || []).join('；') }}</dd>
-            <dt>产出物</dt><dd>{{ (task.outputs || []).join('；') }}</dd>
-            <dt>边界</dt><dd>{{ (task.boundaries || []).join('；') }}</dd>
-            <dt>验收</dt><dd>{{ (task.acceptance || []).join('；') }}</dd>
-            <template v-if="assistantReport.results[task.id]?.failure_reason">
-              <dt>失败原因</dt><dd>{{ assistantReport.results[task.id].failure_reason }}</dd>
-              <dt>续跑点</dt><dd>{{ assistantReport.results[task.id].resume_point }}</dd>
-            </template>
-          </dl>
-        </details>
-      </div>
-    </section>
-
-    <section v-if="alerts.length" class="at-alerts" aria-label="平台助手已收到的失联报告">
-      <header><div><span>!</span><h3>失联报告</h3></div><small>平台助手已收到 · 后端读路径落盘</small></header>
-      <article v-for="alert in alerts" :key="`${alert.agent_id}-${alert.last_seen}`" class="at-alert" data-heartbeat-alert>
-        <strong>{{ alert.agent_id }}</strong>
-        <span v-if="alert.role"> · {{ alert.role }}</span>
-        <p>平台助手已收到失联报告 · {{ clockText(alert.detected_at) }}</p>
-        <small>静默 {{ secondsText(alert.silence_seconds) }} · 最后活动 {{ clockText(alert.last_seen) }} · 进度冻结 {{ alert.progress_frozen ? '是' : '否' }}</small>
-        <small>接收端：{{ alert.receiver }} · 落盘：{{ alert.delivery }}</small>
-      </article>
-    </section>
+    <!-- 平台助手已挪到问答页：需求细化 / 失联报告属于它的管理面，不在工作台展示。 -->
 
     <section v-if="data?.pending.length" class="at-approvals" aria-label="待审批派发">
-      <header><div><span>02</span><h3>待审批</h3></div><small>{{ data.pending.length }} 项</small></header>
+      <header><div><span>01</span><h3>待审批</h3></div><small>{{ data.pending.length }} 项</small></header>
       <article v-for="node in data.pending" :key="node.id" class="at-approval">
         <strong>{{ parentLabel(node) }} → {{ node.role }}</strong>
         <p>{{ node.task }}</p>
@@ -347,10 +315,10 @@ async function decide(node: DelegationNode, approved: boolean) {
       </article>
     </section>
 
-    <section class="at-tree" aria-label="平台助手与子 Agent 任务树">
-      <header><div><span>{{ data?.pending.length ? '03' : '02' }}</span><h3>任务树</h3></div><small>点击任意节点 → 右栏切到该 Agent 上下文</small></header>
+    <section class="at-tree" aria-label="子 Agent 任务树">
+      <header><div><span>{{ data?.pending.length ? '02' : '01' }}</span><h3>任务树</h3></div><small>点击任意节点 → 右栏切到该 Agent 上下文</small></header>
       <div v-if="!loading && !flatNodes.length && !error" class="at-state at-state-embedded">
-        <span class="at-state-mark" aria-hidden="true"></span><strong>还没有 Agent 任务节点</strong><p>平台助手或任务助手创建第一条派发后，父子关系会显示在这里。</p>
+        <span class="at-state-mark" aria-hidden="true"></span><strong>还没有子 Agent 任务节点</strong><p>平台助手在问答页派发任务后，子 Agent 的父子关系会显示在这里。</p>
       </div>
 
       <article
