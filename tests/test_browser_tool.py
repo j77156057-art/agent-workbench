@@ -240,3 +240,65 @@ def test_typing_into_an_ordinary_input_is_unaffected(monkeypatch):
     monkeypatch.setattr(page_action, "_sessions", {"sess1": session})
     page_action.type_text(".", page="sess1", value="hello", selector="input", domain="public")
     assert any(method == "Input.insertText" for method, _p in devtools.calls)
+
+
+# --------------------------------------------------------------------------- 审批边界
+
+def test_unparseable_url_does_not_block_the_approval_request(monkeypatch):
+    """urlsplit 解析失败时只把 url 清空，不能让整个动作绕过审批直接失败。"""
+
+    def boom(_raw):
+        raise ValueError("not a url")
+
+    monkeypatch.setattr(browser_tool, "urlsplit", boom)
+    calls = {}
+    monkeypatch.setattr(browser_tool, "execute_desktop_action",
+                        lambda **kwargs: calls.update(kwargs) or {"ok": True})
+    result = browser_tool.run_browser_action(
+        ".", {"action": "click", "url": "::not-a-url::", "selector": "#save"})
+    assert result["ok"] is True
+    assert calls["details"]["url"] == ""
+    assert calls["details"]["selector"] == "#save"
+
+
+def test_dev_page_action_dispatches_press_wait_locate_and_list(monkeypatch):
+    """action 分支必须真的把参数落到 page_action，而不是静默返回成功。"""
+    import tools
+    from agent_runtime import page_action
+
+    seen = []
+    monkeypatch.setattr(tools, "_get_code_root", lambda: ".")
+    monkeypatch.setattr(tools, "execute_desktop_action",
+                        lambda **kwargs: kwargs["executor"]())
+    monkeypatch.setattr(page_action, "press_key",
+                        lambda *args, **kwargs: seen.append(("press", kwargs)) or {"ok": True})
+    monkeypatch.setattr(page_action, "wait_for",
+                        lambda *args, **kwargs: seen.append(("wait", kwargs)) or {"ok": True})
+    monkeypatch.setattr(page_action, "locate",
+                        lambda *args, **kwargs: seen.append(("locate", kwargs)) or {"ok": True})
+    monkeypatch.setattr(page_action, "live_pages", lambda: [
+        {"page": "p1", "idle_seconds": 1, "actions": 0, "url": "http://127.0.0.1/"}])
+
+    tools.dev_page_action("action: press\npage: p1\nkey: Enter")
+    tools.dev_page_action("action: wait\npage: p1\nselector: #done")
+    tools.dev_page_action("action: locate\npage: p1\nselector: #done")
+    listed = tools.dev_page_action("action: list")
+
+    assert [name for name, _ in seen] == ["press", "wait", "locate"]
+    assert seen[0][1]["key"] == "Enter"
+    assert "在途页面会话 1 个" in listed
+
+
+def test_dev_page_action_clears_unparseable_url_before_approval(monkeypatch):
+    """url 解析失败时只清空展示用 url，动作仍进入审批而不是直接崩。"""
+    import tools
+    from agent_runtime import page_action
+
+    captured = {}
+    monkeypatch.setattr(tools, "_get_code_root", lambda: ".")
+    monkeypatch.setattr(page_action, "open_page", lambda **kwargs: {"ok": True})
+    monkeypatch.setattr(tools, "execute_desktop_action",
+                        lambda **kwargs: captured.update(kwargs) or {"ok": True})
+
+    tools.dev_page_action("action: open\nurl: http://[::1")
+    assert captured["details"]["url"] == ""

@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """LLM 弹性层：重试/退避/deadline/可重试判定（离线，不触网）。"""
+import os
 import time
 import threading
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from llm import retry_call, is_retryable, _OllamaStream, StreamChat, LLMClient
 import config
@@ -686,6 +688,28 @@ class UsageCaptureTests(unittest.TestCase):
         self.assertEqual(out, "hi")
         self.assertEqual(sink.get("prompt_tokens"), 11)
         self.assertEqual(sink.get("completion_tokens"), 5)
+
+
+class MockProviderBranchTests(unittest.TestCase):
+    """mock 提供方的节流参数与带图流的两个兜底分支（演示/离线场景）。"""
+
+    def test_invalid_pace_env_falls_back_to_zero_delay(self):
+        with patch.dict(os.environ, {"DOCMIND_MOCK_PACE_MS": "not-a-number"}):
+            self.assertEqual("".join(LLMClient._mock_stream("ab")), "ab")
+
+    def test_positive_pace_sleeps_between_non_space_chars(self):
+        with patch.dict(os.environ, {"DOCMIND_MOCK_PACE_MS": "2"}), \
+                patch("llm.time.sleep") as sleep:
+            self.assertEqual("".join(LLMClient._mock_stream("a b")), "a b")
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_image_question_streams_an_explicit_incapability_answer(self):
+        client = LLMClient(provider="mock")
+        chunks = client._mock_chat(
+            [{"role": "user", "content": "这是什么图", "images": ["img"]}], stream=True)
+        text = "".join(chunks)
+        self.assertIn("不具备视觉能力", text)
+        self.assertTrue(client.last_usage["completion_tokens"] > 0)
 
 
 if __name__ == "__main__":

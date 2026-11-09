@@ -253,6 +253,30 @@ def test_visual_click_rides_the_sandbox_then_falls_back_after_expiry(monkeypatch
         visual_click.PROPOSALS.clear()
 
 
+def test_vision_click_falls_back_to_project_root_without_stage_scope(monkeypatch, tmp_path):
+    """stage_origin_root 不可用时退回项目根，不能让视觉点击整个失败。"""
+    from agent_runtime import visual_click
+
+    root = _project(tmp_path)
+    seen = {}
+    monkeypatch.setattr(tools, "_get_code_root", lambda: root)
+    monkeypatch.setattr("projects.current_project_id", lambda: "prj-x")
+    monkeypatch.setattr(visual_click, "execution_details",
+                        lambda pid: {"proposal_id": pid})
+
+    def boom():
+        raise RuntimeError("no stage scope")
+
+    monkeypatch.setattr("agent_runtime.tools.stage_origin_root", boom)
+    monkeypatch.setattr(tools, "execute_desktop_action",
+                        lambda **kwargs: seen.update(kwargs) or {"ok": True})
+
+    out = tools.vision_click("proposal_id: prop-1")
+    assert seen["root"] == root
+    assert seen["channel"] == "vision"
+    assert getattr(out, "ok", None) is True
+
+
 # --------------------------------------------------------------------------- 试做区
 
 def test_stage_scope_allows_engine_and_window_tools(tmp_path):

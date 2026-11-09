@@ -85,5 +85,111 @@ class ToolWriteBoundaryTests(unittest.TestCase):
                 create.assert_not_called()
 
 
+class ExternalFileToolTests(unittest.TestCase):
+    """外部文件读写工具的成功/拒绝分支：拒绝要可解释，成功要真落盘。"""
+
+    def test_read_external_file_refuses_safe_mode(self):
+        import tools
+        with patch("tools.external_access_high", return_value=False):
+            result = tools.read_external_file("/tmp/notes.txt")
+        self.assertIn("仅项目内写", result)
+
+    def test_create_external_file_reports_sandbox_refusal(self):
+        import tools
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "new.txt")
+            with patch("tools.external_access_high", return_value=True), \
+                    patch("tools._get_code_root", return_value=root), \
+                    patch("tools.enforce_file_write_boundary",
+                          side_effect=SandboxUnavailable("企业模式只允许项目内写入")):
+                result = tools.create_external_file(
+                    "path: %s\nnew_text: hello" % target)
+            self.assertIn("拒绝执行", result)
+            self.assertFalse(target.exists())
+
+    def test_create_external_file_writes_new_file(self):
+        import tools
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "new.txt")
+            with patch("tools.external_access_high", return_value=True), \
+                    patch("tools._get_code_root", return_value=root), \
+                    patch("tools._edit_confirm_on", return_value=False):
+                result = tools.create_external_file(
+                    "path: %s\nnew_text: hello" % target)
+            self.assertIn("已", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "hello")
+
+    def test_edit_external_file_reports_sandbox_refusal(self):
+        import tools
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "notes.txt")
+            target.write_text("old", encoding="utf-8")
+            with patch("tools.external_access_high", return_value=True), \
+                    patch("tools._get_code_root", return_value=root), \
+                    patch("tools.enforce_file_write_boundary",
+                          side_effect=SandboxUnavailable("越界")):
+                result = tools.edit_external_file(
+                    "path: %s\nold_text: old\nnew_text: new" % target)
+            self.assertIn("拒绝执行", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "old")
+
+    def test_edit_external_file_writes_replacement(self):
+        import tools
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "notes.txt")
+            target.write_text("old", encoding="utf-8")
+            with patch("tools.external_access_high", return_value=True), \
+                    patch("tools._get_code_root", return_value=root), \
+                    patch("tools._edit_confirm_on", return_value=False):
+                result = tools.edit_external_file(
+                    "path: %s\nold_text: old\nnew_text: new" % target)
+            self.assertIn("已写入外部文件", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "new")
+
+    def test_delete_external_file_removes_confirmed_file(self):
+        import tools
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "gone.txt")
+            target.write_text("x", encoding="utf-8")
+            with patch("tools.external_access_high", return_value=True), \
+                    patch("tools._get_code_root", return_value=root), \
+                    patch("tools._edit_confirm_on", return_value=False):
+                result = tools.delete_external_file(
+                    "path: %s\nconfirm: yes" % target)
+            self.assertIn("已删除外部文件", result)
+            self.assertFalse(target.exists())
+
+    def test_confirm_edit_creates_staged_file(self):
+        import tools
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "created.txt")
+            pid = tools.stage_edit("create_file", str(target), "created.txt",
+                                   None, "hello\n", "create")
+            with patch("tools._get_code_root", return_value=root):
+                ok, detail = tools.confirm_edit(pid)
+            self.assertTrue(ok, detail)
+            self.assertEqual(target.read_text(encoding="utf-8"), "hello\n")
+
+    def test_confirm_edit_deletes_staged_file_and_discards_missing(self):
+        import tools
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root, "gone.txt")
+            target.write_text("x", encoding="utf-8")
+            pid = tools.stage_edit("delete_external_file", str(target), "gone.txt",
+                                   None, "", "delete")
+            ok, detail = tools.confirm_edit(pid)
+            self.assertTrue(ok, detail)
+            self.assertFalse(target.exists())
+
+            # 暂存后文件被别人删掉：拒绝并丢弃该待确认项，避免永远失败的重试。
+            again = Path(root, "again.txt")
+            pid = tools.stage_edit("delete_external_file", str(again), "again.txt",
+                                   None, "", "delete")
+            ok, reason = tools.confirm_edit(pid)
+            self.assertFalse(ok)
+            self.assertIn("已不存在", reason)
+            self.assertNotIn(pid, [row["id"] for row in tools.list_pending_edits()])
+
+
 if __name__ == "__main__":
     unittest.main()

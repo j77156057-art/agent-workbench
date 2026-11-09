@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """T3：game_screenshot 工具与 screen_capture 模块（离线；抓帧全部注入替身）。"""
 import base64
+import ctypes
 import io
 import os
 import sys
 import tempfile
+import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -161,6 +163,231 @@ class CaptureGeometryContractTests(unittest.TestCase):
             screen_capture.crop_client_frame(
                 _gradient_bgra(4, 4), 4, 4,
                 {"left": 3, "top": 0, "width": 2, "height": 2})
+
+    def test_crop_reports_incomplete_or_nonpositive_geometry(self):
+        # 缺字段和零尺寸都必须走「拒绝」而不是 KeyError/ZeroDivision。
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.compute_client_crop({"x": 0}, self.CLIENT, self.ORIGIN)
+        with self.assertRaises(screen_capture.CaptureGeometryError):
+            screen_capture.compute_client_crop(
+                {"x": 0, "y": 0, "width": 0, "height": 600},
+                self.CLIENT, {"x": 0, "y": 0})
+
+
+class _FakeUser32:
+    """最小 user32 替身：按配置填写 RECT/POINT，但不调用任何 Win32。"""
+
+    def __init__(self, *, window=(10, 20, 110, 80), client=(0, 0, 80, 40),
+                 origin=(15, 26), window_ok=True, client_ok=True,
+                 origin_ok=True, print_result=1, dc=1):
+        self.window = window
+        self.client = client
+        self.origin = origin
+        self.window_ok = window_ok
+        self.client_ok = client_ok
+        self.origin_ok = origin_ok
+        self.print_result = print_result
+        self.dc = dc
+        self.print_calls = 0
+        self.released = []
+
+    def GetWindowRect(self, _hwnd, ref):
+        if not self.window_ok:
+            return 0
+        ref._obj.left, ref._obj.top, ref._obj.right, ref._obj.bottom = self.window
+        return 1
+
+    def GetClientRect(self, _hwnd, ref):
+        if not self.client_ok:
+            return 0
+        ref._obj.left, ref._obj.top, ref._obj.right, ref._obj.bottom = self.client
+        return 1
+
+    def ClientToScreen(self, _hwnd, ref):
+        if not self.origin_ok:
+            return 0
+        ref._obj.x, ref._obj.y = self.origin
+        return 1
+
+    def GetDC(self, _hwnd):
+        return self.dc
+
+    def ReleaseDC(self, hwnd, dc):
+        self.released.append((hwnd, dc))
+        return 1
+
+    def PrintWindow(self, _hwnd, _dc, _flags):
+        self.print_calls += 1
+        return self.print_result
+
+
+class _FakeGdi32:
+    """最小 gdi32 替身：GetDIBits 按请求高度返回，buffer 留零。"""
+
+    def __init__(self, *, bitblt=1, scan_rows=None):
+        self.bitblt = bitblt
+        self.scan_rows = scan_rows
+        self.bitblt_calls = 0
+        self.deleted = []
+        self.dcs_deleted = []
+
+    def CreateCompatibleDC(self, _dc):
+        return 2
+
+    def CreateCompatibleBitmap(self, _dc, _w, _h):
+        return 3
+
+    def SelectObject(self, _dc, _obj):
+        return 4
+
+    def BitBlt(self, *_args):
+        self.bitblt_calls += 1
+        return self.bitblt
+
+    def GetDIBits(self, _dc, _bmp, _start, rows, _buffer, _info, _usage):
+        return rows if self.scan_rows is None else self.scan_rows
+
+    def DeleteObject(self, obj):
+        self.deleted.append(obj)
+        return 1
+
+    def DeleteDC(self, dc):
+        self.dcs_deleted.append(dc)
+        return 1
+
+
+class CapturePlatformPathTests(unittest.TestCase):
+    """Win32 绑定/DPI/几何/渲染路径：用替身覆盖，CI（Linux）也能跑。"""
+
+    GEOMETRY = (
+        {"x": 10, "y": 20, "width": 100, "height": 60},
+        {"width": 80, "height": 40},
+        {"x": 15, "y": 26},
+    )
+
+    def test_libs_binds_signatures_on_windows(self):
+        user32, gdi32 = MagicMock(), MagicMock()
+        windll = types.SimpleNamespace(user32=user32, gdi32=gdi32)
+        with patch.object(screen_capture.os, "name", "nt"), \
+                patch.object(screen_capture.ctypes, "windll", windll, create=True):
+            got_user32, got_gdi32 = screen_capture._libs()
+        self.assertIs(got_user32, user32)
+        self.assertIs(got_gdi32, gdi32)
+        self.assertEqual(user32.GetWindowRect.restype, ctypes.wintypes.BOOL)
+        self.assertEqual(gdi32.GetDIBits.restype, ctypes.c_int)
+
+    def test_ensure_capture_dpi_is_process_wide_and_reports_dpi(self):
+        calls = []
+        bridge = types.SimpleNamespace(
+            ensure_dpi_awareness=lambda: (calls.append("ensure") or (True, "per-monitor-v2")),
+            dpi_of=lambda _hwnd: 120)
+        with patch.dict(screen_capture._DPI_STATE,
+                        {"checked": False, "awareness": "unknown"}, clear=True), \
+                patch.dict(sys.modules, {"desktop_bridge": bridge}):
+            self.assertEqual(screen_capture.ensure_capture_dpi(),
+                             {"awareness": "per-monitor-v2", "dpi": 96})
+            self.assertEqual(screen_capture.ensure_capture_dpi(7),
+                             {"awareness": "per-monitor-v2", "dpi": 120})
+        self.assertEqual(calls, ["ensure"])
+
+    def test_ensure_capture_dpi_keeps_going_when_platform_calls_fail(self):
+        def boom():
+            raise RuntimeError("no dpi api")
+
+        def bad_dpi(_hwnd):
+            raise RuntimeError("no dpi")
+
+        bridge = types.SimpleNamespace(ensure_dpi_awareness=boom, dpi_of=bad_dpi)
+        with patch.dict(screen_capture._DPI_STATE,
+                        {"checked": False, "awareness": "unknown"}, clear=True), \
+                patch.dict(sys.modules, {"desktop_bridge": bridge}):
+            self.assertEqual(screen_capture.ensure_capture_dpi(9),
+                             {"awareness": "unknown", "dpi": 96})
+
+    def test_client_geometry_success_and_each_failure(self):
+        self.assertEqual(
+            screen_capture._client_geometry(_FakeUser32(), 123), self.GEOMETRY)
+        for kwargs in ({"window_ok": False}, {"client_ok": False}, {"origin_ok": False}):
+            with self.subTest(**kwargs):
+                self.assertIsNone(
+                    screen_capture._client_geometry(_FakeUser32(**kwargs), 123))
+
+    def test_render_window_bgra_returns_none_when_printwindow_fails(self):
+        user32, gdi32 = _FakeUser32(print_result=0), _FakeGdi32()
+        self.assertIsNone(screen_capture._render_window_bgra(
+            123, user32, gdi32, 100, 60, print_window=True))
+        # 失败也要把 GDI 对象还回去，长驻进程不能漏句柄。
+        self.assertEqual(gdi32.deleted, [3])
+        self.assertEqual(gdi32.dcs_deleted, [2])
+        self.assertEqual(user32.released, [(123, 1)])
+
+    def test_capture_window_printwindow_full_then_crop(self):
+        user32, gdi32 = _FakeUser32(), _FakeGdi32()
+        with patch.object(screen_capture, "_libs", return_value=(user32, gdi32)), \
+                patch.object(screen_capture, "ensure_capture_dpi",
+                             return_value={"awareness": "per-monitor-v2", "dpi": 96}):
+            out = screen_capture.capture_window(123)
+        self.assertIsNotNone(out)
+        raw, out_w, out_h = out
+        self.assertEqual((out_w, out_h), (80, 40))
+        self.assertEqual(len(raw), 80 * 40 * 4)
+        self.assertEqual(user32.print_calls, 1)
+
+    def test_capture_window_falls_back_to_client_bitblt(self):
+        user32, gdi32 = _FakeUser32(print_result=0), _FakeGdi32()
+        with patch.object(screen_capture, "_libs", return_value=(user32, gdi32)), \
+                patch.object(screen_capture, "ensure_capture_dpi",
+                             return_value={"awareness": "per-monitor-v2", "dpi": 96}):
+            out = screen_capture.capture_window(123)
+        self.assertEqual(out[1:], (80, 40))
+        self.assertEqual(gdi32.bitblt_calls, 1)
+
+    def test_capture_window_returns_none_when_both_render_paths_fail(self):
+        user32, gdi32 = _FakeUser32(print_result=0), _FakeGdi32()
+        with patch.object(screen_capture, "_libs", return_value=(user32, gdi32)), \
+                patch.object(screen_capture, "ensure_capture_dpi",
+                             return_value={"awareness": "unknown", "dpi": 96}), \
+                patch.object(screen_capture, "_render_window_bgra", return_value=None):
+            self.assertIsNone(screen_capture.capture_window(123))
+
+    def test_capture_window_returns_none_when_geometry_unavailable(self):
+        with patch.object(screen_capture, "_libs",
+                          return_value=(_FakeUser32(window_ok=False), _FakeGdi32())), \
+                patch.object(screen_capture, "ensure_capture_dpi",
+                             return_value={"awareness": "unknown", "dpi": 96}):
+            self.assertIsNone(screen_capture.capture_window(123))
+
+    def test_capture_window_returns_none_for_empty_client_or_no_win32(self):
+        with patch.object(screen_capture, "_libs",
+                          return_value=(_FakeUser32(client=(0, 0, 0, 0)), _FakeGdi32())), \
+                patch.object(screen_capture, "ensure_capture_dpi",
+                             return_value={"awareness": "unknown", "dpi": 96}):
+            self.assertIsNone(screen_capture.capture_window(123))
+        with patch.object(screen_capture, "_libs", return_value=(None, None)):
+            self.assertIsNone(screen_capture.capture_window(123))
+
+    def test_capture_window_size_mismatch_is_fatal_by_default(self):
+        user32, gdi32 = _FakeUser32(print_result=0), _FakeGdi32()
+        bad_frame = (_bgra(78, 40), 78, 40)  # 比客户区窄 2px，超出 1px 容差
+        with patch.object(screen_capture, "_libs", return_value=(user32, gdi32)), \
+                patch.object(screen_capture, "ensure_capture_dpi",
+                             return_value={"awareness": "unknown", "dpi": 96}), \
+                patch.object(screen_capture, "_render_window_bgra",
+                             side_effect=[None, bad_frame]):
+            with self.assertRaises(screen_capture.CaptureGeometryError):
+                screen_capture.capture_window(123)
+
+    def test_capture_window_size_mismatch_can_be_tolerated(self):
+        user32, gdi32 = _FakeUser32(print_result=0), _FakeGdi32()
+        bad_frame = (_bgra(78, 40), 78, 40)
+        with patch.object(screen_capture, "_libs", return_value=(user32, gdi32)), \
+                patch.object(screen_capture, "ensure_capture_dpi",
+                             return_value={"awareness": "unknown", "dpi": 96}), \
+                patch.object(screen_capture, "_render_window_bgra",
+                             side_effect=[None, bad_frame]), \
+                self.assertLogs(screen_capture.logger, level="ERROR"):
+            out = screen_capture.capture_window(123, strict_geometry=False)
+        self.assertEqual(out[1:], (78, 40))
 
 
 class EmbeddedTargetTests(unittest.TestCase):

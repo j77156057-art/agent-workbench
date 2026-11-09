@@ -112,5 +112,20 @@ class ExtractSymbolsTests(unittest.TestCase):
             self.assertEqual(gw._extract_symbols(broken), [])
 
 
+class ApprovalLedgerTests(unittest.TestCase):
+    """审批账本：未批准记录只跳过、不遮蔽更早的有效批准。"""
+
+    def test_unapproved_latest_row_does_not_hide_an_earlier_approval(self):
+        with _fixture_root() as root:
+            gw.approval(root, "desktop_action", "u", approved=True, target="btn-1")
+            gw.approval(root, "desktop_action", "u", approved=False, target="btn-1")
+            self.assertTrue(gw.is_approved(root, "desktop_action", "btn-1"))
+
+    def test_only_unapproved_rows_are_not_approved(self):
+        with _fixture_root() as root:
+            gw.approval(root, "desktop_action", "u", approved=False, target="btn-2")
+            self.assertFalse(gw.is_approved(root, "desktop_action", "btn-2"))
+
+
 if __name__ == "__main__":
     unittest.main()
