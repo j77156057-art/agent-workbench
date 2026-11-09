@@ -11,6 +11,10 @@ import '../shared/markdown.css'
 import '../workbench/skins.css'
 // 种子皮肤：由 tools/design_seed.py 从随机种子确定性派生（换观感 = 重新生成这个文件）
 import '../workbench/skins-seed.css'
+// 平台助手记忆面板的配色令牌（:root 浅色 / [data-skin='observatory'] 深色）。
+// 必须晚于 skins.css：面板的 --mi-* 是独立一套，问答页自己的 --bg/--ink 仍由
+// html[data-skin] 的更高优先级规则覆盖，不会被这份 :root 抢走。
+import '../workbench/memory-inspector-tokens.css'
 // 玻璃材质：参数在 workbench/glass.css（单源），这里只引样式 + 初始化。
 // 必须放在 skins.css **之后**：参数块 :root 兜底要早于 html[data-skin] 覆写才生效。
 import '../workbench/glass.css'

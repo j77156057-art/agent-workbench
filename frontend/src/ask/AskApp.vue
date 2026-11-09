@@ -18,7 +18,11 @@ import AskMessage from './components/AskMessage.vue'
 import FileViewer from './components/FileViewer.vue'
 // 设置弹窗体积大（117KB）且低频：异步组件 + v-if，打开时才拉取
 const ModelSettingsDialog = defineAsyncComponent(() => import('../workbench/components/ModelSettingsDialog.vue'))
+// 平台助手已从工作台挪到问答页：记忆/上下文面板复用工具体，按需加载，
+// 不把记忆检查器的整包（含 force worker）塞进问答首屏。
+const AssistantMemoryPanel = defineAsyncComponent(() => import('../workbench/components/MemoryContextPanel.vue'))
 import type { ChatMsg, ChatTraceItem } from '../workbench/composables/chat-types'
+import { onSkinChange } from '../workbench/skins'
 import { prefs } from './askPrefs'
 
 // ---------------- 全局状态 ----------------
@@ -70,6 +74,21 @@ watch(() => [prefs.defaultThinking, prefs.defaultWeb] as const, ([t, w]) => {
 })
 
 const viewer = ref<{ path: string; line: number } | null>(null)
+// 平台助手上下文抽屉（agentId=main，session=当前 ask-*）；只做展示/管理，
+// 不改变问答页的会话归属，记忆仍是项目级 main 名下。
+const assistantPanelOpen = ref(false)
+// 记忆面板的 --mi-* 令牌默认只有 [:root 浅色] 和 [data-skin='observatory' 深色] 两档，
+// 问答页的深色皮肤叫 graphite/seed，所以显式把「当前皮肤是不是深色」写到 <html>，
+// tokens 里多认一个 [data-assistant-dark='1']。只影响 .mp，不动问答页自己的皮肤令牌。
+function syncAssistantDark() {
+  const el = document.documentElement
+  const dark = getComputedStyle(el).getPropertyValue('--skin-dark').trim() === '1'
+  if (dark) el.dataset.assistantDark = '1'
+  else delete el.dataset.assistantDark
+}
+syncAssistantDark()
+const stopAssistantSkin = onSkinChange(() => syncAssistantDark())
+onUnmounted(stopAssistantSkin)
 
 const ingestBusy = ref(false)
 const ingestMsg = ref('')
@@ -890,6 +909,10 @@ onMounted(async () => {
           <span v-if="usageLabel" class="tb-usage"
                 :class="{ 'is-warn': usage?.level === 'warn', 'is-high': usage?.level === 'high' }"
                 :title="usageTitle">{{ usageLabel }}</span>
+          <button class="tb-btn" type="button" :aria-expanded="assistantPanelOpen" @click="assistantPanelOpen = true">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 3a4 4 0 0 1 4 4v1h1a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3v-7a3 3 0 0 1 3-3h1V7a4 4 0 0 1 4-4Zm-2 7h4V7a2 2 0 1 0-4 0v3Zm-1 3a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm6 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z"/></svg>
+            平台助手
+          </button>
           <a class="tb-btn primary" href="/workbench">
             代码工作台
             <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M8.5 16.5L16 9H9V7h10v10h-2v-7l-7.5 7.5z"/></svg>
@@ -1082,6 +1105,13 @@ onMounted(async () => {
         @saved="onModelSaved"
       />
       <FileViewer v-if="viewer" :path="viewer.path" :line="viewer.line" @close="viewer = null" />
+      <AssistantMemoryPanel
+        :visible="assistantPanelOpen"
+        :session-id="sid()"
+        agent-id="main"
+        agent-label="平台助手"
+        @close="assistantPanelOpen = false"
+      />
     </main>
   </div>
 </template>

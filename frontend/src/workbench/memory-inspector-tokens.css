@@ -170,7 +170,10 @@
 }
 
 /* 深色档（可选）：观测舱。只覆盖颜色令牌，几何令牌与别名映射与浅色档共用。 */
-:root:root:root:root[data-skin='observatory'] {
+/* data-assistant-dark 由问答页写入：那边深色皮肤叫 graphite/seed，不是 observatory，
+   复用同一份深色令牌，避免面板在深色问答页里还是一块白底。 */
+:root:root:root:root[data-skin='observatory'],
+:root:root:root:root[data-assistant-dark='1'] {
   color-scheme: dark;
   --skin-dark: 1;
   --mi-bg-deep: oklch(0.145 0.018 245);
