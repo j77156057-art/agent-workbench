@@ -16,11 +16,23 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import config
 from file_locks import cross_process_lock
 
 _LOCK = threading.RLock()
 _ROOTS = {}
-_DIR = Path(".docmind") / "delegations"
+
+
+def _dir():
+    """委派快照目录：跟随 DOCMIND_STATE_ROOT，和 sessions / trace 用同一套解析。
+
+    未设置 DOCMIND_STATE_ROOT 时 STATE_ROOT 就是仓库根，默认落点仍是
+    `<repo>/.docmind/delegations`；pytest / unittest 进程会被 config 隔离到临时
+    STATE_ROOT，因此从仓库根跑测试不会再写入或删除生产目录。
+    """
+    default = os.path.join(config.STATE_ROOT, ".docmind", "delegations")
+    return Path(config.state_path("DOCMIND_DELEGATIONS_DIR", default))
+
 
 # 只有仍在占用算力的节点计入额度（总量 / 单父）。completed、failed、expired、
 # rejected 以及重启后被标记为 unknown 的节点都不再占额度，否则长会话里每个跑完
@@ -34,7 +46,7 @@ _RECENT_BEATS = 8
 
 def _session_path(session):
     digest = hashlib.sha256(str(session or "default").encode("utf-8")).hexdigest()[:20]
-    return _DIR / (digest + ".json")
+    return _dir() / (digest + ".json")
 
 
 def _iso(epoch=None):
@@ -60,11 +72,26 @@ def _atomic_write(path, payload):
     os.replace(tmp, path)
 
 
+def _drop_orphan_temps(path):
+    """清理同一目标被中断的原子写残留（<name>.tmp-<hex>）。
+
+    调用方必须已持有该路径的跨进程锁：持锁期间不会有其他进程正在写同一个
+    目标，所以匹配到的 tmp 一定是上次被硬杀留下的死文件。读路径（all_nodes
+    只匹配 `*.json`）本来就不会把 tmp 当成记录。
+    """
+    for stale in path.parent.glob(path.name + ".tmp-*"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
 def _write_nodes(session, nodes, alerts=None):
     """原子落盘；并从磁盘合并更新的心跳字段，避免并发 beat 被旧内存快照覆盖。"""
     session = str(session or "default")
     path = _session_path(session)
     with cross_process_lock(path, timeout=10):
+        _drop_orphan_temps(path)
         old = _read_payload(path) or {}
         old_nodes = {str(row.get("id")): row for row in old.get("nodes") or [] if row.get("id")}
         merged = []
@@ -622,7 +649,7 @@ def all_nodes():
     不依赖内存中的 root/callbacks：后端重启后卡片仍然能列出历史 agent。
     """
     rows = []
-    for path in sorted(_DIR.glob("*.json")):
+    for path in sorted(_dir().glob("*.json")):
         payload = _read_payload(path)
         if not payload:
             continue
@@ -843,14 +870,29 @@ def decide(session, node_id, approved, resume_agent=None, actor=""):
     return response
 
 
-def clear(session=None):
-    """测试隔离用；生产代码不调用。同步清理对应持久化记录。"""
+def clear(session=None, *, all_sessions=False):
+    """删除会话 / 测试隔离用。
+
+    默认只清指定会话；不传 session 时只清进程内缓存，不碰磁盘。
+    `all_sessions=True` 才清空**当前 STATE_ROOT** 下的全部记录 —— 旧版无参数
+    调用会直接 unlink 整个目录，从仓库根跑测试时曾把生产
+    `.docmind/delegations/*.json` 一并删掉。
+    """
     with _LOCK:
-        if session is None:
-            _ROOTS.clear()
-            if _DIR.is_dir():
-                for path in _DIR.glob("*.json"):
-                    path.unlink(missing_ok=True)
-        else:
+        if session is not None:
             _ROOTS.pop(str(session), None)
             _session_path(session).unlink(missing_ok=True)
+            return
+        _ROOTS.clear()
+        if not all_sessions:
+            return
+        directory = _dir()
+        if not directory.is_dir():
+            return
+        for path in directory.glob("*.json"):
+            path.unlink(missing_ok=True)
+        for stale in directory.glob("*.json.tmp-*"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass

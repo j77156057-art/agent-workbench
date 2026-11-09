@@ -1,10 +1,13 @@
 """交互式子代理派发：直接执行登记、跨层/扩权/超限审批与代理树。"""
 import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import agent
+import config
 from agent_runtime import delegation
 from agent_runtime.memory import inspector
 from tests.test_agent_trace import _IsoBase
@@ -36,7 +39,7 @@ class _LLM:
 class DelegationTests(_IsoBase):
     def setUp(self):
         super().setUp()
-        delegation.clear()
+        delegation.clear(all_sessions=True)
         self._audit_patch = patch("agent._audit_live_answer", return_value={
             "required": False, "checks": {}, "gate_checks": {}, "references": [],
         })
@@ -44,7 +47,7 @@ class DelegationTests(_IsoBase):
 
     def tearDown(self):
         self._audit_patch.stop()
-        delegation.clear()
+        delegation.clear(all_sessions=True)
         super().tearDown()
 
     def test_nested_dispatch_requires_approval_beyond_direct_child(self):
@@ -176,6 +179,59 @@ class DelegationTests(_IsoBase):
                 {"id": "main", "session_id": "delegation-api", "parent_id": "", "role": "main",
                  "task": "主 Agent", "depth": 0, "status": "active", "children": []},
             ])
+
+
+class DelegationStateRootTests(unittest.TestCase):
+    """状态根隔离回归：clear() 不得碰到 cwd 下的生产 delegations 目录。"""
+
+    def test_clear_is_scoped_to_state_root(self):
+        with tempfile.TemporaryDirectory() as repo, \
+                tempfile.TemporaryDirectory() as state, \
+                patch.dict(os.environ, {"DOCMIND_DELEGATIONS_DIR": ""}):
+            # 模拟旧 bug 的现场：cwd 下有一份“生产”目录，STATE_ROOT 指向别处。
+            prod = Path(repo) / ".docmind" / "delegations"
+            prod.mkdir(parents=True)
+            guard = prod / "keep.json"
+            guard.write_text("{}", encoding="utf-8")
+            old_root, old_cwd = config.STATE_ROOT, os.getcwd()
+            config.STATE_ROOT = state
+            os.chdir(repo)
+            try:
+                host = delegation._dir()
+                self.assertTrue(str(host).startswith(state))
+                self.assertNotEqual(host.resolve(), prod.resolve())
+                host.mkdir(parents=True, exist_ok=True)
+                record = host / "record.json"
+                record.write_text("{}", encoding="utf-8")
+                stale = host / "record.json.tmp-dead"
+                stale.write_text("{", encoding="utf-8")
+
+                delegation.clear()  # 默认只清内存，不碰磁盘
+                self.assertTrue(record.exists())
+                self.assertTrue(stale.exists())
+
+                delegation.clear(all_sessions=True)
+                self.assertFalse(record.exists())
+                self.assertFalse(stale.exists())
+                self.assertTrue(guard.exists(), "clear 删到了 cwd 下的生产目录")
+            finally:
+                os.chdir(old_cwd)
+                config.STATE_ROOT = old_root
+
+    def test_write_drops_orphan_temps(self):
+        with tempfile.TemporaryDirectory() as state, \
+                patch.dict(os.environ, {"DOCMIND_DELEGATIONS_DIR": ""}), \
+                patch.object(config, "STATE_ROOT", state):
+            path = delegation._session_path("orphan-tmp")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stale = path.with_name(path.name + ".tmp-deadbeef")
+            stale.write_text("{", encoding="utf-8")
+
+            delegation._write_nodes("orphan-tmp", [{"id": "ag-x", "status": "completed"}])
+
+            self.assertFalse(stale.exists())
+            self.assertTrue(path.exists())
+            self.assertEqual([n["id"] for n in delegation.all_nodes()], ["ag-x"])
 
 
 if __name__ == "__main__":

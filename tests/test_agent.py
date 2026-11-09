@@ -1017,8 +1017,8 @@ class DynamicOrchestrationContractTests(unittest.TestCase):
 
     def test_subagent_context_is_isolated_from_parent_history(self):
         from agent_runtime import delegation
-        # 该用例会走 delegation 闸门，派发登记按 cwd 落到 .docmind/delegations/。
-        # 不清账本时，同一目录重复跑会把历次节点累加成额度，用例从绿退化为 pending。
+        # 该用例会走 delegation 闸门，派发登记落在 STATE_ROOT 下的 delegations/。
+        # 不清账本时，同一状态根重复跑会把历次节点累加成额度，用例从绿退化为 pending。
         delegation.clear("parent-session")
         self.addCleanup(delegation.clear, "parent-session")
         llm = self._PlannerLLM()

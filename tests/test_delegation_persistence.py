@@ -31,7 +31,8 @@ class DelegationPersistenceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.session = "approval-restart"
-        self.dir_patch = mock.patch.object(delegation, "_DIR", Path(self.tmp.name) / "delegations")
+        self.dir_patch = mock.patch.object(
+            delegation, "_dir", lambda: Path(self.tmp.name) / "delegations")
         self.plan_patch = mock.patch.object(orchestration, "_ROOT", Path(self.tmp.name) / "plans")
         self.dir_patch.start()
         self.plan_patch.start()

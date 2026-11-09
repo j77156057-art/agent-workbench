@@ -22,7 +22,7 @@ def _spec(task_id="t1", depends=None):
 class TaskAssistantTests(_IsoBase):
     def setUp(self):
         super().setUp()
-        delegation.clear()
+        delegation.clear(all_sessions=True)
         self._audit_patch = patch("agent._audit_live_answer", return_value={
             "required": False, "checks": {}, "gate_checks": {}, "references": [],
         })
@@ -30,7 +30,7 @@ class TaskAssistantTests(_IsoBase):
 
     def tearDown(self):
         self._audit_patch.stop()
-        delegation.clear()
+        delegation.clear(all_sessions=True)
         super().tearDown()
 
     def test_standard_spec_survives_dag_parser(self):

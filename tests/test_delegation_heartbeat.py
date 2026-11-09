@@ -16,8 +16,9 @@ from file_locks import cross_process_lock
 class HeartbeatTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self._old_dir = delegation._DIR
-        delegation._DIR = Path(self._tmp.name) / "delegations"
+        self._dir_patch = patch.object(
+            delegation, "_dir", lambda: Path(self._tmp.name) / "delegations")
+        self._dir_patch.start()
         delegation._ROOTS.clear()
         self._env = patch.dict(os.environ, {
             "DOCMIND_HEARTBEAT_INTERVAL_S": "10",
@@ -29,7 +30,7 @@ class HeartbeatTests(unittest.TestCase):
 
     def tearDown(self):
         self._env.stop()
-        delegation._DIR = self._old_dir
+        self._dir_patch.stop()
         delegation._ROOTS.clear()
         self._tmp.cleanup()
 
