@@ -384,11 +384,13 @@ export const agentApi = {
   },
   // level='agent' 与 memory_search 同口径（该 agent 自己的 + 共享/项目级）；
   // level='project' 是项目级浏览（所有 Agent 的 active 记忆），供设置页库存视图使用。
+  // excludeAgent 在 SQL 层排除某个 owner（设置页排除平台助手 main，避免先截断后过滤）。
   memories(query = '', limit = 20, level: 'agent' | 'project' = 'agent',
-           agentId = 'main'): Promise<MemoryListResp> {
+           agentId = 'main', excludeAgent = ''): Promise<MemoryListResp> {
     const params = new URLSearchParams({
       query, limit: String(limit), level, agent_id: agentId,
     })
+    if (excludeAgent) params.set('exclude_agent', excludeAgent)
     return rawJson(`/api/agent/memory?${params.toString()}`)
   },
   // 写侧归属校验：DELETE 必须带上该行的归属 agent，跨 agent 会返回 403；

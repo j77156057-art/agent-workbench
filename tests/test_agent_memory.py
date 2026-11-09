@@ -482,25 +482,36 @@ class MemoryWriteOwnershipTests(_IsoBase):
         self.assertIsNone(memory.owner(scope, sub_mid))
         self.assertTrue(memory.forget(scope, main_mid))
 
-    def test_legacy_shared_rows_readable_but_not_sub_agent_deletable(self):
-        """边界结论：agent_legacy=1 是引入归属维度前的项目级共享行（owner=main）。
+    def test_legacy_rows_are_platform_only_and_not_sub_agent_deletable(self):
+        """边界结论：agent_legacy=1 是平台助手（main）的历史行，不是项目级共享知识。
 
-        所有 agent 都可以读（include_shared=True 是**有意为之**：这些是项目级知识，
-        不是泄漏）；但写侧只有归属者 main 能删/作废，子 agent 的删除请求必须失败。
+        读侧只有 main 能通过 include_shared=True 读到；子 Agent 即使传
+        include_shared=True 也只能拿到自己的行，不能再被 legacy 行灌入检索上下文。
+        写侧原本就只有归属者 main 能删/作废。
         """
         scope = memory.scope_key("p")
         # agent_id="" 模拟历史行；下一次 _connect() 回填成 main + agent_legacy=1
-        shared = memory.remember(scope, "fact", "共享历史", "项目级共享知识", agent_id="")
+        shared = memory.remember(scope, "fact", "共享历史", "平台助手历史知识", agent_id="")
         self.assertEqual(memory.owner(scope, shared), "main")
-        visible = memory.recall(scope, "共享", agent_id="ag-a", include_shared=True)
-        self.assertIn(shared, [row["id"] for row in visible])
-        # 私有口径里看不到（它不是 ag-a 的私有记忆）——共享靠显式 include_shared
-        self.assertNotIn(shared, [row["id"] for row in memory.recall(
-            scope, "共享", agent_id="ag-a", include_shared=False)])
-        # 工具层同样有意共享：memory_search 固定 include_shared=True，子 agent
-        # 能检索到项目级 legacy 行（这是设计，不是漏出来的）；写侧仍然被拒。
+        # main 自己仍能读到（legacy 是它的历史）
+        self.assertIn(shared, [row["id"] for row in memory.recall(
+            scope, "共享", agent_id="main", include_shared=True)])
+        # 子 Agent 无论 include_shared 与否都读不到 legacy
+        for include_shared in (True, False):
+            self.assertNotIn(shared, [row["id"] for row in memory.recall(
+                scope, "共享", agent_id="ag-a", include_shared=include_shared)])
+        # 工具层同理：子 Agent 的 memory_search 不再被 legacy 行灌入
         scope_token = memory.bind(scope, "")
         agent_token = memory.bind_agent("ag-a")
+        try:
+            found = json.loads(tools.memory_search("共享"))
+            self.assertNotIn(shared, [row["id"] for row in found["items"]])
+        finally:
+            memory.reset_agent(agent_token)
+            memory.reset(scope_token)
+        # main 绑定时工具层仍能检索到 legacy
+        scope_token = memory.bind(scope, "")
+        agent_token = memory.bind_agent("main")
         try:
             found = json.loads(tools.memory_search("共享"))
             self.assertIn(shared, [row["id"] for row in found["items"]])

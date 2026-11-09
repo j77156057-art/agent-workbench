@@ -4697,12 +4697,15 @@ async def sessions_ep(limit: int = 50):
 
 @app.get("/api/agent/memory")
 async def agent_memory_ep(query: str = "", limit: int = 20,
-                          agent_id: str = "main", level: str = "agent"):
+                          agent_id: str = "main", level: str = "agent",
+                          exclude_agent: str = ""):
     """项目长期记忆列表。
 
     `level=agent`（默认）与 memory_search 同口径：该 agent 自己的 + 共享/项目级
-    （agent_legacy=1 的历史回填行）。`level=project` 是项目级浏览，返回该项目下
-    所有 agent 的 active 记忆，供设置页这类「项目级库存」视图使用。
+    （agent_legacy=1 的历史回填行，仅 main 自己可见）。`level=project` 是项目级
+    浏览，返回该项目下所有 agent 的 active 记忆，供设置页这类「项目级库存」视图
+    使用；`exclude_agent` 在 SQL 层排除某个 owner（设置页用它排除平台助手 main，
+    避免分页先截断、前端再过滤把子 Agent 行挤掉）。
     """
     import agent_memory
     scope = agent_memory.scope_key(_request_project_id() or None)
@@ -4710,7 +4713,8 @@ async def agent_memory_ep(query: str = "", limit: int = 20,
     if mode not in ("agent", "project"):
         mode = "agent"
     if mode == "project":
-        items = agent_memory.recall(scope, query, limit)
+        items = agent_memory.recall(scope, query, limit,
+                                    exclude_agent=(exclude_agent or "").strip() or None)
         # recall() 会 pop 掉 agent_id（保注入串逐字节不变）；项目级库存视图显式带回
         # 归属，UI 才能标明这条属于谁，并在删除时把 agent_id 一起传给 DELETE。
         owners = agent_memory.agent_map(scope, [item.get("id") for item in items])
@@ -4720,7 +4724,8 @@ async def agent_memory_ep(query: str = "", limit: int = 20,
         items = agent_memory.recall(scope, query, limit,
                                     agent_id=agent_id, include_shared=True)
     return {"ok": True, "items": items, "advisory": True,
-            "level": mode, "agent_id": agent_id if mode == "agent" else None}
+            "level": mode, "agent_id": agent_id if mode == "agent" else None,
+            "exclude_agent": (exclude_agent or None) if mode == "project" else None}
 
 
 @app.get("/api/agent/memory/inspect")

@@ -121,9 +121,9 @@ const memoryLoading = ref(false)
 async function loadMemoryProfile() {
   profileLoading.value = true; memoryLoading.value = true; profileError.value = ''
   try {
-    // 这里是项目级库存浏览（所有 Agent 共享），不是某个 Agent 的私有记忆：
-    // level='project' 显式声明口径，避免接口默认值让人误以为是 main 的私有列表。
-    const [p, m] = await Promise.all([agentApi.userProfile(), agentApi.memories('', 30, 'project')])
+    // 这里是项目级库存浏览，但平台助手（main）已挪到问答页，设置页只展示子 Agent：
+    // exclude_agent=main 在 SQL 层过滤，避免 limit 先截断、前端再过滤把子 Agent 行挤掉。
+    const [p, m] = await Promise.all([agentApi.userProfile(), agentApi.memories('', 30, 'project', '', 'main')])
     if (p.profile) profile.value = { ...profile.value, ...p.profile }
     memoryItems.value = m.items || []
   } catch (e) { profileError.value = (e as { message?: string }).message || '读取长期记忆失败' }
@@ -2347,14 +2347,14 @@ async function powerAction(action: 'on' | 'off') {
             <p v-if="profileSaved" class="sv-ok">{{ profileSaved }}</p>
             <div class="sv-actions"><button class="sv-btn sv-primary" :disabled="profileSaving" @click="saveMemoryProfile">{{ profileSaving ? '保存中…' : '保存画像' }}</button></div>
             <div v-if="memoryItems.length" class="sv-memory-list">
-              <div class="sv-memory-head"><span>项目级长期记忆（所有 Agent 共享）</span><span>{{ memoryItems.length }} 条</span></div>
-              <p class="sv-hint">这里是项目级浏览，包含该项目下所有 Agent 的记忆；单个 Agent 的私有记忆请到它的上下文面板查看。</p>
+              <div class="sv-memory-head"><span>子 Agent 记忆（当前项目）</span><span>{{ memoryItems.length }} 条</span></div>
+              <p class="sv-hint">平台助手已挪到问答页，不再出现在工作台设置里；这里是子 Agent 的记忆库存。<a href="/">平台助手记忆在问答页管理 ↗</a></p>
               <div v-for="item in memoryItems" :key="item.id" class="sv-memory-row">
                 <div class="sv-list-main"><b>{{ item.title || item.kind }}</b><span class="sv-list-sub">{{ item.content }}</span></div>
                 <button class="sv-mini" title="删除这条记忆" @click="deleteMemory(item.id, item.agent_id || 'main')">删除</button>
               </div>
             </div>
-            <p v-else-if="!memoryLoading" class="sv-hint">当前项目还没有长期记忆。</p>
+            <p v-else-if="!memoryLoading" class="sv-hint">当前项目还没有子 Agent 的长期记忆。<a href="/">平台助手记忆在问答页管理 ↗</a></p>
             <div class="sv-sep"></div>
             <div class="sv-section-head">
               <div>

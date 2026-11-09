@@ -39,6 +39,9 @@ _SCOPE = ContextVar("agent_memory_scope", default=None)
 _AGENT = ContextVar("agent_memory_agent", default="main")
 KINDS = {"fact", "preference", "workflow", "episode"}
 DEFAULT_USER_ID = "local-user"
+# 引入 agent 归属维度前的历史行的唯一所有者。这些行只属于平台助手（main）：
+# 子 Agent 不再把它们当项目级共享知识读取，写侧原本也只有 main 能删/作废。
+LEGACY_OWNER = "main"
 
 
 def scrub(value, limit=6000):
@@ -328,7 +331,7 @@ def _embed_client():
 
 
 def recall(scope, query="", limit=8, *, include_preferences=False, include_all=False,
-           agent_id=None, include_shared=False):
+           agent_id=None, include_shared=False, exclude_agent=None):
     terms = set(re.findall(r"[a-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", str(query).lower()))
     terms |= {term[i:i+2] for term in list(terms) if re.fullmatch(r"[\u4e00-\u9fff]{3,}", term) for i in range(len(term)-1)}
     # 缺口 C · A：默认只浮出 active 记忆——被 supersede/retire 的旧错误结论不再回到
@@ -338,14 +341,20 @@ def recall(scope, query="", limit=8, *, include_preferences=False, include_all=F
     # agent_id=None 保持旧行为（不按 agent 过滤），供测试/全局审计使用。
     # 传入具体 agent_id 时默认只召回该 agent 名下的记忆（注入路径的真隔离）。
     # include_shared=True 供 memory_search 工具使用：额外放行 agent_legacy=1 的
-    # 历史行——它们是引入 agent 维度之前的项目级长期记忆（已统一回填给 main），
-    # 属于「共享/项目级」知识，子 Agent 检索时应能看到，但看不到 main 新写的私有行。
+    # 历史行——但**只对 LEGACY_OWNER（平台助手 main）生效**。这些行是引入 agent
+    # 维度前留下的平台助手历史，不是项目级共享知识；子 Agent 即使传了
+    # include_shared 也只能读到自己的行，不能再被 legacy 行灌进检索上下文。
     if agent_id is not None:
-        if include_shared:
+        if include_shared and str(agent_id) == LEGACY_OWNER:
             where += " AND (agent_id=? OR agent_legacy=1)"
         else:
             where += " AND agent_id=?"
         params.append(str(agent_id))
+    # 项目级库存视图可排除某个 owner（当前用于设置页排除平台助手 main）：
+    # 必须在 SQL 里过滤，否则 limit 会先截断、前端再过滤会把子 Agent 行挤掉。
+    if exclude_agent:
+        where += " AND agent_id<>?"
+        params.append(str(exclude_agent))
     with _LOCK, closing(_connect()) as conn:
         rows = [dict(row) for row in conn.execute(
             "SELECT * FROM memories WHERE " + where + " ORDER BY updated DESC", tuple(params))]

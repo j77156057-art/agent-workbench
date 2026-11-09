@@ -89,46 +89,61 @@ class MemoryInspectorTests(_IsoBase):
             api._SESSION_AGENTS.pop(key, None)
 
 
-    def test_agent_memory_api_scopes_lists_but_keeps_shared_rows(self):
+    def test_agent_memory_api_scopes_lists_but_keeps_legacy_platform_only(self):
         import api
         from starlette.testclient import TestClient
 
         scope = memory.scope_key("p")
         # agent_id="" 模拟引入 agent 维度前的历史行：下一次 _connect() 会把它回填成
-        # main + agent_legacy=1，即「共享/项目级」池，所有 Agent 都应看得到。
-        shared = memory.remember(scope, "fact", "共享历史", "项目级共享知识", agent_id="")
+        # main + agent_legacy=1。它属于平台助手 main，不再是「所有 Agent 共享」。
+        shared = memory.remember(scope, "fact", "共享历史", "平台助手历史知识", agent_id="")
         main_private = memory.remember(scope, "fact", "main 私有", "只有 main 看得到")
         a_private = memory.remember(scope, "fact", "ag-a 私有", "只有 ag-a 看得到", agent_id="ag-a")
         b_private = memory.remember(scope, "fact", "ag-b 私有", "只有 ag-b 看得到", agent_id="ag-b")
 
         with patch.object(api, "_request_project_id", return_value="p"), TestClient(api.app) as client:
-            def list_payload(agent_id, level="agent"):
-                resp = client.get(f"/api/agent/memory?agent_id={agent_id}&level={level}")
+            def list_payload(agent_id, level="agent", exclude=""):
+                url = f"/api/agent/memory?agent_id={agent_id}&level={level}"
+                if exclude:
+                    url += f"&exclude_agent={exclude}"
+                resp = client.get(url)
                 self.assertEqual(resp.status_code, 200)
                 return resp.json()
 
             a = list_payload("ag-a")
             b = list_payload("ag-b")
+            main = list_payload("main")
             project = list_payload("ag-a", "project")
+            subagents = list_payload("ag-a", "project", "main")
 
         a_ids = {row["id"] for row in a["items"]}
         b_ids = {row["id"] for row in b["items"]}
+        main_ids = {row["id"] for row in main["items"]}
         project_ids = {row["id"] for row in project["items"]}
+        subagent_ids = {row["id"] for row in subagents["items"]}
         self.assertEqual(a["level"], "agent")
         self.assertEqual(a["agent_id"], "ag-a")
         self.assertNotEqual(a_ids, b_ids)
-        # 两个 Agent 都能看到共享/项目级行，且只多出自己名下的私有行。
+        # legacy 行只属于平台助手：子 Agent 的 level=agent 列表里不能出现。
         for ids in (a_ids, b_ids):
-            self.assertIn(shared, ids)
+            self.assertNotIn(shared, ids)
             self.assertNotIn(main_private, ids)
+        # main 自己仍能看到 legacy 和私有行。
+        self.assertIn(shared, main_ids)
+        self.assertIn(main_private, main_ids)
         self.assertIn(a_private, a_ids)
         self.assertNotIn(a_private, b_ids)
         self.assertIn(b_private, b_ids)
         self.assertNotIn(b_private, a_ids)
-        # 项目级浏览是另一种口径：返回该项目下所有 Agent 的 active 记忆。
+        # 项目级浏览是审计口径：仍返回该项目下所有 Agent 的 active 记忆。
         self.assertEqual(project["level"], "project")
         self.assertIsNone(project["agent_id"])
         self.assertTrue({shared, main_private, a_private, b_private} <= project_ids)
+        # exclude_agent=main 在 SQL 层排除平台助手：设置页只看到子 Agent 的行。
+        self.assertEqual(subagents["exclude_agent"], "main")
+        self.assertNotIn(shared, subagent_ids)
+        self.assertNotIn(main_private, subagent_ids)
+        self.assertTrue({a_private, b_private} <= subagent_ids)
 
     def test_memory_delete_api_enforces_agent_ownership(self):
         """DELETE 跨 agent 必须返回错误码（403），不是 200，也不能静默。"""
