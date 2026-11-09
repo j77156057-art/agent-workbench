@@ -6179,7 +6179,9 @@ async def index():
             {"ok": False, "error": "问答页前端未构建：请先在 frontend/ 目录执行 npm ci && npm run build（或直接运行 启动DocMind.bat）。"},
             status_code=404,
         )
-    return FileResponse(page)
+    # 入口 HTML 不带 hash，必须每次回源校验：否则浏览器按启发式缓存可能继续用
+    # 旧 HTML，而它引用的旧 assets 已被下一次构建删掉（表现就是黑屏/无样式）。
+    return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/dev/browser/pages")
@@ -6256,7 +6258,8 @@ async def workbench():
             {"ok": False, "error": "工作台前端未构建：请先在 frontend/ 目录执行 npm ci && npm run build（或直接运行 启动DocMind.bat）。"},
             status_code=404,
         )
-    return FileResponse(page)
+    # 同 `/`：入口 HTML 不哈希，no-cache 让每次导航都回源，避免旧 HTML 粘住旧 assets。
+    return FileResponse(page, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/workbench.html")
@@ -8537,8 +8540,22 @@ class _LazyStaticFiles(StaticFiles):
         await super().check_config()
 
 
+class _HashedAssetsStaticFiles(_LazyStaticFiles):
+    """`/assets` 下的构建产物都带内容 hash，可以安全长缓存。
+
+    固定名文件（``session.js``、``favicon.ico`` 等）由 ``/static`` 或独立路由提供，
+    不经过这个挂载；因此这里对成功响应统一加 immutable，不会把固定名文件永久锁死。
+    304 是同一资源的复用，沿用同一个头，避免浏览器缩短新鲜期。
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code=200):
+        response = super().file_response(full_path, stat_result, scope, status_code)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 # Vite 构建产物（web/assets/*，workbench.html 以 /assets/... 绝对路径引用）。
 # 目录存在性按请求判断：先起后端、后构建前端时不用重启，构建完成后刷新即可；
 # 目录还没生成时返回 404（不是 500，也不是启动失败）。
 _ASSETS_DIR = os.path.join(PROJECT_WEB_DIR, "assets")
-app.mount("/assets", _LazyStaticFiles(directory=_ASSETS_DIR, check_dir=False), name="assets")
+app.mount("/assets", _HashedAssetsStaticFiles(directory=_ASSETS_DIR, check_dir=False), name="assets")
