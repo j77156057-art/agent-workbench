@@ -6,7 +6,8 @@ import { closeAgentWall, openAgentContext } from '../uiPanels'
 import SubagentChatWindow from './SubagentChatWindow.vue'
 
 // askHost：同一个卡片墙也挂在问答页侧栏入口下，那里不需要再指回问答页。
-const props = defineProps<{ visible: boolean; sessionId: string; askHost?: boolean }>()
+// embedded：作为右侧栏的一个标签页内嵌时，不再自己占满整个视口，也不再自带关闭按钮。
+const props = defineProps<{ visible: boolean; sessionId: string; askHost?: boolean; embedded?: boolean }>()
 
 type TabKey = 'conversation' | 'memory' | 'usage'
 const TABS: Array<{ key: TabKey; label: string }> = [
@@ -18,9 +19,14 @@ const TABS: Array<{ key: TabKey; label: string }> = [
 const allCards = ref<AgentCard[]>([])
 const rosterError = ref('')
 const loading = ref(false)
-// 平台助手（main）已挪到问答页，不再作为工作台里的一个 agent 展示。
-// 后端 roster 仍返回 main（兼容旧接口），这里只在读侧过滤掉。
-const cards = computed(() => allCards.value.filter(card => !card.is_main))
+// 空态要能区分「真的没派发过」和「记录不在本项目」。
+const otherProjectSessions = ref(0)
+// 平台助手（main）已挪到问答页：工作台不再展示它，问答页必须保留 —— 否则它的
+// 对话 / 记忆 / 用量在界面上没有任何入口（后端 roster 两条路径都会返回 main）。
+const cards = computed(() =>
+  props.askHost ? allCards.value : allCards.value.filter(card => !card.is_main))
+// 副标题只数子 Agent，main 不算「子 Agent」。
+const subAgentCount = computed(() => cards.value.filter(card => !card.is_main).length)
 const selectedId = ref('')
 const tab = ref<TabKey>('conversation')
 
@@ -41,6 +47,11 @@ const selected = computed(() => cards.value.find(card => card.agent_id === selec
 const memoryCount = computed(() => memory.value?.count ?? 0)
 const conversationCount = computed(() => conversation.value?.messages?.length ?? 0)
 const usageCount = computed(() => usage.value?.count ?? 0)
+// 抽屉副标题不再暴露内部会话 id，用卡片数 + 最近活动时间这些可读信息。
+const lastActiveLabel = computed(() => {
+  const times = cards.value.map(card => card.last_active).filter(Boolean).sort()
+  return times.length ? fmtTime(times[times.length - 1]) : '未记录'
+})
 
 function fmtTime(value?: string): string {
   if (!value) return '未记录'
@@ -75,14 +86,19 @@ async function loadRoster() {
   loading.value = true
   rosterError.value = ''
   try {
-    const data = await agentsApi.roster(props.sessionId)
+    // 只有问答页（平台助手）允许用 sub-* 会话兜底：子会话文件没记父会话，
+    // 开发台硬扫会把平台助手在问答页派发的 agent 混进来。
+    const data = await agentsApi.roster(props.sessionId, !!props.askHost)
     allCards.value = Array.isArray(data.items) ? data.items : []
+    // 子 agent 卡片数（不含平台助手）；副标题和空态都用这个口径。
+    otherProjectSessions.value = data.other_project_sessions ?? 0
     if (!cards.value.some(card => card.agent_id === selectedId.value)) {
       selectedId.value = cards.value[0]?.agent_id || ''
     }
   } catch (e) {
     rosterError.value = (e as Error).message || 'Agent 列表加载失败'
     allCards.value = []
+    otherProjectSessions.value = 0
   } finally {
     loading.value = false
   }
@@ -152,17 +168,17 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
 
 <template>
   <Transition name="aw-panel">
-    <section v-if="visible" class="aw" role="dialog" aria-label="Agent 工作台">
+    <section v-if="visible" class="aw" :class="{ 'aw--embedded': embedded }" role="dialog" aria-label="Agent 工作台">
       <header class="aw-head">
         <div class="aw-identity">
           <span class="aw-mark" aria-hidden="true"><i /><i /><i /></span>
           <div>
             <strong>Agent 工作台</strong>
-            <span>卡片墙 · 会话 {{ sessionId || '未记录' }}</span>
+            <span>卡片墙 · {{ subAgentCount }} 个子 Agent · 最近 {{ lastActiveLabel }}</span>
           </div>
         </div>
         <a v-if="!askHost" class="aw-link" href="/">平台助手在问答页 ↗</a>
-        <button class="aw-close" type="button" aria-label="关闭" @click="closeAgentWall">×</button>
+        <button v-if="!embedded" class="aw-close" type="button" aria-label="关闭" @click="closeAgentWall">×</button>
       </header>
 
       <div v-if="rosterError" class="aw-error">{{ rosterError }}</div>
@@ -181,7 +197,7 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
             <span class="aw-card-name">{{ card.name }}</span>
             <span class="aw-chip" :class="statusClass(card.status)">{{ card.status_label || card.status }}</span>
           </span>
-          <span class="aw-card-role">{{ card.role_label || card.role }} · 委派 agent</span>
+          <span class="aw-card-role">{{ card.is_main ? '平台助手' : `${card.role_label || card.role} · 委派 agent` }}</span>
           <span class="aw-card-meta">
             <span>消息 {{ card.message_count }}</span>
             <span v-if="!card.is_main" class="aw-archive" :class="{ 'is-legacy': card.archive_source !== 'sessions' }">
@@ -191,7 +207,10 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
           </span>
         </button>
         <div v-if="!loading && !cards.length && !rosterError" class="aw-empty">
-          <p>还没有子 Agent 记录。</p>
+          <p v-if="otherProjectSessions">
+            当前项目没有子 Agent 卡片；另外 {{ otherProjectSessions }} 个子 Agent 会话归属其他项目。
+          </p>
+          <p v-else>这个会话确实还没有派发过子 Agent。</p>
           <p>平台助手已挪到问答页：<a href="/">去问答页打开平台助手 ↗</a></p>
         </div>
       </div>
@@ -200,7 +219,7 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
         <div class="aw-detail-head">
           <div>
             <strong>{{ selected.name }}</strong>
-            <span>{{ selected.status_label || selected.status }} · 会话 {{ selected.session_id || '未记录' }}</span>
+            <span>{{ selected.status_label || selected.status }} · 消息 {{ selected.message_count }} · 最近 {{ fmtTime(selected.last_active) }}</span>
           </div>
           <button type="button" class="aw-link" @click="openFullContext">
             {{ selected.is_main ? '打开完整上下文面板' : '打开该 Agent 上下文面板' }}
@@ -336,6 +355,7 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
 
 <style scoped>
 .aw { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(720px, 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); color-scheme: dark; font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
+.aw--embedded { position: relative; inset: auto; z-index: auto; width: 100%; height: 100%; max-width: none; border-left: 0; box-shadow: none; flex: 1 1 auto; min-height: 0; }
 .aw *, .aw *::before, .aw *::after { box-sizing: border-box; }
 .aw-panel-leave-active { transition: transform var(--mi-duration-slow) var(--mi-ease-enter), opacity var(--mi-duration-base) var(--mi-ease-standard); }
 .aw-panel-leave-to { transform: translateX(100%); opacity: 0; }
@@ -365,10 +385,11 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
 .aw-chip.is-good, .is-good { color: var(--mi-success); }
 .aw-chip.is-bad, .is-bad { color: var(--mi-danger); }
 .aw-detail { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
-.aw-detail-head { display: flex; align-items: center; justify-content: space-between; gap: var(--mi-space-3); padding: var(--mi-space-3) var(--mi-space-5) 0; }
-.aw-detail-head > div { display: flex; flex-direction: column; min-width: 0; }
+.aw-detail-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--mi-space-2) var(--mi-space-3); padding: var(--mi-space-3) var(--mi-space-5) 0; }
+.aw-detail-head > div { flex: 1 1 240px; display: flex; flex-direction: column; min-width: 0; }
 .aw-detail-head strong { font-size: var(--mi-fs-title); line-height: var(--mi-lh-title); }
 .aw-detail-head span { overflow: hidden; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); text-overflow: ellipsis; white-space: nowrap; }
+.aw-detail-head .aw-source { flex: 1 1 100%; white-space: normal; }
 .aw-link { flex: 0 0 auto; padding: 0 var(--mi-space-3); min-height: var(--mi-control-height-sm); border: var(--mi-border-width) solid var(--mi-border-level-3); border-radius: var(--mi-radius-control); background: var(--mi-surface-level-3); color: var(--mi-text); font-size: var(--mi-fs-caption); cursor: pointer; }
 .aw-link:hover { border-color: var(--mi-accent-dim); }
 .aw-tabs { display: flex; flex-wrap: wrap; gap: var(--mi-space-2) var(--mi-space-5); padding: var(--mi-space-2) var(--mi-space-5) 0; border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); }

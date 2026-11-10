@@ -4767,9 +4767,13 @@ async def agent_delegations_ep(session_id: str = ""):
 # ---------------------------------------------------------------- Agent 卡片墙（只读）
 # 花名册 / 对话记录 / 记忆 / 使用台账。全部读持久化数据，不依赖进程内实例。
 @app.get("/api/agents")
-async def agents_roster_ep(session_id: str = ""):
+async def agents_roster_ep(session_id: str = "", include_restored: int = 0):
     import agent_workbench
-    return agent_workbench.roster(_request_project_id() or "", str(session_id or "").strip() or "default")
+    return agent_workbench.roster(
+        _request_project_id() or "",
+        str(session_id or "").strip() or "default",
+        include_restored=bool(include_restored),
+    )
 
 
 @app.get("/api/agents/{agent_id}/conversation")

@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 
 import agent_memory
@@ -82,8 +84,117 @@ def _has_sub_session(agent_id, project_id):
     return bool(data.get("turns"))
 
 
-def roster(project_id, session_id):
-    """卡片墙花名册：平台助手 + 所有持久化过的委派 agent。"""
+_PERSONA_RE = re.compile(r"【([^】]{1,24})】")
+_persona_roles = None
+
+
+def _persona_role_map():
+    """子 agent 提示词里的【角色名】→ 角色键（researcher/coder/...）。
+
+    直接读 `agent._SUBAGENT_ROLES` 的 hint，避免在只读层再抄一份映射。
+    """
+    global _persona_roles
+    if _persona_roles is not None:
+        return _persona_roles
+    mapping = {}
+    try:
+        from agent import _SUBAGENT_ROLES
+    except Exception:  # noqa: BLE001 —— 只读展示，导入失败就退化成无角色名
+        _SUBAGENT_ROLES = {}
+    for role, spec in (_SUBAGENT_ROLES or {}).items():
+        match = _PERSONA_RE.search(str((spec or {}).get("hint") or ""))
+        if match:
+            mapping[match.group(1)] = role
+    _persona_roles = mapping
+    return mapping
+
+
+def _sub_session_rows(project_id):
+    """扫描 `.docmind_sessions/sub-*.json`，返回 (可展示行, 其他项目行数)。
+
+    委派快照曾被旧版 `delegation.clear()` 全量删过，而子 agent 的逐轮会话
+    （`sub-<ticket>.json`）仍在。只有快照没有会话时卡片来自快照；反过来只有
+    会话没有快照时卡片会整批消失，所以这里以会话为兜底来源重建卡片。
+
+    归属过滤与会话列表同口径：`owner_project_id` 必须等于当前项目；缺失归属的
+    旧文件按「归属不明」排除，不再放行 —— 无法证明属于当前项目的子 Agent 不进
+    当前卡片墙。只有明确属于其他项目的才计入「别处有记录」。
+    """
+    rows = []
+    other_project = 0
+    want = str(project_id or "").strip()
+    try:
+        names = sorted(os.listdir(session_store.SESSIONS_DIR))
+    except OSError:
+        return rows, other_project
+    prefix = session_store.SUBAGENT_SESSION_PREFIX
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(session_store.SESSIONS_DIR, name), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or not data.get("turns"):
+            continue
+        sid = str(data.get("session_id") or name[:-5])
+        if not sid.startswith(prefix):
+            sid = name[:-5]
+        owner = str(data.get("owner_project_id") or "").strip()
+        if not owner or (want and owner != want):
+            # 归属不明（owner 为空）无法证明属于当前项目，按排除处理；
+            # 只有明确属于其他项目的才计入「别处有记录」，避免空态把
+            # 「未知」误报成「其他项目」。
+            if owner:
+                other_project += 1
+            continue
+        rows.append((sid[len(prefix):], data))
+    return rows, other_project
+
+
+def _session_card(agent_id, data):
+    """由子 agent 自己的会话重建一张卡片（不补造状态：只按真实 turns 统计）。"""
+    turns = [turn for turn in (data.get("turns") or []) if isinstance(turn, dict)]
+    first_user = next((str(turn.get("user") or "") for turn in turns
+                       if str(turn.get("user") or "").strip()), "")
+    match = _PERSONA_RE.search(first_user)
+    persona = match.group(1) if match else ""
+    role = _persona_role_map().get(persona, "")
+    label = persona or (_role_label(role) if role else "子 Agent")
+    short = str(agent_id or "").replace("ag-", "")[:8]
+    return {
+        "agent_id": agent_id,
+        "name": f"{label} · {short}" if short else label,
+        "role": role,
+        "role_label": label,
+        "status": "completed",
+        "status_label": _status_label("completed"),
+        "last_active": str(data.get("updated_at") or ""),
+        "message_count": sum(
+            (1 if str(turn.get("user") or "").strip() else 0)
+            + (1 if str(turn.get("assistant") or "").strip() else 0)
+            for turn in turns
+        ),
+        # 父会话（ask-* / web-*）没记在子会话里，这里不猜，留空由前端展示可读信息。
+        "session_id": "",
+        "chat_session_id": session_store.subagent_session_id(agent_id),
+        "archive_source": "sessions",
+        "source": "session",
+        "is_main": False,
+        "memory_owner": agent_id,
+        "parent_id": "",
+        "depth": 1,
+    }
+
+
+def roster(project_id, session_id, include_restored=False):
+    """卡片墙花名册：平台助手 + 本会话持久化过的委派 agent。
+
+    只列 `session_id` 对得上的委派节点：平台助手已迁到问答页，它的子 agent
+    属于 `ask-*` 会话，不该出现在开发台（`web-*`）的记忆/卡片墙里。
+    归属不明的节点（session_id 缺失）一律不展示。
+    """
     session = str(session_id or "default")
     data = session_store.load(session, project_id)
     turns = data.get("turns") or []
@@ -108,7 +219,12 @@ def roster(project_id, session_id):
     }
     cards = [main]
     seen = set()
-    for node in _delegation_nodes():
+    all_nodes = _delegation_nodes()
+    # 任何会话里有快照的 agent 都归属某个具体的卡片墙，不做跨墙兜底。
+    delegated_anywhere = {str(node.get("id") or "") for node in all_nodes}
+    for node in all_nodes:
+        if str(node.get("session_id") or "") != session:
+            continue
         agent_id = str(node.get("id") or "")
         if not agent_id or agent_id in seen:
             continue
@@ -133,12 +249,31 @@ def roster(project_id, session_id):
             "parent_id": str(node.get("parent_id") or ""),
             "depth": node.get("depth"),
         })
+    # 快照缺失、但子 agent 会话还在：以会话为兜底重建卡片。
+    # 只给问答页（`include_restored=1`）用：子会话文件没记父会话，开发台无法
+    # 判断归属，硬扫会把平台助手在问答页派发的 agent 混进来。有快照的 agent
+    # 已经归属某个具体的卡片墙，也不在这里重复兜底。
+    restored = 0
+    other_project = 0
+    if include_restored:
+        sub_rows, other_project = _sub_session_rows(project_id)
+        sub_rows.sort(key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
+        for agent_id, data in sub_rows:
+            if not agent_id or agent_id in seen or agent_id in delegated_anywhere:
+                continue
+            seen.add(agent_id)
+            cards.append(_session_card(agent_id, data))
+            restored += 1
     return {
         "ok": True,
         "session_id": session,
         "items": cards,
         "count": len(cards),
-        "source": "sessions + .docmind/delegations/*.json",
+        # 前端据此区分空态：0 且 other_project_sessions>0 = 别的项目有记录，
+        # 两者都 0 才是真的没派发过。
+        "restored_from_sessions": restored,
+        "other_project_sessions": other_project,
+        "source": "sessions + 子 agent 会话（sub-*.json）+ .docmind/delegations/*.json",
     }
 
 

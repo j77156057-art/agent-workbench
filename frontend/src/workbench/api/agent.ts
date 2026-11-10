@@ -559,7 +559,13 @@ export interface AgentCard {
   archive_source?: 'sessions' | 'delegation' | string
   memory_owner?: string; parent_id?: string; depth?: number
 }
-export interface AgentRosterResp { ok?: boolean; session_id?: string; items: AgentCard[]; count?: number }
+export interface AgentRosterResp {
+  ok?: boolean; session_id?: string; items: AgentCard[]; count?: number
+  /** 由 sub-*.json 会话兜底重建的卡片数（委派快照被清理过时 >0） */
+  restored_from_sessions?: number
+  /** 归属其他项目的子 agent 会话数；用于区分「本项目没派发过」与「记录在别的项目」 */
+  other_project_sessions?: number
+}
 
 export interface AgentMessage {
   role: 'user' | 'assistant' | string; text: string; ts?: string; kind?: string; turn_id?: string
@@ -590,8 +596,9 @@ export interface AgentUsageResp {
 }
 
 export const agentsApi = {
-  roster: (sessionId: string) =>
-    request<AgentRosterResp>(`/api/agents?session_id=${encodeURIComponent(sessionId || '')}`),
+  roster: (sessionId: string, includeRestored = false) =>
+    request<AgentRosterResp>(
+      `/api/agents?session_id=${encodeURIComponent(sessionId || '')}${includeRestored ? '&include_restored=1' : ''}`),
   conversation: (agentId: string, sessionId: string) =>
     request<AgentConversationResp>(
       `/api/agents/${encodeURIComponent(agentId)}/conversation?session_id=${encodeURIComponent(sessionId || '')}`),

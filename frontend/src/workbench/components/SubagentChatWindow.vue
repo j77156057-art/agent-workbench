@@ -48,7 +48,7 @@ watch(() => props.open, (open) => {
           <div class="scw-id">
             <strong>{{ title || '子 Agent 对话' }}</strong>
             <span class="scw-sub">
-              只读回看 · {{ sessionId || '无会话' }}
+              只读回看 · 工具轨迹与结论
               <em v-if="chip" class="scw-chip" :class="{ 'is-legacy': source !== 'sessions' }">{{ chip }}</em>
             </span>
           </div>
