@@ -273,7 +273,7 @@ POST   /api/memory/reindex
 
 全程 ledger；旧库不改动；跑两遍结果一致。
 
-**P0-4 实测（本机旧库）**：归档 464 条、共享候选 41 条、偏好 1 条、checkpoint 352 条、experience 23 条、退休 13 条；第二次运行直接跳过；`--force` 不产生重复文件。旧库以只读 URI 打开。
+**P0-4 实测（当前环境旧库）**：归档 464 条、共享候选 41 条、偏好 1 条、checkpoint 352 条、experience 23 条、退休 13 条；第二次运行直接跳过；`--force` 不产生重复文件。旧库以只读 URI 打开。
 
 ## 12. 计量（不设硬预算）
 
@@ -334,7 +334,7 @@ POST   /api/memory/reindex
 ### 16.1 按需检索（可召回未注入）
 - `index.search` 按关键词打分并叠加 pin 分，**按当前项目隔离**（`global` + 当前项目），项目候选（status=candidate）也在检索范围内；索引新增 `body` 与 `project` 列，旧索引自动补列。
 - `memory_search` 在 v2 开启时合并 v2 检索结果（带 `source=memory_v2`、scope、置信、关联来源），v2 关时输出保持旧形状。
-- 语义召回：`memory_semantic`（设置页 v2 分区）或旧 `memory_embed` 开启时，重建索引会为条目写向量，检索按 `0.35·语义 + 0.20·关键词 + 0.20·重要度 + 0.15·置信 + 0.10·时效` 排序；嵌入后端故障自动退化为关键词。注意：本机 Ollama 尚无 `bge-m3` 时会退回本地哈希（非语义），要真实语义需选 qwen 嵌入或先拉取 `bge-m3`。
+- 语义召回：`memory_semantic`（设置页 v2 分区）或旧 `memory_embed` 开启时，重建索引会为条目写向量，检索按 `0.35·语义 + 0.20·关键词 + 0.20·重要度 + 0.15·置信 + 0.10·时效` 排序；嵌入后端故障自动退化为关键词。注意：当前环境 Ollama 尚无 `bge-m3` 时会退回本地哈希（非语义），要真实语义需选 qwen 嵌入或先拉取 `bge-m3`。
 - 上下文面板「共享记忆」下新增「可召回但未注入」折叠区：共享未 pin 条目可直接 pin，项目候选可点「晋升」；晋升失败会展示具体原因（缺回执/缺采纳/通用化不通过）。
 
 ### 16.2 关联边
@@ -394,7 +394,7 @@ POST   /api/memory/reindex
 ### 16.8 去重、保留与索引一致性（2026-10-31）
 
 - **写入近似去重**：`create_candidate` 先找同 kind 的共享 active/项目候选；中文 bigram + 英文词 Jaccard，短句叠加 `SequenceMatcher`，阈值 0.88。命中则合并 receipts、重要度（取高）、usage、last_used，不再新增碎片；共享副本优先，不同 kind 不合并。
-- **历史清理**：`python -m agent_runtime.memory dedupe --project <id>` 对存量候选做一次合并；本机 28 条检查、0 条命中（本轮候选彼此差异足够大）。
+- **历史清理**：`python -m agent_runtime.memory dedupe --project <id>` 对存量候选做一次合并；当前环境 28 条检查、0 条命中（本轮候选彼此差异足够大）。
 - **回合保留**：`episodes.jsonl` 超过 512KB 自动把旧行移到 `projects/<pid>/archive/episodes/`，保留最近 200 条；`latest` 仍只读尾部。
 - **索引一致性**：`upsert_item` 在编辑/晋升/采纳/状态/pin 变化时立即同步行、边、FTS 与向量；`rebuild` 比较标题/状态/置信/重要度/pin/usage/时间，不再只看 body_hash。
 - **验证**：后端 **289 passed**；前端 158 node、build 通过；历史去重 CLI 与真实迁移幂等均已实跑。
@@ -609,7 +609,7 @@ POST   /api/memory/reindex
 `，第一版断言拿"新内容 encode 一下"去比立刻对不上；冲突比较读的也是磁盘字节，两侧必须同口径，否则每次撤销都被自己误判成"别人改过"。
   - turn 标识必须是 **contextvar** 而不是 `threading.local`：并行工具批次走 `copy_context()`，线程本地在工作线程里读不到，那一批写入会记成"没有回合"、撤销时整批漏掉。变异（退回 threading.local）→ 16 红。
 - **二次撤销会来回搬文件（真实现过又改掉）**：撤销会记一笔 `op=undo` 作补偿，第一版重放时把补偿记录也当原始写入，于是第二次撤销把同一批文件又搬一遍，结果和第一次一样 —— 那**不是**"退回来"。现在只重放原始写入，且同一回合**拒绝第二次撤销**；撤销前的内容仍存 blob，数据不丢，正向 redo 不提供（留给以后显式做）。
-- **安全阀**：默认干跑，真落盘必须显式 `apply: true`（不可逆类操作，宪法 C-006）；磁盘内容 ≠ 账本 after_sha 就**跳过并如实报冲突**，绝不覆盖别人/后续回合的改动；改前内容超 1MB 或二进制就明说"恢复不了"；`prune` 按 200 回合 + 7 天双上限清账本与孤儿 blob —— **保留期从第一天就在**，这台机器上 5 GB 无保留期快照就是前例。
+- **安全阀**：默认干跑，真落盘必须显式 `apply: true`（不可逆类操作，宪法 C-006）；磁盘内容 ≠ 账本 after_sha 就**跳过并如实报冲突**，绝不覆盖别人/后续回合的改动；改前内容超 1MB 或二进制就明说"恢复不了"；`prune` 按 200 回合 + 7 天双上限清账本与孤儿 blob —— **保留期从第一天就在**，当前环境上 5 GB 无保留期快照就是前例。
 - **验证**：`tests/test_write_journal.py` **21 passed**（记录/恢复/新建即删除/同回合两次改动退到回合开始前/冲突跳过/超限如实报/干跑不落盘/无 turn 时取最近回合/漏斗 AST 守卫/只删无引用 blob）。四次变异各有牙：去掉冲突检查 1 红、允许二次撤销 1 红、turn 退回 threading.local 16 红、漏斗不记账 16 红。
 - **连带重标定**：新增 `dev_undo_turn`（登记进 `verify/回滚` 分面）使裸提示词 22262 → **22315** 字符，带 309 记忆时 22624，旧下界 `MIN_TASK_TOKEN_BUDGET=21534` 只撑 2/3 轮 → 重量得 **21576**（21575 只撑 2，贴线成立）。
 - **顺手查出的既有缺陷（本轮未修）**：`task_snapshot` 用 `errors='replace'` 读旧内容、`task_revert` 又把那段文本写回去 —— **非 UTF-8（GBK/二进制）文件在"存快照 → 回滚"这一趟里会被不可逆污染**。修法应按字节存、按字节写（与本 journal 同口径），但要动 `game_workbench` 及其既有测试，不塞进这个提交。
@@ -707,16 +707,16 @@ POST   /api/memory/reindex
 
 - `sqlite tests` job 里 `Run pytest-style lane` 步骤的结果是 **1 failed, 1081 passed, 4 skipped**，
   唯一红项是 `tests/test_live_vision.py::test_live_stream_delivers_...`，异常是 `starlette WebSocketDisconnect`。
-- 这条**不是活体网络测试**（`analyze_live_frame_ep` 被 patch 掉了），本机同形复现：
+- 这条**不是活体网络测试**（`analyze_live_frame_ep` 被 patch 掉了），当前环境同形复现：
   测试发 `origin: http://testserver`，而 `_origin_allowed`（api.py:3964）只放
-  「origin == host 且 host 是本机」或 `DOCMIND_CORS_ORIGINS` 显式列出的来源 → 握手被 1008 关掉。
+  「origin == host 且 host 指向本服务」或 `DOCMIND_CORS_ORIGINS` 显式列出的来源 → 握手被 1008 关掉。
   守卫是后来加的（`503e27e4`），测试夹具没跟上（`d9b59223`）—— 所以错的是夹具，不是守卫。
 - **真正的危害是级联**：GitHub Actions 步骤失败即跳过后续步骤，于是排在这条 lane 之后的
   `python -m unittest discover -s tests` 长期**根本没执行过**。本轮新增的写账本、
   磁盘保留期、快照字节、漏斗口径那批测试一次都没被 CI 跑过 —— 我一直以为"测试都在 CI 里红着或绿着"，
   实际是"它们没进过 CI"。
 
-修：夹具换成本机同源对（`origin == host == 127.0.0.1:8000`），顺带把"带 origin 的浏览器套节能连上"真验上。
+修：夹具换成当前环境同源对（`origin == host == 127.0.0.1:8000`），顺带把"带 origin 的浏览器套节能连上"真验上。
 另加反向守卫 `test_foreign_origin_live_stream_socket_is_closed`。它第一版是**假守卫**：
 只断言"连接被关"，而这条端点先查项目再查 origin，真实关闭原因是 `unknown project`，
 所以把 `_origin_allowed` 放宽成恒真它照样绿。补上 `get_project` 的 patch 与**原因断言**之后，
@@ -746,7 +746,7 @@ POST   /api/memory/reindex
 
 **边界单源**：`ranges` 由后端下发，前端 `input` 的 `min/max` 读它。浏览器回归属意用**非默认**载荷（400 / 800）——组件若把 3650 写死在模板里，那一遍就红；同一脚本再跑一遍真接口断言 `max === 3650`，两头钉住同一条链。
 
-**实测**：真接口 `POST /run {apply:false}` 在这台机器上 **13.4 s**，可回收 **3.37 GB / 7 项**（全部来自 `dist/`），`kept_items` 159。13 秒意味着按钮必须有反馈，忙态文案写成「正在扫描整盘副本，要十几秒…」。顺带核实一条与项目记忆相反的环境事实：记忆里写着「本机 `shutil.rmtree` 被换成回收站」，实测本 venv 里它是 stock —— 那条是 WorkBuddy 沙箱的条件，不是这里；所以 UI 不写「记得清空回收站」。
+**实测**：真接口 `POST /run {apply:false}` 在当前环境上 **13.4 s**，可回收 **3.37 GB / 7 项**（全部来自 `dist/`），`kept_items` 159。13 秒意味着按钮必须有反馈，忙态文案写成「正在扫描整盘副本，要十几秒…」。顺带核实一条与项目记忆相反的环境事实：记忆里写着「当前环境 `shutil.rmtree` 被换成回收站」，实测本 venv 里它是 stock —— 那条是某沙箱工具的条件，不是这里；所以 UI 不写「记得清空回收站」。
 
 **验证**：`tests/test_disk_retention.py` 27 passed、`tests/test_disk_retention_api.py` 18 passed、`tests/test_maintenance.py` 12 passed。变异十三条真红：局部更新丢掉 `None` 守卫 / 丢 `confirm` 闸 / `interval=0` 判到点 / 干跑真删 / 白名单丢内置项（端点层 5 条）+ 动手处白名单失效 / 单次上限失效 / 越界根校验失效 / 干跑标志失效（执行层 4 条）+ 干跑不继承真动手时刻 / 调度只看基线 / 从没记录就判到点 / 默认间隔退回 0（调度层 4 条）。计划层白名单那一条单独变异**不红**（被执行层兜住），按上面的对照组拆开各钉一层。前端 `frontend/tests/diskRetention.browser.mjs` 40/40，`memoryFunnel.browser.mjs` 47/47 未回归，`vue-tsc` 干净。
 
@@ -768,7 +768,7 @@ POST   /api/memory/reindex
 
 ### 16.36 CI 红名单通道：先让红可读，再逐条归因（2026-11-01）
 
-CI 日志的下载域名（objects.githubusercontent.com）在这台机器上不可达，"CI 红"一直是零信息量。做法：两个测试 lane 把输出落盘 → `tools/ci_red_summary.py` 解析（unittest 的 `FAIL: x (mod.Cls.test)`、pytest 的 `FAILED path::node - reason`）→ 打成 `::error file=,title=::` 注释 → `gh api .../check-runs/<job>/annotations` 走 api.github.com 可读。注释带 traceback 最后一行（异常文本），只给用例名等于还要回去捞日志。
+CI 日志的下载域名（objects.githubusercontent.com）在当前环境上不可达，"CI 红"一直是零信息量。做法：两个测试 lane 把输出落盘 → `tools/ci_red_summary.py` 解析（unittest 的 `FAIL: x (mod.Cls.test)`、pytest 的 `FAILED path::node - reason`）→ 打成 `::error file=,title=::` 注释 → `gh api .../check-runs/<job>/annotations` 走 api.github.com 可读。注释带 traceback 最后一行（异常文本），只给用例名等于还要回去捞日志。
 
 **两个踩坑，都记进守卫**：
 
@@ -805,7 +805,7 @@ CI 日志的下载域名（objects.githubusercontent.com）在这台机器上不
 
 ### 16.38 30 天没有 pass 回执：`.md` 写入没有校验器，被记成了「校验失败」（2026-11-02）
 
-§16.37 只说"没有通过的回执"，没说为什么。追到会话原文（`web-25b8f39d3f0043c5989fd2ad`）：
+§16.37 只说"没有通过的回执"，没说为什么。追到那一轮的台账原句：
 
 ```
 observation: 已创建 docs\notes\passed-vs-score.md（513 字节，路径沙箱校验通过）
@@ -890,9 +890,9 @@ observation: [自验证未完成] docs\notes\passed-vs-score.md：无可执行�
 
 **仍未做**：`.tscn` 里 `ext_resource path="res://…"` 的悬空引用 —— 需要先定位 Godot 工程根并区分「导入期生成」的资源，误报风险比收益大。
 
-### 16.42 那 20 条「本环境未验证」在本机逐条验掉（2026-11-02）
+### 16.42 那 20 条「本环境未验证」在当前环境逐条验掉（2026-11-02）
 
-CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既不算抓住也不算活下来。本机是 Windows + 真 Edge，逐条跑了一遍：
+CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既不算抓住也不算活下来。当前环境是 Windows + 真 Edge，逐条跑了一遍：
 
 | 电池 | 条数 | 怎么验的 | 结果 |
 |---|---|---|---|
@@ -903,7 +903,7 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 
 **踩到的是我探针的坑，不是电池的坑**：多行锚点用 `open(newline='')` 读进来带 `\r\n`，跟电池里写死的 `\n` 锚点对不上，命中数 0 —— 我一度以为"这条变异没有锚点"。引擎的做法是 `read_text`/`write_text`（读时归一成 `\n`，写时按平台还原），照它改完就命中 1 次并判红。**锚点命中数必须按引擎的读法量**，否则会把"我的探针错了"记成"电池坏了"。
 
-**结论**：`363/383 + 20 未验证` 在本机的真实覆盖面是 **383 条全部抓住、0 条活下来**。全部跑完后 1126 个跟踪文件的 SHA-256 汇总与开跑前逐字节一致。
+**结论**：`363/383 + 20 未验证` 在当前环境的真实覆盖面是 **383 条全部抓住、0 条活下来**。全部跑完后 1126 个跟踪文件的 SHA-256 汇总与开跑前逐字节一致。
 
 ### 16.43 写后收尾门补上 `dev_move` 与 `dev_add_region`：移动断链终于有人验（2026-11-02）
 
@@ -1035,7 +1035,7 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 - 棘轮单独验：往 tracked 文件追加一条 `import zlib`（没人用）→ 守卫当场判红（断言里带着 `F401 [*] `zlib` imported but unused`），文件按字节还原。
 - 门与守卫：`--select` 抬到六条后 `tests/test_ci_static_defect_gate.py` + `tests/test_ci_lint_gate.py` **22 passed**。
 
-**顺带归因并修掉的那条红**：`test_the_bundle_is_not_older_than_the_sources` 比的是 `frontend/src/**` 与 `web/assets` 的最新 mtime —— 实测 src 03:46:45 vs `web/` 00:06:13，产物确实旧了 3 小时 40 分。这是本机状态而非仓库状态：`git ls-files web` 只有 3 个文件，构建产物不入库（`35f704ac`、`523d0ce7`），CI 绿是因为 `Build workbench frontend` 排在测试 lane 之前。跑 `npm run build`（10.19 秒，退出码 0）后复跑该文件 **7 tests OK**。次序上刻意等电池跑完才构建：电池会临时改写源码，此时构建会把被变异的内容烘进产物。
+**顺带归因并修掉的那条红**：`test_the_bundle_is_not_older_than_the_sources` 比的是 `frontend/src/**` 与 `web/assets` 的最新 mtime —— 实测 src 03:46:45 vs `web/` 00:06:13，产物确实旧了 3 小时 40 分。这是当前环境状态而非仓库状态：`git ls-files web` 只有 3 个文件，构建产物不入库（`35f704ac`、`523d0ce7`），CI 绿是因为 `Build workbench frontend` 排在测试 lane 之前。跑 `npm run build`（10.19 秒，退出码 0）后复跑该文件 **7 tests OK**。次序上刻意等电池跑完才构建：电池会临时改写源码，此时构建会把被变异的内容烘进产物。
 
 
 ### 16.48 改动行覆盖率门：不盯全仓百分比，盯「这次改的行有没有人走过」（2026-11-02）
@@ -1069,7 +1069,7 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 
 这条是本节全部立论的活证据：**门说的"这次改的行没人走过"，通常是真的没人走过**，包括写门的人自己。
 
-**复跑结论（run 41398743596，两条 lane 全 success）**：`Changed-line coverage gate` 步骤 **success**，用时 7 秒。它留下两条 `::warning file=agent_runtime/coverage_eval.py,line=119/120::` —— 正是 Windows 跨盘符 `relpath` 抛 `ValueError` 那两行：它们在 CI（Linux）上永远不执行，在本机（Windows）才走得到。我**不**给它们加 `pragma: no cover`：留着这条 warning 才是实情（"平台专用分支在另一个平台上没被走过"），抹掉它等于让门少说话。这也验证了 `file=,line=` 格式的作用 —— 两条 warning 直接落在源码行上，不用数行号。
+**复跑结论（run 41398743596，两条 lane 全 success）**：`Changed-line coverage gate` 步骤 **success**，用时 7 秒。它留下两条 `::warning file=agent_runtime/coverage_eval.py,line=119/120::` —— 正是 Windows 跨盘符 `relpath` 抛 `ValueError` 那两行：它们在 CI（Linux）上永远不执行，在当前环境（Windows）才走得到。我**不**给它们加 `pragma: no cover`：留着这条 warning 才是实情（"平台专用分支在另一个平台上没被走过"），抹掉它等于让门少说话。这也验证了 `file=,line=` 格式的作用 —— 两条 warning 直接落在源码行上，不用数行号。
 
 **成本重测（不再用外推）**：同一条 lane 包进 `coverage run` 前后 —— pytest lane **365s → 376s**、全量 unittest **480s → 481s**、整条 sqlite lane 22.4 分 → **20.9 分**（波动小于测试自身的抖动），加上线程/解析开销也不到 3%。我之前按 1.17 倍外推担心要重排 CI 结构，是多余的：**这两条 lane 的耗时大头本来就在子进程与 I/O，不在解释器执行**。
 
@@ -1120,15 +1120,15 @@ CI 跑 `run_all.py --no-live`，live 变异只记「本环境未验证」，既�
 **③ `CoverageWarning: Couldn't parse '.../tools.py:TOOLS'`（每次跑都产一条）**
 `tests/test_tool_taxonomy.py:102` 用 `compile(源码切片, "tools.py:TOOLS", "exec")` 在不碰真 import 的前提下取 `TOOLS` 注册表 —— 名字是合成的，coverage 却把它记进数据文件，报告阶段真去 open 它。修法精确到只有一个目标：`coverage json` 加 `--omit "*:TOOLS"`（路径里带冒号的不可能是真文件）。本地对拍过加与不加的两份报告：**690 个文件、125116 条语句一字不差**，也就是说这条排除不吞任何真实测量。守卫 `test_report_step_omits_the_synthetic_filename` 不只看 CI 那一行，还回头读测试里真正用的那个 filename，两边必须对得上 —— 否则有人把它改名，omit 就悄悄失效而守卫仍绿。4 条变异（摘 `--omit`／改成对不上的模式／摘 `--ignore-errors`／改 filename）0 存活。
 
-**顺手关掉一条本机恒红的假阳性**。`test_a_failing_inner_launcher_keeps_the_window...` 断言的是 `pause` 提示语的英文字面「Press any key」，而那行字由 cmd.exe 按控制台代码页印：中文 Windows 上是「按任意键继续. . .」，stdout 还是 cp936（用 utf-8 解码只剩乱码）。**先证明这不是我改出来的**：把 `HEAD` 那版文件写回去跑，同样 `1 failed, 8 passed, 1 warning`；换成我的版本是 `1 failed`（改完 `r"""` 后 warning 归零）→ 红的是断言，不是产品。修法是把断言换成它代指的**机制**：失败路径真会阻塞等人按键（`feed=False`：stdin 是一根保持打开、不写也不关的管道，脚本 5 秒内没退出即算「停住」），成功路径不会（`feed=True`：喂一个回车让它跑到 `exit /b`，退出码必须传出来）。两趟分工是因为被 kill 的那趟拿不到真实退出码。第一版我用了 `communicate(timeout=…)`，它**会先把 stdin 关掉**，`pause` 立刻走过去 —— 于是「停住」验不出来；这就是 `DEVNULL` 那一类坑的另一种形态。4 条变异 0 存活，其中 M2（把 `pause` 改成无条件）恰好由「成功不该拖住窗口」那条抓住，说明两条断言各管一边。
+**顺手关掉一条当前环境恒红的假阳性**。`test_a_failing_inner_launcher_keeps_the_window...` 断言的是 `pause` 提示语的英文字面「Press any key」，而那行字由 cmd.exe 按控制台代码页印：中文 Windows 上是「按任意键继续. . .」，stdout 还是 cp936（用 utf-8 解码只剩乱码）。**先证明这不是我改出来的**：把 `HEAD` 那版文件写回去跑，同样 `1 failed, 8 passed, 1 warning`；换成我的版本是 `1 failed`（改完 `r"""` 后 warning 归零）→ 红的是断言，不是产品。修法是把断言换成它代指的**机制**：失败路径真会阻塞等人按键（`feed=False`：stdin 是一根保持打开、不写也不关的管道，脚本 5 秒内没退出即算「停住」），成功路径不会（`feed=True`：喂一个回车让它跑到 `exit /b`，退出码必须传出来）。两趟分工是因为被 kill 的那趟拿不到真实退出码。第一版我用了 `communicate(timeout=…)`，它**会先把 stdin 关掉**，`pause` 立刻走过去 —— 于是「停住」验不出来；这就是 `DEVNULL` 那一类坑的另一种形态。4 条变异 0 存活，其中 M2（把 `pause` 改成无条件）恰好由「成功不该拖住窗口」那条抓住，说明两条断言各管一边。
 
 **电池自己的一个坑**（记下来防止误读结论）：多变异循环里必须以**进入前的干净文本**为底本，不能 `path.read_text()` —— 我这版写了后者，第一个变异把 `--omit` 摘掉后，后面两个变异的锚点就不存在了，输出里显示成「未施加」。它没造成假绿（未施加会被单列），但会把「4 条变异」悄悄报成「2/4 杀死」，读起来像是守卫没牙。
 
 **同一段日志又挖出第四件，加上我自己造的两处误读**（复跑 run 41406783090 之后）：
-- **测试把自己编的假红句子打进了 CI 的测试日志**。`Run full test suite` 步骤里出现过 `"改动行覆盖率 0.0% 低于门槛 90.0%"` —— 那不是门判红，是 `EndToEndRepoTests` 三条用例直接 `cov.main([...])` 而**没接 stdout**，合成夹具（`agent_runtime/mod.py` 改了 5 行全未执行）的报告被原样打印。修法：加 `_main_json()` 收成载荷，既收音又顺手断言 `ok / changed_total / failures / percent`（断言反而变强了）。本机对拍：改前泄漏 2 份合成 JSON，改后 0 份。
+- **测试把自己编的假红句子打进了 CI 的测试日志**。`Run full test suite` 步骤里出现过 `"改动行覆盖率 0.0% 低于门槛 90.0%"` —— 那不是门判红，是 `EndToEndRepoTests` 三条用例直接 `cov.main([...])` 而**没接 stdout**，合成夹具（`agent_runtime/mod.py` 改了 5 行全未执行）的报告被原样打印。修法：加 `_main_json()` 收成载荷，既收音又顺手断言 `ok / changed_total / failures / percent`（断言反而变强了）。当前环境对拍：改前泄漏 2 份合成 JSON，改后 0 份。
 - **第三次栽在「用字符串审 shell 步骤」上**：我验证 `--omit` 生效时 `grep -c "Couldn't parse"` 得到 **1**，差点报成「告警没消掉」。那 1 次命中的是**我自己写在那一步里的注释**（GitHub 会把整段 `run:` 脚本连注释一起回显）。换成不可能出现在注释里的签名 `No source for code` 才是 **0** —— 同一条教训在 §16.48 已经记过两次，这轮轮到 grep 命令自己犯。
-- **本机全量的 7 条红是我自己配错环境**：那条 lane 我按「少写盘」的想法设了 `DOCMIND_TRACE=0`，而 CI 明写着 `DOCMIND_TRACE: "1"`。7 条全是 `agent_trace.recent(1)[0]` 越界。A/B 当场做完：同一批 7 条 `TRACE=0` → 7 failed、`TRACE=1` → 7 passed。**跑别人的口径之前先抄别人的 env**，否则报出来的红名单要人替你归因。
-- 按 CI 口径的本机全量结论：**`Ran 5439 tests in 1313.769s`，除上面那 7 条配置性错误外 0 红**（skipped 17）。本轮新加的启动器用例在 Windows 上真跑通过 —— 那条路径 CI 上 `skipUnless(os.name == 'nt')` 跳过，只有本机验得到。
+- **当前环境全量的 7 条红是我自己配错环境**：那条 lane 我按「少写盘」的想法设了 `DOCMIND_TRACE=0`，而 CI 明写着 `DOCMIND_TRACE: "1"`。7 条全是 `agent_trace.recent(1)[0]` 越界。A/B 当场做完：同一批 7 条 `TRACE=0` → 7 failed、`TRACE=1` → 7 passed。**跑别人的口径之前先抄别人的 env**，否则报出来的红名单要人替你归因。
+- 按 CI 口径的当前环境全量结论：**`Ran 5439 tests in 1313.769s`，除上面那 7 条配置性错误外 0 红**（skipped 17）。本轮新加的启动器用例在 Windows 上真跑通过 —— 那条路径 CI 上 `skipUnless(os.name == 'nt')` 跳过，只有当前环境验得到。
 
 ### 16.51 lane 死于 `[Errno 28] No space left on device`：往没有 GPU 的 runner 上搬 CUDA 才是根因（2026-11-02）
 
@@ -1141,15 +1141,15 @@ run 41411405586 的 sqlite lane 红了，红在 `Install dependencies`，报的�
 - **取那个轮子的 PEP 658 元数据把 `Requires-Dist` 逐条读出来**：只有 `filelock / typing-extensions / setuptools / sympy / networkx / jinja2 / fsspec`（外加三个 `extra ==` 可选件）—— **一条 nvidia/cuda/triton 都没有**。也就是说装它**结构上不可能**把 CUDA 那批带回来。
 - PyPI 上 `sentence-transformers` 的约束是 `torch>=2.2`，PEP 440 下 `2.15.0+cpu` 满足它；第二步没有 `--upgrade`，pip 看见「已满足」就不回头换 PyPI 那份。**把两行调个顺序就等于没改** —— 所以顺序必须有断言。
 
-**守卫**：`tests/test_ci_cpu_only_torch.py` 10 条 —— 顺序（CPU 行在前、requirements 在后）、索引只能是 `/whl/cpu`（混进 `/whl/cu` 判红）、退出码不被吞、不许挂到单条 lane、`requirements.txt` 里确实还有那个拖 torch 的包、邻门命令仍在。另有一条**夹具**证明「模块级导入」判据本身不是空的：我**没有**真去把 `retrieval.py` 的懒导入提到模块级做变异 —— 那会让本机没装的包进入导入链、收集阶段就 `ModuleNotFoundError`，是一次「为了错误的原因变红」的杀死，证明不了任何事。**5/5 变异杀死**，其中「两行调换顺序」只有顺序断言抓得到。
+**守卫**：`tests/test_ci_cpu_only_torch.py` 10 条 —— 顺序（CPU 行在前、requirements 在后）、索引只能是 `/whl/cpu`（混进 `/whl/cu` 判红）、退出码不被吞、不许挂到单条 lane、`requirements.txt` 里确实还有那个拖 torch 的包、邻门命令仍在。另有一条**夹具**证明「模块级导入」判据本身不是空的：我**没有**真去把 `retrieval.py` 的懒导入提到模块级做变异 —— 那会让当前环境没装的包进入导入链、收集阶段就 `ModuleNotFoundError`，是一次「为了错误的原因变红」的杀死，证明不了任何事。**5/5 变异杀死**，其中「两行调换顺序」只有顺序断言抓得到。
 
 **同轮两次「测具自己骗人」**：① 多变异电池必须以进入前的干净文本为底本 —— 我第一版写了 `path.read_text()`，于是 P1 调换两行之后，P2 要删的锚点已经不在文件里，被记成「未施加」；没造成假绿，但把「5 条变异」报成了不足数。② 我用 `grep -c "Couldn't parse"` 验 `--omit` 生效，得到 **1**，差点报成「告警没消掉」—— 命中的是我自己写进步骤的注释（GitHub 连注释一起回显 `run:` 脚本）。换成注释里不可能出现的签名 `No source for code` 才是 **0**。**§16.48 立的「审 shell 步骤先剥注释行」这条，这轮轮到 grep 命令自己犯。**
 
-**其余实测**：本机 10 份读 `harness.yml` 的守卫加上启动器用例合跑 **174 passed（245.88 秒）**，无跨文件干扰；三组变异电池 9/9（动作与 runner 标签）、4/4（启动器语义）、5/5（CPU 索引）全杀；被电池改过的五个文件（`harness.yml`、`retrieval.py`、`启动DocMind.bat`、`test_coverage_eval.py`、`test_tool_taxonomy.py`）跑完**全部与 HEAD 按字节一致**，无残留。
+**其余实测**：当前环境 10 份读 `harness.yml` 的守卫加上启动器用例合跑 **174 passed（245.88 秒）**，无跨文件干扰；三组变异电池 9/9（动作与 runner 标签）、4/4（启动器语义）、5/5（CPU 索引）全杀；被电池改过的五个文件（`harness.yml`、`retrieval.py`、`启动DocMind.bat`、`test_coverage_eval.py`、`test_tool_taxonomy.py`）跑完**全部与 HEAD 按字节一致**，无残留。
 
 ### 16.52 句柄那一族：SIM115 清零、把规则放进门，然后发现门有个看不见的盲区（2026-11-02）
 
-上一节量到本机全量有 **181 条 ResourceWarning**（129 `unclosed file` / 49 `TemporaryDirectory` 靠回收 / 3 `subprocess still running`）。这一条先处理它的**静态对应物**：ruff `SIM115`（文件打开后没用上下文管理）。
+上一节量到当前环境全量有 **181 条 ResourceWarning**（129 `unclosed file` / 49 `TemporaryDirectory` 靠回收 / 3 `subprocess still running`）。这一条先处理它的**静态对应物**：ruff `SIM115`（文件打开后没用上下文管理）。
 
 **先量形状再动手**：`--select SIM115` 全仓 **90 处**，按区域分成 生产/根级 **23**（`game_workbench` 8、`tools.py` 4、`ci_status` 3、`api.py` 3、另 5 个单点）、`tools/` 脚本 **6**、`tests/` **61**（36 个文件）。顺序按「生产 → 工具脚本 → 测试」。拆法：能机械化的三种形状（`名 = open(...).read()`、`assertIn(..., open(...).read())`、整行的 `open(...).write(x)`）用一次性脚本改（每条规则要求唯一命中、改完逐文件 `compile()`），其余（多行、带分号并列、`NamedTemporaryFile`、以及**句柄本身就是被测对象**的锁）手改。
 
@@ -1176,15 +1176,15 @@ run 41411405586 的 sqlite lane 红了，红在 `Install dependencies`，报的�
 
 **一次跨文件假红的归因（顺手记下方法）**：15 个文件合跑时 `test_handoff` 里一条用例红，单跑却绿。用 `git worktree add` 把 **HEAD 干净副本**开出来跑同一组合 —— `1 failed, 314 passed`，与工作树**一模一样**，结论：既有的测试隔离缺陷（全局 `CODE_ROOT` 被别的用例污染），不是本批次引入。**「单独绿、合跑红」先怀疑全局状态泄漏，再用 HEAD 副本在同一组合里复现，才算归因闭合。**
 
-**本机全量复跑（CI 口径 `DOCMIND_TRACE=1`）**：`Ran 5454 tests in 924.623s — OK (skipped=14)`，**0 红**。ResourceWarning 三类合计 **181 → 76**：`unclosed file` **129 → 24**、`Implicitly cleaning up TemporaryDirectory` **49 → 49**、`subprocess still running` **3 → 3**。也就是说这一批只吃掉了句柄那一类的静态可判部分；后两类（运行期对象生命周期）原样留着，是下一批的目标。起手先做了一次归因尝试：开 `PYTHONTRACEMALLOC=20` 跑 `test_connector_routing` + `test_visual_acceptance_runtime`，3 条 `Implicitly cleaning up <TemporaryDirectory 'D:\Temp\docmind-visual-preview-…'>` 被直接点名 —— 创建点在**测试侧**的预览目录，而不是 `visual_acceptance.browser_session`（那条路的 `finally` 里本来就有 `_release_profile`）。**归因要先看对象名和创建栈，别按「哪个文件里出现过 TemporaryDirectory」猜。**
+**当前环境全量复跑（CI 口径 `DOCMIND_TRACE=1`）**：`Ran 5454 tests in 924.623s — OK (skipped=14)`，**0 红**。ResourceWarning 三类合计 **181 → 76**：`unclosed file` **129 → 24**、`Implicitly cleaning up TemporaryDirectory` **49 → 49**、`subprocess still running` **3 → 3**。也就是说这一批只吃掉了句柄那一类的静态可判部分；后两类（运行期对象生命周期）原样留着，是下一批的目标。起手先做了一次归因尝试：开 `PYTHONTRACEMALLOC=20` 跑 `test_connector_routing` + `test_visual_acceptance_runtime`，3 条 `Implicitly cleaning up <TemporaryDirectory '…'>` 被直接点名 —— 创建点在**测试侧**的预览目录，而不是 `visual_acceptance.browser_session`（那条路的 `finally` 里本来就有 `_release_profile`）。**归因要先看对象名和创建栈，别按「哪个文件里出现过 TemporaryDirectory」猜。**
 
-另一个必须记住的数：这次全量 924.6 秒，比上一轮 1451.2 秒快 36%。两轮都在同一台机器上、测试数还多了 3 条（新守卫 `test_no_inline_open_in_return.py`）。原因没查：可能是缓存变热、也可能是那几次 CI 轮询与本机全量同时跑造成的负载差异。**别把「变快了」当成修复的功劳** —— 要报就报「本轮没测这一项」。
+另一个必须记住的数：这次全量 924.6 秒，比上一轮 1451.2 秒快 36%。两轮都在同一环境中、测试数还多了 3 条（新守卫 `test_no_inline_open_in_return.py`）。原因没查：可能是缓存变热、也可能是那几次 CI 轮询与当前环境全量同时跑造成的负载差异。**别把「变快了」当成修复的功劳** —— 要报就报「本轮没测这一项」。
 
 **改动行覆盖率门把这批改动判红了，而它是对的**（run 41430694766，head `e93c066`）：**70.4%（81 行生产改动、57 行被执行）**。点名的都是我这批 `with` 改造里**从没被用例走过的分支**：`engine_inspect` 的 Unity 分支（`ProjectVersion` / `.meta` guid）与 unreal 的 `.Build.cs` 依赖解析、`_close_engine_log` 的 except 分支、`api.py` 自动连接状态端点的三条读取路径；再加上 `game_workbench` 五个普通产品函数里的 13 行（`project_memory` / `asset_dependencies` / `create_placeholder` / `impact_analysis` / `_extract_symbols`）。处理方式是补用例，两处 manual 分类则改成**结构性**判断（`tools/mutation/mutate_*` 与 `tools/design_seed.py` 按定义手工跑、测试里不该有调用点）。复算：**100.0%（94/94）**；CI run 41440110928（head `96475fc`）两条 lane `success`、门 `通过`（本次增量 5/5）、八规则静态门 `success`、非 notice 注解 0 条。
 
 **这一轮最值钱的方法教训：注解 ≠ 清单**。GitHub 对 `::warning` / `::error` / `::notice` **每类每步只留 10 条**，而门是**逐行**打注解的；超出的既不出现在注解里、也不回显到步骤日志（被平台吃成注解了）。我第一次按注解清，只拿到 15 行，而真实未执行是 24 行 —— **按注解清会永远差一截，而且看不出来**。正确量法是本地按 CI 同一套算法复算：两条 lane 各跑一遍 `coverage run` → `coverage combine` → `coverage json` → 用同一个 `coverage_eval` 对**批次前的基线提交**算一遍，拿到的才是完整清单。这条对任何「平台有配额的可视化产物」都成立：**配额内的样本不能当全集**。
 
-**两处按真实行为写的用例**（不是按我的想象）：① `_extract_symbols` 的正则在 `public class Hero` 上只会抓到 `class`（关键字自己当了名字），夹具改用 `class Hero`，局限写进注释；② `impact_analysis` 先走向量分支，而本机装着真的 `.chroma` 代码库 —— 用 `sys.modules` 把 `vectorstore` 置空，测到的才是回退 grep 那条路（CI 没有 `.chroma`，走同一条）。另外两个环境事实：`engine_inspect` 会跳过任何路径段叫 `Temp` 的目录（本机默认临时目录就是 `D:\Temp`，夹具必须放仓库内 `.tmp`）；coverage 那条 unittest lane 在本机会因为 `test_frontend_bundle_fresh`（前端产物比源码旧）红，那是既有的本机专属红，要 `npm run build`，与代码无关。
+**两处按真实行为写的用例**（不是按我的想象）：① `_extract_symbols` 的正则在 `public class Hero` 上只会抓到 `class`（关键字自己当了名字），夹具改用 `class Hero`，局限写进注释；② `impact_analysis` 先走向量分支，而当前环境装着真的 `.chroma` 代码库 —— 用 `sys.modules` 把 `vectorstore` 置空，测到的才是回退 grep 那条路（CI 没有 `.chroma`，走同一条）。另外两个环境事实：`engine_inspect` 会跳过任何路径段叫 `Temp` 的目录（默认临时目录的路径段就叫 `Temp`，夹具必须放仓库内 `.tmp`）；coverage 那条 unittest lane 在当前环境会因为 `test_frontend_bundle_fresh`（前端产物比源码旧）红，那是既有的当前环境专属红，要 `npm run build`，与代码无关。
 
 **CI 往返结论（run 41414220773，head `0adbb33`，两条 lane 全 success、注解 0 条）**：
 - 装到的是 `torch-2.15.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl`（**209.5 MB**），`Successfully installed` 里就是 `torch-2.15.0+cpu`。

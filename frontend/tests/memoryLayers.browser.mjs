@@ -22,17 +22,17 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE
     '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 
 const BASE = process.env.DOCMIND_BASE || 'http://127.0.0.1:8000'
-// 真实快照最丰富的会话（injected 9：8 legacy + 1 shared；hook 在本会话无条目）。
-// 首个 id 是 2026-11-04 真跑一轮 chat 后产生的快照；后面的 id 依次兜底。
+// 示例会话占位 id（无真实会话含义）：仅用于演示脚本的默认取值，
+// 实跑请用 DOCMIND_LAYER_SESSION 指定当前环境快照最丰富的会话。
 const SESSION_RICH = process.env.DOCMIND_LAYER_SESSION
   ? [process.env.DOCMIND_LAYER_SESSION]
-  : ['web-c354e15cc0e51b973887649b', 'web-5e3eecbb21b3423ba8d03267',
-    'web-3f5b14cf6b814fa7897af79a', 'web-fbe442ffa59940199d73233e']
+  : ['web-000000000000000000000001', 'web-000000000000000000000002',
+    'web-000000000000000000000003', 'web-000000000000000000000004']
 // 有会话钩子的会话（hook 环有真实节点）
 const SESSION_HOOK = process.env.DOCMIND_HOOK_SESSION
   ? [process.env.DOCMIND_HOOK_SESSION]
-  : ['web-32d380b1f11248139cc6b7da', 'web-07910a35553148ea858652f2',
-    'web-e3cbd52264134b2db56d20ba', 'web-5a77280d534b4897a96e9d05']
+  : ['web-0000000000000000000000a1', 'web-0000000000000000000000a2',
+    'web-0000000000000000000000a3', 'web-0000000000000000000000a4']
 const OUT = path.resolve(process.cwd(), '.screenshots/store-layers-20261104')
 
 const results = []

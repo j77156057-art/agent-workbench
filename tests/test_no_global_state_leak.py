@@ -18,14 +18,14 @@
 
 cleanup 跑完后：
 
-    TRACE_FILE    = D:\\Temp\\dm_llm_stub_favmc0fx\\traces.jsonl   （原：仓库根）
-    SESSIONS_DIR  = D:\\Temp\\dm_llm_stub_favmc0fx\\sessions      （原：仓库根）
+    TRACE_FILE    = <tmp>\\dm_llm_stub_a\\traces.jsonl   （原：仓库根）
+    SESSIONS_DIR  = <tmp>\\dm_llm_stub_a\\sessions      （原：仓库根）
     泄漏的全局量 = ['TRACE_FILE', 'SESSIONS_DIR']
 
 于是 `tests/test_state_root_isolation.py` 那 3 条红：
 
-    sessions.SESSIONS_DIR 未落在 STATE_ROOT 下：D:\\Temp\\dm_llm_stub_9lcwdt9c\\sessions
-    agent_trace.TRACE_FILE 未落在 STATE_ROOT 下：D:\\Temp\\dm_llm_stub_9lcwdt9c\\traces.jsonl
+    sessions.SESSIONS_DIR 未落在 STATE_ROOT 下：<tmp>\\dm_llm_stub_b\\sessions
+    agent_trace.TRACE_FILE 未落在 STATE_ROOT 下：<tmp>\\dm_llm_stub_b\\traces.jsonl
 
 它们单跑是绿的，全量跑才红 —— 纯顺序依赖。
 

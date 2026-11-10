@@ -137,7 +137,7 @@ $env:DOCMIND_NO_TEST_ISOLATION="1"
 ```text
 .venv\\Scripts\\python.exe -m agent_runtime.acceptance \\
   --project <sample-project> \\
-  --godot D:\\Tools\\Godot\\Godot_v4.7.2-stable_win64_console.exe \\
+  --godot <Godot_v4.x-stable_win64_console.exe> \\
   --collection docmind_code --json
 ```
 

@@ -96,6 +96,9 @@ golden/results_*_verify*.jsonl
 golden/results_full_*.jsonl
 golden/*.bak
 golden/results_baseline.old*
+# 真实运行轨迹（含真实会话 id 与本机绝对路径），2026-11-10 移出公开仓库，
+# 本地归档到仓库外目录；后续任何 jsonl 轨迹一律不入库。
+golden/*.jsonl
 
 # ===== 引擎工程导入元数据（Godot/Unity 自动生成，不入库）=====
 *.import
@@ -113,6 +116,9 @@ game_project_template.md
 分区开发设计.md
 docs/agent-self-verify-memory.md
 docs/agent-applications-roadmap.md
+# 内部规划与交接档（2026-11-10 移出公开仓库，本地归档保留）
+docs/backlog.md
+docs/ask-conversation-redesign-handoff.md
 
 # 运行时/工具生成的本地状态，不入库：
 # .coverage      —— coverage.py 跑出来的 SQLite 覆盖率数据库（每次跑都变）

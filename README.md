@@ -159,12 +159,12 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 工具清单能回答"有什么"，回答不了"为什么这么切"。下面几处是实现里**主动做出来的选择**：
 
-- **浏览与交互分成两个会话域。** 内置浏览器 `browser_action` 只许公网，协议 / 主机名后缀 / IP 段 / DNS 解析 / 导航后复核**五道闸**；本机页面操作 `dev_page_action` 只许回环地址。两者**会话域互不相通** —— 模型没法借"看本机"的通道去读公网。
+- **浏览与交互分成两个会话域。** 内置浏览器 `browser_action` 只许公网，协议 / 主机名后缀 / IP 段 / DNS 解析 / 导航后复核**五道闸**；本地页面操作 `dev_page_action` 只许回环地址。两者**会话域互不相通** —— 模型没法借"看本地"的通道去读公网。
 - **视觉定位与视觉点击是两个工具**（`vision_locate_click` / `vision_click`）。合成一个，模型就会以为"定位成功 = 可以点"。点击的放行条件是**审批台账里有人批过**，模型自称确认不算数。
 - **引擎控制与 HTTP 接口走同一份实现**（`engine_start` / `engine_stop` / `engine_reload` ↔ `POST /api/engine/start|stop|reload`），共用 GPU 租约与引擎日志 —— 不会出现"界面停了、模型还能开"的两套状态。
 - **EDA 验收只判不回滚**（`eda_run_script` / `eda_report_gate`）。真跑脚本并解析输出（fail-closed，工具没装就返回 `tool_unavailable`）；在线报告解析成结构化事实，给 **met / unmet / uncertain** 三态结论。真实回滚仍走人工审批门。
 - **程序化工具调用是独立开关**（`DOCMIND_PTC_BRIDGE` / `DOCMIND_PTC_BRIDGE_WRITE`，默认关）。开启后模型可在一次 `python_exec` 里程序化调用其它工具；写侧走带外确认落盘 + 会话隔离 + 硬底线二次复核。
-- **提示词前缀缓存：两条命中率一起看。** 设置页「用量与费用」同时报**按 token**（本机 88%）与**按回合**（改前 13%）—— 只看前者会把"跨回合几乎没复用"完全藏住，因为长回合内逐步重发天然命中。打断跨回合前缀的是 `【当前时间】` 秒级时间戳块；2026-11-01 已先改裁剪器再挪消息：`_fit_budget` 改为两边界 + **整单元**删除（可裁区 = 固定头区之后、尾部易变块之前；带「上轮未完成现场」的历史单元是 3 条，整单元删，顺带修掉旧代码拆单元会留下孤儿 resume 的潜在 bug），时间块随之挪到历史之后、当前问题之前，`[固定块 + 全部历史]` 成为跨回合稳定前缀。按回合命中率的新数要等真实流量重新积累后再报，不预支。
+- **提示词前缀缓存：两条命中率一起看。** 设置页「用量与费用」同时报**按 token**（实测 88%）与**按回合**（改前 13%）—— 只看前者会把"跨回合几乎没复用"完全藏住，因为长回合内逐步重发天然命中。打断跨回合前缀的是 `【当前时间】` 秒级时间戳块；2026-11-01 已先改裁剪器再挪消息：`_fit_budget` 改为两边界 + **整单元**删除（可裁区 = 固定头区之后、尾部易变块之前；带「上轮未完成现场」的历史单元是 3 条，整单元删，顺带修掉旧代码拆单元会留下孤儿 resume 的潜在 bug），时间块随之挪到历史之后、当前问题之前，`[固定块 + 全部历史]` 成为跨回合稳定前缀。按回合命中率的新数要等真实流量重新积累后再报，不预支。
 
 ### 工作流：两套并存
 
@@ -197,7 +197,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 |---|---|
 | 后端测试 | 全量测试收在 `tests/`，以 `unittest.TestCase` 为主、CI 每次跑全量（`python -m unittest discover`）；module 级 `def test_*` 走独立 pytest lane，`pytest` 与 `unittest` 两条都能收 |
 | 前端测试 | `node --test` 直跑生产模块，不做打包后测试 |
-| CI | GitHub Actions 单 workflow，两矩阵（SQLite / Postgres 16），job 级 60 分钟超时，覆盖：依赖安装（torch 走 PyTorch 官方 CPU 索引 —— 托管 runner 没有 GPU，这样一次安装少搬 3.27 GB 的 nvidia-*-cu13/triton 死重）→ 前端构建 → 前端测试 → **前端 lint（eslint）** → 编译检查 → **静态缺陷门（ruff F821/F811/F402/F541/F841/F401/W605/SIM115）** → **改动行覆盖率门（这次改的行有没有用例走过，不盯全仓百分比）** → 评测门 → **变异测试电池** → 检索回归 → 离线工作流验收 → 全量测试 → Postgres 严格集成 → 真实 LLM 冒烟。两个测试 lane 失败时会把红名单打成 check-run 注释（`tools/ci_red_summary.py`），用 `gh api repos/{o}/{r}/commits/{sha}/check-runs` 加 `/annotations` 就能读——不依赖 objects.githubusercontent.com 那个在本机被墙的日志下载域名。runner 标签钉成 `ubuntu-24.04`（不用会飘的 `-latest`），`checkout` / `setup-python` / `setup-node` 全部升到 node24 大版本 v7，每次跑不再挂「Node.js 20 is deprecated」告警 |
+| CI | GitHub Actions 单 workflow，两矩阵（SQLite / Postgres 16），job 级 60 分钟超时，覆盖：依赖安装（torch 走 PyTorch 官方 CPU 索引 —— 托管 runner 没有 GPU，这样一次安装少搬 3.27 GB 的 nvidia-*-cu13/triton 死重）→ 前端构建 → 前端测试 → **前端 lint（eslint）** → 编译检查 → **静态缺陷门（ruff F821/F811/F402/F541/F841/F401/W605/SIM115）** → **改动行覆盖率门（这次改的行有没有用例走过，不盯全仓百分比）** → 评测门 → **变异测试电池** → 检索回归 → 离线工作流验收 → 全量测试 → Postgres 严格集成 → 真实 LLM 冒烟。两个测试 lane 失败时会把红名单打成 check-run 注释（`tools/ci_red_summary.py`），用 `gh api repos/{o}/{r}/commits/{sha}/check-runs` 加 `/annotations` 就能读——不依赖 objects.githubusercontent.com 那个在本地网络被墙的日志下载域名。runner 标签钉成 `ubuntu-24.04`（不用会飘的 `-latest`），`checkout` / `setup-python` / `setup-node` 全部升到 node24 大版本 v7，每次跑不再挂「Node.js 20 is deprecated」告警 |
 | 变异测试 | 改坏实现，门禁必须抓到（"写了测试但抓不住 bug"和没写测试一样糟） |
 | baseline 回归门 | 黄金题库分 L1 单跳 / L2 多跳 / L3 抗干扰三档，pass→fail 即**退出码 1**，已接入冻结发布流程 |
 | 视觉回归 | 多套基线逐像素比对，单像素通道差 > 4 的像素超过 200 个即失败 |
@@ -251,7 +251,7 @@ cp .env.example .env        # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 >
 > Windows 上直接跑 `启动DocMind.bat` 更省事：首次启动自动建 `.venv`、装依赖、装前端并构建 `web/`，之后双击即用。它内部走 `dependency_bootstrap.py`：pip 带 `--timeout` / `--retries`，默认源失败会自动切阿里云镜像，并打印每一步在做什么。网络参数可用 `DOCMIND_PIP_TIMEOUT` / `DOCMIND_PIP_RETRIES`（默认源）与 `DOCMIND_PIP_MIRROR` / `DOCMIND_PIP_MIRROR_TIMEOUT` / `DOCMIND_PIP_MIRROR_RETRIES`（镜像）调整；设置了 `PIP_INDEX_URL` 时只使用你指定的源，不再自动切镜像。
 >
-> 服务地址用 `127.0.0.1` 而不是 `localhost`（本机 IPv6 解析会连不上）。
+> 服务地址用 `127.0.0.1` 而不是 `localhost`（某些网络下 IPv6 解析会连不上）。
 >
 > `frontend/.npmrc` 里有 `min-release-age=2`：npm 不安装**发布不足 2 天**的包版本 —— 供应链护栏，挡"刚发就被投毒"的版本。**它需要 npm ≥ 11.6（Node 24 自带），Node 22 自带的 npm 10 会静默失效** —— 这就是 `.nvmrc` 选 24 的原因：与 CI 一致，且让护栏真正生效。`npm ci` 不受影响（严格按 lockfile 装，不进入版本解析）。
 >
@@ -278,7 +278,7 @@ cp .env.example .env        # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 
 ### 用真实模型
 
-页面内切换（推荐，免重启）：问答页右上角「⚙ 模型设置」→ 选 provider、填 Key → 保存即生效。API Key 不写进普通状态文件，而是按项目存入本机受保护密钥库，启动时自动加载。
+页面内切换（推荐，免重启）：问答页右上角「⚙ 模型设置」→ 选 provider、填 Key → 保存即生效。API Key 不写进普通状态文件，而是按项目存入本地受保护密钥库，启动时自动加载。
 
 或直接改 `.env`：`LLM_PROVIDER=qwen` / `EMBEDDING_PROVIDER=qwen` / `DASHSCOPE_API_KEY=...`。
 
@@ -302,21 +302,21 @@ curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持�
 | 值 | 说明 | 依赖 |
 |---|---|---|
 | `local` | 字符 n-gram 哈希成固定维向量，**非语义**，只保证链路可跑 | 零依赖，**不需要 torch** |
-| `ollama` | 本机 Ollama 的 `/v1/embeddings`，默认 `bge-m3`（模型在 Ollama 仓库里，约 1.2 GB），零 Key | 本机跑着 Ollama |
+| `ollama` | 本地 Ollama 的 `/v1/embeddings`，默认 `bge-m3`（模型在 Ollama 仓库里，约 1.2 GB），零 Key | 本地跑着 Ollama |
 | `qwen` | 通义千问 `text-embedding-v3` | 需 `DASHSCOPE_API_KEY` |
 
 通过模型设置保存（或预设一键激活）时，非法的 `EMBEDDING_PROVIDER` 会在写入配置前被 **400 拒绝**并列出合法值（`local` / `ollama` / `qwen`）。边界：直接写进 `.env` 的 `EMBEDDING_PROVIDER` 不经过这道校验，非法值仍会退回本地哈希，并在 `/api/config` 的 `embedding_status` 里标 `degraded`。
 
 ### 跑黄金题库回归（可选）
 
-黄金题是**端到端**回归：拿真实模型跑 `golden/questions_v2.json` 里的题，再用规则判分器 `agent_eval.py` 打分，与 `golden/results_baseline.jsonl` 对比 —— pass→fail 即回归（退出码 1）。与单元测试互补：单测锁确定性契约，黄金题锁「活模型 + 真检索 + 真工具」整条链路不被改坏。
+黄金题是**端到端**回归：拿真实模型跑 `golden/questions_v2.json` 里的题，再用规则判分器 `agent_eval.py` 打分，与本地维护的基线结果行对比 —— pass→fail 即回归（退出码 1）。基线含真实运行轨迹，不入库（见 `.gitignore` 的 `golden/*.jsonl`）；克隆后请先自己跑一轮生成基线，再用它做后续对比。与单元测试互补：单测锁确定性契约，黄金题锁「活模型 + 真检索 + 真工具」整条链路不被改坏。
 
 ```bash
 # 1) 实跑：产出每题结果行（写类题必须 --isolate-fs，跑前备份、跑后还原）
 .venv\Scripts\python.exe run_golden.py --ids G01,G02,... --provider deepseek --model deepseek-flash \
     --project-id <prj> --isolate-fs --out golden/results.jsonl --max-seconds 200
 # 2) 打分 + 回归门
-.venv\Scripts\python.exe agent_eval.py --results golden/results.jsonl --baseline golden/results_baseline.jsonl
+.venv\Scripts\python.exe agent_eval.py --results golden/results.jsonl --baseline <本地基线路径>
 ```
 
 题库跨**两个 code_root**：本项目自身源码（`config.py`/`tools.py`/`agent.py`/`capacity.py`…）与一份附带的示例库 `booklog`。`--project-id` 决定当前 code_root，所以两套题要**分两批跑**再合并。L3 抗干扰降级档用 `--disable-tools search_code` 单独跑。
@@ -394,11 +394,11 @@ agent-workbench/
 
 | 维度 | 现状 |
 |---|---|
-| 单用户本地 | 本机默认免鉴权，可按需开单 token 校验。**不做**多用户协作与角色权限 |
+| 单用户本地 | 单机部署默认免鉴权，可按需开单 token 校验。**不做**多用户协作与角色权限 |
 | 桌面动作审批 | 可逆的点击/输入/拖拽**直接执行**，不做逐次审批 —— 逐次确认卡的骚扰成本高于收益。保留的灾难地板：键名白名单（`Win+r` 这类系统组合键一个事件都不投递）、坐标必须在目标窗口客户区内、引擎窗口只按当前项目根解析。**视觉点击**仍走审批台账（模型自称确认不算数） |
 | 平台 | 桌面端打包为 Windows 64 位；服务端与前端跨平台 |
 | 分发版能力 | 分包校验与 DOCX / PDF / PPTX / XLSX 生成在进程内完成；playtest、cProfile、`python_exec` 需要真实 Python 环境 |
-| 引擎嵌入覆盖 | Godot 4.7.2 + 真 Win32 宿主实机验证；100% / 125% 缩放未覆盖（本机 150%） |
+| 引擎嵌入覆盖 | Godot 4.7.2 + 真 Win32 宿主实机验证；100% / 125% 缩放未覆盖（150% 已验证） |
 | 大规模并发 | 单机单用户场景已验证；多项目 / 多引擎 / 长期运行评估未覆盖 |
 | 许可 | **MIT**（全文见 [`LICENSE`](LICENSE)）。`docs/` 与 `dist/` 里的第三方许可属于各自上游项目，不随本仓库授权 |
 

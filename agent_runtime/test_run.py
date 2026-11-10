@@ -7,9 +7,9 @@
    `--basetemp` 缺失或选择器写错时就是这个形状。
 2. **`-q` 的失败摘要会丢**。整屏 text 里 `FAILED a.py::t - AssertionError...` 才是能下手的
    信息，模型读文本时最容易漏的就是这几行。
-3. **`--lf` 在这台机器上不能用**：本工作树的 `.pytest_cache/` 是 `Permission denied`
+3. **`--lf` 在本工作树里不能用**：工作树的 `.pytest_cache/` 是 `Permission denied`
    （实测每条 pytest 都带 `PytestCacheWarning: could not create cache path
-   D:\\work\\rag-agent\\.pytest_cache\\v\\cache`），pytest 自己的 lastfailed 存不下来。
+   <worktree>\\.pytest_cache\\v\\cache`），pytest 自己的 lastfailed 存不下来。
    所以"只重跑上次失败的"由本模块自己记账（状态目录里的 last-failed.json），
    并且一律带 `-p no:cacheprovider`——否则每次跑都在刷那条警告，也把"缓存写成功"
    误当成"记账成功"。
