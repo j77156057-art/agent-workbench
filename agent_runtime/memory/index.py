@@ -165,7 +165,8 @@ def read_edges():
         conn = sqlite3.connect(uri, uri=True, timeout=2)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT e.src, e.dst, e.type, s.scope AS src_scope, d.scope AS dst_scope "
+            "SELECT e.src, e.dst, e.type, s.scope AS src_scope, d.scope AS dst_scope, "
+            "s.project AS src_project, d.project AS dst_project "
             "FROM edges e LEFT JOIN items s ON s.id = e.src "
             "LEFT JOIN items d ON d.id = e.dst").fetchall()
         conn.close()
@@ -174,7 +175,9 @@ def read_edges():
     return [{"src": str(row["src"]), "dst": str(row["dst"]),
             "type": str(row["type"] or ""),
             "src_scope": str(row["src_scope"] or ""),
-            "dst_scope": str(row["dst_scope"] or "")} for row in rows]
+            "dst_scope": str(row["dst_scope"] or ""),
+            "src_project": str(row["src_project"] or ""),
+            "dst_project": str(row["dst_project"] or "")} for row in rows]
 
 
 def _fts(conn):

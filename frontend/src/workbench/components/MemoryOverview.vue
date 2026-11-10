@@ -449,12 +449,12 @@ function short(text: string, length = 180) {
     <template v-else>
       <header class="mo-overview-head">
         <div><h2>注入快照</h2><p>只呈现本轮实际进入模型的上下文</p></div>
-        <span class="mo-snapshot-state" :class="{ stale: data.stale }"><i></i>{{ data.stale ? '快照待更新' : '已捕获' }}</span>
+        <span class="mo-snapshot-state" :class="{ stale: data.stale || !data.has_snapshot }"><i></i>{{ !data.has_snapshot ? '未捕获' : (data.stale ? '快照待更新' : '已捕获') }}</span>
       </header>
 
       <div class="mo-summary" aria-label="记忆快照关键数字">
         <div><span>本轮注入</span><strong>{{ metric(usedCount) }}</strong><small>条进入提示词</small></div>
-        <div><span>记忆库条目</span><strong>{{ metric(data.memories.length) }}</strong><small>条可追溯记录</small></div>
+        <div><span>记忆库条目</span><strong>{{ metric(data.memories.length) }}</strong><small>条可用记录</small></div>
         <div><span>生效守则</span><strong>{{ metric(data.rules.length) }}</strong><small>条当前约束</small></div>
       </div>
       <div class="mo-snapshot-meta"><span>{{ snapshotLabel }}</span><span>{{ data.turn_id || '尚无回合 ID' }}</span></div>
@@ -676,7 +676,7 @@ function short(text: string, length = 180) {
 
       <section v-if="detailsStage >= 4" class="mo-section" aria-labelledby="mo-catalog">
         <header class="mo-section-head">
-          <div><span class="mo-section-index">05</span><h3 id="mo-catalog">已记录的全部内容</h3></div>
+          <div><span class="mo-section-index">05</span><h3 id="mo-catalog">当前可用的全部内容</h3></div>
           <span>{{ data.memories.length }} 条</span>
         </header>
         <div class="mo-catalog">

@@ -134,12 +134,17 @@ def _catalog(agent, project, session):
     import agent_memory
     # 真隔离：legacy 库（项目长期记忆）按 agent_id 过滤；shared/project/hook 是
     # 项目/会话级内容语义层，不属于任何单个 agent，原样列出并在 UI 明确标注。
+    #
+    # 库存只算「还能被注入/检索」的行：retired / superseded 仍要能追溯，但不能
+    # 混进分母 —— 否则面板会把已作废的条目算成 21 条库存，和 active 数对不上。
     owner = str(getattr(agent, "agent_id", "") or "main")
-    rows = [_node(row, "legacy") for row in agent_memory.audit(agent.memory_scope, agent_id=owner)]
+    rows = [_node(row, "legacy") for row in agent_memory.audit(agent.memory_scope, agent_id=owner)
+            if str(row.get("status") or "active") == "active"]
     try:
         from . import hooks, promote
-        rows.extend(_node(row, "shared") for row in promote.shared_items(include_inactive=True))
-        rows.extend(_node(row, "project") for row in promote.candidates(project))
+        rows.extend(_node(row, "shared") for row in promote.shared_items())
+        rows.extend(_node(row, "project") for row in promote.candidates(project)
+                    if str(row.get("status") or "candidate") == "candidate")
         if session:
             rows.extend(_node(row, "hook") for row in hooks.items(project, session))
     except Exception:  # noqa: BLE001 —— v2 未启用/不可读时保留旧库
@@ -151,11 +156,14 @@ def _store_for_scope(scope):
     return "shared" if str(scope or "") == "global" else "project"
 
 
-def _edges(memories):
+def _edges(memories, project=""):
     """把索引 `edges` 表解析成图上的真实邻接；解析不了就如实报，不补合成边。
 
     `weight` 缺失原因：索引 schema 的 edges 只有 (src, dst, type)，没有权重列，
     这里返回 null，而不是拿一个好看的数字补上。
+
+    `edges` 表是跨项目共用的；统计前必须先按项目过滤，否则别的项目的边会被读成
+    “本项目索引表 N 条、端点全缺失”，把 0 条真实边说成 N 条坏边。
     """
     from . import index
 
@@ -166,6 +174,13 @@ def _edges(memories):
                     "source": "agent_runtime/memory/index.py → edges 表（mode=ro 只读）",
                     "in_table": 0, "resolved": 0, "unresolved": 0,
                     "unresolved_rows": [], "by_type": {}, "weight_available": False}
+    if project:
+        # global 条目对所有项目可见；项目条目只算当前项目的。
+        raw = [row for row in raw
+               if str(row.get("src_scope") or "") == "global"
+               or str(row.get("dst_scope") or "") == "global"
+               or str(row.get("src_project") or "") == str(project)
+               or str(row.get("dst_project") or "") == str(project)]
     known = {(str(node["store"]), str(node["id"])) for node in memories}
     edges, unresolved = [], []
     for row in raw:
@@ -308,7 +323,7 @@ def view(agent, *, project, session, agent_id="main"):
         degraded.append("当前会话还没有实际注入快照；亮起的节点只会在真实组提示词后出现")
     elif snapshot.get("stale"):
         degraded.append("这是最近一条持久化注入快照；项目/会话守则与回答正文未完整持久化，相关合规项只能标为无法判定")
-    edges, edge_stats = _edges(memories)
+    edges, edge_stats = _edges(memories, project)
     return {
         "ok": True, "session_id": session, "agent_id": agent_id,
         "layer_config": layers.config(),

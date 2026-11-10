@@ -728,7 +728,7 @@ async function reindex() {
 
     <div class="mp-tabs" role="tablist">
       <button type="button" role="tab" :aria-selected="active === 'overview'" class="mp-tab" :class="{ on: active === 'overview' }" @click="active = 'overview'">
-        记忆总览 <span title="分子=本轮实际注入的记忆条数，分母=该 Agent 记忆库存总条数；单位是条，不是字数/容量">{{ inspection?.injected.length || 0 }}/{{ inspection?.memories.length || 0 }} 条</span>
+        记忆总览 <span title="注入=本轮实际进入提示词的条数（流量）；库存=当前可注入/可检索的条数（active 的 legacy/共享条目 + candidate 项目条目，不含 retired/superseded）。两者口径不同，不是覆盖率">{{ inspection?.injected.length || 0 }} 注入 · {{ inspection?.memories.length || 0 }} 库存</span>
       </button>
       <button
         v-for="layer in layers"

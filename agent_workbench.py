@@ -408,9 +408,9 @@ def memories(project_id, session_id, agent_id):
         "legacy_unclassified_count": legacy,
         "isolated_dimension": "memories.agent_id",
         "note": ("常驻守则 / 用户画像 / 共享记忆 / 会话钩子仍是项目或会话级内容语义层，"
-                 "不按 agent 隔离；本列表只含该 agent 名下的长期记忆（legacy 库）。"
-                 "原有 legacy 行统一归到平台助手并标记「历史未分类」；上下文面板里的 183 条"
-                 "是 legacy + shared/project/hook 的总库存，不等于本列表条数。"),
+                 "不按 agent 隔离；本列表只含该 agent 名下的长期记忆（legacy 库，含 retired 行）。"
+                 "原有 legacy 行统一归到平台助手并标记「历史未分类」；上下文面板里的库存数"
+                 "是 legacy + shared/project/hook 中仍可注入/检索的条数，不等于本列表条数。"),
         "source": "agent_memory SQLite（scope + agent_id 双维度）",
     }
 
