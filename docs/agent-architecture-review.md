@@ -15,7 +15,7 @@
 | 成功标准 | 1065 项单测全绿；场景画布 54 项、UI 23 项、引擎真机 79 项 | 已确认（项目记忆） |
 | 任务结构 | 混合：代码问答（检索为主）/ 受控改码（写+验证）/ 多角色协作（delegate+orchestrate）/ 声明式流程（flows） | 从代码反推，**默认假设** |
 | 数据边界 | 单项目 code_root（ContextVar 绑定）+ 分区子目录 + 白名单越界目录 | 已确认（regions/config） |
-| 硬约束 | 离线可用（mock provider + local embedding）；本机 12GB 显存；Windows 桌面单进程 | 已确认 |
+| 硬约束 | 离线可用（mock provider + local embedding）；目标机约 12GB 显存；Windows 桌面单进程 | 已确认 |
 | 用户场景 | 单人桌面 GUI（pywebview + Vue），非多用户、非服务端 | 已确认 |
 | 边界 | 不做多用户/鉴权/数据库；不改只读契约；前端 AI 改写不自动落盘 | 已确认（项目铁律） |
 | 技术栈约束 | Python 3.13 + FastAPI + PyInstaller + Vue 3；Ollama/DashScope/DeepSeek 多 provider | 已确认 |

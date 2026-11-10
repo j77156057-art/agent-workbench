@@ -26,7 +26,7 @@ BM25 默认使用持久化 SQLite lexical postings：默认写入 `<STATE_ROOT>/
 
 受限部署可以设置 `DOCMIND_LEXICAL_BACKEND=snapshot`，使用带指纹的 JSON snapshot（`<collection>.bm25.json`）；`DOCMIND_LEXICAL_PERSIST=0` 可关闭 JSON 持久化，`DOCMIND_LEXICAL_INDEX_DIR` 可更换目录。两种后端都支持安全回退和状态诊断。
 
-可用 `python -m benchmarks.retrieval_sqlite --sizes 1000,10000,100000` 做本机基准。当前环境实测：1k 文档构建/查询/更新约 `72/7/16ms`，10k 约 `455/55/39ms`，100k 约 `12442/794/336ms`；实际部署仍应在目标机器重跑并据此调节候选数和同步窗口。
+可用 `python -m benchmarks.retrieval_sqlite --sizes 1000,10000,100000` 做本地基准。当前环境实测：1k 文档构建/查询/更新约 `72/7/16ms`，10k 约 `455/55/39ms`，100k 约 `12442/794/336ms`；实际部署仍应在目标机器重跑并据此调节候选数和同步窗口。
 
 工作流保存的五层上下文（route/project/task/subagent/output）通过持久化压缩队列处理。默认后端是面向单机/Windows 的原子 JSON 队列：状态写入 `<STATE_ROOT>/.docmind/context_compression.json`，任务状态、源快照 digest、结果 digest、尝试次数和异常都可跨窗口恢复，不触碰 SQLite 原生扩展。需要多进程队列时可设置 `DOCMIND_CONTEXT_COMPRESSION_BACKEND=sqlite`；只有显式设置 `DOCMIND_CONTEXT_COMPRESSION_ASYNC=1` 才启用后台 SQLite worker，否则在当前保存调用内同步完成并校验 digest。进程重启后 queued 或超时 running 任务会被重新领取；保存等待超时会同步回退，但队列任务仍可由后续进程完成。
 
@@ -151,7 +151,7 @@ $env:DOCMIND_NO_TEST_ISOLATION="1"
 
 工作流的步数预算随任务规模动态放大：子代理默认最多 `SUBAGENT_MAX_STEPS=24` 步、硬顶 `SUBAGENT_STEPS_HARD_CAP=64`（环境变量可调）；工作流总预算为 `min(硬顶, max(下限, 任务数*24+4))`，内置默认区间 `[24, 200]`，可由部署侧环境变量覆盖：`DOCMIND_WORKFLOW_STEPS_MIN` 设置自动预算下限（同时是「未显式指定」的基准值，简单任务可下调）、`DOCMIND_WORKFLOW_STEPS_MAX` 设置硬顶（复杂任务可上调，颠倒或非法的配置会被安全回退/夹取）。规划时显式给出的 `max_steps`（含低于下限的值）会被尊重并透传到执行节点，但不超过硬顶；默认值与下限相同则视为未指定、走自动预算。多 Agent 并行波各自计步，因此长流程不会被单代理的小预算误截断。
 
-本机 Ollama 单次短 JSON smoke（`num_ctx=8192`，仅作相对参考）测得：`qwen3:4b` 约 13 秒、`qwen3:14b` 约 20 秒、`qwen3.6:35b-a3b` 约 32 秒。完整 Harness 仍建议 4B/14B/35B 默认串行；并发提升必须以目标机器实测显存、超时和失败率为依据。
+本地 Ollama 单次短 JSON smoke（`num_ctx=8192`，仅作相对参考）测得：`qwen3:4b` 约 13 秒、`qwen3:14b` 约 20 秒、`qwen3.6:35b-a3b` 约 32 秒。完整 Harness 仍建议 4B/14B/35B 默认串行；并发提升必须以目标机器实测显存、超时和失败率为依据。
 
 五层上下文除了预算外，还会在每次 checkpoint 保存 bounded snapshot 和 digest。`route/project/task/subagent/output` 的快照可在另一个进程恢复；如果恢复时发现正文缺失或 digest 不一致，会同步重建快照并标记 `job_state=recovery_sync`，再由 `snapshot_meta.valid` 校验恢复内容。Subagent 只携带依赖摘要，不共享父会话原文。
 
