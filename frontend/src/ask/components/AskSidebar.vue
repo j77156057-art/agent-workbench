@@ -435,14 +435,18 @@ const currentSessionTitle = computed(() => {
   font-weight: 600;
 }
 
-/* 平台助手：与「最近对话」并列的独立入口块 */
+/* 平台助手：与「最近对话」并列的独立入口块。
+   .ask-side 只把文字类令牌覆写成导航轨道的亮色（--ink / --text / --text-muted），
+   没有覆写 --bg-raised，所以卡片背景仍解析成页面皮肤的表面色：
+   浅色皮肤下是近白底 + 白色轨道字 = 白底白字；深色皮肤下则反过来变深底深字。
+   这里统一改用轨道自己的 --ui2-rail-* 令牌，让底色和文字始终同属一套配色。 */
 .assistant-block {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
   gap: 6px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--ui2-rail-line);
 }
 
 .assistant-entry {
@@ -453,16 +457,16 @@ const currentSessionTitle = computed(() => {
   width: calc(100% - 20px);
   margin: 0 10px;
   padding: 7px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--ui2-rail-line);
   border-radius: 8px;
-  background: var(--bg-raised);
-  color: var(--ink);
+  background: color-mix(in srgb, var(--ui2-rail-text) 9%, transparent);
+  color: var(--ui2-rail-text);
   text-align: left;
 }
 
 .assistant-entry:hover {
-  border-color: var(--accent-text);
-  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--ui2-rail-text) 34%, transparent);
+  background: color-mix(in srgb, var(--ui2-rail-text) 16%, transparent);
 }
 
 .assistant-entry-main {
@@ -479,14 +483,14 @@ const currentSessionTitle = computed(() => {
 
 .assistant-entry-main small {
   overflow: hidden;
-  color: var(--text-muted);
+  color: var(--ui2-rail-muted);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .assistant-entry svg {
-  color: var(--text-muted);
+  color: var(--ui2-rail-muted);
 }
 
 .history-section {
