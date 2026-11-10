@@ -343,9 +343,17 @@ async function refreshSessionList() {
   if (demoMode.value) return
   try {
     const result = await harnessApi.sessions()
-    // 问答页只列 ask- 域会话（工作台 web- 域不混入），后端已按当前项目分桶
+    // 问答页列平台助手的两类会话：ask- 是问答页自身的，web- 是工作台时期
+    // 同一个平台助手留下的历史。两者都属于平台助手，不能因为入口迁移就
+    // 让旧记录在界面上消失；sub- 是子 Agent 会话，仍留给卡片墙。后端已按
+    // 当前项目分桶，这里只做域过滤。空的 web-* 只是打开工作台时自动落盘的
+    // 占位，没有实际对话，不当作历史记录展示。
     sessionItems.value = (Array.isArray(result.items) ? result.items : [])
-      .filter(i => String(i.session_id || '').startsWith('ask-'))
+      .filter(i => {
+        const id = String(i.session_id || '')
+        if (id.startsWith('ask-')) return true
+        return id.startsWith('web-') && Number(i.turns || 0) > 0
+      })
   } catch (e) {
     showToast((e as Error).message || '问答历史加载失败')
   }
