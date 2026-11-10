@@ -15,7 +15,7 @@ import type {
   MemoryPinnedEntry,
 } from '../api'
 
-const props = withDefaults(defineProps<{ visible: boolean; sessionId: string; agentId?: string; agentLabel?: string }>(), { agentId: 'main', agentLabel: '平台助手' })
+const props = withDefaults(defineProps<{ visible: boolean; sessionId: string; agentId?: string; agentLabel?: string; embedded?: boolean }>(), { agentId: 'main', agentLabel: '平台助手', embedded: false })
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const mode = ref<'next' | 'last'>('next')
@@ -708,18 +708,18 @@ async function reindex() {
 
 <template>
   <Transition name="mp-panel">
-    <aside v-if="visible" class="mp" :class="{ 'is-overview': active === 'overview' }" :data-agent-id="agentId" data-memory-panel role="complementary" aria-label="上下文记忆">
+    <aside v-if="visible" class="mp" :class="{ 'is-overview': active === 'overview', 'mp--embedded': embedded }" :data-agent-id="agentId" data-memory-panel role="complementary" aria-label="上下文记忆">
     <header class="mp-head">
       <div class="mp-identity">
         <span class="mp-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <div><strong>{{ agentLabel }} 的上下文 · 独立</strong><span>{{ agentId }} · {{ sessionId || '未选择会话' }}</span></div>
+        <div><strong>{{ agentLabel }} 的上下文 · 独立</strong><span>{{ layers.length }} 层 · 共 {{ totalChars.toLocaleString() }} 字 · {{ sessionId ? '当前会话' : '未选择会话' }}</span></div>
       </div>
       <span v-if="active === 'overview'" class="mp-observing"><i></i>观测中</span>
       <div v-else class="mp-modes" role="group" aria-label="注入视图">
         <button type="button" :class="{ on: mode === 'next' }" @click="load('next')">下一回合</button>
         <button type="button" :class="{ on: mode === 'last' }" @click="load('last')">上一回合</button>
       </div>
-      <button class="mp-close" type="button" aria-label="关闭上下文记忆" @click="emit('close')">×</button>
+      <button v-if="!embedded" class="mp-close" type="button" aria-label="关闭上下文记忆" @click="emit('close')">×</button>
     </header>
 
     <div v-if="loading && active !== 'overview'" class="mp-inline-status" role="status"><i></i>正在读取当前层级的真实数据</div>
@@ -1157,6 +1157,7 @@ async function reindex() {
 .mp { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(var(--mi-panel-width-base), 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); color-scheme: dark; font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
 .mp *, .mp *::before, .mp *::after { box-sizing: border-box; }
 .mp.is-overview { width: min(var(--mi-panel-width), 100vw); }
+.mp--embedded, .mp--embedded.is-overview { position: relative; inset: auto; z-index: auto; width: 100%; height: 100%; max-width: none; border-left: 0; box-shadow: none; flex: 1 1 auto; min-height: 0; }
 .mp-panel-leave-active { transition: transform var(--mi-duration-slow) var(--mi-ease-enter), opacity var(--mi-duration-base) var(--mi-ease-standard); }
 .mp-panel-leave-to { transform: translateX(100%); opacity: 0; }
 .mp-head { display: flex; align-items: center; gap: var(--mi-space-4); min-height: var(--mi-header-height); padding: 0 var(--mi-space-5); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); background: var(--mi-bg); }

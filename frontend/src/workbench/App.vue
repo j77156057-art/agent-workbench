@@ -17,7 +17,6 @@ import RewriteDiffDialog from './components/RewriteDiffDialog.vue'
 import TaskEnginePanel from './components/TaskEnginePanel.vue'
 import SceneRuntimePanel from './components/SceneRuntimePanel.vue'
 import ChatDock from './components/ChatDock.vue'
-import AgentTreePanel from './components/AgentTreePanel.vue'
 import ExecApprovalDialog from './components/ExecApprovalDialog.vue'
 import GpuPanel from './components/GpuPanel.vue'
 import EdaVerifyPanel from './components/EdaVerifyPanel.vue'
@@ -36,7 +35,6 @@ import { regionColor } from './theme'
 import { projectApi, getProjectId, setProjectId, getSessionId, type ProjectInfo } from './api'
 import { appEvents } from './eventBus'
 import { loadLayout, onLayoutChange, type LayoutKey } from './layoutMode'
-import { agentTreeOpen, toggleAgentTree } from './uiPanels'
 
 // 重型弹层/视图按需加载：仅在首次打开时拉取独立 chunk（首屏不下载、不解析）
 const RelationGraph = defineAsyncComponent(() => import('./components/RelationGraph.vue'))
@@ -309,13 +307,6 @@ const viewBtn = ref<HTMLButtonElement | null>(null)
 /** 统一设置页（用量费用 / 网络搜索 / MCP / 智能体 / 运行与引擎）显隐 */
 const settingsVisible = ref(false)
 const settingsSection = ref<'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'runtime'>('usage')
-/** Agent 树是运行时的任务编排状态，不属于长期记忆：独立顶栏入口 + 独立抽屉。
- *  抽屉与记忆面板互斥（uiPanels.ts），避免两个 720px 侧栏叠在一起。 */
-const agentTreeSession = ref('')
-function openAgentTree() {
-  agentTreeSession.value = getSessionId()
-  toggleAgentTree()
-}
 function openSettings(tab: 'usage' | 'search' | 'mcp' | 'agent' | 'model' | 'runtime' = 'usage') {
   settingsSection.value = tab
   // 先同步挂载异步设置组件，再切换可见状态，避免首次点击时 watcher
@@ -819,24 +810,7 @@ onBeforeUnmount(() => {
           </svg>
           问答页
         </a>
-        <!-- Agent 树是运行时任务编排状态，不是长期记忆：独立入口（一键打开独立抽屉），
-             不放进右侧记忆面板的 tab 条，也不与记忆内容共用布局。 -->
-        <button
-          class="wb-save-btn wb-icon-btn wb-agent-btn"
-          type="button"
-          title="Agent 树：运行时任务编排与审批（独立于长期记忆）"
-          aria-label="Agent 树"
-          :aria-expanded="agentTreeOpen"
-          data-agent-tree-entry
-          @click="openAgentTree"
-        >
-          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" aria-hidden="true">
-            <circle cx="6.5" cy="2.6" r="1.3" />
-            <circle cx="3" cy="10" r="1.1" />
-            <circle cx="10" cy="10" r="1.1" />
-            <path d="M6.5 3.9 V6.3 M3 8.9 V6.3 H10 M10 8.9 V6.3" />
-          </svg>
-        </button>
+        <!-- Agent 树已随平台助手迁到问答页，开发台不再挂入口与抽屉。 -->
         <button
           class="wb-save-btn wb-icon-btn wb-settings-btn"
           title="设置：Token 用量与费用、网络搜索、MCP 连接器、智能体预设"
@@ -1224,8 +1198,5 @@ onBeforeUnmount(() => {
     <BackgroundJobsPanel v-if="everMounted.jobs" />
     <SelectionToolbar />
     <SettingsView v-if="everMounted.settings" :visible="settingsVisible" :initial-tab="settingsSection" @close="settingsVisible = false" />
-    <Teleport to="body">
-      <AgentTreePanel :visible="agentTreeOpen" :session-id="agentTreeSession" />
-    </Teleport>
   </div>
 </template>

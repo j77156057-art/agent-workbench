@@ -883,8 +883,6 @@ html[data-material='glass'] .wb-proj-notice {
   padding: 0 !important;
   display: inline-flex; align-items: center; justify-content: center;
 }
-/* Agent 树抽屉打开时给入口一个明确状态，避免用户找不到它从哪儿弹出来的。 */
-.wb-agent-btn[aria-expanded="true"] { border-color: var(--accent) !important; color: var(--accent) !important; }
 .wb-ask-link {
   display: inline-flex; align-items: center; gap: 6px;
   text-decoration: none;

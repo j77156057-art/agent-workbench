@@ -315,6 +315,8 @@ html[data-layout='fixed'] .wb-body--rail-resize .ft-panel { border-right: 0; }
 /* 拖动期间整页保持列宽光标，避免掠过主区时光标跳回箭头、拖动手感断裂 */
 body.ft-col-resizing { cursor: col-resize; user-select: none; }
 body.ft-col-resizing * { cursor: col-resize !important; }
+/* 拖拽经过内嵌预览时，iframe 会自己吞掉指针事件；统一让它们透传。 */
+body.ft-col-resizing iframe { pointer-events: none !important; }
 
 /* ==========================================================
    ⑥b 右侧预览栏宽度拖拽（第三栏）

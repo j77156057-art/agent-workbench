@@ -14,20 +14,20 @@ import { useWorkflowGate } from '../workbench/composables/useWorkflowGate'
 import { useOrphanWorkflow } from '../workbench/composables/useOrphanWorkflow'
 import { useChatStream } from '../workbench/composables/useChatStream'
 import AskSidebar from './components/AskSidebar.vue'
+import { usePanelWidth } from '../shared/usePanelWidth'
 import AskMessage from './components/AskMessage.vue'
 import FileViewer from './components/FileViewer.vue'
 // 设置弹窗体积大（117KB）且低频：异步组件 + v-if，打开时才拉取
 const ModelSettingsDialog = defineAsyncComponent(() => import('../workbench/components/ModelSettingsDialog.vue'))
 // 平台助手已从工作台挪到问答页：记忆/上下文与卡片墙都复用工具体，按需加载，
-// 不把记忆检查器/卡片墙整包塞进问答首屏。
-const AssistantMemoryPanel = defineAsyncComponent(() => import('../workbench/components/MemoryContextPanel.vue'))
-const AgentWallPanel = defineAsyncComponent(() => import('../workbench/components/AgentWallPanel.vue'))
+// 不把记忆检查器/卡片墙整包塞进问答首屏。两者共用右侧栏外壳（顶部小标签切换）。
+const RightSidebar = defineAsyncComponent(() => import('../workbench/components/RightSidebar.vue'))
 import type { ChatMsg, ChatTraceItem } from '../workbench/composables/chat-types'
 import { onSkinChange } from '../workbench/skins'
 // 面板开关直接复用工作台的 uiPanels：问答页没有工作台实例，同一份 ref 不会出现两套 UI。
 import {
-  agentWallOpen, memoryPanelOpen, memoryAgentId, memoryAgentLabel,
-  openAgentWall, closeAgentWall, closeMemoryPanel,
+  memoryAgentId, memoryAgentLabel,
+  openAgentWall, openAgentContext, closeRightSidebar,
 } from '../workbench/uiPanels'
 import { prefs } from './askPrefs'
 
@@ -84,8 +84,7 @@ const viewer = ref<{ path: string; line: number } | null>(null)
 // 三块落点：对话=本页问答区，卡片墙=AgentWallPanel，上下文=MemoryContextPanel。
 // 面板开关复用工作台 uiPanels 的 ref；本页没有工作台实例，不存在两套 UI 抢同一开关。
 function focusAssistantChat() {
-  closeAgentWall()
-  closeMemoryPanel()
+  closeRightSidebar()
   closeSidebar()
   void nextTick(() => textareaEl.value?.focus())
 }
@@ -94,10 +93,7 @@ function openAssistantWall() {
   closeSidebar()
 }
 function openAssistantMemory() {
-  closeAgentWall()
-  memoryAgentId.value = 'main'
-  memoryAgentLabel.value = '平台助手'
-  memoryPanelOpen.value = true
+  openAgentContext('main', '平台助手')
   closeSidebar()
 }
 // 记忆面板的 --mi-* 令牌默认只有 [:root 浅色] 和 [data-skin='observatory' 深色] 两档，
@@ -131,9 +127,22 @@ const sidebarOpen = ref(false)
 const sidebarRef = ref<InstanceType<typeof AskSidebar> | null>(null)
 const sidebarToggle = ref<HTMLButtonElement | null>(null)
 const mobileNavigation = window.matchMedia('(max-width: 920px)')
+const sidebarNarrow = ref(mobileNavigation.matches)
 function onNavigationResize() {
+  sidebarNarrow.value = mobileNavigation.matches
   if (!mobileNavigation.matches) sidebarOpen.value = false
 }
+// 左栏宽度拖拽：桌面态右边缘手柄；≤920px 是覆盖式抽屉，退回 CSS 默认宽度。
+const {
+  width: sidebarWidth, dragging: sidebarResizing,
+  onPointerDown: onSidebarResizeStart, nudge: nudgeSidebarWidth, reset: resetSidebarWidth,
+} = usePanelWidth(() => (sidebarRef.value?.$el as HTMLElement | undefined) || null, {
+  storageKey: 'docmind.askSideWidth', min: 200, max: 420, mainMin: 480, edge: 'right',
+})
+const sidebarStyle = computed(() => (
+  !sidebarNarrow.value && sidebarWidth.value != null
+    ? { width: `${sidebarWidth.value}px`, flex: `0 0 ${sidebarWidth.value}px` }
+    : undefined))
 onMounted(() => mobileNavigation.addEventListener('change', onNavigationResize))
 onUnmounted(() => mobileNavigation.removeEventListener('change', onNavigationResize))
 function closeSidebar() {
@@ -921,6 +930,25 @@ onMounted(async () => {
       @open-assistant-chat="focusAssistantChat"
       @open-agent-wall="openAssistantWall"
       @open-assistant-memory="openAssistantMemory"
+      :style="sidebarStyle"
+    />
+    <!-- 拖拽手柄：零宽占位，命中区向两侧各扩 4px，不改变现有布局宽度 -->
+    <div
+      v-if="!sidebarNarrow"
+      class="ask-resizer"
+      :class="{ dragging: sidebarResizing }"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="调整导航栏宽度"
+      :aria-valuenow="sidebarWidth ?? 256"
+      aria-valuemin="200"
+      aria-valuemax="420"
+      tabindex="0"
+      title="拖动调整导航栏宽度，双击恢复默认"
+      @pointerdown="onSidebarResizeStart"
+      @dblclick="resetSidebarWidth"
+      @keydown.left.prevent="nudgeSidebarWidth(-16)"
+      @keydown.right.prevent="nudgeSidebarWidth(16)"
     />
 
     <main class="ask-main" :class="{ 'is-empty': !messages.length }" :inert="sidebarOpen">
@@ -1127,13 +1155,12 @@ onMounted(async () => {
         @saved="onModelSaved"
       />
       <FileViewer v-if="viewer" :path="viewer.path" :line="viewer.line" @close="viewer = null" />
-      <AgentWallPanel :visible="agentWallOpen" :session-id="sid()" ask-host />
-      <AssistantMemoryPanel
-        :visible="memoryPanelOpen"
-        :session-id="sid()"
+      <RightSidebar
+        :wall-session-id="sid()"
+        :memory-session-id="sid()"
         :agent-id="memoryAgentId || 'main'"
         :agent-label="memoryAgentLabel || '平台助手'"
-        @close="closeMemoryPanel"
+        ask-host
       />
     </main>
   </div>
@@ -1142,6 +1169,11 @@ onMounted(async () => {
 <style scoped>
 .ask-shell { display: flex; height: 100dvh; overflow: hidden; background: var(--bg); }
 .ask-main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100dvh; background: var(--surface); }
+/* 左栏宽度手柄：零宽占位，命中区向两侧各扩 4px，不改变现有布局宽度 */
+.ask-resizer { flex: 0 0 0; width: 0; align-self: stretch; position: relative; z-index: 20; cursor: col-resize; touch-action: none; outline: none; }
+.ask-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: -4px; right: -4px; }
+.ask-resizer:hover::before, .ask-resizer.dragging::before, .ask-resizer:focus-visible::before { background: color-mix(in srgb, var(--accent) 55%, transparent); }
+@media (max-width: 920px) { .ask-resizer { display: none; } }
 .ask-topbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 58px; padding: 10px 28px; border-bottom: 1px solid var(--border); }
 .tb-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .tb-title { margin: 0; font-family: var(--font-ui); font-size: var(--fs-h3); font-weight: 600; letter-spacing: -.02em; color: var(--ink); white-space: nowrap; }

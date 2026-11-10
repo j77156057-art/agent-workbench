@@ -46,11 +46,10 @@ const WorkflowCard = defineAsyncComponent(() => import('./WorkflowCard.vue'))
 import WorkflowMembersDock from './WorkflowMembersDock.vue'
 import ChatComposer from './ChatComposer.vue'
 import TaskFeedbackBar from './TaskFeedbackBar.vue'
-import MemoryContextPanel from './MemoryContextPanel.vue'
-import AgentWallPanel from './AgentWallPanel.vue'
+import RightSidebar from './RightSidebar.vue'
 import PlanPanel from './PlanPanel.vue'
 import FileDiffDialog from './FileDiffDialog.vue'
-import { agentWallOpen, memoryPanelOpen, memoryAgentId, memoryAgentLabel, openAgentWall, closeMemoryPanel, closeAgentWall } from '../uiPanels'
+import { memoryAgentId, memoryAgentLabel, openAgentWall } from '../uiPanels'
 
 import type { WorkflowSummary } from '../api'
 import type { PreviewFeedbackRequest } from '../previewFeedback'
@@ -351,7 +350,6 @@ function dismissFeedback() {
 }
 
 // 记忆 v2 上下文面板：右侧抽屉，可查看/编辑各层实际注入内容。
-// 与 Agent 树抽屉共用互斥开关（uiPanels.ts）：两者语义不同，但都占右栏。
 // 入口先落到 Agent 卡片墙：不默认把「记忆」等同于平台助手那一份，
 // 点卡片看各自的对话 / 记忆 / 使用记录；卡片内再进完整六 Tab 上下文面板。
 function openMemoryPanel() {
@@ -2267,21 +2265,13 @@ const webTitle = computed(() => webOn.value
     />
 
     <!-- 全局弹层只在正常工作台对话台挂载；replay 示例会从卡片墙里打开，
-         若不排除会再挂一份 AgentWallPanel / MemoryContextPanel（可见标记是全局的）。 -->
+         若不排除会再挂一份右侧侧栏（可见标记是全局的）。 -->
     <Teleport v-if="!isReplay" to="body">
-      <AgentWallPanel
-        :visible="agentWallOpen"
-        :session-id="currentSessionId()"
-        @close="closeAgentWall"
-      />
-    </Teleport>
-    <Teleport v-if="!isReplay" to="body">
-      <MemoryContextPanel
-        :visible="memoryPanelOpen"
-        :session-id="memoryPanelSessionId()"
+      <RightSidebar
+        :wall-session-id="currentSessionId()"
+        :memory-session-id="memoryPanelSessionId()"
         :agent-id="memoryAgentId"
         :agent-label="memoryAgentLabel"
-        @close="closeMemoryPanel"
       />
     </Teleport>
     <Teleport v-if="!isReplay" to="body">

@@ -65,9 +65,9 @@ function viewDiffFile(path: string) {
     </header>
 
     <div class="rr-body">
-      <RailBrowser v-if="rightRailTab === 'browser'" />
-      <RailFile v-else-if="rightRailTab === 'file'" />
-      <div v-else class="rr-diff">
+      <RailBrowser v-show="rightRailTab === 'browser'" />
+      <RailFile v-show="rightRailTab === 'file'" />
+      <div v-show="rightRailTab === 'diff'" class="rr-diff">
         <DiffBody :entries="rightRailDiff" action-label="只读查看" @action="viewDiffFile($event.path)" />
       </div>
     </div>
@@ -91,12 +91,14 @@ function viewDiffFile(path: string) {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
 }
-.rr-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; padding: 2px; border-radius: var(--r-sm); background: var(--bg); }
+.rr-tabs { flex: 1 1 auto; display: flex; flex-wrap: nowrap; align-items: center; gap: 2px; min-width: 0; padding: 2px; overflow-x: auto; overflow-y: hidden; white-space: nowrap; border-radius: var(--r-sm); background: var(--bg); scrollbar-width: thin; }
 .rr-tab {
+  flex: 0 0 auto;
   padding: 5px 10px;
   font-size: var(--fs-sm);
   font-weight: 600;
