@@ -220,9 +220,8 @@ class OwnerWriteGuardTests(unittest.TestCase):
         first = index.migrate_owner()
         self.assertTrue(first["ok"])
         self.assertTrue(first["added_column"])
-        # 回填发生在 _ensure_owner 的 ALTER ... DEFAULT 'main' 里，
-        # migrate_owner 随后的 UPDATE 匹配 0 行；归属正确性看 owners 分布。
-        self.assertEqual(first["backfilled"], 0)
+        # 补列的 ALTER DEFAULT 已把 owner 写进既有行；backfilled 按既有行数报。
+        self.assertEqual(first["backfilled"], 2)
         self.assertEqual(first["total"], 2)
         self.assertEqual(first["owners"], {"main": 2})
         backup = first["backed_up"]

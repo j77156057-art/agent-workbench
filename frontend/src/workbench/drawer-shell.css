@@ -1,0 +1,17 @@
+/* AgentWallPanel 与 MemoryContextPanel 共用的抽屉外壳（2026-11-17 去重）。
+   组件差异（宽度、caption 行高、退出动画）留在各自 scoped 块。
+   embedded 用加倍类提特异性：要压过组件内 .mp.is-overview 的宽度规则。 */
+.aw, .mp { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
+.aw *, .aw *::before, .aw *::after, .mp *, .mp *::before, .mp *::after { box-sizing: border-box; }
+.aw.aw--embedded, .mp.mp--embedded, .mp.mp--embedded.is-overview { position: relative; inset: auto; z-index: auto; width: 100%; height: 100%; max-width: none; border-left: 0; box-shadow: none; flex: 1 1 auto; min-height: 0; }
+.aw-head, .mp-head { display: flex; align-items: center; gap: var(--mi-space-4); min-height: var(--mi-header-height); padding: 0 var(--mi-space-5); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); background: var(--mi-bg); }
+.aw-identity, .mp-identity { display: flex; align-items: center; gap: var(--mi-space-3); flex: 1; min-width: 0; }
+.aw-identity > div, .mp-identity > div { display: flex; flex-direction: column; min-width: 0; }
+.aw-identity strong, .mp-identity strong { font-size: var(--mi-fs-title); line-height: var(--mi-lh-title); font-weight: var(--mi-weight-semibold); }
+.aw-identity span:last-child, .mp-identity span:last-child { overflow: hidden; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); text-overflow: ellipsis; white-space: nowrap; }
+.aw-mark, .mp-mark { position: relative; flex: 0 0 var(--mi-space-6); width: var(--mi-space-6); height: var(--mi-space-6); }
+.aw-mark i, .mp-mark i { position: absolute; inset: 0; border: var(--mi-border-width) solid var(--mi-border-strong); border-radius: var(--mi-radius-lg); }
+.aw-mark i:nth-child(2), .mp-mark i:nth-child(2) { inset: var(--mi-space-2); border-color: var(--mi-accent-dim); }
+.aw-mark i:nth-child(3), .mp-mark i:nth-child(3) { inset: var(--mi-space-3); border: 0; background: var(--mi-accent); box-shadow: var(--mi-glow-node); }
+.aw-close, .mp-close { flex: 0 0 var(--mi-icon-button); width: var(--mi-icon-button); height: var(--mi-icon-button); padding: 0; border: var(--mi-border-width) solid transparent; border-radius: var(--mi-radius-control); background: transparent; color: var(--mi-text-secondary); font-size: var(--mi-fs-title); line-height: 1; cursor: pointer; }
+.aw-close:hover, .mp-close:hover { border-color: var(--mi-border); background: var(--mi-hover); color: var(--mi-text); }

@@ -7,6 +7,7 @@
 // 两处可改，是纯粹的对账歧义。唯一被移走时无处可去的动作是「计数清零」，
 // 已补进设置页的用量分区（resetSpent）。这里只留「这张表在讲什么」。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { fmtTime } from '../../shared/format'
 import {
   harnessApi, setSessionId, getSessionId, startNewSession, fmtTraceError,
   type SessionInfo,
@@ -76,11 +77,6 @@ function ago(iso: string): string {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h} 小时前`
   return new Date(iso).toLocaleDateString('zh-CN')
-}
-function fmtTime(iso: string): string {
-  const t = new Date(iso)
-  if (Number.isNaN(t.getTime())) return iso
-  return t.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 function fmtMs(ms: number): string {
   if (!ms) return '—'

@@ -21,7 +21,6 @@ _CAPABILITY_LEASE_RENEW_MARGIN_S = 300.0
 from agent_runtime.retrieval import retrieve_context, status as retrieval_status
 from agent_runtime.retrieval_eval import compare_reports, evaluate_modes
 from agent_runtime.workflow_eval import DEFAULT_DATASET_NAME, dataset_cases
-from agent_runtime.tool_install import ToolInstallError, ToolInstallManager
 from agent_runtime.project_profile import load_profile
 from agent_runtime.adapter_catalog import (approve_generated as approve_generated_adapter,
                                             catalog as adapter_catalog,
@@ -30,7 +29,7 @@ from agent_runtime.local_runtime import effective_subagent_limit, resource_profi
 from config import (COLLECTION_NAME, LLM_MODEL, LLM_PROVIDER, PROVIDERS, get_runtime,
                     set_context_code_root, reset_context_code_root)
 from game_workbench import approval as record_user_approval
-from game_workbench import list_approval_records, require_approval
+from game_workbench import list_approval_records
 from agent_runtime.cockpit_policy import QUEUE_APPROVABLE, pending_gate_requests
 import projects
 import tools
@@ -170,14 +169,6 @@ class RetrievalEvaluateReq(BaseModel):
     modes: list[str] = ["dense", "hybrid"]
     metric: str = "mrr"
     ks: list[int] = [1, 3, 5]
-
-
-class ToolInstallReq(BaseModel):
-    manager: str
-    package: str
-    version: str = ""
-    fallback_tools: list[str] = []
-    approved: bool = False
 
 
 class CockpitApprovalDecisionReq(BaseModel):
@@ -734,38 +725,8 @@ def build_router(ctx) -> APIRouter:
     async def langsmith_status():
         return {"ok": True, **langsmith.status()}
 
-    @router.post("/tools/install/plan")
-    async def tool_install_plan(req: ToolInstallReq):
-        root = ctx._project_root_or_error()
-        if not root:
-            return {"ok": False, "error": "未配置代码库"}
-        try:
-            return {"ok": True, "plan": ToolInstallManager(root).plan(req.dict())}
-        except (ToolInstallError, TypeError, ValueError) as exc:
-            return {"ok": False, "error": str(exc)}
 
-    @router.post("/tools/install")
-    async def tool_install(req: ToolInstallReq):
-        root = ctx._project_root_or_error()
-        if not root:
-            return {"ok": False, "error": "未配置代码库"}
-        try:
-            manager = ToolInstallManager(root)
-            request = req.dict()
-            plan = manager.plan(request)
-            gate = require_approval(root, "install_tool", plan["approval_target"])
-            if gate:
-                return {"ok": False, **gate, "plan": plan}
-            return manager.install(request, approved=True)
-        except (ToolInstallError, TypeError, ValueError) as exc:
-            return {"ok": False, "error": str(exc)}
 
-    @router.get("/tools/install/audit")
-    async def tool_install_audit(limit: int = 50):
-        root = ctx._project_root_or_error()
-        if not root:
-            return {"ok": False, "error": "未配置代码库"}
-        return {"ok": True, "items": ToolInstallManager(root).audit(limit)}
 
     @router.get("/workflow/backend")
     async def workflow_backend():
@@ -1441,17 +1402,7 @@ def build_router(ctx) -> APIRouter:
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
 
-    @router.get("/secrets")
-    async def secrets():
-        root = ctx._project_root_or_error()
-        return {"ok": bool(root),
-                "providers": ctx.secrets_store.providers(root) if root else []}
 
-    @router.delete("/secrets/{provider}")
-    async def remove_secret(provider: str):
-        root = ctx._project_root_or_error()
-        return (ctx.secrets_store.remove(root, provider) if root
-                else {"ok": False, "error": "未配置代码库"})
 
     @router.get("/approvals")
     async def approvals():
@@ -1510,14 +1461,6 @@ def build_router(ctx) -> APIRouter:
                     if item.get("id") == approval_id), None)
         return {"ok": bool(row), "approval": row}
 
-    @router.post("/external-write")
-    async def external_write(payload: dict):
-        root = ctx._project_root_or_error()
-        if not root:
-            return {"ok": False, "error": "未配置代码库"}
-        return ctx.apply_approved_external(
-            root, payload.get("approval_id", ""), payload.get("path", ""),
-            payload.get("content"))
 
     @router.get("/connectors")
     async def connectors():

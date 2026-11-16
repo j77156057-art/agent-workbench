@@ -6,6 +6,7 @@
 // 点节点看右侧详情。trace 按隐私设计只存元数据（不存提问正文与文件路径），这里不伪造跳转。
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { cat, catAlpha } from '../theme'
+import { fmtTime } from '../../shared/format'
 import { VueFlow, useVueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -156,11 +157,6 @@ function turnStatus(t: TraceItem) {
   if (t.error) return { text: '出错', cls: 'err' }
   if (t.outcome === 'completed') return { text: '完成', cls: 'ok' }
   return { text: t.outcome || '完成', cls: 'warn' }
-}
-function fmtTime(iso: string) {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 function fmtMs(ms: number) {
   if (!ms) return '—'

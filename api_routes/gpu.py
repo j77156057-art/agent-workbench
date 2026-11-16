@@ -21,13 +21,6 @@ class GpuConfigureReq(BaseModel):
     poll_interval: Optional[float] = None
 
 
-class GpuProcessReq(BaseModel):
-    pid: int
-    owner: str = ""
-    gpu: int | None = None
-    purpose: str = ""
-
-
 def build_router(ctx) -> APIRouter:
     router = APIRouter(prefix="/api/gpu", tags=["gpu"])
 
@@ -35,18 +28,8 @@ def build_router(ctx) -> APIRouter:
     async def status():
         return {"ok": True, **ctx.gpu_status()}
 
-    @router.post("/process/register")
-    async def register_process(req: GpuProcessReq):
-        return {"ok": True, "process": ctx.gpu.register_process(
-            req.pid, req.owner, req.gpu, req.purpose)}
 
-    @router.post("/process/heartbeat")
-    async def heartbeat_process(req: GpuProcessReq):
-        return {"ok": ctx.gpu.heartbeat_process(req.pid)}
 
-    @router.post("/process/unregister")
-    async def unregister_process(req: GpuProcessReq):
-        return {"ok": bool(ctx.gpu.unregister_process(req.pid))}
 
     @router.get("/environment")
     async def environment(device_index: int = -1):
@@ -98,4 +81,4 @@ def build_router(ctx) -> APIRouter:
     return router
 
 
-__all__ = ["GpuConfigureReq", "GpuOwnerReq", "GpuProcessReq", "build_router"]
+__all__ = ["GpuConfigureReq", "GpuOwnerReq", "build_router"]

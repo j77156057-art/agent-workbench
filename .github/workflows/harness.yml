@@ -101,6 +101,16 @@ jobs:
         # 「声明了多少 vs 真跑了多少」判定在 tests/test_frontend_node_tests.py 里，
         # 会随 pytest lane 一起跑——这里只负责人类可读的那份日志。
         run: npm run test:node
+      - name: Privacy gate (machine paths / real session ids / key shapes)
+        if: matrix.backend == 'sqlite'
+        # 2026-11-17 挂门：基线假化曾靠手工替换漏过 dev-* 会话 id。
+        # 豁免（夹具约定路径/假键/全零占位）逐条计数打印，不静默。
+        run: python tools/privacy_scan.py
+      - name: Doc reference gate (tracked paths + line ranges)
+        if: matrix.backend == 'sqlite'
+        # 判据是 git 跟踪而非本机存在：被 gitignore 的内部文档在本机判绿、
+        # 空白克隆上就是死链（2026-11-17 实测漏过两处后收窄）。
+        run: python tools/check_docs_refs.py
       - name: Lint workbench frontend (eslint)
         if: matrix.backend == 'sqlite'
         working-directory: frontend

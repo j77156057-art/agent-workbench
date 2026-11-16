@@ -307,7 +307,7 @@ from scene_runtime import scene_graph, scene_op, runtime_sessions, runtime_clear
 # `sys.modules[__name__]`（本模块）。静态检查看不见这条取用路径 —— 本仓 2026-11-02 刚为
 # 「api.py 少了这个导入」修过一次生产缺陷，别按「本文件没用到」再删回去。
 from game_workbench import engine_start  # noqa: F401
-from game_workbench import list_tasks, upsert_task, validate_task_scope, task_impact, task_snapshot, verify_task, engine_catalog, engine_scan, engine_inspect, engine_prepare, install_unreal_bridge, engine_config, engine_status, engine_stop, engine_reload, engine_changes, engine_logs, engine_verify, engine_embed, engine_detach, engine_focus, engine_resize, engine_place, engine_running_roots, EMBED_TOP_STRIP, install_runtime_probe, comfy_status, comfy_start, comfy_stop, comfy_templates, comfy_template_workflow, comfy_model_check, comfy_apply_parameters, comfy_queue, comfy_free_models, comfy_history, comfy_history_list, comfy_retry, comfy_wait, comfy_watch, comfy_watch_status, comfy_cancel, comfy_import, comfy_import_all, comfy_validate_provenance, comfy_resource_duplicates, comfy_unused_resources, parse_unreal_diagnostics, scene_tree, set_scene_property, runtime_events, task_revert, task_branch, validate_data, localization_check, release_check, project_memory, simulate_growth, asset_dependencies, preview_resource, create_placeholder, impact_analysis, generate_test_scene, playtest, performance_sample, approval, approval_status, require_approval, list_mcp_proposals, remove_mcp_proposal, godot_check_script, godot_addon_status, install_godot_addon, _resolve_engine_executable, start_engine_watchdog
+from game_workbench import list_tasks, upsert_task, validate_task_scope, task_impact, task_snapshot, verify_task, engine_catalog, engine_scan, engine_inspect, engine_prepare, install_unreal_bridge, engine_config, engine_status, engine_stop, engine_reload, engine_changes, engine_logs, engine_verify, engine_embed, engine_detach, engine_focus, engine_resize, engine_place, engine_running_roots, EMBED_TOP_STRIP, install_runtime_probe, comfy_status, comfy_start, comfy_stop, comfy_templates, comfy_template_workflow, comfy_model_check, comfy_apply_parameters, comfy_queue, comfy_free_models, comfy_history, comfy_history_list, comfy_retry, comfy_wait, comfy_watch, comfy_watch_status, comfy_cancel, comfy_import, comfy_import_all, comfy_validate_provenance, comfy_resource_duplicates, comfy_unused_resources, parse_unreal_diagnostics, scene_tree, set_scene_property, runtime_events, task_revert, task_branch, validate_data, localization_check, release_check, simulate_growth, asset_dependencies, preview_resource, create_placeholder, impact_analysis, generate_test_scene, playtest, performance_sample, approval, approval_status, require_approval, list_mcp_proposals, remove_mcp_proposal, godot_check_script, godot_addon_status, install_godot_addon, _resolve_engine_executable, start_engine_watchdog
 
 
 @asynccontextmanager
@@ -1418,13 +1418,6 @@ async def desktop_host_get_ep(project_id: str = ''):
         info['bridge_error'] = str(e)
     return info
 
-@app.post('/api/desktop/resize')
-async def desktop_resize_ep(req: DesktopResizeReq):
-    try:
-        from desktop_bridge import resize
-        return {'ok': bool(resize(req.child_hwnd, req.width, req.height)), 'child_hwnd': req.child_hwnd, 'width': req.width, 'height': req.height}
-    except Exception as e:
-        return {'ok': False, 'error': str(e)}
 
 
 @app.middleware("http")
@@ -2697,17 +2690,8 @@ async def approval_ep(req: ApprovalReq):
     return {"ok":True, "approval": approval(root, req.action, req.user, req.approved, req.target)}
 
 
-@app.get("/api/memory")
-async def memory_get_ep():
-    root = _project_root_or_error()
-    return {"ok": bool(root), "content": project_memory(root) if root else ""}
 
 
-@app.put("/api/memory")
-async def memory_put_ep(req: MemoryReq):
-    root = _project_root_or_error()
-    if not root: return JSONResponse({"ok": False, "error": "未配置代码库"}, status_code=400)
-    return {"ok": True, "content": project_memory(root, req.content)}
 
 
 @app.post("/api/ingest")
@@ -4630,9 +4614,6 @@ async def trace_ep(limit: int = 50):
     return {"ok": True, "items": agent_trace.recent(lim), "summary": agent_trace.summary()}
 
 
-@app.get("/api/trace/summary")
-async def trace_summary_ep():
-    return {"ok": True, **agent_trace.summary()}
 
 
 @app.post("/api/trace/clear")
@@ -5878,9 +5859,6 @@ async def skills_reload_ep():
     return {"ok": True, **agent_skills.reload()}
 
 
-@app.get("/api/skills/stats")
-async def skills_stats_ep(name: str = ""):
-    return {"ok": True, "name": name, "stats": agent_skills.skill_statistics(name)}
 
 
 @app.get("/api/skills/regression")

@@ -1200,28 +1200,17 @@ async function reindex() {
 </template>
 
 <style scoped>
-.mp { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(var(--mi-panel-width-base), 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
-.mp *, .mp *::before, .mp *::after { box-sizing: border-box; }
+@import '../drawer-shell.css';
+.mp { width: min(var(--mi-panel-width-base), 100vw); }
+.mp-identity span:last-child { line-height: var(--mi-lh-caption); }
 .mp.is-overview { width: min(var(--mi-panel-width), 100vw); }
-.mp--embedded, .mp--embedded.is-overview { position: relative; inset: auto; z-index: auto; width: 100%; height: 100%; max-width: none; border-left: 0; box-shadow: none; flex: 1 1 auto; min-height: 0; }
 .mp-panel-leave-active { transition: transform var(--mi-duration-slow) var(--mi-ease-enter), opacity var(--mi-duration-base) var(--mi-ease-standard); }
 .mp-panel-leave-to { transform: translateX(100%); opacity: 0; }
-.mp-head { display: flex; align-items: center; gap: var(--mi-space-4); min-height: var(--mi-header-height); padding: 0 var(--mi-space-5); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); background: var(--mi-bg); }
-.mp-identity { display: flex; align-items: center; gap: var(--mi-space-3); flex: 1; min-width: 0; }
-.mp-identity > div { display: flex; flex-direction: column; min-width: 0; }
-.mp-identity strong { font-size: var(--mi-fs-title); line-height: var(--mi-lh-title); font-weight: var(--mi-weight-semibold); }
-.mp-identity span:last-child { overflow: hidden; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); line-height: var(--mi-lh-caption); text-overflow: ellipsis; white-space: nowrap; }
-.mp-mark { position: relative; flex: 0 0 var(--mi-space-6); width: var(--mi-space-6); height: var(--mi-space-6); }
-.mp-mark i { position: absolute; inset: 0; border: var(--mi-border-width) solid var(--mi-border-strong); border-radius: var(--mi-radius-lg); }
-.mp-mark i:nth-child(2) { inset: var(--mi-space-2); border-color: var(--mi-accent-dim); }
-.mp-mark i:nth-child(3) { inset: var(--mi-space-3); border: 0; background: var(--mi-accent); box-shadow: var(--mi-glow-node); }
 .mp-observing { display: inline-flex; align-items: center; gap: var(--mi-space-2); color: var(--mi-accent); font-size: var(--mi-fs-caption); white-space: nowrap; }
 .mp-observing i { width: var(--mi-status-dot); height: var(--mi-status-dot); border-radius: var(--mi-radius-lg); background: var(--mi-accent); box-shadow: var(--mi-glow-node); }
 .mp-modes { display: inline-flex; gap: var(--mi-space-1); margin-left: auto; }
 .mp-modes button { min-height: var(--mi-control-height-sm); padding: 0 var(--mi-space-3); border: var(--mi-border-width) solid transparent; border-radius: var(--mi-radius-control); background: transparent; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); cursor: pointer; }
 .mp-modes button.on { border-color: var(--mi-border-level-3); background: var(--mi-surface-level-3); color: var(--mi-text); box-shadow: var(--mi-shadow-level-2); }
-.mp-close { flex: 0 0 var(--mi-icon-button); width: var(--mi-icon-button); height: var(--mi-icon-button); padding: 0; border: var(--mi-border-width) solid transparent; border-radius: var(--mi-radius-control); background: transparent; color: var(--mi-text-secondary); font-size: var(--mi-fs-title); line-height: 1; cursor: pointer; }
-.mp-close:hover { border-color: var(--mi-border); background: var(--mi-hover); color: var(--mi-text); }
 .mp-inline-status { display: flex; align-items: center; gap: var(--mi-space-2); margin: var(--mi-space-3) var(--mi-space-5) 0; color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); }
 .mp-inline-status i { width: var(--mi-status-dot); height: var(--mi-status-dot); border-radius: var(--mi-radius-lg); background: var(--mi-accent); animation: mp-status var(--mi-duration-flow) var(--mi-ease-standard) infinite; }
 .mp-message { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--mi-space-3); margin: var(--mi-space-3) var(--mi-space-5) 0; padding: var(--mi-space-2) var(--mi-space-3); border-left: var(--mi-focus-width) solid var(--mi-border-strong); background: var(--mi-surface); color: var(--mi-text-secondary); font-size: var(--mi-fs-secondary); line-height: var(--mi-lh-secondary); }

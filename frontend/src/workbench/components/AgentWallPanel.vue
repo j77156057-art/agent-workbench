@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { agentsApi } from '../api'
+import { fmtTime as fmtTimeShared } from '../../shared/format'
 import type { AgentCard, AgentConversationResp, AgentMemoryResp, AgentUsageResp } from '../api'
 import { closeAgentWall, openAgentContext } from '../uiPanels'
 import SubagentChatWindow from './SubagentChatWindow.vue'
@@ -54,11 +55,7 @@ const lastActiveLabel = computed(() => {
 })
 
 function fmtTime(value?: string): string {
-  if (!value) return '未记录'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return fmtTimeShared(value, { empty: '未记录', full: true })
 }
 
 function fmtDuration(ms: number | null | undefined): string {
@@ -354,22 +351,10 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
 </template>
 
 <style scoped>
-.aw { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(720px, 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
-.aw--embedded { position: relative; inset: auto; z-index: auto; width: 100%; height: 100%; max-width: none; border-left: 0; box-shadow: none; flex: 1 1 auto; min-height: 0; }
-.aw *, .aw *::before, .aw *::after { box-sizing: border-box; }
+@import '../drawer-shell.css';
+.aw { width: min(720px, 100vw); }
 .aw-panel-leave-active { transition: transform var(--mi-duration-slow) var(--mi-ease-enter), opacity var(--mi-duration-base) var(--mi-ease-standard); }
 .aw-panel-leave-to { transform: translateX(100%); opacity: 0; }
-.aw-head { display: flex; align-items: center; gap: var(--mi-space-4); min-height: var(--mi-header-height); padding: 0 var(--mi-space-5); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); background: var(--mi-bg); }
-.aw-identity { display: flex; align-items: center; gap: var(--mi-space-3); flex: 1; min-width: 0; }
-.aw-identity > div { display: flex; flex-direction: column; min-width: 0; }
-.aw-identity strong { font-size: var(--mi-fs-title); line-height: var(--mi-lh-title); font-weight: var(--mi-weight-semibold); }
-.aw-identity span:last-child { overflow: hidden; color: var(--mi-text-muted); font-size: var(--mi-fs-caption); text-overflow: ellipsis; white-space: nowrap; }
-.aw-mark { position: relative; flex: 0 0 var(--mi-space-6); width: var(--mi-space-6); height: var(--mi-space-6); }
-.aw-mark i { position: absolute; inset: 0; border: var(--mi-border-width) solid var(--mi-border-strong); border-radius: var(--mi-radius-lg); }
-.aw-mark i:nth-child(2) { inset: var(--mi-space-2); border-color: var(--mi-accent-dim); }
-.aw-mark i:nth-child(3) { inset: var(--mi-space-3); border: 0; background: var(--mi-accent); box-shadow: var(--mi-glow-node); }
-.aw-close { flex: 0 0 var(--mi-icon-button); width: var(--mi-icon-button); height: var(--mi-icon-button); padding: 0; border: var(--mi-border-width) solid transparent; border-radius: var(--mi-radius-control); background: transparent; color: var(--mi-text-secondary); font-size: var(--mi-fs-title); line-height: 1; cursor: pointer; }
-.aw-close:hover { border-color: var(--mi-border); background: var(--mi-hover); color: var(--mi-text); }
 .aw-cards { display: flex; gap: var(--mi-space-3); flex: 0 0 auto; overflow-x: auto; padding: var(--mi-space-4) var(--mi-space-5); border-bottom: var(--mi-border-width) solid var(--mi-border-subtle); scrollbar-color: var(--mi-border-strong) transparent; }
 .aw-cards.is-loading { opacity: .55; }
 .aw-card { display: flex; flex-direction: column; gap: var(--mi-space-1); flex: 0 0 210px; min-height: 92px; padding: var(--mi-space-3); border: var(--mi-border-width) solid var(--mi-border); border-radius: var(--mi-radius-control); background: var(--mi-surface); color: var(--mi-text); text-align: left; cursor: pointer; transition: border-color var(--mi-duration-base) var(--mi-ease-standard), background var(--mi-duration-base) var(--mi-ease-standard); }

@@ -125,8 +125,8 @@ def migrate_owner(default="main"):
     """幂等迁移 owner 维度：老库先备份、补列并回填，返回可复核的计数。
 
     第一次在有数据的老库上调用：`added_column=True` 且 `backed_up` 指向备份文件，
-    既有行全部归到 default（main）。第二次调用：列已存在，`added_column=False`、
-    `backed_up=''`、`backfilled=0`，items 总数与 owner 分布保持不变。
+    既有行全部归到 default（main），`backfilled` = 既有行数。第二次调用：列已存在，
+    `added_column=False`、`backed_up=''`、`backfilled=0`，items 总数与 owner 分布保持不变。
     """
     target = path()
     existed = os.path.isfile(target)
@@ -151,10 +151,14 @@ def migrate_owner(default="main"):
     finally:
         conn.close()
     migrated = existed and not had_owner
+    # 补列的 ALTER ... DEFAULT 'main' 已把 owner 写进全部既有行，随后的 UPDATE
+    # 只修空值（通常 0 行）。拿 cursor.rowcount 当「回填数」会恒 0，把「迁移了
+    # N 行」藏掉；补列那次按既有行数报，其余按修复行数报。
+    reported = int(total) if migrated else int(backfilled or 0)
     return {"ok": True, "db": target, "existed": existed,
             "added_column": migrated,
             "backed_up": _LAST_OWNER_BACKUP if migrated else "",
-            "backfilled": int(backfilled or 0), "total": int(total),
+            "backfilled": reported, "total": int(total),
             "owners": owners}
 
 
