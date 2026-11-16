@@ -56,6 +56,10 @@ def tracked_files(root):
 def scan(root=ROOT):
     violations, allowed = [], 0
     for rel in tracked_files(root):
+        # 扫描器自身的模式/注释字面量（如 /Users/ 正则片段）不是泄露；
+        # 秘密扫描器排除自身是惯例，否则门会咬自己的pattern。
+        if rel == "tools/privacy_scan.py":
+            continue
         ext = os.path.splitext(rel)[1].lower()
         if ext in SKIP_EXT:
             continue
