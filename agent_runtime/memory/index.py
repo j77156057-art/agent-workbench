@@ -10,7 +10,6 @@ import json
 import math
 import os
 import re
-import shutil
 import sqlite3
 from datetime import datetime
 
@@ -60,11 +59,19 @@ def path():
     return store.safe_path("shared", "index.sqlite3")
 
 
-def _backup_file(target):
-    """迁移前备份数据库文件（只在补列那次做）。文件名带秒级时间戳，可重复跑。"""
+def _backup_file(conn, target):
+    """迁移前备份数据库（只在补列那次做）。文件名带秒级时间戳，可重复跑。
+
+    用 sqlite3 在线备份 API 而不是拷文件：服务进程可能正在写库，
+    直接 copy 可能撞上写入中途得到不一致副本；backup() 内部持锁取一致快照。
+    """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = "%s.bak-%s" % (target, stamp)
-    shutil.copy2(target, backup)
+    dest = sqlite3.connect(backup)
+    try:
+        conn.backup(dest)
+    finally:
+        dest.close()
     return backup
 
 
@@ -80,7 +87,7 @@ def _ensure_owner(conn, target):
         return ""
     backup = ""
     if os.path.isfile(target):
-        backup = _backup_file(target)
+        backup = _backup_file(conn, target)
         _LAST_OWNER_BACKUP = backup
     conn.execute("ALTER TABLE items ADD COLUMN owner TEXT NOT NULL DEFAULT 'main'")
     conn.execute("UPDATE items SET owner='main' WHERE owner='' OR owner IS NULL")

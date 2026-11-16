@@ -354,7 +354,7 @@ watch(() => props.sessionId, () => { if (props.visible) void loadRoster().then((
 </template>
 
 <style scoped>
-.aw { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(720px, 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); color-scheme: dark; font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
+.aw { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(720px, 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
 .aw--embedded { position: relative; inset: auto; z-index: auto; width: 100%; height: 100%; max-width: none; border-left: 0; box-shadow: none; flex: 1 1 auto; min-height: 0; }
 .aw *, .aw *::before, .aw *::after { box-sizing: border-box; }
 .aw-panel-leave-active { transition: transform var(--mi-duration-slow) var(--mi-ease-enter), opacity var(--mi-duration-base) var(--mi-ease-standard); }

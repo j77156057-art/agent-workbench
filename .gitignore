@@ -99,6 +99,9 @@ golden/results_baseline.old*
 # 真实运行轨迹（含真实会话 id 与本机绝对路径），2026-11-10 移出公开仓库，
 # 本地归档到仓库外目录；后续任何 jsonl 轨迹一律不入库。
 golden/*.jsonl
+# 唯一例外：假化后的回归基线（真实会话 id → *-baselineNN，本机路径 → <repo>/<tmp> 等
+# 占位符；expect 与打分逐题不变）。回归门 agent_eval --baseline 依赖它，必须入库。
+!golden/results_baseline.jsonl
 
 # ===== 引擎工程导入元数据（Godot/Unity 自动生成，不入库）=====
 *.import

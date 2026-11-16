@@ -15,6 +15,13 @@ const props = withDefaults(defineProps<{
   askHost?: boolean
 }>(), { agentId: 'main', agentLabel: '平台助手', askHost: false })
 
+// withDefaults 只对 undefined 兜底：宿主可能传 ''（还没选过 Agent）。
+// 空 id 会被 MemoryContextPanel 当成子 Agent（agentScoped = id !== 'main'），
+// 在入口统一归一化，所有宿主共用这一道闸。
+const panelAgentId = computed(() => props.agentId || 'main')
+const panelAgentLabel = computed(() => (
+  props.agentLabel || (panelAgentId.value === 'main' ? '平台助手' : panelAgentId.value)))
+
 const TABS = [
   { key: 'wall', label: '卡片墙', title: 'Agent 卡片墙：对话记录 / 记忆 / 使用记录' },
   { key: 'memory', label: '上下文记忆', title: '当前 Agent 的上下文注入与记忆库存' },
@@ -92,8 +99,8 @@ const shellStyle = computed(() => (
       <MemoryContextPanel
         :visible="true"
         :session-id="props.memorySessionId"
-        :agent-id="props.agentId"
-        :agent-label="props.agentLabel"
+        :agent-id="panelAgentId"
+        :agent-label="panelAgentLabel"
         embedded
       />
     </div>
@@ -102,7 +109,7 @@ const shellStyle = computed(() => (
 
 <style scoped>
 /* 外壳沿用两个面板原有的 --mi-* 令牌，不引入新颜色/字号 */
-.rs { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(720px, 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); color-scheme: dark; font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
+.rs { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(720px, 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
 .rs *, .rs *::before, .rs *::after { box-sizing: border-box; }
 .rs-resizer { position: absolute; inset: 0 auto 0 0; width: 8px; z-index: 3; cursor: col-resize; touch-action: none; outline: none; }
 .rs-resizer::before { content: ''; position: absolute; inset: 0; }

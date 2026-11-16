@@ -1154,7 +1154,7 @@ async function reindex() {
 </template>
 
 <style scoped>
-.mp { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(var(--mi-panel-width-base), 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); color-scheme: dark; font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
+.mp { position: fixed; inset: 0 0 0 auto; z-index: var(--mi-z-panel); width: min(var(--mi-panel-width-base), 100vw); display: flex; flex-direction: column; overflow: hidden; border-left: var(--mi-border-width) solid var(--mi-border); background: var(--mi-bg); box-shadow: var(--mi-shadow-panel); color: var(--mi-text); font-family: var(--mi-font-ui); font-size: var(--mi-fs-body); line-height: var(--mi-lh-body); isolation: isolate; }
 .mp *, .mp *::before, .mp *::after { box-sizing: border-box; }
 .mp.is-overview { width: min(var(--mi-panel-width), 100vw); }
 .mp--embedded, .mp--embedded.is-overview { position: relative; inset: auto; z-index: auto; width: 100%; height: 100%; max-width: none; border-left: 0; box-shadow: none; flex: 1 1 auto; min-height: 0; }

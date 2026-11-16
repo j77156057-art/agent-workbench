@@ -219,9 +219,11 @@ function currentSessionId(): string {
   }
 }
 /** 记忆面板按当前选中 Agent 取会话：子 Agent 用 sub-<agent_id> 自己的会话，
- *  不能拿平台助手主会话给它做六 Tab 的 hook/summary 取数。 */
+ *  不能拿平台助手主会话给它做六 Tab 的 hook/summary 取数。
+ *  memoryAgentId 默认是 ''（还没选过 Agent），按 main 处理，不能拼出 sub-。 */
 function memoryPanelSessionId(): string {
-  return memoryAgentId.value === 'main' ? currentSessionId() : `sub-${memoryAgentId.value}`
+  const agentId = memoryAgentId.value || 'main'
+  return agentId === 'main' ? currentSessionId() : `sub-${agentId}`
 }
 async function selectSession(id: string): Promise<boolean> {
   if (props.scope === 'default') return setSessionId(id)

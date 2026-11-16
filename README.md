@@ -309,14 +309,14 @@ curl -X POST http://127.0.0.1:8000/api/chat -F "question=Agent 工作台 支持�
 
 ### 跑黄金题库回归（可选）
 
-黄金题是**端到端**回归：拿真实模型跑 `golden/questions_v2.json` 里的题，再用规则判分器 `agent_eval.py` 打分，与本地维护的基线结果行对比 —— pass→fail 即回归（退出码 1）。基线含真实运行轨迹，不入库（见 `.gitignore` 的 `golden/*.jsonl`）；克隆后请先自己跑一轮生成基线，再用它做后续对比。与单元测试互补：单测锁确定性契约，黄金题锁「活模型 + 真检索 + 真工具」整条链路不被改坏。
+黄金题是**端到端**回归：拿真实模型跑 `golden/questions_v2.json` 里的题，再用规则判分器 `agent_eval.py` 打分，与基线结果行对比 —— pass→fail 即回归（退出码 1）。基线 `golden/results_baseline.jsonl` 已**假化入库**（真实会话 id 换成 `*-baselineNN` 占位、本机路径换成 `<repo>`/`<tmp>` 等占位符，expect 与逐题判分不变），克隆后即可直接用；真实运行轨迹仍不入库（见 `.gitignore` 的 `golden/*.jsonl`）。与单元测试互补：单测锁确定性契约，黄金题锁「活模型 + 真检索 + 真工具」整条链路不被改坏。
 
 ```bash
 # 1) 实跑：产出每题结果行（写类题必须 --isolate-fs，跑前备份、跑后还原）
 .venv\Scripts\python.exe run_golden.py --ids G01,G02,... --provider deepseek --model deepseek-flash \
     --project-id <prj> --isolate-fs --out golden/results.jsonl --max-seconds 200
 # 2) 打分 + 回归门
-.venv\Scripts\python.exe agent_eval.py --results golden/results.jsonl --baseline <本地基线路径>
+.venv\Scripts\python.exe agent_eval.py --results golden/results.jsonl --baseline golden/results_baseline.jsonl
 ```
 
 题库跨**两个 code_root**：本项目自身源码（`config.py`/`tools.py`/`agent.py`/`capacity.py`…）与一份附带的示例库 `booklog`。`--project-id` 决定当前 code_root，所以两套题要**分两批跑**再合并。L3 抗干扰降级档用 `--disable-tools search_code` 单独跑。

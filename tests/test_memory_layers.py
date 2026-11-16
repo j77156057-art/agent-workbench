@@ -187,6 +187,60 @@ class OwnerWriteGuardTests(unittest.TestCase):
         self.assertTrue(promote.delete_shared("mem-shared", actor="main"))
         self.assertFalse(os.path.exists(path))
 
+    def test_sync_index_denied_writes_ledger(self):
+        """归属冲突被 upsert 拒绝时不能静默吞掉：索引保持原样且台账留痕。"""
+        import json
+        index.upsert_item(self._item())
+        promote._sync_index(self._item(owner="ag-a", body="劫持"))
+        self.assertEqual(self._stored(), ("main", "v1"))
+        ledger_path = store.safe_path(store.LEDGER_NAME)
+        with open(ledger_path, encoding="utf-8") as fh:
+            events = [json.loads(line) for line in fh if line.strip()]
+        denied = [e for e in events if e.get("event") == "memory.index_sync_denied"]
+        self.assertEqual(len(denied), 1)
+        self.assertEqual(denied[0].get("id"), "mem-owner")
+
+    def test_migrate_owner_backups_consistently_and_is_idempotent(self):
+        """老库补列：备份是一致快照（在线 backup API），二次调用零变化。"""
+        target = index.path()
+        store.ensure_dir(os.path.dirname(target))
+        conn = sqlite3.connect(target)
+        conn.execute("""CREATE TABLE items(
+            id TEXT PRIMARY KEY, kind TEXT, scope TEXT, project TEXT, status TEXT,
+            path TEXT, title TEXT, body TEXT, body_hash TEXT, confidence REAL,
+            importance REAL, pinned INTEGER, usage INTEGER,
+            created TEXT, updated TEXT, last_used TEXT)""")
+        conn.execute("INSERT INTO items(id, kind, scope, title, body) VALUES"
+                     "('m1', 'fact', 'global', 't1', 'b1')")
+        conn.execute("INSERT INTO items(id, kind, scope, title, body) VALUES"
+                     "('m2', 'fact', 'global', 't2', 'b2')")
+        conn.commit()
+        conn.close()
+
+        first = index.migrate_owner()
+        self.assertTrue(first["ok"])
+        self.assertTrue(first["added_column"])
+        # 回填发生在 _ensure_owner 的 ALTER ... DEFAULT 'main' 里，
+        # migrate_owner 随后的 UPDATE 匹配 0 行；归属正确性看 owners 分布。
+        self.assertEqual(first["backfilled"], 0)
+        self.assertEqual(first["total"], 2)
+        self.assertEqual(first["owners"], {"main": 2})
+        backup = first["backed_up"]
+        self.assertTrue(backup and os.path.isfile(backup))
+        # 备份必须是可读的一致快照，行数与原库一致
+        probe = sqlite3.connect(backup)
+        try:
+            self.assertEqual(probe.execute("SELECT COUNT(*) FROM items").fetchone()[0], 2)
+        finally:
+            probe.close()
+
+        second = index.migrate_owner()
+        self.assertFalse(second["added_column"])
+        self.assertEqual(second["backed_up"], "")
+        self.assertEqual(second["backfilled"], 0)
+        self.assertEqual(second["total"], 2)
+        self.assertEqual(second["owners"], {"main": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

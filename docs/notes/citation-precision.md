@@ -106,7 +106,7 @@ def citation_precision_score(rec, code_root=".", strict_mode=True, *, judge=None
 #### 案例 3：路径真实但属于另一份工作树副本（Qoder 补写）
 
 - **现象**：本仓库在 `.docmind/projects/*/headcheck/*/` 下有整仓副本
-  （已知缺陷记录：`docs/known-defect-docmind-shadow-repo-copies.md`）。答案引用
+  （已知缺陷记录在内部缺陷清单，不随公开仓库分发）。答案引用
   `agent_eval.py:143` 时，若 root 被解析成副本目录，文件存在、行号也合法，检查全绿——
   但用户在他的 root 里根本看不到那份行内容（副本可能是旧提交）。
 - **误判风险**：纯 filesystem 检查**结构上无法发现**这种错，因为「存在」是真的。

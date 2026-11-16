@@ -741,6 +741,14 @@ def _sync_index(item):
     try:
         from . import index
         index.upsert_item(item)
+    except PermissionError as exc:
+        # 归属冲突不是普通 IO 故障：文件已写而索引拒绝覆盖，两者会分叉。
+        # 静默吞掉会让这次冲突永远不可见——记一笔台账，保留可追查的证据。
+        try:
+            store.ledger("memory.index_sync_denied", id=item.get("id"),
+                         path=item.get("path"), error=str(exc))
+        except Exception:  # noqa: BLE001 —— 台账失败不阻断文件事实
+            pass
     except Exception:  # noqa: BLE001 —— 索引同步失败不阻断文件事实
         pass
 

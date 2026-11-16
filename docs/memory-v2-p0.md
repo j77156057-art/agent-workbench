@@ -2,7 +2,7 @@
 
 > 状态：记忆系统 v2 P0 + P1 完成（含学习闭环、真实迁移、bge-m3 语义、记忆评测与宪法闸门，2026-10-31；真实设置已开启）。
 > 开关：全部新路径挂在 `DOCMIND_MEMORY_V2` 下，**默认关**；关时提示词与行为和今天逐字节一致。
-> 关联：`docs/agent-self-verify-memory.md`（经验记忆）、`docs/agent-architecture-review.md`（分层审查）。
+> 关联：`docs/agent-architecture-review.md`（分层审查）。经验记忆（self-verify）的设计稿为内部文档，不随公开仓库分发。
 
 ## 0. 目标与非目标
 

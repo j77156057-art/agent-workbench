@@ -23,8 +23,29 @@
 也受保护。实测 `tests/` 全量在该加载下零误报。
 """
 
+import os
 import pathlib
 import sys
+
+
+def _normalize_no_proxy():
+    """剔除 NO_PROXY 里的 IPv6 字面量（[::1]、::1）。
+
+    httpx2 解析不了这种条目：OpenAI 客户端构造时抛 InvalidURL: Invalid port，
+    凡 import api 的测试在**收集阶段**就崩（本机实测）。IPv6 回环已被
+    localhost/127.0.0.1 覆盖，剔除不改变绕行语义；只动含 ':' 的条目，
+    域名与 CIDR 条目原样保留，且只影响测试进程的环境。
+    """
+    for key in ("NO_PROXY", "no_proxy"):
+        value = os.environ.get(key)
+        if not value or ":" not in value:
+            continue
+        kept = [item.strip() for item in value.split(",")
+                if item.strip() and ":" not in item]
+        os.environ[key] = ",".join(kept)
+
+
+_normalize_no_proxy()
 
 _TOOLS = str(pathlib.Path(__file__).resolve().parent / "tools")
 if _TOOLS not in sys.path:

@@ -240,6 +240,9 @@ def remember(scope, kind, title, content, evidence="", *, source="agent", key=No
     # 归属进入主键派生：main 保持历史 id 不变（老行与既有 supersedes 指针零迁移），
     # 其他 agent 加前缀。否则两个 agent 写同名记忆会命中同一个 ON CONFLICT，
     # 把别人的正文改掉——那是"只写不查"的隐藏写侧越权。
+    # 改动前写入的子 agent 行保留旧 id：key 未落库，无法安全重算新 id，不做重键迁移。
+    # 旧行照常可读可删；同 key 重记会新增行而非就地更新——子 agent 是一次性委派票，
+    # 实际影响面为零（生产库实测 12 条，各属不同 ticket）。
     if agent_id and str(agent_id) != "main":
         seed = str(agent_id) + "|" + seed
     mid = hashlib.sha256(seed.encode()).hexdigest()[:24]

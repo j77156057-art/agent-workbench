@@ -154,7 +154,12 @@ def _sub_session_rows(project_id):
 
 
 def _session_card(agent_id, data):
-    """由子 agent 自己的会话重建一张卡片（不补造状态：只按真实 turns 统计）。"""
+    """由子 agent 自己的会话重建一张卡片。
+
+    只按真实 turns 统计消息数；终态（completed/failed/expired）记在委派快照里，
+    会话文件没有，快照缺失时无法证明结果——状态如实标 unknown（结果未知），
+    不补造成「已完成」。
+    """
     turns = [turn for turn in (data.get("turns") or []) if isinstance(turn, dict)]
     first_user = next((str(turn.get("user") or "") for turn in turns
                        if str(turn.get("user") or "").strip()), "")
@@ -168,8 +173,8 @@ def _session_card(agent_id, data):
         "name": f"{label} · {short}" if short else label,
         "role": role,
         "role_label": label,
-        "status": "completed",
-        "status_label": _status_label("completed"),
+        "status": "unknown",
+        "status_label": _status_label("unknown"),
         "last_active": str(data.get("updated_at") or ""),
         "message_count": sum(
             (1 if str(turn.get("user") or "").strip() else 0)
