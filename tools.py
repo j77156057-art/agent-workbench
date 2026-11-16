@@ -8352,6 +8352,9 @@ def dev_refactor(arg):
     except EnterpriseSandboxUnavailable as exc:
         return f"拒绝搬移：{exc}"
     create_res = create_file(_emit_edit_arg(dst_target, None, content))
+    # create_file 返回 ToolResult；成员测试/startswith 必须先取文本，
+    # 否则每次搬移都 TypeError（2026-11-17 第四批探针抓出）。
+    create_res = getattr(create_res, "text", None) or str(create_res)
     # 「人工确认」模式：仅暂存、未落盘 → 不要动源文件，等用户确认后再搬
     if "待人工确认" in create_res:
         return (f"目标已暂存、待人工确认，源文件未改动。请在界面确认写入后重新调用本工具，"

@@ -576,5 +576,161 @@ class Tranche3ToolsTests(unittest.TestCase):
         self.assertIn("move-payload", dst.read_text(encoding="utf-8"))
 
 
+class Tranche4ToolsTests(unittest.TestCase):
+    """2026-11-17 扩面第四批：测试跑 / Vue 诊断 / 诊断 / _headcheck_ / bug 台账 /
+    分区三件 / 批量编辑原子性 / 跨区重构 / 知识检索。
+
+    机制判据加两条硬的：批量编辑「一坏全不动」原子性；testrun 能判 fail
+    （恒真判据的反面：必须证明它会把坏测试判红）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import agent  # noqa: F401
+        subprocess.run(["git", "init", "-q"], cwd=BOX, check=True)
+
+    def test_testrun_passes_good_and_fails_bad(self):
+        (BOX / "test_probe_ok.py").write_text(
+            "def test_ok():\n    assert 1 + 1 == 2\n", encoding="utf-8")
+        out = call("dev_testrun", "paths: test_probe_ok.py\n")
+        self.assertNotIn("failed", out.lower().replace("0 failed", ""),
+                         "好测试被判红：%s" % out[:160])
+        (BOX / "test_probe_bad.py").write_text(
+            "def test_bad():\n    assert 1 + 1 == 3\n", encoding="utf-8")
+        out2 = call("dev_testrun", "paths: test_probe_bad.py\n")
+        self.assertTrue("fail" in out2.lower() or "1 failed" in out2,
+                        "坏测试没被判红（恒真判据反面）：%s" % out2[:160])
+
+    def test_vue_diagnoses_props_and_emits(self):
+        from agent_runtime import visual_acceptance as visual
+        # dev_vue 挂真浏览器真点击收 emit；浏览器起不来时可见 skip（同 BrowserChainTests）。
+        if not visual.browser_available():
+            self.skipTest("浏览器起不来，跳过 Vue 运行时接线探针：%s"
+                          % (visual.browser_probe_reason() or "未知原因"))
+        # dev_vue 要求工程结构（package.json + src/）与 esbuild/compiler-sfc/vue；沙箱真建前置。
+        (BOX / "package.json").write_text('{"name":"probe"}\n', encoding="utf-8")
+        (BOX / "src").mkdir(exist_ok=True)
+        if not (BOX / "node_modules" / "vue").exists():
+            subprocess.run("npm install --no-save --no-audit --no-fund esbuild @vue/compiler-sfc vue",
+                           cwd=BOX, shell=True, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (BOX / "src" / "ProbeComp.vue").write_text(
+            "<script setup>\n"
+            "const props = defineProps(['probeProp'])\n"
+            "const emit = defineEmits(['probeEmit'])\n"
+            "function go() { emit('probeEmit', props.probeProp) }\n"
+            "</script>\n<template><button id=\"probe-go\" @click=\"go\">{{ probeProp }}</button></template>\n",
+            encoding="utf-8")
+        out = call("dev_vue",
+                   'component: src/ProbeComp.vue\n'
+                   'props: {"probeProp": "probe-value"}\n'
+                   'clicks: #probe-go\n'
+                   'texts: probe-value\n'
+                   'expect_emit: probeEmit\n'
+                   'expect_emit_args: ["probe-value"]\n')
+        self.assertIn("probeEmit", out, "Vue 运行时没收到声明的 emit：%s" % out[:200])
+        self.assertIn("probe-value", out, "Vue 渲染/实参没带 prop 值：%s" % out[:200])
+        self.assertNotIn("未通过", out, "Vue 接线判未通过：%s" % out[:200])
+
+    def test_diagnostics_reports_real_defect_location(self):
+        (BOX / "diag_bad.py").write_text("def f(\n", encoding="utf-8")
+        out = call("dev_diagnostics", "")
+        self.assertIn("diag_bad.py", out,
+                      "诊断没定位真缺陷文件：%s" % out[:160])
+
+    def test_headcheck_catches_file_missing_from_head(self):
+        # headcheck 的机制是「干净检出 HEAD 跑 import」：工作树能跑、HEAD 缺文件必红。
+        (BOX / "mod_a.py").write_text("import mod_b\nVALUE = mod_b.X\n", encoding="utf-8")
+        (BOX / "mod_b.py").write_text("X = 1\n", encoding="utf-8")
+        subprocess.run(["git", "add", "mod_a.py"], cwd=BOX, check=True)
+        subprocess.run(["git", "-c", "user.email=probe@local", "-c", "user.name=probe",
+                        "commit", "-q", "-m", "probe-headcheck-a-only"],
+                       cwd=BOX, check=True)
+        out = call("dev_headcheck", "modules: mod_a\n")
+        self.assertIn("mod_b", out,
+                      "干净检出缺 mod_b 却没被抓出：%s" % out[:200])
+        subprocess.run(["git", "add", "mod_b.py"], cwd=BOX, check=True)
+        subprocess.run(["git", "-c", "user.email=probe@local", "-c", "user.name=probe",
+                        "commit", "-q", "-m", "probe-headcheck-b-added"],
+                       cwd=BOX, check=True)
+        out2 = call("dev_headcheck", "modules: mod_a\n")
+        self.assertNotIn("ModuleNotFoundError", out2,
+                         "补齐 HEAD 后仍红：%s" % out2[:200])
+
+    def test_bug_ledger_list_and_update(self):
+        out = call("dev_capture_bug",
+                   "title: probe-ledger-bug\nerror: probe\nseverity: low\n"
+                   "reproduction: run probe\n")
+        m = re.search(r"BUG-[A-Za-z0-9-]+", out)
+        self.assertIsNotNone(m, "capture_bug 没给 id：%s" % out[:120])
+        bid = m.group(0)
+        listed = call("dev_list_bugs", "")
+        self.assertIn(bid, listed, "bug 台账列不到新 bug")
+        call("dev_update_bug", "bug_id: %s\nstatus: fixed\n" % bid)
+        after = call("dev_list_bugs", "")
+        self.assertIn("fixed", after, "更新状态后台账没体现")
+
+    def test_regions_init_list_read(self):
+        call("init_regions", "")
+        listed = call("dev_list_regions", "")
+        for key in ("assets", "values", "behaviors"):
+            self.assertIn(key, listed, "分区列表缺 %s：%s" % (key, listed[:120]))
+        target = BOX / "assets" / "region-probe.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("region-read-payload\n", encoding="utf-8")
+        out = call("dev_region_read", "region: assets\npath: region-probe.txt\n")
+        self.assertIn("region-read-payload", out,
+                      "分区读没回内容：%s" % out[:120])
+
+    def test_apply_edits_atomic_all_or_nothing(self):
+        p = BOX / "atomic.txt"
+        q = BOX / "atomic2.txt"
+        p.write_text("alpha\nbeta\n", encoding="utf-8")
+        q.write_text("gamma\n", encoding="utf-8")
+        # 同一文件多块按设计拒绝（须合并为一块），原子性探针用两个文件。
+        bad_batch = ("path: atomic.txt\nold_text: alpha\nnew_text: alpha-x\n"
+                     "---\npath: atomic2.txt\nold_text: NOT-PRESENT\nnew_text: delta\n")
+        call("dev_apply_edits", bad_batch)
+        self.assertEqual(p.read_text(encoding="utf-8"), "alpha\nbeta\n",
+                         "一坏全不动被违反：部分编辑落盘了")
+        self.assertEqual(q.read_text(encoding="utf-8"), "gamma\n",
+                         "一坏全不动被违反：第二文件落盘了")
+        good_batch = ("path: atomic.txt\nold_text: alpha\nnew_text: alpha-x\n"
+                      "---\npath: atomic2.txt\nold_text: gamma\nnew_text: gamma-x\n")
+        call("dev_apply_edits", good_batch)
+        # apply_edit 会归一尾换行；机制判据扣内容不扣尾空白。
+        self.assertEqual(p.read_text(encoding="utf-8").rstrip("\n"), "alpha-x\nbeta",
+                         "全好批次没全落盘")
+        self.assertEqual(q.read_text(encoding="utf-8").rstrip("\n"), "gamma-x",
+                         "全好批次第二文件没落盘")
+
+    def test_refactor_moves_across_regions(self):
+        src = BOX / "assets" / "refactor-src.py"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("VALUE = 1\n", encoding="utf-8")
+        # assets → behaviors 是反向依赖（behaviors 依赖 assets），按设计拒绝；
+        # 探针走无关分区 bugs，并另钉反向依赖拒绝这条护栏。
+        refused = call("dev_refactor",
+                       "src_region: assets\nsrc_path: refactor-src.py\n"
+                       "dst_region: behaviors\ndst_path: refactor-src.py\n")
+        self.assertIn("拒绝", refused, "反向依赖搬移没被拒：%s" % refused[:120])
+        call("dev_refactor",
+             "src_region: assets\nsrc_path: refactor-src.py\n"
+             "dst_region: bugs\ndst_path: refactor-src.py\n")
+        self.assertFalse(src.exists(), "跨区重构后源仍在")
+        self.assertTrue((BOX / "bugs" / "refactor-src.py").exists(),
+                        "跨区重构后目标不在")
+
+    def test_search_knowledge_returns_ingested_fragment(self):
+        import ingest
+        kb = BOX / "kb-probe.md"
+        kb.write_text("# 探针知识\n\nKNOWLEDGE-MARKER-XYZ 是探针专用事实。\n",
+                      encoding="utf-8")
+        ingest.ingest_file(str(kb))
+        out = call("search_knowledge", "KNOWLEDGE-MARKER-XYZ")
+        self.assertIn("KNOWLEDGE-MARKER-XYZ", out,
+                      "知识检索没回已_ingest_片段：%s" % out[:160])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
