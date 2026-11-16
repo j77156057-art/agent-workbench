@@ -61,7 +61,12 @@ ROOT_LEVEL_PRODUCTION = re.compile(r"^[a-z0-9_]+\.py$")
 #: 「测试本来就不该执行的行」判红，那是量具错，不是代码错。
 MANUAL_SCRIPTS = ("verify_", "tools/mutation/probe_", "tools/mutation/diagnose_",
                   "tools/mutation/mutate_", "tools/design_seed.py",
-                  "tools/backfill_", "run_golden.py")
+                  "tools/backfill_", "run_golden.py",
+                  # 结构性豁免（2026-11-17）：这三个是 CI 步骤/人工现场执行的入口，
+                  # 进程内用例不 import 它们（seed 写真实 state、扫描器读 git 树），
+                  # 算 production 会让改动行门拿「CI 才执行的路径」判红。
+                  "tools/ci_browser_seed.py", "tools/privacy_scan.py",
+                  "tools/check_docs_refs.py")
 
 
 def classify(path: str) -> str:

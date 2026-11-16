@@ -67,7 +67,9 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(set(cov.MANUAL_SCRIPTS),
                          {"verify_", "tools/mutation/probe_", "tools/mutation/diagnose_",
                           "tools/mutation/mutate_", "tools/design_seed.py",
-                          "tools/backfill_", "run_golden.py"})
+                          "tools/backfill_", "run_golden.py",
+                          "tools/ci_browser_seed.py", "tools/privacy_scan.py",
+                          "tools/check_docs_refs.py"})
 
     def test_run_golden_is_not_testable_in_process(self):
         # 上面那条理由的证据本身也要被钉住：那份守卫确实声明了「不许 import run_golden」。
