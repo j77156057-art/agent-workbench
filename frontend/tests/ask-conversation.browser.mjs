@@ -9,7 +9,7 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 
 const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE || process.env.HOME, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const output = path.join(root, 'artifacts/shots')
 const fixtureBase = process.env.DOCMIND_UI_FIXTURE_URL || 'http://127.0.0.1:5174/tests/ask-message.fixture.html'
@@ -28,7 +28,8 @@ const report = {
   },
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge', headless: true,
+  args: process.env.PLAYWRIGHT_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [] })
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
 await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(fixtureBase).origin })
 await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(appBase).origin })
@@ -166,8 +167,8 @@ async function newFixture(width = 1440, height = 900) {
     copyButtons: document.querySelectorAll('.action-btn').length,
   }))
   assert.equal(before.processOpen, 0)
-  assert.match(before.processSummary, /读取 1 个文件/)
-  assert.deepEqual(before.status, ['已回复', '已回复'])
+  assert.match(before.processSummary, /2 步工具调用/)
+  assert.deepEqual(before.status, [])  // 现契约：成功回合隐藏状态徽标，异常才显示
   // 2026-10-29：回答正文由 16px 降到 15px（用户反馈偏大），守卫跟着走。
   assert.equal(before.answerFont, '15px')
   assert(before.answerWidth >= 700)
@@ -175,12 +176,12 @@ async function newFixture(width = 1440, height = 900) {
   assert.equal(before.copyButtons, 2)
   report.fixture.push({ case: 'long-answer', ...before })
 
-  await page.locator('.process-toggle').first().click()
+  await page.locator('.process-head').first().click()
   await page.waitForTimeout(60)
   assert.equal(await page.locator('.process-body').count(), 1)
   assert((await page.locator('.narration').count()) >= 2)
   assert.equal(await page.locator('.flow-row').count(), 4)
-  assert.equal(await page.locator('.process-toggle').count(), 1, 'process must not nest another level')
+  assert.equal(await page.locator('.process-head').count(), 1, 'process must not nest another level')
 
   await page.locator('.refs-toggle').first().click()
   await page.waitForTimeout(40)
@@ -214,7 +215,7 @@ async function newFixture(width = 1440, height = 900) {
     rows: document.querySelectorAll('.flow-row').length,
     narration: document.querySelectorAll('.narration').length,
   }))
-  assert.equal(noTrace.summary, '查看思考过程')
+  assert.equal(noTrace.summary, '思考过程')
   assert.equal(noTrace.rows, 0)
   assert(noTrace.narration > 0)
   await page.evaluate(() => window.__askFixture.setPrefs({ showTrace: true, autoExpandTrace: true }))
@@ -252,9 +253,9 @@ async function newFixture(width = 1440, height = 900) {
   report.interactions.push('授权选项只提交一次，状态变为已提交选择')
 
   await page.evaluate(() => window.__askFixture.setCase('workflow'))
-  await page.waitForTimeout(350)
-  assert(await page.locator('.wf-card').count() > 0, 'workflow card should render')
-  await page.locator('.process-toggle').first().click()
+  // 异步组件冷启动（dev 现转译重子组件）可能远超 350ms；等选择器而不是固定睡眠。
+  await page.locator('.wf-card').first().waitFor({ timeout: 15000 })
+  await page.locator('.process-head').first().click()
   await page.waitForTimeout(60)
   assert(await page.locator('.wf-card').count() > 0, 'workflow card must survive process toggle')
   report.interactions.push('工作流卡片不受执行过程折叠影响')
@@ -266,12 +267,15 @@ async function newFixture(width = 1440, height = 900) {
   await page.evaluate(() => window.__askFixture.appendEvent({ type: 'action', text: 'read_file(frontend/src/ask/AskApp.vue)' }))
   await page.evaluate(() => window.__askFixture.appendEvent({ type: 'observation', text: '读取到入口发送逻辑。', ok: true }))
   await page.waitForTimeout(60)
-  assert.equal(await page.locator('.process-body').count(), 0)
-  assert.match(await page.locator('.process-summary').textContent(), /读取 1 个文件/)
-  await page.locator('.process-toggle').click()
-  await page.waitForTimeout(40)
+  assert.equal(await page.locator('.process-body').count(), 1)  // 现契约：流式且无答案时默认展开
+  assert.match(await page.locator('.process-summary').textContent(), /读取 1 个文件/)  // 展开态为人话 headline
   const autoOpen = await page.locator('.flow-detail').count()
   assert.equal(autoOpen, 1, 'autoExpandTrace should open the latest row while streaming')
+  await page.locator('.process-head').click()
+  await page.waitForTimeout(40)
+  assert.equal(await page.locator('.process-body').count(), 0, 'manual collapse closes the process')
+  await page.locator('.process-head').click()
+  await page.waitForTimeout(40)
   await page.locator('.flow-row').last().click()
   await page.evaluate(() => window.__askFixture.setPrefs({ autoExpandTrace: false }))
   await page.evaluate(() => window.__askFixture.appendEvent({ type: 'action', text: 'grep("postSse")' }))
@@ -285,7 +289,7 @@ async function newFixture(width = 1440, height = 900) {
   await page.evaluate(() => window.__askFixture.appendEvent({ type: 'final', text: '这是流式回答的最终内容。' }))
   await page.evaluate(() => window.__askFixture.appendEvent({ type: 'done' }))
   await page.waitForTimeout(40)
-  assert.equal(await page.locator('.ai-status').textContent(), '已回复')
+  assert.equal(await page.locator('.ai-status').count(), 0)  // 成功后徽标隐藏
   assert.equal(await page.locator('.answer').textContent(), '这是流式回答的最终内容。')
   report.interactions.push('运行中：阶段状态、过程默认关闭、自动摊开最新行、手收后不被追加重开')
 
@@ -311,10 +315,10 @@ async function newFixture(width = 1440, height = 900) {
       await page.screenshot({ path: path.join(output, `ask-conversation-after-${skin}-${width}.png`), fullPage: true })
       assert.equal(metrics.overflow, false, `fixture ${skin} ${width} overflow`)
       assert.equal(metrics.failures.length, 0, `fixture ${skin} ${width} contrast: ${JSON.stringify(metrics.failures)}`)
-      await page.locator('.process-toggle').first().click()
+      await page.locator('.process-head').first().click()
       await page.waitForTimeout(50)
       await page.screenshot({ path: path.join(output, `ask-conversation-after-process-${skin}-${width}.png`), fullPage: true })
-      await page.locator('.process-toggle').first().click()
+      await page.locator('.process-head').first().click()
     }
   }
   await page.close()
@@ -445,17 +449,17 @@ async function send(page, text) {
   await page.evaluate(id => window.__askTransport.emit(id, { type: 'action', text: 'read_file(frontend/src/ask/AskApp.vue)' }), first)
   await page.evaluate(id => window.__askTransport.emit(id, { type: 'observation', text: '读取到入口发送逻辑。', ok: true }), first)
   await page.waitForFunction(() => document.querySelector('.process-summary')?.textContent?.includes('读取 1 个文件'))
-  assert.equal(await page.locator('.process-body').count(), 0)
+  assert.equal(await page.locator('.process-body').count(), 1)  // 流式无答案默认展开
   await page.evaluate(id => window.__askTransport.emit(id, { type: 'token', text: '这是流式回答的开头。' }), first)
   await page.waitForFunction(() => document.querySelector('.ai-status')?.textContent === '正在回答')
   await page.evaluate(({ id, text }) => window.__askTransport.finish(id, text), { id: first, text: APP_ANSWER })
-  await page.waitForFunction(() => document.querySelector('.ai-status')?.textContent === '已回复')
+  await page.waitForFunction(() => !document.querySelector('.ai-status'))  // 成功=徽标隐藏
   assert((await page.locator('.answer').textContent()).includes('请求由'))
   assert.equal(await page.getByText(/流式连接在服务完成前中断/).count(), 0)
   await page.waitForFunction(() => !document.querySelector('.send-btn.stop'))
-  report.app.push({ case: 'stream-success', status: '已回复' })
+  report.app.push({ case: 'stream-success', status: '完成（徽标隐藏）' })
 
-  await page.locator('.process-toggle').click()
+  await page.locator('.process-head').click()
   assert((await page.locator('.narration').count()) >= 1)
   assert((await page.locator('.flow-row').count()) >= 2)
   report.interactions.push('生产页面：分阶段状态、final+done 成功收束、过程展开')
@@ -492,7 +496,7 @@ async function send(page, text) {
   let id = await send(page, '给我一份较长的说明。')
   const longText = Array.from({ length: 26 }, (_, i) => `第 ${i + 1} 段：这是一段用于撑开滚动区域的长内容。`).join('\n\n')
   await page.evaluate(({ id, text }) => window.__askTransport.finish(id, text), { id, text: longText })
-  await page.waitForFunction(() => document.querySelector('.ai-status')?.textContent === '已回复')
+  await page.waitForFunction(() => !document.querySelector('.send-btn.stop'))  // 收束=停止按钮消失
 
   id = await send(page, '再来一段更长的。')
   await page.evaluate(id => {
@@ -533,7 +537,7 @@ async function send(page, text) {
   const page = await newAppPage()
   const id = await send(page, '给我几个文件位置。')
   await page.evaluate(({ id, text }) => window.__askTransport.finish(id, text), { id, text: REF_ANSWER })
-  await page.waitForFunction(() => document.querySelector('.ai-status')?.textContent === '已回复')
+  await page.waitForFunction(() => !document.querySelector('.send-btn.stop'))  // 收束=停止按钮消失
   await page.locator('.refs-toggle').click()
   const rows = page.locator('.ref-item')
   await rows.filter({ hasText: 'slow.ts' }).click()
@@ -556,7 +560,7 @@ async function send(page, text) {
   const page = await newAppPage(390, 844)
   const id = await send(page, '移动端长回答。')
   await page.evaluate(({ id, text }) => window.__askTransport.finish(id, text), { id, text: APP_ANSWER })
-  await page.waitForFunction(() => document.querySelector('.ai-status')?.textContent === '已回复')
+  await page.waitForFunction(() => !document.querySelector('.send-btn.stop'))  // 收束=停止按钮消失
   await page.evaluate(() => document.fonts.ready)
   const metrics = await page.evaluate(measure)
   report.contrast.push({ page: 'app', skin: 'zinc', width: 390, ...metrics })

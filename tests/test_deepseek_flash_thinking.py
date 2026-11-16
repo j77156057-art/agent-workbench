@@ -177,6 +177,17 @@ class TestThinkingParameterShapeReallySent:
         got = _real_kwargs("qwen", "qwen3-35b-a3b", True)
         assert got.get("temperature") == llm_mod.LLM_TEMPERATURE
 
+    def test_suppression_flag_tracks_thinking_for_notice(self):
+        """抑制必须可被上层看见（notice/trace），且关思考后复位——静默偏差的告知落点。"""
+        caps = _CapturingCompletions()
+        c = llm_mod.LLMClient(provider="deepseek", model="deepseek-flash", api_key="test-key")
+        c.client = type("C", (), {"chat": type("Chat", (), {
+            "completions": caps})()})()
+        c.chat([{"role": "user", "content": "hi"}], stream=False, enable_thinking=True)
+        assert c.last_sampling_suppressed is True
+        c.chat([{"role": "user", "content": "hi"}], stream=False, enable_thinking=False)
+        assert c.last_sampling_suppressed is False
+
     def test_json_serialisable(self):
         """`extra_body` 最终要进 HTTP body —— 不可序列化等于发不出去。"""
         for prov, model in (("deepseek", "deepseek-flash"), ("qwen", "qwen3-35b-a3b")):

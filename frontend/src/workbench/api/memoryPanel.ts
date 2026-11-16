@@ -59,6 +59,7 @@ export interface MemoryLayer {
   scope_label?: string
   retrievable?: number
   retrievable_items?: Array<Record<string, unknown>>
+  note?: string
 }
 
 export interface MemoryContextResult {

@@ -397,6 +397,12 @@ async function adoptLastSession(): Promise<boolean> {
 function recalledProjectSession(pid: string): string {
   try { return sessionStorage.getItem(projectSessionKey(pid)) || '' } catch { return '' }
 }
+/** 跨标签页/重开的上次会话记录。mount 瞬间项目 id 可能还没加载（异步），
+    _startupLastSession 会读空；项目首次绑定事件里必须按已知 pid 再读一次，
+    否则「关掉重开自动续上最近对话」静默失效、每次新建会话。 */
+function lastSessionFor(pid: string): string {
+  try { return pid ? localStorage.getItem(lastSessionKey(pid)) || '' : '' } catch { return '' }
+}
 rememberProjectSession(chatProject, chatSession)
 const draftKey = () => 'docmind.workbenchChatDraft:' + chatProject + ':' + chatSession
 const recoveryKey = () => 'docmind.interrupted:' + chatProject + ':' + chatSession
@@ -1125,7 +1131,7 @@ async function onProjectChanged() {
   }
   preserveInterrupted()
   stop()
-  const sid = recalledProjectSession(project)
+  const sid = recalledProjectSession(project) || lastSessionFor(project)
   let selected = sid ? await selectSession(sid) : false
   if (seq !== projectSwitchSeq || project !== getProjectId()) return
   if (!selected) {

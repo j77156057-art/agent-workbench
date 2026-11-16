@@ -155,6 +155,8 @@ class Turn:
         self.cache_creation_tokens = 0  # prompt caching 首次写入（按溢价计费）
         self.llm_calls = 0
         self.llm_ms = 0
+        # 思考模式下上游忽略 temperature、出站省略了该参数（抑制+告知的落账）。
+        self.sampling_suppressed = False
         self.steps = []
         self.actions = []
         self.reflections = 0
@@ -232,6 +234,12 @@ class Turn:
         self.llm_ms += int(latency_ms or 0)
         if finish_reason:
             self.finish_reason = finish_reason
+
+    def note_sampling_suppressed(self):
+        """记一次「思考模式抑制 temperature」；返回是否回合内首次（供 notice 去重）。"""
+        first = not self.sampling_suppressed
+        self.sampling_suppressed = True
+        return first
 
     def tool_step(self, action, arg="", latency_ms=0, obs="", ok=True):
         with self._lk:
@@ -327,6 +335,8 @@ class Turn:
         }
         if self.injection:
             record["injection"] = self.injection
+        if self.sampling_suppressed:
+            record["sampling_suppressed"] = True
         return record
 
 

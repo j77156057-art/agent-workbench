@@ -17,7 +17,7 @@ import fs from 'node:fs/promises'
 import { FRAME_B64 } from './fixtures/right-rail-frame.mjs'
 
 const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE || process.env.HOME, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const output = path.join(root, 'artifacts/shots')
 const base = process.env.DOCMIND_UI_TEST_URL || 'http://127.0.0.1:8000'
@@ -49,7 +49,8 @@ const ran = []
 const report = { planned, ran, cases: [], interactions: [], errors: [], writes: [] }
 
 await fs.mkdir(output, { recursive: true })
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge', headless: true,
+  args: process.env.PLAYWRIGHT_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [] })
 
 const sseFrame = (obj) => 'data: ' + JSON.stringify(obj) + '\n\n'
 const SSE_BODY = [
@@ -101,6 +102,21 @@ async function createPage({ skin = 'zinc', layout = null, width = 1440, height =
     if (pathname === '/api/turn/active') return json({ ok: true, turns: [] })
     if (pathname === '/api/sessions') return json({ ok: true, items: [] })
     if (pathname.startsWith('/api/sessions/')) return json({ ok: true, session_id: pathname.split('/').at(-1), turns: [] })
+    if (pathname === '/api/fs/tree') {
+      // 引用卡只认真实文件树里存在的路径（过滤幻觉引用）；桩树让本套不依赖服务端 code_root。
+      return json({
+        ok: true, code_root: '/fixture', regions_enabled: false, regions: [],
+        nodes: [{
+          name: 'frontend', path: 'frontend', type: 'dir', children: [{
+            name: 'src', path: 'frontend/src', type: 'dir', children: [{
+              name: 'workbench', path: 'frontend/src/workbench', type: 'dir', children: [{
+                name: 'App.vue', path: FILE_PATH, type: 'file', size: FILE_CONTENT.length,
+              }],
+            }],
+          }],
+        }],
+      })
+    }
     if (pathname === '/api/fs/file') {
       return json({
         ok: true,
@@ -178,7 +194,7 @@ async function railWidth(page) {
 async function openDiffFromTrace(page) {
   const head = page.locator('.cd-trace-head')
   if ((await head.getAttribute('aria-expanded')) !== 'true') await head.click()
-  const seg = page.locator('.cd-flow-toggle').first()
+  const seg = page.locator('.cd-trace-head').first()
   await seg.waitFor()
   if ((await seg.getAttribute('aria-expanded')) !== 'true') await seg.click()
   await page.locator('.cd-flow-body').waitFor()

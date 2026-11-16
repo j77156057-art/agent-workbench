@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { askConfirm, askPrompt } from '../composables/dialogs'
-import { memoryPanelApi } from '../api'
+import { memoryPanelApi, agentApi } from '../api'
 import MemoryOverview from './MemoryOverview.vue'
 import type {
   DiskRetentionRunResult,
@@ -570,6 +570,35 @@ async function invalidateItem(item: MemoryPanelItem) {
   })
 }
 
+async function removeLegacyItem(item: MemoryPanelItem) {
+  if (!item.id) return
+  const confirmed = await askConfirm({
+    title: '删除长期记忆',
+    message: '删除后该条不再注入，且无法撤销；后续自动提取的同事实会被墓碑阻挡。',
+    confirmText: '删除',
+    danger: true,
+  })
+  if (!confirmed) return
+  await run(async () => {
+    await agentApi.deleteMemory(item.id!, String(item.agent_id || 'main'))
+    notice.value = '已删除长期记忆'
+  })
+}
+
+async function retireLegacyItem(item: MemoryPanelItem) {
+  if (!item.id) return
+  const confirmed = await askConfirm({
+    title: '失效长期记忆',
+    message: '失效后保留审计记录，但不再参与召回与注入；适合「结论已过时」而非「记错了」。',
+    confirmText: '失效',
+  })
+  if (!confirmed) return
+  await run(async () => {
+    await agentApi.retireMemory(item.id!, String(item.agent_id || 'main'))
+    notice.value = '已失效；审计记录保留'
+  })
+}
+
 async function addLink(item: MemoryPanelItem) {
   if (!item.id) return
   const target = (linkTargets.value[item.id] || '').trim()
@@ -1077,6 +1106,23 @@ async function reindex() {
             </div>
           </div>
         </details>
+      </template>
+
+      <template v-else-if="current.kind === 'legacy'">
+        <p v-if="current.note" class="mp-hint">{{ current.note }}</p>
+        <p v-if="!l2Items.length" class="mp-hint">没有 active 的长期记忆。聊天存证与自动提取的事实会出现在这里。</p>
+        <div v-for="item in l2Items" :key="String(item.id)" class="mp-item">
+          <div class="mp-item-head">
+            <span>{{ item.kind === 'lesson' ? '教训' : '事实' }} · {{ item.updated || '更新时间未记录' }}</span>
+            <span v-if="item.legacy_unclassified" class="mp-hint">历史未分类</span>
+          </div>
+          <p class="mp-body-text">{{ item.title }}</p>
+          <p v-if="item.content" class="mp-body-text">{{ item.content }}</p>
+          <div class="mp-actions">
+            <button class="mp-mini" type="button" :disabled="busy || mode === 'last'" @click="retireLegacyItem(item)">失效</button>
+            <button class="mp-mini mp-danger" type="button" :disabled="busy || mode === 'last'" @click="removeLegacyItem(item)">删除</button>
+          </div>
+        </div>
       </template>
 
       <template v-else-if="current.kind === 'taskbook'">

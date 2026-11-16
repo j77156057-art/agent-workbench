@@ -14,6 +14,9 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 function cleanAssets(): Plugin {
   return {
     name: 'docmind-clean-assets',
+    // 只在构建时清旧哈希产物：buildStart 在 dev 启动也会跑，若不限制 apply，
+    // 起一次 dev server 就会删掉后端正在服务的生产构建（实测 web/assets 被清空）。
+    apply: 'build',
     buildStart() {
       const dir = resolve(__dirname, '../web/assets')
       if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })

@@ -401,5 +401,25 @@ class TestCommandEvidenceTests(unittest.TestCase):
                          "测试之后又改了文件，旧测试结果不能继续作数")
 
 
+class SamplingSuppressionRecordTests(_IsoBase):
+    def test_note_dedups_and_record_only_when_suppressed(self):
+        turn = agent_trace.Turn(session_id="web-x")
+        self.assertNotIn("sampling_suppressed", turn.to_record())
+        self.assertTrue(turn.note_sampling_suppressed())
+        self.assertFalse(turn.note_sampling_suppressed())
+        self.assertIs(turn.to_record()["sampling_suppressed"], True)
+
+    def test_run_emits_notice_once_and_records_suppression(self):
+        fake = _FakeLLM(["Final Answer: ok"])
+        fake.last_sampling_suppressed = True
+        a = agent_mod.Agent(llm=fake, session_id="s-sampling")
+        events = list(a.run("hi", stream=True))
+        notices = [e for e in events
+                   if e.get("type") == "notice" and "temperature" in str(e.get("text"))]
+        self.assertEqual(len(notices), 1)
+        rows = [r for r in agent_trace.recent(10) if r["session_id"] == "s-sampling"]
+        self.assertTrue(rows and rows[0].get("sampling_suppressed"))
+
+
 if __name__ == "__main__":
     unittest.main()

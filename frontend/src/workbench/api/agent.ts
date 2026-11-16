@@ -399,6 +399,11 @@ export const agentApi = {
     const query = new URLSearchParams({ agent_id: agentId })
     return request(`/api/agent/memory/${encodeURIComponent(id)}?${query.toString()}`, { method: 'DELETE' })
   },
+  // 退役：保留审计但不再召回/注入；归属校验与删除同口径（403/404 可区分）。
+  retireMemory(id: string, agentId = 'main'): Promise<{ ok?: boolean; error?: string }> {
+    const query = new URLSearchParams({ agent_id: agentId })
+    return request(`/api/agent/memory/${encodeURIComponent(id)}/retire?${query.toString()}`, { method: 'POST' })
+  },
   workflowStart(
     prompt: string,
     options: { use_llm?: boolean; web_enabled?: boolean; kind?: 'generic' | 'game' | 'eda' } = {},

@@ -172,6 +172,38 @@ class MemoryInspectorTests(_IsoBase):
         self.assertEqual(sub_own.status_code, 200)
         self.assertIsNone(memory.owner(scope, main_mid))
 
+    def test_memory_retire_api_enforces_agent_ownership(self):
+        """退役与删除同口径：跨 agent 403、不存在 404；退役后不再召回。"""
+        import api
+        from starlette.testclient import TestClient
+
+        scope = memory.scope_key("p")
+        mid = memory.remember(scope, "fact", "过时结论", "曾经成立")
+        with patch.object(api, "_request_project_id", return_value="p"), TestClient(api.app) as client:
+            cross = client.post(f"/api/agent/memory/{mid}/retire?agent_id=ag-a")
+            missing = client.post("/api/agent/memory/not-a-real-id/retire?agent_id=main")
+            own = client.post(f"/api/agent/memory/{mid}/retire?agent_id=main")
+        self.assertEqual(cross.status_code, 403)
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(own.status_code, 200)
+        self.assertTrue(own.json()["ok"])
+        self.assertNotIn(mid, [row["id"] for row in memory.recall(scope, "过时结论")])
+
+    def test_next_view_exposes_legacy_as_manageable_layer(self):
+        """legacy 主记忆库必须是一等层：next 预览含它、带 active 库存、可编辑。"""
+        from agent_runtime.memory import context_panel
+
+        scope = memory.scope_key("p")
+        mid = memory.remember(scope, "fact", "夹具事实", "长期记忆正文")
+        view = context_panel.next_view("p", "web-legacy-test")
+        legacy = [layer for layer in view["layers"] if layer["key"] == "legacy"]
+        self.assertEqual(len(legacy), 1)
+        layer = legacy[0]
+        self.assertEqual(layer["kind"], "legacy")
+        self.assertTrue(layer["editable"])
+        self.assertIn(mid, [item["id"] for item in layer["items"]])
+        self.assertIn("夹具事实", layer["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

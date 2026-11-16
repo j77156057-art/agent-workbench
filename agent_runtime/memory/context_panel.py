@@ -16,7 +16,7 @@ from . import (constitution, episodes, errors, hooks, injection, profile, promot
 BUDGETS = {"rule": 600, "profile": profile.PROFILE_INJECT_MAX_CHARS,
            "shared": 800, "taskbook": 400, "hook": 600}
 TITLES = {"rule": "常驻守则", "profile": "用户画像", "shared": "共享记忆",
-          "taskbook": "任务书", "hook": "会话钩子"}
+          "legacy": "项目长期记忆", "taskbook": "任务书", "hook": "会话钩子"}
 
 # 旧 trace 里的提示词层编号 → 新提示词层 key（与图上的 store 分层不是同一套，
 # 例如旧 L1 是画像而不是项目长期记忆）。仅用于读历史快照。
@@ -138,6 +138,29 @@ def next_view(project_id, session_id, code_root="", agent_id="main"):
                                 for item in pinned],
                          retrievable=len(retrievable_items),
                          retrievable_items=retrievable_items))
+
+    # legacy 主记忆库是一等层：提示词每轮真注入它（agent._build_messages 走
+    # context_with_rows），预览与库存必须在这里可见可管理，否则「直接编辑」
+    # 的承诺对最主要的记忆库不成立。召回随问题浮出，空查询预览最近 active 行。
+    import agent_memory
+    legacy_scope = agent_memory.scope_key(project_id or None)
+    try:
+        legacy_text, _ = agent_memory.context_with_rows(legacy_scope, "", agent_id=owner)
+        legacy_catalog = [row for row in agent_memory.audit(legacy_scope, agent_id=owner)
+                          if str(row.get("status") or "active") == "active"]
+    except Exception:  # noqa: BLE001 —— 记忆库不可读时如实空层，不编造
+        legacy_text, legacy_catalog = "", []
+    layers.append(_layer("legacy", "项目长期记忆", legacy_text,
+                         editable=True, source="长期记忆库", kind="legacy",
+                         items=[{"id": row.get("id"), "kind": row.get("kind"),
+                                 "title": row.get("title"),
+                                 "content": str(row.get("content") or "")[:400],
+                                 "status": row.get("status"),
+                                 "updated": row.get("updated"),
+                                 "agent_id": row.get("agent_id"),
+                                 "legacy_unclassified": bool(int(row.get("agent_legacy") or 0))}
+                                for row in legacy_catalog],
+                         note="注入召回随问题浮出；此处以空查询预览最近 active 行，库存为全量 active 目录。"))
 
     book = taskbook.info(project)
     layers.append(_layer("taskbook", "任务书", taskbook.summary(project, max_chars=caps["project"]),

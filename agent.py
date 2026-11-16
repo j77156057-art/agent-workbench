@@ -7086,6 +7086,10 @@ class Agent:
                 if turn is not None:
                     turn.llm_step((time.monotonic() - _t_llm) * 1000, finish_reason)
                     turn.add_usage(getattr(self.llm, "last_usage", None))
+                    if getattr(self.llm, "last_sampling_suppressed", False) and turn.note_sampling_suppressed():
+                        yield {"type": "notice",
+                               "text": "思考模式已开：当前上游在思考模式下忽略 temperature，"
+                                       "本回合按上游默认采样发送；你的温度设置保留，关思考后恢复生效。"}
                 self._record_budget_usage(messages, acc)
                 # 关思考只作用于被截断后的那一次续写重试；用完即复位，避免影响后续正常轮次
                 self._suppress_thinking_once = False

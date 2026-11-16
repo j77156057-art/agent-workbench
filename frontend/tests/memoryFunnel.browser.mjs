@@ -42,6 +42,7 @@ async function openHealthTab(page) {
   await page.goto(BASE + '/workbench.html', { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('button[aria-label="上下文记忆"]', { timeout: 20000 })
   await page.click('button[aria-label="上下文记忆"]')
+  await page.click('.rs-tab:has-text("上下文记忆")')
   await page.waitForSelector('button:has-text("健康")', { timeout: 10000 })
   await page.click('button:has-text("健康")')
   await page.waitForSelector('.mp-funnel', { timeout: 15000 })
@@ -240,7 +241,8 @@ async function readPanel(page, tag, width, strict = true) {
   return info
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge', headless: true,
+  args: process.env.PLAYWRIGHT_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [] })
 try {
   const ctx1 = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   const page1 = await ctx1.newPage()

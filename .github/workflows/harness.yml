@@ -310,3 +310,80 @@ jobs:
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python -m unittest tests.test_live_llm_workflow -q
+
+  # 浏览器回归门：六套 browser.mjs 里五套契约级套件进 CI（2026-11-17 挂门）。
+  # 此前它们硬编码 msedge + 手工跑，UI 契约漂移（侧栏标签化、状态徽标隐藏、
+  # 摘要措辞）没人发现——门不挂上去就永远靠人记得。
+  # memoryLayers.browser.mjs 刻意留在手工：它的像素级图断言（同层注入/未注入
+  # 亮度差、真实边拖拽邻域）依赖有机真实数据，合成 seed 满足不了共享候选态 /
+  # project 环召回 / 边端点目录过滤三层口径；硬塞进 CI 只会造恒红或假绿。
+  browser-regression:
+    name: browser regression (chrome)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      DOCMIND_STATE_ROOT: ${{ runner.temp }}/docmind-ci-state
+      DOCMIND_MEMORY_V2: "1"
+      DOCMIND_TRACE: "1"
+      LLM_PROVIDER: mock
+      EMBEDDING_PROVIDER: local
+      NO_PROXY: localhost,127.0.0.1
+      PLAYWRIGHT_CHANNEL: chrome
+      PLAYWRIGHT_NO_SANDBOX: "1"
+      DOCMIND_BASE: http://127.0.0.1:8000
+      DOCMIND_UI_TEST_URL: http://127.0.0.1:8000
+      DOCMIND_UI_FIXTURE_URL: http://127.0.0.1:5174/tests/ask-message.fixture.html
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Build frontend and install playwright-core
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          npm install --no-save playwright-core
+      - name: Start backend with isolated state and fixture project
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-fixture/src"
+          printf 'def add(a, b):\n    return a + b\n' > "$RUNNER_TEMP/ci-fixture/src/calc.py"
+          nohup python -m uvicorn api:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/api/health > /dev/null; then break; fi
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:8000/api/health
+          printf '{"root":"%s/ci-fixture","name":"CI browser fixture"}' "$RUNNER_TEMP" > "$RUNNER_TEMP/proj.json"
+          pid=$(curl -sf -X POST http://127.0.0.1:8000/api/projects -H 'Content-Type: application/json' --data-binary @"$RUNNER_TEMP/proj.json" | python -c 'import json,sys; print(json.load(sys.stdin)["project_id"])')
+          python tools/ci_browser_seed.py "$pid"
+      - name: Start vite dev for ask fixture page
+        working-directory: frontend
+        run: |
+          nohup npm run dev -- --port 5174 --strictPort > "$RUNNER_TEMP/vite.log" 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:5174/tests/ask-message.fixture.html > /dev/null; then break; fi
+            sleep 2
+          done
+          curl -sf -o /dev/null http://127.0.0.1:5174/tests/ask-message.fixture.html
+      - name: Run browser regression suites
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/frontend/node_modules/playwright-core
+        run: |
+          for s in product-ui right-rail ask-conversation memoryFunnel diskRetention; do
+            echo "== $s"
+            node "frontend/tests/$s.browser.mjs"
+          done
+      - name: Show server logs on failure
+        if: failure()
+        run: |
+          tail -50 "$RUNNER_TEMP/server.log" || true
+          tail -30 "$RUNNER_TEMP/vite.log" || true

@@ -15,7 +15,9 @@
   --ui2-accent-soft: color-mix(in srgb, var(--accent) 9%, transparent);
   --ui2-rail-bg: color-mix(in srgb, var(--accent) 18%, var(--ink));
   --ui2-rail-text: var(--bg-raised);
-  --ui2-rail-muted: color-mix(in srgb, var(--bg-raised) 68%, transparent);
+  /* 80%：68% 合成在 graphite 反色轨道上仅 4.22:1（AA 门实测抓出）；
+     提高占比让 muted 更接近 rail-text，深浅两档都 ≥4.5。 */
+  --ui2-rail-muted: color-mix(in srgb, var(--bg-raised) 80%, transparent);
   --ui2-rail-line: color-mix(in srgb, var(--bg-raised) 16%, transparent);
   --ui2-font-display: 'Archivo Black', 'Archivo', 'Noto Sans SC', sans-serif;
   --ui2-font-mono: 'Space Mono', ui-monospace, Consolas, monospace;

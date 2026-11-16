@@ -59,24 +59,27 @@ async function payload(session, project = '') {
  */
 async function openOverview(page, sessions, { strict = true } = {}) {
   const candidates = Array.isArray(sessions) ? sessions : [sessions]
-  await page.goto(BASE + '/workbench.html', { waitUntil: 'domcontentloaded' })
-  await page.waitForFunction(() => window.DocMindSession && window.DocMindSession.ready, null, { timeout: 20000 })
-  await page.waitForSelector('button[aria-label="上下文记忆"]', { timeout: 20000 })
-  await page.evaluate(async () => {
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-    let last = window.DocMindSession.get()
-    for (let stable = 0; stable < 12;) {
-      await sleep(150)
-      const now = window.DocMindSession.get()
-      if (now === last) stable += 1
-      else { last = now; stable = 0 }
-    }
-  })
+  // 用产品自己的「重开续上最近对话」机制指定会话：按项目写 localStorage 记录，
+  // 工作台首次项目绑定事件会接管它（ChatDock.lastSessionFor）。
+  const proj = await (await fetch(BASE + '/api/projects')).json()
+  const pid = typeof proj.current === 'string' ? proj.current : (proj.current && proj.current.project_id) || ''
   let chosen = ''
   for (const id of candidates) {
-    const ok = await page.evaluate(value => window.DocMindSession.set(value), id)
-    if (!ok) continue
-    await page.waitForTimeout(250)
+    await page.addInitScript(([k, v]) => localStorage.setItem(k, v),
+      ['docmind.workbenchLastSession:' + pid, id])
+    await page.goto(BASE + '/workbench.html', { waitUntil: 'domcontentloaded' })
+    await page.waitForFunction(() => window.DocMindSession && window.DocMindSession.ready, null, { timeout: 20000 })
+    await page.waitForSelector('button[aria-label="上下文记忆"]', { timeout: 20000 })
+    await page.evaluate(async () => {
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+      let last = window.DocMindSession.get()
+      for (let stable = 0; stable < 12;) {
+        await sleep(150)
+        const now = window.DocMindSession.get()
+        if (now === last) stable += 1
+        else { last = now; stable = 0 }
+      }
+    })
     if (await page.evaluate(() => window.DocMindSession.get()) === id) { chosen = id; break }
   }
   if (strict && !chosen) throw new Error(`没有可用的真实会话（都被占用）：${candidates.join(',')}`)
@@ -85,6 +88,7 @@ async function openOverview(page, sessions, { strict = true } = {}) {
     { timeout: 20000 },
   ).catch(() => null)
   await page.click('button[aria-label="上下文记忆"]')
+  await page.click('.rs-tab:has-text("上下文记忆")')
   await page.waitForSelector('[data-memory-panel] .mo-stable-graph', { timeout: 25000 })
   await page.waitForSelector('[data-memory-panel] .mo-node', { timeout: 25000 })
   await inspect
@@ -169,7 +173,8 @@ function byLayer(rows, layer, used) {
   return rows.filter(row => row.layer === layer && (used === undefined || row.used === used))
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge', headless: true,
+  args: process.env.PLAYWRIGHT_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [] })
 fs.mkdirSync(OUT, { recursive: true })
 const consoleErrors = []
 const brightness = {}
@@ -191,7 +196,9 @@ try {
   richEdges = api.edges || []
   const shot = await page.evaluate(measure)
   const headerText = await page.locator('[data-memory-panel] .mp-identity').innerText()
-  check('面板确实用了指定真实会话', headerText.includes(richSession), headerText.replace(/\n/g, ' / '))
+  // 身份区不再印原始 session id；用网络层证据判定面板绑定到了指定会话。
+  check('面板确实用了指定真实会话', inspectUrls.some(url => url.includes(richSession)),
+    headerText.replace(/\n/g, ' / ') + ' || ' + inspectUrls.slice(0, 1).join(''))
   check('inspect 请求带真实会话', inspectUrls.some(url => url.includes(richSession)),
     inspectUrls.find(url => url.includes('/memory/inspect')) || '(未捕获)')
   brightness.rich = shot

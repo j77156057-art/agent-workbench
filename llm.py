@@ -673,6 +673,7 @@ class LLMClient:
         # `completion_tokens` 只能告诉你后者**可能**发生——留一段真实文本，
         # 才能一眼看出是哪一种。
         self.last_finish_reason = None   # 非流式路径原本完全没有这个信息
+        self.last_sampling_suppressed = False  # 思考模式省略 temperature（上游静默忽略）时为 True
         self.last_stream_ref = None      # 流式下**记流对象本身**（值要消费完才定）
         self.last_raw_head = ""          # 分辨「空」与「有开场白但被掐」
         self.last_call_probe = bool(os.getenv("DOCMIND_PROBE_LLM", "").strip()
@@ -824,6 +825,7 @@ class LLMClient:
         self.last_usage = {}
         self.last_tool_calls = []
         self.last_finish_reason = None
+        self.last_sampling_suppressed = False
         self.last_stream_ref = None
         self.last_raw_head = ""
         self.last_messages = list(messages) if self.last_call_probe else []
@@ -893,6 +895,7 @@ class LLMClient:
         )
         if not deepseek_thinking:
             kwargs["temperature"] = temperature
+        self.last_sampling_suppressed = bool(deepseek_thinking)
         # qwen3 toggle 家族（含 DashScope 兼容模式/自建端点）：按开关透传 enable_thinking。
         # 不支持思考的模型绝不带这个参数，避免 400；native 模型本身始终推理，无需传。
         #

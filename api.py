@@ -5142,6 +5142,20 @@ async def agent_memory_delete_ep(memory_id: str, agent_id: str = "main"):
     return {"ok": agent_memory.forget(scope, memory_id, agent_id=agent_id)}
 
 
+@app.post("/api/agent/memory/{memory_id}/retire")
+async def agent_memory_retire_ep(memory_id: str, agent_id: str = "main"):
+    """退役一条记忆（保留审计、不再召回/注入）。归属校验与删除同口径：403/404 可区分。"""
+    import agent_memory
+    scope = agent_memory.scope_key(_request_project_id() or None)
+    holder = agent_memory.owner(scope, memory_id)
+    if holder is None:
+        raise HTTPException(status_code=404, detail="未找到该记忆")
+    if holder != str(agent_id or "main"):
+        raise HTTPException(status_code=403,
+                            detail="该记忆属于 agent %s，当前身份 %s 无权退役" % (holder, agent_id))
+    return {"ok": agent_memory.retire(scope, memory_id, agent_id=agent_id)}
+
+
 @app.post("/api/feedback/task")
 async def feedback_task_ep(request: Request):
     """任务级星级反馈（记忆 v2）：外部信号，只影响置信/晋升，不改提示词。"""

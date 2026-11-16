@@ -5,12 +5,13 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 
 const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE || process.env.HOME, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const output = path.join(root, 'artifacts/shots')
 const base = process.env.DOCMIND_UI_TEST_URL || 'http://127.0.0.1:8000'
 const report = { cases: [], interactions: [], errors: [], writes: [] }
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge', headless: true,
+  args: process.env.PLAYWRIGHT_NO_SANDBOX === '1' ? ['--no-sandbox', '--disable-dev-shm-usage'] : [] })
 
 function measure() {
   const canvas = document.createElement('canvas')
@@ -131,7 +132,8 @@ try {
   assert.equal(await page.getByRole('button', { name: '联网搜索', exact: true }).getAttribute('aria-pressed'), 'true')
   await page.locator('.send-btn').click()
   await page.getByText('这是隔离的界面测试回答，未调用真实模型。', { exact: true }).waitFor()
-  await page.locator('.ai-status').filter({ hasText: '已回复' }).waitFor()
+  // 成功回合按现契约隐藏「已回复」徽标；异常才显示。断言无危险态徽标残留。
+  assert.equal(await page.locator('.ai-status.tone-danger').count(), 0)
   assert.equal(await page.getByText(/流式连接在服务完成前中断/).count(), 0)
   assert.equal(calls(), 1)
   assert.equal(await page.locator('.suggestions').count(), 0)
