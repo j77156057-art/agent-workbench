@@ -332,7 +332,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
-      DOCMIND_STATE_ROOT: ${{ runner.temp }}/docmind-ci-state
       DOCMIND_MEMORY_V2: "1"
       DOCMIND_TRACE: "1"
       LLM_PROVIDER: mock
@@ -363,6 +362,10 @@ jobs:
           npm run build
           npm install --no-save playwright-core
       - name: Start backend with isolated state and fixture project
+        env:
+          # runner 上下文不能出现在 job 级 env（GitHub 解析期拒收，整条 workflow
+          # 零 jobs 失败）；只在用它的步骤里给。
+          DOCMIND_STATE_ROOT: ${{ runner.temp }}/docmind-ci-state
         run: |
           mkdir -p "$RUNNER_TEMP/ci-fixture/src"
           printf 'def add(a, b):\n    return a + b\n' > "$RUNNER_TEMP/ci-fixture/src/calc.py"
