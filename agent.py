@@ -6914,6 +6914,14 @@ class Agent:
                         trail.append({"role": "user", "content": _reminder["reminder"]})
                         yield {"type": "notice",
                                "text": "定时提醒：" + _reminder["message"][:160]}
+                        # 语音会话静音听答时提醒也要主动到达：向活跃桥推一条
+                        # 收口文本；无活跃语音会话时返回 False，仅文本注入生效。
+                        try:
+                            from agent_runtime import realtime_bridge as _rt_bridge
+                            _rt_bridge.push_reminder(
+                                self.session_id, "定时提醒：" + _reminder["message"][:160])
+                        except Exception:  # noqa: BLE001 —— 推送故障不影响问答
+                            pass
                 except Exception:  # noqa: BLE001 —— 定时器故障不影响问答
                     pass
             # 每轮送模型前都做一次 token 预算裁剪（trail 往返 -> head 历史）

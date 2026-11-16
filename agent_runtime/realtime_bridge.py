@@ -244,6 +244,18 @@ _GATEWAY_OWNED_WIRE_TYPES = frozenset({"hello.ok", "session.closed"})
 
 METRICS = metrics.MetricsRegistry()
 
+#: 会话 id → 活跃桥。定时提醒等网关主动推送按会话找桥（bind_session 登记、close 注销）。
+_ACTIVE_BRIDGES: dict[str, "SessionBridge"] = {}
+
+
+def push_reminder(session_id: str, text: str) -> bool:
+    """向活跃语音会话主动推一条提醒；无活跃会话返回 False（调用方退回文本注入）。"""
+    bridge = _ACTIVE_BRIDGES.get(str(session_id or ""))
+    if bridge is None:
+        return False
+    bridge.push_server_text(text)
+    return True
+
 _timelines: dict[str, RealtimeTimeline] = {}
 _timeline_users: dict[str, int] = {}
 _state_lock = threading.Lock()
@@ -368,6 +380,10 @@ class SessionBridge:
         self._frame_received_at: float | None = None
         self._pending_frames = 0
         self._closed = False
+        # 网关主动推送（定时提醒等）的出箱：next_events 先泵它再泵 provider，
+        # 静音听歌/听答时提醒也能主动到达客户端（2026-11-17 推送增量）。
+        self._server_outbox: list[RealtimeEvent] = []
+        self._outbox_lock = threading.Lock()
         # 适配器自报"会话已建立"（收到 vendor 的 session.created）。
         # 注意与 `native` 的区别：`native` 只表示网关已经连上并按原生通道转发，
         # `native_ready` 才是服务端确认可用。
@@ -407,6 +423,19 @@ class SessionBridge:
         """
         self.session_id = str(session_id or "")
         METRICS.incr(metrics.CONNECTIONS, 1, self.session_id or None)
+        if self.session_id:
+            _ACTIVE_BRIDGES[self.session_id] = self
+
+    def push_server_text(self, text: str) -> None:
+        """网关主动推一条收口文本（定时提醒等），走 model.delta final 线上形。"""
+        if self._closed or not str(text or "").strip():
+            return
+        with self._outbox_lock:
+            self._server_outbox.append(RealtimeEvent(
+                EVENT_TEXT_DELTA,
+                session_id=self.session_id or "",
+                payload={"text": str(text), "role": "assistant", "final": True},
+            ))
 
     # -- 模式上报 -------------------------------------------------------------
     @property
@@ -465,6 +494,8 @@ class SessionBridge:
         release_timeline(self.project_id)
         if self.session_id:
             METRICS.drop_session(self.session_id)
+            if _ACTIVE_BRIDGES.get(self.session_id) is self:
+                _ACTIVE_BRIDGES.pop(self.session_id, None)
 
     # -- 媒体入站（R10 记账 + R5 时间线 + R4 转发） ---------------------------
     def note_frame(self, header: dict[str, Any], *, queued: bool = True) -> None:
@@ -544,6 +575,12 @@ class SessionBridge:
     def note_model_failure(self) -> None:
         self.metrics.incr(metrics.MODEL_REJECTIONS, 1, self.session_id or None)
 
+    def _drain_server_outbox_events(self) -> list[RealtimeEvent]:
+        with self._outbox_lock:
+            events = self._server_outbox[:]
+            self._server_outbox.clear()
+        return events
+
     def next_events(self, *, limit: int = 32, timeout: float = 0.0) -> list[dict[str, Any]]:
         """泵出 provider 事件（已转成可直接 send_json 的线上事件）并喂时间线。
 
@@ -551,8 +588,8 @@ class SessionBridge:
         文档 2.1；拦下的事件仍然记账，便于状态端点与测试复核。
         """
         if not self.native or self.provider is None:
-            return []
-        events: list[RealtimeEvent] = []
+            return wire_events(self._drain_server_outbox_events())
+        events: list[RealtimeEvent] = self._drain_server_outbox_events()
         first = self.provider.poll(timeout) if timeout else self.provider.poll()
         if first is not None:
             events.append(first)
