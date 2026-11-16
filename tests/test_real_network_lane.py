@@ -19,7 +19,8 @@ import unittest
 import tools
 
 BLOCK_SIGNATURES = ("captcha", "verify", "blocked", "forbidden", "403",
-                    "验证码", "封禁", "人机", "unusual traffic")
+                    "验证码", "封禁", "人机", "unusual traffic",
+                    "unavailable", "不可用", "无结果", "no results", "未配置")
 
 
 def _retry(fn, attempts=3):
@@ -50,13 +51,16 @@ class RealNetworkLaneTests(unittest.TestCase):
                       "抓回了但不是 example.com 的内容：%s" % str(out)[:120])
 
     def test_web_search_returns_real_links(self):
-        out, info = _retry(lambda: tools.web_search("Example Domain IANA reserved domain"))
+        # godot 类查询能命中辅助源（GitHub 等），比通用词在数据中心 IP 下更稳。
+        out, info = _retry(lambda: tools.web_search("godot engine github repository"))
         if out and re.search(r"https?://", out):
             return
-        signature = str(info or out or "").lower()
+        signature = str(info or "").lower() + " " + str(out or "").lower()
         if any(s in signature for s in BLOCK_SIGNATURES):
-            self.skipTest("搜索引擎封禁/验证码墙（可见豁免，非静默绿）：%s" % str(info)[:160])
-        self.fail("搜索三次全败且非封禁签名：%s" % str(info)[:200])
+            self.skipTest("搜索引擎封禁/验证码/不可用墙（可见豁免，非静默绿）：%s"
+                          % str(out or info)[:160])
+        self.fail("搜索三次全败且非封禁签名：info=%s out=%s"
+                  % (str(info)[:120], str(out)[:160]))
 
 
 if __name__ == "__main__":

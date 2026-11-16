@@ -32,17 +32,22 @@ def main():
                           agent_id="main", importance=0.6)
     # seed_shared 对已存在文件不改 status（旧版 seed 留下的 candidate 会一直
     # 进不了 active 目录）；这两个文件是本夹具自有产物，重建保证幂等。
-    for body in ("CI 共享正文", "CI 共享正文乙"):
+    for body in ("CI 共享正文", "第二类共享记忆：独立措辞供未注入对照与拖拽邻域使用"):
         fixture = os.path.join(promote.shared_dir("fact"),
                                promote.item_id("fact", body) + ".md")
         if os.path.isfile(fixture):
             os.remove(fixture)
-    shared_used = promote.seed_shared("fact", "CI 共享正文", title="CI 共享记忆", status="active")
-    shared_idle = promote.seed_shared("fact", "CI 共享正文乙", title="CI 共享记忆乙", status="active")
+    shared_idle = promote.seed_shared("fact", "第二类共享记忆：独立措辞供未注入对照与拖拽邻域使用",
+                                      title="CI 共享记忆乙", status="active")
+    # 边必须写进源文件 header：体检的索引重建按文件 header.edges 重同步 edges 表，
+    # 只写 edges 表（set_edges）会在重建时被抹掉（2026-11-17 CI 首跑实测）。
+    shared_used = promote.seed_shared(
+        "fact", "CI 共享正文", title="CI 共享记忆", status="active",
+        meta={"edges": [{"type": "refines", "to": shared_idle}] if shared_idle else []})
     # 图上的边只认「目录节点 ∩ index 镜像」：shared/project 候选住在 promote 文件里，
     # 没有 index 镜像就没有 scope，边会被项目过滤丢掉（2026-11-17 实测）。
     for mid, body, title in ((shared_used, "CI 共享正文", "CI 共享记忆"),
-                             (shared_idle, "CI 共享正文乙", "CI 共享记忆乙")):
+                             (shared_idle, "第二类共享记忆：独立措辞供未注入对照与拖拽邻域使用", "CI 共享记忆乙")):
         if mid:
             index.upsert_item({"id": mid, "kind": "fact", "scope": "global", "project": "",
                                "status": "active", "path": "shared/fact/%s.md" % mid,
