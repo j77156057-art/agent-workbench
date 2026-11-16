@@ -1093,10 +1093,15 @@ class ContextPanelTests(_MemBase):
     def test_next_view_has_all_layers(self):
         view = context_panel.next_view("prj", "s1")
         keys = [layer["key"] for layer in view["layers"]]
-        self.assertEqual(keys, ["rule", "profile", "rules", "shared", "taskbook", "hook", "summary"])
+        # 2026-11-17：legacy 升一等层（带 active 库存、可失效/删除），契约同步更新。
+        self.assertEqual(keys, ["rule", "profile", "rules", "shared", "legacy",
+                                "taskbook", "hook", "summary"])
         self.assertTrue(view["layers"][0]["editable"])
         self.assertIn("【常驻守则", view["layers"][0]["text"])
         self.assertEqual(view["layers"][0]["budget"], 600)
+        legacy = next(layer for layer in view["layers"] if layer["key"] == "legacy")
+        self.assertTrue(legacy["editable"])
+        self.assertIsInstance(legacy["items"], list)
 
     def test_shared_and_taskbook_items_are_editable_data(self):
         _pinned_shared()
