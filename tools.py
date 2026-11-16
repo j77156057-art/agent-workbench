@@ -13392,6 +13392,27 @@ TOOLS = {
     },
 }
 
+# PTC 开模式：工具描述里告知子进程有 bridge（系统提示变体在 agent._ptc_variant_system_prompt）。
+# 关模式描述逐字节不变。
+def _ptc_note_python_exec_bridge():
+    if not _PTC_BRIDGE_ENABLED:
+        return
+    entry = TOOLS["python_exec"]
+    desc = entry["description"]
+    if "agent_tool_bridge" in desc:
+        return
+    noted = desc + (
+        " PTC 工具桥启用时子进程预注入 agent_tool_bridge：调 list_tools() 发现可用工具，"
+        "tool(arg) 返回 (ok, result_text)，用法见系统提示。")
+    if isinstance(entry, dict):
+        entry["description"] = noted
+    else:
+        from dataclasses import replace
+        TOOLS["python_exec"] = replace(entry, description=noted)
+
+
+_ptc_note_python_exec_bridge()
+
 # Convert the built-in registry once at import time.  Extensions and tests may
 # still add legacy dict entries later; consumers call ``coerce_tool_spec`` at
 # their boundary so those remain compatible.

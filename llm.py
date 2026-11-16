@@ -95,6 +95,23 @@ def is_retryable(exc) -> bool:
     return any(h in msg for h in _RETRYABLE_HINTS)
 
 
+_QUOTA_HINTS = ("usage limit", "quota", "balance", "billing", "arrears", "insufficient funds")
+
+
+def is_quota_error(exc) -> bool:
+    """配额/余额类限制（429 配额耗尽、402 欠费）：短期重试无效，需换模型或充值。
+
+    与瞬时限流区分：状态码 402，或 429/限流措辞且上游文本含配额/余额字样。
+    判错的代价是把「等 12 天重置」误报成「稍后再试」，用户会无效重试。
+    """
+    if _status_of(exc) == 402:
+        return True
+    msg = str(exc).lower()
+    limited = ("429" in msg or "rate limit" in msg or "rate_limit" in msg
+               or type(exc).__name__ == "RateLimitError")
+    return limited and any(h in msg for h in _QUOTA_HINTS)
+
+
 def retry_call(fn, deadline=None, attempts=None, base=None):
     """带指数退避的重试包装。
 

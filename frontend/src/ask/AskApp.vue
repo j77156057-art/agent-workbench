@@ -578,6 +578,9 @@ const { drain, appendTrace, dispatch } = useChatStream<ChatMsg>({
     t.text = text
     if (partial) partial.assistant = text
     followScroll()
+    // 回合落库后历史列表才会含本会话（空会话不算历史）；不刷新则刚问完的
+    // 对话在「最近对话」里缺席，直到 newChat/重载。
+    void refreshSessionList()
   },
 })
 

@@ -290,15 +290,32 @@ _PTC_BRIDGE_ENABLED = os.getenv("DOCMIND_PTC_BRIDGE", "0") != "0"
 
 
 def _ptc_variant_system_prompt(channel_prompt: str) -> str:
-    """PTC 开模式的系统提示拼装（步 1 三锚点之一：system_prompt 组装 gate）。
+    """PTC 开模式的系统提示拼装：通道提示 + bridge 用法说明。
 
     关模式根本不调此函数（走默认 SYSTEM_PROMPT 常量，逐字节不变）。
-    开模式在此独立拼装 PTC 变体提示——**不追加到 SYSTEM_PROMPT 常量**，token-floor 刀尖不受威胁。
-
-    步 1 语义：真实变体文本（bridge 用法说明 + `list_tools()` 自发现提示）在步 2-6 分化；
-    此占位当前原样返回传入的通道提示，保证接缝已建立但暂不改变实际发给模型的字节。
+    桩源码虽已注入子进程（tools._ptc_bridge_stub_src），但模型不知道它存在
+    就等于开关静默无效——这段文本是 bridge 的可发现性接缝。不枚举工具名，
+    让模型用 list_tools() 自发现，提示词与白名单永不漂移。
     """
-    return channel_prompt
+    from tools import _PTC_BRIDGE_WRITE_ENABLED
+    lines = [
+        "",
+        "【PTC 工具桥（本回合启用）】",
+        "python_exec 子进程已预注入 agent_tool_bridge，可在 Python 里直接调用受治理的工具：",
+        "- 先调 list_tools() 查看可用桥接工具名；每个工具是同名函数 tool(arg)，",
+        "  arg 为该工具的标准输入字符串，返回 (ok, result_text)，如 ok, text = read_file('path: agent.py')。",
+        "- 先判 ok 再用 result；ok=False 时 result 是拒绝原因，不要原参反复重试。",
+        "- 桥调用经父进程完整治理（白名单/分区门/证据归因），与直接调工具同等留痕；",
+        "  不要绕过桥在沙箱里自行读写文件或访问网络。桥调用同步阻塞，勿在线程里并发调用。",
+        "- web_search / web_fetch / web_research 有单次运行调用上限，超限返回 ok=False（未执行）。",
+    ]
+    if _PTC_BRIDGE_WRITE_ENABLED:
+        lines.append(
+            "- 写类工具可见但一律延后：返回 ok=False 与「已登记待确认 #pid·未执行」，"
+            "人工确认后才落盘；不要把「已排队」当「已写入」，同参写不要重复登记。")
+    else:
+        lines.append("- 本回合只暴露只读工具；写请求会被桥拒绝（ok=False，未执行）。")
+    return channel_prompt + "\n".join(lines)
 
 
 def _ptc_build_server(*, tool_lookup, spec_lookup, execute_tool_fn, is_failure,

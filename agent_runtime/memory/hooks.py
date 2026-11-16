@@ -77,18 +77,6 @@ def add(project_id, session_id, kind, text, *, source_turn="", verified=False,
         return row
 
 
-def set_pinned(project_id, session_id, item_id, pinned):
-    with _LOCK:
-        rows = items(project_id, session_id)
-        for row in rows:
-            if row.get("id") == item_id:
-                row["pinned"] = bool(pinned)
-                row["updated"] = store.now()
-                store.save_items(path(project_id, session_id), rows)
-                return row
-    return None
-
-
 def update_item(project_id, session_id, item_id, *, text=None, pinned=None):
     """面板编辑钩子：只改文本/pin，kind 与来源不动。"""
     with _LOCK:

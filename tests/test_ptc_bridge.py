@@ -107,9 +107,35 @@ class DispatchAnchorTests(unittest.TestCase):
 
 
 class PromptAnchorTests(unittest.TestCase):
-    def test_variant_prompt_passthrough_step1(self):
+    def test_variant_prompt_teaches_bridge_discovery(self):
         sample = "系统提示：你是一个……"
-        self.assertEqual(agent_mod._ptc_variant_system_prompt(sample), sample)
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_ENABLED", False):
+            out = agent_mod._ptc_variant_system_prompt(sample)
+        self.assertTrue(out.startswith(sample))
+        self.assertIn("list_tools()", out)
+        self.assertIn("(ok, result_text)", out)
+        self.assertIn("只读", out)
+
+    def test_variant_prompt_write_branch_defers_writes(self):
+        with patch.object(tools_mod, "_PTC_BRIDGE_WRITE_ENABLED", True):
+            out = agent_mod._ptc_variant_system_prompt("CHANNEL")
+        self.assertIn("待确认", out)
+        self.assertIn("人工确认后才落盘", out)
+
+    def test_python_exec_description_notes_bridge_only_when_enabled(self):
+        original_entry = tools_mod.TOOLS["python_exec"]
+        original = original_entry["description"]
+        self.assertNotIn("agent_tool_bridge", original)  # 关模式（默认 env）逐字节不变
+        try:
+            with patch.object(tools_mod, "_PTC_BRIDGE_ENABLED", True):
+                tools_mod._ptc_note_python_exec_bridge()
+                noted = tools_mod.TOOLS["python_exec"]["description"]
+                self.assertIn("agent_tool_bridge", noted)
+                self.assertTrue(noted.startswith(original))
+                tools_mod._ptc_note_python_exec_bridge()  # 幂等：不重复追加
+                self.assertEqual(tools_mod.TOOLS["python_exec"]["description"], noted)
+        finally:
+            tools_mod.TOOLS["python_exec"] = original_entry
 
     def test_off_flag_does_not_rewrite_channel(self):
         with patch.object(agent_mod, "_PTC_BRIDGE_ENABLED", False):

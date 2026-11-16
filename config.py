@@ -1150,7 +1150,7 @@ def _apply_persisted_state():
     except (OSError, ValueError):
         return
     root = data.get("code_root")
-    # 顺序约束：调用方（如 verify_scene_canvas.py / verify_engine_embed.py / verify_regions.py
+    # 顺序约束：调用方（如 verify_scene_canvas.py / verify_engine_embed.py
     # 的 serve()）若已在启动前 set_runtime('code_root', …) 显式指定代码库，则不得被持久化
     # 状态覆盖——显式设置优先于持久化恢复。这正是把本函数从 import 期移到 lifespan
     # （ensure_dirs() 之后）后必须补上的约束：脚本「先设 code_root、再启动应用」，其

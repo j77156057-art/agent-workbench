@@ -61,7 +61,7 @@ ROOT_LEVEL_PRODUCTION = re.compile(r"^[a-z0-9_]+\.py$")
 #: 「测试本来就不该执行的行」判红，那是量具错，不是代码错。
 MANUAL_SCRIPTS = ("verify_", "tools/mutation/probe_", "tools/mutation/diagnose_",
                   "tools/mutation/mutate_", "tools/design_seed.py",
-                  "make_lnk_pure.py", "demo_", "tools/backfill_", "run_golden.py")
+                  "tools/backfill_", "run_golden.py")
 
 
 def classify(path: str) -> str:

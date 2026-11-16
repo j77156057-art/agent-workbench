@@ -32,7 +32,7 @@ import {
 } from './lib/rightRail'
 import { probeBackend, demoMode, demoTagMap, demoRegionCards } from './composables/demo'
 import { regionColor } from './theme'
-import { projectApi, getProjectId, setProjectId, getSessionId, type ProjectInfo } from './api'
+import { projectApi, getProjectId, setProjectId, type ProjectInfo } from './api'
 import { appEvents } from './eventBus'
 import { loadLayout, onLayoutChange, type LayoutKey } from './layoutMode'
 

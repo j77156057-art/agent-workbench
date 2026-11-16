@@ -470,21 +470,6 @@ def pinned_shared(limit=5):
     return rows[:max(1, int(limit))]
 
 
-def set_shared_pinned(item_id_value, pinned):
-    for kind in ("fact", "lesson"):
-        path = os.path.join(shared_dir(kind), str(item_id_value) + ".md")
-        item = _read(path)
-        if not item:
-            continue
-        item["pinned"] = bool(pinned)
-        item["updated"] = store.now()
-        _write(path, {key: value for key, value in item.items()
-                      if key not in ("body", "path")}, item.get("body") or "")
-        store.ledger("memory.pin", id=item_id_value, pinned=bool(pinned))
-        return item
-    return None
-
-
 def shared_item(item_id_value):
     for kind in ("fact", "lesson"):
         item = _read(os.path.join(shared_dir(kind), str(item_id_value) + ".md"))

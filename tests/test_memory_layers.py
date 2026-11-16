@@ -23,8 +23,8 @@ class LayerMappingTests(unittest.TestCase):
         expected = {"system": "rule", "shared": "shared", "legacy": "legacy",
                     "project": "project", "hook": "hook"}
         self.assertEqual(layers.STORE_LAYER, expected)
-        for store, layer_key in expected.items():
-            self.assertEqual(layers.layer_for_store(store), layer_key)
+        for store_key, layer_key in expected.items():
+            self.assertEqual(layers.layer_for_store(store_key), layer_key)
 
     def test_labels_cover_every_layer(self):
         self.assertEqual(layers.LAYER_ORDER, ("rule", "shared", "legacy", "project", "hook"))
@@ -60,11 +60,11 @@ class LayerMappingTests(unittest.TestCase):
         self.assertEqual(config["misfits"], [])
 
     def test_every_store_node_carries_expected_layer(self):
-        for store in ("legacy", "shared", "project", "hook"):
-            node = inspector._node({}, store)
-            self.assertEqual(node["layer_key"], layers.STORE_LAYER[store], store)
-            self.assertEqual(node["layer_label"], layers.LAYER_LABELS[store], store)
-            self.assertFalse(node["layer_fallback"], store)
+        for store_key in ("legacy", "shared", "project", "hook"):
+            node = inspector._node({}, store_key)
+            self.assertEqual(node["layer_key"], layers.STORE_LAYER[store_key], store_key)
+            self.assertEqual(node["layer_label"], layers.LAYER_LABELS[store_key], store_key)
+            self.assertFalse(node["layer_fallback"], store_key)
 
     def test_unmapped_store_node_is_flagged_as_fallback(self):
         node = inspector._node({}, "mystery")

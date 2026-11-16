@@ -3032,6 +3032,35 @@ def _plain_field(value: Any, fallback: str = "") -> str:
     return declared if isinstance(declared, str) else fallback
 
 
+def _classify_chat_failure(e):
+    """聊天终态错误的三态分类 + 可行动文案。
+
+    配额/余额类（429 配额耗尽、402 欠费）单独分支：短期重试无效，
+    如实转述上游原因并指引切换模型，不再误报成「疑似网络不稳定」。
+    """
+    from llm import is_retryable, is_quota_error
+    if type(e).__name__ == "SystemExit":
+        return ("permanent",
+                "本轮请求失败（服务异常），未完成。已保留问题与工具现场，可继续重试；如频繁出现请重启 Agent 工作台 服务。")
+    if isinstance(e, MissingAPIKey):
+        return ("permanent", str(e))
+    if isinstance(e, SessionBusyError):
+        return ("permanent",
+                "该会话正在另一个 Agent 工作台实例中运行，请稍后重试；不要同时开两个实例跑同一会话。")
+    if isinstance(e, SessionStillRunningError):
+        return ("retried_failed",
+                "同一会话的上一轮仍在执行（可能卡在不可取消的工具里），请稍后重试；如持续卡住请重启 Agent 工作台。")
+    if is_quota_error(e):
+        head = " ".join(str(e).split())[:160]
+        return ("retried_failed",
+                "当前模型受上游配额/余额限制，短期重试无效。上游原文：" + head +
+                " 可在输入框模型选择器切换其它已配置模型，或按上游提示充值/等待重置。")
+    if not is_retryable(e):
+        return ("permanent", "本轮请求失败，未完成。请稍后重试，或检查模型设置/网络。")
+    return ("retried_failed",
+            "已自动重试 2 次仍失败（疑似网络或上游服务不稳定），未完成。可稍后再试，或检查网络与模型设置。")
+
+
 @app.post("/api/chat")
 async def chat(
     # 默认 None 只为让既有代码能直接 `await api.chat(question=...)` 调处理器（测试就是这么调的）；
@@ -3643,25 +3672,7 @@ async def chat(
             #   - permanent 不可恢复（fallback 也失败 / 非网络类错误）→ 红条
             #   - retried_failed 临时类（重试用尽 + 无 fallback）→ 黄条
             #   - 其他 → 旧逻辑（灰条）
-            from llm import is_retryable as _llm_is_retryable2
-            if type(e).__name__ == "SystemExit":
-                err_kind = "permanent"
-                err_text = "本轮请求失败（服务异常），未完成。已保留问题与工具现场，可继续重试；如频繁出现请重启 Agent 工作台 服务。"
-            elif isinstance(e, MissingAPIKey):
-                err_kind = "permanent"
-                err_text = str(e)
-            elif isinstance(e, SessionBusyError):
-                err_kind = "permanent"
-                err_text = "该会话正在另一个 Agent 工作台实例中运行，请稍后重试；不要同时开两个实例跑同一会话。"
-            elif isinstance(e, SessionStillRunningError):
-                err_kind = "retried_failed"
-                err_text = "同一会话的上一轮仍在执行（可能卡在不可取消的工具里），请稍后重试；如持续卡住请重启 Agent 工作台。"
-            elif not _llm_is_retryable2(e):
-                err_kind = "permanent"
-                err_text = "本轮请求失败，未完成。请稍后重试，或检查模型设置/网络。"
-            else:
-                err_kind = "retried_failed"
-                err_text = "已自动重试 2 次仍失败（疑似网络或上游服务不稳定），未完成。可稍后再试，或检查网络与模型设置。"
+            err_kind, err_text = _classify_chat_failure(e)
             final_ev = {"type": "final", "status": "error",
                         "text": err_text, "error_kind": err_kind}
             # 异常收尾也带 checkpoint id：前端「继续」能取回逐步现场。
