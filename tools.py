@@ -12514,7 +12514,9 @@ def memory_forget(arg):
     跨 agent（含 legacy 共享行，owner=main）一律拒绝并说明原因，不静默返回成功。"""
     import agent_memory as memory
     try:
-        mid = _parse_keyed(str(arg), ["id"]).get("id") or str(arg).strip()
+        # id 是标识符：keyed 解析会保留值尾换行（content 需要保留），
+        # 不 strip 会让 "id: xxx\n" 永远 SQL 不匹配、误报「未找到」。
+        mid = (_parse_keyed(str(arg), ["id"]).get("id") or str(arg).strip()).strip()
         scope, agent_id = memory.current_scope()[0], memory.current_agent()
         if memory.forget(scope, mid, agent_id=agent_id):
             return json.dumps({"ok": True}, ensure_ascii=False)

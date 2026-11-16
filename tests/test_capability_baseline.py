@@ -406,5 +406,65 @@ class DesktopAndGameTests(unittest.TestCase):
         self.assertTrue(str(out).strip(), "写 bug 分区没回报")
 
 
+class Tranche2ToolsTests(unittest.TestCase):
+    """2026-11-17 扩面第二批：数据生成 / 文档产物 / 记忆删除 / 技能取回 / 工具自省。
+
+    判据纪律同首批：扣机制本身（文件系统真变、返回值等于期望、搜不到已删），
+    不扣措辞、不把错误消息当成功。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        # dev_use_skill / tool_search 是 agent 导入期 setdefault 进注册表的，
+        # 只 import tools 拿不到（112 是导入期快照）。
+        import agent  # noqa: F401
+
+    def test_generate_data_file_writes_and_roundtrips(self):
+        p = BOX / "gen_by_probe.csv"
+        p.unlink(missing_ok=True)
+        out = call("generate_data_file", json.dumps({
+            "path": "gen_by_probe.csv", "format": "csv",
+            "data": [{"name": "alice", "age": 30}, {"name": "bob", "age": 25}],
+        }, ensure_ascii=False))
+        self.assertTrue(p.exists(), "generate_data_file 没真建文件：%s" % out[:120])
+        back = call("inspect_data_file", str(p))
+        self.assertIn("alice", back, "生成的表读不回内容")
+
+    def test_create_artifact_produces_real_docx(self):
+        out = call("create_artifact", json.dumps({
+            "format": "docx", "filename": "probe-artifact.docx",
+            "title": "探针文档",
+            "sections": [{"heading": "一节", "paragraphs": ["探针正文一段。"]}],
+        }, ensure_ascii=False))
+        payload = json.loads(out)
+        self.assertTrue(payload.get("ok"), "create_artifact 未 ok：%s" % out[:160])
+        path = pathlib.Path(payload.get("path") or "")
+        self.assertTrue(path.exists(), "回报 ok 但文件不在：%s" % path)
+        self.assertEqual(path.read_bytes()[:2], b"PK", "docx 不是真 zip 容器")
+
+    def test_memory_forget_really_removes_recall(self):
+        import agent_memory
+        marker = "probe-forget-cap-baseline"
+        call("memory_save", "content: %s 待删记忆\n" % marker)
+        scope = agent_memory.scope_key(None)
+        row = next((r for r in agent_memory.audit(scope, agent_id="main")
+                    if marker in str(r.get("content") or "")), None)
+        self.assertIsNotNone(row, "存了却审计不到，无法取 id")
+        call("memory_forget", "id: %s\n" % row["id"])
+        out = call("memory_search", "query: %s\n" % marker)
+        self.assertNotIn(marker, out, "forget 后仍召回 —— 删除没生效")
+
+    def test_dev_use_skill_returns_full_body(self):
+        import skills
+        skills.save_user_skill("probe-cap-skill", "探针技能",
+                               "SKILL-BODY-MARKER 正文", version="1.0.0")
+        out = call("dev_use_skill", "probe-cap-skill")
+        self.assertIn("SKILL-BODY-MARKER", out, "技能正文没取回")
+
+    def test_tool_search_returns_usage(self):
+        out = call("tool_search", "grep")
+        self.assertIn("pattern", out, "tool_search 没给 grep 的用法")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -267,9 +267,59 @@ async function rollbackSkill(skill: SkillInfo) {
   if (demoMode.value) { actionMsg.value = '演示模式不能回滚技能'; return }
   if (skill.source !== 'user') return
   if (!window.confirm(`回滚技能「${skill.name}」到上一版本？`)) return
-  const result = await harnessApi.rollbackSkill(skill.name)
-  actionMsg.value = result.approval_required ? '回滚需要审批' : result.ok ? (result.restored_previous ? '已恢复上一版本' : '已移除该技能') : (result.error || '回滚失败')
-  if (result.ok) void loadAll()
+  try {
+    const result = await harnessApi.rollbackSkill(skill.name)
+    actionMsg.value = result.ok ? (result.restored_previous ? '已恢复上一版本' : '已移除该技能') : (result.error || '回滚失败')
+    if (result.ok) void loadAll()
+  } catch (e) {
+    const extra = (e as { extra?: Record<string, unknown> })?.extra || {}
+    actionMsg.value = extra.approval_required
+      ? '回滚需要审批：' + String(extra.message || '在审批台账确认后再次点回滚')
+      : ((e as Error)?.message || '回滚失败')
+  }
+}
+const editingSkill = ref<string | null>(null)
+const editDraft = ref({ description: '', body: '', version: '' })
+const editBusy = ref(false)
+/** 更新编辑器预填当前正文：update 是全量覆写，空起手等于静默替换用户指令。 */
+async function startEditSkill(skill: SkillInfo) {
+  if (demoMode.value) { actionMsg.value = '演示模式不能编辑技能'; return }
+  if (skill.source !== 'user') return
+  const r = await harnessApi.skillRead(skill.name)
+  if (!r.ok) { actionMsg.value = r.error || '读取技能正文失败'; return }
+  editDraft.value = {
+    description: r.description || skill.description || '',
+    body: r.body || '',
+    version: r.version || skill.version || '1.0.0',
+  }
+  editingSkill.value = skill.name
+}
+async function saveEditSkill(skill: SkillInfo) {
+  if (editBusy.value) return
+  editBusy.value = true
+  try {
+    const result = await harnessApi.skillUpdate({
+      name: skill.name,
+      description: editDraft.value.description,
+      body: editDraft.value.body,
+      version: editDraft.value.version || '1.0.0',
+    })
+    if (result.ok) {
+      actionMsg.value = '已更新技能，旧版本存入历史'
+      editingSkill.value = null
+      void loadAll()
+    } else {
+      actionMsg.value = result.error || '更新失败'
+    }
+  } catch (e) {
+    // postJson 对 ok:false 抛 FsApiError；审批门 payload 在 extra 里。
+    const extra = (e as { extra?: Record<string, unknown> })?.extra || {}
+    actionMsg.value = extra.approval_required
+      ? '更新需要审批：' + String(extra.message || '在审批台账确认后再次点保存更新')
+      : ((e as Error)?.message || '更新失败')
+  } finally {
+    editBusy.value = false
+  }
 }
 async function reloadHooks() {
   if (demoMode.value) { actionMsg.value = '演示模式无需重载'; return }
@@ -455,6 +505,16 @@ defineExpose({ show })
               </div>
               <small v-if="sk.history_versions?.length" class="hp-skill-history">历史版本：{{ skillHistoryText(sk) }}</small>
               <button v-if="sk.source === 'user'" class="hp-btn sm hp-skill-rollback" @click="rollbackSkill(sk)">回滚</button>
+              <button v-if="sk.source === 'user'" class="hp-btn sm hp-skill-rollback" @click="startEditSkill(sk)">更新</button>
+              <div v-if="editingSkill === sk.name" class="hp-skill-edit">
+                <label>描述<input v-model="editDraft.description" /></label>
+                <label>版本<input v-model="editDraft.version" /></label>
+                <textarea v-model="editDraft.body" rows="8" aria-label="技能正文"></textarea>
+                <div class="hp-skill-edit-actions">
+                  <button class="hp-btn sm" type="button" :disabled="editBusy" @click="saveEditSkill(sk)">保存更新</button>
+                  <button class="hp-btn sm" type="button" @click="editingSkill = null">取消</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -604,6 +664,11 @@ defineExpose({ show })
 .hp-baseline input { width: 72px; height: 26px; padding: 3px 6px; border: 1px solid var(--border-2); border-radius: 4px; background: var(--bg-raised); color: var(--text); font: inherit; }
 .hp-baseline .hp-btn { margin-top: 0; }
 .hp-skill-rollback { align-self: flex-start; margin-top: 4px; }
+.hp-skill-edit { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.hp-skill-edit label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.hp-skill-edit input, .hp-skill-edit textarea { font: inherit; font-size: 12px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); }
+.hp-skill-edit textarea { font-family: var(--font-mono, monospace); resize: vertical; }
+.hp-skill-edit-actions { display: flex; gap: 6px; }
 .hp-hook-breakpoint { margin-top:10px; padding:8px 9px; border: 1px solid var(--border-2); border-radius:8px; background: var(--bg-raised); }
 .hp-hook-breakpoint .hp-subhead { margin:0 0 6px; }
 .hp-hook-breakpoint .hp-subhead small { color: var(--text-muted); font-size: var(--fs-cap); font-weight:400; margin-left:6px; }

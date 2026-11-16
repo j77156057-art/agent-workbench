@@ -214,6 +214,14 @@ from engine_adapters import skill_for_engine
 import gpu_coordinator as gpu
 from gpu_coordinator import status as gpu_status  # noqa: F401 - re-export：tests/test_api_routes.py 从 api 取
 from agent_policy import route_for, redact_for_cloud
+# 供 api_routes 经 ctx 模块对象取用的重导出：静态扫描看不见使用点，
+# 按仓库惯例逐行 noqa 豁免（同 ctx.engine_start 一类）。缺了它们审批路由整组 500。
+from agent_policy import approval_allows  # noqa: F401
+from agent_policy import create_external_approval  # noqa: F401
+from agent_policy import list_approvals  # noqa: F401
+from agent_policy import decide_approval  # noqa: F401
+from agent_policy import record_permission  # noqa: F401
+from agent_policy import routing_status  # noqa: F401
 import secrets_store
 # 桌面宿主表：project_id -> hwnd。键 None = 无项目 / 全局默认宿主（等价旧单一变量，生命线）。
 # 桌面壳可为每个已打开项目各注册一个宿主；引擎端点取「本请求项目」的宿主，未登记则回落默认。
@@ -5851,6 +5859,19 @@ async def hooks_breakpoint_remove_ep(kind: str):
 @app.get("/api/skills")
 async def skills_list_ep():
     return {"ok": True, **agent_skills.list_skills()}
+
+
+@app.get("/api/skills/read")
+async def skills_read_ep(name: str = ""):
+    """读已安装技能正文与元信息（更新编辑器预填用），只读。"""
+    body = agent_skills.get(name)
+    if body is None:
+        return JSONResponse({"ok": False, "error": "未找到该技能"}, status_code=404)
+    item = next((s for s in agent_skills.list_skills().get("items", [])
+                 if s.get("name") == name), {})
+    return {"ok": True, "name": name, "body": body,
+            "description": item.get("description", ""),
+            "version": item.get("version", "")}
 
 
 @app.post("/api/skills/reload")

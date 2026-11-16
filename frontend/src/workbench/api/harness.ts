@@ -267,6 +267,12 @@ export const harnessApi = {
   rollbackSkill(name: string): Promise<{ ok: boolean; rolled_back?: boolean; restored_previous?: boolean; approval_required?: boolean; error?: string }> {
     return postJson('/api/skills/rollback', { name })
   },
+  skillRead(name: string): Promise<{ ok: boolean; name?: string; body?: string; description?: string; version?: string; error?: string }> {
+    return request(`/api/skills/read?name=${encodeURIComponent(name)}`)
+  },
+  skillUpdate(payload: { name: string; description: string; body: string; version: string }): Promise<{ ok: boolean; approval_required?: boolean; error?: string }> {
+    return postJson('/api/skills/update', payload)
+  },
   hooks(): Promise<{ ok: boolean; hooks_dir: string; exists: boolean; counts: Record<string, number>; workflow_counts?: Record<string, number>; workflow_kinds?: string[]; breakpoints?: Record<string, { enabled?: boolean; block?: boolean; match?: string; reason?: string }>; sources: Record<string, unknown>; errors: string[] }> {
     return request('/api/hooks')
   },

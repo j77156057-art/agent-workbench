@@ -30,21 +30,33 @@ def main():
                                         agent_id="main", importance=0.7)
     agent_memory.remember(scope, "fact", "CI 未注入事实", "CI 未注入正文",
                           agent_id="main", importance=0.6)
+    # seed_shared 对已存在文件不改 status（旧版 seed 留下的 candidate 会一直
+    # 进不了 active 目录）；这两个文件是本夹具自有产物，重建保证幂等。
+    for body in ("CI 共享正文", "CI 共享正文乙"):
+        fixture = os.path.join(promote.shared_dir("fact"),
+                               promote.item_id("fact", body) + ".md")
+        if os.path.isfile(fixture):
+            os.remove(fixture)
     shared_used = promote.seed_shared("fact", "CI 共享正文", title="CI 共享记忆", status="active")
-    promote.seed_shared("fact", "CI 共享正文乙", title="CI 共享记忆乙", status="active")
-    # project 层注入判定看内容是否进共享注入块：P1 与共享正文同文 → used。
-    index.upsert_item({"id": "ci-project-1", "kind": "fact", "scope": "project",
-                       "project": PROJECT, "status": "active", "path": "ci/seed.md",
-                       "title": "CI 项目记忆", "body": "CI 共享正文", "owner": "main",
-                       "importance": 0.7})
-    index.upsert_item({"id": "ci-project-2", "kind": "fact", "scope": "project",
-                       "project": PROJECT, "status": "active", "path": "ci/seed2.md",
-                       "title": "CI 项目记忆乙", "body": "CI 项目正文乙", "owner": "main",
-                       "importance": 0.6})
+    shared_idle = promote.seed_shared("fact", "CI 共享正文乙", title="CI 共享记忆乙", status="active")
+    # 图上的边只认「目录节点 ∩ index 镜像」：shared/project 候选住在 promote 文件里，
+    # 没有 index 镜像就没有 scope，边会被项目过滤丢掉（2026-11-17 实测）。
+    for mid, body, title in ((shared_used, "CI 共享正文", "CI 共享记忆"),
+                             (shared_idle, "CI 共享正文乙", "CI 共享记忆乙")):
+        if mid:
+            index.upsert_item({"id": mid, "kind": "fact", "scope": "global", "project": "",
+                               "status": "active", "path": "shared/fact/%s.md" % mid,
+                               "title": title, "body": body, "owner": "main"})
+    cand = promote.seed_project(PROJECT, "fact", "CI 项目候选正文", title="CI 项目候选")
+    if cand:
+        index.upsert_item({"id": cand, "kind": "fact", "scope": "project", "project": PROJECT,
+                           "status": "candidate",
+                           "path": "projects/%s/fact/%s.md" % (PROJECT, cand),
+                           "title": "CI 项目候选", "body": "CI 项目候选正文", "owner": "main"})
     context_panel.add_hook(PROJECT, SID, "note", "CI 钩子正文")
     context_panel.add_hook(PROJECT, SID, "note", "CI 钩子正文乙")
-    if shared_used:
-        index.set_edges(legacy_used, [{"to": shared_used, "type": "refines"}])
+    if shared_used and shared_idle:
+        index.set_edges(shared_used, [{"to": shared_idle, "type": "refines"}])
     sessions.save(SID, [{"user": "CI 夹具问题", "assistant": "CI 夹具回答", "ts": NOW}],
                   project_id=PROJECT)
     agent_trace.record({
