@@ -3,7 +3,7 @@
 
 ## 这份文件是什么
 
-`tools.TOOLS` 有 112 个键。这份只钉住**已经真跑通**的那部分 ——
+`tools.TOOLS` 当前 127 个键（计数随注册表增长，以 len(tools.TOOLS) 为准）。这份只钉住**已经真跑通**的那部分 ——
 不是「目录里有个名字」，是**真调过、并且效果被验证过**。
 
 今晚反复吃到的一课：**符号还在 ≠ 行为还成立**。所以每条判据都要求
@@ -228,7 +228,7 @@ class CodeBaseToolsTests(unittest.TestCase):
                       "存了却搜不到 —— 记忆链路没通")
 
     def test_tool_catalog_lists_categories_on_demand(self):
-        """**按需披露**：空参数给的是 14 个大类总览，不是 112 个工具名。
+        """**按需披露**：空参数给的是 14 个大类总览，不是全量工具名。
 
         探针阶段我要求它回显 `read_file`，于是红了一次 —— 那是我的期望
         写错。真实设计是**两层披露**（与 `5cbe94b`「工具说明不再教模型
@@ -416,7 +416,7 @@ class Tranche2ToolsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # dev_use_skill / tool_search 是 agent 导入期 setdefault 进注册表的，
-        # 只 import tools 拿不到（112 是导入期快照）。
+        # 只 import tools 拿不到（导入期快照不含运行期 setdefault 的键）。
         import agent  # noqa: F401
 
     def test_generate_data_file_writes_and_roundtrips(self):
@@ -464,6 +464,116 @@ class Tranche2ToolsTests(unittest.TestCase):
     def test_tool_search_returns_usage(self):
         out = call("tool_search", "grep")
         self.assertIn("pattern", out, "tool_search 没给 grep 的用法")
+
+
+class Tranche3ToolsTests(unittest.TestCase):
+    """2026-11-17 扩面第三批：执行 / 定时器 / 技能生命周期 / git 只读 / 引用 / 自验证 / 补丁 / 移动。
+
+    判据纪律同前：扣机制本身。git 类在沙箱里真 init 真 commit；
+    技能生命周期钉「草稿不生效 → 批准生效 → 拒绝删除」三段正面证据。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import agent  # noqa: F401  运行期注册 dev_use_skill 等
+        subprocess.run(["git", "init", "-q"], cwd=BOX, check=True)
+        subprocess.run(["git", "-c", "user.email=probe@local", "-c", "user.name=probe",
+                        "add", "hello.txt"], cwd=BOX, check=True)
+        subprocess.run(["git", "-c", "user.email=probe@local", "-c", "user.name=probe",
+                        "commit", "-q", "-m", "probe-base-commit-marker"],
+                       cwd=BOX, check=True)
+
+    def test_python_exec_returns_computed_value(self):
+        out = call("python_exec", "print(6 * 7)")
+        self.assertIn("42", out, "python_exec 没回计算值：%s" % out[:120])
+
+    def test_run_command_echoes_marker(self):
+        out = call("run_command", "echo probe-cmd-marker")
+        self.assertIn("probe-cmd-marker", out, "run_command 没回显：%s" % out[:120])
+
+    def test_timer_set_list_cancel_lifecycle(self):
+        from agent_runtime import timers
+        # 定时器是会话级设计：无会话拒绝属 fail-closed，探针须真绑会话。
+        tokens = timers.bind("prj-cap3", "s-cap3-timer")
+        try:
+            out = call("timer_set", "message: 探针定时\ndelay_seconds: 3600\n")
+            m = re.search(r"tm-[A-Za-z0-9]+", out)
+            self.assertIsNotNone(m, "timer_set 没给 id：%s" % out[:120])
+            tid = m.group(0)
+            listed = call("timer_list", "")
+            self.assertIn(tid, listed, "timer_list 看不到刚设的定时器")
+            call("timer_cancel", "timer_id: %s\n" % tid)
+            after = call("timer_list", "")
+            self.assertNotIn(tid, after, "cancel 后定时器仍在列")
+        finally:
+            timers.reset(tokens)
+
+    def test_skill_draft_inactive_until_approved(self):
+        name = "probe-cap3-skill"
+        created = call("dev_skill_create",
+                       "name: %s\ndescription: 探针技能三批\nbody: CAP3-SKILL-BODY 正文\n" % name)
+        self.assertIn('"ok": true', created, "起草失败：%s" % created[:120])
+        before = call("dev_use_skill", name)
+        self.assertNotIn("CAP3-SKILL-BODY", before, "草稿未批准就生效了")
+        approved = call("dev_skill_approve", "name: %s\n" % name)
+        self.assertIn('"ok": true', approved, "批准失败：%s" % approved[:120])
+        after = call("dev_use_skill", name)
+        self.assertIn("CAP3-SKILL-BODY", after, "批准后正文取不回")
+        call("dev_skill_create",
+             "name: %s-rej\ndescription: 待拒\nbody: CAP3-REJECTED-BODY\n" % name)
+        call("dev_skill_reject", "name: %s-rej\n" % name)
+        rejected = call("dev_use_skill", name + "-rej")
+        self.assertNotIn("CAP3-REJECTED-BODY", rejected, "拒绝后草稿仍生效")
+
+    def test_git_log_shows_real_commit(self):
+        out = call("dev_git_log", "")
+        self.assertIn("probe-base-commit-marker", out,
+                      "git log 没回真实提交：%s" % out[:120])
+
+    def test_git_diff_shows_uncommitted_change(self):
+        p = BOX / "hello.txt"
+        p.write_text("hello from probe\ndiff-marker-line\n", encoding="utf-8")
+        out = call("dev_git_diff", "")
+        self.assertIn("diff-marker-line", out,
+                      "git diff 没回未提交改动：%s" % out[:120])
+
+    def test_find_references_locates_caller(self):
+        (BOX / "use_hero.py").write_text(
+            "from main import hero_damage\nprint(hero_damage())\n",
+            encoding="utf-8")
+        out = call("dev_find_references", "hero_damage")
+        self.assertIn("use_hero.py", out,
+                      "引用定位没找到调用方：%s" % out[:160])
+
+    def test_self_verify_fails_then_passes_on_fix(self):
+        bad = BOX / "bad_syntax.py"
+        bad.write_text("def f(\n", encoding="utf-8")
+        out = call("self_verify", "scope: backend\nfiles: bad_syntax.py\n")
+        self.assertNotIn('"passed": true', out,
+                         "语法错误竟判通过：%s" % out[:160])
+        bad.write_text("def f():\n    return 1\n", encoding="utf-8")
+        out2 = call("self_verify", "scope: backend\nfiles: bad_syntax.py\n")
+        self.assertIn('"passed": true', out2,
+                      "修好后仍判不通过：%s" % out2[:160])
+
+    def test_patch_applies_unified_diff(self):
+        p = BOX / "hello.txt"
+        p.write_text("line-one\nline-two\n", encoding="utf-8")
+        diff = ("--- a/hello.txt\n+++ b/hello.txt\n@@ -1,2 +1,2 @@\n"
+                " line-one\n-line-two\n+line-two-patched\n")
+        call("dev_patch", diff)
+        self.assertIn("line-two-patched", p.read_text(encoding="utf-8"),
+                      "patch 返回但文件没变")
+
+    def test_move_renames_on_filesystem(self):
+        src = BOX / "move-src.txt"
+        dst = BOX / "move-dst.txt"
+        src.write_text("move-payload\n", encoding="utf-8")
+        dst.unlink(missing_ok=True)
+        call("dev_move", "from: move-src.txt\nto: move-dst.txt\n")
+        self.assertFalse(src.exists(), "move 后源文件仍在")
+        self.assertTrue(dst.exists(), "move 后目标不在")
+        self.assertIn("move-payload", dst.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -1344,7 +1344,9 @@ def dev_skill_approve(arg):
     dst_dir = os.path.join(os.path.abspath(_skills_mod.SKILLS_DIR), clean)
     if os.path.exists(dst_dir):
         return json.dumps({"ok": False, "error": f"活动技能 {clean} 已存在"}, ensure_ascii=False)
-    os.makedirs(os.path.abspath(_skills_mod.SKILLS_DIR), exist_ok=True)
+    # 必须建到 <name>/ 一层：shutil.move/copyfile 不建目标父目录，
+    # 只建 SKILLS_DIR 会让新技能批准永远 FileNotFoundError（2026-11-17 探针抓出）。
+    os.makedirs(dst_dir, exist_ok=True)
     shutil.move(src, os.path.join(dst_dir, "SKILL.md"))
     try:
         os.rmdir(os.path.join(_skill_pending_dir(), clean))
