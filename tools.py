@@ -9968,7 +9968,11 @@ def game_simulate(arg):
     return json.dumps(simulate_growth(int(f.get("levels") or 50),float(f.get("base") or 100),float(f.get("growth") or 1.08),(f.get("model") or "geometric"),(float(f.get("k")) if f.get("k") not in (None,"") else None)),ensure_ascii=False)
 def game_impact(arg):
     from game_workbench import impact_analysis
-    f=_parse_keyed(arg or "",["query"]); return json.dumps(impact_analysis(_get_code_root(),f.get("query") or ""),ensure_ascii=False)
+    # keyed 值尾换行必须 strip：子串 grep 与语义 query 带 '\n' 会永远匹配不上
+    # （2026-11-17 外部探针抓出，与 memory_forget id 尾换行同类）。
+    f = _parse_keyed(arg or "", ["query"])
+    return json.dumps(impact_analysis(_get_code_root(), (f.get("query") or "").strip()),
+                      ensure_ascii=False)
 def game_playtest(arg):
     from game_workbench import playtest
     f=_parse_keyed(arg or "",["command","timeout"]); return json.dumps(playtest(_get_code_root(),f.get("command") or "",int(f.get("timeout") or 30)),ensure_ascii=False)

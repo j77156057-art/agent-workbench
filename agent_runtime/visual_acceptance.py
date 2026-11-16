@@ -14,6 +14,7 @@ import ctypes
 import functools
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -823,6 +824,7 @@ class _DevTools:
         self.recv_timeout = max(1.0, float(recv_timeout))
         self.runtime_errors = runtime_errors if runtime_errors is not None else []
         self.console: list[dict[str, Any]] = []
+        self._ignored_404 = 0
         self.failed_requests: list[dict[str, Any]] = []
         # 去重【前】的事件计数。列表会去重也会截断，所以「这次动作有没有新报错」不能看列表
         # 长度——同一个错误每次动作都复现时，长度差恒为 0，就会把失败的动作报成成功。
@@ -845,6 +847,10 @@ class _DevTools:
 
     def _record_failure(self, kind: str, url: str, detail: str) -> None:
         if str(url).split("?")[0].rstrip("/").lower().endswith(_IGNORED_REQUEST_SUFFIX):
+            # 良性资源 404（favicon 等）：不计 failed_requests，但记一笔预算，
+            # 供预览判据抵扣浏览器随之产生的 console 404 噪声（顺序无关）。
+            if kind.startswith("http_404"):
+                self._ignored_404 += 1
             return
         self.failure_events += 1
         # Chrome reports an HTTP failure twice: once as the status and once as an
@@ -1137,7 +1143,19 @@ def capture_project_preview(root: str | Path, *, entry: str = "", evidence_dir: 
             path = target_dir / "preview.png"
             path.write_bytes(raw)
             rel = path.relative_to(root_path).as_posix()
-            console_errors = [item for item in devtools.console if item["level"] == "error"]
+            console_errors = []
+            ignored_budget = getattr(devtools, "_ignored_404", 0)
+            for item in devtools.console:
+                if item["level"] != "error":
+                    continue
+                # favicon 等良性资源 404 会随带一条不含 URL 的 console 404 噪声；
+                # 按被忽略后缀的 404 计数抵扣（顺序无关），其余 console 错误仍判红。
+                if ignored_budget > 0 and re.search(
+                        r"failed to load resource[^\n]*\b404\b",
+                        str(item.get("text") or ""), re.I):
+                    ignored_budget -= 1
+                    continue
+                console_errors.append(item)
             console_warnings = [item for item in devtools.console if item["level"] == "warning"]
             checks = {
                 "page_loaded": True,
