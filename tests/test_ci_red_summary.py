@@ -207,7 +207,8 @@ class WorkflowWiringTests(unittest.TestCase):
 
     def test_tests_run_before_the_summary_is_rendered(self):
         run = self._steps().get("Run full test suite", "")
-        self.assertLess(run.index("unittest discover"), run.index("ci_red_summary.py"),
+        # 分片后全量 lane 用 `-m unittest $modules`（不再是 discover），口径不变。
+        self.assertLess(run.index("-m unittest"), run.index("ci_red_summary.py"),
                         "先解析后跑测试，红名单永远是空的")
 
 

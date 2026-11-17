@@ -36,6 +36,20 @@ def _steps():
     return [s for s in doc["jobs"]["test"]["steps"] if isinstance(s, dict)]
 
 
+def _all_steps():
+    """test + coverage-gate 两个 job 的步骤。
+
+    2026-11-17 sqlite 分片后，改动行门搬到独立 coverage-gate job（它要收齐
+    所有分片的覆盖率数据才能判），接线断言必须跨两个 job 找，否则门搬了家
+    守卫就瞎了。
+    """
+    doc = yaml.safe_load(CI_FILE.read_text(encoding="utf-8"))
+    steps = []
+    for job in ("test", "coverage-gate"):
+        steps.extend(s for s in doc["jobs"][job]["steps"] if isinstance(s, dict))
+    return steps
+
+
 def _code(step) -> str:
     """步骤里的**命令**文本，剥掉 YAML run 里的 `#` 注释行。
 
@@ -413,12 +427,25 @@ class CiWiringTests(unittest.TestCase):
     """接线守卫：门在 CI 里真的会跑，而且红会传出去。"""
 
     def _gate_step(self):
-        hits = [s for s in _steps() if "coverage_eval" in str(s.get("run") or "")]
+        hits = [s for s in _all_steps() if "coverage_eval" in str(s.get("run") or "")]
         self.assertTrue(hits, "CI 里没有跑 coverage_eval 的步骤")
         return hits[0]
 
-    def test_gate_step_exists_and_is_sqlite_only(self):
-        self.assertIn("sqlite", str(self._gate_step().get("if") or ""))
+    def test_gate_consumes_only_sqlite_shard_coverage(self):
+        # 分片后门搬到独立 coverage-gate job：它靠下载 `ci-cov-shard-*` 过门，
+        # 而这些 artifact 只有 sqlite lane 上传（postgres lane 不产覆盖率）。
+        # 「只吃 sqlite 数据」从步骤级 `if` 变成了 job 级结构，断言跟着搬家。
+        doc = yaml.safe_load(CI_FILE.read_text(encoding="utf-8"))
+        gate = doc["jobs"]["coverage-gate"]
+        self.assertIn("test", gate.get("needs") or [], "门必须等测试分片跑完")
+        dl = [s for s in gate["steps"] if "download-artifact" in str(s.get("uses") or "")]
+        self.assertTrue(dl, "门没有下载分片覆盖率数据的步骤")
+        self.assertEqual((dl[0].get("with") or {}).get("pattern"), "ci-cov-shard-*")
+        up = [s for s in _steps() if "upload-artifact" in str(s.get("uses") or "")]
+        self.assertTrue(up, "sqlite lane 没有上传覆盖率的步骤")
+        for step in up:
+            self.assertIn("sqlite", str(step.get("if") or ""),
+                          "覆盖率上传被挂到了非 sqlite lane")
 
     def test_gate_exit_code_is_not_swallowed(self):
         run = _code(self._gate_step())
@@ -440,7 +467,7 @@ class CiWiringTests(unittest.TestCase):
         self.assertTrue(lane, "找不到 pytest lane 那一步")
         self.assertIn("coverage run", _code(lane[0]), "pytest lane 没在覆盖率下跑")
         self.assertIn("-m pytest", _code(lane[0]))
-        suite = [s for s in _steps() if "unittest discover" in _code(s)]
+        suite = [s for s in _steps() if "-m unittest $modules" in _code(s)]
         self.assertTrue(suite, "找不到全量测试那一步")
         self.assertIn("coverage run", _code(suite[0]), "unittest lane 没在覆盖率下跑")
         gate = _code(self._gate_step())
@@ -476,10 +503,15 @@ class CiWiringTests(unittest.TestCase):
                       "真读不到的文件会让整份报告失败，门就没输入了")
 
     def test_checkout_fetches_full_history(self):
-        checkout = [s for s in _steps() if "checkout" in str(s.get("uses") or "")]
-        self.assertTrue(checkout, "找不到 checkout 步骤")
-        self.assertEqual((checkout[0].get("with") or {}).get("fetch-depth"), 0,
-                         "浅克隆会让门取不到 base 而恒红")
+        # 门在 coverage-gate job 里算 `git diff <base>..HEAD`，那个 job 的 checkout
+        # 必须全量克隆；test job 的 checkout 同样要全量（改动行 base 解析）。
+        doc = yaml.safe_load(CI_FILE.read_text(encoding="utf-8"))
+        for job in ("test", "coverage-gate"):
+            checkout = [s for s in doc["jobs"][job]["steps"]
+                        if "checkout" in str(s.get("uses") or "")]
+            self.assertTrue(checkout, "%s 找不到 checkout 步骤" % job)
+            self.assertEqual((checkout[0].get("with") or {}).get("fetch-depth"), 0,
+                             "%s 浅克隆会让门取不到 base 而恒红" % job)
 
     def test_sibling_gates_still_run_their_own_commands(self):
         joined = "\n".join(str(s.get("run") or "") for s in _steps())
