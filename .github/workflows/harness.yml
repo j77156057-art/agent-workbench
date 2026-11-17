@@ -329,6 +329,10 @@ jobs:
           path: .tmp/ci-cov-upload/
           retention-days: 1
           if-no-files-found: error
+          # 覆盖率数据文件以 . 开头（.coverage.*），upload-artifact v7 默认
+          # include-hidden-files:false 会把它们整个漏掉 → 「No files were found」。
+          # 必须显式收隐藏文件；coverage combine 认的就是 .coverage.* 命名。
+          include-hidden-files: true
       - name: Verify strict Postgres integration
         if: matrix.backend == 'postgres'
         env:

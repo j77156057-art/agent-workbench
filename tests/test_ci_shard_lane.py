@@ -120,6 +120,10 @@ class CoverageAggregationTests(unittest.TestCase):
         self.assertEqual(with_.get("name"), "ci-cov-shard-${{ matrix.shard }}")
         self.assertEqual(with_.get("if-no-files-found"), "error",
                          "没数据不许静默传个空 artifact")
+        # .coverage.* 是隐藏文件；upload-artifact v7 默认不收隐藏文件，
+        # 漏了这条整个 artifact 为空（首跑实测「No files were found」）。
+        self.assertIs(with_.get("include-hidden-files"), True,
+                      "覆盖率数据是 . 开头隐藏文件，必须显式 include-hidden-files")
 
     def test_staged_files_carry_the_shard_suffix(self):
         # 同名文件在 merge-multiple 下载时会互相覆盖——片号后缀是防覆盖的关键。
