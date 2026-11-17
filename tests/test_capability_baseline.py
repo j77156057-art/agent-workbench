@@ -956,5 +956,42 @@ class Tranche9BackgroundTests(unittest.TestCase):
             shutil.rmtree(sandbox, ignore_errors=True)
 
 
+class Tranche10RecallTests(unittest.TestCase):
+    """2026-11-17 扩面第十批：经验召回 recall_experience（隔离经验库 round-trip）。
+
+    经验库维度随建库嵌入定死（本机现存 1024/bge-m3，CI unittest 用 local 256），直接
+    往全局库写会维度冲突（InvalidArgumentError: expecting 1024, got 256）。故探针用
+    reset_collection 建隔离专用库（维度随当前嵌入自建），record_episode 写一条教训 →
+    recall_experience 召回，扣机制正面证据；用完复位库名并重建清理，不碰全局经验库。
+    """
+
+    def test_recall_experience_record_then_recall_roundtrip(self):
+        import experience
+        import vectorstore
+        from projects import current_project_id
+        orig = config.EXPERIENCE_COLLECTION_NAME
+        probe_col = "cap_baseline_recall_probe"
+        config.EXPERIENCE_COLLECTION_NAME = probe_col
+        try:
+            vectorstore.reset_collection(probe_col)
+            pid = current_project_id() or "default"
+            ok = experience.record_episode(
+                pid, "探针动作RECALL10：升级依赖后校验反复失败",
+                "先核对锁定版本再升级", "fail-then-fixed",
+                lesson="RECALL10-LESSON：升级前先锁定版本核对")
+            self.assertTrue(ok, "经验写入失败")
+            out = call("recall_experience", "升级依赖后校验反复失败怎么办")
+            self.assertIn("RECALL10-LESSON", out,
+                          "召回没回已写入的教训：%s" % out[:200])
+            self.assertGreaterEqual(json.loads(out).get("count", 0), 1,
+                                    "召回计数为 0")
+        finally:
+            config.EXPERIENCE_COLLECTION_NAME = orig
+            try:
+                vectorstore.reset_collection(probe_col)
+            except Exception:  # noqa: BLE001 - 清理失败不影响结论
+                pass
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
