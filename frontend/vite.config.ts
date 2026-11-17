@@ -11,6 +11,19 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
  * 安装目录，等于白带一堆死文件。这里只删 assets 子目录：它纯粹是 Vite 产物，
  * 入口 HTML 每次构建都会重写引用，删掉安全。
  */
+// fontsource 的 css 同时列 woff2+woff 双 src，vite 会双份产出；
+// 现代浏览器全支持 woff2，woff 是安装包死重（实测 4.57MB）——构建期剥离 woff src。
+function woff2Only(): Plugin {
+  return {
+    name: 'docmind-woff2-only',
+    enforce: 'pre',
+    transform(code, id) {
+      if (!id.includes('@fontsource') || !id.endsWith('.css')) return null
+      return code.replace(/,\s*url\([^)]*\.woff\)\s*format\(['"]woff['"]\)/g, '')
+    },
+  }
+}
+
 function cleanAssets(): Plugin {
   return {
     name: 'docmind-clean-assets',
@@ -49,6 +62,7 @@ function serveSessionScript(): Plugin {
 export default defineConfig({
   plugins: [
     vue({ template: { compilerOptions: { isCustomElement: (tag: string) => tag === 'model-viewer' } } }),
+    woff2Only(),
     cleanAssets(),
     serveSessionScript(),
   ],
