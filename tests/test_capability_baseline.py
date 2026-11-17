@@ -1041,5 +1041,47 @@ class Tranche11ApprovalTests(unittest.TestCase):
             shutil.rmtree(sandbox, ignore_errors=True)
 
 
+class Tranche12PreviewAdapterTests(unittest.TestCase):
+    """2026-11-17 扩面第十二批：预览适配器 dev_preview_adapter_create / approve。
+
+    草稿→激活/拒绝生命周期（离线可证，扣 manifest 状态翻转）。test/refresh/rollback
+    需 Docker/Podman 隔离沙箱跑 adapt(payload)，属外部依赖，不在本离线探针内。
+    """
+
+    def test_preview_adapter_create_approve_reject_lifecycle(self):
+        sandbox = pathlib.Path(config.STATE_ROOT) / ".tmp" / "cap_adapter_probe"
+        if sandbox.exists():
+            shutil.rmtree(sandbox, ignore_errors=True)
+        sandbox.mkdir(parents=True)
+        saved = config._CTX_CODE_ROOT.get()
+        config.set_context_code_root(str(sandbox))
+        src = 'def adapt(payload): return {"doubled": payload["n"] * 2}'
+        try:
+            cr = json.loads(call("dev_preview_adapter_create",
+                                 "id: probeadapter12\nlabel: 探针适配器\ndomain: generic\n"
+                                 "runtime: python\nentrypoint: adapt\nsource: %s\n" % src))
+            self.assertTrue(cr.get("ok"), "适配器草稿创建失败：%s" % cr)
+            ap = json.loads(call("dev_preview_adapter_approve",
+                                 "id: probeadapter12\ndecision: approve\n"))
+            self.assertTrue(ap.get("ok"), "激活失败：%s" % ap)
+            self.assertEqual(ap["manifest"]["status"], "active",
+                             "批准后状态没翻转为 active")
+            call("dev_preview_adapter_create",
+                 "id: probeadapter13\nruntime: python\nsource: %s\n" % src)
+            rj = json.loads(call("dev_preview_adapter_approve",
+                                 "id: probeadapter13\ndecision: reject\n"))
+            self.assertTrue(rj.get("ok"), "拒绝失败：%s" % rj)
+            self.assertEqual(rj["manifest"]["status"], "rejected",
+                             "拒绝后状态没翻转为 rejected")
+            bad = json.loads(call("dev_preview_adapter_approve",
+                                  "id: probeadapter12\ndecision: maybe\n"))
+            self.assertFalse(bad.get("ok"), "非法 decision 竟被接受")
+            noid = json.loads(call("dev_preview_adapter_create", "label: 无名\n"))
+            self.assertFalse(noid.get("ok"), "缺 id 竟创建成功")
+        finally:
+            config.set_context_code_root(saved)
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
