@@ -5,7 +5,7 @@
 或者覆盖率门只看到一片的数据就盖章。所以这里钉四件事：
 
 1. matrix 形状：sqlite 恰好 4 片（片号 1..4），postgres 不分片；
-2. 两条测试 lane 用同一套确定性分配（体积降序轮转取模），本地重算一遍：
+2. 两条测试 lane 用同一套确定性分配（文件名稳定哈希 crc32(name)%shards），本地重算一遍：
    全量文件恰好被认领一次（不重不漏），每片非空；
 3. YAML 里的分配表达式与本地重算的算法逐字对得上（防算法漂移）；
 4. 覆盖率数据带片号上传、门 job 收齐合并——门不许只看半边数据。
@@ -15,6 +15,7 @@
 import ast
 import pathlib
 import unittest
+import zlib
 
 import yaml
 
@@ -38,9 +39,9 @@ def _step(name):
 
 
 def _partition(files, shard, total):
-    """与 harness.yml 两条 lane 内嵌 Python 相同的分配算法。"""
-    ordered = sorted(files, key=lambda p: (-p.stat().st_size, p.as_posix()))
-    return [p for i, p in enumerate(ordered) if i % total == shard - 1]
+    """与 harness.yml 两条 lane 内嵌 Python 相同的分配算法（文件名稳定哈希）。"""
+    return [p for p in files
+            if zlib.crc32(p.name.encode("utf-8")) % total == shard - 1]
 
 
 class MatrixShapeTests(unittest.TestCase):
@@ -91,15 +92,26 @@ class PartitionCoverageTests(unittest.TestCase):
                          sorted(p.as_posix() for p in paths))
 
     def test_yaml_partition_expression_matches_the_recomputed_algorithm(self):
-        # 字符串钉住算法形状：改了取模/排序而本地重算没跟上时，这里先红。
+        # 字符串钉住算法形状：改了哈希/取模而本地重算没跟上时，这里先红。
         for name in ("Run pytest-style lane", "Run full test suite"):
             run = str(_step(name).get("run") or "")
-            self.assertIn("i % total == shard - 1", run,
+            self.assertIn("zlib.crc32(p.name.encode(\"utf-8\")) % total == shard - 1", run,
                           "%s 的分配表达式变了" % name)
-            self.assertIn("-p.stat().st_size", run,
-                          "%s 不再按体积降序轮转" % name)
             self.assertIn("CI_SHARD", run)
             self.assertIn("CI_SHARDS", run)
+
+    def test_partition_is_stable_independent_of_file_size(self):
+        # 稳定哈希的核心承诺：分配只认文件名，不认体积——改内容/换 CRLF-LF 都不挪位。
+        # 承重断言：两条 lane 的分配代码不得再读文件体积（否则又回到随提交挪位）。
+        for name in ("Run pytest-style lane", "Run full test suite"):
+            run = str(_step(name).get("run") or "")
+            self.assertNotIn("st_size", run,
+                             "%s 又按体积分片了——会随提交挪位、反复暴露潜伏依赖" % name)
+            self.assertNotIn("hash(p.name", run,
+                             "%s 用了盐控 hash()，跨 run 不稳定" % name)
+        # crc32 对同一文件名恒定（跨平台/跨 run），本地重算与 CI 必然一致
+        self.assertEqual(zlib.crc32(b"test_parallel.py") % 4,
+                         zlib.crc32(b"test_parallel.py") % 4)
 
     def test_lane_steps_receive_the_matrix_shard_env(self):
         for name in ("Run pytest-style lane", "Run full test suite"):

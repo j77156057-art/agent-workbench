@@ -21,9 +21,9 @@ jobs:
         include:
           # sqlite 全量套件按文件分 4 片并行（2026-11-17）：串行 ~25 分钟的大头是
           # unittest 全量；分片后每片只跑 1/4 的文件，墙钟 ≈ 装环境 + 套件/4。
-          # 分片算法两步一致：按文件体积降序轮转取模（确定性，各片独立算出同一份
-          # 全局分配再取自己那份）。覆盖率数据每片上传，coverage-gate job 合并后过门。
-          # 守卫：tests/test_ci_shard_lane.py
+          # 分片算法两步一致：按**文件名稳定哈希** crc32(name)%shards（确定性、跨平台、
+          # 不随提交体积变化挪位，各片独立算出同一份全局分配再取自己那份）。
+          # 覆盖率数据每片上传，coverage-gate job 合并后过门。守卫：tests/test_ci_shard_lane.py
           - backend: sqlite
             checkpoint_dsn: ""
             shard: 1
@@ -215,15 +215,15 @@ jobs:
         # 走 api.github.com 就能读到红名单。分片后每片各自打自己的红名单。
         run: |
           files=$(python - <<'PY'
-          import ast, os, pathlib
+          import ast, os, pathlib, zlib
           shard, total = int(os.environ["CI_SHARD"]), int(os.environ["CI_SHARDS"])
           paths = []
           for p in sorted(pathlib.Path("tests").glob("test_*.py")):
               tree = ast.parse(p.read_text(encoding="utf-8"), filename=str(p))
               if any(isinstance(n, ast.FunctionDef) and n.name.startswith("test_") for n in tree.body):
                   paths.append(p)
-          paths.sort(key=lambda p: (-p.stat().st_size, p.as_posix()))
-          mine = [p.as_posix() for i, p in enumerate(paths) if i % total == shard - 1]
+          mine = [p.as_posix() for p in paths
+                  if zlib.crc32(p.name.encode("utf-8")) % total == shard - 1]
           print(" ".join(mine))
           PY
           )
@@ -273,16 +273,18 @@ jobs:
           DOCMIND_TRACE: "1"
           CI_SHARD: ${{ matrix.shard }}
           CI_SHARDS: ${{ matrix.shards }}
-        # 分片跑全量：文件按体积降序轮转取模分成 shards 份（与 pytest lane 同一算法），
+        # 分片跑全量：按**文件名稳定哈希** crc32(name)%shards 分片（与 pytest lane 同一算法），
         # 本片只把自己那份模块名交给 `python -m unittest`。TestCase 收集口径与
         # discover 相同（模块级 pytest 函数不被 unittest 收取，归 pytest lane）。
+        # 用稳定哈希而非体积：体积随每次提交变化会让分片挪位、反复暴露潜伏的跨测试
+        # 依赖；文件名不变 → 分配恒定，隔离修复一次到位即永久绿（跨平台也一致）。
         run: |
           modules=$(python - <<'PY'
-          import os, pathlib
+          import os, pathlib, zlib
           shard, total = int(os.environ["CI_SHARD"]), int(os.environ["CI_SHARDS"])
-          files = sorted(pathlib.Path("tests").glob("test*.py"),
-                         key=lambda p: (-p.stat().st_size, p.as_posix()))
-          mine = ["tests." + p.stem for i, p in enumerate(files) if i % total == shard - 1]
+          files = pathlib.Path("tests").glob("test*.py")
+          mine = ["tests." + p.stem for p in files
+                  if zlib.crc32(p.name.encode("utf-8")) % total == shard - 1]
           print(" ".join(mine))
           PY
           )
