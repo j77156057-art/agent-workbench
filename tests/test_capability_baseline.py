@@ -834,5 +834,27 @@ class Tranche6ChangesetTests(unittest.TestCase):
                          "整体回滚后新建文件仍在——git revert 没真撤销（文件系统证据）")
 
 
+class Tranche7AssetsTests(unittest.TestCase):
+    """2026-11-17 扩面第七批：素材注册→取得 round-trip（manifest 落盘 + 元数据对账）。"""
+
+    def test_asset_register_then_get_roundtrip(self):
+        call("init_regions", "")
+        asset = BOX / "assets" / "probe-asset7.txt"
+        asset.parent.mkdir(parents=True, exist_ok=True)
+        asset.write_text("ASSET7-PAYLOAD\n", encoding="utf-8")
+        reg = call("dev_asset_register",
+                   "asset_id: probeasset7\npath: probe-asset7.txt\ntype: text\n")
+        self.assertTrue(json.loads(reg).get("ok"), "素材注册没回 ok：%s" % reg[:160])
+        manifest = json.loads((BOX / "assets" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertIn("probeasset7", manifest.get("assets", {}),
+                      "manifest.json 没真记下素材 id（文件系统证据）")
+        got = json.loads(call("dev_asset_get", "asset_id: probeasset7\n"))
+        self.assertTrue(got.get("ok"), "素材取得没回 ok：%s" % got)
+        self.assertEqual(got.get("size"), asset.stat().st_size,
+                         "素材元数据尺寸与真实文件不符")
+        self.assertIn("probe-asset7.txt", got.get("path", ""),
+                      "素材取得没回正确相对路径")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
