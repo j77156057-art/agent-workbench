@@ -8,21 +8,21 @@ import EditorTabs from './components/EditorTabs.vue'
 import ContextMenu from './components/ContextMenu.vue'
 import AppDialog from './components/AppDialog.vue'
 import SymbolOutline from './components/SymbolOutline.vue'
-import SymbolMap from './components/SymbolMap.vue'
+const SymbolMap = defineAsyncComponent(() => import('./components/SymbolMap.vue'))
 import SelectionToolbar from './components/SelectionToolbar.vue'
-import SelectionAiPanel from './components/SelectionAiPanel.vue'
-import GitHistoryDialog from './components/GitHistoryDialog.vue'
-import GitChangesPanel from './components/GitChangesPanel.vue'
-import RewriteDiffDialog from './components/RewriteDiffDialog.vue'
-import TaskEnginePanel from './components/TaskEnginePanel.vue'
+const SelectionAiPanel = defineAsyncComponent(() => import('./components/SelectionAiPanel.vue'))
+const GitHistoryDialog = defineAsyncComponent(() => import('./components/GitHistoryDialog.vue'))
+const GitChangesPanel = defineAsyncComponent(() => import('./components/GitChangesPanel.vue'))
+const RewriteDiffDialog = defineAsyncComponent(() => import('./components/RewriteDiffDialog.vue'))
+const TaskEnginePanel = defineAsyncComponent(() => import('./components/TaskEnginePanel.vue'))
 import SceneRuntimePanel from './components/SceneRuntimePanel.vue'
 import ChatDock from './components/ChatDock.vue'
 import ExecApprovalDialog from './components/ExecApprovalDialog.vue'
-import GpuPanel from './components/GpuPanel.vue'
-import EdaVerifyPanel from './components/EdaVerifyPanel.vue'
-import LiveStreamPanel from './components/LiveStreamPanel.vue'
+const GpuPanel = defineAsyncComponent(() => import('./components/GpuPanel.vue'))
+const EdaVerifyPanel = defineAsyncComponent(() => import('./components/EdaVerifyPanel.vue'))
+const LiveStreamPanel = defineAsyncComponent(() => import('./components/LiveStreamPanel.vue'))
 import BrowserLivePanel from './components/BrowserLivePanel.vue'
-import HarnessPanel from './components/HarnessPanel.vue'
+const HarnessPanel = defineAsyncComponent(() => import('./components/HarnessPanel.vue'))
 import SemanticLocateBar from './components/SemanticLocateBar.vue'
 import RightRail from './components/RightRail.vue'
 import { useWorkbench, askConfirm } from './composables/workbench'
@@ -65,7 +65,7 @@ const {
   openChanges,
   openRegionMap,
   relationGraphOpen, unityGraphOpen, flowOpen, regionMapOpen, changesOpen, jobsOpen,
-  aiPanelOpen,
+  aiPanelOpen, symbolMapOpen, history, rewriteDiff,
   workspace, setWorkspace, seedDemoRegionCards,
   closeAllTabs, closeRuntime,
   // 阶段 4：运行面板常驻（docked）态
@@ -322,13 +322,47 @@ function onOpenSettings(ev: Event) {
  * 重型弹层首次打开才挂载（异步 chunk 届时才下载）；挂载后常驻、关闭不销毁，
  * 保留已加载数据与缩放状态——与原先"始终挂载 + 根 v-if 隐藏"的体验一致。
  */
-const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, changes: false, jobs: false, settings: false })
+const openTE = async () => {
+  await import('./components/TaskEnginePanel.vue')
+  everMounted.te = true
+  for (let i = 0; i < 40 && !teRef.value; i++) await new Promise((r) => setTimeout(r, 50))
+  teRef.value?.show()
+}
+const openGP = async () => {
+  await import('./components/GpuPanel.vue')
+  everMounted.gp = true
+  for (let i = 0; i < 40 && !gpRef.value; i++) await new Promise((r) => setTimeout(r, 50))
+  gpRef.value?.show()
+}
+const openEV = async () => {
+  await import('./components/EdaVerifyPanel.vue')
+  everMounted.ev = true
+  for (let i = 0; i < 40 && !evRef.value; i++) await new Promise((r) => setTimeout(r, 50))
+  evRef.value?.show()
+}
+const openLS = async () => {
+  await import('./components/LiveStreamPanel.vue')
+  everMounted.ls = true
+  for (let i = 0; i < 40 && !lsRef.value; i++) await new Promise((r) => setTimeout(r, 50))
+  lsRef.value?.show()
+}
+const openHP = async () => {
+  await import('./components/HarnessPanel.vue')
+  everMounted.hp = true
+  for (let i = 0; i < 40 && !hpRef.value; i++) await new Promise((r) => setTimeout(r, 50))
+  hpRef.value?.show()
+}
+const everMounted = reactive({ relation: false, unity: false, flow: false, region: false, changes: false, jobs: false, settings: false, te: false, gp: false, ev: false, hp: false, ls: false, symbol: false, githistory: false, rewrite: false, selai: false })
 watch(relationGraphOpen, (v) => { if (v) everMounted.relation = true })
 watch(unityGraphOpen, (v) => { if (v) everMounted.unity = true })
 watch(flowOpen, (v) => { if (v) everMounted.flow = true })
 watch(changesOpen, (v) => { if (v) everMounted.changes = true })
 watch(jobsOpen, (v) => { if (v) everMounted.jobs = true })
 watch(regionMapOpen, (v) => { if (v) everMounted.region = true })
+watch(symbolMapOpen, (v) => { if (v) everMounted.symbol = true })
+watch(history, (v) => { if (v) everMounted.githistory = true })
+watch(rewriteDiff, (v) => { if (v) everMounted.rewrite = true })
+watch(aiPanelOpen, (v) => { if (v) everMounted.selai = true })
 /** 当前标签可回滚：已纳入 git 且磁盘或编辑器存在改动 */
 const canRevertActive = computed(() => {
   const t = activeTab.value
@@ -383,13 +417,13 @@ function onShellEsc(event: KeyboardEvent) {
   }
   if (mobileRailOpen.value) toggleRailCollapsed()
 }
-const teRef = ref<InstanceType<typeof TaskEnginePanel> | null>(null)
-const gpRef = ref<InstanceType<typeof GpuPanel> | null>(null)
-const evRef = ref<InstanceType<typeof EdaVerifyPanel> | null>(null)
-const lsRef = ref<InstanceType<typeof LiveStreamPanel> | null>(null)
+const teRef = ref<{ show: () => void } | null>(null)
+const gpRef = ref<{ show: () => void } | null>(null)
+const evRef = ref<{ show: () => void } | null>(null)
+const lsRef = ref<{ show: () => void } | null>(null)
 // EDA 面板嵌入态：false=弹窗（默认），true=停靠主区常驻（复用 SceneRuntimePanel 的 dock 惯用法）。
 const edaResident = ref(false)
-const hpRef = ref<InstanceType<typeof HarnessPanel> | null>(null)
+const hpRef = ref<{ show: () => void } | null>(null)
 // 2026-10-19：AI 运行设置与游戏引擎连接两个入口已移进设置页的「运行与引擎」分区，
 // 这里对应的 ref 与事件派发一并删除（面板改由 SettingsView 内嵌渲染）。
 
@@ -892,19 +926,19 @@ onBeforeUnmount(() => {
             </button>
             <div class="wb-menu-sep" />
             <div class="wb-menu-label">开发工具与运行</div>
-            <button type="button" class="wb-menu-item" title="任务与生成：任务分支、Godot 控制、ComfyUI 画图、Unreal" @click="teRef?.show()">
+            <button type="button" class="wb-menu-item" title="任务与生成：任务分支、Godot 控制、ComfyUI 画图、Unreal" @click="openTE">
               <span class="wb-menu-glyph" aria-hidden="true">✦</span>
               <span class="wb-menu-item-name">任务与生成</span>
             </button>
-            <button type="button" class="wb-menu-item" title="GPU 监控：显存占用、任务排队、空闲自动释放" @click="gpRef?.show()">
+            <button type="button" class="wb-menu-item" title="GPU 监控：显存占用、任务排队、空闲自动释放" @click="openGP">
               <span class="wb-menu-glyph" aria-hidden="true">▤</span>
               <span class="wb-menu-item-name">GPU 监控</span>
             </button>
-            <button type="button" class="wb-menu-item" title="EDA 多模态验收：结构化报告 × 视觉回归 → 三态合并门（只判不回滚）" @click="evRef?.show()">
+            <button type="button" class="wb-menu-item" title="EDA 多模态验收：结构化报告 × 视觉回归 → 三态合并门（只判不回滚）" @click="openEV">
               <span class="wb-menu-glyph" aria-hidden="true">✓</span>
               <span class="wb-menu-item-name">EDA 多模态验收</span>
             </button>
-            <button type="button" class="wb-menu-item" title="实时对话：摄像头或屏幕共享画面与语音实时送入本地实时模型（WS 通道）" @click="lsRef?.show()">
+            <button type="button" class="wb-menu-item" title="实时对话：摄像头或屏幕共享画面与语音实时送入本地实时模型（WS 通道）" @click="openLS">
               <span class="wb-menu-glyph" aria-hidden="true">◉</span>
               <span class="wb-menu-item-name">实时对话</span>
             </button>
@@ -912,7 +946,7 @@ onBeforeUnmount(() => {
               <span class="wb-menu-glyph" aria-hidden="true">⚙</span>
               <span class="wb-menu-item-name">运行与引擎</span>
             </button>
-            <button type="button" class="wb-menu-item" title="AI 运行台：历史会话、操作记录、技能与断点（花费在设置里看）" @click="hpRef?.show()">
+            <button type="button" class="wb-menu-item" title="AI 运行台：历史会话、操作记录、技能与断点（花费在设置里看）" @click="openHP">
               <span class="wb-menu-glyph" aria-hidden="true">◷</span>
               <span class="wb-menu-item-name">AI 运行台</span>
             </button>
@@ -1173,12 +1207,12 @@ onBeforeUnmount(() => {
     <!-- 高级工具面板宿主：自带触发按钮隐藏（入口已收进顶栏「工具」菜单），
          弹层 teleport 到 body，经模板 ref 调 show() 唤起。 -->
     <div class="wb-tool-host" aria-hidden="true">
-      <TaskEnginePanel ref="teRef" :key="currentProjectId" />
-      <GpuPanel ref="gpRef" />
-      <EdaVerifyPanel ref="evRef" :mode="edaResident ? 'docked' : 'popup'" host="#wb-eda-slot"
+      <TaskEnginePanel v-if="everMounted.te" ref="teRef" :key="currentProjectId" />
+      <GpuPanel v-if="everMounted.gp" ref="gpRef" />
+      <EdaVerifyPanel v-if="everMounted.ev" ref="evRef" :mode="edaResident ? 'docked' : 'popup'" host="#wb-eda-slot"
         @dock="edaResident = true" @undock="edaResident = false" />
-      <HarnessPanel ref="hpRef" />
-      <LiveStreamPanel ref="lsRef" />
+      <HarnessPanel v-if="everMounted.hp" ref="hpRef" />
+      <LiveStreamPanel v-if="everMounted.ls" ref="lsRef" />
       <!-- 右栏打开时隐藏右侧浮窗（两者都在右边，会重叠）；右栏「只读镜像」页签
            接管实况画面，关闭右栏后这个浮窗自动回来。 -->
       <BrowserLivePanel v-if="!rightRailActive" />
@@ -1186,11 +1220,11 @@ onBeforeUnmount(() => {
 
     <ContextMenu />
     <AppDialog />
-    <GitHistoryDialog />
-    <RewriteDiffDialog />
+    <GitHistoryDialog v-if="everMounted.githistory" />
+    <RewriteDiffDialog v-if="everMounted.rewrite" />
     <ExecApprovalDialog />
     <RegionMapDialog v-if="everMounted.region" />
-    <SymbolMap />
+    <SymbolMap v-if="everMounted.symbol" />
     <RelationGraph v-if="everMounted.relation" />
     <UnityGraph v-if="everMounted.unity" />
     <FlowCanvas v-if="everMounted.flow" />
