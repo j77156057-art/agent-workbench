@@ -9632,6 +9632,8 @@ def dev_apply_regions(arg):
     from regions import init_regions
     ok, msg = init_regions(root, regions_list)
     if not ok:
+        if isinstance(msg, dict):  # 审批门禁阻断结构，按约定原样 JSON 上抛（别 str+dict）
+            return json.dumps(msg, ensure_ascii=False)
         return "应用分区方案失败：" + msg
     # 重新注入分区契约，使 Agent 立即按新分区约束工作
     try:
@@ -9673,6 +9675,8 @@ def dev_add_region(arg):
     cur.append(new_region)
     ok, msg = init_regions(root, cur)
     if not ok:
+        if isinstance(msg, dict):  # 审批门禁阻断结构，按约定原样 JSON 上抛（别 str+dict）
+            return json.dumps(msg, ensure_ascii=False)
         return "新增/更新分区失败：" + msg
     try:
         from ingest import load_project_rules

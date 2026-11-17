@@ -732,5 +732,68 @@ class Tranche4ToolsTests(unittest.TestCase):
                       "知识检索没回已_ingest_片段：%s" % out[:160])
 
 
+class Tranche5WritePathTests(unittest.TestCase):
+    """2026-11-17 扩面第五批：写路径离线探针（依赖对账 / 分区增改 / 分区方案审批门）。
+
+    这批探针当场抓出一个真缺陷：`dev_add_region` / `dev_apply_regions` 在审批门禁
+    返回 dict 阻断结构时做 `str + dict` → TypeError（敏感操作本该把 gate 原样 JSON
+    上抛）。判据扣机制：依赖对账要真把缺失声明写进清单（文件系统证据）；分区写要
+    真落盘内容；审批门要回 approval_required 而不是崩。
+    """
+
+    def test_dev_deps_check_finds_undeclared_and_apply_writes(self):
+        # 自备 code_root 沙箱：dev_deps 按 code_root 读依赖清单，BOX 没有清单，
+        # 故临时把上下文根指到一个带 requirements.txt 的小沙箱（用完复位）。
+        sandbox = pathlib.Path(config.STATE_ROOT) / ".tmp" / "cap_deps_probe"
+        if sandbox.exists():
+            shutil.rmtree(sandbox, ignore_errors=True)
+        sandbox.mkdir(parents=True)
+        (sandbox / "app.py").write_text("import yaml\n", encoding="utf-8")
+        (sandbox / "requirements.txt").write_text("# empty manifest\n", encoding="utf-8")
+        saved = config._CTX_CODE_ROOT.get()
+        config.set_context_code_root(str(sandbox))
+        try:
+            before = (sandbox / "requirements.txt").read_text(encoding="utf-8")
+            chk = call("dev_deps", "action: check")
+            self.assertIn("yaml", chk.lower(), "check 没指出未声明的 import：%s" % chk[:160])
+            self.assertIn("app.py", chk, "check 没给出导入方：%s" % chk[:160])
+            self.assertEqual((sandbox / "requirements.txt").read_text(encoding="utf-8"),
+                             before, "check 是只读对账，不该改清单")
+            call("dev_deps", "action: apply\nsource: requirements.txt")
+            after = (sandbox / "requirements.txt").read_text(encoding="utf-8")
+            self.assertIn("PyYAML", after,
+                          "apply 没把缺失声明真写进清单（文件系统证据）：%s" % after)
+        finally:
+            config.set_context_code_root(saved)
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+    def test_apply_regions_gate_is_surfaced_not_crash(self):
+        # 回归锁：自定义分区方案触发审批门时须回 approval_required JSON，
+        # 而不是 `str + dict` TypeError（本批探针抓出的真缺陷）。
+        # 方法名刻意排在 test_dev_add_* 之前（unittest 按字母序跑）：dev_add 探针
+        # 会批准 apply_regions/*，一旦先批了这里的门就没了，故须先断言门再放行。
+        call("init_regions", "")
+        out = call("dev_apply_regions", 'regions: [{"key":"probe5a","dir":"probe5a"}]')
+        payload = json.loads(out)
+        self.assertTrue(payload.get("approval_required"),
+                        "分区方案审批门没原样上抛阻断结构：%s" % out[:160])
+
+    def test_dev_add_region_then_region_edit_really_writes(self):
+        call("init_regions", "")
+        first = call("dev_add_region", "key: probe5w\ndir: probe5w\nname: 探针写区\n")
+        self.assertTrue(json.loads(first).get("approval_required"),
+                        "新增分区审批门没原样上抛（str+dict 缺陷回归）：%s" % first[:160])
+        call_approved("dev_add_region", "key: probe5w\ndir: probe5w\nname: 探针写区\n")
+        self.assertTrue((BOX / "probe5w").is_dir(), "审批后分区目录没建起来")
+        call_approved("dev_region_edit",
+                      "region: probe5w\npath: w.txt\nnew_text: WRITE-PAYLOAD-5\n")
+        target = BOX / "probe5w" / "w.txt"
+        self.assertTrue(target.exists(), "分区写没落盘")
+        self.assertIn("WRITE-PAYLOAD-5", target.read_text(encoding="utf-8"),
+                      "分区写内容不对：%s" % target.read_text(encoding="utf-8"))
+        ver = call("dev_region_verify", "region: probe5w\n")
+        self.assertTrue(str(ver).strip(), "分区校验没给结论")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
