@@ -35,6 +35,7 @@ ui/hud.gd:1-30），证据齐备，答案里每个行号也都对。但结尾挂
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -43,6 +44,29 @@ import agent as agent_mod  # noqa: E402
 
 class AuditUsesRealExecutionsTests(unittest.TestCase):
     """核心：传了真实执行记录就用它，不再反推。"""
+
+    def setUp(self):
+        # 自备代码根：审计的 references_exist 会按 get_runtime("code_root") 打开
+        # behaviors/enemy.gd / player.gd。分片乱序时别处残留的 root 里没有这两个
+        # 文件 → exists=False → 误判未核验。这里造一个含夹具文件的临时根，并把
+        # 审计读到的 code_root 钉死到它（只改 agent 侧 get_runtime，隔离环境态）。
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory(prefix="dm_audit_src_")
+        root = self._tmp.name
+        os.makedirs(os.path.join(root, "behaviors"), exist_ok=True)
+        with open(os.path.join(root, "behaviors", "enemy.gd"), "w", encoding="utf-8") as f:
+            f.write("\n".join("line %d" % i for i in range(1, 13)) + "\n")
+        with open(os.path.join(root, "behaviors", "player.gd"), "w", encoding="utf-8") as f:
+            f.write("\n".join("line %d" % i for i in range(1, 50)) + "\n")
+        real = agent_mod.get_runtime
+
+        def fake(key, default=None):
+            return root if key == "code_root" else real(key, default)
+
+        patcher = patch.object(agent_mod, "get_runtime", side_effect=fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
 
     def _audit(self, steps):
         return agent_mod._audit_live_answer(
