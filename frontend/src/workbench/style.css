@@ -561,6 +561,12 @@ html[data-material='glass'] .wb-proj-notice {
   background: var(--bg);
   border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
+  /* 分区卡是浅色底（var(--bg)），但深色资源栏把 --ink/--text 覆写成了白字，
+     直接继承会白字压浅底（实测 1.08:1）。这里把文本令牌复位回皮肤真实墨色
+     --mi-text（栏内未被覆写），名字与 regionTextColor 的混墨都随之压暗，
+     浅皮卡深字、深皮卡浅字，跨皮肤自洽。 */
+  --ink: var(--mi-text);
+  --text: var(--mi-text);
 }
 .ft-region-root:hover { background: var(--bg-hover); }
 .ft-region-root .ft-name { font-family: var(--font-display); color: var(--ink); }
