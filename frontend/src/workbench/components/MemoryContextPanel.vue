@@ -61,6 +61,10 @@ const missingVectors = computed(() => Math.max(
   0, Number(health.value?.index?.items || 0) - Number(health.value?.index?.vectors || 0),
 ))
 const l2Items = computed(() => (current.value?.items || []) as MemoryPanelItem[])
+// 长列表分页：生产库数百条一次挂载 DOM 过重；首屏 50 + 加载更多，切标签重置。
+const itemLimit = ref(50)
+const shownItems = computed(() => l2Items.value.slice(0, itemLimit.value))
+watch(active, () => { itemLimit.value = 50 })
 const l4Items = computed(() => (current.value?.items || []) as MemoryPanelHook[])
 const l3Items = computed(() => (current.value?.items || []) as MemoryPanelTaskItem[])
 const l4Errors = computed(() => (current.value?.errors || []) as Array<Record<string, unknown>>)
@@ -1060,7 +1064,7 @@ async function reindex() {
         <p v-if="!l2Items.length" class="mp-hint">
           没有 pin 的共享记忆。可召回条目 {{ retrievableItems.length }} 条，可在下方检索或采纳。
         </p>
-        <div v-for="item in l2Items" :key="String(item.id)" class="mp-item">
+        <div v-for="item in shownItems" :key="String(item.id)" class="mp-item">
           <div class="mp-item-head">
             <span>{{ item.kind === 'lesson' ? '教训' : '事实' }} · 置信 {{ Number(item.confidence || 0).toFixed(2) }} · 关联 {{ (item.edges || []).length }}</span>
             <label class="mp-pin"><input type="checkbox" :checked="!!item.pinned" @change="togglePin(item)" /> pin</label>
@@ -1089,6 +1093,9 @@ async function reindex() {
             <button class="mp-mini" type="button" :disabled="busy || !linkTargets[String(item.id)]" @click="addLink(item)">关联</button>
           </div>
         </div>
+        <button v-if="l2Items.length > itemLimit" class="mp-mini" type="button" @click="itemLimit += 50">
+          加载更多（剩余 {{ l2Items.length - itemLimit }}）
+        </button>
         <details v-if="retrievableItems.length" class="mp-retrievable">
           <summary>可召回但未注入（{{ retrievableItems.length }}）</summary>
           <div v-for="item in retrievableItems" :key="String(item.id)" class="mp-item">
@@ -1111,7 +1118,7 @@ async function reindex() {
       <template v-else-if="current.kind === 'legacy'">
         <p v-if="current.note" class="mp-hint">{{ current.note }}</p>
         <p v-if="!l2Items.length" class="mp-hint">没有 active 的长期记忆。聊天存证与自动提取的事实会出现在这里。</p>
-        <div v-for="item in l2Items" :key="String(item.id)" class="mp-item">
+        <div v-for="item in shownItems" :key="String(item.id)" class="mp-item">
           <div class="mp-item-head">
             <span>{{ item.kind === 'lesson' ? '教训' : '事实' }} · {{ item.updated || '更新时间未记录' }}</span>
             <span v-if="item.legacy_unclassified" class="mp-hint">历史未分类</span>
@@ -1123,6 +1130,9 @@ async function reindex() {
             <button class="mp-mini mp-danger" type="button" :disabled="busy || mode === 'last'" @click="removeLegacyItem(item)">删除</button>
           </div>
         </div>
+        <button v-if="l2Items.length > itemLimit" class="mp-mini" type="button" @click="itemLimit += 50">
+          加载更多（剩余 {{ l2Items.length - itemLimit }}）
+        </button>
       </template>
 
       <template v-else-if="current.kind === 'taskbook'">
