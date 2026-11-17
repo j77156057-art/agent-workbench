@@ -169,18 +169,6 @@ jobs:
         if: matrix.backend == 'postgres'
         run: |
           python -c "import inspect, psycopg, psycopg_pool; print(psycopg.__version__); print(inspect.signature(psycopg_pool.ConnectionPool))"
-      - name: Run workflow regression gate
-        run: python -m agent_runtime.workflow_eval --self-check --baseline .github/workflow-eval-baseline.json --json
-      - name: Run dev lane capability gate
-        run: python -m agent_runtime.dev_eval --self-check --baseline .github/dev-eval-baseline.json --json
-      - name: Run mutation batteries (守卫到底有没有牙)
-        if: matrix.backend == 'sqlite'
-        # 上面那道门只问"能力在不在"，这一道问"守着能力的测试会不会根本没在守"：
-        # 逐条把源码改坏，确认有测试或门禁因此变红。--no-live = 不启真浏览器，
-        # 只有现场能验的变异记成「本环境未验证」而不是"抓住"。
-        run: python tests/mutation/run_all.py --no-live -q
-      - name: Run retrieval regression gate
-        run: python -m agent_runtime.retrieval_eval --dataset .github/retrieval-eval.json --baseline .github/retrieval-eval-baseline.json --minimum 0.75 --json
       - name: Run live Chroma retrieval gate
         if: env.DOCMIND_LIVE_RETRIEVAL_COLLECTION != ''
         env:
@@ -192,8 +180,6 @@ jobs:
             --modes dense,hybrid,hybrid_rerank \
             --baseline .github/retrieval-eval-live-baseline.json \
             --minimum 0.75 --json
-      - name: Run offline game workflow acceptance
-        run: python -m unittest tests.test_game_workflow_e2e tests.test_retrieval_adapter tests.test_retrieval_api -q
       - name: Run opt-in real project acceptance
         if: env.DOCMIND_REAL_GAME_PROJECT != '' && env.DOCMIND_GODOT_EXECUTABLE != ''
         env:
@@ -363,6 +349,57 @@ jobs:
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: python -m unittest tests.test_live_llm_workflow -q
+
+  # 能力门 + 变异电池（2026-11-17 从 test 矩阵拆出，只跑一次）：workflow/dev/retrieval
+  # 评测与变异电池是**全仓口径**的门，与测试分片无关。原先挂在 test job 上会在 4 个
+  # sqlite 分片里各跑一遍（变异电池 ~4min × 4），既浪费 CI 分钟又把最慢分片拖长。
+  # 拆成独立并行 job 后只跑一次，test 分片专心跑测试，墙钟进一步下降。
+  # 这些门不被「按步骤钉在 test job」的接线守卫约束（守卫钉的是 ruff/lint/隐私/覆盖率等），
+  # 搬出来后仍每次推送必跑、红则整条 workflow 红——牙口不减。守卫：tests/test_ci_shard_lane.py。
+  capability-gates:
+    name: capability gates + mutation (once)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DOCMIND_CHECKPOINT_POSTGRES_REQUIRED: "0"
+      DOCMIND_WORKFLOW_AUTO_RECOVER: "0"
+      DOCMIND_TRACE: "0"
+      DOCMIND_BROWSER_NO_SANDBOX: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build workbench frontend
+        working-directory: frontend
+        # 变异电池含前端守卫（eslint/产物形状），需要 node_modules 与构建产物。
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Run workflow regression gate
+        run: python -m agent_runtime.workflow_eval --self-check --baseline .github/workflow-eval-baseline.json --json
+      - name: Run dev lane capability gate
+        run: python -m agent_runtime.dev_eval --self-check --baseline .github/dev-eval-baseline.json --json
+      - name: Run mutation batteries (守卫到底有没有牙)
+        # 上面那道门只问"能力在不在"，这一道问"守着能力的测试会不会根本没在守"：
+        # 逐条把源码改坏，确认有测试或门禁因此变红。--no-live = 不启真浏览器，
+        # 只有现场能验的变异记成「本环境未验证」而不是"抓住"。
+        run: python tests/mutation/run_all.py --no-live -q
+      - name: Run retrieval regression gate
+        run: python -m agent_runtime.retrieval_eval --dataset .github/retrieval-eval.json --baseline .github/retrieval-eval-baseline.json --minimum 0.75 --json
+      - name: Run offline game workflow acceptance
+        run: python -m unittest tests.test_game_workflow_e2e tests.test_retrieval_adapter tests.test_retrieval_api -q
 
   # 改动行覆盖率门（2026-11-17 随 sqlite 分片拆成独立 job）：门要看到**全部**
   # 分片的覆盖率才有意义——任何一片单独的数据都会把「别的片覆盖过的改动行」误判成

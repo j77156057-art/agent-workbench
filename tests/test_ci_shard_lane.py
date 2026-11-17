@@ -155,5 +155,33 @@ class CoverageAggregationTests(unittest.TestCase):
         self.assertIn("actions/download-artifact@v8.0.2", uses)
 
 
+class CapabilityGatesDedupTests(unittest.TestCase):
+    """能力门/变异电池是全仓口径，只跑一次，不许回到分片里重复跑。"""
+
+    def _gate_runs(self):
+        doc = _doc()
+        return "\n".join(str(s.get("run") or "")
+                         for s in doc["jobs"]["capability-gates"]["steps"])
+
+    def test_mutation_and_evals_live_in_the_once_job(self):
+        run = self._gate_runs()
+        for fragment in ("run_all.py --no-live", "workflow_eval", "dev_eval",
+                         "retrieval_eval", "test_game_workflow_e2e"):
+            self.assertIn(fragment, run, "%s 不在 capability-gates job" % fragment)
+
+    def test_mutation_and_evals_not_duplicated_in_test_shards(self):
+        joined = "\n".join(str(s.get("run") or "") for s in _steps())
+        for fragment in ("run_all.py --no-live", "workflow_eval --self-check",
+                         "dev_eval --self-check", "retrieval_eval --dataset"):
+            self.assertNotIn(fragment, joined,
+                             "%s 又回到 test 矩阵里按片重复跑了" % fragment)
+
+    def test_once_job_still_builds_frontend_for_mutation(self):
+        # 变异电池含前端守卫，需要 node_modules/产物；丢了构建会现场红。
+        run = self._gate_runs()
+        self.assertIn("npm ci --ignore-scripts", run)
+        self.assertIn("npm run build", run)
+
+
 if __name__ == "__main__":
     unittest.main()
