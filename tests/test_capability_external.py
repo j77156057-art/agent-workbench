@@ -21,19 +21,22 @@ import config
 import tools
 
 BOX = None
+_ROOT_TOKEN = None
 
 
 def setUpModule():
-    global BOX
+    global BOX, _ROOT_TOKEN
     import tempfile
     BOX = tempfile.mkdtemp(prefix="dm_ext_probe_")
-    config.set_context_code_root(BOX)
+    _ROOT_TOKEN = config.set_context_code_root(BOX)
     with open(os.path.join(BOX, "main.py"), "w", encoding="utf-8") as fh:
         fh.write("def hero_damage():\n    return 10\n")
 
 
 def tearDownModule():
-    config.set_context_code_root("")
+    # 必须按 Token 复位 contextvar（设 "" 会留下 '' 污染后续隔离断言）。
+    if _ROOT_TOKEN is not None:
+        config.reset_context_code_root(_ROOT_TOKEN)
     if BOX:
         shutil.rmtree(BOX, ignore_errors=True)
 
@@ -118,9 +121,12 @@ class ExternalResourceProbes(unittest.TestCase):
         # 索引不可用时退回大小写不敏感子串 grep，任何环境都能用。
         import vectorstore
         from unittest.mock import patch
-        config.set_context_code_root(BOX)
-        with patch.object(vectorstore, "count", return_value=0):
-            out = call("game_impact", "query: hero_damage\n")
+        token = config.set_context_code_root(BOX)
+        try:
+            with patch.object(vectorstore, "count", return_value=0):
+                out = call("game_impact", "query: hero_damage\n")
+        finally:
+            config.reset_context_code_root(token)
         self.assertIn("main.py", out,
                       "game_impact 兜底 grep 没定位真实文件：%s" % out[:160])
 
