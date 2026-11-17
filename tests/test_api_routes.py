@@ -130,9 +130,14 @@ class ApiRouteTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 config.set_runtime('code_root', tmp)
-                client = TestClient(api.app)
-                resp = client.post('/api/engine/embed', json={
-                    'host_hwnd': 1, 'x': 10, 'y': 20, 'width': 100, 'height': 50, 'offset_y': -1})
+                # 本文件守的是「路由/处理器真的执行」，不是 root 解析逻辑。分片乱序时
+                # 别处残留的项目/会话上下文会抢占 _project_root_or_error（返回已清理的
+                # 临时目录 → 「未配置代码库」）。这里钉死返回 tmp，隔离环境态，
+                # 保证走到 engine_embed()。
+                with patch.object(api, '_project_root_or_error', return_value=tmp):
+                    client = TestClient(api.app)
+                    resp = client.post('/api/engine/embed', json={
+                        'host_hwnd': 1, 'x': 10, 'y': 20, 'width': 100, 'height': 50, 'offset_y': -1})
                 self.assertNotEqual(resp.status_code, 500, resp.text)
                 body = resp.json()
                 self.assertFalse(body.get('ok'))

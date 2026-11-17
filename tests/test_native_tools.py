@@ -9,7 +9,8 @@ import agent as agent_mod
 import agent_trace
 import sessions
 from llm import args_to_input, normalize_tool_calls
-from tools import TOOLS, tool_schemas
+import tools  # TOOLS 动态取：reload(tools) 会换掉这张 dict（见 test_parallel 注释）
+from tools import tool_schemas
 
 
 class _NativeLLM:
@@ -57,7 +58,7 @@ class SchemaTests(unittest.TestCase):
             self.assertTrue(s["function"]["description"])
 
     def test_schema_covers_registry(self):
-        self.assertEqual(len(tool_schemas()), len(TOOLS))
+        self.assertEqual(len(tool_schemas()), len(tools.TOOLS))
 
     def test_args_to_input_extracts_single_input(self):
         self.assertEqual(args_to_input('{"input": "path: a.py"}'), "path: a.py")

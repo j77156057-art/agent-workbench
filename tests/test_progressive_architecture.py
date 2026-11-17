@@ -2,14 +2,15 @@ import unittest
 
 from agent_runtime.context_router import ContextRouter
 from agent_runtime.tools import Capability, SideEffect, ToolSpec
-from tools import TOOLS, tool_schemas
+import tools  # TOOLS 动态取：reload(tools) 会换掉这张 dict（见 test_parallel 注释）
+from tools import tool_schemas
 
 
 class ProgressiveArchitectureTests(unittest.TestCase):
     def test_registry_is_fully_typed(self):
-        self.assertTrue(TOOLS)
-        self.assertTrue(all(isinstance(spec, ToolSpec) for spec in TOOLS.values()))
-        write = TOOLS["apply_edit"]
+        self.assertTrue(tools.TOOLS)
+        self.assertTrue(all(isinstance(spec, ToolSpec) for spec in tools.TOOLS.values()))
+        write = tools.TOOLS["apply_edit"]
         self.assertEqual(write.capability, Capability.WRITE_LOCAL)
         self.assertEqual(write.side_effect, SideEffect.MUTATING)
         self.assertFalse(write.parallel_safe)

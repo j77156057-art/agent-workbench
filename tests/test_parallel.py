@@ -19,8 +19,10 @@ from unittest.mock import patch
 import agent as agent_mod
 import agent_trace
 import sessions
+# 动态取 tools.TOOLS：别处 importlib.reload(tools) 会换掉这张 dict，
+# `from tools import TOOLS` 绑死旧引用会在分片乱序时与 agent 派发表脱节。
+import tools
 from llm import LLMClient
-from tools import TOOLS
 
 
 class _CloningLLM:
@@ -88,10 +90,10 @@ class ParallelBatchTests(_Iso):
             time.sleep(0.25)
             return f"slow:{arg}"
 
-        TOOLS["_slow_probe"] = {"description": "test probe", "func": _slow}
+        tools.TOOLS["_slow_probe"] = {"description": "test probe", "func": _slow}
 
     def tearDown(self):
-        TOOLS.pop("_slow_probe", None)
+        tools.TOOLS.pop("_slow_probe", None)
         super().tearDown()
 
     def test_parallel_safe_predicate(self):
@@ -118,7 +120,7 @@ class ParallelBatchTests(_Iso):
         def _boom(arg):
             raise RuntimeError("kaboom")
 
-        TOOLS["_boom_probe"] = {"description": "x", "func": _boom}
+        tools.TOOLS["_boom_probe"] = {"description": "x", "func": _boom}
         try:
             a = agent_mod.Agent(llm=_CloningLLM())
             results = a._run_batch([("_slow_probe", "ok"), ("_boom_probe", "x")], None)
@@ -128,7 +130,7 @@ class ParallelBatchTests(_Iso):
             self.assertEqual(results[1][5], "exception",
                              "并行失败必须带 error_kind 供熔断分类")
         finally:
-            TOOLS.pop("_boom_probe", None)
+            tools.TOOLS.pop("_boom_probe", None)
 
     def test_parallel_network_timeout_hook_can_block_follow_up(self):
         def timeout_probe(_arg):
@@ -191,7 +193,7 @@ class ParallelBatchTests(_Iso):
         def _boom(_arg):
             raise RuntimeError("kaboom")
 
-        TOOLS["_batch_boom"] = {"description": "x", "func": _boom}
+        tools.TOOLS["_batch_boom"] = {"description": "x", "func": _boom}
         try:
             llm = _CloningLLM([
                 ("tools", [("_slow_probe", {"input": "a"}),
@@ -205,7 +207,7 @@ class ParallelBatchTests(_Iso):
             self.assertTrue(any("并行调用中有工具失败" in text for text in reflections),
                             reflections)
         finally:
-            TOOLS.pop("_batch_boom", None)
+            tools.TOOLS.pop("_batch_boom", None)
 
     def test_native_multi_readonly_calls_use_batch(self):
         llm = _CloningLLM([

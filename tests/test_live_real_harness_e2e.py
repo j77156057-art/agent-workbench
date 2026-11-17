@@ -18,7 +18,7 @@ from agent_runtime.retrieval import retrieve_context
 from agent_runtime.tools import execute_tool
 from config import get_runtime, set_runtime
 from llm import LLMClient
-from tools import TOOLS
+import tools  # TOOLS 动态取：reload(tools) 会换掉这张 dict（见 test_parallel 注释）
 
 
 _PROJECT_ENV = "DOCMIND_REAL_GAME_PROJECT"
@@ -137,7 +137,7 @@ class LiveRealHarnessE2ETests(unittest.TestCase):
                                     for item in planned["tasks"]))
 
                 def tool(name: str, argument: str):
-                    spec = TOOLS[name]
+                    spec = tools.TOOLS[name]
                     result = execute_tool(spec.func, argument,
                                           lambda text: any(marker in str(text) for marker in (
                                               "文件已存在", "写入失败", "拒绝", "参数缺失",

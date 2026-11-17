@@ -16,8 +16,10 @@ import mcp_client
 from tools import (
     dev_mcp_search, dev_mcp_add, dev_mcp_probe, dev_mcp_discover,
     dev_mcp_decide, dev_mcp_remove, dev_approve,
-    set_session_web_enabled, _session_web_enabled,
 )
+# ContextVar 动态取：reload(tools) 会新建 _session_web_enabled，set_session_web_enabled
+# 在当前 ContextVar 上造 token，若 reset 用旧引用会报「Token created by a different ContextVar」。
+import tools
 from game_workbench import (
     approval, list_mcp_proposals, remove_mcp_proposal,
 )
@@ -55,11 +57,11 @@ class McpSelfAssemblyTests(unittest.TestCase):
 
     # ---- search ------------------------------------------------------------
     def test_search_offline_directory_returns_template(self):
-        token = set_session_web_enabled(False)
+        token = tools.set_session_web_enabled(False)
         try:
             r = _parse(dev_mcp_search("EDA"))
         finally:
-            _session_web_enabled.reset(token)
+            tools._session_web_enabled.reset(token)
         self.assertTrue(r["ok"])
         item = r["results"][0]
         self.assertEqual(item["id"], "eda")
@@ -84,23 +86,23 @@ class McpSelfAssemblyTests(unittest.TestCase):
             }]}
 
         with patch("mcp_registry_bridge.registry_fn_for", return_value=fake_registry):
-            token = set_session_web_enabled(True)
+            token = tools.set_session_web_enabled(True)
             try:
                 result = _parse(dev_mcp_search("EDA"))
             finally:
-                _session_web_enabled.reset(token)
+                tools._session_web_enabled.reset(token)
         self.assertIn("easyeda", calls)
         options = result["results"][0]["connection_options"]
         self.assertTrue(any(o.get("id") == "io.github.VLab-Software/easyeda-pro-mcp"
                             for o in options))
         self.assertFalse(os.path.exists(os.path.join(self.root, ".docmind_mcp.json")))
 
-        token = set_session_web_enabled(False)
+        token = tools.set_session_web_enabled(False)
         try:
             with patch("mcp_registry_bridge.registry_fn_for", side_effect=AssertionError("network")):
                 offline = _parse(dev_mcp_search("EDA"))
         finally:
-            _session_web_enabled.reset(token)
+            tools._session_web_enabled.reset(token)
         self.assertEqual(offline["results"][0]["source_status"], "offline_guide")
 
     def test_natural_language_agent_can_discover_mcp_without_preconfigured_server(self):
