@@ -856,5 +856,73 @@ class Tranche7AssetsTests(unittest.TestCase):
                       "素材取得没回正确相对路径")
 
 
+class Tranche8DeliveryTests(unittest.TestCase):
+    """2026-11-17 扩面第八批：交付材料 dev_handoff（需 git 提交史 + 已跟踪改动）。
+
+    判据扣机制正面证据：真读出 HEAD、点名已改文件、给出 git diff 的真实规模——
+    不是「生成了看起来就绪的文本」。自备带提交史的 git 沙箱（BOX 无提交史）。
+    """
+
+    def test_dev_handoff_generates_real_delivery_material(self):
+        sandbox = pathlib.Path(config.STATE_ROOT) / ".tmp" / "cap_handoff_probe"
+        if sandbox.exists():
+            shutil.rmtree(sandbox, ignore_errors=True)
+        sandbox.mkdir(parents=True)
+
+        def git(*a):
+            subprocess.run(["git", *a], cwd=sandbox, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        git("init", "-q")
+        git("config", "user.email", "probe@local")
+        git("config", "user.name", "Probe")
+        (sandbox / "tracked.py").write_text("V = 1\n", encoding="utf-8")
+        git("add", "tracked.py")
+        git("commit", "-qm", "init")
+        (sandbox / "tracked.py").write_text("V = 2  # handoff probe\n", encoding="utf-8")
+        saved = config._CTX_CODE_ROOT.get()
+        config.set_context_code_root(str(sandbox))
+        try:
+            out = call("dev_handoff", "title: 探针交付改动\n")
+            self.assertIn("HEAD=", out, "没真读出 git HEAD：%s" % out[:160])
+            self.assertIn("tracked.py", out, "没点名已改文件：%s" % out[:160])
+            self.assertIn("1 file changed", out,
+                          "没给 git diff 的真实规模（文件系统证据）：%s" % out[:200])
+        finally:
+            config.set_context_code_root(saved)
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+    def test_dev_undo_turn_dry_run_safe_then_apply_removes_created(self):
+        # 写账本回合撤销：干跑不落盘、apply 真删本回合新建文件。文件用 write_bytes
+        # 落盘——必须与账本 after 字节逐字一致，否则撤销的安全阀（磁盘≠写入后内容
+        # 即跳过）会因 Windows CRLF 误判而跳过，那正是该阀在正确工作。
+        sandbox = pathlib.Path(config.STATE_ROOT) / ".tmp" / "cap_undo_probe"
+        if sandbox.exists():
+            shutil.rmtree(sandbox, ignore_errors=True)
+        sandbox.mkdir(parents=True)
+        target = sandbox / "undome8.txt"
+        target.write_bytes(b"UNDO8-PAYLOAD\n")
+        from agent_runtime import write_journal
+        write_journal.record(str(sandbox), "undome8.txt", op="create",
+                             before=None, after=b"UNDO8-PAYLOAD\n", turn="probe-turn-8")
+        saved = config._CTX_CODE_ROOT.get()
+        config.set_context_code_root(str(sandbox))
+        try:
+            status = call("dev_undo_turn", "action: status\n")
+            self.assertIn("probe-turn-8", status, "账本没列出探针回合：%s" % status[:160])
+            self.assertIn("undome8.txt", status, "账本没列出探针文件：%s" % status[:160])
+            dry = call("dev_undo_turn", "action: undo\nturn: probe-turn-8\n")
+            self.assertIn("干跑", dry, "默认撤销应是干跑：%s" % dry[:160])
+            self.assertTrue(target.exists(), "干跑不该真删文件（安全阀）")
+            applied = call("dev_undo_turn",
+                           "action: undo\nturn: probe-turn-8\napply: true\n")
+            self.assertIn("已撤销", applied, "apply 撤销没执行：%s" % applied[:160])
+            self.assertFalse(target.exists(),
+                             "apply 后本回合新建文件仍在——撤销没真落盘（文件系统证据）")
+        finally:
+            config.set_context_code_root(saved)
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
