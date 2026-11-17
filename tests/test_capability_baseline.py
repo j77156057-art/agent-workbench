@@ -924,5 +924,37 @@ class Tranche8DeliveryTests(unittest.TestCase):
             shutil.rmtree(sandbox, ignore_errors=True)
 
 
+class Tranche9BackgroundTests(unittest.TestCase):
+    """2026-11-17 扩面第九批：后台任务 dev_job_logs / dev_job_cancel round-trip。
+
+    真起一个后台进程（print 标记后 sleep），判据扣机制：日志真读到该进程的输出标记、
+    取消真把状态置 cancelled。finally 兜底 job_cancel，绝不把活进程留给后续用例。
+    """
+
+    def test_dev_job_logs_and_cancel_roundtrip(self):
+        sandbox = pathlib.Path(config.STATE_ROOT) / ".tmp" / "cap_job_probe"
+        if sandbox.exists():
+            shutil.rmtree(sandbox, ignore_errors=True)
+        sandbox.mkdir(parents=True)
+        from agent_runtime import process_runner
+        r = process_runner.start_job(
+            [sys.executable, "-c",
+             "print('JOB9-MARKER', flush=True); import time; time.sleep(8)"],
+            cwd=str(sandbox), timeout=30, command_text="probe job")
+        self.assertTrue(r.get("ok"), "后台任务没起来：%s" % r)
+        jid = r.get("job_id", "")
+        try:
+            time.sleep(1.5)
+            logs = call("dev_job_logs", "job_id: %s\n" % jid)
+            self.assertIn("JOB9-MARKER", logs,
+                          "后台任务日志没读到进程输出：%s" % logs[:160])
+            cancel = call("dev_job_cancel", "job_id: %s\n" % jid)
+            self.assertIn("cancelled", cancel, "取消没把状态置 cancelled：%s" % cancel[:160])
+        finally:
+            if jid:
+                process_runner.job_cancel(jid)
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
