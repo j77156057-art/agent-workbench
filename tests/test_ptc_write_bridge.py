@@ -60,8 +60,17 @@ class FlagLayeringTests(unittest.TestCase):
         上的提示/注册表脱节守卫就会报出 `delegate` / `orchestrate` /
         `dev_use_skill`：它们只在 agent 侧 `_register_dynamic_tools()` 注册。
         实测表现是「tests/test_tool_domains.py 单跑全绿、排在本文件之后就红」。
+
+        同理，reload 也会换掉 tools 里的 ContextVar 对象。agent 侧 set_* 函数
+        （reload 安全）在**新** ContextVar 上 .set()，而收尾 reset 用的是 agent
+        import 时绑死的**旧** ContextVar → reset 落空、值残留（分片乱序时
+        test_pending_exec_turn_cleanup 的「回合结束 owner 必须还原」即红）。
+        所以这几个 ContextVar 也要一并重绑到当前 tools 的对象。
         """
         agent_mod.TOOLS = tools_mod.TOOLS
+        agent_mod._session_web_enabled = tools_mod._session_web_enabled
+        agent_mod._session_vision_mode = tools_mod._session_vision_mode
+        agent_mod._exec_owner = tools_mod._exec_owner
         agent_mod._register_dynamic_tools()
 
     def _reload(self, main, write):
