@@ -157,7 +157,13 @@ class ActionInputsSurviveUpgradeTests(unittest.TestCase):
 
 class SiblingGatesSurviveTests(unittest.TestCase):
     def test_the_other_gates_still_own_their_commands(self):
-        joined = "\n".join(str(s.get("run") or "") for s in _steps())
+        # 改动行覆盖率门 2026-11-17 随 sqlite 分片搬到 coverage-gate job，
+        # 找命令要跨两个 job，否则门搬了家这条守卫就瞎了。
+        doc = _doc()
+        steps = list(_steps())
+        steps.extend(s for s in doc["jobs"]["coverage-gate"].get("steps") or []
+                     if isinstance(s, dict))
+        joined = "\n".join(str(s.get("run") or "") for s in steps)
         for fragment, label in (("ruff check", "静态缺陷门"),
                                 ("npm run lint", "前端 lint 门"),
                                 ("npm run test:node", "前端行为测试"),

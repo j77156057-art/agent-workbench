@@ -176,13 +176,19 @@ class PackagingSemanticsTests(unittest.TestCase):
 
 class SiblingStepsSurviveTests(unittest.TestCase):
     def test_the_gates_next_to_it_still_own_their_commands(self):
+        # 改动行覆盖率门随 sqlite 分片搬到 coverage-gate job，覆盖率相关命令
+        # 要跨两个 job 找；其余门仍在 test job。
+        doc = yaml.safe_load(CI_FILE.read_text(encoding="utf-8"))
+        gate_steps = [s for s in doc["jobs"]["coverage-gate"]["steps"] if isinstance(s, dict)]
         joined = "\n".join(_code(s) for s in _steps())
+        gate_joined = "\n".join(_code(s) for s in gate_steps)
         for fragment, label in (("ruff check", "静态缺陷门"),
                                 ("npm run lint", "前端 lint 门"),
-                                ("coverage_eval", "改动行覆盖率门"),
-                                ("coverage json", "覆盖率报告那一步"),
                                 ("npm run test:node", "前端行为测试")):
             self.assertIn(fragment, joined, "%s 的命令不见了" % label)
+        for fragment, label in (("coverage_eval", "改动行覆盖率门"),
+                                ("coverage json", "覆盖率报告那一步")):
+            self.assertIn(fragment, gate_joined, "%s 的命令不见了" % label)
 
     def test_the_setup_actions_are_still_where_they_were(self):
         uses = [str(s.get("uses") or "") for s in _steps()]
