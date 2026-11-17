@@ -131,10 +131,19 @@ class ApiRouteTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as tmp:
                 config.set_runtime('code_root', tmp)
                 # 本文件守的是「路由/处理器真的执行」，不是 root 解析逻辑。分片乱序时
-                # 别处残留的项目/会话上下文会抢占 _project_root_or_error（返回已清理的
-                # 临时目录 → 「未配置代码库」）。这里钉死返回 tmp，隔离环境态，
-                # 保证走到 engine_embed()。
-                with patch.object(api, '_project_root_or_error', return_value=tmp):
+                # 别处残留的项目/会话上下文会抢占 root 解析（返回已清理的临时目录 →
+                # 「未配置代码库」）。注意 /api/engine/embed 实际由 api_routes.engine 的
+                # router 提供，它在 build_router 时就把 _project_root_or_error 捕进闭包，
+                # 事后 patch api._project_root_or_error 够不着那份已捕获的引用。所以钉死
+                # 该函数**读取的底层全局**（_request_project_id / get_runtime）——无论哪个
+                # 处理器、引用是否已被捕获，运行时都从 api 模块字典取到补丁，root 恒为 tmp。
+                real_gr = api.get_runtime
+
+                def fake_gr(key, default=None):
+                    return tmp if key == 'code_root' else real_gr(key, default)
+
+                with patch.object(api, '_request_project_id', return_value=''), \
+                        patch.object(api, 'get_runtime', side_effect=fake_gr):
                     client = TestClient(api.app)
                     resp = client.post('/api/engine/embed', json={
                         'host_hwnd': 1, 'x': 10, 'y': 20, 'width': 100, 'height': 50, 'offset_y': -1})
