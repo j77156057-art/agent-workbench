@@ -795,5 +795,44 @@ class Tranche5WritePathTests(unittest.TestCase):
         self.assertTrue(str(ver).strip(), "分区校验没给结论")
 
 
+class Tranche6ChangesetTests(unittest.TestCase):
+    """2026-11-17 扩面第六批：跨区变更集提交→列表→整体回滚 round-trip + 分区维护。
+
+    又抓出一个真缺陷：`dev_rollback_changeset` 把审批门 dict 原样 return，而
+    execute_tool 对非 str 返回一律判 invalid_result（「返回值不符合工具协议」）——
+    审批流被静默吞掉，Agent 永远看不到 approval_required。修：dict 门按约定
+    json.dumps 上抛。判据扣机制：回滚后新建文件真被移除（git revert 的文件系统证据）。
+    """
+
+    def test_verify_contracts_and_rebuild_index(self):
+        call("init_regions", "")
+        vc = call("dev_verify_contracts", "")
+        self.assertIn("依赖图", vc, "契约校验没给依赖图：%s" % vc[:160])
+        self.assertIn("契约校验通过", vc, "默认分区契约应通过：%s" % vc[:160])
+        call("dev_rebuild_index", "")
+        self.assertTrue((BOX / "DEV_INDEX.md").exists(),
+                        "rebuild_index 没真写出 DEV_INDEX.md（文件系统证据）")
+
+    def test_changeset_commit_list_rollback_roundtrip(self):
+        call("init_regions", "")
+        call_approved("dev_region_edit",
+                      "region: assets\npath: cs6.txt\nnew_text: CS6-PAYLOAD\n")
+        target = BOX / "assets" / "cs6.txt"
+        self.assertTrue(target.exists(), "变更集前置：分区写没落盘")
+        co = call_approved("dev_commit_all", "message: 探针变更集6\n")
+        m = re.search(r"变更集 ([0-9a-f]+)", co)
+        self.assertIsNotNone(m, "commit_all 没回变更集 id：%s" % co[:160])
+        cs = m.group(1)
+        self.assertIn(cs, call("dev_list_changesets", ""),
+                      "list_changesets 没列出刚建的变更集")
+        # 回归锁：回滚审批门须回 approval_required JSON（裸 dict 会被判 invalid_result）。
+        first = call("dev_rollback_changeset", "changeset: %s\n" % cs)
+        self.assertTrue(json.loads(first).get("approval_required"),
+                        "回滚审批门没原样 JSON 上抛：%s" % first[:160])
+        call_approved("dev_rollback_changeset", "changeset: %s\n" % cs)
+        self.assertFalse(target.exists(),
+                         "整体回滚后新建文件仍在——git revert 没真撤销（文件系统证据）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

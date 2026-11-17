@@ -9473,6 +9473,8 @@ def dev_rollback_changeset(arg):
     from regions import rollback_changeset
     ok, detail = rollback_changeset(root, cs_id)
     if not ok:
+        if isinstance(detail, dict):  # 审批门阻断结构须 JSON 上抛；裸 dict 会被 execute_tool 判 invalid_result
+            return json.dumps(detail, ensure_ascii=False)
         return detail
     return f"已回滚变更集 {cs_id}：\n- " + "\n- ".join(detail)
 
