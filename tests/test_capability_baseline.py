@@ -993,5 +993,53 @@ class Tranche10RecallTests(unittest.TestCase):
                 pass
 
 
+class Tranche11ApprovalTests(unittest.TestCase):
+    """2026-11-17 扩面第十一批：审批族 dev_approve / dev_approval_status。
+
+    与已抓的 2 个审批门序列化缺陷同根因类的**消费侧**。判据扣机制：
+    状态 round-trip（未通过→approve→已通过）+ 三条 fail-closed 安全护栏
+    （target 前缀拼错拒绝且真没放行 / 缺 target 不默认通配 / MCP 不许 Agent 自批）。
+    自备隔离沙箱审批台账，不碰 BOX。
+    """
+
+    def test_approve_roundtrip_and_fail_closed_guards(self):
+        sandbox = pathlib.Path(config.STATE_ROOT) / ".tmp" / "cap_approval_probe"
+        if sandbox.exists():
+            shutil.rmtree(sandbox, ignore_errors=True)
+        sandbox.mkdir(parents=True)
+        saved = config._CTX_CODE_ROOT.get()
+        config.set_context_code_root(str(sandbox))
+        try:
+            call("init_regions", "")
+            st0 = call("dev_approval_status",
+                       "action: rollback_changeset\ntarget: probe-appr-11\n")
+            self.assertIn("未通过", st0, "审批前台账应为未通过：%s" % st0[:120])
+            ap = call("dev_approve",
+                      "action: rollback_changeset\ntarget: probe-appr-11\n")
+            self.assertIn("已审批", ap, "dev_approve 没记台账：%s" % ap[:120])
+            st1 = call("dev_approval_status",
+                       "action: rollback_changeset\ntarget: probe-appr-11\n")
+            self.assertIn("已通过", st1, "审批后状态没翻转为已通过：%s" % st1[:120])
+            # 护栏①：target 前缀拼错 → 拒绝，且真没放行（fail-closed，BUG-APPROVE-WILDCARD 回归）
+            typo = call("dev_approve",
+                        "action: rollback_changeset\ntarget_id: probe-appr-typo\n")
+            self.assertIn("拼错", typo, "target 拼错没被拒：%s" % typo[:120])
+            st_typo = call("dev_approval_status",
+                           "action: rollback_changeset\ntarget: probe-appr-typo\n")
+            self.assertIn("未通过", st_typo,
+                          "拼错调用竟放行了审批（授权范围放大）：%s" % st_typo[:120])
+            # 护栏②：缺 target 不默认通配
+            notarget = call("dev_approve", "action: rollback_changeset\n")
+            self.assertIn("显式提供 target", notarget,
+                          "缺 target 没被拒（会静默降为通配）：%s" % notarget[:120])
+            # 护栏③：MCP 不许 Agent 自批
+            mcp = call("dev_approve", "action: mcp_server\ntarget: x\n")
+            self.assertIn("不能自行审批", mcp,
+                          "MCP 竟允许 Agent 自批：%s" % mcp[:120])
+        finally:
+            config.set_context_code_root(saved)
+            shutil.rmtree(sandbox, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
