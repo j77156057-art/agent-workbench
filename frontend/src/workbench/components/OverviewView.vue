@@ -330,15 +330,15 @@ function showSymbolMap() {
 .ov-action:hover { background: var(--bg-hover); }
 .ov-start-note { display: block; font-size: var(--fs-sm); line-height: 1.7; color: var(--text-muted); }
 .ov-region-settings { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 0 4px 20px; border-bottom: 1px solid var(--border); }
-.ov-region-settings h3 { margin: 0; font-size: var(--fs-body); font-weight: 500; line-height: 1.5; }
+.ov-region-settings h3 { margin: 0; font-size: var(--fs-h3); font-weight: 600; line-height: 1.5; }
 .ov-region-settings p { margin: 5px 0 0; font-size: var(--fs-md); line-height: 1.6; color: var(--text-muted); }
 .ov-text-button { flex: none; min-height: 32px; padding: 6px 8px; border: 0; border-radius: var(--mi-radius-control); background: none; color: var(--text-muted); font-size: var(--fs-md); line-height: 1.5; cursor: pointer; }
 .ov-text-button:hover { color: var(--accent-text); background: var(--bg-hover); }
-.ov-rail { min-width: 0; display: flex; flex-direction: column; gap: 24px; }
+.ov-rail { min-width: 0; display: flex; flex-direction: column; gap: 0; }
 .ov-group { min-width: 0; }
-.ov-group + .ov-group { padding-top: 20px; border-top: 1px solid var(--border); }
+.ov-group + .ov-group { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
 .ov-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; margin-bottom: 12px; }
-.ov-group-head h2 { margin: 0; font-size: var(--fs-body); line-height: 1.5; font-weight: 600; }
+.ov-group-head h2 { margin: 0; font-size: var(--fs-h2); line-height: 1.5; font-weight: 650; letter-spacing: .01em; }
 .ov-dismiss { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: none; border-radius: var(--mi-radius-control); background: none; color: var(--text-muted); cursor: pointer; }
 .ov-dismiss:hover { background: var(--bg-hover); color: var(--text); }
 .ov-steps, .ov-recent, .ov-task-list { list-style: none; margin: 0; padding: 0; }
