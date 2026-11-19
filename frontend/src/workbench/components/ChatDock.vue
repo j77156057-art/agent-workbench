@@ -641,13 +641,7 @@ function traceCompactHeadline(msg: ChatMsg): string {
   if (elapsed) parts.push(elapsed)
   return parts.join(' · ')
 }
-// 把交错流切成「发言 → 该段工具摘要」若干段（reasoning 分段与 ReAct Thought 都是发言）。
-function segmentsOf(msg: ChatMsg) {
-  return segmentsOfCached(msg)
-}
-function rowKind(msg: ChatMsg, ti: number): 'action' | 'result' {
-  return msg.trace[ti]?.type === 'action' ? 'action' : 'result'
-}
+// 2026-11-20：轨迹改卡片后，旧的「分段 → 动作行」包装（segmentsOf / rowKind）随模板一起删了。
 function onCardActivity() {
   // 卡片内部子代理步骤频率高：按帧合批跟随，不做每事件 nextTick
   scheduleFollow()
@@ -1739,13 +1733,13 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', onBeforeLeave)
 })
 
-// 消息展示层（流式 markdown 节流/成稿引用缓存/trace 步骤/计时）
+// 消息展示层（流式 markdown 节流/成稿引用缓存/计时）
+// 2026-11-20：轨迹改卡片后，trace 步骤那一组（toggleActivity / traceState / traceElapsed…）
+// 随旧模板一起退休——卡片自己管展开与状态。
 const {
   scheduleLiveMd, finishLiveMd, streamHtmlOf,
   answerHtml, refsOf, webRefsOf, openRef,
-  toggleActivity, activityIsOpen, traceTitle, traceSummary,
-  traceState, traceStateLabel,
-  traceElapsed, elapsedLabel, resetRenderState,
+  elapsedLabel, resetRenderState,
 } = useMessageRender<ChatMsg>(() =>
   sending.value
   || messages.value.some(m => m.status === 'streaming' || (m.workflow?.workflowId && !m.finishedAt))
@@ -1849,19 +1843,8 @@ function openWebInRail(url: string) {
   else window.open(url, '_blank', 'noopener')
 }
 
-// ---- 浏览器动作留痕（流程行展开后的"动作前 / 动作后"画面） ----
-const EVIDENCE_EFFECT_LABEL: Record<string, string> = {
-  changed: '页面有变化', navigated: '跳转', reloaded: '刷新', typed: '已输入',
-  pixels: '画面变化', error_seen: '页面报错', no_change: '没有变化',
-}
-function evidenceOf(item: ChatTraceItem): BrowserEvidence | undefined {
-  return item?.evidence
-}
-function evidenceEffect(ev?: BrowserEvidence): string {
-  if (!ev) return ''
-  const key = ev.effect || ''
-  return EVIDENCE_EFFECT_LABEL[key] || key
-}
+// ---- 浏览器动作留痕（卡片展开后的"动作前 / 动作后"画面） ----
+// 2026-11-20：卡片自己渲染证据块（effect 文案随之进了卡片组件），这里只留取图地址。
 function evidenceShot(path?: string): string {
   return path ? browserLiveApi.shotUrl(path) : ''
 }
@@ -2136,12 +2119,12 @@ const webTitle = computed(() => webOn.value
               正在创建工作流，方案马上在对话中展开…
             </div>
 
-            <!-- 2026-10-14：交错流——思考（reasoning 分段 / ReAct Thought）与
-                 工具调用按发生顺序排成一条故事线：think → 调用 → 返回 → think
-                 → … 答案之前全部可见、无边框（容器只有左侧一条虚线时间线）。
-                 reasoning 的轮次切分在 useChatStream（动作事件即切点，思考随帧
-                 实时生长）；历史/演示路径没有 flow，由 flowOf 兜底合成。
-                 点动作/返回行看该事件全文；流式中最新一行自动摊开（偏好可关）。 -->
+            <!-- 2026-11-20：轨迹改成 Qoder 式卡片（对齐 Qoder 对话台）。
+                 原来这里是「分析摘要 / 执行动作 / 返回结果」逐条裸露的符号行，
+                 信息密度高但读起来像日志；现在折成一张张工具卡：图标 + 工具名 +
+                 参数一行 + 状态灯，返回全文收在卡里，点开才看。
+                 卡片组装是纯函数（composables/chatCards.ts），这里只渲染；
+                 折叠头保留为「本轮过程」的概览行（步数 + 耗时）。 -->
             <div v-if="cdHasFlow(m)" class="cd-trace-wrap">
               <!-- 轨迹执行中展开，答案阶段自动收起；点击可覆盖当前轮的默认状态。 -->
               <button
@@ -2156,101 +2139,6 @@ const webTitle = computed(() => webOn.value
                 <span v-if="m.status === 'streaming' && !finalAnswerText(m)" class="cd-trace-live">进行中</span>
                 <span class="cd-trace-chevron" :class="{ open: traceOpen(m) }">⌄</span>
               </button>
-              <div v-if="traceOpen(m)" :id="`cd-trace-${m.id}`" class="cd-flow">
-              <!-- 一段解说之后紧跟该段工具与返回，保持原事件顺序。 -->
-              <template v-for="(seg, si) in segmentsOf(m)" :key="'seg' + si">
-                <!-- 解说、深度思考与工具行按原发生顺序常驻可见。 -->
-                <div v-if="seg.narration.length" class="cd-narration">
-                  <template v-for="(line, li) in seg.narration" :key="'nar' + li">
-                    <div v-if="line.kind === 'reasoning'" class="cd-nar-reasoning-wrap">
-                      <span class="cd-nar-tag">深度思考</span>
-                      <p class="cd-narration-line cd-nar-reasoning">{{ line.text }}</p>
-                    </div>
-                    <p v-else class="cd-narration-line cd-nar-thought">{{ line.text }}</p>
-                  </template>
-                </div>
-                <div v-if="displayPrefs.showTrace && seg.rows.length" class="cd-flow-body">
-                  <div v-if="si === 0 && m.plan.length" class="cd-plan">
-                    <div class="cd-plan-title">执行计划</div>
-                    <div v-for="(s, pi) in m.plan" :key="'p' + pi" class="cd-plan-step">
-                      <span class="cd-plan-idx">{{ pi + 1 }}</span><span>{{ s }}</span>
-                    </div>
-                  </div>
-                  <template v-for="(ti, ri) in seg.rows" :key="'r' + ri">
-                    <button
-                      class="cd-flow-row"
-                      :class="[rowKind(m, ti), `cd-flow-${traceState(m, m.trace[ti], ti)}`]"
-                      :aria-expanded="activityIsOpen(m.id, ti, m)"
-                      :aria-label="`${traceTitle(m.trace[ti])}，${traceStateLabel(traceState(m, m.trace[ti], ti), m.trace[ti])}，点击查看详情`"
-                      @click="toggleActivity(m.id, ti, m)"
-                    >
-                      <span class="cd-flow-glyph" aria-hidden="true"></span>
-                      <span class="cd-flow-main">
-                        <span class="cd-flow-title">{{ traceTitle(m.trace[ti]) }}</span>
-                        <!-- 展开后事件详情就是全文，摘要行再留一份等于同一段字排两遍 -->
-                        <span v-if="!activityIsOpen(m.id, ti, m)" class="cd-flow-summary">{{ traceSummary(m.trace[ti]) }}</span>
-                      </span>
-                      <img
-                        v-if="rowKind(m, ti) === 'result' && evidenceOf(m.trace[ti])?.shot_after"
-                        class="cd-flow-thumb"
-                        :src="evidenceShot(evidenceOf(m.trace[ti])?.shot_after)"
-                        alt="动作后画面"
-                        loading="lazy"
-                      />
-                      <span class="cd-flow-meta">
-                        <span class="cd-flow-state">{{ traceStateLabel(traceState(m, m.trace[ti], ti), m.trace[ti]) }}</span>
-                        <span v-if="traceElapsed(m.trace[ti])" class="cd-flow-time">{{ traceElapsed(m.trace[ti]) }}</span>
-                        <span class="cd-flow-chevron">{{ activityIsOpen(m.id, ti, m) ? '▾' : '▸' }}</span>
-                      </span>
-                    </button>
-                    <div v-if="activityIsOpen(m.id, ti, m)" class="cd-flow-detail">
-                      <span class="cd-flow-detail-label">事件详情</span>
-                      <div v-if="evidenceOf(m.trace[ti])" class="cd-flow-evidence" data-testid="trace-evidence">
-                        <div class="cd-flow-evidence-meta">
-                          <span
-                            class="cd-flow-evidence-effect"
-                            :data-ok="evidenceOf(m.trace[ti])?.ok ? '1' : '0'"
-                          >{{ evidenceEffect(evidenceOf(m.trace[ti])) }}</span>
-                          <a
-                            v-if="evidenceOf(m.trace[ti])?.url"
-                            class="cd-flow-evidence-url"
-                            :href="evidenceOf(m.trace[ti])?.url || undefined"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                          >{{ evidenceOf(m.trace[ti])?.url }}</a>
-                          <button
-                            v-if="evidenceOf(m.trace[ti])?.url"
-                            type="button"
-                            class="cd-flow-evidence-rail"
-                            title="在内置浏览器（只读镜像）查看这个页面；侧栏不可用时在新标签打开"
-                            @click="openEvidenceInRail(evidenceOf(m.trace[ti]))"
-                          >内置浏览器</button>
-                        </div>
-                        <div class="cd-flow-shots">
-                          <figure v-if="evidenceOf(m.trace[ti])?.shot_before">
-                            <img :src="evidenceShot(evidenceOf(m.trace[ti])?.shot_before)" alt="动作前画面" loading="lazy" />
-                            <figcaption>动作前</figcaption>
-                          </figure>
-                          <figure v-if="evidenceOf(m.trace[ti])?.shot_after">
-                            <img :src="evidenceShot(evidenceOf(m.trace[ti])?.shot_after)" alt="动作后画面" loading="lazy" />
-                            <figcaption>动作后</figcaption>
-                          </figure>
-                        </div>
-                      </div>
-                      <code>{{ m.trace[ti].text }}</code>
-                      <button
-                        v-if="m.trace[ti]?.file_diffs?.length"
-                        class="cd-flow-diffbtn"
-                        @click="openFileDiff(m.trace[ti]?.file_diffs)"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4h6M2 7h8M2 10h5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
-                        查看改动
-                        <span class="cd-flow-diffbtn-count">{{ m.trace[ti].file_diffs!.length }} 个文件</span>
-                      </button>
-                    </div>
-                  </template>
-                </div>
-              </template>
               <div v-if="traceOpen(m)" :id="`cd-trace-${m.id}`" class="cd-cards">
                 <div v-if="m.plan.length" class="cd-plan">
                   <div class="cd-plan-title">执行计划</div>
