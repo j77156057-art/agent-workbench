@@ -121,30 +121,26 @@ function effectLabel(ev: BrowserEvidence): string {
 </template>
 
 <style scoped>
-/* 「本轮过程」里的工具条目（2026-11-21 重做）：**不再是方框**。
-   之前每条工具调用都是一个 1px 边框 + 圆角 + 半透明底的矩形，一列下来像
-   一摞盒子 —— 与工作台整体的「冷白 + 细线 + 无框」气质不合，也把过程
-   压成了卡片墙。过程本来是**流动的时间线**：整轮由一条竖线串起
-   （竖线在 .cd-cards 上，见 chat-ink.css），每条工具调用只是一行；
-   状态由色点与状态字承担，展开的内容才给一块浅底。
-   配色仍走对话台既有令牌（--border / --bg-hover / --green…），不引新色板。 */
+/* 卡片视觉语言沿用对话台既有令牌（--border / --r-sm / --fs-cap / --green…），
+   不引入新的一套色板：卡片是轨迹行的新皮肤，不是新主题。 */
 .cd-card {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  overflow: hidden;
 }
-.cd-card + .cd-card { margin-top: 2px; }
+.cd-card + .cd-card { margin-top: 4px; }
+.cd-card[data-state="error"] { border-color: color-mix(in srgb, var(--danger) 34%, var(--border)); }
+.cd-card[data-state="running"] { border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
 
 .cd-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 28px;
-  padding: 2px 8px;
+  min-height: 30px;
+  padding: 5px 8px;
   border: 0;
-  border-radius: var(--r-xs);
   background: transparent;
   font-family: inherit;
   text-align: left;
@@ -173,7 +169,7 @@ function effectLabel(ev: BrowserEvidence): string {
 .cd-card-state { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-cap); }
 .cd-card-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .cd-card-time { color: var(--text-faint); font-size: var(--fs-cap); font-variant-numeric: tabular-nums; }
-.cd-card-chevron { color: var(--text-faint); font-size: var(--fs-micro); }
+.cd-card-chevron { color: var(--text-faint); font-size: 10px; }
 
 .cd-card[data-state="ok"] .cd-card-state { color: var(--green); }
 .cd-card[data-state="warn"] .cd-card-state { color: var(--amber); }
@@ -182,19 +178,12 @@ function effectLabel(ev: BrowserEvidence): string {
 .cd-card[data-state="running"] .cd-card-dot { animation: cd-card-pulse 1.2s ease-in-out infinite; }
 @keyframes cd-card-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
 
-/* 展开的内容：一块浅底（代码/摘要），不是又一个框。
-   失败态只给极淡的红底 —— 状态由色点与状态字说，不靠整块染色。 */
 .cd-card-body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin: 2px 0 8px;
-  padding: 8px 10px;
-  background: color-mix(in srgb, var(--bg) 80%, transparent);
-  border-radius: var(--r-sm);
+  padding: 2px 10px 10px 30px;
 }
-.cd-card[data-state="error"] .cd-card-body { background: color-mix(in srgb, var(--danger) 6%, var(--bg)); }
-.cd-card[data-state="running"] .cd-card-body { background: color-mix(in srgb, var(--accent) 5%, var(--bg)); }
 .cd-card-text {
   margin: 0;
   max-height: 320px;
@@ -243,7 +232,7 @@ function effectLabel(ev: BrowserEvidence): string {
 .cd-card-evidence-rail:hover { background: var(--bg-hover); color: var(--text); }
 
 .cd-card-shots { display: flex; gap: 8px; flex-wrap: wrap; }
-.cd-card-shots figure { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.cd-card-shots figure { margin: 0; display: flex; flex-direction: column; gap: 3px; }
 .cd-card-shots img { width: 180px; border-radius: var(--r-xs); border: 1px solid var(--border); }
 .cd-card-shots figcaption { color: var(--text-faint); font-size: var(--fs-cap); }
 
@@ -252,7 +241,7 @@ function effectLabel(ev: BrowserEvidence): string {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 8px;
+  padding: 3px 8px;
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   background: transparent;

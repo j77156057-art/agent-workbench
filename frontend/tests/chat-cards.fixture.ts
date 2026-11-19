@@ -6,9 +6,6 @@ import '../src/fonts'
 import '../src/workbench/skins.css'
 import '../src/workbench/skins-seed.css'
 import '../src/workbench/style.css'
-// 与工作台对话台同一层质感（chat-ink.css）：本轮过程的时间线竖线、计划卡的
-// 无框排版都在这一层里，夹具不引它就看不到真实观感。
-import '../src/workbench/chat-ink.css'
 import { applySkin, isSkinKey } from '../src/workbench/skins'
 import { cardsOf } from '../src/workbench/composables/chatCards.ts'
 import type { ChatTraceItem } from '../src/workbench/composables/chat-types.ts'
@@ -38,16 +35,12 @@ const App = {
   setup() {
     return () => h('div', { class: 'fixture-wrap' }, [
       h('div', { class: 'fixture-title' }, '工具调用卡（真实组件渲染）'),
-      // 结构与工作台对话台一致：.cd-dock > .cd-cards —— 时间线竖线与条目排版
-      // 都挂在这两个类上，夹具跟真实 DOM 同构才看得出效果。
-      h('div', { class: 'cd-dock' }, [
-        h('div', { class: 'cd-cards' },
-          cards.map((card, i) => h(ChatCardItem, {
-            key: card.key,
-            card,
-            defaultOpen: card.state === 'error' || i === cards.length - 1,
-          }))),
-      ]),
+      h('div', { class: 'fixture-list' },
+        cards.map((card, i) => h(ChatCardItem, {
+          key: card.key,
+          card,
+          defaultOpen: card.state === 'error' || i === cards.length - 1,
+        }))),
       h('div', { class: 'fixture-title' }, '最终答案'),
       h('div', { class: 'fixture-answer' },
         '已定位到提交入口：`api_routes/agent.py:120`。测试里那一条失败与本次改动无关，是既有用例。'),
