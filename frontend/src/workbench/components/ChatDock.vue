@@ -22,6 +22,11 @@ import { noteBrowserEvidence } from '../composables/browserLive'
 import type { ChatActivityKind, ChatMsg, ChatTraceItem, BrowserEvidence } from '../composables/chat-types'
 import { flowOf, finalAnswerText } from '../composables/chat-types'
 import { traceSegments } from '../composables/traceDigest'
+// Qoder 式工具调用卡：把「分析摘要 / 执行动作 / 返回结果」折成一张张卡片，
+// 结果收在卡里，不再逐条裸奔（组装口径在 chatCards.ts，纯函数、可单测）。
+import { cardsOf } from '../composables/chatCards'
+import type { ChatCard } from '../composables/chatCards'
+import ChatCardItem from './ChatCardItem.vue'
 import type { ChatArtifact } from '../composables/chat-types'
 import ArtifactCards from './ArtifactCards.vue'
 import { useAutoScroll } from '../composables/useAutoScroll'
@@ -545,6 +550,42 @@ function cdHasFlow(msg: ChatMsg) {
   if (!items.length) return false
   if (displayPrefs.showTrace) return true
   return items.some((n) => n.kind === 'think' || n.kind === 'thought')
+}
+
+/* ---------------------------------------------------------------- 工具调用卡片
+   轨迹折成 Qoder 式卡片：一个工具一张卡（图标 + 工具名 + 参数一行 + 状态灯），
+   返回全文收在卡里，点开才看。卡片组装是纯函数（composables/chatCards.ts），
+   这里只做缓存与「默认展开谁」的判断。
+
+   缓存签名要多带两项：observation 的 ok / elapsedMs 是**回填**进已有 trace 条目的
+   （长度不变），只看长度会拿到过期的卡片——失败卡就永远显示成「完成」。 */
+const _cardSig = (m: ChatMsg) => {
+  const t = m.trace || []
+  const last = t[t.length - 1]
+  return `${t.length}:${m.flow?.length ?? 0}:${(m.reasoning || '').length}:${m.status}:${last?.ok}:${last?.elapsedMs}`
+}
+const _cardCache = new WeakMap<object, { sig: string; cards: ChatCard[] }>()
+function cardsOfCached(msg: ChatMsg): ChatCard[] {
+  const sig = _cardSig(msg)
+  const hit = _cardCache.get(msg)
+  if (hit && hit.sig === sig) return hit.cards
+  const cards = cardsOf(msg)
+  _cardCache.set(msg, { sig, cards })
+  return cards
+}
+/** 卡片默认展开：失败卡永远展开（错误不该被折叠藏起来）；流式中的最后一张也展开
+ *  （正在跑的那一步要看得见）。其余一律折叠——点开才看，与 Qoder 一致。 */
+function cardDefaultOpen(msg: ChatMsg, card: ChatCard, index: number): boolean {
+  if (card.state === 'error') return true
+  if (msg.status === 'streaming' && index === cardsOfCached(msg).length - 1) return true
+  return false
+}
+/** 「显示推理轨迹」偏好关掉时，工具卡不渲染（思考卡仍显示——那是模型的推理，
+    不是工具流水）。偏好语义与旧版一致：关掉的是工具轨迹，不是思考。 */
+function visibleCardsOf(msg: ChatMsg): ChatCard[] {
+  const cards = cardsOfCached(msg)
+  if (displayPrefs.showTrace) return cards
+  return cards.filter((c) => c.kind === 'think')
 }
 
 /* 原始 reasoning_content（「深度思考」）不再单独成块——现在由 traceDigest 按发生顺序
@@ -1666,6 +1707,7 @@ onMounted(() => {
   }
   void loadModelConfig()
   void loadContextUsage()
+  void refreshTurnCost()
   void refreshSessionList()
   // 历史回灌完成后再探测孤儿：避免本会话卡片已随历史逻辑存在时误报
   void (async () => {
@@ -1708,6 +1750,60 @@ const {
   sending.value
   || messages.value.some(m => m.status === 'streaming' || (m.workflow?.workflowId && !m.finishedAt))
   || activeWorkflowIds.value.length > 0, finalAnswerText)
+
+/* ---------------------------------------------------------------- 顶部状态条
+   Qoder 的对话台顶部有一排常量指示（模式 / 模型 / 成本 / 上下文占用 / 沙箱）。
+   这边能诚实给出的只有：当前模型、上下文占用（后端按真实窗口估）、本轮花费与
+   耗时、以及本轮开着的模式开关。拿不到的不摆——状态条上放一个假的指示比不放更糟。 */
+const turnCost = ref<{ cost: number; tokens: number; elapsed: number } | null>(null)
+/** 本轮花费：只在真的计到钱时显示。0 元有两种含义（免费 / 未配置单价），逐轮
+    trace 里没有 pricing_state 字段，分不清就不冒充「免费」——那就不显示。 */
+const turnCostLabel = computed(() => {
+  const c = turnCost.value
+  if (!c || !(c.cost > 0)) return ''
+  return `¥${c.cost.toFixed(4)}`
+})
+const turnCostTitle = computed(() => {
+  const c = turnCost.value
+  if (!c) return ''
+  return `本轮花费 ${c.cost.toFixed(4)} 元 · ${c.tokens} token · 耗时 ${(c.elapsed / 1000).toFixed(1)}s`
+})
+/** 本轮开着的模式开关（深度思考 / 联网）。关着的不占位置。 */
+const statusFlags = computed(() => {
+  const flags: string[] = []
+  if (thinkingEffective.value) flags.push('深度思考')
+  if (webOn.value) flags.push('联网')
+  return flags
+})
+const activeTurnLabel = computed(() => {
+  const active = messages.value.find((m) => m.status === 'streaming')
+  if (active) {
+    const el = elapsedLabel(active)
+    return el ? `进行中 · ${el}` : '进行中'
+  }
+  const last = messages.value[messages.value.length - 1]
+  if (!last) return ''
+  const el = elapsedLabel(last)
+  return el ? `上一轮 ${el}` : ''
+})
+/** 从 trace 记录里取本会话最近一轮的花费。取不到就算了——状态条不报错。 */
+async function refreshTurnCost() {
+  try {
+    const r = await harnessApi.trace(20)
+    if (!r?.ok || !Array.isArray(r.items) || !r.items.length) return
+    const sid = currentSessionId()
+    const mine = r.items.filter((it) => !sid || !it.session_id || it.session_id === sid)
+    if (!mine.length) return
+    const latest = mine.reduce((a, b) => ((b.ts || '') > (a.ts || '') ? b : a))
+    turnCost.value = {
+      cost: latest.cost_cny,
+      tokens: latest.total_tokens,
+      elapsed: latest.elapsed_ms,
+    }
+  } catch {
+    /* 没有 trace 记录就不显示，不给用户添堵 */
+  }
+}
 
 /**
  * 点开一个文件产物：在工作台里定位到它（文件树展开 + 打开预览）。
@@ -1783,6 +1879,8 @@ const { drain, dispatch } = useChatStream<ChatMsg>({
     t.text = text
     // 立即停止节流渲染并预热完成态 HTML，避免最后一帧与成稿之间格式闪一下
     finishLiveMd(t.id, () => answerHtml(t))
+    // 本轮结束：状态条上的花费/耗时从 trace 记录里取（后端在回合收尾才落账）
+    void refreshTurnCost()
   },
 })
 
@@ -1918,6 +2016,30 @@ const webTitle = computed(() => webOn.value
       </button>
     </header>
 
+    <!-- Qoder 式状态条：模型 / 上下文占用 / 本轮花费 / 本轮模式。
+         这些是「这一轮在什么条件下跑」的常量指示，单独一行——混进消息流会被
+         读成回答的一部分。拿不到的指标不摆（见 refreshTurnCost 的注释）。 -->
+    <div class="cd-statusbar" aria-label="本轮状态">
+      <span class="cd-sb-model" :title="modelLabel">{{ modelLabel }}</span>
+      <span
+        v-if="usage"
+        class="cd-sb-ctx"
+        :data-level="usage.level"
+        :title="usageTitle"
+      >
+        <span class="cd-sb-ctx-bar" aria-hidden="true">
+          <i :style="{ width: Math.min(100, Math.max(0, usage.percent)) + '%' }" />
+        </span>
+        <span class="cd-sb-ctx-pct">{{ Math.round(usage.percent) }}%</span>
+      </span>
+      <span v-if="turnCostLabel" class="cd-sb-cost" :title="turnCostTitle">{{ turnCostLabel }}</span>
+      <span v-if="statusFlags.length" class="cd-sb-flags">
+        <span v-for="flag in statusFlags" :key="flag" class="cd-sb-flag">{{ flag }}</span>
+      </span>
+      <span class="cd-sb-spacer" />
+      <span v-if="activeTurnLabel" class="cd-sb-state">{{ activeTurnLabel }}</span>
+    </div>
+
 
     <SessionHistoryPopover
       :open="sessionOpen" :items="sessionItems" :busy="sessionBusy" :error="sessionError"
@@ -2029,7 +2151,7 @@ const webTitle = computed(() => webOn.value
                 :aria-controls="`cd-trace-${m.id}`"
                 @click="toggleTrace(m)"
               >
-                <span class="cd-trace-label">推理过程</span>
+                <span class="cd-trace-label">本轮过程</span>
                 <span class="cd-trace-count">{{ traceOpen(m) ? (displayPrefs.showTrace ? (traceHeadline(m) || '思考过程') : '思考过程') : traceCompactHeadline(m) }}</span>
                 <span v-if="m.status === 'streaming' && !finalAnswerText(m)" class="cd-trace-live">进行中</span>
                 <span class="cd-trace-chevron" :class="{ open: traceOpen(m) }">⌄</span>
@@ -2129,6 +2251,22 @@ const webTitle = computed(() => webOn.value
                   </template>
                 </div>
               </template>
+              <div v-if="traceOpen(m)" :id="`cd-trace-${m.id}`" class="cd-cards">
+                <div v-if="m.plan.length" class="cd-plan">
+                  <div class="cd-plan-title">执行计划</div>
+                  <div v-for="(s, pi) in m.plan" :key="'p' + pi" class="cd-plan-step">
+                    <span class="cd-plan-idx">{{ pi + 1 }}</span><span>{{ s }}</span>
+                  </div>
+                </div>
+                <ChatCardItem
+                  v-for="(card, ci) in visibleCardsOf(m)"
+                  :key="card.key"
+                  :card="card"
+                  :default-open="cardDefaultOpen(m, card, ci)"
+                  :shot-url="evidenceShot"
+                  @open-diff="openFileDiff"
+                  @open-evidence="openEvidenceInRail"
+                />
               </div>
             </div>
             <!-- 轨迹偏移后的正文 token 进入独立的最终答案区，继续按 90ms 限流逐字渲染。 -->
@@ -2310,6 +2448,52 @@ const webTitle = computed(() => webOn.value
 </template>
 
 <style scoped>
+/* ---------------------------------------------------------------- 顶部状态条
+   Qoder 的对话台在消息区上方有一排常量指示。这边给的是能诚实给出的几项：
+   当前模型、上下文占用（后端按真实窗口估）、本轮花费、本轮模式开关、本轮耗时。
+   风格跟对话台既有令牌走，不另起一套色板。 */
+.cd-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 12px 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: var(--fs-cap);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.cd-sb-model { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cd-sb-ctx { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.cd-sb-ctx-bar {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 4px;
+  border-radius: var(--r-full, 999px);
+  background: color-mix(in srgb, var(--text-faint) 22%, transparent);
+  overflow: hidden;
+}
+.cd-sb-ctx-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  border-radius: inherit;
+  background: var(--green);
+}
+.cd-sb-ctx[data-level="warn"] .cd-sb-ctx-bar i { background: var(--amber); }
+.cd-sb-ctx[data-level="high"] .cd-sb-ctx-bar i { background: var(--danger); }
+.cd-sb-ctx-pct { font-variant-numeric: tabular-nums; }
+.cd-sb-cost { flex: none; color: var(--green); font-variant-numeric: tabular-nums; }
+.cd-sb-flags { flex: none; display: inline-flex; gap: 6px; }
+.cd-sb-flag {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  color: var(--text-muted);
+}
+.cd-sb-spacer { flex: 1 1 auto; }
+.cd-sb-state { flex: none; color: var(--text-muted); }
 .cd-dock {
   position: relative;
   flex: 0 0 auto;
@@ -2651,14 +2835,16 @@ const webTitle = computed(() => webOn.value
 }
 @keyframes cd-wf-spin { to { transform: rotate(360deg); } }
 
-/* 执行过程与问答页一致：轻量卡片常驻，摘要保持可见，仅技术详情单步展开。 */
+/* 执行过程与问答页一致：轻量卡片常驻，摘要保持可见，仅技术详情单步展开。
+   2026-11-20 卡片化：卡片自带边框与底色，这层不再套框（框中框）；折叠时只剩
+   一行概览，标题跟着「进行中」染色。 */
 .cd-trace-wrap {
-  display: flex; flex-direction: column; gap: 3px;
-  max-width: var(--measure); margin: 4px 0 10px; padding: 9px 11px 7px;
-  border: 1px solid var(--border); border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--bg-raised) 72%, transparent);
+  display: flex; flex-direction: column; gap: 4px;
+  max-width: var(--measure); margin: 4px 0 10px; padding: 0;
+  border: 0; border-radius: var(--r-md);
+  background: transparent;
 }
-.cd-trace-wrap:has(.cd-trace-live) { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }
+.cd-trace-wrap:has(.cd-trace-live) .cd-trace-label { color: var(--accent-text); }
 .cd-trace-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 22px; padding: 0; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
 .cd-trace-chevron { flex: none; color: var(--text-faint); transition: transform .15s; }
 .cd-trace-chevron.open { transform: rotate(180deg); }

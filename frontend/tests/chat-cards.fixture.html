@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat cards fixture</title>
+    <style>
+      /* 仅夹具：复刻对话台的消息栏宽度与底色，不进入生产构建。 */
+      body { background: var(--bg); color: var(--text); }
+      .fixture-wrap { max-width: var(--measure); margin: 0 auto; padding: 28px 24px 60px; }
+      .fixture-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); margin: 18px 0 8px; }
+      .fixture-list { display: flex; flex-direction: column; }
+      .fixture-answer { font-size: var(--fs-body); line-height: 1.7; color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./chat-cards.fixture.ts"></script>
+  </body>
+</html>

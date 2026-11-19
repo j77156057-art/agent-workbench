@@ -190,18 +190,18 @@ async function railWidth(page) {
   return page.locator('.wb-rightrail').evaluate((el) => el.getBoundingClientRect().width)
 }
 
-/** 展开推理轨迹 → 展开分段 → 打开写文件观察 → 点「查看改动」。 */
+/** 展开本轮过程 → 展开写文件那张卡 → 点「查看改动」。
+ *  2026-11-20：轨迹改成 Qoder 式卡片后，选择器从 .cd-flow-body/.cd-flow-row
+ *  换成 .cd-cards/.cd-card（按 data-tool 认工具，不再靠行文案）。 */
 async function openDiffFromTrace(page) {
   const head = page.locator('.cd-trace-head')
   if ((await head.getAttribute('aria-expanded')) !== 'true') await head.click()
-  const seg = page.locator('.cd-trace-head').first()
-  await seg.waitFor()
-  if ((await seg.getAttribute('aria-expanded')) !== 'true') await seg.click()
-  await page.locator('.cd-flow-body').waitFor()
-  const row = page.locator('.cd-flow-row').filter({ hasText: '已写入文件' }).first()
-  await row.waitFor()
-  if ((await row.getAttribute('aria-expanded')) !== 'true') await row.click()
-  const btn = page.locator('.cd-flow-diffbtn')
+  await page.locator('.cd-cards').waitFor()
+  const card = page.locator('.cd-card[data-tool="apply_edit"]').first()
+  await card.waitFor()
+  const cardHead = card.locator('.cd-card-head')
+  if ((await cardHead.getAttribute('aria-expanded')) !== 'true') await cardHead.click()
+  const btn = card.locator('.cd-card-diffbtn')
   await btn.waitFor()
   await btn.click()
 }
