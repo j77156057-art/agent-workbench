@@ -26,10 +26,10 @@
 
   --ink: #221f1b;
   --text: #221f1b;
-  --muted: #6a6156;
-  --text-muted: #6a6156;
-  --faint: #857b6e;
-  --text-faint: #857b6e;
+  --muted: #5f564b;
+  --text-muted: #5f564b;
+  --faint: #6a6156;
+  --text-faint: #6a6156;
 
   --border: #e3d9c9;
   --border-strong: #cdbfa9;
@@ -46,9 +46,9 @@
 
   --danger: #a8382c;
   --danger-ink: #fffdf8;
-  --amber: #8a6412;
+  --amber: #7f5c0e;
   --amber-ink: #fffdf8;
-  --green: #4a7a48;
+  --green: #3f6a3c;
   --green-ink: #fffdf8;
   --tool: #2f6f6a;
 
@@ -84,7 +84,7 @@
   --mi-text: oklch(0.235 0.012 70);
   --mi-text-secondary: oklch(0.440 0.014 72);
   --mi-text-muted: oklch(0.480 0.013 72);
-  --mi-text-faint: oklch(0.600 0.012 72);
+  --mi-text-faint: oklch(0.500 0.012 72);
   --mi-accent: oklch(0.545 0.130 45);
   --mi-accent-strong: oklch(0.460 0.125 42);
   --mi-accent-dim: oklch(0.585 0.090 48);
@@ -114,10 +114,10 @@
 
   --ink: #efe9e1;
   --text: #efe9e1;
-  --muted: #a89e92;
-  --text-muted: #a89e92;
-  --faint: #7d746a;
-  --text-faint: #7d746a;
+  --muted: #b3a99c;
+  --text-muted: #b3a99c;
+  --faint: #a1988c;
+  --text-faint: #a1988c;
 
   --border: #2e2b27;
   --border-strong: #443f39;
@@ -132,11 +132,11 @@
   --accent-text: #e08a5f;
   --accent-2-ink: #17150f;
 
-  --danger: #d0634f;
+  --danger: #dc7f6a;
   --danger-ink: #17150f;
   --amber: #d2a04a;
   --amber-ink: #17150f;
-  --green: #6f9c63;
+  --green: #76a36a;
   --green-ink: #17150f;
   --tool: #5aa39c;
 
@@ -169,7 +169,7 @@
   --mi-text: oklch(0.940 0.012 75);
   --mi-text-secondary: oklch(0.760 0.014 72);
   --mi-text-muted: oklch(0.690 0.013 72);
-  --mi-text-faint: oklch(0.560 0.012 70);
+  --mi-text-faint: oklch(0.680 0.012 72);
   --mi-accent: oklch(0.660 0.140 48);
   --mi-accent-strong: oklch(0.720 0.145 52);
   --mi-accent-dim: oklch(0.580 0.115 50);
