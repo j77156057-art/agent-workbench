@@ -262,7 +262,9 @@ jobs:
           echo "--- 真起一次（走生产路径 browser_session）---"
           python - <<'PY'
           from agent_runtime import visual_acceptance as visual
-          ok = visual.browser_available(timeout=30)
+          # 120 秒：runner 被压满时浏览器光 --version 就要 24 秒（2026-11-20 实测），
+          # 30 秒的预算起不来浏览器，整条 lane 会以「浏览器不可用」红掉。
+          ok = visual.browser_available(timeout=120)
           print("browser_available =", ok)
           print("reason =", visual.browser_probe_reason())
           raise SystemExit(0 if ok else 1)

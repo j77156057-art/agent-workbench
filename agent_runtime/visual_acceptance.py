@@ -535,6 +535,10 @@ def _claim_profile(path: str) -> None:
 #: 所以就绪判据必须是「**读得出第一行**」，读操作本身也要重试。
 _ACTIVE_PORT_NAME = "DevToolsActivePort"
 
+#: 端口等待的上限（秒）。跟着调用方的 timeout 走，但封顶在这里 ——
+#: 原来封顶 15 秒，慢机器上必然不够（见 browser_session 里的注释）。
+_ACTIVE_PORT_BUDGET_CAP = 60.0
+
 _ACTIVE_PORT_TIMEOUT_HINT = (
     "浏览器调试端口未就绪：%s 在 %.1f 秒内没能读出 CDP 端口。"
     "浏览器可能仍在启动，或被别的进程占着这个 profile 目录。"
@@ -752,8 +756,12 @@ def browser_session(timeout: float = 25.0, extra_flags: Any = (),
         if process is None:
             raise BrowserSpawnError("浏览器未能创建在回收作业对象里：%s" % spawn_error)
         active = Path(profile.name) / _ACTIVE_PORT_NAME
+        # 端口等待的预算跟着调用方的 timeout 走，但**不要**卡死在 15 秒。
+        # 2026-11-20 实测：CI runner 被压满时，google-chrome --version 单条命令
+        # 就要 24 秒，浏览器真正起来只会更久 —— 15 秒的预算必然读不到端口，
+        # 整条 lane 以「浏览器起不来」红掉，而那其实是环境抖动、与代码无关。
         port, _ws_path = _read_active_port(
-            active, timeout=min(15.0, max(3.0, float(timeout) / 2)))
+            active, timeout=min(_ACTIVE_PORT_BUDGET_CAP, max(3.0, float(timeout) / 2)))
         with loopback_http.urlopen("http://127.0.0.1:%s/json" % port, timeout=5) as response:
             tabs = json.load(response)
         page = next((row for row in tabs if row.get("type") == "page"), None)
