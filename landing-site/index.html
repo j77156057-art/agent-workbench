@@ -275,7 +275,6 @@
   .shot{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:12px;transition:.3s}
   .shot:hover{border-color:var(--border-strong);transform:translateY(-3px)}
   .shot img{display:block;width:100%;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:#0a0d11}
-  .shot.wide{grid-column:1/-1}
   .shot figcaption{padding:14px 6px 4px;display:flex;flex-direction:column;gap:4px}
   .shot figcaption b{font-size:13.5px;font-weight:600;color:#dfe3ea}
   .shot figcaption span{font-size:12.5px;color:var(--dim)}
@@ -296,10 +295,6 @@
   .chapter b{display:block;font-size:13.5px;font-weight:580;color:#dfe3ea}
   .chapter span{display:block;font-size:12.3px;color:var(--dim);margin-top:2px}
   .video-note{margin-top:14px;font-size:12px;color:var(--dim)}
-  .video-block + .video-block{margin-top:58px}
-  .video-block > h3{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:600;letter-spacing:-.01em;margin-bottom:16px;color:#dfe3ea}
-  .video-block > h3 .tagmode{font-family:var(--mono);font-size:11px;color:var(--accent);border:1px solid rgba(143,124,247,.3);
-    background:var(--accent-soft);border-radius:999px;padding:2px 9px;letter-spacing:.04em}
 
   /* ---------- responsive ---------- */
   @media (max-width:900px){
@@ -370,7 +365,7 @@
           查看架构
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
         </a>
-        <a class="btn ghost" href="#demo">观看真实录屏</a>
+        <a class="btn ghost" href="#demo">60 秒演示流程</a>
       </div>
       <p class="hero-note">Python ≥ 3.11 · FastAPI · Vue 3.5 · MIT License</p>
 
@@ -548,44 +543,24 @@
       <div class="sec-head reveal">
         <span class="eyebrow">产品实拍</span>
         <h2>真实界面，不加滤镜</h2>
-        <p>以下均为本机实际运行的截图：问答页与代码工作台两个入口、代码地图与关系图、对话流水线与对话现场，取自当前工程的最新界面。</p>
+        <p>以下均为本机实际运行的工作台截图：概览、改动、GPU 与任务面板，取自当前工程。</p>
       </div>
       <div class="shots">
         <figure class="shot reveal">
-          <img src="assets/ask-home.png" alt="问答页首页" loading="lazy" />
-          <figcaption><b>问答页</b><span>进来先看清工作区与资料（rag-agent · 31 份 · qwen-plus），三步引导：读懂项目、梳理资料、解决问题</span></figcaption>
-        </figure>
-        <figure class="shot reveal">
-          <img src="assets/ask-answer.png" alt="问答页真实回答" loading="lazy" />
-          <figcaption><b>问答页 · 真实回答</b><span>问题、推理过程（2 步工具调用）、逐条结论与文中引用同屏，末尾还能顺着继续追问</span></figcaption>
-        </figure>
-        <figure class="shot wide reveal">
-          <img src="assets/chat.png" alt="代码与对话同屏" loading="lazy" />
-          <figcaption><b>代码工作台 · 代码与对话同屏</b><span>打开 agent_trace.py 直接提问：29.2 秒、3 次工具调用，答案逐条对照源码，落地为可点开的文件</span></figcaption>
-        </figure>
-        <figure class="shot reveal">
-          <img src="assets/codemap.png" alt="代码地图" loading="lazy" />
-          <figcaption><b>代码地图</b><span>1000 个文件 · 19106 个符号按分区展开；搜一个名字，签名、注释、行号全列出来，点开直达代码</span></figcaption>
-        </figure>
-        <figure class="shot reveal">
-          <img src="assets/relation.png" alt="关系图" loading="lazy" />
-          <figcaption><b>关系图</b><span>1750 个类/脚本/场景、1505 条继承：打开即按 100% 落在主干，缩小到看不清时自动只留色块</span></figcaption>
-        </figure>
-        <figure class="shot reveal">
-          <img src="assets/flow.png" alt="对话流水线" loading="lazy" />
-          <figcaption><b>对话流水线</b><span>每一轮画成节点图：提问 → 检索 → 工具 → 回答，节点上标着 token、耗时与成败</span></figcaption>
-        </figure>
-        <figure class="shot reveal">
           <img src="assets/overview.png" alt="工作台项目概览" loading="lazy" />
-          <figcaption><b>项目概览</b><span>载入 7694 个文件，上手清单与探索入口一屏展开</span></figcaption>
+          <figcaption><b>项目概览</b><span>载入 7652 个文件，项目探索与上手清单一屏展开</span></figcaption>
         </figure>
         <figure class="shot reveal">
           <img src="assets/changes.png" alt="改动总览" loading="lazy" />
-          <figcaption><b>改动总览</b><span>118 处未提交改动按文件聚合，修改与未跟踪分开列</span></figcaption>
+          <figcaption><b>改动总览</b><span>127 处未提交改动按文件聚合，改动状态一眼可见</span></figcaption>
         </figure>
         <figure class="shot reveal">
           <img src="assets/gpu.png" alt="GPU 监控" loading="lazy" />
-          <figcaption><b>GPU 监控</b><span>显存租约与排队策略，本机 RTX 5070 Ti 实测占用</span></figcaption>
+          <figcaption><b>GPU 监控</b><span>显存租约与排队策略，本机显卡实测占用</span></figcaption>
+        </figure>
+        <figure class="shot reveal">
+          <img src="assets/chat.jpg" alt="真实对话与最终答案" loading="lazy" />
+          <figcaption><b>真实对话</b><span>提问后实时推理、调用工具，最后给出带文件引用的答案</span></figcaption>
         </figure>
       </div>
     </div>
@@ -596,42 +571,23 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <span class="eyebrow">演示视频</span>
-        <h2>两段真实录屏：工作台与问答页</h2>
-        <p>提一个问题，模型在本机实时推理、逐次检索代码、逐个调用工具，最后给出带文件引用的答案——全过程无剪辑，等待时间也原样保留。</p>
+        <h2>52 秒真实录屏：一次真实对话</h2>
+        <p>提一个问题，模型在本机实时推理、逐个调用工具，最后给出带文件引用的答案——全过程无剪辑。</p>
       </div>
-      <div class="video-block">
-        <h3>① 代码工作台 <span class="tagmode">68s · qwen-plus</span></h3>
-        <div class="video-wrap">
-          <div class="player reveal">
-            <video id="demoVideo" src="assets/demo.mp4" poster="assets/demo-poster.jpg" muted autoplay loop playsinline preload="metadata"></video>
-            <div class="badge-live"><i></i>真实录屏 · 68s</div>
-          </div>
-          <div class="chapters reveal">
-            <div class="chapter" data-t="0"><span class="t">00:00</span><div><b>项目概览</b><span>加载完成的最新工作台界面</span></div></div>
-            <div class="chapter" data-t="4"><span class="t">00:04</span><div><b>提问</b><span>在底部 AI 助手里直接问 agent_trace.py</span></div></div>
-            <div class="chapter" data-t="6.5"><span class="t">00:06</span><div><b>开始执行</b><span>交付代理接手：探索 1 次 · 思考 1 次</span></div></div>
-            <div class="chapter" data-t="10.5"><span class="t">00:10</span><div><b>检索与调用</b><span>检索代码、展开工具结果，过程逐条可见</span></div></div>
-            <div class="chapter" data-t="61"><span class="t">01:01</span><div><b>最终答案</b><span>带文件引用与推理轨迹的回答</span></div></div>
-          </div>
+      <div class="video-wrap">
+        <div class="player reveal">
+          <video id="demoVideo" src="assets/demo.mp4" poster="assets/demo-poster.jpg" muted autoplay loop playsinline preload="metadata"></video>
+          <div class="badge-live"><i></i>真实录屏 · 52s</div>
+        </div>
+        <div class="chapters reveal">
+          <div class="chapter" data-t="0"><span class="t">00:00</span><div><b>启动</b><span>本地服务连上真实工程 rag-agent</span></div></div>
+          <div class="chapter" data-t="2.2"><span class="t">00:02</span><div><b>项目概览</b><span>7653 个文件载入，探索入口与上手清单</span></div></div>
+          <div class="chapter" data-t="4"><span class="t">00:04</span><div><b>提问</b><span>在底部 AI 助手里直接问代码</span></div></div>
+          <div class="chapter" data-t="7"><span class="t">00:07</span><div><b>实时执行</b><span>流式推理 · 检索 1 次 · 工具调用展开</span></div></div>
+          <div class="chapter" data-t="38"><span class="t">00:38</span><div><b>最终答案</b><span>带文件引用与推理轨迹的回答</span></div></div>
         </div>
       </div>
-      <div class="video-block">
-        <h3>② AI 问答页 <span class="tagmode">1:57 · 本地 qwen3.6 离线</span></h3>
-        <div class="video-wrap">
-          <div class="player reveal">
-            <video id="askVideo" src="assets/ask-demo.mp4" poster="assets/ask-poster.jpg" muted autoplay loop playsinline preload="metadata"></video>
-            <div class="badge-live"><i></i>真实录屏 · 1:57</div>
-          </div>
-          <div class="chapters reveal">
-            <div class="chapter" data-t="0"><span class="t">00:00</span><div><b>问答页</b><span>工作区已绑定 rag-agent，31 份资料就位</span></div></div>
-            <div class="chapter" data-t="7"><span class="t">00:07</span><div><b>提问</b><span>直接问项目里的 agent_trace.py</span></div></div>
-            <div class="chapter" data-t="57"><span class="t">00:57</span><div><b>检索与工具调用</b><span>search_code 定位，read_file 读出真实源码</span></div></div>
-            <div class="chapter" data-t="78"><span class="t">01:18</span><div><b>生成答案</b><span>结论带文件与行号引用</span></div></div>
-            <div class="chapter" data-t="109"><span class="t">01:49</span><div><b>最终答案</b><span>文中引用、复制回答与继续追问</span></div></div>
-          </div>
-        </div>
-      </div>
-      <p class="video-note">两段录屏均取自本机实际运行：工作台为云端 qwen-plus；问答页为本机 Ollama 的 qwen3.6:35b（零 API Key、完全离线）。界面未替换、过程未剪辑——包括本地模型那 50 秒的推理等待。</p>
+      <p class="video-note">录屏与截图均取自本机实际运行的工作台：模型为 qwen-plus，对话为真实执行，未做界面替换或合成。</p>
     </div>
   </section>
 
@@ -709,16 +665,14 @@
 
     var items = document.querySelectorAll('.reveal');
 
-    // video chapters：每块视频只绑定自己那一列章节
-    document.querySelectorAll('.video-block').forEach(function (block) {
-      var video = block.querySelector('video');
-      var chapters = block.querySelectorAll('.chapter');
-      chapters.forEach(function (ch) {
-        ch.addEventListener('click', function () {
-          if (!video) return;
-          video.currentTime = parseFloat(ch.dataset.t || '0');
-          video.play();
-        });
+    // video chapters
+    var video = document.getElementById('demoVideo');
+    var chapters = document.querySelectorAll('.chapter');
+    chapters.forEach(function (ch) {
+      ch.addEventListener('click', function () {
+        if (!video) return;
+        video.currentTime = parseFloat(ch.dataset.t || '0');
+        video.play();
       });
     });
 

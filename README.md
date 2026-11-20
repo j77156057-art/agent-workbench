@@ -77,20 +77,7 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 ## 界面
 
-工作台是同一套 Web UI，桌面端只是把它装进原生窗口。
-
-界面按**四层正交**组织，改一层不会牵动其他层：
-
-| 维度 | 取值 |
-|---|---|
-| **皮肤**（配色） | 纸 · 锌 · 石墨（深色） · 种子（确定性生成，可换种子重掷） |
-| **布局**（空间构成） | 固定三栏 · 单列专注 · 底部抽屉 · 对半分屏 · 仪表盘网格 |
-| **材质** | 实心 · 玻璃（`backdrop-filter`，导航轨道不参与玻璃以保可读） |
-| **调色板**（工作台） | 浅色 · 观测舱（深色） |
-
-组合出来的每种形态都过一遍**组合矩阵**（60 组，见「质量」），不是"应该没问题"。
-
-面板按用途分四组：
+工作台是同一套 Web UI，桌面端只是把它装进原生窗口。面板按用途分四组：
 
 | 分组 | 面板 | 解决什么 |
 |---|---|---|
@@ -218,8 +205,6 @@ Agent 接进真实工程时，栽的是同两个跟头：
 | 变异测试 | 改坏实现，门禁必须抓到（"写了测试但抓不住 bug"和没写测试一样糟） |
 | baseline 回归门 | 黄金题库分 L1 单跳 / L2 多跳 / L3 抗干扰三档，pass→fail 即**退出码 1**，已接入冻结发布流程 |
 | 视觉回归 | 多套基线逐像素比对，单像素通道差 > 4 的像素超过 200 个即失败 |
-| **设计验收** | 三级准入：**L1 可用 / L2 可商用 / L3 可规模化**。① **静态门禁 11 条**（字号必须走 `--fs-*` 令牌、间距落 2px 栅格、配色令牌逐皮肤覆写、禁 `var(--x, 色值)` 兜底、强调色可读、动效 ≤260ms、尊重 `prefers-reduced-motion`、hover 必有 focus、空/载/错三态、中性色色相同族……）；② **人工项 6 条**用真浏览器量而不是数 CSS（字号层级 ≤3 桶、间距脱格 ≤10%、文本对比度按色值解析逐元素判、键盘可达、无横向溢出、焦点可见）；③ **L3 组合矩阵 60 组**（4 皮肤 × 5 布局 × 2 材质 + 工作台 2 调色板 × 5 × 2），逐组判溢出 / 对比度 / 轨道层次，**任一组破相即不通过**。三条命令可复跑：`python tools/design_acceptance.py --gate` · `node tools/verify_design_acceptance_a.mjs` · `node tools/verify_l3_matrix.mjs --all` |
-| **文档命令** | 本 README（中英两版）里出现的每个**项目内脚本**都要真能跑：`tests/test_readme_commands.py` 提取命令 → 校验文件存在 → 逐个 `--help` 断言退出码 0。防的是"改了脚本签名或挪了位置，文档悄悄失效、读者复制才发现"。环境类命令（`pip install` / `npm ci` / `uvicorn` 启动）**不在此列**——成败取决于机器与网络，不假装验证过 |
 | 真实引擎 | Godot / Unity / Unreal 的 HWND 嵌入在真 Win32 宿主下实机验证（置父、样式摘除、resize 跟随、**真实合成键鼠**送达、解除嵌入还原、DPI 一致） |
 
 ## 上手
@@ -238,33 +223,30 @@ Agent 接进真实工程时，栽的是同两个跟头：
 
 **联网要求**：只有第一次装依赖需要联网；装完之后默认 `mock` 模型可完全离线运行，不需要任何 API Key。切云端模型才需要网络与 key。
 
-以下命令按 **Windows `cmd.exe`** 写，可逐行复制执行（`REM` 开头是说明，粘贴进去也无害）。PowerShell 用户把 `.venv\Scripts\activate` 换成 `.\.venv\Scripts\Activate.ps1`。
-
-```bat
-REM 1. Python 版本与依赖（需要 >= 3.11）
-python -V
+```bash
+# 1. Python 版本与依赖
+python -V                                  # 需要 ≥ 3.11
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10
-REM 默认依赖约 762 MB；国内直连 PyPI 可能在若干大轮子上读超时，镜像 + 更耐心的超时重试能装完，失败也会明确报错、直接重跑。
-REM 也可以用自己的源：先设 PIP_INDEX_URL，pip 会优先使用它。
+# 默认依赖约 762 MB；国内直连 PyPI 可能在若干大轮子上读超时，镜像 + 更耐心的超时重试能装完，失败也会明确报错、直接重跑。
+# 也可以用自己的源：先设 PIP_INDEX_URL，pip 会优先使用它。
 
-REM 2. 前端产物（先构建、再起后端最稳；后端也支持构建后免重启）
+# 2. 前端产物（先构建、再起后端最稳；后端也支持构建后免重启）
 cd frontend
-npm ci
-npm run build
+npm ci                       # 严格按 package-lock.json 还原
+npm run build                # 产物 -> ../web
 cd ..
 
-REM 3. 配置（可选，默认 mock 模式无需 key）
-REM 注意：会覆盖已有 .env —— 已经配过的机器跳过这一行。
-if not exist .env copy .env.example .env
+# 3. 配置（可选，默认 mock 模式无需 key）
+cp .env.example .env        # 改 LLM_PROVIDER=qwen 并填 DASHSCOPE_API_KEY
 
-REM 4. 后端
+# 4. 后端
 .venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 
-REM 5. 打开
-REM    工作台 : http://127.0.0.1:8000/workbench
-REM    问答页 : http://127.0.0.1:8000
+# 5. 打开
+#   工作台 : http://127.0.0.1:8000/workbench
+#   问答页 : http://127.0.0.1:8000
 ```
 
 > **默认依赖约 762 MB**（拆分前约 1.67 GB，降约 54%），**不含 torch 与 `sentence-transformers`**：两者只服务于可选的交叉编码器重排，需要时单独 `pip install -r requirements-ml.txt`（这一档才含 torch，Linux 上约 3.27 GB；它不是默认安装的一部分）。默认的 `heuristic` 重排零依赖。
@@ -378,10 +360,6 @@ agent-workbench/
 ├── artifact_tools.py      # DOCX / PDF / PPTX / XLSX 结构化生成与回读校验
 ├── orchestrator.py        # 多代理编排：任务图 DAG + 并行 + 重规划 + 结果合成
 ├── agent_eval.py / run_golden.py / golden/   # 黄金题库与 baseline 回归门
-├── tools/                 # 验收与门禁脚本（可独立复跑）
-│   ├── design_acceptance.py            # 设计静态门禁 11 条 + 冻结核减的存量基线
-│   ├── verify_design_acceptance_a.mjs  # 人工项 A1–A6：真浏览器量字号/间距/对比度/键盘/溢出
-│   └── verify_l3_matrix.mjs            # L3 组合矩阵：皮肤 × 布局 × 材质逐组判溢出/对比度/层次
 ├── frontend/              # Vue 3 + Vite 工作台（产物输出到 ../web）
 │   └── src/workbench/
 │       ├── components/    # 工作台组件
@@ -431,7 +409,6 @@ agent-workbench/
 ## 文档
 
 - [`docs/integrations.md`](docs/integrations.md) —— MCP 引擎桥接、Web 试玩导出的产品级用法与边界
-- [`docs/DESIGN-ACCEPTANCE.md`](docs/DESIGN-ACCEPTANCE.md) —— 设计验收标准：L1/L2/L3 三级准入、11 条静态门禁、6 条人工项、60 组组合矩阵，以及每条规则背后的实测数据
 - [`docs/agent-architecture-review.md`](docs/agent-architecture-review.md) —— 架构评审
 - [`docs/capability-boundary.md`](docs/capability-boundary.md) —— 能力边界：哪些是真验证过的，哪些不是
 - [`docs/screenshots/`](docs/screenshots/) —— 界面实拍
