@@ -165,7 +165,7 @@ function go(s: SymbolInfo) {
 }
 .so-classcard {
   margin: 4px 8px 8px;
-  padding: 7px 9px;
+  padding: 8px 8px;
   border: 1px solid var(--border);
   border-left: 2px solid color-mix(in srgb, var(--accent) 47%, transparent);
   border-radius: 5px;
@@ -181,7 +181,7 @@ function go(s: SymbolInfo) {
   color: var(--viz-inherit-t);
 }
 .so-extends {
-  margin-top: 3px;
+  margin-top: 4px;
   font-size: var(--fs-cap);
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -202,8 +202,8 @@ function go(s: SymbolInfo) {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 3px 10px;
+  gap: 8px;
+  padding: 4px 10px;
   border: none;
   background: transparent;
   color: var(--text);

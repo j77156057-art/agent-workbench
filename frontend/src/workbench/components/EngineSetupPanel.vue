@@ -303,16 +303,16 @@ const toolRows = computed(() => {
 .esp-tag {
   display: inline-flex; align-items: baseline; gap: 6px;
   font-size: var(--fs-cap); color: var(--text);
-  padding: 1px 7px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 1px 8px; border: 1px solid var(--border); border-radius: var(--r-sm);
 }
 .esp-tag-path { font-family: var(--font-mono); color: var(--text-faint); }
 .esp-opts { display: flex; gap: 10px; flex-wrap: wrap; }
-.esp-opt { display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-sm); color: var(--text-muted); cursor: pointer; }
+.esp-opt { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-sm); color: var(--text-muted); cursor: pointer; }
 .esp-opt--on { color: var(--accent-text); }
 .esp-opt input { accent-color: var(--accent); }
 .esp-opt-hit {
   font-size: var(--fs-cap); color: var(--green);
-  padding: 0 5px; border-radius: var(--r-sm);
+  padding: 0 4px; border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--green) 12%, transparent);
 }
 .esp-input {
@@ -322,9 +322,9 @@ const toolRows = computed(() => {
   font-family: var(--font-mono); font-size: var(--fs-sm); outline: none;
 }
 .esp-input:focus { border-color: var(--accent); }
-.esp-textarea { resize: vertical; font-family: var(--font-mono); line-height: 1.5; padding: 4px 7px; }
+.esp-textarea { resize: vertical; font-family: var(--font-mono); line-height: 1.5; padding: 4px 8px; }
 .esp-btn {
-  height: 26px; padding: 0 11px; font-size: var(--fs-sm);
+  height: 26px; padding: 0 12px; font-size: var(--fs-sm);
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-raised); color: var(--text); cursor: pointer;
 }

@@ -32,17 +32,25 @@
      切「单列专注 / 对半分屏」时密度其实一点没变 —— 令牌空转。
      现在档位本身含缩放，931 处 var(--fs-*) 全部自动跟随布局，零组件改动。
      默认布局 fixed 的 --style-scale = 1，所以视觉零变化。 */
+  /* 2026-11-19 A1 层级收口：实测覆盖 90% 文本需要 5 个字号桶
+     （12 占 54.2% / 11 占 16.7% / 14 占 14.6% / 15 占 6.3% / 13 占 4.2%），
+     判据 ≤3。合并策略同工作台：小字往大并，可读性只升不降（问答页以阅读为主，
+     不适合反向压缩密度）：
+       · cap / micro 11 → 12（并入 sm）
+       · md 13 → 14（并入 body）
+       · h3 15 → 16（并入 h2）
+     合并后实际桶位：**12 / 14 / 16**，档间跳跃从 1px 拉到 2px —— 层级反而更清楚。 */
   --fs-display: calc(30px * var(--style-scale, 1));   /* 顶栏/英雄标题档：≥28px 的主角字 */
   --fs-h1: calc(22px * var(--style-scale, 1));        /* 一级标题 */
   --fs-xl: calc(20px * var(--style-scale, 1));        /* 副标题档（原 20px 孤档） */
   --fs-lead: calc(18px * var(--style-scale, 1));      /* 引导语/要点档（原 17 与 18 两档并入） */
   --fs-h2: calc(16px * var(--style-scale, 1));        /* 区段标题 */
-  --fs-h3: calc(15px * var(--style-scale, 1));        /* 卡片标题 */
+  --fs-h3: calc(16px * var(--style-scale, 1));        /* 卡片标题：并入 h2（原 15px） */
   --fs-body: calc(14px * var(--style-scale, 1));      /* 正文（两页统一基线） */
-  --fs-md: calc(13px * var(--style-scale, 1));        /* 强调正文（原 13px 孤档） */
+  --fs-md: calc(14px * var(--style-scale, 1));        /* 强调正文：并入 body（原 13px） */
   --fs-sm: calc(12px * var(--style-scale, 1));        /* 次级文字 */
-  --fs-cap: calc(11px * var(--style-scale, 1));       /* 说明/标签 */
-  --fs-micro: calc(11px * var(--style-scale, 1));     /* 元信息/等宽小字（与 cap 同尺寸，靠族/字距区分） */
+  --fs-cap: calc(12px * var(--style-scale, 1));       /* 说明/标签：并入 sm（原 11px） */
+  --fs-micro: calc(12px * var(--style-scale, 1));     /* 元信息：并入 sm（原 11px） */
 
   /* —— 阅读栏宽度：正文与输入框共用同一把尺 —— */
   --measure: min(840px, 100%);

@@ -286,7 +286,7 @@ function connectorGuide(s: McpServer) {
 .cd-inline { position: static; left: auto; bottom: auto; width: auto; max-width: none; max-height: none; overflow: visible; padding: 0; background: none; border: 0; border-radius: 0; box-shadow: none; z-index: auto; animation: none; }
 .cd-spacer { flex: 1; }
 .cd-mini {
-  height: 21px; padding: 0 9px; font-size: var(--fs-cap);
+  height: 21px; padding: 0 8px; font-size: var(--fs-cap);
   border: 1px solid var(--border-strong); border-radius: 5px;
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
@@ -309,7 +309,7 @@ function connectorGuide(s: McpServer) {
   padding: 8px 10px; margin-bottom: 10px; background: var(--bg-hover);
 }
 
-.cd-addon-row, .cd-server-row { display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--text); }
+.cd-addon-row, .cd-server-row { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text); }
 
 .cd-addon-ver { color: var(--text-muted); font-size: var(--fs-cap); }
 
@@ -327,14 +327,14 @@ function connectorGuide(s: McpServer) {
 
 .cd-err-text { color: var(--danger); }
 
-.cd-warn-text { font-size: var(--fs-cap); color: var(--amber); margin-top: 5px; }
+.cd-warn-text { font-size: var(--fs-cap); color: var(--amber); margin-top: 4px; }
 
 .cd-mini-stop { border-color: var(--border-strong); }
 
 .cd-mini-stop:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 
 
-.cd-server-actions { display: flex; align-items: center; padding-top: 5px; }
+.cd-server-actions { display: flex; align-items: center; padding-top: 4px; }
 
 .cd-add-toggle { margin-top: 6px; }
 
@@ -343,7 +343,7 @@ function connectorGuide(s: McpServer) {
 .cd-add-row { display: flex; gap: 6px; align-items: center; }
 
 .cd-input-sm {
-  flex: 1; min-width: 0; height: 24px; padding: 0 7px;
+  flex: 1; min-width: 0; height: 24px; padding: 0 8px;
   background: var(--bg); color: var(--text);
   border: 1px solid var(--border-graphic); border-radius: 5px;
   font-size: var(--fs-cap); font-family: inherit; outline: none;
@@ -356,7 +356,7 @@ function connectorGuide(s: McpServer) {
 .cd-add-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
 
-.cd-server { padding: 8px 5px; border-top: 1px dashed var(--border); border-radius: 6px; transition: background .16s ease; }
+.cd-server { padding: 8px 4px; border-top: 1px dashed var(--border); border-radius: 6px; transition: background .16s ease; }
 .cd-server:hover { background: var(--bg-hover); }
 
 .cd-server-name { font-size: var(--fs-sm); }
@@ -365,7 +365,7 @@ function connectorGuide(s: McpServer) {
 
 .cd-server-result { margin-top: 4px; font-size: var(--fs-cap); word-break: break-all; }
 
-.cd-server-help { margin-top: 3px; font-size: var(--fs-cap); color: var(--text-faint); }
+.cd-server-help { margin-top: 4px; font-size: var(--fs-cap); color: var(--text-faint); }
 
 .cd-server-guide { margin: 4px 0 0 20px; font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.45; }
 

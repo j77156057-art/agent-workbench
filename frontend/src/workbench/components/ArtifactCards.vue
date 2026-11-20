@@ -69,7 +69,7 @@ const shown = computed(() => visibleArtifacts(props.artifacts))
 .ac-img {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   max-width: 180px;
   text-decoration: none;
 }
@@ -95,7 +95,7 @@ const shown = computed(() => visibleArtifacts(props.artifacts))
   align-items: center;
   gap: 6px;
   max-width: 320px;
-  padding: 4px 9px;
+  padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm, 6px);
   background: var(--bg);

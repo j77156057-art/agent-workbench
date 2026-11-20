@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // P1：全局符号语义地图。顶栏按钮唤起；跨文件按分区/文件浏览全部符号，
 // 支持名称/签名/文档/文件名实时搜索与种类过滤；点击符号打开文件并定位到行。
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { fsApi } from '../api'
 import type { SymbolMapResp, SymbolMapFile, SymbolInfo } from '../api'
 import { useWorkbench } from '../composables/workbench'
@@ -29,14 +29,22 @@ async function reload() {
   }
 }
 
+function onOpen() {
+  void reload()
+  void nextTick(() => searchEl.value?.focus())
+  window.addEventListener('keydown', onKey)
+}
+
 watch(symbolMapOpen, (open) => {
-  if (open) {
-    void reload()
-    void nextTick(() => searchEl.value?.focus())
-    window.addEventListener('keydown', onKey)
-  } else {
-    window.removeEventListener('keydown', onKey)
-  }
+  if (open) onOpen()
+  else window.removeEventListener('keydown', onKey)
+})
+
+// 组件由 App 在首次打开时才异步挂载（v-if="everMounted.symbol"），
+// 挂载那一刻 symbolMapOpen 已经是 true，watch 不会补发 —— 必须挂载即加载，
+// 否则永远停在「代码库中暂无可索引文件」的空态。
+onMounted(() => {
+  if (symbolMapOpen.value) onOpen()
 })
 
 function onKey(e: KeyboardEvent) {
@@ -244,7 +252,7 @@ function kindOf(kind: string) {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.sm-title { display: flex; align-items: center; gap: 9px; flex: 1; }
+.sm-title { display: flex; align-items: center; gap: 8px; flex: 1; }
 .sm-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .sm-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .sm-iconbtn {
@@ -302,12 +310,12 @@ function kindOf(kind: string) {
 .sm-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  padding: 2px 9px;
+  padding: 2px 8px;
   border-radius: 11px;
   cursor: pointer;
 }
@@ -322,7 +330,7 @@ function kindOf(kind: string) {
 .sm-chip.active i { color: var(--accent-text); }
 .sm-content { flex: 1; overflow-y: auto; padding: 8px 10px 20px; }
 .sm-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: var(--fs-sm); }
-.sm-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
+.sm-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 4px 14px; cursor: pointer; }
 .sm-group { margin: 10px 6px 0; }
 .sm-group-head {
   display: flex;
@@ -346,7 +354,7 @@ function kindOf(kind: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   border: none;
   background: transparent;
   color: var(--text);
@@ -363,7 +371,7 @@ function kindOf(kind: string) {
   border: 1px solid;
   color: var(--text);
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
   line-height: 15px;
   flex: 0 0 auto;
 }

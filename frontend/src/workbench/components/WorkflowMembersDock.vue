@@ -65,8 +65,8 @@ function focus(id: string) {
   max-width: min(340px, calc(100vw - 24px));
 }
 .wmd-strip {
-  display: inline-flex; align-items: center; gap: 7px;
-  height: 28px; padding: 0 11px;
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 28px; padding: 0 12px;
   border: 1px solid var(--border-strong); border-radius: 99px;
   background: var(--bg-raised); box-shadow: var(--mi-shadow-control);
   color: var(--text); font-size: var(--fs-sm); cursor: pointer; transition: border-color .16s ease, background .16s ease, transform .16s ease, box-shadow .16s ease;
@@ -94,7 +94,7 @@ function focus(id: string) {
   max-height: 42vh; overflow-y: auto;
   border: 1px solid var(--border-strong); border-radius: 10px;
   background: var(--bg-raised); box-shadow: var(--mi-shadow-pop);
-  padding: 8px; display: grid; gap: 3px;
+  padding: 8px; display: grid; gap: 4px;
   transform-origin: left bottom;
   animation: wmd-pop .18s cubic-bezier(.32, .72, 0, 1);
 }
@@ -108,7 +108,7 @@ function focus(id: string) {
 .wmd-head small { font-size: var(--fs-cap); color: var(--text-faint); }
 .wmd-item {
   display: flex; align-items: center; gap: 8px;
-  width: 100%; text-align: left; padding: 6px 7px;
+  width: 100%; text-align: left; padding: 6px 8px;
   border: 0; border-radius: 7px; background: transparent; cursor: pointer; transition: background .15s ease, transform .15s ease;
 }
 .wmd-item:hover { background: var(--bg-hover); transform: translateX(2px); }.wmd-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -120,7 +120,7 @@ function focus(id: string) {
 .wmd-main b { font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
 .wmd-main small { color: var(--text-faint); font-weight: 400; font-family: var(--font-mono); font-size: var(--fs-cap); }
 .wmd-task { font-size: var(--fs-cap); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wmd-state { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); flex: 0 0 auto; border: 1px solid currentColor; border-radius: 99px; padding: 1px 5px; }
+.wmd-state { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); flex: 0 0 auto; border: 1px solid currentColor; border-radius: 99px; padding: 1px 4px; }
 .wmd-item.is-running .wmd-state { color: var(--accent); }
 .wmd-item.is-ok .wmd-state { color: var(--green); }
 .wmd-item.is-bad .wmd-state { color: var(--danger); }

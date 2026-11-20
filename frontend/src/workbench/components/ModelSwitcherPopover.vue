@@ -96,14 +96,14 @@ function providerLabel(p: ModelPreset) {
 .msp-wrap { position: fixed; inset: 0; z-index: 2050; pointer-events: none; }
 .msp-backdrop { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; pointer-events: auto; }
 .msp-pop { position: absolute; right: 14px; bottom: 78px; width: min(360px, calc(100vw - 28px)); padding: 12px; pointer-events: auto; }
-.msp-head { display: flex; justify-content: space-between; gap: 10px; padding-bottom: 9px; border-bottom: 1px solid var(--border); }
+.msp-head { display: flex; justify-content: space-between; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .msp-head b, .msp-head small { display: block; }
 .msp-head b { font-size: var(--fs-md); }
-.msp-head small { margin-top: 3px; color: var(--text-faint); font-size: var(--fs-cap); overflow-wrap: anywhere; }
+.msp-head small { margin-top: 4px; color: var(--text-faint); font-size: var(--fs-cap); overflow-wrap: anywhere; }
 .msp-close { border: 0; background: transparent; color: var(--text-muted); font-size: var(--fs-lead); cursor: pointer; border-radius: 5px; }
 .msp-close:hover { background: var(--bg-hover); color: var(--text); }
-.msp-list { display: grid; gap: 6px; max-height: 260px; overflow: auto; padding: 9px 0; }
-.msp-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); text-align: left; cursor: pointer; transition: border-color .14s, background .14s, transform .14s; }
+.msp-list { display: grid; gap: 6px; max-height: 260px; overflow: auto; padding: 8px 0; }
+.msp-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); text-align: left; cursor: pointer; transition: border-color .14s, background .14s, transform .14s; }
 .msp-item:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-selected); transform: translateY(-1px); }
 .msp-item.current { border-color: var(--accent); background: var(--bg-selected); }
 .msp-item-main { min-width: 0; flex: 1; }
@@ -114,7 +114,7 @@ function providerLabel(p: ModelPreset) {
 .current-state { font-weight: 600; }
 .msp-empty { margin: 14px 0; color: var(--text-faint); font-size: var(--fs-sm); }
 .msp-error { margin: 0 0 8px; color: var(--danger); font-size: var(--fs-cap); }
-.msp-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: var(--fs-cap); }
-.msp-manage { flex: none; padding: 5px 9px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: var(--fs-cap); }
+.msp-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: var(--fs-cap); }
+.msp-manage { flex: none; padding: 4px 8px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: var(--fs-cap); }
 @media (max-width: 560px) { .msp-pop { right: 8px; bottom: 70px; width: calc(100vw - 16px); } }
 </style>

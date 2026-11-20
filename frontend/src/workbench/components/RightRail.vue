@@ -99,7 +99,7 @@ function viewDiffFile(path: string) {
 .rr-tabs { flex: 1 1 auto; display: flex; flex-wrap: nowrap; align-items: center; gap: 2px; min-width: 0; padding: 2px; overflow-x: auto; overflow-y: hidden; white-space: nowrap; border-radius: var(--r-sm); background: var(--bg); scrollbar-width: thin; }
 .rr-tab {
   flex: 0 0 auto;
-  padding: 5px 10px;
+  padding: 4px 10px;
   font-size: var(--fs-sm);
   font-weight: 600;
   border: 1px solid transparent;

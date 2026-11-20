@@ -77,7 +77,7 @@ const stars = ref(0)
   border-radius: 6px;
   background: var(--bg-hover);
   color: var(--text);
-  padding: 3px 10px;
+  padding: 4px 10px;
   font-size: var(--fs-cap);
   cursor: pointer;
 }
@@ -86,7 +86,7 @@ const stars = ref(0)
   border: 0;
   background: transparent;
   color: var(--text-faint);
-  padding: 3px 4px;
+  padding: 4px 4px;
   font-size: var(--fs-cap);
   cursor: pointer;
 }

@@ -150,7 +150,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.gh-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.gh-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .gh-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .gh-path {
   font-size: var(--fs-sm);
@@ -193,7 +193,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   border: 1px solid transparent;
   background: transparent;
   border-radius: 6px;
-  padding: 7px 9px;
+  padding: 8px 8px;
   cursor: pointer;
   transition: background .16s ease, border-color .16s ease, transform .16s ease;
 }
@@ -208,7 +208,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .gh-commit-meta {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-style: normal;
 }
 .gh-commit-meta code {
@@ -217,7 +217,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   border-radius: 3px;
-  padding: 0 5px;
+  padding: 0 4px;
 }
 .gh-commit-meta i {
   font-style: normal;

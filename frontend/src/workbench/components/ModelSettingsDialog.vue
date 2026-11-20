@@ -1173,7 +1173,7 @@ async function save() {
 /* 问答偏好：纯展示开关（不落后端），沿用粗野风方角 + 响亮色勾选块 */
 .ms-prefs { display: flex; flex-direction: column; gap: 8px; }
 .ms-check {
-  display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
   font-family: inherit; font-size: var(--fs-md); color: var(--text); text-align: left;
   background: var(--bg-raised); border: 1px solid var(--border-graphic); border-radius: 0; cursor: pointer;
 }
@@ -1197,7 +1197,7 @@ async function save() {
 .ms-key-toggle:hover { text-decoration: underline; }
 .ms-input {
   width: 100%; box-sizing: border-box;
-  padding: 7px 10px; font-size: var(--fs-md);
+  padding: 8px 10px; font-size: var(--fs-md);
   border: 1px solid var(--border-graphic); border-radius: 8px;
   background: var(--bg-raised); color: var(--text);
   outline: none;
@@ -1237,7 +1237,7 @@ async function save() {
   flex: none; font-size: var(--fs-sm); cursor: pointer;
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--text);
-  padding: 3px 10px;
+  padding: 4px 10px;
 }
 .ms-lookup-num:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .ms-lookup-num:disabled { opacity: .5; cursor: default; }
@@ -1250,21 +1250,21 @@ async function save() {
 .ms-cap { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
 .ms-cap-edit { display: grid; grid-template-columns: 1fr; gap: 6px; }
 .ms-cap-edit label { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: var(--fs-sm); color: var(--text-muted); }
-.ms-select { min-width: 190px; padding: 5px 7px; border: 1px solid var(--border-graphic); border-radius: 6px; background: var(--bg-raised); color: var(--text); font-size: var(--fs-sm); }
+.ms-select { min-width: 190px; padding: 4px 8px; border: 1px solid var(--border-graphic); border-radius: 6px; background: var(--bg-raised); color: var(--text); font-size: var(--fs-sm); }
 .ms-cap-help { margin-top: 2px; line-height: 1.45; }
 .ms-cap-cap-title { font-size: var(--fs-cap); color: var(--text-faint); margin-right: 2px; }
 .ms-cap-tag {
   font-size: var(--fs-cap); color: var(--text-muted);
   border: 1px solid var(--border); border-radius: 999px;
-  padding: 2px 9px; background: var(--bg-selected); transition: border-color .15s ease, transform .15s ease;
+  padding: 2px 8px; background: var(--bg-selected); transition: border-color .15s ease, transform .15s ease;
 }
 .ms-cap-tag:hover { border-color: var(--accent); transform: translateY(-1px); }
 .ms-cap-off { opacity: .65; }
 .ms-tip { font-size: var(--fs-cap); color: var(--text-faint); margin: 8px 0 0; line-height: 1.5; }
 /* 语音模型（实时 Omni / STT / TTS） */
 .ms-voice-block {
-  display: flex; flex-direction: column; gap: 7px;
-  padding: 9px 10px; margin-top: 7px;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 10px; margin-top: 8px;
   border: 1px solid var(--border); border-radius: 9px;
   background: var(--bg-raised);
 }
@@ -1274,7 +1274,7 @@ async function save() {
 .ms-voice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .ms-voice-grid-single { grid-template-columns: 1fr; }
 .ms-voice-field {
-  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
   font-size: var(--fs-cap); color: var(--text-muted);
 }
 .ms-voice-field .ms-input { font-size: var(--fs-md); }
@@ -1284,7 +1284,7 @@ async function save() {
 .ms-seg { display: flex; gap: 8px; }
 .ms-seg-opt {
   flex: 1; display: flex; flex-direction: column; gap: 2px;
-  padding: 9px 12px; border: 1px solid var(--border); border-radius: 9px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px;
   background: var(--bg); color: var(--text); cursor: pointer; text-align: left; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 .ms-seg-opt:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--mi-shadow-control); }.ms-seg-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -1305,7 +1305,7 @@ async function save() {
 .ms-preset-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .ms-preset-item {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
   background: var(--bg); transition: border-color .15s ease, background .15s ease, transform .15s ease;
 }
 .ms-preset-item:hover { border-color: var(--border-strong); background: var(--bg-selected); transform: translateX(2px); }
@@ -1313,7 +1313,7 @@ async function save() {
 .ms-preset-name { font-size: var(--fs-md); font-weight: 600; }
 .ms-preset-meta { font-size: var(--fs-cap); color: var(--text-faint); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .ms-preset-key {
-  border: 1px solid var(--border); border-radius: 999px; padding: 0 7px;
+  border: 1px solid var(--border); border-radius: 999px; padding: 0 8px;
   color: var(--green); background: color-mix(in srgb, var(--green) 12%, var(--bg-raised));
 }
 .ms-preset-key-off { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, var(--bg-raised)); }
@@ -1326,7 +1326,7 @@ async function save() {
 .ms-box { overflow-y: auto; overscroll-behavior: contain; }
 .ms-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .ms-btn {
-  padding: 7px 16px; font-size: var(--fs-md); border-radius: 8px;
+  padding: 8px 16px; font-size: var(--fs-md); border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
   cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
@@ -1376,6 +1376,6 @@ async function save() {
   .ms-preset-actions { flex-direction: row; }
 }
 
-@media (max-width: 560px) { .ms-mask { align-items: flex-end; }.ms-box { width: 100%; max-width: none; max-height: calc(100vh - 12px); border-radius: 12px 12px 0 0; padding: 15px 14px 13px; }.ms-seg { flex-direction: column; }.ms-cap-edit label { align-items: stretch; flex-direction: column; gap: 4px; }.ms-select { min-width: 0; width: 100%; }.ms-voice-grid { grid-template-columns: 1fr; }.ms-actions { position: sticky; bottom: -13px; padding-top: 10px; padding-bottom: 2px; background: linear-gradient(180deg, transparent, var(--bg) 26%); } }
+@media (max-width: 560px) { .ms-mask { align-items: flex-end; }.ms-box { width: 100%; max-width: none; max-height: calc(100vh - 12px); border-radius: 12px 12px 0 0; padding: 16px 14px 12px; }.ms-seg { flex-direction: column; }.ms-cap-edit label { align-items: stretch; flex-direction: column; gap: 4px; }.ms-select { min-width: 0; width: 100%; }.ms-voice-grid { grid-template-columns: 1fr; }.ms-actions { position: sticky; bottom: -13px; padding-top: 10px; padding-bottom: 2px; background: linear-gradient(180deg, transparent, var(--bg) 26%); } }
 @media (prefers-reduced-motion: reduce) { .ms-mask, .ms-box, .ms-mini, .ms-cap-tag, .ms-seg-opt, .ms-preset-item, .ms-btn { animation: none; transition: none; } }
 </style>

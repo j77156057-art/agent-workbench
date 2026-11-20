@@ -98,6 +98,32 @@ class TestSandbox(WbTestBase):
         with self.assertRaises(wb.FsError):
             wb.read_full(self.root, "  ")
 
+    def test_paths_exist_batch(self):
+        """引用存在性校验：真文件才算，目录/不存在/越界一律 False（不抛错）。"""
+        self.write("values/a.py")
+        self.write("note.txt", "hello")
+        res = wb.paths_exist(self.root, ["values/a.py", "note.txt", "values",
+                                        "nope.py", "C:/Windows/x.py", "../x.py", "  "])
+        self.assertIs(res["values/a.py"], True)
+        self.assertIs(res["note.txt"], True)
+        self.assertIs(res["values"], False, "目录不是可跳转的文件引用")
+        self.assertIs(res["nope.py"], False)
+        self.assertIs(res["C:/Windows/x.py"], False)
+        self.assertIs(res["../x.py"], False)
+        self.assertIs(res["  "], False)
+        self.assertEqual(wb.paths_exist(self.root, []), {})
+
+        # stat 版本多给 mtime：源码弹窗用它判断缓存内容是否过期
+        st = wb.paths_stat(self.root, ["values/a.py", "nope.py"])
+        self.assertIs(st["values/a.py"]["exists"], True)
+        self.assertGreater(st["values/a.py"]["mtime"], 0)
+        self.assertEqual(st["nope.py"], {"exists": False, "mtime": 0.0})
+
+    def test_paths_exist_requires_root(self):
+        with self.assertRaises(wb.FsError) as cm:
+            wb.paths_exist("", ["a.py"])
+        self.assertEqual(cm.exception.status, 400)
+
 
 class TestTree(WbTestBase):
     def test_structure_and_filters(self):

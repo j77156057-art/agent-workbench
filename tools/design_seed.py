@@ -153,7 +153,13 @@ def derive(seed):
     body_fs = rnd.pick([13, 13.5, 14, 14, 14.5, 15])                 # 正文字号基线
     density = rnd.pick([0.9, 0.95, 1.0, 1.0, 1.05, 1.1])            # 间距缩放
     tint = rnd.pick([0.02, 0.03, 0.04, 0.05, 0.06])                   # 底色带一点主色相
-    bg_l = rnd.pick([0.975, 0.98, 0.985, 0.99])                       # 底色明度
+    # 底色明度：2026-11-20 从 [0.975~0.99] 压到 [0.945~0.96]。
+    # 原来 bg 0.98 与 surface 0.988 只差 0.008，卡片只能靠 1px 边框存在；
+    # 边框一旦调淡（用户反馈"分隔太明显"），卡片就整片消失。
+    # 按现代 SaaS 的做法：弱边框 + 明确的底色阶差。见 surface/raised 的偏移。
+    # 注：先试过 0.93 起步，实测背景灰得发闷（seed 抽到 0.93 时整屏压暗），
+    # 与 zinc 的 #f4f5f7 观感不一致，故上收到 0.945 档起。
+    bg_l = rnd.pick([0.945, 0.950, 0.955, 0.960])                     # 底色明度
     dark = rnd.pick([True, False, False])                             # 是否走深色底
     return dict(
         hue=hue, hue2=hue2, neutral_hue=neutral_hue, chroma=chroma,
@@ -216,9 +222,11 @@ def build_tokens(p):
         state_ink = ensure_contrast(hsl_to_rgb(p["neutral_hue"], 0.05, 0.10), danger, 4.5, darker=True)
     else:
         bg = hsl_to_rgb(p["neutral_hue"], p["tint"], p["bg_l"])
-        raised = hsl_to_rgb(p["neutral_hue"], p["tint"] * 0.6, min(0.995, p["bg_l"] + 0.012))
+        # surface / raised 的偏移从 +0.008 / +0.012 放大到 +0.045 / +0.055：
+        # 卡片与底色的明度差要够（≥0.04），才能在边框淡化后仍然"浮起"。
+        raised = hsl_to_rgb(p["neutral_hue"], p["tint"] * 0.6, min(0.995, p["bg_l"] + 0.055))
         hover = hsl_to_rgb(p["neutral_hue"], p["tint"] * 0.8, max(0.0, p["bg_l"] - 0.05))
-        surface = hsl_to_rgb(p["neutral_hue"], p["tint"] * 0.5, p["bg_l"] + 0.008)
+        surface = hsl_to_rgb(p["neutral_hue"], p["tint"] * 0.5, p["bg_l"] + 0.045)
         selected = hsl_to_rgb(p["neutral_hue"], p["tint"] * 0.9, max(0.0, p["bg_l"] - 0.03))
         # 浅底上文字是深色 → 对**越暗**的面板对比度越低。bg 比 raised 暗一档
         # （bg_l vs bg_l+0.012），所以解算的基准面必须取 bg 而不是 raised ——
@@ -288,7 +296,12 @@ def build_tokens(p):
         "state_ink": hexs(state_ink),
         "radius": r, "r_xs": rr(r, 0.4), "r_sm": rr(r, 0.7), "r_md": r, "r_lg": rr(r, 1.4),
         "border_w": p["border_w"], "shadow": shadow,
-        "fs_body": fs(14), "fs_sm": fs(12), "fs_cap": fs(11), "fs_md": fs(13),
+        # 字阶：2026-11-19 A1 层级收口（与 workbench-typo / ask-typo 同口径）。
+        # 原来 cap=fs(11)、md=fs(13) 各自独立派生，实测 seed/ask 跑出 4 个字号桶
+        # （15 / 13.9 / 12.9 / 11.8），超出商业化验收判据 ≤3。
+        # 现把 cap 并入 sm 基准、md 并入 body 基准 —— 种子皮肤只保留三档：
+        #   body(=md) / sm(=cap=micro) / h2 / h1 …，档间跳跃反而更清楚。
+        "fs_body": fs(14), "fs_sm": fs(12), "fs_cap": fs(12), "fs_md": fs(14),
         "fs_h3": fs(15), "fs_h2": fs(16), "fs_lead": fs(18), "fs_h1": fs(22),
         # --fs-xl 是 20px 档（弹窗标题/统计数字）。漏了它，种子皮肤下这一档
         # 会停在基准 20px，比周围所有字阶都小一截。

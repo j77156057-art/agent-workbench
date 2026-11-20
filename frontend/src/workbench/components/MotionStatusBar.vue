@@ -227,7 +227,7 @@ onBeforeUnmount(() => {
 .msb-chip {
   display: inline-flex; align-items: center; gap: 6px;
   height: 24px; padding: 0 8px; border-radius: 12px;
-  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border: 1px solid var(--border-strong);
   background: transparent; color: var(--text-dim); cursor: pointer;
   font-size: var(--fs-cap); line-height: 1; white-space: nowrap;
   transition: border-color 0.15s ease, color 0.15s ease;
@@ -245,8 +245,8 @@ onBeforeUnmount(() => {
 .msb-pop {
   position: fixed; z-index: 2200; width: 360px; max-width: calc(100vw - 24px);
   padding: 12px 14px; border-radius: 10px;
-  border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
-  background: var(--surface, #1c1c1f); color: var(--text);
+  border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--text);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
 }
 .msb-pop-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -267,8 +267,8 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 .msb-rows dd.is-muted { color: var(--text-faint); }
-.msb-detail { margin-top: 10px; border-top: 1px solid var(--line, rgba(255, 255, 255, 0.1)); padding-top: 8px; }
-.msb-detail-row { margin: 0 0 5px; display: grid; gap: 2px; }
+.msb-detail { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+.msb-detail-row { margin: 0 0 4px; display: grid; gap: 2px; }
 .msb-detail-row span { font-size: var(--fs-cap); color: var(--text-dim); }
 .msb-detail-row small { font-size: var(--mi-fs-caption, var(--fs-cap)); color: var(--text-faint); }
 .msb-pop-foot {

@@ -145,7 +145,7 @@ async function reject(item: PendingExec) {
 
 <style scoped>
 .ea-root{position:fixed;right:16px;bottom:16px;z-index:420;display:flex;flex-direction:column;gap:10px;width:min(360px,calc(100vw - 32px));max-height:calc(100vh - 120px);overflow:auto;font-size: var(--fs-sm);line-height:1.6}
-.ea-card{padding:12px 13px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-strong);box-shadow:var(--mi-shadow-pop)}
+.ea-card{padding:12px 12px;border-radius:10px;background:var(--bg-raised);border:1px solid var(--border-strong);box-shadow:var(--mi-shadow-pop)}
 .ea-warn{border-color:var(--amber)}
 .ea-danger{border-color:var(--danger)}
 .ea-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}

@@ -5,13 +5,19 @@
 :root {
   color-scheme: light;
   --skin-dark: 0;
-  /* 色彩：低饱和蓝灰中性层；faint 只用于图形与非正文装饰。 */
-  --mi-bg-deep: oklch(0.952 0.004 245);
-  --mi-bg: oklch(0.972 0.003 245);
+  /* 色彩：低饱和蓝灰中性层；faint 只用于图形与非正文装饰。
+     2026-11-19 整体下沉一档（bg / bg-deep / hover / selected 各 -0.015~-0.02）：
+     原 --mi-bg(0.972) 与卡片 --mi-surface(0.985) 只差 0.013（约 3 个 sRGB 阶），
+     卡片与背景几乎融在一起，全靠 1px 边框撑 —— 实测「项目探索」卡就是这样。
+     下沉背景而不是提亮卡片：卡片 0.985 已接近白（1.0 是上限），再提没空间。
+     改后 bg 0.955 / surface 0.985，差 0.030，肉眼可辨但仍克制。
+     hover / selected 跟着下调，保持"比 bg 更暗"的方向与原来的相对距离。 */
+  --mi-bg-deep: oklch(0.932 0.004 245);
+  --mi-bg: oklch(0.955 0.003 245);
   --mi-surface: oklch(0.985 0.002 245);
   --mi-surface-raised: oklch(1 0 0);
-  --mi-hover: oklch(0.945 0.006 240);
-  --mi-selected: oklch(0.930 0.020 215);
+  --mi-hover: oklch(0.938 0.006 240);
+  --mi-selected: oklch(0.920 0.020 215);
   --mi-text: oklch(0.235 0.015 240);
   --mi-text-secondary: oklch(0.440 0.014 235);
   --mi-text-muted: oklch(0.480 0.012 235);
@@ -160,7 +166,7 @@
   --mi-state-signal-width: 2px;
   --mi-state-run-duration: 1400ms;
   --mi-state-stripe-width: 2px;
-  --mi-state-stripe-gap: 3px;
+  --mi-state-stripe-gap: 4px;
   --mi-state-pending-edge: oklch(0.560 0.110 75 / 0.55);
   --mi-state-failed-stripe: repeating-linear-gradient(
     135deg,
@@ -305,12 +311,32 @@
   --skin-dots: 0;
   --style-grain: 0;
   --style-texture: 0;
-  --ui2-rail-bg: var(--mi-bg-deep);
+  /* 深色轨道底色：**不能直接用 --mi-bg-deep**（oklch .145）。
+     它与主区 --mi-bg（oklch .175）的相对亮度只差 0.002 —— 实测侧栏 L=0.003、
+     主区 L=0.005，两者糊成一片，用户分不清导航区和内容区在哪。
+     取略亮一档（L≈0.03），配合 1px 分隔线，形成 VS Code 那种"可辨但不出挑"的层次。 */
+  --ui2-rail-bg: oklch(0.300 0.016 245);
   --ui2-rail-text: var(--mi-text);
   --ui2-rail-muted: var(--mi-text-secondary);
   --ui2-rail-line: var(--mi-border-subtle);
   --ui2-line: var(--mi-border-subtle);
   --ui2-line-strong: var(--mi-border);
+}
+
+/* 问答页深色（graphite / seed）的轨道令牌 —— 单列一块，不合并进上面。
+   上面的别名映射选择器只有 `:root` 与 `[data-skin='observatory']`，而问答页深色
+   皮肤写的是 data-skin='graphite' + data-assistant-dark='1'（AskApp.vue:105）。
+   漏掉后者，轨道就退回 shared/ui-v2.css 的默认配方：
+       --ui2-rail-bg: color-mix(in srgb, var(--accent) 18%, var(--ink))
+   而深色皮肤里 --ink 是**浅色**，混合结果成了亮白底 —— 实测侧栏 L=0.726、
+   主区 L=0.014，深色模式里凭空出现一块发光的侧栏，且侧栏文字是深色，
+   等于把导航区做成了"反色卡片"。2026-11-19 实测定位。
+   只覆盖 rail 四项，不动其余别名，避免波及问答页自己的皮肤映射。 */
+:root[data-assistant-dark='1'] {
+  --ui2-rail-bg: oklch(0.300 0.016 245);
+  --ui2-rail-text: oklch(0.910 0.012 220);
+  --ui2-rail-muted: oklch(0.740 0.018 230);
+  --ui2-rail-line: oklch(0.320 0.020 240);
 }
 
 /* 全工作台动效总闸：覆盖本地组件、共享层和第三方 light-DOM。

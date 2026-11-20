@@ -131,7 +131,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.rd-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.rd-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .rd-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .rd-path {
   font-size: var(--fs-sm);
@@ -156,14 +156,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 .rd-instr {
   flex: 0 0 auto;
-  display: flex; gap: 7px; align-items: flex-start;
+  display: flex; gap: 8px; align-items: flex-start;
   font-size: var(--fs-sm); color: var(--text-muted); background: var(--bg);
   border-bottom: 1px solid var(--border);
   padding: 8px 16px;
 }
 .rd-instr-tag {
   flex: 0 0 auto; font-size: var(--fs-cap); color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); border-radius: 5px; padding: 0 5px; line-height: 16px; margin-top: 1px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); border-radius: 5px; padding: 0 4px; line-height: 16px; margin-top: 1px;
 }
 
 .rd-statbar {
@@ -171,7 +171,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 7px 16px;
+  padding: 8px 16px;
   font-size: var(--fs-sm);
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--text) 4%, var(--bg-raised));
@@ -228,7 +228,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  padding: 11px 16px;
+  padding: 12px 16px;
   border-top: 1px solid var(--border);
   background: var(--bg);
 }

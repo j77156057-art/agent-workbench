@@ -101,7 +101,7 @@ watch(() => props.open, (open) => {
 }
 .scw-mark {
   display: inline-flex;
-  gap: 3px;
+  gap: 4px;
   align-items: center;
 }
 .scw-mark i {

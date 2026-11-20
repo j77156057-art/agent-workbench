@@ -56,7 +56,8 @@ const APP_ANSWER = `## 结论
 - 工具结果以 observation 回传。
 - 最终回答以 final 收束，done 表示传输结束。
 
-相关实现位于 frontend/src/ask/components/AskMessage.vue:800 与 frontend/src/ask/AskApp.vue:835。`
+相关实现位于 frontend/src/ask/components/AskMessage.vue:800、frontend/src/ask/AskApp.vue:835 与
+frontend/src/ask/components/AskMessage.vue:900，超长文件例子见 frontend/src/ask/huge.vue:1600。`
 
 const REF_ANSWER = `可以在这里查看源码：
 
@@ -112,6 +113,13 @@ async function newFixture(width = 1440, height = 900) {
     const req = route.request()
     const pathname = new URL(req.url()).pathname
     if (!pathname.startsWith('/api/')) return route.fallback()
+    // 引用存在性校验（POST）：夹具里一律「存在」，不把这次读取当成后端写入。
+    if (pathname === '/api/fs/exists') {
+      const body = JSON.parse(req.postData() || '{}')
+      const exists = {}
+      for (const q of body.paths || []) exists[q] = true
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: true, exists }) })
+    }
     if (req.method() !== 'GET') {
       report.writes.push(req.url())
       return route.fulfill({ status: 409, contentType: 'application/json', body: '{"ok":false,"error":"fixture blocks writes"}' })
@@ -169,8 +177,8 @@ async function newFixture(width = 1440, height = 900) {
   assert.equal(before.processOpen, 0)
   assert.match(before.processSummary, /2 步工具调用/)
   assert.deepEqual(before.status, [])  // 现契约：成功回合隐藏状态徽标，异常才显示
-  // 2026-10-29：回答正文由 16px 降到 15px（用户反馈偏大），守卫跟着走。
-  assert.equal(before.answerFont, '15px')
+  // 2026-11-19 字阶收口把 15px 并进 16px（h3/h2 同档），正文随 --fs-h3 变 16px。
+  assert.equal(before.answerFont, '16px')
   assert(before.answerWidth >= 700)
   assert.equal(before.refItems, 0)
   assert.equal(before.copyButtons, 2)
@@ -382,7 +390,13 @@ async function newAppPage(width = 1440, height = 900) {
     const req = route.request()
     const url = new URL(req.url())
     const p = url.pathname
-    const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) })
+    const json = (body, status = 200) => {
+      // /api/fs/file 统一带 mtime：源码弹窗按它判断缓存内容能否复用
+      const payload = p === '/api/fs/file' && body && typeof body === 'object'
+        ? { ...body, mtime: 1 }
+        : body
+      return route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(payload) })
+    }
     if (p === '/api/config') return json(CONFIG)
     if (p === '/api/sessions') return json({ ok: true, items: [] })
     if (p.startsWith('/api/sessions/')) return json({ ok: true, session_id: p.split('/').pop(), turns: [] })
@@ -395,10 +409,21 @@ async function newAppPage(width = 1440, height = 900) {
         await new Promise(r => setTimeout(r, 300))
         return json({ content: Array.from({ length: 40 }, (_, i) => `slow line ${i + 1}`).join('\n') })
       }
+      if (target.endsWith('huge.vue')) {
+        // 2000 行：引用第 1600 行走「超出 1500 行加载上限」分支（文件本身有这一行）
+        return json({ content: Array.from({ length: 2000 }, (_, i) => `huge line ${i + 1}`).join('\n') })
+      }
       if (target.endsWith('AskApp.vue')) {
         return json({ content: Array.from({ length: 100 }, (_, i) => `AskApp line ${i + 1}`).join('\n') })
       }
       return json({ content: Array.from({ length: 1200 }, (_, i) => `line ${i + 1}`).join('\n') })
+    }
+    if (p === '/api/fs/exists') {
+      const body = JSON.parse(req.postData() || '{}')
+      const exists = {}
+      const mtime = {}
+      for (const q of body.paths || []) { exists[q] = true; mtime[q] = 1 }
+      return json({ ok: true, exists, mtime })
     }
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method())) {
       report.writes.push(p)
@@ -465,11 +490,14 @@ async function send(page, text) {
   report.interactions.push('生产页面：分阶段状态、final+done 成功收束、过程展开')
 
   await page.locator('.refs-toggle').click()
-  // APP_ANSWER 里除两处显式路径外，行内 `session.js` 也会被识别为引用。
-  assert.equal(await page.locator('.ref-item').count(), 3)
-  await page.locator('.ref-item').filter({ hasText: 'AskMessage.vue' }).click()
+  // APP_ANSWER 里除四处显式路径外，行内 `session.js` 也会被识别为引用。
+  assert.equal(await page.locator('.ref-item').count(), 5)
+  const fileReads = []
+  page.on('request', (r) => { if (r.url().includes('/api/fs/file')) fileReads.push(r.url()) })
+  await page.locator('.ref-item').filter({ hasText: 'AskMessage.vue:800' }).click()
   await page.locator('.fv-modal').waitFor()
   await page.waitForFunction(() => document.querySelector('.fv-ln.hl')?.textContent?.includes('line 800'))
+  assert.equal(fileReads.length, 1, '打开第一条引用只应读一次文件')
   assert((await page.locator('.fv-code').evaluate(el => el.scrollTop)) > 0, 'target line must scroll into view')
   assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('fv-x')), true)
   await page.keyboard.press('Shift+Tab')
@@ -479,9 +507,28 @@ async function send(page, text) {
   assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('ref-item')), true)
   report.interactions.push('源码弹层：目标行高亮、焦点进入与闭环、Esc 关闭后焦点归还引用')
 
+  // 同一文件换一行：只滚动到新行，不再重新请求整份文件
+  await page.locator('.ref-item').filter({ hasText: 'AskMessage.vue:900' }).click()
+  await page.locator('.fv-modal').waitFor()
+  await page.waitForFunction(() => document.querySelector('.fv-ln.hl')?.textContent?.includes('line 900'))
+  assert.equal(fileReads.length, 1, '同一文件换行只滚动，不应重新请求文件：' + fileReads.join(' | '))
+  await page.keyboard.press('Escape')
+  await page.waitForFunction(() => !document.querySelector('.fv-modal'))
+  report.interactions.push('同一文件的不同行引用：定位到新行且不重复读文件')
+
   await page.locator('.ref-item').filter({ hasText: 'AskApp.vue' }).click()
   await page.locator('.fv-modal').waitFor()
-  await page.getByText(/超出当前加载上限/).waitFor()
+  // 100 行的文件引用第 835 行：必须说「文件共 100 行」，不能谎称撞了 1500 行上限
+  await page.getByText(/该文件共 100 行/).waitFor()
+  assert.equal(await page.getByText(/超出当前加载上限/).count(), 0)
+  await page.keyboard.press('Escape')
+  await page.waitForFunction(() => !document.querySelector('.fv-modal'))
+  report.interactions.push('引用行号超出文件真实行数时，提示文件总行数而不是加载上限')
+
+  await page.locator('.ref-item').filter({ hasText: 'huge.vue' }).click()
+  await page.locator('.fv-modal').waitFor()
+  await page.getByText(/超出当前加载上限（1500 行）/).waitFor()
+  assert.equal(await page.locator('.fv-ln.hl').count(), 0, '截断行不该伪装已定位')
   await page.keyboard.press('Escape')
   await page.waitForFunction(() => !document.querySelector('.fv-modal'))
   report.interactions.push('目标行超出加载上限时明确提示，不伪装定位成功')

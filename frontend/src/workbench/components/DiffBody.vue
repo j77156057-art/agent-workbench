@@ -91,8 +91,8 @@ const files = computed<RenderedFile[]>(() =>
   z-index: 1;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 16px;
+  gap: 8px;
+  padding: 8px 16px;
   background: color-mix(in srgb, var(--text) 5%, var(--bg-raised));
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-sm);

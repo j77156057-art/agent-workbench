@@ -2,7 +2,7 @@
    Agent 工作台 · 种子皮肤（由 tools/design_seed.py 生成，**不要手改**）
 
    种子：344284156
-   派生参数：{"bg_l": 0.975, "body_fs": 15, "border_w": 1, "chroma": 0.34, "dark": false, "density": 1.05, "hue": 344.921568627451, "hue2": 194.92156862745105, "neutral_hue": 4.43137254901967, "radius": 14, "radius_scale": 0.75, "shadow_level": 1, "tint": 0.04}
+   派生参数：{"bg_l": 0.945, "body_fs": 15, "border_w": 1, "chroma": 0.34, "dark": false, "density": 1.05, "hue": 344.921568627451, "hue2": 194.92156862745105, "neutral_hue": 4.43137254901967, "radius": 14, "radius_scale": 0.75, "shadow_level": 1, "tint": 0.04}
 
    换观感：python tools/design_seed.py --new-seed
    回到原样：删掉本文件（skins.ts 里的 seed 项同步去掉）
@@ -12,21 +12,21 @@
   --skin-dark: 0;
 
   /* 表面 */
-  --bg: #f9f8f8;
-  --surface: #fbfbfb;
-  --bg-raised: #fcfcfc;
-  --bg-hover: #ecebeb;
-  --bg-selected: #f1f1f0;
+  --bg: #f2f0f0;
+  --surface: #fdfcfc;
+  --bg-raised: #fefefe;
+  --bg-hover: #e5e3e3;
+  --bg-selected: #eae9e9;
 
   /* 墨与文字 */
   --text: #28201f;
   --text-muted: #705d5c;
-  --text-faint: #7f6d6c;
+  --text-faint: #796967;
   --ink: #28201f;
-  --border: #dcd6d6;
+  --border: #d6cfcf;
   /* 描边三档：容器/分隔（装饰，1.4.11 豁免）· 强调 · 控件边界（1.4.11 管） */
-  --border-strong: #bcb1b0;
-  --border-graphic: #9a8a89;
+  --border-strong: #b6aba9;
+  --border-graphic: #958483;
 
   /* 强调 */
   --accent: #904759;
@@ -37,14 +37,14 @@
   --accent-2: #904759;
   --accent-2-ink: #ffffff;
   --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
-  --tool: #2b7892;
+  --tool: #29758e;
 
   /* 状态 */
   --danger: #ae3629;
   --danger-ink: #ffffff;
-  --amber: #916918;
+  --amber: #8c6517;
   --amber-ink: #ffffff;
-  --green: #257e55;
+  --green: #247a52;
   --green-ink: #ffffff;
 
   /* 圆角 / 描边 / 阴影 */
@@ -65,9 +65,9 @@
   --sh-hard-lg: 0 1px 2px var(--ink);
 
   /* 字阶（基线由种子决定） */
-  --fs-body: 15.0px; --fs-md: 13.9px; --fs-sm: 12.9px; --fs-cap: 11.8px;
+  --fs-body: 15.0px; --fs-md: 15.0px; --fs-sm: 12.9px; --fs-cap: 12.9px;
   --fs-h2: 17.1px; --fs-h3: 16.1px; --fs-lead: 19.3px; --fs-h1: 23.6px; --fs-xl: 21.4px; --fs-display: 30px;
-  --fs-micro: 11.8px;
+  --fs-micro: 12.9px;
 
   /* 间距栅格 */
   --s1: 4px; --s2: 8px; --s3: 13px; --s4: 17px; --s5: 25px; --s6: 34px;

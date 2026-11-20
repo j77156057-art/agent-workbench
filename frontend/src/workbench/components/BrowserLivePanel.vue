@@ -172,9 +172,9 @@ function shotUrl(path?: string): string {
 .blp-pill {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   max-width: 340px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -205,7 +205,7 @@ function shotUrl(path?: string): string {
 .blp-dot[data-tone="wait"] { background: var(--amber); }
 .blp-dot[data-tone="bad"] { background: var(--danger); }
 .blp-chip {
-  padding: 0 5px;
+  padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 3px;
   color: var(--text-faint);
@@ -246,7 +246,7 @@ function shotUrl(path?: string): string {
 }
 .blp-page {
   position: absolute; left: 6px; bottom: 5px;
-  padding: 1px 5px;
+  padding: 1px 4px;
   border-radius: 3px;
   background: color-mix(in srgb, #000 55%, transparent);
   color: var(--mi-text); font: 9.5px var(--font-mono);
@@ -270,7 +270,7 @@ function shotUrl(path?: string): string {
   overflow-y: auto;
   display: flex; flex-direction: column; gap: 6px;
 }
-.blp-step { display: flex; gap: 7px; align-items: flex-start; }
+.blp-step { display: flex; gap: 8px; align-items: flex-start; }
 .blp-step-shot {
   width: 52px; height: 34px; flex: 0 0 auto;
   object-fit: cover; border: 1px solid var(--border); border-radius: 3px;
@@ -291,7 +291,7 @@ function shotUrl(path?: string): string {
 .blp-empty { margin: 0; color: var(--text-faint); font-size: 10.5px; }
 .blp-foot {
   display: flex; justify-content: space-between; gap: 8px;
-  padding-top: 7px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
   color: var(--text-faint);
   font-size: 9.5px;

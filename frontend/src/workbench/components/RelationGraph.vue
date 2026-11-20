@@ -17,6 +17,7 @@ import {
   buildForest,
   layoutTree,
   ORPHAN_GROUP_ID,
+  type Forest,
   type TreePlacement,
   type TreeEdgeDraw,
 } from '../lib/relationTreeLayout'
@@ -44,6 +45,13 @@ const geometry = ref<Record<string, Geo>>({})
 const zoom = ref(1)
 const panX = ref(0)
 const panY = ref(0)
+/** 初始视图落点：可见子孙最多的根（项目主干） */
+const anchorId = ref('')
+/** 缩放档位：远看只留色块，中距离只留标题，近看才出副标题与注释。
+ *  阈值按「字号 × 缩放 ≥ 10px 才认得出」定：标题 12.5px → 0.8，副标题 11px → 0.85。 */
+const lodClass = computed(() =>
+  zoom.value < 0.55 ? 'rg-lod-low' : zoom.value < 0.85 ? 'rg-lod-mid' : '',
+)
 
 let dragSim: Placement | null = null
 let dragStart = { x: 0, y: 0 }
@@ -83,7 +91,7 @@ async function reload() {
     buildLayout()
     ready.value = true
     await nextTick()
-    fitView() // buildLayout 时 svg 还没显示，正式渲染后按真实尺寸再适配一次
+    initialView() // 打开即落在项目主干上，按可读比例显示（想看全貌点「适应」）
     syncDom()
   } catch (e) {
     error.value = (e as Error).message
@@ -141,7 +149,11 @@ watch(expandedGroups, () => {
 watch(query, () => {
   if (!data.value || !ready.value) return
   buildLayout()
-  nextTick(() => syncDom())
+  nextTick(() => {
+    syncDom()
+    // 搜索是重新定位：跳到可读比例，而不是把结果子树压到 35% 只剩色块
+    initialView()
+  })
 })
 
 // ------------------------------------------------------------ 过滤 / 搜索
@@ -359,7 +371,41 @@ function buildLayout() {
   placements.value = list
   treeEdges.value = res.edges
   geometry.value = geo
-  fitView()
+  anchorId.value = pickAnchor(forest, list)
+}
+
+/**
+ * 选初始视口的锚点：可见子孙最多的那个根。
+ *
+ * 分层树是 1 千宽 × 4 千高的长条，直接「适应窗口」会缩到 18%，
+ * 卡片标题全糊。初始视图改为按 1:1 落在项目主干（子孙最多的根）上，
+ * 想看全貌再点「适应」。
+ */
+function pickAnchor(forest: Forest, list: Placement[]): string {
+  const visible = new Set(list.map((p) => p.id))
+  const memo = new Map<string, number>()
+  const descendants = (id: string): number => {
+    const hit = memo.get(id)
+    if (hit !== undefined) return hit
+    let n = 0
+    for (const k of forest.childrenOf.get(id) ?? []) {
+      if (!visible.has(k)) continue // 被折进分组卡的整枝不再往下数
+      n += 1 + descendants(k)
+    }
+    memo.set(id, n)
+    return n
+  }
+  let best = ''
+  let bestN = -1
+  for (const root of forest.roots) {
+    if (!visible.has(root)) continue
+    const n = descendants(root)
+    if (n > bestN) {
+      bestN = n
+      best = root
+    }
+  }
+  return best || list[0]?.id || ''
 }
 
 /**
@@ -433,7 +479,7 @@ function edgeLabelPos(e: TreeEdgeDraw): { x: number; y: number } {
 
 // ------------------------------------------------------------ 视口
 
-function fitView() {
+function fitView(minZoom = 0.05) {
   const svg = svgEl.value
   if (!svg || placements.value.length === 0) {
     zoom.value = 1
@@ -452,10 +498,30 @@ function fitView() {
   const ch = svg.clientHeight || 600
   const bw = Math.max(1, maxX - minX + 80)
   const bh = Math.max(1, maxY - minY + 80)
-  const z = Math.min(1.25, Math.max(0.05, Math.min(cw / bw, ch / bh)))
+  const z = Math.min(1.25, Math.max(minZoom, Math.min(cw / bw, ch / bh)))
   zoom.value = z
   panX.value = cw / 2 - ((minX + maxX) / 2) * z
   panY.value = ch / 2 - ((minY + maxY) / 2) * z
+}
+
+/**
+ * 初始视图：1:1 落在项目主干（子孙最多的根）上，而不是把 4 千像素高的树
+ * 硬塞进 700 像素高的画布 —— 那样缩放只剩 18%，卡片标题全糊。
+ */
+function initialView() {
+  const svg = svgEl.value
+  const anchor = byId.get(anchorId.value)
+  if (!svg || !anchor) {
+    fitView()
+    return
+  }
+  const cw = svg.clientWidth || 900
+  const ch = svg.clientHeight || 600
+  const z = 1
+  zoom.value = z
+  // 锚点贴着左边 12% 处，右边留给它的子类；纵向从锚点上方 30% 开始，先读父再往下
+  panX.value = cw * 0.12 - (anchor.x + anchor.ox) * z
+  panY.value = ch * 0.3 - (anchor.y + anchor.oy + anchor.height / 2) * z
 }
 
 function zoomBy(f: number) {
@@ -731,7 +797,8 @@ const colorOf = regionColor
         <div class="rg-zoom">
           <button title="放大" @click="zoomBy(1.2)">+</button>
           <button title="缩小" @click="zoomBy(1 / 1.2)">−</button>
-          <button title="适应窗口" @click="fitView">适应</button>
+          <span class="rg-zoom-val" title="当前缩放比例">{{ Math.round(zoom * 100) }}%</span>
+          <button title="适应窗口（看清全貌）" @click="fitView()">适应</button>
         </div>
       </div>
 
@@ -752,7 +819,7 @@ const colorOf = regionColor
           v-show="ready"
           ref="svgEl"
           class="rg-svg"
-          :class="{ grabbing: panning }"
+          :class="[lodClass, { grabbing: panning }]"
           @pointerdown="onBgDown"
           @click="onBgClick"
           @wheel="onWheel"
@@ -999,7 +1066,7 @@ const colorOf = regionColor
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.rg-title { display: flex; align-items: center; gap: 9px; flex: 1; }
+.rg-title { display: flex; align-items: center; gap: 8px; flex: 1; }
 .rg-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .rg-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .rg-iconbtn {
@@ -1029,7 +1096,7 @@ const colorOf = regionColor
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
 }
 .rg-search {
@@ -1075,7 +1142,7 @@ const colorOf = regionColor
   background: transparent;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  padding: 3px 10px;
+  padding: 4px 10px;
   border-radius: 11px;
   cursor: pointer;
 }
@@ -1101,11 +1168,28 @@ const colorOf = regionColor
   border-radius: 4px;
   font-size: var(--fs-sm);
   cursor: pointer;
-  padding: 0 7px;
+  padding: 0 8px;
 }
 .rg-zoom button:hover { color: var(--text); border-color: var(--border-strong); }
 .rg-zoom button { transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease; }
 .rg-zoom button:active { transform: translateY(1px); }
+.rg-zoom-val {
+  min-width: 36px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-cap);
+  color: var(--text-faint);
+  align-self: center;
+}
+
+/* 缩放到看不清字时按档位降级：先收副标题/注释，再收标题，只留色块走势。
+   卡片标题在 18% 缩放下只有 1.6px，硬画出来只是一片灰雾。 */
+.rg-svg.rg-lod-mid .rg-sub,
+.rg-svg.rg-lod-mid .rg-doc { display: none; }
+.rg-svg.rg-lod-low .rg-label,
+.rg-svg.rg-lod-low .rg-sub,
+.rg-svg.rg-lod-low .rg-doc,
+.rg-svg.rg-lod-low .rg-mark { display: none; }
 
 .rg-canvas-wrap { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
 .rg-svg {
@@ -1213,7 +1297,7 @@ const colorOf = regionColor
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   box-shadow: var(--mi-shadow-pop);
-  padding: 11px 13px;
+  padding: 12px 12px;
   font-size: var(--fs-sm);
   z-index: 5;
 }
@@ -1225,9 +1309,9 @@ const colorOf = regionColor
   color: var(--text-faint); cursor: pointer; padding: 0 2px;
 }
 .rg-d-x:hover { color: var(--text); }
-.rg-d-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0; }
+.rg-d-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
 .rg-d-tags span {
-  font-size: var(--fs-cap); border-radius: 4px; padding: 1px 7px;
+  font-size: var(--fs-cap); border-radius: 4px; padding: 1px 8px;
   border: 1px solid var(--border); color: var(--text-muted); background: var(--bg);
   display: inline-flex; align-items: center; gap: 4px;
 }
@@ -1239,8 +1323,8 @@ const colorOf = regionColor
 .rg-d-path { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-muted); }
 .rg-d-line { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--accent); }
 .rg-d-faint { color: var(--text-faint); }
-.rg-d-sec { font-size: var(--fs-cap); font-weight: 600; color: var(--text-faint); margin: 8px 0 3px; }
-.rg-d-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.rg-d-sec { font-size: var(--fs-cap); font-weight: 600; color: var(--text-faint); margin: 8px 0 4px; }
+.rg-d-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .rg-d-list li { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-cap); }
 .rg-d-arrow { font-style: normal; font-family: var(--font-mono); width: 14px; text-align: center; flex: 0 0 auto; }
 .rg-d-arrow.inherits { color: var(--viz-inherit); }
@@ -1253,7 +1337,7 @@ const colorOf = regionColor
 .rg-d-open {
   width: 100%; margin-top: 10px;
   border: 1px solid var(--accent-deep); background: var(--accent); color: var(--accent-ink);
-  border-radius: 6px; padding: 7px 10px; font-size: var(--fs-sm); cursor: pointer;
+  border-radius: 6px; padding: 8px 10px; font-size: var(--fs-sm); cursor: pointer;
 }
 .rg-d-open:disabled { opacity: .5; cursor: not-allowed; }
 .rg-d-open:not(:disabled):hover { filter: brightness(1.06); transform: translateY(-1px); }
@@ -1278,7 +1362,7 @@ const colorOf = regionColor
   font-size: var(--fs-sm);
 }
 .rg-error { color: var(--danger); }
-.rg-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
+.rg-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 4px 14px; cursor: pointer; }
 
 .rg-legend {
   position: absolute;
@@ -1295,7 +1379,7 @@ const colorOf = regionColor
   color: var(--text-muted);
   pointer-events: none;
 }
-.rg-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.rg-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .rg-lg { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 /* 图例必须和画布用同一个派生式，否则"钥匙"对不上"锁"：
    以前命名类的图例是 var(--accent)，节点描边却是 #58a6ff，两套浅色皮肤下还各自不达标。 */
@@ -1323,11 +1407,11 @@ const colorOf = regionColor
   .rg-panel { height: 100%; max-height: none; border-radius: 0; border-left: 0; border-right: 0; }
   .rg-top { padding: 10px 12px; }
   .rg-stats { display: none; }
-  .rg-toolbar { gap: 7px; padding: 8px 10px; }
+  .rg-toolbar { gap: 8px; padding: 8px 10px; }
   .rg-toggles { order: 2; flex-basis: 100%; }
   .rg-zoom { margin-left: 0; }
   .rg-detail { top: 8px; right: 8px; max-height: calc(100% - 16px); }
-  .rg-legend { left: 8px; bottom: 8px; padding: 5px 9px; }
+  .rg-legend { left: 8px; bottom: 8px; padding: 4px 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rg-overlay, .rg-panel, .rg-toggle, .rg-zoom button, .rg-node rect, .rg-d-open { animation: none; transition: none; }

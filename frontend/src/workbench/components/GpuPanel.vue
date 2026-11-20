@@ -293,10 +293,10 @@ defineExpose({ show })
 <style scoped>
 .gp { position: relative; }
 .gp-trigger {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
   background: transparent; color: var(--text-muted);
   border: 1px solid var(--border-strong); border-radius: 5px;
-  padding: 5px 9px; cursor: pointer; font-size: var(--fs-cap); white-space: nowrap;
+  padding: 4px 8px; cursor: pointer; font-size: var(--fs-cap); white-space: nowrap;
 }
 .gp-trigger:hover { color: var(--text); }
 .gp-busy { border-color: color-mix(in srgb, var(--amber) 45%, transparent); color: var(--amber); }
@@ -322,25 +322,25 @@ defineExpose({ show })
 .gp-link:hover:not(:disabled) { color: var(--accent-text); }
 .gp-warn { margin: 8px 0 0; padding: 6px 8px; border-radius: 5px; background: rgba(200, 129, 28, 0.12); color: var(--amber); font-size: var(--fs-cap); }
 .gp-err { margin: 8px 0 0; color: var(--danger); font-size: var(--fs-cap); }
-.gp-retry { margin-left: 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); padding: 1px 7px; cursor: pointer; }
+.gp-retry { margin-left: 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); padding: 1px 8px; cursor: pointer; }
 .gp-retry:hover:not(:disabled) { color: var(--accent-text); border-color: var(--accent); }
 .gp-faint { color: var(--text-muted); font-size: var(--fs-cap); }
 
 .gp-chart-wrap { margin: 10px 0 4px; }
 .gp-chart { width: 100%; height: 56px; display: block; background: var(--bg-raised); border-radius: 4px; }
 .gp-grid { stroke: var(--border-strong); stroke-width: 0.5; stroke-dasharray: 2 3; }
-.gp-legend { display: flex; gap: 10px; margin-top: 3px; font-size: var(--fs-cap); color: var(--text-muted); }
+.gp-legend { display: flex; gap: 10px; margin-top: 4px; font-size: var(--fs-cap); color: var(--text-muted); }
 .gp-legend i { display: inline-flex; align-items: center; gap: 4px; font-style: normal; }
 .gp-legend b { width: 8px; height: 3px; border-radius: 1px; display: inline-block; }
 
-.gp-card { margin-top: 10px; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: 6px; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+.gp-card { margin-top: 10px; padding: 8px 8px; border: 1px solid var(--border-strong); border-radius: 6px; transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease; }
 .gp-card:hover { border-color: var(--border); box-shadow: var(--mi-shadow-control); transform: translateY(-1px); }
 .gp-card-head { display: flex; align-items: baseline; gap: 8px; }
 .gp-card-head b { font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
 .gp-card-head em { font-style: normal; font-weight: 400; color: var(--text-muted); font-size: var(--fs-cap); }
 .gp-bar { height: 6px; border-radius: 3px; background: var(--mi-bg); margin-top: 6px; overflow: hidden; }
 .gp-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .35s ease; }
-.gp-bar-row { display: flex; justify-content: space-between; margin-top: 3px; font-size: var(--fs-cap); color: var(--text-muted); }
+.gp-bar-row { display: flex; justify-content: space-between; margin-top: 4px; font-size: var(--fs-cap); color: var(--text-muted); }
 
 .gp-holder { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: var(--fs-cap); }
 .gp-wait .gp-owner { color: var(--text-muted); }
@@ -348,18 +348,18 @@ defineExpose({ show })
 .gp-tag-on { background: rgba(224, 72, 79, 0.12); color: var(--danger); }
 .gp-tag-wait { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-text); }
 .gp-owner { color: var(--text); }
-.gp-mini { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 4px; font-size: var(--fs-cap); padding: 1px 7px; cursor: pointer; }
+.gp-mini { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 4px; font-size: var(--fs-cap); padding: 1px 8px; cursor: pointer; }
 .gp-mini:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
-.gp-mini-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 4px; font-size: var(--fs-cap); padding: 1px 7px; cursor: pointer; }
+.gp-mini-danger { background: transparent; border: 1px solid rgba(224, 72, 79, 0.5); color: var(--danger); border-radius: 4px; font-size: var(--fs-cap); padding: 1px 8px; cursor: pointer; }
 .gp-mini-danger:hover:not(:disabled) { background: rgba(224, 72, 79, 0.1); }
 .gp-mini, .gp-mini-danger, .gp-danger { transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease, opacity .16s ease; }
 .gp-mini:active:not(:disabled), .gp-mini-danger:active:not(:disabled), .gp-danger:active:not(:disabled) { transform: translateY(1px); }
 button:disabled { opacity: 0.5; cursor: default; }
 
-.gp-idle { margin-top: 12px; padding: 8px 9px; border: 1px solid var(--border-strong); border-radius: 6px; }
+.gp-idle { margin-top: 12px; padding: 8px 8px; border: 1px solid var(--border-strong); border-radius: 6px; }
 .gp-idle-title { font-size: var(--fs-sm); color: var(--text); }
-.gp-idle-row { display: flex; align-items: center; gap: 7px; margin-top: 5px; }
-.gp-input { width: 72px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 3px 6px; font-size: var(--fs-cap); }
+.gp-idle-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.gp-input { width: 72px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 4px 6px; font-size: var(--fs-cap); }
 .gp-idle-meta { margin-top: 4px; }
 
 .gp-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }

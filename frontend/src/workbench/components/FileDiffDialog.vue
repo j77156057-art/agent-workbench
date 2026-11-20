@@ -91,7 +91,7 @@ function onKey(e: KeyboardEvent) {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.fd-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.fd-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .fd-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .fd-count { font-size: var(--fs-sm); color: var(--text-faint); }
 .fd-equal { font-size: var(--fs-sm); color: var(--amber); }
@@ -114,7 +114,7 @@ function onKey(e: KeyboardEvent) {
   justify-content: flex-end;
   align-items: center;
   gap: 12px;
-  padding: 11px 16px;
+  padding: 12px 16px;
   border-top: 1px solid var(--border);
   background: var(--bg);
 }

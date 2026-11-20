@@ -9,6 +9,10 @@
   --ui2-muted: var(--text-muted);
   --ui2-faint: var(--text-faint);
   --ui2-line: color-mix(in srgb, var(--border) 84%, transparent);
+  /* 2026-11-20 列表分隔线单列一档：卡片边框已淡化到约 1.1:1（只作结构提示），
+     但列表行的底边线承担的是"分隔"职责，跟到那么淡会让行糊在一起。
+     取 --border-strong 一档（约 1.18:1），比容器边框明显、仍远弱于控件边界。 */
+  --ui2-list-rule: var(--border-strong);
   --ui2-line-strong: color-mix(in srgb, var(--ink) 18%, var(--border));
   --ui2-accent: var(--accent-text);
   --ui2-accent-solid: var(--accent);
@@ -102,7 +106,7 @@ body { background: var(--ui2-canvas); font-kerning: normal; }
   letter-spacing: -.045em;
 }
 .welcome-desc.welcome-desc { max-width: 58ch; line-height: 1.85; }
-.suggestions.suggestions { counter-reset: ui2-suggestion; gap: 0; margin-top: 34px; border-top: 1px solid var(--ui2-line); }
+.suggestions.suggestions { counter-reset: ui2-suggestion; gap: 0; margin-top: 34px; border-top: 1px solid var(--ui2-list-rule); }
 .suggestion.suggestion {
   counter-increment: ui2-suggestion;
   display: grid;
@@ -110,7 +114,7 @@ body { background: var(--ui2-canvas); font-kerning: normal; }
   gap: 12px;
   padding: 16px 4px;
   border: 0;
-  border-bottom: 1px solid var(--ui2-line);
+  border-bottom: 1px solid var(--ui2-list-rule);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -216,7 +220,7 @@ body { background: var(--ui2-canvas); font-kerning: normal; }
 .cd-session-pop .cd-pop-title { color: var(--ui2-ink); font-size: var(--fs-h3); letter-spacing: -.01em; }
 .cd-session-subtitle { line-height: 1.6; }
 .cd-session-new.cd-session-new { min-height: 44px; border-left: 3px solid var(--ui2-accent-solid); }
-.cd-session-main { min-height: 52px; padding: 9px 8px; border-radius: 5px; }
+.cd-session-main { min-height: 52px; padding: 8px 8px; border-radius: 5px; }
 .cd-session-copy strong {
   display: -webkit-box;
   overflow: hidden;

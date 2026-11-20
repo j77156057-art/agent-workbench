@@ -1053,6 +1053,7 @@ onMounted(async () => {
           <template v-else>
             <AskMessage
               v-for="m in messages" :key="m.id" :msg="m"
+              :project-root="workspaceRoot"
               @open-file="openFile"
               @ask="(v: string) => send(v)"
               @wf-gate="(open: boolean) => onWfGate(m.workflow!.workflowId, open)"
@@ -1236,9 +1237,38 @@ onMounted(async () => {
 }
 .jump-latest:hover { background: var(--bg-hover); }
 .chat-col { width: min(840px, 100%); margin: 0 auto; padding: 28px 32px 40px; display: flex; flex-direction: column; gap: 30px; }
-.ask-main.is-empty { overflow-y: auto; }
-.is-empty .chat-stage { display: contents; }
-.is-empty .chat-scroll { flex: 0 0 auto; overflow: visible; margin-top: 0; scrollbar-gutter: auto; }
+/* 空状态：滚动权交给 .chat-stage，composer 常驻底部 —— 内容再多输入框也可见。 */
+.ask-main.is-empty { overflow: hidden; }
+/* 2026-11-20 空状态垂直居中。
+   原来这里是 `display: contents` + chat-scroll `flex: 0 0 auto` —— 意图是"空状态
+   不产生滚动容器、由 main 统一滚"。但 contents 的提升项在 flex 分配里不可靠：
+   实测 chat-scroll 停在内容高度 630px，main 剩余 212px 白扔（且它仍带着
+   flex: 1 1 0% 的幽灵分配）。改为正常盒子逐层撑满，滚动仍在 main 上。
+   ⚠ 两条踩过的坑：
+   ① 设 `min-height: 0` → 矮视口下 stage 被压到视口高度，内容超出后输入框压到
+      建议列表上（1440×473 实测真重叠）；
+   ② `flex: 1 1 auto`（默认 shrink: 1）→ stage 被压缩到 207px，里面 chat-col
+      仍高 454px，溢出直接盖住 composer。
+   现在 `flex: 1 0 auto`（**禁止收缩**）：空间够时撑满并居中，空间不够时保持
+   内容高度、由 .ask-main 的 overflow-y 滚动 —— 输入框挪到视口下方是可接受的降级，
+   重叠不可接受。 */
+.is-empty .chat-stage { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.is-empty .chat-scroll { flex: 1 0 auto; display: flex; flex-direction: column; overflow: visible; margin-top: 0; scrollbar-gutter: auto; }
+/* 2026-11-20 空状态垂直居中。
+   试过三条路都失败：① chat-scroll `flex: 0 0 auto` → 内容堆在顶部；
+   ② 改 `flex: 1 1 auto` + 子项 `margin: auto` → main 剩余 212px 就是不分给 grow
+   （contents 提升项与 flex 分配的交互不可靠）；③ `display: contents` 改正常盒子
+   → stage 只撑到内容高度 630，仍不吸收剩余。
+   最后绕开 flex 分配：直接给 chat-col 一个"视口减顶栏"的最小高度并内部居中。
+   内容超高时（矮视口）min-height 不起作用，自然回到顶部排列 + main 滚动。 */
+.is-empty .chat-col.is-welcome {
+  /* 用 margin: auto 在 stage 的剩余空间里居中。
+     stage 已经撑满「topbar 与 composer 之间」，所以这里不需要 min-height ——
+     早先用 calc(100dvh - 58px) 时忘了扣掉 composer 的 208px，大视口反而多出滚动条。 */
+  flex: 0 0 auto;
+  margin-top: auto;
+  margin-bottom: auto;
+}
 .chat-col.is-welcome { width: 100%; padding: 0; }
 .home-layout {
   width: min(1180px, 100%);
@@ -1253,9 +1283,13 @@ onMounted(async () => {
 .welcome-eyebrow { margin-bottom: 14px; color: var(--accent-text); font-size: var(--fs-sm); font-weight: 600; letter-spacing: .04em; }
 .welcome-title { margin: 0 0 14px; font-family: var(--font-ui); font-size: clamp(28px, 3vw, 38px); font-weight: 600; line-height: 1.3; letter-spacing: -.035em; color: var(--ink); }
 .welcome-desc { margin: 0; max-width: 600px; font-size: var(--fs-h3); line-height: 1.75; color: var(--text-muted); }
-.suggestions { display: flex; flex-direction: column; gap: 8px; margin: 26px 0 0; }
-.suggestion { display: flex; align-items: center; gap: 12px; position: relative; text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: transparent; color: var(--text); padding: 12px 14px; cursor: pointer; transition: background 150ms, border-color 150ms; }
-.suggestion:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+/* 2026-11-20 裸列表化：这里原本把 .suggestion 覆盖成"卡片"
+   （border + radius + gap: 8px + padding 12/14），把 shared/ui-v2.css 里
+   已经写好的裸列表样式整个盖住了 —— 那套是「序号 01/02/03 + 底边细线 +
+   hover 底边变强调色 + 箭头右移」的 grid 四列结构，与本组件的 DOM 完全对应。
+   用户选「做成无卡片的裸列表」，所以撤掉这里的卡片覆盖，只保留 ui-v2 没定义的
+   部分（copy 排版、icon 色、箭头位移）。 */
+.suggestions { margin: 26px 0 0; }
 .suggestion:hover .suggestion-copy > span,
 .suggestion:hover .suggestion-arrow { color: color-mix(in srgb, var(--ink) 72%, var(--bg-hover)); }
 .suggestion-icon { color: var(--accent-text); flex: 0 0 auto; margin-top: 2px; }
@@ -1311,7 +1345,7 @@ onMounted(async () => {
 .composer textarea { display: block; width: 100%; min-height: 50px; border: none; outline: none; resize: none; background: transparent; font-family: var(--font-ui); font-size: var(--fs-h3); line-height: 1.7; color: var(--text); padding: 4px; max-height: 160px; }
 .composer textarea::placeholder { color: var(--text-muted); }
 .ghost-text { position: absolute; inset: 0; padding: 4px; font-size: var(--fs-h3); line-height: 1.7; color: var(--text-muted); pointer-events: none; }
-.composer-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 9px 4px 0; color: var(--text-muted); font-size: var(--fs-cap); }
+.composer-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 8px 4px 0; color: var(--text-muted); font-size: var(--fs-cap); }
 .followups { display: flex; flex-direction: column; gap: 8px; margin-top: -8px; padding: 0 2px; }
 .followups-label { color: var(--text-muted); font-size: var(--fs-cap); font-weight: 500; }
 .followups-row { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1320,7 +1354,7 @@ onMounted(async () => {
   border: 1px solid var(--border);
   border-radius: var(--r-full); background: transparent; color: var(--text);
   font-family: var(--font-sans); font-size: var(--fs-sm);
-  padding: 6px 11px; cursor: pointer; text-align: left; line-height: 1.5;
+  padding: 6px 12px; cursor: pointer; text-align: left; line-height: 1.5;
   transition: background 130ms, color 130ms, border-color 130ms;
 }
 .followup-arrow { flex: none; color: var(--accent-text); }
@@ -1346,12 +1380,12 @@ border-radius: var(--r-sm); }
 .bar-right { display: flex; gap: 8px; flex: 0 0 auto; }
 .tool-btn { width: 36px; height: 36px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .tool-btn:hover { color: var(--accent-text); background: var(--bg-hover); }
-.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; padding: 5px 9px; cursor: pointer; transition: background 150ms, color 150ms; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--text-muted); font-size: var(--fs-sm); font-weight: 500; padding: 4px 8px; cursor: pointer; transition: background 150ms, color 150ms; }
 .chip:hover { background: var(--bg-hover); color: var(--ink); }
 .chip.on { background: var(--accent-soft); color: var(--accent-text); }
 .chip.on::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .chip.native { cursor: default; }
-.send-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 36px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600; padding: 7px 14px; cursor: pointer; transition: background 150ms; }
+.send-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; border: 1px solid transparent; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600; padding: 8px 14px; cursor: pointer; transition: background 150ms; }
 .send-btn:hover:not(:disabled) { background: var(--accent-deep); }
 .send-btn:disabled { background: var(--bg-hover); color: var(--text-muted); cursor: not-allowed; }
 .send-btn.stop { background: var(--bg-raised); color: var(--danger); border-color: var(--danger); }
@@ -1378,7 +1412,7 @@ border-radius: var(--r-sm); }
   font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--text);
 }
 .wf-orphan-body { flex: 1; min-width: 0; }
-.wf-orphan-err { color: var(--danger); margin-top: 3px; }
+.wf-orphan-err { color: var(--danger); margin-top: 4px; }
 .wf-orphan-btn {
   flex: 0 0 auto;
   border: 1px solid var(--border-strong);
@@ -1424,7 +1458,7 @@ border-radius: var(--r-sm); }
   .composer-bar { flex-wrap: nowrap; gap: 6px; }
   .bar-left { flex: 1; min-width: 0; gap: 2px; }
   .bar-right { margin-left: auto; }
-  .chip { min-height: 44px; padding: 6px 5px; font-size: var(--fs-sm); }
+  .chip { min-height: 44px; padding: 6px 4px; font-size: var(--fs-sm); }
   .tool-btn { width: 34px; }
   .send-btn { min-height: 44px; padding: 8px 12px; }
   .jump-latest { min-height: 44px; }

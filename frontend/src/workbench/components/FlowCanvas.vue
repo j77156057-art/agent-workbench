@@ -497,7 +497,7 @@ function providerLabel(p: string) {
 }
 .fl-iconbtn:hover { border-color: var(--border); background: var(--bg-hover); color: var(--text); transform: translateY(-1px); }.fl-iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fl-demo {
-  flex: 0 0 auto; margin: 10px 16px 0; padding: 7px 11px; border-radius: 8px;
+  flex: 0 0 auto; margin: 10px 16px 0; padding: 8px 12px; border-radius: 8px;
   font-size: var(--fs-sm); line-height: 1.6; color: var(--amber); background: var(--bg-raised); border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent);
 }
 .fl-err { flex: 0 0 auto; margin: 10px 16px 0; font-size: var(--fs-sm); color: var(--danger); }
@@ -510,24 +510,24 @@ function providerLabel(p: string) {
   background: var(--surface); border-right: 1px solid var(--border-2);
 }
 .fl-filter { padding: 10px; border-bottom: 1px solid var(--border-2); display: flex; flex-direction: column; gap: 8px; }
-.fl-seg { display: flex; background: var(--bg); border-radius: 8px; padding: 3px; gap: 2px; }
+.fl-seg { display: flex; background: var(--bg); border-radius: 8px; padding: 4px; gap: 2px; }
 .fl-seg button {
   flex: 1; border: none; background: transparent; font: inherit; font-size: var(--fs-sm); font-weight: 600;
-  color: var(--text-muted); padding: 5px 0; border-radius: 6px; cursor: pointer;
+  color: var(--text-muted); padding: 4px 0; border-radius: 6px; cursor: pointer;
 }
 .fl-seg button.on { background: var(--bg-raised); color: var(--accent-text); box-shadow: var(--mi-shadow-control); }
 .fl-filter input {
   /* 控件边界走 --border-graphic 档：1.4.11 的 3:1 落在输入框上。
      原来用 --border-2（容器档），zinc 下只有 1.36:1、paper 下 1.38:1 —— 画布探针量出来了。 */
-  padding: 6px 9px; border: 1px solid var(--border-graphic); border-radius: 7px; font: inherit; font-size: var(--fs-sm);
+  padding: 6px 8px; border: 1px solid var(--border-graphic); border-radius: 7px; font: inherit; font-size: var(--fs-sm);
   color: var(--text); background: var(--bg-raised); outline: none;
 }
 .fl-filter input:focus { border-color: var(--accent); background: var(--bg-raised); }
-.fl-turn-list { flex: 1 1 auto; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 7px; }
+.fl-turn-list { flex: 1 1 auto; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .fl-hint { padding: 22px 14px; font-size: var(--fs-sm); line-height: 1.8; color: var(--text-muted); text-align: center; }
 .fl-turn {
   text-align: left; border: 1px solid var(--border-2); background: var(--bg-raised); border-radius: 10px;
-  padding: 8px 10px; cursor: pointer; font: inherit; display: flex; flex-direction: column; gap: 3px; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
+  padding: 8px 10px; cursor: pointer; font: inherit; display: flex; flex-direction: column; gap: 4px; transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 .fl-turn:hover { border-color: var(--border); background: var(--bg-selected); transform: translateX(2px); box-shadow: var(--mi-shadow-control); }.fl-turn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .fl-turn.on { border-color: var(--accent); background: var(--bg-selected); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent); }
@@ -550,7 +550,7 @@ function providerLabel(p: string) {
 }
 .fl-chip {
   font-size: var(--fs-cap); color: var(--text); background: var(--bg-raised); border: 1px solid var(--border-2);
-  border-radius: 999px; padding: 2px 9px; font-variant-numeric: tabular-nums; white-space: nowrap; transition: border-color .15s ease, background .15s ease;
+  border-radius: 999px; padding: 2px 8px; font-variant-numeric: tabular-nums; white-space: nowrap; transition: border-color .15s ease, background .15s ease;
 }
 .fl-chip.model { color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 32%, transparent); background: var(--accent-soft); font-weight: 600; }
 .fl-chip.cache { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); background: var(--bg-raised); font-weight: 600; }
@@ -579,13 +579,13 @@ function providerLabel(p: string) {
   font-size: var(--fs-cap); font-weight: 700; color: var(--danger-ink); background: var(--danger);
   border-radius: 999px; padding: 1px 8px;
 }
-.fl-n-sub { margin-top: 5px; font-size: var(--fs-cap); color: var(--text-muted); line-height: 1.5; }
+.fl-n-sub { margin-top: 4px; font-size: var(--fs-cap); color: var(--text-muted); line-height: 1.5; }
 .fl-n-sub.faint { color: var(--text-muted); }
 .fl-n-sub.mono { font-family: var(--font-mono, ui-monospace, Consolas, monospace); font-size: var(--fs-cap); color: var(--text-muted); }
-.fl-n-stats { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
+.fl-n-stats { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
 .fl-n-stats > span {
   font-size: var(--fs-cap); color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-2);
-  border-radius: 5px; padding: 1px 7px; font-variant-numeric: tabular-nums;
+  border-radius: 5px; padding: 1px 8px; font-variant-numeric: tabular-nums;
 }
 .fl-n-ok.good { color: var(--green) !important; background: var(--bg-raised) !important; border-color: color-mix(in srgb, var(--green) 35%, transparent) !important; }
 .fl-n-ok.bad { color: var(--danger) !important; background: var(--bg-raised) !important; border-color: color-mix(in srgb, var(--danger) 35%, transparent) !important; font-weight: 700; }
@@ -636,6 +636,6 @@ function providerLabel(p: string) {
   .fl-turns { flex-basis: 176px; }
   .fl-title span { display: none; }
 }
-@media (max-width: 560px) { .fl-head { padding: 10px 11px; }.fl-turns { flex-basis: 154px; }.fl-turn-list { padding: 6px; }.fl-canvas-head { max-height: 90px; overflow: auto; padding: 7px 9px; }.fl-n-sub.faint { display: none; } }
+@media (max-width: 560px) { .fl-head { padding: 10px 12px; }.fl-turns { flex-basis: 154px; }.fl-turn-list { padding: 6px; }.fl-canvas-head { max-height: 90px; overflow: auto; padding: 8px 8px; }.fl-n-sub.faint { display: none; } }
 @media (prefers-reduced-motion: reduce) { .fl-overlay, .fl-panel, .fl-iconbtn, .fl-turn, .fl-chip, .fl-node { animation: none; transition: none; } }
 </style>

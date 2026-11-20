@@ -357,7 +357,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .bj-live {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--fs-cap);
   color: var(--accent);
   white-space: nowrap;
@@ -442,7 +442,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   overflow: auto;
   list-style: none;
   margin: 0;
-  padding: 5px;
+  padding: 4px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
@@ -451,8 +451,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 8px;
+  gap: 8px;
+  padding: 8px 8px;
   border: 1px solid transparent;
   border-radius: 7px;
   background: transparent;
@@ -476,7 +476,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .bj-dot.ok { background: var(--green); }
 .bj-dot.bad { background: var(--danger); }
 .bj-dot.warn { background: var(--amber); }
-.bj-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.bj-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .bj-cmd {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -505,7 +505,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
   padding-bottom: 14px;
 }
 .bj-detail-head { display: flex; flex-direction: column; gap: 6px; }
@@ -518,7 +518,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .bj-stop {
   height: 23px;
-  padding: 0 9px;
+  padding: 0 8px;
   border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent);
   border-radius: 5px;
   background: transparent;
@@ -572,7 +572,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   background: color-mix(in srgb, var(--amber) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
   border-radius: 6px;
-  padding: 4px 7px;
+  padding: 4px 8px;
 }
 .bj-job-err { margin: 0; font-size: var(--fs-cap); color: var(--danger); }
 .bj-logbar {
@@ -583,13 +583,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   font-size: var(--fs-cap);
   color: var(--text-muted);
 }
-.bj-auto { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+.bj-auto { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
 .bj-auto input { margin: 0; accent-color: var(--accent); }
 .bj-logs {
   flex: 1;
   min-height: 120px;
   margin: 0;
-  padding: 9px 11px;
+  padding: 8px 12px;
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -619,11 +619,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .bj-drawer { width: min(880px, 100vw); gap: 12px; }
 .bj-body { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; }
 .bj-list { max-height: none; min-height: 0; padding: 0 16px 0 0; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; }
-.bj-item { padding: 9px 8px; border-left: 2px solid transparent; border-radius: 5px; }
+.bj-item { padding: 8px 8px; border-left: 2px solid transparent; border-radius: 5px; }
 .bj-item.on { border-left-color: var(--accent); }
 .bj-cmd { line-height: 1.5; }
 .bj-detail { padding-bottom: 14px; }
-.bj-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 16px; font-family: var(--ui2-font-mono, var(--font-code)); }
+.bj-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; font-family: var(--ui2-font-mono, var(--font-code)); }
 .bj-logs { min-height: 260px; }
 @media (max-width: 860px) {
   .bj-body { grid-template-columns: 200px minmax(0, 1fr); gap: 12px; }

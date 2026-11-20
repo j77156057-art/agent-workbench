@@ -392,7 +392,7 @@ defineExpose({ show, hide })
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 12px; margin: 0;
   border-top: 1px solid var(--border); padding-top: 6px;
 }
-.lsp-metrics div { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+.lsp-metrics div { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
 .lsp-metrics dt { font-size: var(--fs-cap); color: var(--text-faint); }
 .lsp-metrics dd { margin: 0; font-size: var(--fs-cap); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .lsp-video-hint {
@@ -402,7 +402,7 @@ defineExpose({ show, hide })
   border: 1px solid var(--border); border-radius: var(--r-sm);
 }
 .lsp-stats { display: flex; gap: 14px; margin: 0; }
-.lsp-stats div { display: flex; align-items: baseline; gap: 5px; }
+.lsp-stats div { display: flex; align-items: baseline; gap: 4px; }
 .lsp-stats dt { font-size: var(--fs-cap); color: var(--text-faint); }
 .lsp-stats dd { margin: 0; font-size: var(--fs-sm); color: var(--text); font-variant-numeric: tabular-nums; }
 .lsp-side { display: flex; flex-direction: column; min-height: 0; }
@@ -420,7 +420,7 @@ defineExpose({ show, hide })
 .lsp-obs-text { color: var(--text-muted); white-space: pre-wrap; }
 .lsp-empty { margin: 0; font-size: var(--fs-sm); color: var(--text-faint); }
 .lsp-msg {
-  margin: 0; padding: 7px 12px; font-size: var(--fs-sm);
+  margin: 0; padding: 8px 12px; font-size: var(--fs-sm);
   border-top: 1px solid var(--border); color: var(--text-muted);
 }
 .lsp-msg--bad { color: var(--danger); }
@@ -451,7 +451,7 @@ defineExpose({ show, hide })
   border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden;
 }
 .lsp-source-btn {
-  height: 26px; padding: 0 9px; border: none; background: transparent;
+  height: 26px; padding: 0 8px; border: none; background: transparent;
   color: var(--text-muted); font-size: var(--fs-sm); cursor: pointer;
 }
 .lsp-source-btn + .lsp-source-btn { border-left: 1px solid var(--border); }

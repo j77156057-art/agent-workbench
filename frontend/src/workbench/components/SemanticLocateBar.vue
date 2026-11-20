@@ -252,7 +252,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .lb { position: relative; width: 340px; }
 .lb-box {
-  display: flex; align-items: center; gap: 7px;
+  display: flex; align-items: center; gap: 8px;
   height: 32px; padding: 0 10px;
   background: var(--bg-raised);
   border: 1px solid var(--border-graphic);
@@ -299,7 +299,7 @@ onBeforeUnmount(() => {
 .lb-demo-note { color: var(--amber); }
 .lb-tagbtn {
   border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); --btn-fill: color-mix(in srgb, var(--accent) 12%, var(--bg-raised)); background: color-mix(in srgb, var(--accent) 12%, var(--bg-raised)); color: var(--accent);
-  font-size: var(--fs-cap); font-weight: 600; padding: 3px 9px; border-radius: 6px;
+  font-size: var(--fs-cap); font-weight: 600; padding: 4px 8px; border-radius: 6px;
   cursor: pointer; white-space: nowrap; font-family: var(--font-ui);
 }
 .lb-tagbtn:hover:not(:disabled) { --btn-fill: #e0ecfd; background: #e0ecfd; }
@@ -311,35 +311,35 @@ onBeforeUnmount(() => {
 .lb-list { max-height: 380px; overflow-y: auto; padding: 4px; }
 .lb-item {
   display: flex; align-items: stretch; gap: 8px; width: 100%;
-  text-align: left; padding: 7px 9px; border: 0; border-radius: 7px;
+  text-align: left; padding: 8px 8px; border: 0; border-radius: 7px;
   background: transparent; cursor: pointer; font-family: var(--font-ui);
   position: relative;
 }
 .lb-item.lb-active { background: var(--bg-selected); }
 .lb-region-rail { width: 3px; border-radius: 2px; flex: 0 0 3px; }
 .lb-item-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.lb-item-title { display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); color: var(--text); }
+.lb-item-title { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--text); }
 .lb-folder-glyph { font-size: var(--fs-md); }
 .lb-file-name { font-weight: 600; }
 .lb-symbol {
   font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 4px; padding: 0 5px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 4px; padding: 0 4px;
 }
 .lb-region-dir { font-style: normal; color: var(--text-faint); font-size: var(--fs-sm); }
 .lb-region-chip {
   font-size: var(--fs-cap); font-style: normal; font-weight: 600;
-  border: 1px solid; border-radius: 5px; padding: 0 5px; white-space: nowrap;
+  border: 1px solid; border-radius: 5px; padding: 0 4px; white-space: nowrap;
 }
 .lb-item-sub {
-  display: flex; gap: 5px; font-size: var(--fs-cap); color: var(--text-faint);
+  display: flex; gap: 4px; font-size: var(--fs-cap); color: var(--text-faint);
   min-width: 0;
 }
 .lb-path { font-family: var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lb-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.lb-tags { display: flex; gap: 5px; flex-wrap: wrap; }
+.lb-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .lb-tags i {
   font-style: normal; font-size: var(--fs-cap); color: var(--accent-2);
-  background: rgba(122, 90, 248, .09); border-radius: 4px; padding: 0 5px;
+  background: rgba(122, 90, 248, .09); border-radius: 4px; padding: 0 4px;
 }
 .lb-kind-tag {
   align-self: center; flex: 0 0 auto;
@@ -347,12 +347,12 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px;
 }
 .lb-reasons {
-  display: flex; flex-direction: column; gap: 3px; align-items: flex-end;
+  display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
   align-self: center; flex: 0 0 auto;
 }
 .lb-reasons i {
   font-style: normal; font-size: var(--fs-cap); color: var(--text-faint);
-  background: var(--bg-hover); border-radius: 4px; padding: 1px 5px; white-space: nowrap;
+  background: var(--bg-hover); border-radius: 4px; padding: 1px 4px; white-space: nowrap;
 }
 .lb-empty { padding: 22px 14px; text-align: center; font-size: var(--fs-sm); color: var(--text-faint); line-height: 1.7; }
 .lb-pop-foot {

@@ -910,7 +910,7 @@ onBeforeUnmount(stopTimer)
 .ag-primary:disabled { opacity: .5; cursor: not-allowed; }
 .ag-mini {
   border: 1px solid var(--border); background: var(--bg-raised); color: var(--text);
-  border-radius: 5px; padding: 3px 9px; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
+  border-radius: 5px; padding: 4px 8px; font-size: var(--fs-sm); cursor: pointer; white-space: nowrap;
 }
 .ag-mini:disabled { opacity: .45; cursor: not-allowed; }
 .ag-file-label { display: inline-flex; align-items: center; justify-content: center; }
@@ -921,7 +921,7 @@ onBeforeUnmount(stopTimer)
 .ag-wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
 .ag-shot { margin: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg-raised); }
 .ag-shot img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; }
-.ag-shot figcaption { padding: 5px; display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.ag-shot figcaption { padding: 4px; display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
 
 .ag-frame-box { display: flex; gap: 10px; align-items: stretch; }
 .ag-frame-preview {
@@ -937,7 +937,7 @@ onBeforeUnmount(stopTimer)
 .ag-anim-meta { margin: 0; font-size: var(--fs-sm); color: var(--text); }
 .ag-anim-hint { margin: 0; font-size: var(--fs-cap); color: var(--text-faint); text-align: center; }
 
-.ag-job { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
+.ag-job { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
 .ag-job.job-completed { border-color: #2e9e5b; }
 .ag-job.job-failed { border-color: #d0464a; }
 .ag-job-head { display: flex; align-items: center; gap: 10px; font-size: var(--fs-sm); }

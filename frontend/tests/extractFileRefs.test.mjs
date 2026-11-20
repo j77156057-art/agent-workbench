@@ -47,3 +47,51 @@ test('v/pr/issue 号前缀照旧被过滤（版本号不是文件）', () => {
   const paths = extractFileRefs('对齐 v2.gd 与 issue3.py 的说法')
   assert.deepEqual(paths.map((r) => r.path), [])
 })
+
+test('常见行号写法都要认：:12 / 第12行 / #L12 / :L12-L20 / (12 行)', () => {
+  const cases = [
+    ['见 `a.py:12`。', 12],
+    ['见 `a.py 第 12 行`。', 12],
+    ['见 `a.py#L12`。', 12],
+    ['见 `a.py:L12`。', 12],
+    ['见 `a.py:L12-L20`。', 12],
+    ['见 a.py (12 行)。', 12],
+    ['见 a.py（第 12 行）。', 12],
+  ]
+  for (const [text, line] of cases) {
+    const refs = extractFileRefs(text)
+    assert.deepEqual(refs, [{ path: 'a.py', line }], text)
+  }
+  // 脚注式 `(1)` 不带「行」，不能被当成行号
+  assert.deepEqual(extractFileRefs('见 a.py (1)。'), [{ path: 'a.py', line: 0 }])
+})
+
+test('同一文件的无行号引用被带行号引用吸收，不同行号仍各自保留', () => {
+  // 先不带行号、后带行号：只留一条，位置停在首次出现处
+  assert.deepEqual(extractFileRefs('先看 `a.py`，再看 `a.py:130`。'), [{ path: 'a.py', line: 130 }])
+  // 反过来也一样
+  assert.deepEqual(extractFileRefs('先看 `a.py:130`，再说 `a.py`。'), [{ path: 'a.py', line: 130 }])
+  // 两个不同行号指向不同位置，不合并
+  assert.deepEqual(
+    extractFileRefs('`a.py:10` 与 `a.py:40`'),
+    [{ path: 'a.py', line: 10 }, { path: 'a.py', line: 40 }],
+  )
+  // 只有无行号时保持原样
+  assert.deepEqual(extractFileRefs('`a.py`'), [{ path: 'a.py', line: 0 }])
+})
+
+test('绝对路径：按项目根剥成相对路径，剥不掉的保留原样交给后端判否', () => {
+  const root = 'D:\\WorkBuddy\\rag-agent'
+  assert.deepEqual(
+    extractFileRefs('见 D:/WorkBuddy/rag-agent/agent_trace.py:130。', root),
+    [{ path: 'agent_trace.py', line: 130 }],
+  )
+  assert.deepEqual(
+    extractFileRefs('见 d:/workbuddy/RAG-AGENT/tests/a.py#L7。', root),
+    [{ path: 'tests/a.py', line: 7 }],
+  )
+  assert.deepEqual(
+    extractFileRefs('见 D:/other/proj/a.py:3。', root),
+    [{ path: 'other/proj/a.py', line: 3 }],
+  )
+})

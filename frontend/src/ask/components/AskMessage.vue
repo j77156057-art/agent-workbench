@@ -4,6 +4,8 @@
 // Markdown 正文、文件行号引用 chips（点击打开只读源码弹窗）。
 import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { mdToHtml, extractFileRefs } from '../../workbench/markdown'
+import type { FileRef } from '../../workbench/markdown'
+import { fsApi } from '../../workbench/api'
 import { prefs } from '../askPrefs'
 // 工作流卡片 104KB，只有触发工作流的消息才渲染：按需加载，问答首屏不背
 const WorkflowCard = defineAsyncComponent(() => import('../../workbench/components/WorkflowCard.vue'))
@@ -11,7 +13,7 @@ import ArtifactCards from '../../workbench/components/ArtifactCards.vue'
 import type { ChatMsg, ChatTraceItem, ChatArtifact } from '../../workbench/composables/chat-types'
 import { finalAnswerText } from '../../workbench/composables/chat-types'
 
-const props = defineProps<{ msg: ChatMsg }>()
+const props = defineProps<{ msg: ChatMsg; projectRoot?: string }>()
 const emit = defineEmits<{
   (e: 'openFile', path: string, line: number): void
   (e: 'wfGate', open: boolean): void
@@ -50,7 +52,37 @@ watch(answerText, scheduleHtml, { immediate: true })
 watch(streaming, (on) => { if (!on) renderHtml() })
 onBeforeUnmount(() => { if (htmlTimer) window.clearTimeout(htmlTimer) })
 // 引用在成稿时提取即可，避免流式期间每个正文帧重复扫描全文。
-const refs = computed(() => extractFileRefs(streaming.value ? '' : answerText.value))
+// projectRoot 用来把模型写出的绝对路径剥成项目内相对路径（见 extractFileRefs）。
+const extractedRefs = computed(() =>
+  extractFileRefs(streaming.value ? '' : answerText.value, props.projectRoot || ''),
+)
+
+// 只保留项目里真实存在的文件：模型偶尔会编一个路径，点开才发现 404（工作台早就
+// 用文件树过滤，问答页此前没做）。这里不收整棵树（实测 1.9MB / 4s），改问
+// /api/fs/exists 批量 stat；请求失败时保守放行——宁可多一张可能失效的卡片，
+// 也不把真实证据吞掉。结果按 path 全局缓存，同一文件跨消息只问一次。
+const REF_EXISTS = new Map<string, boolean>()
+let refTicket = 0
+const refs = ref<FileRef[]>([])
+watch(extractedRefs, async (list) => {
+  const ticket = ++refTicket
+  if (!list.length) {
+    refs.value = []
+    return
+  }
+  const unknown = [...new Set(list.map((r) => r.path))].filter((p) => !REF_EXISTS.has(p))
+  if (unknown.length) {
+    try {
+      const res = await fsApi.exists(unknown)
+      for (const p of unknown) REF_EXISTS.set(p, res[p] !== false)
+    } catch {
+      if (ticket === refTicket) refs.value = list
+      return
+    }
+  }
+  if (ticket !== refTicket) return
+  refs.value = list.filter((r) => REF_EXISTS.get(r.path) !== false)
+}, { immediate: true })
 
 // 展示偏好直接读 askPrefs 里那份共享 reactive —— 不再自己 ref(loadAskPrefs()) + 挂
 // ASK_PREFS_EVENT 监听器。同一件事两套机制，漏挂或时序差就是「设置改了界面不跟」。
@@ -472,7 +504,7 @@ const phaseLabel = computed(() => {
 .user-imgs img { max-width: 180px; max-height: 180px; border-radius: var(--r-sm); }
 
 .ai-row { min-width: 0; animation: msg-in .18s ease both; }
-.ai-head { display: flex; align-items: center; gap: 7px; min-height: 22px; margin-bottom: 10px; }
+.ai-head { display: flex; align-items: center; gap: 8px; min-height: 22px; margin-bottom: 10px; }
 .ai-mark {
   display: grid;
   place-items: center;
@@ -499,15 +531,13 @@ const phaseLabel = computed(() => {
 .final-answer-head::before { content: ''; width: 14px; height: 2px; background: var(--accent-text); }
 .final-answer-live { color: var(--accent-text); font-size: var(--fs-cap); font-weight: 400; }
 .ai-bubble { background: transparent; border: 0; padding: 0; width: 100%; max-width: 100%; }
-.answer-loading { display: flex; flex-direction: column; gap: 9px; padding: 4px 0; }
+.answer-loading { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
 .answer-loading span { display: block; width: min(420px, 78%); height: 9px; border-radius: var(--r-full); background: var(--bg-hover); animation: loading-breathe 1.4s ease-in-out infinite; }
 .answer-loading span:last-child { width: min(280px, 52%); animation-delay: .18s; }
 @keyframes loading-breathe { 0%, 100% { opacity: .45; } 50% { opacity: .9; } }
 
-/* 回答正文是主视觉：15px / 1.75，标题逐级放大；不改共享 markdown 层，避免影响工作台。
-   2026-10-29：由 16px / 1.8 下调一档（用户反馈正文偏大），标题 24/20/17 → 22/19/16。
-   同日字阶收口：标题改挂 --fs-* —— 种子皮肤会把正文抬到 16.1px，写死的 16px
-   小标题会比正文还小；h2 没有 19px 档位，用 lead+1px 保持 19/20.3 并跟随缩放。 */
+/* 回答正文是主视觉：挂 --fs-h3（2026-11-19 字阶收口后为 16px）/ 1.75，标题逐级放大；
+   不改共享 markdown 层，避免影响工作台。标题也走 --fs-*，种子皮肤会把整页同步抬一档。 */
 .answer {
   word-break: break-word;
   font-family: var(--font-ui);
@@ -530,7 +560,7 @@ const phaseLabel = computed(() => {
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   border-color: color-mix(in srgb, var(--accent) 12%, transparent);
   border-radius: var(--r-xs);
-  padding: 1px 5px;
+  padding: 1px 4px;
 }
 .answer :deep(.md-pre) { margin: 16px 0; border-radius: var(--r-md); }
 .answer :deep(.md-pre code) { font-size: var(--fs-md); line-height: 1.7; }
@@ -541,7 +571,7 @@ const phaseLabel = computed(() => {
 .ai-status.tone-accent { color: var(--accent-text); }
 .ai-status.tone-warning { color: var(--amber); }
 .ai-status.tone-danger { color: var(--danger); }
-.live-dots { display: inline-flex; gap: 3px; }
+.live-dots { display: inline-flex; gap: 4px; }
 .live-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent-text); animation: live-blink 1.2s ease-in-out infinite; }
 .live-dots i:nth-child(2) { animation-delay: .15s; }
 .live-dots i:nth-child(3) { animation-delay: .3s; }
@@ -593,7 +623,7 @@ const phaseLabel = computed(() => {
 .process-live { flex: none; color: var(--accent-text); font-size: var(--fs-cap); }
 .process-body { padding-left: 1px; }
 
-.narration { padding: 7px 0 7px 16px; border-left: 1px solid var(--border); font-size: var(--fs-md); line-height: 1.7; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.narration { padding: 8px 0 8px 16px; border-left: 1px solid var(--border); font-size: var(--fs-md); line-height: 1.7; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .narration.reasoning {
   margin: 4px 0;
   color: var(--text);
@@ -603,7 +633,7 @@ const phaseLabel = computed(() => {
 .flow-row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   width: 100%;
   min-height: 34px;
   padding: 6px 4px;
@@ -762,7 +792,7 @@ const phaseLabel = computed(() => {
   font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: .03em;
-  padding: 1px 7px;
+  padding: 1px 8px;
   border: 1px solid var(--edge-ink);
   border-radius: 4px;
 }
@@ -801,7 +831,7 @@ const phaseLabel = computed(() => {
   color: var(--text-muted);
   background: var(--bg-hover);
   border-radius: var(--r-sm);
-  padding: 7px 10px;
+  padding: 8px 10px;
 }
 
 .chev { color: var(--text-faint); transition: transform .15s; }

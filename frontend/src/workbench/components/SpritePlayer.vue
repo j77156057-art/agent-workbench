@@ -78,7 +78,7 @@ onBeforeUnmount(() => cancelAnimationFrame(raf))
 </script>
 
 <style scoped>
-.sp-wrap { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-hover); }
+.sp-wrap { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-hover); }
 .sp-canvas {
   max-width: 100%;
   height: auto;
@@ -88,5 +88,5 @@ onBeforeUnmount(() => cancelAnimationFrame(raf))
   border-radius: 4px;
   box-shadow: var(--mi-shadow-control);
 }
-.sp-err { font-size: var(--fs-cap); color: var(--danger); margin: 0; padding: 4px 7px; border-radius: 5px; background: color-mix(in srgb, var(--danger) 8%, transparent); }
+.sp-err { font-size: var(--fs-cap); color: var(--danger); margin: 0; padding: 4px 8px; border-radius: 5px; background: color-mix(in srgb, var(--danger) 8%, transparent); }
 </style>

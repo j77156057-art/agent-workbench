@@ -856,7 +856,7 @@ const externalIds = computed<Set<string>>(
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.ug-title { display: flex; align-items: center; gap: 9px; flex: 1; }
+.ug-title { display: flex; align-items: center; gap: 8px; flex: 1; }
 .ug-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .ug-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .ug-warn { color: var(--amber); font-style: normal; }
@@ -887,7 +887,7 @@ const externalIds = computed<Set<string>>(
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
 }
 .ug-search {
@@ -924,12 +924,12 @@ const externalIds = computed<Set<string>>(
   padding: 1px 6px;
 }
 .ug-clear:hover { color: var(--text); }
-.ug-chips { flex: 1; display: flex; gap: 5px; flex-wrap: wrap; }
+.ug-chips { flex: 1; display: flex; gap: 4px; flex-wrap: wrap; }
 .ug-chip {
   border: 1px solid var(--border);
   background: transparent;
   font-size: var(--fs-cap);
-  padding: 2px 9px;
+  padding: 2px 8px;
   border-radius: 11px;
   cursor: pointer;
   opacity: 0.92;
@@ -948,7 +948,7 @@ const externalIds = computed<Set<string>>(
   border-radius: 4px;
   font-size: var(--fs-sm);
   cursor: pointer;
-  padding: 0 7px;
+  padding: 0 8px;
 }
 .ug-zoom button:hover { color: var(--text); border-color: var(--border-strong); }
 .ug-zoom button { transition: color .16s ease, border-color .16s ease, background .16s ease, transform .16s ease; }
@@ -1001,7 +1001,7 @@ const externalIds = computed<Set<string>>(
 }
 .ug-error { color: var(--danger); }
 .ug-hint { font-size: var(--fs-sm); }
-.ug-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
+.ug-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 4px 14px; cursor: pointer; }
 
 .ug-legend {
   position: absolute;
@@ -1033,7 +1033,7 @@ const externalIds = computed<Set<string>>(
   font-size: var(--fs-cap);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  padding: 1px 9px;
+  padding: 1px 8px;
 }
 .ug-d-name { margin: 10px 0 4px; font-size: var(--fs-body); word-break: break-all; }
 .ug-d-rel {
@@ -1051,7 +1051,7 @@ const externalIds = computed<Set<string>>(
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 5px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   margin-bottom: 10px;
 }
 .ug-d-guid code {
@@ -1096,7 +1096,7 @@ const externalIds = computed<Set<string>>(
 .ug-d-section li {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-size: var(--fs-sm);
   padding: 4px 6px;
   border-radius: 4px;
@@ -1136,13 +1136,13 @@ const externalIds = computed<Set<string>>(
   .ug-panel { height: 100%; border-radius: 0; border-left: 0; border-right: 0; }
   .ug-top { padding: 10px 12px; }
   .ug-stats { display: none; }
-  .ug-toolbar { gap: 7px; padding: 8px 10px; }
+  .ug-toolbar { gap: 8px; padding: 8px 10px; }
   .ug-zoom { margin-left: 0; }
   .ug-body { flex-direction: column; }
   .ug-canvas-wrap { min-height: 44vh; }
   .ug-detail { flex: 0 0 auto; max-height: 40vh; border-left: 0; border-top: 1px solid var(--border); padding: 10px 12px; }
   .ug-d-open { margin-bottom: 8px; }
-  .ug-legend { left: 8px; bottom: 8px; max-width: calc(100% - 16px); overflow-x: auto; white-space: nowrap; padding: 5px 9px; }
+  .ug-legend { left: 8px; bottom: 8px; max-width: calc(100% - 16px); overflow-x: auto; white-space: nowrap; padding: 4px 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .ug-overlay, .ug-panel, .ug-chip, .ug-zoom button, .ug-node rect, .ug-d-mini, .ug-d-open { animation: none; transition: none; }

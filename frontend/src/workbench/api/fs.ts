@@ -344,6 +344,20 @@ export const fsApi = {
   read(path: string): Promise<FileResp> {
     return request<FileResp>(`/api/fs/file?path=${encodeURIComponent(path)}`)
   },
+  /** 批量存在性校验（只 stat 不读内容）：返回 path -> 是否为项目内真文件。
+   *  给「只显示可跳转的引用」用；单条非法/越界路径在后端按 false 返回，不会整批失败。 */
+  async exists(paths: string[]): Promise<Record<string, boolean>> {
+    if (!paths.length) return {}
+    const r = await postJson<{ ok: boolean; exists?: Record<string, boolean> }>('/api/fs/exists', { paths })
+    return r.exists || {}
+  },
+  /** 单文件 stat（存在性 + mtime）：源码弹窗用它判断上次读到的内容还能不能复用。 */
+  async stat(path: string): Promise<{ exists: boolean; mtime: number }> {
+    const r = await postJson<{ ok: boolean; exists?: Record<string, boolean>; mtime?: Record<string, number> }>(
+      '/api/fs/exists', { paths: [path] },
+    )
+    return { exists: r.exists?.[path] === true, mtime: r.mtime?.[path] || 0 }
+  },
   save(path: string, content: string, ifMtime: number | null, reindex = true, taskId = ''): Promise<SaveResp> {
     return postJson<SaveResp>('/api/fs/save', {
       path,

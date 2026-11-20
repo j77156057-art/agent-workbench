@@ -278,7 +278,7 @@ function onVideoPick(ev: Event) {
    3.85 / 4.49:1，全部不过 AA。占位符是输入框里唯一的说明文字，不能靠浏览器默认色。 */
 .cd-input::placeholder { color: var(--text-muted); opacity: 1; }
 .cd-send {
-  height: 36px; padding: 0 15px; border-radius: var(--r-md);
+  height: 36px; padding: 0 16px; border-radius: var(--r-md);
   border: 1px solid var(--accent-deep); background: var(--accent);
   color: var(--accent-ink); font-size: var(--fs-md); font-weight: 600; cursor: pointer;
 }
@@ -288,7 +288,7 @@ function onVideoPick(ev: Event) {
 /* 工具行：模型芯片 / 联网开关 / 深度思考开关 */
 .cd-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .cd-chip {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
   height: 23px; padding: 0 8px;
   border: 1px solid var(--edge-ink-soft); border-radius: 12px;
   background: transparent; color: var(--text-muted);
@@ -305,7 +305,7 @@ function onVideoPick(ev: Event) {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono);
 }
-.cd-chip-model { padding: 0 7px 0 8px; }
+.cd-chip-model { padding: 0 8px 0 8px; }
 .cd-chip-on {
   color: var(--accent); border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 7%, transparent);
@@ -357,7 +357,7 @@ function onVideoPick(ev: Event) {
 .cd-file-input { display: none; }
 .cd-attach { cursor: pointer; }
 .cd-attachments { display: inline-flex; gap: 4px; flex-wrap: wrap; max-width: 360px; }
-.cd-attachment { display: inline-flex; align-items: center; gap: 3px; max-width: 150px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted); font-size: var(--fs-cap); }
+.cd-attachment { display: inline-flex; align-items: center; gap: 4px; max-width: 150px; padding: 2px 4px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-muted); font-size: var(--fs-cap); }
 .cd-attachment button { border: 0; background: transparent; color: var(--text-faint); cursor: pointer; padding: 0 1px; }
 .cd-attachment-error { color: var(--danger); font-size: var(--fs-cap); }
 
@@ -374,7 +374,7 @@ function onVideoPick(ev: Event) {
 }
 @media (max-width: 560px) {
   .cd-inputbar { padding: 6px 8px 8px; }
-  .cd-tools { gap: 5px; }
+  .cd-tools { gap: 4px; }
   .cd-chip { max-width: calc(100vw - 24px); }
   .cd-chip-model { max-width: min(62vw, 240px); }
   .cd-input-row { gap: 6px; }

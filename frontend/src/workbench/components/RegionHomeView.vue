@@ -124,11 +124,11 @@ function contractText(c: RegionCard): string {
   gap: 12px; margin-bottom: 14px;
 }
 .rh-head h3 { margin: 0; font-size: var(--fs-h2); color: var(--text); font-weight: 750; letter-spacing: -.01em; }
-.rh-head p { margin: 3px 0 0; font-size: var(--fs-sm); color: var(--text-faint); }
+.rh-head p { margin: 4px 0 0; font-size: var(--fs-sm); color: var(--text-faint); }
 .rh-refresh {
   flex: 0 0 auto; border: 1px solid var(--border); background: var(--bg-raised);
   color: var(--text-muted); font-size: var(--fs-cap); border-radius: 6px;
-  padding: 4px 11px; cursor: pointer; font-family: var(--font-ui);
+  padding: 4px 12px; cursor: pointer; font-family: var(--font-ui);
 }
 .rh-refresh:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 32%, var(--bg-raised)); color: var(--accent); }
 .rh-refresh:focus-visible, .rh-card:focus-visible, .rh-missing-toggle:focus-visible, .rh-missing-go:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: 2px; }
@@ -168,10 +168,10 @@ function contractText(c: RegionCard): string {
 .rh-rail { width: 3px; flex: 0 0 3px; }
 .rh-body {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 5px;
-  padding: 14px 15px 12px;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 14px 16px 12px;
 }
-.rh-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.rh-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .rh-name { font-size: var(--fs-body); font-weight: 750; color: var(--text); }
 .rh-dir { font-family: var(--font-mono); font-size: var(--fs-cap); color: var(--text-faint); }
 .rh-branch {
@@ -221,7 +221,7 @@ function contractText(c: RegionCard): string {
 .rh-missing {
   margin-top: 10px;
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px;
-  padding: 8px 11px;
+  padding: 8px 12px;
   border: 1px dashed var(--border);
   border-radius: 9px;
   background: color-mix(in srgb, var(--bg-raised) 66%, transparent);
@@ -246,7 +246,7 @@ function contractText(c: RegionCard): string {
   flex-basis: 100%;
   list-style: none; margin: 4px 0 0; padding: 6px 0 2px;
   border-top: 1px dashed var(--border);
-  display: flex; flex-direction: column; gap: 5px;
+  display: flex; flex-direction: column; gap: 4px;
 }
 .rh-missing-list li {
   display: flex; align-items: center; gap: 8px;
@@ -260,7 +260,7 @@ function contractText(c: RegionCard): string {
 .rh-dot { width: 7px; height: 7px; border-radius: 2px; flex: 0 0 7px; }
 
 @media (max-width: 620px) {
-  .rh-grid { grid-template-columns: minmax(0, 1fr); gap: 9px; }
+  .rh-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .rh-card { min-height: 0; }
   .rh-missing-list .rh-line-faint { margin-left: 0; flex-basis: 100%; }
 }

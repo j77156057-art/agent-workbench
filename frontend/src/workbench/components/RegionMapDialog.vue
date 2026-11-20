@@ -384,7 +384,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.rm-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.rm-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .rm-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .rm-root {
   font-size: var(--fs-cap);
@@ -396,7 +396,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 }
 .rm-top-actions { display: flex; gap: 6px; align-items: center; flex: 0 0 auto; }
 .rm-refresh {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
   font-size: var(--fs-sm); padding: 4px 10px; border-radius: 6px;
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-muted); cursor: pointer;
 }
@@ -430,9 +430,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-contract {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
+  gap: 8px;
   border-radius: 8px;
-  padding: 9px 12px;
+  padding: 8px 12px;
   font-size: var(--fs-sm);
   margin-bottom: 16px;
 }
@@ -443,12 +443,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-contract svg { flex: 0 0 auto; margin-top: 1px; }
 .rm-contract-text { min-width: 0; }
 .rm-contract-text strong { font-size: var(--fs-sm); }
-.rm-contract-text ul { margin: 5px 0 0; padding-left: 18px; line-height: 1.7; }
+.rm-contract-text ul { margin: 4px 0 0; padding-left: 18px; line-height: 1.7; }
 .rm-contract-off { color: var(--text-faint); font-size: var(--fs-sm); }
 
 .rm-section { margin-bottom: 18px; }
 .rm-section h3 {
-  margin: 0 0 9px;
+  margin: 0 0 8px;
   font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text);
@@ -509,8 +509,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-card.selected { border-color: color-mix(in srgb, var(--accent) 47%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 27%, transparent) inset; }
 .rm-card.missing { cursor: default; opacity: 0.72; }
 .rm-card-bar { flex: 0 0 3px; }
-.rm-card-main { flex: 1 1 auto; min-width: 0; padding: 9px 11px 10px; }
-.rm-card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+.rm-card-main { flex: 1 1 auto; min-width: 0; padding: 8px 12px 10px; }
+.rm-card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .rm-card-name { font-size: var(--fs-sm); font-weight: 600; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .rm-card-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .rm-card-dir {
@@ -519,16 +519,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   color: var(--text-muted);
 }
 .rm-card-desc {
-  margin: 0 0 7px;
+  margin: 0 0 8px;
   font-size: var(--fs-sm);
   line-height: 1.55;
   color: var(--text-muted);
 }
-.rm-card-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
+.rm-card-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
 .rm-badge {
   font-size: var(--fs-cap);
   line-height: 17px;
-  padding: 0 7px;
+  padding: 0 8px;
   border-radius: 9px;
   border: 1px solid var(--border-strong);
   color: var(--text-muted);
@@ -542,7 +542,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 5px 7px;
+  gap: 4px 8px;
   font-size: var(--fs-cap);
   margin-top: 4px;
 }
@@ -556,13 +556,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--fs-cap);
   color: var(--text-muted);
   background: var(--bg-hover);
   border: 1px solid var(--border-strong);
   border-radius: 9px;
-  padding: 1px 8px 1px 7px;
+  padding: 1px 8px 1px 8px;
 }
 .rm-chip i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
 .rm-export {
@@ -571,17 +571,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   color: var(--amber);
   background: var(--bg-hover);
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
 }
 
-.rm-card-actions { display: flex; justify-content: flex-end; margin-top: 9px; }
+.rm-card-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .rm-create-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--fs-cap);
   line-height: 1;
-  padding: 6px 11px;
+  padding: 6px 12px;
   border-radius: 6px;
   border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--bg-raised));
   background: color-mix(in srgb, var(--accent) 7%, transparent);
@@ -595,10 +595,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 .rm-fill-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--fs-cap);
   line-height: 1;
-  padding: 6px 11px;
+  padding: 6px 12px;
   border-radius: 6px;
   border: 1px solid color-mix(in srgb, var(--amber) 38%, transparent);
   background: color-mix(in srgb, var(--amber) 12%, var(--bg-raised));
@@ -621,7 +621,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 12%, var(--bg-raised));
   border: 1px dashed color-mix(in srgb, var(--danger) 38%, transparent);
-  padding: 0 5px;
+  padding: 0 4px;
 }
 
 .rm-state {
@@ -656,9 +656,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
   .rm-title { min-width: 0; }
   .rm-root { display: none; }
   .rm-top-actions { gap: 4px; }
-  .rm-top-actions .rm-refresh { padding: 4px 7px; font-size: var(--fs-cap); }
+  .rm-top-actions .rm-refresh { padding: 4px 8px; font-size: var(--fs-cap); }
   .rm-contract { font-size: var(--fs-sm); }
-  .rm-card-main { padding: 8px 9px 9px; }
+  .rm-card-main { padding: 8px 8px 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rm-overlay, .rm-panel, .rm-refresh, .rm-node rect, .rm-card, .rm-create-btn, .rm-fill-btn { animation: none; transition: none; }

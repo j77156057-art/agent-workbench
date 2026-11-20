@@ -87,7 +87,7 @@ function press(_e: MouseEvent) {}
   position: fixed;
   z-index: 1200;
   min-width: 196px;
-  padding: 6px 6px 7px;
+  padding: 6px 6px 8px;
   background: color-mix(in srgb, var(--bg-raised) 92%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: 9px;
@@ -103,13 +103,13 @@ function press(_e: MouseEvent) {}
 .sel-ai-meta {
   font-size: var(--fs-cap);
   color: var(--text-muted);
-  padding: 0 4px 5px;
+  padding: 0 4px 4px;
   white-space: nowrap;
   letter-spacing: 0.02em;
 }
 .sel-ai-actions {
   display: flex;
-  gap: 3px;
+  gap: 4px;
 }
 .sel-ai-btn {
   display: inline-flex;

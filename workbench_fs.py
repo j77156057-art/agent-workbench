@@ -162,6 +162,40 @@ def _ensure_writable(rel_n: str):
         raise FsError(403, f"受保护目录 {bad[0]}/ 禁止在工作台中修改。")
 
 
+def paths_stat(root, paths) -> dict:
+    """批量 stat：``{path: {"exists": bool, "mtime": float}}``。
+
+    两个用途共用一次 stat：
+      · 问答页过滤幻觉引用（只关心 exists）；
+      · 源码弹窗判断「上次读到的内容还能不能复用」（比对 mtime，变了就重读）。
+    单条非法路径（绝对路径/越界）不抛错，按不存在处理 —— 那是模型写错了引用，
+    不该让整批校验失败、把其它真实引用一起标成失效。
+    """
+    root_abs = _require_root(root)
+    out: dict = {}
+    for raw in list(paths or [])[:200]:
+        key = str(raw)
+        try:
+            rel_n = _norm_rel(key)
+        except FsError:
+            out[key] = {"exists": False, "mtime": 0.0}
+            continue
+        target = os.path.realpath(os.path.join(root_abs, *rel_n.split("/")))
+        inside = target == root_abs or target.startswith(root_abs + os.sep)
+        ok = bool(inside and os.path.isfile(target))
+        out[key] = {"exists": ok, "mtime": (os.path.getmtime(target) if ok else 0.0)}
+    return out
+
+
+def paths_exist(root, paths) -> dict:
+    """批量判断「这些相对路径是否是真文件」——给问答页过滤幻觉引用用。
+
+    与 ``read_full`` 同一套沙箱口径（相对路径、realpath 后仍在根内），但**只做 stat**
+    不读内容：拉一次 ``/api/fs/tree`` 要 1.9MB / 4s，问答页为了 3~9 条引用不值得。
+    """
+    return {k: v["exists"] for k, v in paths_stat(root, paths).items()}
+
+
 def _lang_of(name: str) -> str:
     return WB_LANG.get(os.path.splitext(name)[1].lower(), "text")
 
@@ -1644,6 +1678,25 @@ def tree_ep(depth: int = 6):
 def file_ep(path: str):
     try:
         return read_full(_runtime_root(), path)
+    except FsError as e:
+        return _err(e)
+
+
+class ExistsReq(BaseModel):
+    paths: list[str] = []
+
+
+@router.post("/exists")
+def exists_ep(req: ExistsReq):
+    """批量存在性校验（只 stat，不读内容）：问答页据此隐藏不存在的引用卡片；
+    源码弹窗再用同一次 stat 的 mtime 判断缓存内容是否已经过期。"""
+    try:
+        st = paths_stat(_runtime_root(), req.paths)
+        return {
+            "ok": True,
+            "exists": {k: v["exists"] for k, v in st.items()},
+            "mtime": {k: v["mtime"] for k, v in st.items() if v["exists"]},
+        }
     except FsError as e:
         return _err(e)
 

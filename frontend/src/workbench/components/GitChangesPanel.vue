@@ -234,7 +234,7 @@ function repoKey(dir: string) {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
 }
-.gc-title { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.gc-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
 .gc-title h2 { margin: 0; font-size: var(--fs-body); font-weight: 600; }
 .gc-stats { font-size: var(--fs-sm); color: var(--text-faint); }
 .gc-ro {
@@ -242,7 +242,7 @@ function repoKey(dir: string) {
   color: var(--text-muted);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
   line-height: 15px;
   flex: 0 0 auto;
 }
@@ -261,19 +261,19 @@ function repoKey(dir: string) {
 .gc-iconbtn, .gc-chip, .gc-repo-head, .gc-file, .gc-retry { transition: color .16s ease, background .16s ease, border-color .16s ease; }
 .gc-toolbar {
   flex: 0 0 auto;
-  padding: 9px 16px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
 }
 .gc-chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .gc-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
   font-size: var(--fs-sm);
-  padding: 2px 9px;
+  padding: 2px 8px;
   border-radius: 11px;
   cursor: pointer;
 }
@@ -284,7 +284,7 @@ function repoKey(dir: string) {
 .gc-chip.active i { color: var(--accent); }
 .gc-content { flex: 1; overflow-y: auto; padding: 8px 12px 20px; }
 .gc-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 0; color: var(--text-faint); font-size: var(--fs-sm); }
-.gc-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 5px 14px; cursor: pointer; }
+.gc-retry { border: 1px solid var(--border-strong); background: transparent; color: var(--text); border-radius: 5px; padding: 4px 14px; cursor: pointer; }
 .gc-clean { color: var(--green); }
 .gc-repo { margin: 8px 2px 0; }
 .gc-repo-head {
@@ -310,7 +310,7 @@ function repoKey(dir: string) {
   color: var(--text-faint);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
   line-height: 16px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -325,7 +325,7 @@ function repoKey(dir: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 8px;
+  padding: 4px 8px;
   border: none;
   background: transparent;
   color: var(--text);
@@ -340,7 +340,7 @@ function repoKey(dir: string) {
   font-size: var(--fs-cap);
   border: 1px solid;
   border-radius: 4px;
-  padding: 0 5px;
+  padding: 0 4px;
   line-height: 15px;
   flex: 0 0 auto;
 }

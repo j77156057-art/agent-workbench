@@ -135,7 +135,7 @@ async function openInEditor() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 12px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
 }
@@ -151,7 +151,7 @@ async function openInEditor() {
 }
 .rr-file-open {
   flex: 0 0 auto;
-  padding: 3px 9px;
+  padding: 4px 8px;
   font-size: var(--fs-cap);
   border: 1px solid var(--border-strong);
   border-radius: 5px;

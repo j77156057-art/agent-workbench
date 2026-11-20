@@ -888,7 +888,7 @@ onMounted(() => {
   display: block; width: 100%; text-align: left;
   border: none; background: none; cursor: pointer;
   font-family: var(--font-ui); font-size: var(--fs-sm); color: var(--text);
-  padding: 7px 8px; border-radius: 6px;
+  padding: 8px 8px; border-radius: 6px;
 }
 .ac-more-item:hover { background: var(--bg-hover); }
 
@@ -902,7 +902,7 @@ onMounted(() => {
 .ac-kind {
   border: 1px solid var(--border); background: var(--bg-raised); color: var(--text-muted);
   font-family: var(--font-ui); font-size: var(--fs-sm); font-weight: 500;
-  padding: 4px 11px; border-radius: 14px; cursor: pointer; transition: all .12s;
+  padding: 4px 12px; border-radius: 14px; cursor: pointer; transition: all .12s;
 }
 .ac-kind:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .ac-kind.on { --btn-fill: var(--accent); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -959,7 +959,7 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-thumb-badge {
   position: absolute; left: 6px; top: 6px;
   font-size: var(--fs-cap); font-weight: 700; line-height: 1;
-  padding: 3px 6px; border-radius: 5px;
+  padding: 4px 6px; border-radius: 5px;
   background: color-mix(in srgb, var(--bg-raised) 92%, transparent); color: var(--text);
   border: 1px solid var(--border);
 }
@@ -975,11 +975,11 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-kind-animation { border-color: var(--accent-deep); background: color-mix(in srgb, var(--accent-deep) 16%, var(--bg-raised)); }
 .ac-dup-badge {
   position: absolute; right: 6px; bottom: 6px;
-  font-size: var(--fs-cap); font-weight: 600; padding: 2px 7px; border-radius: 10px;
+  font-size: var(--fs-cap); font-weight: 600; padding: 2px 8px; border-radius: 10px;
   background: color-mix(in srgb, var(--amber) 12%, transparent); color: var(--amber);
   border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
 }
-.ac-card-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 3px; }
+.ac-card-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 4px; }
 .ac-card-name {
   margin: 0; font-size: var(--fs-sm); font-weight: 600; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1015,26 +1015,26 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-refresh:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .ac-lib-head-actions { display: flex; gap: 6px; margin-left: auto; }
 .ac-lib-head-actions .ac-refresh { margin-left: 0; }
-.ac-placeholder { margin: 0 0 12px; padding: 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); }
+.ac-placeholder { margin: 0 0 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); }
 .ac-placeholder-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .ac-placeholder-head b, .ac-placeholder-head small { display: block; }
 .ac-placeholder-head b { font-size: var(--fs-sm); }
-.ac-placeholder-head small { margin-top: 3px; color: var(--text-faint); font-size: var(--fs-cap); }
+.ac-placeholder-head small { margin-top: 4px; color: var(--text-faint); font-size: var(--fs-cap); }
 .ac-placeholder-form { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .ac-placeholder-kinds { display: flex; gap: 2px; padding: 2px; border-radius: 6px; background: var(--bg-hover); }
-.ac-placeholder-kinds button { padding: 4px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); cursor: pointer; }
+.ac-placeholder-kinds button { padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); cursor: pointer; }
 .ac-placeholder-kinds button.on { background: var(--bg-raised); color: var(--accent-text); }
 .ac-placeholder-form > input { flex: 1 1 240px; min-width: 0; height: 30px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); font: inherit; font-size: var(--fs-sm); }
 .ac-placeholder-form .ac-primary { min-height: 30px; }
 .ac-placeholder-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--danger); font-size: var(--fs-cap); }
-.ac-placeholder-result { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
+.ac-placeholder-result { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
 .ac-placeholder-result dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); flex: 1 1 420px; gap: 8px; margin: 0; }
 .ac-placeholder-result dt { color: var(--text-faint); font-size: var(--fs-cap); }
 .ac-placeholder-result dd { margin: 2px 0 0; color: var(--text); font-family: var(--font-mono); font-size: var(--fs-cap); overflow-wrap: anywhere; }
 .ac-lib-group { margin-bottom: 18px; }
 .ac-lib-dir {
   display: flex; align-items: center; gap: 6px;
-  margin: 0 0 9px; font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted);
+  margin: 0 0 8px; font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted);
 }
 .ac-lib-dir i { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); }
 .ac-lib-card { cursor: default; }
@@ -1042,7 +1042,7 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-lib-actions { display: flex; gap: 6px; margin-top: 6px; }
 .ac-mini-btn {
   border: 1px solid var(--border); background: var(--bg-raised); border-radius: 5px;
-  padding: 3px 9px; font-size: var(--fs-cap); cursor: pointer;
+  padding: 4px 8px; font-size: var(--fs-cap); cursor: pointer;
   font-family: var(--font-ui); color: var(--text-muted);
 }
 .ac-mini-btn:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
@@ -1063,7 +1063,7 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-drawer-head {
   flex: 0 0 auto;
   display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
-  padding: 13px 16px; border-bottom: 1px solid var(--border);
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
 }
 .ac-drawer-title { margin: 0; font-size: var(--fs-body); font-weight: 700; color: var(--text); }
 .ac-x {
@@ -1092,7 +1092,7 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-meta-grid a { color: var(--accent); text-decoration: none; }
 .ac-cc0 { color: var(--green); font-weight: 600; }
 .ac-summary { margin: 4px 0 10px; font-size: var(--fs-sm); line-height: 1.6; color: var(--text-muted); }
-.ac-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+.ac-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
 .ac-tag {
   font-size: var(--fs-cap); padding: 2px 8px; border-radius: 10px;
   background: var(--bg-hover); color: var(--text-muted);
@@ -1133,7 +1133,7 @@ button.ac-card { font: inherit; color: inherit; }
   box-shadow: var(--mi-shadow-pop);
   animation: ac-modal-in .2s cubic-bezier(.2,.8,.2,1) both;
 }
-.ac-modal-sub { margin: 3px 0 0; font-size: var(--fs-cap); color: var(--text-faint); }
+.ac-modal-sub { margin: 4px 0 0; font-size: var(--fs-cap); color: var(--text-faint); }
 .ac-peek-loading { flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 30px; text-align: center; }
 .ac-spinner {
   width: 22px; height: 22px;
@@ -1146,11 +1146,11 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-peek-body { flex: 1 1 auto; min-height: 0; display: flex; }
 .ac-peek-files { flex: 1 1 55%; overflow-y: auto; border-right: 1px solid var(--border); padding: 10px 12px; }
 .ac-dir-group { margin-bottom: 12px; }
-.ac-dir-head { display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.ac-dir-head { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .ac-dir-head i { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); font-weight: 400; }
-.ac-file-list { list-style: none; margin: 5px 0 0; padding: 0 0 0 24px; }
+.ac-file-list { list-style: none; margin: 4px 0 0; padding: 0 0 0 24px; }
 .ac-file-row {
-  display: flex; align-items: center; gap: 7px; padding: 2px 4px;
+  display: flex; align-items: center; gap: 8px; padding: 2px 4px;
   border-radius: 5px; font-size: var(--fs-sm);
 }
 .ac-file-row.active { background: color-mix(in srgb, var(--accent) 8%, transparent); }
@@ -1174,11 +1174,11 @@ button.ac-card { font: inherit; color: inherit; }
 .ac-preview-tip { font-size: var(--fs-sm); color: var(--text-faint); text-align: center; }
 .ac-modal-foot {
   flex: 0 0 auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  border-top: 1px solid var(--border); padding: 11px 16px;
+  border-top: 1px solid var(--border); padding: 12px 16px;
 }
-.ac-dest-root { font-size: var(--fs-sm); color: var(--text-muted); display: flex; align-items: center; gap: 5px; }
+.ac-dest-root { font-size: var(--fs-sm); color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
 .ac-dest-root select {
-  border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; height: 26px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; height: 26px;
   font-family: var(--font-ui); font-size: var(--fs-sm); background: var(--bg-raised);
 }
 .ac-selected-n { font-size: var(--fs-sm); color: var(--text-muted); }
@@ -1190,7 +1190,7 @@ button.ac-card { font: inherit; color: inherit; }
   position: absolute; left: 50%; bottom: 26px; transform: translateX(-50%);
   z-index: 60; max-width: 70%;
   background: var(--ink); color: var(--bg); font-size: var(--fs-sm); line-height: 1.5;
-  padding: 9px 16px; border-radius: 9px; box-shadow: var(--mi-shadow-pop);
+  padding: 8px 16px; border-radius: 9px; box-shadow: var(--mi-shadow-pop);
   margin: 0;
 }
 .ac-toast-enter-active, .ac-toast-leave-active { transition: opacity .18s, transform .18s; }

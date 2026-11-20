@@ -239,7 +239,7 @@ onBeforeUnmount(stopPoll)
 .pp-badge {
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 1px 7px;
+  padding: 1px 8px;
   color: var(--text-muted);
   font-size: var(--fs-cap);
 }
@@ -259,7 +259,7 @@ onBeforeUnmount(stopPoll)
   background: var(--bg);
   color: var(--text);
   font: inherit;
-  padding: 7px 8px;
+  padding: 8px 8px;
 }
 .pp-textarea { resize: vertical; margin-bottom: 6px; }
 .pp-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -269,7 +269,7 @@ onBeforeUnmount(stopPoll)
   border-radius: 6px;
   background: var(--bg-hover);
   color: var(--text);
-  padding: 5px 11px;
+  padding: 4px 12px;
   font-size: var(--fs-cap);
   cursor: pointer;
 }
@@ -284,16 +284,16 @@ onBeforeUnmount(stopPoll)
 .pp-last { color: var(--text-muted); font-size: var(--fs-cap); white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .pp-section { margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--border); }
 .pp-section-head { display: flex; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: var(--fs-cap); margin-bottom: 6px; }
-.pp-task { display: flex; gap: 7px; align-items: flex-start; padding: 3px 0; font-size: var(--fs-cap); line-height: 1.5; }
+.pp-task { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; font-size: var(--fs-cap); line-height: 1.5; }
 .pp-task-state { flex: 0 0 auto; color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
 .pp-task-state.done { color: var(--green); }
 .pp-task-state.doing { color: var(--amber); }
 .pp-log { border-bottom: 1px dashed var(--border); padding: 6px 0; }
 .pp-log-head { display: flex; justify-content: space-between; gap: 8px; }
 .pp-log-kind { color: var(--accent); font-size: var(--fs-cap); }
-.pp-log-text { margin: 3px 0; color: var(--text-dim); font-size: var(--fs-cap); line-height: 1.55; white-space: pre-wrap; }
+.pp-log-text { margin: 4px 0; color: var(--text-dim); font-size: var(--fs-cap); line-height: 1.55; white-space: pre-wrap; }
 .pp-log summary { color: var(--text-muted); cursor: pointer; font-size: var(--fs-cap); }
-.pp-pre { margin: 4px 0 0; padding: 7px; border: 1px dashed var(--border); border-radius: 6px; background: var(--bg); color: var(--text-muted); font: 11px/1.5 var(--font-mono); max-height: 180px; overflow: auto; white-space: pre-wrap; }
+.pp-pre { margin: 4px 0 0; padding: 8px; border: 1px dashed var(--border); border-radius: 6px; background: var(--bg); color: var(--text-muted); font: 11px/1.5 var(--font-mono); max-height: 180px; overflow: auto; white-space: pre-wrap; }
 .pp :deep(button:focus-visible), .pp :deep(textarea:focus-visible), .pp :deep(input:focus-visible) {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

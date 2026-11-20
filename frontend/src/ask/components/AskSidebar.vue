@@ -393,10 +393,16 @@ const currentSessionTitle = computed(() => {
   border-radius: 8px;
   background: var(--accent);
   color: var(--accent-ink);
+  /* 玻璃材质逃生口：glass.css 会把所有 button 的底换成半透白，
+     填色按钮必须声明 --btn-fill 保住自己的底色，否则黑字压白底 = 1.43:1。
+     2026-11-20 L3 组合矩阵抓出（glass.css 注释里写着"已修 4 个隐形按钮"，
+     但这一处实际漏了）。 */
+  --btn-fill: var(--accent);
   font-weight: 600;
 }
 
 .new-chat:hover {
+  --btn-fill: color-mix(in srgb, var(--accent) 88%, var(--ink));
   background: color-mix(in srgb, var(--accent) 88%, var(--ink));
   color: var(--accent-ink);
 }
@@ -456,7 +462,7 @@ const currentSessionTitle = computed(() => {
   gap: 8px;
   width: calc(100% - 20px);
   margin: 0 10px;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: 1px solid var(--ui2-rail-line);
   border-radius: 8px;
   background: color-mix(in srgb, var(--ui2-rail-text) 9%, transparent);
@@ -484,7 +490,10 @@ const currentSessionTitle = computed(() => {
 .assistant-entry-main small {
   overflow: hidden;
   color: var(--ui2-rail-muted);
-  font-size: 11px;
+  /* 2026-11-19 A1 收口：原写字面量 11px —— 它是全页唯一逃出令牌体系的字号，
+     导致实测多出第 5 个字号桶（90% 文本要 4~5 桶，判据 ≤3）。改回令牌，
+     与 --fs-cap（=12px，已并入 sm 档）对齐。 */
+  font-size: var(--fs-cap);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -511,7 +520,7 @@ const currentSessionTitle = computed(() => {
 }
 
 .history-heading { display: flex; flex-direction: column; gap: 6px; }
-.session-search { width: calc(100% - 20px); height: 30px; margin: 0 10px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); outline: none; }
+.session-search { width: calc(100% - 20px); height: 30px; margin: 0 10px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font: inherit; font-size: var(--fs-sm); outline: none; }
 .session-search:focus { border-color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent-soft); }
 .session-search::placeholder { color: var(--text-muted); }
 
@@ -628,7 +637,7 @@ const currentSessionTitle = computed(() => {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 4px;
   min-width: 40px;
   min-height: 40px;
   padding: 8px;

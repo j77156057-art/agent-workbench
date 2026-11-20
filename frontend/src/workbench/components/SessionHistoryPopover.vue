@@ -339,7 +339,7 @@ watch(() => props.open, (value) => {
 }
 .cd-pop-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); margin-bottom: 8px; }
 .cd-mini {
-  height: 21px; padding: 0 9px; font-size: var(--fs-cap);
+  height: 21px; padding: 0 8px; font-size: var(--fs-cap);
   border: 1px solid var(--border-strong); border-radius: 5px;
   background: transparent; color: var(--text-muted); cursor: pointer;
 }
@@ -364,8 +364,8 @@ watch(() => props.open, (value) => {
 .cd-session-head { display: flex; align-items: flex-start; gap: 8px; justify-content: space-between; }
 .cd-session-subtitle { color: var(--text-faint); font-size: var(--fs-cap); line-height: 1.45; margin-top: -4px; }
 .cd-session-new {
-  width: 100%; display: flex; align-items: center; gap: 9px; margin: 8px 0;
-  padding: 8px 9px; border: 1px solid var(--mi-border); border-radius: var(--mi-radius-sm);
+  width: 100%; display: flex; align-items: center; gap: 8px; margin: 8px 0;
+  padding: 8px 8px; border: 1px solid var(--mi-border); border-radius: var(--mi-radius-sm);
   background: var(--mi-surface); color: var(--accent); text-align: left; cursor: pointer;
 }
 .cd-session-new:hover { background: var(--bg-selected); border-color: var(--accent); }
@@ -377,7 +377,7 @@ watch(() => props.open, (value) => {
 .cd-session-clear {
   width: 100%;
   margin-top: 8px;
-  padding: 8px 9px 4px;
+  padding: 8px 8px 4px;
   border: 0;
   border-top: 1px solid var(--border);
   background: transparent;
@@ -389,14 +389,14 @@ watch(() => props.open, (value) => {
 .cd-session-clear:hover:not(:disabled) { background: var(--mi-surface-raised); }
 .cd-session-clear:disabled { opacity: .45; cursor: default; }
 .cd-session-error { padding: 6px 8px; color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger); border-radius: var(--mi-radius-sm); font-size: var(--fs-cap); }
-.cd-session-empty { padding: 12px 5px; color: var(--text-faint); font-size: var(--fs-cap); text-align: center; }
+.cd-session-empty { padding: 12px 4px; color: var(--text-faint); font-size: var(--fs-cap); text-align: center; }
 .cd-session-search { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; margin: 4px 0 8px; color: var(--text-muted); font-size: var(--fs-cap); }
 .cd-session-search input { min-width: 0; height: 30px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font: inherit; outline: none; }
 .cd-session-search input:focus { border-color: var(--accent-text); box-shadow: 0 0 0 2px var(--accent-soft); }
 .cd-session-search-count { font-family: var(--ui2-font-mono, var(--font-mono)); font-variant-numeric: tabular-nums; }
 .cd-session-item { display: flex; align-items: stretch; border-top: 1px solid var(--border); }
 .cd-session-item.active { background: var(--bg-selected); }
-.cd-session-main { flex: 1; min-width: 0; display: flex; gap: 7px; align-items: center; padding: 8px 5px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.cd-session-main { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center; padding: 8px 4px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .cd-session-main:hover { background: var(--bg-hover); }
 .cd-session-main:disabled { opacity: .6; cursor: default; }
 .cd-session-current { flex: 0 0 14px; color: var(--text-faint); font-size: var(--fs-cap); }
@@ -405,10 +405,10 @@ watch(() => props.open, (value) => {
 .cd-session-copy strong, .cd-session-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cd-session-copy strong { font-size: var(--fs-sm); font-weight: 600; }
 .cd-session-copy small { margin-top: 2px; color: var(--text-faint); font-size: var(--fs-cap); }
-.cd-session-delete { align-self: center; margin-right: 5px; width: 22px; height: 22px; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; font-size: var(--fs-h2); }
+.cd-session-delete { align-self: center; margin-right: 4px; width: 22px; height: 22px; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; font-size: var(--fs-h2); }
 .cd-session-delete:hover { color: var(--danger); }
 .cd-session-delete:disabled { cursor: default; opacity: .5; }
-.cd-session-fork { align-self: center; margin-right: 2px; padding: 3px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); cursor: pointer; white-space: nowrap; }
+.cd-session-fork { align-self: center; margin-right: 2px; padding: 4px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); font-size: var(--fs-cap); cursor: pointer; white-space: nowrap; }
 .cd-session-fork:hover { color: var(--accent-text); background: var(--bg-hover); }
 .cd-session-fork:disabled { cursor: default; opacity: .5; }
 .cd-session-action-on { color: var(--accent-text); background: var(--bg-selected); }
@@ -416,28 +416,28 @@ watch(() => props.open, (value) => {
 .cd-snapshot-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .cd-snapshot-head b, .cd-snapshot-head small { display: block; }
 .cd-snapshot-head b { font-size: var(--fs-sm); }
-.cd-snapshot-head small { margin-top: 3px; color: var(--text-faint); font-size: var(--fs-cap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 245px; }
+.cd-snapshot-head small { margin-top: 4px; color: var(--text-faint); font-size: var(--fs-cap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 245px; }
 .cd-snapshot-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 0 2px; color: var(--danger); font-size: var(--fs-cap); }
-.cd-snapshot-list { list-style: none; margin: 10px 0 0 7px; padding: 0 0 0 10px; border-left: 1px solid var(--border-strong); }
+.cd-snapshot-list { list-style: none; margin: 10px 0 0 8px; padding: 0 0 0 10px; border-left: 1px solid var(--border-strong); }
 .cd-snapshot-list li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 0 0 12px 4px; }
 .cd-snapshot-list li:last-child { padding-bottom: 0; }
 .cd-snapshot-dot { position: absolute; left: -15px; top: 5px; width: 7px; height: 7px; border: 2px solid var(--bg); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .cd-snapshot-copy { min-width: 0; }
 .cd-snapshot-copy b, .cd-snapshot-copy small { display: block; font-size: var(--fs-cap); }
-.cd-snapshot-copy b span { margin-left: 5px; color: var(--text-faint); font-family: var(--font-mono); font-weight: 400; }
+.cd-snapshot-copy b span { margin-left: 4px; color: var(--text-faint); font-family: var(--font-mono); font-weight: 400; }
 .cd-snapshot-copy small { margin-top: 2px; color: var(--text-faint); }
 .cd-snapshot-copy p { margin: 4px 0 0; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.45; overflow-wrap: anywhere; }
 .cd-snapshot-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
 .cd-rewind-link { color: var(--danger); }
 .cd-session-pop-rewind { width: 480px; max-height: min(78vh, 680px); }
-.cd-rewind-notice { margin-top: 8px; padding: 7px 8px; border-left: 2px solid var(--green); background: color-mix(in srgb, var(--green) 7%, var(--bg)); color: var(--green); font-size: var(--fs-cap); line-height: 1.55; }
-.cd-rewind-panel { margin-top: 8px; padding: 11px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border)); border-radius: 6px; background: var(--bg-raised); }
+.cd-rewind-notice { margin-top: 8px; padding: 8px 8px; border-left: 2px solid var(--green); background: color-mix(in srgb, var(--green) 7%, var(--bg)); color: var(--green); font-size: var(--fs-cap); line-height: 1.55; }
+.cd-rewind-panel { margin-top: 8px; padding: 12px; border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border)); border-radius: 6px; background: var(--bg-raised); }
 .cd-rewind-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .cd-rewind-head b, .cd-rewind-head small { display: block; }
 .cd-rewind-head b { font-size: var(--fs-sm); }
-.cd-rewind-head small { margin-top: 3px; color: var(--text-faint); font-size: var(--fs-cap); }
+.cd-rewind-head small { margin-top: 4px; color: var(--text-faint); font-size: var(--fs-cap); }
 .cd-rewind-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 10px 0; border: 1px solid var(--border); background: var(--border); }
-.cd-rewind-metrics > span { padding: 7px 9px; background: var(--bg); }
+.cd-rewind-metrics > span { padding: 8px 8px; background: var(--bg); }
 .cd-rewind-metrics small, .cd-rewind-metrics b { display: block; }
 .cd-rewind-metrics small { color: var(--text-faint); font-size: var(--fs-cap); }
 .cd-rewind-metrics b { margin-top: 2px; font-family: var(--font-mono); font-size: var(--fs-md); }
@@ -447,10 +447,10 @@ watch(() => props.open, (value) => {
 .cd-rewind-turns li > b { font-size: var(--fs-cap); }
 .cd-rewind-turns p { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 6px; margin: 4px 0 0; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.5; }
 .cd-rewind-turns p span { color: var(--text-faint); }
-.cd-rewind-backup, .cd-rewind-warning { margin: 9px 0 0; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.6; }
+.cd-rewind-backup, .cd-rewind-warning { margin: 8px 0 0; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.6; }
 .cd-rewind-warning { padding: 8px; border-left: 2px solid var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--bg)); color: var(--danger); }
 .cd-rewind-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; color: var(--danger); font-size: var(--fs-cap); line-height: 1.5; }
-.cd-rewind-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 10px; }
+.cd-rewind-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 .cd-rewind-next, .cd-rewind-confirm { min-height: 28px; padding: 4px 10px; border: 1px solid var(--accent); border-radius: 5px; background: var(--accent); color: var(--accent-ink); cursor: pointer; font-size: var(--fs-cap); }
 .cd-rewind-confirm { border-color: var(--danger); background: var(--danger); }
 .cd-rewind-next:disabled, .cd-rewind-confirm:disabled { opacity: .45; cursor: default; }

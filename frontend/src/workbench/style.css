@@ -257,8 +257,8 @@ button:disabled:hover { transform: none; }
   font-weight: 500;
   letter-spacing: .06em;
   color: var(--text-muted);
-  margin-left: 7px;
-  padding-left: 9px;
+  margin-left: 8px;
+  padding-left: 8px;
   border-left: 1px solid var(--border-strong);
 }
 
@@ -327,7 +327,7 @@ html[data-material='glass'] .wb-proj-notice {
 }
 .wb-proj-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  max-width: 240px; padding: 3px 9px;
+  max-width: 240px; padding: 4px 8px;
   background: var(--bg); border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
   color: var(--text); font-size: var(--fs-sm); cursor: pointer; font-family: var(--font-mono);
@@ -351,7 +351,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-proj-list { display: flex; flex-direction: column; }
 .wb-proj-item {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 7px 9px; border: var(--edge-w-strong, 2px) solid transparent; background: transparent; border-radius: var(--r-sm);
+  padding: 8px 8px; border: var(--edge-w-strong, 2px) solid transparent; background: transparent; border-radius: var(--r-sm);
   text-align: left; cursor: pointer; color: var(--text); font-size: var(--fs-sm); font-family: var(--font-sans);
 }
 .wb-proj-item:hover { background: var(--bg-hover); border-color: var(--border-strong); }
@@ -365,7 +365,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-proj-empty { color: var(--text-faint); font-size: var(--fs-sm); padding: 8px; }
 .wb-proj-sep { height: 1px; background: var(--border); margin: 6px 2px; }
 .wb-proj-open-toggle {
-  width: 100%; text-align: left; padding: 7px 9px;
+  width: 100%; text-align: left; padding: 8px 8px;
   border: var(--edge-w-strong, 2px) solid var(--edge-ink) !important;
   border-radius: var(--r-sm) !important;
   background: var(--bg-raised) !important;
@@ -380,7 +380,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-proj-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 6%, transparent); }
 .wb-proj-form-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .wb-proj-browse, .wb-proj-go {
-  padding: 5px 12px; border-radius: var(--r-sm); font-size: var(--fs-sm); cursor: pointer; font-family: inherit;
+  padding: 4px 12px; border-radius: var(--r-sm); font-size: var(--fs-sm); cursor: pointer; font-family: inherit;
 }
 .wb-proj-browse {
   border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
@@ -399,7 +399,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-region-pill {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   letter-spacing: .04em;
@@ -409,7 +409,7 @@ html[data-material='glass'] .wb-proj-notice {
   border-radius: var(--r-sm);
   background: var(--bg-raised);
   box-shadow: var(--shadow-control);
-  padding: 3px 11px;
+  padding: 4px 12px;
   cursor: pointer;
   transition: transform 130ms cubic-bezier(.2,.8,.2,1), box-shadow 130ms, background 130ms;
 }
@@ -426,8 +426,8 @@ html[data-material='glass'] .wb-proj-notice {
 /* 图标档（2026-10-19）：顶栏不再常驻「分区治理 · N 区 / 分区未启用」文字，
    状态由那颗点表达，入口由图标承担。宽度从 ~110px 收到 ~34px。 */
 .wb-region-pill.wb-region-icon {
-  gap: 5px;
-  padding: 3px 8px;
+  gap: 4px;
+  padding: 4px 8px;
 }
 .wb-region-pill.wb-region-icon svg { flex: 0 0 auto; color: var(--ink); }
 .wb-region-pill.wb-region-icon.off svg { color: var(--text-faint); }
@@ -436,7 +436,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-demo-banner {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   letter-spacing: .03em;
@@ -445,7 +445,7 @@ html[data-material='glass'] .wb-proj-notice {
   border: var(--edge-w-strong, 2px) solid var(--amber);
   border-radius: var(--r-sm);
   box-shadow: var(--sh-hard-sm);
-  padding: 3px 12px;
+  padding: 4px 12px;
   white-space: nowrap;
 }
 .wb-demo-banner b { color: var(--amber); }
@@ -530,7 +530,7 @@ html[data-material='glass'] .wb-proj-notice {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   height: 30px;
   padding-right: 12px;
   border: var(--edge-w-strong, 2px) solid transparent;
@@ -558,15 +558,22 @@ html[data-material='glass'] .wb-proj-notice {
 
 .ft-region-root {
   margin-top: 4px;
-  background: var(--bg);
+  /* 2026-11-19：原为 background: var(--bg) —— 浅色 palette 下 --bg 是近白
+     （oklch .972），压在深墨绿侧栏（--ui2-rail-bg）上就是一块白纸。
+     配套的注释还记得当时踩的坑：「分区卡是浅色底，但深色资源栏把 --ink 覆写成
+     白字，直接继承会白字压浅底（1.08:1）」，于是把文字压暗做补偿 ——
+     结果是白底暗字，整列看着像贴了三条白条。
+     现在改成「深底 + 9% 亮底」：保留"分区是一块"的分组意图，但对比从 1:20
+     压到约 1.3:1，和侧栏分隔线同一个思路——有层次，但不抢。
+     混合基色用 --ui2-rail-text 而不是硬编码 #fff，四套皮肤各自自适应。 */
+  background: color-mix(in srgb, var(--ui2-rail-text) 9%, transparent);
   border: var(--edge-w-strong, 2px) solid var(--edge-ink-soft);
   border-radius: var(--r-sm);
-  /* 分区卡是浅色底（var(--bg)），但深色资源栏把 --ink/--text 覆写成了白字，
-     直接继承会白字压浅底（实测 1.08:1）。这里把文本令牌复位回皮肤真实墨色
-     --mi-text（栏内未被覆写），名字与 regionTextColor 的混墨都随之压暗，
-     浅皮卡深字、深皮卡浅字，跨皮肤自洽。 */
-  --ink: var(--mi-text);
-  --text: var(--mi-text);
+  /* 底不再是浅色，文字令牌跟着回到侧栏亮字（原先是压暗到 --mi-text 来对付白底）。
+     分区标签走 regionTextColor = color-mix(分区色 36%, var(--ink))，
+     混向亮墨后实测约 10.8:1，远高于 4.5。 */
+  --ink: var(--ui2-rail-text);
+  --text: var(--ui2-rail-text);
 }
 .ft-region-root:hover { background: var(--bg-hover); }
 .ft-region-root .ft-name { font-family: var(--font-display); color: var(--ink); }
@@ -666,10 +673,10 @@ html[data-material='glass'] .wb-proj-notice {
 }
 .ft-row:hover .ft-tagbadge,
 .ft-row.ft-selected .ft-tagbadge,
-.ft-row.ft-located .ft-tagbadge { max-width: 110px; padding: 0 5px; opacity: 1; }
+.ft-row.ft-located .ft-tagbadge { max-width: 110px; padding: 0 4px; opacity: 1; }
 .ft-tagbadge.ft-tag-manual { color: var(--amber-deep); background: var(--amber-soft); }
 .ft-tagbadge.ft-tag-stale { opacity: .55; }
-.ft-tagbadge + .ft-gitdot { margin-left: 5px; }
+.ft-tagbadge + .ft-gitdot { margin-left: 4px; }
 
 /* 阶段 1：大白话定位命中行持续高亮（琥珀色描边，与一次性闪烁区分） */
 .ft-located {
@@ -722,11 +729,11 @@ html[data-material='glass'] .wb-proj-notice {
   overflow: hidden;
 }
 .cv-crumbs .cv-seg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cv-sep { color: var(--text-faint); margin: 0 3px; font-size: var(--fs-cap); }
+.cv-sep { color: var(--text-faint); margin: 0 4px; font-size: var(--fs-cap); }
 .cv-seg-region { color: var(--accent); font-weight: 700; }
 .cv-seg-last { color: var(--ink); font-weight: 700; }
 
-.cv-meta { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; font-family: var(--font-mono); }
+.cv-meta { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; font-family: var(--font-mono); }
 .cv-badge {
   font-family: var(--font-mono);
   font-size: var(--fs-cap);
@@ -755,7 +762,7 @@ html[data-material='glass'] .wb-proj-notice {
 /* 大块阅读/编辑面必须是中性白：强调色只做选中、定位等小面积信号，
    否则换一次 accent 就把整块编辑器染色（代码区曾被 --accent-soft 染成淡绿）。 */
 .cv-host { flex: 1; min-height: 0; overflow: auto; background: var(--bg-raised); }
-.cv-previewbar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 9px 16px; color: var(--text-muted); background: var(--bg); border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
+.cv-previewbar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 8px 16px; color: var(--text-muted); background: var(--bg); border-bottom: 1px solid var(--border); font-size: var(--fs-sm); }
 .cv-previewbar strong { color: var(--text); }
 .cv-host .cm-editor { height: 100%; background: var(--bg-raised); }
 .cv-host .cm-editor.cm-focused { outline: none; }
@@ -792,7 +799,7 @@ html[data-material='glass'] .wb-proj-notice {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 8px;
   color: var(--text-faint);
   background: var(--bg-raised);
 }
@@ -827,7 +834,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-status-path { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wb-status-spacer { flex: 1; }
 .wb-status-legend { display: flex; gap: 12px; font-family: var(--font-ui); }
-.wb-status-legend i { font-style: normal; font-family: var(--font-mono); display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); }
+.wb-status-legend i { font-style: normal; font-family: var(--font-mono); display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); }
 .wb-status-legend b { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
 
 /* ---------- 树错误 / 启动态 ---------- */
@@ -945,7 +952,7 @@ html[data-material='glass'] .wb-proj-notice {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: var(--edge-w-strong, 2px) solid transparent;
   background: transparent;
   border-radius: var(--r-sm);
@@ -970,7 +977,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-view-wrap { display: inline-flex; align-items: center; }
 .wb-view-btn {
   display: inline-flex; align-items: center; gap: 6px;
-  height: 28px; padding: 0 9px;
+  height: 28px; padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: var(--bg-raised);
@@ -985,14 +992,14 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-view-caret { color: currentColor; opacity: .65; }
 @media (max-width: 1180px) { .wb-view-label { display: none; } .wb-view-btn { padding: 0 8px; } }
 .wb-menu-label {
-  padding: 5px 10px 3px;
+  padding: 4px 10px 4px;
   color: var(--text-faint);
   font-size: var(--fs-cap);
   font-weight: 700;
   letter-spacing: .04em;
   text-transform: uppercase;
 }
-.wb-menu-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+.wb-menu-sep { height: 1px; background: var(--border); margin: 4px 4px; }
 /* 运行游戏触发钮 teleport 进菜单项：抹平组件自带描边，撑满整行 */
 .wb-menu-slot-item { padding: 0; }
 #wb-sr-slot { display: flex; width: 100%; }
@@ -1004,7 +1011,7 @@ html[data-material='glass'] .wb-proj-notice {
   border: 0;
   border-radius: 7px;
   background: transparent;
-  padding: 7px 10px;
+  padding: 8px 10px;
   color: var(--text);
   font-family: inherit;
   font-size: var(--fs-sm);
@@ -1110,7 +1117,7 @@ html[data-material='glass'] .wb-proj-notice {
   position: absolute;
   top: -5px; right: -5px;
   min-width: 15px; height: 15px;
-  padding: 0 3px;
+  padding: 0 4px;
   border-radius: 8px;
   background: var(--amber);
   color: var(--amber-ink);
@@ -1148,7 +1155,7 @@ html[data-material='glass'] .wb-proj-notice {
 .ft-iconbtn:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 20%, transparent); outline-offset: 2px; }
 .ft-iconbtn .spinning { animation: ft-spin 0.9s linear infinite; }
 /* 收起按钮与刷新之间留一点距离：四颗按钮在 220px 窄栏里也不至于粘成一排 */
-.ft-collapse-btn { margin-left: 3px; }
+.ft-collapse-btn { margin-left: 4px; }
 
 /* ---------- 标签栏 ---------- */
 .et-bar {
@@ -1210,7 +1217,7 @@ html[data-material='glass'] .wb-proj-notice {
   font-family: var(--font-mono);
   font-size: var(--fs-cap);
   font-weight: 700;
-  padding: 1px 3px;
+  padding: 1px 4px;
   border-radius: 3px;
   color: var(--text-muted);
   background: var(--bg-hover);
@@ -1281,7 +1288,7 @@ html[data-material='glass'] .wb-proj-notice {
   position: fixed;
   z-index: 1000;
   min-width: 172px;
-  padding: 5px;
+  padding: 4px;
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1303,14 +1310,14 @@ html[data-material='glass'] .wb-proj-notice {
   color: var(--text);
   font-size: var(--fs-sm);
   font-family: var(--font-ui);
-  padding: 7px 10px;
+  padding: 8px 10px;
   border-radius: 6px;
   cursor: pointer;
   transition: background .14s ease, color .14s ease, opacity .14s ease;
 }
 .cm-item:hover { background: var(--accent-soft); color: var(--accent-deep); }
 .cm-item:focus-visible { outline: 2px solid var(--accent-deep); outline-offset: -2px; }
-.cm-item.cm-sep { margin-top: 5px; border-top: 1px solid var(--border);
+.cm-item.cm-sep { margin-top: 4px; border-top: 1px solid var(--border);
   border-top-left-radius: 0; border-top-right-radius: 0; padding-top: 8px; }
 .cm-item.cm-danger { color: var(--danger); }
 /* 危险项 hover：底变 --danger 时字必须换成 --danger-ink，
@@ -1397,7 +1404,7 @@ html[data-material='glass'] .wb-proj-notice {
   border: 1px solid var(--border);
   border-radius: 14px;
   box-shadow: var(--shadow-pop);
-  padding: 19px 21px 17px;
+  padding: 20px 20px 16px;
   animation: dg-rise .14s ease-out;
 }
 @keyframes dg-rise {
@@ -1452,13 +1459,13 @@ html[data-material='glass'] .wb-proj-notice {
 .dg-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 9px;
+  gap: 8px;
   margin-top: 18px;
 }
 .dg-btn {
   min-width: 80px;
   height: 31px;
-  padding: 0 15px;
+  padding: 0 16px;
   border-radius: 7px;
   border: 1px solid var(--edge-ink-soft);
   background: var(--bg-raised);
@@ -1491,8 +1498,8 @@ html[data-material='glass'] .wb-proj-notice {
   .dg-mask, .dg-box, .dg-btn { animation: none; transition: none; }
 }
 @media (max-width: 520px) {
-  .dg-box { width: calc(100vw - 24px); max-width: none; padding: 16px 15px 14px; border-radius: 12px; }
-  .dg-actions { flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+  .dg-box { width: calc(100vw - 24px); max-width: none; padding: 16px 16px 14px; border-radius: 12px; }
+  .dg-actions { flex-wrap: wrap; gap: 8px; margin-top: 14px; }
   .dg-actions .dg-btn { flex: 1 1 auto; min-width: 0; }
 }
 
@@ -1505,10 +1512,10 @@ html[data-material='glass'] .wb-proj-notice {
   width: 100%;
   border-radius: 0;
   border-width: 0 0 1px 0;
-  padding: 7px 16px;
+  padding: 8px 16px;
   white-space: normal;
   justify-content: center;
-  gap: 9px;
+  gap: 8px;
 }
 .wb-shell > .wb-demo-banner span { line-height: 1.6; }
 
@@ -1524,7 +1531,7 @@ html[data-material='glass'] .wb-proj-notice {
 }
 .wb-demo-side-note {
   font-size: var(--fs-cap); font-weight: 700; letter-spacing: .06em;
-  color: var(--text-faint); padding: 2px 4px 9px;
+  color: var(--text-faint); padding: 2px 4px 8px;
 }
 .wb-demo-side ul { list-style: none; margin: 0; padding: 0; }
 .wb-demo-side li {
@@ -1534,7 +1541,7 @@ html[data-material='glass'] .wb-proj-notice {
 .wb-demo-side li ul { padding-left: 14px; }
 .wb-demo-side .wb-demo-dir { color: var(--text); font-family: inherit; font-size: var(--fs-sm); font-weight: 600; }
 .wb-demo-tag {
-  margin-left: 6px; padding: 0 5px; border-radius: 5px;
+  margin-left: 6px; padding: 0 4px; border-radius: 5px;
   font-size: var(--fs-cap); font-family: inherit; font-weight: 600;
   background: var(--accent-soft); color: var(--accent-text);
   vertical-align: 1px; white-space: nowrap;
@@ -1691,14 +1698,14 @@ a:focus-visible,
 @media (max-width: 760px) {
   .cv-head { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 12px; }
   .cv-crumbs { width: 100%; }
-  .cv-meta { width: 100%; flex-wrap: wrap; gap: 5px; }
+  .cv-meta { width: 100%; flex-wrap: wrap; gap: 4px; }
   .cv-faint { margin-left: auto; }
   .et-tab { padding-inline: 9px; }
   .et-name { max-width: 112px; }
 }
 
 @media (max-width: 520px) {
-  .hp-pop { right: 8px; left: 8px; top: 48px; width: auto; max-width: none; padding: 13px 12px; border-radius: 12px; }
+  .hp-pop { right: 8px; left: 8px; top: 48px; width: auto; max-width: none; padding: 12px 12px; border-radius: 12px; }
   .hp-statgrid { grid-template-columns: 1fr; gap: 6px; }
   .hp-row { flex-wrap: wrap; }
   .hp-row input, .hp-row select { flex: 1 1 100%; }

@@ -316,7 +316,7 @@ function showSymbolMap() {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 9px 16px;
+  padding: 8px 16px;
   border: 1px solid var(--mi-border-level-2);
   border-radius: var(--mi-radius-control);
   background: var(--mi-surface-level-2);
@@ -331,7 +331,7 @@ function showSymbolMap() {
 .ov-start-note { display: block; font-size: var(--fs-sm); line-height: 1.7; color: var(--text-muted); }
 .ov-region-settings { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 0 4px 20px; border-bottom: 1px solid var(--border); }
 .ov-region-settings h3 { margin: 0; font-size: var(--fs-h3); font-weight: 600; line-height: 1.5; }
-.ov-region-settings p { margin: 5px 0 0; font-size: var(--fs-md); line-height: 1.6; color: var(--text-muted); }
+.ov-region-settings p { margin: 4px 0 0; font-size: var(--fs-md); line-height: 1.6; color: var(--text-muted); }
 .ov-text-button { flex: none; min-height: 32px; padding: 6px 8px; border: 0; border-radius: var(--mi-radius-control); background: none; color: var(--text-muted); font-size: var(--fs-md); line-height: 1.5; cursor: pointer; }
 .ov-text-button:hover { color: var(--accent-text); background: var(--bg-hover); }
 .ov-rail { min-width: 0; display: flex; flex-direction: column; gap: 0; }
@@ -348,11 +348,11 @@ function showSymbolMap() {
 .ov-step:hover:not(:disabled) { background: var(--bg-hover); }
 .ov-step:disabled { opacity: .55; cursor: not-allowed; }
 .ov-step-num { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--border); border-radius: 50%; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1; font-variant-numeric: tabular-nums; }
-.ov-step-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ov-step-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .ov-step-text b { font-size: var(--fs-md); font-weight: 500; line-height: 1.6; }
 .ov-step-text > span { font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.6; }
 .ov-guide-foot { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; padding: 0 8px; color: var(--text-muted); font-size: var(--fs-cap); line-height: 1.6; }
-.ov-recent-item { width: 100%; display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px 8px; border: 0; border-radius: var(--mi-radius-control); background: none; color: var(--text); cursor: pointer; }
+.ov-recent-item { width: 100%; display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 10px 8px; border: 0; border-radius: var(--mi-radius-control); background: none; color: var(--text); cursor: pointer; }
 .ov-recent-item:hover { background: var(--bg-hover); }
 .ov-recent-name { max-width: 100%; font-size: var(--fs-md); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-recent-dir { max-width: 100%; color: var(--text-muted); font: var(--fs-cap)/1.6 var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

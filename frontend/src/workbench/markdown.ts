@@ -95,32 +95,69 @@ export interface FileRef {
 
 const CODE_EXT =
   'gd|gdshader|tscn|tres|godot|cfg|toml|py|cs|ts|js|vue|json|java|kt|cpp|h|hpp|c|go|rs|shader|uxml|uss|yaml|yml|md|shader|lua|rb'
+// 可选盘符：模型常把项目内文件的绝对路径原样写出来（`D:/proj/a.py:12`）。
+// 盘符只作为「可识别的乱入前缀」收进来，交给 extractFileRefs 按项目根剥掉。
 const REF_TOKEN = new RegExp(
-  `(?:res://)?((?:[A-Za-z0-9_.\\-]+/)*[A-Za-z0-9_.\\-]+\\.(?:${CODE_EXT})(?![A-Za-z0-9_]))`,
+  `((?:[A-Za-z]:/)?(?:[A-Za-z0-9_.\\-]+/)*[A-Za-z0-9_.\\-]+\\.(?:${CODE_EXT})(?![A-Za-z0-9_]))`,
   'g',
 )
 
-/** 从答案文本中提取文件引用，兼容 `a/b.gd:12`、`a/b.gd 第 12 行`、res:// 前缀，按 path+line 去重。 */
-export function extractFileRefs(text: string): FileRef[] {
+/** 从答案文本中提取文件引用，兼容 `a/b.gd:12`、`a/b.gd 第 12 行`、`a/b.gd#L12`、
+ *  `a/b.gd:L12-L20`、`a/b.gd (12 行)`、res:// 前缀，按 path+line 去重；
+ *  同一文件若既有带行号又有不带行号的引用，只留带行号那条（无行号会被吸收）。
+ *  `root` 给定时会剥掉绝对路径里的项目根前缀（`D:/proj/a.py` → `a.py`），
+ *  剥不掉的外部绝对路径保留原样，由调用方/后端判否。 */
+export function extractFileRefs(text: string, root = ''): FileRef[] {
   const stripped = (text || '').replace(/https?:\/\/\S+/g, ' ')
   const out: FileRef[] = []
   const seen = new Set<string>()
+  const rootPosix = String(root || '').replace(/\\/g, '/').replace(/\/+$/, '')
+  const rootNoDrive = rootPosix.replace(/^[A-Za-z]:/, '').replace(/^\/+/, '')
   let m: RegExpExecArray | null
   REF_TOKEN.lastIndex = 0
   while ((m = REF_TOKEN.exec(stripped)) !== null) {
-    const path = m[1]
+    let path = m[1]
     if (/^(v|pr|issue)\d/i.test(path)) continue
-    const after = stripped.slice(m.index + m[0].length, m.index + m[0].length + 24)
+    // 绝对路径：先去掉盘符，再把项目根前缀剥掉（Windows 大小写不敏感，比较时统一小写）
+    if (/^[A-Za-z]:\//.test(path)) path = path.replace(/^[A-Za-z]:\//, '')
+    if (rootNoDrive) {
+      const lowerPath = path.toLowerCase()
+      if (lowerPath.startsWith(rootNoDrive.toLowerCase() + '/')) {
+        path = path.slice(rootNoDrive.length + 1)
+      }
+    }
+    const after = stripped.slice(m.index + m[0].length, m.index + m[0].length + 40)
     let line = 0
-    const colon = /^\s*[:：]\s*(\d{1,5})/.exec(after)
+    // `:12` / `：第 12 行` / `#L130` / `:L50-L53`（区间取起点）
+    const colon = /^\s*[:：#]\s*(?:L|第)?\s*(\d{1,5})(?:\s*[-–—~]\s*(?:L|第)?\d{1,5}\s*行?)?/i.exec(after)
     const cnLine = /^\s*第\s*(\d{1,5})\s*行/.exec(after)
+    // `(12 行)` / `(第 12 行)`：括号里必须带「行」，避免把脚注 `(1)` 当行号
+    const parenLine = /^\s*[（(]\s*(?:第\s*)?(\d{1,5})\s*行\s*[)）]/.exec(after)
     if (colon) line = Number(colon[1])
     else if (cnLine) line = Number(cnLine[1])
+    else if (parenLine) line = Number(parenLine[1])
     const key = `${path}:${line}`
     if (!seen.has(key)) {
       seen.add(key)
       out.push({ path, line })
     }
   }
-  return out
+
+  // 同一文件既有「不带行号」又有「带行号」的引用时，只留带行号那条：两条 chip 指向
+  // 同一个文件、其中一条还更具体，读者会误以为这是两份独立证据。不同行号仍各自保留
+  // ——它们指向的是不同位置。合并后条目停在首次出现的位置，不改变阅读顺序。
+  const anchorLine = new Map<string, number>()
+  for (const r of out) {
+    if (r.line && !anchorLine.has(r.path)) anchorLine.set(r.path, r.line)
+  }
+  const merged: FileRef[] = []
+  const seenMerged = new Set<string>()
+  for (const r of out) {
+    const line = r.line || anchorLine.get(r.path) || 0
+    const key = `${r.path}:${line}`
+    if (seenMerged.has(key)) continue
+    seenMerged.add(key)
+    merged.push({ path: r.path, line })
+  }
+  return merged
 }

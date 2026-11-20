@@ -165,7 +165,7 @@ let zSeq = 0
 .wf-mwin-failed, .wf-mwin-blocked { border-color: rgba(214,78,78,.5); }
 .wf-mwin-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 7px 10px; flex: 0 0 auto;
+  padding: 8px 10px; flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(180deg, var(--bg-raised), var(--bg-hover));
   cursor: grab; user-select: none; touch-action: none;
@@ -177,7 +177,7 @@ let zSeq = 0
   font-size: var(--fs-cap); font-weight: 700;
   background: var(--bg-selected); color: var(--accent); border: 1px solid var(--border);
 }
-.wf-mwin-title { display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; flex: 1; }
+.wf-mwin-title { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
 .wf-mwin-title b { font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
 .wf-mwin-state { font-style: normal; font-size: var(--fs-cap); color: var(--text-faint); }
 .wf-mwin-running .wf-mwin-state { color: var(--accent); }
@@ -185,23 +185,23 @@ let zSeq = 0
 .wf-mwin-failed .wf-mwin-state, .wf-mwin-blocked .wf-mwin-state { color: var(--danger); }
 .wf-mwin-elapsed { font-size: var(--fs-cap); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .wf-mwin-actions { display: inline-flex; align-items: center; }
-.wf-mwin-btn { background: none; border: 0; color: var(--text-muted); cursor: pointer; border-radius: 5px; padding: 1px 7px; font-size: var(--fs-lead); line-height: 1.2; transition: color .16s ease, background .16s ease; }
+.wf-mwin-btn { background: none; border: 0; color: var(--text-muted); cursor: pointer; border-radius: 5px; padding: 1px 8px; font-size: var(--fs-lead); line-height: 1.2; transition: color .16s ease, background .16s ease; }
 .wf-mwin-btn:hover { color: var(--text); background: var(--bg-selected); }
 .wf-mwin-x:hover { color: var(--danger); }
-.wf-mwin-body { flex: 1; min-height: 0; overflow-y: auto; padding: 9px 11px; display: grid; gap: 5px; align-content: start; }
-.wf-mwin-task { margin: 0 0 3px; font-size: var(--fs-cap); color: var(--text-muted); line-height: 1.5; }
-.wf-mwin-wait { font-size: var(--fs-sm); color: var(--text-faint); padding: 3px 0; }
+.wf-mwin-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px; display: grid; gap: 4px; align-content: start; }
+.wf-mwin-task { margin: 0 0 4px; font-size: var(--fs-cap); color: var(--text-muted); line-height: 1.5; }
+.wf-mwin-wait { font-size: var(--fs-sm); color: var(--text-faint); padding: 4px 0; }
 .wf-mwin-conclusion, .wf-mwin-error {
-  margin-top: 3px; padding: 7px 9px; border-radius: 7px;
-  font-size: var(--fs-sm); line-height: 1.55; display: grid; gap: 3px;
+  margin-top: 4px; padding: 8px 8px; border-radius: 7px;
+  font-size: var(--fs-sm); line-height: 1.55; display: grid; gap: 4px;
 }
 .wf-mwin-conclusion b, .wf-mwin-error b { font-size: var(--fs-cap); }
 .wf-mwin-conclusion { background: rgba(52,168,112,.08); color: var(--text); }
 .wf-mwin-conclusion b { color: var(--green); }
 .wf-mwin-error { background: rgba(214,78,78,.07); color: var(--danger); }
-.wf-mwin-error .wf-mini-btn { justify-self: start; margin-top: 3px; }
+.wf-mwin-error .wf-mini-btn { justify-self: start; margin-top: 4px; }
 /* 步骤渲染沿用卡片里的类名与视觉（此处自带一份精简样式，避免跨组件 :deep 依赖） */
-.wf-step { display: flex; gap: 7px; position: relative; }
+.wf-step { display: flex; gap: 8px; position: relative; }
 .wf-step-glyph { width: 18px; flex: 0 0 auto; text-align: center; font-size: var(--fs-cap); color: var(--text-faint); padding-top: 1px; }
 .wf-step-action .wf-step-glyph { color: var(--accent); }
 .wf-step-observation .wf-step-glyph { color: var(--green); }
@@ -209,10 +209,10 @@ let zSeq = 0
 .wf-step-body { min-width: 0; display: grid; gap: 1px; }
 .wf-step-title { font-size: var(--fs-cap); font-weight: 600; color: var(--text); }
 .wf-step-summary { font-size: var(--fs-sm); line-height: 1.5; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
-.wf-step-full { display: none; margin: 3px 0 0; padding: 7px 9px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 7px; font: inherit; font-size: var(--fs-cap); line-height: 1.55; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
+.wf-step-full { display: none; margin: 4px 0 0; padding: 8px 8px; background: var(--bg-raised); border: 1px solid var(--border); border-radius: 7px; font: inherit; font-size: var(--fs-cap); line-height: 1.55; color: var(--text-muted); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
 .wf-step:hover .wf-step-full { display: block; }
 .wf-step-hint { font-size: var(--fs-cap); color: var(--text-faint); }
-.wf-mini-btn { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-raised); color: var(--text-muted); font-size: var(--fs-cap); padding: 2px 9px; cursor: pointer; }
+.wf-mini-btn { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-raised); color: var(--text-muted); font-size: var(--fs-cap); padding: 2px 8px; cursor: pointer; }
 .wf-mini-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .wf-mini-btn:disabled { opacity: .5; cursor: default; }
 .wf-dots { animation: wf-mwin-blink 1.1s infinite; }
