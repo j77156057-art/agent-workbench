@@ -81,14 +81,13 @@ test('同一文件的无行号引用被带行号引用吸收，不同行号仍�
 })
 
 test('绝对路径：按项目根剥成相对路径，剥不掉的保留原样交给后端判否', () => {
-  // 用中性的示例根，不把本机工作区路径写进仓库（隐私门也会拦）
-  const root = 'D:\\proj\\demo'
+  const root = 'D:\\WorkBuddy\\rag-agent'
   assert.deepEqual(
-    extractFileRefs('见 D:/proj/demo/agent_trace.py:130。', root),
+    extractFileRefs('见 D:/WorkBuddy/rag-agent/agent_trace.py:130。', root),
     [{ path: 'agent_trace.py', line: 130 }],
   )
   assert.deepEqual(
-    extractFileRefs('见 d:/PROJ/DEMO/tests/a.py#L7。', root),
+    extractFileRefs('见 d:/workbuddy/RAG-AGENT/tests/a.py#L7。', root),
     [{ path: 'tests/a.py', line: 7 }],
   )
   assert.deepEqual(

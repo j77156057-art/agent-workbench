@@ -43,7 +43,7 @@ export const SKIN_CHANGE_EVENT = 'docmind:skin'
 
 export const SKINS: SkinDef[] = [
   { key: 'zinc', name: '锌白细线', desc: '冷白底 + 1px 灰细线 + 6px 圆角 + 零阴影，青绿强调。日常默认', swatch: ['#fcfcfd', '#7d7d86', '#0f766e', '#ffffff'] },
-  { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e8e6e0', '#4dd0e1', '#000000'] },
+  { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e6e9ef', '#5accf0', '#000000'] },
   { key: 'paper', name: '素纸朱红', desc: '暖骨白纸 + 朱红，零圆角 + 硬阴影。印刷海报风，按需选用', swatch: ['#ece7db', '#14110f', '#ff674d', '#000000'] },
   // 「观测舱」是工作台原来的深色调（memory-inspector-tokens.css 的深色家族）。
   // 2026-11-20 两页合并到同一个皮肤键之后，它也进了问答页的皮肤表 ——
