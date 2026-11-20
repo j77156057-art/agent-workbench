@@ -26,6 +26,8 @@ import { traceSegments } from '../composables/traceDigest'
 // 结果收在卡里，不再逐条裸奔（组装口径在 chatCards.ts，纯函数、可单测）。
 import { cardsOf } from '../composables/chatCards'
 import type { ChatCard } from '../composables/chatCards'
+// 原始输出缓冲（右侧浮层的「原始输出」页签）：SSE 事件原样留在内存里。
+import { recordRawEvent } from '../composables/rawOutput'
 import ChatCardItem from './ChatCardItem.vue'
 import type { ChatArtifact } from '../composables/chat-types'
 import ArtifactCards from './ArtifactCards.vue'
@@ -61,12 +63,15 @@ import type { PreviewFeedbackRequest } from '../previewFeedback'
 import type { FileDiffEntry } from '../composables/chat-types'
 
 const props = withDefaults(defineProps<{
-  scope?: 'default' | 'cockpit' | 'replay'
+  scope?: 'default' | 'cockpit' | 'replay' | 'panel'
   /** replay 专用：只读回看这个 session，不参与工作台的全局会话/锁/发送链路 */
   replaySessionId?: string
   replayTitle?: string
   replayEmptyHint?: string
 }>(), { scope: 'default', replaySessionId: '', replayTitle: '', replayEmptyHint: '' })
+// panel 专用：右侧浮层里的对话台。它有自己的会话（sessionStorage 分键），与底部抽屉
+// 互不干扰；并把会话 id 报给浮层外壳（时间线页签要按会话取检查点）。
+const emit = defineEmits<{ (e: 'session', id: string): void }>()
 // 开发舱里侧栏文件树是隐藏的，「在问哪个库」只剩顶栏那颗项目名，而对话就在这块下方。
 // 所以把代码库根目录搬到输入框同一行；普通对话台不显示（旁边就是资源管理器，重复了）。
 const { tree, jumpToLine, revealPath, jobsOpen, openJobs,
@@ -203,7 +208,10 @@ function speakDelta(turn: ChatMsg) {
   spokenChars.set(turn.id, previous + boundary + 1)
   void speakVoiceText(chunk)
 }
-const scopedSessionKey = () => `docmind.cockpitSession:${getProjectId()}`
+// 会话键按 scope 分开：面板（右侧浮层）与开发舱各有各的会话，底部主对话台不动。
+const scopedSessionKey = () => props.scope === 'panel'
+  ? `docmind.panelSession:${getProjectId()}`
+  : `docmind.cockpitSession:${getProjectId()}`
 const fallbackCockpitSessions = new Map<string, string>()
 function makeCockpitSessionId(): string {
   const id = globalThis.crypto?.randomUUID?.().replace(/-/g, '') || `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
@@ -871,6 +879,9 @@ async function send(text?: string, attached?: File[], onAccepted?: () => void, u
   // 事件分类与帧合批在 useChatStream 中（token/reasoning/plan/trace/workflow/context…）
   const onEvent = (ev: SseEvent) => {
     if (epoch !== chatEpoch) return
+    // 原始输出：SSE 事件原样进内存缓冲（右侧浮层的「原始输出」页签）。
+    // 只留响应侧、不落盘、不记提问原文——与 agent_trace.py 的隐私口径一致。
+    recordRawEvent(ev, currentSessionId())
     if (ev.type === 'final' && typeof ev.text === 'string' && ev.text) receivedFinal = true
     // 浏览器动作：实况窗立刻钉到这一页并展开；流程行也会拿到同一份证据。
     if (ev.browser_evidence) noteBrowserEvidence(ev.browser_evidence)
@@ -1673,6 +1684,8 @@ onMounted(() => {
     if (props.replaySessionId) void restoreHistory(true)
     return
   }
+  // panel（右侧浮层）：把这一路会话的 id 报给浮层外壳 —— 时间线页签要按会话取检查点。
+  if (props.scope === 'panel') emit('session', currentSessionId())
   // 语音能力探测不再按 scope 门控：cockpit scope 已不存在，
   // 只在 cockpit 下探测等于**永远探测不到**，后端配了 STT/TTS 也用不上。
   void voiceApi.status().then(status => {
@@ -1899,9 +1912,11 @@ const webTitle = computed(() => webOn.value
       'cd-gate-blocked': gateBlocking,
       'cd-idle': !messages.length && !orphanWf && !gateBlocking && props.scope === 'default',
       'cd-replay': isReplay,
+      'cd-panel': props.scope === 'panel',
     }"
   >
-    <header class="cd-head">
+    <!-- panel（右侧浮层）有自己的页签头，这条头部不要（避免两层头） -->
+    <header v-if="props.scope !== 'panel'" class="cd-head">
       <!-- 折叠/收起只响应明确的标题热区，避免选中提示文字等误触把面板收起来 -->
       <span
         v-if="!isReplay"
@@ -2382,6 +2397,7 @@ const webTitle = computed(() => webOn.value
 }
 .cd-sb-spacer { flex: 1 1 auto; }
 .cd-sb-state { flex: none; color: var(--text-muted); }
+
 .cd-dock {
   position: relative;
   flex: 0 0 auto;
@@ -2404,6 +2420,12 @@ const webTitle = computed(() => webOn.value
 }
 /* replay：作为独立窗口里的只读对话台，高度交给外层容器，不参与工作台折叠/展开动画 */
 .cd-dock.cd-replay { height: 100%; max-height: none; min-height: 0; flex: 1 1 auto; border-top: 0; }
+/* panel：右侧浮层里的对话台 —— 高度铺满浮层，自身没有折叠/展开动画
+   （浮层外壳已经有关闭按钮，再叠一层折叠头会让人不知道该点哪个）。 */
+.cd-dock.cd-panel {
+  height: 100%; max-height: none; min-height: 0; flex: 1 1 auto;
+  border-top: 0; border-radius: 0; background: transparent;
+}
 .cd-title-replay { font-weight: 600; }
 /* 展开态高度按内容走，不再无条件拉满整屏。
    旧值写死 calc(100vh - --wb-main-min)：短会话只有底部几行答案，上方 60% 是空白，
@@ -2448,8 +2470,8 @@ const webTitle = computed(() => webOn.value
 }
 /* 唯一的折叠热区：箭头 + 标题 + 状态指示；提示文字与按钮不触发折叠 */
 .cd-head-toggle {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 6px; margin-left: -6px;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 6px; margin-left: -6px;
   border-radius: 6px; cursor: pointer; user-select: none;
 }
 .cd-head-toggle:hover { background: var(--bg-hover); }
@@ -2475,7 +2497,7 @@ const webTitle = computed(() => webOn.value
 .cd-live { font-size: var(--fs-cap); color: var(--amber); margin-left: 4px; }
 /* 折叠态工作流后台指示：脉冲点 + 文字，位于标题折叠热区内 */
 .cd-live-wf {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
   color: var(--accent); cursor: pointer;
 }
 .cd-live-dot {
@@ -2490,7 +2512,7 @@ const webTitle = computed(() => webOn.value
 @media (prefers-reduced-motion: reduce) { .cd-live-dot { animation: none; } }
 .cd-spacer { flex: 1; }
 .cd-btn {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
   height: 22px; padding: 0 8px;
   border: 1px solid var(--edge-ink-soft); border-radius: 5px;
   background: transparent; color: var(--text-muted);
@@ -2531,7 +2553,7 @@ const webTitle = computed(() => webOn.value
 }
 .cd-pop-title { font-size: var(--fs-sm); font-weight: 600; color: var(--text); margin-bottom: 8px; }
 .cd-mini {
-  height: 21px; padding: 0 9px; font-size: var(--fs-cap);
+  height: 21px; padding: 0 8px; font-size: var(--fs-cap);
   border: 1px solid var(--border-strong); border-radius: 5px;
   background: transparent; color: var(--text-muted); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
@@ -2542,7 +2564,7 @@ const webTitle = computed(() => webOn.value
 /* 消息区 */
 .cd-jump-bottom {
   position: absolute; right: 14px; bottom: 116px; z-index: 3;
-  border: 1px solid var(--border-2); border-radius: 999px; padding: 4px 9px;
+  border: 1px solid var(--border-2); border-radius: 999px; padding: 4px 8px;
   background: var(--bg-raised); color: var(--accent); font-size: var(--fs-cap);
   box-shadow: var(--mi-shadow-control); cursor: pointer;
 }
@@ -2576,7 +2598,7 @@ const webTitle = computed(() => webOn.value
 .cd-empty-title { font-size: var(--fs-sm); margin: 0 0 10px; color: var(--text-muted); }
 .cd-quicks { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .cd-quick {
-  text-align: left; font-size: var(--fs-sm); padding: 5px 10px;
+  text-align: left; font-size: var(--fs-sm); padding: 4px 10px;
   border: 1px solid var(--edge-ink-soft); border-radius: 12px;
   background: transparent; color: var(--text-muted); cursor: pointer; transition: color .15s ease, border-color .15s ease, background .15s ease, transform .15s ease;
 }
@@ -2602,7 +2624,7 @@ const webTitle = computed(() => webOn.value
 .cd-msg-activity { display: flex; justify-content: center; }
 .cd-act-note {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 10px; border-radius: 99px;
+  padding: 4px 10px; border-radius: 99px;
   background: var(--bg-hover); color: var(--text-faint);
   font-size: var(--fs-cap); line-height: 1.5;
 }
@@ -2645,12 +2667,12 @@ const webTitle = computed(() => webOn.value
   animation: cd-caret 1s steps(1, end) infinite;
 }
 .cd-answer-pending {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 4px;
   font-size: var(--fs-sm); color: var(--text-faint);
 }
-.cd-thinking, .cd-error { font-size: var(--fs-sm); color: var(--text-muted); padding: 6px 9px; border-radius: 7px; background: var(--bg-hover); }
+.cd-thinking, .cd-error { font-size: var(--fs-sm); color: var(--text-muted); padding: 6px 8px; border-radius: 7px; background: var(--bg-hover); }
 .cd-thinking { border-left: 2px solid var(--accent); }
-.cd-slow-notice { margin: 6px 0; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius: 6px; color: var(--text-muted); background: color-mix(in srgb, var(--amber) 10%, transparent); font-size: var(--fs-cap); line-height: 1.45; }
+.cd-slow-notice { margin: 6px 0; padding: 8px 8px; border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--border)); border-radius: 6px; color: var(--text-muted); background: color-mix(in srgb, var(--amber) 10%, transparent); font-size: var(--fs-cap); line-height: 1.45; }
 .cd-error { color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 22%, transparent); background: color-mix(in srgb, var(--danger) 5%, transparent); }
 /* P1 重试层错误染色：按 final.error_kind 三态分流。
  *   cd-error-permanent  — 不可恢复（fallback 也失败 / 非网络错）→ 红条
@@ -2688,7 +2710,7 @@ const webTitle = computed(() => webOn.value
 
 .cd-run-head {
   display: flex; align-items: center; gap: 6px;
-  min-height: 22px; margin: 1px 0 5px;
+  min-height: 22px; margin: 1px 0 4px;
   color: var(--text-muted); font-size: var(--fs-cap);
 }
 .cd-run-avatar {
@@ -2711,7 +2733,7 @@ const webTitle = computed(() => webOn.value
 .cd-run-time { color: var(--text-faint); font-variant-numeric: tabular-nums; }
 
 .cd-wf-pending {
-  display: flex; align-items: center; gap: 9px;
+  display: flex; align-items: center; gap: 8px;
   margin: 4px 0 8px; padding: 10px 12px;
   border: 1px solid var(--border); border-radius: 10px;
   background: var(--bg-hover); color: var(--text-muted); font-size: var(--fs-sm);
@@ -2759,14 +2781,14 @@ const webTitle = computed(() => webOn.value
 }
 .cd-nar-reasoning {
   color: var(--text);
-  margin: 2px 0 0; padding: 5px 0 5px 12px;
+  margin: 2px 0 0; padding: 4px 0 4px 12px;
   border-left: 1px solid var(--border);
 }
 .cd-flow-body { display: flex; flex-direction: column; margin-top: 2px; }
 
 /* 动作/返回行：一行摘要（工具名 + 参数/结果），点开看该事件全文 */
 .cd-flow-row {
-  width: 100%; min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 7px;
+  width: 100%; min-width: 0; min-height: 32px; display: flex; align-items: center; gap: 8px;
   border: 0; border-radius: var(--r-xs); background: transparent; padding: 4px;
   text-align: left; color: var(--text-muted); cursor: pointer;
 }
@@ -2781,7 +2803,7 @@ const webTitle = computed(() => webOn.value
 .cd-flow-ok .cd-flow-glyph { border-color: var(--green); }
 .cd-flow-warn .cd-flow-glyph { border-color: var(--amber); }
 .cd-flow-error .cd-flow-glyph { border-color: var(--danger); }
-.cd-flow-main { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 7px; }
+.cd-flow-main { min-width: 0; flex: 1; display: flex; align-items: baseline; gap: 8px; }
 .cd-flow-title { flex: 0 0 auto; color: var(--text); font-size: var(--fs-sm); font-weight: 650; white-space: nowrap; }
 .cd-flow-summary {
   min-width: 0; flex: 1;
@@ -2791,7 +2813,7 @@ const webTitle = computed(() => webOn.value
 /* 返回行缩进挂在对应动作行下，读作「这次调用的结果」 */
 .cd-flow-row.result { padding-left: 20px; }
 .cd-flow-row.result .cd-flow-summary { color: var(--text-faint); font-size: var(--fs-sm); }
-.cd-flow-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; font-size: var(--fs-cap); }
+.cd-flow-meta { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-cap); }
 .cd-flow-state { padding: 2px 6px; border-radius: 999px; color: var(--text-faint); background: var(--bg-hover); white-space: nowrap; }
 .cd-flow-running .cd-flow-state { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .cd-flow-ok .cd-flow-state { color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
@@ -2805,13 +2827,13 @@ const webTitle = computed(() => webOn.value
   color: var(--text-muted); font: var(--fs-cap)/1.65 var(--font-mono, monospace);
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto;
 }
-.cd-flow-detail-label { display: block; margin-bottom: 3px; color: var(--text-faint); font: 9.5px/1.2 var(--font-ui); letter-spacing: .04em; }
+.cd-flow-detail-label { display: block; margin-bottom: 4px; color: var(--text-faint); font: 9.5px/1.2 var(--font-ui); letter-spacing: .04em; }
 .cd-flow-detail code { display: block; color: inherit; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
 /* 「查看改动」：写文件步骤详情里的绿调胶囊按钮，点开统一 diff 弹窗 */
 .cd-flow-diffbtn {
   margin-top: 8px;
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 10px;
+  padding: 4px 10px;
   border: 1px solid color-mix(in srgb, var(--green) 45%, var(--border-strong));
   border-radius: 999px;
   background: color-mix(in srgb, var(--green) 12%, var(--bg-raised));
@@ -2835,7 +2857,7 @@ const webTitle = computed(() => webOn.value
 }
 /* 有前后截图的详情比纯文本高得多，单独放宽（:has 不影响其他事件） */
 .cd-flow-detail:has(.cd-flow-evidence) { max-height: 420px; }
-.cd-flow-evidence { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 7px; font-family: var(--font-ui); }
+.cd-flow-evidence { display: flex; flex-direction: column; gap: 6px; margin: 2px 0 8px; font-family: var(--font-ui); }
 .cd-flow-evidence-meta { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .cd-flow-evidence-effect {
   padding: 1px 6px; border-radius: 999px;
@@ -2871,7 +2893,7 @@ const webTitle = computed(() => webOn.value
 }
 .cd-flow-shots figcaption { color: var(--text-faint); font-size: 9.5px; }
 
-.cd-refs { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.cd-refs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .cd-ref {
   display: inline-flex; align-items: center; gap: 4px;
   height: 22px; padding: 0 8px;
@@ -2884,9 +2906,9 @@ const webTitle = computed(() => webOn.value
 .cd-ref:hover { background: var(--bg-selected); border-color: var(--accent); }
 .cd-ref-more { font-weight: 700; }
 .cd-ref-line { color: var(--amber); }
-.cd-web-sources { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 5px; max-width: 96%; }
+.cd-web-sources { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 4px; max-width: 96%; }
 .cd-web-sources summary { cursor: pointer; color: var(--text-muted); font-size: var(--fs-cap); }
-.cd-web-source { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; margin-top: 5px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--bg); }
+.cd-web-source { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; margin-top: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); background: var(--bg); }
 .cd-web-source:hover { border-color: var(--accent); background: var(--bg-selected); }
 .cd-web-source-main { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; min-width: 0; color: inherit; text-decoration: none; }
 .cd-web-source-title { font-size: var(--fs-cap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2913,15 +2935,15 @@ const webTitle = computed(() => webOn.value
 
 /* 系统通知（上下文压缩等） */
 .cd-notice {
-  display: flex; align-items: flex-start; gap: 5px;
-  margin: 2px 0 5px; padding: 4px 8px;
+  display: flex; align-items: flex-start; gap: 4px;
+  margin: 2px 0 4px; padding: 4px 8px;
   border-radius: 5px; background: var(--bg-hover);
   font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.5;
 }
 .cd-notice svg { flex: 0 0 auto; margin-top: 2px; color: var(--text-faint); }
 .cd-resume {
-  display: inline-flex; align-items: center; gap: 5px;
-  margin: 1px 0 7px; padding: 5px 9px;
+  display: inline-flex; align-items: center; gap: 4px;
+  margin: 1px 0 8px; padding: 4px 8px;
   border: 1px solid var(--accent); border-radius: 5px;
   background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent);
   font-size: var(--fs-cap); cursor: pointer;
@@ -2937,9 +2959,9 @@ const webTitle = computed(() => webOn.value
   margin: 2px 0 6px; padding: 0;
   border: none; border-radius: 0; background: transparent;
 }
-.cd-plan-title { font-size: var(--fs-cap); font-weight: 600; color: var(--text-muted); margin-bottom: 5px; }
-.cd-plan-step { display: flex; gap: 7px; align-items: flex-start; font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.55; }
-.cd-plan-step + .cd-plan-step { margin-top: 3px; }
+.cd-plan-title { font-size: var(--fs-cap); font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+.cd-plan-step { display: flex; gap: 8px; align-items: flex-start; font-size: var(--fs-cap); color: var(--text-dim); line-height: 1.55; }
+.cd-plan-step + .cd-plan-step { margin-top: 4px; }
 .cd-plan-idx {
   flex: 0 0 15px; width: 15px; height: 15px; margin-top: 1px;
   border-radius: 50%; background: var(--accent); color: var(--accent-ink);
@@ -2952,7 +2974,7 @@ const webTitle = computed(() => webOn.value
 }
 @media (max-width: 1020px) {
   .cd-live { display: none; }
-  .cd-btn { padding: 0 7px; }
+  .cd-btn { padding: 0 8px; }
   .cd-btn span { display: none; }
   .cd-size-btn span { display: none; }
 }
@@ -2974,7 +2996,7 @@ const webTitle = computed(() => webOn.value
 /* 任务满意度（记忆 v2）：交付型回合结束后的一条细带，不抢答案的注意力 */
 .cd-feedback-hint,
 .cd-feedback-thanks {
-  padding: 5px 14px;
+  padding: 4px 14px;
   border-top: 1px dashed var(--border);
   background: var(--bg-raised);
   font-size: var(--fs-cap);
@@ -3005,11 +3027,11 @@ const webTitle = computed(() => webOn.value
 @keyframes cd-pop-in { from { opacity: 0; transform: translateY(5px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes cd-run-pulse { 0%, 100% { opacity: .6; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
 @media (max-width: 560px) {
-  .cd-head { gap: 5px; padding-inline: 7px; }
+  .cd-head { gap: 4px; padding-inline: 7px; }
   .cd-head-toggle { margin-left: -4px; padding-inline: 4px; }
   .cd-title { max-width: 76px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cd-btn { height: 24px; padding-inline: 6px; }
-  .cd-body { padding-left: 9px; padding-right: 9px; }
+  .cd-body { padding-left: 8px; padding-right: 8px; }
   .cd-user-bubble { max-width: 94%; }
   .cd-answer { max-width: 100%; }
   /* 窄屏：动作行的标题与摘要换行，meta 靠右 */

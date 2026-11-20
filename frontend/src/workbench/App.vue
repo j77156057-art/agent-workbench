@@ -17,6 +17,8 @@ const RewriteDiffDialog = defineAsyncComponent(() => import('./components/Rewrit
 const TaskEnginePanel = defineAsyncComponent(() => import('./components/TaskEnginePanel.vue'))
 import SceneRuntimePanel from './components/SceneRuntimePanel.vue'
 import ChatDock from './components/ChatDock.vue'
+// 右侧浮层三页签（对话 / 原始输出 / 时间线）——按需弹出，不改全局三栏布局。
+import RightChatPanel from './components/RightChatPanel.vue'
 import ExecApprovalDialog from './components/ExecApprovalDialog.vue'
 const GpuPanel = defineAsyncComponent(() => import('./components/GpuPanel.vue'))
 const EdaVerifyPanel = defineAsyncComponent(() => import('./components/EdaVerifyPanel.vue'))
@@ -1201,6 +1203,8 @@ onBeforeUnmount(() => {
          docked 主体 teleport 进主区 #wb-playpane-slot；同实例仅切 mode，不重建，
          故 iframe 与引擎嵌入状态得以保留。触发按钮由该实例 teleport 回顶栏 #wb-sr-slot。 -->
     <Teleport defer to="#wb-chat-slot"><ChatDock scope="default" /></Teleport>
+    <!-- 右侧浮层三页签：自带头与关闭按钮（fixed 定位，不占主区布局） -->
+    <RightChatPanel />
     <SceneRuntimePanel :mode="runtimeResident ? 'docked' : 'popup'"
       host="#wb-playpane-slot" />
 
