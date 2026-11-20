@@ -26,7 +26,7 @@
 // 的规则收编到了 --border / --edge-* / --r-* 上；这些替换在 paper / graphite 下
 // 逐像素等价（--border 与 --ink 在那两套里同值，--r-sm 本就是 0），
 // 由 verify_visual_regression.mjs 的「paper / graphite 用例 0 像素差」证明。
-export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'seed' | 'moyu' | 'moyu-night'
+export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'seed' | 'moyu' | 'moyu-night' | 'observatory'
 
 export interface SkinDef {
   key: SkinKey
@@ -45,6 +45,10 @@ export const SKINS: SkinDef[] = [
   { key: 'zinc', name: '锌白细线', desc: '冷白底 + 1px 灰细线 + 6px 圆角 + 零阴影，青绿强调。日常默认', swatch: ['#fcfcfd', '#7d7d86', '#0f766e', '#ffffff'] },
   { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e8e6e0', '#4dd0e1', '#000000'] },
   { key: 'paper', name: '素纸朱红', desc: '暖骨白纸 + 朱红，零圆角 + 硬阴影。印刷海报风，按需选用', swatch: ['#ece7db', '#14110f', '#ff674d', '#000000'] },
+  // 「观测舱」是工作台原来的深色调（memory-inspector-tokens.css 的深色家族）。
+  // 2026-11-20 两页合并到同一个皮肤键之后，它也进了问答页的皮肤表 ——
+  // 否则工作台切「观测舱」时，问答页没有对应的皮肤可跟，两页又得分家。
+  { key: 'observatory', name: '观测舱', desc: '深蓝灰底 + 电光青，面板与画布同源。夜间低亮环境', swatch: ['#0a1118', '#3b4757', '#5accf0', '#0a1118'] },
   // 「种子」是一套**由随机种子推导出来**的皮肤：色相/明度/圆角/描边/阴影/字号/间距
   // 全部来自 tools/design_seed.py 对该种子的确定性派生（色值按对比度反解，保证过 AA）。
   // 换观感就跑 `python tools/design_seed.py --new-seed` 重新生成，别手改这个文件。
@@ -56,14 +60,29 @@ export const SKINS: SkinDef[] = [
   { key: 'moyu-night', name: '墨屿夜航', desc: '深墨底 + 砖橙强调 + 衬线正文，夜间低亮环境', swatch: ['#121110', '#443f39', '#c2623a', '#17150f'] },
 ]
 
-// 2026-10-20：默认皮肤从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）
-// 换成 zinc（1px 细线 + 圆角 + 零阴影 + 青绿强调）—— 前者更像工程样机，
-// 后者才是能拿上线给普通用户的默认观感。brutalist 保留为可选皮肤。
-export const DEFAULT_SKIN: SkinKey = 'zinc'
+// 默认皮肤：
+//   2026-10-20 从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）
+//   换成 zinc（1px 细线 + 圆角 + 零阴影 + 青绿强调）—— 前者更像工程样机，
+//   后者才是能拿上线给普通用户的默认观感。
+//   2026-11-20 再换成 moyu（墨屿纸感）：工作台的配色档先一步做成了墨屿，
+//   而问答页还在 zinc —— 两页默认值分家，用户来回切一次就看出是两套产品。
+//   两页现在共用这一个键（见下方「唯一真源」），默认自然一致。
+export const DEFAULT_SKIN: SkinKey = 'moyu'
 
 const VALID = new Set<string>(SKINS.map((s) => s.key))
-/** 旧默认皮肤：曾被大量用户默认选中（从没主动选过），迁移到新默认时要换掉。 */
-const LEGACY_DEFAULT: SkinKey = 'paper'
+/** 旧默认皮肤：曾被大量用户默认选中（从没主动选过），迁移到新默认时要换掉。
+ *  2026-11-20：zinc 也成了旧默认（它当过一个月的默认），一并列入。 */
+const LEGACY_DEFAULTS: SkinKey[] = ['paper', 'zinc']
+/** 2026-11-20 之前工作台单独用的配色键（docmind.workbenchPalette）。
+ *  两页合并到 docmind.skin 之后，这个键只作一次性迁移来源。 */
+const LEGACY_PALETTE_KEY = 'docmind.workbenchPalette'
+/** 旧配色键的档位 → 皮肤键。两页合并后皮肤键是唯一真源。 */
+const LEGACY_PALETTE_TO_SKIN: Record<string, SkinKey> = {
+  light: 'zinc',
+  observatory: 'observatory',
+  moyu: 'moyu',
+  'moyu-night': 'moyu-night',
+}
 
 export function isSkinKey(v: unknown): v is SkinKey {
   return typeof v === 'string' && VALID.has(v)
@@ -71,19 +90,32 @@ export function isSkinKey(v: unknown): v is SkinKey {
 
 /** 读当前皮肤；读不到/被禁用/值非法一律回默认（不抛）
  *
- *  2026-10-20 加一次性迁移：旧默认皮肤是 paper（brutalist），现在是 zinc。
- *  凡是**从没主动选过**皮肤的机器（localStorage 里是 paper，且没有锁定标记），
- *  自动换到新默认 —— 否则它们会一直停在"工程样机"观感上。
- *  主动选过 paper 的用户（选的时候会打锁定标记）不受影响。 */
+ *  2026-10-20 加一次性迁移：旧默认皮肤是 paper（brutalist），当时换成 zinc。
+ *  凡是**从没主动选过**皮肤的机器（localStorage 里是旧默认，且没有锁定标记），
+ *  自动换到新默认 —— 否则它们会一直停在旧观感上。
+ *  主动选过的用户（选的时候会打锁定标记）不受影响。
+ *  2026-11-20：新默认是 moyu（墨屿纸感），zinc 也列入旧默认。 */
 export function loadSkin(): SkinKey {
   try {
     const raw = window.localStorage.getItem(KEY)
-    if (!isSkinKey(raw)) return DEFAULT_SKIN
-    if (raw === LEGACY_DEFAULT && !window.localStorage.getItem(LOCK_KEY)) {
-      window.localStorage.setItem(KEY, DEFAULT_SKIN)
-      return DEFAULT_SKIN
+    if (isSkinKey(raw)) {
+      // 从没主动选过的机器（没有锁定标记）跟着新默认走，不留在旧观感上。
+      if (LEGACY_DEFAULTS.includes(raw) && !window.localStorage.getItem(LOCK_KEY)) {
+        window.localStorage.setItem(KEY, DEFAULT_SKIN)
+        return DEFAULT_SKIN
+      }
+      return raw
     }
-    return raw
+    // 2026-11-20 之前工作台单独用 docmind.workbenchPalette 存配色，
+    // 问答页用 docmind.skin —— 两个键各记各的，两页随时可能分家。
+    // 这里把旧配色键一次性并到皮肤键：用户选过的配色不丢，之后只有一个键。
+    const legacy = window.localStorage.getItem(LEGACY_PALETTE_KEY)
+    const mapped = legacy ? LEGACY_PALETTE_TO_SKIN[legacy] : undefined
+    if (mapped) {
+      window.localStorage.setItem(KEY, mapped)
+      return mapped
+    }
+    return DEFAULT_SKIN
   } catch {
     return DEFAULT_SKIN
   }

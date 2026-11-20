@@ -15,12 +15,25 @@ import '../workbench/skins-seed.css'
 // 必须晚于 skins.css：面板的 --mi-* 是独立一套，问答页自己的 --bg/--ink 仍由
 // html[data-skin] 的更高优先级规则覆盖，不会被这份 :root 抢走。
 import '../workbench/memory-inspector-tokens.css'
+// 「墨屿」两套皮肤的令牌（2026-11-20 补上）：此前只有工作台入口 import 它，
+// 问答页里 data-skin='moyu' 匹配不到任何规则，只能落回 ask.css 的 base :root
+// （其实是素纸朱红那套暖色）—— 切了「墨屿」却根本没换成功。
+//
+// 位置有讲究：必须排在 memory-inspector-tokens.css **之后**。问答页深色皮肤会写
+// data-assistant-dark='1'，那份深色家族给的是冷蓝观测舱的 --mi-*；墨屿这一族
+// 与它同特异度（:root×4），同特异度时后导入者胜 —— 排在后面，夜航档才是
+// 「暖墨的壳 + 暖墨的面板」而不是混搭。
+import '../workbench/skins-moyu.css'
 // 玻璃材质：参数在 workbench/glass.css（单源），这里只引样式 + 初始化。
 // 必须放在 skins.css **之后**：参数块 :root 兜底要早于 html[data-skin] 覆写才生效。
 import '../workbench/glass.css'
 import '../workbench/layout-modes.css'
 import './ask-glass.css'
 import '../shared/ui-v2.css'
+// 「墨屿」质感层（问答页）：与工作台的 chat-ink.css 同款的形态与阅读体。
+// 必须放在最后 import：问答页组件的 scoped 样式是运行时注入的，晚于这里的
+// 静态 CSS —— 靠 #app 前缀的特异度（1,1,0）压过 scoped（0,2,0），不靠顺序。
+import './ask-ink.css'
 import { applyStoredSkin, applySkin, onSkinChange } from '../workbench/skins'
 import { initStyle } from '../workbench/styleMode'
 import { initLayout } from '../workbench/layoutMode'

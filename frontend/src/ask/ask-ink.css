@@ -1,0 +1,81 @@
+/* 「墨屿」质感层（问答页）—— 与工作台的 chat-ink.css 是同一套形态与阅读体。
+ *
+ * 为什么要有这一层：2026-11-20 之前，「墨屿」只做在工作台（chat-ink.css，作用域
+ * 锁在 .cd-dock），问答页一点没沾 —— 两页于是长成两个产品：工作台是暖白纸底 +
+ * 砖橙 + 衬线正文 + 圆形发送键，问答页还是冷白 + 青绿 + 无衬线 + 方角按钮。
+ * 两页现在共用同一个皮肤键（docmind.skin），颜色已经同源；这一层补上**形态**。
+ *
+ * 这一层只动「怎么读」与「长什么样」，不动「什么颜色」：
+ *   · 阅读体（衬线）由 --font-read 令牌驱动 —— 默认继承界面无衬线；
+ *     「墨屿」两套皮肤把它换成系统衬线栈（见 skins-moyu.css），别的皮肤不变。
+ *   · 形态（圆形发送键、序号强调色、引文块）是全局生效的，与工作台同款。
+ *
+ * 选择器一律带 #app 前缀：问答页组件样式是 scoped（.composer[data-v-xxx]，
+ * 0,2,0），普通类名（0,1,0）压不过它；#app 是 1,1,0，稳定胜出且不用 !important。
+ */
+
+/* 阅读体：默认继承（无衬线）。皮肤可以整体换成衬线栈。 */
+:root {
+  --font-read: inherit;
+}
+
+/* ---------------------------------------------------------------- 阅读体 */
+#app .welcome-title {
+  font-family: var(--font-read, inherit);
+  font-weight: 700;
+  letter-spacing: .01em;
+}
+#app .welcome-desc { font-family: var(--font-read, inherit); }
+#app .answer,
+#app .answer .md-p,
+#app .answer .md-ul,
+#app .answer .md-ol { font-family: var(--font-read, inherit); }
+#app .answer .md-p { line-height: 1.9; }
+#app .answer .md-h {
+  font-family: var(--font-read, inherit);
+  letter-spacing: .01em;
+  line-height: 1.5;
+}
+/* 有序列表的序号用强调色（墨屿：1. 2. 是橙的） */
+#app .answer .md-ol > li::marker { color: var(--accent-text); font-weight: 700; }
+/* 引文块：淡强调底 + 左侧强调线 */
+#app .answer blockquote {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+/* 代码块仍是等宽 —— 衬线只给可读的文字，不给代码 */
+#app .answer .md-pre,
+#app .answer .md-code { font-family: var(--font-code); }
+
+/* ---------------------------------------------------------------- 输入区 */
+/* 圆形发送键：与工作台对话坞同款。文字「发送」缩成 0 号字（仍留在无障碍树里，
+   按键的 title 也还在），只让箭头露出来 —— 宽度固定成圆，按钮不再忽大忽小。 */
+#app .send-btn {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  gap: 0;
+  border-radius: 50%;
+  font-size: 0;
+}
+#app .send-btn svg { width: 15px; height: 15px; }
+/* 「停止」是另一个动作，不该被压成圆形图标态 */
+#app .send-btn.stop {
+  width: auto;
+  height: 36px;
+  min-height: 36px;
+  padding: 8px 14px;
+  gap: 8px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-md);
+}
+
+/* ---------------------------------------------------------------- 空态 */
+#app .welcome-eyebrow {
+  color: var(--accent-text);
+  letter-spacing: .06em;
+}
