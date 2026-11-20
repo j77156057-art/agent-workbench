@@ -51,16 +51,24 @@ function measure() {
   return { overflow: document.documentElement.scrollWidth > innerWidth, pairs: pairs.length, minimum: Math.min(...pairs.map(p => p.ratio)), failures: pairs.filter(p => p.ratio + .01 < p.threshold) }
 }
 
-async function createPage(skin, width, height = 900, finalText = '这是隔离的界面测试回答，未调用真实模型。') {
+// 工作台的颜色由**配色档**（palette，palette.ts）决定，不是 skins.ts 那套皮肤
+// （skins.ts 只管问答页）。2026-11-20 起工作台默认是「墨屿纸感」，所以对比度
+// 采样必须显式带上配色档 —— 否则工作台那四轮「换皮肤」量到的其实是同一档，
+// 另外三档（浅色 / 观测舱 / 墨屿夜航）根本没被测到。
+const WORKBENCH_PALETTES = ['light', 'observatory', 'moyu', 'moyu-night']
+
+async function createPage(skin, width, height = 900, finalText = '这是隔离的界面测试回答，未调用真实模型。', palette = '') {
   const page = await browser.newPage({ viewport: { width, height }, reducedMotion: 'reduce' })
   page.on('pageerror', error => report.errors.push(error.message))
   page.on('dialog', dialog => dialog.accept())
-  await page.addInitScript(({ skin }) => {
+  await page.addInitScript(({ skin, palette }) => {
     localStorage.clear()
     sessionStorage.clear()
     localStorage.setItem('docmind.skin', skin)
     localStorage.setItem('docmind.skinLocked', '1')
-  }, { skin })
+    // 留空 = 用应用自己的默认档；给了才显式切。
+    if (palette) localStorage.setItem('docmind.workbenchPalette', palette)
+  }, { skin, palette })
   let chatCalls = 0
   let failChat = false
   const sessions = Array.from({ length: 18 }, (_, i) => ({ session_id: `ask-ui-fixture-${i}`, title: i === 0 ? '项目架构与入口分析' : `资料阅读记录 ${i}`, preview: '界面回归测试会话', updated_at: '2026-10-28T08:00:00Z' }))
@@ -169,14 +177,18 @@ try {
   report.interactions.push('抽屉打开时切回桌面解除主区锁定')
   await page.close()
 
-  for (const skin of ['zinc', 'graphite', 'paper', 'seed']) {
-    const { page, calls } = await createPage(skin, 1440)
+  // 工作台的颜色源是**配色档**（palette.ts），不是 skins.ts 那套皮肤 —— 工作台
+  // 根本没读 docmind.skin，所以之前这一圈「换皮肤」量到的其实是同一档配色。
+  // 2026-11-20 起默认是「墨屿纸感」，因此这里按配色档逐档采样，让四档
+  // （浅色 / 观测舱 / 墨屿纸感 / 墨屿夜航）都真正过一遍对比度守卫。
+  for (const palette of WORKBENCH_PALETTES) {
+    const { page, calls } = await createPage('zinc', 1440, 900, undefined, palette)
     await page.goto(base + '/workbench')
     await page.locator('.ov-page-head').waitFor()
     await page.evaluate(() => document.fonts.ready)
     const metrics = await page.evaluate(measure)
-    report.cases.push({ page: 'workbench', skin, width: 1440, ...metrics })
-    await page.screenshot({ path: path.join(output, `product-workbench-${skin}.png`) })
+    report.cases.push({ page: 'workbench', palette, width: 1440, ...metrics })
+    await page.screenshot({ path: path.join(output, `product-workbench-${palette}.png`) })
     const action = page.getByRole('button', { name: '梳理项目结构', exact: true }).first()
     await action.click()
     await page.waitForFunction(() => document.querySelector('.cd-input')?.value.includes('梳理当前项目'))
@@ -191,11 +203,13 @@ try {
     await viewButton.click()
     await page.locator('[data-wb-view="overview"]').click()
     assert.equal(await page.locator('.wb-view-label').textContent(), '概览')
-    report.interactions.push(`${skin} 工作台行动预填、输入框可见、素材从更多进入并回到概览`)
+    report.interactions.push(`${palette} 工作台行动预填、输入框可见、素材从更多进入并回到概览`)
     await page.close()
   }
+  // 尺寸回归固定用「墨屿纸感」这一档（当前默认），与上面的四档配色采样分工：
+  // 这里量的是布局，palette 覆盖率由上面那圈负责。
   for (const [width, height] of [[1024, 768], [390, 844], [1440, 600]]) {
-    const { page } = await createPage('zinc', width, height)
+    const { page } = await createPage('zinc', width, height, undefined, 'moyu')
     await page.goto(base + '/workbench')
     await page.locator('.ov-page-head').waitFor()
     await page.evaluate(() => document.fonts.ready)
@@ -215,7 +229,7 @@ try {
       assert.equal(await page.locator('.wb-main').evaluate(el => el.inert), false)
       report.interactions.push('移动工作台文件树抽屉、Escape关闭及主区宽度下限')
     }
-    report.cases.push({ page: 'workbench', skin: 'zinc', width, height, ...metrics })
+    report.cases.push({ page: 'workbench', palette: 'moyu', width, height, ...metrics })
     await page.screenshot({ path: path.join(output, `product-workbench-${width}-${height}.png`) })
     await page.locator('.cd-size-btn').click()
     const box = await page.locator('.cd-input').boundingBox()
@@ -245,7 +259,7 @@ try {
         jump: !!document.querySelector('.cd-jump-bottom'),
       }
     })
-    const { page: short } = await createPage('zinc', 1440)
+    const { page: short } = await createPage('zinc', 1440, 900, undefined, 'moyu')
     await short.goto(base + '/workbench')
     await short.locator('.cd-input').fill('短会话贴底验证')
     await short.locator('.cd-send').click()
@@ -265,7 +279,7 @@ try {
     await short.close()
 
     const longText = Array.from({ length: 40 }, (_, i) => `- 第 ${i + 1} 行：滚动回归的长回答，用来确认消息区可以正常溢出，且从顶上还能回到底部。`).join('\n')
-    const { page: long } = await createPage('zinc', 1440, 900, longText)
+    const { page: long } = await createPage('zinc', 1440, 900, longText, 'moyu')
     await long.goto(base + '/workbench')
     await long.locator('.cd-input').fill('长会话滚动验证')
     await long.locator('.cd-send').click()
