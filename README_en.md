@@ -29,6 +29,10 @@
 <sub>Left: the trace ledger — per-turn tokens / latency / tool sequence / outcome, **metadata only; prompt and answer text are never written to disk**.
 Right: the scene canvas — a visual, editable node graph of a Godot `.tscn`; every edit is undoable and undo restores the file byte-for-byte.</sub>
 
+**▶ Online showcase** — the whole product on one page: six-layer architecture, 21 panels, real UI screenshots, and a 52-second recording of a real conversation (ask → streaming reasoning → tool calls → answer with file references).
+
+<sub>[Open the showcase](https://37kr9u7jhirnnrv8qde.traesite.cn) · [page source](landing-site/index.html) · [recording (52s, 1440×900)](landing-site/assets/demo.mp4)</sub>
+
 ---
 
 ## What it is

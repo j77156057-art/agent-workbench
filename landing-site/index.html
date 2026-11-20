@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent 工作台 · 可观测、可编排、可回归的 Agent 运行时</title>
+<meta name="description" content="Agent 工作台（DocMind）：面向工程代码的 Agent 运行时。六层护栏、逐轮 trace 账本、受控写、黄金题回归门，零 API Key 即可离线跑通。" />
+<style>
+  :root{
+    --bg:#07090c;
+    --bg-soft:#0b0e13;
+    --surface:#10141a;
+    --surface-2:#141922;
+    --border:rgba(255,255,255,.075);
+    --border-strong:rgba(255,255,255,.14);
+    --text:#e9ecf2;
+    --muted:#98a1b0;
+    --dim:#6b7483;
+    --accent:#8f7cf7;
+    --accent-soft:rgba(143,124,247,.14);
+    --teal:#4fd1c5;
+    --amber:#efb45f;
+    --rose:#e8788a;
+    --radius:18px;
+    --maxw:1160px;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    line-height:1.65;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  ::selection{background:rgba(143,124,247,.35)}
+  a{color:inherit;text-decoration:none}
+  .wrap{width:min(calc(100% - 48px),var(--maxw));margin:0 auto}
+  .eyebrow{
+    display:inline-flex;align-items:center;gap:8px;
+    font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;
+  }
+  .eyebrow::before{
+    content:"";width:18px;height:1px;background:linear-gradient(90deg,transparent,var(--accent));
+  }
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 12px var(--teal)}
+
+  /* ---------- background ---------- */
+  .bg-fx{position:fixed;inset:0;z-index:-2;overflow:hidden;pointer-events:none}
+  .bg-fx .grid{
+    position:absolute;inset:-1px;
+    background-image:linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+    background-size:64px 64px;
+    mask-image:radial-gradient(ellipse 70% 55% at 50% 0%,#000 20%,transparent 78%);
+    -webkit-mask-image:radial-gradient(ellipse 70% 55% at 50% 0%,#000 20%,transparent 78%);
+  }
+  .bg-fx .orb{position:absolute;border-radius:50%;filter:blur(120px);opacity:.5}
+  .bg-fx .orb.a{width:620px;height:620px;left:50%;top:-320px;transform:translateX(-50%);background:radial-gradient(circle,rgba(143,124,247,.5),transparent 68%)}
+  .bg-fx .orb.b{width:460px;height:460px;right:-160px;top:520px;background:radial-gradient(circle,rgba(79,209,197,.22),transparent 68%)}
+  .bg-fx .orb.c{width:480px;height:480px;left:-200px;top:1500px;background:radial-gradient(circle,rgba(239,180,95,.14),transparent 68%)}
+
+  /* ---------- nav ---------- */
+  header{position:sticky;top:0;z-index:50;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+    background:rgba(7,9,12,.62);border-bottom:1px solid transparent;transition:border-color .3s,background .3s}
+  header.scrolled{border-bottom-color:var(--border);background:rgba(7,9,12,.86)}
+  .nav{display:flex;align-items:center;justify-content:space-between;height:66px}
+  .brand{display:flex;align-items:center;gap:11px;font-weight:650;letter-spacing:-.01em;font-size:15px}
+  .brand .mark{
+    width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+    background:linear-gradient(145deg,rgba(143,124,247,.9),rgba(79,209,197,.75));
+    box-shadow:0 6px 22px rgba(143,124,247,.35);
+  }
+  .brand .mark svg{width:16px;height:16px}
+  .brand small{color:var(--dim);font-weight:500;font-size:12px;letter-spacing:.04em}
+  .nav-links{display:flex;align-items:center;gap:28px;font-size:13.5px;color:var(--muted)}
+  .nav-links a{transition:color .2s}
+  .nav-links a:hover{color:var(--text)}
+  .nav-cta{
+    display:inline-flex;align-items:center;gap:8px;padding:9px 17px;border-radius:999px;
+    border:1px solid var(--border-strong);color:var(--text);font-size:13px;font-weight:550;
+    background:rgba(255,255,255,.03);transition:.22s;
+  }
+  .nav-cta:hover{background:rgba(255,255,255,.07);border-color:rgba(143,124,247,.5)}
+
+  /* ---------- hero ---------- */
+  .hero{padding:96px 0 72px;position:relative;text-align:center}
+  .hero .eyebrow{justify-content:center}
+  .hero .eyebrow::after{content:"";width:18px;height:1px;background:linear-gradient(270deg,transparent,var(--accent))}
+  h1{
+    margin:26px auto 0;max-width:940px;
+    font-size:clamp(34px,5.2vw,62px);line-height:1.18;letter-spacing:-.025em;font-weight:680;
+  }
+  h1 .grad{
+    background:linear-gradient(100deg,#cfc6ff 0%,var(--accent) 38%,var(--teal) 78%,#cfe9e5 100%);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .lede{
+    margin:24px auto 0;max-width:660px;color:var(--muted);font-size:clamp(15px,1.6vw,18px);
+  }
+  .hero-actions{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:38px}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;padding:13px 26px;border-radius:999px;
+    font-size:14.5px;font-weight:560;transition:transform .2s,box-shadow .25s,background .25s,border-color .25s;
+  }
+  .btn svg{width:15px;height:15px}
+  .btn.primary{
+    background:linear-gradient(135deg,#9b8bff,#6f5df0);color:#0b0918;
+    box-shadow:0 12px 34px rgba(143,124,247,.35);
+  }
+  .btn.primary:hover{transform:translateY(-2px);box-shadow:0 18px 44px rgba(143,124,247,.45)}
+  .btn.ghost{border:1px solid var(--border-strong);color:var(--text);background:rgba(255,255,255,.02)}
+  .btn.ghost:hover{background:rgba(255,255,255,.06);transform:translateY(-2px)}
+  .hero-note{margin-top:18px;font-size:12.5px;color:var(--dim);letter-spacing:.02em}
+
+  .stats{
+    display:grid;grid-template-columns:repeat(4,1fr);gap:1px;margin-top:74px;
+    background:var(--border);border:1px solid var(--border);border-radius:16px;overflow:hidden;
+  }
+  .stat{background:linear-gradient(180deg,rgba(16,20,26,.92),rgba(11,14,19,.92));padding:26px 20px;text-align:left}
+  .stat b{display:block;font-size:clamp(22px,2.6vw,30px);font-weight:650;letter-spacing:-.02em;
+    background:linear-gradient(180deg,#fff,#a9b0c0);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .stat span{display:block;margin-top:6px;font-size:12.5px;color:var(--muted)}
+
+  /* ---------- sections ---------- */
+  section{padding:96px 0;position:relative;scroll-margin-top:76px}
+  .sec-head{max-width:720px;margin-bottom:52px}
+  .sec-head h2{
+    margin-top:18px;font-size:clamp(26px,3.4vw,40px);line-height:1.25;letter-spacing:-.02em;font-weight:660;
+  }
+  .sec-head p{margin-top:16px;color:var(--muted);font-size:15.5px;max-width:620px}
+
+  /* pain */
+  .pain-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .pain{
+    position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+    padding:34px 32px;overflow:hidden;transition:border-color .3s,transform .3s;
+  }
+  .pain:hover{border-color:var(--border-strong);transform:translateY(-3px)}
+  .pain::after{content:"";position:absolute;inset:0;background:radial-gradient(400px 200px at 100% 0%,rgba(143,124,247,.1),transparent 70%);pointer-events:none}
+  .pain .num{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.1em}
+  .pain h3{font-size:20px;margin-top:14px;font-weight:620;letter-spacing:-.01em}
+  .pain p{margin-top:12px;color:var(--muted);font-size:14.5px}
+  .pain .fix{
+    margin-top:22px;padding-top:18px;border-top:1px dashed var(--border);
+    font-size:13.5px;color:var(--text);display:flex;gap:10px;align-items:flex-start;
+  }
+  .fix .tag{
+    flex:none;margin-top:2px;padding:2px 9px;border-radius:6px;font-size:11px;letter-spacing:.06em;
+    background:var(--accent-soft);color:#c7bdff;border:1px solid rgba(143,124,247,.3);
+  }
+
+  /* layers */
+  .layers{display:grid;gap:14px}
+  .layer{
+    display:grid;grid-template-columns:64px 200px 1fr;gap:24px;align-items:center;
+    background:linear-gradient(90deg,rgba(20,25,34,.85),rgba(16,20,26,.6));
+    border:1px solid var(--border);border-radius:14px;padding:24px 28px;
+    transition:border-color .25s,background .25s,transform .25s;
+  }
+  .layer:hover{border-color:rgba(143,124,247,.4);transform:translateX(4px);background:linear-gradient(90deg,rgba(24,29,40,.9),rgba(16,20,26,.7))}
+  .layer .k{
+    width:44px;height:44px;border-radius:12px;display:grid;place-items:center;
+    font-family:var(--mono);font-size:17px;font-weight:600;color:#cfc6ff;
+    background:rgba(143,124,247,.12);border:1px solid rgba(143,124,247,.25);
+  }
+  .layer h4{font-size:16.5px;font-weight:620}
+  .layer h4 span{display:block;font-size:11.5px;color:var(--dim);font-weight:500;letter-spacing:.08em;margin-top:2px;text-transform:uppercase}
+  .layer p{color:var(--muted);font-size:14px}
+  .layer code{
+    font-family:var(--mono);font-size:12px;color:#a9b6cc;background:rgba(255,255,255,.04);
+    border:1px solid var(--border);border-radius:5px;padding:1px 6px;white-space:nowrap;
+  }
+
+  /* panels */
+  .panel-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}
+  .panel{
+    background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px;
+    position:relative;overflow:hidden;transition:.3s;
+  }
+  .panel:hover{border-color:var(--border-strong);transform:translateY(-3px);background:var(--surface-2)}
+  .panel .ico{
+    width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+    border:1px solid var(--border-strong);background:rgba(255,255,255,.03);margin-bottom:18px;
+  }
+  .panel .ico svg{width:18px;height:18px;stroke:#c9cfdb;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+  .panel h3{font-size:16.5px;font-weight:620;letter-spacing:-.01em}
+  .panel p{margin-top:9px;color:var(--muted);font-size:13.8px}
+  .panel ul{list-style:none;margin-top:16px;display:grid;gap:7px}
+  .panel li{font-size:13px;color:var(--dim);padding-left:16px;position:relative}
+  .panel li::before{content:"";position:absolute;left:0;top:9px;width:5px;height:5px;border-radius:50%;background:var(--accent);opacity:.7}
+
+  /* demo timeline */
+  .timeline{position:relative;display:grid;gap:0}
+  .timeline::before{
+    content:"";position:absolute;left:27px;top:14px;bottom:14px;width:1px;
+    background:linear-gradient(180deg,transparent,rgba(143,124,247,.5) 12%,rgba(79,209,197,.5) 88%,transparent);
+  }
+  .step{display:grid;grid-template-columns:56px 1fr;gap:22px;padding:18px 0}
+  .step .idx{
+    width:56px;height:56px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);
+    font-size:13px;color:var(--text);background:var(--bg-soft);border:1px solid rgba(143,124,247,.35);
+    position:relative;z-index:1;box-shadow:0 0 0 6px var(--bg);
+  }
+  .step:hover .idx{border-color:var(--accent);color:#d7cfff;box-shadow:0 0 0 6px var(--bg),0 0 24px rgba(143,124,247,.3)}
+  .step h4{font-size:16px;font-weight:620;padding-top:6px}
+  .step p{color:var(--muted);font-size:14px;margin-top:5px}
+
+  /* stack */
+  .stack{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+  .chip{
+    font-family:var(--mono);font-size:12.5px;color:#c3cbd8;padding:7px 13px;border-radius:999px;
+    border:1px solid var(--border);background:rgba(255,255,255,.025);transition:.2s;
+  }
+  .chip:hover{border-color:rgba(143,124,247,.45);color:#fff;background:rgba(143,124,247,.08)}
+  .stack-block{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .stack-card{border:1px solid var(--border);border-radius:16px;padding:28px;background:var(--surface)}
+  .stack-card h4{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600}
+  .stack-card .big{margin-top:18px;font-size:28px;font-weight:650;letter-spacing:-.02em}
+  .stack-card .big small{font-size:13px;color:var(--muted);font-weight:500;margin-left:6px}
+
+  /* cta */
+  .cta-box{
+    position:relative;border-radius:24px;overflow:hidden;text-align:center;padding:68px 32px;
+    border:1px solid rgba(143,124,247,.25);
+    background:linear-gradient(160deg,rgba(143,124,247,.13),rgba(16,20,26,.9) 55%,rgba(79,209,197,.08));
+  }
+  .cta-box::before{
+    content:"";position:absolute;inset:0;
+    background:radial-gradient(ellipse 60% 80% at 50% -20%,rgba(143,124,247,.3),transparent 70%);
+    pointer-events:none;
+  }
+  .cta-box h2{position:relative;font-size:clamp(24px,3.2vw,36px);letter-spacing:-.02em;font-weight:650}
+  .cta-box p{position:relative;color:var(--muted);margin-top:14px;max-width:520px;margin-left:auto;margin-right:auto}
+  .cta-box .hero-actions{margin-top:30px}
+
+  footer{border-top:1px solid var(--border);padding:40px 0;margin-top:40px}
+  .foot{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;color:var(--dim);font-size:13px}
+  .foot .links{display:flex;gap:22px}
+  .foot a:hover{color:var(--text)}
+  .foot .brand{margin-bottom:0;font-size:13.5px}
+
+  /* reveal */
+  .reveal{opacity:0;transform:translateY(22px);transition:opacity .7s cubic-bezier(.2,.7,.2,1),transform .7s cubic-bezier(.2,.7,.2,1)}
+  .reveal.in{opacity:1;transform:none}
+  @media (prefers-reduced-motion:reduce){
+    .reveal{opacity:1;transform:none;transition:none}
+    html{scroll-behavior:auto}
+  }
+
+  /* feature groups */
+  .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .fgroup{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:26px 28px;transition:.3s}
+  .fgroup:hover{border-color:var(--border-strong);background:var(--surface-2)}
+  .fgroup h3{font-size:15px;font-weight:650;display:flex;align-items:center;gap:10px}
+  .fgroup h3 .cnt{font-family:var(--mono);font-size:11px;color:var(--dim);border:1px solid var(--border);border-radius:999px;padding:1px 8px;font-weight:500}
+  .fitems{margin-top:18px;display:grid}
+  .fitem{display:grid;grid-template-columns:118px 1fr;gap:16px;padding:10px 0;border-bottom:1px dashed rgba(255,255,255,.055);font-size:13.2px}
+  .fitem:last-child{border-bottom:none}
+  .fitem b{color:#d9dde6;font-weight:560}
+  .fitem span{color:var(--dim)}
+
+  .guards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:22px}
+  .guard{position:relative;background:linear-gradient(180deg,rgba(20,25,34,.85),rgba(13,17,22,.85));border:1px solid var(--border);border-radius:14px;padding:22px 22px 20px;transition:.3s;overflow:hidden}
+  .guard:hover{border-color:rgba(143,124,247,.4);transform:translateY(-3px)}
+  .guard .n{font-family:var(--mono);font-size:11px;color:var(--accent);opacity:.9;letter-spacing:.12em}
+  .guard h4{font-size:14.5px;margin-top:9px;font-weight:620}
+  .guard p{margin-top:7px;font-size:12.8px;color:var(--muted);line-height:1.6}
+
+  /* screenshots */
+  .shots{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .shot{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:12px;transition:.3s}
+  .shot:hover{border-color:var(--border-strong);transform:translateY(-3px)}
+  .shot img{display:block;width:100%;border-radius:10px;border:1px solid rgba(255,255,255,.06);background:#0a0d11}
+  .shot figcaption{padding:14px 6px 4px;display:flex;flex-direction:column;gap:4px}
+  .shot figcaption b{font-size:13.5px;font-weight:600;color:#dfe3ea}
+  .shot figcaption span{font-size:12.5px;color:var(--dim)}
+
+  /* video */
+  .video-wrap{display:grid;grid-template-columns:1.6fr 1fr;gap:26px;align-items:start}
+  .player{position:relative;border-radius:18px;overflow:hidden;border:1px solid rgba(143,124,247,.25);background:#05070a;aspect-ratio:16/10;
+    box-shadow:0 24px 70px rgba(0,0,0,.55)}
+  .player video{width:100%;height:100%;display:block;object-fit:cover}
+  .player .badge-live{position:absolute;left:14px;top:14px;font-size:11px;letter-spacing:.08em;color:#dfe6f5;
+    background:rgba(9,12,17,.72);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:5px 11px;display:flex;align-items:center;gap:7px;backdrop-filter:blur(8px)}
+  .player .badge-live i{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 10px var(--teal)}
+  .chapters{display:grid;gap:2px;border:1px solid var(--border);border-radius:16px;background:var(--surface);padding:8px 22px}
+  .chapter{display:flex;gap:16px;padding:13px 0;border-bottom:1px dashed rgba(255,255,255,.06);cursor:pointer;transition:.2s}
+  .chapter:last-child{border-bottom:none}
+  .chapter:hover{padding-left:4px}
+  .chapter .t{font-family:var(--mono);font-size:11.5px;color:var(--accent);min-width:38px;padding-top:2px}
+  .chapter b{display:block;font-size:13.5px;font-weight:580;color:#dfe3ea}
+  .chapter span{display:block;font-size:12.3px;color:var(--dim);margin-top:2px}
+  .video-note{margin-top:14px;font-size:12px;color:var(--dim)}
+
+  /* ---------- responsive ---------- */
+  @media (max-width:900px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .pain-grid,.panel-grid,.stack-block,.fgrid,.shots,.video-wrap{grid-template-columns:1fr}
+    .guards{grid-template-columns:1fr 1fr}
+    .layer{grid-template-columns:52px 1fr;gap:16px;padding:20px}
+    .layer p{grid-column:1/-1;padding-left:0}
+    .layer .k{width:40px;height:40px;font-size:15px}
+    .nav-links{display:none}
+  }
+  @media (max-width:600px){
+    .wrap{width:calc(100% - 32px)}
+    .hero{padding:64px 0 48px}
+    section{padding:68px 0}
+    .layer{grid-template-columns:1fr}
+    .layer .k{margin-bottom:4px}
+    .step{grid-template-columns:40px 1fr;gap:16px}
+    .step .idx{width:40px;height:40px;font-size:11px}
+    .timeline::before{left:19px}
+    .stat{padding:20px 16px}
+    .nav-cta{padding:8px 14px;font-size:12px}
+    .guards{grid-template-columns:1fr}
+    .fitem{grid-template-columns:96px 1fr;gap:12px}
+    .chapters{padding:4px 16px}
+  }
+</style>
+</head>
+<body>
+<div class="bg-fx" aria-hidden="true">
+  <div class="grid"></div>
+  <div class="orb a"></div>
+  <div class="orb b"></div>
+  <div class="orb c"></div>
+</div>
+
+<header id="top">
+  <div class="wrap nav">
+    <a class="brand" href="#top">
+      <span class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#0b0918" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 6h16M4 12h10M4 18h7"/>
+        </svg>
+      </span>
+      Agent 工作台 <small>DocMind</small>
+    </a>
+    <nav class="nav-links">
+      <a href="#why">为什么</a>
+      <a href="#layers">六层架构</a>
+      <a href="#features">功能全景</a>
+      <a href="#demo">演示视频</a>
+    </nav>
+    <a class="nav-cta" href="#cta">了解项目
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </a>
+  </div>
+</header>
+
+<main>
+  <!-- HERO -->
+  <section class="hero">
+    <div class="wrap">
+      <span class="eyebrow"><span class="dot"></span>离线可跑 · 零 API Key</span>
+      <h1>把「能跑的 Agent」<br/>补齐成<span class="grad">可观测、可编排、可回归</span>的工程系统</h1>
+      <p class="lede">Agent 工作台是一个面向工程代码的 Agent 运行时（Harness）：六层护栏、逐轮 trace 账本、受控写、黄金题回归门——每一条结论都带可核对的证据。</p>
+      <div class="hero-actions">
+        <a class="btn primary" href="#layers">
+          查看架构
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
+        </a>
+        <a class="btn ghost" href="#demo">60 秒演示流程</a>
+      </div>
+      <p class="hero-note">Python ≥ 3.11 · FastAPI · Vue 3.5 · MIT License</p>
+
+      <div class="stats reveal">
+        <div class="stat"><b>21+</b><span>工作台面板，按用途分四组</span></div>
+        <div class="stat"><b>6 层</b><span>每层都有可被测试的护栏</span></div>
+        <div class="stat"><b>1485</b><span>真实工程关系图节点实测</span></div>
+        <div class="stat"><b>0</b><span>API Key 即可跑通完整流程</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHY -->
+  <section id="why">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <span class="eyebrow">为什么需要它</span>
+        <h2>Agent 接进真实工程，栽的是同两个跟头</h2>
+        <p>工程化的解法不是「请模型更小心」，也不是在提示词里祈祷——而是把每一层都做成可以被测出来的护栏。</p>
+      </div>
+      <div class="pain-grid">
+        <article class="pain reveal">
+          <span class="num">01 / HALLUCINATION</span>
+          <h3>幻觉：凭印象指路</h3>
+          <p>AI 说「伤害计算在 player.py」，而这个文件根本不存在。没有证据的结论，在真实工程里就是事故。</p>
+          <div class="fix"><span class="tag">解法</span><span>让每条结论都带可核对证据：文件行号、代码块哈希、检索命中数、工具返回原文。</span></div>
+        </article>
+        <article class="pain reveal">
+          <span class="num">02 / LOSS OF CONTROL</span>
+          <h3>失控：改完不知道改了什么</h3>
+          <p>不知道这次改了什么、烧了多少 token、下次会不会再犯。没有账本，就没有复盘。</p>
+          <div class="fix"><span class="tag">解法</span><span>逐轮 trace 账本只记元数据不记正文，受控写先读后写，回合级撤销可逐字节还原。</span></div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- LAYERS -->
+  <section id="layers">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <span class="eyebrow">六层架构</span>
+        <h2>E · T · C · S · L · V</h2>
+        <p>执行、工具、上下文、状态、生命周期、评估——每层职责单一，护栏可以单独验证，也可以组合复用。</p>
+      </div>
+      <div class="layers">
+        <div class="layer reveal">
+          <span class="k">E</span>
+          <h4>执行循环<span>Execution</span></h4>
+          <p>ReAct + 反思重试、原生 function-calling、plan 模式、风险分档的子代理委派、并行只读批次、DAG 多代理编排与失败重规划。<br/><code>agent.py</code> <code>agent_runtime/delegation.py</code> <code>orchestrator.py</code></p>
+        </div>
+        <div class="layer reveal">
+          <span class="k">T</span>
+          <h4>工具注册<span>Tools</span></h4>
+          <p>声明式工具注册表；参数校验、域名白名单、受控写（先读后写 + 体积上限 + 语法校验 + 人工确认）。<br/><code>tools.py</code> <code>agent_runtime/tool_domains.py</code></p>
+        </div>
+        <div class="layer reveal">
+          <span class="k">C</span>
+          <h4>上下文管理<span>Context</span></h4>
+          <p>prompt token 预算、观察截断、轨迹裁剪（保 system 与当前问题）、历史滚动摘要——不让上下文与提示词爆炸。<br/><code>agent.py::_fit_budget</code></p>
+        </div>
+        <div class="layer reveal">
+          <span class="k">S</span>
+          <h4>状态存储<span>State</span></h4>
+          <p>逐轮 trace 账本（只记元数据不记正文）、会话隔离与持久化、跨重启恢复。<br/><code>agent_trace.py</code> <code>sessions.py</code></p>
+        </div>
+        <div class="layer reveal">
+          <span class="k">L</span>
+          <h4>生命周期钩子<span>Lifecycle</span></h4>
+          <p>钩子 / 技能热插拔、人工审批门、按 provider 计价的成本熔断。<br/><code>hooks.py</code> <code>skills.py</code> <code>pricing.py</code></p>
+        </div>
+        <div class="layer reveal">
+          <span class="k">V</span>
+          <h4>评估接口<span>Evaluation</span></h4>
+          <p>黄金题规则打分 + 可选 LLM-judge + baseline 回归门，回归即退出码 1。<br/><code>agent_eval.py</code> <code>run_golden.py</code> <code>golden/</code></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <span class="eyebrow">功能全景</span>
+        <h2>21 个面板，四组用途，一层底座</h2>
+        <p>理解代码、改动与验收、工程设施、工作台底座——桌面端只是把同一套 Web UI 装进原生窗口。</p>
+      </div>
+
+      <div class="fgrid">
+        <article class="fgroup reveal">
+          <h3>理解代码 <span class="cnt">7 个面板</span></h3>
+          <div class="fitems">
+            <div class="fitem"><b>AI 助手</b><span>符号级检索、逐轮决策链路、产物卡直接摆在回答下方</span></div>
+            <div class="fitem"><b>代码地图</b><span>按内容 / 符号 / glob 检索，引用点定位到行</span></div>
+            <div class="fitem"><b>关系图</b><span>左→右分层继承树，大扇出折叠成「N 个子类」</span></div>
+            <div class="fitem"><b>Unity 图</b><span>场景、预制体的引用与挂载关系</span></div>
+            <div class="fitem"><b>流程图</b><span>每轮问答的决策链路可视化</span></div>
+            <div class="fitem"><b>改动总览</b><span>未提交改动按文件聚合成一张图</span></div>
+            <div class="fitem"><b>分区图</b><span>区域之间的依赖 DAG 与影响面</span></div>
+          </div>
+        </article>
+
+        <article class="fgroup reveal">
+          <h3>改动与验收 <span class="cnt">5 个面板</span></h3>
+          <div class="fitems">
+            <div class="fitem"><b>选区 AI</b><span>选中代码即解释 / 改写，改动先读后写</span></div>
+            <div class="fitem"><b>场景画布</b><span>Godot <code>.tscn</code> 节点图，属性可改、撤销逐字节还原</span></div>
+            <div class="fitem"><b>运行时时间线</b><span>游戏事件按时间轴展开，定位卡顿与异常</span></div>
+            <div class="fitem"><b>EDA 验收</b><span>Vivado / KLayout 报告三态验收</span></div>
+            <div class="fitem"><b>实时对话</b><span>摄像头 / 屏幕画面与语音经 WebSocket 直送本地模型</span></div>
+          </div>
+        </article>
+
+        <article class="fgroup reveal">
+          <h3>工程设施 <span class="cnt">5 个面板</span></h3>
+          <div class="fitems">
+            <div class="fitem"><b>任务与生成</b><span>任务分支 <code>docmind/&lt;任务名&gt;</code>、ComfyUI 出图</span></div>
+            <div class="fitem"><b>GPU 监控</b><span>显存租约与排队，避免多任务互相抢占</span></div>
+            <div class="fitem"><b>运行与引擎</b><span>引擎启停、窗口嵌入与尺寸同步</span></div>
+            <div class="fitem"><b>AI 运行台</b><span>逐轮轨迹、断点续跑、决策账本</span></div>
+            <div class="fitem"><b>素材中心</b><span>素材库、来源管理与生成记录</span></div>
+          </div>
+        </article>
+
+        <article class="fgroup reveal">
+          <h3>工作台底座 <span class="cnt">4 个面板</span></h3>
+          <div class="fitems">
+            <div class="fitem"><b>概览驾驶舱</b><span>项目概览与上手入口</span></div>
+            <div class="fitem"><b>文件树 / 编辑器</b><span>CodeMirror 多标签编辑与语法校验</span></div>
+            <div class="fitem"><b>统一设置页</b><span>模型 / MCP / Agent 策略集中配置，改完即生效</span></div>
+            <div class="fitem"><b>上下文记忆</b><span>L0–L4 分层记忆，下一回合注入内容可预览</span></div>
+          </div>
+        </article>
+      </div>
+
+      <div class="guards">
+        <article class="guard reveal">
+          <div class="n">01</div>
+          <h4>受控写</h4>
+          <p>先读后写、体积上限、语法校验、人工确认。写工具绝不并发，越界当场拦下。</p>
+        </article>
+        <article class="guard reveal">
+          <div class="n">02</div>
+          <h4>三档回滚</h4>
+          <p>回合级 / 任务级 / 变更集级，粒度不同；按字节还原，冲突如实报告不覆盖。</p>
+        </article>
+        <article class="guard reveal">
+          <div class="n">03</div>
+          <h4>Trace 账本</h4>
+          <p>逐回合记录 token、延迟、工具序列与结局，只记元数据，不落 prompt 与回答正文。</p>
+        </article>
+        <article class="guard reveal">
+          <div class="n">04</div>
+          <h4>上下文预算</h4>
+          <p>token 预算、观察截断、轨迹裁剪、历史滚动摘要，四条一起压住提示词爆炸。</p>
+        </article>
+        <article class="guard reveal">
+          <div class="n">05</div>
+          <h4>Plan 长跑</h4>
+          <p>填目标与复盘间隔，模型在后台连续执行任务书；只有用户能停，每轮动作进决策账本。</p>
+        </article>
+        <article class="guard reveal">
+          <div class="n">06</div>
+          <h4>黄金题回归门</h4>
+          <p>规则打分 + 可选 LLM-judge，baseline 一旦回归即以退出码 1 拦下。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCREENSHOTS -->
+  <section id="shots">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <span class="eyebrow">产品实拍</span>
+        <h2>真实界面，不加滤镜</h2>
+        <p>以下均为本机实际运行的工作台截图：概览、改动、GPU 与任务面板，取自当前工程。</p>
+      </div>
+      <div class="shots">
+        <figure class="shot reveal">
+          <img src="assets/overview.png" alt="工作台项目概览" loading="lazy" />
+          <figcaption><b>项目概览</b><span>载入 7652 个文件，项目探索与上手清单一屏展开</span></figcaption>
+        </figure>
+        <figure class="shot reveal">
+          <img src="assets/changes.png" alt="改动总览" loading="lazy" />
+          <figcaption><b>改动总览</b><span>127 处未提交改动按文件聚合，改动状态一眼可见</span></figcaption>
+        </figure>
+        <figure class="shot reveal">
+          <img src="assets/gpu.png" alt="GPU 监控" loading="lazy" />
+          <figcaption><b>GPU 监控</b><span>显存租约与排队策略，本机显卡实测占用</span></figcaption>
+        </figure>
+        <figure class="shot reveal">
+          <img src="assets/chat.jpg" alt="真实对话与最终答案" loading="lazy" />
+          <figcaption><b>真实对话</b><span>提问后实时推理、调用工具，最后给出带文件引用的答案</span></figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- VIDEO -->
+  <section id="demo">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <span class="eyebrow">演示视频</span>
+        <h2>52 秒真实录屏：一次真实对话</h2>
+        <p>提一个问题，模型在本机实时推理、逐个调用工具，最后给出带文件引用的答案——全过程无剪辑。</p>
+      </div>
+      <div class="video-wrap">
+        <div class="player reveal">
+          <video id="demoVideo" src="assets/demo.mp4" poster="assets/demo-poster.jpg" muted autoplay loop playsinline preload="metadata"></video>
+          <div class="badge-live"><i></i>真实录屏 · 52s</div>
+        </div>
+        <div class="chapters reveal">
+          <div class="chapter" data-t="0"><span class="t">00:00</span><div><b>启动</b><span>本地服务连上真实工程 rag-agent</span></div></div>
+          <div class="chapter" data-t="2.2"><span class="t">00:02</span><div><b>项目概览</b><span>7653 个文件载入，探索入口与上手清单</span></div></div>
+          <div class="chapter" data-t="4"><span class="t">00:04</span><div><b>提问</b><span>在底部 AI 助手里直接问代码</span></div></div>
+          <div class="chapter" data-t="7"><span class="t">00:07</span><div><b>实时执行</b><span>流式推理 · 检索 1 次 · 工具调用展开</span></div></div>
+          <div class="chapter" data-t="38"><span class="t">00:38</span><div><b>最终答案</b><span>带文件引用与推理轨迹的回答</span></div></div>
+        </div>
+      </div>
+      <p class="video-note">录屏与截图均取自本机实际运行的工作台：模型为 qwen-plus，对话为真实执行，未做界面替换或合成。</p>
+    </div>
+  </section>
+
+  <!-- STACK -->
+  <section id="stack">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <span class="eyebrow">技术底座</span>
+        <h2>离线优先，随时接云</h2>
+        <p>默认 provider 是本地 mock，装完依赖就能问答、改代码、跑验收；云端模型随时切换，界面里改完即生效。</p>
+      </div>
+      <div class="stack-block">
+        <div class="stack-card reveal">
+          <h4>Runtime</h4>
+          <div class="big">Python ≥ 3.11<small>FastAPI</small></div>
+          <div class="stack">
+            <span class="chip">FastAPI</span><span class="chip">Uvicorn</span><span class="chip">Chroma</span>
+            <span class="chip">WebSocket</span><span class="chip">MCP</span><span class="chip">SQLite</span>
+          </div>
+        </div>
+        <div class="stack-card reveal">
+          <h4>Interface</h4>
+          <div class="big">Vue 3.5<small>Node ≥ 22</small></div>
+          <div class="stack">
+            <span class="chip">Vue 3.5</span><span class="chip">Vite</span><span class="chip">CodeMirror</span>
+            <span class="chip">Canvas / SVG</span><span class="chip">Electron 桌面壳</span><span class="chip">MIT</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section id="cta">
+    <div class="wrap">
+      <div class="cta-box reveal">
+        <h2>让 Agent 的每一步都留下证据</h2>
+        <p>六层护栏、trace 账本、受控写与回归门，合起来才是一个能长期跑在真实工程里的 Agent 运行时。</p>
+        <div class="hero-actions">
+          <a class="btn primary" href="#layers">回看架构</a>
+          <a class="btn ghost" href="#demo">回看演示</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <a class="brand" href="#top">
+      <span class="mark" style="width:24px;height:24px;border-radius:7px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#0b0918" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
+      </span>
+      Agent 工作台 · DocMind
+    </a>
+    <div class="links">
+      <a href="#why">设计动机</a>
+      <a href="#layers">架构</a>
+      <a href="#features">功能</a>
+      <a href="#shots">实拍</a>
+      <a href="#demo">演示</a>
+    </div>
+    <span>面向工程代码的 Agent 运行时 · MIT License</span>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var header = document.querySelector('header');
+    var onScroll = function () {
+      header.classList.toggle('scrolled', window.scrollY > 8);
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+
+    var items = document.querySelectorAll('.reveal');
+
+    // video chapters
+    var video = document.getElementById('demoVideo');
+    var chapters = document.querySelectorAll('.chapter');
+    chapters.forEach(function (ch) {
+      ch.addEventListener('click', function () {
+        if (!video) return;
+        video.currentTime = parseFloat(ch.dataset.t || '0');
+        video.play();
+      });
+    });
+
+    if (!('IntersectionObserver' in window)) {
+      items.forEach(function (el) { el.classList.add('in'); });
+      return;
+    }
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry, i) {
+        if (entry.isIntersecting) {
+          var el = entry.target;
+          var delay = parseInt(el.dataset.delay || '0', 10);
+          setTimeout(function () { el.classList.add('in'); }, delay);
+          io.unobserve(el);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+
+    items.forEach(function (el, i) {
+      if (!el.dataset.delay && el.parentElement) {
+        var siblings = Array.prototype.slice.call(el.parentElement.children);
+        var idx = siblings.indexOf(el);
+        el.dataset.delay = String(Math.min(idx, 5) * 70);
+      }
+      io.observe(el);
+    });
+  })();
+</script>
+</body>
+</html>
