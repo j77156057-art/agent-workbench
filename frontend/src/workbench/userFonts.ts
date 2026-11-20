@@ -134,6 +134,11 @@ function safeFamily(name: string): string {
   return 'docmind-user-' + (slug || 'font')
 }
 
+/** 同一份文件重复导入时不产生第二份。 */
+function fileKey(file: File): string {
+  return file.name + '|' + file.size + '|' + file.lastModified
+}
+
 function alreadyRegistered(family: string): boolean {
   return Array.from(document.fonts || []).some((face) => face.family === family)
 }

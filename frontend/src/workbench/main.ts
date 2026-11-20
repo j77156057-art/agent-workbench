@@ -19,6 +19,8 @@ import './memory-inspector-tokens.css'
 import './chat-ink.css'
 import './skins-moyu.css'
 import { applyPalette, loadPalette } from './palette'
+// 用户自备字体（2026-11-20）：偏好同步落到 :root（首帧就对），字体文件异步注册。
+import { applyFontPrefs, restoreUserFonts } from './userFonts'
 import { initStyle } from './styleMode'
 import { initLayout } from './layoutMode'
 import { initMaterial } from './glassPointer'
@@ -26,6 +28,8 @@ import { initMaterial } from './glassPointer'
 // 配色：默认浅色；深色观测舱由设置页切换（docmind.workbenchPalette）。
 // 2026-11-09 之前这里写死 observatory + dark，导致首次打开就是黑、旧偏好也无效。
 applyPalette(loadPalette())
+applyFontPrefs()
+restoreUserFonts()
 // 风格（造型语言）、布局（空间构成）、材质（实体/玻璃）同样要在挂载前应用，
 // 否则先按默认骨架渲染再重排会闪一下（尤其 focus 模式是限宽居中，闪一下很明显）。
 initStyle()

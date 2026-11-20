@@ -9,6 +9,7 @@
 
 import { computed, onMounted, ref } from 'vue'
 import {
+  applyFontPrefs,
   deleteUserFont,
   getFontPrefs,
   importFontFile,

@@ -32,6 +32,7 @@ import { loadMaterial, setMaterial, onMaterialChange, type Material } from '../g
 import { preferredScrollBehavior } from '../composables/motionPreference'
 import { LAYOUTS, loadLayout, setLayout, onLayoutChange, type LayoutKey } from '../layoutMode'
 import { loadPalette, setPalette, onPaletteChange, type PaletteKey } from '../palette'
+import FontSettings from './FontSettings.vue'
 // 对话展示偏好：与问答页 / 模型设置弹窗同一份（reactive 视图 + localStorage）。
 // 这里不复制状态，直接绑到共享对象上，改完写存储并派发事件让两个入口同时刷新。
 import { prefs as dp, saveAskPrefs } from '../../ask/askPrefs'
@@ -81,7 +82,7 @@ onMaterialChange((m) => { material.value = m })
 // 2026-11-09：工作台此前把配色写死成深色观测舱，首次打开也是黑的。
 // 两档只换颜色令牌（memory-inspector-tokens.css），布局 / 造型 / 材质不受影响。
 const PALETTES: { key: PaletteKey; name: string; desc: string }[] = [
-  { key: 'moyu', name: '墨屿纸感（默认）', desc: '暖白纸底 + 砖橙强调 + 衬线正文，长文按书读。' },
+  { key: 'moyu', name: '墨屿纸感', desc: '暖白纸底 + 砖橙强调 + 衬线正文，长文按书读。' },
   { key: 'moyu-night', name: '墨屿夜航', desc: '深墨底 + 砖橙强调 + 衬线正文，夜间写作。' },
   { key: 'light', name: '浅色 · 冷白', desc: '白底深字；记忆面板与主工作区共用同一套浅色令牌。' },
   { key: 'observatory', name: '深色 · 观测舱', desc: '低亮度深底；夜间长时间盯屏时使用。' },
@@ -2456,7 +2457,7 @@ async function powerAction(action: 'on' | 'off') {
             <div class="sv-section-head">
               <div>
                 <h4 class="sv-h4">外观</h4>
-                <p class="sv-hint">默认浅色；深色是可选档。两档共用同一套布局与材质，只换颜色令牌；问答页的皮肤偏好不受影响。</p>
+                <p class="sv-hint">默认冷白（锌白细线）；深色与暖色是可选档。各档共用同一套布局与材质，只换颜色令牌。配色与皮肤是同一个偏好 —— 问答页与工作台共用，切一处两处都变。</p>
               </div>
             </div>
 
@@ -2496,6 +2497,15 @@ async function powerAction(action: 'on' | 'off') {
                 </span>
               </button>
             </div>
+
+            <!-- 字体：导入用户自己下载的字体文件 / 调正文字重（2026-11-20） -->
+            <div class="sv-section-head" style="margin-top: 18px;">
+              <div>
+                <h4 class="sv-h4">字体</h4>
+              </div>
+            </div>
+
+            <FontSettings />
 
             <!-- 布局：空间构成 -->
             <div class="sv-section-head" style="margin-top: 18px;">
