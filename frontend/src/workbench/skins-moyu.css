@@ -123,8 +123,12 @@
   --border-strong: #443f39;
   --border-graphic: #5b544c;
 
-  --accent: #c2623a;
-  --accent-loud: #d3703f;
+  /* 砖橙当**文字色**用时（状态栏降级态等），深底上必须过 AA：
+     #c2623a 在轨道底 #211f1c 上只有 3.99:1（CI 实测），抬到 #d3703f
+     是 4.78:1。深墨底配亮一点的砖橙也更好认。
+     墨屿纸感档的 #b4532a 在纸面上是 4.91:1，同样过线，不动。 */
+  --accent: #d3703f;
+  --accent-loud: #e08a5f;
   --accent-deep: #a14c27;
   --accent-ink: #17150f;
   --accent-2: var(--accent);
