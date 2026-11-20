@@ -1,0 +1,61 @@
+{
+  "_note": "存量债务白名单。新增违规=门禁红；修掉后可用 --update-baseline 收紧。",
+  "R01": [
+    "[\"shared/ui-v2.css\", \"32px\"]",
+    "[\"workbench/components/BrowserLivePanel.vue#style0\", \"10.5px\"]",
+    "[\"workbench/components/BrowserLivePanel.vue#style0\", \"10px\"]",
+    "[\"workbench/components/BrowserLivePanel.vue#style0\", \"9.5px\"]",
+    "[\"workbench/components/ChatDock.vue#style0\", \"10px\"]",
+    "[\"workbench/components/ChatDock.vue#style0\", \"9.5px\"]",
+    "[\"workbench/components/HarnessPanel.vue#style0\", \"12px\"]",
+    "[\"workbench/components/MemoryContextPanel.vue#style0\", \"12px\"]",
+    "[\"workbench/components/PlanPanel.vue#style0\", \"20px\"]",
+    "[\"workbench/components/SubagentChatWindow.vue#style0\", \"10px\"]",
+    "[\"workbench/components/SubagentChatWindow.vue#style0\", \"11px\"]",
+    "[\"workbench/components/SubagentChatWindow.vue#style0\", \"13px\"]",
+    "[\"workbench/components/SubagentChatWindow.vue#style0\", \"15px\"]",
+    "[\"workbench/components/TaskFeedbackBar.vue#style0\", \"16px\"]",
+    "[\"workbench/layout-modes.css\", \"10px\"]",
+    "[\"workbench/style.css\", \"10px\"]",
+    "[\"workbench/style.css\", \"9px\"]"
+  ],
+  "R03": [
+    "[\"shared/markdown.css\", \"--mi-bg-deep\", \"#0f1623\"]",
+    "[\"shared/markdown.css\", \"--mi-border\", \"#202a3d\"]",
+    "[\"shared/markdown.css\", \"--mi-text-secondary\", \"#c7d4e8\"]",
+    "[\"workbench/components/SubagentChatWindow.vue#style0\", \"--accent\", \"#4f8cff\"]",
+    "[\"workbench/components/SubagentChatWindow.vue#style0\", \"--bg-hover\", \"rgba(255,255,255,.06\"]",
+    "[\"workbench/components/SubagentChatWindow.vue#style0\", \"--fg-muted\", \"#8a93a3\"]"
+  ],
+  "R04": [
+    "[\"workbench/components/RuntimeTimeline.vue#style0\", \"-4.5px 0 0 -4.5px\"]",
+    "[\"workbench/components/SelectionAiPanel.vue#style0\", \"0.5px 4px\"]",
+    "[\"workbench/components/SymbolMap.vue#style0\", \"2.5px 8px\"]"
+  ],
+  "R06": [
+    "[\"ask/AskApp.vue#style0\", \".ask-resizer\"]",
+    "[\"ask/AskApp.vue#style0\", \".composer textarea\"]",
+    "[\"ask/components/AskSidebar.vue#style0\", \".session-search\"]",
+    "[\"workbench/components/ChatComposer.vue#style0\", \".cd-input\"]",
+    "[\"workbench/components/EngineConnectPopover.vue#style0\", \".cd-input-sm\"]",
+    "[\"workbench/components/EngineSetupPanel.vue#style0\", \".esp-input\"]",
+    "[\"workbench/components/ExecApprovalDialog.vue#style0\", \".ea-code summary\"]",
+    "[\"workbench/components/FlowCanvas.vue#style0\", \".fl-filter input\"]",
+    "[\"workbench/components/HarnessPanel.vue#style0\", \".hp-row input\"]",
+    "[\"workbench/components/HarnessPanel.vue#style0\", \".hp-row select\"]",
+    "[\"workbench/components/MemoryOverview.vue#style0\", \".mo-node\"]",
+    "[\"workbench/components/ModelSettingsDialog.vue#style0\", \".ms-input\"]",
+    "[\"workbench/components/RelationGraph.vue#style0\", \".rg-search input\"]",
+    "[\"workbench/components/RightSidebar.vue#style0\", \".rs-resizer\"]",
+    "[\"workbench/components/SceneCanvas.vue#style0\", \".sc-wrap\"]",
+    "[\"workbench/components/SelectionAiPanel.vue#style0\", \".ai-compose-input\"]",
+    "[\"workbench/components/SemanticLocateBar.vue#style0\", \".lb-input\"]",
+    "[\"workbench/components/SessionHistoryPopover.vue#style0\", \".cd-session-search input\"]",
+    "[\"workbench/components/SettingsView.vue#style0\", \".sv-input\"]",
+    "[\"workbench/components/SymbolMap.vue#style0\", \".sm-search input\"]",
+    "[\"workbench/components/UnityGraph.vue#style0\", \".ug-search input\"]",
+    "[\"workbench/components/WorkflowGateDialog.vue#style0\", \".wg-box\"]",
+    "[\"workbench/style.css\", \".cv-host .cm-editor.cm-focused\"]",
+    "[\"workbench/style.css\", \".dg-input\"]"
+  ]
+}
