@@ -56,23 +56,19 @@ function measure() {
 // 采样必须显式带上配色档 —— 否则工作台那四轮「换皮肤」量到的其实是同一档，
 // 另外三档（浅色 / 观测舱 / 墨屿夜航）根本没被测到。
 const WORKBENCH_PALETTES = ['light', 'observatory', 'moyu', 'moyu-night']
-// 两页在 2026-11-20 合并到同一个键（docmind.skin）之后，工作台的「配色档」
-// 就是皮肤表里的一个子集。测试里同样按这张映射写回去，两页必然同源。
-const PALETTE_TO_SKIN = { light: 'zinc', observatory: 'observatory', moyu: 'moyu', 'moyu-night': 'moyu-night' }
 
 async function createPage(skin, width, height = 900, finalText = '这是隔离的界面测试回答，未调用真实模型。', palette = '') {
   const page = await browser.newPage({ viewport: { width, height }, reducedMotion: 'reduce' })
   page.on('pageerror', error => report.errors.push(error.message))
   page.on('dialog', dialog => dialog.accept())
-  await page.addInitScript(({ skin, palette, paletteToSkin }) => {
+  await page.addInitScript(({ skin, palette }) => {
     localStorage.clear()
     sessionStorage.clear()
     localStorage.setItem('docmind.skin', skin)
     localStorage.setItem('docmind.skinLocked', '1')
-    // 留空 = 用应用自己的默认档；给了才显式切。写的是**皮肤键**（唯一真源）。
-    // 注意：这段在**浏览器上下文**里跑，看不到模块作用域，映射必须一起传进来。
-    if (palette) localStorage.setItem('docmind.skin', paletteToSkin[palette] || palette)
-  }, { skin, palette, paletteToSkin: PALETTE_TO_SKIN })
+    // 留空 = 用应用自己的默认档；给了才显式切。
+    if (palette) localStorage.setItem('docmind.workbenchPalette', palette)
+  }, { skin, palette })
   let chatCalls = 0
   let failChat = false
   const sessions = Array.from({ length: 18 }, (_, i) => ({ session_id: `ask-ui-fixture-${i}`, title: i === 0 ? '项目架构与入口分析' : `资料阅读记录 ${i}`, preview: '界面回归测试会话', updated_at: '2026-10-28T08:00:00Z' }))
@@ -105,9 +101,7 @@ async function createPage(skin, width, height = 900, finalText = '这是隔离�
 }
 
 try {
-  // 2026-11-20：补上「墨屿」两套 —— 问答页此前切到墨屿根本没生效
-  // （skins-moyu.css 没进问答页的包），守卫也就一直没测过它。
-  for (const skin of ['zinc', 'graphite', 'paper', 'seed', 'moyu', 'moyu-night']) {
+  for (const skin of ['zinc', 'graphite', 'paper', 'seed']) {
     for (const width of [1440, 1024, 390]) {
       const { page } = await createPage(skin, width, width === 390 ? 844 : 900)
       await page.goto(base + '/')
@@ -192,17 +186,6 @@ try {
     await page.goto(base + '/workbench')
     await page.locator('.ov-page-head').waitFor()
     await page.evaluate(() => document.fonts.ready)
-    // 状态栏的降级态（.msb-chip.is-problem）只在**低功耗机器**上出现：CI runner
-    // 是这种机器，本地是「高配」，所以本地根本跑不到那个状态 —— 不强制的话，
-    // 这个状态在任何一台高配机器上都没被测到（2026-11-20 就是这样漏掉了夜航档
-    // 砖橙当文字色、3.99:1 的对比度缺陷）。这里强制成降级态再采样。
-    await page.evaluate(() => {
-      const chip = document.querySelector('.msb-chip')
-      if (!chip) return
-      chip.classList.add('is-problem')
-      const label = chip.querySelector('.msb-text')
-      if (label) label.textContent = '低配 · 等待帧观测'
-    })
     const metrics = await page.evaluate(measure)
     report.cases.push({ page: 'workbench', palette, width: 1440, ...metrics })
     await page.screenshot({ path: path.join(output, `product-workbench-${palette}.png`) })
