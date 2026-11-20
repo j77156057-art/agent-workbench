@@ -77,7 +77,20 @@ Three design commitments run through all of it:
 
 ## The workbench
 
-One Web UI; the desktop app is just that UI in a native window. Twenty-one panels, grouped by what you are trying to do:
+One Web UI; the desktop app is just that UI in a native window.
+
+The interface is organised on **four orthogonal layers** — changing one does not drag the others:
+
+| Layer | Values |
+|---|---|
+| **Skin** (colour) | Paper · Zinc · Graphite (dark) · Seed (deterministically generated; re-roll by changing the seed) |
+| **Layout** (spatial composition) | Fixed three-column · Focus single-column · Bottom drawer · Split half-and-half · Dashboard grid |
+| **Material** | Solid · Glass (`backdrop-filter`; the nav rail stays opaque so text remains readable) |
+| **Palette** (workbench) | Light · Observatory (dark) |
+
+Every resulting combination goes through the **matrix** (60 cases — see Quality); nothing is left at "should be fine".
+
+Twenty-one panels, grouped by what you are trying to do:
 
 | Group | Panels | What it answers |
 |---|---|---|
@@ -216,6 +229,8 @@ This is where Agent Workbench separates itself from "call an API and call it an 
 | Mutation testing | Break the implementation on purpose; the gate must catch it. A test that cannot fail is no better than no test. |
 | Baseline regression gate | A golden set spanning L1 single-hop / L2 multi-hop / L3 distractor tiers; pass→fail raises **exit code 1**; wired into the frozen release flow |
 | Visual regression | Multiple baselines compared pixel-by-pixel; failing when more than 200 pixels differ by more than 4 channels |
+| **Design acceptance** | Three tiers: **L1 usable / L2 shippable / L3 scalable**. ① **11 static gates** (font sizes must go through `--fs-*` tokens, spacing on the 2px grid, per-skin token overrides, no `var(--x, colour)` fallbacks, accent readable, motion ≤260 ms, `prefers-reduced-motion` respected, hover implies focus, empty/loading/error states present, neutral hues share a family…). ② **6 measured checks** run in a real browser instead of counting CSS (font-size buckets ≤3, off-grid spacing ≤10%, per-element text contrast resolved from colour values, keyboard reachability, no horizontal overflow, visible focus). ③ **An L3 matrix of 60 combinations** (4 skins × 5 layouts × 2 materials, plus workbench 2 palettes × 5 × 2), each judged on overflow / contrast / rail hierarchy — **a single failing combination fails the tier**. Re-runnable: `python tools/design_acceptance.py --gate` · `node tools/verify_design_acceptance_a.mjs` · `node tools/verify_l3_matrix.mjs --all` |
+| **Documented commands** | Every **in-repo script** referenced by this README (both language versions) must actually run: `tests/test_readme_commands.py` extracts the commands, checks the files exist, and asserts `--help` exits 0 for each. It guards against "signature changed or script moved, docs silently rot, reader finds out after pasting". Environment commands (`pip install` / `npm ci` / `uvicorn` startup) are **out of scope** — their outcome depends on the machine and network, and we do not pretend to have verified them |
 | Real engines | Godot / Unity / Unreal HWND embedding verified on a real Win32 host: reparenting, style stripping, resize tracking, **real synthesized keyboard and mouse** delivered into the engine, restore-on-detach, DPI consistency |
 
 ## Getting started
@@ -234,31 +249,34 @@ A blank machine needs **Python ≥ 3.11** and **Node 24** (`.nvmrc` and CI both 
 
 **Network**: only the first dependency install needs the network. After that the default `mock` model runs fully offline with no API key. Cloud models need network and a key.
 
-```bash
-# 1. Python version and dependencies
-python -V                                  # must be ≥ 3.11
+These commands target **Windows `cmd.exe`** and can be pasted line by line (`REM` lines are comments — harmless if pasted). On PowerShell, replace `.venv\Scripts\activate` with `.\.venv\Scripts\Activate.ps1`.
+
+```bat
+REM 1. Python version and dependencies (needs >= 3.11)
+python -V
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --timeout 300 --retries 10
-# The default install is about 762 MB; direct PyPI can read-timeout on large wheels in China, while
-# the mirror + patient retries finish the job and report failures explicitly — just rerun.
-# To use your own index, set PIP_INDEX_URL.
+REM The default install is about 762 MB; direct PyPI can read-timeout on large wheels in China, while
+REM the mirror + patient retries finish the job and report failures explicitly — just rerun.
+REM To use your own index, set PIP_INDEX_URL.
 
-# 2. Frontend bundle (build first, then start the backend; the backend also picks up a later build without restart)
+REM 2. Frontend bundle (build first, then start the backend; the backend also picks up a later build without restart)
 cd frontend
-npm ci                       # exact restore from package-lock.json
-npm run build                # output -> ../web
+npm ci
+npm run build
 cd ..
 
-# 3. Configuration (optional — the default mock mode needs no key)
-cp .env.example .env        # set LLM_PROVIDER=qwen and fill DASHSCOPE_API_KEY
+REM 3. Configuration (optional — the default mock mode needs no key)
+REM Note: this overwrites an existing .env — skip the line on a machine that is already configured.
+if not exist .env copy .env.example .env
 
-# 4. Backend
+REM 4. Backend
 .venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000
 
-# 5. Open
-#   Workbench : http://127.0.0.1:8000/workbench
-#   Q&A page  : http://127.0.0.1:8000
+REM 5. Open
+REM   Workbench : http://127.0.0.1:8000/workbench
+REM   Q&A page  : http://127.0.0.1:8000
 ```
 
 > **The default install is about 762 MB** (1.67 GB before the split, roughly 54% smaller) and **does not include torch or `sentence-transformers`**: both only serve the optional cross-encoder reranker. Install `pip install -r requirements-ml.txt` when you want it — that is the only tier with torch (about 3.27 GB on Linux, not part of the default install). The default `heuristic` reranker needs nothing extra.
@@ -347,6 +365,10 @@ agent-workbench/
 ├── artifact_tools.py      # Structured DOCX / PDF / PPTX / XLSX generation with read-back verification
 ├── orchestrator.py        # Multi-agent orchestration: task DAG + parallelism + re-planning + synthesis
 ├── agent_eval.py / run_golden.py / golden/   # Golden set and the baseline regression gate
+├── tools/                 # Acceptance and gate scripts (re-runnable standalone)
+│   ├── design_acceptance.py            # 11 static design gates + frozen-tree baseline
+│   ├── verify_design_acceptance_a.mjs  # Measured checks A1–A6 in a real browser
+│   └── verify_l3_matrix.mjs            # L3 matrix: skins × layouts × materials
 ├── frontend/              # Vue 3 + Vite workbench (output to ../web)
 │   └── src/workbench/
 │       ├── components/    # workbench components
@@ -396,6 +418,7 @@ This section states **what the project applies to** and **the trade-offs it acce
 ## Documentation
 
 - [`docs/integrations.md`](docs/integrations.md) — product-level usage and boundaries for the MCP bridge and Web playtest export
+- [`docs/DESIGN-ACCEPTANCE.md`](docs/DESIGN-ACCEPTANCE.md) — design acceptance: L1/L2/L3 tiers, 11 static gates, 6 measured checks, the 60-combination matrix, and the measurements behind each rule
 - [`docs/agent-architecture-review.md`](docs/agent-architecture-review.md) — architecture review
 - [`docs/capability-boundary.md`](docs/capability-boundary.md) — what is actually verified end-to-end, and what is not
 - [`docs/screenshots/`](docs/screenshots/) — real UI captures
