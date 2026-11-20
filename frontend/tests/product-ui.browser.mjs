@@ -186,6 +186,17 @@ try {
     await page.goto(base + '/workbench')
     await page.locator('.ov-page-head').waitFor()
     await page.evaluate(() => document.fonts.ready)
+    // 状态栏的降级态（.msb-chip.is-problem）只在**低功耗机器**上出现：CI runner
+    // 是这种机器，本地是「高配」，所以本地根本跑不到那个状态 —— 不强制的话，
+    // 这个状态在任何一台高配机器上都没被测到（2026-11-20 就是这样漏掉了夜航档
+    // 砖橙当文字色、3.99:1 的对比度缺陷）。这里强制成降级态再采样。
+    await page.evaluate(() => {
+      const chip = document.querySelector('.msb-chip')
+      if (!chip) return
+      chip.classList.add('is-problem')
+      const label = chip.querySelector('.msb-text')
+      if (label) label.textContent = '低配 · 等待帧观测'
+    })
     const metrics = await page.evaluate(measure)
     report.cases.push({ page: 'workbench', palette, width: 1440, ...metrics })
     await page.screenshot({ path: path.join(output, `product-workbench-${palette}.png`) })
