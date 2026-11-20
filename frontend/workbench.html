@@ -13,14 +13,17 @@
     <script>
       (function () {
         var el = document.documentElement
-        var key = 'moyu'
+        // 默认是**锌白细线**（2026-11-20 从墨屿纸感换回来：暖白纸底 + 深棕脊偏重，
+        // 用户说「棕色怪怪的」；墨屿两套仍在皮肤表里，想用随时切）。
+        var key = 'zinc'
         var LEGACY = { light: 'zinc', observatory: 'observatory', moyu: 'moyu', 'moyu-night': 'moyu-night' }
         var KNOWN = ['zinc', 'graphite', 'paper', 'seed', 'moyu', 'moyu-night', 'observatory']
         try {
-          key = window.localStorage.getItem('docmind.skin') || 'moyu'
+          key = window.localStorage.getItem('docmind.skin') || 'zinc'
+          if (key === 'moyu' && !window.localStorage.getItem('docmind.skinLocked')) key = 'zinc'
           if (KNOWN.indexOf(key) < 0) {
             var legacy = window.localStorage.getItem('docmind.workbenchPalette')
-            key = LEGACY[legacy] || 'moyu'
+            key = LEGACY[legacy] || 'zinc'
           }
         } catch (e) {}
         var dark = key === 'observatory' || key === 'moyu-night' || key === 'graphite'

@@ -64,15 +64,17 @@ export const SKINS: SkinDef[] = [
 //   2026-10-20 从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）
 //   换成 zinc（1px 细线 + 圆角 + 零阴影 + 青绿强调）—— 前者更像工程样机，
 //   后者才是能拿上线给普通用户的默认观感。
-//   2026-11-20 再换成 moyu（墨屿纸感）：工作台的配色档先一步做成了墨屿，
-//   而问答页还在 zinc —— 两页默认值分家，用户来回切一次就看出是两套产品。
-//   两页现在共用这一个键（见下方「唯一真源」），默认自然一致。
-export const DEFAULT_SKIN: SkinKey = 'moyu'
+//   2026-11-20 短暂换成 moyu（墨屿纸感），当天就换回来：暖白纸底 + 深棕脊 +
+//   砖橙的整套观感偏重，用户明确说「棕色怪怪的」。默认仍是**锌白细线**。
+//   「墨屿」两套保留在皮肤表里（skin 键 moyu / moyu-night），想用随时切。
+//   两页共用这一个键（见下方「唯一真源」），默认自然一致。
+export const DEFAULT_SKIN: SkinKey = 'zinc'
 
 const VALID = new Set<string>(SKINS.map((s) => s.key))
 /** 旧默认皮肤：曾被大量用户默认选中（从没主动选过），迁移到新默认时要换掉。
- *  2026-11-20：zinc 也成了旧默认（它当过一个月的默认），一并列入。 */
-const LEGACY_DEFAULTS: SkinKey[] = ['paper', 'zinc']
+ *  2026-11-20：paper（brutalist）与当过一天默认的 moyu（墨屿）都算旧默认。
+ *  zinc 既是当前默认也是旧默认，不列（列了也是原地踏步）。 */
+const LEGACY_DEFAULTS: SkinKey[] = ['paper', 'moyu']
 /** 2026-11-20 之前工作台单独用的配色键（docmind.workbenchPalette）。
  *  两页合并到 docmind.skin 之后，这个键只作一次性迁移来源。 */
 const LEGACY_PALETTE_KEY = 'docmind.workbenchPalette'

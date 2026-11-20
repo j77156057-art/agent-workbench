@@ -15,17 +15,18 @@
       (function () {
         try {
           var k = localStorage.getItem('docmind.skin')
-          // 一次性迁移：旧默认是 paper（brutalist），随后是 zinc；新默认是「墨屿纸感」。
+          // 一次性迁移：旧默认依次是 paper（brutalist）→ moyu（墨屿纸感，2026-11-20 当过一天）。
+          // 当前默认是**锌白细线**（用户反馈「棕色怪怪的」，墨屿两套仍留在皮肤表里可选）。
           // 主动选过的用户带锁定标记，不动他们。这里也要迁，
           // 否则首帧按旧皮肤画一帧、main.ts 再切，会闪一下。
-          if ((k === 'paper' || k === 'zinc') && !localStorage.getItem('docmind.skinLocked')) {
-            k = 'moyu'
+          if ((k === 'paper' || k === 'moyu') && !localStorage.getItem('docmind.skinLocked')) {
+            k = 'zinc'
             localStorage.setItem('docmind.skin', k)
           }
           // 2026-11-20：白名单补上「墨屿」两套与「观测舱」—— 此前只有 zinc /
           // graphite / paper / seed 在册，切到墨屿会被首帧脚本直接打回 zinc。
           if (k !== 'zinc' && k !== 'graphite' && k !== 'paper' && k !== 'seed'
-              && k !== 'moyu' && k !== 'moyu-night' && k !== 'observatory') k = 'moyu'
+              && k !== 'moyu' && k !== 'moyu-night' && k !== 'observatory') k = 'zinc'
           var el = document.documentElement
           el.setAttribute('data-skin', k)
           // 深浅判定交给皮肤块自己声明的 --skin-dark（新增深色皮肤不用改这里）
