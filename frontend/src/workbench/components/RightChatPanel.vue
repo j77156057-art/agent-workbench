@@ -235,7 +235,7 @@ function turnTitle(t: SessionTurn): string {
   transform: translateY(-50%);
   z-index: 40;
   writing-mode: vertical-rl;
-  padding: 14px 4px;
+  padding: 14px 5px;
   border: 1px solid var(--border);
   border-right: 0;
   border-radius: var(--r-sm) 0 0 var(--r-sm);
@@ -273,8 +273,8 @@ function turnTitle(t: SessionTurn): string {
 .wb-rcp-tab {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: 5px;
+  padding: 3px 9px;
   border: 1px solid transparent;
   border-radius: var(--r-xs);
   background: transparent;
@@ -291,7 +291,7 @@ function turnTitle(t: SessionTurn): string {
   font-weight: 600;
 }
 .wb-rcp-badge {
-  padding: 0 4px;
+  padding: 0 5px;
   border-radius: var(--r-full, 999px);
   background: var(--accent-soft);
   color: var(--accent-text);
@@ -306,7 +306,7 @@ function turnTitle(t: SessionTurn): string {
   border-radius: var(--r-xs);
   background: transparent;
   color: var(--text-muted);
-  font-size: var(--fs-md);
+  font-size: 16px;
   line-height: 1;
   cursor: pointer;
 }
@@ -347,7 +347,7 @@ function turnTitle(t: SessionTurn): string {
 .wb-rcp-ev {
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  padding: 6px 8px;
+  padding: 6px 9px;
   margin-bottom: 6px;
   background: color-mix(in srgb, var(--bg-raised) 55%, transparent);
 }
@@ -360,7 +360,7 @@ function turnTitle(t: SessionTurn): string {
 .wb-rcp-ev[data-type="error"] .wb-rcp-ev-type { color: var(--danger); }
 .wb-rcp-ev-time { color: var(--text-faint); font-size: var(--fs-cap); font-variant-numeric: tabular-nums; }
 .wb-rcp-ev-sum {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   color: var(--text-muted);
   font-size: var(--fs-sm);
   word-break: break-word;
@@ -374,7 +374,7 @@ function turnTitle(t: SessionTurn): string {
   padding: 6px 8px;
   border-radius: var(--r-xs);
   background: color-mix(in srgb, var(--bg) 70%, transparent);
-  color: var(--text-muted);
+  color: var(--text-maint);
   font-family: var(--font-mono);
   font-size: var(--fs-cap);
   white-space: pre-wrap;
@@ -393,7 +393,7 @@ function turnTitle(t: SessionTurn): string {
 .wb-rcp-turn-head { display: flex; align-items: center; gap: 6px; }
 .wb-rcp-turn-idx { color: var(--text-muted); font-size: var(--fs-cap); }
 .wb-rcp-cp {
-  padding: 0 4px;
+  padding: 0 5px;
   border-radius: var(--r-xs);
   background: color-mix(in srgb, var(--green) 12%, transparent);
   color: var(--green);
