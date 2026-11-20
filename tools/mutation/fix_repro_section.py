@@ -29,7 +29,7 @@ NEW_SECTION = """### ⚠ 可复现性：⚠ **更正 —— 不是 8/8 一致，
 它就是「观察到一次」而不是「观察到稳定」。
 
 **跑法**：结果落盘（`DOCMIND_E2E_OUT`，
-默认 `D:/Temp/opencode/e2e_guard_result.json`），
+默认 `<系统临时目录>/opencode/e2e_guard_result.json`），
 对比用 `tools/e2e_guard_repro.py`（**逐格布尔读数**）。
 
 **三次数据并排**：

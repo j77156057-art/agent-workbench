@@ -68,7 +68,8 @@ MODEL = os.getenv("DOCMIND_E2E_MODEL", "qwen3.6:35b-a3b")
 READONLY = ("read_file", "list_dir", "grep", "search_code", "calculate")
 
 HARVEST_JSON = pathlib.Path(os.getenv(
-    "DOCMIND_HARVEST_OUT", "D:/Temp/opencode/intent_harvest.json"))
+    "DOCMIND_HARVEST_OUT",
+    os.path.join(tempfile.gettempdir(), "opencode", "intent_harvest.json")))
 
 #: 超过这个长度的句子**不测** —— 长段技术内容不是「用户说的话」。
 #: 阈值来自第一版的观察：用户/模型的授权表达都是短句，

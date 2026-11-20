@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import io
+import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 #: 仓库根。这个脚本在 `tools/mutation/` 下，**要往上三层**——
 #: `parents[1]` 会得到 `tools/`，于是 sys.path 插错、找不到 `tests/` 与 `agent.py`。
@@ -39,7 +41,8 @@ def run(targets: list[str]) -> str:
 
 def main() -> None:
     print("  === 段 5：脚本按旧文件名收集（我改名时全量正在跑）===")
-    with io.open(r"D:\Temp\opencode\full_seg5.txt", encoding="utf-8") as handle:
+    seg5 = os.path.join(tempfile.gettempdir(), "opencode", "full_seg5.txt")
+    with io.open(seg5, encoding="utf-8") as handle:
         tail = handle.read()
     for line in tail.splitlines():
         if "not found" in line or "no tests ran" in line:

@@ -172,7 +172,8 @@ def main() -> int:
             print("     **单次跑不足以定性** —— 同一判据至少要 3 次。")
 
         dump = pathlib.Path(os.getenv("DOCMIND_SUPPLY_DUMP",
-                                       "D:/Temp/opencode/narration_supply.json"))
+                                       os.path.join(tempfile.gettempdir(), "opencode",
+                                                    "narration_supply.json")))
         try:
             dump.write_text(json.dumps(
                 {"model": MODEL, "question": QUESTION, "calls": seen,

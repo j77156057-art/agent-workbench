@@ -29,6 +29,7 @@ import json
 import pathlib
 import contextlib
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -87,8 +88,10 @@ def _grid(grade_map: dict) -> dict:
 
 def _run_repro(a_grid: dict, b_grid: dict, tag: str) -> tuple[int, str]:
     import e2e_guard_repro as R
-    p = pathlib.Path("D:/Temp/opencode/_t_a.json")
-    q = pathlib.Path("D:/Temp/opencode/_t_b.json")
+    scratch = pathlib.Path(tempfile.gettempdir()) / "opencode"
+    scratch.mkdir(parents=True, exist_ok=True)
+    p = scratch / "_t_a.json"
+    q = scratch / "_t_b.json"
     p.write_text(json.dumps({"model": "fake", "grid": a_grid}, ensure_ascii=False),
                  encoding="utf-8")
     q.write_text(json.dumps({"model": "fake", "grid": b_grid}, ensure_ascii=False),

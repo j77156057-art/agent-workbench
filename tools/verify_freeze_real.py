@@ -21,11 +21,12 @@ import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 AGENT = ROOT / "agent.py"
 ORIG = AGENT.read_text(encoding="utf-8")
-REPORT = pathlib.Path(r"D:\Temp\opencode\real_freeze3.json")
+REPORT = pathlib.Path(tempfile.gettempdir()) / "opencode" / "real_freeze3.json"
 PROBE = ROOT / "tests" / "test_freeze_realprobe.py"
 
 PROBE_SRC = '''import pathlib

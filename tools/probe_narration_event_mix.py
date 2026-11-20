@@ -110,7 +110,8 @@ def main() -> int:
         # ⚠ **完整原文落盘** —— 只数事件不够，因为「协议文本泄漏到结案」
         # 只能靠看**完整**原文判，截断后的 96 字会把真实结案隐掉。
         dump = pathlib.Path(os.getenv("DOCMIND_NARRATION_DUMP",
-                                        "D:/Temp/opencode/narration_events.json"))
+                                        os.path.join(tempfile.gettempdir(), "opencode",
+                                                     "narration_events.json")))
         try:
             dump.write_text(json.dumps([
                 {"type": str(e.get("type")), "text": str(e.get("text", ""))}

@@ -41,8 +41,8 @@ FAKE_KEYS = {
     "sk-1234567890abcdef", "sk-abcdEFGH1234567890wxyz",
     "sk-REALPLAINTEXTKEY000000000000", "sk-abcdefghijklmnop",
 }
-# tests/ 与 tools/ 里的盘符路径是夹具约定（C:\work 合成根、D:/Temp/opencode
-# _scratch 约定），非真本机根；产品代码与文档仍按严判据核。
+# tests/ 里的盘符路径是夹具约定（C:\work 合成根）；本地探针脚本（tools/）已统一
+# 改用 tempfile.gettempdir()，这里保留前缀豁免只防回归，产品代码与文档仍按严判据核。
 FIXTURE_PREFIXES = ("tests/", "tools/")
 
 

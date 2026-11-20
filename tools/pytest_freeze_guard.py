@@ -71,12 +71,14 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 
 import pytest
 
 #: 报告落盘位置（测完直接看这个文件）
 REPORT = pathlib.Path(os.environ.get(
-    "DOCMIND_FREEZE_REPORT", r"D:\Temp\opencode\freeze_violations.json"))
+    "DOCMIND_FREEZE_REPORT",
+    os.path.join(tempfile.gettempdir(), "opencode", "freeze_violations.json")))
 
 #: 会话开始时记下的快照：路径 -> (大小, mtime_ns, 摘要)
 _BASELINE: dict[str, tuple] = {}

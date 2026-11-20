@@ -26,9 +26,12 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+import tempfile
 
-DEFAULT_A = pathlib.Path("D:/Temp/opencode/e2e_guard_result_run1.json")
-DEFAULT_B = pathlib.Path("D:/Temp/opencode/e2e_guard_result_run2.json")
+# 本地探针产物统一落系统临时目录：本机行为不变，换机器也不用再改盘符。
+SCRATCH = pathlib.Path(tempfile.gettempdir()) / "opencode"
+DEFAULT_A = SCRATCH / "e2e_guard_result_run1.json"
+DEFAULT_B = SCRATCH / "e2e_guard_result_run2.json"
 
 # 判「护栏拦得住」的关键格 —— 第 1、3 轮实验组必须是「未改」
 GUARD_KEYS = ("实验组/轮1", "实验组/轮3")

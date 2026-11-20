@@ -39,7 +39,14 @@ git_report.txt
 
 # ===== 环境变量（含 API Key，严禁提交！）=====
 .env
+.env.*
+!.env.example
 .env.bak-*
+
+# ===== 本机工具产物 / 事故备份（不入库）=====
+.env.after-accident-*
+.mavis/
+.trae-html-share-packages/
 
 # ===== 运行时本地状态/备份（2026-09-27 补）=====
 .docmind_model_context.json
@@ -49,6 +56,12 @@ git_report.txt
 # 实测 7.4 MB / 372 个文件，且未忽略时任何一次 `git add -A` 都会把它们扫进版本库——
 # 共用工作树上这已经发生过（一条 lane 的批量 add 把另一条 lane 的在制品一起暂存了）。
 .tmp/
+
+# ===== 设计验收的原始产物（截图 / OCR-AX dump）：本地留档，不入库 =====
+# 它们由 tools/verify_design_acceptance_a.mjs、tools/verify_l3_matrix.mjs 现场生成，
+# dump 里会带出本机临时目录路径；需要对照时重跑脚本即可。
+docs/screenshots/design-a/
+docs/screenshots/design-l3-matrix.json
 
 # ===== 前端工程（Node 依赖与构建产物）=====
 frontend/node_modules/

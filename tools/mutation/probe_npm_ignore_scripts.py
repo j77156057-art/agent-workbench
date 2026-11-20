@@ -38,6 +38,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -179,9 +180,10 @@ def main() -> int:
     if not baseline:
         print("  *** 基线为空 —— 先确认 web/assets 存在 ***")
         return 1
-    (pathlib.Path("D:/Temp/opencode/exp_baseline.json")
-     .write_text(json.dumps(baseline, indent=1), encoding="utf-8"))
-    print("  基线哈希已存 D:/Temp/opencode/exp_baseline.json")
+    out = pathlib.Path(tempfile.gettempdir()) / "opencode" / "exp_baseline.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(baseline, indent=1), encoding="utf-8")
+    print("  基线哈希已存 %s" % out)
 
     print()
     print("=" * 78)

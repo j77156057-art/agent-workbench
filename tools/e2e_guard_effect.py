@@ -91,7 +91,7 @@ MODEL = os.getenv("DOCMIND_E2E_MODEL", "qwen3.6:35b-a3b")
 # 不是「结论听起来一样」。
 RESULT_JSON = pathlib.Path(os.getenv(
     "DOCMIND_E2E_OUT",
-    "D:/Temp/opencode/e2e_guard_result.json"))
+    os.path.join(tempfile.gettempdir(), "opencode", "e2e_guard_result.json")))
 
 # ⚠⚠ **异常轮次检出** —— 这是本文件最要紧的一处判据修正。
 #
