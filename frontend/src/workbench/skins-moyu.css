@@ -1,0 +1,187 @@
+/* 「墨屿」两套配色：纸感（暖白 + 砖橙）与夜航（深墨 + 砖橙）。
+ *
+ * 为什么单独一个文件：skins.ts / skins.css / skins-seed.css 正在被另一条线改动，
+ * 新皮肤只用**自己的文件 + 注册表里一行**，冲突面压到最小。
+ *
+ * 色板取自「墨屿」实拍：
+ *   纸感 —— 底 #f6f1e8 暖白纸面，文字 #221f1b，砖橙强调 #b4532a，
+ *           状态绿点 #4a7a48，描边细而浅（#e3d9c9），圆角明显；
+ *   夜航 —— 底 #121110，文字 #efe9e1，砖橙强调 #c2623a。
+ *
+ * 阅读体（衬线）也在这两套里换：--font-read 用系统衬线栈，零新增字体资源。
+ * macOS 命中 Songti SC，Windows 落到 SimSun，其余平台按 Noto Serif CJK 回落。
+ * 命中不了就退回无衬线（font-family 列表末尾没有 fallback 时浏览器用默认字体）。
+ */
+
+:root:root:root[data-skin='moyu'] {
+  --skin-dark: 0;
+  color: #221f1b;
+  background-color: #f6f1e8;
+
+  --bg: #f6f1e8;
+  --surface: #fdfaf4;
+  --bg-raised: #fffdf8;
+  --bg-hover: #ece4d7;
+  --bg-selected: #f3ead9;
+
+  --ink: #221f1b;
+  --text: #221f1b;
+  --muted: #6a6156;
+  --text-muted: #6a6156;
+  --faint: #857b6e;
+  --text-faint: #857b6e;
+
+  --border: #e3d9c9;
+  --border-strong: #cdbfa9;
+  --border-graphic: #b3a48e;
+
+  --accent: #b4532a;
+  --accent-loud: #c2623a;
+  --accent-deep: #8f3f1d;
+  --accent-ink: #fffdf8;
+  --accent-2: var(--accent);
+  --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
+  --accent-text: #8f3f1d;
+  --accent-2-ink: #fffdf8;
+
+  --danger: #a8382c;
+  --danger-ink: #fffdf8;
+  --amber: #8a6412;
+  --amber-ink: #fffdf8;
+  --green: #4a7a48;
+  --green-ink: #fffdf8;
+  --tool: #2f6f6a;
+
+  --r-xs: 6px; --r-sm: 10px; --r-md: 14px; --r-lg: 18px;
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-xl: 18px;
+  --radius-pill: 999px;
+  --modal-radius: 14px;
+  --edge-w: 1px; --edge-w-strong: 1px; --edge-w-heavy: 1px;
+
+  --shadow-control: none;
+  --shadow-pop: 0 16px 40px rgba(60, 44, 30, .14);
+  --shadow-soft: 0 2px 8px rgba(60, 44, 30, .06);
+  --modal-shadow: 0 22px 54px rgba(60, 44, 30, .18);
+  --sh-hard: none; --sh-hard-sm: none; --sh-hard-lg: none;
+
+  --skin-grain: 0;
+  --skin-vignette: 0%;
+  --skin-dots: 0;
+
+  /* 阅读体：系统衬线栈（不引字体资源） */
+  --font-read: "Songti SC", "Source Han Serif SC", "Noto Serif CJK SC", "Noto Serif SC",
+               "STSong", "SimSun", "宋体", serif;
+
+  /* ---- 工作台真正的颜色源：memory-inspector-tokens.css 的 --mi-* 家族 ----
+     只换 --bg/--accent 是不够的：面板、关系图、画布那些组件吃的是 --mi-*，
+     不一起换就会「壳是暖的、面板还是冷蓝」。两套家族一起换，才是一整套观感。 */
+  --mi-bg-deep: oklch(0.932 0.012 78);
+  --mi-bg: oklch(0.955 0.011 78);
+  --mi-surface: oklch(0.988 0.008 80);
+  --mi-surface-raised: oklch(1 0 0);
+  --mi-hover: oklch(0.940 0.016 75);
+  --mi-selected: oklch(0.925 0.030 60);
+  --mi-text: oklch(0.235 0.012 70);
+  --mi-text-secondary: oklch(0.440 0.014 72);
+  --mi-text-muted: oklch(0.480 0.013 72);
+  --mi-text-faint: oklch(0.600 0.012 72);
+  --mi-accent: oklch(0.545 0.130 45);
+  --mi-accent-strong: oklch(0.460 0.125 42);
+  --mi-accent-dim: oklch(0.585 0.090 48);
+  --mi-accent-ink: oklch(0.995 0.006 60);
+  --mi-success: oklch(0.520 0.090 145);
+  --mi-warning: oklch(0.560 0.110 75);
+  --mi-danger: oklch(0.540 0.140 32);
+  --mi-border-subtle: oklch(0.915 0.012 78);
+  --mi-border: oklch(0.865 0.016 78);
+  --mi-border-strong: oklch(0.760 0.022 74);
+  --mi-overlay: oklch(0.235 0.012 70 / .32);
+  --mi-shadow-panel: 0 1px 2px oklch(0.30 0.03 50 / .08);
+  --mi-shadow-drawer: 0 16px 40px oklch(0.30 0.03 50 / .16);
+  --mi-shadow-focus: 0 0 0 3px oklch(0.545 0.130 45 / .28);
+}
+
+:root:root:root[data-skin='moyu-night'] {
+  --skin-dark: 1;
+  color: #efe9e1;
+  background-color: #121110;
+
+  --bg: #121110;
+  --surface: #1a1917;
+  --bg-raised: #211f1c;
+  --bg-hover: #2b2825;
+  --bg-selected: #322d29;
+
+  --ink: #efe9e1;
+  --text: #efe9e1;
+  --muted: #a89e92;
+  --text-muted: #a89e92;
+  --faint: #7d746a;
+  --text-faint: #7d746a;
+
+  --border: #2e2b27;
+  --border-strong: #443f39;
+  --border-graphic: #5b544c;
+
+  --accent: #c2623a;
+  --accent-loud: #d3703f;
+  --accent-deep: #a14c27;
+  --accent-ink: #17150f;
+  --accent-2: var(--accent);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-text: #e08a5f;
+  --accent-2-ink: #17150f;
+
+  --danger: #d0634f;
+  --danger-ink: #17150f;
+  --amber: #d2a04a;
+  --amber-ink: #17150f;
+  --green: #6f9c63;
+  --green-ink: #17150f;
+  --tool: #5aa39c;
+
+  --r-xs: 6px; --r-sm: 10px; --r-md: 14px; --r-lg: 18px;
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-xl: 18px;
+  --radius-pill: 999px;
+  --modal-radius: 14px;
+  --edge-w: 1px; --edge-w-strong: 1px; --edge-w-heavy: 1px;
+
+  --shadow-control: none;
+  --shadow-pop: 0 16px 44px rgba(0, 0, 0, .5);
+  --shadow-soft: 0 2px 10px rgba(0, 0, 0, .3);
+  --modal-shadow: 0 22px 60px rgba(0, 0, 0, .58);
+  --sh-hard: none; --sh-hard-sm: none; --sh-hard-lg: none;
+
+  --skin-grain: 0;
+  --skin-vignette: 0%;
+  --skin-dots: 0;
+
+  --font-read: "Songti SC", "Source Han Serif SC", "Noto Serif CJK SC", "Noto Serif SC",
+               "STSong", "SimSun", "宋体", serif;
+
+  /* 深墨档的 --mi-* 覆写（与浅色档同一批令牌，值取深底可读的解算值） */
+  --mi-bg-deep: oklch(0.118 0.008 60);
+  --mi-bg: oklch(0.142 0.008 60);
+  --mi-surface: oklch(0.178 0.008 60);
+  --mi-surface-raised: oklch(0.205 0.009 58);
+  --mi-hover: oklch(0.222 0.010 58);
+  --mi-selected: oklch(0.262 0.016 52);
+  --mi-text: oklch(0.940 0.012 75);
+  --mi-text-secondary: oklch(0.760 0.014 72);
+  --mi-text-muted: oklch(0.690 0.013 72);
+  --mi-text-faint: oklch(0.560 0.012 70);
+  --mi-accent: oklch(0.660 0.140 48);
+  --mi-accent-strong: oklch(0.720 0.145 52);
+  --mi-accent-dim: oklch(0.580 0.115 50);
+  --mi-accent-ink: oklch(0.160 0.010 60);
+  --mi-success: oklch(0.680 0.110 145);
+  --mi-warning: oklch(0.760 0.115 80);
+  --mi-danger: oklch(0.660 0.150 35);
+  --mi-border-subtle: oklch(0.215 0.009 60);
+  --mi-border: oklch(0.262 0.011 60);
+  --mi-border-strong: oklch(0.355 0.014 58);
+  --mi-overlay: oklch(0.120 0.008 60 / .58);
+  --mi-shadow-panel: 0 1px 2px oklch(0 0 0 / .4);
+  --mi-shadow-drawer: 0 16px 44px oklch(0 0 0 / .5);
+  --mi-shadow-focus: 0 0 0 3px oklch(0.660 0.140 48 / .32);
+}

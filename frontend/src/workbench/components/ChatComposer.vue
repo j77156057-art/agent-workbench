@@ -236,17 +236,28 @@ function onVideoPick(ev: Event) {
         :value="modelValue"
         class="cd-input"
         rows="2"
-        placeholder="描述你的目标或问题…（Ctrl+Enter 发送）"
+        placeholder="描述你的目标或问题…"
         @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
         @keydown="onKeydown"
         @paste="onPaste"
         @drop="onDrop"
         @dragover="onDragover"
       />
+      <!-- 墨屿质感层：框内左下的按键提示。写实际生效的键位（Ctrl+Enter 发送），
+           不写「Enter 发送」——Enter 在这里是换行，写错了等于教错人。 -->
+      <span class="cd-hint" aria-hidden="true">
+        <b>Ctrl+Enter</b> 发送 · Enter 换行
+      </span>
       <button v-if="sending" class="cd-send cd-stop" title="停止当前请求" aria-label="停止当前请求" @click="emit('stop')">停止</button>
       <!-- 2026-10-20：aria-busy —— 全站 451 个按钮此前 0 个有 aria-busy，
            屏幕阅读器无法知道"正在发送"。 -->
-      <button class="cd-send" :aria-busy="sending" :disabled="(!canSendText && !pendingImages.length)" :title="canSendText || pendingImages.length ? '发送消息（Ctrl+Enter）；运行中发送＝打断当前轮并重定向' : '请描述你的问题（至少包含文字或数字）'" @click="emit('submit')">发送</button>
+      <button class="cd-send" :aria-busy="sending" :disabled="(!canSendText && !pendingImages.length)" :title="canSendText || pendingImages.length ? '发送消息（Ctrl+Enter）；运行中发送＝打断当前轮并重定向' : '请描述你的问题（至少包含文字或数字）'" @click="emit('submit')">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8 13V3.6" />
+          <path d="M3.9 7.7 8 3.6l4.1 4.1" />
+        </svg>
+        <span class="cd-send-label">发送</span>
+      </button>
     </div>
   </footer>
 </template>

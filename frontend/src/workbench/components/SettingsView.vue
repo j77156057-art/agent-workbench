@@ -81,7 +81,9 @@ onMaterialChange((m) => { material.value = m })
 // 2026-11-09：工作台此前把配色写死成深色观测舱，首次打开也是黑的。
 // 两档只换颜色令牌（memory-inspector-tokens.css），布局 / 造型 / 材质不受影响。
 const PALETTES: { key: PaletteKey; name: string; desc: string }[] = [
-  { key: 'light', name: '浅色（默认）', desc: '白底深字；记忆面板与主工作区共用同一套浅色令牌。' },
+  { key: 'moyu', name: '墨屿纸感（默认）', desc: '暖白纸底 + 砖橙强调 + 衬线正文，长文按书读。' },
+  { key: 'moyu-night', name: '墨屿夜航', desc: '深墨底 + 砖橙强调 + 衬线正文，夜间写作。' },
+  { key: 'light', name: '浅色 · 冷白', desc: '白底深字；记忆面板与主工作区共用同一套浅色令牌。' },
   { key: 'observatory', name: '深色 · 观测舱', desc: '低亮度深底；夜间长时间盯屏时使用。' },
 ]
 const palette = ref<PaletteKey>(loadPalette())
@@ -2459,7 +2461,7 @@ async function powerAction(action: 'on' | 'off') {
             </div>
 
             <p class="sv-note" data-tone="neutral">
-              当前配色：<strong>{{ palette === 'observatory' ? '深色 · 观测舱' : '浅色' }}</strong>。背景、正文、分隔线与控件全部引用 <code>memory-inspector-tokens.css</code>；
+              当前配色：<strong>{{ PALETTES.find((x) => x.key === palette)?.name || '浅色' }}</strong>。背景、正文、分隔线与控件全部引用 <code>memory-inspector-tokens.css</code>；
               布局与材质可独立调整。
             </p>
 

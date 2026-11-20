@@ -26,7 +26,7 @@
 // 的规则收编到了 --border / --edge-* / --r-* 上；这些替换在 paper / graphite 下
 // 逐像素等价（--border 与 --ink 在那两套里同值，--r-sm 本就是 0），
 // 由 verify_visual_regression.mjs 的「paper / graphite 用例 0 像素差」证明。
-export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'seed'
+export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'seed' | 'moyu' | 'moyu-night'
 
 export interface SkinDef {
   key: SkinKey
@@ -49,6 +49,11 @@ export const SKINS: SkinDef[] = [
   // 全部来自 tools/design_seed.py 对该种子的确定性派生（色值按对比度反解，保证过 AA）。
   // 换观感就跑 `python tools/design_seed.py --new-seed` 重新生成，别手改这个文件。
   { key: 'seed', name: '种子 344284156', desc: '由种子推导：玫瑰红强调 + 14px 圆角 + 紧凑密度 + 浅底', swatch: ['#f9f8f8', '#28201f', '#904759', '#ffffff'] },
+  // 「墨屿」两套（2026-11-20）：暖白纸底 + 砖橙强调 + 衬线阅读体，与深墨夜航。
+  // 令牌在独立的 skins-moyu.css 里（skins.css 正被另一条线改动，新皮肤另起文件
+  // 免得撞车）；阅读体用系统衬线栈，不引字体资源。
+  { key: 'moyu', name: '墨屿纸感', desc: '暖白纸底 + 砖橙强调 + 衬线正文，圆角明显', swatch: ['#f6f1e8', '#cdbfa9', '#b4532a', '#fffdf8'] },
+  { key: 'moyu-night', name: '墨屿夜航', desc: '深墨底 + 砖橙强调 + 衬线正文，夜间低亮环境', swatch: ['#121110', '#443f39', '#c2623a', '#17150f'] },
 ]
 
 // 2026-10-20：默认皮肤从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）

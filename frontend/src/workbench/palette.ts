@@ -7,7 +7,7 @@
 //   - observatory：挂 data-skin='observatory'，用同一文件的深色档。
 // 只影响工作台；问答页仍用 skins.ts 的 docmind.skin（zinc/graphite/...），互不覆盖。
 
-export type PaletteKey = 'light' | 'observatory'
+export type PaletteKey = 'light' | 'observatory' | 'moyu' | 'moyu-night'
 
 const KEY = 'docmind.workbenchPalette'
 export const PALETTE_CHANGE_EVENT = 'docmind:palette'
@@ -16,29 +16,39 @@ export const PALETTE_CHANGE_EVENT = 'docmind:palette'
 export const PALETTE_BG: Record<PaletteKey, string> = {
   light: 'oklch(0.952 0.004 245)',
   observatory: 'oklch(0.145 0.018 245)',
+  // 「墨屿」两档（2026-11-20）：暖白纸底 / 深墨夜航。色值与 skins-moyu.css 里
+  // 的 --mi-* 覆写一致，首帧铺的底色必须和它对得上，否则刷新会闪一下冷白。
+  moyu: 'oklch(0.945 0.011 78)',
+  'moyu-night': 'oklch(0.142 0.008 60)',
 }
 
 export function isPaletteKey(v: unknown): v is PaletteKey {
-  return v === 'light' || v === 'observatory'
+  return v === 'light' || v === 'observatory' || v === 'moyu' || v === 'moyu-night'
 }
 
-/** 读偏好：没存过 / 存了非法值都回落浅色。 */
+/** 默认配色档。2026-11-20 起是「墨屿纸感」（暖白 + 砖橙 + 衬线正文），
+ *  之前是浅色冷白。显式选过别的档的用户不受影响（localStorage 里存着）。 */
+export const DEFAULT_PALETTE: PaletteKey = 'moyu'
+
+/** 读偏好：没存过 / 存了非法值都回落默认。 */
 export function loadPalette(): PaletteKey {
   try {
     const raw = window.localStorage.getItem(KEY)
-    return isPaletteKey(raw) ? raw : 'light'
+    return isPaletteKey(raw) ? raw : DEFAULT_PALETTE
   } catch {
-    return 'light'
+    return DEFAULT_PALETTE
   }
 }
 
 /** 只应用、不落盘（首帧与切换共用）。 */
 export function applyPalette(key: PaletteKey): PaletteKey {
-  const k = isPaletteKey(key) ? key : 'light'
+  const k = isPaletteKey(key) ? key : DEFAULT_PALETTE
   const el = document.documentElement
   if (k === 'observatory') el.setAttribute('data-skin', 'observatory')
+  else if (k === 'moyu') el.setAttribute('data-skin', 'moyu')
+  else if (k === 'moyu-night') el.setAttribute('data-skin', 'moyu-night')
   else el.removeAttribute('data-skin')
-  el.style.colorScheme = k === 'observatory' ? 'dark' : 'light'
+  el.style.colorScheme = (k === 'observatory' || k === 'moyu-night') ? 'dark' : 'light'
   el.style.background = PALETTE_BG[k]
   return k
 }

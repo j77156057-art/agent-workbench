@@ -1,0 +1,227 @@
+/* 「墨屿」质感层：**排版与形态**（配色交给皮肤）。
+ *
+ * 这一层只动「怎么读」与「长什么样」，不动「什么颜色」：
+ *   · 阅读体（衬线）由 --font-read 令牌驱动 —— 默认继承界面无衬线；
+ *     「墨屿」两套皮肤把它换成系统衬线栈（见 skins-moyu.css），所以别的皮肤
+ *     用户看到的观感不变。
+ *   · 输入框大圆角 + 框内提示行 + 圆形发送键、空态大卡片、计划卡的图标块，
+ *     这些是形态，全局生效。
+ *
+ * 作用域尽量锁在 .cd-dock 内：问答页与编辑器不受影响。
+ * 加载顺序：本文件在 main.ts 里最后 import，因此能盖过 shared/markdown.css
+ * 的同名规则（同特异性时后者胜）。
+ */
+
+:root {
+  /* 阅读体：默认继承（无衬线）。皮肤可以整体换成衬线栈。 */
+  --font-read: inherit;
+}
+
+/* ---------------------------------------------------------------- 答案正文 */
+.cd-dock .cd-answer,
+.cd-dock .ai-md { font-family: var(--font-read, inherit); }
+.cd-dock .ai-md p { line-height: 1.9; }
+.cd-dock .ai-md h1,
+.cd-dock .ai-md h2,
+.cd-dock .ai-md h3 {
+  font-family: var(--font-read, inherit);
+  letter-spacing: .01em;
+  line-height: 1.5;
+}
+/* 有序列表的序号用强调色（墨屿：1. 2. 是橙的） */
+.cd-dock .ai-md ol > li::marker { color: var(--accent-text); font-weight: 700; }
+/* 引文块：淡强调底 + 左侧强调线 */
+.cd-dock .ai-md blockquote {
+  margin: 12px 0;
+  padding: 10px 14px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+/* 代码块仍是等宽 —— 衬线只给可读的文字，不给代码 */
+.cd-dock .ai-md code,
+.cd-dock .ai-md pre { font-family: var(--font-code); }
+
+/* ---------------------------------------------------------------- 输入区 */
+/* 墨屿的输入框：一个大圆角的浅底盒子，提示行在框内左下，圆形发送键在右下。 */
+.cd-dock .cd-input-row { position: relative; }
+.cd-dock .cd-input {
+  border-radius: 16px;
+  padding-bottom: 30px;   /* 给框内提示行留位 */
+  padding-right: 52px;   /* 给圆形发送键留位 */
+}
+.cd-dock .cd-hint {
+  position: absolute;
+  left: 14px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-faint);
+  font-size: var(--fs-cap);
+  pointer-events: none;
+}
+.cd-dock .cd-hint b { font-weight: 500; color: var(--text-muted); }
+.cd-dock .cd-send {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;           /* 「发送」两个字换成箭头图标后，宽度固定成圆 */
+}
+.cd-dock .cd-send svg { width: 15px; height: 15px; }
+/* 圆钮里只留箭头，但「发送」这个词要留给读屏 —— 视觉隐藏，不删。 */
+.cd-dock .cd-send-label {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* 「停止」态不该被压成圆形图标态：它是另一个动作 */
+.cd-dock .cd-send.cd-stop { position: static; width: auto; height: 36px; border-radius: var(--r-md); font-size: var(--fs-md); }
+
+/* ---------------------------------------------------------------- 空态 */
+.cd-dock .cd-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 26px 16px 18px;
+  text-align: center;
+}
+.cd-dock .cd-empty-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: var(--fs-md);
+  font-weight: 700;
+  letter-spacing: .04em;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.cd-dock .cd-empty-title {
+  font-family: var(--font-read, inherit);
+  font-size: var(--fs-h2);
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: .01em;
+  line-height: 1.35;
+}
+.cd-dock .cd-empty-sub {
+  margin: 0 0 6px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.cd-dock .cd-quicks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  max-width: 560px;
+}
+.cd-dock .cd-quick {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .16s, background .16s, transform .16s;
+}
+.cd-dock .cd-quick:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  transform: translateY(-1px);
+}
+.cd-dock .cd-quick-hint {
+  color: var(--text-muted);
+  font-size: var(--fs-cap);
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------- 计划卡 */
+.cd-dock .cd-plan {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 10px 12px;
+  margin: 4px 0 8px;
+}
+.cd-dock .cd-plan-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.cd-dock .cd-plan-title::before {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--accent);
+  flex: none;
+}
+.cd-dock .cd-plan-step {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+.cd-dock .cd-plan-idx {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
+  color: var(--text-faint);
+  font-size: var(--fs-micro);
+  line-height: 14px;
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- 底部免责行 */
+.cd-dock .cd-foot-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 8px;
+  color: var(--text-faint);
+  font-size: var(--fs-cap);
+}
+.cd-dock .cd-foot-note .cd-foot-left { display: inline-flex; align-items: center; gap: 6px; }
+.cd-dock .cd-foot-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.cd-dock .cd-foot-dot.busy { background: var(--accent); }
+.cd-dock .cd-foot-spacer { flex: 1 1 auto; }
+
+@media (max-width: 720px) {
+  .cd-dock .cd-quicks { grid-template-columns: minmax(0, 1fr); }
+}

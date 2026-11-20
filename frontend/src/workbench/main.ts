@@ -14,6 +14,10 @@ import './glass.css'
 import '../shared/markdown.css'
 import '../shared/ui-v2.css'
 import './memory-inspector-tokens.css'
+// 「墨屿」质感层：阅读体排版与形态（chat-ink）+ 两套新皮肤（skins-moyu）。
+// 放在最后 import：同名规则下后者胜（要盖过 shared/markdown.css 的答案排版）。
+import './chat-ink.css'
+import './skins-moyu.css'
 import { applyPalette, loadPalette } from './palette'
 import { initStyle } from './styleMode'
 import { initLayout } from './layoutMode'
