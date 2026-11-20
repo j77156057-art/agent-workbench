@@ -13,7 +13,13 @@
  * 命中不了就退回无衬线（font-family 列表末尾没有 fallback 时浏览器用默认字体）。
  */
 
-:root:root:root[data-skin='moyu'] {
+/* 特异度说明：这里用 :root×4（0,5,0）而不是 :root×3（0,4,0）——
+   问答页会给 <html> 写 data-assistant-dark='1'（深色皮肤都这样），
+   而 memory-inspector-tokens.css 的深色家族是 :root×4 + [data-assistant-dark]
+   （同为 0,5,0），它给的是**冷蓝**观测舱的 --mi-*。同特异度时后导入者胜，
+   所以墨屿这一族必须与它同特异度，且在问答页的 main.ts 里排在它后面，
+   否则夜航档会出现「暖墨的壳 + 冷蓝的面板」。 */
+:root:root:root:root[data-skin='moyu'] {
   --skin-dark: 0;
   color: #221f1b;
   background-color: #f6f1e8;
@@ -101,7 +107,7 @@
   --mi-shadow-focus: 0 0 0 3px oklch(0.545 0.130 45 / .28);
 }
 
-:root:root:root[data-skin='moyu-night'] {
+:root:root:root:root[data-skin='moyu-night'] {
   --skin-dark: 1;
   color: #efe9e1;
   background-color: #121110;

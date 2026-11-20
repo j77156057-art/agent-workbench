@@ -35,8 +35,6 @@ import '../shared/ui-v2.css'
 // 静态 CSS —— 靠 #app 前缀的特异度（1,1,0）压过 scoped（0,2,0），不靠顺序。
 import './ask-ink.css'
 import { applyStoredSkin, applySkin, onSkinChange } from '../workbench/skins'
-// 用户自备字体（与工作台共用同一份偏好与字体库，2026-11-20）
-import { applyFontPrefs, restoreUserFonts } from '../workbench/userFonts'
 import { initStyle } from '../workbench/styleMode'
 import { initLayout } from '../workbench/layoutMode'
 import { initMaterial } from '../workbench/glassPointer'
@@ -47,8 +45,6 @@ import { initMaterial } from '../workbench/glassPointer'
 // （2026-10-07 并层：style-modes.css / hierarchy-fix.css 已删，造型令牌在
 //   skins.css，问答页减边框规则在 ask.css 末尾。）
 applyStoredSkin()
-applyFontPrefs()
-restoreUserFonts()
 initStyle()
 initLayout()
 initMaterial()
