@@ -26,7 +26,7 @@
 // 的规则收编到了 --border / --edge-* / --r-* 上；这些替换在 paper / graphite 下
 // 逐像素等价（--border 与 --ink 在那两套里同值，--r-sm 本就是 0），
 // 由 verify_visual_regression.mjs 的「paper / graphite 用例 0 像素差」证明。
-export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'seed' | 'moyu' | 'moyu-night' | 'observatory'
+export type SkinKey = 'paper' | 'graphite' | 'zinc' | 'seed' | 'moyu' | 'moyu-night'
 
 export interface SkinDef {
   key: SkinKey
@@ -43,12 +43,8 @@ export const SKIN_CHANGE_EVENT = 'docmind:skin'
 
 export const SKINS: SkinDef[] = [
   { key: 'zinc', name: '锌白细线', desc: '冷白底 + 1px 灰细线 + 6px 圆角 + 零阴影，青绿强调。日常默认', swatch: ['#fcfcfd', '#7d7d86', '#0f766e', '#ffffff'] },
-  { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e6e9ef', '#5accf0', '#000000'] },
+  { key: 'graphite', name: '石墨夜航', desc: '深炭底 + 电光青，硬边 + 近黑阴影。夜间低亮环境', swatch: ['#16181d', '#e8e6e0', '#4dd0e1', '#000000'] },
   { key: 'paper', name: '素纸朱红', desc: '暖骨白纸 + 朱红，零圆角 + 硬阴影。印刷海报风，按需选用', swatch: ['#ece7db', '#14110f', '#ff674d', '#000000'] },
-  // 「观测舱」是工作台原来的深色调（memory-inspector-tokens.css 的深色家族）。
-  // 2026-11-20 两页合并到同一个皮肤键之后，它也进了问答页的皮肤表 ——
-  // 否则工作台切「观测舱」时，问答页没有对应的皮肤可跟，两页又得分家。
-  { key: 'observatory', name: '观测舱', desc: '深蓝灰底 + 电光青，面板与画布同源。夜间低亮环境', swatch: ['#0a1118', '#3b4757', '#5accf0', '#0a1118'] },
   // 「种子」是一套**由随机种子推导出来**的皮肤：色相/明度/圆角/描边/阴影/字号/间距
   // 全部来自 tools/design_seed.py 对该种子的确定性派生（色值按对比度反解，保证过 AA）。
   // 换观感就跑 `python tools/design_seed.py --new-seed` 重新生成，别手改这个文件。
@@ -60,31 +56,14 @@ export const SKINS: SkinDef[] = [
   { key: 'moyu-night', name: '墨屿夜航', desc: '深墨底 + 砖橙强调 + 衬线正文，夜间低亮环境', swatch: ['#121110', '#443f39', '#c2623a', '#17150f'] },
 ]
 
-// 默认皮肤：
-//   2026-10-20 从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）
-//   换成 zinc（1px 细线 + 圆角 + 零阴影 + 青绿强调）—— 前者更像工程样机，
-//   后者才是能拿上线给普通用户的默认观感。
-//   2026-11-20 短暂换成 moyu（墨屿纸感），当天就换回来：暖白纸底 + 深棕脊 +
-//   砖橙的整套观感偏重，用户明确说「棕色怪怪的」。默认仍是**锌白细线**。
-//   「墨屿」两套保留在皮肤表里（skin 键 moyu / moyu-night），想用随时切。
-//   两页共用这一个键（见下方「唯一真源」），默认自然一致。
+// 2026-10-20：默认皮肤从 paper（brutalist：墨黑粗边 + 硬偏移阴影 + 孔版纹理）
+// 换成 zinc（1px 细线 + 圆角 + 零阴影 + 青绿强调）—— 前者更像工程样机，
+// 后者才是能拿上线给普通用户的默认观感。brutalist 保留为可选皮肤。
 export const DEFAULT_SKIN: SkinKey = 'zinc'
 
 const VALID = new Set<string>(SKINS.map((s) => s.key))
-/** 旧默认皮肤：曾被大量用户默认选中（从没主动选过），迁移到新默认时要换掉。
- *  2026-11-20：paper（brutalist）与当过一天默认的 moyu（墨屿）都算旧默认。
- *  zinc 既是当前默认也是旧默认，不列（列了也是原地踏步）。 */
-const LEGACY_DEFAULTS: SkinKey[] = ['paper', 'moyu']
-/** 2026-11-20 之前工作台单独用的配色键（docmind.workbenchPalette）。
- *  两页合并到 docmind.skin 之后，这个键只作一次性迁移来源。 */
-const LEGACY_PALETTE_KEY = 'docmind.workbenchPalette'
-/** 旧配色键的档位 → 皮肤键。两页合并后皮肤键是唯一真源。 */
-const LEGACY_PALETTE_TO_SKIN: Record<string, SkinKey> = {
-  light: 'zinc',
-  observatory: 'observatory',
-  moyu: 'moyu',
-  'moyu-night': 'moyu-night',
-}
+/** 旧默认皮肤：曾被大量用户默认选中（从没主动选过），迁移到新默认时要换掉。 */
+const LEGACY_DEFAULT: SkinKey = 'paper'
 
 export function isSkinKey(v: unknown): v is SkinKey {
   return typeof v === 'string' && VALID.has(v)
@@ -92,32 +71,19 @@ export function isSkinKey(v: unknown): v is SkinKey {
 
 /** 读当前皮肤；读不到/被禁用/值非法一律回默认（不抛）
  *
- *  2026-10-20 加一次性迁移：旧默认皮肤是 paper（brutalist），当时换成 zinc。
- *  凡是**从没主动选过**皮肤的机器（localStorage 里是旧默认，且没有锁定标记），
- *  自动换到新默认 —— 否则它们会一直停在旧观感上。
- *  主动选过的用户（选的时候会打锁定标记）不受影响。
- *  2026-11-20：新默认是 moyu（墨屿纸感），zinc 也列入旧默认。 */
+ *  2026-10-20 加一次性迁移：旧默认皮肤是 paper（brutalist），现在是 zinc。
+ *  凡是**从没主动选过**皮肤的机器（localStorage 里是 paper，且没有锁定标记），
+ *  自动换到新默认 —— 否则它们会一直停在"工程样机"观感上。
+ *  主动选过 paper 的用户（选的时候会打锁定标记）不受影响。 */
 export function loadSkin(): SkinKey {
   try {
     const raw = window.localStorage.getItem(KEY)
-    if (isSkinKey(raw)) {
-      // 从没主动选过的机器（没有锁定标记）跟着新默认走，不留在旧观感上。
-      if (LEGACY_DEFAULTS.includes(raw) && !window.localStorage.getItem(LOCK_KEY)) {
-        window.localStorage.setItem(KEY, DEFAULT_SKIN)
-        return DEFAULT_SKIN
-      }
-      return raw
+    if (!isSkinKey(raw)) return DEFAULT_SKIN
+    if (raw === LEGACY_DEFAULT && !window.localStorage.getItem(LOCK_KEY)) {
+      window.localStorage.setItem(KEY, DEFAULT_SKIN)
+      return DEFAULT_SKIN
     }
-    // 2026-11-20 之前工作台单独用 docmind.workbenchPalette 存配色，
-    // 问答页用 docmind.skin —— 两个键各记各的，两页随时可能分家。
-    // 这里把旧配色键一次性并到皮肤键：用户选过的配色不丢，之后只有一个键。
-    const legacy = window.localStorage.getItem(LEGACY_PALETTE_KEY)
-    const mapped = legacy ? LEGACY_PALETTE_TO_SKIN[legacy] : undefined
-    if (mapped) {
-      window.localStorage.setItem(KEY, mapped)
-      return mapped
-    }
-    return DEFAULT_SKIN
+    return raw
   } catch {
     return DEFAULT_SKIN
   }

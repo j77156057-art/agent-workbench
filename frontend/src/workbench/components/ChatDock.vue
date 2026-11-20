@@ -661,11 +661,14 @@ const composerHeight = ref(0)
 let composerRO: ResizeObserver | null = null
 function focusComposer() { composerEl.value?.focus() }
 /** 空态的快捷问题（2026-10-20）：点一下就落到输入框里，不自动发送 ——
- *  用户可能想先改一改措辞。与概览页「试试问 AI」同一批问题。 */
+ *  用户可能想先改一改措辞。与概览页「试试问 AI」同一批问题。
+ *  2026-11-20：改成「标题 + 一行说明」的卡片式（墨屿质感层），标题给动作、
+ *  说明给边界，避免只丢一个干巴巴的短句让人猜。 */
 const QUICK_PROMPTS = [
-  '梳理项目结构',
-  '解释当前文件',
-  '分析报错原因',
+  { title: '梳理项目结构', hint: '按目录讲清这个仓库怎么组织', ask: '梳理项目结构' },
+  { title: '解释当前文件', hint: '打开的文件在做什么、为什么这么写', ask: '解释当前文件' },
+  { title: '分析报错原因', hint: '从报错一路挖到根因，不停在表面', ask: '分析报错原因' },
+  { title: '跑一次验证', hint: '真跑测试或构建，用结果说话', ask: '跑一次验证' },
 ]
 function askQuick(q: string) { input.value = q; focusComposer() }
 const pendingImages = ref<File[]>([])
@@ -2070,15 +2073,21 @@ const webTitle = computed(() => webOn.value
         <div v-if="!messages.length" class="cd-empty">
           <div v-if="isReplay" class="cd-empty-title">{{ props.replayEmptyHint || '暂无已归档的逐轮记录' }}</div>
           <template v-else>
-            <div class="cd-empty-title">试着问问</div>
+            <!-- 墨屿质感层：居中标记 + 大标题 + 一行说明 + 四张能直接点的建议卡 -->
+            <div class="cd-empty-mark" aria-hidden="true">DM</div>
+            <div class="cd-empty-title">从哪一个问题开始？</div>
+            <p class="cd-empty-sub">可以直接问代码、查证改动、跑一次验证 —— 提问后由 agent 实际动手，不只是给建议。</p>
             <div class="cd-quicks">
               <button
                 v-for="q in QUICK_PROMPTS"
-                :key="q"
+                :key="q.title"
                 type="button"
                 class="cd-quick"
-                @click="askQuick(q)"
-              >{{ q }}</button>
+                @click="askQuick(q.ask)"
+              >
+                <span>{{ q.title }}</span>
+                <span class="cd-quick-hint">{{ q.hint }}</span>
+              </button>
             </div>
           </template>
         </div>
@@ -2307,6 +2316,17 @@ const webTitle = computed(() => webOn.value
         @plan="planOpen = true"
       />
 
+      <!-- 底部状态行（墨屿质感层）：左边说这台 agent 在不在忙，右边说清楚它的边界。
+           措辞按实际行为写，不承诺「不会改代码」——它就是会改，只是按你的要求改。 -->
+      <div class="cd-foot-note">
+        <span class="cd-foot-left">
+          <i class="cd-foot-dot" :class="{ busy: sending }" aria-hidden="true" />
+          {{ sending ? '流式输出已开启' : '可以开始提问' }}
+        </span>
+        <span class="cd-foot-spacer" />
+        <span>读操作限于当前项目，写操作按你的要求执行</span>
+      </div>
+
     <WorkflowMembersDock
       :active="!!wfActiveTeam"
       :members="wfActiveTeam?.members || []"
@@ -2359,7 +2379,7 @@ const webTitle = computed(() => webOn.value
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 3px 12px 4px;
+  padding: 2px 12px 4px;
   border-bottom: 1px solid var(--border);
   color: var(--text-faint);
   font-size: var(--fs-cap);
@@ -2367,7 +2387,7 @@ const webTitle = computed(() => webOn.value
   overflow: hidden;
 }
 .cd-sb-model { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.cd-sb-ctx { flex: none; display: inline-flex; align-items: center; gap: 5px; }
+.cd-sb-ctx { flex: none; display: inline-flex; align-items: center; gap: 4px; }
 .cd-sb-ctx-bar {
   position: relative;
   display: inline-block;

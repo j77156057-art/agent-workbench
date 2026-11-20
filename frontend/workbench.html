@@ -6,36 +6,23 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <!-- 字体已全部自托管，见 src/fonts.ts —— 不再依赖任何外部字体 CDN -->
     <title>DocMind · 代码工作台</title>
-    <!-- 首帧配色：与 src/workbench/skins.ts 同源同默认（墨屿纸感）。深色偏好在这里就应用，
-         避免模块下载前先闪一下白，也避免旧版本「强制观测舱」的首帧硬编码。
-         2026-11-20：改读 docmind.skin —— 两页合并到同一个键（唯一真源），
-         旧的 docmind.workbenchPalette 只作一次性迁移来源。 -->
+    <!-- 首帧配色：与 src/workbench/palette.ts 同源同默认（墨屿纸感）。深色偏好在这里就应用，
+         避免模块下载前先闪一下白，也避免旧版本「强制观测舱」的首帧硬编码。 -->
     <script>
       (function () {
         var el = document.documentElement
-        // 默认是**锌白细线**（2026-11-20 从墨屿纸感换回来：暖白纸底 + 深棕脊偏重，
-        // 用户说「棕色怪怪的」；墨屿两套仍在皮肤表里，想用随时切）。
-        var key = 'zinc'
-        var LEGACY = { light: 'zinc', observatory: 'observatory', moyu: 'moyu', 'moyu-night': 'moyu-night' }
-        var KNOWN = ['zinc', 'graphite', 'paper', 'seed', 'moyu', 'moyu-night', 'observatory']
-        try {
-          key = window.localStorage.getItem('docmind.skin') || 'zinc'
-          if (key === 'moyu' && !window.localStorage.getItem('docmind.skinLocked')) key = 'zinc'
-          if (KNOWN.indexOf(key) < 0) {
-            var legacy = window.localStorage.getItem('docmind.workbenchPalette')
-            key = LEGACY[legacy] || 'zinc'
-          }
-        } catch (e) {}
-        var dark = key === 'observatory' || key === 'moyu-night' || key === 'graphite'
-        el.setAttribute('data-skin', key)
+        var key = 'moyu'
+        try { key = window.localStorage.getItem('docmind.workbenchPalette') || 'moyu' } catch (e) {}
+        var skin = key === 'observatory' ? 'observatory'
+          : key === 'moyu' ? 'moyu'
+          : key === 'moyu-night' ? 'moyu-night'
+          : ''
+        var dark = key === 'observatory' || key === 'moyu-night'
+        if (skin) el.setAttribute('data-skin', skin)
         el.style.colorScheme = dark ? 'dark' : 'light'
         el.style.background = key === 'moyu' ? 'oklch(0.945 0.011 78)'
           : key === 'moyu-night' ? 'oklch(0.142 0.008 60)'
-          : key === 'observatory' ? 'oklch(0.145 0.018 245)'
-          : key === 'graphite' ? '#101319'
-          : key === 'paper' ? '#ece7db'
-          : key === 'seed' ? '#f2f0f0'
-          : 'oklch(0.952 0.004 245)'
+          : dark ? 'oklch(0.145 0.018 245)' : 'oklch(0.952 0.004 245)'
       })()
     </script>
   </head>

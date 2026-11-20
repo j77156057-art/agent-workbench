@@ -13,13 +13,7 @@
  * 命中不了就退回无衬线（font-family 列表末尾没有 fallback 时浏览器用默认字体）。
  */
 
-/* 特异度说明：这里用 :root×4（0,5,0）而不是 :root×3（0,4,0）——
-   问答页会给 <html> 写 data-assistant-dark='1'（深色皮肤都这样），
-   而 memory-inspector-tokens.css 的深色家族是 :root×4 + [data-assistant-dark]
-   （同为 0,5,0），它给的是**冷蓝**观测舱的 --mi-*。同特异度时后导入者胜，
-   所以墨屿这一族必须与它同特异度，且在问答页的 main.ts 里排在它后面，
-   否则夜航档会出现「暖墨的壳 + 冷蓝的面板」。 */
-:root:root:root:root[data-skin='moyu'] {
+:root:root:root[data-skin='moyu'] {
   --skin-dark: 0;
   color: #221f1b;
   background-color: #f6f1e8;
@@ -32,10 +26,10 @@
 
   --ink: #221f1b;
   --text: #221f1b;
-  --muted: #5f564b;
-  --text-muted: #5f564b;
-  --faint: #6a6156;
-  --text-faint: #6a6156;
+  --muted: #6a6156;
+  --text-muted: #6a6156;
+  --faint: #857b6e;
+  --text-faint: #857b6e;
 
   --border: #e3d9c9;
   --border-strong: #cdbfa9;
@@ -52,9 +46,9 @@
 
   --danger: #a8382c;
   --danger-ink: #fffdf8;
-  --amber: #7f5c0e;
+  --amber: #8a6412;
   --amber-ink: #fffdf8;
-  --green: #3f6a3c;
+  --green: #4a7a48;
   --green-ink: #fffdf8;
   --tool: #2f6f6a;
 
@@ -90,7 +84,7 @@
   --mi-text: oklch(0.235 0.012 70);
   --mi-text-secondary: oklch(0.440 0.014 72);
   --mi-text-muted: oklch(0.480 0.013 72);
-  --mi-text-faint: oklch(0.500 0.012 72);
+  --mi-text-faint: oklch(0.600 0.012 72);
   --mi-accent: oklch(0.545 0.130 45);
   --mi-accent-strong: oklch(0.460 0.125 42);
   --mi-accent-dim: oklch(0.585 0.090 48);
@@ -107,7 +101,7 @@
   --mi-shadow-focus: 0 0 0 3px oklch(0.545 0.130 45 / .28);
 }
 
-:root:root:root:root[data-skin='moyu-night'] {
+:root:root:root[data-skin='moyu-night'] {
   --skin-dark: 1;
   color: #efe9e1;
   background-color: #121110;
@@ -120,21 +114,17 @@
 
   --ink: #efe9e1;
   --text: #efe9e1;
-  --muted: #b3a99c;
-  --text-muted: #b3a99c;
-  --faint: #a1988c;
-  --text-faint: #a1988c;
+  --muted: #a89e92;
+  --text-muted: #a89e92;
+  --faint: #7d746a;
+  --text-faint: #7d746a;
 
   --border: #2e2b27;
   --border-strong: #443f39;
   --border-graphic: #5b544c;
 
-  /* 砖橙当**文字色**用时（状态栏降级态等），深底上必须过 AA：
-     #c2623a 在轨道底 #211f1c 上只有 3.99:1（CI 实测），抬到 #d3703f
-     是 4.78:1。深墨底配亮一点的砖橙也更好认。
-     墨屿纸感档的 #b4532a 在纸面上是 4.91:1，同样过线，不动。 */
-  --accent: #d3703f;
-  --accent-loud: #e08a5f;
+  --accent: #c2623a;
+  --accent-loud: #d3703f;
   --accent-deep: #a14c27;
   --accent-ink: #17150f;
   --accent-2: var(--accent);
@@ -142,11 +132,11 @@
   --accent-text: #e08a5f;
   --accent-2-ink: #17150f;
 
-  --danger: #dc7f6a;
+  --danger: #d0634f;
   --danger-ink: #17150f;
   --amber: #d2a04a;
   --amber-ink: #17150f;
-  --green: #76a36a;
+  --green: #6f9c63;
   --green-ink: #17150f;
   --tool: #5aa39c;
 
@@ -179,7 +169,7 @@
   --mi-text: oklch(0.940 0.012 75);
   --mi-text-secondary: oklch(0.760 0.014 72);
   --mi-text-muted: oklch(0.690 0.013 72);
-  --mi-text-faint: oklch(0.680 0.012 72);
+  --mi-text-faint: oklch(0.560 0.012 70);
   --mi-accent: oklch(0.660 0.140 48);
   --mi-accent-strong: oklch(0.720 0.145 52);
   --mi-accent-dim: oklch(0.580 0.115 50);
@@ -194,15 +184,4 @@
   --mi-shadow-panel: 0 1px 2px oklch(0 0 0 / .4);
   --mi-shadow-drawer: 0 16px 44px oklch(0 0 0 / .5);
   --mi-shadow-focus: 0 0 0 3px oklch(0.660 0.140 48 / .32);
-
-  /* 导航轨道（--ui2-rail-*）：shared/ui-v2.css 的默认配方是
-     color-mix(accent 18%, ink) —— 它假设 --ink 是深色。夜航档的 --ink 是
-     **浅色**（#efe9e1），混出来是一块发亮的浅色轨道（实测 #e7d1c3），
-     在深墨底里像一张反色卡片，把左栏整个翻成浅色。
-     这里把轨道钉成深墨暖面板（比主区 L=0.142 略亮，与观测舱同一层次关系），
-     轨道文字回浅色、hover/selected 走行色透层。 */
-  --ui2-rail-bg: oklch(0.215 0.010 58);
-  --ui2-rail-text: oklch(0.940 0.012 75);
-  --ui2-rail-muted: oklch(0.760 0.014 72);
-  --ui2-rail-line: color-mix(in srgb, oklch(0.940 0.012 75) 16%, transparent);
 }

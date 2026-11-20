@@ -158,23 +158,13 @@
   line-height: 1.5;
 }
 
-/* ---------------------------------------------------------------- 本轮过程
-   「本轮过程」原本是一摞带边框的工具卡（每条工具调用一个矩形），与工作台
-   整体的「冷白 + 细线 + 无框」气质不合 —— 过程是流动的时间线，不是卡片墙。
-   现在整轮由一条 1px 竖线串起：计划与工具条目都挂在这条线上，条目本身
-   不再画框，状态由色点与状态字承担；只有展开的内容才给一块浅底。 */
-.cd-dock .cd-cards {
-  border-left: 1px solid var(--border);
-  padding-left: 14px;
-  margin-left: 4px;
-}
-
-/* 执行计划：同样不装框 —— 一行标题 + 步骤清单，挂在时间线上。 */
+/* ---------------------------------------------------------------- 计划卡 */
 .cd-dock .cd-plan {
-  border: 0;
-  background: transparent;
-  padding: 0;
-  margin: 2px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  padding: 10px 12px;
+  margin: 4px 0 8px;
 }
 .cd-dock .cd-plan-title {
   display: flex;
@@ -187,9 +177,9 @@
 }
 .cd-dock .cd-plan-title::before {
   content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
   background: var(--accent);
   flex: none;
 }
@@ -204,11 +194,13 @@
 .cd-dock .cd-plan-idx {
   flex: none;
   width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border-strong);
   color: var(--text-faint);
-  font-family: var(--font-mono);
   font-size: var(--fs-micro);
-  line-height: 1.6;
-  text-align: right;
+  line-height: 14px;
+  text-align: center;
 }
 
 /* ---------------------------------------------------------------- 底部免责行 */

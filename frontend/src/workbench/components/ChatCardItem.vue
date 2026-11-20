@@ -139,7 +139,7 @@ function effectLabel(ev: BrowserEvidence): string {
   gap: 8px;
   width: 100%;
   min-height: 30px;
-  padding: 5px 8px;
+  padding: 4px 8px;
   border: 0;
   background: transparent;
   font-family: inherit;
@@ -169,7 +169,7 @@ function effectLabel(ev: BrowserEvidence): string {
 .cd-card-state { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-cap); }
 .cd-card-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .cd-card-time { color: var(--text-faint); font-size: var(--fs-cap); font-variant-numeric: tabular-nums; }
-.cd-card-chevron { color: var(--text-faint); font-size: 10px; }
+.cd-card-chevron { color: var(--text-faint); font-size: var(--fs-micro); }
 
 .cd-card[data-state="ok"] .cd-card-state { color: var(--green); }
 .cd-card[data-state="warn"] .cd-card-state { color: var(--amber); }
@@ -232,7 +232,7 @@ function effectLabel(ev: BrowserEvidence): string {
 .cd-card-evidence-rail:hover { background: var(--bg-hover); color: var(--text); }
 
 .cd-card-shots { display: flex; gap: 8px; flex-wrap: wrap; }
-.cd-card-shots figure { margin: 0; display: flex; flex-direction: column; gap: 3px; }
+.cd-card-shots figure { margin: 0; display: flex; flex-direction: column; gap: 2px; }
 .cd-card-shots img { width: 180px; border-radius: var(--r-xs); border: 1px solid var(--border); }
 .cd-card-shots figcaption { color: var(--text-faint); font-size: var(--fs-cap); }
 
@@ -241,7 +241,7 @@ function effectLabel(ev: BrowserEvidence): string {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 8px;
+  padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: var(--r-xs);
   background: transparent;
