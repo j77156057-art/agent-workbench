@@ -184,4 +184,15 @@
   --mi-shadow-panel: 0 1px 2px oklch(0 0 0 / .4);
   --mi-shadow-drawer: 0 16px 44px oklch(0 0 0 / .5);
   --mi-shadow-focus: 0 0 0 3px oklch(0.660 0.140 48 / .32);
+
+  /* 导航轨道（--ui2-rail-*）：shared/ui-v2.css 的默认配方是
+     color-mix(accent 18%, ink) —— 它假设 --ink 是深色。夜航档的 --ink 是
+     **浅色**（#efe9e1），混出来是一块发亮的浅色轨道（实测 #e7d1c3），
+     在深墨底里像一张反色卡片，把左栏整个翻成浅色。
+     这里把轨道钉成深墨暖面板（比主区 L=0.142 略亮，与观测舱同一层次关系），
+     轨道文字回浅色、hover/selected 走行色透层。 */
+  --ui2-rail-bg: oklch(0.215 0.010 58);
+  --ui2-rail-text: oklch(0.940 0.012 75);
+  --ui2-rail-muted: oklch(0.760 0.014 72);
+  --ui2-rail-line: color-mix(in srgb, oklch(0.940 0.012 75) 16%, transparent);
 }
