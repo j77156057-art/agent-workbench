@@ -25,7 +25,7 @@ import json
 import math
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
