@@ -2091,7 +2091,6 @@ const webTitle = computed(() => webOn.value
             </div>
           </template>
         </div>
-        <div v-if="messages.length" class="cd-thread-spacer" aria-hidden="true"></div>
         <div v-for="m in messages" :key="m.id" class="cd-msg" :class="`cd-msg-${m.role}`">
           <div v-if="m.role === 'activity'" class="cd-act-note">
             <svg v-if="m.activityKind === 'inspect'" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
@@ -2605,12 +2604,13 @@ const webTitle = computed(() => webOn.value
 .cd-orphan-err { font-size: var(--fs-cap); color: var(--danger); margin-top: 2px; }
 .cd-orphan .cd-mini { flex: none; white-space: nowrap; }
 .cd-body { flex: 1 1 auto; display: flex; flex-direction: column; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; padding: 8px 14px 4px; min-height: 90px; }
-/* 内容不满一屏时贴底：短会话紧挨输入框，而不是悬在顶部、下面留一大片空白。
-   用零高空节点吃剩余空间，而不是 justify-content:flex-end —— 后者在可滚动容器里
-   会把溢出内容顶到滚动起点之外（Chromium 的 flex-end 溢出裁剪问题），消息一多
-   就够不到第一条。 */
+/* 内容从**顶部**开始排（2026-11-21）：此前用一个零高空节点（margin-top:auto）把
+   短会话顶到最下面，结果对话坞的标题栏与第一条消息之间空出一大段，而回答又紧贴
+   输入框 —— 录屏里一眼就看出「对话沉在最底下」。现在与问答页一致：内容从上往下走，
+   不满一屏时空出来的地方留在下方（靠输入框那侧），这是主流聊天界面的读法。
+   不用 justify-content:flex-end —— 它在可滚动容器里会把溢出内容顶到滚动起点之外
+   （Chromium 的 flex-end 溢出裁剪问题），消息一多就够不到第一条。 */
 .cd-body > * { flex: 0 0 auto; }
-.cd-thread-spacer { margin-top: auto; }
 /* 2026-10-20：对话台回到**底部抽屉**形态（38vh）后，宽度横跨全屏 ——
    空态那句引导和 3 个快捷问题如果也满宽，就会孤零零挤在左边、右侧一大片空白。
    把空态收进与答案区同宽的阅读栏（--measure），空态与正式回答左对齐在同一列。 */

@@ -272,27 +272,31 @@ try {
         scrollHeight: body.scrollHeight,
         distance: body.scrollHeight - body.scrollTop - body.clientHeight,
         gapBelowLast: +(box.bottom - last.bottom).toFixed(1),
+        gapAboveFirst: +(first.top - box.top).toFixed(1),
         firstVisible: first.top >= box.top - 1,
         jump: !!document.querySelector('.cd-jump-bottom'),
       }
     })
     const { page: short } = await createPage('zinc', 1440, 900, undefined, 'moyu')
     await short.goto(base + '/workbench')
-    await short.locator('.cd-input').fill('短会话贴底验证')
+    await short.locator('.cd-input').fill('短会话顶对齐验证')
     await short.locator('.cd-send').click()
     await short.waitForFunction(() => document.querySelector('.cd-msg-assistant .cd-answer')?.textContent.includes('隔离的界面测试回答'))
     await short.waitForTimeout(700)
     const shortM = await bodyMetrics(short)
     assert.equal(shortM.expanded, true, `asking must expand the dock: ${JSON.stringify(shortM)}`)
     assert(shortM.scrollHeight <= shortM.bodyHeight + 1, `short thread should not overflow: ${JSON.stringify(shortM)}`)
-    assert(shortM.gapBelowLast <= 32, `short thread must sit on the composer: ${JSON.stringify(shortM)}`)
+    // 2026-11-21：短会话从**顶部**开始排（此前被零高空节点顶到最下面，标题栏与
+    // 第一条消息之间空出一大段）。空出来的地方留在下方，靠输入框那侧。
+    assert(shortM.firstVisible, `short thread must start at the top of the body: ${JSON.stringify(shortM)}`)
+    assert(shortM.gapAboveFirst <= 24, `short thread must not float below the header: ${JSON.stringify(shortM)}`)
     assert.equal(shortM.jump, false, 'no jump control when everything is visible')
     await short.locator('.cd-body').hover()
     await short.mouse.wheel(0, -160)
     await short.waitForTimeout(150)
     assert.equal(await short.locator('.cd-jump-bottom').count(), 0, 'wheel on a short thread must not pretend to leave the bottom')
-    await short.screenshot({ path: path.join(output, 'chatdock-bottom-anchored.png') })
-    report.interactions.push('短会话贴底、无溢出时上滚不出现「回到底部」')
+    await short.screenshot({ path: path.join(output, 'chatdock-top-anchored.png') })
+    report.interactions.push('短会话从顶部开始排、空出空间在下方，无溢出时上滚不出现「回到底部」')
     await short.close()
 
     const longText = Array.from({ length: 40 }, (_, i) => `- 第 ${i + 1} 行：滚动回归的长回答，用来确认消息区可以正常溢出，且从顶上还能回到底部。`).join('\n')
