@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE || path.join(process.env.USERPROFILE || process.env.HOME || '', '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 const base = process.env.DOCMIND_UI_TEST_URL || 'http://127.0.0.1:8011'
 const registry = await (await fetch(base + '/api/projects')).json()
 const fixture = registry.projects.find(p => p.project_id === registry.current)

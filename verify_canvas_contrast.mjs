@@ -15,7 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE
-  || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
+  || path.join(process.env.USERPROFILE || process.env.HOME || '', '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 const base = process.env.DOCMIND_UI_TEST_URL || 'http://127.0.0.1:8011'
 const BASELINE_FILE = 'docs/canvas-contrast-baseline.json'
 const RECORD = process.argv.includes('--record')

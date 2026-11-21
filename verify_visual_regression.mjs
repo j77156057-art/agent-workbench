@@ -19,7 +19,7 @@ import net from 'node:net'
 import path from 'node:path'
 const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE
-  || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
+  || path.join(process.env.USERPROFILE || process.env.HOME || '', '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 
 const PY = ['.venv/Scripts/python.exe', '.venv/bin/python', 'python', 'py']
   .filter(c => !c.includes('/') || fs.existsSync(c))

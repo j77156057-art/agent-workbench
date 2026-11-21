@@ -17,9 +17,6 @@ import net from 'node:net'
 import path from 'node:path'
 
 const require = createRequire(import.meta.url)
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE
-  || path.join(process.env.USERPROFILE, '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
-
 // --help / -h：只打印用法并退出，供文档命令验证与人工查阅使用（不启动浏览器）。
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
   console.log(`用法：node tools/verify_design_acceptance_a.mjs [--quick | --rail | --selftest | --help]
@@ -34,6 +31,9 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
   产物：docs/screenshots/design-a/raw.json`);
   process.exit(0)
 }
+
+const { chromium } = require(process.env.PLAYWRIGHT_MODULE
+  || path.join(process.env.USERPROFILE || process.env.HOME || '', '.workbuddy/binaries/node/workspace/node_modules/playwright-core'))
 
 const QUICK = process.argv.includes('--quick')
 const SELFTEST = process.argv.includes('--selftest')
