@@ -29,9 +29,9 @@
 <sub>左：Trace 账本 —— 逐回合 token / 延迟 / 工具序列 / 结局，**只记元数据，不落 prompt 与回答正文**。
 右：场景画布 —— Godot `.tscn` 的可视化与可编辑节点图，父子边与实例化边分色，改动逐字节可撤销。</sub>
 
-**▶ 在线展示站** —— 一页看完全部能力：六层架构、21 个面板、真实界面截图，以及一段 52 秒的真实对话录屏（提问 → 流式推理 → 工具调用 → 带文件引用的答案）。
+**▶ 在线展示站** —— 一页看完全部能力：六层架构、21 个面板、真实界面截图，以及一段 84 秒的产品走查录屏（项目概览 → 流式推理与过程时间线 → 配色与自备字体 → 右侧浮层 → 上下文记忆）。
 
-<sub>[打开展示站](https://37kr9u7jhirnnrv8qde.traesite.cn) · [页面源码](landing-site/index.html) · [录屏文件（52 秒，1440×900）](landing-site/assets/demo.mp4)</sub>
+<sub>[打开展示站](https://37kr9u7jhirnnrv8qde.traesite.cn) · [页面源码](landing-site/index.html) · [录屏文件（84 秒，1600×1000）](landing-site/assets/demo.mp4)</sub>
 
 ---
 

@@ -282,6 +282,10 @@
 
   /* video */
   .video-wrap{display:grid;grid-template-columns:1.6fr 1fr;gap:26px;align-items:start}
+  /* 播放器占满整行（2026-11-22）：1.6fr 的窄列只有 ~580px，1600px 画幅缩到
+     580px 之后，界面里 12px 的小字只剩 4~5px，基本看不清 —— 录屏已经按重点
+     区取景推近，这里再给足宽度，字才读得动。说明文字落到播放器下方。 */
+  .video-wrap{grid-template-columns:1fr}
   .player{position:relative;border-radius:18px;overflow:hidden;border:1px solid rgba(143,124,247,.25);background:#05070a;aspect-ratio:16/10;
     box-shadow:0 24px 70px rgba(0,0,0,.55)}
   .player video{width:100%;height:100%;display:block;object-fit:cover}
