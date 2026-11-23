@@ -6,6 +6,7 @@ import gpu_coordinator as _gpu
 import project_state as _project_state
 from gpu_coordinator import process_environment as _gpu_process_environment
 from datetime import datetime
+from agent_runtime.source_walk import walk_source_files
 
 # ComfyUI 作业租约 TTL：提交后到生成完成之间即使 Agent 工作台 崩了/不再轮询，
 # 租约也会在该秒数后自动回收，不会把 GPU 锁死（DOCMIND_COMFY_JOB_TTL 可调）。
@@ -92,15 +93,19 @@ ENGINE_CATALOG = [
 def engine_catalog(): return {'ok':True,'engines':ENGINE_CATALOG}
 
 def engine_scan(root):
-    """识别并摘要 Godot/Unity/Unreal 项目文件，供适配层和 AI 定位入口。"""
+    """识别并摘要 Godot/Unity/Unreal 项目文件，供适配层和 AI 定位入口。
+
+    走统一剪枝口径（`walk_source_files`）：此前这里是「按路径片段 continue」，
+    既不剪枝也漏掉 `.docmind` 状态目录 —— 于是工作流检查点里的**同一份项目的
+    几十份副本**全被当成独立项目报出来（实测 152 个），扫描还要 4 秒。
+    """
     base = _root(root); found=[]
-    for dp, _, files in os.walk(base):
-        if any(x in dp.split(os.sep) for x in ('.git','node_modules','.venv','Library','Intermediate','DerivedDataCache')): continue
-        for fn in files:
-            rel=os.path.relpath(os.path.join(dp,fn),base).replace('\\','/')
-            if fn=='project.godot': found.append({'engine':'godot','path':rel})
-            elif fn=='ProjectVersion.txt': found.append({'engine':'unity','path':rel})
-            elif fn.endswith('.uproject'): found.append({'engine':'unreal','path':rel})
+    for p in walk_source_files(base, extra_skip=frozenset({'Library','Intermediate','DerivedDataCache'})):
+        fn=os.path.basename(p)
+        rel=os.path.relpath(p,base).replace('\\','/')
+        if fn=='project.godot': found.append({'engine':'godot','path':rel})
+        elif fn=='ProjectVersion.txt': found.append({'engine':'unity','path':rel})
+        elif fn.endswith('.uproject'): found.append({'engine':'unreal','path':rel})
     return {'ok':True,'projects':found}
 
 def engine_inspect(root, engine=''):
@@ -114,19 +119,18 @@ def engine_inspect(root, engine=''):
             with open(ver,encoding='utf-8',errors='replace') as handle:
                 version_lines=handle.readlines()
             result['manifests'].append({'path':'ProjectSettings/ProjectVersion.txt','version':next((x.split(':',1)[1].strip() for x in version_lines if x.startswith('m_EditorVersion:' )), '')})
-        for dp,_,files in os.walk(base):
-            if any(x in dp.split(os.sep) for x in ('.git','Library','Temp','Logs','obj')): continue
-            for fn in files:
-                rel=os.path.relpath(os.path.join(dp,fn),base).replace('\\','/')
-                if fn.endswith('.unity'): result['scenes'].append({'path':rel})
-                elif fn.endswith('.prefab'): result['prefabs'].append({'path':rel})
-                elif fn.endswith('.meta'):
-                    try:
-                        with open(os.path.join(dp,fn),encoding='utf-8',errors='replace') as handle:
-                            text=handle.read(4000)
-                        m=re.search(r'^guid:\s*([0-9a-fA-F]+)',text,re.M)
-                        if m: result['assets'].append({'path':rel[:-5],'meta':rel,'guid':m.group(1)})
-                    except OSError: pass
+        for p in walk_source_files(base, extra_skip=frozenset({'Library','Temp','Logs','obj'})):
+            fn=os.path.basename(p)
+            rel=os.path.relpath(p,base).replace('\\','/')
+            if fn.endswith('.unity'): result['scenes'].append({'path':rel})
+            elif fn.endswith('.prefab'): result['prefabs'].append({'path':rel})
+            elif fn.endswith('.meta'):
+                try:
+                    with open(p,encoding='utf-8',errors='replace') as handle:
+                        text=handle.read(4000)
+                    m=re.search(r'^guid:\s*([0-9a-fA-F]+)',text,re.M)
+                    if m: result['assets'].append({'path':rel[:-5],'meta':rel,'guid':m.group(1)})
+                except OSError: pass
     elif engine=='unreal':
         for p in projects:
             if p['engine']!='unreal': continue
@@ -138,29 +142,30 @@ def engine_inspect(root, engine=''):
                     'plugins':[x.get('Name') for x in data.get('Plugins',[]) if isinstance(x,dict)],
                     'targets':data.get('TargetPlatforms',[])})
             except Exception: result['manifests'].append({'path':p['path'],'error':'invalid json'})
-        for dp,_,files in os.walk(os.path.join(base,'Source')) if os.path.isdir(os.path.join(base,'Source')) else []:
-            for fn in files:
+        src_root=os.path.join(base,'Source')
+        if os.path.isdir(src_root):
+            for p in walk_source_files(src_root):
+                fn=os.path.basename(p)
                 if fn.endswith(('.h','.cpp','.cs','.Build.cs')):
-                    rel=os.path.relpath(os.path.join(dp,fn),base).replace('\\','/')
+                    rel=os.path.relpath(p,base).replace('\\','/')
                     item={'path':rel,'kind':'build' if fn.endswith('.Build.cs') else 'source'}
                     if fn.endswith('.Build.cs'):
                         try:
-                            with open(os.path.join(dp,fn),encoding='utf-8',errors='replace') as handle:
+                            with open(p,encoding='utf-8',errors='replace') as handle:
                                 text=handle.read(12000)
                             item['dependencies']=re.findall(r'"([A-Za-z0-9_]+)"', text)
                         except OSError: pass
                     result['symbols'].append(item)
-        for dp,_,files in os.walk(base):
-            if any(x in dp.split(os.sep) for x in ('.git','Intermediate','DerivedDataCache','Saved')): continue
-            for fn in files:
-                rel=os.path.relpath(os.path.join(dp,fn),base).replace('\\','/')
-                if fn.endswith('.uplugin'): result['assets'].append({'path':rel,'kind':'plugin'})
-                elif fn.endswith('.umap'):
-                    result['levels'].append({'path':rel,'kind':'level'})
-                elif fn.endswith('.uasset'):
-                    low=fn.lower()
-                    kind='blueprint' if ('blueprint' in low or low.startswith('bp_') or low.endswith('_bp.uasset')) else 'asset'
-                    result['blueprints' if kind=='blueprint' else 'assets'].append({'path':rel,'kind':kind})
+        for p in walk_source_files(base, extra_skip=frozenset({'Intermediate','DerivedDataCache','Saved'})):
+            fn=os.path.basename(p)
+            rel=os.path.relpath(p,base).replace('\\','/')
+            if fn.endswith('.uplugin'): result['assets'].append({'path':rel,'kind':'plugin'})
+            elif fn.endswith('.umap'):
+                result['levels'].append({'path':rel,'kind':'level'})
+            elif fn.endswith('.uasset'):
+                low=fn.lower()
+                kind='blueprint' if ('blueprint' in low or low.startswith('bp_') or low.endswith('_bp.uasset')) else 'asset'
+                result['blueprints' if kind=='blueprint' else 'assets'].append({'path':rel,'kind':kind})
     return result
 
 def install_unreal_bridge(root, force=False):
@@ -2476,27 +2481,25 @@ def verify_task(root, task):
 
 def validate_data(root):
     errors=[]; checked=0
-    for base, dirs, files in os.walk(_root(root)):
-        dirs[:] = [d for d in dirs if d not in {".git",".venv","__pycache__","build","dist","node_modules",".chroma"}]
-        for name in files:
-            if os.path.splitext(name)[1].lower() not in {".json",".yaml",".yml",".csv",".toml"}: continue
-            path=os.path.join(base,name); checked+=1
-            if name.endswith(".json"):
-                try:
-                    with open(path, encoding="utf-8") as f: json.load(f)
-                except Exception as e: errors.append({"path":os.path.relpath(path,root),"error":str(e)})
+    for path in walk_source_files(_root(root)):
+        name=os.path.basename(path)
+        if os.path.splitext(name)[1].lower() not in {".json",".yaml",".yml",".csv",".toml"}: continue
+        checked+=1
+        if name.endswith(".json"):
+            try:
+                with open(path, encoding="utf-8") as f: json.load(f)
+            except Exception as e: errors.append({"path":os.path.relpath(path,root),"error":str(e)})
     return {"ok": not errors, "checked": checked, "errors": errors}
 
 def localization_check(root):
     keys={}; missing=[]
-    for base, dirs, files in os.walk(_root(root)):
-        dirs[:] = [d for d in dirs if d not in {".git",".venv","__pycache__","build","dist","node_modules"}]
-        for name in files:
-            if not re.search(r"(locale|localization|i18n|translation)", name, re.I): continue
-            try:
-                with open(os.path.join(base,name), encoding="utf-8") as f: data=json.load(f)
-                if isinstance(data,dict): keys[name]=set(data)
-            except Exception: pass
+    for path in walk_source_files(_root(root)):
+        name=os.path.basename(path)
+        if not re.search(r"(locale|localization|i18n|translation)", name, re.I): continue
+        try:
+            with open(path, encoding="utf-8") as f: data=json.load(f)
+            if isinstance(data,dict): keys[name]=set(data)
+        except Exception: pass
     if len(keys)>1:
         allk=set.union(*keys.values())
         missing=[{"file":n,"keys":sorted(allk-v)} for n,v in keys.items() if v != allk]
@@ -2602,16 +2605,13 @@ def simulate_growth(levels=50, base=100, growth=1.08, model="geometric", k=None)
 
 def asset_dependencies(root):
     refs=[]
-    for base,dirs,files in os.walk(_root(root)):
-        dirs[:]=[d for d in dirs if d not in {".git",".venv","build","dist",".chroma","__pycache__"}]
-        for name in files:
-            if os.path.splitext(name)[1].lower() not in {".py",".js",".ts",".cs",".json",".yaml",".yml"}: continue
-            p=os.path.join(base,name)
-            try:
-                with open(p,encoding="utf-8",errors="ignore") as handle: text=handle.read()
-            except OSError: continue
-            for m in re.finditer(r"(?:asset|sprite|texture|sound|audio|resource)[_:/\"']+([A-Za-z0-9_./-]+)",text,re.I):
-                refs.append({"source":os.path.relpath(p,root),"asset":m.group(1)})
+    for p in walk_source_files(_root(root)):
+        if os.path.splitext(p)[1].lower() not in {".py",".js",".ts",".cs",".json",".yaml",".yml"}: continue
+        try:
+            with open(p,encoding="utf-8",errors="ignore") as handle: text=handle.read()
+        except OSError: continue
+        for m in re.finditer(r"(?:asset|sprite|texture|sound|audio|resource)[_:/\"']+([A-Za-z0-9_./-]+)",text,re.I):
+            refs.append({"source":os.path.relpath(p,root),"asset":m.group(1)})
     return refs
 
 def preview_resource(root, rel):
@@ -2663,19 +2663,16 @@ def impact_analysis(root, query, k=8):
         pass
     # 2) 兜底：子串 grep
     hits = []
-    for base, dirs, files in os.walk(root_abs):
-        dirs[:] = [d for d in dirs if d not in {".git", ".venv", "build", "dist", ".chroma", "__pycache__"}]
-        for name in files:
-            if os.path.splitext(name)[1].lower() not in {".py", ".js", ".ts", ".cs", ".json", ".yaml", ".yml"}:
-                continue
-            p = os.path.join(base, name)
-            try:
-                with open(p, encoding="utf-8", errors="ignore") as handle:
-                    matched = query.lower() in handle.read().lower()
-                if matched:
-                    hits.append(os.path.relpath(p, root))
-            except OSError:
-                pass
+    for p in walk_source_files(root_abs):
+        if os.path.splitext(p)[1].lower() not in {".py", ".js", ".ts", ".cs", ".json", ".yaml", ".yml"}:
+            continue
+        try:
+            with open(p, encoding="utf-8", errors="ignore") as handle:
+                matched = query.lower() in handle.read().lower()
+            if matched:
+                hits.append(os.path.relpath(p, root))
+        except OSError:
+            pass
     return sorted(hits)
 
 _CODE_EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".cs", ".java", ".go", ".rs",
