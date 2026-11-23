@@ -31,6 +31,23 @@ from config import (
 )
 from gpu_coordinator import note_activity as _gpu_note_activity
 
+
+def OpenAI(*args, **kwargs):
+    """`openai.OpenAI` 的**惰性薄包装**。
+
+    为什么要有这一层（2026-11-24）：
+    - `openai` SDK 要 1.6 秒，而服务启动时用不到它；
+    - 但模块级必须**保留 `OpenAI` 这个名字**：测试用
+      `patch.object(embeddings, "OpenAI", ...)` 注入桩来隔离真实 SDK，
+      名字消失会让桩点找不到（实测报 `module 'embeddings' does not have the
+      attribute 'OpenAI'`）。
+
+    所以：**惰性的是 SDK 的导入，不是这个名字**。调用 `embeddings.OpenAI(...)`
+    时才真正 import SDK 并构造。
+    """
+    from openai import OpenAI as _OpenAI
+    return _OpenAI(*args, **kwargs)
+
 #: 合法 embedding provider。顺序与前端下拉、/api/config 的 embedding_options 一致。
 #: 注意：三条路径都不需要 torch —— 本地语义向量由 Ollama 进程算（HTTP），
 #: 进程内 torch 只在可选的 cross_encoder 重排里出现（requirements-ml.txt）。
@@ -105,14 +122,12 @@ class EmbeddingClient:
             cfg = PROVIDERS["qwen"]
             # `openai` SDK 惰性导入（2026-11-24）：它本身要 1.9 秒，
             # 而服务启动时一次都用不到 —— 客户端只在真正算向量时才建。
-            from openai import OpenAI
             self.client = OpenAI(base_url=cfg["base_url"], api_key=key)
             self.model = EMBEDDING_MODEL
             self.dim = 1024
         elif self.provider == "ollama":
             # 本机 Ollama OpenAI 兼容端点, 零 Key
             cfg = PROVIDERS["ollama"]
-            from openai import OpenAI
             self.client = OpenAI(base_url=cfg["base_url"], api_key="ollama-local")
             self.model = EMBEDDING_MODEL or "bge-m3"
             # 维度自动探测；探测失败则降级 local
