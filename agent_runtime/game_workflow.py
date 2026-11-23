@@ -1455,16 +1455,12 @@ class GameWorkflowManager:
         self._checkpoint_pool = None
         self._graph_checkpointer = None
         self._checkpoint_built = False
-        # Postgres 严格模式：**构造期**就要判依赖可用性（契约：依赖缺失且要求
-        # 严格时必须立刻抛错，而不是等到第一次建图）。
-        # 这里只判断「装没装」（不建 saver、不连库）—— import langgraph 仍推迟。
-        if self._checkpoint_dsn_configured and self._checkpoint_required:
-            _load_langgraph()
-            if PostgresSaver is None or ConnectionPool is None:
-                self._checkpoint_error = "postgres_dependencies_unavailable"
-                self._checkpoint_health_state = "error"
-                raise RuntimeError(
-                    "postgres_checkpoint_required:%s" % self._checkpoint_error)
+        # Postgres 路径**在构造期就建好 pool + saver** —— 这是既有契约：配了 DSN
+        # 就要连库装表，调用方（如租约栅栏）会在构造完立刻用
+        # `manager._checkpoint_pool.connection()`。推迟它会破坏该契约。
+        # 所以只有「没配 DSN」的路径才能推迟到第一次建图时。
+        if self._checkpoint_dsn_configured:
+            self._build_postgres_checkpointer()
 
     def _ensure_checkpointer(self) -> None:
         """首次需要时建立 checkpointer（LangGraph 是可选依赖，惰性加载）。
@@ -1478,84 +1474,16 @@ class GameWorkflowManager:
         _load_langgraph()
         self._checkpoint_backend = "native"
         self._checkpoint_schema_version: int | None = None
-        self._checkpoint_health_state = "not_configured"
+        # Postgres 路径在构造期已经试过（可能失败并留下诊断信息）—— 别把
+        # 那条诊断擦掉，否则 checkpoint_error / health 会说谎。
+        if not self._checkpoint_error:
+            self._checkpoint_health_state = "not_configured"
         configured_dsn = (self._checkpoint_dsn or os.getenv("DOCMIND_CHECKPOINT_POSTGRES_DSN") or
                           os.getenv("LANGGRAPH_CHECKPOINT_POSTGRES_DSN") or "").strip()
         self._checkpoint_dsn_configured = bool(configured_dsn)
         self._checkpoint_required = os.getenv(
             "DOCMIND_CHECKPOINT_POSTGRES_REQUIRED", "0").strip().lower() in {
                 "1", "true", "yes", "on"}
-        if configured_dsn and PostgresSaver is not None and ConnectionPool is not None:
-            try:
-                pool_size = max(1, min(32, int(os.getenv("DOCMIND_CHECKPOINT_POOL_SIZE", "4"))))
-                try:
-                    pool_timeout = max(0.1, min(120.0, float(
-                        os.getenv("DOCMIND_CHECKPOINT_POOL_TIMEOUT_S", "30"))))
-                except (TypeError, ValueError):
-                    pool_timeout = 30.0
-                self._checkpoint_pool = ConnectionPool(
-                    conninfo=configured_dsn, min_size=1, max_size=pool_size,
-                    kwargs={"autocommit": True}, timeout=pool_timeout, open=True,
-                )
-                self._graph_checkpointer = PostgresSaver(self._checkpoint_pool)
-                # setup() is idempotent and creates the saver tables on a new
-                # database.  Existing schemas are left intact for migrations.
-                self._graph_checkpointer.setup()
-                with self._checkpoint_pool.connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("""
-                            CREATE TABLE IF NOT EXISTS docmind_checkpoint_schema (
-                                component TEXT PRIMARY KEY,
-                                version INTEGER NOT NULL,
-                                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-                            )
-                        """)
-                        cur.execute("""
-                            SELECT version FROM docmind_checkpoint_schema
-                            WHERE component = 'workflow'
-                        """)
-                        schema_row = cur.fetchone()
-                        if schema_row and int(schema_row[0]) > CHECKPOINT_SCHEMA_VERSION:
-                            raise RuntimeError(
-                                "checkpoint_schema_newer:%s" % int(schema_row[0]))
-                        cur.execute("""
-                            INSERT INTO docmind_checkpoint_schema
-                                (component, version, updated_at)
-                            VALUES ('workflow', %s, CURRENT_TIMESTAMP)
-                            ON CONFLICT (component) DO UPDATE SET
-                                version = EXCLUDED.version,
-                                updated_at = CURRENT_TIMESTAMP
-                        """, (CHECKPOINT_SCHEMA_VERSION,))
-                        cur.execute("""
-                            CREATE TABLE IF NOT EXISTS docmind_workflow_leases (
-                                workflow_id TEXT PRIMARY KEY,
-                                owner_id TEXT NOT NULL,
-                                fencing_token BIGINT NOT NULL DEFAULT 0,
-                                expires_at TIMESTAMPTZ NOT NULL,
-                                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-                            )
-                        """)
-                self._checkpoint_backend = "langgraph-postgres"
-                self._checkpoint_schema_version = CHECKPOINT_SCHEMA_VERSION
-                self._checkpoint_health_state = "ok"
-            except Exception as exc:
-                self._checkpoint_error = type(exc).__name__
-                self._checkpoint_health_state = "error"
-                pool, self._checkpoint_pool = self._checkpoint_pool, None
-                if pool is not None:
-                    try:
-                        pool.close()
-                    except Exception:
-                        pass
-                if self._checkpoint_required:
-                    raise RuntimeError(
-                        "postgres_checkpoint_required:%s" % self._checkpoint_error) from exc
-        elif configured_dsn:
-            self._checkpoint_error = "postgres_dependencies_unavailable"
-            self._checkpoint_health_state = "error"
-            if self._checkpoint_required:
-                raise RuntimeError(
-                    "postgres_checkpoint_required:%s" % self._checkpoint_error)
         # The bundled Python 3.13 runtime has shown intermittent native
         # access violations while closing LangGraph's sqlite connection.
         # Workflow state is already persisted as bounded JSON, so keep the
@@ -6096,6 +6024,94 @@ class GameWorkflowManager:
         self._ensure_checkpointer()
         return graph.compile(checkpointer=checkpointer or self._graph_checkpointer)
 
+
+    def _build_postgres_checkpointer(self) -> None:
+        """Postgres 模式的 checkpointer：**构造期**就建好（连库 + 装表）。
+
+        配了 DSN 就要连库 —— 调用方（租约栅栏等）会在构造完立刻用
+        `manager._checkpoint_pool.connection()`，所以这里不能推迟。
+
+        这是既有契约（CI 的 Postgres 集成用例锁的就是它）：构造完立刻读
+        `_checkpoint_pool` 必须拿到**当时**配置下的池（池大小等环境变量
+        在构造期生效），推迟到第一次建图再建就会用错配置。
+        """
+        _load_langgraph()
+        if PostgresSaver is None or ConnectionPool is None:
+            self._checkpoint_error = "postgres_dependencies_unavailable"
+            self._checkpoint_health_state = "error"
+            if self._checkpoint_required:
+                raise RuntimeError(
+                    "postgres_checkpoint_required:%s" % self._checkpoint_error)
+            return
+        try:
+                pool_size = max(1, min(32, int(os.getenv("DOCMIND_CHECKPOINT_POOL_SIZE", "4"))))
+                try:
+                    pool_timeout = max(0.1, min(120.0, float(
+                        os.getenv("DOCMIND_CHECKPOINT_POOL_TIMEOUT_S", "30"))))
+                except (TypeError, ValueError):
+                    pool_timeout = 30.0
+                self._checkpoint_pool = ConnectionPool(
+                    conninfo=self._checkpoint_dsn, min_size=1, max_size=pool_size,
+                    kwargs={"autocommit": True}, timeout=pool_timeout, open=True,
+                )
+                self._graph_checkpointer = PostgresSaver(self._checkpoint_pool)
+                # setup() is idempotent and creates the saver tables on a new
+                # database.  Existing schemas are left intact for migrations.
+                self._graph_checkpointer.setup()
+                with self._checkpoint_pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS docmind_checkpoint_schema (
+                                component TEXT PRIMARY KEY,
+                                version INTEGER NOT NULL,
+                                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """)
+                        cur.execute("""
+                            SELECT version FROM docmind_checkpoint_schema
+                            WHERE component = 'workflow'
+                        """)
+                        schema_row = cur.fetchone()
+                        if schema_row and int(schema_row[0]) > CHECKPOINT_SCHEMA_VERSION:
+                            raise RuntimeError(
+                                "checkpoint_schema_newer:%s" % int(schema_row[0]))
+                        cur.execute("""
+                            INSERT INTO docmind_checkpoint_schema
+                                (component, version, updated_at)
+                            VALUES ('workflow', %s, CURRENT_TIMESTAMP)
+                            ON CONFLICT (component) DO UPDATE SET
+                                version = EXCLUDED.version,
+                                updated_at = CURRENT_TIMESTAMP
+                        """, (CHECKPOINT_SCHEMA_VERSION,))
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS docmind_workflow_leases (
+                                workflow_id TEXT PRIMARY KEY,
+                                owner_id TEXT NOT NULL,
+                                fencing_token BIGINT NOT NULL DEFAULT 0,
+                                expires_at TIMESTAMPTZ NOT NULL,
+                                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """)
+                self._checkpoint_backend = "langgraph-postgres"
+                self._checkpoint_schema_version = CHECKPOINT_SCHEMA_VERSION
+                self._checkpoint_health_state = "ok"
+                # 池与 saver 已在构造期就绪 —— 标记为「已建」，后面的
+                # _ensure_checkpointer() 不再动它（否则会把 Postgres saver
+                # 换成 sqlite saver，并把 backend 覆盖掉）。
+                self._checkpoint_built = True
+        except Exception as exc:
+            self._checkpoint_error = type(exc).__name__
+            self._checkpoint_health_state = "error"
+            pool, self._checkpoint_pool = self._checkpoint_pool, None
+            self._graph_checkpointer = None
+            if pool is not None:
+                try:
+                    pool.close()
+                except Exception:
+                    pass
+            if self._checkpoint_required:
+                raise RuntimeError(
+                    "postgres_checkpoint_required:%s" % self._checkpoint_error) from exc
 
 def _canonical_project_root(value: Any) -> str:
     """把项目根路径归一为「同一项目」恒等的形式。
