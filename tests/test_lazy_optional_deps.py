@@ -16,11 +16,15 @@
 4. checkpointer 的诊断状态在**被问到时**如实反映（惰性建 saver）。
 """
 
+import os
 import subprocess
 import sys
 import unittest
 
-ROOT = r"D:\WorkBuddy\rag-agent"
+# 仓库根目录 —— **必须从 __file__ 推**，不能写死本机路径：
+# CI 跑在 Linux runner 上，写死的 Windows 路径不存在，子进程直接
+# FileNotFoundError（上一轮就这么红过一次）。
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _run(code: str) -> str:
@@ -41,6 +45,17 @@ class StartupImportTests(unittest.TestCase):
             "import api\n"
             "print(int('langchain_core' in sys.modules), int('langgraph' in sys.modules))" % ROOT)
         self.assertEqual(out, "0 0", "导入期不该加载 langchain/langgraph：%r" % out)
+
+    def test_import_api_does_not_load_httpx(self):
+        # httpx/__init__ 里 import 了它的 CLI 模块，会连带拖起 click 与 rich
+        # （单个 httpx 实测 327ms）；启动期一个 HTTP 请求都发不出去。
+        out = _run(
+            "import sys\n"
+            "sys.path.insert(0, r'%s')\n"
+            "import api\n"
+            "print(int('httpx' in sys.modules), int('rich' in sys.modules), "
+            "int('click' in sys.modules))" % ROOT)
+        self.assertEqual(out, "0 0 0", "导入期不该加载 httpx/rich/click：%r" % out)
 
     def test_import_retrieval_alone_is_cheap(self):
         out = _run(
@@ -87,6 +102,31 @@ class LazyBoundaryTests(unittest.TestCase):
         out = _run(code)
         name, coll, topk = out.split()
         self.assertEqual((name, coll, topk), ("ChromaRetriever", "c", "3"), out)
+
+
+class LazyHttpxTests(unittest.TestCase):
+    """惰性的 httpx 仍要指向**真正的** httpx 模块（测试靠它打桩）。"""
+
+    def test_asset_gen_httpx_is_the_real_module(self):
+        out = _run(
+            "import sys; sys.path.insert(0, r'%s'); "
+            "import asset_gen, httpx; "
+            "print(asset_gen.httpx is httpx)" % ROOT)
+        self.assertEqual(out, "True", out)
+
+    def test_cloud_gen_httpx_is_the_real_module(self):
+        out = _run(
+            "import sys; sys.path.insert(0, r'%s'); "
+            "import cloud_gen, httpx; "
+            "print(cloud_gen.httpx is httpx)" % ROOT)
+        self.assertEqual(out, "True", out)
+
+    def test_httpx_is_not_loaded_until_first_use(self):
+        out = _run(
+            "import sys; sys.path.insert(0, r'%s'); "
+            "import asset_gen; "
+            "print(int('httpx' in sys.modules))" % ROOT)
+        self.assertEqual(out, "0", "只是 import asset_gen 就不该加载 httpx：%r" % out)
 
 
 class CheckpointerDiagnosticTests(unittest.TestCase):

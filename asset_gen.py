@@ -25,11 +25,31 @@ import threading
 import time
 import uuid
 from datetime import datetime
-
-import httpx
+from typing import TYPE_CHECKING
 
 import asset_sources as assets
 import game_workbench as gw
+
+
+if TYPE_CHECKING:  # pragma: no cover - 只给静态检查看名字
+    import httpx
+
+
+def __getattr__(name: str):
+    """惰性暴露 `httpx`（PEP 562）。
+
+    `httpx/__init__.py` 里 import 了它的 CLI 模块，会连带拖起 click 与 rich
+    —— 实测单个 httpx 就要 327 毫秒，而启动期一个 HTTP 请求都发不出去。
+    真正要发请求时第一次访问 `httpx.post` 之类的名字才真导入。
+
+    这里必须仍然返回**真正的 httpx 模块**：测试用
+    `mock.patch.object(asset_gen.httpx, "post", ...)` 打桩。
+    """
+    if name == "httpx":
+        import httpx as _httpx
+        globals()["httpx"] = _httpx
+        return _httpx
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 # ---------------------------------------------------------------- 参数 / 模型
 DEFAULT_FPS = 12

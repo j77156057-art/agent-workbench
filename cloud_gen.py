@@ -24,13 +24,32 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
-
-import httpx
 
 import asset_gen
 import asset_sources as assets
 import secrets_store
+
+
+if TYPE_CHECKING:  # pragma: no cover - 只给静态检查看名字
+    import httpx
+
+
+def __getattr__(name: str):
+    """惰性暴露 `httpx`（PEP 562）—— 理由见 asset_gen.__getattr__。
+
+    `httpx` 会连带拖起 click 与 rich（实测 327 毫秒），启动期用不上；
+    真正要联网时第一次访问才真导入。测试用
+    `mock.patch.object(cloud_gen.httpx, "post", ...)` 打桩，
+    所以这个模块级名字必须仍然指向**真正的** httpx 模块。
+    """
+    if name == "httpx":
+        import httpx as _httpx
+        globals()["httpx"] = _httpx
+        return _httpx
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
 
 IMAGE_SUBDIR = asset_gen.IMAGE_SUBDIR
 ANIM_SUBDIR = asset_gen.ANIM_SUBDIR

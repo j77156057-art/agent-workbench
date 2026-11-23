@@ -2954,6 +2954,9 @@ class GameWorkflowManager:
               task_generator: Callable[[str, Mapping[str, Any], ContextPlan], Any] | None = None,
               defer_option_generation: bool = False,
               stage_enabled: bool = False) -> dict[str, Any]:
+        # LangGraph 是惰性加载的：判定「装没装」之前必须先把它加载进来，
+        # 否则 StateGraph 还是 None，会被误判成「没装」而悄悄走降级路径。
+        _load_langgraph()
         request = _clean_text(request, 12000)
         if not request:
             raise WorkflowError("开发目标不能为空")
@@ -3615,6 +3618,9 @@ class GameWorkflowManager:
 
     def plan(self, workflow_id: str, tasks: Iterable[Mapping[str, Any]] | None = None,
              task_generator: Callable[[str, Mapping[str, Any], ContextPlan], Any] | None = None) -> dict[str, Any]:
+        # 计划 DAG 走不走 LangGraph，取决于 StateGraph 是不是真的可用 ——
+        # 惰性加载下必须先加载，否则会误判成「没装」而把 5 步计划整个丢掉。
+        _load_langgraph()
         state = self._load(workflow_id)
         if state.status == "planned" and tasks is None:
             # The LangGraph plan node may already have generated and
@@ -4118,6 +4124,7 @@ class GameWorkflowManager:
         user or the main Agent can retry them separately after inspecting the
         repaired upstream result.
         """
+        _load_langgraph()
         task_id = str(task_id or "").strip()
         if not task_id:
             raise WorkflowError("缺少要重试的 task_id")
@@ -4284,6 +4291,7 @@ class GameWorkflowManager:
                 *, synth_runner: Callable[[list[dict[str, Any]], dict[str, Any]], str] | None = None,
                 replanner: Callable[..., Any] | None = None, on_event: Callable[..., Any] | None = None,
                 session_id: str = "") -> dict[str, Any]:
+        _load_langgraph()
         from orchestrator import run_plan
         state = self._load(workflow_id)
         if state.status != "planned":
@@ -4694,6 +4702,7 @@ class GameWorkflowManager:
         而「点批准」这条路上那些回调可能还没登记（进程重启后就丢了）。真正的执行在
         `approve(auto_execute=True)` 分支里才会用到回调。
         """
+        _load_langgraph()
         if WorkflowPolicy.from_state(state.policy).approval_mode != "safe":
             # 高自主模式本来就没有审批门，planned 之后直接就是执行。
             return state
@@ -4721,6 +4730,7 @@ class GameWorkflowManager:
         return self._save(state)
 
     def approve(self, workflow_id: str, approved: bool, *, auto_execute: bool = False) -> dict[str, Any]:
+        _load_langgraph()
         state = self._load(workflow_id)
         # `planned` 也算数 —— 界面把它和 `awaiting_approval` 都标成「等待计划审核」，
         # 而点批准走的正是这里。详见 `_promote_to_approval_gate` 的 docstring。
@@ -5280,6 +5290,7 @@ class GameWorkflowManager:
         execute → review → replan loop; tools still run through the existing
         runner and its ToolSpec/approval boundaries.
         """
+        _load_langgraph()
         if StateGraph is None:
             return None
 
