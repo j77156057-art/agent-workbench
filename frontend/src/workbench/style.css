@@ -215,8 +215,12 @@ button:disabled:hover { transform: none; }
 @media (max-width: 820px)  { .wb-shell { --wb-main-min: 172px; } }
 
 .wb-topbar {
-  height: 64px;
-  flex: 0 0 64px;
+  /* 高度随内容走（2026-11-23）：字档抬了一档后，390px 窄屏上搜索框
+     比写死的 64px 顶栏高出几像素、被裁掉（CI 的 browser regression 抓到的
+     「Mobile search is clipped by topbar」）。改成 min-height + 按内容撑开，
+     内容不够高时仍是 64px（桌面观感不变）。 */
+  min-height: 64px;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   flex-wrap: nowrap;

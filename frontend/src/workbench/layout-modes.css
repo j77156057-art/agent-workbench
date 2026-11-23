@@ -267,7 +267,9 @@ html[data-layout='focus'] .wb-main {
   }
   .wb-mobile-scrim { position: absolute; inset: 0; border: 0; background: var(--scrim); z-index: 31; }
   html[data-layout] .wb-shell { --wb-main-min: 216px; }
-  html[data-layout] .wb-topbar { height: 108px; flex-basis: 108px; flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  /* 窄屏顶栏同样改成「最小 108px + 按内容撑开」——写死高度时，字档抬一档
+     就会把第二行的搜索框挤出顶栏（见 style.css 里 .wb-topbar 的注释）。 */
+  html[data-layout] .wb-topbar { min-height: 108px; flex-basis: auto; flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
   html[data-layout] .wb-topbar .lb.wb-locate-slot { order: 3; width: 100%; flex: 1 0 100%; }
   .wb-topbar .wb-proj-btn { max-width: 112px; }
   .wb-topbar .wb-brand-name em { display: none; }
