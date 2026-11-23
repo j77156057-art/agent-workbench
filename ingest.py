@@ -11,8 +11,19 @@ import json
 
 from config import CHUNK_SIZE, CHUNK_OVERLAP, CODE_COLLECTION_NAME, CODE_CHUNK
 from embeddings import EmbeddingClient
-from vectorstore import add_documents
 from data_formats import FORMAT_EXTENSIONS, DataFormatError, read_file
+
+# `add_documents` 惰性加载 vectorstore：它顶层会拖起 chromadb（约 2 秒），
+# 而 ingest 模块在服务启动时就被 api.py 导入 —— 但**摄取**是低频操作，
+# 不该让每次启动都付这 2 秒。
+#
+# 这里保留模块级名字 `add_documents`（而不是换成 `_add_documents`）：
+# 测试用 `mock.patch.object(ingest, "add_documents")` 打桩来验证「哪些文件被
+# 摄取」，改名会让那个打桩点消失、桩不到真调用（实测 10 例因此报红）。
+# 惰性的是**它背后的 vectorstore**，不是这个名字本身。
+def add_documents(*args, **kwargs):
+    from vectorstore import add_documents as _real_add_documents
+    return _real_add_documents(*args, **kwargs)
 
 
 def load_text(path):

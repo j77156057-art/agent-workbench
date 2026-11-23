@@ -1,5 +1,4 @@
 """Chroma 向量库封装：建库 / 入库 / 检索。"""
-import chromadb
 import re
 
 from config import CHROMA_DIR, COLLECTION_NAME, ensure_dirs
@@ -28,8 +27,17 @@ _client = None
 
 
 def _get_client():
+    """取（必要时建）Chroma 客户端。
+
+    `chromadb` **惰性导入**（2026-11-23）：它本身要 2 秒（拉起一整套
+    向量库依赖），而绝大多数请求根本不碰向量库 —— 只是打开工作台、列个会话。
+    实测 `import api` 累计 6.8 秒，其中 chromadb 占 1.5 秒；改成惰性后
+    服务启动立刻就能接请求，第一次真要用检索/建库时再付这 2 秒
+    （那之后是进程内缓存，后续调用不再付）。
+    """
     global _client
     if _client is None:
+        import chromadb  # 惰性：只在真的要连向量库时才付这 2 秒
         # 惰性建目录：脱离 api.py lifespan 的用法（脚本 / 测试）也能正常建库。
         ensure_dirs()
         _client = chromadb.PersistentClient(path=CHROMA_DIR)

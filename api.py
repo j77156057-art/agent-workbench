@@ -1503,12 +1503,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 已上传文档来源（basename 集合）。启动时从 chroma 已有元数据回填，
+# 已上传文档来源（basename 集合）。从 chroma 已有元数据回填，
 # 用于：1) 上传新文档时清空多轮上下文避免污染；2) 聊天时给 LLM 上下文提示
 # （让它知道"里面/这个文档"指什么）；3) 在 UI 状态栏展示。
+#
+# **惰性回填**（2026-11-23）：原先在模块导入期就调 `list_sources()`，那会立刻
+# 建 Chroma client、把 `chromadb` 拖进来（约 2 秒）—— 而实测 `import api`
+# 累计要 6.8 秒，其中 chromadb 占 1.5 秒。绝大多数请求根本不碰知识库
+# （列会话、开工作台），不该让**每次启动**都先付这 2 秒。
+# 现在改成第一次真正用到 `_INGESTED` 时才回填；回填结果与原来逐字一致
+# （同一个 list_sources()、同样的 basename 集合）。
 _INGESTED = set()
-for _s in list_sources():
-    _INGESTED.add(os.path.basename(_s))
+_INGESTED_LOADED = False
+_INGESTED_LOCK = threading.Lock()
+
+
+def _ingested_sources() -> set:
+    """已入库文档的 basename 集合（首次调用时从 chroma 回填，之后走内存缓存）。
+
+    读它的都是 `async` 端点 —— 多个请求可能同时撞上「首次回填」。
+    用锁保证只回填一次（否则会重复建 client、重复读一遍向量库）。
+    """
+    global _INGESTED_LOADED
+    if not _INGESTED_LOADED:
+        with _INGESTED_LOCK:
+            if not _INGESTED_LOADED:
+                for _s in list_sources():
+                    _INGESTED.add(os.path.basename(_s))
+                _INGESTED_LOADED = True
+    return _INGESTED
 
 
 def _project_root_or_error():
@@ -2714,11 +2737,12 @@ async def ingest(file: UploadFile = File(...)):
         # 上传新文档 = 新话题开始，清空多轮上下文避免旧问答污染当前问题
         # P3：清的是「本请求上下文所属项目」的默认会话 Agent（无上下文等价改动前）
         _agent_for("default").history = []
-        _INGESTED.add(file.filename)  # 用原始文件名（无 uuid），配合 pretty_source 保证一致
+        # 先回填库里已有的（惰性），再加入新上传的 —— 否则会漏掉库里的旧文档。
+        _ingested_sources().add(file.filename)  # 用原始文件名（无 uuid），配合 pretty_source 保证一致
         return {"ok": True, "chunks": n, "file": file.filename,
                 "detected": {key: detected.get(key) for key in
                              ("format", "mime", "bytes", "encoding", "confidence", "binary")},
-                "ingested_files": sorted(_INGESTED)}
+                "ingested_files": sorted(_ingested_sources())}
     except Exception as e:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -3203,6 +3227,7 @@ async def chat(
     # 给 LLM 一个上下文提示：列出知识库里已有哪些文档，让它知道"里面/这个文档"指什么
     code_root = get_runtime("code_root") or CODE_ROOT
     hints = []
+    _ingested_sources()
     if _INGESTED:
         names = ", ".join(sorted(_INGESTED))
         hints.append(
@@ -3486,7 +3511,7 @@ async def chat(
                                 cloud_question, stream=True, images=vision_images,
                                 llm=current_llm,
                                 system_context=cloud_context,
-                                ingested_sources=tuple(sorted(_INGESTED)),
+                                ingested_sources=tuple(sorted(_ingested_sources())),
                                 web_enabled=web_enabled_override,
                                 thinking_enabled=thinking_enabled_override,
                                 thinking_level=thinking_level_override,
@@ -6474,7 +6499,7 @@ async def get_config():
         "embedding_options": list(SUPPORTED_EMBEDDING_PROVIDERS),
         # 当前后端是否降级 + 可照做的指引（与 embedding_provider 同源，避免只显示「已选中」）
         "embedding_status": _embedding_status(emb, ollama_status),
-        "ingested_files": sorted(_INGESTED),
+        "ingested_files": sorted(_ingested_sources()),
         "code_root": get_runtime("code_root") or CODE_ROOT,
         "code_sources": count(projects.code_collection(_request_project_id())),
         "project_rules_loaded": bool(get_runtime("project_rules")),
@@ -7554,7 +7579,7 @@ async def _apply_config(req: ConfigReq):
                 "llm_provider": get_runtime("llm_provider") or LLM_PROVIDER,
                 "llm_model": get_runtime("llm_model") or LLM_MODEL or PROVIDERS[(get_runtime("llm_provider") or LLM_PROVIDER)]["default_model"],
                 "embedding_provider": get_runtime("embedding_provider") or EMBEDDING_PROVIDER,
-                "ingested_files": sorted(_INGESTED),
+                "ingested_files": sorted(_ingested_sources()),
             }
 
     # 能力覆盖在探活通过后落盘，失败切换不会留下半成品配置。
@@ -7719,7 +7744,7 @@ async def _apply_config(req: ConfigReq):
         "thinking_level_default": get_thinking_level(),
         "context_source": getattr(new_llm, "context_source", "profile"),
         "context_window_override": get_context_window_override(prov, eff_model) or 0,
-        "ingested_files": sorted(_INGESTED),
+        "ingested_files": sorted(_ingested_sources()),
         "warnings": warnings,
         "external_access_mode": get_external_access_mode(),
         "desktop_approval_mode": get_desktop_approval_mode(),
