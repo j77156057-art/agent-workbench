@@ -18,31 +18,55 @@ import re
 import sqlite3
 import threading
 import time
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 from config import TOP_K, COLLECTION_NAME, STATE_ROOT
 from embeddings import EmbeddingClient
 from vectorstore import get_collection, query as vector_query
 
-try:  # langchain-core is optional for source-only/offline installations
-    from langchain_core.documents import Document
-    from langchain_core.retrievers import BaseRetriever
-    from pydantic import PrivateAttr
-except Exception:  # pragma: no cover - exercised only without langchain-core
-    @dataclass(frozen=True)
-    class Document:  # type: ignore[no-redef]
-        page_content: str
-        metadata: dict[str, Any]
+# langchain-core 的导入与两个 retriever 类的定义都**推迟到第一次真正用到时**。
+#
+# 为什么（2026-11-24 的启动耗时体检）：`langchain_core.retrievers` 会拖起
+# langsmith / langgraph 一整套（实测 ~960ms），而本模块在服务启动时就被导入
+# （api.py -> agent.py -> tools.py -> 这里），此时**一个 retriever 都不会被构造**
+# —— retriever 只在工具真正检索时才建（get_retriever）。
+# stub 掉 langchain 实测：`import api` 从 2.6s 降到 1.5s。
+#
+# 契约不变：类**仍是真正的 LangChain 类**（BaseRetriever / RunnableSerializable），
+# 不是降级版；langchain 缺失时的降级路径也仍然保留（见 except 分支）。
+# 只是把「什么时候 import / 定义」往后挪。
+_LANGCHAIN: dict[str, Any] = {}
 
-    class BaseRetriever:  # type: ignore[no-redef]
-        def __init__(self, **kwargs: Any):
-            for key, value in kwargs.items():
-                setattr(self, key, value)
 
-        def invoke(self, query: str, **_: Any) -> list[Document]:
-            return self._get_relevant_documents(query)
+def _build_langchain() -> dict[str, Any]:
+    """首次需要时 import langchain-core；结果缓存。"""
+    if _LANGCHAIN:
+        return _LANGCHAIN
+    ns: dict[str, Any] = {}
+    try:  # langchain-core is optional for source-only/offline installations
+        from langchain_core.documents import Document
+        from langchain_core.retrievers import BaseRetriever
+        from pydantic import PrivateAttr
+    except Exception:  # pragma: no cover - exercised only without langchain-core
+        @dataclass(frozen=True)
+        class Document:  # type: ignore[no-redef]
+            page_content: str
+            metadata: dict[str, Any]
 
-    PrivateAttr = None
+        class BaseRetriever:  # type: ignore[no-redef]
+            def __init__(self, **kwargs: Any):
+                for key, value in kwargs.items():
+                    setattr(self, key, value)
+
+            def invoke(self, query: str, **_: Any) -> list[Document]:
+                return self._get_relevant_documents(query)
+
+        PrivateAttr = None
+    ns["Document"] = Document
+    ns["BaseRetriever"] = BaseRetriever
+    ns["PrivateAttr"] = PrivateAttr
+    _LANGCHAIN.update(ns)
+    return _LANGCHAIN
 
 
 @dataclass(frozen=True)
@@ -694,60 +718,252 @@ def _metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
             isinstance(item, (str, int, float, bool, type(None)))}
 
 
-class ChromaRetriever(BaseRetriever):
-    """LangChain-compatible retriever backed by the existing Chroma wrapper."""
+def _build_retrievers() -> dict[str, Any]:
+    """首次需要时定义两个 retriever 类（依赖 langchain 的 BaseRetriever）。
 
-    collection_name: str = COLLECTION_NAME
-    top_k: int = TOP_K
-    source_allowlist: tuple[str, ...] = ()
+    基类必须先 import 好 —— 所以这个函数只在**真的要构造 retriever**时调用，
+    而 retriever 只在工具真正检索时才建（get_retriever）。
+    """
+    ns = _build_langchain()
+    BaseRetriever = ns["BaseRetriever"]
+    PrivateAttr = ns["PrivateAttr"]
+    # 两个 retriever 类在这里定义 —— 基类 BaseRetriever 必须先就位，
+    # 而它来自 langchain-core（首次 import 要 ~1.2 秒）。
+    class ChromaRetriever(BaseRetriever):
+        """LangChain-compatible retriever backed by the existing Chroma wrapper."""
 
-    if PrivateAttr is not None:
-        _embedding_client: Any = PrivateAttr(default=None)
+        collection_name: str = COLLECTION_NAME
+        top_k: int = TOP_K
+        source_allowlist: tuple[str, ...] = ()
 
-    def __init__(self, *, collection: str = COLLECTION_NAME, top_k: int = TOP_K,
-                 embedding_client: Any | None = None,
-                 source_allowlist: Iterable[str] | None = None, **kwargs: Any):
-        allowlist = tuple(dict.fromkeys(str(item) for item in (source_allowlist or ()) if str(item)))
-        super().__init__(collection_name=str(collection), top_k=max(1, int(top_k)),
-                         source_allowlist=allowlist, **kwargs)
         if PrivateAttr is not None:
-            self._embedding_client = embedding_client
-        else:  # pragma: no cover - fallback class has no pydantic internals
-            self._embedding_client = embedding_client
+            _embedding_client: Any = PrivateAttr(default=None)
 
-    def _get_relevant_documents(self, query: str, *, run_manager: Any = None) -> list[Document]:
-        text = str(query or "").strip()
-        if not text:
-            return []
-        started = time.perf_counter()
-        out: list[Document] = []
-        with _retrieval_span(name="retrieval.dense", collection=self.collection_name,
-                              mode="dense", query_chars=len(text),
-                              inputs={"top_k": self.top_k}) as span:
-            client = self._embedding_client or EmbeddingClient()
-            embedding = client.embed([text])[0]
-            where = {"source": {"$in": list(self.source_allowlist)}} if self.source_allowlist else None
-            if where:
-                result = vector_query(embedding, k=self.top_k, collection=self.collection_name, where=where)
-            else:
-                result = vector_query(embedding, k=self.top_k, collection=self.collection_name)
-            documents = (result.get("documents") or [[]])[0]
-            metadatas = (result.get("metadatas") or [[]])[0]
-            distances = (result.get("distances") or [[]])[0]
-            ids = (result.get("ids") or [[]])[0]
-            for index, content in enumerate(documents):
-                metadata = _metadata(metadatas[index] if index < len(metadatas) else {})
-                if index < len(ids):
-                    metadata.setdefault("_id", ids[index])
-                if index < len(distances):
-                    metadata.setdefault("distance", distances[index])
-                out.append(Document(page_content=str(content or ""), metadata=metadata))
-            span.update({"documents": len(out), "returned": len(out),
-                         "duration_ms": round((time.perf_counter() - started) * 1000, 2)})
-        _record_retrieval_event(query=text, collection=self.collection_name, mode="dense",
-                                documents=out, duration_ms=(time.perf_counter() - started) * 1000,
-                                returned=len(out))
-        return out
+        def __init__(self, *, collection: str = COLLECTION_NAME, top_k: int = TOP_K,
+                     embedding_client: Any | None = None,
+                     source_allowlist: Iterable[str] | None = None, **kwargs: Any):
+            allowlist = tuple(dict.fromkeys(str(item) for item in (source_allowlist or ()) if str(item)))
+            super().__init__(collection_name=str(collection), top_k=max(1, int(top_k)),
+                             source_allowlist=allowlist, **kwargs)
+            if PrivateAttr is not None:
+                self._embedding_client = embedding_client
+            else:  # pragma: no cover - fallback class has no pydantic internals
+                self._embedding_client = embedding_client
+
+        def _get_relevant_documents(self, query: str, *, run_manager: Any = None) -> list[Document]:
+            text = str(query or "").strip()
+            if not text:
+                return []
+            started = time.perf_counter()
+            out: list[Document] = []
+            with _retrieval_span(name="retrieval.dense", collection=self.collection_name,
+                                  mode="dense", query_chars=len(text),
+                                  inputs={"top_k": self.top_k}) as span:
+                client = self._embedding_client or EmbeddingClient()
+                embedding = client.embed([text])[0]
+                where = {"source": {"$in": list(self.source_allowlist)}} if self.source_allowlist else None
+                if where:
+                    result = vector_query(embedding, k=self.top_k, collection=self.collection_name, where=where)
+                else:
+                    result = vector_query(embedding, k=self.top_k, collection=self.collection_name)
+                documents = (result.get("documents") or [[]])[0]
+                metadatas = (result.get("metadatas") or [[]])[0]
+                distances = (result.get("distances") or [[]])[0]
+                ids = (result.get("ids") or [[]])[0]
+                for index, content in enumerate(documents):
+                    metadata = _metadata(metadatas[index] if index < len(metadatas) else {})
+                    if index < len(ids):
+                        metadata.setdefault("_id", ids[index])
+                    if index < len(distances):
+                        metadata.setdefault("distance", distances[index])
+                    out.append(Document(page_content=str(content or ""), metadata=metadata))
+                span.update({"documents": len(out), "returned": len(out),
+                             "duration_ms": round((time.perf_counter() - started) * 1000, 2)})
+            _record_retrieval_event(query=text, collection=self.collection_name, mode="dense",
+                                    documents=out, duration_ms=(time.perf_counter() - started) * 1000,
+                                    returned=len(out))
+            return out
+
+    class HybridRetriever(BaseRetriever):
+        """BM25 + dense retrieval with reciprocal-rank fusion and reranking."""
+
+        collection_name: str = COLLECTION_NAME
+        top_k: int = TOP_K
+        candidate_k: int = max(TOP_K * 4, 12)
+        dense_weight: float = 1.0
+        lexical_weight: float = 1.0
+        rrf_k: int = 60
+        source_allowlist: tuple[str, ...] = ()
+
+        if PrivateAttr is not None:
+            _embedding_client: Any = PrivateAttr(default=None)
+            _reranker: Any = PrivateAttr(default=None)
+
+        def __init__(self, *, collection: str = COLLECTION_NAME, top_k: int = TOP_K,
+                     candidate_k: int | None = None, dense_weight: float | None = None,
+                     lexical_weight: float | None = None, rrf_k: int = 60,
+                     embedding_client: Any | None = None, reranker: Any | None = None,
+                     source_allowlist: Iterable[str] | None = None,
+                     **kwargs: Any):
+            top = max(1, int(top_k))
+            allowlist = tuple(dict.fromkeys(str(item) for item in (source_allowlist or ()) if str(item)))
+            super().__init__(
+                collection_name=str(collection), top_k=top,
+                candidate_k=max(top, int(candidate_k or max(top * 4, 12))),
+                dense_weight=float(dense_weight if dense_weight is not None else os.getenv("DOCMIND_DENSE_WEIGHT", "1")),
+                lexical_weight=float(lexical_weight if lexical_weight is not None else os.getenv("DOCMIND_BM25_WEIGHT", "1")),
+                rrf_k=max(1, int(rrf_k)), source_allowlist=allowlist, **kwargs)
+            if PrivateAttr is not None:
+                self._embedding_client = embedding_client
+                self._reranker = reranker if reranker is not None else _make_reranker()
+            else:  # pragma: no cover
+                self._embedding_client = embedding_client
+                self._reranker = reranker if reranker is not None else _make_reranker()
+
+        def _get_relevant_documents(self, query: str, *, run_manager: Any = None) -> list[Document]:
+            text = str(query or "").strip()
+            if not text:
+                return []
+            started = time.perf_counter()
+            selected: list[Document] = []
+            candidate_count = 0
+            mode = "hybrid_rerank" if self._reranker is not None and getattr(self._reranker, "name", "") == "sentence_transformers" else "hybrid"
+            with _retrieval_span(name="retrieval.hybrid", collection=self.collection_name,
+                                  mode=mode, query_chars=len(text),
+                                  inputs={"top_k": self.top_k, "candidate_k": self.candidate_k,
+                                          "dense_weight": self.dense_weight,
+                                          "lexical_weight": self.lexical_weight,
+                                          "reranker": getattr(self._reranker, "name", "none")}) as span:
+                lexical_backend = _lexical_backend()
+                corpus: list[Document] = []
+                lexical_index: Any | None = None
+                lexical_meta: dict[str, Any] = {}
+                if lexical_backend == "sqlite":
+                    # SQLite can answer from postings without a Chroma-wide read.
+                    # A snapshot is needed only on first use or after an invalidation.
+                    lexical_index, lexical_meta = get_lexical_index(self.collection_name, None)
+                    if not lexical_meta.get("ready"):
+                        corpus = _collection_snapshot(self.collection_name)
+                        lexical_index, lexical_meta = get_lexical_index(self.collection_name, corpus)
+                else:
+                    corpus = _collection_snapshot(self.collection_name)
+                    if self.source_allowlist:
+                        allowed = set(self.source_allowlist)
+                        corpus = [item for item in corpus
+                                  if str((item.metadata or {}).get("source") or "") in allowed]
+                # dense 腿必须**独立可失败**。它最常见的失败原因是向量维度与集合不符
+                #（Ollama 掉线 -> EmbeddingClient 降级成 256 维哈希词袋，而集合是
+                # 1024 维）。此前这里没有 try/except，那个 ValueError 会掀掉整次
+                # 检索——可下面还有一条完好的 BM25 词法腿根本用不上。
+                # 名为 hybrid，就该真的是 hybrid：一腿断，另一腿还能出结果。
+                # 失败原因记进 span，让「检索质量下降」在观测里看得见，
+                # 而不是静默地少了一半候选。
+                dense: list[Document] = []
+                dense_error = ""
+                try:
+                    if lexical_backend == "sqlite":
+                        dense = ChromaRetriever(
+                            collection=self.collection_name, top_k=self.candidate_k,
+                            embedding_client=self._embedding_client,
+                            source_allowlist=self.source_allowlist).invoke(text)
+                    elif not corpus:
+                        span.update({"documents": 0, "returned": 0})
+                    else:
+                        dense_k = min(self.candidate_k, len(corpus))
+                        dense = ChromaRetriever(
+                            collection=self.collection_name, top_k=dense_k,
+                            embedding_client=self._embedding_client,
+                            source_allowlist=self.source_allowlist).invoke(text)
+                except Exception as exc:  # noqa: BLE001
+                    dense = []
+                    dense_error = "%s: %s" % (type(exc).__name__, exc)
+                    span.update({"dense_error": dense_error, "dense_degraded": True})
+                if corpus or lexical_backend == "sqlite":
+                    dense_by_key = {_doc_key(item): item for item in dense}
+                    dense_rank = {_doc_key(item): index for index, item in enumerate(dense)}
+
+                    with _retrieval_span(name="retrieval.bm25", collection=self.collection_name,
+                                         mode="bm25", query_chars=len(text),
+                                         inputs={"candidate_k": self.candidate_k}) as bm_span:
+                        if lexical_backend == "sqlite":
+                            lexical_hits = lexical_index.query_hits(
+                                text, self.candidate_k, allowed_sources=self.source_allowlist)
+                            lexical_order = [hit.key for hit in lexical_hits]
+                            lexical_rank = {hit.key: rank for rank, hit in enumerate(lexical_hits)}
+                            bm25_by_key = {hit.key: hit.score for hit in lexical_hits}
+                            lexical_docs = {hit.key: hit.document for hit in lexical_hits}
+                        else:
+                            lexical_index, lexical_meta = get_lexical_index(self.collection_name, corpus)
+                            lexical_scores = lexical_index.scores(text)
+                            lexical_order = sorted(range(len(corpus)), key=lambda index: lexical_scores[index], reverse=True)
+                            lexical_rank = {_doc_key(corpus[index]): rank for rank, index in enumerate(lexical_order)
+                                            if lexical_scores[index] > 0}
+                            bm25_by_key = {_doc_key(item): lexical_scores[index]
+                                           for index, item in enumerate(corpus)}
+                            lexical_docs = {_doc_key(item): item for item in corpus}
+                        bm_span.update({"documents": lexical_meta.get("documents", len(corpus)), "candidates": len(lexical_rank),
+                                        "cache": "persistent" if lexical_meta.get("persistent") else "memory",
+                                        "backend": lexical_meta.get("backend", lexical_backend),
+                                        "added": (lexical_meta.get("last_delta") or {}).get("added", 0),
+                                        "removed": (lexical_meta.get("last_delta") or {}).get("removed", 0),
+                                        "updated": (lexical_meta.get("last_delta") or {}).get("updated", 0)})
+                    corpus_by_key = {_doc_key(item): item for item in corpus}
+                    corpus_by_key.update(lexical_docs)
+                    candidates: dict[str, Document] = {
+                        key: corpus_by_key.get(key, document)
+                        for key, document in dense_by_key.items()
+                    }
+                    if lexical_backend == "sqlite":
+                        for key in lexical_order[:self.candidate_k]:
+                            if key in lexical_docs:
+                                candidates.setdefault(key, lexical_docs[key])
+                    else:
+                        for index in lexical_order[:self.candidate_k]:
+                            if lexical_scores[index] > 0:
+                                candidates.setdefault(_doc_key(corpus[index]), corpus[index])
+                    candidate_count = len(candidates)
+
+                    ranked: list[tuple[float, Document]] = []
+                    for key, document in candidates.items():
+                        score = 0.0
+                        if key in dense_rank:
+                            score += self.dense_weight / (self.rrf_k + dense_rank[key] + 1)
+                        if key in lexical_rank:
+                            score += self.lexical_weight / (self.rrf_k + lexical_rank[key] + 1)
+                        metadata = dict(document.metadata or {})
+                        metadata["dense_rank"] = dense_rank.get(key)
+                        metadata["bm25_score"] = bm25_by_key.get(key, 0.0)
+                        metadata["hybrid_score"] = score
+                        metadata["lexical_index"] = "persistent" if lexical_meta.get("persistent") else "memory"
+                        ranked.append((score, Document(page_content=document.page_content, metadata=metadata)))
+                    ranked.sort(key=lambda item: item[0], reverse=True)
+                    selected = [item for _score, item in ranked[:max(self.top_k, self.candidate_k)]]
+                    if self._reranker is not None:
+                        with _retrieval_span(name="retrieval.reranker", collection=self.collection_name,
+                                             mode=getattr(self._reranker, "name", "reranker"),
+                                             query_chars=len(text),
+                                             inputs={"candidates": len(selected)}) as rerank_span:
+                            before = list(selected)
+                            selected = self._reranker.rerank(text, selected)
+                            rerank_span.update({"candidates": len(before), "returned": len(selected),
+                                                "reranker": getattr(self._reranker, "name", "reranker"),
+                                                "rerank_applied": selected != before})
+                    selected = selected[:self.top_k]
+                    span.update({"documents": len(corpus), "candidates": len(candidates),
+                                 "returned": len(selected), "reranker": getattr(self._reranker, "name", "none"),
+                                 "rerank_applied": bool(self._reranker),
+                                 "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                                 "lexical_backend": lexical_backend})
+            _record_retrieval_event(query=text, collection=self.collection_name, mode=mode,
+                                    documents=selected, duration_ms=(time.perf_counter() - started) * 1000,
+                                    candidates=candidate_count, returned=len(selected),
+                                    reranker=getattr(self._reranker, "name", "none"),
+                                    lexical_index=selected[0].metadata.get("lexical_index") if selected else "")
+            return selected
+
+    ns["ChromaRetriever"] = ChromaRetriever
+    ns["HybridRetriever"] = HybridRetriever
+    return ns
 
 
 def _collection_snapshot(collection: str) -> list[Document]:
@@ -765,183 +981,6 @@ def _collection_snapshot(collection: str) -> list[Document]:
     return out
 
 
-class HybridRetriever(BaseRetriever):
-    """BM25 + dense retrieval with reciprocal-rank fusion and reranking."""
-
-    collection_name: str = COLLECTION_NAME
-    top_k: int = TOP_K
-    candidate_k: int = max(TOP_K * 4, 12)
-    dense_weight: float = 1.0
-    lexical_weight: float = 1.0
-    rrf_k: int = 60
-    source_allowlist: tuple[str, ...] = ()
-
-    if PrivateAttr is not None:
-        _embedding_client: Any = PrivateAttr(default=None)
-        _reranker: Any = PrivateAttr(default=None)
-
-    def __init__(self, *, collection: str = COLLECTION_NAME, top_k: int = TOP_K,
-                 candidate_k: int | None = None, dense_weight: float | None = None,
-                 lexical_weight: float | None = None, rrf_k: int = 60,
-                 embedding_client: Any | None = None, reranker: Any | None = None,
-                 source_allowlist: Iterable[str] | None = None,
-                 **kwargs: Any):
-        top = max(1, int(top_k))
-        allowlist = tuple(dict.fromkeys(str(item) for item in (source_allowlist or ()) if str(item)))
-        super().__init__(
-            collection_name=str(collection), top_k=top,
-            candidate_k=max(top, int(candidate_k or max(top * 4, 12))),
-            dense_weight=float(dense_weight if dense_weight is not None else os.getenv("DOCMIND_DENSE_WEIGHT", "1")),
-            lexical_weight=float(lexical_weight if lexical_weight is not None else os.getenv("DOCMIND_BM25_WEIGHT", "1")),
-            rrf_k=max(1, int(rrf_k)), source_allowlist=allowlist, **kwargs)
-        if PrivateAttr is not None:
-            self._embedding_client = embedding_client
-            self._reranker = reranker if reranker is not None else _make_reranker()
-        else:  # pragma: no cover
-            self._embedding_client = embedding_client
-            self._reranker = reranker if reranker is not None else _make_reranker()
-
-    def _get_relevant_documents(self, query: str, *, run_manager: Any = None) -> list[Document]:
-        text = str(query or "").strip()
-        if not text:
-            return []
-        started = time.perf_counter()
-        selected: list[Document] = []
-        candidate_count = 0
-        mode = "hybrid_rerank" if self._reranker is not None and getattr(self._reranker, "name", "") == "sentence_transformers" else "hybrid"
-        with _retrieval_span(name="retrieval.hybrid", collection=self.collection_name,
-                              mode=mode, query_chars=len(text),
-                              inputs={"top_k": self.top_k, "candidate_k": self.candidate_k,
-                                      "dense_weight": self.dense_weight,
-                                      "lexical_weight": self.lexical_weight,
-                                      "reranker": getattr(self._reranker, "name", "none")}) as span:
-            lexical_backend = _lexical_backend()
-            corpus: list[Document] = []
-            lexical_index: Any | None = None
-            lexical_meta: dict[str, Any] = {}
-            if lexical_backend == "sqlite":
-                # SQLite can answer from postings without a Chroma-wide read.
-                # A snapshot is needed only on first use or after an invalidation.
-                lexical_index, lexical_meta = get_lexical_index(self.collection_name, None)
-                if not lexical_meta.get("ready"):
-                    corpus = _collection_snapshot(self.collection_name)
-                    lexical_index, lexical_meta = get_lexical_index(self.collection_name, corpus)
-            else:
-                corpus = _collection_snapshot(self.collection_name)
-                if self.source_allowlist:
-                    allowed = set(self.source_allowlist)
-                    corpus = [item for item in corpus
-                              if str((item.metadata or {}).get("source") or "") in allowed]
-            # dense 腿必须**独立可失败**。它最常见的失败原因是向量维度与集合不符
-            #（Ollama 掉线 -> EmbeddingClient 降级成 256 维哈希词袋，而集合是
-            # 1024 维）。此前这里没有 try/except，那个 ValueError 会掀掉整次
-            # 检索——可下面还有一条完好的 BM25 词法腿根本用不上。
-            # 名为 hybrid，就该真的是 hybrid：一腿断，另一腿还能出结果。
-            # 失败原因记进 span，让「检索质量下降」在观测里看得见，
-            # 而不是静默地少了一半候选。
-            dense: list[Document] = []
-            dense_error = ""
-            try:
-                if lexical_backend == "sqlite":
-                    dense = ChromaRetriever(
-                        collection=self.collection_name, top_k=self.candidate_k,
-                        embedding_client=self._embedding_client,
-                        source_allowlist=self.source_allowlist).invoke(text)
-                elif not corpus:
-                    span.update({"documents": 0, "returned": 0})
-                else:
-                    dense_k = min(self.candidate_k, len(corpus))
-                    dense = ChromaRetriever(
-                        collection=self.collection_name, top_k=dense_k,
-                        embedding_client=self._embedding_client,
-                        source_allowlist=self.source_allowlist).invoke(text)
-            except Exception as exc:  # noqa: BLE001
-                dense = []
-                dense_error = "%s: %s" % (type(exc).__name__, exc)
-                span.update({"dense_error": dense_error, "dense_degraded": True})
-            if corpus or lexical_backend == "sqlite":
-                dense_by_key = {_doc_key(item): item for item in dense}
-                dense_rank = {_doc_key(item): index for index, item in enumerate(dense)}
-
-                with _retrieval_span(name="retrieval.bm25", collection=self.collection_name,
-                                     mode="bm25", query_chars=len(text),
-                                     inputs={"candidate_k": self.candidate_k}) as bm_span:
-                    if lexical_backend == "sqlite":
-                        lexical_hits = lexical_index.query_hits(
-                            text, self.candidate_k, allowed_sources=self.source_allowlist)
-                        lexical_order = [hit.key for hit in lexical_hits]
-                        lexical_rank = {hit.key: rank for rank, hit in enumerate(lexical_hits)}
-                        bm25_by_key = {hit.key: hit.score for hit in lexical_hits}
-                        lexical_docs = {hit.key: hit.document for hit in lexical_hits}
-                    else:
-                        lexical_index, lexical_meta = get_lexical_index(self.collection_name, corpus)
-                        lexical_scores = lexical_index.scores(text)
-                        lexical_order = sorted(range(len(corpus)), key=lambda index: lexical_scores[index], reverse=True)
-                        lexical_rank = {_doc_key(corpus[index]): rank for rank, index in enumerate(lexical_order)
-                                        if lexical_scores[index] > 0}
-                        bm25_by_key = {_doc_key(item): lexical_scores[index]
-                                       for index, item in enumerate(corpus)}
-                        lexical_docs = {_doc_key(item): item for item in corpus}
-                    bm_span.update({"documents": lexical_meta.get("documents", len(corpus)), "candidates": len(lexical_rank),
-                                    "cache": "persistent" if lexical_meta.get("persistent") else "memory",
-                                    "backend": lexical_meta.get("backend", lexical_backend),
-                                    "added": (lexical_meta.get("last_delta") or {}).get("added", 0),
-                                    "removed": (lexical_meta.get("last_delta") or {}).get("removed", 0),
-                                    "updated": (lexical_meta.get("last_delta") or {}).get("updated", 0)})
-                corpus_by_key = {_doc_key(item): item for item in corpus}
-                corpus_by_key.update(lexical_docs)
-                candidates: dict[str, Document] = {
-                    key: corpus_by_key.get(key, document)
-                    for key, document in dense_by_key.items()
-                }
-                if lexical_backend == "sqlite":
-                    for key in lexical_order[:self.candidate_k]:
-                        if key in lexical_docs:
-                            candidates.setdefault(key, lexical_docs[key])
-                else:
-                    for index in lexical_order[:self.candidate_k]:
-                        if lexical_scores[index] > 0:
-                            candidates.setdefault(_doc_key(corpus[index]), corpus[index])
-                candidate_count = len(candidates)
-
-                ranked: list[tuple[float, Document]] = []
-                for key, document in candidates.items():
-                    score = 0.0
-                    if key in dense_rank:
-                        score += self.dense_weight / (self.rrf_k + dense_rank[key] + 1)
-                    if key in lexical_rank:
-                        score += self.lexical_weight / (self.rrf_k + lexical_rank[key] + 1)
-                    metadata = dict(document.metadata or {})
-                    metadata["dense_rank"] = dense_rank.get(key)
-                    metadata["bm25_score"] = bm25_by_key.get(key, 0.0)
-                    metadata["hybrid_score"] = score
-                    metadata["lexical_index"] = "persistent" if lexical_meta.get("persistent") else "memory"
-                    ranked.append((score, Document(page_content=document.page_content, metadata=metadata)))
-                ranked.sort(key=lambda item: item[0], reverse=True)
-                selected = [item for _score, item in ranked[:max(self.top_k, self.candidate_k)]]
-                if self._reranker is not None:
-                    with _retrieval_span(name="retrieval.reranker", collection=self.collection_name,
-                                         mode=getattr(self._reranker, "name", "reranker"),
-                                         query_chars=len(text),
-                                         inputs={"candidates": len(selected)}) as rerank_span:
-                        before = list(selected)
-                        selected = self._reranker.rerank(text, selected)
-                        rerank_span.update({"candidates": len(before), "returned": len(selected),
-                                            "reranker": getattr(self._reranker, "name", "reranker"),
-                                            "rerank_applied": selected != before})
-                selected = selected[:self.top_k]
-                span.update({"documents": len(corpus), "candidates": len(candidates),
-                             "returned": len(selected), "reranker": getattr(self._reranker, "name", "none"),
-                             "rerank_applied": bool(self._reranker),
-                             "duration_ms": round((time.perf_counter() - started) * 1000, 2),
-                             "lexical_backend": lexical_backend})
-        _record_retrieval_event(query=text, collection=self.collection_name, mode=mode,
-                                documents=selected, duration_ms=(time.perf_counter() - started) * 1000,
-                                candidates=candidate_count, returned=len(selected),
-                                reranker=getattr(self._reranker, "name", "none"),
-                                lexical_index=selected[0].metadata.get("lexical_index") if selected else "")
-        return selected
-
 
 def _doc_key(document: Document) -> str:
     metadata = dict(document.metadata or {})
@@ -952,10 +991,14 @@ def get_retriever(*, collection: str = COLLECTION_NAME, top_k: int = TOP_K,
                   embedding_client: Any | None = None, mode: str | None = None,
                   **kwargs: Any) -> BaseRetriever:
     """Return the configured retriever through the standard component boundary."""
+    # 下面要用 ChromaRetriever / HybridRetriever —— 这两个类由模块级 __getattr__
+    # 惰性提供（首次访问时才 import langchain 并定义）。
+    chroma_cls = __getattr__("ChromaRetriever")
+    hybrid_cls = __getattr__("HybridRetriever")
     selected = (mode or os.getenv("DOCMIND_RETRIEVAL_MODE", "hybrid")).strip().lower()
     if selected in {"dense", "vector", "chroma"}:
-        return ChromaRetriever(collection=collection, top_k=top_k,
-                               embedding_client=embedding_client, **kwargs)
+        return chroma_cls(collection=collection, top_k=top_k,
+                          embedding_client=embedding_client, **kwargs)
     if selected in {"hybrid_rerank", "hybrid-cross-encoder", "hybrid_cross_encoder", "cross_encoder"}:
         # This explicit mode is an opt-in to the optional Cross-Encoder even
         # when the process-wide default disables reranking.  The reranker
@@ -964,8 +1007,8 @@ def get_retriever(*, collection: str = COLLECTION_NAME, top_k: int = TOP_K,
         if kwargs.get("reranker") is None:
             kwargs["reranker"] = SentenceTransformerReranker(
                 os.getenv("DOCMIND_RERANKER_MODEL", "BAAI/bge-reranker-base"))
-    return HybridRetriever(collection=collection, top_k=top_k,
-                           embedding_client=embedding_client, **kwargs)
+    return hybrid_cls(collection=collection, top_k=top_k,
+                       embedding_client=embedding_client, **kwargs)
 
 
 def retrieve_context(query: str, *, collections: Mapping[str, str],
@@ -1063,6 +1106,35 @@ def status(*, collection: str = COLLECTION_NAME, top_k: int = TOP_K) -> dict[str
         "lexical_index": lexical_status(collection),
         "recent_events": retrieval_events(20),
     }
+
+
+# `Document` / `BaseRetriever` / `ChromaRetriever` / `HybridRetriever` 在本模块的
+# **类型注解**里被引用（`from __future__ import annotations` 让它们不求值，但静态
+# 检查仍要求名字在作用域里可见）。这里用 TYPE_CHECKING 分支给静态检查用；
+# 运行时它们由下面的模块级 `__getattr__` 惰性提供。
+if TYPE_CHECKING:  # pragma: no cover - 仅供类型检查
+    from langchain_core.documents import Document as Document
+    from langchain_core.retrievers import BaseRetriever as BaseRetriever
+else:  # pragma: no cover - 运行时走模块级 __getattr__
+    pass
+
+
+def __getattr__(name: str) -> Any:
+    """模块级惰性属性：第一次访问时把 langchain 依赖与 retriever 类准备好。
+
+    外部有人写 `from agent_runtime.retrieval import ChromaRetriever` / `Document`；
+    内部函数体里也有 `Document(...)` 的运行时构造。这些都不能在导入期就把
+    langchain-core 拖进来（那要 ~1.2 秒），所以统一在这里懒加载。
+    """
+    if name in ("Document", "BaseRetriever", "PrivateAttr"):
+        ns = _build_langchain()
+        globals().update(ns)
+        return ns[name]
+    if name in ("ChromaRetriever", "HybridRetriever"):
+        ns = _build_retrievers()
+        globals().update(ns)
+        return ns[name]
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 __all__ = ["BM25Index", "SQLiteBM25Index", "ChromaRetriever", "Document", "HeuristicReranker",

@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from agent_runtime import langsmith
-from agent_runtime.game_workflow import (WORKFLOWS, StateGraph, WorkflowError,
+from agent_runtime.game_workflow import (WORKFLOWS, WorkflowError,
                                           WorkflowPolicy, review_output)
 from agent_runtime.workflow_profiles import get_profile, normalize_kind
 
@@ -733,6 +733,11 @@ def build_router(ctx) -> APIRouter:
         provider = get_runtime("llm_provider") or LLM_PROVIDER
         model = (get_runtime("llm_model") or LLM_MODEL or
                  PROVIDERS.get(provider, {}).get("default_model", ""))
+        # LangGraph 是**惰性加载**的（启动期不必付那 ~1.6 秒），所以这里
+        # 主动问一次「装没装」而不是读模块级变量 —— 否则会误报「未安装」。
+        from agent_runtime.game_workflow import _load_langgraph
+        _load_langgraph()
+        from agent_runtime.game_workflow import StateGraph
         return {"ok": True, "backend": "langgraph" if StateGraph is not None else "native",
                 "langgraph_installed": StateGraph is not None,
                 "checkpoint_backend": WORKFLOWS.checkpoint_backend,

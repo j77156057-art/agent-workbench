@@ -202,44 +202,71 @@ def task_wants_write(task: str) -> bool:
     text = str(task or "").lower()
     return any(verb in text for verb in _WRITE_VERBS)
 
-try:  # optional dependency: the harness remains usable without LangGraph
-    from langgraph.graph import END, START, StateGraph
-    from langgraph.types import Command, Send, interrupt as graph_interrupt
+# LangGraph 是**可选依赖**，且只在工作流**真正执行**时才用到（build_langgraph 与
+# fanout 图都在函数体内）。但本模块在服务启动时就被导入（api.py ->
+# agent_runtime.game_workflow），顶层 import 会把 langgraph 一整套拖进启动路径
+# （实测 `import langgraph.graph` 约 1.6 秒，还顺带拖起 langchain_core）。
+#
+# 所以改成**惰性**：模块级先全部置 None（语义上等同于「未安装」），真正要用时
+# 调 _load_langgraph() 补齐。降级路径（langgraph 缺失）保持不变。
+END = START = StateGraph = None
+MemorySaver = None
+SqliteSaver = None
+PostgresSaver = None
+ConnectionPool = None
+Command = None
+graph_interrupt = None
+Send = None
+_LANGGRAPH_LOADED = False
+
+
+def _load_langgraph() -> None:
+    """首次需要时 import LangGraph（及其可选的 checkpointer 依赖）。
+
+    幂等：重复调用直接返回。失败（包没装 / 装坏了）时保持 None —— 与改动前的
+    降级语义一致。
+    """
+    global END, START, StateGraph, MemorySaver, SqliteSaver, PostgresSaver
+    global ConnectionPool, Command, graph_interrupt, Send, _LANGGRAPH_LOADED
+    if _LANGGRAPH_LOADED:
+        return
+    _LANGGRAPH_LOADED = True
     try:
-        from langgraph.checkpoint.memory import MemorySaver
-    except Exception:  # pragma: no cover
-        MemorySaver = None
-    try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
-    except Exception:  # pragma: no cover
-        SqliteSaver = None
-    # psycopg loads a native libpq extension.  Import it only when a Postgres
-    # checkpoint DSN is explicitly configured; importing it on every local
-    # run made Python 3.13 intermittently crash during test/module discovery.
-    _postgres_dsn_configured = bool(
-        (os.getenv("DOCMIND_CHECKPOINT_POSTGRES_DSN") or
-         os.getenv("LANGGRAPH_CHECKPOINT_POSTGRES_DSN") or "").strip())
-    if _postgres_dsn_configured:
+        from langgraph.graph import END as _END, START as _START, StateGraph as _StateGraph
+        from langgraph.types import Command as _Command, Send as _Send
+        from langgraph.types import interrupt as _graph_interrupt
         try:
-            from langgraph.checkpoint.postgres import PostgresSaver
+            from langgraph.checkpoint.memory import MemorySaver as _MemorySaver
         except Exception:  # pragma: no cover
-            PostgresSaver = None
+            _MemorySaver = None
         try:
-            from psycopg_pool import ConnectionPool
+            from langgraph.checkpoint.sqlite import SqliteSaver as _SqliteSaver
         except Exception:  # pragma: no cover
-            ConnectionPool = None
-    else:
-        PostgresSaver = None
-        ConnectionPool = None
-except Exception:  # pragma: no cover - exercised when optional package absent
-    END = START = StateGraph = None
-    MemorySaver = None
-    SqliteSaver = None
-    PostgresSaver = None
-    ConnectionPool = None
-    Command = None
-    graph_interrupt = None
-    Send = None
+            _SqliteSaver = None
+        # psycopg loads a native libpq extension.  Import it only when a Postgres
+        # checkpoint DSN is explicitly configured; importing it on every local
+        # run made Python 3.13 intermittently crash during test/module discovery.
+        _postgres_dsn_configured = bool(
+            (os.getenv("DOCMIND_CHECKPOINT_POSTGRES_DSN") or
+             os.getenv("LANGGRAPH_CHECKPOINT_POSTGRES_DSN") or "").strip())
+        if _postgres_dsn_configured:
+            try:
+                from langgraph.checkpoint.postgres import PostgresSaver as _PostgresSaver
+            except Exception:  # pragma: no cover
+                _PostgresSaver = None
+            try:
+                from psycopg_pool import ConnectionPool as _ConnectionPool
+            except Exception:  # pragma: no cover
+                _ConnectionPool = None
+        else:
+            _PostgresSaver = None
+            _ConnectionPool = None
+    except Exception:  # pragma: no cover - exercised when optional package absent
+        return
+    END, START, StateGraph = _END, _START, _StateGraph
+    MemorySaver, SqliteSaver, PostgresSaver = _MemorySaver, _SqliteSaver, _PostgresSaver
+    ConnectionPool, Command, Send = _ConnectionPool, _Command, _Send
+    graph_interrupt = _graph_interrupt
 
 
 class WorkflowError(ValueError):
@@ -1410,11 +1437,49 @@ class GameWorkflowManager:
         self._leases: dict[str, tuple[int, int]] = {}
         # 非 Postgres 模式的跨进程执行租约：wid -> (重入计数, 文件锁, 持有线程)
         self._local_workflow_locks: dict[str, tuple[int, CrossProcessFileLock, int]] = {}
+        # checkpointer 初始化**推迟到第一次真正需要时**（见 _ensure_checkpointer）。
+        # LangGraph 是可选依赖，而 `import langgraph.graph` 约 1.6 秒
+        # （它还顺带拖起 langchain_core）—— 而启动期一个 saver 都不用建。
+        # 这里只记下配置意图；真正建 saver 时才加载 LangGraph。
         self._checkpoint_error = ""
         self._checkpoint_backend = "native"
         self._checkpoint_schema_version: int | None = None
         self._checkpoint_health_state = "not_configured"
-        configured_dsn = (checkpoint_dsn or os.getenv("DOCMIND_CHECKPOINT_POSTGRES_DSN") or
+        self._checkpoint_dsn = (checkpoint_dsn or
+                            os.getenv("DOCMIND_CHECKPOINT_POSTGRES_DSN") or
+                            os.getenv("LANGGRAPH_CHECKPOINT_POSTGRES_DSN") or "").strip()
+        self._checkpoint_dsn_configured = bool(self._checkpoint_dsn)
+        self._checkpoint_required = os.getenv(
+            "DOCMIND_CHECKPOINT_POSTGRES_REQUIRED", "0").strip().lower() in {
+                "1", "true", "yes", "on"}
+        self._checkpoint_pool = None
+        self._graph_checkpointer = None
+        self._checkpoint_built = False
+        # Postgres 严格模式：**构造期**就要判依赖可用性（契约：依赖缺失且要求
+        # 严格时必须立刻抛错，而不是等到第一次建图）。
+        # 这里只判断「装没装」（不建 saver、不连库）—— import langgraph 仍推迟。
+        if self._checkpoint_dsn_configured and self._checkpoint_required:
+            _load_langgraph()
+            if PostgresSaver is None or ConnectionPool is None:
+                self._checkpoint_error = "postgres_dependencies_unavailable"
+                self._checkpoint_health_state = "error"
+                raise RuntimeError(
+                    "postgres_checkpoint_required:%s" % self._checkpoint_error)
+
+    def _ensure_checkpointer(self) -> None:
+        """首次需要时建立 checkpointer（LangGraph 是可选依赖，惰性加载）。
+
+        幂等：重复调用直接返回。建 saver 才需要 import langgraph ——
+        那要 ~1.6 秒（且顺带拖起 langchain_core），而启动期用不到。
+        """
+        if self._checkpoint_built:
+            return
+        self._checkpoint_built = True
+        _load_langgraph()
+        self._checkpoint_backend = "native"
+        self._checkpoint_schema_version: int | None = None
+        self._checkpoint_health_state = "not_configured"
+        configured_dsn = (self._checkpoint_dsn or os.getenv("DOCMIND_CHECKPOINT_POSTGRES_DSN") or
                           os.getenv("LANGGRAPH_CHECKPOINT_POSTGRES_DSN") or "").strip()
         self._checkpoint_dsn_configured = bool(configured_dsn)
         self._checkpoint_required = os.getenv(
@@ -1526,6 +1591,7 @@ class GameWorkflowManager:
                 if self._graph_checkpointer is not None:
                     self._checkpoint_backend = "langgraph-memory"
 
+
     def close(self) -> None:
         """Close the persistent checkpoint connection (useful for tests/servers)."""
         with self._lock:
@@ -1555,18 +1621,24 @@ class GameWorkflowManager:
 
     @property
     def checkpoint_backend(self) -> str:
+        # 诊断接口会被前端主动调用 —— 这时才真正建 checkpointer
+        # （启动期不必付 LangGraph 的 ~1.6 秒）。
+        self._ensure_checkpointer()
         return self._checkpoint_backend
 
     @property
     def checkpoint_error(self) -> str:
+        self._ensure_checkpointer()
         return self._checkpoint_error
 
     @property
     def persistent_checkpoint(self) -> bool:
+        self._ensure_checkpointer()
         return self._checkpoint_backend in {"langgraph-sqlite", "langgraph-postgres"}
 
     @property
     def distributed_leases(self) -> bool:
+        self._ensure_checkpointer()
         return self._checkpoint_backend == "langgraph-postgres" and self._checkpoint_pool is not None
 
     def checkpoint_health(self, *, probe: bool = True) -> dict[str, Any]:
@@ -3755,6 +3827,8 @@ class GameWorkflowManager:
         trace_parent_id: str = "",
     ) -> dict[str, Any]:
         """Execute one task DAG with LangGraph ``Send`` fan-out per wave."""
+        # 真要建 fanout 图了 —— 先把 checkpointer 建出来（LangGraph 惰性加载）。
+        self._ensure_checkpointer()
         from orchestrator import (dedup_tasks, extract_dispatch_tasks, parse_plan,
                                   topological_waves)
 
@@ -4482,6 +4556,8 @@ class GameWorkflowManager:
                                     status="ok" if report.get("ok") else "failed")
                 return report
 
+            # 真要建图了 —— 先把 checkpointer 建出来（LangGraph 惰性加载）。
+            self._ensure_checkpointer()
             graph = self.build_langgraph(
                 checkpointer=self._graph_checkpointer,
                 execute_wave=execute_wave,
@@ -6016,6 +6092,8 @@ class GameWorkflowManager:
                                     {"execute_wave": "execute_wave", "fail": "fail"})
         graph.add_edge("complete", END)
         graph.add_edge("fail", END)
+        # 真要建图了 —— 这时才需要 checkpointer（LangGraph 惰性加载）。
+        self._ensure_checkpointer()
         return graph.compile(checkpointer=checkpointer or self._graph_checkpointer)
 
 

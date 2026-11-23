@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 from config import COLLECTION_NAME, TOP_K
-from .retrieval import BM25Index, Document, get_retriever
+from .retrieval import BM25Index, get_retriever
+
+if TYPE_CHECKING:  # pragma: no cover - 仅供类型检查
+    from .retrieval import Document as Document
+else:
+    Document = Any
 
 
 DEFAULT_KS = (1, 3, 5)
@@ -67,6 +72,8 @@ def load_retrieval_cases(path: str | os.PathLike[str]) -> dict[str, Any]:
 def evaluate_bm25_corpus(documents: Sequence[Mapping[str, Any]], cases: Iterable[Mapping[str, Any]],
                          ks: Sequence[int] = DEFAULT_KS) -> dict[str, Any]:
     """Evaluate the persisted lexical component without embeddings/network."""
+    # `Document` 顶层导入会拖起 langchain-core（~280ms）；这里只在真要构造时导入。
+    from .retrieval import Document
     rows = [dict(item) for item in documents if isinstance(item, Mapping)]
     docs = [Document(page_content=str(item.get("content") or ""), metadata={
         "_id": str(item.get("id") or ""), "source": str(item.get("source") or "")})
