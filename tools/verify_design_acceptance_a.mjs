@@ -38,7 +38,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE
 const QUICK = process.argv.includes('--quick')
 const SELFTEST = process.argv.includes('--selftest')
 const OUT_DIR = 'docs/screenshots/design-a'
-const SKINS = QUICK || SELFTEST ? ['zinc'] : ['zinc', 'graphite', 'paper', 'seed']
+const SKINS = QUICK || SELFTEST ? ['zinc'] : ['zinc', 'graphite', 'paper', 'seed', 'moyu', 'moyu-night']
 const CASES = [
   { name: 'workbench', route: '/workbench', stable: '.ft-head-title' },
   { name: 'ask', route: '/', stable: '.composer textarea' },

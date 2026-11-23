@@ -41,8 +41,12 @@ const ALL = process.argv.includes('--all')
 const SHOTS = process.argv.includes('--shots')
 const OUT = 'docs/screenshots/design-l3'
 
-const SKINS = ['zinc', 'graphite', 'paper', 'seed']
-const PALETTES = ['light', 'observatory']
+const SKINS = ['zinc', 'graphite', 'paper', 'seed', 'moyu', 'moyu-night']
+const PALETTES = ['light', 'observatory', 'moyu', 'moyu-night']
+// 工作台的「配色档」在 2026-11-20 之后是**皮肤键的一个子集**（两页共用 docmind.skin）。
+// 这里直接写皮肤键，别再依赖旧的 docmind.workbenchPalette 一次性迁移 —— 迁移是兜底，
+// 不是契约：审计脚本应该自己说清要量哪一档。
+const PALETTE_TO_SKIN = { light: 'zinc', observatory: 'observatory', moyu: 'moyu', 'moyu-night': 'moyu-night' }
 const LAYOUTS = ALL ? ['fixed', 'focus', 'dock', 'split', 'grid'] : ['fixed', 'focus']
 const MATERIALS = ['solid', 'glass']
 
@@ -202,7 +206,7 @@ try {
     const page = await ctx.newPage()
     const init = [
       c.skin ? `localStorage.setItem("docmind.skin","${c.skin}");localStorage.setItem("docmind.skinLocked","1")` : '',
-      c.palette ? `localStorage.setItem("docmind.workbenchPalette","${c.palette}")` : '',
+      c.palette ? `localStorage.setItem("docmind.skin","${PALETTE_TO_SKIN[c.palette] || c.palette}");localStorage.setItem("docmind.skinLocked","1")` : '',
       `localStorage.setItem("docmind.layout","${c.layout}")`,
       `localStorage.setItem("docmind.material","${c.material}")`,
     ].filter(Boolean).join(';')
