@@ -59,11 +59,16 @@
   --fs-lead: calc(15px * var(--style-scale, 1));      /* 引导语/要点档 */
   --fs-h2: calc(14px * var(--style-scale, 1));        /* 区段标题 */
   --fs-h3: calc(13px * var(--style-scale, 1));        /* 卡片标题 */
-  --fs-body: calc(12.5px * var(--style-scale, 1));    /* 正文基线（原 14px） */
-  --fs-md: calc(12.5px * var(--style-scale, 1));      /* 强调正文：并入 body（原 12px） */
-  --fs-sm: calc(11px * var(--style-scale, 1));        /* 次级文字（原 12px） */
-  --fs-cap: calc(11px * var(--style-scale, 1));       /* 说明/标签：并入 sm（原 10.5px） */
-  --fs-micro: calc(11px * var(--style-scale, 1));     /* 元信息：并入 sm（原 10.5px） */
+  --fs-body: calc(13px * var(--style-scale, 1));      /* 正文基线（原 14px → 12.5 → 13） */
+  --fs-md: calc(13px * var(--style-scale, 1));        /* 强调正文：并入 body（原 12px） */
+  --fs-sm: calc(12px * var(--style-scale, 1));        /* 次级文字（原 12px → 11 → 12） */
+  --fs-cap: calc(12px * var(--style-scale, 1));       /* 说明/标签：并入 sm（原 10.5px） */
+  --fs-micro: calc(12px * var(--style-scale, 1));     /* 元信息：并入 sm（原 10.5px） */
+  /* 2026-11-23 小字抬一档：用户说「里面有些字体太细了，看不太清楚」。
+     A1–A6 量出来工作台 66% 的文字是 11px（问答页同位是 12px），正文 12.5px
+     （问答页 14px）—— 工作台这套密度是为了「工程台」刻意压下来的，但压到 11px
+     就真的难读了。这里只抬小字一档（11→12 / 12.5→13），标题档不动，层级靠
+     字重区分；--style-scale 缩放照旧，种子皮肤整档跟随。 */
 
   /* —— 阅读栏宽度：正文与输入框共用同一把尺 ——
      原 680px 在 ~1300px 宽的对话台里靠左排，右边空出一大条；提到 960px
