@@ -79,7 +79,15 @@ def test_redirect_hint_injected_when_active_run():
         yield {"type": "final", "text": "ok"}
 
     # 注册一个仍“活着”的线程，模拟正在跑的旧 run（scope 会 join 它）。
-    holder = threading.Thread(target=lambda: time.sleep(2.0), daemon=True)
+    #
+    # 用 **stop 事件阻塞**而不是 sleep：端点侧判定「活跃 run」的条件是
+    # `thread.is_alive()`，而 TestClient 的 lifespan 启动本身就要 ~3 秒 ——
+    # sleep(2.0) 的线程在请求到达前就已经结束，提示自然不会注入。
+    # 那是测试自身的竞态（靠「时长发够」碰运气），不是产品的。
+    #
+    # 线程等的是 **dummy（stop 事件）**：端点看到旧 run 活着会 `prev["stop"].set()`
+    # 并 join 它 —— 事件被置位后线程立刻退出，join 不会真的等满 30 秒。
+    holder = threading.Thread(target=dummy.wait, daemon=True)
     holder.start()
     _ACTIVE_RUN[key] = {"stop": dummy, "thread": holder}
 
@@ -101,6 +109,8 @@ def test_redirect_hint_injected_when_active_run():
         config.set_runtime("code_root", prev_root or "")
         config.set_runtime("llm_provider", old_provider or "")
         _ACTIVE_RUN.pop(key, None)
+        dummy.set()             # 放掉模拟的旧 run 线程（否则它会一直阻塞）
+        holder.join(timeout=2)
 
 
 def test_redirect_hint_absent_when_idle():
