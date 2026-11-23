@@ -90,31 +90,57 @@ def current_agent():
     return _AGENT.get() or "main"
 
 
+# 记忆库的建表语句。单独提成常量：_connect() 只在**表不在**时才执行它，
+# 不再每次连接都重跑一遍 CREATE TABLE（老库升级仍靠下面的 ALTER 补列）。
+# 注意：这里**不放** idx_memories_agent_id 索引 —— 建表语句会在「memories 表已存在
+# 但缺 agent_id 列」的老库上跑（CREATE TABLE IF NOT EXISTS 不补列），索引建不出来。
+_SCHEMA_SQL = """
+    CREATE TABLE IF NOT EXISTS memories (
+        scope TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL,
+        title TEXT NOT NULL, content TEXT NOT NULL, evidence TEXT NOT NULL,
+        source TEXT NOT NULL, repeats INTEGER NOT NULL, updated TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active', supersedes TEXT NOT NULL DEFAULT '',
+        agent_id TEXT NOT NULL DEFAULT '', agent_legacy INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(scope, id));
+    CREATE TABLE IF NOT EXISTS checkpoints (
+        scope TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL,
+        question TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
+        events TEXT NOT NULL, answer TEXT NOT NULL, updated TEXT NOT NULL,
+        journal TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY(scope, id));
+    CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '',
+        language TEXT NOT NULL DEFAULT '', timezone TEXT NOT NULL DEFAULT '',
+        location TEXT NOT NULL DEFAULT '', preferences TEXT NOT NULL DEFAULT '{}',
+        goals TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '',
+        updated TEXT NOT NULL);
+"""
+
+
+def _schema_present(conn):
+    """三张表齐了没有 —— 齐了就别再重跑建表语句。"""
+    try:
+        rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    except sqlite3.Error:
+        return False
+    names = {row[0] for row in rows}
+    return {"memories", "checkpoints", "user_profiles"} <= names
+
+
+def _index_present(conn, name):
+    """索引在不在 —— 老库升级时要补建（见 _connect 里的说明）。"""
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
 def _connect():
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS memories (
-            scope TEXT NOT NULL, id TEXT NOT NULL, kind TEXT NOT NULL,
-            title TEXT NOT NULL, content TEXT NOT NULL, evidence TEXT NOT NULL,
-            source TEXT NOT NULL, repeats INTEGER NOT NULL, updated TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active', supersedes TEXT NOT NULL DEFAULT '',
-            agent_id TEXT NOT NULL DEFAULT '', agent_legacy INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY(scope, id));
-        CREATE TABLE IF NOT EXISTS checkpoints (
-            scope TEXT NOT NULL, id TEXT NOT NULL, session TEXT NOT NULL,
-            question TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL,
-            events TEXT NOT NULL, answer TEXT NOT NULL, updated TEXT NOT NULL,
-            journal TEXT NOT NULL DEFAULT '',
-            PRIMARY KEY(scope, id));
-        CREATE TABLE IF NOT EXISTS user_profiles (
-            user_id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '',
-            language TEXT NOT NULL DEFAULT '', timezone TEXT NOT NULL DEFAULT '',
-            location TEXT NOT NULL DEFAULT '', preferences TEXT NOT NULL DEFAULT '{}',
-            goals TEXT NOT NULL DEFAULT '[]', notes TEXT NOT NULL DEFAULT '',
-            updated TEXT NOT NULL);
-    """)
+    if not _schema_present(conn):
+        conn.executescript(_SCHEMA_SQL)
     # 缺口 C · A：生命周期列的幂等补列。CREATE TABLE IF NOT EXISTS 对已存在的表
     # 不会补列，老库必须靠这段 ALTER。默认 active = fail-closed：既有记忆不静默
     # 丢弃，只有被显式 supersede/retire 才停止浮出。
@@ -134,10 +160,14 @@ def _connect():
         conn.execute("ALTER TABLE memories ADD COLUMN agent_legacy INTEGER NOT NULL DEFAULT 0")
     # 幂等回填：任何仍没有 agent 归属的行都归到平台助手 main 并标 legacy=1。
     # 新写入一律显式带 agent_id，所以这里只会命中「引入维度之前」的历史行。
-    # 必须显式 commit：sqlite3 对 ALTER 会自动提交，但紧随其后的 UPDATE 属于
+    # 只有确实存在「没有归属的历史行」时才回填：老实现是无条件 UPDATE，没有遗留行时
+    # 它也是一次写事务 + commit —— 白付 3ms，还每次连接抢一次库文件的写锁
+    # （一次 /api/memory/context 会开 4 次连接）。
+    # 回填后必须显式 commit：sqlite3 对 ALTER 会自动提交，但紧随其后的 UPDATE 属于
     # 新的隐式事务，不 commit 会在连接关闭时回滚（实测会留下空归属列）。
-    conn.execute("UPDATE memories SET agent_id='main', agent_legacy=1 WHERE agent_id=''")
-    conn.commit()
+    if conn.execute("SELECT 1 FROM memories WHERE agent_id='' LIMIT 1").fetchone():
+        conn.execute("UPDATE memories SET agent_id='main', agent_legacy=1 WHERE agent_id=''")
+        conn.commit()
     # Provenance W-C：episode 落库时是否被工具产出背书（1=final 关键数命中强归因证据）。
     # 默认 0 = fail-closed：既有行/未背书写入与今天逐字节一致；仅用于 recall 信任档排序，
     # 绝不进 context() 注入串（recall 里像 status/supersedes 一样 pop 掉），不触 MEMORY_CHARS=309。
@@ -174,6 +204,13 @@ def _connect():
     _pu_cols = {row[1] for row in conn.execute("PRAGMA table_info(user_profiles)")}
     if "learned" not in _pu_cols:
         conn.execute("ALTER TABLE user_profiles ADD COLUMN learned TEXT NOT NULL DEFAULT '{}'")
+    # 归属索引（这轮加的，见 _SCHEMA_SQL 的注释）。**必须放在补列之后**：老库的
+    # memories 表可能压根还没有 agent_id 列，先建索引会直接报错。
+    # 没有它，下面那条「查有没有 agent_id='' 的遗留行」只能全表扫描 —— 504 行就是
+    # 3.3ms，而一次 /api/memory/context 要开 4 次连接。
+    if not _index_present(conn, "idx_memories_agent_id"):
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_agent_id ON memories(agent_id)")
+        conn.commit()
     return conn
 
 

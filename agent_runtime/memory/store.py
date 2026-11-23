@@ -17,6 +17,11 @@ import yaml
 
 from config import STATE_ROOT, state_path
 
+# libyaml 的 C 解析器：语义与 SafeLoader 完全一致（CSafeLoader 是 SafeLoader 的子类），
+# 但纯 Python 的 safe_load 每次要 0.3ms 以上 —— 一次 /api/memory/context 要解 9 份
+# frontmatter，光这一项就吃掉近 30ms。装不上 libyaml 时回退纯 Python，行为不变。
+_YAML_LOADER = getattr(yaml, "CSafeLoader", None)
+
 LEDGER_NAME = "ledger.jsonl"
 _LOCK = threading.RLock()
 
@@ -103,7 +108,7 @@ def split_frontmatter(text):
     header_text = raw[4:end]
     body = raw[end + 5:]
     try:
-        header = yaml.safe_load(header_text)
+        header = yaml.load(header_text, Loader=_YAML_LOADER) if _YAML_LOADER else yaml.safe_load(header_text)
     except yaml.YAMLError as exc:
         raise ValueError(f"frontmatter YAML 损坏: {exc}") from exc
     if header is None:
