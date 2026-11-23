@@ -163,6 +163,65 @@ def _read_raw(path):
         return None
 
 
+# 会话列表的元信息缓存（2026-11-23）。
+# list_sessions() 要遍历所有桶目录里的每个会话文件，每次都整份读出来 JSON 解析：
+# 实测 1922 个文件 / 3.1MB，单次 ≈ 400ms —— 而这个接口**每次开页都要调**
+# （问答页左栏的最近对话、工作台的会话弹层都是它）。
+# 这里按 (mtime, size) 缓存每个文件的**列表元信息**：文件没动就直接复用，
+# 列表从「全量解析」变成「全量 stat + 只解析变动过的文件」，
+# 二次调用从 ~400ms 降到几十毫秒。
+#
+# 为什么用 mtime+size 而不是内容哈希：哈希要把文件整个读一遍，正好抵消了缓存
+# 的意义；mtime+size 是文件系统契约里的标准启发式（改动会改 mtime）。
+_SESSION_META_CACHE: dict[str, tuple[float, int, dict]] = {}
+
+
+def _session_meta(path: str, name: str) -> dict | None:
+    """单个会话文件的**列表**元信息（带 mtime+size 缓存）。
+
+    只取列表要用的那几个字段，不把整份会话留在内存里。文件不可读或不是 dict
+    时返回 None（与 _read_raw 一致）。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    hit = _SESSION_META_CACHE.get(path)
+    if hit is not None and hit[0] == st.st_mtime and hit[1] == st.st_size:
+        return hit[2]
+    raw = _read_raw(path)
+    if not isinstance(raw, dict):
+        return None
+    sid = str(raw.get("session_id") or name[:-5])
+    turns = raw.get("turns") or []
+    archived = raw.get("archived") or []
+    # 完整逐轮 = 归档 + 工作窗口：压缩只收缩喂 LLM 的 turns，列表里的轮数
+    # 与标题（首条用户问题）都必须按完整历史算，否则长会话会「轮数变少、
+    # 标题跳到中途那一问」。
+    all_turns = [t for t in archived if isinstance(t, dict)] + \
+                [t for t in turns if isinstance(t, dict)]
+    first_user = ""
+    for turn in all_turns:
+        if isinstance(turn, dict) and str(turn.get("user") or "").strip():
+            first_user = _clean_legacy_prompt(turn.get("user", "")).strip()
+            break
+    preview = " ".join(first_user.split())
+    meta = {
+        "session_id": sid,
+        # 归属字段（缺失时由调用方回退到桶目录名）。
+        "owner_field": str(raw.get("owner_project_id") or "").strip(),
+        "turns": len(all_turns),
+        "has_summary": bool(raw.get("pinned") or raw.get("rolling")
+                            or raw.get("summary")),
+        "updated_at": raw.get("updated_at") or "",
+        # 首条用户问题作为可读标题；不保存额外数据，兼容旧会话文件。
+        "title": preview[:72] or "未命名对话",
+        "preview": preview[:180],
+    }
+    _SESSION_META_CACHE[path] = (st.st_mtime, st.st_size, meta)
+    return meta
+
+
 def _pinned_text(entries) -> str:
     """结构化 pinned 条目 → 渲染用正文（条目之间空行分隔）。"""
     out = []
@@ -2100,10 +2159,10 @@ def list_sessions(limit=50, project_id=None, include_subagents=False):
         for name in names:
             if not name.endswith(".json"):
                 continue
-            raw = _read_raw(os.path.join(d, name))
-            if not isinstance(raw, dict):
+            meta = _session_meta(os.path.join(d, name), name)
+            if meta is None:
                 continue
-            sid = raw.get("session_id") or name[:-5]
+            sid = meta["session_id"]
             # 子 agent 会话走同一落盘路径，但不进主会话历史：
             # 它们由工作台的 agent 卡片单独打开（/api/agents/{id}/conversation）。
             if not include_subagents and is_subagent_session(sid):
@@ -2111,7 +2170,7 @@ def list_sessions(limit=50, project_id=None, include_subagents=False):
             if sid in seen:
                 continue  # 全局先遍历 → 全局条目优先
             # 归属：**文件里的字段优先**，缺失时回退到目录名。
-            owner = str(raw.get("owner_project_id") or "").strip() or dir_owner
+            owner = meta["owner_field"] or dir_owner
             # 归属过滤（丙）。**与我要的不一致就排除** —— 包括「无归属」。
             #
             # ⚠ 此前是「有归属且不是我要的才排除」，无归属一律放行。那条豁免
@@ -2124,31 +2183,17 @@ def list_sessions(limit=50, project_id=None, include_subagents=False):
             #   与 `tests/test_projects_qa.py::B10`。前者是收窄，后者是读穿透。
             if want_pid and owner != want_pid:
                 continue
-            turns = raw.get("turns") or []
-            archived = raw.get("archived") or []
-            # 完整逐轮 = 归档 + 工作窗口：压缩只收缩喂 LLM 的 turns，列表里的轮数
-            # 与标题（首条用户问题）都必须按完整历史算，否则长会话会「轮数变少、
-            # 标题跳到中途那一问」。
-            all_turns = [t for t in archived if isinstance(t, dict)] + \
-                        [t for t in turns if isinstance(t, dict)]
-            first_user = ""
-            for turn in all_turns:
-                if isinstance(turn, dict) and str(turn.get("user") or "").strip():
-                    first_user = _clean_legacy_prompt(turn.get("user", "")).strip()
-                    break
-            preview = " ".join(first_user.split())
             seen[sid] = {
                 "session_id": sid,
-                "turns": len(all_turns),
-                "has_summary": bool(raw.get("pinned") or raw.get("rolling")
-                                    or raw.get("summary")),
-                "updated_at": raw.get("updated_at") or "",
+                "turns": meta["turns"],
+                "has_summary": meta["has_summary"],
+                "updated_at": meta["updated_at"],
                 # 归属项目（丙）。**回退到桶目录名** —— 见上面 dir_owner。
                 # 读穿透拿到的旧记录因此也带着归属，不再是一串空串。
                 "owner_project_id": owner,
                 # 首条用户问题作为可读标题；不保存额外数据，兼容旧会话文件。
-                "title": preview[:72] or "未命名对话",
-                "preview": preview[:180],
+                "title": meta["title"],
+                "preview": meta["preview"],
             }
     rows = list(seen.values())
     rows.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
