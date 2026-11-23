@@ -1334,7 +1334,24 @@ def _agent_for(session_id, project_id=None):
 
 # 模块级默认 Agent（兼容既有引用）。端点内部一律通过 _agent_for("default") 取用，
 # 以便在请求上下文中命中「当前项目」的默认会话 Agent（见 P3 注释）。
-agent = _agent_for("default")
+#
+# **惰性**（2026-11-24）：原先在模块导入期就 `_agent_for("default")`，
+# 而 Agent.__init__ 会 `LLMClient()` → 建 OpenAI SDK 客户端 → 拖起 `openai`
+# （本机实测 1.6 秒）。服务启动时一次都用不到它。
+#
+# 现在用模块级 `__getattr__`（PEP 562）做**惰性代理**：第一次真的有人读
+# `api.agent` 时才建，之后缓存。端点内部走的 `_agent_for("default")` 不受影响
+# （它自己维护 `_SESSION_AGENTS`），两边拿到的是同一个实例。
+_DEFAULT_AGENT = None
+
+
+def __getattr__(name):
+    global _DEFAULT_AGENT
+    if name == "agent":
+        if _DEFAULT_AGENT is None:
+            _DEFAULT_AGENT = _agent_for("default")
+        return _DEFAULT_AGENT
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 def _resolve_request_project(request):
     """解析请求要绑定的项目：header `X-DocMind-Project` > 查询参数 `?project_id=`。

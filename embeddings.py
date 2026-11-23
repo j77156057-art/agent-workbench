@@ -21,7 +21,6 @@ import os
 import re
 import warnings
 
-from openai import OpenAI
 
 from config import (
     EMBEDDING_PROVIDER,
@@ -104,12 +103,16 @@ class EmbeddingClient:
                 self._degrade(QWEN_KEY_GUIDANCE)
                 return
             cfg = PROVIDERS["qwen"]
+            # `openai` SDK 惰性导入（2026-11-24）：它本身要 1.9 秒，
+            # 而服务启动时一次都用不到 —— 客户端只在真正算向量时才建。
+            from openai import OpenAI
             self.client = OpenAI(base_url=cfg["base_url"], api_key=key)
             self.model = EMBEDDING_MODEL
             self.dim = 1024
         elif self.provider == "ollama":
             # 本机 Ollama OpenAI 兼容端点, 零 Key
             cfg = PROVIDERS["ollama"]
+            from openai import OpenAI
             self.client = OpenAI(base_url=cfg["base_url"], api_key="ollama-local")
             self.model = EMBEDDING_MODEL or "bge-m3"
             # 维度自动探测；探测失败则降级 local

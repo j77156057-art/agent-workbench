@@ -14,8 +14,6 @@ import urllib.request
 import uuid
 from gpu_coordinator import acquire as _gpu_acquire, release as _gpu_release, note_activity as _gpu_note_activity
 
-from openai import OpenAI
-
 from config import (
     LLM_PROVIDER, PROVIDERS, LLM_MODEL, LLM_API_KEY,
     LLM_MAX_TOKENS, LLM_ENABLE_THINKING, PROMPT_TOKEN_BUDGET, get_runtime,
@@ -26,6 +24,24 @@ from config import (
 )
 from agent_runtime.local_runtime import local_llm_slot
 from textutil import as_text
+
+
+def OpenAI(*args, **kwargs):
+    """`openai.OpenAI` 的**惰性薄包装**。
+
+    为什么要有这一层（2026-11-24）：
+    - `openai` SDK 本身要 1.6 秒，而服务启动时一次都用不到它（客户端只在真正
+      调模型时才建）。顶层 `from openai import OpenAI` 等于让**每次启动**白付。
+    - 但模块级必须**保留 `OpenAI` 这个名字**：测试用
+      `patch.object(llm, "OpenAI", FakeOpenAI)` 拦截 SDK 构造来验证「厂商头
+      交给 SDK」这一层；名字消失会让桩点找不到、那条用例报
+      `module 'llm' does not have the attribute 'OpenAI'`。
+
+    所以：**惰性的是 SDK 的导入，不是这个名字**。调用 `llm.OpenAI(...)` 时才
+    真正 import SDK 并构造。
+    """
+    from openai import OpenAI as _OpenAI
+    return _OpenAI(*args, **kwargs)
 
 # 默认单次 LLM 调用超时（秒）与重试策略（可用环境变量覆盖）
 LLM_TIMEOUT = float(os.getenv("DOCMIND_LLM_TIMEOUT", "180"))
@@ -731,9 +747,14 @@ class LLMClient:
         self.output_budget = output_token_budget(
             self.provider, self.model, context_window=self.capability["context_window"])
 
+        # 惰性 client 的构建参数（见 client property）。先置默认值，
+        # mock provider 走下面的 early return 时也能安全访问。
+        self._client = None
+        self._client_key = ""
+
         if self.provider == "mock":
             # 离线演示模式：不发起任何网络请求
-            self.client = None
+            self._client = None
             return
 
         if self.provider == "custom" and not self.base_url:
@@ -751,9 +772,54 @@ class LLMClient:
         # 入口拦截，不会真的把 "EMPTY" 发出去。本地兼容端点（llamacpp/custom）
         # 仍依赖这个占位值。
         # default_headers 用厂商特定头覆盖 SDK 默认值（OpenCode Go 的会话头/UA）。
-        self.client = OpenAI(base_url=self.base_url, api_key=key or "EMPTY",
-                             timeout=self.timeout,
-                             default_headers=provider_default_headers(self.provider) or None)
+        #
+        # `openai` SDK 惰性导入（2026-11-24）：SDK 本身要 1.6 秒（本机实测，
+        # 比 chromadb 还多），而服务启动时一次都用不到它 —— 客户端只在真正调
+        # 模型时才建。顶层 import 会让**每次启动**都白付这 1.6 秒。
+        #
+        # client 仍在**构造时**建（与改动前一致）：厂商头是构造时决定的，
+        # 传递必须发生在那一刻（测试 test_llm_client_passes_headers_to_sdk
+        # 锁的就是这一层）。惰性的是 **SDK 的导入** —— 模块级 `OpenAI` 包装器
+        # 内部才 import openai，所以启动期不会拖起它。
+        #
+        # 启动期为什么不会碰到这里：api.py 的模块级默认 Agent 已改成**惰性代理**
+        # （PEP 562 的模块级 __getattr__），所以 LLMClient() 根本不在导入期跑。
+        self._client = OpenAI(base_url=self.base_url, api_key=key or "EMPTY",
+                              timeout=self.timeout,
+                              default_headers=provider_default_headers(self.provider) or None)
+        self._client_key = key or "EMPTY"
+
+    @property
+    def client(self):
+        """OpenAI SDK 客户端（**惰性创建**）。
+
+        `openai` SDK 要 1.9 秒，而服务启动时用不到它 —— api.py 模块级就会建
+        默认 Agent，Agent.__init__ 会 `LLMClient()`。顶层 import SDK 等于让
+        每次启动都白付这 1.9 秒。
+
+        这里改为首次真正访问 `self.client` 时才 import + 构造；构造后缓存在
+        `_client` 里，之后照旧复用同一个实例（SDK 客户端带连接池，重建会丢）。
+        """
+        if self._client is not None:
+            # 已构造过，或外部注入过桩（setter）—— 直接返回。
+            return self._client
+        if self.provider == "mock":
+            # 离线演示模式：不建 SDK 客户端（与改动前 `self.client = None` 一致）。
+            return None
+        # 用**模块级**的 OpenAI 名字（而不是直接 from openai import）：
+        # 那样测试的 `patch.object(llm, "OpenAI", FakeOpenAI)` 才拦得住。
+        self._client = OpenAI(base_url=self.base_url, api_key=self._client_key,
+                              timeout=self.timeout,
+                              default_headers=provider_default_headers(self.provider) or None)
+        return self._client
+
+    @client.setter
+    def client(self, value):
+        """允许外部注入桩客户端（测试用 `client.client = SimpleNamespace(...)`）。
+
+        注入后 `_client` 已有值，property 直接返回它，不再走惰性构造。
+        """
+        self._client = value
 
     def clone(self):
         """复制一份**独立**的客户端（同 provider/model/key），供并发子代理使用。"""
