@@ -9026,11 +9026,11 @@ class Agent:
         cs.artifacts = []
         # 「需要用户确认」的上浮载体：子代理被授权问题卡住时，从事件流收进来，
         # 最后进 `output["needs_confirmation"]`（必填，无内容时是空 dict）。
-        cs.needs_confirm: dict = {}
+        cs._needs_confirm: dict = {}
         # 「改了哪些文件」：由写工具在真正落盘那一步自报（见下面 observation 分支的注释）。
         # `_seen_file_changes` 只为去重——同一文件被改多次，清单里出现一次就够。
-        cs.file_changes: list[dict] = []
-        cs.seen_file_changes: set[str] = set()
+        cs._file_changes: list[dict] = []
+        cs._seen_file_changes: set[str] = set()
         _read_conv_token = begin_read_conversation()
         try:
             with _hooks.workflow_event_scope(record_hook):
@@ -9253,8 +9253,8 @@ class Agent:
             et = ev.get("type")
             if et == "needs_confirmation":
                 # 子代理被授权问题卡住 —— 收下来，稍后上浮给父。
-                cs.needs_confirm["action"] = ev.get("action", "")
-                cs.needs_confirm["reason"] = (
+                cs._needs_confirm["action"] = ev.get("action", "")
+                cs._needs_confirm["reason"] = (
                     "子代理拿不到用户的原始请求，无法自行确认写授权")
             elif et == "final":
                 cs.final_text = ev.get("text") or ""
@@ -9310,10 +9310,10 @@ class Agent:
                     # 就是靠这条路）。收在这里，一处覆盖两条。
                     if isinstance(artifact, Mapping):
                         _p = str(artifact.get("path") or "").strip()
-                        if (_p and _p not in cs.seen_file_changes
-                                and len(cs.file_changes) < 100):
-                            cs.seen_file_changes.add(_p)
-                            cs.file_changes.append({
+                        if (_p and _p not in cs._seen_file_changes
+                                and len(cs._file_changes) < 100):
+                            cs._seen_file_changes.add(_p)
+                            cs._file_changes.append({
                                 "path": _p,
                                 # 不填 `kind`：`preview_adapters` 的
                                 # `_adapter_inputs` 拿它当**适配器路由键**
@@ -9372,11 +9372,11 @@ class Agent:
         status = "ok" if reflection.get("ok") else "failed"
         error = "" if status == "ok" else "子代理反思未通过：" + "; ".join(
             str(item) for item in (reflection.get("issues") or []))
-        if cs.delegation_ticket and not cs.needs_confirm:
+        if cs.delegation_ticket and not cs._needs_confirm:
             from agent_runtime import delegation as _delegation
             pending_child = _delegation.latest_pending(cs.interactive_session, cs.delegation_ticket)
             if pending_child:
-                cs.needs_confirm.update({
+                cs._needs_confirm.update({
                     "kind": "delegation", "action": "delegate", "id": pending_child["id"],
                     "reason": "下一层子代理等待用户审批"})
         output = {"status": status, "conclusion": conclusion, "steps": cs.used,
@@ -9390,13 +9390,13 @@ class Agent:
                 # 的原始请求，所以「拿不准，请向用户确认」这个判断在子代理层是
                 # **真实**的（顶层那句是猜的）。而父 agent 手里**有**用户的原话，
                 # 由它去问才问得对人。
-                "needs_confirmation": dict(cs.needs_confirm),
+                "needs_confirmation": dict(cs._needs_confirm),
                 "artifacts": cs.artifacts,
                 # 「改了哪些文件」。消费方有三处都只认这个字段：`output_audit`
                 # 的上界检查与证据回报、`preview_adapters` 的产物清单、以及人工
                 # 构造的 runner 一直在填的同一个字段（`agent_runtime/acceptance.py`）。
                 # 此前真子代理路径下这里恒为空。
-                "file_changes": [dict(row) for row in cs.file_changes],
+                "file_changes": [dict(row) for row in cs._file_changes],
                 "trace": _child_trace(cs.traj, cs.thoughts, cs.reflections,
                                       getattr(cs.child, "last_turn_record", None), cs.used,
                                       hooks=cs.hook_events)}

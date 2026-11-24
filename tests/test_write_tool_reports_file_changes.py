@@ -155,11 +155,16 @@ def test_the_failure_branches_are_still_plain_string_returns():
 
 
 def _run_child_fn() -> ast.FunctionDef:
+    """子代理那层的**合成视图**（准备 / 事件泵 / 出报告合在一起）。
+
+    拆分 `_run_child` 之后，收集 `file_changes` 的那段搬到了 `_child_pump`、
+    结果字典搬到了 `_child_build_output` —— 守卫不该因此失明，所以这里取
+    合成视图（见 `tests/agent_loop_source.py`），载体前缀也一并还原成裸名字。
+    """
+    from tests.agent_loop_source import child_composite_ast
+
     tree = ast.parse(AGENT_PY.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_run_child":
-            return node
-    pytest.fail("找不到 _run_child")
+    return child_composite_ast(tree)
 
 
 def test_file_changes_is_built_from_the_observation_event():

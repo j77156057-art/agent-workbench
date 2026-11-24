@@ -484,6 +484,12 @@ _tool_ok / _result / obs 等），再拆一层的代价已经很低：
    锚的是 `child.tool_step_override = cap if cap > 0 else SUBAGENT_STEP_FLOOR`，
    搬家后变成 `cs.child.tool_step_override = cs.cap if ...` → 锚点找不到 →
    整块电池脱钩。→ 锚点随代码同步更新（与 `battery_empty_model_turn` 同一套规矩）。
+4. **载体字段名必须与拆分前一字不差**：第一版把 `_file_changes` /
+   `_seen_file_changes` / `_needs_confirm` 起了个「干净」的载体名
+   （`file_changes` / `seen_file_changes` / `needs_confirm`），结果
+   `tests/test_write_tool_reports_file_changes.py` 那 4 条守卫（它们查的正是
+   `_file_changes.append` 这个形状）当场失明。→ 载体字段名照抄原局部变量名，
+   连**下划线**都照抄；§6 的「字段名一字不差」这条约定在这里同样适用。
 
 ### 验收
 
