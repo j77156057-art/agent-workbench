@@ -23,7 +23,6 @@
 """
 import importlib.util
 import os
-import re
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -100,7 +99,8 @@ class GateOnTheRealRepoTests(unittest.TestCase):
         path = os.path.join(ROOT, "golden", "results_baseline.jsonl")
         if not os.path.isfile(path):
             self.skipTest("基线文件不在本工作树")
-        text = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
         self.assertEqual(PS.PATTERNS["run_stamp_id"].findall(text), [],
                          "入库基线里还有真实跑批会话 id")
         self.assertEqual(PS.PATTERNS["local_session_path"].findall(text), [],
