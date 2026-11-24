@@ -49,14 +49,15 @@ MINIMUM_MUTATIONS = 4
 # ---- 锚点定义（每条都用 `grep -c -F` 核过命中数）----
 
 #: 空响应归一成空串的那两行。
-#: （拆分 _run 之后，acc 挂在了 _TurnState 载体上 → 源码里是 st.acc）
-_EMPTY_TURN = 'if st.acc is None:\n                            st.acc = ""'
+#: （拆分 _run 之后，acc 挂在了 _TurnState 载体上 → 源码里是 st.acc；
+#:   主循环拆成「一轮」的三个阶段后，这两行的缩进也变了。）
+_EMPTY_TURN = 'if st.acc is None:\n                        st.acc = ""'
 
 #: 归一之后立刻做取消检查——顺序有意义（先归一再让取消有机会抛出）。
-_AFTER_EMPTY = '                            st.acc = ""\n                        _raise_if_cancelled()'
+_AFTER_EMPTY = '                        st.acc = ""\n                    _raise_if_cancelled()'
 
 #: 工具调用归一：`last_tool_calls` 为空时走文本协议。
-_CALLS_FETCH = ('calls = (getattr(self.llm, "last_tool_calls", None) or []) if use_tools else []')
+_CALLS_FETCH = ('calls = (getattr(self.llm, "last_tool_calls", None) or []) if st.use_tools else []')
 
 MUTATIONS = [
     # ---- 归一本身----
@@ -65,15 +66,15 @@ MUTATIONS = [
     # 保持缩进的等价破坏是「条件反过来」：`acc is not None` 时才赋空串。
     ("空响应不再归一（条件反过来）——又崩成 AttributeError: 'NoneType' has no attribute 'strip'",
      _EMPTY_TURN,
-     'if st.acc is not None:\n                            st.acc = ""'),
+     'if st.acc is not None:\n                        st.acc = ""'),
 
     ("归一写成把 None 变成 'None' 字面量——不再崩，但结论里多出 'None' 四个字符",
      _EMPTY_TURN,
-     'if st.acc is None:\n                            st.acc = "None"'),
+     'if st.acc is None:\n                        st.acc = "None"'),
 
     ("归一挪到取消检查之后——空响应先把取消标记吞掉",
      _AFTER_EMPTY,
-     '                            st.acc = ""'),
+     '                        st.acc = ""'),
 
     # ---- 原生 FC 通道那条不能被顺手改掉 ----
     ("工具调用归一被整体跳过：last_tool_calls 拿不到，原生 FC 通道的调用全部丢失",

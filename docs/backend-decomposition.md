@@ -343,6 +343,45 @@ addonweb），与 T1 同法。注意该文件里 `root_or_error` 原先是 `buil
    `for nm, ar, obs, _ok, imgs, _ek in results:` 的循环变量，与工具段那两个
    同名但无关 → 改名**只能限定在 `_run_tool_action` 内**，别全函数扫。
 
+### 第四轮：「一轮」的边界定义 + 主循环拆成子方法
+
+主循环原来 792 行、是一个 25 段的状态机。现在把它定义成**「一轮」**并拆开。
+
+#### 「一轮」是什么
+
+**一轮 = 主循环的一次迭代 = 准备 → 取模型输出 → 决定下一步**（不是「一轮问答」——
+一轮问答是整个 `_run` 调用，对应载体 `_TurnState` 的生命周期）。
+
+| 段 | 方法 | 行数 | 内容 |
+|---|---|---|---|
+| A 准备 | `_run_round_prepare` | 178 | 取消检查、轮次计数、快照、deadline、步数上限、并行批次、定时提醒、构造 messages |
+| B 取输出 | `_run_round_ask` | 189 | 原生队列或模型调用（流式解析、token 过滤、reasoning 合并），tool_calls 归一进文本协议 |
+| C 决定 | `_run_round_parse` | 69 | 解析响应、续写、复读检测、thought/叙述/plan 事件 |
+| | `_run_round_decide` | 170 | 工具动作分发、未知工具兜底、终态处理编排 |
+| | `_run_round_finalize_guards` | 104 | 终态守卫（前三个：截断续写、裸铺源码、裸证据） |
+| | `_run_round_finalize` | 113 | 终态守卫（后三个）+ 纠偏与兜底收尾 |
+
+外加 `_init_turn_state`（96 行）把这一轮问答的状态初始化独立出来。
+**`_run` 从 997 行降到 141 行**——它现在只剩：建载体 → 初始化 → 两个局部闭包
+（`_snapshot` / `_evidence_final`）→ 23 行的主循环骨架。
+
+#### 边界契约（三条）
+
+1. **段间只用控制码通信**：`None` = 继续往下、`"stop"` = 整轮结束、
+   `"continue"` = 下一轮。控制码沿方法链一路往上抛，最顶层的 `_run` 把它
+   翻译成 `return` / `continue`。
+2. **跨段状态一律走载体**（`_TurnState`，现 55 个字段）：
+   轮内量（`acc` / `parsed` / `messages` / `finish_reason` / `pending_final` …）
+   每轮刷新，跨轮量（trail / 计数 / 账本 / 证据）按问答累积。
+   **常量走参数**：每轮问答只算一次的配额（`tool_step_limit` /
+   `observation_limit` / `lookup_output_limit` / `max_nudges` /
+   `max_final_continuations`）不进载体。
+3. **事件流契约不变**：token / thought / action / observation / reflection /
+   plan / notice / final 的字段与顺序一字未改——事件流等价对拍逐条比对。
+
+> 这轮抽块全部是**机器搬运**（AST 切片 + 自动算参数 + 自动改控制流），
+> 人在里面只做三件事：定边界、定命名、定「哪些量归载体、哪些走参数」。
+
 ### 第一轮：路由族巨型函数
 
 已完成三处拆分，全部**逐字搬运 + 硬门对拍**：

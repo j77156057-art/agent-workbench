@@ -75,6 +75,27 @@ class _TurnState:
     # ---- 导航预算 -------------------------------------------------------
     nav_free_used: int = 0
 
+    # ---- 一轮（主循环的一次迭代）里的量 --------------------------------
+    # 「一轮」= 主循环的一次迭代 = 准备 → 取模型输出 → 决定下一步。
+    # 下面这些是**轮内**量：每轮刷新，但跨三个阶段传递。
+    messages: list = field(default_factory=list)
+    finish_reason: Any = None
+    native_override: Any = None
+    use_tools: bool = False
+    tools_arg: Any = None
+    eff_thinking: bool = False
+    eff_level: Any = None
+    pending_final: Any = None
+    continuation_incomplete: bool = False
+
+    # ---- 这一轮问答的固定配额（每轮问答算一次，轮内不变）----------------
+    tool_step_limit: int = 0
+    observation_limit: int = 0
+    lookup_output_limit: int = 0
+    max_nudges: int = 0
+    max_final_continuations: int = 0
+    narration_filter: Any = None
+
     # ---- 当前这次工具调用的上下文（工具段各阶段共享）----------------------
     action_name: str = ""
     action_arg: str = ""

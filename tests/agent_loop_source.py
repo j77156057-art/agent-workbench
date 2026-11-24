@@ -23,6 +23,13 @@ from agent_runtime.turn_state import _TurnState
 
 LOOP_METHODS = (
     "_run",
+    "_init_turn_state",
+    "_run_round_prepare",
+    "_run_round_ask",
+    "_run_round_parse",
+    "_run_round_decide",
+    "_run_round_finalize",
+    "_run_round_finalize_guards",
     "_run_tool_action",
     "_tool_guard",
     "_tool_execute",
