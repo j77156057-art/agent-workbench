@@ -497,3 +497,176 @@ _tool_ok / _result / obs 等），再拆一层的代价已经很低：
   1 个外壳失败场景；归一化从一层改成递归）
 - 类成员对照：HEAD 83 → 95，**丢失 0**
 - 变异电池锚点：全部命中（脱钩 0）
+
+## 14. 第六轮设计稿：`api.py:chat`（656 行）的拆分
+
+> 本节是**设计稿**，本轮只出稿不动代码。行号一律标注「**拆分前**」，实现时会漂。
+
+### 14.1 目标与不做的事
+
+**目标**：把 `POST /api/chat` 这个 656 行的端点处理器拆成「可读、可测、边界清楚」的形态，**同时保证 SSE 事件流逐帧不变**。
+
+**本轮不做**：
+
+- 不改 `api.py` 的端点注册顺序、不改 `chat` 的签名与 Form 注解（FastAPI 靠注解注入）。
+- 不动前端（`web/`）。
+- 不改 `api.py` 的域拆分（8600+ 行 / 203 路由按域拆到 `api_routes/*`）—— 那是**另起一稿**的事。
+- 不新增依赖、不改事件流协议。
+
+### 14.2 现状实测（AST 扫描，不是印象）
+
+`api.py:chat` = **3098–3753，656 行**，`async def`，**模块级函数**（不是方法）。
+
+它天然分两段：
+
+| 段 | 拆分前行号 | 行数 | 干什么 |
+|---|---|---|---|
+| 前段 | 3098–3451 | 354 | 参数归一化 → 视觉准备 → provider/路由/降级 → 上下文 → 覆盖参数 → 打开上下文 |
+| 后段 | 3452–3751 | 300 | 嵌套的 `async def event_stream()`：SSE 事件流主体 |
+
+后段内部再分（实测提纲）：
+
+| 块 | 拆分前行号 | 行数 | 干什么 |
+|---|---|---|---|
+| 流准备 | 3456–3478 | 23 | gen / worker / worker_stop / events / wf_holder / inflight |
+| 前置事件 | 3480–3495 | 16 | turn、route、notice×2 |
+| 云端脱敏 | 3496–3497 | 2 | cloud_question / cloud_context |
+| `produce()` | 3499–3605 | 107 | **worker 线程体**：瞬断重试层 + fallback + 消费 `agent.run` |
+| 起 worker + 心跳计时 | 3607–3612 | 6 | — |
+| 事件泵 `while True` | 3614–3680 | 67 | poll → 心跳 / 转发 payload / workflow 补发 |
+| 断连分支 | 3681–3683 | 3 | `(GeneratorExit, KeyboardInterrupt, CancelledError)` → raise |
+| 失败收尾 | 3685–3726 | 42 | 分类 → `final(status=error)` → consistency → yield |
+| finally 收尾 | 3729–3750 | 22 | 停 worker、关生成器、pop pending、终态标记、turn trace |
+| done | 3751 | 1 | `data: {"type":"done"}` |
+
+**三个关键实测结论**：
+
+1. **闭包面是干净的单向数据流**：`event_stream` 读 `chat` 的 **21 个名字，全部只读**（写方向为 0）。
+2. **流内真正跨段共享的只有 6 个**：`gen` / `worker` / `worker_stop` / `events` / `wf_holder` / `inflight`（其余 32 个局部都是单块内自用）。
+3. **yield 点共 9 处**（见 §14.6）。
+
+### 14.3 边界怎么定的：两段式
+
+- **前段 = 算出这一轮怎么跑**（纯判定与配置装配，不产帧）。它的产物就是那 21 个「只读输入」。
+- **后段 = 把这一轮跑成 SSE**（唯一产帧的地方）。
+
+这两段之间**没有回写**——这是实测出来的事实，不是设计愿望：`event_stream` 对 `chat` 的 21 个闭包名一个都没改。所以状态边界可以直接照着闭包面切，不需要发明新的抽象。
+
+### 14.4 状态边界：两个载体
+
+沿用 §6 的约定：**字段名与拆分前一字不差**，载体不带方法、不做校验。
+
+#### `_ChatState`（前段 → 后段的接口，21 个字段）
+
+| 组 | 字段 |
+|---|---|
+| 身份 | question、session_id、turn_id、resume_checkpoint、request |
+| 视觉 | vision_images、vision_context、vision_audit |
+| 路由 | routing、is_cloud、cloud_llm、search_degraded_notice |
+| 覆盖参数 | tool_mode_override、plan_mode_override、web_enabled_override、thinking_enabled_override、thinking_level_override、narration_override |
+| 运行对象 | selected_agent、_redir_key |
+| 上下文 | request_context、agent_context |
+
+字段数与闭包面**一一对应**（21 = 21），不多不少。
+
+#### `_ChatStreamState`（流内跨段共享，6 个字段）
+
+gen、worker、worker_stop、events、wf_holder、inflight。
+
+**为什么这 6 个必须进载体**：`produce()` 是个嵌套函数，靠 `nonlocal gen` 把 worker 线程里拿到的生成器句柄交回主循环；抽成方法后 `nonlocal` 失效，`gen` 必须挂在载体上。`worker_stop` 是断连信号，`events` 是跨线程队列，`inflight` 是前端「继续」用的现场账本——这四个跨线程/跨块共享。
+
+**载体放哪**：新建 `agent_runtime/chat_state.py`（api.py 侧目前没有载体先例，agent.py 的在 `agent_runtime/turn_state.py`；同名不同层，分文件更清楚）。
+
+### 14.5 子方法清单（11 个）
+
+#### 前段 6 个
+
+| 方法 | 拆分前行号 | 职责 | 边界注意 |
+|---|---|---|---|
+| `_chat_normalize` | 3121–3142 | 14 个 `_plain_field` 归一化、images 类型校验、turn_id/question 规整 | 纯函数式，不碰运行时 |
+| `_chat_prepare_vision` | 3143–3209 | 视觉准备、**空问题 400 早退**、ui_context 分支、视觉审计 | 早退要能中止整轮 → 返回控制码 |
+| `_chat_resolve_provider` | 3210–3244 | provider/embedding 探测、云端方案解析、ollama 降级判定 | 产出 search_degraded_notice |
+| `_chat_resolve_context` | 3245–3300 | code_root、摄取、hints、项目审计、selected_agent、实时告警特例 | 产出 request_context |
+| `_chat_resolve_overrides` | 3301–3441 | tool/plan/web/thinking/narration 覆盖 + 各 ui_context 特例 | 产出 6 个 override |
+| `_chat_open_context` | 3442–3451 | 重定向键、活跃 run、request_context、agent_context | 产出 agent_context |
+
+#### 后段 5 个
+
+| 方法 | 拆分前行号 | 职责 | 边界注意 |
+|---|---|---|---|
+| `_chat_stream_open` | 3456–3498 | 流准备 + 前置事件（turn/route/notice×2）+ 云端脱敏 | **副作用必须留在流开始时**（见 §14.7） |
+| `_chat_worker_produce` | 3499–3605 | worker 线程体：瞬断重试层、fallback、消费 `agent.run` | 产出写进 `ss.events`；`gen` 写 `ss.gen` |
+| `_chat_stream_pump` | 3607–3680 | 起 worker、心跳计时、事件泵（poll/转发/workflow 补发） | 唯一产流帧的循环 |
+| `_chat_stream_fail` | 3685–3726 | 失败收尾：分类 → final(status=error) → consistency → yield | 整体搬，别拆散 |
+| `_chat_stream_finish` | 3729–3750 | 停 worker、关生成器、pop pending、终态标记、turn trace | 对应 finally |
+
+拆完 `chat` 剩下 **~70 行编排**：归一化 → 视觉 → provider → 上下文 → 覆盖 → 打开上下文 → 返回 StreamingResponse。
+
+### 14.6 事件流不变约束（硬约束）
+
+9 个 yield 点 → 6 种帧：
+
+| 序 | 帧 | 触发条件 | 不变式 |
+|---|---|---|---|
+| 1 | `data: {"type":"turn",turn_id,session_id}` | 无条件 | **必须是第一个 data 帧** |
+| 2 | `data: {"type":"route",route,complexity}` | 无条件 | 必须是第二个 |
+| 3 | `data: {"type":"notice",text}` | vision_audit.mode ∉ (none, native) | 在 route 之后 |
+| 4 | `data: {"type":"notice",text}` | search_degraded_notice 非空 | 在 route 之后 |
+| 5 | `: keep-alive` | 心跳到期 | **不是事件**（parse_events 丢弃），但行数与位置不得被吞 |
+| 6 | `data: {payload}` | agent.run 的事件 | **逐条原样转发** |
+| 7 | `data: {"type":"workflow","phase":"started",...}` | start_workflow 成功后 | 紧跟触发它的那条 |
+| 8 | `data: {final}` | final 事件 | — |
+| 9 | `data: {"type":"done"}` | 无条件 | **必须是最后一个 data 帧** |
+
+#### 六条不变式（拆完必须逐条成立）
+
+1. **帧序**：`turn` → `route` → (notice*) → (流) → `done`。三者（turn/route/done）的相对位置**不可换**。
+2. **心跳不是事件、但不能消失**：`: keep-alive` 行在 `parse_events` 里被丢掉（那是协议设计），但它夹在流中间——被吞掉前端就失去断连探测能力。
+3. **透传不改形**：第 6 类帧是 `agent.run` 的原样转发（`json.dumps(payload, ensure_ascii=False)`），**不得加字段、不得改顺序、不得合并**。
+4. **失败终态形状**：`final.status == "error"` + `error_kind`，可选 `checkpoint_id` / `consistency` / `consistency_ratio`，且**只出现一次**。
+5. **done 必到**：正常路径与失败路径都要在最后 yield 一次 `{"type":"done"}`；客户端断连（GeneratorExit）路径**不** yield done——那是异常传播，不是契约违约。
+6. **早退不产帧**：问题为空时直接 `JSONResponse(400)`，**不产生任何 SSE 帧**。
+
+#### 怎么保证它不变（判据，不是口号）
+
+| 判据 | 落点 |
+|---|---|
+| **事件流对拍**（新增） | `.tmp/chat_equiv.py`：录基线 → 拆后**逐帧比**；既比事件表（parse_events），也比**原始行**（心跳算在内） |
+| **既有判据不许动** | `agent_runtime/chat_sse.py`（纯函数判定表）、`tests/test_chat_sse.py`、`tests/mutation/battery_chat_sse.py`（18 条变异下限），以及另外 26 个涉及 chat SSE 的测试文件 |
+| **结构性锚点**（新增） | 拆完后 `chat` 里**不允许再出现 `yield`** —— SSE 帧只允许在 `_chat_stream_*` 里发。这条把「有人顺手在编排层加了一帧」变成不可能 |
+| **顺序锚点**（新增） | `_chat_stream_open` 里「turn → route → notice」三帧的**相对次序**被一条守卫钉住（不是「都出现过」） |
+
+### 14.7 失败形态与处置
+
+| 形态 | 症状 | 处置 |
+|---|---|---|
+| **帧序漂移** | 前端拿不到 route；done 提前或缺失 | 事件流对拍当场抓到 |
+| **副作用提前** | `push_pending_stream()` / `_register_in_flight_turn()` 从「流开始时」变成「请求时」——**请求还没开始消费就占了 pending stream** | 载体初始化留在 `_chat_stream_open` **内部**（流开始时惰性执行），不挪到 `chat` 里 |
+| **闭包丢失** | `nonlocal gen` 失效 → worker 句柄丢 → 断连停不掉后端 worker | `gen` 进 `_ChatStreamState` |
+| **异常被拆散** | `except BaseException` 的收尾被切碎 → 失败终态形状变了（少了 error_kind / consistency） | `_chat_stream_fail` **整体搬**，不拆 |
+| **早退丢失** | 空问题不再 400，直接进流 | `_chat_prepare_vision` 返回控制码，`chat` 据此提前返回 |
+| **心跳被吞** | 断连探测失效（长思考时前端以为死了） | 泵内 keep-alive 不动 |
+| **透传被改形** | payload 多了字段 / 顺序变了 → 前端渲染错位 | 对拍比原始行 |
+
+### 14.8 验收标准
+
+1. **事件流对拍**：多场景（正常轮 / 工具轮 / 失败轮 / 降级轮 / 早退 400）逐帧一致，含心跳行。
+2. **既有判据全绿**：chat SSE 相关测试文件 + 变异电池 ≥18 条。
+3. **新增两条锚点守卫**：`chat` 里无 `yield`；turn→route→notice 次序被钉。
+4. **不改签名**：`chat` 的参数与 Form 注解逐字未变（FastAPI 注入靠注解）。
+5. **CI 9/9 全绿**。
+
+### 14.9 风险登记册
+
+| 风险 | 等级 | 缓解 |
+|---|---|---|
+| api.py 侧没有载体先例，字段表可能定错 | 中 | 字段表**照抄闭包面实测**（21 个），并用 `tests/agent_loop_source.py` 的前缀还原机制保持源码钉桩可用 |
+| `_register_in_flight_turn` 的时机 | **高** | 载体初始化留在流内（§14.7） |
+| `produce()` 的 `nonlocal` 语义 | **高** | `gen` 进载体 |
+| FastAPI 端点注入依赖注解 | 低 | 签名与注解一字不动 |
+| 前端对帧序有隐含依赖 | 中 | 对拍 + 顺序锚点 |
+
+### 14.10 待确认事项
+
+- `api.py` 本身按域拆到 `api_routes/*`（另起一稿），**本轮不做**。
+- 是否给 api.py 单独建 `agent_runtime/chat_state.py`，还是并入现有 `agent_runtime/turn_state.py`？前者更清楚（不同层、不同生命周期），后者少一个文件。
