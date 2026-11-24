@@ -1,6 +1,6 @@
 # 后端巨型函数拆分 · 设计稿
 
-> 状态：实现中（2026-11-24）。本稿是**动手前的契约**，实现必须按稿走；
+> 状态：本轮实现完成（2026-11-24）。本稿是**动手前的契约**，实现必须按稿走；
 > 稿与实现不一致时，先改稿再改码。
 
 ## 1. 目标与边界
@@ -24,8 +24,9 @@
 - **CI 有 9 条 job**，其中「改动行覆盖率门」的聚合下限是 90%
   （`agent_runtime/coverage_eval.py` 的 `AGGREGATE_FLOOR`）。
 - **CI 跑在 Linux runner**：测试里不得写死本机绝对路径，要从 `__file__` 推。
-- **freeze-guard**：改文件期间不跑测试；跑完确认
-  `D:\Temp\opencode\freeze_violations.json` 未更新。
+- **freeze-guard**：改文件期间不跑测试；跑完确认 freeze-guard 的违规清单
+  没有新增条目（该清单在本机临时目录里，**不要把它的路径写进仓库文档**，
+  隐私门禁会判成泄露本机路径）。
 - 本机 git 协议不通 GitHub，推送走 REST + 固定 IP 的脚本。
 
 ## 3. 现状实测（AST 扫描，不是印象）
@@ -126,7 +127,23 @@ tests/test_review_code_root_wiring.py:166 patch.object(route_mod.WORKFLOWS, "get
 
 端点代码**逐字搬运**（AST 切片，缩进不变）。
 
-#### 5.3 依赖 ctx 的 helper 怎么搬
+#### 5.3 拆分脚本必须把**文件尾部**一起拼回去（实测踩坑）
+
+第一版脚本按「头部 + 重建函数」重写文件，**没把尾部接回去** →
+`api_routes/agent.py` 的 `__all__ = [name for name in globals() if
+name.endswith("Req")]` 被丢掉 → CI 四个 sqlite 分片全红；同一批脚本在
+`api.py` 上甚至截掉了后 850 行（靠 ruff 突然报 42 条 F401 暴露：
+`logging` / `StaticFiles` / `regions.*` 变成「未使用」）。
+
+两个要点：
+
+1. **脚本重写文件 = 手工编辑的等价风险**。用 AST 切片重建时，文件里
+   「函数之外的一切」（`__all__` / 常量 / 尾部 re-export）都得显式接回去。
+2. **路由快照查不出这类丢失**（`__all__` 不影响路由表）。所以验收要再加
+   一条：**顶层符号清单对照**（AST 取函数/类/模块级赋值名，与拆分前逐一比对，
+   「丢失」必须为空）。
+
+#### 5.4 依赖 ctx 的 helper 怎么搬
 
 原先 9 个 helper 是 `build_router` 里的闭包（靠闭包捕获 `ctx`）。拆成
 模块级注册函数后，闭包没了。做法是改成**工厂**：
@@ -155,8 +172,17 @@ def _register_workflow(router, ctx):
 `tools.set_workflow_launcher`）**仍在 `build_router` 里、且时机不变**
 （构建时各做一次）。
 
-### T2 `api_routes/engine.py:build_router`（248）
-同样按连续段切成注册函数（与 T1 同法）。
+### T2 `api_routes/engine.py:build_router`（248 → 26 行）✅ 已做
+同样按连续段切成 5 个注册函数（discovery / unreal / skillconfig / runtime /
+addonweb），与 T1 同法。注意该文件里 `root_or_error` 原先是 `build_router`
+的闭包变量，搬到子函数后必须**在每个注册函数内重新绑定**
+（`root_or_error = ctx._project_root_or_error`），否则 NameError。
+
+### T7 `api.py:_apply_config`（273 → 169 行）✅ 已做
+- 7515-7627（校验 + 解析 + 能力覆盖落盘）→ `_resolve_config(req)`，
+  返回 `(resolved, failure)`：失败路径原本 `return X`，现在
+  `return None, X`，由调用方原样返回；
+- `_apply_config` 改成先解包再继续，**副作用顺序一字未改**。
 
 ### T3 `api.py:chat`（656）
 - 参数解析与上下文装配 → 抽成独立函数；
@@ -205,21 +231,25 @@ def _register_workflow(router, ctx):
 | 形态 | 症状 | 处置 |
 |---|---|---|
 | **路由错位** | 某个端点 404 或被更宽的路径吃掉 | 路由表快照对拍立刻抓到；按原行序分段 |
-| **闭包变参数后漏传** | 端点运行时报 `NameError`/拿到 None | 工厂返回 None 会被当场抓住（工厂必须 `return` 内层函数） |
+| **闭包变参数后漏传** | 端点运行时报 `NameError`/拿到 None | 工厂必须显式 `return`（漏 `return` 会让绑定变成 None） |
 | **打桩点搬家** | 测试红，或更糟：静默用错对象 | 模块级名字一律不动；只拆函数不拆文件 |
+| **脚本重写丢尾部** | `__all__` / 常量 / re-export 消失 | 生成器拼回尾部 + 顶层符号清单对照 |
 | **状态搬运漏一个字段** | 行为细微变化（如 nudge 少发一次） | 变异电池 + 事件流逐事件对拍 |
 | **导入环** | 新模块互相 import → ImportError | 子模块只依赖 `agent_support`，`agent_support` 不反向依赖子模块 |
 
 ## 9. 测试与验收标准
 
-1. **路由表对拍（硬门）**：重构前后各导一份规范化快照
+1. **顶层符号清单对照（硬门）**：AST 取拆分前后每个文件的顶层
+   函数/类/模块级赋值名，逐一比对，「丢失」必须为空。这一条能抓住
+   `__all__`、常量、尾部 re-export 之类**路由快照查不出**的丢失。
+2. **路由表对拍（硬门）**：重构前后各导一份规范化快照
    （路径 / 方法 / 端点名 / 状态码 / 响应模型 / 标签 / 依赖 / summary /
    description / **顺序**），逐条**完全一致**。
-2. **端点冒烟**：对被拆模块的每个端点发一次真实请求，断言状态码与响应结构
+3. **端点冒烟**：对被拆模块的每个端点发一次真实请求，断言状态码与响应结构
    不变（不是只查表 —— 表查不出运行期才炸的问题）。
-3. **现有测试全绿**：`pytest tests/` + CI 的 4 个 sqlite 分片。
-4. **变异电池**：`tests/mutation/run_all.py --no-live` 全绿。
-5. **改动行覆盖率** ≥ 90%（CI 门）。
+4. **现有测试全绿**：`pytest tests/` + CI 的 4 个 sqlite 分片。
+5. **变异电池**：`tests/mutation/run_all.py --no-live` 全绿。
+6. **改动行覆盖率** ≥ 90%（CI 门）。
 
 ## 10. 风险登记册
 
@@ -228,13 +258,14 @@ def _register_workflow(router, ctx):
 | 路由顺序变化导致端点被吃掉 | 线上 404 / 行为漂移 | 按原行序分段 + 快照对拍 |
 | 闭包转显式参数时漏传 | 运行期异常 | 工厂必须显式 `return`；冒烟逐端点打真请求 |
 | 打桩点搬家（拆文件导致） | 测试红或静默串味 | **本轮不拆文件**（§5.1） |
+| 脚本重写丢文件尾部 | `__all__`/常量消失 → CI 红 | 生成器拼回尾部 + 符号清单对照 |
 | 状态搬运漏字段 | 细微行为漂移 | 变异电池 + 事件流对拍 |
 | 与并发写者改到同一文件 | 提交串味 | 只提交自己的路径；撞同一文件先提示 |
 | 一次拆太多，回滚成本高 | 事故半径大 | 按 T1→T6 分批，每批独立提交 + 独立 CI |
 
 ## 11. 待确认事项
 
-1. **`api.py` 本身（9000+ 行、203 个路由）要不要也拆**？
+1. **`api.py` 本身（8600+ 行、203 个路由）要不要也拆**？
    本稿只处理「巨型函数」，没动 `api.py` 的整体体量。若要拆，
    应另起一稿（按域迁到 `api_routes/*`，与既有惯例一致），工作量约等于 T1 的数倍。
 2. **`game_workflow.py:build_langgraph`（757 行）**：本稿按"声明式、不算病态"
@@ -243,3 +274,32 @@ def _register_workflow(router, ctx):
    拆成 per-language 模块有独立价值，但与本次「函数太大」是另一类问题，未纳入。
 4. **端点族要不要真拆文件**：§5.1 的修订把这件事推到下一轮。若要拆，
    需先单独立项处理 6 个测试文件的打桩点迁移。
+
+## 12. 本轮结果（2026-11-24）
+
+已完成三处拆分，全部**逐字搬运 + 硬门对拍**：
+
+| 目标 | 拆前 | 拆后 | 验收 |
+|---|---|---|---|
+| `api_routes/agent.py:build_router` | 1233 行 | 23 行（11 个 `_register_*`） | 路由表 359 条逐条一致；符号 0 丢；84 个直接依赖测试绿 |
+| `api_routes/engine.py:build_router` | 248 行 | 26 行（5 个 `_register_*`） | 同上（143 测试绿） |
+| `api.py:_apply_config` | 273 行 | 169 行 + `_resolve_config` 129 行 | 同上（230 测试绿） |
+
+**≥200 行的后端函数：25 个 → 22 个**。
+
+### 剩余的巨型函数与下一步
+
+| 函数 | 行数 | 为什么还没动 |
+|---|---|---|
+| `agent.py:_run` | 1973 | 主循环 1653 行；工具执行段写 68 个跨段状态、journal 恢复段写 48 个 → 先上 §6 的状态载体 |
+| `game_workflow.py:build_langgraph` | 757 | 声明式建图，拆了更碎（§1 边界 3） |
+| `api.py:chat` / `event_stream` | 656 / 300 | 嵌套 SSE 生成器闭包捕获约 45 个局部量 |
+| `agent.py:_run_child` / `_run_shell` | 543 / 474 | 主执行段写 9 / 13 个跨段状态 |
+| `api.py:live_vision_stream` | 388 | WebSocket 协议处理，205 行 try 写 25 个状态 |
+| `workbench_fs.py:build_relation_graph` | 351 | 三个大循环 + 4 个闭包 helper |
+| `output_audit.py:audit_evidence` | 312 | 判定段互相依赖 |
+| `symbols.py:_extract_java` 等解析器 | 280 / 201 | 字符级解析器，状态机式循环 |
+
+**下一步建议**：按 §6 先做 `_TurnState` 状态载体（只搬运、不加逻辑），
+再依次拆 `_run` 的低耦合段（native_queue / 两个 nudge 段 / 降级收尾，
+约 380 行）与 `_run_child` / `_run_shell` 的主执行段。
