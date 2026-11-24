@@ -46,8 +46,18 @@ if (-not (Test-Path (Join-Path $package "DocMind.exe"))) {
 }
 
 if (-not $Version) {
-    $git = git -C $Root describe --tags --always --dirty 2>$null
-    $Version = if ($git) { $git.Trim() } else { Get-Date -Format "yyyy.MM.dd.HHmm" }
+    $versionFile = Join-Path $Root "VERSION"
+    $declared = if (Test-Path -LiteralPath $versionFile) {
+        (Get-Content -LiteralPath $versionFile -Raw).Trim()
+    } else { "" }
+    $Version = if ($declared) { $declared } else { Get-Date -Format "yyyy.MM.dd.HHmm" }
+}
+# 版本号只认 VERSION 文件；提交哈希单独记在 build_ref，供排查用。
+$buildRef = (git -C $Root describe --always --dirty 2>$null)
+if ($buildRef) { $buildRef = $buildRef.Trim() }
+$exactTag = (git -C $Root describe --tags --exact-match 2>$null)
+if ($exactTag -and $exactTag.Trim() -ne "v$Version") {
+    throw "VERSION=$Version 与当前提交的 tag $($exactTag.Trim()) 不一致；请先同步 VERSION 再打包"
 }
 $reqHash = (& $hostPython[0] @hostPythonArgs -c `
     "from pathlib import Path; import dependency_bootstrap; print(dependency_bootstrap._sha256(Path('requirements.txt')))" ).Trim()
@@ -57,6 +67,7 @@ $manifest = [ordered]@{
     schema = 1
     name = "DocMind"
     version = $Version
+    build_ref = $buildRef
     built_at = (Get-Date).ToString("o")
     requirements_sha256 = $reqHash
     frontend_lock_sha256 = $lockHash
@@ -68,7 +79,7 @@ $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $packa
 Copy-Item (Join-Path $Root "installer\uninstall_portable.ps1") (Join-Path $package "uninstall_portable.ps1") -Force
 Copy-Item (Join-Path $Root "installer\upgrade_portable.ps1") (Join-Path $package "upgrade_portable.ps1") -Force
 Copy-Item (Join-Path $Root "installer\uninstall.bat") (Join-Path $package "uninstall.bat") -Force
-Write-Host "[DocMind] 发布包：$package ($Version)"
+Write-Host "[DocMind] 发布包：$package ($Version, $buildRef)"
 
 if (-not $SkipInstaller) {
     $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue

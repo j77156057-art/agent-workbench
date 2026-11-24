@@ -434,7 +434,7 @@
         <div class="layer reveal">
           <span class="k">C</span>
           <h4>上下文管理<span>Context</span></h4>
-          <p>prompt token 预算、观察截断、轨迹裁剪（保 system 与当前问题）、历史滚动摘要——不让上下文与提示词爆炸。<br/><code>agent.py::_fit_budget</code></p>
+          <p>prompt token 预算、观察截断、轨迹裁剪（保 system 与当前问题）、历史滚动摘要、8 层长期记忆按预算注入——不让上下文与提示词爆炸。<br/><code>agent.py::_fit_budget</code> <code>agent_runtime/memory/</code></p>
         </div>
         <div class="layer reveal">
           <span class="k">S</span>
@@ -506,7 +506,7 @@
             <div class="fitem"><b>概览驾驶舱</b><span>项目概览与上手入口</span></div>
             <div class="fitem"><b>文件树 / 编辑器</b><span>CodeMirror 多标签编辑与语法校验</span></div>
             <div class="fitem"><b>统一设置页</b><span>模型 / MCP / Agent 策略集中配置，改完即生效</span></div>
-            <div class="fitem"><b>上下文记忆</b><span>L0–L4 分层记忆，下一回合注入内容可预览</span></div>
+            <div class="fitem"><b>上下文记忆</b><span>8 层上下文并列字数与预算，下一回合注入内容可预览</span></div>
           </div>
         </article>
       </div>
@@ -552,7 +552,7 @@
       <div class="sec-head reveal">
         <span class="eyebrow">产品实拍</span>
         <h2>真实界面，不加滤镜</h2>
-        <p>以下均为本机实际运行的截图：问答页与代码工作台两个入口、代码地图与关系图、对话流水线与对话现场，取自当前工程的最新界面。</p>
+        <p>以下均为本机实际运行的截图：问答页与代码工作台两个入口、上下文记忆注入、代码地图与关系图、对话流水线与对话现场，取自当前工程的最新界面。</p>
       </div>
       <div class="shots">
         <figure class="shot reveal">
@@ -564,8 +564,12 @@
           <figcaption><b>问答页 · 真实回答</b><span>问题、推理过程（2 步工具调用）、逐条结论与文中引用同屏，末尾还能顺着继续追问</span></figcaption>
         </figure>
         <figure class="shot wide reveal">
+          <img src="assets/memory.png" alt="上下文记忆面板" loading="lazy" />
+          <figcaption><b>上下文记忆 · 8 层注入可预览</b><span>常驻守则、用户画像、项目规则、共享记忆、项目长期记忆、任务书、会话钩子、历史摘要共 8 层并列字数与预算；本轮注入 9 条、库存 160 条，注入快照与记忆神经网络可回看</span></figcaption>
+        </figure>
+        <figure class="shot wide reveal">
           <img src="assets/chat.png" alt="代码与对话同屏" loading="lazy" />
-          <figcaption><b>代码工作台 · 代码与对话同屏</b><span>打开 agent_trace.py 直接提问：29.2 秒、3 次工具调用，答案逐条对照源码，落地为可点开的文件</span></figcaption>
+          <figcaption><b>代码工作台 · 代码与对话同屏</b><span>打开 agent_trace.py 直接提问：25.3 秒、1 步工具调用，答案逐条对照源码，落地为可点开的文件</span></figcaption>
         </figure>
         <figure class="shot reveal">
           <img src="assets/codemap.png" alt="代码地图" loading="lazy" />
@@ -585,7 +589,7 @@
         </figure>
         <figure class="shot reveal">
           <img src="assets/changes.png" alt="改动总览" loading="lazy" />
-          <figcaption><b>改动总览</b><span>118 处未提交改动按文件聚合，修改与未跟踪分开列</span></figcaption>
+          <figcaption><b>改动总览</b><span>116 处未提交改动按文件聚合，修改与未跟踪分开列</span></figcaption>
         </figure>
         <figure class="shot reveal">
           <img src="assets/gpu.png" alt="GPU 监控" loading="lazy" />
@@ -620,11 +624,11 @@
         </div>
       </div>
       <div class="video-block">
-        <h3>② AI 问答页 <span class="tagmode">1:57 · 本地 qwen3.6 离线</span></h3>
+        <h3>② AI 问答页 <span class="tagmode">1:58 · 本地 qwen3.6 离线</span></h3>
         <div class="video-wrap">
           <div class="player reveal">
             <video id="askVideo" src="assets/ask-demo.mp4" poster="assets/ask-poster.jpg" muted autoplay loop playsinline preload="metadata"></video>
-            <div class="badge-live"><i></i>真实录屏 · 1:57</div>
+            <div class="badge-live"><i></i>真实录屏 · 1:58</div>
           </div>
           <div class="chapters reveal">
             <div class="chapter" data-t="0"><span class="t">00:00</span><div><b>问答页</b><span>工作区已绑定 rag-agent，31 份资料就位</span></div></div>
