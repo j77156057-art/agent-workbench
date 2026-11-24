@@ -263,9 +263,12 @@ class WiringTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        path = os.path.join(os.path.dirname(os.path.abspath(agent_mod.__file__)), "agent.py")
-        with open(path, encoding="utf-8") as handle:
-            cls.source = handle.read()
+        # 走统一入口取源码：拆分之后共享状态挂在 _TurnState 载体上（st.action_arg），
+        # 这里的正则认的是裸名字 —— helper 会按载体字段表把前缀还原。
+        # 顺带：变异电池会把改过的源码装进 sys.modules["agent"]，helper 现取，
+        # 这里也就跟着看到变异后的源码（钉子才有牙）。
+        from tests.agent_loop_source import agent_module_source
+        cls.source = agent_module_source()
 
     def test_dispatch_sites_pass_the_tool_context(self):
         """顺序 + 并行两条派发路径都得把 (工具名, 命令文本) 交给判据。"""

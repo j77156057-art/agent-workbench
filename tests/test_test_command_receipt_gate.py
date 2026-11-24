@@ -85,9 +85,10 @@ class WiringTests(unittest.TestCase):
 
         漏一条 = 那条路径上凭证依旧可伪造，而单测全绿。
         """
-        with open(os.path.join(os.path.dirname(os.path.abspath(agent_mod.__file__)),
-                              "agent.py"), encoding="utf-8") as handle:
-            source = handle.read()
+        # 走统一入口取源码：共享状态挂在 _TurnState 载体上之后，源码里是
+        # _test_command_passed(st.obs)；helper 会按载体字段表把前缀还原成裸名字。
+        from tests.agent_loop_source import agent_module_source
+        source = agent_module_source()
         sites = re.findall(r"turn\.test_command_ok = (.+)", source)
         self.assertEqual(len(sites), 2, "测试命令凭证的赋值点应恰好两处")
         for expr in sites:
