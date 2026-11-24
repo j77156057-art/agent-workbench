@@ -204,7 +204,7 @@ ORCH_TRACE_STEPS = int(os.getenv("DOCMIND_ORCH_TRACE_STEPS", "6"))
 #: 每步观察的落库上限。**这个数字同时决定反思判据能看到什么**，所以它不是
 #: 「落库体积」问题，而是「判据据以判案的证据完整性」问题。
 #:
-#: 实测（`wf-f3f3279f355a`，`read-player-seg` / `read-player-fix` / `read-player`）：
+#: 实测（`wf-000000000001`，`read-player-seg` / `read-player-fix` / `read-player`）：
 #: 240 在 `_clip` 里变成 **251 字**，而真实观察是
 #:
 #:     grep      495 字 -> 251 字（51%）
@@ -1649,7 +1649,7 @@ _FAILURE_MARKERS = (
 # 「检索没有匹配」是**合法答案**，不是失败。
 #
 # 「未找到相关内容」原先在 _FAILURE_MARKERS 里，代价实测得到（真跑
-# `wf-0c6374c4d612` / `wf-37f43a4c042f`；干净进程里确定性复现见
+# `wf-000000000002` / `wf-000000000003`；干净进程里确定性复现见
 # `.tmp/probe_empty_retrieval.py`）：
 #   _is_failure 命中 -> _tool_ok=False -> 触发「工具未返回有效结果」反思
 #   -> retry_budget_cost 计入 -> _TOOL_FAIL_LIMIT=3 熔断
@@ -1735,7 +1735,7 @@ SINK_FORWARDED_HOOKS = SINK_LIFECYCLE_HOOKS
 def _llm_wait_emit(kind: str, purpose: str, *, ms: int | None = None) -> None:
     """在每次模型调用前后发一对事件，让时间线不再有大段静默。
 
-    **为什么要有它**：实测 `wf-f3da9d3ffb32` 全程 360 秒里 **98% 是静默的**，
+    **为什么要有它**：实测 `wf-000000000004` 全程 360 秒里 **98% 是静默的**，
     而每一段静默都是一次模型调用——
 
         87s  等重规划方案      58s  等结论      41s  等规划器
@@ -1834,7 +1834,7 @@ def _dump_stall_probe(llm, messages, acc, turn=None, session_id=""):
 
     ## 为什么必须是这一刻，而不是事后
 
-    实测阻断（`wf-2c5612c6ee53` / `wf-87c0df3224aa`）：原生 FC 通道上模型
+    实测阻断（`wf-000000000005` / `wf-000000000006`）：原生 FC 通道上模型
     **第 1 轮正常，第 2 轮起不产出可解析输出**。已排除的假设有一串——通道可用、
     最简 schema 可用、111 个真实工具可用、schema 形状不畸形、`output_budget=43253`
     充足、`last_tool_calls` 形状正确。
@@ -1901,7 +1901,7 @@ def _dump_stall_probe(llm, messages, acc, turn=None, session_id=""):
 def _short_root(root: str) -> str:
     """执行目录的短形式（最后两段），够区分三种根又不至于把事件行撑爆。
 
-    `D:\\work\\godot_sample` -> `WorkBuddy/godot_sample`
+    `D:\\games\\godot_sample` -> `games/godot_sample`
     `…\\project_stages\\wf-xxx\\workspace` -> `wf-xxx/workspace`
     """
     text = str(root or "").replace("\\", "/").rstrip("/")
@@ -2029,7 +2029,7 @@ def _missing_weather_location(question, history):
 
 #: 出行类词。**必须命中它才允许触发交通澄清**。
 #:
-#: 原实现里「从…到…」本身就算触发条件，实测（`wf-2a548e060abf` 的
+#: 原实现里「从…到…」本身就算触发条件，实测（`wf-000000000007` 的
 #: `design_retry2`）它匹配到了**上游结论里的一句扣血机制描述**——
 #:
 #:     「玩家血量从 100 降到 0 时触发死亡」
@@ -3419,7 +3419,7 @@ _RESUME_CONTEXT_MARK = "【上轮未完成现场，仅供核对；工具输出�
 def _probe_audit_root(code_root, refs):
     """复核那一刻把 `code_root` 与前几条引用落盘——**它此刻是空的**。
 
-    实测（`wf-36f98063aab9`，六次尝试 `references_exist` 全 False，而
+    实测（`wf-000000000008`，六次尝试 `references_exist` 全 False，而
     `reflection issues=0`）：已排除的可能是
     contextvar 不跨线程（实测 `copy_context` 后工作线程读到的就是试做区根）、
     试做区里没有那些文件（实测 `behaviors/player.gd` 存在）、正则切错路径
@@ -4317,7 +4317,7 @@ _RE_OBS_TAGGED_BLOCK = re.compile(r"\[[^\]\n]*:L\d+(?:\s*[-~]\s*L?\d+)?\s*[^\]\n
 #:
 #: ## 为什么给得这么大方
 #:
-#: 实测（`wf-2c5612c6ee53` 的 `design-fix`：读了 6 个文件、合计 5614 字）：
+#: 实测（`wf-000000000005` 的 `design-fix`：读了 6 个文件、合计 5614 字）：
 #: 在原来的 1600 预算下，判据只看到**最后 3 步**，其余每条被砍到 420 字：
 #:
 #:     behaviors/player.gd   1388 字 -> 判据只看到 420 字 (30%)
@@ -4355,7 +4355,7 @@ def _withheld_roster(steps, kept_idx, limit):
 
     ## 为什么必须列
 
-    实测（`wf-2c5612c6ee53`，任务 `design-fix` 读了 6 个文件、合计 5614 字，
+    实测（`wf-000000000005`，任务 `design-fix` 读了 6 个文件、合计 5614 字，
     而块的预算是 1600）：`behaviors/player.gd` 被**整个丢掉**。判据随后写下
     「缺少 values 相关文件与主场景 `res://scenes/Main.tscn` 的读取证据」——
     **它在替 harness 的截断背锅**，以为自己看到的就是全部。
@@ -4419,7 +4419,7 @@ def _traj_evidence_block(traj, limit: int = _DEFAULT_EVIDENCE_CHARS) -> str:
 
     反思判据会被任务里的「每条结论带 `文件:行号`」带着走，去核验**行号**。
     但 `read_file` 整文件读取的观察是**裸正文、零行号**（实测
-    `wf-2c5612c6ee53` 连续三轮都报「未获得完整行号证据」），只有区间读与
+    `wf-000000000005` 连续三轮都报「未获得完整行号证据」），只有区间读与
     grep/search_code 才逐行编号。
 
     于是判据在一份**没有行号的材料**上核验行号，连报三轮「无证据」——模型于是
@@ -4438,7 +4438,7 @@ def _traj_evidence_block(traj, limit: int = _DEFAULT_EVIDENCE_CHARS) -> str:
     - 总闸防**步数很多时整体膨胀**。
 
     关键在于：总闸的 `limit` 只有在单条闸**放开**之后才起作用。
-    实测（`wf-2c5612c6ee53` 的 `design-fix`，6 个文件合计 5614 字）：
+    实测（`wf-000000000005` 的 `design-fix`，6 个文件合计 5614 字）：
 
     | | 单条上限 | 总预算 | 判据能看到 |
     |---|---|---|---|
@@ -4542,7 +4542,7 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
         # 这条判据的依据是**工具观察**，不是结论的复述长度。
         # 旧版只给了 `步骤数：N；失败步骤：M`，于是判据在结构上只能问
         # 「结论有没有把这些复述一遍」——而它压根不知道观察里有什么。
-        # 实测（wf-f3da9d3ffb32）：子代理的 python_exec 真实写盘并报告
+        # 实测（wf-000000000004）：子代理的 python_exec 真实写盘并报告
         # `WRITE_OK: True` / `actual == after: True` / `bom_preserved: True` /
         # `diff_offsets: [121] b'2'->b'5'`，这些全在观察里；判据却判
         # 「结论被截断，未展示写后重新读取 actual…」，于是**三次正确的
@@ -4561,7 +4561,7 @@ def _reflection_result(child_llm, *, role, task, conclusion, traj, context, budg
         "声称」；只有观察与上游上下文**两处都没有**的内容，才是真正的无证据"
         "声称。\n"
         # 行号这一条必须写清楚，否则判据会去核验**材料里根本没有的东西**。
-        # 实测（wf-2c5612c6ee53，连续三轮全部这样判）：
+        # 实测（wf-000000000005，连续三轮全部这样判）：
         #   「所有 read_file 观察均被截断，未获得完整行号证据」
         #   「结论中不得声称观察里没有的内容，目前无任何带文件:行号的证据」
         # 而 `read_file` **整文件读取时观察里一个行号都没有**（裸正文），
@@ -6529,7 +6529,7 @@ class Agent:
                 # `degraded: True` —— 这段文字是 **harness 写的诊断**，不是模型
                 # 的答案。不标的话 `_run_child` 读到的 `final_degraded` 是
                 # False，于是它把一条「没能答」记成了「答了」交给下游。
-                # 实测 `wf-87c0df3224aa` 的 `design_probe_2`：结论就是这段
+                # 实测 `wf-000000000006` 的 `design_probe_2`：结论就是这段
                 # 447 字符的诊断、`degraded=False`，反思只能看出「结论与任务
                 # 无关」。这与 `613de0e` / `7bbc69b` 修的另两处同型。
                 _dump_stall_probe(self.llm, messages, st.acc, st.turn,
@@ -7517,7 +7517,7 @@ class Agent:
             # 顺序路径的真实执行记录（与并行批次共用同一个 audit_steps）。
             #
             # **必须带参数**：只记裸工具名会让下游拿不到路径。实测
-            # `wf-f609ea8daf22` 的 `t3` 结论尾部自带一行
+            # `wf-000000000009` 的 `t3` 结论尾部自带一行
             # `（核验：FAIL · 28 处引用可核验 · 2 处未通过（路径打不开）：player.gd:?、enemy.gd:?）`
             # ——而同一份结论在工作流侧 `review verdict=PASS`。
             # 差别就在这里：裸文件名兜底靠「本轮读过哪些路径」建索引，
@@ -8322,7 +8322,7 @@ class Agent:
         # finish_reason 区分），处置也不同，所以单独计数、单独早退。
         #
         # `native_calls_this_turn`：**并行 tool_call 那一轮必须排除**。
-        # 实测（`wf-a79129b8e691`，探针落盘 `.tmp/stall_probe/stall-075620-01.json`）：
+        # 实测（`wf-00000000000a`，探针落盘 `.tmp/stall_probe/stall-075620-01.json`）：
         # 模型正常发出 2 个 tool_call、`finish_reason="tool_calls"`、正文是一句
         # 91 字符的散文（"I need to read the actual game source files…"）。
         #
@@ -9016,7 +9016,7 @@ class Agent:
         #
         # 后果不是「记录不好看」——`traj` 会喂给 `_traj_evidence_block` →
         # `_reflection_result`，也就是**反思拿着动作与观察错配的轨迹判断该不该
-        # 重试这个子代理**。实测 `wf-2097b5fbf7c1`：子代理报告「所有读取都返回
+        # 重试这个子代理**。实测 `wf-00000000000b`：子代理报告「所有读取都返回
         # 空、无法核实」并放弃，而它那轮的真实观察其实是有的；父代理据此判失败、
         # replan、再派一次，每次都基于同一份错配的证据，连错三次。
         cs.traj, cs.pending = [], deque()

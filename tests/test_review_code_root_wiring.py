@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """逐任务复核**必须拿到代码根**——缺省会让每一个引用都被判「打不开」。
 
-## 实测事故（`wf-6cd1ee3ca3c0`，八次尝试 `references_exist` 全 False）
+## 实测事故（`wf-000000000020`，八次尝试 `references_exist` 全 False）
 
 子代理用 `read_file(path: behaviors/enemy.gd)` 读到 1543 字全文，结论 2390 字、
 行号齐备、反思 `issues=0`——却被 Harness 复核否掉：
@@ -133,7 +133,7 @@ class ThePerTaskReviewFollowsTheExecutionRootTests(unittest.TestCase):
     """行为断言：子代理在试做区里跑，复核就必须拿试做区根。
 
     上面的源码断言只防得住「参数丢了」，防不住「参数传错根」——而实测
-    `wf-fe7288d4d77e` 恰好是后者：`code_root` 传了，只是传成了 origin。
+    `wf-000000000021` 恰好是后者：`code_root` 传了，只是传成了 origin。
     这里用假 ctx + 假 WORKFLOWS 把 `workflow_callbacks` 的 runner 真正跑
     一遍，看它交给 `review_output` 的到底是哪一份代码。
     """

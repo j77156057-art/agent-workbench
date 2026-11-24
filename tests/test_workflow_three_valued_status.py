@@ -3,7 +3,7 @@
 
 ## 为什么
 
-实测（`wf-80dc902c8cae` 等连续多次只读真跑）：四任务全 ok、十项检查全 True、
+实测（`wf-00000000000d` 等连续多次只读真跑）：四任务全 ok、十项检查全 True、
 `evidence_verified`、引用不过 0 条、`change_count = 0`，而 `status` 一直是
 `failed`——唯一原因是 `review.ok = agent_ok and project.ok` 而
 `project.status == "unverified"`（试做区没有容器级命令隔离）。

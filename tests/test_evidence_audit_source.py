@@ -135,7 +135,7 @@ class BothExecutionPathsRecordTests(unittest.TestCase):
 
     # ---- 记录必须**带参数**，否则下游拿不到路径 -----------------------------
     #
-    # 实测（`wf-f609ea8daf22` 的 `t3`）：结论尾部自带一行
+    # 实测（`wf-000000000009` 的 `t3`）：结论尾部自带一行
     #     （核验：FAIL · 28 处引用可核验 · 2 处未通过（路径打不开）：player.gd:?、enemy.gd:?）
     # 而同一份结论在工作流侧 `review verdict=PASS`。
     #

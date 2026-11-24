@@ -197,9 +197,9 @@ def _stage_workspace_root(state: dict, workflow_root: str,
     项目」。写操作一旦绕过它落到真实项目，用户就没有回退——而 UI 仍在报
     「改动位于临时试做区」。
 
-    实测这不是理论风险：`wf-3073fc5f2403` 之前，24 次工具调用**全部**落在真实
-    项目（`python_exec` 自报的「执行目录」也是它），而 `wf-3073fc5f2403` 修好
-    之后 24 次全部落在 `project_stages/wf-3073fc5f2403/workspace`。
+    实测这不是理论风险：`wf-00000000001e` 之前，24 次工具调用**全部**落在真实
+    项目（`python_exec` 自报的「执行目录」也是它），而 `wf-00000000001e` 修好
+    之后 24 次全部落在 `project_stages/wf-00000000001e/workspace`。
 
     ## 为什么必须每次调用时才读
 
@@ -378,10 +378,10 @@ def make_project_bound(ctx):
         而绑定发生在执行请求到达时、试做区存在**之前**。所以在绑定那一刻把根
         抓成字符串，之后永远不会变——试做区建好了也没人重新读它。
 
-        实测后果（`wf-7cc2e86620ce`、`wf-db3caef9623f`）：`scoped_runner` 把根设成
+        实测后果（`wf-000000000019`、`wf-00000000001f`）：`scoped_runner` 把根设成
         试做区 workspace，紧接着 `runner` 进来第一件事就是把它盖回真实项目。
         探针在 `scoped_runner` 里读到 `want == actual == workspace`（`matches=True`），
-        而工具事件里全是 `@WorkBuddy/godot_sample`，`python_exec` 自报的「执行
+        而工具事件里全是 `@<项目根>/godot_sample`，`python_exec` 自报的「执行
         目录」也是真实项目。
 
         也就是说**试做区隔离从来没有生效过**，而 UI 一直在报「改动位于临时试
@@ -513,7 +513,7 @@ def make_workflow_callbacks(ctx):
             # `exists=False` —— 而 `in_root` 因`root is None` 保持初值 `True`，
             # 两者组合起来看起来像「路径存在但判定矛盾」，实际是「压根没查」。
             #
-            # 实测（`wf-6cd1ee3ca3c0`，八次尝试`references_exist` 全 False）：
+            # 实测（`wf-000000000020`，八次尝试`references_exist` 全 False）：
             # 子代理用 `read_file(path: behaviors/enemy.gd)` 读到了 1543 字全文，
             # 结论 2390 字、行号齐备、反思 `issues=0`，却被这一行否掉。
             # 而同一时刻 `_audit_live_answer`（它传了 `get_runtime("code_root")`）
@@ -525,7 +525,7 @@ def make_workflow_callbacks(ctx):
             # 但**读哪个根**必须跟着执行根走：`stage_enabled=True` 时子代理的
             # 截图 `.docmind/screenshots/*.jpg` 和 `engine.log` 只存在于试做区
             # 副本，拿 origin 项目根去核验，这些**根外绝对路径**必然
-            # `references_exist=False`——实测 `wf-fe7288d4d77e` 的 boot 任务
+            # `references_exist=False`——实测 `wf-000000000021` 的 boot 任务
             # 三连失败、报「子代理输出未通过 Harness 复核」，而同一结论用
             # 试做区根复核是通过的。`_audit_root()` 与 `scoped()` 用同一个
             # 解析器，保证「在哪跑就在哪验」。

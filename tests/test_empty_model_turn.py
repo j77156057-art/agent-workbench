@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """模型某一轮什么都没说时，子代理不该崩成 `AttributeError`。
 
-## 实测故障（真实工作流trace，`wf-f3da9d3ffb32`）
+## 实测故障（真实工作流trace，`wf-000000000004`）
 
 `impl_update_hp_growth` 任务，4.9 秒后失败：
 

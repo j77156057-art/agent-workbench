@@ -126,7 +126,7 @@ class WaitEventsReachTheStreamTests(unittest.TestCase):
 class GraphNodeWaitsTests(unittest.TestCase):
     """图节点的 LLM 调用也要发等待事件——**那才是静默的大头**。
 
-    实测 `wf-f3da9d3ffb32`：等重规划 87s、等规划器 41s、等方案选项 23s，
+    实测 `wf-000000000004`：等重规划 87s、等规划器 41s、等方案选项 23s，
     三段合计 151s。而 `agent.py` 侧那对 `llm_wait_*` **只覆盖 ReAct 循环里的
     调用**，这三段都在 `game_workflow` 的图节点上，一个都没覆盖到——
     所以上一条提交说「时间线不再有大段静默」是**过头了**，这里补上。

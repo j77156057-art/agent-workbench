@@ -551,7 +551,7 @@ class WorkflowOption:
 #
 # ## 为什么要第三个值
 #
-# 实测（`wf-80dc902c8cae` 等连续多次只读真跑，四任务全 ok、十项检查全 True、
+# 实测（`wf-00000000000d` 等连续多次只读真跑，四任务全 ok、十项检查全 True、
 # `evidence_verified`、引用不过 0 条、change_count=0）里，`status` 一直是
 # `failed`，唯一原因是 `review.ok = agent_ok and project.ok` 而
 # `project.status == "unverified"`（试做区没有容器级命令隔离）。
@@ -624,7 +624,7 @@ def counts_as_ok(item: Any) -> bool:
 def unmet_acceptance_items(contract: Any, results: Any) -> list[dict[str, Any]]:
     """用户已批准的**必需**验收条件里，哪些指向的任务没能完成。
 
-    ## 实测事故（`wf-bdb1a54286bf` / `wf-0bbd6c9edf6e`，形状完全一致）
+    ## 实测事故（`wf-00000000000e` / `wf-00000000000f`，形状完全一致）
 
     用户批准的验收条件（`revision=1, approved_revision=1`）要求三个任务：
 
@@ -658,7 +658,7 @@ def unmet_acceptance_items(contract: Any, results: Any) -> list[dict[str, Any]]:
     ## 反向守卫
 
     · 全部必需条件都被 `ok` / `deduped` / `failed`(已补救) 的任务支撑 -> 门开
-      （实测 `wf-80dc902c8cae`、`wf-23be9f18b3c6` 四条全 ok，必须仍能报完成；
+      （实测 `wf-00000000000d`、`wf-000000000010` 四条全 ok，必须仍能报完成；
       `test_execute_uses_langgraph_for_single_wave_replan_and_context`
       broken->repair 也必须仍能报 completed）
     · 任务 `blocked`（因上游失败**从未被尝试**）-> 算未满足
@@ -808,7 +808,7 @@ def keep_required_tasks(previous: Iterable[Mapping[str, Any]],
                         protected: set[str]) -> tuple[list[dict[str, Any]], list[str]]:
     """重规划的提案若丢掉了**受保护**的任务，把它们放回去。-> ``(最终任务表, 保留的 id)``
 
-    ## 实测（wf-58a346c6cbec / wf-02f4a26bf38b，两轮真跑）
+    ## 实测（wf-000000000011 / wf-000000000012，两轮真跑）
 
     重规划**反复**把计划改小：
 
@@ -1353,8 +1353,8 @@ def build_recovery_plan(state: Mapping[str, Any] | WorkflowState | None,
         if not failed and not uncertain and not changed:
             # **什么都没发生就不要编一个「需要用户审核的失败下一步」。**
             #
-            # 实测（`wf-f609ea8daf22` / `wf-fc3cf86c5eaf` / `wf-fd543f79c197` /
-            # `wf-e042489bf0fe` / `wf-af6a2e4a9b2b`，五次真跑形状完全一致）：
+            # 实测（`wf-000000000009` / `wf-000000000013` / `wf-000000000014` /
+            # `wf-000000000015` / `wf-000000000016`，五次真跑形状完全一致）：
             # 四任务全 `ok`、`failed_task_ids: []`、`uncertain_task_ids: []`、
             # `review.project.change_count = 0`、`changes = []`、`diff = ""`，
             # 却照样产出 `status: "required"` +「恢复执行前项目快照」。
@@ -1883,7 +1883,7 @@ class GameWorkflowManager:
                        "merged": str((state.results or {}).get("merged") or "")},
         })
         # 压缩快照是**派生账本**（跨窗口交接用的补充材料），主状态才是事实来源。
-        # 所以这里绝不能让它的失败拖垮 `_save`：实测 `wf-3784257fd6d1` 里
+        # 所以这里绝不能让它的失败拖垮 `_save`：实测 `wf-00000000000c` 里
         # `context_compression.json` 的一次 `os.replace` 撞上 Windows 的
         # `PermissionError: [WinError 5]`，异常从这行直接冒出 `_save`，
         # **主状态根本没写下去**，`/choose` 于是返回 500。
@@ -2122,7 +2122,7 @@ class GameWorkflowManager:
 
         `state.tasks` 是规划出来的 DAG，条目本身**没有** status；真正的结局
         在 `state.results["results"][task_id].status`。旧写法数
-        `tasks[*].status == "done"` 恒为 0——实测 wf-57af9cdb2f18 卡片显示
+        `tasks[*].status == "done"` 恒为 0——实测 wf-000000000017 卡片显示
         3/3，历史弹层却写「已完成 · 0/3 个任务」。这里与卡片
         `completedCount`（status === 'ok'）保持同一口径。
         """
@@ -2427,7 +2427,7 @@ class GameWorkflowManager:
         先只报不拦：拦下来要改规划器的重试语义，而「哪些动词算要写」这个判据
         本身有误报风险——宁可先让人看见，别先让人动不了。
 
-        实测依据（四次真实工作流）：`wf-9f121dec38a6` 的三个任务全是
+        实测依据（四次真实工作流）：`wf-000000000018` 的三个任务全是
         `researcher`/`researcher`/`planner`，**整轮没有一个人有权写文件**，
         而目标就是写一个文件。那不是模型偷懒，是任务在结构上无法完成——
         而界面上看不出这件事，只能看到「任务失败」。
@@ -2872,7 +2872,7 @@ class GameWorkflowManager:
 
         ## 为什么需要
 
-        实测（真跑 `wf-0c6374c4d612` / `wf-37f43a4c042f`）：探测项目从未 ingest，
+        实测（真跑 `wf-000000000002` / `wf-000000000003`）：探测项目从未 ingest，
         `search_code` 返回空，而**没有任何提示**。子代理拿不到任何代码证据，转去
         追 `search_knowledge` 里的无关文档，五步全花掉、任务失败。
 
@@ -3470,7 +3470,7 @@ class GameWorkflowManager:
         # 角色能力错配：任务要求写文件，而它的角色工具列表里没有任何写类工具
         # （`researcher` / `planner` / `dispatcher` / `reviewer` 都是只读的，
         #  hint 里明写「不要改任何文件」）。这类任务在**结构上无法完成**——
-        # 实测 `wf-9f121dec38a6` 整轮三个任务全是只读角色，而目标就是写一个文件。
+        # 实测 `wf-000000000018` 整轮三个任务全是只读角色，而目标就是写一个文件。
         #
         # 与上面「未知依赖」同一条处置：**整图拒绝**，不静默删掉那几条。
         # 静默删任务正是本会话修掉的那个病（多步 DAG 被悄悄截成只剩根任务，
@@ -3564,7 +3564,7 @@ class GameWorkflowManager:
         那段注释写着「重排同样会静默丢任务…差额记进持久化历史，否则『重排后只剩
         两步』没人看得见」——而它偏偏在这个场景失效：**提案本身变小了，差额是 0。**
 
-        实测（`wf-bdb1a54286bf` / `wf-0bbd6c9edf6e`）：
+        实测（`wf-00000000000e` / `wf-00000000000f`）：
 
             tasks   = [research_retry]        （原 research/implement/verify）
             results = {research: failed, implement: blocked, verify: blocked,
@@ -4448,7 +4448,7 @@ class GameWorkflowManager:
                     with project_stage_scope(origin_root=state.project_root):
                         # 诊断：设置之后、派发之前，各读一次真实生效的根。
                         # 此前这条路径被静态排查过三次都判「机制正常」，而实测
-                        # `wf-7cc2e86620ce` 里 python_exec 报的执行目录是**真实
+                        # `wf-000000000019` 里 python_exec 报的执行目录是**真实
                         # 项目**。分不清是「没设」还是「设了但没生效」，所以两头
                         # 都读一次：两者不一致就说明中间有人把它改回去了。
                         self._stage_scope_probe(state, task, token)
@@ -5309,7 +5309,7 @@ class GameWorkflowManager:
 
             同时给**模型调用**发一对 `llm_wait_start` / `llm_wait_end`。
             `agent.py` 侧那对只覆盖了 ReAct 循环里的调用，而实测最大的几段静默
-            根本不在那里（`wf-f3da9d3ffb32`：等重规划 87s、等规划器 41s、
+            根本不在那里（`wf-000000000004`：等重规划 87s、等规划器 41s、
             等方案选项 23s，三段合计 151s，占全部静默的大头）——那些是本图节点的
             LLM 调用，只能在这里补。
 
@@ -5925,7 +5925,7 @@ class GameWorkflowManager:
                             # 留痕写在**这里**，不写在 task 的字段上：`_parse_
                             # generated_tasks` 会「intentionally drop unknown
                             # fields」，所以 `restored_after_replan` 那个标记活不到
-                            # 落盘（实测 wf-b49a04ee5594：tasks 上查不到）。
+                            # 落盘（实测 wf-00000000001a：tasks 上查不到）。
                             "restored_required": restored_ids})
             return {"phase": "execute", "status": "executing", "event": "replan",
                     "replan_count": attempt, "failed_tasks": [], "tasks": parsed,

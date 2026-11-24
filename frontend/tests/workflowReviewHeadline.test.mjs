@@ -5,7 +5,7 @@ import { reviewHeadlineOf, statusLabelOf, displayStatusOf } from '../src/workben
 /**
  * 复核区标题必须**分两维度说**，不能读被压扁的 `review.ok`。
  *
- * ## 实测（`wf-af6a2e4a9b2b` 真跑）
+ * ## 实测（`wf-000000000016` 真跑）
  *
  * 四任务全 ok、十项检查全 True、evidence_verified、引用 50/30/28/2 条不过 0 条、
  * change_count=0（纯只读）。后端分开存了 `review.agent_ok`（内容+证据）与

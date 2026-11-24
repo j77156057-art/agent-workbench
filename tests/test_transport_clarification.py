@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """交通票价澄清**不得劫持**与出行无关的中文任务。
 
-## 实测（`wf-2a548e060abf` 的 `design_retry2`，切到 deepseek-chat 后第一轮真跑）
+## 实测（`wf-000000000007` 的 `design_retry2`，切到 deepseek-chat 后第一轮真跑）
 
 那个子代理的结论是：
 

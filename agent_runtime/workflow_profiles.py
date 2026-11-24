@@ -85,7 +85,7 @@ def _eda_options(request: str, sources) -> list[dict]:
 
 def _eda_fallback_tasks() -> list[dict]:
     # 根任务：先读当前 EDA 文档，再谈任何设计动作。此前把 schematic 挂在
-    # research 之后，`wf-b087d3f6b77f` 里 research 只拿到 0 条外部资料并把
+    # research 之后，`wf-00000000001c` 里 research 只拿到 0 条外部资料并把
     # "无法核实"的上下文喂给 schematic，子代理 ReAct 一步都没走、
     # steps=0 直接判死——连接器路径根本没被触发过。修好的形状：schematic
     # 自己就是根，读原理图这一步不依赖任何上游结论；research 并行、可选，
@@ -121,7 +121,7 @@ def _eda_fallback_tasks() -> list[dict]:
         # game_workflow 的 depends_on→context 装配）。research/layout/verify 均为
         # optional——EasyEDA Pro v0.1.0 只开放原理图侧只读工具，没有 ERC/DRC/网表导出
         # 能力，纯读取场景里这几步往往无法确定完成；把它们标可选，是为了让**失败的检查
-        # 不阻断末尾的 report 节点**、也不逼重规划器原地打转（见 wf-99ecf32f9c86：
+        # 不阻断末尾的 report 节点**、也不逼重规划器原地打转（见 wf-00000000001d：
         # verify 失败 → report 被"上游 verify failed"阻断 → replan 反复补 report），
         # 而每个子代理仍如实回报自身状态、终审 review_output 仍复核合并结论。
         # 本节点只读、不再调连接器、不写文件，职责是把各子任务的真实数据、
@@ -261,7 +261,7 @@ EDA = Profile(
         "任务 JSON 必须给出【显式 tools 白名单】且 mcp=\"allow\"，"
         "并在任务描述中要求子代理先 dev_list_connector_tools 核实真实工具名后再 dev_mcp_call，禁止臆造工具名；"
         "每个任务的验收必须可检验（例如 ERC/DRC 零错误，或逐项列明违规与豁免依据）。"
-        "**硬性编排规则**（`wf-b087d3f6b77f` 反例教训）："
+        "**硬性编排规则**（`wf-00000000001c` 反例教训）："
         "(1) EDA 连接器读取任务**必须是根任务**（`depends_on:[]`），"
         "禁止把 schematic/layout/verify 之类需要连接器数据的任务 `depends_on:[\"research\"]`——"
         "research 走 web_search/web_fetch，找不到外部资料就把\"无法核实\"塞进上下文，"

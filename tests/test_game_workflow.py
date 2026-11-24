@@ -1072,7 +1072,7 @@ class GameWorkflowTests(unittest.TestCase):
     def test_list_workflows_counts_done_tasks_from_execution_results(self):
         """历史弹层的完成数来自 results，不是 tasks[].status（后者不存在）。
 
-        实测 wf-57af9cdb2f18：卡片 3/3，历史却写「已完成 · 0/3 个任务」。
+        实测 wf-000000000017：卡片 3/3，历史却写「已完成 · 0/3 个任务」。
         """
         state = self.manager.start("历史计数", project_root="D:/count",
                                    policy=WorkflowPolicy(approval_mode="high"))

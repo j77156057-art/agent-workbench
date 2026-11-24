@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """从正文里切文件引用时，扩展名不能被截断——截断了会**误判路径不存在**。
 
-## 实测（`wf-2a548e060abf` 的 `design_retry`）
+## 实测（`wf-000000000007` 的 `design_retry`）
 
 模型交出 3769 字符的设计说明、引用 18 处**完全正确**的路径，整份被
 `review_output` 拒掉，理由是 `evidence_verified` 判红。真正的原因：
@@ -117,7 +117,7 @@ class NoPhantomPathTests(unittest.TestCase):
 class GodotUriSchemeTests(unittest.TestCase):
     """`res://` 是 Godot 原生路径写法，模型每写一个就被误报一次。
 
-    实测（`wf-87c0df3224aa` 的 `design_probe`）：模型交出 4028 字符、每条都带
+    实测（`wf-000000000006` 的 `design_probe`）：模型交出 4028 字符、每条都带
     `文件:行号` 的证据清单，被整份拒掉，理由是 6 条引用「路径打不开」：
 
         //addons/docmind_bridge/docmind_bridge.gd

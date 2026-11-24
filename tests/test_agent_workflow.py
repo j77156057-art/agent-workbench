@@ -60,7 +60,7 @@ class AgentWorkflowTests(unittest.TestCase):
     def test_engine_log_summary_fields_survive_a_flooded_tail(self):
         """证据摘要必须排在 lines 前面：反思只保留观察前 1600 字。
 
-        实测 `wf-4dd2abca90c9`：点击已落地、CLICK_PROBE 与 match_count 都在
+        实测 `wf-000000000022`：点击已落地、CLICK_PROBE 与 match_count 都在
         工具结果里，但 300 行 HEARTBEAT 把摘要挤出前 1600 字，反思判据只能
         看到心跳，于是把一条完全正确的结论判成「无证据」。
         """

@@ -405,6 +405,10 @@ agent-workbench/
 
 This section states **what the project applies to** and **the trade-offs it accepts**. (Per-project defect notes exist locally but are deliberately kept out of this repo as working documents — see `docs/` for what *is* published.)
 
+**The git history still carries the internal working documents and the shape of the developer machine** — a deliberate trade-off, not an oversight. The internal process notes (handoffs / defect lists / methods) were removed from the current version in `6308336`, and `.gitignore` keeps them out from then on; but **the commit history was not rewritten**. History *is* this project's process evidence (every criterion change, every real run is in it), and rewriting it to make the names clean would erase that evidence along with it. The cost: anyone who clones this repo can still read those documents out of history, together with the local directory layout of the machine they were written on (drive-letter paths with developer directory names).
+
+The current version (HEAD) is clean under the [`tools/privacy_scan.py`](tools/privacy_scan.py) gate: real session ids, workflow session ids, machine-local absolute paths (**including the escaped forms used in source and JSON**) and key-shaped strings are all treated as leaks. Workflow session ids are uniformly faked into placeholders of the shape "eight zeros plus a number", and the real session ids and machine-local session paths in the evaluation baseline were replaced with `<repo>` / `<tmp>`-style placeholders. The gate has its own **judgement self-test** ([`tests/test_privacy_scan_gate.py`](tests/test_privacy_scan_gate.py)) — a gate that goes blind on its own produces no red light for anyone to notice.
+
 | Dimension | Status |
 |---|---|
 | Single-user, local | No auth on localhost by default; a single-token check can be enabled. **No** multi-user collaboration or role permissions |

@@ -25,23 +25,42 @@ MAX_BYTES = 2 * 1024 * 1024
 PATTERNS = {
     # 只认真本机根：示例路径（D:\MyGame、D:\path\to 之类）不泄露机器身份，
     # 而 WorkBuddy/work/Temp/Users/study 下的路径带开发者目录与项目名。
-    "drive_path": re.compile(r"\b[A-Za-z]:[\\/](?:WorkBuddy|work|Temp|Users|study)[\\/][^\s\"'`,)\]]{0,90}"),
-    "user_dir": re.compile(r"(?:C:\\\\?Users\\\\?|/Users/)[A-Za-z0-9_' -]{1,40}"),
+    #
+    # **分隔符容错 {1,2}**：源码与 JSON 里写的是**转义形式**（D:\\WorkBuddy\\…），
+    # 旧正则只认单个分隔符 → 整整一类写法在门禁面前是隐形的（实测：把 agent.py 的
+    # 示例改成双反斜杠，门禁依然 0 命中）。
+    "drive_path": re.compile(r"\b[A-Za-z]:[\\/]{1,2}(?:WorkBuddy|work|Temp|Users|study)"
+                            r"[\\/]{1,2}[^\s\"'`,)\]]{0,90}"),
+    # Linux 家目录（/Users/ 之外的那一半）。
+    "abs_home": re.compile(r"/(?:home|Users)/[A-Za-z0-9_.-]{1,40}/"),
+    # 本机状态目录里的**真实**会话文件。目录名 .docmind_sessions 本身是产品公开名，
+    # 不判；判的是「目录 + 带时间戳的真实会话名」。
+    "local_session_path": re.compile(r"\.docmind_sessions[\\/]{1,2}[A-Za-z0-9_.-]*-\d{8}-\d{6}"),
+    # 真实会话 id：工作流（wf-）、跑批时间戳（golden-20261027-201309-G01）。
     "session_id": re.compile(r"\b(?:ask|web|dev)-[0-9a-f]{16,}\b"),
+    "wf_session_id": re.compile(r"\bwf-[0-9a-f]{10,16}\b"),
+    "run_stamp_id": re.compile(r"\b(?:golden|ask|web|dev|wf)-[0-9]{8}-[0-9]{6}-[A-Za-z0-9]+\b"),
     "secret": re.compile(r"\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})"),
 }
+
 # 带理由的白名单：合成占位 id（全零），逐条计数打印，豁免量本身可见。
 ALLOW = {
     "session_id": (
         re.compile(r"^(?:ask|web|dev)-0{8,}[0-9a-f]*$"),  # 全零合成占位（browser 套件默认值）
     ),
+    # 工作流会话 id 的合成占位：8 个零起头 + 十六进制编号（保留「同一个 id 在多处
+    # 出现」的关系，抹掉的是真实运行痕迹）。
+    "wf_session_id": (re.compile(r"^wf-0{8,}[0-9a-f]*$"),),
+    # Emscripten 运行时默认用户（浏览器沙箱里的固定串，不是本机身份）。
+    "abs_home": (re.compile(r"^/home/web_user/?$"),),
 }
 # 脱敏测试夹具键：scrub/泄露守卫用例故意写的假键，不是真凭据。
 FAKE_KEYS = {
     "sk-1234567890abcdef", "sk-abcdEFGH1234567890wxyz",
     "sk-REALPLAINTEXTKEY000000000000", "sk-abcdefghijklmnop",
 }
-# tests/ 里的盘符路径是夹具约定（C:\work 合成根）；本地探针脚本（tools/）已统一
+# tests/ 里的盘符路径与家目录是夹具约定（C:\work 合成根、/home/u/ 合成基址）；
+# 本地探针脚本（tools/）已统一
 # 改用 tempfile.gettempdir()，这里保留前缀豁免只防回归，产品代码与文档仍按严判据核。
 FIXTURE_PREFIXES = ("tests/", "tools/")
 
@@ -84,7 +103,7 @@ def scan(root=ROOT):
                     if kind == "secret" and val in FAKE_KEYS:
                         allowed += 1
                         continue
-                    if kind == "drive_path" and rel.startswith(FIXTURE_PREFIXES):
+                    if kind in ("drive_path", "abs_home") and rel.startswith(FIXTURE_PREFIXES):
                         allowed += 1
                         continue
                     violations.append("%s:%d [%s] %s" % (rel, no, kind, val[:90]))

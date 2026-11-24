@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """重规划让计划**变小**这件事必须看得见。
 
-## 实测（`wf-bdb1a54286bf` / `wf-0bbd6c9edf6e` 形状完全一致）
+## 实测（`wf-00000000000e` / `wf-00000000000f` 形状完全一致）
 
     原计划      research / implement / verify        （3 个，用户已批准）
     research    failed  （子代理反思未通过）

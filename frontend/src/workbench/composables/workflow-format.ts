@@ -12,7 +12,7 @@ export const STATUS_LABEL: Record<string, string> = {
   planning: '规划中', interrupted: '已暂停', completed: '已完成', failed: '执行失败',
   // **纯展示态**，后端不产生这个 status。
   //
-  // 实测（`wf-e042489bf0fe`）：四个子代理全 `ok`、十项复核检查全绿、
+  // 实测（`wf-000000000015`）：四个子代理全 `ok`、十项复核检查全绿、
   // `evidence_verified: true`、144 条引用 0 条不过、内容 4133 字全部正确交付——
   // 而 `status` 是 `failed`，因为 `game_workflow.py:3245` 把两个维度压成一个布尔：
   //
@@ -59,7 +59,7 @@ export function displayStatusOf(state: { status?: string; review?: Record<string
 /**
  * 复核区标题：**分两维度说**，不读那个被压扁的 `review.ok`。
  *
- * ## 实测（`wf-af6a2e4a9b2b` 真跑）
+ * ## 实测（`wf-000000000016` 真跑）
  *
  * 那一轮：四任务全 `ok`、十项检查全 True、`evidence_verified: true`、
  * 引用 50/30/28/2 条**不过 0 条**、`change_count: 0`（纯只读）。

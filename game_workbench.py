@@ -1271,7 +1271,7 @@ def engine_logs(root, limit=200, contains=""):
     # 顺序即协议：**摘要字段必须排在 `lines` 前面**。
     # 反思/观察截断只保留工具结果的前 1600 字；`lines` 若排在最前，一次
     # 300 行的心跳洪泛就会把 total_lines / marker_samples / matches 全挤出窗口，
-    # 判据于是把「材料被切掉」误判成「结论无证据」。实测 `wf-4dd2abca90c9` 的
+    # 判据于是把「材料被切掉」误判成「结论无证据」。实测 `wf-000000000022` 的
     # verify 首轮：结论里的 CLICK_PROBE / match_count 全对，却被反思否掉，
     # 只因观察里只剩 HEARTBEAT_FRAME。字段值与行为不变，只改排列。
     data = {"ok": True,

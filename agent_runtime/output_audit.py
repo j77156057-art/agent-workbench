@@ -44,7 +44,7 @@ _LOCATION_QUERY = re.compile(
 #:
 #: ## 扩展名表为什么按「长的在前」排
 #:
-#: 实测（`wf-2a548e060abf` 的 `design_retry`）：模型交出 3769 字符的设计说明，
+#: 实测（`wf-000000000007` 的 `design_retry`）：模型交出 3769 字符的设计说明，
 #: 引用了 18 处**完全正确**的路径，却整份被 `review_output` 拒掉——
 #: `evidence_verified` 判红的真正原因是
 #:
@@ -356,7 +356,7 @@ def _tool_name(action: str) -> str:
     写的是 `action == "read_file"` 精确匹配，于是**工作流路径下 `read_steps`
     恒为空**，`read_file_present` 恒为 False——而 `evidence_verified` 用的正是
     含这一项的聚合。结果是每个工作流子代理的结论都被 Harness 复核拒掉，
-    无论内容多好（实测 `wf-87c0df3224aa` 的 `design_probe`：4028 字符、每条都
+    无论内容多好（实测 `wf-000000000006` 的 `design_probe`：4028 字符、每条都
     带 `文件:行号`，照样被拒）。
     """
     text = str(action or "").strip()
@@ -367,7 +367,7 @@ def _tool_name(action: str) -> str:
 def _strip_uri_scheme(path: str) -> str:
     """去掉 `res://` / `user://` 这类 URI 前缀，只留**相对代码根**的部分。
 
-    实测（`wf-87c0df3224aa` 的 `design_probe`）：模型交出 4028 字符、每条都带
+    实测（`wf-000000000006` 的 `design_probe`）：模型交出 4028 字符、每条都带
     `文件:行号` 的证据清单（`project.godot:6 config/name="StarVoyager"`…），
     又被整份拒掉，理由是 6 条引用「路径打不开」：
 
@@ -538,7 +538,7 @@ def _basename_index(paths: Any) -> dict[str, list[str]]:
 
     ## 为什么需要它
 
-    实测（`wf-54651f11c4a0`）：子代理用 `read_file(path: behaviors/enemy.gd)` 成功
+    实测（`wf-00000000001b`）：子代理用 `read_file(path: behaviors/enemy.gd)` 成功
     读到全文，结论里写的是裸文件名 `enemy.gd`——复核判 `exists=false`，于是
     `references_exist: false` 把**整份结论**否掉，而同一份结论里的
     `behaviors/player.gd:8`、`project.godot` 全部 `exists=true line_ok=true`。
@@ -603,7 +603,7 @@ def audit_evidence(result: Mapping[str, Any] | None, *, question: str = "",
     # 此前写的是 `action == "read_file"` 精确匹配，于是工作流里 `read_steps`
     # **恒为空**、`read_file_present` 恒为 False，而 `evidence_verified` 用的
     # 正是含这一项的聚合 —— 结果是**每个工作流子代理的结论都被 Harness 复核
-    # 拒掉**，无论内容多好。实测 `wf-87c0df3224aa` 的 `design_probe`：
+    # 拒掉**，无论内容多好。实测 `wf-000000000006` 的 `design_probe`：
     # 4028 字符、每条都带 `文件:行号`，照样被拒。
     read_steps = [item for item, action in zip(steps, actions)
                   if _tool_name(action) == "read_file"]

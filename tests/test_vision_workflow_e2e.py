@@ -226,7 +226,7 @@ class WorkflowGateE2ETests(unittest.TestCase):
         planned = self.manager.plan(wid)
         tasks = planned["tasks"]
         # 连接器读取（schematic）为根任务，research 并行可选——
-        # 见 wf-b087d3f6b77f：schematic 挂在 research 之后会被 research 的空
+        # 见 wf-00000000001c：schematic 挂在 research 之后会被 research 的空
         # 结论污染、导致子代理 steps=0。修好后 schematic 排最前、depends_on 为空。
         self.assertEqual([t["id"] for t in tasks],
                          ["schematic", "research", "layout", "verify", "report"])

@@ -5,20 +5,20 @@
 
 修之前，连续两轮工作流的**每一次**工具调用都落在真实项目：
 
-    wf-7cc2e86620ce   python_exec 自报「执行目录：<sample-project>
+    wf-000000000019   python_exec 自报「执行目录：<sample-project>
                       ← 不在试做区内，相对路径会写进真实项目」
-    wf-db3caef9623f   6 次 before_tool 全部 @WorkBuddy/godot_sample
+    wf-00000000001f   6 次 before_tool 全部 @<项目根>/godot_sample
 
 而在 `scoped_runner` 内部架的探针读到的是
 
-    want == actual == …\\project_stages\\wf-db3caef9623f\\workspace   matches=True
+    want == actual == …\\project_stages\\wf-00000000001f\\workspace   matches=True
 
 也就是说 `set_context_code_root` **确实生效了**，紧接着 `runner` 进来第一件事
 就把它盖回真实项目。探针的价值就在这儿：只验 `set_context_code_root` 本身成立
 （此前三次静态排查就是这么下的结论）根本不足以说明问题，因为真正被覆盖的是
 **调用它的那一层**。
 
-修之后（`wf-3073fc5f2403`）：**24 次工具调用全部** `@wf-3073fc5f2403/workspace`。
+修之后（`wf-00000000001e`）：**24 次工具调用全部** `@wf-00000000001e/workspace`。
 
 ## 为什么是「每次调用时才解析」而不是绑定时抓成字符串
 

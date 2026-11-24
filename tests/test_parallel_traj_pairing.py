@@ -3,7 +3,7 @@ r"""并行工具批次下，`_run_child` 的 action/observation 配对错位。
 
 ## 实测依据（不是设想）
 
-真实工作流 `wf-2097b5fbf7c1`（跑在 godot_sample 上）的落库 trace 里，动作和
+真实工作流 `wf-00000000000b`（跑在 godot_sample 上）的落库 trace 里，动作和
 观察对不上：
 
 | 动作 | 实际观察到的内容 |
@@ -161,7 +161,7 @@ class ParallelBatchPairingTests(unittest.TestCase):
 
 
 class RealRunShapeTests(unittest.TestCase):
-    """把 `wf-2097b5fbf7c1` 里观察到的那个形状钉下来当回归。"""
+    """把 `wf-00000000000b` 里观察到的那个形状钉下来当回归。"""
 
     def test_the_real_shape_pairs_correctly(self):
         steps = _steps_from([

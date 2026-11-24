@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """`search_code` 必须按项目隔离 —— 这一族。
 
-## 真实故障（真跑 `wf-0c6374c4d612`）
+## 真实故障（真跑 `wf-000000000002`）
 
 子代理在探测项目（只有 `calc.py` / `test_calc.py` / `README.md`）上干活，
 `search_code` 却返回了：

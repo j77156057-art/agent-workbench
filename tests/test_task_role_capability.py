@@ -3,7 +3,7 @@
 
 ## 实测依据（四次真实工作流，不是设想）
 
-`wf-9f121dec38a6` 的三个任务全是 `researcher` / `researcher` / `planner`：
+`wf-000000000018` 的三个任务全是 `researcher` / `researcher` / `planner`：
 
 | 角色 | 工具列表有 `python_exec` 吗 | hint 写的什么 |
 |---|---|---|
@@ -12,7 +12,7 @@
 
 **整轮没有一个人有权写文件**，而目标就是写一个文件。
 
-而 `wf-f3da9d3ffb32` 里任务一旦派给 `coder`（有 `python_exec`），模型立刻就用了
+而 `wf-000000000004` 里任务一旦派给 `coder`（有 `python_exec`），模型立刻就用了
 ——`WRITE_OK: True` 就是它写出来的。
 
 **所以曾把这件事归因为「模型不肯用指定工具」是错的。** 真实形状是

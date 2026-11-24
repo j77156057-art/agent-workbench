@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """`read_file` 的行号参数名必须都认——`start_line:` 是第四层语法陷阱。
 
-## 实测（`wf-2c5612c6ee53`）
+## 实测（`wf-000000000005`）
 
     read_file(path: project.godot, start_line: 6, end_line: 8)
     → 文件不存在：project.godot, start_line: 6, end_line: 8

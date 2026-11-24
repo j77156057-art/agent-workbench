@@ -2,7 +2,7 @@
 
 ## 来源
 
-**子代理无限挂死**（实测 `wf-f3da9d3ffb32`）。`MAX_AGENT_STEPS` /
+**子代理无限挂死**（实测 `wf-000000000004`）。`MAX_AGENT_STEPS` /
 `SUBAGENT_MAX_STEPS` / `SUBAGENT_STEPS_HARD_CAP` 三处默认全 0，而 `_run` 的
 `while True:` 唯一上界是 `tool_step_limit > 0` → **结构上无界**。
 

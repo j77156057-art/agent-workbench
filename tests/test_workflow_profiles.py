@@ -210,7 +210,7 @@ class EdaProfileTests(unittest.TestCase):
         self.assertTrue(by_id["research"].get("optional"), "research 必须是可选并行任务")
         # layout/verify 也必须可选：EasyEDA Pro v0.1.0 无 ERC/DRC/导出工具，
         # 纯读取场景里这几步常无法确定完成；标可选后其失败不阻断末尾 report，
-        # 也不逼重规划器原地补 report（wf-99ecf32f9c86 反例）。
+        # 也不逼重规划器原地补 report（wf-00000000001d 反例）。
         self.assertTrue(by_id["layout"].get("optional"), "layout 失败不得阻断 report")
         self.assertTrue(by_id["verify"].get("optional"), "verify 失败不得阻断 report")
         # report 收尾节点依赖全部四个子任务，且自身只读、不调连接器

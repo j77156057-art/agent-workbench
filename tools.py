@@ -1429,7 +1429,7 @@ def search_knowledge(query):
         # 截断单个 chunk 的长度：避免把大段原文塞给小模型逼它"逐条抄"
         text = d if len(d) <= 500 else d[:500].rstrip() + "…"
         # 来源必须说清这是**知识库文档**，不是项目里的一个文件。
-        # 实测（真跑 `wf-37f43a4c042f`）：输出形如 `[MiniMax_H3_提示词速查.md] ...`，
+        # 实测（真跑 `wf-000000000003`）：输出形如 `[MiniMax_H3_提示词速查.md] ...`，
         # 输出里没有任何「这来自知识库」的标记，而文档正文还写着「**本机**节点」「**本地** ComfyUI 版」，
         # 模型据此认定「本项目有 ComfyUI 节点」，随后五步都在 read_file / grep
         # 追 `comfy_extras/nodes_minimax_h3.py`——那个文件根本不在项目里，
@@ -5512,7 +5512,7 @@ def _project_code_scope():
     `set_runtime` 调用点，没有它）。结果是：项目的代码被索引进它自己的集合，
     然后**永远不会被查询**，每一次 `search_code` 都在查 legacy 全局集合。
 
-    实测（真跑 `wf-0c6374c4d612`）：在一个只有 `calc.py` / `test_calc.py` /
+    实测（真跑 `wf-000000000002`）：在一个只有 `calc.py` / `test_calc.py` /
     `README.md` 的项目上，`search_code` 返回 `project.godot:L1-L39` /
     `.docmind/web/index.js` / `MiniMax_H3_提示词速查.md`——全是 Agent 工作台 自己
     仓库的内容。子代理据此把调研结论写成了另一个项目，三连任务全 failed。
@@ -5615,7 +5615,7 @@ def begin_read_conversation():
     「未变化存根」的前提是「**本次对话**中读过，且直接引用那次结果」。而模块级
     全局会让**另一个子代理**拿到上一个子代理的读记录——那份内容它压根没见过。
 
-    实测 `wf-3073fc5f2403`（连错三轮的真正原因）：`research` 读完
+    实测 `wf-00000000001e`（连错三轮的真正原因）：`research` 读完
     `behaviors/enemy.gd` 全文后被反思判失败，重规划产生的
     `research_behaviors_r2` 是一个**全新上下文**的子代理，它再读同一文件拿到的
     却是——
@@ -6133,7 +6133,7 @@ _RE_READ_END = re.compile(
 #: 识别不出来的残留（`start=1`、`行1-55` 之类）——用于把语法问题与路径问题区分开。
 #:
 #: **`start_line:` / `end_line:` 是第四层**（前三层见下面 `_RE_PATH_KEY_LINE` 的说明）。
-#: 实测（`wf-2c5612c6ee53`）：模型写
+#: 实测（`wf-000000000005`）：模型写
 #: `read_file(path: project.godot, start_line: 6, end_line: 8)`，得到
 #: `文件不存在：project.godot, start_line: 6, end_line: 8`
 #: ——**那个文件明明就在那儿**，而报错断言它不存在。模型于是去找别的路径写法，
@@ -6372,7 +6372,7 @@ def read_file(path):
         return _enc_note + out
     # 整文件读取**逐行编号**，与区间读统一形态。
     #
-    # 实测（`wf-fd543f79c197`）：总行数补上后模型不再数错行数（报 53 / 49，与
+    # 实测（`wf-000000000014`）：总行数补上后模型不再数错行数（报 53 / 49，与
     # 原文一致），但紧接着 `verify-constants` 的反思写下——
     #
     #     「结论中给出的行号在工具观察中并不存在 —— read_file 整文件读取返回的

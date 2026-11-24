@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """复核**必须认**子代理这一轮真的读过的路径。
 
-## 实测事故（`wf-54651f11c4a0`，探针落盘 `.tmp/stall_probe/audit-root-100137.json`）
+## 实测事故（`wf-00000000001b`，探针落盘 `.tmp/stall_probe/audit-root-100137.json`）
 
 同一份结论里，两类引用得到相反判定：
 

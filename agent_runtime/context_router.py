@@ -307,7 +307,7 @@ class JsonCompressionWorker:
             # `PermissionError: [WinError 5]`（压缩执行器有 2 个 worker，
             # 再加上杀毒/索引器也会短暂持有句柄）。这不是逻辑错误，重试即可。
             #
-            # 实测（`wf-3784257fd6d1`）：未加重试时这一抛会让 `_save` 整个失败，
+            # 实测（`wf-00000000000c`）：未加重试时这一抛会让 `_save` 整个失败，
             # 于是 **`/choose` 直接 500**——一个派生账本写不进去，把主状态也赔上了。
             last: OSError | None = None
             for attempt in range(_REPLACE_RETRIES):

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """反思判据必须**看得见工具观察**，而不是只数结论复述了多少。
 
-## 实测故障（真实工作流 trace，`wf-f3da9d3ffb32`）
+## 实测故障（真实工作流 trace，`wf-000000000004`）
 
 三次任务都做出了正确的字节级写入。`python_exec` 的观察里全是硬凭据：
 
@@ -49,7 +49,7 @@ sys.path.insert(0, ROOT)
 import agent  # noqa: E402
 from agent_runtime import tools as agent_runtime_tools  # noqa: E402
 
-#: 一次真实成功写入的观察（形状照抄 wf-f3da9d3ffb32 的 trace，不是编的）
+#: 一次真实成功写入的观察（形状照抄 wf-000000000004 的 trace，不是编的）
 REAL_TRAJ = [
     {"action": "list_dir(path: .)", "obs": "behaviors  scripts  ui  values", "ok": True},
     {"action": "grep(pattern: HP_GROWTH)",
@@ -64,7 +64,7 @@ REAL_TRAJ = [
 class LlmWaitEventTests(unittest.TestCase):
     """模型等待必须有头有尾——尤其**异常时也要有尾**。
 
-    实测 `wf-f3da9d3ffb32`：全程 360 秒里 98% 静默，而每段静默都是一次模型
+    实测 `wf-000000000004`：全程 360 秒里 98% 静默，而每段静默都是一次模型
     调用（87s 等重规划、58s 等结论、41s 等规划器…）。事件流里此前**完全没有**
     对应标记，所以界面上就是一整段空白，状态 346 秒不变，用户以为卡了。
 
@@ -293,7 +293,7 @@ class TrajEvidenceBlockTests(unittest.TestCase):
     def test_a_clipped_observation_says_how_much_was_withheld(self):
         """「已截断」不等于「文件本来就那么短」——判据必须知道差多少。
 
-        实测（`wf-2c5612c6ee53`）：判据把 harness 的截断读成了「文件里没有那些内容」。
+        实测（`wf-000000000005`）：判据把 harness 的截断读成了「文件里没有那些内容」。
         """
         big = [{"action": "read_file(path: big.gd)", "obs": "Q" * (agent._MAX_OBS_CHARS * 4)}]
         block = agent._traj_evidence_block(big)
@@ -355,7 +355,7 @@ class TruncatedEvidenceKeepsTheTailTests(unittest.TestCase):
                          "截断后保留了头部**作为证据**——那正是这条守卫要治的缺陷")
 
     def test_the_dropped_steps_are_disclosed_rather_than_vanishing(self):
-        """实测（`wf-2c5612c6ee53`）：判据写下「缺少 xxx 的读取证据」，而那一步
+        """实测（`wf-000000000005`）：判据写下「缺少 xxx 的读取证据」，而那一步
         其实**读过**，只是被这块的预算丢掉了。
 
         不披露的话，判据在替 harness 的截断背锅——它以为看到的就是全部。

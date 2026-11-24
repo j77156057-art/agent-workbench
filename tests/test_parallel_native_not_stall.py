@@ -3,7 +3,7 @@
 
 ## 实测事故（探针落盘，`.tmp/stall_probe/stall-075620-01.json`）
 
-`wf-a79129b8e691` 的 `recover_project_config` 子代理：
+`wf-00000000000a` 的 `recover_project_config` 子代理：
 
     finish_reason='tool_calls'   ← 模型用协议允许的方式表达了动作
     tool_calls_seen=2

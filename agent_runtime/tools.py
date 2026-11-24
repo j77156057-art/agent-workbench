@@ -408,7 +408,7 @@ _PROJECT_STAGE_SCOPE: ContextVar[bool] = ContextVar("project_stage_scope", defau
 #: 试做区对应的真实项目根。试做区里文件/进程操作走 ``_get_code_root()``（副本），
 #: 但审批台账与自检沙箱租约是**按真实项目根**记账的；没有这一条，stage 里的
 #: ``dev_desktop_action`` / ``vision_click`` 会去 stage 目录下找租约，永远查不到，
-#: 于是「默认开启试做区」反而让自检动作全被拦截（实测 wf-57af9cdb2f18 的成因之一）。
+#: 于是「默认开启试做区」反而让自检动作全被拦截（实测 wf-000000000017 的成因之一）。
 _PROJECT_STAGE_ORIGIN: ContextVar[str] = ContextVar("project_stage_origin", default="")
 #: 用户本轮消息明确指定了桌面动作（「在(400,300)点一下」「输入 hello」等），
 #: 等同于口头授权——`dev_desktop_action` / `vision_click` 可跳过 per-action
@@ -481,7 +481,7 @@ def desktop_pre_authorization(active: bool):
 def stage_cwd_report(cwd: str) -> str:
     """在试做区里执行时，说清相对路径究竟落在哪个目录。
 
-    **为什么需要这一行**（实测，``wf-f3da9d3ffb32``）：一次真实工作流里，
+    **为什么需要这一行**（实测，``wf-000000000004``）：一次真实工作流里，
     子代理用 ``open("values/level.gd", "wb")`` 改了文件并报告
     ``WRITE_OK: True``，而事后核对发现——
 
