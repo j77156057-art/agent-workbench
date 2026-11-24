@@ -670,3 +670,47 @@ gen、worker、worker_stop、events、wf_holder、inflight。
 
 - `api.py` 本身按域拆到 `api_routes/*`（另起一稿），**本轮不做**。
 - 是否给 api.py 单独建 `agent_runtime/chat_state.py`，还是并入现有 `agent_runtime/turn_state.py`？前者更清楚（不同层、不同生命周期），后者少一个文件。
+
+## 15. 实施结果与对 §14 的修正（2026-11-25）
+
+按 §14 的设计实施完成。**代码形态与设计稿有两处不一致**，都是实施中实测出来的，
+记在这里（设计稿保留原样，便于对照「当初以为是什么样」）。
+
+### 15.1 实际形态
+
+| 项 | §14 设计 | 实际 | 说明 |
+|---|---|---|---|
+| 子方法数 | 11（前段 6 + 后段 5） | **13（前段 7 + 后段 6）** | 后段的「流准备」必须**独立于 try 之外**（见 §14.7 的「副作用提前」），所以从「流准备 + 前置事件」里拆出两个方法 |
+| `_ChatState` 字段 | 21（闭包面） | **38** | 21 是「前段 → 后段」的接口；另有 17 个是**前段各方法之间**跨界的变量（入参 + 派生量），不收进载体就没地方放 |
+| `_ChatStreamState` 字段 | 6 | **9** | 加 `cloud_question` / `cloud_context`（流准备算出来、worker 线程体要用）与 `stopped`（见 §15.2 第 4 条） |
+| 载体位置 | 待定 | `agent_runtime/chat_state.py` | 与 `agent_runtime/turn_state.py` 分开：生命周期不同、字段不重叠 |
+
+`chat` 本身从 **656 行降到 40 行**（只剩编排：归一化 → 守卫 → 视觉 → provider →
+上下文 → 覆盖 → 打开上下文 → 返回 StreamingResponse）。
+
+### 15.2 实施中踩到的四个坑
+
+1. **抽出方法不等于抽出早退**（§14.7 已列，实测确认代价）。
+   `_chat_resolve_provider` 里那条 `return StreamingResponse(_ollama_down_stream(...))`
+   （ollama 不可达时的降级流）搬进子方法后**没人接** → 降级路径直接失效。
+   实测：前段一共有 **5 条早退**（409 / 400×3 / 降级流），必须逐条列出来，
+   子方法返回「响应或 None」，编排层负责回传。
+2. **async 判定不能用子串**。用 `"await " in body` 判协程时，注释里出现的
+   "await" 会把**同步块误判成协程** → 协程没被 await → 那一段整个走空
+   （表现为「模型没被调用 + final error」）。→ 判定必须看 **AST 的 Await / Yield 节点**。
+3. **async 生成器里没有 `yield from`**。事件流拆成子生成器后，`yield from` 是语法错误，
+   只能 `async for ... yield`。代价：**子生成器的清理不再由外层确定性触发**
+   → 所以「停 worker / 关生成器 / 终态标记」这些收尾必须留在**外层的 `finally`**。
+4. **`return` 的语义要带出去**。原循环里的 `return` = 直接退出流、**不发 done 帧**；
+   拆成子生成器后 `return` 只会结束子生成器，外层会继续往下走 → 多发一个 done。
+   → 用 `ss.stopped` 标志把「不发 done」这个语义带回最外层。
+
+### 15.3 验收
+
+| 项 | 结果 |
+|---|---|
+| 事件流对拍 | **11 场景 / 136 帧逐帧一致**（含原始行 —— 心跳也在内） |
+| 抽出的 13 块 | 经「反向重命名」（`st.X`/`ss.X` → `X`）与**原文逐行等价**，差异仅为有意改动（去掉 `nonlocal gen`、线程目标改为模块级函数、`return` 前加 `ss.stopped = True`） |
+| 相关测试面 | 27 个 chat SSE 相关测试文件 + 子代理/编排面全绿 |
+| 新增结构性锚点 | `tests/test_chat_stream_contract.py` 4 条（编排层不许产帧 / turn→route 次序 / done 在收尾之后 / 心跳仍在） |
+| 失明的源码守卫 | 2 条改看**合成视图**（`tests/agent_loop_source.py` 新增 `agent_chat_source()` / `agent_chat_stream_source()`）—— 与 `_run` 那轮同一套办法 |

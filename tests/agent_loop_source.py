@@ -108,6 +108,63 @@ def agent_loop_source(*extra: str) -> str:
     return _normalize(chr(10).join(parts))
 
 
+#: `api.py` 里 chat 这一层拆出来的方法（拆分前是一个 656 行的 `chat`）。
+CHAT_METHODS = (
+    "_chat_normalize",
+    "_chat_guard_input",
+    "_chat_prepare_vision",
+    "_chat_resolve_provider",
+    "_chat_resolve_context",
+    "_chat_resolve_overrides",
+    "_chat_open_context",
+    "_chat_event_stream",
+    "_chat_stream_prepare",
+    "_chat_stream_open",
+    "_chat_worker_produce",
+    "_chat_stream_pump",
+    "_chat_stream_fail",
+    "_chat_stream_finish",
+)
+
+#: SSE 那一层。顺序**有讲究**：`_chat_event_stream` 必须排第一（它含
+#: `except BaseException as e:`），`_chat_stream_fail` 紧随其后（守卫要在这两段
+#: 之间找 `worker_stop.is_set()` / `ClientDisconnected` 的窗口）。
+CHAT_STREAM_METHODS = (
+    "_chat_event_stream",
+    "_chat_stream_fail",
+    "_chat_stream_pump",
+    "_chat_stream_prepare",
+    "_chat_stream_open",
+    "_chat_worker_produce",
+    "_chat_stream_finish",
+)
+
+
+def agent_chat_source(*names: str) -> str:
+    """`api.py` 里 chat 那一层的源码拼接。
+
+    拆分 `api.py:chat` 之后，provider 判定与事件流分家了；守卫不该因此失明 ——
+    这里的拼接视图让它们按**逻辑形状**检查，而不是「住在哪个函数里」。
+    不传名字时给整个 chat 层。
+    """
+    import api  # 局部导入：变异电池可能替换 sys.modules 里的模块
+
+    wanted = tuple(names) if names else CHAT_METHODS
+    parts = []
+    for name in wanted:
+        fn = getattr(api, name, None)
+        if fn is None:
+            continue
+        parts.append(inspect.getsource(fn))
+    return "\n".join(parts)
+
+
+def agent_chat_stream_source() -> str:
+    """SSE 那一层的源码拼接（顺序见 `CHAT_STREAM_METHODS`）。"""
+    return agent_chat_source(*CHAT_STREAM_METHODS)
+
+
+
 def _carrier_prefixes():
     """载体前缀 → 它的字段表（cs / sh）。"""
     return {"cs": set(_CHILD_FIELDS), "sh": set(_SHELL_FIELDS)}

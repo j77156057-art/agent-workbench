@@ -236,8 +236,8 @@ class SourceGuardTests(unittest.TestCase):
     """
 
     def _chat_src(self):
-        import inspect
-        return inspect.getsource(api.chat)
+        from tests.agent_loop_source import agent_chat_source
+        return agent_chat_source("_chat_resolve_provider")
 
     def _blocking_condition(self):
         """返回真正触发拦截的那行 `if` 条件（而不是探活那行）。"""
