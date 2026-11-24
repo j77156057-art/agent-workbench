@@ -36,7 +36,7 @@ PATTERNS = {
     # 本机状态目录里的**真实**会话文件。目录名 .docmind_sessions 本身是产品公开名，
     # 不判；判的是「目录 + 带时间戳的真实会话名」。
     "local_session_path": re.compile(r"\.docmind_sessions[\\/]{1,2}[A-Za-z0-9_.-]*-\d{8}-\d{6}"),
-    # 真实会话 id：工作流（wf-）、跑批时间戳（golden-20261027-201309-G01）。
+    # 真实会话 id：工作流（wf-）、跑批时间戳（golden-<时间戳>-G01 这种形态）。
     "session_id": re.compile(r"\b(?:ask|web|dev)-[0-9a-f]{16,}\b"),
     "wf_session_id": re.compile(r"\bwf-[0-9a-f]{10,16}\b"),
     "run_stamp_id": re.compile(r"\b(?:golden|ask|web|dev|wf)-[0-9]{8}-[0-9]{6}-[A-Za-z0-9]+\b"),
