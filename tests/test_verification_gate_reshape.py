@@ -35,6 +35,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agent as agent_mod  # noqa: E402
+from tests.agent_loop_source import agent_loop_source
 from agent_runtime.output_audit import audit_evidence  # noqa: E402
 
 _PROJECT_ENV = "DOCMIND_REAL_GAME_PROJECT"
@@ -150,8 +151,7 @@ class VerdictRenderingTests(unittest.TestCase):
         "事后盖章"。这里钉的是**当前契约**：一次性证据纠偏闸门仍在，且 PASS/FAIL
         横幅不由 `_run` 追加，防止"处处受限"式盖章悄悄长回来。
         """
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertIn("if evidence_nudges < 1:", src,
                       "一次性证据纠偏闸门必须仍在（内部 re-ask，不盖章）")
         self.assertNotIn(
@@ -190,8 +190,7 @@ class VerdictRenderingTests(unittest.TestCase):
         断言只针对**真正被发出的那句**——``agent.py`` 里还留着解释这次改动的注释，
         它们提到旧文案是合理的，不该被这条断言算成回归。
         """
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertNotIn("（证据复核：以上文件/行号", src,
                          "旧的恐吓文案还在被发出——它断言的原因（没读过）常常不成立")
         self.assertNotIn("请勿据此修改代码。）", src,

@@ -38,6 +38,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from tests.agent_loop_source import agent_loop_source
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -201,8 +202,7 @@ class ProbeIsWiredToTheStallBranchTests(unittest.TestCase):
     """
 
     def setUp(self):
-        import inspect
-        self.src = inspect.getsource(agent.Agent._run)
+        self.src = agent_loop_source()
 
     def test_the_call_site_exists(self):
         self.assertIn("_dump_stall_probe(", self.src)

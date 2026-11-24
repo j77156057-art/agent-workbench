@@ -216,11 +216,13 @@ class EmptyResponseAttributionTests(unittest.TestCase):
         测试会对着错误的代码断言（本文件第一版就踩了这个）。用
         `turn.outcome = "empty"` 作锚点：它在整个 `_run` 里只出现一次。
         """
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        from tests.agent_loop_source import agent_method_source
+        # 这一支现在住在 _handle_final_fallback 里（拆分 _run 之后）——
+        # 直接看那个方法，拼接视图里「elif not acc.strip():」有两处同名片段。
+        src = agent_method_source("_handle_final_fallback")
         anchor = src.index('turn.outcome = "empty"')
         start = src.rindex("elif not acc.strip():", 0, anchor)
-        end = src.index("\n            else:", anchor)
+        end = src.index("\n        else:", anchor)
         return src[start:end]
 
     def test_the_two_attributions_are_mutually_exclusive(self):

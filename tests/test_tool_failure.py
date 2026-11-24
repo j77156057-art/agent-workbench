@@ -30,6 +30,7 @@
 import os
 import sys
 import unittest
+from tests.agent_loop_source import agent_loop_source
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -190,18 +191,14 @@ class AgentWiringTests(unittest.TestCase):
                         "agent.py 没导入 tool_failure —— 模块写了却没接线")
 
     def test_the_source_uses_the_guidance(self):
-        import agent as agent_mod
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertIn("failure_guidance", src)
         self.assertIn("retry_budget_cost", src)
         self.assertIn("_permanent_failures", src)
 
     def test_the_old_blanket_retry_wording_is_gone(self):
         """旧措辞「请换一种方式重试」不区分类别，正是这次要消掉的东西。"""
-        import agent as agent_mod
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertNotIn("请换一种方式\n", src.replace("\r", ""))
         self.assertNotIn("例如改用 web_search，或换关键词", src,
                          "这句一视同仁的措辞还在——失败分类就白做了")

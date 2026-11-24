@@ -35,6 +35,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import agent as agent_mod  # noqa: E402
+from tests.agent_loop_source import agent_loop_source
 import tools as tools_mod  # noqa: E402
 from agent_runtime import tool_domains as D  # noqa: E402
 
@@ -168,9 +169,8 @@ def test_the_source_scanners_still_see_what_they_scan():
 
     本条断言直接查那四个字串还在 `_run` 里 —— 比等到组合跑才发现便宜。
     """
-    import inspect
 
-    src = inspect.getsource(agent_mod.Agent._run)
+    src = agent_loop_source()
     assert "format_stalls" in src, "查错了函数：_run 里没有 format_stalls"
     for probe in ("原生 function-calling", "模型最后一次输出",
                   "不要当作结论", "不要写任何 Action:"):

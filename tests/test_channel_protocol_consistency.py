@@ -41,6 +41,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import agent as agent_mod  # noqa: E402
+from tests.agent_loop_source import agent_loop_source
 from agent import _prompt_for_channel  # noqa: E402
 
 
@@ -129,8 +130,7 @@ def _shell_source():
     于是永远查不到循环里的文案——一个「看起来在检查、实际什么都没查」的测试。
     检查器必须先确认自己看的是对的地方。
     """
-    import inspect
-    src = inspect.getsource(agent_mod.Agent._run)
+    src = agent_loop_source()
     assert "format_stalls" in src, "查错了函数：_run 里没有 format_stalls"
     return src
 

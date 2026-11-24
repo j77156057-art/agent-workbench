@@ -29,6 +29,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agent as agent_mod  # noqa: E402
+from tests.agent_loop_source import agent_loop_source
 from agent_runtime.output_audit import audit_evidence  # noqa: E402
 
 _PROJECT_ENV = "DOCMIND_REAL_GAME_PROJECT"
@@ -104,8 +105,7 @@ class NudgeTextIsNoLongerHardcodedTests(unittest.TestCase):
     """防回归：那句写死的"缺少 read_file 原文"不许再出现。"""
 
     def _nudge_src(self):
-        import inspect
-        return inspect.getsource(agent_mod.Agent._run)
+        return agent_loop_source()
 
     def test_the_nudge_quotes_the_failing_items(self):
         self.assertIn("_evidence_failure_detail(evidence_audit)", self._nudge_src(),

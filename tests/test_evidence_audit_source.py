@@ -40,6 +40,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agent as agent_mod  # noqa: E402
+from tests.agent_loop_source import agent_loop_source
 
 
 class AuditUsesRealExecutionsTests(unittest.TestCase):
@@ -120,16 +121,14 @@ class BothExecutionPathsRecordTests(unittest.TestCase):
     """
 
     def test_the_sequential_path_records_it(self):
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertIn('audit_steps.append({', src,
                       "顺序路径没有记录真实执行——单文件读取会重新开始挂假警告")
         self.assertIn('parsed["action"]', src,
                       "顺序路径的动作名没进记录")
 
     def test_the_parallel_batch_path_records_it(self):
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertIn('audit_steps.extend({', src,
                       "并行批次路径没有记录真实执行——而它恰恰不写 `Action:` 标记，"
                       "靠 trail 反推只能得到零步骤")
@@ -146,8 +145,7 @@ class BothExecutionPathsRecordTests(unittest.TestCase):
 
     def test_the_record_carries_the_arguments(self):
         """只记裸工具名 = 把路径丢掉 = 下游拿不到「这轮读过什么」。"""
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertNotRegex(
             src, r'audit_steps\.(?:append|extend)\(\{"action":\s*(?:nm|parsed\["action"\])',
             "audit_steps 只记了裸工具名——路径参数被丢掉，"
@@ -155,9 +153,8 @@ class BothExecutionPathsRecordTests(unittest.TestCase):
             "是这次故障的直接来源")
 
     def test_both_paths_use_the_full_action_shape(self):
-        import inspect
         from agent_runtime.output_audit import _read_paths_from_actions
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         # 断言用**不含裸引号**的稳定子串：早先直接抄源码片段 `'%s(%s)' % (parsed["action"]'`
         # 本身就是一句不完整的 Python，第一跑就 SyntaxError。
         self.assertIn('"%s(%s)"', src,
@@ -172,8 +169,7 @@ class BothExecutionPathsRecordTests(unittest.TestCase):
             ["behaviors/player.gd"])
 
     def test_the_audit_is_called_with_the_records(self):
-        import inspect
-        src = inspect.getsource(agent_mod.Agent._run)
+        src = agent_loop_source()
         self.assertIn(
             "_audit_live_answer(final_text, question, trail, audit_steps)", src,
             "记录了却没传给审计——等于白记")

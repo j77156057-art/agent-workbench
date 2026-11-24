@@ -38,6 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import agent  # noqa: E402
+from tests.agent_loop_source import agent_loop_source
 
 
 #: 只给三个真工具。`Agent.__init__` 的参数是 `tool_registry` 而不是 `tools`
@@ -169,15 +170,13 @@ class TheCriterionIsAboutIntentNotSpellingTests(unittest.TestCase):
     """判据的依据是「模型有没有表达动作」，不是「acc 里有没有 Action: 字样」。"""
 
     def test_the_stall_branch_excludes_native_calls(self):
-        import inspect
-        src = inspect.getsource(agent.Agent._run)
+        src = agent_loop_source()
         self.assertIn("not native_calls_this_turn", src,
                       "格式失守判定没有排除「本轮已发出原生 tool_call」——"
                       "那正是实测误判的那一行")
 
     def test_the_flag_is_set_before_the_criterion(self):
-        import inspect
-        src = inspect.getsource(agent.Agent._run)
+        src = agent_loop_source()
         flag_at = src.find("native_calls_this_turn = True")
         use_at = src.find("not native_calls_this_turn")
         self.assertNotEqual(flag_at, -1, "标记从未被置真")
@@ -187,8 +186,7 @@ class TheCriterionIsAboutIntentNotSpellingTests(unittest.TestCase):
 
     def test_the_flag_resets_every_turn(self):
         """标记必须**每轮**归零，否则某一轮发过调用就永远免检。"""
-        import inspect
-        src = inspect.getsource(agent.Agent._run)
+        src = agent_loop_source()
         decl_at = src.find("native_calls_this_turn = False")
         self.assertNotEqual(decl_at, -1,
                             "标记没有每轮重置——第一轮发过调用之后，"
