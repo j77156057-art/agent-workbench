@@ -19,6 +19,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import agent as agent_mod  # noqa: E402
+from tests.agent_loop_source import agent_module_source
 from agent import _MAX_FORMAT_STALLS, parse_response  # noqa: E402
 
 
@@ -136,15 +137,13 @@ class NudgeContentTests(unittest.TestCase):
 
     def test_the_nudge_echoes_the_previous_output(self):
         """实测依据：原来只说「你没给 Final Answer」，模型并不知道自己说了什么。"""
-        import inspect
-        source = inspect.getsource(agent_mod)
+        source = agent_module_source()
         self.assertIn("你上一轮的**实际输出**", source)
         self.assertIn("前面**补一行 `Final Answer: `", source)
 
     def test_it_does_not_tell_the_model_to_rewrite_from_scratch(self):
         """让它重写会导致内容漂移；正确做法是把已有正文挪到标记后面。"""
-        import inspect
-        source = inspect.getsource(agent_mod)
+        source = agent_module_source()
         self.assertIn("不要重写内容", source)
 
 

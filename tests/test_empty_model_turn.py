@@ -49,6 +49,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import agent  # noqa: E402
+from tests.agent_loop_source import agent_module_source
 
 
 class _TurnsLLM:
@@ -150,9 +151,8 @@ class LlmContractTests(unittest.TestCase):
 
         改掉它就会破坏那条通道——所以本轮刻意**只**在 agent 侧归一。
         """
-        import inspect
 
-        src = inspect.getsource(agent)
+        src = agent_module_source()
         self.assertIn("if acc is None:", src,
                       "agent 侧的空响应归一不见了")
         # 归一必须发生在任何 .strip() 之前
@@ -176,9 +176,8 @@ class NativeToolCallStillReachesTheTextProtocolTests(unittest.TestCase):
     """
 
     def test_the_native_tool_calls_are_translated_into_the_text_protocol(self):
-        import inspect
 
-        src = inspect.getsource(agent)
+        src = agent_module_source()
         self.assertIn('getattr(self.llm, "last_tool_calls"', src,
                       "原生 FC 的 last_tool_calls 归一不见了——工具调用会静默消失")
         self.assertIn('f"Action: {_nm}\\nAction Input: {_nin}"', src,
@@ -188,9 +187,8 @@ class NativeToolCallStillReachesTheTextProtocolTests(unittest.TestCase):
 
     def test_translation_happens_before_the_text_is_used(self):
         """归一必须发生在 `acc` 被当成最终文本用掉之前。"""
-        import inspect
 
-        src = inspect.getsource(agent)
+        src = agent_module_source()
         idx_fetch = src.index('getattr(self.llm, "last_tool_calls"')
         idx_use = src.index('f"Action: {_nm}\\nAction Input: {_nin}"', idx_fetch)
         self.assertLess(idx_fetch, idx_use,
@@ -207,9 +205,8 @@ class CancellationBeatsEmptyTurnTests(unittest.TestCase):
     """
 
     def test_the_cancellation_check_still_runs_right_after_the_normalisation(self):
-        import inspect
 
-        src = inspect.getsource(agent)
+        src = agent_module_source()
         idx_norm = src.index("if acc is None:")
         tail = src[idx_norm:idx_norm + 200]
         self.assertIn("_raise_if_cancelled()", tail,

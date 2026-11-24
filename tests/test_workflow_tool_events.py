@@ -38,6 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import agent  # noqa: E402
+from tests.agent_loop_source import agent_module_source
 from agent import (  # noqa: E402
     SINK_LIFECYCLE_HOOKS, SINK_TOOL_HOOKS, _exc_traceback, _short_root, _tool_event_payload,
     _tool_event_text,
@@ -257,11 +258,9 @@ class ExecutionRootIsReportedTests(unittest.TestCase):
         §9 的教训：「上限写两处，就等于写了一处旧的」。所以这里钉住两处
         都走同一个构造函数——将来改字段只改一处。
         """
-        import inspect
 
-        import agent as agent_mod
 
-        src = inspect.getsource(agent_mod)
+        src = agent_module_source()
         # `argument_chars` 只允许出现在构造函数里。出现第二次就说明有人在调用
         # 点又手写了一份 payload，字段会分叉。
         self.assertEqual(
