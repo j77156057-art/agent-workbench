@@ -7507,27 +7507,29 @@ async def model_power_ep(req: ModelPowerReq):
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=400)
 
 
-async def _apply_config(req: ConfigReq):
-    """切换模型的完整实现：更新运行时覆盖、重建 Agent 的 LLM 客户端，即时生效。
+async def _resolve_config(req: ConfigReq):
+    """校验并解析一次模型切换请求。
 
-    /api/config 与「预设一键激活」共用本函数，保证两条路径行为完全一致。
+    返回 (resolved, failure)：failure 非 None 时原样返回给调用方；
+    否则 resolved 里是解析好的配置值。**副作用顺序与拆分前一致** ——
+    能力覆盖 / 思考等级 / 上下文窗口覆盖都在这里落，不挪位置。
     """
     # ConfigReq.provider 的默认值是 "mock"。没有显式点名 provider 的局部请求
     #（典型：设置页只提交 web_*）若继续执行，会把用户真实的模型覆盖成离线 mock
     # 并写盘 —— 2026-10-29 实测定型。这里 fail-closed：切模型必须显式给 provider，
     # 局部设置请走各自的专用端点（如 /api/web-settings、/api/memory-settings）。
     if "provider" not in req.model_fields_set:
-        return JSONResponse(
+        return None, JSONResponse(
             {"ok": False,
              "error": "保存模型配置必须显式提供 provider；网络搜索等设置请走对应专用端点。"},
             status_code=400)
     if req.provider not in PROVIDERS:
-        return JSONResponse({"ok": False, "error": f"未知 provider: {req.provider}"}, status_code=400)
+        return None, JSONResponse({"ok": False, "error": f"未知 provider: {req.provider}"}, status_code=400)
     # embedding provider 白名单：必须在任何运行时/持久化变更之前拒绝。
     # 以前这里不校验，写进一个拼错的值只会让 embeddings.py 静默退回哈希兜底
     # —— 检索悄悄退化成字面匹配，界面却显示配置成功。
     if req.embedding_provider and req.embedding_provider not in SUPPORTED_EMBEDDING_PROVIDERS:
-        return JSONResponse(
+        return None, JSONResponse(
             {"ok": False,
              "error": "embedding_provider 不支持 %r，合法值：%s。"
                       % (req.embedding_provider, " / ".join(SUPPORTED_EMBEDDING_PROVIDERS))},
@@ -7535,7 +7537,7 @@ async def _apply_config(req: ConfigReq):
     # 搜索/抓取地址的校验也必须在任何状态变更之前（老客户端仍可能带 web_* 打这里）。
     url_error = _web_url_error(req)
     if url_error:
-        return JSONResponse({"ok": False, "error": url_error}, status_code=400)
+        return None, JSONResponse({"ok": False, "error": url_error}, status_code=400)
 
     # 自定义 OpenAI 兼容端点：base_url / model 必填，且只允许 http(s)
     previous_provider = get_runtime("llm_provider") or LLM_PROVIDER
@@ -7555,7 +7557,7 @@ async def _apply_config(req: ConfigReq):
     effective_key = provided_key or runtime_key or stored_key or env_key or LLM_API_KEY
     if api_key_env and not effective_key:
         provider_label = PROVIDERS[req.provider].get("label", req.provider)
-        return JSONResponse(
+        return None, JSONResponse(
             {"ok": False,
              "error": f"还没有保存 {provider_label} 的 API Key，请填写 Key 后再切换模型。"},
             status_code=400)
@@ -7564,11 +7566,11 @@ async def _apply_config(req: ConfigReq):
     if req.provider == "custom":
         custom_base_url = (req.base_url or get_runtime("llm_base_url") or "").strip().rstrip("/")
         if not custom_base_url.startswith(("http://", "https://")):
-            return JSONResponse(
+            return None, JSONResponse(
                 {"ok": False, "error": "自定义服务需要填写 http(s) 开头的接口地址（到 /v1 一级）。"},
                 status_code=400)
         if not (req.model or "").strip():
-            return JSONResponse(
+            return None, JSONResponse(
                 {"ok": False, "error": "自定义服务需要填写模型名称（如 gpt-4o-mini / qwen-plus）。"},
                 status_code=400)
         set_runtime("llm_base_url", custom_base_url)
@@ -7581,7 +7583,7 @@ async def _apply_config(req: ConfigReq):
     # 手填上下文窗口：先做范围校验（1k~2M；0=清除覆盖回到自动），避免无意义探活
     if req.context_window is not None and req.context_window != 0 and not (
             1024 <= req.context_window <= 2_097_152):
-        return JSONResponse(
+        return None, JSONResponse(
             {"ok": False, "error": "上下文窗口需在 1024 ~ 2097152 tokens 之间（清空输入框则恢复自动探测/内置画像）。"},
             status_code=400)
 
@@ -7590,7 +7592,7 @@ async def _apply_config(req: ConfigReq):
         # 真实推理探活最坏等待模型冷加载（60s），必须在线程池执行
         ok, err = await run_in_threadpool(_check_ollama_model, target_model)
         if not ok:
-            return {
+            return None, {
                 "ok": False,
                 "model_error": err,
                 "llm_provider": get_runtime("llm_provider") or LLM_PROVIDER,
@@ -7609,7 +7611,7 @@ async def _apply_config(req: ConfigReq):
                 video=req.video_capability,
             )
         except ValueError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+            return None, JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     # 全局默认思考等级：None=不变；''=清空回落；off/low/medium/high=设置；非法值 400。
     if req.thinking_level is not None:
@@ -7619,13 +7621,38 @@ async def _apply_config(req: ConfigReq):
         else:
             norm = normalize_thinking_level(raw)
             if norm is None:
-                return JSONResponse({"ok": False, "error": f"无效的思考等级: {raw}"}, status_code=400)
+                return None, JSONResponse({"ok": False, "error": f"无效的思考等级: {raw}"}, status_code=400)
             set_thinking_level(norm)
 
     # 探活/校验全部通过后才落窗口覆盖，紧接着重建客户端即按新窗口算预算
     if req.context_window is not None:
         set_context_window_override(req.provider, target_model, req.context_window)
+    return {
+        "previous_provider": previous_provider,
+        "root_for_secret": root_for_secret,
+        "provided_key": provided_key,
+        "stored_key": stored_key,
+        "effective_key": effective_key,
+        "custom_base_url": custom_base_url,
+        "target_model": target_model,
+    }, None
 
+
+async def _apply_config(req: ConfigReq):
+    """切换模型的完整实现：更新运行时覆盖、重建 Agent 的 LLM 客户端，即时生效。
+
+    /api/config 与「预设一键激活」共用本函数，保证两条路径行为完全一致。
+    """
+    resolved, failure = await _resolve_config(req)
+    if failure is not None:
+        return failure
+    previous_provider = resolved["previous_provider"]
+    root_for_secret = resolved["root_for_secret"]
+    provided_key = resolved["provided_key"]
+    stored_key = resolved["stored_key"]
+    effective_key = resolved["effective_key"]
+    custom_base_url = resolved["custom_base_url"]
+    target_model = resolved["target_model"]
     warnings = []
     set_runtime("llm_provider", req.provider)
     # 空模型表示选择该 provider 的默认模型，不能继续沿用上一个 provider 的模型。

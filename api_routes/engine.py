@@ -1,4 +1,12 @@
-"""Game-engine discovery, lifecycle, embedding and bridge endpoints."""
+"""Game-engine discovery, lifecycle, embedding and bridge endpoints.
+
+原先 build_router 是一个 248 行的巨型函数（38 个端点 + 一个动态注册循环）。
+现按**连续路由段**拆成若干个 _register_* 函数：
+
+- 端点代码逐字搬运，路由注册顺序与拆分前完全一致；
+- 模块级名字一个都没动（测试直接 patch 过它们）。
+
+"""
 import json
 import urllib.parse
 import urllib.request
@@ -125,10 +133,9 @@ def _godot_executable(ctx, root):
     return ctx._resolve_engine_executable("godot", config.get("executable", "godot"))
 
 
-def build_router(ctx) -> APIRouter:
-    router = APIRouter(tags=["engine"])
+def _register_discovery(router, ctx):
+    """发现与准备：试玩、状态、目录、扫描、检查、Unity 图、准备。"""
     root_or_error = ctx._project_root_or_error
-
     @router.post("/api/playtest")
     async def playtest(req: ctx.CommandReq):
         root = root_or_error()
@@ -166,6 +173,10 @@ def build_router(ctx) -> APIRouter:
         return (ctx.engine_prepare(root, req.engine, req.executable) if root
                 else {"ok": False, "error": "未配置代码库"})
 
+
+def _register_unreal(router, ctx):
+    """Unreal 桥接：安装、状态、资产、角色、蓝图、读角色、写文件。"""
+    root_or_error = ctx._project_root_or_error
     @router.post("/api/engine/unreal-bridge/install")
     async def install_unreal(req: UnrealBridgeReq):
         root = root_or_error()
@@ -204,6 +215,10 @@ def build_router(ctx) -> APIRouter:
     async def unreal_write(req: UnrealWriteReq):
         return await unreal_write_endpoint(ctx, req)
 
+
+def _register_skillconfig(router, ctx):
+    """技能与配置：技能解析、读配置、写配置。"""
+    root_or_error = ctx._project_root_or_error
     @router.get("/api/engine/skill")
     async def skill(engine: str = "godot"):
         if engine not in {"godot", "unity", "unreal"}:
@@ -221,6 +236,10 @@ def build_router(ctx) -> APIRouter:
         return (ctx.engine_config(root, req.engine, req.executable) if root
                 else {"ok": False, "error": "未配置代码库"})
 
+
+def _register_runtime(router, ctx):
+    """运行时控制：启动、停止、重载、变更、嵌入、放置、分离、聚焦、缩放、日志、探针、校验、诊断、检查。"""
+    root_or_error = ctx._project_root_or_error
     @router.post("/api/engine/start")
     async def start(req: EngineReq):
         return await engine_start_endpoint(ctx, req)
@@ -308,6 +327,10 @@ def build_router(ctx) -> APIRouter:
                                         req.executable, req.timeout)
                 if root else {"ok": False, "error": "未配置代码库"})
 
+
+def _register_addonweb(router, ctx):
+    """Godot 插件与网页导出：插件状态、安装、网页模板、安装模板、导出。"""
+    root_or_error = ctx._project_root_or_error
     @router.get("/api/engine/addon/status")
     async def addon_status():
         root = root_or_error()
@@ -354,7 +377,15 @@ def build_router(ctx) -> APIRouter:
             return {"ok": False, "error": "当前引擎不是 Godot 或未找到可执行文件。"}
         return await run_in_threadpool(ctx.web_export.export_web, root, executable, 300)
 
-    # Project task/validation endpoints are engine-workbench concerns too.
+
+def build_router(ctx) -> APIRouter:
+    """装配引擎路由族（拆分说明见本模块顶部）。"""
+    router = APIRouter(tags=["engine"])
+    _register_discovery(router, ctx)
+    _register_unreal(router, ctx)
+    _register_skillconfig(router, ctx)
+    _register_runtime(router, ctx)
+    _register_addonweb(router, ctx)
     for path, method, name in [
         ("/api/tasks", "GET", "tasks_ep"),
         ("/api/tasks/{task_id}", "GET", "task_get_ep"),
@@ -371,7 +402,7 @@ def build_router(ctx) -> APIRouter:
         ("/api/simulate_growth", "GET", "simulate_ep"),
     ]:
         router.add_api_route(path, getattr(ctx, name), methods=[method])
-
+    return router
     return router
 
 

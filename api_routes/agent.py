@@ -1594,3 +1594,7 @@ def build_router(ctx) -> APIRouter:
     _register_approvals(router, ctx)
     _register_connectors(router, ctx)
     return router
+
+
+__all__ = ["AgentRouteReq", "build_router", "WorkflowStartReq", "WorkflowChoiceReq",
+           "RetrievalEvaluateReq"]
