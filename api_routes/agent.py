@@ -1,4 +1,15 @@
-"""Agent policy, approvals and connector discovery endpoints."""
+"""Agent policy, approvals and connector discovery endpoints.
+
+原先 build_router 是一个 1233 行的巨型函数（57 个端点 + 9 个 helper + 2 个大闭包）。
+现按**连续路由段**拆成若干个 _register_* 函数：
+
+- 端点代码逐字搬运，路由注册顺序与拆分前完全一致；
+- 模块级名字（WORKFLOWS / evaluate_modes / retrieval_status / review_output 等）
+  **一个都没动** —— 多个测试直接 patch 这些名字，拆到别的模块会让打桩点搬家、
+  静默失去作用；
+- 依赖 ctx 的 helper 改成工厂（make_xxx(ctx)），端点函数体一字未改。
+
+"""
 import asyncio
 import json
 import os
@@ -258,23 +269,44 @@ def _stage_workspace_root(state: dict, workflow_root: str,
     return root
 
 
-def build_router(ctx) -> APIRouter:
-    router = APIRouter(prefix="/api/agent", tags=["agent"])
+def _canonicalize_root(value: str) -> str:
+    """Windows 下做大小写无关 + 尾斜杠归一，避免「同一项目」因大小写/symlink 漂移。
 
-    def _canonicalize_root(value: str) -> str:
-        """Windows 下做大小写无关 + 尾斜杠归一，避免「同一项目」因大小写/symlink 漂移。
+    `os.path.normcase` 在 Windows 上是 `lower()`，配合 `os.path.normpath`
+    统一尾斜杠与斜杠方向。空串原样返回。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(text))
+    except (OSError, ValueError):
+        return text
 
-        `os.path.normcase` 在 Windows 上是 `lower()`，配合 `os.path.normpath`
-        统一尾斜杠与斜杠方向。空串原样返回。
-        """
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        try:
-            return os.path.normcase(os.path.normpath(text))
-        except (OSError, ValueError):
-            return text
 
+def _ownership_blocked(payload):
+    """`require_workflow_project` 拒绝时转 404 响应，去掉内部字段。"""
+    return JSONResponse(
+        {k: v for k, v in (payload or {}).items() if not k.startswith("_")},
+        status_code=int((payload or {}).get("_status") or 404),
+    )
+
+
+def workflow_evidence(prompt: str, project_id: str = "", project_root: str = "") -> str:
+    """Build bounded local evidence for planning prompts only."""
+    # Planning a concrete project must not substitute the global knowledge
+    # base (which may describe Agent Workbench) for that project's own files.
+    collections = {} if project_root else {"knowledge": COLLECTION_NAME}
+    if project_root:
+        pid = project_id or projects.project_id(project_root)
+        collections["code"] = projects.code_collection(pid)
+    try:
+        return retrieve_context(prompt, collections=collections, top_k=4, max_chars=2600)
+    except Exception:
+        return ""
+
+
+def make_require_workflow_project(ctx):
     def require_workflow_project(workflow_id: str, state) -> dict | None:
         """校验收到的 `state` 是否真的属于当前项目；不通过时返回 404 body。
 
@@ -311,13 +343,11 @@ def build_router(ctx) -> APIRouter:
                 "_status": 404,
                 "_workflow_id": str(workflow_id or "")}
 
-    def _ownership_blocked(payload):
-        """`require_workflow_project` 拒绝时转 404 响应，去掉内部字段。"""
-        return JSONResponse(
-            {k: v for k, v in (payload or {}).items() if not k.startswith("_")},
-            status_code=int((payload or {}).get("_status") or 404),
-        )
+    return require_workflow_project
 
+
+def make_deny_if_cross_project(ctx):
+    require_workflow_project = make_require_workflow_project(ctx)
     def _deny_if_cross_project(workflow_id: str) -> dict | None:
         """对不直接拿 `state` 但仍按 `workflow_id` 调管理器的端点做一次 owner 校验。
 
@@ -331,6 +361,10 @@ def build_router(ctx) -> APIRouter:
             return {"ok": False, "error": "工作流不存在", "_status": 404}
         return require_workflow_project(workflow_id, state or {})
 
+    return _deny_if_cross_project
+
+
+def make_project_bound(ctx):
     def project_bound(callback, project_root, project_id: str = ""):
         """Run durable workflow callbacks in their stored project, not the UI's current one.
 
@@ -384,19 +418,11 @@ def build_router(ctx) -> APIRouter:
                     reset_context_code_root(root_token)
         return scoped
 
-    def workflow_evidence(prompt: str, project_id: str = "", project_root: str = "") -> str:
-        """Build bounded local evidence for planning prompts only."""
-        # Planning a concrete project must not substitute the global knowledge
-        # base (which may describe Agent Workbench) for that project's own files.
-        collections = {} if project_root else {"knowledge": COLLECTION_NAME}
-        if project_root:
-            pid = project_id or projects.project_id(project_root)
-            collections["code"] = projects.code_collection(pid)
-        try:
-            return retrieve_context(prompt, collections=collections, top_k=4, max_chars=2600)
-        except Exception:
-            return ""
+    return project_bound
 
+
+def make_workflow_callbacks(ctx):
+    project_bound = make_project_bound(ctx)
     def workflow_callbacks(state, session_id=""):
         """Rebuild execution callbacks from durable workflow/session IDs."""
         sid = session_id or state.get("execution_session_id") or "workflow"
@@ -555,10 +581,11 @@ def build_router(ctx) -> APIRouter:
                 _execution_root, workflow_pid),
         }
 
-    # Approval may arrive after a process restart.  The manager persists only
-    # the session identifier and asks this factory to recreate the callbacks.
-    WORKFLOWS.set_execution_resolver(lambda state: workflow_callbacks(state))
+    return workflow_callbacks
 
+
+def make_launch_workflow(ctx):
+    project_bound = make_project_bound(ctx)
     def launch_workflow(*, prompt, kind, web_enabled, use_llm, experience_enabled,
                         project_id, policy, schedule_options, stage_enabled=True):
         """HTTP 端点与对话内 start_workflow 工具共用的工作流组装入口。
@@ -677,6 +704,11 @@ def build_router(ctx) -> APIRouter:
             schedule_options(workflow["workflow_id"])
         return workflow
 
+    return launch_workflow
+
+
+def make_workflow_launcher(ctx):
+    launch_workflow = make_launch_workflow(ctx)
     def _workflow_launcher(goal, *, kind="generic", web_enabled=False):
         """start_workflow 工具的注入实现：复用同一套组装，方案生成放守护线程。"""
         def _spawn_options(wid):
@@ -689,8 +721,11 @@ def build_router(ctx) -> APIRouter:
             use_llm=True, experience_enabled=True, project_id="", policy=None,
             schedule_options=_spawn_options, stage_enabled=True)
 
-    tools.set_workflow_launcher(_workflow_launcher)
+    return _workflow_launcher
 
+
+def _register_policy(router, ctx):
+    """策略与运行时状态：路由决策、权限、路由状态、项目画像、LangSmith 状态。"""
     @router.post("/route")
     async def route(req: AgentRouteReq):
         return ctx.route_for(req.prompt, req.files, req.requested)
@@ -726,7 +761,10 @@ def build_router(ctx) -> APIRouter:
         return {"ok": True, **langsmith.status()}
 
 
-
+def _register_workflow(router, ctx):
+    """工作流核心：后端探测、启动、当前工作流、列表、读取、事件流。"""
+    launch_workflow = make_launch_workflow(ctx)
+    require_workflow_project = make_require_workflow_project(ctx)
 
     @router.get("/workflow/backend")
     async def workflow_backend():
@@ -869,6 +907,12 @@ def build_router(ctx) -> APIRouter:
                                           "Connection": "keep-alive",
                                           "X-Accel-Buffering": "no"})
 
+
+def _register_eval(router, ctx):
+    """评测与检索：技能候选、评测、数据集、检索评测与运行时状态。"""
+    _deny_if_cross_project = make_deny_if_cross_project(ctx)
+    require_workflow_project = make_require_workflow_project(ctx)
+
     @router.get("/workflow/{workflow_id}/skill-candidate")
     async def workflow_skill_candidate(workflow_id: str):
         try:
@@ -935,6 +979,11 @@ def build_router(ctx) -> APIRouter:
                 workflow_id, req.approved)}
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
+
+
+def _register_planning(router, ctx):
+    """决策与规划：选项选择、研究、研究执行、计划、批准。"""
+    require_workflow_project = make_require_workflow_project(ctx)
 
     @router.post("/workflow/{workflow_id}/choice")
     async def workflow_choice(workflow_id: str, req: WorkflowChoiceReq):
@@ -1080,6 +1129,12 @@ def build_router(ctx) -> APIRouter:
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
 
+
+def _register_preview(router, ctx):
+    """预览与验收：预览、预览产物、验收、验收裁决。"""
+    _deny_if_cross_project = make_deny_if_cross_project(ctx)
+    require_workflow_project = make_require_workflow_project(ctx)
+
     @router.get("/workflow/{workflow_id}/preview")
     async def workflow_preview(workflow_id: str):
         try:
@@ -1147,6 +1202,11 @@ def build_router(ctx) -> APIRouter:
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
 
+
+def _register_visual(router, ctx):
+    """视觉反馈：反馈提交、项目归属、状态查询、快照存取。"""
+    require_workflow_project = make_require_workflow_project(ctx)
+
     @router.post("/workflow/{workflow_id}/visual-feedback")
     async def workflow_visual_feedback(workflow_id: str, req: WorkflowVisualFeedbackReq):
         try:
@@ -1188,6 +1248,11 @@ def build_router(ctx) -> APIRouter:
             return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
         except WorkflowError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+
+
+def _register_project(router, ctx):
+    """项目级状态：检查点、项目检查点与回滚、预览适配器、阶段应用/复核/清理。"""
+    _deny_if_cross_project = make_deny_if_cross_project(ctx)
 
     @router.post("/workflow/{workflow_id}/checkpoint")
     async def workflow_checkpoint(workflow_id: str, req: WorkflowCheckpointReq):
@@ -1295,6 +1360,11 @@ def build_router(ctx) -> APIRouter:
         except (OSError, ValueError, TypeError) as exc:
             return {"ok": False, "error": str(exc)}
 
+
+def _register_acceptance(router, ctx):
+    """验收报告。"""
+    require_workflow_project = make_require_workflow_project(ctx)
+
     @router.get("/workflow/{workflow_id}/acceptance-report")
     async def workflow_acceptance_report(workflow_id: str):
         try:
@@ -1317,6 +1387,13 @@ def build_router(ctx) -> APIRouter:
             }}
         except WorkflowError as exc:
             return {"ok": False, "error": str(exc)}
+
+
+def _register_lifecycle(router, ctx):
+    """生命周期：中断、删除、恢复、修订、修订批准、执行、子代理重试。"""
+    _deny_if_cross_project = make_deny_if_cross_project(ctx)
+    require_workflow_project = make_require_workflow_project(ctx)
+    workflow_callbacks = make_workflow_callbacks(ctx)
 
     @router.post("/workflow/{workflow_id}/interrupt")
     async def workflow_interrupt(workflow_id: str, req: WorkflowInterruptReq):
@@ -1408,7 +1485,8 @@ def build_router(ctx) -> APIRouter:
             return {"ok": False, "error": str(exc)}
 
 
-
+def _register_approvals(router, ctx):
+    """审批：审批列表、审批请求、裁决、创建、决定、读取。"""
     @router.get("/approvals")
     async def approvals():
         root = ctx._project_root_or_error()
@@ -1467,6 +1545,8 @@ def build_router(ctx) -> APIRouter:
         return {"ok": bool(row), "approval": row}
 
 
+def _register_connectors(router, ctx):
+    """连接器：目录与路由选择。"""
     @router.get("/connectors")
     async def connectors():
         root = ctx._project_root_or_error()
@@ -1490,8 +1570,27 @@ def build_router(ctx) -> APIRouter:
         except Exception as exc:
             return {"ok": False, "error": str(exc), "matches": []}
 
+
+def build_router(ctx) -> APIRouter:
+    """装配 /api/agent 路由族。
+
+    拆分说明见本模块顶部。这里只做三件事：建 router、注册两个进程级
+    回调（执行解析器 / 工作流启动器）、按固定顺序挂载各段端点。
+    """
+    router = APIRouter(prefix="/api/agent", tags=["agent"])
+    # 进程级注册：**构建时**做一次（与拆分前同一时机）。
+    workflow_callbacks = make_workflow_callbacks(ctx)
+    WORKFLOWS.set_execution_resolver(lambda state: workflow_callbacks(state))
+    tools.set_workflow_launcher(make_workflow_launcher(ctx))
+    _register_policy(router, ctx)
+    _register_workflow(router, ctx)
+    _register_eval(router, ctx)
+    _register_planning(router, ctx)
+    _register_preview(router, ctx)
+    _register_visual(router, ctx)
+    _register_project(router, ctx)
+    _register_acceptance(router, ctx)
+    _register_lifecycle(router, ctx)
+    _register_approvals(router, ctx)
+    _register_connectors(router, ctx)
     return router
-
-
-__all__ = ["AgentRouteReq", "build_router", "WorkflowStartReq", "WorkflowChoiceReq",
-           "RetrievalEvaluateReq"]
