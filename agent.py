@@ -71,6 +71,7 @@ from agent_runtime.verification import verification_message
 from agent_runtime.output_audit import audit_evidence, obs_reports_code_undercount
 from agent_runtime.context_router import ContextRouter
 from agent_runtime.run_budget import RunBudget
+from agent_runtime.turn_state import _TurnState
 from agent_runtime.local_runtime import effective_parallelism, local_llm_slot
 from agent_runtime.tools import (
     Capability, SideEffect, coerce_tool_spec, execute_tool, tool_mutates,
@@ -6435,107 +6436,224 @@ class Agent:
             # 历史摘要压缩在正常完成路径执行（需要 yield notice 事件）；
             # 断连现场在上方持久化，不在 finally 中调用模型压缩。
 
-    def _run(self, question, turn=None, stream=True, images=None, deadline=None, cancel_event=None,
-             journal=None, on_journal=None):
-        """执行一次问答，yield 出流式事件：
-        token / thought / action / observation / reflection / final / done。
-
-        images: 可选的 base64 图片列表（视觉模型输入），挂在本轮问题消息上。
-        消息分两部分：head（系统提示/项目规则/历史滑窗/当前问题，固定）+
-        trail（本轮 ReAct 决策与观察，动态增长，超预算时成对丢弃最早的往返）。
-        """
-        head = self._build_messages(question, images=images)
-        trail = []
-        # 本轮开工前上报一次上下文用量（仅顶层会话代理；子代理不刷 UI 指示）。
-        # 此时尚未产生工具往返，用量 = 系统提示 + 历史摘要/回放 + 当前问题。
-        if self.session_id and self.depth == 0:
-            try:
-                self.last_context = self.context_stats(question)
-                yield {"type": "context", **self.last_context}
-            except Exception:  # noqa: BLE001 —— 用量统计失败绝不影响问答
-                pass
-
-        failures = 0
-        nudges = 0
-        max_nudges, max_final_continuations = self._execution_policy()
-        pending_final = None
-        final_continuations = 0
-        tool_steps = 0
-        nav_free_used = 0  # 已用掉的免费目录导航次数（_NAV_TOOLS，超出后照常计步）
-        iterations = 0
-        self._hb_steps = 0
-        self._heartbeat("started", steps=0, event="run_start")
-        # 工具/观察预算按本轮真实用户问题动态选择。项目缺陷审查通常需要同时核对
-        # 脚本、场景、输入与 UI，不能与普通问答共用同一个很小的固定上限。
-        # 工作流子代理按任务显式申请加步时（tool_step_override），以申请值为准——
-        # 该值在 _run_child 已被夹到 [1, SUBAGENT_STEPS_HARD_CAP]。
-        tool_step_limit = int(self.tool_step_override or 0) or _step_budget(question)
-        observation_limit = _observation_budget(question)
-        lookup_output_limit = _quick_lookup_output_limit(question)
-        repeats = 0  # 完全相同参数重复调用同一工具的次数
-        tool_fail_streak = {}  # 同一工具连续失败次数（换参数也算；防同工具反复失败死循环）
-        web_family_failures = {}  # 同一研究意图反复换写法仍失败时，及时要求换来源或收尾
-        _permanent_failures = {}  # 重试必然同样失败的类别（invalid_result / 幂等存疑 / 试做区禁调）
-                                  # 连续撞同一类就立刻要求换工具，不浪费反思额度
-        fail_total = 0  # 连续失败总次数（任一工具；成功即清零）
-        _last_ctx_at = 0.0  # 上次实时刷新上下文用量指示的时刻（限频用）
-        executed = set()  # 本轮已执行过的 (工具, 参数)，用于防空转循环
-        last_action = None
-        last_obs = None
-        last_exec_obs = None  # 最近一次成功的 python_exec 观察（终态"原样重贴"兜底用）
-        forced_finals = 0  # 已发出的强制收尾提示次数（步数耗尽 / 重复空转共用一次机会）
-        # 过程解说的剥协议 + 同轮去重器。**每轮 run() 一个**，因为去重集合必须
-        # 只在「同一轮的工具调用之间」生效 —— 跨轮去重会把用户第二次问同一件事时
-        # 模型 legitimately 重复说的话也吃掉。
-        narration_filter = _PromptNarrationFilter()
-        forced_final_reason = ""  # 触发强制收尾的原因，证据兜底 final 里原样告知用户
-        evidence = []  # 本轮已执行工具的简要清单（action(input)），耗尽时兜底用
-        # 写工具真落盘的文件（由工具在成功那一步自报，不由 action 文本反推）。
-        # `_seen_file_changes` 只为去重——同一个文件被 create_file 之外的工具再改一次
-        # 时，「改了哪些文件」的清单里出现一次就够，不必按调用次数重复。
-        _file_changes: list[dict] = []
-        _seen_file_changes: set[str] = set()
-        # 本轮**真实执行记录**（含成功/失败），供证据审计使用。
-        # 刻意不从trail 文本反推：原生 FC 的并行批次路径不写 `Action:` 标记，
-        # 反推会得到零步骤，于是把「证据齐备」误判成「未核验」并给用户挂上
-        # 误导性警告。见 _audit_live_answer。
-        audit_steps: list[dict] = []
-        evidence_nudges = 0  # 定位类回答最多补读一次原文，避免复核本身形成死循环
-        # BUG-7 终态守卫：模型把「带行号的源码整段铺出」当 Final Answer 交付时（实测 X：
-        # enemy/hud/player 三份源码裸铺、几乎无综合），最多**逼它综合一次**；仍裸铺就
-        # 如实标 degraded 交付，绝不把「原始 dump」冒充成综合结论（fail-closed，不假完成）。
-        verbatim_dump_nudges = 0
-        # 「数字/行号清单冒充答案」的纠正次数。与源码裸铺分开计数：两类 dump 的
-        # 纠正话术不同（一个要它讲清结构、一个要它讲清每一项是什么），但都只给一次机会。
-        evidence_dump_nudges = 0
-        # 「最终回答只是原样重贴工具观察」的纠正次数。与上面两类 dump 分开：它拦的是
-        # 混合内容（如“总行数 + 几行源码”），形状判据抓不住，但行级重合度能抓住。
-        observation_echo_nudges = 0
-        # 「final 从中间开始」的纠正次数。实测前端原生通道只拿到后半段：先要求它
-        # 从头重写一次；仍截头就如实标 degraded，不把半截答案当完整交付。
-        continuation_nudges = 0
-        # 本回合是否成功跑过 python_exec。终态硬门不能只看 last_action：模型完全
-        # 可能在 python_exec 之后又读了两个文件（last_action 变成 read_file），
-        # 最后仍然只把之前那串行号当答案。
-        ran_python_exec = False
-        # 连续「输出无标记」的次数。与 nudges 分开计数，因为它的处置完全不同：
-        # nudges 是「再给它一次机会」，而格式连续失守说明**这个模型在当前提示词下
-        # 稳定地不遵守契约**——继续喂 nudge 只会让界面上重复同一条提示（实测最多 8 遍），
-        # 而真正该做的是停下来告诉用户「模型没按格式应答」，让他换模型或调提示词。
-        format_stalls = 0
-        # 连续复读内部调度标记的轮数（「（并行调用）」+工具名）。独立于 format_stalls：
-        # 它衡量的是上下文污染，不是格式能力；任何一轮没复读就清零（见闸门处）。
-        marker_echoes = 0
-        plan_emitted = False  # 计划模式：计划只上抛一次
-        self._native_queue = []   # 原生通道：顺序回退时逐个消化 tool_calls
-        self._pending_batch = []  # 原生通道：待并发执行的只读 tool_calls
-
-        # ── 精确续跑：把上一次中断时的现场栽回来 ──────────────────────────
-        # 恢复的是「结构和账本」，不是一段给人看的摘要：trail 原样接上，
-        # executed 账本恢复后，同一个 (工具, 参数) 会被既有的防重复闸门拦住，
-        # 因此已完成的调用不会被重放；计数器沿用，步数预算不因重启而重置。
-        _resume_tip = ""
-        _journal_hist_len = len(self.history)
+    def _handle_format_stall(self, st, messages):
+        """模型连续不按格式应答时的处置（stop=本轮终止）。"""
+        if (st.acc.strip() and not st.truncated and not st.has_real_final
+                and not st.parsed["action"] and not st.native_calls_this_turn):
+            st.format_stalls += 1
+            if st.format_stalls >= _MAX_FORMAT_STALLS:
+                if st.turn is not None:
+                    st.turn.outcome = "format_stall"
+                # **不要丢掉 acc。** 此前这里直接把模型的实际输出换成一段固定
+                # 文案，于是它已经产出的内容（工具观察、候选文件、推理）全部蒸发，
+                # 用户只看到一句"执行失败"。trace 里模型明明已经搜到
+                # player.gd L22-38 与 enemy.gd，结果一个字都没留下。
+                #
+                # 同时**不把这段散文当作答案**：本条 trace 恰好证明裸散文可能是
+                # *计划*（"需要用 read_file 读取原文核验…"）而不是结论——把它当答案
+                # 等于告诉用户"我再去查一下"，比报错更糟。所以原样回显并标明未核验。
+                native = self._native_enabled()
+                tail = (
+                    "\n\n──── 模型最后一次输出（**未完成、未核验，不要当作结论**）────\n"
+                    "%s\n%s" % (_clip(st.acc, 1200),
+                            "──── 以上内容未经 read_file 核验 ────"
+                            if native else "──── 以上内容缺少格式标记 ────")
+                )
+                if native:
+                    why = (
+                        "本轮走的是原生 function-calling 通道：工具调用由 API 负责，"
+                        "模型只负责发出真正的 tool call 或直接写最终回答。"
+                        "但本轮既没有 tool call，正文里也没有给出结论——"
+                        "这段话没能告诉系统「你要调用哪个工具」或「这就是答案」，"
+                        "所以无法判定它是没答完还是已经答完。"
+                    )
+                    todo = (
+                        "可下手的办法：\n"
+                        "  · 若要继续查证：让模型**直接调用工具**（不要手写 Action 标记）；\n"
+                        "  · 若证据已足够：让模型**直接用自然语言给出结论**，"
+                        "不需要 `Final Answer:` 标记；\n"
+                        "  · 换用更守格式的模型，或把 `DOCMIND_TOOL_MODE` 设回 `react` "
+                        "改用文本协议。"
+                    )
+                else:
+                    why = (
+                        "本轮走的是 ReAct 文本协议，模型有正文、但既没写 `Action:` 也没写 "
+                        "`Final Answer:`，因此无法判断它是没答完还是已经答完。"
+                    )
+                    todo = (
+                        "可下手的办法：换一个更守格式的模型；或在项目规则里明确要求"
+                        "它以 `Final Answer:` 开头收尾。"
+                    )
+                st.final_text = (
+                    "模型连续 %d 轮没有给出可判定的动作或结论，本轮已停止重试。\n\n%s\n%s%s"
+                    % (st.format_stalls, why, todo, tail)
+                )
+                # `degraded: True` —— 这段文字是 **harness 写的诊断**，不是模型
+                # 的答案。不标的话 `_run_child` 读到的 `final_degraded` 是
+                # False，于是它把一条「没能答」记成了「答了」交给下游。
+                # 实测 `wf-87c0df3224aa` 的 `design_probe_2`：结论就是这段
+                # 447 字符的诊断、`degraded=False`，反思只能看出「结论与任务
+                # 无关」。这与 `613de0e` / `7bbc69b` 修的另两处同型。
+                _dump_stall_probe(self.llm, messages, st.acc, st.turn,
+                                  session_id=self.session_id or "")
+                yield {"type": "final", "status": "error",
+                       "degraded": True, "text": st.final_text}
+                return "stop"
+        else:
+            st.format_stalls = 0
+        return None
+    def _handle_nudge(self, st, max_nudges):
+        """输出不完整时的纠偏（continue=继续主循环）。"""
+        if self._limit_ok(st.nudges, max_nudges) and (
+                st.truncated or not st.acc.strip() or not st.has_real_final):
+            st.nudges += 1
+            # 原生并行批次轮：本轮已按协议发出 >1 个 tool_call，正待循环顶部派发。
+            # 这不是「模型输出尚未结束」——不发误导 notice，也不往 trail 注入
+            # 「你既没调用工具也没给结论」这种与事实相反的假提示。但上面已 `nudges += 1`，
+            # 仍受 `_limit_ok(nudges, max_nudges)` 兜底：万一模型反复原地打转、每轮都发
+            # 同样的并行调用，nudge 次数耗尽后这条分支不再命中，会落到后续收尾/兜底逻辑
+            # 终止——绝不能在这里放一条不计数、不受上限约束的裸 continue，否则会退化成
+            # 「每轮重建 _run_batch 线程池」的死循环。
+            if st.native_calls_this_turn and self._pending_batch:
+                return "continue"
+            if st.truncated:
+                self._suppress_thinking_once = True   # 重试关思考，避免再烧预算
+            if st.acc.strip():
+                st.trail.append(
+                    {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                )
+            if st.truncated:
+                if "Action:" in st.acc:
+                    # 已写到 Action 就被切断：让它立刻补全调用
+                    hint = (
+                        "Nudge: 你的输出在长度上限处中断，Action 没有写完。"
+                        "请立即用一句 Thought 加完整的 `Action:` 与 `Action Input:` 补全"
+                        "你上一轮要做的调用，不要重复之前的长分析；信息已足够时才直接给 "
+                        "`Final Answer: ...`。"
+                    )
+                elif st.nudges == 1 and st.tool_steps == 0:
+                    # 还没检索/读文件就烧光长度：先去拿证据，而不是逼它凭空回答
+                    hint = (
+                        "Nudge: 你的上一轮在长度上限处中断，且还没有调用任何工具。"
+                        "请先用一句话 Thought，然后直接输出一个 Action"
+                        "（代码问题优先 search_code / read_file / grep）去获取信息，"
+                        "禁止长篇思考；拿到结果后再给 Final Answer。"
+                    )
+                else:
+                    hint = (
+                        "Nudge: 输出在单次长度上限处中断。请从中断处继续，"
+                        "需要工具时继续调用；证据充分时给出完整的 `Final Answer: ...`。"
+                    )
+            elif not st.acc.strip():
+                if self._native_enabled():
+                    hint = (
+                        "Nudge: 你上一轮没有输出任何正文内容，也没有发出工具调用。"
+                        "请直接用自然语言给出最终回答（中文、简洁），"
+                        "不需要写 `Final Answer:` 标记；需要查证就直接调用工具。"
+                    )
+                else:
+                    hint = (
+                        "Nudge: 你上一轮没有输出任何正文内容。请严格按格式直接给出最终回答："
+                        "`Final Answer: ...`（中文、简洁、不要再只做思考）。"
+                    )
+            else:
+                # 把上一轮的**实际输出**回显给它，并明确指出缺的是哪一段。
+                # 原来只说「你没给 Final Answer」，模型并不知道自己说了什么；
+                # 回显 + 指出缺口之后，它要做的改动是明确的（把已有正文挪到标记后面，
+                # 而不是重写一遍）——这也顺带避免了「换个说法再答一遍」导致内容漂移。
+                #
+                # 原生通道下**不能**要求它补 `Action:` / `Final Answer:`：传输层
+                # 不支持"手写"一个调用。必须换成"直接调用工具 / 直接写结论"。
+                if self._native_enabled():
+                    hint = (
+                        "Nudge: 你上一轮既没有发出工具调用，也没有直接给出结论，"
+                        "所以系统无法判断你是已经答完了还是打算继续。下面是你上一轮的"
+                        "**实际输出**：\n----------\n%s\n----------\n"
+                        "请二选一，**不要重写内容、不要写任何 Action:/Final Answer: 标记**：\n"
+                        "· 还需要查证 → 直接调用相应的工具（例如 read_file），"
+                        "把工具名和参数放进真正的调用里；\n"
+                        "· 已经答完了 → 直接用自然语言把结论写完整即可。"
+                        % _clip(st.acc, 1200)
+                    )
+                else:
+                    hint = (
+                        "Nudge: 你上一轮的输出既没有 `Action:`，也没有 `Final Answer:`，"
+                        "所以系统无法判断你是不是已经答完了。下面是你上一轮的**实际输出**：\n"
+                        "----------\n%s\n----------\n"
+                        "请二选一，不要重写内容：\n"
+                        "· 已经答完了 → 在这段正文**前面**补一行 `Final Answer: `，其余一字不改；\n"
+                        "· 还需要查证 → 补上 `Thought:` / `Action: <工具名>` / `Action Input: <参数>`。"
+                        % _clip(st.acc, 1200)
+                    )
+            st.trail.append({"role": "user", "content": hint})
+            yield {"type": "notice", "text": "模型输出尚未结束，正在继续执行。", "transient": True}
+            return "continue"
+        return None
+    def _handle_final_fallback(self, st):
+        """纠偏用尽后的终态兜底（stop=本轮终止）。"""
+        if st.truncated:
+            if st.turn is not None:
+                st.turn.outcome = "truncated"
+            st.final_text = (
+                "模型回答因上下文长度限制被截断，未能给出完整答案。"
+                "请缩小问题范围（例如指定具体文件/函数）或开新对话后重试。"
+            )
+        elif not st.acc.strip():
+            if st.turn is not None:
+                st.turn.outcome = "empty"
+            # 走到这里时，格式纠偏（_MAX_FORMAT_STALLS）与续写纠偏
+            # （_MAX_FINAL_CONTINUATIONS）都已用尽仍一个字都没拿到。
+            # 空响应是**结果**不是**原因**，归因必须二选一（见下）：
+            # · fail_total > 0 → 「工具一直报错 -> 模型拿不到信息 -> 放弃作答」，
+            #   此时让用户去重试 / 改问题 / 查 provider 全是错误方向；
+            # · 否则 → 才轮到「上游回了个空信封」这个瞬时故障假设。
+            # 实测（godot_sample 定位扣血逻辑）：read_file 连续 5 次「文件不存在」，
+            # 根因是参数语法（start:/end: 写成行内不被识别），但用户看到的归因是
+            # 「中转返回空内容，直接重试通常就能拿到」——重试多少次都没用。
+            # 与上面 truncated 那条刻意区分开：那是长度被截，这条是拿不到内容。
+            attempts = 1 + int(st.final_continuations) + int(st.format_stalls)
+            if st.fail_total:
+                worst = max(st.tool_fail_streak.items(),
+                            key=lambda kv: kv[1], default=None)
+                worst_txt = ("（最常失败：%s ×%d）" % (worst[0], worst[1])
+                             if worst and worst[1] else "")
+                st.final_text = (
+                    "模型连续 %d 次调用都没有产出可用正文，而本轮有 **%d 次工具调用失败**%s。"
+                    "**最可能的原因就在这里**：工具一直报错 -> 模型拿不到任何可用信息 -> "
+                    "放弃作答。请先看上面那些工具返回的具体报错，那里才是根因；"
+                    "单纯重试**大概率无效**，得先把工具调用修对（参数名、路径、用户是否"
+                    "需要开联网等）。修好之后再重问一次即可。"
+                    % (max(1, attempts), st.fail_total, worst_txt)
+                )
+            else:
+                st.final_text = (
+                    "模型连续 %d 次调用都没有返回可用正文，而本轮**没有**工具失败记录，"
+                    "因此更像是上游/中转回了个空信封（瞬时故障）——重试通常就能拿到。"
+                    "若反复出现，依次检查：① 该 provider 是否可用（免费中转容易限流或"
+                    "无上游容量）；② 若该模型开了思考模式，可能是思考阶段吃光了输出预算——"
+                    "关掉 thinking 或调小 max_tokens 再试。"
+                    % max(1, attempts)
+                )
+        else:
+            # 连纠偏后仍不合格式的残句：清洗 ReAct 标记后再兜底，不再把 Thought/Action 原样抛给用户
+            if st.turn is not None:
+                st.turn.outcome = "fallback_cleaned"
+            st.final_text = _clean_fallback_answer(st.acc)
+            self.history.append({"user": st.question, "assistant": st.final_text})
+            # 下面这两条 yield 与 3029 那条证据兜底同型：**harness 代写的文字，
+            # 不是模型自己的 Final Answer**（一条是清洗后的残句，一条是空响应
+            # 诊断）。此前它们都没带 degraded，于是 `_run_child` 读到
+            # `final_degraded = bool(ev.get("degraded"))` = False，把一条
+            # **诊断**当成模型的正式答案交给下游任务——实测那条结论是
+            # 「模型连续 1 次调用都没有返回可用正文…」，而记录是
+            # `status: ok` / `degraded: False` / 结论非空。
+            # 下游于是以为上一个任务真给了答案。这就是本仓库反复出现的
+            # 那类错：把「没能答」记成「答了」。
+            yield {"type": "final", "degraded": True, "text": st.final_text}
+            return "stop"
+        return None
+    def _restore_from_journal(self, st, journal):
+        """把上次中断时的现场栽回来（恢复结构与账本，不是给人看的摘要）。"""
         if isinstance(journal, dict):
             _restored_trail = [
                 {"role": str(m.get("role")), "content": str(m.get("content") or "")}
@@ -6543,9 +6661,9 @@ class Agent:
                 if isinstance(m, dict) and m.get("role") in ("user", "assistant", "system")
             ]
             if _restored_trail:
-                trail = _restored_trail
+                st.trail = _restored_trail
             try:
-                _journal_hist_len = int(journal.get("history_len", _journal_hist_len))
+                st._journal_hist_len = int(journal.get("history_len", st._journal_hist_len))
             except (TypeError, ValueError):
                 pass
             # 上一轮已经产出终态（max_steps / 验证未过 / 异常收尾）时，用户点
@@ -6561,58 +6679,58 @@ class Agent:
                     except (TypeError, ValueError):
                         return default
 
-                failures = _ci("failures", failures)
-                nudges = _ci("nudges", nudges)
-                tool_steps = _ci("tool_steps", tool_steps)
-                nav_free_used = _ci("nav_free_used", nav_free_used)
-                iterations = _ci("iterations", iterations)
-                repeats = _ci("repeats", repeats)
-                forced_finals = _ci("forced_finals", forced_finals)
-                fail_total = _ci("fail_total", fail_total)
-                evidence_nudges = _ci("evidence_nudges", evidence_nudges)
-                verbatim_dump_nudges = _ci("verbatim_dump_nudges", verbatim_dump_nudges)
-                evidence_dump_nudges = _ci("evidence_dump_nudges", evidence_dump_nudges)
-                observation_echo_nudges = _ci("observation_echo_nudges", observation_echo_nudges)
-                continuation_nudges = _ci("continuation_nudges", continuation_nudges)
-                format_stalls = _ci("format_stalls", format_stalls)
-                marker_echoes = _ci("marker_echoes", marker_echoes)
+                st.failures = _ci("failures", st.failures)
+                st.nudges = _ci("nudges", st.nudges)
+                st.tool_steps = _ci("tool_steps", st.tool_steps)
+                st.nav_free_used = _ci("nav_free_used", st.nav_free_used)
+                st.iterations = _ci("iterations", st.iterations)
+                st.repeats = _ci("repeats", st.repeats)
+                st.forced_finals = _ci("forced_finals", st.forced_finals)
+                st.fail_total = _ci("fail_total", st.fail_total)
+                st.evidence_nudges = _ci("evidence_nudges", st.evidence_nudges)
+                st.verbatim_dump_nudges = _ci("verbatim_dump_nudges", st.verbatim_dump_nudges)
+                st.evidence_dump_nudges = _ci("evidence_dump_nudges", st.evidence_dump_nudges)
+                st.observation_echo_nudges = _ci("observation_echo_nudges", st.observation_echo_nudges)
+                st.continuation_nudges = _ci("continuation_nudges", st.continuation_nudges)
+                st.format_stalls = _ci("format_stalls", st.format_stalls)
+                st.marker_echoes = _ci("marker_echoes", st.marker_echoes)
                 for _key, _dst in (("tool_fail_streak", "tool_fail_streak"),
                                    ("web_family_failures", "web_family_failures"),
                                    ("_permanent_failures", "_permanent_failures")):
                     _val = journal.get(_key)
                     if isinstance(_val, dict):
                         if _dst == "tool_fail_streak":
-                            tool_fail_streak = _val
+                            st.tool_fail_streak = _val
                         elif _dst == "web_family_failures":
-                            web_family_failures = _val
+                            st.web_family_failures = _val
                         else:
-                            _permanent_failures = _val
-            ran_python_exec = bool(journal.get("ran_python_exec", ran_python_exec))
-            plan_emitted = bool(journal.get("plan_emitted", plan_emitted))
-            forced_final_reason = str(journal.get("forced_final_reason") or forced_final_reason)
-            last_action = journal.get("last_action", last_action)
-            last_obs = journal.get("last_obs", last_obs)
-            last_exec_obs = journal.get("last_exec_obs", last_exec_obs)
+                            st._permanent_failures = _val
+            st.ran_python_exec = bool(journal.get("ran_python_exec", st.ran_python_exec))
+            st.plan_emitted = bool(journal.get("plan_emitted", st.plan_emitted))
+            st.forced_final_reason = str(journal.get("forced_final_reason") or st.forced_final_reason)
+            st.last_action = journal.get("last_action", st.last_action)
+            st.last_obs = journal.get("last_obs", st.last_obs)
+            st.last_exec_obs = journal.get("last_exec_obs", st.last_exec_obs)
             for _sig in (journal.get("executed") or []):
                 if isinstance(_sig, (list, tuple)) and len(_sig) == 2:
-                    executed.add((str(_sig[0]), str(_sig[1])))
+                    st.executed.add((str(_sig[0]), str(_sig[1])))
             if isinstance(journal.get("evidence"), list):
-                evidence = [str(x) for x in journal["evidence"]]
+                st.evidence = [str(x) for x in journal["evidence"]]
             if isinstance(journal.get("audit_steps"), list):
-                audit_steps = [x for x in journal["audit_steps"] if isinstance(x, dict)]
+                st.audit_steps = [x for x in journal["audit_steps"] if isinstance(x, dict)]
             for _fc in (journal.get("file_changes") or []):
                 if isinstance(_fc, dict):
-                    _file_changes.append(_fc)
+                    st._file_changes.append(_fc)
                     _path = str(_fc.get("path") or "")
                     if _path:
-                        _seen_file_changes.add(_path)
-            if turn is not None and isinstance(journal.get("verification"), dict):
+                        st._seen_file_changes.add(_path)
+            if st.turn is not None and isinstance(journal.get("verification"), dict):
                 # 三态原样恢复：None=没能校验，不能塌成 False（那会把「没跑过」
                 # 记成「校验失败」）。
-                turn.verification_targets = {
+                st.turn.verification_targets = {
                     str(k): (None if v is None else bool(v))
                     for k, v in journal["verification"].items()}
-                turn.verified = bool(journal.get("verified"))
+                st.turn.verified = bool(journal.get("verified"))
 
             def _pairs(value):
                 out = []
@@ -6631,33 +6749,810 @@ class Agent:
                     # 有副作用的调用「可能已经执行」：不能自动重放（重复写文件/
                     # 重复下单的代价远大于少走一步），也不能假装它没发生。把不
                     # 确定性写进 trail，让模型先核对目标再决定是否重试。
-                    trail.append({"role": "assistant",
+                    st.trail.append({"role": "assistant",
                                   "content": "Action: %s\nAction Input: %s" % (_sn, _sa)})
-                    trail.append({"role": "user", "content": (
+                    st.trail.append({"role": "user", "content": (
                         "Observation: 上一步 " + _sn + " 在中断时已经开始执行，可能已生效"
                         "（也可能只执行了一部分）。本轮不会自动重放这一步。请先核对目标"
                         "当前状态，再决定是否用相同或不同的参数重试；确认未生效才可重试。")})
-                    executed.add((_sn, _sa))
-                    _resume_tip = ("已从断点继续；" + _sn + " 在中断时可能已执行，"
+                    st.executed.add((_sn, _sa))
+                    st._resume_tip = ("已从断点继续；" + _sn + " 在中断时可能已执行，"
                                    "为避免重复副作用未自动重放，请先核对结果。")
                 else:
                     # 只读工具重放无副作用：放回队列由既有执行路径跑，保留原顺序，
                     # 也不需要再问模型一次。
                     self._native_queue = [[_sn, _sa]] + self._native_queue
-                    _resume_tip = "已从断点继续；正在重放未完成的一步 " + _sn + "。"
+                    st._resume_tip = "已从断点继续；正在重放未完成的一步 " + _sn + "。"
             elif isinstance(_started, list):
                 _batch_started = [[str(x.get("name")), str(x.get("arg") or "")]
                                   for x in _started
                                   if isinstance(x, dict) and x.get("name")]
                 if _batch_started:
                     self._pending_batch = _batch_started + self._pending_batch
-                    _resume_tip = ("已从断点继续；正在重放未完成的 %d 个只读调用。"
+                    st._resume_tip = ("已从断点继续；正在重放未完成的 %d 个只读调用。"
                                    % len(_batch_started))
-            if not _resume_tip:
-                _resume_tip = ("已从断点继续：恢复 %d 条现场消息、%d 条已执行记录，"
-                               "下一步直接继续。" % (len(trail), len(executed)))
+            if not st._resume_tip:
+                st._resume_tip = ("已从断点继续：恢复 %d 条现场消息、%d 条已执行记录，"
+                               "下一步直接继续。" % (len(st.trail), len(st.executed)))
             if journal.get("trail_truncated"):
-                _resume_tip += "（现场过长，最早的部分观察已裁剪）"
+                st._resume_tip += "（现场过长，最早的部分观察已裁剪）"
+    def _run_tool_action(self, st, tool_step_limit, observation_limit, _snapshot, _evidence_final):
+        """执行模型点名的那个工具动作（stop=整轮终止 / continue=继续主循环）。"""
+        if st.parsed["action"] and st.parsed["action"] in self.tools:
+            action_name = st.parsed["action"]
+            action_arg = _normalize_tool_arg(action_name, (st.parsed["action_input"] or "").strip())
+            sig = (action_name, action_arg)
+
+            # 强制收尾（步数耗尽/重复空转）已发出后，模型仍输出任何 Action——
+            # 即使换了不同参数——也不再执行/回填，直接用已有观察证据确定性兜底。
+            if st.forced_finals >= _MAX_FORCED_FINALS:
+                yield _evidence_final(st.forced_final_reason)
+                return "stop"
+            # 同一工具连续两次「不可重试」失败后只封禁**该工具本身**；别的工具
+            # 必须放行 —— 上面的 nudge 明确让模型「改用其它工具」，若这里把任何
+            # Action 都拦下，模型唯一切换路径也被堵死，只能提前交半成品。
+            if st._permanent_failures.get(st.parsed["action"], 0) >= 2:
+                yield _evidence_final(st.forced_final_reason or (
+                    f"（工具 {st.parsed['action']} 已连续返回不可重试的失败，已停止重试。）"))
+                return "stop"
+
+            # 写操作同意护栏：没有明确授权时拒绝真正落盘，以一条 Observation 把模型引导
+            # 回「只报告 / 去问用户」模式（不消耗工具步数）。
+            # Memory writes update advisory state, not project source files;
+            # capability leases and preference evidence checks still apply.
+            #
+            # 三值判定：denied（没要求）与 uncertain（拿不准）**都不放行**，但
+            # 说法必须不同 —— 对「拿不准」说「用户没有要求」，是把我们的判不准
+            # 说成用户的意思。
+            if self._is_write_tool(st.parsed["action"]) and st.parsed[
+                    "action"] not in {"memory_save", "memory_forget"}:
+                if self.depth > 0:
+                    # 委派层被挡时，除了拦下来，还要**把「需要用户确认」上浮**。
+                    # 子代理手里没有用户的原始请求，所以它无法自己去问 ——
+                    # 而父 agent 有。让父去问，才问得对人。
+                    _d_intent = self._intent_for_delegated(st.parsed["action"])
+                    if _d_intent != _WRITE_INTENT_GRANTED:
+                        _needs_confirmation = {
+                            "action": st.parsed["action"],
+                            "reason": ("子代理拿不到用户的原始请求，"
+                                       "无法自行确认写授权"),
+                        }
+                        yield {
+                            "type": "needs_confirmation",
+                            "text": ("[需要用户确认] %s 未执行：委派子代理没有可用的"
+                                     "写授权租约，需由主 Agent 向用户确认后继续。"
+                                     % st.parsed["action"]),
+                            "action": st.parsed["action"],
+                            "ask": {
+                                "kind": "permission",
+                                "question": ("是否授权执行写操作「%s」？"
+                                             % st.parsed["action"]),
+                                "allow_free_text": True,
+                                "options": [
+                                    {"label": "批准执行",
+                                     "value": "确认授权：请执行刚才被拦下的写操作。"},
+                                    {"label": "先给我看会改哪些文件/影响再决定",
+                                     "value": "先不要落盘，列出这次写操作会改哪些文件、影响范围，我看过再决定。"},
+                                    {"label": "取消这次写操作",
+                                     "value": "取消这次写操作，不要修改任何文件。"},
+                                ],
+                            },
+                        }
+                    # 委派子代理：**不从角色提示词猜权限**。
+                    #
+                    # `question` 在这里是 `spec["hint"]`（角色提示词），不是用户的
+                    # 请求 —— 拿它判写授权会出两个方向都错的结论：
+                    #   coder     「在授权范围内**改**代码」-> denied（职责就是改代码）
+                    #   designer  「可以**创建**设计文档」   -> granted（与用户无关）
+                    # 实测 11 个角色里 10 个碰巧对，**唯一错的就是 coder** ——
+                    # 那个职责就是改代码的角色，永远被拦。
+                    #
+                    # 权威改由两处结构性来源给：
+                    #   1. `tool_allowlist`（4571 已拦不在名单里的工具；
+                    #      且 `_READ_ONLY_ROLES` 已按 ToolSpec 把写工具滤掉）
+                    #   2. 父 agent 的授权租约（`_run_child` 已继承，见 5430）
+                    # 二者都要成立，缺一即拒 —— 与 opencode 查授权表、
+                    # Hermes 查工具开关同一个思路：权威来自结构，不来自散文。
+                    _intent = self._intent_for_delegated(st.parsed["action"])
+                else:
+                    _intent = self._intent_for_top_turn(st.question, st.parsed["action"])
+                if _intent != _WRITE_INTENT_GRANTED:
+                    _uncertain = _intent == _WRITE_INTENT_UNCERTAIN
+                    _note = (_WRITE_UNCERTAIN_OBS if _uncertain
+                             else _WRITE_BLOCKED_OBS)
+                    _why = ("拿不准用户是否授权" if _uncertain
+                            else "用户没有要求创建或修改文件")
+                    st.trail.append(
+                        {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                    )
+                    st.trail.append(
+                        {"role": "user", "content": "Observation: " + _note}
+                    )
+                    st.executed.add(sig)  # 再试同样的写调用会被防重复逻辑拦住
+                    yield {
+                        "type": "action",
+                        "text": f"{st.parsed['action']}({st.parsed['action_input']}) [已拦截：未授权写操作]",
+                    }
+                    yield {
+                        "type": "observation",
+                        "text": f"[安全拦截] {st.parsed['action']} 未执行：{_why}。",
+                    }
+                    return "continue"
+
+            # 防重复空转：同参数调用结果已在上文 Observation，不再执行第二次
+            if sig in st.executed:
+                st.repeats += 1
+                if st.repeats >= 3:
+                    # 不直接硬停：先强制模型基于已有 Observation 收尾一次
+                    # （答案可能已在观察中，如刚 grep 到目标行号）；仍要调工具再证据兜底。
+                    if st.forced_finals < _MAX_FORCED_FINALS:
+                        st.forced_finals += 1
+                        st.forced_final_reason = (
+                            "（模型反复用完全相同的参数调用同一工具，已要求其停止工具调用并收尾。）"
+                        )
+                        st.trail.append(
+                            {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                        )
+                        st.trail.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Nudge: 你已多次用完全相同的参数调用同一工具，重复调用不会"
+                                    "返回任何新结果。禁止再调用任何工具（即使更换参数也不行）。"
+                                    "请立即基于上文全部 Observation 输出 `Final Answer:`："
+                                    "用中文简洁总结已确认的结论并附文件:行号；关键结论尚未确认的"
+                                    "部分如实说明「当前无法确认」，不要编造，也不要输出 Action。"
+                                ),
+                            }
+                        )
+                        yield {
+                            "type": "reflection",
+                            "text": "检测到模型重复空转，正在要求模型基于已有观察强制收尾。",
+                        }
+                        return "continue"
+                    yield _evidence_final(st.forced_final_reason)
+                    return "stop"
+                st.trail.append(
+                    {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                )
+                if st.repeats >= 2:
+                    note = (
+                        "Nudge: 你已经用完全相同的参数重复调用该工具，结果就在上文 "
+                        "Observation 中。禁止再次重复调用；请直接基于已有观察输出简短的 "
+                        "`Final Answer: ...`。"
+                    )
+                else:
+                    note = (
+                        f"Reflection: 你刚刚已经用完全相同的参数调用过 {st.parsed['action']}，"
+                        "其结果已在上一条 Observation 中给出，不要重复调用。"
+                        "请直接利用该结果给出 Final Answer，或换一个【不同参数】的工具调用。"
+                    )
+                st.trail.append({"role": "user", "content": note})
+                yield {
+                    "type": "reflection",
+                    "text": f"检测到重复调用 {st.parsed['action']}（相同参数），已拦截并提示模型利用已有结果。",
+                }
+                return "continue"
+
+            # 空参数护栏：需要输入的工具不允许空参调用（不执行、不计工具步数）。
+            # 放在重复计数之后：连续空参第 2/3 次直接走上面的重复升级（Nudge→停止），
+            # 避免弱模型靠空参空转刷到迭代上限。
+            if not action_arg and self._arg_required(action_name):
+                st.executed.add(sig)
+                st.trail.append(
+                    {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                )
+                empty_obs = _empty_arg_obs(action_name, st.question)
+                st.trail.append({"role": "user", "content": empty_obs})
+                yield {
+                    "type": "action",
+                    "text": f"{action_name}() [已拦截：缺少参数]",
+                }
+                yield {
+                    "type": "observation",
+                    "text": empty_obs,
+                }
+                return "continue"
+
+            # 付费步数耗尽后，仍有免费目录导航额度时放行 list_dir（成本 0），
+            # 只有免费额度也用完才进入强制收尾；同参重复导航已在前面拦截。
+            _nav_is_free = action_name in _NAV_TOOLS and st.nav_free_used < NAV_FREE_STEPS
+            if tool_step_limit > 0 and st.tool_steps >= tool_step_limit and not _nav_is_free:
+                # 步数耗尽：先强制模型基于已有 Observation 收尾（不执行新工具、不计步），
+                # 给一次机会产出带证据的 Final Answer；仍要调工具则由前置拦截证据兜底。
+                if st.forced_finals < _MAX_FORCED_FINALS:
+                    st.forced_finals += 1
+                    st.forced_final_reason = (
+                        f"（已达到最大工具调用步数 {tool_step_limit}（本轮动态上限），模型未能自行收尾。）"
+                    )
+                    st.trail.append(
+                        {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                    )
+                    st.trail.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Nudge: 工具调用步数已达上限（{tool_step_limit} 步），"
+                                "禁止再调用任何工具。请立即基于上文全部 Observation 输出 "
+                                "`Final Answer:`：用中文简洁总结已确认的结论并附文件:行号；"
+                                "证据不足的部分如实说明"
+                                "「当前无法确认」，不要编造，也不要输出 Action。"
+                            ),
+                        }
+                    )
+                    yield {
+                        "type": "reflection",
+                        "text": "工具步数已用尽，正在要求模型基于已有观察收尾。",
+                    }
+                    return "continue"
+                # 防御性兜底：正常路径已被循环顶部的前置拦截覆盖
+                yield _evidence_final(st.forced_final_reason)
+                return "stop"
+            # 「留地板、拆其余」重构：交通票价/余票强制改道门已拆。
+            # 此前只要问句命中「票价/余票/机票…」，模型想用普通网页搜索就会被
+            # 当场拦下、回填一句「请改用 web_transport」，替模型决定了工具选择。
+            # 这不是灾难地板，是「处处受限」的一种 —— 拆掉，交给模型自己判断该用
+            # 泛搜索还是结构化交通工具查询。函数 _transport_search_required 保留
+            # （直接调用它的测试仍在钉判据）。
+            # 子代理白名单：不在名单内的工具直接拒绝（防止受限子代理越权）
+            if self.tool_allowlist is not None and action_name not in self.tool_allowlist:
+                _obs = (f"[受限] 本子代理只允许使用：{'、'.join(self.tool_allowlist)}。"
+                        f"{action_name} 不在白名单内，已拒绝。")
+                st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
+                st.trail.append({"role": "user", "content": f"Observation: {_obs}"})
+                yield {"type": "observation", "text": _obs}
+                st.executed.add(sig)  # 登记已「处理」签名：同参重复出现时可触发防重复升级
+                return "continue"
+
+            # 联网开关关闭：web_* 一律不执行（原生通道已在 schema 剔除，
+            # 这里拦文本协议/开关切换瞬间残留的调用），不消耗工具步数。
+            if self._web_blocked(action_name):
+                _obs = ("[联网未开启] web_search / web_fetch / web_research / web_subtitles 已被用户关闭，本次未执行。"
+                        "请改用本地代码库/知识库工具回答；确需最新外部资料时，"
+                        "提示用户在输入框上方打开「联网」开关后重试。")
+                st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
+                st.trail.append({"role": "user", "content": f"Observation: {_obs}"})
+                yield {"type": "action", "text": f"{action_name}({action_arg})"}
+                yield {"type": "observation", "text": _obs}
+                st.executed.add(sig)  # 登记已「处理」签名：同参重复出现时可触发防重复升级
+                return "continue"
+
+            # 租约是工作流的临时能力范围；过期或未包含当前能力时，
+            # 只回填 Observation，让模型自行收尾或申请新的工作流。
+            _lease_blocked, _lease_reason = self._lease_blocked(action_name)
+            if _lease_blocked:
+                _obs = f"[权限租约] {action_name} 未执行：{_lease_reason}。"
+                st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
+                st.trail.append({"role": "user", "content": f"Observation: {_obs}"})
+                yield {"type": "action", "text": f"{action_name}({action_arg}) [已拦截：权限租约]"}
+                yield {"type": "observation", "text": _obs}
+                st.executed.add(sig)
+                return "continue"
+
+            # 「留地板、拆其余」重构：项目缺陷审查证据门已拆。
+            # 此前当模型调 dev_list_bugs、而 harness 用正则判定「这是当前项目体检
+            # 问题且还没读过当前代码」时，会直接拦下不执行、回填一句「先去看当前
+            # 代码/日志」。这不是灾难地板，是替模型排执行顺序的「处处受限」——拆掉，
+            # 让模型自己决定先翻历史归档还是先读代码。判据函数
+            # _is_project_audit_question / _has_project_evidence 保留（直接调用它们
+            # 的测试仍在钉判据）。
+
+            # pre_tool 钩子：可改写参数，或拦截本次执行（热插拔）
+            _blk, _hreason, _harg = _hooks.run_pre_tool(action_name, action_arg)
+            if _blk:
+                _obs = f"[钩子拦截] {action_name} 未执行：{_hreason}"
+                st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
+                st.trail.append({"role": "user", "content": f"Observation: {_obs}"})
+                if st.turn is not None:
+                    st.turn.tool_step(action_name, action_arg, 0, _obs, ok=False)
+                yield {"type": "observation", "text": _obs}
+                return "continue"
+            action_arg = _harg
+
+            _before_tool = _hooks.run_workflow("before_tool", _tool_event_payload(
+                action_name, action_arg, depth=self.depth,
+                session_id=self.session_id or ""))
+            if _before_tool.get("blocked"):
+                _obs = f"[钩子拦截] {action_name} 未执行：{_before_tool.get('reason') or '工具生命周期钩子拦截'}"
+                if st.turn is not None:
+                    st.turn.tool_step(action_name, action_arg, 0, _obs, ok=False)
+                yield {"type": "observation", "text": _obs}
+                return "continue"
+
+            # 落「动作即将执行」现场（必须在 executed/计步之前）：恢复端据此
+            # 知道最后一步是没跑还是跑了一半。只读工具放回队列重放；有副作用
+            # 的工具则 fail-closed，不自动重放（见 _run 顶部的恢复逻辑）。
+            _spec = self._tool_spec(action_name)
+            _side_effect = (_spec.side_effect if _spec is not None else SideEffect.PURE)
+            _snapshot("action_started", started={
+                "name": action_name, "arg": action_arg,
+                "side_effect": _side_effect is not SideEffect.PURE,
+            })
+            st.executed.add(sig)
+            # 免费目录导航只占导航额度（与并行批次同一口径），其余工具占 1 个工具步数。
+            if _nav_is_free:
+                st.nav_free_used += 1
+            else:
+                st.tool_steps += 1
+            # 事件展示 / 证据清单 / 实际派发必须统一用归一化后的 action_arg：
+            # 弱模型的 query:/pattern:/path: 关键字风格已在此处还原为工具真实入参。
+            st.evidence.append(f"{action_name}({_clip(action_arg, 120)})")
+            # step_cost 透传给外层：子代理编排器据此统计步数，免费导航为 0。
+            yield {"type": "action", "text": f"{action_name}({action_arg})",
+                   "step_cost": 0 if _nav_is_free else 1}
+            _t_tool = time.monotonic()
+            obs_images = None  # 工具图片经能力门后挂到成功路径的 Observation 消息
+            if action_name == "delegate":
+                # 子代理必须继承父代理的模型/会话，走特殊派发而非 TOOLS 里的占位实现
+                _fn = lambda arg: self._delegate(arg, turn=st.turn)
+            elif action_name == "orchestrate":
+                _fn = lambda arg: self._orchestrate_tool(arg, turn=st.turn)
+            else:
+                _fn = self.tools[action_name]["func"]
+            try:
+                _tool_trace = _langsmith.tool_call(
+                    name="tool.%s" % action_name, session_id=self.session_id or "",
+                    input_chars=len(str(action_arg or "")))
+            except Exception:
+                _tool_trace = _nullcontext()
+            with self._ptc_server_scope(action_name, st.turn), _tool_trace:
+                _result = execute_tool(
+                    _fn, action_arg, _failure_for(action_name, action_arg),
+                    tool_name=action_name,
+                    side_effect=_side_effect,
+                )
+            obs = _hooks.run_post_tool(action_name, action_arg, _result.text)
+            obs, obs_images = self._gate_tool_images(obs, _result.data)
+            _tool_ok = _result.ok and (
+                obs == _result.text or not _is_failure(obs, action_name, action_arg))
+            if _tool_ok and action_name in _WEB_ACTIONS and not _web_result_relevant(action_name, action_arg, obs):
+                # 非空不等于有用：把明显跑题的搜索结果标记为可恢复失败，
+                # 让模型继续换关键词/年份/平台，而不是把它写进结论。
+                obs = (
+                    "搜索结果相关性不足：当前候选与查询主题缺少足够共同信号，"
+                    "请更换关键词、年份、平台或地区后继续搜索；不得把以下候选直接当作证据。\n"
+                    + _clip_tool_observation(obs, observation_limit, action_name)
+                )
+                _tool_ok = False
+            _duration_ms = int((time.monotonic() - _t_tool) * 1000)
+            if _result.error_kind == "timeout" and self._is_network_tool(action_name):
+                _timeout_hook = _hooks.run_workflow("network_timeout", {
+                    "tool": action_name,
+                    "error_kind": _result.error_kind,
+                    "duration_ms": _duration_ms,
+                    "depth": self.depth,
+                    "session_id": self.session_id or "",
+                })
+                if _timeout_hook.get("blocked"):
+                    obs = (f"[钩子拦截] {action_name} 网络超时后的后续处理未放行："
+                           f"{_timeout_hook.get('reason') or '需要人工审核'}")
+                    _tool_ok = False
+            _after_tool = _hooks.run_workflow("after_tool", {
+                "tool": action_name, "ok": _tool_ok,
+                "duration_ms": _duration_ms,
+                "error_kind": _result.error_kind,
+                "depth": self.depth, "session_id": self.session_id or "",
+            })
+            if _after_tool.get("blocked"):
+                obs = f"[钩子拦截] {action_name} 结果未放行：{_after_tool.get('reason') or '工具生命周期钩子拦截'}"
+                _tool_ok = False
+            if (st.turn is not None and action_name == "run_command"
+                    and _is_test_command(action_arg)):
+                st.turn.test_command_ok = _test_command_passed(obs)
+                st.turn.test_command = _clip(str(action_arg), 200)
+                st.turn.test_command_targets = dict(getattr(st.turn, "verification_targets", None) or {})
+            if st.turn is not None:
+                st.turn.tool_step(
+                    action_name, action_arg,
+                    (time.monotonic() - _t_tool) * 1000, obs,
+                    ok=_tool_ok,
+                )
+                _ev = _tool_evidence_from_obs(action_name, obs, _tool_ok)
+                if _ev:
+                    st.turn.add_tool_evidence(**_ev)
+            if (action_name == "preview_project" and _tool_ok and st.turn is not None
+                    and st.turn.verification_targets):
+                # production visual adapter is a real post-write verifier:
+                # only a successful fresh preview can close targets invalidated
+                # by the preceding file write.
+                for _target in st.turn.verification_targets:
+                    st.turn.verification_targets[_target] = True
+                st.turn.verified = all(st.turn.verification_targets.values())
+            # `ok` 是这一步的真实成败（_tool_ok 已综合 execute_tool 结果 +
+            # post-tool 钩子 + 相关性判定）。前端据此染色，**不再从返回正文里
+            # grep「错误/失败/超时」**——read_file 读到的源码/日志天然含这些字，
+            # 历史上把成功的一次读取整排标红（实测 agent.py 前 80 行那次）。
+            self._hb_steps = st.tool_steps
+            self._heartbeat("tool", steps=st.tool_steps,
+                            event=f"{action_name}:{'ok' if _tool_ok else 'fail'}")
+            observation_event = {"type": "observation", "text": obs,
+                                 "ok": bool(_tool_ok)}
+            if _result.artifacts:
+                # 工作流预览协议消费的持久证据；图片正文仍只通过 data.images
+                # 进入视觉通道，避免把 base64 写进事件和 checkpoint。
+                observation_event["artifacts"] = list(_result.artifacts)[:16]
+                # 主路径的「本轮改了哪些文件」也在这里落。此前 `file_changes` 只有
+                # 两处来源：子代理的 observation 出口（见 `_run_child`）与 resume 账本，
+                # 主代理自己写盘时**一条都不进**。实测真实项目 21 个回合里有 3 个调了
+                # `create_file`，episode 的 `files` 却是空 → 漏斗把「改了文件」报成 0，
+                # 学习环的断点因此归错地方。取值口径与子代理那处一致：不填 `kind`
+                # （它被 `preview_adapters` 当适配器路由键，填错会让产物清单变 0 条）。
+                for _artifact in _result.artifacts:
+                    if not isinstance(_artifact, Mapping):
+                        continue
+                    _apath = str(_artifact.get("path") or "").strip()
+                    if (_apath and _apath not in st._seen_file_changes
+                            and len(st._file_changes) < 100):
+                        st._seen_file_changes.add(_apath)
+                        st._file_changes.append({
+                            "path": _apath,
+                            "label": str(_artifact.get("label")
+                                         or os.path.basename(_apath)),
+                            "summary": _clip(_artifact.get("summary"), 160),
+                        })
+            _evidence = (_result.data or {}).get("browser_evidence") if isinstance(_result.data, dict) else None
+            if _evidence:
+                # 内置浏览器的每一步留痕：前端流程行据此显示"点之前/点之后"的缩略图
+                # 与地址。只有相对路径，没有图片正文。
+                observation_event["browser_evidence"] = _evidence
+            _fdiffs = (_result.data or {}).get("file_diffs") if isinstance(_result.data, dict) else None
+            if _fdiffs:
+                # 写文件工具的完整 before/after：只给前端「查看改动」渲染 diff 用。
+                # 模型侧看不到（trail 用的是 obs 文本，非本字段），对 agent 决策与
+                # 黄金题评分中性。与 artifacts 同因不写图片正文/巨块，按条数封顶。
+                observation_event["file_diffs"] = list(_fdiffs)[:16]
+            yield observation_event
+            # 实时刷新上下文用量指示：把本轮已产生的工具往返一并计入。旧实现只在
+            # 开工/压缩后各上报一次，长回合里进度条会一直停在初始值（用户反馈的
+            # 「上下文永远 5%」）。限频以免每步都触发网络计数。
+            if self.session_id and self.depth == 0:
+                _now = time.monotonic()
+                if _now - st._last_ctx_at >= _CTX_EMIT_INTERVAL:
+                    st._last_ctx_at = _now
+                    try:
+                        self.last_context = self._live_context(
+                            st.head, st.trail + [{"role": "user", "content": obs}])
+                        yield {"type": "context", **self.last_context}
+                    except Exception:  # noqa: BLE001 —— 用量统计失败绝不影响问答
+                        pass
+            st.last_action = st.parsed["action"]
+            st.last_obs = obs
+            if st.parsed["action"] == "python_exec" and _tool_ok:
+                st.ran_python_exec = True
+                st.last_exec_obs = obs
+
+            # 自我反思：工具未返回有效结果时，标记反思并提示换思路重试。
+            if not _tool_ok:
+                # 按失败类别分级处置（见 agent_runtime/tool_failure.py）。
+                # 以前一律只说「换一种方式重试」，于是三类**重试必然同样失败**
+                # 的情况被当成"再试一次说不定就成了"：
+                #   · invalid_result（工具返回值不符协议）—— 那是代码 bug；
+                #   · idempotency_in_doubt（上次执行中途挂了，状态未知）
+                #     —— execute_tool 已经拒绝执行，但若这里还提示模型重试，
+                #        模型换个参数再调就会算出新的幂等 key，**绕过唯一那道
+                #        防重复副作用的闸门**；
+                #   · project_stage_blocked（试做区禁该工具）—— 重试必被拒。
+                # permanent 类不再累加"连续失败"计数：它本来就不该重试，
+                # 累加只会让熔断阈值提前触发，在模型还没试够别的路之前收尾。
+                _fail_category, _fail_guidance = _tool_failure.failure_guidance(
+                    _result.error_kind, obs)
+                if _fail_category == "permanent":
+                    st._permanent_failures[st.parsed["action"]] = (
+                        st._permanent_failures.get(st.parsed["action"], 0) + 1)
+                if st.parsed["action"] in _WEB_ACTIONS:
+                    family = _web_query_family(action_arg)
+                    if family:
+                        st.web_family_failures[family] = st.web_family_failures.get(family, 0) + 1
+                streak = st.tool_fail_streak.get(st.parsed["action"], 0) + 1
+                st.tool_fail_streak[st.parsed["action"]] = streak
+                st.fail_total += _tool_failure.retry_budget_cost(_fail_category)
+                # Phase 3 经验记录辅助：累计失败次数 / 单工具最长连续失败 / 全局最长连续失败 /
+                # 最近一次失败观察（截断，脱敏后用于回合收尾决策）。
+                if st.turn is not None:
+                    st.turn.failure_count += 1
+                    st.turn.max_tool_streak = max(st.turn.max_tool_streak, streak)
+                    st.turn.max_consec_failures = max(st.turn.max_consec_failures, st.fail_total)
+                    st.turn.last_failure = _clip(obs, 4000)
+                    st.turn.last_failure_tool = str(st.parsed["action"])
+                # 同一工具反复撞「重试必然同样失败」的类别：立刻要求换工具，
+                # 不再走下面的通用熔断（那条要3 次才触发，而这里每次都是白试）。
+                # 幂等存疑（idempotency_in_doubt）尤其要拦：execute_tool 已经
+                # 拒绝执行，若还让模型换参数再调，会算出新key 绕过唯一那道闸门。
+                if _fail_category == "permanent" and st._permanent_failures[st.parsed["action"]] >= 2:
+                    st.forced_final_reason = (
+                        f"（工具 {st.parsed['action']} 连续 { st._permanent_failures[st.parsed['action']] } 次"
+                        "返回同类不可重试的失败（" + str(_result.error_kind or "unspecified") +
+                        "），重试没有意义，已要求换工具或直接收尾。）"
+                    )
+                    st.trail.append(
+                        {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                    )
+                    st.trail.append(
+                        {"role": "user", "content": (
+                            f"Nudge: 工具 {st.parsed['action']} 反复返回同类**不可重试**的失败"
+                            "（" + str(_result.error_kind or "unspecified") +
+                            "）。**禁止再用任何参数调用它**——这不是环境抖动，重试只会"
+                            "得到同样的错误。请立即改用其它工具；若没有其它路可走，就基于"
+                            "已有 Observation 输出 `Final Answer:`，如实说明这一步没做成、"
+                            "原因是什么。"
+                        )}
+                    )
+                    yield {
+                        "type": "reflection",
+                        "text": (f"工具 {st.parsed['action']} 反复返回不可重试的失败"
+                                 f"（{_result.error_kind or 'unspecified'}），已要求停止重试。"),
+                    }
+                    return "continue"
+                # 同一工具连续失败到上限（换参数也算），或连续失败总数越界：判为「无用重试」，
+                # 强制收尾。否则弱模型会一直重试同一工具耗尽上下文——这正是
+                # dev_apply_regions 入参格式没被识别时报「参数缺失」刷出死循环的成因。
+                is_web_research = st.parsed["action"] in _WEB_ACTIONS
+                fail_limit = _WEB_RESEARCH_FAIL_LIMIT if is_web_research else _TOOL_FAIL_LIMIT
+                total_limit = _WEB_RESEARCH_TOTAL_LIMIT if is_web_research else _TOTAL_FAIL_LIMIT
+                family_count = st.web_family_failures.get(_web_query_family(action_arg), 0)
+                family_limit_hit = is_web_research and family_count >= 3
+                if family_limit_hit:
+                    fail_limit = min(fail_limit, 3)
+                if streak >= fail_limit or st.fail_total >= total_limit or family_limit_hit:
+                    st.forced_finals = _MAX_FORCED_FINALS
+                    st.forced_final_reason = (
+                        f"（工具 {st.parsed['action']} 对同一检索意图已失败 {family_count} 次，"
+                        "模型未能换出可用的调用方式。）" if family_limit_hit else
+                        f"（工具 {st.parsed['action']} 已连续失败 {streak} 次，模型未能换出可用的调用方式。）"
+                    )
+                    st.trail.append(
+                        {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                    )
+                    st.trail.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Nudge: 工具 {st.parsed['action']} 已反复失败（连续 {streak} 次），"
+                                "禁止再用任何参数重试它。请立即基于上文全部 Observation 输出 "
+                                "`Final Answer:`：如实说明该步骤未完成及原因，不要编造，"
+                                "也不要再输出 Action。"
+                            ),
+                        }
+                    )
+                    yield {
+                        "type": "reflection",
+                        "text": f"工具 {st.parsed['action']} 反复失败，已要求模型停止重试并收尾。",
+                    }
+                    return "continue"
+                if st.failures < _MAX_REFLECTIONS:
+                    st.failures += 1
+                    yield {
+                        "type": "reflection",
+                        "text": (f"工具 {st.parsed['action']} 未返回有效结果（{_fail_category}），"
+                                 + ("可原样重试。" if _fail_category == "transient"
+                                    else "不要重试，换工具或收尾。"
+                                    if _fail_category == "permanent"
+                                    else "建议针对性换做法。")),
+                    }
+                    st.trail.append(
+                        {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                    )
+                    st.trail.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Reflection: {_fail_guidance}\n\nObservation was: "
+                                f"{_clip_tool_observation(obs, observation_limit, st.parsed['action'])}"
+                            ),
+                        }
+                    )
+                    return "continue"
+            else:
+                # 本次执行成功：清掉该工具的连续失败计数与全局连续失败计数
+                st.tool_fail_streak.pop(st.parsed["action"], None)
+                st._permanent_failures.pop(st.parsed["action"], None)
+                st.fail_total = 0
+                if st.parsed["action"] in _WEB_ACTIONS:
+                    st.web_family_failures.clear()
+            # 顺序路径的真实执行记录（与并行批次共用同一个 audit_steps）。
+            #
+            # **必须带参数**：只记裸工具名会让下游拿不到路径。实测
+            # `wf-f609ea8daf22` 的 `t3` 结论尾部自带一行
+            # `（核验：FAIL · 28 处引用可核验 · 2 处未通过（路径打不开）：player.gd:?、enemy.gd:?）`
+            # ——而同一份结论在工作流侧 `review verdict=PASS`。
+            # 差别就在这里：裸文件名兜底靠「本轮读过哪些路径」建索引，
+            # 索引来源就是这个 `action` 字段，只存`read_file` 四个字时索引恒空，
+            # 于是**每一条裸文件名引用都被判成幻觉路径**。
+            # 形状与 `traj` 一致（`read_file(path: behaviors/player.gd)`），
+            # 这样 `_tool_name` 的切分也不受影响。
+            st.audit_steps.append({
+                "action": "%s(%s)" % (st.parsed["action"], st.parsed["action_input"] or ""),
+                "ok": bool(_tool_ok),
+                # 乙：拿**原始 obs**（此处尚未 clip）判这次代码检索有没有自报少计型截断。
+                "truncated": obs_reports_code_undercount(st.parsed["action"], obs),
+                # 原始观察文本：裸文件名兜底要从 grep/search_code 成功观察里
+                # 提取被列出的文件路径（见 _observed_ref_paths）。
+                "obs": str(obs or "")})
+
+            # 写操作改变了代码库状态：清空已执行记录，允许随后用【相同命令】
+            # 重新跑测试做验证（防重复护栏针对的是无意义空转，不是改后复验）。
+            if st.parsed["action"] in _VERIFY_AFTER_WRITE_TOOLS:
+                st.executed.clear()
+
+            # 写后自验证收尾门（Phase 1 闭环）：写成功即校验改动，失败把结果回填
+            # 模型触发 ReAct 自修；成功则在 trace 标记 verified=True。纯内部调用，
+            # 不占工具步数；自修循环由本轮动态工具预算与既有失败上限护栏封顶。
+            if (st.parsed["action"] in _VERIFY_AFTER_WRITE_TOOLS
+                    and _tool_ok and st.turn is not None):
+                _written = _parse_written_rel(obs)
+                # 移动还额外带上旧路径：只验新文件在不在，查不出引用断没断。
+                _moved = _parse_moved_rel(obs)
+                # Every successful write invalidates previous evidence for that file.
+                _target = _written or "unknown-write-target"
+                st.turn.verification_targets[_target] = False
+                st.turn.verified = False
+                if _written and _SELF_VERIFY_ENABLED:
+                    _verifier = self.tools.get("self_verify")
+                    _sv_obs, _sv_state = _run_self_verify(
+                        _written, _verifier.func if _verifier else None, moved=_moved)
+                    st.trail.append(
+                        {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+                    )
+                    st.trail.append(
+                        {"role": "user", "content": "Observation: " + _clip_tool_observation(_sv_obs, observation_limit, "self_verify")}
+                    )
+                    # 三态只影响「记什么」：未通过要人看，没能校验同样不能算过。
+                    yield {"type": "observation", "text": _sv_obs, "ok": _sv_state is True}
+                    st.turn.verification_targets[_target] = _sv_state
+                    st.turn.verified = all(value is True
+                                        for value in st.turn.verification_targets.values())
+                    # agent 自身结构化日志：self_verify 失败事件（与现有 verdict
+                    # 字段并列；不引入新决策，只是「agent 看自己」的可观测面）。
+                    # 永静默：失败时 event() 内部 try/except 全包，不影响主流程。
+                    if _sv_state is False:
+                        self._agent_log_event(
+                            self._session_code_root or "",
+                            "self_verify_failed",
+                            files=list(_written or ()),
+                            turn_id=getattr(st.turn, "turn_id", None),
+                        )
+
+            # "产出即答案"的工具：结果已经正确，直接作为最终回答返回，
+            # 不再给模型多一轮（避免小模型反复调用同一工具导致步数耗尽 / 死循环）。
+            if (self._is_verbatim_tool(st.parsed["action"]) and _tool_ok
+                    and _should_verbatim_passthrough(st.parsed["action"], obs)):
+                if st.turn is not None:
+                    st.turn.outcome = "verbatim"
+                st.final_text = _format_verbatim(st.parsed["action"], obs)
+                self.history.append({"user": st.question, "assistant": st.final_text})
+                yield self._final_event(st.final_text, st.turn)
+                return "stop"
+
+            # 把本轮结果回填，进入下一轮推理。观察先截断，防止撑爆 n_ctx。
+            # 即便模型在同一轮里也写了 Final Answer，也以真实观察为准再走一轮，
+            # 避免它在没看到工具结果前就给出最终答案（小模型常把 Action+Final 写在一起）。
+            st.trail.append(
+                {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
+            )
+            _obs_entry = {
+                "role": "user",
+                "content": (
+                    f"Observation: {_clip_tool_observation(obs, observation_limit, st.parsed['action'])}"
+                    "\n\n（请基于观察继续，或给出 Final Answer）"
+                ),
+            }
+            if obs_images:
+                # 仅最近一条工具观察允许带图；_fit_budget 会剥离更早观察上的图片。
+                _obs_entry["images"] = list(obs_images)
+            st.trail.append(_obs_entry)
+            # 观察已经写进 trail：这一步算真正完成。落盘后恢复端从「下一步」
+            # 开始，不会把刚执行过的工具再跑一遍。
+            _snapshot("step_done")
+            return "continue"
+        return None
+    def _run(self, question, turn=None, stream=True, images=None, deadline=None, cancel_event=None,
+             journal=None, on_journal=None):
+        """执行一次问答，yield 出流式事件：
+        token / thought / action / observation / reflection / final / done。
+
+        images: 可选的 base64 图片列表（视觉模型输入），挂在本轮问题消息上。
+        消息分两部分：head（系统提示/项目规则/历史滑窗/当前问题，固定）+
+        trail（本轮 ReAct 决策与观察，动态增长，超预算时成对丢弃最早的往返）。
+        """
+        # 本轮的可变状态收进 _TurnState（见 docs/backend-decomposition.md §6）：
+        # 只做搬运，不加逻辑 —— 字段名与拆分前**一字不差**，行为不变。
+        st = _TurnState()
+        st.question = question
+        st.turn = turn
+
+        st.head = self._build_messages(st.question, images=images)
+        st.trail = []
+        # 本轮开工前上报一次上下文用量（仅顶层会话代理；子代理不刷 UI 指示）。
+        # 此时尚未产生工具往返，用量 = 系统提示 + 历史摘要/回放 + 当前问题。
+        if self.session_id and self.depth == 0:
+            try:
+                self.last_context = self.context_stats(st.question)
+                yield {"type": "context", **self.last_context}
+            except Exception:  # noqa: BLE001 —— 用量统计失败绝不影响问答
+                pass
+
+        st.failures = 0
+        st.nudges = 0
+        max_nudges, max_final_continuations = self._execution_policy()
+        pending_final = None
+        st.final_continuations = 0
+        st.tool_steps = 0
+        st.nav_free_used = 0  # 已用掉的免费目录导航次数（_NAV_TOOLS，超出后照常计步）
+        st.iterations = 0
+        self._hb_steps = 0
+        self._heartbeat("started", steps=0, event="run_start")
+        # 工具/观察预算按本轮真实用户问题动态选择。项目缺陷审查通常需要同时核对
+        # 脚本、场景、输入与 UI，不能与普通问答共用同一个很小的固定上限。
+        # 工作流子代理按任务显式申请加步时（tool_step_override），以申请值为准——
+        # 该值在 _run_child 已被夹到 [1, SUBAGENT_STEPS_HARD_CAP]。
+        tool_step_limit = int(self.tool_step_override or 0) or _step_budget(st.question)
+        observation_limit = _observation_budget(st.question)
+        lookup_output_limit = _quick_lookup_output_limit(st.question)
+        st.repeats = 0  # 完全相同参数重复调用同一工具的次数
+        st.tool_fail_streak = {}  # 同一工具连续失败次数（换参数也算；防同工具反复失败死循环）
+        st.web_family_failures = {}  # 同一研究意图反复换写法仍失败时，及时要求换来源或收尾
+        st._permanent_failures = {}  # 重试必然同样失败的类别（invalid_result / 幂等存疑 / 试做区禁调）
+                                  # 连续撞同一类就立刻要求换工具，不浪费反思额度
+        st.fail_total = 0  # 连续失败总次数（任一工具；成功即清零）
+        st._last_ctx_at = 0.0  # 上次实时刷新上下文用量指示的时刻（限频用）
+        st.executed = set()  # 本轮已执行过的 (工具, 参数)，用于防空转循环
+        st.last_action = None
+        st.last_obs = None
+        st.last_exec_obs = None  # 最近一次成功的 python_exec 观察（终态"原样重贴"兜底用）
+        st.forced_finals = 0  # 已发出的强制收尾提示次数（步数耗尽 / 重复空转共用一次机会）
+        # 过程解说的剥协议 + 同轮去重器。**每轮 run() 一个**，因为去重集合必须
+        # 只在「同一轮的工具调用之间」生效 —— 跨轮去重会把用户第二次问同一件事时
+        # 模型 legitimately 重复说的话也吃掉。
+        narration_filter = _PromptNarrationFilter()
+        st.forced_final_reason = ""  # 触发强制收尾的原因，证据兜底 final 里原样告知用户
+        st.evidence = []  # 本轮已执行工具的简要清单（action(input)），耗尽时兜底用
+        # 写工具真落盘的文件（由工具在成功那一步自报，不由 action 文本反推）。
+        # `_seen_file_changes` 只为去重——同一个文件被 create_file 之外的工具再改一次
+        # 时，「改了哪些文件」的清单里出现一次就够，不必按调用次数重复。
+        st._file_changes: list[dict] = []
+        st._seen_file_changes: set[str] = set()
+        # 本轮**真实执行记录**（含成功/失败），供证据审计使用。
+        # 刻意不从trail 文本反推：原生 FC 的并行批次路径不写 `Action:` 标记，
+        # 反推会得到零步骤，于是把「证据齐备」误判成「未核验」并给用户挂上
+        # 误导性警告。见 _audit_live_answer。
+        st.audit_steps: list[dict] = []
+        st.evidence_nudges = 0  # 定位类回答最多补读一次原文，避免复核本身形成死循环
+        # BUG-7 终态守卫：模型把「带行号的源码整段铺出」当 Final Answer 交付时（实测 X：
+        # enemy/hud/player 三份源码裸铺、几乎无综合），最多**逼它综合一次**；仍裸铺就
+        # 如实标 degraded 交付，绝不把「原始 dump」冒充成综合结论（fail-closed，不假完成）。
+        st.verbatim_dump_nudges = 0
+        # 「数字/行号清单冒充答案」的纠正次数。与源码裸铺分开计数：两类 dump 的
+        # 纠正话术不同（一个要它讲清结构、一个要它讲清每一项是什么），但都只给一次机会。
+        st.evidence_dump_nudges = 0
+        # 「最终回答只是原样重贴工具观察」的纠正次数。与上面两类 dump 分开：它拦的是
+        # 混合内容（如“总行数 + 几行源码”），形状判据抓不住，但行级重合度能抓住。
+        st.observation_echo_nudges = 0
+        # 「final 从中间开始」的纠正次数。实测前端原生通道只拿到后半段：先要求它
+        # 从头重写一次；仍截头就如实标 degraded，不把半截答案当完整交付。
+        st.continuation_nudges = 0
+        # 本回合是否成功跑过 python_exec。终态硬门不能只看 last_action：模型完全
+        # 可能在 python_exec 之后又读了两个文件（last_action 变成 read_file），
+        # 最后仍然只把之前那串行号当答案。
+        st.ran_python_exec = False
+        # 连续「输出无标记」的次数。与 nudges 分开计数，因为它的处置完全不同：
+        # nudges 是「再给它一次机会」，而格式连续失守说明**这个模型在当前提示词下
+        # 稳定地不遵守契约**——继续喂 nudge 只会让界面上重复同一条提示（实测最多 8 遍），
+        # 而真正该做的是停下来告诉用户「模型没按格式应答」，让他换模型或调提示词。
+        st.format_stalls = 0
+        # 连续复读内部调度标记的轮数（「（并行调用）」+工具名）。独立于 format_stalls：
+        # 它衡量的是上下文污染，不是格式能力；任何一轮没复读就清零（见闸门处）。
+        st.marker_echoes = 0
+        st.plan_emitted = False  # 计划模式：计划只上抛一次
+        self._native_queue = []   # 原生通道：顺序回退时逐个消化 tool_calls
+        self._pending_batch = []  # 原生通道：待并发执行的只读 tool_calls
+
+        # ── 精确续跑：把上一次中断时的现场栽回来 ──────────────────────────
+        # 恢复的是「结构和账本」，不是一段给人看的摘要：trail 原样接上，
+        # executed 账本恢复后，同一个 (工具, 参数) 会被既有的防重复闸门拦住，
+        # 因此已完成的调用不会被重放；计数器沿用，步数预算不因重启而重置。
+        st._resume_tip = ""
+        st._journal_hist_len = len(self.history)
+        self._restore_from_journal(st, journal)
 
         def _snapshot(phase, started=None):
             """把「下一位应该从哪继续」落盘。只存结构，不存图片。"""
@@ -6666,72 +7561,72 @@ class Agent:
             state = {
                 "version": 1,
                 "phase": phase,
-                "question": question,
-                "history_len": _journal_hist_len,
-                "iterations": iterations,
+                "question": st.question,
+                "history_len": st._journal_hist_len,
+                "iterations": st.iterations,
                 "trail": [{"role": str(m.get("role")),
                            "content": str(m.get("content") or "")}
-                          for m in trail if isinstance(m, dict) and m.get("role")],
+                          for m in st.trail if isinstance(m, dict) and m.get("role")],
                 "counters": {
-                    "failures": failures, "nudges": nudges, "tool_steps": tool_steps,
-                    "nav_free_used": nav_free_used, "repeats": repeats,
-                    "forced_finals": forced_finals, "fail_total": fail_total,
-                    "evidence_nudges": evidence_nudges,
-                    "verbatim_dump_nudges": verbatim_dump_nudges,
-                    "evidence_dump_nudges": evidence_dump_nudges,
-                    "observation_echo_nudges": observation_echo_nudges,
-                    "continuation_nudges": continuation_nudges,
-                    "format_stalls": format_stalls, "marker_echoes": marker_echoes,
+                    "failures": st.failures, "nudges": st.nudges, "tool_steps": st.tool_steps,
+                    "nav_free_used": st.nav_free_used, "repeats": st.repeats,
+                    "forced_finals": st.forced_finals, "fail_total": st.fail_total,
+                    "evidence_nudges": st.evidence_nudges,
+                    "verbatim_dump_nudges": st.verbatim_dump_nudges,
+                    "evidence_dump_nudges": st.evidence_dump_nudges,
+                    "observation_echo_nudges": st.observation_echo_nudges,
+                    "continuation_nudges": st.continuation_nudges,
+                    "format_stalls": st.format_stalls, "marker_echoes": st.marker_echoes,
                 },
-                "tool_fail_streak": dict(tool_fail_streak),
-                "web_family_failures": dict(web_family_failures),
-                "_permanent_failures": dict(_permanent_failures),
-                "executed": [list(sig) for sig in executed if isinstance(sig, tuple)],
+                "tool_fail_streak": dict(st.tool_fail_streak),
+                "web_family_failures": dict(st.web_family_failures),
+                "_permanent_failures": dict(st._permanent_failures),
+                "executed": [list(sig) for sig in st.executed if isinstance(sig, tuple)],
                 "pending_batch": [[str(a), str(b)] for a, b in self._pending_batch],
                 "native_queue": [[str(a), str(b)] for a, b in self._native_queue],
                 "started": started,
-                "verification": (dict(getattr(turn, "verification_targets", {}) or {})
-                                 if turn is not None else {}),
-                "verified": bool(getattr(turn, "verified", False)) if turn is not None else False,
-                "file_changes": list(_file_changes),
-                "evidence": list(evidence),
-                "audit_steps": list(audit_steps),
-                "ran_python_exec": bool(ran_python_exec),
-                "plan_emitted": bool(plan_emitted),
-                "forced_final_reason": forced_final_reason,
-                "last_action": last_action,
-                "last_obs": _clip(str(last_obs or ""), 20000),
-                "last_exec_obs": _clip(str(last_exec_obs or ""), 20000),
+                "verification": (dict(getattr(st.turn, "verification_targets", {}) or {})
+                                 if st.turn is not None else {}),
+                "verified": bool(getattr(st.turn, "verified", False)) if st.turn is not None else False,
+                "file_changes": list(st._file_changes),
+                "evidence": list(st.evidence),
+                "audit_steps": list(st.audit_steps),
+                "ran_python_exec": bool(st.ran_python_exec),
+                "plan_emitted": bool(st.plan_emitted),
+                "forced_final_reason": st.forced_final_reason,
+                "last_action": st.last_action,
+                "last_obs": _clip(str(st.last_obs or ""), 20000),
+                "last_exec_obs": _clip(str(st.last_exec_obs or ""), 20000),
             }
             try:
                 on_journal(state)
             except Exception:  # noqa: BLE001 —— 落盘失败只能降级，不能打断推理
                 pass
 
-        if _resume_tip:
-            yield {"type": "notice", "text": _resume_tip}
+        if st._resume_tip:
+            yield {"type": "notice", "text": st._resume_tip}
 
         def _evidence_final(reason):
             """模型在强制收尾后仍不给出 Final Answer：用本轮真实观察做确定性兜底。"""
             # calculate 的有效结果本身就是一句可读结论，优先用「计算结果为：…」兜底，
             # 不套检索证据模板（避免"以下为检索到的证据"式的错位话术）。
-            if last_action == "calculate" and last_obs and not _is_failure(last_obs):
-                if turn is not None:
-                    turn.outcome = "verbatim"
-                return {"type": "final", "text": _format_verbatim("calculate", last_obs)}
-            if turn is not None:
-                turn.outcome = "evidence_fallback"
-            steps_used = "；".join(evidence) or "（无）"
-            last = _clip_tool_observation(last_obs or "", observation_limit, last_action)
-            if last_action in {"web_search", "web_search_batch", "web_research"} and (
+            if st.last_action == "calculate" and st.last_obs and not _is_failure(st.last_obs):
+                if st.turn is not None:
+                    st.turn.outcome = "verbatim"
+                return {"type": "final", "text": _format_verbatim("calculate", st.last_obs)}
+            if st.turn is not None:
+                st.turn.outcome = "evidence_fallback"
+            steps_used = "；".join(st.evidence) or "（无）"
+            last = _clip_tool_observation(st.last_obs or "", observation_limit, st.last_action)
+            if st.last_action in {"web_search", "web_search_batch", "web_research"} and (
                     "搜索结果相关性不足" in last or "搜索未返回结果" in last or "搜索失败" in last):
                 # 相关性门已经判定这些候选不能作为证据；兜底回答不能再次把它们
                 # 展示给用户，否则用户看到的仍是跑题 Bing 页面。
                 last = ("联网搜索未获得与问题直接匹配、可核对的结果。"
                         "已丢弃跑题候选，当前不能据此确认票价、余票或行程细节。")
-            elif last_action == "web_transport":
+            elif st.last_action == "web_transport":
                 try:
-                    payload = json.loads(str(last_obs or ""))
+                    payload = json.loads(str(st.last_obs or ""))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     payload = {}
                 if isinstance(payload, dict) and payload.get("verified_fare") is False:
@@ -6757,14 +7652,14 @@ class Agent:
 
         while True:
             _raise_if_cancelled()
-            iterations += 1
+            st.iterations += 1
             # 每次问模型之前先落一版「等模型」现场：若在 LLM 调用中崩溃/断连，
             # 恢复时从同一位置重新问，trail 与计数完全一致。
             _snapshot("awaiting_llm")
             # 统一 deadline：到点即中止本轮，避免一次问答无限拖长（0/负数 = 不限时）。
             if deadline is not None and time.monotonic() > deadline:
-                if turn is not None:
-                    turn.outcome = "deadline_exceeded"
+                if st.turn is not None:
+                    st.turn.outcome = "deadline_exceeded"
                 yield {
                     "type": "final",
                     "text": "（本轮已超出时间上限，已中止。请缩小问题范围或拆成更具体的问题后重试。）",
@@ -6782,9 +7677,9 @@ class Agent:
                     _slack += max_nudges
                 if max_final_continuations > 0:
                     _slack += max_final_continuations
-                if iterations > tool_step_limit + _slack:
-                    if turn is not None:
-                        turn.outcome = "max_steps"
+                if st.iterations > tool_step_limit + _slack:
+                    if st.turn is not None:
+                        st.turn.outcome = "max_steps"
                     yield {
                         "type": "final",
                         "text": "（已达到最大推理步数，请尝试更具体的问题，或补充知识库内容。）",
@@ -6795,18 +7690,18 @@ class Agent:
             # 省掉逐条往返。批内只要含写/副作用工具（或超并发上限）就整体退回顺序路径。
             if self._pending_batch:
                 # 批次的 verdict 与顺序路径一致：已强制收尾后不再执行任何调用。
-                if forced_finals >= _MAX_FORCED_FINALS:
-                    yield _evidence_final(forced_final_reason)
+                if st.forced_finals >= _MAX_FORCED_FINALS:
+                    yield _evidence_final(st.forced_final_reason)
                     return
                 # 批内含「已连续不可重试失败」的工具：退回顺序路径逐条裁决。
                 # 其它工具仍有执行机会；被封禁的那条由统一闸门触发证据兜底。
-                if any(_permanent_failures.get(nm, 0) >= 2
+                if any(st._permanent_failures.get(nm, 0) >= 2
                        for nm, _ar in self._pending_batch):
                     self._native_queue = self._pending_batch
                     self._pending_batch = []
                     continue
                 if PARALLEL_TOOLS and self._parallel_safe(self._pending_batch):
-                    remaining = (max(0, tool_step_limit - tool_steps)
+                    remaining = (max(0, tool_step_limit - st.tool_steps)
                                  if tool_step_limit > 0 else PARALLEL_MAX)
                     # 按成本拆批：免费目录导航成本 0（即使付费步数耗尽也可放行），
                     # 其余工具成本 1。严格按模型给出的顺序取用，不重排后续调用。
@@ -6819,7 +7714,7 @@ class Agent:
                             break
                         free_nav = (
                             nm in _NAV_TOOLS
-                            and nav_free_used + nav_taken < NAV_FREE_STEPS
+                            and st.nav_free_used + nav_taken < NAV_FREE_STEPS
                         )
                         if not free_nav:
                             if paid_taken >= remaining:
@@ -6841,8 +7736,8 @@ class Agent:
                     _snapshot("batch_started", started=[
                         {"name": nm, "arg": ar, "side_effect": False} for nm, ar in batch])
                     for nm, ar in batch:
-                        executed.add((nm, ar))
-                    results = self._run_batch(batch, turn)
+                        st.executed.add((nm, ar))
+                    results = self._run_batch(batch, st.turn)
                     for (nm, ar, _o, _k, _i, _ek), _free in zip(results, batch_free):
                         # step_cost 透传给外层（子代理编排器按它统计上限，免费导航不计）
                         yield {"type": "action", "text": f"{nm}({ar})",
@@ -6861,14 +7756,14 @@ class Agent:
                                     "content": f"Observation: [{nm}] {_clip_tool_observation(obs, observation_limit, nm)}"}
                         if imgs:
                             _obs_msg["images"] = list(imgs)
-                        trail.append(_obs_msg)
-                    evidence.extend(f"{nm}({_clip(ar, 120)})"
+                        st.trail.append(_obs_msg)
+                    st.evidence.extend(f"{nm}({_clip(ar, 120)})"
                                     for nm, ar, _o, _k, _i, _ek in results)
                     # 真实执行记录：证据审计必须读它，而不是回头扫trail 里的
                     # `Action:` 文本——这条路径不写那种标记（见 _audit_live_answer）。
                     # **带参数**，与顺序路径同形状（见上面那条的说明：只存裸工具名
                     # 会让「本轮读过哪些路径」索引恒空，裸文件名引用全被判幻觉）。
-                    audit_steps.extend({"action": "%s(%s)" % (nm, _ar), "ok": bool(_ok),
+                    st.audit_steps.extend({"action": "%s(%s)" % (nm, _ar), "ok": bool(_ok),
                                         # 乙：并行批同样拿原始 obs（_o，未 clip）打截断标。
                                         "truncated": obs_reports_code_undercount(nm, _o),
                                         # 原始观察文本：裸文件名兜底要从 grep/search_code
@@ -6878,28 +7773,28 @@ class Agent:
                     # 免费导航只消耗导航额度（与拆批时判定的 batch_free 同序），
                     # 其余结果按实际数量计入工具步数。
                     _nav_freed = sum(1 for _free in batch_free if _free)
-                    nav_free_used += _nav_freed
-                    tool_steps += len(results) - _nav_freed
-                    self._hb_steps = tool_steps
-                    self._heartbeat("tool_batch", steps=tool_steps,
+                    st.nav_free_used += _nav_freed
+                    st.tool_steps += len(results) - _nav_freed
+                    self._hb_steps = st.tool_steps
+                    self._heartbeat("tool_batch", steps=st.tool_steps,
                                     event=",".join(str(row[0]) for row in results)[:80])
-                    last_action = results[-1][0]
-                    last_obs = results[-1][2]
+                    st.last_action = results[-1][0]
+                    st.last_obs = results[-1][2]
                     if any(self._is_write_tool(nm) for nm, _a, _o, _k, _i, _ek in results):
-                        executed.clear()
+                        st.executed.clear()
                     # 并行失败也必须进顺序路径同一套分类/熔断：此前 _run_batch
                     # 只回 ok，批量失败既不封禁工具也不会计入连续失败，弱模型
                     # 可以靠并行批次无限白试。
-                    fail_total, _batch_forced, _batch_nudge = self._record_batch_failures(
-                        results, turn, tool_fail_streak, fail_total,
-                        web_family_failures, _permanent_failures)
+                    st.fail_total, _batch_forced, _batch_nudge = self._record_batch_failures(
+                        results, st.turn, st.tool_fail_streak, st.fail_total,
+                        st.web_family_failures, st._permanent_failures)
                     if _batch_forced:
-                        forced_finals = _MAX_FORCED_FINALS
-                        forced_final_reason = _batch_forced
+                        st.forced_finals = _MAX_FORCED_FINALS
+                        st.forced_final_reason = _batch_forced
                     if _batch_nudge:
-                        if failures < _MAX_REFLECTIONS:
-                            failures += 1
-                        trail.append({"role": "user", "content": _clip(_batch_nudge, 1600)})
+                        if st.failures < _MAX_REFLECTIONS:
+                            st.failures += 1
+                        st.trail.append({"role": "user", "content": _clip(_batch_nudge, 1600)})
                         yield {"type": "reflection", "text": _clip(_batch_nudge, 500)}
                     _snapshot("step_done")
                     continue
@@ -6911,7 +7806,7 @@ class Agent:
             if self.depth == 0 and self.session_id:
                 try:
                     for _reminder in _timers.due(self.project_id or "", self.session_id):
-                        trail.append({"role": "user", "content": _reminder["reminder"]})
+                        st.trail.append({"role": "user", "content": _reminder["reminder"]})
                         yield {"type": "notice",
                                "text": "定时提醒：" + _reminder["message"][:160]}
                         # 语音会话静音听答时提醒也要主动到达：向活跃桥推一条
@@ -6925,13 +7820,13 @@ class Agent:
                 except Exception:  # noqa: BLE001 —— 定时器故障不影响问答
                     pass
             # 每轮送模型前都做一次 token 预算裁剪（trail 往返 -> head 历史）
-            messages = self._fit_budget(head, trail)
-            if turn is not None and turn.messages_hash is None:
-                turn.snapshot_prompt(messages)
-                turn.add_injection(
+            messages = self._fit_budget(st.head, st.trail)
+            if st.turn is not None and st.turn.messages_hash is None:
+                st.turn.snapshot_prompt(messages)
+                st.turn.add_injection(
                     list(getattr(self, "_last_injection", []) or [])
                     + list(getattr(self, "_last_legacy_injection", []) or []))
-            acc = ""
+            st.acc = ""
             finish_reason = None
             # 续写纠偏重试：本次调用暂时关思考，把输出预算留给答案本身
             eff_thinking = False if (self._suppress_thinking_once or pending_final is not None) else self.thinking_enabled
@@ -6944,12 +7839,12 @@ class Agent:
                 # 原生通道：上一轮一次返回了多个 tool_call，逐条顺序执行（不再问模型）
                 _nm, _nin = self._native_queue.pop(0)
                 native_override = (_nm, _nin)
-                acc = f"Action: {_nm}\nAction Input: {_nin}"
+                st.acc = f"Action: {_nm}\nAction Input: {_nin}"
                 finish_reason = "tool_calls"
             else:
                 if not self._budget_allows(messages, lookup_output_limit or LLM_MAX_TOKENS):
-                    if turn is not None:
-                        turn.outcome = "token_budget"
+                    if st.turn is not None:
+                        st.turn.outcome = "token_budget"
                     yield _evidence_final("（已达到本任务 Token 上限，已停止继续调用模型。）")
                     return
                 _t_llm = time.monotonic()
@@ -6957,7 +7852,7 @@ class Agent:
                 # 最长（实测 58s），而事件流里此前完全没有对应标记。
                 _llm_wait_t0 = _t_llm
                 _llm_wait_purpose = "%s#%d" % (
-                    "subagent" if self.depth else "main", iterations)
+                    "subagent" if self.depth else "main", st.iterations)
                 if stream:
                     # 思考流（reasoning_content / thinking）与正文分开收集，
                     # 每收到正文 token 就把已到达的思考片段作为 reasoning 事件上抛。
@@ -7023,7 +7918,7 @@ class Agent:
                         for tok in _traced_stream():
                             for _chunk in reasoning_coalescer.take(reasoning_q):
                                 yield {"type": "reasoning", "text": _chunk}
-                            acc += tok
+                            st.acc += tok
                             visible = react_token_filter.feed(prompt_leak_filter.feed(tok))
                             if visible:
                                 yield {"type": "token", "text": visible}
@@ -7065,7 +7960,7 @@ class Agent:
                         _llm_wait_emit("llm_wait_start", _llm_wait_purpose)
                         self._heartbeat("thinking", steps=self._hb_steps, event="llm_start")
                         try:
-                            acc = self.llm.chat(**chat_kwargs)
+                            st.acc = self.llm.chat(**chat_kwargs)
                         finally:
                             _llm_wait_emit(
                                 "llm_wait_end", _llm_wait_purpose,
@@ -7088,76 +7983,76 @@ class Agent:
                         # 归一成空串，让它走**本来就为它准备好的**那条路：
                         # format_stalls（`_MAX_FORMAT_STALLS`）会纠偏两次，然后如实
                         # 告诉用户「模型没按格式应答」——而不是伪装成一次崩溃。
-                        if acc is None:
-                            acc = ""
+                        if st.acc is None:
+                            st.acc = ""
                         _raise_if_cancelled()
-                if turn is not None:
-                    turn.llm_step((time.monotonic() - _t_llm) * 1000, finish_reason)
-                    turn.add_usage(getattr(self.llm, "last_usage", None))
-                    if getattr(self.llm, "last_sampling_suppressed", False) and turn.note_sampling_suppressed():
+                if st.turn is not None:
+                    st.turn.llm_step((time.monotonic() - _t_llm) * 1000, finish_reason)
+                    st.turn.add_usage(getattr(self.llm, "last_usage", None))
+                    if getattr(self.llm, "last_sampling_suppressed", False) and st.turn.note_sampling_suppressed():
                         yield {"type": "notice",
                                "text": "思考模式已开：当前上游在思考模式下忽略 temperature，"
                                        "本回合按上游默认采样发送；你的温度设置保留，关思考后恢复生效。"}
-                self._record_budget_usage(messages, acc)
+                self._record_budget_usage(messages, st.acc)
                 # 关思考只作用于被截断后的那一次续写重试；用完即复位，避免影响后续正常轮次
                 self._suppress_thinking_once = False
                 calls = (getattr(self.llm, "last_tool_calls", None) or []) if use_tools else []
                 # 这一轮模型是否已经**用协议允许的方式**表达了动作。
                 # 只要是，就绝不参与「格式失守」判定——见下面 parallel_batch 那段。
-                native_calls_this_turn = False
+                st.native_calls_this_turn = False
                 if calls:
                     # 原生 tool_call 归一进文本协议：护栏 / 事件 / 账本完全复用
                     pairs = [(c["name"], args_to_input(c["arguments"])) for c in calls]
-                    native_calls_this_turn = True
+                    st.native_calls_this_turn = True
                     if len(pairs) > 1:
                         # 多调用：走并行批次（不安全的批次会在循环顶自动退回顺序）
                         self._pending_batch = pairs
                     else:
                         _nm, _nin = pairs[0]
                         native_override = (_nm, _nin)
-                        acc = (acc + "\n" if acc.strip() else "") + f"Action: {_nm}\nAction Input: {_nin}"
+                        st.acc = (st.acc + "\n" if st.acc.strip() else "") + f"Action: {_nm}\nAction Input: {_nin}"
                     finish_reason = "tool_calls"
 
             # 解析前再清理一次，保证模型回显旧版内部前缀时不会破坏
             # Action / Final Answer 识别，也不会把前缀写入本轮历史。
-            acc = _strip_internal_prompt_leak(acc)
+            st.acc = _strip_internal_prompt_leak(st.acc)
             if pending_final is not None:
                 # 这是上一段 Final Answer 的续写，不再把正文解释成新的工具动作。
-                pending_final = _join_final_continuation(pending_final, acc)
+                pending_final = _join_final_continuation(pending_final, st.acc)
                 if finish_reason == "length" and self._limit_ok(
-                        final_continuations, max_final_continuations):
-                    final_continuations += 1
-                    trail.append({"role": "assistant", "content": acc[-TRAIL_ASSISTANT_CHARS:]})
-                    trail.append({"role": "user", "content": (
+                        st.final_continuations, max_final_continuations):
+                    st.final_continuations += 1
+                    st.trail.append({"role": "assistant", "content": st.acc[-TRAIL_ASSISTANT_CHARS:]})
+                    st.trail.append({"role": "user", "content": (
                         "上一段最终回答仍未结束。紧接末尾继续正文，不要重述前文，"
                         "不要重新写 Final Answer 标记，也不要调用工具；完成时自然结束。"
                     )})
                     yield {"type": "notice", "text": "模型单次输出已满，正在接续完整回答。", "transient": True}
                     continue
                 continuation_incomplete = finish_reason == "length"
-                acc = "Final Answer: " + pending_final
+                st.acc = "Final Answer: " + pending_final
                 pending_final = None
             else:
                 continuation_incomplete = False
-            repeated = _repeated_sentence(acc)
-            if repeated and not re.search(r"(?:Action|Final Answer):", acc):
-                if forced_finals < _MAX_FORCED_FINALS:
-                    forced_finals += 1
-                    forced_final_reason = "（检测到模型连续重复同一句话，已要求它停止复述并继续完成回答。）"
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": (
+            repeated = _repeated_sentence(st.acc)
+            if repeated and not re.search(r"(?:Action|Final Answer):", st.acc):
+                if st.forced_finals < _MAX_FORCED_FINALS:
+                    st.forced_finals += 1
+                    st.forced_final_reason = "（检测到模型连续重复同一句话，已要求它停止复述并继续完成回答。）"
+                    st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
+                    st.trail.append({"role": "user", "content": (
                         "Nudge: 你刚才连续重复了同一句话。不要再复述，也不要输出内部思考；"
                         "请基于已有证据继续执行下一步，或直接输出完整的 `Final Answer:`。"
                     )})
                     yield {"type": "reflection", "text": "检测到模型重复同一句话，正在要求它继续而不是重复复述。"}
                     continue
-            parsed = parse_response(acc)
+            st.parsed = parse_response(st.acc)
             if native_override is not None:
-                parsed = {"thought": parsed.get("thought") or "", "action": native_override[0],
+                st.parsed = {"thought": st.parsed.get("thought") or "", "action": native_override[0],
                           "action_input": native_override[1], "final": None}
-            if parsed["thought"]:
-                yield {"type": "thought", "text": parsed["thought"]}
-            elif self.narration and (parsed["action"] or native_override is not None
+            if st.parsed["thought"]:
+                yield {"type": "thought", "text": st.parsed["thought"]}
+            elif self.narration and (st.parsed["action"] or native_override is not None
                                      or self._pending_batch):
                 # 工具轮里模型自己写的散文（没写 `Thought:` 标记的那种）。
                 # 剥掉协议标记后才敢用 —— 实测模型在该契约下仍会吐 `Thought:`。
@@ -7178,685 +8073,25 @@ class Agent:
                 # 所以这个守卫仍然拦得住「答案漏进时间线」—— 承重性由
                 # `test_the_action_guard_is_load_bearing` 与
                 # `test_final_answer_never_enters_the_activity_timeline` 盯住。
-                _narration = narration_filter.offer(acc)
+                _narration = narration_filter.offer(st.acc)
                 if _narration:
                     yield {"type": "thought", "text": _narration}
             # 计划模式：从首轮输出抽取计划，作为 plan 事件上抛一次（正文仍走原流程）
-            if self.plan_mode and not plan_emitted:
-                _steps = _extract_plan(acc)
+            if self.plan_mode and not st.plan_emitted:
+                _steps = _extract_plan(st.acc)
                 if _steps:
-                    plan_emitted = True
+                    st.plan_emitted = True
                     yield {"type": "plan", "steps": _steps}
 
-            if parsed["action"] and parsed["action"] in self.tools:
-                action_name = parsed["action"]
-                action_arg = _normalize_tool_arg(action_name, (parsed["action_input"] or "").strip())
-                sig = (action_name, action_arg)
-
-                # 强制收尾（步数耗尽/重复空转）已发出后，模型仍输出任何 Action——
-                # 即使换了不同参数——也不再执行/回填，直接用已有观察证据确定性兜底。
-                if forced_finals >= _MAX_FORCED_FINALS:
-                    yield _evidence_final(forced_final_reason)
-                    return
-                # 同一工具连续两次「不可重试」失败后只封禁**该工具本身**；别的工具
-                # 必须放行 —— 上面的 nudge 明确让模型「改用其它工具」，若这里把任何
-                # Action 都拦下，模型唯一切换路径也被堵死，只能提前交半成品。
-                if _permanent_failures.get(parsed["action"], 0) >= 2:
-                    yield _evidence_final(forced_final_reason or (
-                        f"（工具 {parsed['action']} 已连续返回不可重试的失败，已停止重试。）"))
-                    return
-
-                # 写操作同意护栏：没有明确授权时拒绝真正落盘，以一条 Observation 把模型引导
-                # 回「只报告 / 去问用户」模式（不消耗工具步数）。
-                # Memory writes update advisory state, not project source files;
-                # capability leases and preference evidence checks still apply.
-                #
-                # 三值判定：denied（没要求）与 uncertain（拿不准）**都不放行**，但
-                # 说法必须不同 —— 对「拿不准」说「用户没有要求」，是把我们的判不准
-                # 说成用户的意思。
-                if self._is_write_tool(parsed["action"]) and parsed[
-                        "action"] not in {"memory_save", "memory_forget"}:
-                    if self.depth > 0:
-                        # 委派层被挡时，除了拦下来，还要**把「需要用户确认」上浮**。
-                        # 子代理手里没有用户的原始请求，所以它无法自己去问 ——
-                        # 而父 agent 有。让父去问，才问得对人。
-                        _d_intent = self._intent_for_delegated(parsed["action"])
-                        if _d_intent != _WRITE_INTENT_GRANTED:
-                            _needs_confirmation = {
-                                "action": parsed["action"],
-                                "reason": ("子代理拿不到用户的原始请求，"
-                                           "无法自行确认写授权"),
-                            }
-                            yield {
-                                "type": "needs_confirmation",
-                                "text": ("[需要用户确认] %s 未执行：委派子代理没有可用的"
-                                         "写授权租约，需由主 Agent 向用户确认后继续。"
-                                         % parsed["action"]),
-                                "action": parsed["action"],
-                                "ask": {
-                                    "kind": "permission",
-                                    "question": ("是否授权执行写操作「%s」？"
-                                                 % parsed["action"]),
-                                    "allow_free_text": True,
-                                    "options": [
-                                        {"label": "批准执行",
-                                         "value": "确认授权：请执行刚才被拦下的写操作。"},
-                                        {"label": "先给我看会改哪些文件/影响再决定",
-                                         "value": "先不要落盘，列出这次写操作会改哪些文件、影响范围，我看过再决定。"},
-                                        {"label": "取消这次写操作",
-                                         "value": "取消这次写操作，不要修改任何文件。"},
-                                    ],
-                                },
-                            }
-                        # 委派子代理：**不从角色提示词猜权限**。
-                        #
-                        # `question` 在这里是 `spec["hint"]`（角色提示词），不是用户的
-                        # 请求 —— 拿它判写授权会出两个方向都错的结论：
-                        #   coder     「在授权范围内**改**代码」-> denied（职责就是改代码）
-                        #   designer  「可以**创建**设计文档」   -> granted（与用户无关）
-                        # 实测 11 个角色里 10 个碰巧对，**唯一错的就是 coder** ——
-                        # 那个职责就是改代码的角色，永远被拦。
-                        #
-                        # 权威改由两处结构性来源给：
-                        #   1. `tool_allowlist`（4571 已拦不在名单里的工具；
-                        #      且 `_READ_ONLY_ROLES` 已按 ToolSpec 把写工具滤掉）
-                        #   2. 父 agent 的授权租约（`_run_child` 已继承，见 5430）
-                        # 二者都要成立，缺一即拒 —— 与 opencode 查授权表、
-                        # Hermes 查工具开关同一个思路：权威来自结构，不来自散文。
-                        _intent = self._intent_for_delegated(parsed["action"])
-                    else:
-                        _intent = self._intent_for_top_turn(question, parsed["action"])
-                    if _intent != _WRITE_INTENT_GRANTED:
-                        _uncertain = _intent == _WRITE_INTENT_UNCERTAIN
-                        _note = (_WRITE_UNCERTAIN_OBS if _uncertain
-                                 else _WRITE_BLOCKED_OBS)
-                        _why = ("拿不准用户是否授权" if _uncertain
-                                else "用户没有要求创建或修改文件")
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                        )
-                        trail.append(
-                            {"role": "user", "content": "Observation: " + _note}
-                        )
-                        executed.add(sig)  # 再试同样的写调用会被防重复逻辑拦住
-                        yield {
-                            "type": "action",
-                            "text": f"{parsed['action']}({parsed['action_input']}) [已拦截：未授权写操作]",
-                        }
-                        yield {
-                            "type": "observation",
-                            "text": f"[安全拦截] {parsed['action']} 未执行：{_why}。",
-                        }
-                        continue
-
-                # 防重复空转：同参数调用结果已在上文 Observation，不再执行第二次
-                if sig in executed:
-                    repeats += 1
-                    if repeats >= 3:
-                        # 不直接硬停：先强制模型基于已有 Observation 收尾一次
-                        # （答案可能已在观察中，如刚 grep 到目标行号）；仍要调工具再证据兜底。
-                        if forced_finals < _MAX_FORCED_FINALS:
-                            forced_finals += 1
-                            forced_final_reason = (
-                                "（模型反复用完全相同的参数调用同一工具，已要求其停止工具调用并收尾。）"
-                            )
-                            trail.append(
-                                {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                            )
-                            trail.append(
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        "Nudge: 你已多次用完全相同的参数调用同一工具，重复调用不会"
-                                        "返回任何新结果。禁止再调用任何工具（即使更换参数也不行）。"
-                                        "请立即基于上文全部 Observation 输出 `Final Answer:`："
-                                        "用中文简洁总结已确认的结论并附文件:行号；关键结论尚未确认的"
-                                        "部分如实说明「当前无法确认」，不要编造，也不要输出 Action。"
-                                    ),
-                                }
-                            )
-                            yield {
-                                "type": "reflection",
-                                "text": "检测到模型重复空转，正在要求模型基于已有观察强制收尾。",
-                            }
-                            continue
-                        yield _evidence_final(forced_final_reason)
-                        return
-                    trail.append(
-                        {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                    )
-                    if repeats >= 2:
-                        note = (
-                            "Nudge: 你已经用完全相同的参数重复调用该工具，结果就在上文 "
-                            "Observation 中。禁止再次重复调用；请直接基于已有观察输出简短的 "
-                            "`Final Answer: ...`。"
-                        )
-                    else:
-                        note = (
-                            f"Reflection: 你刚刚已经用完全相同的参数调用过 {parsed['action']}，"
-                            "其结果已在上一条 Observation 中给出，不要重复调用。"
-                            "请直接利用该结果给出 Final Answer，或换一个【不同参数】的工具调用。"
-                        )
-                    trail.append({"role": "user", "content": note})
-                    yield {
-                        "type": "reflection",
-                        "text": f"检测到重复调用 {parsed['action']}（相同参数），已拦截并提示模型利用已有结果。",
-                    }
-                    continue
-
-                # 空参数护栏：需要输入的工具不允许空参调用（不执行、不计工具步数）。
-                # 放在重复计数之后：连续空参第 2/3 次直接走上面的重复升级（Nudge→停止），
-                # 避免弱模型靠空参空转刷到迭代上限。
-                if not action_arg and self._arg_required(action_name):
-                    executed.add(sig)
-                    trail.append(
-                        {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                    )
-                    empty_obs = _empty_arg_obs(action_name, question)
-                    trail.append({"role": "user", "content": empty_obs})
-                    yield {
-                        "type": "action",
-                        "text": f"{action_name}() [已拦截：缺少参数]",
-                    }
-                    yield {
-                        "type": "observation",
-                        "text": empty_obs,
-                    }
-                    continue
-
-                # 付费步数耗尽后，仍有免费目录导航额度时放行 list_dir（成本 0），
-                # 只有免费额度也用完才进入强制收尾；同参重复导航已在前面拦截。
-                _nav_is_free = action_name in _NAV_TOOLS and nav_free_used < NAV_FREE_STEPS
-                if tool_step_limit > 0 and tool_steps >= tool_step_limit and not _nav_is_free:
-                    # 步数耗尽：先强制模型基于已有 Observation 收尾（不执行新工具、不计步），
-                    # 给一次机会产出带证据的 Final Answer；仍要调工具则由前置拦截证据兜底。
-                    if forced_finals < _MAX_FORCED_FINALS:
-                        forced_finals += 1
-                        forced_final_reason = (
-                            f"（已达到最大工具调用步数 {tool_step_limit}（本轮动态上限），模型未能自行收尾。）"
-                        )
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                        )
-                        trail.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"Nudge: 工具调用步数已达上限（{tool_step_limit} 步），"
-                                    "禁止再调用任何工具。请立即基于上文全部 Observation 输出 "
-                                    "`Final Answer:`：用中文简洁总结已确认的结论并附文件:行号；"
-                                    "证据不足的部分如实说明"
-                                    "「当前无法确认」，不要编造，也不要输出 Action。"
-                                ),
-                            }
-                        )
-                        yield {
-                            "type": "reflection",
-                            "text": "工具步数已用尽，正在要求模型基于已有观察收尾。",
-                        }
-                        continue
-                    # 防御性兜底：正常路径已被循环顶部的前置拦截覆盖
-                    yield _evidence_final(forced_final_reason)
-                    return
-                # 「留地板、拆其余」重构：交通票价/余票强制改道门已拆。
-                # 此前只要问句命中「票价/余票/机票…」，模型想用普通网页搜索就会被
-                # 当场拦下、回填一句「请改用 web_transport」，替模型决定了工具选择。
-                # 这不是灾难地板，是「处处受限」的一种 —— 拆掉，交给模型自己判断该用
-                # 泛搜索还是结构化交通工具查询。函数 _transport_search_required 保留
-                # （直接调用它的测试仍在钉判据）。
-                # 子代理白名单：不在名单内的工具直接拒绝（防止受限子代理越权）
-                if self.tool_allowlist is not None and action_name not in self.tool_allowlist:
-                    _obs = (f"[受限] 本子代理只允许使用：{'、'.join(self.tool_allowlist)}。"
-                            f"{action_name} 不在白名单内，已拒绝。")
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": f"Observation: {_obs}"})
-                    yield {"type": "observation", "text": _obs}
-                    executed.add(sig)  # 登记已「处理」签名：同参重复出现时可触发防重复升级
-                    continue
-
-                # 联网开关关闭：web_* 一律不执行（原生通道已在 schema 剔除，
-                # 这里拦文本协议/开关切换瞬间残留的调用），不消耗工具步数。
-                if self._web_blocked(action_name):
-                    _obs = ("[联网未开启] web_search / web_fetch / web_research / web_subtitles 已被用户关闭，本次未执行。"
-                            "请改用本地代码库/知识库工具回答；确需最新外部资料时，"
-                            "提示用户在输入框上方打开「联网」开关后重试。")
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": f"Observation: {_obs}"})
-                    yield {"type": "action", "text": f"{action_name}({action_arg})"}
-                    yield {"type": "observation", "text": _obs}
-                    executed.add(sig)  # 登记已「处理」签名：同参重复出现时可触发防重复升级
-                    continue
-
-                # 租约是工作流的临时能力范围；过期或未包含当前能力时，
-                # 只回填 Observation，让模型自行收尾或申请新的工作流。
-                _lease_blocked, _lease_reason = self._lease_blocked(action_name)
-                if _lease_blocked:
-                    _obs = f"[权限租约] {action_name} 未执行：{_lease_reason}。"
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": f"Observation: {_obs}"})
-                    yield {"type": "action", "text": f"{action_name}({action_arg}) [已拦截：权限租约]"}
-                    yield {"type": "observation", "text": _obs}
-                    executed.add(sig)
-                    continue
-
-                # 「留地板、拆其余」重构：项目缺陷审查证据门已拆。
-                # 此前当模型调 dev_list_bugs、而 harness 用正则判定「这是当前项目体检
-                # 问题且还没读过当前代码」时，会直接拦下不执行、回填一句「先去看当前
-                # 代码/日志」。这不是灾难地板，是替模型排执行顺序的「处处受限」——拆掉，
-                # 让模型自己决定先翻历史归档还是先读代码。判据函数
-                # _is_project_audit_question / _has_project_evidence 保留（直接调用它们
-                # 的测试仍在钉判据）。
-
-                # pre_tool 钩子：可改写参数，或拦截本次执行（热插拔）
-                _blk, _hreason, _harg = _hooks.run_pre_tool(action_name, action_arg)
-                if _blk:
-                    _obs = f"[钩子拦截] {action_name} 未执行：{_hreason}"
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": f"Observation: {_obs}"})
-                    if turn is not None:
-                        turn.tool_step(action_name, action_arg, 0, _obs, ok=False)
-                    yield {"type": "observation", "text": _obs}
-                    continue
-                action_arg = _harg
-
-                _before_tool = _hooks.run_workflow("before_tool", _tool_event_payload(
-                    action_name, action_arg, depth=self.depth,
-                    session_id=self.session_id or ""))
-                if _before_tool.get("blocked"):
-                    _obs = f"[钩子拦截] {action_name} 未执行：{_before_tool.get('reason') or '工具生命周期钩子拦截'}"
-                    if turn is not None:
-                        turn.tool_step(action_name, action_arg, 0, _obs, ok=False)
-                    yield {"type": "observation", "text": _obs}
-                    continue
-
-                # 落「动作即将执行」现场（必须在 executed/计步之前）：恢复端据此
-                # 知道最后一步是没跑还是跑了一半。只读工具放回队列重放；有副作用
-                # 的工具则 fail-closed，不自动重放（见 _run 顶部的恢复逻辑）。
-                _spec = self._tool_spec(action_name)
-                _side_effect = (_spec.side_effect if _spec is not None else SideEffect.PURE)
-                _snapshot("action_started", started={
-                    "name": action_name, "arg": action_arg,
-                    "side_effect": _side_effect is not SideEffect.PURE,
-                })
-                executed.add(sig)
-                # 免费目录导航只占导航额度（与并行批次同一口径），其余工具占 1 个工具步数。
-                if _nav_is_free:
-                    nav_free_used += 1
-                else:
-                    tool_steps += 1
-                # 事件展示 / 证据清单 / 实际派发必须统一用归一化后的 action_arg：
-                # 弱模型的 query:/pattern:/path: 关键字风格已在此处还原为工具真实入参。
-                evidence.append(f"{action_name}({_clip(action_arg, 120)})")
-                # step_cost 透传给外层：子代理编排器据此统计步数，免费导航为 0。
-                yield {"type": "action", "text": f"{action_name}({action_arg})",
-                       "step_cost": 0 if _nav_is_free else 1}
-                _t_tool = time.monotonic()
-                obs_images = None  # 工具图片经能力门后挂到成功路径的 Observation 消息
-                if action_name == "delegate":
-                    # 子代理必须继承父代理的模型/会话，走特殊派发而非 TOOLS 里的占位实现
-                    _fn = lambda arg: self._delegate(arg, turn=turn)
-                elif action_name == "orchestrate":
-                    _fn = lambda arg: self._orchestrate_tool(arg, turn=turn)
-                else:
-                    _fn = self.tools[action_name]["func"]
-                try:
-                    _tool_trace = _langsmith.tool_call(
-                        name="tool.%s" % action_name, session_id=self.session_id or "",
-                        input_chars=len(str(action_arg or "")))
-                except Exception:
-                    _tool_trace = _nullcontext()
-                with self._ptc_server_scope(action_name, turn), _tool_trace:
-                    _result = execute_tool(
-                        _fn, action_arg, _failure_for(action_name, action_arg),
-                        tool_name=action_name,
-                        side_effect=_side_effect,
-                    )
-                obs = _hooks.run_post_tool(action_name, action_arg, _result.text)
-                obs, obs_images = self._gate_tool_images(obs, _result.data)
-                _tool_ok = _result.ok and (
-                    obs == _result.text or not _is_failure(obs, action_name, action_arg))
-                if _tool_ok and action_name in _WEB_ACTIONS and not _web_result_relevant(action_name, action_arg, obs):
-                    # 非空不等于有用：把明显跑题的搜索结果标记为可恢复失败，
-                    # 让模型继续换关键词/年份/平台，而不是把它写进结论。
-                    obs = (
-                        "搜索结果相关性不足：当前候选与查询主题缺少足够共同信号，"
-                        "请更换关键词、年份、平台或地区后继续搜索；不得把以下候选直接当作证据。\n"
-                        + _clip_tool_observation(obs, observation_limit, action_name)
-                    )
-                    _tool_ok = False
-                _duration_ms = int((time.monotonic() - _t_tool) * 1000)
-                if _result.error_kind == "timeout" and self._is_network_tool(action_name):
-                    _timeout_hook = _hooks.run_workflow("network_timeout", {
-                        "tool": action_name,
-                        "error_kind": _result.error_kind,
-                        "duration_ms": _duration_ms,
-                        "depth": self.depth,
-                        "session_id": self.session_id or "",
-                    })
-                    if _timeout_hook.get("blocked"):
-                        obs = (f"[钩子拦截] {action_name} 网络超时后的后续处理未放行："
-                               f"{_timeout_hook.get('reason') or '需要人工审核'}")
-                        _tool_ok = False
-                _after_tool = _hooks.run_workflow("after_tool", {
-                    "tool": action_name, "ok": _tool_ok,
-                    "duration_ms": _duration_ms,
-                    "error_kind": _result.error_kind,
-                    "depth": self.depth, "session_id": self.session_id or "",
-                })
-                if _after_tool.get("blocked"):
-                    obs = f"[钩子拦截] {action_name} 结果未放行：{_after_tool.get('reason') or '工具生命周期钩子拦截'}"
-                    _tool_ok = False
-                if (turn is not None and action_name == "run_command"
-                        and _is_test_command(action_arg)):
-                    turn.test_command_ok = _test_command_passed(obs)
-                    turn.test_command = _clip(str(action_arg), 200)
-                    turn.test_command_targets = dict(getattr(turn, "verification_targets", None) or {})
-                if turn is not None:
-                    turn.tool_step(
-                        action_name, action_arg,
-                        (time.monotonic() - _t_tool) * 1000, obs,
-                        ok=_tool_ok,
-                    )
-                    _ev = _tool_evidence_from_obs(action_name, obs, _tool_ok)
-                    if _ev:
-                        turn.add_tool_evidence(**_ev)
-                if (action_name == "preview_project" and _tool_ok and turn is not None
-                        and turn.verification_targets):
-                    # production visual adapter is a real post-write verifier:
-                    # only a successful fresh preview can close targets invalidated
-                    # by the preceding file write.
-                    for _target in turn.verification_targets:
-                        turn.verification_targets[_target] = True
-                    turn.verified = all(turn.verification_targets.values())
-                # `ok` 是这一步的真实成败（_tool_ok 已综合 execute_tool 结果 +
-                # post-tool 钩子 + 相关性判定）。前端据此染色，**不再从返回正文里
-                # grep「错误/失败/超时」**——read_file 读到的源码/日志天然含这些字，
-                # 历史上把成功的一次读取整排标红（实测 agent.py 前 80 行那次）。
-                self._hb_steps = tool_steps
-                self._heartbeat("tool", steps=tool_steps,
-                                event=f"{action_name}:{'ok' if _tool_ok else 'fail'}")
-                observation_event = {"type": "observation", "text": obs,
-                                     "ok": bool(_tool_ok)}
-                if _result.artifacts:
-                    # 工作流预览协议消费的持久证据；图片正文仍只通过 data.images
-                    # 进入视觉通道，避免把 base64 写进事件和 checkpoint。
-                    observation_event["artifacts"] = list(_result.artifacts)[:16]
-                    # 主路径的「本轮改了哪些文件」也在这里落。此前 `file_changes` 只有
-                    # 两处来源：子代理的 observation 出口（见 `_run_child`）与 resume 账本，
-                    # 主代理自己写盘时**一条都不进**。实测真实项目 21 个回合里有 3 个调了
-                    # `create_file`，episode 的 `files` 却是空 → 漏斗把「改了文件」报成 0，
-                    # 学习环的断点因此归错地方。取值口径与子代理那处一致：不填 `kind`
-                    # （它被 `preview_adapters` 当适配器路由键，填错会让产物清单变 0 条）。
-                    for _artifact in _result.artifacts:
-                        if not isinstance(_artifact, Mapping):
-                            continue
-                        _apath = str(_artifact.get("path") or "").strip()
-                        if (_apath and _apath not in _seen_file_changes
-                                and len(_file_changes) < 100):
-                            _seen_file_changes.add(_apath)
-                            _file_changes.append({
-                                "path": _apath,
-                                "label": str(_artifact.get("label")
-                                             or os.path.basename(_apath)),
-                                "summary": _clip(_artifact.get("summary"), 160),
-                            })
-                _evidence = (_result.data or {}).get("browser_evidence") if isinstance(_result.data, dict) else None
-                if _evidence:
-                    # 内置浏览器的每一步留痕：前端流程行据此显示"点之前/点之后"的缩略图
-                    # 与地址。只有相对路径，没有图片正文。
-                    observation_event["browser_evidence"] = _evidence
-                _fdiffs = (_result.data or {}).get("file_diffs") if isinstance(_result.data, dict) else None
-                if _fdiffs:
-                    # 写文件工具的完整 before/after：只给前端「查看改动」渲染 diff 用。
-                    # 模型侧看不到（trail 用的是 obs 文本，非本字段），对 agent 决策与
-                    # 黄金题评分中性。与 artifacts 同因不写图片正文/巨块，按条数封顶。
-                    observation_event["file_diffs"] = list(_fdiffs)[:16]
-                yield observation_event
-                # 实时刷新上下文用量指示：把本轮已产生的工具往返一并计入。旧实现只在
-                # 开工/压缩后各上报一次，长回合里进度条会一直停在初始值（用户反馈的
-                # 「上下文永远 5%」）。限频以免每步都触发网络计数。
-                if self.session_id and self.depth == 0:
-                    _now = time.monotonic()
-                    if _now - _last_ctx_at >= _CTX_EMIT_INTERVAL:
-                        _last_ctx_at = _now
-                        try:
-                            self.last_context = self._live_context(
-                                head, trail + [{"role": "user", "content": obs}])
-                            yield {"type": "context", **self.last_context}
-                        except Exception:  # noqa: BLE001 —— 用量统计失败绝不影响问答
-                            pass
-                last_action = parsed["action"]
-                last_obs = obs
-                if parsed["action"] == "python_exec" and _tool_ok:
-                    ran_python_exec = True
-                    last_exec_obs = obs
-
-                # 自我反思：工具未返回有效结果时，标记反思并提示换思路重试。
-                if not _tool_ok:
-                    # 按失败类别分级处置（见 agent_runtime/tool_failure.py）。
-                    # 以前一律只说「换一种方式重试」，于是三类**重试必然同样失败**
-                    # 的情况被当成"再试一次说不定就成了"：
-                    #   · invalid_result（工具返回值不符协议）—— 那是代码 bug；
-                    #   · idempotency_in_doubt（上次执行中途挂了，状态未知）
-                    #     —— execute_tool 已经拒绝执行，但若这里还提示模型重试，
-                    #        模型换个参数再调就会算出新的幂等 key，**绕过唯一那道
-                    #        防重复副作用的闸门**；
-                    #   · project_stage_blocked（试做区禁该工具）—— 重试必被拒。
-                    # permanent 类不再累加"连续失败"计数：它本来就不该重试，
-                    # 累加只会让熔断阈值提前触发，在模型还没试够别的路之前收尾。
-                    _fail_category, _fail_guidance = _tool_failure.failure_guidance(
-                        _result.error_kind, obs)
-                    if _fail_category == "permanent":
-                        _permanent_failures[parsed["action"]] = (
-                            _permanent_failures.get(parsed["action"], 0) + 1)
-                    if parsed["action"] in _WEB_ACTIONS:
-                        family = _web_query_family(action_arg)
-                        if family:
-                            web_family_failures[family] = web_family_failures.get(family, 0) + 1
-                    streak = tool_fail_streak.get(parsed["action"], 0) + 1
-                    tool_fail_streak[parsed["action"]] = streak
-                    fail_total += _tool_failure.retry_budget_cost(_fail_category)
-                    # Phase 3 经验记录辅助：累计失败次数 / 单工具最长连续失败 / 全局最长连续失败 /
-                    # 最近一次失败观察（截断，脱敏后用于回合收尾决策）。
-                    if turn is not None:
-                        turn.failure_count += 1
-                        turn.max_tool_streak = max(turn.max_tool_streak, streak)
-                        turn.max_consec_failures = max(turn.max_consec_failures, fail_total)
-                        turn.last_failure = _clip(obs, 4000)
-                        turn.last_failure_tool = str(parsed["action"])
-                    # 同一工具反复撞「重试必然同样失败」的类别：立刻要求换工具，
-                    # 不再走下面的通用熔断（那条要3 次才触发，而这里每次都是白试）。
-                    # 幂等存疑（idempotency_in_doubt）尤其要拦：execute_tool 已经
-                    # 拒绝执行，若还让模型换参数再调，会算出新key 绕过唯一那道闸门。
-                    if _fail_category == "permanent" and _permanent_failures[parsed["action"]] >= 2:
-                        forced_final_reason = (
-                            f"（工具 {parsed['action']} 连续 { _permanent_failures[parsed['action']] } 次"
-                            "返回同类不可重试的失败（" + str(_result.error_kind or "unspecified") +
-                            "），重试没有意义，已要求换工具或直接收尾。）"
-                        )
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                        )
-                        trail.append(
-                            {"role": "user", "content": (
-                                f"Nudge: 工具 {parsed['action']} 反复返回同类**不可重试**的失败"
-                                "（" + str(_result.error_kind or "unspecified") +
-                                "）。**禁止再用任何参数调用它**——这不是环境抖动，重试只会"
-                                "得到同样的错误。请立即改用其它工具；若没有其它路可走，就基于"
-                                "已有 Observation 输出 `Final Answer:`，如实说明这一步没做成、"
-                                "原因是什么。"
-                            )}
-                        )
-                        yield {
-                            "type": "reflection",
-                            "text": (f"工具 {parsed['action']} 反复返回不可重试的失败"
-                                     f"（{_result.error_kind or 'unspecified'}），已要求停止重试。"),
-                        }
-                        continue
-                    # 同一工具连续失败到上限（换参数也算），或连续失败总数越界：判为「无用重试」，
-                    # 强制收尾。否则弱模型会一直重试同一工具耗尽上下文——这正是
-                    # dev_apply_regions 入参格式没被识别时报「参数缺失」刷出死循环的成因。
-                    is_web_research = parsed["action"] in _WEB_ACTIONS
-                    fail_limit = _WEB_RESEARCH_FAIL_LIMIT if is_web_research else _TOOL_FAIL_LIMIT
-                    total_limit = _WEB_RESEARCH_TOTAL_LIMIT if is_web_research else _TOTAL_FAIL_LIMIT
-                    family_count = web_family_failures.get(_web_query_family(action_arg), 0)
-                    family_limit_hit = is_web_research and family_count >= 3
-                    if family_limit_hit:
-                        fail_limit = min(fail_limit, 3)
-                    if streak >= fail_limit or fail_total >= total_limit or family_limit_hit:
-                        forced_finals = _MAX_FORCED_FINALS
-                        forced_final_reason = (
-                            f"（工具 {parsed['action']} 对同一检索意图已失败 {family_count} 次，"
-                            "模型未能换出可用的调用方式。）" if family_limit_hit else
-                            f"（工具 {parsed['action']} 已连续失败 {streak} 次，模型未能换出可用的调用方式。）"
-                        )
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                        )
-                        trail.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"Nudge: 工具 {parsed['action']} 已反复失败（连续 {streak} 次），"
-                                    "禁止再用任何参数重试它。请立即基于上文全部 Observation 输出 "
-                                    "`Final Answer:`：如实说明该步骤未完成及原因，不要编造，"
-                                    "也不要再输出 Action。"
-                                ),
-                            }
-                        )
-                        yield {
-                            "type": "reflection",
-                            "text": f"工具 {parsed['action']} 反复失败，已要求模型停止重试并收尾。",
-                        }
-                        continue
-                    if failures < _MAX_REFLECTIONS:
-                        failures += 1
-                        yield {
-                            "type": "reflection",
-                            "text": (f"工具 {parsed['action']} 未返回有效结果（{_fail_category}），"
-                                     + ("可原样重试。" if _fail_category == "transient"
-                                        else "不要重试，换工具或收尾。"
-                                        if _fail_category == "permanent"
-                                        else "建议针对性换做法。")),
-                        }
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                        )
-                        trail.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"Reflection: {_fail_guidance}\n\nObservation was: "
-                                    f"{_clip_tool_observation(obs, observation_limit, parsed['action'])}"
-                                ),
-                            }
-                        )
-                        continue
-                else:
-                    # 本次执行成功：清掉该工具的连续失败计数与全局连续失败计数
-                    tool_fail_streak.pop(parsed["action"], None)
-                    _permanent_failures.pop(parsed["action"], None)
-                    fail_total = 0
-                    if parsed["action"] in _WEB_ACTIONS:
-                        web_family_failures.clear()
-                # 顺序路径的真实执行记录（与并行批次共用同一个 audit_steps）。
-                #
-                # **必须带参数**：只记裸工具名会让下游拿不到路径。实测
-                # `wf-f609ea8daf22` 的 `t3` 结论尾部自带一行
-                # `（核验：FAIL · 28 处引用可核验 · 2 处未通过（路径打不开）：player.gd:?、enemy.gd:?）`
-                # ——而同一份结论在工作流侧 `review verdict=PASS`。
-                # 差别就在这里：裸文件名兜底靠「本轮读过哪些路径」建索引，
-                # 索引来源就是这个 `action` 字段，只存`read_file` 四个字时索引恒空，
-                # 于是**每一条裸文件名引用都被判成幻觉路径**。
-                # 形状与 `traj` 一致（`read_file(path: behaviors/player.gd)`），
-                # 这样 `_tool_name` 的切分也不受影响。
-                audit_steps.append({
-                    "action": "%s(%s)" % (parsed["action"], parsed["action_input"] or ""),
-                    "ok": bool(_tool_ok),
-                    # 乙：拿**原始 obs**（此处尚未 clip）判这次代码检索有没有自报少计型截断。
-                    "truncated": obs_reports_code_undercount(parsed["action"], obs),
-                    # 原始观察文本：裸文件名兜底要从 grep/search_code 成功观察里
-                    # 提取被列出的文件路径（见 _observed_ref_paths）。
-                    "obs": str(obs or "")})
-
-                # 写操作改变了代码库状态：清空已执行记录，允许随后用【相同命令】
-                # 重新跑测试做验证（防重复护栏针对的是无意义空转，不是改后复验）。
-                if parsed["action"] in _VERIFY_AFTER_WRITE_TOOLS:
-                    executed.clear()
-
-                # 写后自验证收尾门（Phase 1 闭环）：写成功即校验改动，失败把结果回填
-                # 模型触发 ReAct 自修；成功则在 trace 标记 verified=True。纯内部调用，
-                # 不占工具步数；自修循环由本轮动态工具预算与既有失败上限护栏封顶。
-                if (parsed["action"] in _VERIFY_AFTER_WRITE_TOOLS
-                        and _tool_ok and turn is not None):
-                    _written = _parse_written_rel(obs)
-                    # 移动还额外带上旧路径：只验新文件在不在，查不出引用断没断。
-                    _moved = _parse_moved_rel(obs)
-                    # Every successful write invalidates previous evidence for that file.
-                    _target = _written or "unknown-write-target"
-                    turn.verification_targets[_target] = False
-                    turn.verified = False
-                    if _written and _SELF_VERIFY_ENABLED:
-                        _verifier = self.tools.get("self_verify")
-                        _sv_obs, _sv_state = _run_self_verify(
-                            _written, _verifier.func if _verifier else None, moved=_moved)
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                        )
-                        trail.append(
-                            {"role": "user", "content": "Observation: " + _clip_tool_observation(_sv_obs, observation_limit, "self_verify")}
-                        )
-                        # 三态只影响「记什么」：未通过要人看，没能校验同样不能算过。
-                        yield {"type": "observation", "text": _sv_obs, "ok": _sv_state is True}
-                        turn.verification_targets[_target] = _sv_state
-                        turn.verified = all(value is True
-                                            for value in turn.verification_targets.values())
-                        # agent 自身结构化日志：self_verify 失败事件（与现有 verdict
-                        # 字段并列；不引入新决策，只是「agent 看自己」的可观测面）。
-                        # 永静默：失败时 event() 内部 try/except 全包，不影响主流程。
-                        if _sv_state is False:
-                            self._agent_log_event(
-                                self._session_code_root or "",
-                                "self_verify_failed",
-                                files=list(_written or ()),
-                                turn_id=getattr(turn, "turn_id", None),
-                            )
-
-                # "产出即答案"的工具：结果已经正确，直接作为最终回答返回，
-                # 不再给模型多一轮（避免小模型反复调用同一工具导致步数耗尽 / 死循环）。
-                if (self._is_verbatim_tool(parsed["action"]) and _tool_ok
-                        and _should_verbatim_passthrough(parsed["action"], obs)):
-                    if turn is not None:
-                        turn.outcome = "verbatim"
-                    final_text = _format_verbatim(parsed["action"], obs)
-                    self.history.append({"user": question, "assistant": final_text})
-                    yield self._final_event(final_text, turn)
-                    return
-
-                # 把本轮结果回填，进入下一轮推理。观察先截断，防止撑爆 n_ctx。
-                # 即便模型在同一轮里也写了 Final Answer，也以真实观察为准再走一轮，
-                # 避免它在没看到工具结果前就给出最终答案（小模型常把 Action+Final 写在一起）。
-                trail.append(
-                    {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                )
-                _obs_entry = {
-                    "role": "user",
-                    "content": (
-                        f"Observation: {_clip_tool_observation(obs, observation_limit, parsed['action'])}"
-                        "\n\n（请基于观察继续，或给出 Final Answer）"
-                    ),
-                }
-                if obs_images:
-                    # 仅最近一条工具观察允许带图；_fit_budget 会剥离更早观察上的图片。
-                    _obs_entry["images"] = list(obs_images)
-                trail.append(_obs_entry)
-                # 观察已经写进 trail：这一步算真正完成。落盘后恢复端从「下一步」
-                # 开始，不会把刚执行过的工具再跑一遍。
-                _snapshot("step_done")
+            outcome = yield from self._run_tool_action(
+                st, tool_step_limit, observation_limit, _snapshot, _evidence_final)
+            if outcome == "stop":
+                return
+            if outcome == "continue":
                 continue
 
-            truncated = finish_reason == "length"
-            has_real_final = bool(_RE_HAS_REAL_FINAL.search(acc))
+            st.truncated = finish_reason == "length"
+            st.has_real_final = bool(_RE_HAS_REAL_FINAL.search(st.acc))
 
             # 原生 function-calling 下，「有正文、无 tool_call」**按协议定义就是最终
             # 答案**：API 已经通过 tool_calls 字段告诉了harness 模型想不想要工具，
@@ -7874,12 +8109,12 @@ class Agent:
             # 因此这里可以安全放行——但仍要求内容非空、且本轮确实没有工具调用。
             native_prose_final = (
                 self._native_enabled()
-                and not truncated
+                and not st.truncated
                 and finish_reason != "tool_calls"
                 and not self._pending_batch
                 and not native_override
-                and not parsed["action"]
-                and bool(acc.strip())
+                and not st.parsed["action"]
+                and bool(st.acc.strip())
             )
             # 未知 action 兜底：模型写了 action 但该工具不存在（白名单/拼写错误/
             # 工具被临时禁用）。反馈一条 Observation 让模型用其他工具重试或收尾，
@@ -7890,31 +8125,31 @@ class Agent:
             # 否则下面 `if final_body` 会把整轮当作"已收尾"放过去 → 用户侧完全
             # 看不到模型调了不存在的工具。连续 2 次同未知 action 直接强制收尾
             # 并 yield final（不再 continue，否则会进入下一轮死循环）。
-            if parsed["action"] and parsed["action"] not in self.tools:
-                if parsed["action"] not in tool_fail_streak:
-                    tool_fail_streak[parsed["action"]] = 0
-                streak = tool_fail_streak[parsed["action"]] + 1
-                tool_fail_streak[parsed["action"]] = streak
+            if st.parsed["action"] and st.parsed["action"] not in self.tools:
+                if st.parsed["action"] not in st.tool_fail_streak:
+                    st.tool_fail_streak[st.parsed["action"]] = 0
+                streak = st.tool_fail_streak[st.parsed["action"]] + 1
+                st.tool_fail_streak[st.parsed["action"]] = streak
                 if streak >= 2:
-                    _obs = ("[未知工具] " + str(parsed["action"]) + " 不在可用列表中；"
+                    _obs = ("[未知工具] " + str(st.parsed["action"]) + " 不在可用列表中；"
                              "已连续 2 次触发，强制收尾。请用已注册工具重试或"
                              "直接在 Final Answer 中说明。")
-                    trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                    trail.append({"role": "user", "content": "Observation: " + _obs})
-                    yield {"type": "action", "text": f"{parsed['action']}({parsed['action_input'] or ''}) [已拦截：未知工具，强制收尾]"}
+                    st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
+                    st.trail.append({"role": "user", "content": "Observation: " + _obs})
+                    yield {"type": "action", "text": f"{st.parsed['action']}({st.parsed['action_input'] or ''}) [已拦截：未知工具，强制收尾]"}
                     yield {"type": "observation", "text": _obs}
                     yield {"type": "reflection", "text": _obs}
                     yield _evidence_final(
-                        f"（工具 {parsed['action']} 不存在，已要求模型停止再写这个 Action 并收尾。）")
+                        f"（工具 {st.parsed['action']} 不存在，已要求模型停止再写这个 Action 并收尾。）")
                     return
-                _obs = ("[未知工具] " + str(parsed["action"]) + " 不在可用列表中。"
+                _obs = ("[未知工具] " + str(st.parsed["action"]) + " 不在可用列表中。"
                          "可调用的工具请按系统提示中的列表选择；如需新增工具请到设置页启用。")
-                trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
-                trail.append({"role": "user", "content": "Observation: " + _obs})
-                yield {"type": "action", "text": f"{parsed['action']}({parsed['action_input'] or ''}) [已拦截：未知工具]"}
+                st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
+                st.trail.append({"role": "user", "content": "Observation: " + _obs})
+                yield {"type": "action", "text": f"{st.parsed['action']}({st.parsed['action_input'] or ''}) [已拦截：未知工具]"}
                 yield {"type": "observation", "text": _obs}
                 continue
-            final_body = parsed["final"] or (acc if native_prose_final else "")
+            final_body = st.parsed["final"] or (st.acc if native_prose_final else "")
 
             # 内部标记复读闸门：模型把 harness 写进自己历史的「（并行调用）read_file、…」
             # 原样吐回来当"最终回答"时，绝不把这行内部串下发给用户。
@@ -7931,11 +8166,11 @@ class Agent:
             # 清洗后下发，等于把闸门刚拦下的东西又放出去。
             if final_body and _is_internal_marker_only(final_body):
                 final_body = ""
-                marker_echoes += 1
-                if marker_echoes >= _MAX_MARKER_ECHOES or not self._limit_ok(nudges, max_nudges):
-                    if turn is not None:
-                        turn.outcome = "marker_echo"
-                    _dump_stall_probe(self.llm, messages, acc, turn,
+                st.marker_echoes += 1
+                if st.marker_echoes >= _MAX_MARKER_ECHOES or not self._limit_ok(st.nudges, max_nudges):
+                    if st.turn is not None:
+                        st.turn.outcome = "marker_echo"
+                    _dump_stall_probe(self.llm, messages, st.acc, st.turn,
                                       session_id=self.session_id or "")
                     yield {"type": "final", "status": "error", "degraded": True,
                            "text": (
@@ -7945,11 +8180,11 @@ class Agent:
                                "可下手的办法：重试一次；或换一个模型；"
                                "或把 `DOCMIND_TOOL_MODE` 设回 `react` 改用文本协议。\n"
                                "──── 那行内部摘要不属于答案，已丢弃 ────"
-                               % marker_echoes
+                               % st.marker_echoes
                            )}
                     return
-                nudges += 1
-                trail.append({"role": "user", "content": (
+                st.nudges += 1
+                st.trail.append({"role": "user", "content": (
                     "Nudge: 你上一轮输出的只是一行内部调度摘要（系统记录的工具名列表），"
                     "那不是你写的回答，也不是结论。请忽略它，基于上面已经拿到的工具观察，"
                     "用自然语言写出对问题的综合结论；如果证据还不够，就直接调用工具继续查。"
@@ -7957,16 +8192,16 @@ class Agent:
                 yield {"type": "notice", "text": "模型复读了内部标记，正在纠正。", "transient": True}
                 continue
             # 没复读就是中断了连续计数（中间夹着正常调用/结论轮次时不该累计）。
-            marker_echoes = 0
+            st.marker_echoes = 0
 
             if final_body:
-                if truncated and not continuation_incomplete:
+                if st.truncated and not continuation_incomplete:
                     # parse_response 会 strip 掉结尾空格；在词边界截断时这会把
                     # "Hello " + "world" 错拼成 "Helloworld"，故保存原始正文。
-                    pending_final = _RE_FINAL.search(acc).group(1)
-                    final_continuations = 1
-                    trail.append({"role": "assistant", "content": acc[-TRAIL_ASSISTANT_CHARS:]})
-                    trail.append({"role": "user", "content": (
+                    pending_final = _RE_FINAL.search(st.acc).group(1)
+                    st.final_continuations = 1
+                    st.trail.append({"role": "assistant", "content": st.acc[-TRAIL_ASSISTANT_CHARS:]})
+                    st.trail.append({"role": "user", "content": (
                         "上一段 Final Answer 因单次输出上限中断。紧接末尾继续正文，"
                         "保留所有审查发现、证据和结论；不要压缩、重写或重复前文，"
                         "不要重新写 Final Answer 标记，也不要调用工具。"
@@ -7978,7 +8213,7 @@ class Agent:
                 # 却有票价数字"，然后把模型自己写好的 final 整段替换成 harness 写的免责话。
                 # 那是事后改写答案，属于"处处受限"。拆掉这一调用点：照常交付模型的答案。
                 # （判据函数保留，直测仍钉它。）
-                final_text = final_body
+                st.final_text = final_body
                 # 若上一步是"产出即答案"的工具且返回有效，用工具结果兜底数字/格式，
                 # 避免小模型在 Final Answer 里改写数字导致错误。
                 #
@@ -7989,17 +8224,17 @@ class Agent:
                 #   · calculate：模型 final 已含正确结果 → 保留解释；否则用精确结果纠正；
                 #   · python_exec / gen_video_prompt：模型 final 有实质叙述 → 保留；
                 #     只有「薄 final」（纯数字/复述）才用工具结果兜底。
-                if (self._is_verbatim_tool(last_action) and last_obs
-                        and not _is_failure(last_obs)
-                        and _should_verbatim_passthrough(last_action, last_obs)):
+                if (self._is_verbatim_tool(st.last_action) and st.last_obs
+                        and not _is_failure(st.last_obs)
+                        and _should_verbatim_passthrough(st.last_action, st.last_obs)):
                     _keep_model_final = False
-                    if last_action == "calculate":
-                        _needle = str(last_obs).strip()
-                        _keep_model_final = bool(_needle) and _needle in final_text
-                    elif not _is_thin_final(final_text):
+                    if st.last_action == "calculate":
+                        _needle = str(st.last_obs).strip()
+                        _keep_model_final = bool(_needle) and _needle in st.final_text
+                    elif not _is_thin_final(st.final_text):
                         _keep_model_final = True
                     if not _keep_model_final:
-                        final_text = _format_verbatim(last_action, last_obs)
+                        st.final_text = _format_verbatim(st.last_action, st.last_obs)
                 # BUG-7 终态守卫：模型**自己**把源码整段裸铺当 Final Answer
                 # （python_exec 捷径那条已由 `_should_verbatim_passthrough` 在更早处挡下；
                 # 这里管的是模型在自己的最终回答里重贴 `12: 代码` 清单或几行关键源码）。
@@ -8007,13 +8242,13 @@ class Agent:
                 # （短、可无行号，但源码行占比过半），数字/结论型答案永不命中。
                 # 最多逼它综合一次；仍裸铺→如实标 degraded 交付，绝不把原始 dump
                 # 冒充成综合结论（fail-closed）。
-                if _is_raw_source_echo(final_text) or _is_source_like_dump(final_text):
-                    if verbatim_dump_nudges < 1:
-                        verbatim_dump_nudges += 1
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                if _is_raw_source_echo(st.final_text) or _is_source_like_dump(st.final_text):
+                    if st.verbatim_dump_nudges < 1:
+                        st.verbatim_dump_nudges += 1
+                        st.trail.append(
+                            {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
                         )
-                        trail.append({
+                        st.trail.append({
                             "role": "user",
                             "content": (
                                 "你给出的是**源码整段铺出**（一屏 `12: 代码` 或几行关键代码，"
@@ -8028,8 +8263,8 @@ class Agent:
                         continue
                     # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
                     # "未能综合成结论"横幅、不再标 degraded。那是用户抱怨的"事后盖章"。
-                    self.history.append({"user": question, "assistant": final_text})
-                    yield self._final_event(final_text, turn)
+                    self.history.append({"user": st.question, "assistant": st.final_text})
+                    yield self._final_event(st.final_text, st.turn)
                     return
                 # 终态硬门 B：**中间证据冒充答案**。上一步是 verbatim 工具（典型是
                 # python_exec），模型/兜底却只交出一串数字或行号清单——这不是对问题的
@@ -8039,14 +8274,14 @@ class Agent:
                 # 「答案本来就是一组数字」的正常提问（如「输出 1..10 的平方」）。
                 # 用 `ran_python_exec` 而不是只看 last_action：模型可能在 python_exec
                 # 之后又读了两个文件，最后仍只把之前那串行号当答案。
-                if ((ran_python_exec or self._is_verbatim_tool(last_action or ""))
-                        and _is_bare_evidence_answer(final_text)):
-                    if evidence_dump_nudges < 1:
-                        evidence_dump_nudges += 1
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                if ((st.ran_python_exec or self._is_verbatim_tool(st.last_action or ""))
+                        and _is_bare_evidence_answer(st.final_text)):
+                    if st.evidence_dump_nudges < 1:
+                        st.evidence_dump_nudges += 1
+                        st.trail.append(
+                            {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
                         )
-                        trail.append({"role": "user", "content": (
+                        st.trail.append({"role": "user", "content": (
                             "你给出的最终回答只是**工具返回的数字/行号清单**（原始输出），"
                             "这不是对问题的回答。请基于已经拿到的工具观察写出综合结论："
                             "逐项说明这些数字分别对应哪个分支/位置、满足什么条件，"
@@ -8058,8 +8293,8 @@ class Agent:
                         continue
                     # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
                     # "未能综合"横幅、不再标 degraded。
-                    self.history.append({"user": question, "assistant": final_text})
-                    yield self._final_event(final_text, turn)
+                    self.history.append({"user": st.question, "assistant": st.final_text})
+                    yield self._final_event(st.final_text, st.turn)
                     return
                 # 终态硬门 C：**原样重贴工具观察**。这条兜的是形状判据抓不住的
                 # 混合输出（实测真实 DeepSeek：`总行数 8298` + 五行 `while/def`），
@@ -8067,15 +8302,15 @@ class Agent:
                 # 同样属于“中间证据冒充答案”。先要求综合一次；仍重贴就如实标 degraded。
                 # 跳过条件：该观察本身已被判为可交付的短结果（verbatim 兜底/透传），
                 # 此时「final == 观察」正是预期行为，不能反过来纠偏。
-                if (last_exec_obs
-                        and not _should_verbatim_passthrough("python_exec", last_exec_obs)
-                        and _is_observation_echo(final_text, last_exec_obs)):
-                    if observation_echo_nudges < 1:
-                        observation_echo_nudges += 1
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                if (st.last_exec_obs
+                        and not _should_verbatim_passthrough("python_exec", st.last_exec_obs)
+                        and _is_observation_echo(st.final_text, st.last_exec_obs)):
+                    if st.observation_echo_nudges < 1:
+                        st.observation_echo_nudges += 1
+                        st.trail.append(
+                            {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
                         )
-                        trail.append({"role": "user", "content": (
+                        st.trail.append({"role": "user", "content": (
                             "你的最终回答只是把上一次工具的**原始输出原样贴回**，"
                             "没有基于它写出结论。请逐项解释这些内容分别是什么、"
                             "对应哪个位置/分支、满足什么条件，把它们组织成完整回答；"
@@ -8086,22 +8321,22 @@ class Agent:
                         continue
                     # 「留地板、拆其余」：逼综合一次后仍如此，就原样交付 —— 不再挂
                     # "未能综合"横幅、不再标 degraded。
-                    self.history.append({"user": question, "assistant": final_text})
-                    yield self._final_event(final_text, turn)
+                    self.history.append({"user": st.question, "assistant": st.final_text})
+                    yield self._final_event(st.final_text, st.turn)
                     return
                 # 终态硬门 D：**截头回答**。实测工作台长任务：前端原生通道缓冲被
                 # final 整体替换，只剩从「` 或补 Action: 的 Nudge。\n28. ...」开始的
                 # 后半段（435 字符）。用户等了半天，拿到的是一份从第 28 条开始、
                 # 没有任何提示的清单。先要求它从头重写；仍截头就如实标注并交付。
                 # 显式续写请求（“从第 28 条继续”“接着写”）例外：那种回答本就该接着中间写。
-                if (not _asks_to_continue(question)
-                        and _is_answer_continuation_fragment(final_text)):
-                    if continuation_nudges < 1:
-                        continuation_nudges += 1
-                        trail.append(
-                            {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
+                if (not _asks_to_continue(st.question)
+                        and _is_answer_continuation_fragment(st.final_text)):
+                    if st.continuation_nudges < 1:
+                        st.continuation_nudges += 1
+                        st.trail.append(
+                            {"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)}
                         )
-                        trail.append({"role": "user", "content": (
+                        st.trail.append({"role": "user", "content": (
                             "你给出的最终回答是从一段话的**中间**开始的（开头就是半句、"
                             "引号残片，或者直接跳到第 2 条之后的编号），前半部分已经丢失。"
                             "请**从头重写**一份自包含的完整回答：先交代问题与结论，再按"
@@ -8113,19 +8348,19 @@ class Agent:
                         continue
                     # 「留地板、拆其余」：逼重写一次后仍如此，就原样交付 —— 不再挂
                     # "未能完整交付/请重新提问"横幅、不再标 degraded。
-                    self.history.append({"user": question, "assistant": final_text})
-                    yield self._final_event(final_text, turn)
+                    self.history.append({"user": st.question, "assistant": st.final_text})
+                    yield self._final_event(st.final_text, st.turn)
                     return
-                evidence_audit = _audit_live_answer(final_text, question, trail, audit_steps)
+                evidence_audit = _audit_live_answer(st.final_text, st.question, st.trail, st.audit_steps)
                 # 闸门只看**事实项**（引用能不能打开、行号是否越界）。
                 # `read_file_present` 已降级为参考——Claude Code 的验证 prompt 明确写着
                 # "reading is not verification. Run it."，拿"读过没有"当闸门是方向反了，
                 # 而且本次会话已因此连续误报四次。详见 output_audit.gate_checks。
                 if (evidence_audit.get("required") or evidence_audit.get("content_fail")) \
                         and not evidence_audit.get("gate_ok"):
-                    if evidence_nudges < 1:
-                        evidence_nudges += 1
-                        trail.append({"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)})
+                    if st.evidence_nudges < 1:
+                        st.evidence_nudges += 1
+                        st.trail.append({"role": "assistant", "content": _clip(st.acc, TRAIL_ASSISTANT_CHARS)})
                         # 纠偏文案必须**说当前传输层的话**，并且**说清是哪一项没过**。
                         # 原生 function-calling 下模型无法"写一行 Action"——它只能发出
                         # 真正的 tool call；此前这条提示不论通道都要求"再给出 Final Answer"，
@@ -8138,7 +8373,7 @@ class Agent:
                         # 前者要它补引用/改路径，后者要它撤回确定性口径或换稳妥计数法。
                         _kind = ("这是定位类问题" if evidence_audit.get("required")
                                  else "这是一次带确定性声称（准确计数／来源断言）的回答")
-                        trail.append({
+                        st.trail.append({
                             "role": "user",
                             "content": (
                                 "Evidence check: %s，但你的回答没通过证据核验。"
@@ -8154,16 +8389,16 @@ class Agent:
                     # 保留上面的一次性纠偏（内部 re-ask），但不替用户下结论。
                     pass
                 if continuation_incomplete:
-                    if turn is not None:
-                        turn.outcome = "truncated"
-                    final_text += "\n\n（模型连续达到单次输出上限，以上为已生成正文，回答尚未结束；可继续本轮任务。）"
-                    yield {"type": "final", "status": "error", "text": final_text}
+                    if st.turn is not None:
+                        st.turn.outcome = "truncated"
+                    st.final_text += "\n\n（模型连续达到单次输出上限，以上为已生成正文，回答尚未结束；可继续本轮任务。）"
+                    yield {"type": "final", "status": "error", "text": st.final_text}
                     return
                 # 「留地板、拆其余」：即使核验 PASS，也不再往 final 追加 harness 写的
                 # 「（核验：PASS·N 处引用可核验）」横幅。那是往用户答案上贴的"事后盖章"，
                 # 与 FAIL 侧同一种"处处受限"。判据函数保留，直测仍钉它。
-                self.history.append({"user": question, "assistant": final_text})
-                yield self._final_event(final_text, turn)
+                self.history.append({"user": st.question, "assistant": st.final_text})
+                yield self._final_event(st.final_text, st.turn)
                 return
 
             # 没有有效动作也没有合格 Final：可能是输出被长度截断 / 只有思考没有正文 /
@@ -8195,218 +8430,17 @@ class Agent:
             # 所以判据是「模型**有没有**按协议允许的方式表达动作」，不是
             # 「`acc` 里**有没有** `Action:` 字样」——后者只是文本协议的形状，
             # 而原生通道下它本来就不该出现。
-            if (acc.strip() and not truncated and not has_real_final
-                    and not parsed["action"] and not native_calls_this_turn):
-                format_stalls += 1
-                if format_stalls >= _MAX_FORMAT_STALLS:
-                    if turn is not None:
-                        turn.outcome = "format_stall"
-                    # **不要丢掉 acc。** 此前这里直接把模型的实际输出换成一段固定
-                    # 文案，于是它已经产出的内容（工具观察、候选文件、推理）全部蒸发，
-                    # 用户只看到一句"执行失败"。trace 里模型明明已经搜到
-                    # player.gd L22-38 与 enemy.gd，结果一个字都没留下。
-                    #
-                    # 同时**不把这段散文当作答案**：本条 trace 恰好证明裸散文可能是
-                    # *计划*（"需要用 read_file 读取原文核验…"）而不是结论——把它当答案
-                    # 等于告诉用户"我再去查一下"，比报错更糟。所以原样回显并标明未核验。
-                    native = self._native_enabled()
-                    tail = (
-                        "\n\n──── 模型最后一次输出（**未完成、未核验，不要当作结论**）────\n"
-                        "%s\n%s" % (_clip(acc, 1200),
-                                "──── 以上内容未经 read_file 核验 ────"
-                                if native else "──── 以上内容缺少格式标记 ────")
-                    )
-                    if native:
-                        why = (
-                            "本轮走的是原生 function-calling 通道：工具调用由 API 负责，"
-                            "模型只负责发出真正的 tool call 或直接写最终回答。"
-                            "但本轮既没有 tool call，正文里也没有给出结论——"
-                            "这段话没能告诉系统「你要调用哪个工具」或「这就是答案」，"
-                            "所以无法判定它是没答完还是已经答完。"
-                        )
-                        todo = (
-                            "可下手的办法：\n"
-                            "  · 若要继续查证：让模型**直接调用工具**（不要手写 Action 标记）；\n"
-                            "  · 若证据已足够：让模型**直接用自然语言给出结论**，"
-                            "不需要 `Final Answer:` 标记；\n"
-                            "  · 换用更守格式的模型，或把 `DOCMIND_TOOL_MODE` 设回 `react` "
-                            "改用文本协议。"
-                        )
-                    else:
-                        why = (
-                            "本轮走的是 ReAct 文本协议，模型有正文、但既没写 `Action:` 也没写 "
-                            "`Final Answer:`，因此无法判断它是没答完还是已经答完。"
-                        )
-                        todo = (
-                            "可下手的办法：换一个更守格式的模型；或在项目规则里明确要求"
-                            "它以 `Final Answer:` 开头收尾。"
-                        )
-                    final_text = (
-                        "模型连续 %d 轮没有给出可判定的动作或结论，本轮已停止重试。\n\n%s\n%s%s"
-                        % (format_stalls, why, todo, tail)
-                    )
-                    # `degraded: True` —— 这段文字是 **harness 写的诊断**，不是模型
-                    # 的答案。不标的话 `_run_child` 读到的 `final_degraded` 是
-                    # False，于是它把一条「没能答」记成了「答了」交给下游。
-                    # 实测 `wf-87c0df3224aa` 的 `design_probe_2`：结论就是这段
-                    # 447 字符的诊断、`degraded=False`，反思只能看出「结论与任务
-                    # 无关」。这与 `613de0e` / `7bbc69b` 修的另两处同型。
-                    _dump_stall_probe(self.llm, messages, acc, turn,
-                                      session_id=self.session_id or "")
-                    yield {"type": "final", "status": "error",
-                           "degraded": True, "text": final_text}
-                    return
-            else:
-                format_stalls = 0
+            if (yield from self._handle_format_stall(st, messages)):
+                return
 
-            if self._limit_ok(nudges, max_nudges) and (
-                    truncated or not acc.strip() or not has_real_final):
-                nudges += 1
-                # 原生并行批次轮：本轮已按协议发出 >1 个 tool_call，正待循环顶部派发。
-                # 这不是「模型输出尚未结束」——不发误导 notice，也不往 trail 注入
-                # 「你既没调用工具也没给结论」这种与事实相反的假提示。但上面已 `nudges += 1`，
-                # 仍受 `_limit_ok(nudges, max_nudges)` 兜底：万一模型反复原地打转、每轮都发
-                # 同样的并行调用，nudge 次数耗尽后这条分支不再命中，会落到后续收尾/兜底逻辑
-                # 终止——绝不能在这里放一条不计数、不受上限约束的裸 continue，否则会退化成
-                # 「每轮重建 _run_batch 线程池」的死循环。
-                if native_calls_this_turn and self._pending_batch:
-                    continue
-                if truncated:
-                    self._suppress_thinking_once = True   # 重试关思考，避免再烧预算
-                if acc.strip():
-                    trail.append(
-                        {"role": "assistant", "content": _clip(acc, TRAIL_ASSISTANT_CHARS)}
-                    )
-                if truncated:
-                    if "Action:" in acc:
-                        # 已写到 Action 就被切断：让它立刻补全调用
-                        hint = (
-                            "Nudge: 你的输出在长度上限处中断，Action 没有写完。"
-                            "请立即用一句 Thought 加完整的 `Action:` 与 `Action Input:` 补全"
-                            "你上一轮要做的调用，不要重复之前的长分析；信息已足够时才直接给 "
-                            "`Final Answer: ...`。"
-                        )
-                    elif nudges == 1 and tool_steps == 0:
-                        # 还没检索/读文件就烧光长度：先去拿证据，而不是逼它凭空回答
-                        hint = (
-                            "Nudge: 你的上一轮在长度上限处中断，且还没有调用任何工具。"
-                            "请先用一句话 Thought，然后直接输出一个 Action"
-                            "（代码问题优先 search_code / read_file / grep）去获取信息，"
-                            "禁止长篇思考；拿到结果后再给 Final Answer。"
-                        )
-                    else:
-                        hint = (
-                            "Nudge: 输出在单次长度上限处中断。请从中断处继续，"
-                            "需要工具时继续调用；证据充分时给出完整的 `Final Answer: ...`。"
-                        )
-                elif not acc.strip():
-                    if self._native_enabled():
-                        hint = (
-                            "Nudge: 你上一轮没有输出任何正文内容，也没有发出工具调用。"
-                            "请直接用自然语言给出最终回答（中文、简洁），"
-                            "不需要写 `Final Answer:` 标记；需要查证就直接调用工具。"
-                        )
-                    else:
-                        hint = (
-                            "Nudge: 你上一轮没有输出任何正文内容。请严格按格式直接给出最终回答："
-                            "`Final Answer: ...`（中文、简洁、不要再只做思考）。"
-                        )
-                else:
-                    # 把上一轮的**实际输出**回显给它，并明确指出缺的是哪一段。
-                    # 原来只说「你没给 Final Answer」，模型并不知道自己说了什么；
-                    # 回显 + 指出缺口之后，它要做的改动是明确的（把已有正文挪到标记后面，
-                    # 而不是重写一遍）——这也顺带避免了「换个说法再答一遍」导致内容漂移。
-                    #
-                    # 原生通道下**不能**要求它补 `Action:` / `Final Answer:`：传输层
-                    # 不支持"手写"一个调用。必须换成"直接调用工具 / 直接写结论"。
-                    if self._native_enabled():
-                        hint = (
-                            "Nudge: 你上一轮既没有发出工具调用，也没有直接给出结论，"
-                            "所以系统无法判断你是已经答完了还是打算继续。下面是你上一轮的"
-                            "**实际输出**：\n----------\n%s\n----------\n"
-                            "请二选一，**不要重写内容、不要写任何 Action:/Final Answer: 标记**：\n"
-                            "· 还需要查证 → 直接调用相应的工具（例如 read_file），"
-                            "把工具名和参数放进真正的调用里；\n"
-                            "· 已经答完了 → 直接用自然语言把结论写完整即可。"
-                            % _clip(acc, 1200)
-                        )
-                    else:
-                        hint = (
-                            "Nudge: 你上一轮的输出既没有 `Action:`，也没有 `Final Answer:`，"
-                            "所以系统无法判断你是不是已经答完了。下面是你上一轮的**实际输出**：\n"
-                            "----------\n%s\n----------\n"
-                            "请二选一，不要重写内容：\n"
-                            "· 已经答完了 → 在这段正文**前面**补一行 `Final Answer: `，其余一字不改；\n"
-                            "· 还需要查证 → 补上 `Thought:` / `Action: <工具名>` / `Action Input: <参数>`。"
-                            % _clip(acc, 1200)
-                        )
-                trail.append({"role": "user", "content": hint})
-                yield {"type": "notice", "text": "模型输出尚未结束，正在继续执行。", "transient": True}
+            if (yield from self._handle_nudge(st, max_nudges)):
                 continue
 
             # 续写纠偏后仍不完整：给出明确错误，不再把半句 Thought 冒充答案；
             # 这类错误结果不写入历史，避免污染下一轮上下文。
-            if truncated:
-                if turn is not None:
-                    turn.outcome = "truncated"
-                final_text = (
-                    "模型回答因上下文长度限制被截断，未能给出完整答案。"
-                    "请缩小问题范围（例如指定具体文件/函数）或开新对话后重试。"
-                )
-            elif not acc.strip():
-                if turn is not None:
-                    turn.outcome = "empty"
-                # 走到这里时，格式纠偏（_MAX_FORMAT_STALLS）与续写纠偏
-                # （_MAX_FINAL_CONTINUATIONS）都已用尽仍一个字都没拿到。
-                # 空响应是**结果**不是**原因**，归因必须二选一（见下）：
-                # · fail_total > 0 → 「工具一直报错 -> 模型拿不到信息 -> 放弃作答」，
-                #   此时让用户去重试 / 改问题 / 查 provider 全是错误方向；
-                # · 否则 → 才轮到「上游回了个空信封」这个瞬时故障假设。
-                # 实测（godot_sample 定位扣血逻辑）：read_file 连续 5 次「文件不存在」，
-                # 根因是参数语法（start:/end: 写成行内不被识别），但用户看到的归因是
-                # 「中转返回空内容，直接重试通常就能拿到」——重试多少次都没用。
-                # 与上面 truncated 那条刻意区分开：那是长度被截，这条是拿不到内容。
-                attempts = 1 + int(final_continuations) + int(format_stalls)
-                if fail_total:
-                    worst = max(tool_fail_streak.items(),
-                                key=lambda kv: kv[1], default=None)
-                    worst_txt = ("（最常失败：%s ×%d）" % (worst[0], worst[1])
-                                 if worst and worst[1] else "")
-                    final_text = (
-                        "模型连续 %d 次调用都没有产出可用正文，而本轮有 **%d 次工具调用失败**%s。"
-                        "**最可能的原因就在这里**：工具一直报错 -> 模型拿不到任何可用信息 -> "
-                        "放弃作答。请先看上面那些工具返回的具体报错，那里才是根因；"
-                        "单纯重试**大概率无效**，得先把工具调用修对（参数名、路径、用户是否"
-                        "需要开联网等）。修好之后再重问一次即可。"
-                        % (max(1, attempts), fail_total, worst_txt)
-                    )
-                else:
-                    final_text = (
-                        "模型连续 %d 次调用都没有返回可用正文，而本轮**没有**工具失败记录，"
-                        "因此更像是上游/中转回了个空信封（瞬时故障）——重试通常就能拿到。"
-                        "若反复出现，依次检查：① 该 provider 是否可用（免费中转容易限流或"
-                        "无上游容量）；② 若该模型开了思考模式，可能是思考阶段吃光了输出预算——"
-                        "关掉 thinking 或调小 max_tokens 再试。"
-                        % max(1, attempts)
-                    )
-            else:
-                # 连纠偏后仍不合格式的残句：清洗 ReAct 标记后再兜底，不再把 Thought/Action 原样抛给用户
-                if turn is not None:
-                    turn.outcome = "fallback_cleaned"
-                final_text = _clean_fallback_answer(acc)
-                self.history.append({"user": question, "assistant": final_text})
-                # 下面这两条 yield 与 3029 那条证据兜底同型：**harness 代写的文字，
-                # 不是模型自己的 Final Answer**（一条是清洗后的残句，一条是空响应
-                # 诊断）。此前它们都没带 degraded，于是 `_run_child` 读到
-                # `final_degraded = bool(ev.get("degraded"))` = False，把一条
-                # **诊断**当成模型的正式答案交给下游任务——实测那条结论是
-                # 「模型连续 1 次调用都没有返回可用正文…」，而记录是
-                # `status: ok` / `degraded: False` / 结论非空。
-                # 下游于是以为上一个任务真给了答案。这就是本仓库反复出现的
-                # 那类错：把「没能答」记成「答了」。
-                yield {"type": "final", "degraded": True, "text": final_text}
+            if (yield from self._handle_final_fallback(st)):
                 return
-            yield {"type": "final", "degraded": True, "text": final_text}
+            yield {"type": "final", "degraded": True, "text": st.final_text}
             return
 
     # ------------------------------------------------------------------
