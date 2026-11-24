@@ -74,3 +74,15 @@ class _TurnState:
 
     # ---- 导航预算 -------------------------------------------------------
     nav_free_used: int = 0
+
+    # ---- 当前这次工具调用的上下文（工具段各阶段共享）----------------------
+    action_name: str = ""
+    action_arg: str = ""
+    sig: Any = None
+    _nav_is_free: bool = False
+    _tool_ok: bool = False
+    _result: Any = None
+    obs: Any = None
+    _duration_ms: Any = None
+    _t_tool: Any = None
+    obs_images: Any = None

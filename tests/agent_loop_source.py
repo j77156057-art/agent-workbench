@@ -24,6 +24,11 @@ from agent_runtime.turn_state import _TurnState
 LOOP_METHODS = (
     "_run",
     "_run_tool_action",
+    "_tool_guard",
+    "_tool_execute",
+    "_tool_observe",
+    "_tool_failure",
+    "_tool_wrap",
     "_handle_format_stall",
     "_handle_nudge",
     "_handle_final_fallback",
