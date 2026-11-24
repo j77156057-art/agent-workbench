@@ -92,8 +92,10 @@ MINIMUM_MUTATIONS = 7
 _FLOOR = 'SUBAGENT_STEP_FLOOR = max(1, int(os.getenv("DOCMIND_SUBAGENT_STEP_FLOOR", "200")))'
 
 #: cap==0 时落兜底上限，而不是"不设"。**纯层能断**：断言只读 `child.tool_step_override`
+#: （拆分 `_run_child` 之后这行搬到了 `_child_prepare`，字段挂上了 `_ChildState`
+#: 载体 → 锚点文本随之同步，见 docs/backend-decomposition.md §13。）
 #: 这个数（`Agent.run` 被 spy 替掉），不跑 ReAct——见下面那段注释。
-_OVERRIDE = 'child.tool_step_override = cap if cap > 0 else SUBAGENT_STEP_FLOOR'
+_OVERRIDE = 'cs.child.tool_step_override = cs.cap if cs.cap > 0 else SUBAGENT_STEP_FLOOR'
 
 MUTATIONS = [
     # ---- 纯层能断的：兜底上限的**值** ----
@@ -126,17 +128,17 @@ MUTATIONS = [
     # 引擎对变异模块没有超时 → 电池会挂到 CI 超时。详见文件头那一节。
     ("cap==0 时不再落兜底上限（`while True:` 重新变成结构上无界）",
      _OVERRIDE,
-     'child.tool_step_override = cap'),
+     'cs.child.tool_step_override = cs.cap'),
 
     ("兜底上限只留给 cap>1 的分支——而 cap 恒为 0，等于永不生效",
      _OVERRIDE,
-     'child.tool_step_override = cap if cap > 1 else 0'),
+     'cs.child.tool_step_override = cs.cap if cs.cap > 1 else 0'),
 
     ("兜底上限取反：cap>0 时才落兜底、cap==0 时留 0——正好把要治的形状换了个方向",
      _OVERRIDE,
-     'child.tool_step_override = SUBAGENT_STEP_FLOOR if cap > 0 else 0'),
+     'cs.child.tool_step_override = SUBAGENT_STEP_FLOOR if cs.cap > 0 else 0'),
 
     ("兜底上限直接被忽略：子代理拿到的永远是 cap 自己（0 = 不设上限）",
      _OVERRIDE,
-     'child.tool_step_override = cap + 0 if cap > 0 else cap'),
+     'cs.child.tool_step_override = cs.cap + 0 if cs.cap > 0 else cs.cap'),
 ]

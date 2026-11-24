@@ -72,6 +72,7 @@ from agent_runtime.output_audit import audit_evidence, obs_reports_code_undercou
 from agent_runtime.context_router import ContextRouter
 from agent_runtime.run_budget import RunBudget
 from agent_runtime.turn_state import _TurnState
+from agent_runtime.run_state import _ChildState, _ShellState
 from agent_runtime.local_runtime import effective_parallelism, local_llm_slot
 from agent_runtime.tools import (
     Capability, SideEffect, coerce_tool_spec, execute_tool, tool_mutates,
@@ -5967,8 +5968,82 @@ class Agent:
         ① 生成本回合 trace（token 账本 / 工具序列 / 各步延迟 / 结局）；
         ② 把更新后的会话历史落盘并按阈值做摘要压缩。
         客户端断连（生成器被 close）走 aborted 分支，仍留一条可观测记录。
+
+        拆法（docs/backend-decomposition.md §13）：外壳只做编排 —— 现场准备 /
+        回合开启 / 前置门 / 事件泵 / 收尾落库各归各的方法；跨段共享的
+        可变状态挂在 `_ShellState` 载体上（跨 yield 存活，见
+        agent_runtime/run_state.py）。
         """
-        # resume 新鲜度必须按压缩前的工作窗口判断；压缩缩短 history 不代表没有新对话。
+        sh = _ShellState(question=question)
+        question, _resume_rec, _resume_journal = self._shell_prepare_resume(question, resume)
+        turn, _journal_turn_token, deadline = self._shell_open_turn(question, deadline)
+        sh.turn = turn
+        sh.journal_token = _journal_turn_token
+        sh.deadline = deadline
+        stopped, question = yield from self._shell_gates(sh, question)
+        if stopped:
+            return
+        sh.question = question
+
+        # 「留地板、拆其余」重构：无意义输入顶回门已拆。
+        # 此前空 / 纯标点（"？""。。。"）会在调任何工具/provider 之前被挡下、回一句
+        # 客服话并标 degraded=True + clarification_required 早退。这不是灾难地板，是
+        # 「处处受限」+ 事后降级章 —— 拆掉，交给模型自己处理（真没内容时模型会自然追问）。
+        # 函数 _meaningless_input_clarification 保留（直接调用它的测试仍在钉判据）。
+
+        # "能不能修改文件？" capability-question gate.
+        # 「留地板、拆其余」重构：这道门用正则猜"这是不是能力问句"，命中就在模型
+        # 之前弹澄清、标 degraded。它不是灾难地板，是"处处受限"的一种 —— 拆掉，
+        # 交给模型自己判断（真拿不准时模型会正常发问）。函数 _ambiguous_write_request
+        # 保留（直接调用它的测试仍在钉判据）。
+
+        # P0（BUG-11）：首问用悬空写指代（"刚才的改动/优化下"）又没给具体路径时，
+        # 本会话无先行词可落地，禁借跨会话记忆脑补目标 —— 弹提问框请用户指明。
+        # 「留地板、拆其余」重构：这道门靠正则猜意图，会在一个自足的任务里
+        # （比如正文出现"上面得到的结果"这类词）把任务整个挡在模型之前，正是用户
+        # 抱怨的"处处受限"。它不是灾难地板，拆掉 —— 真拿不准时让模型自己去问。
+        # 函数 _unresolved_anaphor_clarification 保留（直接调用它的测试仍在钉判据）。
+
+        sh.history_start = len(self.history)
+        sh.checkpoint_id = _resume_rec.get("id") if _resume_rec else None
+        sh.journal_state = dict(_resume_journal) if _resume_journal else None
+        # 最近一次落库的 checkpoint id：API 的重试/fallback 层据此在同一现场上
+        # 续跑，而不是把已经执行过的工具再跑一遍。
+        self.last_checkpoint_id = sh.checkpoint_id
+
+        def persist_checkpoint(status="running", reason=""):
+            self._shell_persist_checkpoint(sh, status, reason)
+
+        def update_journal(state):
+            self._shell_update_journal(sh, state)
+
+        try:
+            persist_checkpoint()
+            if self.session_id:
+                try:
+                    _memory.capture_preferences(self.memory_write_scope, sh.question)
+                except Exception:
+                    pass
+            sh.inner = self._run(sh.question, turn=sh.turn, stream=stream, images=images, deadline=deadline,
+                              cancel_event=cancel_event,
+                              journal=sh.journal_state,
+                              on_journal=(update_journal
+                                          if (self.depth == 0 and self.session_id) else None))
+            yield from self._shell_pump(sh, sh.inner, persist_checkpoint)
+            yield from self._shell_compact_after(sh)
+        except GeneratorExit:
+            sh.aborted = True
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._shell_on_error(sh, e)
+            raise
+        finally:
+            self._shell_finish(sh, persist_checkpoint)
+
+    def _shell_prepare_resume(self, question, resume):
+        """准备本轮问答的输入：会话压缩 + 断点续跑现场。
+
+        返回 (question, resume_rec, resume_journal)。"""
         _resume_rec = self._resolve_resume_record(resume)
         _resume_history_len = len(self.history)
         if (_resume_rec and self.history
@@ -6039,9 +6114,10 @@ class Agent:
                     _resume_rec = None
             else:
                 _resume_rec = None
+        return question, _resume_rec, _resume_journal
 
-        # Every top-level request gets a fresh task budget.  Child Agents keep
-        # the inherited object instead of creating a separate allowance.
+    def _shell_open_turn(self, question, deadline):
+        """开一个回合：预算账本 + trace turn + 回合级撤销令牌 + 截止时间。"""
         if self.depth == 0 or self.run_budget is None:
             self.run_budget = RunBudget(_task_token_budget())
         turn = _trace.Turn(
@@ -6057,16 +6133,19 @@ class Agent:
 
         if TURN_DEADLINE_S > 0 and deadline is None:
             deadline = time.monotonic() + TURN_DEADLINE_S
+        return turn, _journal_turn_token, deadline
 
-        # Explicit capacity questions are answered from local settings before
-        # any provider/billing gate. This remains available after a hard stop.
+    def _shell_gates(self, sh, question):
+        """前置门：能力问答 / 预算熔断 / 每分钟限流 / 前置钩子。
+
+        命中任一门即整轮收尾；返回 (stopped, question)。"""
         help_text = _capacity_help_response(
             question, self.session_id or "", llm=self.llm, run_budget=self.run_budget)
         if help_text:
-            turn.finish("capability_help", final_text=help_text)
-            _trace.record(turn.to_record())
+            sh.turn.finish("capability_help", final_text=help_text)
+            _trace.record(sh.turn.to_record())
             yield {"type": "final", "text": help_text, "offline": True}
-            return
+            return True, question
 
         # ① 预算熔断：已超限直接拒绝本轮，不发起任何模型调用
         try:
@@ -6074,12 +6153,12 @@ class Agent:
         except Exception:  # noqa: BLE001
             _bud = {"ok": True}
         if not _bud.get("ok"):
-            turn.finish("budget_blocked")
-            _trace.record(turn.to_record())
+            sh.turn.finish("budget_blocked")
+            _trace.record(sh.turn.to_record())
             yield {"type": "final",
                    "text": f"（预算熔断）{_bud.get('reason', '预算已用尽')}。"
                            f"可在 /api/budget 调整额度或清零后重试。"}
-            return
+            return True, question
 
         # ①-b 每分钟限流：超出则拒绝本轮（调用次数上限在此预检并计数）
         try:
@@ -6087,11 +6166,11 @@ class Agent:
         except Exception:  # noqa: BLE001
             _rate = {"ok": True}
         if not _rate.get("ok"):
-            turn.finish("rate_limited")
-            _trace.record(turn.to_record())
+            sh.turn.finish("rate_limited")
+            _trace.record(sh.turn.to_record())
             yield {"type": "final",
                    "text": f"（每分钟限流）{_rate.get('reason', '调用过于频繁')}。请稍后重试。"}
-            return
+            return True, question
 
         # ② pre_turn 钩子：可改写问题，或整轮拦截
         try:
@@ -6099,340 +6178,299 @@ class Agent:
         except Exception:  # noqa: BLE001
             _blk, _reason, _q = False, "", question
         if _blk:
-            turn.finish("hook_blocked")
-            _trace.record(turn.to_record())
+            sh.turn.finish("hook_blocked")
+            _trace.record(sh.turn.to_record())
             yield {"type": "final", "text": f"（钩子拦截）{_reason or '本轮被前置钩子阻止。'}"}
-            return
+            return True, question
         question = _q
+        return False, question
 
-        # 「留地板、拆其余」重构：无意义输入顶回门已拆。
-        # 此前空 / 纯标点（"？""。。。"）会在调任何工具/provider 之前被挡下、回一句
-        # 客服话并标 degraded=True + clarification_required 早退。这不是灾难地板，是
-        # 「处处受限」+ 事后降级章 —— 拆掉，交给模型自己处理（真没内容时模型会自然追问）。
-        # 函数 _meaningless_input_clarification 保留（直接调用它的测试仍在钉判据）。
-
-        # "能不能修改文件？" capability-question gate.
-        # 「留地板、拆其余」重构：这道门用正则猜"这是不是能力问句"，命中就在模型
-        # 之前弹澄清、标 degraded。它不是灾难地板，是"处处受限"的一种 —— 拆掉，
-        # 交给模型自己判断（真拿不准时模型会正常发问）。函数 _ambiguous_write_request
-        # 保留（直接调用它的测试仍在钉判据）。
-
-        # P0（BUG-11）：首问用悬空写指代（"刚才的改动/优化下"）又没给具体路径时，
-        # 本会话无先行词可落地，禁借跨会话记忆脑补目标 —— 弹提问框请用户指明。
-        # 「留地板、拆其余」重构：这道门靠正则猜意图，会在一个自足的任务里
-        # （比如正文出现"上面得到的结果"这类词）把任务整个挡在模型之前，正是用户
-        # 抱怨的"处处受限"。它不是灾难地板，拆掉 —— 真拿不准时让模型自己去问。
-        # 函数 _unresolved_anaphor_clarification 保留（直接调用它的测试仍在钉判据）。
-
-        aborted = False
-        error = None
-        final_text = ""
-        inner = None
-        history_start = len(self.history)
-        recovery_events = []
-        checkpoint_id = _resume_rec.get("id") if _resume_rec else None
-        journal_state = dict(_resume_journal) if _resume_journal else None
-        # 最近一次落库的 checkpoint id：API 的重试/fallback 层据此在同一现场上
-        # 续跑，而不是把已经执行过的工具再跑一遍。
-        self.last_checkpoint_id = checkpoint_id
-
-        def persist_checkpoint(status="running", reason=""):
-            nonlocal checkpoint_id
-            if not self.session_id:
-                return
-            try:
-                checkpoint_id = _memory.checkpoint(self.memory_scope, self.session_id, question,
-                    cid=checkpoint_id, status=status, reason=reason,
-                    events=recovery_events, answer=final_text,
-                    journal=journal_state)
-                self.last_checkpoint_id = checkpoint_id
-            except Exception:
-                pass
-
-        def update_journal(state):
-            nonlocal journal_state
-            journal_state = state
-            persist_checkpoint()
-        try:
-            persist_checkpoint()
-            if self.session_id:
-                try:
-                    _memory.capture_preferences(self.memory_write_scope, question)
-                except Exception:
-                    pass
-            # 「留地板、拆其余」重构：天气缺地点、出行缺出发/到达/日期 —— 这两道门
-            # 都是正则猜"信息够不够"，命中就在模型之前弹澄清、标 degraded。它们不是
-            # 灾难地板，是"处处受限"。拆掉，交给模型自己处理（缺信息时模型会正常追问
-            # 或直接检索）。函数 _missing_weather_location / _transport_request_clarification
-            # 保留（直接调用它们的测试仍在钉判据）。
-            inner = self._run(question, turn=turn, stream=stream, images=images, deadline=deadline,
-                              cancel_event=cancel_event,
-                              journal=journal_state,
-                              on_journal=(update_journal
-                                          if (self.depth == 0 and self.session_id) else None))
-            for ev in inner:
-                et = ev.get("type")
-                if et in {"action", "observation"}:
-                    recovery_events.append(f"{et}: " + _clip(str(ev.get("text") or ""), 1600))
-                    recovery_events = recovery_events[-6:]
-                    persist_checkpoint()
-                if et == "reflection":
-                    turn.note_reflection()
-                elif et == "final":
-                    ev = dict(ev)
-                    ev["text"] = _strip_internal_prompt_leak(ev.get("text") or "")
-                    if turn.verification_targets and not turn.verified:
-                        # 本轮写文件后跑过测试且退出码 0，且测试之后没再改文件：
-                        # 这与 self_verify 一样是真实验收证据，不应再替换成“未验证”。
-                        if _test_command_verified(turn):
-                            turn.verified = True
-                            ev["verification_status"] = "test_command"
-                        else:
-                            ev["text"] = "修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。"
-                            ev["verification_status"] = "unverified"
-                            # 诚实终态必须抵达 UI：前端两处「未完成」徽章只认 m.degraded
-                            # （useChatStream 仅由 ev.degraded===true 置位，从不读
-                            # verification_status/outcome）。此前这一支只换正文、只写
-                            # outcome，没打 degraded，于是后端记着「未验证」而前端仍染成
-                            # 绿色「已完成」。补上 degraded=True，与 harness 自写兜底 final
-                            # （见本文件 6231/7639/7789）同一信号对齐。
-                            ev["degraded"] = True
-                            turn.outcome = "verification_incomplete"
-                            if self.history and self.history[-1].get("user") == question:
-                                self.history[-1]["assistant"] = ev["text"]
-                    final_text = ev.get("text") or ""
-                    incomplete = {"verification_incomplete", "failed", "deadline_exceeded", "max_steps", "truncated", "empty"}
-                    status = turn.outcome if turn.outcome in incomplete else "completed"
-                    # 终态也写进 journal：进程在这之后崩掉时，恢复端能看出这轮已经
-                    # 有结论（而不是停在某个动作前面），不会把最后一步再跑一遍。
-                    if journal_state is not None:
-                        journal_state = dict(journal_state)
-                        journal_state["phase"] = "final"
-                        journal_state["final_outcome"] = status
-                    persist_checkpoint(status, final_text if status != "completed" else "")
-                    # 失败/降级回合的 final 带 checkpoint id：前端「继续」据此取回
-                    # 精确现场（刷新/断连时前端还可用 resume_checkpoint=latest）。
-                    if checkpoint_id:
-                        ev["checkpoint_id"] = checkpoint_id
-                    if len(self.history) == history_start:
-                        self.history.append({"user": question, "assistant": final_text})
-                    if status != "completed":
-                        self.history[-1].update({"checkpoint_id": checkpoint_id,
-                            "failure_reason": _memory.scrub(final_text, 1200),
-                            "resume_context": _memory.scrub("状态：" + status + "\n" + "\n".join(recovery_events))})
-                    if self.session_id:
-                        _sessions.save(self.session_id, self.history, self.summary, self.project_id)
-                yield ev
-            # 正常跑完（非断连）才落盘本轮历史并做压缩：超阈值时把早期轮次
-            # 摘要化，并给前端一条 notice（在 finally 里无法安全 yield）。
-            if self.session_id:
-                try:
-                    before_n = len(self.history)
-                    # 压缩阈值按当前模型真实窗口换算：1M 模型与 16k 本地模型各用各的
-                    # token 阈值，不再用固定 8000 字符 / 12 轮一刀切。
-                    _budget = self._prompt_budget()
-                    kept, summary = _sessions.maybe_compact(
-                        self.session_id, self.history, self.llm,
-                        trigger_tokens=int(_budget * COMPACT_TRIGGER_RATIO),
-                        keep_tokens=int(_budget * COMPACT_KEEP_RATIO),
-                        project_id=self.project_id, prompt_budget=_budget)
-                    if len(kept) < before_n:
-                        # 压缩弹出的更早轮次完整归档（kept 是压缩前 self.history 的后缀），
-                        # 供 UI 回灌完整历史；LLM 工作窗口 self.history 仍按压缩结果走。
-                        _dropped = self.history[:before_n - len(kept)]
-                        self.archived = (self.archived or []) + _dropped
-                        self.history = kept
-                        self.summary = summary
-                        _sessions.save(self.session_id, kept, summary, self.project_id,
-                                       archived=self.archived, compaction_turns=_dropped)
-                        yield {"type": "notice",
-                               "text": f"早期 {before_n - len(kept)} 轮对话已自动压缩为摘要，新问答不受影响。"}
-                        # 压缩后刷新一次用量指示，让进度条立即回落
-                        self.last_context = self.context_stats("")
-                        yield {"type": "context", **self.last_context}
+    def _shell_pump(self, sh, inner, persist_checkpoint):
+        """把内层 _run 的事件流搬到外壳事件流，并同步落盘恢复现场。"""
+        for ev in sh.inner:
+            et = ev.get("type")
+            if et in {"action", "observation"}:
+                sh.recovery_events.append(f"{et}: " + _clip(str(ev.get("text") or ""), 1600))
+                sh.recovery_events = sh.recovery_events[-6:]
+                persist_checkpoint()
+            if et == "reflection":
+                sh.turn.note_reflection()
+            elif et == "final":
+                ev = dict(ev)
+                ev["text"] = _strip_internal_prompt_leak(ev.get("text") or "")
+                if sh.turn.verification_targets and not sh.turn.verified:
+                    # 本轮写文件后跑过测试且退出码 0，且测试之后没再改文件：
+                    # 这与 self_verify 一样是真实验收证据，不应再替换成“未验证”。
+                    if _test_command_verified(sh.turn):
+                        sh.turn.verified = True
+                        ev["verification_status"] = "test_command"
                     else:
-                        _sessions.save(self.session_id, self.history, self.summary, self.project_id)
-                        # 本轮问答已入历史，用量随之上浮，刷新指示
-                        self.last_context = self.context_stats("")
-                        yield {"type": "context", **self.last_context}
-                except Exception:  # noqa: BLE001
-                    pass
-        except GeneratorExit:
-            aborted = True
-            raise
-        except Exception as e:  # noqa: BLE001
-            error = _memory.scrub(f"{type(e).__name__}: {e}", 1200)
-            # 失败也要把「用户问了什么」写进历史。此前的历史只在成功路径 append+save，
-            # 于是任意一次 400 / 连接错误都会让整轮问答凭空消失，下一轮完全不记得
-            # 用户问过（实测：一轮 web_fetch 图片触发 400 后，"广西北海" 就查无此问）。
-            try:
-                if len(self.history) == history_start:
-                    self.history.append({
-                        "user": question,
-                        "assistant": f"（本轮未完成：{type(e).__name__}，请重试。）",
-                        "checkpoint_id": checkpoint_id,
-                        "failure_reason": error,
-                        "resume_context": _memory.scrub("失败原因：" + error + "\n" + "\n".join(recovery_events)),
-                    })
+                        ev["text"] = "修改尚未完成验证，不能确认任务成功。请检查校验结果后继续修复或补齐验证环境。"
+                        ev["verification_status"] = "unverified"
+                        # 诚实终态必须抵达 UI：前端两处「未完成」徽章只认 m.degraded
+                        # （useChatStream 仅由 ev.degraded===true 置位，从不读
+                        # verification_status/outcome）。此前这一支只换正文、只写
+                        # outcome，没打 degraded，于是后端记着「未验证」而前端仍染成
+                        # 绿色「已完成」。补上 degraded=True，与 harness 自写兜底 final
+                        # （见本文件 6231/7639/7789）同一信号对齐。
+                        ev["degraded"] = True
+                        sh.turn.outcome = "verification_incomplete"
+                        if self.history and self.history[-1].get("user") == sh.question:
+                            self.history[-1]["assistant"] = ev["text"]
+                sh.final_text = ev.get("text") or ""
+                incomplete = {"verification_incomplete", "failed", "deadline_exceeded", "max_steps", "truncated", "empty"}
+                status = sh.turn.outcome if sh.turn.outcome in incomplete else "completed"
+                # 终态也写进 journal：进程在这之后崩掉时，恢复端能看出这轮已经
+                # 有结论（而不是停在某个动作前面），不会把最后一步再跑一遍。
+                if sh.journal_state is not None:
+                    sh.journal_state = dict(sh.journal_state)
+                    sh.journal_state["phase"] = "final"
+                    sh.journal_state["final_outcome"] = status
+                persist_checkpoint(status, sh.final_text if status != "completed" else "")
+                # 失败/降级回合的 final 带 checkpoint id：前端「继续」据此取回
+                # 精确现场（刷新/断连时前端还可用 resume_checkpoint=latest）。
+                if sh.checkpoint_id:
+                    ev["checkpoint_id"] = sh.checkpoint_id
+                if len(self.history) == sh.history_start:
+                    self.history.append({"user": sh.question, "assistant": sh.final_text})
+                if status != "completed":
+                    self.history[-1].update({"checkpoint_id": sh.checkpoint_id,
+                        "failure_reason": _memory.scrub(sh.final_text, 1200),
+                        "resume_context": _memory.scrub("状态：" + status + "\n" + "\n".join(sh.recovery_events))})
                 if self.session_id:
                     _sessions.save(self.session_id, self.history, self.summary, self.project_id)
-            except Exception:  # noqa: BLE001 —— 历史兜底绝不能再抛
-                pass
-            raise
-        finally:
-            _write_journal.reset_turn(_journal_turn_token)
-            if error:
-                turn.outcome = "failed"
-            if error or not final_text:
-                reason = error or ("请求停止或客户端断连（GeneratorExit）" if aborted else "未产生最终答案")
-                persist_checkpoint("failed" if error else "interrupted", reason)
-                try:
-                    if len(self.history) == history_start:
-                        self.history.append({"user": question, "assistant": "（本轮未完成，可核对现场后继续。）",
-                            "checkpoint_id": checkpoint_id, "failure_reason": reason,
-                            "resume_context": _memory.scrub("失败/中断原因：" + reason + "\n" + "\n".join(recovery_events))})
-                    if self.session_id:
-                        _sessions.save(self.session_id, self.history, self.summary, self.project_id)
-                except Exception:
-                    pass
+            yield ev
+
+    def _shell_compact_after(self, sh):
+        """正常跑完（非断连）后的历史压缩：需要 yield notice 事件，故不在 finally 里做。"""
+        if not self.session_id:
+            return
+        try:
+            before_n = len(self.history)
+            # 压缩阈值按当前模型真实窗口换算：1M 模型与 16k 本地模型各用各的
+            # token 阈值，不再用固定 8000 字符 / 12 轮一刀切。
+            _budget = self._prompt_budget()
+            kept, summary = _sessions.maybe_compact(
+                self.session_id, self.history, self.llm,
+                trigger_tokens=int(_budget * COMPACT_TRIGGER_RATIO),
+                keep_tokens=int(_budget * COMPACT_KEEP_RATIO),
+                project_id=self.project_id, prompt_budget=_budget)
+            if len(kept) < before_n:
+                # 压缩弹出的更早轮次完整归档（kept 是压缩前 self.history 的后缀），
+                # 供 UI 回灌完整历史；LLM 工作窗口 self.history 仍按压缩结果走。
+                _dropped = self.history[:before_n - len(kept)]
+                self.archived = (self.archived or []) + _dropped
+                self.history = kept
+                self.summary = summary
+                _sessions.save(self.session_id, kept, summary, self.project_id,
+                               archived=self.archived, compaction_turns=_dropped)
+                yield {"type": "notice",
+                       "text": f"早期 {before_n - len(kept)} 轮对话已自动压缩为摘要，新问答不受影响。"}
+                # 压缩后刷新一次用量指示，让进度条立即回落
+                self.last_context = self.context_stats("")
+                yield {"type": "context", **self.last_context}
+            else:
+                _sessions.save(self.session_id, self.history, self.summary, self.project_id)
+                # 本轮问答已入历史，用量随之上浮，刷新指示
+                self.last_context = self.context_stats("")
+                yield {"type": "context", **self.last_context}
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _shell_on_error(self, sh, e):
+        """失败收尾：把「用户问了什么」写进历史，并记下失败原因。"""
+        sh.error = _memory.scrub(f"{type(e).__name__}: {e}", 1200)
+        # 失败也要把「用户问了什么」写进历史。此前的历史只在成功路径 append+save，
+        # 于是任意一次 400 / 连接错误都会让整轮问答凭空消失，下一轮完全不记得
+        # 用户问过（实测：一轮 web_fetch 图片触发 400 后，"广西北海" 就查无此问）。
+        try:
+            if len(self.history) == sh.history_start:
+                self.history.append({
+                    "user": sh.question,
+                    "assistant": f"（本轮未完成：{type(e).__name__}，请重试。）",
+                    "checkpoint_id": sh.checkpoint_id,
+                    "failure_reason": sh.error,
+                    "resume_context": _memory.scrub("失败原因：" + sh.error + "\n" + "\n".join(sh.recovery_events)),
+                })
             if self.session_id:
+                _sessions.save(self.session_id, self.history, self.summary, self.project_id)
+        except Exception:  # noqa: BLE001 —— 历史兜底绝不能再抛
+            pass
+
+    def _shell_finish(self, sh, persist_checkpoint):
+        """收尾：断点现场落库、记忆落库、终态判定、trace 记录、计价与后置钩子。"""
+        _write_journal.reset_turn(sh.journal_token)
+        if sh.error:
+            sh.turn.outcome = "failed"
+        if sh.error or not sh.final_text:
+            reason = sh.error or ("请求停止或客户端断连（GeneratorExit）" if sh.aborted else "未产生最终答案")
+            persist_checkpoint("failed" if sh.error else "interrupted", reason)
+            try:
+                if len(self.history) == sh.history_start:
+                    self.history.append({"user": sh.question, "assistant": "（本轮未完成，可核对现场后继续。）",
+                        "checkpoint_id": sh.checkpoint_id, "failure_reason": reason,
+                        "resume_context": _memory.scrub("失败/中断原因：" + reason + "\n" + "\n".join(sh.recovery_events))})
+                if self.session_id:
+                    _sessions.save(self.session_id, self.history, self.summary, self.project_id)
+            except Exception:
+                pass
+        if self.session_id:
+            try:
+                _ep_backed = _episode_is_backed(
+                    sh.final_text, getattr(sh.turn, "tool_evidence", None) if sh.turn is not None else None)
+                _ep_mid = _memory.remember(self.memory_write_scope, "episode", _memory.scrub(sh.question, 200),
+                    ("未完成：" + (sh.error or "停止/中断") if sh.error or not sh.final_text else "模型报告（尚需核对验收）：" + sh.final_text),
+                    "\n".join(sh.recovery_events), source="model_report", key=sh.question, backed=_ep_backed,
+                    agent_id=self.agent_id)
+                # 记忆 v2 · 会话钩子：结构化回合 + 钩子/错误/回执。只影响本层，
+                # 绝不影响上面已完成的老记忆落库；开关关时直接返回。
                 try:
-                    _ep_backed = _episode_is_backed(
-                        final_text, getattr(turn, "tool_evidence", None) if turn is not None else None)
-                    _ep_mid = _memory.remember(self.memory_write_scope, "episode", _memory.scrub(question, 200),
-                        ("未完成：" + (error or "停止/中断") if error or not final_text else "模型报告（尚需核对验收）：" + final_text),
-                        "\n".join(recovery_events), source="model_report", key=question, backed=_ep_backed,
-                        agent_id=self.agent_id)
-                    # 记忆 v2 · 会话钩子：结构化回合 + 钩子/错误/回执。只影响本层，
-                    # 绝不影响上面已完成的老记忆落库；开关关时直接返回。
-                    try:
-                        if get_memory_v2():
-                            from agent_runtime.memory import turns as _memory_v2_turns
-                            _v2_status = ("failed" if error else "interrupted" if aborted
-                                          else "completed" if (final_text or "").strip() else "partial")
-                            # 写入 scope 与读取 scope 可以分开：评测流量读真实项目、
-                            # 只写自己的桶，既不再污染，也仍然把记忆链路走一遍。
-                            _v2_project = self.memory_write_project or (self.project_id or "")
-                            _v2_recorded = _memory_v2_turns.record_turn(
-                                session_id=self.session_id,
-                                project_id=_v2_project,
-                                question=question,
-                                final_text=final_text or "",
-                                status=_v2_status,
-                                turn=turn,
-                                journal=journal_state,
-                                error=error or "",
-                            )
-                            if _v2_recorded.get("record"):
-                                from agent_runtime.memory import consolidate as _memory_v2_consolidate
-                                _memory_v2_consolidate.schedule(
-                                    _v2_project, self.session_id,
-                                    self._child_llm(), _v2_recorded["record"])
-                    except Exception:  # noqa: BLE001
-                        pass
-                    # B3：per-number 背书审计旁路（§5 高估观测化）。**只观测、不改 backed/trust/
-                    # recall/to_record**；默认关，仅当 DOCMIND_PROVENANCE_AUDIT 落盘才写。自包一层
-                    # try——审计异常一律吞掉，绝不影响上面已完成的落库。
-                    try:
-                        _provenance_audit_emit(
-                            _episode_number_audit(
-                                final_text,
-                                getattr(turn, "tool_evidence", None) if turn is not None else None),
-                            key=question)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    # 长期记忆优化 W-B：把逐字 episode 交后台就地蒸馏/作废。默认关
-                    # （DOCMIND_MEMORY_DISTILL 未设）→ 直接 return，行为与今天逐字节一致。
-                    # 上面同步逐字写入**已先落库**保持久性，这里只是可选非阻塞精炼；
-                    # 单独包 try——蒸馏触发异常绝不影响上面已完成的落库。
-                    try:
-                        self._schedule_memory_distill(_ep_mid, question, final_text, error, _ep_backed)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    # 透明偏好学习：把本轮**可观测**信号（触碰文件 / 用到的工具）
-                    # 累加进画像 learned。默认关（learning_enabled() False）→ 整段跳过，
-                    # 连一次 DB 读都不做，行为逐字节同今天。单独包 try——学习异常绝不
-                    # 影响上面已完成的 episode 落库。learned 只作建议级上下文、可一键清除。
-                    try:
-                        if _memory.learning_enabled():
-                            _js = journal_state or {}
-                            _memory.learn_habits(
-                                question=question,
-                                paths=[fc.get("path") for fc in (_js.get("file_changes") or [])
-                                       if isinstance(fc, dict)],
-                                tools=[sig[0] for sig in (_js.get("executed") or [])
-                                       if isinstance(sig, (list, tuple)) and sig],
-                            )
-                    except Exception:  # noqa: BLE001
-                        pass
-                except Exception:
-                    pass
-            # 断连时关闭内层循环，确保不再执行后续工具调用（已耗尽时 close 是空操作）。
-            if inner is not None:
-                try:
-                    inner.close()
+                    if get_memory_v2():
+                        from agent_runtime.memory import turns as _memory_v2_turns
+                        _v2_status = ("failed" if sh.error else "interrupted" if sh.aborted
+                                      else "completed" if (sh.final_text or "").strip() else "partial")
+                        # 写入 scope 与读取 scope 可以分开：评测流量读真实项目、
+                        # 只写自己的桶，既不再污染，也仍然把记忆链路走一遍。
+                        _v2_project = self.memory_write_project or (self.project_id or "")
+                        _v2_recorded = _memory_v2_turns.record_turn(
+                            session_id=self.session_id,
+                            project_id=_v2_project,
+                            question=sh.question,
+                            final_text=sh.final_text or "",
+                            status=_v2_status,
+                            turn=sh.turn,
+                            journal=sh.journal_state,
+                            error=sh.error or "",
+                        )
+                        if _v2_recorded.get("record"):
+                            from agent_runtime.memory import consolidate as _memory_v2_consolidate
+                            _memory_v2_consolidate.schedule(
+                                _v2_project, self.session_id,
+                                self._child_llm(), _v2_recorded["record"])
                 except Exception:  # noqa: BLE001
                     pass
-            # BUG-1/6 fail-closed 交付门：收尾判定必须校验"本轮是否真的交付了可用答案"，
-            # 不能只看模型 finish_reason。agent_trace.to_record 里
-            #   outcome = self.outcome or self.finish_reason or "completed"
-            # ——只要 turn.outcome 没被显式设成非完成态，就会被上一次 LLM 的
-            # finish_reason="completed"（或兜底字面量）落成"完成"。实测铁证：
-            # aborted=true、final_chars=0 的中断轮仍记 completed。
-            # 以下两类是"没能答"，绝不落成 completed：
-            #   · 本轮被中断（GeneratorExit / 客户端断连）——哪怕 finish_reason 残留 completed；
-            #   · 没有任何非空最终正文（且非显式错误、非澄清）——空 / 纯空白 final。
-            # 只在 outcome 为空或"completed"时覆盖，保留内层已设的更具体终态
-            # （truncated / empty / verification_incomplete / clarification_required）。
-            if aborted and turn.outcome in (None, "", "completed"):
-                turn.outcome = "interrupted"
-            elif (not aborted and not error
-                  and not (final_text or "").strip()
-                  and turn.outcome in (None, "", "completed")):
-                turn.outcome = "empty"
-            turn.finish(
-                reason=None if aborted else (turn.outcome or "completed"),
-                final_text=final_text,
-                error=error,
-                aborted=aborted,
-            )
-            if self.run_budget is not None:
-                turn.task_budget = self.run_budget.snapshot()
-            # ③ 按 provider 计价 + 预算累计（本地 provider 恒为 0，不影响离线演示）
-            try:
-                turn.cost_cny = _pricing.cost_cny(
-                    turn.provider, turn.model, turn.prompt_tokens, turn.completion_tokens,
-                    turn.cache_read_tokens, turn.cache_creation_tokens)
-            except Exception:  # noqa: BLE001
-                turn.cost_cny = 0.0
-            # ④ 跨会话经验记录（Phase 3，可选）：回合结束若判定为「有趣」（失败-已修复 /
-            # 反复失败）则沉淀一条经验；任何故障静默降级，绝不拖垮主流程（record_episode
-            # 自身也已全包异常）。
-            try:
-                self._maybe_record_experience(turn, question)
-            except Exception:  # noqa: BLE001
-                turn.experience = {"recorded": False, "error": "hook_failed"}
-            rec = turn.to_record()
-            self.last_turn_record = rec      # 供父代理读取（子代理轨迹/成本回传）
-            try:
-                from agent_runtime.memory import inspector as _memory_inspector
-                _memory_inspector.complete(
-                    self, final_text=final_text,
-                    file_changes=(journal_state or {}).get("file_changes") or [], record=rec)
-            except Exception:  # noqa: BLE001 —— 合规证据快照不得影响收尾
-                pass
-            _trace.record(rec)
-            _langsmith.export_turn(rec)
-            if turn.cost_cny:
+                # B3：per-number 背书审计旁路（§5 高估观测化）。**只观测、不改 backed/trust/
+                # recall/to_record**；默认关，仅当 DOCMIND_PROVENANCE_AUDIT 落盘才写。自包一层
+                # try——审计异常一律吞掉，绝不影响上面已完成的落库。
                 try:
-                    _pricing.charge(turn.cost_cny, self.session_id or "")
+                    _provenance_audit_emit(
+                        _episode_number_audit(
+                            sh.final_text,
+                            getattr(sh.turn, "tool_evidence", None) if sh.turn is not None else None),
+                        key=sh.question)
                 except Exception:  # noqa: BLE001
                     pass
-            # ④ post_turn 钩子（埋点/通知，返回值忽略）
+                # 长期记忆优化 W-B：把逐字 episode 交后台就地蒸馏/作废。默认关
+                # （DOCMIND_MEMORY_DISTILL 未设）→ 直接 return，行为与今天逐字节一致。
+                # 上面同步逐字写入**已先落库**保持久性，这里只是可选非阻塞精炼；
+                # 单独包 try——蒸馏触发异常绝不影响上面已完成的落库。
+                try:
+                    self._schedule_memory_distill(_ep_mid, sh.question, sh.final_text, sh.error, _ep_backed)
+                except Exception:  # noqa: BLE001
+                    pass
+                # 透明偏好学习：把本轮**可观测**信号（触碰文件 / 用到的工具）
+                # 累加进画像 learned。默认关（learning_enabled() False）→ 整段跳过，
+                # 连一次 DB 读都不做，行为逐字节同今天。单独包 try——学习异常绝不
+                # 影响上面已完成的 episode 落库。learned 只作建议级上下文、可一键清除。
+                try:
+                    if _memory.learning_enabled():
+                        _js = sh.journal_state or {}
+                        _memory.learn_habits(
+                            question=sh.question,
+                            paths=[fc.get("path") for fc in (_js.get("file_changes") or [])
+                                   if isinstance(fc, dict)],
+                            tools=[sig[0] for sig in (_js.get("executed") or [])
+                                   if isinstance(sig, (list, tuple)) and sig],
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:
+                pass
+        # 断连时关闭内层循环，确保不再执行后续工具调用（已耗尽时 close 是空操作）。
+        if sh.inner is not None:
             try:
-                _hooks.run_post_turn(rec)
+                sh.inner.close()
             except Exception:  # noqa: BLE001
                 pass
+        # BUG-1/6 fail-closed 交付门：收尾判定必须校验"本轮是否真的交付了可用答案"，
+        # 不能只看模型 finish_reason。agent_trace.to_record 里
+        #   outcome = self.outcome or self.finish_reason or "completed"
+        # ——只要 turn.outcome 没被显式设成非完成态，就会被上一次 LLM 的
+        # finish_reason="completed"（或兜底字面量）落成"完成"。实测铁证：
+        # aborted=true、final_chars=0 的中断轮仍记 completed。
+        # 以下两类是"没能答"，绝不落成 completed：
+        #   · 本轮被中断（GeneratorExit / 客户端断连）——哪怕 finish_reason 残留 completed；
+        #   · 没有任何非空最终正文（且非显式错误、非澄清）——空 / 纯空白 final。
+        # 只在 outcome 为空或"completed"时覆盖，保留内层已设的更具体终态
+        # （truncated / empty / verification_incomplete / clarification_required）。
+        if sh.aborted and sh.turn.outcome in (None, "", "completed"):
+            sh.turn.outcome = "interrupted"
+        elif (not sh.aborted and not sh.error
+              and not (sh.final_text or "").strip()
+              and sh.turn.outcome in (None, "", "completed")):
+            sh.turn.outcome = "empty"
+        sh.turn.finish(
+            reason=None if sh.aborted else (sh.turn.outcome or "completed"),
+            final_text=sh.final_text,
+            error=sh.error,
+            aborted=sh.aborted,
+        )
+        if self.run_budget is not None:
+            sh.turn.task_budget = self.run_budget.snapshot()
+        # ③ 按 provider 计价 + 预算累计（本地 provider 恒为 0，不影响离线演示）
+        try:
+            sh.turn.cost_cny = _pricing.cost_cny(
+                sh.turn.provider, sh.turn.model, sh.turn.prompt_tokens, sh.turn.completion_tokens,
+                sh.turn.cache_read_tokens, sh.turn.cache_creation_tokens)
+        except Exception:  # noqa: BLE001
+            sh.turn.cost_cny = 0.0
+        # ④ 跨会话经验记录（Phase 3，可选）：回合结束若判定为「有趣」（失败-已修复 /
+        # 反复失败）则沉淀一条经验；任何故障静默降级，绝不拖垮主流程（record_episode
+        # 自身也已全包异常）。
+        try:
+            self._maybe_record_experience(sh.turn, sh.question)
+        except Exception:  # noqa: BLE001
+            sh.turn.experience = {"recorded": False, "error": "hook_failed"}
+        rec = sh.turn.to_record()
+        self.last_turn_record = rec      # 供父代理读取（子代理轨迹/成本回传）
+        try:
+            from agent_runtime.memory import inspector as _memory_inspector
+            _memory_inspector.complete(
+                self, final_text=sh.final_text,
+                file_changes=(sh.journal_state or {}).get("file_changes") or [], record=rec)
+        except Exception:  # noqa: BLE001 —— 合规证据快照不得影响收尾
+            pass
+        _trace.record(rec)
+        _langsmith.export_turn(rec)
+        if sh.turn.cost_cny:
+            try:
+                _pricing.charge(sh.turn.cost_cny, self.session_id or "")
+            except Exception:  # noqa: BLE001
+                pass
+        # ④ post_turn 钩子（埋点/通知，返回值忽略）
+        try:
+            _hooks.run_post_turn(rec)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _shell_persist_checkpoint(self, sh, status="running", reason=""):
+        """把本轮现场落成 checkpoint（断点续跑用）。"""
+        if not self.session_id:
+            return
+        try:
+            sh.checkpoint_id = _memory.checkpoint(
+                self.memory_scope, self.session_id, sh.question,
+                cid=sh.checkpoint_id, status=status, reason=reason,
+                events=sh.recovery_events, answer=sh.final_text,
+                journal=sh.journal_state)
+            self.last_checkpoint_id = sh.checkpoint_id
+        except Exception:
+            pass
+
+    def _shell_update_journal(self, sh, state):
+        """把内层 journal 现场换掉并立刻落盘。"""
+        sh.journal_state = state
+        self._shell_persist_checkpoint(sh)
             # 历史摘要压缩在正常完成路径执行（需要 yield notice 事件）；
             # 断连现场在上方持久化，不在 finally 中调用模型压缩。
 
@@ -8824,10 +8862,9 @@ class Agent:
         except Exception:  # noqa: BLE001
             pass
 
-    def _run_child(self, role, task, context=None, turn=None, *, persona="",
-                   tool_allowlist=None, mcp_policy="auto", reflect=True,
-                   max_steps=None, step_sink=None, llm=None, _delegation_ticket="",
-                   _plan_id="", _task_id=""):
+    def _run_child(self, role, task, context=None, turn=None, *, persona="", tool_allowlist=None,
+                   mcp_policy="auto", reflect=True, max_steps=None, step_sink=None, llm=None,
+                   _delegation_ticket="", _plan_id="", _task_id=""):
         """跑一个受限子代理，返回 {status, conclusion, steps, error}（delegate 与 orchestrate 共用）。
 
         - 角色决定**默认**工具集与角色提示（researcher / coder / reviewer / tester）；
@@ -8840,8 +8877,11 @@ class Agent:
         - 子代理 token 计入父回合账本；
         - `step_sink(item)` 可选：每产生一条 thought/action/observation 实时回调
           （文本已按 SINK_* 有界裁剪），供工作流 SSE 推给 UI；sink 异常绝不影响执行。
-        """
 
+        拆法（docs/backend-decomposition.md §13）：本方法只做编排 ——
+        角色/派发/钩子在前，准备子代理、跑事件泵、出结论报告各归各的
+        方法；跨段共享的可变状态挂在 `_ChildState` 载体上。
+        """
         def emit_sink(step_type, text):
             if not callable(step_sink) or step_type not in SINK_STEP_TYPES:
                 return
@@ -8860,16 +8900,7 @@ class Agent:
                 step_sink({"type": step_type, "text": _clip(str(text or ""), limit)})
             except Exception:
                 pass
-        # 角色不再限于 `_SUBAGENT_ROLES` 那 11 个。
-        #
-        # harness 的职责是**给模型兜底**，不是**替模型决定**。那 11 个角色是
-        # 手写枚举，覆盖游戏/EDA/开发三域；域一变就得改代码，而「该派个 agent
-        # 去读那份长文档」这类判断本该由看过问题的主 agent 自己做——它需要
-        # 什么角色就说什么角色。
-        #
-        # 命中枚举：沿用那一行的 hint 与默认工具集（保持既有行为不变）。
-        # 未命中：**不拒绝**，用主 agent 给的 `persona` 当人设，工具集取
-        # `self.tools`（由下面的 requested_tools 分支再按需收窄）。
+
         role_name = str(role or "").strip()
         spec = _SUBAGENT_ROLES.get(role_name)
         ad_hoc_role = spec is None
@@ -8890,8 +8921,6 @@ class Agent:
             self, default_tools=spec["tools"], tool_allowlist=tool_allowlist,
             mcp_policy=mcp_policy, read_only=role_name in _READ_ONLY_ROLES,
             interactive_session=interactive_session)
-        requested_tools = resolved["requested_tools"]
-        allowlist_provided = resolved["allowlist_provided"]
         allowed = resolved["allowed"]
         policy = resolved["policy"]
         if interactive_session and not _delegation_ticket:
@@ -8964,9 +8993,81 @@ class Agent:
                                    "issues": ["before_subagent_blocked"]},
                     "trace": _child_trace([], [], hooks=hook_events)}
 
-        # 开发舱 auto 模式可按子任务复杂度传入升级模型；None 时沿用会话自身模型的克隆
-        child_llm = llm if llm is not None else self._child_llm()
-        requested_tools = tool_allowlist
+        cs = _ChildState(
+            role=role, role_name=role_name, spec=spec, ad_hoc_role=ad_hoc_role,
+            task=task, context=context, persona=persona,
+            tool_allowlist=tool_allowlist, mcp_policy=mcp_policy, max_steps=max_steps,
+            llm=llm, turn=turn, reflect=reflect, step_sink=step_sink,
+            delegation_ticket=_delegation_ticket, plan_id=_plan_id, task_id=_task_id,
+            interactive_session=interactive_session)
+        cs.hook_events = hook_events
+        early = self._child_prepare(cs)
+        if early is not None:
+            return early
+        cs.final_text, cs.used = "", 0
+        cs.final_degraded = False     # 安全网兜底 final（非模型 Final Answer）→ 结论须标记降级
+        cs.thoughts, cs.reflections, cs.last_obs = [], [], ""
+        # traj: [{action, obs}] —— 有界的逐步轨迹
+        #
+        # `pending` 必须是**队列**而不是单个槽：并行工具批次路径（见 `run` 里
+        # `if self._pending_batch:` 那段）先 yield 全部 action、再 yield 全部
+        # observation。单槽时批次里第二个 action 会把第一个顶掉，第一个
+        # observation 填进第二个 pending，其余观察被 `not pending["obs"]` 丢掉。
+        #
+        # 后果不是「记录不好看」——`traj` 会喂给 `_traj_evidence_block` →
+        # `_reflection_result`，也就是**反思拿着动作与观察错配的轨迹判断该不该
+        # 重试这个子代理**。实测 `wf-2097b5fbf7c1`：子代理报告「所有读取都返回
+        # 空、无法核实」并放弃，而它那轮的真实观察其实是有的；父代理据此判失败、
+        # replan、再派一次，每次都基于同一份错配的证据，连错三次。
+        cs.traj, cs.pending = [], deque()
+        # 与主会话同一套轨迹结构（type/text），供工作台子 agent 窗口刷新后重建推理过程。
+        # 子 agent 的 SSE 不经过 api.py 的 in-flight 蒸馏路径，必须在这里自己收。
+        cs.trace_steps: list[dict] = []
+        cs.artifacts = []
+        # 「需要用户确认」的上浮载体：子代理被授权问题卡住时，从事件流收进来，
+        # 最后进 `output["needs_confirmation"]`（必填，无内容时是空 dict）。
+        cs.needs_confirm: dict = {}
+        # 「改了哪些文件」：由写工具在真正落盘那一步自报（见下面 observation 分支的注释）。
+        # `_seen_file_changes` 只为去重——同一文件被改多次，清单里出现一次就够。
+        cs.file_changes: list[dict] = []
+        cs.seen_file_changes: set[str] = set()
+        _read_conv_token = begin_read_conversation()
+        try:
+            with _hooks.workflow_event_scope(record_hook):
+                with local_llm_slot(getattr(cs.child_llm, "provider", ""),
+                                    getattr(cs.child_llm, "model", ""),
+                                    base_url=getattr(cs.child_llm, "base_url", ""),
+                                    purpose=f"subagent:{cs.role}"):
+                    self._child_pump(cs, emit_sink)
+        except Exception as e:  # noqa: BLE001 —— 子代理失败不应炸掉父回合
+            failed = {"status": "failed", "conclusion": "", "steps": cs.used,
+                    "max_steps": cs.cap,
+                    "error": f"{type(e).__name__}: {e}",
+                    # 只存 `type: msg` 的话，排查时只剩一句标签：本次真实故障是
+                    # `AttributeError: 'NoneType' object has no attribute 'strip'`，
+                    # 而**堆栈被丢掉了**，只能靠全文撒网猜`.strip()` 在哪——
+                    # 猜错了两次。标签不是证据，栈才是。
+                    "traceback": _clip(_exc_traceback(e), 4000),
+                    "reflection": {"ok": False, "source": "exception",
+                                   "issues": [type(e).__name__]},
+                    "trace": _child_trace(cs.traj, cs.thoughts, hooks=cs.hook_events)}
+            with _hooks.workflow_event_scope(record_hook):
+                _hooks.run_workflow("after_subagent", {
+                    "role": str(cs.role)[:60], "status": "failed", "steps": cs.used,
+                    "error": type(e).__name__, "depth": self.depth + 1,
+                })
+            failed["trace"] = _child_trace(cs.traj, cs.thoughts, hooks=cs.hook_events)
+            return failed
+        finally:
+            # 严格配对：异常路径也会 return，所以只能在 finally 里还原。
+            end_read_conversation(_read_conv_token)
+
+        return self._child_build_output(cs, record_hook)
+
+    def _child_prepare(self, cs):
+        """准备子代理：角色工具策略 → 子 Agent → 提问串。"""
+        cs.child_llm = cs.llm if cs.llm is not None else self._child_llm()
+        requested_tools = cs.tool_allowlist
         allowlist_provided = requested_tools is not None
         if isinstance(requested_tools, str):
             requested_tools = [item.strip() for item in requested_tools.split(",") if item.strip()]
@@ -8993,7 +9094,7 @@ class Agent:
             # 和本仓库反复出现的「把没做的记成做了」是同一族。
             #
             # 要写文件就用 `coder`，或自造一个能写的角色名——两条路都通。
-            if role_name in _READ_ONLY_ROLES:
+            if cs.role_name in _READ_ONLY_ROLES:
                 # 权威分类只有一份（`agent_runtime.tools`）。**不要**在这里
                 # 手抄一份工具名清单——它会与真实分类漂移，而漂移之后没人会发现：
                 # 那正是 `dev_apply_edits` 漏登记却一直绿灯的原因。
@@ -9019,29 +9120,29 @@ class Agent:
                 def _mutates(name):
                     return tool_mutates(self._tool_spec(str(name)))
 
-                allowed = [str(name) for name in requested_tools
+                cs.allowed = [str(name) for name in requested_tools
                            if str(name) in self.tools
                            and not _mutates(str(name))]
             else:
-                allowed = [str(name) for name in requested_tools
+                cs.allowed = [str(name) for name in requested_tools
                            if str(name) in self.tools]
         elif not allowlist_provided:
-            allowed = list(spec["tools"])
+            cs.allowed = list(cs.spec["tools"])
         else:
-            allowed = []
-        policy = str(mcp_policy or "auto").strip().lower()
-        if role_name in _READ_ONLY_ROLES:
+            cs.allowed = []
+        cs.policy = str(cs.mcp_policy or "auto").strip().lower()
+        if cs.role_name in _READ_ONLY_ROLES:
             # Planner/dispatcher are analysis-only roles by contract. Even if a model
             # asks for MCP access, keep it read-only and surface the effective
             # policy in the child prompt/trace.
-            policy = "deny"
-        mcp_tools = [name for name in (
+            cs.policy = "deny"
+        cs.mcp_tools = [name for name in (
             "dev_route_connector", "dev_list_connector_tools", "dev_mcp_call")
                      if name in self.tools]
-        if policy == "deny":
-            allowed = [name for name in allowed if name not in mcp_tools]
-        elif policy == "allow" and not allowlist_provided:
-            allowed = list(dict.fromkeys(allowed + mcp_tools))
+        if cs.policy == "deny":
+            cs.allowed = [name for name in cs.allowed if name not in cs.mcp_tools]
+        elif cs.policy == "allow" and not allowlist_provided:
+            cs.allowed = list(dict.fromkeys(cs.allowed + cs.mcp_tools))
         # 显式 allowlist 是**硬上限**（9f8ef17 有意废除「过滤后为空 → 回填角色默认
         # 工具」这条隐式放宽）：过滤后为空就保持为空，绝不回填。
         #
@@ -9053,10 +9154,10 @@ class Agent:
         #   - 「planner 拿到零工具」的根因在**生成端**（主 agent 不该给只读角色点名
         #     写工具），不该靠放宽校验端来救。该生成端问题仍未解决，记在
         #     docs/next-steps.md，不在本提交里改。
-        allowed = [name for name in allowed if name in self.tools]
-        if interactive_session:
+        cs.allowed = [name for name in cs.allowed if name in self.tools]
+        if cs.interactive_session:
             # 递归编排是一等能力；跨层递归会在入口处按风险分档要求审批。
-            allowed = list(dict.fromkeys(allowed + [
+            cs.allowed = list(dict.fromkeys(cs.allowed + [
                 name for name in ("delegate", "orchestrate") if name in self.tools]))
         # 显式点名了非空名单、过滤后却一个不剩 → **结构上无法完成**，当场失败。
         #
@@ -9071,17 +9172,17 @@ class Agent:
         # 为什么是「点名了非空」而不是「最终为空」：显式传空名单是调用方的意图，
         # 不覆盖；而角色默认工具集为空（自造角色可能如此）也不归这里管。
         # 只处理**点名了、却被边界筛光**这一种——它的成因明确、可指名。
-        if allowlist_provided and requested_tools and not allowed:
-            dropped = sorted({str(n) for n in requested_tools} - set(allowed))
+        if allowlist_provided and requested_tools and not cs.allowed:
+            dropped = sorted({str(n) for n in requested_tools} - set(cs.allowed))
             reason = (
                 "子代理零工具：点名的 %d 个工具（%s）全部被安全边界筛掉，"
                 "它没有任何可用工具、结构上无法完成这个子任务。"
                 % (len(dropped), "、".join(dropped[:8]) + ("…" if len(dropped) > 8 else ""))
             )
-            if role_name in _READ_ONLY_ROLES:
+            if cs.role_name in _READ_ONLY_ROLES:
                 reason += ("%s 是只读角色：点名写工具会被丢弃、MCP 恒为 deny。"
                            "要写文件请派 coder；要读文件请点名 read_file/grep/search_code，"
-                           "或不传 tools 用角色默认集。" % role_name)
+                           "或不传 tools 用角色默认集。" % cs.role_name)
             else:
                 reason += ("这些工具要么不在本会话工具注册表里，要么不在本角色可用范围。"
                            "请核实工具名，或不传 tools 用角色默认集。")
@@ -9089,256 +9190,197 @@ class Agent:
                     "error": reason, "dropped_tools": dropped,
                     "reflection": {"ok": False, "source": "allowlist",
                                    "issues": ["zero_effective_tools"]},
-                    "trace": _child_trace([], [], hooks=hook_events)}
-        cap = _resolve_child_max_steps(max_steps)
+                    "trace": _child_trace([], [], hooks=cs.hook_events)}
+        cs.cap = _resolve_child_max_steps(cs.max_steps)
         # 子 agent 也是正常 Agent：分配真实 session_id，走同一个 sessions 落盘路径。
         # id 由委派 ticket 确定性推导（sub-<ticket>），重启后工作台仍能按 id 找回，
         # 且 sessions.list_sessions 默认过滤该前缀，不把主会话列表塞脏。
-        child = Agent(
-            llm=child_llm,
-            session_id=_sessions.subagent_session_id(_delegation_ticket),
+        cs.child = Agent(
+            llm=cs.child_llm,
+            session_id=_sessions.subagent_session_id(cs.delegation_ticket),
             tool_mode=self.tool_mode,
             plan_mode=False,
             depth=self.depth + 1,
             project_id=self.project_id,
-            tool_allowlist=allowed,
+            tool_allowlist=cs.allowed,
             tool_registry=self.tools,
             application_id=self.application_id,
             system_prompt=self.system_prompt,
             capability_lease=self.capability_lease,
             run_budget=self.run_budget,
-            agent_id=(_delegation_ticket or "main"),
-            memory_session_id=interactive_session,
+            agent_id=(cs.delegation_ticket or "main"),
+            memory_session_id=cs.interactive_session,
         )
-        if _delegation_ticket:
+        if cs.delegation_ticket:
             from agent_runtime import delegation as _delegation
-            _delegation.register_agent(_delegation_ticket, child)
+            _delegation.register_agent(cs.delegation_ticket, cs.child)
         # 子代理同样继承滑动续期器：一次长任务可能由子代理连续跑很久，
         # 静态租约副本不续期会在中途把子代理的工具拦死。
-        child.capability_lease_renew = self.capability_lease_renew
+        cs.child.capability_lease_renew = self.capability_lease_renew
         # 子代理继承父代理的「联网 / 深度思考」开关：否则父代理已开联网时，
         # 子代理 web_enabled 仍为 False，researcher 等子任务的 web_* 会被 _web_blocked 全拦截。
-        child.web_enabled = self.web_enabled
-        child.thinking_enabled = self.thinking_enabled
-        child.thinking_level = self.thinking_level
-        question = spec["hint"]
-        if ad_hoc_role:
+        cs.child.web_enabled = self.web_enabled
+        cs.child.thinking_enabled = self.thinking_enabled
+        cs.child.thinking_level = self.thinking_level
+        cs.question = cs.spec["hint"]
+        if cs.ad_hoc_role:
             # 自造角色：`spec["hint"]` 是空的。如果不补，子代理收到的第一句话
             # 直接跳到「工具策略」，它不知道主 agent 为什么派它出来。
-            question = (f"你是【{_clip(role_name, 60)}】：这个角色由主 Agent 为本次任务"
+            cs.question = (f"你是【{_clip(cs.role_name, 60)}】：这个角色由主 Agent 为本次任务"
                         "专门设定，下面是主 Agent 给你的专项要求。")
-        if persona:
-            question += "\n你的本次专项人设：" + _clip(str(persona), 500)
-        question += ("\n工具策略：MCP=" + (policy if policy in {"allow", "deny", "auto"} else "auto") +
-                     "；允许工具=" + ", ".join(allowed))
-        question += "\n\n子任务：" + task
-        if context:
+        if cs.persona:
+            cs.question += "\n你的本次专项人设：" + _clip(str(cs.persona), 500)
+        cs.question += ("\n工具策略：MCP=" + (cs.policy if cs.policy in {"allow", "deny", "auto"} else "auto") +
+                     "；允许工具=" + ", ".join(cs.allowed))
+        cs.question += "\n\n子任务：" + cs.task
+        if cs.context:
             # 上游结论交给 `_render_upstream_context`（清单样式，**每值不截断**）。
             # 这些值进来之前已经过 `summarize_subagent_result` 压缩（去掉工具参数/
             # 完整观察，只留状态+结论+步骤，每值限在 ~1200）。此前这里再砍一刀
             # `_clip(str(v), 600)` 会把真正结论的尾巴切掉——下游子代理看不到完整前情，
             # 只会更糊涂。summarize 的每值预算已经是足够的防灾闸。
-            ctx = _render_upstream_context(context, bullet=True)
-            question += "\n\n【上游子任务结论（供参考，勿重复劳动）】\n" + ctx
+            ctx = _render_upstream_context(cs.context, bullet=True)
+            cs.question += "\n\n【上游子任务结论（供参考，勿重复劳动）】\n" + ctx
         # 工作流设置是子代理真实上限，不能被动态问题预算覆盖。
         # cap == 0 时落兜底上限而不是「不设」——见 SUBAGENT_STEP_FLOOR 的说明：
         # 不设的话 `_run` 那个 `while True:` 结构上无界，一个永不收尾的模型
         # 会让整个工作流永远跑不完，而子代理没有逐个中断的入口。
-        child.tool_step_override = cap if cap > 0 else SUBAGENT_STEP_FLOOR
-        final_text, used = "", 0
-        final_degraded = False     # 安全网兜底 final（非模型 Final Answer）→ 结论须标记降级
-        thoughts, reflections, last_obs = [], [], ""
-        # traj: [{action, obs}] —— 有界的逐步轨迹
-        #
-        # `pending` 必须是**队列**而不是单个槽：并行工具批次路径（见 `run` 里
-        # `if self._pending_batch:` 那段）先 yield 全部 action、再 yield 全部
-        # observation。单槽时批次里第二个 action 会把第一个顶掉，第一个
-        # observation 填进第二个 pending，其余观察被 `not pending["obs"]` 丢掉。
-        #
-        # 后果不是「记录不好看」——`traj` 会喂给 `_traj_evidence_block` →
-        # `_reflection_result`，也就是**反思拿着动作与观察错配的轨迹判断该不该
-        # 重试这个子代理**。实测 `wf-2097b5fbf7c1`：子代理报告「所有读取都返回
-        # 空、无法核实」并放弃，而它那轮的真实观察其实是有的；父代理据此判失败、
-        # replan、再派一次，每次都基于同一份错配的证据，连错三次。
-        traj, pending = [], deque()
-        # 与主会话同一套轨迹结构（type/text），供工作台子 agent 窗口刷新后重建推理过程。
-        # 子 agent 的 SSE 不经过 api.py 的 in-flight 蒸馏路径，必须在这里自己收。
-        trace_steps: list[dict] = []
-        artifacts = []
-        # 「需要用户确认」的上浮载体：子代理被授权问题卡住时，从事件流收进来，
-        # 最后进 `output["needs_confirmation"]`（必填，无内容时是空 dict）。
-        _needs_confirm: dict = {}
-        # 「改了哪些文件」：由写工具在真正落盘那一步自报（见下面 observation 分支的注释）。
-        # `_seen_file_changes` 只为去重——同一文件被改多次，清单里出现一次就够。
-        _file_changes: list[dict] = []
-        _seen_file_changes: set[str] = set()
-        # 子代理是**新对话**：给一份独立的读记录。
-        #
-        # 「未变化存根」的前提是「本次对话中读过」——而全局共享会让重规划产生的
-        # 新子代理拿到上一个子代理的读记录，那份内容它压根没见过。实测
-        # `wf-3073fc5f2403` 连错三轮就是这个：每次重试都必然拿不到正文，那个
-        # 重试在结构上不可能成功。
-        _read_conv_token = begin_read_conversation()
-        try:
-            # The child still gets its own client and history, but local model
-            # generations share a bounded inference slot across all clones.
-            with _hooks.workflow_event_scope(record_hook):
-                with local_llm_slot(getattr(child_llm, "provider", ""),
-                                    getattr(child_llm, "model", ""),
-                                    base_url=getattr(child_llm, "base_url", ""),
-                                    purpose=f"subagent:{role}"):
-                    for ev in child.run(question, stream=False):
-                        et = ev.get("type")
-                        if et == "needs_confirmation":
-                            # 子代理被授权问题卡住 —— 收下来，稍后上浮给父。
-                            _needs_confirm["action"] = ev.get("action", "")
-                            _needs_confirm["reason"] = (
-                                "子代理拿不到用户的原始请求，无法自行确认写授权")
-                        elif et == "final":
-                            final_text = ev.get("text") or ""
-                            final_degraded = bool(ev.get("degraded"))
-                        elif et == "action":
-                            # 免费目录导航 step_cost=0：不占子任务步数上限（与内层同一口径）
-                            used += int(ev.get("step_cost", 1))
-                            emit_sink("action", ev.get("text") or "")
-                            trace_steps.append({"type": "action", "text": ev.get("text") or ""})
-                            if len(traj) < ORCH_TRACE_STEPS:
-                                # 入队而不是覆盖：并行批次会连着来多个 action，
-                                # 队列先进先出才能让观察回到它自己那次调用。
-                                entry = {"action": ev.get("text") or "", "obs": ""}
-                                traj.append(entry)
-                                pending.append(entry)
-                            else:
-                                # 超出上限：不入队。它的观察随后无人认领、直接丢弃
-                                # —— 这正是想要的（提示不能无限长），而且因为队列
-                                # 是 FIFO，它不会抢前面已记步骤的观察。
-                                pass
-                        elif et == "thought":
-                            thoughts.append(ev.get("text") or "")
-                            trace_steps.append({"type": "thought", "text": ev.get("text") or ""})
-                            emit_sink("thought", ev.get("text") or "")
-                        elif et == "reflection":
-                            reflections.append(ev.get("text") or "")
-                            trace_steps.append({"type": "reflection", "text": ev.get("text") or ""})
-                        elif et == "observation":
-                            last_obs = ev.get("text") or ""
-                            trace_steps.append({"type": "observation", "text": last_obs,
-                                                "ok": ev.get("ok")})
-                            for artifact in list(ev.get("artifacts") or []):
-                                if isinstance(artifact, dict) and len(artifacts) < 16:
-                                    artifacts.append(dict(artifact))
-                                # 「改了哪些文件」——由**写工具在真正落盘的那一刻**
-                                # 自报，随 observation 事件带上来。
-                                #
-                                # 为什么不让下游从 action 文本反推：实测被安全拦截的
-                                # `apply_edit`、被安全模式拒绝的 `create_external_file`，
-                                # action 文本里**同样带着 `path:`**——照文本解析会把
-                                # 没做的记成做了。而 `python_exec` / `run_command`
-                                # 真落盘了、路径却藏在 `code:`/命令行里，解析不到
-                                # ——漏报同样是说谎。所以只有工具自报这一条路。
-                                #
-                                # **为什么收在这里**（而不是 `_run` 里的执行点）：
-                                # `_run` 里有两条工具执行路径——`_run_batch`
-                                # （原生 FC 并行批次，子代理实际走这条）与文本协议的
-                                # 顺序路径。我最初挂在顺序路径的 `execute_tool` 之后，
-                                # 结果子代理永远走不到那里，`file_changes` 恒为空
-                                # （插桩确认：该分支一次都没进）。而 observation 事件
-                                # 是**两条路径的共同出口**——`artifacts` 早就靠它回到
-                                # 子代理结果里了（`workflow_reflection` 能显示文件名
-                                # 就是靠这条路）。收在这里，一处覆盖两条。
-                                if isinstance(artifact, Mapping):
-                                    _p = str(artifact.get("path") or "").strip()
-                                    if (_p and _p not in _seen_file_changes
-                                            and len(_file_changes) < 100):
-                                        _seen_file_changes.add(_p)
-                                        _file_changes.append({
-                                            "path": _p,
-                                            # 不填 `kind`：`preview_adapters` 的
-                                            # `_adapter_inputs` 拿它当**适配器路由键**
-                                            # （`adapter or domain or workflow["kind"]`），
-                                            # 路由不到就整条被丢。而协议认可的取值是
-                                            # 内容类型（code/text/image/…），我先填过
-                                            # `"file"`，实测产物清单直接变 0 条。
-                                            # 不填则由 `normalize_artifact` 按扩展名自推。
-                                            "label": str(artifact.get("label")
-                                                         or os.path.basename(_p)),
-                                            "summary": _clip(artifact.get("summary"), 160),
-                                        })
-                            if pending:
-                                # 无条件出队：出队才能推进，否则一次重复的
-                                # observation 会把整条队列卡住，之后的观察全部
-                                # 错位。已写过观察的那一条只丢弃、不覆盖。
-                                entry = pending.popleft()
-                                if not entry["obs"]:
-                                    entry["obs"] = _clip(last_obs,
-                                                          ORCH_TRACE_OBS_CHARS)
-                            emit_sink("observation", last_obs)
-                        # The action event precedes tool execution; stop only after its
-                        # observation so the final allowed call is not silently skipped.
-                        if cap > 0 and used > cap:
-                            break
-        except Exception as e:  # noqa: BLE001 —— 子代理失败不应炸掉父回合
-            failed = {"status": "failed", "conclusion": "", "steps": used,
-                    "max_steps": cap,
-                    "error": f"{type(e).__name__}: {e}",
-                    # 只存 `type: msg` 的话，排查时只剩一句标签：本次真实故障是
-                    # `AttributeError: 'NoneType' object has no attribute 'strip'`，
-                    # 而**堆栈被丢掉了**，只能靠全文撒网猜`.strip()` 在哪——
-                    # 猜错了两次。标签不是证据，栈才是。
-                    "traceback": _clip(_exc_traceback(e), 4000),
-                    "reflection": {"ok": False, "source": "exception",
-                                   "issues": [type(e).__name__]},
-                    "trace": _child_trace(traj, thoughts, hooks=hook_events)}
-            with _hooks.workflow_event_scope(record_hook):
-                _hooks.run_workflow("after_subagent", {
-                    "role": str(role)[:60], "status": "failed", "steps": used,
-                    "error": type(e).__name__, "depth": self.depth + 1,
-                })
-            failed["trace"] = _child_trace(traj, thoughts, hooks=hook_events)
-            return failed
-        finally:
-            # 严格配对：异常路径也会 return，所以只能在 finally 里还原。
-            end_read_conversation(_read_conv_token)
+        cs.child.tool_step_override = cs.cap if cs.cap > 0 else SUBAGENT_STEP_FLOOR
 
-        if turn is not None:
-            turn.add_usage(getattr(child_llm, "last_usage", None))
+    def _child_pump(self, cs, emit_sink):
+        """子代理事件泵：把 child.run 的事件收进轨迹 / 上浮 / 确认通道。"""
+        for ev in cs.child.run(cs.question, stream=False):
+            et = ev.get("type")
+            if et == "needs_confirmation":
+                # 子代理被授权问题卡住 —— 收下来，稍后上浮给父。
+                cs.needs_confirm["action"] = ev.get("action", "")
+                cs.needs_confirm["reason"] = (
+                    "子代理拿不到用户的原始请求，无法自行确认写授权")
+            elif et == "final":
+                cs.final_text = ev.get("text") or ""
+                cs.final_degraded = bool(ev.get("degraded"))
+            elif et == "action":
+                # 免费目录导航 step_cost=0：不占子任务步数上限（与内层同一口径）
+                cs.used += int(ev.get("step_cost", 1))
+                emit_sink("action", ev.get("text") or "")
+                cs.trace_steps.append({"type": "action", "text": ev.get("text") or ""})
+                if len(cs.traj) < ORCH_TRACE_STEPS:
+                    # 入队而不是覆盖：并行批次会连着来多个 action，
+                    # 队列先进先出才能让观察回到它自己那次调用。
+                    entry = {"action": ev.get("text") or "", "obs": ""}
+                    cs.traj.append(entry)
+                    cs.pending.append(entry)
+                else:
+                    # 超出上限：不入队。它的观察随后无人认领、直接丢弃
+                    # —— 这正是想要的（提示不能无限长），而且因为队列
+                    # 是 FIFO，它不会抢前面已记步骤的观察。
+                    pass
+            elif et == "thought":
+                cs.thoughts.append(ev.get("text") or "")
+                cs.trace_steps.append({"type": "thought", "text": ev.get("text") or ""})
+                emit_sink("thought", ev.get("text") or "")
+            elif et == "reflection":
+                cs.reflections.append(ev.get("text") or "")
+                cs.trace_steps.append({"type": "reflection", "text": ev.get("text") or ""})
+            elif et == "observation":
+                cs.last_obs = ev.get("text") or ""
+                cs.trace_steps.append({"type": "observation", "text": cs.last_obs,
+                                    "ok": ev.get("ok")})
+                for artifact in list(ev.get("artifacts") or []):
+                    if isinstance(artifact, dict) and len(cs.artifacts) < 16:
+                        cs.artifacts.append(dict(artifact))
+                    # 「改了哪些文件」——由**写工具在真正落盘的那一刻**
+                    # 自报，随 observation 事件带上来。
+                    #
+                    # 为什么不让下游从 action 文本反推：实测被安全拦截的
+                    # `apply_edit`、被安全模式拒绝的 `create_external_file`，
+                    # action 文本里**同样带着 `path:`**——照文本解析会把
+                    # 没做的记成做了。而 `python_exec` / `run_command`
+                    # 真落盘了、路径却藏在 `code:`/命令行里，解析不到
+                    # ——漏报同样是说谎。所以只有工具自报这一条路。
+                    #
+                    # **为什么收在这里**（而不是 `_run` 里的执行点）：
+                    # `_run` 里有两条工具执行路径——`_run_batch`
+                    # （原生 FC 并行批次，子代理实际走这条）与文本协议的
+                    # 顺序路径。我最初挂在顺序路径的 `execute_tool` 之后，
+                    # 结果子代理永远走不到那里，`file_changes` 恒为空
+                    # （插桩确认：该分支一次都没进）。而 observation 事件
+                    # 是**两条路径的共同出口**——`artifacts` 早就靠它回到
+                    # 子代理结果里了（`workflow_reflection` 能显示文件名
+                    # 就是靠这条路）。收在这里，一处覆盖两条。
+                    if isinstance(artifact, Mapping):
+                        _p = str(artifact.get("path") or "").strip()
+                        if (_p and _p not in cs.seen_file_changes
+                                and len(cs.file_changes) < 100):
+                            cs.seen_file_changes.add(_p)
+                            cs.file_changes.append({
+                                "path": _p,
+                                # 不填 `kind`：`preview_adapters` 的
+                                # `_adapter_inputs` 拿它当**适配器路由键**
+                                # （`adapter or domain or workflow["kind"]`），
+                                # 路由不到就整条被丢。而协议认可的取值是
+                                # 内容类型（code/text/image/…），我先填过
+                                # `"file"`，实测产物清单直接变 0 条。
+                                # 不填则由 `normalize_artifact` 按扩展名自推。
+                                "label": str(artifact.get("label")
+                                             or os.path.basename(_p)),
+                                "summary": _clip(artifact.get("summary"), 160),
+                            })
+                if cs.pending:
+                    # 无条件出队：出队才能推进，否则一次重复的
+                    # observation 会把整条队列卡住，之后的观察全部
+                    # 错位。已写过观察的那一条只丢弃、不覆盖。
+                    entry = cs.pending.popleft()
+                    if not entry["obs"]:
+                        entry["obs"] = _clip(cs.last_obs,
+                                              ORCH_TRACE_OBS_CHARS)
+                emit_sink("observation", cs.last_obs)
+            # The action event precedes tool execution; stop only after its
+            # observation so the final allowed call is not silently skipped.
+            if cs.cap > 0 and cs.used > cs.cap:
+                break
+
+    def _child_build_output(self, cs, record_hook):
+        """把子代理这一轮的现场收成一份可交付的报告。"""
+        if cs.turn is not None:
+            cs.turn.add_usage(getattr(cs.child_llm, "last_usage", None))
 
         degraded = False
-        conclusion = final_text.strip()
+        conclusion = cs.final_text.strip()
         if not conclusion:
             # 子代理在步数内没收尾：用它的过程要点兜底，**不要**给下游一个空结论
             # （否则编排器会把"没结论"当成"没问题"，下游也拿不到任何上下文）
-            salvage = "\n".join(t for t in thoughts if t.strip()).strip() or last_obs.strip()
+            salvage = "\n".join(t for t in cs.thoughts if t.strip()).strip() or cs.last_obs.strip()
             if salvage:
                 degraded = True
                 conclusion = "（子代理未在步数内收尾，以下为过程要点）\n" + _clip(salvage, 900)
         # 即使有安全网兜底 final（文字非空），其来源不是模型 Final Answer，仍属降级结论。
-        degraded = degraded or final_degraded
+        degraded = degraded or cs.final_degraded
         # 子 agent 的逐轮记录已由 child.run 写进 sessions（sub-<ticket>）；这里把同一份
         # 推理轨迹挂到那轮上，工作台「独立对话窗口」刷新后能重建 think/action/观察，
         # 而不是只剩任务与结论。失败时静默——轨迹是锦上添花。
-        if child.session_id and trace_steps:
+        if cs.child.session_id and cs.trace_steps:
             try:
-                _sessions.attach_turn_trace(child.session_id, question, final_text, trace_steps)
+                _sessions.attach_turn_trace(cs.child.session_id, cs.question, cs.final_text, cs.trace_steps)
             except Exception:  # noqa: BLE001
                 pass
         reflection = (_reflection_result(
-            child_llm, role=role, task=task, conclusion=conclusion,
-            traj=traj, context=context, budget=self.run_budget) if reflect else {
+            cs.child_llm, role=cs.role, task=cs.task, conclusion=conclusion,
+            traj=cs.traj, context=cs.context, budget=self.run_budget) if cs.reflect else {
                 "ok": True, "source": "disabled", "issues": [],
                 "next_step": "交给主 Agent 复核"})
         status = "ok" if reflection.get("ok") else "failed"
         error = "" if status == "ok" else "子代理反思未通过：" + "; ".join(
             str(item) for item in (reflection.get("issues") or []))
-        if _delegation_ticket and not _needs_confirm:
+        if cs.delegation_ticket and not cs.needs_confirm:
             from agent_runtime import delegation as _delegation
-            pending_child = _delegation.latest_pending(interactive_session, _delegation_ticket)
+            pending_child = _delegation.latest_pending(cs.interactive_session, cs.delegation_ticket)
             if pending_child:
-                _needs_confirm.update({
+                cs.needs_confirm.update({
                     "kind": "delegation", "action": "delegate", "id": pending_child["id"],
                     "reason": "下一层子代理等待用户审批"})
-        output = {"status": status, "conclusion": conclusion, "steps": used,
-                "max_steps": cap,
+        output = {"status": status, "conclusion": conclusion, "steps": cs.used,
+                "max_steps": cs.cap,
                 "error": error, "degraded": degraded, "reflection": reflection,
                 # 「需要用户确认」的上浮通道。**必填**（无确认时是 dict()，不是
                 # 省略）—— 缺失会让老消费点静默把它当成普通结果，于是子代理
@@ -9348,24 +9390,24 @@ class Agent:
                 # 的原始请求，所以「拿不准，请向用户确认」这个判断在子代理层是
                 # **真实**的（顶层那句是猜的）。而父 agent 手里**有**用户的原话，
                 # 由它去问才问得对人。
-                "needs_confirmation": dict(_needs_confirm),
-                "artifacts": artifacts,
+                "needs_confirmation": dict(cs.needs_confirm),
+                "artifacts": cs.artifacts,
                 # 「改了哪些文件」。消费方有三处都只认这个字段：`output_audit`
                 # 的上界检查与证据回报、`preview_adapters` 的产物清单、以及人工
                 # 构造的 runner 一直在填的同一个字段（`agent_runtime/acceptance.py`）。
                 # 此前真子代理路径下这里恒为空。
-                "file_changes": [dict(row) for row in _file_changes],
-                "trace": _child_trace(traj, thoughts, reflections,
-                                      getattr(child, "last_turn_record", None), used,
-                                      hooks=hook_events)}
+                "file_changes": [dict(row) for row in cs.file_changes],
+                "trace": _child_trace(cs.traj, cs.thoughts, cs.reflections,
+                                      getattr(cs.child, "last_turn_record", None), cs.used,
+                                      hooks=cs.hook_events)}
         with _hooks.workflow_event_scope(record_hook):
             _hooks.run_workflow("after_subagent", {
-                "role": str(role)[:60], "status": status, "steps": used,
+                "role": str(cs.role)[:60], "status": status, "steps": cs.used,
                 "reflection_ok": bool(reflection.get("ok")), "depth": self.depth + 1,
             })
-        output["trace"] = _child_trace(traj, thoughts, reflections,
-                                        getattr(child, "last_turn_record", None), used,
-                                        hooks=hook_events)
+        output["trace"] = _child_trace(cs.traj, cs.thoughts, cs.reflections,
+                                        getattr(cs.child, "last_turn_record", None), cs.used,
+                                        hooks=cs.hook_events)
         return output
 
     def _delegate(self, arg, turn=None):

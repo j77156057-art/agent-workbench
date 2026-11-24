@@ -39,13 +39,19 @@ def source() -> str:
 
 
 def _child_runner(tree: ast.AST) -> ast.FunctionDef:
-    """取造子代理的那个函数体。"""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef):
-            body = ast.unparse(node)
-            if "_SUBAGENT_ROLES.get(" in body and "SUBAGENT_MAX_DEPTH" in body:
-                return node
-    pytest.fail("找不到造子代理的函数——守卫扫不到它，本次改动可能漏改")
+    """取造子代理的那个函数体。
+
+    拆分 `_run_child` 之后，造子代理的逻辑分家了（准备 / 事件泵 / 出报告），
+    所以这里取**合成视图**：各方法的函数体按顺序拼成一个函数、载体前缀还原 ——
+    守卫的形状检查原样可用（见 `tests/agent_loop_source.py`）。
+    """
+    from tests.agent_loop_source import child_composite_ast
+
+    comp = child_composite_ast(tree)
+    body = ast.unparse(comp)
+    if "_SUBAGENT_ROLES.get(" not in body or "SUBAGENT_MAX_DEPTH" not in body:
+        pytest.fail("合成视图里找不到造子代理的逻辑——守卫扫不到它，本次改动可能漏改")
+    return comp
 
 
 # --------------------------------------------------------------------------

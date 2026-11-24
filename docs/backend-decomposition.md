@@ -424,3 +424,70 @@ _tool_ok / _result / obs 等），再拆一层的代价已经很低：
 
 另外 `_run_child`（543）/ `_run_shell`（474）的主执行段（分别写 9 / 13 个
 跨段状态）可以照 `_run` 的做法拆。
+
+## 13. 第五轮：外壳与子代理两层的主执行段（`_run_shell` 474 → 79 / `_run_child` 543 → 203）
+
+这一轮拆的是另外两层巨型函数：`run()` 下面的**外壳**（`_run_shell`）与
+**子代理**（`_run_child`）。两者的共同点是：主执行段都是一整块 `try:`，
+块里既有跨段的共享可变状态，又混着「早退 / 断连 / 失败」三类控制流。
+
+### 边界怎么定的
+
+| 层 | 主执行段（拆前） | 拆后 |
+|---|---|---|
+| 外壳 | `try:` 块 280 行（事件泵 53 + 收尾 154 + 压缩 32 + 失败 22） | `_run_shell` 只剩编排 79 行 |
+| 子代理 | `try:` 块 120 行（事件泵 95 + 失败 18 + 还原 1） | `_run_child` 只剩编排 203 行 |
+
+**外壳**拆成 9 个方法：
+
+| 方法 | 职责 |
+|---|---|
+| `_shell_prepare_resume` | 会话压缩 + 断点续跑现场解析 |
+| `_shell_open_turn` | 预算账本 + trace turn + 撤销令牌 + 截止时间 |
+| `_shell_gates` | 四道前置门：能力问答 / 预算熔断 / 每分钟限流 / 前置钩子 |
+| `_shell_pump` | 把内层 `_run` 的事件流搬到外壳事件流 |
+| `_shell_compact_after` | 正常跑完后的历史压缩（要 yield notice，故不在 `finally` 里） |
+| `_shell_on_error` | 失败收尾：历史兜底 + 失败原因 |
+| `_shell_finish` | 断点落库 / 记忆落库 / 终态判定 / trace / 计价 / 后置钩子 |
+| `_shell_persist_checkpoint` | 落 checkpoint |
+| `_shell_update_journal` | 换 journal 现场并立刻落盘 |
+
+**子代理**拆成 3 个方法：`_child_prepare`（角色工具策略 → 子 Agent → 提问串，182 行）、
+`_child_pump`（事件泵，92 行）、`_child_build_output`（出报告，69 行）。
+
+### 新增两个状态载体（`agent_runtime/run_state.py`）
+
+`_TurnState` 只管 `_run`；这一轮的两层各有自己的共享状态：
+
+- `_ShellState`（14 字段）：外壳跨段共享的可变状态。
+- `_ChildState`（38 字段）：一次子代理运行的输入 + 工具策略 + 运行现场。
+
+**为什么外壳必须用载体，而不是局部变量**：外壳是**生成器**。事件在 `yield` 出去
+的过程中被消费者打断（客户端断连）时，生成器栈上的局部变量会一起消失 ——
+而收尾逻辑（`finally`）恰恰要在断连后读 `final_text` / `journal_state` /
+`recovery_events` 才能把现场落盘。所以**跨 yield 存活的状态必须挂在载体上**。
+（子代理那一层没有这个约束：它的 `except` 只接 `Exception`，断连时 `GeneratorExit`
+不会被接住，块后面的代码根本不会执行。）
+
+### 这次踩到的三个坑
+
+1. **抽出方法不等于抽出早退**：`_child_prepare` 里那条「点名了工具却被安全边界
+   筛光 → fail-closed」的早退，原本是 `_run_child` 的 `return {...}`。搬进子方法
+   后它变成了子方法的返回值，**没人接** → 9 条守卫红（`KeyError: dropped_tools`）。
+   → 抽块时必须把块里的**早退**一并列出来：留在原地，或显式回传给调用方。
+2. **源码钉桩守卫会跟着代码搬家失明**：子代理自治那 11 条守卫查的是
+   `_run_child` 函数体里的形状（`allowed = [...]` / `list(spec['tools'])` /
+   `question = spec['hint']`）。逻辑分家之后它们扫的是**错误的函数**。
+   → 沿用 `_run` 那轮的既有做法（`tests/agent_loop_source.py`）：给守卫一个
+   **合成视图**（各方法函数体按顺序拼成一个函数 + 载体前缀还原），牙不变。
+3. **变异电池的锚点写死了源码文本**：`battery_subagent_step_floor` 的 `_OVERRIDE`
+   锚的是 `child.tool_step_override = cap if cap > 0 else SUBAGENT_STEP_FLOOR`，
+   搬家后变成 `cs.child.tool_step_override = cs.cap if ...` → 锚点找不到 →
+   整块电池脱钩。→ 锚点随代码同步更新（与 `battery_empty_model_turn` 同一套规矩）。
+
+### 验收
+
+- 事件流等价对拍：**11 场景 / 1034 事件逐条一致**（新增 4 个子代理场景 +
+  1 个外壳失败场景；归一化从一层改成递归）
+- 类成员对照：HEAD 83 → 95，**丢失 0**
+- 变异电池锚点：全部命中（脱钩 0）

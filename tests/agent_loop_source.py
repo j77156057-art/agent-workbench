@@ -15,10 +15,12 @@
 未被变异的原文** → 只靠源码形状检测的变异会「活下来」（守卫看起来没牙，
 其实是取错了源）。
 """
+import ast
 import inspect
 import re
 import sys
 
+from agent_runtime.run_state import _ChildState, _ShellState
 from agent_runtime.turn_state import _TurnState
 
 LOOP_METHODS = (
@@ -43,7 +45,19 @@ LOOP_METHODS = (
 )
 
 _CARRIER_FIELDS = sorted(_TurnState.__dataclass_fields__)
+_SHELL_FIELDS = sorted(_ShellState.__dataclass_fields__)
+_CHILD_FIELDS = sorted(_ChildState.__dataclass_fields__)
 _STRIP = [re.compile(r"\bst\.%s\b" % re.escape(name)) for name in _CARRIER_FIELDS]
+_STRIP += [re.compile(r"\bsh\.%s\b" % re.escape(name)) for name in _SHELL_FIELDS]
+_STRIP += [re.compile(r"\bcs\.%s\b" % re.escape(name)) for name in _CHILD_FIELDS]
+
+#: 子代理这一层的几个方法（拆开后的家）。守卫按**合成视图**查它们。
+CHILD_METHODS = (
+    "_run_child",
+    "_child_prepare",
+    "_child_pump",
+    "_child_build_output",
+)
 
 
 def _agent_module():
@@ -92,3 +106,65 @@ def agent_loop_source(*extra: str) -> str:
             continue
         parts.append(inspect.getsource(fn))
     return _normalize(chr(10).join(parts))
+
+
+def _carrier_prefixes():
+    """载体前缀 → 它的字段表（cs / sh）。"""
+    return {"cs": set(_CHILD_FIELDS), "sh": set(_SHELL_FIELDS)}
+
+
+def _strip_carrier_fields(node):
+    """AST 级别把 cs.<字段> / sh.<字段> 还原成裸名字。
+
+    守卫查的是「这段逻辑还在、还是不是那个形状」，而不是「它住在哪个方法里」
+    —— 所以拆开之后要把载体前缀摘掉，钉桩的**牙不变**。
+    """
+    prefixes = _carrier_prefixes()
+
+    def carrier_of(value):
+        """这个 Name 是载体前缀吗？是的话返回它的字段表。"""
+        if isinstance(value, ast.Name) and value.id in prefixes:
+            return prefixes[value.id]
+        return None
+
+    def plain(item):
+        """载体字段访问 → 裸名字；不是载体字段就原样返回。"""
+        fields = carrier_of(item.value) if isinstance(item, ast.Attribute) else None
+        if fields is not None and item.attr in fields:
+            return ast.Name(id=item.attr, ctx=ast.Load())
+        return item
+
+    for n in ast.walk(node):
+        for field, value in list(ast.iter_fields(n)):
+            if isinstance(value, ast.Attribute):
+                setattr(n, field, plain(value))
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    if isinstance(item, ast.Attribute):
+                        value[i] = plain(item)
+    return node
+
+
+def child_composite_ast(tree):
+    """子代理相关的几个方法合成一个「函数体」，供守卫按老形状检查。
+
+    拆分 _run_child 之后，造子代理的逻辑分家了（准备 / 事件泵 / 出报告）。
+    守卫不该因此失明 —— 这里的合成视图把各方法的**函数体**按顺序拼成一个
+    函数，载体前缀也一并还原，于是老守卫的形状检查原样可用。
+    """
+    funcs = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            funcs.setdefault(node.name, node)
+    body = []
+    for name in CHILD_METHODS:
+        fdef = funcs.get(name)
+        if fdef is None:
+            continue
+        body.extend(fdef.body)
+    if not body:
+        raise AssertionError(
+            "子代理方法一个都没找到：%s" % (", ".join(CHILD_METHODS),))
+    comp = ast.parse("def _child_composite():\n    pass\n").body[0]
+    comp.body = body
+    return _strip_carrier_fields(comp)
