@@ -198,3 +198,8 @@ docs/screenshots/workbench-unified/
 /frontend-outofscope-start.json
 # notes/ 下的交接笔记只在本机流转，不入库。
 notes/inflight-handoff-*.md
+
+# ===== 本地生成的图片素材（不入库）=====
+# hair_swap*.jpg：本地跑图/换发流程在工作区根目录留下的中间产物，
+# 与仓库源码无关。未忽略时任何一次 git add -A 都会把它们带进公开仓库。
+hair_swap*.jpg
