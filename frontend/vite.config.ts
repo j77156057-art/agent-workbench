@@ -1,7 +1,15 @@
 import { defineConfig, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { resolve } from 'node:path'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { join, relative, resolve, sep } from 'node:path'
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 
 /**
  * 构建前清掉 web/assets。
@@ -59,11 +67,58 @@ function serveSessionScript(): Plugin {
 // - 多页应用（MPA）：ask=AI 问答首页（/，产物 index.html）；workbench=代码工作台（/workbench）
 // - 产物直接写入后端静态目录 ../web（PyInstaller 的 ("web","web") 会原样带走）
 // - emptyOutDir 必须为 false：../web 里还有 trace.html 等非本工程托管的静态文件，构建时绝不能清空
+
+
+/**
+ * 构建来源清单：把「这次构建用的 frontend/src 每一个文件的哈希」写进
+ * web/build-manifest.json。
+ *
+ * 为什么不能靠时间戳：产物与源码的对应关系**只能用内容核对**。git checkout
+ * 会把所有文件的 mtime 刷成同一时刻，于是「产物比源码新」这条判据在 CI 上
+ * 只是构建顺序的副产品；而在本地「改了 src 忘了 build」又可能被 mtime 偶然
+ * 放过（文件内容没真改，只有 mtime 变了）。哈希不受这两种干扰。
+ *
+ * 清单本身是**构建产物**（web/ 在 .gitignore 里），所以它只存在于「构建过的那
+ * 台机器上」—— 而这正是它该在的地方：要核对的正是「这台机器上的产物」对不对
+ * 得上「这台机器上的源码」。跨机器比较没有意义，也不该做。
+ */
+function buildManifest(): Plugin {
+  return {
+    name: 'docmind-build-manifest',
+    apply: 'build',
+    closeBundle() {
+      const srcRoot = resolve(__dirname, 'src')
+      const files: Record<string, string> = {}
+      const walk = (dir: string) => {
+        for (const name of readdirSync(dir).sort()) {
+          const full = join(dir, name)
+          if (statSync(full).isDirectory()) {
+            walk(full)
+            continue
+          }
+          const rel = relative(srcRoot, full).split(sep).join('/')
+          files[rel] = createHash('sha256').update(readFileSync(full)).digest('hex')
+        }
+      }
+      walk(srcRoot)
+      const payload = {
+        version: 1,
+        source_root: 'frontend/src',
+        source_count: Object.keys(files).length,
+        sources: files,
+      }
+      writeFileSync(resolve(__dirname, '../web/build-manifest.json'),
+        JSON.stringify(payload, null, 1) + '\n')
+    },
+  }
+}
+
 export default defineConfig({
   plugins: [
     vue({ template: { compilerOptions: { isCustomElement: (tag: string) => tag === 'model-viewer' } } }),
     woff2Only(),
     cleanAssets(),
+    buildManifest(),
     serveSessionScript(),
   ],
   build: {

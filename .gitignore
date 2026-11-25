@@ -78,6 +78,12 @@ Thumbs.db
 .vscode/
 web/favicon.ico
 
+# 构建来源清单（frontend/vite.config.ts 的 buildManifest 插件写的）：
+# 它是**构建产物**，而且是**逐机器**的（哈希按工作区文件内容算，
+# 换行规整/平台不同就对不上）——进版本库必然误报。
+# 只在本机存在，用来判「这份产物是不是用当前源码构建的」。
+web/build-manifest.json
+
 # ===== WorkBuddy 会话记忆（工具本地状态，不入库；结论已沉淀到 HANDOFF/README）=====
 .workbuddy/
 .docmind_secrets.json
