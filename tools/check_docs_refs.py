@@ -28,6 +28,14 @@ DOCS = (
     "docs/memory-v2-p0.md",
     "README.md",
     "README_en.md",
+    # showcase 的 6 份 README 也是对外文档（带引用），一并纳入检查。
+    "showcase/docmind-landing-brutalist/README.md",
+    "showcase/docmind-landing-industrial/README.md",
+    "showcase/docmind-landing-minimal/README.md",
+    "showcase/docmind-realtime/README.md",
+    "showcase/docmind-realtime-brutalist/README.md",
+    "showcase/docmind-realtime-industrial/README.md",
+    "showcase/docmind-realtime-minimal/README.md",
 )
 REF = re.compile(r"([A-Za-z0-9_./\\-]+\.(?:py|md|json|ts|vue|js)):(\d{1,5})(?:-(\d{1,5}))?")
 BARE = re.compile(r"(?<![\w./])((?:docs|tools|tests|frontend|agent_runtime|golden|scripts)/"

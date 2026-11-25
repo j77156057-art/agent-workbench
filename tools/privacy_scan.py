@@ -40,6 +40,14 @@ PATTERNS = {
     "session_id": re.compile(r"\b(?:ask|web|dev)-[0-9a-f]{16,}\b"),
     "wf_session_id": re.compile(r"\bwf-[0-9a-f]{10,16}\b"),
     "run_stamp_id": re.compile(r"\b(?:golden|ask|web|dev|wf)-[0-9]{8}-[0-9]{6}-[A-Za-z0-9]+\b"),
+    # 内部**跑批/产物目录名**：带日期戳的真实目录（形如 <品牌>_p0_<6 位日期戳>、
+    # dist_<品牌>.bak_<6 位日期戳>_<6 位日期戳>）。它们不是机器身份，但会把内部
+    # 跑批的时间线与命名约定一并抖出来 —— 合成占位一律是全零。
+    # （这条注释本身**不许**写真名：门禁跳过自身文件，真名会从后门溜进公开仓库。）
+    "batch_run_dir": re.compile(
+        r"(?<![A-Za-z0-9])(?:DocMind|WorkBuddy)[A-Za-z0-9_.-]*_[0-9]{6}(?![0-9])"),
+    # 同上的另一类形态：带日期的跑批目录（<前缀>-<8 位日期戳>）。
+    "dated_run_dir": re.compile(r"(?<![A-Za-z0-9])(?:regression|acceptance)-[0-9]{8}(?![0-9])"),
     "secret": re.compile(r"\b(?:sk-[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})"),
 }
 
@@ -53,6 +61,9 @@ ALLOW = {
     "wf_session_id": (re.compile(r"^wf-0{8,}[0-9a-f]*$"),),
     # Emscripten 运行时默认用户（浏览器沙箱里的固定串，不是本机身份）。
     "abs_home": (re.compile(r"^/home/web_user/?$"),),
+    # 跑批目录名的合成占位：日期戳全零。
+    "batch_run_dir": (re.compile(r"^(?:DocMind|WorkBuddy)[A-Za-z0-9_.-]*_0{6}$"),),
+    "dated_run_dir": (re.compile(r"^(?:regression|acceptance)-0{8}$"),),
 }
 # 脱敏测试夹具键：scrub/泄露守卫用例故意写的假键，不是真凭据。
 FAKE_KEYS = {

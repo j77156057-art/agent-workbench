@@ -194,7 +194,7 @@ class ReferenceScanTests(unittest.TestCase):
     def test_name_appearing_only_in_tests_is_not_a_dependency(self):
         """保留期自己的测试数据不许把真目录判成"仍在用"。
 
-        实测踩过：测试样本里写了 `DocMind_p0_210820`，那三个 dist 目录就全被豁免，
+        实测踩过：测试样本里写了 `DocMind_p0_000000`，那三个 dist 目录就全被豁免，
         默认规则下可回收从 4.01 GB 掉到 2.69 GB —— 守卫自己造了个假依赖。
         """
         def runner(cmd, *a, **kw):

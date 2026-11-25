@@ -85,6 +85,34 @@ class GateJudgementTests(unittest.TestCase):
         probe = "会话写在 .docmind_sessions" + chr(92) + "x.json"
         self.assertFalse(self._hits("local_session_path", probe))
 
+    def test_a_real_batch_run_dir_is_caught(self):
+        """内部跑批目录名（带日期戳）不能留在公开仓库里。"""
+        probe = "DocMind_p0_" + "210820"
+        self.assertTrue(self._hits("batch_run_dir", probe))
+
+    def test_a_backup_dir_with_a_stamp_is_caught(self):
+        probe = "dist_DocMind.bak_" + "163124_163834"
+        self.assertTrue(self._hits("batch_run_dir", probe))
+
+    def test_a_dated_run_dir_is_caught(self):
+        probe = "regression-" + "20260918"
+        self.assertTrue(self._hits("dated_run_dir", probe))
+
+    def test_the_synthetic_run_dirs_are_allowed(self):
+        """假化后的目录名必须放行 —— 否则门禁会逼着大家把真名留着。"""
+        for kind, probe in (("batch_run_dir", "DocMind_p0_" + "0" * 6),
+                            ("batch_run_dir", "DocMind_sample_" + "0" * 6),
+                            ("dated_run_dir", "regression-" + "0" * 8)):
+            self.assertTrue(self._hits(kind, probe))
+            allow = PS.ALLOW[kind]
+            self.assertTrue(any(a.match(probe) for a in allow),
+                            "合成占位没被白名单接住：" + probe)
+
+    def test_a_plain_run_dir_without_a_stamp_is_not_a_violation(self):
+        """没有日期戳的普通目录名不判（判据只抓「带时间线的」那一类）。"""
+        probe = "DocMind/MinGit"
+        self.assertFalse(self._hits("batch_run_dir", probe))
+
 
 class GateOnTheRealRepoTests(unittest.TestCase):
     """门禁在**当前仓库**上的表现。"""
